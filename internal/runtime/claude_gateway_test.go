@@ -223,6 +223,141 @@ func TestInstallClaudeHooks_GatewaySettings(t *testing.T) {
 	}
 }
 
+// TestClaudeRunnerSettings: every run's settings document pins the hook
+// settings ("" for a name the runner has no value for) and disableAllHooks;
+// a gateway run's env block keeps the route and gains the hook settings.
+func TestClaudeRunnerSettings(t *testing.T) {
+	recorded := []hookEnvPair{
+		{"TIRITH_REQUIRED", "1"},
+		{"FULLSEND_EGRESS_ALLOWLIST", "api.github.com:443"},
+		{"FULLSEND_CANARY_TOKEN", ""},
+	}
+	hookEnv := func() map[string]any {
+		return map[string]any{
+			"TIRITH_FAIL_ON":            "",
+			"TIRITH_REQUIRED":           "1",
+			"FULLSEND_EGRESS_ALLOWLIST": "api.github.com:443",
+			"FULLSEND_CANARY_TOKEN":     "",
+			"FULLSEND_TOOL_ALLOWLIST":   "",
+		}
+	}
+	// pinned are the names the launch clears after .env, set "" as well.
+	pinned := append(strings.Fields(strings.TrimPrefix(claudeLoaderEnvUnset, "unset ")+" "+strings.TrimPrefix(claudeSettingsEnvUnset, "unset ")), claudeShellStartupEnv...)
+	withPinned := func(env map[string]any) map[string]any {
+		for _, key := range pinned {
+			env[key] = ""
+		}
+		return env
+	}
+
+	t.Run("non-gateway", func(t *testing.T) {
+		assert.Equal(t, map[string]any{"env": withPinned(hookEnv()), "disableAllHooks": false}, claudeRunnerSettings(recorded, nil))
+		assert.Contains(t, pinned, "CLAUDE_CODE_SHELL_PREFIX")
+		assert.Contains(t, pinned, "LD_PRELOAD")
+		assert.Contains(t, pinned, "BASH_ENV")
+	})
+
+	t.Run("nothing recorded pins every name empty", func(t *testing.T) {
+		env, ok := claudeRunnerSettings(nil, nil)["env"].(map[string]any)
+		require.True(t, ok)
+		require.Len(t, env, len(hookEnvManagedKeys)+len(pinned))
+		for _, key := range append(append([]string{}, hookEnvManagedKeys...), pinned...) {
+			assert.Equal(t, "", env[key], key)
+		}
+	})
+
+	t.Run("gateway env is merged, not replaced", func(t *testing.T) {
+		routeEnv := map[string]any{"ANTHROPIC_BASE_URL": "https://gw.example.com", "CLAUDE_CODE_USE_VERTEX": ""}
+		extra := map[string]any{"apiKeyHelper": "helper", "env": routeEnv}
+		want := withPinned(hookEnv())
+		want["ANTHROPIC_BASE_URL"] = "https://gw.example.com"
+		want["CLAUDE_CODE_USE_VERTEX"] = ""
+		assert.Equal(t, map[string]any{"apiKeyHelper": "helper", "env": want, "disableAllHooks": false}, claudeRunnerSettings(recorded, extra))
+		assert.Equal(t, map[string]any{"ANTHROPIC_BASE_URL": "https://gw.example.com", "CLAUDE_CODE_USE_VERTEX": ""}, routeEnv, "the gateway settings are not modified")
+		assert.NotContains(t, extra, "disableAllHooks")
+	})
+}
+
+// TestInstallClaudeHooks_PinsRunnerSettings: the hooks.json Bootstrap uploads
+// (and whose digest the launch guard checks) carries the hook settings
+// Bootstrap recorded and disableAllHooks on every route; a gateway run passes
+// the same document inline, with its route env merged in.
+func TestInstallClaudeHooks_PinsRunnerSettings(t *testing.T) {
+	stubDir := t.TempDir()
+	captured := filepath.Join(t.TempDir(), "hooks.json")
+	// Copy the uploaded hooks.json aside: `sandbox upload <name> <src> <dest>`.
+	script := "#!/bin/sh\ncase \"$*\" in *upload*hooks.json*) for a; do last2=$prev; prev=$a; done; cp \"$last2\" '" + captured + "' ;; esac\n" +
+		strings.TrimPrefix(claudeHooksStubScript("", ""), "#!/bin/sh\n")
+	require.NoError(t, os.WriteFile(filepath.Join(stubDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", stubDir+":/usr/bin:/bin")
+	// The harness pair as the stub reads it back from .env: a canary token,
+	// no tool allowlist.
+	t.Setenv("FULLSEND_TEST_ENV_READ", "canary-value"+hookEnvReadSeparator)
+	hooks := securityAllOff().WithForgeEgressEntry("api.github.com:443")
+	wantHookEnv := map[string]any{
+		"TIRITH_FAIL_ON":            "",
+		"TIRITH_REQUIRED":           "",
+		"FULLSEND_EGRESS_ALLOWLIST": "api.github.com:443",
+		"FULLSEND_CANARY_TOKEN":     "canary-value",
+		"FULLSEND_TOOL_ALLOWLIST":   "",
+	}
+	for _, unset := range []string{claudeLoaderEnvUnset, claudeSettingsEnvUnset} {
+		for _, key := range strings.Fields(strings.TrimPrefix(unset, "unset ")) {
+			wantHookEnv[key] = ""
+		}
+	}
+	for _, key := range claudeShellStartupEnv {
+		wantHookEnv[key] = ""
+	}
+
+	install := func(t *testing.T, sb string, extra map[string]any) (map[string]any, []byte) {
+		t.Helper()
+		t.Cleanup(func() { forgetClaudeHookDigests(sb) })
+		require.NoError(t, installClaudeHooks(sb, hooks, extra))
+		data, err := os.ReadFile(captured)
+		require.NoError(t, err)
+		var doc map[string]any
+		require.NoError(t, json.Unmarshal(data, &doc))
+		d, ok := lookupClaudeHookDigests(sb)
+		require.True(t, ok)
+		assert.Equal(t, codexAssetSHA256(data), d.HooksJSON, "the guard pins the document with the runner settings")
+		assert.Contains(t, doc, "hooks")
+		assert.Equal(t, false, doc["disableAllHooks"])
+		return doc, data
+	}
+
+	t.Run("non-gateway", func(t *testing.T) {
+		doc, _ := install(t, "fs-claude-runner-settings", nil)
+		assert.Equal(t, wantHookEnv, doc["env"])
+		assert.NotContains(t, doc, "apiKeyHelper")
+	})
+
+	for _, apiKey := range []bool{false, true} {
+		sb := "fs-claude-runner-settings-gw-oidc"
+		if apiKey {
+			sb = "fs-claude-runner-settings-gw-key"
+		}
+		t.Run(sb, func(t *testing.T) {
+			registerClaudeGateway(t, sb, apiKey)
+			extra := ClaudeRuntime{}.claudeGatewaySettings(sb)
+			doc, data := install(t, sb, extra)
+			env, ok := doc["env"].(map[string]any)
+			require.True(t, ok)
+			for key, want := range wantHookEnv {
+				assert.Equal(t, want, env[key], key)
+			}
+			assert.Equal(t, "https://gw.example.com", env["ANTHROPIC_BASE_URL"], "the route env is kept")
+			assert.Equal(t, "", env["CLAUDE_CODE_USE_VERTEX"])
+			assert.Len(t, env, len(extra["env"].(map[string]any))+len(wantHookEnv))
+			assert.Equal(t, extra["apiKeyHelper"], doc["apiKeyHelper"])
+
+			cmd := buildRunCommand(RunParams{SandboxName: sb, AgentBaseName: "agent", RepoDir: "/r", Model: "gateway/m", HooksSettingsPath: security.SandboxHooksSettings})
+			assert.Equal(t, doc, inlineGatewaySettings(t, cmd), "the launch passes the same document inline")
+			assert.Equal(t, string(data), ClaudeRuntime{}.claudeGatewaySettingsArg(sb))
+		})
+	}
+}
+
 func TestBuildRunCommand_GatewayOIDC(t *testing.T) {
 	const sb = "fs-claude-gw-cmd-oidc"
 	registerClaudeGateway(t, sb, false)
@@ -235,7 +370,7 @@ func TestBuildRunCommand_GatewayOIDC(t *testing.T) {
 	})
 
 	seedAt := strings.Index(cmd, gatewayTokenSeed(sandbox.SandboxClaudeConfig))
-	envAt := strings.Index(cmd, ". /sandbox/workspace/.env")
+	envAt := strings.Index(cmd, envDataExportsVar+"=")
 	loaderAt := strings.Index(cmd, claudeLoaderEnvUnset)
 	unsetAt := strings.Index(cmd, "unset "+strings.Join(claudeGatewayEnvUnset, " "))
 	baseAt := strings.Index(cmd, "export ANTHROPIC_BASE_URL='https://gw.example.com'")
@@ -282,7 +417,7 @@ func TestBuildRunCommand_GatewayAPIKey(t *testing.T) {
 	cmd := buildRunCommand(RunParams{SandboxName: sb, AgentBaseName: "agent", RepoDir: "/r", Model: "gateway/claude-haiku-5-5"})
 
 	captureAt := strings.Index(cmd, `FULLSEND_GATEWAY_PLACEHOLDER="$INFERENCE_GATEWAY_API_KEY" && readonly FULLSEND_GATEWAY_PLACEHOLDER`)
-	envAt := strings.Index(cmd, ". /sandbox/workspace/.env")
+	envAt := strings.Index(cmd, envDataExportsVar+"=")
 	exportAt := strings.Index(cmd, `export ANTHROPIC_AUTH_TOKEN="$FULLSEND_GATEWAY_PLACEHOLDER"`)
 	require.NotEqual(t, -1, captureAt, cmd)
 	require.NotEqual(t, -1, exportAt, cmd)
@@ -334,7 +469,7 @@ func gatewayLaunch(t *testing.T, sb, envBody string) (string, string, error) {
 	cmd := buildRunCommand(RunParams{SandboxName: sb, AgentBaseName: "agent", RepoDir: tmp, Model: "gateway/m"})
 	cmd = strings.Replace(cmd, sandbox.SandboxWorkspace+"/.env", envFile, 1)
 	cmd = strings.ReplaceAll(cmd, sandbox.SandboxClaudeConfig, cfgDir)
-	c := exec.Command("/bin/sh", "-c", cmd)
+	c := exec.Command("/bin/sh", "-c", protectedDirsShell(t, binDir)+cmd)
 	c.Env = []string{
 		"PATH=" + binDir + ":/usr/bin:/bin",
 		"HOME=" + tmp,
@@ -390,21 +525,25 @@ func TestBuildRunCommand_GatewayEnvOwnership_APIKey(t *testing.T) {
 	assert.NotContains(t, out, "CLAUDE_CODE_USE_VERTEX=")
 	assert.NotContains(t, out, "FULLSEND_GATEWAY_PLACEHOLDER", "the captured placeholder is never exported")
 
-	// .env cannot replace the captured value: the assignment aborts the shell.
+	// .env cannot replace the captured value: the loader drops the
+	// assignment, so the placeholder read before .env is the one exported.
 	out, _, err = gatewayLaunch(t, sb, "FULLSEND_GATEWAY_PLACEHOLDER=planted\n")
-	require.Error(t, err)
-	assert.NotContains(t, out, "REAL-CLAUDE")
+	require.NoError(t, err, out)
+	assert.Contains(t, out, "ANTHROPIC_AUTH_TOKEN="+gatewayTestPlaceholder+"\n")
+	assert.NotContains(t, out, "planted")
 }
 
-// A variable .env makes readonly cannot be cleared, so the launch stops
-// instead of starting Claude Code with it.
-func TestBuildRunCommand_GatewayReadonlyFailsClosed(t *testing.T) {
+// .env cannot make a route variable readonly: `readonly` is not part of the
+// .env grammar, so the line is ignored and the runner's values are exported.
+func TestBuildRunCommand_GatewayReadonlyIgnored(t *testing.T) {
 	const sb = "fs-claude-gw-shell-ro"
 	registerClaudeGateway(t, sb, false)
 	for _, name := range []string{"ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_VERTEX", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"} {
 		out, _, err := gatewayLaunch(t, sb, "readonly "+name+"=planted\n")
-		require.Error(t, err, name)
-		assert.NotContains(t, out, "REAL-CLAUDE", name)
+		require.NoError(t, err, name)
+		assert.Contains(t, out, "REAL-CLAUDE", name)
+		assert.NotContains(t, out, "planted", name)
+		assert.Contains(t, out, "ANTHROPIC_BASE_URL=https://gw.example.com\n", name)
 	}
 }
 
@@ -425,7 +564,7 @@ func TestBuildRunCommand_GatewayPlaceholderRequired(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(binDir, "claude"), []byte("#!/bin/sh\necho REAL-CLAUDE\n"), 0o755))
 		cmd := buildRunCommand(RunParams{SandboxName: sb, AgentBaseName: "agent", RepoDir: tmp, Model: "gateway/m"})
 		cmd = strings.ReplaceAll(cmd, sandbox.SandboxClaudeConfig, filepath.Join(tmp, "cfg"))
-		c := exec.Command("/bin/sh", "-c", cmd)
+		c := exec.Command("/bin/sh", "-c", protectedDirsShell(t, binDir)+cmd)
 		c.Env = []string{"PATH=" + binDir + ":/usr/bin:/bin", "INFERENCE_GATEWAY_API_KEY=eyJhbGciOi.eyJzdWIiOi.sig"}
 		out, err := c.CombinedOutput()
 		var exitErr *exec.ExitError
@@ -524,7 +663,7 @@ func TestBuildRunCommand_GatewayInlineSettingsArgv(t *testing.T) {
 	cmd := buildRunCommand(RunParams{SandboxName: sb, AgentBaseName: "agent", RepoDir: tmp, Model: "gateway/m", HooksSettingsPath: "/sandbox/claude-config/hooks.json"})
 	cmd = strings.Replace(cmd, sandbox.SandboxWorkspace+"/.env", envFile, 1)
 	cmd = strings.ReplaceAll(cmd, sandbox.SandboxClaudeConfig, filepath.Join(tmp, "claude-config"))
-	c := exec.Command("/bin/sh", "-c", cmd)
+	c := exec.Command("/bin/sh", "-c", protectedDirsShell(t, binDir)+cmd)
 	c.Env = []string{"PATH=" + binDir + ":/usr/bin:/bin", "HOME=" + tmp, "INFERENCE_GATEWAY_API_KEY=" + gatewayTestPlaceholder}
 	out, err := c.CombinedOutput()
 	require.NoError(t, err, string(out))

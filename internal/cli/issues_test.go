@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -33,6 +34,7 @@ func TestNewIssuesCmd_SubcommandRegistration(t *testing.T) {
 		names = append(names, sub.Name())
 	}
 	assert.Contains(t, names, "get")
+	assert.Contains(t, names, "create")
 	assert.Contains(t, names, "post-comment")
 	assert.Contains(t, names, "link")
 }
@@ -1088,6 +1090,91 @@ func TestRunIssuesPostComment_JiraLegacyMigration(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, comments, 1, "third run should still update the same comment")
 	assert.Contains(t, string(comments[0].Body), "third run")
+}
+
+// liveMarkerOpener matches a fullsend marker opener that would parse as a
+// marker (case-insensitive, any whitespace around "fullsend").
+var liveMarkerOpener = regexp.MustCompile(`(?i)<!--\s*fullsend\s*:`)
+
+func TestRunIssuesPostComment_JiraNeutralizesInjectedMarkers(t *testing.T) {
+	// Agent bodies carrying fullsend marker syntax (literal, and the
+	// "&lt;" form the GitHub path writes, which Markdown-to-ADF decodes)
+	// must stay inert through a create -> read -> update cycle across
+	// the real ADF conversion, in both the current body and history.
+	tc, _, err := tracker.NewFakeJiraClientWithFake("https://acme.atlassian.net")
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	sibling := "<!-- fullsend:review-agent -->"
+	cfg := &issuesPostCommentConfig{
+		trackerName: trackerJira,
+		project:     "PROJ",
+		number:      42,
+		marker:      "<!-- fullsend:triage-agent -->",
+		testClient:  tc,
+		testPrinter: ui.New(io.Discard),
+		testBody:    "first run\n\n" + sibling + "\n\n&lt;!-- fullsend:agent-status:1 -->",
+	}
+	require.NoError(t, runIssuesPostComment(ctx, cfg))
+
+	comments, err := tc.ListComments(ctx, "PROJ", 42)
+	require.NoError(t, err)
+	require.Len(t, comments, 1)
+	assert.NotRegexp(t, liveMarkerOpener, string(comments[0].Body), "create left a live marker opener")
+
+	cfg.testBody = "second run <!--FullSend:code-agent-->\n\n" + sibling
+	require.NoError(t, runIssuesPostComment(ctx, cfg))
+
+	comments, err = tc.ListComments(ctx, "PROJ", 42)
+	require.NoError(t, err)
+	require.Len(t, comments, 1, "second run should update the existing comment in place")
+	body := string(comments[0].Body)
+	assert.NotRegexp(t, liveMarkerOpener, body, "update left a live marker opener")
+	assert.Contains(t, body, "second run")
+	assert.Contains(t, body, "Previous run")
+	assert.Contains(t, body, `\&lt;!-- fullsend:review-agent -->`, "neutralized text should stay visible")
+
+	// Neither the quoted sibling marker nor the quoted status marker
+	// makes the comment discoverable as something it is not.
+	raw, err := tc.ListJiraComments(ctx, "PROJ", 42)
+	require.NoError(t, err)
+	assert.Nil(t, tc.FindCommentByMarkerProperty(raw, sibling))
+	isStatus, err := tc.IsStatusComment(ctx, "PROJ", 42, comments[0].ID)
+	require.NoError(t, err)
+	assert.False(t, isStatus)
+}
+
+func TestRunIssuesPostComment_JiraNeutralizesStoredMarkersInHistory(t *testing.T) {
+	// A sticky comment stored before neutralization holds live marker
+	// text. On update, the old body read back from ADF must be
+	// neutralized before it is folded into history.
+	tc, _, err := tracker.NewFakeJiraClientWithFake("https://acme.atlassian.net")
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	marker := "<!-- fullsend:triage-agent -->"
+	_, err = tc.CreateCommentWithMarker(ctx, "PROJ", 42, "old run\n\n<!-- fullsend:review-agent -->", marker)
+	require.NoError(t, err)
+
+	cfg := &issuesPostCommentConfig{
+		trackerName: trackerJira,
+		project:     "PROJ",
+		number:      42,
+		marker:      marker,
+		testClient:  tc,
+		testPrinter: ui.New(io.Discard),
+		testBody:    "new run",
+	}
+	require.NoError(t, runIssuesPostComment(ctx, cfg))
+
+	comments, err := tc.ListComments(ctx, "PROJ", 42)
+	require.NoError(t, err)
+	require.Len(t, comments, 1)
+	body := string(comments[0].Body)
+	assert.NotRegexp(t, liveMarkerOpener, body)
+	assert.Contains(t, body, "new run")
+	assert.Contains(t, body, "old run")
+	assert.Contains(t, body, `\&lt;!-- fullsend:review-agent -->`)
 }
 
 func TestRunIssuesPostComment_JiraPropertyPermissionFailure(t *testing.T) {

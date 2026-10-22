@@ -154,6 +154,8 @@ func (a AgentEntry) DerivedName() string {
 const (
 	// DefaultUpstreamRepo is the canonical fullsend repository for layered workflow calls.
 	DefaultUpstreamRepo = "fullsend-ai/fullsend"
+	// DefaultAgentsRepo is the canonical repository for upstream agent resources.
+	DefaultAgentsRepo = "fullsend-ai/agents"
 	// DefaultUpstreamRef is the default ref for layered upstream workflow calls.
 	DefaultUpstreamRef = "main"
 	// DefaultGHRunner is the default GitHub Actions runner image for scaffold workflows.
@@ -744,11 +746,11 @@ func NewPerRepoConfig(roles []string, targetRepo string) PerRepoConfigWriter {
 	if targetRepo != "" {
 		// The target repository itself is implicitly allowed by the
 		// triage and retro post-scripts, so only the upstream
-		// cross-repo permission (retro proposals, triage prerequisites)
-		// needs an explicit entry (#8218).
+		// cross-repo permissions (retro proposals, triage prerequisites)
+		// need explicit entries (#8218, #8504).
 		cfg.CreateIssues = &CreateIssuesConfig{
 			AllowTargets: AllowTargets{
-				Repos: []string{DefaultUpstreamRepo},
+				Repos: DefaultIssueCreationRepos(),
 			},
 		}
 	}

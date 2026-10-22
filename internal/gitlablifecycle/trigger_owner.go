@@ -563,7 +563,23 @@ func (o *TriggerOwner) noPollerMember(ctx context.Context, owner, repo string) e
 // This inventory is for reconciliation only: selecting the runtime Poller
 // identity still uses the rotation state's managed account alone (see
 // managedPollerIDs).
+//
+// A recorded account that the service-account inventory confirms is already
+// deleted is omitted, because there is nothing left to reconcile for it. The
+// trigger-account collision check keeps such IDs (recordedPollerUserIDs).
 func (o *TriggerOwner) ManagedPollerUserIDs(ctx context.Context, owner, repo string) ([]int64, error) {
+	return o.pollerUserIDs(ctx, owner, repo, true)
+}
+
+// recordedPollerUserIDs is ManagedPollerUserIDs that also lists recorded
+// Poller generations whose service account no longer exists. A deleted Poller's
+// ID is still a Poller identity GitLab must not hand to the trigger account, so
+// the collision check keeps it.
+func (o *TriggerOwner) recordedPollerUserIDs(ctx context.Context, owner, repo string) ([]int64, error) {
+	return o.pollerUserIDs(ctx, owner, repo, false)
+}
+
+func (o *TriggerOwner) pollerUserIDs(ctx context.Context, owner, repo string, dropDeleted bool) ([]int64, error) {
 	ids, err := o.managedPollerIDs(ctx, owner, repo)
 	if err != nil && !forge.IsNotFound(err) {
 		return nil, err
@@ -577,7 +593,21 @@ func (o *TriggerOwner) ManagedPollerUserIDs(ctx context.Context, owner, repo str
 		if supErr != nil {
 			return nil, supErr
 		}
+		// With dropDeleted, a recorded account that the service-account
+		// inventory confirms is gone (retirement deleted it but could not clear
+		// its record) has no membership or bootstrap credential to reconcile,
+		// and reconciling it would fail closed and tear down the current fast
+		// path. An inventory that cannot be read confirms nothing, so the
+		// account stays listed.
+		var accounts []gitlab.ServiceAccount
+		var listErr error
+		if dropDeleted {
+			accounts, listErr = o.Admin.ListProjectServiceAccounts(ctx, owner, repo)
+		}
 		for _, id := range recorded {
+			if dropDeleted && listErr == nil && !slices.ContainsFunc(accounts, func(sa gitlab.ServiceAccount) bool { return int64(sa.ID) == id }) {
+				continue
+			}
 			if !slices.Contains(ids, id) && !slices.Contains(excluded, id) {
 				ids = append(ids, id)
 			}

@@ -208,10 +208,11 @@ make behaviour-test
 
 ### Parallel execution
 
-The suite runs scenarios in parallel by default (`GODOG_CONCURRENCY=12`,
-matching the repo pool size). Each scenario gets its own `World` clone and
-leases a unique `test-repo-NN` from the pool, so no cross-scenario state
-is shared. The `behaviour-test` Make target includes `-race` to catch
+The suite runs scenarios in parallel by default. The default concurrency
+equals the slots per org (12), not the total pool capacity, and
+`GODOG_CONCURRENCY` overrides it. Each scenario gets its own `World` clone
+and leases a unique `(org, test-repo-NN)` slot from the pool, so no
+cross-scenario state is shared. The `behaviour-test` Make target includes `-race` to catch
 data races under concurrent execution.
 
 To adjust concurrency:
@@ -238,7 +239,7 @@ The dummy-playback scenarios (`@playback`, e.g. `features/runtime/playback.featu
 make playback-test
 ```
 
-The target runs `go test -tags playback -race -v -count=1 -timeout 45m ./e2e/behaviour/`. It uses only the `playback` build tag, so only `TestPlaybackSuite` (`behaviourtest.RunPlaybackSuite`) is compiled and `TestBehaviourSuite` is left out. Do not add `behaviour` to the tag list; that would run both suites. `RunPlaybackSuite` fixes the godog tag filter to `@playback` (`GODOG_TAGS` is ignored) and sets `PLAYBACK_RUNTIME=dummy-playback` for the install driver. Everything else is configured from the same environment as `make behaviour-test`: `ENVIRONMENT`, `BEHAVIOUR_SCM` / `BEHAVIOUR_CI` / `BEHAVIOUR_INSTALL_MODE`, `E2E_GCP_*`, `E2E_LOCK_TIMEOUT`, `GODOG_CONCURRENCY`, `BEHAVIOUR_ARTIFACT_DIR`, and the role PEM / Cloudflare credentials the install factories need. `make behaviour-test` skips `@playback` scenarios, so the two targets never run the same scenario.
+The target runs `go test -tags playback -race -v -count=1 -timeout 45m ./e2e/behaviour/`. It uses only the `playback` build tag, so only `TestPlaybackSuite` (`behaviourtest.RunPlaybackSuite`) is compiled and `TestBehaviourSuite` is left out. Do not add `behaviour` to the tag list; that would run both suites. `RunPlaybackSuite` fixes the godog tag filter to `@playback` (`GODOG_TAGS` is ignored) and sets `PLAYBACK_RUNTIME=dummy-playback` for the install driver. Everything else is configured from the same environment as `make behaviour-test`: `ENVIRONMENT`, `BEHAVIOUR_SCM` / `BEHAVIOUR_CI` / `BEHAVIOUR_INSTALL_MODE`, `E2E_GCP_*`, `GODOG_CONCURRENCY`, `BEHAVIOUR_ARTIFACT_DIR`, and the role PEM / Cloudflare credentials the install factories need. `E2E_LOCK_TIMEOUT` does not apply, because neither suite acquires the org lock (see the slot leasing bullet under [Running the playback suite in CI](#running-the-playback-suite-in-ci)). `make behaviour-test` skips `@playback` scenarios, so the two targets never run the same scenario.
 
 #### Running the playback suite in CI
 
@@ -246,13 +247,9 @@ The `playback` job mirrors the `behaviour` job in [`.github/workflows/e2e.yml`](
 
 - **Target and environment.** Run `make playback-test` with `shell: bash`, teeing output (for example to `playback-test.log`) so `pipefail` propagates failures. Pass the same `env:` block as the behaviour job: `BEHAVIOUR_SCM=github`, `BEHAVIOUR_CI=githubactions`, `BEHAVIOUR_INSTALL_MODE=per-repo`, `E2E_GCP_*`, `TEST_*_PEM`, and the `TEST_CLOUDFLARE_*` credentials. Point `BEHAVIOUR_ARTIFACT_DIR` at a playback-specific directory (for example `${{ runner.temp }}/playback-artifacts`). You do not need to set `GODOG_TAGS` or `PLAYBACK_RUNTIME`, because `RunPlaybackSuite` sets them itself.
 - **Triggers, gate, and environment binding.** Use `needs: gate` for authorized `pull_request_target`, `merge_group`, and push to `main`; manual dispatch runs playback when `run_playback=true`. Bind to the same GitHub Environment (`stage` on push, `dev` otherwise) and set `ENVIRONMENT` to match. The job checks out and runs PR-head code with secrets, so the [CI Workflows security rules](../../contributing/ci-workflows.md#review-checklist-for-secrets-in-behaviourplayback-jobs) apply.
-- **Org reservation.** The playback and behaviour jobs share a job concurrency group within each stage workflow run, so they execute one at a time. Dev jobs use distinct groups and run concurrently, reserving separate orgs. `RunPlaybackSuite` reserves a pool org with the same `e2etest.AcquireOrg` lock that `RunSuite` uses (`orgPoolForEnvironment`), and the lock is released in `t.Cleanup`. Two limits make relying on that lock alone unsafe when both suites target the single stage org:
-  - `AcquireOrg` waits for the lock for the `E2E_LOCK_TIMEOUT` default of 10 minutes, far less than the 45-minute suite budget, so a job that starts while the other suite is running can fail while waiting.
-  - A lock is treated as stale and reclaimed once it is older than 30 minutes (`staleLockTimeout` in `internal/e2etest`). That check uses only the lock's creation time and does not check whether the holder is still running, so a later contender can reclaim an org that a long-running suite is still using.
-
-  On `dev`, the pool has several orgs, so contention is lower, but the same limits apply when the pool is exhausted. The org lock remains responsible for reservation; job concurrency prevents contention between these two suites in the same stage run.
+- **Slot leasing.** Neither suite reserves a whole org. `RunPlaybackSuite` and `RunSuite` lease individual `(org, test-repo-NN)` slots through the same shared install driver and allocator (see [Repo allocation via the shared slot driver](#repo-allocation-via-the-shared-slot-driver)), so the two suites and other concurrent runs can share an org without resetting each other's repos. Neither suite takes the exclusive `e2e-lock` (`e2etest.AcquireOrg`) or runs the broad startup `e2etest.CleanupStaleResources`. Abandoned slot repos are reclaimed by the allocator's [repo-slot GC](#repo-slot-gc). The playback and behaviour jobs still share a job concurrency group within each stage workflow run, because the STAGE pool is the single `halfsend` org with only 12 slots. Dev jobs use distinct groups and run concurrently across the numbered orgs.
 - **Change detection.** Reuse the behaviour job's file filter (its `grep -qE` path list and the `push.paths` entries under the same `SYNC-WITH` comment). It already covers `e2e/behaviour/` (playback features, fixtures and results), `pkg/behaviourtest/`, `internal/runtime/` (the `dummy-playback` runtime), and `Makefile`. Keep the two filters in sync, and keep the behaviour job's fallback of running the tests when the file list cannot be fetched or may be truncated.
-- **Cancellation.** The job inherits the workflow-level `concurrency` group and `cancel-in-progress` expression. A cancelled or killed run cannot run `t.Cleanup`, so its org lock is reclaimed by the stale-lock timeout in `internal/e2etest`, exactly as for the behaviour job. Gate post-test steps on `always()` rather than `success()` so that redaction still runs after a failure.
+- **Cancellation.** The job inherits the workflow-level `concurrency` group and `cancel-in-progress` expression. A cancelled or killed run cannot run `t.Cleanup`, so its slot repos stay occupied until the [repo-slot GC](#repo-slot-gc) reclaims them, exactly as for the behaviour job. Gate post-test steps on `always()` rather than `success()` so that redaction still runs after a failure.
 - **Artifacts.** Before uploading, redact the playback artifact directory with the base-branch `scripts/redact-behaviour-artifacts.sh`, run through `env -i` with the full secret list, as described in [Behaviour debug artifact redaction](../../contributing/ci-workflows.md#behaviour-debug-artifact-redaction). Upload only when `steps.redact.outcome == 'success'` and the suite step failed, with `if-no-files-found: ignore`. Use an artifact name distinct from `behaviour-artifacts-*`, for example `playback-artifacts-<pr-or-run-id>`.
 - **Timeout.** Set `timeout-minutes: 45` to match the target's `go test -timeout` (see [CI timeout budgeting](#ci-timeout-budgeting-for-lazy-provisioning)).
 
@@ -267,18 +264,63 @@ This runs the branch's workflow and test target in the dev environment. The regu
 
 In CI, the test runner mints cross-org `e2e` installation tokens via OIDC for GitHub API operations. Triage workflows on the pool org's `test-repo` mint same-org `triage` tokens from vendored reusable workflows; those require per-repo mint enrollment (`PER_REPO_WIF_REPOS`) on the hosted mint project. Pool `test-repo` repos are enrolled once by a GCP admin — not during CI install. Before `github setup`, the install driver resolves the repo-scoped inference WIF provider: it runs `fullsend inference status` and runs `fullsend inference provision` only when the provider is not healthy. Provisions are serialised across the process. The resolved provider is cached per repo name for the rest of the run, including after the repo is deleted and recreated, because the provider ID, its attribute condition and the Vertex AI grant are all keyed by `owner/repo`, not by repo ID (`Provisioner.ProvisionWIF` in `internal/dispatch/gcf/provisioner.go` creates the provider and the grant, and is the source of truth for these bindings). See [e2e-testing.md](e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
 
-### Repo allocation via unified Driver
+### Repo allocation via the shared slot driver
 
-The `Given the enrolled test repository` step allocates a repo via `Driver.AllocateRepo(ctx)`. The unified `install.Driver` (constructed by a `Factory` during suite setup) owns pool leasing and lazy create+install internally:
+`RunSuite` and `RunPlaybackSuite` build one shared install driver (`install.Factory` over an `install.PoolConfig`) for the environment's pool. On `dev` the pool is the derived orgs `halfsend-01` … `halfsend-12`, and on `stage` it is the single unsuffixed `halfsend` org, each with `test-repo-01` … `test-repo-NN` slots (`install.PoolLayoutForEnvironment`; `BEHAVIOUR_POOL_SIZE` sets the slots per org). The driver resolves one installation token per org (`e2etest.TokenForOrg`, minted once per org and kept for the run, since a token outlives the 45-minute job). It builds one forge client per org from that token. The `Given the enrolled test repository` step calls `install.LeaseDriver.AllocateLease(ctx)`, which:
 
-1. Leases a slot from the internal pool (blocks until one is free or ctx is cancelled).
-2. If the repo already exists, deletes it (and any leftover `{name}-fork`) so the scenario cannot inherit labels, branches, PRs, workflow runs, or config from a previous lessee.
-3. Creates the repo (the forge's `auto_init` provides the initial commit) and runs `fullsend github setup` (after resolving the inference WIF provider when configured).
-4. Caches the successful ensure for the duration of this lease so duplicate `EnsureRepo` calls skip redundant work.
+1. Claims a free slot through the cross-org allocator (`slotpool.go`), blocking until one is free or ctx is cancelled. The claim *creates* the slot repo (the forge's `auto_init` provides the initial commit). A slot whose repo already exists belongs to another holder, possibly another suite. It is skipped for the whole of provisioning and is never reset or deleted. Orgs whose installation's rate-limit headers show the quota nearly spent are skipped until their reset, so leases move to orgs with quota left.
+2. On the first lease in any org of a mint group, deploys the group's mint: a public preview mint on `dev` and the durable STAGE mint on `stage`. The driver packs the pool orgs into the fewest groups whose `WORKFLOW_HOST_REPOS` fits in 5,000 bytes, recomputed from the layout on every run (two groups for the 12 DEV orgs at 12 slots each, one for STAGE). Every mint's `--status-github-group` is the `mint-status` team of one pool org, picked at random once per job. Concurrent first leases in a group share one deploy. A failed deploy is torn down and retried by the group's next lease, and `Finalize` tears each deployed mint down once.
+3. Installs fullsend into the claimed repo with the org's credential and mint URL. It deletes a leftover `{name}-fork` from an earlier holder of the slot, then runs `fullsend github setup` (after resolving the inference WIF provider when configured) and the post-install checks. If the install fails, the slot is released, deleting only this lease's own repo.
+4. Returns an `install.RepoLease` with the org, repo, the org's token and client, and its group's mint URL, status group and workflow hosts. The step rebinds the scenario `World` to that org: `Org`, `RepoOwner`, `Token`, `MintURL`, `MintStatusGroup`, `MintWorkflowHostRepos`, and SCM/CI drivers rebuilt through `World.OrgDrivers` from the lease's client. Every step and the scenario's cleanup then act in the leased org with its credentials.
 
-The After hook runs `CleanupScenario` (issues, PRs, ephemeral forks, hosting repos) and then `Driver.DeallocateRepo`, which deletes the leased base — after in-scenario debug collection has written workflow logs and agent artifacts under `BEHAVIOUR_ARTIFACT_DIR` — and returns the name to the pool. For a failed scenario the After hook first runs `steps.CollectFailureLogs`. It saves the logs of the repository's recent workflow runs that no step already saved, which covers a wait that timed out or a step that failed before it resolved a run. It always writes `debug-scenario-<name>-<suffix>/failure-summary.txt` with the scenario error and each run's outcome. A run whose logs cannot be fetched gets a `workflow-logs-unavailable.txt` stating why. The summary states when the run listing may be truncated or the per-scenario fetch cap was reached. A scenario that passes but whose repo deallocation fails also gets a failure summary. Everything is redacted and written `0600`, like the in-scenario logs; the redaction also masks the runner's `World.Token` and the values of credential-named environment variables (for example `*_TOKEN`, `*_PAT`, `*_KEY`), including in directory names. The next lessee of that name recreates the repo from scratch. Mint enrollment of the numbered *names* can remain pre-provisioned; the GitHub repos themselves are ephemeral around a lease. `Driver.Finalize` tears down suite-scoped resources (e.g. preview mint) and reclaims outstanding leases with an error.
+#### Public preview mints
 
-Concurrent callers for the same repo are serialized via `singleflight.Group` — only one goroutine runs the create+install flow while others wait. This removes the requirement for numbered `test-repo-NN` repos to be pre-provisioned in the pool org.
+The `dev` preview mints are deployed with `--public` (`PER_REPO_WIF_REPOS=*`), which broadens *caller* eligibility, not anonymous access. OIDC verification, the workflow-host allowlist (an explicit `--workflow-host-repos`, kept separate from callers per [ADR 0082](../../ADRs/0082-workflow-host-allow-list.md)), role permissions, and requested-repo and FOREIGN scope checks all still apply, and the status endpoint's GitHub-team authorization is independent of this mode. The accepted trade-off: the `fullsend-test-*` Apps are installed on every repo in the pool orgs, so an unrelated repo there that uses an approved workflow host could mint a token for *itself* through a live preview URL. The previews are temporary and the identities test-only. The [GitHub mint scope scenarios](#github-mint-scope-scenarios) keep the denials for another repository or org without the required FOREIGN grant and for unapproved workflow hosts. Grouped orgs share a preview hostname and its 60 requests/minute/IP native rate limiter, so validate 429s with live traffic rather than assuming the per-org traffic pattern still holds.
+
+Godog concurrency stays independent of slot capacity. The default is the slots per org (12), and `GODOG_CONCURRENCY` overrides it. Capacity is every slot of the pool (144 on `dev`), and a concurrency above capacity only makes workers wait. The allocator logs each claim and release with its org/repo and that org's quota (`[slots] claimed halfsend-03/test-repo-05 (quota …)`). An exhausted pass logs the per-org breakdown: occupied, rate-limited until, denied, failed, e2e-lock excluded, and GC results. `Finalize` logs every org's last observed rate limit.
+
+The After hook runs `CleanupScenario` (issues, PRs, ephemeral forks, hosting
+repos) and then `LeaseDriver.DeallocateLease(org, repo)`. Cleanup changes the
+slot repo and deletes repos by name, and the name may have been taken over by
+another holder (a lessee that outlived the slot GC deadline, for example). So
+the hook first sets `World.LeaseOwned` from the driver's `install.LeaseVerifier`
+(`StillOwnsLease`, the same ownership check the release uses). `CleanupScenario`
+checks it before every mutation and every cleanup retry, and the forge client
+checks it again before resending a request after a rate-limit wait. A lost
+lease, or one that cannot be verified, skips the mutation and logs why. A
+`LeaseDriver` that does not implement `LeaseVerifier` is treated as
+unverifiable. Local cleanup (mock servers, artifact directories) still runs,
+and the lease is still released. `DeallocateLease` runs after
+in-scenario debug collection has written workflow logs and agent artifacts
+under `BEHAVIOUR_ARTIFACT_DIR`. It deletes the leftover fork only if it is a
+real fork and the repo under the slot name is still this lease's (by
+repository ID, else by the claim's description nonce), because a replaced slot
+repo means the fork may belong to the new holder. The ownership check runs
+after the fork is looked up, just before the first delete, and again before
+any delete is resent. A fork it leaves is cleaned by the slot's next
+`EnsureRepo`. It then deletes the slot repo only if it is still this lease's,
+and frees the slot. A repo the release cannot delete stays occupied for
+everyone until the [repo-slot GC](#repo-slot-gc) reclaims it. For a failed
+scenario the After hook first runs `steps.CollectFailureLogs`. It saves the
+logs of the repository's recent workflow runs that no step already saved,
+which covers a wait that timed out or a step that failed before it resolved a
+run. It always writes `debug-scenario-<name>-<suffix>/failure-summary.txt` with
+the scenario error and each run's outcome. A run whose logs cannot be fetched
+gets a `workflow-logs-unavailable.txt` stating why. The summary states when the
+run listing may be truncated or the per-scenario fetch cap was reached. A
+scenario that passes but whose repo deallocation fails also gets a failure
+summary. Everything is redacted and written `0600`, like the in-scenario logs;
+the redaction also masks the runner's `World.Token` and the values of
+credential-named environment variables (for example `*_TOKEN`, `*_PAT`,
+`*_KEY`), including in directory names. The next claim of that slot creates the
+repo from scratch. Mint enrollment of the numbered *names* can remain
+pre-provisioned; the GitHub repos themselves are ephemeral around a lease.
+`Driver.Finalize` releases outstanding leases with an error, tears down every
+org's mint, and stops the trace collector.
+
+Concurrent ensures of the same repo are serialized via `singleflight.Group`, so only one goroutine runs the install while others wait. The numbered `test-repo-NN` repos do not need to be pre-provisioned in the pool orgs.
+
+Scenarios that never lease a repo (for example the CLI mint status scenarios) still need a mint. "Given the suite mint address" therefore leases a slot first and uses that org's mint. Until a scenario leases, its `World` points at the pool's first org.
 
 **Credential context separation:** The suite's e2e installation token and dispatch's per-repo `GITHUB_TOKEN` are distinct credential contexts with independent permission propagation graphs. After a pool repo is deleted and recreated, the suite can confirm the repo exists (via `GetRepo`), but it **cannot** observe or predict when dispatch-side collaborator permissions will be ready. Do not add `GetCollaboratorPermission` polling to the suite-side readiness checks — the suite's token resolves permissions through a different GitHub subsystem than dispatch's token. See the [package doc comment](../../../pkg/behaviourtest/drivers/install/doc.go) for details and the empirical evidence from [#6701](https://github.com/fullsend-ai/fullsend/issues/6701).
 
@@ -313,6 +355,117 @@ When `ENVIRONMENT=stage`, the suite selects the `RepoPoolCFMintStage` driver whi
 
 Triage scenarios apply the `ready-for-triage` label (not `/fs-triage` comments) because the per-repo shim ignores `issue_comment` events from bot users and CI uses minted e2e installation tokens.
 
+### Shared org lock bridge (temporary)
+
+The repo-slot allocator
+([`slotpool.go`](../../../pkg/behaviourtest/drivers/install/slotpool.go),
+[#8578](https://github.com/fullsend-ai/fullsend/issues/8578)) leases
+individual `test-repo-NN` slots, so several suites can share an org. Suites
+built from older branches still reserve a whole org with the exclusive
+`e2e-lock` repository (`e2etest.AcquireOrg` / `e2etest.ReleaseLock`). Until
+those runners drain, the allocator holds the org's `e2e-lock` in shared mode
+for each lease
+([`orglock.go`](../../../pkg/behaviourtest/drivers/install/orglock.go),
+[#8620](https://github.com/fullsend-ai/fullsend/issues/8620)):
+
+- `README.md` keeps a UUID, the lock generation. Legacy runners treat it as
+  another holder's run ID, so they neither release the lock nor delete it as
+  invalid.
+- `SHARED_LOCK` is the shared-mode flag. A lock without it is a legacy
+  exclusive lock, and new runners skip that org.
+- `holders.json` records the generation, the holders, and whether admission
+  is closed. It changes only through `forge.Client.UpdateFileIfMatch`, a
+  write conditional on the file's blob SHA. Joins and leaves reread and
+  retry after a conflict. The last holder closes admission in the same
+  write that removes it, then deletes the lock. A release against a lock of
+  another generation, or a legacy lock, changes nothing.
+- A lease joins only a shared lock younger than 15 minutes, and otherwise
+  looks for another org. Any lock older than 30 minutes is reclaimed, the
+  same rule legacy runners apply.
+
+**Residual risk:** Legacy runners reclaim any lock older than 30 minutes by
+creation age alone, without checking holders. A lease admitted near the
+15-minute mark whose scenario plus cleanup runs past the lock's 30th minute
+can therefore share its org with a legacy suite that resets `test-repo-NN`
+repositories. The admission window reduces this risk but does not rule it
+out. Join logs record the lock age at admission. Leave logs record how long
+each holder ran and warn at 25 minutes and beyond 30 minutes.
+
+A second, narrower window exists while a lock is created. The new repository
+briefly shows the default non-UUID README, which a legacy runner deletes as
+invalid before recreating the lock with its own run ID. The allocator rechecks
+the repository ID right before its initial commit, and again after every wait
+inside that commit (repository-initialisation, rate-limit and stale-head
+retries, which can add up to several seconds), and does not join a lock that
+was replaced. The platform has no commit conditional on the repository ID, so
+a replacement between a check and the next request, or among the requests the
+commit sends back to back, can still let both suites use the org.
+
+**Removal:** Delete the bridge (and the shared files in `e2e-lock`) once no
+runner can still take the exclusive lock. That means every open PR branch
+and the merge queue contain the allocator wiring, and the last legacy run
+has finished or been reclaimed. Repo-slot GC (below) uses its own persistent
+coordination repository, not this temporary lock.
+
+### Repo-slot GC
+
+A runner that crashes, or whose release fails, leaves its `test-repo-NN`
+repository behind, and every allocator treats that slot as occupied. The
+allocator reclaims such slots itself
+([`slotgc.go`](../../../pkg/behaviourtest/drivers/install/slotgc.go),
+[#8621](https://github.com/fullsend-ai/fullsend/issues/8621)). DEV and the
+single unsuffixed STAGE org use the same code path.
+
+- **Trigger.** A claim pass that leases nothing counts, per org, the slots it
+  found occupied by another lease's repository. When an org reaches two full
+  passes' worth (2 × slots per org, 24 for a 12-slot org), the pass collects
+  that org before it reports no capacity, and the count starts again. An org
+  inside a rate-limit window is not collected, or probed, until the window
+  ends. When GC frees a slot, `Acquire` claims again without waiting for the
+  next poll.
+- **Candidates.** GC inspects only the slot names derived from the pool
+  layout. It reclaims a repository only when the description is the
+  test-ownership marker (`fullsend behaviour test slot lease=` plus a 32-digit
+  hex nonce) and the repository ID and creation time are known. The repository
+  must also not be archived and must be at least **1 hour** old. Anything
+  else, including a failed or throttled lookup, stays occupied. The reason
+  appears in the capacity error and in the `[slots] gc` log lines.
+- **Age bound.** The hour is the 45-minute limit of the suites that hold
+  leases plus a 15-minute margin. That limit is the Makefile `go test -timeout
+  45m` and the `timeout-minutes: 45` of the `behaviour` and `playback` jobs in
+  `e2e.yml`. The first panics the test binary and the second kills the runner,
+  so a slot repository, which never outlives the process that claimed it,
+  cannot be live after 45 minutes. A Godog context deadline would not stop a
+  step, so it is not the bound. The margin covers requests still in flight
+  when a job is killed, and clock skew. `TestSlotReclaimAgeCoversJobLimits`
+  fails if either limit rises above 45 minutes. Raise the bound in
+  `slotgc.go` together with them, and do not run the suites with a longer or
+  disabled `-timeout` against shared orgs.
+- **One collector per org.** The lease is `collector-lease.json` in the
+  org's persistent `behaviour-slot-gc` repository. It changes only through
+  `forge.Client.UpdateFileIfMatch`. A collector skips the org while another
+  collector's lease is unexpired, or within 5 minutes after the last
+  collection ended. It scans the slots read-only, and only when it finds a
+  candidate does it take a 10-minute lease conditional on the SHA it read. A
+  collector that loses that write does nothing.
+- **Before each delete,** the collector rereads the lease. It acts only
+  while the file is still exactly what it wrote and more than 4 minutes of
+  the lease remain. It then rereads the repository and deletes only if the
+  ID, description and creation time are unchanged. The delete is not resent
+  after an ambiguous failure. Before a resend after a rate-limit wait, both
+  checks run again. Release is conditional on the SHA the collector wrote, so
+  a collector whose lease was taken over can neither use nor release its
+  successor's lease. A crashed collector's lease is taken over once it
+  expires.
+- **Diagnostics.** `CapacityError` carries `Reclaimed` and a per-org `GC`
+  outcome, and `GCDiagnostics()` returns the last outcome per org, next to
+  `QuotaDiagnostics()`.
+
+**Residual risk:** GitHub deletes repositories by name only, so the final
+identity check and the delete are one round trip apart. A collector paused
+for longer than its 4-minute safety margin inside that window could still
+delete a repository recreated after a successor reclaimed the slot.
+
 ### Job-scoped trace collection
 
 The tested Fullsend workflows run on separate GitHub-hosted runners, so the suite gives them a single place to send traces. When the trace collector is enabled, the CF mint install drivers (`NewRepoPoolCFMintPreviews`, `NewRepoPoolCFMintStage`) set it up during suite setup. No workflow changes are needed:
@@ -321,7 +474,9 @@ The tested Fullsend workflows run on separate GitHub-hosted runners, so the suit
 2. Start the OpenTelemetry Collector (`otelcol-contrib`) with Podman. Its OTLP/HTTP receiver is published on `127.0.0.1` of the CI worker and requires the token through the `bearertokenauth` extension. The file exporter writes received traces as OTLP/JSON lines, one file per trace ID (`/traces/trace-<trace ID>.jsonl`). The file exporter can only route by a resource attribute, so the traces pipeline first copies each span's trace ID into a temporary `bt.trace_id` span attribute (`transform` processor) and promotes it to a resource attribute (`groupbyattrs` processor). Spans of one trace that arrive in different OTLP requests are appended to the same file, and different trace IDs never share a file.
 3. Probe the receiver. Startup fails unless a request without a token and a request with a wrong token are both rejected and the job token is accepted.
 4. Start a Cloudflare quick tunnel (`cloudflared` container) that gives the receiver a public HTTPS endpoint under `trycloudflare.com`, so the token is protected by TLS in transit.
-5. On every `AllocateRepo`, set the leased repository's `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` variable to the tunnel endpoint (path `/v1/traces`) and its `OTEL_EXPORTER_OTLP_TRACES_HEADERS` secret to `Authorization=Bearer%20<token>`. The reusable workflows already forward both to `fullsend`. Deleting the repository at deallocation removes both.
+5. On every `AllocateLease`, set the leased repository's `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` variable to the tunnel endpoint (path `/v1/traces`) and its `OTEL_EXPORTER_OTLP_TRACES_HEADERS` secret to `Authorization=Bearer%20<token>`. The reusable workflows already forward both to `fullsend`. Deleting the repository at deallocation removes both.
+
+`NewRepoPoolCFMintPreviews` starts the collector before it deploys the preview mint and points the mint at it too: it writes `Authorization=Bearer%20<token>` to a private (`0600`) temporary file, runs `fullsend mint deploy` with `--otlp-traces-endpoint <tunnel endpoint>` and `--otlp-headers-file <file>`, and deletes the file once the deploy returns. The token reaches the Worker only as the version-scoped `MINT_OTLP_HEADERS` secret (see [`mint deploy` tracing](../../cli/mint.md#tracing)). Workflow and mint spans share trace IDs through `traceparent` propagation, so each `trace-<trace ID>.jsonl` file holds the mint's server and stage spans next to the workflow spans that called it. If the mint deploy fails, the collector is stopped before the factory returns. `NewRepoPoolCFMintStage` does not configure its mint: the stage mint is a durable Worker shared across runs, so it is not pointed at a per-job collector.
 
 `Driver.Finalize` stops the tunnel, then stops the Collector with a grace period so it flushes, and removes both containers. It then copies every `trace-<trace ID>.jsonl` file and `collector.log` to `otel-collector/` under `BEHAVIOUR_ARTIFACT_DIR` (mode `0600`) and overwrites every literal occurrence of the token in files under `BEHAVIOUR_ARTIFACT_DIR` with a mask of the same length. The scrub matches raw bytes only, so it does not look inside compressed or archived files. Existing files and symlinks at the destination are replaced, never written through. If the traces cannot be copied, the source files are kept and the next `Stop` call retries the copy. If the collector fails to start and its cleanup also fails, `Finalize` retries that cleanup. The overwrite is done in place, so a file that did capture the token keeps its size and offsets. Cleanup runs under its own bounded timeout, and if removing a container fails it is retried by the next `Stop` call. Finalize runs in `t.Cleanup` within the `make behaviour-test` step, which ends before the workflow's redaction and `behaviour-artifacts-*` upload steps, whether the suite passed or failed. The trace files then pass through the redaction step like any other artifact. The trace files work with `hack/upload-traces.sh` (see [tracing.md](tracing.md)) if you want to replay them into a trace backend.
 
@@ -455,15 +610,15 @@ The forge's `CreateRepo` uses `auto_init`, which creates an initial commit conta
 
 If a scenario needs to seed additional files, use a filename that does not collide with the `auto_init` commit (e.g., `seed.txt` instead of `README.md`), or check for existence first.
 
-Reference: [`ensureRepoExists`](../../../pkg/behaviourtest/drivers/install/ensure.go) — see the `auto_init` comment and `CreateRepo` call.
+Reference: the slot allocator's `Claim` in [`slotpool.go`](../../../pkg/behaviourtest/drivers/install/slotpool.go), which creates each slot repo with `CreateRepo`.
 
-### Repo deletion can lag behind `GetRepo`
+### An existing slot repo is never deleted during provisioning
 
-After `DeleteRepo`, GitHub may keep serving a cached repository object for several seconds. A successful `GetRepo` immediately after delete does **not** mean the name is still taken — and it also does not mean the repo will still exist by the time `fullsend github setup` runs. Treating that stale success as "already ready" skips recreation and then 404s during setup.
+A slot repo that already exists is another holder's lease, possibly a concurrent suite's. A `CreateRepo` "already exists" on a slot name therefore means *occupied*. The allocator moves on to another slot and never deletes the repo to free the name. The only exception is a repo carrying one of the allocator's own pending claim nonces, which it adopts (see `slotpool.go`). The ensurer never creates, deletes or resets a slot repo. It waits for the claimed repo to become visible (`awaitCreation`) and fails the allocation if it never does. Slot repos abandoned by crashed runners are reclaimed only by the [repo-slot GC](#repo-slot-gc), under its age and ownership checks.
 
-GitHub's reads are not monotonic here: a confirmed 404 can be followed by a stale 200, and a 404 does not guarantee `CreateRepo` will accept the name yet. So the install ensurer waits for a 404 (`awaitDeletion`) and then always calls `CreateRepo`, never trusting a single `GetRepo`. If creation fails because the name is still taken, it deletes the repository blocking creation, and any leftover `-fork`, with `deleteBlockingRepo`. It waits for that deletion to propagate, backs off exponentially, and retries `CreateRepo`. It fails the allocation if the name never becomes free within the attempt budget.
+GitHub's reads are not monotonic. A `GetRepo` right after a create can 404, and a `GetRepo` right after a delete can still return the deleted repo. So `awaitCreation` polls with backoff. The release path checks repository identity before and after its `DELETE` instead of trusting a single read.
 
-Reference: [`ensureRepoExists`](../../../pkg/behaviourtest/drivers/install/ensure.go), [`deleteBlockingRepo`](../../../pkg/behaviourtest/drivers/install/ensure.go) and [`awaitDeletion`](../../../pkg/behaviourtest/drivers/install/ensure.go).
+Reference: [`awaitCreation`](../../../pkg/behaviourtest/drivers/install/ensure.go), [`deleteLeftoverFork`](../../../pkg/behaviourtest/drivers/install/ensure.go), and the allocator's `Release` in [`slotpool.go`](../../../pkg/behaviourtest/drivers/install/slotpool.go).
 
 ### Fork name derivation depends on `World.RepoName`
 
@@ -536,7 +691,7 @@ URL-dispatch scenarios require a vendored CLI binary that includes `FetchPolicy`
 
 The install driver's internal ensurer always re-vendors the CLI binary (`github setup --vendor`) even when a prior install's post-install validation passes. This guarantees leased pool repos run the binary built from the current checkout rather than a stale binary from a previous CI run. Without re-vendoring, pool repos that passed validation would keep a pre-fix binary and silently fail to dispatch URL-sourced agents.
 
-`doEnsure` always resets (delete + recreate), installs, and settles: every lease starts from a freshly created repo, so there is no re-vendor path that skips the settle wait — the settle step runs on every ensure.
+`doEnsure` always installs and settles. Every lease starts from a repo its claim just created, so there is no re-vendor path that skips the settle wait: the settle step runs on every ensure.
 
 ## GitHub mint scope scenarios
 
@@ -591,7 +746,7 @@ Each row is a scenario that leases a pool repository, so the 18 rows add 18 leas
 
 ## CLI mint status scenarios
 
-`e2e/behaviour/features/platform/mint-status.feature` checks that an operator who knows only the mint address and has an authorized GitHub account gets the mint's status through the CLI: `fullsend mint status --mint-url <mint address>`. The target is the suite's own mint: the preview mint of the numbered halfsend org on `dev`, the STAGE mint on `stage`. Both CF mint drivers deploy it with `--status-auth oidc,github --status-github-group <org>/mint-status`, and the write actor is the only member of that team (see [Mint status team](e2e-testing.md#mint-status-team)). The steps get the address from the install driver through the optional `install.MintURLReporter` interface, so the scenarios lease no pool repository.
+`e2e/behaviour/features/platform/mint-status.feature` checks that an operator who knows only the mint address and has an authorized GitHub account gets the mint's status through the CLI: `fullsend mint status --mint-url <mint address>`. The target is the suite's own mint: the preview mint of the leased org's mint group on `dev`, the STAGE mint on `stage`. Both CF mint drivers deploy it with `--status-auth oidc,github --status-github-group <org>/mint-status`, where `<org>` is one pool org picked once per job, and the write actor is the only member of that team (see [Mint status team](e2e-testing.md#mint-status-team)). The steps get the address from the install driver through the lease: the scenarios lease a pool slot (`givenEnrolledTestRepository`) and read `RepoLease.MintURL`. The lease also carries the status group and the mint's workflow hosts (`World.MintStatusGroup`, `World.MintWorkflowHostRepos`), which the failure diagnostic and the facts check use instead of deriving them from the scenario's org. The optional `install.MintURLReporter` interface is the fallback for drivers that do not lease slots.
 
 The steps run the suite's CLI binary (`World.CLIBinary`) with only `--mint-url`, never `--project`. The CLI gets a clean environment. It inherits only `PATH`, `TMPDIR`, the proxy variables and `SSL_CERT_FILE`/`SSL_CERT_DIR`. It gets a fresh `HOME` and gh config directory, and `GH_TOKEN` set to the credential under test. The GitHub Actions OIDC variables, which the behaviour job has because it declares `id-token: write`, are withheld, so the CLI cannot authenticate with OIDC before it falls back to the user token. GCP project and credential variables, `GITHUB_TOKEN` and `FULLSEND_MINT_URL` are withheld too. The status facts are read from the CLI's output, and nothing calls `/v1/status` directly:
 
@@ -599,7 +754,7 @@ The steps run the suite's CLI binary (`World.CLIBinary`) with only `--mint-url`,
 - the URL the CLI reports is the address it was given;
 - no caller organization, which only OIDC status auth reports;
 - every `fullsend-test` role is listed, and the summary's role count matches the list;
-- every workflow host repository is in the suite's org, and `<org>/test-repo-01` is one of them.
+- the workflow host repositories are exactly the mint group's configured hosts (or, for a driver that reports none, all in the scenario's org), and the scenario's own leased repository is one of them.
 
 A failure has one of four classes, and the step error starts with the class:
 
@@ -626,7 +781,7 @@ require github.com/fullsend-ai/fullsend v0.x.y // released tag, not @main
 
 Do not import `internal/mintcore` (or `internal/mintcore/mintconsts`) from packages reachable from `pkg/behaviourtest`. The nested mintcore module is resolved only by a local `replace` that downstream modules do not inherit; a leak makes `go build github.com/fullsend-ai/fullsend/pkg/behaviourtest` fail with `unknown revision internal/mintcore/v0.0.0`. Duplicate constants locally and keep the graph clean — see [Go Code](../../contributing/go-code.md).
 
-The supported entry point is `behaviourtest.RunSuite`. Driver selection, org acquisition, CLI build, concurrency, tags, and step registration are handled internally from the same environment variables as the in-repo suite (`BEHAVIOUR_SCM`, `BEHAVIOUR_CI`, `BEHAVIOUR_INSTALL_MODE`, `ENVIRONMENT`, `BEHAVIOUR_CAPABILITIES`, `BEHAVIOUR_CONFIG_PRESET`, `GODOG_TAGS`, `GODOG_CONCURRENCY`):
+The supported entry point is `behaviourtest.RunSuite`. Driver selection, slot leasing, CLI build, concurrency, tags, and step registration are handled internally from the same environment variables as the in-repo suite (`BEHAVIOUR_SCM`, `BEHAVIOUR_CI`, `BEHAVIOUR_INSTALL_MODE`, `ENVIRONMENT`, `BEHAVIOUR_CAPABILITIES`, `BEHAVIOUR_CONFIG_PRESET`, `GODOG_TAGS`, `GODOG_CONCURRENCY`):
 
 ```go
 //go:build behaviour
@@ -686,7 +841,14 @@ Lower-level packages (`world`, `steps`, `drivers`, `suite.InitScenario`) remain 
 **`suite.InitScenario` signature change:** The function signature changed from `InitScenario(sc, template, pool)` to `InitScenario(sc, template)`. The `*world.RepoPool` type has been removed. Repo leasing is handled internally by the unified `install.Driver` on `template.Driver`. Callers construct a `Driver` via a `Factory` and set it on the template World:
 
 ```go
-driver, err := install.NewRepoPoolCFMintPreviews(org, client, token, binary, gcpProjectID, t.Logf)
+driver, err := install.NewRepoPoolCFMintPreviews(install.PoolConfig{
+    Layout:       install.PoolLayoutForEnvironment("dev", t.Logf),
+    TokenFor:     tokenForOrg, // func(ctx, org) (string, error)
+    NewClient:    func(token string) forge.Client { return newClient(token) },
+    Binary:       binary,
+    GCPProjectID: gcpProjectID,
+    Logf:         t.Logf,
+})
 if err != nil {
     t.Fatalf("creating driver: %v", err)
 }
@@ -706,7 +868,11 @@ suiteRunner := godog.TestSuite{
 }
 ```
 
-**Concrete drivers renamed:** `cfmint` → `RepoPoolCFMintPreviews`, `legacy` / `externalmint` → `RepoPoolExternalMint`. Drivers are named for the environments they manage. Concrete implementations live in the `install` package. `install.Factory` takes `(org string, client forge.Client, token, binary, gcpProjectID string, logf func(string, ...any))`; driver-specific config (PEMs, pool size, mint URL) is read from env or computed internally. `install.State`, `install.MintURLProvider`, `install.RepoEnsurer`, and `install.CFMintConfig` are removed from the exported surface. External code should only reference `install.Factory` and `install.Driver`.
+**Concrete drivers renamed:** `cfmint` → `RepoPoolCFMintPreviews`, `legacy` / `externalmint` → `RepoPoolExternalMint`. Drivers are named for the environments they manage. Concrete implementations live in the `install` package. `install.Factory` originally took `(org string, client forge.Client, token, binary, gcpProjectID string, logf func(string, ...any))` (see the cross-org slot leasing bullet below for the current signature); driver-specific config (PEMs, pool size, mint URL) is read from env or computed internally. `install.State`, `install.MintURLProvider`, `install.RepoEnsurer`, and `install.CFMintConfig` are removed from the exported surface. External code should only reference `install.Factory` and `install.Driver`.
+
+**Cross-org slot leasing ([#8622](https://github.com/fullsend-ai/fullsend/issues/8622)):** `install.Factory` now takes an `install.PoolConfig` (pool layout, per-org `TokenFor`, `NewClient`, CLI binary, GCP project, logger) instead of one org's client and token. The returned driver leases `(org, repo)` slots across the pool orgs and implements the new `install.LeaseDriver` (`AllocateLease`, `DeallocateLease`, returning an `install.RepoLease` with the org's token, client and mint URL); its name-only `AllocateRepo`/`DeallocateRepo` return an error. `install.PlaybackDriver` forwards the lease methods. A lease driver also implements `install.LeaseVerifier` (`StillOwnsLease`) so scenario cleanup can fail closed when another holder has replaced the slot. `World` gains `LeasedRepoOrg`, `MintURL`, `OrgDrivers` and `LeaseOwned`, and the enrolled-repository step rebinds `Org`, `Token`, SCM and CI to the leased org. `e2etest.TokenForOrg` replaces `e2etest.AcquireOrg` in the suite runners, which no longer take the exclusive `e2e-lock` or run `e2etest.CleanupStaleResources`; admin e2e tests still use both.
+
+**Shared public preview mints ([#8681](https://github.com/fullsend-ai/fullsend/issues/8681)):** the DEV driver deploys one public preview mint per mint group instead of one per org, and every mint uses one job-wide status group. `install.RepoLease` gains `MintStatusGroup` and `MintWorkflowHostRepos`, and `World` gains the matching `MintStatusGroup` and `MintWorkflowHostRepos`, set by the enrolled-repository step. See [Repo allocation via the shared slot driver](#repo-allocation-via-the-shared-slot-driver).
 
 **`world.World.Install` removed:** The `Install install.State` field on `World` is removed. Steps use `w.Org` + `w.RepoName` (the allocated repo name) and per-repo constants from the `install` package (`PerRepoTriageWorkflow`, `PerRepoAgentWorkflow`, `PerRepoAgentArtifact`) instead of config indirection through `State`.
 

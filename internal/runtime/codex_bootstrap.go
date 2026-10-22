@@ -248,19 +248,13 @@ func (r CodexRuntime) Bootstrap(input BootstrapInput) error {
 		}
 		// Exactly what was installed, by name: Run cannot re-derive the set
 		// because it does not see the harness's hook config.
-		securityEnv := codexSecurityEnv(hooks)
-		// FULLSEND_CANARY_TOKEN and FULLSEND_TOOL_ALLOWLIST are harness-supplied
-		// (env.sandbox / host_files) rather than derived from SandboxHookConfig,
-		// so the runner has no typed copy to re-export. It can still read them
-		// here: the runner writes .env and then calls Bootstrap, and no agent
-		// iteration has run yet, so the file is still exactly what the runner
-		// put there. Reading them later — in Run — would read whatever the
-		// previous iteration left behind, which is the problem.
-		harnessEnv, err := codexReadHarnessSecurityEnv(sandboxName)
+		// The hook settings, recorded while .env is still exactly what the
+		// runner wrote (bootstrapHookEnv).
+		securityEnv, err := bootstrapHookEnv(sandboxName, hooks)
 		if err != nil {
 			return err
 		}
-		digests.SecurityEnv = append(securityEnv, harnessEnv...)
+		digests.SecurityEnv = securityEnv
 		digests.HookScripts = map[string]string{}
 		for name, content := range security.HookFiles(hooks) {
 			digests.HookScripts[name] = codexAssetSHA256(content)
@@ -271,7 +265,10 @@ func (r CodexRuntime) Bootstrap(input BootstrapInput) error {
 		if err := uploadBytes(sandboxName, r.codexAdapterPath(), codexHookAdapterPy); err != nil {
 			return fmt.Errorf("installing hook adapter: %w", err)
 		}
-		python, err := codexPreflightPython(sandboxName)
+		// The hook children's PATH is pinned by the launch itself
+		// (envDataTrustedPath, see buildCodexRunCommand), so only the
+		// interpreter is taken from here.
+		python, _, err := hookPreflightInterpreter(sandboxName)
 		if err != nil {
 			return err
 		}
@@ -491,80 +488,43 @@ func codexPreflightCatalog(sandboxName string) (codexCatalog, error) {
 // failure before it reaches a run.
 const codexVersionPrefix = "codex-cli "
 
-// codexHarnessSecurityEnvKeys are the hook-configuration variables the harness
-// supplies through the sandbox environment rather than through
-// SandboxHookConfig, so the runner learns them by reading the file it just
-// wrote rather than from its own state.
-var codexHarnessSecurityEnvKeys = []string{"FULLSEND_CANARY_TOKEN", "FULLSEND_TOOL_ALLOWLIST"}
+// hookInterpreterSep separates the interpreter from the PATH on the line
+// hookInterpreterProbe prints.
+const hookInterpreterSep = "|fullsend-hook-sep|"
 
-// codexEnvReadSeparator delimits the values read back, chosen so a plausible
-// token or allowlist cannot contain it.
-const codexEnvReadSeparator = "|fullsend-env-sep|"
-
-// codexReadHarnessSecurityEnvCmd sources envFile silently, so nothing a
-// sourced file prints lands in front of the first value, and prints the
-// codexHarnessSecurityEnvKeys values joined by codexEnvReadSeparator. A failed
-// source prints nothing and exits non-zero, so a broken .env fails Bootstrap
-// instead of pinning the values as unset. Its stderr stays discarded because
-// the shell echoes the offending .env line, which can carry a token. The
-// references are double-quoted, not shellQuote'd: single quotes would print
-// the literal "${KEY:-}" text instead of expanding it.
-func codexReadHarnessSecurityEnvCmd(envFile string) string {
-	var refs []string
-	for _, key := range codexHarnessSecurityEnvKeys {
-		refs = append(refs, fmt.Sprintf("${%s:-}", key))
-	}
-	return fmt.Sprintf(`. %s >/dev/null 2>&1 && printf '%%s' "%s"`,
-		shellQuote(envFile), strings.Join(refs, codexEnvReadSeparator))
+// hookInterpreterProbe is the sandbox command hookPreflightInterpreter runs:
+// the launch's own python3 pin (envDataPin), then one line holding the pinned
+// interpreter and the trusted PATH it was taken from.
+func hookInterpreterProbe() string {
+	return envDataPin() + ` && printf '%s` + hookInterpreterSep + `%s\n' "$` + envDataPythonVar + `" "$` + envDataTrustedPathVar + `"`
 }
 
-// codexReadHarnessSecurityEnv reads the harness-supplied hook variables from
-// the workspace .env, which at Bootstrap time is still exactly what the runner
-// wrote — no agent iteration has run. Unset values are re-asserted as empty,
-// which every hook treats as unset, so an agent that sets one in .env later
-// cannot supply an allowlist the harness left out.
-func codexReadHarnessSecurityEnv(sandboxName string) ([]codexEnvPair, error) {
-	cmd := codexReadHarnessSecurityEnvCmd(sandbox.SandboxWorkspace + "/.env")
-	stdout, stderr, exitCode, err := sandbox.Exec(sandboxName, cmd, 10*time.Second)
+// hookPreflightInterpreter resolves the absolute interpreter the hook
+// handlers name and the PATH the hooks resolve their tools from, both from
+// directories the agent cannot write. It runs the lookup the launch makes
+// before it reads .env (envDataPin) on a shell the agent has not touched,
+// rather than leaving a bare `python3` in hooks.json or taking the sandbox
+// PATH as is: an image can put a directory the agent owns (a virtualenv's
+// bin) first on PATH.
+func hookPreflightInterpreter(sandboxName string) (python, path string, err error) {
+	stdout, stderr, exitCode, err := sandbox.Exec(sandboxName, hookInterpreterProbe(), 10*time.Second)
 	if err != nil {
-		return nil, fmt.Errorf("reading the harness hook environment: %w", err)
+		return "", "", fmt.Errorf("resolving python3 for the hooks: %w", err)
 	}
-	if exitCode != 0 {
-		return nil, fmt.Errorf("reading the harness hook environment: exited %d: %s",
+	line := strings.TrimSpace(stdout)
+	if i := strings.LastIndexByte(line, '\n'); i >= 0 {
+		line = strings.TrimSpace(line[i+1:])
+	}
+	python, path, found := strings.Cut(line, hookInterpreterSep)
+	if exitCode != 0 || !found || python == "" {
+		return "", "", fmt.Errorf("resolving python3 for the hooks: none found in a PATH directory the agent cannot write (exit %d): %s",
 			exitCode, strings.TrimSpace(sanitizeOutput(stderr)))
 	}
-
-	values := strings.Split(stdout, codexEnvReadSeparator)
-	if len(values) != len(codexHarnessSecurityEnvKeys) {
-		return nil, fmt.Errorf("reading the harness hook environment: expected %d values, got %d",
-			len(codexHarnessSecurityEnvKeys), len(values))
+	if !strings.HasPrefix(python, "/") {
+		return "", "", fmt.Errorf("resolving python3 for the hooks: %q is not an absolute path", sanitizeOutput(python))
 	}
-	var env []codexEnvPair
-	for i, key := range codexHarnessSecurityEnvKeys {
-		env = append(env, codexEnvPair{key, strings.TrimSpace(values[i])})
-	}
-	return env, nil
-}
-
-// codexPreflightPython resolves the absolute interpreter the hook handlers
-// will name. It is resolved here, on a shell the agent has not touched, rather
-// than left as a bare `python3` in hooks.json: codex spawns hooks after the
-// agent-writable .env is sourced, so PATH resolution at that point is the
-// agent's to influence.
-func codexPreflightPython(sandboxName string) (string, error) {
-	stdout, _, exitCode, err := sandbox.Exec(sandboxName, "command -v python3", 10*time.Second)
-	if err != nil {
-		return "", fmt.Errorf("resolving python3 for the hook adapter: %w", err)
-	}
-	path := strings.TrimSpace(stdout)
-	if exitCode != 0 || path == "" {
-		return "", fmt.Errorf("resolving python3 for the hook adapter: not found in the sandbox image (exit %d)", exitCode)
-	}
-	if i := strings.LastIndexByte(path, '\n'); i >= 0 {
-		path = strings.TrimSpace(path[i+1:])
-	}
-	if !strings.HasPrefix(path, "/") {
-		return "", fmt.Errorf("resolving python3 for the hook adapter: %q is not an absolute path", sanitizeOutput(path))
+	if path == "" || strings.ContainsAny(path, "\r\n") {
+		return "", "", fmt.Errorf("resolving the PATH for the hooks: unusable result (exit %d)", exitCode)
 	}
 	// The adapter's isolation of its children rests on `-I` keeping the
 	// script's own directory off sys.path, so the verified hooks directory can
@@ -572,10 +532,10 @@ func codexPreflightPython(sandboxName string) (string, error) {
 	// true of every CPython that has had `-I`, but the floor is asserted here
 	// rather than assumed: below it, a planted `hooks/json/` would shadow a
 	// stdlib import inside a hook script.
-	if err := codexPreflightPythonVersion(sandboxName, path); err != nil {
-		return "", err
+	if err := codexPreflightPythonVersion(sandboxName, python); err != nil {
+		return "", "", err
 	}
-	return path, nil
+	return python, path, nil
 }
 
 // codexMinPythonMinor is the 3.x minor the hook adapter requires. 3.11 is the

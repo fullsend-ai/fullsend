@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 )
 
 // GCPSecretPEMAccessor reads agent PEMs from GCP Secret Manager via REST API,
@@ -31,8 +32,26 @@ func (s *GCPSecretPEMAccessor) AccessPEM(ctx context.Context, role string) ([]by
 	if err := ValidateRoleName(secretRole); err != nil {
 		return nil, err
 	}
-	name := fmt.Sprintf("projects/%s/secrets/fullsend-%s-app-pem/versions/latest",
-		s.gcpProjectNum, secretRole)
+	return s.accessLatest(ctx, "fullsend-"+secretRole+"-app-pem")
+}
+
+// gcpSecretIDPattern matches Secret Manager secret IDs.
+var gcpSecretIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,255}$`)
+
+// AccessGCPSecret reads the latest version of the Secret Manager secret
+// secretID in the given project, authenticating with the GCE metadata
+// server token. The GCF load site uses it to read the OTLP collector
+// headers secret. Errors never include the secret payload.
+func AccessGCPSecret(ctx context.Context, gcpProjectNum, secretID string) ([]byte, error) {
+	if !gcpSecretIDPattern.MatchString(secretID) {
+		return nil, fmt.Errorf("invalid secret ID %q", secretID)
+	}
+	return NewGCPSecretPEMAccessor(gcpProjectNum).accessLatest(ctx, secretID)
+}
+
+// accessLatest reads the latest version of secretID.
+func (s *GCPSecretPEMAccessor) accessLatest(ctx context.Context, secretID string) ([]byte, error) {
+	name := fmt.Sprintf("projects/%s/secrets/%s/versions/latest", s.gcpProjectNum, secretID)
 	token, err := s.metadataToken(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("getting metadata token: %w", err)

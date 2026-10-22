@@ -64,14 +64,26 @@ Some type/scope pairs are **enforced as errors** by gitlint (rule `UC1`). These 
 
 ## Breaking changes
 
-Breaking changes **must** be marked in both commit messages and PR titles. GoReleaser builds release notes from merged PR titles (`use: github` in `.goreleaser.yml`), so an unmarked PR title means the breaking change is invisible to users reading the release notes. This has caused real incidents — users upgraded with no warning that their agents would stop working.
+Breaking changes **must** be marked in both commit messages and PR titles.
+GoReleaser builds release notes from the subject line of every commit in the
+release range (`use: github` in `.goreleaser.yml`). PRs land through the merge
+queue as merge commits, whose `Merge pull request …` subjects are excluded, so
+the PR title does not appear in the release notes: each breaking commit's own
+subject must carry the `!`. A breaking commit whose subject lacks `!` is filed
+under Features, Bug Fixes, or Refactoring instead of **Breaking Changes**, so
+users reading the release notes get no warning. This has caused
+real incidents — users upgraded with no warning that their agents would stop
+working (#8366).
 
 **How to mark a breaking change:**
 
 1. Append `!` after the type/scope: `feat(harness)!: require role field`
 2. Include a `BREAKING CHANGE:` trailer in the commit body explaining what breaks and how to migrate
 
-Both the `!` suffix and the trailer are required. The `!` suffix signals the breaking change to human reviewers and enables future automated tooling; the trailer tells users what to do about it.
+Both the `!` suffix and the trailer are required. The `!` suffix signals the
+breaking change to human reviewers and puts the commit under **Breaking
+Changes** in the release notes; GoReleaser only reads subjects, so a trailer
+alone does not. The trailer tells users what to do about it.
 
 **How to tell if your change is breaking:**
 
@@ -115,4 +127,9 @@ docs: add mint URL stability note to installation guide
 When reviewing PRs, check that commit messages and PR titles use the correct type prefix. Flag violations as a required change — they are not cosmetic. Pay particular attention to:
 
 - **`feat` misuse** — challenge it if the change is not user-facing.
-- **Missing `!` on breaking changes** — if the diff removes a field, renames a flag, adds a required input, tightens validation, or otherwise breaks existing usage, the PR title and commit messages **must** carry the `!` suffix. Flag a missing `!` as an important-severity finding. The PR title is especially critical because GoReleaser uses it to build user-facing release notes.
+- **Missing `!` on breaking changes** — if the diff removes a field, renames a
+  flag, adds a required input, tightens validation, or otherwise breaks
+  existing usage, the PR title and commit messages **must** carry the `!`
+  suffix. Flag a missing `!` as an important-severity finding. Every commit
+  subject matters because GoReleaser lists each one in the user-facing release
+  notes. The PR title is not one of them, because PRs land as merge commits.

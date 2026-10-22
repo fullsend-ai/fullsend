@@ -98,8 +98,12 @@ type mockClient struct {
 	// dispatch ref rather than the default branch.
 	wrapperContentRefs []string
 	fileContentErr     error
-	branchRefErr       error
-	forceCommitErr     error
+	// fileContentErrAt fails only the poll-state read with the given 1-based
+	// ordinal (counted across non-wrapper reads), for transient-failure tests.
+	fileContentErrAt map[int]error
+	fileContentReads int
+	branchRefErr     error
+	forceCommitErr   error
 	// forceCommitErrSeq is an error queue for CommitFileToBranch / ForceCommitFileToBranch.
 	// Each call shifts the first element; when empty, falls through to forceCommitErr.
 	forceCommitErrSeq []error
@@ -130,6 +134,8 @@ type mockClient struct {
 
 	memberLevel map[int]int   // keyed by userID
 	memberErr   map[int]error // keyed by userID
+	userBot     map[int]bool
+	userBotErr  map[int]error
 
 	projectPaths map[int]string // keyed by project ID
 
@@ -182,6 +188,8 @@ func newMockClient() *mockClient {
 		wrapperContent: typedWrapperFixture(),
 		memberLevel:    make(map[int]int),
 		memberErr:      make(map[int]error),
+		userBot:        make(map[int]bool),
+		userBotErr:     make(map[int]error),
 		projectPaths:   make(map[int]string),
 		branchGen:      make(map[string]int),
 	}
@@ -288,6 +296,7 @@ func (m *mockClient) setBranchState(branch string, s persistedPollState) {
 			FailedKeysFull:     s.FailedKeysFull,
 			PendingLabels:      s.PendingLabels,
 			LegacyMirrors:      s.LegacyMirrors,
+			IssueOpenCutoff:    s.IssueOpenCutoff,
 		}
 	}
 	m.mu.Lock()
@@ -333,7 +342,7 @@ func (m *mockClient) getBranchState(branch string) (persistedPollState, bool) {
 			if err := json.Unmarshal(data, &s); err != nil {
 				return persistedPollState{}, true
 			}
-			return decodeLegacyMirrors(decodePendingLabels(decodeReplayKeys(s))), true
+			return decodeIssueOpenCutoff(decodeLegacyMirrors(decodePendingLabels(decodeReplayKeys(s)))), true
 		}
 	}
 	// Fall back to a seeded-but-not-yet-force-committed document (see
@@ -376,6 +385,10 @@ func (m *mockClient) GetFileContentAtRef(_ context.Context, owner, repo, path, r
 	}
 	if m.fileContentErr != nil {
 		return nil, m.fileContentErr
+	}
+	m.fileContentReads++
+	if err := m.fileContentErrAt[m.fileContentReads]; err != nil {
+		return nil, err
 	}
 	// persistWithCAS pins its read to the SHA a prior GetBranchRef call
 	// returned rather than a branch name; resolve it back to the branch
@@ -538,6 +551,13 @@ func (m *mockClient) GetAuthenticatedUser(_ context.Context) (string, error) {
 
 func (m *mockClient) GetAuthenticatedUserID(_ context.Context) (int, error) {
 	return 0, m.authErr
+}
+
+func (m *mockClient) GetUserBot(_ context.Context, userID int) (bool, error) {
+	if err := m.userBotErr[userID]; err != nil {
+		return false, err
+	}
+	return m.userBot[userID], nil
 }
 
 func (m *mockClient) CreateNoteAwardEmoji(_ context.Context, _, _, _ string, noteableIID, noteID int, emoji string) error {

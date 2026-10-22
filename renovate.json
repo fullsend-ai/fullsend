@@ -28,13 +28,15 @@
       "enabled": false
     },
     {
-      "description": "Group OpenShell base image and version pin into one PR. After a version bump, fetch and update OPENSHELL_SHA from the matching release tag (the github-releases datasource can't resolve a digest here because extractVersionTemplate strips the 'v' prefix that GitHub's tag lookup needs).",
+      "description": "Group OpenShell base image and version pin into one PR. After a version bump, fetch and update OPENSHELL_SHA from the matching release tag (the github-releases datasource can't resolve a digest here because extractVersionTemplate strips the 'v' prefix that GitHub's tag lookup needs). Hold updates for 2 days so a release pulled upstream soon after publishing never becomes a PR (#4076, #3967). minimumReleaseAgeBehaviour=timestamp-optional is required: Renovate age-checks digest updates too, but ghcr gives it no release dates for the digest-pinned base image, so under the default timestamp-required every base-image update would be held forever. The version pin has a GitHub release date and is still held for 2 days.",
       "matchPackageNames": [
         "ghcr.io/nvidia/openshell-community/sandboxes/base",
         "NVIDIA/OpenShell"
       ],
       "groupName": "openshell",
       "automerge": false,
+      "minimumReleaseAge": "2 days",
+      "minimumReleaseAgeBehaviour": "timestamp-optional",
       "postUpgradeTasks": {
         "commands": ["bash scripts/renovate/update-openshell-sha.sh"],
         "fileFilters": [".github/scripts/openshell-version.sh"],
@@ -71,6 +73,16 @@
       "postUpgradeTasks": {
         "commands": ["bash scripts/renovate/update-tirith-checksums.sh"],
         "fileFilters": ["images/sandbox/Containerfile"],
+        "executionMode": "branch"
+      }
+    },
+    {
+      "description": "After a Go toolchain bump in the code and runner images, fetch and update GO_SHA256_{AMD64,ARM64} in both Containerfiles from https://go.dev/dl/?mode=json&include=all (#8617)",
+      "matchDatasources": ["golang-version"],
+      "matchPackageNames": ["golang"],
+      "postUpgradeTasks": {
+        "commands": ["bash scripts/renovate/update-go-checksums.sh"],
+        "fileFilters": ["images/code/Containerfile", "images/runner/Containerfile"],
         "executionMode": "branch"
       }
     },
@@ -130,6 +142,17 @@
     },
     {
       "customType": "regex",
+      "description": "Track the OpenShell tag in the gateway configuration link of the customizing agents guide (migrating proxy and certificate settings), so the link follows the pin in the same openshell group PR instead of pointing at a tag the pinned gateway does not match (#3373).",
+      "managerFilePatterns": ["/^docs/guides/user/customizing-agents\\.md$/"],
+      "matchStrings": [
+        "github\\.com/NVIDIA/OpenShell/blob/v(?<currentValue>\\d+\\.\\d+\\.\\d+)/"
+      ],
+      "depNameTemplate": "NVIDIA/OpenShell",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>.*)$"
+    },
+    {
+      "customType": "regex",
       "description": "Track the gcloud CLI version pin in the runner image. GCLOUD_SHA256_{AMD64,ARM64} must be refreshed manually from https://cloud.google.com/sdk/docs/install — the runner-image PR build fails on checksum mismatch until they are.",
       "managerFilePatterns": ["/^images/runner/Containerfile$/"],
       "matchStrings": [
@@ -141,7 +164,7 @@
     },
     {
       "customType": "regex",
-      "description": "Track the Go toolchain version pin baked into the code and runner sandbox images (images/code/Containerfile and images/runner/Containerfile, which must stay in sync per their own comments). GO_SHA256_{AMD64,ARM64} in both files must be refreshed manually from https://go.dev/dl/?mode=json — the image build fails on checksum mismatch until they are.",
+      "description": "Track the Go toolchain version pin baked into the code and runner sandbox images (images/code/Containerfile and images/runner/Containerfile, which must stay in sync per their own comments). GO_SHA256_{AMD64,ARM64} in both files are updated automatically by postUpgradeTasks (scripts/renovate/update-go-checksums.sh).",
       "managerFilePatterns": [
         "/^images/code/Containerfile$/",
         "/^images/runner/Containerfile$/"

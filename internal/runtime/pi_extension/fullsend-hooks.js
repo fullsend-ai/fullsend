@@ -33,6 +33,15 @@ export const DEFAULT_MANIFEST_PATH = "/sandbox/pi-config/fullsend-manifest.json"
 // parent with `write` could otherwise blank hooks.groups mid-iteration and
 // dispatch children whose adapter loads a plan with no hooks in it.
 export const MANIFEST_SHA256_ENV = "FULLSEND_PI_MANIFEST_SHA256";
+// HOOK_PYTHON_ENV carries the absolute python3 the launch pinned before it
+// read the agent-writable .env (piHookPythonEnv in pi_run.go, #8577). A bare
+// "python3" would be resolved through the PATH .env left behind, where a
+// stub that exits 0 would make every hook read as allowed.
+export const HOOK_PYTHON_ENV = "FULLSEND_PI_HOOK_PYTHON";
+// HOOK_PATH_ENV carries the PATH the hook scripts run with: the launch PATH
+// recorded before .env was read, without directories the agent user can
+// write (piHookPathEnv in pi_run.go). Hook scripts start tools by name.
+export const HOOK_PATH_ENV = "FULLSEND_PI_HOOK_PATH";
 const SCRIPT_TIMEOUT_MS = 60_000;
 const SCRIPT_MAX_BUFFER = 64 * 1024 * 1024;
 const LOG_PREFIX = "[fullsend-hooks]";
@@ -180,14 +189,42 @@ function parseJSON(text) {
   }
 }
 
+// hookPython returns the pinned interpreter from env, or null when it is
+// missing, empty or not an absolute path.
+export function hookPython(env) {
+  const value = env?.[HOOK_PYTHON_ENV];
+  return typeof value === "string" && value.startsWith("/") ? value : null;
+}
+
+// hookPath returns the trusted hook PATH from env, or null when it is
+// missing, empty, or has an entry that is not an absolute directory (an
+// empty or relative entry would search the working directory).
+export function hookPath(env) {
+  const value = env?.[HOOK_PATH_ENV];
+  if (typeof value !== "string" || value === "") return null;
+  return value.split(":").every((d) => d.startsWith("/")) ? value : null;
+}
+
 // runScript executes one hook script with the payload on stdin and returns
-// the normalized verdict. `spawn` is injectable for tests.
-export function runScript(manifest, script, payload, spawn = spawnSync) {
-  const path = `${manifest.hooks.dir}/${script}`;
-  const res = spawn("python3", [path], {
+// the normalized verdict. `spawn` and `env` are injectable for tests.
+export function runScript(manifest, script, payload, spawn = spawnSync, env = process.env) {
+  const scriptPath = `${manifest.hooks.dir}/${script}`;
+  const python = hookPython(env);
+  if (python === null) {
+    return { block: true, reason: `hook ${script} not run (fail closed): ${HOOK_PYTHON_ENV} is not an absolute interpreter path` };
+  }
+  const path = hookPath(env);
+  if (path === null) {
+    return { block: true, reason: `hook ${script} not run (fail closed): ${HOOK_PATH_ENV} is not a list of absolute directories` };
+  }
+  // -E -s -B, as the Claude hook launcher uses: ignore PYTHON* variables and
+  // the user site directory (an agent-chosen HOME can carry a
+  // usercustomize.py), and write no bytecode, so nothing the agent placed
+  // runs before the hook script's own checks.
+  const res = spawn(python, ["-E", "-s", "-B", scriptPath], {
     input: JSON.stringify(payload),
     encoding: "utf8",
-    env: process.env,
+    env: { ...env, PATH: path },
     timeout: SCRIPT_TIMEOUT_MS,
     maxBuffer: SCRIPT_MAX_BUFFER,
   });
@@ -226,7 +263,7 @@ function replaceText(content, text) {
 // unreadable or carries no hook plan means the wiring was lost or tampered
 // with: every tool call is blocked — running the agent with the hook wiring
 // silently absent is the failure mode ADR 0090 forbids.
-export function createHooks(manifest, { spawn = spawnSync, log = (m) => console.error(m) } = {}) {
+export function createHooks(manifest, { spawn = spawnSync, log = (m) => console.error(m), env = process.env } = {}) {
   const wired = Boolean(manifest && manifest.hooks && Array.isArray(manifest.hooks.groups));
   // Extension tool names logged at first use, so the transcript shows what
   // the model gained from the declared plugins.
@@ -264,7 +301,7 @@ export function createHooks(manifest, { spawn = spawnSync, log = (m) => console.
     const payload = { tool_name: toolName, tool_input: claudeToolInput(piName, input) };
     for (const group of groupsFor(manifest, "PreToolUse", toolName)) {
       for (const script of group.scripts ?? []) {
-        const verdict = runScript(manifest, script, payload, spawn);
+        const verdict = runScript(manifest, script, payload, spawn, env);
         if (verdict.block) {
           log(`${LOG_PREFIX} ${script} blocked ${toolName}: ${verdict.reason}`);
           return { block: true, reason: verdict.reason };
@@ -295,7 +332,7 @@ export function createHooks(manifest, { spawn = spawnSync, log = (m) => console.
           // shells, so this cannot be moved by the agent.
           cwd: process.cwd(),
         };
-        const verdict = runScript(manifest, script, payload, spawn);
+        const verdict = runScript(manifest, script, payload, spawn, env);
         const updated = verdict.output?.hookSpecificOutput?.updatedToolOutput ?? verdict.output?.tool_result;
         if (typeof updated === "string") text = updated;
         if (verdict.block) {

@@ -479,6 +479,59 @@ func TestGetJobTokenRepositoryPushAllowed_Errors(t *testing.T) {
 	})
 }
 
+func TestGetPushRuleBranchNameRegex(t *testing.T) {
+	for name, tc := range map[string]struct {
+		body string
+		want string
+	}{
+		"regex set":         {body: `{"id": 1, "branch_name_regex": "master"}`, want: "master"},
+		"regex unset":       {body: `{"id": 1, "branch_name_regex": null}`, want: ""},
+		"regex empty":       {body: `{"id": 1, "branch_name_regex": ""}`, want: ""},
+		"no push rule null": {body: `null`, want: ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			client, mux := setupTest(t)
+			mux.HandleFunc("/api/v4/projects/mygroup%2Fmyrepo/push_rule", func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, http.MethodGet, r.Method)
+				fmt.Fprint(w, tc.body)
+			})
+
+			got, err := client.GetPushRuleBranchNameRegex(context.Background(), "mygroup", "myrepo")
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestGetPushRuleBranchNameRegex_Errors(t *testing.T) {
+	for name, tc := range map[string]struct {
+		status int
+		body   string
+		check  func(t *testing.T, err error)
+	}{
+		"not found": {status: http.StatusNotFound, body: `{"message":"404 Not Found"}`, check: func(t *testing.T, err error) {
+			assert.True(t, forge.IsNotFound(err))
+		}},
+		"forbidden": {status: http.StatusForbidden, body: `{"message":"403 Forbidden"}`, check: func(t *testing.T, err error) {
+			assert.ErrorIs(t, err, forge.ErrForbidden)
+		}},
+		"malformed": {status: http.StatusOK, body: `{"branch_name_regex": 7}`, check: func(t *testing.T, err error) {
+			assert.Contains(t, err.Error(), "decode push rule")
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			client, mux := setupTest(t)
+			mux.HandleFunc("/api/v4/projects/owner%2Frepo/push_rule", func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.status)
+				fmt.Fprint(w, tc.body)
+			})
+			_, err := client.GetPushRuleBranchNameRegex(context.Background(), "owner", "repo")
+			require.Error(t, err)
+			tc.check(t, err)
+		})
+	}
+}
+
 func TestGetPipelineVariablesMinimumOverrideRole_NotFound(t *testing.T) {
 	client, mux := setupTest(t)
 	mux.HandleFunc("/api/v4/projects/owner%2Fgone", func(w http.ResponseWriter, r *http.Request) {

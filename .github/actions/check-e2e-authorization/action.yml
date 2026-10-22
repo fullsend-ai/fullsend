@@ -1,6 +1,6 @@
 name: Check E2E Authorization
 description: >-
-  Authorize PR-triggered e2e runs for trusted authors or a fresh ok-to-test label.
+  Authorize PR-triggered e2e runs for trusted authors or an ok-to-test labeled event.
   Removes stale ok-to-test labels and posts a sticky PR comment when unauthorized.
 
 inputs:
@@ -19,11 +19,11 @@ inputs:
     required: false
     default: ""
   pr_author_association:
-    description: github.event.pull_request.author_association (frozen event payload)
+    description: Deprecated (unused) — authorization uses collaborator permissions
     required: false
     default: ""
   pr_author_login:
-    description: github.event.pull_request.user.login (for collaborator permission API fallback)
+    description: github.event.pull_request.user.login (for collaborator permission API check)
     required: false
     default: ""
   label_actor_login:
@@ -63,8 +63,10 @@ runs:
         LABEL_ACTOR_LOGIN: ${{ inputs.label_actor_login }}
       run: bash "${GITHUB_WORKSPACE}/scripts/check-e2e-authorization.sh" "${PR_NUMBER}" "${REPOSITORY}"
 
+    # fresh_ok_to_test: a newer label belongs to the labeled workflow.
+    # Stay quiet so this run does not overwrite that run's comment.
     - name: Post gate comment
-      if: steps.check.outputs.authorized != 'true'
+      if: steps.check.outputs.authorized != 'true' && steps.check.outputs.reason != 'fresh_ok_to_test'
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
@@ -100,7 +102,7 @@ runs:
         "
             ;;
           *)
-            body+="E2E tests run automatically for org/repo **members and collaborators** on pull requests.
+            body+="E2E tests run automatically for pull requests authored by users with **write access or higher**.
 
         For other contributors, a maintainer with write access must add the \`ok-to-test\` label **after** the latest push.
         "

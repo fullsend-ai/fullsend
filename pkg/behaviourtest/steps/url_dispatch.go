@@ -119,7 +119,7 @@ func RestoreAllowedResources(w *world.World) error {
 	if err != nil {
 		return err
 	}
-	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, cfgPath, "behaviour: restore allowed_remote_resources", merged); err != nil {
+	if err := commitVerified(w, cfgPath, "behaviour: restore allowed_remote_resources", merged); err != nil {
 		return fmt.Errorf("updating config: %w", err)
 	}
 	return nil
@@ -146,7 +146,7 @@ func RestoreAgents(w *world.World) error {
 	if err != nil {
 		return err
 	}
-	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, cfgPath, "behaviour: restore agents", merged); err != nil {
+	if err := commitVerified(w, cfgPath, "behaviour: restore agents", merged); err != nil {
 		return fmt.Errorf("updating config: %w", err)
 	}
 	return nil

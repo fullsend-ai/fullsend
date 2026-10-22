@@ -111,6 +111,19 @@ type PollerRuntimeToken struct {
 // Poller credential, mints as the client's own identity, which the
 // runtime privilege ceiling then accepts only below Maintainer.
 func EnsureGitLabWebhookFastPathWithTriggerOwner(ctx context.Context, client forge.Client, triggerOwner GitLabTriggerOwner, baseURL, owner, repo string, rotate, dryRun bool) (res GitLabWebhookResult, err error) {
+	return ensureGitLabWebhookFastPathWithTriggerOwner(ctx, client, triggerOwner, baseURL, owner, repo, rotate, dryRun, false)
+}
+
+// EnsureGitLabWebhookAccountRouteAfterPollerFailure repairs a stale account
+// webhook only while dispatch activation still selects that account. The
+// route check and webhook mutation share the project lease, so a concurrent
+// installer cannot withdraw activation between them and cause Poller-route
+// provisioning after the Poller credential stage failed.
+func EnsureGitLabWebhookAccountRouteAfterPollerFailure(ctx context.Context, client forge.Client, triggerOwner GitLabTriggerOwner, baseURL, owner, repo string) (res GitLabWebhookResult, err error) {
+	return ensureGitLabWebhookFastPathWithTriggerOwner(ctx, client, triggerOwner, baseURL, owner, repo, false, false, true)
+}
+
+func ensureGitLabWebhookFastPathWithTriggerOwner(ctx context.Context, client forge.Client, triggerOwner GitLabTriggerOwner, baseURL, owner, repo string, rotate, dryRun, accountOnly bool) (res GitLabWebhookResult, err error) {
 	// One installer at a time per project, across processes: the whole
 	// transaction (Poller reconciliation, trigger and credential inventory,
 	// revocation, elevation, minting, restoration, and webhook publication)
@@ -134,6 +147,19 @@ func EnsureGitLabWebhookFastPathWithTriggerOwner(ctx context.Context, client for
 		err = red.redact(err)
 		release(&err)
 	}()
+	if accountOnly {
+		acct, routeErr := loadGitLabWebhookTriggerAccount(ctx, client, owner, repo)
+		if routeErr != nil {
+			return GitLabWebhookResult{}, routeErr
+		}
+		if acct == nil {
+			return GitLabWebhookResult{Action: "none"}, nil
+		}
+		stale, routeErr := GitLabWebhookTriggerRouteStale(ctx, client, baseURL, owner, repo)
+		if routeErr != nil || !stale {
+			return GitLabWebhookResult{Action: "none"}, routeErr
+		}
+	}
 	return ensureGitLabWebhookFastPath(ctx, client, triggerOwner, lease, baseURL, owner, repo, rotate, dryRun, red)
 }
 

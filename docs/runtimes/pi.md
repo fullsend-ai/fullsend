@@ -235,6 +235,25 @@ What a local pi run needs, beyond the guide:
 - **A sandbox image that includes pi** — `ghcr.io/fullsend-ai/fullsend-sandbox` v0.37.0+ (the image
   bakes `PI_VERSION`). A stale image fails preflight with `pi preflight: pi --version exited 127`;
   `podman pull ghcr.io/fullsend-ai/fullsend-sandbox:latest` fixes it.
+- **`python3` in the sandbox image** — the launch reads `.env` as data with a pinned `python3`
+  (`-I -S`), taken from a `PATH` directory the sandbox user neither owns nor can write; without
+  one it fails with `python3 not found in a PATH directory the agent cannot write` (exit 127).
+  It also needs `readlink` there as a regular file, not a symlink; without one the launch also
+  prints `no readlink that is a regular file in a PATH directory the agent cannot write`. The
+  fullsend sandbox image ships both.
+- **`pi` and `node` in directories the agent cannot write** — the launch pins
+  the first `pi` in a `PATH` directory the sandbox user neither owns nor can
+  write, judged by the file it resolves to and every directory above that
+  file. pi's CLI is a `#!/usr/bin/env node` script, so the launch also pins
+  `node` by the same rule and starts pi with it. It does not let `env` look
+  `node` up on the `PATH` left after `.env` is read. A `pi` or `node` found
+  only through an agent-writable directory, or a symlink into one, fails the
+  launch with `pi not found in a PATH directory the agent cannot write` or
+  `node not found in a PATH directory the agent cannot write` (exit 127). The
+  Agent tool starts its sub-agents with the same pinned `pi` and `node`. The
+  first line must be exactly `#!/usr/bin/env node`: any other line that starts
+  pi through `env` fails the launch with
+  `starts through env with a first line other than '#!/usr/bin/env node'`.
 - **Platforms** — verified end to end on macOS Apple Silicon (podman machine, Homebrew `openshell`)
   and Fedora with rootless Podman; the guide's platform notes apply unchanged.
 - **`review` and `retro`** run their real sub-agent roster through the `Agent` tool; the children
@@ -253,6 +272,13 @@ What a local pi run needs, beyond the guide:
 - **No permission system.** pi's posture is "run in a container". The sandbox, its egress policy and
   credential placeholders are the boundary ([ADR 0027](../ADRs/0027-allowed-and-disallowed-tools-for-agents.md));
   fullsend's hook adapter is defense-in-depth on top.
+- **Sandbox hook settings come from the harness, not `.env`.** With sandbox
+  hooks on, `TIRITH_FAIL_ON`, `TIRITH_REQUIRED`, `FULLSEND_EGRESS_ALLOWLIST`,
+  `FULLSEND_CANARY_TOKEN` and `FULLSEND_TOOL_ALLOWLIST` are taken from the
+  harness configuration at Bootstrap, before the first iteration. The launch
+  sets them again after it reads `.env`, and unsets any of them the harness did
+  not set. A value in `.env`, including one the agent wrote there, cannot change
+  them. The hook adapter and every sub-agent inherit those values.
 - **Reads `AGENTS.md` natively** — no `CLAUDE.md` bridge is injected.
 - **The agent body is appended** to pi's own system prompt rather than replacing it, so pi's default
   tool guidance stays. Claude Code's `--agent` replaces it.
@@ -814,7 +840,7 @@ that project's Model Garden, or the provider resolved a different project than y
 
 **`[pi-anthropic-vertex] disabled: set GOOGLE_CLOUD_PROJECT ...`.** The sandbox environment comes
 from the harness (`host_files`, `env.sandbox`), not from `--env-file`, which only reaches the runner
-process (ADR 0055). Files sourced from `.env.d/` need `export` on each line. The fleet harnesses
+process (ADR 0055). Files read from `.env.d/` need `export` on each line. The fleet harnesses
 already wire this; a custom harness must too.
 
 **The run used Claude instead of pi.** The runtime falls back to `claude` when neither the config's

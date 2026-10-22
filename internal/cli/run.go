@@ -47,6 +47,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/normevent"
 	"github.com/fullsend-ai/fullsend/internal/pluginformat"
 	"github.com/fullsend-ai/fullsend/internal/prescript"
+	"github.com/fullsend-ai/fullsend/internal/repos"
 	"github.com/fullsend-ai/fullsend/internal/resolve"
 	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
@@ -155,6 +156,12 @@ var defaultAgentsRepoKnownAgents = func() map[string]bool {
 // setupStatusNotifier (status comment tokens) and mintAgentToken (agent
 // runtime tokens). Tests that override it affect both paths.
 var statusMintToken = mintclient.MintToken
+
+// statusNewForgeClientFn constructs the GitHub client for status comments.
+// Override in tests to capture status writes without calling GitHub.
+var statusNewForgeClientFn = func(token string) forge.Client {
+	return gh.New(token)
+}
 
 // agentWorkingDirExcludes lists fullsend-reserved directory patterns that
 // must stay out of commits. They are appended to .git/info/exclude before
@@ -1170,7 +1177,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// Run lint checks before merging env.runner into RunnerEnv so that
 	// Lint() sees the original YAML state and only warns when runner_env
 	// was actually declared (not when env.runner entries are merged in).
-	for _, diag := range h.Lint() {
+	// reservedSandboxEnvDiagnostics rides along: it names the env.sandbox
+	// keys this run will drop instead of exporting them (#3373).
+	for _, diag := range append(h.Lint(), reservedSandboxEnvDiagnostics(h)...) {
 		emitDiagnostic(printer, diag)
 	}
 
@@ -1313,6 +1322,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// Declared here so the status-notification defer (below) can read the
 	// final values for the completion comment footer.
 	var aggMetrics aggregateMetrics
+	var statusFinalizer func()
+	var statusFinalizerOnce sync.Once
 
 	// 1c. Set up status notifications (comments on the issue/PR).
 	// Lives in the CLI layer (not harness or post-script) so it wraps the
@@ -1330,7 +1341,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			} else {
 				printer.StepDone("Posted start status comment")
 			}
-			defer func() {
+			statusFinalizer = func() {
 				status := "success"
 				detail := ""
 				if ctx.Err() != nil {
@@ -1349,12 +1360,53 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				// Set RunInfo for the completion footer. aggMetrics
 				// is fully populated by now (after all iterations).
 				notifier.SetRunInfo(runInfoFor(aggMetrics, h.Effort))
-				dCtx, dCancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+				finalizeTimeout := 15 * time.Second
+				if status == "cancelled" && forgePlatform == repos.ForgeGitHub {
+					// The priority defer registered before the agent loop starts this
+					// work before run-level teardown. Keep it bounded as well; the
+					// always() reconciliation step remains the hard-kill fallback.
+					finalizeTimeout = 7 * time.Second
+				}
+				dCtx, dCancel := context.WithTimeout(context.WithoutCancel(ctx), finalizeTimeout)
 				defer dCancel()
+				if status == "cancelled" && builtInGitHubReview(agentName, forgePlatform, sOpts.trackerSource) {
+					parts := strings.SplitN(sOpts.statusRepo, "/", 2)
+					client, err := newStatusGitHubForgeClient(dCtx, sOpts.mintURL, h.Role, parts[1])
+					if err == nil {
+						// Reuse this freshly minted write client for completion so
+						// cancellation cleanup does not spend time on a second mint.
+						notifier.SetClientFactory(func(context.Context) (tracker.Client, error) {
+							return tracker.NewForgeClient(client), nil
+						})
+						// Minting exchanges the OIDC token and can take longer than
+						// the short HEAD lookup window. Start that window only after
+						// the client is ready so mint latency cannot consume it.
+						headCtx, headCancel := context.WithTimeout(dCtx, 2*time.Second)
+						var guidance string
+						guidance, err = resolveBuiltInGitHubReviewCancellationGuidance(
+							headCtx, client, agentName, forgePlatform, sOpts.trackerSource,
+							sOpts.statusRepo, sOpts.statusNum, reviewedPRHeadSHA(),
+						)
+						headCancel()
+						if err == nil {
+							notifier.SetCancellationGuidance(guidance)
+						}
+					}
+					if err != nil {
+						printer.StepWarn("Could not determine whether cancelled review was superseded; leaving the status comment for always() reconciliation to retry: " + err.Error())
+						// Do not terminalize the comment without verified guidance.
+						// The action's always() reconciliation gets a fresh mint and
+						// context, and can retry before finalizing the orphaned comment.
+						return
+					}
+				}
 				if err := notifier.PostCompletionWithDetail(dCtx, description, status, detail); err != nil {
 					printer.StepWarn("Failed to post completion status: " + err.Error())
 				}
-			}()
+			}
+			// Preserve completion reporting for setup failures that return before
+			// the priority cancellation defer below can be registered.
+			defer func() { statusFinalizerOnce.Do(statusFinalizer) }()
 		}
 	}
 
@@ -1422,6 +1474,19 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				LocalPath: profilePath,
 			}}, result.Profiles...)
 		}
+		// The profile above is imported but attached only when a provider
+		// names its type, and it carries no credential. The stock GitLab
+		// providers attach their own profiles, whose GITLAB_TOKEN
+		// placeholder OpenShell resolves only at those profiles' endpoints,
+		// so the configured forge host must be one of them (#8683).
+		forgeHost, forgePort := gl.ResolveForgeHostPort()
+		boundProfiles, cleanupBound, err := bindGitLabForgeHost(result.Profiles, forgeHost, forgePort)
+		if err != nil {
+			printer.StepFail("Failed to add the GitLab forge host to provider profiles")
+			return fmt.Errorf("binding GitLab forge host to provider profiles: %w", err)
+		}
+		defer cleanupBound()
+		result.Profiles = boundProfiles
 	}
 
 	if intErr := checkProviderProfileIntegrity(result.Providers, result.Profiles); intErr != nil {
@@ -2500,6 +2565,18 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		oidcCancel()
 		oidcWg.Wait()
 	}()
+	if statusFinalizer != nil {
+		// This is the last run-level defer registered before agent execution.
+		// Under LIFO it records a cancelled built-in GitHub review before
+		// telemetry flush, post-script, sandbox, provider, refresher, and
+		// fetch-service teardown. Other outcomes still use the earlier fallback
+		// so they include any post-script failure.
+		defer func() {
+			if ctx.Err() != nil && builtInGitHubReview(agentName, forgePlatform, sOpts.trackerSource) {
+				statusFinalizerOnce.Do(statusFinalizer)
+			}
+		}()
+	}
 
 	// validationFeedback holds the previous iteration's validation failure
 	// output. When feedback_mode is "append" and this is non-empty, it is
@@ -3188,13 +3265,14 @@ var oidcDenyKeys = map[string]bool{
 	gatewayAPIKeyEnv: true,
 	// The GitLab webhook fast-path credentials `fullsend repos install`
 	// provisions as protected, wildcard-scoped CI/CD variables. The trigger
-	// token is a bearer credential that starts pipelines on the protected
-	// default branch; no run needs either value. The job scripts unset both,
+	// tokens are bearer credentials that start protected-branch pipelines;
+	// no run needs these values. The job scripts unset all three,
 	// and listing them here is defense in depth so a harness cannot expand
 	// them into sandbox-visible values and host-side scripts never inherit
 	// them.
-	"FULLSEND_TRIGGER_TOKEN":  true,
-	"FULLSEND_WEBHOOK_SECRET": true,
+	"FULLSEND_TRIGGER_TOKEN":                true,
+	"FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN": true,
+	"FULLSEND_WEBHOOK_SECRET":               true,
 	// The runner secrets bundle and its file path (ADR 0136).
 	// loadRunnerSecrets unsets both at start-up; listing them here keeps a
 	// harness from expanding the whole bundle and strips them from child
@@ -3289,6 +3367,10 @@ func harnessEnvLookup(key string) (string, bool) {
 // vars that could influence sandbox execution (e.g. shared library injection,
 // auto-sourced shell startup files). OIDC credential vars from oidcDenyKeys
 // are merged in by init() to prevent re-injection into the sandbox (#5832).
+// The sandbox credential deny-list is checked beside this map by
+// isReservedSandboxKey, not merged into it, because runnerSecretNameRefused
+// reads this map too and must accept those names (ADR 0145).
+// Entries are matched case-insensitively; every name in the map is uppercase.
 // NOTE: keep in sync with bootstrapEnv exports below for FULLSEND_* keys.
 var reservedSandboxKeys = map[string]bool{
 	"PATH":                        true,
@@ -3345,10 +3427,22 @@ func init() {
 	}
 }
 
+// isReservedSandboxKey reports whether an env.sandbox key is blocked by name:
+// a runner-reserved name, or one the sandbox credential deny-list refuses, so
+// a name unsafe as a provider credential is not exported here either (#3373).
+// Matching is case-insensitive. The gate and reservedSandboxEnvDiagnostics
+// both call this, so they cannot disagree about what a run drops.
+func isReservedSandboxKey(k string) bool {
+	return reservedSandboxKeys[strings.ToUpper(k)] || sandbox.IsReservedCredentialKey(k)
+}
+
 // buildSandboxEnvLines generates export lines for env.sandbox values (ADR 0055).
 // Values have already been expanded by the caller. Each value is single-quoted
-// with internal single quotes escaped. Keys that are not valid shell identifiers
-// are silently skipped.
+// with internal single quotes escaped. Keys that are not valid POSIX
+// identifiers, and keys that isReservedSandboxKey rejects, are skipped with a
+// warning on stderr; reservedSandboxEnvDiagnostics reports the reserved ones
+// again as a lint diagnostic, so they also surface with the other harness
+// warnings when the harness loads (#3373).
 func buildSandboxEnvLines(h *harness.Harness) []string {
 	if h.Env == nil || len(h.Env.Sandbox) == 0 {
 		return nil
@@ -3359,8 +3453,15 @@ func buildSandboxEnvLines(h *harness.Harness) []string {
 			fmt.Fprintf(os.Stderr, "WARNING: env.sandbox key %q is not a valid POSIX identifier; skipping\n", k)
 			continue
 		}
-		if reservedSandboxKeys[k] {
-			fmt.Fprintf(os.Stderr, "WARNING: env.sandbox key %q is reserved for runner infrastructure; skipping\n", k)
+		// Case-folded, like the credential and plugin doors. The two spellings
+		// are not interchangeable for the tools that read them: libcurl
+		// documents http_proxy as lowercase-only while other scheme proxies
+		// are also checked uppercase, and which of https_proxy and HTTPS_PROXY
+		// wins is upstream curl behavior, not something this repo controls.
+		// Blocking one spelling while exporting the other would make the
+		// strength of this blocklist depend on tool internals (#3373).
+		if isReservedSandboxKey(k) {
+			fmt.Fprintf(os.Stderr, "WARNING: env.sandbox key %q is reserved (runner infrastructure or security deny-list); skipping\n", k)
 			continue
 		}
 		keys = append(keys, k)
@@ -5697,15 +5798,18 @@ func buildScanContextCommand(repoDir, traceID string) string {
 	sort.Strings(inames) // deterministic ordering
 	inameExpr := strings.Join(inames, " -o ")
 
-	// Source .env for the run's environment. The scanner is the binary
-	// bootstrapCommon uploaded, named by its absolute path so the version
-	// that runs matches the runner whatever PATH .env ends up with.
+	// Read .env as data for the run's environment, as the launch does
+	// (EnvDataLoad, #8574): no .env or .env.d line runs as shell. find runs
+	// with the trusted PATH recorded before .env, so a PATH that .env sets
+	// cannot choose it. The scanner is the binary bootstrapCommon uploaded,
+	// named by its absolute path so the version that runs matches the
+	// runner.
 	envFile := sandbox.SandboxWorkspace + "/.env"
 	scanner := sandbox.SandboxWorkspace + "/bin/fullsend"
 
 	return fmt.Sprintf(
-		". %s && FULLSEND_TRACE_ID='%s' find '%s' -maxdepth %d -type f \\( %s \\) -exec %s scan context {} +",
-		envFile, traceID, escapedDir, maxContextScanDepth, inameExpr, scanner,
+		"%s && FULLSEND_TRACE_ID='%s' PATH=\"$%s\" find '%s' -maxdepth %d -type f \\( %s \\) -exec %s scan context {} +",
+		agentruntime.EnvDataLoad(envFile), traceID, agentruntime.EnvDataTrustedPathVar, escapedDir, maxContextScanDepth, inameExpr, scanner,
 	)
 }
 
@@ -6311,6 +6415,49 @@ func setupStatusNotifier(fullsendDir string, role string, forgePlatform string, 
 	return setupStatusNotifierGitHub(notifyCfg, owner, repo, role, sOpts, printer)
 }
 
+// builtInGitHubReview identifies the one review run that can be retried with
+// GitHub's /fs-review command. Roles are intentionally excluded: custom
+// agents may declare role: review but that command would run the built-in
+// agent, not the custom one. Jira-routed comments cannot invoke that command,
+// even when the code-hosting forge is GitHub.
+func builtInGitHubReview(agentName, forgePlatform, trackerSource string) bool {
+	return agentName == "review" && forgePlatform == repos.ForgeGitHub && trackerSource != "jira"
+}
+
+// builtInGitHubReviewRetryGuidance tells readers how to retry a cancelled review of the current PR head.
+const builtInGitHubReviewRetryGuidance = "**Automated review did not complete for this commit. Check the latest review status before merging. If no review is queued or running, comment `/fs-review` to retry.**"
+
+// builtInGitHubReviewSupersededGuidance identifies a review cancelled after a newer PR head appeared.
+const builtInGitHubReviewSupersededGuidance = "**This review was superseded by a newer commit. Check the current pull request HEAD's review status before merging.**"
+
+// resolveBuiltInGitHubReviewCancellationGuidance compares a verified reviewed SHA with the current PR head.
+func resolveBuiltInGitHubReviewCancellationGuidance(
+	ctx context.Context,
+	client forge.Client,
+	agentName, forgePlatform, trackerSource, project string,
+	number int,
+	reviewedSHA string,
+) (string, error) {
+	if !builtInGitHubReview(agentName, forgePlatform, trackerSource) || reviewedSHA == "" {
+		return "", nil
+	}
+	parts := strings.SplitN(project, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", fmt.Errorf("invalid GitHub project %q", project)
+	}
+	currentSHA, err := client.GetPullRequestHeadSHA(ctx, parts[0], parts[1], number)
+	if err != nil {
+		return "", fmt.Errorf("fetching current pull request HEAD: %w", err)
+	}
+	if currentSHA == "" {
+		return "", fmt.Errorf("current pull request HEAD is empty")
+	}
+	if !strings.EqualFold(reviewedSHA, currentSHA) {
+		return builtInGitHubReviewSupersededGuidance, nil
+	}
+	return builtInGitHubReviewRetryGuidance, nil
+}
+
 // setupStatusNotifierGitHub creates a status notifier for GitHub. It mints
 // a fresh token via the mint service for each API call and reads SHA/run ID
 // from GitHub Actions environment variables.
@@ -6323,15 +6470,7 @@ func setupStatusNotifierGitHub(notifyCfg config.StatusNotificationConfig, owner,
 		return nil, fmt.Errorf("no mint URL available (set --mint-url or FULLSEND_MINT_URL)")
 	}
 
-	sha := os.Getenv("GITHUB_SHA")
-	// Prefer explicit PR_HEAD_SHA (set by per-repo workflow_call callers
-	// where GITHUB_EVENT_PATH lacks the dispatched event_payload wrapper).
-	// Fall back to extracting from the workflow_dispatch event payload.
-	if prSHA := os.Getenv("PR_HEAD_SHA"); prSHA != "" {
-		sha = prSHA
-	} else if prSHA := prHeadSHAFromEventPath(os.Getenv("GITHUB_EVENT_PATH")); prSHA != "" {
-		sha = prSHA
-	}
+	sha := githubStatusSHA()
 	runID := os.Getenv("GITHUB_RUN_ID")
 	if runID == "" {
 		runID = fmt.Sprintf("%d", time.Now().UnixNano())
@@ -6348,25 +6487,54 @@ func setupStatusNotifierGitHub(notifyCfg config.StatusNotificationConfig, owner,
 
 	canonRole := resolveRole(role)
 	n.SetClientFactory(func(ctx context.Context) (tracker.Client, error) {
-		result, err := statusMintToken(ctx, mintclient.MintRequest{
-			MintURL: mintURL,
-			Role:    canonRole,
-			Level:   mintcore.LevelWrite,
-			Repos:   []string{repo},
-		})
+		client, err := newStatusGitHubForgeClient(ctx, mintURL, canonRole, repo)
 		if err != nil {
-			return nil, fmt.Errorf("minting status token: %w", err)
+			return nil, err
 		}
-		if !mintTokenPattern.MatchString(result.Token) {
-			return nil, fmt.Errorf("minted status token contains unexpected characters")
-		}
-		if os.Getenv("GITHUB_ACTIONS") == "true" {
-			fmt.Fprintf(os.Stderr, "::add-mask::%s\n", result.Token)
-		}
-		return tracker.NewForgeClient(gh.New(result.Token)), nil
+		return tracker.NewForgeClient(client), nil
 	})
 
 	return n, nil
+}
+
+// reviewedPRHeadSHA returns only an explicit or event-derived PR head.
+// GITHUB_SHA may identify a merge or base commit on native PR events.
+func reviewedPRHeadSHA() string {
+	if prSHA := os.Getenv("PR_HEAD_SHA"); prSHA != "" {
+		return prSHA
+	}
+	return prHeadSHAFromEventPath(os.Getenv("GITHUB_EVENT_PATH"))
+}
+
+// githubStatusSHA returns a PR head when available, or GITHUB_SHA for status display.
+func githubStatusSHA() string {
+	if prSHA := reviewedPRHeadSHA(); prSHA != "" {
+		return prSHA
+	}
+	return os.Getenv("GITHUB_SHA")
+}
+
+// newStatusGitHubForgeClient mints a write-scoped token for status updates and returns a GitHub forge client.
+func newStatusGitHubForgeClient(ctx context.Context, mintURL, role, repo string) (forge.Client, error) {
+	if mintURL == "" {
+		mintURL = os.Getenv("FULLSEND_MINT_URL")
+	}
+	result, err := statusMintToken(ctx, mintclient.MintRequest{
+		MintURL: mintURL,
+		Role:    resolveRole(role),
+		Level:   mintcore.LevelWrite,
+		Repos:   []string{repo},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("minting status token: %w", err)
+	}
+	if !mintTokenPattern.MatchString(result.Token) {
+		return nil, fmt.Errorf("minted status token contains unexpected characters")
+	}
+	if os.Getenv("GITHUB_ACTIONS") == "true" {
+		fmt.Fprintf(os.Stderr, "::add-mask::%s\n", result.Token)
+	}
+	return statusNewForgeClientFn(result.Token), nil
 }
 
 // setupStatusNotifierGitLab creates a status notifier for GitLab. It uses
@@ -6467,10 +6635,9 @@ func extractMapString(m map[string]any, keys ...string) string {
 	return ""
 }
 
-// prHeadSHAFromEventPath extracts pull_request.head.sha from the event
-// payload embedded in a workflow_dispatch event file. For workflow_dispatch
-// events, the file contains {"inputs": {"event_payload": "<json-string>"}}.
-// Returns empty string if the file is unreadable or the field is absent.
+// prHeadSHAFromEventPath extracts pull_request.head.sha from a native PR event
+// or from the event_payload JSON string embedded in a workflow_dispatch event.
+// It returns empty if the file is unreadable or the field is absent.
 func prHeadSHAFromEventPath(path string) string {
 	if path == "" {
 		return ""
@@ -6479,13 +6646,23 @@ func prHeadSHAFromEventPath(path string) string {
 	if err != nil {
 		return ""
 	}
-	// The workflow_dispatch event has inputs.event_payload as a JSON string.
 	var event struct {
+		PullRequest struct {
+			Head struct {
+				SHA string `json:"sha"`
+			} `json:"head"`
+		} `json:"pull_request"`
 		Inputs struct {
 			EventPayload string `json:"event_payload"`
 		} `json:"inputs"`
 	}
-	if err := json.Unmarshal(data, &event); err != nil || event.Inputs.EventPayload == "" {
+	if err := json.Unmarshal(data, &event); err != nil {
+		return ""
+	}
+	if event.PullRequest.Head.SHA != "" {
+		return event.PullRequest.Head.SHA
+	}
+	if event.Inputs.EventPayload == "" {
 		return ""
 	}
 	var payload struct {

@@ -41,7 +41,7 @@
 # version tags and on changes to images/runner/. UBI images pull anonymously
 # from registry.access.redhat.com — no Red Hat subscription required.
 # registry.access.redhat.com/ubi10/go-toolset:latest
-FROM registry.access.redhat.com/ubi10/go-toolset@sha256:f6b33401d7dc17d32bed91be97ba14c642646031ef2e89630b035a822d1755bf AS build
+FROM registry.access.redhat.com/ubi10/go-toolset@sha256:93ae1289310acbf92b3b4ac443210b61e113daffb766bc91deb6dea4d502cb01 AS build
 
 USER 0
 WORKDIR /src
@@ -86,7 +86,7 @@ ARG FULLSEND_VERSION=dev
 ARG FULLSEND_COMMIT=unknown
 RUN CGO_ENABLED=1 CGO_LDFLAGS="-L/usr/lib" GOOS=linux GOARCH=${TARGETARCH} \
     go build -trimpath -tags ORT \
-      -ldflags "-s -w -X github.com/fullsend-ai/fullsend/internal/cli.version=${FULLSEND_VERSION} -X github.com/fullsend-ai/fullsend/internal/cli.commitSHA=${FULLSEND_COMMIT}" \
+      -ldflags "-s -w -X github.com/fullsend-ai/fullsend/internal/buildinfo.version=${FULLSEND_VERSION} -X github.com/fullsend-ai/fullsend/internal/buildinfo.commitSHA=${FULLSEND_COMMIT}" \
       -o /out/fullsend ./cmd/fullsend/
 
 # ---------------------------------------------------------------------------
@@ -103,7 +103,7 @@ RUN CGO_ENABLED=1 CGO_LDFLAGS="-L/usr/lib" GOOS=linux GOARCH=${TARGETARCH} \
 # under rootless podman container root maps to the invoking host user, so
 # bind-mounted configs and repos keep sane ownership without UID mapping.
 # registry.access.redhat.com/ubi10/ubi:latest
-FROM registry.access.redhat.com/ubi10/ubi@sha256:3ef7bffd1dc7e55f8d34d5cc9737d188e3b9613e562942d2955e2fc867dd74d2
+FROM registry.access.redhat.com/ubi10/ubi@sha256:4debe04be3b15ff2861e3428cbfa42379a183b16787ca2b8cf124d7afd6e84a5
 
 # NOTE: no SHELL directive — podman's default OCI image format ignores it,
 # so all RUN steps below stay POSIX-sh compatible for docker AND podman.

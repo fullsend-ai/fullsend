@@ -580,21 +580,14 @@ func refreshGatewayProvider(ctx context.Context, h gatewayProviderHandle, placeh
 	return a.IssuedAt, a.ExpiresAt, seeded, nil
 }
 
-// waitGateway waits d, or returns false when ctx ends first.
-func waitGateway(ctx context.Context, d time.Duration) bool {
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-timer.C:
-		return true
-	}
-}
-
 // runGatewayRefresh keeps the gateway token valid for the life of the
 // run, scheduling each refresh from the provider's current token's own iat
 // and exp (gatewayRefreshDelay). Runs until ctx is cancelled.
+//
+// The gateway checks the token's exp on the wall clock, so every deadline
+// is compared on the wall clock (wallNowFn) and every wait is a
+// waitWallClock: a host that sleeps past the refresh point refreshes on
+// the first wall-clock check after it wakes (#8584).
 //
 //   - When the fetch retries are exhausted it stops and says so: the
 //     provider's recorded expiry makes the proxy fail closed at that
@@ -626,14 +619,22 @@ func runGatewayRefresh(ctx context.Context, h gatewayProviderHandle, printer *ui
 	// on every retry: it warns once per held token, when that token expires.
 	var warnedHeldExpiry time.Time
 	for {
-		delay, fits := gatewayRefreshDelay(st.issuedAt, st.expiresAt, time.Now(), rand.Float64())
+		now := wallNowFn()
+		delay, fits := gatewayRefreshDelay(st.issuedAt.Round(0), st.expiresAt.Round(0), now, rand.Float64())
+		refreshAt := now.Add(delay)
 		if st.handOffPending && delay > gatewayRefreshBackoff {
-			if !waitGateway(ctx, gatewayRefreshBackoff) {
+			if !waitWallClock(ctx, gatewayRefreshBackoff, now.Add(gatewayRefreshBackoff)) {
 				return
 			}
 			// Each retry ends when the next rotation is due, so a slow
-			// settle cannot hold the rotation past the provider's exp.
-			retryCtx, cancel := context.WithTimeout(ctx, delay-gatewayRefreshBackoff)
+			// settle cannot hold the rotation past the provider's exp. A
+			// host that slept through the wait may already be past it:
+			// go round and rotate.
+			retryFor := refreshAt.Sub(wallNowFn())
+			if retryFor <= 0 {
+				continue
+			}
+			retryCtx, cancel := context.WithTimeout(ctx, retryFor)
 			held, err := handOffGateway(retryCtx, h, st.placeholder, printer)
 			cancel()
 			if err != nil {
@@ -645,14 +646,14 @@ func runGatewayRefresh(ctx context.Context, h gatewayProviderHandle, printer *ui
 					failGatewayClosed(h, st, err, printer)
 					return
 				}
-				if !warnedHeldExpiry.Equal(st.heldExpiresAt) && !time.Now().Before(st.heldExpiresAt) {
+				if !warnedHeldExpiry.Equal(st.heldExpiresAt) && !wallNowFn().Before(st.heldExpiresAt.Round(0)) {
 					warnedHeldExpiry = st.heldExpiresAt
 					printer.StepWarn(fmt.Sprintf("Inference gateway hand-off for %s still failing: %v; the running agent's token expired at %s, still retrying", h.name, err, st.heldExpiresAt.UTC().Format(time.RFC3339)))
 				}
 				continue
 			}
 			st.placeholder, st.heldExpiresAt, st.handOffPending, st.superseded = held, st.expiresAt, false, nil
-			printer.StepDone(fmt.Sprintf("Inference gateway token handed off for %s (next expiry in %s)", h.name, time.Until(st.expiresAt).Round(time.Second)))
+			printer.StepDone(fmt.Sprintf("Inference gateway token handed off for %s (next expiry in %s)", h.name, st.expiresAt.Round(0).Sub(wallNowFn()).Round(time.Second)))
 			continue
 		}
 		if !fits && !warnedFor.Equal(st.expiresAt) {
@@ -667,7 +668,7 @@ func runGatewayRefresh(ctx context.Context, h gatewayProviderHandle, printer *ui
 				printer.StepWarn(fmt.Sprintf("Inference gateway token for %s expires at %s, inside the %s refresh budget; the refresh is running late", h.name, st.expiresAt.UTC().Format(time.RFC3339), budget.Round(time.Second)))
 			}
 		}
-		if !waitGateway(ctx, delay) {
+		if !waitWallClock(ctx, delay, refreshAt) {
 			return
 		}
 		// With a hand-off still pending the sandbox already hands out a
@@ -692,7 +693,7 @@ func runGatewayRefresh(ctx context.Context, h gatewayProviderHandle, printer *ui
 		case err != nil && !errors.As(err, &reseedErr) && ctx.Err() != nil:
 			return
 		case errors.As(err, &baselineErr):
-			if !time.Now().Before(st.expiresAt) {
+			if !wallNowFn().Before(st.expiresAt.Round(0)) {
 				printer.StepWarn(fmt.Sprintf("Inference gateway token refresh for %s gave up: %v; the provider's token expired at %s", h.name, err, st.expiresAt.UTC().Format(time.RFC3339)))
 				return
 			}
@@ -713,7 +714,7 @@ func runGatewayRefresh(ctx context.Context, h gatewayProviderHandle, printer *ui
 			return
 		default:
 			st.issuedAt, st.expiresAt, st.heldExpiresAt, st.placeholder, st.handOffPending, st.superseded = iat, exp, exp, held, false, nil
-			printer.StepDone(fmt.Sprintf("Inference gateway token refreshed for %s (next expiry in %s)", h.name, time.Until(exp).Round(time.Second)))
+			printer.StepDone(fmt.Sprintf("Inference gateway token refreshed for %s (next expiry in %s)", h.name, exp.Round(0).Sub(wallNowFn()).Round(time.Second)))
 		}
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -118,6 +119,8 @@ const (
 	classicProtectionViolation = "protected branch 'probe-classic-protection' check failed:\n  Changes must be made through a pull request. Required status check \"probe-check\" is expected."
 	samlForbidden              = "Resource protected by organization SAML enforcement. You must grant your Personal Access token access to this organization."
 	staleHead                  = `Expected branch to point to "abc123" but it did not.  Pull and try again.`
+	// The same stale-head condition, returned with type FORBIDDEN (#8580).
+	forbiddenStaleHead = "is at 98ad40bffbd1e5fb27d3636e7f7b6cbce85113c2 but expected 23ab78126def5042fe61d7e66dcbf5d9f35b589a"
 )
 
 var regularFile = []forge.TreeFile{{Path: "f.txt", Content: []byte("x"), Mode: "100644"}}
@@ -280,6 +283,23 @@ func TestCommitFiles_GraphQL_StaleDataRetries(t *testing.T) {
 		mutations++
 		if mutations == 1 {
 			graphqlCommitError(w, "STALE_DATA", staleHead)
+			return
+		}
+		graphqlCommitOK(w, "newcommit")
+	})
+
+	committed, err := newTestClient(t, srv).CommitFiles(context.Background(), "org", "repo", "msg", regularFile)
+	require.NoError(t, err)
+	assert.True(t, committed)
+	assert.Equal(t, 2, mutations)
+}
+
+func TestCommitFiles_GraphQL_ForbiddenStaleHeadRetries(t *testing.T) {
+	var mutations int
+	srv, _ := graphqlCommitServer(t, "main", nil, func(w http.ResponseWriter, _ commitMutationInput) {
+		mutations++
+		if mutations == 1 {
+			graphqlCommitError(w, "FORBIDDEN", forbiddenStaleHead)
 			return
 		}
 		graphqlCommitOK(w, "newcommit")
@@ -527,6 +547,84 @@ func TestCommitFiles_GraphQL_RateLimitedHonoursCancelledContext(t *testing.T) {
 	_, err := New("test-token").WithBaseURL(srv.URL).WithAfterFunc(cancelInsteadOfWaiting).CommitFiles(ctx, "org", "repo", "msg", regularFile)
 	require.ErrorIs(t, err, context.Canceled)
 	assert.Equal(t, 1, mutations)
+}
+
+// rateLimitedOnceServer answers the first mutation with an HTTP-200
+// RATE_LIMITED and every later one with success. mutations counts the
+// mutation requests received.
+func rateLimitedOnceServer(t *testing.T) (*httptest.Server, *atomic.Int32) {
+	t.Helper()
+	var mutations atomic.Int32
+	srv, _ := graphqlCommitServer(t, "main", nil, func(w http.ResponseWriter, _ commitMutationInput) {
+		if mutations.Add(1) == 1 {
+			w.Header().Set("Retry-After", "1")
+			graphqlCommitError(w, "RATE_LIMITED", "API rate limit already exceeded for user ID 1.")
+			return
+		}
+		graphqlCommitOK(w, "newcommit")
+	})
+	return srv, &mutations
+}
+
+func TestCreateCommitOnBranch_RateLimitedResendsWithoutGuard(t *testing.T) {
+	srv, mutations := rateLimitedOnceServer(t)
+
+	oid, err := newTestClient(t, srv).createCommitOnBranch(context.Background(), "org", "repo", "main", "abc123", "msg", regularFile, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "newcommit", oid)
+	assert.Equal(t, int32(2), mutations.Load())
+}
+
+func TestCreateCommitOnBranch_RateLimitedGuardRunsAfterWaitAndAllowsResend(t *testing.T) {
+	srv, mutations := rateLimitedOnceServer(t)
+
+	var guardCalls, mutationsAtGuard atomic.Int32
+	ctx := forge.WithRetryGuard(context.Background(), func(context.Context) error {
+		guardCalls.Add(1)
+		mutationsAtGuard.Store(mutations.Load())
+		return nil
+	})
+	oid, err := newTestClient(t, srv).createCommitOnBranch(ctx, "org", "repo", "main", "abc123", "msg", regularFile, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "newcommit", oid)
+	assert.Equal(t, int32(1), guardCalls.Load(), "the guard runs once, after the rate-limit wait")
+	assert.Equal(t, int32(1), mutationsAtGuard.Load(), "the guard runs after the rate-limited mutation, before the resend")
+	assert.Equal(t, int32(2), mutations.Load())
+}
+
+func TestCreateCommitOnBranch_RateLimitedGuardRefusalStopsResend(t *testing.T) {
+	srv, mutations := rateLimitedOnceServer(t)
+
+	stop := errors.New("ownership lost")
+	var guardCalls atomic.Int32
+	ctx := forge.WithRetryGuard(context.Background(), func(context.Context) error {
+		guardCalls.Add(1)
+		return stop
+	})
+	oid, err := newTestClient(t, srv).createCommitOnBranch(ctx, "org", "repo", "main", "abc123", "msg", regularFile, nil)
+	require.ErrorIs(t, err, stop)
+	assert.Contains(t, err.Error(), "not retried")
+	assert.Empty(t, oid)
+	assert.Equal(t, int32(1), guardCalls.Load())
+	assert.Equal(t, int32(1), mutations.Load(), "the mutation is not resent after the guard refuses")
+}
+
+func TestCommitFiles_GraphQL_RateLimitedGuardRefusalAfterWaitStopsResend(t *testing.T) {
+	// CommitFiles also runs the guard before its first mutation; let that
+	// call pass and refuse the one after the rate-limit wait.
+	srv, mutations := rateLimitedOnceServer(t)
+
+	stop := errors.New("ownership lost")
+	ctx := forge.WithRetryGuard(context.Background(), func(context.Context) error {
+		if mutations.Load() > 0 {
+			return stop
+		}
+		return nil
+	})
+	committed, err := newTestClient(t, srv).CommitFiles(ctx, "org", "repo", "msg", regularFile)
+	require.ErrorIs(t, err, stop)
+	assert.False(t, committed)
+	assert.Equal(t, int32(1), mutations.Load(), "the mutation is not resent after the guard refuses")
 }
 
 // rateLimitHeaders sets the X-RateLimit-* headers GitHub sends with a
@@ -932,6 +1030,10 @@ func TestClassifyCreateCommitErrors(t *testing.T) {
 		{name: "other", errs: []graphQLError{{Type: "INTERNAL", Message: "boom"}}, contains: "INTERNAL"},
 		{name: "rule violation wins over earlier unrelated error", errs: []graphQLError{{Type: "INTERNAL", Message: "boom"}, {Type: "FORBIDDEN", Message: pullRequestRuleViolation}}, protected: true, contains: "rule violations"},
 		{name: "stale wins over later forbidden", errs: []graphQLError{{Type: "FORBIDDEN", Message: "Resource not accessible by personal access token"}, {Type: "STALE_DATA", Message: staleHead}}, nonFF: true, contains: "STALE_DATA"},
+		{name: "stale head typed forbidden", errs: []graphQLError{{Type: "FORBIDDEN", Message: forbiddenStaleHead}}, nonFF: true, contains: "but expected"},
+		{name: "stale head text needs both shas", errs: []graphQLError{{Type: "FORBIDDEN", Message: "is at abc123 but expected def456"}}, forbidden: true, contains: "FORBIDDEN"},
+		{name: "rule violation wins over stale head text", errs: []graphQLError{{Type: "FORBIDDEN", Message: pullRequestRuleViolation}, {Type: "FORBIDDEN", Message: forbiddenStaleHead}}, protected: true, contains: "rule violations"},
+		{name: "STALE_DATA wins over earlier stale head text", errs: []graphQLError{{Type: "FORBIDDEN", Message: forbiddenStaleHead}, {Type: "STALE_DATA", Message: staleHead}}, nonFF: true, contains: "STALE_DATA"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -955,6 +1057,8 @@ func TestClassifyCreateCommitErrors(t *testing.T) {
 func TestIsRetriableCommitError(t *testing.T) {
 	assert.True(t, isRetriableCommitError(forge.ErrNonFastForward))
 	assert.True(t, isRetriableCommitError(classifyCreateCommitErrors([]graphQLError{{Type: "STALE_DATA", Message: staleHead}})))
+	assert.True(t, isRetriableCommitError(classifyCreateCommitErrors([]graphQLError{{Type: "FORBIDDEN", Message: forbiddenStaleHead}})))
+	assert.False(t, isRetriableCommitError(classifyCreateCommitErrors([]graphQLError{{Type: "FORBIDDEN", Message: "Resource not accessible by personal access token"}})))
 	assert.True(t, isRetriableCommitError(classifyCreateCommitErrors([]graphQLError{{Type: "NOT_FOUND", Message: "Could not resolve to a Ref"}})))
 	assert.False(t, isRetriableCommitError(classifyCreateCommitErrors([]graphQLError{{Type: "FORBIDDEN", Message: pullRequestRuleViolation}})))
 	assert.False(t, isRetriableCommitError(&APIError{StatusCode: http.StatusNotFound, Message: "Not Found"}))

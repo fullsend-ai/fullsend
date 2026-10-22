@@ -41,7 +41,9 @@ import (
 // interruption leaves a duplicate (removed on the next run) rather than no
 // polling schedule at all:
 //
-//   - adoption: a managed schedule owned by anyone else is replaced by an
+//   - adoption: a managed schedule owned by anyone else (a verified installer
+//     Maintainer, or a retired generation awaiting retirement after rotation
+//     or repair) is replaced by an
 //     account-owned one on the protected branch, keeping its active state. A
 //     disabled replacement is created disabled (the create request carries
 //     active=false), so it is never active; while the original survives it is
@@ -222,6 +224,28 @@ func (op *gitLabTriggerAccountOp) recordedGenerationOwner(id int64) bool {
 		}
 	}
 	return false
+}
+
+// verifyRetiredScheduleOwner confirms that a schedule owner recorded as a
+// retired generation is that generation's nonce-named account, as
+// releaseOwnedSchedules does before it touches the account's schedules. It
+// fails closed on a renamed, missing, or unreadable account.
+func (op *gitLabTriggerAccountOp) verifyRetiredScheduleOwner(ctx context.Context, id int64) error {
+	for i := range op.st.Retired {
+		if int64(op.st.Retired[i].AccountID) != id {
+			continue
+		}
+		gen := &gitLabTriggerAccountOp{opts: op.opts, st: op.st.Retired[i], exists: true, retired: true}
+		_, found, err := gen.findOwnedAccount(ctx)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return fmt.Errorf("retired GitLab trigger account %d was not found; refusing to move its managed polling schedules", id)
+		}
+		return nil
+	}
+	return fmt.Errorf("schedule owner %d is not a recorded retired trigger account generation; refusing to move its managed polling schedules", id)
 }
 
 // installerScheduleOwner accepts the current installer and another current
@@ -431,6 +455,18 @@ func (op *gitLabTriggerAccountOp) planAccountSchedules(ctx context.Context) ([]a
 				mine = append(mine, s)
 			} else {
 				if op.recordedGenerationOwner(s.OwnerID) && s.OwnerID != int64(op.st.AccountID) {
+					// A retired generation still owns the schedule while its
+					// retirement waits for the webhook cutover (rotation or
+					// repair). It moves straight to the current account:
+					// retirement would otherwise hand it to the installer after
+					// this stage ran, leaving it installer-owned until another
+					// install (#8602). Like the hand-back, it only touches the
+					// schedules of a generation whose nonce-named account is
+					// verified.
+					if err := op.verifyRetiredScheduleOwner(ctx, s.OwnerID); err != nil {
+						return nil, nil, nil, err
+					}
+					others = append(others, s)
 					continue
 				}
 				trusted, err := op.installerScheduleOwner(ctx, s.OwnerID, int64(installerID))

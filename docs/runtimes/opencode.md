@@ -125,6 +125,20 @@ example above.
   the previous iteration could have written, re-uploads the agent, and checks that OpenCode loads it.
   `skills/` in the config directory stays agent-writable until #7824.
 - **Repo config is ignored.** OpenCode does not load the target repo's `.opencode/` config or skills.
+- **`.env` is read as data.** As on the other runtimes, the launch parses `.env` with a pinned
+  `python3` and runs none of it as shell, so the image needs `python3` and a regular-file `readlink`
+  in `PATH` directories the sandbox user neither owns nor can write. Without them the launch fails
+  with `python3 not found in a PATH directory the agent cannot write` (exit 127). The fullsend
+  sandbox image ships both.
+- **`opencode` comes from a directory the agent cannot write.** The launch pins
+  the first `opencode` in a `PATH` directory the sandbox user neither owns nor
+  can write, judged by the file it resolves to and every directory above that
+  file. An `opencode` found only through an agent-writable directory, or a
+  symlink into one, fails the launch with
+  `opencode not found in a PATH directory the agent cannot write` (exit 127).
+  If `opencode` is a `#!/usr/bin/env node` script rather than a binary, `node`
+  must sit in such a directory too, and the launch starts the script with it.
+  In the fullsend sandbox image `opencode` is a binary.
 
 ## Troubleshooting
 
@@ -136,6 +150,9 @@ example above.
 | `ProviderModelNotFoundError` | The id is not in OpenCode's built-in catalog. Use an id from the table above |
 | Vertex `404 NOT_FOUND` for the model | Your project does not serve it. Name one it serves |
 | `Falling back to default agent` | OpenCode could not load the agent, and the iteration fails. Rerun with `--debug='*'` and read `opencode-debug.log` |
+| `python3 not found in a PATH directory the agent cannot write` | The image has no `python3` outside directories the sandbox user owns or can write. Use the fullsend sandbox image or add one |
+| `no readlink that is a regular file in a PATH directory the agent cannot write`, then `opencode not found in a PATH directory the agent cannot write` | The image has no regular-file `readlink` outside those directories, so no binary can be pinned. Use the fullsend sandbox image or add coreutils `readlink` |
+| `opencode not found in a PATH directory the agent cannot write` | The image's `opencode` is missing, or is found only through a directory the sandbox user owns or can write. Install it outside such directories |
 | Tool calls fail with a permission error | The policy does not allow that tool (step 1) |
 
 ## See also

@@ -19,9 +19,9 @@ func writebackManifestFile(t *testing.T, m *Manifest) string {
 	return path
 }
 
-func upstreamOnly(t *testing.T) string {
+func upstreamIssueTargets(t *testing.T) string {
 	t.Helper()
-	body, err := marshalManagedConfig(mustManagedConfig(t, "create_issues:\n  allow_targets:\n    repos: [fullsend-ai/fullsend]\n").Writer())
+	body, err := marshalManagedConfig(mustManagedConfig(t, "create_issues:\n  allow_targets:\n    repos: [fullsend-ai/fullsend, fullsend-ai/agents]\n").Writer())
 	require.NoError(t, err)
 	return string(body)
 }
@@ -46,7 +46,7 @@ func TestEnsureManagedConfigDefaults_ExistingEntryPersistsUpstreamDefault(t *tes
 	web, _ := reloaded.ResolveConfig("acme", "web")
 	body, _, err := desiredManagedConfig(api)
 	require.NoError(t, err)
-	assert.Equal(t, managedConfigMarker+upstreamOnly(t), string(body))
+	assert.Equal(t, managedConfigMarker+upstreamIssueTargets(t), string(body))
 	assert.False(t, reloaded.GitHub.Repos[1].Config.IsSet(), "unselected repos are untouched")
 	assert.NotNil(t, web.Managed)
 }
@@ -82,7 +82,49 @@ func TestEnsureManagedConfigDefaults_NewEntryAndBootstrap(t *testing.T) {
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
 	assert.Contains(t, string(data), "fullsend-ai/fullsend")
+	assert.Contains(t, string(data), "fullsend-ai/agents")
 	assert.Contains(t, string(data), "acme/new")
+}
+
+// Verify the persisted policy and rendered overlay, not just the in-memory list.
+func TestEnsureManagedConfigDefaults_ForgeSpecificTargets(t *testing.T) {
+	for _, forgeName := range []string{ForgeGitHub, ForgeGitLab} {
+		t.Run(forgeName, func(t *testing.T) {
+			m := newConvergeManifest("acme/api")
+			if forgeName == ForgeGitLab {
+				m.GitLab, m.GitHub = m.GitHub, nil
+			}
+			path := writebackManifestFile(t, m)
+			fc := newFakeClientForBatch("acme/api")
+			names, err := EnsureManagedConfigDefaults(context.Background(), ManagedConfigWritebackConfig{
+				Manifest: m, ManifestPath: path,
+			}, newTestClientFactory(fc), nil)
+			require.NoError(t, err)
+			assert.Equal(t, []string{"acme/api"}, names)
+			reloaded, err := LoadManifest(context.Background(), path)
+			require.NoError(t, err)
+			rc, ok := reloaded.ResolveConfig("acme", "api")
+			require.True(t, ok)
+			policy := rc.Managed.IssueCreationConfig()
+			require.NotNil(t, policy, "an empty policy must remain explicit after reload")
+			body, _, err := desiredManagedConfig(rc)
+			require.NoError(t, err)
+			if forgeName == ForgeGitLab {
+				assert.Empty(t, policy.AllowTargets.Repos)
+				assert.Empty(t, policy.AllowTargets.Orgs)
+				assert.Contains(t, string(body), "allow_targets: {}")
+				assert.NotContains(t, string(body), "fullsend-ai/")
+			} else {
+				assert.Equal(t, []string{"fullsend-ai/fullsend", "fullsend-ai/agents"}, policy.AllowTargets.Repos)
+			}
+			// Repeating the install preserves the persisted declaration.
+			names, err = EnsureManagedConfigDefaults(context.Background(), ManagedConfigWritebackConfig{
+				Manifest: reloaded, ManifestPath: path,
+			}, newTestClientFactory(fc), nil)
+			require.NoError(t, err)
+			assert.Empty(t, names)
+		})
+	}
 }
 
 func TestEnsureManagedConfigDefaults_GlobCoveredGetsScopedEntry(t *testing.T) {
@@ -137,53 +179,83 @@ func TestEnsureManagedConfigDefaults_DryRunUpdatesMemoryOnly(t *testing.T) {
 	assert.True(t, m.GitHub.Repos[0].Config.IsSet(), "dry run renders from the updated in-memory manifest")
 	require.Len(t, msgs, 1)
 	assert.Contains(t, msgs[0], "Would persist")
+	assert.Contains(t, msgs[0], "[fullsend-ai/fullsend, fullsend-ai/agents]")
 }
 
 func TestEnsureManagedConfigDefaults_DoesNotOverrideDeclaredValues(t *testing.T) {
-	presetPath := writePresetFile(t, testPresetYAML)
+	for _, forgeName := range []string{ForgeGitHub, ForgeGitLab} {
+		t.Run(forgeName, func(t *testing.T) {
+			newManifest := func() *Manifest {
+				m := newConvergeManifest("acme/api")
+				if forgeName == ForgeGitLab {
+					m.GitLab, m.GitHub = m.GitHub, nil
+				}
+				return m
+			}
+			presetPath := writePresetFile(t, testPresetYAML)
 
-	t.Run("declared preset", func(t *testing.T) {
-		m := newConvergeManifest("acme/api")
-		m.Defaults.ConfigBase.Source = presetPath
-		names, err := EnsureManagedConfigDefaults(context.Background(), ManagedConfigWritebackConfig{Manifest: m},
-			newTestClientFactory(newFakeClientForBatch("acme/api")), nil)
-		require.NoError(t, err)
-		assert.Empty(t, names)
-		assert.False(t, m.GitHub.Repos[0].Config.IsSet())
-	})
-	t.Run("explicit repo create_issues", func(t *testing.T) {
-		m := newConvergeManifest("acme/api")
-		m.GitHub.Repos[0].Config = mustManagedConfig(t, "create_issues:\n  allow_targets:\n    orgs: [acme]\n")
-		names, err := EnsureManagedConfigDefaults(context.Background(), ManagedConfigWritebackConfig{Manifest: m},
-			newTestClientFactory(newFakeClientForBatch("acme/api")), nil)
-		require.NoError(t, err)
-		assert.Empty(t, names)
-	})
-	t.Run("explicit defaults create_issues", func(t *testing.T) {
-		m := newConvergeManifest("acme/api")
-		m.Defaults.Config = mustManagedConfig(t, "create_issues:\n  allow_targets:\n    orgs: [acme]\n")
-		names, err := EnsureManagedConfigDefaults(context.Background(), ManagedConfigWritebackConfig{Manifest: m},
-			newTestClientFactory(newFakeClientForBatch("acme/api")), nil)
-		require.NoError(t, err)
-		assert.Empty(t, names)
-	})
-	t.Run("existing overlay", func(t *testing.T) {
-		m := newConvergeManifest("acme/api")
-		fc := newFakeClientForBatch("acme/api")
-		fc.FileContents["acme/api/"+preset.OverlayPath] = []byte(managedConfigMarker + "{}\n")
-		names, err := EnsureManagedConfigDefaults(context.Background(), ManagedConfigWritebackConfig{Manifest: m},
-			newTestClientFactory(fc), nil)
-		require.NoError(t, err)
-		assert.Empty(t, names)
-	})
-	t.Run("repo without inference auth", func(t *testing.T) {
-		m := newConvergeManifest("acme/api")
-		m.Defaults.Inference = InferenceSettings{}
-		names, err := EnsureManagedConfigDefaults(context.Background(), ManagedConfigWritebackConfig{Manifest: m},
-			newTestClientFactory(newFakeClientForBatch("acme/api")), nil)
-		require.NoError(t, err)
-		assert.Empty(t, names, "install fails validation first; the manifest must not change")
-	})
+			t.Run("declared preset", func(t *testing.T) {
+				m := newManifest()
+				m.Defaults.ConfigBase.Source = presetPath
+				names, err := EnsureManagedConfigDefaults(context.Background(), ManagedConfigWritebackConfig{Manifest: m},
+					newTestClientFactory(newFakeClientForBatch("acme/api")), nil)
+				require.NoError(t, err)
+				assert.Empty(t, names)
+				assert.False(t, m.PlatformFor(forgeName).Repos[0].Config.IsSet())
+			})
+			t.Run("explicit repo create_issues", func(t *testing.T) {
+				m := newManifest()
+				m.PlatformFor(forgeName).Repos[0].Config = mustManagedConfig(t, "create_issues:\n  allow_targets:\n    orgs: [acme]\n")
+				names, err := EnsureManagedConfigDefaults(context.Background(), ManagedConfigWritebackConfig{Manifest: m},
+					newTestClientFactory(newFakeClientForBatch("acme/api")), nil)
+				require.NoError(t, err)
+				assert.Empty(t, names)
+			})
+			t.Run("explicit defaults create_issues", func(t *testing.T) {
+				m := newManifest()
+				m.Defaults.Config = mustManagedConfig(t, "create_issues:\n  allow_targets:\n    orgs: [acme]\n")
+				names, err := EnsureManagedConfigDefaults(context.Background(), ManagedConfigWritebackConfig{Manifest: m},
+					newTestClientFactory(newFakeClientForBatch("acme/api")), nil)
+				require.NoError(t, err)
+				assert.Empty(t, names)
+			})
+			for name, declaration := range map[string]string{
+				"explicit custom repository": "create_issues:\n  allow_targets:\n    repos: [acme/custom-agents]\n",
+				"explicit empty targets":     "create_issues:\n  allow_targets:\n    repos: []\n",
+			} {
+				t.Run(name, func(t *testing.T) {
+					m := newManifest()
+					m.PlatformFor(forgeName).Repos[0].Config = mustManagedConfig(t, declaration)
+					before, err := marshalManagedConfig(m.PlatformFor(forgeName).Repos[0].Config.Writer())
+					require.NoError(t, err)
+					names, err := EnsureManagedConfigDefaults(context.Background(), ManagedConfigWritebackConfig{Manifest: m},
+						newTestClientFactory(newFakeClientForBatch("acme/api")), nil)
+					require.NoError(t, err)
+					assert.Empty(t, names)
+					after, err := marshalManagedConfig(m.PlatformFor(forgeName).Repos[0].Config.Writer())
+					require.NoError(t, err)
+					assert.Equal(t, string(before), string(after), "explicit permissions are never widened")
+				})
+			}
+			t.Run("existing overlay", func(t *testing.T) {
+				m := newManifest()
+				fc := newFakeClientForBatch("acme/api")
+				fc.FileContents["acme/api/"+preset.OverlayPath] = []byte(managedConfigMarker + "{}\n")
+				names, err := EnsureManagedConfigDefaults(context.Background(), ManagedConfigWritebackConfig{Manifest: m},
+					newTestClientFactory(fc), nil)
+				require.NoError(t, err)
+				assert.Empty(t, names)
+			})
+			t.Run("repo without inference auth", func(t *testing.T) {
+				m := newManifest()
+				m.Defaults.Inference = InferenceSettings{}
+				names, err := EnsureManagedConfigDefaults(context.Background(), ManagedConfigWritebackConfig{Manifest: m},
+					newTestClientFactory(newFakeClientForBatch("acme/api")), nil)
+				require.NoError(t, err)
+				assert.Empty(t, names, "install fails validation first; the manifest must not change")
+			})
+		})
+	}
 }
 
 func TestEnsureManagedConfigDefaults_ReadOnlyManifestSuggestsExactEdit(t *testing.T) {
@@ -197,7 +269,7 @@ func TestEnsureManagedConfigDefaults_ReadOnlyManifestSuggestsExactEdit(t *testin
 	msg := err.Error()
 	assert.Contains(t, msg, "read-only")
 	assert.Contains(t, msg, `github.repos entry "acme/api"`)
-	for _, want := range []string{"config:", "create_issues:", "allow_targets:", "- fullsend-ai/fullsend"} {
+	for _, want := range []string{"config:", "create_issues:", "allow_targets:", "- fullsend-ai/fullsend", "- fullsend-ai/agents"} {
 		assert.Contains(t, msg, want)
 	}
 	assert.False(t, m.GitHub.Repos[0].Config.IsSet(), "a read-only manifest is not edited in memory either")
@@ -219,7 +291,7 @@ func TestEnsureManagedConfigDefaults_ReadOnlyGlobCoveredSuggestsFullEntry(t *tes
 	require.Error(t, err)
 	msg := err.Error()
 	assert.Contains(t, msg, "keep the covering glob entry")
-	for _, want := range []string{"- name: acme/api", "fullsend_ref: v1.2.3", "inference:", "auth: vertex-wif", "config:", "- fullsend-ai/fullsend"} {
+	for _, want := range []string{"- name: acme/api", "fullsend_ref: v1.2.3", "inference:", "auth: vertex-wif", "config:", "- fullsend-ai/fullsend", "- fullsend-ai/agents"} {
 		assert.Contains(t, msg, want, "the suggested entry must carry the glob's settings")
 	}
 	require.Len(t, m.GitHub.Repos, 1, "a read-only manifest is not edited in memory either")
@@ -234,6 +306,7 @@ func TestEnsureManagedConfigDefaults_WriteFailureSuggestsEdit(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "writing manifest")
 	assert.Contains(t, err.Error(), "- fullsend-ai/fullsend")
+	assert.Contains(t, err.Error(), "- fullsend-ai/agents")
 }
 
 func TestEnsureManagedConfigDefaults_Errors(t *testing.T) {

@@ -63,6 +63,9 @@ type GitLabClient interface {
 	DeleteRef(ctx context.Context, owner, repo, refPath string) error
 	GetAuthenticatedUser(ctx context.Context) (string, error)
 	GetAuthenticatedUserID(ctx context.Context) (int, error)
+	// GetUserBot reads the authoritative user bot flag. Issue and note author
+	// objects can omit it, including for project service accounts.
+	GetUserBot(ctx context.Context, userID int) (bool, error)
 	// CreateNoteAwardEmoji adds an emoji reaction. noteableType must be
 	// "Issue" or "MergeRequest" to select the correct API endpoint.
 	CreateNoteAwardEmoji(ctx context.Context, owner, repo string, noteableType string, noteableIID, noteID int, emoji string) error

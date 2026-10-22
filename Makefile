@@ -1,9 +1,9 @@
 .DEFAULT_GOAL := help
 .PHONY: help bootstrap ensure-hooks lint lint-all check fmt \
        mindmap go-build go-test go-fmt go-vet go-tidy \
-       lint-md-links script-test test \
+       lint-md-links script-test test ci-local \
        behaviour-test playback-test \
-       wasm-build wasm-stage mint-cf-worker-test
+       wasm-build wasm-stage wasm-stage-traced mint-cf-worker-test
 
 # Let Go automatically download the toolchain version required by go.mod.
 # This ensures local builds use the right version without manual intervention.
@@ -25,8 +25,9 @@ help:
 	@echo "  go-vet               - Run go vet"
 	@echo "  go-tidy              - Run go mod tidy"
 	@echo "  lint-md-links        - Check markdown files for broken in-repo links and anchors"
-	@echo "  script-test          - Run shell script tests (topissues, analyze-transcript, user-forum-whats-new, gitlint-rules, gateway doc configs, artifact redaction, kill_stray_processes)"
+	@echo "  script-test          - Run shell script tests (topissues, analyze-transcript, user-forum-whats-new, gitlint-rules, gateway doc configs, artifact redaction, kill_stray_processes, ci-local)"
 	@echo "  test                 - Run all checks: lint-all, go-test, script-test"
+	@echo "  ci-local             - Run CI checks in a container matching the ubuntu-24.04 runner (T=\"targets\"; see hack/ci-local)"
 	@echo "  behaviour-test       - Run Gherkin behaviour tests (installs fullsend per-repo; CI: OIDC mint)"
 	@echo "  playback-test        - Run @playback behaviour scenarios on the dummy-playback runtime (CI: OIDC mint)"
 	@echo "  wasm-build           - Build mintcore WASM binary and report gzip size vs Workers limits"
@@ -100,7 +101,7 @@ mindmap:
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 
 go-build:
-	go build -ldflags "-X github.com/fullsend-ai/fullsend/internal/cli.version=$(VERSION)" -o bin/fullsend ./cmd/fullsend/
+	go build -ldflags "-X github.com/fullsend-ai/fullsend/internal/buildinfo.version=$(VERSION)" -o bin/fullsend ./cmd/fullsend/
 
 go-test:
 	GH_TOKEN= GITHUB_TOKEN= \
@@ -155,10 +156,20 @@ wasm-stage: wasm-build
 	cp "$$(go env GOROOT)/lib/wasm/wasm_exec.js" $(WORKERSRC_DIR)/wasm_exec.js
 	@echo "==> Staged: $(WORKERSRC_DIR)/mintcore.wasm, $(WORKERSRC_DIR)/wasm_exec.js"
 
+# Stage a second WASM binary with a test OTLP traces endpoint stamped in
+# (the same -ldflags mechanism `fullsend mint deploy` uses). Only the Worker
+# tracing bridge tests (src/index.tracing.test.ts) import it; never deploy it.
+# Keep the endpoint in sync with TEST_COLLECTOR_URL in that test file.
+wasm-stage-traced:
+	@echo "==> Building traced mintcore WASM binary for Worker bridge tests..."
+	cd cmd/mint-wasm && GOOS=js GOARCH=wasm go build \
+		-ldflags "-s -w -X main.otlpTracesEndpoint=https://collector.test/v1/traces -X main.traceDeployment=worker-bridge-test" \
+		-o ../../$(WORKERSRC_DIR)/mintcore-traced.wasm .
+
 # Run CF Worker bridge smoke tests.
 # Works on a clean checkout: stages WASM, installs locked npm deps, runs vitest.
 # Do not rename: .github/workflows/mint-cf-worker-test.yml calls this target.
-mint-cf-worker-test: wasm-stage
+mint-cf-worker-test: wasm-stage wasm-stage-traced
 	@echo "==> Installing CF Worker npm dependencies..."
 	cd $(WORKERSRC_DIR) && npm ci --no-audit --no-fund
 	@echo "==> Type-checking CF Worker source (production + test files)..."
@@ -183,9 +194,12 @@ script-test:
 	$(call run-timed,bash scripts/check-e2e-authorization-test.sh)
 	$(call run-timed,bash scripts/redact-behaviour-artifacts-test.sh)
 	$(call run-timed,bash .github/scripts/check-fix-eligibility-test.sh)
+	$(call run-timed,bash .github/scripts/count-fix-commits-test.sh)
 	$(call run-timed,bash .github/scripts/pre-fetch-review-body-test.sh)
 	$(call run-timed,bash scripts/check-agents-gate-pin-test.sh)
 	$(call run-timed,bash scripts/verify-release-tag-test.sh)
+	$(call run-timed,bash skills/cutting-releases/scripts/prepend-release-highlights-test.sh)
+	$(call run-timed,bash scripts/renovate/update-go-checksums-test.sh)
 	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/pre-fetch-prior-review-test.sh)
 	$(call run-timed,bash internal/scaffold/fullsend-repo/.github/scripts/setup-agent-env-test.sh)
 	$(call run-timed,bash hack/gitlab-runner-vm/executor/prepare_validation_test.sh)
@@ -200,6 +214,7 @@ script-test:
 	$(call run-timed,bash hack/setup-e2e-inference-gateway_test.sh)
 	$(call run-timed,bash hack/setup-new-e2e-org_test.sh)
 	$(call run-timed,bash internal/runtime/kill_stray_processes_test.sh)
+	$(call run-timed,bash hack/ci-local/ci-local_test.sh)
 	$(call run-timed,python3 skills/topissues/scripts/topissues_test.py)
 	$(call run-timed,python3 skills/nextwork/scripts/nextwork_test.py)
 	$(call run-timed,python3 skills/adr-corner/scripts/adr_corner_test.py)
@@ -211,6 +226,12 @@ script-test:
 	$(call run-timed,node --test internal/runtime/pi_extension/*.test.mjs)
 
 test: lint-all go-test script-test
+
+# Run CI checks in a container matching the ubuntu-24.04 runner, for macOS and
+# non-Ubuntu Linux (#8479). Default: everything PR CI runs.
+#   make ci-local T="go-test lint-all"
+ci-local:
+	hack/ci-local/ci-local $(or $(T),ci)
 
 # Capabilities the runner declares for @requires:capability:<name> scenarios.
 # Declared here rather than in the e2e workflow so a PR that adds a gated
@@ -251,7 +272,8 @@ behaviour-test:
 # run both suites. RunPlaybackSuite fixes the @playback tag filter (GODOG_TAGS
 # is ignored), sets PLAYBACK_RUNTIME=dummy-playback, and otherwise reads the
 # same env as behaviour-test (ENVIRONMENT, BEHAVIOUR_*, E2E_*, GODOG_CONCURRENCY,
-# BEHAVIOUR_ARTIFACT_DIR) and reserves an org through the same pool lock.
+# BEHAVIOUR_ARTIFACT_DIR) and leases repo slots across the pool orgs through
+# the same shared install driver.
 # The timeout matches behaviour-test; a CI job running this target must use
 # the same timeout-minutes (see docs/guides/dev/behaviour-testing.md).
 playback-test:

@@ -40,6 +40,14 @@ var hunkHeaderRe = regexp.MustCompile(`^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@`)
 // cannot inject markup. The resolved-thread fetch matches this form (#7907).
 var findingIDRe = regexp.MustCompile(`^f_[a-zA-Z0-9]+$`)
 
+// reviewProjectionMarkerRe matches the review-findings-v2 projection marker
+// line (base64 payload) that the agents post-review script puts at the start
+// of the review body. The script strips agent-written copies of this marker
+// before prepending its own, so a match on the first line is trusted
+// metadata. It is left unescaped there, so it stays hidden and the next
+// review run can read it (#8544).
+var reviewProjectionMarkerRe = regexp.MustCompile(`^<!-- fullsend:review-findings-v2:[A-Za-z0-9+/]+={0,2} -->$`)
+
 func newPostReviewCmd() *cobra.Command {
 	var (
 		repo        string
@@ -331,6 +339,7 @@ This PR was NOT reviewed. Do not count this as an approval.`, reason)
 // review submission is best-effort: a forge API failure must not turn
 // a posted verdict into a workflow Failure (#3548).
 func postReviewContent(ctx context.Context, client forge.Client, owner, repo string, pr int, parsed ReviewResult, cfg sticky.Config, dryRun bool, printer *ui.Printer) error {
+	cfg.TrustedLeadingLine = reviewProjectionMarkerRe
 	commentURL, err := sticky.Post(ctx, client, owner, repo, pr, parsed.Body, cfg, printer)
 	if err != nil {
 		return err

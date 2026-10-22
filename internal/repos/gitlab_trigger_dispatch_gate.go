@@ -32,8 +32,8 @@ type GitLabTriggerDispatchGate struct {
 
 // CheckGitLabTriggerDispatchGate is the activation gate that must pass before
 // any Fullsend webhook or schedule dispatch path uses the trigger account
-// (#8438). Scheduled polling uses its CI_JOB_TOKEN; the separate trigger
-// token is reserved for the webhook move (#8509). The gate only reads, so it can be run on activation, on
+// (#8438). Scheduled polling uses its CI_JOB_TOKEN; the managed webhook uses
+// the separate trigger token (#8509). The gate only reads, so it can be run on activation, on
 // repair, and on every install path that prepares the trigger account,
 // including the legacy (non-typed) path and the path taken after the Poller
 // protected-ref grant is refused. A failed check never disturbs existing
@@ -126,14 +126,59 @@ func CheckGitLabTriggerDispatchGate(ctx context.Context, client forge.Client, ap
 			deferred = append(deferred, reason)
 		}
 	}
-	if status := DiagnoseGitLabTriggerAccount(ctx, client, api, owner, repo, branch); status.State != GitLabTriggerStateReady {
+	if status := diagnoseGitLabTriggerAccount(ctx, client, api, owner, repo, branch, true); status.State != GitLabTriggerStateReady {
 		reason := "the trigger account is " + status.State
 		if len(status.Reasons) > 0 {
 			reason += " (" + strings.Join(status.Reasons, "; ") + ")"
 		}
 		deferred = append(deferred, reason)
 	}
+	// A previous generation may still serve the webhook while the current
+	// generation is being activated. Its bearer must remain Developer-owned
+	// and bound to the recorded trigger until the webhook moves and retirement
+	// completes; the intentionally pending retirement alone is not drift for
+	// this gate.
+	deferred = append(deferred, gitlabRetiredPublishedSafetyProblems(ctx, client, api, owner, repo, branch)...)
 	return GitLabTriggerDispatchGate{Ready: len(deferred) == 0, Deferred: deferred, UnverifiedInheritedScopes: unverifiedScopes}
+}
+
+// gitlabRetiredPublishedSafetyProblems returns the deferral reasons for retired
+// generations whose published trigger may still serve the webhook: each must
+// stay Developer-owned and bound to its recorded trigger. Ledger read and
+// decode failures yield none; the current-generation diagnosis reports them.
+func gitlabRetiredPublishedSafetyProblems(ctx context.Context, client forge.Client, api GitLabTriggerAccountAPI, owner, repo, branch string) []string {
+	if api == nil {
+		return nil // the gate already reports the missing API
+	}
+	raw, exists, err := client.GetRepoVariable(ctx, owner, repo, forge.VarGitLabTriggerAccount)
+	if err != nil || !exists {
+		return nil // current-generation diagnosis reports the ledger failure
+	}
+	st, err := decodeGitLabTriggerAccountState(raw)
+	if err != nil {
+		return nil // current-generation diagnosis reports the decode failure
+	}
+	var problems []string
+	for _, old := range st.Retired {
+		if !old.TriggerPublished {
+			continue
+		}
+		op := &gitLabTriggerAccountOp{opts: GitLabTriggerAccountOptions{Owner: owner, Repo: repo, Branch: branch, API: api, State: client}, st: old, exists: true, retired: true}
+		acct, found, err := op.findOwnedAccount(ctx)
+		if err != nil || !found {
+			problems = append(problems, fmt.Sprintf("could not verify retired trigger account %d ownership", old.AccountID))
+			continue
+		}
+		level, err := api.GetProjectMemberAccessLevel(ctx, owner, repo, int64(acct.ID))
+		if err != nil || level != forge.GitLabAccessLevelDeveloper {
+			problems = append(problems, fmt.Sprintf("retired trigger account %d is not verified at Developer access", old.AccountID))
+		}
+		trigger, found, err := op.findTrigger(ctx, old.TriggerTokenID)
+		if err != nil || !found || trigger.OwnerID != int64(acct.ID) {
+			problems = append(problems, fmt.Sprintf("retired trigger account %d has an unverified pipeline trigger", old.AccountID))
+		}
+	}
+	return problems
 }
 
 // GitLab requires a protected-branch schedule owner to have merge permission.

@@ -185,19 +185,24 @@ func (r *HarnessRouter) routeMerge(event *NormalizedEvent) ([]string, error) {
 	return []string{"retro"}, nil
 }
 
-// routeOpened dispatches review when a change proposal is opened.
+// routeOpened dispatches triage for a new GitLab work item and review for a
+// new change proposal. Jira issue opening retains its existing routing.
 // Authorization is enforced in the GitLab agent template (Developer+),
 // matching the previous native merge_request_event path. Review is
 // read-only, so fork MRs are allowed; the agent template skips write
 // stages on forks.
 func (r *HarnessRouter) routeOpened(event *NormalizedEvent) ([]string, error) {
-	if event.Entity.Kind != "change_proposal" {
-		return nil, nil
+	switch event.Entity.Kind {
+	case "work_item":
+		if event.Source.System == "gitlab" && r.validAgents["triage"] {
+			return []string{"triage"}, nil
+		}
+	case "change_proposal":
+		if r.validAgents["review"] {
+			return []string{"review"}, nil
+		}
 	}
-	if !r.validAgents["review"] {
-		return nil, nil
-	}
-	return []string{"review"}, nil
+	return nil, nil
 }
 
 // isForkOrUnknown reports whether the event's change proposal state

@@ -695,7 +695,7 @@ jobs:
 
       - name: Resolve PR head for issue_comment events
         id: pr-head
-        if: steps.route.outputs.stage != '' && steps.role-check.outputs.skipped != 'true' && steps.agent-check.outputs.skipped != 'true' && steps.pr-check.outputs.skipped != 'true' && github.event_name == 'issue_comment' && github.event.issue.pull_request
+        if: steps.route.outputs.stage != '' && steps.role-check.outputs.skipped != 'true' && steps.agent-check.outputs.skipped != 'true' && github.event_name == 'issue_comment' && github.event.issue.pull_request
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_REPO: ${{ github.repository }}
@@ -1185,13 +1185,6 @@ jobs:
           FULLSEND_WORK_ITEM_URL: ${{ fromJSON(needs.route.outputs.event_payload).issue.html_url }}
           FULLSEND_WORK_ITEM_KEY: ${{ fromJSON(needs.route.outputs.event_payload).issue.number }}
           ISSUE_NUMBER: ${{ fromJSON(needs.route.outputs.event_payload).issue.number }}
-          # Reaches the harness pre-script inside fullsend run, which reads it
-          # for its --force override of the existing-PR check (pre-script
-          # output protocol, issue #4718). The override is not end-to-end:
-          # the route job's own "Check for existing PRs" step above gates
-          # stage=code first and does not honor --force, so a /fs-code
-          # --force comment is stopped before this value is ever read.
-          # env-quoted, never interpolated into run: blocks.
           COMMENT_BODY: ${{ fromJSON(needs.route.outputs.event_payload).comment.body }}
           REPO_FULL_NAME: ${{ github.repository }}
           CODE_ALLOWED_TARGET_BRANCHES: ''
@@ -1519,7 +1512,7 @@ jobs:
 
           FIX_COMMITS="$(gh api "repos/${SOURCE_REPO}/pulls/${PR_NUM}/commits" \
             --paginate 2>/dev/null \
-            | jq -s 'add | [.[] | select(.commit.author.name == "fullsend-fix")] | length')" \
+            | jq -s --arg bot_email "${GIT_BOT_EMAIL}" -f .defaults/.github/scripts/count-fix-commits.jq)" \
             || { echo "::warning::Could not count prior fix commits — defaulting to cap"; FIX_COMMITS="${ITERATION_CAP:-5}"; }
           ITERATION=$(( FIX_COMMITS + 1 ))
           echo "Fix iteration: ${ITERATION} (${FIX_COMMITS} previous fix commits)" >&2
@@ -2185,6 +2178,7 @@ jobs:
           agent: ${{ matrix.agent }}
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
           gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+          role: ${{ matrix.role }}
           runner_secrets: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}
           version: ${{ inputs.fullsend_version || job.workflow_sha }}
           fullsend-dir: .fullsend

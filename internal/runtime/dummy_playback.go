@@ -692,6 +692,10 @@ func injectReviewMetadata(content []byte, forge string, printer *ui.Printer) []b
 		injected = true
 	}
 
+	if expandPriorDispositions(result, printer) {
+		injected = true
+	}
+
 	if !injected {
 		return content
 	}
@@ -701,6 +705,94 @@ func injectReviewMetadata(content []byte, forge string, printer *ui.Printer) []b
 		return content
 	}
 	return modified
+}
+
+// priorDispositionPlaceholder is the disposition id a canned review result
+// uses to answer the prior review's findings. Their ids are minted at random
+// when the prior review is posted, so a fixture cannot name them.
+const priorDispositionPlaceholder = "f_PRIOR"
+
+// expandPriorDispositions replaces each disposition whose id is
+// priorDispositionPlaceholder with one copy per open finding id in the prior
+// review projection at PRIOR_REVIEW_FILE (written on the runner by the review
+// pre-script). An id is open unless the projection records it as
+// resolved_by_change or dismissed_by_human. Without a projection or open ids
+// (a first review) the placeholder entries are dropped, and the dispositions
+// key with them when nothing is left. Other dispositions are kept as they
+// are. It reports whether result changed.
+func expandPriorDispositions(result map[string]any, printer *ui.Printer) bool {
+	entries, ok := result["dispositions"].([]any)
+	if !ok {
+		return false
+	}
+	var templates, kept []any
+	for _, e := range entries {
+		if m, isMap := e.(map[string]any); isMap && m["id"] == priorDispositionPlaceholder {
+			templates = append(templates, m)
+			continue
+		}
+		kept = append(kept, e)
+	}
+	if len(templates) == 0 {
+		return false
+	}
+
+	openIDs := priorOpenFindingIDs(os.Getenv("PRIOR_REVIEW_FILE"))
+	for _, id := range openIDs {
+		for _, t := range templates {
+			entry := make(map[string]any, len(t.(map[string]any)))
+			for k, v := range t.(map[string]any) {
+				entry[k] = v
+			}
+			entry["id"] = id
+			kept = append(kept, entry)
+		}
+	}
+	if len(kept) == 0 {
+		delete(result, "dispositions")
+	} else {
+		result["dispositions"] = kept
+	}
+	printer.StepInfo(fmt.Sprintf("dummy-playback: answered %d prior finding(s)", len(openIDs)))
+	return true
+}
+
+// priorOpenFindingIDs returns the ids of the open findings in the prior
+// review projection at path, in projection order. A missing, empty or
+// unparsable file yields none.
+func priorOpenFindingIDs(path string) []string {
+	if path == "" {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var projection struct {
+		Findings []struct {
+			ID string `json:"id"`
+		} `json:"findings"`
+		Dispositions []struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+		} `json:"dispositions"`
+	}
+	if err := json.Unmarshal(data, &projection); err != nil {
+		return nil
+	}
+	closed := make(map[string]bool)
+	for _, d := range projection.Dispositions {
+		if d.Status == "resolved_by_change" || d.Status == "dismissed_by_human" {
+			closed[d.ID] = true
+		}
+	}
+	var ids []string
+	for _, f := range projection.Findings {
+		if f.ID != "" && !closed[f.ID] {
+			ids = append(ids, f.ID)
+		}
+	}
+	return ids
 }
 
 func repoFromEnv(forge string) string {

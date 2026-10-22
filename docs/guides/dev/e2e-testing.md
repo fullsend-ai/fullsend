@@ -34,7 +34,7 @@ Cloudflare preview mint; GitHub authentication alone is not sufficient.
    |-----------------------|-----------------|
    | `TEST_FULLSEND_PEM`, `TEST_TRIAGE_PEM`, `TEST_CODER_PEM`, `TEST_REVIEW_PEM`, `TEST_RETRO_PEM`, `TEST_PRIORITIZE_PEM` | Private-key **contents**, not paths, for the installed test GitHub Apps. The driver materializes temporary PEM files for mint deployment and removes them afterward. |
    | `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN` | Test Cloudflare account and token authorized to deploy preview mint Workers. Locally use these names, not the CI secret names `TEST_CLOUDFLARE_*`. |
-   | `E2E_GCP_PROJECT_ID` | Test inference project. Authenticate locally with GCP permissions to inspect/provision inference WIF for the pool repos; see [inference setup](behaviour-testing.md#repo-allocation-via-unified-driver). |
+   | `E2E_GCP_PROJECT_ID` | Test inference project. Authenticate locally with GCP permissions to inspect/provision inference WIF for the pool repos; see [inference setup](behaviour-testing.md#repo-allocation-via-the-shared-slot-driver). |
    | `TEST_ACTOR_WRITE_PAT`, `TEST_ACTOR_TRIAGE_PAT`, `TEST_ACTOR_OUTSIDER_PAT` | Human-like test-actor PATs used by SCM steps. Playback uses the triage PAT to create its tracking issue. |
 
    The default app set is `fullsend-test`; the PEMs must match those installed
@@ -69,16 +69,20 @@ Optional environment variables:
 | Variable | Purpose |
 |----------|---------|
 | `GH_TOKEN` / `GITHUB_TOKEN` | Override token source for local runs |
-| `FULLSEND_MINT_URL` | Override mint endpoint (default: hosted public mint, same as `fullsend admin --mint-url`) |
-| `E2E_LOCK_TIMEOUT` | Max wait for a free pool org (default 10m) |
+| `FULLSEND_MINT_URL` | Override mint endpoint (default: hosted public mint, same as `fullsend github setup --mint-url`) |
+| `E2E_LOCK_TIMEOUT` | Max wait for a free pool org (default 10m). Applies to suites that still take the exclusive org lock; the behaviour and playback suites lease slots and ignore it |
 | `E2E_GCP_PROJECT_ID` | GCP project for inference setup (`github setup --inference-project`) |
 
 Behaviour tests use the pool orgs (for `ENVIRONMENT=dev`) and install fullsend per-repo via `fullsend github setup`. When `ENVIRONMENT=stage`, the suite uses the `halfsend` org with a durable CF Worker mint instead of a pool org. See [behaviour-testing.md](behaviour-testing.md) and [behaviour-drivers.md](behaviour-drivers.md).
 
-Tests acquire an exclusive lock on one org from the pool (`halfsend-01` …
-`halfsend-12` for DEV, or `halfsend` for STAGE) — see [ADR 0040](../../ADRs/0040-org-pool-for-parallel-e2e-tests.md).
+The behaviour and playback suites lease `(org, test-repo-NN)` slots across the
+pool orgs (`halfsend-01` … `halfsend-12` for DEV, or `halfsend` for STAGE)
+instead of locking a whole org; see
+[behaviour-testing.md](behaviour-testing.md#repo-allocation-via-the-shared-slot-driver).
+Other e2e tests still acquire an exclusive lock on one pool org — see
+[ADR 0040](../../ADRs/0040-org-pool-for-parallel-e2e-tests.md).
 
-Shared pool, CLI, and cleanup helpers used by the behaviour and playback suites live in `internal/e2etest/`.
+The behaviour and playback suites use the CLI and auth helpers in `internal/e2etest/` (for example `TokenForOrg`); the lock helpers there serve the admin e2e tests.
 
 ## CI runs
 
@@ -101,7 +105,7 @@ Required repository secrets:
 | `TEST_ACTOR_TRIAGE_PAT` | Classic PAT for the triage-level human-like test actor (`fstest-triage`); exposed to the behaviour job under the same env name |
 | `TEST_ACTOR_OUTSIDER_PAT` | Classic PAT for the outsider (no org write) human-like test actor (`fstest-outsider`); exposed to the behaviour job under the same env name |
 
-Mint URL uses the hosted public endpoint by default (same as `fullsend admin --mint-url`). Override with org/repo variable `FULLSEND_MINT_URL` if needed; no separate e2e secret.
+Mint URL uses the hosted public endpoint by default (same as `fullsend github setup --mint-url`). Override with org/repo variable `FULLSEND_MINT_URL` if needed; no separate e2e secret.
 
 ### Behaviour job GitHub Environments
 
@@ -125,7 +129,7 @@ Prefer **`wrangler versions upload --name=mint-test --preview-alias=…`** so ru
 
 Behaviour tests install fullsend in **per-repo** mode (`fullsend github setup`). Triage workflows mint same-org `triage` tokens from vendored reusable workflows; that requires per-repo mint enrollment (`PER_REPO_WIF_REPOS`). The install driver does **not** run `mint enroll` — pool org behaviour repos must be enrolled once by a GCP admin on the hosted mint project.
 
-Behaviour tests allocate numbered `halfsend-NN/test-repo-01` … `test-repo-12` names via the unified `install.Driver`; these repos are **lazily created and installed** on demand (see [behaviour-testing.md](behaviour-testing.md#repo-allocation-via-unified-driver)). Pre-provisioning numbered repos in the pool org is no longer required — mint enrollment for those names is still pre-provisioned so it is not on the critical path. Enroll base names only — do **not** enroll `*-fork` names (forks are ephemeral PR sources and mint against the enrolled base repo), nor the `*-mint-host` and `*-mint-unapproved` probe hosts of the [GitHub mint scope scenarios](behaviour-testing.md#github-mint-scope-scenarios) (the CF mint drivers list `*-mint-host` as a workflow host only, at deploy time). GitHub repositories need not exist yet — enroll is a mint allowlist / WIF-provider update only.
+Behaviour tests lease numbered `halfsend-NN/test-repo-01` … `test-repo-12` slots across the pool orgs via the shared slot driver; each claim **creates** the slot repo and installs into it, and the release deletes it (see [behaviour-testing.md](behaviour-testing.md#repo-allocation-via-the-shared-slot-driver)). Pre-provisioning numbered repos in the pool org is no longer required — mint enrollment for those names is still pre-provisioned so it is not on the critical path. Enroll base names only — do **not** enroll `*-fork` names (forks are ephemeral PR sources and mint against the enrolled base repo), nor the `*-mint-host` and `*-mint-unapproved` probe hosts of the [GitHub mint scope scenarios](behaviour-testing.md#github-mint-scope-scenarios) (the CF mint drivers list `*-mint-host` as a workflow host only, at deploy time). GitHub repositories need not exist yet — enroll is a mint allowlist / WIF-provider update only.
 
 Inference (`E2E_GCP_PROJECT_ID`) and mint (`it-gcp-konflux-dev-fullsend` for the hosted mint) may be different GCP projects. The behaviour install driver resolves the repo-scoped WIF provider using CI credentials on the inference project and passes it to `github setup`. It runs `fullsend inference status <org>/test-repo-NN` first and runs `fullsend inference provision` only when the provider is not healthy, one provision at a time. The provider is cached per repo name for the rest of the run. `E2E_GCP_WIF_PROVIDER` authenticates the CI job itself; it is not written to pool org repos.
 
@@ -281,7 +285,9 @@ a closed team.
 The STAGE and numbered test mints take these values as
 `--status-github-group=ORG/mint-status`. The behaviour suite's CF mint
 drivers pass it, with `--status-auth=oidc,github`, on every mint
-deploy. The
+deploy. The DEV driver picks one pool org's team at random once per
+job and uses it for every preview mint, so every numbered org needs
+the team. The
 [CLI mint status scenarios](behaviour-testing.md#cli-mint-status-scenarios)
 run `fullsend mint status --mint-url` with the writer PAT against that
 mint.
@@ -740,19 +746,16 @@ use repository secrets. Because that exposes credentials to untrusted code, a
 
 ### Who runs automatically
 
-E2E tests run without maintainer action when the PR author is an org/repo
-**member** or **collaborator** (`author_association` of `OWNER`, `MEMBER`, or
-`COLLABORATOR` on the base repo). The gate uses the frozen
-`github.event.pull_request.author_association` from the workflow event — not a
-live REST lookup — because `GITHUB_TOKEN` lacks `read:org` and cannot see org
-membership for members with private visibility. (Note: agent dispatch paths use
-the collaborator permission API instead, which does not have this limitation —
-see [ADR 0054](../../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md).)
+E2E tests run without maintainer action when the PR author has **write
+access or higher** (`write`, `maintain`, or `admin` on the base repo) or is an
+allowed trusted bot. The gate verifies this using the collaborator permission
+API rather than `author_association`, ensuring contributors with read or
+triage roles cannot trigger credentialed CI runs automatically.
 
 ### Who needs `ok-to-test`
 
-External contributors and fork PR authors must have a maintainer with write
-access apply the **`ok-to-test`** label **after** the latest push. A label from
+Contributors without write access must have a maintainer with write access
+apply the **`ok-to-test`** label **after** the latest push. A label from
 anyone else (for example a triage-role user) is removed and does not authorize
 the run. The label must be created once in GitHub repo settings (Settings →
 Labels).
@@ -793,8 +796,8 @@ gate. Re-run the workflow or add/re-apply `ok-to-test` as appropriate.
    authors authorized immediately)
 2. **`ok-to-test` label** — the thin **E2E ok-to-test** workflow calls the same
    suite via `workflow_call` (fork / external path)
-3. **Gate** — authorize the PR author or a fresh `ok-to-test` label (base
-   checkout only; never checks out PR head)
+3. **Gate** — authorize a write+ / trusted-bot author, or an `ok-to-test`
+   labeled event from a write+ sender (base checkout only; never checks out PR head)
 4. **Behaviour / playback** — checkout PR head SHA, authenticate to GCP via
    WIF, mint cross-org tokens per pool org, `make behaviour-test` (or
    `make playback-test` for the playback job)

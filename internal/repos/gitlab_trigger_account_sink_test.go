@@ -24,6 +24,7 @@ func (e *trigEnv) useRecreatingSink() {
 		e.f.published[id] = token
 		delete(e.state.SecretProtections, trigSinkKey)
 		e.setSink(true)
+		e.state.VariableValues[trigSinkKey] = token
 		return nil
 	}
 }
@@ -32,6 +33,7 @@ func (e *trigEnv) unpublishClearsAttributes(o GitLabTriggerAccountOptions) GitLa
 	o.UnpublishTriggerToken = func(context.Context) error {
 		delete(e.state.SecretProtections, trigSinkKey)
 		e.setSink(false)
+		delete(e.state.VariableValues, trigSinkKey)
 		return nil
 	}
 	return o

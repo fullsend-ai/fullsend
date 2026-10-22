@@ -2749,8 +2749,8 @@ func TestReconcileFailedGitLabWebhookSafety_CoversRoleStageFailures(t *testing.T
 		roleFailed := []repos.ConvergeResult{{Owner: "group", Repo: "project", Error: roleErr}}
 
 		captureStdout(t, func() {
-			reconcileFailedGitLabWebhookSafety(context.Background(), newSingleClientFactory(fc), m,
-				ui.New(os.Stdout), false, map[string]bool{}, nil, roleFailed)
+			reconcileFailedGitLabWebhookSafety(context.Background(), &reposInstallConfig{}, newSingleClientFactory(fc), m,
+				ui.New(os.Stdout), map[string]bool{}, nil, roleFailed)
 		})
 
 		assert.Empty(t, fc.PipelineTriggerTokens["group/project"], "managed trigger token is revoked")
@@ -2764,8 +2764,8 @@ func TestReconcileFailedGitLabWebhookSafety_CoversRoleStageFailures(t *testing.T
 		roleFailed := []repos.ConvergeResult{{Owner: "group", Repo: "project", Error: roleErr}}
 
 		captureStdout(t, func() {
-			reconcileFailedGitLabWebhookSafety(context.Background(), newSingleClientFactory(fc), m,
-				ui.New(os.Stdout), false, map[string]bool{}, roleFailed)
+			reconcileFailedGitLabWebhookSafety(context.Background(), &reposInstallConfig{}, newSingleClientFactory(fc), m,
+				ui.New(os.Stdout), map[string]bool{}, roleFailed)
 		})
 
 		require.Error(t, roleFailed[0].Error)
@@ -2779,8 +2779,8 @@ func TestReconcileFailedGitLabWebhookSafety_CoversRoleStageFailures(t *testing.T
 		roleFailed := []repos.ConvergeResult{{Owner: "group", Repo: "project", Error: roleErr}}
 
 		captureStdout(t, func() {
-			reconcileFailedGitLabWebhookSafety(context.Background(), newSingleClientFactory(fc), m,
-				ui.New(os.Stdout), false, done, roleFailed)
+			reconcileFailedGitLabWebhookSafety(context.Background(), &reposInstallConfig{}, newSingleClientFactory(fc), m,
+				ui.New(os.Stdout), done, roleFailed)
 		})
 
 		assert.Len(t, fc.PipelineTriggerTokens["group/project"], 1)

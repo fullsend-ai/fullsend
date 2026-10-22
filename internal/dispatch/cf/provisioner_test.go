@@ -442,6 +442,117 @@ func TestProvisioner_Provision_PreviewWithSecrets(t *testing.T) {
 		"PutSecret should not be called when secrets are in Deploy")
 }
 
+// --- Tracing tests ---
+
+func TestProvisioner_StoreTraceHeaders(t *testing.T) {
+	fake := &fakeWranglerRunner{}
+	p := NewProvisioner(Config{AccountID: "abc123", WorkerName: "test-mint"}, fake)
+
+	require.NoError(t, p.StoreTraceHeaders(context.Background(), []byte("Authorization=Bearer%20x")))
+	require.Len(t, fake.secretCalls, 1)
+	assert.Equal(t, "test-mint", fake.secretCalls[0].workerName)
+	assert.Equal(t, TraceHeadersSecretName, fake.secretCalls[0].secretName)
+	assert.Equal(t, []byte("Authorization=Bearer%20x"), fake.secretCalls[0].value)
+
+	fake.secretPutErr = fmt.Errorf("api error")
+	err := p.StoreTraceHeaders(context.Background(), []byte("v"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "storing secret "+TraceHeadersSecretName)
+}
+
+// A durable build stores its headers under the secret name stamped into
+// that build, not the shared default.
+func TestProvisioner_StoreTraceHeaders_StampedSecretName(t *testing.T) {
+	fake := &fakeWranglerRunner{}
+	p := NewProvisioner(Config{
+		AccountID:  "abc123",
+		WorkerName: "test-mint",
+		Tracing:    TracingStamp{Endpoint: "https://collector.example/v1/traces", HeadersSecret: "MINT_OTLP_HEADERS_TEST"},
+	}, fake)
+
+	require.NoError(t, p.StoreTraceHeaders(context.Background(), []byte("k=v")))
+	require.Len(t, fake.secretCalls, 1)
+	assert.Equal(t, "MINT_OTLP_HEADERS_TEST", fake.secretCalls[0].secretName)
+}
+
+func TestNewTraceHeadersSecretName(t *testing.T) {
+	a, err := NewTraceHeadersSecretName()
+	require.NoError(t, err)
+	b, err := NewTraceHeadersSecretName()
+	require.NoError(t, err)
+	assert.NotEqual(t, a, b, "each deploy needs its own secret name")
+	for _, n := range []string{a, b} {
+		assert.True(t, strings.HasPrefix(n, TraceHeadersSecretName+"_"), n)
+		assert.NotEqual(t, TraceHeadersSecretName, n)
+		assert.Regexp(t, traceHeadersSecretNamePattern, n)
+	}
+}
+
+func TestProvisioner_Validate_RejectsBadTraceHeadersSecretName(t *testing.T) {
+	p := NewProvisioner(Config{
+		AccountID:  "abc123",
+		WorkerName: "test-mint",
+		Tracing:    TracingStamp{Endpoint: "https://collector.example/v1/traces", HeadersSecret: "bad name"},
+	}, &fakeWranglerRunner{})
+	_, err := p.Provision(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid trace headers secret name")
+}
+
+func TestProvisioner_Provision_PreviewWithTracing(t *testing.T) {
+	const headerValue = "Authorization=Bearer%20collector-header-value"
+	var builtWith TracingStamp
+	origBuild, origCopy := BuildWASMFn, CopyWASMExecFn
+	BuildWASMFn = func(outPath, _, _ string, _ StatusGitHubAuth, tracing TracingStamp) error {
+		builtWith = tracing
+		return os.WriteFile(outPath, []byte("fake-wasm"), 0o644)
+	}
+	CopyWASMExecFn = func(destPath string) error { return os.WriteFile(destPath, []byte("x"), 0o644) }
+	t.Cleanup(func() { BuildWASMFn, CopyWASMExecFn = origBuild, origCopy })
+
+	fake := &fakeWranglerRunner{}
+	stamp := TracingStamp{Endpoint: "https://collector.example/v1/traces", Deployment: "test-mint@bt-1"}
+	p := NewProvisioner(Config{
+		AccountID:    "abc123",
+		WorkerName:   "test-mint",
+		DeployMode:   DeployPreview,
+		PreviewAlias: "bt-1",
+		SourceDir:    createFakeWorkerSourceDir(t),
+		Secrets:      map[string][]byte{TraceHeadersSecretName: []byte(headerValue)},
+		Tracing:      stamp,
+	}, fake)
+
+	_, err := p.Provision(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, stamp, builtWith, "tracing settings must be stamped into the WASM build")
+	assert.NotContains(t, traceLDFlags(builtWith), "collector-header-value", "header values must never reach the build")
+	require.Len(t, fake.deployCalls, 1)
+	assert.Equal(t, []byte(headerValue), fake.deployCalls[0].secrets[TraceHeadersSecretName],
+		"preview header secret must be version-scoped via Deploy secrets")
+	assert.Empty(t, fake.secretCalls)
+}
+
+func TestProvisioner_Provision_RejectsInvalidTracing(t *testing.T) {
+	stubWASMBuild(t)
+	for name, stamp := range map[string]TracingStamp{
+		"bad endpoint":   {Endpoint: "not a url"},
+		"bad deployment": {Endpoint: "https://collector.example/v1/traces", Deployment: "a b"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fake := &fakeWranglerRunner{}
+			p := NewProvisioner(Config{
+				AccountID:  "abc123",
+				WorkerName: "test-mint",
+				SourceDir:  createFakeWorkerSourceDir(t),
+				Tracing:    stamp,
+			}, fake)
+			_, err := p.Provision(context.Background())
+			require.Error(t, err)
+			assert.Empty(t, fake.deployCalls)
+		})
+	}
+}
+
 // --- Teardown tests ---
 
 func TestProvisioner_Teardown_PreviewWithAlias(t *testing.T) {
@@ -533,14 +644,14 @@ func TestEnsureWASMArtifacts_ForwardsVersionCommit(t *testing.T) {
 
 	var capturedVersion, capturedCommit string
 	origBuild := BuildWASMFn
-	BuildWASMFn = func(outPath, version, commit string, _ StatusGitHubAuth) error {
+	BuildWASMFn = func(outPath, version, commit string, _ StatusGitHubAuth, _ TracingStamp) error {
 		capturedVersion = version
 		capturedCommit = commit
 		return os.WriteFile(outPath, []byte("fake-wasm"), 0o644)
 	}
 	t.Cleanup(func() { BuildWASMFn = origBuild })
 
-	err := ensureWASMArtifacts(dir, "2.0.0", "deadbeef", StatusGitHubAuth{})
+	err := ensureWASMArtifacts(dir, "2.0.0", "deadbeef", StatusGitHubAuth{}, TracingStamp{})
 	require.NoError(t, err)
 	assert.Equal(t, "2.0.0", capturedVersion, "version should be forwarded to BuildWASMFn")
 	assert.Equal(t, "deadbeef", capturedCommit, "commit should be forwarded to BuildWASMFn")
@@ -553,15 +664,68 @@ func TestEnsureWASMArtifacts_ForwardsStatusParams(t *testing.T) {
 
 	var capturedStatusGitHub StatusGitHubAuth
 	origBuild := BuildWASMFn
-	BuildWASMFn = func(outPath, _, _ string, statusGitHub StatusGitHubAuth) error {
+	BuildWASMFn = func(outPath, _, _ string, statusGitHub StatusGitHubAuth, _ TracingStamp) error {
 		capturedStatusGitHub = statusGitHub
 		return os.WriteFile(outPath, []byte("fake-wasm"), 0o644)
 	}
 	t.Cleanup(func() { BuildWASMFn = origBuild })
 
-	err := ensureWASMArtifacts(dir, "", "", StatusGitHubAuth{Group: "acme/team"})
+	err := ensureWASMArtifacts(dir, "", "", StatusGitHubAuth{Group: "acme/team"}, TracingStamp{})
 	require.NoError(t, err)
 	assert.Equal(t, "acme/team", capturedStatusGitHub.Group, "StatusGitHub.Group should be forwarded to BuildWASMFn")
+}
+
+func TestEnsureWASMArtifacts_TracingForcesRebuild(t *testing.T) {
+	dir := t.TempDir()
+	// Pre-stage both files: without tracing this would be a no-op.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "mintcore.wasm"), []byte("stale"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "wasm_exec.js"), []byte("exec"), 0o644))
+
+	var captured TracingStamp
+	origBuild := BuildWASMFn
+	BuildWASMFn = func(outPath, _, _ string, _ StatusGitHubAuth, tracing TracingStamp) error {
+		captured = tracing
+		return os.WriteFile(outPath, []byte("fresh"), 0o644)
+	}
+	t.Cleanup(func() { BuildWASMFn = origBuild })
+
+	stamp := TracingStamp{Endpoint: "https://collector.example/v1/traces", Deployment: "bt-mint@bt-1"}
+	require.NoError(t, ensureWASMArtifacts(dir, "", "", StatusGitHubAuth{}, stamp))
+	assert.Equal(t, stamp, captured, "a stale pre-staged binary lacks the tracing stamp and must be rebuilt")
+	data, err := os.ReadFile(filepath.Join(dir, "mintcore.wasm"))
+	require.NoError(t, err)
+	assert.Equal(t, "fresh", string(data))
+}
+
+func TestTraceLDFlags(t *testing.T) {
+	assert.Empty(t, traceLDFlags(TracingStamp{}), "no stamp when tracing is disabled")
+	assert.Empty(t, traceLDFlags(TracingStamp{Deployment: "w"}), "deployment alone does not enable tracing")
+	flags := traceLDFlags(TracingStamp{Endpoint: "https://collector.example/v1/traces", Deployment: "bt-mint@bt-1"})
+	assert.Equal(t, " -X main.otlpTracesEndpoint=https://collector.example/v1/traces -X main.traceDeployment=bt-mint@bt-1", flags)
+	flags = traceLDFlags(TracingStamp{Endpoint: "https://collector.example/v1/traces", Deployment: "stage-mint", HeadersSecret: "MINT_OTLP_HEADERS_TEST"})
+	assert.Equal(t, " -X main.otlpTracesEndpoint=https://collector.example/v1/traces -X main.traceDeployment=stage-mint -X main.otlpHeadersSecret=MINT_OTLP_HEADERS_TEST", flags)
+}
+
+func TestValidateTraceEndpoint(t *testing.T) {
+	assert.NoError(t, ValidateTraceEndpoint("https://collector.example/v1/traces"))
+	for _, bad := range []string{
+		"http://collector.example/v1/traces",
+		"http://127.0.0.1:4318/v1/traces",
+		"collector.example/v1/traces",
+		"ftp://collector.example/v1/traces",
+		"https://user:pass@collector.example/v1/traces",
+		"https://collector.example/v1/traces -X main.x=y",
+		"https://collector.example/\"q",
+		"https://collector.example/a\\b",
+	} {
+		assert.Error(t, ValidateTraceEndpoint(bad), bad)
+	}
+}
+
+func TestTraceDeploymentName(t *testing.T) {
+	assert.Equal(t, "fullsend-mint", TraceDeploymentName("", ""))
+	assert.Equal(t, "stage-mint", TraceDeploymentName("stage-mint", ""))
+	assert.Equal(t, "bt-mint@bt-1234", TraceDeploymentName("bt-mint", "bt-1234"))
 }
 
 func TestBuildWASM(t *testing.T) {
@@ -575,7 +739,7 @@ func TestBuildWASM(t *testing.T) {
 		t.Cleanup(func() { execCombinedOutputFn = origExec })
 
 		outPath := filepath.Join(t.TempDir(), "mintcore.wasm")
-		err := buildWASM(outPath, "1.2.3", "abc123", StatusGitHubAuth{})
+		err := buildWASM(outPath, "1.2.3", "abc123", StatusGitHubAuth{}, TracingStamp{})
 		require.NoError(t, err)
 		require.NotNil(t, capturedCmd)
 
@@ -613,7 +777,7 @@ func TestBuildWASM(t *testing.T) {
 		t.Cleanup(func() { execCombinedOutputFn = origExec })
 
 		outPath := filepath.Join(t.TempDir(), "mintcore.wasm")
-		err := buildWASM(outPath, "1.0.0", "abc", StatusGitHubAuth{Group: "acme/team"})
+		err := buildWASM(outPath, "1.0.0", "abc", StatusGitHubAuth{Group: "acme/team"}, TracingStamp{})
 		require.NoError(t, err)
 		require.NotNil(t, capturedCmd)
 
@@ -632,12 +796,30 @@ func TestBuildWASM(t *testing.T) {
 		t.Cleanup(func() { execCombinedOutputFn = origExec })
 
 		outPath := filepath.Join(t.TempDir(), "mintcore.wasm")
-		err := buildWASM(outPath, "1.0.0", "abc", StatusGitHubAuth{})
+		err := buildWASM(outPath, "1.0.0", "abc", StatusGitHubAuth{}, TracingStamp{})
 		require.NoError(t, err)
 		require.NotNil(t, capturedCmd)
 
 		args := strings.Join(capturedCmd.Args, " ")
 		assert.NotContains(t, args, "-tags")
+		assert.NotContains(t, args, "otlpTracesEndpoint", "no tracing stamp when disabled")
+	})
+
+	t.Run("stamps tracing settings when an endpoint is set", func(t *testing.T) {
+		origExec := execCombinedOutputFn
+		var capturedCmd *exec.Cmd
+		execCombinedOutputFn = func(cmd *exec.Cmd) ([]byte, error) {
+			capturedCmd = cmd
+			return nil, nil
+		}
+		t.Cleanup(func() { execCombinedOutputFn = origExec })
+
+		outPath := filepath.Join(t.TempDir(), "mintcore.wasm")
+		stamp := TracingStamp{Endpoint: "https://collector.example/v1/traces", Deployment: "w@a"}
+		require.NoError(t, buildWASM(outPath, "1.0.0", "abc", StatusGitHubAuth{}, stamp))
+		require.NotNil(t, capturedCmd)
+		args := strings.Join(capturedCmd.Args, " ")
+		assert.Contains(t, args, wasmLDFlags("1.0.0", "abc", StatusGitHubAuth{})+traceLDFlags(stamp))
 	})
 
 	t.Run("wraps exec error", func(t *testing.T) {
@@ -647,7 +829,7 @@ func TestBuildWASM(t *testing.T) {
 		}
 		t.Cleanup(func() { execCombinedOutputFn = origExec })
 
-		err := buildWASM("/tmp/out.wasm", "1.0.0", "def456", StatusGitHubAuth{})
+		err := buildWASM("/tmp/out.wasm", "1.0.0", "def456", StatusGitHubAuth{}, TracingStamp{})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "go build cmd/mint-wasm")
 		assert.Contains(t, err.Error(), "some build output")
@@ -696,13 +878,13 @@ func TestEnsureWASMArtifacts_AlreadyPresent(t *testing.T) {
 	// Should be a no-op — no build functions called.
 	buildCalled := false
 	origBuild := BuildWASMFn
-	BuildWASMFn = func(outPath, _, _ string, _ StatusGitHubAuth) error {
+	BuildWASMFn = func(outPath, _, _ string, _ StatusGitHubAuth, _ TracingStamp) error {
 		buildCalled = true
 		return nil
 	}
 	t.Cleanup(func() { BuildWASMFn = origBuild })
 
-	err := ensureWASMArtifacts(dir, "", "", StatusGitHubAuth{})
+	err := ensureWASMArtifacts(dir, "", "", StatusGitHubAuth{}, TracingStamp{})
 	require.NoError(t, err)
 	assert.False(t, buildCalled, "should not build when WASM is already present")
 }
@@ -711,7 +893,7 @@ func TestEnsureWASMArtifacts_MissingBoth(t *testing.T) {
 	stubWASMBuild(t)
 	dir := t.TempDir()
 
-	err := ensureWASMArtifacts(dir, "", "", StatusGitHubAuth{})
+	err := ensureWASMArtifacts(dir, "", "", StatusGitHubAuth{}, TracingStamp{})
 	require.NoError(t, err)
 
 	// Both files should now exist.
@@ -727,7 +909,7 @@ func TestEnsureWASMArtifacts_MissingWASMOnly(t *testing.T) {
 	// Pre-stage wasm_exec.js but not mintcore.wasm.
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "wasm_exec.js"), []byte("exec"), 0o644))
 
-	err := ensureWASMArtifacts(dir, "", "", StatusGitHubAuth{})
+	err := ensureWASMArtifacts(dir, "", "", StatusGitHubAuth{}, TracingStamp{})
 	require.NoError(t, err)
 	assert.True(t, fileExistsAndNonEmpty(filepath.Join(dir, "mintcore.wasm")))
 }
@@ -735,7 +917,7 @@ func TestEnsureWASMArtifacts_MissingWASMOnly(t *testing.T) {
 func TestEnsureWASMArtifacts_BuildError(t *testing.T) {
 	origBuild := BuildWASMFn
 	origCopy := CopyWASMExecFn
-	BuildWASMFn = func(outPath, _, _ string, _ StatusGitHubAuth) error {
+	BuildWASMFn = func(outPath, _, _ string, _ StatusGitHubAuth, _ TracingStamp) error {
 		return fmt.Errorf("go build failed")
 	}
 	CopyWASMExecFn = func(destPath string) error {
@@ -747,7 +929,7 @@ func TestEnsureWASMArtifacts_BuildError(t *testing.T) {
 	})
 
 	dir := t.TempDir()
-	err := ensureWASMArtifacts(dir, "", "", StatusGitHubAuth{})
+	err := ensureWASMArtifacts(dir, "", "", StatusGitHubAuth{}, TracingStamp{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "auto-building mintcore.wasm")
 }
@@ -1716,7 +1898,7 @@ func TestWriteSecretsFile_NilSecrets(t *testing.T) {
 func TestEnsureWASMArtifacts_CopyExecError(t *testing.T) {
 	origBuild := BuildWASMFn
 	origCopy := CopyWASMExecFn
-	BuildWASMFn = func(outPath, _, _ string, _ StatusGitHubAuth) error {
+	BuildWASMFn = func(outPath, _, _ string, _ StatusGitHubAuth, _ TracingStamp) error {
 		return os.WriteFile(outPath, []byte("wasm"), 0o644)
 	}
 	CopyWASMExecFn = func(destPath string) error {
@@ -1728,7 +1910,7 @@ func TestEnsureWASMArtifacts_CopyExecError(t *testing.T) {
 	})
 
 	dir := t.TempDir()
-	err := ensureWASMArtifacts(dir, "", "", StatusGitHubAuth{})
+	err := ensureWASMArtifacts(dir, "", "", StatusGitHubAuth{}, TracingStamp{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "copying wasm_exec.js")
 }
@@ -2279,7 +2461,7 @@ func stubWASMBuild(t *testing.T) {
 	t.Helper()
 	origBuild := BuildWASMFn
 	origCopy := CopyWASMExecFn
-	BuildWASMFn = func(outPath, _, _ string, _ StatusGitHubAuth) error {
+	BuildWASMFn = func(outPath, _, _ string, _ StatusGitHubAuth, _ TracingStamp) error {
 		return os.WriteFile(outPath, []byte("fake-wasm"), 0o644)
 	}
 	CopyWASMExecFn = func(destPath string) error {

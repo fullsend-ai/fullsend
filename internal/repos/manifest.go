@@ -119,6 +119,11 @@ type Manifest struct {
 	// manifest's trust boundary without affecting manifests built in memory.
 	sourceRemote bool
 	sourceDir    string
+	// sourceURL is the sanitized HTTPS location the manifest was loaded
+	// from (see sanitizeManifestSource), recorded in every managed
+	// .fullsend/config.yaml so readers can trace its content back to the
+	// manifest. Empty for a local-path manifest or one built in memory.
+	sourceURL string
 }
 
 // PlatformConfig holds per-platform infrastructure settings and the
@@ -361,6 +366,12 @@ type ResolvedConfig struct {
 	// order. Nil when ConfigManaged is false. It does not bake in code
 	// defaults or config.base.yaml.
 	Managed config.PerRepoConfigWriter
+	// ManifestSource is the sanitized HTTPS URL of the repos.yaml manifest
+	// this configuration was resolved from, written after the ownership
+	// marker in the managed .fullsend/config.yaml. Empty when the manifest
+	// was loaded from a local path (whose machine-specific location is not
+	// meaningful to readers of the target repository) or built in memory.
+	ManifestSource string
 }
 
 func parseManifestBytes(data []byte, m *Manifest) error {
@@ -466,6 +477,12 @@ func migrateDeprecatedRunnerTags(m *Manifest) {
 	p.DeprecatedRunnerTags = nil
 }
 
+// manifestFetcher retrieves a remote manifest for LoadManifest. It is a
+// variable only so tests can exercise LoadManifest's HTTPS branch without
+// a TLS server; production always uses fetchManifestURL with its timeout,
+// size limit and SSRF protections.
+var manifestFetcher = fetchManifestURL
+
 // LoadManifest reads and parses a repos.yaml manifest from a local
 // file path or an HTTPS URL. Remote fetches enforce a 30-second
 // timeout and a 1 MB response size limit.
@@ -477,7 +494,7 @@ func LoadManifest(ctx context.Context, pathOrURL string) (*Manifest, error) {
 
 	if strings.HasPrefix(pathOrURL, "https://") {
 		sourceRemote = true
-		data, err = fetchManifestURL(ctx, pathOrURL, false)
+		data, err = manifestFetcher(ctx, pathOrURL, false)
 		if err != nil {
 			return nil, err
 		}
@@ -510,6 +527,9 @@ func LoadManifest(ctx context.Context, pathOrURL string) (*Manifest, error) {
 	}
 	m.sourceRemote = sourceRemote
 	m.sourceDir = sourceDir
+	if sourceRemote {
+		m.sourceURL = sanitizeManifestSource(pathOrURL)
+	}
 
 	return &m, nil
 }
@@ -1278,6 +1298,7 @@ func (m *Manifest) resolveWithEntry(owner, repo, forgeName string, platform *Pla
 	// config key is required to opt in (#8218).
 	cfg.ConfigManaged = true
 	cfg.Managed = m.mergeManagedConfig(platform, entry)
+	cfg.ManifestSource = m.sourceURL
 
 	// Source infrastructure config from the platform-level section,
 	// with per-repo overrides via the string fallback chain.

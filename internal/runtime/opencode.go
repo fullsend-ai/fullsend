@@ -42,7 +42,7 @@ func (OpenCodeRuntime) WorkspaceDir() string { return sandbox.SandboxWorkspace }
 //
 // OPENCODE_CONFIG_CONTENT (Vertex provider + permission policy) and
 // GOOGLE_APPLICATION_CREDENTIALS (WIF credential file) come from the harness;
-// Run restores their pristine values after sourcing the agent-writable .env.
+// Run restores their pristine values after reading the agent-writable .env.
 // The policy must ALLOW the tools a read-only agent needs: headless
 // `opencode run` has no TTY and auto-rejects any permission request config
 // does not pre-resolve (run.ts:795-808), so a bare "deny" fails every tool

@@ -15,11 +15,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// UpstreamIssueTarget is the repository agents may file cross-repo issues
-// in by default: retro proposals and triage prerequisites target it. The
-// repository an agent runs in is always allowed, so it needs no entry.
-const UpstreamIssueTarget = config.DefaultUpstreamRepo
-
 // ManagedConfigWritebackConfig holds inputs for EnsureManagedConfigDefaults.
 type ManagedConfigWritebackConfig struct {
 	Manifest *Manifest
@@ -318,7 +313,9 @@ type pendingWriteback struct {
 // selected repository on a first install (#8218): a no-preset first
 // install with no explicit create_issues declaration and no
 // .fullsend/config.yaml records
-// config.create_issues.allow_targets.repos: [fullsend-ai/fullsend].
+// config.create_issues.allow_targets.repos:
+// [fullsend-ai/fullsend, fullsend-ai/agents] on GitHub, or an explicit
+// empty allow_targets policy on GitLab.
 //
 // A declared preset keeps inheriting its own create_issues, and an
 // explicit manifest value is never overridden. A repository covered only
@@ -463,8 +460,12 @@ func pristineRepository(ctx context.Context, fc ForgeConfig, resolved ResolvedCo
 func installDefaultsFor(rr ResolvedRepo, resolved ResolvedConfig, pristine bool) (next config.ManagedConfig, what []string) {
 	next = rr.Entry.Config
 	if pristine && installDefaultsPossible(resolved) {
-		next = next.WithCreateIssuesRepos([]string{UpstreamIssueTarget})
-		what = append(what, "create_issues.allow_targets.repos: ["+UpstreamIssueTarget+"]")
+		targets := []string{}
+		if rr.Forge == ForgeGitHub {
+			targets = config.DefaultIssueCreationRepos()
+		}
+		next = next.WithCreateIssuesRepos(targets)
+		what = append(what, "create_issues.allow_targets.repos: ["+strings.Join(targets, ", ")+"]")
 	}
 	return next, what
 }

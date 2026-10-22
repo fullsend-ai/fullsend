@@ -63,6 +63,7 @@ create_issues:
       - my-org
     repos:                           # Specific repos (owner/name) agents may create issues in
       - fullsend-ai/fullsend
+      - fullsend-ai/agents
 
 # ── Authorization ────────────────────────────────────────────
 authorization:                       # Extra sources of slash-command permission, checked before the collaborator API
@@ -234,9 +235,26 @@ restricts which orgs and repos agents may create issues in.
 
 When omitted, agents cannot create issues outside the repository they are
 running in. That repository is always allowed, so it does not need an
-entry. The default per-repo configuration generated without a preset lists
-only `fullsend-ai/fullsend` in `allow_targets.repos`, which lets retro file
-upstream proposals and triage file upstream prerequisites.
+entry. The default GitHub per-repo configuration generated without a preset lists
+both `fullsend-ai/fullsend` and `fullsend-ai/agents` in `allow_targets.repos`,
+so retro proposals and triage prerequisites can reach the platform or agent
+repository that owns the change. These are installation defaults, not an
+automatic grant for every repository in `allowed_remote_resources`.
+Fresh GitLab installations instead record an explicit empty `allow_targets`
+policy: cross-project targets must be configured for the GitLab host.
+Explicit settings are preserved. Retro and triage post-scripts currently read
+only the overlay (`.fullsend/config.yaml`), not the preset
+(`.fullsend/config.base.yaml`). Until
+[agents#1728](https://github.com/fullsend-ai/agents/issues/1728) is fixed,
+preset users must declare the required `config.create_issues.allow_targets` in the
+managed repository’s `repos.yaml` entry and rerun `fullsend repos install`,
+or edit `.fullsend/config.yaml` for an unmanaged installation. Updating only
+the preset does not enable these cross-repository operations. Include all
+targets the post-scripts need in the overlay policy.
+Existing installations retain their permissions on upgrade; on GitHub, to opt in, add
+`fullsend-ai/agents` to the existing target list in the managed repository’s
+`repos.yaml` configuration, or in `.fullsend/config.yaml` for an installation
+not managed through `fullsend repos`. Preserve any other targets you need.
 
 ### `authorization`
 

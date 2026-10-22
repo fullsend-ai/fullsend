@@ -72,9 +72,13 @@ func CrossCompile(opts CrossCompileOpts) error {
 // crossCompileArgs returns the go build arguments for a vendored binary.
 // -s -w strip the symbol table and DWARF, as .goreleaser.yml does, so the
 // vendored binary stays under GitHub's blob API size limit (#7581).
+//
+// The version is stamped into both internal/buildinfo (current home) and
+// internal/cli (pre-buildinfo source trees): SourceDir may point at an older
+// checkout, and the linker silently ignores -X for a missing symbol.
 func crossCompileArgs(versionLD, destPath string) []string {
 	return []string{"build",
-		"-ldflags", fmt.Sprintf("-s -w -X github.com/fullsend-ai/fullsend/internal/cli.version=%s", versionLD),
+		"-ldflags", fmt.Sprintf("-s -w -X github.com/fullsend-ai/fullsend/internal/buildinfo.version=%[1]s -X github.com/fullsend-ai/fullsend/internal/cli.version=%[1]s", versionLD),
 		"-o", destPath,
 		"./cmd/fullsend/",
 	}

@@ -2175,3 +2175,74 @@ func TestPostReviewCmd_GitLabCoderCannotApprove(t *testing.T) {
 	assert.ErrorIs(t, err, gitlabroles.ErrCapabilityDenied)
 	assert.NotContains(t, err.Error(), "glpat-")
 }
+
+// The review-findings-v2 projection marker that the agents post-review
+// script places at the start of the body must stay a live, hidden marker,
+// while every other marker in the review is escaped (#8544).
+func TestPostReviewContent_KeepsLeadingProjectionMarkerLive(t *testing.T) {
+	const projection = "<!-- fullsend:review-findings-v2:eyJmaW5kaW5ncyI6W119 -->"
+	const escapedProjection = "&lt;!-- fullsend:review-findings-v2:eyJmaW5kaW5ncyI6W119 -->"
+
+	tests := []struct {
+		name     string
+		body     string
+		wantBody string
+	}{
+		{
+			name:     "leading marker kept, other markers escaped",
+			body:     projection + "\n\n## Review\n<!-- fullsend:agent-status:1 -->",
+			wantBody: reviewMarker + "\n" + projection + "\n\n## Review\n&lt;!-- fullsend:agent-status:1 -->",
+		},
+		{
+			name:     "marker mid-body escaped",
+			body:     "## Review\n" + projection,
+			wantBody: reviewMarker + "\n## Review\n" + escapedProjection,
+		},
+		{
+			name:     "duplicate marker escaped",
+			body:     projection + "\n" + projection,
+			wantBody: reviewMarker + "\n" + projection + "\n" + escapedProjection,
+		},
+		{
+			name:     "invalid payload escaped",
+			body:     "<!-- fullsend:review-findings-v2:a-b -->\n## Review",
+			wantBody: reviewMarker + "\n&lt;!-- fullsend:review-findings-v2:a-b -->\n## Review",
+		},
+		{
+			name:     "v1 marker escaped",
+			body:     "<!-- fullsend:review-findings-v1:eyJ9 -->\n## Review",
+			wantBody: reviewMarker + "\n&lt;!-- fullsend:review-findings-v1:eyJ9 -->\n## Review",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fc := forge.NewFakeClient()
+			fc.AuthenticatedUser = "bot"
+			cfg := sticky.Config{Marker: reviewMarker, KeepHistory: true}
+			parsed := ReviewResult{Body: tt.body, Action: "comment"}
+
+			err := postReviewContent(context.Background(), fc, "o", "r", 1, parsed, cfg, false, ui.New(io.Discard))
+			require.NoError(t, err)
+
+			comments := fc.IssueComments["o/r/1"]
+			require.Len(t, comments, 1)
+			assert.Equal(t, tt.wantBody, comments[0].Body)
+		})
+	}
+}
+
+// Only the review-content path trusts a leading projection marker; a
+// failure notice escapes it like any other agent-written marker.
+func TestPostFailureNotice_EscapesProjectionMarker(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	cfg := sticky.Config{Marker: reviewMarker, KeepHistory: true}
+	parsed := ReviewResult{Action: "failure", Body: "<!-- fullsend:review-findings-v2:eyJ9 -->\nFailed"}
+
+	err := postFailureNotice(context.Background(), fc, "o", "r", 1, parsed, cfg, ui.New(io.Discard))
+	require.NoError(t, err)
+
+	comments := fc.IssueComments["o/r/1"]
+	require.Len(t, comments, 1)
+	assert.Equal(t, reviewMarker+"\n&lt;!-- fullsend:review-findings-v2:eyJ9 -->\nFailed", comments[0].Body)
+}

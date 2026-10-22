@@ -41,6 +41,7 @@ func canonicalForgeEnvVars() map[string]struct{} {
 		forge.SecretGitLabCoderToken,
 		forge.SecretDispatch,
 		forge.SecretTriggerToken,
+		forge.SecretGitLabTriggerAccountToken,
 		forge.SecretWebhookSecret,
 		forge.SecretOpenAIAPIKey,
 		forge.SecretInferenceGatewayAPIKey,

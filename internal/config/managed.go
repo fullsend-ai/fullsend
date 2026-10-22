@@ -131,7 +131,7 @@ func (o ManagedConfig) Clone() ManagedConfig {
 
 // WithCreateIssuesRepos returns a copy of o whose create_issues allowlist
 // permits exactly the given repositories. It is how repos install records
-// the upstream-only cross-repo permission on a manifest entry (#8218).
+// the upstream cross-repo permissions on a manifest entry (#8218, #8504).
 // The receiver is not modified.
 func (o ManagedConfig) WithCreateIssuesRepos(repos []string) ManagedConfig {
 	cp := o.clone()

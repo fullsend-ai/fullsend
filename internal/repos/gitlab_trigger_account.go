@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -176,6 +177,15 @@ type GitLabTriggerAccountOptions struct {
 	UnpublishTriggerToken func(ctx context.Context) error
 	// State stores the ledger as a protected CI/CD variable.
 	State forge.Client
+	// EnforceWebhookSafety requires the same project-wide trigger safety
+	// invariants as the webhook before publishing or retaining this account's
+	// bearer. Installer entry points set it; containment and tests can opt in
+	// without requiring unrelated scaffold state.
+	EnforceWebhookSafety bool
+	// DeferRetirement keeps previously published generations usable until the
+	// installer has repointed and verified the managed webhook. The installer
+	// calls RetireGitLabTriggerAccount after that cutover.
+	DeferRetirement bool
 	// ReactivateSchedules mirrors --reactivate-schedules: a disabled managed
 	// polling schedule the trigger account owns is replaced by an active one.
 	// The installer cannot edit a schedule the account owns, so the install's
@@ -216,7 +226,14 @@ type gitLabTriggerAccountState struct {
 	DeployKeyID          int    `json:"deploy_key_id,omitempty"`
 	GrantEntryID         int    `json:"grant_entry_id,omitempty"`
 	TriggerTokenID       int64  `json:"trigger_token_id,omitempty"`
-	TriggerPublished     bool   `json:"trigger_published,omitempty"`
+	// TriggerTokenDigest binds the published variable to the trigger ID without
+	// recording its bearer value in the unmasked ledger.
+	TriggerTokenDigest string `json:"trigger_token_digest,omitempty"`
+	TriggerPublished   bool   `json:"trigger_published,omitempty"`
+	// PublicationPending distinguishes a saved new digest from a completed
+	// replacement. While it is true, the retired bearer may still occupy the
+	// sink (or the sink may be empty between clear and publish).
+	PublicationPending bool `json:"publication_pending,omitempty"`
 	// PublishStarted is written before the trigger value is stored in the
 	// token sink and kept until the sink is removed. From then on the value
 	// may have left this process, so the generation is never raised to
@@ -307,6 +324,12 @@ func decodeGitLabTriggerAccountState(raw string) (gitLabTriggerAccountState, err
 	if st.TriggerPublished && !st.PublishStarted {
 		return gitLabTriggerAccountState{}, fmt.Errorf("invalid %s: published trigger recorded without the publication marker", name)
 	}
+	if st.TriggerTokenDigest != "" && !validTriggerTokenDigest(st.TriggerTokenDigest) {
+		return gitLabTriggerAccountState{}, fmt.Errorf("invalid %s: trigger token digest must be 64 lowercase hex characters", name)
+	}
+	if st.PublicationPending && (!st.PublishStarted || st.TriggerPublished || st.TriggerTokenID == 0 || st.TriggerTokenDigest == "") {
+		return gitLabTriggerAccountState{}, fmt.Errorf("invalid %s: pending publication lacks an unpublished trigger and bearer digest", name)
+	}
 	seen := map[string]bool{st.Nonce: true}
 	for i, old := range st.Retired {
 		switch {
@@ -322,10 +345,27 @@ func decodeGitLabTriggerAccountState(raw string) (gitLabTriggerAccountState, err
 			return gitLabTriggerAccountState{}, fmt.Errorf("invalid %s: retired generation %d records a grant or key without its key identity", name, i)
 		case old.AccountID == 0 && (old.Elevated || old.PATID != 0 || old.PATPending):
 			return gitLabTriggerAccountState{}, fmt.Errorf("invalid %s: retired generation %d records account-scoped entries without an account", name, i)
+		case old.TriggerTokenDigest != "" && !validTriggerTokenDigest(old.TriggerTokenDigest):
+			return gitLabTriggerAccountState{}, fmt.Errorf("invalid %s: retired generation %d has an invalid trigger token digest", name, i)
+		case old.PublicationPending:
+			return gitLabTriggerAccountState{}, fmt.Errorf("invalid %s: retired generation %d retains a pending publication", name, i)
 		}
 		seen[old.Nonce] = true
 	}
 	return st, nil
+}
+
+func validTriggerTokenDigest(digest string) bool {
+	if len(digest) != 64 {
+		return false
+	}
+	b, err := hex.DecodeString(digest)
+	return err == nil && len(b) == sha256.Size && digest == strings.ToLower(digest)
+}
+
+func triggerTokenDigest(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
 }
 
 // gitLabTriggerAccountOp carries one lifecycle run.
@@ -485,6 +525,9 @@ func convergeGitLabTriggerAccountLocked(ctx context.Context, opts GitLabTriggerA
 	// read is contained too. The error is returned before anything else runs.
 	if err := op.containUnsafePublishedSink(ctx); err != nil {
 		return GitLabTriggerAccountResult{}, err
+	}
+	if reason, err := op.webhookSafetyDeferral(ctx); reason != "" || err != nil {
+		return GitLabTriggerAccountResult{Deferred: reason}, err
 	}
 	if op.exists && op.st.Branch != opts.Branch {
 		// Fail closed with a recoverable path: the ledger keeps recording the
@@ -718,6 +761,16 @@ func (op *gitLabTriggerAccountOp) converge(ctx context.Context) error {
 		return err
 	}
 	if op.st.PublishStarted {
+		if op.st.PublicationPending && !op.st.TriggerPublished && sinkOK && triggerOK && op.st.TriggerTokenDigest != "" {
+			// The publish call can succeed and the following ledger save can
+			// fail or be interrupted. The protected sink's value and the owned
+			// trigger prove publication completed; finish the recorded step.
+			op.st.TriggerPublished = true
+			op.st.PublicationPending = false
+			if err := op.save(ctx); err != nil {
+				return err
+			}
+		}
 		// The trigger value left this process, and a trigger request GitLab
 		// already accepted can still become a job after any snapshot, so this
 		// identity is never raised to Maintainer again. Anything that needs
@@ -725,7 +778,7 @@ func (op *gitLabTriggerAccountOp) converge(ctx context.Context) error {
 		// recoverable and may be exposed), starts a fresh generation; the old
 		// one stays at Developer until the new one is published.
 		sinkOK = sinkOK && triggerOK
-		if !keyOK || !triggerOK || !sinkOK {
+		if !keyOK || !triggerOK || !sinkOK || op.st.TriggerTokenDigest == "" || !op.st.TriggerPublished {
 			if !sinkOK && !sinkContained {
 				// The trigger is missing, or the sink was not found unsafe
 				// above: remove the variable fullsend owns and revoke its
@@ -753,6 +806,9 @@ func (op *gitLabTriggerAccountOp) converge(ctx context.Context) error {
 	op.st.Phase = gitLabTriggerPhaseReady
 	if err := op.save(ctx); err != nil {
 		return err
+	}
+	if op.opts.DeferRetirement {
+		return nil
 	}
 	return op.retirePrevious(ctx)
 }
@@ -817,7 +873,23 @@ func triggerSinkProblems(ctx context.Context, client forge.Client, owner, repo s
 
 func (op *gitLabTriggerAccountOp) sinkHealthy(ctx context.Context) (bool, error) {
 	problems, err := triggerSinkProblems(ctx, op.opts.State, op.opts.Owner, op.opts.Repo)
-	return len(problems) == 0, err
+	if err != nil || len(problems) != 0 {
+		return false, err
+	}
+	vars, err := op.opts.State.ListRepoVariables(ctx, op.opts.Owner, op.opts.Repo)
+	if err != nil {
+		return false, safeAPIError("reading the trigger token sink", err)
+	}
+	value := vars[forge.SecretGitLabTriggerAccountToken]
+	if value == "" {
+		return false, nil
+	}
+	// Existing accounts predate the digest. Keep their healthy bearer usable
+	// until convergence creates a fingerprinted generation and moves the hook.
+	if op.st.TriggerTokenDigest == "" {
+		return true, nil
+	}
+	return triggerTokenDigest(value) == op.st.TriggerTokenDigest, nil
 }
 
 // startFreshGeneration moves the current generation to the retired list and
@@ -839,6 +911,25 @@ func (op *gitLabTriggerAccountOp) startFreshGeneration(ctx context.Context) erro
 	}
 	old := op.st
 	old.Retired = nil
+	old.PublicationPending = false
+	// A legacy generation has no recorded bearer digest. Bind its healthy
+	// published sink before moving it to the retired list, so an interrupted
+	// replacement can distinguish that exact old value from a later override.
+	if old.PublishStarted && old.TriggerPublished && old.TriggerTokenDigest == "" {
+		problems, err := triggerSinkProblems(ctx, op.opts.State, op.opts.Owner, op.opts.Repo)
+		if err != nil {
+			return err
+		}
+		if len(problems) == 0 {
+			vars, err := op.opts.State.ListRepoVariables(ctx, op.opts.Owner, op.opts.Repo)
+			if err != nil {
+				return safeAPIError("reading the retired trigger token sink", err)
+			}
+			if value := vars[forge.SecretGitLabTriggerAccountToken]; value != "" {
+				old.TriggerTokenDigest = triggerTokenDigest(value)
+			}
+		}
+	}
 	phase := gitLabTriggerPhaseBootstrapping
 	if old.Phase == gitLabTriggerPhaseRotating {
 		phase = gitLabTriggerPhaseRotating
@@ -916,6 +1007,13 @@ func (op *gitLabTriggerAccountOp) containUnsafePublishedSink(ctx context.Context
 	if !op.exists || op.retired || !op.sinkOwned() {
 		return nil
 	}
+	if reason, safetyErr := op.webhookSafetyDeferral(ctx); reason != "" || safetyErr != nil {
+		// The value has already been published, so a failed or unreadable
+		// project invariant requires ownership-verified revocation and sink
+		// removal before convergence can return or publish a replacement.
+		accessErr := op.restorePublishedAccessToDeveloper(ctx)
+		return errors.Join(safetyErr, accessErr, op.removeRevokeAndSave(ctx, true))
+	}
 	// A distributed trigger value is only safe while its account holds exactly
 	// Developer access, whatever the sink and the override role look like. The
 	// access of every publication-owning generation is therefore restored
@@ -937,6 +1035,17 @@ func (op *gitLabTriggerAccountOp) containUnsafePublishedSink(ctx context.Context
 	return errors.Join(errs...)
 }
 
+func (op *gitLabTriggerAccountOp) webhookSafetyDeferral(ctx context.Context) (string, error) {
+	if !op.opts.EnforceWebhookSafety {
+		return "", nil
+	}
+	branch := op.opts.Branch
+	if branch == "" {
+		branch = op.st.Branch
+	}
+	return gitlabTriggerProjectSafetyProblem(ctx, op.opts.State, op.opts.Owner, op.opts.Repo, branch)
+}
+
 // containBySinkState removes the sink and revokes the owned triggers when the
 // override role or the sink attributes make the published credential unsafe,
 // and retries the revocation for a missing sink. contained reports whether the
@@ -948,23 +1057,75 @@ func (op *gitLabTriggerAccountOp) containBySinkState(ctx context.Context) (conta
 	}
 	prot, err := op.opts.State.GetRepoSecretProtection(ctx, op.opts.Owner, op.opts.Repo, forge.SecretGitLabTriggerAccountToken)
 	if err != nil {
-		return false, safeAPIError("reading "+forge.SecretGitLabTriggerAccountToken, err)
+		return true, errors.Join(safeAPIError("reading "+forge.SecretGitLabTriggerAccountToken, err), op.removeRevokeAndSave(ctx, true))
 	}
 	if !prot.Exists {
 		// The variable may already be gone because an earlier containment
 		// deleted it and then failed to revoke the trigger. A missing sink
 		// holds no recoverable value, so retry the ownership-verified
 		// revocation before the deferral stands; it is idempotent.
+		if op.retiredBearerAwaitsReplacement() {
+			// The old webhook still uses a retired trigger during the gap
+			// between clearing the old variable and publishing the new one.
+			// Project safety and every published owner's access were checked
+			// before this sink check; keep the retired bearer until cutover.
+			return false, nil
+		}
 		return true, op.removeRevokeAndSave(ctx, false)
 	}
 	problems, err := triggerSinkProblems(ctx, op.opts.State, op.opts.Owner, op.opts.Repo)
 	if err != nil {
-		return false, err
+		return true, errors.Join(err, op.removeRevokeAndSave(ctx, true))
 	}
 	if len(problems) > 0 {
 		return true, op.removeRevokeAndSave(ctx, true)
 	}
+	vars, err := op.opts.State.ListRepoVariables(ctx, op.opts.Owner, op.opts.Repo)
+	if err != nil {
+		return true, errors.Join(safeAPIError("reading the trigger token sink", err), op.removeRevokeAndSave(ctx, true))
+	}
+	value := vars[forge.SecretGitLabTriggerAccountToken]
+	// A retired generation may still occupy the sink after the new publication
+	// marker is saved but before the variable is replaced. Accept only a
+	// matching retired digest in that window; once current publication finishes,
+	// a retired value cannot make an unrelated replacement appear safe.
+	bound := false
+	if value != "" && op.st.PublishStarted {
+		bound = op.st.TriggerTokenDigest == "" || triggerTokenDigest(value) == op.st.TriggerTokenDigest
+	}
+	if value != "" && !bound && (!op.st.PublishStarted || op.st.PublicationPending) {
+		for _, old := range op.st.Retired {
+			bound = bound || old.PublishStarted && old.TriggerTokenDigest != "" && triggerTokenDigest(value) == old.TriggerTokenDigest
+		}
+	}
+	if !bound {
+		return true, op.removeRevokeAndSave(ctx, true)
+	}
 	return false, nil
+}
+
+// retiredBearerAwaitsReplacement reports whether an empty sink is the expected
+// gap between clearing a retired generation's variable and publishing the
+// current generation's. That holds while the current generation has not
+// published and either its own publication is pending or a retired generation
+// still has a published trigger. The second case survives an interrupted
+// retry: startFreshGeneration clears PublicationPending when it retires the
+// pending generation, but the generation the webhook still uses stays
+// published until webhook cutover or an explicit containment revokes it and
+// clears its marker (removeAndRevokePublished).
+func (op *gitLabTriggerAccountOp) retiredBearerAwaitsReplacement() bool {
+	if len(op.st.Retired) == 0 || op.st.TriggerPublished {
+		return false
+	}
+	if op.st.PublicationPending {
+		return true
+	}
+	for _, old := range op.st.Retired {
+		if old.PublishStarted && old.TriggerPublished {
+			return true
+		}
+	}
+	return false
 }
 
 // removeAndRevokePublished optionally removes the token sink, then revokes the
@@ -984,6 +1145,7 @@ func (op *gitLabTriggerAccountOp) containBySinkState(ctx context.Context) (conta
 // that exhausts its deadline never suppresses the following ones.
 func (op *gitLabTriggerAccountOp) removeAndRevokePublished(ctx context.Context, removeSink bool) error {
 	var errs []error
+	op.st.PublicationPending = false
 	if removeSink && op.opts.UnpublishTriggerToken != nil {
 		if err := gitlabCleanupStep(ctx, op.opts.UnpublishTriggerToken); err != nil {
 			errs = append(errs, safeAPIError("removing the unsafe pipeline trigger token variable", err))
@@ -1023,11 +1185,46 @@ func gitlabCleanupStep(ctx context.Context, fn func(context.Context) error) erro
 // whether or not it failed, so the generations whose revocation completed are
 // recorded and the unresolved obligations stay for an idempotent retry.
 func (op *gitLabTriggerAccountOp) removeRevokeAndSave(ctx context.Context, removeSink bool) error {
+	var markerErr error
+	if op.st.PublicationPending {
+		// Persist the end of the benign clear-before-publish window before
+		// deleting an unsafe sink. If this write fails, keep the sink so a
+		// retry can still distinguish unsafe containment from that window;
+		// revoke every owned trigger now even though the deletion must wait.
+		op.st.PublicationPending = false
+		markerErr = gitlabCleanupStep(ctx, op.save)
+		if markerErr != nil {
+			removeSink = false
+		}
+	}
 	err := op.removeAndRevokePublished(ctx, removeSink)
 	if sErr := gitlabCleanupStep(ctx, op.save); sErr != nil {
 		err = errors.Join(err, sErr)
 	}
-	return err
+	return errors.Join(markerErr, err)
+}
+
+// containFailedReplacementPublication removes a possibly exposed replacement
+// value and revokes only its trigger. A retired trigger may still serve the
+// webhook until cutover, so publication failure must not retire it. The
+// pending marker preserves that obligation across a retry while the sink is
+// empty; project-wide safety failures still revoke every generation.
+func (op *gitLabTriggerAccountOp) containFailedReplacementPublication(ctx context.Context) error {
+	var errs []error
+	if op.opts.UnpublishTriggerToken != nil {
+		if err := gitlabCleanupStep(ctx, op.opts.UnpublishTriggerToken); err != nil {
+			errs = append(errs, safeAPIError("removing the failed replacement trigger token variable", err))
+		}
+	}
+	if err := gitlabCleanupStep(ctx, op.revokeOwnedTriggers); err != nil {
+		errs = append(errs, err)
+	} else {
+		op.st.TriggerPublished = false
+	}
+	if err := gitlabCleanupStep(ctx, op.save); err != nil {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
 }
 
 // retirePrevious removes every retired generation with the same ownership
@@ -1061,6 +1258,36 @@ func (op *gitLabTriggerAccountOp) retirePrevious(ctx context.Context) error {
 	return nil
 }
 
+// RetireGitLabTriggerAccount completes deferred generation cleanup after the
+// caller has verified that the managed webhook no longer uses a retired token.
+// An unfinished replacement keeps the old generation for a later retry. This
+// call does not alter dispatch activation or provision replacement resources.
+func RetireGitLabTriggerAccount(ctx context.Context, opts GitLabTriggerAccountOptions) error {
+	if err := requireGitLabTriggerLease(opts); err != nil {
+		return err
+	}
+	op, err := newGitLabTriggerAccountOp(ctx, opts)
+	if err != nil || !op.exists || len(op.st.Retired) == 0 {
+		return err
+	}
+	if op.st.Phase != gitLabTriggerPhaseReady || !op.st.TriggerPublished {
+		return nil
+	}
+	return op.retirePrevious(ctx)
+}
+
+// GitLabTriggerAccountRetirementPending reports whether a ready replacement
+// has an earlier generation to clean up. An unfinished replacement keeps its
+// retired generation without probing the webhook or reporting a cleanup
+// failure. Callers use this under the project lease before checking cutover.
+func GitLabTriggerAccountRetirementPending(ctx context.Context, client forge.Client, owner, repo string) (bool, error) {
+	op, err := loadGitLabTriggerAccountOp(ctx, GitLabTriggerAccountOptions{Owner: owner, Repo: repo, State: client})
+	if err != nil {
+		return false, err
+	}
+	return op.exists && op.st.Phase == gitLabTriggerPhaseReady && op.st.TriggerPublished && len(op.st.Retired) > 0, nil
+}
+
 // removeSink deletes the token sink when the ledger proves fullsend wrote it
 // and clears every generation's publication marker.
 func (op *gitLabTriggerAccountOp) removeSink(ctx context.Context) error {
@@ -1072,7 +1299,7 @@ func (op *gitLabTriggerAccountOp) removeSink(ctx context.Context) error {
 			return safeAPIError("removing the published pipeline trigger token", err)
 		}
 	}
-	op.st.PublishStarted, op.st.TriggerPublished = false, false
+	op.st.PublishStarted, op.st.TriggerPublished, op.st.PublicationPending = false, false, false
 	for i := range op.st.Retired {
 		op.st.Retired[i].PublishStarted, op.st.Retired[i].TriggerPublished = false, false
 	}
@@ -1315,7 +1542,7 @@ func (op *gitLabTriggerAccountOp) findOwnedDeployKey(ctx context.Context) (GitLa
 }
 
 func (op *gitLabTriggerAccountOp) triggerPresent(ctx context.Context) (bool, error) {
-	if op.st.TriggerTokenID != 0 && op.st.TriggerPublished {
+	if op.st.TriggerTokenID != 0 && (op.st.TriggerPublished || op.st.PublicationPending) {
 		tok, found, err := op.findTrigger(ctx, op.st.TriggerTokenID)
 		if err != nil {
 			return false, err
@@ -1326,8 +1553,8 @@ func (op *gitLabTriggerAccountOp) triggerPresent(ctx context.Context) (bool, err
 		if found {
 			return false, fmt.Errorf("pipeline trigger token %d is not owned by GitLab trigger account %d", tok.ID, op.st.AccountID)
 		}
-		// The published trigger is gone. Its value was distributed, so the
-		// caller starts a fresh generation rather than elevating this one.
+		// A recorded publication may already have distributed this value.
+		// Start a fresh generation rather than elevating this one.
 		return false, nil
 	}
 	return false, nil
@@ -1368,7 +1595,7 @@ func (op *gitLabTriggerAccountOp) revokeUnpublishedTriggers(ctx context.Context)
 	if err := op.revokeOwnedTriggers(ctx); err != nil {
 		return err
 	}
-	op.st.TriggerTokenID, op.st.TriggerPublished, op.st.PublishStarted = 0, false, false
+	op.st.TriggerTokenID, op.st.TriggerPublished, op.st.PublishStarted, op.st.PublicationPending = 0, false, false, false
 	return op.save(ctx)
 }
 
@@ -1510,7 +1737,9 @@ func (op *gitLabTriggerAccountOp) bootstrap(ctx context.Context, keyOK, triggerO
 	// Record that the value may leave this process before it is written, and
 	// clear whatever a previous generation left in the sink so the new value
 	// is stored with fresh attributes.
+	op.st.TriggerTokenDigest = triggerTokenDigest(pending.value)
 	op.st.PublishStarted = true
+	op.st.PublicationPending = true
 	if err := op.save(ctx); err != nil {
 		return err
 	}
@@ -1528,9 +1757,14 @@ func (op *gitLabTriggerAccountOp) bootstrap(ctx context.Context, keyOK, triggerO
 		// ledger keeps every obligation that did not complete.
 		cctx, cancel := gitlabCleanupContext(ctx)
 		defer cancel()
+		if len(op.st.Retired) > 0 {
+			return errors.Join(pubErr, op.containFailedReplacementPublication(cctx))
+		}
+		op.st.PublicationPending = false
 		return errors.Join(pubErr, op.removeRevokeAndSave(cctx, true))
 	}
 	op.st.TriggerPublished = true
+	op.st.PublicationPending = false
 	return op.save(ctx)
 }
 
@@ -1975,6 +2209,12 @@ func RotateGitLabTriggerAccount(ctx context.Context, opts GitLabTriggerAccountOp
 		res := op.result(false)
 		res.Deferred = branchChangeReason(op.st.Branch, opts.Branch)
 		return res, nil
+	}
+	if reason, err := op.webhookSafetyDeferral(ctx); reason != "" || err != nil {
+		if cErr := op.containUnsafePublishedSink(ctx); cErr != nil {
+			return GitLabTriggerAccountResult{}, errors.Join(err, cErr)
+		}
+		return GitLabTriggerAccountResult{Deferred: reason}, err
 	}
 	// Defer before the ledger moves to a replacement generation: a weakened
 	// project must not start a rotation that would publish a new credential.

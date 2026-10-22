@@ -5,8 +5,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-
-	"github.com/fullsend-ai/fullsend/internal/security"
 )
 
 // Expected digests for the runner-owned files under CODEX_HOME.
@@ -41,16 +39,12 @@ import (
 type codexRunnerHeldDigestSet struct {
 	ConfigTOML string
 	HooksJSON  string
-	// SecurityEnv is the hook configuration the runner knows at Bootstrap:
-	// what it derived from SandboxHookConfig, plus the harness-supplied
-	// variables read back from the workspace .env before any agent iteration
-	// could touch it. Between them these are the values appendHookEnv and the
-	// harness env wrote into that file.
-	// That file is agent-writable, so iteration 1 can rewrite the SSRF
-	// allowlist or clear TIRITH_REQUIRED for iteration 2; re-exporting these
-	// after .env from what the runner knows means the .env copy cannot win.
-	// Ordered so the launch command is stable across iterations.
-	SecurityEnv []codexEnvPair
+	// SecurityEnv is the hook configuration the runner knows at Bootstrap
+	// (bootstrapHookEnv): what it derived from SandboxHookConfig, plus the
+	// harness-supplied variables read back from the workspace .env before
+	// any agent iteration could touch it. The launch re-asserts it after
+	// .env (hookEnvExports), so the .env copy cannot win.
+	SecurityEnv []hookEnvPair
 
 	// AgentModel is the agent definition's frontmatter model, as Bootstrap
 	// parsed it from the file on the runner side. Run resolves the model from
@@ -78,41 +72,9 @@ type codexRunnerHeldDigestSet struct {
 	RoleFiles map[string]string
 }
 
-// codexEnvPair is one runner-owned environment assignment.
-type codexEnvPair struct {
-	Key   string
-	Value string
-}
-
-// codexSecurityEnv returns the hook configuration values the runner can
-// re-assert after .env, in a stable order.
-//
-// This covers what SandboxHookConfig knows. The harness-supplied pair —
-// FULLSEND_CANARY_TOKEN and FULLSEND_TOOL_ALLOWLIST — has no typed runner-side
-// copy, so Bootstrap reads it from the workspace .env instead
-// (codexReadHarnessSecurityEnv) while that file is still pristine, and appends
-// it to the same list.
-func codexSecurityEnv(hooks security.SandboxHookConfig) []codexEnvPair {
-	var env []codexEnvPair
-	if failOn := hooks.TirithFailOn(); failOn != "" {
-		env = append(env, codexEnvPair{"TIRITH_FAIL_ON", failOn})
-	}
-	if hooks.TirithRequired() {
-		env = append(env, codexEnvPair{"TIRITH_REQUIRED", "1"})
-	}
-	allowlist := hooks.SSRFEgressAllowlist()
-	if entry := hooks.ForgeEgressEntry(); entry != "" {
-		if allowlist == "" {
-			allowlist = entry
-		} else {
-			allowlist += "," + entry
-		}
-	}
-	if allowlist != "" {
-		env = append(env, codexEnvPair{"FULLSEND_EGRESS_ALLOWLIST", allowlist})
-	}
-	return env
-}
+// delegating reports whether Bootstrap registered native sub-agent roles for
+// this run. It reads the runner-held record, never the manifest.
+func (d codexRunnerHeldDigestSet) delegating() bool { return len(d.RoleFiles) > 0 }
 
 // codexRunnerHeldDigests maps a sandbox name to the digests Bootstrap
 // recorded. Held on the runner side on purpose (see above); a sync.Map because

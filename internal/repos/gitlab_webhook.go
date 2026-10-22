@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"gopkg.in/yaml.v3"
@@ -136,6 +137,11 @@ type gitlabWebhookState struct {
 	// environment variable. Its value is discarded and regenerated.
 	triggerUnsafe bool
 	secretUnsafe  bool
+	// triggerStored reports that the wildcard-scoped FULLSEND_TRIGGER_TOKEN
+	// variable holds a value, safe or not. An environment-scoped variable of
+	// the same name does not count: it cannot be deleted here. On the
+	// trigger-account route (#8509) it is retired.
+	triggerStored bool
 	// known holds every credential value seen while probing (including
 	// discarded ones) so errors can be redacted.
 	known []string
@@ -283,7 +289,9 @@ func probeGitLabWebhookState(ctx context.Context, client forge.Client, baseURL, 
 	// here too: this probe is exported through GitLabWebhookNeedsProvisioning
 	// and its callers do not hold the redactor.
 	red := &credentialRedactor{}
-	for _, v := range []string{vars[forge.SecretTriggerToken], vars[forge.SecretWebhookSecret]} {
+	// The trigger account's published token is registered as well (#8509): the
+	// webhook embeds it, and ListRepoVariables returns it.
+	for _, v := range []string{vars[forge.SecretTriggerToken], vars[forge.SecretWebhookSecret], vars[forge.SecretGitLabTriggerAccountToken]} {
 		if v != "" {
 			st.known = append(st.known, v)
 			red.add(v)
@@ -306,6 +314,11 @@ func probeGitLabWebhookState(ctx context.Context, client forge.Client, baseURL, 
 			return st, red.redact(fmt.Errorf("checking %s protection: %w", cred.name, protErr))
 		}
 		if cred.name == forge.SecretTriggerToken && prot.Exists && !prot.EnvironmentScoped {
+			// Only the wildcard-scoped variable can be deleted when the
+			// account route retires it, so only it counts as stored: an
+			// environment-scoped variable of the same name is left alone and
+			// must not keep the account route from settling.
+			st.triggerStored = true
 			// Ownership evidence only: an unsafe or drifted wildcard
 			// token still identifies the unnamed hook that carries it.
 			st.ownerToken = cred.value
@@ -478,6 +491,11 @@ func GitLabWebhookNeedsProvisioning(ctx context.Context, client forge.Client, ba
 			return true, nil
 		}
 	}
+	// A superseded Poller generation that has not been retired is retired
+	// only by running the install step.
+	if gen.RetiringUserID != 0 {
+		return true, nil
+	}
 	if len(st.hooks) > 0 || len(st.triggers) > 0 {
 		// Live managed credentials with an unmet or unverifiable safety
 		// invariant need the revoking reconciliation even when they look
@@ -502,7 +520,23 @@ func GitLabWebhookNeedsProvisioning(ctx context.Context, client forge.Client, ba
 			}
 		}
 	}
-	if !st.provisioned(baseURL) {
+	// On the trigger-account route (#8509) the webhook must carry the
+	// account's published trigger token instead of FULLSEND_TRIGGER_TOKEN.
+	acct, acctErr := loadGitLabWebhookTriggerAccount(ctx, client, owner, repo)
+	if acctErr != nil {
+		return true, acctErr
+	}
+	if acct != nil {
+		token, problem, _, tokErr := resolveGitLabWebhookAccountToken(ctx, client, owner, repo, acct)
+		if tokErr != nil {
+			red := &credentialRedactor{}
+			red.add(token)
+			return true, red.redact(tokErr)
+		}
+		if problem != "" || !st.accountRouteProvisioned(baseURL, token, acct.triggerID) {
+			return true, nil
+		}
+	} else if !st.provisioned(baseURL) {
 		return true, nil
 	}
 	// Credentials and hook configuration do not show that the committed
@@ -700,12 +734,45 @@ func definesDispatcherJob(content []byte) bool {
 // existing managed credentials (see ensureGitLabWebhookFastPath). An error
 // means the invariants could not be verified.
 func gitlabTriggerSafetyProblem(ctx context.Context, client forge.Client, owner, repo, defaultBranch string) (string, error) {
+	problem, _, err := gitlabTriggerSafetyCheck(ctx, client, owner, repo, defaultBranch)
+	return problem, err
+}
+
+// gitlabTriggerSafetyCheck is gitlabTriggerSafetyProblem that also reports
+// accountUnsafe: the trigger account's own pipeline trigger failed its owner
+// check (above Developer, below it, or unverifiable). Removing the managed
+// webhook does not invalidate that bearer or its published variable, so the
+// caller must also have the trigger account contained (see
+// GitLabWebhookTriggerOwnerUnsafe).
+func gitlabTriggerSafetyCheck(ctx context.Context, client forge.Client, owner, repo, defaultBranch string) (problem string, accountUnsafe bool, err error) {
+	problem, err = gitlabTriggerProjectSafetyProblem(ctx, client, owner, repo, defaultBranch)
+	if problem != "" || err != nil {
+		// The project-wide trigger account bearer remains usable through the
+		// trigger API after the webhook is removed. A recorded published
+		// generation must be contained on every project safety failure, even
+		// when dispatch activation has already been withdrawn.
+		required, accountErr := gitlabTriggerAccountContainmentRequired(ctx, client, owner, repo)
+		return problem, required, errors.Join(err, accountErr)
+	}
+	return gitlabTriggerOwnerSafety(ctx, client, owner, repo, defaultBranch)
+}
+
+// gitlabTriggerProjectSafetyProblem checks the project-level invariants of
+// gitlabTriggerSafetyProblem, everything but the trigger owners.
+func gitlabTriggerProjectSafetyProblem(ctx context.Context, client forge.Client, owner, repo, defaultBranch string) (string, error) {
 	role, err := client.GetPipelineVariablesMinimumOverrideRole(ctx, owner, repo)
 	if err != nil {
 		return "", safeAPIError("reading ci_pipeline_variables_minimum_override_role", err)
 	}
 	if role != forge.PipelineVarOverrideNoOneAllowed {
 		return fmt.Sprintf("webhook fast-path deferred: ci_pipeline_variables_minimum_override_role is %s, not no_one_allowed", displayPipelineVarRole(role)), nil
+	}
+	// A copied account trigger can start a pipeline on any ref. If job tokens
+	// can push to the repository, withdrawing dispatch activation alone leaves
+	// that bearer capable of pushing as the account. Contain published account
+	// triggers on this project-wide safety drift.
+	if reason := gitlabTriggerDispatchJobTokenPushProblem(ctx, client, owner, repo); reason != "" {
+		return "webhook fast-path deferred: " + reason, nil
 	}
 	// Every check below reads the committed .gitlab-ci.yml and the files it
 	// reaches. That is only the pipeline GitLab runs when the project uses the
@@ -778,14 +845,31 @@ func gitlabTriggerSafetyProblem(ctx context.Context, client forge.Client, owner,
 	if err != nil {
 		return "", err
 	}
-	if extra != "" {
-		return extra, nil
+	return extra, nil
+}
+
+// gitlabTriggerOwnerSafety checks the managed trigger tokens' owners, the last
+// safety invariant: the token is a runtime credential and must not act above
+// Developer. Besides the Poller-owned webhook triggers it covers the trigger
+// account's published trigger (#8509). That trigger is found through the
+// ledger, not the dispatch activation, and through any trigger a managed
+// webhook names, so a missing, malformed or mismatched activation cannot leave
+// a live account bearer unchecked. accountUnsafe is set when the account's
+// trigger (or a trigger the webhook names in its place) failed the check or
+// could not be verified; the account's trigger and token are then contained
+// by the trigger-account lifecycle, which repos install runs for it.
+func gitlabTriggerOwnerSafety(ctx context.Context, client forge.Client, owner, repo, defaultBranch string) (problem string, accountUnsafe bool, err error) {
+	// Whether a published account bearer needs containment is established
+	// first, so every later read failure keeps the signal: an unreadable
+	// ledger is treated as published, since removing the webhook does not
+	// invalidate a bearer whose safety cannot be verified.
+	published, err := gitlabTriggerAccountContainmentRequired(ctx, client, owner, repo)
+	if err != nil {
+		return "", published, err
 	}
-	// The managed trigger tokens' owners are the last invariant: the token
-	// is a runtime credential and must not act above Developer.
 	triggers, err := client.ListPipelineTriggerTokens(ctx, owner, repo)
 	if err != nil {
-		return "", safeAPIError("listing pipeline trigger tokens", err)
+		return "", published, safeAPIError("listing pipeline trigger tokens", err)
 	}
 	var managed []forge.PipelineTriggerToken
 	for _, t := range triggers {
@@ -793,7 +877,95 @@ func gitlabTriggerSafetyProblem(ctx context.Context, client forge.Client, owner,
 			managed = append(managed, t)
 		}
 	}
-	return gitlabTriggerOwnerProblem(ctx, client, owner, repo, defaultBranch, managed)
+	// The account reaches the protected default branch through its recorded
+	// deploy-key push grant, which only counts while the dispatch activation
+	// is recorded; without it only the privilege ceiling is enforced.
+	acct, active, err := loadGitLabTriggerAccountRoute(ctx, client, owner, repo)
+	if err != nil {
+		return "", published, err
+	}
+	var accountTriggers []forge.PipelineTriggerToken
+	skipAdmission := map[int64]bool{}
+	seen := map[int64]bool{}
+	addAccountSide := func(t forge.PipelineTriggerToken) {
+		if seen[t.ID] || t.Description == GitLabWebhookTriggerDescription {
+			return
+		}
+		seen[t.ID] = true
+		accountTriggers = append(accountTriggers, t)
+		if acct == nil || t.ID != acct.triggerID || !active {
+			skipAdmission[t.OwnerID] = true
+		}
+	}
+	if acct != nil {
+		for _, t := range triggers {
+			if t.ID == acct.triggerID {
+				addAccountSide(t)
+			}
+		}
+	}
+	hooked, err := gitlabHookNamedTriggers(ctx, client, owner, repo, triggers)
+	if err != nil {
+		return "", published, err
+	}
+	for _, t := range hooked {
+		addAccountSide(t)
+	}
+	var keys map[int64]int
+	if active {
+		keys = acct.deployKeys()
+	}
+	problem, err = gitlabTriggerOwnerProblemSkipping(ctx, client, owner, repo, defaultBranch, managed, nil, nil)
+	if problem != "" || err != nil {
+		// Judge the account-side triggers too, so an unsafe account is
+		// contained even when a Poller trigger failed first.
+		accProblem, accErr := gitlabTriggerOwnerProblemSkipping(ctx, client, owner, repo, defaultBranch, accountTriggers, keys, skipAdmission)
+		return strings.Join(nonEmptyStrings(problem, accProblem), "; "), published && (accProblem != "" || accErr != nil), errors.Join(err, accErr)
+	}
+	problem, err = gitlabTriggerOwnerProblemSkipping(ctx, client, owner, repo, defaultBranch, accountTriggers, keys, skipAdmission)
+	return problem, published && (problem != "" || err != nil), err
+}
+
+// nonEmptyStrings returns the non-empty values of in.
+func nonEmptyStrings(in ...string) []string {
+	var out []string
+	for _, s := range in {
+		if s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// gitlabHookNamedTriggers returns the listed triggers that a managed webhook's
+// description names as its active trigger and that are not the Poller-owned
+// webhook trigger, so the owner check also covers a credential the webhook
+// embeds in place of the Poller's.
+func gitlabHookNamedTriggers(ctx context.Context, client forge.Client, owner, repo string, triggers []forge.PipelineTriggerToken) ([]forge.PipelineTriggerToken, error) {
+	baseURL := GitLabBaseURL(client)
+	if baseURL == "" {
+		return nil, nil
+	}
+	project, err := client.GetRepo(ctx, owner, repo)
+	if err != nil {
+		return nil, safeAPIError("reading project", err)
+	}
+	hooks, err := client.ListProjectHooks(ctx, owner, repo)
+	if err != nil {
+		return nil, safeAPIError("listing project webhooks", err)
+	}
+	var named []forge.PipelineTriggerToken
+	for _, h := range hooks {
+		if !isFullsendWebhook(h, baseURL, project.ID, "") {
+			continue
+		}
+		for _, t := range triggers {
+			if t.Description != GitLabWebhookTriggerDescription && gitlabHookNamesTrigger(h, t.ID) {
+				named = append(named, t)
+			}
+		}
+	}
+	return named, nil
 }
 
 // gitlabTriggerOwnerProblem enforces the runtime privilege ceiling for
@@ -807,7 +979,22 @@ func gitlabTriggerSafetyProblem(ctx context.Context, client forge.Client, owner,
 // lacks the Developer access a trigger pipeline needs. A non-empty problem
 // completes "webhook fast-path blocked: …"; an error means the owner could
 // not be verified and the caller must fail closed.
-func gitlabTriggerOwnerProblem(ctx context.Context, client forge.Client, owner, repo, defaultBranch string, triggers []forge.PipelineTriggerToken) (string, error) {
+//
+// accountKeys maps the trigger-only account (#8437) to its recorded deploy
+// key. GitLab lets the user who added a deploy key in the default branch's
+// allowed_to_push list start pipelines there, so that grant admits the
+// account's trigger without a user-level push or merge grant (#8509). The
+// Developer ceiling still applies to the account.
+func gitlabTriggerOwnerProblem(ctx context.Context, client forge.Client, owner, repo, defaultBranch string, triggers []forge.PipelineTriggerToken, accountKeys map[int64]int) (string, error) {
+	return gitlabTriggerOwnerProblemSkipping(ctx, client, owner, repo, defaultBranch, triggers, accountKeys, nil)
+}
+
+// gitlabTriggerOwnerProblemSkipping is gitlabTriggerOwnerProblem that skips the
+// protected-branch admission check for the owners in skipAdmission and enforces
+// only the Developer ceiling for them. It is used for a trigger account whose
+// dispatch activation is not recorded: its push grant is not expected then,
+// but its bearer must still not act above Developer.
+func gitlabTriggerOwnerProblemSkipping(ctx context.Context, client forge.Client, owner, repo, defaultBranch string, triggers []forge.PipelineTriggerToken, accountKeys map[int64]int, skipAdmission map[int64]bool) (string, error) {
 	levels := map[int64]int{}
 	var defaultRule *forge.ProtectedBranchRule
 	rulesLoaded := false
@@ -847,7 +1034,7 @@ func gitlabTriggerOwnerProblem(ctx context.Context, client forge.Client, owner, 
 				}
 				rulesLoaded = true
 			}
-			if defaultRule != nil && !protectedRuleAdmitsUser(*defaultRule, t.OwnerID, level) {
+			if defaultRule != nil && !skipAdmission[t.OwnerID] && !protectedRuleAdmitsUser(*defaultRule, t.OwnerID, level) && !protectedRuleAdmitsDeployKey(*defaultRule, accountKeys[t.OwnerID]) {
 				problems = append(problems, fmt.Sprintf("pipeline trigger token ID %d is owned by a user without verifiable push or merge access to protected branch %q, so GitLab may reject its pipeline requests; grant that identity merge access to the default branch", t.ID, defaultBranch))
 			}
 		}
@@ -870,6 +1057,20 @@ func protectedRuleAdmitsUser(rule forge.ProtectedBranchRule, userID int64, level
 			return true
 		}
 		if g.UserID == 0 && g.GroupID == 0 && g.DeployKeyID == 0 && g.AccessLevel > 0 && g.AccessLevel <= level {
+			return true
+		}
+	}
+	return false
+}
+
+// protectedRuleAdmitsDeployKey reports whether rule grants push access to the
+// deploy key with the given positive ID.
+func protectedRuleAdmitsDeployKey(rule forge.ProtectedBranchRule, deployKeyID int) bool {
+	if deployKeyID <= 0 {
+		return false
+	}
+	for _, g := range rule.PushAccessLevels {
+		if g.DeployKeyID == deployKeyID {
 			return true
 		}
 	}
@@ -904,7 +1105,7 @@ func revokeUnsafeTriggerCredential(ctx context.Context, client forge.Client, own
 		// left injected into jobs.
 		removeStored = true
 	} else if token := vars[forge.SecretTriggerToken]; token != "" {
-		red.add(token, vars[forge.SecretWebhookSecret])
+		red.add(token, vars[forge.SecretWebhookSecret], vars[forge.SecretGitLabTriggerAccountToken])
 		prot, protErr := client.GetRepoSecretProtection(ctx, owner, repo, forge.SecretTriggerToken)
 		switch {
 		case protErr != nil:
@@ -1013,7 +1214,7 @@ func removeUnboundTriggerCredential(ctx context.Context, client forge.Client, ow
 // otherwise the returned result and error are final.
 func reconcileGitLabTriggerSafety(ctx context.Context, client forge.Client, owner, repo, defaultBranch string, dryRun bool) (res GitLabWebhookResult, handled bool, err error) {
 	credDetails, credErr := revokeUnsafeTriggerCredential(ctx, client, owner, repo, dryRun)
-	problem, safetyErr := gitlabTriggerSafetyProblem(ctx, client, owner, repo, defaultBranch)
+	problem, accountUnsafe, safetyErr := gitlabTriggerSafetyCheck(ctx, client, owner, repo, defaultBranch)
 	if problem == "" && safetyErr == nil {
 		if credErr != nil {
 			// A credential that could not be revoked must not be provisioned
@@ -1035,7 +1236,13 @@ func reconcileGitLabTriggerSafety(ctx context.Context, client forge.Client, owne
 		res.Action = "update"
 	}
 	res.Details = append(res.Details, details...)
-	return res, true, errors.Join(credErr, safetyErr, revokeErr)
+	var unsafeErr error
+	if accountUnsafe && !dryRun {
+		// Removing the webhook does not invalidate the account's bearer: the
+		// caller contains the trigger account (GitLabWebhookTriggerOwnerUnsafe).
+		unsafeErr = errGitLabAccountTriggerUnsafe
+	}
+	return res, true, errors.Join(credErr, safetyErr, revokeErr, unsafeErr)
 }
 
 // ReconcileGitLabWebhookSafety enforces only the trigger-token safety
@@ -1126,7 +1333,14 @@ func failClosedOnProjectLookup(ctx context.Context, client forge.Client, owner, 
 	if changed && !dryRun {
 		res.Action = "update"
 	}
-	return res, errors.Join(lookupErr, credErr, revokeErr)
+	var unsafeErr error
+	if required, _ := gitlabTriggerAccountContainmentRequired(ctx, client, owner, repo); required && !dryRun {
+		// Removing the webhook does not invalidate a published account bearer
+		// whose safety could not be verified: the caller contains the account
+		// (GitLabWebhookTriggerOwnerUnsafe).
+		unsafeErr = errGitLabAccountTriggerUnsafe
+	}
+	return res, errors.Join(lookupErr, credErr, revokeErr, unsafeErr)
 }
 
 // revokeGitLabWebhookFastPath removes the managed webhook and trigger tokens
@@ -1677,7 +1891,16 @@ func deferGitLabTriggerReplacement(ctx context.Context, client forge.Client, res
 // lease capability the caller holds for non-dry runs, or nil; a trigger owner
 // that implements GitLabPollerHandoff mints through a fresh Poller generation
 // only when the lease is held.
-func ensureGitLabWebhookFastPath(ctx context.Context, client forge.Client, triggerOwner GitLabTriggerOwner, lease *GitLabProjectLease, baseURL, owner, repo string, rotate, dryRun bool, red *credentialRedactor) (GitLabWebhookResult, error) {
+func ensureGitLabWebhookFastPath(ctx context.Context, client forge.Client, triggerOwner GitLabTriggerOwner, lease *GitLabProjectLease, baseURL, owner, repo string, rotate, dryRun bool, red *credentialRedactor) (fastPathRes GitLabWebhookResult, fastPathErr error) {
+	// A failing retirement of a superseded Poller never stops the webhook
+	// repair below: its error is kept and joined to whatever the rest of the
+	// step returns, so the next install retries retirement.
+	var retirementErr error
+	defer func() {
+		if retirementErr != nil {
+			fastPathErr = errors.Join(fastPathErr, retirementErr)
+		}
+	}()
 	// A managed Poller left above Developer (for example by an interrupted
 	// rotation) is corrected before the safety and readiness early returns
 	// below, so none of them can leave the installed Poller identity
@@ -1741,6 +1964,54 @@ func ensureGitLabWebhookFastPath(ctx context.Context, client forge.Client, trigg
 			return GitLabWebhookResult{Action: "update", Details: carried}, finErr
 		}
 	}
+	// A superseded Poller generation is retired once its cutover is confirmed
+	// and its rotation grace has elapsed, which also lets a later rotation
+	// start the next generation. Dry runs change nothing. The trigger evidence
+	// that protects the webhook's trigger is re-read just before revocation,
+	// and a failure is kept in retirementErr instead of returned, so it never
+	// prevents the webhook repair that follows.
+	var retirementNote string
+	retire := func() (changes, notes []string) {
+		if triggerOwner == nil || dryRun || lease == nil {
+			return nil, nil
+		}
+		ret, retErr := retireSupersededPollerGeneration(ctx, client, triggerOwner, lease, owner, repo, currentWebhookTriggerEvidence(client, baseURL, owner, repo), time.Now())
+		st.triggers = dropRevokedTriggers(st.triggers, ret.revokedTriggerIDs)
+		switch {
+		case retErr != nil:
+			retirementErr = retErr
+			retirementNote = "Retirement of the superseded GitLab Poller generation did not finish and is retried by the next install: " + retErr.Error()
+		case ret.waiting != "":
+			retirementNote = ret.waiting
+		}
+		if retirementNote != "" {
+			notes = []string{retirementNote}
+		}
+		return ret.details, notes
+	}
+	// On the trigger-account route (#8509) the webhook carries the account's
+	// trigger token and nothing is minted for the Poller. Retirement runs after
+	// the route converged, so the account-owned webhook is the evidence it
+	// protects; a route that failed leaves retirement for the next install.
+	acct, err := loadGitLabWebhookTriggerAccount(ctx, client, owner, repo)
+	if err != nil {
+		return GitLabWebhookResult{Details: carried}, err
+	}
+	if acct != nil {
+		res, routeErr := ensureGitLabWebhookAccountRoute(ctx, client, st, acct, baseURL, owner, repo, rotate, dryRun, red, carried)
+		if routeErr != nil {
+			return res, routeErr
+		}
+		changes, notes := retire()
+		res.Details = append(res.Details[:len(res.Details):len(res.Details)], append(changes, notes...)...)
+		if len(changes) > 0 && (res.Action == "none" || res.Action == "") {
+			res.Action = "update"
+		}
+		return res, nil
+	}
+	changes, notes := retire()
+	carried = append(carried[:len(carried):len(carried)], append(changes, notes...)...)
+	pollerRes.Details = append(pollerRes.Details[:len(pollerRes.Details):len(pollerRes.Details)], changes...)
 	// Reconcile trigger ownership after an unflagged legacy-role replacement.
 	// A compliant trigger of the previous Developer identity is safe to retain
 	// while replacement is deferred, but it must not suppress Poller cutover.
@@ -1769,6 +2040,9 @@ func ensureGitLabWebhookFastPath(ctx context.Context, client forge.Client, trigg
 		}
 		if len(pollerRes.Details) > 0 {
 			return GitLabWebhookResult{Action: "update", Details: carried}, nil
+		}
+		if retirementNote != "" {
+			return GitLabWebhookResult{Action: "none", Details: carried}, nil
 		}
 		return GitLabWebhookResult{Action: "none"}, nil
 	}
@@ -1909,7 +2183,7 @@ func ensureGitLabWebhookFastPath(ctx context.Context, client forge.Client, trigg
 			// effective role before the token is stored or wired into a
 			// webhook, and fail closed: revoke it rather than leave a
 			// credential above Developer.
-			problem, ownerErr := gitlabTriggerOwnerProblem(ctx, client, owner, repo, project.DefaultBranch, []forge.PipelineTriggerToken{*minted})
+			problem, ownerErr := gitlabTriggerOwnerProblem(ctx, client, owner, repo, project.DefaultBranch, []forge.PipelineTriggerToken{*minted}, nil)
 			if problem != "" || ownerErr != nil {
 				res.Action = "deferred"
 				if problem != "" {
@@ -1968,99 +2242,13 @@ func ensureGitLabWebhookFastPath(ctx context.Context, client forge.Client, trigg
 		}
 	}
 
-	// Webhook secret.
-	secret := st.webhookSecret
-	secretChanged := false
-	// pendingSecret is a generated secret not yet stored in
-	// FULLSEND_WEBHOOK_SECRET. It is stored only after the webhook carries
-	// it: the hook's secret cannot be read back, so storing first and then
-	// failing the hook update would leave an ordinary rerun treating the
-	// repair as complete while the hook still held the old (possibly
-	// exposed) secret. Stored last, a failed update leaves the variable
-	// missing or unsafe, so every rerun regenerates and repairs the hook.
-	pendingSecret := ""
-	if secret == "" {
-		secretChanged = true
-		if dryRun {
-			secret = "dry-run"
-		} else {
-			generated, genErr := generateGitLabWebhookSecret()
-			if genErr != nil {
-				return res, genErr
-			}
-			red.add(generated)
-			secret = generated
-			pendingSecret = generated
-		}
-		if st.secretUnsafe {
-			res.Details = append(res.Details, verb("Replaced", "Would replace")+" webhook secret ("+forge.SecretWebhookSecret+"): the stored variable was not a masked, protected, wildcard-scoped environment variable")
-		} else {
-			res.Details = append(res.Details, verb("Created", "Would create")+" webhook secret ("+forge.SecretWebhookSecret+", protected, masked)")
-		}
+	// Webhook secret and webhook.
+	keepIdx := 0
+	if idx := st.activeHookIndex(baseURL); idx >= 0 && !rotate && activeID != 0 {
+		keepIdx = idx
 	}
-
-	// Webhook.
-	want := desiredGitLabWebhook(baseURL, st.target, token, secret, activeID)
-	red.addHookURL(want.URL)
-	if len(st.hooks) == 0 {
-		if !dryRun {
-			created, createErr := client.CreateProjectHook(ctx, owner, repo, want)
-			if createErr != nil {
-				return res, fmt.Errorf("creating project webhook: %w", createErr)
-			}
-			res.Details = append(res.Details, fmt.Sprintf("Created project webhook (ID %d) pinned to %q", created.ID, st.target.defaultBranch))
-		} else {
-			res.Details = append(res.Details, fmt.Sprintf("Would create project webhook pinned to %q", st.target.defaultBranch))
-		}
-	} else {
-		// Keep the hook that corroborates the stored token, even behind a
-		// stale duplicate; every other managed hook is deleted below.
-		keepIdx := 0
-		if idx := st.activeHookIndex(baseURL); idx >= 0 && !rotate && activeID != 0 {
-			keepIdx = idx
-		}
-		keep := st.hooks[keepIdx]
-		if keep.HookDeliveryDisabled() {
-			// An update does not reliably clear GitLab's permanent
-			// disablement, so recreate the owned hook with the desired
-			// configuration.
-			if !dryRun {
-				if delErr := client.DeleteProjectHook(ctx, owner, repo, keep.ID); delErr != nil && !forge.IsNotFound(delErr) {
-					return res, fmt.Errorf("deleting disabled project webhook ID %d: %w", keep.ID, delErr)
-				}
-				created, createErr := client.CreateProjectHook(ctx, owner, repo, want)
-				if createErr != nil {
-					return res, fmt.Errorf("recreating disabled project webhook: %w", createErr)
-				}
-				res.Details = append(res.Details, fmt.Sprintf("Recreated project webhook (ID %d, previously ID %d): GitLab had disabled it after delivery failures", created.ID, keep.ID))
-			} else {
-				res.Details = append(res.Details, fmt.Sprintf("Would recreate project webhook (ID %d): GitLab disabled it after delivery failures", keep.ID))
-			}
-		} else if tokenChanged || secretChanged || !gitlabWebhookMatches(keep, want) {
-			if !dryRun {
-				if _, updateErr := client.UpdateProjectHook(ctx, owner, repo, keep.ID, want); updateErr != nil {
-					return res, fmt.Errorf("updating project webhook ID %d: %w", keep.ID, updateErr)
-				}
-			}
-			res.Details = append(res.Details, fmt.Sprintf("%s project webhook (ID %d) pinned to %q", verb("Updated", "Would update"), keep.ID, st.target.defaultBranch))
-		}
-		for i, dup := range st.hooks {
-			if i == keepIdx {
-				continue
-			}
-			if !dryRun {
-				if delErr := client.DeleteProjectHook(ctx, owner, repo, dup.ID); delErr != nil && !forge.IsNotFound(delErr) {
-					return res, fmt.Errorf("deleting duplicate project webhook ID %d: %w", dup.ID, delErr)
-				}
-			}
-			res.Details = append(res.Details, fmt.Sprintf("%s duplicate project webhook (ID %d)", verb("Deleted", "Would delete"), dup.ID))
-		}
-	}
-
-	if pendingSecret != "" {
-		if storeErr := client.CreateRepoSecret(ctx, owner, repo, forge.SecretWebhookSecret, pendingSecret); storeErr != nil {
-			return res, fmt.Errorf("storing %s: %w", forge.SecretWebhookSecret, storeErr)
-		}
+	if err := convergeGitLabWebhookHook(ctx, client, st, baseURL, owner, repo, token, activeID, keepIdx, tokenChanged, dryRun, red, &res); err != nil {
+		return res, err
 	}
 
 	// A concurrent install or rotation may have replaced the webhook or
@@ -2136,6 +2324,32 @@ var errGitLabTriggerOwnerBelowDeveloper = errors.New("its owner has less than De
 // current access could not be established after webhook publication (GitLab
 // omitted the owner, or the effective-access lookup failed).
 var errGitLabTriggerOwnerUnverified = errors.New("its owner's current access could not be verified after the webhook was published, so the managed fast path was disabled; rerun repos install to converge")
+
+// errGitLabAccountTokenUnsafe marks a trigger account's published token whose
+// CI/CD variable is no longer a masked, protected, wildcard-scoped environment
+// variable, so the bearer may be exposed.
+var errGitLabAccountTokenUnsafe = errors.New("the trigger account's published token is not stored as a masked, protected, wildcard-scoped variable, so the managed fast path was disabled; rerun repos install to converge")
+
+// errGitLabAccountTriggerUnsafe marks a published account bearer that must be
+// contained after either an owner or a project-wide trigger safety failure.
+// Removing the managed webhook alone does not invalidate the bearer.
+var errGitLabAccountTriggerUnsafe = errors.New("the trigger account's published pipeline trigger failed a runtime safety check, so the managed fast path was disabled; the account's trigger and published token must be contained")
+
+// GitLabWebhookTriggerOwnerUnsafe reports whether err says the owner of a
+// published webhook trigger was found above Developer, below Developer, or
+// unverifiable (after the webhook was published or in the safety checks), that
+// a project-wide trigger safety invariant failed with an account bearer
+// published, or that the account token is stored unsafely. The webhook
+// step then removes only the managed webhook; a trigger account's own trigger
+// and published token are contained by the trigger-account lifecycle, which
+// repos install runs for this error (#8509).
+func GitLabWebhookTriggerOwnerUnsafe(err error) bool {
+	return errors.Is(err, errGitLabAccountTriggerUnsafe) ||
+		errors.Is(err, errGitLabAccountTokenUnsafe) ||
+		errors.Is(err, errGitLabTriggerOwnerElevated) ||
+		errors.Is(err, errGitLabTriggerOwnerBelowDeveloper) ||
+		errors.Is(err, errGitLabTriggerOwnerUnverified)
+}
 
 // dropRevokedTriggers returns triggers without the revoked IDs.
 func dropRevokedTriggers(triggers []forge.PipelineTriggerToken, revoked []int64) []forge.PipelineTriggerToken {
@@ -2318,7 +2532,7 @@ func TeardownGitLabWebhookFastPathLocked(ctx context.Context, client forge.Clien
 		// Values are not known yet, so the error cannot be redacted.
 		errs = append(errs, safeAPIError("listing CI/CD variables", varsErr))
 	} else {
-		red.add(vars[forge.SecretTriggerToken], vars[forge.SecretWebhookSecret])
+		red.add(vars[forge.SecretTriggerToken], vars[forge.SecretWebhookSecret], vars[forge.SecretGitLabTriggerAccountToken])
 		if vars[forge.SecretTriggerToken] != "" {
 			prot, protErr := client.GetRepoSecretProtection(ctx, owner, repo, forge.SecretTriggerToken)
 			if protErr != nil {
@@ -2388,4 +2602,110 @@ func gitlabWebhookNeedsWork(ctx context.Context, client forge.Client, owner, rep
 	}
 	needs, err := GitLabWebhookNeedsProvisioning(ctx, client, GitLabBaseURL(client), owner, repo)
 	return needs || err != nil
+}
+
+// webhookVerb returns done, or planned for a dry run.
+func webhookVerb(dryRun bool, done, planned string) string {
+	if dryRun {
+		return planned
+	}
+	return done
+}
+
+// convergeGitLabWebhookHook converges the webhook secret and the managed
+// webhook so it carries token and records activeID. keepIdx selects the managed
+// hook to keep, the one that corroborates the stored token even behind a stale
+// duplicate; every other managed hook is deleted. tokenChanged forces an
+// update. Details are appended to res.
+func convergeGitLabWebhookHook(ctx context.Context, client forge.Client, st gitlabWebhookState, baseURL, owner, repo, token string, activeID int64, keepIdx int, tokenChanged, dryRun bool, red *credentialRedactor, res *GitLabWebhookResult) error {
+	verb := func(done, planned string) string { return webhookVerb(dryRun, done, planned) }
+	// Webhook secret.
+	secret := st.webhookSecret
+	secretChanged := false
+	// pendingSecret is a generated secret not yet stored in
+	// FULLSEND_WEBHOOK_SECRET. It is stored only after the webhook carries
+	// it: the hook's secret cannot be read back, so storing first and then
+	// failing the hook update would leave an ordinary rerun treating the
+	// repair as complete while the hook still held the old (possibly
+	// exposed) secret. Stored last, a failed update leaves the variable
+	// missing or unsafe, so every rerun regenerates and repairs the hook.
+	pendingSecret := ""
+	if secret == "" {
+		secretChanged = true
+		if dryRun {
+			secret = "dry-run"
+		} else {
+			generated, genErr := generateGitLabWebhookSecret()
+			if genErr != nil {
+				return genErr
+			}
+			red.add(generated)
+			secret = generated
+			pendingSecret = generated
+		}
+		if st.secretUnsafe {
+			res.Details = append(res.Details, verb("Replaced", "Would replace")+" webhook secret ("+forge.SecretWebhookSecret+"): the stored variable was not a masked, protected, wildcard-scoped environment variable")
+		} else {
+			res.Details = append(res.Details, verb("Created", "Would create")+" webhook secret ("+forge.SecretWebhookSecret+", protected, masked)")
+		}
+	}
+
+	// Webhook.
+	want := desiredGitLabWebhook(baseURL, st.target, token, secret, activeID)
+	red.addHookURL(want.URL)
+	if len(st.hooks) == 0 {
+		if !dryRun {
+			created, createErr := client.CreateProjectHook(ctx, owner, repo, want)
+			if createErr != nil {
+				return fmt.Errorf("creating project webhook: %w", createErr)
+			}
+			res.Details = append(res.Details, fmt.Sprintf("Created project webhook (ID %d) pinned to %q", created.ID, st.target.defaultBranch))
+		} else {
+			res.Details = append(res.Details, fmt.Sprintf("Would create project webhook pinned to %q", st.target.defaultBranch))
+		}
+	} else {
+		keep := st.hooks[keepIdx]
+		if keep.HookDeliveryDisabled() {
+			// An update does not reliably clear GitLab's permanent
+			// disablement, so recreate the owned hook with the desired
+			// configuration.
+			if !dryRun {
+				if delErr := client.DeleteProjectHook(ctx, owner, repo, keep.ID); delErr != nil && !forge.IsNotFound(delErr) {
+					return fmt.Errorf("deleting disabled project webhook ID %d: %w", keep.ID, delErr)
+				}
+				created, createErr := client.CreateProjectHook(ctx, owner, repo, want)
+				if createErr != nil {
+					return fmt.Errorf("recreating disabled project webhook: %w", createErr)
+				}
+				res.Details = append(res.Details, fmt.Sprintf("Recreated project webhook (ID %d, previously ID %d): GitLab had disabled it after delivery failures", created.ID, keep.ID))
+			} else {
+				res.Details = append(res.Details, fmt.Sprintf("Would recreate project webhook (ID %d): GitLab disabled it after delivery failures", keep.ID))
+			}
+		} else if tokenChanged || secretChanged || !gitlabWebhookMatches(keep, want) {
+			if !dryRun {
+				if _, updateErr := client.UpdateProjectHook(ctx, owner, repo, keep.ID, want); updateErr != nil {
+					return fmt.Errorf("updating project webhook ID %d: %w", keep.ID, updateErr)
+				}
+			}
+			res.Details = append(res.Details, fmt.Sprintf("%s project webhook (ID %d) pinned to %q", verb("Updated", "Would update"), keep.ID, st.target.defaultBranch))
+		}
+		for i, dup := range st.hooks {
+			if i == keepIdx {
+				continue
+			}
+			if !dryRun {
+				if delErr := client.DeleteProjectHook(ctx, owner, repo, dup.ID); delErr != nil && !forge.IsNotFound(delErr) {
+					return fmt.Errorf("deleting duplicate project webhook ID %d: %w", dup.ID, delErr)
+				}
+			}
+			res.Details = append(res.Details, fmt.Sprintf("%s duplicate project webhook (ID %d)", verb("Deleted", "Would delete"), dup.ID))
+		}
+	}
+
+	if pendingSecret != "" {
+		if storeErr := client.CreateRepoSecret(ctx, owner, repo, forge.SecretWebhookSecret, pendingSecret); storeErr != nil {
+			return fmt.Errorf("storing %s: %w", forge.SecretWebhookSecret, storeErr)
+		}
+	}
+	return nil
 }

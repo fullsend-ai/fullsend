@@ -37,6 +37,9 @@ var runnerSecretRefusedPrefixes = []string{
 	"RUNNER_",
 	"CI_",
 	"LD_",
+	// macOS dynamic-linker injection (#3373). The plugin door refuses the
+	// whole prefix; the env.sandbox gate refuses only DYLD_INSERT_LIBRARIES.
+	"DYLD_",
 	"OTEL_",
 	// google-github-actions/auth exports these for the job.
 	"GOOGLE_",
@@ -66,9 +69,10 @@ var workflowSetEnvNames = []string{
 
 // runnerSecretRefusedNames are minted role tokens and other runner-owned
 // names outside the refused families: GH_TOKEN, every role token in
-// roleTokenVars, GITLAB_TOKEN, PATH and workflowSetEnvNames. oidcDenyKeys, providerOnlyKeys and
-// reservedSandboxKeys are refused as well (runnerSecretNameRefused), which
-// keeps GH_WORKFLOW_TOKEN (ADR 0114) unforgeable.
+// roleTokenVars, GITLAB_TOKEN, PATH and workflowSetEnvNames. oidcDenyKeys,
+// providerOnlyKeys and reservedSandboxKeys are refused as well
+// (runnerSecretNameRefused), which keeps GH_WORKFLOW_TOKEN (ADR 0114)
+// unforgeable.
 var runnerSecretRefusedNames = func() map[string]bool {
 	names := map[string]bool{
 		"GH_TOKEN":     true,
@@ -98,13 +102,18 @@ func runnerSecretDisplayName(name string) string {
 
 // runnerSecretNameRefused reports whether name is runner-owned and so may
 // neither be a key in FULLSEND_GITHUB_RUNNER_SECRETS nor receive a runner secret
-// value as an env.runner key.
+// value as an env.runner key. Matched case-insensitively, consistent with
+// the env.sandbox gate (isReservedSandboxKey), so "path" is refused like
+// "PATH". It reads reservedSandboxKeys but not the credential deny-list the
+// env.sandbox gate also checks: proxy, TLS-trust and Git settings are
+// legitimate host-side runner secrets (ADR 0145).
 func runnerSecretNameRefused(name string) bool {
-	if harnessExpansionDenied(name) || reservedSandboxKeys[name] || runnerSecretRefusedNames[name] {
+	upper := strings.ToUpper(name)
+	if harnessExpansionDenied(upper) || reservedSandboxKeys[upper] || runnerSecretRefusedNames[upper] {
 		return true
 	}
 	for _, p := range runnerSecretRefusedPrefixes {
-		if strings.HasPrefix(name, p) {
+		if strings.HasPrefix(upper, p) {
 			return true
 		}
 	}

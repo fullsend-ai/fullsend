@@ -4,35 +4,137 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"sync"
 
+	"golang.org/x/sync/singleflight"
+
+	"github.com/fullsend-ai/fullsend/internal/e2etest"
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install/common"
 )
 
-// composedDriver wraps a mintDriver, ensurer, and an internal
-// channel-based pool into a unified Driver. The suite constructs one
-// via newComposedDriver (typically called from a Factory) and threads
-// it through World. Scenarios call AllocateRepo / DeallocateRepo;
-// Finalize tears down suite-scoped resources.
-type composedDriver struct {
-	org     string
+// orgCredential is one org's installation token and the forge client
+// built from it.
+type orgCredential struct {
+	token  string
+	client forge.Client
+}
+
+// orgCredentials resolves and caches each org's credential. A token is
+// minted once per org and kept for the suite (see PoolConfig.TokenFor).
+// Failures are not cached, so a later lease retries the org. One client
+// per org is shared by the allocator, the org's ensurer and its
+// scenarios, so the allocator's rate-limit gate sees all of the org's
+// traffic.
+type orgCredentials struct {
+	tokenFor  OrgTokenFunc
+	newClient func(token string) forge.Client
+
+	mu     sync.Mutex
+	byOrg  map[string]orgCredential
+	flight singleflight.Group
+}
+
+func newOrgCredentials(tokenFor OrgTokenFunc, newClient func(string) forge.Client) *orgCredentials {
+	return &orgCredentials{tokenFor: tokenFor, newClient: newClient, byOrg: map[string]orgCredential{}}
+}
+
+func (c *orgCredentials) get(ctx context.Context, org string) (orgCredential, error) {
+	c.mu.Lock()
+	cred, ok := c.byOrg[org]
+	c.mu.Unlock()
+	if ok {
+		return cred, nil
+	}
+	v, err := doContext(ctx, &c.flight, org, func() (any, error) {
+		c.mu.Lock()
+		cached, ok := c.byOrg[org]
+		c.mu.Unlock()
+		if ok {
+			return cached, nil
+		}
+		// The mint is shared by every caller waiting on this org, so it
+		// does not stop when the caller that started it is cancelled.
+		token, err := c.tokenFor(context.WithoutCancel(ctx), org)
+		if err != nil {
+			return nil, fmt.Errorf("minting token for %s: %w", org, err)
+		}
+		cred := orgCredential{token: token, client: c.newClient(token)}
+		c.mu.Lock()
+		c.byOrg[org] = cred
+		c.mu.Unlock()
+		return cred, nil
+	})
+	if err != nil {
+		return orgCredential{}, err
+	}
+	return v.(orgCredential), nil
+}
+
+// doContext runs fn through g like singleflight.Group.Do, but a caller
+// waiting on a shared in-flight call returns ctx.Err() as soon as its own
+// context is done instead of blocking until the call completes. fn keeps
+// running for the remaining callers, so it must not depend on any one
+// caller's cancellation.
+func doContext(ctx context.Context, g *singleflight.Group, key string, fn func() (any, error)) (any, error) {
+	ch := g.DoChan(key, fn)
+	select {
+	case res := <-ch:
+		return res.Val, res.Err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// clientFor implements OrgClientFunc for the slot allocator.
+func (c *orgCredentials) clientFor(ctx context.Context, org string) (forge.Client, error) {
+	cred, err := c.get(ctx, org)
+	if err != nil {
+		return nil, err
+	}
+	return cred.client, nil
+}
+
+// orgEnv is the per-org half of the shared driver: the org's mint and
+// the ensurer that installs into the org's slot repos with the org's
+// credential.
+type orgEnv struct {
 	mint    mintDriver
-	ensurer ensurer
-	logf    func(string, ...any)
-
-	// rate, when set, samples the shared installation token's primary
-	// rate-limit budget on every allocation and release, so a suite
-	// that later goes blind on 403s shows in its own log how the
-	// budget drained across the run (#6702).
-	rate forge.RateLimitReporter
-
-	// mintURL is the suite's mint URL, reported by MintURL. Set by the
-	// factories through withMintURL once the mint is deployed.
 	mintURL string
+	ensurer ensurer
+	// statusGroup and workflowHostRepos are what the org's mint was
+	// deployed with (--status-github-group, --workflow-host-repos);
+	// empty when the driver does not configure them. Leases carry them
+	// so the mint status steps check the mint actually serving the
+	// scenario.
+	statusGroup       string
+	workflowHostRepos []string
+}
+
+// orgSetupFunc deploys org's mint and returns its orgEnv. The shared
+// driver calls it once per org, the first time a slot in the org is
+// leased. On error it must leave nothing deployed.
+type orgSetupFunc func(ctx context.Context, org string, cred orgCredential) (*orgEnv, error)
+
+// composedDriver is the shared Driver of the behaviour and playback
+// suites. It leases (org, repo-name) slots across the pool orgs through
+// the slot allocator (slotpool.go): a claim creates the slot repo, so an
+// existing repo always belongs to another holder and is never reset or
+// deleted. Each org gets its own mint and ensurer on its first lease
+// (orgSetupFunc), using that org's installation credential, and every
+// lease carries the org, credential and mint URL so the scenario's
+// World, SCM/CI drivers and cleanup all target the same org.
+type composedDriver struct {
+	alloc *slotAllocator
+	creds *orgCredentials
+	setup orgSetupFunc
+	logf  func(string, ...any)
 
 	// traces, when set, is the job-scoped trace collector: each
 	// allocated repo is pointed at it, and Finalize stops it and
-	// saves its trace files. Set by withTraceCollector.
+	// saves its trace files. Set by traceStart.attach.
 	traces traceSink
 
 	// pendingTraces is a collector that failed to start and whose own
@@ -40,149 +142,500 @@ type composedDriver struct {
 	// only retries its cleanup.
 	pendingTraces interface{ Stop(context.Context) error }
 
-	names    chan string // buffered channel of available repo names
-	capacity int
+	// envMu guards envs, closed and abandoned. setups counts org setups
+	// in flight: a setup runs detached from its callers' contexts, so
+	// Finalize waits for it (until its own context is done) rather than
+	// snapshotting envs while a mint is still being deployed. closed is
+	// set by Finalize; no setup starts after it. abandoned is set when
+	// Finalize snapshots envs for teardown: a setup that finishes after
+	// that tears down its own mint instead of caching it.
+	envMu     sync.Mutex
+	envs      map[string]*orgEnv
+	closed    bool
+	abandoned bool
+	setups    sync.WaitGroup
+	envFlight singleflight.Group
+
+	// allocs counts AllocateLease calls admitted (under envMu, while the
+	// driver is not closed) and not yet returned, so Finalize can wait
+	// for allocations still provisioning before it snapshots leases.
+	allocs sync.WaitGroup
+	// acquireCtx is the parent of every admitted allocation's wait for
+	// pool capacity; Finalize cancels it (cancelAcquire) so an
+	// allocation blocked on a full pool cannot keep Finalize from
+	// reclaiming the leases that would unblock it. Both are created on
+	// the first admission, under envMu.
+	acquireCtx    context.Context
+	cancelAcquire context.CancelFunc
 
 	mu          sync.Mutex
-	outstanding map[string]struct{} // names currently leased
+	outstanding map[Slot]*orgEnv // slots currently leased
+	// finalized is set by Finalize when it snapshots outstanding: an
+	// allocation finishing after that (Finalize gave up waiting) releases
+	// its slot instead of registering a lease nobody will reclaim.
+	finalized bool
 }
 
-// newComposedDriver constructs a unified Driver from its constituent
-// parts. It pre-fills the internal pool with repo names in the form
-// "test-repo-01" … "test-repo-NN". The caller (Factory) is responsible
-// for deploying the mint and creating the ensurer before calling this.
-func newComposedDriver(
-	org string,
-	mint mintDriver,
-	ensurer ensurer,
-	capacity int,
-	logf func(string, ...any),
-) (Driver, error) {
-	if capacity <= 0 {
-		return nil, fmt.Errorf("composed driver: capacity must be positive, got %d", capacity)
+// newComposedDriver builds the shared driver over pool. setup deploys a
+// single org's mint and ensurer on demand.
+func newComposedDriver(pool PoolConfig, setup orgSetupFunc) (*composedDriver, error) {
+	if err := pool.validate(); err != nil {
+		return nil, fmt.Errorf("composed driver: %w", err)
 	}
-	if ensurer == nil {
-		return nil, errors.New("composed driver: ensurer must not be nil")
+	if setup == nil {
+		return nil, errors.New("composed driver: org setup must not be nil")
 	}
-	names := make(chan string, capacity)
-	for i := 1; i <= capacity; i++ {
-		names <- fmt.Sprintf("test-repo-%02d", i)
+	logf := poolLogf(pool)
+	creds := newOrgCredentials(pool.TokenFor, pool.NewClient)
+	alloc, err := newSlotAllocator(pool.Layout, creds.clientFor, logf)
+	if err != nil {
+		return nil, fmt.Errorf("composed driver: %w", err)
 	}
 	return &composedDriver{
-		org:         org,
-		mint:        mint,
-		ensurer:     ensurer,
+		alloc:       alloc,
+		creds:       creds,
+		setup:       setup,
 		logf:        logf,
-		names:       names,
-		capacity:    capacity,
-		outstanding: make(map[string]struct{}),
+		envs:        map[string]*orgEnv{},
+		outstanding: map[Slot]*orgEnv{},
 	}, nil
 }
 
-// AllocateRepo leases a slot from the internal pool and ensures the
-// repo is created and installed from a clean base (delete+recreate if
-// it already exists). Blocks until a slot is free or ctx is cancelled.
-func (d *composedDriver) AllocateRepo(ctx context.Context) (string, error) {
-	// Acquire a name from the pool (blocks if all slots are in use).
-	var name string
-	select {
-	case name = <-d.names:
-	case <-ctx.Done():
-		return "", fmt.Errorf("allocating repo: %w", ctx.Err())
+// groupMintFunc builds the mint driver for one mint group from the
+// credential of the org whose lease triggered the deploy. cleanup
+// releases deploy-only material (PEM files, trace headers) and is
+// called once Install has returned.
+type groupMintFunc func(group mintGroup, cred orgCredential) (md mintDriver, cleanup func(), err error)
+
+// buildPoolDriver constructs the shared slot-leasing driver. plan maps
+// each org to its mint group (nil serves every org from one mint); a
+// group's mint is newMint's, deployed on the first lease in any of the
+// group's orgs and shared by them (sharedMint), and torn down once at
+// Finalize. Each org gets its own ensurer bound to the org's credential
+// and its group's mint URL, installing with setupOpts (and the playback
+// tracking-issue hook when setupOpts selects the playback runtime).
+// traces is the already started trace collector (if any): it is
+// attached to the returned driver, or stopped when construction fails.
+func buildPoolDriver(pool PoolConfig, plan *mintPlan, newMint groupMintFunc, setupOpts common.GitHubSetupOpts, traces traceStart) (Driver, error) {
+	logf := poolLogf(pool)
+	if plan == nil {
+		plan = singleMintPlan(pool.Layout)
 	}
-
-	d.mu.Lock()
-	d.outstanding[name] = struct{}{}
-	d.mu.Unlock()
-
-	// Ensure the repo exists and has fullsend installed.
-	if err := d.ensurer.EnsureRepo(ctx, d.org, name); err != nil {
-		// Return the name to the pool on failure so it can be retried.
-		d.mu.Lock()
-		delete(d.outstanding, name)
-		d.mu.Unlock()
-		d.names <- name
-		return "", fmt.Errorf("allocating repo %s/%s: %w", d.org, name, err)
-	}
-
-	if d.traces != nil {
-		if err := d.traces.ConfigureRepo(ctx, d.org, name); err != nil {
-			d.logf("[driver] trace collector: configuring %s/%s (continuing without traces from it): %v", d.org, name, err)
+	shared := make([]*sharedMint, len(plan.groups))
+	for i, group := range plan.groups {
+		shared[i] = &sharedMint{
+			deploy: func(ctx context.Context, cred orgCredential) (mintDriver, string, error) {
+				md, cleanup, err := newMint(group, cred)
+				if err != nil {
+					return nil, "", err
+				}
+				logf("[driver] deploying the mint of %s", group)
+				mintURL, err := md.Install(ctx)
+				if cleanup != nil {
+					cleanup()
+				}
+				if err != nil {
+					// A deploy that failed partway may still have created the
+					// mint; tear it down so a failed setup leaves nothing behind.
+					if tdErr := md.Teardown(context.WithoutCancel(ctx)); tdErr != nil {
+						logf("[driver] tearing down the failed mint deploy of %s: %v", group, tdErr)
+					}
+					return nil, "", fmt.Errorf("deploying mint: %w", err)
+				}
+				return md, mintURL, nil
+			},
 		}
 	}
+	var hostsOf [][]string
+	for _, group := range plan.groups {
+		var hosts []string
+		if group.workflowHostRepos != "" {
+			hosts = strings.Split(group.workflowHostRepos, ",")
+		}
+		hostsOf = append(hostsOf, hosts)
+	}
+	setup := func(ctx context.Context, org string, cred orgCredential) (*orgEnv, error) {
+		gi, ok := plan.groupOf[org]
+		if !ok {
+			return nil, fmt.Errorf("org %s is not in any mint group", org)
+		}
+		md := &sharedMintRef{shared: shared[gi], cred: cred}
+		mintURL, err := md.Install(ctx)
+		if err != nil {
+			return nil, err
+		}
 
-	d.logf("[driver] allocated %s/%s", d.org, name)
-	d.logRateLimit("after allocating " + d.org + "/" + name)
-	return name, nil
+		e2eCfg := e2etest.EnvConfig{
+			MintURL:      mintURL,
+			GCPProjectID: pool.GCPProjectID,
+		}
+		ens, err := newRepoEnsurerWithOpts(e2eCfg, cred.client, cred.token, pool.Binary, setupOpts, logf,
+			playbackInstallHooks(setupOpts, logf))
+		if err != nil {
+			if tdErr := md.Teardown(context.WithoutCancel(ctx)); tdErr != nil {
+				logf("[driver] tearing down the mint for %s after ensurer setup failed: %v", org, tdErr)
+			}
+			return nil, err
+		}
+		logf("[driver] %s uses the mint of %s at %s", org, plan.groups[gi], mintURL)
+		return &orgEnv{
+			mint:              md,
+			mintURL:           mintURL,
+			ensurer:           ens,
+			statusGroup:       plan.statusGroup,
+			workflowHostRepos: hostsOf[gi],
+		}, nil
+	}
+
+	d, err := newComposedDriver(pool, setup)
+	if err != nil {
+		traces.abort()
+		return nil, err
+	}
+	return traces.attach(d), nil
 }
 
-// DeallocateRepo deletes the leased pool base (best-effort) and returns
-// the name to the pool. Called from the After hook after CleanupScenario
-// and after in-scenario debug collection (workflow logs, agent
-// artifacts) so CI still has those files under BEHAVIOUR_ARTIFACT_DIR
-// once the forge repo is gone. Errors on unknown name or double-release.
-// A delete failure is logged; the name is still returned so the slot is
-// not leaked. The next AllocateRepo reset+recreates leftovers.
-func (d *composedDriver) DeallocateRepo(ctx context.Context, repoName string) error {
-	d.mu.Lock()
-	if _, ok := d.outstanding[repoName]; !ok {
-		d.mu.Unlock()
-		return fmt.Errorf("DeallocateRepo: %q is not an outstanding lease (possible double-release)", repoName)
+// poolLogf returns pool.Logf, or a no-op logger when it is nil.
+func poolLogf(pool PoolConfig) func(string, ...any) {
+	if pool.Logf == nil {
+		return func(string, ...any) {}
 	}
-	delete(d.outstanding, repoName)
+	return pool.Logf
+}
+
+// errLeaseRequired is returned by the name-only Driver methods.
+var errLeaseRequired = errors.New("the shared pool driver leases slots across orgs; use AllocateLease and DeallocateLease (install.LeaseDriver)")
+
+// AllocateRepo fails: a repo name alone does not identify a slot across
+// orgs. Use AllocateLease.
+func (d *composedDriver) AllocateRepo(context.Context) (string, error) {
+	return "", errLeaseRequired
+}
+
+// DeallocateRepo fails: a repo name alone does not identify a slot
+// across orgs. Use DeallocateLease.
+func (d *composedDriver) DeallocateRepo(context.Context, string) error {
+	return errLeaseRequired
+}
+
+// AllocateLease implements LeaseDriver.
+func (d *composedDriver) AllocateLease(ctx context.Context) (RepoLease, error) {
+	// Admission is gated on the driver's lifecycle, including for orgs
+	// whose environment is already cached.
+	d.envMu.Lock()
+	if d.closed {
+		d.envMu.Unlock()
+		return RepoLease{}, errors.New("allocating repo: driver is finalized")
+	}
+	d.allocs.Add(1)
+	if d.acquireCtx == nil {
+		d.acquireCtx, d.cancelAcquire = context.WithCancel(context.Background())
+	}
+	acquireStop := d.acquireCtx
+	d.envMu.Unlock()
+	defer d.allocs.Done()
+
+	// Only the wait for capacity is cancelled when Finalize begins;
+	// an allocation already provisioning keeps ctx alone.
+	acquireCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	stopWatch := context.AfterFunc(acquireStop, cancel)
+	slot, _, err := d.alloc.Acquire(acquireCtx)
+	stopWatch()
+	if err != nil {
+		return RepoLease{}, fmt.Errorf("allocating repo: %w", err)
+	}
+
+	lease, env, err := d.provision(ctx, slot)
+	if err != nil {
+		// The claim created the slot repo, so it is ours to delete:
+		// release the slot rather than leaving it occupied until GC. The
+		// release runs even if ctx was cancelled.
+		if relErr := d.alloc.Release(context.WithoutCancel(ctx), slot); relErr != nil {
+			d.logf("[driver] releasing %s after failed provisioning: %v", slot, relErr)
+		}
+		return RepoLease{}, fmt.Errorf("allocating repo %s: %w", slot, err)
+	}
+
+	d.mu.Lock()
+	if d.finalized {
+		d.mu.Unlock()
+		// Finalize gave up waiting for this allocation and has already
+		// torn the driver down; undo it instead of leaking the slot.
+		if relErr := d.alloc.Release(context.WithoutCancel(ctx), slot); relErr != nil {
+			d.logf("[driver] releasing %s allocated after Finalize: %v", slot, relErr)
+		}
+		return RepoLease{}, fmt.Errorf("allocating repo %s: driver is finalized", slot)
+	}
+	d.outstanding[slot] = env
 	d.mu.Unlock()
 
-	if d.ensurer != nil {
-		if err := d.ensurer.DeleteRepo(ctx, d.org, repoName); err != nil {
-			d.logf("[driver] deleting leased repo %s/%s: %v", d.org, repoName, err)
+	d.logf("[driver] allocated %s (mint %s; %s)", slot, env.mintURL, d.alloc.quotaSummary(slot.Org))
+	return lease, nil
+}
+
+// provision makes a freshly claimed slot ready: the org's credential and
+// orgEnv (deploying its mint on first use), then the install.
+func (d *composedDriver) provision(ctx context.Context, slot Slot) (_ RepoLease, _ *orgEnv, err error) {
+	cred, err := d.creds.get(ctx, slot.Org)
+	if err != nil {
+		return RepoLease{}, nil, err
+	}
+	env, err := d.orgEnv(ctx, slot.Org, cred)
+	if err != nil {
+		return RepoLease{}, nil, err
+	}
+	// Provisioning can be delayed (retry waits, mint or inference setup),
+	// so the ensurer re-verifies the claim is still this lease's before
+	// each write to the slot.
+	stillOwns := func(ctx context.Context) (bool, error) {
+		return d.alloc.StillOwns(ctx, slot)
+	}
+	if err := env.ensurer.EnsureRepo(ctx, slot.Org, slot.Repo, stillOwns); err != nil {
+		return RepoLease{}, nil, err
+	}
+	// EnsureRepo succeeded, so the ensurer remembers this slot as
+	// installed. If provisioning fails from here on, the caller releases
+	// the slot's claim and the next lease creates a fresh repo under the
+	// same name; forget the install (and clean up the fork, while the
+	// claim is still ours) so that lease installs from scratch instead of
+	// being handed an uninstalled repo. The cleanup runs even if ctx was
+	// cancelled.
+	defer func() {
+		if err == nil {
+			return
+		}
+		if relErr := env.ensurer.ReleaseRepo(context.WithoutCancel(ctx), slot.Org, slot.Repo, stillOwns); relErr != nil {
+			d.logf("[driver] releasing leftover state of %s after failed provisioning: %v", slot, relErr)
+		}
+	}()
+	if d.traces != nil {
+		// EnsureRepo's validation and Actions-readiness waits can outlast
+		// the lease, and trace configuration writes variables and secrets
+		// by repo name, so recheck ownership and guard those writes.
+		target := slot.Org + "/" + slot.Repo
+		if err := requireOwnership(ctx, stillOwns, target, "trace configuration"); err != nil {
+			return RepoLease{}, nil, err
+		}
+		traceCtx := ownershipGuardedCtx(ctx, stillOwns, target, "trace configuration")
+		if err := d.traces.ConfigureRepo(traceCtx, cred.client, slot.Org, slot.Repo); err != nil {
+			if errors.Is(err, errLeaseLost) {
+				// The slot is no longer this lease's: fail the allocation
+				// rather than record a lease on a repo it does not own.
+				return RepoLease{}, nil, err
+			}
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				// The caller cancelled (or its deadline passed) while the
+				// traces were being configured: that is not a best-effort
+				// trace failure, and the caller no longer wants the lease.
+				return RepoLease{}, nil, fmt.Errorf("configuring trace collection: %w", ctxErr)
+			}
+			d.logf("[driver] trace collector: configuring %s (continuing without traces from it): %v", slot, err)
 		}
 	}
+	return RepoLease{
+		Org:     slot.Org,
+		Repo:    slot.Repo,
+		Token:   cred.token,
+		Client:  cred.client,
+		MintURL: env.mintURL,
 
+		MintStatusGroup:       env.statusGroup,
+		MintWorkflowHostRepos: env.workflowHostRepos,
+	}, env, nil
+}
+
+// orgEnv returns org's environment, setting it up on first use.
+// Concurrent first leases in one org share a single setup; a failed
+// setup is not cached, so the org's next lease tries again.
+func (d *composedDriver) orgEnv(ctx context.Context, org string, cred orgCredential) (*orgEnv, error) {
+	d.envMu.Lock()
+	env, ok := d.envs[org]
+	d.envMu.Unlock()
+	if ok {
+		return env, nil
+	}
+	v, err := doContext(ctx, &d.envFlight, org, func() (any, error) {
+		d.envMu.Lock()
+		cached, ok := d.envs[org]
+		if !ok && d.closed {
+			d.envMu.Unlock()
+			return nil, fmt.Errorf("setting up %s: driver is finalized", org)
+		}
+		if !ok {
+			d.setups.Add(1)
+		}
+		d.envMu.Unlock()
+		if ok {
+			return cached, nil
+		}
+		defer d.setups.Done()
+		d.logf("[driver] first lease in %s: deploying its mint", org)
+		// Shared by every lease waiting on this org, so it is independent
+		// of the cancellation of the lease that happened to start it.
+		env, err := d.setup(context.WithoutCancel(ctx), org, cred)
+		if err != nil {
+			return nil, fmt.Errorf("setting up %s: %w", org, err)
+		}
+		d.envMu.Lock()
+		if d.abandoned {
+			// Finalize gave up waiting and has already torn down the
+			// mints it knew of; this one is ours to remove.
+			d.envMu.Unlock()
+			if env.mint != nil {
+				if err := env.mint.Teardown(context.WithoutCancel(ctx)); err != nil {
+					d.logf("[driver] tearing down %s mint deployed after Finalize: %v", org, err)
+				}
+			}
+			return nil, fmt.Errorf("setting up %s: driver is finalized", org)
+		}
+		d.envs[org] = env
+		d.envMu.Unlock()
+		return env, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return v.(*orgEnv), nil
+}
+
+// StillOwnsLease implements LeaseVerifier through the allocator, which
+// compares the repository under the slot's name with this lease's claim.
+func (d *composedDriver) StillOwnsLease(ctx context.Context, org, repo string) (bool, error) {
+	return d.alloc.StillOwns(ctx, Slot{Org: org, Repo: repo})
+}
+
+// DeallocateLease implements LeaseDriver. The ensurer removes leftover
+// per-slot state, then the allocator deletes the slot repo after
+// checking it is still this lease's and frees the slot. Release failures
+// are logged, not returned: a repo the release could not delete stays
+// occupied for every allocator and is reclaimed by GC (slotgc.go), so
+// it cannot leak into another lease.
+func (d *composedDriver) DeallocateLease(ctx context.Context, org, repo string) error {
+	slot := Slot{Org: org, Repo: repo}
 	d.mu.Lock()
-	// Send inside the lock: the channel buffer equals capacity and this
-	// name was removed during AllocateRepo, so the send is guaranteed
-	// non-blocking.
-	d.names <- repoName
-	d.logf("[driver] deallocated %s/%s", d.org, repoName)
+	env, ok := d.outstanding[slot]
+	if ok {
+		delete(d.outstanding, slot)
+	}
 	d.mu.Unlock()
-	d.logRateLimit("after deallocating " + d.org + "/" + repoName)
+	if !ok {
+		return fmt.Errorf("DeallocateLease: %s is not an outstanding lease (possible double-release)", slot)
+	}
+	d.release(ctx, slot, env)
+	d.logf("[driver] deallocated %s (%s)", slot, d.alloc.quotaSummary(slot.Org))
 	return nil
 }
 
-// Finalize tears down suite-scoped resources (mint, trace collector).
-// If leases are still outstanding, it reclaims them (logging the names), best-effort
-// deletes each leaked repo (same log-and-continue policy as
-// DeallocateRepo, so a leak doesn't leave the forge repo behind until
-// the next acquire), and returns an error alongside any mint teardown
-// error via errors.Join.
+// release runs the ensurer's and the allocator's release steps for one
+// slot, logging failures. The ensurer deletes the slot's fork only while
+// the allocator confirms the slot repo is still this lease's, since a
+// replaced repo means the fork may belong to the replacement's holder.
+// The ensurer re-asks before the delete and every resend of it. A repo
+// that cannot be verified is treated as not ours.
+func (d *composedDriver) release(ctx context.Context, slot Slot, env *orgEnv) {
+	stillOwns := func(ctx context.Context) (bool, error) {
+		return d.alloc.StillOwns(ctx, slot)
+	}
+	if err := env.ensurer.ReleaseRepo(ctx, slot.Org, slot.Repo, stillOwns); err != nil {
+		d.logf("[driver] releasing leftover state of %s: %v", slot, err)
+	}
+	if err := d.alloc.Release(ctx, slot); err != nil {
+		d.logf("[driver] releasing slot %s (left for GC): %v", slot, err)
+	}
+}
+
+// Finalize releases any outstanding leases (logging them and returning
+// an error), releases every org's mint (each shared mint is torn down
+// once, by its last org), logs the per-org quota
+// diagnostics, and stops the trace collector last.
 func (d *composedDriver) Finalize(ctx context.Context) error {
+	// Refuse new allocations, then wait for those still provisioning so
+	// their leases are in outstanding before it is snapshotted. The wait
+	// honors ctx; an allocation still running then releases its own slot
+	// (see finalized).
+	d.envMu.Lock()
+	d.closed = true
+	if d.cancelAcquire != nil {
+		// Abandon waits for pool capacity: with a full pool they only
+		// end once the leases Finalize reclaims below are released.
+		d.cancelAcquire()
+	}
+	d.envMu.Unlock()
+	allocsDone := make(chan struct{})
+	go func() {
+		d.allocs.Wait()
+		close(allocsDone)
+	}()
+	var allocWaitErr error
+	select {
+	case <-allocsDone:
+	case <-ctx.Done():
+		allocWaitErr = fmt.Errorf("Finalize: allocation still in flight: %w", ctx.Err())
+	}
+
 	d.mu.Lock()
+	d.finalized = true
+	leaked := make([]Slot, 0, len(d.outstanding))
+	envs := make(map[Slot]*orgEnv, len(d.outstanding))
+	for slot, env := range d.outstanding {
+		leaked = append(leaked, slot)
+		envs[slot] = env
+	}
+	d.outstanding = map[Slot]*orgEnv{}
+	d.mu.Unlock()
+
 	var leakErr error
-	leaked := make([]string, 0, len(d.outstanding))
-	if len(d.outstanding) > 0 {
-		for name := range d.outstanding {
-			leaked = append(leaked, name)
-		}
+	if len(leaked) > 0 {
+		sort.Slice(leaked, func(i, j int) bool { return leaked[i].String() < leaked[j].String() })
 		d.logf("[driver] Finalize: reclaiming %d outstanding lease(s): %v", len(leaked), leaked)
-		for _, name := range leaked {
-			delete(d.outstanding, name)
-			d.names <- name
+		for _, slot := range leaked {
+			d.release(ctx, slot, envs[slot])
 		}
 		leakErr = fmt.Errorf("Finalize: %d outstanding lease(s) not deallocated: %v", len(leaked), leaked)
 	}
-	d.mu.Unlock()
 
-	for _, name := range leaked {
-		if err := d.ensurer.DeleteRepo(ctx, d.org, name); err != nil {
-			d.logf("[driver] Finalize: deleting leaked repo %s/%s: %v", d.org, name, err)
+	// Refuse new org setups, then wait for those still in flight (they
+	// outlive the leases that started them) so their mints are cached
+	// and torn down below instead of being deployed after teardown. The
+	// wait honors ctx: a hung deploy must not block teardown of the other
+	// orgs' mints. A setup still running then tears down its own mint.
+	d.envMu.Lock()
+	d.closed = true
+	d.envMu.Unlock()
+	setupsDone := make(chan struct{})
+	go func() {
+		d.setups.Wait()
+		close(setupsDone)
+	}()
+	var waitErr error
+	select {
+	case <-setupsDone:
+	case <-ctx.Done():
+		waitErr = fmt.Errorf("Finalize: org setup still in flight: %w", ctx.Err())
+	}
+
+	d.envMu.Lock()
+	d.abandoned = true
+	orgs := sortedKeys(d.envs)
+	mints := make([]mintDriver, 0, len(orgs))
+	for _, org := range orgs {
+		mints = append(mints, d.envs[org].mint)
+	}
+	d.envMu.Unlock()
+
+	var teardownErr error
+	for i, md := range mints {
+		if md == nil {
+			continue
+		}
+		if err := md.Teardown(ctx); err != nil {
+			teardownErr = errors.Join(teardownErr, fmt.Errorf("Finalize: mint teardown for %s: %w", orgs[i], err))
 		}
 	}
 
-	var teardownErr error
-	if d.mint != nil {
-		if err := d.mint.Teardown(ctx); err != nil {
-			teardownErr = fmt.Errorf("Finalize: mint teardown: %w", err)
-		}
+	if diag := d.alloc.QuotaDiagnostics(); diag != "" {
+		d.logf("[driver] per-org rate limits at finalize:\n%s", diag)
 	}
 
 	// Stop the trace collector last, after the repos (and their
@@ -193,57 +646,20 @@ func (d *composedDriver) Finalize(ctx context.Context) error {
 			traceErr = fmt.Errorf("Finalize: trace collector: %w", err)
 		}
 	}
-
 	if d.pendingTraces != nil {
 		if err := d.pendingTraces.Stop(ctx); err != nil {
 			traceErr = errors.Join(traceErr, fmt.Errorf("Finalize: failed-start trace collector cleanup: %w", err))
 		}
 	}
 
-	return errors.Join(leakErr, teardownErr, traceErr)
+	return errors.Join(allocWaitErr, leakErr, waitErr, teardownErr, traceErr)
 }
 
-// Capacity returns the max concurrent outstanding allocations.
+// Capacity returns the number of slots in the pool.
 func (d *composedDriver) Capacity() int {
-	return d.capacity
+	return d.alloc.Capacity()
 }
 
 // Compile-time check.
-var _ Driver = (*composedDriver)(nil)
-
-// withRateLimitReporter attaches client as the driver's rate-limit
-// sampler when it reports one; other clients leave sampling off.
-func withRateLimitReporter(d Driver, client forge.Client) Driver {
-	if cd, ok := d.(*composedDriver); ok {
-		if r, ok := client.(forge.RateLimitReporter); ok {
-			cd.rate = r
-		}
-	}
-	return d
-}
-
-// withMintURL records mintURL as the URL a composed driver reports
-// through MintURLReporter; other drivers are returned unchanged.
-func withMintURL(d Driver, mintURL string) Driver {
-	if cd, ok := d.(*composedDriver); ok {
-		cd.mintURL = mintURL
-	}
-	return d
-}
-
-// MintURL implements MintURLReporter.
-func (d *composedDriver) MintURL() string { return d.mintURL }
-
-// Compile-time check: composedDriver reports its mint URL.
-var _ MintURLReporter = (*composedDriver)(nil)
-
-// logRateLimit writes one primary-quota sample, if a reporter is set
-// and has observed a response.
-func (d *composedDriver) logRateLimit(when string) {
-	if d.rate == nil {
-		return
-	}
-	if rl, seen := d.rate.RateLimit(); seen {
-		d.logf("[driver] rate limit %s: %s", when, rl)
-	}
-}
+var _ LeaseDriver = (*composedDriver)(nil)
+var _ LeaseVerifier = (*composedDriver)(nil)

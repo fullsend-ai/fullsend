@@ -53,6 +53,7 @@ if [ "$2" = "exec" ]; then
       sh -c 'mkdir() { :; }; mv() { shift; shift; cp -- "$1" '\''` + storeDir + `/'\''"$(printf "%s" "$2" | tr / _)"; }; '"$last"
       exit $? ;;
     "pi --version") echo "0.84.2"; exit 0 ;;
+    ` + hookEnvReadStubArm + `
     "command -v pi"*) printf '%s\n' /usr/bin/pi '/usr/local/share/pi-extensions/anthropic-vertex'; exit 0 ;;
     *usage.jsonl*mv*) u='` + storeDir + `'/` + piFakeUsageFile + `; if [ -f "$u" ]; then cat "$u"; mv -f "$u" "$u.read"; fi; exit 0 ;;
     cat\ *) f=$(printf '%s' "${last#cat }" | tr -d "'" | tr '/' '_'); cat '` + storeDir + `'/"$f"; exit $? ;;
@@ -64,6 +65,9 @@ exit 0
 `
 	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	// A hooks-enabled Bootstrap records the hook settings for its sandbox
+	// name; drop them so other tests' launches for that name are unchanged.
+	t.Cleanup(resetPiHookEnvs)
 }
 
 func storedUpload(t *testing.T, storeDir, remotePath string) []byte {
@@ -494,6 +498,11 @@ func TestPiRuntimeRun_SecurityOnButManifestWithoutHooksFailsFast(t *testing.T) {
 	require.NoError(t, PiRuntime{}.Bootstrap(bootstrapInput{
 		sandboxName: "sb", agentPath: writeAgentFile(t, testAgentDef), agentName: "triage",
 	}))
+	// Hook settings recorded as a hooks Bootstrap would, so Run reaches the
+	// manifest check (TestPiRuntimeRun_RefusesWithoutRecordedHookEnv covers
+	// the missing record).
+	recordPiHookEnv("sb", nil)
+	t.Cleanup(func() { piHookEnvs.Delete("sb") })
 	exit, err := PiRuntime{}.Run(context.Background(), RunParams{
 		SandboxName: "sb", RepoDir: "/r", Timeout: 30 * time.Second, HooksSettingsPath: "/sandbox/claude-config/hooks.json",
 		OnEvent: func(AgentEvent) {},

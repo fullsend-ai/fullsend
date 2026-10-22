@@ -381,6 +381,11 @@ func Install(ctx context.Context, cfg InstallConfig,
 				})
 			}
 		}
+		// Step 5b creates the poll-state branches; refuse before any
+		// write if the project's push rule would reject their names.
+		if err := requireGitLabPushRuleAllowsPollStateBranches(ctx, client, cfg.Owner, cfg.Repo); err != nil {
+			return result, err
+		}
 	}
 
 	// Step 5: Write repository variables. Variables and secrets are
@@ -626,6 +631,10 @@ func BuildScaffoldFiles(cfg InstallConfig) ([]forge.TreeFile, error) {
 				perRepoCfg = overlay
 			default:
 				generated := config.NewPerRepoConfig(cfg.Roles, cfg.Owner+"/"+cfg.Repo)
+				if cfg.Forge == ForgeGitLab {
+					// GitHub upstream names are not destinations on the GitLab host.
+					generated.IssueCreationConfig().AllowTargets = config.AllowTargets{}
+				}
 				if cfg.Runtime != "" {
 					generated.SetRuntime(cfg.Runtime)
 				}

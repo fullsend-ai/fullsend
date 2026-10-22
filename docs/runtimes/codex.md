@@ -220,6 +220,39 @@ What a local codex run needs, beyond the guide:
   loads as instructions. Only the root file is read, cut at 32 KiB: nested `AGENTS.md` files and
   `AGENTS.override.md` are not, and a symlinked `AGENTS.md` is skipped. No `CLAUDE.md` bridge is
   injected.
+- **`.env` is read as data, not run.** The launch parses the sandbox `.env` with a `python3` resolved
+  before anything the agent wrote (`-I -S`) and evals only the single-quoted `[export ]NAME='value'`
+  lines that parser prints, so no line of `.env` executes as shell. Only `NAME=value`, `export NAME` and comments are taken;
+  anything else is ignored with a warning naming the file and line. `LD_PRELOAD`,
+  `LD_LIBRARY_PATH`, `LD_AUDIT`, every `PYTHON*` variable, `BASH_ENV`, `ENV`, `IFS` and the launch's own read-only
+  pins are never taken from `.env` (#8498). The sandbox image needs `python3` for this, in a
+  `PATH` directory the sandbox user neither owns nor can write; without one the launch fails with
+  `python3 not found in a PATH directory the agent cannot write` (exit 127).
+  It also needs `readlink` there as a regular file, not a symlink; without one the launch also
+  prints `no readlink that is a regular file in a PATH directory the agent cannot write`.
+  With sandbox hooks on, that `python3` must also be 3.11 or newer; an older one fails Bootstrap
+  with `hook interpreter ... needs at least 3.11`.
+- **Sandbox hook settings come from the harness, not `.env`.** With sandbox
+  hooks on, `TIRITH_FAIL_ON`, `TIRITH_REQUIRED`, `FULLSEND_EGRESS_ALLOWLIST`,
+  `FULLSEND_CANARY_TOKEN` and `FULLSEND_TOOL_ALLOWLIST` are taken from the
+  harness configuration at Bootstrap, before the first iteration. The launch
+  sets them again after it reads `.env`, and unsets any of them the harness did
+  not set. A value in `.env`, including one the agent wrote there, cannot change
+  them.
+- **`codex` and `node` come from directories the agent cannot write.** The
+  launch pins the first `codex` in a `PATH` directory the sandbox user neither
+  owns nor can write, judged by the file it resolves to and every directory
+  above that file. `codex` on `PATH` is npm's `#!/usr/bin/env node` launcher,
+  so the launch also pins `node` by the same rule and starts the launcher with
+  it. It does not let `env` look `node` up on the `PATH` left after `.env` is
+  read. A `codex` or `node` found only through an agent-writable directory, or
+  a symlink into one, fails the launch with
+  `codex not found in a PATH directory the agent cannot write` or
+  `node not found in a PATH directory the agent cannot write` (exit 127). Any
+  other first line that starts `codex` through `env` (`#!/usr/bin/env -S node`,
+  say) fails it with
+  `starts through env with a first line other than '#!/usr/bin/env node'`. The
+  `PATH` that codex and its tools inherit does not change.
 - **The repository's own `.codex/` config is never loaded.** fullsend pins the cloned repo's
   project trust to untrusted, so `.codex/config.toml` and `.codex/hooks.json` (model, instructions,
   MCP servers, hooks) never apply. A target repo cannot change how the agent runs.
@@ -281,9 +314,13 @@ agents:
 
 ## Troubleshooting
 
-**``codex preflight: `codex --version` exited 127``, or `fullsend: codex not found on PATH`
-(exit 127) once the run starts.** The sandbox image predates the `CODEX_VERSION` pin, so there is no
-codex to run. Pull a current `ghcr.io/fullsend-ai/fullsend-sandbox` image.
+**``codex preflight: `codex --version` exited 127``, or
+`fullsend: codex not found in a PATH directory the agent cannot write` (exit
+127) once the run starts.** The sandbox image predates the `CODEX_VERSION` pin,
+so there is no codex to run. Pull a current
+`ghcr.io/fullsend-ai/fullsend-sandbox` image. A custom image fails the same way
+when its `codex` is found only through a directory the sandbox user owns or can
+write. Install it, and `node`, outside such directories.
 
 **Denied requests in the sandbox egress log at startup.** Expected noise, not failures. Codex
 probes on the way up and the policy refuses what the run does not need:

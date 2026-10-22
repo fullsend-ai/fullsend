@@ -8,6 +8,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"embed"
 	"encoding/hex"
@@ -45,7 +46,7 @@ const (
 // ErrFunctionNotFound is returned when the mint function does not exist.
 var ErrFunctionNotFound = errors.New("mint function not found")
 
-//go:embed mintsrc/go.mod.embed mintsrc/go.sum.embed mintsrc/main.go.embed mintsrc/mintcore/go.mod.embed mintsrc/mintcore/go.sum.embed mintsrc/mintcore/claims.go.embed mintsrc/mintcore/config.go.embed mintsrc/mintcore/env.go.embed mintsrc/mintcore/foreign.go.embed mintsrc/mintcore/gcp_pem.go.embed mintsrc/mintcore/github.go.embed mintsrc/mintcore/handler.go.embed mintsrc/mintcore/http_client.go.embed mintsrc/mintcore/interfaces.go.embed mintsrc/mintcore/jwks_verifier.go.embed mintsrc/mintcore/mintconsts/mintconsts.go.embed mintsrc/mintcore/oidc_verify.go.embed mintsrc/mintcore/patterns.go.embed mintsrc/mintcore/repos_scope.go.embed mintsrc/mintcore/status_auth.go.embed mintsrc/mintcore/status_consts.go.embed mintsrc/mintcore/status_github.go.embed mintsrc/mintcore/status_github_stub.go.embed mintsrc/mintcore/sts_verifier.go.embed mintsrc/mintcore/version.go.embed mintsrc/mintcore/wif.go.embed
+//go:embed mintsrc/go.mod.embed mintsrc/go.sum.embed mintsrc/main.go.embed mintsrc/trace_consts.go.embed mintsrc/mintcore/go.mod.embed mintsrc/mintcore/go.sum.embed mintsrc/mintcore/claims.go.embed mintsrc/mintcore/config.go.embed mintsrc/mintcore/env.go.embed mintsrc/mintcore/foreign.go.embed mintsrc/mintcore/gcp_pem.go.embed mintsrc/mintcore/github.go.embed mintsrc/mintcore/handler.go.embed mintsrc/mintcore/http_client.go.embed mintsrc/mintcore/interfaces.go.embed mintsrc/mintcore/jwks_verifier.go.embed mintsrc/mintcore/mintconsts/mintconsts.go.embed mintsrc/mintcore/oidc_verify.go.embed mintsrc/mintcore/patterns.go.embed mintsrc/mintcore/repos_scope.go.embed mintsrc/mintcore/status_auth.go.embed mintsrc/mintcore/status_consts.go.embed mintsrc/mintcore/status_github.go.embed mintsrc/mintcore/status_github_stub.go.embed mintsrc/mintcore/sts_verifier.go.embed mintsrc/mintcore/tracing.go.embed mintsrc/mintcore/version.go.embed mintsrc/mintcore/wif.go.embed
 var embeddedMintSource embed.FS
 
 // embeddedMintFiles maps embedded filenames (.embed suffix avoids
@@ -55,6 +56,7 @@ var embeddedMintFiles = map[string]string{
 	"go.mod.embed":                            "go.mod",
 	"go.sum.embed":                            "go.sum",
 	"main.go.embed":                           "main.go",
+	"trace_consts.go.embed":                   "trace_consts.go",
 	"mintcore/go.mod.embed":                   "mintcore/go.mod",
 	"mintcore/go.sum.embed":                   "mintcore/go.sum",
 	"mintcore/claims.go.embed":                "mintcore/claims.go",
@@ -76,6 +78,7 @@ var embeddedMintFiles = map[string]string{
 	"mintcore/status_github.go.embed":         "mintcore/status_github.go",
 	"mintcore/status_github_stub.go.embed":    "mintcore/status_github_stub.go",
 	"mintcore/sts_verifier.go.embed":          "mintcore/sts_verifier.go",
+	"mintcore/tracing.go.embed":               "mintcore/tracing.go",
 	"mintcore/version.go.embed":               "mintcore/version.go",
 	"mintcore/wif.go.embed":                   "mintcore/wif.go",
 }
@@ -148,6 +151,124 @@ type Config struct {
 	// StatusGitHub holds the GitHub status auth config stamped into
 	// the source at bundle time alongside Version and Commit.
 	StatusGitHub StatusGitHubAuth
+
+	// Tracing configures OTLP trace export from the deployed function.
+	// The endpoint is stamped into the source at bundle time; header
+	// values are stored in Secret Manager, never in the source.
+	Tracing TracingConfig
+}
+
+// TracingConfig is the tracing input for a mint deploy.
+type TracingConfig struct {
+	// Endpoint is the full OTLP/HTTP traces URL. Empty disables tracing.
+	Endpoint string
+	// Headers is the collector authentication header content
+	// (OTEL_EXPORTER_OTLP_HEADERS syntax), stored in a new per-deploy
+	// secret (see NewTraceHeadersSecretID). Nil deploys without collector
+	// headers. Zeroed after Provision.
+	Headers []byte
+}
+
+// TraceHeadersSecretPrefix is the prefix of the per-deploy Secret Manager
+// secrets holding OTLP collector authentication headers for the mint
+// function.
+const TraceHeadersSecretPrefix = "fullsend-mint-otlp-headers-"
+
+// NewTraceHeadersSecretID returns a unique Secret Manager secret ID for the
+// collector headers of one deploy. Each deploy stamps its own ID into the
+// function source, so a deployed revision always reads the headers that
+// were stored for its endpoint: a later deploy for another collector, or
+// for another region, cannot change what an earlier revision reads at
+// cold start, and a retry after a partial failure stamps a new ID and so
+// always redeploys.
+func NewTraceHeadersSecretID() (string, error) {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("generating collector headers secret ID: %w", err)
+	}
+	return TraceHeadersSecretPrefix + hex.EncodeToString(b[:]), nil
+}
+
+// TracingStamp is the nonsecret tracing configuration generated into the
+// function source (trace_consts.go). An empty Endpoint disables tracing.
+type TracingStamp struct {
+	// Endpoint is the full OTLP/HTTP traces URL.
+	Endpoint string
+	// Deployment identifies the deployment on exported spans
+	// (fullsend.mint.deployment).
+	Deployment string
+	// HeadersSecret is the Secret Manager secret ID the function reads
+	// its collector headers from. Empty means no headers.
+	HeadersSecret string
+}
+
+// TraceDeploymentName returns the deployment identity recorded on spans
+// for the mint function in region.
+func TraceDeploymentName(region string) string {
+	if region == "" {
+		region = defaultRegion
+	}
+	return functionName + "/" + region
+}
+
+// tracingStamp derives the stamp for this deploy from the config.
+// headersSecret is the per-deploy secret ID for the collector headers, or
+// empty when the deploy has none.
+func (p *Provisioner) tracingStamp(headersSecret string) TracingStamp {
+	if p.cfg.Tracing.Endpoint == "" {
+		return TracingStamp{}
+	}
+	return TracingStamp{
+		Endpoint:      p.cfg.Tracing.Endpoint,
+		Deployment:    TraceDeploymentName(p.cfg.Region),
+		HeadersSecret: headersSecret,
+	}
+}
+
+// validateTracing checks the tracing config before anything is deployed.
+// The endpoint must be an absolute https URL without credentials, because
+// collector headers and trace payloads are sent to it.
+func (p *Provisioner) validateTracing() error {
+	endpoint := p.cfg.Tracing.Endpoint
+	if endpoint == "" {
+		if p.cfg.Tracing.Headers != nil {
+			return fmt.Errorf("collector headers require an OTLP traces endpoint")
+		}
+		return nil
+	}
+	if _, err := mintcore.NewTracer(mintcore.TracingConfig{Endpoint: endpoint}); err != nil {
+		return err
+	}
+	if u, err := url.Parse(endpoint); err != nil || u.Scheme != "https" {
+		return fmt.Errorf("invalid OTLP traces endpoint: must use https")
+	}
+	if p.cfg.Tracing.Headers != nil {
+		if _, err := mintcore.ParseOTLPHeaders(string(p.cfg.Tracing.Headers)); err != nil {
+			return fmt.Errorf("invalid collector headers: %w", err)
+		}
+	}
+	return nil
+}
+
+// storeTraceHeaders stores the collector headers in the new per-deploy
+// secret sid and grants the mint service account access, following the
+// agent PEM precedent. The secret is created for this deploy only and is
+// never updated afterwards, so the stamped ID binds the deployed endpoint
+// to these exact headers.
+func (p *Provisioner) storeTraceHeaders(ctx context.Context, sid string) error {
+	if err := p.gcpAPI.CreateSecret(ctx, p.cfg.ProjectID, sid); err != nil {
+		return fmt.Errorf("creating secret %s: %w", sid, err)
+	}
+	if err := p.gcpAPI.AddSecretVersion(ctx, p.cfg.ProjectID, sid, p.cfg.Tracing.Headers); err != nil {
+		return fmt.Errorf("adding secret version for %s: %w", sid, err)
+	}
+	saEmail := MintServiceAccountEmail(p.cfg.ProjectID)
+	secretResource := fmt.Sprintf("projects/%s/secrets/%s", p.cfg.ProjectID, sid)
+	if err := p.gcpAPI.SetSecretIAMBinding(ctx, secretResource,
+		"serviceAccount:"+saEmail, "roles/secretmanager.secretAccessor"); err != nil {
+		return fmt.Errorf("granting secret access for %s: %w", sid, err)
+	}
+	return nil
 }
 
 // StatusGitHubAuth bundles the GitHub status auth configuration
@@ -591,6 +712,10 @@ func (p *Provisioner) RegisterPerRepoWIF(ctx context.Context, repo string) error
 //  2. Return the provided MintURL
 func (p *Provisioner) Provision(ctx context.Context) (map[string]string, error) {
 	defer p.zeroPEMs()
+	defer clear(p.cfg.Tracing.Headers)
+	if p.cfg.MintURL != "" && p.cfg.Tracing.Endpoint != "" {
+		return nil, fmt.Errorf("tracing requires deploying the mint function; it cannot be configured with an existing MintURL")
+	}
 
 	if len(p.cfg.GitHubOrgs) == 0 && !p.cfg.PublicMint {
 		return nil, fmt.Errorf("at least one GitHub org is required")
@@ -712,6 +837,24 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 			return nil, fmt.Errorf("role %q has a PEM but no corresponding App ID", role)
 		}
 	}
+	if err := p.validateTracing(); err != nil {
+		return nil, err
+	}
+	if p.cfg.Tracing.Endpoint != "" && p.cfg.DeployMode == DeploySkip {
+		return nil, fmt.Errorf("tracing cannot be configured with --skip-mint-deploy: the endpoint is stamped into the function source")
+	}
+	// Each deploy with collector headers gets its own secret ID, stamped
+	// into the source. The ID changes the source hash, so a retry after a
+	// partial failure always redeploys.
+	headersSecret := ""
+	if p.cfg.Tracing.Headers != nil {
+		id, idErr := NewTraceHeadersSecretID()
+		if idErr != nil {
+			return nil, idErr
+		}
+		headersSecret = id
+	}
+	stamp := p.tracingStamp(headersSecret)
 
 	// Check existing function state before infrastructure setup.
 	existing, err := p.gcpAPI.GetFunction(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
@@ -746,6 +889,16 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 	}
 	projectNumber := wifResult.projectNumber
 
+	// Store collector headers in this deploy's own secret before any code
+	// deploy so new instances find them at cold start. The stamped secret
+	// ID is part of the source hash, so the function is always redeployed
+	// to pick them up.
+	if headersSecret != "" {
+		if err := p.storeTraceHeaders(ctx, headersSecret); err != nil {
+			return nil, err
+		}
+	}
+
 	// Determine if code deployment is needed. When the function already
 	// exists and is active with the same source hash, skip the code deploy
 	// path and use the lightweight provisionWithExistingMint for PEM storage
@@ -763,10 +916,13 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 			switch {
 			case p.cfg.DeployMode == DeploySkip:
 				needsDeploy = false
-			case p.cfg.FunctionSourceDir == "":
+			case p.cfg.FunctionSourceDir == "" && p.cfg.Tracing.Endpoint == "":
+				// No source to compare. A tracing deploy must still
+				// compare the stamped source, so it falls through to
+				// the default case (embedded source).
 				needsDeploy = false
 			default: // DeployAuto
-				earlySourceZip, err = bundleFunctionSource(p.cfg.FunctionSourceDir, p.cfg.Version, p.cfg.Commit, p.cfg.StatusGitHub)
+				earlySourceZip, err = bundleFunctionSource(p.cfg.FunctionSourceDir, p.cfg.Version, p.cfg.Commit, p.cfg.StatusGitHub, stamp)
 				if err != nil {
 					return nil, fmt.Errorf("validating function source: %w", err)
 				}
@@ -785,7 +941,7 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 
 	// Code deployment path — bundle source.
 	if earlySourceZip == nil {
-		earlySourceZip, err = bundleFunctionSource(p.cfg.FunctionSourceDir, p.cfg.Version, p.cfg.Commit, p.cfg.StatusGitHub)
+		earlySourceZip, err = bundleFunctionSource(p.cfg.FunctionSourceDir, p.cfg.Version, p.cfg.Commit, p.cfg.StatusGitHub, stamp)
 		if err != nil {
 			return nil, fmt.Errorf("validating function source: %w", err)
 		}
@@ -1748,15 +1904,16 @@ func sortedByteMapKeys(m map[string][]byte) []string {
 // Version and commit are stamped directly into the source by generating a
 // mintcore/version.go file in the zip, so the deployed code carries its own
 // version identity without relying on environment variables.
-func bundleFunctionSource(dir, version, commit string, statusGitHub StatusGitHubAuth) ([]byte, error) {
+// The tracing stamp is generated into trace_consts.go the same way.
+func bundleFunctionSource(dir, version, commit string, statusGitHub StatusGitHubAuth, tracing TracingStamp) ([]byte, error) {
 	if dir == "" {
-		return bundleEmbeddedMintSource(version, commit, statusGitHub)
+		return bundleEmbeddedMintSource(version, commit, statusGitHub, tracing)
 	}
 
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return bundleEmbeddedMintSource(version, commit, statusGitHub)
+			return bundleEmbeddedMintSource(version, commit, statusGitHub, tracing)
 		}
 		return nil, fmt.Errorf("reading function source dir: %w", err)
 	}
@@ -1773,6 +1930,10 @@ func bundleFunctionSource(dir, version, commit string, statusGitHub StatusGitHub
 			continue
 		}
 		if entry.Type()&os.ModeSymlink != 0 {
+			continue
+		}
+		// Generated below with the stamped tracing settings.
+		if entry.Name() == traceConstsFile {
 			continue
 		}
 		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
@@ -1825,6 +1986,11 @@ func bundleFunctionSource(dir, version, commit string, statusGitHub StatusGitHub
 	// Stamp status auth consts into the source.
 	if err := writeStatusConstsGoToZip(w, "mintcore/status_consts.go", statusGitHub.Group); err != nil {
 		return nil, fmt.Errorf("writing status_consts.go: %w", err)
+	}
+
+	// Stamp tracing settings into the source.
+	if err := writeTraceConstsGoToZip(w, traceConstsFile, tracing); err != nil {
+		return nil, fmt.Errorf("writing %s: %w", traceConstsFile, err)
 	}
 
 	// Select the correct status GitHub file based on config. Build
@@ -1924,7 +2090,7 @@ func addDirToZipRooted(w *zip.Writer, absRoot, srcDir, zipPrefix string, skip ma
 // toolchain from treating the directory as a module root, and are renamed
 // to their real names in the zip. The version.go entry is replaced with
 // generated content that stamps the provided version and commit.
-func bundleEmbeddedMintSource(version, commit string, statusGitHub StatusGitHubAuth) ([]byte, error) {
+func bundleEmbeddedMintSource(version, commit string, statusGitHub StatusGitHubAuth, tracing TracingStamp) ([]byte, error) {
 	var buf bytes.Buffer
 	w := zip.NewWriter(&buf)
 
@@ -1945,9 +2111,9 @@ func bundleEmbeddedMintSource(version, commit string, statusGitHub StatusGitHubA
 
 	for _, embeddedName := range keys {
 		realName := embeddedMintFiles[embeddedName]
-		// Skip generated files — version.go and status_consts.go are
-		// generated below with stamped values.
-		if realName == "mintcore/version.go" || realName == "mintcore/status_consts.go" {
+		// Skip generated files — version.go, status_consts.go and
+		// trace_consts.go are generated below with stamped values.
+		if realName == "mintcore/version.go" || realName == "mintcore/status_consts.go" || realName == traceConstsFile {
 			continue
 		}
 		// Skip the unwanted GitHub file; the wanted one is written
@@ -1976,6 +2142,11 @@ func bundleEmbeddedMintSource(version, commit string, statusGitHub StatusGitHubA
 	// Stamp status auth consts into the source.
 	if err := writeStatusConstsGoToZip(w, "mintcore/status_consts.go", statusGitHub.Group); err != nil {
 		return nil, fmt.Errorf("writing status_consts.go: %w", err)
+	}
+
+	// Stamp tracing settings into the source.
+	if err := writeTraceConstsGoToZip(w, traceConstsFile, tracing); err != nil {
+		return nil, fmt.Errorf("writing %s: %w", traceConstsFile, err)
 	}
 
 	// Write the selected status GitHub file with build constraint stripped.
@@ -2018,6 +2189,25 @@ func writeVersionGoToZip(w *zip.Writer, path, version, commit string) error {
 // zip archive with the provided status auth configuration values.
 func writeStatusConstsGoToZip(w *zip.Writer, path, githubGroup string) error {
 	src := fmt.Sprintf("package mintcore\n\nvar StatusGitHubGroup = %q\n", githubGroup)
+	f, err := w.Create(path)
+	if err != nil {
+		return err
+	}
+	_, err = f.Write([]byte(src))
+	return err
+}
+
+// traceConstsFile is the function-package file holding the stamped
+// tracing settings (internal/mint/trace_consts.go on disk).
+const traceConstsFile = "trace_consts.go"
+
+// writeTraceConstsGoToZip writes a generated trace_consts.go into the zip
+// archive with the nonsecret tracing settings. Collector header values
+// are deliberately not a parameter: they must never be written into the
+// function source.
+func writeTraceConstsGoToZip(w *zip.Writer, path string, tracing TracingStamp) error {
+	src := fmt.Sprintf("package function\n\nvar (\n\totlpTracesEndpoint = %q\n\ttraceDeployment    = %q\n\totlpHeadersSecret  = %q\n)\n",
+		tracing.Endpoint, tracing.Deployment, tracing.HeadersSecret)
 	f, err := w.Create(path)
 	if err != nil {
 		return err

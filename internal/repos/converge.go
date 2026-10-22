@@ -2087,10 +2087,11 @@ func withoutLegacyOpenAIConsumer(ctx context.Context, resolved ResolvedConfig, f
 // contract (or rejecting an incomplete one) and the live pipeline-variable
 // override restriction, refusing a typed-to-legacy transition, and
 // confirming the root .gitlab-ci.yml would merge cleanly (e.g. no STAGE
-// conflict). It performs no writes and never mutates project state. A
-// fresh-install dry run that skips these checks can report "Would install
-// (new)" for a plan the real installation would reject — see the review
-// finding on preview fidelity.
+// conflict), and confirming the project's push rule would let the
+// poll-state branches be created. It performs no writes and never mutates
+// project state. A fresh-install dry run that skips these checks can report
+// "Would install (new)" for a plan the real installation would reject — see
+// the review finding on preview fidelity.
 func gitlabFreshInstallDryRunPreflight(ctx context.Context, resolved ResolvedConfig, installCfg InstallConfig) error {
 	client := resolved.ForgeConfig.Client
 	owner, repo := installCfg.Owner, installCfg.Repo
@@ -2130,7 +2131,7 @@ func gitlabFreshInstallDryRunPreflight(ctx context.Context, resolved ResolvedCon
 			return fmt.Errorf("merging .gitlab-ci.yml: %w", err)
 		}
 	}
-	return nil
+	return requireGitLabPushRuleAllowsPollStateBranches(ctx, client, owner, repo)
 }
 
 // convergeVariables checks and repairs variable drift for an installed repo.

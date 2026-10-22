@@ -37,11 +37,13 @@
 #   GITLAB_RUNNER_VERSION — gitlab-runner version to install (default: 19.2.1)
 #
 # Note: The OpenShell version sourced here is the *provisioning* pin
-# (.github/scripts/openshell-version.sh, Renovate-tracked) and becomes the host
-# pin. Per-job prepare.sh installs the job image's openshell --version only when
-# it equals this host pin; a job image on any other version fails the job. After
-# an OpenShell bump, re-run create-*-vm.sh --resume NUMBER from an updated
-# checkout before the VM runs runner images built from the bump.
+# (.github/scripts/openshell-version.sh, Renovate-tracked): the version the
+# host starts on. Per-job prepare.sh does not consult this copy: it reads the
+# job image's org.opencontainers.image.revision label, verifies that Fullsend
+# commit on GitHub, and installs the OpenShell version and commit pinned there
+# (the image's own openshell --version must agree). Images built on different
+# pins therefore alternate on one VM, and new Fullsend releases need no
+# create-*-vm.sh --resume.
 set -euo pipefail
 
 GITLAB_URL="${GITLAB_URL:-}"

@@ -1716,13 +1716,13 @@ func TestBuildConfigMap_AllFields(t *testing.T) {
 	assert.Contains(t, arr, "https://example.com/*")
 
 	// Issue creation config (set by NewPerRepoConfig): the default
-	// allowlist is upstream-only; the target repo is always implicitly
+	// allowlist includes both upstreams; the target repo is always implicitly
 	// allowed and needs no entry.
 	ci, ok := m["create_issues"].(map[string]any)
 	require.True(t, ok)
 	repos, ok := ci["allow_repos"].([]any)
 	require.True(t, ok)
-	assert.Equal(t, []any{"fullsend-ai/fullsend"}, repos)
+	assert.Equal(t, []any{"fullsend-ai/fullsend", "fullsend-ai/agents"}, repos)
 	assert.NotContains(t, repos, "org/repo")
 }
 

@@ -411,6 +411,8 @@ type trigState struct {
 	writes    int
 	// failWhen fails (once) the first write whose ledger satisfies it.
 	failWhen func(gitLabTriggerAccountState) bool
+	// failAlwaysWhen fails every matching ledger write until cleared.
+	failAlwaysWhen func(gitLabTriggerAccountState) bool
 	// failDeleteAfter, when positive, lets that many schedule deletions
 	// succeed and then fails every later one.
 	failDeleteAfter int
@@ -502,6 +504,11 @@ func (s *trigState) UpdateCIVariable(ctx context.Context, owner, repo, name, val
 			return errTrigInjected
 		}
 	}
+	if s.failAlwaysWhen != nil {
+		if st, err := decodeGitLabTriggerAccountState(value); err == nil && s.failAlwaysWhen(st) {
+			return errTrigInjected
+		}
+	}
 	return s.FakeClient.UpdateCIVariable(ctx, owner, repo, name, value, protected)
 }
 
@@ -541,6 +548,7 @@ func newTrigEnv() *trigEnv {
 		if ok {
 			e.f.published[id] = token
 			e.setSink(true)
+			e.state.VariableValues[trigOwner+"/"+trigRepo+"/"+forge.SecretGitLabTriggerAccountToken] = token
 		}
 		return err
 	}
@@ -572,6 +580,7 @@ func (e *trigEnv) opts() GitLabTriggerAccountOptions {
 				return err
 			}
 			e.setSink(false)
+			delete(e.state.VariableValues, trigOwner+"/"+trigRepo+"/"+forge.SecretGitLabTriggerAccountToken)
 			return nil
 		},
 		State: e.state,
@@ -726,6 +735,273 @@ func TestConvergeGitLabTriggerAccount_FreshInstall(t *testing.T) {
 		assert.Equal(t, before[m], e.f.calls[m], "reinstall must not call %s", m)
 	}
 	e.assertConverged(t, res2)
+}
+
+func TestRotateGitLabTriggerAccount_DefersRetirementUntilWebhookCutover(t *testing.T) {
+	ctx := context.Background()
+	e := newTrigEnv()
+	o := e.opts()
+	o.DeferRetirement = true
+	old, err := ConvergeGitLabTriggerAccount(ctx, o)
+	require.NoError(t, err)
+	pending, err := GitLabTriggerAccountRetirementPending(ctx, e.state, trigOwner, trigRepo)
+	require.NoError(t, err)
+	assert.False(t, pending)
+	current, err := RotateGitLabTriggerAccount(ctx, o)
+	require.NoError(t, err)
+	require.NotEqual(t, old.TriggerTokenID, current.TriggerTokenID)
+	assert.Contains(t, e.f.triggers, old.TriggerTokenID, "the old webhook bearer stays usable until cutover")
+	st, ok := e.ledger(t)
+	require.True(t, ok)
+	require.Len(t, st.Retired, 1)
+	pending, err = GitLabTriggerAccountRetirementPending(ctx, e.state, trigOwner, trigRepo)
+	require.NoError(t, err)
+	assert.True(t, pending)
+
+	require.NoError(t, RetireGitLabTriggerAccount(ctx, e.opts()))
+	assert.NotContains(t, e.f.triggers, old.TriggerTokenID)
+	st, ok = e.ledger(t)
+	require.True(t, ok)
+	assert.Empty(t, st.Retired)
+	pending, err = GitLabTriggerAccountRetirementPending(ctx, e.state, trigOwner, trigRepo)
+	require.NoError(t, err)
+	assert.False(t, pending)
+}
+
+func TestRetireGitLabTriggerAccount_WaitsForReadyReplacement(t *testing.T) {
+	ctx := context.Background()
+	e := newTrigEnv()
+	o := e.opts()
+	o.DeferRetirement = true
+	old, err := ConvergeGitLabTriggerAccount(ctx, o)
+	require.NoError(t, err)
+	e.f.fail["Unpublish"] = true
+	_, err = RotateGitLabTriggerAccount(ctx, o)
+	require.Error(t, err)
+	st, _ := e.ledger(t)
+	require.Len(t, st.Retired, 1)
+	require.False(t, st.TriggerPublished)
+	pending, err := GitLabTriggerAccountRetirementPending(ctx, e.state, trigOwner, trigRepo)
+	require.NoError(t, err)
+	assert.False(t, pending, "the webhook cannot cut over to an unfinished replacement")
+	require.NoError(t, RetireGitLabTriggerAccount(ctx, o))
+	assert.Contains(t, e.f.triggers, old.TriggerTokenID)
+	st, _ = e.ledger(t)
+	assert.Len(t, st.Retired, 1)
+}
+
+func TestConvergeGitLabTriggerAccount_LegacyDigestlessGenerationSurvivesCutover(t *testing.T) {
+	ctx := context.Background()
+	e := newTrigEnv()
+	o := e.opts()
+	o.DeferRetirement = true
+	old, err := ConvergeGitLabTriggerAccount(ctx, o)
+	require.NoError(t, err)
+	st, _ := e.ledger(t)
+	st.TriggerTokenDigest = "" // installed by a CLI before value binding
+	e.setLedger(t, st)
+
+	require.NoError(t, ContainGitLabTriggerAccount(ctx, o))
+	assert.Contains(t, e.f.triggers, old.TriggerTokenID, "early containment must not break the existing webhook")
+	assert.True(t, e.sinkPresent())
+	current, err := ConvergeGitLabTriggerAccount(ctx, o)
+	require.NoError(t, err)
+	assert.NotEqual(t, old.TriggerTokenID, current.TriggerTokenID)
+	assert.Contains(t, e.f.triggers, old.TriggerTokenID, "legacy bearer stays available until webhook cutover")
+	st, _ = e.ledger(t)
+	assert.NotEmpty(t, st.TriggerTokenDigest)
+	require.Len(t, st.Retired, 1)
+
+	require.NoError(t, RetireGitLabTriggerAccount(ctx, e.opts()))
+	assert.NotContains(t, e.f.triggers, old.TriggerTokenID)
+}
+
+func TestContainGitLabTriggerAccount_CurrentDigestTakesPrecedenceOverLegacyRetirement(t *testing.T) {
+	ctx := context.Background()
+	e := newTrigEnv()
+	o := e.opts()
+	o.DeferRetirement = true
+	old, err := ConvergeGitLabTriggerAccount(ctx, o)
+	require.NoError(t, err)
+	st, _ := e.ledger(t)
+	st.TriggerTokenDigest = "" // legacy generation without value binding
+	e.setLedger(t, st)
+	current, err := ConvergeGitLabTriggerAccount(ctx, o)
+	require.NoError(t, err)
+	st, _ = e.ledger(t)
+	require.Len(t, st.Retired, 1)
+	require.NotEmpty(t, st.TriggerTokenDigest)
+
+	key := trigOwner + "/" + trigRepo + "/" + forge.SecretGitLabTriggerAccountToken
+	e.state.VariableValues[key] = "copied-foreign-token"
+	require.NoError(t, ContainGitLabTriggerAccount(ctx, o))
+	assert.False(t, e.sinkPresent(), "a legacy retirement cannot authorize the current sink")
+	assert.NotContains(t, e.f.triggers, current.TriggerTokenID)
+	assert.NotContains(t, e.f.triggers, old.TriggerTokenID)
+}
+
+func TestContainGitLabTriggerAccount_LostMarkerSaveKeepsUnsafeSinkForRetry(t *testing.T) {
+	ctx := context.Background()
+	e := newTrigEnv()
+	o := e.opts()
+	o.DeferRetirement = true
+	old, err := ConvergeGitLabTriggerAccount(ctx, o)
+	require.NoError(t, err)
+	e.f.fail["Unpublish"] = true
+	_, err = RotateGitLabTriggerAccount(ctx, o)
+	require.Error(t, err)
+	st, _ := e.ledger(t)
+	require.True(t, st.PublicationPending)
+	delete(e.f.triggers, st.TriggerTokenID) // only the retired revocation remains
+	key := trigOwner + "/" + trigRepo + "/" + forge.SecretGitLabTriggerAccountToken
+	e.state.SecretProtections[key] = forge.SecretProtection{Exists: true, Protected: true} // unmasked
+	e.state.failAlwaysWhen = func(next gitLabTriggerAccountState) bool {
+		return !next.PublicationPending && next.PublishStarted && len(next.Retired) > 0
+	}
+	e.f.fail["RevokePipelineTriggerToken"] = true
+	require.Error(t, ContainGitLabTriggerAccount(ctx, o))
+	assert.True(t, e.sinkPresent(), "an unrecorded containment must leave the sink visible for retry")
+	assert.Contains(t, e.f.triggers, old.TriggerTokenID)
+	st, _ = e.ledger(t)
+	assert.True(t, st.PublicationPending, "the failed marker write did not reach the ledger")
+
+	e.state.failAlwaysWhen = nil
+	require.NoError(t, ContainGitLabTriggerAccount(ctx, o))
+	assert.False(t, e.sinkPresent())
+	assert.NotContains(t, e.f.triggers, old.TriggerTokenID)
+}
+
+func TestConvergeGitLabTriggerAccount_InterruptedPublishKeepsOldWebhookBearer(t *testing.T) {
+	ctx := context.Background()
+	e := newTrigEnv()
+	o := e.opts()
+	o.DeferRetirement = true
+	old, err := ConvergeGitLabTriggerAccount(ctx, o)
+	require.NoError(t, err)
+	oldValue := e.state.VariableValues[trigOwner+"/"+trigRepo+"/"+forge.SecretGitLabTriggerAccountToken]
+	st, _ := e.ledger(t)
+	st.TriggerTokenDigest = "" // generation installed before bearer binding
+	e.setLedger(t, st)
+	e.f.fail["Unpublish"] = true // crash after recording the new digest
+	_, err = ConvergeGitLabTriggerAccount(ctx, o)
+	require.Error(t, err)
+	st, _ = e.ledger(t)
+	require.True(t, st.PublishStarted)
+	require.False(t, st.TriggerPublished)
+	require.Len(t, st.Retired, 1)
+	assert.Equal(t, triggerTokenDigest(oldValue), st.Retired[0].TriggerTokenDigest)
+
+	require.NoError(t, ContainGitLabTriggerAccount(ctx, o))
+	assert.True(t, e.sinkPresent())
+	assert.Contains(t, e.f.triggers, old.TriggerTokenID)
+	assert.Equal(t, oldValue, e.state.VariableValues[trigOwner+"/"+trigRepo+"/"+forge.SecretGitLabTriggerAccountToken])
+
+	_, err = ConvergeGitLabTriggerAccount(ctx, o)
+	require.NoError(t, err)
+	assert.Contains(t, e.f.triggers, old.TriggerTokenID, "the old hook remains usable until cutover")
+}
+
+func TestConvergeGitLabTriggerAccount_InterruptedPublishAfterClearKeepsOldTrigger(t *testing.T) {
+	ctx := context.Background()
+	e := newTrigEnv()
+	o := e.opts()
+	o.DeferRetirement = true
+	old, err := ConvergeGitLabTriggerAccount(ctx, o)
+	require.NoError(t, err)
+	e.f.fail["Unpublish"] = true // stop after the new publication marker
+	_, err = RotateGitLabTriggerAccount(ctx, o)
+	require.Error(t, err)
+	st, _ := e.ledger(t)
+	require.True(t, st.PublicationPending)
+	require.Len(t, st.Retired, 1)
+
+	// Simulate a crash after the clear call but before publishing the new value.
+	e.setSink(false)
+	delete(e.state.VariableValues, trigOwner+"/"+trigRepo+"/"+forge.SecretGitLabTriggerAccountToken)
+	require.NoError(t, ContainGitLabTriggerAccount(ctx, o))
+	assert.Contains(t, e.f.triggers, old.TriggerTokenID)
+	_, err = ConvergeGitLabTriggerAccount(ctx, o)
+	require.NoError(t, err)
+	assert.Contains(t, e.f.triggers, old.TriggerTokenID, "the old hook remains usable until cutover")
+}
+
+// A second interrupted retry retires the pending generation and clears its
+// PublicationPending marker; the cleared sink must still not revoke the older
+// generation the webhook uses before it is repointed.
+func TestContainGitLabTriggerAccount_ClearedSinkSurvivesSecondInterruptedRetry(t *testing.T) {
+	ctx := context.Background()
+	e := newTrigEnv()
+	o := e.opts()
+	o.DeferRetirement = true
+	old, err := ConvergeGitLabTriggerAccount(ctx, o)
+	require.NoError(t, err)
+	e.f.fail["Unpublish"] = true // stop after the new publication marker
+	_, err = RotateGitLabTriggerAccount(ctx, o)
+	require.Error(t, err)
+	st, _ := e.ledger(t)
+	require.True(t, st.PublicationPending)
+	require.Len(t, st.Retired, 1)
+
+	// The next retry retired the pending generation (startFreshGeneration) and
+	// then failed before publishing: the current generation is empty and the
+	// sink was cleared.
+	pending := st
+	pending.Retired = nil
+	pending.PublicationPending = false
+	st.Nonce = "0123456789abcdef"
+	st.AccountID, st.DeployKeyID, st.DeployKeyFingerprint, st.GrantEntryID = 0, 0, "", 0
+	st.TriggerTokenID, st.TriggerTokenDigest = 0, ""
+	st.TriggerPublished, st.PublishStarted, st.PublicationPending = false, false, false
+	st.Retired = append(st.Retired, pending)
+	e.setLedger(t, st)
+	e.setSink(false)
+	delete(e.state.VariableValues, trigOwner+"/"+trigRepo+"/"+forge.SecretGitLabTriggerAccountToken)
+
+	require.NoError(t, ContainGitLabTriggerAccount(ctx, o))
+	assert.Contains(t, e.f.triggers, old.TriggerTokenID, "the old hook remains usable until cutover")
+}
+
+func TestConvergeGitLabTriggerAccount_InterruptedLedgerSaveAfterPublish(t *testing.T) {
+	ctx := context.Background()
+	e := newTrigEnv()
+	o := e.opts()
+	current, err := ConvergeGitLabTriggerAccount(ctx, o)
+	require.NoError(t, err)
+	st, _ := e.ledger(t)
+	st.PublicationPending = true
+	st.TriggerPublished = false // publish succeeded; the final save did not
+	e.setLedger(t, st)
+
+	resumed, err := ConvergeGitLabTriggerAccount(ctx, o)
+	require.NoError(t, err)
+	assert.Equal(t, current.TriggerTokenID, resumed.TriggerTokenID)
+	st, _ = e.ledger(t)
+	assert.True(t, st.TriggerPublished)
+	assert.False(t, st.PublicationPending)
+}
+
+func TestRemoveGitLabTriggerAccount_InterruptedPublicationRetriesAfterTeardownFailure(t *testing.T) {
+	ctx := context.Background()
+	e := newTrigEnv()
+	o := e.opts()
+	o.DeferRetirement = true
+	_, err := ConvergeGitLabTriggerAccount(ctx, o)
+	require.NoError(t, err)
+	e.f.fail["Unpublish"] = true
+	_, err = RotateGitLabTriggerAccount(ctx, o)
+	require.Error(t, err)
+	st, _ := e.ledger(t)
+	require.True(t, st.PublicationPending)
+
+	e.f.fail["RevokePipelineTriggerToken"] = true
+	require.Error(t, RemoveGitLabTriggerAccount(ctx, o))
+	st, _ = e.ledger(t)
+	assert.False(t, st.PublicationPending)
+	assert.False(t, st.PublishStarted)
+	_, err = GitLabTriggerAccountRetirementPending(ctx, e.state, trigOwner, trigRepo)
+	require.NoError(t, err, "the partly removed ledger must remain readable")
+	require.NoError(t, RemoveGitLabTriggerAccount(ctx, o))
+	e.assertRemoved(t)
 }
 
 func TestConvergeGitLabTriggerAccount_RepairsDrift(t *testing.T) {

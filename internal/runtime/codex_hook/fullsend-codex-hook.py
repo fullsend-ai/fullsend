@@ -91,8 +91,9 @@ HOOK_DIGESTS_ENV = "FULLSEND_CODEX_HOOK_DIGESTS"
 # registry; the guard re-checks the values before every spawn.
 SPAWN_DIGESTS_ENV = "FULLSEND_CODEX_SPAWN_DIGESTS"
 
-# The PATH captured before the agent-writable .env was sourced. See _child_env.
-PINNED_PATH_ENV = "FULLSEND_CODEX_PATH"
+# The launch PATH recorded before the agent-writable .env was read, without the
+# directories the agent can write. See _child_env.
+TRUSTED_PATH_ENV = "FULLSEND_TRUSTED_PATH"
 
 # Bound one script run, so a wedged stage cannot consume the budget of the
 # ones after it.
@@ -189,9 +190,10 @@ def _child_env() -> dict[str, str]:
     codex spawns the hook after the agent-writable .env has been sourced.
 
     LD_* goes the same way: it would load code into any dynamically linked
-    program a hook script runs — tirith, git — before its main. PATH is
-    inherited unchanged and is already the value the run command pinned before
-    sourcing .env, which is what makes `tirith` resolve to the real one.
+    program a hook script runs — tirith, git — before its main. PATH is set
+    from the value the run command recorded before reading .env, without the
+    directories the agent can write, which is what makes `tirith` resolve to
+    the image's own.
     """
     env = {
         k: v
@@ -201,16 +203,30 @@ def _child_env() -> dict[str, str]:
     # Inert under `-I`, which already ignores the user site directory. Kept as
     # a second latch so dropping the flag does not silently re-enable it.
     env["PYTHONNOUSERSITE"] = "1"
-    # PATH from the value the run command captured before .env was sourced,
-    # when it is available. The hook scripts resolve their tools by name —
+    # PATH from the value the run command recorded before .env was read, with
+    # the directories the agent user owns or can write left out (run_script
+    # blocks before spawning when it is missing).
+    # Codex's own PATH keeps those directories. The hook scripts resolve their tools by name —
     # tirith_check.py runs a bare `tirith` — so a PATH with a planted entry
     # ahead of the real one neuters the chain with every digest still green.
     # Taking it from here rather than from the inherited PATH means the
     # defence does not rest on nothing having touched PATH in between.
-    pinned = os.environ.get(PINNED_PATH_ENV, "").strip()
-    if pinned:
+    pinned = trusted_path()
+    if pinned is not None:
         env["PATH"] = pinned
     return env
+
+
+def trusted_path() -> str | None:
+    """The PATH the run command recorded before .env was read, or None when it
+    is missing, empty, or has an entry that is not an absolute directory (an
+    empty or relative entry would search the working directory). The run
+    command always sets it before codex starts, so None means the launch was
+    not the one fullsend built; run_script then blocks."""
+    value = os.environ.get(TRUSTED_PATH_ENV, "")
+    if not value or not all(d.startswith("/") for d in value.split(":")):
+        return None
+    return value
 
 
 # How a hook script is executed. `-I` alone is not enough and a bare script
@@ -483,6 +499,13 @@ def run_script(script: str, payload: dict[str, Any]) -> dict[str, Any]:
         digest_error = verify_hooks_dir()
     if digest_error is not None:
         return {"block": True, "reason": digest_error, "output": None}
+    if trusted_path() is None:
+        return {
+            "block": True,
+            "reason": f"fullsend: {TRUSTED_PATH_ENV} is missing or malformed, so hook "
+            f"{script} has no trusted PATH to run with (fail closed)",
+            "output": None,
+        }
     timeout = script_timeout(time.monotonic() - _START)
     if timeout is None:
         return {

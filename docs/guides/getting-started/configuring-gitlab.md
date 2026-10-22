@@ -45,6 +45,13 @@ GitHub repositories use a different command (`fullsend github setup`). See
   their compatible setting. See [GitLab Role-Credential
   Contract](../../contributing/gitlab-role-credentials.md#how-a-job-selects-its-credential)
   for the remaining live-validation rollout gates for this transport.
+* If the project has a push rule with a branch name regex (**Settings >
+  Repository > Push rules > Branch name**), it must also match
+  `fullsend-poll-state-slash` and `fullsend-poll-state-events`. Install
+  creates those branches, so `repos install` (including `--dry-run`) reads
+  the push rule and stops before any write when the regex rejects a branch
+  that does not exist yet. The check is skipped when the push rule cannot
+  be read, for example on editions without push rules.
 
 ## Typed-input dispatch migration
 
@@ -228,7 +235,12 @@ Install then converges the project:
   a pipeline trigger token stored as the protected, masked
   `FULLSEND_TRIGGER_TOKEN` variable, a generated `FULLSEND_WEBHOOK_SECRET`,
   and a project webhook (issues, merge requests, comments) that triggers a
-  pipeline on the protected default branch. Existing credential variables
+  pipeline on the protected default branch. Opening an issue dispatches
+  triage through the webhook fast path; events-mode cron polling recovers
+  the issue open if webhook delivery is missed. The agent job runs triage
+  only when the issue author has Developer access or higher; for a
+  Reporter, Guest, or non-member author it exits successfully without
+  running triage. Existing credential variables
   are reused only when masked, protected, and wildcard-scoped; otherwise they
   are regenerated. Only webhooks Fullsend owns are updated or deleted. This
   step is deferred until the dispatcher and its scripts are on the default
@@ -248,7 +260,9 @@ Install then converges the project:
   missing or drifted webhook or token; `--rotate-gitlab-trigger-token`
   rotates the token and revokes the old one after the webhook is updated.
   The polling schedules stay in place as the backstop. Token and secret
-  values are never printed.
+  values are never printed. Once install records the trigger-account
+  dispatch activation, the webhook uses the trigger-only account's trigger
+  token instead (see [Trigger-only service account](#trigger-only-service-account)).
   The install-time Maintainer access is used only to create and revoke
   these resources; it is not a runtime credential. A trigger token runs
   pipelines as its owner, so install verifies the owner's effective
@@ -257,9 +271,11 @@ Install then converges the project:
   up): it revokes the token, removes the managed webhook, and leaves the
   fast path disabled. A rejected owner is reported as a deferral rather
   than an installation failure once cleanup succeeded; owner-lookup and
-  cleanup failures are still reported as errors. A Developer-owned token
-  also needs push or merge access to the protected default branch; an
-  owner without it defers the fast path with remediation guidance. The
+  cleanup failures are still reported as errors. For the Poller fallback
+  route, a Developer-owned trigger token also needs push or merge access to
+  the protected default branch; an owner without it defers the fast path
+  with remediation guidance. The trigger-only account instead uses its
+  default-branch deploy-key grant for repository access. The
   webhook is enabled only after the committed wrapper, root, and
   agent/poll templates carry the typed pipeline-input contract, and the
   default branch must stay protected. Because GitLab ties a trigger
@@ -267,9 +283,11 @@ Install then converges the project:
   when the only available creator is a Maintainer or Owner; the polling
   schedules keep working, and the poller, dispatcher, and agent
   credentials stay Developer-level. Where the project is eligible, the
-  trigger is owned by a fresh Poller service account that is verified at
-  Developer before its credential is published; see
-  [Project service accounts](#project-service-accounts).
+  Poller fallback trigger is owned by a fresh Poller service account that is
+  verified at Developer before its credential is published. When dispatch
+  activation is recorded, the webhook instead uses the trigger-only account's
+  published trigger; see
+  [Trigger-only service account](#trigger-only-service-account).
 * Writes inference CI/CD variables when a GCP project is supplied, by
   `--vertex-project` or a declared `inference.project` (see
   [Inference Setup](#inference-setup)).
@@ -607,7 +625,8 @@ no drain barrier for requests accepted before revocation. Install:
    default-branch pipeline access read-only and defers the handoff before
    elevation when the existing policy (for example a protected default branch
    that only lists individual users) excludes the replacement Poller; it never
-   writes a merge grant for the replacement account.
+   writes a merge grant (an individual user's entry under **Allowed to merge**
+   on a protected branch) for the replacement account.
 2. Creates an installer-only bootstrap personal access token for the
    replacement account. The bootstrap token is never stored in a CI/CD
    variable, log, or agent environment.
@@ -630,10 +649,9 @@ no drain barrier for requests accepted before revocation. Install:
 6. Records that the trigger may be distributed, stores the trigger secret
    (`FULLSEND_TRIGGER_TOKEN`), and creates or updates the webhook. Then, only
    after both succeed, publishes the replacement runtime credential and cuts
-   over. The previous Poller stays at Developer as the retiring generation
-   until it is retired
-   ([#8244](https://github.com/fullsend-ai/fullsend/issues/8244)); until then
-   a forced trigger rotation defers and keeps the existing fast path.
+   over. The previous Poller stays at Developer as the retiring generation,
+   and a later install retires it (see below); until then a forced trigger
+   rotation defers and keeps the existing fast path.
 
 The current Poller is never elevated or modified, and keeps polling
 throughout, so polling and in-flight jobs that authenticate as the current
@@ -669,11 +687,49 @@ lost; see the variable table in the
 [operations guide](operations.md) for the full recovery steps.
 
 An unresolved retiring Poller is a separate condition: it blocks any new
-generation and cutover, and removing `pending` does not clear it. Retirement
-completes only after the recorded retiring account's schedules, credentials,
-triggers and account are removed and its `retiring_user_id` is then cleared
-through the retirement step (`finishPollerRetirement`). Polling continues with
-the current Poller in the meantime.
+generation and cutover, and removing `pending` does not clear it. A later
+`repos install` retires it
+([#8244](https://github.com/fullsend-ai/fullsend/issues/8244)) under the project
+lease, once all of these hold:
+
+- the cutover is confirmed, meaning the managed Poller is the recorded current
+  generation;
+- the 24-hour rotation grace has elapsed since the replacement credential was
+  distributed, so in-flight jobs that read the previous credential can finish;
+- no unfinished job runs as the retiring account.
+
+Until then install reports why retirement is waiting and changes nothing.
+Retirement revokes the pipeline triggers the retiring account owns, never the
+trigger a webhook uses: install re-reads the webhook, the trigger inventory and
+the trigger-account ledger immediately before revoking, on both the
+trigger-account route and the installer-owned Poller route, and waits when a
+managed webhook's trigger cannot be identified. When GitLab does not report the
+owner of a trigger, fullsend revokes it only if it carries the managed webhook
+trigger description and no webhook uses it. Any other trigger without an owner
+cannot be attributed, so install keeps the retirement waiting and names the
+trigger: revoke it in **Settings → CI/CD → Pipeline trigger tokens** if it is
+not in use, then rerun install. A failing retirement never stops install from
+repairing the webhook; the error is reported and retirement is retried by the
+next install. It does not change any merge grant (an individual user's entry
+under **Allowed to merge** on a protected branch) on the protected default
+branch, because fullsend does not record who created a per-user grant
+and it may be an administrator's. Retirement revokes the account's credentials,
+verifies that it holds no active token, SSH key, unfinished job, schedule or
+trigger, deletes it, confirms by listing again that it is gone, and only then
+clears `retiring_user_id`. If the protected default branch still lists a merge
+grant for the retired account, install reports it so you can remove it in
+**Settings → Repository → Protected branches** if it is no longer needed. Each
+step can be safely repeated. A step that fails or
+cannot be verified leaves `retiring_user_id` in place for the next install to
+retry. An account that owns an administrator-supplied credential is never
+deleted. Polling continues with the current Poller throughout.
+
+Retirement also enforces the GitLab Free-tier account quota. ADR 0125 sets no
+numeric Free-tier limit, so the bound is that at most one old/new pair of
+Poller accounts exists at a time: the current Poller plus either one pending
+replacement or one retiring Poller. At most three abandoned replacements may
+also await deletion. Repeated installs and rotations therefore return to a
+single Poller instead of accumulating service accounts.
 
 The current Poller is not raised, so its own credentials do not block the
 handoff. The checks that guard the temporary Maintainer elevation apply to the
@@ -698,12 +754,26 @@ for details.
 
 `repos install` also sets up a separate, trigger-only project service account
 for the protected-branch dispatch route that
-[#8438](https://github.com/fullsend-ai/fullsend/issues/8438) activates. The
-webhook fast path is unchanged
-([#8509](https://github.com/fullsend-ai/fullsend/issues/8509)), but once
-install records the dispatch activation, scheduled polling moves onto the
-trigger-only account and dispatches through the child-pipeline route (see
-"Polling schedule ownership" below). It needs only project Maintainer (or Owner) access: no
+[#8438](https://github.com/fullsend-ai/fullsend/issues/8438) activates. Once
+install records the dispatch activation, scheduled polling moves onto
+the trigger-only account and dispatches through the child-pipeline route (see
+"Polling schedule ownership" below), and the managed webhook moves onto the
+account's trigger token
+([#8509](https://github.com/fullsend-ai/fullsend/issues/8509)): a
+webhook-triggered pipeline then runs as the account and dispatches through the
+same child-pipeline route. Install points the webhook at the published
+`FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN` and records the account's trigger ID in
+the webhook description, then revokes the Poller-owned webhook trigger and
+deletes `FULLSEND_TRIGGER_TOKEN`. Install converges the webhook again after the
+trigger account stage, so an account rotation re-points it, and a withdrawn
+activation returns it to a Poller-owned trigger on the Poller `api` route.
+If a Poller role stage fails, install leaves a requested trigger-account
+rotation pending rather than revoking the token still embedded in the webhook.
+While the activation is not recorded (for example where the trigger account
+lacks merge access to the protected default branch and the schedules stay
+installer-owned), the webhook keeps its Poller-owned trigger, and the Poller
+protected-branch merge grant stays in use. `--rotate-gitlab-trigger-token` does
+not rotate the account's trigger token; use `--rotate-gitlab-trigger-account`. It needs only project Maintainer (or Owner) access: no
 instance administrator and no persistent Maintainer token or private key.
 
 Install creates the account (`fullsend-trigger-<nonce>`), temporarily raises it
@@ -715,6 +785,28 @@ never the Poller account. The `FULLSEND_GITLAB_TRIGGER_ACCOUNT` ledger records
 account, deploy-key, and trigger-token obligations before creation. Managed
 schedules are instead recognized by their exact descriptions and verified
 owner. An interrupted run is finished by running install again.
+The poller, dispatcher, and agent job scripts unset this bearer before doing
+work, and `fullsend run` keeps it out of harness expansion and child processes.
+If project-wide trigger safety checks fail after publication, install removes
+the variable and revokes the account-owned trigger using the ledger's cleanup
+record. It will not republish the token until those checks pass.
+If `ci_push_repository_for_job_token_allowed` becomes enabled or cannot be
+verified, install removes the published account token and revokes its trigger;
+withdrawing dispatch activation alone does not contain a copied bearer.
+#8509 adds two keys to the strict ledger schema: `trigger_token_digest` (the
+token fingerprint) and `publication_pending` (the replacement-publication
+marker). The ledger stays at version 1, and older strict decoders reject
+either key before they read the version. Use
+the first CLI release or source commit containing #8509 (or newer) for
+`repos install`, `repos status`, rotation, and `repos uninstall` after it writes
+the ledger. There is no in-place downgrade path for an installed account:
+uninstall it with a compatible CLI before using an older installer. Older
+CLIs may report an unknown ledger field instead of an unsupported version.
+#8509 also starts automatic triage for newly opened GitLab issues. After
+upgrading, a project with a `triage` agent and an active webhook fast path
+triages each issue opened by a Developer-or-higher member. Before #8509,
+triage started only from a `/fs-triage` comment. Issues opened by Reporter,
+Guest, or non-member authors are not triaged automatically.
 
 Install defers, creates nothing, and reports the reason (polling stays in
 place) when the default branch is covered only by a wildcard protected-branch
@@ -744,7 +836,8 @@ reason and resource IDs.
 - **Rotate:** `repos install --rotate-gitlab-trigger-account` replaces the
   whole identity with a fresh account generation (account, deploy key, push
   entry, and trigger token) and retires the previous generation after the new
-  token is published. A published identity is never raised to Maintainer again,
+  token is published and the managed webhook is verified on its new route. A
+  failed webhook cutover keeps the old generation for retry. A published identity is never raised to Maintainer again,
   because a trigger request accepted earlier can still become a job. Install
   does the same when the token variable is missing or unsafe (not masked, not
   protected, file-typed, or environment-scoped) or the deploy key is gone. If a
@@ -753,7 +846,11 @@ reason and resource IDs.
 - **GitLab.com Free:** GitLab refuses the legacy per-user protected-branch
   merge grant for the Poller. Install still prepares the trigger account in
   that case. The Poller access failure is reported once for the repo, and the
-  dispatch-route stages that follow it (the webhook fast path) stay skipped.
+  full dispatch-route stages that follow it stay skipped. Install still
+  refreshes the webhook after ordinary trigger-account repair if the account
+  route is active, because repair can replace its token. It does not move an
+  account webhook onto an unverified Poller route; a requested rotation waits
+  for a successful Poller stage.
 - **Dispatch activation gate:** whenever install leaves the trigger account
   ready, including after the Poller grant is refused, it rechecks the
   prerequisites for the child-pipeline route that uses the account's job token and
@@ -779,11 +876,12 @@ reason and resource IDs.
   generation (nonce and resource IDs); each later install, repair, rotation,
   containment pass or uninstall deletes it first, so the child-pipeline
   dispatch route is never selected or admitted on a ready account alone. The
-  `FULLSEND_GITLAB_TRIGGER_ACCOUNT` ledger itself gains no field, so an older
-  CLI keeps reading it. An older CLI does not know the activation variable: if
-  it rotates, repairs or removes the account, the record no longer matches the
-  ledger and the scaffold falls back to the Poller route until a current CLI
-  install records a fresh activation. The gate also defers when a committed CI
+  dispatch activation stays outside the `FULLSEND_GITLAB_TRIGGER_ACCOUNT`
+  ledger. This version adds the `trigger_token_digest` and
+  `publication_pending` keys to that ledger, however, so older strict CLI
+  decoders reject it; use this version or newer for later install,
+  status, repair, rotation, or uninstall, even if schedules remain
+  installer-owned. The gate also defers when a committed CI
   job, other than Fullsend's own, would run in a trigger, agent child
   (`source=pipeline`) or scheduled (`source=schedule`) pipeline, and while the
   committed dispatch scripts, including helpers that run before authorization,
@@ -859,15 +957,26 @@ reason and resource IDs.
   When the activation is not recorded (the account or the gate deferred, or the
   account stage failed), install hands any account-owned schedule back to the
   installer instead. This also happens before the account is ever raised to
-  Maintainer and when rotation or repair retires an account. Each move creates
+  Maintainer and when rotation or repair retires an account while the
+  activation is not recorded. When rotation or repair records the activation
+  for the replacement generation, the schedules the retired account still owns
+  move straight to the replacement account in the same run. While the
+  activation is recorded, `repos status` reports any managed schedule the
+  trigger account does not own as drift; re-run install to move it. Install
+  refuses a schedule whose owner is not a retired generation or a verified
+  installer Maintainer; an administrator must remove or reassign that one first.
+  Each move creates
   the replacement before deleting the original, so an interrupted run leaves a
   duplicate that the next install removes. If an install stops before it
   reaches the trigger-account stage, the activation stays withdrawn and the
   poll job selects the `api` route, so the account-owned schedules keep
   dispatching with the Poller credential until an install completes. Re-run
-  install. Use this release or newer for subsequent `repos install` and
-  `repos uninstall` runs: older CLIs treat account-owned managed schedules as foreign
-  and refuse the operation. Upgrade the CLI before retrying.
+  install. Use this release or newer for subsequent `repos install`,
+  `repos status`, and `repos uninstall` runs: older strict CLIs reject the
+  `trigger_token_digest` and `publication_pending` ledger keys even while
+  schedules are installer-owned.
+  Older CLIs also treat account-owned managed schedules as foreign and refuse
+  their cleanup. Upgrade the CLI before retrying.
 - **Deferral and unsafe token variable:** a branch-change, override-role, or
   capability deferral first removes an unsafe published token variable and
   revokes its ownership-verified trigger. A weakened or unreadable override
@@ -1452,6 +1561,19 @@ Confirm:
   registered under Settings → CI/CD → Runners — when that tag differs
   from `gitlab.agent_runner_tags`, both need their own registered runner
   (see [Assigning runners](#assigning-runners)).
+* **Dispatcher pipelines** — With the webhook fast path enabled, every
+  issue, merge request, and comment event creates a `trigger` pipeline
+  that runs the dispatcher job. GitLab creates that pipeline before
+  Fullsend can read `TRIGGER_PAYLOAD`, so the pipeline appears even for
+  events that dispatch nothing. An issue edit that does not change labels
+  (title, description, assignee) is ignored: the job logs
+  `ignoring issue #N update without changes.labels` and succeeds without
+  starting an agent pipeline. A failed dispatcher job means the payload
+  was rejected, not ignored. Typical causes are a label change the API
+  re-fetch contradicts or cannot tie to the acting user, a stale or
+  replayed event, or an unsupported action such as a merge request edit
+  or an issue reopen. Nothing is dispatched for a rejected payload, and
+  the job log names the check that failed.
 * **Role identities** — On instances with project service accounts, a fresh
   install shows `fullsend-poller`, `fullsend-analyst`, and `fullsend-coder`
   (plus any `fullsend-role-*` accounts) under Project information → Members
@@ -1467,16 +1589,24 @@ Confirm:
   owner's username instead; no project access token is created.
 * **CI/CD variables** — `FULLSEND_DISPATCH_SECRET`, `FULLSEND_GCP_PROJECT_ID`,
   and `FULLSEND_GCP_WIF_PROVIDER` exist and are protected.
-  When the webhook fast-path is enabled, `FULLSEND_TRIGGER_TOKEN` and
-  `FULLSEND_WEBHOOK_SECRET` are also stored as masked, protected variables
-  and must never appear in logs. The poller, dispatcher, and agent jobs unset
-  both variables before doing any work, and the runner never exposes them to
+  When the webhook fast-path is enabled, `FULLSEND_WEBHOOK_SECRET` is also
+  stored as a masked, protected variable, together with
+  `FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN` on the trigger-account route or
+  `FULLSEND_TRIGGER_TOKEN` on the Poller-owned route (`FULLSEND_TRIGGER_TOKEN`
+  is deleted once the account route is active, so its absence there is not a
+  provisioning failure). These values must never appear in logs. The poller, dispatcher, and agent jobs unset
+  the applicable trigger token and webhook secret before doing any work, and the runner never exposes them to
   harness scripts or the sandbox. If the stored trigger token's privilege
-  cannot be bounded (an unmanaged pipeline trigger owned at or above
-  Maintainer, or one whose owner cannot be verified, could be that token),
+  cannot be bounded on the Poller route (an unmanaged pipeline trigger owned at
+  or above Maintainer, or one whose owner cannot be verified, could be that token),
   `repos install` deletes the `FULLSEND_TRIGGER_TOKEN` variable and the
   Fullsend-managed webhook and trigger tokens instead of leaving the bearer
-  in storage; unmanaged trigger tokens are never revoked.
+  in storage; unmanaged trigger tokens are never revoked. On the account route,
+  install compares the published value with the digest recorded when the
+  account trigger was created. An existing healthy account without a digest
+  keeps its token through a fresh-generation cutover; a mismatched digest
+  tears down the managed webhook and contains the account's published token
+  and trigger.
   `FULLSEND_FORGE_TOKEN` may remain only as a legacy artifact; no automated
   path retires it, so an administrator must manually remove it (see
   above). Role-aware installs also provision

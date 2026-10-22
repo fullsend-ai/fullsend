@@ -1717,6 +1717,20 @@ func TestGitLabWebhookNeedsProvisioning_ProtectionErrorRedactsBothCredentials(t 
 	assert.Contains(t, err.Error(), credentialRedacted)
 }
 
+// The trigger account's published token, which the webhook embeds on the
+// account route, is redacted from probe errors as well (#8509).
+func TestGitLabWebhookNeedsProvisioning_ProtectionErrorRedactsAccountToken(t *testing.T) {
+	c := newWebhookFake()
+	ensureWebhook(t, c, false, false)
+	require.NoError(t, c.CreateRepoSecret(context.Background(), webhookTestOwner, webhookTestRepo, forge.SecretGitLabTriggerAccountToken, "account-bearer-value"))
+	c.Errors = map[string]error{"GetRepoSecretProtection": errors.New("500: upstream said token=account-bearer-value")}
+
+	_, err := GitLabWebhookNeedsProvisioning(context.Background(), c, webhookTestBase, webhookTestOwner, webhookTestRepo)
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "account-bearer-value")
+	assert.Contains(t, err.Error(), credentialRedacted)
+}
+
 // Protected tags are refs a project-wide trigger token can target, so any
 // protected-tag rule, exact or wildcard, defers provisioning.
 func TestEnsureGitLabWebhookFastPath_ProtectedTagsDeferProvisioning(t *testing.T) {

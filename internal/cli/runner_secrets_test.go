@@ -14,6 +14,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/prescript"
+	"github.com/fullsend-ai/fullsend/internal/sandbox"
 	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 	"gopkg.in/yaml.v3"
@@ -406,6 +407,64 @@ func TestRunnerSecretNameRefused_AllowsOrdinaryNames(t *testing.T) {
 	for _, name := range []string{"JIRA_TOKEN", "JIRA_USER_EMAIL", "JIRA_BASE_URL", "OTEL_EXPORTER_OTLP_HEADERS",
 		"GIT_BOT_EMAIL", "OPENSHELL_VERSION", "TARGET_REPO_DIR", "GOOGLE_APPLICATION_CREDENTIALS", "CLOUDSDK_CORE_PROJECT"} {
 		assert.True(t, runnerSecretNameRefused(name), name)
+	}
+}
+
+// TestRunnerSecretNameRefused_AllowsCredentialClassNames pins the two doors
+// (ADR 0145): the env.sandbox gate refuses every credential-class name, and
+// the runner-secret door accepts it, because runner secrets reach only
+// host-side scripts. A name that is also in reservedSandboxKeys (PATH, HOME,
+// SHELL, BASH_ENV, ENV, LD_PRELOAD, LD_LIBRARY_PATH) or under a refused
+// loader prefix stays refused at both doors. Credential names are read live
+// from sandbox.ReservedCredentialKeys, so a new one is covered at once.
+func TestRunnerSecretNameRefused_AllowsCredentialClassNames(t *testing.T) {
+	t.Parallel()
+
+	credentialKeys := sandbox.ReservedCredentialKeys()
+	require.NotEmpty(t, credentialKeys, "no credential names to probe; this test is vacuous")
+
+	for _, name := range credentialKeys {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.True(t, isReservedSandboxKey(name),
+				"%s must be refused by the env.sandbox gate", name)
+
+			if reservedSandboxKeys[name] || strings.HasPrefix(name, "LD_") || strings.HasPrefix(name, "DYLD_") {
+				// Also refused as a runner-secret key: runner infrastructure
+				// or dynamic-loader names.
+				assert.True(t, runnerSecretNameRefused(name),
+					"%s is dual-class (credential and infrastructure) and must stay refused at both doors", name)
+			} else {
+				assert.False(t, runnerSecretNameRefused(name),
+					"%s is credential-class only: refused in env.sandbox, not as a runner-secret key for host-side scripts", name)
+			}
+		})
+	}
+
+	// Runner-only infrastructure names (not in the credential list) stay
+	// refused at both doors.
+	t.Run("TRACEPARENT", func(t *testing.T) {
+		t.Parallel()
+
+		assert.True(t, runnerSecretNameRefused("TRACEPARENT"),
+			"TRACEPARENT is runner infrastructure and must stay refused as a runner-secret key")
+		assert.True(t, isReservedSandboxKey("TRACEPARENT"),
+			"TRACEPARENT must also stay refused by the env.sandbox gate")
+	})
+}
+
+// TestRunnerSecretNameRefused_CaseInsensitive pins the case fold: a
+// lowercase or mixed-case key is refused exactly when its uppercase form
+// is, and credential-class names stay allowed in any case.
+func TestRunnerSecretNameRefused_CaseInsensitive(t *testing.T) {
+	t.Parallel()
+
+	for _, name := range []string{"path", "Home", "github_x", "ld_preload", "dyld_library_path", "fullsend_x", "jira_token"} {
+		assert.True(t, runnerSecretNameRefused(name), "%s must be refused regardless of case", name)
+	}
+	for _, name := range []string{"https_proxy", "ssl_cert_file", "my_secret"} {
+		assert.False(t, runnerSecretNameRefused(name), "%s must stay allowed", name)
 	}
 }
 

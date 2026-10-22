@@ -184,9 +184,28 @@ func maskingRequired(name string) bool {
 	return strings.HasPrefix(name, "FULLSEND_GITLAB_ROLE_") && strings.HasSuffix(name, "_TOKEN")
 }
 
+// isMaskingError reports whether a 400 response rejected the variable because
+// its value cannot be masked. Some GitLab instances say so explicitly ("can
+// not be masked"); others return only a generic field validation error,
+// {"message":{"value":["is invalid"]}}, which extractMessage renders as
+// "value: [is invalid]" (e.g. a value shorter than 8 characters). That error
+// is treated as a masking rejection too; if the value is invalid for another
+// reason, the unmasked retry fails and its error is returned. Secrets in
+// maskingRequired are never retried unmasked either way.
 func isMaskingError(err *APIError) bool {
-	return err.StatusCode == http.StatusBadRequest &&
-		strings.Contains(strings.ToLower(err.Message), "mask")
+	if err.StatusCode != http.StatusBadRequest {
+		return false
+	}
+	msg := strings.ToLower(err.Message)
+	if strings.Contains(msg, "mask") {
+		return true
+	}
+	for part := range strings.SplitSeq(msg, "; ") {
+		if strings.HasPrefix(part, "value: ") && strings.Contains(part, "is invalid") {
+			return true
+		}
+	}
+	return false
 }
 
 func isAlreadyExistsError(err *APIError) bool {

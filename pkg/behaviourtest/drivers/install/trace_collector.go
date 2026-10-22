@@ -6,10 +6,13 @@
 // random bearer token, required by the receiver, is delivered to each
 // leased repository as the OTEL_EXPORTER_OTLP_TRACES_HEADERS secret
 // next to the OTEL_EXPORTER_OTLP_TRACES_ENDPOINT variable the reusable
-// workflows already read. The Collector writes one JSONL file per trace
-// ID; Finalize copies those files and the Collector log under
-// BEHAVIOUR_ARTIFACT_DIR before the job's redaction and upload steps
-// run.
+// workflows already read. The preview mint driver starts the collector
+// before deploying its mint and passes the same endpoint and token to
+// `fullsend mint deploy`, so mint spans land in the same trace files as
+// the workflow spans that called the mint. The Collector writes one
+// JSONL file per trace ID; Finalize copies those files and the
+// Collector log under BEHAVIOUR_ARTIFACT_DIR before the job's redaction
+// and upload steps run.
 package install
 
 import (
@@ -160,8 +163,9 @@ func execCommandRunner(ctx context.Context, extraEnv []string, name string, args
 // traceSink is the composed driver's view of the trace collector.
 type traceSink interface {
 	// ConfigureRepo points a freshly installed repository's workflows
-	// at the collector.
-	ConfigureRepo(ctx context.Context, org, repo string) error
+	// at the collector, using client (the repository org's
+	// credentials).
+	ConfigureRepo(ctx context.Context, client forge.Client, org, repo string) error
 	// Stop flushes and stops the collector, copies the trace files
 	// under the artifact dir and removes the token from every
 	// artifact. Safe to call more than once.
@@ -170,7 +174,6 @@ type traceSink interface {
 
 // traceCollector owns the Collector and tunnel containers.
 type traceCollector struct {
-	client      forge.Client
 	logf        func(string, ...any)
 	run         commandRunner
 	httpClient  *http.Client
@@ -217,9 +220,8 @@ func traceCollectorEnabled(getenv func(string) string) (bool, error) {
 }
 
 // newTraceCollector returns a collector with production dependencies.
-func newTraceCollector(client forge.Client, artifactDir string, logf func(string, ...any)) *traceCollector {
+func newTraceCollector(artifactDir string, logf func(string, ...any)) *traceCollector {
 	return &traceCollector{
-		client:       client,
 		logf:         logf,
 		run:          execCommandRunner,
 		httpClient:   &http.Client{Timeout: 10 * time.Second},
@@ -230,29 +232,33 @@ func newTraceCollector(client forge.Client, artifactDir string, logf func(string
 	}
 }
 
-// withTraceCollector starts the job-scoped trace collector when the
-// environment enables it and attaches it to a composed driver. A
-// collector that cannot start is logged and skipped: trace collection
-// is diagnostic and must not fail the suite.
-func withTraceCollector(d Driver, client forge.Client, logf func(string, ...any)) Driver {
-	cd, ok := d.(*composedDriver)
-	if !ok {
-		return d
-	}
+// traceStart is the outcome of starting the job-scoped collector before
+// the driver that will own it exists, so the suite's mint can be
+// deployed with the collector as its trace destination. started is the
+// running collector; pending is a collector that failed to start and
+// whose cleanup Finalize must retry. Both are nil when collection is off.
+type traceStart struct {
+	started *traceCollector
+	pending interface{ Stop(context.Context) error }
+}
+
+// startTraceCollector starts the collector when the environment enables
+// it. Failures are logged and leave started nil: trace collection is
+// diagnostic and must not fail the suite.
+func startTraceCollector(logf func(string, ...any)) traceStart {
 	enabled, err := traceCollectorEnabled(os.Getenv)
 	if err != nil {
 		logf("[trace-collector] WARNING: not collecting traces: %v", err)
-		return d
+		return traceStart{}
 	}
 	if !enabled {
-		return d
+		return traceStart{}
 	}
 	if _, err := exec.LookPath("podman"); err != nil {
 		logf("[trace-collector] WARNING: not collecting traces: podman not found: %v", err)
-		return d
+		return traceStart{}
 	}
-	tc := newTraceCollector(client,
-		strings.TrimSpace(os.Getenv("BEHAVIOUR_ARTIFACT_DIR")), logf)
+	tc := newTraceCollector(strings.TrimSpace(os.Getenv("BEHAVIOUR_ARTIFACT_DIR")), logf)
 	// Bounds image pulls and readiness waits.
 	ctx, cancel := context.WithTimeout(context.Background(), traceCollectorStartTimeout)
 	defer cancel()
@@ -262,12 +268,81 @@ func withTraceCollector(d Driver, client forge.Client, logf func(string, ...any)
 		// containers (and the token) are still around: have Finalize
 		// retry, without pointing any repository at the collector.
 		if tc.cleanupPending() {
-			cd.pendingTraces = tc
+			return traceStart{pending: tc}
 		}
+		return traceStart{}
+	}
+	return traceStart{started: tc}
+}
+
+// attach hands the collector to a composed driver, which configures each
+// leased repository and stops the collector at Finalize. A driver that
+// is not composed cannot own it, so the collector is stopped instead.
+func (s traceStart) attach(d Driver) Driver {
+	cd, ok := d.(*composedDriver)
+	if !ok {
+		s.abort()
 		return d
 	}
-	cd.traces = tc
+	if s.started != nil {
+		cd.traces = s.started
+	}
+	if s.pending != nil {
+		cd.pendingTraces = s.pending
+	}
 	return d
+}
+
+// abort stops a collector that will not be attached (the factory
+// failed), so its containers and token do not outlive the suite.
+func (s traceStart) abort() {
+	if s.started != nil {
+		if err := s.started.Stop(context.Background()); err != nil {
+			s.started.logf("[trace-collector] cleanup after failed driver setup: %v", err)
+		}
+	}
+	if s.pending != nil {
+		_ = s.pending.Stop(context.Background())
+	}
+}
+
+// mintTracing writes the collector headers to a private temporary file
+// for `fullsend mint deploy --otlp-headers-file`, so the token never
+// appears on a command line, and returns the traces endpoint and the
+// file path. It returns empty values when no collector is running. The
+// caller must call cleanup once the deploy has finished.
+func (s traceStart) mintTracing() (endpoint, headersFile string, cleanup func(), err error) {
+	cleanup = func() {}
+	if s.started == nil {
+		return "", "", cleanup, nil
+	}
+	f, err := os.CreateTemp("", "bt-otlp-headers-*")
+	if err != nil {
+		return "", "", cleanup, fmt.Errorf("creating mint headers file: %w", err)
+	}
+	path := f.Name()
+	cleanup = func() { _ = os.Remove(path) }
+	// CreateTemp already uses 0600; make it explicit for the CLI check.
+	if err := f.Chmod(0o600); err != nil {
+		f.Close()
+		cleanup()
+		return "", "", func() {}, fmt.Errorf("protecting mint headers file: %w", err)
+	}
+	_, werr := f.WriteString(s.started.collectorHeaders() + "\n")
+	if cerr := f.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr != nil {
+		cleanup()
+		return "", "", func() {}, fmt.Errorf("writing mint headers file: %w", werr)
+	}
+	return s.started.endpoint, path, cleanup, nil
+}
+
+// collectorHeaders returns the receiver's bearer-token header in
+// OTEL_EXPORTER_OTLP_HEADERS syntax.
+func (c *traceCollector) collectorHeaders() string {
+	return "Authorization=Bearer%20" + c.token
 }
 
 // Start generates the token, starts the Collector and the tunnel, and
@@ -494,12 +569,13 @@ func (c *traceCollector) poll(ctx context.Context, what string, check func() (bo
 
 // ConfigureRepo sets the traces endpoint variable and the bearer-token
 // headers secret on a leased repository. The repository is deleted at
-// deallocation, which removes both.
-func (c *traceCollector) ConfigureRepo(ctx context.Context, org, repo string) error {
-	if err := c.client.CreateOrUpdateRepoVariable(ctx, org, repo, otelTracesEndpointVar, c.endpoint); err != nil {
+// deallocation, which removes both. client holds the repository org's
+// credentials.
+func (c *traceCollector) ConfigureRepo(ctx context.Context, client forge.Client, org, repo string) error {
+	if err := client.CreateOrUpdateRepoVariable(ctx, org, repo, otelTracesEndpointVar, c.endpoint); err != nil {
 		return fmt.Errorf("setting variable %s: %w", otelTracesEndpointVar, err)
 	}
-	if err := c.client.CreateRepoSecret(ctx, org, repo, otelTracesHeadersSecret, "Authorization=Bearer%20"+c.token); err != nil {
+	if err := client.CreateRepoSecret(ctx, org, repo, otelTracesHeadersSecret, c.collectorHeaders()); err != nil {
 		return fmt.Errorf("setting secret %s: %w", otelTracesHeadersSecret, err)
 	}
 	return nil

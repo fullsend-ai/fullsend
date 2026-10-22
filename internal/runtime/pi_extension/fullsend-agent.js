@@ -44,6 +44,26 @@ import { basename, dirname, join } from "node:path";
 
 export const DEFAULT_MANIFEST_PATH = "/sandbox/pi-config/fullsend-manifest.json";
 export const DEPTH_ENV = "FULLSEND_SUBAGENT_DEPTH";
+
+// CHILD_BIN_ENV and CHILD_NODE_ENV carry the pi CLI and the node the launch
+// pinned before .env was read (piChildLaunchExport). Children start through
+// them: pi is a `#!/usr/bin/env node` script, so spawning it by path would
+// have env look node up on the PATH the parent inherited.
+export const CHILD_BIN_ENV = "FULLSEND_PI_CHILD_BIN";
+export const CHILD_NODE_ENV = "FULLSEND_PI_CHILD_NODE";
+
+// childLaunch returns the command and leading arguments a child starts with:
+// the pinned node and pi when a node was pinned, pi alone when it is empty
+// (pi is not a node script). It returns null, so no child starts, when the
+// pi path is missing or either value is not absolute.
+export function childLaunch(env) {
+  const bin = env?.[CHILD_BIN_ENV];
+  const node = env?.[CHILD_NODE_ENV] ?? "";
+  if (typeof bin !== "string" || !bin.startsWith("/")) return null;
+  if (node === "") return { command: bin, prefix: [] };
+  if (typeof node !== "string" || !node.startsWith("/")) return null;
+  return { command: node, prefix: [bin] };
+}
 // RESULT_MAX_BYTES caps the text handed back to the parent; pi's own
 // built-in tools truncate at 50 KB, and a reviewer's findings fit well
 // within this.
@@ -940,9 +960,15 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log: rawLog = (m)
         }
         spawnEnv[GATEWAY_CONFIG_FILE_ENV] = gatewayCopy.path;
       }
+      const launch = childLaunch(env);
+      if (launch === null) {
+        gatewayCopy?.cleanup();
+        resolve({ state, startedAt, exitCode: null, signal: null, spawnError: `${CHILD_BIN_ENV} and ${CHILD_NODE_ENV} do not name an absolute pi and node`, stderr: "", timedOut: false, pid: undefined, droppedLines: 0 });
+        return;
+      }
       let child;
       try {
-        child = spawn(agent.piBin || "pi", args, {
+        child = spawn(launch.command, [...launch.prefix, ...args], {
           env: spawnEnv,
           // stdin carries the prompt; a child in the parent's process group
           // so `detached` is not set — a killed parent must not leave

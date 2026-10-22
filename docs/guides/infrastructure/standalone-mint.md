@@ -117,6 +117,10 @@ The standalone mint is configured entirely through environment variables:
 | `CUSTOM_ROLE_PERMISSIONS` | JSON map of custom role permissions (see below) | `{"scanner":{"contents":"read"}}` |
 | `WORKFLOW_HOST_REPOS` | Comma-separated repos whose workflows are trusted to call the mint. Applies to every admitted caller; the upstream `fullsend-ai/fullsend` is always accepted. Defaults to `fullsend-ai/fullsend` when unset. | `fullsend-ai/fullsend,myorg/my-workflows` |
 | `PORT` | HTTP listen port | `8080` (default) |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | Full OTLP/HTTP traces URL for mint spans. Takes precedence over `OTEL_EXPORTER_OTLP_ENDPOINT`. Unset (with no base endpoint) disables tracing. See [Tracing](#tracing). | `https://collector.example/v1/traces` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Base OTLP/HTTP URL; `/v1/traces` is appended | `https://collector.example` |
+| `MINT_OTLP_HEADERS_FILE` | Path to a file of collector authentication headers. Must be mode `0600` or stricter. | `/etc/fullsend-mint/otlp-headers` |
+| `MINT_DEPLOYMENT_NAME` | Deployment identity recorded on spans. Defaults to the host name. | `mint-prod-eu` |
 
 ### Public mint mode
 
@@ -419,6 +423,56 @@ gh api -X POST /orgs/myorg/actions/variables \
   -f value="https://your-tunnel-url.trycloudflare.com" \
   -f visibility=all
 ```
+
+## Tracing
+
+The standalone mint can export OpenTelemetry spans for each request to an
+OTLP/HTTP collector, following the [distributed tracing](distributed-tracing.md#mint-tracing)
+model used by the rest of Fullsend. Tracing is off by default: with no
+traces endpoint configured the mint uses a no-op tracer and makes no
+export attempts.
+
+Set the endpoint at startup with the standard OpenTelemetry variables:
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT="https://collector.example"   # /v1/traces is appended
+# or, verbatim:
+export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="https://collector.example/v1/traces"
+```
+
+Collector authentication headers are read from a protected file, not from
+`OTEL_EXPORTER_OTLP_HEADERS` or `OTEL_EXPORTER_OTLP_TRACES_HEADERS` (the
+standalone mint ignores both with a warning; headers must go in
+`MINT_OTLP_HEADERS_FILE`), so header values never appear in the process
+environment. The file
+uses the `OTEL_EXPORTER_OTLP_HEADERS` syntax: `key=value` pairs with
+percent-encoded values, separated by commas or newlines. Lines starting with
+`#` are ignored.
+
+```bash
+install -m 0600 /dev/null /etc/fullsend-mint/otlp-headers
+printf 'Authorization=Bearer%%20%s\n' "$COLLECTOR_TOKEN" > /etc/fullsend-mint/otlp-headers
+export MINT_OTLP_HEADERS_FILE=/etc/fullsend-mint/otlp-headers
+```
+
+The mint refuses to start if the file is accessible by group or others (mode
+must be 0600 or stricter), is not a regular file, or cannot be parsed.
+
+**Rotating collector credentials:** write the new header values to the
+file, then restart the mint. Headers are read once at startup.
+
+Collector failures never affect token minting. Each export is a single
+request bounded by a 2-second timeout, and failures are logged without
+header values. Exports run in the background after the response is
+returned, so a slow or unreachable collector never delays a response. On
+shutdown the mint waits for pending exports within the shutdown grace
+period.
+
+Tracing covers every request, including requests routed to the
+[fallback proxy](#fallback-proxy-behavior). A proxied request gets its own
+server span and `traceresponse` header, proxy failures are recorded on that
+span, and the mint forwards `traceparent` and `tracestate` to the fallback
+mint so the trace continues upstream.
 
 ## See also
 

@@ -297,6 +297,90 @@ again.
 Recreating the VM (delete, then create) remains the compliance path for a
 VM that was configured and served jobs.
 
+## OpenShell version per job
+
+The host's OpenShell CLI, gateway, and supervisor image must match the
+OpenShell CLI in the job's runner image. One VM can serve runner images from
+Fullsend releases built on different OpenShell pins, in any order, without
+re-provisioning between jobs.
+
+**Supported images.** Official Fullsend runner images
+(`ghcr.io/fullsend-ai/fullsend-runner`), referenced by release tag
+(`X.Y.Z`), by digest, or by a moving tag (`dev`, `latest`, `X.Y`, a short
+commit SHA), including a registry mirror that holds identical content. The
+image's digest must be held by Fullsend's runner image repository (step 3
+below), so an official image keeps working after its tags move. A
+custom or rebuilt image is not supported, even if it copies an official
+image's labels and `openshell --version` output: those are written by
+whoever built the image, so the executor only accepts an image whose digest
+Fullsend itself published (step 3 below). The VM keeps no list of supported
+releases, so a newly published release needs no VM update.
+
+**How the version is selected.** `prepare.sh` pulls the job image, then
+`ensure_job_openshell_gateway`:
+
+1. Reads `org.opencontainers.image.revision` from the **already-pulled**
+   image (`podman image inspect`); moving tags are never re-resolved.
+2. Verifies that commit against GitHub: for a release image (tag `X.Y.Z`),
+   Git tag `vX.Y.Z` must resolve to the same commit; for any other
+   reference, the commit must be on `main` (fork commits are served under
+   the parent repository's URLs, so this check is what ties the commit to
+   Fullsend).
+3. Verifies that the pulled image is one Fullsend published for that
+   commit: at least one of the digests podman recorded for the pulled image
+   must be held by `ghcr.io/fullsend-ai/fullsend-runner` (only Fullsend's
+   workflow can push there). The registry is asked for the manifest by
+   digest, anonymously, never through a tag, so the answer does not change
+   when `dev`, the 7-character commit tag, or a release tag later moves to
+   another build. Without this check, an image could name any real commit,
+   including one with an older OpenShell pin, and so steer the host to an
+   older version. This check needs `ghcr.io` (token and manifest
+   endpoints) during job preparation, and runs on every job.
+4. Reads `OPENSHELL_VERSION` and `OPENSHELL_SHA` from
+   `.github/scripts/openshell-version.sh` at that exact commit.
+5. Requires the image's own `openshell --version` (run hardened like the job
+   container) to equal that pin. A match is required even when the host
+   already has the version.
+6. If the host version differs, tears down the old gateway, installs the
+   pinned version from `install.sh` at `OPENSHELL_SHA` (never a release tag
+   the job could influence), confirms the host now reports that version,
+   and pulls the matching supervisor image. This works for both upgrades
+   and downgrades. If it matches, the supervisor image is re-pinned to it.
+
+Images built before the OpenShell 0.0.x to 0.1 breaking change cannot be
+served after a host has moved to 0.1: the executor migrates forward only.
+
+**When version resolution fails.** The job log shows one of these errors:
+
+- `could not probe OpenShell version from job image` or `could not read an
+  OpenShell version from job image`: the image has no usable `openshell`
+  CLI. Use an official Fullsend runner image.
+- `has no org.opencontainers.image.revision label`: the image was not built
+  by the Fullsend runner image workflow. Use an official image.
+- `is not an image Fullsend published for commit`: none of the image's
+  digests is held by Fullsend's runner image repository (a custom or
+  rebuilt image, or a copy that was not built by Fullsend's workflow). Use
+  an official image by its release tag, `dev`, or digest.
+- `Git tag vX.Y.Z resolves to ...` or `is not on fullsend-ai/fullsend@main`:
+  the image's label does not match its release tag, or its commit is not on
+  `main`. Use the release-tagged image, or an image built from `main`
+  (a `:latest` image tagged from a commit outside `main` fails here too;
+  use its `X.Y.Z` tag).
+- `could not resolve`, `could not compare`, `could not fetch`, `could not get
+  a GHCR pull token`, `GHCR returned no pull token`, or `could not verify
+  that job image`: the VM could not reach `api.github.com`,
+  `raw.githubusercontent.com`, or `ghcr.io`
+  (outage, rate limit, or egress policy). Retry the job; no VM change is
+  needed. Commits on `main` that were verified once are cached under
+  `~/.local/state/fullsend/verified-revisions` to avoid repeat API calls.
+- `reports OpenShell X, but the Fullsend commit it was built from pins Y`:
+  the image's CLI does not match its source commit. Rebuild the image.
+- `host OpenShell is ... after installing`: the installer exited
+  successfully but the host did not switch versions. Inspect the install
+  output in the job log.
+
+No VM resume is needed when Fullsend publishes a release or bumps OpenShell.
+
 ## Environment variables
 
 ### Shared
@@ -312,7 +396,7 @@ VM that was configured and served jobs.
 | `RUNNER_TAG` | no | `fullsend-gitlab-runner` | Runner tag for job matching |
 | `DRAIN_TIMEOUT_SEC` | no | `600` | Delete mode only: cap in seconds on draining in-flight jobs (SIGQUIT + wait for `runner-*` containers to exit) before deleting the VM. On cap overrun, the script warns and proceeds. See `--no-drain` to skip draining entirely |
 | `RUNNER_ACCESS_LEVEL` | no | `not_protected` | `ref_protected` restricts the runner to protected branches and tags, so merge-request pipelines on unprotected source refs never match and sit `pending`. In project mode, `not_protected` means any job on any branch of the project can run; in group mode, any tag-matched job on any branch of any project invited into the group tree runs on this VM (see Security below) |
-| `OPENSHELL_VERSION` | no | from `.github/scripts/openshell-version.sh` | OpenShell version used at **VM provision** (Renovate-tracked); it becomes the host pin. Per-job `prepare.sh` reads the job image's `openshell --version` and installs that version (CLI + supervisor) only when it equals this host pin. A job image on any other version fails the job ("this host only trusts the Renovate-pinned ..."). After an OpenShell bump, re-run `create-gcp-vm.sh` or `create-openshift-vm.sh` with `--resume NUMBER` from an updated checkout (it copies the new pin file and re-runs `setup.sh`) before the VM runs runner images built from the bump. |
+| `OPENSHELL_VERSION` | no | from `.github/scripts/openshell-version.sh` | OpenShell version installed at **VM provision** (Renovate-tracked). It is only the starting version: each job's `prepare.sh` switches the host to the version pinned by the job image's verified Fullsend source commit (see [OpenShell version per job](#openshell-version-per-job)). |
 | `GITLAB_RUNNER_VERSION` | no | `19.2.1` | gitlab-runner version |
 | `REGISTRATION_TOKEN` | setup only | — | GitLab runner registration token |
 

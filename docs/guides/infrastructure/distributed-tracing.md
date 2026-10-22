@@ -138,7 +138,11 @@ recorded: a file body, an edit, a prompt, a notebook source, a todo list,
 any member whose value is an object or an array, and the whole input of
 a tool not listed here (every `mcp__` tool among them) are dropped —
 scanned first, so a secret in them still counts, but neither charged nor
-marked, since the list is the policy and the markers mean loss. A `Bash`
+marked, since the list is the policy and the markers mean loss. A Claude
+call's `summary` is cut from its input separately — a `Bash` command or an
+`Agent` prompt collapsed to one line and cut at 120 characters, a `Read`,
+`Write` or `Edit` path at 200, a `Grep` or `Glob` pattern at 50 — so the
+start of a prompt `arguments` drops can still appear there. A `Bash`
 `command` is recorded whole, up to 8 KiB, so a heredoc or an inline
 script records what it writes. A URL anywhere in the record — a
 member, text, a result, a summary, the input message, a name — has
@@ -605,6 +609,107 @@ consume Level 3 prompt/completion capture once Level 3 is implemented —
 that is where the real quality signal lives. See
 [Eval Measurements](./eval-measurements.md) and
 [ADR 0087](../../ADRs/0087-eval-measurements-online-trace-scoring.md).
+
+## Mint tracing
+
+The token mint takes part in the same trace model. It records one server
+span per request and child spans for each stage, then exports them over
+OTLP/HTTP (JSON encoding) when a traces endpoint is configured.
+
+**Availability:** tracing is configurable for the
+[standalone mint](standalone-mint.md#tracing), for GCP Cloud Function
+mints, and for Cloudflare Worker mints, durable and preview, through
+`fullsend mint deploy --otlp-traces-endpoint` and `--otlp-headers-file`
+(see [`mint deploy` tracing for GCP](../../cli/mint.md#tracing-gcp) and
+[for Cloudflare](../../cli/mint.md#tracing)). On GCP the endpoint is
+stamped into the generated function source and collector headers are
+stored in a per-deploy Secret Manager secret
+(`fullsend-mint-otlp-headers-<random>`) whose ID is stamped next to the
+endpoint; the function reads it at cold start, and rotating the headers
+stores a new secret and redeploys the function. On Cloudflare the endpoint is
+compiled into the Worker WASM binary; collector headers are stored as
+a Worker secret (`MINT_OTLP_HEADERS`, scoped to the version, for previews; a
+per-deploy `MINT_OTLP_HEADERS_<random>` name for durable deploys). The
+instrumentation is shared by all backends (it lives in
+`internal/mintcore`). Behaviour-test preview mints export to the suite's
+[job-scoped collector](../dev/behaviour-testing.md#job-scoped-trace-collection).
+
+**Propagation:** the mint client (`internal/mintclient`) starts a
+`fullsend.mint.token` client span when the caller's context has an active
+span. It sends W3C `traceparent` and `tracestate` headers to the mint. No
+headers are sent when no trace context is active. The mint extracts the
+incoming context, so its server span becomes a child of the client span.
+It also keeps the upstream sampling decision: an unsampled parent (`-00`)
+produces no export. The mint returns a W3C `traceresponse` header that
+identifies its server span. Client retries reuse the client span, so
+each attempt shows up as a sibling server span, and the client span
+records `fullsend.mint.attempts`.
+
+**Spans:**
+
+| Span | Kind | Stage recorded on failure |
+|------|------|---------------------------|
+| `POST /v1/token`, `GET /v1/status`, … | Server | (aggregated, see below) |
+| `mint.oidc_verify` | Internal | `oidc_verification`, or `authorization` when the token verifies but enrollment or workflow-ref policy rejects it |
+| `mint.status_auth` | Internal | `authentication` |
+| `mint.authorize` | Internal | `authorization` |
+| `mint.foreign_grant_fallback` | Internal | — (records `fullsend.mint.fallback_result`) |
+| `mint.foreign_grant_check` | Internal | `foreign_grant` (records `fullsend.mint.foreign_grant_scope`, `repo` or `org`) |
+| `mint.pem_access` | Internal | `pem_access` |
+| `mint.github_app_auth` | Internal | `github_app_auth` |
+| `mint.installation_lookup` | Internal | `installation_lookup` |
+| `mint.create_installation_token` | Internal | `token_issuance` |
+
+`GET /health` is not traced. Unknown routes are recorded as `other`, so
+paths supplied by callers never reach the collector.
+
+**Server span attributes:** `http.request.method`, `url.path`,
+`http.response.status_code`, `fullsend.mint.outcome` (`success`,
+`denied`, `rejected`, `error`), `fullsend.mint.failure_stage`,
+`fullsend.mint.backend`, `fullsend.mint.deployment`, `fullsend.mint.role`,
+`fullsend.mint.level`, `fullsend.mint.repo_count`,
+`fullsend.mint.caller_org`, `fullsend.mint.source_repo`,
+`fullsend.mint.workflow_ref`, `fullsend.mint.target_org`,
+`fullsend.mint.cross_org`, and on success `fullsend.mint.app_id`,
+`fullsend.mint.installation_id`, and `fullsend.mint.repository_selection`.
+The `mint.foreign_grant_check` span also records
+`fullsend.mint.foreign_grant_scope` (`repo` or `org`). Server spans get error status only for 5xx responses. Stage spans get
+error status plus an `exception` event when their stage fails.
+
+**Resource attributes:** `service.name` (`fullsend-mint`),
+`service.version`, `fullsend.mint.commit`, `fullsend.mint.backend`,
+`fullsend.mint.deployment`.
+
+**Security boundaries:** spans never carry OIDC JWTs, installation tokens,
+PEM material, or collector authentication headers. Error text on spans is
+capped at 256 bytes, and anything shaped like a JWT, GitHub token, bearer
+credential, `Authorization` header value, URL userinfo, sensitive URL query
+value, or PEM block is redacted. Failed GitHub installation-token
+calls record only the HTTP status, never the response body. The mint
+client records only the failure stage and a fixed error class (`timeout`,
+`canceled`, `request_failed`, or `error`) on its span.
+
+**Fail-open:** each request's spans are exported in one request bounded by
+a 2-second timeout. Collector errors, non-2xx responses, and timeouts are
+logged (without header values) and never change the mint response. The
+standalone mint exports in the background after the response is returned;
+serverless backends export before returning because they cannot run work
+afterwards. OTLP export does not follow redirects, so collector
+credentials and span payloads are never forwarded to another origin. On
+the Cloudflare Worker the host fetch bridge uses `redirect: "manual"` for
+export requests. A Worker export adds at most the 2-second export timeout
+to the response. If the collector headers secret cannot be parsed, the
+Worker logs a warning without header values and runs with tracing
+disabled.
+
+**Export budget:** an inbound `traceparent` sampled flag is honored only
+within a local budget of 20 sampled requests per second; requests beyond it
+are treated as unsampled. At most 4 exports run concurrently; additional
+exports are dropped rather than queued.
+
+The mint does not use the OpenTelemetry Go SDK. It uses a small built-in
+exporter so the Cloudflare Worker WASM binary stays within its size
+limit. See [Mintcore Architecture](../../contributing/mintcore.md#tracing).
 
 ## See also
 

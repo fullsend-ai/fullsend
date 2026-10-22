@@ -75,6 +75,55 @@ func TestContainGitLabTriggerAccount_ContainsPublishedCredentialWhenOverrideRole
 	})
 }
 
+func TestConvergeGitLabTriggerAccount_ProjectSafetyDriftContainsAndDoesNotRepublish(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		mutate     func(*trigEnv)
+		wantsError bool
+	}{
+		{"extra protected ref", func(e *trigEnv) {
+			e.state.ProtectedBranches[trigOwner+"/"+trigRepo+"/main"] = true
+			e.state.ProtectedBranches[trigOwner+"/"+trigRepo+"/release"] = true
+		}, false},
+		{"unreadable protected refs", func(e *trigEnv) {
+			e.state.Errors = map[string]error{"ListProtectedBranches": errors.New("503 unavailable")}
+		}, true},
+		{"job-token repository push enabled", func(e *trigEnv) {
+			e.state.JobTokenRepositoryPushAllowed[trigOwner+"/"+trigRepo] = true
+		}, false},
+		{"job-token repository push unreadable", func(e *trigEnv) {
+			e.state.Errors = map[string]error{"GetJobTokenRepositoryPushAllowed": errors.New("503 unavailable")}
+		}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newTrigEnv()
+			e.useRecreatingSink()
+			opts := e.unpublishClearsAttributes(e.opts())
+			res, err := ConvergeGitLabTriggerAccount(context.Background(), opts)
+			require.NoError(t, err)
+			require.True(t, e.sinkPresent())
+			require.Contains(t, e.f.triggers, res.TriggerTokenID)
+			tc.mutate(e)
+			opts.EnforceWebhookSafety = true
+
+			result, err := ConvergeGitLabTriggerAccount(context.Background(), opts)
+			if tc.wantsError {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+				assert.NotEmpty(t, result.Deferred)
+			}
+			assert.False(t, e.sinkPresent(), "unsafe published variable is removed")
+			assert.NotContains(t, e.f.triggers, res.TriggerTokenID, "the owned trigger is revoked")
+			st, exists := e.ledger(t)
+			require.True(t, exists)
+			assert.True(t, st.PublishStarted, "cleanup obligations remain recorded")
+			assert.False(t, st.TriggerPublished)
+			assert.Len(t, e.f.triggers, 0, "a replacement must not be published while safety is unmet")
+		})
+	}
+}
+
 // A failed replacement leaves the retired generation's live token in the sink
 // while the current generation never published. Ordinary convergence on a
 // healthy project must contain that sink when it becomes unsafe, before the

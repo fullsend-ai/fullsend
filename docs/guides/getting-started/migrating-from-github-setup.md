@@ -285,7 +285,7 @@ The repository has no Fullsend files.
    ```
 
    A first install without a preset records
-   `config.create_issues.allow_targets.repos: [fullsend-ai/fullsend]` on
+   `config.create_issues.allow_targets.repos: [fullsend-ai/fullsend, fullsend-ai/agents]` on
    the entry, and writes `github.fullsend_ref` when it is unset. Commit
    both.
 
@@ -464,11 +464,51 @@ Install writes to `repos.yaml` itself only in two cases, both of which
 predate this change:
 
 - On a first install with no preset and no `create_issues` declaration, it
-  records `config.create_issues.allow_targets.repos: [fullsend-ai/fullsend]`
-  on the repository's entry. For a repository covered only by a glob, this
+  records `config.create_issues.allow_targets.repos: [fullsend-ai/fullsend, fullsend-ai/agents]`
+  on a GitHub repository's entry. For GitLab it records the explicit empty
+  policy `config.create_issues.allow_targets: {}`. For a repository covered only by a glob, this
   adds an explicit entry.
 - After a first install, it writes the CLI's release to
   `github.fullsend_ref` or `gitlab.fullsend_ref` when that key is unset.
+
+### Permit agent improvement proposals on existing installations
+
+Fresh GitHub no-preset installations without an explicit `create_issues` setting
+include both `fullsend-ai/fullsend` and `fullsend-ai/agents` as cross-repository
+issue targets. Upgrading the CLI or rerunning install does not widen an
+established installation’s permissions or override a declared preset.
+
+Fresh GitLab installations default to an explicit empty cross-project
+allowlist. Existing GitLab installations may still contain the old
+`fullsend-ai/fullsend` default. Remove that entry from
+`config.create_issues.allow_targets.repos` in the repository’s `repos.yaml`
+configuration, then rerun `fullsend repos install` for that repository.
+Declare `config.create_issues.allow_targets: {}` to allow no cross-project
+targets, or list the real project paths you intend to authorize on your
+GitLab host. Preserve other intended targets. For an unmanaged installation,
+make the equivalent change under `create_issues` in `.fullsend/config.yaml`.
+A GitHub repository name is interpreted as a path on the GitLab host; it
+does not route proposals to GitHub. Upgrading alone does not remove the old
+entry.
+
+To let retro file agent-layer proposals from an existing managed GitHub installation,
+add `fullsend-ai/agents` to the existing
+`config.create_issues.allow_targets.repos` list in the repository’s `repos.yaml`
+entry (or the manifest layer that owns that policy), then run `fullsend repos
+install` for that repository. Keep any existing targets; this is an explicit
+permission change. For an installation still using `github setup`, edit its
+`.fullsend/config.yaml` instead.
+
+For preset-backed installations, declare the required
+`config.create_issues.allow_targets` in the repository’s `repos.yaml` entry
+and rerun `fullsend repos install`; for an unmanaged installation, declare
+`create_issues.allow_targets` directly in `.fullsend/config.yaml`. Retro and
+triage currently read only that overlay, not `.fullsend/config.base.yaml`,
+so changing the preset alone has no effect on their allowlist. Include all
+intended targets in the overlay policy. This workaround applies to both
+GitHub and GitLab until
+[agents#1728](https://github.com/fullsend-ai/agents/issues/1728) adds base and
+overlay composition to the post-scripts.
 
 ## Why install requires `inference.auth`
 

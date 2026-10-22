@@ -83,6 +83,32 @@ func TestCheckGitLabTriggerDispatchGate_ReadyWhenAllPrerequisitesHold(t *testing
 	assert.Empty(t, gate.Deferred)
 }
 
+func TestCheckGitLabTriggerDispatchGate_ReadyDuringDeferredRetirement(t *testing.T) {
+	e := readyTriggerDispatchEnv(t)
+	o := e.opts()
+	o.DeferRetirement = true
+	previous, err := RotateGitLabTriggerAccount(context.Background(), o)
+	require.NoError(t, err)
+	st, _ := e.ledger(t)
+	require.Len(t, st.Retired, 1)
+	assert.Equal(t, GitLabTriggerStateDrifted, e.diagnose(e.f, trigBranch).State, "status still reports pending cleanup")
+	assert.True(t, e.dispatchGate().Ready, "the verified replacement can activate before webhook cutover")
+	assert.Contains(t, e.f.triggers, st.Retired[0].TriggerTokenID, "the old webhook bearer remains usable")
+	assert.Contains(t, e.f.triggers, previous.TriggerTokenID)
+
+	e.f.members[st.Retired[0].AccountID] = forge.GitLabAccessLevelMaintainer
+	assert.False(t, e.dispatchGate().Ready, "a retired published bearer above Developer blocks activation")
+	e.f.members[st.Retired[0].AccountID] = forge.GitLabAccessLevelDeveloper
+	oldTrigger := e.f.triggers[st.Retired[0].TriggerTokenID]
+	misowned := oldTrigger
+	misowned.OwnerID = 99999
+	e.f.triggers[st.Retired[0].TriggerTokenID] = misowned
+	assert.False(t, e.dispatchGate().Ready, "an unverified retired trigger owner blocks activation")
+	e.f.triggers[st.Retired[0].TriggerTokenID] = oldTrigger
+	require.NoError(t, RetireGitLabTriggerAccount(context.Background(), o))
+	assert.True(t, e.dispatchGate().Ready)
+}
+
 func TestCheckGitLabTriggerDispatchGate_RunnerTagsMatchManifest(t *testing.T) {
 	e := readyTriggerDispatchEnv(t)
 	manifest := &Manifest{GitLab: &PlatformConfig{

@@ -208,7 +208,7 @@ func deleteGatewayAPIKeySecret(w *world.World) error {
 	if !ok {
 		return fmt.Errorf("inference gateway api-key test requires GitHub SCM driver")
 	}
-	err := ghDriver.Client.DeleteRepoSecret(context.Background(), w.Org, w.RepoName, forge.SecretInferenceGatewayAPIKey)
+	err := ghDriver.Client.DeleteRepoSecret(mutationCtx(w), w.Org, w.RepoName, forge.SecretInferenceGatewayAPIKey)
 	if err != nil && !forge.IsNotFound(err) {
 		return err
 	}
@@ -276,7 +276,7 @@ func restoreGatewayConfig(w *world.World) error {
 		return nil
 	}
 	cfgPath := filepath.Join(".fullsend", "config.yaml")
-	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, cfgPath, "behaviour: restore config after inference gateway scenario", w.GatewayConfigOriginal); err != nil {
+	if err := w.SCM.CommitFile(mutationCtx(w), w.Org, w.RepoName, cfgPath, "behaviour: restore config after inference gateway scenario", w.GatewayConfigOriginal); err != nil {
 		// Keep the original so a cleanupRetry attempt can commit it again.
 		return err
 	}

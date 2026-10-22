@@ -39,7 +39,7 @@ func TestRunReposInstall_SelectionErrorStillContainsResolvedGitLabRepos(t *testi
 		return nil
 	}
 	triggerCalls := 0
-	opts.testConvergeTriggerAccount = func(context.Context, forge.Client, string, string) error {
+	opts.testConvergeTriggerAccount = func(context.Context, forge.Client, string, string, bool) error {
 		triggerCalls++
 		return nil
 	}

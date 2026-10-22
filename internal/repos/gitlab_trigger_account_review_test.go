@@ -264,7 +264,9 @@ func TestGitLabTriggerAccount_AmbiguousPublicationRevokedBeforeElevation(t *test
 			require.True(t, ok)
 			require.False(t, st.TriggerPublished, "the ledger does not know the token is published")
 
-			// The retry must revoke the live token before it elevates again.
+			// A published value with a matching recorded digest and owned
+			// trigger can finish the interrupted ledger save without another
+			// elevation. Otherwise the retry revokes the token before elevation.
 			e2 := e
 			e2.publish = func(_ context.Context, id int64, token string) error {
 				e.f.published[id] = token
@@ -280,8 +282,13 @@ func TestGitLabTriggerAccount_AmbiguousPublicationRevokedBeforeElevation(t *test
 			res, err := ConvergeGitLabTriggerAccount(context.Background(), o)
 			require.NoError(t, err)
 			e.assertConverged(t, res)
-			assert.Zero(t, triggersAtElevation, "the elevated account owns no trigger token")
-			assert.Equal(t, []int64{int64(res.AccountID)}, elevated, "the account that may have distributed a token is never elevated again")
+			if tc.liveAfterFailure {
+				assert.Empty(t, elevated, "a proven publication resumes without elevating its owner")
+				assert.Equal(t, 1, e.managedTriggers())
+			} else {
+				assert.Zero(t, triggersAtElevation, "the elevated account owns no trigger token")
+				assert.Equal(t, []int64{int64(res.AccountID)}, elevated, "the account that may have distributed a token is never elevated again")
+			}
 		})
 	}
 }

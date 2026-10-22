@@ -710,6 +710,70 @@ func TestInjectReviewMetadata(t *testing.T) {
 	})
 }
 
+func TestInjectReviewMetadata_PriorDispositions(t *testing.T) {
+	template := `{"id":"f_PRIOR","status":"resolved_by_change","rationale":"fixed","evidence":"main.go"}`
+	writePrior := func(t *testing.T, projection string) {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "prior-review.txt")
+		require.NoError(t, os.WriteFile(path, []byte(projection), 0o600))
+		t.Setenv("PRIOR_REVIEW_FILE", path)
+	}
+	inject := func(t *testing.T, content string) map[string]any {
+		t.Helper()
+		t.Setenv("PR_HEAD_SHA", "")
+		t.Setenv("STATUS_NUMBER", "")
+		t.Setenv("GITHUB_REPOSITORY", "")
+		var parsed map[string]any
+		require.NoError(t, json.Unmarshal(injectReviewMetadata([]byte(content), "github", ui.New(io.Discard)), &parsed))
+		return parsed
+	}
+
+	t.Run("expands the placeholder to each open prior id", func(t *testing.T) {
+		writePrior(t, `{"version":2,"findings":[{"id":"f_aaa"},{"id":"f_bbb"},{"id":"f_ccc"}],`+
+			`"dispositions":[{"id":"f_bbb","status":"resolved_by_change"},{"id":"f_ccc","status":"open"}]}`)
+		parsed := inject(t, `{"action":"approve","body":"ok","dispositions":[`+template+`]}`)
+
+		disp := parsed["dispositions"].([]any)
+		require.Len(t, disp, 2)
+		assert.Equal(t, "f_aaa", disp[0].(map[string]any)["id"])
+		assert.Equal(t, "f_ccc", disp[1].(map[string]any)["id"])
+		assert.Equal(t, "resolved_by_change", disp[1].(map[string]any)["status"])
+		assert.Equal(t, "main.go", disp[1].(map[string]any)["evidence"])
+	})
+
+	t.Run("drops the placeholder on a first review", func(t *testing.T) {
+		t.Setenv("PRIOR_REVIEW_FILE", "")
+		parsed := inject(t, `{"action":"approve","body":"ok","dispositions":[`+template+`]}`)
+		assert.NotContains(t, parsed, "dispositions")
+	})
+
+	t.Run("drops the placeholder when the projection is unreadable", func(t *testing.T) {
+		writePrior(t, ``)
+		parsed := inject(t, `{"action":"approve","body":"ok","dispositions":[`+template+`]}`)
+		assert.NotContains(t, parsed, "dispositions")
+	})
+
+	t.Run("keeps dispositions that name a real id", func(t *testing.T) {
+		writePrior(t, `{"version":2,"findings":[{"id":"f_aaa"}]}`)
+		parsed := inject(t, `{"action":"approve","body":"ok","dispositions":[`+
+			`{"id":"f_zzz","status":"open","rationale":"still there","evidence":""},`+template+`]}`)
+
+		disp := parsed["dispositions"].([]any)
+		require.Len(t, disp, 2)
+		assert.Equal(t, "f_zzz", disp[0].(map[string]any)["id"])
+		assert.Equal(t, "f_aaa", disp[1].(map[string]any)["id"])
+	})
+
+	t.Run("leaves results without the placeholder unchanged", func(t *testing.T) {
+		writePrior(t, `{"version":2,"findings":[{"id":"f_aaa"}]}`)
+		t.Setenv("PR_HEAD_SHA", "")
+		t.Setenv("STATUS_NUMBER", "")
+		t.Setenv("GITHUB_REPOSITORY", "")
+		content := []byte(`{"action":"approve","body":"ok"}`)
+		assert.Equal(t, content, injectReviewMetadata(content, "github", ui.New(io.Discard)))
+	})
+}
+
 func TestDummyPlaybackRuntime_FixCommitsToCurrentBranch(t *testing.T) {
 	t.Parallel()
 

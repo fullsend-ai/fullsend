@@ -298,6 +298,7 @@ func (s *tahServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"id": 7, "name": "p", "path_with_namespace": "g/p",
 			"default_branch": tahBranch, "visibility": "private",
 			"ci_pipeline_variables_minimum_override_role": s.overrideRole,
+			"ci_push_repository_for_job_token_allowed":    false,
 		})
 	case p == "/admin/ci/variables" && r.Method == http.MethodGet:
 		// The activation gate inventories inherited variable overrides. The
@@ -667,6 +668,8 @@ func (s *tahServer) project(w http.ResponseWriter, r *http.Request, uid int, seg
 			return
 		}
 		tahJSON(w, http.StatusOK, []any{s.protectedBranchPayload()})
+	case "GET /protected_tags":
+		tahJSON(w, http.StatusOK, []any{})
 	case "GET /protected_branches/:name":
 		if seg[1] != tahBranch || !s.protected {
 			tahJSON(w, http.StatusNotFound, map[string]any{"message": "404 Not found"})
@@ -902,7 +905,7 @@ func newTAHEnv(t *testing.T) *tahEnv {
 func (e *tahEnv) converge(rotate bool) error {
 	e.t.Helper()
 	var client forge.Client = e.client
-	return maybeConvergeGitLabTriggerAccount(context.Background(), &reposInstallConfig{}, client, ui.New(e.out), "g", "p", rotate, nil)
+	return maybeConvergeGitLabTriggerAccount(context.Background(), &reposInstallConfig{}, client, ui.New(e.out), "g", "p", rotate, false, nil)
 }
 
 func (e *tahEnv) install() error { return e.converge(false) }

@@ -204,7 +204,7 @@ func TestBuildCodexRunCommand_GatewayRoute(t *testing.T) {
 	assert.NotContains(t, cmd, codexBaseURL)
 	assert.NotContains(t, cmd, r.OpenAIAuthSeed(), "a gateway run needs no OpenAI placeholder")
 
-	envAt := strings.Index(cmd, ". '"+sandbox.SandboxWorkspace+"/.env'")
+	envAt := strings.Index(cmd, codexEnvLoad)
 	require.Positive(t, envAt)
 	seedAt := strings.Index(cmd, r.gatewayAuthSeed())
 	require.Positive(t, seedAt, "the gateway token is seeded")

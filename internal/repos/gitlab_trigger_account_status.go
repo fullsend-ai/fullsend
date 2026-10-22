@@ -47,6 +47,16 @@ type GitLabTriggerAccountUninstaller interface {
 // installed, reports why install would defer. branch is the protected default
 // branch the account must be granted on. It only reads.
 func DiagnoseGitLabTriggerAccount(ctx context.Context, client forge.Client, api GitLabTriggerAccountAPI, owner, repo, branch string) GitLabTriggerAccountStatus {
+	return diagnoseGitLabTriggerAccount(ctx, client, api, owner, repo, branch, false)
+}
+
+// diagnoseGitLabTriggerAccount permits the dispatch gate (forDispatchGate) to
+// check the ready current generation during the intentional webhook cutover
+// window. In that mode it neither reports an outstanding retirement nor
+// managed polling schedules the account does not own yet as drift, because the
+// schedules move to the account only after the gate passes. Status still
+// reports both as drift until cleanup completes or install moves the schedules.
+func diagnoseGitLabTriggerAccount(ctx context.Context, client forge.Client, api GitLabTriggerAccountAPI, owner, repo, branch string, forDispatchGate bool) GitLabTriggerAccountStatus {
 	raw, exists, err := client.GetRepoVariable(ctx, owner, repo, forge.VarGitLabTriggerAccount)
 	if err != nil {
 		return GitLabTriggerAccountStatus{State: GitLabTriggerStateUnreadable, Reasons: []string{"could not read " + forge.VarGitLabTriggerAccount}}
@@ -108,9 +118,20 @@ func DiagnoseGitLabTriggerAccount(ctx context.Context, client forge.Client, api 
 		for _, p := range problems {
 			reasons = append(reasons, p+"; run repos install to revoke the trigger and publish a replacement")
 		}
+		if len(problems) == 0 {
+			if st.TriggerTokenDigest == "" {
+				reasons = append(reasons, "the published trigger token predates value binding; run repos install to rotate it to a fingerprinted generation")
+			} else if vars, valueErr := client.ListRepoVariables(ctx, owner, repo); valueErr != nil {
+				reasons = append(reasons, "could not verify the published trigger token value against its recorded fingerprint")
+			} else if value := vars[forge.SecretGitLabTriggerAccountToken]; value == "" || triggerTokenDigest(value) != st.TriggerTokenDigest {
+				reasons = append(reasons, "the published trigger token value does not match its recorded fingerprint; run repos install to contain it and publish a replacement")
+			}
+		}
 	}
-	for _, old := range st.Retired {
-		reasons = append(reasons, fmt.Sprintf("retirement of the previous trigger account generation (account %d) is unfinished; re-run repos install or repos uninstall to finish it", old.AccountID))
+	if !forDispatchGate {
+		for _, old := range st.Retired {
+			reasons = append(reasons, fmt.Sprintf("retirement of the previous trigger account generation (account %d) is unfinished; re-run repos install or repos uninstall to finish it", old.AccountID))
+		}
 	}
 	if api != nil {
 		// A live credential is only safe while pipeline-variable overrides are
@@ -121,6 +142,11 @@ func DiagnoseGitLabTriggerAccount(ctx context.Context, client forge.Client, api 
 			reasons = append(reasons, "install and rotation defer: "+reason)
 		}
 		reasons = append(reasons, op.liveDrift(ctx)...)
+		// The dispatch gate must not depend on schedule ownership: the
+		// schedules move to the account only after the gate passes.
+		if !forDispatchGate {
+			reasons = append(reasons, op.scheduleOwnershipDrift(ctx)...)
+		}
 	}
 	if len(reasons) > 0 {
 		return GitLabTriggerAccountStatus{State: GitLabTriggerStateDrifted, Reasons: append(deferralNotes, reasons...)}
@@ -183,6 +209,59 @@ func foreignStateReason(err error) string {
 		return "could not verify the trigger account holds no credential or resource fullsend did not create: " + err.Error()
 	}
 	return "install would refuse to continue: " + err.Error()
+}
+
+// scheduleOwnershipDrift reports managed polling schedules that the trigger
+// account does not own although the dispatch activation is recorded for it.
+// GitLab runs a scheduled pipeline with its owner's permissions, so such a
+// schedule polls as that user (for example the installer) instead of the
+// Developer-level account until install moves it (#8602). Without a recorded
+// activation the schedules are meant to stay installer-owned.
+func (op *gitLabTriggerAccountOp) scheduleOwnershipDrift(ctx context.Context) []string {
+	active, err := op.dispatchActivationRecorded(ctx)
+	if err != nil {
+		return []string{"could not read the dispatch activation; the owner of the managed polling schedules is unverified"}
+	}
+	if !active {
+		return nil
+	}
+	schedules, err := op.opts.State.ListPipelineSchedules(ctx, op.opts.Owner, op.opts.Repo)
+	if err != nil {
+		return []string{"could not list pipeline schedules; the owner of the managed polling schedules is unverified"}
+	}
+	var reasons []string
+	installerID := -1
+	for _, s := range schedules {
+		if !isManagedPipelineSchedule(s.Description) || s.OwnerID == int64(op.st.AccountID) {
+			continue
+		}
+		// Install adopts only a retired generation's schedules and those of a
+		// verified installer Maintainer (planAccountSchedules); it refuses any
+		// other owner, so re-running it would not repair that drift.
+		adoptable := op.recordedGenerationOwner(s.OwnerID)
+		if !adoptable {
+			if installerID < 0 {
+				id, err := op.opts.API.GetAuthenticatedUserID(ctx)
+				if err != nil {
+					reasons = append(reasons, "could not verify the installer; the owner of the managed polling schedules is unverified")
+					break
+				}
+				installerID = id
+			}
+			trusted, err := op.installerScheduleOwner(ctx, s.OwnerID, int64(installerID))
+			if err != nil {
+				reasons = append(reasons, fmt.Sprintf("could not verify the owner of managed polling schedule %d; its owner is unverified", s.ID))
+				continue
+			}
+			adoptable = trusted
+		}
+		advice := "re-run repos install to move it to the trigger account"
+		if !adoptable {
+			advice = "install refuses to adopt it because its owner is not a verified installer Maintainer; an administrator must remove or reassign it, then re-run repos install"
+		}
+		reasons = append(reasons, fmt.Sprintf("managed polling schedule %d (%q) is owned by user %d, not the trigger account, although the dispatch activation is recorded, so it runs with that user's permissions; %s", s.ID, s.Description, s.OwnerID, advice))
+	}
+	return reasons
 }
 
 // liveDrift compares the recorded resources with GitLab. A failed read is

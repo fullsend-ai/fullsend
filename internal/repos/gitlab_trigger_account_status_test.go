@@ -2,6 +2,7 @@ package repos
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -42,6 +43,89 @@ func TestDiagnoseGitLabTriggerAccount_NotInstalledAndDeferred(t *testing.T) {
 	assert.Contains(t, got.Reasons[len(got.Reasons)-1], "could not check")
 }
 
+// With the dispatch activation recorded, a managed schedule the trigger
+// account does not own runs with its owner's permissions, so status reports it
+// instead of a ready account. The dispatch gate must not, because the
+// schedules move only after it passes (#8602).
+func TestDiagnoseGitLabTriggerAccount_ScheduleOwnershipAfterActivation(t *testing.T) {
+	ctx := context.Background()
+	e := newTrigEnv()
+	e.readyActive(t)
+	spec := trigSpec(t, trigSlashDesc)
+	id := e.adminSchedule(t, spec.Description, trigBranch, spec.Cron, true)
+
+	got := e.diagnose(e.f, trigBranch)
+	assert.Equal(t, GitLabTriggerStateDrifted, got.State)
+	require.Len(t, got.Reasons, 1)
+	assert.Contains(t, got.Reasons[0], fmt.Sprintf("managed polling schedule %d", id))
+	assert.Contains(t, got.Reasons[0], "not the trigger account")
+	assert.Contains(t, got.Reasons[0], "re-run repos install")
+	assert.Equal(t, GitLabTriggerStateReady, diagnoseGitLabTriggerAccount(ctx, e.state, e.f, trigOwner, trigRepo, trigBranch, true).State, "the dispatch gate ignores schedule ownership")
+	assert.Equal(t, GitLabTriggerStateReady, e.diagnose(nil, "").State, "the ledger-only diagnosis makes no live reads")
+
+	e.state.Errors = map[string]error{"ListPipelineSchedules": errTrigInjected}
+	got = e.diagnose(e.f, trigBranch)
+	assert.Equal(t, GitLabTriggerStateDrifted, got.State)
+	assert.Contains(t, strings.Join(got.Reasons, "\n"), "owner of the managed polling schedules is unverified")
+	e.state.Errors = nil
+
+	_, err := ConvergeGitLabTriggerSchedules(ctx, e.opts())
+	require.NoError(t, err)
+	assert.Equal(t, GitLabTriggerStateReady, e.diagnose(e.f, trigBranch).State)
+
+	// Without a recorded activation the schedules belong to the installer.
+	e2 := newTrigEnv()
+	e2.readyActive(t)
+	e2.adminSchedule(t, spec.Description, trigBranch, spec.Cron, true)
+	require.NoError(t, SetGitLabTriggerDispatchActive(ctx, e2.opts(), false))
+	assert.Equal(t, GitLabTriggerStateReady, e2.diagnose(e2.f, trigBranch).State)
+}
+
+// Install refuses to adopt a managed schedule whose owner is not a verified
+// installer Maintainer, so status must not tell the operator that re-running it
+// repairs the drift.
+func TestDiagnoseGitLabTriggerAccount_ScheduleOwnershipGuidance(t *testing.T) {
+	ctx := context.Background()
+	spec := trigSpec(t, trigSlashDesc)
+	setup := func(owner int64) (*trigEnv, int64) {
+		e := newTrigEnv()
+		e.readyActive(t)
+		id := e.adminSchedule(t, spec.Description, trigBranch, spec.Cron, true)
+		for i := range e.state.PipelineSchedules[trigOwner+"/"+trigRepo] {
+			if e.state.PipelineSchedules[trigOwner+"/"+trigRepo][i].ID == id {
+				e.state.PipelineSchedules[trigOwner+"/"+trigRepo][i].OwnerID = owner
+			}
+		}
+		return e, id
+	}
+
+	e, _ := setup(77)
+	e.f.members[77] = forge.GitLabAccessLevelDeveloper
+	got := e.diagnose(e.f, trigBranch)
+	assert.Equal(t, GitLabTriggerStateDrifted, got.State)
+	require.Len(t, got.Reasons, 1)
+	assert.Contains(t, got.Reasons[0], "owned by user 77")
+	assert.Contains(t, got.Reasons[0], "install refuses to adopt it")
+	assert.Contains(t, got.Reasons[0], "administrator must remove or reassign")
+	assert.NotContains(t, got.Reasons[0], "move it to the trigger account")
+	_, err := ConvergeGitLabTriggerSchedules(ctx, e.opts())
+	require.ErrorContains(t, err, "refusing adoption", "status guidance agrees with convergence")
+
+	// A Maintainer other than the installer is adoptable.
+	e, _ = setup(78)
+	e.f.members[78] = forge.GitLabAccessLevelMaintainer
+	got = e.diagnose(e.f, trigBranch)
+	require.Len(t, got.Reasons, 1)
+	assert.Contains(t, got.Reasons[0], "re-run repos install to move it")
+
+	// A failed installer lookup is reported as unverified, not as adoptable.
+	e, _ = setup(79)
+	e.f.fail["GetAuthenticatedUserID"] = true
+	got = e.diagnose(e.f, trigBranch)
+	require.Len(t, got.Reasons, 1)
+	assert.Contains(t, got.Reasons[0], "could not verify the installer")
+}
+
 func TestDiagnoseGitLabTriggerAccount_ReadyAndDrift(t *testing.T) {
 	e := newTrigEnv()
 	res, err := ConvergeGitLabTriggerAccount(context.Background(), e.opts())
@@ -61,7 +145,15 @@ func TestDiagnoseGitLabTriggerAccount_ReadyAndDrift(t *testing.T) {
 		mutate func(e *trigEnv, res GitLabTriggerAccountResult)
 		want   string
 	}{
-		"sink missing":    {func(e *trigEnv, _ GitLabTriggerAccountResult) { e.setSink(false) }, forge.SecretGitLabTriggerAccountToken + " is missing"},
+		"sink missing": {func(e *trigEnv, _ GitLabTriggerAccountResult) { e.setSink(false) }, forge.SecretGitLabTriggerAccountToken + " is missing"},
+		"sink value copied": {func(e *trigEnv, _ GitLabTriggerAccountResult) {
+			e.state.VariableValues[trigOwner+"/"+trigRepo+"/"+forge.SecretGitLabTriggerAccountToken] = "another-trigger-bearer"
+		}, "does not match its recorded fingerprint"},
+		"legacy digest missing": {func(e *trigEnv, _ GitLabTriggerAccountResult) {
+			st, _ := e.ledger(t)
+			st.TriggerTokenDigest = ""
+			e.setLedger(t, st)
+		}, "predates value binding"},
 		"key missing":     {func(e *trigEnv, res GitLabTriggerAccountResult) { delete(e.f.keys, res.DeployKeyID) }, "deploy key"},
 		"trigger missing": {func(e *trigEnv, res GitLabTriggerAccountResult) { delete(e.f.triggers, res.TriggerTokenID) }, "trigger token"},
 		"account elevated": {func(e *trigEnv, res GitLabTriggerAccountResult) {

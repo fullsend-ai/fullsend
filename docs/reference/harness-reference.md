@@ -75,7 +75,7 @@ host_files:
 env:
   runner:                            # Available to pre/post scripts
     MY_VAR: "${MY_VAR}"
-  sandbox:                           # Available inside sandbox
+  sandbox:                           # Available inside sandbox; reserved names are dropped
     MY_SETTING: "value"
 runner_env:                          # ⚠ Deprecated: use env.runner instead
   MY_VAR: "${MY_VAR}"
@@ -171,7 +171,28 @@ breaks the hash-verified fetch cache.
 
 These rules make a run fail before `pre_script` starts:
 
-- **Refused names.** A key in the object may not be a runner-owned name. That covers `GH_WORKFLOW_TOKEN`, the OIDC request variables, provider-only keys such as `OPENAI_API_KEY`, the `FULLSEND_*`, `GITHUB_*`, `ACTIONS_*`, `RUNNER_*`, `CI_*`, `LD_*`, `OTEL_*`, `GOOGLE_*` and `CLOUDSDK_*` families, the minted role tokens (`GH_TOKEN`, `PUSH_TOKEN`, `PUSH_TOKEN_SOURCE`, `REVIEW_TOKEN`, `GITLAB_TOKEN`), `PATH`, and the sandbox-reserved names (`HOME`, `SHELL`, `TRACEPARENT`, …), and every name the reusable workflow sets on the `fullsend run` step, such as the named `JIRA_TOKEN`, `JIRA_USER_EMAIL` and `JIRA_BASE_URL` on `harness-run`. An `env.runner` key with one of those names may not receive a value from the object either.
+- **Refused names.** A key in the object may not be a runner-owned name. That
+  covers `GH_WORKFLOW_TOKEN`, the OIDC request variables, provider-only keys
+  such as `OPENAI_API_KEY`, the `FULLSEND_*`, `GITHUB_*`, `ACTIONS_*`,
+  `RUNNER_*`, `CI_*`, `LD_*`, `DYLD_*`, `OTEL_*`, `GOOGLE_*` and `CLOUDSDK_*`
+  families, the minted role tokens (`GH_TOKEN`, `PUSH_TOKEN`,
+  `PUSH_TOKEN_SOURCE`, `REVIEW_TOKEN`, `GITLAB_TOKEN`), `PATH`, the
+  runner-infrastructure names (`HOME`, `SHELL`, `BASH_ENV`, `ENV`,
+  `TRACEPARENT`), and every name the reusable workflow sets on the `fullsend
+  run` step, such as the named `JIRA_TOKEN`, `JIRA_USER_EMAIL` and
+  `JIRA_BASE_URL` on `harness-run`. An `env.runner` key with one of those names
+  may not receive a value from the object either. Credential-class names beyond
+  the runner-infrastructure names, `PATH`, and the `LD_*`/`DYLD_*` families —
+  proxy, TLS trust, Git, interpreter and shell-behavior variables such as
+  `HTTPS_PROXY`, `SSL_CERT_FILE`, `GIT_SSH_COMMAND`, `NODE_OPTIONS` and
+  `HOSTALIASES` — are **not** refused here: runner secrets reach host-side
+  scripts (`pre_script`, `post_script`, `validation_loop`) only as `env.runner`
+  values, and the sandbox gate independently blocks them from `env.sandbox`
+  exports; see [Migrating proxy and certificate
+  settings](../guides/user/customizing-agents.md#migrating-proxy-and-certificate-settings)
+  for where the proxy and TLS-trust settings go instead. Names are matched
+  case-insensitively, so `path` or `github_token` is refused like `PATH` or
+  `GITHUB_TOKEN`.
 - **Host side only.** The object's names may be referenced only from `env.runner` values. A reference from `env.sandbox`, `runner_env`, a provider's `credentials` or `config`, a `host_files` `src`, the content of a `host_files` entry with `expand: true`, or a `validation_loop` field is a validation error.
 - **Overlays.** An overlay that references one of the object's names may be guarded only by `runtime.forge` and `config`. An overlay that reads `event` or any other `runtime` field is refused, even when it does not match. This rule is interim until [ADR 0112](../ADRs/0112-overlays-may-set-any-harness-field.md)'s guarded-field check is implemented; until then an event-guarded overlay can still swap `pre_script`, `post_script` or `validation_loop`, and so choose which script receives a referenced value.
 - **Shape.** The value must be a JSON object whose values are strings, with no duplicate keys and no `null` values. Each value must be at least as long as the redactor's minimum (currently 8 characters), so it can be redacted. Errors name the offending key, never its value.
@@ -180,11 +201,56 @@ These rules make a run fail before `pre_script` starts:
 
 These rules cover names in the GitHub object only. GitLab is unchanged: each secret is its own masked CI/CD variable, `${NAME}` reads it directly, and no name is refused there (keeping fullsend's own credentials out of GitLab host-side scripts is tracked in [#8146](https://github.com/fullsend-ai/fullsend/issues/8146)). For setup, see [Building custom agents § Pass secrets to host-side scripts](../guides/user/building-custom-agents.md#pass-secrets-to-host-side-scripts-github).
 
+**`env.sandbox`** — Variables exported into the sandbox environment. Reserved
+names are dropped instead of exported, matched case-insensitively: the
+runner-infrastructure names (`PATH`, `HOME`, `SHELL`, `BASH_ENV`, `ENV`,
+`LD_PRELOAD`, `LD_LIBRARY_PATH`, `TRACEPARENT` and the `FULLSEND_*` names the
+runner reserves), the credentials it mints or receives and the runner-only
+inputs that select them, and the credential deny-list (proxy, TLS-trust, Git,
+interpreter, loader and shell-behavior names such as `HTTPS_PROXY`,
+`SSL_CERT_FILE`, `GIT_SSH_COMMAND`, `NODE_OPTIONS` and `IFS`). `fullsend run`
+warns once when the harness loads, naming every dropped key, and once per key on
+stderr as it writes the sandbox environment; `fullsend lock` prints the
+load-time warning when it composes a harness. The full list is in the
+`env.sandbox` note in [Customizing
+agents](../guides/user/customizing-agents.md#reserved-envsandbox-names),
+where blocked proxy and certificate settings go instead is in [Migrating proxy
+and certificate
+settings](../guides/user/customizing-agents.md#migrating-proxy-and-certificate-settings),
+and the warnings are described in [`fullsend run` § Reserved `env.sandbox`
+keys](../cli/run.md#reserved-envsandbox-keys).
+
 **`agent_input`** — A local directory, not a file. When a URL `base:` harness declares it, the inherited value is cleared rather than fetched; supply the directory in the child harness if needed. See [Harness field semantic types](../contributing/harness-fields.md#semantic-types-adr-0127).
 
-**`host_files[].dest`** — An absolute path under `/sandbox/` or `/tmp/`. Paths the runner writes or puts on `PATH` ahead of the image are refused when the harness loads: `/sandbox/workspace/.env`, the runner and runtime binaries in `/sandbox/workspace/bin` (`claude`, `codex`, `pi`, `opencode`, `fullsend`, `fullsend-check-output`), and anything under `/sandbox/claude-config`, `/sandbox/codex-config`, `/sandbox/pi-config`, `/sandbox/workspace/.fullsend`, `/sandbox/workspace/.security`, `/sandbox/.venv` or `/sandbox/go/bin`. A `dest` containing a `..` path component is refused as well. The same rule applies to `host_files` under `overlays:`, `forge:` and inherited from `base:`. On Claude and pi runs `/sandbox/workspace/bin` is last on the agent's `PATH`, so a file there adds a command but does not replace one the image provides. Codex runs restore the `PATH` from before `.env`, so `/sandbox/workspace/bin` and `.env.d` additions are not on the codex agent's `PATH`. See [Adding executables](../guides/user/customizing-agents.md#adding-executables).
+**`host_files[].dest`** — An absolute path under `/sandbox/` or `/tmp/`. Paths the runner writes or puts on `PATH` ahead of the image are refused when the harness loads: `/sandbox/workspace/.env`, the runner and runtime binaries in `/sandbox/workspace/bin` (`claude`, `codex`, `pi`, `opencode`, `fullsend`, `fullsend-check-output`), and anything under `/sandbox/claude-config`, `/sandbox/codex-config`, `/sandbox/pi-config`, `/sandbox/workspace/.fullsend`, `/sandbox/workspace/.security`, `/sandbox/.venv` or `/sandbox/go/bin`. A `dest` containing a `..` path component is refused as well. The same rule applies to `host_files` under `overlays:`, `forge:` and inherited from `base:`. On Claude and pi runs `/sandbox/workspace/bin` is last on the agent's `PATH`, so a file there adds a command but does not replace one the image provides. Codex and OpenCode runs restore the `PATH` from before `.env`, so `/sandbox/workspace/bin` and `.env.d` additions are not on the codex or OpenCode agent's `PATH`. See [Adding executables](../guides/user/customizing-agents.md#adding-executables).
 
-**`.env.d` host files** — A `host_files` entry with a `dest` in `/sandbox/workspace/.env.d/` ending in `.env` is sourced as shell in the agent launch shell, before the runtime starts. Treat these files like `pre_script`: they run whatever they contain. `host_files` can also place configuration that tools load, such as git config or shell rc files; that is trusted like `pre_script` too. After the `.env.d` files run, on Claude and pi runs the runner puts its own `PATH` back in front. Claude runs then unset `LD_PRELOAD`, `LD_LIBRARY_PATH`, `LD_AUDIT`, `PYTHONPATH`, `PYTHONHOME`, `PYTHONSTARTUP`, `NODE_OPTIONS`, `NODE_PATH` and `BUN_OPTIONS`; codex runs unset the same names except `BUN_OPTIONS`. Setting those there has no effect on the agent of those runtimes.
+**`.env.d` host files** — A `host_files` entry with a `dest` in
+`/sandbox/workspace/.env.d/` ending in `.env` is read before the runtime starts.
+Claude, codex, pi and OpenCode launches, and the runner's own in-sandbox probes
+(the pre-agent context scan, the GitHub preflight and the runtime bootstrap
+reads), read these files, like `.env` itself, as data: only `[export
+]NAME=value` assignments, `export NAME` and comments are taken (values may be
+quoted and may use `$NAME`, `${NAME}` and a leading `~`), and any other line is
+ignored with a warning that names the file and line number. Shell forms that
+these launches ignore include `${NAME:-default}` and every other `${...}` form
+beyond `${NAME}`, `export A=1 B=2` (put one assignment on each line), `FOO=x;
+export FOO` (write `export FOO=x`), and a value containing a NUL byte. An
+`.env.d` directory or an included file that exists but cannot be read fails the
+launch. `.env` itself stays valid shell, and a shell that sources it (such as an
+agent running `. /sandbox/workspace/.env`) runs these files too, so still treat
+them like `pre_script`. `host_files` can also place configuration that tools
+load, such as git config or shell rc files; that is trusted like `pre_script`
+too. After the `.env.d` files are read, on Claude and pi runs the runner puts
+its own `PATH` back in front; OpenCode runs restore the `PATH` from before
+`.env`. `LD_PRELOAD`, `LD_LIBRARY_PATH`, `LD_AUDIT`, every `PYTHON*` variable,
+`BASH_ENV`, `ENV` and `IFS` are never taken from `.env` or `.env.d` on Claude,
+codex, pi or OpenCode runs. Claude runs also unset `LD_PRELOAD`,
+`LD_LIBRARY_PATH`, `LD_AUDIT`, `PYTHONPATH`, `PYTHONHOME`, `PYTHONSTARTUP`,
+`NODE_OPTIONS`, `NODE_PATH` and `BUN_OPTIONS`, plus the Claude Code variables
+`CLAUDE_CODE_SAFE_MODE`, `CLAUDE_CODE_SIMPLE`, `CLAUDE_CODE_SHELL_PREFIX` and
+`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`; codex runs unset the same loader names
+except `BUN_OPTIONS`. Setting those there has no effect on the agent of those
+runtimes.
 
 
 **`policy`** — Path or pinned URL of the sandbox policy. Required at `fullsend run`; fullsend ships no default. A child that omits `policy:` still passes if it inherits one from `base:`. A local file that unmarshals to no fields (comments only) is rejected with the path named. Commit a copy of the fleet policy from [fullsend-ai/agents](https://github.com/fullsend-ai/agents), or set `policy:` to its URL with a `#sha256=` hash under `allowed_remote_resources`; `fullsend agent new` writes both the file and the field for a new agent.

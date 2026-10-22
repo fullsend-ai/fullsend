@@ -2181,6 +2181,37 @@ func TestSeedGitLabPollStateBranches_EmptyBaselineWhenNoLegacyVars(t *testing.T)
 	}
 }
 
+// A freshly seeded events branch carries the issue-open recovery cutoff, set
+// at installation; the slash branch does not.
+func TestSeedGitLabPollStateBranches_SeedsIssueOpenCutoff(t *testing.T) {
+	fc := forge.NewFakeClient()
+	before := time.Now().Add(-time.Second)
+
+	if _, err := SeedGitLabPollStateBranches(context.Background(), fc, "testgroup", "testrepo", "test-secret"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	read := func(branch string) persistedPollState {
+		raw, err := fc.GetFileContentAtRef(context.Background(), "testgroup", "testrepo", PollStateFileName, branch)
+		if err != nil {
+			t.Fatalf("%s: %v", branch, err)
+		}
+		var state persistedPollState
+		if err := json.Unmarshal(raw, &state); err != nil {
+			t.Fatalf("unmarshal %s: %v", branch, err)
+		}
+		return state
+	}
+	events := read(PollStateBranchEvents)
+	cutoff := decodeIssueOpenCutoff(events).IssueOpenCutoff
+	if cutoff.Before(before) || cutoff.After(time.Now().Add(time.Second)) {
+		t.Errorf("events cutoff = %v, want about now", cutoff)
+	}
+	if got := decodeIssueOpenCutoff(read(PollStateBranchSlash)).IssueOpenCutoff; !got.IsZero() {
+		t.Errorf("slash branch cutoff = %v, want none", got)
+	}
+}
+
 func TestSeedGitLabPollStateBranches_SkipsExistingBranch(t *testing.T) {
 	fc := forge.NewFakeClient()
 	existing := []byte(`{"last_poll_at_fast":"2025-06-01T00:00:00Z","hmac":"keep-me"}`)
@@ -2302,6 +2333,23 @@ func TestSeedGitLabPollStateBranches_ForceCommitErrorPropagates(t *testing.T) {
 	_, err := SeedGitLabPollStateBranches(context.Background(), fc, "testgroup", "testrepo", "test-secret")
 	if err == nil {
 		t.Fatal("expected a force-commit error to propagate")
+	}
+	if strings.Contains(err.Error(), "Push rules") {
+		t.Errorf("unrelated error must not carry the push-rule hint: %v", err)
+	}
+}
+
+func TestSeedGitLabPollStateBranches_PushRuleRejectionAddsHint(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.Errors["ForceCommitFileToBranch"] = errors.New("gitlab api: 400 Cannot create branch. The branch name must match this regular expression: master")
+	_, err := SeedGitLabPollStateBranches(context.Background(), fc, "testgroup", "testrepo", "test-secret")
+	if err == nil {
+		t.Fatal("expected a force-commit error to propagate")
+	}
+	for _, want := range []string{"must match this regular expression", "Push rules", PollStateBranchSlash, PollStateBranchEvents} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err, want)
+		}
 	}
 }
 

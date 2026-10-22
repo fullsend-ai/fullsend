@@ -42,6 +42,7 @@ Use --tracker to select the tracker backend. For GitHub and GitLab,
 pointing at the directory containing it.`,
 	}
 	cmd.AddCommand(newIssuesGetCmd())
+	cmd.AddCommand(newIssuesCreateCmd())
 	cmd.AddCommand(newIssuesPostCommentCmd())
 	cmd.AddCommand(newIssuesLinkCmd())
 	return cmd
@@ -192,6 +193,155 @@ func runIssuesGet(ctx context.Context, cfg *issuesGetConfig) error {
 			Body:      string(c.Body),
 			CreatedAt: c.CreatedAt,
 			HTMLURL:   c.HTMLURL,
+		}
+	}
+
+	w := cfg.testWriter
+	if w == nil {
+		w = os.Stdout
+	}
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(result)
+}
+
+// issueCreateResult is the JSON output of "fullsend issues create".
+type issueCreateResult struct {
+	Number int    `json:"number"`
+	Key    string `json:"key,omitempty"` // Jira only: PROJ-<number>
+	Title  string `json:"title"`
+	URL    string `json:"url"`
+}
+
+// issuesCreateConfig holds the flags and test overrides for
+// "fullsend issues create".
+type issuesCreateConfig struct {
+	trackerName string
+	project     string
+	issueType   string
+	parent      string
+	title       string
+	body        string
+	token       string
+	jiraURL     string
+	jiraEmail   string
+	fullsendDir string
+
+	// Test overrides — when non-nil, used instead of creating a real
+	// tracker client, reading os.Stdin, or writing os.Stdout. Not set by
+	// CLI flag parsing.
+	testClient       tracker.Client
+	testStdin        io.Reader
+	testWriter       io.Writer
+	testConfigReader config.PerRepoConfigReader
+}
+
+func newIssuesCreateCmd() *cobra.Command {
+	var cfg issuesCreateConfig
+
+	cmd := &cobra.Command{
+		Use:   "create",
+		Short: "Create an issue in a tracker",
+		Long: `Creates a new issue in the specified tracker (GitHub, GitLab, or
+Jira) and prints its number, URL, and (for Jira) key as JSON.
+
+For GitHub/GitLab, --project is "owner/repo". For Jira, --project is
+the Jira project key (e.g. "PROJ").
+
+--type and --parent are Jira only. --type is required for Jira: an
+all-digit value is an issue type ID (e.g. "10003"), anything else an
+issue type name (e.g. "Sub-task"). --parent is the parent issue key
+(e.g. "PROJ-42"), used to create sub-tasks. Passing either flag with
+--tracker github or gitlab is an error.
+
+--body is the issue description as Markdown, or "-" to read it from
+stdin. For Jira it is converted to Atlassian Document Format.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runIssuesCreate(cmd.Context(), &cfg)
+		},
+	}
+
+	cmd.Flags().StringVar(&cfg.trackerName, "tracker", "", "tracker backend: github, gitlab, or jira (required unless a default is set via config)")
+	cmd.Flags().StringVar(&cfg.project, "project", "", "project identifier: owner/repo (GitHub/GitLab) or project key (Jira) (required)")
+	cmd.Flags().StringVar(&cfg.issueType, "type", "", "Jira issue type ID or name (required for Jira; Jira only)")
+	cmd.Flags().StringVar(&cfg.parent, "parent", "", "Jira parent issue key for sub-task creation (Jira only)")
+	cmd.Flags().StringVar(&cfg.title, "title", "", "issue title (required)")
+	cmd.Flags().StringVar(&cfg.body, "body", "", "issue description as Markdown, or '-' to read from stdin")
+	cmd.Flags().StringVar(&cfg.token, "token", "", "API token (default: env var per tracker)")
+	cmd.Flags().StringVar(&cfg.jiraURL, "jira-url", "", "Jira instance URL (default: $JIRA_BASE_URL)")
+	cmd.Flags().StringVar(&cfg.jiraEmail, "jira-email", "", "Jira user email for Basic auth (default: $JIRA_USER_EMAIL)")
+	cmd.Flags().StringVar(&cfg.fullsendDir, "fullsend-dir", "", "path to .fullsend config directory (sources a default --tracker from its config.yaml when --tracker is omitted)")
+	_ = cmd.MarkFlagRequired("project")
+	_ = cmd.MarkFlagRequired("title")
+
+	return cmd
+}
+
+func runIssuesCreate(ctx context.Context, cfg *issuesCreateConfig) error {
+	if strings.TrimSpace(cfg.project) == "" {
+		return fmt.Errorf("--project must not be empty")
+	}
+	if strings.TrimSpace(cfg.title) == "" {
+		return fmt.Errorf("--title must not be empty")
+	}
+
+	trackerName, err := resolveTracker(cfg.trackerName, cfg.fullsendDir, cfg.testConfigReader)
+	if err != nil {
+		return err
+	}
+	if trackerName != trackerJira {
+		if cfg.issueType != "" {
+			return fmt.Errorf("--type is only supported with --tracker jira")
+		}
+		if cfg.parent != "" {
+			return fmt.Errorf("--parent is only supported with --tracker jira")
+		}
+	} else if strings.TrimSpace(cfg.issueType) == "" {
+		return fmt.Errorf("--type is required with --tracker jira")
+	}
+
+	body := cfg.body
+	if body == "-" {
+		stdin := cfg.testStdin
+		if stdin == nil {
+			stdin = os.Stdin
+		}
+		body, err = readBodyFrom("-", stdin)
+		if err != nil {
+			return fmt.Errorf("reading issue body: %w", err)
+		}
+	}
+	if trackerName == trackerJira && len(body) > jira.MaxMarkdownBytes {
+		return fmt.Errorf("Jira issue body exceeds maximum size of %d bytes", jira.MaxMarkdownBytes)
+	}
+
+	tc := cfg.testClient
+	if tc == nil {
+		tc, err = newTrackerClient(trackerName, cfg.token, cfg.jiraURL, cfg.jiraEmail)
+		if err != nil {
+			return err
+		}
+	}
+
+	issue, err := tc.CreateIssue(ctx, cfg.project, cfg.title, tracker.Body(body), tracker.CreateIssueOptions{
+		IssueType: cfg.issueType,
+		Parent:    cfg.parent,
+	})
+	if err != nil {
+		return fmt.Errorf("creating issue: %w", err)
+	}
+
+	result := issueCreateResult{
+		Number: issue.Number,
+		Title:  issue.Title,
+		URL:    issue.URL,
+	}
+	if trackerName == trackerJira {
+		// Prefer the key Jira returned so key and url cannot disagree
+		// when --project is spelled differently from the canonical key.
+		result.Key = issue.Key
+		if result.Key == "" {
+			result.Key = fmt.Sprintf("%s-%d", cfg.project, issue.Number)
 		}
 	}
 
@@ -380,6 +530,11 @@ func postJiraStickyComment(ctx context.Context, jc *tracker.JiraClient, project 
 		return "", fmt.Errorf("marker is empty")
 	}
 
+	// Escape marker syntax in the agent-written body, as the
+	// GitHub/GitLab path does, in the form that stays escaped through
+	// the Markdown -> ADF -> Markdown round trip.
+	body = statuscomment.NeutralizeMarkersADF(body)
+
 	// Same rule as the GitHub/GitLab path: only the poster's own comments
 	// are candidates, matched by exact account ID. Filtering before the
 	// lookup covers both the marker property and the legacy body-text
@@ -401,13 +556,21 @@ func postJiraStickyComment(ctx context.Context, jc *tracker.JiraClient, project 
 
 		// Build the updated body using sticky's history-collapsing
 		// logic. The old body is read from Jira as Markdown (via
-		// ADFToMarkdown). BuildUpdatedBody uses cfg.Marker to strip
-		// the marker from oldBody (handling both legacy body-embedded
-		// markers and the property-based path where oldBody has no
-		// marker). The new body is passed without the marker prefix
-		// because the marker lives in a property, not the visible body.
+		// ADFToMarkdown). A legacy body-embedded marker is cut from the
+		// front of oldBody (the property-based path has none). The new
+		// body is passed without the marker prefix because the marker
+		// lives in a property, not the visible body.
+		//
+		// ADFToMarkdown decodes any escaped marker in the stored text
+		// back into a live one, so the old body is neutralized again
+		// after it is read back. The legacy marker is cut first so it
+		// is dropped rather than kept as escaped text in history.
+		// BuildUpdatedBody's own escaping uses "&lt;", which Jira would
+		// decode, so its result is neutralized once more as well.
 		oldBody := jira.ADFToMarkdown(existing.Body)
-		newBody := sticky.BuildUpdatedBody(oldBody, body, cfg)
+		oldBody, _ = strings.CutPrefix(oldBody, cfg.Marker)
+		oldBody = statuscomment.NeutralizeMarkersADF(oldBody)
+		newBody := statuscomment.NeutralizeMarkersADF(sticky.BuildUpdatedBody(oldBody, body, cfg))
 
 		if cfg.DryRun {
 			printer.StepInfo("Dry run — would update comment " + existing.ID)

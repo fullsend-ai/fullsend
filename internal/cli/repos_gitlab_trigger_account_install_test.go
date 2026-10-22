@@ -46,6 +46,10 @@ func newTriggerInstallFake(t *testing.T) *forge.FakeClient {
 	return fc
 }
 
+type triggerInstallBaseURLClient struct{ *forge.FakeClient }
+
+func (triggerInstallBaseURLClient) BaseURL() string { return "https://gitlab.example.com" }
+
 // seedPipelineSchedules makes the fullsend poll schedules present, so the repo
 // has no GitLab post-install work (which needs the live client) and the install
 // reaches the role and trigger-account stages with local fakes.
@@ -112,7 +116,7 @@ func TestRunReposInstall_GitLabContainmentFailureExcludesRepoFromConverge(t *tes
 		return errors.New("restoring Developer access")
 	}
 	triggerCalls := 0
-	opts.testConvergeTriggerAccount = func(context.Context, forge.Client, string, string) error {
+	opts.testConvergeTriggerAccount = func(context.Context, forge.Client, string, string, bool) error {
 		triggerCalls++
 		return nil
 	}
@@ -143,10 +147,13 @@ func TestRunReposInstall_GitLabPollerProvisioningFailureStillPreparesTriggerAcco
 	seedPipelineSchedules(fc)
 
 	opts := gitlabInstallOpts(manifestPath, fc)
+	opts.testClient = triggerInstallBaseURLClient{fc}
 	opts.gitlabRoleRegistryJSON = "not json" // makes role provisioning fail
+	opts.rotateGitLabTriggerAccount = true
 	triggerCalls := 0
-	opts.testConvergeTriggerAccount = func(context.Context, forge.Client, string, string) error {
+	opts.testConvergeTriggerAccount = func(_ context.Context, _ forge.Client, _, _ string, rotate bool) error {
 		triggerCalls++
+		assert.False(t, rotate, "a failed Poller stage must not rotate the bearer still embedded in the webhook")
 		return nil
 	}
 	var runErr error
@@ -155,6 +162,26 @@ func TestRunReposInstall_GitLabPollerProvisioningFailureStillPreparesTriggerAcco
 	require.Error(t, runErr)
 	assert.Equal(t, 1, triggerCalls, "the trigger account is prepared despite the Poller failure")
 	assert.Equal(t, 1, strings.Count(output, "FAILED: group/project"), "the repo is counted once")
+	assert.Empty(t, fc.CreatedProjectHooks, "a failed Poller stage does not provision a new Poller webhook")
+	assert.Empty(t, fc.CreatedTriggerTokens, "a failed Poller stage does not provision a new Poller trigger")
+}
+
+func TestRunReposInstall_GitLabPollerFailureSkipsRefreshWithoutActiveAccount(t *testing.T) {
+	manifestPath := writeTestManifest(t, triggerInstallManifest)
+	fc := newTriggerInstallFake(t)
+	seedPipelineSchedules(fc)
+	opts := gitlabInstallOpts(manifestPath, fc)
+	opts.testClient = triggerInstallBaseURLClient{fc}
+	opts.gitlabRoleRegistryJSON = "not json" // fail the Poller/role stage
+	opts.testConvergeTriggerAccount = func(context.Context, forge.Client, string, string, bool) error {
+		fc.Errors["ListProjectHooks"] = errors.New("route probe unavailable")
+		return nil
+	}
+	var runErr error
+	output := captureStdout(t, func() { runErr = runReposInstall(context.Background(), opts) })
+
+	require.Error(t, runErr)
+	assert.NotContains(t, output, "GitLab webhook route refresh failed")
 }
 
 // Published-credential containment runs for the repo before any role stage can
@@ -172,7 +199,7 @@ func TestRunReposInstall_GitLabPublishedCredentialContainmentRunsBeforeRoleStage
 		order = append(order, "contain")
 		return nil
 	}
-	opts.testConvergeTriggerAccount = func(context.Context, forge.Client, string, string) error {
+	opts.testConvergeTriggerAccount = func(context.Context, forge.Client, string, string, bool) error {
 		order = append(order, "converge")
 		return errors.New("trigger account convergence failed")
 	}
@@ -200,7 +227,7 @@ func TestRunReposInstall_GitLabRefusedPollerMergeGrantStillPreparesTriggerAccoun
 
 	opts := gitlabInstallOpts(manifestPath, fc)
 	triggerCalls := 0
-	opts.testConvergeTriggerAccount = func(context.Context, forge.Client, string, string) error {
+	opts.testConvergeTriggerAccount = func(context.Context, forge.Client, string, string, bool) error {
 		triggerCalls++
 		return nil
 	}
@@ -324,6 +351,9 @@ func (e *installEmulation) handle(w http.ResponseWriter, r *http.Request) bool {
 	case r.Method == http.MethodGet && (p == proj+"forks" || p == proj+"merge_requests" || p == proj+"hooks" ||
 		p == proj+"resource_groups" || p == proj+"protected_branches" || p == proj+"protected_tags"):
 		tahJSON(w, http.StatusOK, []any{})
+	case r.Method == http.MethodGet && p == proj+"push_rule":
+		// GitLab Free has no push rules; the install preflight skips the check.
+		tahJSON(w, http.StatusNotFound, map[string]any{"message": "404 Not Found"})
 	case r.Method == http.MethodPost && p == proj+"merge_requests":
 		tahJSON(w, http.StatusCreated, map[string]any{"iid": 1, "web_url": "https://gitlab.example.com/g/p/-/merge_requests/1"})
 	case r.Method == http.MethodPost && p == proj+"pipeline_schedules":
@@ -424,7 +454,7 @@ func TestRunReposInstall_GitLabScheduleRepairRunsAfterContainmentBeforeConverge(
 			assert.Empty(t, fc.Variables, "convergence has not written a variable yet")
 			return nil
 		}
-		opts.testConvergeTriggerAccount = func(context.Context, forge.Client, string, string) error {
+		opts.testConvergeTriggerAccount = func(context.Context, forge.Client, string, string, bool) error {
 			order = append(order, "converge")
 			return nil
 		}
@@ -442,7 +472,7 @@ func TestRunReposInstall_GitLabScheduleRepairRunsAfterContainmentBeforeConverge(
 			return errors.New("repair unavailable")
 		}
 		triggerCalls := 0
-		opts.testConvergeTriggerAccount = func(context.Context, forge.Client, string, string) error {
+		opts.testConvergeTriggerAccount = func(context.Context, forge.Client, string, string, bool) error {
 			triggerCalls++
 			return nil
 		}

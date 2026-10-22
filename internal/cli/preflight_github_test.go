@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -89,6 +90,28 @@ func TestCheckSandboxGitHubConnectivity_SuccessFirstAttempt(t *testing.T) {
 	require.NotNil(t, result)
 	assert.False(t, result.Skipped)
 	assert.Empty(t, *slept)
+}
+
+// Both probe commands read .env as data, as the launch does (#8574), with the
+// loader's warnings discarded so they cannot reach the 401/404 diagnosis.
+func TestCheckSandboxGitHubConnectivity_ReadsEnvAsData(t *testing.T) {
+	useNoSleepPreflightGitHub(t)
+	var cmds []string
+	inner := connectivityExec(t, []fakeExecResult{{}})
+	usePreflightGitHubExec(t, func(name, cmd string, timeout time.Duration) (string, string, int, error) {
+		cmds = append(cmds, cmd)
+		return inner(name, cmd, timeout)
+	})
+	_, err := checkSandboxGitHubConnectivity("sb", nil)
+	require.NoError(t, err)
+	require.Len(t, cmds, 2)
+	load := "{ " + agentruntime.EnvDataLoad("/sandbox/workspace/.env") + "; } 2>/dev/null"
+	assert.True(t, strings.HasPrefix(cmds[0], load+"; "), cmds[0])
+	assert.True(t, strings.HasPrefix(cmds[1], load+` && PATH="$FULLSEND_TRUSTED_PATH" gh api /rate_limit`), cmds[1])
+	assert.Contains(t, cmds[0], `(PATH="$FULLSEND_TRUSTED_PATH"; command -v gh)`, "gh is looked up on the trusted PATH")
+	for _, cmd := range cmds {
+		assert.NotContains(t, cmd, ". /sandbox/workspace/.env")
+	}
 }
 
 func TestCheckSandboxGitHubConnectivity_RetriesOnTransient403(t *testing.T) {

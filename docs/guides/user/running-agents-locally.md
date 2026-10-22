@@ -386,6 +386,9 @@ or a cached artifact is missing, `fullsend run` falls back to normal network
 resolution and prints a warning suggesting you re-run `fullsend lock`.
 
 Use `--update` to force re-resolution even if the lock entry appears current.
+A current entry is also not composed, so `fullsend lock` does not check it for
+reserved `env.sandbox` keys; see
+[Reserved `env.sandbox` keys](../../cli/run.md#reserved-envsandbox-keys).
 
 ### Status notification flags
 

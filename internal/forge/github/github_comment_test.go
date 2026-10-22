@@ -46,6 +46,35 @@ func TestCreateIssueWithLabels(t *testing.T) {
 	assert.Equal(t, []string{"type/chore"}, issue.Labels)
 }
 
+func TestCreateIssueEscapesRepositoryPathSegment(t *testing.T) {
+	tests := []struct {
+		name string
+		repo string
+		path string
+	}{
+		{name: "fragment", repo: "widgets#ignored", path: "/repos/acme/widgets%23ignored/issues"},
+		{name: "query", repo: "widgets?ignored", path: "/repos/acme/widgets%3Fignored/issues"},
+		{name: "extra path segments", repo: "widgets/issues/42/comments", path: "/repos/acme/widgets%2Fissues%2F42%2Fcomments/issues"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			handlerCalled := false
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				handlerCalled = true
+				assert.Equal(t, http.MethodPost, r.Method)
+				assert.Equal(t, tc.path, r.URL.EscapedPath())
+				assert.Empty(t, r.URL.RawQuery)
+				json.NewEncoder(w).Encode(map[string]any{"number": 1, "title": "title"})
+			}))
+			defer srv.Close()
+
+			_, err := newTestClient(t, srv).CreateIssue(context.Background(), "acme", tc.repo, "title", "body")
+			require.NoError(t, err)
+			assert.True(t, handlerCalled, "handler was not called — URL path mismatch")
+		})
+	}
+}
+
 func TestCreateIssueRetriesWithoutLabelsOnValidationError(t *testing.T) {
 	call := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

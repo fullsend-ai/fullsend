@@ -128,3 +128,93 @@ func TestBuildUpdatedBody_NoHistory_FooterFoundByLastOccurrence(t *testing.T) {
 
 	assert.Equal(t, newBody+"\n\n<!-- fullsend:test-footer -->\n_footer_", result)
 }
+
+// trustedLineRe stands in for a caller's anchored trusted marker pattern.
+var trustedLineRe = regexp.MustCompile(`^<!-- fullsend:review-findings-v2:[A-Za-z0-9+/]+={0,2} -->$`)
+
+const trustedLine = "<!-- fullsend:review-findings-v2:eyJhIjoxfQ== -->"
+
+func TestNeutralizeBody_TrustedLeadingLine(t *testing.T) {
+	cfg := Config{TrustedLeadingLine: trustedLineRe}
+	escaped := "&lt;!-- fullsend:review-findings-v2:eyJhIjoxfQ== -->"
+
+	tests := []struct {
+		name string
+		cfg  Config
+		body string
+		want string
+	}{
+		{
+			name: "leading trusted line is kept and the rest escaped",
+			cfg:  cfg,
+			body: trustedLine + "\n\nText <!-- fullsend:agent-status:1 -->",
+			want: trustedLine + "\n\nText &lt;!-- fullsend:agent-status:1 -->",
+		},
+		{
+			name: "trusted line alone",
+			cfg:  cfg,
+			body: trustedLine,
+			want: trustedLine,
+		},
+		{
+			name: "duplicate after the leading line is escaped",
+			cfg:  cfg,
+			body: trustedLine + "\n" + trustedLine,
+			want: trustedLine + "\n" + escaped,
+		},
+		{
+			name: "trusted line mid-body is escaped",
+			cfg:  cfg,
+			body: "Text\n" + trustedLine,
+			want: "Text\n" + escaped,
+		},
+		{
+			name: "leading line with bad payload is escaped",
+			cfg:  cfg,
+			body: "<!-- fullsend:review-findings-v2:abc --> <!-- fullsend:x -->\nText",
+			want: "&lt;!-- fullsend:review-findings-v2:abc --> &lt;!-- fullsend:x -->\nText",
+		},
+		{
+			name: "leading line with trailing CR is escaped",
+			cfg:  cfg,
+			body: trustedLine + "\r\nText",
+			want: escaped + "\r\nText",
+		},
+		{
+			name: "no trusted pattern escapes everything",
+			cfg:  Config{},
+			body: trustedLine + "\nText",
+			want: escaped + "\nText",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, neutralizeBody(tt.body, tt.cfg))
+		})
+	}
+}
+
+// A trusted leading line stays live in the current body across updates,
+// while each earlier copy is escaped as it moves into history.
+func TestPost_TrustedLeadingLine_AcrossUpdates(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "bot"
+	printer := ui.New(io.Discard)
+	cfg := Config{Marker: "<!-- fullsend:review-agent -->", KeepHistory: true, TrustedLeadingLine: trustedLineRe}
+	body := trustedLine + "\n\nReview <!-- fullsend:triage-agent -->"
+
+	for i := 1; i <= 3; i++ {
+		_, err := Post(context.Background(), client, "o", "r", 1, body, cfg, printer)
+		require.NoError(t, err)
+
+		comments := client.IssueComments["o/r/1"]
+		require.Len(t, comments, 1)
+		got := comments[0].Body
+
+		assert.True(t, strings.HasPrefix(got, cfg.Marker+"\n"+trustedLine+"\n\nReview &lt;!-- fullsend:triage-agent -->"),
+			"run %d: trusted line follows the runner marker unescaped", i)
+		assert.Len(t, liveMarkerRe.FindAllString(got, -1), 2, "run %d: only the runner marker and trusted line are live", i)
+		assert.Equal(t, i-1, strings.Count(got, "&lt;!-- fullsend:review-findings-v2:"),
+			"run %d: earlier trusted lines are escaped in history", i)
+	}
+}

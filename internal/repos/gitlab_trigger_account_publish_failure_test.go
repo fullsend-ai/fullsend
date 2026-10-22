@@ -84,6 +84,60 @@ func (e *trigEnv) publishUnsafeThenFail() {
 	}
 }
 
+func TestRotateGitLabTriggerAccount_PublisherFailureKeepsPreviousWebhookBearer(t *testing.T) {
+	ctx := context.Background()
+	e := newTrigEnv()
+	o := e.unpublishClearsAttributes(e.opts())
+	o.DeferRetirement = true
+	old, err := ConvergeGitLabTriggerAccount(ctx, o)
+	require.NoError(t, err)
+	e.publishUnsafeThenFail()
+	o = e.unpublishClearsAttributes(e.opts())
+	o.DeferRetirement = true
+	_, err = RotateGitLabTriggerAccount(ctx, o)
+	require.ErrorContains(t, err, "publishing the pipeline trigger token")
+	st, _ := e.ledger(t)
+	require.Len(t, st.Retired, 1)
+	assert.True(t, st.PublicationPending, "the old bearer remains an intentional cutover obligation")
+	assert.Contains(t, e.f.triggers, old.TriggerTokenID, "publication failure cannot break the existing webhook")
+	assert.NotContains(t, e.f.triggers, st.TriggerTokenID, "the failed replacement is revoked")
+	assert.False(t, e.sinkPresent(), "the potentially unsafe replacement variable is removed")
+
+	e.useRecreatingSink()
+	o = e.unpublishClearsAttributes(e.opts())
+	o.DeferRetirement = true
+	_, err = ConvergeGitLabTriggerAccount(ctx, o)
+	require.NoError(t, err)
+	assert.Contains(t, e.f.triggers, old.TriggerTokenID, "retry retains the old bearer until cutover")
+}
+
+func TestRotateGitLabTriggerAccount_PublisherAndSinkDeletionFailureKeepsPreviousBearer(t *testing.T) {
+	ctx := context.Background()
+	e := newTrigEnv()
+	o := e.opts()
+	o.DeferRetirement = true
+	old, err := ConvergeGitLabTriggerAccount(ctx, o)
+	require.NoError(t, err)
+	e.publishUnsafeThenFail()
+	o = e.opts()
+	o.DeferRetirement = true
+	deletions := 0
+	o.UnpublishTriggerToken = func(context.Context) error {
+		deletions++
+		if deletions > 1 {
+			return errors.New("sink deletion unavailable")
+		}
+		e.setSink(false)
+		delete(e.state.VariableValues, trigSinkKey)
+		return nil
+	}
+	_, err = RotateGitLabTriggerAccount(ctx, o)
+	require.ErrorContains(t, err, "removing the failed replacement trigger token variable")
+	assert.Contains(t, e.f.triggers, old.TriggerTokenID, "the existing webhook bearer survives both failures")
+	st, _ := e.ledger(t)
+	assert.NotContains(t, e.f.triggers, st.TriggerTokenID, "the failed replacement is revoked even when the sink cannot be deleted")
+}
+
 // A failed publication revokes the new trigger in the same run, even when the
 // publisher also cannot delete the variable, and keeps the ledger obligation.
 func TestConvergeGitLabTriggerAccount_FailedPublicationRevokesTrigger(t *testing.T) {

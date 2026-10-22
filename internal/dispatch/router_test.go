@@ -261,21 +261,54 @@ func TestHarnessRouter_Opened(t *testing.T) {
 	}
 }
 
-func TestHarnessRouter_OpenedWorkItemIgnored(t *testing.T) {
+func TestHarnessRouter_OpenedWorkItemTriaged(t *testing.T) {
 	r := NewHarnessRouter([]string{"review", "triage"})
 
 	event := &NormalizedEvent{
 		Entity:     Entity{Kind: "work_item", ID: 1},
 		Transition: Transition{Kind: "opened"},
 		Actor:      Actor{ID: "alice", Role: "write"},
+		Source:     Source{System: "gitlab"},
 	}
 
 	stages, err := r.Route(event)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	if len(stages) != 1 || stages[0] != "triage" {
+		t.Fatalf("expected [triage] for work_item opened, got %v", stages)
+	}
+}
+
+func TestHarnessRouter_OpenedWorkItemTriageNotInValidSet(t *testing.T) {
+	r := NewHarnessRouter([]string{"review"})
+	event := &NormalizedEvent{
+		Entity:     Entity{Kind: "work_item", ID: 1},
+		Transition: Transition{Kind: "opened"},
+		Source:     Source{System: "gitlab"},
+	}
+	stages, err := r.Route(event)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if len(stages) != 0 {
-		t.Fatalf("expected no stages for work_item opened, got %v", stages)
+		t.Fatalf("expected no stages when triage is disabled, got %v", stages)
+	}
+}
+
+func TestHarnessRouter_OpenedJiraWorkItemIgnored(t *testing.T) {
+	r := NewHarnessRouter([]string{"triage"})
+	event := &NormalizedEvent{
+		Entity:     Entity{Kind: "work_item", ID: 1},
+		Transition: Transition{Kind: "opened"},
+		Source:     Source{System: "jira"},
+	}
+	stages, err := r.Route(event)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(stages) != 0 {
+		t.Fatalf("Jira issue open must not route to triage, got %v", stages)
 	}
 }
 

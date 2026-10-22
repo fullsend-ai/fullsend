@@ -588,6 +588,23 @@ func TestBuildScaffoldFiles(t *testing.T) {
 	}
 }
 
+func TestBuildScaffoldFiles_GitLabIssueTargets(t *testing.T) {
+	files, err := BuildScaffoldFiles(InstallConfig{Forge: ForgeGitLab, Owner: "acme", Repo: "api"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range files {
+		if file.Path == ".fullsend/config.yaml" {
+			body := string(file.Content)
+			if !strings.Contains(body, "allow_targets: {}") || strings.Contains(body, "- fullsend-ai/") {
+				t.Fatalf("GitLab config should explicitly allow no cross-project targets:\n%s", body)
+			}
+			return
+		}
+	}
+	t.Fatal("missing config overlay")
+}
+
 func TestBuildScaffoldFiles_WithPreset(t *testing.T) {
 	cfg := baseCfg()
 	cfg.Preset = []byte(testPresetYAML)

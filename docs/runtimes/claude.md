@@ -118,8 +118,8 @@ prefix only selects the route, so `gateway/claude-haiku-5-5` calls `claude-haiku
   `api.anthropic.com`;
 - the credential, per mode (below).
 
-`.env` cannot override any of these. A variable that `.env` makes `readonly` stops the launch rather
-than reaching Claude Code. The placeholder is read from the sandbox before `.env` runs.
+`.env` cannot override any of these. A `readonly` line in `.env` is ignored with a warning by the
+data loader, so it never reaches Claude Code. The placeholder is read from the sandbox before `.env` runs.
 
 The repository's own `.claude/settings.json` and `.claude/settings.local.json` can carry an `env`
 block, which Claude Code applies after launch over the launch environment. The runner therefore
@@ -234,14 +234,38 @@ Use the gateway route above. For Claude models, the default Vertex route is the 
 
 ## Environment the launch clears
 
-The launch sources the sandbox `.env` and then clears variables before it starts Claude Code.
-`.env` carries the harness `env.sandbox` values, the host-file env files it sources, and anything
-the agent wrote there between iterations. The rest of the environment, including provider
+The launch reads the sandbox `.env` as data and then clears variables before it starts Claude Code.
+No line of `.env` runs as shell: a `python3` resolved before anything the agent wrote parses its
+`NAME=value` assignments and ignores everything else, and `LD_PRELOAD`, `LD_LIBRARY_PATH`,
+`LD_AUDIT`, every `PYTHON*` variable, `BASH_ENV`, `ENV` and `IFS` are never taken from it (#8498).
+The sandbox image therefore needs `python3` on every Claude run, including runs without sandbox
+hooks, in a `PATH` directory the sandbox user neither owns nor can write (a virtualenv or a
+`$HOME`-managed interpreter does not count); without one the launch fails with
+`python3 not found in a PATH directory the agent cannot write` (exit 127). It also needs
+`readlink` there as a regular file, not a symlink; without one the launch prints
+`no readlink that is a regular file in a PATH directory the agent cannot write` and then fails
+with `claude not found in a PATH directory the agent cannot write` (exit 127). With sandbox
+hooks on, that `python3` must also be 3.11 or newer; an older one fails Bootstrap with
+`hook interpreter ... needs at least 3.11`. The fullsend sandbox image ships both.
+
+The `claude` CLI is held to the same rule. The launch pins the first `claude`
+in a `PATH` directory the sandbox user neither owns nor can write, judged by
+the file it resolves to and every directory above that file. A `claude` found
+only through an agent-writable directory, or a symlink into one, fails the
+launch with `claude not found in a PATH directory the agent cannot write`
+(exit 127). If `claude` is a `#!/usr/bin/env node` script rather than a binary,
+`node` must sit in such a directory too. The launch then starts the script with
+that `node`, and without one it fails with
+`node not found in a PATH directory the agent cannot write` (exit 127). In the
+fullsend sandbox image `claude` is a binary. `.env` carries the harness
+`env.sandbox` values, the host-file env files it sources, and anything the agent
+wrote there between iterations. The rest of the environment, including provider
 credentials, comes from the sandbox.
 
 | Run | Cleared after `.env` | Sources it covers |
 |---|---|---|
 | Every run | `LD_PRELOAD`, `LD_LIBRARY_PATH`, `LD_AUDIT`, `PYTHONPATH`, `PYTHONHOME`, `PYTHONSTARTUP`, `PYTHONUSERBASE`, `NODE_OPTIONS`, `NODE_PATH`, `BUN_OPTIONS`: code-loading variables, not routing ones | all |
+| Every run | `CLAUDE_CODE_SAFE_MODE`, `CLAUDE_CODE_SIMPLE`, `CLAUDE_CODE_SHELL_PREFIX`, `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`: they change how Claude Code loads settings, runs hook commands and passes the environment to them | all |
 | Gateway runs | `ANTHROPIC_BASE_URL`, `ANTHROPIC_UNIX_SOCKET`, `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_CUSTOM_HEADERS`, `ANTHROPIC_IDENTITY_TOKEN`, `ANTHROPIC_IDENTITY_TOKEN_FILE`, `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR`, `CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR`, `CLAUDE_CODE_API_KEY_HELPER_TTL_MS`, `ANTHROPIC_PROFILE`, `ANTHROPIC_FEDERATION_RULE_ID`, `CLAUDE_CODE_GATEWAY_TOKEN_FILE_DESCRIPTOR`, `CLAUDE_CODE_SESSION_ACCESS_TOKEN`, `CLAUDE_CODE_HOST_AUTH_ENV_VAR`, `CLAUDE_CODE_ENABLE_PROXY_AUTH_HELPER`, `AGENT_PROXY_AUTH_TOKEN`, and the provider selectors `CLAUDE_CODE_USE_VERTEX`, `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_FOUNDRY`, `CLAUDE_CODE_USE_MANTLE`, `CLAUDE_CODE_USE_ANTHROPIC_AWS`, `CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD`, `CLAUDE_CODE_USE_GATEWAY`; then the runner exports its own values | all: `env.sandbox`, host-file env files, the agent's `.env` writes, and providers |
 
 On non-gateway runs no `ANTHROPIC_*` variable is cleared. A value the harness sets is honoured.
@@ -250,6 +274,27 @@ pinned. On gateway runs the cleared variables are also pinned in the inline `--s
 `.claude/settings.json` `env` block (see [What the runner owns](#inference-gateway-route)). On
 non-gateway runs that block is read by Claude Code itself, after launch. On every route, the egress profile and the endpoint-bound placeholder are what keep the
 credential on its host.
+
+**Sandbox hook settings come from the harness, not `.env`.** With sandbox
+hooks on, `TIRITH_FAIL_ON`, `TIRITH_REQUIRED`, `FULLSEND_EGRESS_ALLOWLIST`,
+`FULLSEND_CANARY_TOKEN` and `FULLSEND_TOOL_ALLOWLIST` are taken from the harness
+configuration at Bootstrap, before the first iteration. The launch sets them
+again after it reads `.env`, and unsets any of them the harness did not set. A
+value in `.env`, including one the agent wrote there, cannot change them.
+
+Whether the hooks run at all is also the runner's choice. The `--settings`
+document the runner passes pins these keys:
+
+- `env`: the five hook variables, empty for any the harness did not set, and
+  every variable in the "Every run" rows of the table above, and `BASH_ENV`
+  and `ENV`, set empty.
+- `"disableAllHooks": false`.
+
+On gateway runs the `env` entries are added to the route's `env` block in the
+inline document. `--settings` ranks above `$CLAUDE_CONFIG_DIR/settings.json`
+and the repository's `.claude/settings.json` and `.claude/settings.local.json`
+for the keys it sets, so a value for one of these keys in those files has no
+effect. Other keys in those files still apply.
 
 ## Behaviour differences worth knowing
 
@@ -290,8 +335,7 @@ the offending tool and the expected vocabulary.
 exactly what `Bootstrap` installed. A file that was changed, deleted or added, usually by an earlier
 iteration, fails the run instead of loading altered hooks. On the inference gateway route the settings
 document is passed inline, so only the hook scripts are checked. The launch also starts the `claude`
-binary it found before sourcing `.env`, so a `claude` function or a `PATH` entry from `.env` cannot
-stand in for it.
+binary it found before reading `.env`, so a `PATH` entry from `.env` cannot stand in for it.
 
 **A harness plugin did not load.** When Claude Code reports a plugin in the `plugin_errors` of its
 startup `system`/`init` event, the run output prints one `Plugin <name> failed to load …` warning per

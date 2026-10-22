@@ -78,6 +78,9 @@ type Handler struct {
 	// workflowHostRepos lists the repos whose workflows are trusted to
 	// call the mint. Defaults to fullsend-ai/fullsend.
 	workflowHostRepos map[string]bool
+
+	// tracer records and exports request spans. Nil disables tracing.
+	tracer *Tracer
 }
 
 type foreignInflight struct {
@@ -191,12 +194,35 @@ func NewHandler(pemAccessor PEMAccessor, oidcVerifier OIDCVerifier) (*Handler, e
 	return h, nil
 }
 
+// SetTracer enables request tracing. Load sites call it after
+// NewHandler when an OTLP traces endpoint is configured; a nil tracer
+// (the default) disables tracing with no export attempts. It must be
+// called before the handler serves requests.
+func (h *Handler) SetTracer(t *Tracer) {
+	h.tracer = t
+}
+
 // ServeHTTP handles incoming token mint requests.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet && r.URL.Path == "/health" {
 		h.handleHealth(w)
 		return
 	}
+	// A load site that wraps the whole handler chain with Tracer.Wrap has
+	// already started the server span; do not start a second one.
+	if h.tracer == nil || spanFromContext(r.Context()) != nil {
+		h.serveHTTP(w, r)
+		return
+	}
+	ctx, root := h.tracer.startRequest(r)
+	w.Header().Set("traceresponse", root.traceresponse())
+	rec := &statusRecorder{ResponseWriter: w}
+	h.serveHTTP(rec, r.WithContext(ctx))
+	h.tracer.finishRequest(root, rec.statusCode())
+}
+
+func (h *Handler) serveHTTP(w http.ResponseWriter, r *http.Request) {
+	root := spanFromContext(r.Context())
 
 	if r.URL.Path != "/v1/token" && r.URL.Path != "/" && r.URL.Path != "/v1/status" {
 		writeError(w, http.StatusNotFound, "not found")
@@ -214,7 +240,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// --- /v1/status auth pipeline ---
 	if r.URL.Path == "/v1/status" {
-		auth, err := h.authenticateStatus(r.Context(), r)
+		authCtx, authSpan := startSpan(r.Context(), "mint.status_auth", stageAuthentication)
+		auth, err := h.authenticateStatus(authCtx, r)
+		authSpan.recordError(err)
+		authSpan.end()
 		if err != nil {
 			writeError(w, http.StatusUnauthorized, "authentication failed")
 			return
@@ -251,6 +280,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid role format")
 		return
 	}
+	root.setStr("fullsend.mint.role", req.Role)
 
 	if !h.checkAllowedRole(req.Role) {
 		writeError(w, http.StatusForbidden, "role not allowed")
@@ -269,6 +299,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid level format")
 		return
 	}
+	root.setStr("fullsend.mint.level", req.Level)
 
 	if len(req.Repos) == 0 {
 		writeError(w, http.StatusBadRequest, "repos is required")
@@ -295,8 +326,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	root.setInt("fullsend.mint.repo_count", int64(len(req.Repos)))
+
 	// --- /v1/token auth: OIDC only (shared helper) ---
-	claims, oidcErr := h.verifyOIDCRequest(r.Context(), r)
+	oidcCtx, oidcSpan := startSpan(r.Context(), "mint.oidc_verify", stageOIDCVerification)
+	claims, oidcErr := h.verifyOIDCRequest(oidcCtx, r)
+	if oidcErr != nil && !errors.Is(oidcErr, errOIDCNotAuthenticated) {
+		// The token verified but enrollment or workflow-ref policy
+		// rejected it.
+		oidcSpan.recordErrorAt(stageAuthorization, oidcErr)
+	} else {
+		oidcSpan.recordError(oidcErr)
+	}
+	oidcSpan.end()
 	if oidcErr != nil {
 		log.Printf("authentication failed: %v", oidcErr)
 		writeError(w, http.StatusUnauthorized, "authentication failed")
@@ -319,6 +361,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	isTargetForeign := !strings.EqualFold(targetOrg, callerOrg)
+	root.setStr("fullsend.mint.caller_org", callerOrg)
+	root.setStr("fullsend.mint.source_repo", claims.Repository)
+	root.setStr("fullsend.mint.workflow_ref", claims.JobWorkflowRef)
+	root.setStr("fullsend.mint.target_org", targetOrg)
+	root.setBool("fullsend.mint.cross_org", isTargetForeign)
+
+	authzCtx, authzSpan := startSpan(ctx, "mint.authorize", stageAuthorization)
 	shape, scopeErr := validateReposScope(isTargetForeign, claims.Repository, req.Repos)
 	if scopeErr != nil && !isTargetForeign {
 		// Same-org scope denied. For callers requesting repos beyond
@@ -326,15 +375,22 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// FOREIGN grants. Only override the per-repo cross-repo denial;
 		// other denial reasons (empty repos) must not be overridden.
 		if len(req.Repos) > 0 && errors.Is(scopeErr, errPerRepoCrossRepo) {
-			if fErr := h.checkRepoForeignGrants(ctx, claims, callerOrg, req.Role, req.Repos); fErr == nil {
+			fbCtx, fbSpan := startSpan(authzCtx, "mint.foreign_grant_fallback", "")
+			fErr := h.checkRepoForeignGrants(fbCtx, claims, callerOrg, req.Role, req.Repos)
+			if fErr == nil {
+				fbSpan.setStr("fullsend.mint.fallback_result", "granted")
 				log.Printf("intra-org repo-level foreign grant: caller=%s target_org=%s repos=%v role=%s",
 					claims.Repository, callerOrg, req.Repos, req.Role)
 				scopeErr = nil
 			} else {
+				fbSpan.setStr("fullsend.mint.fallback_result", "denied")
 				log.Printf("intra-org repo-level foreign grant check failed: %v", fErr)
 			}
+			fbSpan.end()
 		}
 	}
+	authzSpan.recordError(scopeErr)
+	authzSpan.end()
 	if scopeErr != nil {
 		writeError(w, http.StatusForbidden, scopeErr.Error())
 		return
@@ -377,6 +433,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if granted != nil {
+		root.setStr("fullsend.mint.app_id", granted.AppID)
+		root.setInt("fullsend.mint.installation_id", granted.InstallationID)
+		root.setStr("fullsend.mint.repository_selection", granted.RepoSelection)
 		log.Printf("minted: org=%s target_org=%s role=%s level=%s app_id=%s installation_id=%d requested_repos=%v source_repo=%s workflow_ref=%s",
 			callerOrg, targetOrg, req.Role, req.Level, granted.AppID, granted.InstallationID, req.Repos, claims.Repository, claims.JobWorkflowRef)
 		log.Printf("granted scope: repos=%v permissions=%v repo_selection=%s",
@@ -456,7 +515,10 @@ func (h *Handler) mintToken(ctx context.Context, org, role, level string, repos 
 		return "", "", nil, &mintError{status: http.StatusForbidden, msg: fmt.Sprintf("looking up app ID for role %s: %v", role, err)}
 	}
 
-	pemData, err := h.pemAccessor.AccessPEM(ctx, role)
+	pemCtx, pemSpan := startSpan(ctx, "mint.pem_access", stagePEMAccess)
+	pemData, err := h.pemAccessor.AccessPEM(pemCtx, role)
+	pemSpan.recordError(err)
+	pemSpan.end()
 	if err != nil {
 		return "", "", nil, &mintError{status: http.StatusForbidden, msg: fmt.Sprintf("reading PEM secret for role %s: %v", role, err)}
 	}
@@ -466,69 +528,26 @@ func (h *Handler) mintToken(ctx context.Context, org, role, level string, repos 
 		}
 	}()
 
+	_, appAuthSpan := startSpan(ctx, "mint.github_app_auth", stageGitHubAppAuth)
 	jwt, err := GenerateAppJWT(appID, pemData)
+	appAuthSpan.recordError(err)
+	appAuthSpan.end()
 	if err != nil {
 		return "", "", nil, &mintError{status: http.StatusInternalServerError, msg: fmt.Sprintf("generating app JWT: %v", err)}
 	}
 
-	var installation installationResponse
-	if len(repos) == 0 {
-		installation, err = findOrgInstallationDetails(ctx, h.githubBaseURL, jwt, org)
-	} else {
-		installation, err = findInstallationDetails(ctx, h.githubBaseURL, jwt, org, repos[0])
-	}
+	lookupCtx, lookupSpan := startSpan(ctx, "mint.installation_lookup", stageInstallationLookup)
+	installationID, installPerms, err := h.lookupInstallation(lookupCtx, jwt, org, repos)
+	lookupSpan.recordError(err)
+	lookupSpan.end()
 	if err != nil {
-		// A 404 from FindInstallation means the repo is not covered by
-		// the GitHub App installation. Surface a clear 422 so callers
-		// can diagnose misconfigured installations. Transient errors
-		// (500, 503, 429, network) propagate as 502.
-		if len(repos) > 0 && errors.Is(err, ErrInstallationNotFound) {
-			umsg := fmt.Sprintf("repository %s/%s is not covered by the GitHub App installation", org, repos[0])
-			return "", "", nil, &mintError{
-				status:  http.StatusUnprocessableEntity,
-				msg:     umsg,
-				userMsg: umsg,
-			}
-		}
-		return "", "", nil, &mintError{status: http.StatusBadGateway, msg: err.Error()}
-	}
-	installationID := installation.ID
-
-	// Verify all requested repos are covered by the same installation.
-	// If the GitHub App uses selected-repository installation mode,
-	// repos not in the selection return 404 from the installation
-	// lookup. Detecting this upfront produces a clear error instead
-	// of a confusing 422 from CreateInstallationToken.
-	//
-	// Only 404 responses indicate a genuinely uncovered repo (→ 422).
-	// Transient failures (500, 503, 429, network errors) are propagated
-	// as 502, matching the repos[0] error path above.
-	if len(repos) > 1 {
-		for _, repo := range repos[1:] {
-			otherID, otherErr := FindInstallation(ctx, h.githubBaseURL, jwt, org, repo)
-			if otherErr != nil {
-				if errors.Is(otherErr, ErrInstallationNotFound) {
-					umsg := fmt.Sprintf("repository %s/%s is not covered by the GitHub App installation", org, repo)
-					return "", "", nil, &mintError{
-						status:  http.StatusUnprocessableEntity,
-						msg:     umsg,
-						userMsg: umsg,
-					}
-				}
-				return "", "", nil, &mintError{status: http.StatusBadGateway, msg: otherErr.Error()}
-			}
-			if otherID != installationID {
-				umsg := fmt.Sprintf("repository %s/%s uses a different GitHub App installation than %s", org, repo, repos[0])
-				return "", "", nil, &mintError{
-					status:  http.StatusUnprocessableEntity,
-					msg:     umsg,
-					userMsg: umsg,
-				}
-			}
-		}
+		return "", "", nil, err
 	}
 
-	token, expiresAt, granted, err := CreateInstallationTokenWithGrantedPermissions(ctx, h.githubBaseURL, jwt, installationID, org, role, level, repos, installation.Permissions)
+	issueCtx, issueSpan := startSpan(ctx, "mint.create_installation_token", stageTokenIssuance)
+	token, expiresAt, granted, err := CreateInstallationTokenWithGrantedPermissions(issueCtx, h.githubBaseURL, jwt, installationID, org, role, level, repos, installPerms)
+	issueSpan.recordError(err)
+	issueSpan.end()
 	if err != nil {
 		if errors.Is(err, ErrRequiredPermissionsMissing) {
 			return "", "", nil, &mintError{
@@ -548,12 +567,82 @@ func (h *Handler) mintToken(ctx context.Context, org, role, level string, repos 
 	return token, expiresAt, granted, nil
 }
 
+// lookupInstallation resolves the GitHub App installation covering org
+// (installation-wide when repos is empty) and verifies every requested
+// repo is covered by that same installation. Errors are *mintError.
+func (h *Handler) lookupInstallation(ctx context.Context, jwt, org string, repos []string) (int64, map[string]string, error) {
+	var installation installationResponse
+	var err error
+	if len(repos) == 0 {
+		installation, err = findOrgInstallationDetails(ctx, h.githubBaseURL, jwt, org)
+	} else {
+		installation, err = findInstallationDetails(ctx, h.githubBaseURL, jwt, org, repos[0])
+	}
+	if err != nil {
+		// A 404 from FindInstallation means the repo is not covered by
+		// the GitHub App installation. Surface a clear 422 so callers
+		// can diagnose misconfigured installations. Transient errors
+		// (500, 503, 429, network) propagate as 502.
+		if len(repos) > 0 && errors.Is(err, ErrInstallationNotFound) {
+			umsg := fmt.Sprintf("repository %s/%s is not covered by the GitHub App installation", org, repos[0])
+			return 0, nil, &mintError{
+				status:  http.StatusUnprocessableEntity,
+				msg:     umsg,
+				userMsg: umsg,
+			}
+		}
+		return 0, nil, &mintError{status: http.StatusBadGateway, msg: err.Error()}
+	}
+	installationID := installation.ID
+
+	// Verify all requested repos are covered by the same installation.
+	// If the GitHub App uses selected-repository installation mode,
+	// repos not in the selection return 404 from the installation
+	// lookup. Detecting this upfront produces a clear error instead
+	// of a confusing 422 from CreateInstallationToken.
+	//
+	// Only 404 responses indicate a genuinely uncovered repo (→ 422).
+	// Transient failures (500, 503, 429, network errors) are propagated
+	// as 502, matching the repos[0] error path above.
+	if len(repos) > 1 {
+		for _, repo := range repos[1:] {
+			otherID, otherErr := FindInstallation(ctx, h.githubBaseURL, jwt, org, repo)
+			if otherErr != nil {
+				if errors.Is(otherErr, ErrInstallationNotFound) {
+					umsg := fmt.Sprintf("repository %s/%s is not covered by the GitHub App installation", org, repo)
+					return 0, nil, &mintError{
+						status:  http.StatusUnprocessableEntity,
+						msg:     umsg,
+						userMsg: umsg,
+					}
+				}
+				return 0, nil, &mintError{status: http.StatusBadGateway, msg: otherErr.Error()}
+			}
+			if otherID != installationID {
+				umsg := fmt.Sprintf("repository %s/%s uses a different GitHub App installation than %s", org, repo, repos[0])
+				return 0, nil, &mintError{
+					status:  http.StatusUnprocessableEntity,
+					msg:     umsg,
+					userMsg: umsg,
+				}
+			}
+		}
+	}
+
+	return installationID, installation.Permissions, nil
+}
+
 func (h *Handler) mintTokenCrossOrg(ctx context.Context, claims *Claims, targetOrg, role, level string, repos []string) (string, string, *GrantedScope, error) {
 	// Specific repos requested → authorize exclusively via per-repo
 	// FOREIGN grants. Org-level FOREIGN is not consulted for repo-scoped
 	// requests; it authorizes only installation-wide tokens.
+	grantCtx, grantSpan := startSpan(ctx, "mint.foreign_grant_check", stageForeignGrant)
 	if len(repos) > 0 {
-		if err := h.checkRepoForeignGrants(ctx, claims, targetOrg, role, repos); err != nil {
+		grantSpan.setStr("fullsend.mint.foreign_grant_scope", "repo")
+		err := h.checkRepoForeignGrants(grantCtx, claims, targetOrg, role, repos)
+		grantSpan.recordError(err)
+		grantSpan.end()
+		if err != nil {
 			log.Printf("repo-level foreign grant check failed: %v", err)
 			return "", "", nil, &mintError{status: http.StatusForbidden, msg: "foreign caller not authorized for target repos"}
 		}
@@ -563,15 +652,22 @@ func (h *Handler) mintTokenCrossOrg(ctx context.Context, claims *Claims, targetO
 	}
 
 	// Installation-wide (empty repos) → org-level FOREIGN check only.
-	allowlist, err := h.loadForeignAllowlist(ctx, targetOrg, role)
+	grantSpan.setStr("fullsend.mint.foreign_grant_scope", "org")
+	allowlist, err := h.loadForeignAllowlist(grantCtx, targetOrg, role)
 	if err != nil {
+		grantSpan.recordError(err)
+		grantSpan.end()
 		return "", "", nil, &mintError{status: http.StatusBadGateway, msg: err.Error()}
 	}
 	if CallerAllowed(allowlist, claims.Repository, claims.RepositoryOwner) {
+		grantSpan.end()
 		return h.mintToken(ctx, targetOrg, role, level, repos)
 	}
 
-	return "", "", nil, &mintError{status: http.StatusForbidden, msg: "foreign caller not authorized for target org"}
+	denyErr := &mintError{status: http.StatusForbidden, msg: "foreign caller not authorized for target org"}
+	grantSpan.recordError(denyErr)
+	grantSpan.end()
+	return "", "", nil, denyErr
 }
 
 func (h *Handler) loadForeignAllowlist(ctx context.Context, targetOrg, role string) ([]string, error) {

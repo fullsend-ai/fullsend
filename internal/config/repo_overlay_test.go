@@ -32,8 +32,6 @@ func repoFullsendDir(t *testing.T) string {
 // dropping the role. reusable-dispatch.yml's agent-check skips a stage
 // when the last matching agents[] entry has enabled: false, and that
 // gate is shared by automatic PR-close retro and manual /fs-retro.
-// Dropping retro from roles: would not stop dispatch while roles still
-// lists fullsend (backward-compat in the role-check step). See #7805.
 func TestRepoOverlay_RetroTemporarilyDisabled(t *testing.T) {
 	cfg, err := LoadConfigWriter(repoFullsendDir(t), LoadOpts{MissingOK: false})
 	require.NoError(t, err)
@@ -50,7 +48,6 @@ func TestRepoOverlay_RetroTemporarilyDisabled(t *testing.T) {
 	require.True(t, ok)
 	assert.Contains(t, pr.ConfigRoles(), "retro",
 		"keep the retro role so the GitHub App stays installed; re-enable by deleting enabled: false")
-	assert.Contains(t, pr.ConfigRoles(), "fullsend")
 
 	entry, found := AgentSettingsFor(cfg.AgentEntries(), "retro")
 	require.True(t, found)

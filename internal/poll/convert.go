@@ -170,8 +170,9 @@ func translateEventType(event RoutableEvent) string {
 			return "merged"
 		}
 	case "issue_event":
-		// Issue lifecycle events are produced only by the webhook
-		// builder (webhook.go), which admits just these two actions.
+		// Issue lifecycle events come from the webhook builder
+		// (webhook.go), which admits just these two actions, and from
+		// poll discovery, which recovers missed opens.
 		return event.Action
 	default:
 		return event.Type

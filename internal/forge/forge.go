@@ -5,6 +5,8 @@ package forge
 
 import (
 	"context"
+	"crypto/sha1" //nolint:gosec // Git's blob hash algorithm, not used for security
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -186,9 +188,10 @@ const (
 
 	// SecretGitLabTriggerAccountToken is the pipeline trigger token owned by
 	// the trigger-only service account. It is stored as a masked, protected
-	// CI/CD variable that no pipeline reads until the dispatch route of #8438
-	// is activated; the existing polling path and FULLSEND_TRIGGER_TOKEN are
-	// unaffected. Never logged and never written to the ledger.
+	// CI/CD variable. While the dispatch route of #8438 is activated, the
+	// managed webhook embeds it in its trigger URL in place of
+	// FULLSEND_TRIGGER_TOKEN (#8509). Never logged and never written to the
+	// ledger.
 	SecretGitLabTriggerAccountToken = "FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN"
 )
 
@@ -243,6 +246,24 @@ var ErrAlreadyExists = errors.New("already exists")
 // IsAlreadyExists reports whether err indicates a duplicate resource.
 func IsAlreadyExists(err error) bool {
 	return errors.Is(err, ErrAlreadyExists)
+}
+
+// ErrConflict indicates that a conditional write was rejected because
+// the target changed since the caller read it (see UpdateFileIfMatch).
+var ErrConflict = errors.New("conflict")
+
+// IsConflict reports whether err indicates a rejected conditional write.
+func IsConflict(err error) bool {
+	return errors.Is(err, ErrConflict)
+}
+
+// GitBlobSHA returns the Git blob object ID (SHA-1) of content: the
+// expectedSHA UpdateFileIfMatch compares against the stored file.
+func GitBlobSHA(content []byte) string {
+	h := sha1.New() //nolint:gosec // Git's blob hash algorithm, not used for security
+	fmt.Fprintf(h, "blob %d\x00", len(content))
+	h.Write(content)
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // ErrBranchProtected indicates that a ref update failed because the
@@ -446,10 +467,16 @@ type Repository struct {
 	Private       bool
 	Archived      bool
 	Fork          bool
+	// Description is the repository description. Populated by CreateRepo
+	// and GetRepo; list operations may leave it empty.
+	Description string
 	// CIConfigPath is the project's configured CI configuration path, as
 	// reported by GitLab (ci_config_path). Empty means the default
 	// .gitlab-ci.yml at the repository root. Other forges leave it empty.
 	CIConfigPath string
+	// CreatedAt is when the repository was created. Populated by the
+	// GitHub CreateRepo and GetRepo; zero when the forge did not report it.
+	CreatedAt time.Time
 }
 
 // ChangeProposal represents a pull request or merge request.
@@ -853,6 +880,18 @@ type Client interface {
 	CreateOrUpdateFile(ctx context.Context, owner, repo, path, message string, content []byte) error
 
 	GetFileContent(ctx context.Context, owner, repo, path string) ([]byte, error)
+
+	// UpdateFileIfMatch writes content to path on the default branch only
+	// if the file's current Git blob SHA equals expectedSHA (GitBlobSHA of
+	// the content the caller read). An empty expectedSHA creates the file
+	// only if it does not exist yet. When the file changed, was deleted,
+	// or (for an empty expectedSHA) already exists, it returns an error
+	// wrapping ErrConflict. The write is attempted once: implementations
+	// must not retry it after a conflict or an ambiguous failure. The
+	// caller decides whether to reread and try again. GitLab returns
+	// ErrNotSupported.
+	UpdateFileIfMatch(ctx context.Context, owner, repo, path, message string, content []byte, expectedSHA string) error
+
 	DeleteFile(ctx context.Context, owner, repo, path, message string) error
 
 	// DeleteFiles atomically removes multiple paths in a single commit.
@@ -1344,6 +1383,15 @@ type Client interface {
 	// than treat an unreported setting as disabled. Returns ErrNotFound if
 	// the project does not exist. GitHub returns ErrNotSupported.
 	GetJobTokenRepositoryPushAllowed(ctx context.Context, owner, repo string) (bool, error)
+	// GetPushRuleBranchNameRegex returns the branch_name_regex of the
+	// GitLab project's push rule (GET /projects/:id/push_rule), which
+	// every pushed or API-created branch name must match. Returns
+	// ("", nil) when the project has no push rule or the rule sets no
+	// branch name regex. Returns ErrNotFound when the endpoint or project
+	// is unavailable (push rules are not offered on every GitLab edition)
+	// and ErrForbidden when the caller may not read push rules. GitHub
+	// returns ErrNotSupported.
+	GetPushRuleBranchNameRegex(ctx context.Context, owner, repo string) (string, error)
 
 	// Commit comparison
 	// CompareCommits compares two commits and returns their relationship

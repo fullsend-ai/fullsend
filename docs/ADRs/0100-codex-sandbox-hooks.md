@@ -64,6 +64,11 @@ which is a stronger check than the trust hash it replaces.
 > a process still running in the sandbox, including one the iteration's `.env` starts in the
 > background, can change the files after it, as on codex.
 
+> **Implementation note (October 2026):** Since #8498 the Claude Code, codex and pi launches read
+> the agent-writable `.env` as data (a pinned `python3 -I -S` parses it and the launch evals only the
+> single-quoted `[export ]NAME='value'` lines it prints) instead of sourcing it, so code in `.env` can no longer run before the
+> launch-time checks finish. The post-`.env` unsets and second guard passes stay as a second layer.
+
 Because the hook scripts and their directory stay agent-writable between iterations — the residue
 Claude Code and pi also have — codex additionally **re-verifies every script against runner-held digests
 before each invocation** — digests the runner records outside the sandbox at Bootstrap and injects into the launch command at Run, here carried in the codex process's

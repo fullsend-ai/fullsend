@@ -78,10 +78,12 @@ func TestIsVendoredDefaultsInfra(t *testing.T) {
 	// Scripts ship only via the explicit allowlist — an arbitrary file
 	// under .github/scripts/ must NOT be vendored to consumer repos.
 	assert.True(t, isVendoredDefaultsInfra(".github/scripts/check-fix-eligibility.sh"))
+	assert.True(t, isVendoredDefaultsInfra(".github/scripts/count-fix-commits.jq"))
 	assert.True(t, isVendoredDefaultsInfra(".github/scripts/install-podman.sh"))
 	assert.True(t, isVendoredDefaultsInfra(".github/scripts/pre-fetch-review-body.sh"))
 	assert.False(t, isVendoredDefaultsInfra(".github/scripts/run.sh"))
 	assert.False(t, isVendoredDefaultsInfra(".github/scripts/check-fix-eligibility-test.sh"))
+	assert.False(t, isVendoredDefaultsInfra(".github/scripts/count-fix-commits-test.sh"))
 	assert.False(t, isVendoredDefaultsInfra(".github/scripts/pre-fetch-review-body-test.sh"))
 	assert.False(t, isVendoredDefaultsInfra(".github/workflows/reusable-prioritize.yml"))
 }

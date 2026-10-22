@@ -38,6 +38,22 @@ import (
 // goroutine scheduling and Promise settlement overhead.
 const requestTimeout = 20 * time.Second
 
+// Tracing settings stamped by `fullsend mint deploy` via -ldflags -X.
+// Header values are never stamped; they stay in the Worker secret.
+//
+// otlpHeadersSecret names the Worker secret holding collector
+// authentication headers (OTEL_EXPORTER_OTLP_HEADERS syntax). It is read
+// through the getEnv callback, which resolves Worker secrets by name.
+// Durable deploys stamp a unique name per build, so a build only ever
+// reads the headers its own deploy stored, never those of a concurrent
+// deploy that stamped a different endpoint. Previews bind the secret in
+// the version itself and keep the default name.
+var (
+	otlpTracesEndpoint string
+	traceDeployment    string
+	otlpHeadersSecret  = "MINT_OTLP_HEADERS"
+)
+
 var handler *mintcore.Handler
 
 func main() {
@@ -89,9 +105,30 @@ func initMint(_ js.Value, args []js.Value) interface{} {
 	if err != nil {
 		return fmt.Sprintf("failed to initialize handler: %v", err)
 	}
+	h.SetTracer(buildTracer(getEnvFn))
 
 	handler = h
 	return ""
+}
+
+// buildTracer configures tracing from the stamped endpoint and the
+// collector headers Worker secret. Tracing is fail-open: a bad
+// configuration is logged (without header values) and leaves tracing
+// disabled rather than failing mint initialization.
+func buildTracer(getEnvFn js.Value) *mintcore.Tracer {
+	if otlpTracesEndpoint == "" {
+		return nil
+	}
+	rawHeaders := ""
+	if v := getEnvFn.Invoke(otlpHeadersSecret); v.Type() == js.TypeString {
+		rawHeaders = v.String()
+	}
+	tracer, err := mintcore.NewStampedTracer(mintcore.TraceBackendCloudflare, traceDeployment, otlpTracesEndpoint, rawHeaders)
+	if err != nil {
+		fmt.Printf("warning: mint tracing disabled: %v\n", err)
+		return nil
+	}
+	return tracer
 }
 
 // handleFetch processes a Worker Fetch request through ServeHTTP.

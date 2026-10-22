@@ -9,7 +9,7 @@ import {
   createExecutionContext,
   waitOnExecutionContext,
 } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import worker, { type Env } from "./index";
 
 /** Mock RateLimit that always denies. */
@@ -161,5 +161,41 @@ describe("mint worker rate limiting", () => {
     // Both keys should contain the client IP.
     expect(keys[0]).toContain("1.2.3.4");
     expect(keys[1]).toContain("1.2.3.4");
+  });
+});
+
+describe("mint worker tracing disabled", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  // This test file runs against the WASM built without a stamped traces
+  // endpoint (index.tracing.test.ts covers the stamped build). A leftover
+  // collector secret must not enable export on its own.
+  it("makes no collector request without a stamped endpoint", async () => {
+    const urls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      async (input: RequestInfo | URL): Promise<Response> => {
+        urls.push(typeof input === "string" ? input : String(input));
+        return new Response("{}", { status: 200 });
+      },
+    );
+    const ctx = createExecutionContext();
+    const res = await worker.fetch(
+      new Request("https://worker.test/v1/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      }),
+      { ...env, MINT_OTLP_HEADERS: "Authorization=Bearer unused" } as Env,
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
+    // Rejected by the mint (4xx), never rate-limited or failed.
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(res.status).toBeLessThan(500);
+    expect(res.status).not.toBe(429);
+    expect(urls).toEqual([]);
   });
 });

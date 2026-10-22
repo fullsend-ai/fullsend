@@ -954,9 +954,26 @@ func createInstallationToken(ctx context.Context, githubBaseURL, jwt string, ins
 		return "", "", nil, err
 	}
 	if status != http.StatusCreated {
-		return "", "", nil, fmt.Errorf("creating installation token returned status %d: %s", status, truncateForLog(body, 256))
+		return "", "", nil, &installationTokenStatusError{status: status, body: truncateForLog(body, 256)}
 	}
 	return token, expiresAt, tokenGranted, nil
+}
+
+// installationTokenStatusError reports a non-201 installation token
+// response. Error includes a bounded excerpt of the upstream body for
+// logs; spans record only the status via telemetryMessage so raw GitHub
+// response content never reaches the trace collector.
+type installationTokenStatusError struct {
+	status int
+	body   string
+}
+
+func (e *installationTokenStatusError) Error() string {
+	return fmt.Sprintf("creating installation token returned status %d: %s", e.status, e.body)
+}
+
+func (e *installationTokenStatusError) telemetryMessage() string {
+	return fmt.Sprintf("creating installation token returned status %d", e.status)
 }
 
 // postInstallationAccessToken POSTs /app/installations/{id}/access_tokens and

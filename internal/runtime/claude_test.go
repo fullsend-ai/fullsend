@@ -770,9 +770,9 @@ func fakeOpenshellBootstrap(t *testing.T, logPath, sentinelPath string) {
 		"if [ \"$2\" = \"exec\" ]; then\n" +
 		"  for last; do :; done\n" +
 		"  case \"$last\" in\n" +
-		"    \"command -v python3\") echo /usr/bin/python3 ;;\n" +
+		"    *'" + hookInterpreterSep + "'*) printf '%s' '/usr/bin/python3" + hookInterpreterSep + "/usr/local/bin:/usr/bin:/bin' ;;\n" +
 		"    *sys.version_info*) echo 3.12 ;;\n" +
-		"    *'\"$PATH\"'*) printf '%s' /usr/local/bin:/usr/bin:/bin ;;\n" +
+		"    " + hookEnvReadStubArm + "\n" +
 		"  esac\n" +
 		"fi\n" +
 		"exit 0\n"
@@ -1178,15 +1178,23 @@ func claudeHooksStubScript(logPath, failOn string) string {
 	script += `if [ "$2" = "exec" ]; then
   for last; do :; done
   case "$last" in
-    "command -v python3") echo /usr/bin/python3 ;;
+    ` + claudeHooksStubProbeArm + `
+    ` + hookEnvReadStubArm + `
     *sys.version_info*) echo 3.12 ;;
-    *'"$PATH"'*) printf '%s' /usr/local/bin:/usr/bin:/bin ;;
+    # What a plain lookup and the raw sandbox PATH give in the fleet image;
+    # Bootstrap must not use them.
+    "command -v python3") echo /sandbox/.venv/bin/python3 ;;
+    "printf '%s' \"\$PATH\"") printf '%s' /sandbox/.venv/bin:/usr/local/bin:/usr/bin:/bin ;;
   esac
 fi
 exit 0
 `
 	return script
 }
+
+// claudeHooksStubProbeArm answers the hook interpreter probe with the pinned
+// interpreter and the trusted PATH.
+const claudeHooksStubProbeArm = `*'` + hookInterpreterSep + `'*) printf '%s` + hookInterpreterSep + `%s\n' /usr/bin/python3 /usr/local/bin:/usr/bin:/bin ;;`
 
 // TestInstallClaudeHooks_HappyPath verifies that installClaudeHooks writes
 // hook scripts and the hooks.json wiring to the runner-owned config
@@ -1209,7 +1217,8 @@ func TestInstallClaudeHooks_HappyPath(t *testing.T) {
 }
 
 // TestInstallClaudeHooks_PinsInterpreter verifies the hooks.json Bootstrap
-// uploads names the absolute interpreter and the sandbox PATH it resolved.
+// uploads names the absolute interpreter and the trusted PATH it resolved,
+// not the raw sandbox PATH.
 func TestInstallClaudeHooks_PinsInterpreter(t *testing.T) {
 	uploadDir := t.TempDir()
 	stubDir := t.TempDir()
@@ -1224,6 +1233,7 @@ if [ "$2" = "exec" ]`, 1)
 	require.NoError(t, err)
 	assert.Contains(t, string(got), "PATH='/usr/local/bin:/usr/bin:/bin' '/usr/bin/python3' -E -s -B "+security.SandboxHooksDir+"/tirith_check.py")
 	assert.NotContains(t, string(got), `"python3 `)
+	assert.NotContains(t, string(got), "/sandbox/.venv")
 }
 
 // TestInstallClaudeHooks_FailsWithoutInterpreter: no resolvable python3 means
@@ -1232,7 +1242,8 @@ func TestInstallClaudeHooks_FailsWithoutInterpreter(t *testing.T) {
 	const name = "claude-no-python"
 	t.Cleanup(func() { forgetClaudeHookDigests(name) })
 	stubDir := t.TempDir()
-	script := strings.Replace(claudeHooksStubScript("", ""), `"command -v python3") echo /usr/bin/python3 ;;`, `"command -v python3") exit 1 ;;`, 1)
+	script := strings.Replace(claudeHooksStubScript("", ""), claudeHooksStubProbeArm, `*'`+hookInterpreterSep+`'*) exit 127 ;;`, 1)
+	require.NotEqual(t, claudeHooksStubScript("", ""), script)
 	require.NoError(t, os.WriteFile(filepath.Join(stubDir, "openshell"), []byte(script), 0o755))
 	t.Setenv("PATH", stubDir)
 

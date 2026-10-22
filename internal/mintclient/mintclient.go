@@ -12,6 +12,10 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 var httpClient HTTPDoer = &http.Client{Timeout: 30 * time.Second}
@@ -100,17 +104,84 @@ func MintToken(ctx context.Context, req MintRequest) (*MintResult, error) {
 		audience = defaultAudience
 	}
 
+	ctx, span := startClientSpan(ctx, "fullsend.mint.token",
+		attribute.String("http.request.method", http.MethodPost),
+		attribute.String("server.address", parsed.Hostname()),
+		attribute.String("fullsend.mint.role", req.Role),
+		attribute.Int("fullsend.mint.repo_count", len(req.Repos)),
+	)
+	defer span.End()
+
 	oidcJWT, err := fetchOIDCJWT(ctx, audience)
 	if err != nil {
+		recordSpanError(span, "oidc_token_request", err)
 		return nil, fmt.Errorf("fetching OIDC JWT: %w", err)
 	}
 
 	result, err := callMint(ctx, req.MintURL, oidcJWT, req)
 	if err != nil {
+		recordSpanError(span, "mint_request", err)
 		return nil, fmt.Errorf("calling mint service: %w", err)
 	}
 
 	return result, nil
+}
+
+// tracerName is the instrumentation scope for mint client spans.
+const tracerName = "github.com/fullsend-ai/fullsend/internal/mintclient"
+
+// startClientSpan starts a client span using the tracer provider of the
+// span already active in ctx. Without an active span the provider is a
+// no-op, so callers that do not trace pay nothing and send no trace
+// headers.
+func startClientSpan(ctx context.Context, name string, attrs ...attribute.KeyValue) (context.Context, trace.Span) {
+	return trace.SpanFromContext(ctx).TracerProvider().Tracer(tracerName).Start(ctx, name,
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(attrs...),
+	)
+}
+
+// recordSpanError marks span failed. Only the failure stage and an
+// allowlisted error class are recorded: client errors can embed an excerpt
+// of the upstream response, which must not be exported to the collector.
+// The HTTP status of mint calls is recorded separately by callMint.
+func recordSpanError(span trace.Span, stage string, err error) {
+	class := spanErrorClass(err)
+	span.SetAttributes(attribute.String("fullsend.mint.failure_stage", stage))
+	span.SetStatus(codes.Error, class)
+	span.AddEvent("exception", trace.WithAttributes(
+		attribute.String("exception.type", class),
+	))
+}
+
+// spanErrorClass maps err to a fixed, non-sensitive class name.
+func spanErrorClass(err error) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	}
+	var re *retryableError
+	if errors.As(err, &re) {
+		return "request_failed"
+	}
+	return "error"
+}
+
+// injectTraceContext writes W3C traceparent and tracestate headers for
+// the span context in ctx, so mint server spans join the caller's trace
+// and inherit its sampling decision. It writes nothing when ctx carries
+// no valid span context.
+func injectTraceContext(ctx context.Context, h http.Header) {
+	sc := trace.SpanContextFromContext(ctx)
+	if !sc.IsValid() {
+		return
+	}
+	h.Set("traceparent", "00-"+sc.TraceID().String()+"-"+sc.SpanID().String()+"-"+sc.TraceFlags().String())
+	if ts := sc.TraceState().String(); ts != "" {
+		h.Set("tracestate", ts)
+	}
 }
 
 type oidcTokenResponse struct {
@@ -211,13 +282,23 @@ func callMint(ctx context.Context, mintURL, oidcJWT string, req MintRequest) (*M
 
 	var body []byte
 	var statusCode int
+	attempts := 0
+	span := trace.SpanFromContext(ctx)
+	defer func() {
+		span.SetAttributes(attribute.Int("fullsend.mint.attempts", attempts))
+		if statusCode != 0 {
+			span.SetAttributes(attribute.Int("http.response.status_code", statusCode))
+		}
+	}()
 	err = doWithRetry(ctx, callMintMaxAttempts, func() error {
+		attempts++
 		httpReq, rerr := http.NewRequestWithContext(ctx, http.MethodPost, mintEndpoint, bytes.NewReader(bodyBytes))
 		if rerr != nil {
 			return fmt.Errorf("creating request: %w", rerr)
 		}
 		httpReq.Header.Set("Authorization", "Bearer "+oidcJWT)
 		httpReq.Header.Set("Content-Type", "application/json")
+		injectTraceContext(ctx, httpReq.Header)
 
 		resp, rerr := httpClient.Do(httpReq)
 		if rerr != nil {
@@ -519,6 +600,7 @@ func callStatus(ctx context.Context, statusURL, bearerToken string) (*StatusResu
 			return fmt.Errorf("creating request: %w", rerr)
 		}
 		httpReq.Header.Set("Authorization", "Bearer "+bearerToken)
+		injectTraceContext(ctx, httpReq.Header)
 
 		resp, rerr := httpClient.Do(httpReq)
 		if rerr != nil {

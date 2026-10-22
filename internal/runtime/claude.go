@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -23,8 +24,13 @@ import (
 const claudeDebugLog = "claude-debug.log"
 
 // claudeBinaryVar holds the absolute path of the claude binary, resolved before
-// .env is sourced and marked read-only.
+// .env is read and marked read-only.
 const claudeBinaryVar = "FULLSEND_CLAUDE_BIN"
+
+// claudeNodeVar holds the node that starts claude when claude is a
+// `#!/usr/bin/env node` script, empty otherwise (binaryPin). In the sandbox
+// image claude is an ELF binary.
+const claudeNodeVar = "FULLSEND_CLAUDE_NODE"
 
 // claudeBinaryPin is the POSIX sh fragment that records where claude is; see
 // binaryPin for why it holds. The pin runs before .env, which adds the
@@ -32,7 +38,7 @@ const claudeBinaryVar = "FULLSEND_CLAUDE_BIN"
 // files, so neither a `claude` file there nor a PATH change in an env file
 // decides which binary the run starts.
 func claudeBinaryPin() string {
-	return binaryPin(claudeBinaryVar, "claude")
+	return binaryPin(claudeBinaryVar, claudeNodeVar, "claude")
 }
 
 // claudeLoaderEnvUnset clears, after .env, the variables that load code into
@@ -45,6 +51,23 @@ func claudeBinaryPin() string {
 // a special builtin, so a function a sourced file defined cannot stand in
 // for it.
 const claudeLoaderEnvUnset = "unset LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT PYTHONPATH PYTHONHOME PYTHONSTARTUP PYTHONUSERBASE NODE_OPTIONS NODE_PATH BUN_OPTIONS"
+
+// claudeSettingsEnvUnset clears, after .env and next to claudeLoaderEnvUnset,
+// the Claude Code variables that change how it loads settings and runs hook
+// commands: CLAUDE_CODE_SAFE_MODE (--safe-mode) and CLAUDE_CODE_SIMPLE
+// (--bare) narrow what Claude Code loads, CLAUDE_CODE_SHELL_PREFIX wraps
+// the shell commands it runs, hook commands included, and
+// CLAUDE_CODE_SUBPROCESS_ENV_SCRUB removes credential-named variables, such
+// as FULLSEND_CANARY_TOKEN, from the hooks' environment. None of them belongs
+// to the harness, so a value .env sets never reaches claude, and the settings
+// document pins each to "" (claudeRunnerSettings) so a settings file's env
+// block cannot set one either.
+const claudeSettingsEnvUnset = "unset CLAUDE_CODE_SAFE_MODE CLAUDE_CODE_SIMPLE CLAUDE_CODE_SHELL_PREFIX CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"
+
+// claudeShellStartupEnv are the shell startup variables envDataDropNames
+// refuses from .env. The settings document sets them to "" as well, so a
+// settings file's env block cannot hand one to the shells Claude Code starts.
+var claudeShellStartupEnv = []string{"BASH_ENV", "ENV"}
 
 // ClaudeRuntime implements Runtime using the Claude Code CLI.
 type ClaudeRuntime struct{}
@@ -787,17 +810,24 @@ func buildRunCommandWithDigests(params RunParams, hookDigests claudeHookDigests)
 		preEnv = " && " + ClaudeRuntime{}.claudeGatewayPreEnv(gw)
 		postEnv = " && " + claudeGatewayPostEnv(gw)
 	}
+	if params.HooksSettingsPath != "" {
+		// The hook settings, re-asserted after the agent-writable .env from
+		// what Bootstrap recorded; a name the runner has no value for is
+		// unset. Digests from a missed lookup carry none, so every name is
+		// unset — and the guard fails closed anyway.
+		postEnv = " && " + hookEnvExports(hookDigests.SecurityEnv) + postEnv
+	}
 
 	parts := []string{
-		// The pin comes before `. .env`; `unset -f` is a special builtin, which a
-		// function defined in .env (or an .env.d file it sources) cannot
-		// shadow, and the launch goes through the pinned path, which no
-		// function or alias can shadow either. With sandbox hooks the hooks
-		// guard runs on both sides of .env (claudeGuardedEnv).
-		fmt.Sprintf("cd %s && %s%s && %s%s && \"$%s\"",
+		// The pin comes before the .env read (envDataLoad); `unset -f` is a
+		// special builtin, which no function can shadow, and the launch goes
+		// through the pinned path, which no function or alias can shadow
+		// either. With sandbox hooks the hooks guard runs on both sides of
+		// .env (claudeGuardedEnv).
+		fmt.Sprintf("cd %s && %s%s && %s%s && %s",
 			shellQuote(params.RepoDir), claudeBinaryPin(), preEnv,
 			claudeGuardedEnv(envFile, params.HooksSettingsPath != "", gw == nil, hookDigests),
-			postEnv, claudeBinaryVar),
+			postEnv, cliLaunch(claudeBinaryVar, claudeNodeVar)),
 		"--print",
 		"--verbose",
 		"--output-format stream-json",
@@ -901,8 +931,9 @@ func buildRunCommandWithDigests(params RunParams, hookDigests claudeHookDigests)
 //
 // extra are further settings for the same document: Claude Code reads one
 // --settings flag, so a gateway run's settings (claudeGatewaySettings: the
-// pinned route env and the apiKeyHelper) are merged here. On a gateway run
-// the merged document is also recorded, and buildRunCommand passes it
+// pinned route env and the apiKeyHelper) are merged here, together with the
+// settings the runner owns on every run (claudeRunnerSettings). On a gateway
+// run the merged document is also recorded, and buildRunCommand passes it
 // inline instead of the uploaded file.
 func installClaudeHooks(sandboxName string, hooks security.SandboxHookConfig, extra map[string]any) error {
 	// security.SandboxHooksDir is the directory the generated hooks.json
@@ -911,11 +942,21 @@ func installClaudeHooks(sandboxName string, hooks security.SandboxHookConfig, ex
 		return err
 	}
 
-	// The interpreter and PATH the hooks run with are resolved here, on a
-	// shell the agent has not touched, and baked into hooks.json (whose digest
-	// the launch guard pins) rather than left to the PATH a later iteration's
-	// .env can set.
-	python, hookPath, err := claudePreflightInterpreter(sandboxName)
+	// The hook settings, recorded while .env is still exactly what the
+	// runner wrote; the launch re-asserts them after .env (hookEnvExports),
+	// and the settings document below pins them against the settings files
+	// Claude Code reads beneath it.
+	securityEnv, err := bootstrapHookEnv(sandboxName, hooks)
+	if err != nil {
+		return err
+	}
+
+	// The interpreter and PATH the hooks run with are resolved here, from
+	// directories the agent cannot write (hookPreflightInterpreter, which also
+	// asserts the version floor the hook scripts need: datetime.UTC, Python
+	// 3.11), and baked into hooks.json (whose digest the launch guard pins)
+	// rather than left to the PATH a later iteration's .env can set.
+	python, hookPath, err := hookPreflightInterpreter(sandboxName)
 	if err != nil {
 		return err
 	}
@@ -923,9 +964,9 @@ func installClaudeHooks(sandboxName string, hooks security.SandboxHookConfig, ex
 	if err != nil {
 		return fmt.Errorf("generating hooks config: %w", err)
 	}
-	hooksJSON, err = mergeClaudeSettings(hooksJSON, extra)
+	hooksJSON, err = mergeClaudeSettings(hooksJSON, claudeRunnerSettings(securityEnv, extra))
 	if err != nil {
-		return fmt.Errorf("adding the inference gateway settings to the hooks config: %w", err)
+		return fmt.Errorf("adding the runner settings to the hooks config: %w", err)
 	}
 	// A gateway run passes this document inline (claudeGatewaySettingsArg),
 	// not the uploaded file.
@@ -948,28 +989,60 @@ func installClaudeHooks(sandboxName string, hooks security.SandboxHookConfig, ex
 	if err := appendHookEnv(sandboxName, hooks); err != nil {
 		return err
 	}
-	recordClaudeHookDigests(sandboxName, claudeHookDigestsFor(hooks, hooksJSON))
+	digests := claudeHookDigestsFor(hooks, hooksJSON)
+	digests.SecurityEnv = securityEnv
+	recordClaudeHookDigests(sandboxName, digests)
 	return nil
 }
 
-// claudePreflightInterpreter returns the absolute python3 and the PATH the
-// Claude hooks run with, both read from a sandbox shell before the agent has
-// run in it. The interpreter reuses the codex preflight, including its version
-// floor (the hook scripts need datetime.UTC, Python 3.11).
-func claudePreflightInterpreter(sandboxName string) (python, path string, err error) {
-	python, err = codexPreflightPython(sandboxName)
-	if err != nil {
-		return "", "", err
+// claudeRunnerSettings returns extra (a gateway run's claudeGatewaySettings,
+// or nil) with the settings the runner owns on every run added. Claude Code
+// also reads $CLAUDE_CONFIG_DIR/settings.json and the repository's
+// .claude/settings.json and .claude/settings.local.json, and --settings wins
+// over them only for the keys it sets, so each key is set explicitly:
+//
+//   - env holds every hookEnvManagedKeys name, with the value Bootstrap
+//     recorded (securityEnv) or "" — which every hook treats as unset —
+//     for a name the runner has no value for, as hookEnvExports does at
+//     launch. A settings file's env block is applied inside Claude Code,
+//     after that export. On a gateway run the names are added to the
+//     route's env block rather than replacing it.
+//   - env also sets each claudeLoaderEnvUnset and claudeSettingsEnvUnset
+//     name, and claudeShellStartupEnv, to "": the launch unsets or refuses
+//     them after .env, and a settings file's
+//     env block would otherwise set them again inside Claude Code, for the
+//     hook commands it starts.
+//   - disableAllHooks is false, so no other file can switch off the hooks
+//     this document wires.
+//
+// extra is not modified.
+func claudeRunnerSettings(securityEnv []hookEnvPair, extra map[string]any) map[string]any {
+	out := maps.Clone(extra)
+	if out == nil {
+		out = map[string]any{}
 	}
-	stdout, _, exitCode, err := sandbox.Exec(sandboxName, `printf '%s' "$PATH"`, 10*time.Second)
-	if err != nil {
-		return "", "", fmt.Errorf("reading the sandbox PATH for the hooks: %w", err)
+	env := map[string]any{}
+	if routeEnv, ok := extra["env"].(map[string]any); ok {
+		maps.Copy(env, routeEnv)
 	}
-	path = strings.TrimSpace(stdout)
-	if exitCode != 0 || path == "" || strings.ContainsAny(path, "\n\r") {
-		return "", "", fmt.Errorf("reading the sandbox PATH for the hooks: unusable result (exit %d)", exitCode)
+	values := make(map[string]string, len(securityEnv))
+	for _, pair := range securityEnv {
+		values[pair.Key] = pair.Value
 	}
-	return python, path, nil
+	for _, key := range hookEnvManagedKeys {
+		env[key] = values[key]
+	}
+	for _, unset := range []string{claudeLoaderEnvUnset, claudeSettingsEnvUnset} {
+		for _, key := range strings.Fields(strings.TrimPrefix(unset, "unset ")) {
+			env[key] = ""
+		}
+	}
+	for _, key := range claudeShellStartupEnv {
+		env[key] = ""
+	}
+	out["env"] = env
+	out["disableAllHooks"] = false
+	return out
 }
 
 func bootstrapPlugins(sandboxName, configDir string, plugins []string) error {

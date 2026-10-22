@@ -64,6 +64,10 @@ func TestContainGitLabTriggerAccount_RestoresElevatedAccountWhateverTheSinkState
 			}
 			assert.Equal(t, forge.GitLabAccessLevelDeveloper, e.f.members[res.AccountID],
 				"the published account is back at Developer")
+			if name == "sink attributes unreadable" {
+				assert.False(t, e.sinkPresent(), "an unreadable protection record cannot retain the published bearer")
+				assert.NotContains(t, e.f.triggers, res.TriggerTokenID, "the owned trigger is revoked")
+			}
 		})
 	}
 }

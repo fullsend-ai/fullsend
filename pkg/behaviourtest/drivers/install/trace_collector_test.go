@@ -251,7 +251,8 @@ func argAfter(args []string, flag string) string {
 }
 
 func newTestTraceCollector(t *testing.T, f *fakeCollectorEnv, client forge.Client, artifactDir string) *traceCollector {
-	tc := newTraceCollector(client, artifactDir, t.Logf)
+	_ = client // repos are configured with the leased org's client (see ConfigureRepo)
+	tc := newTraceCollector(artifactDir, t.Logf)
 	tc.run = f.run
 	tc.freePort = f.freePort
 	tc.readyTimeout = 5 * time.Second
@@ -317,7 +318,7 @@ func TestTraceCollector_StartConfigureStop(t *testing.T) {
 	logContent := "start\ntoken=" + token + "\nend\n"
 	require.NoError(t, os.WriteFile(logPath, []byte(logContent), 0o600))
 
-	require.NoError(t, tc.ConfigureRepo(context.Background(), "org", "test-repo-01"))
+	require.NoError(t, tc.ConfigureRepo(context.Background(), client, "org", "test-repo-01"))
 	assert.Equal(t, tc.endpoint, client.VariableValues["org/test-repo-01/"+otelTracesEndpointVar])
 	require.Len(t, client.CreatedSecrets, 1)
 	assert.Equal(t, forge.SecretRecord{Owner: "org", Repo: "test-repo-01", Name: otelTracesHeadersSecret, Value: "Authorization=Bearer%20" + token}, client.CreatedSecrets[0])
@@ -441,15 +442,13 @@ func TestTraceCollector_ConfigureRepoErrors(t *testing.T) {
 
 	client := forge.NewFakeClient()
 	client.Errors["CreateOrUpdateRepoVariable"] = errors.New("boom")
-	tc.client = client
-	err := tc.ConfigureRepo(context.Background(), "org", "repo")
+	err := tc.ConfigureRepo(context.Background(), client, "org", "repo")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), otelTracesEndpointVar)
 
 	client = forge.NewFakeClient()
 	client.Errors["CreateRepoSecret"] = errors.New("boom")
-	tc.client = client
-	err = tc.ConfigureRepo(context.Background(), "org", "repo")
+	err = tc.ConfigureRepo(context.Background(), client, "org", "repo")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), otelTracesHeadersSecret)
 }
@@ -733,15 +732,17 @@ func TestFreeLocalPort(t *testing.T) {
 type fakeTraceSink struct {
 	mu           sync.Mutex
 	configured   []string
+	clients      []forge.Client
 	configureErr error
 	stopCalls    int
 	stopErr      error
 }
 
-func (f *fakeTraceSink) ConfigureRepo(_ context.Context, org, repo string) error {
+func (f *fakeTraceSink) ConfigureRepo(_ context.Context, client forge.Client, org, repo string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.configured = append(f.configured, org+"/"+repo)
+	f.clients = append(f.clients, client)
 	return f.configureErr
 }
 
@@ -754,83 +755,77 @@ func (f *fakeTraceSink) Stop(_ context.Context) error {
 
 func TestComposedDriver_TraceCollector(t *testing.T) {
 	sink := &fakeTraceSink{}
-	d, err := newComposedDriver("org", &fakeMintDriver{}, newFakeEnsurer(), 2, t.Logf)
-	require.NoError(t, err)
-	d.(*composedDriver).traces = sink
+	td := newTestPoolDriver(t, StagePoolLayout(2))
+	td.traces = sink
 
-	name, err := d.AllocateRepo(context.Background())
+	l, err := td.AllocateLease(context.Background())
 	require.NoError(t, err)
-	assert.Equal(t, []string{"org/" + name}, sink.configured)
-	require.NoError(t, d.DeallocateRepo(context.Background(), name))
+	assert.Equal(t, []string{l.Org + "/" + l.Repo}, sink.configured)
+	require.Len(t, sink.clients, 1)
+	assert.Same(t, td.pool.clients[l.Org], sink.clients[0], "repo configured with the leased org's client")
+	require.NoError(t, td.DeallocateLease(context.Background(), l.Org, l.Repo))
 
-	require.NoError(t, d.Finalize(context.Background()))
+	require.NoError(t, td.Finalize(context.Background()))
 	assert.Equal(t, 1, sink.stopCalls)
 }
 
 func TestComposedDriver_TraceCollectorErrors(t *testing.T) {
 	sink := &fakeTraceSink{configureErr: errors.New("api down"), stopErr: errors.New("podman gone")}
-	d, err := newComposedDriver("org", &fakeMintDriver{}, newFakeEnsurer(), 1, t.Logf)
-	require.NoError(t, err)
-	d.(*composedDriver).traces = sink
+	td := newTestPoolDriver(t, StagePoolLayout(1))
+	td.traces = sink
 
-	name, err := d.AllocateRepo(context.Background())
+	l, err := td.AllocateLease(context.Background())
 	require.NoError(t, err, "a repo that cannot be pointed at the collector is still allocated")
-	require.NoError(t, d.DeallocateRepo(context.Background(), name))
+	require.NoError(t, td.DeallocateLease(context.Background(), l.Org, l.Repo))
 
-	err = d.Finalize(context.Background())
+	err = td.Finalize(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "trace collector: podman gone")
 }
 
 func TestComposedDriver_FinalizeRetriesFailedStartCleanup(t *testing.T) {
 	pending := &fakeTraceSink{}
-	d, err := newComposedDriver("org", &fakeMintDriver{}, newFakeEnsurer(), 1, t.Logf)
-	require.NoError(t, err)
-	cd := d.(*composedDriver)
-	cd.pendingTraces = pending
+	td := newTestPoolDriver(t, StagePoolLayout(1))
+	td.pendingTraces = pending
 
-	name, err := d.AllocateRepo(context.Background())
+	l, err := td.AllocateLease(context.Background())
 	require.NoError(t, err)
 	assert.Empty(t, pending.configured, "a failed-start collector never configures repos")
-	require.NoError(t, d.DeallocateRepo(context.Background(), name))
+	require.NoError(t, td.DeallocateLease(context.Background(), l.Org, l.Repo))
 
-	require.NoError(t, d.Finalize(context.Background()))
+	require.NoError(t, td.Finalize(context.Background()))
 	assert.Equal(t, 1, pending.stopCalls)
 
 	pending.stopErr = errors.New("podman gone")
-	err = d.Finalize(context.Background())
+	err = td.Finalize(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed-start trace collector cleanup: podman gone")
 }
 
-func TestWithTraceCollector_NotStarted(t *testing.T) {
-	newDriver := func(t *testing.T) Driver {
-		d, err := newComposedDriver("org", &fakeMintDriver{}, newFakeEnsurer(), 1, t.Logf)
-		require.NoError(t, err)
-		return d
+func TestStartTraceCollector_NotStarted(t *testing.T) {
+	attach := func(t *testing.T) *composedDriver {
+		td := newTestPoolDriver(t, StagePoolLayout(1))
+		return startTraceCollector(t.Logf).attach(td.composedDriver).(*composedDriver)
 	}
 
 	t.Run("disabled", func(t *testing.T) {
 		t.Setenv("GITHUB_ACTIONS", "")
 		t.Setenv(envTraceCollector, "")
-		d := withTraceCollector(newDriver(t), forge.NewFakeClient(), t.Logf)
-		assert.Nil(t, d.(*composedDriver).traces)
+		assert.Nil(t, attach(t).traces)
 	})
 	t.Run("invalid setting", func(t *testing.T) {
 		t.Setenv(envTraceCollector, "sometimes")
-		d := withTraceCollector(newDriver(t), forge.NewFakeClient(), t.Logf)
-		assert.Nil(t, d.(*composedDriver).traces)
+		assert.Nil(t, attach(t).traces)
 	})
 	t.Run("podman missing", func(t *testing.T) {
 		t.Setenv(envTraceCollector, "true")
 		t.Setenv("BEHAVIOUR_ARTIFACT_DIR", t.TempDir())
 		t.Setenv("PATH", t.TempDir())
-		d := withTraceCollector(newDriver(t), forge.NewFakeClient(), t.Logf)
-		assert.Nil(t, d.(*composedDriver).traces)
+		assert.Nil(t, attach(t).traces)
 	})
 	t.Run("non-composed driver", func(t *testing.T) {
-		inner := newDriver(t)
-		pd := NewPlaybackDriver(inner)
-		assert.Same(t, pd, withTraceCollector(pd, forge.NewFakeClient(), t.Logf))
+		td := newTestPoolDriver(t, StagePoolLayout(1))
+		pd := NewPlaybackDriver(td.composedDriver)
+		assert.Same(t, pd, traceStart{}.attach(pd))
 	})
 }

@@ -190,7 +190,8 @@ func TestResolveMRSource_APIError(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	client, err := gl.New("test-token", gl.WithBaseURL(srv.URL))
+	// The 500 is retried with exponential backoff; skip the real waits.
+	client, err := gl.New("test-token", gl.WithBaseURL(srv.URL), gl.WithAfterFunc(noWaitAfter))
 	require.NoError(t, err)
 
 	_, err = resolveMRSource(context.Background(), client, "group/project", 5)

@@ -37,7 +37,7 @@ fullsend github setup <owner/repo> \
 
 See [Configuring GitHub — Using a vendor preset](../getting-started/configuring-github.md#using-a-vendor-preset) for details. Fleet installs declare the same source in `repos.yaml` (`defaults.config_base` / per-repo `config_base`) and converge it with `fullsend repos install`; see [Repo Management — Configuration presets](../getting-started/repo-management.md#configuration-presets).
 
-If you have IAM access to the platform operator's GCP project, pass `--mint-project` and `--mint-region` to `admin install` to enable auto-discovery of shared app IDs and automatic validation of mint configuration. This requires `roles/cloudfunctions.developer` on the platform mint project.
+If you have IAM access to the platform operator's GCP project, pass `--mint-project` and `--mint-region` to `admin install` to enable auto-discovery of shared app IDs and automatic validation of mint configuration. This requires `roles/cloudfunctions.developer` on the platform mint project. (`admin install` is deprecated; see [Deprecated: all-in-one admin install](#deprecated-all-in-one-admin-install).)
 
 > This section documents the **SaaS installation profile** — the default variant of the Managed model, where a platform operator pre-provisions the shared GitHub Apps and mint for you. See the [CLI reference](../../cli/github.md#flags) for the full flag list.
 
@@ -193,7 +193,7 @@ fullsend github setup "$ORG_NAME/$REPO_NAME" \
 
 ## Deprecated: all-in-one admin install
 
-> **Deprecated.** The `fullsend admin install` all-in-one command that provisions GCP mint, inference, and GitHub in a single invocation is deprecated. Use the [standalone commands](../getting-started/operations.md#standalone-commands) instead: `fullsend inference provision` + `fullsend github setup <owner/repo>`. Per-org installation has been removed, so `fullsend admin install` and `fullsend github setup` accept only `owner/repo` targets. See [Getting Started](../getting-started/configuring-github.md) for the recommended per-repo flow.
+> **Deprecated.** The `fullsend admin install` all-in-one command that provisions GCP mint, inference, and GitHub in a single invocation is deprecated. Use the [standalone commands](../getting-started/operations.md#standalone-commands) instead: `fullsend inference provision` + `fullsend github setup <owner/repo>`. Per-org installation has been removed, so `fullsend admin install` and `fullsend github setup` accept only `owner/repo` targets. See [Getting Started](../getting-started/configuring-github.md) for the recommended per-repo flow. For GitLab projects, follow [Installing Fullsend](../getting-started/configuring-gitlab.md#installing-fullsend) in the GitLab guide (set `gitlab.url`, `gitlab.inference.auth` and the project in `repos.yaml`, then run `fullsend repos install`). To create GitHub Apps, use `fullsend mint add-role <role> --project <gcp-project> --org <org>` per role, or the deprecated `admin install` to create every role's app in one run (see [Mint administration](mint-administration.md)).
 
 ## See Also
 

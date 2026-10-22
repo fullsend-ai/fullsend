@@ -28,11 +28,31 @@ fi
 
 # Stub podman / systemctl / openshell so the test exercises path validation
 # only. prepare.sh now starts a per-job OpenShell gateway after the pull;
-# those helpers must succeed against these no-op binaries.
-printf '#!/bin/sh\nexit 0\n' > "${SHIM_DIR}/podman"
+# those helpers must succeed against these no-op binaries. The job image
+# probe (`podman run ... openshell --version`) reports the host's version so
+# no install is attempted; an unreadable version is rejected. The image's
+# revision label names a Fullsend commit that the curl stub reports as on
+# main and as pinning that same version, and the image's digest equals the one
+# the registry stub serves for that commit, so provenance verification passes.
+REV="$(printf 'a%.0s' $(seq 1 40))"
+DIGEST="sha256:$(printf 'd%.0s' $(seq 1 64))"
+printf '#!/bin/sh\ncase "$1" in run) echo "openshell 0.1.1";; image) case "$*" in *RepoDigests*) echo "%s";; *) echo "%s";; esac;; esac\nexit 0\n' \
+  "${DIGEST}" "${REV}" > "${SHIM_DIR}/podman"
 printf '#!/bin/sh\nexit 0\n' > "${SHIM_DIR}/systemctl"
 printf '#!/bin/sh\ncase "$1" in --version) echo "openshell 0.1.1";; gateway) echo "  * openshell";; esac\nexit 0\n' > "${SHIM_DIR}/openshell"
-chmod +x "${SHIM_DIR}/podman" "${SHIM_DIR}/systemctl" "${SHIM_DIR}/openshell"
+cat > "${SHIM_DIR}/curl" <<CURL
+#!/bin/sh
+for a in "\$@"; do url="\$a"; done
+case "\${url}" in
+  https://ghcr.io/token*) echo '{"token":"anonymous-pull-token"}' ;;
+  https://ghcr.io/v2/fullsend-ai/fullsend-runner/manifests/*) printf 'HTTP/2 200\r\ndocker-content-digest: ${DIGEST}\r\n\r\n\n200' ;;
+  https://api.github.com/repos/fullsend-ai/fullsend/compare/main...*) echo '{"status": "behind"}' ;;
+  https://raw.githubusercontent.com/fullsend-ai/fullsend/*/.github/scripts/openshell-version.sh)
+    printf 'OPENSHELL_VERSION=0.1.1\nOPENSHELL_SHA=%s\n' "$(printf 'b%.0s' $(seq 1 40))" ;;
+  *) exit 22 ;;
+esac
+CURL
+chmod +x "${SHIM_DIR}/podman" "${SHIM_DIR}/systemctl" "${SHIM_DIR}/openshell" "${SHIM_DIR}/curl"
 
 FAKE_HOME=$(mktemp -d)
 trap 'rm -rf "${SHIM_DIR}" "${FAKE_HOME}"' EXIT

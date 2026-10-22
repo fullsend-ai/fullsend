@@ -383,7 +383,7 @@ type reposInstallConfig struct {
 	testContainTriggerAccount func(ctx context.Context, client forge.Client, owner, repo string) error
 	// testConvergeTriggerAccount replaces the live GitLab trigger-account
 	// convergence step, which only runs against the live client.
-	testConvergeTriggerAccount func(ctx context.Context, client forge.Client, owner, repo string) error
+	testConvergeTriggerAccount func(ctx context.Context, client forge.Client, owner, repo string, rotate bool) error
 	// testRepairTriggerSchedules replaces the live repair of drifted
 	// trigger-account-owned polling schedules, which only runs against the
 	// live client.
@@ -497,7 +497,7 @@ GCP infrastructure (WIF, mint) must be provisioned separately via
 	cmd.Flags().StringArrayVar(&opts.gitlabRoleTokens, "gitlab-role-token", nil, "administrator-provided GitLab role PAT (repeatable, role=token); values are never logged")
 	cmd.Flags().BoolVar(&opts.rotateGitLabRoles, "rotate-gitlab-roles", false, "force-rotate GitLab role credentials even if they are not near expiry")
 	cmd.Flags().StringArrayVar(&opts.rotateGitLabRoleNames, "rotate-gitlab-role", nil, "rotate a specific GitLab role (repeatable); default is all own-credential roles that are due")
-	cmd.Flags().BoolVar(&opts.rotateGitLabTriggerToken, "rotate-gitlab-trigger-token", false, "force-rotate the GitLab webhook fast-path pipeline trigger token (FULLSEND_TRIGGER_TOKEN); the previous token is revoked after the webhook is updated")
+	cmd.Flags().BoolVar(&opts.rotateGitLabTriggerToken, "rotate-gitlab-trigger-token", false, "force-rotate the GitLab webhook fast-path pipeline trigger token (FULLSEND_TRIGGER_TOKEN); the previous token is revoked after the webhook is updated. A webhook on the trigger-account route uses FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN instead; rotate it with --rotate-gitlab-trigger-account")
 	cmd.Flags().BoolVar(&opts.rotateGitLabTriggerAccount, "rotate-gitlab-trigger-account", false, "replace the GitLab trigger-only service account's deploy key, protected-branch push entry, and trigger token (FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN); requires a ready trigger account, otherwise install finishes it instead")
 	cmd.Flags().StringVar(&opts.fullsendBinary, "fullsend-binary", "", "path to a Linux fullsend binary to upload for repos whose repos.yaml settings resolve vendor: true (default: auto-resolve)")
 	cmd.Flags().StringVar(&opts.fullsendSource, "fullsend-source", "", "fullsend source checkout for vendored content and cross-compile, for repos whose repos.yaml settings resolve vendor: true (default: auto-detect or GitHub fetch)")
@@ -1173,14 +1173,29 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 			// replacement Poller is verified, which surfaces here as an opaque
 			// provisioning failure). The failure stays the repo's recorded
 			// error and the dispatch-route stages below remain skipped, so
-			// it is counted once. Identity separation is still enforced by the
-			// trigger-account lifecycle.
+			// it is counted once. The callback still refreshes an existing
+			// webhook after the lifecycle: ordinary repair can replace the
+			// account token even without a requested rotation.
 			convergeTriggerAfterPollerFailure := func(pollerErr error) error {
-				if tErr := maybeConvergeGitLabTriggerAccount(ctx, opts, fc.Client, printer, item.r.Owner, item.r.Repo, opts.rotateGitLabTriggerAccount, manifest); tErr != nil {
+				// Do not force rotation on a failed Poller stage, but do repair
+				// the webhook if normal account convergence changed its token.
+				tErr := maybeConvergeGitLabTriggerAccount(ctx, opts, fc.Client, printer, item.r.Owner, item.r.Repo, false, true, manifest)
+				if tErr != nil {
 					printer.StepWarn(fmt.Sprintf("[%s/%s] GitLab trigger account failed: %v", item.r.Owner, item.r.Repo, tErr))
-					return errors.Join(pollerErr, tErr)
 				}
-				return pollerErr
+				wErr := refreshGitLabWebhookAfterPollerFailure(ctx, fc.Client, printer, item.r.Owner, item.r.Repo, opts.dryRun)
+				if wErr != nil {
+					printer.StepWarn(fmt.Sprintf("[%s/%s] GitLab webhook route refresh failed: %v", item.r.Owner, item.r.Repo, wErr))
+				}
+				var containErr error
+				if repos.GitLabWebhookTriggerOwnerUnsafe(wErr) {
+					containErr = containGitLabTriggerAccountAfterWebhookFailure(ctx, opts, fc.Client, printer, item.r.Owner, item.r.Repo)
+				}
+				var retireErr error
+				if tErr == nil && wErr == nil {
+					retireErr = finishGitLabTriggerAccountRetirement(ctx, opts, fc.Client, item.r.Owner, item.r.Repo)
+				}
+				return errors.Join(pollerErr, tErr, wErr, containErr, retireErr)
 			}
 			if err := maybeProvisionGitLabRoles(ctx, opts, fc.Client, printer, item.r.Owner, item.r.Repo); err != nil {
 				printer.StepWarn(fmt.Sprintf("[%s/%s] GitLab role provisioning failed: %v", item.r.Owner, item.r.Repo, err))
@@ -1212,9 +1227,9 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 				// GitLab.com Free refuses the legacy Poller per-user merge
 				// grant. The trigger account does not use that grant, so its
 				// resource preparation still runs. The Poller failure stays the
-				// repo's recorded error and the dispatch-route stages below
-				// (override role, webhook) remain skipped, so the failure is
-				// counted once.
+				// repo's recorded error. The full dispatch-route stages below
+				// remain skipped; the callback only refreshes an existing webhook
+				// route after account repair. The failure is counted once.
 				if pollerMergeGrantRejected(err) {
 					err = convergeTriggerAfterPollerFailure(err)
 				}
@@ -1242,26 +1257,10 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 				roleFailedRepos = append(roleFailedRepos, item.r)
 				continue
 			}
-			// Webhook fast-path (ADR 0125): runs after the override-role
-			// step because it requires no_one_allowed before a live
-			// webhook may start trigger pipelines.
-			if item.r.NeedsGitLabWebhook || opts.rotateGitLabTriggerToken {
-				if err := setupGitLabWebhookFastPath(ctx, fc.Client, printer, item.r.Owner, item.r.Repo, opts.rotateGitLabTriggerToken, opts.dryRun); err != nil {
-					printer.StepWarn(fmt.Sprintf("[%s/%s] GitLab webhook fast-path provisioning failed: %v", item.r.Owner, item.r.Repo, err))
-					roleFail++
-					item.r.Error = err
-					if item.fresh {
-						roleFailInstalledCount++
-					}
-					roleFailedRepos = append(roleFailedRepos, item.r)
-					continue
-				}
-			}
-			// Trigger-only service account (#8437): after the Poller and its
-			// generations are settled, so the verified Poller inventory it
-			// stays separate from is current. A deferral is not a failure.
-			if err := maybeConvergeGitLabTriggerAccount(ctx, opts, fc.Client, printer, item.r.Owner, item.r.Repo, opts.rotateGitLabTriggerAccount, manifest); err != nil {
-				printer.StepWarn(fmt.Sprintf("[%s/%s] GitLab trigger account failed: %v", item.r.Owner, item.r.Repo, err))
+			// Webhook fast-path (ADR 0125) and trigger-only service account
+			// (#8437), ordered so the webhook follows the dispatch route the
+			// account lifecycle settles (#8509).
+			if err := convergeGitLabDispatchRoute(ctx, opts, fc.Client, printer, item.r.Owner, item.r.Repo, item.r.NeedsGitLabWebhook, manifest); err != nil {
 				roleFail++
 				item.r.Error = err
 				if item.fresh {
@@ -1281,7 +1280,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	// would otherwise stay live. This only revokes; it never provisions.
 	// Cleanup errors are reported alongside the original failure, which is
 	// preserved.
-	reconcileFailedGitLabWebhookSafety(ctx, clients, manifest, printer, opts.dryRun, webhookSafetyDone,
+	reconcileFailedGitLabWebhookSafety(ctx, opts, clients, manifest, printer, webhookSafetyDone,
 		failed, postInstallFailedRepos, pollStateFailedRepos, roleFailedRepos)
 
 	printer.Blank()
@@ -1322,7 +1321,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 // post-install, poll-state, and role-stage failures — whose entries are
 // updated in place: a cleanup error is joined onto the original failure,
 // which is preserved.
-func reconcileFailedGitLabWebhookSafety(ctx context.Context, clients repos.ForgeClientFactory, manifest *repos.Manifest, printer *ui.Printer, dryRun bool, done map[string]bool, groups ...[]repos.ConvergeResult) {
+func reconcileFailedGitLabWebhookSafety(ctx context.Context, opts *reposInstallConfig, clients repos.ForgeClientFactory, manifest *repos.Manifest, printer *ui.Printer, done map[string]bool, groups ...[]repos.ConvergeResult) {
 	for _, group := range groups {
 		for i := range group {
 			r := &group[i]
@@ -1340,7 +1339,7 @@ func reconcileFailedGitLabWebhookSafety(ctx context.Context, clients repos.Forge
 				printer.StepWarn(fmt.Sprintf("[%s] Could not get GitLab client for webhook safety reconciliation: %v", key, fcErr))
 				continue
 			}
-			if err := reconcileGitLabWebhookSafety(ctx, fc.Client, printer, r.Owner, r.Repo, dryRun); err != nil {
+			if err := reconcileGitLabWebhookSafety(ctx, opts, fc.Client, printer, r.Owner, r.Repo); err != nil {
 				r.Error = errors.Join(r.Error, fmt.Errorf("webhook safety reconciliation: %w", err))
 			}
 		}

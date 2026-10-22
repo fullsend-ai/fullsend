@@ -1,6 +1,7 @@
 package world
 
 import (
+	"context"
 	"net/http/httptest"
 	"path/filepath"
 	"time"
@@ -93,9 +94,48 @@ type World struct {
 	CreatedPRNumbers   []int
 
 	// LeasedRepoName is the logical test-repo name acquired via
-	// Driver.AllocateRepo for this scenario's duration. Empty when no
-	// driver is configured.
+	// Driver.AllocateRepo (or install.LeaseDriver.AllocateLease) for this
+	// scenario's duration. Empty when no driver is configured.
 	LeasedRepoName string
+
+	// LeasedRepoOrg is the org of the slot leased through
+	// install.LeaseDriver.AllocateLease; the After hook releases the
+	// slot with it. Empty when the driver leases by repo name only.
+	LeasedRepoOrg string
+
+	// LeaseOwned reports whether the repository under the leased slot's
+	// name is still this scenario's lease (install.LeaseVerifier). The
+	// After hook sets it before scenario cleanup, which consults it before
+	// every name-based mutation (and before every retry of one) and skips
+	// the mutation when the lease is lost or ownership cannot be verified,
+	// because the name may by then belong to another holder. Nil means
+	// ownership is not tracked (no lease, or tests with bare worlds).
+	LeaseOwned func(ctx context.Context) (bool, error)
+
+	// MintURL is the URL of the mint serving the leased repository's org
+	// (install.RepoLease.MintURL). Empty when the driver does not report
+	// one per lease.
+	MintURL string
+
+	// MintStatusGroup is the ORG/TEAM the leased repository's mint was
+	// deployed with as --status-github-group
+	// (install.RepoLease.MintStatusGroup). It is chosen once per job and
+	// need not be the leased org's team. Empty when the driver does not
+	// report it.
+	MintStatusGroup string
+
+	// MintWorkflowHostRepos is the leased repository's mint's
+	// WORKFLOW_HOST_REPOS: the workflow hosts of every org of its mint
+	// group (install.RepoLease.MintWorkflowHostRepos). Nil when the
+	// driver does not report them.
+	MintWorkflowHostRepos []string
+
+	// OrgDrivers builds the SCM and CI drivers for one org from that
+	// org's forge client and token. When a scenario leases a slot, the
+	// lease step rebinds SCM and CI through it so every operation uses
+	// the leased org's credentials. Set by the suite runners on the
+	// template World; nil keeps the template drivers.
+	OrgDrivers func(client forge.Client, token string) (scm.Driver, ci.Driver, error)
 
 	// Driver is the unified install driver that owns repo allocation,
 	// deallocation, and suite-scoped teardown. Shared across scenarios

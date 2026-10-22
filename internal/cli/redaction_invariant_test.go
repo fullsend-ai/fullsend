@@ -392,6 +392,11 @@ func TestRedaction_NoSecretSurvivesAnyWrapping(t *testing.T) {
 		for _, w := range wrappings {
 			for _, s := range surfaces {
 				t.Run(fmt.Sprintf("%s/%s/%s", a.name, w.name, s.name), func(t *testing.T) {
+					// The cases share only read-only fixtures, so run them
+					// in parallel: serially, this test alone takes minutes
+					// under -race. The parent's t.Setenv stays in force
+					// until every parallel subtest has finished.
+					t.Parallel()
 					if reason := w.excluded(a); reason != "" {
 						t.Skip("named exclusion: " + reason)
 					}

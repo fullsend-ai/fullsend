@@ -181,7 +181,7 @@ func TestRunPollJobScript_BlanksSiblingSecretsBeforePoll(t *testing.T) {
 	}
 	writeStub("fullsend", "echo POLL_RAN\nexit 0\n")
 
-	cmd := exec.Command("bash", "-c", `set -euo pipefail; . "$SCRIPT"; echo ANALYST="${FULLSEND_GITLAB_ANALYST_TOKEN-unset}"; echo CODER="${FULLSEND_GITLAB_CODER_TOKEN-unset}"; echo SHARED="${FULLSEND_FORGE_TOKEN-unset}"; echo JOB="${FULLSEND_JOB_TOKEN-unset}"; echo TRIGGER="${FULLSEND_TRIGGER_TOKEN-unset}"; echo WEBHOOK_SECRET="${FULLSEND_WEBHOOK_SECRET-unset}"`)
+	cmd := exec.Command("bash", "-c", `set -euo pipefail; . "$SCRIPT"; echo ANALYST="${FULLSEND_GITLAB_ANALYST_TOKEN-unset}"; echo CODER="${FULLSEND_GITLAB_CODER_TOKEN-unset}"; echo SHARED="${FULLSEND_FORGE_TOKEN-unset}"; echo JOB="${FULLSEND_JOB_TOKEN-unset}"; echo TRIGGER="${FULLSEND_TRIGGER_TOKEN-unset}"; echo ACCOUNT_TRIGGER="${FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN-unset}"; echo WEBHOOK_SECRET="${FULLSEND_WEBHOOK_SECRET-unset}"`)
 	cmd.Env = append([]string{
 		"SCRIPT=" + script,
 		"PATH=" + bin + ":" + os.Getenv("PATH"),
@@ -194,6 +194,7 @@ func TestRunPollJobScript_BlanksSiblingSecretsBeforePoll(t *testing.T) {
 		"FULLSEND_GITLAB_CODER_TOKEN=coder-pat",
 		"FULLSEND_FORGE_TOKEN=shared-pat",
 		"FULLSEND_TRIGGER_TOKEN=trigger-bearer",
+		"FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN=account-bearer",
 		"FULLSEND_WEBHOOK_SECRET=webhook-secret",
 		"FULLSEND_POLL_MODE=events",
 		"CI_PROJECT_ID=1",
@@ -209,6 +210,7 @@ func TestRunPollJobScript_BlanksSiblingSecretsBeforePoll(t *testing.T) {
 	assert.Contains(t, got, "SHARED=unset")
 	assert.Contains(t, got, "JOB=poll-pat")
 	assert.Contains(t, got, "TRIGGER=unset", "the webhook trigger bearer must not outlive the job preamble")
+	assert.Contains(t, got, "ACCOUNT_TRIGGER=unset", "the account trigger bearer must not outlive the job preamble")
 	assert.Contains(t, got, "WEBHOOK_SECRET=unset", "the webhook secret must not outlive the job preamble")
 }
 
@@ -222,7 +224,7 @@ func TestGitLabJobScripts_UnsetWebhookCredentialsBeforePin(t *testing.T) {
 	for _, path := range []string{gitlabRunPollJobScriptPath, gitlabRunDispatcherJobScriptPath, gitlabRunAgentJobScriptPath} {
 		t.Run(path, func(t *testing.T) {
 			s := gitlabPerRepoText(t, path)
-			unsetIdx := strings.Index(s, "unset FULLSEND_TRIGGER_TOKEN FULLSEND_WEBHOOK_SECRET\n")
+			unsetIdx := strings.Index(s, "unset FULLSEND_TRIGGER_TOKEN FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN FULLSEND_WEBHOOK_SECRET\n")
 			require.NotEqual(t, -1, unsetIdx, "expected the webhook credential unset")
 			pinIdx := strings.Index(s, ". \"${CI_PROJECT_DIR:-.}/.gitlab/ci/scripts/pin-ci-job-identity.sh\"")
 			require.NotEqual(t, -1, pinIdx, "expected the identity pin to be sourced")
@@ -1696,4 +1698,110 @@ func TestRunAgentJobScript_UnsetsMergeRequestIIDForIssueEvent(t *testing.T) {
 	assert.Contains(t, got, "/-/issues/7")
 	assert.Contains(t, got, "STUB_ENV CI_MERGE_REQUEST_IID=UNSET")
 	assert.Contains(t, got, "STUB_ENV FULLSEND_NOTE_TARGET=issues")
+}
+
+// TestRunAgentJobScript_IssueOpenTriageRequiresDeveloper pins the permission
+// boundary for automatic GitLab issue-open triage (#8555): the agent job's
+// ADR 0054 gate applies to the issue author, so an author below Developer
+// (access_level < 30) gets a successful job that never runs triage, while a
+// Developer-or-higher author reaches `fullsend run triage`. The user-facing
+// triage and GitLab guides describe this same rule.
+func TestRunAgentJobScript_IssueOpenTriageRequiresDeveloper(t *testing.T) {
+	tests := []struct {
+		accessLevel int
+		wantRun     bool
+	}{
+		{accessLevel: 0},
+		{accessLevel: 10},
+		{accessLevel: 20},
+		{accessLevel: 30, wantRun: true},
+		{accessLevel: 40, wantRun: true},
+	}
+	for _, tt := range tests {
+		t.Run("access_level_"+strconv.Itoa(tt.accessLevel), func(t *testing.T) {
+			root := t.TempDir()
+			writeGitLabScript(t, root, ".gitlab/ci/scripts/trust-ci-server-ca.sh")
+			writeGitLabScript(t, root, gitlabPinCIJobIdentityScriptPath)
+			writeGitLabScript(t, root, ".gitlab/ci/scripts/select-gitlab-role-token.sh")
+			script := writeGitLabScript(t, root, gitlabRunAgentJobScriptPath)
+
+			mux := http.NewServeMux()
+			mux.HandleFunc("/api/v4/job", func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(pinJobJSON("42", "100", "main")))
+			})
+			mux.HandleFunc("/api/v4/user", func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"id":7,"username":"fullsend-bot"}`))
+			})
+			mux.HandleFunc("/api/v4/projects/", func(w http.ResponseWriter, r *http.Request) {
+				path := r.URL.Path
+				switch {
+				case strings.Contains(path, "/repository/branches/"):
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte(`{"name":"main","protected":true}`))
+				case strings.Contains(path, "/pipelines/"):
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte(`{"id":100,"source":"api","user":{"id":7}}`))
+				case strings.Contains(path, "/members/all/"):
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte(`{"access_level":` + strconv.Itoa(tt.accessLevel) + `}`))
+				case strings.Contains(path, "/notes"):
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte(`[]`))
+				default:
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte(`{"id":42,"default_branch":"main","path_with_namespace":"pinned/project"}`))
+				}
+			})
+			srv := httptest.NewTLSServer(mux)
+			t.Cleanup(srv.Close)
+
+			bin := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(bin, "fullsend"), []byte(
+				"#!/bin/sh\necho FULLSEND_ARGS: \"$@\"\nexit 0\n"), 0o755))
+
+			const secret = "test-hmac-secret"
+			// An issue-open webhook dispatch: issue_event with the issue
+			// author as the signed actor.
+			hmacHex := computeDispatchHMAC(secret, "5", "", "issue_event", "", "false", "", "", "", "test-key", "triage", "7")
+
+			setupPinnedConfigOrigin(t, root)
+
+			cmd := exec.Command("bash", "-c", `set -euo pipefail; . "$SCRIPT"`)
+			cmd.Dir = root
+			cmd.Env = append([]string{
+				"SCRIPT=" + script,
+				"PATH=" + bin + ":" + os.Getenv("PATH"),
+				"HOME=" + t.TempDir(),
+				"CI_PROJECT_DIR=" + root,
+				"RUNNER_TEMP=" + t.TempDir(),
+				"CI_JOB_TOKEN=job-token",
+				"FULLSEND_GITLAB_POLLER_TOKEN=poller-pat",
+				"FULLSEND_GITLAB_ANALYST_TOKEN=analyst-pat",
+				"STAGE=triage",
+				"EVENT_TYPE=issue_event",
+				"RESOURCE_KEY=test-key",
+				"ACTOR_ID=5",
+				"IS_FORK=false",
+				"STATUS_IID=7",
+				"FULLSEND_DISPATCH_SECRET=" + secret,
+				"FULLSEND_DISPATCH_HMAC=" + hmacHex,
+				"CI_PIPELINE_URL=https://gitlab.example/pinned/project/-/pipelines/999",
+				"CI_PROJECT_ID=1",
+				"CI_PROJECT_PATH=pinned/project",
+			}, pinTLSEnv(t, srv)...)
+			out, err := cmd.CombinedOutput()
+			require.NoError(t, err, "a skipped stage must still exit 0; stdout/stderr: %s", out)
+			got := string(out)
+
+			if tt.wantRun {
+				assert.Contains(t, got, "FULLSEND_ARGS: run triage")
+				assert.NotContains(t, got, "Actor does not have Developer access")
+			} else {
+				assert.Contains(t, got, "Actor does not have Developer access (access_level="+strconv.Itoa(tt.accessLevel)+")")
+				assert.NotContains(t, got, "FULLSEND_ARGS: run")
+			}
+		})
+	}
 }

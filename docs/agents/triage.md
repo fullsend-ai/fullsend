@@ -10,7 +10,7 @@ Inspects a GitHub issue, assesses information sufficiency, asks clarifying quest
 
 ## How the agent works
 
-The triage agent is triggered when a new issue is opened or when an existing issue is updated. It fetches the issue content — title, body, labels, comments — and reads repository context (architecture docs, existing issues, PRs) to understand the landscape. It then decides whether the issue has enough information to act on, or whether clarification is needed.
+The triage agent is triggered when a new issue is opened or when an existing issue is updated. On GitLab, opening an issue also dispatches triage when the issue author has Developer access or higher (see [Commands](#commands)). The webhook fast path starts this dispatch, and events-mode cron polling backstops it when a webhook delivery is missed. It fetches the issue content — title, body, labels, comments — and reads repository context (architecture docs, existing issues, PRs) to understand the landscape. It then decides whether the issue has enough information to act on, or whether clarification is needed.
 
 The agent runs in a read-only sandbox. It cannot modify issues, push code, or interact with external services. Its only output is a structured JSON triage result consumed by the post-script, which applies labels and posts a summary comment.
 
@@ -39,6 +39,19 @@ label is applied to an issue (used by the [retro agent](retro.md) to
 route proposal issues into the triage pipeline). To re-trigger triage
 after providing clarification on a `needs-info` issue, use the
 `/fs-triage` command.
+
+On GitLab, the triage-level rule above does not apply. The GitLab agent
+job requires the event actor to hold Developer access or higher
+([ADR 0054](../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)),
+so automatic issue-open triage runs only for issues opened by Developer, Maintainer, or
+Owner members. The webhook fast path normally starts the dispatch; if a
+delivery is missed, events-mode cron polling recovers the issue open
+(for issues created after the poller's discovery watermark and its persisted
+issue-open cutoff) and dispatches it with the same authorization rule. When a
+Reporter, Guest, or non-member opens an issue, the
+webhook (or the polling backstop) still starts a dispatch, but the agent job exits successfully
+without running triage. A Developer-or-higher member can then comment
+`/fs-triage` on the issue to start triage.
 
 ## Control labels
 
@@ -74,7 +87,14 @@ create_issues:
       - upstream-org/specific-repo
 ```
 
-**Defaults:** At install time, fullsend populates this with only `fullsend-ai/fullsend` as an upstream target. The repository the agent runs in is always allowed, so it needs no entry.
+**Defaults:** A fresh GitHub installation without a preset or explicit `create_issues`
+setting permits `fullsend-ai/fullsend` and `fullsend-ai/agents` as upstream
+targets. Fresh GitLab installations have an explicit empty cross-project
+allowlist; configure any additional projects on the GitLab host explicitly.
+The repository the agent runs in is always allowed, so it needs no
+entry. Existing installations retain their configured permissions on upgrade;
+see [migration guidance](../guides/getting-started/migrating-from-github-setup.md#permit-agent-improvement-proposals-on-existing-installations)
+to add the agents repository explicitly.
 
 **When to expand the allowlist:** If your project depends on libraries or services
 in other GitHub orgs and you want the triage agent to automatically file

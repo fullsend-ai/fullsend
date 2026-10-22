@@ -100,6 +100,7 @@ const openCodeHooksMissingExit = 97
 
 const (
 	openCodeBinaryVar             = "FULLSEND_OPENCODE_BIN"
+	openCodeNodeVar               = "FULLSEND_OPENCODE_NODE"
 	openCodeTestVar               = "FULLSEND_OPENCODE_TEST_BIN"
 	openCodeSHA256Var             = "FULLSEND_OPENCODE_SHA256SUM_BIN"
 	openCodeCutVar                = "FULLSEND_OPENCODE_CUT_BIN"
@@ -112,6 +113,25 @@ const (
 	openCodeHomePinVar            = "FULLSEND_OPENCODE_HOME"
 	openCodePathPinVar            = "FULLSEND_OPENCODE_PATH"
 )
+
+// openCodeEnvDataDrop are the read-only pins the OpenCode launch and the
+// trusted-env read set before .env is read. envDataLoad drops assignments to
+// them: eval'ing one would abort the shell on the read-only variable.
+var openCodeEnvDataDrop = []string{
+	openCodeBinaryVar,
+	openCodeNodeVar,
+	openCodeTestVar,
+	openCodeSHA256Var,
+	openCodeCutVar,
+	openCodePrintfVar,
+	openCodeTeeVar,
+	openCodeCatVar,
+	openCodeRmVar,
+	openCodeConfigContentPinVar,
+	openCodeCredentialsPathPinVar,
+	openCodeHomePinVar,
+	openCodePathPinVar,
+}
 
 // Sandbox-side layout. The transcript and the exit-code file live under
 // openCodeRunnerSubdir, not output/, so ExtractOutputFiles does not collect
@@ -151,7 +171,7 @@ func openCodeEffortFor(effort string) (string, bool) {
 // Every interpolated value is shell-quoted because the sandbox receives a
 // single `sh -c` string, not an argv array. With hooks enabled
 // (params.HooksSettingsPath != ""), the command verifies the adapter's
-// SHA-256 before sourcing .env and fails closed.
+// SHA-256 before reading .env and fails closed.
 func buildOpenCodeRunCommand(params RunParams, agentName string, trustedEnv openCodeTrustedEnv) string {
 	r := OpenCodeRuntime{}
 	envFile := sandbox.SandboxWorkspace + "/.env"
@@ -167,7 +187,7 @@ func buildOpenCodeRunCommand(params RunParams, agentName string, trustedEnv open
 	rcFile := sandbox.SandboxWorkspace + "/" + openCodeRunRCFile
 
 	// The opencode.json that re-attaches AGENTS.md is written after .env is
-	// sourced, overwriting any agent edit to it.
+	// read, overwriting any agent edit to it.
 	configJSON := openCodeInstructionsConfig(params.RepoDir)
 	configPath := r.ConfigDir() + "/" + openCodeConfigFile
 	prelude := []string{
@@ -183,17 +203,22 @@ func buildOpenCodeRunCommand(params RunParams, agentName string, trustedEnv open
 		prelude = append(prelude, "&& "+openCodeHooksGuard(r.openCodeHooksExtensionPath()))
 	}
 	prelude = append(prelude,
-		"&& . "+shellQuote(envFile),
-		// .env is agent-writable: re-pin the config exports, unset injected
-		// overrides, and restore the pinned trusted values.
+		// .env is read as data, never sourced (envDataLoad, #8574): no line
+		// of it or of an .env.d file runs as shell, and LD_*, PYTHON*,
+		// BASH_ENV, ENV, IFS and the read-only pins above are never taken
+		// from it.
+		"&& "+envDataLoad(envFile, openCodeEnvDataDrop...),
+		// .env is agent-writable: as a second layer from when it was
+		// sourced, re-pin the config exports, unset injected overrides, and
+		// restore the pinned trusted values.
 		"&& "+strings.Join(r.EnvExports(), " && "),
 		"&& "+openCodeTrustedEnvRestore(),
 	)
 	if trustedEnv.AgentDefinition != "" {
-		// .env can run arbitrary commands, so redo the override reset after
-		// it and check the agent file restoreOpenCodeAgent verified is
-		// unchanged. (Rewriting the file here would exceed openshell's 32 KiB
-		// argument limit for a long agent.)
+		// Second layer: redo the override reset after .env and check the
+		// agent file restoreOpenCodeAgent verified is unchanged. (Rewriting
+		// the file here would exceed openshell's 32 KiB argument limit for a
+		// long agent.)
 		prelude = append(prelude,
 			`&& "$`+openCodeRmVar+`" -rf -- `+r.openCodeOverridePaths(false),
 			"&& "+openCodeAgentGuard(trustedEnv.AgentPath, trustedEnv.AgentDefinition),
@@ -208,12 +233,12 @@ func buildOpenCodeRunCommand(params RunParams, agentName string, trustedEnv open
 		"&& export "+openCodeRuntimeEnv+"=opencode",
 	)
 	if hooksEnabled {
-		// .env can run arbitrary commands, so verify the adapter again.
+		// Second layer: verify the adapter again after .env.
 		prelude = append(prelude, "&& "+openCodeHooksGuard(r.openCodeHooksExtensionPath()))
 	}
 
 	invocation := []string{
-		`"$` + openCodeBinaryVar + `"`,
+		cliLaunch(openCodeBinaryVar, openCodeNodeVar),
 	}
 	if params.Debug != "" {
 		// Global flags, so they go before `run`; --print-logs sends logs to
@@ -268,9 +293,11 @@ func openCodeExitPipeline(invocation []string, rcFile, transcript string) string
 		` && exit "$FULLSEND_OPENCODE_RC"`
 }
 
+// openCodeBinaryPin is the POSIX sh fragment that records where opencode is,
+// held to the trusted-PATH rule; see binaryPin. In the sandbox image opencode
+// is an ELF binary, so openCodeNodeVar is pinned empty there.
 func openCodeBinaryPin() string {
-	return `readonly ` + openCodeBinaryVar + `="$(command -v opencode)" && if test -n "$` + openCodeBinaryVar +
-		`"; then :; else echo 'fullsend: opencode not found on PATH' >&2; exit 127; fi`
+	return binaryPin(openCodeBinaryVar, openCodeNodeVar, "opencode")
 }
 
 // openCodeCloudLocationExport exports GOOGLE_CLOUD_LOCATION only when
@@ -308,7 +335,7 @@ func openCodeTrustedEnvPin(env openCodeTrustedEnv) string {
 		openCodePathPinVar + `="$PATH"`
 }
 
-// openCodeDangerousEnvVars are unset after sourcing the agent-writable .env
+// openCodeDangerousEnvVars are unset after reading the agent-writable .env
 // because they could widen the permission policy, redirect config/auth/db
 // paths, or inject code (CWE-15, CWE-426). HOME and PATH are re-pinned
 // instead. Keep in sync with upstream config/config.ts and src/plugin.
@@ -497,7 +524,7 @@ func (r OpenCodeRuntime) Run(ctx context.Context, params RunParams, printer *ui.
 		return 1, fmt.Errorf("opencode ran its default agent instead of %q; refusing the result", agentName)
 	}
 	if exitCode == openCodeAgentModifiedExit {
-		return exitCode, fmt.Errorf("opencode agent file %s changed after .env was sourced; refusing to run", trustedEnv.AgentPath)
+		return exitCode, fmt.Errorf("opencode agent file %s changed after .env was read; refusing to run", trustedEnv.AgentPath)
 	}
 	if exitCode == openCodeHooksMissingExit && params.HooksSettingsPath != "" {
 		return exitCode, fmt.Errorf("opencode hook adapter missing or modified in %s; refusing to run unhooked (was Bootstrap run, or did the agent change it?)", r.ConfigDir())
@@ -546,7 +573,7 @@ func (r OpenCodeRuntime) openCodeOverridePaths(withAgentDir bool) string {
 
 // restoreOpenCodeAgent undoes overrides an earlier iteration could have left:
 // it removes openCodeOverridePaths, re-uploads the Bootstrap agent file, and
-// verifies it. The run prelude repeats the reset after sourcing .env.
+// verifies it. The run prelude repeats the reset after reading .env.
 func (r OpenCodeRuntime) restoreOpenCodeAgent(sandboxName, agentName string, env openCodeTrustedEnv) error {
 	clearCmd := "rm -rf -- " + r.openCodeOverridePaths(true)
 	_, stderr, exitCode, err := sandbox.Exec(sandboxName, clearCmd, 10*time.Second)

@@ -142,9 +142,12 @@ func TestTriggerAccountOptions_SinkCreateFailureAndUnpublish(t *testing.T) {
 	o = newSinkOwner(t, f)
 	opts := o.triggerAccountOptions("g", "p", "main", []int{}, nil)
 	assert.True(t, opts.PollerInventoryVerified)
+	assert.True(t, opts.EnforceWebhookSafety, "install and rotation enforce the webhook's project-wide trigger invariants")
 	assert.Nil(t, opts.Lease)
 	require.NoError(t, opts.UnpublishTriggerToken(context.Background()))
 	assert.False(t, f.exists)
 	require.NoError(t, opts.UnpublishTriggerToken(context.Background()))
 	assert.Equal(t, 2, f.deletes)
+	contain := o.ContainmentOptions("g", "p", nil)
+	assert.True(t, contain.EnforceWebhookSafety, "early containment checks the same project-wide invariants")
 }

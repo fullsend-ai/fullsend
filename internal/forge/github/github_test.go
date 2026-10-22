@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -113,8 +114,10 @@ func TestCreateRepo(t *testing.T) {
 
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(map[string]any{
+			"id":             int64(4242),
 			"name":           "new-repo",
 			"full_name":      "myorg/new-repo",
+			"description":    "A repo",
 			"default_branch": "main",
 			"private":        true,
 		})
@@ -124,9 +127,170 @@ func TestCreateRepo(t *testing.T) {
 	client := newTestClient(t, srv)
 	repo, err := client.CreateRepo(context.Background(), "myorg", "new-repo", "A repo", true)
 	require.NoError(t, err)
+	assert.Equal(t, int64(4242), repo.ID)
+	assert.Equal(t, "A repo", repo.Description)
 	assert.Equal(t, "new-repo", repo.Name)
 	assert.Equal(t, "myorg/new-repo", repo.FullName)
 	assert.True(t, repo.Private)
+}
+
+func TestGetRepo_ReportsIDAndDescription(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/repos/myorg/slot", r.URL.Path)
+		json.NewEncoder(w).Encode(map[string]any{
+			"id":          int64(99),
+			"name":        "slot",
+			"full_name":   "myorg/slot",
+			"description": "lease marker",
+		})
+	}))
+	defer srv.Close()
+
+	repo, err := newTestClient(t, srv).GetRepo(context.Background(), "myorg", "slot")
+	require.NoError(t, err)
+	assert.Equal(t, int64(99), repo.ID)
+	assert.Equal(t, "lease marker", repo.Description)
+	assert.True(t, repo.CreatedAt.IsZero(), "created_at absent from the response")
+}
+
+func TestRepoCreatedAt(t *testing.T) {
+	created := time.Date(2026, 10, 20, 11, 0, 0, 0, time.UTC)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusCreated)
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"id":         int64(7),
+			"name":       "e2e-lock",
+			"full_name":  "myorg/e2e-lock",
+			"created_at": created.Format(time.RFC3339),
+		})
+	}))
+	defer srv.Close()
+	client := newTestClient(t, srv)
+
+	repo, err := client.GetRepo(context.Background(), "myorg", "e2e-lock")
+	require.NoError(t, err)
+	assert.True(t, created.Equal(repo.CreatedAt), "GetRepo CreatedAt = %v", repo.CreatedAt)
+
+	repo, err = client.CreateRepo(context.Background(), "myorg", "e2e-lock", "lock", false)
+	require.NoError(t, err)
+	assert.True(t, created.Equal(repo.CreatedAt), "CreateRepo CreatedAt = %v", repo.CreatedAt)
+}
+
+// contentsServer is a minimal Contents API for one file that enforces the
+// "sha" precondition the way GitHub does.
+type contentsServer struct {
+	t       *testing.T
+	mu      sync.Mutex
+	content []byte
+	exists  bool
+	puts    int
+	// failPut makes the next PUT answer with this status.
+	failPut int
+}
+
+func (s *contentsServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	assert.Equal(s.t, "/repos/o/r/contents/state/holders.json", r.URL.Path)
+	switch r.Method {
+	case http.MethodGet:
+		if !s.exists {
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(map[string]any{"message": "Not Found"})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"content": base64.StdEncoding.EncodeToString(s.content),
+			"sha":     forge.GitBlobSHA(s.content),
+		})
+	case http.MethodPut:
+		s.puts++
+		if s.failPut != 0 {
+			w.WriteHeader(s.failPut)
+			s.failPut = 0
+			return
+		}
+		var body struct {
+			Content string `json:"content"`
+			SHA     string `json:"sha"`
+		}
+		require.NoError(s.t, json.NewDecoder(r.Body).Decode(&body))
+		switch {
+		case s.exists && body.SHA == "":
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			json.NewEncoder(w).Encode(map[string]any{"message": "Invalid request.\n\n\"sha\" wasn't supplied."})
+			return
+		case s.exists && body.SHA != forge.GitBlobSHA(s.content):
+			w.WriteHeader(http.StatusConflict)
+			json.NewEncoder(w).Encode(map[string]any{"message": "state/holders.json does not match " + body.SHA})
+			return
+		}
+		data, err := base64.StdEncoding.DecodeString(body.Content)
+		require.NoError(s.t, err)
+		status := http.StatusOK
+		if !s.exists {
+			status = http.StatusCreated
+		}
+		s.content, s.exists = data, true
+		w.WriteHeader(status)
+		json.NewEncoder(w).Encode(map[string]any{})
+	default:
+		s.t.Errorf("unexpected %s", r.Method)
+	}
+}
+
+func (s *contentsServer) state() ([]byte, int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.content, s.puts
+}
+
+func TestUpdateFileIfMatch(t *testing.T) {
+	ctx := context.Background()
+	cs := &contentsServer{t: t}
+	srv := httptest.NewServer(cs)
+	defer srv.Close()
+	client := newTestClient(t, srv)
+	const path = "state/holders.json"
+
+	// Create only if absent.
+	require.NoError(t, client.UpdateFileIfMatch(ctx, "o", "r", path, "create", []byte("v1"), ""))
+	err := client.UpdateFileIfMatch(ctx, "o", "r", path, "create again", []byte("other"), "")
+	require.True(t, forge.IsConflict(err), "create over an existing file: %v", err)
+
+	// Update at the SHA of the content just read.
+	read, err := client.GetFileContent(ctx, "o", "r", path)
+	require.NoError(t, err)
+	staleSHA := forge.GitBlobSHA(read)
+	require.NoError(t, client.UpdateFileIfMatch(ctx, "o", "r", path, "update", []byte("v2"), staleSHA))
+
+	// A stale SHA is a conflict, sent exactly once, and leaves the file.
+	_, putsBefore := cs.state()
+	err = client.UpdateFileIfMatch(ctx, "o", "r", path, "stale", []byte("v3"), staleSHA)
+	require.True(t, forge.IsConflict(err), "stale SHA: %v", err)
+	content, puts := cs.state()
+	assert.Equal(t, putsBefore+1, puts, "a conflicting write must not be retried")
+	assert.Equal(t, "v2", string(content))
+
+	// A server error is not a conflict and is not replayed either.
+	cs.mu.Lock()
+	cs.failPut = http.StatusBadGateway
+	cs.mu.Unlock()
+	err = client.UpdateFileIfMatch(ctx, "o", "r", path, "ambiguous", []byte("v4"), forge.GitBlobSHA([]byte("v2")))
+	require.Error(t, err)
+	assert.False(t, forge.IsConflict(err))
+	content, after := cs.state()
+	assert.Equal(t, puts+1, after, "an ambiguous failure must not be replayed")
+	assert.Equal(t, "v2", string(content))
+}
+
+func TestIsFileConflict(t *testing.T) {
+	assert.True(t, isFileConflict(&APIError{StatusCode: http.StatusConflict}))
+	assert.True(t, isFileConflict(&APIError{StatusCode: http.StatusUnprocessableEntity, Message: `"sha" wasn't supplied.`}))
+	assert.False(t, isFileConflict(&APIError{StatusCode: http.StatusUnprocessableEntity, Message: "Validation Failed"}))
+	assert.False(t, isFileConflict(&APIError{StatusCode: http.StatusNotFound}))
 }
 
 func TestDeleteRepo(t *testing.T) {
@@ -2195,6 +2359,395 @@ func TestSecondaryRateLimit_RetriedWithoutRetryAfterHeader(t *testing.T) {
 	assert.Equal(t, 3, attempts, "should have retried twice before succeeding")
 }
 
+func TestRateLimitError_CarriesUncappedRetryAfter(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "600")
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(map[string]string{"message": "You have exceeded a secondary rate limit"})
+	}))
+	defer srv.Close()
+
+	client := &LiveClient{
+		token:     "test-token",
+		baseURL:   srv.URL,
+		http:      srv.Client(),
+		afterFunc: noWaitAfter,
+	}
+
+	_, err := client.CreateRepo(context.Background(), "org", "test-repo", "desc", false)
+	require.Error(t, err)
+	assert.True(t, IsRateLimitError(err))
+	d, ok := RetryAfterFromError(err)
+	require.True(t, ok)
+	assert.Equal(t, 600*time.Second, d, "Retry-After beyond the client's wait cap is still reported")
+}
+
+func TestRetryAfterFromError_Absent(t *testing.T) {
+	_, ok := RetryAfterFromError(&APIError{StatusCode: http.StatusForbidden, Message: "rate limit"})
+	assert.False(t, ok)
+	_, ok = RetryAfterFromError(errors.New("other"))
+	assert.False(t, ok)
+	d, ok := RetryAfterFromError(fmt.Errorf("wrapped: %w", &APIError{StatusCode: http.StatusTooManyRequests, RetryAfter: 90 * time.Second}))
+	assert.True(t, ok)
+	assert.Equal(t, 90*time.Second, d)
+}
+
+func TestRateLimitBackoffInterrupted_KeepsRetryAfterAndContextError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "600")
+		w.WriteHeader(http.StatusTooManyRequests)
+		json.NewEncoder(w).Encode(map[string]string{"message": "API rate limit exceeded"})
+	}))
+	defer srv.Close()
+
+	client := &LiveClient{
+		token:   "test-token",
+		baseURL: srv.URL,
+		http:    srv.Client(),
+		// A wait that never fires, so only the context ends the backoff.
+		afterFunc: func(time.Duration) <-chan time.Time { return nil },
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	_, err := client.CreateRepo(ctx, "org", "test-repo", "desc", false)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, context.DeadlineExceeded))
+	assert.True(t, IsRateLimitError(err))
+	assert.False(t, forge.IsTransient(err))
+	d, ok := RetryAfterFromError(err)
+	require.True(t, ok)
+	assert.Equal(t, 600*time.Second, d)
+}
+
+func TestRateLimitBackoffInterrupted_HeaderlessLeavesRetryAfterUnset(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		json.NewEncoder(w).Encode(map[string]string{"message": "API rate limit exceeded"})
+	}))
+	defer srv.Close()
+
+	client := &LiveClient{
+		token:   "test-token",
+		baseURL: srv.URL,
+		http:    srv.Client(),
+		// A wait that never fires, so only the context ends the backoff.
+		afterFunc: func(time.Duration) <-chan time.Time { return nil },
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	_, err := client.CreateRepo(ctx, "org", "test-repo", "desc", false)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, context.DeadlineExceeded))
+	assert.True(t, IsRateLimitError(err))
+	// The client's own backoff delay is not a server deadline, so callers
+	// must see no Retry-After and apply their own default window.
+	_, ok := RetryAfterFromError(err)
+	assert.False(t, ok)
+}
+
+func TestWithoutAmbiguousRetry_DoesNotRetryServerError(t *testing.T) {
+	var attempts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer srv.Close()
+
+	client := &LiveClient{
+		token:     "test-token",
+		baseURL:   srv.URL,
+		http:      srv.Client(),
+		afterFunc: noWaitAfter,
+	}
+
+	err := client.DeleteRepo(forge.WithoutAmbiguousRetry(context.Background()), "org", "repo")
+	var apiErr *APIError
+	require.ErrorAs(t, err, &apiErr)
+	assert.Equal(t, http.StatusBadGateway, apiErr.StatusCode)
+	assert.Equal(t, int32(1), attempts.Load())
+
+	// Without the option the same failure is retried.
+	attempts.Store(0)
+	err = client.DeleteRepo(context.Background(), "org", "repo")
+	require.Error(t, err)
+	assert.Equal(t, int32(maxRetries), attempts.Load())
+}
+
+func TestWithoutAmbiguousRetry_DoesNotRetryTimeout(t *testing.T) {
+	var attempts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		time.Sleep(200 * time.Millisecond)
+	}))
+	defer srv.Close()
+
+	httpClient := srv.Client()
+	httpClient.Timeout = 50 * time.Millisecond
+	client := &LiveClient{
+		token:     "test-token",
+		baseURL:   srv.URL,
+		http:      httpClient,
+		afterFunc: noWaitAfter,
+	}
+
+	err := client.DeleteRepo(forge.WithoutAmbiguousRetry(context.Background()), "org", "repo")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not retried")
+	assert.Equal(t, int32(1), attempts.Load())
+}
+
+func TestWithRetryGuard_RunsBeforeEachResend(t *testing.T) {
+	var attempts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if attempts.Add(1) < 3 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	client := &LiveClient{
+		token:     "test-token",
+		baseURL:   srv.URL,
+		http:      srv.Client(),
+		afterFunc: noWaitAfter,
+	}
+
+	var guardCalls int
+	ctx := forge.WithRetryGuard(context.Background(), func(context.Context) error {
+		guardCalls++
+		return nil
+	})
+	require.NoError(t, client.DeleteRepo(ctx, "org", "repo"))
+	assert.Equal(t, int32(3), attempts.Load())
+	assert.Equal(t, 2, guardCalls, "the guard runs before each resend, not before the first attempt")
+}
+
+func TestWithRetryGuard_ErrorStopsResend(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{name: "429", status: http.StatusTooManyRequests},
+		{name: "rate-limit 403", status: http.StatusForbidden, body: `{"message":"You have exceeded a secondary rate limit"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var attempts atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				attempts.Add(1)
+				w.WriteHeader(tt.status)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer srv.Close()
+
+			client := &LiveClient{
+				token:     "test-token",
+				baseURL:   srv.URL,
+				http:      srv.Client(),
+				afterFunc: noWaitAfter,
+			}
+
+			stop := errors.New("target changed")
+			ctx := forge.WithRetryGuard(context.Background(), func(context.Context) error { return stop })
+			err := client.DeleteRepo(ctx, "org", "repo")
+			require.ErrorIs(t, err, stop)
+			assert.Contains(t, err.Error(), "not retried")
+			assert.Equal(t, int32(1), attempts.Load(), "the request is not resent after the guard refuses")
+		})
+	}
+}
+
+func TestWithRetryGuard_StopsCommitFilesRetryWaits(t *testing.T) {
+	// Every request after the repo read answers 404 (init race), so
+	// CommitFiles waits and would retry the branch-ref read.
+	var refReads atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/org/repo":
+			_, _ = w.Write([]byte(`{"default_branch":"main"}`))
+		default:
+			refReads.Add(1)
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"message":"Not Found"}`))
+		}
+	}))
+	defer srv.Close()
+
+	client := &LiveClient{token: "test-token", baseURL: srv.URL, http: srv.Client(), afterFunc: noWaitAfter}
+
+	var guardCalls int
+	stop := errors.New("target replaced")
+	ctx := forge.WithRetryGuard(context.Background(), func(context.Context) error {
+		guardCalls++
+		return stop
+	})
+	_, err := client.CommitFiles(ctx, "org", "repo", "msg", []forge.TreeFile{{Path: "a", Content: []byte("a")}})
+	require.ErrorIs(t, err, stop)
+	assert.Equal(t, 1, guardCalls, "the guard runs after the first repo-race wait")
+	assert.Equal(t, int32(1), refReads.Load(), "no branch-ref read follows a refused guard")
+}
+
+func TestWithRetryGuard_RunsBeforeFirstCommitMutation(t *testing.T) {
+	// The slot is replaced while CommitFiles reads the repo, ref, commit
+	// and tree. The guard must refuse the commit on the first attempt,
+	// before any write, not only after a retry wait.
+	var reads, writes atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writes.Add(1)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		reads.Add(1)
+		switch r.URL.Path {
+		case "/repos/org/repo":
+			_ = json.NewEncoder(w).Encode(map[string]string{"default_branch": "main"})
+		case "/repos/org/repo/git/ref/heads/main":
+			_ = json.NewEncoder(w).Encode(map[string]any{"object": map[string]string{"sha": "abc123"}})
+		case "/repos/org/repo/git/commits/abc123":
+			_ = json.NewEncoder(w).Encode(map[string]any{"tree": map[string]string{"sha": "tree000"}})
+		case "/repos/org/repo/git/trees/tree000":
+			_ = json.NewEncoder(w).Encode(map[string]any{"tree": []any{}, "truncated": false})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	client := &LiveClient{token: "test-token", baseURL: srv.URL, http: srv.Client(), afterFunc: noWaitAfter}
+
+	var guardCalls int
+	stop := errors.New("target replaced")
+	ctx := forge.WithRetryGuard(context.Background(), func(context.Context) error {
+		guardCalls++
+		return stop
+	})
+	_, err := client.CommitFiles(ctx, "org", "repo", "msg", []forge.TreeFile{{Path: "a", Content: []byte("a"), Mode: "100644"}})
+	require.ErrorIs(t, err, stop)
+	assert.Equal(t, 1, guardCalls, "the guard runs once, before the first write")
+	assert.Equal(t, int32(4), reads.Load(), "the preparatory reads all happened first")
+	assert.Zero(t, writes.Load(), "no write is sent after the guard refuses")
+}
+
+func TestWithRetryGuard_RunsBeforeEachDistinctWrite(t *testing.T) {
+	// A slot replaced between two requests of one operation must not
+	// receive the later write: the guard runs before every distinct
+	// mutating request, not only before retries.
+	stop := errors.New("target replaced")
+	// refuseAfter lets the first n guard calls pass, then refuses.
+	guardCtx := func(refuseAfter int, calls *int) context.Context {
+		return forge.WithRetryGuard(context.Background(), func(context.Context) error {
+			*calls++
+			if *calls > refuseAfter {
+				return stop
+			}
+			return nil
+		})
+	}
+
+	tests := []struct {
+		name        string
+		refuseAfter int
+		wantGuard   int
+		wantMethods []string
+		run         func(ctx context.Context, c *LiveClient) error
+	}{
+		{
+			name:        "variable POST fallback after PATCH",
+			refuseAfter: 1,
+			wantGuard:   2,
+			wantMethods: []string{http.MethodPatch},
+			run: func(ctx context.Context, c *LiveClient) error {
+				return c.CreateOrUpdateRepoVariable(ctx, "org", "repo", "V", "x")
+			},
+		},
+		{
+			name:        "variable PATCH",
+			refuseAfter: 0,
+			wantGuard:   1,
+			run: func(ctx context.Context, c *LiveClient) error {
+				return c.CreateOrUpdateRepoVariable(ctx, "org", "repo", "V", "x")
+			},
+		},
+		{
+			name:        "secret upload after public-key lookup",
+			refuseAfter: 0,
+			wantGuard:   1,
+			wantMethods: []string{http.MethodGet},
+			run: func(ctx context.Context, c *LiveClient) error {
+				return c.CreateRepoSecret(ctx, "org", "repo", "S", "x")
+			},
+		},
+		{
+			name:        "issue",
+			refuseAfter: 0,
+			wantGuard:   1,
+			run: func(ctx context.Context, c *LiveClient) error {
+				_, err := c.CreateIssue(ctx, "org", "repo", "t", "b")
+				return err
+			},
+		},
+		{
+			name:        "issue comment",
+			refuseAfter: 0,
+			wantGuard:   1,
+			run: func(ctx context.Context, c *LiveClient) error {
+				_, err := c.CreateIssueComment(ctx, "org", "repo", 1, "b")
+				return err
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var methods []string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				methods = append(methods, r.Method)
+				mu.Unlock()
+				switch {
+				case strings.HasSuffix(r.URL.Path, "/actions/secrets/public-key"):
+					key := base64.StdEncoding.EncodeToString(make([]byte, 32))
+					_ = json.NewEncoder(w).Encode(map[string]string{"key_id": "k", "key": key})
+				default:
+					// Every write the guard lets through is not found, so the
+					// variable path would fall back from PATCH to POST.
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer srv.Close()
+			client := newTestClient(t, srv)
+
+			var calls int
+			err := tt.run(guardCtx(tt.refuseAfter, &calls), client)
+			require.ErrorIs(t, err, stop)
+			assert.Equal(t, tt.wantGuard, calls)
+			mu.Lock()
+			defer mu.Unlock()
+			assert.Equal(t, tt.wantMethods, methods, "no request follows the one the guard refused")
+		})
+	}
+}
+
+func TestWithRetryGuard_StopsCommitRetryDelay(t *testing.T) {
+	c := &LiveClient{afterFunc: noWaitAfter}
+	stop := errors.New("target replaced")
+	ctx := forge.WithRetryGuard(context.Background(), func(context.Context) error { return stop })
+
+	var runs int
+	_, err := retryCommitOp(ctx, c, "commit", func() (bool, error) {
+		runs++
+		return false, forge.ErrNonFastForward
+	})
+	require.ErrorIs(t, err, stop)
+	assert.Equal(t, 1, runs, "the op is not rerun after the guard refuses")
+}
+
 func TestCreateFileOnBranch(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "PUT", r.Method)
@@ -2611,11 +3164,14 @@ func TestAPIError_IsTransient(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name string
-		code int
-		want bool
+		name  string
+		code  int
+		cause error
+		want  bool
 	}{
 		{name: "429 rate limit", code: 429, want: true},
+		{name: "429 backoff interrupted by cancellation", code: 429, cause: context.Canceled, want: false},
+		{name: "429 backoff interrupted by deadline", code: 429, cause: context.DeadlineExceeded, want: false},
 		{name: "500 internal server error", code: 500, want: true},
 		{name: "502 bad gateway", code: 502, want: true},
 		{name: "503 service unavailable", code: 503, want: true},
@@ -2629,8 +3185,9 @@ func TestAPIError_IsTransient(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			err := &APIError{StatusCode: tt.code, Message: http.StatusText(tt.code)}
+			err := &APIError{StatusCode: tt.code, Message: http.StatusText(tt.code), cause: tt.cause}
 			assert.Equal(t, tt.want, err.IsTransient())
+			assert.Equal(t, tt.want, forge.IsTransient(err))
 		})
 	}
 }
@@ -5330,6 +5887,10 @@ func TestUnsupportedMethods(t *testing.T) {
 	})
 	t.Run("GetJobTokenRepositoryPushAllowed", func(t *testing.T) {
 		_, err := client.GetJobTokenRepositoryPushAllowed(ctx, "o", "r")
+		assert.ErrorIs(t, err, forge.ErrNotSupported)
+	})
+	t.Run("GetPushRuleBranchNameRegex", func(t *testing.T) {
+		_, err := client.GetPushRuleBranchNameRegex(ctx, "o", "r")
 		assert.ErrorIs(t, err, forge.ErrNotSupported)
 	})
 	t.Run("ForceCommitFileToBranch", func(t *testing.T) {

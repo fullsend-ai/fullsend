@@ -1138,6 +1138,93 @@ func TestRotateGitLabTriggerAccount_HandsSchedulesToNewAccount(t *testing.T) {
 	e.assertAccountOwnsManaged(t, res.AccountID)
 }
 
+// The installer rotates with retirement deferred until the webhook cutover, so
+// the ownership stage runs while the previous generation still owns the
+// schedules. They must move straight to the replacement account; retirement
+// then has nothing to hand back to the installer (#8602).
+func TestRotateGitLabTriggerAccount_DeferredRetirementMovesSchedulesToNewAccount(t *testing.T) {
+	ctx := context.Background()
+	slash := trigSpec(t, trigSlashDesc)
+	event := trigSpec(t, trigEventDesc)
+	setup := func(t *testing.T) (*trigEnv, GitLabTriggerAccountOptions, int, GitLabTriggerAccountResult) {
+		t.Helper()
+		e := newTrigEnv()
+		o := e.opts()
+		o.DeferRetirement = true
+		// One options value throughout, so its Rand gives the replacement a
+		// fresh nonce.
+		first, err := ConvergeGitLabTriggerAccount(ctx, o)
+		require.NoError(t, err)
+		require.True(t, first.Ready)
+		require.NoError(t, SetGitLabTriggerDispatchActive(ctx, o, true))
+		oldAcct := first.AccountID
+		e.adminSchedule(t, slash.Description, trigBranch, slash.Cron, true)
+		e.adminSchedule(t, event.Description, trigBranch, event.Cron, false)
+		_, err = ConvergeGitLabTriggerSchedules(ctx, o)
+		require.NoError(t, err)
+		e.assertAccountOwnsManaged(t, oldAcct)
+
+		res, err := RotateGitLabTriggerAccount(ctx, o)
+		require.NoError(t, err)
+		require.True(t, res.Ready)
+		require.NotEqual(t, oldAcct, res.AccountID)
+		require.Contains(t, e.f.accounts, oldAcct, "retirement waits for the webhook cutover")
+		require.NoError(t, SetGitLabTriggerDispatchActive(ctx, o, true))
+		return e, o, oldAcct, res
+	}
+
+	t.Run("schedules move to the replacement account", func(t *testing.T) {
+		e, o, oldAcct, res := setup(t)
+		got, err := ConvergeGitLabTriggerSchedules(ctx, o)
+		require.NoError(t, err)
+		assert.Len(t, got.Created, 2)
+		assert.Len(t, got.Removed, 2)
+		byDesc := e.assertAccountOwnsManaged(t, res.AccountID)
+		require.Len(t, byDesc, 2)
+		assert.True(t, byDesc[slash.Description].Active)
+		assert.False(t, byDesc[event.Description].Active, "a disabled schedule stays disabled under the replacement account")
+		assert.Empty(t, e.ownedBy(t, oldAcct))
+		e.assertNoBootstrapResidue(t, res.AccountID)
+
+		created := len(e.state.CreatedSchedules)
+		require.NoError(t, RetireGitLabTriggerAccount(ctx, o))
+		assert.NotContains(t, e.f.accounts, oldAcct, "the retired account is deleted")
+		assert.Equal(t, created, len(e.state.CreatedSchedules), "retirement hands nothing back to the installer")
+		e.assertAccountOwnsManaged(t, res.AccountID)
+		assert.Equal(t, GitLabTriggerStateReady, e.diagnose(e.f, trigBranch).State)
+	})
+
+	// A retired generation whose account no longer carries its recorded name is
+	// not fullsend's to touch: the move fails closed, like the hand-back.
+	t.Run("renamed or missing retired account fails closed", func(t *testing.T) {
+		e, o, oldAcct, _ := setup(t)
+		a := e.f.accounts[oldAcct]
+		a.Name = "renamed"
+		e.f.accounts[oldAcct] = a
+		_, err := ConvergeGitLabTriggerSchedules(ctx, o)
+		require.ErrorContains(t, err, "does not carry the recorded trigger account name")
+		assert.Len(t, e.ownedBy(t, oldAcct), 2, "the retired account keeps its schedules")
+
+		delete(e.f.accounts, oldAcct)
+		_, err = ConvergeGitLabTriggerSchedules(ctx, o)
+		require.ErrorContains(t, err, "was not found")
+		assert.Len(t, e.ownedBy(t, oldAcct), 2, "the retired account keeps its schedules")
+	})
+
+	// An interrupted move left the replacement account's schedule next to the
+	// retired generation's original; the original is removed.
+	t.Run("interrupted move keeps the replacement", func(t *testing.T) {
+		e, o, oldAcct, res := setup(t)
+		replacement := e.accountSchedule(t, res.AccountID, slash.Description, trigBranch, slash.Cron, nil)
+		got, err := ConvergeGitLabTriggerSchedules(ctx, o)
+		require.NoError(t, err)
+		assert.Len(t, got.Created, 1, "only the event schedule is created")
+		byDesc := e.assertAccountOwnsManaged(t, res.AccountID)
+		assert.Equal(t, replacement, byDesc[slash.Description].ID)
+		assert.Empty(t, e.ownedBy(t, oldAcct))
+	})
+}
+
 func TestReleaseGitLabTriggerSchedules_RetiredGeneration(t *testing.T) {
 	ctx := context.Background()
 	e := newTrigEnv()

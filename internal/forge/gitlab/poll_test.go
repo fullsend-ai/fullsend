@@ -26,6 +26,44 @@ func setupPollTest(t *testing.T) (*PollClient, *http.ServeMux) {
 	return NewPollClient(client), mux
 }
 
+func TestGetUserBot(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    map[string]any
+		status  int
+		userID  int
+		wantBot bool
+		wantErr bool
+	}{
+		{"service account", map[string]any{"id": 57, "bot": true}, http.StatusOK, 57, true, false},
+		{"human", map[string]any{"id": 57, "bot": false}, http.StatusOK, 57, false, false},
+		{"missing bot flag", map[string]any{"id": 57}, http.StatusOK, 57, false, true},
+		{"mismatched user", map[string]any{"id": 58, "bot": false}, http.StatusOK, 57, false, true},
+		{"API failure", nil, http.StatusServiceUnavailable, 57, false, true},
+		{"invalid ID", nil, http.StatusOK, 0, false, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pc, mux := setupPollTest(t)
+			handlerCalled := false
+			mux.HandleFunc("/api/v4/users/57", func(w http.ResponseWriter, r *http.Request) {
+				handlerCalled = true
+				assert.Equal(t, http.MethodGet, r.Method)
+				writeJSON(t, w, tt.status, tt.body)
+			})
+			bot, err := pc.GetUserBot(context.Background(), tt.userID)
+			// An invalid ID must be rejected before any HTTP request.
+			assert.Equal(t, tt.userID != 0, handlerCalled)
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantBot, bot)
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // ListIssuesUpdatedSince
 // ---------------------------------------------------------------------------

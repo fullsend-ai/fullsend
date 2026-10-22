@@ -22,13 +22,13 @@ func TestBuildRunCommand_PinsClaudeBinary(t *testing.T) {
 	t.Parallel()
 	cmd := testRunCommand("agent", "opus", "/sandbox/workspace/repo", nil, "")
 
-	pin := `{ readonly FULLSEND_CLAUDE_BIN="$(command -v claude)" && case "$FULLSEND_CLAUDE_BIN" in /*) ;; *) false ;; esac || { echo 'fullsend: claude not found on PATH' >&2; exit 127; }; }`
-	require.Equal(t, pin, claudeBinaryPin())
+	pin := claudeBinaryPin()
+	require.Equal(t, binaryPin(claudeBinaryVar, claudeNodeVar, "claude"), pin)
 	pinAt := strings.Index(cmd, pin)
-	envAt := strings.Index(cmd, ". /sandbox/workspace/.env")
+	envAt := strings.Index(cmd, envDataLoad(sandbox.SandboxWorkspace+"/.env", claudeBinaryVar, claudeNodeVar, claudeGatewayPlaceholderVar))
 	unsetAt := strings.Index(cmd, "unset -f claude")
 	loaderAt := strings.Index(cmd, "unset LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT PYTHONPATH PYTHONHOME PYTHONSTARTUP PYTHONUSERBASE NODE_OPTIONS NODE_PATH BUN_OPTIONS")
-	launchAt := strings.Index(cmd, `"$FULLSEND_CLAUDE_BIN" --print`)
+	launchAt := strings.Index(cmd, `${FULLSEND_CLAUDE_NODE:+"$FULLSEND_CLAUDE_NODE"} "$FULLSEND_CLAUDE_BIN" --print`)
 	require.NotEqual(t, -1, pinAt, cmd)
 	require.NotEqual(t, -1, envAt, cmd)
 	require.NotEqual(t, -1, unsetAt, cmd)
@@ -41,6 +41,7 @@ func TestBuildRunCommand_PinsClaudeBinary(t *testing.T) {
 	assert.Less(t, unsetAt, launchAt, "launch must follow unset -f")
 	assert.Less(t, loaderAt, launchAt, "launch must follow the loader unset")
 	assert.NotContains(t, cmd, "&& claude ", "claude must not be launched by bare name")
+	assert.Equal(t, 1, strings.Count(cmd, "readonly "+envDataTrustedPathVar+"="), "the trusted PATH is recorded once per launch")
 }
 
 // TestBuildRunCommand_ShadowedClaudeNotRun executes the launch fragment under
@@ -111,7 +112,7 @@ func TestBuildRunCommand_ShadowedClaudeNotRun(t *testing.T) {
 				cmd := testRunCommand("agent", "", repoDir, nil, "")
 				cmd = strings.Replace(cmd, sandbox.SandboxWorkspace+"/.env", envFile, 1)
 
-				c := exec.Command(shell, "-c", cmd)
+				c := exec.Command(shell, "-c", protectedDirsShell(t, realDir)+cmd)
 				c.Env = []string{"PATH=" + realDir + ":/usr/bin:/bin", "HOME=" + tmp}
 				out, err := c.CombinedOutput()
 				got := string(out)
@@ -127,26 +128,24 @@ func TestBuildRunCommand_ShadowedClaudeNotRun(t *testing.T) {
 }
 
 // TestBuildRunCommand_ClaudeMissingExits127 checks the pin fails closed when
-// claude is not on PATH, before .env can supply one.
+// no claude is in a PATH directory the agent cannot write, before .env can
+// supply one. The launch PATH holds only the fixture directories, so a
+// claude installed on the host does not stand in for the missing one.
 func TestBuildRunCommand_ClaudeMissingExits127(t *testing.T) {
 	t.Parallel()
-	tmp := t.TempDir()
-	evilDir := filepath.Join(tmp, "evil")
+	f := newTrustedPinFixture(t)
+	evilDir := filepath.Join(f.writable, "evil")
 	require.NoError(t, os.MkdirAll(evilDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(evilDir, "claude"), []byte("#!/bin/sh\necho FAKE-BINARY\n"), 0o755))
-	envFile := filepath.Join(tmp, ".env")
+	envFile := filepath.Join(f.writable, ".env")
 	require.NoError(t, os.WriteFile(envFile, []byte("export PATH="+evilDir+":$PATH\n"), 0o644))
 
-	cmd := testRunCommand("agent", "", tmp, nil, "")
+	cmd := testRunCommand("agent", "", f.writable, nil, "")
 	cmd = strings.Replace(cmd, sandbox.SandboxWorkspace+"/.env", envFile, 1)
-	c := exec.Command("/bin/sh", "-c", cmd)
-	c.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + tmp}
-	out, err := c.CombinedOutput()
-	var exitErr *exec.ExitError
-	require.ErrorAs(t, err, &exitErr, string(out))
-	assert.Equal(t, 127, exitErr.ExitCode())
-	assert.Contains(t, string(out), "fullsend: claude not found on PATH")
-	assert.NotContains(t, string(out), "FAKE-BINARY")
+	out, code := f.run(t, "/bin/sh", f.protected+":"+evilDir, cmd)
+	assert.Equal(t, 127, code, out)
+	assert.Contains(t, out, "fullsend: claude not found in a PATH directory the agent cannot write")
+	assert.NotContains(t, out, "FAKE-BINARY")
 }
 
 // TestBuildRunCommand_ClearsLoaderEnv executes the launch with an env file
@@ -167,7 +166,7 @@ func TestBuildRunCommand_ClearsLoaderEnv(t *testing.T) {
 	require.NoError(t, os.WriteFile(envFile, []byte(env.String()), 0o644))
 
 	cmd := strings.Replace(testRunCommand("agent", "", tmp, nil, ""), sandbox.SandboxWorkspace+"/.env", envFile, 1)
-	c := exec.Command("/bin/sh", "-c", cmd)
+	c := exec.Command("/bin/sh", "-c", protectedDirsShell(t, realDir)+cmd)
 	c.Env = []string{"PATH=" + realDir + ":/usr/bin:/bin", "HOME=" + tmp}
 	out, err := c.CombinedOutput()
 	require.NoError(t, err, string(out))
@@ -177,19 +176,21 @@ func TestBuildRunCommand_ClearsLoaderEnv(t *testing.T) {
 	}
 }
 
-// TestBinaryPin executes the shared pin used by the claude, codex and pi
-// launches: it accepts only an absolute path, and a failed cd before it is
-// reported as the cd failure, not as a missing binary.
+// TestBinaryPin executes the shared pin used by the claude, codex, pi and
+// OpenCode launches: it pins an absolute path that no function of the same
+// name can stand in for, and a failed cd before it is reported as the cd
+// failure, not as a missing binary.
 func TestBinaryPin(t *testing.T) {
 	t.Parallel()
 	tmp := t.TempDir()
 	binDir := filepath.Join(tmp, "bin")
 	require.NoError(t, os.MkdirAll(binDir, 0o755))
-	for _, name := range []string{"claude", "codex", "pi"} {
+	for _, name := range []string{"claude", "codex", "pi", "opencode"} {
 		require.NoError(t, os.WriteFile(filepath.Join(binDir, name), []byte("#!/bin/sh\necho REAL\n"), 0o755))
 	}
+	protect := protectedDirsShell(t, binDir)
 	run := func(script string) (string, int) {
-		c := exec.Command("/bin/sh", "-c", script)
+		c := exec.Command("/bin/sh", "-c", protect+script)
 		c.Env = []string{"PATH=" + binDir + ":/usr/bin:/bin"}
 		out, err := c.CombinedOutput()
 		code := 0
@@ -201,26 +202,25 @@ func TestBinaryPin(t *testing.T) {
 		}
 		return string(out), code
 	}
-	pins := map[string]string{"claude": claudeBinaryPin(), "codex": codexBinaryPin(), "pi": piBinaryPin()}
-	vars := map[string]string{"claude": claudeBinaryVar, "codex": codexBinaryVar, "pi": piBinaryVar}
-	for name, pin := range pins {
-		t.Run(name, func(t *testing.T) {
+	for _, c := range cliPins {
+		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
-			out, code := run(pin + ` && "$` + vars[name] + `"`)
+			launch := c.pin() + ` && ` + cliLaunch(c.binVar, c.nodeVar)
+			out, code := run(launch)
 			assert.Equal(t, 0, code, out)
 			assert.Contains(t, out, "REAL")
 
-			// A function of the same name makes `command -v` print the bare
-			// name, which is refused rather than looked up again later.
-			out, code = run(name + `() { echo FAKE; }; ` + pin + ` && "$` + vars[name] + `"`)
-			assert.Equal(t, 127, code, out)
-			assert.Contains(t, out, "fullsend: "+name+" not found on PATH")
+			// The lookup reads directories, not the shell's command table,
+			// so a function of the same name neither is pinned nor runs.
+			out, code = run(c.name + `() { echo FAKE; }; ` + launch)
+			assert.Equal(t, 0, code, out)
+			assert.Contains(t, out, "REAL")
 			assert.NotContains(t, out, "FAKE")
 
-			out, code = run("cd " + filepath.Join(tmp, "missing") + " && " + pin + ` && "$` + vars[name] + `"`)
+			out, code = run("cd " + filepath.Join(tmp, "missing") + " && " + launch)
 			assert.NotEqual(t, 0, code, out)
 			assert.NotEqual(t, 127, code, out)
-			assert.NotContains(t, out, "not found on PATH")
+			assert.NotContains(t, out, "not found in a PATH directory")
 			assert.NotContains(t, out, "REAL")
 		})
 	}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/forge/gitlab"
@@ -25,9 +26,9 @@ import (
 // leave account-owned schedules after activation is withdrawn. Clients that
 // are not the live GitLab client (tests) have
 // no trigger-account API and are skipped.
-func maybeConvergeGitLabTriggerAccount(ctx context.Context, opts *reposInstallConfig, client forge.Client, printer *ui.Printer, owner, repo string, rotate bool, manifest *repos.Manifest) (err error) {
+func maybeConvergeGitLabTriggerAccount(ctx context.Context, opts *reposInstallConfig, client forge.Client, printer *ui.Printer, owner, repo string, rotate, deferRetirement bool, manifest *repos.Manifest) (err error) {
 	if opts.testConvergeTriggerAccount != nil {
-		return opts.testConvergeTriggerAccount(ctx, client, owner, repo)
+		return opts.testConvergeTriggerAccount(ctx, client, owner, repo, rotate)
 	}
 	glClient, ok := client.(*gitlab.LiveClient)
 	if !ok {
@@ -57,6 +58,7 @@ func maybeConvergeGitLabTriggerAccount(ctx context.Context, opts *reposInstallCo
 		return err
 	}
 	lifecycleOpts.ReactivateSchedules = gitlabReactivateSchedules(ctx, opts, client, printer, owner, repo)
+	lifecycleOpts.DeferRetirement = deferRetirement
 	var result repos.GitLabTriggerAccountResult
 	diag := repos.DiagnoseGitLabTriggerAccount(ctx, client, nil, owner, repo, "")
 	if rotate && diag.State == repos.GitLabTriggerStateReady {
@@ -86,6 +88,160 @@ func maybeConvergeGitLabTriggerAccount(ctx context.Context, opts *reposInstallCo
 		// trigger account. Otherwise hand them to the installer. A failed hand-back
 		// can leave account-owned schedules temporarily; the next install retries.
 		return reconcileGitLabTriggerScheduleOwnership(ctx, lifecycleOpts, printer, repoFullName, gate.Ready)
+	}
+	return nil
+}
+
+// finishGitLabTriggerAccountRetirement runs only after webhook convergence has
+// verified the current route. Earlier account triggers remain usable if the
+// hook update fails, and a subsequent install can retry the cutover.
+func finishGitLabTriggerAccountRetirement(ctx context.Context, opts *reposInstallConfig, client forge.Client, owner, repo string) (err error) {
+	if opts.dryRun {
+		return nil
+	}
+	glClient, ok := client.(*gitlab.LiveClient)
+	if !ok {
+		return nil
+	}
+	info, err := client.GetRepo(ctx, owner, repo)
+	if err != nil {
+		return repos.SafeAPIError("reading the repository before trigger account retirement", err)
+	}
+	lease, release, err := repos.LockGitLabProjectLease(ctx, client, owner, repo)
+	if err != nil {
+		return err
+	}
+	defer release(&err)
+	pending, err := repos.GitLabTriggerAccountRetirementPending(ctx, client, owner, repo)
+	if err != nil || !pending {
+		return err
+	}
+	// Verify while holding the same lease as retirement. An installer that
+	// rotates between a pre-lock check and cleanup could otherwise leave the
+	// hook on a generation this call is about to revoke.
+	// Only an actual reference to a retired credential blocks retirement. A
+	// deferred webhook fast path with no managed webhook, or a webhook on
+	// other credentials, leaves nothing that retirement would break.
+	inUse, err := repos.GitLabWebhookUsesRetiredTriggerCredential(ctx, client, repos.GitLabBaseURL(client), owner, repo)
+	if err != nil {
+		return err
+	}
+	if inUse {
+		return errors.New("GitLab trigger account: webhook route is not verified; keeping retired trigger credentials for a later retry")
+	}
+	triggerOwner := gitlablifecycle.NewTriggerOwner(glClient)
+	lifecycleOpts, err := triggerOwner.TriggerAccountOptions(ctx, owner, repo, info.DefaultBranch, lease)
+	if err != nil {
+		return err
+	}
+	return repos.RetireGitLabTriggerAccount(ctx, lifecycleOpts)
+}
+
+// gitlabTriggerContainTimeout bounds the containment that runs after a webhook
+// owner-verification failure, on a context detached from the install's own
+// cancellation so a canceled run still contains the account.
+const gitlabTriggerContainTimeout = 2 * time.Minute
+
+// convergeGitLabDispatchRoute runs the trigger-account lifecycle and the
+// webhook fast path for one repository in the order that keeps the webhook on
+// the right dispatch route (#8509), and returns their joined errors.
+//
+// Early containment withdraws the dispatch activation on every install, and
+// only the lifecycle re-records it. When a trigger-account ledger already
+// exists, the lifecycle therefore runs before the webhook, so the webhook is
+// judged and converged against the activation the lifecycle settled instead of
+// against the temporarily withdrawn Poller route, which would cut the webhook
+// over to a Poller trigger or, when that defers, delete a correctly owned
+// account webhook that the later refresh cannot recreate. Whether the webhook
+// needs work is rechecked after the lifecycle for the same reason. Without a
+// ledger (a fresh install) nothing was withdrawn, so the webhook runs first and
+// the lifecycle follows once the Poller and its generations are settled.
+//
+// A webhook failure that says the published trigger's owner is outside the
+// Developer ceiling or unverifiable contains the trigger account (demotes it,
+// or revokes its published token and trigger) before returning, because the
+// webhook step only removes the managed webhook.
+func convergeGitLabDispatchRoute(ctx context.Context, opts *reposInstallConfig, client forge.Client, printer *ui.Printer, owner, repo string, needsWebhook bool, manifest *repos.Manifest) error {
+	repoFullName := owner + "/" + repo
+	accountFirst := false
+	if !opts.dryRun {
+		_, exists, err := client.GetRepoVariable(ctx, owner, repo, forge.VarGitLabTriggerAccount)
+		if err != nil {
+			printer.StepWarn(fmt.Sprintf("[%s] Could not read the GitLab trigger account ledger to order the install stages: %v", repoFullName, repos.SafeAPIError("reading the trigger account ledger", err)))
+		}
+		accountFirst = err == nil && exists
+	}
+	convergeAccount := func() error {
+		// Trigger-only service account (#8437): after the Poller and its
+		// generations are settled, so the verified Poller inventory it stays
+		// separate from is current. A deferral is not a failure.
+		tErr := maybeConvergeGitLabTriggerAccount(ctx, opts, client, printer, owner, repo, opts.rotateGitLabTriggerAccount, true, manifest)
+		if tErr != nil {
+			printer.StepWarn(fmt.Sprintf("[%s] GitLab trigger account failed: %v", repoFullName, tErr))
+		}
+		return tErr
+	}
+	var tErr error
+	if accountFirst {
+		tErr = convergeAccount()
+		if !needsWebhook {
+			// The lifecycle may have re-recorded or withdrawn the route, so
+			// the webhook is probed again; a probe that cannot complete
+			// reports work, like the convergence probe.
+			needsWebhook, _ = repos.GitLabWebhookNeedsProvisioning(ctx, client, repos.GitLabBaseURL(client), owner, repo)
+		}
+	}
+	// Webhook fast-path (ADR 0125): runs after the override-role step because
+	// it requires no_one_allowed before a live webhook may start trigger
+	// pipelines.
+	if needsWebhook || opts.rotateGitLabTriggerToken {
+		if err := setupGitLabWebhookFastPath(ctx, client, printer, owner, repo, opts.rotateGitLabTriggerToken, opts.dryRun); err != nil {
+			printer.StepWarn(fmt.Sprintf("[%s] GitLab webhook fast-path provisioning failed: %v", repoFullName, err))
+			errs := []error{tErr, err}
+			if repos.GitLabWebhookTriggerOwnerUnsafe(err) {
+				errs = append(errs, containGitLabTriggerAccountAfterWebhookFailure(ctx, opts, client, printer, owner, repo))
+			}
+			return errors.Join(errs...)
+		}
+	}
+	if !accountFirst {
+		tErr = convergeAccount()
+	}
+	// The trigger-account stage can activate, rotate, or withdraw the dispatch
+	// route whose trigger token the webhook carries (#8509), so the webhook is
+	// converged again when it no longer matches.
+	wErr := refreshGitLabWebhookTriggerRoute(ctx, client, printer, owner, repo, opts.dryRun)
+	errs := []error{tErr, wErr}
+	if wErr != nil {
+		printer.StepWarn(fmt.Sprintf("[%s] GitLab webhook fast-path provisioning failed: %v", repoFullName, wErr))
+		// The refresh can reach the account route after the lifecycle activated
+		// it, so an owner-safety failure there needs the same containment as the
+		// initial webhook step: the webhook step only removes the webhook.
+		if repos.GitLabWebhookTriggerOwnerUnsafe(wErr) {
+			errs = append(errs, containGitLabTriggerAccountAfterWebhookFailure(ctx, opts, client, printer, owner, repo))
+		}
+	}
+	if tErr == nil && wErr == nil {
+		errs = append(errs, finishGitLabTriggerAccountRetirement(ctx, opts, client, owner, repo))
+	}
+	return errors.Join(errs...)
+}
+
+// containGitLabTriggerAccountAfterWebhookFailure runs the ownership-verified
+// trigger-account containment on a bounded context detached from ctx's
+// cancellation, and reports a failure.
+func containGitLabTriggerAccountAfterWebhookFailure(ctx context.Context, opts *reposInstallConfig, client forge.Client, printer *ui.Printer, owner, repo string) error {
+	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), gitlabTriggerContainTimeout)
+	defer cancel()
+	var err error
+	if opts.testContainTriggerAccount != nil {
+		err = opts.testContainTriggerAccount(cctx, client, owner, repo)
+	} else {
+		err = containGitLabTriggerAccount(cctx, opts, client, printer, owner, repo)
+	}
+	if err != nil {
+		printer.StepWarn(fmt.Sprintf("[%s/%s] Containing the GitLab trigger account after the webhook failure failed: %v", owner, repo, err))
+		return fmt.Errorf("containing the GitLab trigger account after the webhook failure: %w", err)
 	}
 	return nil
 }

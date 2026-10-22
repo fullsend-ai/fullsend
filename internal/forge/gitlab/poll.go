@@ -32,6 +32,29 @@ func NewPollClient(c *LiveClient) *PollClient {
 	return &PollClient{LiveClient: c}
 }
 
+// GetUserBot reads the full user record because nested issue author objects
+// omit bot on some GitLab versions. A missing field is not proof of a human.
+func (pc *PollClient) GetUserBot(ctx context.Context, userID int) (bool, error) {
+	if userID <= 0 {
+		return false, fmt.Errorf("invalid user ID %d", userID)
+	}
+	resp, err := pc.get(ctx, fmt.Sprintf("/users/%d", userID))
+	if err != nil {
+		return false, fmt.Errorf("get user %d: %w", userID, err)
+	}
+	var user struct {
+		ID  int   `json:"id"`
+		Bot *bool `json:"bot"`
+	}
+	if err := decodeJSON(resp, &user); err != nil {
+		return false, fmt.Errorf("decode user %d: %w", userID, err)
+	}
+	if user.ID != userID || user.Bot == nil {
+		return false, fmt.Errorf("user %d response lacks matching ID or bot flag", userID)
+	}
+	return *user.Bot, nil
+}
+
 const pollPerPage = 100
 
 // ListIssuesUpdatedSince returns all project issues updated after the

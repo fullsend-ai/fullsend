@@ -53,7 +53,7 @@ sole supported installation model
 - Forge abstraction: all forge operations go through the `forge.Client` interface, keeping the rest of the codebase forge-agnostic ([ADR 0005](ADRs/0005-forge-abstraction-layer.md)).
 - Conversation surface: agents participate in GitHub Discussions and later other chat systems through a narrow `conversation.Client` (parallel to `tracker.Client` for issue content), not by extending `forge.Client` ([ADR 0086](ADRs/0086-conversation-surface-for-agent-participation.md)). A **conversation** is the container (Discussion / Slack channel) with exactly one category and optional M:M labels; a **thread** is the top-level message plus replies that share its `parent_id` (`parent_id == id` on the root message).
 - Event-source routing for status notifications: the notification destination for run-status comments and reactions is dynamically determined by event provenance — a Jira-triggered run posts status to Jira, a GitHub-triggered run posts to GitHub — rather than being hardwired to the code-output forge. Status notifications route through `tracker.Client`; reactions are an optional `tracker.Reactor` capability (Jira Cloud supports comment reactions but not issue reactions, so `Reactor` is not implemented for Jira currently) ([ADR 0093](ADRs/0093-tracker-routed-status-notifications.md)).
-- Installation model: the CLI installs per repository only (`fullsend github setup <owner/repo>`, `fullsend admin install <owner/repo>`, `fullsend repos install`); per-org CLI installation was removed ([ADR 0044](ADRs/0044-deprecate-per-org-installation-mode.md)). The concrete layers of the ordered layer stack (vendor-binary, secrets, inference, and the per-org workflows layer) were removed along with per-org mode; `internal/layers` keeps only the `Layer` interface and shared helpers, and the CLI no longer orchestrates a layer stack ([ADR 0006](ADRs/0006-ordered-layer-model.md)).
+- Installation model: the CLI installs per repository only (`fullsend github setup <owner/repo>`, `fullsend admin install <owner/repo>` (deprecated), `fullsend repos install`); per-org CLI installation was removed ([ADR 0044](ADRs/0044-deprecate-per-org-installation-mode.md)). The concrete layers of the ordered layer stack (vendor-binary, secrets, inference, and the per-org workflows layer) were removed along with per-org mode; `internal/layers` keeps only the `Layer` interface and shared helpers, and the CLI no longer orchestrates a layer stack ([ADR 0006](ADRs/0006-ordered-layer-model.md)).
 - Dispatch: each repository's `.github/workflows/fullsend.yaml` shim calls the upstream `reusable-dispatch.yml` via `workflow_call`; that workflow mints OIDC tokens exchanged at a central token mint (GCP Cloud Function or Cloudflare Worker) for scoped GitHub App installation tokens per agent role. App PEM secrets are stored in Secret Manager (GCF mint), Worker secrets (CF mint), or the local filesystem (standalone mint), not the config repo ([ADR 0008](ADRs/0008-workflow-dispatch-for-cross-repo-dispatch.md)).
 - Shim workflow security: `pull_request_target` prevents PR authors from modifying the shim workflow. No long-lived secrets flow through the shim — OIDC tokens are issued by the GitHub runtime and scoped to the workflow run ([ADR 0009](ADRs/0009-pull-request-target-in-shim-workflows.md)).
 - Installer scaffold: per-repo installs deploy content from an embedded scaffold (`internal/scaffold/`), keeping deployable files as real files under version control rather than Go string constants. The per-org dispatch, repo-maintenance, and enrollment-reconciliation scaffolds were removed with the rest of per-org mode ([ADR 0044](ADRs/0044-deprecate-per-org-installation-mode.md)).
@@ -67,7 +67,7 @@ sole supported installation model
 
 **Open questions:**
 
-- Do we adopt a 3rd party platform, use existing internal infrastructure, or build our own? The tenant manifest format is decided, while the source of truth, service, infrastructure, and poller/dispatch/runner boundary remain open ([ADR 0123](ADRs/0123-tenant-configuration-from-repos-yaml.md); see [agent-infrastructure.md](problems/agent-infrastructure.md)).
+- Do we adopt a 3rd party platform, use existing internal infrastructure, or build our own? The tenant manifest format is decided in [ADR 0123](ADRs/0123-tenant-configuration-from-repos-yaml.md), and the poll/run process lifecycle is decided in [ADR 0144](ADRs/0144-reuse-poll-and-entity-bound-run-processes.md); the source of truth, service, infrastructure, and invocation backend remain open (see [agent-infrastructure.md](problems/agent-infrastructure.md)).
 - Can different agent types (short-lived review vs. long-running code) run on different infrastructure?
 - Who in the org owns and operates this, and how does it relate to existing platform or CI ownership?
 - Should model and MCP (or other tool-protocol) traffic from agent runtimes go through a **shared gateway** for authentication, spend limits, allowlists, and telemetry? (See [landscape.md](landscape.md#agent-gateway). Authenticating model traffic to an inference gateway with the job's OIDC token is decided in [ADR 0137](ADRs/0137-inference-gateway-credential-route.md); spend limits, allowlists, telemetry and MCP traffic remain open.)
@@ -149,6 +149,9 @@ repo baseline and overrides)
   `runtime.forge` or `config` (interim until ADR 0112's guarded-field check).
   GitLab is unchanged: one masked CI/CD variable per secret, none of these
   rules ([ADR 0136](ADRs/0136-runner-secrets-through-one-stored-secret.md)).
+  The refusal does not consult the credential deny-list that the
+  `env.sandbox` gate also checks
+  ([ADR 0145](ADRs/0145-keep-credential-deny-list-out-of-runner-secret-refusal.md)).
 - Agent configuration env vars: behavioral knobs use `{AGENT}_{SETTING_NAME}`
   naming (e.g., `REVIEW_SEVERITY_THRESHOLD`), delivered via `env.runner` and
   `env.sandbox` in the harness YAML. Each agent documents its config vars in
@@ -365,13 +368,15 @@ The existing design principle is that [the repo is the coordinator](problems/age
   operating on a `NormalizedEvent` struct
   ([ADR 0061](ADRs/0061-harness-cel-dispatch.md), partially superseded by
   [ADR 0098](ADRs/0098-entity-first-harness-evaluation.md)).
-- Automatic runs are serialized per harness and event subject. Later events do
+- Automatic runs are serialized per harness, repository, and canonical entity. Later events do
   not cancel an active run. Each event still passes through authorization and
-  CEL routing; the execution platform coalesces matching events into one latest
-  pending run, and each run reconciles the subject's current state. Authority
-  over other comments and content discovered during reconciliation remains a
-  separate decision
-  ([ADR 0106](ADRs/0106-serialize-agent-runs-and-coalesce-subsequent-events.md)).
+  CEL routing; the execution platform coalesces matching events into one
+  pending follow-up, and each sandbox attempt reconciles the subject's current
+  state. A resident bound process may handle that follow-up without a new
+  platform execution. Authority over other comments and content discovered
+  during reconciliation remains a separate decision
+  ([ADR 0106](ADRs/0106-serialize-agent-runs-and-coalesce-subsequent-events.md),
+  partially superseded by [ADR 0144](ADRs/0144-reuse-poll-and-entity-bound-run-processes.md)).
 - Dispatch runs no follow-up stage after an agent. Every run publishes the
   `fullsend-<agent>` artifact, and users who want to act on a result chain
   their own workflow on the shim's `workflow_run` event
@@ -382,12 +387,29 @@ The existing design principle is that [the repo is the coordinator](problems/age
   via source-native write-then-verify locks, and feeds the same dispatch pipeline
   as webhooks ([ADR 0063](ADRs/0063-polling-based-work-discovery.md)). Initial
   scope is per-repo mode only.
+- Process lifecycle (target state): bound `fullsend run` and `fullsend poll`
+  support once, resident polling, and deadline-bounded polling. Bare
+  `fullsend poll` and non-CI bound runs default to once; a CI bound run with
+  entity sources, eventless eligibility, a usable job deadline, and recurring
+  repository-scoped poll coverage defaults to timed. Its internal timer checks
+  only its bound entity, independently of optional private Fullsend-to-Fullsend
+  wake delivery; the broad `fullsend poll` scan normally runs less often. Bound
+  `run` exits after an idle period in either resident lifecycle, while a
+  repository-wide `fullsend poll` may stay resident until stopped. Eventless
+  work deferred at a bound run's deadline awaits `fullsend poll` rediscovery;
+  event-backed work retains its pending platform execution. Each sandbox
+  attempt is fresh, while one `fullsend run` call publishes only its latest
+  selected cycle's validated result through the existing artifact shape and
+  joins all sandbox traces under a run-level parent. A long-lived poll lifecycle
+  may update that result at idle or within a response window. Current CLI and
+  workflows remain one-shot
+  ([ADR 0144](ADRs/0144-reuse-poll-and-entity-bound-run-processes.md)).
 - Harness routing uses one CEL predicate over a required normalized entity and
   an optional prompting event. Webhooks provide low-latency candidates;
   `fullsend poll` and its input drivers enumerate and resolve scheduled
   candidates without reconstructing a complete event stream. Entity activity
-  retains actor and authorization provenance, while harness-defined evidence —
-  existing entity activity or explicit receipts — distinguishes handled work
+  retains actor and authorization provenance; harness CEL can use entity state
+  or explicit receipts to decide whether work has already been handled
   ([ADR 0098](ADRs/0098-entity-first-harness-evaluation.md), partially
   superseding [ADR 0063](ADRs/0063-polling-based-work-discovery.md)).
 - GitLab dispatch uses a native webhook fast-path for low-latency candidates and the cron-poller as the authoritative reconciliation backstop ([ADR 0125](ADRs/0125-gitlab-hybrid-webhook-poller-dispatch.md)). Native `merge_request_event` dispatch stays removed ([#7322](https://github.com/fullsend-ai/fullsend/issues/7322)). No external webhook bridge (see [ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md) for the poller, credentials, and in-job gate).
@@ -433,17 +455,20 @@ The existing design principle is that [the repo is the coordinator](problems/age
   model-initiated direct source-system calls; future ADRs may encourage use of
   platform-originated checked data or add filtering for model-originated
   retrievals ([ADR 0133](ADRs/0133-actor-attributed-data-security-boundary.md)).
-- Poll entity-discovery authorization: `fullsend poll` has no prompting event
-  actor; verified, non-user-assertable Fullsend invocation provenance authorizes
-  entity enumeration and evaluation, and callers without it are denied. Before
-  each candidate harness's CEL predicate, the platform fail-closed enumerates a
-  closed superset of action-indicating entity elements, resolves each actor's
-  current permission, and removes elements below that harness's observation or
-  mutation threshold. Later input-selection and injection filtering are defense
-  in depth for prompt construction. Entity-first execution remains disabled
-  until its versioned normalized-entity contract exists. Every run uses the
-  harness's configured identity
-  ([ADR 0098](ADRs/0098-entity-first-harness-evaluation.md)).
+- Fullsend-originated entity evaluation (target state): `fullsend poll`
+  enumerates candidates, while a bound `fullsend run` may recheck only its
+  canonical entity with `event == null`. Both require verified,
+  non-user-assertable Fullsend invocation provenance and effective platform
+  eligibility; the actor of an earlier event does not authorize an eventless
+  cycle. Before each candidate harness's CEL predicate, the platform
+  fail-closed enumerates a closed superset of action-indicating entity
+  elements, resolves each actor's current permission, and removes elements
+  below that harness's observation or mutation threshold. Later input-selection
+  and injection filtering are defense in depth for prompt construction.
+  Entity-first execution remains disabled until its versioned normalized-entity
+  contract exists. Every run uses the harness's configured identity
+  ([ADR 0098](ADRs/0098-entity-first-harness-evaluation.md),
+  [ADR 0144](ADRs/0144-reuse-poll-and-entity-bound-run-processes.md)).
 
 **Open questions:**
 

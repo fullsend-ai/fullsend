@@ -251,7 +251,7 @@ func TestRunReposInstall_NoConfigKeyWritesSparseManagedOverlay(t *testing.T) {
 	require.NoError(t, runReposInstall(context.Background(), githubManagedInstallOpts(manifestPath, fc)))
 
 	overlay := fc.FileContents[overlayPath("acme/api")]
-	assert.Equal(t, managedConfigMarker+"create_issues:\n    allow_targets:\n        repos:\n            - fullsend-ai/fullsend\n", string(overlay))
+	assert.Equal(t, managedConfigMarker+"create_issues:\n    allow_targets:\n        repos:\n            - fullsend-ai/fullsend\n            - fullsend-ai/agents\n", string(overlay))
 
 	reloaded, err := repos.LoadManifest(context.Background(), manifestPath)
 	require.NoError(t, err)
@@ -294,6 +294,7 @@ func TestRunReposInstall_DeclaredRolesRenderedFromManifest(t *testing.T) {
 	assert.Contains(t, overlay, "roles:")
 	assert.Contains(t, overlay, "- review")
 	assert.Contains(t, overlay, "fullsend-ai/fullsend")
+	assert.Contains(t, overlay, "fullsend-ai/agents")
 }
 
 func TestRunReposInstall_ExplicitCreateIssuesIsNotOverridden(t *testing.T) {
@@ -307,6 +308,7 @@ func TestRunReposInstall_ExplicitCreateIssuesIsNotOverridden(t *testing.T) {
 	overlay := string(fc.FileContents[overlayPath("acme/api")])
 	assert.Contains(t, overlay, "acme/other")
 	assert.NotContains(t, overlay, "fullsend-ai/fullsend")
+	assert.NotContains(t, overlay, "fullsend-ai/agents")
 }
 
 func TestRunReposInstall_ReadOnlyManifestFailsWithSuggestedEdit(t *testing.T) {
@@ -322,6 +324,7 @@ func TestRunReposInstall_ReadOnlyManifestFailsWithSuggestedEdit(t *testing.T) {
 	assert.Contains(t, err.Error(), `entry "acme/api"`)
 	assert.Contains(t, err.Error(), "create_issues:")
 	assert.Contains(t, err.Error(), "- fullsend-ai/fullsend")
+	assert.Contains(t, err.Error(), "- fullsend-ai/agents")
 }
 
 func TestRunReposInstall_ManagedConfigBothReposManaged(t *testing.T) {

@@ -23,6 +23,14 @@ type Config struct {
 	MaxSize      int    // max comment body size (default 65000)
 	DryRun       bool
 	KeepHistory  bool // when false, updates replace the body in-place with no "Previous run" history
+
+	// TrustedLeadingLine, when set, matches a marker line that the trusted
+	// caller places as the first line of the body. When the first line of
+	// the body matches it in full, that line is posted as is and only the
+	// rest of the body has its marker syntax escaped. A match anywhere else
+	// is escaped like any other marker. The pattern must be anchored with
+	// ^ and $ and must not match a line that could carry a second marker.
+	TrustedLeadingLine *regexp.Regexp
 }
 
 func (c Config) maxSize() int {
@@ -66,8 +74,9 @@ func Post(ctx context.Context, client forge.Client, owner, repo string, number i
 
 	existing := FindMarkedComment(comments, cfg.Marker, botUser)
 	// Escape marker syntax in the agent-written body before the runner's
-	// own marker is prepended, so the runner's marker is the only live one.
-	markedBody := cfg.Marker + "\n" + statuscomment.NeutralizeMarkers(body)
+	// own marker is prepended, so the runner's marker is the only live one
+	// (apart from a validated trusted leading line, see neutralizeBody).
+	markedBody := cfg.Marker + "\n" + neutralizeBody(body, cfg)
 
 	if existing != nil {
 		printer.StepStart("Found existing comment, updating in-place")
@@ -101,6 +110,23 @@ func Post(ctx context.Context, client forge.Client, owner, repo string, number i
 	}
 	printer.StepDone("Comment created")
 	return created.HTMLURL, nil
+}
+
+// neutralizeBody escapes fullsend marker syntax in body. When
+// cfg.TrustedLeadingLine matches the whole first line of body, that line is
+// kept unescaped and only the text after it is escaped. The kept line ends
+// at the first newline, so escaping the rest cannot join with it.
+func neutralizeBody(body string, cfg Config) string {
+	if cfg.TrustedLeadingLine != nil {
+		first, rest, hasRest := strings.Cut(body, "\n")
+		if cfg.TrustedLeadingLine.MatchString(first) {
+			if !hasRest {
+				return first
+			}
+			return first + "\n" + statuscomment.NeutralizeMarkers(rest)
+		}
+	}
+	return statuscomment.NeutralizeMarkers(body)
 }
 
 // FindMarkedComment returns the first comment whose body contains the given

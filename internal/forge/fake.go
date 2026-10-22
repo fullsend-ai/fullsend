@@ -44,6 +44,7 @@ func NewFakeClient() *FakeClient {
 		ProjectLeases:            make(map[string]string),
 
 		JobTokenRepositoryPushAllowed: make(map[string]bool),
+		PushRuleBranchNameRegexes:     make(map[string]string),
 		// New trigger tokens are owned by a Developer-level user unless a
 		// test says otherwise.
 		TriggerTokenOwnerID: 1001,
@@ -304,6 +305,11 @@ type FakeClient struct {
 	// Key: "owner/repo". Missing keys read as false (push disabled).
 	JobTokenRepositoryPushAllowed map[string]bool
 
+	// PushRuleBranchNameRegexes stores the GitLab push rule
+	// branch_name_regex per project. Key: "owner/repo". Missing keys read
+	// as "" (no push rule).
+	PushRuleBranchNameRegexes map[string]string
+
 	// Directory listings for ListDirectoryContents.
 	DirContents map[string][]DirectoryEntry // key: "owner/repo/path@ref"
 
@@ -515,10 +521,15 @@ func (f *FakeClient) CreateRepo(_ context.Context, org, name, description string
 	}
 
 	r := Repository{
+		// Created plus deleted never decreases and grows by one per
+		// create, so a recreated name gets a fresh ID.
+		ID:            int64(1000 + len(f.CreatedRepos) + len(f.DeletedRepos)),
 		Name:          name,
 		FullName:      fullName,
+		Description:   description,
 		DefaultBranch: "main",
 		Private:       private,
+		CreatedAt:     time.Now(),
 	}
 	f.CreatedRepos = append(f.CreatedRepos, r)
 	return &r, nil
@@ -755,6 +766,43 @@ func (f *FakeClient) GetFileContent(_ context.Context, owner, repo, path string)
 		return nil, fmt.Errorf("%w: %s", ErrNotFound, key)
 	}
 	return slices.Clone(data), nil
+}
+
+// UpdateFileIfMatch writes content only when the stored file's blob SHA
+// equals expectedSHA (or, for an empty expectedSHA, when no file exists).
+// Otherwise it returns ErrConflict and leaves the file unchanged.
+func (f *FakeClient) UpdateFileIfMatch(_ context.Context, owner, repo, path, message string, content []byte, expectedSHA string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("UpdateFileIfMatch"); e != nil {
+		return e
+	}
+
+	key := owner + "/" + repo + "/" + path
+	current, exists := f.FileContents[key]
+	switch {
+	case expectedSHA == "" && exists:
+		return fmt.Errorf("%w: %s already exists", ErrConflict, key)
+	case expectedSHA != "" && !exists:
+		return fmt.Errorf("%w: %s does not exist", ErrConflict, key)
+	case expectedSHA != "" && GitBlobSHA(current) != expectedSHA:
+		return fmt.Errorf("%w: %s does not match %s", ErrConflict, key, expectedSHA)
+	}
+
+	stored := slices.Clone(content)
+	f.CreatedFiles = append(f.CreatedFiles, FileRecord{
+		Owner:   owner,
+		Repo:    repo,
+		Path:    path,
+		Message: message,
+		Content: stored,
+	})
+	if f.FileContents == nil {
+		f.FileContents = make(map[string][]byte)
+	}
+	f.FileContents[key] = stored
+	return nil
 }
 
 func (f *FakeClient) DeleteFile(_ context.Context, owner, repo, path, message string) error {
@@ -2911,6 +2959,16 @@ func (f *FakeClient) GetJobTokenRepositoryPushAllowed(_ context.Context, owner, 
 		return false, e
 	}
 	return f.JobTokenRepositoryPushAllowed[owner+"/"+repo], nil
+}
+
+func (f *FakeClient) GetPushRuleBranchNameRegex(_ context.Context, owner, repo string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("GetPushRuleBranchNameRegex"); e != nil {
+		return "", e
+	}
+	return f.PushRuleBranchNameRegexes[owner+"/"+repo], nil
 }
 
 func (f *FakeClient) CompareCommits(_ context.Context, owner, repo, base, head string) (string, error) {

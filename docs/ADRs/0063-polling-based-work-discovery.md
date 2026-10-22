@@ -32,6 +32,12 @@ GitLab's native webhook fast-path
 event-driven input into this same dispatch core; the GitLab cron-poller
 remains the reconciliation backstop.
 
+[ADR 0144](0144-reuse-poll-and-entity-bound-run-processes.md) partially
+supersedes the one-cycle `fullsend poll` lifecycle below: pollers may remain
+resident or run within a deadline, and the reserved `--watch` option denotes
+the explicit resident poll lifecycle. The poll command, driver architecture,
+and per-repository scope remain current.
+
 ## Context
 
 Fullsend's primary dispatch path is **event-driven**: forge webhooks are normalized

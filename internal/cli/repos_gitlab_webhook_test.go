@@ -132,3 +132,41 @@ func TestSetupGitLabWebhookFastPath_Error(t *testing.T) {
 	assert.Contains(t, buf.String(), "GitLab webhook fast-path")
 	assert.NotContains(t, buf.String(), c.CreatedTriggerTokens[0].Token)
 }
+
+// After the trigger-account stage, refresh repairs any missing or drifted
+// webhook, including on the Poller failure path (#8509).
+func TestRefreshGitLabWebhookTriggerRoute(t *testing.T) {
+	ctx := context.Background()
+	c := newWebhookCLIFake()
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+
+	// A missing managed webhook is provisioned.
+	require.NoError(t, refreshGitLabWebhookTriggerRoute(ctx, c, printer, "group", "app", false))
+	assert.Len(t, c.CreatedTriggerTokens, 1)
+
+	require.NoError(t, setupGitLabWebhookFastPath(ctx, c, printer, "group", "app", false, false))
+	require.Len(t, c.CreatedTriggerTokens, 1)
+
+	// A webhook that matches the route is left alone.
+	require.NoError(t, refreshGitLabWebhookTriggerRoute(ctx, c, printer, "group", "app", false))
+	assert.Len(t, c.CreatedTriggerTokens, 1)
+	assert.Empty(t, c.UpdatedProjectHooks)
+
+	// The webhook names a trigger that is not a Poller-owned webhook trigger
+	// (for example the trigger account's after its activation was withdrawn):
+	// it is converged back to a Poller-owned trigger.
+	c.ProjectHooks["group/app"][0].Description = "Fullsend webhook fast-path (trigger token ID 9001)"
+	buf.Reset()
+	require.NoError(t, refreshGitLabWebhookTriggerRoute(ctx, c, printer, "group", "app", true), "dry runs skip the refresh")
+	assert.Len(t, c.CreatedTriggerTokens, 1)
+	require.NoError(t, refreshGitLabWebhookTriggerRoute(ctx, c, printer, "group", "app", false))
+	require.Len(t, c.CreatedTriggerTokens, 2)
+	assert.Contains(t, c.ProjectHooks["group/app"][0].Description, "(trigger token ID 2)")
+	assert.NotContains(t, buf.String(), c.CreatedTriggerTokens[1].Token)
+
+	c.Errors = map[string]error{"ListProjectHooks": errors.New("503 unavailable")}
+	err := refreshGitLabWebhookTriggerRoute(ctx, c, printer, "group", "app", false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "checking the GitLab webhook trigger route")
+}

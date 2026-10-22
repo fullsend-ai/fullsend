@@ -206,7 +206,7 @@ func TestBuildPiRunCommand_GatewayTokenSeedBeforeEnv(t *testing.T) {
 	cmd := buildPiRunCommand(params, &piManifest{}, nil, "")
 	seed := PiGatewayTokenSeed(PiRuntime{}.ConfigDir())
 	seedIdx := strings.Index(cmd, seed)
-	envIdx := strings.Index(cmd, ". '/sandbox/workspace/.env'")
+	envIdx := strings.Index(cmd, piEnvLoad)
 	unset := strings.Index(cmd, piGatewayEnvUnset())
 	require.GreaterOrEqual(t, seedIdx, 0, cmd)
 	require.GreaterOrEqual(t, envIdx, 0, cmd)

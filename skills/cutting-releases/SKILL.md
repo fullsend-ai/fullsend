@@ -4,7 +4,7 @@ description: >
   Use when the user wants to tag a release, cut a release candidate, or ship a
   new version. Also use when asking about release process, versioning, or how
   GoReleaser is configured.
-allowed-tools: Read, Grep, Glob, AskUserQuestion, Agent, Bash(git tag:*), Bash(git log:*), Bash(git diff:*), Bash(git pull:*), Bash(git push:*), Bash(git rev-parse:*), Bash(gh release:*), Bash(gh run:*), Bash(gh api:*), Bash(gh pr:*), Bash(git checkout:*), Bash(git fetch:*), Bash(skopeo inspect:*), Bash(grep:*), Bash(bash skills/cutting-releases/scripts/install-binary.sh:*)
+allowed-tools: Read, Grep, Glob, AskUserQuestion, Agent, Bash(git tag:*), Bash(git log:*), Bash(git diff:*), Bash(git pull:*), Bash(git push:*), Bash(git rev-parse:*), Bash(gh release:*), Bash(gh run:*), Bash(gh api:*), Bash(gh pr:*), Bash(git checkout:*), Bash(git fetch:*), Bash(skopeo inspect:*), Bash(grep:*), Bash(bash skills/cutting-releases/scripts/install-binary.sh:*), Bash(bash skills/cutting-releases/scripts/prepend-release-highlights.sh:*)
 ---
 
 # Cutting Releases
@@ -240,20 +240,32 @@ summary highlighting the changes that matter most to end users.
    > Here are the draft release highlights I'd prepend to the release body.
    > Edit freely or say "looks good" to proceed.
 
-5. **Prepend to the release.** Once confirmed (with any edits applied), fetch
-   the current release body, prepend the highlights separated by a horizontal
-   rule (`---`), and update the release:
+5. **Prepend to the release.** Once confirmed (with any edits applied), run
+   the script with its repo-root-relative path, passing the confirmed
+   highlights text in place of `<highlights>`:
 
-   ```
-   gh release edit <tag> --notes "$(cat <<'EOF'
+   ```bash
+   bash skills/cutting-releases/scripts/prepend-release-highlights.sh <tag> <<'HIGHLIGHTS_EOF'
    <highlights>
-
-   ---
-
-   <existing body>
-   EOF
-   )"
+   HIGHLIGHTS_EOF
    ```
+
+   Pass the highlights only, never the existing body or a command that
+   produces it. Keep the quotes around `'HIGHLIGHTS_EOF'` so the shell expands
+   nothing. The script fetches the current body itself, prepends the
+   highlights and a horizontal rule (`---`), and writes the release once. It
+   re-reads the notes just before and after that write; if they changed or
+   do not match, it stops without overwriting anything and says which case it
+   hit, so check the release by hand before re-running. It also rejects
+   placeholders: a line that is only `$(...)` or `${...}`, or the template's
+   `<highlights>` or `<existing body>`. Never compose the body by hand with
+   `gh release edit --notes`: v0.33.0 shipped a literal `$(cat ...)` line in
+   place of its changelog that way (#8366).
+
+   If the script refuses highlights you believe are correct, stop and show
+   the user its error. The user can reword the highlights and you re-run the
+   script, or the user can paste them above the changelog in the GitHub web
+   UI's release editor, where no shell is involved.
 
 ### 12. Install the binary locally
 
@@ -274,7 +286,12 @@ installs the binary as `fullsend-<tag>` so multiple versions can coexist.
 - **Never delete a tag that published binaries or a GitHub Release.** If
   a shipped release is bad, cut a new patch or RC. Only a blocked final
   may be deleted (see "When a release run fails").
-- **The changelog** is auto-generated from PR titles (which must follow conventional commit format). GoReleaser uses `changelog.use: github` in `.goreleaser.yml`, so merged PR titles — not individual commit subjects — are the source of release-note entries.
+- **The changelog** is auto-generated from commit subjects (which must follow
+  conventional commit format). GoReleaser uses `changelog.use: github` in
+  `.goreleaser.yml`, which lists every commit in the release range, so
+  individual commit subjects — not PR titles — are the source of release-note
+  entries. PRs land as merge commits, which are excluded, so PR titles never
+  appear. Subjects with `!` are grouped first under **Breaking Changes**.
 - **The `v0` tag** is a moving tag consumed by downstream orgs for reusable
   workflows. It is automatically moved by the release workflow after
   GoReleaser completes (skipped for pre-release tags).

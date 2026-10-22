@@ -21,7 +21,7 @@ import (
 // lifecycle: install neither fails nor reports anything.
 func TestMaybeConvergeGitLabTriggerAccount_SkipsNonLiveClient(t *testing.T) {
 	var buf bytes.Buffer
-	err := maybeConvergeGitLabTriggerAccount(context.Background(), &reposInstallConfig{}, forge.NewFakeClient(), ui.New(&buf), "g", "p", true, nil)
+	err := maybeConvergeGitLabTriggerAccount(context.Background(), &reposInstallConfig{}, forge.NewFakeClient(), ui.New(&buf), "g", "p", true, false, nil)
 	require.NoError(t, err)
 	assert.Empty(t, buf.String())
 
@@ -42,7 +42,7 @@ func TestMaybeConvergeGitLabTriggerAccount_DryRunMakesNoRequests(t *testing.T) {
 	_, isLive := client.(*gitlab.LiveClient)
 	require.True(t, isLive)
 
-	err := maybeConvergeGitLabTriggerAccount(context.Background(), &reposInstallConfig{dryRun: true}, client, ui.New(&buf), "g", "p", false, nil)
+	err := maybeConvergeGitLabTriggerAccount(context.Background(), &reposInstallConfig{dryRun: true}, client, ui.New(&buf), "g", "p", false, false, nil)
 	require.NoError(t, err)
 	assert.Contains(t, buf.String(), "Would converge the GitLab trigger account")
 }

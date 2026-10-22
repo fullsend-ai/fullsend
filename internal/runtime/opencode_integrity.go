@@ -64,8 +64,11 @@ func openCodeReadTrustedEnv(sandboxName string) (openCodeTrustedEnv, error) {
 	return parseOpenCodeTrustedEnv(stdout)
 }
 
+// openCodeTrustedEnvReadCommand reads .env as data (envDataLoad, #8574), as
+// the launch does, and prints the two trusted values. The loader reports a
+// dropped line by file and line only, so its stderr can be shown on failure.
 func openCodeTrustedEnvReadCommand(envFile string) string {
-	return openCodeUtilityPin() + " && . " + shellQuote(envFile) + ` 2>/dev/null && "$` + openCodePrintfVar + `" '%s' "${OPENCODE_CONFIG_CONTENT-}" ` +
+	return openCodeUtilityPin() + " && " + envDataTrustedPin() + " && " + envDataLoad(envFile, openCodeEnvDataDrop...) + ` && "$` + openCodePrintfVar + `" '%s' "${OPENCODE_CONFIG_CONTENT-}" ` +
 		shellQuote(openCodeEnvReadSeparator) + ` "${GOOGLE_APPLICATION_CREDENTIALS-}"`
 }
 

@@ -259,7 +259,7 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 		}
 
 		// Run lint diagnostics (non-fatal), deduplicating across forge variants
-		for _, diag := range h.Lint() {
+		for _, diag := range append(h.Lint(), reservedSandboxEnvDiagnostics(h)...) {
 			key := diag.String()
 			if !linted[key] {
 				linted[key] = true

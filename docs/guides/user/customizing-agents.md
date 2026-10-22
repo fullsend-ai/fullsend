@@ -370,9 +370,9 @@ also need the Go toolchain. Pin the parent tag to a digest before CI use.
 On Claude and pi runs the sandbox already has `/sandbox/workspace/bin` on its
 `PATH`, after the image's own directories. A file there adds a command; it
 does not replace a command the image already provides, such as `git`,
-`python3` or `node`. Codex runs restore the `PATH` from before the workspace
-`.env` is sourced, so `/sandbox/workspace/bin` is not on the codex agent's
-`PATH`; call the script by its absolute path there. To make a script
+`python3` or `node`. Codex and OpenCode runs restore the `PATH` from before
+the workspace `.env` is read, so `/sandbox/workspace/bin` is not on the codex
+or OpenCode agent's `PATH`; call the script by its absolute path there. To make a script
 available as a command on Claude and pi runs, drop it there:
 
 1. Create your script (e.g. `scripts/my-tool.sh`):
@@ -427,24 +427,166 @@ When you need a directory outside `/sandbox/workspace/bin` on the `PATH`
        dest: /sandbox/workspace/.env.d/extra-path.env
    ```
 
-3. At startup the sandbox sources every `*.env` file under
-   `/sandbox/workspace/.env.d/`, picking up your PATH addition.
+3. At startup the sandbox reads every `*.env` file under
+   `/sandbox/workspace/.env.d/`, picking up your PATH addition. Claude, codex,
+   pi and OpenCode launches read these files as data, not shell: write plain
+   `export NAME=value` lines, one assignment per line and without
+   `${NAME:-default}` (see
+   [`.env.d` host files](../../reference/harness-reference.md)).
 
-On Claude and pi runs, after the `.env.d` files are sourced, the runner puts
+On Claude and pi runs, after the `.env.d` files are read, the runner puts
 its own `PATH` back in front, so your directory ends up after the runner's
 entries: a command found only in `/opt/my-toolchain/bin` is picked up from
 there, and a command the image also provides, such as `git` or `go`, is
 picked up from the image. To replace one of those, extend the sandbox image
-(see [Extending the sandbox image](#extending-the-sandbox-image)). Codex runs
-restore the `PATH` from before `.env`, so `.env.d` additions are not on the
-codex agent's `PATH`.
+(see [Extending the sandbox image](#extending-the-sandbox-image)). Codex and
+OpenCode runs restore the `PATH` from before `.env`, so `.env.d` additions are
+not on the codex or OpenCode agent's `PATH`.
 
-`.env.d` files run as shell in the agent launch shell; treat them like
-`pre_script`. `host_files` can also place configuration that tools load, such
+Launches and the runner's probes read `.env.d` files as data, and shell
+constructs in them (command substitution, `;`-joined commands, `${NAME:-default}`
+and other lines that are not plain assignments) are skipped with a warning.
+`.env` itself is still valid shell that an agent may source, so keep treating
+these files like `pre_script`. `host_files` can also place configuration that tools load, such
 as git config or shell rc files; that is trusted like `pre_script` too.
 
-**Note**: `env.sandbox` cannot modify `PATH`, the harness ignores special
-variables to protect sandbox operation.
+#### Reserved `env.sandbox` names
+
+**Note**: `env.sandbox` cannot modify runner infrastructure or security
+settings through the reserved names below. The runner drops these names
+before writing the sandbox environment, case-insensitively:
+
+- **Runner infrastructure and process-loading safeguards:** `PATH`, `HOME`,
+  `SHELL`, `BASH_ENV`, `ENV`, `LD_PRELOAD`, `LD_LIBRARY_PATH`, `TRACEPARENT`,
+  and every `FULLSEND_*` variable the runner itself exports into the sandbox
+  (its output and fetch plumbing, the repository path, role and slug, the
+  iteration budget and deadline, and its own `PATH` entry). The set grows
+  with the runner; the warnings described below name any such key a harness
+  sets.
+- **Credentials it mints or receives:** `FULLSEND_GCP_OIDC_AUTH_FILE`,
+  `FULLSEND_TRIGGER_TOKEN`, `FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN`,
+  `FULLSEND_WEBHOOK_SECRET`, `FULLSEND_INFERENCE_GATEWAY_API_KEY`,
+  `FULLSEND_OPENAI_API_KEY`, `OPENAI_API_KEY`, `GH_WORKFLOW_TOKEN`, the
+  runner-secret bundle and its staging path (`FULLSEND_GITHUB_RUNNER_SECRETS`,
+  `FULLSEND_GITHUB_RUNNER_SECRETS_FILE`), and the GitHub Actions OpenID Connect
+  (OIDC) request pair `ACTIONS_ID_TOKEN_REQUEST_URL` /
+  `ACTIONS_ID_TOKEN_REQUEST_TOKEN`. The runner uses this pair to request a
+  token proving the job's identity.
+- **Non-secret, runner-only inputs that select those credentials:**
+  `FULLSEND_GCP_OIDC_URL`, `FULLSEND_GCP_PROJECT_ID`,
+  `FULLSEND_GCP_WIF_PROVIDER`, `FULLSEND_OPENAI_AUDIENCE`,
+  `FULLSEND_OPENAI_IDENTITY_PROVIDER_ID`,
+  `FULLSEND_OPENAI_SERVICE_ACCOUNT_ID`.
+- **Security-sensitive names also refused in URL-sourced provider credential
+  definitions:** proxy settings (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`,
+  `ALL_PROXY`), Transport Layer Security (TLS) trust settings that select
+  certificates for verifying encrypted connections (`SSL_CERT_FILE`,
+  `SSL_CERT_DIR`, `CURL_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`), git configuration
+  (`GIT_SSH_COMMAND`, `GIT_CONFIG_GLOBAL`, `GIT_EXEC_PATH`, `GIT_ASKPASS`,
+  `GIT_TEMPLATE_DIR`), interpreter injection (`NODE_OPTIONS`, `PYTHONPATH`,
+  `PYTHONSTARTUP`, `JAVA_TOOL_OPTIONS`, `RUBYOPT`, `PERL5OPT`),
+  dynamic-linker hooks (`LD_AUDIT`, `DYLD_INSERT_LIBRARIES`), shell behavior
+  (`IFS`, `CDPATH`, `PROMPT_COMMAND`) and the resolver alias file
+  (`HOSTALIASES`).
+
+The list is by name, not by namespace: harness-supplied hook inputs such as
+`FULLSEND_CANARY_TOKEN` and `FULLSEND_TOOL_ALLOWLIST` are still delivered
+through `env.sandbox` — see
+[Runtime Implementation](../../contributing/runtime-implementation.md).
+Matching is case-insensitive, so `https_proxy` is dropped exactly as
+`HTTPS_PROXY` is.
+
+This deny-list covers selected names, not every variable that can affect
+network routing, certificate trust, Git or interpreter behavior. An unlisted
+name is not necessarily safe.
+
+`fullsend run` warns when the harness loads, naming all reserved keys it will
+drop, and warns again on stderr for each key as it writes the sandbox
+environment. To check the harness without starting an agent:
+
+1. Run `fullsend lock <agent-name>`. It reports the same lint warning when it
+   loads and composes the harness. Locking may fetch dependencies and write the
+   lock file. If the entry is already current, it skips composition and does
+   not check the keys. `lock` composes without event context, so a key added
+   by an overlay guarded on `event` is reported only by `fullsend run`.
+2. Run `fullsend lock <agent-name> --update` (or
+   `fullsend lock --all --update`) to check the composed harness when the entry
+   is current. This forces dependency re-resolution and may change the lock
+   file; it is not a diagnostics-only operation.
+
+No key-specific warning on a cache hit means the keys were not checked, not
+that they are allowed.
+
+A key must start with an ASCII letter or underscore, followed only by ASCII
+letters, digits or underscores. `fullsend run` skips invalid names and warns
+on stderr; this separate identifier check is not reported by `fullsend lock`.
+Dropping a key removes that one `env.sandbox` export; it does not unset a value
+that reaches the sandbox another way, as `host_files` `.env.d` does.
+
+This gate covers `env.sandbox` only. `host_files` `.env.d` files are read
+before the runtime starts: every launch and the runner's in-sandbox probes
+read them as data and take only assignment lines, and never take the
+dynamic-loader, interpreter and shell-startup variables that the
+[`.env.d` host files](../../reference/harness-reference.md#field-details)
+entry in the harness reference lists. `.env` itself is still valid shell that
+an agent may source, so keep treating these files like `pre_script`. Either
+way, `.env.d` is not a general migration path for blocked proxy or
+certificate settings; the harness reference entry has the per-runtime
+rules.
+
+#### Migrating proxy and certificate settings
+
+Coordinate these changes with the operator of your OpenShell gateway:
+
+- **Corporate proxies:** use the operator-managed outbound-network settings
+  for the OpenShell version and compute driver you deploy; fullsend records
+  the version it pins in
+  [`.github/scripts/openshell-version.sh`](https://github.com/fullsend-ai/fullsend/blob/main/.github/scripts/openshell-version.sh)
+  at your release tag.
+  The [OpenShell gateway configuration reference](https://github.com/NVIDIA/OpenShell/blob/v0.1.4/docs/how-it-works/gateways/configuration.mdx)
+  for that version describes proxy chaining for policy-approved TLS
+  connections using the HTTP CONNECT method to establish a tunnel. Plain-HTTP
+  destination traffic remains direct. These are not fullsend harness fields or
+  a general replacement for every `HTTP_PROXY` or `ALL_PROXY` use. Do not
+  reintroduce application proxy exports through `.env.d` as a workaround.
+  **GitHub Action limitation:** fullsend's own GitHub Action writes
+  `gateway.toml` with a fixed template and has no input for upstream proxy or
+  CA settings. Self-hosted Actions runners behind a corporate proxy that relied
+  on `HTTPS_PROXY` in `env.sandbox` have no configuration step available yet.
+  This is tracked as a follow-up for an Action proxy input
+  ([#8505](https://github.com/fullsend-ai/fullsend/issues/8505)).
+- **Additional certificate authorities (CAs):** preserve the active sandbox's
+  OpenShell CA certificate and other required roots in application trust.
+  OpenShell's supervisor also verifies upstream TLS separately. Follow the
+  selected driver's certificate-provisioning instructions in that reference,
+  which documents `proxy_ca_bundle` for a corporate proxy. It requires
+  `https_proxy`, and on Kubernetes it is a path in the gateway Pod mounted
+  from a ConfigMap, not a host path. Do not assume that replacing a
+  generated bundle with a custom-only file, or changing only the agent
+  image's trust store, configures both trust paths. Have the gateway operator
+  validate the required application and supervisor connections before
+  deployment. The linked tag is what the pinned gateway supports; a setting
+  documented only at a later OpenShell tag is not available until fullsend
+  bumps the pin. If the linked tag does not document `additional_ca_bundle`
+  (added in OpenShell 0.1.5, for Podman gateways), a private CA used without
+  a corporate proxy has no gateway-level replacement for `SSL_CERT_FILE` or
+  `NODE_EXTRA_CA_CERTS` at that version.
+- **Git settings:** place git configuration with `host_files` (a git config
+  file or shell rc file the tools load) or use the tool's own configuration,
+  instead of `GIT_SSH_COMMAND`, `GIT_CONFIG_GLOBAL`, `GIT_ASKPASS` and the
+  other blocked `GIT_*` names. `host_files` content is trusted like
+  `pre_script`. Git and TLS equivalents the list does not yet cover, such as
+  `GIT_SSH`, `GIT_CONFIG_*` and `REQUESTS_CA_BUNDLE`, are tracked in
+  [#8503](https://github.com/fullsend-ai/fullsend/issues/8503).
+- **Interpreter, loader and shell names:** `NODE_OPTIONS`, `PYTHONPATH`,
+  `JAVA_TOOL_OPTIONS`, `LD_AUDIT`, `IFS` and the other blocked names of this
+  class have no supported replacement route into the sandbox. They are
+  blocked because they change how code is loaded or run. Which of them
+  `host_files` `.env.d` still delivers differs by runtime; the
+  [`.env.d` host files](../../reference/harness-reference.md#field-details)
+  entry lists what each runtime drops or unsets. Whatever it delivers, it
+  does so only because that file is trusted like `pre_script`, so it is not
+  a sanctioned way to restore them.
 
 ### Adding a skill
 
@@ -596,7 +738,10 @@ only. This triage-level access applies to **GitHub webhook dispatch** (slash
 commands, label-triggered dispatch, and event-triggered dispatch). The Go
 poll path used for GitLab and Jira currently requires `write` for all
 non-exception transitions — it does not yet distinguish observation from
-mutation thresholds.
+mutation thresholds. On GitLab, the agent job also requires the event actor
+to hold Developer access or higher for every stage except retro and
+prioritize, so automatic triage of a newly opened issue runs only when its
+author is a Developer, Maintainer, or Owner.
 See the
 [Authorization Contract](../../normative/authorization/v1/README.md) for the
 full role hierarchy, exception rules, and implementation notes.

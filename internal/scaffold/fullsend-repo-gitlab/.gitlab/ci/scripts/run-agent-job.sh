@@ -21,13 +21,12 @@ case "${CI_DEBUG_TRACE:-}" in
     ;;
 esac
 
-# Clear the webhook fast-path credentials. GitLab injects the protected
-# FULLSEND_TRIGGER_TOKEN (a bearer that starts default-branch pipelines)
-# and FULLSEND_WEBHOOK_SECRET into every protected-branch job, and no
-# agent step needs either: they exist only for the webhook and its
-# provisioning. Unset them before any later code, including the agent's
-# host-side scripts, can read them.
-unset FULLSEND_TRIGGER_TOKEN FULLSEND_WEBHOOK_SECRET
+# Clear the webhook fast-path credentials. GitLab injects
+# FULLSEND_TRIGGER_TOKEN, FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN, and
+# FULLSEND_WEBHOOK_SECRET into every protected-branch job. Both trigger tokens
+# can start pipelines; the agent needs none of these values. Unset them before
+# any later code, including the agent's host-side scripts, can read them.
+unset FULLSEND_TRIGGER_TOKEN FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN FULLSEND_WEBHOOK_SECRET
 
 # Pin job/pipeline/project identity to the CI_JOB_TOKEN job record
 # and admit only source=api (started by the Poller through the

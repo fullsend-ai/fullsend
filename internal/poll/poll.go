@@ -29,6 +29,7 @@ type Poller struct {
 	labelBase         LabelState       // LabelState snapshot the current cycle's label delta derives from
 	discoveryErrs     []error          // label-event lookup failures of the current discovery, reported by Run after state is persisted
 	unresolvedLabels  LabelState       // label additions whose occurrence lookup failed during discovery; their concurrently recorded presence is removed at persist
+	issueOpenCutoff   time.Time        // events discovery emits only issue opens created after this instant (the installation boundary); zero disables recovery
 	now               func() time.Time // clock for webhook freshness checks; nil uses time.Now
 }
 
@@ -66,7 +67,7 @@ const maxEventRetries = 3
 //
 // Poll mode is determined by Options.Mode:
 //   - "slash": fast poll — only /fs-* slash commands via the Events API
-//   - "events": full discovery — labels, merges, MR opens, closed-unmerged MRs, non-slash notes (filters out /fs-* notes)
+//   - "events": full discovery — labels, issue opens, merges, MR opens, closed-unmerged MRs, non-slash notes (filters out /fs-* notes)
 //   - "": backward compatibility — uses events discovery path but does not filter /fs-* notes
 func (p *Poller) Run(ctx context.Context) error {
 	if p.client == nil {
@@ -83,11 +84,48 @@ func (p *Poller) Run(ctx context.Context) error {
 		log.Printf("poll mode: events (full discovery, legacy — no /fs-* filtering)")
 	}
 
+	cycleStart := time.Now()
+	if p.now != nil {
+		cycleStart = p.now()
+	}
+	var issueOpenCutoffPersisted bool
+	// newIssueOpenCutoff is the cutoff this cycle establishes: the cycle's
+	// start when the events poll found none persisted, otherwise nil.
+	newIssueOpenCutoff := func() *time.Time {
+		if p.slashCommandsOnly || issueOpenCutoffPersisted {
+			return nil
+		}
+		return &cycleStart
+	}
+	// persistCutoffOnFailure records the cutoff when the cycle fails before
+	// its main persist. Without it a first cycle that fails early (read or
+	// discover errors) would leave the next cycle to set a later cutoff, and
+	// an issue opened between the two cycle starts whose webhook was also
+	// missed would never be recovered. It costs a commit only on that path.
+	persistCutoffOnFailure := func() {
+		cutoff := newIssueOpenCutoff()
+		if cutoff == nil {
+			return
+		}
+		if perr := p.persistCycleDeltas(ctx, p.owner, p.repo, persistDeltas{issueOpenCutoff: cutoff}); perr != nil {
+			log.Printf("WARNING: persist issue-open cutoff after failed cycle: %v", perr)
+		}
+	}
+	// persistCutoffOnReadFailure is persistCutoffOnFailure for a failed state
+	// read (including one made during discovery). Tampered, malformed, or
+	// unsignable state is not transient, so the cycle stays fail-closed there
+	// and nothing is written.
+	persistCutoffOnReadFailure := func(readErr error) {
+		if errors.Is(readErr, errPollStateTampered) || errors.Is(readErr, errDispatchSecretUnset) {
+			return
+		}
+		persistCutoffOnFailure()
+	}
 	lastPollAt, err := p.readWatermark(ctx, p.owner, p.repo)
 	if err != nil {
+		persistCutoffOnReadFailure(err)
 		return fmt.Errorf("read watermark: %w", err)
 	}
-
 	var events []RoutableEvent
 	var labelState LabelState
 	var minSkippedAt time.Time
@@ -97,12 +135,32 @@ func (p *Poller) Run(ctx context.Context) error {
 		p.labelBase = nil
 		p.discoveryErrs = nil
 		p.unresolvedLabels = nil
+		// Issue-open recovery backstops a missed webhook delivery, but must
+		// never reach an issue that predates installation. The discovery
+		// watermark cannot mark that boundary (it starts an hour back, is
+		// overlapped by 30s, and is held back on a failure or by an older
+		// event), so a separate cutoff is persisted the first time the events
+		// poll runs and recovery requires created_at after it.
+		p.issueOpenCutoff, issueOpenCutoffPersisted, err = p.readIssueOpenCutoff(ctx, p.owner, p.repo)
+		if err != nil {
+			persistCutoffOnReadFailure(err)
+			return fmt.Errorf("read issue-open cutoff: %w", err)
+		}
+		if !issueOpenCutoffPersisted {
+			p.issueOpenCutoff = cycleStart
+		}
 		events, labelState, minSkippedAt, err = p.discoverAllEvents(ctx, p.owner, p.repo, lastPollAt)
 	}
 	if err != nil {
+		// Discovery re-reads poll state (detectNewLabels), so its error can
+		// be a tamper or malformed-state failure that must stay fail-closed.
+		persistCutoffOnReadFailure(err)
 		return fmt.Errorf("discover events: %w", err)
 	}
 
+	// Issue-open author bot status is looked up per event in the dispatch loop
+	// below, so a failing lookup is counted against that event's retry budget
+	// instead of aborting the cycle for every other event.
 	events = p.filterBotEvents(events)
 	events = p.deduplicate(events)
 
@@ -117,6 +175,7 @@ func (p *Poller) Run(ctx context.Context) error {
 	if !p.slashCommandsOnly {
 		pending, err := p.readPendingLabels(ctx, p.owner, p.repo)
 		if err != nil {
+			persistCutoffOnReadFailure(err)
 			return fmt.Errorf("pending labels: %w", err)
 		}
 		pendingByKey = pending
@@ -143,6 +202,7 @@ func (p *Poller) Run(ctx context.Context) error {
 	// One snapshot for all three: see readDedupState.
 	previouslyDispatched, failedKeys, mirrors, err := p.readDedupState(ctx, p.owner, p.repo)
 	if err != nil {
+		persistCutoffOnReadFailure(err)
 		return fmt.Errorf("dedup state: %w", err)
 	}
 
@@ -238,6 +298,25 @@ func (p *Poller) Run(ctx context.Context) error {
 			observe(event)
 			resolvedPending[eventKey] = true
 			continue
+		}
+
+		// Resolve an issue open's authoritative bot flag before routing. The
+		// lookup is skipped when the occurrence was already dispatched (the
+		// webhook recorded it), and a failure fails closed for this event
+		// only: it is retried through the failure count and watermark holdback
+		// while unrelated events and pending handoffs proceed.
+		if p.needsIssueOpenBotLookup(event) && !dispatchedForAnyStage(previouslyDispatched, event) {
+			if err := p.enrichIssueOpenBot(ctx, &event); err != nil {
+				log.Printf("WARNING: skipping %s event on IID %d: %v", event.Type, event.IID, err)
+				recordEventFailure(&cycleErrs, failedKeys, mirrors, event, &minFailedAt, failedLabelEvents,
+					fmt.Errorf("check issue-open author for %s: %w", eventKey, err))
+				continue
+			}
+			if p.isBotEvent(event) {
+				// Bot-authored issue opens are filtered like any other bot event.
+				observe(event)
+				continue
+			}
 		}
 
 		normalizedEvent, actorID, err := p.toNormalizedEvent(ctx, event)
@@ -541,6 +620,7 @@ func (p *Poller) Run(ctx context.Context) error {
 		// them again.
 		deltas := persistDeltas{failed: failedKeys, pendingClear: pendingClear, pendingAdd: pendingAdd, mirrors: mirrors}
 		deltas.failedPresence = failedPresence
+		deltas.issueOpenCutoff = newIssueOpenCutoff()
 		if len(newDispatchedKeys) > 0 {
 			deltas.dispatched = newDispatchedKeys
 		}
@@ -606,6 +686,7 @@ func (p *Poller) Run(ctx context.Context) error {
 	}
 	cycle.reconcileFailed = failedLabelEvents
 	cycle.failedPresence = failedPresence
+	cycle.issueOpenCutoff = newIssueOpenCutoff()
 	for _, event := range events {
 		if event.Type == "issue_label" && !pendingOnly[event.Key()] {
 			cycle.discovered = append(cycle.discovered, event)

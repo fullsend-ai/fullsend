@@ -18,6 +18,11 @@ Date: 2026-10-07
 
 Accepted
 
+*Amended by [ADR 0145](0145-keep-credential-deny-list-out-of-runner-secret-refusal.md),
+which keeps the credential deny-list that #3373 adds to the `env.sandbox` gate
+out of the refused-names rule below, matches that rule case-insensitively, and
+adds the `DYLD_*` family to the refused prefixes.*
+
 ## Context
 
 A custom harness's `pre_script`, `post_script` and `validation_loop` read

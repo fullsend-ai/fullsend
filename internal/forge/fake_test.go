@@ -794,166 +794,29 @@ func TestFakeClient_ErrorInjection(t *testing.T) {
 	ctx := context.Background()
 	injected := errors.New("injected error")
 
-	methods := []struct {
-		name string
-		call func(fc *FakeClient) error
-	}{
-		{"GetRepoVariableInfo", func(fc *FakeClient) error { _, _, err := fc.GetRepoVariableInfo(ctx, "o", "r", "n"); return err }},
-		{"ListOrgRepos", func(fc *FakeClient) error { _, err := fc.ListOrgRepos(ctx, "org", false); return err }},
-		{"CreateRepo", func(fc *FakeClient) error { _, err := fc.CreateRepo(ctx, "o", "r", "d", false); return err }},
-		{"DeleteRepo", func(fc *FakeClient) error { return fc.DeleteRepo(ctx, "o", "r") }},
-		{"CreateFile", func(fc *FakeClient) error { return fc.CreateFile(ctx, "o", "r", "p", "m", nil) }},
-		{"CreateOrUpdateFile", func(fc *FakeClient) error { return fc.CreateOrUpdateFile(ctx, "o", "r", "p", "m", nil) }},
-		{"UpdateRepoVisibility", func(fc *FakeClient) error {
-			fc.Repos = []Repository{{Name: "r", FullName: "o/r"}}
-			return fc.UpdateRepoVisibility(ctx, "o", "r", true)
-		}},
-		{"GetFileContent", func(fc *FakeClient) error { _, err := fc.GetFileContent(ctx, "o", "r", "p"); return err }},
-		{"CreateBranch", func(fc *FakeClient) error { return fc.CreateBranch(ctx, "o", "r", "b") }},
-		{"CreateBranchFromSHA", func(fc *FakeClient) error { return fc.CreateBranchFromSHA(ctx, "o", "r", "b", "sha") }},
-		{"DeleteBranch", func(fc *FakeClient) error { return fc.DeleteBranch(ctx, "o", "r", "b") }},
-		{"DeleteRef", func(fc *FakeClient) error { return fc.DeleteRef(ctx, "o", "r", "heads/b") }},
-		{"CreateFileOnBranch", func(fc *FakeClient) error { return fc.CreateFileOnBranch(ctx, "o", "r", "b", "p", "m", nil) }},
-		{"CreateChangeProposal", func(fc *FakeClient) error {
-			_, err := fc.CreateChangeProposal(ctx, "o", "r", "t", "b", "h", "base")
-			return err
-		}},
-		{"CreateCrossRepoChangeProposal", func(fc *FakeClient) error {
-			_, err := fc.CreateCrossRepoChangeProposal(ctx, "o", "r", "ho", "hr", "t", "b", "h", "base")
-			return err
-		}},
-		{"ListRepoPullRequests", func(fc *FakeClient) error { _, err := fc.ListRepoPullRequests(ctx, "o", "r"); return err }},
-		{"GetAuthenticatedUser", func(fc *FakeClient) error { _, err := fc.GetAuthenticatedUser(ctx); return err }},
-		{"GetAuthenticatedUserIdentity", func(fc *FakeClient) error {
-			fc.AuthenticatedUserIdentity = &UserIdentity{Name: "n", Email: "e"}
-			_, err := fc.GetAuthenticatedUserIdentity(ctx)
-			return err
-		}},
-		{"CreateRepoSecret", func(fc *FakeClient) error { return fc.CreateRepoSecret(ctx, "o", "r", "n", "v") }},
-		{"RepoSecretExists", func(fc *FakeClient) error { _, err := fc.RepoSecretExists(ctx, "o", "r", "n"); return err }},
-		{"CreateOrUpdateRepoVariable", func(fc *FakeClient) error {
-			return fc.CreateOrUpdateRepoVariable(ctx, "o", "r", "n", "v")
-		}},
-		{"GetLatestWorkflowRun", func(fc *FakeClient) error {
-			_, err := fc.GetLatestWorkflowRun(ctx, "o", "r", "w")
-			return err
-		}},
-		{"GetWorkflowRun", func(fc *FakeClient) error { _, err := fc.GetWorkflowRun(ctx, "o", "r", 1); return err }},
-		{"ListOrgInstallations", func(fc *FakeClient) error {
-			_, err := fc.ListOrgInstallations(ctx, "org")
-			return err
-		}},
-		{"OrgSecretExists", func(fc *FakeClient) error {
-			_, err := fc.OrgSecretExists(ctx, "o", "n")
-			return err
-		}},
-		{"DeleteOrgSecret", func(fc *FakeClient) error { return fc.DeleteOrgSecret(ctx, "o", "n") }},
-		{"CommitFiles", func(fc *FakeClient) error {
-			_, err := fc.CommitFiles(ctx, "o", "r", "m", nil)
-			return err
-		}},
-		{"ForceCommitFileToBranch", func(fc *FakeClient) error {
-			return fc.ForceCommitFileToBranch(ctx, "o", "r", "b", "p", "m", []byte("c"))
-		}},
-		{"GetPipelineVariablesMinimumOverrideRole", func(fc *FakeClient) error {
-			_, err := fc.GetPipelineVariablesMinimumOverrideRole(ctx, "o", "r")
-			return err
-		}},
-		{"SetPipelineVariablesMinimumOverrideRole", func(fc *FakeClient) error {
-			return fc.SetPipelineVariablesMinimumOverrideRole(ctx, "o", "r", PipelineVarOverrideOwner)
-		}},
-		{"GetJobTokenRepositoryPushAllowed", func(fc *FakeClient) error {
-			_, err := fc.GetJobTokenRepositoryPushAllowed(ctx, "o", "r")
-			return err
-		}},
-		{"CreateOrUpdateOrgVariableAll", func(fc *FakeClient) error {
-			return fc.CreateOrUpdateOrgVariableAll(ctx, "o", "n", "v")
-		}},
-		{"GetOrgVariable", func(fc *FakeClient) error { _, _, err := fc.GetOrgVariable(ctx, "o", "n"); return err }},
-		{"ListOrgVariables", func(fc *FakeClient) error { _, err := fc.ListOrgVariables(ctx, "o"); return err }},
-		{"ListInheritedRepoVariables", func(fc *FakeClient) error {
-			_, err := fc.ListInheritedRepoVariables(ctx, "o", "r")
-			return err
-		}},
-		{"ListInstanceVariables", func(fc *FakeClient) error { _, err := fc.ListInstanceVariables(ctx); return err }},
-		{"IsInstallationToken", func(fc *FakeClient) error { _, err := fc.IsInstallationToken(ctx); return err }},
-		{"DeleteOrgVariable", func(fc *FakeClient) error {
-			return fc.DeleteOrgVariable(ctx, "o", "n")
-		}},
-		{"DeleteRepoVariable", func(fc *FakeClient) error {
-			return fc.DeleteRepoVariable(ctx, "o", "r", "n")
-		}},
-		{"DeleteIssueComment", func(fc *FakeClient) error {
-			return fc.DeleteIssueComment(ctx, "o", "r", 1)
-		}},
-		{"GetIssueComment", func(fc *FakeClient) error {
-			_, err := fc.GetIssueComment(ctx, "o", "r", 1)
-			return err
-		}},
-		{"ListDirectoryContents", func(fc *FakeClient) error {
-			_, err := fc.ListDirectoryContents(ctx, "o", "r", "p", "main", false)
-			return err
-		}},
-		{"ListRepositoryFiles", func(fc *FakeClient) error {
-			_, err := fc.ListRepositoryFiles(ctx, "o", "r")
-			return err
-		}},
-		{"GetFileContentAtRef", func(fc *FakeClient) error {
-			_, err := fc.GetFileContentAtRef(ctx, "o", "r", "p", "main")
-			return err
-		}},
-		{"DeleteRepoSecret", func(fc *FakeClient) error {
-			return fc.DeleteRepoSecret(ctx, "o", "r", "n")
-		}},
-		{"ListRepoVariables", func(fc *FakeClient) error {
-			_, err := fc.ListRepoVariables(ctx, "o", "r")
-			return err
-		}},
-		{"ListWorkflowRunJobs", func(fc *FakeClient) error {
-			_, err := fc.ListWorkflowRunJobs(ctx, "o", "r", 1)
-			return err
-		}},
-		{"CreatePipelineTriggerToken", func(fc *FakeClient) error {
-			_, err := fc.CreatePipelineTriggerToken(ctx, "o", "r", "d")
-			return err
-		}},
-		{"ListPipelineTriggerTokens", func(fc *FakeClient) error {
-			_, err := fc.ListPipelineTriggerTokens(ctx, "o", "r")
-			return err
-		}},
-		{"RevokePipelineTriggerToken", func(fc *FakeClient) error {
-			return fc.RevokePipelineTriggerToken(ctx, "o", "r", 1)
-		}},
-		{"CreateProjectHook", func(fc *FakeClient) error {
-			_, err := fc.CreateProjectHook(ctx, "o", "r", ProjectHook{URL: "https://example.test"})
-			return err
-		}},
-		{"ListProjectHooks", func(fc *FakeClient) error {
-			_, err := fc.ListProjectHooks(ctx, "o", "r")
-			return err
-		}},
-		{"UpdateProjectHook", func(fc *FakeClient) error {
-			_, err := fc.UpdateProjectHook(ctx, "o", "r", 1, ProjectHook{})
-			return err
-		}},
-		{"DeleteProjectHook", func(fc *FakeClient) error {
-			return fc.DeleteProjectHook(ctx, "o", "r", 1)
-		}},
-	}
-
-	for _, m := range methods {
-		t.Run(m.name, func(t *testing.T) {
-			fc := &FakeClient{
-				Errors: map[string]error{m.name: injected},
-			}
-			err := m.call(fc)
+	calls := fakeClientCalls(ctx)
+	for name, call := range calls {
+		t.Run(name, func(t *testing.T) {
+			fc := NewFakeClient()
+			fc.Errors[name] = injected
+			err := returnedError(call(fc))
 			assert.ErrorIs(t, err, injected)
 		})
 	}
 }
 
+// returnedError returns the error value from a fake method's packed results.
+func returnedError(results []any) error {
+	for _, result := range results {
+		if err, ok := result.(error); ok {
+			return err
+		}
+	}
+	return nil
+}
+
 // newThreadSafetyFake seeds one shared "o/r" fixture so the readers and the
-// in-place writers in threadSafetyCalls touch the same stored entries.
+// in-place writers in fakeClientCalls touch the same stored entries.
 func newThreadSafetyFake() *FakeClient {
 	fc := NewFakeClient()
 	fc.Repos = []Repository{{Name: "r", FullName: "o/r"}}
@@ -975,11 +838,12 @@ func newThreadSafetyFake() *FakeClient {
 	return fc
 }
 
-// threadSafetyCalls holds one call per exported FakeClient method;
-// TestFakeClient_ThreadSafetyCoversAllMethods keeps it complete. Each call
-// returns its results so the caller can read them: -race only flags a fake
-// that hands out its internal storage when the returned data is read.
-func threadSafetyCalls(ctx context.Context) map[string]func(fc *FakeClient) []any {
+// fakeClientCalls holds one call per exported FakeClient method.
+// TestFakeClient_ErrorInjection and TestFakeClient_ThreadSafety execute it,
+// and TestFakeClient_CoversAllMethods keeps it complete. Each call returns its
+// results so callers can read them: -race only flags a fake that hands out its
+// internal storage when the returned data is read.
+func fakeClientCalls(ctx context.Context) map[string]func(fc *FakeClient) []any {
 	pack := func(v ...any) []any { return v }
 	return map[string]func(fc *FakeClient) []any{
 		// Client
@@ -1003,6 +867,9 @@ func threadSafetyCalls(ctx context.Context) map[string]func(fc *FakeClient) []an
 		"GetFileContent": func(fc *FakeClient) []any { return pack(fc.GetFileContent(ctx, "o", "r", "p")) },
 		"DeleteFile":     func(fc *FakeClient) []any { return pack(fc.DeleteFile(ctx, "o", "r", "gone", "m")) },
 		"DeleteFiles":    func(fc *FakeClient) []any { return pack(fc.DeleteFiles(ctx, "o", "r", "m", []string{"gone"})) },
+		"UpdateFileIfMatch": func(fc *FakeClient) []any {
+			return pack(fc.UpdateFileIfMatch(ctx, "o", "r", "p", "m", []byte("data"), GitBlobSHA([]byte("content"))))
+		},
 		"ListDirectoryContents": func(fc *FakeClient) []any {
 			return pack(fc.ListDirectoryContents(ctx, "o", "r", "p", "main", false))
 		},
@@ -1196,6 +1063,9 @@ func threadSafetyCalls(ctx context.Context) map[string]func(fc *FakeClient) []an
 		"GetJobTokenRepositoryPushAllowed": func(fc *FakeClient) []any {
 			return pack(fc.GetJobTokenRepositoryPushAllowed(ctx, "o", "r"))
 		},
+		"GetPushRuleBranchNameRegex": func(fc *FakeClient) []any {
+			return pack(fc.GetPushRuleBranchNameRegex(ctx, "o", "r"))
+		},
 		"CompareCommits": func(fc *FakeClient) []any { return pack(fc.CompareCommits(ctx, "o", "r", "a", "b")) },
 
 		// GitHubExtensions
@@ -1256,7 +1126,7 @@ func readDeep(v reflect.Value) {
 func TestFakeClient_ThreadSafety(t *testing.T) {
 	ctx := context.Background()
 	fc := newThreadSafetyFake()
-	calls := threadSafetyCalls(ctx)
+	calls := fakeClientCalls(ctx)
 
 	var wg sync.WaitGroup
 	const goroutines = 20
@@ -1273,22 +1143,55 @@ func TestFakeClient_ThreadSafety(t *testing.T) {
 	wg.Wait()
 }
 
-// TestFakeClient_ThreadSafetyCoversAllMethods fails when an exported
-// FakeClient method (every forge.Client, GitHubExtensions, GitLabExtensions
-// and ProjectLeaser method) has no entry in threadSafetyCalls, or when an
-// entry names a method that no longer exists.
-func TestFakeClient_ThreadSafetyCoversAllMethods(t *testing.T) {
-	calls := threadSafetyCalls(context.Background())
+// TestFakeClient_CoversAllMethods fails when an exported FakeClient method
+// (every forge.Client, GitHubExtensions, GitLabExtensions and ProjectLeaser
+// method) has no entry in fakeClientCalls, or when an entry names a method
+// that no longer exists.
+func TestFakeClient_CoversAllMethods(t *testing.T) {
+	calls := fakeClientCalls(context.Background())
 	methods := reflect.TypeFor[*FakeClient]()
 	want := make(map[string]bool, methods.NumMethod())
 	for i := range methods.NumMethod() {
 		name := methods.Method(i).Name
 		want[name] = true
-		assert.Contains(t, calls, name, "add %s to threadSafetyCalls so TestFakeClient_ThreadSafety runs it concurrently", name)
+		assert.Contains(t, calls, name, "add %s to fakeClientCalls so error injection and thread safety tests cover it", name)
 	}
 	for name := range calls {
-		assert.True(t, want[name], "threadSafetyCalls has an entry for %s, which is not a FakeClient method", name)
+		assert.True(t, want[name], "fakeClientCalls has an entry for %s, which is not a FakeClient method", name)
 	}
+}
+
+func TestFakeClient_UpdateFileIfMatch(t *testing.T) {
+	ctx := context.Background()
+	fc := NewFakeClient()
+
+	require.NoError(t, fc.UpdateFileIfMatch(ctx, "o", "r", "s.json", "create", []byte("v1"), ""))
+	err := fc.UpdateFileIfMatch(ctx, "o", "r", "s.json", "create again", []byte("x"), "")
+	require.True(t, IsConflict(err), "create over an existing file: %v", err)
+
+	read, err := fc.GetFileContent(ctx, "o", "r", "s.json")
+	require.NoError(t, err)
+	stale := GitBlobSHA(read)
+	require.NoError(t, fc.UpdateFileIfMatch(ctx, "o", "r", "s.json", "update", []byte("v2"), stale))
+
+	err = fc.UpdateFileIfMatch(ctx, "o", "r", "s.json", "stale", []byte("v3"), stale)
+	require.True(t, IsConflict(err), "stale SHA: %v", err)
+	got, err := fc.GetFileContent(ctx, "o", "r", "s.json")
+	require.NoError(t, err)
+	assert.Equal(t, "v2", string(got), "a conflicting write leaves the file unchanged")
+
+	err = fc.UpdateFileIfMatch(ctx, "o", "r", "missing.json", "update", []byte("v"), stale)
+	require.True(t, IsConflict(err), "update of a missing file: %v", err)
+
+	injected := errors.New("injected")
+	fc.Errors = map[string]error{"UpdateFileIfMatch": injected}
+	require.ErrorIs(t, fc.UpdateFileIfMatch(ctx, "o", "r", "s.json", "m", []byte("v"), ""), injected)
+}
+
+func TestGitBlobSHA(t *testing.T) {
+	// git hash-object of an empty file and of "hello\n".
+	assert.Equal(t, "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391", GitBlobSHA(nil))
+	assert.Equal(t, "ce013625030ba8dba906f756967f9e9ca394464a", GitBlobSHA([]byte("hello\n")))
 }
 
 func TestFakeClient_FindExistingFork(t *testing.T) {

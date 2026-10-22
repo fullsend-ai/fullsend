@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -32,23 +34,51 @@ func (e *trigEnv) rawLedger() string {
 	return e.state.VariableValues[trigOwner+"/"+trigRepo+"/"+forge.VarGitLabTriggerAccount]
 }
 
-// pre8438LedgerFields is the exact field set the ledger decoder of CLIs that
-// predate the dispatch activation knows. Released decoders reject any other
-// key before they read the version (DisallowUnknownFields), so the ledger must
-// never carry an activation field (#8438).
-var pre8438LedgerFields = map[string]bool{
+// currentLedgerFields lists the non-secret ledger fields accepted by this
+// version. The trigger digest and publication-pending marker are new and
+// older strict decoders reject either one before they read the version;
+// that compatibility break is called out in the GitLab upgrade guidance.
+var currentLedgerFields = map[string]bool{
 	"version": true, "phase": true, "branch": true, "nonce": true, "account_id": true,
 	"elevated": true, "pat_id": true, "pat_pending": true, "deploy_key_fingerprint": true,
 	"deploy_key_id": true, "grant_entry_id": true, "trigger_token_id": true,
 	"trigger_published": true, "publish_started": true, "retired": true,
+	"trigger_token_digest": true, "publication_pending": true,
 }
 
-func assertOlderDecoderCompatible(t *testing.T, raw string) {
+// TestCurrentLedgerFields_MatchStateSchema keeps currentLedgerFields in sync
+// with the ledger struct, so a new ledger key cannot ship without being
+// listed (and named in the compatibility guidance).
+func TestCurrentLedgerFields_MatchStateSchema(t *testing.T) {
+	tags := map[string]bool{}
+	for field := range reflect.TypeFor[gitLabTriggerAccountState]().Fields() {
+		name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
+		if name == "" || name == "-" {
+			continue
+		}
+		tags[name] = true
+	}
+	assert.Equal(t, currentLedgerFields, tags)
+
+	// A ledger carrying both new keys serializes only listed keys and
+	// passes a strict decode.
+	raw, err := json.Marshal(gitLabTriggerAccountState{
+		Version: gitLabTriggerAccountStateVersion, Phase: "ready", Branch: "main",
+		Nonce: "abc", TriggerTokenID: 9, TriggerTokenDigest: "digest",
+		TriggerPublished: true, PublicationPending: true,
+	})
+	require.NoError(t, err)
+	assert.Contains(t, string(raw), `"trigger_token_digest"`)
+	assert.Contains(t, string(raw), `"publication_pending"`)
+	assertCurrentLedgerSchema(t, string(raw))
+}
+
+func assertCurrentLedgerSchema(t *testing.T, raw string) {
 	t.Helper()
 	var doc map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal([]byte(raw), &doc))
 	for key := range doc {
-		assert.Truef(t, pre8438LedgerFields[key], "ledger key %q is unknown to older decoders, which reject unknown fields before the version check", key)
+		assert.Truef(t, currentLedgerFields[key], "ledger key %q is unexpected", key)
 	}
 	// And a strict decode (the older decoder's behavior) accepts it.
 	dec := json.NewDecoder(bytes.NewReader([]byte(raw)))
@@ -85,7 +115,7 @@ func TestGitLabTriggerDispatchActive_RecordedOnlyExplicitlyAndWithdrawnByLifecyc
 	}, a, "the activation binds to the exact ledger generation")
 	assert.Equal(t, gitLabTriggerPhaseReady, st.Phase)
 	assert.Equal(t, ledgerBefore, e.rawLedger(), "activating must not rewrite the ledger an older CLI reads")
-	assertOlderDecoderCompatible(t, e.rawLedger())
+	assertCurrentLedgerSchema(t, e.rawLedger())
 	protected := false
 	for _, rec := range e.state.UpdatedVariables {
 		if rec.Name == forge.VarGitLabDispatchActivation {
@@ -138,7 +168,7 @@ func TestGitLabTriggerDispatchActive_RotationWithdrawsAndNewGenerationDoesNotMat
 	assert.False(t, active, "rotation must withdraw the activation")
 	st, _ := e.ledger(t)
 	assert.NotEqual(t, old.Nonce, st.Nonce, "the rotated generation has a new nonce, so an older record can never bind to it")
-	assertOlderDecoderCompatible(t, e.rawLedger())
+	assertCurrentLedgerSchema(t, e.rawLedger())
 }
 
 // A CLI that predates the activation does not know the variable: it

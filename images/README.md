@@ -189,6 +189,12 @@ it downloads the release tarball by version and verifies it with
 See `.github/scripts/openshell-version.sh` for the version/SHA source of
 truth.
 
+The Go toolchain is automated the same way: Renovate bumps `GO_VERSION` in
+`images/code/Containerfile` and `images/runner/Containerfile`, and
+`scripts/renovate/update-go-checksums.sh` (run via `postUpgradeTasks`)
+refreshes `GO_SHA256_{AMD64,ARM64}` in both files from
+<https://go.dev/dl/?mode=json&include=all>.
+
 ## Local builds
 
 Build for your native architecture:

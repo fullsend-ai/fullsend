@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -340,10 +341,11 @@ func ensureGitLabPipelineVariableOverrideRole(ctx context.Context, client forge.
 // like setupGitLabPipelineSchedules' callers: an already-provisioned repo
 // is a no-op. rotate force-rotates the trigger token. Output names
 // variables and numeric IDs only — never the trigger token, webhook
-// secret, or webhook URL. The trigger token is owned by a fresh Poller
-// service account generation that is verified at Developer before it is
-// published; ineligible repos defer and keep polling (see
-// gitlabTriggerOwnerFor).
+// secret, or webhook URL. While the trigger-account dispatch activation is
+// recorded, the webhook uses the trigger account's published trigger token
+// (#8509). Otherwise the trigger token is owned by a fresh Poller service
+// account generation that is verified at Developer before it is published;
+// ineligible repos defer and keep polling (see gitlabTriggerOwnerFor).
 func setupGitLabWebhookFastPath(ctx context.Context, client forge.Client, printer *ui.Printer, owner, repo string, rotate, dryRun bool) error {
 	repoFullName := owner + "/" + repo
 	res, err := repos.EnsureGitLabWebhookFastPathWithTriggerOwner(ctx, client, gitlabTriggerOwnerFor(client), repos.GitLabBaseURL(client), owner, repo, rotate, dryRun)
@@ -361,13 +363,57 @@ func setupGitLabWebhookFastPath(ctx context.Context, client forge.Client, printe
 	return nil
 }
 
+// refreshGitLabWebhookTriggerRoute converges the webhook fast path again after
+// the trigger-account stage when the webhook's trigger credential no longer
+// matches the dispatch route (#8509): the route was activated or the account
+// rotated, so the webhook must carry the account's current trigger token, or
+// the route was withdrawn, so the webhook returns to a Poller-owned trigger.
+// Dry runs change nothing and skip it.
+func refreshGitLabWebhookTriggerRoute(ctx context.Context, client forge.Client, printer *ui.Printer, owner, repo string, dryRun bool) error {
+	if dryRun {
+		return nil
+	}
+	stale, err := repos.GitLabWebhookNeedsProvisioning(ctx, client, repos.GitLabBaseURL(client), owner, repo)
+	if err != nil {
+		return fmt.Errorf("checking the GitLab webhook trigger route: %w", err)
+	}
+	if !stale {
+		return nil
+	}
+	return setupGitLabWebhookFastPath(ctx, client, printer, owner, repo, false, false)
+}
+
+// refreshGitLabWebhookAfterPollerFailure skips Poller-route provisioning after
+// a failed Poller stage, even if an old account hook appears stale after
+// activation was withdrawn. It may repair or
+// create a hook only if account convergence restored the active account route.
+func refreshGitLabWebhookAfterPollerFailure(ctx context.Context, client forge.Client, printer *ui.Printer, owner, repo string, dryRun bool) error {
+	if dryRun {
+		return nil
+	}
+	repoFullName := owner + "/" + repo
+	res, err := repos.EnsureGitLabWebhookAccountRouteAfterPollerFailure(ctx, client, gitlabTriggerOwnerFor(client), repos.GitLabBaseURL(client), owner, repo)
+	for _, d := range res.Details {
+		if res.Action == "deferred" {
+			printer.StepInfo(fmt.Sprintf("[%s] %s", repoFullName, d))
+		} else {
+			printer.StepDone(fmt.Sprintf("[%s] %s", repoFullName, d))
+		}
+	}
+	if err != nil {
+		printer.StepFail(fmt.Sprintf("[%s] GitLab webhook fast-path: %v", repoFullName, err))
+	}
+	return err
+}
+
 // reconcileGitLabWebhookSafety revokes the managed webhook and trigger
 // credential when the trigger-token safety invariants no longer hold, and
 // never provisions. It runs for repositories whose installation or
 // convergence failed, where setupGitLabWebhookFastPath is not reached but
 // an existing credential must still not outlive a weakened restriction.
-func reconcileGitLabWebhookSafety(ctx context.Context, client forge.Client, printer *ui.Printer, owner, repo string, dryRun bool) error {
+func reconcileGitLabWebhookSafety(ctx context.Context, opts *reposInstallConfig, client forge.Client, printer *ui.Printer, owner, repo string) error {
 	repoFullName := owner + "/" + repo
+	dryRun := opts != nil && opts.dryRun
 	// A Poller left elevated by an interrupted install is restored, or its
 	// credential contained, even when the install failed before webhook setup.
 	res, err := repos.ReconcileGitLabWebhookSafetyWithTriggerOwner(ctx, client, gitlabTriggerOwnerFor(client), owner, repo, dryRun)
@@ -376,6 +422,12 @@ func reconcileGitLabWebhookSafety(ctx context.Context, client forge.Client, prin
 	}
 	if err != nil {
 		printer.StepWarn(fmt.Sprintf("[%s] GitLab webhook safety reconciliation: %v", repoFullName, err))
+		// Removing the managed webhook does not invalidate the trigger
+		// account's bearer, so an account-side safety failure also contains the
+		// account's trigger and published token.
+		if repos.GitLabWebhookTriggerOwnerUnsafe(err) && !dryRun {
+			err = errors.Join(err, containGitLabTriggerAccountAfterWebhookFailure(ctx, opts, client, printer, owner, repo))
+		}
 		return err
 	}
 	return nil

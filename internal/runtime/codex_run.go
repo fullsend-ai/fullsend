@@ -31,13 +31,17 @@ const codexConfigTamperedExit = 98
 // .env is sourced and marked read-only.
 const codexBinaryVar = "FULLSEND_CODEX_BIN"
 
+// codexNodeVar holds the node that starts codex: `codex` on PATH is npm's
+// `#!/usr/bin/env node` launcher, so binaryPin pins node by the same rule.
+const codexNodeVar = "FULLSEND_CODEX_NODE"
+
 // codexRuntimeEnv tells skills running inside the sandbox which runtime they
 // are on, so a skill can take a runtime-specific path deliberately.
 const codexRuntimeEnv = "FULLSEND_RUNTIME"
 
 // codexPathVar holds the PATH captured before the agent-writable .env is
-// sourced, so it can be restored before codex — and therefore every hook — is
-// launched.
+// sourced, so it can be restored before codex is launched. The hook adapter's
+// children take envDataTrustedPathVar instead (see buildCodexRunCommand).
 const codexPathVar = "FULLSEND_CODEX_PATH"
 
 // codexHookDigestsEnv carries the hook scripts' expected digests to the
@@ -210,9 +214,10 @@ func translateCodexModel(model string, gateway bool) (codexModel, error) {
 // binaryPin for why it holds. The launch below uses the path, which no
 // function or alias can shadow. This matters more on codex than on pi:
 // `codex` on PATH is npm's node launcher, so a planted shim would run before
-// the native binary ever starts.
+// the native binary ever starts, and the node that runs the launcher is
+// pinned with it.
 func codexBinaryPin() string {
-	return binaryPin(codexBinaryVar, "codex")
+	return binaryPin(codexBinaryVar, codexNodeVar, "codex")
 }
 
 // codexAssetGuard is the POSIX sh fragment run before codex: the runner-owned
@@ -385,27 +390,29 @@ func buildCodexRunCommand(params RunParams, model codexModel, effort string, hoo
 	parts := []string{"cd " + shellQuote(params.RepoDir)}
 	parts = append(parts,
 		"&& "+codexBinaryPin(),
-		// PATH is captured before .env and restored after it. The hook scripts
-		// resolve their tools by name — tirith_check.py runs a bare `tirith` —
-		// so a .env that prepends a directory holding a fake `tirith` that
-		// exits 0 neuters the whole PreToolUse chain while every digest stays
-		// green. Reproduced before this was added. `readonly` means a .env
-		// that assigns the same name aborts the sourcing shell under a POSIX
-		// sh rather than winning.
+		// PATH is captured before .env and restored after it for codex
+		// itself, so a .env cannot change the PATH codex runs with; the hook
+		// children take envDataTrustedPathVar instead. `readonly` means a
+		// .env that assigns the same name aborts the sourcing shell under a
+		// POSIX sh rather than winning.
 		"&& readonly "+codexPathVar+`="$PATH"`,
 		"&& "+codexAssetGuard(r, hooksEnabled, digests),
 		"&& "+codexConfigGuard(r, digests),
 		"&& "+codexModelsCacheRemoval(r),
 		"&& "+seed,
-		"&& . "+shellQuote(envFile),
+		// .env is read as data, never sourced (envDataLoad, #8498).
+		"&& "+envDataLoad(envFile, codexBinaryVar, codexNodeVar, codexPathVar),
 		// .env is agent-writable; re-pin the runner-owned config location
 		// after it so a rewritten .env cannot move codex's home out from
 		// under the guards.
 		"&& "+strings.Join(r.EnvExports(), " && "),
-		// Restored for codex itself, and exported so the hook adapter can set
-		// it for its children from a value that never passed through .env —
-		// rather than trusting whatever PATH it happens to inherit.
-		"&& export PATH=\"$"+codexPathVar+"\" && export "+codexPathVar,
+		// Restored for codex itself. The hook adapter sets its children's
+		// PATH from envDataTrustedPathVar instead: the same launch PATH,
+		// recorded read-only before .env by codexBinaryPin, without the
+		// directories the agent can write. It is exported from a value that
+		// never passed through .env, rather than trusting whatever PATH the
+		// adapter happens to inherit.
+		"&& export PATH=\"$"+codexPathVar+"\" && export "+envDataTrustedPathVar,
 		"&& export "+codexRuntimeEnv+"=codex",
 		// NODE_* would load code into npm's codex launcher; PYTHON* would do
 		// the same to the hook adapter's interpreter, which `-I` in hooks.json
@@ -448,17 +455,14 @@ func buildCodexRunCommand(params RunParams, model codexModel, effort string, hoo
 		parts = append(parts, "&& export "+codexSpawnDigestsEnv+"="+
 			shellQuote(codexSpawnDigestsValue(digests)))
 		// The hook scripts' own configuration, re-asserted from what the
-		// runner derived from the harness. appendHookEnv wrote the same values
-		// into the workspace .env at bootstrap, and that file is
-		// agent-writable: without this, iteration 1 could widen the SSRF
-		// allowlist or clear TIRITH_REQUIRED for iteration 2 and the hooks
-		// would read the agent's values. Reproduced before this was added.
-		for _, pair := range digests.SecurityEnv {
-			parts = append(parts, "&& export "+pair.Key+"="+shellQuote(pair.Value))
-		}
+		// runner recorded at Bootstrap (hookEnvExports): the workspace .env
+		// carries the same values and is agent-writable, so without this,
+		// iteration 1 could widen the SSRF allowlist or clear TIRITH_REQUIRED
+		// for iteration 2. A name the runner has no value for is unset.
+		parts = append(parts, "&& "+hookEnvExports(digests.SecurityEnv))
 	}
 	parts = append(parts,
-		"&& printf '%s' "+shellQuote(prompt)+` | "$`+codexBinaryVar+`"`,
+		"&& printf '%s' "+shellQuote(prompt)+" | "+cliLaunch(codexBinaryVar, codexNodeVar),
 		"exec",
 		"--json",
 		"--skip-git-repo-check",
@@ -607,6 +611,9 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 		}
 	}
 
+	childIDs := &codexChildIDs{}
+	reader = io.TeeReader(reader, childIDs)
+
 	handler := params.OnEvent
 	if handler == nil {
 		renderer := NewEventRenderer(printer)
@@ -652,6 +659,24 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 		return exitCode, fmt.Errorf(
 			"codex config.toml in %s no longer pins the run-scoped provider endpoint, its auth command, or leaves the project untrusted; refusing to run because any of those can redirect or replace the runner's credential (did the agent write there between iterations?)",
 			r.ConfigDir())
+	}
+
+	// The fold runs whatever the exit code: codex writes a child's usage as
+	// each response completes, and the parent's entry keeps per_model_usage
+	// summing to the totals across a retry. A read failure is a warning.
+	if digests.delegating() || len(childIDs.IDs) > 0 {
+		n, ferr := r.foldCodexChildUsage(params.SandboxName, childIDs.IDs, metrics)
+		if ferr != nil {
+			printer.StepWarn("Sub-agent usage not fully counted: " + redactSummary(sanitizeOutput(ferr.Error())))
+		}
+		if n > 0 {
+			printer.StepInfo(fmt.Sprintf("%d sub-agent thread(s) folded into the run metrics", n))
+		}
+		// At the budget or on a cancel OpenShell kills nothing, so codex's
+		// children can record more after the read.
+		if len(childIDs.IDs) > 0 && (ctx.Err() != nil || exitCode == 124 || exitCode == -1) {
+			printer.StepWarn("Sub-agent usage may be undercounted: codex was stopped, and its children can record more after the read")
+		}
 	}
 
 	if exitCode == 0 && lastResult != nil && lastResult.IsError {

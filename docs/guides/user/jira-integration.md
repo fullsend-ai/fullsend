@@ -49,7 +49,7 @@ Currently, agents process Jira-sourced dispatches and write substantive results 
 
 The CLI primitive for posting comments to Jira exists — `fullsend issues post-comment --tracker jira` — along with the underlying `tracker.Client` Jira implementation ([#5989](https://github.com/fullsend-ai/fullsend/issues/5989)). However, the built-in agent pipeline does not use it yet: agent pre/post scripts still expect a GitHub issue number, not a Jira key ([#2264](https://github.com/fullsend-ai/fullsend/issues/2264)).
 
-This means the person who commented `/fs-triage` on a Jira issue will see the run-status updates in Jira, but needs to check the linked GitHub repo for the triage result. Until agent-pipeline integration lands ([#2264](https://github.com/fullsend-ai/fullsend/issues/2264)), treat Jira as a **trigger source for substantive built-in-agent output**: it can start agent work, while that output appears in GitHub. Custom agents can use `fullsend issues post-comment --tracker jira` directly to post results back to Jira.
+This means the person who commented `/fs-triage` on a Jira issue will see the run-status updates in Jira, but needs to check the linked GitHub repo for the triage result. Until agent-pipeline integration lands ([#2264](https://github.com/fullsend-ai/fullsend/issues/2264)), treat Jira as a **trigger source for substantive built-in-agent output**: it can start agent work, while that output appears in GitHub. Custom agents can use `fullsend issues post-comment --tracker jira` directly to post results back to Jira, and `fullsend issues create --tracker jira` to create Jira issues and sub-tasks. See [Issue commands](issues-commands.md) for usage.
 
 ## Prerequisites
 
@@ -434,3 +434,4 @@ However, more pollers against the same Jira project means more API calls per cyc
 - [CEL Triggers Reference](cel-triggers-reference.md) — NormalizedEvent fields and routing rules
 - [Bring Your Own Agent](bring-your-own-agent.md) — adding custom agents
 - [Configuring agent behavior](customizing-agents.md) — harness configuration
+- [Issue commands](issues-commands.md) — `fullsend issues get`, `create`, and `post-comment`, including Jira

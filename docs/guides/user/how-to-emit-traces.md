@@ -123,35 +123,44 @@ to a backend like MLflow, Jaeger, Grafana Tempo, etc.
 
 ## Capture conversation content
 
-Set `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` to add the agent's
-text, reasoning, tool calls, and their arguments and results — when the
-runtime's stream provides them; Claude runs do — to each `agent` span, in the
-local file and
-at the endpoint. A retry that carries validation feedback also records the
-prompt the runner composed. Content is redacted for secrets and bounded per iteration;
-a string that held a terminal colour or title code or tag characters, as most
-coloured CLI output does, or that was not valid UTF-8 or held the replacement character (U+FFFD), is recorded as `***` whole, and so is a retry
-prompt the runner sanitized, or cut at its size bound while it held compatibility
-characters or a URL with userinfo, a query or a fragment; feedback cut otherwise is still recorded. Content may still contain proprietary code or PII:
-tool arguments carry the commands an agent ran and the paths and patterns it used.
-A `Write`, `Edit` or `NotebookEdit` body, an `Agent` or `WebFetch` prompt and the
-input of MCP tools are not recorded as arguments, though a tool's result can quote
-what it wrote and a call's summary keeps the first 120 characters of its input;
-a `Bash` command is recorded whole (up to 8 KiB) and can embed the file content
-it writes. A URL in the record has its userinfo, query and fragment masked, as
-written in a command, text or JSON; the developer guide's tracing page lists the
-forms it does not read. Make sure your backend's
-access controls fit before enabling it.
+By default, traces carry metadata only: timing, token counts, tool names, and
+errors. Set `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` to also record
+the agent's conversation content (Level 3) on each `agent` span: its text,
+reasoning, tool calls, and tool results. On a retry that carries validation
+feedback, the prompt the runner composed is recorded too. Content goes to the
+local `run-telemetry.jsonl` file and, when configured, to the endpoint.
+
+To enable it on a repository:
 
 ```bash
 gh variable set OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT --body "true" --repo <owner/repo>
 ```
 
-With the `claude` runtime, id-bearing tool calls are visible at every level as
-`execute_tool` child spans of each `agent` span (tool name, call id, timing,
-error) — that is metadata, not content, and this variable does not affect
-it. The pi and codex runtimes emit none yet (see
-[Runtimes](../../runtimes.md)).
+To enable it for all repositories in an organization:
+
+```bash
+gh variable set OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT \
+  --body "true" \
+  --org <org> --visibility all
+```
+
+::: warning Check your backend's access controls first
+Content is redacted for secrets and bounded in size, but it can still contain
+proprietary code or PII, such as the commands an agent ran and the file paths
+it read. Make sure your backend's access controls are appropriate before
+enabling capture.
+:::
+
+What gets recorded depends on the agent runtime. Claude runs include tool
+arguments and results; the pi and codex runtimes do not yet (see
+[Runtimes](../../runtimes.md)). With the `claude` runtime, tool calls also
+appear as `execute_tool` child spans at every level. Those spans are metadata,
+and this variable does not affect them.
+
+For accepted values, redaction rules, size limits, and the attributes that
+hold content, see
+[Content capture (Level 3)](../infrastructure/distributed-tracing.md#content-capture-level-3)
+in the Tracing Reference.
 
 ## Disable trace export
 

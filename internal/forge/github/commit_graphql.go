@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -159,7 +160,7 @@ func (c *LiveClient) createCommitOnBranch(ctx context.Context, owner, repo, bran
 			}
 			return oid, nil
 		}
-		if firstGraphQLError(result.Errors, "STALE_DATA") != nil {
+		if staleHeadError(result.Errors) != nil {
 			// doRequest resends the mutation after a 5xx or timeout, and a
 			// resend of a commit GitHub had already applied is stale against
 			// that commit: the branch content tells it from a concurrent
@@ -187,6 +188,11 @@ func (c *LiveClient) createCommitOnBranch(ctx context.Context, owner, repo, bran
 		case <-ctx.Done():
 			return "", ctx.Err()
 		case <-c.afterFunc(delay):
+		}
+		// The target may have changed during the wait; a refused guard
+		// means the mutation is not resent.
+		if err := checkRetryGuard(ctx, http.MethodPost, c.graphqlEndpoint()); err != nil {
+			return "", fmt.Errorf("create commit on branch: %w", err)
 		}
 	}
 }
@@ -268,13 +274,34 @@ func firstGraphQLError(errs []graphQLError, typ string) *graphQLError {
 	return nil
 }
 
+// staleHeadMessage matches GitHub's stale expectedHeadOid text ("is at
+// <sha> but expected <sha>"), which it has also sent typed FORBIDDEN
+// (#8580). Both SHAs are required so SAML, missing-scope and rule-violation
+// FORBIDDEN errors do not match.
+var staleHeadMessage = regexp.MustCompile(`is at [0-9a-f]{40} but expected [0-9a-f]{40}`)
+
+// staleHeadError returns the first STALE_DATA entry, else the first entry
+// whose message reports a stale expectedHeadOid whatever its type.
+func staleHeadError(errs []graphQLError) *graphQLError {
+	if e := firstGraphQLError(errs, "STALE_DATA"); e != nil {
+		return e
+	}
+	for i := range errs {
+		if staleHeadMessage.MatchString(errs[i].Message) {
+			return &errs[i]
+		}
+	}
+	return nil
+}
+
 // classifyCreateCommitErrors maps the errors array onto forge sentinels.
 // GitHub may return several entries, so the most actionable wins: a
 // protection rejection (classic protection answers
 // BRANCH_PROTECTION_RULE_VIOLATION, rulesets FORBIDDEN with rule-violation
-// text), then STALE_DATA, NOT_FOUND, RATE_LIMITED, FORBIDDEN, then the
-// first error as is. An exhausted RATE_LIMITED is reported as a 429
-// *APIError so IsRateLimitError and forge.IsTransient still apply.
+// text), then a stale head (STALE_DATA, or any type with stale-head text),
+// NOT_FOUND, RATE_LIMITED, FORBIDDEN, then the first error as is. An
+// exhausted RATE_LIMITED is reported as a 429 *APIError so IsRateLimitError
+// and forge.IsTransient still apply.
 func classifyCreateCommitErrors(errs []graphQLError) error {
 	if len(errs) == 0 {
 		return errors.New("create commit on branch: empty errors array")
@@ -288,7 +315,7 @@ func classifyCreateCommitErrors(errs []graphQLError) error {
 		}
 		return fmt.Errorf("create commit on branch: %w: %w", forge.ErrBranchProtected, &errs[i])
 	}
-	if e := firstGraphQLError(errs, "STALE_DATA"); e != nil {
+	if e := staleHeadError(errs); e != nil {
 		return fmt.Errorf("create commit on branch: %w: %w", forge.ErrNonFastForward, e)
 	}
 	if e := firstGraphQLError(errs, "NOT_FOUND"); e != nil {
