@@ -119,7 +119,7 @@ jobs:
       issues: read
       pull-requests: read
     outputs:
-      stage: ${{ steps.kill-switch.outputs.skipped != 'true' && steps.role-check.outputs.skipped != 'true' && steps.agent-check.outputs.skipped != 'true' && steps.pr-check.outputs.skipped != 'true' && steps.route.outputs.stage || '' }}
+      stage: ${{ steps.kill-switch.outputs.skipped != 'true' && steps.role-check.outputs.skipped != 'true' && steps.agent-check.outputs.skipped != 'true' && steps.route.outputs.stage || '' }}
       trigger_source: ${{ steps.route.outputs.trigger_source }}
       event_payload: ${{ steps.payload.outputs.event_payload }}
       authorization_denied: ${{ steps.authorization.outputs.authorization_denied || 'false' }}
@@ -479,55 +479,6 @@ jobs:
             echo "authorization_denied=${AUTHORIZATION_DENIED}"
           } >> "${GITHUB_OUTPUT}"
 
-      - name: Check for existing PRs
-        id: pr-check
-        if: steps.route.outputs.requested_stage == 'code'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
-          SOURCE_REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          # Query for PRs that actually close this issue (Fixes/Closes/Resolves
-          # keywords), not a substring search over title/body — the latter
-          # false-positives on any PR that merely references the issue (#5575).
-          # closedByPullRequestsReferences also returns MERGED PRs regardless of
-          # includeClosedPrs, so filter on .state explicitly. Exclude the code-
-          # agent bot via __typename + login so it can re-dispatch even when it
-          # already has an open PR (#5974); other bots (e.g. Renovate) still
-          # block. See docs/contributing/bot-identities.md for the login format.
-          # NOTE: bot identity is checked in three places — (1) this existing-PR
-          # guard (GraphQL __typename), (2) the fix eligibility script
-          # (.defaults/.github/scripts/check-fix-eligibility.sh — gh pr view
-          # is_bot/login), (3) org-scaffold dispatch.yml:226 (webhook [bot]$
-          # regex). See docs/contributing/bot-identities.md.
-          OWNER="${SOURCE_REPO%%/*}"
-          REPO_NAME="${SOURCE_REPO##*/}"
-          GQL_ERR=$(mktemp)
-          if ! LINKED_PRS=$(gh api graphql -f query='
-            query($owner: String!, $repo: String!, $number: Int!) {
-              repository(owner: $owner, name: $repo) {
-                issue(number: $number) {
-                  closedByPullRequestsReferences(first: 20) {
-                    nodes { number state author { login __typename } }
-                  }
-                }
-              }
-            }' -f owner="${OWNER}" -f repo="${REPO_NAME}" -F number="${ISSUE_NUMBER}" \
-            --jq '[.data.repository.issue.closedByPullRequestsReferences.nodes[]
-                   | select(.state == "OPEN")
-                   | select(.author.__typename != "Bot" or .author.login != "fullsend-ai-coder")]
-                   | map("#\(.number)") | join(", ")' \
-            2>"${GQL_ERR}"); then
-            echo "::warning::Linked-PR query failed for issue #${ISSUE_NUMBER}: $(tr '\n' ' ' < "${GQL_ERR}" | sed 's/::/__/g')"
-            LINKED_PRS=""
-          fi
-          rm -f "${GQL_ERR}"
-          if [[ -n "${LINKED_PRS}" ]]; then
-            echo "::notice::Skipping code dispatch — issue #${ISSUE_NUMBER} has open PR(s) ${LINKED_PRS}"
-            echo "skipped=true" >> "${GITHUB_OUTPUT}"
-          fi
-
       - name: Validate routed stage
         if: steps.route.outputs.stage != ''
         env:
@@ -667,7 +618,7 @@ jobs:
 
       - name: Check agent is enabled
         id: agent-check
-        if: steps.route.outputs.requested_stage != '' && steps.kill-switch.outputs.skipped != 'true' && steps.role-check.outputs.skipped != 'true' && steps.pr-check.outputs.skipped != 'true'
+        if: steps.route.outputs.requested_stage != '' && steps.kill-switch.outputs.skipped != 'true' && steps.role-check.outputs.skipped != 'true'
         env:
           STAGE: ${{ steps.route.outputs.requested_stage }}
         run: |
@@ -746,7 +697,6 @@ jobs:
           KILL_SWITCH_SKIPPED: ${{ steps.kill-switch.outputs.skipped }}
           ROLE_SKIPPED: ${{ steps.role-check.outputs.skipped }}
           AGENT_SKIPPED: ${{ steps.agent-check.outputs.skipped }}
-          PR_SKIPPED: ${{ steps.pr-check.outputs.skipped }}
         run: |
           set -euo pipefail
           echo "authorization_denied=false" >> "${GITHUB_OUTPUT}"
@@ -773,8 +723,7 @@ jobs:
           fi
           if [[ "${ROUTE_AUTHORIZATION_DENIED}" != "true" \
             || "${ROLE_SKIPPED}" == "true" \
-            || "${AGENT_SKIPPED}" == "true" \
-            || "${PR_SKIPPED}" == "true" ]]; then
+            || "${AGENT_SKIPPED}" == "true" ]]; then
             exit 0
           fi
           echo "::notice::User ${COMMENT_USER_LOGIN} is not authorized to launch the requested agent"

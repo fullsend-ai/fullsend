@@ -241,7 +241,6 @@ func TestAuthorizationMetadataStep_EmitsPauseForHumanLaunch(t *testing.T) {
 		killSwitch   string
 		roleSkipped  string
 		agentSkipped string
-		prSkipped    string
 		wantPause    bool
 		wantDenied   bool
 	}{
@@ -257,10 +256,6 @@ func TestAuthorizationMetadataStep_EmitsPauseForHumanLaunch(t *testing.T) {
 		{
 			name:         "disabled agent suppresses denial",
 			agentSkipped: "true",
-		},
-		{
-			name:      "existing code PR suppresses denial",
-			prSkipped: "true",
 		},
 		{
 			name:       "runnable unauthorized launch emits denial",
@@ -291,7 +286,6 @@ func TestAuthorizationMetadataStep_EmitsPauseForHumanLaunch(t *testing.T) {
 				"KILL_SWITCH_SKIPPED="+tc.killSwitch,
 				"ROLE_SKIPPED="+tc.roleSkipped,
 				"AGENT_SKIPPED="+tc.agentSkipped,
-				"PR_SKIPPED="+tc.prSkipped,
 				"GITHUB_OUTPUT="+outputPath,
 			)
 			out, err := cmd.CombinedOutput()
