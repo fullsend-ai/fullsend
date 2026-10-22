@@ -88,7 +88,13 @@ each target repository's **`.fullsend/`** directory
 
 - What is the right isolation level — process, container, microVM, or separate cluster? (See [agent-infrastructure.md](problems/agent-infrastructure.md) and [security-threat-model.md](problems/security-threat-model.md).)
 - ~~How granular is network regulation? Allowlist of endpoints, or coarser controls?~~ Decided in [ADR 0065](ADRs/0065-provider-backed-policy-composition.md): network access is granted through provider profiles with per-endpoint allowlists.
-- Does the sandbox provide a pre-built environment (tools, language runtimes, repo clones), or does the agent set up its own workspace within the sandbox? (The environment-variable dimension is now a published, generated contract — [ADR 0146](ADRs/0146-sandbox-environment-contract-manifest.md), [manifest](normative/sandbox-env/v1/README.md); tools, runtimes, and workspace setup remain open.)
+- Does the sandbox provide a pre-built environment (tools, language
+  runtimes, repo clones), or does the agent set up its own workspace
+  within the sandbox? (The environment-variable dimension is now a
+  published, generated contract —
+  [ADR 0146](ADRs/0146-sandbox-environment-contract-manifest.md),
+  [manifest](normative/sandbox-env/v1/README.md); tools, runtimes,
+  and workspace setup remain open.)
 - ~~Is the sandbox the same for all agent roles, or does each role get a differently-scoped sandbox?~~ Decided in [ADR 0020](ADRs/0020-composable-single-responsibility-agents-with-individual-sandboxes.md): each agent gets its own sandbox with policies designed for its responsibility.
 
 **Decided:**
