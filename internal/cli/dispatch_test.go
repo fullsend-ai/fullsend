@@ -17,7 +17,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/normevent"
 )
 
-func TestWriteAuthorizationOutput(t *testing.T) {
+func TestWriteDispatchOutput_AuthorizationDenied(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "github-output")
 	t.Setenv("GITHUB_OUTPUT", path)
 	require.NoError(t, os.WriteFile(path, nil, 0o600))
@@ -37,7 +37,7 @@ func TestWriteAuthorizationOutput(t *testing.T) {
 	assert.Equal(t, "authorization_denied=true\nauthorization_actor=alice\nauthorization_actor_id=1234\nauthorization_number=42\n", string(data))
 }
 
-func TestWriteAuthorizationOutputSupportsCustomSlashCommand(t *testing.T) {
+func TestWriteDispatchOutput_AuthorizationDeniedSupportsCustomSlashCommand(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "github-output")
 	t.Setenv("GITHUB_OUTPUT", path)
 	require.NoError(t, os.WriteFile(path, nil, 0o600))
@@ -57,7 +57,7 @@ func TestWriteAuthorizationOutputSupportsCustomSlashCommand(t *testing.T) {
 	assert.Contains(t, string(data), "authorization_actor_id=1234")
 }
 
-func TestWriteDispatchOutputKillSwitch(t *testing.T) {
+func TestWriteDispatchOutput_KillSwitch(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "github-output")
 	t.Setenv("GITHUB_OUTPUT", path)
 	require.NoError(t, os.WriteFile(path, nil, 0o600))
@@ -77,7 +77,7 @@ func TestWriteDispatchOutputKillSwitch(t *testing.T) {
 	assert.Equal(t, "dispatch_blocked_reason=kill_switch\nauthorization_actor=alice\nauthorization_actor_id=1234\nauthorization_number=42\n", string(data))
 }
 
-func TestWriteAuthorizationOutputSkipsNonDeniedOrNonHuman(t *testing.T) {
+func TestWriteDispatchOutput_SkipsNonDeniedOrNonHuman(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "github-output")
 	t.Setenv("GITHUB_OUTPUT", path)
 	for _, event := range []*normevent.Event{
@@ -90,7 +90,7 @@ func TestWriteAuthorizationOutputSkipsNonDeniedOrNonHuman(t *testing.T) {
 	assert.ErrorIs(t, err, os.ErrNotExist)
 }
 
-func TestWriteAuthorizationOutputSkipsInvalidLogin(t *testing.T) {
+func TestWriteDispatchOutput_SkipsInvalidLogin(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "github-output")
 	t.Setenv("GITHUB_OUTPUT", path)
 	event := &normevent.Event{
@@ -105,7 +105,7 @@ func TestWriteAuthorizationOutputSkipsInvalidLogin(t *testing.T) {
 	assert.ErrorIs(t, err, os.ErrNotExist)
 }
 
-func TestWriteAuthorizationOutputSkipsAutomaticTrigger(t *testing.T) {
+func TestWriteDispatchOutput_SkipsAutomaticTrigger(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "github-output")
 	t.Setenv("GITHUB_OUTPUT", path)
 	event := &normevent.Event{
@@ -120,7 +120,7 @@ func TestWriteAuthorizationOutputSkipsAutomaticTrigger(t *testing.T) {
 	assert.ErrorIs(t, err, os.ErrNotExist)
 }
 
-func TestWriteAuthorizationOutputSkipsMissingNumericID(t *testing.T) {
+func TestWriteDispatchOutput_SkipsMissingNumericID(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "github-output")
 	t.Setenv("GITHUB_OUTPUT", path)
 	event := &normevent.Event{
@@ -135,7 +135,7 @@ func TestWriteAuthorizationOutputSkipsMissingNumericID(t *testing.T) {
 	assert.ErrorIs(t, err, os.ErrNotExist)
 }
 
-func TestWriteAuthorizationOutputReportsOutputError(t *testing.T) {
+func TestWriteDispatchOutput_ReportsOutputError(t *testing.T) {
 	outputPath := t.TempDir()
 	t.Setenv("GITHUB_OUTPUT", outputPath)
 	event := &normevent.Event{

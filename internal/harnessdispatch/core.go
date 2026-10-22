@@ -57,7 +57,23 @@ func DispatchResult(ctx context.Context, opts Options) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	if dirCfg.IsKillSwitchActive() {
+	killSwitchActive := dirCfg.IsKillSwitchActive()
+	if killSwitchActive {
+		// A kill switch blocks execution, but it must not turn every slash
+		// command into a paused-agent notice. Evaluate triggers first so the
+		// caller can distinguish an actual agent launch request from commands
+		// handled by another workflow, such as /fs-fix-stop.
+		candidates, err := ListTriggeredHarnesses(ctx, opts.ConfigDir, dirCfg, opts.FetchPolicy)
+		if err != nil {
+			return Result{}, nil
+		}
+		matched, err := MatchHarnesses(candidates, opts.Event)
+		if err != nil {
+			return Result{}, err
+		}
+		if len(matched) == 0 {
+			return Result{}, nil
+		}
 		return Result{DispatchBlockedReason: "kill_switch"}, nil
 	}
 

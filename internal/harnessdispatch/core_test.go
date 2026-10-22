@@ -2,6 +2,7 @@ package harnessdispatch
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -16,11 +17,9 @@ import (
 
 func TestDispatch_KillSwitch(t *testing.T) {
 	dir := t.TempDir()
-	cfg := config.NewPerRepoConfig(nil, "o/r")
-	cfg.SetKillSwitch(true)
-	data, err := yaml.Marshal(cfg)
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), data, 0o644))
+	writeHarnessConfig(t, dir, killSwitchLabelHarnessYAML(), func(cfg config.PerRepoConfigWriter) {
+		cfg.SetKillSwitch(true)
+	})
 
 	ev := mustEvent(t, "ready-to-code-labeled.json")
 	result, err := DispatchResult(context.Background(), Options{ConfigDir: dir, Event: ev})
@@ -28,6 +27,35 @@ func TestDispatch_KillSwitch(t *testing.T) {
 	assert.Empty(t, result.Refs)
 	assert.Equal(t, "kill_switch", result.DispatchBlockedReason)
 	assert.False(t, result.AuthorizationDenied)
+}
+
+func TestDispatchResult_KillSwitchOnlyForMatchingHumanCommand(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		command     string
+		wantBlocked bool
+	}{
+		{name: "unmatched fix stop command", command: "/fs-fix-stop"},
+		{name: "matched custom launch command", command: "/analyze", wantBlocked: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeHarnessConfig(t, dir, slashCommandHarnessYAML("/analyze"), func(cfg config.PerRepoConfigWriter) {
+				cfg.SetKillSwitch(true)
+			})
+
+			ev := mustEvent(t, "fs-fix-comment.json")
+			ev.Transition.Comment.Command = tc.command
+			result, err := DispatchResult(context.Background(), Options{ConfigDir: dir, Event: ev})
+			require.NoError(t, err)
+			assert.Empty(t, result.Refs)
+			if tc.wantBlocked {
+				assert.Equal(t, "kill_switch", result.DispatchBlockedReason)
+			} else {
+				assert.Empty(t, result.DispatchBlockedReason)
+			}
+		})
+	}
 }
 
 func TestDispatch_AuthDeny(t *testing.T) {
@@ -146,6 +174,30 @@ trigger: |
   && event.transition.kind == "label_changed"
   && event.transition.label.name == "ready-for-ping"
 `
+}
+
+func killSwitchLabelHarnessYAML() string {
+	return `agent: agents/triage.md
+role: triage
+slug: fullsend-ai-kill-switch-label
+model: opus
+image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
+trigger: |
+  event.transition.kind == "label_changed"
+  && event.transition.label.name == "ready-to-code"
+`
+}
+
+func slashCommandHarnessYAML(command string) string {
+	return fmt.Sprintf(`agent: agents/triage.md
+role: triage
+slug: fullsend-ai-slash-command
+model: opus
+image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
+trigger: |
+  event.transition.kind == "comment_added"
+  && event.transition.comment.command == %q
+`, command)
 }
 
 func TestDispatch_OwnersUpgradesActorRole(t *testing.T) {
