@@ -15,6 +15,7 @@ func TestBuilder_CanonicalForm(t *testing.T) {
 		AddRuntimeSpecific("opencode").
 		AddHarnessDelivered("GOOGLE_APPLICATION_CREDENTIALS", "Vertex scaffold").
 		AddReserved("GH_WORKFLOW_TOKEN", "OPENAI_API_KEY", "GH_WORKFLOW_TOKEN").
+		AddDeprecated("OLD_VAR_B", "OLD_VAR_A", "OLD_VAR_B").
 		Build()
 
 	assert.Equal(t, SchemaVersion, m.SchemaVersion)
@@ -28,6 +29,7 @@ func TestBuilder_CanonicalForm(t *testing.T) {
 		"GOOGLE_APPLICATION_CREDENTIALS": {Provenance: "Vertex scaffold"},
 	}, m.HarnessDelivered)
 	assert.Equal(t, []string{"GH_WORKFLOW_TOKEN", "OPENAI_API_KEY"}, m.Reserved)
+	assert.Equal(t, []string{"OLD_VAR_A", "OLD_VAR_B"}, m.Deprecated)
 }
 
 func TestBuilder_EmptyCategoriesRenderEmptyJSON(t *testing.T) {
@@ -39,6 +41,7 @@ func TestBuilder_EmptyCategoriesRenderEmptyJSON(t *testing.T) {
 	assert.Contains(t, string(data), `"runtime_specific": {}`)
 	assert.Contains(t, string(data), `"harness_delivered": {}`)
 	assert.Contains(t, string(data), `"reserved": []`)
+	assert.Contains(t, string(data), `"deprecated": []`)
 }
 
 func TestBuilder_ZeroValueUsable(t *testing.T) {
@@ -49,6 +52,7 @@ func TestBuilder_ZeroValueUsable(t *testing.T) {
 		AddRuntimeSpecific("opencode").
 		AddHarnessDelivered("CLOUD_ML_REGION", "Vertex scaffold").
 		AddReserved("GH_WORKFLOW_TOKEN").
+		AddDeprecated("LEGACY_VAR").
 		Build()
 
 	assert.Equal(t, SchemaVersion, m.SchemaVersion)

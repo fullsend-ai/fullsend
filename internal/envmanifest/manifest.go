@@ -33,6 +33,7 @@ type Manifest struct {
 	Exports          Exports                     `json:"exports"`
 	HarnessDelivered map[string]HarnessDelivered `json:"harness_delivered"`
 	Reserved         []string                    `json:"reserved"`
+	Deprecated       []string                    `json:"deprecated"`
 }
 
 // Exports groups the runner-exported variable categories. Always and
@@ -86,9 +87,9 @@ func Parse(data []byte) (*Manifest, error) {
 // renders as [] or {} instead of null, and the harness-delivered
 // not-runner-guaranteed label enforced. m itself is not modified.
 func (m Manifest) normalized() Manifest {
-	conditional := m.Exports.Conditional
-	if conditional == nil {
-		conditional = map[string]string{}
+	conditional := make(map[string]string, len(m.Exports.Conditional))
+	for k, v := range m.Exports.Conditional {
+		conditional[k] = v
 	}
 	runtimeSpecific := make(map[string][]string, len(m.Exports.RuntimeSpecific))
 	for runtime, names := range m.Exports.RuntimeSpecific {
@@ -108,6 +109,7 @@ func (m Manifest) normalized() Manifest {
 		},
 		HarnessDelivered: harnessDelivered,
 		Reserved:         sortedUnique(m.Reserved),
+		Deprecated:       sortedUnique(m.Deprecated),
 	}
 }
 

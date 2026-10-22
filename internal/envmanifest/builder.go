@@ -8,6 +8,7 @@ type Builder struct {
 	runtimeSpecific  map[string][]string
 	harnessDelivered map[string]HarnessDelivered
 	reserved         []string
+	deprecated       []string
 }
 
 // NewBuilder returns an empty manifest builder.
@@ -63,6 +64,13 @@ func (b *Builder) AddReserved(names ...string) *Builder {
 	return b
 }
 
+// AddDeprecated records variables that are deprecated and scheduled for
+// removal in a future version.
+func (b *Builder) AddDeprecated(names ...string) *Builder {
+	b.deprecated = append(b.deprecated, names...)
+	return b
+}
+
 // Build returns the manifest stamped with the current schema version and
 // every category in canonical form.
 func (b *Builder) Build() Manifest {
@@ -75,5 +83,6 @@ func (b *Builder) Build() Manifest {
 		},
 		HarnessDelivered: b.harnessDelivered,
 		Reserved:         b.reserved,
+		Deprecated:       b.deprecated,
 	}.normalized()
 }
