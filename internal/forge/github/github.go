@@ -4633,7 +4633,7 @@ func (c *LiveClient) GetAppClientID(ctx context.Context, slug string) (string, e
 func (c *LiveClient) GetCollaboratorPermission(ctx context.Context, owner, repo, username string) (string, error) {
 	perm, err := c.fetchCollaboratorPermission(ctx, owner, repo, username)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("get collaborator permission for %s: %w", username, err)
 	}
 	if perm.RoleName == "" {
 		return "", fmt.Errorf("%w: no permission for %s", forge.ErrNotFound, username)
@@ -4644,7 +4644,7 @@ func (c *LiveClient) GetCollaboratorPermission(ctx context.Context, owner, repo,
 func (c *LiveClient) GetCollaboratorPermissionDetail(ctx context.Context, owner, repo, username string) (forge.GitHubCollaboratorPermissionDetail, error) {
 	perm, err := c.fetchCollaboratorPermission(ctx, owner, repo, username)
 	if err != nil {
-		return forge.GitHubCollaboratorPermissionDetail{}, err
+		return forge.GitHubCollaboratorPermissionDetail{}, fmt.Errorf("get collaborator permission for %s: %w", username, err)
 	}
 	if perm.Permission == "" {
 		return forge.GitHubCollaboratorPermissionDetail{}, fmt.Errorf("decode collaborator permission for %s: missing permission field", username)
@@ -4660,11 +4660,7 @@ func (c *LiveClient) fetchCollaboratorPermission(ctx context.Context, owner, rep
 		url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(username))
 	resp, err := c.get(ctx, path)
 	if err != nil {
-		var apiErr *APIError
-		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
-			return collaboratorPermission{}, fmt.Errorf("%w: collaborator %s", forge.ErrNotFound, username)
-		}
-		return collaboratorPermission{}, fmt.Errorf("get collaborator permission for %s: %w", username, err)
+		return collaboratorPermission{}, err
 	}
 	var perm collaboratorPermission
 	if err := decodeJSON(resp, &perm); err != nil {

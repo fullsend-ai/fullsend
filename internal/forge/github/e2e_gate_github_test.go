@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -38,6 +39,30 @@ func TestGetCollaboratorPermissionDetail(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "write", detail.RoleName)
 	assert.Equal(t, "read", detail.Permission)
+}
+
+func TestGetCollaboratorPermission_HTTP404(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	_, err := newTestClient(t, srv).GetCollaboratorPermission(context.Background(), "o", "r", "alice")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "get collaborator permission for alice")
+	assert.True(t, forge.IsNotFound(err))
+}
+
+func TestGetCollaboratorPermissionDetail_HTTP404(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	_, err := newTestClient(t, srv).GetCollaboratorPermissionDetail(context.Background(), "o", "r", "alice")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "get collaborator permission for alice")
+	assert.True(t, forge.IsNotFound(err))
 }
 
 func TestGetCollaboratorPermissionDetail_MissingPermission(t *testing.T) {
