@@ -172,7 +172,12 @@ It's slow and hard to detect. Each individual change looks fine. The degradation
 
 Drift becomes detectable when you have a declared baseline to measure against. An organization's architecture documentation — ADRs, per-service architecture docs — provides that baseline. See [architectural-invariants.md](architectural-invariants.md) for a full treatment of how agents can consume and enforce these constraints, both at PR time and through periodic drift detection scans.
 
-The runner's environment surface now has such a baseline: which env vars the sandbox receives, per runtime and under documented gates, is published as a generated, machine-checkable manifest rather than hand-synced descriptions, so content repos can verify env-var reachability against a released runner ([ADR 0146](../ADRs/0146-sandbox-environment-contract-manifest.md)).
+The runner's environment surface now has such a baseline: which env
+vars the sandbox receives, per runtime and under documented gates, is
+published as a generated, machine-checkable manifest rather than
+hand-synced descriptions, so content repos can verify env-var
+reachability against a released runner
+([ADR 0146](../ADRs/0146-sandbox-environment-contract-manifest.md)).
 
 Drift from security-relevant invariants (RBAC model, trusted component model, build provenance chain) is a security concern, not just a quality concern.
 

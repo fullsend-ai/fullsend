@@ -42,16 +42,18 @@ at PR time, `main` nightly ([ADR 0139](0139-agent-functional-test-suite-lives-in
 
 ## Options
 
-**Hand-maintained manifest** — rejected: it recreates the drift (#1677 passed
-review the same way). **Behavior-level golden over `bootstrapEnv`** — strongest
-check, but needs fixtures for every emission gate; hardening follow-up.
+- **Hand-maintained manifest** — rejected: it recreates the drift
+  (#1677 passed review the same way).
+- **Behavior-level golden over `bootstrapEnv`** — strongest check,
+  but needs fixtures for every emission gate; hardening follow-up.
 
 ## Decision
 
 Publish the sandbox environment contract as a generated, committed manifest
 at [`sandbox-env.json`](../normative/sandbox-env/v1/sandbox-env.json), with
 schema and category semantics in its [README](../normative/sandbox-env/v1/README.md).
-A collector derives it by executing the production emitters — the
+A build-time collector generates the manifest by running every code
+path that injects environment variables into the sandbox — the
 `bootstrapEnv` `.env` emission, the per-iteration env, trace-ID injection,
 the security-hook env, each production runtime's `EnvExports()`, the
 `fullsend agent new` Vertex scaffold, and the effective reserved-key set
@@ -62,7 +64,9 @@ when a runtime is newly registered without a manifest decision.
 
 The manifest is fetchable at any tag via raw.githubusercontent.com — the pinned-URL
 mechanism of [ADR 0038](0038-universal-harness-access.md) — and the tag is the
-version: no `fullsend_version` field. Consumers validate env-var reachability
+version — the tag itself is the version identifier, so the manifest
+carries no embedded `fullsend_version` field. Consumers validate env-var
+reachability
 against the latest released tag at PR time and `main` nightly, following the
 [ADR 0139](0139-agent-functional-test-suite-lives-in-agents-repo.md) bridge.
 
@@ -77,6 +81,15 @@ against the latest released tag at PR time and `main` nightly, following the
 - The manifest is derived contract data — no runtime cost or behavior change.
 - `harness_delivered` variables are labeled not-runner-guaranteed: their
   provenance is the stock scaffold and may lag the fleet's `gcp-vertex.env`.
+
+## Forge scope
+
+The manifest is forge-agnostic: it describes the variables the runner
+injects into the sandbox regardless of which forge hosts the repository.
+The fetch URL uses raw.githubusercontent.com because fullsend is hosted on
+GitHub; a GitLab or Forgejo deployment would use the equivalent raw-file
+endpoint. Consumer validation logic (parse, fail closed) is
+forge-independent.
 
 ## References
 
