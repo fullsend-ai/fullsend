@@ -123,6 +123,7 @@ comment.
 |-----|----------|---------|
 | `skipped` | no | `true` or `false`. Any other value — including an empty one — is an error. |
 | `reason` | no | Short human-readable explanation, shown in the run log and in the status comment. |
+| `disabled` | no | `true` or `false`. CLI-emitted only; pre-scripts must not emit this key. Indicates the agent was explicitly disabled in configuration. |
 
 Reserved keys are **lowercase**. A key differing only in case (`SKIPPED=true`)
 is a hard error rather than an unrelated output — see [Error semantics](#error-semantics).
@@ -188,7 +189,10 @@ When running under GitHub Actions (`GITHUB_ACTIONS=true` **and** `GITHUB_OUTPUT`
 set), `fullsend run` appends the outputs to `$GITHUB_OUTPUT` on every path it
 reaches the skip decision on — skip, proceed, and harnesses that define no
 `pre_script` at all — with `skipped` normalized to `true`/`false`. The composite
-action re-exports them as the `skipped` and `skip-reason` action outputs.
+action re-exports them as the `skipped`, `disabled`, and `skip-reason` action outputs.
+For agents explicitly disabled in configuration (`enabled: false`), `fullsend run`
+relays `skipped=true` alongside `disabled=true` and the skip reason; see
+[`docs/cli/run.md`](../../../cli/run.md#early-termination-and-skips) for CLI skip semantics.
 
 A consumer can therefore distinguish three states:
 
