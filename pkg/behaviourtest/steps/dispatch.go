@@ -16,6 +16,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
@@ -474,25 +475,33 @@ func ensureHarnessArtifacts(w *world.World, agent string) error {
 }
 
 func whenPullRequestOpened(w *world.World) error {
+	_, err := openPullRequest(w, w.SCM)
+	return err
+}
+
+// openPullRequest pushes a new branch with one commit and opens a pull
+// request from it through driver, so the PR author (and the sender of its
+// opened event) is driver's identity. It returns the head branch.
+func openPullRequest(w *world.World, driver scm.Driver) (string, error) {
 	if w.RepoOwner == "" || w.RepoName == "" {
-		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before PR operations")
+		return "", fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before PR operations")
 	}
 	w.ScenarioStart = time.Now()
 	branch := fmt.Sprintf("behaviour-pr-%d", time.Now().UnixNano())
 	ctx := context.Background()
-	if err := w.SCM.CreateBranch(ctx, w.RepoOwner, w.RepoName, branch); err != nil {
-		return err
+	if err := driver.CreateBranch(ctx, w.RepoOwner, w.RepoName, branch); err != nil {
+		return "", err
 	}
 	msg := fmt.Sprintf("behaviour pr %s", branch)
-	if err := w.SCM.CommitFileToBranch(ctx, w.RepoOwner, w.RepoName, branch, "behaviour/pr.txt", msg, []byte("behaviour test\n")); err != nil {
-		return err
+	if err := driver.CommitFileToBranch(ctx, w.RepoOwner, w.RepoName, branch, "behaviour/pr.txt", msg, []byte("behaviour test\n")); err != nil {
+		return branch, err
 	}
-	pr, err := w.SCM.CreateChangeProposal(ctx, w.RepoOwner, w.RepoName, "Behaviour test PR", "behaviour", branch, "main")
+	pr, err := driver.CreateChangeProposal(ctx, w.RepoOwner, w.RepoName, "Behaviour test PR", "behaviour", branch, "main")
 	if err != nil {
-		return err
+		return branch, err
 	}
 	w.PRNumber = pr.Number
-	return nil
+	return branch, nil
 }
 
 func whenPullRequestLabeled(w *world.World, label string) error {

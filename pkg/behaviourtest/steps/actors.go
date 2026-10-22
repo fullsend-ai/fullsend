@@ -27,6 +27,9 @@ func registerActorSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the (`+actorAlternation+`) posts "([^"]+)" on the issue$`, func(ctx context.Context, actor, body string) (context.Context, error) {
 		return ctx, whenActorPostsComment(world.FromContext(ctx), actor, body)
 	})
+	sc.Step(`^the write actor opens a pull request$`, func(ctx context.Context) (context.Context, error) {
+		return ctx, whenActorOpensPullRequest(world.FromContext(ctx), actorWrite)
+	})
 	sc.Step(`^the (`+actorAlternation+`) posts "([^"]+)" on the pull request$`, func(ctx context.Context, actor, body string) (context.Context, error) {
 		return ctx, whenActorPostsPRComment(world.FromContext(ctx), actor, body)
 	})
@@ -95,6 +98,26 @@ func whenActorPostsComment(w *world.World, actor, body string) error {
 	_, err = actorSCM.AddComment(context.Background(),
 		w.RepoOwner, w.RepoName, w.IssueNumber, body)
 	return err
+}
+
+// whenActorOpensPullRequest opens a pull request as the named test actor,
+// so the PR author and the opened event's sender are a human with that
+// actor's repository role rather than the e2e installation identity (a
+// bot). The PR and its branch are registered for scenario cleanup.
+func whenActorOpensPullRequest(w *world.World, actor string) error {
+	actorSCM, _, err := actorIdentity(w, actor)
+	if err != nil {
+		return err
+	}
+	branch, err := openPullRequest(w, actorSCM)
+	if branch != "" {
+		w.CreatedBranches = append(w.CreatedBranches, branch)
+	}
+	if err != nil {
+		return err
+	}
+	w.CreatedPRNumbers = append(w.CreatedPRNumbers, w.PRNumber)
+	return nil
 }
 
 // whenActorPostsPRComment posts body on the scenario's pull request as the
