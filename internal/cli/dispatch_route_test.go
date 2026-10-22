@@ -491,7 +491,7 @@ func TestRouteBuiltinAgent_Errors(t *testing.T) {
 	})
 	t.Run("unsupported agent", func(t *testing.T) {
 		_, err := routeBuiltinAgent(context.Background(), routeOpts{agent: "code", configDir: t.TempDir(), event: routeEvent(t, routePROpened)})
-		require.ErrorContains(t, err, `unsupported --route agent "code" (supported: review)`)
+		require.ErrorContains(t, err, `unsupported --route agent "code" (supported: retro, review)`)
 	})
 	t.Run("nil event", func(t *testing.T) {
 		_, err := routeBuiltinAgent(context.Background(), routeOpts{agent: "review", configDir: t.TempDir()})

@@ -365,3 +365,50 @@ func TestFilterAuthorizedHarnesses(t *testing.T) {
 		names(FilterAuthorizedHarnesses(candidates, botLookupEvent(normevent.TransitionLabelChanged, "", nil))))
 	assert.Empty(t, FilterAuthorizedHarnesses(nil, human(normevent.RoleWrite)))
 }
+
+func TestIsLifecycleCloseAuthorized(t *testing.T) {
+	closeBy := func(kind normevent.TransitionKind, actor normevent.Actor) *normevent.Event {
+		return &normevent.Event{
+			Entity:     normevent.Entity{Kind: normevent.EntityChangeProposal, ID: 7},
+			Transition: normevent.Transition{Kind: kind},
+			Actor:      actor,
+			Source:     normevent.Source{System: normevent.SystemGitHub, RawType: "pull_request_target", RawAction: "closed"},
+		}
+	}
+	readAuthor := normevent.Actor{ID: "contributor", Kind: normevent.ActorHuman, Role: normevent.RoleRead, IsEntityAuthor: true}
+	appBot := normevent.Actor{ID: "dep-updater[bot]", Kind: normevent.ActorBot, Role: normevent.RoleNone}
+	failed := false
+	unrecognizedBot := normevent.Actor{ID: "stale[bot]", Kind: normevent.ActorBot, Role: normevent.RoleNone, RoleVerified: &failed}
+
+	t.Run("any closer is admitted for the retro role", func(t *testing.T) {
+		for name, ev := range map[string]*normevent.Event{
+			"read-only author closes": closeBy(normevent.TransitionClosed, readAuthor),
+			"app bot without a role":  closeBy(normevent.TransitionClosed, appBot),
+			"bot whose lookup failed": closeBy(normevent.TransitionClosed, unrecognizedBot),
+			"PR merged":               closeBy(normevent.TransitionMerged, readAuthor),
+		} {
+			assert.True(t, IsLifecycleCloseAuthorized(ev, "retro"), name)
+			assert.False(t, IsAuthorized(ev), "%s: the ordinary gate still denies it", name)
+		}
+	})
+	t.Run("other harness roles keep their threshold", func(t *testing.T) {
+		for _, role := range []string{"coder", "review", "triage", "fullsend", ""} {
+			assert.False(t, IsLifecycleCloseAuthorized(closeBy(normevent.TransitionClosed, readAuthor), role), role)
+		}
+	})
+	t.Run("other events are not lifecycle closes", func(t *testing.T) {
+		issueClosed := closeBy(normevent.TransitionClosed, readAuthor)
+		issueClosed.Entity.Kind = normevent.EntityWorkItem
+		reopened := closeBy(normevent.TransitionReopened, readAuthor)
+		gitlab := closeBy(normevent.TransitionMerged, readAuthor)
+		gitlab.Source.System = normevent.SystemGitLab
+		pullRequest := closeBy(normevent.TransitionClosed, readAuthor)
+		pullRequest.Source.RawType = "pull_request"
+		for name, ev := range map[string]*normevent.Event{
+			"issue closed": issueClosed, "PR reopened": reopened, "GitLab MR merged": gitlab,
+			"pull_request (not _target) closed": pullRequest, "nil event": nil,
+		} {
+			assert.False(t, IsLifecycleCloseAuthorized(ev, "retro"), name)
+		}
+	})
+}

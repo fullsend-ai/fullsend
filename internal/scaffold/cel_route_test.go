@@ -207,19 +207,29 @@ func TestCELRouteOptIn(t *testing.T) {
 
 func TestCELRouteOptIn_EventGate(t *testing.T) {
 	requireYQ(t)
-	files := map[string]string{".fullsend/config.yaml": "agents:\n  - name: review\n    trigger: \"true\"\n"}
+	files := map[string]string{".fullsend/config.yaml": "agents:\n  - name: review\n    trigger: \"true\"\n  - name: retro\n    trigger: \"true\"\n"}
 	cases := []struct {
-		name, event, isPR, stage, wantAgent string
+		name, event, isPR, stage, action, comment, wantAgent string
 	}{
-		{"PR event with no bash stage", "pull_request_target", "false", "", "review"},
-		{"PR event routed to review", "pull_request_target", "false", "review", "review"},
-		{"PR comment", "issue_comment", "true", "", "review"},
-		{"issue comment", "issue_comment", "false", "", ""},
-		{"PR event routed to another stage", "pull_request_target", "false", "retro", ""},
+		{"PR event with no bash stage", "pull_request_target", "false", "", "opened", "", "review"},
+		{"PR event routed to review", "pull_request_target", "false", "review", "synchronize", "", "review"},
+		{"PR comment", "issue_comment", "true", "", "created", "thanks", "review"},
+		{"issue comment", "issue_comment", "false", "", "created", "thanks", ""},
+		{"PR event routed to another stage", "pull_request_target", "false", "fix", "opened", "", ""},
+		{"PR closed routed to retro", "pull_request_target", "false", "retro", "closed", "", "retro"},
+		{"PR closed with no bash stage", "pull_request_target", "false", "", "closed", "", "retro"},
+		{"/fs-retro on a PR routed to retro", "issue_comment", "true", "retro", "created", "/fs-retro", "retro"},
+		{"/fs-retro on a PR bash denied", "issue_comment", "true", "", "created", "/fs-retro look at the fix loop", "retro"},
+		{"/fs-retro on an issue", "issue_comment", "false", "retro", "created", "/fs-retro.", "retro"},
+		{"/fs-retro on a later line is a plain PR comment", "issue_comment", "true", "", "created", "see\n/fs-retro", "review"},
+		{"/fs-review on a PR", "issue_comment", "true", "review", "created", "/fs-review", "review"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := runRouteStep(t, "Detect CEL route opt-in", optInEnv(tc.event, tc.isPR, tc.stage), files)
+			env := optInEnv(tc.event, tc.isPR, tc.stage)
+			env["EVENT_ACTION"] = tc.action
+			env["COMMENT_BODY"] = tc.comment
+			got := runRouteStep(t, "Detect CEL route opt-in", env, files)
 			assert.Equal(t, tc.wantAgent, got.outputs["agent"])
 			assert.Equal(t, map[bool]string{true: "true", false: "false"}[tc.wantAgent != ""], got.outputs["opt_in"])
 		})
@@ -238,6 +248,11 @@ func TestFinalizeStage_CELRoute(t *testing.T) {
 	withOptIn := func(outcome string) map[string]string {
 		env := finalizeEnv("review", "", "", "")
 		env["CEL_OPT_IN_OUTCOME"] = outcome
+		return env
+	}
+	retro := func(bashStage, decision string) map[string]string {
+		env := finalizeEnv(bashStage, "success", "success", decision)
+		env["ROUTE_AGENT"] = "retro"
 		return env
 	}
 	badAgent := finalizeEnv("", "success", "success", "run")
@@ -295,6 +310,23 @@ func TestFinalizeStage_CELRoute(t *testing.T) {
 			env:  hostile, wantStage: "",
 			wantLog:   "reason=bad: :error: :pwned 100%25 harness=x: :warning: :y\n",
 			wantNoLog: "\n::error::",
+		},
+		{
+			name: "retro skip clears a closed PR's bash retro stage",
+			env:  retro("retro", "skip"), wantStage: "", wantSummary: "retro_route=cel",
+			wantLog: "::notice::CEL route (retro): bash=retro cel=skip",
+		},
+		{
+			name: "retro run keeps a /fs-retro bash stage",
+			env:  retro("retro", "run"), wantStage: "retro", wantSummary: "retro_route=cel",
+		},
+		{
+			name: "retro run sets the stage where bash chose nothing",
+			env:  retro("", "run"), wantStage: "retro", wantSummary: "retro_route=cel",
+		},
+		{
+			name: "retro bash decision keeps the bash stage",
+			env:  retro("retro", "bash"), wantStage: "retro", wantSummary: "retro_route=bash",
 		},
 		{
 			name: "an unexpected agent name keeps the bash stage",

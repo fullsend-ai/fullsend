@@ -163,3 +163,26 @@ func IsRecognizedBot(actor normevent.Actor) bool {
 		actor.RoleVerified != nil && *actor.RoleVerified &&
 		actor.BotRole != ""
 }
+
+// lifecycleCloseRole is the harness role the lifecycle-close exception
+// admits: retro observes a closed pull request and does not change it.
+const lifecycleCloseRole = "retro"
+
+// IsLifecycleCloseAuthorized reports whether event is a GitHub
+// pull_request_target close (merged or not) and harnessRole, the resolved
+// harness role: of the agent being routed, is the retro role. Such an event is authorized for that harness whoever closed the pull
+// request: the authorization contract's lifecycle-close exception, which the
+// bash router applies by starting a retro for any closer. Like the label
+// exception it ignores the actor; a caller checks it before IsAuthorized,
+// which still denies these events. Unlike that exception it is scoped to one
+// harness role, because any pull request author can close their own pull
+// request, and every other harness keeps its ordinary threshold.
+func IsLifecycleCloseAuthorized(event *normevent.Event, harnessRole string) bool {
+	if event == nil || harnessRole != lifecycleCloseRole {
+		return false
+	}
+	return event.Source.System == normevent.SystemGitHub &&
+		event.Source.RawType == "pull_request_target" &&
+		event.Entity.Kind == normevent.EntityChangeProposal &&
+		(event.Transition.Kind == normevent.TransitionClosed || event.Transition.Kind == normevent.TransitionMerged)
+}

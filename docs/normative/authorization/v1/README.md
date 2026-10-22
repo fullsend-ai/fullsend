@@ -173,6 +173,10 @@ The bash dispatch implementation uses a parameterized
 > Developer access for every stage except retro and prioritize. The bash path (GitHub webhook
 > dispatch) applies the same thresholds per stage through
 > `has_repo_permission`.
+> Among the Go paths, only `fullsend dispatch --route retro` applies the
+> lifecycle-close exception; the bash path applies it for every closer and
+> CEL harness dispatch does not (see
+> [Lifecycle close](#lifecycle-close-pull_request_targetclosed)).
 
 ## Fail-closed behavior
 
@@ -257,9 +261,14 @@ role and review state are accepted.
 The `pull_request_target.closed` event that triggers the retro stage is
 intentionally ungated: any closer may trigger read-only lifecycle
 accounting. The retro agent performs only observation work and does not
-mutate repository state. This exception is currently implemented in
-the bash dispatch path. The Go CEL path has no special handling for closed
-transitions: the retro harness role resolves to the `write` threshold.
+mutate repository state. This exception is implemented in the bash
+dispatch path and, on GitHub, by `fullsend dispatch --route retro`
+(`IsLifecycleCloseAuthorized()` in `harnessdispatch`), which admits a
+`pull_request_target` close, merged or not, whoever closed it, for the
+retro role only. Any pull request author can close their own pull request,
+so no other harness role gets the exception. CEL harness dispatch has no
+special handling for closed transitions: the retro harness role resolves to
+the `write` threshold there.
 
 ### Schedule and manual dispatch
 

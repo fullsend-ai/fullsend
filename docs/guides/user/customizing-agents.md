@@ -830,6 +830,50 @@ the review entry is disabled.
 | `CEL route failed; keeping the bash stage` | A CEL route step failed or the configuration is invalid, so the dispatch workflow decided | Open the failed "… CEL route" step for the error, for example an invalid `trigger` or another invalid `agents:` entry |
 | `invalid agent config: agents[N] (review): invalid trigger` in any agent job | The `trigger` in `config.yaml` does not compile; every agent run validates the whole `agents:` list, so all agents fail, not only review | Fix the expression in `.fullsend/config.yaml` |
 
+## Choosing when retro runs
+
+By default, the dispatch workflow starts the retro agent when a pull request
+is closed, merged or not, and on a `/fs-retro` comment on an issue or a pull
+request. To decide it yourself, give the `retro` entry in
+`.fullsend/config.yaml` a `trigger`. The retro still runs in the same `Retro`
+job; the trigger only decides whether that job starts. What opts a repository
+in, and how to check the decision, work as for review: see
+[What opts a repository in](#what-opts-a-repository-in) and
+[Checking the decision](#checking-the-decision), with `retro` in place of
+`review` (`CEL route (retro): ...`, `retro_route=cel`).
+
+### Example: retro only on `/fs-retro`
+
+To stop the retro on every closed pull request but keep `/fs-retro`, add this
+entry to `.fullsend/config.yaml` on your default branch:
+
+```yaml
+agents:
+  - name: retro
+    trigger: >-
+      event.transition.kind == "comment_added"
+      && has(event.transition.comment.command)
+      && event.transition.comment.command == "/fs-retro"
+      && event.actor.kind == "human"
+```
+
+After the change merges, close a pull request: no retro starts. Comment
+`/fs-retro` on it: one retro starts.
+
+The `Route` job asks the trigger only about closed pull requests and
+`/fs-retro` comments; every other event keeps the dispatch workflow's rules,
+and a bot's `/fs-retro` comment never starts a retro.
+
+### Who can start a retro
+
+A trigger decides which events start a retro, not who may start one:
+
+- **Closing a pull request:** anyone who closes or merges it, including its
+  read-only author and bots without a registered fullsend role, as with the
+  dispatch workflow. Only the retro agent gets this exception (the
+  [lifecycle-close exception](../../normative/authorization/v1/README.md#lifecycle-close-pull_request_targetclosed)).
+- **`/fs-retro`:** users with write access or above.
+
 ## Agent dispatch authorization
 
 By default, fullsend checks the forge's permission API to decide who can

@@ -45,6 +45,9 @@ func registerDispatchSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^a review comment is submitted on the pull request$`, func(ctx context.Context) (context.Context, error) {
 		return ctx, whenPullRequestReviewComment(world.FromContext(ctx))
 	})
+	sc.Step(`^the pull request is closed$`, func(ctx context.Context) (context.Context, error) {
+		return ctx, whenPullRequestClosed(world.FromContext(ctx))
+	})
 	sc.Step(`^the kill switch is active$`, func(ctx context.Context) (context.Context, error) {
 		return ctx, givenKillSwitchActive(world.FromContext(ctx))
 	})
@@ -510,6 +513,17 @@ func whenPullRequestLabeled(w *world.World, label string) error {
 	}
 	w.ScenarioStart = time.Now()
 	return w.SCM.AddIssueLabels(context.Background(), w.RepoOwner, w.RepoName, w.PRNumber, label)
+}
+
+// whenPullRequestClosed closes the pull request without merging it. The e2e
+// installation identity closes it, so the closer is a bot with no
+// collaborator role.
+func whenPullRequestClosed(w *world.World) error {
+	if w.PRNumber == 0 {
+		return fmt.Errorf("no pull request opened")
+	}
+	w.ScenarioStart = time.Now()
+	return w.SCM.CloseIssue(context.Background(), w.RepoOwner, w.RepoName, w.PRNumber)
 }
 
 func whenPullRequestReviewComment(w *world.World) error {

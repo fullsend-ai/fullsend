@@ -435,7 +435,7 @@ jobs:
       # from the bash rules above to a CEL trigger by setting agents[].trigger
       # on the agent's entry in config.yaml; a harness trigger: never does.
       # The opt-in step picks the agent whose CEL route covers this event
-      # (review today) and looks for that entry; only then do the other cel-*
+      # (review or retro) and looks for that entry; only then do the other cel-*
       # steps install the CLI and let `fullsend dispatch --route <agent>`
       # decide. Every cel-* step continues on error: when a step or the
       # config fails, "Finalize stage" keeps the bash stage, so a CEL failure
@@ -450,6 +450,8 @@ jobs:
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ inputs.event_action }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
           ISSUE_IS_PR: ${{ github.event.issue.pull_request && 'true' || 'false' }}
           BASH_STAGE: ${{ steps.bash-route.outputs.stage }}
         run: |
@@ -460,10 +462,23 @@ jobs:
           # stage or none. Adding an agent: a gate block here, its
           # routableAgents entry, and this step's if: widened to the agent's
           # events. Gates must be mutually exclusive: each requires
-          # BASH_STAGE to be empty or its own agent.
+          # BASH_STAGE to be empty or its own agent, and a later gate also
+          # requires that no earlier one picked an agent.
           agent=""
+          # Same command parsing as "Determine stage".
+          COMMAND=""
+          if [[ -n "${COMMENT_BODY:-}" ]]; then
+            COMMAND="$(printf '%s\n' "${COMMENT_BODY}" | head -1 | tr -d '\r' | awk '{print $1}' | sed 's/[.,;:!?]*$//')"
+          fi
+          # retro: a closed pull request, or /fs-retro on an issue or a pull
+          # request.
+          if [[ ( "${EVENT_NAME}" == "pull_request_target" && "${EVENT_ACTION:-}" == "closed" ) || ( "${EVENT_NAME}" == "issue_comment" && "${COMMAND}" == "/fs-retro" ) ]] \
+            && [[ -z "${BASH_STAGE}" || "${BASH_STAGE}" == "retro" ]]; then
+            agent="retro"
+          fi
           # review: pull request events and comments on a pull request.
-          if [[ "${EVENT_NAME}" == "pull_request_target" || ( "${EVENT_NAME}" == "issue_comment" && "${ISSUE_IS_PR}" == "true" ) ]] \
+          if [[ -z "${agent}" ]] \
+            && [[ "${EVENT_NAME}" == "pull_request_target" || ( "${EVENT_NAME}" == "issue_comment" && "${ISSUE_IS_PR}" == "true" ) ]] \
             && [[ -z "${BASH_STAGE}" || "${BASH_STAGE}" == "review" ]]; then
             agent="review"
           fi
@@ -594,9 +609,9 @@ jobs:
           sparse-checkout-cone-mode: false
 
       # Installs from job.workflow_sha, as harness-dispatch does. A caller that
-      # pins fullsend_version runs the Review job on that version instead, so
+      # pins fullsend_version runs the agent's job on that version instead, so
       # the trigger can come from a different agents ref than the one the
-      # Review job runs.
+      # agent's job runs.
       - name: Install fullsend CLI for CEL route (upstream workflow)
         if: steps.cel-config.outcome == 'success' && steps.cel-cli-mode.outputs.mode == 'upstream' && steps.cel-cli-cache.outputs.cache-hit != 'true'
         continue-on-error: true

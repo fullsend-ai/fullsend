@@ -42,10 +42,25 @@ type routableAgent struct {
 	// accepts reports whether the event is one this agent's CEL route
 	// covers. Other events keep bash routing (routeBash).
 	accepts func(*normevent.Event) bool
+	// role is the role the agent's reusable-dispatch.yml job mints its
+	// token for, used by the authorization gate.
+	role string
 }
 
 var routableAgents = map[string]routableAgent{
-	"review": {accepts: reviewRouteAccepts},
+	"retro":  {accepts: retroRouteAccepts, role: "retro"},
+	"review": {accepts: reviewRouteAccepts, role: "review"},
+}
+
+// retroRouteAccepts covers the events bash routes to retro: a pull request
+// closed (merged or not), and /fs-retro on an issue or a pull request.
+func retroRouteAccepts(e *normevent.Event) bool {
+	if e.Entity.Kind == normevent.EntityChangeProposal &&
+		(e.Transition.Kind == normevent.TransitionClosed || e.Transition.Kind == normevent.TransitionMerged) {
+		return true
+	}
+	return e.Transition.Kind == normevent.TransitionCommentAdded &&
+		e.Transition.Comment != nil && e.Transition.Comment.Command == "/fs-retro"
 }
 
 // reviewRouteAccepts covers pull request events and comments on a pull
@@ -206,9 +221,17 @@ func routeBuiltinAgent(ctx context.Context, o routeOpts) (routeDecision, error) 
 
 	// Same gate as harness dispatch: the event-level rules, then the
 	// harness role threshold (IsHarnessAuthorized applies both), on the
-	// OWNERS-upgraded role.
+	// OWNERS-upgraded role. A closed pull request starts a retro whoever
+	// closed it (the lifecycle-close exception), keyed on the resolved
+	// harness role:, or on the agent's own role only when the harness could
+	// not be loaded (the agent's job mints that role either way).
+	exceptionRole := harnessRole
+	if harnessUnavailable {
+		exceptionRole = agent.role
+	}
 	authCheck := harnessdispatch.AuthCheckEvent(o.configDir, cfg, o.event)
-	if !harnessdispatch.IsHarnessAuthorized(&authCheck, harnessRole) {
+	if !harnessdispatch.IsLifecycleCloseAuthorized(o.event, exceptionRole) &&
+		!harnessdispatch.IsHarnessAuthorized(&authCheck, harnessRole) {
 		if harnessUnavailable {
 			return withDecision(d, routeSkip, "harness unavailable; actor below write"), nil
 		}
