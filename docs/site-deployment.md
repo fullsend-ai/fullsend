@@ -53,6 +53,14 @@ Create an API token that can deploy Workers for your account, for example:
 
 Store it as GitHub secret **`CLOUDFLARE_API_TOKEN`**. A token scoped **only** to "Cloudflare Pages — Edit" is **not** enough for `wrangler deploy` / `versions upload` on a Worker.
 
+### Zone settings (IaC)
+
+Zone-level settings for `fullsend.sh` (e.g. **Always Use HTTPS**) are managed with OpenTofu in
+[`infrastructure-as-code/cloudflare/`](../infrastructure-as-code/cloudflare/README.md) and applied by the
+**Cloudflare Infrastructure** workflow (`.github/workflows/cloudflare.yml`) on merge to `main`. That
+workflow uses its own zone-scoped GitHub secret (`CLOUDFLARE_IAC_API_TOKEN`), separate from the Workers
+deploy token above.
+
 ### Account ID and Worker name
 
 - Copy **Account ID** → secret **`CLOUDFLARE_ACCOUNT_ID`**.

@@ -1,0 +1,111 @@
+name: Cloudflare Infrastructure
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'infrastructure-as-code/cloudflare/**'
+      - '.github/workflows/cloudflare.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'infrastructure-as-code/cloudflare/**'
+      - '.github/workflows/cloudflare.yml'
+  merge_group:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # Never cancel in-progress runs on the default branch.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions: {}
+
+jobs:
+  tofu:
+    name: OpenTofu Plan & Apply
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: infrastructure-as-code/cloudflare
+    steps:
+      - name: Check for relevant changes
+        id: changes
+        if: github.event_name == 'merge_group'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          MERGE_GROUP_BASE: ${{ github.event.merge_group.base_sha }}
+          MERGE_GROUP_HEAD: ${{ github.event.merge_group.head_sha }}
+        # SYNC-WITH: push.paths / pull_request.paths filters above
+        run: |
+          FILES=$(gh api "repos/${REPO}/compare/${MERGE_GROUP_BASE}...${MERGE_GROUP_HEAD}" \
+            --jq '.files[].filename') || {
+            echo "::warning::Failed to fetch merge group files — running as a precaution"
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+          FILE_COUNT=$(echo "$FILES" | wc -l)
+          if [ "$FILE_COUNT" -ge 300 ]; then
+            echo "::warning::Compare API returned $FILE_COUNT files (possible truncation) — running as a precaution"
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if echo "$FILES" | grep -qE '^infrastructure-as-code/cloudflare/|^\.github/workflows/cloudflare\.yml$'; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::No relevant files changed — skipping"
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.changes.outputs.relevant != 'false'
+
+      - name: Setup OpenTofu
+        uses: opentofu/setup-opentofu@9d84900f3238fab8cd84ce47d658d25dd008be2f # v1.0.8
+        if: steps.changes.outputs.relevant != 'false'
+        with:
+          tofu_version: "1.13.1"
+
+      - name: Initialize OpenTofu
+        if: steps.changes.outputs.relevant != 'false'
+        run: tofu init
+
+      - name: Check formatting
+        if: steps.changes.outputs.relevant != 'false'
+        run: tofu fmt -check
+
+      - name: Validate configuration
+        if: steps.changes.outputs.relevant != 'false'
+        run: tofu validate
+
+      # Plan/apply only run for trusted events (push to main, manual dispatch).
+      # PR runs execute unreviewed PR-head code, so the token is scoped to these
+      # steps and never reaches the fmt/validate steps above (Cloudflare API
+      # tokens are long-lived; see docs/contributing/ci-workflows.md).
+      - name: Plan changes
+        if: >-
+          steps.changes.outputs.relevant != 'false' &&
+          (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_IAC_API_TOKEN }}
+          CLOUDFLARE_ZONE: ${{ secrets.CLOUDFLARE_ZONE || vars.CLOUDFLARE_ZONE }}
+        run: |
+          if [ -n "$CLOUDFLARE_ZONE" ]; then
+            tofu plan -compact-warnings -var="cloudflare={zone=\"$CLOUDFLARE_ZONE\"}" -out=tfplan
+          else
+            tofu plan -compact-warnings -out=tfplan
+          fi
+
+      - name: Apply changes
+        if: >-
+          steps.changes.outputs.relevant != 'false' &&
+          github.ref == 'refs/heads/main' &&
+          (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_IAC_API_TOKEN }}
+        run: tofu apply -auto-approve tfplan

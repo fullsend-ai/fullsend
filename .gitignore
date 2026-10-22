@@ -29,3 +29,19 @@ coverage.out
 cmd/mint-wasm/mint.wasm
 # QualityFlow working directory; nothing under it belongs in a commit.
 outputs/
+# OpenTofu / Terraform (infrastructure-as-code/). The lockfile
+# (.terraform.lock.hcl) is a sibling of .terraform/ and stays tracked.
+**/.terraform/*
+**/.tofu/*
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+*.tfvars
+*.tfvars.json
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+*.tfplan
+tfplan
