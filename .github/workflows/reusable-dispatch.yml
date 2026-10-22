@@ -147,6 +147,154 @@ jobs:
             /OWNERS_ALIASES
           sparse-checkout-cone-mode: false
 
+      # CEL review routing (#8726). FULLSEND_CEL_ROUTING_REVIEW = off (default),
+      # shadow (log the CEL decision next to the bash stage) or on (the CEL
+      # decision sets STAGE=review). When it is off or unset every cel-* step
+      # is skipped and "Determine stage" routes exactly as before. Only PR and
+      # comment events are evaluated; other events keep the bash stage.
+      - name: Checkout config for CEL review route
+        id: cel-config
+        if: ${{ (vars.FULLSEND_CEL_ROUTING_REVIEW == 'shadow' || vars.FULLSEND_CEL_ROUTING_REVIEW == 'on') && (github.event_name == 'pull_request_target' || github.event_name == 'issue_comment') }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Same trusted ref as the checkout above: the base branch for PR events.
+          ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
+          path: cel-route
+          persist-credentials: false
+          allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
+          sparse-checkout: |
+            .fullsend/
+            /OWNERS
+            /OWNERS_ALIASES
+            .defaults/action.yml
+            .defaults/.github/actions/install-fullsend-cli/
+            .fullsend/.defaults/action.yml
+          sparse-checkout-cone-mode: false
+
+      - name: Detect CLI install mode for CEL review route
+        id: cel-cli-mode
+        if: steps.cel-config.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f cel-route/.defaults/action.yml || -f cel-route/.fullsend/.defaults/action.yml ]]; then
+            echo "mode=vendored" >> "${GITHUB_OUTPUT}"
+          else
+            echo "mode=upstream" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Guard vendored install for CEL review route
+        if: steps.cel-config.outcome == 'success' && steps.cel-cli-mode.outputs.mode == 'vendored'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -f cel-route/.fullsend/bin/fullsend ]]; then
+            echo "::error::broken --vendor install: vendored marker present but .fullsend/bin/fullsend is missing"
+            exit 1
+          fi
+
+      # Shares the harness-dispatch cache key, so whichever job installs first
+      # serves the other.
+      - name: Restore fullsend CLI cache for CEL review route
+        id: cel-cli-cache
+        if: steps.cel-config.outcome == 'success'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/fullsend-cache
+          key: fullsend-cli-${{ steps.cel-cli-mode.outputs.mode }}-${{ job.workflow_sha }}
+
+      - name: Install fullsend CLI for CEL review route (vendored defaults)
+        if: steps.cel-config.outcome == 'success' && steps.cel-cli-mode.outputs.mode == 'vendored' && steps.cel-cli-cache.outputs.cache-hit != 'true'
+        uses: ./cel-route/.defaults/.github/actions/install-fullsend-cli
+        with:
+          mode: vendored
+          vendored_path: cel-route/.fullsend/bin/fullsend
+          github_token: ${{ github.token }}
+
+      - name: Checkout upstream install action for CEL review route
+        if: steps.cel-config.outcome == 'success' && steps.cel-cli-mode.outputs.mode == 'upstream' && steps.cel-cli-cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .workflow-actions
+          fetch-depth: 1
+          sparse-checkout: |
+            .github/actions/install-fullsend-cli/
+          sparse-checkout-cone-mode: false
+
+      - name: Install fullsend CLI for CEL review route (upstream workflow)
+        if: steps.cel-config.outcome == 'success' && steps.cel-cli-mode.outputs.mode == 'upstream' && steps.cel-cli-cache.outputs.cache-hit != 'true'
+        uses: ./.workflow-actions/.github/actions/install-fullsend-cli
+        with:
+          mode: upstream
+          workflow_repository: ${{ job.workflow_repository }}
+          workflow_sha: ${{ job.workflow_sha }}
+          github_token: ${{ github.token }}
+
+      - name: Expose cached fullsend CLI for CEL review route
+        if: steps.cel-config.outcome == 'success' && steps.cel-cli-cache.outputs.cache-hit == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          install_dir="${RUNNER_TEMP}/fullsend"
+          mkdir -p "${install_dir}"
+          cp "${RUNNER_TEMP}/fullsend-cache/fullsend" "${install_dir}/fullsend"
+          chmod +x "${install_dir}/fullsend"
+          echo "${install_dir}" >> "${GITHUB_PATH}"
+
+      - name: Prepare fullsend CLI cache artifact for CEL review route
+        if: steps.cel-config.outcome == 'success' && steps.cel-cli-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/fullsend-cache"
+          cp "${RUNNER_TEMP}/fullsend/fullsend" "${RUNNER_TEMP}/fullsend-cache/fullsend"
+
+      - name: Save fullsend CLI cache for CEL review route
+        if: steps.cel-config.outcome == 'success' && steps.cel-cli-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/fullsend-cache
+          key: fullsend-cli-${{ steps.cel-cli-mode.outputs.mode }}-${{ job.workflow_sha }}
+
+      # A failure here never fails the route job: "Determine stage" keeps the
+      # bash stage and reports the failure (::error:: when on, ::warning:: when
+      # shadow).
+      - name: Evaluate CEL review route
+        id: cel-review
+        if: steps.cel-config.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ inputs.event_action }}
+        run: |
+          set -euo pipefail
+          DECISION_JSON=$(fullsend dispatch \
+            --input-driver gha-event \
+            --config-dir cel-route/.fullsend \
+            --event-action "${EVENT_ACTION}" \
+            --route review)
+          printf '%s\n' "${DECISION_JSON}"
+          DECISION=$(jq -r '.decision // ""' <<<"${DECISION_JSON}")
+          case "${DECISION}" in
+            run|skip|bash) ;;
+            *)
+              echo "::error::Unexpected CEL review route decision: ${DECISION}"
+              exit 1
+              ;;
+          esac
+          REASON=$(jq -r '.reason // ""' <<<"${DECISION_JSON}" | tr -d '\r\n')
+          HARNESS=$(jq -r '.harness // ""' <<<"${DECISION_JSON}" | tr -d '\r\n')
+          {
+            echo "decision=${DECISION}"
+            echo "reason=${REASON}"
+            echo "harness=${HARNESS}"
+          } >> "${GITHUB_OUTPUT}"
+
       - name: Determine stage
         id: route
         env:
@@ -170,6 +318,11 @@ jobs:
           ORG_NAME: ${{ github.repository_owner }}
           FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
           GH_TOKEN: ${{ github.token }}
+          CEL_REVIEW_MODE: ${{ vars.FULLSEND_CEL_ROUTING_REVIEW }}
+          CEL_REVIEW_OUTCOME: ${{ steps.cel-review.outcome }}
+          CEL_REVIEW_DECISION: ${{ steps.cel-review.outputs.decision }}
+          CEL_REVIEW_REASON: ${{ steps.cel-review.outputs.reason }}
+          CEL_REVIEW_HARNESS: ${{ steps.cel-review.outputs.harness }}
         run: |
           set -euo pipefail
 
@@ -418,6 +571,49 @@ jobs:
                   fi
                 fi
               fi
+              ;;
+          esac
+
+          # CEL review routing (#8726). off or unset leaves STAGE exactly as
+          # the bash rules above set it. shadow only logs. on lets the CEL
+          # decision set or clear STAGE=review, but never replaces another
+          # bash stage; decision=bash (the resolved review harness has no
+          # trigger) keeps the bash stage.
+          case "${CEL_REVIEW_MODE:-off}" in
+            off) ;;
+            shadow|on)
+              if [[ "${CEL_REVIEW_OUTCOME}" == "skipped" || -z "${CEL_REVIEW_OUTCOME}" ]]; then
+                : # Event type not evaluated by CEL: keep the bash stage.
+              elif [[ "${CEL_REVIEW_OUTCOME}" != "success" ]]; then
+                if [[ "${CEL_REVIEW_MODE}" == "on" ]]; then
+                  echo "::error::CEL review route failed; keeping the bash stage '${STAGE}'. See the 'Evaluate CEL review route' step."
+                else
+                  echo "::warning::CEL review route (shadow) failed. See the 'Evaluate CEL review route' step."
+                fi
+              elif [[ -n "${STAGE}" && "${STAGE}" != "review" ]]; then
+                echo "::notice::CEL review route: keeping bash stage '${STAGE}' (CEL decision ${CEL_REVIEW_DECISION})"
+              else
+                CEL_BASH_STAGE="${STAGE:-none}"
+                echo "::notice::CEL review route (${CEL_REVIEW_MODE}): bash=${CEL_BASH_STAGE} cel=${CEL_REVIEW_DECISION} reason=${CEL_REVIEW_REASON} harness=${CEL_REVIEW_HARNESS}"
+                if [[ "${CEL_REVIEW_MODE}" == "shadow" ]]; then
+                  if [[ "${CEL_REVIEW_DECISION}" == "run" && "${STAGE}" != "review" ]] \
+                    || [[ "${CEL_REVIEW_DECISION}" == "skip" && "${STAGE}" == "review" ]]; then
+                    echo "::warning::CEL review route mismatch: bash=${CEL_BASH_STAGE} cel=${CEL_REVIEW_DECISION} (${CEL_REVIEW_REASON})"
+                  fi
+                  echo "CEL review route (shadow): bash=${CEL_BASH_STAGE} cel=${CEL_REVIEW_DECISION}" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+                else
+                  CEL_ROUTE_SOURCE="cel"
+                  case "${CEL_REVIEW_DECISION}" in
+                    run) STAGE="review" ;;
+                    skip) STAGE="" ;;
+                    *) CEL_ROUTE_SOURCE="bash" ;;
+                  esac
+                  echo "review_route=${CEL_ROUTE_SOURCE}" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+                fi
+              fi
+              ;;
+            *)
+              echo "::warning::FULLSEND_CEL_ROUTING_REVIEW='${CEL_REVIEW_MODE}' is not off, shadow or on; using bash routing"
               ;;
           esac
 

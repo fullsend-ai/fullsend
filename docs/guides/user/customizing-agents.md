@@ -729,6 +729,90 @@ role name. The built-in agent names are: `code`, `triage`, `review`,
 agent named `code` — writing `name: coder` passes validation but
 disables nothing because no agent has that harness name.
 
+## Choosing when review runs
+
+By default, the dispatch workflow decides when the review agent runs: when a
+pull request is opened, pushed to or marked ready, when the
+`ready-for-review` label is added, and on a `/fs-review` comment. To change
+that, set the repository or organization variable
+`FULLSEND_CEL_ROUTING_REVIEW` and give the review harness a `trigger`
+expression. The review still runs in the same `Review` job; the trigger only
+decides whether that job starts.
+
+| `FULLSEND_CEL_ROUTING_REVIEW` | What happens |
+|---|---|
+| unset or `off` | The dispatch workflow decides, as before. |
+| `shadow` | The dispatch workflow still decides. The `Route` job also evaluates the review trigger and logs both decisions, with a warning when they differ. Use this to check a trigger before you switch to `on`. |
+| `on` | The review trigger decides for pull request and comment events. |
+
+The review harness is the one `fullsend run review` resolves: your
+`agents:` entry named `review` with a `source:`, otherwise the default review
+harness from the agents repository. **If the resolved harness has no
+`trigger`, the dispatch workflow keeps deciding even when the variable is
+`on`.** A review override whose `base:` pins an agents commit from before the
+default review trigger existed therefore keeps today's behaviour.
+
+### Example: review only on `/fs-review`
+
+To stop automatic reviews on every pull request but keep `/fs-review`,
+override the review harness with a narrower trigger:
+
+```yaml
+# .fullsend/harness/review.yaml
+base: https://raw.githubusercontent.com/fullsend-ai/agents/<sha>/harness/review.yaml#sha256=abc...
+
+trigger: >
+  event.transition.kind == "comment_added"
+  && has(event.transition.comment.command)
+  && event.transition.comment.command == "/fs-review"
+  && event.actor.kind == "human"
+```
+
+```yaml
+# .fullsend/config.yaml
+agents:
+  - name: review
+    source: harness/review.yaml
+```
+
+Then turn routing on:
+
+```bash
+gh variable set FULLSEND_CEL_ROUTING_REVIEW --repo <owner>/<repo> --body shadow
+# after the shadow log looks right:
+gh variable set FULLSEND_CEL_ROUTING_REVIEW --repo <owner>/<repo> --body on
+```
+
+You cannot remove an inherited trigger by leaving `trigger` empty: an empty
+`trigger` inherits the one from `base:`. Write the narrower expression
+instead, or `trigger: "false"` to never start a review automatically.
+
+### Checking the decision
+
+The `Route` job's "Determine stage" step logs one line per pull request or
+comment event:
+
+```text
+CEL review route (on): bash=review cel=skip reason=trigger did not match harness=config:harness/review.yaml
+```
+
+With `on`, the job summary also shows `review_route=cel` (the trigger
+decided) or `review_route=bash` (the resolved harness has no trigger).
+
+| Log text | Meaning | Action |
+|---|---|---|
+| `CEL review route mismatch: bash=review cel=skip` | `shadow`: the trigger would skip a review the workflow runs | Expected for events your trigger leaves out; otherwise fix the trigger before switching to `on` |
+| `CEL review route failed; keeping the bash stage` | `on`: the trigger could not be evaluated, so the workflow decided | Open the "Evaluate CEL review route" step for the error (for example a harness that fails to load) |
+| `bash=... cel=bash reason=resolved harness has no trigger` | The review harness has no trigger | Add a `trigger` to your review harness, or remove the override to use the default |
+| `is not off, shadow or on; using bash routing` | The variable holds another value | Set it to `off`, `shadow` or `on` |
+
+Two cases are not yet authorized on the trigger path, so with `on` they do
+not start a review: pull requests and `/fs-review` comments from triage-role
+users ([#8724](https://github.com/fullsend-ai/fullsend/issues/8724)), and pull
+requests opened or pushed by a bot without a `write` collaborator role,
+including fullsend's own agent bots. Check both in `shadow` before you switch
+to `on`.
+
 ## Agent dispatch authorization
 
 By default, fullsend checks the forge's permission API to decide who can

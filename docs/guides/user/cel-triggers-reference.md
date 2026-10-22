@@ -33,6 +33,8 @@ When you register a custom agent and give it a `trigger` expression, fullsend ha
 
 Built-in agents (triage, code, review, fix, retro, prioritize) are routed by the dispatch workflow's stage-based routing logic. Custom agents with CEL triggers run alongside them — the two mechanisms coexist. A single event can trigger both a built-in agent via stage routing and one or more custom agents via CEL matching.
 
+The review agent can opt in to CEL routing: with the variable `FULLSEND_CEL_ROUTING_REVIEW` set to `on`, the trigger on the resolved review harness decides whether the `Review` job starts, and `shadow` only logs that decision. A resolved review harness without a `trigger` keeps the stage-based routing, and an empty `trigger` in a harness with `base:` inherits the base trigger. See [Choosing when review runs](customizing-agents.md#choosing-when-review-runs).
+
 You can also keep a hand-written workflow that invokes `fullsend run` with a fixed harness path. CEL-based dispatch and explicit harness invocation may run side by side in the same installation.
 
 ## Writing CEL triggers

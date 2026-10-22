@@ -1,0 +1,15 @@
+// Copy of the trigger: field in fullsend-ai/agents harness/review.yaml
+// (added by fullsend-ai/agents#1755). Update both together; the parity test in
+// review_route_parity_test.go compares it with the bash router.
+(event.entity.kind == "change_proposal"
+  && event.transition.kind in ["opened", "synchronized", "marked_ready"])
+|| (event.entity.kind == "change_proposal"
+  && event.transition.kind == "label_changed"
+  && event.transition.label.name == "ready-for-review"
+  && event.transition.label.action == "added")
+|| (event.transition.kind == "comment_added"
+  && has(event.transition.comment.command)
+  && event.transition.comment.command == "/fs-review"
+  && event.actor.kind == "human"
+  && (event.entity.kind == "change_proposal"
+      || has(event.entity.linked_change_proposal)))
