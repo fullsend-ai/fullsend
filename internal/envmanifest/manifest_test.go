@@ -22,6 +22,7 @@ func sampleManifest() Manifest {
 		AddRuntimeSpecific("pi", "PI_TELEMETRY", "JITI_FS_CACHE").
 		AddHarnessDelivered("GOOGLE_APPLICATION_CREDENTIALS", "stock harness configuration: Vertex scaffold; fleet env/gcp-vertex.env").
 		AddReserved("GH_WORKFLOW_TOKEN", "OPENAI_API_KEY").
+		AddDeprecated("SOME_OLD_VAR").
 		Build()
 }
 
@@ -63,7 +64,8 @@ func TestRender_InputOrderIndependent(t *testing.T) {
 				RunnerGuaranteed: true,
 			},
 		},
-		Reserved: []string{"OPENAI_API_KEY", "GH_WORKFLOW_TOKEN"},
+		Reserved:   []string{"OPENAI_API_KEY", "GH_WORKFLOW_TOKEN"},
+		Deprecated: []string{"SOME_OLD_VAR"},
 	}
 
 	rendered, err := shuffled.Render()
@@ -111,6 +113,9 @@ func TestRender_ExactJSONOutput(t *testing.T) {
   "reserved": [
     "GH_WORKFLOW_TOKEN",
     "OPENAI_API_KEY"
+  ],
+  "deprecated": [
+    "SOME_OLD_VAR"
   ]
 }
 `
@@ -159,6 +164,12 @@ func TestRender_CategorySemantics(t *testing.T) {
 			manifest: NewBuilder().AddReserved("GH_WORKFLOW_TOKEN").Build(),
 			path:     []string{"reserved"},
 			expected: []any{"GH_WORKFLOW_TOKEN"},
+		},
+		{
+			name:     "deprecated names render under deprecated",
+			manifest: NewBuilder().AddDeprecated("SOME_OLD_VAR").Build(),
+			path:     []string{"deprecated"},
+			expected: []any{"SOME_OLD_VAR"},
 		},
 	}
 	for _, tt := range tests {
@@ -231,6 +242,7 @@ func TestRender_ZeroValue(t *testing.T) {
 	assert.Empty(t, parsed.Exports.RuntimeSpecific)
 	assert.Empty(t, parsed.HarnessDelivered)
 	assert.Empty(t, parsed.Reserved)
+	assert.Empty(t, parsed.Deprecated)
 }
 
 func TestParse_PreservesSchemaVersion(t *testing.T) {
@@ -258,6 +270,7 @@ var namesOnlyFieldTypes = map[string]string{
 	"Manifest.Exports":                  "envmanifest.Exports",
 	"Manifest.HarnessDelivered":         "map[string]envmanifest.HarnessDelivered",
 	"Manifest.Reserved":                 "[]string",
+	"Manifest.Deprecated":               "[]string",
 	"Exports.Always":                    "[]string",
 	"Exports.Conditional":               "map[string]string",
 	"Exports.RuntimeSpecific":           "map[string][]string",

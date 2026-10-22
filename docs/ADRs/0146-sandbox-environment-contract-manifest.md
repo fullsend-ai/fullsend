@@ -23,7 +23,9 @@ Accepted
 
 The sandbox environment surface — what the runner injects into the sandbox and
 reserves from harness override — was hand-synced in three descriptions, none
-machine-checked: the `reservedSandboxKeys` sync note in `internal/cli/run.go`,
+machine-checked: the
+[`reservedSandboxKeys` sync note](https://github.com/fullsend-ai/fullsend/blob/487169a9da/internal/cli/run.go#L3375-L3427)
+in `internal/cli/run.go`,
 the agents repo's `SANDBOX_RUNTIME_VARS` allowlist in
 `scripts/skill-env-reachability-test.sh`, and per-runtime `EnvExports()` in
 prose only. The drift was realized in
@@ -54,20 +56,23 @@ at [`sandbox-env.json`](../normative/sandbox-env/v1/sandbox-env.json), with
 schema and category semantics in its [README](../normative/sandbox-env/v1/README.md).
 A build-time collector generates the manifest by running every code
 path that injects environment variables into the sandbox — the
-`bootstrapEnv` `.env` emission, the per-iteration env, trace-ID injection,
-the security-hook env, each production runtime's `EnvExports()`, the
-`fullsend agent new` Vertex scaffold, and the effective reserved-key set
-after the init-time merges — so the contract cannot disagree with the code
+[`bootstrapEnv` `.env` emission](https://github.com/fullsend-ai/fullsend/blob/487169a9da/internal/cli/run.go#L3836-L3871),
+the per-iteration env, trace-ID injection, the security-hook env,
+each production runtime's `EnvExports()`, the `fullsend agent new`
+Vertex scaffold, and the effective reserved-key set after the
+init-time merges — so the contract cannot disagree with the code
 that builds the environment. An always-on golden test byte-compares the
 committed file against collector output (`-update` regenerates), and fails
 when a runtime is newly registered without a manifest decision.
 
-The manifest is fetchable at any tag via raw.githubusercontent.com — the pinned-URL
-mechanism of [ADR 0038](0038-universal-harness-access.md) — and the tag is the
-version — the tag itself is the version identifier, so the manifest
-carries no embedded `fullsend_version` field. Consumers validate env-var
-reachability
-against the latest released tag at PR time and `main` nightly, following the
+The manifest is fetchable at any tag via raw.githubusercontent.com
+(tag-pinned URLs complement the commit-SHA + integrity-hash
+mechanism of [ADR 0038](0038-universal-harness-access.md) for
+read-only contract data that does not execute). The tag itself is
+the version identifier, so the manifest carries no embedded
+`fullsend_version` field. Consumers validate
+env-var reachability against the latest released tag at PR time
+and `main` nightly, following the
 [ADR 0139](0139-agent-functional-test-suite-lives-in-agents-repo.md) bridge.
 
 ## Consequences
@@ -93,7 +98,7 @@ forge-independent.
 
 ## References
 
-- [ADR 0038](0038-universal-harness-access.md) — URL-based resource access and tag pinning
+- [ADR 0038](0038-universal-harness-access.md) — URL-based resource access with commit-SHA + integrity-hash pinning
 - [ADR 0058](0058-agent-registration.md) — agent registration and the transitional fleet lockstep
 - [ADR 0139](0139-agent-functional-test-suite-lives-in-agents-repo.md) — cross-repo validation topology
 - [fullsend-ai/agents#1677](https://github.com/fullsend-ai/agents/issues/1677) — the drift incident

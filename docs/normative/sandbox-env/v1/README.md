@@ -17,11 +17,11 @@ rather than assumed
   generated contract document. It is authoritative; this README describes it.
 - **Generated, never hand-authored:** the collector in
   `internal/cli/env_manifest_collector_test.go` derives the manifest by
-  executing the production emitters that build the sandbox environment — the
-  bootstrap `.env` emission, the per-iteration env, trace-ID injection, the
-  security-hook env, every production runtime's `EnvExports()`, the
-  `fullsend agent new` Vertex scaffold, and the effective reserved-key set
-  after the OIDC and provider-only merges.
+  running every code path that injects environment variables into the
+  sandbox — the bootstrap `.env` emission, the per-iteration env,
+  trace-ID injection, the security-hook env, every production
+  runtime's `EnvExports()`, the `fullsend agent new` Vertex scaffold,
+  and the effective reserved-key set after the init-time merges.
 - **Golden invariant:** `internal/cli/env_manifest_golden_test.go`
   byte-compares the committed file against collector output on every test
   run, so the published contract cannot drift from the code that builds the
@@ -36,11 +36,12 @@ rather than assumed
 | Field | Type | Semantics |
 |-------|------|-----------|
 | `schema_version` | integer | Shape version of this document; currently `1`. Check it before interpreting anything else — a version the consumer does not understand is a contract it cannot validate. |
-| `exports.always` | array of strings | Variables the runner injects into every sandbox it builds (eight in v1). |
-| `exports.conditional` | object: variable name → gate description | Variables the runner injects only when the described gate holds (nine in v1). Each description is the emitter's actual guard, transcribed from the production code. |
+| `exports.always` | array of strings | Variables the runner injects into every sandbox it builds (four in v1). |
+| `exports.conditional` | object: variable name → gate description | Variables the runner injects only when the described gate holds (twelve in v1). Each description is the emitter's actual guard, transcribed from the production code. |
 | `exports.runtime_specific` | object: runtime name → array of strings | Variables emitted only by the named runtime's `EnvExports()`: `claude`, `codex`, `opencode`, `pi`. |
 | `harness_delivered` | object: variable name → `{ "provenance": string, "runner_guaranteed": boolean }` | Variables delivered by stock harness configuration, not by the runner (four in v1). `runner_guaranteed` is always `false` — a label, not a toggle: a variable the runner guarantees belongs in `exports` instead. `provenance` names the configuration that delivers it. |
-| `reserved` | array of strings | Keys the runner reserves from harness override (34 in v1): `env.sandbox` cannot set them. The set merges the base runner-infrastructure keys with the OIDC-denied and provider-only credential keys at startup. |
+| `reserved` | array of strings | Keys the runner reserves from harness override (62 in v1): `env.sandbox` cannot set them. The set merges the base runner-infrastructure keys, the OIDC-denied and provider-only credential keys, and the security-critical credential keys (`IsReservedCredentialKey`) at startup. |
+| `deprecated` | array of strings | Variables that are deprecated and scheduled for removal in a future version. Consumers should migrate away from these variables. Empty when no deprecations are active. |
 
 Abridged shape (see [`sandbox-env.json`](sandbox-env.json) for the full
 document):
@@ -49,13 +50,13 @@ document):
 {
   "schema_version": 1,
   "exports": {
-    "always": ["FULLSEND_ROLE", "PATH", "TRACEPARENT"],
+    "always": ["FULLSEND_OUTPUT_DIR", "FULLSEND_ROLE", "PATH"],
     "conditional": {
       "FULLSEND_FETCH_URL": "the runtime fetch service is enabled (ADR 0038)"
     },
     "runtime_specific": {
       "claude": ["CLAUDE_CONFIG_DIR"],
-      "opencode": []
+      "opencode": ["OPENCODE_CONFIG_DIR", "..."]
     }
   },
   "harness_delivered": {
@@ -64,7 +65,8 @@ document):
       "runner_guaranteed": false
     }
   },
-  "reserved": ["BASH_ENV", "HOME", "LD_PRELOAD"]
+  "reserved": ["BASH_ENV", "HOME", "LD_PRELOAD"],
+  "deprecated": []
 }
 ```
 
@@ -112,11 +114,17 @@ omits that configuration will not see them.
 
 **`reserved` — stripped from harness override.** Harness `env.sandbox`
 entries naming these keys are skipped with a warning: the runner removes
-them so harness configuration cannot shadow runner infrastructure or inject
-OIDC and provider credentials. A key may appear both here and in an export
+them so harness configuration cannot shadow runner infrastructure, inject
+OIDC and provider credentials, or override security-critical process
+variables (e.g. `HTTPS_PROXY`, `LD_PRELOAD`, `NODE_OPTIONS`). A key may appear both here and in an export
 category — `PATH` is exported by the runner *and* reserved against harness
 override. The categories answer different questions: `exports` asks "does
 the runner set it?", `reserved` asks "may the harness set it?".
+
+**`deprecated` — scheduled for removal.** Variables listed here still
+function but are slated for removal in a future version. Consumers
+should migrate to any documented replacement. The array is empty when no
+deprecations are active.
 
 ## Fetching the manifest
 
@@ -195,7 +203,7 @@ Breaking changes require `docs/normative/sandbox-env/v2/`.
 | Change | v1 impact |
 |--------|-----------|
 | **Breaking** (requires v2): remove or rename schema fields, change a field's type, remove or rename a category, redefine category semantics | Consumers must migrate |
-| **Non-breaking** (allowed in v1): add variables or runtimes to any category, refine gate descriptions, add `harness_delivered` provenance entries | Existing consumers keep working |
+| **Non-breaking** (allowed in v1): add variables or runtimes to any category, refine gate descriptions, add `harness_delivered` provenance entries, add or remove `deprecated` entries | Existing consumers keep working |
 
 Variable sets change with the contract itself — that is the manifest doing
 its job. Consumers pin a tag and compare; the comparison is the drift signal.

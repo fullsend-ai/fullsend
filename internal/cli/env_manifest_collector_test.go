@@ -17,6 +17,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/envmanifest"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
+	"github.com/fullsend-ai/fullsend/internal/sandbox"
 	"github.com/fullsend-ai/fullsend/internal/security"
 )
 
@@ -51,15 +52,18 @@ var (
 // export cannot enter the manifest undescribed — and when a gate's key no
 // longer derives from any emitter, so the descriptions cannot go stale.
 var sandboxEnvGates = map[string]string{
-	"FULLSEND_SLUG":             "the harness sets a slug",
-	"FULLSEND_OUTPUT_SCHEMA":    "an output schema is configured (validation_loop.schema, or the legacy FULLSEND_OUTPUT_SCHEMA runner env) and its file uploads into the sandbox",
-	"FULLSEND_OUTPUT_FILE":      "the legacy runner_env FULLSEND_OUTPUT_FILE is set",
-	"FULLSEND_FETCH_URL":        "the runtime fetch service is enabled (ADR 0038)",
-	"FULLSEND_FETCH_TOKEN":      "the runtime fetch service is enabled (ADR 0038)",
-	"FULLSEND_TRACE_ID":         "trace-ID injection succeeds; the run warns and continues when it fails",
-	"TIRITH_FAIL_ON":            "security.sandbox_hooks.tirith.fail_on is set",
-	"TIRITH_REQUIRED":           "Tirith scanning is required (security.sandbox_hooks.tirith.enabled, default true)",
-	"FULLSEND_EGRESS_ALLOWLIST": "an SSRF egress allowlist is configured, including the auto-merged forge egress entry",
+	"FULLSEND_SLUG":               "the harness sets a slug",
+	"FULLSEND_OUTPUT_SCHEMA":      "an output schema is configured (validation_loop.schema, or the legacy FULLSEND_OUTPUT_SCHEMA runner env) and its file uploads into the sandbox",
+	"FULLSEND_OUTPUT_FILE":        "the legacy runner_env FULLSEND_OUTPUT_FILE is set",
+	"FULLSEND_FETCH_URL":          "the runtime fetch service is enabled (ADR 0038)",
+	"FULLSEND_FETCH_TOKEN":        "the runtime fetch service is enabled (ADR 0038)",
+	"FULLSEND_TRACE_ID":           "trace-ID injection succeeds; the run warns and continues when it fails",
+	"TIRITH_FAIL_ON":              "security.sandbox_hooks.tirith.fail_on is set",
+	"TIRITH_REQUIRED":             "Tirith scanning is required (security.sandbox_hooks.tirith.enabled, default true)",
+	"FULLSEND_EGRESS_ALLOWLIST":   "an SSRF egress allowlist is configured, including the auto-merged forge egress entry",
+	"FULLSEND_ITERATION_DEADLINE": "writeIterationEnv succeeds; the run warns and continues when it fails",
+	"FULLSEND_TIMEOUT_MINUTES":    "writeIterationEnv succeeds; the run warns and continues when it fails",
+	"TRACEPARENT":                 "writeIterationEnv succeeds; the run warns and continues when it fails",
 }
 
 // envManifestKeyRe matches a KEY= assignment token while excluding $KEY
@@ -86,14 +90,10 @@ func TestEnvManifestCollector(t *testing.T) {
 
 	t.Run("always", func(t *testing.T) {
 		assert.Equal(t, []string{
-			"FULLSEND_ITERATION_DEADLINE",
 			"FULLSEND_OUTPUT_DIR",
 			"FULLSEND_ROLE",
-			"FULLSEND_RUNNER_PATH",
 			"FULLSEND_TARGET_REPO_DIR",
-			"FULLSEND_TIMEOUT_MINUTES",
 			"PATH",
-			"TRACEPARENT",
 		}, m.Exports.Always)
 	})
 
@@ -102,12 +102,15 @@ func TestEnvManifestCollector(t *testing.T) {
 			"FULLSEND_EGRESS_ALLOWLIST",
 			"FULLSEND_FETCH_TOKEN",
 			"FULLSEND_FETCH_URL",
+			"FULLSEND_ITERATION_DEADLINE",
 			"FULLSEND_OUTPUT_FILE",
 			"FULLSEND_OUTPUT_SCHEMA",
 			"FULLSEND_SLUG",
+			"FULLSEND_TIMEOUT_MINUTES",
 			"FULLSEND_TRACE_ID",
 			"TIRITH_FAIL_ON",
 			"TIRITH_REQUIRED",
+			"TRACEPARENT",
 		}
 		got := slices.Collect(maps.Keys(m.Exports.Conditional))
 		slices.Sort(got)
@@ -125,6 +128,9 @@ func TestEnvManifestCollector(t *testing.T) {
 			{"TIRITH_FAIL_ON", "tirith"},
 			{"TIRITH_REQUIRED", "tirith"},
 			{"FULLSEND_EGRESS_ALLOWLIST", "egress"},
+			{"FULLSEND_ITERATION_DEADLINE", "writeIterationEnv"},
+			{"FULLSEND_TIMEOUT_MINUTES", "writeIterationEnv"},
+			{"TRACEPARENT", "writeIterationEnv"},
 		} {
 			assert.Contains(t, m.Exports.Conditional[tc.key], tc.gateContains, "gate for %s", tc.key)
 		}
@@ -137,7 +143,11 @@ func TestEnvManifestCollector(t *testing.T) {
 		}{
 			{"claude", []string{"CLAUDE_CONFIG_DIR"}},
 			{"codex", []string{"CODEX_HOME"}},
-			{"opencode", []string{}},
+			{"opencode", []string{
+				"OPENCODE_CONFIG_DIR",
+				"OPENCODE_DISABLE_EXTERNAL_SKILLS",
+				"OPENCODE_DISABLE_PROJECT_CONFIG",
+			}},
 			{"pi", []string{
 				"JITI_FS_CACHE",
 				"PI_CODING_AGENT_DIR",
@@ -174,7 +184,11 @@ func TestEnvManifestCollector(t *testing.T) {
 		assert.Equal(t, []string{
 			"ACTIONS_ID_TOKEN_REQUEST_TOKEN",
 			"ACTIONS_ID_TOKEN_REQUEST_URL",
+			"ALL_PROXY",
 			"BASH_ENV",
+			"CDPATH",
+			"CURL_CA_BUNDLE",
+			"DYLD_INSERT_LIBRARIES",
 			"ENV",
 			"FULLSEND_FETCH_TOKEN",
 			"FULLSEND_FETCH_URL",
@@ -182,6 +196,9 @@ func TestEnvManifestCollector(t *testing.T) {
 			"FULLSEND_GCP_OIDC_URL",
 			"FULLSEND_GCP_PROJECT_ID",
 			"FULLSEND_GCP_WIF_PROVIDER",
+			"FULLSEND_GITHUB_RUNNER_SECRETS",
+			"FULLSEND_GITHUB_RUNNER_SECRETS_FILE",
+			"FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN",
 			"FULLSEND_INFERENCE_GATEWAY_API_KEY",
 			"FULLSEND_ITERATION_DEADLINE",
 			"FULLSEND_OPENAI_API_KEY",
@@ -199,12 +216,33 @@ func TestEnvManifestCollector(t *testing.T) {
 			"FULLSEND_TRIGGER_TOKEN",
 			"FULLSEND_WEBHOOK_SECRET",
 			"GH_WORKFLOW_TOKEN",
+			"GIT_ASKPASS",
+			"GIT_CONFIG_GLOBAL",
+			"GIT_EXEC_PATH",
+			"GIT_SSH_COMMAND",
+			"GIT_TEMPLATE_DIR",
 			"HOME",
+			"HOSTALIASES",
+			"HTTPS_PROXY",
+			"HTTP_PROXY",
+			"IFS",
+			"JAVA_TOOL_OPTIONS",
+			"LD_AUDIT",
 			"LD_LIBRARY_PATH",
 			"LD_PRELOAD",
+			"NODE_EXTRA_CA_CERTS",
+			"NODE_OPTIONS",
+			"NO_PROXY",
 			"OPENAI_API_KEY",
 			"PATH",
+			"PERL5OPT",
+			"PROMPT_COMMAND",
+			"PYTHONPATH",
+			"PYTHONSTARTUP",
+			"RUBYOPT",
 			"SHELL",
+			"SSL_CERT_DIR",
+			"SSL_CERT_FILE",
 			"TRACEPARENT",
 		}, m.Reserved)
 	})
@@ -300,10 +338,26 @@ func collectSandboxEnvManifest(t *testing.T) *envmanifest.Manifest {
 	for key := range gatedOff {
 		require.True(t, gatedOn[key], "bootstrapEnv emits %q only with its gates off", key)
 	}
+	// These variables are assigned readonly WITHOUT export in the
+	// bootstrap/launch script (env_data.go, runnerPathCaptureLine): the
+	// sandbox never sees them as env vars, only as shell variables.
+	// Exclude them from every export category.
+	readonlyNotExported := map[string]bool{
+		"FULLSEND_RUNNER_PATH":  true, // runnerPathCaptureLine
+		"FULLSEND_ENV_PYTHON":   true, // envDataPythonVar
+		"FULLSEND_ENV_EXPORTS":  true, // envDataExportsVar
+		"FULLSEND_TRUSTED_PATH": true, // envDataTrustedPathVar
+		"FULLSEND_READLINK":     true, // envDataReadlinkVar
+	}
+	alwaysKeys := map[string]bool{}
 	conditional := map[string]bool{}
 	for key := range gatedOn {
+		if readonlyNotExported[key] {
+			continue
+		}
 		if gatedOff[key] {
 			b.AddAlways(key)
+			alwaysKeys[key] = true
 		} else {
 			conditional[key] = true
 		}
@@ -311,15 +365,20 @@ func collectSandboxEnvManifest(t *testing.T) *envmanifest.Manifest {
 
 	iterationCmd := iterationEnvCommand(30, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), envManifestTraceparent)
 	for _, key := range parseExportedEnvKeys(iterationCmd) {
-		require.False(t, conditional[key], "%q is emitted both under a gate and unconditionally", key)
-		b.AddAlways(key)
+		if !readonlyNotExported[key] && !alwaysKeys[key] {
+			conditional[key] = true
+		}
 	}
 
 	for _, key := range traceIDExportKeys(t) {
-		conditional[key] = true
+		if !readonlyNotExported[key] && !alwaysKeys[key] {
+			conditional[key] = true
+		}
 	}
 	for _, key := range hookEnvExportKeys(t) {
-		conditional[key] = true
+		if !readonlyNotExported[key] && !alwaysKeys[key] {
+			conditional[key] = true
+		}
 	}
 	for key := range conditional {
 		gate, ok := sandboxEnvGates[key]
@@ -341,6 +400,9 @@ func collectSandboxEnvManifest(t *testing.T) *envmanifest.Manifest {
 	}
 
 	for key := range reservedSandboxKeys {
+		b.AddReserved(key)
+	}
+	for _, key := range sandbox.ReservedCredentialKeys() {
 		b.AddReserved(key)
 	}
 
@@ -408,7 +470,18 @@ func hookEnvExportKeys(t *testing.T) []string {
 		hooks:       security.SandboxHookConfigFromHarness(h),
 	}
 	require.NoError(t, agentruntime.ClaudeRuntime{}.Bootstrap(in))
-	return parseExportedEnvKeys(envManifestStubArgs(t, argsLog)...)
+	// Filter to only args-log lines that write to .env — the
+	// appendHookEnv pattern "echo 'export KEY=...' >> .env".
+	// The full Bootstrap also runs env_data launch scripts whose
+	// shell-internal variables (p, d, s, r, IFS, NAME, etc.) would
+	// be noise if parsed.
+	var hookLines []string
+	for _, line := range envManifestStubArgs(t, argsLog) {
+		if strings.Contains(line, ".env") {
+			hookLines = append(hookLines, line)
+		}
+	}
+	return parseExportedEnvKeys(hookLines...)
 }
 
 // envManifestScaffoldOptions builds a valid agent-new Options whose
@@ -500,9 +573,22 @@ func envManifestOpenshell(t *testing.T) (argsLog, captureDir string) {
 	script := "#!/bin/sh\n" +
 		"printf '%s\\n' \"$*\" >> '" + argsLog + "'\n" +
 		"if [ \"$1\" = \"sandbox\" ] && [ \"$2\" = \"upload\" ]; then\n" +
-		"  case \"$4\" in\n" +
-		"    *fullsend-env-*) cp \"$4\" '" + captureDir + "/' ;;\n" +
+		"  case \"$5\" in\n" +
+		"    *fullsend-env-*) cp \"$5\" '" + captureDir + "/' ;;\n" +
 		"  esac\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"if [ \"$1\" = \"sandbox\" ] && [ \"$2\" = \"exec\" ]; then\n" +
+		"  for last; do :; done\n" +
+		"  case \"$last\" in\n" +
+		"    \"mkdir -m 700 -- \"*|\"rm -f -- \"*) sh -c \"$last\"; exit $? ;;\n" +
+		"    \"test -f \"*) exit 0 ;;\n" +
+		"    *\"|fullsend-hook-sep|\"*) printf '%s|fullsend-hook-sep|%s\\n' /usr/bin/python3 /usr/local/bin:/usr/bin:/bin; exit 0 ;;\n" +
+		"    *\"sys.version_info\"*) echo 3.12; exit 0 ;;\n" +
+		"    *fullsend-env-sep*) printf '%s' \"|fullsend-env-sep|\"; exit 0 ;;\n" +
+		"    cat\\ *) exit 0 ;;\n" +
+		"  esac\n" +
+		"  exit 0\n" +
 		"fi\n" +
 		"exit 0\n"
 	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
