@@ -742,15 +742,37 @@ decides whether that job starts.
 | `FULLSEND_CEL_ROUTING_REVIEW` | What happens |
 |---|---|
 | unset or `off` | The dispatch workflow decides, as before. |
-| `shadow` | The dispatch workflow still decides. The `Route` job also evaluates the review trigger and logs both decisions, with a warning when they differ. Use this to check a trigger before you switch to `on`. |
-| `on` | The review trigger decides for pull request and comment events. |
+| `shadow` | The dispatch workflow still decides. The `Route` job also evaluates the review trigger and logs both decisions, with a warning when they differ. Use this to check a trigger. |
+| `on` | The review trigger decides for pull request and pull request comment events. **Not ready yet:** wait for the three issues below to be fixed before you use it. |
 
 The review harness is the one `fullsend run review` resolves: your
 `agents:` entry named `review` with a `source:`, otherwise the default review
 harness from the agents repository. **If the resolved harness has no
 `trigger`, the dispatch workflow keeps deciding even when the variable is
 `on`.** A review override whose `base:` pins an agents commit from before the
-default review trigger existed therefore keeps today's behaviour.
+default review trigger existed therefore keeps today's behaviour. The kill
+switch and an `enabled: false` review entry also leave the decision to the
+dispatch workflow, which reports them as before.
+
+> [!WARNING]
+> Use `shadow` only until these are fixed. With `on`, reviews are lost or
+> doubled in these cases:
+>
+> - Pull requests and `/fs-review` comments from triage-role users do not start
+>   a review ([#8724](https://github.com/fullsend-ai/fullsend/issues/8724)).
+> - A `review` entry with a `source:` harness that has a `trigger` also runs
+>   the review a second time, through the custom-agent path, in every mode,
+>   including `off` ([#8725](https://github.com/fullsend-ai/fullsend/issues/8725)).
+>   This includes the example below.
+> - Pull requests opened or pushed by bots, including fullsend's own agent
+>   bots, do not start a review, because the trigger path does not yet look
+>   up a bot's fullsend role
+>   ([#8329](https://github.com/fullsend-ai/fullsend/issues/8329)).
+
+The `Route` job evaluates the trigger with the fullsend CLI built at the
+dispatch workflow's commit. If your workflow call pins `fullsend_version`,
+the `Review` job runs that version instead, so the trigger can come from a
+different agents release than the review harness that runs.
 
 ### Example: review only on `/fs-review`
 
@@ -766,7 +788,13 @@ trigger: >
   && has(event.transition.comment.command)
   && event.transition.comment.command == "/fs-review"
   && event.actor.kind == "human"
+  && (event.entity.kind == "change_proposal"
+      || has(event.entity.linked_change_proposal))
 ```
+
+The last line keeps the trigger to pull requests. The `Route` job also ignores
+a `run` decision for a comment that is not on a pull request, and never starts
+a review from a bot's comment.
 
 ```yaml
 # .fullsend/config.yaml
@@ -775,12 +803,10 @@ agents:
     source: harness/review.yaml
 ```
 
-Then turn routing on:
+Then turn on shadow routing and compare the decisions:
 
 ```bash
 gh variable set FULLSEND_CEL_ROUTING_REVIEW --repo <owner>/<repo> --body shadow
-# after the shadow log looks right:
-gh variable set FULLSEND_CEL_ROUTING_REVIEW --repo <owner>/<repo> --body on
 ```
 
 You cannot remove an inherited trigger by leaving `trigger` empty: an empty
@@ -789,29 +815,24 @@ instead, or `trigger: "false"` to never start a review automatically.
 
 ### Checking the decision
 
-The `Route` job's "Determine stage" step logs one line per pull request or
-comment event:
+When the trigger is evaluated, the `Route` job's "Finalize stage" step logs
+the decision:
 
 ```text
 CEL review route (on): bash=review cel=skip reason=trigger did not match harness=config:harness/review.yaml
 ```
 
 With `on`, the job summary also shows `review_route=cel` (the trigger
-decided) or `review_route=bash` (the resolved harness has no trigger).
+decided) or `review_route=bash` (the dispatch workflow decided: the resolved
+harness has no trigger, the kill switch is on, the review entry is disabled, or
+the trigger matched a comment that is not on a pull request).
 
 | Log text | Meaning | Action |
 |---|---|---|
 | `CEL review route mismatch: bash=review cel=skip` | `shadow`: the trigger would skip a review the workflow runs | Expected for events your trigger leaves out; otherwise fix the trigger before switching to `on` |
-| `CEL review route failed; keeping the bash stage` | `on`: the trigger could not be evaluated, so the workflow decided | Open the "Evaluate CEL review route" step for the error (for example a harness that fails to load) |
+| `CEL review route failed; keeping the bash stage` (`on`) or `CEL review route (shadow) failed` | A CEL review route step failed, so the workflow decided | Open the failed "… CEL review route" step for the error (for example a CLI install failure or a harness that fails to load) |
 | `bash=... cel=bash reason=resolved harness has no trigger` | The review harness has no trigger | Add a `trigger` to your review harness, or remove the override to use the default |
-| `is not off, shadow or on; using bash routing` | The variable holds another value | Set it to `off`, `shadow` or `on` |
-
-Two cases are not yet authorized on the trigger path, so with `on` they do
-not start a review: pull requests and `/fs-review` comments from triage-role
-users ([#8724](https://github.com/fullsend-ai/fullsend/issues/8724)), and pull
-requests opened or pushed by a bot without a `write` collaborator role,
-including fullsend's own agent bots. Check both in `shadow` before you switch
-to `on`.
+| `is not off, shadow or on; using bash routing` | The variable holds another value | Set it to `off`, `shadow` or `on` (case does not matter) |
 
 ## Agent dispatch authorization
 

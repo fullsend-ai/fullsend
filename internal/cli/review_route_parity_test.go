@@ -1,7 +1,8 @@
-package harnessdispatch_test
+package cli
 
 import (
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -11,31 +12,32 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
-	"github.com/fullsend-ai/fullsend/internal/harness"
-	"github.com/fullsend-ai/fullsend/internal/harnessdispatch"
 	"github.com/fullsend-ai/fullsend/internal/harnessdispatch/input"
+	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
-// TestReviewRouteParity runs raw GitHub webhook payloads through the same
-// steps `fullsend dispatch --route review` uses (gha-event input, the dispatch
-// authorization gate, the review trigger) and compares the result with the
-// decision the bash router in reusable-dispatch.yml makes for the same event.
+// TestReviewRouteParity runs raw GitHub webhook payloads through the gha-event
+// input and routeBuiltinAgent (the code behind `fullsend dispatch --route
+// review`), with a review harness carrying the default trigger, and compares
+// the decision with the one the bash router in reusable-dispatch.yml makes for
+// the same event.
 //
 // A row whose CEL result differs from bash must name the known difference in
-// diff; any other mismatch is a parity regression. The trigger under test is
-// testdata/review-trigger.cel, a copy of the trigger: field in the agents
-// repository harness/review.yaml.
+// diff; any other mismatch is a parity regression.
 func TestReviewRouteParity(t *testing.T) {
-	triggerData, err := os.ReadFile(filepath.Join("testdata", "review-trigger.cel"))
-	require.NoError(t, err)
-	trigger := string(triggerData)
-	require.NoError(t, harness.ValidateTriggerExpression(trigger))
+	dir := writeRouteFixture(t, routeFixture{
+		agents: []config.AgentEntry{{Name: "review", Source: "harness/review.yaml"}},
+		files: map[string]string{
+			"harness/review.yaml": routeTestHarnessBody + reviewTriggerYAML(t),
+		},
+	})
 
 	const repo = "acme/widgets"
 	permissions := map[string]string{
-		repo + "/writer":  "write",
-		repo + "/triager": "triage",
-		repo + "/reader":  "read",
+		repo + "/writer":          "write",
+		repo + "/triager":         "triage",
+		repo + "/reader":          "read",
+		repo + "/writer-bot[bot]": "write",
 	}
 
 	cases := []struct {
@@ -142,6 +144,12 @@ func TestReviewRouteParity(t *testing.T) {
 			bash:    false, cel: false,
 		},
 		{
+			name:      "/fs-review on a PR by a bot with a write role",
+			eventName: "issue_comment", action: "created",
+			payload: commentPayload(true, "writer-bot[bot]", "Bot", "/fs-review"),
+			bash:    false, cel: false,
+		},
+		{
 			name:      "/fs-review on an issue",
 			eventName: "issue_comment", action: "created",
 			payload: commentPayload(false, "writer", "User", "/fs-review"),
@@ -154,9 +162,6 @@ func TestReviewRouteParity(t *testing.T) {
 			bash:    false, cel: false,
 		},
 	}
-
-	cfg, err := config.LoadConfig(t.TempDir(), config.LoadOpts{MissingOK: true})
-	require.NoError(t, err)
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -174,13 +179,16 @@ func TestReviewRouteParity(t *testing.T) {
 			})
 			require.NoError(t, err)
 
-			got := false
-			if harnessdispatch.AuthorizeEvent(filepath.Join(t.TempDir(), ".fullsend"), cfg, ev) {
-				eventMap, err := ev.ToMap()
-				require.NoError(t, err)
-				got, err = harness.EvaluateTrigger(trigger, eventMap)
-				require.NoError(t, err)
-			}
+			d, err := routeBuiltinAgent(context.Background(), routeOpts{
+				agent:       "review",
+				configDir:   dir,
+				event:       ev,
+				forgeClient: client,
+				printer:     ui.New(io.Discard),
+			})
+			require.NoError(t, err)
+			require.Contains(t, []string{routeRun, routeSkip}, d.Decision, "reason: %s", d.Reason)
+			got := d.Decision == routeRun
 
 			assert.Equal(t, tc.cel, got, "CEL route decision")
 			if tc.diff == "" {

@@ -23,8 +23,9 @@ const (
 	routeRun = "run"
 	// routeSkip: the agent must not run for this event.
 	routeSkip = "skip"
-	// routeBash: the resolved harness has no trigger, so the bash router in
-	// reusable-dispatch.yml keeps deciding (compatibility guard).
+	// routeBash: the bash router in reusable-dispatch.yml keeps deciding:
+	// the resolved harness has no trigger (compatibility guard), or the kill
+	// switch or a disabled agent entry is left to the route job's own checks.
 	routeBash = "bash"
 )
 
@@ -56,10 +57,12 @@ type routeOpts struct {
 }
 
 // routeBuiltinAgent decides whether a built-in agent runs for an event. It
-// resolves the agent harness the way `fullsend run` does (a config entry with
-// source:, else the agents-repo fallback at the lockstep ref), and returns
-// routeBash when that harness has no trigger. Otherwise the event must pass
-// the dispatch authorization gate and the trigger must match.
+// returns routeBash for an active kill switch or a disabled agent entry and
+// routeSkip for a bot's comment. It then resolves the agent harness the way
+// `fullsend run` does (a config entry with source:, else the agents-repo
+// fallback at the lockstep ref) and returns routeBash when that harness has no
+// trigger. Otherwise the event must pass the dispatch authorization gate and
+// the trigger must match.
 func routeBuiltinAgent(ctx context.Context, o routeOpts) (routeDecision, error) {
 	d := routeDecision{Agent: o.agent}
 	if o.event == nil {
@@ -70,11 +73,20 @@ func routeBuiltinAgent(ctx context.Context, o routeOpts) (routeDecision, error) 
 	if err != nil {
 		return d, err
 	}
+	// The route job's own kill-switch and agent-enabled checks report these
+	// cases loudly, so leave the decision to the bash router.
 	if cfg.IsKillSwitchActive() {
-		return withDecision(d, routeSkip, "kill switch active"), nil
+		return withDecision(d, routeBash, "kill switch active"), nil
 	}
 	if config.IsAgentExplicitlyDisabled(cfg.AgentEntries(), o.agent) {
-		return withDecision(d, routeSkip, "agent disabled in config"), nil
+		return withDecision(d, routeBash, "agent disabled in config"), nil
+	}
+
+	// Bash never starts a stage from a bot's slash command; keep that for
+	// any trigger, including one that leaves out an actor.kind guard. Checked
+	// before the harness is fetched, since the answer does not depend on it.
+	if o.event.Transition.Kind == normevent.TransitionCommentAdded && o.event.Actor.Kind == normevent.ActorBot {
+		return withDecision(d, routeSkip, "bot comments do not start a review"), nil
 	}
 
 	absConfigDir, err := filepath.Abs(o.configDir)

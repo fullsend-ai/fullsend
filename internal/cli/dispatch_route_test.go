@@ -23,23 +23,22 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
-// routeTestTrigger mirrors the default review trigger shape: PR opened,
-// synchronized or marked ready, the ready-for-review label, and a human
-// /fs-review comment.
-const routeTestTrigger = `trigger: >
-  (event.entity.kind == "change_proposal"
-    && event.transition.kind in ["opened", "synchronized", "marked_ready"])
-  || (event.entity.kind == "change_proposal"
-    && event.transition.kind == "label_changed"
-    && event.transition.label.name == "ready-for-review"
-    && event.transition.label.action == "added")
-  || (event.transition.kind == "comment_added"
-    && has(event.transition.comment.command)
-    && event.transition.comment.command == "/fs-review"
-    && event.actor.kind == "human")
-`
+// reviewTriggerYAML returns the default review trigger fixture
+// (testdata/review-route/review-trigger.cel) as a harness trigger: field.
+func reviewTriggerYAML(t *testing.T) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("testdata", "review-route", "review-trigger.cel"))
+	require.NoError(t, err)
+	var b strings.Builder
+	b.WriteString("trigger: |\n")
+	for _, line := range strings.Split(strings.TrimRight(string(data), "\n"), "\n") {
+		b.WriteString("  " + line + "\n")
+	}
+	return b.String()
+}
 
-// routeTestCommentOnlyTrigger is a narrowed override: /fs-review only.
+// routeTestCommentOnlyTrigger is a narrowed override: /fs-review only, with
+// no actor.kind guard.
 const routeTestCommentOnlyTrigger = `trigger: >
   event.transition.kind == "comment_added"
   && has(event.transition.comment.command)
@@ -141,6 +140,14 @@ const (
   "state": {"labels": []},
   "source": {"system": "github", "raw_type": "issue_comment", "raw_action": "created"}
 }`
+	routeBotReviewComment = `{
+  "repo": "fullsend-ai/demo",
+  "entity": {"kind": "change_proposal", "id": 7, "url": "https://github.com/fullsend-ai/demo/pull/7"},
+  "transition": {"kind": "comment_added", "comment": {"id": "1", "command": "/fs-review", "body": "/fs-review"}},
+  "actor": {"id": "helper[bot]", "kind": "bot", "role": "write", "is_entity_author": false},
+  "state": {"labels": []},
+  "source": {"system": "github", "raw_type": "issue_comment", "raw_action": "created"}
+}`
 	routePROpenedNoRole = `{
   "repo": "fullsend-ai/demo",
   "entity": {"kind": "change_proposal", "id": 7, "url": "https://github.com/fullsend-ai/demo/pull/7"},
@@ -165,7 +172,7 @@ func TestRouteBuiltinAgent(t *testing.T) {
 		{
 			name:         "no review entry uses the agents-repo harness and matches",
 			fixture:      func(t *testing.T, u string) routeFixture { return routeFixture{allowlist: []string{u}} },
-			agentsYAML:   routeTestHarnessBody + routeTestTrigger,
+			agentsYAML:   routeTestHarnessBody + reviewTriggerYAML(t),
 			event:        routePROpened,
 			wantDecision: routeRun,
 			wantReason:   "trigger matched",
@@ -179,7 +186,7 @@ func TestRouteBuiltinAgent(t *testing.T) {
 					agents:    []config.AgentEntry{{Name: "review", Model: "sonnet"}},
 				}
 			},
-			agentsYAML:   routeTestHarnessBody + routeTestTrigger,
+			agentsYAML:   routeTestHarnessBody + reviewTriggerYAML(t),
 			event:        routeReviewComment,
 			wantDecision: routeRun,
 			wantHarness:  "agents@" + routeTestSHA[:12],
@@ -223,7 +230,7 @@ forge:
 				return routeFixture{
 					agents: []config.AgentEntry{{Name: "review", Source: "harness/review.yaml"}},
 					files: map[string]string{
-						"harness/base-new.yaml": routeTestHarnessBody + routeTestTrigger,
+						"harness/base-new.yaml": routeTestHarnessBody + reviewTriggerYAML(t),
 						"harness/review.yaml":   "base: base-new.yaml\nmodel: sonnet\n",
 					},
 				}
@@ -259,25 +266,39 @@ forge:
 			wantDecision: routeRun,
 		},
 		{
-			name: "disabled agent is skipped",
+			name: "bot /fs-review is skipped even when the trigger has no actor guard",
+			fixture: func(t *testing.T, u string) routeFixture {
+				return routeFixture{
+					agents: []config.AgentEntry{{Name: "review", Source: "harness/review.yaml"}},
+					files: map[string]string{
+						"harness/review.yaml": routeTestHarnessBody + routeTestCommentOnlyTrigger,
+					},
+				}
+			},
+			event:        routeBotReviewComment,
+			wantDecision: routeSkip,
+			wantReason:   "bot comments do not start a review",
+		},
+		{
+			name: "disabled agent is left to bash",
 			fixture: func(t *testing.T, u string) routeFixture {
 				return routeFixture{agents: []config.AgentEntry{{Name: "review", Enabled: &disabled}}}
 			},
 			event:        routePROpened,
-			wantDecision: routeSkip,
+			wantDecision: routeBash,
 			wantReason:   "agent disabled in config",
 		},
 		{
-			name:         "kill switch skips",
+			name:         "kill switch is left to bash",
 			fixture:      func(t *testing.T, u string) routeFixture { return routeFixture{killSwitch: true} },
 			event:        routePROpened,
-			wantDecision: routeSkip,
+			wantDecision: routeBash,
 			wantReason:   "kill switch active",
 		},
 		{
 			name:         "unauthorized actor is skipped",
 			fixture:      func(t *testing.T, u string) routeFixture { return routeFixture{allowlist: []string{u}} },
-			agentsYAML:   routeTestHarnessBody + routeTestTrigger,
+			agentsYAML:   routeTestHarnessBody + reviewTriggerYAML(t),
 			event:        routePROpenedNoRole,
 			wantDecision: routeSkip,
 			wantReason:   "actor not authorized",
@@ -288,7 +309,7 @@ forge:
 		t.Run(tc.name, func(t *testing.T) {
 			agentsYAML := tc.agentsYAML
 			if agentsYAML == "" {
-				agentsYAML = routeTestHarnessBody + routeTestTrigger
+				agentsYAML = routeTestHarnessBody + reviewTriggerYAML(t)
 			}
 			client, policy, agentsURL := routeAgentsRepo(t, agentsYAML)
 			dir := writeRouteFixture(t, tc.fixture(t, agentsURL))

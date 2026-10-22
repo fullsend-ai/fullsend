@@ -1,6 +1,8 @@
-// Copy of the trigger: field in fullsend-ai/agents harness/review.yaml
-// (added by fullsend-ai/agents#1755). Update both together; the parity test in
-// review_route_parity_test.go compares it with the bash router.
+// Provisional copy of the default review trigger specified by
+// fullsend-ai/agents#1756 (reference: closed fullsend-ai/agents#1755 at
+// 58a00b749a8d). Replace it with the merged harness/review.yaml trigger and
+// keep the two in step: TestReviewRouteParity compares it with the bash
+// router in reusable-dispatch.yml.
 (event.entity.kind == "change_proposal"
   && event.transition.kind in ["opened", "synchronized", "marked_ready"])
 || (event.entity.kind == "change_proposal"
