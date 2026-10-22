@@ -6,7 +6,8 @@
 #   exclude-pr   PR number to exclude (typically the current PR)
 #
 # Prints one four-digit ADR number per line, sorted and deduplicated.
-# Exit code is always 0 (no output means no in-flight ADR numbers found).
+# Exit code is always 0. No output means either no in-flight ADR numbers were
+# found or `gh` could not list open PRs (failures are not reported).
 #
 # Note: reports ADR numbers from all changed files (added, modified, deleted),
 # not just additions. This is intentionally conservative — the caller already
