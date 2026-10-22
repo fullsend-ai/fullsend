@@ -148,6 +148,14 @@ const (
   "state": {"labels": []},
   "source": {"system": "github", "raw_type": "issue_comment", "raw_action": "created"}
 }`
+	routeIssueReviewComment = `{
+  "repo": "fullsend-ai/demo",
+  "entity": {"kind": "work_item", "id": 8, "url": "https://github.com/fullsend-ai/demo/issues/8"},
+  "transition": {"kind": "comment_added", "comment": {"id": "2", "command": "/fs-review", "body": "/fs-review"}},
+  "actor": {"id": "alice", "kind": "human", "role": "write", "is_entity_author": false},
+  "state": {"labels": []},
+  "source": {"system": "github", "raw_type": "issue_comment", "raw_action": "created"}
+}`
 	routePROpenedNoRole = `{
   "repo": "fullsend-ai/demo",
   "entity": {"kind": "change_proposal", "id": 7, "url": "https://github.com/fullsend-ai/demo/pull/7"},
@@ -158,55 +166,68 @@ const (
 }`
 )
 
+// reviewTrigger returns the default review trigger fixture as a CEL string.
+func reviewTrigger(t *testing.T) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("testdata", "review-route", "review-trigger.cel"))
+	require.NoError(t, err)
+	return string(data)
+}
+
+// sourcedReview registers review with a local harness file and extra files.
+func sourcedReview(entry config.AgentEntry, files map[string]string) routeFixture {
+	entry.Name = "review"
+	entry.Source = "harness/review.yaml"
+	return routeFixture{agents: []config.AgentEntry{entry}, files: files}
+}
+
 func TestRouteBuiltinAgent(t *testing.T) {
 	disabled := false
+	commentOnly := strings.TrimPrefix(routeTestCommentOnlyTrigger, "trigger: >\n")
 	cases := []struct {
 		name         string
 		fixture      func(t *testing.T, agentsURL string) routeFixture
-		agentsYAML   string // served as the agents-repo review harness
 		event        string
 		wantDecision string
 		wantReason   string
 		wantHarness  string
 	}{
+		// --- no explicit trigger: bash keeps routing ---
 		{
-			name:         "no review entry uses the agents-repo harness and matches",
+			name:         "no review entry stays on bash, even though the default harness has a trigger",
 			fixture:      func(t *testing.T, u string) routeFixture { return routeFixture{allowlist: []string{u}} },
-			agentsYAML:   routeTestHarnessBody + reviewTriggerYAML(t),
-			event:        routePROpened,
-			wantDecision: routeRun,
-			wantReason:   "trigger matched",
-			wantHarness:  "agents@" + routeTestSHA[:12],
-		},
-		{
-			name: "override-only entry still uses the agents-repo harness",
-			fixture: func(t *testing.T, u string) routeFixture {
-				return routeFixture{
-					allowlist: []string{u},
-					agents:    []config.AgentEntry{{Name: "review", Model: "sonnet"}},
-				}
-			},
-			agentsYAML:   routeTestHarnessBody + reviewTriggerYAML(t),
-			event:        routeReviewComment,
-			wantDecision: routeRun,
-			wantHarness:  "agents@" + routeTestSHA[:12],
-		},
-		{
-			name:         "agents-repo harness without a trigger stays on bash",
-			fixture:      func(t *testing.T, u string) routeFixture { return routeFixture{allowlist: []string{u}} },
-			agentsYAML:   routeTestHarnessBody,
 			event:        routePROpened,
 			wantDecision: routeBash,
-			wantReason:   "resolved harness has no trigger",
+			wantReason:   "no explicit trigger",
 		},
 		{
-			name: "override on a base without a trigger stays on bash",
+			name: "override-only entry without a trigger stays on bash",
 			fixture: func(t *testing.T, u string) routeFixture {
-				return routeFixture{
-					agents: []config.AgentEntry{{Name: "review", Source: "harness/review.yaml"}},
-					files: map[string]string{
-						"harness/base-old.yaml": routeTestHarnessBody,
-						"harness/review.yaml": `base: base-old.yaml
+				return routeFixture{allowlist: []string{u}, agents: []config.AgentEntry{{Name: "review", Model: "sonnet"}}}
+			},
+			event:        routeReviewComment,
+			wantDecision: routeBash,
+			wantReason:   "no explicit trigger",
+		},
+		{
+			name: "sourced override that only inherits a base trigger stays on bash",
+			fixture: func(t *testing.T, u string) routeFixture {
+				return sourcedReview(config.AgentEntry{}, map[string]string{
+					"harness/base-new.yaml": routeTestHarnessBody + reviewTriggerYAML(t),
+					"harness/review.yaml":   "base: base-new.yaml\nmodel: sonnet\n",
+				})
+			},
+			event:        routePROpened,
+			wantDecision: routeBash,
+			wantReason:   "no explicit trigger (an inherited base trigger does not opt in)",
+			wantHarness:  "config:harness/review.yaml",
+		},
+		{
+			name: "sourced override on an old base with scripts and a forge block stays on bash",
+			fixture: func(t *testing.T, u string) routeFixture {
+				return sourcedReview(config.AgentEntry{}, map[string]string{
+					"harness/base-old.yaml": routeTestHarnessBody,
+					"harness/review.yaml": `base: base-old.yaml
 model: sonnet
 pre_script: scripts/pre-review.sh
 post_script: scripts/post-review.sh
@@ -215,69 +236,77 @@ forge:
     runner_env:
       REVIEW_MODE: strict
 `,
-						"harness/scripts/pre-review.sh":  "#!/bin/sh\n",
-						"harness/scripts/post-review.sh": "#!/bin/sh\n",
-					},
-				}
+					"harness/scripts/pre-review.sh":  "#!/bin/sh\n",
+					"harness/scripts/post-review.sh": "#!/bin/sh\n",
+				})
 			},
 			event:        routePROpened,
 			wantDecision: routeBash,
-			wantHarness:  "config:harness/review.yaml",
 		},
+		// --- config trigger ---
 		{
-			name: "override inherits the trigger of its base",
+			name: "config trigger on an override-only entry opts in",
 			fixture: func(t *testing.T, u string) routeFixture {
-				return routeFixture{
-					agents: []config.AgentEntry{{Name: "review", Source: "harness/review.yaml"}},
-					files: map[string]string{
-						"harness/base-new.yaml": routeTestHarnessBody + reviewTriggerYAML(t),
-						"harness/review.yaml":   "base: base-new.yaml\nmodel: sonnet\n",
-					},
-				}
-			},
-			event:        routePROpened,
-			wantDecision: routeRun,
-		},
-		{
-			name: "narrowed override skips automatic review",
-			fixture: func(t *testing.T, u string) routeFixture {
-				return routeFixture{
-					agents: []config.AgentEntry{{Name: "review", Source: "harness/review.yaml"}},
-					files: map[string]string{
-						"harness/review.yaml": routeTestHarnessBody + routeTestCommentOnlyTrigger,
-					},
-				}
-			},
-			event:        routePROpened,
-			wantDecision: routeSkip,
-			wantReason:   "trigger did not match",
-		},
-		{
-			name: "narrowed override keeps /fs-review",
-			fixture: func(t *testing.T, u string) routeFixture {
-				return routeFixture{
-					agents: []config.AgentEntry{{Name: "review", Source: "harness/review.yaml"}},
-					files: map[string]string{
-						"harness/review.yaml": routeTestHarnessBody + routeTestCommentOnlyTrigger,
-					},
-				}
+				return routeFixture{allowlist: []string{u}, agents: []config.AgentEntry{{Name: "review", Trigger: commentOnly}}}
 			},
 			event:        routeReviewComment,
 			wantDecision: routeRun,
+			wantReason:   "trigger matched (agents[].trigger)",
+			wantHarness:  "agents@" + routeTestSHA[:12],
 		},
+		{
+			name: "config trigger skips automatic review",
+			fixture: func(t *testing.T, u string) routeFixture {
+				return routeFixture{allowlist: []string{u}, agents: []config.AgentEntry{{Name: "review", Trigger: commentOnly}}}
+			},
+			event:        routePROpened,
+			wantDecision: routeSkip,
+			wantReason:   "trigger did not match (agents[].trigger)",
+		},
+		{
+			name: "config trigger wins over the harness trigger",
+			fixture: func(t *testing.T, u string) routeFixture {
+				return sourcedReview(config.AgentEntry{Trigger: commentOnly}, map[string]string{
+					"harness/review.yaml": routeTestHarnessBody + reviewTriggerYAML(t),
+				})
+			},
+			event:        routePROpened,
+			wantDecision: routeSkip,
+			wantHarness:  "config:harness/review.yaml",
+		},
+		// --- explicit harness trigger ---
+		{
+			name: "explicit trigger in the sourced harness opts in",
+			fixture: func(t *testing.T, u string) routeFixture {
+				return sourcedReview(config.AgentEntry{}, map[string]string{
+					"harness/review.yaml": routeTestHarnessBody + routeTestCommentOnlyTrigger,
+				})
+			},
+			event:        routeReviewComment,
+			wantDecision: routeRun,
+			wantHarness:  "config:harness/review.yaml",
+		},
+		{
+			name: "explicit trigger written over a base opts in",
+			fixture: func(t *testing.T, u string) routeFixture {
+				return sourcedReview(config.AgentEntry{}, map[string]string{
+					"harness/base-new.yaml": routeTestHarnessBody + reviewTriggerYAML(t),
+					"harness/review.yaml":   "base: base-new.yaml\n" + routeTestCommentOnlyTrigger,
+				})
+			},
+			event:        routePROpened,
+			wantDecision: routeSkip,
+			wantReason:   "trigger did not match (harness trigger:)",
+		},
+		// --- gates ---
 		{
 			name: "bot /fs-review is skipped even when the trigger has no actor guard",
 			fixture: func(t *testing.T, u string) routeFixture {
-				return routeFixture{
-					agents: []config.AgentEntry{{Name: "review", Source: "harness/review.yaml"}},
-					files: map[string]string{
-						"harness/review.yaml": routeTestHarnessBody + routeTestCommentOnlyTrigger,
-					},
-				}
+				return routeFixture{agents: []config.AgentEntry{{Name: "review", Trigger: commentOnly}}}
 			},
 			event:        routeBotReviewComment,
 			wantDecision: routeSkip,
-			wantReason:   "bot comments do not start a review",
+			wantReason:   "bot comments do not start review",
 		},
 		{
 			name: "disabled agent is left to bash",
@@ -289,16 +318,19 @@ forge:
 			wantReason:   "agent disabled in config",
 		},
 		{
-			name:         "kill switch is left to bash",
-			fixture:      func(t *testing.T, u string) routeFixture { return routeFixture{killSwitch: true} },
-			event:        routePROpened,
+			name: "kill switch is left to bash",
+			fixture: func(t *testing.T, u string) routeFixture {
+				return routeFixture{killSwitch: true, agents: []config.AgentEntry{{Name: "review", Trigger: commentOnly}}}
+			},
+			event:        routeReviewComment,
 			wantDecision: routeBash,
 			wantReason:   "kill switch active",
 		},
 		{
-			name:         "unauthorized actor is skipped",
-			fixture:      func(t *testing.T, u string) routeFixture { return routeFixture{allowlist: []string{u}} },
-			agentsYAML:   routeTestHarnessBody + reviewTriggerYAML(t),
+			name: "unauthorized actor is skipped",
+			fixture: func(t *testing.T, u string) routeFixture {
+				return routeFixture{allowlist: []string{u}, agents: []config.AgentEntry{{Name: "review", Trigger: reviewTrigger(t)}}}
+			},
 			event:        routePROpenedNoRole,
 			wantDecision: routeSkip,
 			wantReason:   "actor not authorized",
@@ -307,11 +339,7 @@ forge:
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			agentsYAML := tc.agentsYAML
-			if agentsYAML == "" {
-				agentsYAML = routeTestHarnessBody + reviewTriggerYAML(t)
-			}
-			client, policy, agentsURL := routeAgentsRepo(t, agentsYAML)
+			client, policy, agentsURL := routeAgentsRepo(t, routeTestHarnessBody+reviewTriggerYAML(t))
 			dir := writeRouteFixture(t, tc.fixture(t, agentsURL))
 
 			got, err := routeBuiltinAgent(context.Background(), routeOpts{
@@ -335,19 +363,117 @@ forge:
 	}
 }
 
-func TestRouteBuiltinAgent_FallbackUnavailableIsAnError(t *testing.T) {
-	neutralizeAgentsRepoFallback(t)
-	dir := writeRouteFixture(t, routeFixture{})
-
-	_, err := routeBuiltinAgent(context.Background(), routeOpts{
-		agent:       "review",
-		configDir:   dir,
-		event:       routeEvent(t, routePROpened),
-		forgeClient: forge.NewFakeClient(),
-		printer:     ui.New(io.Discard),
+func TestRouteBuiltinAgent_TriggerFromConfigBase(t *testing.T) {
+	dir := writeRouteFixture(t, sourcedReview(config.AgentEntry{Model: "sonnet"}, map[string]string{
+		"harness/review.yaml": routeTestHarnessBody,
+		"config.base.yaml":    "agents:\n  - name: review\n    trigger: event.transition.kind == \"comment_added\"\n",
+	}))
+	got, err := routeBuiltinAgent(context.Background(), routeOpts{
+		agent: "review", configDir: dir, event: routeEvent(t, routePROpened), printer: ui.New(io.Discard),
 	})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "agents-repo fallback unavailable")
+	require.NoError(t, err)
+	assert.Equal(t, routeSkip, got.Decision, "the base layer's trigger survives the overlay entry's merge")
+	assert.Equal(t, "trigger did not match (agents[].trigger)", got.Reason)
+}
+
+func TestRouteBuiltinAgent_NoTriggerNeedsNoNetwork(t *testing.T) {
+	neutralizeAgentsRepoFallback(t)
+	dir := writeRouteFixture(t, routeFixture{agents: []config.AgentEntry{{Name: "review", Model: "sonnet"}}})
+
+	got, err := routeBuiltinAgent(context.Background(), routeOpts{
+		agent: "review", configDir: dir, event: routeEvent(t, routePROpened),
+		forgeClient: forge.NewFakeClient(), printer: ui.New(io.Discard),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, routeBash, got.Decision)
+	assert.Empty(t, got.Harness, "no harness is resolved without an explicit trigger")
+}
+
+func TestRouteBuiltinAgent_ConfigTriggerDecidesWithoutHarness(t *testing.T) {
+	neutralizeAgentsRepoFallback(t)
+	dir := writeRouteFixture(t, routeFixture{agents: []config.AgentEntry{{Name: "review", Trigger: "true"}}})
+	got, err := routeBuiltinAgent(context.Background(), routeOpts{
+		agent: "review", configDir: dir, event: routeEvent(t, routePROpened),
+		forgeClient: forge.NewFakeClient(), printer: ui.New(io.Discard),
+	})
+	require.NoError(t, err, "an unresolvable harness only loses the label")
+	assert.Equal(t, routeRun, got.Decision)
+	assert.Empty(t, got.Harness)
+}
+
+func TestRouteBuiltinAgent_WhitespaceTriggerIsNoTrigger(t *testing.T) {
+	neutralizeAgentsRepoFallback(t)
+	assert.False(t, config.AgentEntry{Name: "review", Trigger: "  \n"}.HasSettings())
+	dir := writeRouteFixture(t, sourcedReview(config.AgentEntry{Trigger: "  "}, map[string]string{
+		"harness/review.yaml": routeTestHarnessBody,
+	}))
+	got, err := routeBuiltinAgent(context.Background(), routeOpts{
+		agent: "review", configDir: dir, event: routeEvent(t, routePROpened), printer: ui.New(io.Discard),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, routeBash, got.Decision)
+}
+
+func TestReviewRouteAccepts(t *testing.T) {
+	cases := map[string]struct {
+		event string
+		want  bool
+	}{
+		"PR opened":           {routePROpened, true},
+		"comment on a PR":     {routeReviewComment, true},
+		"comment on an issue": {routeIssueReviewComment, false},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, tc.want, reviewRouteAccepts(routeEvent(t, tc.event)))
+		})
+	}
+}
+
+func TestRouteBuiltinAgent_IssueCommentIsLeftToBash(t *testing.T) {
+	dir := writeRouteFixture(t, routeFixture{agents: []config.AgentEntry{{Name: "review", Trigger: "true"}}})
+	got, err := routeBuiltinAgent(context.Background(), routeOpts{
+		agent: "review", configDir: dir, event: routeEvent(t, routeIssueReviewComment), printer: ui.New(io.Discard),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, routeBash, got.Decision)
+	assert.Equal(t, "event is not routable for review", got.Reason)
+}
+
+func TestRouteBuiltinAgent_Errors(t *testing.T) {
+	t.Run("fallback unavailable for a sourced entry is an error", func(t *testing.T) {
+		neutralizeAgentsRepoFallback(t)
+		dir := writeRouteFixture(t, routeFixture{agents: []config.AgentEntry{{Name: "review", Source: "harness/missing.yaml"}}})
+		_, err := routeBuiltinAgent(context.Background(), routeOpts{
+			agent: "review", configDir: dir, event: routeEvent(t, routePROpened),
+			forgeClient: forge.NewFakeClient(), printer: ui.New(io.Discard),
+		})
+		require.Error(t, err)
+	})
+	t.Run("invalid config trigger", func(t *testing.T) {
+		dir := writeRouteFixture(t, routeFixture{agents: []config.AgentEntry{{Name: "review", Trigger: "event.x =="}}})
+		_, err := routeBuiltinAgent(context.Background(), routeOpts{
+			agent: "review", configDir: dir, event: routeEvent(t, routePROpened), printer: ui.New(io.Discard),
+		})
+		require.ErrorContains(t, err, "invalid trigger")
+	})
+	t.Run("invalid explicit harness trigger", func(t *testing.T) {
+		dir := writeRouteFixture(t, sourcedReview(config.AgentEntry{}, map[string]string{
+			"harness/review.yaml": routeTestHarnessBody + "trigger: event.x ==\n",
+		}))
+		_, err := routeBuiltinAgent(context.Background(), routeOpts{
+			agent: "review", configDir: dir, event: routeEvent(t, routePROpened), printer: ui.New(io.Discard),
+		})
+		require.ErrorContains(t, err, "invalid review trigger")
+	})
+	t.Run("unsupported agent", func(t *testing.T) {
+		_, err := routeBuiltinAgent(context.Background(), routeOpts{agent: "code", configDir: t.TempDir(), event: routeEvent(t, routePROpened)})
+		require.ErrorContains(t, err, `unsupported --route agent "code" (supported: review)`)
+	})
+	t.Run("nil event", func(t *testing.T) {
+		_, err := routeBuiltinAgent(context.Background(), routeOpts{agent: "review", configDir: t.TempDir()})
+		require.ErrorContains(t, err, "event is required")
+	})
 }
 
 func TestRunDispatch_RouteRejectsUnsupportedAgent(t *testing.T) {
@@ -391,7 +517,7 @@ func TestRunDispatch_RoutePrintsOneJSONLine(t *testing.T) {
 	assert.Equal(t, routeDecision{
 		Agent:    "review",
 		Decision: routeRun,
-		Reason:   "trigger matched",
+		Reason:   "trigger matched (harness trigger:)",
 		Harness:  "config:harness/review.yaml",
 	}, got)
 }

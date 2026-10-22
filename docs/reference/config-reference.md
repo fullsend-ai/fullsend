@@ -50,6 +50,7 @@ agents:                              # Registered agent sources and per-agent tu
     subagents:                       # Per-agent sub-agent model map
       default: sonnet                # Fallback model for personas without an explicit entry
       code-reviewer: opus            # Model for a specific persona
+    # trigger: <CEL expression>      # When the agent runs; takes precedence over the harness trigger:
 
 # ── Remote resources ─────────────────────────────────────────
 allowed_remote_resources:            # URL prefixes allowed for remote resources (agents, policies, skills, plugins, profiles, providers, and base composition)
@@ -174,7 +175,7 @@ Omitting the key inherits the parent's roles. See
 
 Registered agent sources and per-agent tuning. Each entry identifies an agent
 by source URL or local path, with optional overrides for runtime, model,
-effort, and sub-agent models.
+effort, sub-agent models and the trigger.
 
 - **`source`** — URL (must include `#sha256=<64-hex-char>` integrity hash) or
   local path. URL sources must be covered by `allowed_remote_resources`.
@@ -194,6 +195,17 @@ effort, and sub-agent models.
   key sets the fallback for personas without an explicit entry. A `~` (null)
   value tombstones an inherited entry. Keys must be lowercase alphanumeric
   segments joined by hyphens (max 64 chars).
+- **`trigger`** — A [CEL trigger](../guides/user/cel-triggers-reference.md)
+  (a boolean over the normalized `event`) that decides when the agent runs.
+  It takes precedence over the `trigger:` field of the agent's harness. On a
+  `review` entry it opts the repository into CEL review routing: the trigger,
+  not the dispatch workflow's built-in rules, decides when the `Review` job
+  starts (see
+  [Choosing when review runs](../guides/user/customizing-agents.md#choosing-when-review-runs)).
+  On a source-registered custom agent it replaces the harness trigger in CEL
+  dispatch. A trigger alone makes a valid override-only entry for a built-in
+  agent. Validated when the agent list is validated: it must compile and
+  return a boolean.
 
 In the layered config system, agents use keyed merge by `DerivedName()` — see
 [Layered Config Reference](../guides/infrastructure/layered-config-reference.md).

@@ -733,106 +733,87 @@ disables nothing because no agent has that harness name.
 
 By default, the dispatch workflow decides when the review agent runs: when a
 pull request is opened, pushed to or marked ready, when the
-`ready-for-review` label is added, and on a `/fs-review` comment. To change
-that, set the repository or organization variable
-`FULLSEND_CEL_ROUTING_REVIEW` and give the review harness a `trigger`
-expression. The review still runs in the same `Review` job; the trigger only
-decides whether that job starts.
-
-| `FULLSEND_CEL_ROUTING_REVIEW` | What happens |
-|---|---|
-| unset or `off` | The dispatch workflow decides, as before. |
-| `shadow` | The dispatch workflow still decides. The `Route` job also evaluates the review trigger and logs both decisions, with a warning when they differ. Use this to check a trigger. |
-| `on` | The review trigger decides for pull request and pull request comment events. **Not ready yet:** wait for the three issues below to be fixed before you use it. |
-
-The review harness is the one `fullsend run review` resolves: your
-`agents:` entry named `review` with a `source:`, otherwise the default review
-harness from the agents repository. **If the resolved harness has no
-`trigger`, the dispatch workflow keeps deciding even when the variable is
-`on`.** A review override whose `base:` pins an agents commit from before the
-default review trigger existed therefore keeps today's behaviour. The kill
-switch and an `enabled: false` review entry also leave the decision to the
-dispatch workflow, which reports them as before.
-
-> [!WARNING]
-> Use `shadow` only until these are fixed. With `on`, reviews are lost or
-> doubled in these cases:
->
-> - Pull requests and `/fs-review` comments from triage-role users do not start
->   a review ([#8724](https://github.com/fullsend-ai/fullsend/issues/8724)).
-> - A `review` entry with a `source:` harness that has a `trigger` also runs
->   the review a second time, through the custom-agent path, in every mode,
->   including `off` ([#8725](https://github.com/fullsend-ai/fullsend/issues/8725)).
->   This includes the example below.
-> - Pull requests opened or pushed by bots, including fullsend's own agent
->   bots, do not start a review, because the trigger path does not yet look
->   up a bot's fullsend role
->   ([#8329](https://github.com/fullsend-ai/fullsend/issues/8329)).
-
-The `Route` job evaluates the trigger with the fullsend CLI built at the
-dispatch workflow's commit. If your workflow call pins `fullsend_version`,
-the `Review` job runs that version instead, so the trigger can come from a
-different agents release than the review harness that runs.
+`ready-for-review` label is added, and on a `/fs-review` comment. To decide it
+yourself, give the `review` entry in `.fullsend/config.yaml` a `trigger`: a
+[CEL expression](cel-triggers-reference.md) over the event. The review still
+runs in the same `Review` job; the trigger only decides whether that job
+starts.
 
 ### Example: review only on `/fs-review`
 
-To stop automatic reviews on every pull request but keep `/fs-review`,
-override the review harness with a narrower trigger:
+To stop the automatic review on every pull request but keep `/fs-review`, add
+this entry to `.fullsend/config.yaml` on your default branch:
 
 ```yaml
-# .fullsend/harness/review.yaml
-base: https://raw.githubusercontent.com/fullsend-ai/agents/<sha>/harness/review.yaml#sha256=abc...
-
-trigger: >
-  event.transition.kind == "comment_added"
-  && has(event.transition.comment.command)
-  && event.transition.comment.command == "/fs-review"
-  && event.actor.kind == "human"
-  && (event.entity.kind == "change_proposal"
-      || has(event.entity.linked_change_proposal))
-```
-
-The last line keeps the trigger to pull requests. The `Route` job also ignores
-a `run` decision for a comment that is not on a pull request, and never starts
-a review from a bot's comment.
-
-```yaml
-# .fullsend/config.yaml
 agents:
   - name: review
-    source: harness/review.yaml
+    trigger: >-
+      event.transition.kind == "comment_added"
+      && has(event.entity.linked_change_proposal)
+      && has(event.transition.comment.command)
+      && event.transition.comment.command == "/fs-review"
+      && event.actor.kind == "human"
 ```
 
-Then turn on shadow routing and compare the decisions:
+`has(event.entity.linked_change_proposal)` keeps the trigger to comments on
+pull requests. The `Route` job also ignores a match on a comment that is not
+on a pull request, and never starts a review from a bot's comment.
 
-```bash
-gh variable set FULLSEND_CEL_ROUTING_REVIEW --repo <owner>/<repo> --body shadow
-```
+The trigger is read from your default branch, so a pull request cannot change
+its own routing. After the change merges, open a pull request: no review
+starts. Comment `/fs-review` on it: one review starts.
 
-You cannot remove an inherited trigger by leaving `trigger` empty: an empty
-`trigger` inherits the one from `base:`. Write the narrower expression
-instead, or `trigger: "false"` to never start a review automatically.
+### What opts a repository in
+
+Only an explicit trigger moves review routing to CEL:
+
+| Your configuration | Who decides |
+|---|---|
+| No `review` entry, or one with only `runtime`, `model`, `effort` or `subagents` | The dispatch workflow, as before |
+| `trigger` on the `review` entry | The trigger |
+| A `review` entry with `source:` whose harness file sets `trigger:` itself | That trigger (a `trigger` on the entry wins over it) |
+| A `review` entry with `source:` whose harness only inherits a `trigger` through `base:` | The dispatch workflow, as before |
+
+The default review harness's own trigger does not opt you in, but a `trigger:`
+already written in your own review harness does. That includes a trigger you
+added for [Jira](jira-integration.md): it now also decides GitHub reviews, so
+move a Jira-only trigger to an agent with another name or widen it before you
+upgrade. The kill switch
+and `enabled: false` on the review entry keep working as before. The `Route`
+job evaluates the trigger with the fullsend CLI built at the dispatch
+workflow's commit; if your workflow call pins `fullsend_version`, the `Review`
+job runs that version instead.
+
+> [!WARNING]
+> Until these issues are fixed, a trigger does not start a review in two
+> cases where the dispatch workflow would:
+>
+> - Pull requests and `/fs-review` comments from triage-role users
+>   ([#8724](https://github.com/fullsend-ai/fullsend/issues/8724)).
+> - Pull requests opened or pushed by bots without a registered fullsend
+>   role, including pushes from the fix agent, because the trigger path does
+>   not yet look up a bot's role
+>   ([#8329](https://github.com/fullsend-ai/fullsend/issues/8329)).
 
 ### Checking the decision
 
-When the trigger is evaluated, the `Route` job's "Finalize stage" step logs
-the decision:
+When a trigger is set, the `Route` job's "Finalize stage" step logs the
+decision for each pull request and pull request comment:
 
 ```text
-CEL review route (on): bash=review cel=skip reason=trigger did not match harness=config:harness/review.yaml
+CEL route (review): bash=review cel=skip reason=trigger did not match (agents[].trigger) harness=agents@3c3081741e3c
 ```
 
-With `on`, the job summary also shows `review_route=cel` (the trigger
-decided) or `review_route=bash` (the dispatch workflow decided: the resolved
-harness has no trigger, the kill switch is on, the review entry is disabled, or
-the trigger matched a comment that is not on a pull request).
+The job summary shows `review_route=cel` when the trigger decided, or
+`review_route=bash` when the dispatch workflow did: the kill switch is on, the
+review entry is disabled, the trigger is only inherited, or the trigger
+matched a comment that is not on a pull request.
 
 | Log text | Meaning | Action |
 |---|---|---|
-| `CEL review route mismatch: bash=review cel=skip` | `shadow`: the trigger would skip a review the workflow runs | Expected for events your trigger leaves out; otherwise fix the trigger before switching to `on` |
-| `CEL review route failed; keeping the bash stage` (`on`) or `CEL review route (shadow) failed` | A CEL review route step failed, so the workflow decided | Open the failed "… CEL review route" step for the error (for example a CLI install failure or a harness that fails to load) |
-| `bash=... cel=bash reason=resolved harness has no trigger` | The review harness has no trigger | Add a `trigger` to your review harness, or remove the override to use the default |
-| `is not off, shadow or on; using bash routing` | The variable holds another value | Set it to `off`, `shadow` or `on` (case does not matter) |
+| `cel=skip reason=trigger did not match` | The trigger left this event out | Expected for events your trigger excludes; otherwise fix the trigger. The reason ends with where the trigger came from: `agents[].trigger` or `harness trigger:` |
+| `cel=skip reason=actor not authorized` | The actor failed the dispatch permission check | See the warning above for triage users and bots |
+| `CEL route failed; keeping the bash stage` | A CEL route step failed, so the dispatch workflow decided | Open the failed "… CEL route" step for the error, for example an invalid `trigger` or a harness that fails to load |
 
 ## Agent dispatch authorization
 

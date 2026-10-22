@@ -61,6 +61,36 @@ image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
 	assert.Empty(t, out)
 }
 
+func TestListTriggeredHarnesses_ConfigTriggerOverridesHarness(t *testing.T) {
+	const configTrigger = `event.transition.kind == "comment_added"`
+	for name, harnessTrigger := range map[string]string{
+		"replaces the harness trigger": "trigger: event.transition.kind == \"opened\"\n",
+		"applies without one":          "",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeHarnessConfig(t, dir, `agent: agents/triage.md
+role: triage
+slug: issue-ping
+model: opus
+image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
+`+harnessTrigger)
+			cfg := config.NewPerRepoConfig(nil, "o/r")
+			cfg.SetAgents([]config.AgentEntry{{Name: "issue-ping", Source: "harness/issue-ping.yaml", Trigger: configTrigger}})
+			data, err := yaml.Marshal(cfg)
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), data, 0o644))
+			dirCfg, err := config.LoadConfig(dir, config.LoadOpts{})
+			require.NoError(t, err)
+
+			out, err := ListTriggeredHarnesses(context.Background(), dir, dirCfg, nil)
+			require.NoError(t, err)
+			require.Len(t, out, 1)
+			assert.Equal(t, configTrigger, out[0].Harness.Trigger)
+		})
+	}
+}
+
 func TestListTriggeredHarnesses_DuplicateName(t *testing.T) {
 	dir := t.TempDir()
 	cfg := config.NewPerRepoConfig(nil, "o/r")

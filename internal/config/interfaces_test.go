@@ -41,6 +41,29 @@ func TestPerRepoConfig_AgentEntries_RefSurvivesLayeredMerge(t *testing.T) {
 	assert.Contains(t, merged[0].Source, "raw.githubusercontent.com")
 }
 
+func TestPerRepoConfig_AgentEntries_TriggerLayeredMerge(t *testing.T) {
+	const parentTrigger = `event.transition.kind == "opened"`
+	const overlayTrigger = `event.transition.kind == "comment_added"`
+	parent := &perRepoConfig{
+		Agents: []AgentEntry{{Name: "review", Trigger: parentTrigger}},
+	}
+
+	inherit := &perRepoConfig{parent: parent, Agents: []AgentEntry{{Name: "review", Model: "sonnet"}}}
+	merged := inherit.AgentEntries()
+	require.Len(t, merged, 1)
+	assert.Equal(t, parentTrigger, merged[0].Trigger, "an omitted trigger inherits the parent's")
+	assert.Equal(t, "sonnet", merged[0].Model)
+
+	override := &perRepoConfig{parent: parent, Agents: []AgentEntry{
+		{Name: "review", Trigger: `event.transition.kind == "synchronized"`},
+		{Name: "review", Trigger: overlayTrigger},
+	}}
+	merged = override.AgentEntries()
+	require.Len(t, merged, 1)
+	assert.Equal(t, overlayTrigger, merged[0].Trigger, "the last overlay trigger wins")
+	assert.Equal(t, parentTrigger, parent.Agents[0].Trigger, "the merge must not write to the parent layer")
+}
+
 func TestPerRepoConfig_IsKillSwitchActive(t *testing.T) {
 	tr := true
 	cfg := &perRepoConfig{KillSwitch: &tr}

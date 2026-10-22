@@ -129,6 +129,22 @@ func TestWhenActorPostsComment_Errors(t *testing.T) {
 	require.ErrorContains(t, err, "TEST_ACTOR_TRIAGE_PAT not set")
 }
 
+func TestWhenActorPostsPRComment(t *testing.T) {
+	t.Parallel()
+
+	w, drivers := actorWorld()
+	require.ErrorContains(t, whenActorPostsPRComment(w, actorWrite, "/fs-review"), "no pull request opened")
+
+	w.PRNumber = 9
+	require.NoError(t, whenActorPostsPRComment(w, actorWrite, "/fs-review"))
+	assert.Equal(t, []string{"/fs-review"}, drivers[actorWrite].addedBodies)
+	assert.Empty(t, drivers["default"].addedBodies, "the comment must not use the e2e installation identity")
+	assert.False(t, w.ScenarioStart.IsZero())
+
+	err := whenActorPostsPRComment(&world.World{PRNumber: 9}, actorWrite, "/fs-review")
+	require.ErrorContains(t, err, "TEST_ACTOR_WRITE_PAT not set")
+}
+
 func TestThenIssueCommentAuthoredBy(t *testing.T) {
 	t.Parallel()
 

@@ -56,7 +56,7 @@ func newDispatchCmd() *cobra.Command {
 	cmd.Flags().StringVar(&eventName, "event-name", "", "GitHub event name (default: GITHUB_EVENT_NAME)")
 	cmd.Flags().StringVar(&eventAction, "event-action", "", "GitHub event action")
 	cmd.Flags().StringVar(&forgeToken, "forge-token", "", "Forge API token (default: GH_TOKEN, GITHUB_TOKEN, or gh auth token)")
-	cmd.Flags().StringVar(&route, "route", "", "Decide routing for one built-in agent (review) and print one JSON line with decision run, skip or bash; --output-driver is ignored")
+	cmd.Flags().StringVar(&route, "route", "", "Decide routing for one built-in agent with a CEL route (review) and print one JSON line with decision run, skip or bash; --output-driver is ignored")
 
 	return cmd
 }
@@ -77,8 +77,8 @@ type dispatchOpts struct {
 
 func runDispatch(ctx context.Context, opts dispatchOpts) error {
 	route := strings.ToLower(strings.TrimSpace(opts.route))
-	if opts.route != "" && !routableAgents[route] {
-		return fmt.Errorf("unsupported --route agent %q (supported: review)", opts.route)
+	if _, ok := routableAgents[route]; opts.route != "" && !ok {
+		return fmt.Errorf("unsupported --route agent %q (supported: %s)", opts.route, routableAgentNames())
 	}
 
 	inDriver := opts.inputDriver

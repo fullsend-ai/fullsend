@@ -205,6 +205,9 @@ func (c *perRepoConfig) AgentEntries() []AgentEntry {
 			if oi.entry.Effort != "" {
 				merged.Effort = oi.entry.Effort
 			}
+			if oi.entry.Trigger != "" {
+				merged.Trigger = oi.entry.Trigger
+			}
 			// Subagents merge per key: overlay entries override or
 			// tombstone parent entries; unstated keys inherit.
 			// `merged := pa` shares the map header, so clone before

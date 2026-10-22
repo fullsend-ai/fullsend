@@ -349,7 +349,6 @@ Repos whose `inference.auth` is `openai-wif` need no Fullsend-managed inference 
 - `FULLSEND_GCP_REGION` (value drift is detected and repaired by convergence)
 - `FULLSEND_REVIEW_CLIENT_ID` — OAuth client ID of the review agent's GitHub App (best-effort, conditional on successful lookup)
 - `FULLSEND_APP_SET` — GitHub App set prefix (apps named `{app-set}-{role}`); auto-set by the installer and repaired on convergence
-- `FULLSEND_CEL_ROUTING_REVIEW` — optional, set by you: `off` (default), `shadow` or `on` (not ready yet); `shadow` logs the review harness `trigger` decision next to the dispatch workflow's, `on` lets the trigger decide when review runs ([Choosing when review runs](../user/customizing-agents.md#choosing-when-review-runs)); not set by `github setup`
 
 #### GitLab
 

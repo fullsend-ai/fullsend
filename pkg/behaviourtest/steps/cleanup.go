@@ -130,16 +130,6 @@ func CleanupScenario(w *world.World) {
 		worldLogf(w, "behaviour cleanup: delete inference gateway api-key secret: %v", err)
 	}
 
-	// --- Repository variable cleanup ---
-	// Restore the variables a scenario set (for example
-	// FULLSEND_CEL_ROUTING_REVIEW) so the slot's next scenario routes with
-	// the install defaults.
-	if err := guardedCleanupRetry(w, "restore repository variables", func() error {
-		return RestoreRepoVariables(w)
-	}); err != nil {
-		worldLogf(w, "behaviour cleanup: restore repository variables: %v", err)
-	}
-
 	// --- Issue / PR cleanup ---
 	if w.IssueNumber > 0 {
 		desc := fmt.Sprintf("close issue #%d", w.IssueNumber)

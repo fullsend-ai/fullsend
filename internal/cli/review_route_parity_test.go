@@ -18,17 +18,19 @@ import (
 
 // TestReviewRouteParity runs raw GitHub webhook payloads through the gha-event
 // input and routeBuiltinAgent (the code behind `fullsend dispatch --route
-// review`), with a review harness carrying the default trigger, and compares
+// review`), with the default review trigger set in config, and compares
 // the decision with the one the bash router in reusable-dispatch.yml makes for
 // the same event.
 //
 // A row whose CEL result differs from bash must name the known difference in
 // diff; any other mismatch is a parity regression.
 func TestReviewRouteParity(t *testing.T) {
+	// The default trigger is set as agents[].trigger, the documented opt-in.
+	// The review harness is local so the test needs no agents-repo fetch.
 	dir := writeRouteFixture(t, routeFixture{
-		agents: []config.AgentEntry{{Name: "review", Source: "harness/review.yaml"}},
+		agents: []config.AgentEntry{{Name: "review", Source: "harness/review.yaml", Trigger: reviewTrigger(t)}},
 		files: map[string]string{
-			"harness/review.yaml": routeTestHarnessBody + reviewTriggerYAML(t),
+			"harness/review.yaml": routeTestHarnessBody,
 		},
 	})
 
@@ -187,8 +189,12 @@ func TestReviewRouteParity(t *testing.T) {
 				printer:     ui.New(io.Discard),
 			})
 			require.NoError(t, err)
-			require.Contains(t, []string{routeRun, routeSkip}, d.Decision, "reason: %s", d.Reason)
+			// bash hands the event back to the bash router, so the
+			// effective decision is bash's.
 			got := d.Decision == routeRun
+			if d.Decision == routeBash {
+				got = tc.bash
+			}
 
 			assert.Equal(t, tc.cel, got, "CEL route decision")
 			if tc.diff == "" {

@@ -27,7 +27,8 @@ type TriggeredHarness struct {
 	Path    string
 }
 
-// ListTriggeredHarnesses returns config-registered agents whose harness has a non-empty trigger.
+// ListTriggeredHarnesses returns config-registered agents with a non-empty
+// trigger: the entry's agents[].trigger when set, else the harness trigger:.
 // fetchPolicy controls SSRF protection for URL-sourced agents. When nil,
 // fetch.DefaultPolicy is used. Callers that need custom domain lists (e.g.
 // tests using httptest) can pass a policy with the test server's domain.
@@ -88,6 +89,10 @@ func ListTriggeredHarnesses(ctx context.Context, configDir string, cfg config.Co
 			continue
 		}
 		loaded++
+		// A config agents[].trigger takes precedence over the harness's own.
+		if strings.TrimSpace(agent.Entry.Trigger) != "" {
+			h.Trigger = agent.Entry.Trigger
+		}
 		if strings.TrimSpace(h.Trigger) == "" {
 			continue
 		}

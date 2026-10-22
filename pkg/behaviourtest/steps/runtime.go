@@ -209,6 +209,7 @@ func givenRepositoryAgentSettings(w *world.World, doc string) error {
 		Runtime string `yaml:"runtime"`
 		Model   string `yaml:"model"`
 		Effort  string `yaml:"effort"`
+		Trigger string `yaml:"trigger"`
 	}
 	if err := yaml.Unmarshal([]byte(doc), &settings); err != nil {
 		return fmt.Errorf("parsing agent settings docstring: %w", err)
@@ -241,6 +242,9 @@ func givenRepositoryAgentSettings(w *world.World, doc string) error {
 			effort = st.Effort
 		}
 		agents = config.UpsertAgentSettings(agents, name, runtimeName, model, effort, nil)
+		if st.Trigger != "" {
+			setAgentTrigger(agents, name, st.Trigger)
+		}
 	}
 	cfg.SetAgents(agents)
 	if err := config.ValidateAgentEntries(cfg.AgentEntries(), cfg.AllowedResources()); err != nil {
@@ -254,6 +258,18 @@ func givenRepositoryAgentSettings(w *world.World, doc string) error {
 		return fmt.Errorf("updating config: %w", err)
 	}
 	return nil
+}
+
+// setAgentTrigger sets agents[].trigger on the entry named name, which
+// UpsertAgentSettings has just ensured exists.
+func setAgentTrigger(agents []config.AgentEntry, name, trigger string) {
+	lower := strings.ToLower(name)
+	for i := range agents {
+		if strings.ToLower(agents[i].DerivedName()) == lower {
+			agents[i].Trigger = trigger
+			return
+		}
+	}
 }
 
 // RestoreRuntime puts the install-time runtime back. Exported so

@@ -431,17 +431,75 @@ jobs:
           echo "stage=${STAGE}" >> "${GITHUB_OUTPUT}"
           echo "trigger_source=${TRIGGER_SOURCE}" >> "${GITHUB_OUTPUT}"
 
-      # CEL review routing (#8726). FULLSEND_CEL_ROUTING_REVIEW = off (default),
-      # shadow (log the CEL decision next to the bash stage) or on (the CEL
-      # decision sets or clears STAGE=review). The cel-* steps run only when
-      # the variable is shadow or on, the event is a PR or a PR comment, and
-      # the bash stage above is empty or review. Every cel-* step continues on
-      # error: "Finalize stage" then keeps the bash stage, so a CEL failure
-      # never stops another stage. When the variable is off or unset,
+      # CEL routing (#8726). A repository moves a built-in stage's routing
+      # from the bash rules above to a CEL trigger with an explicit trigger:
+      # agents[].trigger on the agent's entry in config.yaml, or a trigger:
+      # key in its own source-registered harness. The opt-in step picks the
+      # agent whose CEL route covers this event (review today) and looks for
+      # a candidate entry; only then do the other cel-* steps install the CLI
+      # and let `fullsend dispatch --route <agent>` decide. Every cel-* step
+      # continues on error: "Finalize stage" then keeps the bash stage, so a
+      # CEL failure never stops another stage. Without a candidate entry
       # "Finalize stage" passes the bash stage through unchanged.
-      - name: Checkout config for CEL review route
+      - name: Detect CEL route opt-in
+        id: cel-opt-in
+        if: ${{ github.event_name == 'pull_request_target' || github.event_name == 'issue_comment' }}
+        continue-on-error: true
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          ISSUE_IS_PR: ${{ github.event.issue.pull_request && 'true' || 'false' }}
+          BASH_STAGE: ${{ steps.bash-route.outputs.stage }}
+        run: |
+          set -euo pipefail
+          # Pick the agent whose CEL route covers this event, among those
+          # `fullsend dispatch --route` supports (routableAgents in
+          # internal/cli/dispatch_route.go), and only when bash chose that
+          # stage or none. Adding an agent: a gate block here plus its
+          # routableAgents entry.
+          agent=""
+          # review: pull request events and comments on a pull request.
+          if [[ "${EVENT_NAME}" == "pull_request_target" || ( "${EVENT_NAME}" == "issue_comment" && "${ISSUE_IS_PR}" == "true" ) ]] \
+            && [[ -z "${BASH_STAGE}" || "${BASH_STAGE}" == "review" ]]; then
+            agent="review"
+          fi
+
+          # A candidate is the agent's entry with a trigger or a source,
+          # matched the way config.AgentEntry.DerivedName names entries: the
+          # name, else the source file name without its last #fragment and
+          # extension, case-insensitive. `fullsend dispatch --route` decides
+          # whether the entry's trigger opts in.
+          # shellcheck disable=SC2016
+          query='[.agents[]? | select(
+            ((tag == "!!str") and (sub("#[^#]*$"; "") | test("(?i)(^|/)" + strenv(AGENT) + "(\\.[^./]*)?$")))
+            or ((tag == "!!map")
+              and ((has("trigger") and ((.trigger | tostring) != "") and ((.trigger | tostring) != "null"))
+                or (has("source") and ((.source | tostring) != "") and ((.source | tostring) != "null")))
+              and ((has("name") and ((.name | tostring | downcase) == strenv(AGENT)))
+                or (((has("name") | not) or ((.name | tostring) == "") or ((.name | tostring) == "null"))
+                  and has("source")
+                  and (.source | tostring | sub("#[^#]*$"; "") | test("(?i)(^|/)" + strenv(AGENT) + "(\\.[^./]*)?$"))))))] | length'
+          opt_in=false
+          if [[ -n "${agent}" ]]; then
+            for f in .fullsend/config.yaml .fullsend/config.base.yaml; do
+              if [[ ! -f "${f}" ]]; then
+                continue
+              fi
+              # An unreadable file lets the CLI decide and report it.
+              if ! count=$(AGENT="${agent}" yq "${query}" "${f}" 2>/dev/null) || [[ "${count}" != "0" ]]; then
+                opt_in=true
+                break
+              fi
+            done
+          fi
+          {
+            echo "agent=${agent}"
+            echo "opt_in=${opt_in}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Checkout config for CEL route
         id: cel-config
-        if: ${{ (vars.FULLSEND_CEL_ROUTING_REVIEW == 'shadow' || vars.FULLSEND_CEL_ROUTING_REVIEW == 'on') && (github.event_name == 'pull_request_target' || (github.event_name == 'issue_comment' && github.event.issue.pull_request)) && (steps.bash-route.outputs.stage == '' || steps.bash-route.outputs.stage == 'review') }}
+        if: steps.cel-opt-in.outputs.opt_in == 'true'
         continue-on-error: true
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -457,7 +515,7 @@ jobs:
             .defaults/action.yml
           sparse-checkout-cone-mode: false
 
-      - name: Detect CLI install mode for CEL review route
+      - name: Detect CLI install mode for CEL route
         id: cel-cli-mode
         if: steps.cel-config.outcome == 'success'
         continue-on-error: true
@@ -472,7 +530,7 @@ jobs:
 
       # Later runs on the same workflow_sha reuse whichever of this job and
       # harness-dispatch saved the CLI first.
-      - name: Restore fullsend CLI cache for CEL review route
+      - name: Restore fullsend CLI cache for CEL route
         id: cel-cli-cache
         if: steps.cel-config.outcome == 'success'
         continue-on-error: true
@@ -484,7 +542,7 @@ jobs:
       # Vendored installs copy the committed binary directly, so the step does
       # not depend on where the vendored defaults (.defaults/ or
       # .fullsend/.defaults/) live.
-      - name: Install fullsend CLI for CEL review route (vendored)
+      - name: Install fullsend CLI for CEL route (vendored)
         if: steps.cel-config.outcome == 'success' && steps.cel-cli-mode.outputs.mode == 'vendored' && steps.cel-cli-cache.outputs.cache-hit != 'true'
         continue-on-error: true
         shell: bash
@@ -499,7 +557,7 @@ jobs:
           chmod +x "${RUNNER_TEMP}/fullsend/fullsend"
           echo "${RUNNER_TEMP}/fullsend" >> "${GITHUB_PATH}"
 
-      - name: Checkout upstream install action for CEL review route
+      - name: Checkout upstream install action for CEL route
         if: steps.cel-config.outcome == 'success' && steps.cel-cli-mode.outputs.mode == 'upstream' && steps.cel-cli-cache.outputs.cache-hit != 'true'
         continue-on-error: true
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -516,7 +574,7 @@ jobs:
       # pins fullsend_version runs the Review job on that version instead, so
       # the trigger can come from a different agents ref than the one the
       # Review job runs.
-      - name: Install fullsend CLI for CEL review route (upstream workflow)
+      - name: Install fullsend CLI for CEL route (upstream workflow)
         if: steps.cel-config.outcome == 'success' && steps.cel-cli-mode.outputs.mode == 'upstream' && steps.cel-cli-cache.outputs.cache-hit != 'true'
         continue-on-error: true
         uses: ./.workflow-actions/.github/actions/install-fullsend-cli
@@ -526,7 +584,7 @@ jobs:
           workflow_sha: ${{ job.workflow_sha }}
           github_token: ${{ github.token }}
 
-      - name: Expose cached fullsend CLI for CEL review route
+      - name: Expose cached fullsend CLI for CEL route
         if: steps.cel-config.outcome == 'success' && steps.cel-cli-cache.outputs.cache-hit == 'true'
         continue-on-error: true
         shell: bash
@@ -538,7 +596,7 @@ jobs:
           chmod +x "${install_dir}/fullsend"
           echo "${install_dir}" >> "${GITHUB_PATH}"
 
-      - name: Prepare fullsend CLI cache artifact for CEL review route
+      - name: Prepare fullsend CLI cache artifact for CEL route
         if: steps.cel-config.outcome == 'success' && steps.cel-cli-cache.outputs.cache-hit != 'true'
         continue-on-error: true
         shell: bash
@@ -547,7 +605,7 @@ jobs:
           mkdir -p "${RUNNER_TEMP}/fullsend-cache"
           cp "${RUNNER_TEMP}/fullsend/fullsend" "${RUNNER_TEMP}/fullsend-cache/fullsend"
 
-      - name: Save fullsend CLI cache for CEL review route
+      - name: Save fullsend CLI cache for CEL route
         if: steps.cel-config.outcome == 'success' && steps.cel-cli-cache.outputs.cache-hit != 'true'
         continue-on-error: true
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -555,8 +613,8 @@ jobs:
           path: ${{ runner.temp }}/fullsend-cache
           key: fullsend-cli-${{ steps.cel-cli-mode.outputs.mode }}-${{ job.workflow_sha }}
 
-      - name: Evaluate CEL review route
-        id: cel-review
+      - name: Evaluate CEL route
+        id: cel-route
         if: steps.cel-config.outcome == 'success'
         continue-on-error: true
         shell: bash
@@ -564,19 +622,20 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GITHUB_EVENT_NAME: ${{ github.event_name }}
           EVENT_ACTION: ${{ inputs.event_action }}
+          ROUTE_AGENT: ${{ steps.cel-opt-in.outputs.agent }}
         run: |
           set -euo pipefail
           DECISION_JSON=$(fullsend dispatch \
             --input-driver gha-event \
             --config-dir cel-route/.fullsend \
             --event-action "${EVENT_ACTION}" \
-            --route review)
+            --route "${ROUTE_AGENT}")
           printf '%s\n' "${DECISION_JSON}"
           DECISION=$(jq -r '.decision // ""' <<<"${DECISION_JSON}")
           case "${DECISION}" in
             run|skip|bash) ;;
             *)
-              echo "::error::Unexpected CEL review route decision: ${DECISION}"
+              echo "::error::Unexpected CEL route decision: ${DECISION}"
               exit 1
               ;;
           esac
@@ -594,70 +653,43 @@ jobs:
         env:
           BASH_STAGE: ${{ steps.bash-route.outputs.stage }}
           BASH_TRIGGER_SOURCE: ${{ steps.bash-route.outputs.trigger_source }}
-          EVENT_NAME: ${{ github.event_name }}
-          ISSUE_IS_PR: ${{ github.event.issue.pull_request && 'true' || 'false' }}
-          CEL_REVIEW_MODE: ${{ vars.FULLSEND_CEL_ROUTING_REVIEW }}
+          ROUTE_AGENT: ${{ steps.cel-opt-in.outputs.agent }}
+          CEL_OPT_IN_OUTCOME: ${{ steps.cel-opt-in.outcome }}
           CEL_CONFIG_OUTCOME: ${{ steps.cel-config.outcome }}
-          CEL_REVIEW_OUTCOME: ${{ steps.cel-review.outcome }}
-          CEL_REVIEW_DECISION: ${{ steps.cel-review.outputs.decision }}
-          CEL_REVIEW_REASON: ${{ steps.cel-review.outputs.reason }}
-          CEL_REVIEW_HARNESS: ${{ steps.cel-review.outputs.harness }}
+          CEL_ROUTE_OUTCOME: ${{ steps.cel-route.outcome }}
+          CEL_ROUTE_DECISION: ${{ steps.cel-route.outputs.decision }}
+          CEL_ROUTE_REASON: ${{ steps.cel-route.outputs.reason }}
+          CEL_ROUTE_HARNESS: ${{ steps.cel-route.outputs.harness }}
         run: |
           set -euo pipefail
           STAGE="${BASH_STAGE}"
           TRIGGER_SOURCE="${BASH_TRIGGER_SOURCE}"
 
-          # off or unset passes the bash stage through. Expression == is
-          # case-insensitive, so the mode is lowercased here to match the
-          # cel-* step gates.
-          MODE=$(printf '%s' "${CEL_REVIEW_MODE}" | tr '[:upper:]' '[:lower:]')
-          case "${MODE}" in
-            ""|off) ;;
-            shadow|on)
-              if [[ -z "${CEL_CONFIG_OUTCOME}" || "${CEL_CONFIG_OUTCOME}" == "skipped" ]]; then
-                : # Not evaluated (event type or bash stage): keep the bash stage.
-              elif [[ "${CEL_CONFIG_OUTCOME}" != "success" || "${CEL_REVIEW_OUTCOME}" != "success" ]]; then
-                if [[ "${MODE}" == "on" ]]; then
-                  echo "::error::CEL review route failed; keeping the bash stage '${STAGE}'. See the CEL review route steps."
-                else
-                  echo "::warning::CEL review route (shadow) failed. See the CEL review route steps."
-                fi
-              else
-                BASH_SHOWN="${STAGE:-none}"
-                echo "::notice::CEL review route (${MODE}): bash=${BASH_SHOWN} cel=${CEL_REVIEW_DECISION} reason=${CEL_REVIEW_REASON} harness=${CEL_REVIEW_HARNESS}"
-                if [[ "${MODE}" == "shadow" ]]; then
-                  if [[ "${CEL_REVIEW_DECISION}" == "run" && "${STAGE}" != "review" ]] \
-                    || [[ "${CEL_REVIEW_DECISION}" == "skip" && "${STAGE}" == "review" ]]; then
-                    echo "::warning::CEL review route mismatch: bash=${BASH_SHOWN} cel=${CEL_REVIEW_DECISION} (${CEL_REVIEW_REASON})"
+          # The cel-* steps did not run (no routable agent for this event,
+          # or no candidate entry): pass the bash stage through.
+          if [[ "${CEL_OPT_IN_OUTCOME}" == "failure" ]]; then
+            echo "::error::CEL route opt-in check failed; keeping the bash stage '${STAGE}'. See the CEL route steps."
+          elif [[ -n "${CEL_CONFIG_OUTCOME}" && "${CEL_CONFIG_OUTCOME}" != "skipped" ]]; then
+            if [[ ! "${ROUTE_AGENT}" =~ ^[a-z]+$ || "${CEL_CONFIG_OUTCOME}" != "success" || "${CEL_ROUTE_OUTCOME}" != "success" ]]; then
+              echo "::error::CEL route failed; keeping the bash stage '${STAGE}'. See the CEL route steps."
+            else
+              echo "::notice::CEL route (${ROUTE_AGENT}): bash=${STAGE:-none} cel=${CEL_ROUTE_DECISION} reason=${CEL_ROUTE_REASON} harness=${CEL_ROUTE_HARNESS}"
+              ROUTE_SOURCE="cel"
+              case "${CEL_ROUTE_DECISION}" in
+                run) STAGE="${ROUTE_AGENT}" ;;
+                skip)
+                  if [[ "${STAGE}" == "${ROUTE_AGENT}" ]]; then
+                    STAGE=""
                   fi
-                  echo "CEL review route (shadow): bash=${BASH_SHOWN} cel=${CEL_REVIEW_DECISION}" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
-                else
-                  ROUTE_SOURCE="cel"
-                  case "${CEL_REVIEW_DECISION}" in
-                    run)
-                      # Review needs a PR: bash routes /fs-review only on PRs.
-                      if [[ "${EVENT_NAME}" == "pull_request_target" ]] \
-                        || [[ "${EVENT_NAME}" == "issue_comment" && "${ISSUE_IS_PR}" == "true" ]]; then
-                        STAGE="review"
-                      else
-                        echo "::notice::CEL review route: ignoring run for a ${EVENT_NAME} event that is not on a pull request"
-                        ROUTE_SOURCE="bash"
-                      fi
-                      ;;
-                    skip) STAGE="" ;;
-                    *) ROUTE_SOURCE="bash" ;;
-                  esac
-                  echo "review_route=${ROUTE_SOURCE}" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
-                  if [[ "${STAGE}" != "${BASH_STAGE}" ]]; then
-                    echo "CEL review route changed the stage: '${BASH_STAGE}' -> '${STAGE}'"
-                  fi
-                fi
+                  ;;
+                *) ROUTE_SOURCE="bash" ;;
+              esac
+              echo "${ROUTE_AGENT}_route=${ROUTE_SOURCE}" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+              if [[ "${STAGE}" != "${BASH_STAGE}" ]]; then
+                echo "CEL route changed the stage: '${BASH_STAGE}' -> '${STAGE}'"
               fi
-              ;;
-            *)
-              echo "::warning::FULLSEND_CEL_ROUTING_REVIEW='${CEL_REVIEW_MODE}' is not off, shadow or on; using bash routing"
-              ;;
-          esac
+            fi
+          fi
 
           echo "stage=${STAGE}" >> "${GITHUB_OUTPUT}"
           echo "trigger_source=${TRIGGER_SOURCE}" >> "${GITHUB_OUTPUT}"
@@ -749,10 +781,11 @@ jobs:
             exit 1
           fi
           # An enabled entry may omit source when it only tunes a built-in
-          # agent by name (runtime/model/effort; ADR 0091).
-          BAD_SOURCE=$(yq '.agents[] | select(type == "!!map" and .enabled != false and (.source == null or .source == "") and (.runtime == null and .model == null and .effort == null)) | line' .fullsend/config.yaml 2>/dev/null || echo "")
+          # agent by name (runtime/model/effort/subagents, ADR 0091; trigger,
+          # #8726). Mirrors config.AgentEntry.HasSettings.
+          BAD_SOURCE=$(yq '.agents[] | select(type == "!!map" and .enabled != false and (.source == null or .source == "") and (.runtime == null and .model == null and .effort == null and .subagents == null and .trigger == null)) | line' .fullsend/config.yaml 2>/dev/null || echo "")
           if [[ -n "$BAD_SOURCE" ]]; then
-            echo "::error::config.yaml: enabled agent entry without a source field (an entry with only a name must set runtime, model or effort to tune a built-in agent)"
+            echo "::error::config.yaml: enabled agent entry without a source field (an entry with only a name must set runtime, model, effort, subagents or trigger to tune a built-in agent)"
             exit 1
           fi
           DUPES_ENABLED=$(yq '.agents[] | select(type == "!!map" and .enabled != false) | (.name // "") | select(. != "") | downcase' .fullsend/config.yaml 2>/dev/null | sort | uniq -d)

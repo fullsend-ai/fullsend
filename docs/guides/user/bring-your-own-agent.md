@@ -177,8 +177,9 @@ sequenceDiagram
   Post->>User: reply posted on the issue or pull request
 ```
 
-The dispatch workflow matches the comment against the `trigger:` of every
-registered harness and starts `fullsend run` for each match. `fullsend run`
+The dispatch workflow matches the comment against the trigger of every
+registered harness (its `agents:` entry's `trigger` when set, else the
+harness `trigger:`) and starts `fullsend run` for each match. `fullsend run`
 gets a short-lived GitHub token for the harness's `role:` from the mint (a
 local run without `--mint-url` or `FULLSEND_MINT_URL` skips this and uses
 your `GH_TOKEN`), sets up the providers on the OpenShell gateway, and starts

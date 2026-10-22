@@ -299,9 +299,22 @@ func TestGivenRepositoryAgentSettings_WritesEntriesAndSnapshotsAgents(t *testing
 	assert.Equal(t, config.AgentEntry{Name: "triage", Runtime: "claude"}, triage, "built-ins get a name-only entry")
 }
 
+func TestGivenRepositoryAgentSettings_Trigger(t *testing.T) {
+	t.Parallel()
+	scmDriver := &recordingSCM{fakeCleanupSCM: fakeCleanupSCM{fileContent: []byte(perRepoDummyConfig)}}
+	w := &world.World{Org: "org", RepoOwner: "org", RepoName: "repo", SCM: scmDriver}
+
+	require.NoError(t, givenRepositoryAgentSettings(w, "review:\n  trigger: event.transition.kind == \"comment_added\"\n"))
+	written, err := config.ParsePerRepoConfig(scmDriver.lastContent)
+	require.NoError(t, err)
+	review, ok := config.AgentSettingsFor(written.AgentEntries(), "review")
+	require.True(t, ok)
+	assert.Equal(t, config.AgentEntry{Name: "review", Trigger: `event.transition.kind == "comment_added"`}, review)
+}
+
 func TestGivenRepositoryAgentSettings_RejectsWhatTheRunnerWouldReject(t *testing.T) {
 	t.Parallel()
-	for _, doc := range []string{"coder:\n  runtime: dummy\n", "triage:\n  runtime: nonexistent\n", "triage:\n  effort: turbo\n", ""} {
+	for _, doc := range []string{"coder:\n  runtime: dummy\n", "triage:\n  runtime: nonexistent\n", "triage:\n  effort: turbo\n", "review:\n  trigger: event.x ==\n", ""} {
 		scmDriver := &recordingSCM{fakeCleanupSCM: fakeCleanupSCM{fileContent: []byte(perRepoDummyConfig)}}
 		w := &world.World{Org: "org", RepoOwner: "org", RepoName: "repo", SCM: scmDriver}
 		err := givenRepositoryAgentSettings(w, doc)
