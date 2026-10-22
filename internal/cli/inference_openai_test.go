@@ -1634,7 +1634,7 @@ repos:
 
 	_, err := resolveOpenAIStatusSources(fullsendDir)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "org-mode config")
+	assert.Contains(t, err.Error(), "per-org configuration format")
 
 	err = runImportConfig(ui.New(&bytes.Buffer{}), config.OpenAIWIFConfig{
 		Audience:           "aud",
@@ -1642,5 +1642,5 @@ repos:
 		ServiceAccountID:   "sa",
 	}, fullsendDir)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "org-mode config")
+	assert.Contains(t, err.Error(), "per-org configuration format")
 }

@@ -20,7 +20,8 @@ import (
 )
 
 // fakeOpenshellPi installs a fake "openshell" that records every argv line
-// to logPath, stores each "sandbox upload <name> <local> <remote>" payload
+// to logPath, stores each
+// "sandbox upload --no-git-ignore <name> <local> <remote>" payload
 // under storeDir keyed by the remote path, answers `pi --version` and `cat
 // <remote>` execs from that store, and streams streamFixture for the pi run
 // command. Everything else succeeds silently.
@@ -40,13 +41,19 @@ func fakeOpenshellPi(t *testing.T, logPath, storeDir, streamFixture string) {
 	script := `#!/bin/sh
 echo "$@" >> '` + logPath + `'
 if [ "$2" = "upload" ]; then
-  cp "$4" '` + storeDir + `'/"$(printf '%s' "$5" | tr '/' '_')"
+  case "$6" in /tmp/fs-upload-*/) cp -- "$5" "$6/"; exit $? ;; esac
+  cp "$5" '` + storeDir + `'/"$(printf '%s' "$6" | tr '/' '_')"
   exit 0
 fi
 if [ "$2" = "exec" ]; then
   for last; do :; done
   case "$last" in
+    "mkdir -m 700 -- /tmp/"*|"mkdir -m 700 -- '/tmp/"*|"rm -f -- '/tmp/fs-upload-"*) sh -c "$last"; exit $? ;;
+    "test -f '/tmp/fs-upload-"*)
+      sh -c 'mkdir() { :; }; mv() { shift; shift; cp -- "$1" '\''` + storeDir + `/'\''"$(printf "%s" "$2" | tr / _)"; }; '"$last"
+      exit $? ;;
     "pi --version") echo "0.84.2"; exit 0 ;;
+    ` + hookEnvReadStubArm + `
     "command -v pi"*) printf '%s\n' /usr/bin/pi '/usr/local/share/pi-extensions/anthropic-vertex'; exit 0 ;;
     *usage.jsonl*mv*) u='` + storeDir + `'/` + piFakeUsageFile + `; if [ -f "$u" ]; then cat "$u"; mv -f "$u" "$u.read"; fi; exit 0 ;;
     cat\ *) f=$(printf '%s' "${last#cat }" | tr -d "'" | tr '/' '_'); cat '` + storeDir + `'/"$f"; exit $? ;;
@@ -58,6 +65,9 @@ exit 0
 `
 	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	// A hooks-enabled Bootstrap records the hook settings for its sandbox
+	// name; drop them so other tests' launches for that name are unchanged.
+	t.Cleanup(resetPiHookEnvs)
 }
 
 func storedUpload(t *testing.T, storeDir, remotePath string) []byte {
@@ -277,7 +287,7 @@ func TestPiRuntimeRun_StreamsFixtureAndReportsMetrics(t *testing.T) {
 	require.NotEmpty(t, events)
 	init, ok := events[0].(InitEvent)
 	require.True(t, ok, "InitEvent is emitted first")
-	assert.Equal(t, "claude-opus-4-6", init.Model, "bare model id, as Claude Code reports it")
+	assert.Equal(t, "claude-opus-5-5", init.Model, "bare model id, as Claude Code reports it")
 	assert.Equal(t, "0.84.2", init.Version, "pi version comes from Bootstrap's preflight")
 	inits := 0
 	for _, e := range events {
@@ -289,7 +299,7 @@ func TestPiRuntimeRun_StreamsFixtureAndReportsMetrics(t *testing.T) {
 
 	assert.Equal(t, 1, metrics.NumTurns)
 	assert.Equal(t, int32(1), metrics.ToolCalls.Load())
-	assert.Equal(t, "claude-opus-4-6", metrics.Model)
+	assert.Equal(t, "claude-opus-5-5", metrics.Model)
 	assert.InDelta(t, 0.015, metrics.TotalCostUSD, 0.001)
 
 	teed, err := os.ReadFile(outPath)
@@ -328,7 +338,7 @@ func TestPiRuntimeRun_FoldsSubagentUsage(t *testing.T) {
 	assert.Equal(t, 0, exit)
 
 	require.NotNil(t, metrics.PerModelUsage)
-	parent := metrics.PerModelUsage["anthropic-vertex/claude-opus-4-6"]
+	parent := metrics.PerModelUsage["anthropic-vertex/claude-opus-5-5"]
 	child := metrics.PerModelUsage["anthropic-vertex/claude-sonnet-4-6"]
 	assert.Equal(t, 1, parent.Requests, "the parent's own iteration is one request, keyed by its full model spec")
 	assert.Equal(t, 2, child.Requests, "a failed sub-agent still spent tokens")
@@ -337,7 +347,7 @@ func TestPiRuntimeRun_FoldsSubagentUsage(t *testing.T) {
 	assert.Equal(t, parent.InputTokens+child.InputTokens, metrics.InputTokens)
 	assert.Equal(t, parent.CacheReadInputTokens+10, metrics.CacheReadInputTokens)
 	assert.Equal(t, parent.CacheCreationInputTokens+5, metrics.CacheCreationInputTokens)
-	assert.Equal(t, "claude-opus-4-6", metrics.Model, "the reported model stays the bare parent id")
+	assert.Equal(t, "claude-opus-5-5", metrics.Model, "the reported model stays the bare parent id")
 
 	// The read consumes the file, so a retry iteration whose
 	// ClearIterationArtifacts failed cannot count the same children twice.
@@ -375,7 +385,7 @@ func TestPiRuntimeRun_NoSubagentUsageLeavesMetricsAlone(t *testing.T) {
 	// an iteration missing from the breakdown makes the run's
 	// per_model_usage stop matching its totals.
 	require.Len(t, metrics.PerModelUsage, 1)
-	parent := metrics.PerModelUsage["anthropic-vertex/claude-opus-4-6"]
+	parent := metrics.PerModelUsage["anthropic-vertex/claude-opus-5-5"]
 	assert.Equal(t, 1, parent.Requests)
 	assert.InDelta(t, metrics.TotalCostUSD, parent.CostUSD, 1e-9, "no children means the parent entry is the whole breakdown")
 }
@@ -488,6 +498,11 @@ func TestPiRuntimeRun_SecurityOnButManifestWithoutHooksFailsFast(t *testing.T) {
 	require.NoError(t, PiRuntime{}.Bootstrap(bootstrapInput{
 		sandboxName: "sb", agentPath: writeAgentFile(t, testAgentDef), agentName: "triage",
 	}))
+	// Hook settings recorded as a hooks Bootstrap would, so Run reaches the
+	// manifest check (TestPiRuntimeRun_RefusesWithoutRecordedHookEnv covers
+	// the missing record).
+	recordPiHookEnv("sb", nil)
+	t.Cleanup(func() { piHookEnvs.Delete("sb") })
 	exit, err := PiRuntime{}.Run(context.Background(), RunParams{
 		SandboxName: "sb", RepoDir: "/r", Timeout: 30 * time.Second, HooksSettingsPath: "/sandbox/claude-config/hooks.json",
 		OnEvent: func(AgentEvent) {},
@@ -536,6 +551,62 @@ func TestPiRuntimeBootstrap_SkillDirsOnlyAddsRead(t *testing.T) {
 	require.NoError(t, json.Unmarshal(storedUpload(t, store, PiRuntime{}.ConfigDir()+"/fullsend-manifest.json"), &m))
 	assert.Equal(t, []string{"bash", "read"}, m.Tools)
 	assert.Equal(t, []string{"go"}, m.BashAllowlist)
+}
+
+func TestPiRuntimeBootstrap_NestedForgeSkillsShareBasename(t *testing.T) {
+	work := t.TempDir()
+	logPath := filepath.Join(work, "openshell.log")
+	fakeOpenshellPi(t, logPath, filepath.Join(work, "store"), "/dev/null")
+
+	root := t.TempDir()
+	labelsDir := filepath.Join(root, "issue-labels", "github")
+	reviewDir := filepath.Join(root, "pr-review", "github")
+	require.NoError(t, os.MkdirAll(labelsDir, 0o755))
+	require.NoError(t, os.MkdirAll(reviewDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(labelsDir, "SKILL.md"),
+		[]byte("---\nname: issue-labels\n---\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(reviewDir, "SKILL.md"),
+		[]byte("---\nname: pr-review-github\n---\n"), 0o644))
+
+	in := bootstrapInput{
+		sandboxName: "sb",
+		agentPath:   writeAgentFile(t, testAgentDef),
+		agentName:   "triage",
+		skillDirs:   []string{labelsDir, reviewDir},
+	}
+	require.NoError(t, PiRuntime{}.Bootstrap(in))
+
+	log, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	cfg := PiRuntime{}.ConfigDir()
+	assert.Contains(t, string(log), cfg+"/skills/issue-labels")
+	assert.Contains(t, string(log), cfg+"/skills/pr-review-github")
+	assert.NotContains(t, string(log), cfg+"/skills/github")
+}
+
+func TestPiRuntimeBootstrap_RejectsInvalidSkillDestinationName(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		path func(root string) string
+	}{
+		{"dotdot", func(root string) string { return root + "/sub/.." }},
+		{"dot", func(root string) string { return root + "/sub/." }},
+		{"control-char", func(root string) string { return root + "/bad\x01name" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			work := t.TempDir()
+			fakeOpenshellPi(t, filepath.Join(work, "openshell.log"), filepath.Join(work, "store"), "/dev/null")
+
+			err := PiRuntime{}.Bootstrap(bootstrapInput{
+				sandboxName: "sb",
+				agentPath:   writeAgentFile(t, testAgentDef),
+				agentName:   "triage",
+				skillDirs:   []string{tc.path(t.TempDir())},
+			})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "invalid sandbox name")
+		})
+	}
 }
 
 func TestPiRuntimeExtractTranscripts(t *testing.T) {
@@ -733,10 +804,10 @@ func TestPiAgentTool_ManifestBlock(t *testing.T) {
 		assert.Equal(t, []string{piVertexExtensionPath, cfg + "/fullsend-hooks.js"}, m.Agent.Extensions,
 			"only the provider extensions the image has (the probe found anthropic-vertex, not xai-vertex), then the hook adapter")
 		assert.Equal(t, map[string]string{
-			"default": "anthropic-vertex/claude-opus-4-6",
-			"opus":    "anthropic-vertex/claude-opus-4-6",
-			"sonnet":  "anthropic-vertex/claude-sonnet-4-6",
-			"haiku":   "anthropic-vertex/claude-haiku-4-5",
+			"default": "anthropic-vertex/claude-opus-5-5",
+			"opus":    "anthropic-vertex/claude-opus-5-5",
+			"sonnet":  "anthropic-vertex/claude-sonnet-5-5",
+			"haiku":   "anthropic-vertex/claude-haiku-5-5",
 			"fable":   "anthropic-vertex/claude-fable-5-1",
 		}, m.Agent.Models)
 		assert.Equal(t, map[string][]string{
@@ -830,7 +901,7 @@ func TestPiAgentTool_ManifestBlock(t *testing.T) {
 		t.Setenv(piProviderEnv, piXaiVertexProvider)
 		m, _, _ := bootstrap(t, "---\nname: review\nmodel: grok-4.6\n---\nbody", false)
 		assert.Equal(t, "xai-vertex/xai/grok-4.6", m.Agent.Models["default"])
-		assert.Equal(t, "anthropic-vertex/claude-sonnet-4-6", m.Agent.Models["sonnet"], "aliases are Claude models on the Anthropic Vertex provider regardless of the parent's provider")
+		assert.Equal(t, "anthropic-vertex/claude-sonnet-5-5", m.Agent.Models["sonnet"], "aliases are Claude models on the Anthropic Vertex provider regardless of the parent's provider")
 	})
 
 	t.Run("config aliases reach the sub-agent model table", func(t *testing.T) {
@@ -850,9 +921,9 @@ func TestPiAgentTool_ManifestBlock(t *testing.T) {
 		require.NotNil(t, m.Agent)
 		assert.Equal(t, "anthropic-vertex/claude-sonnet-5", m.Agent.Models["sonnet"],
 			"per-repo config alias overrides the fleet default in the child model table")
-		assert.Equal(t, "anthropic-vertex/claude-opus-4-6", m.Agent.Models["opus"],
+		assert.Equal(t, "anthropic-vertex/claude-opus-5-5", m.Agent.Models["opus"],
 			"unstated aliases keep the fleet default")
-		assert.Equal(t, "anthropic-vertex/claude-haiku-4-5", m.Agent.Models["haiku"],
+		assert.Equal(t, "anthropic-vertex/claude-haiku-5-5", m.Agent.Models["haiku"],
 			"unstated aliases keep the fleet default")
 		assert.Equal(t, "anthropic-vertex/claude-fable-5-1", m.Agent.Models["fable"],
 			"unstated aliases keep the fleet default")
@@ -880,7 +951,7 @@ func TestPiAgentTool_ManifestBlock(t *testing.T) {
 		require.NotNil(t, m.Agent)
 		assert.Equal(t, "google-vertex/gemini-3.8-flash", m.Agent.Models["haiku"],
 			"a provider-qualified override passes through verbatim, as it does for the parent")
-		assert.Equal(t, "anthropic-vertex/claude-opus-4-6", m.Agent.Models["opus"],
+		assert.Equal(t, "anthropic-vertex/claude-opus-5-5", m.Agent.Models["opus"],
 			"bare fleet defaults still get the Anthropic Vertex prefix")
 	})
 
@@ -927,6 +998,148 @@ func TestPiAgentTool_ManifestBlock(t *testing.T) {
 		require.NotNil(t, m.Agent)
 		assert.Equal(t, "anthropic-vertex/claude-sonnet-5", m.Agent.Models["default"],
 			"the child default follows the repo's remap of the agent's own alias")
+	})
+}
+
+// A pre-configured child naming the openai provider — a subagents.<persona>
+// override, subagents.default, or a discovered persona's own frontmatter
+// model: — is trusted only when the run-scoped OpenAI provider actually
+// attached OPENAI_API_KEY to this sandbox; otherwise Bootstrap fails with a
+// remedy naming the actual fix, not just the accepted-specs list (#7981).
+// A Vertex parent (opus) with an OpenAI persona is exactly the scenario
+// that previously failed even once NeedsOpenAIProvider was fixed, since
+// nothing else admitted the configured openai spec into the trusted set.
+func TestPiAgentTool_OpenAISubagent(t *testing.T) {
+	t.Setenv("FULLSEND_PI_MODEL", "")
+	t.Setenv(piProviderEnv, "")
+	cfg := PiRuntime{}.ConfigDir()
+
+	skill := t.TempDir()
+	writePersonaFile(t, skill, "checker", "---\nname: checker\n---\nCheck something.\n")
+
+	// correctness=openai/gpt-5.6-luna is the issue's own repro
+	// (`agent set review --subagent correctness=openai/gpt-5.6-luna`): an
+	// explicit override, which makes a rejection fatal rather than a
+	// skip-and-warn (resolvePersonaModels only skips an *unreferenced*
+	// persona silently).
+	bootstrap := func(t *testing.T, attached bool) error {
+		t.Helper()
+		forgetPiManifestHash(t, "sb")
+		work := t.TempDir()
+		store := filepath.Join(work, "store")
+		fakeOpenshellPi(t, filepath.Join(work, "openshell.log"), store, "/dev/null")
+		in := bootstrapInput{
+			sandboxName:            "sb",
+			agentPath:              writeAgentFile(t, "---\nname: review\nmodel: opus\n---\nReview the PR."),
+			agentName:              "review",
+			skillDirs:              []string{skill},
+			agentSubagents:         map[string]*string{"checker": strp("openai/gpt-5.6-luna")},
+			openAIProviderAttached: attached,
+		}
+		err := PiRuntime{}.Bootstrap(in)
+		if err != nil {
+			return err
+		}
+		var m piManifest
+		require.NoError(t, json.Unmarshal(storedUpload(t, store, cfg+"/fullsend-manifest.json"), &m))
+		require.NotNil(t, m.Agent)
+		assert.Equal(t, "openai/gpt-5.6-luna", m.Agent.Personas["checker"].Model,
+			"the Vertex parent's OpenAI persona resolves once the credential is actually attached")
+		assert.Contains(t, m.Agent.ProviderModels[piOpenAIProvider], "gpt-5.6-luna",
+			"the configured id extends the openai allowlist the way a google-vertex/xai-vertex catalog does for theirs")
+		return nil
+	}
+
+	t.Run("resolves when the openai provider is attached", func(t *testing.T) {
+		require.NoError(t, bootstrap(t, true))
+	})
+
+	t.Run("fails with a named remedy when it is not", func(t *testing.T) {
+		err := bootstrap(t, false)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `resolved model "openai/gpt-5.6-luna" is not available in this run`)
+		assert.Contains(t, err.Error(), `declare "openai" in the harness providers list`,
+			"the error names the actual remedy instead of only listing accepted specs")
+		assert.Contains(t, err.Error(), "move the sub-agent off openai/")
+	})
+
+	t.Run("subagents.default is covered too", func(t *testing.T) {
+		forgetPiManifestHash(t, "sb")
+		work := t.TempDir()
+		store := filepath.Join(work, "store")
+		fakeOpenshellPi(t, filepath.Join(work, "openshell.log"), store, "/dev/null")
+		in := bootstrapInput{
+			sandboxName:            "sb",
+			agentPath:              writeAgentFile(t, "---\nname: review\nmodel: opus\n---\nReview the PR."),
+			agentName:              "review",
+			agentSubagents:         map[string]*string{"default": strp("openai/gpt-5.6-luna")},
+			openAIProviderAttached: true,
+		}
+		require.NoError(t, PiRuntime{}.Bootstrap(in))
+		var m piManifest
+		require.NoError(t, json.Unmarshal(storedUpload(t, store, cfg+"/fullsend-manifest.json"), &m))
+		require.NotNil(t, m.Agent)
+		assert.Equal(t, "openai/gpt-5.6-luna", m.Agent.SubagentDefault)
+	})
+
+	// A models.aliases entry mapping to openai is trusted through the model
+	// table, so without the provider it would register an openai persona
+	// whose launch skips the OpenAI safeguards. It is dropped instead, and
+	// the persona is skipped like any other unservable one.
+	aliasRun := func(t *testing.T, attached bool) piManifest {
+		t.Helper()
+		forgetPiManifestHash(t, "sb")
+		work := t.TempDir()
+		store := filepath.Join(work, "store")
+		fakeOpenshellPi(t, filepath.Join(work, "openshell.log"), store, "/dev/null")
+		aliasSkill := t.TempDir()
+		writePersonaFile(t, aliasSkill, "checker", "---\nname: checker\nmodel: luna\n---\nCheck something.\n")
+		in := bootstrapInput{
+			sandboxName:            "sb",
+			agentPath:              writeAgentFile(t, "---\nname: review\nmodel: opus\n---\nReview the PR."),
+			agentName:              "review",
+			skillDirs:              []string{aliasSkill},
+			modelAliases:           map[string]string{"luna": "openai/gpt-5.6-luna"},
+			openAIProviderAttached: attached,
+		}
+		require.NoError(t, PiRuntime{}.Bootstrap(in))
+		var m piManifest
+		require.NoError(t, json.Unmarshal(storedUpload(t, store, cfg+"/fullsend-manifest.json"), &m))
+		require.NotNil(t, m.Agent)
+		return m
+	}
+
+	t.Run("an openai alias is dropped when the provider is not attached", func(t *testing.T) {
+		m := aliasRun(t, false)
+		assert.NotContains(t, m.Agent.Models, "luna")
+		assert.NotContains(t, m.Agent.Personas, "checker", "the persona is skipped, not registered")
+		assert.Contains(t, m.Agent.SkippedPersonas, "checker")
+		assert.Empty(t, m.Agent.ProviderModels[piOpenAIProvider])
+	})
+
+	t.Run("an openai agent-definition model is not trusted for children when the parent moved off it", func(t *testing.T) {
+		forgetPiManifestHash(t, "sb")
+		work := t.TempDir()
+		store := filepath.Join(work, "store")
+		fakeOpenshellPi(t, filepath.Join(work, "openshell.log"), store, "/dev/null")
+		in := bootstrapInput{
+			sandboxName:    "sb",
+			agentPath:      writeAgentFile(t, "---\nname: review\nmodel: openai/gpt-5.6-luna\n---\nReview the PR."),
+			agentName:      "review",
+			parentModel:    "opus",
+			agentSubagents: map[string]*string{"default": strp("openai/gpt-5.6-luna")},
+		}
+		err := PiRuntime{}.Bootstrap(in)
+		require.Error(t, err, "subagents.default on openai is configured, so it fails rather than being served")
+		assert.Contains(t, err.Error(), "move the sub-agent off openai/")
+	})
+
+	t.Run("an openai alias works when the provider is attached", func(t *testing.T) {
+		m := aliasRun(t, true)
+		assert.Equal(t, "openai/gpt-5.6-luna", m.Agent.Models["luna"])
+		assert.Equal(t, "openai/gpt-5.6-luna", m.Agent.Personas["checker"].Model)
+		assert.Equal(t, []string{"gpt-5.6-luna"}, m.Agent.ProviderModels[piOpenAIProvider],
+			"listed, so the launch applies the OpenAI safeguards")
 	})
 }
 

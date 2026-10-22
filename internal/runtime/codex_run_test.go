@@ -22,7 +22,7 @@ var testRunnerHeldDigests = codexRunnerHeldDigestSet{
 	ConfigTOML:  "aaaa000000000000000000000000000000000000000000000000000000000000",
 	HooksJSON:   "bbbb000000000000000000000000000000000000000000000000000000000000",
 	HookScripts: testCodexHookScripts(),
-	SecurityEnv: []codexEnvPair{
+	SecurityEnv: []hookEnvPair{
 		{"TIRITH_REQUIRED", "1"},
 		{"FULLSEND_EGRESS_ALLOWLIST", "api.github.com:443"},
 	},
@@ -38,6 +38,19 @@ func testCodexHookScripts() map[string]string {
 	return out
 }
 
+func TestValidateCodexModel(t *testing.T) {
+	t.Parallel()
+
+	require.NoError(t, ValidateCodexModel("openai/gpt-5.6-luna"))
+	require.NoError(t, ValidateCodexModel("gpt-5.6-luna"))
+	require.Error(t, ValidateCodexModel(""))
+	require.Error(t, ValidateCodexModel("opus"))
+	// Accepted by shape: whether a block applies is checked at run time.
+	require.NoError(t, ValidateCodexModel("gateway/vendor/org/model"))
+	require.Error(t, ValidateCodexModel("gateway/"))
+	require.Error(t, ValidateCodexModel("google-vertex/gemini-3.8-flash"))
+}
+
 func TestTranslateCodexModel(t *testing.T) {
 	t.Parallel()
 
@@ -51,8 +64,8 @@ func TestTranslateCodexModel(t *testing.T) {
 		{name: "openai prefix stripped", in: "openai/gpt-5.6-luna", want: "gpt-5.6-luna"},
 		{name: "prefix matched case-insensitively", in: "OpenAI/gpt-5.6-luna", want: "gpt-5.6-luna"},
 		{name: "whitespace trimmed", in: "  openai/gpt-5.6-luna  ", want: "gpt-5.6-luna"},
-		{name: "foreign provider rejected", in: "anthropic-vertex/claude-opus-4-6", wantErr: "codex takes OpenAI model ids only"},
-		{name: "vertex prefix rejected", in: "xai-vertex/xai/grok-4.6", wantErr: "codex takes OpenAI model ids only"},
+		{name: "foreign provider rejected", in: "anthropic-vertex/claude-opus-4-6", wantErr: "codex takes OpenAI model ids or gateway/<model> only"},
+		{name: "vertex prefix rejected", in: "xai-vertex/xai/grok-4.6", wantErr: "codex takes OpenAI model ids or gateway/<model> only"},
 		{name: "empty id after prefix", in: "openai/", wantErr: "empty model id"},
 		{name: "empty spec", in: "", wantErr: "no model was named"},
 		// Claude aliases deliberately do not apply to codex, and are never
@@ -61,11 +74,53 @@ func TestTranslateCodexModel(t *testing.T) {
 		{name: "claude alias is case-insensitive", in: "Sonnet", wantErr: "the Claude model aliases do not apply"},
 		{name: "haiku rejected", in: "haiku", wantErr: "FULLSEND_CODEX_MODEL"},
 		{name: "fable rejected", in: "fable", wantErr: "agents: entry or the harness"},
+		// gateway/ with no inference.gateway block is an error, never a
+		// fallback to the OpenAI route.
+		{name: "gateway without a block", in: "gateway/vendor/org/model", wantErr: "no inference.gateway block applies"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got, err := translateCodexModel(tt.in)
+			got, err := translateCodexModel(tt.in, false)
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, codexModel{ID: tt.want}, got)
+		})
+	}
+}
+
+// With an inference.gateway block, gateway/<model> passes everything after
+// the first slash to codex — a multi-segment id included — on the gateway
+// route, while openai/ and bare ids keep the direct route.
+func TestTranslateCodexModel_Gateway(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		in      string
+		want    codexModel
+		wantErr string
+	}{
+		{name: "single segment", in: "gateway/gpt-6-luna", want: codexModel{ID: "gpt-6-luna", Gateway: true}},
+		{name: "multi-segment id", in: "gateway/vendor/org/model", want: codexModel{ID: "vendor/org/model", Gateway: true}},
+		{name: "prefix case-folded", in: "Gateway/vendor/org/model", want: codexModel{ID: "vendor/org/model", Gateway: true}},
+		{name: "whitespace trimmed", in: "  gateway/m1  ", want: codexModel{ID: "m1", Gateway: true}},
+		{name: "openai keeps the direct route", in: "openai/gpt-5.6-luna", want: codexModel{ID: "gpt-5.6-luna"}},
+		{name: "bare id keeps the direct route", in: "gpt-5.6-luna", want: codexModel{ID: "gpt-5.6-luna"}},
+		{name: "empty id", in: "gateway/", wantErr: "empty model id"},
+		{name: "leading slash in id", in: "gateway//m", wantErr: "empty model id"},
+		{name: "trailing slash in id", in: "gateway/org/", wantErr: "empty model id"},
+		{name: "other providers still refused", in: "anthropic-vertex/claude-opus-4-6", wantErr: "codex takes OpenAI model ids or gateway/<model> only"},
+		{name: "claude alias still refused", in: "opus", wantErr: "the Claude model aliases do not apply"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := translateCodexModel(tt.in, true)
 			if tt.wantErr != "" {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tt.wantErr)
@@ -108,7 +163,7 @@ func TestBuildCodexRunCommand_OrderAndFlags(t *testing.T) {
 		RepoDir:           sandbox.SandboxWorkspace + "/repo",
 		HooksSettingsPath: "/sandbox/codex-config/hooks.json",
 	}
-	cmd := buildCodexRunCommand(params, "gpt-5.6-luna", "high", true, testRunnerHeldDigests)
+	cmd := buildCodexRunCommand(params, codexModel{ID: "gpt-5.6-luna"}, "high", true, testRunnerHeldDigests)
 
 	// Everything that must happen before the agent-writable .env is sourced,
 	// in order: nothing can shadow the shell builtins the guards use yet, and
@@ -121,7 +176,7 @@ func TestBuildCodexRunCommand_OrderAndFlags(t *testing.T) {
 		`sha256sum`,
 		testRunnerHeldDigests.ConfigTOML,
 		`OPENAI_API_KEY`,
-		`. '` + sandbox.SandboxWorkspace + `/.env'`,
+		codexEnvLoad,
 		`export CODEX_HOME=`,
 		`unset OPENAI_BASE_URL OPENAI_API_KEY CODEX_API_KEY NODE_OPTIONS NODE_PATH PYTHONPATH PYTHONHOME PYTHONSTARTUP`,
 		`unset -f test command grep cut wc sha256sum printf codex`,
@@ -141,7 +196,21 @@ func TestBuildCodexRunCommand_OrderAndFlags(t *testing.T) {
 	assert.Equal(t, 4, strings.Count(cmd, "exit "+strconv.Itoa(codexHooksMissingExit)))
 	assert.Equal(t, 2, strings.Count(cmd, "exit "+strconv.Itoa(codexConfigTamperedExit)))
 	assert.Equal(t, 2, strings.Count(cmd, testRunnerHeldDigests.ConfigTOML))
-	assert.Equal(t, 2, strings.Count(cmd, testRunnerHeldDigests.HooksJSON))
+	// hooks.json's digest once more: the spawn guard's export carries it.
+	assert.Equal(t, 3, strings.Count(cmd, testRunnerHeldDigests.HooksJSON))
+
+	// models_cache.json is removed before .env is sourced and again after it,
+	// before launch.
+	removal := codexModelsCacheRemoval(CodexRuntime{})
+	assert.Equal(t, 2, strings.Count(cmd, removal))
+	firstRemovalAt := strings.Index(cmd, removal)
+	lastRemovalAt := strings.LastIndex(cmd, removal)
+	removalEnvAt := strings.Index(cmd, codexEnvLoad)
+	removalExecAt := strings.Index(cmd, "exec --json")
+	require.GreaterOrEqual(t, firstRemovalAt, 0)
+	assert.Less(t, firstRemovalAt, removalEnvAt, "the first removal runs before .env is sourced")
+	assert.Greater(t, lastRemovalAt, removalEnvAt, "the second removal runs after .env is sourced")
+	assert.Less(t, lastRemovalAt, removalExecAt, "the second removal runs immediately before launch")
 
 	// The endpoint and the credential command are pinned as SessionFlags as
 	// well as by the digest: verified against codex 0.152.1 to beat the file.
@@ -166,19 +235,34 @@ func TestBuildCodexRunCommand_OrderAndFlags(t *testing.T) {
 
 	// The prompt goes in on stdin behind codex's explicit `-` sentinel, never
 	// on argv: on a retry iteration it carries the previous failure's text.
-	assert.Contains(t, cmd, "printf '%s' '"+DefaultAgentPrompt+"' | \"$FULLSEND_CODEX_BIN\"")
+	// codex is npm's node launcher, so it runs through the pinned node.
+	assert.Contains(t, cmd, "printf '%s' '"+DefaultAgentPrompt+`' | ${FULLSEND_CODEX_NODE:+"$FULLSEND_CODEX_NODE"} "$FULLSEND_CODEX_BIN"`)
 
-	// PATH is captured before .env and restored after it: the hook scripts
-	// resolve their tools by name (tirith_check.py runs a bare `tirith`), so a
-	// .env that prepends a fake one would neuter the chain with every digest
-	// green. Reproduced before the pin was added.
+	// PATH is captured before .env and restored after it for codex itself;
+	// the hook children take the trusted PATH exported below.
 	pinAt := strings.Index(cmd, `readonly FULLSEND_CODEX_PATH="$PATH"`)
-	envAt := strings.Index(cmd, `. '`+sandbox.SandboxWorkspace+`/.env'`)
+	envAt := strings.Index(cmd, codexEnvLoad)
 	restoreAt := strings.Index(cmd, `export PATH="$FULLSEND_CODEX_PATH"`)
 	require.Positive(t, pinAt)
 	require.Positive(t, restoreAt)
 	assert.Less(t, pinAt, envAt, "PATH is captured before .env")
 	assert.Greater(t, restoreAt, envAt, "and restored after it")
+
+	// The hook adapter's children take the trusted PATH, which the codex
+	// pin records read-only, once, before .env (codexBinaryPin); it is
+	// exported after .env and before codex starts, and nothing unsets it.
+	trustedAt := strings.Index(cmd, "readonly "+envDataTrustedPathVar+"=")
+	exportAt := strings.Index(cmd, "export "+envDataTrustedPathVar)
+	execAt := strings.Index(cmd, `"$FULLSEND_CODEX_BIN" exec`)
+	require.Positive(t, trustedAt)
+	require.Positive(t, exportAt)
+	require.Positive(t, execAt)
+	assert.Equal(t, 1, strings.Count(cmd, "readonly "+envDataTrustedPathVar+"="), "recorded once per launch")
+	assert.Less(t, trustedAt, strings.Index(cmd, "readonly "+codexBinaryVar+"="), "before the codex pin")
+	assert.NotContains(t, codexEnvLoad, "readonly "+envDataTrustedPathVar+"=")
+	assert.Greater(t, exportAt, envAt, "exported after .env")
+	assert.Less(t, exportAt, execAt, "and before codex starts")
+	assert.NotRegexp(t, `unset [^&]*\b`+envDataTrustedPathVar+`\b`, cmd)
 
 	// Loader variables would inject code into any dynamically linked program
 	// the run starts, before its main.
@@ -210,7 +294,7 @@ func TestBuildCodexRunCommand_OrderAndFlags(t *testing.T) {
 func TestBuildCodexRunCommand_HooksDisabled(t *testing.T) {
 	t.Parallel()
 
-	cmd := buildCodexRunCommand(RunParams{RepoDir: "/repo"}, "gpt-5.6-luna", "", false, testRunnerHeldDigests)
+	cmd := buildCodexRunCommand(RunParams{RepoDir: "/repo"}, codexModel{ID: "gpt-5.6-luna"}, "", false, testRunnerHeldDigests)
 
 	// The flag is decided from the runner's own signal, not the manifest.
 	assert.NotContains(t, cmd, "--dangerously-bypass-hook-trust")
@@ -224,7 +308,7 @@ func TestBuildCodexRunCommand_HooksDisabled(t *testing.T) {
 func TestBuildCodexRunCommand_DebugCapturesStderr(t *testing.T) {
 	t.Parallel()
 
-	cmd := buildCodexRunCommand(RunParams{RepoDir: "/repo", Debug: "1"}, "gpt-5.6-luna", "", false, testRunnerHeldDigests)
+	cmd := buildCodexRunCommand(RunParams{RepoDir: "/repo", Debug: "1"}, codexModel{ID: "gpt-5.6-luna"}, "", false, testRunnerHeldDigests)
 	// codex exec has no --debug flag: tracing goes to stderr behind RUST_LOG.
 	assert.Contains(t, cmd, `export RUST_LOG="${RUST_LOG:-info}"`)
 	assert.Contains(t, cmd, "2>>'"+sandbox.SandboxWorkspace+"/"+codexDebugLogFile+"'")
@@ -236,9 +320,46 @@ func TestBuildCodexRunCommand_HonoursPromptOverride(t *testing.T) {
 	// The validation loop replaces the prompt on a retry iteration to inject
 	// the previous failure (#1050/#6494); a runtime that ignored it would turn
 	// validation_loop.feedback_mode into a silent no-op.
-	cmd := buildCodexRunCommand(RunParams{RepoDir: "/repo", Prompt: "retry: it's broken"}, "m", "", false, testRunnerHeldDigests)
+	cmd := buildCodexRunCommand(RunParams{RepoDir: "/repo", Prompt: "retry: it's broken"}, codexModel{ID: "m"}, "", false, testRunnerHeldDigests)
 	assert.Contains(t, cmd, `printf '%s' 'retry: it'\''s broken'`)
 	assert.NotContains(t, cmd, DefaultAgentPrompt)
+}
+
+// TestCodexModelsCacheRemoval_Executes runs the real removal fragment under
+// /bin/sh against a temporary CODEX_HOME, because it is shell text: a quoting
+// slip would leave the file in place while the chain still exits 0.
+func TestCodexModelsCacheRemoval_Executes(t *testing.T) {
+	dir := t.TempDir()
+	cachePath := filepath.Join(dir, codexModelsCacheFile)
+	removal := strings.ReplaceAll(codexModelsCacheRemoval(CodexRuntime{}), sandbox.SandboxCodexConfig, dir)
+	envFile := filepath.Join(dir, ".env")
+	recreate := "printf '%s' '{}' > " + shellQuote(cachePath) + "\n"
+
+	tests := []struct {
+		name   string
+		cached bool
+		env    string
+	}{
+		{name: "removes a cache present before .env", cached: true},
+		{name: "no cache present", cached: false},
+		{name: "removes a cache .env recreates", env: recreate},
+		{name: "removes a cache .env recreates behind an rm function", env: recreate + "rm() { :; }\n"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			require.NoError(t, os.RemoveAll(cachePath))
+			if tc.cached {
+				require.NoError(t, os.WriteFile(cachePath, []byte(`{}`), 0o644))
+			}
+			require.NoError(t, os.WriteFile(envFile, []byte(tc.env), 0o644))
+			script := removal + " && . " + shellQuote(envFile) + " && " + removal + " && echo RAN"
+			out, err := exec.Command("/bin/sh", "-c", script).CombinedOutput()
+			require.NoError(t, err, string(out))
+			assert.Contains(t, string(out), "RAN")
+			_, statErr := os.Stat(cachePath)
+			assert.True(t, os.IsNotExist(statErr), "models_cache.json must be absent before launch")
+		})
+	}
 }
 
 // TestCodexAssetGuard_Executes runs the real fragment under /bin/sh against a
@@ -371,7 +492,7 @@ func TestCodexConfigGuard_Executes(t *testing.T) {
 	dir := t.TempDir()
 	r := CodexRuntime{}
 
-	good, err := renderCodexConfig(dir, "body")
+	good, err := renderCodexConfig(dir, "/sandbox/workspace/repo", "body", "")
 	require.NoError(t, err)
 	digests := codexRunnerHeldDigestSet{ConfigTOML: codexAssetSHA256(good)}
 	guard := strings.ReplaceAll(codexConfigGuard(r, digests), sandbox.SandboxCodexConfig, dir)
@@ -562,6 +683,7 @@ func TestCodexHookScriptsGuard_Executes(t *testing.T) {
 // only thing standing between a real key that reached the sandbox and codex
 // putting it on the wire.
 func TestCodexOpenAIAuthSeed_Executes(t *testing.T) {
+	requireSeedLock(t)
 	dir := t.TempDir()
 	r := CodexRuntime{}
 	seed := strings.ReplaceAll(r.OpenAIAuthSeed(), sandbox.SandboxCodexConfig, dir)
@@ -580,8 +702,7 @@ func TestCodexOpenAIAuthSeed_Executes(t *testing.T) {
 		assert.Equal(t, placeholder, string(got))
 		// Written through a rename, so the auth command never reads a
 		// half-written file.
-		_, statErr := os.Stat(tokenPath + ".fullsend")
-		assert.True(t, os.IsNotExist(statErr), "the temp file must be renamed away")
+		assertOnlySeedFiles(t, dir, codexTokenFile)
 	})
 
 	for name, value := range map[string]string{
@@ -656,7 +777,7 @@ func TestCodexSecurityEnv_PinsWhatTheRunnerKnows(t *testing.T) {
 			Tirith: &harness.TirithConfig{Enabled: &on, FailOn: "medium"},
 		}},
 	})
-	got := codexSecurityEnv(cfg)
+	got := configHookEnv(cfg)
 
 	keys := map[string]string{}
 	for _, p := range got {
@@ -665,15 +786,14 @@ func TestCodexSecurityEnv_PinsWhatTheRunnerKnows(t *testing.T) {
 	assert.Equal(t, "medium", keys["TIRITH_FAIL_ON"])
 
 	// FULLSEND_CANARY_TOKEN and FULLSEND_TOOL_ALLOWLIST come from the
-	// harness's own env/host_files, not from the hook config, so the runtime
-	// has no runner-side copy to re-export — the exposure Claude Code and pi
-	// have stays for those two, which the matrix says.
+	// harness's own env/host_files, not from the hook config, so Bootstrap
+	// reads them back from .env instead (readHarnessHookEnv).
 	assert.NotContains(t, keys, "FULLSEND_CANARY_TOKEN")
 	assert.NotContains(t, keys, "FULLSEND_TOOL_ALLOWLIST")
 
 	// Stable order, so the launch command does not churn between iterations.
 	for range 5 {
-		assert.Equal(t, got, codexSecurityEnv(cfg))
+		assert.Equal(t, got, configHookEnv(cfg))
 	}
 }
 
@@ -693,4 +813,33 @@ func TestCodexSecurityEnv_BeatsTheAgentsEnvFile(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "api.github.com:443", string(out),
 		"the runner's value must survive an agent-written .env")
+}
+
+// TestBuildCodexRunCommand_ExportsSpawnDigests: the spawn digests are
+// exported after .env, before launch, and only when hooks are on.
+func TestBuildCodexRunCommand_ExportsSpawnDigests(t *testing.T) {
+	t.Parallel()
+
+	digests := testRunnerHeldDigests
+	digests.RoleFiles = map[string]string{"correctness": strings.Repeat("c", 64)}
+	params := RunParams{
+		RepoDir:           sandbox.SandboxWorkspace + "/repo",
+		HooksSettingsPath: "/sandbox/codex-config/hooks.json",
+	}
+	cmd := buildCodexRunCommand(params, codexModel{ID: "gpt-5.6-luna"}, "high", true, digests)
+
+	spawnExport := "export " + codexSpawnDigestsEnv + "=" + shellQuote(
+		"agents/correctness.toml:"+strings.Repeat("c", 64)+" hooks.json:"+digests.HooksJSON)
+	spawnAt := strings.Index(cmd, spawnExport)
+	require.Positive(t, spawnAt, "the spawn digests are not exported: %s", cmd)
+	assert.Greater(t, spawnAt, strings.Index(cmd, codexEnvLoad),
+		"exported after .env so nothing there can move it")
+	assert.Less(t, spawnAt, strings.Index(cmd, "exec --json"))
+	assert.Contains(t, cmd,
+		"export "+codexHookDigestsEnv+"="+shellQuote(codexHookDigestsValue(digests.HookScripts))+" && "+spawnExport,
+		"directly after the hook-script digests")
+	assert.Equal(t, 1, strings.Count(cmd, codexSpawnDigestsEnv), "one export, one variable")
+
+	off := buildCodexRunCommand(RunParams{RepoDir: "/repo"}, codexModel{ID: "gpt-5.6-luna"}, "", false, digests)
+	assert.NotContains(t, off, codexSpawnDigestsEnv, "no hooks, no guard, nothing to export")
 }

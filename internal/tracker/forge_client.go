@@ -24,6 +24,13 @@ func NewForgeClient(fc forge.Client) *ForgeClient {
 	return &ForgeClient{forge: fc}
 }
 
+// AuthenticatedUser returns the login the underlying forge client is
+// authenticated as, so a caller can tell the bot's own comments from
+// anyone else's.
+func (c *ForgeClient) AuthenticatedUser(ctx context.Context) (string, error) {
+	return c.forge.GetAuthenticatedUser(ctx)
+}
+
 // GetIssue implements Client by splitting project into owner/repo for the
 // underlying forge call.
 func (c *ForgeClient) GetIssue(ctx context.Context, project string, number int) (*Issue, error) {
@@ -32,6 +39,35 @@ func (c *ForgeClient) GetIssue(ctx context.Context, project string, number int) 
 		return nil, err
 	}
 	issue, err := c.forge.GetIssue(ctx, owner, repo, number)
+	if err != nil {
+		return nil, wrapNotFound(err)
+	}
+	return &Issue{
+		Number: issue.Number,
+		Title:  issue.Title,
+		Body:   Body(issue.Body),
+		URL:    issue.URL,
+		Labels: issue.Labels,
+	}, nil
+}
+
+// CreateIssue implements Client by splitting project into owner/repo for
+// the underlying forge call. Issue type and parent are only implemented
+// for Jira so far (GitHub and GitLab have their own equivalents, but
+// they are not wired up yet), so a non-empty IssueType or Parent is
+// rejected with ErrNotSupported instead of being silently dropped.
+func (c *ForgeClient) CreateIssue(ctx context.Context, project, title string, body Body, opts CreateIssueOptions) (*Issue, error) {
+	if opts.IssueType != "" {
+		return nil, fmt.Errorf("tracker: issue type: %w (Jira only)", ErrNotSupported)
+	}
+	if opts.Parent != "" {
+		return nil, fmt.Errorf("tracker: parent issue: %w (Jira only)", ErrNotSupported)
+	}
+	owner, repo, err := splitProject(project)
+	if err != nil {
+		return nil, err
+	}
+	issue, err := c.forge.CreateIssue(ctx, owner, repo, title, string(body))
 	if err != nil {
 		return nil, wrapNotFound(err)
 	}
@@ -157,6 +193,16 @@ func (c *ForgeClient) DeleteCommentReaction(ctx context.Context, project string,
 		return fmt.Errorf("tracker: comment ID %q is not numeric: %w", commentID, err)
 	}
 	return c.forge.DeleteIssueCommentReaction(ctx, owner, repo, id, reactionID)
+}
+
+// MoveIssue implements Mover. Both forge-backed trackers have a native
+// move — GitHub's GraphQL transferIssue mutation, GitLab's
+// POST /projects/:id/issues/:iid/move — but neither is exposed on
+// forge.Client yet, so there is nothing for this adapter to delegate to.
+// It reports ErrNotSupported rather than reporting a move it did not
+// perform.
+func (c *ForgeClient) MoveIssue(_ context.Context, sourceProject string, number int, targetProject string) (*MoveResult, error) {
+	return nil, fmt.Errorf("move issue %s#%d to %s: %w", sourceProject, number, targetProject, ErrNotSupported)
 }
 
 // wrapNotFound translates a forge.ErrNotFound-satisfying error into one

@@ -59,9 +59,6 @@ func (d *perRepoDefaults) IssueCreationConfig() *CreateIssuesConfig { return nil
 // StatusNotifications returns nil — no status notifications by default.
 func (d *perRepoDefaults) StatusNotifications() *StatusNotificationConfig { return nil }
 
-// IsOrgMode returns false — per-repo configs are never org mode.
-func (d *perRepoDefaults) IsOrgMode() bool { return false }
-
 // IsOwnersFileAuthEnabled returns false — OWNERS auth is off by default.
 func (d *perRepoDefaults) IsOwnersFileAuthEnabled() bool { return false }
 
@@ -91,6 +88,12 @@ func (d *perRepoDefaults) ConfigKeepHistory() bool { return true }
 // set by `fullsend github setup --openai-*` or the FULLSEND_OPENAI_*
 // runner variables).
 func (d *perRepoDefaults) ConfigInferenceOpenAI() OpenAIWIFConfig { return OpenAIWIFConfig{} }
+
+// ConfigInferenceGateway returns the default inference.gateway block
+// (none — set by committing the block to config.yaml).
+func (d *perRepoDefaults) ConfigInferenceGateway() InferenceGatewayConfig {
+	return InferenceGatewayConfig{}
+}
 
 // ConfigModelAliases returns the default model aliases (none — fleet
 // defaults are compiled into the runtimes).

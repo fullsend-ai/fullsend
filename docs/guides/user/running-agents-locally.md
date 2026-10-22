@@ -53,10 +53,64 @@ fullsend is pinned to — the source of truth is
 in the fullsend repo at your release tag (also printed on Fullsend workflow runs).
 
 ```bash
-export OPENSHELL_VERSION=0.0.116  # check the pin file for the current version
+export OPENSHELL_VERSION=0.1.4  # check the pin file for the current version
 curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/v${OPENSHELL_VERSION}/install.sh | OPENSHELL_VERSION=v${OPENSHELL_VERSION} sh
 openshell --version
 ```
+
+The gateway reads a schema v2 config. With podman, pin the compute driver and the supervisor image
+that matches the CLI:
+
+```toml
+# ~/.config/openshell/gateway.toml (Homebrew on macOS: /opt/homebrew/var/openshell/gateway.toml
+# is used when this file does not exist)
+[openshell]
+version = 2
+
+[openshell.gateway]
+compute_driver = "podman"
+
+[openshell.drivers.podman]
+supervisor_image = "ghcr.io/nvidia/openshell/supervisor:0.1.4"  # match your openshell --version
+health_check_interval_secs = 10
+```
+
+Restart the gateway after editing it (`brew services restart openshell` on macOS). `openshell sandbox
+list` answering `No sandboxes found.` means the CLI reaches it.
+
+**Upgrading from OpenShell 0.0.x.** 0.1 cannot read 0.0.x gateway state or a schema v1 config, and
+its installer refuses to replace 0.0.x unless `OPENSHELL_ACK_BREAKING_UPGRADE=1` is set. Clean up
+while the 0.0.x CLI is still installed, and write the new config before installing: the installer
+starts the gateway straight away.
+
+```bash
+# 1. With the 0.0.x CLI: delete your sandboxes (they do not carry over)
+openshell sandbox delete --all
+
+# 2. Stop the 0.0.x gateway
+systemctl --user stop openshell-gateway
+
+# 3. Move the old config and gateway state aside
+cfg="${XDG_CONFIG_HOME:-$HOME/.config}/openshell"
+state="${XDG_STATE_HOME:-$HOME/.local/state}/openshell"
+ts="$(date +%s)"
+if [ -f "$cfg/gateway.toml" ]; then mv "$cfg/gateway.toml" "$cfg/gateway.toml.pre-0.1"; fi
+for d in gateway tls; do
+  if [ -d "$state/$d" ]; then mv "$state/$d" "$state/$d.pre-0.1.$ts"; fi
+done
+
+# 4. Write the schema v2 config shown above to "$cfg/gateway.toml", then install
+curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/v${OPENSHELL_VERSION}/install.sh \
+  | OPENSHELL_ACK_BREAKING_UPGRADE=1 OPENSHELL_VERSION=v${OPENSHELL_VERSION} sh
+openshell sandbox list   # "No sandboxes found." means the new gateway is up
+```
+
+The paths are the XDG defaults, which a Homebrew install (what the installer uses on Apple Silicon
+macOS) also uses for the gateway state. With Homebrew, stop the gateway in step 2 with
+`brew services stop openshell` instead, and start it with `brew services start openshell` after
+installing. The rest is unchanged: `$cfg/gateway.toml` takes precedence over Homebrew's
+`$(brew --prefix)/var/openshell/gateway.toml`, and the installer manages Homebrew's TLS under that
+directory. fullsend recreates its providers and profiles on the next run.
 
 ## Get Google Cloud Platform credentials
 
@@ -117,7 +171,7 @@ Then pick a GPT model when you run:
 
 ```bash
 fullsend run triage --runtime pi --model openai/gpt-5.6-luna \
-  --env-file fullsend-openai.env --env-file fullsend-triage.env ...
+  --forge github --env-file fullsend-openai.env --env-file fullsend-triage.env ...
 ```
 
 Codex takes the same key and the same harness requirements — swap `--runtime pi` for
@@ -128,10 +182,13 @@ A committed `inference.openai` block in the repository's `config.yaml` is ignore
 works in CI and on your machine.
 
 The agent's harness must declare the provider (`providers: [openai]`; both the definition and the
-`fullsend-openai` profile are built into fullsend, nothing needs to be on disk) and a sandbox policy
-(`policy: policies/base.yaml` — the fleet's agents already have it; a custom harness needs it because
-the sandbox image's default policy leaves an uninspected route to `api.openai.com`, which the gateway
-refuses to carry the credential over). The sandbox only ever sees a placeholder; the provider holding
+`fullsend-openai` profile are built into fullsend, nothing needs to be on disk; the fleet's agents
+declare it) and a sandbox policy
+(`policy: policies/base.yaml` — the fleet's agents already have it). A custom harness needs
+`policy:`: `fullsend run` fails at harness validation, before it creates the sandbox, if one is
+missing. The fleet base policy is also the one that does not leave an uninspected route to
+`api.openai.com`, which the gateway refuses to carry the credential over. The sandbox only ever
+sees a placeholder; the provider holding
 your key belongs to this run, expires an hour after the run at the latest and is deleted when the run
 ends.
 
@@ -163,6 +220,13 @@ git clone --depth 1 https://github.com/fullsend-ai/agents.git /tmp/fullsend-agen
 Depending on the agent you want to run you need a different set of environment variables.
 Check the variables they need in their environment files, referenced in their harness files.
 
+**Note**: the fleet-clone examples below need `--forge github` (or `--forge gitlab`),
+because the clone's `config.yaml` sets no `forge:`. Without a forge, the harness's
+GitHub settings (`ISSUE_URL`, the GitHub provider) never apply and the pre-script
+stops with `ISSUE_URL must be set`. `fullsend run` takes the forge from `--forge`, then
+`forge:` in the `config.yaml` at the root of `--fullsend-dir`, then CI environment
+variables (`GITHUB_ACTIONS`, `GITLAB_CI`).
+
 **Tip**: use `--no-post-script` in the `fullsend run` calls to avoid side-effects. You
 can also use `--keep-sandbox` to debug failures (but remember to remove them).
 
@@ -187,8 +251,10 @@ GITHUB_ISSUE_URL=https://github.com/{org}/{repo}/issues/{issue_num}
 fullsend run triage \
   --fullsend-dir /tmp/fullsend-agents/ \
   --target-repo /tmp/target-repo/ \
+  --forge github \
   --env-file fullsend-gcp.env \
-  --env-file fullsend-triage.env
+  --env-file fullsend-triage.env \
+  --forge github
 ```
 
 ### Review agent
@@ -200,17 +266,23 @@ Add to an env file:
 # In CI, REVIEW_TOKEN is auto-minted by the binary when --mint-url is provided.
 # For local runs, supply a GitHub PAT manually:
 REVIEW_TOKEN={github-pat}
+GH_TOKEN={github-pat}
 GITHUB_PR_URL="https://github.com/{org}/{repo}/pull/{pr_number}"
 PR_NUMBER="{pr_number}"
 REPO_FULL_NAME="{org}/{repo}"
+# Set by CI on a re-review; leave empty for a first review.
+PRIOR_REVIEW_SHA=
+PRIOR_REVIEW_PROVENANCE=
 ```
 
 ```bash
 fullsend run review \
   --fullsend-dir /tmp/fullsend-agents/ \
   --target-repo /tmp/target-repo/ \
+  --forge github \
   --env-file fullsend-gcp.env \
-  --env-file fullsend-review.env
+  --env-file fullsend-review.env \
+  --forge github
 ```
 
 ### Code agent
@@ -230,14 +302,18 @@ ISSUE_NUMBER={issue_num}
 CODE_ALLOWED_TARGET_BRANCHES=main
 REPO_DIR=/tmp/repo-dir
 GITHUB_WORKSPACE=/tmp/
+# Author and committer email for the agent's commits.
+GIT_BOT_EMAIL={bot-or-your-email}
 ```
 
 ```bash
 fullsend run code \
   --fullsend-dir /tmp/fullsend-agents/ \
   --target-repo /tmp/target-repo/ \
+  --forge github \
   --env-file fullsend-gcp.env \
-  --env-file fullsend-code.env
+  --env-file fullsend-code.env \
+  --forge github
 ```
 
 ### Choosing the runtime
@@ -252,14 +328,18 @@ this page runs on either by adding one flag to the same command:
 fullsend run triage \
   --fullsend-dir /tmp/fullsend-agents/ \
   --target-repo /tmp/target-repo/ \
+  --forge github \
   --env-file fullsend-gcp.env \
   --env-file fullsend-triage.env \
+  --forge github \
   --runtime pi
 ```
 
-Codex is selected the same way (`--runtime codex`); it runs OpenAI models
-only, so pair it with `--model openai/gpt-5.6-luna` and the OpenAI key
-above.
+Codex is selected the same way (`--runtime codex`); pair it with
+`--model openai/gpt-5.6-luna` and the OpenAI key above. With an
+`inference.gateway` block in `auth: api-key` mode, codex can instead run
+`--model gateway/<model>` with `FULLSEND_INFERENCE_GATEWAY_API_KEY` set
+([Codex › Models through an inference gateway](../../runtimes/codex.md#models-through-an-inference-gateway-experimental)).
 
 Everything else about runtimes lives in one place: [Agent
 runtimes](../../runtimes.md) for selecting and overriding the runtime,
@@ -275,7 +355,7 @@ you can tune resolution limits:
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--forge` | (auto-detect) | Forge platform to use (`github`, `gitlab`). Auto-detected from CI env vars (`GITHUB_ACTIONS`, `GITLAB_CI`) when omitted |
+| `--forge` | (auto-detect) | Forge platform to use (`github`, `gitlab`). When omitted, resolved from `forge:` in the `config.yaml` at the root of `--fullsend-dir`, then `GITHUB_ACTIONS`/`GITLAB_CI` |
 | `--max-depth` | 10 | Maximum dependency depth for transitive resolution (0 disables) |
 | `--max-resources` | 50 | Maximum total remote resources fetched per harness |
 | `--offline` | false | Reject network fetches; only use cached remote resources |
@@ -306,6 +386,9 @@ or a cached artifact is missing, `fullsend run` falls back to normal network
 resolution and prints a warning suggesting you re-run `fullsend lock`.
 
 Use `--update` to force re-resolution even if the lock entry appears current.
+A current entry is also not composed, so `fullsend lock` does not check it for
+reserved `env.sandbox` keys; see
+[Reserved `env.sandbox` keys](../../cli/run.md#reserved-envsandbox-keys).
 
 ### Status notification flags
 
@@ -318,7 +401,7 @@ target issue/PR. These flags mirror what the CI workflows pass automatically:
 | `--status-repo` | Repository (`owner/repo`) to post status comments on |
 | `--status-number` | Issue or PR number for status comments |
 | `--mint-url` | Mint service URL for on-demand status comment tokens (default: `$FULLSEND_MINT_URL`) |
-| `--forge` | Forge platform (`github` or `gitlab`); auto-detected from CI env vars when omitted |
+| `--forge` | Forge platform (`github` or `gitlab`); when omitted, resolved from `forge:` in the `config.yaml` at the root of `--fullsend-dir`, then `GITHUB_ACTIONS`/`GITLAB_CI` |
 
 Example:
 
@@ -326,17 +409,249 @@ Example:
 fullsend run triage \
   --fullsend-dir /tmp/fullsend-agents/ \
   --target-repo /tmp/target-repo/ \
+  --forge github \
   --env-file fullsend-gcp.env \
   --env-file fullsend-triage.env \
+  --forge github \
   --status-repo myorg/myrepo \
   --status-number 42 \
   --run-url "https://github.com/myorg/myrepo/actions/runs/12345"
 ```
 
-For GitLab repositories, use `--forge gitlab` instead of `--mint-url`. The agent resolves its credential through the [GitLab role-credential contract](../../contributing/gitlab-role-credentials.md) and exports `GITLAB_TOKEN` (and `PUSH_TOKEN`, for roles with repository-write access) itself; it does not require the mint service. While the migration gate is unset, `disabled`, or `rollback`, `FULLSEND_FORGE_TOKEN` is preferred and exported to `GITLAB_TOKEN`; if it is absent, a directly-set `GITLAB_TOKEN` is still used as a fallback (a warning is logged). Once the gate is `migrating`, the matching per-role secret (Poller/Analyst/Coder, or a registered custom role) is used when configured; an unconfigured role still falls back to `FULLSEND_FORGE_TOKEN` (this shared-token fallback only ceases once the gate is `enforced`, where the per-role secret is strictly required). In both `migrating` and `enforced` mode, though, the unmanaged fallback to a directly-set `GITLAB_TOKEN` (used above when `FULLSEND_FORGE_TOKEN` itself is absent) no longer applies. See the [operations guide](../getting-started/operations.md#gitlab-ci) for required environment variables. Self-hosted instances that use a private CA have a separate [certificate-provisioning contract](../getting-started/operations.md#private-ca-self-hosted-gitlab).
+For GitLab repositories, use `--forge gitlab` instead of `--mint-url`. The agent resolves its credential through the [GitLab role-credential contract](../../contributing/gitlab-role-credentials.md) and exports `GITLAB_TOKEN` (and `PUSH_TOKEN`, for roles with repository-write access) itself; it does not require the mint service. Set the matching per-role secret (Poller/Analyst/Coder, or a registered custom role). A missing role secret fails closed and does not fall back to `FULLSEND_FORGE_TOKEN` or a directly-set `GITLAB_TOKEN`. See the [operations guide](../getting-started/operations.md#gitlab-ci) for required environment variables. Self-hosted instances that use a private CA have a separate [certificate-provisioning contract](../getting-started/operations.md#private-ca-self-hosted-gitlab).
 
 Status comment behavior is configured via `status_notifications` in
 `config.yaml`. See [Status Notifications](customizing-agents.md#status-notifications).
+
+## Using an inference gateway (experimental)
+
+> **Experimental.** Behaviour may change. This section covers local runs, where the harness ships
+> the extension as a plugin. Hosted (CI) runs use the runner-managed `inference.gateway` block in
+> `.fullsend/config.yaml` instead (see the [config reference](../../reference/config-reference.md)).
+> For the CI setup, see [Using an inference gateway](inference-gateway.md).
+> A local run can use that block too with `auth: api-key`, which reads the gateway key from
+> `FULLSEND_INFERENCE_GATEWAY_API_KEY` and needs no OIDC endpoint
+> ([ADR 0138](../../ADRs/0138-inference-gateway-api-key-credential-mode.md)).
+
+On the [pi](../../runtimes/pi.md) runtime, an agent can reach its model through an
+OpenAI/Anthropic-compatible inference gateway (Praxis, LiteLLM, agentgateway, ...). The
+[pi-inference-gateway](https://github.com/fullsend-ai/pi-inference-gateway) extension adds a
+`gateway` provider to pi, and your harness ships it as a [plugin](../../runtimes/pi.md#plugins-pi-extensions).
+No fullsend change is needed.
+
+You need the gateway's URL, a key for it, and the id of each model you want, with the API the
+gateway serves it on:
+
+| API | `api` value | Typical models |
+|---|---|---|
+| Responses | `openai-responses` | GPT |
+| Chat Completions | `openai-completions` | Open-weight models |
+| Messages | `anthropic-messages` | Claude |
+
+The steps edit the agents clone from [Clone repositories](#clone-repositories)
+(`/tmp/fullsend-agents/`) and use `https://gateway.example.com` as the gateway.
+
+1. **Add the extension to the harness repository.** Download the release, check it, and keep only
+   the code. The block stops before extracting anything if the checksum does not match:
+
+   ```bash
+   (
+     set -eu
+     ver=0.1.1
+     dest=/tmp/fullsend-agents/extensions/inference-gateway
+     cd "$(mktemp -d)"
+     curl -fsSL -o pi-inference-gateway.tgz \
+       "https://github.com/fullsend-ai/pi-inference-gateway/archive/refs/tags/v$ver.tar.gz"
+     echo "9d4a9446842f27aa51de99be4f61b6cbc2a6de009ddf04f2dc712c1fb1417d29  pi-inference-gateway.tgz" \
+       | shasum -a 256 -c -
+     mkdir -p "$dest"
+     tar xzf pi-inference-gateway.tgz -C "$dest" --strip-components=1 \
+       "pi-inference-gateway-$ver/package.json" "pi-inference-gateway-$ver/LICENSE" \
+       "pi-inference-gateway-$ver/src"
+     rm "$dest"/src/*.test.ts "$dest"/src/test-fixtures.ts
+   )
+   ```
+
+   ```text
+   pi-inference-gateway.tgz: OK
+   ```
+
+2. **Add a provider for the key** as `/tmp/fullsend-agents/providers/gateway.yaml`:
+
+   ```yaml
+   ---
+   name: gateway
+   type: gateway-inference
+   credentials:
+     INFERENCE_GATEWAY_API_KEY: "${INFERENCE_GATEWAY_API_KEY}"
+   ```
+
+3. **Allow the gateway host** with `/tmp/fullsend-agents/profiles/gateway-inference.yaml`:
+
+   ```yaml
+   ---
+   id: gateway-inference
+   display_name: Inference gateway
+   description: OpenAI/Anthropic-compatible inference gateway for pi
+   category: inference
+   credentials:
+     - name: api_key
+       description: Inference gateway key
+       env_vars: [INFERENCE_GATEWAY_API_KEY]
+       required: true
+       auth_style: bearer
+       header_name: authorization
+   endpoints:
+     - host: gateway.example.com
+       port: 443
+       protocol: rest
+       enforcement: enforce
+       allow_uninspected_credentials: true
+       rules:
+         - allow:
+             method: POST
+             path: /v1/chat/completions
+         - allow:
+             method: POST
+             path: /v1/responses
+         - allow:
+             method: POST
+             path: /v1/messages
+   binaries:
+     - "**/node"
+   ```
+
+   The sandbox only ever holds a placeholder for the key. OpenShell puts the real key on requests
+   to this host and blocks the agent from reaching any other host with it.
+
+4. **Wire them into the harness.** In `/tmp/fullsend-agents/harness/triage.yaml`, add the provider,
+   the profile and the plugin:
+
+   ```yaml
+   providers:
+     - vertex-ai
+     - openai
+     - providers/gateway.yaml
+   openshell:
+     profiles:
+       - profiles/gateway-inference.yaml
+   plugins:
+     - path: extensions/inference-gateway
+       env:
+         INFERENCE_GATEWAY_BASE_URL: "https://gateway.example.com"
+         INFERENCE_GATEWAY_EXTRA_MODELS: "gpt-6-luna=openai-responses,example-org/open-model=openai-completions,claude-haiku-4-5=anthropic-messages"
+   ```
+
+   List every model you will use in `INFERENCE_GATEWAY_EXTRA_MODELS`, as `id=api`. pi never asks
+   the gateway for its model list inside the sandbox, so a model missing here is unknown to pi.
+
+5. **Add per-model settings (optional).** Only needed for a model that needs `compat`,
+   `contextWindow` / `maxTokens` or `exclude`. Write
+   `/tmp/fullsend-agents/extensions/inference-gateway/inference-gateway.json`:
+
+   ```json
+   {
+     "providers": {
+       "gateway": {
+         "baseUrlEnv": "INFERENCE_GATEWAY_BASE_URL",
+         "models": {
+           "claude-opus-5-5": {
+             "api": "anthropic-messages",
+             "compat": { "supportsMidConvoEffort": false, "supportsStrictTools": false }
+           },
+           "example-org/open-model": {
+             "api": "openai-completions",
+             "contextWindow": 262144,
+             "maxTokens": 65536
+           }
+         }
+       }
+     }
+   }
+   ```
+
+   - Keep `"baseUrlEnv": "INFERENCE_GATEWAY_BASE_URL"` in the `gateway` entry. Without it the
+     extension skips the entry with a warning.
+   - Put no credential keys in the file (`apiKey*`, `tokenFile`, `password*`). The key comes from
+     the provider.
+   - Keep every model in `INFERENCE_GATEWAY_EXTRA_MODELS` as well.
+   - `contextWindow` / `maxTokens` are your deployment's limits; the values above are examples.
+
+   See the extension's
+   [per-model keys](https://github.com/fullsend-ai/pi-inference-gateway/blob/v0.1.1/docs/configuration.md#config-file)
+   and [`compat` reference](https://github.com/fullsend-ai/pi-inference-gateway/blob/v0.1.1/docs/compat.md).
+   The file ships inside the plugin directory, and the runner checks that directory is unchanged
+   before every iteration, so the agent cannot edit it.
+
+6. **Run with a `gateway/` model** from the directory that holds your env files from
+   [Run default agents](#run-default-agents):
+
+   ```bash
+   export INFERENCE_GATEWAY_API_KEY=...   # your gateway key
+   fullsend run triage \
+     --fullsend-dir /tmp/fullsend-agents/ \
+     --target-repo /tmp/target-repo/ \
+     --forge github \
+     --env-file fullsend-gcp.env \
+     --env-file fullsend-triage.env \
+     --runtime pi \
+     --model gateway/gpt-6-luna \
+     --no-post-script
+   ```
+
+   Always write the full `gateway/<id>`. A bare id gets the default `anthropic-vertex/` prefix.
+
+### What success looks like
+
+The run names the gateway model, sets up the provider and profile, uploads the extension, and the
+result passes schema validation (excerpt; local paths shortened):
+
+```text
+    Model: gateway/gpt-6-luna (from --model flag)
+    Plugins: /tmp/fullsend-agents/extensions/inference-gateway (pi)
+  ✓ Profile imported: gateway-inference (0.1s)
+  ✓ Provider ready: gateway (0.1s)
+Extension "inference-gateway": uploaded to sandbox
+    Turns: 5
+  ✓ Agent exited with code 0 (56.2s)
+PASS: output validated against schema (0.5s)
+    Validation: passed
+```
+
+The same setup passed with an open-weight model on Chat Completions and with `claude-haiku-4-5` and
+`claude-sonnet-5` on Messages.
+
+`claude-opus-5-5` passed with the per-model file from step 5:
+
+```text
+    Model: gateway/claude-opus-5-5 (from --model flag)
+    Plugins: /tmp/fullsend-agents/extensions/inference-gateway (pi)
+  ✓ Profile imported: gateway-inference (0.1s)
+  ✓ Provider ready: gateway (0.1s)
+Extension "inference-gateway": uploaded to sandbox
+    Turns: 6
+  ✓ Agent exited with code 0 (32.8s)
+PASS: output validated against schema (0.2s)
+    Validation: passed
+```
+
+### Limits
+
+- **Per-model settings go in the plugin's file.** The extension's `compat`,
+  `contextWindow` / `maxTokens` and `exclude` settings live in the `inference-gateway.json` from
+  step 5, not in the harness `env`.
+- **The base URL and model list come from the harness.** The runner exports the plugin's `env` on
+  every launch, after the agent-writable `.env`, so plain assignments in `.env` do not change them.
+  The key is only sent to the profile's host.
+
+### Troubleshooting the gateway
+
+| Error | Cause | Fix |
+|---|---|---|
+| `WARNING: plugin ".../extensions/inference-gateway" has 1 injection finding(s) in src/config.ts` (and `src/discovery.ts`) | The content scan flags patterns in the extension's code | Expected for v0.1.1; the run continues |
+| `Warning: Model "<id>" not found for provider "gateway". Using custom model id.`, then an error such as `` 404: {"message":"The model `<id>` does not exist ...","code":"model_not_found"} `` | The model is not in `INFERENCE_GATEWAY_EXTRA_MODELS`, so pi sends it on another listed model's API | Add `<id>=<api>` to `INFERENCE_GATEWAY_EXTRA_MODELS` |
+| Claude: `400 ... messages.1.output_config: Extra inputs are not permitted` | The gateway's Claude backend (for example Vertex) rejects pi's mid-conversation effort setting | Set `"compat": { "supportsMidConvoEffort": false }` on that model in `inference-gateway.json` (step 5) |
+| `` 400 ... disallowed feature structured_outputs for Partner model <id> `` | Your cloud project's policy disallows that feature for the partner model | Set `"compat": { "supportsStrictTools": false }` on that model in `inference-gateway.json` (step 5) |
 
 ## Run from a container
 
@@ -366,8 +681,10 @@ podman run --rm -it --network=host \
   run triage \
     --fullsend-dir /tmp/fullsend-agents/ \
     --target-repo /tmp/target-repo/ \
+    --forge github \
     --env-file fullsend-gcp.env \
-    --env-file fullsend-triage.env
+    --env-file fullsend-triage.env \
+    --forge github
 ```
 
 The image's working directory is `/work`, so relative paths in `--env-file`
@@ -399,14 +716,15 @@ Fullsend automatically aggregates different layers of information before running
 In case you want to test how customizations impact default agents, or you custom agents, follow the
 next steps.
 
-If your organization uses config-driven agents registered in `config.yaml`,
-pass your `.fullsend` config repo as `--fullsend-dir`:
+If your repository uses config-driven agents registered in
+`.fullsend/config.yaml`, pass the target repository's local `.fullsend/`
+directory as `--fullsend-dir`:
 
 ```bash
-git clone --depth 1 https://github.com/{org}/.fullsend.git /tmp/org-fullsend/
+git clone --depth 1 https://github.com/{org}/{repo}.git /tmp/target-repo/
 ```
 
-When you execute `fullsend run`, pass `--fullsend-dir` as `/tmp/org-fullsend/`.
+When you execute `fullsend run`, pass `--fullsend-dir` as `/tmp/target-repo/.fullsend/`.
 See [Bring Your Own Agent](bring-your-own-agent.md) for the config-driven
 approach.
 
@@ -446,7 +764,7 @@ to the server (gateway). It is likely that you need to bind the gateway to `0.0.
 
 **`API Error: Error code policy_denied` on the first model call (agent exits after ~2 s, 0 tokens)**
 - The gateway denied the agent's binary, not the model. Run `grep DENIED <run-dir>/logs/openshell-sandbox.log`; a line ending in `binary '…/claude.exe' not allowed in policy '_provider_vertex_ai'` means the Vertex profile lacks `**/claude.exe` (Claude Code 2.1.2xx runs as `claude.exe`, even on Linux)
-- Only profiles listed in `openshell.profiles` are imported. If `--fullsend-dir` contains a `profiles/` directory, files there are **not** imported unless explicitly listed on the harness. To override a harness profile locally, add it to `openshell.profiles` (e.g., `profiles/fullsend-vertex-ai.yaml`)
+- For the built-in `fullsend-vertex-ai` profile, upgrade fullsend: the profile ships in the binary. To try a changed profile locally, copy it under your own id (for example `profiles/myorg-vertex-ai.yaml` with `id: myorg-vertex-ai`), list it in `openshell.profiles`, and point a provider of your own at it (`type: myorg-vertex-ai`). Files under `profiles/` are **not** imported unless the harness lists them
 
 **Agent fails with missing environment variable**
 - Check your env file contains all variables listed in the agent's harness YAML (`harness/{agent}.yaml` in the `.fullsend` config directory)
@@ -468,14 +786,18 @@ output to iterate on network policy allowlists.
 ### Run directory structure
 
 Every `fullsend run` creates a run directory. By default this is under
-`/tmp/fullsend/`; override it with `--output-dir`:
+`/tmp/fullsend/`; override it with `--output-dir`. Relative `--output-dir`
+values are resolved to an absolute path so post-script env vars such as
+`FULLSEND_VALIDATED_ITERATION_DIR` do not depend on the process cwd:
 
 ```bash
 fullsend run triage \
   --fullsend-dir /tmp/fullsend-agents/ \
   --target-repo /tmp/target-repo/ \
+  --forge github \
   --env-file fullsend-gcp.env \
   --env-file fullsend-triage.env \
+  --forge github \
   --output-dir /tmp/my-debug-output
 ```
 
@@ -530,8 +852,10 @@ or gateway routing issues).
    fullsend run <agent> \
      --fullsend-dir /tmp/fullsend-agents/ \
      --target-repo /tmp/target-repo/ \
+     --forge github \
      --env-file fullsend-gcp.env \
      --env-file fullsend-<agent>.env \
+     --forge github \
      --keep-sandbox \
      --no-post-script
    ```

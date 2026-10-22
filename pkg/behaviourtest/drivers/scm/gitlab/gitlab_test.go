@@ -65,6 +65,34 @@ func TestCreateRepo_Error(t *testing.T) {
 	}
 }
 
+func TestCreateUserFork(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "outsider"
+	d := New(fc)
+
+	owner, repo, err := d.CreateUserFork(context.Background(), "group", "project")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if owner != "outsider" || repo != "project" {
+		t.Errorf("expected fork outsider/project, got %s/%s", owner, repo)
+	}
+	if len(fc.CreatedForks) != 1 || fc.CreatedForks[0] != "group/project" {
+		t.Errorf("expected CreateFork call for group/project, got %v", fc.CreatedForks)
+	}
+}
+
+func TestCreateUserFork_Error(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.Errors["CreateFork"] = errors.New("create failed")
+	d := New(fc)
+
+	_, _, err := d.CreateUserFork(context.Background(), "group", "project")
+	if err == nil || err.Error() != "create failed" {
+		t.Fatalf("expected create failed error, got %v", err)
+	}
+}
+
 func TestCreateForkChangeProposal_DiscardsBaseOwnerRepo(t *testing.T) {
 	fc := forge.NewFakeClient()
 	d := New(fc)
@@ -286,6 +314,49 @@ func TestSubmitPullRequestReview_CreateReviewError(t *testing.T) {
 	err := d.SubmitPullRequestReview(context.Background(), "owner", "repo", 1, "APPROVE")
 	if err == nil {
 		t.Fatal("expected error when CreatePullRequestReview fails")
+	}
+}
+
+func TestListPullRequestReviews(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.PullRequestHeadSHA = "abc123"
+	d := New(fc)
+
+	if err := d.SubmitPullRequestReview(context.Background(), "owner", "repo", 1, "APPROVE"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	reviews, err := d.ListPullRequestReviews(context.Background(), "owner", "repo", 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(reviews) != 1 || reviews[0].State != "APPROVE" {
+		t.Fatalf("expected 1 APPROVE review, got %+v", reviews)
+	}
+}
+
+func TestListPullRequestCommits(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.PRCommits = map[string][]string{"owner/repo/1": {"first", "second"}}
+	d := New(fc)
+
+	shas, err := d.ListPullRequestCommits(context.Background(), "owner", "repo", 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(shas) != 2 || shas[0] != "first" || shas[1] != "second" {
+		t.Fatalf("expected [first second], got %v", shas)
+	}
+}
+
+func TestListPullRequestReviews_Error(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.Errors["ListPullRequestReviews"] = errors.New("list failed")
+	d := New(fc)
+
+	_, err := d.ListPullRequestReviews(context.Background(), "owner", "repo", 1)
+	if err == nil {
+		t.Fatal("expected error when ListPullRequestReviews fails")
 	}
 }
 

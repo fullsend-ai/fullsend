@@ -7,6 +7,7 @@
 #   - rootless Podman + an OCI hook that injects the host CA bundle
 #   - OpenShell CLI (pinned) and a per-job gateway (no long-lived daemon)
 #   - pre-pulled runner + supervisor images
+#   - a user systemd timer that prunes unused Podman images (#7663)
 #
 # Idempotent: safe to re-run, and must stay that way. Each step is guarded
 # (version checks, grep-for-existing-config, early returns) so a second run
@@ -36,9 +37,13 @@
 #   GITLAB_RUNNER_VERSION — gitlab-runner version to install (default: 19.2.1)
 #
 # Note: The OpenShell version sourced here is the *provisioning* pin
-# (.github/scripts/openshell-version.sh, Renovate-tracked). Per-job prepare.sh
-# re-reads the job image's openshell --version and upgrades the host when they
-# differ, so a VM that was created on an older pin still matches the job.
+# (.github/scripts/openshell-version.sh, Renovate-tracked): the version the
+# host starts on. Per-job prepare.sh does not consult this copy: it reads the
+# job image's org.opencontainers.image.revision label, verifies that Fullsend
+# commit on GitHub, and installs the OpenShell version and commit pinned there
+# (the image's own openshell --version must agree). Images built on different
+# pins therefore alternate on one VM, and new Fullsend releases need no
+# create-*-vm.sh --resume.
 set -euo pipefail
 
 GITLAB_URL="${GITLAB_URL:-}"
@@ -56,7 +61,8 @@ if [ -f "${_openshell_version_sh}" ]; then
   # shellcheck source=../../.github/scripts/openshell-version.sh
   source "${_openshell_version_sh}"
 fi
-OPENSHELL_VERSION="${OPENSHELL_VERSION:-0.0.116}"
+# Fallback only when the pin file is absent; keep in step with openshell-version.sh.
+OPENSHELL_VERSION="${OPENSHELL_VERSION:-0.1.4}"
 
 # Source the executor's gateway helpers (wait_for_openshell_gateway,
 # user_systemctl) so configure_per_job_gateway can wait for the seed start
@@ -72,6 +78,14 @@ BUILDS_DIR="${HOME}/builds"
 CACHE_DIR="${HOME}/cache"
 CONFIG_TOML="/etc/gitlab-runner/config.toml"
 RUNNER_USER="${USER:-$(whoami)}"
+# Overridable so setup_test.sh can point the drop-in at a temp dir.
+GITLAB_RUNNER_OVERRIDE_DIR="/etc/systemd/system/gitlab-runner.service.d"
+# Overridable so setup_test.sh can install the CA hook into a temp root.
+HOST_CA_BUNDLE="/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"
+CA_HOOK_SCRIPT="/usr/local/bin/inject-ca-certs.sh"
+OCI_HOOKS_DIR="/etc/containers/oci/hooks.d"
+# Overridable so setup_test.sh can repair Fedora repo files in a temp dir.
+YUM_REPOS_DIR="/etc/yum.repos.d"
 
 # Source the central gitlab-runner version pin.
 _runner_version_sh="${SCRIPT_DIR}/gitlab-runner-version.sh"
@@ -99,17 +113,27 @@ fix_fedora_repos() {
   #
   # Standard Fedora repo files have baseurl= commented out and metalink=
   # active. This function comments out metalink= and uncomments baseurl=.
+  #
+  # The base URLs themselves are repaired independently of metalink=, so a
+  # repo already switched to baseurl= (e.g. by vm.yaml's bootcmd from an
+  # older template) is fixed too. Keep in step with vm.yaml's bootcmd.
   local changed=0
-  for repo_file in /etc/yum.repos.d/fedora*.repo; do
+  for repo_file in "${YUM_REPOS_DIR}"/fedora*.repo; do
     [ -f "${repo_file}" ] || continue
     if grep -q '^metalink=' "${repo_file}"; then
       sudo sed -i -e 's/^metalink=/#metalink=/' -e 's/^#baseurl=/baseurl=/' "${repo_file}"
-      # Stock Fedora cloud images ship a placeholder baseurl pointing at
-      # download.example (not a real mirror). Replace it with the real
-      # Fedora mirror that is already in the TenantEgress allowlist.
-      if grep -q 'download\.example' "${repo_file}"; then
-        sudo sed -i 's|download\.example|dl.fedoraproject.org|g' "${repo_file}"
-      fi
+      changed=1
+    fi
+    # Stock Fedora cloud images ship a placeholder baseurl pointing at
+    # download.example (not a real mirror), over plain HTTP. Replace it
+    # with the real Fedora mirror that is already in the TenantEgress
+    # allowlist, and use HTTPS: egress-restricted clusters may block
+    # port 80 while HTTPS to dl.fedoraproject.org works.
+    if grep -q 'download\.example' "${repo_file}" \
+      || grep -q '^baseurl=http://dl\.fedoraproject\.org/' "${repo_file}"; then
+      sudo sed -i -e 's|download\.example|dl.fedoraproject.org|g' \
+        -e 's|^baseurl=http://dl\.fedoraproject\.org/|baseurl=https://dl.fedoraproject.org/|' \
+        "${repo_file}"
       changed=1
     fi
   done
@@ -117,7 +141,7 @@ fix_fedora_repos() {
   # The Cisco openh264 repo has broken mirrors on Fedora 43 cloud images
   # and is not needed for runner operation. Disable it to prevent dnf
   # metadata refresh failures.
-  local cisco_repo="/etc/yum.repos.d/fedora-cisco-openh264.repo"
+  local cisco_repo="${YUM_REPOS_DIR}/fedora-cisco-openh264.repo"
   if [ -f "${cisco_repo}" ]; then
     sudo dnf config-manager setopt fedora-cisco-openh264.enabled=0 2>/dev/null \
       || sudo sed -i 's/^enabled=1/enabled=0/' "${cisco_repo}"
@@ -125,9 +149,9 @@ fix_fedora_repos() {
   fi
 
   if [ "${changed}" -eq 1 ]; then
-    ok "switched Fedora repos from metalink to baseurl"
+    ok "switched Fedora repos to HTTPS dl.fedoraproject.org baseurl"
   else
-    ok "Fedora repos already using baseurl"
+    ok "Fedora repos already using HTTPS baseurl"
   fi
 }
 
@@ -272,13 +296,110 @@ install_gitlab_runner() {
   ok "gitlab-runner ${GITLAB_RUNNER_VERSION} installed"
 }
 
+# stop_runner_service — stop the system gitlab-runner service, used when a
+# registration check fails so the VM does not keep polling a GitLab instance
+# it should not serve. The stop is confirmed with `systemctl is-active`: when
+# it cannot be confirmed, an explicit containment-failure warning is printed
+# and the function returns 1. Either way it sets RUNNER_STOP_NOTE, the phrase
+# rejection messages use to say what actually happened to the service.
+RUNNER_STOP_NOTE="gitlab-runner left stopped"
+stop_runner_service() {
+  sudo systemctl stop gitlab-runner 2>/dev/null || true
+  if systemctl is-active --quiet gitlab-runner; then
+    RUNNER_STOP_NOTE="CONTAINMENT FAILED: gitlab-runner is still running and polling — stop it now with: sudo systemctl stop gitlab-runner"
+    echo "  WARN: ${RUNNER_STOP_NOTE}"
+    return 1
+  fi
+  RUNNER_STOP_NOTE="gitlab-runner left stopped"
+}
+
+# read_config_runners — structural, offline read of config.toml. Prints the
+# number of [[runners]] entries, then each entry's url, one per line. Parsed
+# as TOML, so indented or otherwise reformatted headers (e.g. "[[ runners ]]")
+# are counted too. Returns 1 when the file cannot be parsed.
+read_config_runners() {
+  python3 - "${CONFIG_TOML}" 2>/dev/null <<'PY'
+import sys, tomllib
+with open(sys.argv[1], "rb") as f:
+    runners = tomllib.load(f).get("runners", [])
+print(len(runners))
+for r in runners:
+    print(r.get("url", ""))
+PY
+}
+
+# check_registration_config — structural, offline check of config.toml: it
+# must hold exactly one runner and that runner's url must be GITLAB_URL (the
+# only instance this VM should serve).
+check_registration_config() {
+  local out count url
+  if ! out=$(read_config_runners); then
+    echo "  WARN: cannot parse ${CONFIG_TOML} as TOML"
+    return 1
+  fi
+  count=$(printf '%s\n' "${out}" | head -n 1)
+  if [ "${count}" -ne 1 ]; then
+    echo "  WARN: expected exactly one [[runners]] entry in ${CONFIG_TOML}, found ${count}"
+    return 1
+  fi
+  url=$(printf '%s\n' "${out}" | sed -n 2p)
+  if [ "${url%/}" != "${GITLAB_URL%/}" ]; then
+    echo "  WARN: runner is registered with '${url}', expected ${GITLAB_URL}"
+    return 1
+  fi
+}
+
+# config_runner_token_matches — succeeds when the single configured runner's
+# token equals REGISTRATION_TOKEN. The supplied token is handed to python via
+# the environment (not argv) and neither token is ever printed. Fails on an
+# unparseable config or a mismatch.
+config_runner_token_matches() {
+  SUPPLIED_TOKEN="${REGISTRATION_TOKEN}" python3 - "${CONFIG_TOML}" 2>/dev/null <<'PY'
+import hmac, os, sys, tomllib
+with open(sys.argv[1], "rb") as f:
+    runners = tomllib.load(f).get("runners", [])
+supplied = os.environ.get("SUPPLIED_TOKEN", "")
+ok = len(runners) == 1 and bool(supplied) and hmac.compare_digest(
+    str(runners[0].get("token", "")).encode(), supplied.encode())
+sys.exit(0 if ok else 1)
+PY
+}
+
 # --------------------------------------------------------------------------
 # 0c. Register runner with GitLab (first-time only)
 # --------------------------------------------------------------------------
 register_runner() {
   info "Checking runner registration"
 
-  if [ -f "${CONFIG_TOML}" ] && grep -q '^\[\[runners\]\]' "${CONFIG_TOML}"; then
+  # Whether a registration exists is decided from the parsed TOML, not a
+  # header grep, so every valid spelling of [[runners]] counts. An existing
+  # config that cannot be parsed is treated as a registration to check, which
+  # then fails closed.
+  local config_out config_count=0
+  if [ -f "${CONFIG_TOML}" ]; then
+    if config_out=$(read_config_runners); then
+      config_count=$(printf '%s\n' "${config_out}" | head -n 1)
+    else
+      config_count=-1
+    fi
+  fi
+
+  if [ "${config_count}" -ne 0 ]; then
+    # Reusing a config (e.g. --resume) must never leave this VM serving some
+    # other GitLab instance: check the target before the service can start
+    # or poll, and keep the service stopped if it is wrong.
+    if ! check_registration_config; then
+      stop_runner_service || true
+      fail "existing runner config in ${CONFIG_TOML} is not a single registration with ${GITLAB_URL} — ${RUNNER_STOP_NOTE}; remove the config and re-run"
+    fi
+    # A supplied registration token (shared-pool mode) must be the one this
+    # config already holds; otherwise the VM would keep serving another pool.
+    # Without a token (GL_TOKEN reuse), the config is trusted as-is.
+    if [ -n "${REGISTRATION_TOKEN:-}" ] && ! config_runner_token_matches; then
+      echo "  WARN: the runner in ${CONFIG_TOML} holds a different runner token than the one supplied"
+      stop_runner_service || true
+      fail "existing runner config in ${CONFIG_TOML} does not match the supplied runner token — ${RUNNER_STOP_NOTE}; remove the config and re-run"
+    fi
     ok "runner already registered"
     return
   fi
@@ -306,21 +427,31 @@ register_runner() {
 setup_runner_user() {
   info "Configuring gitlab-runner to run as ${RUNNER_USER}"
 
-  local override_dir="/etc/systemd/system/gitlab-runner.service.d"
+  local override_dir="${GITLAB_RUNNER_OVERRIDE_DIR}"
   local override_file="${override_dir}/user.conf"
+  local runner_uid
 
   # GitLab Runner is a system service, so it does not go through pam_systemd
   # and does not inherit a user-session bus. Linger keeps user@UID.service
   # alive; these Environment= lines let systemctl --user and rootless podman
-  # talk to it. %U is the UID of User= (systemd specifier).
+  # talk to it.
   #
-  # The skip path must also require the env lines: a VM provisioned before
-  # this fix has User= already, and re-running setup.sh has to rewrite the
-  # drop-in so existing runners converge without manual repair.
+  # Resolve the numeric UID at generation time. systemd %U/%u specifiers
+  # expand to the *manager instance* (root / 0 for a system-scope unit),
+  # not to User= — interpolating %U produced /run/user/0 and broke
+  # rootless Podman (#7696).
+  #
+  # The skip path must require the env lines with this UID: a VM
+  # provisioned before #7453 has User= already, and a VM provisioned with
+  # the #7453 %U drop-in still expands to UID 0. Re-running setup.sh has
+  # to rewrite the drop-in so existing runners converge without manual
+  # repair.
+  runner_uid="$(id -u "${RUNNER_USER}")" || fail "cannot resolve UID for ${RUNNER_USER}"
+
   if [ -f "${override_file}" ] \
     && grep -q "User=${RUNNER_USER}" "${override_file}" \
-    && grep -q 'XDG_RUNTIME_DIR=/run/user/%U' "${override_file}" \
-    && grep -q 'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus' "${override_file}"; then
+    && grep -Fq "XDG_RUNTIME_DIR=/run/user/${runner_uid}" "${override_file}" \
+    && grep -Fq "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${runner_uid}/bus" "${override_file}"; then
     ok "systemd override already in place"
     return
   fi
@@ -331,8 +462,8 @@ setup_runner_user() {
 User=${RUNNER_USER}
 Group=${RUNNER_USER}
 WorkingDirectory=${HOME}
-Environment=XDG_RUNTIME_DIR=/run/user/%U
-Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus
+Environment=XDG_RUNTIME_DIR=/run/user/${runner_uid}
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${runner_uid}/bus
 ExecStart=
 ExecStart=/usr/local/bin/gitlab-runner run --config ${CONFIG_TOML} --working-directory ${HOME} --service gitlab-runner
 EOF
@@ -388,11 +519,14 @@ install_openshell() {
   if [ ! -f "${install_sh}" ]; then
     install_sh="${SCRIPT_DIR}/../../.github/scripts/install-openshell.sh"
   fi
-  if [ -f "${install_sh}" ]; then
-    bash "${install_sh}"
-  else
+  if [ ! -f "${install_sh}" ]; then
     fail "install-openshell.sh not found — run from the VM layout or repo checkout"
   fi
+  # The installer starts the new gateway: stop the old one, drop its state
+  # and write the v2 config first (gateway.sh).
+  prepare_openshell_upgrade "${OPENSHELL_VERSION}"
+  # install.sh refuses a pre-0.1 -> 0.1 upgrade on a persistent VM without the ack.
+  OPENSHELL_ACK_BREAKING_UPGRADE=1 bash "${install_sh}"
 
   if ! command -v openshell &>/dev/null; then
     fail "openshell binary not found after install"
@@ -431,41 +565,12 @@ configure_gateway() {
     ok "gateway binding set to 0.0.0.0"
   fi
 
-  # Pin supervisor_image to the Renovate-tracked version (matching action.yml).
-  local gateway_toml="${HOME}/.config/openshell/gateway.toml"
-  local supervisor_image="ghcr.io/nvidia/openshell/supervisor:${OPENSHELL_VERSION}"
-  if [ -f "${gateway_toml}" ] && grep -qF "supervisor_image = \"${supervisor_image}\"" "${gateway_toml}"; then
-    ok "supervisor_image already pinned to ${supervisor_image}"
-  elif [ -f "${gateway_toml}" ] && grep -q "supervisor_image" "${gateway_toml}"; then
-    sed -i "s|supervisor_image = .*|supervisor_image = \"${supervisor_image}\"|" "${gateway_toml}"
-    ok "supervisor_image updated to ${supervisor_image}"
-  else
-    mkdir -p "$(dirname "${gateway_toml}")"
-    if [ -f "${gateway_toml}" ] && grep -q '^\[openshell\.gateway\]' "${gateway_toml}"; then
-      sed -i "/^\[openshell\.gateway\]/a supervisor_image = \"${supervisor_image}\"" "${gateway_toml}"
-    elif [ -f "${gateway_toml}" ]; then
-      printf '\n[openshell]\nversion = 1\n\n[openshell.gateway]\nsupervisor_image = "%s"\n' "${supervisor_image}" >> "${gateway_toml}"
-    else
-      # The RPM's user unit only seeds gateway.toml.default when no config
-      # exists, and this function runs before the first start — so writing a
-      # bare stub here would permanently drop the packaged defaults (without
-      # compute_drivers the gateway auto-detects Kubernetes before Podman).
-      # Seed from the packaged default so the values track the installed RPM;
-      # the literal fallback mirrors the packaged gateway.toml.default.
-      local packaged_default=/usr/share/openshell-gateway/gateway.toml.default
-      if [ -f "${packaged_default}" ]; then
-        install -m 0644 "${packaged_default}" "${gateway_toml}"
-        if grep -q '^\[openshell\.gateway\]' "${gateway_toml}"; then
-          sed -i "/^\[openshell\.gateway\]/a supervisor_image = \"${supervisor_image}\"" "${gateway_toml}"
-        else
-          printf '\n[openshell.gateway]\nsupervisor_image = "%s"\n' "${supervisor_image}" >> "${gateway_toml}"
-        fi
-      else
-        printf '[openshell]\nversion = 1\n\n[openshell.gateway]\nbind_address = "0.0.0.0:17670"\ncompute_drivers = ["podman"]\nsupervisor_image = "%s"\n' "${supervisor_image}" > "${gateway_toml}"
-      fi
-    fi
-    ok "supervisor_image pinned to ${supervisor_image}"
-  fi
+  # Pin supervisor_image to the Renovate-tracked version in a schema-v2
+  # gateway.toml (matching action.yml). install_openshell writes it before
+  # any install; this covers its already-installed return and is otherwise
+  # a no-op.
+  pin_supervisor_image "${OPENSHELL_VERSION}"
+  ok "supervisor_image pinned to $(openshell_supervisor_image "${OPENSHELL_VERSION}")"
 }
 
 # --------------------------------------------------------------------------
@@ -488,13 +593,13 @@ install_ca_hook() {
 
   # Stage the host CA bundle in a user-writable location.
   mkdir -p "${HOME}/.local/share/ca-trust"
-  cp /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem \
+  cp "${HOST_CA_BUNDLE}" \
      "${HOME}/.local/share/ca-trust/ca-bundle.pem"
   chmod 644 "${HOME}/.local/share/ca-trust/ca-bundle.pem"
 
   # Install the hook script ($HOME expands at install time via unquoted heredoc).
   local ca_src="${HOME}/.local/share/ca-trust/ca-bundle.pem"
-  sudo tee /usr/local/bin/inject-ca-certs.sh > /dev/null <<HOOKSCRIPT
+  sudo tee "${CA_HOOK_SCRIPT}" > /dev/null <<HOOKSCRIPT
 #!/bin/bash
 STATE=\$(cat)
 # Resolve rootfs from OCI hook state. Primary: bundle + config.json (OCI spec).
@@ -598,15 +703,25 @@ done
 echo "inject-ca-certs: no writable CA bundle path found in rootfs" >&2
 exit 0
 HOOKSCRIPT
-  sudo chmod +x /usr/local/bin/inject-ca-certs.sh
+  # Rootless Podman reads the hook JSON and execs the script as the runner
+  # user, so both must be world-readable and every directory on the path
+  # traversable. sudo tee creates new files under root's umask and keeps
+  # the mode of existing ones, so set explicit modes on every run: a
+  # restrictive umask (or an earlier root-only install) otherwise fails
+  # every job with "setting up OCI Hooks: ... permission denied" (#8153).
+  # These files hold hook config and public CA trust, not credentials.
+  sudo chmod 0755 "${CA_HOOK_SCRIPT}"
 
   # Install the hook JSON.
-  sudo mkdir -p /etc/containers/oci/hooks.d
-  sudo tee /etc/containers/oci/hooks.d/inject-ca-certs.json > /dev/null <<'HOOKJSON'
+  local oci_dir
+  oci_dir="$(dirname "${OCI_HOOKS_DIR}")"
+  sudo mkdir -p "${OCI_HOOKS_DIR}"
+  sudo chmod 0755 "${oci_dir}" "${OCI_HOOKS_DIR}"
+  sudo tee "${OCI_HOOKS_DIR}/inject-ca-certs.json" > /dev/null <<HOOKJSON
 {
   "version": "1.0.0",
   "hook": {
-    "path": "/usr/local/bin/inject-ca-certs.sh"
+    "path": "${CA_HOOK_SCRIPT}"
   },
   "when": {
     "always": true
@@ -614,6 +729,7 @@ HOOKSCRIPT
   "stages": ["createRuntime"]
 }
 HOOKJSON
+  sudo chmod 0644 "${OCI_HOOKS_DIR}/inject-ca-certs.json"
 
   # Tell Podman where to find hooks (required for rootless mode).
   mkdir -p "${HOME}/.config/containers"
@@ -664,7 +780,7 @@ configure_per_job_gateway() {
   # If the unit has been re-enabled or is running, fall through and
   # pin it back to per-job.
   if [ -f "${CONFIG_TOML}" ] \
-    && grep -q 'executor = "custom"' "${CONFIG_TOML}" \
+    && config_uses_custom_executor \
     && user_systemctl cat openshell-gateway.service >/dev/null 2>&1 \
     && ! user_systemctl is-enabled --quiet openshell-gateway.service \
     && ! user_systemctl is-active --quiet openshell-gateway.service; then
@@ -724,6 +840,175 @@ install_executor() {
 # --------------------------------------------------------------------------
 # 7. Patch gitlab-runner config.toml
 # --------------------------------------------------------------------------
+# Read or rewrite the custom-executor keys setup.sh manages in a config.toml.
+#   custom_executor_keys read  <file>  — prints "key=value" per managed key,
+#                                        value decoded (quotes, \\ and \"
+#                                        escapes, any trailing comment removed),
+#                                        plus "executor=value" for the
+#                                        [[runners]] executor
+#   custom_executor_keys write <file>  — prints the whole file with each managed
+#                                        key whose decoded value differs from the
+#                                        wanted one rewritten; every other line
+#                                        (including a current key's comment)
+#                                        verbatim
+# Table headers are matched after dropping a trailing comment and CR, and
+# values may be basic ("...") or literal ('...') strings, so a commented or
+# CRLF config is parsed the same as a plain one.
+# Keys are scoped to the table gitlab-runner reads them from — builds_dir and
+# cache_dir in [[runners]], the *_exec keys in [runners.custom] — so a
+# same-named key under another table is never read or touched.
+# The wanted paths reach awk through ENVIRON, not -v, because -v interprets
+# backslash escapes. Basic strings are written with \ and " escaped and read
+# back by undoing exactly those two escapes; any other escape decodes to a
+# value that never matches, so such a line is rewritten.
+custom_executor_keys() {
+  local mode="$1" file="$2"
+  CE_BUILDS_DIR="${BUILDS_DIR}" \
+    CE_CACHE_DIR="${CACHE_DIR}" \
+    CE_PREPARE_EXEC="${EXECUTOR_DIR}/prepare.sh" \
+    CE_RUN_EXEC="${EXECUTOR_DIR}/run.sh" \
+    CE_CLEANUP_EXEC="${EXECUTOR_DIR}/cleanup.sh" \
+    awk -v mode="${mode}" '
+    function tomlenc(s,   i, c, out) {
+      out = ""
+      for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if (c == "\\" || c == "\"") out = out "\\"
+        out = out c
+      }
+      return out
+    }
+    function tomldec(s,   i, c, n, out) {
+      out = ""
+      n = length(s)
+      for (i = 1; i <= n; i++) {
+        c = substr(s, i, 1)
+        if (c == "\\" && i < n) {
+          i++
+          c = substr(s, i, 1)
+          if (c != "\\" && c != "\"") out = out "\001"
+        }
+        out = out c
+      }
+      return out
+    }
+    BEGIN {
+      want["builds_dir"] = ENVIRON["CE_BUILDS_DIR"]
+      want["cache_dir"] = ENVIRON["CE_CACHE_DIR"]
+      want["prepare_exec"] = ENVIRON["CE_PREPARE_EXEC"]
+      want["run_exec"] = ENVIRON["CE_RUN_EXEC"]
+      want["cleanup_exec"] = ENVIRON["CE_CLEANUP_EXEC"]
+    }
+    /^[ \t]*\[/ {
+      section = $0
+      sub(/^[ \t]+/, "", section)
+      sub(/[ \t\r]*#.*$/, "", section)
+      sub(/[ \t\r]+$/, "", section)
+      if (mode == "write") print
+      next
+    }
+    /^[ \t]*[a-z_]+[ \t]*=/ {
+      key = $0
+      sub(/^[ \t]+/, "", key)
+      sub(/[ \t]*=.*$/, "", key)
+      if (((key in want) \
+        && ((section == "[[runners]]" && (key == "builds_dir" || key == "cache_dir")) \
+          || (section == "[runners.custom]" && key ~ /_exec$/))) \
+        || (mode == "read" && key == "executor" && section == "[[runners]]")) {
+        val = $0
+        sub(/^[^=]*=[ \t]*/, "", val)
+        if (match(val, /^"([^"\\]|\\.)*"/)) {
+          val = tomldec(substr(val, 2, RLENGTH - 2))
+        } else if (match(val, /^\047[^\047]*\047/)) {
+          val = substr(val, 2, RLENGTH - 2)
+        } else {
+          sub(/[ \t\r]*#.*$/, "", val)
+          sub(/[ \t\r]+$/, "", val)
+        }
+        if (mode == "read") {
+          print key "=" val
+        } else if (val == want[key]) {
+          print
+        } else {
+          indent = $0
+          sub(/[^ \t].*$/, "", indent)
+          eol = ($0 ~ /\r$/) ? "\r" : ""
+          print indent key " = \"" tomlenc(want[key]) "\"" eol
+        }
+        next
+      }
+    }
+    mode == "write" { print }
+  ' "${file}"
+}
+
+# True when config.toml's [[runners]] executor decodes to "custom". Uses the
+# same TOML-aware read as the managed keys, so `executor="custom"` and
+# `executor = 'custom'` count like `executor = "custom"`.
+config_uses_custom_executor() {
+  local executor
+  executor=$(custom_executor_keys read "${CONFIG_TOML}" | sed -n 's/^executor=//p')
+  [ "${executor}" = "custom" ]
+}
+
+# Bring an existing custom-executor config's managed paths back in line with
+# this user's EXECUTOR_DIR/BUILDS_DIR/CACHE_DIR. A runner whose config points
+# at another home fails every job in prepare ("fork/exec .../prepare.sh: no
+# such file or directory") while the scripts under EXECUTOR_DIR look healthy
+# (#8160). Only the managed values are rewritten — registration (name, url,
+# token, id) and every other setting stay byte-for-byte — and a config that
+# already matches is left untouched (no write, no .bak).
+reconcile_custom_executor_paths() {
+  local current key count
+  current=$(custom_executor_keys read "${CONFIG_TOML}")
+  for key in builds_dir cache_dir prepare_exec run_exec cleanup_exec; do
+    count=$(printf '%s\n' "${current}" | grep -c "^${key}=") || true
+    if [ "${count}" -ne 1 ]; then
+      fail "expected exactly 1 custom executor ${key} in config.toml, found ${count} — patch manually"
+    fi
+  done
+
+  # The rewritten copy holds the runner token: remove it on any exit, not just
+  # the success paths (global so the EXIT handler can still see it).
+  RECONCILE_TMP=$(mktemp)
+  trap 'rm -f "${RECONCILE_TMP:-}"' EXIT
+  local tmp="${RECONCILE_TMP}"
+  custom_executor_keys write "${CONFIG_TOML}" > "${tmp}"
+
+  # Compare decoded values, not bytes: awk always ends the last line with a
+  # newline, so a current config without one would otherwise look changed.
+  local wanted old new
+  wanted=$(custom_executor_keys read "${tmp}")
+  if [ "${current}" = "${wanted}" ]; then
+    rm -f "${tmp}"
+    trap - EXIT
+    ok "already using custom executor (executor, build and cache paths current)"
+    return
+  fi
+
+  # The line-based writer cannot edit every valid TOML form (e.g. a multiline
+  # string value would be left half-rewritten). Never install a rewrite that
+  # does not parse; the EXIT trap removes the temp copy.
+  if ! python3 -c 'import sys, tomllib; tomllib.load(open(sys.argv[1], "rb"))' "${tmp}" 2>/dev/null; then
+    fail "rewritten config.toml is not valid TOML (multiline or otherwise unsupported managed value?) — ${CONFIG_TOML} left unchanged; patch manually"
+  fi
+
+  for key in builds_dir cache_dir prepare_exec run_exec cleanup_exec; do
+    old=$(printf '%s\n' "${current}" | sed -n "s/^${key}=//p")
+    new=$(printf '%s\n' "${wanted}" | sed -n "s/^${key}=//p")
+    if [ "${old}" != "${new}" ]; then
+      echo "  stale ${key}: ${old} -> ${new}"
+    fi
+  done
+
+  cp "${CONFIG_TOML}" "${CONFIG_TOML}.bak"
+  ok "backed up config.toml"
+  cp "${tmp}" "${CONFIG_TOML}"
+  rm -f "${tmp}"
+  trap - EXIT
+  ok "custom executor paths reconciled to ${HOME}"
+}
+
 patch_config() {
   info "Patching ${CONFIG_TOML}"
 
@@ -739,18 +1024,25 @@ patch_config() {
   fi
 
   # Single-runner VM assumption: these VMs register exactly one runner.
-  # The executor = "custom" early-return greps the whole file, so a
-  # partially-patched multi-runner config (one custom block, one still
-  # shell) would skip the remaining shell block. Patch those by hand.
-  if grep -q 'executor = "custom"' "${CONFIG_TOML}"; then
-    ok "already using custom executor"
-    return
-  fi
-
+  # Both the shell -> custom patch and the custom-executor path
+  # reconciliation edit "the" [[runners]] block, so a multi-runner config
+  # is refused rather than partially patched. Patch those by hand.
   local runner_count
-  runner_count=$(grep -c '^\[\[runners\]\]' "${CONFIG_TOML}")
+  # Headers may be indented (valid TOML); grep -c exits 1 on zero matches,
+  # which must reach the diagnostic below rather than abort under set -e.
+  runner_count=$(grep -c '^[[:space:]]*\[\[runners\]\]' "${CONFIG_TOML}") || true
   if [ "${runner_count}" -ne 1 ]; then
     fail "expected exactly 1 [[runners]] block in config.toml, found ${runner_count} — patch manually"
+  fi
+
+  # Re-run: do not trust an existing custom executor's paths — reconcile
+  # them to this user's HOME (#8160). The executor value is read with the
+  # same TOML-aware parsing as the managed keys, so `executor="custom"` and
+  # `executor = 'custom'` are recognised too.
+  if config_uses_custom_executor; then
+    reconcile_custom_executor_paths
+    mkdir -p "${BUILDS_DIR}" "${CACHE_DIR}"
+    return
   fi
 
   # Single overwriting backup — a timestamped name accumulated a new
@@ -810,8 +1102,143 @@ prepull_images() {
 }
 
 # --------------------------------------------------------------------------
+# 8b. Periodic Podman prune (user systemd timer)
+# --------------------------------------------------------------------------
+# Long-lived VMs accumulate superseded rootless images until the ~30 GiB
+# root disk fills (#7663). A user-level timer reclaims unused images and
+# stopped leftovers without touching in-flight job containers. Re-running
+# setup.sh on an already-provisioned VM installs the timer (idempotent).
+install_podman_prune() {
+  info "Installing Podman prune timer"
+
+  local src="${SCRIPT_DIR}/podman-prune.sh"
+  if [ ! -f "${src}" ]; then
+    fail "podman-prune.sh not found: ${src}"
+  fi
+
+  local libdir="${HOME}/.local/lib/fullsend"
+  local unitdir="${HOME}/.config/systemd/user"
+  local keepdir="${HOME}/.config/fullsend-gitlab-runner"
+  mkdir -p "${libdir}" "${unitdir}" "${keepdir}"
+
+  cp "${src}" "${libdir}/podman-prune.sh"
+  chmod +x "${libdir}/podman-prune.sh"
+
+  local supervisor="ghcr.io/nvidia/openshell/supervisor:${OPENSHELL_VERSION}"
+  cat > "${keepdir}/keep-images" <<EOF
+# Warm-cache images pre-pulled by setup.sh. podman-prune.sh will not rmi these.
+${RUNNER_IMAGE}
+${supervisor}
+EOF
+
+  cat > "${unitdir}/fullsend-podman-prune.service" <<'EOF'
+[Unit]
+Description=Prune unused rootless Podman images on the GitLab runner
+After=podman.socket
+
+[Service]
+Type=oneshot
+Nice=19
+# The observed failure mode was ~45 GiB of unused images; without this,
+# the systemd manager's DefaultTimeoutStartSec (typically 90s) SIGTERMs a
+# still-running reclaim before it frees enough space, so the very next
+# pull can still hit ENOSPC (review on #7663/#7669).
+TimeoutStartSec=infinity
+ExecStart=%h/.local/lib/fullsend/podman-prune.sh
+EOF
+
+  cat > "${unitdir}/fullsend-podman-prune.timer" <<'EOF'
+[Unit]
+Description=Periodically prune unused rootless Podman images on the GitLab runner
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=1h
+Persistent=true
+RandomizedDelaySec=5min
+Unit=fullsend-podman-prune.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
+  user_systemctl daemon-reload
+  user_systemctl enable --now fullsend-podman-prune.timer
+  # Asynchronous first run so already-full VMs reclaim space without
+  # waiting for OnBootSec. --no-block keeps setup.sh from waiting on a
+  # multi-gigabyte prune.
+  user_systemctl start --no-block fullsend-podman-prune.service || true
+  ok "podman prune timer enabled"
+}
+
+# --------------------------------------------------------------------------
 # 9. Verify
 # --------------------------------------------------------------------------
+# check_registration confirms config.toml holds exactly one runner, that it
+# targets GITLAB_URL (the only instance this VM should serve), and that
+# GitLab did not reject its token. `gitlab-runner verify` exits non-zero
+# only when GitLab rejects a token (transport errors and unexpected HTTP
+# statuses are non-fatal), so a stale registration left behind by an
+# interrupted provisioning run fails here instead of as an idle runner. A
+# zero exit only counts when verify's output says the runner is valid; an
+# unconfirmed result (transport error, HTTP 503) is retried up to
+# VERIFY_ATTEMPTS times, VERIFY_RETRY_SEC apart, then treated as a failure.
+# Any failed check leaves gitlab-runner stopped.
+check_registration() {
+  local verify_out attempt=1
+  local attempts="${VERIFY_ATTEMPTS:-3}" retry_sec="${VERIFY_RETRY_SEC:-5}"
+  if ! check_registration_config; then
+    stop_runner_service || true
+    return 1
+  fi
+  while true; do
+    if ! verify_out=$(gitlab-runner verify --config "${CONFIG_TOML}" 2>&1); then
+      echo "  WARN: ${GITLAB_URL} rejected the runner token (gitlab-runner verify failed)"
+      stop_runner_service || true
+      return 1
+    fi
+    if printf '%s\n' "${verify_out}" | grep -qi 'is valid'; then
+      ok "runner registered with ${GITLAB_URL} (token verified)"
+      return 0
+    fi
+    if [ "${attempt}" -ge "${attempts}" ]; then
+      echo "  WARN: GitLab did not confirm the runner token is valid after ${attempt} attempt(s)"
+      stop_runner_service || true
+      return 1
+    fi
+    echo "  WARN: GitLab did not confirm the runner token (attempt ${attempt}/${attempts}) — retrying in ${retry_sec}s"
+    attempt=$((attempt + 1))
+    sleep "${retry_sec}"
+  done
+}
+
+# Check the paths config.toml actually points the custom executor at, not
+# just the copies under EXECUTOR_DIR: a stale config fails every job while
+# EXECUTOR_DIR looks healthy (#8160). setup.sh runs as RUNNER_USER, the
+# service user setup_runner_user installs, so test(1) here checks access as
+# that user. Returns the number of problems found.
+verify_configured_executor_paths() {
+  local errors=0 settings key path
+  settings=$(custom_executor_keys read "${CONFIG_TOML}")
+  for key in prepare_exec run_exec cleanup_exec builds_dir cache_dir; do
+    path=$(printf '%s\n' "${settings}" | sed -n "s/^${key}=//p" | head -1)
+    if [ -z "${path}" ]; then
+      echo "  WARN: ${key} not configured in ${CONFIG_TOML}"; errors=$((errors + 1))
+    elif [ "${key}" = "builds_dir" ] || [ "${key}" = "cache_dir" ]; then
+      if [ -d "${path}" ] && [ -w "${path}" ] && [ -x "${path}" ]; then
+        ok "configured ${key} ${path} writable"
+      else
+        echo "  WARN: configured ${key} ${path} missing or not writable/searchable by ${RUNNER_USER}"; errors=$((errors + 1))
+      fi
+    elif [ -f "${path}" ] && [ -r "${path}" ] && [ -x "${path}" ]; then
+      ok "configured ${key} ${path} executable"
+    else
+      echo "  WARN: configured ${key} ${path} missing or not executable by ${RUNNER_USER}"; errors=$((errors + 1))
+    fi
+  done
+  return "${errors}"
+}
+
 verify() {
   info "Verifying setup"
 
@@ -840,16 +1267,27 @@ verify() {
     echo "  WARN: podman socket not active"; errors=$((errors + 1))
   fi
 
+  if user_systemctl is-enabled --quiet fullsend-podman-prune.timer; then
+    ok "podman prune timer enabled"
+  else
+    echo "  WARN: podman prune timer not enabled"; errors=$((errors + 1))
+  fi
+
   if systemctl is-active --quiet gitlab-runner; then
     ok "gitlab-runner service running"
   else
     echo "  WARN: gitlab-runner service not running"; errors=$((errors + 1))
   fi
 
-  if grep -q 'executor = "custom"' "${CONFIG_TOML}"; then
+  if config_uses_custom_executor; then
     ok "custom executor configured"
   else
     echo "  WARN: custom executor not in config"; errors=$((errors + 1))
+  fi
+  verify_configured_executor_paths || errors=$((errors + $?))
+
+  if ! check_registration; then
+    errors=$((errors + 1))
   fi
 
   # Smoke-test internal CA injection: verify a container can reach the internal
@@ -936,5 +1374,6 @@ configure_per_job_gateway
 install_executor
 patch_config
 prepull_images
+install_podman_prune
 sudo systemctl restart gitlab-runner
 verify

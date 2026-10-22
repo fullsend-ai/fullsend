@@ -129,7 +129,7 @@ In a corporate setting, a dedicated platform team might operate the agent factor
 
 **Part-time operators.** The people tuning agent instructions, investigating failures, and monitoring costs are also writing code, reviewing PRs, and participating in SIG meetings. Tooling must surface important information proactively rather than requiring active monitoring.
 
-**Distributed ownership.** Different SIGs own different repos. The SIG that owns a component should be able to see how agents are performing on their repos without needing access to the entire system. Per-repo views and per-SIG dashboards matter.
+**Distributed ownership.** Different SIGs own different repos. The SIG that owns a component should be able to see how agents are performing on their repos without needing access to the entire system. Per-repo views and per-SIG dashboards matter. The relationship between the people operating the pipeline and the teams consuming it is also a communication channel in its own right — see [platform team and consuming teams](agentic-sdlc-adoption-org-communication.md#platform-team-and-consuming-teams).
 
 **Varied expertise.** Some contributors are deeply technical and comfortable with trace analysis. Others are domain experts who want to know "is the agent doing a good job on my repo" without reading prompt/completion pairs. The tooling needs multiple levels of abstraction: high-level health dashboards, mid-level trend analysis, and low-level trace inspection.
 

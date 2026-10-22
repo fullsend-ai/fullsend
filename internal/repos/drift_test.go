@@ -367,6 +367,54 @@ func TestCheckOrphanVars_GitLabRetiredVarsNotFlagged(t *testing.T) {
 	}
 }
 
+// The webhook fast path's trigger token and webhook secret are managed
+// variables, so status does not report them, while an unknown FULLSEND_
+// variable on the same project still is an orphan.
+func TestCheckOrphanVars_GitLabWebhookVarsManagedButGenuineOrphanReported(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.VariableValues["owner/repo/"+forge.SecretTriggerToken] = "trigger"
+	fc.VariableValues["owner/repo/"+forge.SecretWebhookSecret] = "webhook"
+	fc.VariableValues["owner/repo/FULLSEND_UNKNOWN_LEFTOVER"] = "x"
+
+	orphans, err := CheckOrphanVars(context.Background(), fc, "owner", "repo", InstallConfig{Forge: ForgeGitLab}, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(orphans) != 1 || orphans[0].Name != "FULLSEND_UNKNOWN_LEFTOVER" {
+		t.Errorf("expected only the genuine orphan, got %v", orphans)
+	}
+}
+
+func TestCheckOrphanFiles_GitLabDispatchStubIsOrphan(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.FileContents["owner/repo/"+fullsendPipelineInclude] = []byte("---\n# fullsend-ref: v2.5.0\n")
+	fc.FileContents["owner/repo/"+fullsendDispatchInclude] = []byte("---\n# fullsend-ref: v2.5.0\n")
+
+	expected := []forge.TreeFile{
+		{Path: fullsendPipelineInclude, Content: []byte("---\n# fullsend-ref: v2.5.0\n")},
+	}
+
+	glFC := GitLabForgeConfig()
+	glFC.Client = fc
+
+	orphans, err := CheckOrphanFiles(
+		context.Background(), fc, "owner", "repo",
+		glFC, ForgeGitLab, expected,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var found bool
+	for _, o := range orphans {
+		if o.Path == fullsendDispatchInclude {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected leftover %s to be reported as an orphan, got %v", fullsendDispatchInclude, orphans)
+	}
+}
+
 func TestCheckOrphanFiles_GitLabPollStateBranchesNotScaffoldPaths(t *testing.T) {
 	for _, branch := range gitlabPollStateBranches {
 		for _, p := range ScaffoldPathsForForge(ForgeGitLab) {
@@ -416,5 +464,44 @@ func TestCheckOrphanVars_GitLabDetectsGenuineOrphan(t *testing.T) {
 	}
 	if orphans[0].Name != "FULLSEND_BOGUS" {
 		t.Errorf("orphan name = %q, want %q", orphans[0].Name, "FULLSEND_BOGUS")
+	}
+}
+
+// The removed unverified-variable-scope acceptance setting is no longer
+// special: a value left on a project is an ordinary orphan.
+func TestCheckOrphanVars_GitLabObsoleteScopeAcceptanceIsOrphan(t *testing.T) {
+	const obsolete = "FULLSEND_GITLAB_ACCEPT_UNVERIFIED_VARIABLE_SCOPES"
+	fc := forge.NewFakeClient()
+	fc.VariableValues["owner/repo/"+obsolete] = "instance"
+
+	orphans, err := CheckOrphanVars(context.Background(), fc, "owner", "repo", InstallConfig{Forge: ForgeGitLab}, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(orphans) != 1 || orphans[0].Name != obsolete {
+		t.Errorf("orphans = %v, want only %s", orphans, obsolete)
+	}
+}
+
+// Repos installed before #7902 have one space before the version comment;
+// that alone must not count as content drift.
+func TestCheckFileContentDrift_IgnoresCommentSpacing(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.FileContents["owner/repo/.github/workflows/fullsend.yaml"] = []byte(
+		"    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@abc123 # v2.1.0\n")
+	expected := []forge.TreeFile{{
+		Path:    ".github/workflows/fullsend.yaml",
+		Content: []byte("    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@abc123  # v2.1.0\n"),
+	}}
+
+	ghFC := GitHubForgeConfig()
+	ghFC.Client = fc
+
+	drifted, err := CheckFileContentDrift(context.Background(), fc, "owner", "repo", ghFC, ForgeGitHub, expected)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(drifted) != 0 {
+		t.Errorf("expected 0 drifted files, got %d", len(drifted))
 	}
 }

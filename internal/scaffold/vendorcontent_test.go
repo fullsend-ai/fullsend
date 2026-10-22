@@ -62,7 +62,7 @@ func TestVendoredInfraFileMode(t *testing.T) {
 }
 
 func TestIsVendoredReusableWorkflow(t *testing.T) {
-	assert.True(t, isVendoredReusableWorkflow(".github/workflows/reusable-triage.yml"))
+	assert.True(t, isVendoredReusableWorkflow(".github/workflows/reusable-prioritize.yml"))
 	assert.False(t, isVendoredReusableWorkflow(".github/workflows/triage.yml"))
 	assert.False(t, isVendoredReusableWorkflow("action.yml"))
 }
@@ -78,10 +78,14 @@ func TestIsVendoredDefaultsInfra(t *testing.T) {
 	// Scripts ship only via the explicit allowlist — an arbitrary file
 	// under .github/scripts/ must NOT be vendored to consumer repos.
 	assert.True(t, isVendoredDefaultsInfra(".github/scripts/check-fix-eligibility.sh"))
+	assert.True(t, isVendoredDefaultsInfra(".github/scripts/count-fix-commits.jq"))
 	assert.True(t, isVendoredDefaultsInfra(".github/scripts/install-podman.sh"))
+	assert.True(t, isVendoredDefaultsInfra(".github/scripts/pre-fetch-review-body.sh"))
 	assert.False(t, isVendoredDefaultsInfra(".github/scripts/run.sh"))
 	assert.False(t, isVendoredDefaultsInfra(".github/scripts/check-fix-eligibility-test.sh"))
-	assert.False(t, isVendoredDefaultsInfra(".github/workflows/reusable-triage.yml"))
+	assert.False(t, isVendoredDefaultsInfra(".github/scripts/count-fix-commits-test.sh"))
+	assert.False(t, isVendoredDefaultsInfra(".github/scripts/pre-fetch-review-body-test.sh"))
+	assert.False(t, isVendoredDefaultsInfra(".github/workflows/reusable-prioritize.yml"))
 }
 
 func TestWalkVendoredUpstreamFromRoot_SkipsSymlink(t *testing.T) {
@@ -109,7 +113,7 @@ func TestWalkLayeredContent_ExcludesTestFiles(t *testing.T) {
 		return nil
 	}))
 	assert.Contains(t, paths, "scripts/pre-fetch-prior-review.sh")
-	assert.Contains(t, paths, "scripts/reconcile-repos.sh")
+	assert.Contains(t, paths, "scripts/resolve-precommit-tools.py")
 	for _, p := range paths {
 		assert.False(t, isLayeredRepoTestFile(p), "test file shipped in layered content: %s", p)
 	}

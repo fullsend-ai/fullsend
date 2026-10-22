@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/fullsend-ai/fullsend/internal/appsetup"
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/poll"
@@ -106,6 +107,7 @@ func baseCfg() InstallConfig {
 // newFakeClientWithRepo returns a FakeClient pre-populated with a repo.
 func newFakeClientWithRepo() *forge.FakeClient {
 	fc := forge.NewFakeClient()
+	fc.PipelineVarOverrideRoles["acme/widgets"] = forge.PipelineVarOverrideNoOneAllowed
 	fc.Repos = []forge.Repository{{
 		FullName:      "acme/widgets",
 		Name:          "widgets",
@@ -215,8 +217,12 @@ func markFullyInstalled(fc *forge.FakeClient, owner, repo string) {
 	fullName := owner + "/" + repo
 	fc.VariableValues[fullName+"/FULLSEND_MINT_URL"] = "https://mint.example.com"
 	fc.VariableValues[fullName+"/FULLSEND_GCP_REGION"] = "us-central1"
+	fc.VariableValues[fullName+"/FULLSEND_APP_SET"] = appsetup.DefaultAppSet
 	fc.FileContents[fullName+"/.github/workflows/fullsend.yaml"] = []byte("name: fullsend")
 	addThinCallerFiles(fc, owner, repo)
+	// Every repository's overlay is managed (#8218): an installed repo
+	// carries the marked, empty sparse overlay unless a test overrides it.
+	fc.FileContents[fullName+"/.fullsend/config.yaml"] = []byte(managedConfigMarker + "{}\n")
 	fc.Secrets[fullName+"/FULLSEND_GCP_PROJECT_ID"] = true
 	fc.Secrets[fullName+"/FULLSEND_GCP_WIF_PROVIDER"] = true
 }
@@ -582,6 +588,23 @@ func TestBuildScaffoldFiles(t *testing.T) {
 	}
 }
 
+func TestBuildScaffoldFiles_GitLabIssueTargets(t *testing.T) {
+	files, err := BuildScaffoldFiles(InstallConfig{Forge: ForgeGitLab, Owner: "acme", Repo: "api"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range files {
+		if file.Path == ".fullsend/config.yaml" {
+			body := string(file.Content)
+			if !strings.Contains(body, "allow_targets: {}") || strings.Contains(body, "- fullsend-ai/") {
+				t.Fatalf("GitLab config should explicitly allow no cross-project targets:\n%s", body)
+			}
+			return
+		}
+	}
+	t.Fatal("missing config overlay")
+}
+
 func TestBuildScaffoldFiles_WithPreset(t *testing.T) {
 	cfg := baseCfg()
 	cfg.Preset = []byte(testPresetYAML)
@@ -619,13 +642,12 @@ func TestBuildScaffoldFiles_WithPreset(t *testing.T) {
 // the preset's own roles/allowed_remote_resources — the same bug
 // `github setup --config` avoids via buildPresetOverlay's stub overlay.
 // When the caller did not explicitly request roles (cfg.Roles is empty,
-// matching converge.go's fresh-install path when --roles was not
-// passed), the overlay must leave roles/allowed_remote_resources unset
+// matching converge.go's fresh-install path with a declared preset), the overlay must leave roles/allowed_remote_resources unset
 // so the preset's values take effect through the overlay -> base
 // fallback chain.
 func TestBuildScaffoldFiles_PresetOverlayDoesNotShadowPresetRoles(t *testing.T) {
 	cfg := baseCfg()
-	cfg.Roles = nil // no explicit --roles override
+	cfg.Roles = nil // no explicit roles
 	presetYAML := "version: \"1\"\n" +
 		"roles:\n  - triage\n  - review\n" +
 		"allowed_remote_resources:\n  - https://raw.githubusercontent.com/acme/private-agents/\n"
@@ -668,6 +690,58 @@ func TestBuildScaffoldFiles_PresetOverlayDoesNotShadowPresetRoles(t *testing.T) 
 	}
 	if got := effective.AllowedResources(); !slices.Contains(got, "https://raw.githubusercontent.com/acme/private-agents/") {
 		t.Errorf("effective allowed_remote_resources = %v, want it to include the preset's entry", got)
+	}
+}
+
+func TestBuildScaffoldFiles_ManagedConfig(t *testing.T) {
+	cfg := baseCfg()
+	managed := []byte("kill_switch: true\n")
+	cfg.ManagedConfig = managed
+	cfg.Roles = []string{"triage", "review"}
+
+	files, err := BuildScaffoldFiles(cfg)
+	if err != nil {
+		t.Fatalf("BuildScaffoldFiles() returned error: %v", err)
+	}
+
+	var managedFile []byte
+	for _, f := range files {
+		if f.Path == ".fullsend/config.yaml" {
+			managedFile = f.Content
+		}
+	}
+	if managedFile == nil {
+		t.Fatal("expected .fullsend/config.yaml managed configuration")
+	}
+	if string(managedFile) != string(managed) {
+		t.Errorf("config.yaml = %q, want managed bytes %q", managedFile, managed)
+	}
+	if strings.Contains(string(managedFile), "roles:") {
+		t.Errorf("managed configuration must not be replaced by installer roles: %s", managedFile)
+	}
+}
+
+// TestBuildScaffoldFiles_ManagedConfigAdoptionRequired is the ADR-0122
+// adoption gate on the fresh-install path: when the caller (convergeRepo)
+// found an existing .fullsend/config.yaml without the ownership marker, it
+// sets ManagedConfigAdoptionRequired so BuildScaffoldFiles must not emit
+// a config.yaml tree entry at all — writing anything here, managed or
+// generated, would still overwrite the existing file the caller decided
+// requires a deliberate adoption handoff first.
+func TestBuildScaffoldFiles_ManagedConfigAdoptionRequired(t *testing.T) {
+	cfg := baseCfg()
+	cfg.ManagedConfig = []byte(managedConfigMarker + "kill_switch: true\n")
+	cfg.ManagedConfigAdoptionRequired = true
+
+	files, err := BuildScaffoldFiles(cfg)
+	if err != nil {
+		t.Fatalf("BuildScaffoldFiles() returned error: %v", err)
+	}
+
+	for _, f := range files {
+		if f.Path == ".fullsend/config.yaml" {
+			t.Errorf("adoption-required install must not write config.yaml, got content %q", f.Content)
+		}
 	}
 }
 
@@ -760,7 +834,7 @@ func TestCheckInstallComponents_SecretCheckError(t *testing.T) {
 
 func TestCheckInstallComponents_GitLab_MissingSecrets(t *testing.T) {
 	fc := forge.NewFakeClient()
-	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("include:")
+	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("include:")
 	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
 	fc.VariableValues["acme/api/"+forge.VarLastPollAtFull] = "2026-01-01T00:00:00Z"
 	fc.VariableValues["acme/api/"+forge.VarLabelState] = "{}"
@@ -780,12 +854,8 @@ func TestCheckInstallComponents_GitLab_MissingSecrets(t *testing.T) {
 
 func TestCheckInstallComponents_GitLab_FullyInstalled(t *testing.T) {
 	fc := forge.NewFakeClient()
-	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("include:")
-	trustScript, err := scaffold.GitLabPerRepoFile(gitlabTrustScriptPath)
-	if err != nil {
-		t.Fatalf("GitLabPerRepoFile() error = %v", err)
-	}
-	fc.FileContents["acme/api/"+gitlabTrustScriptPath] = trustScript
+	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("include:")
+	putGitLabAuxiliaryScripts(t, fc, "acme", "api")
 	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
 	fc.VariableValues["acme/api/"+forge.VarLastPollAtFull] = "2026-01-01T00:00:00Z"
 	fc.VariableValues["acme/api/"+forge.VarLabelState] = "{}"
@@ -810,18 +880,19 @@ func TestCheckInstallComponents_GitLab_FullyInstalled(t *testing.T) {
 	}
 }
 
-func TestCheckInstallComponents_GitHub_MissingSecrets(t *testing.T) {
+func TestCheckInstallComponents_GitHub_NoGCPSecrets(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.FileContents["acme/api/.github/workflows/fullsend.yml"] = []byte(shimWorkflow)
 	addThinCallerFiles(fc, "acme", "api")
 	fc.VariableValues["acme/api/FULLSEND_MINT_URL"] = "https://mint.example.com"
+	fc.VariableValues["acme/api/FULLSEND_APP_SET"] = appsetup.DefaultAppSet
 
 	installed, err := checkInstallComponents(context.Background(), fc, "acme", "api", ForgeGitHub, defaultForgeConfig, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if installed {
-		t.Error("expected installed=false when secrets are missing")
+	if !installed {
+		t.Error("expected installed=true when both optional GCP secrets are absent")
 	}
 }
 
@@ -830,6 +901,7 @@ func TestCheckInstallComponents_GitHub_WithSecrets(t *testing.T) {
 	fc.FileContents["acme/api/.github/workflows/fullsend.yml"] = []byte(shimWorkflow)
 	addThinCallerFiles(fc, "acme", "api")
 	fc.VariableValues["acme/api/FULLSEND_MINT_URL"] = "https://mint.example.com"
+	fc.VariableValues["acme/api/FULLSEND_APP_SET"] = appsetup.DefaultAppSet
 	fc.Secrets["acme/api/FULLSEND_GCP_PROJECT_ID"] = true
 	fc.Secrets["acme/api/FULLSEND_GCP_WIF_PROVIDER"] = true
 
@@ -961,6 +1033,65 @@ func TestInstall_FreshInstall_WritesReviewClientID(t *testing.T) {
 	}
 }
 
+func TestInstallVarsForForge_GitHub_IncludesAppSet(t *testing.T) {
+	cfg := InstallConfig{
+		Forge:  ForgeGitHub,
+		AppSet: "custom-set",
+	}
+	vars, err := installVarsForForge(cfg, "https://mint.example.com")
+	if err != nil {
+		t.Fatalf("installVarsForForge(GitHub) error = %v", err)
+	}
+	if v, ok := vars["FULLSEND_APP_SET"]; !ok || v != "custom-set" {
+		t.Errorf("FULLSEND_APP_SET = %q, want %q", v, "custom-set")
+	}
+}
+
+func TestInstallVarsForForge_GitHub_OmitsEmptyAppSet(t *testing.T) {
+	cfg := InstallConfig{Forge: ForgeGitHub}
+	vars, err := installVarsForForge(cfg, "https://mint.example.com")
+	if err != nil {
+		t.Fatalf("installVarsForForge(GitHub) error = %v", err)
+	}
+	if _, ok := vars["FULLSEND_APP_SET"]; ok {
+		t.Error("FULLSEND_APP_SET should not be set when AppSet is empty")
+	}
+}
+
+func TestInstallVarsForForge_GitLab_NeverIncludesAppSet(t *testing.T) {
+	cfg := InstallConfig{Forge: ForgeGitLab, AppSet: "custom-set"}
+	vars, err := installVarsForForge(cfg, "")
+	if err != nil {
+		t.Fatalf("installVarsForForge(GitLab) error = %v", err)
+	}
+	if _, ok := vars["FULLSEND_APP_SET"]; ok {
+		t.Error("FULLSEND_APP_SET must never be written for GitLab")
+	}
+}
+
+func TestInstall_FreshInstall_WritesAppSet(t *testing.T) {
+	fc := newFakeClientWithRepo()
+	cfg := baseCfg()
+	cfg.AppSet = "custom-set"
+	sc := &fakeScaffoldCommit{}
+
+	result, err := Install(context.Background(), cfg, fc, sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Install() returned error: %v", err)
+	}
+	if !result.Success {
+		t.Error("expected Success=true")
+	}
+
+	varMap := make(map[string]string)
+	for _, v := range fc.Variables {
+		varMap[v.Name] = v.Value
+	}
+	if v, ok := varMap["FULLSEND_APP_SET"]; !ok || v != "custom-set" {
+		t.Errorf("FULLSEND_APP_SET = %q, want %q", v, "custom-set")
+	}
+}
+
 func TestInstallVarsForForge_UnsupportedForge(t *testing.T) {
 	cfg := InstallConfig{Forge: "bitbucket"}
 	_, err := installVarsForForge(cfg, "")
@@ -1012,18 +1143,6 @@ func TestRequiredSecretsForForge(t *testing.T) {
 	secrets := requiredSecretsForForge(ForgeGitHub)
 	if len(secrets) == 0 {
 		t.Fatal("expected non-empty required secrets")
-	}
-	if got := requiredSecretsForForgeMode(ForgeGitLab, "enforced", true); len(got) != len(requiredSecrets) {
-		t.Errorf("enforced GitLab mode should omit the shared credential, got %v", got)
-	}
-	if got := requiredSecretsForForgeMode(ForgeGitLab, "migrating", true); len(got) != len(requiredSecrets)+1 {
-		t.Errorf("migrating GitLab mode should require the shared credential, got %v", got)
-	}
-	if got := requiredSecretsForForgeMode(ForgeGitLab, " EnFoRcEd ", true); len(got) != len(requiredSecrets) {
-		t.Errorf("normalized enforced GitLab mode should omit the shared credential, got %v", got)
-	}
-	if got := requiredSecretsForForgeMode(ForgeGitLab, "unknown", true); len(got) != len(requiredSecrets) {
-		t.Errorf("unknown GitLab mode should not require the shared credential, got %v", got)
 	}
 }
 
@@ -1315,8 +1434,15 @@ func TestBuildScaffoldFiles_GitLab(t *testing.T) {
 	for _, expected := range []string{
 		".gitlab/ci/fullsend-pipeline.yml",
 		".gitlab/ci/fullsend-agent.yml",
-		".gitlab/ci/fullsend-dispatch.yml",
 		".gitlab/ci/fullsend-poll.yml",
+		".gitlab/ci/fullsend-dispatcher.yml",
+		".gitlab/ci/scripts/select-gitlab-role-token.sh",
+		".gitlab/ci/scripts/pin-ci-job-identity.sh",
+		".gitlab/ci/scripts/install-fullsend-cli.sh",
+		".gitlab/ci/scripts/run-poll-job.sh",
+		".gitlab/ci/scripts/run-dispatcher-job.sh",
+		".gitlab/ci/scripts/run-agent-job.sh",
+		".gitlab/ci/scripts/checkout-mr-source.sh",
 		".fullsend/config.yaml",
 	} {
 		if !paths[expected] {
@@ -1326,6 +1452,9 @@ func TestBuildScaffoldFiles_GitLab(t *testing.T) {
 	if paths[".gitlab-ci.yml"] {
 		t.Error(".gitlab-ci.yml should not be in static scaffold — " +
 			"root file is merged dynamically by Install")
+	}
+	if paths[fullsendDispatchInclude] {
+		t.Error("fresh GitLab install must not include obsolete fullsend-dispatch.yml")
 	}
 }
 

@@ -18,7 +18,7 @@
 # The harness references this image:
 #   image: ghcr.io/fullsend-ai/fullsend-code:latest
 
-# CI passes --build-arg BASE_IMAGE=... from the build-base job output.
+# CI passes --build-arg BASE_IMAGE=... from the merge-base job output.
 # The default lets local builds work when the sandbox image is already pulled.
 ARG BASE_IMAGE=ghcr.io/fullsend-ai/fullsend-sandbox:latest
 FROM ${BASE_IMAGE}

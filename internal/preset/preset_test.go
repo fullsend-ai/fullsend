@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -458,4 +460,198 @@ func TestSafeDialContext_SkipIPCheckAllowsLoopback(t *testing.T) {
 	conn, err := dial(context.Background(), "tcp", ln.Addr().String())
 	require.NoError(t, err)
 	conn.Close()
+}
+
+// --- Transport-failure retry and error detail (#8516) ---
+
+// shortRetryDelay keeps retry tests fast.
+func shortRetryDelay(t *testing.T) {
+	t.Helper()
+	prev := fetchRetryDelay
+	fetchRetryDelay = time.Millisecond
+	t.Cleanup(func() { fetchRetryDelay = prev })
+}
+
+// dropConnection closes the client connection without a response, which
+// net/http reports to the client as a bare EOF.
+func dropConnection(t *testing.T, w http.ResponseWriter) {
+	t.Helper()
+	conn, _, err := w.(http.Hijacker).Hijack()
+	if err != nil {
+		t.Errorf("hijack: %v", err)
+		return
+	}
+	_ = conn.Close()
+}
+
+func TestFetchHTTPS_RetriesDroppedConnectionOnce(t *testing.T) {
+	shortRetryDelay(t)
+	content := "version: \"1\"\n"
+	var requests atomic.Int32
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if requests.Add(1) == 1 {
+			dropConnection(t, w)
+			return
+		}
+		_, _ = w.Write([]byte(content))
+	}))
+	defer srv.Close()
+
+	data, err := fetchHTTPSWithTestTLS(context.Background(), t, srv, srv.URL+"/preset.yaml", true)
+	require.NoError(t, err)
+	assert.Equal(t, content, string(data))
+	assert.Equal(t, int32(2), requests.Load())
+}
+
+func TestFetchHTTPS_RetriesTruncatedBodyOnce(t *testing.T) {
+	shortRetryDelay(t)
+	content := "version: \"1\"\n"
+	var requests atomic.Int32
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if requests.Add(1) == 1 {
+			conn, buf, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Errorf("hijack: %v", err)
+				return
+			}
+			_, _ = buf.WriteString("HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nversion")
+			_ = buf.Flush()
+			_ = conn.Close()
+			return
+		}
+		_, _ = w.Write([]byte(content))
+	}))
+	defer srv.Close()
+
+	data, err := fetchHTTPSWithTestTLS(context.Background(), t, srv, srv.URL+"/preset.yaml", true)
+	require.NoError(t, err)
+	assert.Equal(t, content, string(data))
+	assert.Equal(t, int32(2), requests.Load())
+}
+
+func TestFetchHTTPS_PersistentDropReportsPhaseAndBothAttempts(t *testing.T) {
+	shortRetryDelay(t)
+	var requests atomic.Int32
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		dropConnection(t, w)
+	}))
+	defer srv.Close()
+
+	_, err := fetchHTTPSWithTestTLS(context.Background(), t, srv, srv.URL+"/preset.yaml", true)
+	require.Error(t, err)
+	assert.Equal(t, int32(2), requests.Load())
+	msg := err.Error()
+	assert.Contains(t, msg, "failed while awaiting response headers")
+	assert.Contains(t, msg, "with "+srv.Listener.Addr().String())
+	assert.Contains(t, msg, "retried once")
+	assert.Equal(t, 2, strings.Count(msg, "EOF"), "both attempts' causes are reported: %s", msg)
+	assert.ErrorIs(t, err, io.EOF)
+}
+
+func TestFetchHTTPS_TLSHandshakeFailureNamesPhase(t *testing.T) {
+	shortRetryDelay(t)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer ln.Close()
+	var accepted atomic.Int32
+	go func() {
+		for {
+			conn, acceptErr := ln.Accept()
+			if acceptErr != nil {
+				return
+			}
+			accepted.Add(1)
+			_ = conn.Close()
+		}
+	}()
+	_, port, err := net.SplitHostPort(ln.Addr().String())
+	require.NoError(t, err)
+
+	// A host name (rather than an IP literal) exercises the DNS phase
+	// before the connection.
+	rawURL := "https://" + net.JoinHostPort("localhost", port) + "/preset.yaml"
+	_, err = fetchHTTPS(context.Background(), rawURL, true)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed while TLS handshake")
+	assert.Contains(t, err.Error(), "retried once")
+	assert.GreaterOrEqual(t, accepted.Load(), int32(2))
+}
+
+func TestFetchHTTPS_HTTPErrorIsNotRetried(t *testing.T) {
+	shortRetryDelay(t)
+	var requests atomic.Int32
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	_, err := fetchHTTPSWithTestTLS(context.Background(), t, srv, srv.URL+"/preset.yaml", true)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "HTTP 403")
+	assert.NotContains(t, err.Error(), "retried")
+	assert.Equal(t, int32(1), requests.Load())
+}
+
+func TestFetchHTTPS_RedirectPolicyErrorIsNotRetried(t *testing.T) {
+	shortRetryDelay(t)
+	var requests atomic.Int32
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		http.Redirect(w, r, "http://example.com/preset.yaml", http.StatusFound)
+	}))
+	defer srv.Close()
+
+	_, err := fetchHTTPSWithTestTLS(context.Background(), t, srv, srv.URL+"/preset.yaml", true)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "non-HTTPS")
+	assert.Equal(t, int32(1), requests.Load())
+}
+
+func TestFetchHTTPS_BlockedAddressIsNotRetried(t *testing.T) {
+	_, err := fetchHTTPS(context.Background(), "https://10.1.2.3/preset.yaml", false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "blocked")
+	assert.NotContains(t, err.Error(), "retried")
+}
+
+func TestFetchHTTPS_ContextCanceledDuringAttemptIsNotRetried(t *testing.T) {
+	shortRetryDelay(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var requests atomic.Int32
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		cancel()
+		dropConnection(t, w)
+	}))
+	defer srv.Close()
+
+	_, err := fetchHTTPSWithTestTLS(ctx, t, srv, srv.URL+"/preset.yaml", true)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "context canceled")
+	assert.NotContains(t, err.Error(), "retried")
+	assert.Equal(t, int32(1), requests.Load())
+}
+
+func TestFetchHTTPS_ContextCanceledBeforeRetryAbandonsIt(t *testing.T) {
+	prev := fetchRetryDelay
+	fetchRetryDelay = time.Minute
+	t.Cleanup(func() { fetchRetryDelay = prev })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var requests atomic.Int32
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		dropConnection(t, w)
+		time.AfterFunc(50*time.Millisecond, cancel)
+	}))
+	defer srv.Close()
+
+	_, err := fetchHTTPSWithTestTLS(ctx, t, srv, srv.URL+"/preset.yaml", true)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "retry abandoned: context canceled")
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, int32(1), requests.Load())
 }

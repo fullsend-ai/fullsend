@@ -1,0 +1,405 @@
+#!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.12"
+# dependencies = ["pyyaml>=6.0"]
+# ///
+"""Validate the agentgateway config blocks in the inference gateway operator guide.
+
+docs/guides/infrastructure/inference-gateway-operator.md walks an operator
+through an agentgateway config. Its config blocks were run end to end when
+the page was written; this check keeps them valid as agentgateway changes.
+
+Every ```yaml block on the page must carry a marker comment just above it:
+
+    <!-- gateway-doc-check: <name> -->
+
+The marker names a config block (see FRAGMENTS) or, for a short excerpt of
+an example file, `excerpt <path relative to the page>`. The check:
+
+1. Requires every yaml block to be marked, and every known marker to appear
+   exactly once.
+2. Requires each excerpt to appear verbatim in the file it excerpts.
+3. Builds the configs the page describes (see VARIANTS): the step 3 config
+   on its own, and with each optional addition merged in, including the
+   echo upstream from examples/inference-gateway/echo-upstream.yaml.
+4. Validates each config with `agentgateway --validate-only`, at the
+   version the page names, pulled by digest (see IMAGE_DIGESTS).
+
+agentgateway runs from its release image via docker or podman (set
+CONTAINER_RUNTIME to choose), or from a local binary named by
+AGENTGATEWAY_BIN, whose `-V` output must match the page's version.
+
+Usage: check-gateway-doc-configs [--page PATH] [--examples-dir DIR]
+"""
+
+import argparse
+import copy
+import hashlib
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import textwrap
+from dataclasses import dataclass
+from pathlib import Path
+
+import yaml
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_PAGE = REPO_ROOT / "docs/guides/infrastructure/inference-gateway-operator.md"
+DEFAULT_EXAMPLES = REPO_ROOT / "docs/guides/infrastructure/examples/inference-gateway"
+
+IMAGE = "ghcr.io/agentgateway/agentgateway"
+
+# Digest of each agentgateway release image the page may name. When the page
+# moves to a new version, add its multi-arch index digest here, from
+# `skopeo inspect --raw docker://ghcr.io/agentgateway/agentgateway:<v> | shasum -a 256`.
+IMAGE_DIGESTS = {
+    "v1.6.0": "sha256:9d3e6044ddcdc0878b1787f77bd401252b95e22684203fb5e874c4c42d2ed90c",
+}
+
+MARKER_RE = re.compile(r"^<!--\s*gateway-doc-check:\s*(.+?)\s*-->\s*$")
+FENCE_RE = re.compile(r"^(```+|~~~+)\s*([^\s`]*)")
+# Every agentgateway version the page names: image tags, the source tree it
+# links to, and prose such as "agentgateway v1.6.0". They must all agree.
+VERSION_RE = re.compile(
+    r"agentgateway(?::|/blob/|\s+)(v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?)"
+)
+
+# Placeholders the page asks the operator to fill in, and what the check
+# fills in instead. KEY_HASH must look like a real SHA-256 digest.
+PLACEHOLDERS = {
+    "VERTEX_PROJECT": "example-project",
+    "AUDIENCE": "fullsend-inference",
+    "ALLOWED_REPO": "example-org/example-repo",
+    "ECHO_KEY": "placeholder-echo-key",
+    "KEY_HASH": hashlib.sha256(b"example-key").hexdigest(),
+}
+
+# Where the page mounts the upstream key file, which must exist to validate.
+UPSTREAM_DIR = "/etc/agw-upstream"
+CONFIG_DIR = "/etc/agw-config"
+
+# Config blocks on the page, by marker name, and how each merges into the
+# step 3 config:
+#   append-models  the block is a list of models, added to llm.models
+#   set-llm        the block is a mapping whose keys replace those in llm
+#   set-models     the block is a mapping whose keys replace those in every model
+FRAGMENTS = {
+    "openai-model": "append-models",
+    "api-key-policies": "set-llm",
+    "api-key-authorization": "set-models",
+    "custody-models": "append-models",
+}
+BASE = "base"
+
+# Example files merged at the top level of the config.
+ECHO_UPSTREAM = "echo-upstream.yaml"
+
+# The configs the page describes: the step 3 config plus these additions.
+VARIANTS = {
+    "step 3 config": [],
+    "step 3 + upstream that needs an API key": ["openai-model"],
+    "step 3 + static keys (auth: api-key)": ["api-key-policies", "api-key-authorization"],
+    "step 3 + step 9 custody check": [f"file:{ECHO_UPSTREAM}", "custody-models"],
+}
+
+
+class CheckError(Exception):
+    pass
+
+
+@dataclass
+class Block:
+    marker: str | None
+    line: int  # 1-based line of the opening fence
+    lang: str
+    text: str
+
+
+def parse_blocks(page_text: str) -> list[Block]:
+    """Return the fenced code blocks on the page with the marker above each."""
+    blocks: list[Block] = []
+    lines = page_text.splitlines()
+    pending: tuple[str, int] | None = None
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        m = MARKER_RE.match(line.strip())
+        if m:
+            if pending:
+                raise CheckError(f"line {pending[1]}: marker is not followed by a code block")
+            pending = (m.group(1), i + 1)
+            i += 1
+            continue
+        fence = FENCE_RE.match(line.lstrip())
+        if fence:
+            indent = len(line) - len(line.lstrip())
+            opening = fence.group(1)
+            close_re = re.compile(re.escape(opening[0]) + "{" + str(len(opening)) + ",}")
+            start = i
+            body: list[str] = []
+            i += 1
+            while i < len(lines):
+                if close_re.fullmatch(lines[i].strip()):
+                    break
+                body.append(lines[i][indent:] if not lines[i][:indent].strip() else lines[i])
+                i += 1
+            else:
+                raise CheckError(f"line {start + 1}: code block is never closed")
+            marker = pending[0] if pending else None
+            pending = None
+            blocks.append(Block(marker, start + 1, fence.group(2).lower(), "\n".join(body) + "\n"))
+            i += 1
+            continue
+        if pending and line.strip():
+            raise CheckError(f"line {pending[1]}: marker is not followed by a code block")
+        i += 1
+    if pending:
+        raise CheckError(f"line {pending[1]}: marker is not followed by a code block")
+    return blocks
+
+
+def page_version(page_text: str) -> str:
+    versions = sorted(set(VERSION_RE.findall(page_text)))
+    if not versions:
+        raise CheckError("the page names no agentgateway version (such as agentgateway:v1.6.0)")
+    if len(versions) > 1:
+        raise CheckError(
+            f"the page names more than one agentgateway version: {', '.join(versions)}"
+        )
+    return versions[0]
+
+
+def fill_placeholders(text: str) -> str:
+    for name, value in PLACEHOLDERS.items():
+        text = re.sub(rf"\b{name}\b", value, text)
+    return text
+
+
+def load_yaml(text: str, where: str):
+    try:
+        return yaml.safe_load(fill_placeholders(text))
+    except yaml.YAMLError as e:
+        raise CheckError(f"{where}: not valid YAML: {e}") from e
+
+
+def collect(page: Path, examples: Path) -> tuple[str, dict[str, Block]]:
+    """Check markers and excerpts; return the base text and named blocks."""
+    page_text = page.read_text(encoding="utf-8")
+    named: dict[str, Block] = {}
+    errors: list[str] = []
+    for block in parse_blocks(page_text):
+        if block.lang not in ("yaml", "yml"):
+            if block.marker:
+                lang = block.lang or "plain"
+                errors.append(
+                    f"line {block.line}: marker {block.marker!r} is on a {lang} block, not yaml"
+                )
+            continue
+        if block.marker is None:
+            errors.append(
+                f"line {block.line}: yaml block has no marker; "
+                "add <!-- gateway-doc-check: <name> --> above it"
+            )
+            continue
+        if block.marker in named:
+            errors.append(f"line {block.line}: marker {block.marker!r} is used more than once")
+            continue
+        named[block.marker] = block
+
+    for name, block in named.items():
+        if name.startswith("excerpt "):
+            target = (page.parent / name.removeprefix("excerpt ").strip()).resolve()
+            if not target.is_file():
+                errors.append(f"line {block.line}: excerpt names {target}, which does not exist")
+            elif block.text not in target.read_text(encoding="utf-8"):
+                errors.append(
+                    f"line {block.line}: excerpt does not match {target.name}; "
+                    "copy it from the file"
+                )
+        elif name != BASE and name not in FRAGMENTS:
+            errors.append(f"line {block.line}: unknown marker {name!r}")
+
+    for name in [BASE, *FRAGMENTS]:
+        if name not in named:
+            errors.append(f"no yaml block is marked {name!r}")
+    if not (examples / ECHO_UPSTREAM).is_file():
+        errors.append(f"{examples / ECHO_UPSTREAM} does not exist")
+    if errors:
+        raise CheckError("\n".join(errors))
+    return page_text, named
+
+
+def build_variants(named: dict[str, Block], examples: Path) -> dict[str, str]:
+    """Return each config the page describes, as YAML text with placeholders filled in."""
+    base_block = named[BASE]
+    base_where = f"line {base_block.line} ({BASE})"
+    base = load_yaml(base_block.text, base_where)
+    if not isinstance(base, dict) or not isinstance(base.get("llm"), dict):
+        raise CheckError(f"{base_where}: expected a config with an llm section")
+    if not isinstance(base["llm"].get("models"), list):
+        raise CheckError(f"{base_where}: expected a list under llm.models")
+
+    configs: dict[str, str] = {}
+    for variant, parts in VARIANTS.items():
+        if not parts:
+            # Validate the step 3 block exactly as the operator copies it.
+            configs[variant] = fill_placeholders(base_block.text)
+            continue
+        config = load_yaml(base_block.text, base_where)
+        for part in parts:
+            if part.startswith("file:"):
+                path = examples / part.removeprefix("file:")
+                data = load_yaml(path.read_text(encoding="utf-8"), str(path))
+                if not isinstance(data, dict):
+                    raise CheckError(f"{path}: expected a mapping of top-level config keys")
+                config.update(data)
+                continue
+            block = named[part]
+            where = f"line {block.line} ({part})"
+            data = load_yaml(textwrap.dedent(block.text), where)
+            how = FRAGMENTS[part]
+            if how == "append-models":
+                if not isinstance(data, list) or not all(isinstance(m, dict) for m in data):
+                    raise CheckError(f"{where}: expected a list of models")
+                config["llm"]["models"].extend(data)
+            elif not isinstance(data, dict):
+                raise CheckError(f"{where}: expected a mapping")
+            elif how == "set-llm":
+                config["llm"].update(data)
+            else:
+                for model in config["llm"]["models"]:
+                    model.update(copy.deepcopy(data))
+        configs[variant] = yaml.safe_dump(config, sort_keys=False, width=1000)
+    return configs
+
+
+class Validator:
+    """Runs `agentgateway --validate-only` from a local binary or the release image."""
+
+    def __init__(self, version: str):
+        self.version = version
+        self.binary = os.environ.get("AGENTGATEWAY_BIN", "")
+        self.runtime = ""
+        self.image = ""
+        if self.binary:
+            self._check_binary_version()
+            return
+        if version not in IMAGE_DIGESTS:
+            raise CheckError(
+                f"the page names agentgateway {version}, which has no pinned digest; "
+                f"add its image digest to IMAGE_DIGESTS in {Path(__file__).name}"
+            )
+        self.image = f"{IMAGE}:{version}@{IMAGE_DIGESTS[version]}"
+        wanted = os.environ.get("CONTAINER_RUNTIME", "")
+        for name in [wanted] if wanted else ["docker", "podman"]:
+            found = shutil.which(name)
+            if found:
+                self.runtime = found
+                break
+        if not self.runtime:
+            raise CheckError(
+                "agentgateway is needed to validate the config blocks: install docker or podman, "
+                "or set AGENTGATEWAY_BIN to an agentgateway "
+                f"{version} binary (or skip this hook with SKIP=check-gateway-doc-configs)"
+            )
+        pull = subprocess.run(
+            [self.runtime, "pull", "--quiet", self.image], capture_output=True, text=True
+        )
+        if pull.returncode != 0:
+            raise CheckError(f"could not pull {self.image}:\n{pull.stdout}{pull.stderr}")
+
+    def _check_binary_version(self) -> None:
+        try:
+            out = subprocess.run(
+                [self.binary, "-V"], capture_output=True, text=True, check=True
+            ).stdout.strip()
+        except (OSError, subprocess.CalledProcessError) as e:
+            raise CheckError(
+                f"AGENTGATEWAY_BIN={self.binary}: could not read its version: {e}"
+            ) from e
+        if out.lstrip("v") != self.version.lstrip("v"):
+            raise CheckError(
+                f"AGENTGATEWAY_BIN={self.binary} is version {out!r}, "
+                f"but the page names {self.version}"
+            )
+
+    def validate(self, config_text: str) -> tuple[bool, str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_dir = Path(tmp, "config")
+            upstream_dir = Path(tmp, "upstream")
+            config_dir.mkdir()
+            upstream_dir.mkdir()
+            # The page's key file must exist; its content is never checked.
+            (upstream_dir / "key").write_text("placeholder-upstream-key\n")
+            if self.binary:
+                config_text = config_text.replace(UPSTREAM_DIR + "/", str(upstream_dir) + "/")
+            (config_dir / "config.yaml").write_text(config_text)
+            if self.binary:
+                cmd = [self.binary, "-f", str(config_dir / "config.yaml"), "--validate-only"]
+            else:
+                # The image runs as a non-root user: the mounts must be world-readable.
+                for path in (Path(tmp), config_dir, upstream_dir):
+                    path.chmod(0o755)
+                for path in (config_dir / "config.yaml", upstream_dir / "key"):
+                    path.chmod(0o644)
+                cmd = [
+                    self.runtime,
+                    "run",
+                    "--rm",
+                    "-v",
+                    f"{config_dir}:{CONFIG_DIR}:ro",
+                    "-v",
+                    f"{upstream_dir}:{UPSTREAM_DIR}:ro",
+                    self.image,
+                    "-f",
+                    f"{CONFIG_DIR}/config.yaml",
+                    "--validate-only",
+                ]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+        output = result.stdout + result.stderr
+        return result.returncode == 0 and "Configuration is valid!" in output, output
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(description=(__doc__ or "").strip().split("\n")[0])
+    parser.add_argument("--page", type=Path, default=DEFAULT_PAGE)
+    parser.add_argument("--examples-dir", type=Path, default=DEFAULT_EXAMPLES)
+    args = parser.parse_args(argv)
+
+    try:
+        page_text, named = collect(args.page, args.examples_dir)
+        configs = build_variants(named, args.examples_dir)
+        validator = Validator(page_version(page_text))
+    except CheckError as e:
+        print(f"ERROR: {args.page}:\n{e}", file=sys.stderr)
+        return 1
+
+    failed = 0
+    for variant, config_text in configs.items():
+        ok, output = validator.validate(config_text)
+        if ok:
+            print(f"OK: {variant}")
+            continue
+        failed += 1
+        print(
+            f"ERROR: {variant}: agentgateway {validator.version} rejected the config:",
+            file=sys.stderr,
+        )
+        print(textwrap.indent(output.strip() or "(no output)", "    "), file=sys.stderr)
+        print("  config:", file=sys.stderr)
+        print(textwrap.indent(config_text, "    "), file=sys.stderr)
+    if failed:
+        print(
+            f"ERROR: {failed} of {len(configs)} configs from {args.page} are invalid",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

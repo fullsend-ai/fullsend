@@ -24,6 +24,10 @@ type Driver interface {
 	AddComment(ctx context.Context, owner, repo string, number int, body string) (*forge.IssueComment, error)
 	GetIssue(ctx context.Context, owner, repo string, number int) (*forge.Issue, error)
 	GetFileContent(ctx context.Context, owner, repo, path string) ([]byte, error)
+	// GetFileContentAtRef retrieves the content of a file at a specific
+	// ref (commit SHA, branch, or tag), rather than GetFileContent's
+	// implicit default-branch/HEAD read.
+	GetFileContentAtRef(ctx context.Context, owner, repo, path, ref string) ([]byte, error)
 	CommitFile(ctx context.Context, owner, repo, path, message string, content []byte) error
 	CreateBranch(ctx context.Context, owner, repo, branch string) error
 	// DeleteBranch deletes a branch from a repository. Returns
@@ -67,6 +71,14 @@ type Driver interface {
 	// name already exists, it returns without error.
 	CreateFork(ctx context.Context, owner, repo, forkName string) (forkRepo string, err error)
 
+	// CreateUserFork creates a fork of owner/repo in the authenticated
+	// user's own account (GitHub user / GitLab personal namespace), as
+	// an outside contributor would. The forge picks the fork's name; it
+	// returns the fork's actual owner and repo name. The call is
+	// idempotent — if the user already has a fork of owner/repo, it
+	// returns that fork.
+	CreateUserFork(ctx context.Context, owner, repo string) (forkOwner, forkRepo string, err error)
+
 	// CommitFileToFork commits a file to a branch on a fork repository.
 	// Analogous to CommitFileToBranch but targets the fork.
 	CommitFileToFork(ctx context.Context, forkOwner, forkRepo, branch, path, message string, content []byte) error
@@ -76,4 +88,14 @@ type Driver interface {
 	// The forkRepo parameter is required to disambiguate same-owner forks
 	// (where forkOwner == baseOwner) from branches on the base repo.
 	CreateForkChangeProposal(ctx context.Context, baseOwner, baseRepo, title, body, forkOwner, forkRepo, head, base string) (*forge.ChangeProposal, error)
+
+	// ListPullRequestReviews returns the formal reviews submitted on a
+	// change proposal (pull request / merge request).
+	ListPullRequestReviews(ctx context.Context, owner, repo string, number int) ([]forge.PullRequestReview, error)
+
+	// ListPullRequestCommits returns the commit SHAs on a change
+	// proposal, oldest first. The result is the proposal's current commit
+	// list, so a force-push or rebase of the head branch can replace it;
+	// it makes no promise about the commits the proposal was opened with.
+	ListPullRequestCommits(ctx context.Context, owner, repo string, number int) ([]string, error)
 }

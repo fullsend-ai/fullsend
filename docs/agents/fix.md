@@ -27,7 +27,7 @@ The fix agent has two operating modes with different primary inputs:
 |-------|--------|-------------------|
 | Review body | Latest `CHANGES_REQUESTED` review from a review bot | Pre-fetched on the runner before the sandbox starts, injected as `review-body.txt` |
 | PR diff | `gh pr diff` inside the sandbox | Agent calls this to understand what code changed |
-| Repository checkout | Full repo at PR HEAD | Checked out on the runner, mounted into the sandbox |
+| Repository checkout | Full repo at PR/MR HEAD | Checked out on the runner, mounted into the sandbox |
 | Repo conventions | `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md` | Read from the checkout inside the sandbox |
 
 **Human-triggered** (`/fs-fix [instruction]`):
@@ -42,6 +42,33 @@ The fix agent has two operating modes with different primary inputs:
 
 When a human instruction is present, it supersedes the review body as the
 primary directive.
+
+On GitLab, dispatch pipelines run from the repository default branch, so
+the fix job fetches the MR source SHA into `target-repo/` and points
+`--target-repo` there before `fullsend run`. Trusted `.fullsend/` config
+continues to be read from the default-branch working tree. Fetching the
+source branch without checking it out is not sufficient: the sandbox
+inherits the runner checkout, and the agent cannot recover the reviewed
+revision from inside the sandbox.
+
+**GitLab fork and cross-project MRs:** the job-level fork gate (`IS_FORK`)
+still denies both the **code** and **fix** agents outright on a
+fork/cross-project dispatch. Code opens a new MR against the target
+project and has no analogous validated source revision to check out.
+Fix is denied for a different reason: although the pre-script
+(`checkout-mr-source.sh`) already resolves the MR's source project,
+branch, and head SHA through `fullsend resolve-mr-source` (never
+trusting the job's `IS_FORK` pipeline variable or any other unverified
+CI variable), fetches and checks out that exact revision — fetching
+from the source project even when it differs from the target project —
+and runs a pre-push safety gate, `fullsend check-protected-branch`,
+against the resolved source project and branch before the fix agent
+ever runs, the runner-side post-script that actually pushes the
+resulting fix commit still targets this job's own project and branch
+rather than the validated source project. A validated checkout alone is
+not enough to make a fork/cross-project fix dispatch safe to publish, so
+the `IS_FORK` gate stays in place for `fix` until a source-targeted
+publish path ships in a follow-up PR (#7814).
 
 ### What the agent does not read
 
@@ -127,9 +154,12 @@ The fix agent also triggers automatically when the [review agent](review.md) sub
 this is the native `pull_request_review` event; on GitLab it is a poller-routed
 MR note that contains `<!-- fullsend:changes-requested -->`.
 
-For **PRs authored by the fullsend code agent** (`fullsend-ai-coder[bot]`),
-automatic fixing happens with no extra setup — the fix agent responds to review
-feedback out of the box. PRs from other bots (e.g., Renovate) require the
+For **PRs authored by the fullsend code agent** (`fullsend-ai-coder[bot]`), or
+by the configured app-set coder (`${FULLSEND_APP_SET}-coder[bot]`), automatic
+fixing happens with no extra setup — the fix agent responds to review feedback
+out of the box. In `gh pr view --json author` output, the configured coder is
+identified as `app/${FULLSEND_APP_SET}-coder` and must also have
+`.author.is_bot == true`. PRs from other bots (e.g., Renovate) require the
 `fullsend-fix` label; without it, the bot-triggered fix run is dispatched but
 the eligibility check exits early with a warning. See
 [Bot identities](../contributing/bot-identities.md) for how the eligibility

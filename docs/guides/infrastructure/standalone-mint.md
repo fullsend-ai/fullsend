@@ -104,7 +104,7 @@ The standalone mint is configured entirely through environment variables:
 
 | Variable | Description | Example |
 |----------|-------------|---------|
-| `ALLOWED_ORGS` | Comma-separated GitHub orgs allowed to request tokens, or `*` for public mint mode (any org; upstream-only workflow provenance) | `myorg,myorg-sandbox` or `*` |
+| `PER_REPO_WIF_REPOS` | Comma-separated `owner/repo` entries enrolled to request tokens, or `*` for public mint mode (every requesting repository is admitted). A repository that is not listed is denied. Per-repo callers can only mint to their own repo scope unless repo-level FOREIGN grants authorize more. | `myorg/my-repo,myorg/other-repo` or `*` |
 | `ROLE_APP_IDS` | JSON map of role name to GitHub App ID (use plain role names, not org-prefixed) | `{"triage":"4087047","scanner":"5555555"}` |
 | `PEM_DIR` | Path to directory containing `{role}.pem` files | `./pems` |
 
@@ -115,17 +115,19 @@ The standalone mint is configured entirely through environment variables:
 | `ALLOWED_WORKFLOW_FILES` | Comma-separated workflow file allowlist; `*` for all | `*` |
 | `FALLBACK_MINT_URL` | Upstream mint URL for roles without local PEMs | `https://mint.fullsend.sh` |
 | `CUSTOM_ROLE_PERMISSIONS` | JSON map of custom role permissions (see below) | `{"scanner":{"contents":"read"}}` |
-| `PER_REPO_WIF_REPOS` | Comma-separated repos with per-repo WIF treatment. Use `*` for public mint mode (all repos get per-repo treatment). Per-repo callers can only mint to their own repo scope. Callers not in this list fall through to per-org (`ALLOWED_ORGS`) and get org-mode repos shapes. | `myorg/private-repo` |
-| `WORKFLOW_HOST_REPOS` | Comma-separated repos whose workflows are trusted to call the mint for per-repo callers. Per-org callers are not affected (they hard-wire to `{org}/.fullsend` and upstream). Defaults to `fullsend-ai/fullsend` when unset. | `fullsend-ai/fullsend,myorg/my-workflows` |
+| `WORKFLOW_HOST_REPOS` | Comma-separated repos whose workflows are trusted to call the mint. Applies to every admitted caller; the upstream `fullsend-ai/fullsend` is always accepted. Defaults to `fullsend-ai/fullsend` when unset. | `fullsend-ai/fullsend,myorg/my-workflows` |
 | `PORT` | HTTP listen port | `8080` (default) |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | Full OTLP/HTTP traces URL for mint spans. Takes precedence over `OTEL_EXPORTER_OTLP_ENDPOINT`. Unset (with no base endpoint) disables tracing. See [Tracing](#tracing). | `https://collector.example/v1/traces` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Base OTLP/HTTP URL; `/v1/traces` is appended | `https://collector.example` |
+| `MINT_OTLP_HEADERS_FILE` | Path to a file of collector authentication headers. Must be mode `0600` or stricter. | `/etc/fullsend-mint/otlp-headers` |
+| `MINT_DEPLOYMENT_NAME` | Deployment identity recorded on spans. Defaults to the host name. | `mint-prod-eu` |
 
 ### Public mint mode
 
-Set `ALLOWED_ORGS=*` and `PER_REPO_WIF_REPOS=*` to enable public mint mode:
+Set `PER_REPO_WIF_REPOS=*` to enable public mint mode:
 
-- Any org may request tokens (installation lookup still scopes tokens to the requesting org)
-- `job_workflow_ref` validation uses the same per-repo path: only repos in `WORKFLOW_HOST_REPOS` (defaults to `fullsend-ai/fullsend`) are accepted, and the `ALLOWED_WORKFLOW_FILES` basename gate applies ([ADR 0082](../../ADRs/0082-workflow-host-allow-list.md) §2)
-- Set `PER_REPO_WIF_REPOS=*` alongside `ALLOWED_ORGS=*`
+- Any repository may request tokens (installation lookup still scopes tokens to the requesting org)
+- `job_workflow_ref` validation is the same as in enrolled mode: only the upstream `fullsend-ai/fullsend` and repos in `WORKFLOW_HOST_REPOS` are accepted, and the `ALLOWED_WORKFLOW_FILES` basename gate applies ([ADR 0082](../../ADRs/0082-workflow-host-allow-list.md) §2)
 - No WIF or GCP STS setup is required — standalone mint validates OIDC via GitHub JWKS directly
 
 ### Example: local roles with fallback proxy
@@ -133,7 +135,7 @@ Set `ALLOWED_ORGS=*` and `PER_REPO_WIF_REPOS=*` to enable public mint mode:
 This configuration serves `triage` and `scanner` locally while proxying all other roles (coder, review, etc.) to the hosted mint:
 
 ```bash
-export ALLOWED_ORGS="myorg"
+export PER_REPO_WIF_REPOS="myorg/my-repo"
 export ROLE_APP_IDS='{"triage":"4087047","scanner":"5555555"}'
 export PEM_DIR="./pems"
 export ALLOWED_WORKFLOW_FILES="*"
@@ -156,7 +158,7 @@ On startup, the mint logs the configuration:
 If you do not need the hosted mint at all, omit `FALLBACK_MINT_URL`. Requests for roles without local PEMs will be rejected:
 
 ```bash
-export ALLOWED_ORGS="myorg"
+export PER_REPO_WIF_REPOS="myorg/my-repo"
 export ROLE_APP_IDS='{"triage":"4087047","scanner":"5555555"}'
 export PEM_DIR="./pems"
 export ALLOWED_WORKFLOW_FILES="*"
@@ -322,6 +324,32 @@ curl http://localhost:8080/health
 # {"status":"ok"}
 ```
 
+### Check status via the CLI
+
+If `FULLSEND_MINT_URL` is set (or you pass `--mint-url`), the CLI can
+query the mint's `/v1/status` endpoint using auto-discovered GitHub
+credentials — but only GitHub Actions OIDC succeeds against a standalone
+mint built per Step 3 above (`go build -o fullsend-mint .`, no
+`-tags github`): the `GH_TOKEN` / `GITHUB_TOKEN` / `gh auth token`
+fallback always returns HTTP 401 unless the binary was compiled with
+`-tags github` and `StatusGitHubGroup` is set to a non-empty
+`ORG/TEAM` (see [Enabling optional
+validators](infrastructure-reference.md#status-endpoint)). Run it from
+within a GitHub Actions workflow to use OIDC:
+
+```bash
+fullsend mint status --mint-url="$FULLSEND_MINT_URL"
+```
+
+Under GitHub Actions OIDC, this reports the mint's version, build commit,
+the calling workflow's organization, configured roles, and workflow host
+repos — without requiring any GCP IAM roles. It does not list all enrolled
+organizations; the status response no longer includes an
+`allowed_orgs` field. The non-OIDC (GitHub token) path, which a default
+standalone mint rejects with HTTP 401 as described above, returns the
+roles, workflow host repos, and version without an `org`. To verify locally without GitHub Actions
+OIDC, use the health endpoint above instead.
+
 ### Test from a GitHub Actions workflow
 
 Create a test workflow that requests a token for your custom role:
@@ -377,7 +405,7 @@ git clone https://github.com/fullsend-ai/fullsend.git
 cd fullsend/cmd/mint && go build -o fullsend-mint .
 
 # 4. Run
-export ALLOWED_ORGS="myorg"
+export PER_REPO_WIF_REPOS="myorg/my-repo"
 export ROLE_APP_IDS='{"triage":"4087047","scanner":"5555555"}'
 export PEM_DIR="./pems"
 export ALLOWED_WORKFLOW_FILES="*"
@@ -395,6 +423,56 @@ gh api -X POST /orgs/myorg/actions/variables \
   -f value="https://your-tunnel-url.trycloudflare.com" \
   -f visibility=all
 ```
+
+## Tracing
+
+The standalone mint can export OpenTelemetry spans for each request to an
+OTLP/HTTP collector, following the [distributed tracing](distributed-tracing.md#mint-tracing)
+model used by the rest of Fullsend. Tracing is off by default: with no
+traces endpoint configured the mint uses a no-op tracer and makes no
+export attempts.
+
+Set the endpoint at startup with the standard OpenTelemetry variables:
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT="https://collector.example"   # /v1/traces is appended
+# or, verbatim:
+export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="https://collector.example/v1/traces"
+```
+
+Collector authentication headers are read from a protected file, not from
+`OTEL_EXPORTER_OTLP_HEADERS` or `OTEL_EXPORTER_OTLP_TRACES_HEADERS` (the
+standalone mint ignores both with a warning; headers must go in
+`MINT_OTLP_HEADERS_FILE`), so header values never appear in the process
+environment. The file
+uses the `OTEL_EXPORTER_OTLP_HEADERS` syntax: `key=value` pairs with
+percent-encoded values, separated by commas or newlines. Lines starting with
+`#` are ignored.
+
+```bash
+install -m 0600 /dev/null /etc/fullsend-mint/otlp-headers
+printf 'Authorization=Bearer%%20%s\n' "$COLLECTOR_TOKEN" > /etc/fullsend-mint/otlp-headers
+export MINT_OTLP_HEADERS_FILE=/etc/fullsend-mint/otlp-headers
+```
+
+The mint refuses to start if the file is accessible by group or others (mode
+must be 0600 or stricter), is not a regular file, or cannot be parsed.
+
+**Rotating collector credentials:** write the new header values to the
+file, then restart the mint. Headers are read once at startup.
+
+Collector failures never affect token minting. Each export is a single
+request bounded by a 2-second timeout, and failures are logged without
+header values. Exports run in the background after the response is
+returned, so a slow or unreachable collector never delays a response. On
+shutdown the mint waits for pending exports within the shutdown grace
+period.
+
+Tracing covers every request, including requests routed to the
+[fallback proxy](#fallback-proxy-behavior). A proxied request gets its own
+server span and `traceresponse` header, proxy failures are recorded on that
+span, and the mint forwards `traceparent` and `tracestate` to the fallback
+mint so the trace continues upstream.
 
 ## See also
 

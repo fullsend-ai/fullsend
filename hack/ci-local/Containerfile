@@ -1,0 +1,135 @@
+# Local replica of the fullsend CI toolchain (.github/workflows/lint.yml,
+# mint-cf-worker-test.yml, site-build.yml): ubuntu-24.04 runner, Go, Python +
+# the pre-commit stack, Node, lychee, pinact. Build it with
+# `hack/ci-local/ci-local build-image`: the versions are read from go.mod and
+# lint.yml and passed in as build args, so this file pins none of them.
+# Digest-pinned like images/*; Renovate keeps the digest current.
+FROM docker.io/library/ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
+LABEL fullsend-ci-local=1
+
+# TARGETARCH is set automatically by BuildKit and Buildah, but not by Docker's
+# legacy builder: fail first, with a clear message, rather than mid-download.
+ARG TARGETARCH
+RUN [ -n "${TARGETARCH}" ] || { echo "TARGETARCH is empty: Docker's legacy builder is not supported; use BuildKit (the default since Docker 23) or Podman" >&2; exit 1; }
+
+# build-essential: -race needs cgo. util-linux: flock. bc/gzip: wasm-build.
+# jq: scaffold script tests. xz-utils: node tarball. python3 + python3-yaml:
+# the runner's system /usr/bin/python3, which some scripts hardcode
+# (scripts/redact-behaviour-artifacts.sh); the venv python stays first on PATH.
+# procps: ps for internal/runtime/kill_stray_processes_test.sh (listed
+# explicitly rather than relied on as a transitive dependency).
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      bc build-essential ca-certificates curl file git gzip jq procps python3 python3-yaml unzip util-linux xz-utils zip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set by ci-local from the checkout; no defaults, so a direct build fails loudly.
+ARG GO_VERSION
+ARG PYTHON_VERSION
+ARG NODE_VERSION
+ARG PIP_PACKAGES
+ARG LYCHEE_VERSION
+ARG LYCHEE_SHA256_AMD64
+ARG PINACT_VERSION
+ARG PINACT_SHA256_AMD64
+RUN for v in GO_VERSION PYTHON_VERSION NODE_VERSION PIP_PACKAGES LYCHEE_VERSION \
+        LYCHEE_SHA256_AMD64 PINACT_VERSION PINACT_SHA256_AMD64; do \
+      eval "x=\${$v}"; [ -n "$x" ] || { echo "build arg $v is not set; build with hack/ci-local/ci-local build-image" >&2; exit 1; }; \
+    done
+
+# fetch (download + verify SHA256) and sumof (a name's SHA256 from a checksum
+# file): see the scripts next to this file. COPY instead of a RUN heredoc, which
+# needs Buildah >= 1.33 / BuildKit; explicit chmod instead of COPY --chmod
+# (BuildKit-only) and in case the checkout dropped the executable bit.
+COPY fetch sumof /usr/local/bin/
+RUN chmod 0755 /usr/local/bin/fetch /usr/local/bin/sumof
+
+# Go (actions/setup-go, go-version-file: go.mod): the newest stable release
+# matching go.mod's `go` line ("1.26.5" exactly, or "1.26" -> newest 1.26.x).
+# Each download is its own step, not piped: sh has no pipefail, so a failed
+# curl would read as "no release matches" (here and for Node below).
+RUN set -e; \
+    curl -sSfL --proto '=https' --proto-redir '=https' "https://go.dev/dl/?mode=json&include=all" -o /tmp/go.json; \
+    line=$(jq -r --arg v "go${GO_VERSION}" --arg a "${TARGETARCH}" \
+      '[.[] | select(.stable) | select(.version == $v or (.version | startswith($v + "."))) | .files[] | select(.os == "linux" and .arch == $a and .kind == "archive")][0] // empty | "\(.filename) \(.sha256)"' /tmp/go.json); \
+    rm /tmp/go.json; \
+    [ -n "$line" ] || { echo "no Go release matches go ${GO_VERSION}" >&2; exit 1; }; \
+    fetch "https://go.dev/dl/${line% *}" "${line#* }"; \
+    tar -xzf /tmp/dl -C /usr/local; rm /tmp/dl
+
+# Node (actions/setup-node, node-version from lint.yml): an exact x.y.z, or the
+# newest release of that major line. Checksum from the release's SHASUMS256.txt,
+# downloaded once: name and checksum come from the same copy, and the tarball
+# from its version's directory, so a release published meanwhile (moving
+# latest-vN.x) cannot split them.
+RUN set -e; \
+    case "$TARGETARCH" in amd64) a=x64 ;; *) a=$TARGETARCH ;; esac; \
+    case "$NODE_VERSION" in *.*.*) base="https://nodejs.org/dist/v${NODE_VERSION}" ;; *) base="https://nodejs.org/dist/latest-v${NODE_VERSION%%.*}.x" ;; esac; \
+    curl -sSfL --proto '=https' --proto-redir '=https' "$base/SHASUMS256.txt" -o /tmp/node.sums; \
+    name=$(awk -v a="-linux-$a.tar.xz" 'index($2, a) && $2 ~ /^node-v/ {print $2; exit}' /tmp/node.sums); \
+    [ -n "$name" ] || { echo "no Node $NODE_VERSION tarball for linux-$a" >&2; exit 1; }; \
+    v=${name#node-}; v=${v%%-linux-*}; \
+    fetch "https://nodejs.org/dist/$v/$name" "$(sumof file:///tmp/node.sums "$name")"; \
+    tar -xJf /tmp/dl -C /usr/local --strip-components=1; rm /tmp/dl /tmp/node.sums
+
+# uv (astral-sh/setup-uv, unpinned in lint.yml: the latest release), then
+# Python and the pip packages from lint.yml's `uv pip install --system` step.
+RUN set -e; \
+    case "$TARGETARCH" in amd64) a=x86_64 ;; arm64) a=aarch64 ;; *) a=$TARGETARCH ;; esac; \
+    url="https://github.com/astral-sh/uv/releases/latest/download/uv-${a}-unknown-linux-gnu.tar.gz"; \
+    fetch "$url" "$(sumof "$url.sha256" "uv-${a}-unknown-linux-gnu.tar.gz")"; \
+    tar -xzf /tmp/dl -C /usr/local/bin --strip-components=1; rm /tmp/dl
+ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python
+# PIP_PACKAGES is a space-separated list, so it is deliberately unquoted.
+RUN uv venv --python "${PYTHON_VERSION}" /opt/venv \
+    && VIRTUAL_ENV=/opt/venv uv pip install ${PIP_PACKAGES} \
+    && chmod -R a+rX /opt/uv-python /opt/venv
+
+# lychee + pinact (lint.yml "Install lychee" / "Install pinact"). On amd64 the
+# checksum is the one lint.yml pins; lint.yml pins no arm64 checksum, so other
+# architectures use the release's own checksum file.
+RUN set -e; \
+    case "$TARGETARCH" in amd64) a=x86_64 ;; arm64) a=aarch64 ;; *) a=$TARGETARCH ;; esac; \
+    name="lychee-${a}-unknown-linux-gnu.tar.gz"; \
+    url="https://github.com/lycheeverse/lychee/releases/download/lychee-v${LYCHEE_VERSION}/$name"; \
+    if [ "$TARGETARCH" = amd64 ]; then s=$LYCHEE_SHA256_AMD64; else s=$(sumof "$url.sha256" "$name"); fi; \
+    fetch "$url" "$s"; \
+    tar -xzf /tmp/dl -C /usr/local/bin --strip-components=1 "lychee-${a}-unknown-linux-gnu/lychee"; rm /tmp/dl
+RUN set -e; \
+    name="pinact_linux_${TARGETARCH}.tar.gz"; \
+    rel="https://github.com/suzuki-shunsuke/pinact/releases/download/v${PINACT_VERSION}"; \
+    if [ "$TARGETARCH" = amd64 ]; then s=$PINACT_SHA256_AMD64; else s=$(sumof "$rel/pinact_${PINACT_VERSION}_checksums.txt" "$name"); fi; \
+    fetch "$rel/$name" "$s"; \
+    tar -xzf /tmp/dl -C /usr/local/bin pinact; rm /tmp/dl
+
+# CI=true: matches Actions and makes `make ensure-hooks` a no-op, so running
+# lint never installs git hooks into the host checkout.
+# VIRTUAL_ENV lets `ty` (make check) resolve pytest/yaml from the venv.
+ENV PATH=/opt/venv/bin:/usr/local/go/bin:/home/runner/go/bin:$PATH \
+    VIRTUAL_ENV=/opt/venv \
+    CI=true \
+    GH_TOKEN= \
+    GITHUB_TOKEN=
+
+# The hosted runner is non-root; permission-probing tests differ as root.
+# Docker runs as the host's uid:gid (`--user`), so ci-local passes them as
+# RUNNER_UID/RUNNER_GID and runner gets those ids: whoami and `id -un` then
+# resolve as on the hosted runner. Podman's --userns=keep-id adds its own
+# entry, so it passes neither. A user already holding the uid (the base
+# image's ubuntu, uid 1000) is removed; an existing gid (macOS staff, 20) is
+# reused. HOME and ~/.cache stay world-writable for any other uid: the cache
+# volumes mount under ~/.cache, and without it in the image the engine
+# creates it root-owned, so tools could not add their own cache directories.
+ARG RUNNER_UID=
+ARG RUNNER_GID=
+RUN set -e; \
+    if [ -n "$RUNNER_UID" ] && [ "$RUNNER_UID" != 0 ]; then \
+      u=$(getent passwd "$RUNNER_UID" | cut -d: -f1); [ -z "$u" ] || userdel "$u"; \
+      getent group "$RUNNER_GID" >/dev/null || groupadd -g "$RUNNER_GID" runner; \
+      useradd -l -m -u "$RUNNER_UID" -g "$RUNNER_GID" runner; \
+    else \
+      useradd -m runner; \
+    fi; \
+    mkdir -p /home/runner/.cache; \
+    chmod 1777 /home/runner /home/runner/.cache
+USER runner
+WORKDIR /src

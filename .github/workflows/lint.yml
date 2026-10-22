@@ -42,7 +42,11 @@ jobs:
           echo "8fcbf1b3e95551c82fd995535e3c1defa70e23299ce36eb3afd6c98778de6ca0  /tmp/pinact.tar.gz" | sha256sum -c
           tar xzf /tmp/pinact.tar.gz -C /usr/local/bin pinact
 
+      # The gateway doc config check pulls an agentgateway image, so it runs
+      # in its own job, only when its files change.
       - run: make lint-all
+        env:
+          SKIP: check-gateway-doc-configs
 
       - name: Run Go tests with coverage
         run: go test -race -coverprofile=coverage.out ./...
@@ -79,10 +83,11 @@ jobs:
           GITHUB_TOKEN: ""
 
   commit-lint:
-    # Lint the PR title and individual commits on pull_request.
-    # Lint each commit on push/merge_group.
+    # Lint each commit on push/merge_group/pull_request.
     # The merge queue uses merge (not squash), so individual commit
     # messages matter — catch bad prefixes before the merge queue rejects them.
+    # PR title linting is handled by pr-title-lint.yml so title edits re-lint
+    # without re-running CI or producing skipped status checks.
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -91,14 +96,6 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
-
-      - name: Lint PR title
-        if: github.event_name == 'pull_request'
-        env:
-          PR_TITLE: ${{ github.event.pull_request.title }}
-        run: |
-          echo "${PR_TITLE}" > /tmp/pr-title.txt
-          uvx --from gitlint-core gitlint --config .gitlint --ignore B6 --msg-filename /tmp/pr-title.txt
 
       - name: Lint commits
         env:
@@ -128,6 +125,39 @@ jobs:
           if ${FAILED}; then
             exit 1
           fi
+
+  gateway-doc-configs:
+    # Validates the inference gateway operator guide's agentgateway config
+    # blocks with agentgateway itself. pre-commit's files filter skips the
+    # hook unless the event's changes touch the page, its examples or the
+    # check script.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+
+      - name: Check gateway doc configs
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.sha }}
+          MQ_BASE: ${{ github.event.merge_group.base_sha }}
+          MQ_HEAD: ${{ github.event.merge_group.head_sha }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          case "${EVENT_NAME}" in
+            push)          FROM="${PUSH_BEFORE}"; TO="${PUSH_AFTER}" ;;
+            merge_group)   FROM="${MQ_BASE}"; TO="${MQ_HEAD}" ;;
+            pull_request)  FROM="${PR_BASE}"; TO="${PR_HEAD}" ;;
+            *)             echo "Unknown event: ${EVENT_NAME}"; exit 1 ;;
+          esac
+          uvx pre-commit run check-gateway-doc-configs --from-ref "${FROM}" --to-ref "${TO}"
 
   web:
     runs-on: ubuntu-24.04

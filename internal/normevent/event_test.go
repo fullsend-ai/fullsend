@@ -57,6 +57,20 @@ func TestMapGitHubPermission(t *testing.T) {
 	assert.Equal(t, RoleNone, MapGitHubPermission("custom-docs-role"))
 }
 
+func TestMapGitLabAccessLevel(t *testing.T) {
+	tests := map[int]ActorRole{
+		10: RoleRead,
+		20: RoleTriage,
+		30: RoleWrite,
+		40: RoleMaintain,
+		50: RoleAdmin,
+		0:  RoleNone,
+	}
+	for accessLevel, expected := range tests {
+		assert.Equal(t, expected, MapGitLabAccessLevel(accessLevel), accessLevel)
+	}
+}
+
 func TestComputeChangeProposalIsFork(t *testing.T) {
 	assert.False(t, ComputeChangeProposalIsFork("o/r", "o/r"))
 	assert.True(t, ComputeChangeProposalIsFork("fork/r", "o/r"))

@@ -3,6 +3,8 @@ package steps
 import (
 	"context"
 	"fmt"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -50,6 +52,60 @@ func TestCleanupScenario_ClosesForkPR(t *testing.T) {
 	assert.Equal(t, "org", scmDriver.closedIssues[0].owner)
 	assert.Equal(t, "repo", scmDriver.closedIssues[0].repo)
 	assert.Equal(t, 42, scmDriver.closedIssues[0].number)
+}
+
+func TestCleanupScenario_RestoresGatewayConfig(t *testing.T) {
+	t.Parallel()
+
+	scmDriver := &fakeCleanupSCM{}
+	original := []byte("runtime: dummy\n")
+	w := &world.World{
+		Org:                     "org",
+		RepoOwner:               "org",
+		RepoName:                "repo",
+		SCM:                     scmDriver,
+		GatewayConfigOverridden: true,
+		GatewayConfigOriginal:   original,
+	}
+
+	CleanupScenario(w)
+	require.Len(t, scmDriver.commits, 1)
+	assert.Equal(t, "org", scmDriver.commits[0].owner)
+	assert.Equal(t, "repo", scmDriver.commits[0].repo)
+	assert.Equal(t, filepath.Join(".fullsend", "config.yaml"), scmDriver.commits[0].path)
+	assert.Equal(t, original, scmDriver.commits[0].content)
+	assert.False(t, w.GatewayConfigOverridden, "restored original should be forgotten")
+	assert.Nil(t, w.GatewayConfigOriginal)
+}
+
+func TestCleanupScenario_GatewayRestoreFailureKeepsOriginal(t *testing.T) {
+	t.Parallel()
+
+	var logs []string
+	scmDriver := &fakeCleanupSCM{commitFileErr: fmt.Errorf("commit failed")}
+	w := &world.World{
+		Org:      "org",
+		RepoName: "repo",
+		SCM:      scmDriver,
+		Logf:     func(format string, args ...any) { logs = append(logs, fmt.Sprintf(format, args...)) },
+
+		GatewayConfigOverridden: true,
+		GatewayConfigOriginal:   []byte("runtime: dummy\n"),
+	}
+
+	CleanupScenario(w)
+	assert.True(t, w.GatewayConfigOverridden, "a failed restore keeps the original for a retry")
+	assert.Equal(t, []byte("runtime: dummy\n"), w.GatewayConfigOriginal)
+	require.NotEmpty(t, logs)
+	assert.Contains(t, logs[len(logs)-1], "restore config after inference gateway scenario: commit failed")
+}
+
+func TestCleanupScenario_NoGatewayRestoreWithoutBlock(t *testing.T) {
+	t.Parallel()
+
+	scmDriver := &fakeCleanupSCM{}
+	CleanupScenario(&world.World{Org: "org", RepoName: "repo", SCM: scmDriver})
+	assert.False(t, scmDriver.commitFileCalled)
 }
 
 func TestCleanupScenario_ClosesForkPR_Error(t *testing.T) {
@@ -221,6 +277,38 @@ func TestCleanupScenario_SkipsForkRepoDelete_WhenForkRepoEqualsRepoName(t *testi
 	CleanupScenario(w)
 
 	assert.Empty(t, scmDriver.deletedRepos, "repo deletion should be skipped when ForkRepo == RepoName")
+}
+
+func TestCleanupScenario_ActorOwnedForkDeletedThroughForkSCM(t *testing.T) {
+	t.Parallel()
+
+	e2eSCM := &fakeCleanupSCM{}
+	outsiderSCM := &fakeCleanupSCM{}
+	w := &world.World{
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		ForkPRNumber: 10,
+		ForkOwner:    "outsider",
+		ForkRepo:     "repo", // user forks take the base repo's name
+		ForkPRBranch: "test-branch",
+		SCM:          e2eSCM,
+		ForkSCM:      outsiderSCM,
+	}
+	CleanupScenario(w)
+
+	// The fork PR lives on the base repo, so the e2e identity closes it.
+	require.Len(t, e2eSCM.closedIssues, 1)
+	assert.Equal(t, 10, e2eSCM.closedIssues[0].number)
+	assert.Empty(t, e2eSCM.deletedBranches)
+	assert.Empty(t, e2eSCM.deletedRepos)
+
+	require.Len(t, outsiderSCM.deletedBranches, 1)
+	assert.Equal(t, "outsider", outsiderSCM.deletedBranches[0].owner)
+	assert.Equal(t, "repo", outsiderSCM.deletedBranches[0].repo)
+	assert.Equal(t, "test-branch", outsiderSCM.deletedBranches[0].branch)
+	require.Len(t, outsiderSCM.deletedRepos, 1)
+	assert.Equal(t, "outsider", outsiderSCM.deletedRepos[0].owner)
+	assert.Equal(t, "repo", outsiderSCM.deletedRepos[0].repo)
 }
 
 func TestCleanupScenario_SkipsForkRepoDelete_WhenFieldsMissing(t *testing.T) {
@@ -431,9 +519,26 @@ type fakeCleanupSCM struct {
 	deleteRepoErr    error
 	commitFileCalled bool
 	commitFileErr    error
+	commits          []committedFileRecord
 	fileContent      []byte
 	getFileErr       error
-	openPRs          []forge.ChangeProposal
+	// baseFileConfigured, when true, makes GetFileContent answer
+	// config.base.yaml requests with baseFileContent/baseFileErr
+	// instead of the config.yaml-oriented fileContent/getFileErr
+	// above. Tests that don't care about config.base.yaml leave this
+	// false, so GetFileContent keeps its original path-agnostic
+	// behavior (returning fileContent/getFileErr for every path).
+	baseFileConfigured bool
+	baseFileContent    []byte
+	baseFileErr        error
+	openPRs            []forge.ChangeProposal
+}
+
+type committedFileRecord struct {
+	owner   string
+	repo    string
+	path    string
+	content []byte
 }
 
 type closedIssueRecord struct {
@@ -495,12 +600,22 @@ func (f *fakeCleanupSCM) GetIssue(context.Context, string, string, int) (*forge.
 	return nil, nil
 }
 
-func (f *fakeCleanupSCM) GetFileContent(context.Context, string, string, string) ([]byte, error) {
+func (f *fakeCleanupSCM) GetFileContent(_ context.Context, _, _, path string) ([]byte, error) {
+	if f.baseFileConfigured && strings.Contains(path, "config.base.yaml") {
+		return f.baseFileContent, f.baseFileErr
+	}
 	return f.fileContent, f.getFileErr
 }
 
-func (f *fakeCleanupSCM) CommitFile(_ context.Context, _, _, _, _ string, _ []byte) error {
+func (f *fakeCleanupSCM) GetFileContentAtRef(context.Context, string, string, string, string) ([]byte, error) {
+	return f.fileContent, f.getFileErr
+}
+
+func (f *fakeCleanupSCM) CommitFile(_ context.Context, owner, repo, path, _ string, content []byte) error {
 	f.commitFileCalled = true
+	if f.commitFileErr == nil {
+		f.commits = append(f.commits, committedFileRecord{owner: owner, repo: repo, path: path, content: content})
+	}
 	return f.commitFileErr
 }
 
@@ -548,11 +663,23 @@ func (f *fakeCleanupSCM) CreateFork(context.Context, string, string, string) (st
 	return "", nil
 }
 
+func (f *fakeCleanupSCM) CreateUserFork(context.Context, string, string) (string, string, error) {
+	return "", "", nil
+}
+
 func (f *fakeCleanupSCM) CommitFileToFork(context.Context, string, string, string, string, string, []byte) error {
 	return nil
 }
 
 func (f *fakeCleanupSCM) CreateForkChangeProposal(context.Context, string, string, string, string, string, string, string, string) (*forge.ChangeProposal, error) {
+	return nil, nil
+}
+
+func (f *fakeCleanupSCM) ListPullRequestCommits(context.Context, string, string, int) ([]string, error) {
+	return nil, nil
+}
+
+func (f *fakeCleanupSCM) ListPullRequestReviews(context.Context, string, string, int) ([]forge.PullRequestReview, error) {
 	return nil, nil
 }
 
@@ -722,6 +849,58 @@ func TestCleanupScenario_DeactivateKillSwitch_Error(t *testing.T) {
 	CleanupScenario(w)
 	require.Len(t, logged, 1)
 	assert.Contains(t, logged[0], "deactivate kill switch")
+}
+
+func TestCleanupScenario_DeactivatesKillSwitchBase(t *testing.T) {
+	t.Parallel()
+
+	scmDriver := &fakeCleanupSCM{
+		fileContent: []byte("version: \"1\"\nkill_switch: true\n"),
+	}
+	w := &world.World{
+		Org:                     "org",
+		RepoOwner:               "org",
+		RepoName:                "repo",
+		KillSwitchBaseActivated: true,
+		SCM:                     scmDriver,
+	}
+	CleanupScenario(w)
+	assert.True(t, scmDriver.commitFileCalled, "should commit config.base.yaml to deactivate kill switch")
+}
+
+func TestCleanupScenario_SkipsKillSwitchBaseWhenNotActivated(t *testing.T) {
+	t.Parallel()
+
+	scmDriver := &fakeCleanupSCM{}
+	w := &world.World{
+		RepoOwner:               "org",
+		RepoName:                "repo",
+		KillSwitchBaseActivated: false,
+		SCM:                     scmDriver,
+	}
+	CleanupScenario(w)
+	assert.False(t, scmDriver.commitFileCalled, "should not commit when config.base.yaml kill switch was not activated")
+}
+
+func TestCleanupScenario_DeactivateKillSwitchBase_Error(t *testing.T) {
+	t.Parallel()
+
+	var logged []string
+	scmDriver := &fakeCleanupSCM{
+		fileContent:   []byte("version: \"1\"\nkill_switch: true\n"),
+		commitFileErr: fmt.Errorf("commit failed"),
+	}
+	w := &world.World{
+		Org:                     "org",
+		RepoOwner:               "org",
+		RepoName:                "repo",
+		KillSwitchBaseActivated: true,
+		SCM:                     scmDriver,
+		Logf:                    func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) },
+	}
+	CleanupScenario(w)
+	require.Len(t, logged, 1)
+	assert.Contains(t, logged[0], "deactivate kill switch in config.base.yaml")
 }
 
 // --- Allowed remote resources cleanup tests ---
@@ -1119,6 +1298,10 @@ func (f *fakeRetryCleanupSCM) GetFileContent(context.Context, string, string, st
 	return nil, nil
 }
 
+func (f *fakeRetryCleanupSCM) GetFileContentAtRef(context.Context, string, string, string, string) ([]byte, error) {
+	return nil, nil
+}
+
 func (f *fakeRetryCleanupSCM) CreateBranch(context.Context, string, string, string) error {
 	return nil
 }
@@ -1163,11 +1346,23 @@ func (f *fakeRetryCleanupSCM) CreateFork(context.Context, string, string, string
 	return "", nil
 }
 
+func (f *fakeRetryCleanupSCM) CreateUserFork(context.Context, string, string) (string, string, error) {
+	return "", "", nil
+}
+
 func (f *fakeRetryCleanupSCM) CommitFileToFork(context.Context, string, string, string, string, string, []byte) error {
 	return nil
 }
 
 func (f *fakeRetryCleanupSCM) CreateForkChangeProposal(context.Context, string, string, string, string, string, string, string, string) (*forge.ChangeProposal, error) {
+	return nil, nil
+}
+
+func (f *fakeRetryCleanupSCM) ListPullRequestCommits(context.Context, string, string, int) ([]string, error) {
+	return nil, nil
+}
+
+func (f *fakeRetryCleanupSCM) ListPullRequestReviews(context.Context, string, string, int) ([]forge.PullRequestReview, error) {
 	return nil, nil
 }
 
@@ -1204,6 +1399,45 @@ func TestValidateSlotClean(t *testing.T) {
 		t.Parallel()
 		err := ValidateSlotClean(leased(slotConfig(t, func(c config.PerRepoConfigWriter) { c.SetKillSwitch(true) })))
 		require.ErrorContains(t, err, "kill_switch is active")
+	})
+
+	// config.yaml is silent on kill_switch here (the "clean slot"
+	// baseline); only ValidateSlotClean consulting config.base.yaml
+	// too catches this.
+	t.Run("kill switch left on in config.base.yaml only", func(t *testing.T) {
+		t.Parallel()
+		w := leased(slotConfig(t, nil))
+		w.SCM.(*fakeCleanupSCM).baseFileConfigured = true
+		w.SCM.(*fakeCleanupSCM).baseFileContent = slotConfig(t, func(c config.PerRepoConfigWriter) { c.SetKillSwitch(true) })
+		err := ValidateSlotClean(w)
+		require.ErrorContains(t, err, "kill_switch is active")
+	})
+
+	t.Run("config.base.yaml missing is not an error", func(t *testing.T) {
+		t.Parallel()
+		w := leased(slotConfig(t, nil))
+		w.SCM.(*fakeCleanupSCM).baseFileConfigured = true
+		w.SCM.(*fakeCleanupSCM).baseFileErr = forge.ErrNotFound
+		require.NoError(t, ValidateSlotClean(w))
+	})
+
+	t.Run("malformed config.base.yaml does not mask an overlay kill switch left on", func(t *testing.T) {
+		t.Parallel()
+		w := leased(slotConfig(t, func(c config.PerRepoConfigWriter) { c.SetKillSwitch(true) }))
+		w.SCM.(*fakeCleanupSCM).baseFileConfigured = true
+		w.SCM.(*fakeCleanupSCM).baseFileContent = []byte("kill_switch: [unterminated\n")
+		err := ValidateSlotClean(w)
+		require.ErrorContains(t, err, "config.base.yaml is malformed")
+		require.ErrorContains(t, err, "kill_switch is active")
+	})
+
+	t.Run("malformed config.base.yaml alone is reported as stale", func(t *testing.T) {
+		t.Parallel()
+		w := leased(slotConfig(t, nil))
+		w.SCM.(*fakeCleanupSCM).baseFileConfigured = true
+		w.SCM.(*fakeCleanupSCM).baseFileContent = []byte("kill_switch: [unterminated\n")
+		err := ValidateSlotClean(w)
+		require.ErrorContains(t, err, "config.base.yaml is malformed")
 	})
 
 	t.Run("no leased repo", func(t *testing.T) {

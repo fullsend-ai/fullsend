@@ -37,9 +37,9 @@ gh release download "$TAG" \
 
 echo "Verifying checksum..."
 if command -v sha256sum >/dev/null 2>&1; then
-  grep -F "${ARCHIVE}" checksums.txt | sha256sum -c
+  grep -F "${ARCHIVE}" checksums.txt | sha256sum -c -
 elif command -v shasum >/dev/null 2>&1; then
-  grep -F "${ARCHIVE}" checksums.txt | shasum -a 256 -c
+  grep -F "${ARCHIVE}" checksums.txt | shasum -a 256 -c -
 else
   echo "ERROR: No sha256sum or shasum found" >&2
   exit 1

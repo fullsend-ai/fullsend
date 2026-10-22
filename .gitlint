@@ -10,4 +10,4 @@ line-length=100
 # Matches the types documented in COMMITS.md and parsed by
 # GoReleaser for release notes.
 [contrib-title-conventional-commits]
-types=feat,fix,refactor,docs,test,chore,ci,perf,build
+types=feat,fix,refactor,docs,test,chore,ci,perf,build,style

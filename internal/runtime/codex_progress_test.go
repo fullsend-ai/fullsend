@@ -77,36 +77,38 @@ func TestParseCodexStream_BasicRun(t *testing.T) {
 
 	thinking := codexEventsOfType[ThinkingEvent](events)
 	require.Len(t, thinking, 1)
-	assert.Contains(t, thinking[0].Text, "Executing commands")
+	assert.Contains(t, thinking[0].Text, "Verifying user request")
 
 	texts := codexEventsOfType[TextEvent](events)
 	require.Len(t, texts, 2)
-	assert.Contains(t, texts[0].Text, "list the workspace")
-	assert.Equal(t, "done", texts[1].Text)
+	assert.Contains(t, texts[0].Text, "hello.txt")
+	assert.Equal(t, "Done. `hello.txt` contains `hi`.", texts[1].Text)
 
-	// The capture has item.started *and* item.completed for both the command
+	// The capture has item.started *and* item.completed for both commands
 	// and the file change; only the completions are reported.
 	tools := codexEventsOfType[ToolUseEvent](events)
-	require.Len(t, tools, 2)
+	require.Len(t, tools, 3)
 	assert.Equal(t, "Bash", tools[0].Name)
 	assert.Equal(t, "$ /bin/zsh -lc 'ls .'", tools[0].Summary,
 		"a successful command shows the command, never its output")
 	assert.Equal(t, "Write", tools[1].Name, "kind=add maps to Write")
 	assert.Equal(t, "/sandbox/workspace/repo/hello.txt", tools[1].Summary)
+	assert.Equal(t, "Bash", tools[2].Name)
+	assert.Equal(t, "$ /bin/zsh -lc 'cat hello.txt'", tools[2].Summary)
 
-	// codex nests its categories: input_tokens 41320 includes the 27386
-	// cached and 13925 cache-write tokens, and output_tokens 295 includes
-	// the 74 reasoning tokens. The normalized counters are disjoint, so the
-	// five sum to the 41615 tokens the thread actually used rather than to
-	// ~83000.
+	// codex nests its categories: input_tokens 43607 includes the 32508
+	// cached and 11087 cache-write tokens, and output_tokens 327 includes
+	// the 43 reasoning tokens. The normalized counters are disjoint, so the
+	// five sum to the 43934 tokens the thread actually used rather than to
+	// ~87500.
 	tokens := codexEventsOfType[TokensEvent](events)
 	require.Len(t, tokens, 1)
-	assert.Equal(t, 9, tokens[0].InputTokens, "41320 - 27386 - 13925")
-	assert.Equal(t, 221, tokens[0].OutputTokens, "295 - 74")
-	assert.Equal(t, 74, tokens[0].ReasoningTokens)
-	assert.Equal(t, 27386, tokens[0].CacheRead)
-	assert.Equal(t, 13925, tokens[0].CacheWrite)
-	assert.Equal(t, 41615,
+	assert.Equal(t, 12, tokens[0].InputTokens, "43607 - 32508 - 11087")
+	assert.Equal(t, 284, tokens[0].OutputTokens, "327 - 43")
+	assert.Equal(t, 43, tokens[0].ReasoningTokens)
+	assert.Equal(t, 32508, tokens[0].CacheRead)
+	assert.Equal(t, 11087, tokens[0].CacheWrite)
+	assert.Equal(t, 43934,
 		tokens[0].InputTokens+tokens[0].OutputTokens+tokens[0].ReasoningTokens+
 			tokens[0].CacheRead+tokens[0].CacheWrite,
 		"the renderer sums all five, so they must not overlap")
@@ -116,11 +118,11 @@ func TestParseCodexStream_BasicRun(t *testing.T) {
 	assert.Empty(t, result.Subtype)
 	assert.Equal(t, 1, result.NumTurns)
 	assert.Zero(t, result.TotalCostUSD, "codex reports no cost")
-	assert.Equal(t, 9, result.InputTokens)
-	assert.Equal(t, 221, result.OutputTokens)
-	assert.Equal(t, 74, result.ReasoningTokens)
-	assert.Equal(t, 13925, result.CacheCreationInputTokens)
-	assert.Equal(t, 27386, result.CacheReadInputTokens)
+	assert.Equal(t, 12, result.InputTokens)
+	assert.Equal(t, 284, result.OutputTokens)
+	assert.Equal(t, 43, result.ReasoningTokens)
+	assert.Equal(t, 11087, result.CacheCreationInputTokens)
+	assert.Equal(t, 32508, result.CacheReadInputTokens)
 }
 
 // --- fixture table ----------------------------------------------------------
@@ -747,12 +749,12 @@ func TestApplyCodexMetrics(t *testing.T) {
 	}
 
 	assert.Equal(t, 1, metrics.NumTurns)
-	assert.Equal(t, 9, metrics.InputTokens)
-	assert.Equal(t, 221, metrics.OutputTokens)
-	assert.Equal(t, 74, metrics.ReasoningTokens)
-	assert.Equal(t, 13925, metrics.CacheCreationInputTokens)
-	assert.Equal(t, 27386, metrics.CacheReadInputTokens)
-	assert.Equal(t, int32(2), metrics.ToolCalls.Load())
+	assert.Equal(t, 12, metrics.InputTokens)
+	assert.Equal(t, 284, metrics.OutputTokens)
+	assert.Equal(t, 43, metrics.ReasoningTokens)
+	assert.Equal(t, 11087, metrics.CacheCreationInputTokens)
+	assert.Equal(t, 32508, metrics.CacheReadInputTokens)
+	assert.Equal(t, int32(3), metrics.ToolCalls.Load())
 
 	// Left for the runner: the stream carries neither.
 	assert.Zero(t, metrics.TotalCostUSD)

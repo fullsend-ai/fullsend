@@ -411,10 +411,16 @@ func TestLoadPollState_FailsClosedWhenSecretEmptyAndNoBranch(t *testing.T) {
 	}
 }
 
-func TestSavePollState_FailsClosedWhenSecretEmpty(t *testing.T) {
+// TestCommitPollState_FailsClosedWhenSecretEmpty covers the create/
+// missing-branch path (expectedSHA == "") directly against commitPollState
+// now that the dead savePollState wrapper (which only ever forwarded to
+// commitPollState with an empty expectedSHA) has been removed: runtime
+// persist goes through persistCycleState/persistWithCAS instead, and
+// commitPollState itself already fails closed on an empty secret.
+func TestCommitPollState_FailsClosedWhenSecretEmpty(t *testing.T) {
 	mc := newMockClient()
 	p := newUnsignedTestPoller(mc)
-	if err := p.savePollState(context.Background(), "testgroup", "testrepo", persistedPollState{LastPollAtFull: "2025-01-01T00:00:00Z"}); err == nil {
+	if err := p.commitPollState(context.Background(), "testgroup", "testrepo", persistedPollState{LastPollAtFull: "2025-01-01T00:00:00Z"}, ""); err == nil {
 		t.Fatal("expected fail-closed error when no secret is configured, got nil")
 	} else if !errors.Is(err, errDispatchSecretUnset) {
 		t.Errorf("error = %v, want errDispatchSecretUnset", err)
@@ -787,7 +793,7 @@ func TestPersistDispatchedKeys_PrunesAndWrites(t *testing.T) {
 	watermark := time.Date(2025, 7, 1, 0, 0, 0, 0, time.UTC)
 	keys := map[string]int64{
 		"keep": watermark.Unix() + 10,
-		"drop": watermark.Unix() - 10,
+		"drop": watermark.Add(-dispatchedKeyRetention).Unix() - 10,
 	}
 	if err := p.persistDispatchedKeys(context.Background(), "testgroup", "testrepo", keys, watermark); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -840,6 +846,812 @@ func TestPersistFailedKeys_PrunesOverBudget(t *testing.T) {
 	}
 	if _, exists := got.FailedKeysFull["zero"]; exists {
 		t.Error("zero-count key should be pruned")
+	}
+}
+
+// TestPersistFailedKeys_PreservesOtherFields guards the nil-vs-empty-map
+// distinction persistCycleState relies on: persistFailedKeys only sets the
+// failed-keys field (passing nil for dispatched/watermark/labels), so a
+// failed-keys-only persist must leave the watermark, dispatched keys, and
+// label state untouched. This is the path Run takes on poll.go's
+// all-dispatches-failed branch.
+//
+// The "stale" failed key was previously expected to be wholesale-replaced
+// (dropped) by an uncontended first persistWithCAS attempt. That was the
+// bug: "uncontended" only means this writer's own commit landed as a clean
+// fast-forward, not that the freshly reloaded document is free of a
+// concurrent writer's disjoint update — a key this writer's delta simply
+// doesn't mention must be left alone, not dropped, on every attempt (see
+// applyPersistDeltas / unionFailedKeys). "stale" therefore now survives:
+// this call expresses no opinion on it (it isn't a tombstone — see
+// TestPersistFailedKeys_TombstoneDeletesResolvedKey for the deletion case).
+func TestPersistFailedKeys_PreservesOtherFields(t *testing.T) {
+	mc := newMockClient()
+	existingWM := "2025-01-01T00:00:00Z"
+	mc.setPollState(persistedPollState{
+		LastPollAtFull:     existingWM,
+		DispatchedKeysFull: map[string]int64{"keep-full": 99},
+		FailedKeysFull:     map[string]int{"stale": 1},
+		LabelState:         LabelState{3: {"ready-to-code"}},
+	})
+	p := newTestPoller(mc, Options{})
+	keys := map[string]int{"retry": 2}
+	if err := p.persistFailedKeys(context.Background(), "testgroup", "testrepo", keys); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if mc.forceCommits != 1 {
+		t.Errorf("force commits = %d, want 1", mc.forceCommits)
+	}
+
+	got, ok := mc.getPollState()
+	if !ok {
+		t.Fatal("expected poll state to be written")
+	}
+	if got.LastPollAtFull != existingWM {
+		t.Errorf("watermark clobbered: %q, want %q", got.LastPollAtFull, existingWM)
+	}
+	if got.DispatchedKeysFull["keep-full"] != 99 {
+		t.Errorf("dispatched keys clobbered: %v", got.DispatchedKeysFull)
+	}
+	if labels := got.LabelState[3]; len(labels) != 1 || labels[0] != "ready-to-code" {
+		t.Errorf("label state clobbered: %v", got.LabelState)
+	}
+	if got.FailedKeysFull["retry"] != 2 {
+		t.Errorf("retry count = %d, want 2", got.FailedKeysFull["retry"])
+	}
+	if got.FailedKeysFull["stale"] != 1 {
+		t.Errorf("disjoint stale key should survive a merge this writer has no opinion on: %v", got.FailedKeysFull)
+	}
+}
+
+// TestPersistFailedKeys_TombstoneDeletesResolvedKey covers the deletion
+// side of the same fix: a key this writer explicitly resolved this cycle
+// (a 0-count tombstone — see poll.go's dispatch-success path) must be
+// removed even though the freshly reloaded document (here, the same
+// document this writer itself is about to persist against) still carries
+// a nonzero count for it. Without the tombstone, unionFailedKeys's
+// max-count merge would resurrect the pre-cycle count instead of clearing
+// it.
+func TestPersistFailedKeys_TombstoneDeletesResolvedKey(t *testing.T) {
+	mc := newMockClient()
+	mc.setPollState(persistedPollState{
+		FailedKeysFull: map[string]int{"resolved": 2, "untouched": 1},
+	})
+	p := newTestPoller(mc, Options{})
+	keys := map[string]int{"resolved": 0}
+	if err := p.persistFailedKeys(context.Background(), "testgroup", "testrepo", keys); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, ok := mc.getPollState()
+	if !ok {
+		t.Fatal("expected poll state to be written")
+	}
+	if _, exists := got.FailedKeysFull["resolved"]; exists {
+		t.Errorf("tombstoned key should be removed, got %v", got.FailedKeysFull)
+	}
+	if got.FailedKeysFull["untouched"] != 1 {
+		t.Errorf("untouched key should survive: %v", got.FailedKeysFull)
+	}
+}
+
+// --- persistCycleState tests ---
+
+func TestPersistCycleState_WritesAllFieldsOnce(t *testing.T) {
+	mc := newMockClient()
+	mc.setPollState(persistedPollState{
+		LastPollAtFull:     "2020-01-01T00:00:00Z",
+		DispatchedKeysFull: map[string]int64{"old": 1},
+		FailedKeysFull:     map[string]int{"stale": 1},
+		LabelState:         LabelState{9: {"bug"}},
+	})
+	p := newTestPoller(mc, Options{})
+	wm := time.Date(2025, 7, 1, 0, 0, 0, 0, time.UTC)
+	dispatched := map[string]int64{
+		"keep": wm.Unix() + 10,
+		"drop": wm.Add(-dispatchedKeyRetention).Unix() - 10,
+	}
+	failed := map[string]int{"retry": 2, "done": maxEventRetries + 1}
+	labels := LabelState{1: {"ready-to-code"}}
+
+	if err := p.persistCycleState(context.Background(), "testgroup", "testrepo", dispatched, &wm, failed, labels); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if mc.forceCommits != 1 {
+		t.Errorf("force commits = %d, want 1", mc.forceCommits)
+	}
+
+	got, ok := mc.getPollState()
+	if !ok {
+		t.Fatal("expected poll state to be written")
+	}
+	if got.LastPollAtFull != wm.Format(time.RFC3339) {
+		t.Errorf("watermark = %q, want %q", got.LastPollAtFull, wm.Format(time.RFC3339))
+	}
+	if _, ok := got.DispatchedKeysFull["keep"]; !ok {
+		t.Error("expected keep key to be persisted")
+	}
+	if _, ok := got.DispatchedKeysFull["drop"]; ok {
+		t.Error("expected drop key to be pruned")
+	}
+	if got.FailedKeysFull["retry"] != 2 {
+		t.Errorf("retry count = %d, want 2", got.FailedKeysFull["retry"])
+	}
+	if _, exists := got.FailedKeysFull["done"]; exists {
+		t.Error("over-budget key should be pruned")
+	}
+	if got := got.LabelState[1]; len(got) != 1 || got[0] != "ready-to-code" {
+		t.Errorf("LabelState[1] = %v, want [ready-to-code]", got)
+	}
+}
+
+func TestPersistCycleState_NilFieldsPreserveExisting(t *testing.T) {
+	mc := newMockClient()
+	existingWM := "2025-01-01T00:00:00Z"
+	mc.setPollState(persistedPollState{
+		LastPollAtFull:     existingWM,
+		DispatchedKeysFull: map[string]int64{"keep-full": 99},
+		FailedKeysFull:     map[string]int{"keep-fail": 1},
+		LabelState:         LabelState{3: {"ready-to-code"}},
+	})
+	p := newTestPoller(mc, Options{})
+	if err := p.persistCycleState(context.Background(), "testgroup", "testrepo", nil, nil, nil, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if mc.forceCommits != 1 {
+		t.Errorf("force commits = %d, want 1", mc.forceCommits)
+	}
+
+	got, ok := mc.getPollState()
+	if !ok {
+		t.Fatal("expected poll state")
+	}
+	if got.LastPollAtFull != existingWM {
+		t.Errorf("watermark clobbered: %q", got.LastPollAtFull)
+	}
+	if got.DispatchedKeysFull["keep-full"] != 99 {
+		t.Errorf("dispatched clobbered: %v", got.DispatchedKeysFull)
+	}
+	if got.FailedKeysFull["keep-fail"] != 1 {
+		t.Errorf("failed clobbered: %v", got.FailedKeysFull)
+	}
+	if got := got.LabelState[3]; len(got) != 1 || got[0] != "ready-to-code" {
+		t.Errorf("labels clobbered: %v", got)
+	}
+}
+
+func TestPersistCycleState_SlashModeIsolated(t *testing.T) {
+	mc := newMockClient()
+	mc.setPollState(persistedPollState{
+		LastPollAtFull:     "2020-01-01T00:00:00Z",
+		DispatchedKeysFull: map[string]int64{"keep-full": 99},
+	})
+	p := newTestPoller(mc, Options{})
+	p.slashCommandsOnly = true
+	wm := time.Date(2025, 7, 1, 0, 0, 0, 0, time.UTC)
+	if err := p.persistCycleState(context.Background(), "testgroup", "testrepo", map[string]int64{"slash": wm.Unix() + 1}, &wm, map[string]int{"n": 1}, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if mc.forceCommits != 1 {
+		t.Errorf("force commits = %d, want 1", mc.forceCommits)
+	}
+
+	got, ok := mc.getSlashState()
+	if !ok {
+		t.Fatal("expected slash poll state")
+	}
+	if got.LastPollAtFast != wm.Format(time.RFC3339) {
+		t.Errorf("slash watermark = %q", got.LastPollAtFast)
+	}
+	if got.DispatchedKeysFast["slash"] == 0 {
+		t.Error("expected slash dispatched key")
+	}
+	if got.FailedKeysFast["n"] != 1 {
+		t.Errorf("FailedKeysFast = %v", got.FailedKeysFast)
+	}
+	if got.LastPollAtFull != "" || got.LabelState != nil {
+		t.Errorf("slash document must not carry events fields: %+v", got)
+	}
+	events, ok := mc.getPollState()
+	if !ok || events.DispatchedKeysFull["keep-full"] != 99 {
+		t.Error("full dispatched keys should be preserved on the events branch")
+	}
+}
+
+func TestPersistCycleState_DownloadError(t *testing.T) {
+	mc := newMockClient()
+	mc.fileContentErr = fmt.Errorf("timeout")
+	p := newTestPoller(mc, Options{})
+	wm := time.Now()
+	if err := p.persistCycleState(context.Background(), "testgroup", "testrepo", map[string]int64{"k": 1}, &wm, map[string]int{"k": 1}, nil); err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestPersistCycleState_UploadError(t *testing.T) {
+	mc := newMockClient()
+	mc.forceCommitErr = fmt.Errorf("upload boom")
+	p := newTestPoller(mc, Options{})
+	wm := time.Now()
+	if err := p.persistCycleState(context.Background(), "testgroup", "testrepo", nil, &wm, nil, nil); err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestPersistCycleState_FailsClosedWhenSecretEmpty(t *testing.T) {
+	mc := newMockClient()
+	p := newUnsignedTestPoller(mc)
+	wm := time.Now()
+	if err := p.persistCycleState(context.Background(), "testgroup", "testrepo", nil, &wm, nil, nil); err == nil {
+		t.Fatal("expected fail-closed error when no secret is configured, got nil")
+	} else if !errors.Is(err, errDispatchSecretUnset) {
+		t.Errorf("error = %v, want errDispatchSecretUnset", err)
+	}
+}
+
+func TestPersistCycleState_UnionsConcurrentWriterDedupKeys(t *testing.T) {
+	mc := newMockClient()
+	wm := time.Date(2025, 7, 1, 0, 0, 0, 0, time.UTC)
+	ts := wm.Unix() + 10
+	mc.setPollState(persistedPollState{
+		DispatchedKeysFull: map[string]int64{"shared": ts, "writer-b": ts},
+	})
+	p := newTestPoller(mc, Options{})
+	if err := p.persistCycleState(context.Background(), "testgroup", "testrepo",
+		map[string]int64{"shared": ts, "writer-a": ts}, &wm, nil, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got, ok := mc.getPollState()
+	if !ok {
+		t.Fatal("expected poll state")
+	}
+	if got.DispatchedKeysFull["writer-a"] != ts {
+		t.Errorf("writer-a missing: %v", got.DispatchedKeysFull)
+	}
+	if got.DispatchedKeysFull["writer-b"] != ts {
+		t.Errorf("writer-b missing: %v", got.DispatchedKeysFull)
+	}
+	if got.DispatchedKeysFull["shared"] != ts {
+		t.Errorf("shared missing: %v", got.DispatchedKeysFull)
+	}
+}
+
+func TestPersistCycleState_CASRetryMergesConcurrentKeys(t *testing.T) {
+	mc := newMockClient()
+	wm := time.Date(2025, 7, 1, 0, 0, 0, 0, time.UTC)
+	ts := wm.Unix() + 10
+	mc.setPollState(persistedPollState{
+		DispatchedKeysFull: map[string]int64{"shared": ts},
+	})
+	mc.conflictOnce = &persistedPollState{
+		DispatchedKeysFull: map[string]int64{"shared": ts, "writer-b": ts},
+	}
+	p := newTestPoller(mc, Options{})
+	if err := p.persistCycleState(context.Background(), "testgroup", "testrepo",
+		map[string]int64{"shared": ts, "writer-a": ts}, &wm, nil, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got, ok := mc.getPollState()
+	if !ok {
+		t.Fatal("expected poll state")
+	}
+	if got.DispatchedKeysFull["writer-a"] != ts {
+		t.Errorf("writer-a missing after CAS retry: %v", got.DispatchedKeysFull)
+	}
+	if got.DispatchedKeysFull["writer-b"] != ts {
+		t.Errorf("writer-b missing after CAS retry: %v", got.DispatchedKeysFull)
+	}
+	if mc.forceCommits != 1 {
+		t.Errorf("successful commits = %d, want 1 (retry after one conflict)", mc.forceCommits)
+	}
+}
+
+// TestPersistCycleState_CASRetryMergesFailedKeys mirrors
+// TestPersistCycleState_CASRetryMergesConcurrentKeys for the failed-keys
+// field: a concurrent writer's retry count, recorded on the branch during
+// this writer's CAS retry window, must survive instead of being replaced
+// by this writer's own (disjoint) failed-key snapshot.
+func TestPersistCycleState_CASRetryMergesFailedKeys(t *testing.T) {
+	mc := newMockClient()
+	mc.setPollState(persistedPollState{
+		FailedKeysFull: map[string]int{"writer-a-key": 1},
+	})
+	mc.conflictOnce = &persistedPollState{
+		FailedKeysFull: map[string]int{"writer-b-key": 2},
+	}
+	p := newTestPoller(mc, Options{})
+	if err := p.persistCycleState(context.Background(), "testgroup", "testrepo",
+		nil, nil, map[string]int{"writer-a-key": 1}, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got, ok := mc.getPollState()
+	if !ok {
+		t.Fatal("expected poll state")
+	}
+	if got.FailedKeysFull["writer-a-key"] != 1 {
+		t.Errorf("writer-a-key missing after CAS retry: %v", got.FailedKeysFull)
+	}
+	if got.FailedKeysFull["writer-b-key"] != 2 {
+		t.Errorf("writer-b-key missing after CAS retry: %v", got.FailedKeysFull)
+	}
+}
+
+// TestPersistCycleState_FirstAttemptMergesDisjointFailedKeys mirrors
+// TestPersistCycleState_CASRetryMergesFailedKeys but for the uncontended
+// first attempt (no conflictOnce): a disjoint failed-key entry already on
+// the branch when this writer loads it must still survive persist. Before
+// the fix, the first attempt wholesale-replaced FailedKeysFull with this
+// writer's own (disjoint) map, silently dropping "writer-b-key" even
+// though no CAS conflict was ever detected for this writer's own commit.
+func TestPersistCycleState_FirstAttemptMergesDisjointFailedKeys(t *testing.T) {
+	mc := newMockClient()
+	mc.setPollState(persistedPollState{
+		FailedKeysFull: map[string]int{"writer-b-key": 2},
+	})
+	p := newTestPoller(mc, Options{})
+	if err := p.persistCycleState(context.Background(), "testgroup", "testrepo",
+		nil, nil, map[string]int{"writer-a-key": 1}, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if mc.forceCommits != 1 {
+		t.Errorf("force commits = %d, want 1 (uncontended)", mc.forceCommits)
+	}
+	got, ok := mc.getPollState()
+	if !ok {
+		t.Fatal("expected poll state")
+	}
+	if got.FailedKeysFull["writer-a-key"] != 1 {
+		t.Errorf("writer-a-key missing: %v", got.FailedKeysFull)
+	}
+	if got.FailedKeysFull["writer-b-key"] != 2 {
+		t.Errorf("disjoint writer-b-key dropped by an uncontended first attempt: %v", got.FailedKeysFull)
+	}
+}
+
+// TestPersistCycleState_CASRetryDeletesTombstonedFailedKey covers the
+// deletion side of the failed-keys merge fix: this writer's delta carries
+// an explicit 0-count tombstone for a key it resolved this cycle (see
+// poll.go's dispatch-success path), and that must win over a stale
+// nonzero count a concurrent writer's commit (landed during this writer's
+// CAS retry window) still carries for the same key. A plain max-count
+// union without tombstone handling would resurrect the pre-cycle count.
+func TestPersistCycleState_CASRetryDeletesTombstonedFailedKey(t *testing.T) {
+	mc := newMockClient()
+	mc.setPollState(persistedPollState{
+		FailedKeysFull: map[string]int{"resolved": 3},
+	})
+	mc.conflictOnce = &persistedPollState{
+		// The concurrent writer's commit still carries the pre-cycle
+		// count for "resolved" (it never observed this writer's
+		// resolution) plus its own disjoint key.
+		FailedKeysFull: map[string]int{"resolved": 3, "writer-b-key": 1},
+	}
+	p := newTestPoller(mc, Options{})
+	if err := p.persistCycleState(context.Background(), "testgroup", "testrepo",
+		nil, nil, map[string]int{"resolved": 0}, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got, ok := mc.getPollState()
+	if !ok {
+		t.Fatal("expected poll state")
+	}
+	if _, exists := got.FailedKeysFull["resolved"]; exists {
+		t.Errorf("tombstoned key resurrected by CAS retry merge: %v", got.FailedKeysFull)
+	}
+	if got.FailedKeysFull["writer-b-key"] != 1 {
+		t.Errorf("concurrent writer's disjoint key missing after CAS retry: %v", got.FailedKeysFull)
+	}
+}
+
+// TestPersistCycleState_CASRetryMergesLabelState mirrors the dispatched-key
+// CAS retry coverage for LabelState: a concurrent writer's label update for
+// an issue this writer never looked at must survive a CAS retry rather than
+// being dropped by a wholesale replace.
+func TestPersistCycleState_CASRetryMergesLabelState(t *testing.T) {
+	mc := newMockClient()
+	mc.setPollState(persistedPollState{
+		LabelState: LabelState{1: {"ready-to-code"}},
+	})
+	mc.conflictOnce = &persistedPollState{
+		LabelState: LabelState{2: {"ready-for-review"}},
+	}
+	p := newTestPoller(mc, Options{})
+	if err := p.persistCycleState(context.Background(), "testgroup", "testrepo",
+		nil, nil, nil, LabelState{1: {"ready-to-code"}}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got, ok := mc.getPollState()
+	if !ok {
+		t.Fatal("expected poll state")
+	}
+	if labels := got.LabelState[1]; len(labels) != 1 || labels[0] != "ready-to-code" {
+		t.Errorf("this writer's own label state missing after CAS retry: %v", got.LabelState)
+	}
+	if labels := got.LabelState[2]; len(labels) != 1 || labels[0] != "ready-for-review" {
+		t.Errorf("concurrent writer's label state missing after CAS retry: %v", got.LabelState)
+	}
+}
+
+// TestPersistCycleState_FirstAttemptMergesDisjointLabelState mirrors
+// TestPersistCycleState_CASRetryMergesLabelState but for the uncontended
+// first attempt (no conflictOnce): a disjoint label entry already on the
+// branch when this writer loads it must still survive persist, since this
+// writer's own LabelState snapshot expresses no opinion on that issue.
+func TestPersistCycleState_FirstAttemptMergesDisjointLabelState(t *testing.T) {
+	mc := newMockClient()
+	mc.setPollState(persistedPollState{
+		LabelState: LabelState{2: {"ready-for-review"}},
+	})
+	p := newTestPoller(mc, Options{})
+	if err := p.persistCycleState(context.Background(), "testgroup", "testrepo",
+		nil, nil, nil, LabelState{1: {"ready-to-code"}}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if mc.forceCommits != 1 {
+		t.Errorf("force commits = %d, want 1 (uncontended)", mc.forceCommits)
+	}
+	got, ok := mc.getPollState()
+	if !ok {
+		t.Fatal("expected poll state")
+	}
+	if labels := got.LabelState[1]; len(labels) != 1 || labels[0] != "ready-to-code" {
+		t.Errorf("this writer's own label state missing: %v", got.LabelState)
+	}
+	if labels := got.LabelState[2]; len(labels) != 1 || labels[0] != "ready-for-review" {
+		t.Errorf("disjoint label state dropped by an uncontended first attempt: %v", got.LabelState)
+	}
+}
+
+// TestPersistCycleState_CASRetryDeletesTombstonedLabelState covers the
+// deletion side of the label-state merge fix: this writer's delta carries
+// an explicit tombstone (present, empty slice) for an issue it observed
+// close (or lose its routable labels) this cycle, and that must win over a
+// stale nonempty entry a concurrent writer's commit (landed during this
+// writer's CAS retry window) still carries for the same issue.
+func TestPersistCycleState_CASRetryDeletesTombstonedLabelState(t *testing.T) {
+	mc := newMockClient()
+	mc.setPollState(persistedPollState{
+		LabelState: LabelState{1: {"ready-to-code"}},
+	})
+	mc.conflictOnce = &persistedPollState{
+		// The concurrent writer's commit still carries the pre-cycle
+		// entry for issue 1 (it never observed this writer's closure)
+		// plus its own disjoint entry.
+		LabelState: LabelState{1: {"ready-to-code"}, 2: {"ready-for-review"}},
+	}
+	p := newTestPoller(mc, Options{})
+	if err := p.persistCycleState(context.Background(), "testgroup", "testrepo",
+		nil, nil, nil, LabelState{1: {}}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got, ok := mc.getPollState()
+	if !ok {
+		t.Fatal("expected poll state")
+	}
+	if labels, exists := got.LabelState[1]; exists && len(labels) != 0 {
+		t.Errorf("tombstoned label entry resurrected by CAS retry merge: %v", got.LabelState)
+	}
+	if labels := got.LabelState[2]; len(labels) != 1 || labels[0] != "ready-for-review" {
+		t.Errorf("concurrent writer's disjoint label entry missing after CAS retry: %v", got.LabelState)
+	}
+}
+
+// TestPersistCycleState_CASRetryKeepsLaterWatermark ensures a CAS retry
+// cannot roll the watermark backward: if the document reloaded after a
+// conflict already carries a later watermark than this writer's own value,
+// the later one must be kept.
+func TestPersistCycleState_CASRetryKeepsLaterWatermark(t *testing.T) {
+	mc := newMockClient()
+	wmOld := time.Date(2025, 7, 1, 0, 0, 0, 0, time.UTC)
+	wmConcurrent := wmOld.Add(time.Hour)
+	mc.setPollState(persistedPollState{
+		LastPollAtFull: wmOld.Format(time.RFC3339),
+	})
+	mc.conflictOnce = &persistedPollState{
+		LastPollAtFull: wmConcurrent.Format(time.RFC3339),
+	}
+	p := newTestPoller(mc, Options{})
+	wmThisWriter := wmOld.Add(30 * time.Minute)
+	if err := p.persistCycleState(context.Background(), "testgroup", "testrepo",
+		nil, &wmThisWriter, nil, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got, ok := mc.getPollState()
+	if !ok {
+		t.Fatal("expected poll state")
+	}
+	if got.LastPollAtFull != wmConcurrent.Format(time.RFC3339) {
+		t.Errorf("watermark = %q, want concurrent writer's later value %q", got.LastPollAtFull, wmConcurrent.Format(time.RFC3339))
+	}
+}
+
+func TestPersistCycleState_CASExhaustionFailsClosed(t *testing.T) {
+	mc := newMockClient()
+	mc.setPollState(persistedPollState{
+		DispatchedKeysFull: map[string]int64{"keep": 1},
+	})
+	for range maxPollStateCASAttempts {
+		mc.forceCommitErrSeq = append(mc.forceCommitErrSeq, fmt.Errorf("%w: conflict", forge.ErrNonFastForward))
+	}
+	p := newTestPoller(mc, Options{})
+	wm := time.Date(2025, 7, 1, 0, 0, 0, 0, time.UTC)
+	err := p.persistCycleState(context.Background(), "testgroup", "testrepo",
+		map[string]int64{"writer-a": wm.Unix() + 1}, &wm, nil, nil)
+	if err == nil {
+		t.Fatal("expected CAS exhaustion error, got nil")
+	}
+	if !errors.Is(err, errPollStateCASExhausted) {
+		t.Errorf("error = %v, want errPollStateCASExhausted", err)
+	}
+	if !forge.IsNonFastForward(err) {
+		t.Errorf("error = %v, want to wrap ErrNonFastForward", err)
+	}
+	got, ok := mc.getPollState()
+	if !ok {
+		t.Fatal("expected original poll state to remain")
+	}
+	if _, exists := got.DispatchedKeysFull["writer-a"]; exists {
+		t.Error("fail-closed persist must not land this writer's keys")
+	}
+	if got.DispatchedKeysFull["keep"] != 1 {
+		t.Errorf("original keys clobbered: %v", got.DispatchedKeysFull)
+	}
+	if mc.forceCommits != 0 {
+		t.Errorf("force commits = %d, want 0 on exhaustion", mc.forceCommits)
+	}
+}
+
+func TestPersistCycleState_ConcurrentWritersConvergeDedupKeys(t *testing.T) {
+	mc := newMockClient()
+	wm := time.Date(2025, 7, 1, 0, 0, 0, 0, time.UTC)
+	ts := wm.Unix() + 10
+	mc.setPollState(persistedPollState{
+		DispatchedKeysFull: map[string]int64{"shared": ts},
+	})
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		p := newTestPoller(mc, Options{})
+		if err := p.persistCycleState(context.Background(), "testgroup", "testrepo",
+			map[string]int64{"shared": ts, "writer-a": ts}, &wm, nil, nil); err != nil {
+			t.Errorf("writer-a: %v", err)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		p := newTestPoller(mc, Options{})
+		if err := p.persistCycleState(context.Background(), "testgroup", "testrepo",
+			map[string]int64{"shared": ts, "writer-b": ts}, &wm, nil, nil); err != nil {
+			t.Errorf("writer-b: %v", err)
+		}
+	}()
+	wg.Wait()
+
+	got, ok := mc.getPollState()
+	if !ok {
+		t.Fatal("expected poll state after concurrent writes")
+	}
+	if got.DispatchedKeysFull["writer-a"] != ts {
+		t.Errorf("writer-a missing: %v", got.DispatchedKeysFull)
+	}
+	if got.DispatchedKeysFull["writer-b"] != ts {
+		t.Errorf("writer-b missing: %v", got.DispatchedKeysFull)
+	}
+	if got.HMAC == "" {
+		t.Error("converged document must still be signed")
+	}
+}
+
+func TestPersistCycleState_NonConflictErrorDoesNotRetry(t *testing.T) {
+	mc := newMockClient()
+	mc.forceCommitErr = fmt.Errorf("upload boom")
+	p := newTestPoller(mc, Options{})
+	wm := time.Now()
+	err := p.persistCycleState(context.Background(), "testgroup", "testrepo", nil, &wm, nil, nil)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if errors.Is(err, errPollStateCASExhausted) {
+		t.Errorf("non-conflict error should not be reported as CAS exhaustion: %v", err)
+	}
+}
+
+func TestPersistCycleState_GetBranchRefError(t *testing.T) {
+	mc := newMockClient()
+	mc.branchRefErr = fmt.Errorf("ref lookup failed")
+	p := newTestPoller(mc, Options{})
+	wm := time.Now()
+	if err := p.persistCycleState(context.Background(), "testgroup", "testrepo", nil, &wm, nil, nil); err == nil {
+		t.Fatal("expected error, got nil")
+	} else if err.Error() != "ref lookup failed" {
+		t.Errorf("error = %v, want ref lookup failed", err)
+	}
+	if mc.forceCommits != 0 {
+		t.Errorf("force commits = %d, want 0", mc.forceCommits)
+	}
+}
+
+// TestPersistCycleState_PinsContentReadToBranchRefSHA guards against the
+// GetBranchRef/loadPollState divergence this fix closes: persistWithCAS
+// must read state.json at the exact SHA its own GetBranchRef call just
+// returned, not by branch name, so the two reads cannot observe two
+// different commits if another writer's commit lands on the branch
+// between them.
+func TestPersistCycleState_PinsContentReadToBranchRefSHA(t *testing.T) {
+	mc := newMockClient()
+	mc.setPollState(persistedPollState{
+		DispatchedKeysFull: map[string]int64{"existing": 1},
+	})
+	p := newTestPoller(mc, Options{})
+	wm := time.Now()
+	if err := p.persistCycleState(context.Background(), "testgroup", "testrepo", nil, &wm, nil, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	wantSHA := mockBranchSHA(PollStateBranchEvents, 0)
+	found := false
+	for _, ref := range mc.fileContentRefs {
+		if ref == wantSHA {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected a GetFileContentAtRef call pinned to %q, got refs %v", wantSHA, mc.fileContentRefs)
+	}
+}
+
+func TestPersistCycleState_CanceledContext(t *testing.T) {
+	mc := newMockClient()
+	p := newTestPoller(mc, Options{})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	wm := time.Now()
+	err := p.persistCycleState(ctx, "testgroup", "testrepo", nil, &wm, nil, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("error = %v, want context.Canceled", err)
+	}
+}
+
+func TestUnionDispatchedKeys_MaxTimestampWins(t *testing.T) {
+	state := persistedPollState{
+		DispatchedKeysFull: map[string]int64{"a": 10, "b": 20},
+	}
+	wm := time.Unix(5, 0)
+	unionDispatchedKeys(&state, false, map[string]int64{"b": 15, "c": 30}, wm, nil)
+	if state.DispatchedKeysFull["a"] != 10 {
+		t.Errorf("a = %d, want 10", state.DispatchedKeysFull["a"])
+	}
+	if state.DispatchedKeysFull["b"] != 20 {
+		t.Errorf("b = %d, want 20 (loaded timestamp is newer)", state.DispatchedKeysFull["b"])
+	}
+	if state.DispatchedKeysFull["c"] != 30 {
+		t.Errorf("c = %d, want 30", state.DispatchedKeysFull["c"])
+	}
+}
+
+func TestUnionDispatchedKeys_SlashMode(t *testing.T) {
+	state := persistedPollState{
+		DispatchedKeysFast: map[string]int64{"keep": 10},
+		DispatchedKeysFull: map[string]int64{"full": 99},
+	}
+	unionDispatchedKeys(&state, true, map[string]int64{"slash": 20}, time.Unix(5, 0), nil)
+	if state.DispatchedKeysFast["keep"] != 10 || state.DispatchedKeysFast["slash"] != 20 {
+		t.Errorf("fast keys = %v", state.DispatchedKeysFast)
+	}
+	if state.DispatchedKeysFull["full"] != 99 {
+		t.Errorf("full keys clobbered: %v", state.DispatchedKeysFull)
+	}
+}
+
+func TestUnionFailedKeys_MaxCountWins(t *testing.T) {
+	state := persistedPollState{
+		FailedKeysFull: map[string]int{"a": 1, "b": 2},
+	}
+	unionFailedKeys(&state, false, map[string]int{"b": 1, "c": 3})
+	if state.FailedKeysFull["a"] != 1 {
+		t.Errorf("a = %d, want 1", state.FailedKeysFull["a"])
+	}
+	if state.FailedKeysFull["b"] != 2 {
+		t.Errorf("b = %d, want 2 (loaded count is higher)", state.FailedKeysFull["b"])
+	}
+	if state.FailedKeysFull["c"] != 3 {
+		t.Errorf("c = %d, want 3", state.FailedKeysFull["c"])
+	}
+}
+
+func TestUnionFailedKeys_PrunesOverBudget(t *testing.T) {
+	state := persistedPollState{
+		FailedKeysFull: map[string]int{"stale": 1},
+	}
+	unionFailedKeys(&state, false, map[string]int{"over": maxEventRetries + 1, "zero": 0})
+	if _, exists := state.FailedKeysFull["over"]; exists {
+		t.Error("over-budget key should be pruned")
+	}
+	if _, exists := state.FailedKeysFull["zero"]; exists {
+		t.Error("zero-count key should be pruned")
+	}
+	if state.FailedKeysFull["stale"] != 1 {
+		t.Errorf("stale = %d, want 1", state.FailedKeysFull["stale"])
+	}
+}
+
+func TestUnionFailedKeys_SlashMode(t *testing.T) {
+	state := persistedPollState{
+		FailedKeysFast: map[string]int{"keep": 1},
+		FailedKeysFull: map[string]int{"full": 9},
+	}
+	unionFailedKeys(&state, true, map[string]int{"slash": 2})
+	if state.FailedKeysFast["keep"] != 1 || state.FailedKeysFast["slash"] != 2 {
+		t.Errorf("fast keys = %v", state.FailedKeysFast)
+	}
+	if state.FailedKeysFull["full"] != 9 {
+		t.Errorf("full keys clobbered: %v", state.FailedKeysFull)
+	}
+}
+
+// TestUnionFailedKeys_TombstoneDeletesExistingKey exercises the tombstone
+// handling directly: a 0-count entry in the incoming map is this writer's
+// explicit deletion and must remove the key even though existing carries a
+// higher (stale, pre-cycle) count for it, rather than losing to it under a
+// plain max-count comparison.
+func TestUnionFailedKeys_TombstoneDeletesExistingKey(t *testing.T) {
+	state := persistedPollState{
+		FailedKeysFull: map[string]int{"resolved": 5, "keep": 1},
+	}
+	unionFailedKeys(&state, false, map[string]int{"resolved": 0})
+	if _, exists := state.FailedKeysFull["resolved"]; exists {
+		t.Errorf("tombstoned key should be deleted, got %v", state.FailedKeysFull)
+	}
+	if state.FailedKeysFull["keep"] != 1 {
+		t.Errorf("untouched key should survive: %v", state.FailedKeysFull)
+	}
+}
+
+func TestMergeLabelState_UnionsDisjointIssues(t *testing.T) {
+	existing := LabelState{1: {"ready-to-code"}}
+	incoming := LabelState{2: {"ready-for-review"}}
+	merged := mergeLabelState(existing, incoming)
+	if labels := merged[1]; len(labels) != 1 || labels[0] != "ready-to-code" {
+		t.Errorf("merged[1] = %v", labels)
+	}
+	if labels := merged[2]; len(labels) != 1 || labels[0] != "ready-for-review" {
+		t.Errorf("merged[2] = %v", labels)
+	}
+}
+
+func TestMergeLabelState_IncomingWinsOnOverlap(t *testing.T) {
+	existing := LabelState{1: {"stale-label"}}
+	incoming := LabelState{1: {"fresh-label"}}
+	merged := mergeLabelState(existing, incoming)
+	if labels := merged[1]; len(labels) != 1 || labels[0] != "fresh-label" {
+		t.Errorf("merged[1] = %v, want incoming to win", labels)
+	}
+}
+
+func TestMergeLabelState_NilExisting(t *testing.T) {
+	incoming := LabelState{1: {"ready-to-code"}}
+	merged := mergeLabelState(nil, incoming)
+	if labels := merged[1]; len(labels) != 1 || labels[0] != "ready-to-code" {
+		t.Errorf("merged[1] = %v", labels)
+	}
+}
+
+// TestMergeLabelState_TombstoneDeletesExistingIssue exercises the
+// tombstone handling directly: an IID present in incoming with an empty
+// (non-nil) slice is this writer's explicit deletion and must remove the
+// issue even though existing still carries a nonempty (stale, pre-cycle)
+// entry for it.
+func TestMergeLabelState_TombstoneDeletesExistingIssue(t *testing.T) {
+	existing := LabelState{1: {"ready-to-code"}, 2: {"ready-for-review"}}
+	incoming := LabelState{1: {}}
+	merged := mergeLabelState(existing, incoming)
+	if labels, exists := merged[1]; exists && len(labels) != 0 {
+		t.Errorf("tombstoned issue should be deleted, got %v", labels)
+	}
+	if labels := merged[2]; len(labels) != 1 || labels[0] != "ready-for-review" {
+		t.Errorf("untouched issue should survive: %v", merged)
 	}
 }
 
@@ -945,8 +1757,13 @@ func TestDetectNewLabels_PrunesClosedIssues(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if _, ok := state[99]; ok {
-		t.Error("expected closed issue 99 to be pruned from state")
+	// Closed issue 99 is tombstoned (present, empty), not deleted outright:
+	// mergeLabelState needs the explicit deletion marker to survive a merge
+	// against a freshly reloaded document in persistWithCAS (see
+	// mergeLabelState in state.go). The persisted document still ends up
+	// without an entry for 99 once mergeLabelState/pruning run.
+	if labels, ok := state[99]; !ok || len(labels) != 0 {
+		t.Errorf("expected closed issue 99 to be tombstoned (present, empty) in state, got %v (present=%v)", labels, ok)
 	}
 	if _, ok := state[10]; !ok {
 		t.Error("expected issue 10 to remain in state")
@@ -966,13 +1783,19 @@ func TestDetectNewLabels_DoesNotPruneOpenIssues(t *testing.T) {
 		{IID: 10, Labels: []string{"ready-to-code"}},
 	}
 
-	_, state, _, err := p.detectNewLabels(context.Background(), "testgroup", "testrepo", issues)
+	_, delta, _, err := p.detectNewLabels(context.Background(), "testgroup", "testrepo", issues)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if _, ok := state[88]; !ok {
-		t.Error("expected open issue 88 to remain in state")
+	// Open issue 88 is outside discovery: it is omitted from the delta (not
+	// tombstoned, not echoed from the loaded snapshot), so persisting the
+	// delta leaves whatever the stored document carries for it untouched.
+	if labels, ok := delta[88]; ok {
+		t.Errorf("expected open issue 88 to be absent from the delta, got %v", labels)
+	}
+	if _, ok := delta[10]; !ok {
+		t.Error("expected discovered issue 10 in the delta")
 	}
 }
 
@@ -1358,6 +2181,37 @@ func TestSeedGitLabPollStateBranches_EmptyBaselineWhenNoLegacyVars(t *testing.T)
 	}
 }
 
+// A freshly seeded events branch carries the issue-open recovery cutoff, set
+// at installation; the slash branch does not.
+func TestSeedGitLabPollStateBranches_SeedsIssueOpenCutoff(t *testing.T) {
+	fc := forge.NewFakeClient()
+	before := time.Now().Add(-time.Second)
+
+	if _, err := SeedGitLabPollStateBranches(context.Background(), fc, "testgroup", "testrepo", "test-secret"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	read := func(branch string) persistedPollState {
+		raw, err := fc.GetFileContentAtRef(context.Background(), "testgroup", "testrepo", PollStateFileName, branch)
+		if err != nil {
+			t.Fatalf("%s: %v", branch, err)
+		}
+		var state persistedPollState
+		if err := json.Unmarshal(raw, &state); err != nil {
+			t.Fatalf("unmarshal %s: %v", branch, err)
+		}
+		return state
+	}
+	events := read(PollStateBranchEvents)
+	cutoff := decodeIssueOpenCutoff(events).IssueOpenCutoff
+	if cutoff.Before(before) || cutoff.After(time.Now().Add(time.Second)) {
+		t.Errorf("events cutoff = %v, want about now", cutoff)
+	}
+	if got := decodeIssueOpenCutoff(read(PollStateBranchSlash)).IssueOpenCutoff; !got.IsZero() {
+		t.Errorf("slash branch cutoff = %v, want none", got)
+	}
+}
+
 func TestSeedGitLabPollStateBranches_SkipsExistingBranch(t *testing.T) {
 	fc := forge.NewFakeClient()
 	existing := []byte(`{"last_poll_at_fast":"2025-06-01T00:00:00Z","hmac":"keep-me"}`)
@@ -1479,6 +2333,23 @@ func TestSeedGitLabPollStateBranches_ForceCommitErrorPropagates(t *testing.T) {
 	_, err := SeedGitLabPollStateBranches(context.Background(), fc, "testgroup", "testrepo", "test-secret")
 	if err == nil {
 		t.Fatal("expected a force-commit error to propagate")
+	}
+	if strings.Contains(err.Error(), "Push rules") {
+		t.Errorf("unrelated error must not carry the push-rule hint: %v", err)
+	}
+}
+
+func TestSeedGitLabPollStateBranches_PushRuleRejectionAddsHint(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.Errors["ForceCommitFileToBranch"] = errors.New("gitlab api: 400 Cannot create branch. The branch name must match this regular expression: master")
+	_, err := SeedGitLabPollStateBranches(context.Background(), fc, "testgroup", "testrepo", "test-secret")
+	if err == nil {
+		t.Fatal("expected a force-commit error to propagate")
+	}
+	for _, want := range []string{"must match this regular expression", "Push rules", PollStateBranchSlash, PollStateBranchEvents} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err, want)
+		}
 	}
 }
 

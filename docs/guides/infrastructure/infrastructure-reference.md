@@ -37,11 +37,10 @@ The mint exchanges GitHub OIDC tokens for scoped GitHub App installation tokens.
 │  │                                                          │   │
 │  │  1. Prevalidate OIDC JWT                                 │   │
 │  │     ├─ Check iss == token.actions.githubusercontent.com  │   │
-│  │     ├─ Extract repository_owner → ALLOWED_ORGS check     │   │
-│  │     │   (explicit org list, or * for public mint mode)   │   │
+│  │     ├─ Check repository ∈ PER_REPO_WIF_REPOS             │   │
+│  │     │   (explicit repo list, or * for public mint mode)  │   │
 │  │     └─ Validate job_workflow_ref provenance              │   │
-│  │        (per-org: .fullsend / upstream;                   │   │
-│  │         per-repo/public: WORKFLOW_HOST_REPOS)            │   │
+│  │        (upstream always; plus WORKFLOW_HOST_REPOS)       │   │
 │  │                                                          │   │
 │  │  2. STS Token Exchange                                   │   │
 │  │     ├─ POST securitytoken.googleapis.com                 │   │
@@ -169,9 +168,9 @@ Recommended operator order for adding **`packages:read`** to `coder` (code / fix
    Optionally include a short note to users explaining why.
 2. Update the App used by the pool installations as well, and have each
    `halfsend-01` … `halfsend-12` and `halfsend` installation owner Accept its pending update.
-   For the test-app setup, that is `fullsend-test-coder`; for pools using the
-   shared hosted App, update `fullsend-ai-coder`. Neither app set should be
-   left permanently on permission-drop warnings.
+   For the test-app setup, including the e2e pool organizations, that is
+   `fullsend-test-coder`. Neither app set should be left permanently on
+   permission-drop warnings.
 3. Deploy mint. Lagging installations keep authenticating; they simply omit
    `packages:read` until they Accept. The preflight avoids the two-POST retry
    volume that the old rollout path incurred.
@@ -194,29 +193,26 @@ rollout. Remove that optional entry once all installations have accepted.
 
 ### Mint Security Controls
 
-Mode is inferred from `ALLOWED_ORGS` — there is no separate trust-mode flag.
+Mode is inferred from `PER_REPO_WIF_REPOS` — there is no separate trust-mode flag. The legacy per-org `ALLOWED_ORGS` model no longer authorizes callers: the mint runtime ignores it.
 
-**Tight mint** (default): explicit comma-separated org list (no `*`).
+**Tight mint** (default): explicit comma-separated list of enrolled repositories (no `*`).
 
-- **ALLOWED_ORGS**: Only listed orgs may mint tokens
+- **PER_REPO_WIF_REPOS**: Only listed repositories may mint tokens; any other requesting repository is denied. Repos use dedicated WIF providers (repo-scoped isolation).
 - **ALLOWED_WORKFLOW_FILES**: Fail-closed allowlist of workflow filenames (use `*` to allow any basename)
-- **job_workflow_ref validation (per-org callers)**: `{org}/.fullsend` config repo or `fullsend-ai/fullsend` upstream reusables
-- **job_workflow_ref validation (per-repo callers)**: Only repos listed in `WORKFLOW_HOST_REPOS` (defaults to `fullsend-ai/fullsend`)
-- **job_workflow_ref validation (dual-enrolled callers)**: Callers matching both `PER_REPO_WIF_REPOS` and `ALLOWED_ORGS` accept workflows from **either** per-org sources (`{org}/.fullsend`, upstream) or per-repo sources (`WORKFLOW_HOST_REPOS`, upstream)
-- **WORKFLOW_HOST_REPOS**: Comma-separated repos whose workflows are trusted to call the mint for per-repo callers. Managed via `fullsend mint workflow-host add|remove|list`. Defaults to `fullsend-ai/fullsend` when unset.
-- **PER_REPO_WIF_REPOS**: Repos using dedicated WIF providers (repo-scoped isolation)
+- **job_workflow_ref validation**: Applies to every admitted caller. The workflow must be hosted by the upstream `fullsend-ai/fullsend` (always accepted) or a repo listed in `WORKFLOW_HOST_REPOS`, and its basename must be in `ALLOWED_WORKFLOW_FILES`
+- **WORKFLOW_HOST_REPOS**: Comma-separated repos whose workflows are trusted to call the mint. Managed via `fullsend mint workflow-host add|remove|list`. Defaults to `fullsend-ai/fullsend` when unset.
+- **Repository scope**: A same-org caller may only request its own repository unless repo-level FOREIGN grants authorize the requested repos; cross-org requests require FOREIGN grants.
 
-**Public mint**: `ALLOWED_ORGS` is `*`.
+**Public mint**: `PER_REPO_WIF_REPOS` is `*`.
 
-- **ALLOWED_ORGS**: Any org may mint (cross-org isolation still enforced at installation lookup)
-- **job_workflow_ref validation**: Same as per-repo callers — only repos listed in `WORKFLOW_HOST_REPOS` (defaults to `fullsend-ai/fullsend`). `ALLOWED_WORKFLOW_FILES` basename gate applies ([ADR 0082](../../ADRs/0082-workflow-host-allow-list.md) §2, revised 2026-08-05)
-- **PER_REPO_WIF_REPOS**: Set to `*` for public mode (GCF mint: all repos use `WIF_PROVIDER_NAME`)
+- **PER_REPO_WIF_REPOS**: Any repository may mint (cross-org isolation still enforced at installation lookup). For the GCF mint, all repos use `WIF_PROVIDER_NAME`
+- **job_workflow_ref validation**: Same as tight mode — the upstream plus repos listed in `WORKFLOW_HOST_REPOS` (defaults to `fullsend-ai/fullsend`). `ALLOWED_WORKFLOW_FILES` basename gate applies ([ADR 0082](../../ADRs/0082-workflow-host-allow-list.md) §2, revised 2026-08-05)
 - **WORKFLOW_HOST_REPOS**: Same semantics as tight mode — controls which repos may host workflows. Defaults to `fullsend-ai/fullsend` when unset
-- **mint enroll**: Succeeds without changing mint configuration (org registration is unnecessary); **mint unenroll** for individual orgs is rejected
+- **mint enroll**: Succeeds without changing mint configuration (repository registration is unnecessary); **mint unenroll** for individual repositories is not supported in public mode
 
-**GCF mint (STS verification) only:** The hosted Cloud Function uses `STSVerifier`, which exchanges each OIDC JWT with GCP STS against `WIF_PROVIDER_NAME`. A permissive WIF provider (CEL that does not enumerate orgs/repos) must back that env var, or STS will reject tokens from orgs outside the provider's `attributeCondition` even when `mintcore` prevalidation passes. Use `mint deploy --public` to provision `PER_REPO_WIF_REPOS=*` and permissive WIF together; tight-mode `mint deploy` (default) and `mint enroll` continue to use org-scoped WIF. Redeploys must match the mint mode (`--public` for public, omit for tight).
+**GCF mint (STS verification) only:** The hosted Cloud Function uses `STSVerifier`, which exchanges each OIDC JWT with GCP STS against `WIF_PROVIDER_NAME`. A permissive WIF provider (CEL that does not enumerate orgs/repos) must back that env var, or STS will reject tokens from orgs outside the provider's `attributeCondition` even when `mintcore` prevalidation passes. Use `mint deploy --public` to provision `PER_REPO_WIF_REPOS=*` and permissive WIF together; in tight mode (default), `mint deploy` provisions the shared WIF provider with a placeholder-only condition (it does not scope the provider to any org) and `mint enroll` creates a dedicated repo-scoped WIF provider for each enrolled repository. Redeploys must match the mint mode (`--public` for public, omit for tight).
 
-**Standalone mint (JWKS verification):** `cmd/mint` uses `JWKSVerifier` — direct GitHub JWKS signature checks with no STS or WIF. Public mode is fully determined by `ALLOWED_ORGS` and workflow provenance in `mintcore`; WIF provisioning is not applicable.
+**Standalone mint (JWKS verification):** `cmd/mint` uses `JWKSVerifier` — direct GitHub JWKS signature checks with no STS or WIF. Public mode is fully determined by `PER_REPO_WIF_REPOS` and workflow provenance in `mintcore`; WIF provisioning is not applicable.
 
 - **Minimum permissions**: Tokens are scoped to the role's minimum permission set, not the App's full permissions (both modes)
 
@@ -224,8 +220,8 @@ Mode is inferred from `ALLOWED_ORGS` — there is no separate trust-mode flag.
 
 A single mint instance can serve multiple orgs:
 
-- **Tight mode:** `EnsureOrgInMint()` additively appends orgs to `ALLOWED_ORGS`
-- **Public mode:** `PER_REPO_WIF_REPOS=*` — no per-org registration required; rollback to tight mode is config-only (clear `PER_REPO_WIF_REPOS=*` and set an explicit org list)
+- **Tight mode:** requesting repositories are enrolled in `PER_REPO_WIF_REPOS`
+- **Public mode:** `PER_REPO_WIF_REPOS=*` — no per-org registration required; rollback to tight mode is config-only (clear `PER_REPO_WIF_REPOS=*` and set an explicit repo list)
 - `ROLE_APP_IDS` maps `{role}` to GitHub App IDs (shared across all enrolled orgs)
 - Org isolation at token issuance uses the OIDC `repository_owner` claim and GitHub App installation lookup — not per-org app ID entries
 
@@ -237,14 +233,14 @@ A single mint instance can serve multiple orgs:
 - **Authorization:** Any valid credential from the auth pipeline — no role restriction.
 - **OIDC response:** Scoped to the authenticating workflow's org.
   ```json
-  {"org": "my-org", "roles": ["coder", "review", "triage"]}
+  {"org": "my-org", "roles": ["coder", "review", "triage"], "workflow_host_repos": ["fullsend-ai/fullsend"], "version": "2.0.0", "commit": "abc123"}
   ```
-- **Non-OIDC response** (e.g. GitHub user token): Reports all configured allowed orgs.
+- **Non-OIDC response** (e.g. GitHub user token): Not scoped to an org, so `org` is omitted. The former `allowed_orgs` field is no longer emitted.
   ```json
-  {"allowed_orgs": ["org-a", "org-b"], "roles": ["coder", "review", "triage"]}
+  {"roles": ["coder", "review", "triage"], "workflow_host_repos": ["fullsend-ai/fullsend"], "version": "2.0.0", "commit": "abc123"}
   ```
 - **Use case:** Workflow diagnostics — discover which roles are available before requesting a token. Non-OIDC auth enables status checks from outside GitHub Actions (e.g. `gh` CLI, OAuth login).
-- **Security:** OIDC returns only the requesting org. Non-OIDC returns allowed orgs (not individual role app IDs).
+- **Security:** OIDC returns only the requesting org. Non-OIDC returns the configured roles and workflow hosts (not individual role app IDs).
 - **Enabling optional validators:** Pass `--status-auth=github` to `mint deploy` along with `--status-github-group=ORG/TEAM`. This compiles the GitHub validator via the `github` build tag. Without these flags, OIDC is the only auth path.
 
 ---
@@ -294,7 +290,11 @@ Inference authentication uses GCP Workload Identity Federation (WIF) to allow Gi
 │  │ Project: FULLSEND_GCP_PROJECT_ID│                        │
 │  │ Region:  FULLSEND_GCP_REGION    │                        │
 │  │                                 │                        │
-│  │ Models:                         │                        │
+│  │ Models (alias defaults):        │                        │
+│  │  - claude-haiku-5-5             │                        │
+│  │  - claude-sonnet-5-5            │                        │
+│  │  - claude-opus-5-5              │                        │
+│  │ Fallbacks, if not served:       │                        │
 │  │  - claude-haiku-4-5             │                        │
 │  │  - claude-sonnet-4-6            │                        │
 │  │  - claude-opus-4-6              │                        │
@@ -310,60 +310,54 @@ During installation, the GCF provisioner creates:
 1. **Service Account** — For the Cloud Function identity
 2. **WIF Pool** — `fullsend-inference` for inference, `fullsend-pool` for mint
 3. **WIF Provider** — Maps GitHub OIDC claims to GCP attributes
-4. **IAM Bindings** — Grants `roles/aiplatform.user` to federated identities
+4. **IAM Bindings** — Grants `roles/aiplatform.user` to federated identities (created only by inference provisioning, `ProvisionWIF` / `fullsend inference provision`; mint deployment does not create these bindings)
 5. **Per-repo providers** (per-repo mode) — Scoped WIF provider per repository via `mintcore.BuildRepoProviderID()` (GitHub only; GitLab uses a shared `gitlab-oidc` provider scoped via attribute conditions on the WIF pool)
 
 ---
 
 ## GitHub Secrets & Variables Deployment
 
-> Individual values can be updated with `fullsend github set <target> <key> <value>`. See [Operations](../getting-started/operations.md#updating-configuration-values) for the full configuration management guide.
+> Individual values can be updated with `fullsend github set <owner/repo> <key> <value>`. See [Operations](../getting-started/operations.md#updating-configuration-values) for the full configuration management guide.
 
-Secrets and variables are deployed at different scopes depending on the installation mode.
+Secrets and variables are deployed on the target repository.
 
-### Per-Org Mode Secrets/Variables
-
-**Org-level variable:**
-- `FULLSEND_MINT_URL` — URL of the token mint Cloud Function
-
-**.fullsend repo variables (per role):**
-- `FULLSEND_{ROLE}_CLIENT_ID` — GitHub App client ID
-
-**.fullsend repo secrets (inference):**
-- `FULLSEND_GCP_PROJECT_ID` — GCP project for inference
-- `FULLSEND_GCP_WIF_PROVIDER` — WIF provider resource name
-
-**.fullsend repo variables (inference):**
-- `FULLSEND_GCP_REGION` — GCP region for inference (value drift is detected and repaired by convergence)
-
-**.fullsend repo variable (dot-repo fix):**
-- `FULLSEND_MINT_URL` — Duplicate of org variable (dot-prefixed repos can't read org-level variables)
-
-### Per-Repo Mode Secrets/Variables
+### Per-Repo Secrets/Variables
 
 #### GitHub
 
 **Target repo secrets:**
 - `FULLSEND_GCP_PROJECT_ID`
 - `FULLSEND_GCP_WIF_PROVIDER`
-- `FULLSEND_OPENAI_API_KEY` — opt-in static OpenAI API key when OpenAI WIF is unavailable (not set by `github setup`)
+- `FULLSEND_OPENAI_API_KEY` — static OpenAI API key for repos whose `inference.auth` is `openai-api-key` (written by `repos install --openai-api-key`; not set by `github setup`)
+- `FULLSEND_INFERENCE_GATEWAY_API_KEY` — inference gateway API key for repos whose `inference.gateway.auth` is `api-key` ([ADR 0138](../../ADRs/0138-inference-gateway-api-key-credential-mode.md); set by the repository admin, not by `github setup`)
+- `FULLSEND_GITHUB_RUNNER_SECRETS` — optional, set by you: a JSON object of name → literal value for host-side scripts, resolved through each harness's `env.runner` ([ADR 0136](../../ADRs/0136-runner-secrets-through-one-stored-secret.md); [setup](../user/building-custom-agents.md))
+
+Repos whose `inference.auth` is `openai-wif` need no Fullsend-managed inference secret: they authenticate with the user-managed `FULLSEND_OPENAI_*` identifier variables or `inference.openai` configuration, and the GCP secrets above are written only when Vertex sub-agents are configured.
 
 **Target repo variables:**
 - `FULLSEND_MINT_URL`
 - `FULLSEND_GCP_REGION` (value drift is detected and repaired by convergence)
 - `FULLSEND_REVIEW_CLIENT_ID` — OAuth client ID of the review agent's GitHub App (best-effort, conditional on successful lookup)
+- `FULLSEND_APP_SET` — GitHub App set prefix (apps named `{app-set}-{role}`); auto-set by the installer and repaired on convergence
 
 #### GitLab
 
 **Target repo CI/CD variables (protected):**
 - `FULLSEND_FORGE_TOKEN` — Project access token for bot identity at Developer (30) access (stored as protected CI/CD variable). Reduced from Maintainer (40) once poller state moved onto unprotected poll-state branches (#7381).
 
-Ordinary unflagged `repos install` retires the shared token once role credentials are ready; after successful cutover, `FULLSEND_FORGE_TOKEN` is deleted and missing role credentials are drift while the gate is `enforced`. [`--gitlab-role-cutover --gitlab-role-cutover-drained`](../../cli/repos.md#gitlab-role-cutover) remains an explicit fail-closed retry.
+Ordinary unflagged `repos install` provisions role credentials; it does not remove a leftover legacy shared token — there is no automated path for that, and an administrator must clean it up manually. Missing role credentials are drift; runtime selection never consults a legacy migration gate.
 - `FULLSEND_DISPATCH_SECRET` — Shared HMAC secret for signing dispatch variables and poll-state documents. Auto-provisioned by `repos install` (on both fresh installs and re-run/convergence of already-enrolled repos) as a masked, protected CI/CD variable.
-- `FULLSEND_POLL_MODE` — Pipeline schedule variable (`"slash"` or `"events"`); set automatically per schedule during install, not a project-level CI/CD variable
-- `FULLSEND_GITLAB_POLLER_TOKEN`, `FULLSEND_GITLAB_ANALYST_TOKEN`, `FULLSEND_GITLAB_CODER_TOKEN`, `FULLSEND_GITLAB_ROLE_<NAME>_TOKEN` — masked, protected role PATs provisioned by `repos install` ([gitlab-role-credentials.md](../../contributing/gitlab-role-credentials.md)). Fresh and existing shared-token installs create the three built-in tokens; ordinary unflagged install then retires `FULLSEND_FORGE_TOKEN` once every registered role is ready. When the gate is `migrating` or `enforced`, `fullsend poll` and `fullsend run` authenticate with the matching role token rather than the shared PAT. Absence is not a health failure while the gate is `disabled` or during partial `migrating`; `repos status` reports which roles are ready. Custom `own` roles use `FULLSEND_GITLAB_ROLE_<NAME>_TOKEN`; `reuse` roles share another registered credential.
-- `FULLSEND_GITLAB_ROLE_MIGRATION`, `FULLSEND_GITLAB_ROLE_REGISTRY` — protected, unmasked gate and administrator registry JSON (policy and credential references, never secret values). Written by `repos install`; not repository or merge-request content.
+- `FULLSEND_TRIGGER_TOKEN` — GitLab pipeline trigger token for the webhook fast-path dispatcher. Stored as a masked, protected CI/CD variable when the fast-path is enabled, and deleted once the webhook uses the trigger-only account's token (`FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN`). Never logged.
+- `FULLSEND_WEBHOOK_SECRET` — GitLab project-webhook secret (`X-Gitlab-Token`) for the webhook fast-path. Stored as a masked, protected CI/CD variable when the fast-path is enabled. Never logged.
+- `FULLSEND_POLL_MODE` — Job-local variable (`"slash"` or `"events"`), selected by job rules from `CI_PIPELINE_SCHEDULE_DESCRIPTION`; managed schedules do not submit pipeline variables. Typed activation removes legacy schedule-level overrides.
+- `FULLSEND_GITLAB_DISPATCH_ROUTE` — Job-local variable (`"child-pipeline"` or `"api"`), exported by `pin-ci-job-identity.sh` in the poll and dispatcher jobs and read by `fullsend poll` in both the cron and webhook drivers. `child-pipeline` is selected only when the trigger account ledger is ready, the `FULLSEND_GITLAB_DISPATCH_ACTIVATION` record names that exact ledger generation, the installed CLI reports support for the route (`fullsend poll --print-dispatch-routes`; an older CLI makes the job stop before any dispatch), and both the pipeline creator and the running job's user are the trigger account; otherwise `api` keeps dispatch on the Poller credential. Never a CI/CD variable ([gitlab-role-credentials.md](../../contributing/gitlab-role-credentials.md#trigger-only-service-account)).
+- `FULLSEND_GITLAB_DISPATCH_ACTIVATION` — protected, unmasked activation record for the trigger-account dispatch route (the ledger generation it was recorded for: nonce, account, deploy key, grant and trigger token IDs; no secrets). `repos install` writes it only after the activation gate passes; every install, repair, rotation, containment pass and uninstall deletes it first. It is separate from the ledger because older CLIs reject unknown ledger fields; a record that no longer matches the ledger is ignored ([gitlab-role-credentials.md](../../contributing/gitlab-role-credentials.md#trigger-only-service-account)).
+- `FULLSEND_GITLAB_POLLER_TOKEN`, `FULLSEND_GITLAB_ANALYST_TOKEN`, `FULLSEND_GITLAB_CODER_TOKEN`, `FULLSEND_GITLAB_ROLE_<NAME>_TOKEN` — masked, protected role PATs provisioned by `repos install` ([gitlab-role-credentials.md](../../contributing/gitlab-role-credentials.md)). Fresh installs provision these role tokens directly, with no shared token to retire. Existing installs that predate the role-only model and still have the shared token get the missing role tokens provisioned, but `FULLSEND_FORGE_TOKEN` is left in place — an administrator must revoke it manually. GitLab CI poll/agent jobs (`select-gitlab-role-token.sh`) and `fullsend poll` / `fullsend run` authenticate with the matching role token and fail closed if it is missing. Custom `own` roles use `FULLSEND_GITLAB_ROLE_<NAME>_TOKEN`; `reuse` roles share another registered credential.
+- `FULLSEND_GITLAB_ROLE_REGISTRY` — protected, unmasked administrator registry JSON (policy and credential references, never secret values). Written by `repos install`; not repository or merge-request content.
 - `FULLSEND_GITLAB_ROLE_ROTATION` — protected, unmasked per-role rotation state (lock, token IDs, expiry dates, phase; never secret values). Written when `repos install` rotates a role credential ([gitlab-role-credentials.md](../../contributing/gitlab-role-credentials.md)).
+- `FULLSEND_GITLAB_POLLER_GENERATIONS` — protected, unmasked Poller identity-generation state (current, pending, retiring, and abandoned Poller account IDs and the pending generation's handoff phase; never secret values). `repos install` writes it when it creates or rotates the webhook trigger through a fresh Poller generation, and clears `retiring_user_id` once it has retired the superseded generation; an absent variable is an empty state, and a present but blank one fails closed. When a generation is quarantined, the deferral message names the manual cleanup to perform before removing only the `pending` generation from this variable, keeping `version`, `current_user_id`, `retiring_user_id` and `abandoned_user_ids` ([gitlab-role-credentials.md](../../contributing/gitlab-role-credentials.md#poller-identity-generations)).
+- `FULLSEND_GITLAB_TRIGGER_ACCOUNT` — protected, unmasked ledger for the trigger-only GitLab service account (lifecycle phase, nonce, branch, and the account, bootstrap PAT, deploy key, branch-grant entry and trigger token IDs, plus the SHA-256 digest of the trigger token and a `publication_pending` marker for an unfinished token replacement; never token values or private keys). `repos install` writes it (including with `--rotate-gitlab-trigger-account`), `repos status` reports it, and `repos uninstall` removes it only after the trigger account's resources are removed. Do not edit or blank it by hand: a blank or malformed ledger fails closed ([gitlab-role-credentials.md](../../contributing/gitlab-role-credentials.md#trigger-only-service-account)).
+- `FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN` — masked, protected CI/CD variable (not file-typed, environment scope unrestricted) holding the pipeline trigger token owned by the trigger-only service account. Scheduled polling uses the account's job token, not this variable; while the dispatch activation is recorded, the managed webhook embeds this token instead of `FULLSEND_TRIGGER_TOKEN` ([#8509](https://github.com/fullsend-ai/fullsend/issues/8509)). Job scripts unset it before polling or dispatching, and the harness cannot expand it. Project-wide trigger safety drift removes the variable and revokes its owned trigger before install can publish another. Fullsend writes or deletes it only when the ledger records that fullsend created it, and refuses to overwrite a pre-existing variable of that name that fullsend did not create ([gitlab-role-credentials.md](../../contributing/gitlab-role-credentials.md#trigger-only-service-account)).
 
 **Poll-state branches:** `repos install` (on both fresh installs and
 re-run/convergence of already-enrolled repos) creates
@@ -374,16 +368,30 @@ events); otherwise each branch is an empty signed baseline. Existing
 branch documents are not overwritten. `repos uninstall` deletes both
 branches via `DeleteRef` (a missing branch is ignored).
 
-Every poller save force-re-roots the mode's branch on the repository's
-root commit (`force: true` + `start_sha`), so the branch stays at base +
-1 commit and history never grows. The poller **fails closed** when
+Each poll cycle performs a single save of that mode's `state.json`
+(dispatched keys, failed-key retry counts, watermark, and label state
+together). Runtime persist is conflict-detecting (compare-and-swap):
+the write is parented at the branch tip observed at load (`start_sha`),
+and a 409 / non-fast-forward triggers reload → re-apply this writer's
+dedup/watermark deltas → recommit. Retries are bounded; exhaustion fails
+closed rather than last-writer-wins overwrite, so a concurrent webhook
+dispatcher and the cron poller cannot drop each other's dispatched keys.
+Install-time seeding still force-re-roots (`force: true` + `start_sha` =
+repository root) so a missing branch is created at base + 1 commit. The
+poller **fails closed** when
 `FULLSEND_DISPATCH_SECRET` is unset (refuse load/write) or when a
 present `state.json` has a missing/invalid HMAC (discard the branch and
 fail that cycle). A missing branch or file is **not** tampering: the
 poller starts from a fresh baseline (watermark defaults to ~1 hour ago)
 and the next save recreates the branch. Losing a state branch therefore
 causes a one-time re-scan and at-least-once re-dispatch of recent items,
-not a stall.
+not a stall. A fresh or recreated events branch also resets the issue-open
+recovery cutoff, so issues opened before it are not recovered if their webhook
+delivery was missed. An events branch seeded by install or converge sets the
+cutoff at install time; a branch recreated at runtime takes the start of the
+cycle that recreates it. When no watermark is persisted but a cutoff is older
+than one hour, the first discovery starts at the cutoff rather than one hour
+back.
 
 **Retired poll-state CI/CD variables (#7343 phase 3b / #7380):** the
 following seven variables are no longer seeded at install. `repos
@@ -412,18 +420,10 @@ access instead of Maintainer. See ADR 0067.
 - `FULLSEND_GCP_PROJECT_ID` — GCP project ID for inference (stored as a CI/CD secret, protected + masked)
 - `FULLSEND_GCP_WIF_PROVIDER` — WIF provider resource name for inference (stored as a CI/CD secret, protected + masked)
 - `FULLSEND_GCP_REGION` — GCP region for inference (e.g., `us-central1`)
-- `OPENAI_API_KEY` — optional static OpenAI API key when OpenAI WIF is unavailable (masked CI/CD variable; already on the runner path, no extra forwarding)
+- `FULLSEND_OPENAI_API_KEY` — static OpenAI API key for projects whose `inference.auth` is `openai-api-key` (masked CI/CD variable written by `repos install --openai-api-key`; the job maps it to `OPENAI_API_KEY`, and an unprefixed `OPENAI_API_KEY` CI/CD variable is no longer used)
+- `FULLSEND_INFERENCE_GATEWAY_API_KEY` — inference gateway API key for projects whose `inference.gateway.auth` is `api-key` (masked CI/CD variable set by the project admin; the job passes it to the runner under its own name)
 
-### Secrets Layer Behavior
-
-- **Install**: Writes inference secrets when an inference project is configured.
-- **Analyze**: Checks that expected secrets/variables exist. Cannot verify secret values (GitHub Secrets API is write-only for values).
-- **Uninstall**: Deletes repo secrets and variables for all managed names.
-
-### Inference Layer Behavior
-
-- **Install**: Unconditionally writes secrets and variables (no way to check if values changed since GitHub doesn't expose secret values).
-- **Analyze**: Checks presence of `FULLSEND_GCP_PROJECT_ID`, `FULLSEND_GCP_WIF_PROVIDER`, `FULLSEND_GCP_REGION`.
+Per-repo installation (`internal/repos`) writes the inference secrets and variables directly rather than through layer orchestration.
 
 ---
 
@@ -459,12 +459,6 @@ The GCF provisioner handles full GCP infrastructure deployment:
 │  └─────────┬─────────┘                                          │
 │            ▼                                                    │
 │  ┌───────────────────┐                                          │
-│  │ Grant Agent       │ roles/aiplatform.user                    │
-│  │ Platform access   │ on the inference project                 │
-│  │ to federated IDs  │                                          │
-│  └─────────┬─────────┘                                          │
-│            ▼                                                    │
-│  ┌───────────────────┐                                          │
 │  │ Store PEMs in     │ fullsend-{role}-app-pem                  │
 │  │ Secret Manager    │ once per agent role (shared)             │
 │  └─────────┬─────────┘                                          │
@@ -474,7 +468,6 @@ The GCF provisioner handles full GCP infrastructure deployment:
 │  │ Function          │ SHA256 hash comparison to skip           │
 │  │                   │ redundant deploys                        │
 │  │                   │ Env vars:                                │
-│  │                   │   ALLOWED_ORGS                           │
 │  │                   │   GCP_PROJECT_NUMBER                     │
 │  │                   │   WIF_POOL_NAME                          │
 │  │                   │   WIF_PROVIDER_NAME                      │

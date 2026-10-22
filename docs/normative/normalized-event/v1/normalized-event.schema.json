@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://fullsend.ai/normative/normalized-event/v1/normalized-event.schema.json",
   "title": "NormalizedEvent",
-  "description": "Forge-neutral routing input for fullsend dispatch and harness CEL trigger evaluation (ADR 0061). v1 targets GitHub Actions webhooks (including Discussions via entity.kind conversation and transition.comment id/parent_id per ADR 0086), GitLab cron-poll input (ADR 0067), and Jira poll input (ADR 0063).",
+  "description": "Forge-neutral routing input for fullsend dispatch and harness CEL trigger evaluation (ADR 0061). v1 targets GitHub Actions webhooks (including Discussions via entity.kind conversation and transition.comment id/parent_id per ADR 0086), GitLab cron-poll input (ADR 0067) and planned GitLab native-webhook input (ADR 0125), and Jira poll input (ADR 0063).",
   "type": "object",
   "additionalProperties": false,
   "required": ["repo", "entity", "transition", "actor", "state", "source"],
@@ -316,13 +316,61 @@
             "none",
             "external"
           ],
-          "description": "Effective repository permission level (ADR 0054). Adapters populate from the forge collaborator permission API when available."
+          "description": "Effective repository permission level (ADR 0054); post-migration ADR 0107 producers use `none` for bots, while legacy bot permission values remain valid in v1 during migration."
+        },
+        "bot_role": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "maxLength": 255,
+          "description": "Optional provider-resolved canonical Fullsend bot role; absent or null for humans and unrecognized bots."
+        },
+        "role_verified": {
+          "type": "boolean",
+          "description": "Optional lookup-verification bit: for humans, true means role is a trusted forge permission; for bots, true means bot-role lookup completed, including a successful no-match result. It is not required for the permanent GitHub label-added authorization exception."
         },
         "is_entity_author": {
           "type": "boolean",
           "description": "True when actor.id is the author of the work item, change proposal, or conversation."
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "kind": { "const": "human" } },
+            "required": ["kind"]
+          },
+          "then": {
+            "properties": {
+              "bot_role": { "const": null }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": { "const": "bot" },
+              "role_verified": { "const": false }
+            },
+            "required": ["kind", "role_verified"]
+          },
+          "then": {
+            "properties": { "bot_role": { "const": null } }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": { "const": "bot" },
+              "bot_role": { "type": "string" }
+            },
+            "required": ["kind", "bot_role"]
+          },
+          "then": {
+            "required": ["role_verified"],
+            "properties": { "role_verified": { "const": true } }
+          }
+        }
+      ]
     },
     "state": {
       "type": "object",
@@ -430,6 +478,93 @@
             },
             "is_fork": {
               "type": "boolean"
+            },
+            "diff": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "files",
+                "additions",
+                "deletions"
+              ],
+              "dependentRequired": {
+                "paths_complete": [
+                  "paths"
+                ]
+              },
+              "properties": {
+                "files": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "additions": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "deletions": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "paths": {
+                  "type": "array",
+                  "maxItems": 3000,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096,
+                    "pattern": "^(?:[^./\\x00-\\x1f\\x7f][^/\\x00-\\x1f\\x7f]*|\\.[^./\\x00-\\x1f\\x7f][^/\\x00-\\x1f\\x7f]*|\\.\\.[^/\\x00-\\x1f\\x7f]+)(?:/(?:[^./\\x00-\\x1f\\x7f][^/\\x00-\\x1f\\x7f]*|\\.[^./\\x00-\\x1f\\x7f][^/\\x00-\\x1f\\x7f]*|\\.\\.[^/\\x00-\\x1f\\x7f]+))*$"
+                  },
+                  "description": "Changed file paths relative to the repository root. May be truncated when the forge caps the list; see paths_complete."
+                },
+                "paths_complete": {
+                  "type": "boolean",
+                  "description": "True only when paths is present and lists every changed file."
+                }
+              },
+              "description": "Optional change facts at head_sha, added for ADR 0112's routing and not yet populated by any adapter. Untrusted (README, Trusted fields)."
+            },
+            "linked_work_items": {
+              "type": "array",
+              "maxItems": 50,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "id",
+                  "state",
+                  "labels"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "key": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 255,
+                    "pattern": "^([A-Za-z][A-Za-z0-9_]+-\\d+|[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)+#\\d+)$",
+                    "description": "Human-readable key when the id alone is ambiguous, for example a Jira key (PROJ-123) or a cross-repository reference (owner/repo#12)."
+                  },
+                  "state": {
+                    "type": "string",
+                    "enum": [
+                      "open",
+                      "closed"
+                    ]
+                  },
+                  "labels": {
+                    "type": "array",
+                    "maxItems": 100,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 255
+                    }
+                  }
+                }
+              },
+              "description": "Optional work items the change proposal links to (for example through closing keywords), added for ADR 0112's routing and not yet populated by any adapter. Untrusted: the author chooses which items are linked (README, Trusted fields)."
             }
           },
           "description": "Required when the matched harness needs change-proposal execution context (review, fix, retro on a PR). id MUST match entity.id or entity.linked_change_proposal.id when those are present. Adapters must populate branch and repo fields so dispatch can project event_payload without API round-trips."
@@ -444,7 +579,7 @@
         "system": {
           "type": "string",
           "enum": ["github", "gitlab", "jira", "manual", "schedule"],
-          "description": "Event provenance. v1 adapters emit github (webhooks), gitlab (cron-poll input), jira (poll input), manual, or schedule."
+          "description": "Event provenance. v1 adapters emit github (webhooks), gitlab (cron-poll input per ADR 0067; shipped native-webhook input per ADR 0125, with live validation partial), jira (poll input), manual, or schedule."
         },
         "raw_type": {
           "type": "string",

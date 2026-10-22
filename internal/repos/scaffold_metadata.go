@@ -19,11 +19,9 @@ type ScaffoldPRMetadata struct {
 
 const (
 	// gettingStartedCatalog documents the primary /fs-* slash commands so users
-	// discover them at their first touchpoint — the fresh-install PR. It mirrors
-	// the per-org onboarding catalog (GETTING_STARTED_SECTION in
-	// scripts/reconcile-repos.sh); both surfaces are independently pinned to
-	// dispatch.yml's routing (per-repo by TestPerRepoOnboardingCatalog, per-org by
-	// TestReconcileReposSlashCommandCatalog) so they cannot drift apart. See #2165.
+	// discover them at their first touchpoint — the fresh-install PR. It is
+	// pinned to reusable-dispatch.yml's routing by TestPerRepoOnboardingCatalog
+	// so it cannot drift. See #2165.
 	gettingStartedCatalog = "\n\n## Getting started\n\n" +
 		"Once this PR is merged, interact with fullsend by commenting one of these " +
 		"slash commands. The supported target (issue and/or pull request) is shown for each:\n\n" +
@@ -101,9 +99,8 @@ func BuildScaffoldPRMetadata(ctx context.Context, client forge.Client,
 //
 // Branch intentionally reuses DefaultScaffoldBranch rather than a distinct
 // uninstall branch name: already-deployed per-repo shims (see
-// internal/scaffold/fullsend-repo/templates/shim-per-repo.yaml and
-// shim-workflow-call.yaml) only skip dispatch for
-// head.ref == "fullsend/scaffold-install". A separate uninstall branch name
+// internal/scaffold/fullsend-repo/templates/shim-per-repo.yaml) only skip
+// dispatch for head.ref == "fullsend/scaffold-install". A separate uninstall branch name
 // would fail open and let the teardown PR trigger the fullsend dispatch job
 // (with live WIF/mint credentials) against itself.
 //

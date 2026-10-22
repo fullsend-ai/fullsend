@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"gopkg.in/yaml.v3"
 )
 
 // emojiCall records a CreateNoteAwardEmoji invocation.
@@ -18,12 +19,40 @@ type emojiCall struct {
 	Emoji       string
 }
 
-// pipelineCall records a CreatePipeline invocation.
+// pipelineCall records a CreatePipeline or CreatePipelineWithInputs
+// invocation. ViaInputs distinguishes which transport dispatch() actually
+// used, since both methods decode into the same flat Variables shape here
+// (see CreatePipelineWithInputs below) so most assertions can stay
+// transport-agnostic.
 type pipelineCall struct {
 	Owner     string
 	Repo      string
 	Ref       string
 	Variables map[string]string
+	ViaInputs bool
+	// JobToken is the CI_JOB_TOKEN a child-pipeline dispatch was
+	// authenticated with; empty for the Poller API route.
+	JobToken string
+}
+
+// typedWrapperFixture returns a minimal two-document GitLab wrapper whose
+// spec:inputs header declares every name dispatch() requires, used as
+// mockClient's default GetFileContent response so existing dispatch tests
+// keep exercising the typed pipeline-input transport unless a test
+// explicitly configures a legacy (not-found) or malformed wrapper.
+func typedWrapperFixture() []byte {
+	inputs := make(map[string]any, len(dispatchInputNames)+maxEventPayloadChunks)
+	for _, name := range dispatchInputNames {
+		inputs[name] = map[string]any{"default": ""}
+	}
+	for i := 0; i < maxEventPayloadChunks; i++ {
+		inputs[dispatchEventPayloadChunkInputName(i)] = map[string]any{"default": ""}
+	}
+	header, err := yaml.Marshal(map[string]any{"spec": map[string]any{"inputs": inputs}})
+	if err != nil {
+		panic(fmt.Sprintf("marshaling typed wrapper fixture: %v", err))
+	}
+	return append(header, []byte("---\n{}\n")...)
 }
 
 // mockClient implements GitLabClient with configurable return values
@@ -33,6 +62,9 @@ type mockClient struct {
 
 	issues    []Issue
 	issuesErr error
+	// issuesHonorSince makes ListIssuesUpdatedSince return only issues
+	// updated after its since argument, like the real updated_after filter.
+	issuesHonorSince bool
 
 	mrs    []MergeRequest
 	mrsErr error
@@ -48,15 +80,44 @@ type mockClient struct {
 
 	labelEvents    map[int][]ResourceLabelEvent // keyed by issue IID
 	labelEventsErr map[int]error
+	// labelEventsFailAfter, when > 0, makes ListResourceLabelEvents fail once
+	// labelEventCalls exceeds it, so a test can let a first lookup succeed
+	// and fail the next.
+	labelEventsFailAfter int
 
 	// files is per-branch file content: branch → path → bytes.
 	// ForceCommitFileToBranch replaces the branch tree with a single file.
-	files          map[string]map[string][]byte
-	fileContentErr error
-	forceCommitErr error
-	deleteRefErr   error
-	deletedRefs    []string
-	forceCommits   int
+	files map[string]map[string][]byte
+	// fileContentRefs records every non-wrapper ref GetFileContentAtRef was
+	// queried with, in order, so tests can assert persistWithCAS pins its
+	// content read to the exact SHA a prior GetBranchRef call returned.
+	fileContentRefs []string
+	// wrapperContentRefs records every ref GetFileContentAtRef was queried
+	// with for the GitLab pipeline wrapper (fullsendPipelineIncludePath),
+	// in order, so tests can assert usesTypedDispatch reads at the
+	// dispatch ref rather than the default branch.
+	wrapperContentRefs []string
+	fileContentErr     error
+	// fileContentErrAt fails only the poll-state read with the given 1-based
+	// ordinal (counted across non-wrapper reads), for transient-failure tests.
+	fileContentErrAt map[int]error
+	fileContentReads int
+	branchRefErr     error
+	forceCommitErr   error
+	// forceCommitErrSeq is an error queue for CommitFileToBranch / ForceCommitFileToBranch.
+	// Each call shifts the first element; when empty, falls through to forceCommitErr.
+	forceCommitErrSeq []error
+	deleteRefErr      error
+	deletedRefs       []string
+	forceCommits      int
+	// branchGen is the CAS generation for each branch. GetBranchRef returns
+	// a SHA derived from it; CommitFileToBranch 409s when expectedSHA is
+	// stale relative to the current generation.
+	branchGen map[string]int
+	// conflictOnce, when set, simulates a concurrent writer: the document
+	// is installed as the new branch tip and the commit returns
+	// ErrNonFastForward once, then the field is cleared.
+	conflictOnce *persistedPollState
 
 	// pendingSign holds branch → unsigned poll state seeded via
 	// setPollState/setSlashState. It is signed lazily by
@@ -73,6 +134,8 @@ type mockClient struct {
 
 	memberLevel map[int]int   // keyed by userID
 	memberErr   map[int]error // keyed by userID
+	userBot     map[int]bool
+	userBotErr  map[int]error
 
 	projectPaths map[int]string // keyed by project ID
 
@@ -85,6 +148,27 @@ type mockClient struct {
 	pipelineErr      error
 	pipelineCalls    []pipelineCall
 	pipelineErrAfter int // fail after N successful calls (0 = always fail if pipelineErr set)
+	// onPipeline, when set, runs at the start of every pipeline creation
+	// (before the mock lock is taken) so a test can inject a concurrent
+	// writer's change between a validation/load and the later persist.
+	onPipeline func()
+	// onBranchRef, when set, runs at the start of every GetBranchRef (before
+	// the mock lock is taken), i.e. at the start of each persistWithCAS
+	// attempt, so a test can inject a change between an earlier check and the
+	// commit, or between CAS attempts.
+	onBranchRef func()
+	// labelEventCalls counts ListResourceLabelEvents invocations.
+	labelEventCalls int
+
+	// wrapperContent is dispatch()'s GetFileContentAtRef response for the GitLab
+	// pipeline wrapper, defaulting to typedWrapperFixture() so existing
+	// tests keep exercising the typed transport. wrapperNotFound simulates
+	// a legacy installation with no committed wrapper; wrapperErr simulates
+	// a read failure. wrapperNotFound and wrapperErr take precedence over
+	// wrapperContent when set.
+	wrapperContent  []byte
+	wrapperNotFound bool
+	wrapperErr      error
 }
 
 func newMockClient() *mockClient {
@@ -101,16 +185,51 @@ func newMockClient() *mockClient {
 		issueErr:       make(map[int]error),
 		mr:             make(map[int]*MergeRequest),
 		mrErr:          make(map[int]error),
+		wrapperContent: typedWrapperFixture(),
 		memberLevel:    make(map[int]int),
 		memberErr:      make(map[int]error),
+		userBot:        make(map[int]bool),
+		userBotErr:     make(map[int]error),
 		projectPaths:   make(map[int]string),
+		branchGen:      make(map[string]int),
 	}
+}
+
+func mockBranchSHA(branch string, gen int) string {
+	return fmt.Sprintf("sha-%s-%d", branch, gen)
+}
+
+// mockResolveRef maps a mockBranchSHA-formatted ref back to the branch it
+// names, so GetFileContentAtRef can serve a persistWithCAS-style read
+// pinned to the SHA a prior GetBranchRef call returned. The mock does not
+// keep per-commit historical snapshots; it resolves a SHA ref to that
+// branch's current content, which is sufficient for these tests since
+// nothing else writes to a branch between a GetBranchRef/
+// GetFileContentAtRef pair in a single persistWithCAS attempt. A ref that
+// isn't a recognized mockBranchSHA (e.g. a literal branch name) is
+// returned unchanged.
+func mockResolveRef(ref string) string {
+	for _, b := range []string{PollStateBranchSlash, PollStateBranchEvents} {
+		if strings.HasPrefix(ref, "sha-"+b+"-") {
+			return b
+		}
+	}
+	return ref
 }
 
 var _ GitLabClient = (*mockClient)(nil)
 
-func (m *mockClient) ListIssuesUpdatedSince(_ context.Context, _, _ string, _ time.Time) ([]Issue, error) {
-	return m.issues, m.issuesErr
+func (m *mockClient) ListIssuesUpdatedSince(_ context.Context, _, _ string, since time.Time) ([]Issue, error) {
+	if !m.issuesHonorSince {
+		return m.issues, m.issuesErr
+	}
+	var out []Issue
+	for _, iss := range m.issues {
+		if iss.UpdatedAt.After(since) {
+			out = append(out, iss)
+		}
+	}
+	return out, m.issuesErr
 }
 
 func (m *mockClient) ListMergeRequestsUpdatedSince(_ context.Context, _, _ string, _ time.Time) ([]MergeRequest, error) {
@@ -136,6 +255,10 @@ func (m *mockClient) ListMergeRequestNotes(_ context.Context, _, _ string, mrIID
 }
 
 func (m *mockClient) ListResourceLabelEvents(_ context.Context, _, _ string, issueIID int) ([]ResourceLabelEvent, error) {
+	m.labelEventCalls++
+	if m.labelEventsFailAfter > 0 && m.labelEventCalls > m.labelEventsFailAfter {
+		return nil, fmt.Errorf("label events unavailable")
+	}
 	if err, ok := m.labelEventsErr[issueIID]; ok && err != nil {
 		return nil, err
 	}
@@ -151,13 +274,7 @@ const testDispatchSecret = "test-secret"
 func (m *mockClient) putBranchFile(branch, path string, data []byte) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.files == nil {
-		m.files = make(map[string]map[string][]byte)
-	}
-	// Force-re-root: the branch tree is this one file.
-	copied := make([]byte, len(data))
-	copy(copied, data)
-	m.files[branch] = map[string][]byte{path: copied}
+	m.putBranchFileLocked(branch, path, data)
 }
 
 // setBranchState seeds a validly-signed document for branch, deferring
@@ -177,6 +294,9 @@ func (m *mockClient) setBranchState(branch string, s persistedPollState) {
 			LabelState:         s.LabelState,
 			DispatchedKeysFull: s.DispatchedKeysFull,
 			FailedKeysFull:     s.FailedKeysFull,
+			PendingLabels:      s.PendingLabels,
+			LegacyMirrors:      s.LegacyMirrors,
+			IssueOpenCutoff:    s.IssueOpenCutoff,
 		}
 	}
 	m.mu.Lock()
@@ -222,7 +342,7 @@ func (m *mockClient) getBranchState(branch string) (persistedPollState, bool) {
 			if err := json.Unmarshal(data, &s); err != nil {
 				return persistedPollState{}, true
 			}
-			return s, true
+			return decodeIssueOpenCutoff(decodeLegacyMirrors(decodePendingLabels(decodeReplayKeys(s)))), true
 		}
 	}
 	// Fall back to a seeded-but-not-yet-force-committed document (see
@@ -245,28 +365,53 @@ func (m *mockClient) getSlashState() (persistedPollState, bool) {
 func (m *mockClient) GetFileContentAtRef(_ context.Context, owner, repo, path, ref string) ([]byte, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.fileContentRefs = append(m.fileContentRefs, ref)
+	if path == fullsendPipelineIncludePath {
+		// dispatch()'s GitLab pipeline-wrapper lookup (see usesTypedDispatch)
+		// reads at the dispatch ref, not the default branch; record it
+		// separately from fileContentRefs (poll-state CAS reads) so tests
+		// can assert usesTypedDispatch queries the exact ref dispatch()
+		// creates the pipeline against.
+		m.wrapperContentRefs = append(m.wrapperContentRefs, ref)
+		if m.wrapperErr != nil {
+			return nil, m.wrapperErr
+		}
+		if m.wrapperNotFound {
+			return nil, forge.ErrNotFound
+		}
+		cp := make([]byte, len(m.wrapperContent))
+		copy(cp, m.wrapperContent)
+		return cp, nil
+	}
 	if m.fileContentErr != nil {
 		return nil, m.fileContentErr
 	}
+	m.fileContentReads++
+	if err := m.fileContentErrAt[m.fileContentReads]; err != nil {
+		return nil, err
+	}
+	// persistWithCAS pins its read to the SHA a prior GetBranchRef call
+	// returned rather than a branch name; resolve it back to the branch
+	// so the lookups below (keyed by branch name) still find it.
+	branch := mockResolveRef(ref)
 	// Seeded-valid documents (setPollState/setSlashState) are signed
 	// here, using the owner/repo the caller queries with, rather than
 	// at seed time: the real HMAC domain is bound to the project path,
-	// which varies across tests. A real prior write (files[ref]) always
+	// which varies across tests. A real prior write (files[branch]) always
 	// takes precedence over a stale seed.
 	if path == PollStateFileName {
-		if files, ok := m.files[ref]; !ok || files[path] == nil {
-			if s, ok := m.pendingSign[ref]; ok {
-				domain := hmacDomainFor(ref, owner+"/"+repo)
-				sig, err := computeStateHMAC(testDispatchSecret, domain, s)
+		if files, ok := m.files[branch]; !ok || files[path] == nil {
+			if s, ok := m.pendingSign[branch]; ok {
+				domain := hmacDomainFor(branch, owner+"/"+repo)
+				s, err := signPollState(testDispatchSecret, domain, s)
 				if err != nil {
 					return nil, err
 				}
-				s.HMAC = sig
 				return json.Marshal(s)
 			}
 		}
 	}
-	files, ok := m.files[ref]
+	files, ok := m.files[branch]
 	if !ok {
 		return nil, forge.ErrNotFound
 	}
@@ -279,19 +424,101 @@ func (m *mockClient) GetFileContentAtRef(_ context.Context, owner, repo, path, r
 	return cp, nil
 }
 
-func (m *mockClient) ForceCommitFileToBranch(_ context.Context, _, _, branch, path, _ string, content []byte) error {
+func (m *mockClient) GetBranchRef(_ context.Context, _, _, branch string) (string, error) {
+	if m.onBranchRef != nil {
+		m.onBranchRef()
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.forceCommitErr != nil {
-		return m.forceCommitErr
+	if m.branchRefErr != nil {
+		return "", m.branchRefErr
 	}
+	_, hasFile := m.files[branch]
+	_, hasPending := m.pendingSign[branch]
+	if !hasFile && !hasPending {
+		return "", forge.ErrNotFound
+	}
+	if m.branchGen == nil {
+		m.branchGen = make(map[string]int)
+	}
+	return mockBranchSHA(branch, m.branchGen[branch]), nil
+}
+
+func (m *mockClient) consumeForceCommitErr() error {
+	if len(m.forceCommitErrSeq) > 0 {
+		e := m.forceCommitErrSeq[0]
+		m.forceCommitErrSeq = m.forceCommitErrSeq[1:]
+		return e
+	}
+	return m.forceCommitErr
+}
+
+func (m *mockClient) CommitFileToBranch(_ context.Context, owner, repo, branch, path, _ string, content []byte, expectedSHA string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.consumeForceCommitErr(); err != nil {
+		return err
+	}
+	if m.branchGen == nil {
+		m.branchGen = make(map[string]int)
+	}
+	if m.conflictOnce != nil {
+		s := *m.conflictOnce
+		m.conflictOnce = nil
+		domain := hmacDomainFor(branch, owner+"/"+repo)
+		s, err := signPollState(testDispatchSecret, domain, s)
+		if err != nil {
+			return err
+		}
+		data, err := json.Marshal(s)
+		if err != nil {
+			return err
+		}
+		m.putBranchFileLocked(branch, path, data)
+		m.branchGen[branch]++
+		return fmt.Errorf("%w: concurrent update of %s", forge.ErrNonFastForward, branch)
+	}
+	_, hasFile := m.files[branch]
+	_, hasPending := m.pendingSign[branch]
+	if expectedSHA == "" {
+		if hasFile || hasPending {
+			return fmt.Errorf("%w: branch %s already exists", forge.ErrNonFastForward, branch)
+		}
+	} else {
+		current := mockBranchSHA(branch, m.branchGen[branch])
+		if !hasFile && !hasPending {
+			return forge.ErrNotFound
+		}
+		if current != expectedSHA {
+			return fmt.Errorf("%w: concurrent update of %s", forge.ErrNonFastForward, branch)
+		}
+	}
+	m.putBranchFileLocked(branch, path, content)
+	m.branchGen[branch]++
+	m.forceCommits++
+	return nil
+}
+
+func (m *mockClient) putBranchFileLocked(branch, path string, data []byte) {
 	if m.files == nil {
 		m.files = make(map[string]map[string][]byte)
 	}
-	copied := make([]byte, len(content))
-	copy(copied, content)
-	// Force-re-root: replace the branch tree with this one file.
+	copied := make([]byte, len(data))
+	copy(copied, data)
 	m.files[branch] = map[string][]byte{path: copied}
+}
+
+func (m *mockClient) ForceCommitFileToBranch(_ context.Context, _, _, branch, path, _ string, content []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.consumeForceCommitErr(); err != nil {
+		return err
+	}
+	m.putBranchFileLocked(branch, path, content)
+	if m.branchGen == nil {
+		m.branchGen = make(map[string]int)
+	}
+	m.branchGen[branch]++
 	m.forceCommits++
 	return nil
 }
@@ -314,6 +541,7 @@ func (m *mockClient) DeleteRef(_ context.Context, _, _, refPath string) error {
 	}
 	delete(m.files, branch)
 	delete(m.pendingSign, branch)
+	delete(m.branchGen, branch)
 	return nil
 }
 
@@ -323,6 +551,13 @@ func (m *mockClient) GetAuthenticatedUser(_ context.Context) (string, error) {
 
 func (m *mockClient) GetAuthenticatedUserID(_ context.Context) (int, error) {
 	return 0, m.authErr
+}
+
+func (m *mockClient) GetUserBot(_ context.Context, userID int) (bool, error) {
+	if err := m.userBotErr[userID]; err != nil {
+		return false, err
+	}
+	return m.userBot[userID], nil
 }
 
 func (m *mockClient) CreateNoteAwardEmoji(_ context.Context, _, _, _ string, noteableIID, noteID int, emoji string) error {
@@ -364,7 +599,7 @@ func (m *mockClient) GetMemberAccessLevel(_ context.Context, _, _ string, userID
 	}
 	level, ok := m.memberLevel[userID]
 	if !ok {
-		return 0, fmt.Errorf("member not found")
+		return 0, fmt.Errorf("member not found: %w", forge.ErrNotFound)
 	}
 	return level, nil
 }
@@ -378,6 +613,9 @@ func (m *mockClient) GetProjectPath(_ context.Context, projectID int) (string, e
 }
 
 func (m *mockClient) CreatePipeline(_ context.Context, owner, repo, ref string, variables map[string]string) (int64, string, error) {
+	if m.onPipeline != nil {
+		m.onPipeline()
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	vars := make(map[string]string, len(variables))
@@ -389,6 +627,92 @@ func (m *mockClient) CreatePipeline(_ context.Context, owner, repo, ref string, 
 		Repo:      repo,
 		Ref:       ref,
 		Variables: vars,
+		ViaInputs: false,
+	})
+	if m.pipelineErr != nil && (m.pipelineErrAfter == 0 || len(m.pipelineCalls) > m.pipelineErrAfter) {
+		return 0, "", m.pipelineErr
+	}
+	m.pipelineCounter++
+	return int64(m.pipelineCounter), fmt.Sprintf("https://gitlab.example.com/-/pipelines/%d", m.pipelineCounter), nil
+}
+
+// CreatePipelineWithInputs decodes the typed pipeline inputs dispatch()
+// sends back into the same flat Variables shape CreatePipeline recorded,
+// reconstructing EVENT_PAYLOAD_B64 by concatenating its fixed
+// event_payload_chunk_NN scalar inputs in order (#7850 injection-vuln
+// fix: chunks are plain data now, not shell statements needing parsing).
+// This lets most dispatch_test.go assertions keep reading
+// pipelineCall.Variables unchanged while still exercising the real
+// input-encoding/chunking logic end to end.
+func (m *mockClient) CreatePipelineWithInputs(_ context.Context, owner, repo, ref string, inputs map[string]forge.PipelineInputValue) (int64, string, error) {
+	return m.createPipelineWithInputs(owner, repo, ref, "", inputs)
+}
+
+// CreateChildPipelineWithInputs records a CI_JOB_TOKEN child-pipeline
+// dispatch exactly like CreatePipelineWithInputs, plus the job token it
+// was authenticated with, so tests can tell the two routes apart.
+func (m *mockClient) CreateChildPipelineWithInputs(_ context.Context, owner, repo, ref, jobToken string, inputs map[string]forge.PipelineInputValue) (int64, string, error) {
+	return m.createPipelineWithInputs(owner, repo, ref, jobToken, inputs)
+}
+
+func (m *mockClient) createPipelineWithInputs(owner, repo, ref, jobToken string, inputs map[string]forge.PipelineInputValue) (int64, string, error) {
+	if m.onPipeline != nil {
+		m.onPipeline()
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	reverseInputNames := make(map[string]string, len(dispatchInputNames))
+	for varName, inputName := range dispatchInputNames {
+		reverseInputNames[inputName] = varName
+	}
+
+	vars := make(map[string]string, len(inputs))
+	var payload strings.Builder
+	for i := 0; i < maxEventPayloadChunks; i++ {
+		name := dispatchEventPayloadChunkInputName(i)
+		v, ok := inputs[name]
+		if !ok {
+			continue
+		}
+		raw, err := json.Marshal(v)
+		if err != nil {
+			return 0, "", fmt.Errorf("marshal input %q: %w", name, err)
+		}
+		var s string
+		if err := json.Unmarshal(raw, &s); err != nil {
+			return 0, "", fmt.Errorf("decode input %q as string: %w", name, err)
+		}
+		payload.WriteString(s)
+	}
+	vars["EVENT_PAYLOAD_B64"] = payload.String()
+
+	for inputName, v := range inputs {
+		if strings.HasPrefix(inputName, "event_payload_chunk_") {
+			continue
+		}
+		raw, err := json.Marshal(v)
+		if err != nil {
+			return 0, "", fmt.Errorf("marshal input %q: %w", inputName, err)
+		}
+		varName, ok := reverseInputNames[inputName]
+		if !ok {
+			return 0, "", fmt.Errorf("unrecognized pipeline input %q", inputName)
+		}
+		var s string
+		if err := json.Unmarshal(raw, &s); err != nil {
+			return 0, "", fmt.Errorf("decode input %q as string: %w", inputName, err)
+		}
+		vars[varName] = s
+	}
+
+	m.pipelineCalls = append(m.pipelineCalls, pipelineCall{
+		Owner:     owner,
+		Repo:      repo,
+		Ref:       ref,
+		Variables: vars,
+		ViaInputs: true,
+		JobToken:  jobToken,
 	})
 	if m.pipelineErr != nil && (m.pipelineErrAfter == 0 || len(m.pipelineCalls) > m.pipelineErrAfter) {
 		return 0, "", m.pipelineErr

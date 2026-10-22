@@ -1,5 +1,7 @@
 # Reusable prioritize agent workflow. Called by dispatch workflows via workflow_call.
 # Runs in the caller's repo context (secrets, checkout).
+# GCP secrets are optional: fullsend run prepares credentials for the selected
+# agent/model, including optional Vertex sub-agents of an OpenAI parent.
 #
 # Concurrency: agent-scoped cancel-in-progress group (distinct from dispatch/thin
 # caller groups so workflow_call parent runs are not cancelled).
@@ -28,16 +30,17 @@ on:
         required: false
         type: string
         default: ""
+      install_mode:
+        description: "Legacy compatibility input; ignored because installations are always per-repo"
+        required: false
+        type: string
+        default: "per-repo"
       fullsend_version:
         required: false
         type: string
         default: ""
-      install_mode:
-        required: false
-        type: string
-        default: "per-org"
       fullsend_ai_ref:
-        description: "Deprecated: upstream defaults now use job.workflow_sha. Kept for per-org caller compatibility."
+        description: "Deprecated: upstream defaults now use job.workflow_sha. Kept for caller compatibility."
         type: string
         required: false
         default: v0
@@ -48,14 +51,23 @@ on:
         default: "ubuntu-24.04"
     secrets:
       FULLSEND_GCP_WIF_PROVIDER:
-        required: true
+        required: false
       FULLSEND_GCP_PROJECT_ID:
-        required: true
+        required: false
       FULLSEND_OPENAI_API_KEY:
+        required: false
+      FULLSEND_INFERENCE_GATEWAY_API_KEY:
         required: false
       OTEL_EXPORTER_OTLP_TRACES_HEADERS:
         required: false
       OTEL_EXPORTER_OTLP_HEADERS:
+        required: false
+      FULLSEND_GITHUB_RUNNER_SECRETS:
+        description: >-
+          JSON object of name to value for host-side scripts (pre_script,
+          post_script, validation_loop). fullsend run resolves the names the
+          harness references in env.runner; the values reach host-side
+          scripts, never the sandbox (ADR 0136).
         required: false
 
 concurrency:
@@ -72,8 +84,12 @@ jobs:
       id-token: write
       issues: write
 
+    env:
+      # Explicit CLI overrides may predate runtime-owned Vertex preparation.
+      FULLSEND_LEGACY_GCP_SETUP: ${{ inputs.fullsend_version != '' && secrets.FULLSEND_GCP_WIF_PROVIDER != '' && secrets.FULLSEND_GCP_PROJECT_ID != '' }}
+
     steps:
-      - name: Checkout config repository
+      - name: Checkout caller repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # checkout@v7 blocks fork PR checkouts on pull_request_target by default.
@@ -97,22 +113,12 @@ jobs:
             internal/scaffold/fullsend-repo/
             action.yml
 
-      - name: Prepare workspace (upstream defaults + org/repo overrides)
-        env:
-          INSTALL_MODE: ${{ inputs.install_mode }}
+      - name: Prepare workspace (upstream defaults + repo overrides)
         run: |
           set -euo pipefail
-          if [[ "${INSTALL_MODE}" != "per-org" && "${INSTALL_MODE}" != "per-repo" ]]; then
-            printf 'Received install_mode: %q\n' "${INSTALL_MODE}"
-            echo "::error::Invalid install_mode: must be 'per-org' or 'per-repo'"
-            exit 1
-          fi
           SRC=".defaults/internal/scaffold/fullsend-repo"
-          LAYERED_DIRS="agents skills schemas harness plugins providers scripts env"
-          DEST=""
-          if [[ "${INSTALL_MODE}" == "per-repo" ]]; then
-            DEST=".fullsend/"
-          fi
+          LAYERED_DIRS="agents skills schemas harness plugins scripts env"
+          DEST=".fullsend/"
           for dir in ${LAYERED_DIRS}; do
             if [[ -d "${SRC}/${dir}" ]]; then
               mkdir -p "${DEST}${dir}"
@@ -123,19 +129,19 @@ jobs:
           cp "${SRC}/.github/scripts/setup-agent-env.sh" .github/scripts/setup-agent-env.sh
 
 
-      - name: Validate enrollment and extract repo metadata
+      - name: Validate enrollment and extract repository metadata
         id: repo-parts
         uses: ./.defaults/.github/actions/validate-enrollment
         with:
           source_repo: ${{ inputs.source_repo }}
-          install_mode: ${{ inputs.install_mode }}
 
-      - name: Setup GCP and prepare credentials
+      - name: Prepare GCP credentials for an explicit CLI override
+        if: env.FULLSEND_LEGACY_GCP_SETUP == 'true'
         uses: ./.defaults/.github/actions/setup-gcp
         with:
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
           gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
-          fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
+          fullsend-dir: .fullsend
 
       - name: Setup agent environment
         env:
@@ -173,8 +179,14 @@ jobs:
           FULLSEND_OPENAI_SERVICE_ACCOUNT_ID: ${{ vars.FULLSEND_OPENAI_SERVICE_ACCOUNT_ID }}
           # Opt-in static key, used only when the three variables above are unset (ADR 0092).
           OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}
+          # Inference gateway API key for inference.gateway.auth api-key (ADR 0138),
+          # read by the runner under its own name; unused in the oidc mode.
+          FULLSEND_INFERENCE_GATEWAY_API_KEY: ${{ secrets.FULLSEND_INFERENCE_GATEWAY_API_KEY }}
         with:
           agent: prioritize
+          runner_secrets: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}
           version: ${{ inputs.fullsend_version || job.workflow_sha }}
-          fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
+          fullsend-dir: .fullsend
           mint-url: ${{ inputs.mint_url }}
+          gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
+          gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}

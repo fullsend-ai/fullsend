@@ -46,6 +46,7 @@ Feature: Per-agent runtime and model on agents: entries in config.yaml
       slug: fullsend-ai-pi-override
       model: opus
       image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
+      policy: policies/base.yaml
       trigger: |
         event.entity.kind == "work_item"
         && event.transition.kind == "label_changed"

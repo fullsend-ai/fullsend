@@ -11,8 +11,11 @@ import (
 	"github.com/cucumber/godog"
 	"gopkg.in/yaml.v3"
 
+	"github.com/fullsend-ai/fullsend/internal/agentnew"
 	"github.com/fullsend-ai/fullsend/internal/config"
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
@@ -29,6 +32,9 @@ func registerDispatchSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the harness "([^"]+)" agent did not run$`, func(ctx context.Context, agent string) (context.Context, error) {
 		return ctx, thenHarnessAgentDidNotRun(world.FromContext(ctx), agent)
 	})
+	sc.Step(`^the harness dispatch completes with an empty matrix$`, func(ctx context.Context) (context.Context, error) {
+		return ctx, thenHarnessDispatchEmptyMatrix(world.FromContext(ctx))
+	})
 	sc.Step(`^a pull request is opened$`, func(ctx context.Context) (context.Context, error) {
 		return ctx, whenPullRequestOpened(world.FromContext(ctx))
 	})
@@ -40,6 +46,9 @@ func registerDispatchSteps(sc *godog.ScenarioContext) {
 	})
 	sc.Step(`^the kill switch is active$`, func(ctx context.Context) (context.Context, error) {
 		return ctx, givenKillSwitchActive(world.FromContext(ctx))
+	})
+	sc.Step(`^the kill switch is active in config\.base\.yaml$`, func(ctx context.Context) (context.Context, error) {
+		return ctx, givenKillSwitchActiveViaConfigBase(world.FromContext(ctx))
 	})
 }
 
@@ -93,8 +102,77 @@ func DeactivateKillSwitch(w *world.World) error {
 	if err != nil {
 		return err
 	}
-	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, cfgPath, "behaviour: deactivate kill switch", merged); err != nil {
+	if err := commitVerified(w, cfgPath, "behaviour: deactivate kill switch", merged); err != nil {
 		return fmt.Errorf("updating config: %w", err)
+	}
+	return nil
+}
+
+// givenKillSwitchActiveViaConfigBase sets kill_switch: true in the
+// enrolled repo's config.base.yaml (the central/base config layer),
+// deliberately leaving config.yaml untouched/silent on the key.
+// config.base.yaml is not part of the standard per-repo scaffold, so it
+// may not exist yet; a missing file is treated as an empty starting
+// point rather than an error. It also marks w.KillSwitchBaseActivated
+// so CleanupScenario deactivates it before the slot is reused by
+// another scenario.
+func givenKillSwitchActiveViaConfigBase(w *world.World) error {
+	if w.Org == "" || w.RepoName == "" {
+		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before kill-switch operations")
+	}
+	cfgPath := filepath.Join(".fullsend", "config.base.yaml")
+	cfgData, err := w.SCM.GetFileContent(context.Background(), w.Org, w.RepoName, cfgPath)
+	if err != nil {
+		if !forge.IsNotFound(err) {
+			return fmt.Errorf("reading base config: %w", err)
+		}
+		cfgData = nil
+	}
+	cfg, err := config.ParsePerRepoConfigWriter(cfgData)
+	if err != nil {
+		return fmt.Errorf("parsing base config: %w", err)
+	}
+	cfg.SetKillSwitch(true)
+	merged, err := cfg.Marshal()
+	if err != nil {
+		return err
+	}
+	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, cfgPath, "behaviour: activate kill switch via config.base.yaml", merged); err != nil {
+		return fmt.Errorf("updating base config: %w", err)
+	}
+	w.KillSwitchBaseActivated = true
+	return nil
+}
+
+// DeactivateKillSwitchBase sets kill_switch: false in the enrolled
+// repo's config.base.yaml. Exported so CleanupScenario (in package
+// steps) can call it during scenario teardown. The SCM driver has no
+// delete-file operation, so this resets the key to false rather than
+// removing the file — matching DeactivateKillSwitch's approach for
+// config.yaml.
+func DeactivateKillSwitchBase(w *world.World) error {
+	if w.Org == "" || w.RepoName == "" {
+		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before kill-switch operations")
+	}
+	cfgPath := filepath.Join(".fullsend", "config.base.yaml")
+	cfgData, err := w.SCM.GetFileContent(context.Background(), w.Org, w.RepoName, cfgPath)
+	if err != nil {
+		if !forge.IsNotFound(err) {
+			return fmt.Errorf("reading base config: %w", err)
+		}
+		cfgData = nil
+	}
+	cfg, err := config.ParsePerRepoConfigWriter(cfgData)
+	if err != nil {
+		return fmt.Errorf("parsing base config: %w", err)
+	}
+	cfg.SetKillSwitch(false)
+	merged, err := cfg.Marshal()
+	if err != nil {
+		return err
+	}
+	if err := commitVerified(w, cfgPath, "behaviour: deactivate kill switch in config.base.yaml", merged); err != nil {
+		return fmt.Errorf("updating base config: %w", err)
 	}
 	return nil
 }
@@ -253,10 +331,10 @@ func commitLocalHarnessResources(ctx context.Context, w *world.World, harnessNam
 
 	if h.Policy != "" && !strings.HasPrefix(h.Policy, "/") && !strings.HasPrefix(h.Policy, "https://") {
 		policyPath := filepath.Join(".fullsend", h.Policy)
-		minimalPolicy := fmt.Sprintf("# Minimal policy for %s\n", harnessName)
+		policy := agentnew.BasePolicy()
 		if err := w.SCM.CommitFile(ctx, owner, repo, policyPath,
 			fmt.Sprintf("behaviour: add policy resource for %s", harnessName),
-			[]byte(minimalPolicy)); err != nil {
+			policy); err != nil {
 			return fmt.Errorf("committing policy resource %s: %w", policyPath, err)
 		}
 	}
@@ -299,6 +377,10 @@ func thenHarnessWorkflowCompletes(w *world.World, agent string) error {
 	ctx := context.Background()
 	run, err := w.CI.WaitForHarnessAgent(ctx, w.Org, w.RepoName, agent, w.ScenarioStart)
 	if err != nil {
+		// A failed harness run is the one whose logs matter most, and the
+		// pool repository (with its run logs) is deleted when the lease
+		// ends, so save them before returning.
+		saveWorkflowRunLogs(ctx, w, agent, run)
 		return err
 	}
 	w.WorkflowRun = run
@@ -350,6 +432,25 @@ func thenHarnessAgentDidNotRun(w *world.World, agent string) error {
 		}
 	}
 	return w.CI.AssertNoHarnessAgentArtifact(ctx, w.Org, w.RepoName, agent, w.ScenarioStart)
+}
+
+// thenHarnessDispatchEmptyMatrix asserts that the harness run triggered
+// since ScenarioStart settled with a successful Harness dispatch job and
+// no scheduled agent. Unlike the did-not-run and dispatch-count steps,
+// it waits for the run and fails when the dispatch job errored, so a
+// denial is not inferred from a missing or failed run.
+func thenHarnessDispatchEmptyMatrix(w *world.World) error {
+	if w.ScenarioStart.IsZero() {
+		return fmt.Errorf("no workflow trigger time recorded")
+	}
+	waiter, ok := w.CI.(ci.EmptyMatrixWaiter)
+	if !ok {
+		return fmt.Errorf("the CI driver does not implement ci.EmptyMatrixWaiter; it cannot assert an empty harness matrix")
+	}
+	if _, err := waiter.WaitForHarnessEmptyMatrix(context.Background(), w.Org, w.RepoName, w.ScenarioStart); err != nil {
+		return err
+	}
+	return nil
 }
 
 func ensureHarnessArtifacts(w *world.World, agent string) error {

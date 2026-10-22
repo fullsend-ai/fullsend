@@ -4,11 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-
-	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
-// BuiltinRoleCheck is the cutover-readiness result for one built-in
+// BuiltinRoleCheck is the readiness result for one built-in
 // GitLab role. Reasons carry secret *names* only.
 type BuiltinRoleCheck struct {
 	Name         Role
@@ -22,21 +20,19 @@ type BuiltinRoleCheck struct {
 }
 
 // BuiltinReadiness is the #7501 verification for Poller, Analyst, and
-// Coder. It does not enable ModeEnforced and does not retire the
-// shared token. Ready is true only when every built-in role is
+// Coder. It does not perform legacy credential cleanup. Ready is true only
+// when every built-in role is
 // provisioned, declares its required capabilities, omits the
 // capabilities it must not hold, and maps its jobs onto that identity.
-// A present FULLSEND_FORGE_TOKEN never makes a missing built-in role
-// ready.
+// Legacy shared-token presence never makes a missing built-in role ready.
 type BuiltinReadiness struct {
-	Roles         []BuiltinRoleCheck
-	Ready         bool
-	Missing       []Role
-	SharedPresent bool
-	Diagnostics   []string
+	Roles       []BuiltinRoleCheck
+	Ready       bool
+	Missing     []Role
+	Diagnostics []string
 }
 
-// RegisteredRoleReadiness is the cutover-readiness result for one registered
+// RegisteredRoleReadiness is the readiness result for one registered
 // role. Unlike BuiltinRoleCheck, it does not assume a fixed capability
 // contract: administrator-registered roles are verified against the policy
 // they declared in the trusted registry and against every agent they claim.
@@ -50,9 +46,9 @@ type RegisteredRoleReadiness struct {
 }
 
 // RegisteredReadiness verifies every role in the registry, including custom
-// roles. It is the final authorization check used before cutover. A custom
-// role with no agent mapping is not cutover-ready, and every mapped agent must
-// resolve to that role's own credential in enforced mode.
+// roles. It is the authorization check role routing enforces. A custom
+// role with no agent mapping is not ready, and every mapped agent must
+// resolve to that role's own credential.
 type RegisteredReadiness struct {
 	Roles       []RegisteredRoleReadiness
 	Ready       bool
@@ -118,16 +114,15 @@ func CheckRegisteredReadiness(present map[string]bool, reg Registry) RegisteredR
 		}
 		for _, agent := range rec.Agents {
 			src, err := Resolve(Request{
-				Mode:     ModeEnforced,
 				Job:      AgentJob(agent),
 				Registry: reg,
 				Present:  present,
 			})
 			if err != nil {
-				check.Reasons = append(check.Reasons, fmt.Sprintf("agent %q cannot resolve in enforced mode", agent))
+				check.Reasons = append(check.Reasons, fmt.Sprintf("agent %q cannot resolve", agent))
 				continue
 			}
-			if src.Role != rec.Name || src.SecretName != rec.Credential.SecretName || src.Shared || src.Fallback {
+			if src.Role != rec.Name || src.SecretName != rec.Credential.SecretName {
 				check.Reasons = append(check.Reasons, fmt.Sprintf("agent %q resolves to %s %s (want %s %s)", agent, src.Role, src.SecretName, rec.Name, rec.Credential.SecretName))
 			}
 		}
@@ -225,8 +220,7 @@ func CheckBuiltinReadiness(present map[string]bool, reg Registry) BuiltinReadine
 	reg = reg.effective()
 	specs := builtinReadinessSpecs()
 	out := BuiltinReadiness{
-		Roles:         make([]BuiltinRoleCheck, 0, len(specs)),
-		SharedPresent: isPresent(present, forge.SecretForgeToken),
+		Roles: make([]BuiltinRoleCheck, 0, len(specs)),
 	}
 	readyCount := 0
 	for _, spec := range specs {
@@ -286,7 +280,6 @@ func checkBuiltinRole(present map[string]bool, reg Registry, spec builtinSpec) B
 
 func appendEnforcedResolveReasons(c *BuiltinRoleCheck, rec Registration, present map[string]bool, reg Registry, spec builtinSpec) {
 	src, err := Resolve(Request{
-		Mode:     ModeEnforced,
 		Job:      spec.job,
 		Registry: reg,
 		Present:  present,
@@ -298,19 +291,12 @@ func appendEnforcedResolveReasons(c *BuiltinRoleCheck, rec Registration, present
 		return
 	}
 	if err != nil {
-		c.Reasons = append(c.Reasons, "enforced resolve failed for a provisioned role")
+		c.Reasons = append(c.Reasons, "role resolve failed for a provisioned role")
 		return
 	}
-	if src.Role != spec.role || src.SecretName != rec.Credential.SecretName || src.Shared || src.Fallback {
-		var cause string
-		switch {
-		case src.Shared:
-			cause = "; selected the shared credential instead of a role credential"
-		case src.Fallback:
-			cause = "; selected via migration fallback instead of the role credential"
-		}
-		c.Reasons = append(c.Reasons, fmt.Sprintf("enforced resolve selected role %q secret %q (want role %q secret %q)%s",
-			src.Role, src.SecretName, spec.role, rec.Credential.SecretName, cause))
+	if src.Role != spec.role || src.SecretName != rec.Credential.SecretName {
+		c.Reasons = append(c.Reasons, fmt.Sprintf("role resolve selected role %q secret %q (want role %q secret %q)",
+			src.Role, src.SecretName, spec.role, rec.Credential.SecretName))
 	}
 }
 
@@ -321,7 +307,7 @@ func finishBuiltinCheck(c BuiltinRoleCheck) BuiltinRoleCheck {
 
 // WithLifecycle downgrades a role's readiness to not-ready when its
 // credential lifecycle is expired, revoked, or unverified. A present secret
-// is not sufficient for cutover if its project access token is unusable.
+// is not sufficient for readiness if its project access token is unusable.
 func (br BuiltinReadiness) WithLifecycle(lifecycle map[Role]LifecycleState) BuiltinReadiness {
 	if len(lifecycle) == 0 {
 		return br
@@ -377,9 +363,6 @@ func builtinReadinessMessages(rep BuiltinReadiness) []string {
 			names[i] = string(role)
 		}
 		msgs = append(msgs, fmt.Sprintf("builtin roles ready: %d/%d; missing=%s", readyCount, total, strings.Join(names, ",")))
-	}
-	if rep.SharedPresent && !rep.Ready {
-		msgs = append(msgs, "shared credential FULLSEND_FORGE_TOKEN is present and is not a substitute for missing built-in roles")
 	}
 	return msgs
 }

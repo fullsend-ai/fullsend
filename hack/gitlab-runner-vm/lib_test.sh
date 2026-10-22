@@ -615,6 +615,13 @@ else
   fail "create scripts missing executor/gateway.sh in copy/checksum lists"
 fi
 
+if grep -Fq 'podman-prune.sh' "${CREATE_GCP}" \
+  && grep -Fq 'podman-prune.sh' "${CREATE_OCP}"; then
+  pass "both create scripts copy and checksum podman-prune.sh"
+else
+  fail "create scripts missing podman-prune.sh in copy/checksum lists"
+fi
+
 # Both clouds run the same setup.sh / gateway.sh; the user-session bus env
 # (#7453) must land on GCP and OpenShift runners without a per-cloud fork.
 SETUP="${SCRIPT_DIR}/setup.sh"
@@ -622,7 +629,7 @@ GATEWAY="${SCRIPT_DIR}/executor/gateway.sh"
 if grep -Fq 'ensure_user_systemd_env' "${GATEWAY}" \
   && grep -Fq 'user_systemctl' "${GATEWAY}" \
   && grep -Fq 'user_systemctl' "${SETUP}" \
-  && grep -Fq 'Environment=XDG_RUNTIME_DIR=/run/user/%U' "${SETUP}" \
+  && grep -Fq 'Environment=XDG_RUNTIME_DIR=/run/user/${runner_uid}' "${SETUP}" \
   && grep -Fq 'executor/gateway.sh' "${CREATE_GCP}" \
   && grep -Fq 'executor/gateway.sh' "${CREATE_OCP}" \
   && grep -Fq 'setup.sh' "${CREATE_GCP}" \

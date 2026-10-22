@@ -14,14 +14,15 @@ Each stage below describes what to enable, what to observe, and soft signals tha
 
 Before enabling any agents, you need to get fullsend running in your environment:
 
-1. [Enroll](../getting-started/) your org or repo in a token mint
+1. [Enroll](../getting-started/) your repo in a token mint
 2. [Provision inference access](../getting-started/getting-inference.md)
 3. [Configure GitHub](../getting-started/configuring-github.md) — Apps, permissions, webhooks
 
 These guides walk through each step in detail. Once installed, you're ready to prepare your repo.
 
-GitLab teams follow a different path: no token mint, `fullsend repos install --forge gitlab`
-to scaffold, and `--roles` to scope which agents install. See
+GitLab teams follow a different path: no token mint, the project declared in `repos.yaml` and
+scaffolded with `fullsend repos install`, and `config.roles` in `repos.yaml` to scope which agents
+install. See
 [Configuring GitLab](../getting-started/configuring-gitlab.md).
 
 ### Prepare Your Repo
@@ -40,7 +41,7 @@ The following items benefit any team regardless of how far you go with fullsend.
 
 Tools like [agentready](https://github.com/ambient-code/agentready) can help assess your repo's readiness for agent-driven development.
 
-**Resource note for public repos** — Fullsend requires write access to trigger agents, so external contributors can't trigger agent runs. However, PRs from unknown authors still trigger CI workflows that consume runner minutes. If your repo accepts external contributions, consider a gating workflow that closes PRs from non-approved contributors before other workflows fire. See the fullsend repo's [vouch system](../../contributing/vouch-system.md) for an example.
+**Resource note for public repos** — Fullsend requires write access to trigger agents, so external contributors can't trigger agent runs. To extend trigger access to users listed in a Prow-style OWNERS file, see [OWNERS file authorization](owners-file-authorization.md). However, PRs from unknown authors still trigger CI workflows that consume runner minutes. If your repo accepts external contributions, consider a gating workflow that closes PRs from non-approved contributors before other workflows fire. See the fullsend repo's [vouch system](../../contributing/vouch-system.md) for an example.
 
 ## Crawl — Observe and Evaluate
 
@@ -84,6 +85,8 @@ The most common and lightweight mechanisms:
 
 **Configure agent behavior** — environment variables offer quick behavioral tuning. For example, `REVIEW_FINDING_SEVERITY_THRESHOLD=medium` to adjust review sensitivity. See [configuring agent behavior](customizing-agents.md) for the full set of options.
 
+**Tune models and effort per agent** — each agent can set its own runtime, model and effort (see [per-agent settings](../../runtimes.md#per-agent-runtime-model-and-effort)); the completion status comment shows the model, effort and (where the runtime reports it) cost used. Choose models for the pipeline as a whole, not one agent at a time: agents check each other's work, so weak output from a cheaper `code` model can trigger extra review and fix rounds that cost more than it saved. Save on agents whose output doesn't change code, such as `prioritize`. `effort` tunes cost within a model, but raising it doesn't make a cheaper model match a stronger one on complex tasks.
+
 For teams with specific needs, fullsend offers deeper configuration:
 
 - **Skills** — extend agents with repo-specific capabilities, or replace built-in skills with your own. See [configuring with skills](customizing-with-skills.md).
@@ -95,7 +98,7 @@ Not every team will need all of these. Many teams find that a good AGENTS.md and
 
 **Enable the retro agent** — it reviews agent runs and surfaces systematic problems, so you're not manually auditing agent behavior anymore. Its post-script files issues from retro findings automatically, following your team's conventions — right labels, context, and acceptance criteria.
 
-**Custom agents for specific SDLC gaps (advanced):** If your workflow uses tooling outside GitHub that default agents don't cover, this is where you might start exploring derived or custom agents — for example, a triage agent that bridges to Jira, or a prioritization agent that reads from your planning tool. See [Bring Your Own Agent](bring-your-own-agent.md) and [default vs custom agents](../../agents/topics/default-vs-custom.md) for guidance.
+**Custom agents for specific SDLC gaps (advanced):** If your workflow uses tooling outside GitHub that default agents don't cover, this is where you might start exploring derived or custom agents — for example, a triage agent that bridges to Jira, or a prioritization agent that reads from your planning tool. See [Bring Your Own Agent](bring-your-own-agent.md) and [default vs custom agents](default-vs-custom.md) for guidance.
 
 **What you're learning:**
 

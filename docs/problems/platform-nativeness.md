@@ -14,7 +14,9 @@ These problems exist because fullsend is not part of GitHub. A native system doe
 
 ### Cross-repo dispatch
 
-Fullsend uses a centralized `.fullsend` config repo as the hub for agent pipelines. When something happens in an enrolled repo (a PR is opened, an issue is filed), a shim workflow in that repo must dispatch an event to `.fullsend` so the agent pipeline can run. This requires:
+*(Historical — this section describes the per-org `.fullsend` config-repo model, which was removed with per-org installation ([ADR 0044](../ADRs/0044-deprecate-per-org-installation-mode.md)). Per-repo installs run agents in the enrolled repository itself: its `fullsend.yaml` shim calls the upstream `reusable-dispatch.yml` through `workflow_call` ([ADR 0033](../ADRs/0033-per-repo-installation-mode.md)), so there is no `.fullsend` hub repo and no dispatch PAT. The analysis is kept because it motivated that change.)*
+
+Fullsend used a centralized `.fullsend` config repo as the hub for agent pipelines. When something happens in an enrolled repo (a PR is opened, an issue is filed), a shim workflow in that repo must dispatch an event to `.fullsend` so the agent pipeline can run. This requires:
 
 - `workflow_dispatch` as the cross-repo trigger mechanism, because `workflow_call` would require the caller to have the App PEM ([ADR 0008](../ADRs/0008-workflow-dispatch-for-cross-repo-dispatch.md))
 - A fine-grained PAT (`FULLSEND_DISPATCH_TOKEN`) stored as an org secret with selected-repo visibility, so enrolled repos can trigger `.fullsend` workflows
@@ -108,7 +110,7 @@ Both systems need visibility into inference spend. Fullsend already emits cost a
 Both systems must defend against prompt injection via untrusted input (issue text, PR descriptions, code comments). gh-aw's defense is layered and substantially deeper than a single output scan:
 
 - **Content sanitization** at the input boundary: @mention neutralization, bot trigger protection, XML/HTML tag conversion, URI filtering (only HTTPS from trusted domains), unicode normalization, content size limits (0.5MB/65k lines), and control character removal. This runs before the agent sees any untrusted content.
-- **[Integrity filtering (DIFC)](https://github.github.com/gh-aw/reference/integrity/)**: a trust-based system that filters GitHub content by author association level (`merged > approved > unapproved > none > blocked`). On public repos, `min-integrity: approved` is applied by default — content from untrusted external contributors is removed before the agent sees it. Supports `trusted-users`, `blocked-users`, and `approval-labels` overrides, with centralized management via GitHub organization variables. Filtered events are logged as `DIFC_FILTERED` for audit.
+- **[Integrity filtering (DIFC)](https://github.github.com/gh-aw/reference/integrity/)**: a trust-based system that filters GitHub content by author association level (`merged > approved > unapproved > none > blocked`). On public repos, `min-integrity: approved` is applied by default — content from untrusted external contributors is removed before the agent sees it. Supports `trusted-users`, `blocked-users`, and `approval-labels` overrides, with centralized management via GitHub organization variables. Filtered events are logged as `DIFC_FILTERED` for audit. Author-association filtering treats association as a trust signal; [coordinated inauthentic contributions](security-threat-model.md#threat-7-coordinated-inauthentic-contributions) specifically farm merged PRs and approvals in order to graduate past that filter.
 - **Substrate containment**: read-only token, AWF network firewall with domain allowlisting, MCP server isolation per container.
 - **Threat detection**: AI-powered output scan plus optional custom scanners (Semgrep, TruffleHog, LlamaGuard) before any write is externalized.
 - **[Supply chain protection](https://github.github.com/gh-aw/reference/threat-detection/#supply-chain-protection-protected-files)**: static rule-based flagging of agent modifications to dependency manifests, CI/CD config, agent instruction files, and CODEOWNERS, with `request_review` (default — creates the PR but attaches a blocking review requiring human approval), `blocked` (hard-fails the write), `allowed`, and `fallback-to-issue` policies.
@@ -125,7 +127,9 @@ Fullsend's SDLC pipeline is itself orchestrated natively via GitHub — labels a
 
 ### Org-wide configuration
 
-Fullsend creates a `.fullsend` config repo with `config.yaml`, normative specs, and centralized secrets. GitHub already provides org-level Actions policies, required workflows, organization rulesets, and org secrets with selected-repo visibility. A native system could leverage these directly rather than creating a parallel configuration layer.
+*(Historical — the central `.fullsend` config repo was removed with per-org installation ([ADR 0044](../ADRs/0044-deprecate-per-org-installation-mode.md)); configuration now lives in each repository's `.fullsend/` directory.)*
+
+Fullsend created a `.fullsend` config repo with `config.yaml`, normative specs, and centralized secrets. GitHub already provides org-level Actions policies, required workflows, organization rulesets, and org secrets with selected-repo visibility. A native system could leverage these directly rather than creating a parallel configuration layer.
 
 ## The trade-offs of nativeness
 

@@ -2,6 +2,7 @@ package repos
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -24,6 +25,16 @@ func (c *selectiveSecretClient) CreateRepoSecret(ctx context.Context, owner, rep
 		return err
 	}
 	return c.Client.CreateRepoSecret(ctx, owner, repo, name, value)
+}
+
+// The embedded interface hides the optional project lease capability, so it is
+// forwarded explicitly.
+func (c *selectiveSecretClient) AcquireProjectLease(ctx context.Context, owner, repo, name, holder string) (bool, error) {
+	return c.Client.(forge.ProjectLeaser).AcquireProjectLease(ctx, owner, repo, name, holder)
+}
+
+func (c *selectiveSecretClient) ReleaseProjectLease(ctx context.Context, owner, repo, name, holder string) error {
+	return c.Client.(forge.ProjectLeaser).ReleaseProjectLease(ctx, owner, repo, name, holder)
 }
 
 func seededRoleClient(t *testing.T, roles ...gitlabroles.Role) *forge.FakeClient {
@@ -71,12 +82,10 @@ func TestRotateGitLabRoleCredentials_EachBuiltinIndependently(t *testing.T) {
 				Client:   fc,
 				Tokens:   tokens,
 				Registry: gitlabroles.BuiltinRegistry(),
-				Mode:     gitlabroles.ModeMigrating,
 				Roles:    []gitlabroles.Role{role},
 				Now:      now,
 			})
 			require.NoError(t, err)
-			assert.True(t, result.SharedPreserved)
 			assert.Equal(t, []gitlabroles.Role{role}, result.Rotated)
 			assert.Contains(t, result.Overlapping, role)
 			assert.Empty(t, result.Failed)
@@ -122,7 +131,6 @@ func TestRotateGitLabRoleCredentials_CustomOwnAndReuse(t *testing.T) {
 		Client:   fc,
 		Tokens:   tokens,
 		Registry: reg,
-		Mode:     gitlabroles.ModeEnforced,
 		Now:      now,
 	})
 	require.NoError(t, err)
@@ -148,7 +156,6 @@ func TestRotateGitLabRoleCredentials_ConcurrentSerializedAndIdempotent(t *testin
 		Client:   fc,
 		Tokens:   tokens,
 		Registry: gitlabroles.BuiltinRegistry(),
-		Mode:     gitlabroles.ModeMigrating,
 		Roles:    []gitlabroles.Role{gitlabroles.RolePoller},
 		Force:    true,
 		Now:      now,
@@ -170,7 +177,6 @@ func TestRotateGitLabRoleCredentials_ConcurrentSerializedAndIdempotent(t *testin
 	assert.Len(t, tokens.created, 1, "concurrent force-rotate must mint exactly one replacement")
 	rotated := 0
 	for _, r := range results {
-		assert.True(t, r.SharedPreserved)
 		if len(r.Rotated) > 0 {
 			rotated++
 		}
@@ -181,7 +187,7 @@ func TestRotateGitLabRoleCredentials_ConcurrentSerializedAndIdempotent(t *testin
 	assert.Equal(t, 1, rotated)
 }
 
-func TestRotateGitLabRoleCredentials_FailedDistributionRollsBack(t *testing.T) {
+func TestRotateGitLabRoleCredentials_FailedDistributionKeepsReplacement(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC)
 	inner := seededRoleClient(t, gitlabroles.RolePoller, gitlabroles.RoleAnalyst, gitlabroles.RoleCoder)
@@ -198,16 +204,20 @@ func TestRotateGitLabRoleCredentials_FailedDistributionRollsBack(t *testing.T) {
 		Client:   fc,
 		Tokens:   tokens,
 		Registry: gitlabroles.BuiltinRegistry(),
-		Mode:     gitlabroles.ModeMigrating,
 		Roles:    []gitlabroles.Role{gitlabroles.RolePoller},
 		Now:      now,
 	})
 	require.NoError(t, err)
-	assert.Equal(t, []gitlabroles.Role{gitlabroles.RolePoller}, result.RolledBack)
+	assert.Empty(t, result.RolledBack)
 	require.Len(t, result.Failed, 1)
-	assert.Contains(t, result.Failed[0].Reason, "previous credential left in place")
+	assert.Contains(t, result.Failed[0].Reason, "kept for recovery")
 	require.Len(t, tokens.created, 1)
-	assert.Equal(t, []int{tokens.created[0].ID}, tokens.revoked)
+	// A write error does not prove the variable was not saved, so the
+	// replacement is never revoked.
+	assert.Empty(t, tokens.revoked)
+	rs := readRoleState(t, inner, gitlabroles.RolePoller)
+	assert.Equal(t, rotationPhaseDistributing, rs.Phase)
+	assert.Equal(t, tokens.created[0].ID, rs.IncomingID)
 	assert.True(t, inner.Secrets["group/project/"+forge.SecretGitLabPollerToken])
 	assert.True(t, inner.Secrets["group/project/"+forge.SecretForgeToken])
 	// The last successful write for the poller secret is still the seed.
@@ -226,6 +236,60 @@ func TestRotateGitLabRoleCredentials_FailedDistributionRollsBack(t *testing.T) {
 	}
 }
 
+// saveThenFailSecretClient commits the variable write and then reports an
+// error, as when GitLab saves the variable but the response is lost.
+type saveThenFailSecretClient struct {
+	*forge.FakeClient
+	name string
+	fail bool
+}
+
+func (c *saveThenFailSecretClient) CreateRepoSecret(ctx context.Context, owner, repo, name, value string) error {
+	if err := c.FakeClient.CreateRepoSecret(ctx, owner, repo, name, value); err != nil {
+		return err
+	}
+	if c.fail && name == c.name {
+		return fmt.Errorf("response lost")
+	}
+	return nil
+}
+
+func TestRotateGitLabRoleCredentials_LostPublicationResponseKeepsPublishedToken(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC)
+	inner := seededRoleClient(t, gitlabroles.RolePoller)
+	fc := &saveThenFailSecretClient{FakeClient: inner, name: forge.SecretGitLabPollerToken, fail: true}
+	tokens := &fakeTokens{}
+	tokens.seed(ProjectAccessToken{Name: gitlabroles.PollerTokenName, Active: true, ExpiresAt: "2026-10-01"})
+	cfg := RoleRotateConfig{
+		Owner: "group", Repo: "project", Client: fc, Tokens: tokens,
+		Registry: gitlabroles.BuiltinRegistry(),
+		Roles:    []gitlabroles.Role{gitlabroles.RolePoller}, Now: now,
+	}
+
+	result, err := RotateGitLabRoleCredentials(context.Background(), cfg)
+	require.NoError(t, err)
+	require.Len(t, result.Failed, 1)
+	require.Len(t, tokens.created, 1)
+	published := tokens.created[0]
+	assert.Empty(t, tokens.revoked, "the saved replacement must not be revoked")
+	rs := readRoleState(t, inner, gitlabroles.RolePoller)
+	assert.Equal(t, rotationPhaseDistributing, rs.Phase)
+	assert.Equal(t, published.ID, rs.IncomingID)
+
+	// The next run recovers: the possibly published token becomes an outgoing
+	// obligation instead of being revoked, and a new token is distributed.
+	fc.fail = false
+	result, err = RotateGitLabRoleCredentials(context.Background(), cfg)
+	require.NoError(t, err)
+	require.Empty(t, result.Failed)
+	require.Len(t, tokens.created, 2)
+	assert.NotContains(t, tokens.revoked, published.ID)
+	rs = readRoleState(t, inner, gitlabroles.RolePoller)
+	assert.Contains(t, rs.OutgoingIDs, published.ID)
+	assert.Equal(t, tokens.created[1].ID, rs.IncomingID)
+}
+
 func TestRotateGitLabRoleCredentials_FailedCreateLeavesPrevious(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC)
@@ -241,7 +305,6 @@ func TestRotateGitLabRoleCredentials_FailedCreateLeavesPrevious(t *testing.T) {
 		Client:   fc,
 		Tokens:   tokens,
 		Registry: gitlabroles.BuiltinRegistry(),
-		Mode:     gitlabroles.ModeEnforced,
 		Roles:    []gitlabroles.Role{gitlabroles.RolePoller},
 		Now:      now,
 	})
@@ -266,7 +329,6 @@ func TestRotateGitLabRoleCredentials_InFlightKeepsPreviousPAT(t *testing.T) {
 		Client:   fc,
 		Tokens:   tokens,
 		Registry: gitlabroles.BuiltinRegistry(),
-		Mode:     gitlabroles.ModeMigrating,
 		Roles:    []gitlabroles.Role{gitlabroles.RolePoller},
 		Now:      now,
 	})
@@ -296,7 +358,6 @@ func TestRotateGitLabRoleCredentials_GraceCleanupRevokesOutgoing(t *testing.T) {
 		Client:   fc,
 		Tokens:   tokens,
 		Registry: gitlabroles.BuiltinRegistry(),
-		Mode:     gitlabroles.ModeMigrating,
 		Roles:    []gitlabroles.Role{gitlabroles.RolePoller},
 		Now:      now,
 	})
@@ -311,7 +372,6 @@ func TestRotateGitLabRoleCredentials_GraceCleanupRevokesOutgoing(t *testing.T) {
 		Client:   fc,
 		Tokens:   tokens,
 		Registry: gitlabroles.BuiltinRegistry(),
-		Mode:     gitlabroles.ModeMigrating,
 		Roles:    []gitlabroles.Role{gitlabroles.RolePoller},
 		Now:      later,
 	})
@@ -321,25 +381,32 @@ func TestRotateGitLabRoleCredentials_GraceCleanupRevokesOutgoing(t *testing.T) {
 	assert.Equal(t, []int{1}, tokens.revoked)
 }
 
-func TestRotateGitLabRoleCredentials_DisabledSkipsWithoutForce(t *testing.T) {
+// A forced replacement keeps an earlier outgoing obligation that grace cleanup
+// could not discharge, even when that token is absent from the operational
+// listing, so a later cleanup can still retry it.
+func TestRotateGitLabRoleCredentials_ReplacementKeepsUndischargedOutgoingObligation(t *testing.T) {
 	t.Parallel()
+	ctx := context.Background()
+	now := time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC)
 	fc := seededRoleClient(t, gitlabroles.RolePoller)
-	tokens := &fakeTokens{}
-	tokens.seed(ProjectAccessToken{Name: gitlabroles.PollerTokenName, Active: true, ExpiresAt: "2026-10-01"})
+	require.NoError(t, fc.UpdateCIVariable(ctx, "group", "project", forge.VarGitLabRoleRotation,
+		`{"roles":{"poller":{"phase":"overlapping","incoming_id":5,"outgoing_ids":[4],"distributed_at":"2026-09-01T00:00:00Z","created_token_ids":[4,5]}}}`, true))
+	tokens := &fakeTokens{failRevoke: errors.New("revoke unavailable")}
+	tokens.seed(ProjectAccessToken{ID: 5, Name: gitlabroles.PollerTokenName, Active: true, ExpiresAt: "2027-09-01"})
 
-	result, err := RotateGitLabRoleCredentials(context.Background(), RoleRotateConfig{
-		Owner:    "group",
-		Repo:     "project",
-		Client:   fc,
-		Tokens:   tokens,
-		Registry: gitlabroles.BuiltinRegistry(),
-		Mode:     gitlabroles.ModeDisabled,
-		Now:      time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC),
+	result, err := RotateGitLabRoleCredentials(ctx, RoleRotateConfig{
+		Owner: "group", Repo: "project", Client: fc, Tokens: tokens,
+		Registry: gitlabroles.BuiltinRegistry(), Roles: []gitlabroles.Role{gitlabroles.RolePoller},
+		Force: true, Now: now,
 	})
 	require.NoError(t, err)
-	assert.Empty(t, result.Rotated)
-	assert.Empty(t, tokens.created)
-	assert.Contains(t, strings.Join(result.Diagnostics, "\n"), "skip rotation")
+	assert.Empty(t, result.Failed)
+	assert.Contains(t, result.Rotated, gitlabroles.RolePoller)
+
+	rs := readRoleState(t, fc, gitlabroles.RolePoller)
+	assert.Contains(t, rs.OutgoingIDs, 4, "the undischarged earlier obligation is retained")
+	assert.Contains(t, rs.OutgoingIDs, 5)
+	assert.Equal(t, rotationPhaseOverlapping, rs.Phase)
 }
 
 func TestRotateGitLabRoleCredentials_DryRunDoesNotWrite(t *testing.T) {
@@ -355,7 +422,6 @@ func TestRotateGitLabRoleCredentials_DryRunDoesNotWrite(t *testing.T) {
 		Client:   fc,
 		Tokens:   tokens,
 		Registry: gitlabroles.BuiltinRegistry(),
-		Mode:     gitlabroles.ModeMigrating,
 		Roles:    []gitlabroles.Role{gitlabroles.RolePoller},
 		Now:      time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC),
 		DryRun:   true,
@@ -379,9 +445,8 @@ func TestRotateGitLabRoleCredentials_ProvidedReplacement(t *testing.T) {
 		Owner:    "group",
 		Repo:     "project",
 		Client:   fc,
-		Tokens:   tokens,
+		Tokens:   verifyingTokens(tokens, describedIdentity(gitlabroles.PollerTokenName, 777, 21)),
 		Registry: gitlabroles.BuiltinRegistry(),
-		Mode:     gitlabroles.ModeMigrating,
 		Roles:    []gitlabroles.Role{gitlabroles.RolePoller},
 		Force:    true,
 		Now:      time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC),
@@ -411,14 +476,17 @@ func TestRotateGitLabRoleCredentials_ProvidedReplacementDoesNotScheduleSelfForRe
 	// Premium/Ultimate, then pass its value here). Rotation has no way
 	// to learn this listed token's own ID from the provided value alone.
 	tokens.seed(ProjectAccessToken{ID: 9, Name: gitlabroles.PollerTokenName, Active: true, ExpiresAt: "2027-09-21"})
+	// The enrolled value now authenticates as the listed token, so its own ID
+	// is resolved and must still never be scheduled for grace revocation.
+	verified := verifyingTokens(tokens, describedIdentity(gitlabroles.PollerTokenName, 777, 9))
+	verified.ManagedLegacyTokenIDs = func(context.Context, string, string) ([]int, error) { return []int{9}, nil }
 
 	result, err := RotateGitLabRoleCredentials(context.Background(), RoleRotateConfig{
 		Owner:    "group",
 		Repo:     "project",
 		Client:   fc,
-		Tokens:   tokens,
+		Tokens:   verified,
 		Registry: gitlabroles.BuiltinRegistry(),
-		Mode:     gitlabroles.ModeMigrating,
 		Roles:    []gitlabroles.Role{gitlabroles.RolePoller},
 		Force:    true,
 		Now:      time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC),
@@ -444,8 +512,8 @@ func TestRotateGitLabRoleCredentials_ProvidedUnmaskableAndStoreFailure(t *testin
 		fc := seededRoleClient(t, gitlabroles.RolePoller)
 		result, err := RotateGitLabRoleCredentials(context.Background(), RoleRotateConfig{
 			Owner: "group", Repo: "project", Client: fc, Tokens: &fakeTokens{},
-			Registry: gitlabroles.BuiltinRegistry(), Mode: gitlabroles.ModeMigrating,
-			Roles: []gitlabroles.Role{gitlabroles.RolePoller}, Force: true, Now: now,
+			Registry: gitlabroles.BuiltinRegistry(),
+			Roles:    []gitlabroles.Role{gitlabroles.RolePoller}, Force: true, Now: now,
 			ProvidedTokens: map[gitlabroles.Role]string{gitlabroles.RolePoller: "short"},
 		})
 		require.NoError(t, err)
@@ -458,8 +526,8 @@ func TestRotateGitLabRoleCredentials_ProvidedUnmaskableAndStoreFailure(t *testin
 		fc := &selectiveSecretClient{Client: inner, fail: map[string]error{forge.SecretGitLabPollerToken: fmt.Errorf("nope")}}
 		result, err := RotateGitLabRoleCredentials(context.Background(), RoleRotateConfig{
 			Owner: "group", Repo: "project", Client: fc, Tokens: &fakeTokens{},
-			Registry: gitlabroles.BuiltinRegistry(), Mode: gitlabroles.ModeMigrating,
-			Roles: []gitlabroles.Role{gitlabroles.RolePoller}, Force: true, Now: now,
+			Registry: gitlabroles.BuiltinRegistry(),
+			Roles:    []gitlabroles.Role{gitlabroles.RolePoller}, Force: true, Now: now,
 			ProvidedTokens: map[gitlabroles.Role]string{gitlabroles.RolePoller: "enrolledXXXX"},
 		})
 		require.NoError(t, err)
@@ -472,8 +540,8 @@ func TestRotateGitLabRoleCredentials_ProvidedUnmaskableAndStoreFailure(t *testin
 		before := len(fc.CreatedSecrets)
 		result, err := RotateGitLabRoleCredentials(context.Background(), RoleRotateConfig{
 			Owner: "group", Repo: "project", Client: fc, Tokens: &fakeTokens{},
-			Registry: gitlabroles.BuiltinRegistry(), Mode: gitlabroles.ModeMigrating,
-			Roles: []gitlabroles.Role{gitlabroles.RolePoller}, Force: true, Now: now, DryRun: true,
+			Registry: gitlabroles.BuiltinRegistry(),
+			Roles:    []gitlabroles.Role{gitlabroles.RolePoller}, Force: true, Now: now, DryRun: true,
 			ProvidedTokens: map[gitlabroles.Role]string{gitlabroles.RolePoller: "enrolledXXXX"},
 		})
 		require.NoError(t, err)
@@ -490,18 +558,18 @@ func TestRotateGitLabRoleCredentials_ProvidedReplacementNotDueIsSkippedWithoutFo
 	// The administrator-provided replacement is itself a project access
 	// token GitLab already lists under the role's token name (the
 	// documented free-tier workflow), healthy and far from expiry.
-	tokens.seed(ProjectAccessToken{ID: 9, Name: gitlabroles.PollerTokenName, Active: true, ExpiresAt: "2027-06-01"})
+	tokens.seed(ProjectAccessToken{ID: 9, Name: gitlabroles.PollerTokenName, Active: true, ExpiresAt: "2027-06-01", UserID: 777})
 	// A prior administrator-provided enrollment (rotateProvided, or the
 	// mirrored path in provisionOwnRoles) recorded this not-due proof:
 	// phase=idle, DistributedAt set, no GitLab token ID to track.
 	require.NoError(t, fc.UpdateCIVariable(context.Background(), "group", "project", forge.VarGitLabRoleRotation, `{"roles":{
-		"poller":{"phase":"idle","distributed_at":"2026-09-01T00:00:00Z"}
+		"poller":{"phase":"idle","distributed_at":"2026-09-01T00:00:00Z","supplied":true,"supplied_user_id":777,"excluded_user_ids":[777]}
 	}}`, true))
 
 	result, err := RotateGitLabRoleCredentials(context.Background(), RoleRotateConfig{
-		Owner: "group", Repo: "project", Client: fc, Tokens: tokens,
-		Registry: gitlabroles.BuiltinRegistry(), Mode: gitlabroles.ModeMigrating,
-		Roles: []gitlabroles.Role{gitlabroles.RolePoller}, Now: now,
+		Owner: "group", Repo: "project", Client: fc, Tokens: healthyInstalledTokens(tokens),
+		Registry: gitlabroles.BuiltinRegistry(),
+		Roles:    []gitlabroles.Role{gitlabroles.RolePoller}, Now: now,
 	})
 	require.NoError(t, err)
 	assert.Empty(t, tokens.created, "a healthy administrator-provided credential must not be re-minted just because it has no incoming_id")
@@ -553,7 +621,6 @@ func TestRotateGitLabRoleCredentials_ConcurrentSiblingRoleSurvives(t *testing.T)
 		Client:   fc,
 		Tokens:   tokens,
 		Registry: gitlabroles.BuiltinRegistry(),
-		Mode:     gitlabroles.ModeMigrating,
 		Roles:    []gitlabroles.Role{gitlabroles.RolePoller},
 		Now:      now,
 	})
@@ -613,7 +680,6 @@ func TestRotateGitLabRoleCredentials_ConcurrentSiblingRoleSurvivesLockClaim(t *t
 		Client:   fc,
 		Tokens:   tokens,
 		Registry: gitlabroles.BuiltinRegistry(),
-		Mode:     gitlabroles.ModeMigrating,
 		Roles:    []gitlabroles.Role{gitlabroles.RolePoller},
 		Now:      now,
 	})
@@ -674,8 +740,8 @@ func TestRotateGitLabRoleCredentials_StaleClaimRejectedAfterConcurrentWinner(t *
 
 	result, err := RotateGitLabRoleCredentials(context.Background(), RoleRotateConfig{
 		Owner: "group", Repo: "project", Client: fc, Tokens: tokens,
-		Registry: gitlabroles.BuiltinRegistry(), Mode: gitlabroles.ModeMigrating,
-		Roles: []gitlabroles.Role{gitlabroles.RolePoller}, Now: now, Holder: "self",
+		Registry: gitlabroles.BuiltinRegistry(),
+		Roles:    []gitlabroles.Role{gitlabroles.RolePoller}, Now: now, Holder: "self",
 	})
 	require.NoError(t, err)
 	require.True(t, fc.injected, "the winner's write must have landed for this test to be meaningful")
@@ -736,8 +802,8 @@ func TestRotateGitLabRoleCredentials_StaleClaimPreservesReleasedWinnerState(t *t
 
 	result, err := RotateGitLabRoleCredentials(context.Background(), RoleRotateConfig{
 		Owner: "group", Repo: "project", Client: fc, Tokens: tokens,
-		Registry: gitlabroles.BuiltinRegistry(), Mode: gitlabroles.ModeMigrating,
-		Roles: []gitlabroles.Role{gitlabroles.RolePoller}, Now: now, Holder: "self",
+		Registry: gitlabroles.BuiltinRegistry(),
+		Roles:    []gitlabroles.Role{gitlabroles.RolePoller}, Now: now, Holder: "self",
 	})
 	require.NoError(t, err)
 	require.True(t, fc.injected, "the winner's completed write must have landed for this test to be meaningful")
@@ -764,8 +830,8 @@ func TestRotateGitLabRoleCredentials_InProgressLock(t *testing.T) {
 
 	result, err := RotateGitLabRoleCredentials(context.Background(), RoleRotateConfig{
 		Owner: "group", Repo: "project", Client: fc, Tokens: tokens,
-		Registry: gitlabroles.BuiltinRegistry(), Mode: gitlabroles.ModeMigrating,
-		Roles: []gitlabroles.Role{gitlabroles.RolePoller}, Now: now, Holder: "self",
+		Registry: gitlabroles.BuiltinRegistry(),
+		Roles:    []gitlabroles.Role{gitlabroles.RolePoller}, Now: now, Holder: "self",
 	})
 	require.NoError(t, err)
 	assert.Equal(t, []gitlabroles.Role{gitlabroles.RolePoller}, result.InProgress)
@@ -777,14 +843,14 @@ func TestRotateGitLabRoleCredentials_InvalidStateAndEmptyCreate(t *testing.T) {
 	now := time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC)
 	fc := seededRoleClient(t, gitlabroles.RolePoller)
 	require.NoError(t, fc.UpdateCIVariable(context.Background(), "group", "project", forge.VarGitLabRoleRotation,
-		`{"roles":{"poller":{"unknown":true}}}`, true))
+		`{"roles":{"poller":{"lock_until":"not-a-time"}}}`, true))
 	tokens := &fakeTokens{emptyValue: map[string]bool{gitlabroles.PollerTokenName: true}}
 	tokens.seed(ProjectAccessToken{Name: gitlabroles.PollerTokenName, Active: true, ExpiresAt: "2026-10-01"})
 
 	result, err := RotateGitLabRoleCredentials(context.Background(), RoleRotateConfig{
 		Owner: "group", Repo: "project", Client: fc, Tokens: tokens,
-		Registry: gitlabroles.BuiltinRegistry(), Mode: gitlabroles.ModeMigrating,
-		Roles: []gitlabroles.Role{gitlabroles.RolePoller}, Now: now,
+		Registry: gitlabroles.BuiltinRegistry(),
+		Roles:    []gitlabroles.Role{gitlabroles.RolePoller}, Now: now,
 	})
 	require.NoError(t, err)
 	assert.Contains(t, strings.Join(result.Diagnostics, "\n"), "invalid or unavailable")
@@ -802,8 +868,8 @@ func TestRotateGitLabRoleCredentials_EmptyCreateValue(t *testing.T) {
 
 	result, err := RotateGitLabRoleCredentials(context.Background(), RoleRotateConfig{
 		Owner: "group", Repo: "project", Client: fc, Tokens: tokens,
-		Registry: gitlabroles.BuiltinRegistry(), Mode: gitlabroles.ModeMigrating,
-		Roles: []gitlabroles.Role{gitlabroles.RolePoller}, Now: now,
+		Registry: gitlabroles.BuiltinRegistry(),
+		Roles:    []gitlabroles.Role{gitlabroles.RolePoller}, Now: now,
 	})
 	require.NoError(t, err)
 	require.Len(t, result.Failed, 1)
@@ -813,8 +879,7 @@ func TestRotateGitLabRoleCredentials_EmptyCreateValue(t *testing.T) {
 func TestRotateGitLabRoleCredentials_ForceWithoutTokenClient(t *testing.T) {
 	t.Parallel()
 	_, err := RotateGitLabRoleCredentials(context.Background(), RoleRotateConfig{
-		Owner: "group", Repo: "project", Client: provisionClient(t),
-		Mode: gitlabroles.ModeMigrating, Force: true,
+		Owner: "group", Repo: "project", Client: provisionClient(t), Force: true,
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "token client")
@@ -832,16 +897,10 @@ func TestSecretLeakRotateAndWriteState(t *testing.T) {
 	assert.Contains(t, raw, `"roles"`)
 }
 
-func TestRotateGitLabRoleCredentials_NilClientAndInvalidMode(t *testing.T) {
+func TestRotateGitLabRoleCredentials_NilClient(t *testing.T) {
 	t.Parallel()
 	_, err := RotateGitLabRoleCredentials(context.Background(), RoleRotateConfig{})
 	require.Error(t, err)
-	_, err = RotateGitLabRoleCredentials(context.Background(), RoleRotateConfig{
-		Client: provisionClient(t),
-		Mode:   gitlabroles.Mode("nope"),
-	})
-	require.Error(t, err)
-	assert.ErrorIs(t, err, gitlabroles.ErrInvalidMode)
 }
 
 func TestRotateGitLabRoleCredentials_DoesNotTouchSharedToken(t *testing.T) {
@@ -851,18 +910,16 @@ func TestRotateGitLabRoleCredentials_DoesNotTouchSharedToken(t *testing.T) {
 	tokens.seed(ProjectAccessToken{Name: gitlabroles.PollerTokenName, Active: true, ExpiresAt: "2026-10-01"})
 	tokens.seed(ProjectAccessToken{Name: gitlabroles.SharedTokenName, Active: true, ExpiresAt: "2026-10-01"})
 
-	result, err := RotateGitLabRoleCredentials(context.Background(), RoleRotateConfig{
+	_, err := RotateGitLabRoleCredentials(context.Background(), RoleRotateConfig{
 		Owner:    "group",
 		Repo:     "project",
 		Client:   fc,
 		Tokens:   tokens,
 		Registry: gitlabroles.BuiltinRegistry(),
-		Mode:     gitlabroles.ModeEnforced,
 		Force:    true,
 		Now:      time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC),
 	})
 	require.NoError(t, err)
-	assert.True(t, result.SharedPreserved)
 	for _, name := range tokens.createdNames() {
 		assert.NotEqual(t, gitlabroles.SharedTokenName, name)
 	}
@@ -872,8 +929,6 @@ func TestRotateGitLabRoleCredentials_DoesNotTouchSharedToken(t *testing.T) {
 func TestEnrichGitLabRoleStatusExpiredIsDriftWhenEnforced(t *testing.T) {
 	t.Parallel()
 	fc := provisionClient(t)
-	fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration] = "enforced"
-	fc.VariablesExist["group/project/"+forge.VarGitLabRoleMigration] = true
 	require.NoError(t, fc.CreateRepoSecret(context.Background(), "group", "project", forge.SecretGitLabPollerToken, "oldvalueXXXX"))
 	require.NoError(t, fc.CreateRepoSecret(context.Background(), "group", "project", forge.SecretGitLabAnalystToken, "oldvalueXXXX"))
 	require.NoError(t, fc.CreateRepoSecret(context.Background(), "group", "project", forge.SecretGitLabCoderToken, "oldvalueXXXX"))
@@ -916,8 +971,6 @@ func TestEnrichGitLabRoleStatusExpiredIsDriftWhenEnforced(t *testing.T) {
 func TestEnrichGitLabRoleStatusAcceptsAdministratorEnrollment(t *testing.T) {
 	t.Parallel()
 	fc := provisionClient(t)
-	fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration] = "enforced"
-	fc.VariablesExist["group/project/"+forge.VarGitLabRoleMigration] = true
 	for _, name := range []string{forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken} {
 		require.NoError(t, fc.CreateRepoSecret(context.Background(), "group", "project", name, "enrolledXXXX"))
 	}
@@ -934,29 +987,9 @@ func TestEnrichGitLabRoleStatusAcceptsAdministratorEnrollment(t *testing.T) {
 	assert.NotContains(t, strings.Join(status.GitLabRoleDiagnostics, "\n"), "secret present but no matching project access token")
 }
 
-func TestEnrichGitLabRoleStatusSharedOnlyOmitsRoleReadinessDiagnostics(t *testing.T) {
-	t.Parallel()
-	for _, mode := range []gitlabroles.Mode{gitlabroles.ModeDisabled, gitlabroles.ModeRollback} {
-		t.Run(string(mode), func(t *testing.T) {
-			fc := provisionClient(t)
-			fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration] = string(mode)
-			fc.VariablesExist["group/project/"+forge.VarGitLabRoleMigration] = true
-			status := &RepoStatus{}
-			EnrichGitLabRoleStatus(context.Background(), fc, "group", "project", nil, time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC), status)
-			joined := strings.Join(status.GitLabRoleDiagnostics, "\n")
-			assert.NotContains(t, joined, "builtin poller:")
-			assert.NotContains(t, joined, "builtin roles ready:")
-			assert.NotContains(t, joined, "registered role")
-			assert.True(t, status.GitLabRolesReady)
-		})
-	}
-}
-
 func TestEnrichGitLabRoleStatusIncludesRegisteredReadiness(t *testing.T) {
 	t.Parallel()
 	fc := provisionClient(t)
-	fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration] = "enforced"
-	fc.VariablesExist["group/project/"+forge.VarGitLabRoleMigration] = true
 	fc.VariableValues["group/project/"+forge.VarGitLabRoleRegistry] = `{"roles":[{"name":"scanner","responsibility":"scan","credential":"own","capabilities":["read_issues"],"agents":[]}]}`
 	fc.VariablesExist["group/project/"+forge.VarGitLabRoleRegistry] = true
 	fc.Secrets["group/project/"+gitlabroles.CustomSecretName("scanner")] = true
@@ -992,7 +1025,6 @@ func TestRotateGitLabRoleCredentials_RecoveryAfterPartialDistribution(t *testing
 		Client:   fc,
 		Tokens:   tokens,
 		Registry: gitlabroles.BuiltinRegistry(),
-		Mode:     gitlabroles.ModeMigrating,
 		Roles:    []gitlabroles.Role{gitlabroles.RolePoller},
 		Now:      now,
 		Force:    true,
@@ -1021,7 +1053,6 @@ func TestRotateGitLabRoleCredentials_RecoveryAfterPartialDistributionWithoutForc
 		Client:   fc,
 		Tokens:   tokens,
 		Registry: gitlabroles.BuiltinRegistry(),
-		Mode:     gitlabroles.ModeMigrating,
 		Roles:    []gitlabroles.Role{gitlabroles.RolePoller},
 		Now:      now,
 	})
@@ -1055,7 +1086,6 @@ func TestRotateGitLabRoleCredentials_OrphanBeforeFirstStateWriteIsNotTrustedAsDu
 		Client:   fc,
 		Tokens:   tokens,
 		Registry: gitlabroles.BuiltinRegistry(),
-		Mode:     gitlabroles.ModeMigrating,
 		Roles:    []gitlabroles.Role{gitlabroles.RolePoller},
 		Now:      now,
 	})
@@ -1094,7 +1124,6 @@ func TestRotateGitLabRoleCredentials_SingleUnprovenOrphanIsNotTrustedAsDue(t *te
 		Client:   fc,
 		Tokens:   tokens,
 		Registry: gitlabroles.BuiltinRegistry(),
-		Mode:     gitlabroles.ModeMigrating,
 		Roles:    []gitlabroles.Role{gitlabroles.RolePoller},
 		Now:      now,
 	})
@@ -1181,7 +1210,6 @@ func TestRotateGitLabRoleCredentials_SameDayReplacementIsRecognizedAsCurrent(t *
 		Client:   fc,
 		Tokens:   tokens,
 		Registry: gitlabroles.BuiltinRegistry(),
-		Mode:     gitlabroles.ModeMigrating,
 		Roles:    []gitlabroles.Role{gitlabroles.RolePoller},
 		Now:      now,
 	})
@@ -1268,14 +1296,16 @@ func TestRotateGitLabRoleCredentials_ProvidedReplacementWarnsAboutLeftoverPATs(t
 	// A leftover PAT from a previous mint-based rotation, distinct from
 	// whatever the administrator is now enrolling.
 	tokens.seed(ProjectAccessToken{ID: 5, Name: gitlabroles.PollerTokenName, Active: true, ExpiresAt: "2027-01-01"})
+	// The leftover is a fullsend-created token, so the inventory lists it.
+	verified := verifyingTokens(tokens, describedIdentity(gitlabroles.PollerTokenName, 777, 21))
+	verified.ManagedLegacyTokenIDs = func(context.Context, string, string) ([]int, error) { return []int{5}, nil }
 
 	result, err := RotateGitLabRoleCredentials(context.Background(), RoleRotateConfig{
 		Owner:    "group",
 		Repo:     "project",
 		Client:   fc,
-		Tokens:   tokens,
+		Tokens:   verified,
 		Registry: gitlabroles.BuiltinRegistry(),
-		Mode:     gitlabroles.ModeMigrating,
 		Roles:    []gitlabroles.Role{gitlabroles.RolePoller},
 		Force:    true,
 		Now:      time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC),
@@ -1295,4 +1325,35 @@ func TestRotateGitLabRoleCredentials_ProvidedReplacementWarnsAboutLeftoverPATs(t
 			"the diagnostic must not imply automatic grace cleanup when outgoing_ids cannot be filled")
 	}
 	assert.True(t, warned, "a leftover same-named PAT must surface an explicit manual-revocation warning")
+}
+
+// An administrator-provided replacement keeps the managed tokens the role entry
+// already tracked as recoverable outgoing obligations, except for the
+// replacement's own token ID, instead of forgetting them.
+func TestRotateGitLabRoleCredentials_ProvidedReplacementRetainsTrackedManagedTokens(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	fc := seededRoleClient(t, gitlabroles.RolePoller)
+	require.NoError(t, writeRotationState(ctx, fc, "group", "project", rotationStateFile{Roles: map[string]rotationRoleState{
+		"poller": {CreatedTokenIDs: []int{5, 6, 21}, Phase: rotationPhaseOverlapping, IncomingID: 6, OutgoingIDs: []int{5, 21}, DistributedAt: "2026-09-01T00:00:00Z"},
+	}}))
+	tokens := &fakeTokens{}
+	verified := verifyingTokens(tokens, describedIdentity(gitlabroles.PollerTokenName, 777, 21))
+
+	result, err := RotateGitLabRoleCredentials(ctx, RoleRotateConfig{
+		Owner: "group", Repo: "project", Client: fc, Tokens: verified,
+		Registry: gitlabroles.BuiltinRegistry(), Roles: []gitlabroles.Role{gitlabroles.RolePoller}, Force: true,
+		Now:            time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC),
+		ProvidedTokens: map[gitlabroles.Role]string{gitlabroles.RolePoller: "enrolledXXXX"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, []gitlabroles.Role{gitlabroles.RolePoller}, result.Rotated)
+	state, _, err := loadRotationState(ctx, fc, "group", "project")
+	require.NoError(t, err)
+	rs := state.Roles["poller"]
+	assert.ElementsMatch(t, []int{5, 6}, rs.OutgoingIDs, "tracked managed tokens stay recorded; the replacement's own ID is excluded")
+	assert.Equal(t, rotationPhaseIdle, rs.Phase)
+	assert.Zero(t, rs.IncomingID)
+	assert.Equal(t, 21, rs.SuppliedTokenID)
+	assert.Empty(t, tokens.revoked, "enrollment does not revoke the retained tokens")
 }

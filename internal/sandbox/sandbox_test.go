@@ -512,6 +512,241 @@ func TestSanitizeDownload_RemoveFailureReturnsErrSymlink(t *testing.T) {
 	assert.NoError(t, statErr, "second symlink should remain after walk aborted on first error")
 }
 
+func TestSafeDownload_RetriesIntoFreshDirectoryAfterPartialExtraction(t *testing.T) {
+	binDir := t.TempDir()
+	logPath := filepath.Join(binDir, "download-paths.log")
+	counterPath := filepath.Join(binDir, "attempt-count")
+
+	script := fmt.Sprintf(`#!/bin/sh
+set -e
+if [ "$2" != "download" ]; then
+  exit 0
+fi
+dest=$5
+printf '%%s\n' "$dest" >> "%s"
+attempt=0
+if [ -f "%s" ]; then
+  attempt=$(/bin/cat "%s")
+fi
+attempt=$((attempt + 1))
+printf '%%s\n' "$attempt" > "%s"
+if [ "$attempt" -eq 1 ]; then
+  /bin/mkdir -p "$dest/node_modules/@esbuild/linux-x64/bin" "$dest/node_modules/esbuild/bin"
+  printf 'esbuild' > "$dest/node_modules/@esbuild/linux-x64/bin/esbuild"
+  /bin/ln "$dest/node_modules/@esbuild/linux-x64/bin/esbuild" "$dest/node_modules/esbuild/bin/esbuild"
+  exit 1
+fi
+printf 'safe\n' > "$dest/safe.txt"
+/bin/ln -s /etc/passwd "$dest/dangerous-link"
+exit 0
+`, logPath, counterPath, counterPath, counterPath)
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir)
+
+	parent := t.TempDir()
+	localDir := filepath.Join(parent, "repo")
+	require.NoError(t, SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir))
+
+	log, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	paths := strings.Split(strings.TrimSpace(string(log)), "\n")
+	require.Len(t, paths, 2)
+	assert.NotEqual(t, paths[0], paths[1], "retry must use a fresh staging directory")
+
+	content, err := os.ReadFile(filepath.Join(localDir, "safe.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "safe\n", string(content))
+
+	_, lstatErr := os.Lstat(filepath.Join(localDir, "dangerous-link"))
+	assert.True(t, os.IsNotExist(lstatErr), "dangerous symlink must be removed before publishing")
+	_, statErr := os.Lstat(filepath.Join(localDir, "node_modules"))
+	assert.True(t, os.IsNotExist(statErr), "partial first attempt must not leak into the published directory")
+
+	entries, err := os.ReadDir(parent)
+	require.NoError(t, err)
+	for _, entry := range entries {
+		assert.False(t, strings.HasPrefix(entry.Name(), ".fullsend-safe-download-"),
+			"staging directory must be removed after success: %s", entry.Name())
+	}
+}
+
+func TestSafeDownload_CleansTrailingSeparator(t *testing.T) {
+	binDir := t.TempDir()
+	script := `#!/bin/sh
+if [ "$2" = "download" ]; then
+  printf 'safe\n' > "$5/safe.txt"
+  exit 0
+fi
+exit 0
+`
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir)
+
+	parent := t.TempDir()
+	localDir := filepath.Join(parent, "repo") + string(os.PathSeparator)
+	require.NoError(t, SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir))
+
+	content, err := os.ReadFile(filepath.Join(parent, "repo", "safe.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "safe\n", string(content))
+
+	entries, readErr := os.ReadDir(parent)
+	require.NoError(t, readErr)
+	require.Len(t, entries, 1)
+	assert.Equal(t, "repo", entries[0].Name())
+}
+
+func TestSafeDownload_ExhaustsRetries(t *testing.T) {
+	binDir := t.TempDir()
+	script := `#!/bin/sh
+if [ "$2" = "download" ]; then
+  exit 1
+fi
+exit 0
+`
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir)
+
+	parent := t.TempDir()
+	localDir := filepath.Join(parent, "repo")
+	err := SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "safe download from sandbox failed after 2 attempts")
+	assert.Contains(t, err.Error(), "attempt 1/2")
+	assert.Contains(t, err.Error(), "attempt 2/2")
+
+	_, statErr := os.Lstat(localDir)
+	assert.True(t, os.IsNotExist(statErr), "failed download must not publish a partial directory")
+
+	entries, readErr := os.ReadDir(parent)
+	require.NoError(t, readErr)
+	for _, entry := range entries {
+		assert.False(t, strings.HasPrefix(entry.Name(), ".fullsend-safe-download-"),
+			"staging directory must be removed after failure: %s", entry.Name())
+	}
+}
+
+func TestSafeDownload_ReturnsErrorWhenReplacingExistingDownloadFails(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root bypasses permission checks")
+	}
+
+	binDir := t.TempDir()
+	script := `#!/bin/sh
+if [ "$2" = "download" ]; then
+  printf 'safe\n' > "$5/safe.txt"
+  exit 0
+fi
+exit 0
+`
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir)
+
+	parent := t.TempDir()
+	localDir := filepath.Join(parent, "repo")
+	readonlyDir := filepath.Join(localDir, "readonly")
+	require.NoError(t, os.MkdirAll(readonlyDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(readonlyDir, "file.txt"), []byte("keep"), 0o644))
+	require.NoError(t, os.Chmod(readonlyDir, 0o555))
+	t.Cleanup(func() {
+		require.NoError(t, os.Chmod(readonlyDir, 0o755))
+	})
+
+	err := SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "replacing existing download directory")
+}
+
+func TestSafeDownload_ReturnsErrorWhenSanitizationFails(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root bypasses permission checks")
+	}
+
+	binDir := t.TempDir()
+	script := `#!/bin/sh
+if [ "$2" = "download" ]; then
+  printf 'safe\n' > "$5/safe.txt"
+  /bin/ln -s /etc/passwd "$5/dangerous-link"
+  /bin/mkdir "$5/readonly"
+  printf 'nested\n' > "$5/readonly/nested.txt"
+  /bin/chmod 0555 "$5/readonly"
+  /bin/chmod 0555 "$5"
+  exit 0
+fi
+exit 0
+`
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir)
+
+	parent := t.TempDir()
+	localDir := filepath.Join(parent, "repo")
+	t.Cleanup(func() {
+		entries, readErr := os.ReadDir(parent)
+		if readErr != nil {
+			return
+		}
+		for _, entry := range entries {
+			if !strings.HasPrefix(entry.Name(), ".fullsend-safe-download-") {
+				continue
+			}
+			stagingDir := filepath.Join(parent, entry.Name())
+			_ = os.Chmod(stagingDir, 0o755)
+			_ = os.RemoveAll(stagingDir)
+		}
+	})
+
+	err := SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sanitizing downloaded directory")
+
+	_, statErr := os.Lstat(localDir)
+	assert.True(t, os.IsNotExist(statErr), "unsafe download must not be published")
+
+	entries, readErr := os.ReadDir(parent)
+	require.NoError(t, readErr)
+	for _, entry := range entries {
+		assert.False(t, strings.HasPrefix(entry.Name(), ".fullsend-safe-download-"),
+			"staging directory must be removed after sanitization failure: %s", entry.Name())
+	}
+}
+
+func TestSafeDownload_ReturnsErrorWhenSanitizationCleanupFails(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root bypasses permission checks")
+	}
+
+	binDir := t.TempDir()
+	script := `#!/bin/sh
+if [ "$2" = "download" ]; then
+  printf 'safe\n' > "$5/safe.txt"
+  /bin/ln -s /etc/passwd "$5/dangerous-link"
+  /bin/chmod 0555 "$5"
+  staging_parent="${5%/*}"
+  /bin/chmod 0555 "$staging_parent"
+  exit 0
+fi
+exit 0
+`
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir)
+
+	parent := t.TempDir()
+	t.Cleanup(func() {
+		require.NoError(t, os.Chmod(parent, 0o755))
+	})
+	localDir := filepath.Join(parent, "repo")
+
+	err := SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sanitizing downloaded directory")
+	assert.Contains(t, err.Error(), "cleaning staging directory after sanitization failure")
+	assert.Contains(t, err.Error(), "removing staging directory")
+}
+
+func TestCleanupStagingDir_MissingPath(t *testing.T) {
+	require.NoError(t, cleanupStagingDir(filepath.Join(t.TempDir(), "missing")))
+}
+
 func TestEffectiveReadyTimeout_Default(t *testing.T) {
 	t.Setenv("FULLSEND_SANDBOX_READY_TIMEOUT", "")
 	got := effectiveReadyTimeout(0)
@@ -1105,6 +1340,79 @@ func TestUploadFile_OpenshellNotInPath(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestUploadFile_ExactDestination(t *testing.T) {
+	for _, existing := range []bool{false, true} {
+		t.Run(fmt.Sprintf("existing=%t", existing), func(t *testing.T) {
+			dir := t.TempDir()
+			local := filepath.Join(dir, "source ' file.json")
+			require.NoError(t, os.WriteFile(local, []byte("replacement"), 0o644))
+			remote := filepath.Join(dir, "repo", "main ' file.go")
+			require.NoError(t, os.MkdirAll(filepath.Dir(remote), 0o755))
+			neighbor := filepath.Join(filepath.Dir(remote), "neighbor.go")
+			require.NoError(t, os.WriteFile(neighbor, []byte("preserve"), 0o644))
+			if existing {
+				require.NoError(t, os.WriteFile(remote, []byte("original"), 0o644))
+			}
+			installFileUploadFake(t)
+			require.NoError(t, UploadFile("test", local, remote))
+			got, err := os.ReadFile(remote)
+			require.NoError(t, err)
+			assert.Equal(t, "replacement", string(got))
+			got, err = os.ReadFile(neighbor)
+			require.NoError(t, err)
+			assert.Equal(t, "preserve", string(got))
+		})
+	}
+}
+
+// Execute the remote commands locally and emulate OpenShell's directory
+// destination semantics, including mkdir failure for an existing file. The
+// sandbox runs GNU coreutils, but BSD mv on macOS lacks -T, so the fake
+// emulates "mv -fT -- SRC DST" with portable shell instead of the host mv.
+func installFileUploadFake(t *testing.T) {
+	t.Helper()
+	bin := t.TempDir()
+	script := `#!/bin/sh
+if [ "$2" = upload ]; then
+  mkdir -p -- "$6" && cp -- "$5" "$6/"
+  exit $?
+fi
+if [ "$2" = exec ]; then
+  for arg in "$@"; do command="$arg"; done
+  prelude='mv() {
+  if [ "$1" = -fT ] && [ "$2" = -- ] && [ "$#" -eq 4 ]; then
+    if [ -d "$4" ]; then
+      echo "mv: cannot overwrite directory $4" >&2
+      return 1
+    fi
+    command mv -f -- "$3" "$4"
+  else
+    command mv "$@"
+  fi
+}'
+  sh -c "$prelude
+$command"
+  exit $?
+fi
+exit 1
+`
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func TestUploadFile_RejectsDirectoryDestination(t *testing.T) {
+	installFileUploadFake(t)
+	local := filepath.Join(t.TempDir(), "source")
+	require.NoError(t, os.WriteFile(local, []byte("content"), 0o644))
+	destination := t.TempDir()
+	assert.ErrorContains(t, UploadFile("test", local, destination), "installing uploaded file")
+}
+
+func TestUploadFile_MissingSource(t *testing.T) {
+	installFileUploadFake(t)
+	assert.Error(t, UploadFile("test", filepath.Join(t.TempDir(), "missing"), filepath.Join(t.TempDir(), "dest")))
+}
+
 func TestUploadDir_OpenshellNotInPath(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("PATH", "")
@@ -1162,6 +1470,41 @@ func TestUploadDir_ExcludesPatternsFromTarball(t *testing.T) {
 	assert.Equal(t, "nested\n", string(got))
 }
 
+func TestUploadDir_PreservesInTreeSymlinks(t *testing.T) {
+	// Only in-tree relative links: escaping/absolute links are deliberately
+	// not asserted here, since #5253 may sanitize them on upload.
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "real-dir"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "real-dir", "f.txt"), []byte("x"), 0o644))
+	require.NoError(t, os.Symlink("real-dir", filepath.Join(dir, "link-dir")))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "sub"), 0o755))
+	require.NoError(t, os.Symlink("../real-dir/f.txt", filepath.Join(dir, "sub", "link-file")))
+
+	binDir := t.TempDir()
+	logPath := filepath.Join(binDir, "openshell.log")
+	sentinelPath := filepath.Join(binDir, "uploaded.tar.gz")
+	fakeOpenshell(t, binDir, logPath, sentinelPath)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	require.NoError(t, UploadDir("test-sandbox", dir, "/sandbox/workspace/repo"))
+
+	extracted := extractTar(t, sentinelPath)
+	for link, want := range map[string]string{
+		"link-dir":      "real-dir",          // top-level member passed to tar by tarRootMembers
+		"sub/link-file": "../real-dir/f.txt", // nested entry reached by tar's own recursion
+	} {
+		t.Run(link, func(t *testing.T) {
+			p := filepath.Join(extracted, filepath.FromSlash(link))
+			fi, err := os.Lstat(p)
+			require.NoError(t, err, "%s should be in the tarball", link)
+			assert.NotZero(t, fi.Mode()&os.ModeSymlink, "%s must stay a symlink, not be dereferenced", link)
+			got, err := os.Readlink(p)
+			require.NoError(t, err)
+			assert.Equal(t, want, got, "%s symlink target", link)
+		})
+	}
+}
+
 func TestTarRootMembers_RejectsNestedExclude(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "keep.txt"), []byte("x"), 0o644))
@@ -1171,7 +1514,8 @@ func TestTarRootMembers_RejectsNestedExclude(t *testing.T) {
 }
 
 // fakeOpenshell writes a script that logs every invocation's full argv to
-// logPath, and — when invoked as "sandbox upload <name> <local> <remote>" —
+// logPath, and — when invoked as
+// "sandbox upload --no-git-ignore <name> <local> <remote>" —
 // copies <local> to sentinelPath so the test can inspect exactly what bytes
 // would have been shipped to the sandbox. It always exits 0. The real system
 // tar (found via the pre-existing PATH) is used for archive creation, so
@@ -1181,7 +1525,7 @@ func fakeOpenshell(t *testing.T, binDir, logPath, sentinelPath string) {
 	t.Helper()
 	script := "#!/bin/sh\n" +
 		"echo \"$@\" >> " + shellQuote(logPath) + "\n" +
-		"if [ \"$2\" = \"upload\" ]; then cp \"$4\" " + shellQuote(sentinelPath) + "; fi\n" +
+		"if [ \"$2\" = \"upload\" ]; then cp \"$5\" " + shellQuote(sentinelPath) + "; fi\n" +
 		"exit 0\n"
 	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
 }
@@ -1301,8 +1645,8 @@ func TestUpload_SymlinkToRegularFile_UploadsFileDirectly(t *testing.T) {
 	require.NoError(t, err)
 	log, readErr := os.ReadFile(logPath)
 	require.NoError(t, readErr)
-	assert.Contains(t, string(log), "upload test-sandbox "+wantPath+" /sandbox/workspace/link.txt")
-	assert.NotContains(t, string(log), "upload test-sandbox "+link+" ",
+	assert.Contains(t, string(log), "upload --no-git-ignore test-sandbox "+wantPath+" /sandbox/workspace/link.txt")
+	assert.NotContains(t, string(log), "test-sandbox "+link+" ",
 		"the symlink path itself should never reach openshell")
 }
 
@@ -1365,7 +1709,7 @@ func TestUpload_MaliciousBasename_ExtractCommandNotInjected(t *testing.T) {
 	// real via the host's own sh. This reproduces, on the test machine,
 	// exactly what UploadDir's extractCmd would do inside the sandbox.
 	script := "#!/bin/sh\n" +
-		"if [ \"$2\" = \"upload\" ]; then cp \"$4\" \"$5\"; exit 0; fi\n" +
+		"if [ \"$2\" = \"upload\" ]; then cp \"$5\" \"$6\"; exit 0; fi\n" +
 		"if [ \"$2\" = \"exec\" ]; then\n" +
 		"  for a in \"$@\"; do last=\"$a\"; done\n" +
 		"  sh -c \"$last\"\n" +
@@ -1411,7 +1755,41 @@ func TestUpload_RegularFile_SkipsTarPath(t *testing.T) {
 
 	log, err := os.ReadFile(logPath)
 	require.NoError(t, err)
-	assert.Contains(t, string(log), "upload test-sandbox "+f+" /sandbox/claude-config/settings.json")
+	assert.Contains(t, string(log), "upload --no-git-ignore test-sandbox "+f+" /sandbox/claude-config/settings.json")
+}
+
+// TestUpload_PassesNoGitIgnore: every "sandbox upload" carries --no-git-ignore
+// so OpenShell >= 0.1.3 never drops a file fullsend already chose because the
+// host checkout's .gitignore matches it (NVIDIA/OpenShell#3957, #8484).
+func TestUpload_PassesNoGitIgnore(t *testing.T) {
+	// A git-ignored path inside a checkout, like the cached output schema.
+	f := filepath.Join(t.TempDir(), ".fullsend-cache", "content.json")
+	require.NoError(t, os.MkdirAll(filepath.Dir(f), 0o755))
+	require.NoError(t, os.WriteFile(f, []byte("{}"), 0o644))
+	dir := filepath.Join(t.TempDir(), "skill")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("x"), 0o644))
+
+	binDir := t.TempDir()
+	argvLog := filepath.Join(binDir, "argv.log")
+	script := "#!/bin/sh\n" +
+		"if [ \"$2\" = \"upload\" ]; then printf '%s\\n' \"$*\" >> " + shellQuote(argvLog) + "; fi\n" +
+		"exit 0\n"
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	require.NoError(t, Upload("test-sandbox", f, "/dest/f"))
+	require.NoError(t, UploadDir("test-sandbox", dir, "/dest/skill"))
+
+	data, err := os.ReadFile(argvLog)
+	require.NoError(t, err)
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	require.Len(t, lines, 2)
+	assert.Equal(t, "sandbox upload --no-git-ignore test-sandbox "+f+" /dest/f", lines[0])
+	fields := strings.Fields(lines[1])
+	require.Len(t, fields, 6, "UploadDir tarball upload: %s", lines[1])
+	assert.Equal(t, []string{"sandbox", "upload", "--no-git-ignore", "test-sandbox"}, fields[:4])
+	assert.True(t, strings.HasSuffix(fields[4], ".tar.gz"), "UploadDir uploads its tarball: %s", fields[4])
 }
 
 func TestUpload_TrailingDotConvention_CopiesContentsWithoutWrapping(t *testing.T) {
@@ -1571,14 +1949,482 @@ exit 0
 		"ImportProfile must pass --file flag to openshell provider profile import")
 }
 
+// alreadyExistsThenExportStub builds an openshell stub whose profile import
+// fails with "already exists" and whose profile export prints exportYAML.
+func alreadyExistsThenExportStub(t *testing.T, dir, exportYAML string) string {
+	t.Helper()
+	script := `#!/bin/sh
+case "$3" in
+  import)
+    echo "profile already exists" >&2
+    exit 1
+    ;;
+  export)
+    printf '%s\n' ` + shellQuote(exportYAML) + `
+    exit 0
+    ;;
+esac
+exit 0
+`
+	fakePath := filepath.Join(dir, "openshell")
+	require.NoError(t, os.WriteFile(fakePath, []byte(script), 0o755))
+	return fakePath
+}
+
 func TestImportProfile_AlreadyExists(t *testing.T) {
 	dir := t.TempDir()
 	profilePath := filepath.Join(dir, "my-profile.yaml")
 	require.NoError(t, os.WriteFile(profilePath, []byte("id: my-profile"), 0o644))
 
+	// Gateway content matches the local file, so "already exists" is a no-op.
+	alreadyExistsThenExportStub(t, dir, "id: my-profile")
+	t.Setenv("PATH", dir)
+
+	cachePath := profileFileCachePath("my-profile")
+	t.Cleanup(func() { os.Remove(cachePath) })
+
+	err := ImportProfile(context.Background(), "my-profile", profilePath)
+	assert.NoError(t, err, "already-exists with matching gateway content should not be an error")
+}
+
+// TestImportProfile_AlreadyExists_GatewayMetadataIgnored verifies that a
+// gateway-only metadata field (resource_version) is not a mismatch.
+func TestImportProfile_AlreadyExists_GatewayMetadataIgnored(t *testing.T) {
+	dir := t.TempDir()
+	profilePath := filepath.Join(dir, "my-profile.yaml")
+	require.NoError(t, os.WriteFile(profilePath, []byte("id: my-profile\n"), 0o644))
+
+	alreadyExistsThenExportStub(t, dir, "id: my-profile\nresource_version: 7\n")
+	t.Setenv("PATH", dir)
+
+	cachePath := profileFileCachePath("my-profile")
+	t.Cleanup(func() { os.Remove(cachePath) })
+
+	err := ImportProfile(context.Background(), "my-profile", profilePath)
+	assert.NoError(t, err, "a gateway-only metadata field must not be treated as a content mismatch")
+}
+
+// TestImportProfile_AlreadyExists_GatewayDefaultsIgnored covers #8211: the
+// gateway's export of an unchanged profile adds defaulted fields the local
+// file never declares, which must not be treated as a content mismatch.
+func TestImportProfile_AlreadyExists_GatewayDefaultsIgnored(t *testing.T) {
+	dir := t.TempDir()
+	profilePath := filepath.Join(dir, "my-profile.yaml")
+	local := "id: my-profile\ncategory: source_control\ncredentials:\n  - name: api_token\n    env_vars: [GH_TOKEN]\n    required: true\n"
+	require.NoError(t, os.WriteFile(profilePath, []byte(local), 0o644))
+
+	exported := "id: my-profile\nresource_version: 3\ndescription: ''\ncategory: source_control\n" +
+		"credentials:\n- name: api_token\n  description: ''\n  env_vars:\n  - GH_TOKEN\n  required: true\n" +
+		"  auth_style: ''\n  header_name: ''\n  query_param: ''\n" +
+		"endpoints: []\nbinaries: []\ninference_capable: false\nsource: user\nscope: workspace\n"
+	alreadyExistsThenExportStub(t, dir, exported)
+	t.Setenv("PATH", dir)
+
+	cachePath := profileFileCachePath("my-profile")
+	t.Cleanup(func() { os.Remove(cachePath) })
+
+	err := ImportProfile(context.Background(), "my-profile", profilePath)
+	assert.NoError(t, err, "gateway-defaulted fields on an unchanged profile must not be a content mismatch")
+}
+
+func TestProfileContentEqual(t *testing.T) {
+	const local = `id: my-profile
+category: source_control
+credentials:
+  - name: api_token
+    env_vars: [GH_TOKEN]
+    required: true
+endpoints:
+  - host: api.github.com
+    port: 443
+binaries:
+  - "**/gh"
+`
+	const exported = `id: my-profile
+resource_version: 7
+description: ''
+category: source_control
+credentials:
+- name: api_token
+  description: ''
+  env_vars:
+  - GH_TOKEN
+  required: true
+  auth_style: ''
+  header_name: ''
+  query_param: ''
+endpoints:
+- host: api.github.com
+  port: 443
+binaries:
+- '**/gh'
+inference_capable: false
+source: user
+scope: workspace
+`
+	tests := []struct {
+		name     string
+		local    string
+		exported string
+		want     bool
+	}{
+		{
+			name:     "export adds only metadata and defaults",
+			local:    local,
+			exported: exported,
+			want:     true,
+		},
+		{
+			name:     "local declares defaults explicitly",
+			local:    local + "inference_capable: false\ndescription: ''\n",
+			exported: exported,
+			want:     true,
+		},
+		{
+			name:     "local declares a default the export omits",
+			local:    "id: p\nendpoints: []\n",
+			exported: "id: p\n",
+			want:     true,
+		},
+		{
+			name:     "local declares null and empty map the export omits",
+			local:    "id: p\ndescription:\nannotations: {}\n",
+			exported: "id: p\n",
+			want:     true,
+		},
+		{
+			name:     "no credentials locally, export has empty list",
+			local:    "id: p\ncategory: inference\n",
+			exported: "id: p\ncategory: inference\ncredentials: []\n",
+			want:     true,
+		},
+		{
+			name:     "category omitted locally defaults to other",
+			local:    "id: p\n",
+			exported: "id: p\ncategory: other\n",
+			want:     true,
+		},
+		{
+			name:     "credential env var differs",
+			local:    local,
+			exported: strings.Replace(exported, "  - GH_TOKEN", "  - OTHER_TOKEN", 1),
+			want:     false,
+		},
+		{
+			name:     "endpoint host differs",
+			local:    local,
+			exported: strings.Replace(exported, "host: api.github.com", "host: evil.example.com", 1),
+			want:     false,
+		},
+		{
+			name:     "credential count differs",
+			local:    local,
+			exported: strings.Replace(exported, "endpoints:\n", "- name: extra\nendpoints:\n", 1),
+			want:     false,
+		},
+		{
+			name:     "local drops credentials the export still has",
+			local:    "id: p\n",
+			exported: "id: p\ncredentials:\n- name: api_token\n  env_vars: [GH_TOKEN]\n",
+			want:     false,
+		},
+		{
+			name:     "local drops endpoints the export still has",
+			local:    "id: p\n",
+			exported: "id: p\nendpoints:\n- host: internal.example.com\n  port: 443\n",
+			want:     false,
+		},
+		{
+			name:     "export has non-default inference_capable",
+			local:    local,
+			exported: strings.Replace(exported, "inference_capable: false", "inference_capable: true", 1),
+			want:     false,
+		},
+		{
+			name:     "export has non-default credential query_param",
+			local:    local,
+			exported: strings.Replace(exported, "query_param: ''", "query_param: token", 1),
+			want:     false,
+		},
+		{
+			name:     "export has non-default credential auth_style",
+			local:    local,
+			exported: strings.Replace(exported, "auth_style: ''", "auth_style: bearer", 1),
+			want:     false,
+		},
+		{
+			name:     "export has non-default credential header_name",
+			local:    local,
+			exported: strings.Replace(exported, "header_name: ''", "header_name: X-Key", 1),
+			want:     false,
+		},
+		{
+			name:     "export has non-default endpoint scalar",
+			local:    local,
+			exported: strings.Replace(exported, "  port: 443\nbinaries", "  port: 443\n  allow_uninspected_credentials: true\nbinaries", 1),
+			want:     false,
+		},
+		{
+			name:     "export has non-default source",
+			local:    local,
+			exported: strings.Replace(exported, "source: user", "source: builtin", 1),
+			want:     false,
+		},
+		{
+			name:     "export has non-default scope",
+			local:    local,
+			exported: strings.Replace(exported, "scope: workspace", "scope: global", 1),
+			want:     false,
+		},
+		{
+			name:     "category dropped locally while export has non-default category",
+			local:    "id: p\n",
+			exported: "id: p\ncategory: inference\n",
+			want:     false,
+		},
+		{
+			name:     "unknown non-zero scalar only the export has",
+			local:    local,
+			exported: strings.Replace(exported, "category: source_control", "category: source_control\nfuture_field: x", 1),
+			want:     false,
+		},
+		{
+			name:     "new gateway default the local file never heard of",
+			local:    local,
+			exported: exported + "new_openshell_default: ''\nnew_list_default: []\nnew_map_default: {}\n",
+			want:     true,
+		},
+		{
+			name:     "new credential field only the export has",
+			local:    local,
+			exported: strings.Replace(exported, "query_param: ''", "query_param: ''\n  new_field: ''", 1),
+			want:     true,
+		},
+		{
+			name:     "export has non-empty list inside a credential the local entry lacks",
+			local:    local,
+			exported: strings.Replace(exported, "  query_param: ''", "  query_param: ''\n  scopes: [admin]", 1),
+			want:     false,
+		},
+		{
+			name:     "local sets inference_capable, export differs",
+			local:    local + "inference_capable: true\n",
+			exported: exported,
+			want:     false,
+		},
+		{
+			name:     "local credential field differs from export",
+			local:    strings.Replace(local, "required: true", "required: true\n    query_param: token", 1),
+			exported: exported,
+			want:     false,
+		},
+		{
+			name:     "local declares a non-empty value the export omits inside a credential",
+			local:    strings.Replace(local, "required: true", "required: true\n    header_name: X-Key", 1),
+			exported: strings.Replace(exported, "  header_name: ''\n", "", 1),
+			want:     false,
+		},
+		{
+			name:     "export has explicit MCP strict_tool_names false the local file omits",
+			local:    "id: p\nendpoints:\n- host: mcp.example.com\n  mcp:\n    allow_all_known_mcp_methods: true\n",
+			exported: "id: p\nendpoints:\n- host: mcp.example.com\n  mcp:\n    allow_all_known_mcp_methods: true\n    strict_tool_names: false\n",
+			want:     false,
+		},
+		{
+			name:     "local sets MCP strict_tool_names false the export omits",
+			local:    "id: p\nendpoints:\n- host: mcp.example.com\n  mcp:\n    strict_tool_names: false\n",
+			exported: "id: p\nendpoints:\n- host: mcp.example.com\n  mcp: {}\n",
+			want:     false,
+		},
+		{
+			name:     "local sets endpoint flag false the export omits",
+			local:    strings.Replace(local, "    port: 443\n", "    port: 443\n    allow_uninspected_credentials: false\n", 1),
+			exported: exported,
+			want:     true,
+		},
+		{
+			name:     "credential secret false only the export has",
+			local:    local,
+			exported: strings.Replace(exported, "  required: true\n", "  required: true\n  secret: false\n", 1),
+			want:     true,
+		},
+		{
+			name:     "export has unknown extra field",
+			local:    "id: p\n",
+			exported: "id: p\nannotations:\n  k: v\n",
+			want:     false,
+		},
+		{
+			name:     "local has field the export lacks",
+			local:    "id: p\ndisplay_name: P\n",
+			exported: "id: p\n",
+			want:     false,
+		},
+		{
+			name:     "map-shaped credentials compared exactly",
+			local:    "id: p\ncredentials:\n  api_token: GH_TOKEN\n",
+			exported: "id: p\ncredentials: {}\n",
+			want:     false,
+		},
+		{
+			name:     "list entries that are not maps compared exactly",
+			local:    "id: p\ncredentials: [a]\n",
+			exported: "id: p\ncredentials: [b]\n",
+			want:     false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := profileContentEqual([]byte(tt.local), []byte(tt.exported))
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestProfileContentEqual_UnparseableYAML(t *testing.T) {
+	_, err := profileContentEqual([]byte("id: [unclosed"), []byte("id: p\n"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parsing local profile")
+
+	_, err = profileContentEqual([]byte("id: p\n"), []byte("id: [unclosed"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parsing exported profile")
+}
+
+// TestImportProfile_AlreadyExists_StaleContent covers #7973: a blocked delete
+// leaves old content on the gateway, so ImportProfile must fail rather than
+// cache a false success.
+func TestImportProfile_AlreadyExists_StaleContent(t *testing.T) {
+	dir := t.TempDir()
+	profilePath := filepath.Join(dir, "my-profile.yaml")
+	require.NoError(t, os.WriteFile(profilePath, []byte("id: my-profile\ncredentials:\n  api_token: GH_TOKEN\n"), 0o644))
+
+	// Gateway still has the old content.
+	alreadyExistsThenExportStub(t, dir, "id: my-profile\ncredentials: {}\n")
+	t.Setenv("PATH", dir)
+
+	cachePath := profileFileCachePath("my-profile")
+	t.Cleanup(func() { os.Remove(cachePath) })
+
+	err := ImportProfile(context.Background(), "my-profile", profilePath)
+	require.Error(t, err, "already-exists with mismatched gateway content must fail loudly")
+	assert.Contains(t, err.Error(), "does not match")
+
+	_, readErr := os.ReadFile(cachePath)
+	assert.True(t, os.IsNotExist(readErr), "cache must not be written on a verified content mismatch")
+}
+
+// TestImportProfile_AlreadyExists_RemovedNonDefaultScalar covers a local edit
+// that removes a non-default scalar the gateway still has after a blocked
+// delete: it must fail loudly and must not cache a false success.
+func TestImportProfile_AlreadyExists_RemovedNonDefaultScalar(t *testing.T) {
+	tests := []struct {
+		name     string
+		exported string
+	}{
+		{"inference_capable", "id: my-profile\ninference_capable: true\n"},
+		{"credential query_param", "id: my-profile\ncredentials:\n- name: api_token\n  query_param: token\n"},
+		{"credential auth_style", "id: my-profile\ncredentials:\n- name: api_token\n  auth_style: bearer\n"},
+		{"credential header_name", "id: my-profile\ncredentials:\n- name: api_token\n  header_name: X-Key\n"},
+		{"endpoint flag", "id: my-profile\nendpoints:\n- host: api.github.com\n  allow_uninspected_credentials: true\n"},
+		{"endpoint mcp strict_tool_names", "id: my-profile\nendpoints:\n- host: api.github.com\n  mcp:\n    strict_tool_names: false\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			profilePath := filepath.Join(dir, "my-profile.yaml")
+			local := "id: my-profile\n"
+			if strings.HasPrefix(tt.name, "credential") {
+				local += "credentials:\n  - name: api_token\n"
+			}
+			if strings.HasPrefix(tt.name, "endpoint") {
+				local += "endpoints:\n  - host: api.github.com\n"
+			}
+			if strings.HasSuffix(tt.name, "strict_tool_names") {
+				local += "    mcp: {}\n"
+			}
+			require.NoError(t, os.WriteFile(profilePath, []byte(local), 0o644))
+
+			alreadyExistsThenExportStub(t, dir, tt.exported)
+			t.Setenv("PATH", dir)
+
+			cachePath := profileFileCachePath("my-profile")
+			t.Cleanup(func() { os.Remove(cachePath) })
+
+			err := ImportProfile(context.Background(), "my-profile", profilePath)
+			require.Error(t, err, "a stale non-default scalar left on the gateway must fail loudly")
+			assert.Contains(t, err.Error(), "does not match")
+
+			_, readErr := os.ReadFile(cachePath)
+			assert.True(t, os.IsNotExist(readErr), "cache must not be written on a verified content mismatch")
+		})
+	}
+}
+
+// TestImportProfile_AlreadyExists_RemovedCredentials covers a local profile
+// that dropped `credentials` while the gateway still has them.
+func TestImportProfile_AlreadyExists_RemovedCredentials(t *testing.T) {
+	dir := t.TempDir()
+	profilePath := filepath.Join(dir, "my-profile.yaml")
+	require.NoError(t, os.WriteFile(profilePath, []byte("id: my-profile\n"), 0o644))
+
+	// Gateway still has the removed credentials.
+	alreadyExistsThenExportStub(t, dir, "id: my-profile\ncredentials:\n  api_token: GH_TOKEN\n")
+	t.Setenv("PATH", dir)
+
+	cachePath := profileFileCachePath("my-profile")
+	t.Cleanup(func() { os.Remove(cachePath) })
+
+	err := ImportProfile(context.Background(), "my-profile", profilePath)
+	require.Error(t, err, "a removed-field mismatch (gateway still has credentials) must fail loudly")
+	assert.Contains(t, err.Error(), "does not match")
+
+	_, readErr := os.ReadFile(cachePath)
+	assert.True(t, os.IsNotExist(readErr), "cache must not be written on a verified content mismatch")
+}
+
+// TestImportProfile_AlreadyExists_RemovedEndpoints covers a local profile
+// that dropped an `endpoints` grant the gateway still has.
+func TestImportProfile_AlreadyExists_RemovedEndpoints(t *testing.T) {
+	dir := t.TempDir()
+	profilePath := filepath.Join(dir, "my-profile.yaml")
+	require.NoError(t, os.WriteFile(profilePath, []byte("id: my-profile\n"), 0o644))
+
+	// Gateway still has the removed endpoints grant.
+	alreadyExistsThenExportStub(t, dir, "id: my-profile\nendpoints:\n  - host: internal.example.com\n    port: 443\n")
+	t.Setenv("PATH", dir)
+
+	cachePath := profileFileCachePath("my-profile")
+	t.Cleanup(func() { os.Remove(cachePath) })
+
+	err := ImportProfile(context.Background(), "my-profile", profilePath)
+	require.Error(t, err, "a removed security-relevant field still present on the gateway must fail loudly")
+	assert.Contains(t, err.Error(), "does not match")
+
+	_, readErr := os.ReadFile(cachePath)
+	assert.True(t, os.IsNotExist(readErr), "cache must not be written on a verified content mismatch")
+}
+
+// TestImportProfile_AlreadyExists_ExportFails verifies that an unverifiable
+// "already exists" is not treated as success.
+func TestImportProfile_AlreadyExists_ExportFails(t *testing.T) {
+	dir := t.TempDir()
+	profilePath := filepath.Join(dir, "my-profile.yaml")
+	require.NoError(t, os.WriteFile(profilePath, []byte("id: my-profile"), 0o644))
+
 	script := `#!/bin/sh
-echo "profile already exists" >&2
-exit 1
+case "$3" in
+  import)
+    echo "profile already exists" >&2
+    exit 1
+    ;;
+  export)
+    echo "gateway unreachable" >&2
+    exit 1
+    ;;
+esac
+exit 0
 `
 	fakePath := filepath.Join(dir, "openshell")
 	require.NoError(t, os.WriteFile(fakePath, []byte(script), 0o755))
@@ -1588,7 +2434,8 @@ exit 1
 	t.Cleanup(func() { os.Remove(cachePath) })
 
 	err := ImportProfile(context.Background(), "my-profile", profilePath)
-	assert.NoError(t, err, "idempotent import should not return an error")
+	require.Error(t, err, "an unverifiable already-exists must not be treated as success")
+	assert.Contains(t, err.Error(), "could not be verified")
 }
 
 func TestImportProfile_OtherError(t *testing.T) {
@@ -1676,19 +2523,15 @@ func TestImportProfile_WritesCacheOnAlreadyExists(t *testing.T) {
 	profilePath := filepath.Join(dir, "test.yaml")
 	require.NoError(t, os.WriteFile(profilePath, []byte("id: exists\nname: test"), 0o644))
 
-	script := `#!/bin/sh
-echo "profile already exists" >&2
-exit 1
-`
-	fakePath := filepath.Join(dir, "openshell")
-	require.NoError(t, os.WriteFile(fakePath, []byte(script), 0o755))
+	// Gateway content matches the local file.
+	alreadyExistsThenExportStub(t, dir, "id: exists\nname: test")
 	t.Setenv("PATH", dir)
 
 	cachePath := profileFileCachePath("exists")
 	t.Cleanup(func() { os.Remove(cachePath) })
 
 	err := ImportProfile(context.Background(), "exists", profilePath)
-	require.NoError(t, err, "already-exists should not be an error")
+	require.NoError(t, err, "already-exists with matching gateway content should not be an error")
 
 	// Cache should be written even on already-exists (parallel import).
 	cached, readErr := os.ReadFile(cachePath)
@@ -2129,6 +2972,18 @@ func TestIsTransientProviderErr(t *testing.T) {
 	assert.True(t, isTransientProviderErr(errors.New("provider was modified concurrently")))
 	assert.False(t, isTransientProviderErr(fmt.Errorf("status: PermissionDenied")))
 	assert.False(t, isTransientProviderErr(fmt.Errorf("provider was modified by an operator")))
+
+	// OpenShell 0.1.x wording for a profile a concurrent run is reimporting,
+	// as seen in functional-tests with four parallel eval cases.
+	notFound := `provider create "github-ro" failed: exit status 1 (output: Error:   × provider profile 'fullsend-github-ro' not found; import a matching profile`
+	assert.True(t, isTransientProviderErr(errors.New(notFound)))
+	notFoundWrapped := "Error:   × provider profile 'fullsend-vertex-ai' not\n  │ found; import a matching profile"
+	assert.True(t, isTransientProviderErr(errors.New(notFoundWrapped)), "must match across the CLI's line wrap")
+	// OpenShell 0.1.2 wording, as seen in functional-tests with parallel
+	// triage eval cases (including the CLI's line wrap after "profile").
+	notFound012 := "provider create \"vertex-ai\" failed: exit status 1 (output: Error:   × code: 'Client specified an invalid argument', message: \"provider profile\n  │ 'fullsend-vertex-ai' was not found in the requested scope; import a\n  │ matching profile before creating this provider\""
+	assert.True(t, isTransientProviderErr(errors.New(notFound012)), "must match OpenShell 0.1.2's wording")
+	assert.False(t, isTransientProviderErr(errors.New("provider 'github-ro' not found")), "a missing provider is not a missing profile")
 }
 
 // TestEnsureProvider_NoRetryOnOtherErrors verifies that non-transient
@@ -2229,4 +3084,67 @@ func TestResolvedBasename(t *testing.T) {
 	t.Run("nonexistent path", func(t *testing.T) {
 		assert.Equal(t, "gone.txt", resolvedBasename("/no/such/gone.txt"))
 	})
+}
+
+// stubOpenshellForExtract puts a fake openshell first on PATH. The listing
+// runs "openshell sandbox exec …" and each copy runs
+// "openshell sandbox download <name> <remote> <destDir>", so the script
+// branches on $2.
+func stubOpenshellForExtract(t *testing.T, execBody, downloadBody string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script stub requires a POSIX shell")
+	}
+	dir := t.TempDir()
+	script := "#!/bin/sh\n" +
+		"if [ \"$2\" = \"exec\" ]; then\n" + execBody + "\nfi\n" +
+		"if [ \"$2\" = \"download\" ]; then\n" + downloadBody + "\nfi\n" +
+		"exit 0\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func TestExtractOutputFiles_OpenshellFailureIsAnError(t *testing.T) {
+	stubOpenshellForExtract(t,
+		"  echo 'sandbox is not ready' >&2\n  exit 1",
+		"  exit 0")
+
+	got, err := ExtractOutputFiles("sb", "/sandbox/output", t.TempDir())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sandbox is not ready")
+	assert.Empty(t, got)
+}
+
+func TestExtractOutputFiles_EmptyOutputIsNotAnError(t *testing.T) {
+	stubOpenshellForExtract(t, "  exit 0", "  exit 0")
+
+	got, err := ExtractOutputFiles("sb", "/sandbox/output", t.TempDir())
+	assert.NoError(t, err)
+	assert.Nil(t, got)
+}
+
+func TestExtractOutputFiles_ListedButNoneCopiedIsAnError(t *testing.T) {
+	stubOpenshellForExtract(t,
+		"  echo /sandbox/output/agent-result.json\n  exit 0",
+		"  echo 'sandbox is not ready' >&2\n  exit 1")
+
+	got, err := ExtractOutputFiles("sb", "/sandbox/output", t.TempDir())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "1 listed, none copied")
+	assert.Empty(t, got)
+}
+
+func TestExtractOutputFiles_CopiesListedFiles(t *testing.T) {
+	stubOpenshellForExtract(t,
+		"  echo /sandbox/output/agent-result.json\n  exit 0",
+		"  printf '{}' > \"$5/$(basename \"$4\")\"\n  exit 0")
+
+	localDir := t.TempDir()
+	got, err := ExtractOutputFiles("sb", "/sandbox/output", localDir)
+	require.NoError(t, err)
+	want := filepath.Join(localDir, "agent-result.json")
+	assert.Equal(t, []string{want}, got)
+	data, readErr := os.ReadFile(want)
+	require.NoError(t, readErr)
+	assert.Equal(t, "{}", string(data))
 }

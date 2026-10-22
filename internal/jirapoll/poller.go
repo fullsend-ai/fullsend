@@ -63,6 +63,7 @@ type Poller struct {
 	roleGroups          map[string][]string                  // Jira role name → group IDs for per-actor resolution
 	roleGroupsChecked   map[string]bool                      // accountID → group membership already fetched this cycle
 	statusCategoryCache map[string]string                    // status name → statusCategory key, reset each cycle
+	selfAccountID       string                               // authenticated Jira account from GetMyself; used to classify self-authored events as bot
 }
 
 // ctxSleep sleeps for d or until ctx is cancelled, whichever comes first,
@@ -118,6 +119,12 @@ func (p *Poller) Run(ctx context.Context) error {
 	if !myself.Active {
 		return fmt.Errorf("authentication preflight failed: account %q is inactive", myself.AccountID)
 	}
+	// Remember the authenticated account so self-authored comments and
+	// changelog events classify as bot. A regular Atlassian service
+	// account (accountType: atlassian, ordinary display name) is not
+	// otherwise distinguishable from a human, and treating its mutations
+	// as human follow-up re-dispatches the same agent in a loop.
+	p.selfAccountID = userID(*myself)
 
 	// Step 1: Execute JQL to get candidate issues.
 	candidates, err := p.searchCandidates(ctx)
@@ -441,8 +448,9 @@ func (p *Poller) processIssue(ctx context.Context, issue jira.Issue, cycleID str
 	// Deduplicate.
 	events := deduplicate(result.events)
 
-	// Filter bot events.
-	events = filterBotEvents(events)
+	// Filter bot events (app accounts, automation display names, and
+	// the authenticated poller account).
+	events = p.filterBotEvents(events)
 
 	// Cap events dispatched per issue per cycle. A single issue should
 	// never legitimately produce this many routable events in one 5-minute
@@ -527,11 +535,13 @@ func deduplicate(events []JiraEvent) []JiraEvent {
 	return unique
 }
 
-// filterBotEvents removes events from bot accounts.
-func filterBotEvents(events []JiraEvent) []JiraEvent {
+// filterBotEvents removes events from bot accounts, including the
+// authenticated poller account so a mutation performed by fullsend cannot
+// trigger the same agent again.
+func (p *Poller) filterBotEvents(events []JiraEvent) []JiraEvent {
 	var filtered []JiraEvent
 	for _, event := range events {
-		if actorKind(event) == "bot" {
+		if p.actorKind(event) == "bot" {
 			continue
 		}
 		filtered = append(filtered, event)

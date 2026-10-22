@@ -12,6 +12,7 @@ Feature: URL-sourced harness dispatch
       slug: fullsend-ai-url-ping
       model: opus
       image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
+      policy: policies/base.yaml
       trigger: |
         event.entity.kind == "work_item"
         && event.transition.kind == "label_changed"
@@ -19,7 +20,6 @@ Feature: URL-sourced harness dispatch
       """
     And a dummy agent that would:
       | description              | op           | args                                               |
-      | Issue URL set            | assert_env   | GITHUB_ISSUE_URL                                   |
       | Prove URL execution      | write_fixture| output/dispatch-url-ok.json, fixtures/dispatch/ok.json |
     And an issue
     When the issue is labeled "ready-for-url-ping"
@@ -34,6 +34,7 @@ Feature: URL-sourced harness dispatch
       slug: fullsend-ai-local-ping
       model: opus
       image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
+      policy: policies/base.yaml
       trigger: |
         event.entity.kind == "work_item"
         && event.transition.kind == "label_changed"
@@ -46,6 +47,7 @@ Feature: URL-sourced harness dispatch
       slug: fullsend-ai-url-mixed
       model: opus
       image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
+      policy: policies/base.yaml
       trigger: |
         event.entity.kind == "work_item"
         && event.transition.kind == "label_changed"
@@ -67,6 +69,7 @@ Feature: URL-sourced harness dispatch
       slug: fullsend-ai-good-local
       model: opus
       image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
+      policy: policies/base.yaml
       trigger: |
         event.entity.kind == "work_item"
         && event.transition.kind == "label_changed"
@@ -79,6 +82,7 @@ Feature: URL-sourced harness dispatch
       slug: fullsend-ai-bad-hash
       model: opus
       image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
+      policy: policies/base.yaml
       trigger: |
         event.entity.kind == "work_item"
         && event.transition.kind == "label_changed"
@@ -105,6 +109,7 @@ Feature: URL-sourced harness dispatch
       slug: fullsend-ai-good-allowed
       model: opus
       image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
+      policy: policies/base.yaml
       trigger: |
         event.entity.kind == "work_item"
         && event.transition.kind == "label_changed"
@@ -117,6 +122,7 @@ Feature: URL-sourced harness dispatch
       slug: fullsend-ai-no-allow
       model: opus
       image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
+      policy: policies/base.yaml
       trigger: |
         event.entity.kind == "work_item"
         && event.transition.kind == "label_changed"

@@ -27,13 +27,11 @@ var pipelineScheduleSpecs = []ScheduleSpec{
 		ComponentName: "schedule:slash-poll",
 		Description:   "fullsend slash poll",
 		Cron:          "*/5 * * * *",
-		Variables:     map[string]string{forge.VarPollMode: "slash"},
 	},
 	{
 		ComponentName: "schedule:event-poll",
 		Description:   "fullsend event poll",
 		Cron:          "2,17,32,47 * * * *",
-		Variables:     map[string]string{forge.VarPollMode: "events"},
 	},
 }
 
@@ -52,4 +50,37 @@ func scheduleSpecByComponent(name string) *ScheduleSpec {
 		}
 	}
 	return nil
+}
+
+// legacyPollModeVariables are the FULLSEND_POLL_MODE pipeline variables
+// required by the pre-typed-dispatch GitLab templates, keyed by
+// ComponentName. Those templates select poll mode from this variable and
+// do not derive it from the schedule description, so creating or
+// repairing a schedule for a repo that is not yet on the typed
+// pipeline-input contract must still set it. Typed installations select
+// poll mode from the schedule description instead (see
+// GitLabUsesTypedDispatch) and must use variable-free schedules so the
+// pipeline-variable override restriction can be enforced.
+var legacyPollModeVariables = map[string]map[string]string{
+	"schedule:slash-poll": {forge.VarPollMode: "slash"},
+	"schedule:event-poll": {forge.VarPollMode: "events"},
+}
+
+// ScheduleVariablesFor returns the pipeline variables to submit when
+// creating the given schedule spec. When typed reports that the repo's
+// effective GitLab wrapper is not yet on the typed pipeline-input
+// contract, it returns the legacy FULLSEND_POLL_MODE override so slash
+// and event polling keep working; otherwise it returns the spec's
+// (variable-free) defaults. Exported so every schedule-creation call
+// site — convergeSchedules and the CLI's post-install fresh-install
+// path (setupGitLabPipelineSchedules) — selects variables from the same
+// transport-aware logic instead of risking drift between two copies.
+func ScheduleVariablesFor(spec ScheduleSpec, typed bool) map[string]string {
+	if typed {
+		return spec.Variables
+	}
+	if vars, ok := legacyPollModeVariables[spec.ComponentName]; ok {
+		return vars
+	}
+	return spec.Variables
 }

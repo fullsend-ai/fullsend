@@ -33,6 +33,15 @@ Extends [ADR 0054](0054-require-authorization-on-all-agent-dispatch-paths.md)
 with a scoped authorization path for Fullsend-originated entity discovery that
 has no prompting event actor; event-backed dispatch authorization is unchanged.
 
+On GitLab, the low-latency webhook candidate path and poller backstop are
+[ADR 0125](0125-gitlab-hybrid-webhook-poller-dispatch.md).
+
+[ADR 0144](0144-reuse-poll-and-entity-bound-run-processes.md) clarifies that
+trusted, entity-bound `fullsend run` may recheck only its canonical entity with
+`event == null`. `fullsend poll` remains the broad candidate enumerator. Both
+eventless paths require eligible entity sources, trusted Fullsend invocation
+provenance, current actor filtering, and the same harness CEL predicate.
+
 ## Context
 
 [ADR 0061](0061-harness-cel-dispatch.md) made a `NormalizedEvent` the sole CEL
@@ -119,7 +128,10 @@ state become platform responsibilities.
   continues to authorize event-backed dispatch from its event actor. A
   `fullsend poll` entity-discovery run is instead authorized by its trusted
   Fullsend-controlled origin; callers that cannot establish that provenance are
-  denied. Entity history remains untrusted input. For each candidate harness,
+  denied. Entity history remains untrusted input. The separate model-bound
+  admission contract for filtered, actor-attributed content is defined by [ADR
+  0133](0133-actor-attributed-data-security-boundary.md). For
+  each candidate harness,
   before evaluating its CEL predicate, the platform MUST enumerate a
   platform-defined closed superset of action-indicating elements for the entity
   kind and remove those whose actor's current permission does not meet that

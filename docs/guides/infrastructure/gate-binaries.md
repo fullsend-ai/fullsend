@@ -207,15 +207,11 @@ Create a provider definition that references the profile by its `id`:
 
 ```yaml
 # providers/gate-query.yaml
+# The gate binary handles its own authentication or needs no credentials, so
+# the provider carries none: it exists only to attach the profile's network
+# policy.
 name: gate-query
 type: gate-query
-# The gate binary handles its own authentication or needs no credentials.
-# This placeholder credential exists only to satisfy OpenShell's requirement
-# that every provider declares at least one credential key. The provider
-# definition's sole purpose is to attach the network policy from the profile.
-# See: https://github.com/NVIDIA/OpenShell/issues/1978
-credentials:
-  _PLACEHOLDER_GATE_QUERY: ""
 ```
 
 ### Harness configuration
@@ -253,7 +249,7 @@ If both the gate binary and a general-purpose binary need the same credential en
 
 Until OpenShell#2330 lands, use one of these workarounds:
 
-- **Credential-less provider with a placeholder key.** When the gate binary handles its own authentication — or needs no credentials at all — the provider definition exists only to attach the network policy from the profile. OpenShell requires every provider to declare at least one credential key, so you supply a placeholder (as in the `_PLACEHOLDER_GATE_QUERY` example above) that carries no real secret. This avoids colliding with credential keys declared by other providers.
+- **Credential-less provider.** When the gate binary handles its own authentication — or needs no credentials at all — the provider definition exists only to attach the network policy from the profile. Omit `credentials:` entirely, as in the `gate-query` example above, so it cannot collide with credential keys declared by other providers.
 - **Single provider for both binaries.** If both binaries must share the same credential, use a single provider with a `binaries` list that includes both. This means the `binaries` field cannot differentiate between them — the gate binary's validation logic is the only enforcement.
 
 ## What the proxy enforces vs. what the binary enforces

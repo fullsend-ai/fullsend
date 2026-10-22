@@ -11,6 +11,7 @@ Exit codes: 0 = allow, 1 = block (with reason on stdout).
 
 from __future__ import annotations
 
+import functools
 import ipaddress
 import json
 import os
@@ -42,6 +43,21 @@ BLOCKED_NETWORKS: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = [
     ipaddress.IPv6Network("::/128"),
     ipaddress.IPv6Network("fc00::/7"),
 ]
+
+# Inside an OpenShell sandbox, policy DNS answers every name with a synthetic
+# address from this pool. The supervisor maps it back to the real destination
+# and enforces the sandbox policy when the sandbox connects.
+OPENSHELL_SYNTHETIC_NETWORK = ipaddress.IPv4Network("198.18.0.0/15")
+OPENSHELL_POLICY_LOCAL_IP = "198.18.0.1"
+
+# Names that reach OpenShell itself rather than an external endpoint; their
+# synthetic answers are never deferred to the supervisor.
+OPENSHELL_INTERNAL_HOSTNAMES: set[str] = {
+    "policy.local",
+    "host.openshell.internal",
+    "host.docker.internal",
+    "host.containers.internal",
+}
 
 BLOCKED_SCHEMES: set[str] = {"file", "ftp", "gopher", "data", "dict", "ldap", "tftp"}
 ALLOWED_SCHEMES: set[str] = {"http", "https"}
@@ -384,6 +400,65 @@ def check_ip(ip_str: str) -> str | None:
     return None
 
 
+@functools.cache
+def _policy_dns_active() -> bool:
+    """Return True if OpenShell policy DNS answers this process's lookups.
+
+    Policy DNS always answers ``policy.local`` with OPENSHELL_POLICY_LOCAL_IP.
+    The agent cannot forge that: the sandbox resolver and ``/etc`` are outside
+    its control. OPENSHELL_SANDBOX only skips the lookup outside a sandbox.
+    """
+    if not os.environ.get("OPENSHELL_SANDBOX"):
+        return False
+    try:
+        answers = socket.getaddrinfo("policy.local", None, socket.AF_INET, proto=socket.IPPROTO_TCP)
+    except (OSError, TimeoutError):
+        return False
+    return {str(a[4][0]) for a in answers} == {OPENSHELL_POLICY_LOCAL_IP}
+
+
+def _is_ip_literal(hostname: str) -> bool:
+    """Return True for any IP spelling the resolver accepts (``3323068422``, ``198.18.6``)."""
+    try:
+        socket.getaddrinfo(hostname, None, flags=socket.AI_NUMERICHOST)
+    except (OSError, UnicodeError):
+        return False
+    return True
+
+
+def _is_openshell_synthetic_answer(hostname: str, resolved_ips: list[str]) -> bool:
+    """Return True if *resolved_ips* is OpenShell policy DNS's answer for *hostname*.
+
+    The hook cannot see the real destination behind a synthetic address, so
+    it defers to the supervisor. Only host names qualify, never IP literals or
+    OpenShell's own names, and only when every address is synthetic and
+    policy DNS is answering. Policy DNS returns no IPv6 answers in OpenShell
+    0.1.x; a mixed answer fails closed.
+    """
+    try:
+        # The resolver IDNA-encodes names, so compare in that form
+        # (fullwidth ``policy.local`` resolves as ``policy.local``).
+        canonical = hostname.encode("idna").decode("ascii").lower().rstrip(".")
+    except UnicodeError:
+        return False
+    if (
+        canonical in OPENSHELL_INTERNAL_HOSTNAMES
+        or canonical in BLOCKED_HOSTNAMES
+        or _is_ip_literal(hostname)
+    ):
+        return False
+    try:
+        if not resolved_ips or any(
+            ip == OPENSHELL_POLICY_LOCAL_IP
+            or ipaddress.ip_address(ip) not in OPENSHELL_SYNTHETIC_NETWORK
+            for ip in resolved_ips
+        ):
+            return False
+    except ValueError:
+        return False
+    return _policy_dns_active()
+
+
 def validate_url(url: str) -> str | None:
     try:
         from urllib.parse import urlparse
@@ -422,8 +497,18 @@ def validate_url(url: str) -> str | None:
     try:
         socket.setdefaulttimeout(2.0)
         addrinfos = socket.getaddrinfo(hostname, None, proto=socket.IPPROTO_TCP)
-        for _family, _, _, _, sockaddr in addrinfos:
-            resolved_ip = str(sockaddr[0])
+        resolved_ips = [str(sockaddr[0]) for _family, _, _, _, sockaddr in addrinfos]
+        if _is_openshell_synthetic_answer(hostname, resolved_ips):
+            log_finding(
+                scanner="ssrf",
+                name="openshell_policy_dns_defer",
+                severity="info",
+                detail=f"{hostname} resolved to OpenShell synthetic {resolved_ips}; "
+                "deferring to the sandbox supervisor",
+                action="allow",
+            )
+            return None
+        for resolved_ip in resolved_ips:
             ip_reason = check_ip(resolved_ip)
             if ip_reason:
                 return f"DNS rebinding: {hostname} resolved to blocked {resolved_ip} ({ip_reason})"

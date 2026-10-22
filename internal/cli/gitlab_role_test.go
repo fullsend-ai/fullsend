@@ -20,21 +20,23 @@ func mapGetenv(env map[string]string) func(string) string {
 	return func(k string) string { return env[k] }
 }
 
-func TestResolveGitLabPollerCredentialDisabled(t *testing.T) {
+func TestResolveGitLabPollerCredentialDisabledUsesPollerToken(t *testing.T) {
 	t.Parallel()
-	env := map[string]string{forge.SecretForgeToken: "glpat-SHARED"}
+	env := map[string]string{
+		forge.SecretForgeToken:        "glpat-SHARED",
+		forge.SecretGitLabPollerToken: "glpat-POLLER",
+	}
 	sel, token, err := resolveGitLabPollerCredential(mapGetenv(env))
 	require.NoError(t, err)
-	assert.Equal(t, "glpat-SHARED", token)
-	assert.Equal(t, forge.SecretForgeToken, sel.Source.SecretName)
+	assert.Equal(t, "glpat-POLLER", token)
+	assert.Equal(t, forge.SecretGitLabPollerToken, sel.Source.SecretName)
 	assert.Equal(t, gitlabroles.RolePoller, sel.Source.Role)
-	assert.Equal(t, "shared", sel.IdentitySource())
+	assert.Equal(t, "role", sel.IdentitySource())
 }
 
 func TestResolveGitLabPollerCredentialRoleAware(t *testing.T) {
 	t.Parallel()
 	env := map[string]string{
-		forge.VarGitLabRoleMigration:   "enforced",
 		forge.SecretForgeToken:         "glpat-SHARED",
 		forge.SecretGitLabPollerToken:  "glpat-POLLER",
 		forge.SecretGitLabAnalystToken: "glpat-ANALYST",
@@ -47,18 +49,17 @@ func TestResolveGitLabPollerCredentialRoleAware(t *testing.T) {
 	assert.False(t, sel.Registration.Has(gitlabroles.CapWriteRepository))
 }
 
-func TestResolveGitLabPollerCredentialMissingShared(t *testing.T) {
+func TestResolveGitLabPollerCredentialMissingRoleFailsClosed(t *testing.T) {
 	t.Parallel()
-	_, _, err := resolveGitLabPollerCredential(mapGetenv(nil))
+	_, _, err := resolveGitLabPollerCredential(mapGetenv(map[string]string{forge.SecretForgeToken: "glpat-SHARED"}))
 	require.Error(t, err)
-	assert.ErrorIs(t, err, gitlabroles.ErrSharedUnconfigured)
-	assert.Contains(t, err.Error(), forge.SecretForgeToken)
+	assert.ErrorIs(t, err, gitlabroles.ErrUnconfigured)
+	assert.Contains(t, err.Error(), forge.SecretGitLabPollerToken)
 }
 
 func TestApplyGitLabAgentCredentialsBuiltinMappings(t *testing.T) {
 	t.Parallel()
 	env := map[string]string{
-		forge.VarGitLabRoleMigration:   "enforced",
 		forge.SecretForgeToken:         "glpat-SHARED",
 		forge.SecretGitLabPollerToken:  "glpat-POLLER",
 		forge.SecretGitLabAnalystToken: "glpat-ANALYST",
@@ -99,58 +100,39 @@ func TestApplyGitLabAgentCredentialsBuiltinMappings(t *testing.T) {
 	}
 }
 
-func TestApplyGitLabAgentCredentialsDisabledDoesNotClearPushToken(t *testing.T) {
+func TestApplyGitLabAgentCredentialsClearsPushTokenForAnalyst(t *testing.T) {
+	t.Parallel()
+	env := map[string]string{
+		forge.SecretForgeToken:         "glpat-SHARED",
+		forge.SecretGitLabAnalystToken: "glpat-ANALYST",
+		"PUSH_TOKEN":                   "glpat-SHARED",
+	}
+	got := map[string]string{"PUSH_TOKEN": "glpat-SHARED"}
+	setenv := func(k, v string) { got[k] = v }
+	err := applyGitLabAgentCredentials("review", "review", mapGetenv(env), setenv, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "glpat-ANALYST", got["GITLAB_TOKEN"])
+	assert.Equal(t, "", got["PUSH_TOKEN"], "leftover PUSH_TOKEN is still cleared for Analyst")
+	assert.Equal(t, "role", got[envGitLabRoleSource])
+}
+
+func TestApplyGitLabAgentCredentialsMissingRoleFailsClosed(t *testing.T) {
 	t.Parallel()
 	env := map[string]string{
 		forge.SecretForgeToken: "glpat-SHARED",
 		"PUSH_TOKEN":           "glpat-SHARED",
 	}
-	got := map[string]string{"PUSH_TOKEN": "glpat-SHARED"}
-	setenv := func(k, v string) { got[k] = v }
-	err := applyGitLabAgentCredentials("review", "review", mapGetenv(env), setenv, nil)
-	require.NoError(t, err)
-	assert.Equal(t, "glpat-SHARED", got["GITLAB_TOKEN"])
-	assert.Equal(t, "glpat-SHARED", got["PUSH_TOKEN"], "disabled mode must not rewrite PUSH_TOKEN")
-	assert.Equal(t, "shared", got[envGitLabRoleSource])
-}
-
-func TestApplyGitLabAgentCredentialsMigratingFallback(t *testing.T) {
-	t.Parallel()
-	env := map[string]string{
-		forge.VarGitLabRoleMigration: "migrating",
-		forge.SecretForgeToken:       "glpat-SHARED",
-		"PUSH_TOKEN":                 "glpat-SHARED",
-	}
 	got := map[string]string{}
 	setenv := func(k, v string) { got[k] = v }
 	err := applyGitLabAgentCredentials("code", "coder", mapGetenv(env), setenv, nil)
-	require.NoError(t, err)
-	assert.Equal(t, "glpat-SHARED", got["GITLAB_TOKEN"])
-	assert.Equal(t, "migration-fallback", got[envGitLabRoleSource])
-	assert.Equal(t, "coder", got[envGitLabRole])
-	// Role is Coder so PUSH_TOKEN is granted even on explicit fallback.
-	assert.Equal(t, "glpat-SHARED", got["PUSH_TOKEN"])
-}
-
-func TestApplyGitLabAgentCredentialsAnalystClearsPushTokenWhenMigrating(t *testing.T) {
-	t.Parallel()
-	env := map[string]string{
-		forge.VarGitLabRoleMigration: "migrating",
-		forge.SecretForgeToken:       "glpat-SHARED",
-		"PUSH_TOKEN":                 "glpat-SHARED",
-	}
-	got := map[string]string{"PUSH_TOKEN": "glpat-SHARED"}
-	setenv := func(k, v string) { got[k] = v }
-	err := applyGitLabAgentCredentials("review", "review", mapGetenv(env), setenv, nil)
-	require.NoError(t, err)
-	assert.Equal(t, "", got["PUSH_TOKEN"])
-	assert.Equal(t, "glpat-SHARED", got["GITLAB_TOKEN"])
+	require.Error(t, err)
+	assert.ErrorIs(t, err, gitlabroles.ErrUnconfigured)
+	assert.Empty(t, got["GITLAB_TOKEN"])
 }
 
 func TestApplyGitLabAgentCredentialsCustomRole(t *testing.T) {
 	t.Parallel()
 	env := map[string]string{
-		forge.VarGitLabRoleMigration:            "enforced",
 		forge.SecretForgeToken:                  "glpat-SHARED",
 		forge.SecretGitLabPollerToken:           "p",
 		forge.SecretGitLabAnalystToken:          "a",
@@ -183,7 +165,6 @@ func TestApplyGitLabAgentCredentialsCustomRole(t *testing.T) {
 func TestApplyGitLabAgentCredentialsClearsSiblingSecrets(t *testing.T) {
 	t.Parallel()
 	env := map[string]string{
-		forge.VarGitLabRoleMigration:   "enforced",
 		forge.SecretForgeToken:         "glpat-SHARED",
 		forge.SecretGitLabPollerToken:  "glpat-POLLER",
 		forge.SecretGitLabAnalystToken: "glpat-ANALYST",
@@ -204,7 +185,6 @@ func TestApplyGitLabAgentCredentialsClearsSiblingSecrets(t *testing.T) {
 func TestApplyGitLabAgentCredentialsUnregistered(t *testing.T) {
 	t.Parallel()
 	env := map[string]string{
-		forge.VarGitLabRoleMigration:   "enforced",
 		forge.SecretForgeToken:         "shared",
 		forge.SecretGitLabPollerToken:  "p",
 		forge.SecretGitLabAnalystToken: "a",
@@ -218,9 +198,8 @@ func TestApplyGitLabAgentCredentialsUnregistered(t *testing.T) {
 func TestApplyGitLabAgentCredentialsRawTokenRegistryRejected(t *testing.T) {
 	t.Parallel()
 	env := map[string]string{
-		forge.VarGitLabRoleMigration: "migrating",
-		forge.SecretForgeToken:       "shared",
-		forge.VarGitLabRoleRegistry:  `{"roles":[{"name":"scanner","secret_name":"glpat-RAWTOKEN"}]}`,
+		forge.SecretForgeToken:      "shared",
+		forge.VarGitLabRoleRegistry: `{"roles":[{"name":"scanner","secret_name":"glpat-RAWTOKEN"}]}`,
 	}
 	err := applyGitLabAgentCredentials("scanner", "", mapGetenv(env), func(string, string) {}, nil)
 	require.Error(t, err)
@@ -231,7 +210,6 @@ func TestApplyGitLabAgentCredentialsRawTokenRegistryRejected(t *testing.T) {
 func TestCheckGitLabApprovalCapability(t *testing.T) {
 	t.Parallel()
 	base := map[string]string{
-		forge.VarGitLabRoleMigration:   "enforced",
 		forge.SecretForgeToken:         "shared",
 		forge.SecretGitLabPollerToken:  "p",
 		forge.SecretGitLabAnalystToken: "a",
@@ -269,14 +247,6 @@ func TestCheckGitLabApprovalCapability(t *testing.T) {
 		t.Parallel()
 		require.NoError(t, checkGitLabApprovalCapability("github", "approve", "", mapGetenv(base)))
 	})
-	t.Run("disabled allows coder approve", func(t *testing.T) {
-		t.Parallel()
-		env := map[string]string{
-			forge.SecretForgeToken: "shared",
-			envGitLabRole:          "coder",
-		}
-		require.NoError(t, checkGitLabApprovalCapability("gitlab", "approve", "", mapGetenv(env)))
-	})
 	t.Run("enforced without identity fails closed", func(t *testing.T) {
 		t.Parallel()
 		env := copyStringMap(base)
@@ -313,7 +283,6 @@ func TestCheckGitLabApprovalCapability(t *testing.T) {
 func TestWrapGitLabAuthFailureDoesNotSwitchIdentity(t *testing.T) {
 	t.Parallel()
 	sel := gitlabroles.Selection{
-		Mode: gitlabroles.ModeMigrating,
 		Source: gitlabroles.Source{
 			Role:       gitlabroles.RoleAnalyst,
 			SecretName: forge.SecretGitLabAnalystToken,
@@ -353,46 +322,43 @@ func TestLogGitLabRoleDiagnosticsNilPrinter(t *testing.T) {
 }
 
 func TestApplyGitLabRoleSelectionNilSetenv(t *testing.T) {
-	t.Setenv(forge.SecretForgeToken, "glpat-SHARED")
+	t.Setenv(forge.SecretGitLabPollerToken, "glpat-POLLER")
 	t.Setenv("GITLAB_TOKEN", "")
 	t.Setenv(envGitLabRole, "")
 	t.Setenv(envGitLabRoleSecret, "")
 	t.Setenv(envGitLabRoleSource, "")
+	t.Setenv("PUSH_TOKEN", "leftover")
 	sel := gitlabroles.Selection{
-		Mode: gitlabroles.ModeDisabled,
 		Source: gitlabroles.Source{
 			Role:       gitlabroles.RolePoller,
-			SecretName: forge.SecretForgeToken,
-			Shared:     true,
+			SecretName: forge.SecretGitLabPollerToken,
 		},
 	}
-	applyGitLabRoleSelection(sel, "glpat-SHARED", nil, nil)
-	assert.Equal(t, "glpat-SHARED", os.Getenv("GITLAB_TOKEN"))
+	applyGitLabRoleSelection(sel, "glpat-POLLER", nil, nil)
+	assert.Equal(t, "glpat-POLLER", os.Getenv("GITLAB_TOKEN"))
 	assert.Equal(t, "poller", os.Getenv(envGitLabRole))
+	assert.Equal(t, "", os.Getenv("PUSH_TOKEN"), "Poller must not inherit leftover PUSH_TOKEN")
 }
 
-func TestCheckGitLabApprovalCapabilityInvalidMode(t *testing.T) {
-	t.Parallel()
-	err := checkGitLabApprovalCapability("gitlab", "approve", "", func(string) string { return "nope" })
-	require.Error(t, err)
-	assert.ErrorIs(t, err, gitlabroles.ErrInvalidMode)
-}
-
-func TestCheckGitLabApprovalCapabilityNilGetenvDisabled(t *testing.T) {
-	t.Setenv(forge.VarGitLabRoleMigration, "")
-	require.NoError(t, checkGitLabApprovalCapability("gitlab", "approve", "", nil))
-}
-
-func TestResolveGitLabPollerCredentialMigratingFallback(t *testing.T) {
+func TestCheckGitLabApprovalCapabilityIgnoresInvalidMode(t *testing.T) {
 	t.Parallel()
 	env := map[string]string{
-		forge.VarGitLabRoleMigration: "migrating",
-		forge.SecretForgeToken:       "glpat-SHARED",
+		forge.SecretForgeToken:         "shared",
+		forge.SecretGitLabPollerToken:  "p",
+		forge.SecretGitLabAnalystToken: "a",
+		forge.SecretGitLabCoderToken:   "c",
+		envGitLabRole:                  "analyst",
 	}
-	sel, token, err := resolveGitLabPollerCredential(mapGetenv(env))
-	require.NoError(t, err)
-	assert.Equal(t, "glpat-SHARED", token)
-	assert.True(t, sel.Source.Fallback)
+	require.NoError(t, checkGitLabApprovalCapability("gitlab", "approve", "a", mapGetenv(env)))
+}
+
+func TestCheckGitLabApprovalCapabilityNilGetenvFailsClosed(t *testing.T) {
+	t.Setenv(forge.VarGitLabRoleRegistry, "")
+	t.Setenv(envGitLabRole, "")
+	t.Setenv("STAGE", "")
+	err := checkGitLabApprovalCapability("gitlab", "approve", "", nil)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, gitlabroles.ErrUnknownJob)
 }
 
 func copyStringMap(in map[string]string) map[string]string {

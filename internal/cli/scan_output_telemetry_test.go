@@ -17,7 +17,7 @@ import (
 // redaction scan does NOT rewrite the telemetry JSONL file. It is still held
 // open for append during the scan, so an in-place rewrite would truncate it
 // under the open handle; and any Level 3 conversation content it carries was
-// already redacted at assembly (contentCollector.Result) before reaching a
+// already redacted at assembly (contentCollector) before reaching a
 // span, so the file needs no post-hoc sweep. A normal output file must still
 // be sanitized.
 func TestScanOutputFiles_SkipsTelemetryArtifacts(t *testing.T) {

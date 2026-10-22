@@ -92,6 +92,7 @@ This addresses the gap where the binary model can miss risky changes that don't 
 - Requires agents to accurately self-assess dimensions in real time — a judgment call the binary model avoids entirely.
 - The dimensions listed above are examples, not necessarily exhaustive. Different organizations might weight or define them differently.
 - Could produce false escalations (agent is uncertain, so it escalates conservatively) or false confidence (agent misjudges blast radius). Shadow mode data would help calibrate.
+- Deciding *to* escalate is only half of the handoff. Who receives the escalation, and whether they have the context and authority to act, is covered in [escalation without context](agentic-sdlc-adoption-org-communication.md#escalation-without-context).
 
 ## Open questions
 

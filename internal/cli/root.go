@@ -5,19 +5,35 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/fullsend-ai/fullsend/internal/buildinfo"
+	"github.com/fullsend-ai/fullsend/internal/telemetry"
 )
 
-var version = "dev"
-var commitSHA = "dev"
+// version and commitSHA retain the historical -ldflags -X targets for
+// packagers that still stamp internal/cli. New build sites stamp
+// internal/buildinfo; init copies those values here when the legacy targets
+// were not set.
+var version, commitSHA string
+
+func init() {
+	if version == "" {
+		version = buildinfo.Version()
+	}
+	if commitSHA == "" {
+		commitSHA = buildinfo.CommitSHA()
+	}
+}
+
+// upstreamRefOverride pins scaffold workflow refs to one fullsend-ai/fullsend
+// commit. It is set only through -ldflags: the e2e build stamps the commit
+// under test so e2e runs that commit's scaffold scripts, not main's (#7622).
+// Release and dev builds leave it empty.
+var upstreamRefOverride = ""
 
 // Version returns the CLI version string set at build time.
 func Version() string {
 	return version
-}
-
-// CommitSHA returns the git commit SHA set at build time.
-func CommitSHA() string {
-	return commitSHA
 }
 
 // resolveBuildVersion returns the commit SHA and normalized version tag
@@ -38,9 +54,14 @@ func resolveBuildVersion() (sha, tag string) {
 }
 
 // resolveUpstreamRef returns the SHA and version tag for pinning scaffold
-// workflow refs. Delegates to resolveBuildVersion; dev builds return empty
+// workflow refs. A build-time upstreamRefOverride wins, with no tag;
+// otherwise it delegates to resolveBuildVersion, and dev builds return empty
 // strings, causing the render layer to fall back to config.DefaultUpstreamRef.
+// The override does not affect resolveAgentsRef.
 func resolveUpstreamRef() (ref, tag string) {
+	if upstreamRefOverride != "" {
+		return upstreamRefOverride, ""
+	}
 	return resolveBuildVersion()
 }
 
@@ -52,6 +73,9 @@ func newRootCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Version:       version,
+		PersistentPreRun: func(cmd *cobra.Command, args []string) {
+			telemetry.InstallOTELRedactingLogger()
+		},
 	}
 	cmd.AddCommand(newAgentCmd())
 	cmd.AddCommand(newAdminCmd())
@@ -65,11 +89,14 @@ func newRootCmd() *cobra.Command {
 	cmd.AddCommand(newScanCmd())
 	cmd.AddCommand(newReposCmd())
 	cmd.AddCommand(newPostReviewCmd())
+	cmd.AddCommand(newFetchReviewThreadsCmd())
 	cmd.AddCommand(newIssuesCmd())
 	cmd.AddCommand(newPostCommentCmd())
 	cmd.AddCommand(newReconcileStatusCmd())
 	cmd.AddCommand(newPollCmd())
 	cmd.AddCommand(newEvalMeasureCmd())
+	cmd.AddCommand(newResolveMRSourceCmd())
+	cmd.AddCommand(newCheckProtectedBranchCmd())
 	return cmd
 }
 

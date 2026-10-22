@@ -6,6 +6,8 @@
 
 When changing **any** non-test `.go` file in `internal/mint/`, copy it to the corresponding `.embed` file in `internal/dispatch/gcf/mintsrc/`. If `go.mod` or `go.sum` changed, sync those to `go.mod.embed` and `go.sum.embed` too. The `lint-mint-embed-sync` pre-commit hook checks all files — not just `main.go`.
 
+**Build metadata stamping:** The mint Cloud Function receives version and commit metadata via deploy-time source stamping, not runtime environment variables. The provisioner writes `mintcore/version.go` into the function source zip at bundle time. Never use environment variables for values that must stay in lockstep with the deployed source. See [Mintcore Architecture](mintcore.md#build-metadata-stamping).
+
 **Standalone mint:** `cmd/mint/` is a standalone HTTP server variant of the token mint that serves the same purpose as the GCF mint (`internal/mint/`) but runs without GCP infrastructure. Both use the shared `internal/mintcore/` library for token minting logic; they differ only in deployment model (filesystem PEM vs Secret Manager, JWKS vs STS verification). It supports custom role permissions via `CUSTOM_ROLE_PERMISSIONS` and a fallback proxy to an upstream mint. It has its own `go.mod` and tests run from `cmd/mint/`.
 
 **CF Worker adapter:** `internal/dispatch/cf/workersrc/` is a thin TypeScript Cloudflare Worker adapter that consumes mintcore via WASM (`cmd/mint-wasm`). The adapter handles I/O only (Worker secrets, host fetch, Fetch Request/Response mapping); all mint logic stays in Go. The Go WASM bridge registers `mintcoreInitMint` and `mintcoreHandleFetch` on `globalThis` via `syscall/js`; changes to these entry points in `cmd/mint-wasm` or to the contracts they consume in `internal/mintcore/` require updating `workersrc/src/index.ts` to match.
@@ -59,10 +61,10 @@ The `make wasm-build` target enforces these limits automatically — run it afte
 
 When making changes to Go code under `cmd/`, `internal/`, or `pkg/`:
 
-1. **Unit tests:** Run `make go-test` (or `go test ./...`) and fix any failures before committing.
+1. **Unit tests:** Run `make go-test` (or `go test ./...`) and fix any failures before committing. On macOS or a Linux distribution other than Ubuntu, `make ci-local T=go-test` runs the same tests in a container that matches the CI runner (see [`hack/ci-local`](../../hack/ci-local/README.md)).
 2. **Coverage:** CI enforces thresholds via [Codecov](https://about.codecov.io/) (see [`.codecov.yml`](../../.codecov.yml)). **Patch coverage** on changed lines has an **80% target** and a **75% enforced floor** (5% threshold). Codecov PR comments mark ✗ below 80% even when the `codecov/patch` status check is green. **Project coverage** must not drop more than **1%** below the base branch. `make go-test` alone does **not** enforce these thresholds — you must verify coverage locally before committing. See [Verifying patch coverage locally](#verifying-patch-coverage-locally) below for the exact commands.
 3. **Vet:** Run `make go-vet` to catch common issues.
-4. **E2E tests:** Run `make e2e-test` if your changes touch `internal/appsetup/`, `internal/forge/`, `internal/cli/`, or `internal/layers/`. These tests exercise the full admin install/uninstall flow against live GitHub pool orgs using mint/OIDC authentication.
+4. **Behaviour tests:** Run `make behaviour-test` (and `make playback-test` for multi-agent pipeline changes) if your changes affect the end-to-end behaviour covered by the Gherkin suites. These tests install fullsend per-repo on live GitHub pool repositories using mint/OIDC authentication. See [Behaviour testing](../guides/dev/behaviour-testing.md).
 
 ## Verifying patch coverage locally
 
@@ -71,6 +73,15 @@ changed lines meet the **80% patch coverage** target (75% enforced floor)
 from [`.codecov.yml`](../../.codecov.yml). You must approximate this check
 yourself before committing. Skipping this step is the most common cause
 of `codecov/patch` failures on first push.
+
+On macOS or a Linux distribution other than Ubuntu,
+`hack/ci-local/ci-local coverage` runs `make go-test` in a container that
+matches the CI runner, then prints the coverage of each Go file you changed
+against `origin/main` (see [`hack/ci-local`](../../hack/ci-local/README.md)).
+These are **whole-file** statement percentages, not coverage of the lines you
+changed: a well-covered file can hide poorly covered new code. Treat them as
+a rough signal only, and use the step-by-step check below to verify patch
+coverage.
 
 ### Step-by-step
 
@@ -471,7 +482,9 @@ function in `internal/cli/run.go` is the canonical implementation.
    `_SECRET`, `_PASSWORD`, `_KEY`, `_CREDENTIALS`) with
    `[REDACTED:<key>]`. Skip values shorter than
    `minRedactableSecretLen` (currently 8) — short values like `"main"`
-   or `"true"` cause false-positive mangling.
+   or `"true"` cause false-positive mangling. `replaceEnvSecrets` is that
+   pass: it takes longer values first, so a value that contains another
+   is replaced whole.
 
 2. **Scan `providerOnlyKeys` from the process environment
    (`os.Getenv`) for credential literal values.** Provider-only
@@ -480,10 +493,22 @@ function in `internal/cli/run.go` is the canonical implementation.
    can't reach them, which means the `RunnerEnv` scan in invariant 1
    never sees them. Iterate `providerOnlyKeys`, read each value with
    `os.Getenv`, and replace it the same way (skipping values shorter
-   than `minRedactableSecretLen`). A future credential class kept out
-   of `RunnerEnv` for the same reason needs the same treatment here.
+   than `minRedactableSecretLen`). `replaceEnvSecrets` does this in the
+   same longest-first pass as invariant 1. A future credential class kept
+   out of `RunnerEnv` for the same reason needs the same treatment here.
 
-3. **Apply `security.SecretRedactor` as a fallback pass.**
+3. **Replace registered runtime secrets (`security.RuntimeSecrets()`).**
+   Values registered with `security.RegisterRuntimeSecret` have no
+   sensitive key to match, so they are replaced by value with `***`.
+   Runner secrets ([ADR 0136](../ADRs/0136-runner-secrets-through-one-stored-secret.md))
+   register through `registerRunnerSecretValue`, which adds the trimmed
+   value, each line with and without padding, and the JSON-escaped form
+   of each, because script output is often trimmed or quoted before it
+   is redacted. Exact literals from invariants 1 to 3 are replaced in one
+   pass, longest first, so a value inside a longer one never leaves part
+   of the longer one visible.
+
+4. **Apply `security.SecretRedactor` as a fallback pass.**
    The `RunnerEnv` and `providerOnlyKeys` scans only catch credentials
    the runner explicitly declared. A
    `security.NewSecretRedactor().Scan(content)` call catches
@@ -492,14 +517,14 @@ function in `internal/cli/run.go` is the canonical implementation.
    never passed through either source — for example, a key baked into
    a test fixture or a pre-commit hook printing its own secrets.
 
-4. **Use `truncateUTF8` when enforcing size limits on external
+5. **Use `truncateUTF8` when enforcing size limits on external
    content.** Naive byte slicing (`s[:max]`) can split a multi-byte
    UTF-8 rune, producing invalid text that breaks downstream JSON
    serialization or LLM tokenization. Use `truncateUTF8(s, max)`
    (defined in `internal/cli/run.go`), which backs up to the last
    valid rune boundary before appending a `[truncated]` marker.
 
-5. **Write files containing potential secrets with mode `0600`.**
+6. **Write files containing potential secrets with mode `0600`.**
    Feedback files, redacted logs, and any file derived from external
    content must use `os.WriteFile(path, data, 0o600)` — not `0644`.
    The run directory is uploaded as a CI artifact; restrictive
@@ -562,10 +587,10 @@ This already happened: an enrollment for `crc-org/crc` used a June-era mise `ful
 
 The e2e tests mint short-lived GitHub App installation tokens via the central token mint. Pool-org admin operations use mint/OIDC in CI and do not require a dedicated mint URL secret.
 
-- **CI (mint):** Uses the hosted public mint (same default as `fullsend admin --mint-url`) with the workflow's OIDC identity. The e2e workflow exchanges the OIDC JWT for an `e2e`-role installation token on the pool org. Override with `FULLSEND_MINT_URL` if needed.
+- **CI (mint):** Uses the hosted public mint (same default as `fullsend github setup --mint-url`) with the workflow's OIDC identity. The e2e workflow exchanges the OIDC JWT for an `e2e`-role installation token on the pool org. Override with `FULLSEND_MINT_URL` if needed.
 - **Local:** Run `gh auth login` (or set `GH_TOKEN` / `GITHUB_TOKEN` with pool-org admin access). Mint uses `FULLSEND_MINT_URL` or the hosted default.
 
-**Do not** increase e2e or behaviour **suite** timeouts without **explicit human authorization** in the current session (or an issue/PR comment that clearly authorizes that bump). Suite ceilings are job `timeout-minutes` in `.github/workflows/e2e.yml` for the `e2e` / `behaviour` jobs, the matching `go test -timeout` values in the `e2e-test` / `behaviour-test` Make targets, and the default `E2E_LOCK_TIMEOUT`. Scenario-level wait or assertion windows (for example dispatch detection) are out of scope when an issue asks for them — those are not suite ceilings. On timeout failures, diagnose and fix the root cause (slow scenarios, unnecessary waits, lock contention); do not open a PR whose primary change is raising the suite timeout.
+**Do not** increase e2e or behaviour **suite** timeouts without **explicit human authorization** in the current session (or an issue/PR comment that clearly authorizes that bump). Suite ceilings are job `timeout-minutes` in `.github/workflows/e2e.yml` for the `behaviour` / `playback` jobs, the matching `go test -timeout` values in the `behaviour-test` / `playback-test` Make targets (and the `timeout-minutes` of any job that runs `playback-test`), and the default `E2E_LOCK_TIMEOUT`. Scenario-level wait or assertion windows (for example dispatch detection) are out of scope when an issue asks for them — those are not suite ceilings. On timeout failures, diagnose and fix the root cause (slow scenarios, unnecessary waits, lock contention); do not open a PR whose primary change is raising the suite timeout.
 
 **When reviewing PRs:** Flag unauthorized suite-timeout increases as an **important-severity** finding (policy violation). Explicit human authorization in the linked issue or a PR comment is the only exception.
 

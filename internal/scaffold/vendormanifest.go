@@ -48,7 +48,7 @@ func (m *VendorManifest) MarshalYAML() ([]byte, error) {
 	return yaml.Marshal(m)
 }
 
-// ParseVendorManifest parses manifest YAML from the config repo.
+// ParseVendorManifest parses manifest YAML from a repository.
 func ParseVendorManifest(data []byte) (*VendorManifest, error) {
 	var m VendorManifest
 	if err := yaml.Unmarshal(data, &m); err != nil {
@@ -135,12 +135,17 @@ func (m *VendorManifest) CleanupPaths(workflowPrefix string) []string {
 }
 
 var vendoredReusableWorkflows = []string{
-	"reusable-code.yml",
 	"reusable-dispatch.yml",
-	"reusable-fix.yml",
 	"reusable-prioritize.yml",
-	"reusable-retro.yml",
+}
+
+// retiredVendoredReusableWorkflows are no longer shipped, but remain in the
+// legacy cleanup set so disabling vendoring removes files from older installs.
+var retiredVendoredReusableWorkflows = []string{
+	"reusable-code.yml",
+	"reusable-fix.yml",
 	"reusable-review.yml",
+	"reusable-retro.yml",
 	"reusable-triage.yml",
 }
 
@@ -152,9 +157,11 @@ var vendoredDefaultsInfraPaths = []string{
 	".github/actions/setup-gcp/action.yml",
 	".github/actions/validate-enrollment/action.yml",
 	".github/scripts/check-fix-eligibility.sh",
+	".github/scripts/count-fix-commits.jq",
 	".github/scripts/install-openshell.sh",
 	".github/scripts/install-podman.sh",
 	".github/scripts/openshell-version.sh",
+	".github/scripts/pre-fetch-review-body.sh",
 }
 
 // enumerateVendoredPaths returns embed-derived paths for a current --vendor install layout.
@@ -202,6 +209,12 @@ func enumerateLegacyFlatVendoredPaths(workflowPrefix string) ([]string, error) {
 	for _, name := range vendoredReusableWorkflows {
 		add(".github/workflows/" + name)
 		// Include legacy per-repo paths for cleanup.
+		if workflowPrefix != "" {
+			add(workflowPrefix + ".github/workflows/" + name)
+		}
+	}
+	for _, name := range retiredVendoredReusableWorkflows {
+		add(".github/workflows/" + name)
 		if workflowPrefix != "" {
 			add(workflowPrefix + ".github/workflows/" + name)
 		}
@@ -274,7 +287,7 @@ func ReadVendorManifest(ctx context.Context, client forge.Client, owner, repo, w
 
 // ResolveVendoredCleanupPaths returns paths to delete when disabling --vendor.
 // Prefers the committed manifest; falls back to embed enumeration for legacy installs.
-// binaryPath is included when no manifest is present (per-org or per-repo default).
+// binaryPath is included when no manifest is present.
 func ResolveVendoredCleanupPaths(ctx context.Context, client forge.Client, owner, repo, workflowPrefix, binaryPath string) ([]string, error) {
 	manifest, found, err := ReadVendorManifest(ctx, client, owner, repo, workflowPrefix)
 	if err != nil {

@@ -46,6 +46,35 @@ func TestCreateIssueWithLabels(t *testing.T) {
 	assert.Equal(t, []string{"type/chore"}, issue.Labels)
 }
 
+func TestCreateIssueEscapesRepositoryPathSegment(t *testing.T) {
+	tests := []struct {
+		name string
+		repo string
+		path string
+	}{
+		{name: "fragment", repo: "widgets#ignored", path: "/repos/acme/widgets%23ignored/issues"},
+		{name: "query", repo: "widgets?ignored", path: "/repos/acme/widgets%3Fignored/issues"},
+		{name: "extra path segments", repo: "widgets/issues/42/comments", path: "/repos/acme/widgets%2Fissues%2F42%2Fcomments/issues"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			handlerCalled := false
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				handlerCalled = true
+				assert.Equal(t, http.MethodPost, r.Method)
+				assert.Equal(t, tc.path, r.URL.EscapedPath())
+				assert.Empty(t, r.URL.RawQuery)
+				json.NewEncoder(w).Encode(map[string]any{"number": 1, "title": "title"})
+			}))
+			defer srv.Close()
+
+			_, err := newTestClient(t, srv).CreateIssue(context.Background(), "acme", tc.repo, "title", "body")
+			require.NoError(t, err)
+			assert.True(t, handlerCalled, "handler was not called — URL path mismatch")
+		})
+	}
+}
+
 func TestCreateIssueRetriesWithoutLabelsOnValidationError(t *testing.T) {
 	call := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -503,6 +532,73 @@ func TestListPullRequestFileDiffs(t *testing.T) {
 	assert.Contains(t, files[0].Patch, "@@ -10,5 +10,7 @@")
 	assert.Equal(t, "binary.png", files[1].Path)
 	assert.Empty(t, files[1].Patch)
+}
+
+func TestListPullRequestCommits(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "GET", r.Method)
+		assert.Equal(t, "/repos/owner/repo/pulls/5/commits", r.URL.Path)
+
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode([]map[string]any{
+			{"sha": "first"},
+			{"sha": "second"},
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	shas, err := client.ListPullRequestCommits(context.Background(), "owner", "repo", 5)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"first", "second"}, shas, "must keep GitHub's oldest-first order")
+}
+
+func TestListPullRequestCommits_PaginatesAndErrors(t *testing.T) {
+	t.Run("paginates full pages", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			page := r.URL.Query().Get("page")
+			n := 100
+			if page == "2" {
+				n = 1
+			}
+			out := make([]map[string]any, 0, n)
+			for i := 0; i < n; i++ {
+				out = append(out, map[string]any{"sha": "p" + page + "-" + strconv.Itoa(i)})
+			}
+			json.NewEncoder(w).Encode(out)
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		shas, err := client.ListPullRequestCommits(context.Background(), "owner", "repo", 5)
+		require.NoError(t, err)
+		require.Len(t, shas, 101)
+		assert.Equal(t, "p2-0", shas[100])
+	})
+
+	t.Run("request error", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		_, err := client.ListPullRequestCommits(context.Background(), "owner", "repo", 5)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "list pull request commits page 1")
+	})
+
+	t.Run("decode error", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Write([]byte("not json"))
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		_, err := client.ListPullRequestCommits(context.Background(), "owner", "repo", 5)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "decoding pull request commits page 1")
+	})
 }
 
 func TestListPullRequestReviews(t *testing.T) {

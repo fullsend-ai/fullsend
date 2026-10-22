@@ -68,6 +68,17 @@ func TestRendererToolResultEventIgnored(t *testing.T) {
 	}
 }
 
+func TestRendererToolUseEventNeverPrintsArguments(t *testing.T) {
+	var buf bytes.Buffer
+	r := newTestRenderer(&buf)
+
+	r.Handle(ToolUseEvent{Name: "Bash", Summary: "make", Arguments: `{"command":"make SECRET=hunter2"}`})
+
+	if strings.Contains(buf.String(), "hunter2") {
+		t.Errorf("arguments must not reach the console, got %q", buf.String())
+	}
+}
+
 func TestRendererToolUseEventCI(t *testing.T) {
 	t.Setenv("GITHUB_ACTIONS", "true")
 
@@ -193,6 +204,25 @@ func TestRendererErrorEvent(t *testing.T) {
 	}
 }
 
+func TestRendererModelFallbackEvent(t *testing.T) {
+	var buf bytes.Buffer
+	r := newTestRenderer(&buf)
+
+	r.Handle(ModelFallbackEvent{From: "claude-opus-4-5", To: "claude-haiku-5-5", Trigger: "last_resort"})
+
+	output := buf.String()
+	if !strings.Contains(output, "model claude-opus-4-5 is not available (Claude Code: last_resort); falling back to claude-haiku-5-5") {
+		t.Errorf("expected the fallback warning, got: %s", output)
+	}
+
+	buf.Reset()
+	r.Handle(ModelFallbackEvent{From: "a::b", To: "c\x1b[31m", Trigger: ""})
+	output = buf.String()
+	if !strings.Contains(output, "model a: :b is not available (Claude Code); falling back to c") || strings.Contains(output, "\x1b") {
+		t.Errorf("expected a sanitized fallback warning with no trigger, got: %q", output)
+	}
+}
+
 func TestRendererRetryEvent(t *testing.T) {
 	var buf bytes.Buffer
 	r := newTestRenderer(&buf)
@@ -205,6 +235,39 @@ func TestRendererRetryEvent(t *testing.T) {
 	}
 	if !strings.Contains(output, "timeout") {
 		t.Errorf("expected error in output, got: %s", output)
+	}
+}
+
+func TestRendererPluginErrorEvent(t *testing.T) {
+	tests := []struct {
+		name string
+		evt  PluginErrorEvent
+		want string
+	}{
+		{
+			name: "with path",
+			evt:  PluginErrorEvent{Plugin: "demo@inline", Type: "path-not-found", Path: "/plugins/demo", Message: "not found"},
+			want: "Plugin demo@inline failed to load from /plugins/demo (path-not-found): not found",
+		},
+		{
+			name: "without path",
+			evt:  PluginErrorEvent{Plugin: "demo@inline", Type: "generic-error", Message: "boom"},
+			want: "Plugin demo@inline failed to load (generic-error): boom",
+		},
+		{
+			name: "unnamed, path only",
+			evt:  PluginErrorEvent{Path: "/plugins/x"},
+			want: "Plugin (unnamed) failed to load from /plugins/x",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			newTestRenderer(&buf).Handle(tt.evt)
+			if got := buf.String(); !strings.Contains(got, tt.want) {
+				t.Errorf("got %q, want it to contain %q", got, tt.want)
+			}
+		})
 	}
 }
 

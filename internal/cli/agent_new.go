@@ -56,12 +56,12 @@ The agent is generated with a trigger, because an agent without one
 registers and validates but is silently never dispatched.
 
 Examples:
-  fullsend agent new lint-docs --fullsend-dir .fullsend \
+  fullsend agent new lint-docs \
     --role triage --description "Check docs changes for broken links"
 
-  fullsend agent new lint-docs --fullsend-dir .fullsend --on label:needs-docs
+  fullsend agent new lint-docs --on label:needs-docs
 
-  fullsend agent new -f lint-docs.agent.yaml --fullsend-dir .fullsend
+  fullsend agent new -f lint-docs.agent.yaml
 
 ` + agentnew.RoleHelp(),
 		Args: cobra.MaximumNArgs(1),
@@ -76,15 +76,15 @@ Examples:
 		},
 	}
 
-	cmd.Flags().StringVar(&f.fullsendDir, "fullsend-dir", "", "path to the .fullsend configuration directory")
+	addFullsendDirFlag(cmd, &f.fullsendDir)
 	cmd.Flags().StringVarP(&f.specFile, "file", "f", "", "read the agent definition from a spec YAML file")
 	cmd.Flags().StringVar(&f.role, "role", agentnew.DefaultRole, "mint role the agent runs as (see the table below)")
 	cmd.Flags().StringVar(&f.description, "description", "", "one-line description of what the agent does")
 	cmd.Flags().StringVar(&f.on, "on", "", "trigger preset: "+strings.Join(agentnew.PresetNames(), ", ")+" (default command:/fs-<name>)")
 	cmd.Flags().StringVar(&f.trigger, "trigger", "", "raw CEL trigger expression; mutually exclusive with --on")
-	cmd.Flags().StringVar(&f.model, "model", agentnew.DefaultModel, "model for the agent")
+	cmd.Flags().StringVar(&f.model, "model", agentnew.DefaultModel, "model for the agent; codex needs an OpenAI id such as openai/gpt-5.6-luna")
 	cmd.Flags().StringVar(&f.effort, "effort", agentnew.DefaultEffort, "effort level (low, medium, high, xhigh, max)")
-	cmd.Flags().StringVar(&f.runtime, "runtime", "", "agent runtime recorded in config.yaml (claude, pi or codex)")
+	cmd.Flags().StringVar(&f.runtime, "runtime", "", "agent runtime (claude, pi or codex), recorded in config.yaml and used to shape the harness")
 	cmd.Flags().StringVar(&f.slug, "slug", "", "harness slug (default: <owner>-<name> from the origin remote)")
 	cmd.Flags().StringVar(&f.image, "image", "", "sandbox image (default: the fleet's pin for this role)")
 	cmd.Flags().IntVar(&f.timeoutMinutes, "timeout-minutes", agentnew.DefaultTimeoutMinutes, "agent timeout in minutes")
@@ -93,7 +93,6 @@ Examples:
 	cmd.Flags().BoolVar(&f.noRegister, "no-register", false, "write the files but do not add the agent to config.yaml")
 	cmd.Flags().BoolVar(&f.force, "force", false, "overwrite generated files that already exist (never overwrites shared scaffold assets)")
 	cmd.Flags().BoolVar(&f.dryRun, "dry-run", false, "validate and report what would be written without writing anything")
-	_ = cmd.MarkFlagRequired("fullsend-dir")
 	return cmd
 }
 
@@ -110,6 +109,7 @@ func resolveAgentNewOptions(name string, f agentNewFlags) (opts agentnew.Options
 	runtimeName = f.runtime
 	on, trigger := f.on, f.trigger
 	slug, image, description := f.slug, f.image, f.description
+	modelFromSpec := false
 
 	if f.specFile != "" {
 		if name != "" {
@@ -126,6 +126,7 @@ func resolveAgentNewOptions(name string, f agentNewFlags) (opts agentnew.Options
 		}
 		if !f.changed("model") && spec.Model != "" {
 			opts.Model = spec.Model
+			modelFromSpec = true
 		}
 		if !f.changed("effort") && spec.Effort != "" {
 			opts.Effort = spec.Effort
@@ -212,6 +213,29 @@ func resolveAgentNewOptions(name string, f agentNewFlags) (opts agentnew.Options
 		return opts, "", "", fmt.Errorf("runtime %q is not valid (allowed: %s)",
 			runtimeName, strings.Join(userFacingRuntimes(), ", "))
 	}
+	// Shape the harness for the runtime dispatch will use, which falls back
+	// to the repo's config.yaml runtime:. runtimeName stays the flag/spec
+	// value: it is what gets recorded as this agent's override.
+	opts.Runtime = runtimeName
+	if opts.Runtime == "" {
+		cfg, cfgErr := config.LoadConfig(f.fullsendDir, config.LoadOpts{MissingOK: true})
+		if cfgErr != nil {
+			return opts, "", "", cfgErr
+		}
+		// Resolve as dispatch does: this agent's own agents: entry (an agent
+		// regenerated with --force --no-register), then the per-repo
+		// runtime: default; "" means claude.
+		if entry, ok := config.AgentSettingsFor(cfg.AgentEntries(), opts.Name); ok && entry.Runtime != "" {
+			opts.Runtime = entry.Runtime
+		} else if perRepo, ok := cfg.(config.PerRepoConfigReader); ok {
+			opts.Runtime = perRepo.ConfigRuntime()
+		}
+	}
+	// The --model default is opus, a Claude alias codex refuses: clear it so
+	// Validate asks for an OpenAI id instead of writing opus.
+	if opts.Runtime == "codex" && !f.changed("model") && !modelFromSpec {
+		opts.Model = ""
+	}
 
 	if validateErr := opts.Validate(); validateErr != nil {
 		return opts, "", "", validateErr
@@ -276,7 +300,11 @@ func runAgentNew(ctx context.Context, name string, f agentNewFlags, printer *ui.
 
 	if f.noRegister {
 		printer.StepInfo("Not registered (--no-register). Register it later with:")
-		printer.Raw(fmt.Sprintf("  fullsend agent add %s --fullsend-dir %s\n", result.HarnessPath, f.fullsendDir))
+		printer.Raw(fmt.Sprintf("  fullsend agent add %s%s\n", result.HarnessPath, fullsendDirArg(f.fullsendDir)))
+		// agent add has no --runtime, and the harness is already shaped by it.
+		if runtimeName != "" {
+			printer.Raw(fmt.Sprintf("  fullsend agent set %s --runtime %s%s\n", opts.Name, runtimeName, fullsendDirArg(f.fullsendDir)))
+		}
 	} else {
 		if err := runAgentAdd(ctx, result.HarnessPath, opts.Name, f.fullsendDir, nil, printer); err != nil {
 			return fmt.Errorf("agent files were written but registration failed: %w", err)
@@ -300,14 +328,28 @@ func runAgentNew(ctx context.Context, name string, f agentNewFlags, printer *ui.
 func printNextSteps(opts agentnew.Options, f agentNewFlags, printer *ui.Printer) {
 	printer.Raw("\nNext:\n")
 	printer.Raw(fmt.Sprintf("  1. Fill in the marked sections of agents/%s.md — that file is the agent's prompt.\n", opts.Name))
-	printer.Raw(fmt.Sprintf("  2. Test locally:\n       fullsend run %s --fullsend-dir %s \\\n         --target-repo . --env-file .env.local\n",
-		opts.Name, f.fullsendDir))
-	printer.Raw("     .env.local needs GITHUB_ISSUE_URL, GH_TOKEN, ANTHROPIC_VERTEX_PROJECT_ID,\n")
-	printer.Raw("     CLOUD_ML_REGION, and GOOGLE_APPLICATION_CREDENTIALS pointing at a GCP\n")
-	printer.Raw("     credentials file — the harness copies that file into the sandbox, so the\n")
-	printer.Raw("     run stops before it starts without it. GH_TOKEN must be a real token: a\n")
-	printer.Raw("     connectivity check runs before the agent does. See\n")
-	printer.Raw("     docs/guides/user/running-agents-locally.md.\n")
+	// The dry-run variable is printed so that following step 2 literally
+	// never posts a real comment on the issue it was pointed at.
+	printer.Raw(fmt.Sprintf("  2. Test locally, printing the result instead of commenting:\n"+
+		"       %s=1 fullsend run %s%s \\\n         --target-repo . --env-file .env.local\n",
+		agentnew.DryRunEnvVar(opts.Name), opts.Name, fullsendDirArg(f.fullsendDir)))
+	printer.Raw("     .env.local needs GITHUB_ISSUE_URL, ISSUE_NUMBER, REPO_FULL_NAME,\n")
+	switch {
+	case opts.UsesGateway():
+		printer.Raw("     and GH_TOKEN. The model goes through the inference.gateway block in\n")
+		printer.Raw("     .fullsend/config.yaml; with auth: api-key, also set\n")
+		printer.Raw("     FULLSEND_INFERENCE_GATEWAY_API_KEY on the runner.\n")
+	case !opts.UsesVertex():
+		printer.Raw("     GH_TOKEN, and OPENAI_API_KEY. No GCP variables are needed: this\n")
+		printer.Raw("     agent calls only OpenAI, and the runner keeps the key out of the\n")
+		printer.Raw("     sandbox.\n")
+	default:
+		printer.Raw("     GH_TOKEN, ANTHROPIC_VERTEX_PROJECT_ID, CLOUD_ML_REGION, and\n")
+		printer.Raw("     GOOGLE_APPLICATION_CREDENTIALS pointing at a GCP credentials file;\n")
+		printer.Raw("     the run stops before it starts without them.\n")
+	}
+	printer.Raw("     GH_TOKEN must be a real token: a connectivity check runs before the\n")
+	printer.Raw("     agent does. See docs/guides/user/running-agents-locally.md.\n")
 	if cmd := slashCommandFromTrigger(opts.Trigger); cmd != "" {
 		printer.Raw(fmt.Sprintf("  3. Commit %s, then comment `%s` on an issue or pull request to run it in CI.\n",
 			filepath.Clean(f.fullsendDir), cmd))

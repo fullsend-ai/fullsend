@@ -31,13 +31,17 @@ const codexConfigTamperedExit = 98
 // .env is sourced and marked read-only.
 const codexBinaryVar = "FULLSEND_CODEX_BIN"
 
+// codexNodeVar holds the node that starts codex: `codex` on PATH is npm's
+// `#!/usr/bin/env node` launcher, so binaryPin pins node by the same rule.
+const codexNodeVar = "FULLSEND_CODEX_NODE"
+
 // codexRuntimeEnv tells skills running inside the sandbox which runtime they
 // are on, so a skill can take a runtime-specific path deliberately.
 const codexRuntimeEnv = "FULLSEND_RUNTIME"
 
 // codexPathVar holds the PATH captured before the agent-writable .env is
-// sourced, so it can be restored before codex — and therefore every hook — is
-// launched.
+// sourced, so it can be restored before codex is launched. The hook adapter's
+// children take envDataTrustedPathVar instead (see buildCodexRunCommand).
 const codexPathVar = "FULLSEND_CODEX_PATH"
 
 // codexHookDigestsEnv carries the hook scripts' expected digests to the
@@ -52,6 +56,12 @@ const codexPathVar = "FULLSEND_CODEX_PATH"
 // closing the intra-iteration window that Claude Code and pi leave open.
 const codexHookDigestsEnv = "FULLSEND_CODEX_HOOK_DIGESTS"
 
+// codexSpawnDigestsEnv carries the files the spawn guard re-checks before it
+// admits a child, as space-separated "<path>:<sha256>" pairs relative to
+// CODEX_HOME: hooks.json and every registered role file, which codex re-reads
+// when a child starts. Its keys are also the guard's role registry.
+const codexSpawnDigestsEnv = "FULLSEND_CODEX_SPAWN_DIGESTS"
+
 // codexHookDigestsValue renders the map for the environment. Sorted so the
 // launch command is stable across iterations.
 func codexHookDigestsValue(scripts map[string]string) string {
@@ -65,6 +75,17 @@ func codexHookDigestsValue(scripts map[string]string) string {
 		pairs = append(pairs, name+":"+scripts[name])
 	}
 	return strings.Join(pairs, " ")
+}
+
+// codexSpawnDigestsValue renders the spawn guard's digest map: hooks.json
+// plus agents/<role>.toml per registered role, keyed by path relative to
+// CODEX_HOME, which is where the adapter resolves the file from.
+func codexSpawnDigestsValue(d codexRunnerHeldDigestSet) string {
+	entries := map[string]string{codexHooksFile: d.HooksJSON}
+	for role, digest := range d.RoleFiles {
+		entries["agents/"+role+".toml"] = digest
+	}
+	return codexHookDigestsValue(entries)
 }
 
 // codexOpenAIProvider is the only model provider prefix codex accepts in a
@@ -118,7 +139,27 @@ var codexClaudeAliases = map[string]bool{"opus": true, "sonnet": true, "haiku": 
 // codexModelHelp names both ways to give codex a model it can serve.
 const codexModelHelp = "set FULLSEND_CODEX_MODEL=" + codexOpenAIProvider +
 	"/<id> for the repo, or model: " + codexOpenAIProvider +
-	"/<id> on the agent's agents: entry or the harness"
+	"/<id> on the agent's agents: entry or the harness (or " + codexGatewayModelProvider +
+	"/<model> with an inference.gateway block)"
+
+// ValidateCodexModel reports whether model is one fullsend's codex
+// integration can serve. Empty, a Claude alias, or a provider prefix other
+// than openai/ or gateway/ are errors; the message names both ways to set a
+// valid id. Used by `agent new` so `--runtime codex` cannot generate a harness
+// the runtime will refuse (#7264). A gateway/ model is accepted by shape:
+// whether an inference.gateway block applies is known only at run time.
+func ValidateCodexModel(model string) error {
+	_, err := translateCodexModel(model, true)
+	return err
+}
+
+// codexModel is a resolved codex model: the --model value and whether it is
+// served through the inference gateway route (the fullsend-gateway
+// provider) rather than the direct OpenAI one (fullsend-openai).
+type codexModel struct {
+	ID      string
+	Gateway bool
+}
 
 // translateCodexModel resolves a model spec into codex's --model value: a bare
 // id passes through and an `openai/` prefix is stripped. A Claude alias or any
@@ -126,42 +167,57 @@ const codexModelHelp = "set FULLSEND_CODEX_MODEL=" + codexOpenAIProvider +
 // otherwise send the whole string as a model id and get a 404 from OpenAI with
 // nothing to tune — which is exactly what the local smoke showed: five error
 // reconnects and a turn.failed carrying "Model not found".
-func translateCodexModel(model string) (string, error) {
+//
+// `gateway/<model>` selects the inference gateway route (ADR 0137) and passes
+// everything after the first slash to codex, so a multi-segment id such as
+// `gateway/vendor/org/model` reaches the gateway as `vendor/org/model`. It is
+// accepted only when gateway is true — an inference.gateway block applies and
+// Bootstrap rendered the gateway provider — and is an error otherwise.
+func translateCodexModel(model string, gateway bool) (codexModel, error) {
 	model = strings.TrimSpace(model)
 	if model == "" {
-		return "", fmt.Errorf("codex takes OpenAI model ids only and no model was named: %s", codexModelHelp)
+		return codexModel{}, fmt.Errorf("codex takes OpenAI model ids or gateway/<model> only and no model was named: %s", codexModelHelp)
 	}
 	provider, id, hasSlash := strings.Cut(model, "/")
 	if !hasSlash {
 		if codexClaudeAliases[strings.ToLower(model)] {
-			return "", fmt.Errorf(
-				"codex takes OpenAI model ids only, and the Claude model aliases do not apply to it: %q is one of them. To run this agent on codex, %s",
+			return codexModel{}, fmt.Errorf(
+				"codex takes OpenAI model ids or gateway/<model> only, and the Claude model aliases do not apply to it: %q is one of them. To run this agent on codex, %s",
 				model, codexModelHelp)
 		}
-		return model, nil
+		return codexModel{ID: model}, nil
+	}
+	if strings.EqualFold(provider, codexGatewayModelProvider) {
+		if !gateway {
+			return codexModel{}, fmt.Errorf(
+				"model %q selects the inference gateway route, but no inference.gateway block applies to this run: add one to .fullsend/config.yaml (with auth: oidc it applies on a run with a forge OIDC endpoint, with auth: api-key on every run), or %s",
+				model, codexModelHelp)
+		}
+		id = strings.TrimSpace(id)
+		if id == "" || strings.HasPrefix(id, "/") || strings.HasSuffix(id, "/") {
+			return codexModel{}, fmt.Errorf("model %q has an empty model id after the %q prefix", model, codexGatewayModelProvider)
+		}
+		return codexModel{ID: id, Gateway: true}, nil
 	}
 	if !strings.EqualFold(provider, codexOpenAIProvider) {
-		return "", fmt.Errorf(
-			"codex takes OpenAI model ids only, so %q is not available on it: %s",
+		return codexModel{}, fmt.Errorf(
+			"codex takes OpenAI model ids or gateway/<model> only, so %q is not available on it: %s",
 			model, codexModelHelp)
 	}
 	if strings.TrimSpace(id) == "" {
-		return "", fmt.Errorf("model %q has an empty model id after the %q prefix: %s", model, codexOpenAIProvider, codexModelHelp)
+		return codexModel{}, fmt.Errorf("model %q has an empty model id after the %q prefix: %s", model, codexOpenAIProvider, codexModelHelp)
 	}
-	return id, nil
+	return codexModel{ID: id}, nil
 }
 
-// codexBinaryPin is the POSIX sh fragment that records where codex is.
-// `command -v` is a builtin; `readonly` is a special builtin, so a later
-// assignment in a sourced file is an error: under a POSIX sh such as dash
-// (what `sh -c` is in the sandbox image) it aborts the sourcing shell, and
-// under any shell the assignment fails and the pinned value stands. The launch
-// below uses the path, which no function or alias can shadow. This matters
-// more on codex than on pi: `codex` on PATH is npm's node launcher, so a
-// planted shim would run before the native binary ever starts.
+// codexBinaryPin is the POSIX sh fragment that records where codex is; see
+// binaryPin for why it holds. The launch below uses the path, which no
+// function or alias can shadow. This matters more on codex than on pi:
+// `codex` on PATH is npm's node launcher, so a planted shim would run before
+// the native binary ever starts, and the node that runs the launcher is
+// pinned with it.
 func codexBinaryPin() string {
-	return `readonly ` + codexBinaryVar + `="$(command -v codex)" && test -n "$` + codexBinaryVar +
-		`" || { echo 'fullsend: codex not found on PATH' >&2; exit 127; }`
+	return binaryPin(codexBinaryVar, codexNodeVar, "codex")
 }
 
 // codexAssetGuard is the POSIX sh fragment run before codex: the runner-owned
@@ -178,6 +234,14 @@ func codexAssetGuard(r CodexRuntime, hooksEnabled bool, digests codexRunnerHeldD
 		"test -f " + shellQuote(r.codexConfigPath()),
 		"test -f " + shellQuote(r.codexAuthScriptPath()),
 		codexSHACheck(r.codexAuthScriptPath(), codexAssetSHA256(codexAuthScriptSH)),
+	}
+	if digests.GatewayBaseURL != "" {
+		// The gateway provider's auth.command, pinned exactly as the OpenAI
+		// one is: Bootstrap uploads it only when a block applies.
+		checks = append(checks,
+			"test -f "+shellQuote(r.codexGatewayAuthScriptPath()),
+			codexSHACheck(r.codexGatewayAuthScriptPath(), codexAssetSHA256(codexGatewayAuthScriptSH)),
+		)
 	}
 	if hooksEnabled {
 		checks = append(checks,
@@ -235,6 +299,15 @@ func codexHooksAdapterCheck(hooksPath, adapter string) string {
 	return fmt.Sprintf(`[ "%s" = "%s" ]`, count(`"command":`), count(adapter))
 }
 
+// codexModelsCacheRemoval is the POSIX sh fragment that deletes
+// $CODEX_HOME/models_cache.json, so every run starts from codex's bundled model
+// catalog. The runner never writes this file, so deleting it is always safe.
+// `command -p` keeps a shell function or PATH entry from .env from replacing
+// `rm`.
+func codexModelsCacheRemoval(r CodexRuntime) string {
+	return "command -p rm -f " + shellQuote(r.codexModelsCachePath())
+}
+
 func codexSHACheck(path, sum string) string {
 	return fmt.Sprintf(`[ "$(command -p sha256sum %s | command -p cut -d' ' -f1)" = %s ]`,
 		shellQuote(path), shellQuote(sum))
@@ -283,38 +356,63 @@ func codexConfigGuard(r CodexRuntime, digests codexRunnerHeldDigestSet) string {
 //   - approval policy, sandbox mode and the model provider are passed as `-c`
 //     SessionFlag overrides, which sit above every config layer, so no
 //     rewritten file can move them;
-//   - the project is never trusted (no [projects] entry), so the target repo's
-//     own .codex/ layer — including repo-owned hooks — never loads;
+//   - the project's trust is pinned to untrusted in config.toml, so the target
+//     repo's own .codex/ layer — including repo-owned hooks — never loads;
 //   - whether the hook adapter is required is decided from the runner's own
 //     signal (params.HooksSettingsPath, the same one ClaudeRuntime uses for
-//     --settings), never from the agent-writable manifest.
-func buildCodexRunCommand(params RunParams, model, effort string, hooksEnabled bool, digests codexRunnerHeldDigestSet) string {
+//     --settings), never from the agent-writable manifest;
+//   - models_cache.json is removed before .env and again just before launch,
+//     so codex starts from its bundled model catalog.
+//
+// A gateway/ model (model.Gateway, ADR 0137) swaps the route, never the
+// guards: the gateway token is seeded instead of the OpenAI one, the
+// gateway placeholder is unset after .env as well, and the `-c` overrides
+// select and pin fullsend-gateway — its base_url and auth.command — in
+// place of fullsend-openai. The gateway values come from the runner
+// (digests.GatewayBaseURL, the rendered config.toml), never from .env.
+func buildCodexRunCommand(params RunParams, model codexModel, effort string, hooksEnabled bool, digests codexRunnerHeldDigestSet) string {
 	r := CodexRuntime{}
 	envFile := sandbox.SandboxWorkspace + "/.env"
+
+	providerID := codexProviderID
+	baseURL := codexBaseURL
+	authScript := r.codexAuthScriptPath()
+	seed := r.OpenAIAuthSeed()
+	unset := "OPENAI_BASE_URL OPENAI_API_KEY CODEX_API_KEY"
+	if model.Gateway {
+		providerID = codexGatewayProviderID
+		baseURL = digests.GatewayBaseURL
+		authScript = r.codexGatewayAuthScriptPath()
+		seed = r.gatewayAuthSeed()
+		unset += " " + codexGatewayCredentialEnv
+	}
 
 	parts := []string{"cd " + shellQuote(params.RepoDir)}
 	parts = append(parts,
 		"&& "+codexBinaryPin(),
-		// PATH is captured before .env and restored after it. The hook scripts
-		// resolve their tools by name — tirith_check.py runs a bare `tirith` —
-		// so a .env that prepends a directory holding a fake `tirith` that
-		// exits 0 neuters the whole PreToolUse chain while every digest stays
-		// green. Reproduced before this was added. `readonly` means a .env
-		// that assigns the same name aborts the sourcing shell under a POSIX
-		// sh rather than winning.
+		// PATH is captured before .env and restored after it for codex
+		// itself, so a .env cannot change the PATH codex runs with; the hook
+		// children take envDataTrustedPathVar instead. `readonly` means a
+		// .env that assigns the same name aborts the sourcing shell under a
+		// POSIX sh rather than winning.
 		"&& readonly "+codexPathVar+`="$PATH"`,
 		"&& "+codexAssetGuard(r, hooksEnabled, digests),
 		"&& "+codexConfigGuard(r, digests),
-		"&& "+r.OpenAIAuthSeed(),
-		"&& . "+shellQuote(envFile),
+		"&& "+codexModelsCacheRemoval(r),
+		"&& "+seed,
+		// .env is read as data, never sourced (envDataLoad, #8498).
+		"&& "+envDataLoad(envFile, codexBinaryVar, codexNodeVar, codexPathVar),
 		// .env is agent-writable; re-pin the runner-owned config location
 		// after it so a rewritten .env cannot move codex's home out from
 		// under the guards.
 		"&& "+strings.Join(r.EnvExports(), " && "),
-		// Restored for codex itself, and exported so the hook adapter can set
-		// it for its children from a value that never passed through .env —
-		// rather than trusting whatever PATH it happens to inherit.
-		"&& export PATH=\"$"+codexPathVar+"\" && export "+codexPathVar,
+		// Restored for codex itself. The hook adapter sets its children's
+		// PATH from envDataTrustedPathVar instead: the same launch PATH,
+		// recorded read-only before .env by codexBinaryPin, without the
+		// directories the agent can write. It is exported from a value that
+		// never passed through .env, rather than trusting whatever PATH the
+		// adapter happens to inherit.
+		"&& export PATH=\"$"+codexPathVar+"\" && export "+envDataTrustedPathVar,
 		"&& export "+codexRuntimeEnv+"=codex",
 		// NODE_* would load code into npm's codex launcher; PYTHON* would do
 		// the same to the hook adapter's interpreter, which `-I` in hooks.json
@@ -323,13 +421,15 @@ func buildCodexRunCommand(params RunParams, model, effort string, hooksEnabled b
 		// LD_* would load code into any dynamically linked binary the run
 		// starts — codex's own native binary, tirith, git — before its main
 		// runs, which no digest of ours would see.
-		"&& unset OPENAI_BASE_URL OPENAI_API_KEY CODEX_API_KEY NODE_OPTIONS NODE_PATH PYTHONPATH PYTHONHOME PYTHONSTARTUP LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT",
+		"&& unset "+unset+" NODE_OPTIONS NODE_PATH PYTHONPATH PYTHONHOME PYTHONSTARTUP LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT",
 		// `unset -f` is a special builtin, which a function .env defined
 		// cannot shadow, so it restores the real utilities before the second
 		// pass; `command -p` inside the guard defeats a PATH swap.
 		"&& unset -f test command grep cut wc sha256sum printf codex",
 		"&& "+codexAssetGuard(r, hooksEnabled, digests),
 		"&& "+codexConfigGuard(r, digests),
+		// Again after .env, which runs in this shell and could recreate it.
+		"&& "+codexModelsCacheRemoval(r),
 	)
 	if params.Debug != "" {
 		// codex exec has no --debug flag. Its tracing goes to stderr, at
@@ -352,18 +452,17 @@ func buildCodexRunCommand(params RunParams, model, effort string, hooksEnabled b
 		// and read by the adapter before every hook script it spawns.
 		parts = append(parts, "&& export "+codexHookDigestsEnv+"="+
 			shellQuote(codexHookDigestsValue(digests.HookScripts)))
+		parts = append(parts, "&& export "+codexSpawnDigestsEnv+"="+
+			shellQuote(codexSpawnDigestsValue(digests)))
 		// The hook scripts' own configuration, re-asserted from what the
-		// runner derived from the harness. appendHookEnv wrote the same values
-		// into the workspace .env at bootstrap, and that file is
-		// agent-writable: without this, iteration 1 could widen the SSRF
-		// allowlist or clear TIRITH_REQUIRED for iteration 2 and the hooks
-		// would read the agent's values. Reproduced before this was added.
-		for _, pair := range digests.SecurityEnv {
-			parts = append(parts, "&& export "+pair.Key+"="+shellQuote(pair.Value))
-		}
+		// runner recorded at Bootstrap (hookEnvExports): the workspace .env
+		// carries the same values and is agent-writable, so without this,
+		// iteration 1 could widen the SSRF allowlist or clear TIRITH_REQUIRED
+		// for iteration 2. A name the runner has no value for is unset.
+		parts = append(parts, "&& "+hookEnvExports(digests.SecurityEnv))
 	}
 	parts = append(parts,
-		"&& printf '%s' "+shellQuote(prompt)+` | "$`+codexBinaryVar+`"`,
+		"&& printf '%s' "+shellQuote(prompt)+" | "+cliLaunch(codexBinaryVar, codexNodeVar),
 		"exec",
 		"--json",
 		"--skip-git-repo-check",
@@ -379,8 +478,8 @@ func buildCodexRunCommand(params RunParams, model, effort string, hooksEnabled b
 	}
 	parts = append(parts,
 		"-C "+shellQuote(params.RepoDir),
-		"--model "+shellQuote(model),
-		"-c "+shellQuote("model_provider="+codexProviderID),
+		"--model "+shellQuote(model.ID),
+		"-c "+shellQuote("model_provider="+providerID),
 		"-c "+shellQuote("approval_policy=never"),
 		"-c "+shellQuote("sandbox_mode=danger-full-access"),
 		// The endpoint and the credential command as SessionFlags too, so
@@ -389,10 +488,10 @@ func buildCodexRunCommand(params RunParams, model, effort string, hooksEnabled b
 		// beats the value in config.toml (a file naming an unreachable host
 		// still reached api.openai.com). There is no such pin for project
 		// trust — `-c projects={}` and a scalar `trust_level="untrusted"` were
-		// both tried and neither overrides the file — which is why config.toml
-		// integrity is enforced by digest rather than by overrides alone.
-		"-c "+shellQuote(fmt.Sprintf("model_providers.%s.base_url=%q", codexProviderID, codexBaseURL)),
-		"-c "+shellQuote(fmt.Sprintf("model_providers.%s.auth.command=%q", codexProviderID, r.codexAuthScriptPath())),
+		// both tried and neither overrides the file — so the untrusted entry
+		// lives in config.toml, whose integrity is enforced by digest.
+		"-c "+shellQuote(fmt.Sprintf("model_providers.%s.base_url=%q", providerID, baseURL)),
+		"-c "+shellQuote(fmt.Sprintf("model_providers.%s.auth.command=%q", providerID, authScript)),
 	)
 	if effort != "" {
 		parts = append(parts, "-c "+shellQuote("model_reasoning_effort="+effort))
@@ -461,10 +560,15 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 	// directory and carries no digest, so reading the model from there would
 	// let an agent move a validation retry onto a different model, and a
 	// different cost tier, than the one the run was authorised for.
-	modelID, err := translateCodexModel(EffectiveModel(params.Model, digests.AgentModel))
+	//
+	// Whether a gateway/ model is admitted comes from the runner-held
+	// record of what Bootstrap rendered, so the route and config.toml
+	// cannot disagree.
+	model, err := translateCodexModel(EffectiveModel(params.Model, digests.AgentModel), digests.GatewayBaseURL != "")
 	if err != nil {
 		return -1, err
 	}
+	modelID := model.ID
 	effort, ok := codexEffortFor(params.Effort)
 	if !ok {
 		printer.StepWarn(fmt.Sprintf(
@@ -478,7 +582,7 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 			sanitizeOutput(strings.Join(params.FallbackModels, ","))))
 	}
 
-	cmd := buildCodexRunCommand(params, modelID, effort, hooksEnabled, digests)
+	cmd := buildCodexRunCommand(params, model, effort, hooksEnabled, digests)
 
 	stdout, execCmd, cancel, err := sandbox.ExecStreamReader(ctx, params.SandboxName, cmd, params.Timeout, os.Stderr)
 	if err != nil {
@@ -506,6 +610,9 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 			reader = io.TeeReader(stdout, redacting)
 		}
 	}
+
+	childIDs := &codexChildIDs{}
+	reader = io.TeeReader(reader, childIDs)
 
 	handler := params.OnEvent
 	if handler == nil {
@@ -552,6 +659,24 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 		return exitCode, fmt.Errorf(
 			"codex config.toml in %s no longer pins the run-scoped provider endpoint, its auth command, or leaves the project untrusted; refusing to run because any of those can redirect or replace the runner's credential (did the agent write there between iterations?)",
 			r.ConfigDir())
+	}
+
+	// The fold runs whatever the exit code: codex writes a child's usage as
+	// each response completes, and the parent's entry keeps per_model_usage
+	// summing to the totals across a retry. A read failure is a warning.
+	if digests.delegating() || len(childIDs.IDs) > 0 {
+		n, ferr := r.foldCodexChildUsage(params.SandboxName, childIDs.IDs, metrics)
+		if ferr != nil {
+			printer.StepWarn("Sub-agent usage not fully counted: " + redactSummary(sanitizeOutput(ferr.Error())))
+		}
+		if n > 0 {
+			printer.StepInfo(fmt.Sprintf("%d sub-agent thread(s) folded into the run metrics", n))
+		}
+		// At the budget or on a cancel OpenShell kills nothing, so codex's
+		// children can record more after the read.
+		if len(childIDs.IDs) > 0 && (ctx.Err() != nil || exitCode == 124 || exitCode == -1) {
+			printer.StepWarn("Sub-agent usage may be undercounted: codex was stopped, and its children can record more after the read")
+		}
 	}
 
 	if exitCode == 0 && lastResult != nil && lastResult.IsError {

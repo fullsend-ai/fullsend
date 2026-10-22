@@ -9,18 +9,36 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
-// mockCIDriver implements ci.Driver with a configurable CountHarnessDispatches.
+// mockCIDriver implements ci.Driver with configurable CountHarnessDispatches,
+// DownloadNamedArtifactFromRun, WaitForHarnessAgentRound, and WaitForWorkflow
+// stubs.
 type mockCIDriver struct {
-	ci.Driver // satisfies the full interface; untested methods panic
-	countFn   func(ctx context.Context, owner, repo, agent string, after time.Time) (int, error)
+	ci.Driver                  // satisfies the full interface; untested methods panic
+	countFn                    func(ctx context.Context, owner, repo, agent string, after time.Time) (int, error)
+	downloadNamedArtifactFn    func(ctx context.Context, owner, repo string, runID int, artifactName, destDir string) error
+	waitForHarnessAgentRoundFn func(ctx context.Context, owner, repo, agent string, after time.Time, consumed map[int]bool) (*forge.WorkflowRun, error)
+	waitForWorkflowFn          func(ctx context.Context, owner, repo, workflowFile string, after time.Time, event string) (*forge.WorkflowRun, error)
 }
 
 func (m *mockCIDriver) CountHarnessDispatches(ctx context.Context, owner, repo, agent string, after time.Time) (int, error) {
 	return m.countFn(ctx, owner, repo, agent, after)
+}
+
+func (m *mockCIDriver) DownloadNamedArtifactFromRun(ctx context.Context, owner, repo string, runID int, artifactName, destDir string) error {
+	return m.downloadNamedArtifactFn(ctx, owner, repo, runID, artifactName, destDir)
+}
+
+func (m *mockCIDriver) WaitForHarnessAgentRound(ctx context.Context, owner, repo, agent string, after time.Time, consumed map[int]bool) (*forge.WorkflowRun, error) {
+	return m.waitForHarnessAgentRoundFn(ctx, owner, repo, agent, after, consumed)
+}
+
+func (m *mockCIDriver) WaitForWorkflow(ctx context.Context, owner, repo, workflowFile string, after time.Time, event string) (*forge.WorkflowRun, error) {
+	return m.waitForWorkflowFn(ctx, owner, repo, workflowFile, after, event)
 }
 
 func TestThenHarnessDispatchedExactly_RequiresScenarioStart(t *testing.T) {

@@ -1,0 +1,537 @@
+#!/usr/bin/env bash
+# ci-local — Run fullsend's CI tests and linters in a container that mirrors
+# the GitHub Actions ubuntu-24.04 runner. See `ci-local help`.
+set -euo pipefail
+
+# CDPATH='' here and for -C: with CDPATH set, cd prints the directory it found,
+# and $() would capture it.
+SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENGINE=${CI_LOCAL_ENGINE:-$(command -v podman >/dev/null && echo podman || echo docker)}
+PLATFORM=""
+# checkout_root DIR: the top of the git checkout containing DIR (so ci-local
+# also runs from, or -C names, a subdirectory), or DIR itself outside one.
+checkout_root() {
+  local cdup
+  cdup=$(git -C "$1" rev-parse --show-cdup 2>/dev/null) || cdup=
+  CDPATH='' cd -- "$1/$cdup" && pwd
+}
+REPO=$(checkout_root .)
+
+usage() {
+  cat <<'EOF'
+Usage: ci-local [-C REPO] [--amd64] TARGET [TARGET...]
+       ci-local [-C REPO] [--amd64] build-image|shell|clean   (these run alone)
+
+Targets (each maps to the command CI or the Makefile runs):
+  go-test        make go-test: go test -race ./... + internal/mintcore -tags github, merged coverage.out
+  go-test-ci     exactly lint.yml's step: go test -race -coverprofile=coverage.out ./...
+  go-modules     go test the extra modules CI never runs: cmd/mint, internal/mint (+ build cmd/mint-wasm)
+  go-vet         make go-vet
+  go-fmt         gofmt -l . (fails if anything is unformatted; does not rewrite)
+  go-build       make go-build
+  coverage       make go-test, then per-file coverage of .go files changed vs origin/main,
+                 including uncommitted and new files
+  lint-all       make lint-all with SKIP=check-gateway-doc-configs (as lint.yml)
+  lint           make lint with SKIP=check-gateway-doc-configs (pre-commit on staged files)
+  check          make check (ruff + ty on hack/)
+  lint-md-links  make lint-md-links (lychee --offline)
+  script-test    make script-test (shell, python, node:test suites)
+  web            npm ci && npm test (lint.yml `web` job)
+  mint-cf        make mint-cf-worker-test (WASM build + CF Worker typecheck + vitest)
+  docs           npm ci && npx mvb docs (site-build.yml); builds a clone of HEAD, so commit first
+  commit-lint    gitlint every non-merge commit in origin/main..HEAD (lint.yml commit-lint)
+  ci             everything the PR CI runs: lint-all go-test-ci script-test web mint-cf docs commit-lint
+  all            ci + go-test go-modules go-fmt check
+  shell          interactive shell in the container
+  build-image    rebuild the image, re-resolving floating versions (Node 22.x, Python 3.x, uv) to latest
+  clean          remove old ci-local images (all but the current one; --amd64 for the amd64
+                 ones) and the node_modules volumes of checkouts that no longer exist;
+                 caches are kept
+
+Not supported: behaviour-test / playback-test (need a real GitHub org, OIDC
+mint and secrets) and check-gateway-doc-configs (runs a container itself).
+
+Options:
+  -C REPO   repository or worktree to test (default: the one containing the current directory)
+  --amd64   run linux/amd64 like GitHub's runners (emulated on Apple silicon; slow;
+            needs Rosetta, e.g. Docker Desktop: uv segfaults under QEMU)
+
+Environment:
+  CI_LOCAL_ENGINE  podman, podman-remote or docker (default: podman if installed)
+  CI_LOCAL_DNS     resolvers for the container, space-separated, tried in order
+                   (default: the host's own; empty = the engine's own; see README)
+
+Isolation: ci-local passes no host environment variables, SSH agent or
+credential files from outside the checkout into the container, and no host
+proxy settings: Podman builds and runs with --http-proxy=false, and Docker's
+~/.docker/config.json proxies are overridden with empty values. Podman's own
+containers.conf env, env_host, volumes, mounts and devices settings are turned
+off (this needs Podman 4.5 or later), and so are mounts.conf default mounts (on
+RHEL, the host's subscription certificates under /run/secrets) for a local
+Podman; a remote client (macOS, Windows) reads no mounts.conf. A remote client
+on Linux is refused: its service reads the host's containers.conf and
+mounts.conf, which the override can't reach. Only the checkout (including
+gitignored files), its .git directory and cache volumes are mounted,
+read-write. GH_TOKEN/GITHUB_TOKEN are empty, as on CI. This keeps host
+secrets out; it is not a sandbox against the code under test. The download
+caches (Go modules and go/bin, Go build, pre-commit, uv, npm) are shared by
+every checkout and persist, so code tested in one checkout can leave
+programs a later run in another executes; see the README's Isolation
+section before running code you don't trust.
+EOF
+}
+
+while [ $# -gt 0 ]; do
+  case $1 in
+  -C)
+    [ $# -ge 2 ] || { echo "ci-local: -C needs a directory (see ci-local help)" >&2; exit 2; }
+    REPO=$(checkout_root "$2"); shift 2 ;;
+  --amd64) PLATFORM=linux/amd64; shift ;;
+  -h|--help|help) usage; exit 0 ;;
+  *) break ;;
+  esac
+done
+[ $# -gt 0 ] || { usage; exit 2; }
+for t in "$@"; do
+  case $t in
+  build-image|shell|clean) [ $# -eq 1 ] || { echo "ci-local: $t must be the only target" >&2; exit 2; } ;;
+  esac
+done
+
+ARCH_TAG=${PLATFORM:+-amd64}
+# Always name the platform: the base image is a multi-arch digest, and podman
+# can otherwise resolve it to a cached image of another architecture.
+case "$(uname -m)" in
+arm64 | aarch64) NATIVE=linux/arm64 ;;
+x86_64 | amd64) NATIVE=linux/amd64 ;;
+*) NATIVE="" ;;
+esac
+PLATFORM=${PLATFORM:-$NATIVE}
+
+die() { echo "ci-local: $*" >&2; exit 1; }
+
+# Every engine check keys on this: an engine named otherwise (podman-remote,
+# nerdctl) must not slip past the Podman isolation below.
+case "$(basename "$ENGINE")" in
+podman | podman-remote) ENGINE_KIND=podman ;;
+docker) ENGINE_KIND=docker ;;
+*) die "unsupported engine $ENGINE; set CI_LOCAL_ENGINE to podman, podman-remote or docker" ;;
+esac
+
+# short_hash: first 12 hex chars of the SHA256 of stdin.
+short_hash() {
+  if command -v sha256sum >/dev/null; then sha256sum; else shasum -a 256; fi | cut -c1-12
+}
+
+# write_once TMP PREFIX: move TMP to PREFIX-<hash of its content> unless that
+# file exists, and print its path. It never replaces a file: another run may
+# have it bind-mounted, and Docker Desktop shows a replaced one as deleted.
+# shortcut: one small file per distinct content is left in the cache; prune it if it ever grows.
+write_once() {
+  local f
+  f="$2-$(short_hash < "$1")" || { rm -f "$1"; return 1; }
+  # ln, not mv: it fails instead of replacing a file another run created.
+  ln "$1" "$f" 2>/dev/null || [ -e "$f" ] || { rm -f "$1"; return 1; }
+  rm -f "$1"
+  printf '%s\n' "$f"
+}
+# Per-checkout id, so state that must not be shared between checkouts or
+# worktrees (node_modules, the worktree .git pointer) never collides.
+REPO_ID=$(printf '%s' "$REPO" | short_hash)
+
+# Tool versions come from the checkout's own CI config (go.mod, lint.yml), so
+# the image follows CI, Renovate bumps included, with nothing to keep in sync
+# by hand. A value that can't be read is an error, never a guess.
+BUILD_ARGS=()
+resolve_versions() {
+  local wf=$REPO/.github/workflows/lint.yml gomod=$REPO/go.mod
+  [ -f "$wf" ] || die "missing $wf"
+  [ -f "$gomod" ] || die "missing $gomod"
+  add() { [ -n "$2" ] || die "cannot read $1 from $3"; BUILD_ARGS+=(--build-arg "$1=$2"); }
+  add GO_VERSION "$(sed -nE 's/^go ([0-9]+\.[0-9]+(\.[0-9]+)?)$/\1/p' "$gomod")" go.mod
+  add PYTHON_VERSION "$(grep -m1 -E '^ *python-version:' "$wf" | sed -E 's/.*: *"?([0-9.]+)"?.*/\1/')" lint.yml
+  add NODE_VERSION "$(grep -m1 -E '^ *node-version:' "$wf" | sed -E 's/.*: *"?([0-9.]+)"?.*/\1/')" lint.yml
+  add PIP_PACKAGES "$(grep -m1 'uv pip install --system ' "$wf" | sed -E 's/.*uv pip install --system //')" lint.yml
+  add LYCHEE_VERSION "$(grep -m1 -oE 'lychee/releases/download/lychee-v[0-9.]+/' "$wf" | sed -E 's#.*lychee-v##; s#/$##')" lint.yml
+  add LYCHEE_SHA256_AMD64 "$(grep -m1 -E 'lychee\.tar\.gz.*sha256sum' "$wf" | grep -oE '[0-9a-f]{64}')" lint.yml
+  add PINACT_VERSION "$(grep -m1 -oE 'pinact/releases/download/v[0-9.]+/' "$wf" | sed -E 's#.*/v##; s#/$##')" lint.yml
+  add PINACT_SHA256_AMD64 "$(grep -m1 -E 'pinact\.tar\.gz.*sha256sum' "$wf" | grep -oE '[0-9a-f]{64}')" lint.yml
+  # Docker and rootful Podman run as the host uid:gid (user_args); build
+  # runner with those ids so whoami/id -un resolve. keep-id adds its own
+  # passwd entry.
+  if [ -z "$KEEP_ID" ]; then
+    BUILD_ARGS+=(--build-arg "RUNNER_UID=$(id -u)" --build-arg "RUNNER_GID=$(id -g)")
+  fi
+  # Tag by platform + versions + everything the build copies in (Containerfile
+  # and the fetch/sumof helpers), so any of them changing triggers a rebuild
+  # (and hosts sharing an image store never mix arches).
+  local sum
+  sum=$( { echo "$PLATFORM"; printf '%s\n' "${BUILD_ARGS[@]}"
+    cat "$SCRIPT_DIR/Containerfile" "$SCRIPT_DIR/fetch" "$SCRIPT_DIR/sumof"; } | short_hash)
+  IMAGE=fullsend-ci-local${ARCH_TAG}:$sum
+}
+
+# No host proxy settings reach builds or containers: proxy URLs can carry
+# credentials, and CI uses none. Podman copies the host's HTTP(S)_PROXY unless
+# told --http-proxy=false. Docker's CLI injects ~/.docker/config.json proxies
+# only into variables not already set, so each one is set empty.
+# $1: -e for runs, --build-arg for builds.
+noproxy_args() {
+  if [ "$ENGINE_KIND" = podman ]; then echo --http-proxy=false; return; fi
+  local v
+  for v in HTTP_PROXY http_proxy HTTPS_PROXY https_proxy FTP_PROXY ftp_proxy \
+    NO_PROXY no_proxy ALL_PROXY all_proxy; do
+    printf '%s\n' "$1" "$v="
+  done
+}
+
+# build-image passes --no-cache so floating versions (Node 22.x, Python 3.x,
+# uv) are re-resolved to their newest releases. CI's setup actions take the
+# runner toolcache's match instead (no check-latest), so patches can differ.
+# The proxy build args are not in BUILD_ARGS, so they never change the tag.
+build_image() {
+  local noproxy=() a
+  while IFS= read -r a; do noproxy+=("$a"); done < <(noproxy_args --build-arg)
+  "$ENGINE" ${PODMAN_GLOBAL[@]+"${PODMAN_GLOBAL[@]}"} build ${PLATFORM:+--platform "$PLATFORM"} "${noproxy[@]}" "$@" "${BUILD_ARGS[@]}" \
+    -f "$SCRIPT_DIR/Containerfile" -t "$IMAGE" "$SCRIPT_DIR"
+}
+
+# Podman's own configuration can add host variables (containers.conf env and
+# env_host), host files and devices (containers.conf volumes, mounts and
+# devices, and mounts.conf; on RHEL, the subscription certificates under
+# /run/secrets) to every build and run. Turn them off with an override file
+# that Podman reads last; a remote client (macOS, Windows, CONTAINER_HOST)
+# reads it too, since it fills in the container's mounts from its own
+# containers.conf. Podman < 4.5 ignores CONTAINERS_CONF_OVERRIDE silently, so
+# refuse it. Only a local Podman reads mounts.conf, through the hidden
+# --default-mounts-file flag (containers.conf's default_mounts_file is
+# ignored); a remote client has no such flag. The flag reaches build RUN steps
+# too: checked with a planted mounts.conf secret on Podman 4.5.1 to 6.2.0-dev,
+# rootless and rootful (#8489). A remote client on Linux talks
+# to a service on that host (CONTAINER_HOST, --remote, podman-remote), which
+# applies the host's containers.conf env and mounts.conf itself, so refuse it.
+# Rootful Podman maps keep-id to root, so it gets Docker's --user uid:gid.
+# shortcut: replaces a CONTAINERS_CONF_OVERRIDE the user set (Podman takes one), merge it if anyone needs that.
+PODMAN_GLOBAL=()
+KEEP_ID=""
+podman_isolation() {
+  [ "$ENGINE_KIND" = podman ] || return 0
+  local info remote rootless ver major minor cache="$HOME/.cache/ci-local" f
+  info=$("$ENGINE" info --format '{{.Host.ServiceIsRemote}} {{.Host.Security.Rootless}}') || die "cannot query $ENGINE; is it running?"
+  read -r remote rootless <<< "$info"
+  [ "$remote" = false ] || [ "$(uname -s)" != Linux ] ||
+    die "a remote Podman client on Linux applies the service's own containers.conf env and mounts.conf (on this host, the host's); unset CONTAINER_HOST and drop --remote, or set CI_LOCAL_ENGINE=docker"
+  if [ "$rootless" = true ]; then KEEP_ID=1
+  elif [ "$(id -u)" = 0 ]; then
+    die "rootful Podman run as root (sudo) would run the tests as root, unlike CI; run Podman rootless as your user, or set CI_LOCAL_ENGINE=docker"
+  fi
+  ver=$("$ENGINE" version --format '{{.Client.Version}}') || die "cannot query the $ENGINE version"
+  IFS=. read -r major minor _ <<< "$ver"
+  major=${major%%[!0-9]*} minor=${minor%%[!0-9]*}
+  [ "${major:-0}" -gt 4 ] || { [ "${major:-0}" -eq 4 ] && [ "${minor:-0}" -ge 5 ]; } ||
+    die "Podman $ver ignores CONTAINERS_CONF_OVERRIDE, so host containers.conf settings would reach the container; upgrade to Podman 4.5 or later, or set CI_LOCAL_ENGINE=docker"
+  mkdir -p "$cache" || die "cannot create $cache"
+  printf '[containers]\nenv_host = false\nenv = []\nvolumes = []\nmounts = []\ndevices = []\n' > "$cache/containers-override.$$" ||
+    die "cannot write the Podman override file in $cache"
+  f=$(write_once "$cache/containers-override.$$" "$cache/containers-override") ||
+    die "cannot write the Podman override file in $cache"
+  export CONTAINERS_CONF_OVERRIDE=$f
+  [ "$remote" = false ] || return 0
+  PODMAN_GLOBAL=(--default-mounts-file=/dev/null)
+}
+
+# SELinux hosts (Fedora, RHEL) block bind mounts unless relabelled with :z.
+Z=""
+command -v getenforce >/dev/null 2>&1 && [ "$(getenforce)" = Enforcing ] && Z=":z"
+
+# Rootless podman maps the host user onto the image's runner user; Docker and
+# rootful Podman need the host uid/gid passed explicitly.
+user_args() {
+  if [ -n "$KEEP_ID" ]; then echo --userns=keep-id
+  else echo --user; echo "$(id -u):$(id -g)"; fi
+}
+
+# Mounts: the checkout at /src, named volumes for caches and for Linux
+# node_modules (so they never land in the host checkout).
+mount_args() {
+  local args=(-v "$REPO:/src$Z")
+  if [ -f "$REPO/.git" ]; then
+    # A .git file points at a host path the container cannot see. Mount the
+    # shared git dir at /gitcommon and overlay .git with a pointer into it.
+    # Each step checks itself: run_in calls this with || (set -e is off).
+    local common gitdir
+    common=$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir) || return 1
+    gitdir=$(git -C "$REPO" rev-parse --path-format=absolute --git-dir) || return 1
+    # The pointer and config copy go through write_once: another run on this
+    # checkout may have the previous ones bind-mounted.
+    local cache="$HOME/.cache/ci-local" ptr line
+    mkdir -p "$cache" || return 1
+    args+=(-v "$common:/gitcommon$Z")
+    if [ "$gitdir" = "$common" ]; then
+      # A submodule (or --separate-git-dir) checkout. Its core.worktree is
+      # relative to the host layout, so mount a copy of the config without
+      # it: git then takes the directory holding .git (/src) as the work
+      # tree. Not GIT_WORK_TREE: every git in the container would inherit
+      # it, and `git clone` in the docs target would fail.
+      local cfg="$cache/gitconfig-$REPO_ID"
+      cp "$common/config" "$cfg.$$" || return 1
+      # Exit 5: no core.worktree to unset.
+      git config -f "$cfg.$$" --unset-all core.worktree || [ $? -eq 5 ] || { rm -f "$cfg.$$"; return 1; }
+      cfg=$(write_once "$cfg.$$" "$cfg") || return 1
+      line="gitdir: /gitcommon"
+      args+=(-v "$cfg:/gitcommon/config:ro${Z:+,z}")
+    elif [ "$(dirname "$gitdir")" = "$common/worktrees" ]; then
+      line="gitdir: /gitcommon/worktrees/$(basename "$gitdir")"
+    else
+      echo "ci-local: unsupported .git layout in $REPO (git dir $gitdir, common dir $common)" >&2
+      return 1
+    fi
+    echo "$line" > "$cache/gitfile-$REPO_ID.$$" &&
+      ptr=$(write_once "$cache/gitfile-$REPO_ID.$$" "$cache/gitfile-$REPO_ID") || return 1
+    args+=(-v "$ptr:/src/.git:ro${Z:+,z}")
+  fi
+  # NUL-separated: host paths may contain newlines (read with read -d '').
+  printf '%s\0' "${args[@]}"
+  volume_args
+}
+
+# Named volumes only (no host paths), so Docker's root volume helper in
+# run_in never sees the checkout.
+volume_args() {
+  local args=() v
+  # Download caches are shared by every checkout; node_modules is per
+  # checkout, since npm ci rewrites it from that checkout's lockfile and
+  # concurrent runs in two worktrees would otherwise race on one volume.
+  for v in go:/home/runner/go gobuild:/home/runner/.cache/go-build \
+    precommit:/home/runner/.cache/pre-commit uv:/home/runner/.cache/uv npm:/home/runner/.npm; do
+    args+=(-v "fullsend-ci-local${ARCH_TAG}-${v%%:*}:${v#*:}")
+  done
+  for v in nm-root:/src/node_modules nm-workersrc:/src/internal/dispatch/cf/workersrc/node_modules; do
+    args+=(-v "fullsend-ci-local${ARCH_TAG}-${v%%:*}-${REPO_ID}:${v#*:}")
+  done
+  printf '%s\0' "${args[@]}"
+}
+
+# The node_modules volumes are created up front, labelled with their checkout's
+# path, so clean can remove those whose checkout is gone (a volume that -v
+# creates carries no labels). Inspected again after a failed create: another
+# run may have just made it, and Podman fails where Docker succeeds then.
+create_nm_volumes() {
+  local v
+  for v in nm-root nm-workersrc; do
+    v=fullsend-ci-local${ARCH_TAG}-$v-$REPO_ID
+    "$ENGINE" volume inspect "$v" >/dev/null 2>&1 ||
+      "$ENGINE" volume create --label "fullsend-ci-local.checkout=$REPO" "$v" >/dev/null 2>&1 ||
+      "$ENGINE" volume inspect "$v" >/dev/null 2>&1 || { echo "ci-local: cannot create volume $v" >&2; return 1; }
+  done
+}
+
+target_cmd() {
+  case $1 in
+  go-test) echo 'make go-test' ;;
+  go-test-ci) echo 'go test -race -coverprofile=coverage.out ./...' ;;
+  go-modules) echo 'set -e; for m in cmd/mint internal/mint; do echo "==> $m"; (cd $m && go test -race ./...); done; echo "==> cmd/mint-wasm (build)"; (cd cmd/mint-wasm && GOOS=js GOARCH=wasm go build -o /dev/null .)' ;;
+  go-vet) echo 'make go-vet' ;;
+  # gofmt's own failure (e.g. a parse error) must fail the target, not read as "clean".
+  go-fmt) echo 'out=$(gofmt -l .) || { echo "gofmt: failed to run"; exit 1; }; out=$(grep -vE "(^|/)node_modules/" <<< "$out" || true); [ -z "$out" ] || { echo "unformatted:"; echo "$out"; exit 1; }; echo "gofmt: clean"' ;;
+  go-build) echo 'make go-build' ;;
+  coverage) cat <<'EOF'
+set -e
+make go-test
+echo "==> coverage of .go files changed vs origin/main (committed, staged, unstaged, new)"
+# Each assigned separately so a failure (e.g. no origin/main) aborts, not passes.
+# Diffing the working tree against the merge base covers uncommitted edits;
+# ls-files adds new files git doesn't track yet.
+base=$(git merge-base origin/main HEAD)
+changed=$(git diff --name-only "$base" -- '*.go' ':!*_test.go')
+untracked=$(git ls-files --others --exclude-standard -- '*.go' ':!*_test.go')
+files=$(printf '%s\n' $changed $untracked | sort -u)
+for f in $files; do
+  # coverage.out lines: <pkg>/<file>:<range> <statements> <hit-count>. Counted once
+  # per block, covered if any run hit it: make go-test merges two profiles
+  # (default and -tags github) that both cover internal/mintcore.
+  awk -v f="github.com/fullsend-ai/fullsend/$f:" 'index($0,f)==1 {n[$1]=$2; if ($3>0) h[$1]=1}
+    END {for (b in n) {s+=n[b]; if (b in h) c+=n[b]}
+      if (s>0) printf "  %6.1f%%  %s (%d stmts)\n", 100*c/s, substr(f,1,length(f)-1), s}' coverage.out
+done
+EOF
+    ;;
+  # Both lint targets run the lint-staged hook, which lints the *staged*
+  # docs/.vitepress/ files (even under --all-files) with prettier and
+  # stylelint from node_modules, whose volume is empty until `web` runs.
+  lint-all|lint) echo 'if git diff --cached --name-only | grep -q "^docs/\.vitepress/" && [ ! -x node_modules/.bin/lint-staged ]; then npm ci --no-audit --no-fund || exit 1; fi; SKIP=check-gateway-doc-configs make '"$1" ;;
+  check) echo 'make check' ;;
+  lint-md-links) echo 'make lint-md-links' ;;
+  # make -i runs every suite even after one fails, so one failure cannot hide the rest.
+  # pipefail: if make itself cannot run, fail instead of counting zero failures.
+  # Each failed suite is one "make: [<file>:<line>: <target>] ... (ignored)" line:
+  # "Error N" when the recipe fails, or the signal (Killed, Terminated, ...) when
+  # its shell is killed. Not anchored at line start: a suite whose output lacks
+  # a trailing newline puts make's line right after it.
+  script-test) echo 'set -o pipefail; make -i script-test 2>&1 | tee "${TMPDIR:-/tmp}/st.log" || { echo "script-test: make did not run"; exit 1; }; n=$(grep -cE "make(\[[0-9]+\])?: \[[^]]+\] .+ \(ignored\)$" "${TMPDIR:-/tmp}/st.log" || true); echo "script-test: ${n} suite(s) failed"; [ "$n" -eq 0 ]' ;;
+  web) echo 'npm ci --no-audit --no-fund && npm test' ;;
+  mint-cf) echo 'make mint-cf-worker-test' ;;
+  # mvb runs `git fetch --tags --force` in the source repo, so build from a
+  # throwaway clone: the host repo is never fetched into. GITHUB_ACTIONS=true
+  # makes mvb build the checked-out commit, and VPL_MVB_BRANCH names it, both
+  # as in site-build.yml, which also runs `git submodule update --init` right
+  # before mvb (the experiments submodule supplies docs pages). Committed
+  # content only.
+  docs) echo 'set -e; rm -rf /tmp/site; git clone -q /src /tmp/site; cd /tmp/site; sha=$(git -C /src rev-parse HEAD); git checkout -q --detach "$sha"; npm ci --no-audit --no-fund; git submodule update --init; GITHUB_ACTIONS=true VPL_MVB_BRANCH="$sha" npx mvb docs' ;;
+  commit-lint) cat <<'EOF'
+set -e
+fail=0
+# Assigned first so a git failure aborts instead of looping over nothing.
+shas=$(git rev-list --no-merges origin/main..HEAD)
+[ -n "$shas" ] || { echo "commit-lint: no commits in origin/main..HEAD"; exit 0; }
+for sha in $shas; do
+  git log --format='%s' -1 "$sha" > "${TMPDIR:-/tmp}/msg"
+  printf '%s ' "$(git log --format='%h %s' -1 "$sha")"
+  if uvx --from gitlint-core gitlint --config .gitlint --ignore B6 --msg-filename "${TMPDIR:-/tmp}/msg"; then echo "✓"; else fail=1; fi
+done
+exit $fail
+EOF
+    ;;
+  *) echo "unknown target: $1 (see ci-local help)" >&2; return 1 ;;
+  esac
+}
+
+expand() {
+  local t
+  for t in "$@"; do
+    case $t in
+    ci) expand lint-all go-test-ci script-test web mint-cf docs commit-lint ;;
+    all) expand ci go-test go-modules go-fmt check ;;
+    # printf, not echo: echo would swallow targets such as -n or -e.
+    *) printf '%s\n' "$t" ;;
+    esac
+  done
+}
+
+# The host's default resolvers, in order. IPv4 only: loopback (systemd-resolved's
+# 127.0.0.53) never reaches the host from a container, and IPv6 resolvers
+# don't from a Podman machine or Docker Desktop VM.
+host_resolvers() {
+  if command -v scutil >/dev/null 2>&1; then
+    # macOS: resolver #1 of the first section is the default; the "scoped
+    # queries" section after it holds per-interface resolvers.
+    scutil --dns | awk '/scoped queries/{exit} /^resolver #/{f=($2=="#1")} f && /nameserver\[/{print $3}'
+  else
+    local f=/run/systemd/resolve/resolv.conf
+    [ -r "$f" ] || f=/etc/resolv.conf
+    awk '$1=="nameserver"{print $2}' "$f" 2>/dev/null
+  fi | grep -E '^[0-9]+(\.[0-9]+){3}$' | grep -v '^127\.' || true
+}
+
+# DNS: the container resolves through the host's own resolvers, so lookups go
+# where they go on the host. An engine's default forwards through its VM or
+# network helper and can land on a different resolver (e.g. the router rather
+# than a VPN's). Per-domain (split) resolvers are not carried over.
+dns_args() {
+  local servers s
+  if [ -n "${CI_LOCAL_DNS+set}" ]; then servers=$CI_LOCAL_DNS; else servers=$(host_resolvers); fi
+  [ -n "$servers" ] || return 0
+  for s in $servers; do printf '%s\n' --dns "$s"; done
+  # Docker Desktop's "kernel networking for UDP" sends UDP straight from its
+  # VM, bypassing host routes such as a VPN's; TCP goes through the host.
+  if [ "$ENGINE_KIND" = docker ] &&
+    "$ENGINE" info --format '{{.OperatingSystem}}' 2>/dev/null | grep -q 'Docker Desktop'; then
+    printf '%s\n' --dns-option use-vc
+  fi
+}
+
+run_in() {
+  # -i so `... | ci-local shell` works; -t only on a real terminal.
+  local tty=(-i)
+  [ -t 0 ] && [ -t 1 ] && tty=(-it)
+  local mounts=() users=() noproxy=()
+  # Once directly: a process substitution's exit status is lost (bash 3.2 has no wait $! for it).
+  mount_args > /dev/null || return 1
+  create_nm_volumes || return 1
+  while IFS= read -r -d '' m; do mounts+=("$m"); done < <(mount_args)
+  while IFS= read -r u; do users+=("$u"); done < <(user_args)
+  while IFS= read -r a; do noproxy+=("$a"); done < <(noproxy_args -e)
+  if [ -z "$KEEP_ID" ]; then
+    # Docker and rootful Podman create named volumes root-owned; open them up for the host uid.
+    # This runs as root, so nothing tested code can write may reach it: only
+    # the named volumes are mounted (no checkout or .git, so a planted symlink
+    # can't point chmod at host files), and sh/chmod are absolute with a fixed
+    # PATH (the image PATH includes /home/runner/go/bin, a shared volume).
+    local vols=()
+    while IFS= read -r -d '' m; do vols+=("$m"); done < <(volume_args)
+    "$ENGINE" ${PODMAN_GLOBAL[@]+"${PODMAN_GLOBAL[@]}"} run --rm --user 0 --network none -e PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+      ${PLATFORM:+--platform "$PLATFORM"} "${noproxy[@]}" "${vols[@]}" "$IMAGE" \
+      /bin/sh -c '/bin/chmod 1777 /home/runner/go /home/runner/.cache/* /home/runner/.npm /src/node_modules /src/internal/dispatch/cf/workersrc/node_modules' >/dev/null ||
+      { echo "ci-local: could not open up the $(basename "$ENGINE") volumes for uid $(id -u)" >&2; return 1; }
+  fi
+  # safe.directory: the mounts show a host owner; trust only those two repos.
+  "$ENGINE" ${PODMAN_GLOBAL[@]+"${PODMAN_GLOBAL[@]}"} run --rm "${tty[@]}" ${PLATFORM:+--platform "$PLATFORM"} \
+    "${users[@]}" "${noproxy[@]}" ${DNS[@]+"${DNS[@]}"} -e HOME=/home/runner "${mounts[@]}" "$IMAGE" \
+    bash -c 'git config --global --add safe.directory /src; git config --global --add safe.directory /gitcommon; git config --global commit.gpgsign false; '"$1"
+}
+
+# clean: remove this platform's ci-local images except the current one, and
+# its node_modules volumes whose checkout no longer exists: per-checkout ones
+# whose label names a path that is gone, unlabelled per-checkout ones (from
+# before the label; the next run reinstalls node_modules), and the shared
+# ones from before they were per checkout. Only images carrying the
+# fullsend-ci-local label and only volumes with those names are candidates. Never forced: the engine refuses to remove anything a
+# running container (e.g. a ci-local run in another worktree) still uses,
+# and that is reported as kept. Both listings are taken before anything is
+# removed, so a stopped engine fails here instead of reporting success.
+clean() {
+  local id ref name v imgs vols
+  imgs=$("$ENGINE" images --filter label=fullsend-ci-local=1 --format '{{.ID}} {{.Repository}}:{{.Tag}}') ||
+    die "cannot list images; is $ENGINE running?"
+  vols=$("$ENGINE" volume ls -q) || die "cannot list volumes; is $ENGINE running?"
+  while read -r id ref; do
+    name=${ref##*/} # podman prefixes localhost/
+    if [ "$ref" = '<none>:<none>' ]; then name=$id
+    elif [ "${name%%:*}" != "${IMAGE%%:*}" ] || [ "$name" = "$IMAGE" ]; then continue
+    fi
+    if "$ENGINE" rmi "$name" >/dev/null 2>&1; then echo "removed image $name"
+    else echo "kept image $name (in use, or the engine refused)"; fi
+  done <<< "$imgs"
+  local path why
+  for v in $(grep -E "^fullsend-ci-local${ARCH_TAG}-nm-(root|workersrc)(-[0-9a-f]{12})?\$" <<< "$vols" || true); do
+    case $v in
+    *-root|*-workersrc) why="shared, from before per-checkout volumes" ;;
+    *)
+      path=$("$ENGINE" volume inspect --format '{{index .Labels "fullsend-ci-local.checkout"}}' "$v") ||
+        { echo "kept volume $v (cannot inspect it)"; continue; }
+      if [ -z "$path" ]; then why="no checkout label, from an older ci-local"
+      elif [ -d "$path" ]; then continue
+      else why="checkout $path is gone"; fi ;;
+    esac
+    if "$ENGINE" volume rm "$v" >/dev/null 2>&1; then echo "removed volume $v ($why)"
+    else echo "kept volume $v (in use, or the engine refused)"; fi
+  done
+  echo "current image: $IMAGE (kept)"
+}
+
+targets=()
+if [ "$1" != build-image ] && [ "$1" != shell ] && [ "$1" != clean ]; then
+  while IFS= read -r t; do targets+=("$t"); done < <(expand "$@")
+  for t in "${targets[@]}"; do target_cmd "$t" >/dev/null || exit 2; done
+fi
+
+podman_isolation # before resolve_versions: rootful Podman adds the runner uid build args
+resolve_versions
+if [ "$1" = build-image ]; then build_image --no-cache; exit; fi
+if [ "$1" = clean ]; then clean; exit; fi
+"$ENGINE" image inspect "$IMAGE" >/dev/null 2>&1 || build_image
+DNS=()
+while IFS= read -r d; do DNS+=("$d"); done < <(dns_args)
+if [ "$1" = shell ]; then run_in 'exec bash'; exit; fi
+
+results=()
+rc=0
+for t in "${targets[@]}"; do
+  echo; echo "════════ ci-local: $t ════════"
+  start=$(date +%s)
+  if run_in "$(target_cmd "$t")"; then r=PASS; else r=FAIL; rc=1; fi
+  results+=("$(printf '%-14s %s  %4ss' "$t" "$r" $(( $(date +%s) - start )))")
+done
+echo; echo "════════ ci-local summary ════════"
+printf '  %s\n' "${results[@]}"
+exit $rc

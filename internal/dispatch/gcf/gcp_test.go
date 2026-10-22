@@ -379,6 +379,41 @@ func TestLiveGCFClient_GetWIFProvider(t *testing.T) {
 		require.NoError(t, err)
 		assert.Nil(t, info)
 	})
+
+	t.Run("decodes state, disabled and issuer", func(t *testing.T) {
+		// Shape of a soft-deleted provider as returned by providers.get:
+		// HTTP 200 with state DELETED and the config still present.
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprintln(w, `{"attributeCondition":"assertion.repository == 'acme/widget'","state":"DELETED","disabled":true,"oidc":{"issuerUri":"https://token.actions.githubusercontent.com","allowedAudiences":["fullsend-mint"]}}`)
+		}))
+		defer srv.Close()
+
+		info, err := newTestClient(srv).GetWIFProvider(context.Background(), "123", "pool", "prov")
+		require.NoError(t, err)
+		require.NotNil(t, info)
+		assert.Equal(t, "DELETED", info.State)
+		assert.True(t, info.Disabled)
+		assert.Equal(t, "https://token.actions.githubusercontent.com", info.IssuerURI)
+	})
+}
+
+func TestWIFProviderInfo_Usable(t *testing.T) {
+	tests := []struct {
+		name string
+		info WIFProviderInfo
+		want bool
+	}{
+		{name: "active", info: WIFProviderInfo{State: WIFProviderStateActive}, want: true},
+		{name: "state absent", info: WIFProviderInfo{}, want: true},
+		{name: "soft-deleted", info: WIFProviderInfo{State: "DELETED"}, want: false},
+		{name: "disabled", info: WIFProviderInfo{State: WIFProviderStateActive, Disabled: true}, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.info.Usable())
+		})
+	}
 }
 
 // --- GetSecret ---

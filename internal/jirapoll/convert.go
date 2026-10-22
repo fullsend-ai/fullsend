@@ -31,7 +31,7 @@ func (p *Poller) toNormalizedEvent(event JiraEvent) normevent.Event {
 		},
 		Actor: normevent.Actor{
 			ID:             actorID(event),
-			Kind:           normevent.ActorKind(actorKind(event)),
+			Kind:           normevent.ActorKind(p.actorKind(event)),
 			Role:           normevent.ActorRole(p.resolveRole(event)),
 			IsEntityAuthor: isEntityAuthor(event),
 		},
@@ -138,10 +138,16 @@ func userID(u jira.User) string {
 // "automation" as a substring (e.g. "Marbot", "Dependabot").
 var automationDisplayNamePattern = regexp.MustCompile(`(?i)(^automation for |[\s\-_\[](bot|automation)\]?$)`)
 
-// actorKind returns "bot" or "human" based on the actor's account type or,
-// per the jira-poll-adapter spec, a display name matching an automation
-// naming pattern.
-func actorKind(event JiraEvent) string {
+// actorKind returns "bot" or "human" based on the actor's account type,
+// a display name matching an automation naming pattern (per the
+// jira-poll-adapter spec), or identity match with the authenticated
+// poller account. Self-account matching is required because a regular
+// Atlassian service account reports accountType "atlassian" and an
+// ordinary display name, so the other two signals miss it.
+func (p *Poller) actorKind(event JiraEvent) string {
+	if p.selfAccountID != "" && actorID(event) == p.selfAccountID {
+		return "bot"
+	}
 	var accountType, displayName string
 	switch event.Type {
 	case "comment_added":

@@ -12,13 +12,19 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
 )
 
 const (
 	pollInterval = 15 * time.Second
-	dispatchWait = 12 * time.Minute
+	// dispatchWait bounds how long WaitForHarnessAgent and friends wait
+	// for a harness run to settle. Raised from 12 to 20 minutes to give
+	// longer-running playback scenarios (which replay a full dummy-agent
+	// pipeline rather than a single dispatch) room to complete without
+	// spuriously timing out.
+	dispatchWait = 20 * time.Minute
 
 	// Dispatch detection uses exponential backoff: the poll interval
 	// starts at dispatchPollInit, doubles each iteration up to
@@ -327,6 +333,11 @@ func (d *Driver) GetRunLogs(ctx context.Context, owner, repo string, runID int) 
 	return d.Client.GetWorkflowRunLogs(ctx, owner, repo, runID)
 }
 
+// ListRecentRuns implements ci.RunLister.
+func (d *Driver) ListRecentRuns(ctx context.Context, owner, repo string, limit int) ([]forge.WorkflowRun, error) {
+	return d.Client.ListRecentWorkflowRuns(ctx, owner, repo, limit)
+}
+
 func (d *Driver) DownloadNamedArtifactFromRun(ctx context.Context, owner, repo string, runID int, artifactName string, destDir string) error {
 	artifacts, err := d.Client.ListWorkflowRunArtifacts(ctx, owner, repo, runID)
 	if err != nil {
@@ -526,8 +537,41 @@ func isTerminalFailure(conclusion string) bool {
 // limited for the whole wait, every poll's listing failed, and the wait
 // reported "no recent workflow runs found" for runs that existed.
 // Callers record the error and surface it in their timeout diagnostics.
+//
+// This is capped at the live client's single-page ListWorkflowRuns listing
+// (10 newest runs), which is fine for callers that only care about the
+// newest eligible run (e.g. WaitForHarnessAgent's latest-eligible-run
+// selection and the timeout diagnostics): the newest runs are always on
+// that page. harnessRoundPollOnce's earliest-round selection cannot rely
+// on that — see listHarnessRunsAfterPaginated.
 func (d *Driver) listHarnessRunsAfter(ctx context.Context, owner, repo string, after time.Time) ([]forge.WorkflowRun, error) {
 	runs, err := d.Client.ListWorkflowRuns(ctx, owner, repo, harnessWorkflowFile)
+	if err != nil {
+		return nil, err
+	}
+	var matched []forge.WorkflowRun
+	for _, run := range runs {
+		runTime, parseErr := time.Parse(time.RFC3339, run.CreatedAt)
+		if parseErr != nil || runTime.Before(after) {
+			continue
+		}
+		matched = append(matched, run)
+	}
+	return matched, nil
+}
+
+// listHarnessRunsAfterPaginated returns harness workflow runs created at or
+// after the trigger time, like listHarnessRunsAfter, but through
+// ListWorkflowRunsSince, which paginates back to that time boundary
+// instead of returning only the live client's newest 10 runs.
+// harnessRoundPollOnce's earliest-round selection needs every eligible,
+// not-yet-consumed run: ten newer harness runs — for this agent or others
+// — can otherwise push an earlier eligible run off ListWorkflowRuns's
+// single page, so sorting and checking consumed can no longer recover it
+// and a later successful round is returned instead of the correct one
+// (#7996 review).
+func (d *Driver) listHarnessRunsAfterPaginated(ctx context.Context, owner, repo string, after time.Time) ([]forge.WorkflowRun, error) {
+	runs, err := d.Client.ListWorkflowRunsSince(ctx, owner, repo, harnessWorkflowFile, after)
 	if err != nil {
 		return nil, err
 	}
@@ -799,6 +843,190 @@ func harnessJobSuffix(agent string) string {
 	return "Harness run (" + agent + ")"
 }
 
+// harnessJobNameMarker matches any harness matrix job name, per-agent
+// (e.g. "Harness run (triage)") or the unexpanded-matrix placeholder
+// (harnessJobPlaceholder). Its presence in a run's job list means the
+// harness dispatch job has produced matrix output — either concrete
+// per-agent jobs or a deliberate empty matrix — as opposed to a run whose
+// dispatch job is still computing the matrix, where no such job exists yet.
+const harnessJobNameMarker = "Harness run ("
+
+// builtinRoleJobName returns the static job name reusable-dispatch.yml
+// assigns to one of fullsend's built-in stages (e.g. "Triage", "Code"),
+// or "" if agent is not one of config.ValidAgentNames(). Built-in stages
+// run as fixed per-role jobs, unlike a user-registered custom harness,
+// which runs as a single matrix job named "Harness run (<agent>)"
+// (harnessJobSuffix). Both forms are prefixed by the caller job id when
+// surfaced through the Jobs API (e.g. "dispatch / Triage", "dispatch /
+// Harness run (pr-ping)"), so matching uses HasSuffix either way.
+func builtinRoleJobName(agent string) string {
+	for _, name := range config.ValidAgentNames() {
+		if name == agent && agent != "" {
+			return strings.ToUpper(agent[:1]) + agent[1:]
+		}
+	}
+	return ""
+}
+
+// matchAgentJob reports whether jobs contains the harness job for agent,
+// returning the matched job when found. agent may name either a
+// user-registered custom harness (job "Harness run (<agent>)") or one of
+// the built-in stages (job named after the stage, e.g. "Triage"); both
+// forms are checked (#7957).
+//
+// A single job list can contain both forms for the same agent name: a
+// built-in stage's static job exists on every run but is skipped (or, on
+// a concurrency-group cancellation unrelated to whether a same-named
+// custom harness matrix job actually ran, cancelled) when that trigger
+// did not schedule the stage, while a same-named user-registered custom
+// harness runs as a separate matrix job that can actually execute.
+// Scanning stops at the first match regardless of its state would let
+// job-list order alone decide the outcome: a built-in job that already
+// succeeded could shadow a same-named custom job that is still running or
+// has genuinely failed, letting round polling report success prematurely
+// and dispatch counting settle a count while the custom job is still in
+// flight (#7996 review). To avoid that, every matching job is ranked by
+// jobMatchTier and the highest-tier match wins regardless of list order:
+// a still-running match outranks any completed one (the round is not
+// settled yet), a genuine failure outranks a success (it must not be
+// hidden), and a success outranks a weak (skipped or cancelled) match.
+// Only when every match is weak does the function report one of those,
+// picked arbitrarily by job-list order between a skipped and a cancelled
+// match. That arbitrary pick is fine for the fail-fast/superseding
+// callers, which only care whether the match is weak at all, but it is
+// not a reliable evidence source for a negative assertion that must tell
+// skipped and cancelled apart (#7996 review) — such callers use
+// matchingAgentJobs directly instead (e.g. AssertNoHarnessAgentArtifact,
+// which must still treat a cancelled match as possible execution even
+// when a skipped match for the same agent is also present).
+func matchAgentJob(jobs []forge.WorkflowJob, agent string) (bool, forge.WorkflowJob) {
+	matches := matchingAgentJobs(jobs, agent)
+	found := false
+	var best forge.WorkflowJob
+	bestTier := -1
+	for _, j := range matches {
+		tier := jobMatchTier(j)
+		if !found || tier > bestTier {
+			found = true
+			best = j
+			bestTier = tier
+		}
+	}
+	return found, best
+}
+
+// jobMatchTier ranks a matched job by how decisive its state is for
+// matchAgentJob's selection among multiple same-named matches (#7996
+// review). From most to least decisive: a still-running job (the
+// candidate is not settled yet, regardless of what any completed sibling
+// shows), a genuine terminal failure (must not be hidden behind a
+// sibling's success), a success, and finally a weak (skipped or
+// cancelled) match, which carries no information about whether the agent
+// actually ran.
+func jobMatchTier(j forge.WorkflowJob) int {
+	switch {
+	case j.Status != "completed":
+		return 3
+	case isWeakJobMatch(j):
+		return 0
+	case j.Conclusion == "success":
+		return 1
+	default:
+		return 2
+	}
+}
+
+// matchingAgentJobs returns every job in jobs whose name matches the
+// harness job for agent — either a user-registered custom harness job
+// ("Harness run (<agent>)") or a built-in stage's static job (e.g.
+// "Triage") — per matchAgentJob's doc. Unlike matchAgentJob, which
+// collapses the list down to a single representative job for callers
+// that need one "best" match, this returns every match so a caller that
+// must not let one weak match (skipped or cancelled) shadow another can
+// inspect them independently (AssertNoHarnessAgentArtifact, #7996 review).
+func matchingAgentJobs(jobs []forge.WorkflowJob, agent string) []forge.WorkflowJob {
+	suffix := harnessJobSuffix(agent)
+	builtinSuffix := builtinRoleJobName(agent)
+	var matches []forge.WorkflowJob
+	for _, j := range jobs {
+		if strings.HasSuffix(j.Name, suffix) || (builtinSuffix != "" && strings.HasSuffix(j.Name, builtinSuffix)) {
+			matches = append(matches, j)
+		}
+	}
+	return matches
+}
+
+// isWeakJobMatch reports whether j is a completed job that was either
+// skipped (the built-in stage wasn't scheduled for this trigger) or
+// cancelled. A built-in static job and a same-named custom harness
+// matrix job run in distinct concurrency groups, so the static job's
+// cancellation says nothing about whether the matrix job executed
+// (#7957 review, fifth pass): matchAgentJob must let a stronger
+// (pending, successful, or genuinely failed) match found elsewhere in
+// the job list supersede either kind of weak match, the same way it
+// already did for skipped alone.
+func isWeakJobMatch(j forge.WorkflowJob) bool {
+	return j.Status == "completed" && (j.Conclusion == "skipped" || j.Conclusion == "cancelled")
+}
+
+// isBuiltinRoleMatch reports whether job matched agent through its
+// built-in stage name (e.g. "Triage", builtinRoleJobName) rather than
+// through the user-registered custom-harness matrix job name
+// ("Harness run (<agent>)", harnessJobSuffix). The built-in stage and a
+// same-named custom harness run in distinct jobs — one static, one a
+// matrix entry computed by the independent Harness dispatch job — so the
+// built-in job's own conclusion, whatever it is (success, a genuine
+// failure, or a weak skip/cancel), says nothing about whether a custom
+// harness job will also appear for this run until the matrix itself
+// resolves. Callers combine this with harnessMatrixUnresolved to decide
+// whether a built-in match is decisive yet (#7996 review).
+func isBuiltinRoleMatch(j forge.WorkflowJob, agent string) bool {
+	return !strings.HasSuffix(j.Name, harnessJobSuffix(agent))
+}
+
+// harnessMatrixExpanded reports whether jobs shows that the harness
+// workflow's matrix has resolved — either into concrete per-agent
+// "Harness run (<agent>)" jobs, or into the unexpanded-matrix placeholder
+// for a deliberately empty matrix. Until one of these appears, the
+// dispatch job that computes the matrix is still running, so the absence
+// of any particular agent's job in jobs says nothing about whether that
+// agent will be scheduled.
+func harnessMatrixExpanded(jobs []forge.WorkflowJob) bool {
+	for _, j := range jobs {
+		if strings.Contains(j.Name, harnessJobNameMarker) {
+			return true
+		}
+	}
+	return false
+}
+
+// harnessMatrixUnresolved reports whether the harness dispatch decision is
+// still in progress. An unrelated expanded matrix is not sufficient evidence
+// that the requested built-in stage has been scheduled: the Route job can
+// still be pending while another matrix is already visible. Keep the
+// candidate inconclusive until Route completes or the requested matrix has
+// resolved (#7996 review).
+//
+// Route and the Harness dispatch job (harnessDispatchJobSuffix) are
+// independent: Route decides whether built-in stages are scheduled, while
+// Harness dispatch computes and expands the custom-harness matrix. Neither
+// job's completion proves the matrix has resolved: downstream job
+// visibility can lag the producer jobs' completion. Until expanded matrix
+// jobs or the empty-matrix placeholder are visible
+// (harnessMatrixExpanded), the matrix is therefore unresolved regardless of
+// the Route and Harness dispatch jobs' states (#7996 review).
+func harnessMatrixUnresolved(jobs []forge.WorkflowJob) bool {
+	if !harnessMatrixExpanded(jobs) {
+		return true
+	}
+	for _, j := range jobs {
+		if strings.HasSuffix(j.Name, "Route") && j.Status != "completed" {
+			return true
+		}
+	}
+	return false
+}
+
 // runHasAgentJob reports whether the given workflow run contains a job
 // whose name matches the harness job for agent. It also returns the
 // matched job when found, and any error from the API call.
@@ -807,19 +1035,19 @@ func (d *Driver) runHasAgentJob(ctx context.Context, owner, repo string, runID i
 	if err != nil {
 		return false, forge.WorkflowJob{}, fmt.Errorf("list jobs for run %d: %w", runID, err)
 	}
-	suffix := harnessJobSuffix(agent)
-	for _, j := range jobs {
-		if strings.HasSuffix(j.Name, suffix) {
-			return true, j, nil
-		}
-	}
-	return false, forge.WorkflowJob{}, nil
+	hasJob, job := matchAgentJob(jobs, agent)
+	return hasJob, job, nil
 }
 
 // WaitForHarnessAgent waits for a successful harness-run workflow job for
 // the named agent. It fails fast only when a workflow run that contains the
-// agent's "Harness run (<agent>)" job reaches a terminal failure conclusion.
+// agent's "Harness run (<agent>)" job reaches a terminal failure conclusion
+// and no newer run for the same agent is still pending or has already
+// succeeded. A dual-dispatch race can leave an earlier sibling concluding
+// failure while a later run of the same agent goes on to succeed (#7574).
 // Sibling workflow runs that do not schedule the agent's job are ignored.
+// On a fail-fast the failed run is returned together with the error, so
+// the caller can save its logs before the scenario's repository is deleted.
 //
 // Listing failures never end the wait — the loop keeps polling — but they
 // are counted and reported on timeout so that a wait spent rate limited
@@ -874,13 +1102,50 @@ func (d *Driver) harnessPollOnce(ctx context.Context, remaining time.Duration, o
 				if candidate.Conclusion == "success" {
 					return candidate, true, nil
 				}
+				// The harness workflow uploads fullsend-{agent} with
+				// if: always(), so a dual-dispatch sibling — cancelled,
+				// skipped, or a genuine failure — can produce this
+				// artifact while a later run for the same agent is
+				// still going or has already succeeded.
+				// selectRepositoryArtifactAfter only returns the single
+				// highest-ID matching artifact, and artifact IDs are
+				// assigned at upload time — if the non-success run
+				// finishes uploading after the successful run, its
+				// artifact keeps winning that selection on every poll,
+				// hiding the success artifact from this branch
+				// entirely. Scan the other matching artifacts for one
+				// whose run already completed successfully before
+				// deciding how to treat this artifact's conclusion —
+				// otherwise a cancelled/skipped artifact that keeps
+				// winning the max-ID selection would hide a
+				// lower-ID success forever, since the early return
+				// below never reaches this scan.
+				if success := d.harnessArtifactRunSuccess(ctx, owner, repo, arts, artifactName, after, art.ID, lookupErrs); success != nil {
+					return success, true, nil
+				}
 				// Cancelled/skipped runs are concurrency-group noise —
 				// the superseding run will produce its own artifact.
 				// Keep polling without a fail-fast scan this round.
 				if isConcurrencySuperseded(candidate.Conclusion) {
 					return nil, false, nil
 				}
-				return nil, true, fmt.Errorf("harness run for %q concluded with %q (run %d: %s)",
+				// Apply the same supersede check as the recentRuns
+				// job-scan branch below (#7574) before treating this
+				// artifact's run as authoritative.
+				recentRuns, runsErr := d.listHarnessRunsAfter(ctx, owner, repo, after)
+				runsErrs.record(ctx, runsErr)
+				if runsErr != nil {
+					// Listing failures never end the wait (doc comment
+					// above): an empty recentRuns from the error would
+					// make hasSupersedingAgentRun report false and fall
+					// through to the fail-fast return below on
+					// incomplete information. Keep polling instead.
+					return nil, false, nil
+				}
+				if d.hasSupersedingAgentRun(ctx, owner, repo, agent, *candidate, recentRuns, lookupErrs) {
+					return nil, false, nil
+				}
+				return candidate, true, fmt.Errorf("harness run for %q concluded with %q (run %d: %s)",
 					agent, candidate.Conclusion, candidate.ID, candidate.HTMLURL)
 			}
 		}
@@ -888,21 +1153,273 @@ func (d *Driver) harnessPollOnce(ctx context.Context, remaining time.Duration, o
 
 	// Fail-fast: check recent harness runs for terminal failures,
 	// but only attribute failure to runs that actually scheduled
-	// this agent's harness job.
+	// this agent's harness job. A newer pending or successful run
+	// for the same agent supersedes an earlier failure (#7574).
 	recentRuns, err := d.listHarnessRunsAfter(ctx, owner, repo, after)
 	runsErrs.record(ctx, err)
 	for _, r := range recentRuns {
 		if r.Status != "completed" || !isTerminalFailure(r.Conclusion) {
 			continue
 		}
-		hasJob, _, err := d.runHasAgentJob(ctx, owner, repo, r.ID, agent)
+		hasJob, job, err := d.runHasAgentJob(ctx, owner, repo, r.ID, agent)
 		lookupErrs.record(ctx, err)
-		if hasJob {
-			return nil, true, fmt.Errorf("harness agent %q: workflow run %d concluded with %q before producing artifact (url=%s)",
-				agent, r.ID, r.Conclusion, r.HTMLURL)
+		// builtinRoleJobName (#7957) means hasJob is also true for a
+		// built-in stage's job that exists on every run but was skipped
+		// for this particular trigger (e.g. the workflow schedules a
+		// "Fix" job that only runs conditionally). The run's overall
+		// failure can come entirely from a sibling job in that case, so
+		// only attribute it to agent when agent's own job actually ran
+		// and concluded a real failure.
+		if !hasJob || !isTerminalFailure(job.Conclusion) {
+			continue
 		}
+		if d.hasSupersedingAgentRun(ctx, owner, repo, agent, r, recentRuns, lookupErrs) {
+			continue
+		}
+		failed := r
+		return &failed, true, fmt.Errorf("harness agent %q: workflow run %d concluded with %q before producing artifact (url=%s)",
+			agent, r.ID, r.Conclusion, r.HTMLURL)
 	}
 	return nil, false, nil
+}
+
+// WaitForHarnessAgentRound waits for the named agent's harness run to
+// succeed, selecting the earliest eligible run not in consumed instead of
+// WaitForHarnessAgent's latest-eligible-run selection (see interface doc,
+// #7957). Unlike WaitForHarnessAgent, it does not attempt dual-dispatch
+// fail-fast reconciliation (#7574): a playback scenario's harness runs are
+// driven by the dummy runtime rather than racing real webhook redelivery,
+// so a terminal failure on an eligible, not-yet-consumed run is reported
+// directly.
+func (d *Driver) WaitForHarnessAgentRound(ctx context.Context, owner, repo, agent string, after time.Time, consumed map[int]bool) (*forge.WorkflowRun, error) {
+	deadline := d.now().Add(dispatchWait)
+	interval := dispatchPollInit
+	var runsErrs, lookupErrs pollErrors
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-d.timerAfter(interval):
+		}
+		interval = nextBackoff(interval, dispatchPollMax)
+		remaining := deadline.Sub(d.now())
+		if remaining < pollMinBudget {
+			break
+		}
+		run, done, err := d.harnessRoundPollOnce(ctx, remaining, owner, repo, agent, after, consumed, &runsErrs, &lookupErrs)
+		if done {
+			return run, err
+		}
+	}
+	return nil, fmt.Errorf("harness agent %q did not complete a new round successfully; %s",
+		agent, d.harnessTimeoutDiagnostics(ctx, owner, repo, agent, after, runsErrs, pollErrors{}, lookupErrs))
+}
+
+// harnessRoundPollOnce performs one WaitForHarnessAgentRound poll. It scans
+// runs created at or after `after`, oldest first, skipping any run already
+// in consumed, and settles on the first one that schedules agent's job:
+// success returns it; a genuine terminal failure (not skipped/cancelled)
+// returns it with an error; a still-in-flight job for that earliest
+// candidate holds off considering any later run until it settles, so an
+// earlier round cannot be skipped over while still pending. An earliest
+// candidate whose matrix has not resolved yet (harnessMatrixExpanded) and
+// has not reached a terminal run state is treated the same way: agent's
+// absence from its current job list does not yet rule out scheduling, so a
+// later, already-resolved run must not be allowed to win selection instead
+// (#7957 review). The same unresolved-matrix interval also applies when
+// matchAgentJob reports a match on a built-in stage job (e.g. "Triage"):
+// that static job exists on every run regardless of whether a same-named
+// custom harness matrix job will later run on this candidate, so its
+// conclusion — skipped, cancelled, a success, or a genuine failure — does
+// not rule out scheduling until either the run terminates or its matrix
+// resolves (#7957 review, second pass; cancelled static jobs added #7996
+// review; success/failure built-in matches added #7996 review, second
+// pass).
+func (d *Driver) harnessRoundPollOnce(ctx context.Context, remaining time.Duration, owner, repo, agent string, after time.Time, consumed map[int]bool, runsErrs, lookupErrs *pollErrors) (run *forge.WorkflowRun, done bool, err error) {
+	ctx, cancel := context.WithTimeout(ctx, remaining)
+	defer cancel()
+
+	recentRuns, err := d.listHarnessRunsAfterPaginated(ctx, owner, repo, after)
+	runsErrs.record(ctx, err)
+	if err != nil {
+		return nil, false, nil
+	}
+
+	ordered := make([]forge.WorkflowRun, len(recentRuns))
+	copy(ordered, recentRuns)
+	for i := 1; i < len(ordered); i++ {
+		for j := i; j > 0 && workflowRunNewer(ordered[j-1], ordered[j]); j-- {
+			ordered[j-1], ordered[j] = ordered[j], ordered[j-1]
+		}
+	}
+
+	for i := range ordered {
+		r := ordered[i]
+		if consumed[r.ID] {
+			continue
+		}
+		jobs, err := d.Client.ListWorkflowRunJobs(ctx, owner, repo, r.ID)
+		lookupErrs.record(ctx, err)
+		if err != nil {
+			// The earliest not-yet-consumed candidate's job state is
+			// unknown — do not let the scan fall through to a later,
+			// already-resolved run while that is still uncertain
+			// (#7957 review): a transient lookup failure here must not
+			// let a later round win selection out of order.
+			return nil, false, nil
+		}
+		hasJob, job := matchAgentJob(jobs, agent)
+		matrixUnresolved := r.Status != "completed" && harnessMatrixUnresolved(jobs)
+		if !hasJob {
+			if matrixUnresolved {
+				// The dispatch job that computes this run's matrix has
+				// not resolved yet, and the run itself has not reached
+				// a terminal state — agent's absence from jobs says
+				// nothing about whether it will still be scheduled on
+				// this earliest not-yet-consumed run (harnessMatrixExpanded
+				// doc, #7957 review). Wait rather than letting a later,
+				// already-resolved run win selection out of order.
+				return nil, false, nil
+			}
+			continue
+		}
+		if matrixUnresolved && (isWeakJobMatch(job) || isBuiltinRoleMatch(job, agent)) {
+			// matchAgentJob matched a built-in stage's static job — e.g.
+			// "Triage" — which exists on every run independent of whether
+			// a same-named custom harness matrix job will run on this
+			// candidate. Until the matrix resolves or the run terminates,
+			// that job's conclusion does not rule out scheduling here,
+			// regardless of whether it is weak (skipped/cancelled) or
+			// already settled (success or a genuine failure): a success
+			// must not return this round prematurely while the
+			// independent Harness dispatch job is still computing the
+			// matrix, and a failure must not be reported before the real
+			// custom-harness job is known either. Treat it the same as
+			// the !hasJob case above rather than letting a completed
+			// built-in conclusion settle this candidate and hand
+			// selection to a later run (#7957 review, second pass;
+			// cancelled static jobs added #7996 review; success/failure
+			// built-in matches added #7996 review, second pass).
+			return nil, false, nil
+		}
+		if job.Status != "completed" {
+			// The earliest not-yet-consumed candidate that schedules
+			// agent is still running; wait for it rather than
+			// considering a later run out of order.
+			return nil, false, nil
+		}
+		if job.Conclusion == "success" {
+			found := r
+			return &found, true, nil
+		}
+		if isConcurrencySuperseded(job.Conclusion) {
+			continue
+		}
+		failed := r
+		return &failed, true, fmt.Errorf("harness agent %q: workflow run %d's job concluded with %q (url=%s)",
+			agent, r.ID, job.Conclusion, r.HTMLURL)
+	}
+	return nil, false, nil
+}
+
+// harnessArtifactRunSuccess scans arts for a matching artifact — other than
+// skipID, the one already selected as the highest-ID match — that was
+// created at or after after and belongs to a completed, successful
+// workflow run. selectRepositoryArtifactAfter only ever returns the single
+// highest-ID artifact for a given name, but the harness workflow uploads
+// fullsend-{agent} with if: always(), so a dual-dispatch sibling that
+// concludes failure, cancelled, or skipped can win that selection over an
+// already-succeeded run's own artifact whenever the non-success run
+// finishes uploading later (#7574). This scan finds that hidden success
+// without waiting for its artifact to eventually outrank the other run's
+// by ID, which it may never do — including when the higher-ID artifact
+// belongs to a cancelled/skipped run, which would otherwise keep winning
+// the max-ID selection on every poll and hide the success forever.
+func (d *Driver) harnessArtifactRunSuccess(ctx context.Context, owner, repo string, arts []forge.RepositoryArtifact, name string, after time.Time, skipID int, lookupErrs *pollErrors) *forge.WorkflowRun {
+	for _, art := range arts {
+		if art.Name != name || art.ID == skipID {
+			continue
+		}
+		artTime, parseErr := time.Parse(time.RFC3339, art.CreatedAt)
+		if parseErr != nil || artTime.Before(after) {
+			continue
+		}
+		run, err := d.Client.GetWorkflowRun(ctx, owner, repo, art.WorkflowRunID)
+		lookupErrs.record(ctx, err)
+		if err == nil && run.Status == "completed" && run.Conclusion == "success" {
+			return run
+		}
+	}
+	return nil
+}
+
+// workflowRunNewer reports whether a was created after b. CreatedAt is
+// compared when both parse as RFC3339; otherwise run ID is the tiebreak
+// (GitHub run IDs are monotonic).
+func workflowRunNewer(a, b forge.WorkflowRun) bool {
+	at, aErr := time.Parse(time.RFC3339, a.CreatedAt)
+	bt, bErr := time.Parse(time.RFC3339, b.CreatedAt)
+	if aErr == nil && bErr == nil && !at.Equal(bt) {
+		return at.After(bt)
+	}
+	return a.ID > b.ID
+}
+
+// hasSupersedingAgentRun reports whether recentRuns contains a run newer
+// than failed that either has scheduled agent's harness job and that job
+// is still pending or concluded success, or cannot yet be ruled out as
+// such. Dual-dispatch can leave an earlier sibling concluding failure
+// while a later run of the same agent is still going, still expanding its
+// job matrix, or has already succeeded; fail-fast must not treat the
+// earlier failure as authoritative in any of these cases (#7574). A
+// candidate is only confirmed not to supersede once either its own
+// matching job has itself completed without succeeding (cancelled,
+// skipped, or failure — the overall run's conclusion does not decide
+// this, only the agent's own job does), or its matrix has resolved
+// (harnessMatrixExpanded) without scheduling the agent at all.
+//
+// A job-listing error on a candidate, or a candidate whose matrix has not
+// resolved yet, leaves that candidate's outcome unknown; both are treated
+// as inconclusive (return true) so the caller keeps polling instead of
+// fail-fasting on incomplete information. The same inconclusive treatment
+// applies when the only match is a skipped or cancelled built-in stage job
+// (e.g. "Triage") on a still-executing candidate whose matrix has not
+// resolved: a same-named custom harness matrix job can still appear on it
+// (matchAgentJob doc), so that conclusion alone does not yet rule the
+// candidate out as superseding (#7957 review, third pass — mirrors
+// harnessRoundPollOnce's guard; cancelled static jobs added #7996 review).
+func (d *Driver) hasSupersedingAgentRun(ctx context.Context, owner, repo, agent string, failed forge.WorkflowRun, recentRuns []forge.WorkflowRun, lookupErrs *pollErrors) bool {
+	for _, other := range recentRuns {
+		if other.ID == failed.ID || !workflowRunNewer(other, failed) {
+			continue
+		}
+		if other.Status == "completed" && other.Conclusion != "success" {
+			continue
+		}
+		jobs, err := d.Client.ListWorkflowRunJobs(ctx, owner, repo, other.ID)
+		lookupErrs.record(ctx, err)
+		if err != nil {
+			return true
+		}
+		if hasJob, job := matchAgentJob(jobs, agent); hasJob {
+			// The overall run can conclude "success" while this agent's
+			// own job was skipped or cancelled (other matrix jobs
+			// succeeded) — that must not suppress fail-fast on a genuine
+			// earlier failure. Only a still-pending or successfully
+			// concluded agent job supersedes.
+			if job.Status != "completed" || job.Conclusion == "success" {
+				return true
+			}
+			if (isWeakJobMatch(job) || isBuiltinRoleMatch(job, agent)) && other.Status != "completed" && harnessMatrixUnresolved(jobs) {
+				return true
+			}
+			continue
+		}
+		if other.Status != "completed" && harnessMatrixUnresolved(jobs) {
+			return true
+		}
+	}
+	return false
 }
 
 // WaitForFailedHarnessAgent waits for the named agent's harness run to
@@ -1045,7 +1562,20 @@ func (d *Driver) CountHarnessDispatches(ctx context.Context, owner, repo, agent 
 // settleHarnessDispatchCount classifies harness runs created after the
 // trigger time into counted dispatches and pending runs. A run is pending
 // when its agent job exists but has not completed, or when the run itself
-// is still executing and the agent's job has not appeared yet.
+// is still executing and the agent's job has not appeared yet. It is also
+// pending when the only match is a built-in stage job (e.g. "Triage") on a
+// still-executing run whose matrix has not resolved yet, regardless of
+// that job's conclusion (skipped, cancelled, a success, or a genuine
+// failure): a same-named custom harness matrix job can still appear on
+// this candidate (matchAgentJob doc), so that conclusion alone does not
+// yet rule out — or confirm — a dispatch here. Without this, such a run
+// was either silently classified as neither counted nor pending (a weak
+// match, settling and undercounting before a same-named matrix job it was
+// still waiting on even appeared), or counted immediately on a successful
+// built-in match before the independent Harness dispatch job finished
+// computing the matrix (#7957 review, third pass — mirrors
+// harnessRoundPollOnce's guard; cancelled static jobs added #7996 review;
+// success/failure built-in matches added #7996 review, second pass).
 func (d *Driver) settleHarnessDispatchCount(ctx context.Context, owner, repo, agent string, after time.Time) (count, pending int, err error) {
 	allRuns, err := d.Client.ListWorkflowRuns(ctx, owner, repo, harnessWorkflowFile)
 	if err != nil {
@@ -1056,12 +1586,15 @@ func (d *Driver) settleHarnessDispatchCount(ctx context.Context, owner, repo, ag
 		if parseErr != nil || runTime.Before(after) {
 			continue
 		}
-		hasJob, job, err := d.runHasAgentJob(ctx, owner, repo, r.ID, agent)
+		jobs, err := d.Client.ListWorkflowRunJobs(ctx, owner, repo, r.ID)
 		if err != nil {
 			return 0, 0, err
 		}
+		hasJob, job := matchAgentJob(jobs, agent)
 		switch {
 		case hasJob && job.Status != "completed":
+			pending++
+		case hasJob && r.Status != "completed" && harnessMatrixUnresolved(jobs) && (isWeakJobMatch(job) || isBuiltinRoleMatch(job, agent)):
 			pending++
 		case hasJob && !isConcurrencySuperseded(job.Conclusion):
 			count++
@@ -1073,6 +1606,127 @@ func (d *Driver) settleHarnessDispatchCount(ctx context.Context, owner, repo, ag
 		}
 	}
 	return count, pending, nil
+}
+
+// WaitForHarnessEmptyMatrix implements ci.EmptyMatrixWaiter. It waits
+// for the harness runs created after the trigger time to settle, and
+// requires each run that was not cancelled to show an affirmative
+// empty-matrix decision: the run completed, its Harness dispatch job
+// succeeded, and the matrix job was skipped without expanding into any
+// "Harness run (<agent>)" job. A
+// run whose dispatch job failed (for example on an event or
+// authorization error) fails the wait immediately, and so does a run
+// that scheduled any agent. Absent runs are waited for rather than
+// treated as a pass, so a denial is never inferred from a run that has
+// not been created yet. Cancelled runs are concurrency noise and are
+// ignored.
+func (d *Driver) WaitForHarnessEmptyMatrix(ctx context.Context, owner, repo string, after time.Time) (*forge.WorkflowRun, error) {
+	deadline := d.now().Add(dispatchWait)
+	interval := dispatchPollInit
+	var lastErr error
+	var state string
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-d.timerAfter(interval):
+		}
+		interval = nextBackoff(interval, dispatchPollMax)
+		remaining := deadline.Sub(d.now())
+		if remaining < pollMinBudget {
+			break
+		}
+		run, done, err := d.emptyMatrixPollOnce(ctx, remaining, owner, repo, after, &state)
+		if done {
+			return run, err
+		}
+		if err != nil {
+			lastErr = err
+		}
+	}
+	msg := fmt.Sprintf("harness dispatch did not settle with an empty matrix within %s: %s", dispatchWait, state)
+	if lastErr != nil {
+		msg += fmt.Sprintf(" (last lookup error: %v)", lastErr)
+	}
+	return nil, errors.New(msg)
+}
+
+// emptyMatrixPollOnce performs one WaitForHarnessEmptyMatrix poll with
+// its API calls bounded by the remaining wait budget. done reports
+// whether the wait should end with the returned run and error; a non-nil
+// error with done false is a lookup failure to keep polling through. It
+// records a description of what the poll is still waiting for in state.
+func (d *Driver) emptyMatrixPollOnce(ctx context.Context, remaining time.Duration, owner, repo string, after time.Time, state *string) (*forge.WorkflowRun, bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, remaining)
+	defer cancel()
+
+	// Every non-cancelled run since the trigger time must be checked, so
+	// use the paginated listing: the single-page listing could drop an
+	// earlier violating run once more than ten newer runs exist.
+	runs, err := d.listHarnessRunsAfterPaginated(ctx, owner, repo, after)
+	if err != nil {
+		return nil, false, err
+	}
+	var settled *forge.WorkflowRun
+	pending := 0
+	for i := range runs {
+		r := runs[i]
+		if r.Status == "completed" && r.Conclusion == "cancelled" {
+			continue
+		}
+		if r.Status != "completed" {
+			pending++
+			continue
+		}
+		jobs, err := d.Client.ListWorkflowRunJobs(ctx, owner, repo, r.ID)
+		if err != nil {
+			return nil, false, fmt.Errorf("list jobs for run %d: %w", r.ID, err)
+		}
+		var dispatch, placeholder *forge.WorkflowJob
+		for j := range jobs {
+			job := jobs[j]
+			if strings.HasSuffix(job.Name, harnessDispatchJobSuffix) {
+				dispatch = &jobs[j]
+			}
+			if strings.HasSuffix(job.Name, harnessJobPlaceholder) {
+				placeholder = &jobs[j]
+			} else if strings.Contains(job.Name, harnessJobNameMarker) {
+				return nil, true, fmt.Errorf("expected an empty harness matrix, but job %q was scheduled in workflow run %d", job.Name, r.ID)
+			}
+		}
+		switch {
+		case dispatch == nil:
+			// A completed run's jobs are final, but the job listing
+			// can lag; keep polling until the dispatch job shows up.
+			pending++
+		case dispatch.Status != "completed":
+			pending++
+		case dispatch.Conclusion != "success":
+			return nil, true, fmt.Errorf("expected the %q job to succeed with an empty matrix, but it concluded %s in workflow run %d; see the run logs", dispatch.Name, dispatch.Conclusion, r.ID)
+		case placeholder == nil:
+			// The unexpanded matrix job is the evidence of an empty
+			// matrix; without it nothing was demonstrated. The job
+			// listing can lag, so keep polling.
+			pending++
+		case placeholder.Status != "completed":
+			pending++
+		case placeholder.Conclusion != "skipped":
+			// A cancelled, failed, or timed-out matrix job that never
+			// expanded is not an empty-matrix decision.
+			return nil, true, fmt.Errorf("expected the %q job to be skipped with an empty matrix, but it concluded %s without expanding in workflow run %d; see the run logs", placeholder.Name, placeholder.Conclusion, r.ID)
+		case settled == nil:
+			settled = &runs[i]
+		}
+	}
+	switch {
+	case pending > 0:
+		*state = fmt.Sprintf("%d harness run(s) still in progress", pending)
+		return nil, false, nil
+	case settled == nil:
+		*state = "no harness run created after the trigger time"
+		return nil, false, nil
+	}
+	return settled, true, nil
 }
 
 // isConcurrencySuperseded reports whether a job conclusion indicates
@@ -1102,13 +1756,30 @@ func (d *Driver) AssertNoHarnessAgentArtifact(ctx context.Context, owner, repo, 
 		if parseErr != nil || runTime.Before(after) {
 			continue
 		}
-		hasJob, _, err := d.runHasAgentJob(ctx, owner, repo, r.ID, agent)
+		jobs, err := d.Client.ListWorkflowRunJobs(ctx, owner, repo, r.ID)
 		if err != nil {
 			return err
 		}
-		if hasJob {
-			return fmt.Errorf("expected harness %q not to run, but job %q found in workflow run %d",
-				agent, harnessJobSuffix(agent), r.ID)
+		// Every matching job is inspected independently here, rather than
+		// through matchAgentJob's single "best" match: a job list can
+		// contain both a skipped built-in stage job (e.g. "Triage") and a
+		// cancelled same-named custom harness matrix job for the same
+		// agent, and matchAgentJob's tie-break — which treats skipped and
+		// cancelled as equally "weak" for the fail-fast/superseding paths
+		// that need one representative job — would arbitrarily keep
+		// whichever came first in job-list order. A negative assertion
+		// cannot depend on that order: a skipped job (builtinRoleJobName,
+		// #7957) is present on every run but never evidence the agent
+		// ran, while a cancelled job can mean it ran before being
+		// cancelled — forge.WorkflowJob exposes no started-at metadata
+		// that would let us rule that out — so a cancelled match must
+		// still fail the assertion even when a skipped match for the
+		// same agent is also present (#7996 review).
+		for _, job := range matchingAgentJobs(jobs, agent) {
+			if job.Conclusion != "skipped" {
+				return fmt.Errorf("expected harness %q not to run, but job %q found in workflow run %d",
+					agent, job.Name, r.ID)
+			}
 		}
 	}
 	return nil

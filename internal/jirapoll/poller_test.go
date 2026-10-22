@@ -387,6 +387,9 @@ func TestRun_AuthPreflightSuccess(t *testing.T) {
 	if mc.lastQuery == "" {
 		t.Error("SearchIssues was not called; expected JQL discovery after successful auth preflight")
 	}
+	if p.selfAccountID != "poller-service-account" {
+		t.Errorf("selfAccountID = %q, want poller-service-account from GetMyself", p.selfAccountID)
+	}
 }
 
 func TestRunHappyPath_CommentWithSlashCommand(t *testing.T) {
@@ -954,6 +957,220 @@ func TestRunBotFiltering(t *testing.T) {
 	}
 }
 
+// TestRunSelfAuthoredEventsFiltered covers the service-account loop in
+// #6835: comments and changelog entries from the authenticated poller
+// account (accountType: atlassian, ordinary display name) must not
+// dispatch, but lastCheck must still advance past them.
+func TestRunSelfAuthoredEventsFiltered(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	mc := newMockClient()
+	self := *mc.myselfUser
+	self.DisplayName = "Fullsend Test Account"
+	self.AccountType = "atlassian"
+	mc.myselfUser = &self
+
+	mc.searchResult = []jira.Issue{
+		{
+			ID:  "10042",
+			Key: "PROJ-123",
+			Fields: jira.IssueFields{
+				Labels: []string{"needs-info", "bug"},
+				Status: jira.Status{
+					Name:           "Open",
+					StatusCategory: jira.StatusCategory{Key: "new"},
+				},
+				Reporter: jira.User{AccountID: "reporter-id", AccountType: "atlassian"},
+				Created:  now.Add(-2 * time.Hour).Format("2006-01-02T15:04:05.000-0700"),
+				Updated:  now.Format("2006-01-02T15:04:05.000-0700"),
+			},
+		},
+	}
+	setLastCheck(mc, "PROJ-123", "acme", "platform", now.Add(-30*time.Minute))
+
+	selfCommentTime := now.Add(-2 * time.Minute)
+	selfLabelTime := now.Add(-1 * time.Minute)
+	mc.comments["PROJ-123"] = []jira.Comment{
+		{
+			ID:      "50001",
+			Body:    "Applied needs-info; waiting on more detail.",
+			Created: selfCommentTime.Format("2006-01-02T15:04:05.000-0700"),
+			Author:  self,
+		},
+	}
+	mc.changelog["PROJ-123"] = []jira.ChangelogEntry{
+		{
+			ID:      "100",
+			Created: selfLabelTime.Format("2006-01-02T15:04:05.000-0700"),
+			Author:  self,
+			Items: []jira.ChangeItem{
+				{
+					Field:      "labels",
+					FromString: "bug",
+					ToString:   "bug needs-info",
+				},
+			},
+		},
+	}
+
+	dir := t.TempDir()
+	outputPath := filepath.Join(dir, "dispatches.json")
+
+	router := &stubMatcher{agents: []string{"triage"}}
+	p := newTestPoller(mc, router, Options{
+		TargetRepo:  "acme/platform",
+		JiraBaseURL: "https://acme.atlassian.net",
+		JiraProject: "PROJ",
+		OutputPath:  outputPath,
+	})
+
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	data, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	var dispatches []DispatchRecord
+	if err := json.Unmarshal(data, &dispatches); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(dispatches) != 0 {
+		t.Errorf("expected 0 dispatches (self-authored filtered), got %d: %+v", len(dispatches), dispatches)
+	}
+
+	lastCheck, err := p.readLastCheck(context.Background(), "PROJ-123")
+	if err != nil {
+		t.Fatalf("readLastCheck() error: %v", err)
+	}
+	if lastCheck.IsZero() {
+		t.Fatal("lastCheck should have advanced past self-authored events, but is zero")
+	}
+	if !lastCheck.After(now.Add(-30 * time.Minute)) {
+		t.Errorf("lastCheck = %v, expected it to advance past the original checkpoint", lastCheck)
+	}
+}
+
+// TestRunHumanFollowupAlongsideSelfAuthored verifies a human comment and a
+// human /fs-triage still dispatch when mixed with self-authored activity
+// on a needs-info issue.
+func TestRunHumanFollowupAlongsideSelfAuthored(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	mc := newMockClient()
+	self := *mc.myselfUser
+	self.DisplayName = "Fullsend Test Account"
+	self.AccountType = "atlassian"
+	mc.myselfUser = &self
+
+	human := jira.User{
+		AccountID:   "human-user",
+		AccountType: "atlassian",
+		DisplayName: "Jane Doe",
+	}
+	mc.roleMembership = map[string]string{
+		human.AccountID: "Developers",
+	}
+
+	mc.searchResult = []jira.Issue{
+		{
+			ID:  "10042",
+			Key: "PROJ-123",
+			Fields: jira.IssueFields{
+				Labels: []string{"needs-info", "bug"},
+				Status: jira.Status{
+					Name:           "Open",
+					StatusCategory: jira.StatusCategory{Key: "new"},
+				},
+				Reporter: jira.User{AccountID: "reporter-id", AccountType: "atlassian"},
+				Created:  now.Add(-2 * time.Hour).Format("2006-01-02T15:04:05.000-0700"),
+				Updated:  now.Format("2006-01-02T15:04:05.000-0700"),
+			},
+		},
+	}
+	setLastCheck(mc, "PROJ-123", "acme", "platform", now.Add(-30*time.Minute))
+
+	mc.comments["PROJ-123"] = []jira.Comment{
+		{
+			ID:      "50001",
+			Body:    "Applied needs-info; waiting on more detail.",
+			Created: now.Add(-3 * time.Minute).Format("2006-01-02T15:04:05.000-0700"),
+			Author:  self,
+		},
+		{
+			ID:      "50002",
+			Body:    "Here is the missing stack trace.",
+			Created: now.Add(-2 * time.Minute).Format("2006-01-02T15:04:05.000-0700"),
+			Author:  human,
+		},
+		{
+			ID:      "50003",
+			Body:    "/fs-triage please re-evaluate",
+			Created: now.Add(-1 * time.Minute).Format("2006-01-02T15:04:05.000-0700"),
+			Author:  human,
+		},
+	}
+	mc.changelog["PROJ-123"] = []jira.ChangelogEntry{
+		{
+			ID:      "100",
+			Created: now.Add(-150 * time.Second).Format("2006-01-02T15:04:05.000-0700"),
+			Author:  self,
+			Items: []jira.ChangeItem{
+				{
+					Field:      "labels",
+					FromString: "bug",
+					ToString:   "bug needs-info",
+				},
+			},
+		},
+	}
+
+	dir := t.TempDir()
+	outputPath := filepath.Join(dir, "dispatches.json")
+
+	router := &stubMatcher{agents: []string{"triage"}}
+	p := newTestPoller(mc, router, Options{
+		TargetRepo:  "acme/platform",
+		JiraBaseURL: "https://acme.atlassian.net",
+		JiraProject: "PROJ",
+		OutputPath:  outputPath,
+	})
+
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	data, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	var dispatches []DispatchRecord
+	if err := json.Unmarshal(data, &dispatches); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(dispatches) != 2 {
+		t.Fatalf("expected 2 human dispatches, got %d: %+v", len(dispatches), dispatches)
+	}
+	for _, d := range dispatches {
+		if d.EventType != "comment" {
+			t.Errorf("unexpected event_type %q; self-authored changelog should have been filtered", d.EventType)
+		}
+		if d.Agent != "triage" {
+			t.Errorf("expected triage dispatch, got %q", d.Agent)
+		}
+	}
+
+	lastCheck, err := p.readLastCheck(context.Background(), "PROJ-123")
+	if err != nil {
+		t.Fatalf("readLastCheck() error: %v", err)
+	}
+	if lastCheck.IsZero() {
+		t.Fatal("lastCheck should have advanced, but is zero")
+	}
+	if !lastCheck.After(now.Add(-30 * time.Minute)) {
+		t.Errorf("lastCheck = %v, expected it to advance past the original checkpoint", lastCheck)
+	}
+}
+
 // TestAttemptLock_LiveLockRejectedWithoutWriting is a regression test:
 // attemptLock previously wrote its own lock unconditionally before ever
 // checking for an existing one, so a poller reaching attemptLock well after
@@ -1446,12 +1663,49 @@ func TestFilterBotEvents(t *testing.T) {
 		},
 	}
 
-	filtered := filterBotEvents(events)
+	filtered := (&Poller{}).filterBotEvents(events)
 	if len(filtered) != 1 {
 		t.Errorf("expected 1 event after bot filter, got %d", len(filtered))
 	}
 	if filtered[0].CommentAuthor.AccountID != "human" {
 		t.Error("expected human event to remain")
+	}
+}
+
+func TestFilterBotEvents_SelfAccount(t *testing.T) {
+	const selfID = "poller-service-account"
+	p := &Poller{selfAccountID: selfID}
+	events := []JiraEvent{
+		{
+			Type: "comment_added",
+			CommentAuthor: jira.User{
+				AccountID:   selfID,
+				AccountType: "atlassian",
+				DisplayName: "Fullsend Test Account",
+			},
+		},
+		{
+			Type: "label_changed",
+			ChangeAuthor: jira.User{
+				AccountID:   selfID,
+				AccountType: "atlassian",
+			},
+		},
+		{
+			Type: "comment_added",
+			CommentAuthor: jira.User{
+				AccountID:   "human-user",
+				AccountType: "atlassian",
+			},
+		},
+	}
+
+	filtered := p.filterBotEvents(events)
+	if len(filtered) != 1 {
+		t.Fatalf("expected 1 event after self-account filter, got %d", len(filtered))
+	}
+	if filtered[0].CommentAuthor.AccountID != "human-user" {
+		t.Errorf("expected human event to remain, got %q", filtered[0].CommentAuthor.AccountID)
 	}
 }
 

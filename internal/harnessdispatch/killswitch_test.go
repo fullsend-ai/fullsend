@@ -31,17 +31,14 @@ func TestKillSwitchActive_PerRepo(t *testing.T) {
 	assert.True(t, active)
 }
 
-func TestKillSwitchActive_OrgConfig(t *testing.T) {
+func TestKillSwitchActive_PerOrgConfigRejected(t *testing.T) {
 	dir := t.TempDir()
-	cfg := config.NewOrgConfig(nil, nil, nil, "", "o")
-	cfg.SetKillSwitch(true)
-	data, err := yaml.Marshal(cfg)
-	require.NoError(t, err)
+	data := []byte("version: \"1\"\nkill_switch: true\ndispatch:\n  platform: github-actions\nrepos: {}\n")
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), data, 0o644))
 
-	active, err := KillSwitchActive(dir)
-	require.NoError(t, err)
-	assert.True(t, active)
+	_, err := KillSwitchActive(dir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "per-org configuration format")
 }
 
 func TestKillSwitchActive_InvalidConfig(t *testing.T) {

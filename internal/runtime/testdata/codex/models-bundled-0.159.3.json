@@ -1,0 +1,48 @@
+{
+  "models": [
+    {
+      "slug": "gpt-6-astra",
+      "multi_agent_version": "v2"
+    },
+    {
+      "slug": "gpt-6.1-sol",
+      "multi_agent_version": "v2"
+    },
+    {
+      "slug": "gpt-6-sol",
+      "multi_agent_version": "v2"
+    },
+    {
+      "slug": "gpt-6-luna",
+      "multi_agent_version": "v2"
+    },
+    {
+      "slug": "gpt-5.6-sol",
+      "multi_agent_version": "v2"
+    },
+    {
+      "slug": "gpt-5.6-terra",
+      "multi_agent_version": "v2"
+    },
+    {
+      "slug": "gpt-5.6-luna",
+      "multi_agent_version": "v1"
+    },
+    {
+      "slug": "gpt-daybreak-blue-latest",
+      "multi_agent_version": "v2"
+    },
+    {
+      "slug": "gpt-daybreak-red-latest",
+      "multi_agent_version": "v2"
+    },
+    {
+      "slug": "gpt-5.5",
+      "multi_agent_version": null
+    },
+    {
+      "slug": "codex-auto-review",
+      "multi_agent_version": "v1"
+    }
+  ]
+}

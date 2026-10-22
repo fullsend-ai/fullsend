@@ -23,6 +23,10 @@ Superseded by [ADR-0088](0088-cel-guarded-overlays.md) (CEL-guarded overlays)
 > definition, and merge rules in this ADR reflect the state at the time of
 > acceptance. For the current authoritative version, see
 > [Harness Field Reference](../contributing/harness-fields.md).
+>
+> **Note:** `validation_loop` later changed from whole-struct replacement to
+> field-level merge (child/forge non-zero values win; omitted fields inherit).
+> See the living reference above.
 
 > **Note:** The `forge:` section introduced by this ADR is deprecated in favor
 > of CEL-guarded `overlays:` — see [ADR 0088](0088-cel-guarded-overlays.md).

@@ -23,6 +23,7 @@
     "@types/node": "^22.0.0",
     "@vueuse/core": "^12.4.0",
     "@vueuse/integrations": "^12.4.0",
+    "github-slugger": "2.0.0",
     "jsdom": "^25.0.0",
     "lint-staged": "^16.4.0",
     "mark.js": "8.11.1",

@@ -1,0 +1,277 @@
+# Behaviour-test mint probe (pkg/behaviourtest/steps/mint_probe.go).
+#
+# The mint probe steps commit this reusable workflow to a temporary host
+# repository in the pool org and delete that repository during scenario
+# cleanup. A shim workflow on a temporary branch of the leased test
+# repository calls it, so the OIDC token carries the host repository in
+# job_workflow_ref and the leased repository in repository.
+#
+# The job requests one token from the mint with the GitHub Actions OIDC
+# token and uploads a compact result. It never writes either token
+# anywhere: a minted token is masked and revoked straight away, and only
+# its reported scope is kept. The job exits 0 whatever the mint answers;
+# the suite classifies the uploaded result, so a missing result (for
+# example a failed upload) fails the run instead of passing silently.
+name: mint-probe
+
+on:
+  workflow_call:
+    inputs:
+      mint_url:
+        description: Mint base URL (the caller's FULLSEND_MINT_URL variable)
+        required: true
+        type: string
+      role:
+        required: true
+        type: string
+      level:
+        required: true
+        type: string
+      repos_json:
+        description: JSON array sent as the mint request's repos
+        required: true
+        type: string
+      artifact_name:
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    timeout-minutes: 10
+    steps:
+      - name: Request a token from the mint
+        env:
+          MINT_URL: ${{ inputs.mint_url }}
+          ROLE: ${{ inputs.role }}
+          LEVEL: ${{ inputs.level }}
+          REPOS_JSON: ${{ inputs.repos_json }}
+        run: |
+          set -uo pipefail
+          out=mint-probe-result.json
+          claims='{}'
+          scope='{}'
+          repos='[]'
+          token=''
+          # oidc_verified becomes true only once the OIDC token's signature,
+          # issuer, audience and time claims were verified here. The mint
+          # answers a workflow-host denial and an OIDC failure with the same
+          # 401, so the suite accepts a host denial only from a token this
+          # script verified.
+          oidc_verified=false
+          if jq -e 'type == "array" and all(.[]; type == "string")' <<<"${REPOS_JSON}" >/dev/null 2>&1; then
+            repos="$(jq -c . <<<"${REPOS_JSON}")"
+          fi
+
+          # emit OUTCOME ERROR HTTP_STATUS MESSAGE writes the result file. The
+          # result is never echoed to the step log: its message comes from the
+          # mint's response, and the artifact already keeps it. The log gets
+          # only the probe's own fixed-vocabulary fields.
+          emit() {
+            jq -n \
+              --arg outcome "$1" --arg error "$2" --arg status "$3" --arg message "${4:0:300}" \
+              --arg role "${ROLE}" --arg level "${LEVEL}" --argjson repos "${repos}" \
+              --argjson verified "${oidc_verified}" \
+              --argjson claims "${claims}" --argjson scope "${scope}" \
+              '{outcome: $outcome, role: $role, level: $level, repos: $repos, oidc_verified: $verified}
+               + (if $error == "" then {} else {error: $error} end)
+               + (if $status == "" then {} else {http_status: ($status | tonumber)} end)
+               + (if $message == "" then {} else {message: $message} end)
+               + $claims + $scope' >"${out}"
+            echo "mint probe result: outcome=$1 error=${2:--} http_status=${3:--} oidc_verified=${oidc_verified}"
+          }
+
+          # b64url_decode VALUE decodes unpadded base64url to stdout.
+          b64url_decode() {
+            local v
+            v="$(tr '_-' '/+' <<<"$1")"
+            case $(( ${#v} % 4 )) in
+              2) v="${v}==" ;;
+              3) v="${v}=" ;;
+            esac
+            base64 -d <<<"${v}"
+          }
+
+          # verify_oidc_token JWT checks the GitHub Actions OIDC token the way
+          # the mint does: RS256 signature against GitHub's published signing
+          # key, issuer, audience and time claims. It prints the failing
+          # check on stderr and succeeds only for a fully verified token.
+          oidc_issuer='https://token.actions.githubusercontent.com'
+          oidc_audience='fullsend-mint'
+          verify_oidc_token() {
+            local h p s header kid cert dir now jwks
+            IFS=. read -r h p s <<<"$1"
+            if [[ -z "${h}" || -z "${p}" || -z "${s}" ]]; then
+              echo "not a three-part JWT" >&2
+              return 1
+            fi
+            header="$(b64url_decode "${h}" 2>/dev/null)" || { echo "unreadable JWT header" >&2; return 1; }
+            kid="$(jq -er 'select(.alg == "RS256") | .kid | select(type == "string" and test("^[A-Za-z0-9._-]+$"))' <<<"${header}" 2>/dev/null)" \
+              || { echo "JWT header is not RS256 with a usable kid" >&2; return 1; }
+            now="$(date +%s)"
+            if ! b64url_decode "${p}" 2>/dev/null | jq -e \
+              --arg iss "${oidc_issuer}" --arg aud "${oidc_audience}" --argjson now "${now}" \
+              '.iss == $iss
+               and (.aud == $aud or (.aud | type == "array" and index($aud) != null))
+               and (.exp | type == "number" and . > $now)
+               and ((.nbf // 0) | type == "number" and . <= $now + 60)' >/dev/null 2>&1; then
+              echo "issuer, audience or time claims are not valid" >&2
+              return 1
+            fi
+            if ! jwks="$(curl -sS --fail --max-time 20 --retry 2 --retry-delay 2 "${oidc_issuer}/.well-known/jwks")"; then
+              echo "fetching GitHub's signing keys failed" >&2
+              return 1
+            fi
+            cert="$(jq -er --arg kid "${kid}" '[.keys[] | select(.kid == $kid)][0].x5c[0] | select(type == "string" and test("^[A-Za-z0-9+/=]+$"))' <<<"${jwks}" 2>/dev/null)" \
+              || { echo "no signing key for the token's kid" >&2; return 1; }
+            dir="$(mktemp -d)" || return 1
+            {
+              echo '-----BEGIN CERTIFICATE-----'
+              fold -w 64 <<<"${cert}"
+              echo '-----END CERTIFICATE-----'
+            } >"${dir}/cert.pem"
+            if ! openssl x509 -in "${dir}/cert.pem" -pubkey -noout >"${dir}/pub.pem" 2>/dev/null \
+              || ! b64url_decode "${s}" >"${dir}/sig.bin" 2>/dev/null \
+              || ! printf '%s' "${h}.${p}" | openssl dgst -sha256 -verify "${dir}/pub.pem" -signature "${dir}/sig.bin" >/dev/null 2>&1; then
+              rm -rf "${dir}"
+              echo "signature does not verify" >&2
+              return 1
+            fi
+            rm -rf "${dir}"
+          }
+
+          # usable_token VALUE succeeds for a non-empty token made only of
+          # characters that appear in OIDC JWTs and GitHub installation
+          # tokens. Anything else (whitespace, control characters, "%"
+          # escapes, ":") could smuggle a workflow command into add-mask.
+          token_re='^[A-Za-z0-9._~+/=-]+$'
+          usable_token() {
+            [[ -n "$1" && "$1" =~ ${token_re} ]]
+          }
+
+          # revoke_token deletes the minted installation token, retrying with
+          # bounded timeouts. It clears ${token} only once GitHub answered 204
+          # and succeeds trivially when no token is held, so the exit trap
+          # below is a safety net that revokes at most once.
+          revoke_token() {
+            local attempt code
+            [[ -n "${token}" ]] || return 0
+            for attempt in 1 2 3; do
+              code="$(curl -sS --connect-timeout 10 --max-time 20 -o /dev/null -w '%{http_code}' -X DELETE \
+                -H "Authorization: Bearer ${token}" \
+                -H "Accept: application/vnd.github+json" \
+                https://api.github.com/installation/token)" || code=000
+              if [[ "${code}" == 204 ]]; then
+                token=''
+                return 0
+              fi
+              sleep 2
+            done
+            return 1
+          }
+          trap 'revoke_token || true' EXIT
+
+          if [[ -z "${MINT_URL}" ]]; then
+            emit error config "" "FULLSEND_MINT_URL is not set on the calling repository"
+            exit 0
+          fi
+          if [[ "${repos}" == '[]' ]]; then
+            emit error config "" "repos_json is not a non-empty JSON array of strings"
+            exit 0
+          fi
+
+          if ! oidc_response="$(curl -sS --fail --retry 3 --retry-delay 2 --retry-all-errors \
+            -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=fullsend-mint")"; then
+            emit error oidc "" "requesting the GitHub Actions OIDC token failed"
+            exit 0
+          fi
+          oidc_token="$(jq -r '.value // empty' <<<"${oidc_response}" 2>/dev/null || true)"
+          if ! usable_token "${oidc_token}"; then
+            emit error oidc "" "the OIDC token response held no usable token"
+            exit 0
+          fi
+          echo "::add-mask::${oidc_token}"
+
+          # The claims are not secret; keep the two the mint authorizes on.
+          claims="$(b64url_decode "$(cut -d. -f2 <<<"${oidc_token}")" 2>/dev/null \
+            | jq -c '{repository: (.repository // ""), job_workflow_ref: (.job_workflow_ref // "")}' 2>/dev/null)" || claims='{}'
+          [[ -n "${claims}" ]] || claims='{}'
+
+          # The mint's 401 for a workflow-host denial is the same as for an
+          # OIDC failure, so verify the token here and stop before the mint
+          # request when it is not valid: a request with a token the mint
+          # would reject for authentication says nothing about host policy.
+          if ! oidc_reason="$(verify_oidc_token "${oidc_token}" 2>&1)"; then
+            emit error oidc "" "the OIDC token failed verification: ${oidc_reason}"
+            exit 0
+          fi
+          oidc_verified=true
+
+          body="$(jq -nc --arg role "${ROLE}" --arg level "${LEVEL}" --argjson repos "${repos}" \
+            '{role: $role, level: $level, repos: $repos}')"
+          if ! status="$(curl -sS --retry 2 --retry-delay 2 -o mint-response.json -w '%{http_code}' \
+            -H "Authorization: Bearer ${oidc_token}" \
+            -H "Content-Type: application/json" \
+            -d "${body}" \
+            "${MINT_URL%/}/v1/token")"; then
+            emit error transport "" "the mint request did not complete"
+            exit 0
+          fi
+          message="$(jq -r '.error // empty' mint-response.json 2>/dev/null || true)"
+
+          case "${status}" in
+            200)
+              minted="$(jq -r '.token // empty' mint-response.json 2>/dev/null || true)"
+              if ! usable_token "${minted}"; then
+                emit error response "${status}" "the mint answered 200 without a usable token"
+                rm -f mint-response.json
+                exit 0
+              fi
+              # From here the exit trap revokes the token on any early exit.
+              token="${minted}"
+              echo "::add-mask::${token}"
+              scope_ok=1
+              if ! scope="$(jq -c '{
+                  repository_selection: (.repository_selection // ""),
+                  granted_repos: (.granted_repos // []),
+                  granted_permissions: (.granted_permissions // {})
+                }' mint-response.json 2>/dev/null)"; then
+                scope='{}'
+                scope_ok=0
+              fi
+              rm -f mint-response.json
+              # Revoke the token before reporting: the probe only needs its
+              # reported scope, and a token that stays valid must not pass.
+              if ! revoke_token; then
+                scope='{}'
+                emit error revoke "${status}" "revoking the minted installation token failed"
+              elif [[ "${scope_ok}" == 0 ]]; then
+                emit error response "${status}" "the mint answered 200 with an unreadable scope"
+              else
+                emit minted "" "${status}" ""
+              fi
+              ;;
+            401 | 403)
+              emit denied "" "${status}" "${message}"
+              ;;
+            *)
+              emit error http "${status}" "${message}"
+              ;;
+          esac
+          rm -f mint-response.json
+          exit 0
+
+      - name: Upload the probe result
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: mint-probe-result.json
+          if-no-files-found: error
+          retention-days: 1

@@ -1,9 +1,9 @@
 .DEFAULT_GOAL := help
 .PHONY: help bootstrap ensure-hooks lint lint-all check fmt \
-       mindmap go-build go-test go-lint go-fmt go-vet go-tidy \
-       lint-md-links script-test test \
-       e2e-test behaviour-test lint-eval-cases functional-tests \
-       wasm-build wasm-stage mint-cf-worker-test
+       mindmap go-build go-test go-fmt go-vet go-tidy \
+       lint-md-links script-test test ci-local \
+       behaviour-test playback-test \
+       wasm-build wasm-stage wasm-stage-traced mint-cf-worker-test
 
 # Let Go automatically download the toolchain version required by go.mod.
 # This ensures local builds use the right version without manual intervention.
@@ -21,17 +21,15 @@ help:
 	@echo "  mindmap              - Open the interactive document graph in a browser"
 	@echo "  go-build             - Build the fullsend binary"
 	@echo "  go-test              - Run Go tests with race detection and coverage"
-	@echo "  go-lint              - Run golangci-lint"
 	@echo "  go-fmt               - Format Go code"
 	@echo "  go-vet               - Run go vet"
 	@echo "  go-tidy              - Run go mod tidy"
 	@echo "  lint-md-links        - Check markdown files for broken in-repo links and anchors"
-	@echo "  script-test          - Run shell script tests (reconcile-repos, topissues, analyze-transcript, user-forum-whats-new, gitlint-rules, artifact redaction, kill_stray_processes)"
-	@echo "  test                 - Run all checks: lint-all, go-test, script-test, lint-eval-cases"
-	@echo "  e2e-test             - Run admin e2e tests (CI: OIDC mint; local: gh auth login or GH_TOKEN)"
+	@echo "  script-test          - Run shell script tests (topissues, analyze-transcript, user-forum-whats-new, gitlint-rules, gateway doc configs, artifact redaction, kill_stray_processes, ci-local)"
+	@echo "  test                 - Run all checks: lint-all, go-test, script-test"
+	@echo "  ci-local             - Run CI checks in a container matching the ubuntu-24.04 runner (T=\"targets\"; see hack/ci-local)"
 	@echo "  behaviour-test       - Run Gherkin behaviour tests (installs fullsend per-repo; CI: OIDC mint)"
-	@echo "  lint-eval-cases      - Lint eval case definitions (annotations.yaml completeness)"
-	@echo "  functional-tests     - Run functional agent tests (requires EVAL_ORG, FULLSEND_DIR, GH_TOKEN, GCP creds)"
+	@echo "  playback-test        - Run @playback behaviour scenarios on the dummy-playback runtime (CI: OIDC mint)"
 	@echo "  wasm-build           - Build mintcore WASM binary and report gzip size vs Workers limits"
 	@echo "  wasm-stage           - Build and stage WASM + wasm_exec.js into CF Worker source tree"
 	@echo "  mint-cf-worker-test  - Build WASM, install deps, and run CF Worker bridge smoke tests"
@@ -103,7 +101,7 @@ mindmap:
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 
 go-build:
-	go build -ldflags "-X github.com/fullsend-ai/fullsend/internal/cli.version=$(VERSION)" -o bin/fullsend ./cmd/fullsend/
+	go build -ldflags "-X github.com/fullsend-ai/fullsend/internal/buildinfo.version=$(VERSION)" -o bin/fullsend ./cmd/fullsend/
 
 go-test:
 	GH_TOKEN= GITHUB_TOKEN= \
@@ -119,9 +117,6 @@ go-test:
 	@tail -n +2 cover-github.out >> coverage.out
 	@go tool cover -func=coverage.out | tail -1
 	@rm -f cover-default.out cover-github.out
-
-go-lint:
-	golangci-lint run ./...
 
 go-fmt:
 	gofmt -l -w .
@@ -161,10 +156,20 @@ wasm-stage: wasm-build
 	cp "$$(go env GOROOT)/lib/wasm/wasm_exec.js" $(WORKERSRC_DIR)/wasm_exec.js
 	@echo "==> Staged: $(WORKERSRC_DIR)/mintcore.wasm, $(WORKERSRC_DIR)/wasm_exec.js"
 
+# Stage a second WASM binary with a test OTLP traces endpoint stamped in
+# (the same -ldflags mechanism `fullsend mint deploy` uses). Only the Worker
+# tracing bridge tests (src/index.tracing.test.ts) import it; never deploy it.
+# Keep the endpoint in sync with TEST_COLLECTOR_URL in that test file.
+wasm-stage-traced:
+	@echo "==> Building traced mintcore WASM binary for Worker bridge tests..."
+	cd cmd/mint-wasm && GOOS=js GOARCH=wasm go build \
+		-ldflags "-s -w -X main.otlpTracesEndpoint=https://collector.test/v1/traces -X main.traceDeployment=worker-bridge-test" \
+		-o ../../$(WORKERSRC_DIR)/mintcore-traced.wasm .
+
 # Run CF Worker bridge smoke tests.
 # Works on a clean checkout: stages WASM, installs locked npm deps, runs vitest.
 # Do not rename: .github/workflows/mint-cf-worker-test.yml calls this target.
-mint-cf-worker-test: wasm-stage
+mint-cf-worker-test: wasm-stage wasm-stage-traced
 	@echo "==> Installing CF Worker npm dependencies..."
 	cd $(WORKERSRC_DIR) && npm ci --no-audit --no-fund
 	@echo "==> Type-checking CF Worker source (production + test files)..."
@@ -185,32 +190,49 @@ define run-timed
 endef
 
 script-test:
+	$(call run-timed,bash scripts/check-live-test-relevance-test.sh)
 	$(call run-timed,bash scripts/check-e2e-authorization-test.sh)
 	$(call run-timed,bash scripts/redact-behaviour-artifacts-test.sh)
 	$(call run-timed,bash .github/scripts/check-fix-eligibility-test.sh)
+	$(call run-timed,bash .github/scripts/count-fix-commits-test.sh)
+	$(call run-timed,bash .github/scripts/pre-fetch-review-body-test.sh)
 	$(call run-timed,bash scripts/check-agents-gate-pin-test.sh)
 	$(call run-timed,bash scripts/verify-release-tag-test.sh)
-	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/reconcile-repos-test.sh)
+	$(call run-timed,bash skills/cutting-releases/scripts/prepend-release-highlights-test.sh)
+	$(call run-timed,bash scripts/renovate/update-go-checksums-test.sh)
 	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/pre-fetch-prior-review-test.sh)
 	$(call run-timed,bash internal/scaffold/fullsend-repo/.github/scripts/setup-agent-env-test.sh)
 	$(call run-timed,bash hack/gitlab-runner-vm/executor/prepare_validation_test.sh)
 	$(call run-timed,bash hack/gitlab-runner-vm/executor/gateway_test.sh)
 	$(call run-timed,bash hack/gitlab-runner-vm/lib_test.sh)
 	$(call run-timed,bash hack/gitlab-runner-vm/setup_test.sh)
+	$(call run-timed,bash hack/gitlab-runner-vm/vm_test.sh)
+	$(call run-timed,bash hack/gitlab-runner-vm/create-openshift-vm_test.sh)
+	$(call run-timed,bash hack/gitlab-runner-vm/create-gcp-vm_test.sh)
+	$(call run-timed,bash hack/gitlab-runner-vm/podman-prune_test.sh)
+	$(call run-timed,bash hack/gitlab-runner-vm/grow-root-fs_test.sh)
+	$(call run-timed,bash hack/setup-e2e-inference-gateway_test.sh)
+	$(call run-timed,bash hack/setup-new-e2e-org_test.sh)
 	$(call run-timed,bash internal/runtime/kill_stray_processes_test.sh)
 	$(call run-timed,bash skills/renumber-adr/scripts/inflight-adr-numbers-test.sh)
+	$(call run-timed,bash hack/ci-local/ci-local_test.sh)
 	$(call run-timed,python3 skills/topissues/scripts/topissues_test.py)
 	$(call run-timed,python3 skills/nextwork/scripts/nextwork_test.py)
+	$(call run-timed,python3 skills/adr-corner/scripts/adr_corner_test.py)
 	$(call run-timed,python3 skills/analyze-transcript/analyze_transcript_test.py)
 	$(call run-timed,python3 skills/user-forum-whats-new/scripts/gather_test.py)
 	$(call run-timed,python3 -m pytest gitlint_rules_test.py -v)
+	$(call run-timed,python3 -m pytest hack/check_gateway_doc_configs_test.py -q)
 	$(call run-timed,python3 -m pytest internal/security/hooks/ -q)
 	$(call run-timed,node --test internal/runtime/pi_extension/*.test.mjs)
 
-test: lint-all go-test script-test lint-eval-cases
+test: lint-all go-test script-test
 
-e2e-test:
-	go test -tags e2e -v -count=1 -timeout 30m ./e2e/admin/
+# Run CI checks in a container matching the ubuntu-24.04 runner, for macOS and
+# non-Ubuntu Linux (#8479). Default: everything PR CI runs.
+#   make ci-local T="go-test lint-all"
+ci-local:
+	hack/ci-local/ci-local $(or $(T),ci)
 
 # Capabilities the runner declares for @requires:capability:<name> scenarios.
 # Declared here rather than in the e2e workflow so a PR that adds a gated
@@ -219,31 +241,41 @@ e2e-test:
 # fullsend-sandbox:latest ships pi since v0.37.0; each pi scenario costs one
 # small haiku run on the pool repo's Vertex WIF. Override to skip them:
 #   BEHAVIOUR_CAPABILITIES= make behaviour-test
+# inference-gateway and inference-gateway-api-key
+# (features/runtime/inference-gateway*.feature) reach no real model: the
+# dummy runtime calls the E2E test gateway's echo models. They skip when
+# E2E_INFERENCE_GATEWAY_URL (and, for the api-key scenario,
+# E2E_INFERENCE_GATEWAY_TEST_KEY) is unset. e2e.yml passes both to authorized
+# PRs, including forks (docs/guides/dev/e2e-testing.md).
+# runtime-pi-gateway, runtime-codex-gateway and runtime-claude-gateway (real
+# model runs) and inference-gateway-reseed (holds the sandbox for a 330 s
+# wait) are deliberately not declared; run them on demand with the full list
+# (docs/guides/dev/e2e-testing.md), e.g.
+#   BEHAVIOUR_CAPABILITIES=runtime-pi,inference-gateway,inference-gateway-api-key,runtime-pi-gateway,runtime-codex-gateway,runtime-claude-gateway,inference-gateway-reseed
 # runtime-pi-openai (features/runtime/pi-openai.feature) is deliberately not
 # declared: it needs an OpenAI organization mapped to the pool repositories
 # (docs/guides/infrastructure/openai-workload-identity.md). Add it here once
-# that exists: BEHAVIOUR_CAPABILITIES=runtime-pi,runtime-pi-openai
+# that exists.
 # runtime-codex-openai (features/runtime/codex-openai.feature) is undeclared
-# for the same reason, and codex has no Vertex path — so unlike pi it has no
-# default behaviour coverage at all until that organization exists:
-# BEHAVIOUR_CAPABILITIES=runtime-pi,runtime-codex-openai
-BEHAVIOUR_CAPABILITIES ?= runtime-pi
+# for the same reason, and codex has no direct Vertex path — so unlike pi it
+# has no default behaviour coverage at all until that organization exists.
+# runtime-opencode (features/runtime/opencode.feature) is not declared until
+# fullsend-sandbox:latest ships OpenCode, i.e. after the image change is
+# published from main; then add it here (one small haiku run on Vertex).
+BEHAVIOUR_CAPABILITIES ?= runtime-pi,inference-gateway,inference-gateway-api-key
 
 behaviour-test:
 	BEHAVIOUR_CAPABILITIES="$(BEHAVIOUR_CAPABILITIES)" go test -tags behaviour -race -v -count=1 -timeout 45m ./e2e/behaviour/
 
-# Functional agent evals — run agents against ephemeral GitHub repos and judge results.
-# Required env: EVAL_ORG (GitHub org for ephemeral repos), plus GCP creds for Vertex AI.
-# GH_TOKEN defaults to `gh auth token` if not set.
-FULLSEND_DIR ?= $(CURDIR)/internal/scaffold/fullsend-repo
-EVAL_AGENTS  ?= triage
-
-lint-eval-cases:
-	@for agent in $(EVAL_AGENTS); do \
-		./eval/lint-cases.sh "$$agent"; \
-	done
-
-functional-tests: lint-eval-cases
-	@for agent in $(EVAL_AGENTS); do \
-		FULLSEND_DIR="$(FULLSEND_DIR)" ./eval/run-functional.sh "$$agent"; \
-	done
+# Dummy-playback behaviour suite (e2e/behaviour/playback_suite_test.go ->
+# behaviourtest.RunPlaybackSuite). Built with -tags playback only, never
+# together with "behaviour": that would compile TestBehaviourSuite in too and
+# run both suites. RunPlaybackSuite fixes the @playback tag filter (GODOG_TAGS
+# is ignored), sets PLAYBACK_RUNTIME=dummy-playback, and otherwise reads the
+# same env as behaviour-test (ENVIRONMENT, BEHAVIOUR_*, E2E_*, GODOG_CONCURRENCY,
+# BEHAVIOUR_ARTIFACT_DIR) and leases repo slots across the pool orgs through
+# the same shared install driver.
+# The timeout matches behaviour-test; a CI job running this target must use
+# the same timeout-minutes (see docs/guides/dev/behaviour-testing.md).
+playback-test:
+	go test -tags playback -race -v -count=1 -timeout 45m ./e2e/behaviour/

@@ -15,8 +15,9 @@ func TestAgentEventInterfaceSatisfied(t *testing.T) {
 		ErrorEvent{ErrorType: "overloaded", Message: "rate limited"},
 		RetryEvent{Attempt: 1, MaxRetries: 3, DelayMs: 1000, Error: "timeout"},
 		ToolResultEvent{ID: "toolu_01abc", Result: "file contents"},
+		PluginErrorEvent{Plugin: "demo@inline", Type: "path-not-found", Path: "/plugins/demo", Message: "not found"},
 	)
-	if len(events) != 9 {
-		t.Errorf("expected 9 event types, got %d", len(events))
+	if len(events) != 10 {
+		t.Errorf("expected 10 event types, got %d", len(events))
 	}
 }

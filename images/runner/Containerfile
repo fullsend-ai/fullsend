@@ -34,14 +34,14 @@
 
 # ---------------------------------------------------------------------------
 # Build stage — compile the fullsend binary. Runs natively for each target
-# arch (under QEMU in CI) rather than cross-compiling from the build
+# arch (on a native runner per arch in CI) rather than cross-compiling from the build
 # platform: the binary is built with cgo for the ONNX Runtime scanner (see
 # below), which the previous CGO_ENABLED=0 build did not need. That costs
 # build time, which is tolerable here — the runner image is built only on
 # version tags and on changes to images/runner/. UBI images pull anonymously
 # from registry.access.redhat.com — no Red Hat subscription required.
 # registry.access.redhat.com/ubi10/go-toolset:latest
-FROM registry.access.redhat.com/ubi10/go-toolset@sha256:de00e16138966f9fed6bca2d22d28f6cc0d50b26ef6977398e2d8980d80be75f AS build
+FROM registry.access.redhat.com/ubi10/go-toolset@sha256:93ae1289310acbf92b3b4ac443210b61e113daffb766bc91deb6dea4d502cb01 AS build
 
 USER 0
 WORKDIR /src
@@ -86,7 +86,7 @@ ARG FULLSEND_VERSION=dev
 ARG FULLSEND_COMMIT=unknown
 RUN CGO_ENABLED=1 CGO_LDFLAGS="-L/usr/lib" GOOS=linux GOARCH=${TARGETARCH} \
     go build -trimpath -tags ORT \
-      -ldflags "-s -w -X github.com/fullsend-ai/fullsend/internal/cli.version=${FULLSEND_VERSION} -X github.com/fullsend-ai/fullsend/internal/cli.commitSHA=${FULLSEND_COMMIT}" \
+      -ldflags "-s -w -X github.com/fullsend-ai/fullsend/internal/buildinfo.version=${FULLSEND_VERSION} -X github.com/fullsend-ai/fullsend/internal/buildinfo.commitSHA=${FULLSEND_COMMIT}" \
       -o /out/fullsend ./cmd/fullsend/
 
 # ---------------------------------------------------------------------------
@@ -103,7 +103,7 @@ RUN CGO_ENABLED=1 CGO_LDFLAGS="-L/usr/lib" GOOS=linux GOARCH=${TARGETARCH} \
 # under rootless podman container root maps to the invoking host user, so
 # bind-mounted configs and repos keep sane ownership without UID mapping.
 # registry.access.redhat.com/ubi10/ubi:latest
-FROM registry.access.redhat.com/ubi10/ubi@sha256:4690398669a07627339936c9e79b05233053056ce688efeb4400d3c1c530486b
+FROM registry.access.redhat.com/ubi10/ubi@sha256:4debe04be3b15ff2861e3428cbfa42379a183b16787ca2b8cf124d7afd6e84a5
 
 # NOTE: no SHELL directive — podman's default OCI image format ignores it,
 # so all RUN steps below stay POSIX-sh compatible for docker AND podman.

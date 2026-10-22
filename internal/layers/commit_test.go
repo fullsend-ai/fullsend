@@ -1585,3 +1585,57 @@ func TestRecreateStaleScaffoldBranch_UnrelatedForkSameNameIgnored(t *testing.T) 
 	assert.Equal(t, []string{"acme/widget/fullsend/scaffold-install"}, client.DeletedBranches)
 	assert.NotContains(t, buf.String(), "not authored by acme")
 }
+
+func TestCommitScaffoldViaPR_SignedCommitsRequired(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
+	client.Errors = map[string]error{
+		"CommitFilesToBranch": fmt.Errorf("update ref: %w: %w: github api: 422 Repository rule violations found",
+			forge.ErrBranchProtected, forge.ErrSignedCommitsRequired),
+	}
+	printer, buf := newTestPrinter()
+
+	_, err := CommitScaffoldFiles(context.Background(), client, printer,
+		"acme", "widget", "main", testMeta("msg", "title", "body"), testFiles, false, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "requires signed commits")
+	assert.Contains(t, err.Error(), "fullsend/scaffold-install")
+	assert.NotContains(t, err.Error(), "configure branch protection",
+		"a signature rule must be named instead of the generic protection advice")
+	assert.Contains(t, buf.String(), "require signed commits")
+}
+
+func TestCommitFilesViaPR_SignedCommitsRequired(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
+	client.Errors = map[string]error{
+		"CommitFilesToBranch": fmt.Errorf("create commit on branch: %w: %w: github graphql: FORBIDDEN",
+			forge.ErrBranchProtected, forge.ErrSignedCommitsRequired),
+	}
+	printer, _ := newTestPrinter()
+
+	_, err := CommitFilesViaPR(context.Background(), client, printer,
+		"acme", "widget", "main", "feature/x", "msg", "title", "body", testFiles)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "requires signed commits")
+	assert.Contains(t, err.Error(), `"feature/x"`)
+	assert.NotContains(t, err.Error(), "configure branch protection")
+}
+
+func TestCommitScaffoldDirect_SignedCommitsRequiredFails(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
+	client.Errors = map[string]error{
+		"CommitFiles": fmt.Errorf("update ref: %w: %w: github api: 422", forge.ErrBranchProtected, forge.ErrSignedCommitsRequired),
+	}
+	printer, buf := newTestPrinter()
+
+	_, err := CommitScaffoldFiles(context.Background(), client, printer,
+		"acme", "widget", "main", testMeta("msg", "title", "body"), testFiles, true, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "requires signed commits")
+	assert.Contains(t, err.Error(), `"main"`)
+	assert.NotContains(t, err.Error(), "configure branch protection")
+	assert.Contains(t, buf.String(), "require signed commits")
+	assert.Empty(t, client.CreatedProposals, "no PR fallback: its head would be unsigned too")
+}

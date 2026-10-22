@@ -165,11 +165,17 @@ func TestNewSTSVerifier_AudienceIsConst(t *testing.T) {
 func TestSTSVerifier_ResolveWIFProvider(t *testing.T) {
 	v, err := NewSTSVerifier(STSVerifierConfig{
 		DefaultWIFProvider: "default-provider",
-		PerRepoWIFRepos:    map[string]bool{"myorg/special-repo": true},
+		PerRepoWIFRepos: map[string]bool{
+			"myorg/special-repo": true,
+			"enrolled/.fullsend": true,
+		},
 	})
 	require.NoError(t, err)
 
+	// .fullsend gets no special treatment: unlisted uses the default
+	// provider, listed uses its per-repo provider like any other repo.
 	assert.Equal(t, "default-provider", v.resolveWIFProvider("myorg/.fullsend"))
+	assert.Equal(t, BuildRepoProviderID("enrolled", ".fullsend"), v.resolveWIFProvider("enrolled/.fullsend"))
 	assert.Equal(t, "default-provider", v.resolveWIFProvider("myorg/regular-repo"))
 	assert.Equal(t, "gh-myorg-special-repo", v.resolveWIFProvider("myorg/special-repo"))
 }

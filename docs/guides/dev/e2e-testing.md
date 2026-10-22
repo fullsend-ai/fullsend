@@ -1,6 +1,6 @@
 # E2E Testing
 
-Guide for running and debugging fullsend admin e2e tests locally and in CI.
+Guide for running and debugging fullsend behaviour and playback tests locally and in CI.
 
 Related ADRs: [0040](../../ADRs/0040-org-pool-for-parallel-e2e-tests.md) (org pool),
 [0060](../../ADRs/0060-cross-org-mint-authorization-via-org-variables.md) (cross-org mint),
@@ -16,34 +16,73 @@ Playwright or stored sessions.
 Before running e2e locally or in CI:
 
 1. **Pool orgs** (`halfsend-01` … `halfsend-12`) provisioned per [Pool org provisioning](#pool-org-provisioning) below
-2. **Mint** deployed with `e2e` role enrolled and `ALLOWED_ORGS` including `fullsend-ai`
+2. **Mint** deployed with `e2e` role enrolled and the requesting repository `fullsend-ai/fullsend` enrolled in `PER_REPO_WIF_REPOS` (or the mint explicitly in public mode, `PER_REPO_WIF_REPOS=*`)
 3. **CI only:** pool orgs with `FULLSEND_FOREIGN_E2E_REPOS` authorizing `fullsend-ai/fullsend`
 4. **Local only:** `gh auth login` (or `GH_TOKEN` / `GITHUB_TOKEN`) with admin access on pool orgs
 
 ## Local runs
 
+The default local environment is `dev`. Both suites deploy a temporary
+Cloudflare preview mint; GitHub authentication alone is not sufficient.
+
 1. Authenticate as an admin on the pool orgs (`gh auth login --web`, or export `GH_TOKEN`).
-2. Run tests (uses `gh auth token`, `GH_TOKEN`, or `GITHUB_TOKEN`):
+2. Load the following environment variables from your approved secret store
+   before running either suite. Use test credentials, not production credentials;
+   never commit them or paste them into logs.
+
+   | Environment variables | Required values |
+   |-----------------------|-----------------|
+   | `TEST_FULLSEND_PEM`, `TEST_TRIAGE_PEM`, `TEST_CODER_PEM`, `TEST_REVIEW_PEM`, `TEST_RETRO_PEM`, `TEST_PRIORITIZE_PEM` | Private-key **contents**, not paths, for the installed test GitHub Apps. The driver materializes temporary PEM files for mint deployment and removes them afterward. |
+   | `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN` | Test Cloudflare account and token authorized to deploy preview mint Workers. Locally use these names, not the CI secret names `TEST_CLOUDFLARE_*`. |
+   | `E2E_GCP_PROJECT_ID` | Test inference project. Authenticate locally with GCP permissions to inspect/provision inference WIF for the pool repos; see [inference setup](behaviour-testing.md#repo-allocation-via-the-shared-slot-driver). |
+   | `TEST_ACTOR_WRITE_PAT`, `TEST_ACTOR_TRIAGE_PAT`, `TEST_ACTOR_OUTSIDER_PAT` | Human-like test-actor PATs used by SCM steps. Playback uses the triage PAT to create its tracking issue. |
+
+   The default app set is `fullsend-test`; the PEMs must match those installed
+   Apps. Set `BEHAVIOUR_APP_SET` only when using a different test app set.
+   Overriding `FULLSEND_MINT_URL` does **not** disable preview mint deployment.
+   If no PEMs are loaded, initialization fails with
+   `PEMDir is required (no PEMs materialized)`.
+
+3. Run tests (uses `gh auth token`, `GH_TOKEN`, or `GITHUB_TOKEN`):
 
 ```bash
-make e2e-test
+make behaviour-test   # Gherkin behaviour suite
+make playback-test    # @playback scenarios on the dummy-playback runtime
 ```
+
+The obsolete admin install/uninstall suite and `make e2e-test` target have
+been removed. CI keeps both the regular behaviour and playback suites.
+
+To run playback manually, select **E2E Tests → Run workflow**, choose the branch,
+and leave **Run the playback behaviour suite** enabled. From the CLI:
+
+```bash
+gh workflow run e2e.yml --repo fullsend-ai/fullsend \
+  --ref YOUR_BRANCH -f run_playback=true
+```
+
+Manual runs use the dev org pool and run playback only. Normal CI runs both
+suites, concurrently in dev and serialized against the single stage org.
 
 Optional environment variables:
 
 | Variable | Purpose |
 |----------|---------|
 | `GH_TOKEN` / `GITHUB_TOKEN` | Override token source for local runs |
-| `FULLSEND_MINT_URL` | Override mint endpoint (default: hosted public mint, same as `fullsend admin --mint-url`) |
-| `E2E_LOCK_TIMEOUT` | Max wait for a free pool org (default 10m) |
+| `FULLSEND_MINT_URL` | Override mint endpoint (default: hosted public mint, same as `fullsend github setup --mint-url`) |
+| `E2E_LOCK_TIMEOUT` | Max wait for a free pool org (default 10m). Applies to suites that still take the exclusive org lock; the behaviour and playback suites lease slots and ignore it |
 | `E2E_GCP_PROJECT_ID` | GCP project for inference setup (`github setup --inference-project`) |
 
-Behaviour tests use the same pool orgs (for `ENVIRONMENT=dev`) but install via `fullsend github setup` (per-repo) instead of `fullsend admin install`. When `ENVIRONMENT=stage`, the suite uses the `halfsend` org with a durable CF Worker mint instead of a pool org. See [behaviour-testing.md](behaviour-testing.md) and [behaviour-drivers.md](behaviour-drivers.md).
+Behaviour tests use the pool orgs (for `ENVIRONMENT=dev`) and install fullsend per-repo via `fullsend github setup`. When `ENVIRONMENT=stage`, the suite uses the `halfsend` org with a durable CF Worker mint instead of a pool org. See [behaviour-testing.md](behaviour-testing.md) and [behaviour-drivers.md](behaviour-drivers.md).
 
-Tests acquire an exclusive lock on one org from the pool (`halfsend-01` …
-`halfsend-12` for DEV, or `halfsend` for STAGE) — see [ADR 0040](../../ADRs/0040-org-pool-for-parallel-e2e-tests.md).
+The behaviour and playback suites lease `(org, test-repo-NN)` slots across the
+pool orgs (`halfsend-01` … `halfsend-12` for DEV, or `halfsend` for STAGE)
+instead of locking a whole org; see
+[behaviour-testing.md](behaviour-testing.md#repo-allocation-via-the-shared-slot-driver).
+Other e2e tests still acquire an exclusive lock on one pool org — see
+[ADR 0040](../../ADRs/0040-org-pool-for-parallel-e2e-tests.md).
 
-Shared pool, CLI, and cleanup helpers used by both admin e2e and behaviour tests live in `internal/e2etest/`. Admin-specific test logic remains in `e2e/admin/`.
+The behaviour and playback suites use the CLI and auth helpers in `internal/e2etest/` (for example `TokenForOrg`); the lock helpers there serve the admin e2e tests.
 
 ## CI runs
 
@@ -66,7 +105,7 @@ Required repository secrets:
 | `TEST_ACTOR_TRIAGE_PAT` | Classic PAT for the triage-level human-like test actor (`fstest-triage`); exposed to the behaviour job under the same env name |
 | `TEST_ACTOR_OUTSIDER_PAT` | Classic PAT for the outsider (no org write) human-like test actor (`fstest-outsider`); exposed to the behaviour job under the same env name |
 
-Mint URL uses the hosted public endpoint by default (same as `fullsend admin --mint-url`). Override with org/repo variable `FULLSEND_MINT_URL` if needed; no separate e2e secret.
+Mint URL uses the hosted public endpoint by default (same as `fullsend github setup --mint-url`). Override with org/repo variable `FULLSEND_MINT_URL` if needed; no separate e2e secret.
 
 ### Behaviour job GitHub Environments
 
@@ -90,9 +129,9 @@ Prefer **`wrangler versions upload --name=mint-test --preview-alias=…`** so ru
 
 Behaviour tests install fullsend in **per-repo** mode (`fullsend github setup`). Triage workflows mint same-org `triage` tokens from vendored reusable workflows; that requires per-repo mint enrollment (`PER_REPO_WIF_REPOS`). The install driver does **not** run `mint enroll` — pool org behaviour repos must be enrolled once by a GCP admin on the hosted mint project.
 
-Admin e2e uses the singular `halfsend-NN/test-repo` name. Behaviour tests allocate numbered `halfsend-NN/test-repo-01` … `test-repo-12` names via the unified `install.Driver`; these repos are **lazily created and installed** on demand (see [behaviour-testing.md](behaviour-testing.md#repo-allocation-via-unified-driver)). Pre-provisioning numbered repos in the pool org is no longer required — mint enrollment for those names is still pre-provisioned so it is not on the critical path. Enroll base names only — do **not** enroll `*-fork` names (forks are ephemeral PR sources and mint against the enrolled base repo). GitHub repositories need not exist yet — enroll is a mint allowlist / WIF-provider update only.
+Behaviour tests lease numbered `halfsend-NN/test-repo-01` … `test-repo-12` slots across the pool orgs via the shared slot driver; each claim **creates** the slot repo and installs into it, and the release deletes it (see [behaviour-testing.md](behaviour-testing.md#repo-allocation-via-the-shared-slot-driver)). Pre-provisioning numbered repos in the pool org is no longer required — mint enrollment for those names is still pre-provisioned so it is not on the critical path. Enroll base names only — do **not** enroll `*-fork` names (forks are ephemeral PR sources and mint against the enrolled base repo), nor the `*-mint-host` and `*-mint-unapproved` probe hosts of the [GitHub mint scope scenarios](behaviour-testing.md#github-mint-scope-scenarios) (the CF mint drivers list `*-mint-host` as a workflow host only, at deploy time). GitHub repositories need not exist yet — enroll is a mint allowlist / WIF-provider update only.
 
-Inference (`E2E_GCP_PROJECT_ID`) and mint (`it-gcp-konflux-dev-fullsend` for the hosted mint) may be different GCP projects. The behaviour install driver runs `fullsend inference provision <org>/test-repo` using CI credentials on the inference project (same access model as admin e2e), then passes the repo-scoped WIF provider to `github setup`. `E2E_GCP_WIF_PROVIDER` authenticates the CI job itself; it is not written to pool org repos.
+Inference (`E2E_GCP_PROJECT_ID`) and mint (`it-gcp-konflux-dev-fullsend` for the hosted mint) may be different GCP projects. The behaviour install driver resolves the repo-scoped WIF provider using CI credentials on the inference project and passes it to `github setup`. It runs `fullsend inference status <org>/test-repo-NN` first and runs `fullsend inference provision` only when the provider is not healthy, one provision at a time. The provider is cached per repo name for the rest of the run. `E2E_GCP_WIF_PROVIDER` authenticates the CI job itself; it is not written to pool org repos.
 
 The CI service account needs inference-provision IAM on `E2E_GCP_PROJECT_ID`:
 
@@ -101,7 +140,7 @@ The CI service account needs inference-provision IAM on `E2E_GCP_PROJECT_ID`:
 | `roles/iam.workloadIdentityPoolAdmin` | Create/update repo-scoped inference WIF providers |
 | `roles/resourcemanager.projectIamAdmin` | Grant `roles/aiplatform.user` to repo WIF principals |
 
-One-time enrollment for all pool orgs (idempotent). Enroll the singular admin `test-repo` (used by the driver today) and the behaviour pool `test-repo-01` … `test-repo-12` (pre-provisioned for planned parallelization):
+One-time enrollment for all pool orgs (idempotent). Enroll the singular `test-repo` (used by the driver today) and the behaviour pool `test-repo-01` … `test-repo-12` (pre-provisioned for planned parallelization):
 
 ```bash
 export GCP_PROJECT=it-gcp-konflux-dev-fullsend
@@ -134,14 +173,16 @@ Each pool org must be provisioned before e2e can use it:
 1. Org exists with `botsend` as owner
 2. `test-repo` and `e2e-lock` repos (lock created at runtime)
 3. Test actor permissions granted (see [Test actor permissions](#test-actor-permissions) below)
-4. All role apps installed, including `fullsend-ai-e2e` with **Repository → Variables: Read and write** (`actions_variables`) and **Organization → Variables: Read and write** (`organization_actions_variables`)
-5. `FULLSEND_FOREIGN_E2E_REPOS` includes `fullsend-ai/fullsend` with org-wide visibility (`visibility: all`)
-6. Mint enrolled: org in `ALLOWED_ORGS`, `e2e` in `ROLE_APP_IDS`, e2e app PEM enrolled
+4. `mint-status` team exists with `fstest-write` as an active member (see [Mint status team](#mint-status-team) below)
+5. The six `fullsend-test-*` role apps are installed for the test mint. The production `fullsend-ai-e2e` app is also installed with **Repository → Variables: Read and write** (`actions_variables`) and **Organization → Variables: Read and write** (`organization_actions_variables`); there is no test replacement for the `e2e` role.
+6. `FULLSEND_FOREIGN_E2E_REPOS` includes `fullsend-ai/fullsend` with org-wide visibility (`visibility: all`)
+7. Mint enrolled: requesting repository `fullsend-ai/fullsend` in `PER_REPO_WIF_REPOS` (or public mode), `e2e` in `ROLE_APP_IDS`, e2e app PEM enrolled. The pool org is a foreign target, so its access is governed by the `FULLSEND_FOREIGN_E2E_REPOS` grant and App installation above rather than by requesting-repository enrollment
 
-Use the idempotent setup script:
+Use the idempotent setup script. Numeric arguments become `halfsend-NN`; a full org name (for example `halfsend` for STAGE) is used as-is:
 
 ```bash
-MINT_PROJECT=... MINT_FUNCTION=... hack/setup-new-e2e-org.sh 07
+hack/setup-new-e2e-org.sh 07
+hack/setup-new-e2e-org.sh halfsend
 ```
 
 Verify foreign authorization:
@@ -173,26 +214,38 @@ on repo-level foreign grants.
 Pool orgs grant three test actor accounts specific access levels for
 e2e testing of permission-sensitive behaviour:
 
-| Actor | Org membership | Repo permission on base `test-repo*` |
-|-------|----------------|--------------------------------------|
-| `fstest-write` | member | push (write) |
-| `fstest-triage` | member | triage |
-| `fstest-outsider` | none | public read only (no collaborator grant) |
+| Actor | Org membership | Organization role | Effective repo permission |
+|-------|----------------|-------------------|---------------------------|
+| `fstest-write` | member | all-repository write | write on every org repo |
+| `fstest-triage` | member | all-repository triage | triage on every org repo |
+| `fstest-outsider` | none | none | public read only |
 
-Elevated access uses direct collaborator grants (not team membership). The
-behaviour suite deletes and recreates each pool repo at the start of a run, which
-drops these grants, so it re-applies the `fstest-write` and `fstest-triage` grants
-for every actor whose PAT is set. Fork repos
-(`test-repo-fork`) are intentionally excluded — they are not base/enrolled
-targets for permission grants.
+Elevated access uses **organization-level all-repository roles**, not
+per-repo collaborator grants or team membership. Direct collaborator
+grants vanish when the behaviour suite deletes and recreates a pool repo
+and re-adding them creates pending invitations. Org-level roles survive
+that delete/recreate cycle and apply to any future `test-repo*` name,
+including numbered pool slots that do not exist yet.
+
+The behaviour suite verifies org membership once per org at ensure time.
+It does **not** call `AddCollaborator`, and it does not re-verify the
+all-repository role itself at runtime — that would require the e2e App
+installation on every pool org to hold the `organization_custom_roles`
+permission solely to call the organization-roles API. The all-repository
+role is verified once, at setup time, by `hack/setup-new-e2e-org.sh`
+(which runs with an org-admin `gh` session, not the e2e App). Missing
+membership fails with a message to run `hack/setup-new-e2e-org.sh`. The
+outsider must remain outside the organization and must not receive an
+all-repository role.
 
 The setup script (`hack/setup-new-e2e-org.sh`) creates or verifies this
-model idempotently. To auto-accept org membership invitations, pass the
-actor PATs as environment variables:
+model idempotently on `halfsend-NN` and on the STAGE org `halfsend`. To
+auto-accept org membership invitations, pass the actor PATs as
+environment variables:
 
 ```bash
 TEST_ACTOR_WRITE_PAT=ghp_... TEST_ACTOR_TRIAGE_PAT=ghp_... \
-  MINT_PROJECT=... MINT_FUNCTION=... hack/setup-new-e2e-org.sh 07
+  hack/setup-new-e2e-org.sh 07
 ```
 
 Without the PAT variables, the script pauses for manual acceptance.
@@ -203,6 +256,487 @@ stored as repository secrets `TEST_ACTOR_WRITE_PAT`,
 `TEST_ACTOR_TRIAGE_PAT`, and `TEST_ACTOR_OUTSIDER_PAT` on
 `fullsend-ai/fullsend`.
 
+### Mint status team
+
+GitHub user-token authentication on the test mint status endpoints
+(`--status-auth=github`, see
+[mint administration](../infrastructure/mint-administration.md)) allows
+members of a GitHub team. Every pool org and the STAGE org has a team
+with slug `mint-status`. Its only member is `fstest-write`, the account
+behind `TEST_ACTOR_WRITE_PAT`. The membership is a plain `member` role in
+a closed team.
+
+| Organization | Status auth group |
+|--------------|-------------------|
+| `halfsend` (STAGE) | `halfsend/mint-status` |
+| `halfsend-01` | `halfsend-01/mint-status` |
+| `halfsend-02` | `halfsend-02/mint-status` |
+| `halfsend-03` | `halfsend-03/mint-status` |
+| `halfsend-04` | `halfsend-04/mint-status` |
+| `halfsend-05` | `halfsend-05/mint-status` |
+| `halfsend-06` | `halfsend-06/mint-status` |
+| `halfsend-07` | `halfsend-07/mint-status` |
+| `halfsend-08` | `halfsend-08/mint-status` |
+| `halfsend-09` | `halfsend-09/mint-status` |
+| `halfsend-10` | `halfsend-10/mint-status` |
+| `halfsend-11` | `halfsend-11/mint-status` |
+| `halfsend-12` | `halfsend-12/mint-status` |
+
+The STAGE and numbered test mints take these values as
+`--status-github-group=ORG/mint-status`. The behaviour suite's CF mint
+drivers pass it, with `--status-auth=oidc,github`, on every mint
+deploy. The DEV driver picks one pool org's team at random once per
+job and uses it for every preview mint, so every numbered org needs
+the team. The
+[CLI mint status scenarios](behaviour-testing.md#cli-mint-status-scenarios)
+run `fullsend mint status --mint-url` with the writer PAT against that
+mint.
+
+The setup script (`hack/setup-new-e2e-org.sh`) creates or verifies the
+team after it confirms test actor org membership:
+
+- When the team is missing, the script creates it.
+- On every run, the script removes the operator whose `gh` session it
+  uses from the team, because GitHub adds a team's creator as a
+  maintainer. Doing this on every run also cleans up after a run that
+  stopped between creating the team and removing the creator.
+- When `fstest-write` is not an active team member with the `member`
+  role, the script adds it or sets it back to `member`. A maintainer
+  could add others and widen the allowlist. The membership is active
+  straight away because the earlier step made `fstest-write` an active
+  org member. The step uses the operator's `gh` session, not the actor
+  PAT.
+- The script then checks the team slug and lists every team member and
+  pending invitation. It stops with an error when anyone other than
+  `fstest-write` is on the team.
+- Any API error other than a "not found" 404 stops the script.
+
+Re-running the script makes no changes when the team and membership
+already exist, so it also restores them after an org is rebuilt. To roll
+the team out to existing orgs, an org owner runs the script once per org:
+
+```bash
+for org in halfsend $(seq -w 1 12); do
+  hack/setup-new-e2e-org.sh "${org}"
+done
+```
+
+To check one org by hand:
+
+```bash
+gh api /orgs/halfsend-01/teams/mint-status --jq .slug
+gh api /orgs/halfsend-01/teams/mint-status/memberships/fstest-write --jq .state
+# expect: mint-status, then active
+```
+
+## Inference gateway test gateway
+
+The inference gateway behaviour tests
+([#8280](https://github.com/fullsend-ai/fullsend/issues/8280),
+[ADR 0137](../../ADRs/0137-inference-gateway-credential-route.md)) call a
+durable [agentgateway](https://github.com/agentgateway/agentgateway) v1.6.0
+instance on Cloud Run in the E2E GCP project. The gateway accepts GitHub
+Actions OIDC tokens from the pool repositories only.
+`hack/setup-e2e-inference-gateway.sh` creates it, or adopts an existing one
+with the same names, and keeps it in sync. The gateway also answers under
+the path prefix `/e2e-prefix` (`PATH_PREFIX` in the script, #8303): a
+`path-prefix` route with no policies of its own strips the prefix and hands
+the request back to the same listener, so the prefixed URL gets the same
+authentication, authorization and rate limits as the bare origin. The
+api-key scenario uses the prefixed URL; the oidc scenarios use the bare
+origin. The route went live from the #8303 pull request before it merged,
+so until then a run of the script from `main` shows the `routes:` block as
+a frozen-path difference. The scenarios are gated on
+`@requires:capability:` tags.
+[Wiring it into the behaviour tests](#wiring-it-into-the-behaviour-tests)
+lists the capabilities CI declares and how to run the rest.
+
+### Who runs it, and when
+
+An E2E project admin runs the script from a workstation with `gcloud`
+(authenticated), `skopeo`, `jq`, `curl` and `gh` (authenticated, to read
+this repository's workflow runs for the
+[busy check](#change-control)). Run it again after any of these
+changes:
+
+- **Pool change:** a new pool org, or a different `DefaultPoolSize`
+  (`pkg/behaviourtest/drivers/install/driver.go`). Edit `POOL_ORGS` or
+  `POOL_REPOS` at the top of the script.
+- **agentgateway bump:** change `AGW_VERSION`.
+- **Model change:** edit `VERTEX_MODELS`, plus `vertex_params` for a
+  model-as-a-service model.
+
+The operator needs these roles on the project:
+
+| IAM role | Purpose |
+|----------|---------|
+| `roles/serviceusage.serviceUsageViewer` | Check that the required APIs are enabled |
+| `roles/run.admin` | Create and update the Cloud Run service and allow unauthenticated invocation |
+| `roles/secretmanager.admin` | Create the config and stub key secrets, add versions, grant per-secret access |
+| `roles/artifactregistry.admin` | Create the repository, copy the agentgateway image into it and read its digest |
+| `roles/iam.serviceAccountAdmin` | Create the runtime service account |
+| `roles/iam.serviceAccountUser` | Deploy the service as the runtime service account |
+| `roles/resourcemanager.projectIamAdmin` | Read the project IAM policy on every run, and add or remove the `roles/aiplatform.user` grant |
+
+### Check it, then run it
+
+The project comes from `--project` or `E2E_GCP_PROJECT_ID`, and the region
+defaults to `us-east5`. The durable gateway serves the Vertex models, so pass
+`--with-vertex` on every run. A run with neither `--with-vertex` nor
+`--without-vertex` stops rather than remove them.
+
+1. Preview with `--dry-run`. It only reads, prints what it would change, and
+   exits 3 if anything would change:
+
+   ```bash
+   hack/setup-e2e-inference-gateway.sh --project "$E2E_GCP_PROJECT_ID" --with-vertex --dry-run
+   ```
+
+   Output against the durable gateway, with the project ID, URL, revision and config hash replaced
+   by example values. "No changes" means a real run would be a no-op:
+
+   ```text
+   ==> Dry run (read only) for the e2e inference gateway in project example-project (us-east5)
+
+   ==> Checking required APIs...
+       OK: required APIs are enabled
+
+   ==> Change control...
+       OK: config matches version 27, which the serving revision started with
+
+   ==> Artifact Registry repository fullsend-e2e-gateway...
+       OK: repository fullsend-e2e-gateway exists
+
+   ==> agentgateway v1.6.0 image...
+       upstream ghcr.io/agentgateway/agentgateway:v1.6.0 is sha256:9d3e6044ddcdc0878b1787f77bd401252b95e22684203fb5e874c4c42d2ed90c
+       OK: us-east5-docker.pkg.dev/example-project/fullsend-e2e-gateway/agentgateway:v1.6.0 matches upstream
+
+   ==> Service account fullsend-e2e-gateway@example-project.iam.gserviceaccount.com...
+       OK: service account exists
+       OK: service account has roles/aiplatform.user
+
+   ==> Secrets...
+       rendered config sha256 <sha256 of the rendered config>
+       OK: secret fullsend-e2e-gateway-config is up to date
+       OK: service account can read secret fullsend-e2e-gateway-config
+       OK: secret fullsend-e2e-gateway-stub-upstream-key is up to date
+       OK: service account can read secret fullsend-e2e-gateway-stub-upstream-key
+
+   ==> Cloud Run service fullsend-e2e-gateway...
+       OK: service is up to date
+       OK: all traffic goes to the latest revision, with no tags
+
+   ==> Verifying...
+       service Ready condition: True, revision fullsend-e2e-gateway-00009-abc
+       no token: GET /v1/models -> HTTP 401 text/plain
+         body: authentication failure: no bearer token found
+       x-api-key only: GET /v1/models -> HTTP 401 text/plain
+         body: authentication failure: no bearer token found
+       non-JWT bearer: GET /v1/models -> HTTP 401 text/plain
+         body: authentication failure: the token header is malformed: Error(InvalidToken)
+
+   ==> No changes: everything was already in place.
+
+   ==> Behaviour test settings (set the URL as a repository secret; it embeds
+       the project number, so never commit it):
+
+       E2E_INFERENCE_GATEWAY_URL=https://fullsend-e2e-gateway-abc123-ul.a.run.app
+       E2E_INFERENCE_GATEWAY_AUDIENCE=fullsend-e2e-gateway
+
+       A positive check needs a GitHub Actions OIDC token for a pool
+       repository; the inference-gateway behaviour test covers it.
+   ```
+
+2. Apply the changes:
+
+   ```bash
+   hack/setup-e2e-inference-gateway.sh --project "$E2E_GCP_PROJECT_ID" --with-vertex
+   ```
+
+   Each step prints `OK:` for what is already in place and `CHANGED:` for
+   what it did. A config change adds one config secret version and rolls one
+   Cloud Run revision. The new version is live for any instance that reads
+   the mounted file as soon as it is added; the new revision makes sure the
+   gateway restarts on it. A serving revision older than the latest secret
+   version is always rolled, which also finishes a rollout an earlier run
+   left incomplete. Any other
+   difference in the service's settings triggers a redeploy, and the script
+   names the setting that differed. Traffic pinned to an older revision, or
+   an older revision reachable through a tag, is moved back to the latest one.
+
+   > **Not executed:** this real run has not happened yet. The durable
+   > gateway was deployed by hand with the same names and settings, and the
+   > dry run above shows the script adopts it unchanged.
+
+The 401s must be `text/plain` from agentgateway. An HTML 401 comes from
+Cloud Run's invoker check, which means `--no-invoker-iam-check` is missing,
+and the script fails. The probes need no token, so a positive check is left
+to the behaviour test, which mints a GitHub Actions OIDC token for a pool
+repository.
+
+The api-key behaviour test ([ADR 0138](../../ADRs/0138-inference-gateway-api-key-credential-mode.md))
+needs a gateway key for the `echo` model only. Pass its hash, never the key,
+as `ECHO_KEY_HASH=sha256:<64 hex>` on every run; a run without it removes
+the key. `REAL_KEY_HASH` does the same for a time-boxed key used in one local
+run, and is left unset afterwards. That key may call one real model:
+`claude-haiku-5-5` by default, or `gpt-oss-120b` with
+`REAL_KEY_MODEL=gpt-oss-120b`. With a key, this test gateway serves both
+modes, so its OIDC check is permissive: a request
+with no credential passes authentication and each model then refuses it
+with a 403. That is a test-gateway arrangement, not a recommendation. An
+OIDC-only gateway keeps strict `jwtAuth`, and a gateway that does mix the
+modes must have authorization rules that deny anonymous requests. The probe
+therefore expects a 401 (`api key authentication failure: ...`) for a
+bearer that is neither a valid token nor a configured key, instead of the
+three probes above.
+
+### Change control
+
+The `behaviour` job of `e2e.yml` calls this gateway on every run, and the
+merge queue requires that job. A bad deploy, or a deploy in the middle of a
+run, fails the queue. `release.yml` does not call the gateway, but the
+script also waits for release runs, so nothing changes while a release is
+cut. So a run that changes the gateway goes through three checks. A run that
+changes nothing skips them and is still a no-op.
+
+1. **Frozen-path diff.** Before it changes anything, the script renders the
+   new config and compares it with the live config: the config secret
+   version that the revision getting the traffic started with. A revision
+   pinned to a version number serves that version. The service mounts the
+   secret's latest version, so otherwise that is the newest version
+   created before the revision was, and the post-deploy check of the run
+   that rolled the revision verified it. A version added later is a pending
+   rollout: an instance that restarts may load it, so the script warns
+   about it, but it is not the baseline. If the traffic is split across
+   revisions, the script stops before it changes anything. The comparison
+   masks only the changes that are allowed:
+   - extra allowlist repositories after the pool list, such as temporary
+     repositories added to the live config by hand;
+   - the time-boxed `REAL_KEY_HASH` entry, when it may call exactly one
+     real model, and its allow rule on that model;
+   - the tokens-per-minute cap, only with `--allow-tpm-change`.
+
+   Any other difference refuses the deploy with exit 4 and prints the masked
+   diff. That covers the `echo` and `echo-denied` models, the pool list, the
+   `jwtAuth` and `apiKey` modes, the echo key hash, the requests-per-minute
+   cap, the Vertex models, and the real key's rule on `echo` or
+   `echo-denied`. To make such a change, pass
+   `--allow-frozen-change`. Use it only outside a release window, and tell
+   the maintainers first. `--dry-run` runs this check too.
+2. **Busy check.** Before its first change of any kind, including a pending
+   rollout, an image or IAM change and `--delete`, the script refuses with
+   exit 6 while a `merge_group` run of `e2e.yml` or a `release.yml` run is
+   not completed. It asks `fullsend-ai/fullsend` with `gh` for each
+   unfinished status, so a run behind a page of completed runs still
+   counts. A failed lookup also stops the run, because an unknown state is
+   not an idle gateway. `--force-busy` skips the check. Use it only for an
+   outage fix. `--dry-run` skips it, because it changes nothing.
+3. **Post-deploy check.** After any new revision serves traffic, the script
+   calls `claude-haiku-5-5`, `gemini-3.8-flash`, `gpt-oss-120b` and `echo`,
+   each on `/v1/chat/completions`, `/v1/messages` and `/v1/responses`, with
+   no credential. All 12 calls must return 403. Then one call with a wrong
+   API key must return 401. On a gateway without `--with-vertex`, only `echo`
+   is called. On a gateway without a key hash, the anonymous calls must
+   return 401, because strict `jwtAuth` refuses them before any model does.
+   If a call gets any other status, or the new revision has no URL to
+   call, the script prints the config secret version that was serving
+   before the run and the command that restores it, then exits 5. If the
+   run removed the Vertex grant, the command grants it again first. If that version is disabled, the script stops before
+   it changes anything: enable it, or roll a revision onto an enabled
+   version, to choose a rollback baseline first.
+
+Exit codes:
+
+| Exit | Meaning |
+|------|---------|
+| 0 | Done, or nothing to do |
+| 1 | An error, or a verification probe failed |
+| 2 | `REAL_KEY_MODEL` names a model the real key may not call |
+| 3 | `--dry-run` found pending changes |
+| 4 | The config change touches a frozen part of the config |
+| 5 | The post-deploy check failed. Roll back. |
+| 6 | A merge queue or release run is using the gateway |
+
+**Rolling back.** The post-deploy failure prints one command line, with the
+values filled in. It copies the previous version into a new latest version,
+then rolls a revision onto it:
+
+```bash
+gcloud secrets versions access <previous> --secret=fullsend-e2e-gateway-config --project="$E2E_GCP_PROJECT_ID" > fullsend-e2e-gateway-config-v<previous>.yaml \
+  && gcloud secrets versions add fullsend-e2e-gateway-config --project="$E2E_GCP_PROJECT_ID" --data-file=fullsend-e2e-gateway-config-v<previous>.yaml \
+  && gcloud run services update fullsend-e2e-gateway --project="$E2E_GCP_PROJECT_ID" --region=us-east5 \
+       --update-secrets=/etc/agw-config/config.yaml=fullsend-e2e-gateway-config:latest,/etc/agw-upstream/key=fullsend-e2e-gateway-stub-upstream-key:latest
+```
+
+The restored config is the latest version again, so the service still
+mounts `:latest` and the script sees no drift in the service settings. Fix
+the change in the script before you re-run it. The next run compares the
+fixed config with the restored version and goes through the three checks
+again.
+
+### What it manages
+
+Every resource is named `fullsend-e2e-gateway*`. Those names are reserved for
+this script: it adopts resources that already have them and touches nothing
+else. What it creates carries the marker `purpose=fullsend-e2e-gateway`: a
+label, or the description of the service account. Adopted resources keep
+whatever they had.
+
+| Resource | Name | Settings |
+|----------|------|----------|
+| Artifact Registry repository | `fullsend-e2e-gateway` | Holds `ghcr.io/agentgateway/agentgateway:v1.6.0`, copied unchanged with `skopeo copy --all --preserve-digests`. Every run checks that the copy's digest matches upstream, and refuses to continue if it does not. |
+| Service account | `fullsend-e2e-gateway@<project>.iam.gserviceaccount.com` | Runtime identity. With `--with-vertex`, it holds `roles/aiplatform.user`. |
+| Secret | `fullsend-e2e-gateway-config` | The generated agentgateway config. |
+| Secret | `fullsend-e2e-gateway-stub-upstream-key` | The stub upstream key, a fixed non-secret value: `e2e-stub-upstream-key`. |
+| Cloud Run service | `fullsend-e2e-gateway` | `--allow-unauthenticated --no-invoker-iam-check`, 1 vCPU / 512 MiB, at most 1 instance, label `purpose=fullsend-e2e-gateway`. Deployed by the verified image digest; every run checks that the serving revision runs that image. Both secrets are mounted as files at `:latest`. |
+
+The service account gets `roles/secretmanager.secretAccessor` on each secret,
+not on the project.
+
+The generated config (print it with `--print-config`):
+
+- validates tokens with `jwtAuth`. The issuer is
+  `https://token.actions.githubusercontent.com`, its JWKS is fetched from
+  GitHub, and the only accepted audience is `fullsend-e2e-gateway`. The
+  caller's token is never forwarded upstream; that is agentgateway's default.
+  The mode depends on whether a key hash is set:
+  - **No key hash:** `jwtAuth` runs in `strict` mode, and a request without
+    a valid token gets a 401.
+  - **`ECHO_KEY_HASH` or `REAL_KEY_HASH` set:** `jwtAuth` runs in `permissive` mode, followed by an
+    `apiKey` policy in `optional` mode. A valid JWT is checked and
+    stripped first, so it never reaches the key check. A bearer that is not
+    a JWT goes on to the key check, and a wrong key gets a 401. Each key
+    carries its own `allowedModels`: `[echo]` for the echo key, and the one
+    model `REAL_KEY_MODEL` names for the real key. A request with no credential
+    passes both checks, and each model's authorisation rules then deny it
+    with a 403. The durable gateway has `ECHO_KEY_HASH` only, and no real
+    key.
+
+  This mixed setup exists so that one test gateway can serve both the
+  `oidc` and `api-key` auth modes. Do not copy it to production. A
+  production OIDC gateway should keep the strict `jwtAuth` recommended by
+  [ADR 0137](../../ADRs/0137-inference-gateway-credential-route.md).
+- authorises each model with an exact-match list of `jwt.repository` values.
+  The list covers `test-repo-01` to `test-repo-12` in `halfsend-01` to
+  `halfsend-12` and in the STAGE org `halfsend`: 156 repositories. It
+  matches names, so keep the pool orgs registered: whoever owns a pool org
+  name can call the gateway. A model that a configured key may call also
+  admits that key's `apiKey.purpose`.
+- strips `x-api-key` from every request it sends upstream.
+- caps each real model at 60 requests and 200,000 tokens per minute for
+  each kind of caller: the pool shares one budget per model, each configured
+  key has its own, and every other caller shares one separate budget. So no
+  caller can use up the behaviour tests' budget, not even with requests the
+  model refuses. `echo` and `echo-denied` allow pool and key callers 60
+  requests a second; every other caller stays in its one shared bucket.
+  Tokens are counted after each response, including cached input, so the
+  token budget is a throttle rather than a hard ceiling: requests already in
+  flight when it runs out still finish, and only later ones are refused. The
+  budgets are held in the single instance and start again with each new
+  revision. On the durable gateway, a refused request gets a 429 whose body
+  is `rate limit exceeded`; the limit appears only in its
+  `x-ratelimit-limit` and `retry-after` headers. During a flood of
+  unauthenticated requests, a request with no credential can receive that
+  429 instead of a 403. The script's tests check the rendered rules but do
+  not evaluate them; the separation between callers was checked by sending
+  requests to a running gateway as the pool, as a key, and without
+  credentials.
+- serves these models:
+
+  | Model | Allowed for | Upstream |
+  |-------|-------------|----------|
+  | `claude-haiku-5-5`, `gemini-3.8-flash` (`--with-vertex` only) | The pool, plus the real key for `claude-haiku-5-5` when `REAL_KEY_HASH` is set and `REAL_KEY_MODEL` is left at its default | Vertex AI, location `global`, as the runtime service account |
+  | `gpt-oss-120b` (`--with-vertex` only) | The pool, plus the real key when `REAL_KEY_HASH` is set and `REAL_KEY_MODEL=gpt-oss-120b` | The Vertex AI model-as-a-service model `openai/gpt-oss-120b-maas`, location `global`, as the runtime service account. It serves Responses clients such as Codex on `/v1/responses`, which the gateway translates to Chat Completions. Gemini 3 tool loops through Responses translation aren't supported on the test gateway, and the Claude models take no Responses requests. The gateway drops assistant messages that have neither content nor tool calls from requests to this model, because its chat template rejects them: a test-gateway requirement, not something fullsend needs from every gateway. |
+  | `echo` | The pool, plus the echo key when `ECHO_KEY_HASH` is set | A header-echo listener in the same container. The gateway sends it the stub key. Its answer reports whether that key, and not the caller's credential, arrived, so the custody check can assert it. |
+  | `echo-denied` | Only `fullsend-e2e-gateway-outside/not-a-pool-repo`, which is outside the pool | The same echo listener. A behaviour test calls it from a pool repository and expects 403. |
+- turns off agentgateway's admin, stats and readiness listeners
+  (`adminAddr`, `statsAddr` and `readinessAddr` set to `"off"`), which would
+  otherwise bind ports 15000, 15020 and 15021. Nothing uses them: Cloud
+  Run's startup probe is its default TCP check on port 8080, and nothing
+  scrapes metrics.
+- writes one access log line per request to Cloud Run Logging. The line
+  carries `jwt.sub`, the GitHub OIDC subject, which names the calling
+  repository and its ref or event, alongside `src.addr`, the method, host,
+  path, status and duration. It records no header values and no request or
+  response bodies.
+
+### Wiring it into the behaviour tests
+
+The gateway URL embeds the E2E project number, so it is never committed. This
+script changes no workflow files; the wiring is:
+
+1. Set two repository-level **secrets**, like the `E2E_GCP_*` secrets:
+   - `E2E_INFERENCE_GATEWAY_URL`: the URL the script prints.
+   - `E2E_INFERENCE_GATEWAY_TEST_KEY`: the plaintext of the echo-only key
+     whose hash is passed as `ECHO_KEY_HASH`. The gateway authorises it for
+     the `echo` model only, so it reaches no real model. The suite
+     registers it for redaction. The `api-key` scenario sets it as the
+     enrolled pool repository's `FULLSEND_INFERENCE_GATEWAY_API_KEY`
+     secret for the scenario and deletes it afterwards, so the pool needs
+     no standing key.
+
+   `E2E_INFERENCE_GATEWAY_AUDIENCE` defaults to `fullsend-e2e-gateway` and
+   needs setting only if it changes.
+2. `e2e.yml` passes both secrets in the env of the `behaviour` job's "Run
+   behaviour tests" step, next to the `E2E_GCP_*` secrets, and to the
+   artifact redaction step. The gateway scenarios skip when these variables
+   are unset. Pull requests that the
+   `gate` job does not authorize never run the `behaviour` job, so they
+   receive neither secret. Authorized pull requests, including forks, do
+   receive them, and the `behaviour` job runs the pull request's head code
+   with those secrets in its environment. Authorizing a pull request
+   therefore lets its head code read both values, as it can already read
+   the `E2E_GCP_*` secrets. The echo-only key scope limits what the key can
+   call, not whether it can be read. To keep fork pull requests away from
+   these secrets, add an explicit condition in the base workflow.
+
+CI declares only the gateway capabilities that reach no real model. They
+are part of the `BEHAVIOUR_CAPABILITIES` default in the `Makefile`, which
+`make behaviour-test` and the `behaviour` job use:
+
+| Capability | Scenarios | Declared in CI |
+|------------|-----------|----------------|
+| `inference-gateway` | `features/runtime/inference-gateway.feature`: one dummy-runtime scenario covering the placeholder, credential custody on `echo`, egress scope and the `echo-denied` refusal | Yes |
+| `inference-gateway-api-key` | `features/runtime/inference-gateway-api-key.feature` (dummy runtime, echo-only key) | Yes |
+| `runtime-pi-gateway` | `features/runtime/pi-gateway.feature` (pi through the gateway to a real model, `claude-haiku-5-5`) | No: costs a real model run |
+| `runtime-codex-gateway` | `features/runtime/codex-gateway.feature` (codex through the gateway to a real model, `gpt-oss-120b`, on Responses) | No: costs a real model run |
+| `runtime-claude-gateway` | `features/runtime/claude-gateway.feature` (Claude Code through the gateway to a real model, `claude-haiku-5-5`, in the `oidc` mode) | No: costs a real model run |
+| `inference-gateway-reseed` | The token-rotation scenario in `features/runtime/inference-gateway.feature`, which also needs `inference-gateway` | No: holds the sandbox for a 330 s wait |
+
+To run the undeclared scenarios on demand, set `E2E_INFERENCE_GATEWAY_URL`
+and pass the full capability list. This replaces the `Makefile` default
+rather than adding to it:
+
+```bash
+BEHAVIOUR_CAPABILITIES=runtime-pi,inference-gateway,inference-gateway-api-key,runtime-pi-gateway,runtime-codex-gateway,runtime-claude-gateway,inference-gateway-reseed \
+  make behaviour-test
+```
+
+To run them in CI, add them to the `BEHAVIOUR_CAPABILITIES` default in the
+`Makefile` on a pull request. The behaviour job reads the `Makefile` from
+the pull request.
+
+### Removing it
+
+```bash
+hack/setup-e2e-inference-gateway.sh --project "$E2E_GCP_PROJECT_ID" --delete
+```
+
+`--delete` asks you to type the project ID (`--yes` skips the prompt). It
+then removes the resources above, plus the `roles/aiplatform.user` grant. It
+checks first and stops without deleting anything when:
+
+- a resource lacks the `purpose=fullsend-e2e-gateway` marker, so the script may
+  not have created it. The durable gateway was deployed by hand and adopted, so
+  removing it needs `--include-unlabelled`.
+- a service of that name runs in a region other than `--region`, or the
+  service listing reports an unreachable region. The secrets and the service
+  account are global, so a mistyped region must not remove them from under a
+  running gateway.
+
+> **Not executed:** `--delete` has not been run against the durable gateway,
+> which stays up.
+
 ## CI authorization
 
 Pull requests trigger e2e via `pull_request_target` in
@@ -212,19 +746,16 @@ use repository secrets. Because that exposes credentials to untrusted code, a
 
 ### Who runs automatically
 
-E2E tests run without maintainer action when the PR author is an org/repo
-**member** or **collaborator** (`author_association` of `OWNER`, `MEMBER`, or
-`COLLABORATOR` on the base repo). The gate uses the frozen
-`github.event.pull_request.author_association` from the workflow event — not a
-live REST lookup — because `GITHUB_TOKEN` lacks `read:org` and cannot see org
-membership for members with private visibility. (Note: agent dispatch paths use
-the collaborator permission API instead, which does not have this limitation —
-see [ADR 0054](../../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md).)
+E2E tests run without maintainer action when the PR author has **write
+access or higher** (`write`, `maintain`, or `admin` on the base repo) or is an
+allowed trusted bot. The gate verifies this using the collaborator permission
+API rather than `author_association`, ensuring contributors with read or
+triage roles cannot trigger credentialed CI runs automatically.
 
 ### Who needs `ok-to-test`
 
-External contributors and fork PR authors must have a maintainer with write
-access apply the **`ok-to-test`** label **after** the latest push. A label from
+Contributors without write access must have a maintainer with write access
+apply the **`ok-to-test`** label **after** the latest push. A label from
 anyone else (for example a triage-role user) is removed and does not authorize
 the run. The label must be created once in GitHub repo settings (Settings →
 Labels).
@@ -236,10 +767,10 @@ automatically and e2e is skipped until a maintainer re-applies it after
 reviewing the latest changes. Freshness compares the label timestamp against
 the frozen PR `updated_at` from the workflow event (`PR_UPDATED_AT`); the live
 API fallback may over-reject when non-push activity bumped `updated_at`.
-Applying the label triggers the **E2E ok-to-test** / **Functional ok-to-test**
-caller workflows, which `workflow_call` into the main suites.
+Applying the label triggers the **E2E ok-to-test** caller workflow, which
+`workflow_call`s into the main suite.
 
-The main **E2E Tests** and **Functional Tests** workflows do **not** subscribe to
+The main **E2E Tests** workflow does **not** subscribe to
 `labeled` events. Only `opened` / `synchronize` / `reopened` cancel in-progress
 work in the per-PR concurrency group (code changed). Label events are
 authorization only: they **never** cancel an in-progress suite. If a suite is
@@ -249,8 +780,8 @@ behind it (no expression-only “skip if busy”); that is accepted.
 Other labels (for example `ready-for-review`, `requires-manual-review`, or
 `component/*`) do **not** authorize e2e. They may start the thin ok-to-test
 caller with a skipped `run` job (GitHub cannot filter by label name at `on:`),
-but they do not start skipped checks under the **E2E Tests** / **Functional
-Tests** workflow names, and they never enter the suite concurrency group.
+but they do not start skipped checks under the **E2E Tests** workflow name,
+and they never enter the suite concurrency group.
 
 ### Blocked runs
 
@@ -261,14 +792,15 @@ gate. Re-run the workflow or add/re-apply `ok-to-test` as appropriate.
 
 ## CI architecture
 
-1. **PR open/sync** — **E2E Tests** / **Functional Tests** run gate then suite
-   jobs (trusted authors authorized immediately)
-2. **`ok-to-test` label** — thin **E2E ok-to-test** / **Functional ok-to-test**
-   workflows call the same suites via `workflow_call` (fork / external path)
-3. **Gate** — authorize the PR author or a fresh `ok-to-test` label (base
-   checkout only; never checks out PR head)
-4. **E2E** — checkout PR head SHA, authenticate to GCP via WIF, mint cross-org
-   tokens per pool org, `make e2e-test`
+1. **PR open/sync** — **E2E Tests** runs the gate then suite jobs (trusted
+   authors authorized immediately)
+2. **`ok-to-test` label** — the thin **E2E ok-to-test** workflow calls the same
+   suite via `workflow_call` (fork / external path)
+3. **Gate** — authorize a write+ / trusted-bot author, or an `ok-to-test`
+   labeled event from a write+ sender (base checkout only; never checks out PR head)
+4. **Behaviour / playback** — checkout PR head SHA, authenticate to GCP via
+   WIF, mint cross-org tokens per pool org, `make behaviour-test` (or
+   `make playback-test` for the playback job)
 
 Pushes to `main`, merge queue, and `workflow_dispatch` skip the gate and run e2e
 directly.
@@ -280,6 +812,23 @@ separate from the production `fullsend-ai-*` app set. They exist for temporary
 and test mints, including the Cloudflare Worker mint BT chain. There is **no
 `e2e` test app**. The `fix` role shares the coder test app and PEM (same as
 production).
+
+Pool organizations intentionally do not keep the production agent apps
+installed as baseline test infrastructure. The test mint uses the isolated
+`fullsend-test-*` identities, which limits the blast radius of test credentials
+and prevents ordinary behaviour runs from acting as production agents.
+
+The two credential paths serve different callers. The behaviour-test suite in
+this repository can point at the same hosted public mint used by
+`fullsend-ai/fullsend`, while workflows running in an enrolled test repository
+can point at that repository's dedicated per-run preview or durable stage mint.
+With the appropriate mint URL, credentials, and target-organization App
+installation/foreign-grant plumbing, a scenario can use either credential
+set. A scenario that emulates a third-party production agent must have an
+operator install the corresponding production app on the target organization
+and grant any required cross-organization access. Ordinary tests use the
+isolated test identities without permanently trusting production apps in every
+test organization.
 
 > **Warning:** Do **not** enroll these apps on the production community mint.
 > They are strictly for test infrastructure.
@@ -301,8 +850,13 @@ The `fix` role reuses the coder app (`fullsend-test-coder`) and
 
 ### Installation targets
 
-All six apps are installed with access to **all repositories** on
+All six test apps are installed with access to **all repositories** on
 `halfsend-01` through `halfsend-12` and on `halfsend` (used by the STAGE driver).
+The production `fullsend-ai-e2e` app is installed on the same organizations for
+cross-org suite control and minting. The other production agent apps are not
+required for the normal behaviour or playback suites and are intentionally not
+installed there; a scenario that needs a production identity must arrange that
+installation explicitly.
 
 ### App permission scopes
 
@@ -355,7 +909,8 @@ cover both Workers. Do not put the new value into site-deploy
 URL:
 
 ```bash
-# For each app slug in the inventory table above:
+# Install the six fullsend-test-* apps from the inventory table above, plus
+# the production fullsend-ai-e2e app required for cross-org suite control:
 # https://github.com/apps/<slug>/installations/new
 # Select the target pool org and grant access to "All repositories".
 ```

@@ -17,6 +17,9 @@ Date: 2026-09-05
 
 Accepted
 
+Codex child model resolution and native role dispatch are defined in
+[ADR 0126](0126-fullsend-owned-codex-subagents.md).
+
 ## Context
 
 Sub-agent skills (pr-review, retro-analysis) dispatch children by passing a

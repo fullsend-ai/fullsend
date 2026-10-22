@@ -1,10 +1,15 @@
 package cli
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/fullsend-ai/fullsend/internal/dispatch"
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -19,11 +24,13 @@ func clearPollEnv(t *testing.T) {
 		forge.SecretForgeToken, "CI_PROJECT_PATH",
 		"CI_COMMIT_REF_NAME", "CI_DEFAULT_BRANCH", "CI_JOB_URL",
 		forge.VarPollMode,
-		forge.VarGitLabRoleMigration, forge.VarGitLabRoleRegistry,
+		forge.VarGitLabRoleRegistry,
+		forge.VarGitLabDispatchRoute, "CI_JOB_TOKEN",
 		forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken,
 		forge.SecretGitLabCoderToken,
 		"JIRA_BASE_URL", "GITHUB_REPOSITORY",
 		"JIRA_TOKEN", "JIRA_USER_EMAIL",
+		"TRIGGER_PAYLOAD", "FULLSEND_DISPATCH_SECRET",
 	} {
 		t.Setenv(v, "")
 	}
@@ -244,19 +251,41 @@ func TestPollCmd_NoForgeOrDriver(t *testing.T) {
 	}
 }
 
+// --print-dispatch-routes is the capability probe the GitLab job scripts run
+// before selecting the child-pipeline route (#8438). It needs no credential
+// and must list exactly the routes gitlabChildDispatchJobToken honors.
+func TestPollCmd_PrintDispatchRoutes(t *testing.T) {
+	clearPollEnv(t)
+	var out strings.Builder
+	cmd := newPollCmd()
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"--forge", "gitlab", "--fullsend-dir", t.TempDir(), "--print-dispatch-routes"})
+	require.NoError(t, cmd.Execute())
+	assert.Equal(t, []string{forge.GitLabDispatchRouteAPI, forge.GitLabDispatchRouteChildPipeline}, strings.Fields(out.String()))
+	for _, route := range strings.Fields(out.String()) {
+		_, err := gitlabChildDispatchJobToken(func(k string) string {
+			if k == forge.VarGitLabDispatchRoute {
+				return route
+			}
+			return "job-token"
+		})
+		require.NoError(t, err, "every advertised route must be honored: %s", route)
+	}
+}
+
 func TestPollCmd_GitLabMissingToken(t *testing.T) {
 	clearPollEnv(t)
 	cmd := newPollCmd()
 	cmd.SetArgs([]string{"--forge", "gitlab", "--fullsend-dir", t.TempDir()})
 	err := cmd.Execute()
-	if err == nil || !strings.Contains(err.Error(), forge.SecretForgeToken) {
-		t.Fatalf("expected %s error, got: %v", forge.SecretForgeToken, err)
+	if err == nil || !strings.Contains(err.Error(), forge.SecretGitLabPollerToken) {
+		t.Fatalf("expected %s error, got: %v", forge.SecretGitLabPollerToken, err)
 	}
 }
 
 func TestPollCmd_GitLabMissingProject(t *testing.T) {
 	clearPollEnv(t)
-	t.Setenv(forge.SecretForgeToken, "tok")
+	t.Setenv(forge.SecretGitLabPollerToken, "tok")
 	cmd := newPollCmd()
 	cmd.SetArgs([]string{"--forge", "gitlab", "--fullsend-dir", t.TempDir()})
 	err := cmd.Execute()
@@ -267,7 +296,7 @@ func TestPollCmd_GitLabMissingProject(t *testing.T) {
 
 func TestPollCmd_GitLabInvalidMode(t *testing.T) {
 	clearPollEnv(t)
-	t.Setenv(forge.SecretForgeToken, "tok")
+	t.Setenv(forge.SecretGitLabPollerToken, "tok")
 	t.Setenv("CI_PROJECT_PATH", "group/project")
 	t.Setenv("CI_COMMIT_REF_NAME", "main")
 	cmd := newPollCmd()
@@ -280,7 +309,7 @@ func TestPollCmd_GitLabInvalidMode(t *testing.T) {
 
 func TestPollCmd_GitLabModeFromEnv(t *testing.T) {
 	clearPollEnv(t)
-	t.Setenv(forge.SecretForgeToken, "tok")
+	t.Setenv(forge.SecretGitLabPollerToken, "tok")
 	t.Setenv("CI_PROJECT_PATH", "group/project")
 	t.Setenv("CI_COMMIT_REF_NAME", "main")
 	t.Setenv(forge.VarPollMode, "invalid")
@@ -319,6 +348,162 @@ func TestPollCmd_JiraPollMissingToken(t *testing.T) {
 	}
 }
 
+// --- gitlab-webhook input driver ---
+
+// webhookPayloadFile writes a webhook body to a temp file and points
+// TRIGGER_PAYLOAD at it, as GitLab's file-type variable does.
+func webhookPayloadFile(t *testing.T, body string) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "payload.json")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TRIGGER_PAYLOAD", path)
+}
+
+func runWebhookCmd(t *testing.T, extraArgs ...string) error {
+	t.Helper()
+	cmd := newPollCmd()
+	cmd.SetArgs(append([]string{"--input-driver", "gitlab-webhook", "--fullsend-dir", t.TempDir()}, extraArgs...))
+	return cmd.Execute()
+}
+
+func TestPollCmd_GitLabWebhookPreflight(t *testing.T) {
+	tests := []struct {
+		name    string
+		setup   func(t *testing.T)
+		args    []string
+		wantErr string
+	}{
+		{
+			name:    "missing poller token",
+			args:    []string{"--project", "group/project"},
+			wantErr: forge.SecretGitLabPollerToken,
+		},
+		{
+			name: "missing project ignores CI_PROJECT_PATH",
+			setup: func(t *testing.T) {
+				t.Setenv(forge.SecretGitLabPollerToken, "tok")
+				t.Setenv("CI_PROJECT_PATH", "overridden/project")
+			},
+			wantErr: "--project is required",
+		},
+		{
+			name: "missing ref",
+			setup: func(t *testing.T) {
+				t.Setenv(forge.SecretGitLabPollerToken, "tok")
+			},
+			args:    []string{"--project", "group/project"},
+			wantErr: "CI_COMMIT_REF_NAME or CI_DEFAULT_BRANCH",
+		},
+		{
+			name: "missing TRIGGER_PAYLOAD",
+			setup: func(t *testing.T) {
+				t.Setenv(forge.SecretGitLabPollerToken, "tok")
+				t.Setenv("CI_DEFAULT_BRANCH", "main")
+			},
+			args:    []string{"--project", "group/project"},
+			wantErr: "TRIGGER_PAYLOAD is required",
+		},
+		{
+			name: "symlinked TRIGGER_PAYLOAD",
+			setup: func(t *testing.T) {
+				t.Setenv(forge.SecretGitLabPollerToken, "tok")
+				t.Setenv("CI_COMMIT_REF_NAME", "main")
+				dir := t.TempDir()
+				target := filepath.Join(dir, "real.json")
+				if err := os.WriteFile(target, []byte("{}"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				link := filepath.Join(dir, "link.json")
+				if err := os.Symlink(target, link); err != nil {
+					t.Skipf("symlinks unsupported: %v", err)
+				}
+				t.Setenv("TRIGGER_PAYLOAD", link)
+			},
+			args:    []string{"--project", "group/project"},
+			wantErr: "not a regular file",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clearPollEnv(t)
+			if tt.setup != nil {
+				tt.setup(t)
+			}
+			err := runWebhookCmd(t, tt.args...)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("err = %v, want containing %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestPollCmd_GitLabWebhookDispatchPath drives the driver through client
+// construction, bot-user resolution and routing into RunWebhook, against
+// a fake GitLab API that knows the bot user but none of the payload's
+// resources, so the build fails closed before any dispatch.
+func TestPollCmd_GitLabWebhookDispatchPath(t *testing.T) {
+	var pipelineCalls, userCalls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/v4/user":
+			userCalls++
+			if r.Header.Get("PRIVATE-TOKEN") != "poller-tok" && r.Header.Get("Authorization") != "Bearer poller-tok" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":100,"username":"fullsend-bot"}`))
+		case strings.HasSuffix(r.URL.Path, "/pipeline"):
+			pipelineCalls++
+			w.WriteHeader(http.StatusCreated)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	clearPollEnv(t)
+	t.Setenv(forge.SecretGitLabPollerToken, "poller-tok")
+	t.Setenv("CI_COMMIT_REF_NAME", "main")
+	t.Setenv("FULLSEND_DISPATCH_SECRET", "secret")
+	webhookPayloadFile(t, `{"object_kind":"note","user":{"id":42},"object_attributes":{"id":12,"action":"create","noteable_type":"Issue"},"issue":{"iid":4}}`)
+
+	err := runWebhookCmd(t, "--project", "group/project", "--gitlab-url", srv.URL)
+	if err == nil || !strings.Contains(err.Error(), "build webhook events") {
+		t.Fatalf("err = %v, want fail-closed build error", err)
+	}
+	if userCalls == 0 {
+		t.Error("mock GitLab /api/v4/user handler was never invoked; bot-user resolution was not exercised")
+	}
+	if pipelineCalls != 0 {
+		t.Errorf("pipeline calls = %d, want 0", pipelineCalls)
+	}
+}
+
+func TestPollCmd_GitLabWebhookAuthFailure(t *testing.T) {
+	var handlerCalls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		handlerCalls++
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	clearPollEnv(t)
+	t.Setenv(forge.SecretGitLabPollerToken, "bad-tok")
+	t.Setenv("CI_COMMIT_REF_NAME", "main")
+	webhookPayloadFile(t, `{}`)
+
+	err := runWebhookCmd(t, "--project", "group/project", "--gitlab-url", srv.URL)
+	if err == nil || !strings.Contains(err.Error(), "resolve bot user ID") {
+		t.Fatalf("err = %v, want bot user resolution error", err)
+	}
+	if handlerCalls == 0 {
+		t.Error("mock GitLab handler was never invoked; the 401 path was not exercised")
+	}
+}
+
 // --- buildJiraClient ---
 
 func TestBuildJiraClient_MissingToken(t *testing.T) {
@@ -349,4 +534,50 @@ func TestBuildJiraClient_WithTokenAndEmail(t *testing.T) {
 	if c == nil {
 		t.Fatal("expected non-nil client")
 	}
+}
+
+func TestGitLabChildDispatchJobToken(t *testing.T) {
+	env := func(vars map[string]string) func(string) string {
+		return func(key string) string { return vars[key] }
+	}
+
+	t.Run("unset keeps the Poller API route", func(t *testing.T) {
+		token, err := gitlabChildDispatchJobToken(env(map[string]string{"CI_JOB_TOKEN": "job-token-value"}))
+		require.NoError(t, err)
+		assert.Empty(t, token)
+	})
+
+	t.Run("api keeps the Poller API route", func(t *testing.T) {
+		token, err := gitlabChildDispatchJobToken(env(map[string]string{
+			forge.VarGitLabDispatchRoute: forge.GitLabDispatchRouteAPI,
+			"CI_JOB_TOKEN":               "job-token-value",
+		}))
+		require.NoError(t, err)
+		assert.Empty(t, token)
+	})
+
+	t.Run("child-pipeline returns the job token", func(t *testing.T) {
+		token, err := gitlabChildDispatchJobToken(env(map[string]string{
+			forge.VarGitLabDispatchRoute: forge.GitLabDispatchRouteChildPipeline,
+			"CI_JOB_TOKEN":               "job-token-value",
+		}))
+		require.NoError(t, err)
+		assert.Equal(t, "job-token-value", token)
+	})
+
+	t.Run("child-pipeline without a job token fails closed", func(t *testing.T) {
+		_, err := gitlabChildDispatchJobToken(env(map[string]string{
+			forge.VarGitLabDispatchRoute: forge.GitLabDispatchRouteChildPipeline,
+		}))
+		require.ErrorContains(t, err, "requires CI_JOB_TOKEN")
+	})
+
+	t.Run("unrecognized route fails closed", func(t *testing.T) {
+		_, err := gitlabChildDispatchJobToken(env(map[string]string{
+			forge.VarGitLabDispatchRoute: "trigger",
+			"CI_JOB_TOKEN":               "job-token-value",
+		}))
+		require.ErrorContains(t, err, "not a recognized dispatch route")
+		assert.NotContains(t, err.Error(), "job-token-value")
+	})
 }

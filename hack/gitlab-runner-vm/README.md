@@ -11,11 +11,19 @@ Each runner VM runs:
   The runner is a systemd *system* service running as the VM user, so it
   does not go through `pam_systemd` and does not inherit a login session.
   `setup.sh` enables lingering for that user and writes `XDG_RUNTIME_DIR`
-  / `DBUS_SESSION_BUS_ADDRESS` into the gitlab-runner drop-in so
-  `systemctl --user` (OpenShell gateway start/stop) can reach the user
-  bus. `executor/gateway.sh` also pins those variables itself, so a job
-  still works if the unit environment is missing (#7453).
-- **Podman** (rootless) — creates per-job containers
+  / `DBUS_SESSION_BUS_ADDRESS` into the gitlab-runner drop-in with the
+  runner user's numeric UID (resolved at setup time — systemd `%U` on a
+  system-scope unit expands to 0, not `User=`). `systemctl --user`
+  (OpenShell gateway start/stop) can then reach the user bus.
+  `executor/gateway.sh` also pins those variables itself, so a job still
+  works if the unit environment is missing (#7453, #7696).
+- **Podman** (rootless) — creates per-job containers. A user systemd
+  timer (`fullsend-podman-prune.timer`) plus a prepare/cleanup hook
+  reclaim unused images and stopped leftovers so the ~30 GiB root disk
+  cannot fill with superseded job layers (#7663). In-flight `runner-*` /
+  `openshell-*` containers are never stopped; the warm-cache runner and
+  supervisor images listed in `~/.config/fullsend-gitlab-runner/keep-images`
+  are never removed.
 - **OpenShell gateway** — started per job in `prepare.sh`, torn down in
   `cleanup.sh`. The VM does **not** keep a long-lived `systemd --user`
   gateway: that accumulated a stale profile registry, a baked-in OpenShell
@@ -89,7 +97,56 @@ GL_TOKEN=glpat-xxx \
 
 # 3. List VMs:
 NAMESPACE=my-namespace ./delete-openshift-vm.sh --list
+
+# 4. Finish a VM whose provisioning failed (same environment as the create):
+RUNNER_TOKEN=glrt-xxx \
+  GITLAB_URL=https://gitlab.example.com \
+  NAMESPACE=my-namespace \
+  RUNNER_IMAGE=ghcr.io/org/runner:v1.2.3 \
+  ./create-openshift-vm.sh --resume 05
 ```
+
+### Recovering from a failed provisioning run
+
+The VM's cloud-init `bootcmd` makes the Fedora repos usable before cloud-init
+installs packages: it switches `metalink=` to `baseurl=`, replaces the
+`download.example` placeholder that recent Fedora cloud images ship, rewrites
+the `dl.fedoraproject.org` base URLs from HTTP to HTTPS (some clusters block
+HTTP egress), and disables the metalink-only OpenH264 repo. `setup.sh` applies
+the same repair, including to repos already switched to an HTTP `baseurl=`. If
+the base packages are still
+missing after cloud-init, `create-openshift-vm.sh` sends the current `vm.yaml`
+repair commands to the VM (so a VM created from an older template is fixed too)
+and re-runs the package module once before running `setup.sh`, which then
+verifies the service and that the runner is registered with `GITLAB_URL` (and
+nowhere else). A reused runner config for a different GitLab, or with more
+than one runner, is rejected and leaves `gitlab-runner` stopped.
+
+If a run still fails after the VM exists, fix the cause and re-run with
+`--resume NUMBER` and the same environment. It never creates a second VM, and
+never creates a duplicate registration:
+
+- `RUNNER_TOKEN` (shared pool): no registration is created; `setup.sh` is
+  re-run with the pool token.
+- `GL_TOKEN`: the runner registered for `NAMESPACE/vm-name` is reused if the VM
+  holds its config (the config's runner ID must be that runner's, the VM's
+  token must verify as that runner using the system ID in
+  `/etc/gitlab-runner/.runner_system_id`, and GitLab must still report the
+  requested scope, `RUNNER_ACCESS_LEVEL` and `RUNNER_TAG` for it, with
+  `run_untagged` false and, for a project runner, locked to only the requested
+  project — otherwise `--resume` refuses and stops a running `gitlab-runner`,
+  as it also does when it cannot read the VM's runner config or look up the
+  registration).
+  The runner is found by its `NAMESPACE/vm-name` description, not by tag, so
+  edited tags never cause a duplicate. If none is registered (a failed run
+  deregisters the runner it created), a new one is registered and any stale
+  config on the VM is replaced — but only when GitLab confirms the config's
+  runner ID is gone. If several are registered, or one is registered but the VM never
+  received its token, `--resume` refuses — delete the VM with
+  `./delete-openshift-vm.sh` (which deregisters it) and create it again.
+
+`--resume` is safe to repeat. Recreating the VM (delete, then create) remains
+the compliance path for a VM that was configured and served jobs.
 
 ## Quick start — GCE (Google Compute Engine)
 
@@ -100,6 +157,8 @@ NAMESPACE=my-namespace ./delete-openshift-vm.sh --list
 > configured — without it, VMs created with `--no-address` cannot reach
 > package mirrors or container registries and `dnf install` will fail.
 > Set `GCP_USE_IAP=false` to create the VM with an external IP and SSH directly.
+> VMs get a 30 GiB boot disk whose root filesystem is grown and verified
+> during provisioning — see [GCE boot disk size and repair](#gce-boot-disk-size-and-repair).
 
 ```bash
 # 1. Create and provision a VM — group-scoped runner (recommended):
@@ -141,7 +200,186 @@ GL_TOKEN=glpat-xxx \
 
 # 3. List VMs:
 GCP_PROJECT=my-gcp-project ./delete-gcp-vm.sh --list
+
+# 4. Finish or repair an existing VM (same environment as the create):
+RUNNER_TOKEN=glrt-xxx \
+  GITLAB_URL=https://gitlab.example.com \
+  GCP_PROJECT=my-gcp-project \
+  RUNNER_IMAGE=ghcr.io/org/runner:v1.2.3 \
+  ./create-gcp-vm.sh --resume 05
 ```
+
+### Resuming or repairing a GCE runner
+
+`create-gcp-vm.sh --resume NUMBER` re-runs provisioning on the existing VM
+`fullsend-gitlab-runner-NUMBER` in `GCP_PROJECT` / `GCP_ZONE`. It finishes a
+VM whose create failed part-way, or brings a working runner up to the
+current provisioning. It reuses the steps and files of a fresh create:
+package install, root filesystem growth, staging `hack/gitlab-runner-vm/`,
+and `setup.sh`, followed by its verification.
+
+**Inputs.** Pass the same environment as the create: `GITLAB_URL`,
+`RUNNER_IMAGE`, `GCP_PROJECT`, `GCP_ZONE`, and either `RUNNER_TOKEN` or
+`GL_TOKEN` with `PROJECT_ID` / `GROUP_ID`. `RUNNER_USER` is optional (see
+below). `--resume` never creates or starts a VM: it refuses if the VM does
+not exist or is not running.
+
+**Service user.** `gcloud compute ssh` logs in as a per-operator account,
+so the login user is not necessarily the account the runner runs as. The
+script works out the existing service user from the gitlab-runner systemd
+drop-in (`User=`) and the owner of `/etc/gitlab-runner`, then stages files
+and runs `setup.sh` as that user. It uses `sudo -u` with that user's
+`HOME`, `XDG_RUNTIME_DIR`, and user D-Bus, after enabling lingering. This
+keeps rootless Podman storage, the executor paths and the workspace with
+the same account. On a VM that was never configured, the service user is
+`RUNNER_USER` if set, otherwise the login user. The script refuses if:
+
+- `RUNNER_USER` names a different account from the existing service user,
+  because it does not move a runner between accounts;
+- the drop-in and `/etc/gitlab-runner` disagree about the service user;
+- the service user is `root`;
+- the service user has no passwordless `sudo`, which `setup.sh` needs.
+
+**Disk.** If the boot disk is smaller than 30 GiB, it is resized to 30 GiB
+online. A larger disk is never shrunk. Either way, `grow-root-fs.sh` then
+grows the root filesystem to fill the disk and verifies it.
+
+**Job interruption.** `setup.sh` stops gitlab-runner while it reconfigures
+and restarts it at the end. A job running on the VM at that moment is
+interrupted. Resume when the runner is idle, or pause it in GitLab and
+wait for running jobs to finish first.
+
+**Rerun semantics.** `--resume` is idempotent and safe to repeat. On a
+healthy runner it changes nothing beyond restarting the service: setup
+leaves an already-correct config untouched and the runner keeps its
+registration, images and workspace data.
+
+- With `RUNNER_TOKEN`, the shared token is re-applied. Nothing is
+  registered or deregistered, so a shared fleet runner is never removed.
+- With `GL_TOKEN`, the existing registration for this VM (described as
+  `<GCP_PROJECT>/<vm-name>`) is reused when the VM's config already holds
+  its token. A new runner is registered only if none exists for the VM. If
+  that run fails, only the runner it just registered is deregistered. A
+  stale config is replaced only when GitLab confirms its runner ID is gone;
+  the old file is kept on the VM as
+  `/etc/gitlab-runner/config.toml.stale-<timestamp>` (root-only) so settings
+  you added by hand can be recovered.
+
+`--resume` refuses rather than guessing when it finds:
+
+- a config registered with a different GitLab instance;
+- several runners registered for the VM;
+- a config whose runner ID does not match this VM's registration;
+- a config with a `[[runners]]` entry that has no positive integer `id`.
+
+A runner token is verified from the VM over HTTPS before setup runs, so a
+stale CA trust on the VM (for example after a GitLab CA rotation) also makes
+`--resume` refuse; refresh the VM's CA certificates manually or recreate the
+VM.
+
+A runner that is registered in GitLab but whose token never reached the VM
+cannot be recovered, because GitLab does not show the token again. For
+that, and for any refusal, drain and delete the VM with
+`./delete-gcp-vm.sh` (which deregisters an individual runner) and create it
+again.
+
+**Differences from OpenShift `--resume`.**
+
+- The GCE script resizes an undersized boot disk and grows the root
+  filesystem.
+- It detects the service user instead of using a fixed `VM_USER`.
+- It connects with `gcloud compute ssh` (through IAP unless
+  `GCP_USE_IAP=false`) and installs packages with `dnf`, where OpenShift
+  waits for and repairs cloud-init.
+- It checks the GCE instance status first and refuses a VM that is not
+  running (start it with `gcloud compute instances start`).
+
+Recreating the VM (delete, then create) remains the compliance path for a
+VM that was configured and served jobs.
+
+## OpenShell version per job
+
+The host's OpenShell CLI, gateway, and supervisor image must match the
+OpenShell CLI in the job's runner image. One VM can serve runner images from
+Fullsend releases built on different OpenShell pins, in any order, without
+re-provisioning between jobs.
+
+**Supported images.** Official Fullsend runner images
+(`ghcr.io/fullsend-ai/fullsend-runner`), referenced by release tag
+(`X.Y.Z`), by digest, or by a moving tag (`dev`, `latest`, `X.Y`, a short
+commit SHA), including a registry mirror that holds identical content. The
+image's digest must be held by Fullsend's runner image repository (step 3
+below), so an official image keeps working after its tags move. A
+custom or rebuilt image is not supported, even if it copies an official
+image's labels and `openshell --version` output: those are written by
+whoever built the image, so the executor only accepts an image whose digest
+Fullsend itself published (step 3 below). The VM keeps no list of supported
+releases, so a newly published release needs no VM update.
+
+**How the version is selected.** `prepare.sh` pulls the job image, then
+`ensure_job_openshell_gateway`:
+
+1. Reads `org.opencontainers.image.revision` from the **already-pulled**
+   image (`podman image inspect`); moving tags are never re-resolved.
+2. Verifies that commit against GitHub: for a release image (tag `X.Y.Z`),
+   Git tag `vX.Y.Z` must resolve to the same commit; for any other
+   reference, the commit must be on `main` (fork commits are served under
+   the parent repository's URLs, so this check is what ties the commit to
+   Fullsend).
+3. Verifies that the pulled image is one Fullsend published for that
+   commit: at least one of the digests podman recorded for the pulled image
+   must be held by `ghcr.io/fullsend-ai/fullsend-runner` (only Fullsend's
+   workflow can push there). The registry is asked for the manifest by
+   digest, anonymously, never through a tag, so the answer does not change
+   when `dev`, the 7-character commit tag, or a release tag later moves to
+   another build. Without this check, an image could name any real commit,
+   including one with an older OpenShell pin, and so steer the host to an
+   older version. This check needs `ghcr.io` (token and manifest
+   endpoints) during job preparation, and runs on every job.
+4. Reads `OPENSHELL_VERSION` and `OPENSHELL_SHA` from
+   `.github/scripts/openshell-version.sh` at that exact commit.
+5. Requires the image's own `openshell --version` (run hardened like the job
+   container) to equal that pin. A match is required even when the host
+   already has the version.
+6. If the host version differs, tears down the old gateway, installs the
+   pinned version from `install.sh` at `OPENSHELL_SHA` (never a release tag
+   the job could influence), confirms the host now reports that version,
+   and pulls the matching supervisor image. This works for both upgrades
+   and downgrades. If it matches, the supervisor image is re-pinned to it.
+
+Images built before the OpenShell 0.0.x to 0.1 breaking change cannot be
+served after a host has moved to 0.1: the executor migrates forward only.
+
+**When version resolution fails.** The job log shows one of these errors:
+
+- `could not probe OpenShell version from job image` or `could not read an
+  OpenShell version from job image`: the image has no usable `openshell`
+  CLI. Use an official Fullsend runner image.
+- `has no org.opencontainers.image.revision label`: the image was not built
+  by the Fullsend runner image workflow. Use an official image.
+- `is not an image Fullsend published for commit`: none of the image's
+  digests is held by Fullsend's runner image repository (a custom or
+  rebuilt image, or a copy that was not built by Fullsend's workflow). Use
+  an official image by its release tag, `dev`, or digest.
+- `Git tag vX.Y.Z resolves to ...` or `is not on fullsend-ai/fullsend@main`:
+  the image's label does not match its release tag, or its commit is not on
+  `main`. Use the release-tagged image, or an image built from `main`
+  (a `:latest` image tagged from a commit outside `main` fails here too;
+  use its `X.Y.Z` tag).
+- `could not resolve`, `could not compare`, `could not fetch`, `could not get
+  a GHCR pull token`, `GHCR returned no pull token`, or `could not verify
+  that job image`: the VM could not reach `api.github.com`,
+  `raw.githubusercontent.com`, or `ghcr.io`
+  (outage, rate limit, or egress policy). Retry the job; no VM change is
+  needed. Commits on `main` that were verified once are cached under
+  `~/.local/state/fullsend/verified-revisions` to avoid repeat API calls.
+- `reports OpenShell X, but the Fullsend commit it was built from pins Y`:
+  the image's CLI does not match its source commit. Rebuild the image.
+- `host OpenShell is ... after installing`: the installer exited
+  successfully but the host did not switch versions. Inspect the install
+  output in the job log.
+
+No VM resume is needed when Fullsend publishes a release or bumps OpenShell.
 
 ## Environment variables
 
@@ -158,7 +396,7 @@ GCP_PROJECT=my-gcp-project ./delete-gcp-vm.sh --list
 | `RUNNER_TAG` | no | `fullsend-gitlab-runner` | Runner tag for job matching |
 | `DRAIN_TIMEOUT_SEC` | no | `600` | Delete mode only: cap in seconds on draining in-flight jobs (SIGQUIT + wait for `runner-*` containers to exit) before deleting the VM. On cap overrun, the script warns and proceeds. See `--no-drain` to skip draining entirely |
 | `RUNNER_ACCESS_LEVEL` | no | `not_protected` | `ref_protected` restricts the runner to protected branches and tags, so merge-request pipelines on unprotected source refs never match and sit `pending`. In project mode, `not_protected` means any job on any branch of the project can run; in group mode, any tag-matched job on any branch of any project invited into the group tree runs on this VM (see Security below) |
-| `OPENSHELL_VERSION` | no | from `.github/scripts/openshell-version.sh` | OpenShell version used at **VM provision** (Renovate-tracked). Per-job `prepare.sh` re-reads the job image's `openshell --version` and upgrades the host CLI + supervisor when they differ, so a stale VM pin cannot stick. |
+| `OPENSHELL_VERSION` | no | from `.github/scripts/openshell-version.sh` | OpenShell version installed at **VM provision** (Renovate-tracked). It is only the starting version: each job's `prepare.sh` switches the host to the version pinned by the job image's verified Fullsend source commit (see [OpenShell version per job](#openshell-version-per-job)). |
 | `GITLAB_RUNNER_VERSION` | no | `19.2.1` | gitlab-runner version |
 | `REGISTRATION_TOKEN` | setup only | — | GitLab runner registration token |
 
@@ -187,7 +425,7 @@ GCP_PROJECT=my-gcp-project ./delete-gcp-vm.sh --list
 | `GCP_USE_IAP` | no | `true` | Use IAP tunneling for SSH. Set to `false` to create the VM with an external IP and SSH directly. |
 | `GCP_IMAGE_FAMILY` | no | `fedora-cloud-43-x86-64` | GCE image family |
 | `GCP_IMAGE_PROJECT` | no | `fedora-cloud` | GCE image project |
-| `RUNNER_USER` | no | unset | Delete mode only: Unix account gitlab-runner/podman run as on the VM (setup.sh's `RUNNER_USER`, i.e. whichever identity ran `setup.sh`). Used to drain as the correct identity when `gcloud compute ssh` connects as someone else. GCE has no fixed login user equivalent to OpenShift's `VM_USER`, so unlike there this has no safe default — without it, the drain runs as the connecting identity and can under-report idle if that identity differs from the one gitlab-runner runs as |
+| `RUNNER_USER` | no | unset | `create-gcp-vm.sh --resume`: service user for a VM that was never configured (default: the `gcloud compute ssh` login user). On a configured VM it must match the detected service user or resume refuses (see [Resuming or repairing a GCE runner](#resuming-or-repairing-a-gce-runner)). Delete mode: Unix account gitlab-runner/podman run as on the VM (setup.sh's `RUNNER_USER`, i.e. whichever identity ran `setup.sh`). Used to drain as the correct identity when `gcloud compute ssh` connects as someone else. GCE has no fixed login user equivalent to OpenShift's `VM_USER`, so unlike there this has no safe default — without it, the drain runs as the connecting identity and can under-report idle if that identity differs from the one gitlab-runner runs as |
 
 ## Files
 
@@ -195,12 +433,19 @@ GCP_PROJECT=my-gcp-project ./delete-gcp-vm.sh --list
 - `delete-openshift-vm.sh` — drain in-flight jobs, then OpenShift VM teardown + runner deregistration
 - `create-gcp-vm.sh` — end-to-end VM creation on GCE + runner registration + setup
 - `delete-gcp-vm.sh` — drain in-flight jobs, then GCE VM teardown + runner deregistration
-- `setup.sh` — standalone VM configuration (called by create-openshift-vm.sh / create-gcp-vm.sh). Idempotent and safe to re-run in place as a debug convenience; recreation is the compliance path (see #7257).
-- `setup_test.sh` — unit tests for setup.sh idempotency hygiene (backup, gateway seed skip)
+- `setup.sh` — standalone VM configuration (called by create-openshift-vm.sh / create-gcp-vm.sh). Idempotent and safe to re-run in place as a debug convenience; recreation is the compliance path (see #7257). Re-running it on an already-provisioned VM also installs/refreshes the Podman prune timer.
+- `setup_test.sh` — unit tests for setup.sh idempotency hygiene (backup, executor path reconciliation and verification, gateway seed skip, Fedora repo repair)
+- `create-openshift-vm_test.sh` — end-to-end tests for create-openshift-vm.sh against stubbed `oc`/`virtctl`/GitLab API (shared-token path, cloud-init package repair, `--resume`)
+- `create-gcp-vm_test.sh` — end-to-end tests for create-gcp-vm.sh against stubbed `gcloud`/GitLab API (fresh create, `--resume` disk growth, service-user detection, both registration modes)
+- `podman-prune.sh` — reclaims unused rootless Podman containers and images; installed as a user systemd timer by setup.sh and invoked from prepare/cleanup
+- `podman-prune_test.sh` — unit tests for the prune script and timer install
+- `grow-root-fs.sh` — grows the root partition and Btrfs filesystem to fill the disk and verifies capacity; run by create-gcp-vm.sh and used to repair existing GCE runners (see [GCE boot disk size and repair](#gce-boot-disk-size-and-repair))
+- `grow-root-fs_test.sh` — unit tests for grow-root-fs.sh (unexpanded, already-expanded, failed growth, unsupported layouts)
 - `gitlab-runner-version.sh` — central pin for the gitlab-runner version
 - `vm.yaml` — KubeVirt VirtualMachine template (OpenShift only)
+- `vm_test.sh` — tests that vm.yaml's `bootcmd` leaves Fedora repo files usable (HTTPS `baseurl=`) before cloud-init installs packages
 - `executor/job_id.sh` — shared helper resolving the trusted job ID
-- `executor/prepare.sh` — custom executor prepare stage (reaps leftover OpenShell containers, starts a per-job gateway matched to the job image's OpenShell version)
+- `executor/prepare.sh` — custom executor prepare stage (reaps leftover OpenShell containers, prunes unused images, starts a per-job gateway matched to the job image's OpenShell version)
 - `executor/run.sh` — custom executor run stage
 - `executor/cleanup.sh` — custom executor cleanup stage (stops the gateway, wipes `~/.local/state/openshell/{gateway,tls}`, reaps sandboxes)
 - `executor/gateway.sh` — shared per-job gateway helpers sourced by prepare/cleanup
@@ -233,6 +478,131 @@ silently fails at per-job runtime: `prepare.sh`/`cleanup.sh` source the
 flattened copy, not the source-tree file. [`gateway.sh`](executor/gateway.sh)
 is the current example of (2); `job_id.sh`, `prepare.sh`, `run.sh`, and
 `cleanup.sh` only reference same-directory siblings.
+
+`podman-prune.sh` is **not** an executor script. `setup.sh` installs it
+to `~/.local/lib/fullsend/podman-prune.sh` and `prepare.sh`/`cleanup.sh`
+invoke that path via `prune_unused_podman_storage` in `gateway.sh`. Do
+not add it to the five-file executor allowlist.
+
+## Repairing stale executor paths
+
+`setup.sh` derives the custom executor's paths from the `HOME` of the user
+running it: `prepare_exec`, `run_exec` and `cleanup_exec` under
+`~/gitlab-runner-executor/`, and `builds_dir`/`cache_dir` under `~/builds`
+and `~/cache`. If `/etc/gitlab-runner/config.toml` points them anywhere
+else (for example at another account's home), every job fails in prepare
+with `fork/exec .../prepare.sh: no such file or directory`.
+
+The supported repair is to re-run `setup.sh` as the runner service user,
+the account the runner should run as (`systemctl show -p User gitlab-runner`).
+`setup.sh` also switches the service to whichever user runs it. Copy the
+current `hack/gitlab-runner-vm/` files onto the VM and re-run `setup.sh`
+with the same `GITLAB_URL` / `RUNNER_IMAGE` used at provision time. Do not
+edit the TOML by hand or switch the executor back to `shell`. On an
+existing custom-executor config, `patch_config` then:
+
+- rewrites only those five managed keys when their values differ, after
+  saving the previous file as `config.toml.bak`. Registration (`name`,
+  `url`, `id`, `token`) and every other setting are left unchanged;
+- leaves an already-correct config untouched (no write, no backup);
+- fails without modifying anything if `config.toml` has more than one
+  `[[runners]]` block or a managed key is missing or duplicated. Fix
+  those by hand.
+
+`verify` then checks the paths `config.toml` actually configures, not just
+the scripts under `~/gitlab-runner-executor/`. The configured scripts must
+be executable and the build/cache directories writable by the runner user,
+or setup exits non-zero.
+
+## Disk / image prune
+
+These VMs are long-lived. Without periodic reclaim, unused Podman images
+accumulate until `podman pull` fails with `no space left on device`.
+`setup.sh` therefore:
+
+1. Writes `~/.config/fullsend-gitlab-runner/keep-images` with the
+   pre-pulled `RUNNER_IMAGE` and OpenShell supervisor tag.
+2. Installs `~/.local/lib/fullsend/podman-prune.sh` and a user systemd
+   timer (`fullsend-podman-prune.timer`, hourly, Nice=19) that skips
+   the run when a `runner-*` or `openshell-*` container is in-flight.
+3. Invokes the same helper from `prepare.sh` (before the job image pull)
+   and `cleanup.sh` (after the job container is gone) so a busy runner
+   still reclaims space between jobs.
+
+To apply this to an already-provisioned VM, copy the updated
+`hack/gitlab-runner-vm/` files onto the VM and re-run `setup.sh` with
+the same `GITLAB_URL` / `RUNNER_IMAGE` used at provision time. The
+install is idempotent. For an immediate reclaim without waiting for the
+first timer tick:
+
+```bash
+systemctl --user start fullsend-podman-prune.service
+```
+
+## GCE boot disk size and repair
+
+`create-gcp-vm.sh` creates a **30 GiB** `pd-balanced` boot disk, matching
+the ~30 GiB guest disks of the OpenShift runners. A bigger virtual disk is
+not enough on its own: the Fedora Cloud image's own first-boot growth was
+observed not to run on GCE, leaving an ~8 GiB root Btrfs partition on a
+20 GiB disk (#8163). After installing packages and before registering the
+runner, `create-gcp-vm.sh` therefore streams
+[`grow-root-fs.sh`](grow-root-fs.sh) to the VM and runs it as root. The
+script:
+
+1. Checks the layout first: `/` must be Btrfs on a single-device filesystem
+   on a partition of a whole disk, and `/home` and `/var` must be on the
+   same filesystem (Fedora Cloud subvolumes). Any other layout fails with
+   `ERROR: ... no changes made` before any device is modified.
+2. Installs `cloud-utils-growpart` / `btrfs-progs` with `dnf` if they are
+   missing, then runs `growpart` on the root partition (`NOCHANGE` counts
+   as success) and `btrfs filesystem resize <devid>:max /` for the
+   filesystem's sole device.
+3. Verifies capacity: the disk is at least `MIN_DISK_GIB` (30 when run by
+   `create-gcp-vm.sh`), the root partition reaches the end of the disk, and
+   the Btrfs device size matches the partition. If any check fails,
+   provisioning stops and prints the cleanup hint. `create-gcp-vm.sh` also
+   requires the script's `OK: root filesystem spans the disk` line in the
+   SSH output, so a truncated stream cannot pass as success.
+
+Expected usable capacity: roughly **27–28 GiB** for `/`, `/home`, and
+`/var` together (they share one Btrfs filesystem) on a 30 GiB disk, about
+17–18 GiB on a 20 GiB disk. The difference goes to the EFI and `/boot`
+partitions (~2 GiB) and filesystem overhead. Check with:
+
+```bash
+lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINTS
+df -h / /home /var
+```
+
+### Repairing existing runners
+
+The script is idempotent and grows the disk online. It does not recreate
+the VM and leaves the runner registration, images, and workspace data in
+place. `./create-gcp-vm.sh --resume NUMBER` performs both steps below
+(see [Resuming or repairing a GCE runner](#resuming-or-repairing-a-gce-runner))
+and also re-runs `setup.sh`. To grow only the disk, run it from the repo
+root on your workstation (drop
+`--tunnel-through-iap` for VMs with an external IP):
+
+```bash
+vm=fullsend-gitlab-runner-01
+
+# Optional: grow the GCE disk to 30 GiB first. The boot disk is named after
+# the VM; the resize is online and only increases size. Skip this step to
+# just reclaim the unused space on a current 20 GiB disk.
+gcloud compute disks resize "${vm}" --size=30GB \
+  --project="${GCP_PROJECT}" --zone="${GCP_ZONE}"
+
+# Grow the root partition and Btrfs filesystem, then verify. Set
+# MIN_DISK_GIB to the disk size you expect (30 after the resize, 20 without).
+gcloud compute ssh "${vm}" --project="${GCP_PROJECT}" --zone="${GCP_ZONE}" \
+  --tunnel-through-iap \
+  -- "sudo env MIN_DISK_GIB=30 bash -s" < hack/gitlab-runner-vm/grow-root-fs.sh
+```
+
+If you re-run the script on a runner that is already expanded, it changes
+nothing and still runs the verification.
 
 ## Security notes
 

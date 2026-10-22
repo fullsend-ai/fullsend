@@ -2,6 +2,7 @@ package repos
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -15,8 +16,6 @@ import (
 
 func seedEnforcedIdentity(t *testing.T, fc *forge.FakeClient) {
 	t.Helper()
-	fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration] = string(gitlabroles.ModeEnforced)
-	fc.VariablesExist["group/project/"+forge.VarGitLabRoleMigration] = true
 	fc.VariableValues["group/project/"+forge.VarGitLabRoleRegistry] = `{"roles":[]}`
 	fc.VariablesExist["group/project/"+forge.VarGitLabRoleRegistry] = true
 	fc.VariableValues["group/project/"+forge.VarGitLabRoleRotation] = `{"roles":{}}`
@@ -30,7 +29,7 @@ func seedEnforcedIdentity(t *testing.T, fc *forge.FakeClient) {
 	}
 }
 
-func TestCleanupGitLabRoleIdentity_EnforcedRemovesGateAndRoles(t *testing.T) {
+func TestCleanupGitLabRoleIdentity_RemovesRegistryAndRoles(t *testing.T) {
 	t.Parallel()
 	fc := forge.NewFakeClient()
 	seedEnforcedIdentity(t, fc)
@@ -45,21 +44,43 @@ func TestCleanupGitLabRoleIdentity_EnforcedRemovesGateAndRoles(t *testing.T) {
 		Owner: "group", Repo: "project", Client: fc, Tokens: tokens,
 	})
 	require.NoError(t, err)
-	assert.GreaterOrEqual(t, result.VarsDeleted, 6)
-	assert.Equal(t, 4, result.TokensRevoked)
+	assert.GreaterOrEqual(t, result.VarsDeleted, 5)
+	// The legacy shared fullsend-bot token (ID 4) is never revoked by
+	// cleanup: only the three built-in role tokens are.
+	assert.Equal(t, 3, result.TokensRevoked)
+	assert.NotContains(t, tokens.revoked, 4)
 	assert.NotContains(t, tokens.revoked, 5)
-	assert.Empty(t, fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration])
+	assert.Empty(t, fc.VariableValues["group/project/"+forge.VarGitLabRoleRegistry])
 	assert.False(t, fc.Secrets["group/project/"+forge.SecretGitLabPollerToken])
 	assert.False(t, fc.Secrets["group/project/"+forge.SecretGitLabAnalystToken])
 	assert.False(t, fc.Secrets["group/project/"+forge.SecretGitLabCoderToken])
 }
 
+// TestCleanupGitLabRoleIdentity_LeavesLegacySharedTokenForManualCleanup
+// verifies cleanup no longer touches FULLSEND_FORGE_TOKEN: a repository
+// installed before the role-only rollout keeps that leftover secret
+// until an administrator removes it manually.
+func TestCleanupGitLabRoleIdentity_LeavesLegacySharedTokenForManualCleanup(t *testing.T) {
+	t.Parallel()
+	fc := forge.NewFakeClient()
+	require.NoError(t, fc.CreateRepoSecret(context.Background(), "group", "project", forge.SecretForgeToken, "sharedXXXX"))
+	require.NoError(t, fc.CreateRepoSecret(context.Background(), "group", "project", forge.SecretGitLabPollerToken, "oldvalueXXXX"))
+	tokens := &fakeTokens{}
+	tokens.seed(ProjectAccessToken{ID: 1, Name: gitlabroles.SharedTokenName, Active: true})
+
+	result, err := CleanupGitLabRoleIdentity(context.Background(), GitLabRoleCleanupConfig{
+		Owner: "group", Repo: "project", Client: fc, Tokens: tokens,
+	})
+	require.NoError(t, err)
+	assert.Greater(t, result.VarsDeleted, 0)
+	assert.True(t, fc.Secrets["group/project/"+forge.SecretForgeToken], "legacy shared secret must not be auto-deleted")
+	assert.False(t, fc.Secrets["group/project/"+forge.SecretGitLabPollerToken])
+	assert.NotContains(t, tokens.revoked, 1, "legacy shared token must not be auto-revoked")
+}
+
 func TestCleanupGitLabRoleIdentity_PartialEnrollmentIsIdempotent(t *testing.T) {
 	t.Parallel()
 	fc := forge.NewFakeClient()
-	fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration] = string(gitlabroles.ModeMigrating)
-	fc.VariablesExist["group/project/"+forge.VarGitLabRoleMigration] = true
-	require.NoError(t, fc.CreateRepoSecret(context.Background(), "group", "project", forge.SecretForgeToken, "sharedXXXX"))
 	require.NoError(t, fc.CreateRepoSecret(context.Background(), "group", "project", forge.SecretGitLabPollerToken, "oldvalueXXXX"))
 
 	first, err := CleanupGitLabRoleIdentity(context.Background(), GitLabRoleCleanupConfig{
@@ -67,7 +88,6 @@ func TestCleanupGitLabRoleIdentity_PartialEnrollmentIsIdempotent(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Greater(t, first.VarsDeleted, 0)
-	assert.False(t, fc.Secrets["group/project/"+forge.SecretForgeToken])
 	assert.False(t, fc.Secrets["group/project/"+forge.SecretGitLabPollerToken])
 
 	second, err := CleanupGitLabRoleIdentity(context.Background(), GitLabRoleCleanupConfig{
@@ -81,8 +101,6 @@ func TestCleanupGitLabRoleIdentity_PartialEnrollmentIsIdempotent(t *testing.T) {
 func TestCleanupGitLabRoleIdentity_CustomRoleFromRegistryWhenListFails(t *testing.T) {
 	t.Parallel()
 	fc := forge.NewFakeClient()
-	fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration] = string(gitlabroles.ModeMigrating)
-	fc.VariablesExist["group/project/"+forge.VarGitLabRoleMigration] = true
 	fc.VariableValues["group/project/"+forge.VarGitLabRoleRegistry] = `{"roles":[{"name":"scanner","responsibility":"scan","credential":"own","capabilities":["read_issues"],"agents":["scanner"]}]}`
 	fc.VariablesExist["group/project/"+forge.VarGitLabRoleRegistry] = true
 	secret := gitlabroles.CustomSecretName("scanner")
@@ -130,7 +148,7 @@ func TestCleanupGitLabRoleIdentity_TokenListFailureFailsClosed(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "listing GitLab project tokens")
-	assert.Empty(t, fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration])
+	assert.Empty(t, fc.VariableValues["group/project/"+forge.VarGitLabRoleRegistry])
 	assert.Greater(t, result.VarsDeleted, 0)
 	assert.Equal(t, 0, result.TokensRevoked)
 }
@@ -147,7 +165,7 @@ func TestCleanupGitLabRoleIdentity_NotFoundTokenListFailureIsNotFatal(t *testing
 	require.NoError(t, err)
 	assert.Equal(t, 0, result.TokensRevoked)
 	assert.Greater(t, result.VarsDeleted, 0)
-	assert.Empty(t, fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration])
+	assert.Empty(t, fc.VariableValues["group/project/"+forge.VarGitLabRoleRegistry])
 	require.NotEmpty(t, result.Diagnostics)
 	assert.True(t, strings.HasPrefix(result.Diagnostics[0], "Warning:"), "diagnostic should be surfaced as a warning: %q", result.Diagnostics[0])
 }
@@ -172,7 +190,7 @@ func TestCleanupGitLabRoleIdentity_ForbiddenTokenListFailureFailsClosed(t *testi
 	assert.Contains(t, err.Error(), "listing GitLab project tokens")
 	assert.Equal(t, 0, result.TokensRevoked)
 	assert.Greater(t, result.VarsDeleted, 0)
-	assert.Empty(t, fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration])
+	assert.Empty(t, fc.VariableValues["group/project/"+forge.VarGitLabRoleRegistry])
 }
 
 func TestCleanupGitLabRoleIdentity_StableRevokeOrderForDuplicateNames(t *testing.T) {
@@ -219,7 +237,7 @@ func TestCleanupGitLabRoleIdentity_DryRunDoesNotWrite(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, result.DryRun)
 	assert.Empty(t, tokens.revoked)
-	assert.Equal(t, string(gitlabroles.ModeEnforced), fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration])
+	assert.Equal(t, `{"roles":[]}`, fc.VariableValues["group/project/"+forge.VarGitLabRoleRegistry])
 	assert.True(t, fc.Secrets["group/project/"+forge.SecretGitLabPollerToken])
 }
 
@@ -293,49 +311,61 @@ func TestExtraGitLabRoleUninstallVars_SkipsEmptyAndInvalidRegistry(t *testing.T)
 	assert.Equal(t, []string{forge.VarGitLabRoleRegistry}, got)
 }
 
+// The Poller generation document records quarantine obligations, so uninstall
+// discovery must not select it for deletion even though it is a recognized
+// role-state variable.
+func TestExtraGitLabRoleUninstallVars_RetainsPollerGenerations(t *testing.T) {
+	t.Parallel()
+	fc := forge.NewFakeClient()
+	fc.VariableValues["o/r/"+forge.VarGitLabPollerGenerations] = `{"version":1}`
+	fc.VariablesExist["o/r/"+forge.VarGitLabPollerGenerations] = true
+	got := extraGitLabRoleUninstallVars(context.Background(), fc, "o", "r", nil)
+	assert.NotContains(t, got, forge.VarGitLabPollerGenerations)
+}
+
 func TestIsGitLabIdentityUninstallVar(t *testing.T) {
 	t.Parallel()
 	assert.True(t, isGitLabIdentityUninstallVar(forge.SecretForgeToken))
-	assert.True(t, isGitLabIdentityUninstallVar(forge.VarGitLabRoleMigration))
+	assert.True(t, isGitLabIdentityUninstallVar(forge.VarGitLabRoleRegistry))
 	assert.True(t, isGitLabRoleSecretName(forge.SecretGitLabPollerToken))
 	assert.True(t, isGitLabRoleSecretName("FULLSEND_GITLAB_ROLE_SCANNER_TOKEN"))
-	assert.False(t, isGitLabRoleSecretName(forge.VarGitLabRoleMigration))
+	assert.False(t, isGitLabRoleSecretName(forge.SecretForgeToken), "the legacy shared secret is not auto-deleted as role-identity state")
 	assert.False(t, isGitLabIdentityUninstallVar(forge.VarGCPRegion))
 }
 
-func TestGitLabRoleLifecycle_UninstallThenReinstallDoesNotKeepLegacyState(t *testing.T) {
+// TestGitLabRoleLifecycle_UninstallThenReinstallLeavesLegacySharedCredential
+// covers a repository installed before the role-only rollout: cleanup
+// and a subsequent reinstall must not touch the leftover legacy shared
+// credential (there is no automated path for that — it requires manual
+// cleanup), while reinstall still provisions fresh role secrets.
+func TestGitLabRoleLifecycle_UninstallThenReinstallLeavesLegacySharedCredential(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	fc := provisionClient(t)
-	seedCutoverState(t, fc)
-	tokens := cutoverTokenInventory()
+	for _, name := range []string{forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken} {
+		fc.Secrets["group/project/"+name] = true
+	}
+	tokens := &fakeTokens{}
+	for id, name := range map[int]string{1: gitlabroles.PollerTokenName, 2: gitlabroles.AnalystTokenName, 3: gitlabroles.CoderTokenName} {
+		tokens.seed(ProjectAccessToken{ID: id, Name: name, Active: true, ExpiresAt: "2027-01-01"})
+	}
 
-	_, err := CutoverGitLabRoleCredentials(ctx, GitLabRoleCutoverConfig{
-		Owner: "group", Repo: "project", Client: fc, TokenInventory: tokens, DrainConfirmed: true,
-	})
-	require.NoError(t, err)
-	assert.Equal(t, string(gitlabroles.ModeEnforced), fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration])
-	assert.False(t, fc.Secrets["group/project/"+forge.SecretForgeToken])
-
-	_, err = CleanupGitLabRoleIdentity(ctx, GitLabRoleCleanupConfig{
+	_, err := CleanupGitLabRoleIdentity(ctx, GitLabRoleCleanupConfig{
 		Owner: "group", Repo: "project", Client: fc, Tokens: tokens,
 	})
 	require.NoError(t, err)
-	mode, _, present, err := LoadGitLabRoleState(ctx, fc, "group", "project")
+	_, present, err := LoadGitLabRoleState(ctx, fc, "group", "project")
 	require.NoError(t, err)
-	assert.Equal(t, gitlabroles.ModeDisabled, mode)
 	assert.False(t, present[forge.SecretForgeToken])
 	assert.False(t, present[forge.SecretGitLabPollerToken])
 
 	fresh := &fakeTokens{}
-	provisioned, err := ProvisionGitLabRoleCredentials(ctx, RoleProvisionConfig{
+	_, err = ProvisionGitLabRoleCredentials(ctx, RoleProvisionConfig{
 		Owner: "group", Repo: "project", Client: fc, Tokens: fresh,
-		Registry: gitlabroles.BuiltinRegistry(), DesiredMode: gitlabroles.ModeMigrating,
+		Registry: gitlabroles.BuiltinRegistry(),
 	})
 	require.NoError(t, err)
-	assert.Equal(t, gitlabroles.ModeMigrating, provisioned.Mode)
-	assert.True(t, provisioned.SharedPreserved)
-	assert.False(t, fc.Secrets["group/project/"+forge.SecretForgeToken], "reinstall must not recreate the retired shared credential")
+	assert.True(t, fc.Secrets["group/project/"+forge.SecretForgeToken], "neither cleanup nor reinstall touch the leftover legacy shared credential")
 	assert.True(t, fc.Secrets["group/project/"+forge.SecretGitLabPollerToken])
 	assert.True(t, fc.Secrets["group/project/"+forge.SecretGitLabAnalystToken])
 	assert.True(t, fc.Secrets["group/project/"+forge.SecretGitLabCoderToken])
@@ -352,10 +382,9 @@ func TestGitLabRoleLifecycle_EnforcedDriftDoesNotRecreateSharedToken(t *testing.
 	tokens := &fakeTokens{}
 	result, err := ProvisionGitLabRoleCredentials(ctx, RoleProvisionConfig{
 		Owner: "group", Repo: "project", Client: fc, Tokens: tokens,
-		Registry: gitlabroles.BuiltinRegistry(), DesiredMode: gitlabroles.ModeEnforced,
+		Registry: gitlabroles.BuiltinRegistry(),
 	})
 	require.NoError(t, err)
-	assert.Equal(t, gitlabroles.ModeEnforced, result.Mode)
 	assert.Contains(t, result.Created, gitlabroles.RoleCoder)
 	assert.False(t, fc.Secrets["group/project/"+forge.SecretForgeToken])
 	assert.True(t, fc.Secrets["group/project/"+forge.SecretGitLabCoderToken])
@@ -369,8 +398,6 @@ func TestGitLabRoleLifecycle_RevokedRoleRotatesWithoutSharedToken(t *testing.T) 
 	ctx := context.Background()
 	fc := seededRoleClient(t, gitlabroles.RolePoller, gitlabroles.RoleAnalyst, gitlabroles.RoleCoder)
 	delete(fc.Secrets, "group/project/"+forge.SecretForgeToken)
-	fc.VariableValues["group/project/"+forge.VarGitLabRoleMigration] = string(gitlabroles.ModeEnforced)
-	fc.VariablesExist["group/project/"+forge.VarGitLabRoleMigration] = true
 
 	tokens := &fakeTokens{}
 	tokens.seed(ProjectAccessToken{ID: 1, Name: gitlabroles.PollerTokenName, Active: false, Revoked: true, ExpiresAt: "2027-01-01"})
@@ -379,14 +406,131 @@ func TestGitLabRoleLifecycle_RevokedRoleRotatesWithoutSharedToken(t *testing.T) 
 
 	result, err := RotateGitLabRoleCredentials(ctx, RoleRotateConfig{
 		Owner: "group", Repo: "project", Client: fc, Tokens: tokens,
-		Registry: gitlabroles.BuiltinRegistry(), Mode: gitlabroles.ModeEnforced,
-		Now: time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC),
+		Registry: gitlabroles.BuiltinRegistry(),
+		Now:      time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC),
 	})
 	require.NoError(t, err)
 	assert.Contains(t, result.Rotated, gitlabroles.RolePoller)
-	assert.True(t, result.SharedPreserved)
 	assert.False(t, fc.Secrets["group/project/"+forge.SecretForgeToken])
 	for _, name := range tokens.createdNames() {
 		assert.NotEqual(t, gitlabroles.SharedTokenName, name)
 	}
+}
+
+// The rotation document records credential provenance, so it is kept until
+// token revocation succeeds: a retry after a failed revocation must still
+// recognize the supplied account.
+func TestCleanupGitLabRoleIdentity_RetainsRotationStateUntilRevocationSucceeds(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	fc := forge.NewFakeClient()
+	seedEnforcedIdentity(t, fc)
+	rotationKey := "group/project/" + forge.VarGitLabRoleRotation
+	fc.VariableValues[rotationKey] = `{"roles":{"poller":{"phase":"idle","distributed_at":"2026-01-01T00:00:00Z","supplied_user_id":90}}}`
+	tokens := &fakeTokens{failRevoke: errors.New("revoke refused")}
+	// The token reports a non-excluded owner: with exclusions recorded, a token
+	// that reports no owner is never revoked at all.
+	tokens.seed(ProjectAccessToken{ID: 1, Name: gitlabroles.CoderTokenName, Active: true, UserID: 600})
+
+	_, err := CleanupGitLabRoleIdentity(ctx, GitLabRoleCleanupConfig{
+		Owner: "group", Repo: "project", Client: fc, Tokens: tokens,
+	})
+	require.Error(t, err)
+	assert.True(t, fc.VariablesExist[rotationKey], "provenance survives a failed revocation")
+	state, _, err := loadRotationState(ctx, fc, "group", "project")
+	require.NoError(t, err)
+	assert.Equal(t, 90, state.Roles["poller"].SuppliedUserID)
+
+	tokens.failRevoke = nil
+	_, err = CleanupGitLabRoleIdentity(ctx, GitLabRoleCleanupConfig{
+		Owner: "group", Repo: "project", Client: fc, Tokens: tokens,
+	})
+	require.NoError(t, err)
+	// Only the supplied-account exclusions outlive a successful cleanup.
+	require.True(t, fc.VariablesExist[rotationKey], "exclusions for the surviving supplied account are kept")
+	state, _, err = loadRotationState(ctx, fc, "group", "project")
+	require.NoError(t, err)
+	assert.Equal(t, RoleProvenance{ExcludedUserIDs: []int{90}}, provenanceOf(state.Roles["poller"]))
+}
+
+// Cleanup fails closed when managed-account ownership cannot be read: no
+// credential is revoked and no identity state is deleted.
+func TestCleanupGitLabRoleIdentity_UnreadableOwnershipFailsClosed(t *testing.T) {
+	t.Parallel()
+	fc := forge.NewFakeClient()
+	seedEnforcedIdentity(t, fc)
+	rotationKey := "group/project/" + forge.VarGitLabRoleRotation
+	fc.VariableValues[rotationKey] = "invalid"
+	tokens := &fakeTokens{}
+	tokens.seed(ProjectAccessToken{ID: 1, Name: gitlabroles.CoderTokenName, Active: true})
+
+	_, err := CleanupGitLabRoleIdentity(context.Background(), GitLabRoleCleanupConfig{
+		Owner: "group", Repo: "project", Client: fc, Tokens: tokens,
+	})
+	require.Error(t, err)
+	assert.Empty(t, tokens.revoked)
+	assert.Equal(t, "invalid", fc.VariableValues[rotationKey])
+	assert.True(t, fc.VariablesExist["group/project/"+forge.VarGitLabRoleRegistry])
+}
+
+// A supplied enrollment recorded with no user ID, whose owner is resolved only
+// through the supplied-account callback, keeps that owner in the exclusions-only
+// document cleanup leaves behind.
+func TestCleanupPersistsResolvedSuppliedOwnerExclusion(t *testing.T) {
+	ctx := context.Background()
+	fc := forge.NewFakeClient()
+	require.NoError(t, writeRotationState(ctx, fc, "g", "p", rotationStateFile{Roles: map[string]rotationRoleState{
+		"coder": {Supplied: true},
+	}}))
+	c := ServiceAccountTokenClient{
+		SA:                 newFakeSAAPI(),
+		SuppliedAccountIDs: func(context.Context, string, string) ([]int, error) { return []int{501}, nil },
+	}
+	_, err := CleanupGitLabRoleIdentity(ctx, GitLabRoleCleanupConfig{Owner: "g", Repo: "p", Client: fc, Tokens: c})
+	require.NoError(t, err)
+	require.True(t, fc.VariablesExist["g/p/"+forge.VarGitLabRoleRotation], "exclusions-only document is retained")
+	state, _, err := loadRotationState(ctx, fc, "g", "p")
+	require.NoError(t, err)
+	assert.Equal(t, []int{501}, state.Roles["coder"].ExcludedUserIDs)
+}
+
+// A pointer to the service-account client is wrapped with the recorded
+// exclusions like the value form, so cleanup never revokes an excluded owner's
+// tokens.
+func TestCleanupAppliesRecordedExclusionsForPointerClient(t *testing.T) {
+	ctx := context.Background()
+	fc := forge.NewFakeClient()
+	require.NoError(t, writeRotationState(ctx, fc, "g", "p", rotationStateFile{Roles: map[string]rotationRoleState{
+		"coder": {ExcludedUserIDs: []int{501}},
+	}}))
+	sa := newFakeSAAPI()
+	sa.accounts = []GitLabServiceAccount{{ID: 501, Name: gitlabroles.CoderTokenName}}
+	sa.tokens[501] = []ProjectAccessToken{{ID: 7, Name: gitlabroles.CoderTokenName, Active: true}}
+	c := &ServiceAccountTokenClient{
+		SA:                sa,
+		ManagedAccountIDs: func(context.Context, string, string) ([]int, error) { return []int{501}, nil },
+	}
+	result, err := CleanupGitLabRoleIdentity(ctx, GitLabRoleCleanupConfig{Owner: "g", Repo: "p", Client: fc, Tokens: c})
+	require.NoError(t, err)
+	assert.Empty(t, sa.revoked)
+	assert.Zero(t, result.TokensRevoked)
+	assert.True(t, sa.tokens[501][0].Active)
+}
+
+// Recorded excluded owners are skipped for any token client that reports token
+// owners, not only the service-account client.
+func TestCleanupSkipsExcludedOwnerTokensForGenericClient(t *testing.T) {
+	ctx := context.Background()
+	fc := forge.NewFakeClient()
+	require.NoError(t, writeRotationState(ctx, fc, "g", "p", rotationStateFile{Roles: map[string]rotationRoleState{
+		"coder": {SuppliedUserID: 501, ExcludedUserIDs: []int{502}},
+	}}))
+	tokens := &fakeTokens{}
+	tokens.seed(ProjectAccessToken{ID: 1, Name: gitlabroles.CoderTokenName, Active: true, UserID: 501})
+	tokens.seed(ProjectAccessToken{ID: 2, Name: gitlabroles.AnalystTokenName, Active: true, UserID: 502})
+	tokens.seed(ProjectAccessToken{ID: 3, Name: gitlabroles.PollerTokenName, Active: true, UserID: 600})
+	result, err := CleanupGitLabRoleIdentity(ctx, GitLabRoleCleanupConfig{Owner: "g", Repo: "p", Client: fc, Tokens: tokens})
+	require.NoError(t, err)
+	assert.Equal(t, []int{3}, tokens.revoked)
+	assert.Equal(t, 1, result.TokensRevoked)
 }

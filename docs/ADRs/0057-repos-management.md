@@ -27,6 +27,10 @@ Accepted
      the decision itself needs to change, write a new ADR that supersedes this
      one. For evolving design narrative, use docs/architecture.md. -->
 
+**Annotation (2026-09-21):** Declarative `defaults.config` / per-repository
+`config` managed configuration for `.fullsend/config.yaml` is defined in
+[ADR 0122](0122-declarative-repo-configuration.md).
+
 **Annotation (2026-08-18):** The manifest format was simplified in
 [#6346](https://github.com/fullsend-ai/fullsend/issues/6346): the
 `forge:` wrapper and `defaults.forge` were replaced with top-level
@@ -128,7 +132,9 @@ are covered in the sections below.
 
 > **Note:** [ADR 0074](0074-repos-command-consolidation.md) consolidates
 > the subcommands defined above into five commands (`migrate`, `install`,
-> `status`, `uninstall`, `set-default`).
+> `status`, `uninstall`, `set-default`). `set-default` was later replaced
+> by `repos set <path> <value>`; see the
+> [`repos` CLI reference](../cli/repos.md#repos-set).
 
 ## Implementation status
 

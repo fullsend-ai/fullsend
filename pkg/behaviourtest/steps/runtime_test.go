@@ -94,7 +94,7 @@ func TestGivenRepositoryRuntime_RejectsUnknownAndMissingRepo(t *testing.T) {
 	t.Parallel()
 	scmDriver := &recordingSCM{fakeCleanupSCM: fakeCleanupSCM{fileContent: []byte(perRepoDummyConfig)}}
 	w := &world.World{Org: "org", RepoOwner: "org", RepoName: "repo", SCM: scmDriver}
-	err := givenRepositoryRuntime(w, "opencode")
+	err := givenRepositoryRuntime(w, "nonexistent")
 	require.ErrorContains(t, err, "not one of")
 	assert.False(t, scmDriver.commitFileCalled, "nothing committed for an unknown runtime")
 	assert.False(t, w.RuntimeOverridden)
@@ -143,6 +143,57 @@ func TestRunMetricsAssertions(t *testing.T) {
 	empty := t.TempDir()
 	writeArtifact(t, empty, "metrics.json", `{"runtime":"dummy","token_usage":{"input":0,"output":0}}`)
 	require.ErrorContains(t, assertRunMetricsReportTokens(&world.World{ArtifactDir: empty}), "want input and output > 0")
+}
+
+func TestAssertRunMetricsReportTokensUnless(t *testing.T) {
+	t.Parallel()
+	const exempt = "gateway/gpt-oss-120b"
+	cases := []struct {
+		name, metrics, wantErr string
+	}{
+		{"tokens pass", `{"requested_model":"openai/gpt-5.6-luna","num_turns":2,"token_usage":{"input":10,"output":5}}`, ""},
+		{"exempt model with zero tokens passes", `{"requested_model":"gateway/gpt-oss-120b","num_turns":3,"token_usage":{"input":0,"output":0}}`, ""},
+		{"exempt model with no turn fails", `{"requested_model":"gateway/gpt-oss-120b","num_turns":0,"token_usage":{"input":0,"output":0}}`, "no turn recorded"},
+		{"other model with zero tokens fails", `{"requested_model":"gateway/other","num_turns":3,"token_usage":{"input":0,"output":0}}`, "want input and output > 0"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			writeArtifact(t, root, "metrics.json", tc.metrics)
+			err := assertRunMetricsReportTokensUnless(&world.World{ArtifactDir: root}, exempt)
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, tc.wantErr)
+		})
+	}
+}
+
+func TestAssertRunUsedModelWithoutFallback(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name, metrics, wantErr string
+	}{
+		{"served model passes", `{"model":"claude-haiku-5-5","num_turns":2}`, ""},
+		{"other model fails", `{"model":"anthropic-vertex/claude-haiku-5-5","num_turns":2}`, `want "claude-haiku-5-5"`},
+		{"fallback fails", `{"model":"claude-haiku-5-5","fallback_from":["claude-haiku-6"],"num_turns":2}`, "want none"},
+		{"no turn fails", `{"model":"claude-haiku-5-5","num_turns":0}`, "never answered"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			writeArtifact(t, root, "metrics.json", tc.metrics)
+			err := assertRunUsedModelWithoutFallback(&world.World{ArtifactDir: root}, "claude-haiku-5-5")
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, tc.wantErr)
+		})
+	}
 }
 
 func TestAssertPiTranscriptHasToolCall(t *testing.T) {
@@ -250,7 +301,7 @@ func TestGivenRepositoryAgentSettings_WritesEntriesAndSnapshotsAgents(t *testing
 
 func TestGivenRepositoryAgentSettings_RejectsWhatTheRunnerWouldReject(t *testing.T) {
 	t.Parallel()
-	for _, doc := range []string{"coder:\n  runtime: dummy\n", "triage:\n  runtime: opencode\n", "triage:\n  effort: turbo\n", ""} {
+	for _, doc := range []string{"coder:\n  runtime: dummy\n", "triage:\n  runtime: nonexistent\n", "triage:\n  effort: turbo\n", ""} {
 		scmDriver := &recordingSCM{fakeCleanupSCM: fakeCleanupSCM{fileContent: []byte(perRepoDummyConfig)}}
 		w := &world.World{Org: "org", RepoOwner: "org", RepoName: "repo", SCM: scmDriver}
 		err := givenRepositoryAgentSettings(w, doc)

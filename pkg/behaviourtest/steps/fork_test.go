@@ -47,6 +47,145 @@ func TestGivenFork_CreateForkError(t *testing.T) {
 	assert.Contains(t, err.Error(), "fork conflict")
 }
 
+func TestGivenActorFork_ForksIntoActorAccount(t *testing.T) {
+	e2e := &fakeForkSCM{}
+	outsider := &fakeForkSCM{userForkOwner: "fstest-outsider"}
+	w := &world.World{
+		RepoOwner:   "org",
+		RepoName:    "test-repo-07",
+		SCM:         e2e,
+		OutsiderSCM: outsider,
+	}
+	err := givenActorFork(w, actorOutsider)
+	require.NoError(t, err)
+	assert.Equal(t, "fstest-outsider", w.ForkOwner)
+	assert.Equal(t, "test-repo-07", w.ForkRepo)
+	assert.Same(t, outsider, w.ForkSCM)
+	assert.True(t, outsider.createUserForkCalled)
+	// Readiness is polled through the fork owner's driver; the e2e
+	// identity is not used at all.
+	assert.Positive(t, outsider.getBranchRefCalls)
+	assert.False(t, e2e.createForkCalled)
+	assert.False(t, e2e.createUserForkCalled)
+	assert.Zero(t, e2e.getDefaultBranchCalls)
+	assert.Zero(t, e2e.getBranchRefCalls)
+}
+
+func TestGivenActorFork_Errors(t *testing.T) {
+	tests := []struct {
+		name    string
+		w       *world.World
+		wantErr string
+	}{
+		{
+			name:    "no repo configured",
+			w:       &world.World{OutsiderSCM: &fakeForkSCM{}},
+			wantErr: "no repo configured",
+		},
+		{
+			name:    "actor PAT not set",
+			w:       &world.World{RepoOwner: "org", RepoName: "repo", SCM: &fakeForkSCM{}},
+			wantErr: "TEST_ACTOR_OUTSIDER_PAT not set",
+		},
+		{
+			name: "fork creation fails",
+			w: &world.World{
+				RepoOwner:   "org",
+				RepoName:    "repo",
+				OutsiderSCM: &fakeForkSCM{createUserForkErr: fmt.Errorf("forking disabled")},
+			},
+			wantErr: "creating fork of org/repo as the outsider: forking disabled",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := givenActorFork(tt.w, actorOutsider)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+			assert.Nil(t, tt.w.ForkSCM)
+		})
+	}
+}
+
+func TestWhenForkPullRequestOpenedBy_ActorOwnedFork(t *testing.T) {
+	e2e := &fakeForkSCM{}
+	outsider := &fakeForkSCM{prNumber: 7}
+	w := &world.World{
+		RepoOwner:   "org",
+		RepoName:    "repo",
+		ForkOwner:   "fstest-outsider",
+		ForkRepo:    "repo",
+		ForkSCM:     outsider,
+		SCM:         e2e,
+		OutsiderSCM: outsider,
+	}
+	err := whenForkPullRequestOpenedBy(w, actorOutsider)
+	require.NoError(t, err)
+	assert.Equal(t, 7, w.ForkPRNumber)
+	assert.NotEmpty(t, w.ForkPRBranch)
+	assert.False(t, w.ScenarioStart.IsZero())
+	assert.True(t, outsider.createBranchCalled)
+	assert.True(t, outsider.commitToForkCalled)
+	assert.True(t, outsider.createForkPRCalled)
+	assert.False(t, e2e.createBranchCalled)
+	assert.False(t, e2e.commitToForkCalled)
+	assert.False(t, e2e.createForkPRCalled)
+}
+
+func TestWhenForkPullRequestOpenedBy_E2EOwnedFork(t *testing.T) {
+	// A fork owned by the e2e identity: the head branch is prepared by
+	// the e2e identity, the pull request is opened by the actor.
+	e2e := &fakeForkSCM{}
+	writer := &fakeForkSCM{prNumber: 8}
+	w := &world.World{
+		RepoOwner: "org",
+		RepoName:  "repo",
+		ForkOwner: "org",
+		ForkRepo:  "repo-fork",
+		SCM:       e2e,
+		WriteSCM:  writer,
+	}
+	err := whenForkPullRequestOpenedBy(w, actorWrite)
+	require.NoError(t, err)
+	assert.Equal(t, 8, w.ForkPRNumber)
+	assert.True(t, e2e.createBranchCalled)
+	assert.True(t, e2e.commitToForkCalled)
+	assert.False(t, e2e.createForkPRCalled)
+	assert.True(t, writer.createForkPRCalled)
+	assert.False(t, writer.createBranchCalled)
+}
+
+func TestWhenForkPullRequestOpenedBy_ActorPATNotSet(t *testing.T) {
+	e2e := &fakeForkSCM{}
+	w := &world.World{
+		RepoOwner: "org",
+		RepoName:  "repo",
+		ForkOwner: "org",
+		ForkRepo:  "repo-fork",
+		SCM:       e2e,
+	}
+	err := whenForkPullRequestOpenedBy(w, actorOutsider)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "TEST_ACTOR_OUTSIDER_PAT not set")
+	assert.False(t, e2e.createBranchCalled)
+}
+
+func TestWhenCommitPushedToForkPR_UsesForkOwnerDriver(t *testing.T) {
+	e2e := &fakeForkSCM{}
+	outsider := &fakeForkSCM{}
+	w := &world.World{
+		ForkPRNumber: 10,
+		ForkOwner:    "fstest-outsider",
+		ForkRepo:     "repo",
+		ForkPRBranch: "test-branch",
+		ForkSCM:      outsider,
+		SCM:          e2e,
+	}
+	require.NoError(t, whenCommitPushedToForkPR(w))
+	assert.True(t, outsider.commitToForkCalled)
+	assert.False(t, e2e.commitToForkCalled)
+}
+
 func TestWhenForkPullRequestOpened_RequiresFork(t *testing.T) {
 	w := &world.World{}
 	err := whenForkPullRequestOpened(w)
@@ -482,12 +621,123 @@ func TestCreateForkBranch_ContextCancelled(t *testing.T) {
 	assert.Contains(t, err.Error(), "context cancelled")
 }
 
+// --- isNameCollisionError / createFork unit tests ---
+
+func TestIsNameCollisionError_403(t *testing.T) {
+	err := fmt.Errorf("create fork of org/repo in org org: github api: 403 Name already exists on this account")
+	assert.True(t, isNameCollisionError(err))
+}
+
+func TestIsNameCollisionError_422Detail(t *testing.T) {
+	err := fmt.Errorf("create fork of org/repo in org org: github api: 422 Validation Failed (name already exists on this account)")
+	assert.True(t, isNameCollisionError(err))
+}
+
+func TestIsNameCollisionError_NilError(t *testing.T) {
+	assert.False(t, isNameCollisionError(nil))
+}
+
+func TestIsNameCollisionError_NotFork(t *testing.T) {
+	// ErrNotFork is a real collision with a different repo and must
+	// not be retried. Its message contains "already exists" but not
+	// "name already exists".
+	err := fmt.Errorf("repo org/repo-fork already exists and is not a fork: %w", forge.ErrNotFork)
+	assert.False(t, isNameCollisionError(err))
+}
+
+func TestIsNameCollisionError_NotForkWithNameSuffix(t *testing.T) {
+	// If forkName itself ends in "name" (e.g. "foo-name"), the wrapped
+	// ErrNotFork message ("repo org/foo-name already exists and is not
+	// a fork") contains the substring "name already exists". This must
+	// still be classified as a permanent, non-retryable collision.
+	err := fmt.Errorf("repo org/foo-name already exists and is not a fork: %w", forge.ErrNotFork)
+	assert.False(t, isNameCollisionError(err))
+}
+
+func TestIsNameCollisionError_Unrelated(t *testing.T) {
+	assert.False(t, isNameCollisionError(fmt.Errorf("permission denied")))
+}
+
+func TestCreateFork_ImmediateSuccess(t *testing.T) {
+	scmDriver := &fakeForkSCM{forkRepo: "repo-fork"}
+	w := &world.World{SCM: scmDriver}
+	got, err := createFork(context.Background(), w, "org", "repo", "repo-fork", 5, 0)
+	require.NoError(t, err)
+	assert.Equal(t, "repo-fork", got)
+	assert.Equal(t, 1, scmDriver.createForkCalls)
+}
+
+func TestCreateFork_RetriesThenSucceeds(t *testing.T) {
+	scmDriver := &fakeForkSCM{
+		forkRepo:               "repo-fork",
+		createForkFailures:     2,
+		createForkCollisionErr: fmt.Errorf("github api: 403 Name already exists on this account"),
+	}
+	w := &world.World{SCM: scmDriver}
+	got, err := createFork(context.Background(), w, "org", "repo", "repo-fork", 5, 0)
+	require.NoError(t, err)
+	assert.Equal(t, "repo-fork", got)
+	assert.Equal(t, 3, scmDriver.createForkCalls,
+		"CreateFork should be called 2 failures + 1 success = 3 times")
+}
+
+func TestCreateFork_ExhaustsRetries(t *testing.T) {
+	scmDriver := &fakeForkSCM{
+		createForkFailures:     -1,
+		createForkCollisionErr: fmt.Errorf("github api: 403 Name already exists on this account"),
+	}
+	w := &world.World{SCM: scmDriver}
+	_, err := createFork(context.Background(), w, "org", "repo", "repo-fork", 3, 0)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "creation failed after 3 attempts")
+	assert.Contains(t, err.Error(), "Name already exists")
+	assert.Equal(t, 3, scmDriver.createForkCalls)
+}
+
+func TestCreateFork_NonCollisionErrorNotRetried(t *testing.T) {
+	scmDriver := &fakeForkSCM{
+		createForkErr: fmt.Errorf("permission denied"),
+	}
+	w := &world.World{SCM: scmDriver}
+	_, err := createFork(context.Background(), w, "org", "repo", "repo-fork", 5, 0)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "permission denied")
+	assert.Equal(t, 1, scmDriver.createForkCalls,
+		"non-collision errors should not be retried")
+}
+
+func TestCreateFork_NotForkNotRetried(t *testing.T) {
+	scmDriver := &fakeForkSCM{
+		createForkErr: fmt.Errorf("repo org/repo-fork already exists and is not a fork: %w", forge.ErrNotFork),
+	}
+	w := &world.World{SCM: scmDriver}
+	_, err := createFork(context.Background(), w, "org", "repo", "repo-fork", 5, 0)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, forge.ErrNotFork)
+	assert.Equal(t, 1, scmDriver.createForkCalls,
+		"ErrNotFork is a real collision and must not be retried")
+}
+
+func TestCreateFork_ContextCancelled(t *testing.T) {
+	scmDriver := &fakeForkSCM{
+		createForkFailures:     -1,
+		createForkCollisionErr: fmt.Errorf("github api: 403 Name already exists on this account"),
+	}
+	w := &world.World{SCM: scmDriver}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := createFork(ctx, w, "org", "repo", "repo-fork", 30, 2*time.Second)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "context cancelled")
+}
+
 // fakeForkSCM implements scm.Driver for fork step unit tests.
 type fakeForkSCM struct {
 	forkRepo           string
 	prNumber           int
 	createForkCalled   bool
 	createForkName     string // records the forkName arg passed to CreateFork
+	createForkCalls    int
 	createBranchCalled bool
 	commitToForkCalled bool
 	createForkPRCalled bool
@@ -520,6 +770,27 @@ type fakeForkSCM struct {
 	createBranchFailures   int
 	createBranchCalls      int
 	createBranchReplicaErr error // error to return on replication failures
+
+	// createForkFailures controls how many times CreateFork returns
+	// a name-collision error before succeeding. Each call decrements
+	// the counter; when it reaches 0, CreateFork returns success. A
+	// value of -1 means CreateFork always fails with the collision.
+	createForkFailures     int
+	createForkCollisionErr error // error to return on name-collision failures
+
+	// CreateUserFork behaviour: the fork owner returned (the
+	// authenticated user's login) and an optional error.
+	userForkOwner        string
+	createUserForkCalled bool
+	createUserForkErr    error
+}
+
+func (f *fakeForkSCM) CreateUserFork(_ context.Context, _, repo string) (string, string, error) {
+	f.createUserForkCalled = true
+	if f.createUserForkErr != nil {
+		return "", "", f.createUserForkErr
+	}
+	return f.userForkOwner, repo, nil
 }
 
 type addedLabelRecord struct {
@@ -532,8 +803,19 @@ type addedLabelRecord struct {
 func (f *fakeForkSCM) CreateFork(_ context.Context, _, _, forkName string) (string, error) {
 	f.createForkCalled = true
 	f.createForkName = forkName
+	f.createForkCalls++
 	if f.createForkErr != nil {
 		return "", f.createForkErr
+	}
+	// Support counted name-collision failures for retry tests.
+	if f.createForkCollisionErr != nil {
+		if f.createForkFailures == -1 {
+			return "", f.createForkCollisionErr
+		}
+		if f.createForkFailures > 0 {
+			f.createForkFailures--
+			return "", f.createForkCollisionErr
+		}
 	}
 	if f.forkRepo != "" {
 		return f.forkRepo, nil
@@ -555,6 +837,14 @@ func (f *fakeForkSCM) CreateForkChangeProposal(_ context.Context, _, _, _, _, _,
 		return nil, f.createForkPRErr
 	}
 	return &forge.ChangeProposal{Number: f.prNumber, Head: "test-branch"}, nil
+}
+
+func (f *fakeForkSCM) ListPullRequestCommits(context.Context, string, string, int) ([]string, error) {
+	return nil, nil
+}
+
+func (f *fakeForkSCM) ListPullRequestReviews(context.Context, string, string, int) ([]forge.PullRequestReview, error) {
+	return nil, nil
 }
 
 // Unused scm.Driver methods -- required for interface satisfaction.
@@ -582,6 +872,10 @@ func (f *fakeForkSCM) GetIssue(context.Context, string, string, int) (*forge.Iss
 }
 
 func (f *fakeForkSCM) GetFileContent(context.Context, string, string, string) ([]byte, error) {
+	return nil, nil
+}
+
+func (f *fakeForkSCM) GetFileContentAtRef(context.Context, string, string, string, string) ([]byte, error) {
 	return nil, nil
 }
 

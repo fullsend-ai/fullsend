@@ -22,8 +22,40 @@ func TestMergeGitLabCI_NoExistingFile(t *testing.T) {
 	assert.Contains(t, s, "on_new_commit: none")
 	assert.NotContains(t, s, `$CI_PIPELINE_SOURCE == "merge_request_event"`,
 		"native MR dispatch was removed in #7322")
+	assert.Contains(t, s, debugTraceDenyRuleIf)
+	assert.Contains(t, s, "when: never")
 	assert.Contains(t, s, `$CI_PIPELINE_SOURCE == "schedule"`)
 	assert.Contains(t, s, `$CI_PIPELINE_SOURCE == "api"`)
+	debugIdx := strings.Index(s, debugTraceDenyRuleIf)
+	scheduleIdx := strings.Index(s, `$CI_PIPELINE_SOURCE == "schedule"`)
+	require.NotEqual(t, -1, debugIdx)
+	require.NotEqual(t, -1, scheduleIdx)
+	assert.Less(t, debugIdx, scheduleIdx, "debug-trace deny must precede schedule admit")
+}
+
+func TestMergeGitLabCI_InstallsPipelineInputContract(t *testing.T) {
+	result, err := MergeGitLabCI(nil)
+	require.NoError(t, err)
+	s := string(result)
+	assert.Contains(t, s, "spec:")
+	assert.Contains(t, s, "event_payload_chunk_08:")
+	assert.Contains(t, s, "inputs:")
+	assert.Contains(t, s, "stage: $[[ inputs.stage ]]")
+}
+
+func TestMergeGitLabCI_AddsInputContractToExistingRoot(t *testing.T) {
+	existing := []byte(`include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+stages:
+  - build
+`)
+	result, err := MergeGitLabCI(existing)
+	require.NoError(t, err)
+	s := string(result)
+	assert.Contains(t, s, "spec:")
+	assert.Contains(t, s, "event_type: $[[ inputs.event_type ]]")
+	assert.Contains(t, s, "- local: '.gitlab/ci/fullsend-pipeline.yml'")
+	assert.Contains(t, s, "event_payload_chunk_08: $[[ inputs.event_payload_chunk_08 ]]")
 }
 
 func TestMergeGitLabCI_EmptyFile(t *testing.T) {
@@ -56,9 +88,9 @@ build:
 	// Fullsend include added.
 	assert.Contains(t, s, "fullsend-pipeline.yml")
 
-	// Fullsend stages appended to existing stages array.
-	// dispatch was dropped from the required set in #7337.
-	assert.NotContains(t, s, "- dispatch")
+	// Fullsend stages appended to existing stages array. dispatch
+	// (dropped in #7337) is back for the webhook dispatcher (#7771).
+	assert.Contains(t, s, "- dispatch")
 	assert.Contains(t, s, "- poll")
 	assert.Contains(t, s, "- agent")
 
@@ -144,6 +176,212 @@ workflow:
 	assert.Equal(t, 1, strings.Count(s, `$CI_PIPELINE_SOURCE == "api"`))
 }
 
+func TestMergeGitLabCI_PrependsDebugTraceDeny(t *testing.T) {
+	existing := []byte(`---
+include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+
+workflow:
+  auto_cancel:
+    on_new_commit: none
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
+    - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
+`)
+	result, err := MergeGitLabCI(existing)
+	require.NoError(t, err)
+	s := string(result)
+
+	debugIdx := strings.Index(s, debugTraceDenyRuleIf)
+	require.NotEqual(t, -1, debugIdx, "merge must add the debug-trace deny rule")
+	scheduleIdx := strings.Index(s, `$CI_PIPELINE_SOURCE == "schedule"`)
+	require.NotEqual(t, -1, scheduleIdx)
+	assert.Less(t, debugIdx, scheduleIdx, "debug-trace deny must be prepended before existing admit rules")
+	assert.Contains(t, s, "when: never")
+	assert.Equal(t, 1, strings.Count(s, debugTraceDenyRuleIf))
+}
+
+// --- MergeMissingGitLabDebugTraceRule tests ---
+
+func TestMergeMissingGitLabDebugTraceRule_AddsMissingRule(t *testing.T) {
+	existing := []byte(`---
+include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+
+workflow:
+  name: 'fullsend $CI_PIPELINE_SOURCE $STAGE $RESOURCE_KEY'
+  auto_cancel:
+    on_new_commit: none
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
+    - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
+`)
+	result, changed, err := MergeMissingGitLabDebugTraceRule(existing)
+	require.NoError(t, err)
+	require.True(t, changed, "expected the missing debug-trace rule to be added")
+	s := string(result)
+
+	debugIdx := strings.Index(s, debugTraceDenyRuleIf)
+	require.NotEqual(t, -1, debugIdx, "expected the debug-trace deny rule to be added")
+	scheduleIdx := strings.Index(s, `$CI_PIPELINE_SOURCE == "schedule"`)
+	require.NotEqual(t, -1, scheduleIdx)
+	assert.Less(t, debugIdx, scheduleIdx, "debug-trace deny must precede existing admit rules")
+	assert.Contains(t, s, "when: never")
+	assert.Contains(t, s, `$CI_PIPELINE_SOURCE == "api"`, "existing admit rules must be preserved")
+}
+
+func TestMergeMissingGitLabDebugTraceRule_AlreadyPresentNoAction(t *testing.T) {
+	existing := []byte(`---
+include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+
+workflow:
+  name: 'fullsend $CI_PIPELINE_SOURCE $STAGE $RESOURCE_KEY'
+  auto_cancel:
+    on_new_commit: none
+  rules:
+    - if: ` + debugTraceDenyRuleIf + `
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
+    - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
+`)
+	result, changed, err := MergeMissingGitLabDebugTraceRule(existing)
+	require.NoError(t, err)
+	assert.False(t, changed, "rule already present — nothing to merge")
+	assert.Equal(t, existing, result)
+}
+
+func TestMergeMissingGitLabDebugTraceRule_WrongWhenBackfilled(t *testing.T) {
+	// Same if: condition as the guard, but when: is missing (GitLab
+	// defaults an omitted when: to "always", not "never"), so the rule
+	// does nothing to deny a debug-trace pipeline. Must be replaced by a
+	// correctly-shaped when: never rule, not treated as already present.
+	existing := []byte(`---
+include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+
+workflow:
+  name: 'fullsend $CI_PIPELINE_SOURCE $STAGE $RESOURCE_KEY'
+  auto_cancel:
+    on_new_commit: none
+  rules:
+    - if: ` + debugTraceDenyRuleIf + `
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
+    - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
+`)
+	result, changed, err := MergeMissingGitLabDebugTraceRule(existing)
+	require.NoError(t, err)
+	require.True(t, changed, "wrong when: must be treated as missing, not already present")
+	s := string(result)
+
+	assert.Equal(t, 1, strings.Count(s, debugTraceDenyRuleIf), "must not leave a duplicate if: condition")
+	debugIdx := strings.Index(s, debugTraceDenyRuleIf)
+	scheduleIdx := strings.Index(s, `$CI_PIPELINE_SOURCE == "schedule"`)
+	require.NotEqual(t, -1, debugIdx)
+	require.NotEqual(t, -1, scheduleIdx)
+	assert.Less(t, debugIdx, scheduleIdx, "debug-trace deny must precede admit rules")
+	assert.Contains(t, s, "when: never")
+}
+
+func TestMergeMissingGitLabDebugTraceRule_WrongOrderBackfilled(t *testing.T) {
+	// Correctly-shaped if:/when: never rule, but positioned after an
+	// admit rule — first-match evaluation would let the admit rule win
+	// for a debug-trace pipeline. Must be repositioned, not treated as
+	// already present.
+	existing := []byte(`---
+include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+
+workflow:
+  name: 'fullsend $CI_PIPELINE_SOURCE $STAGE $RESOURCE_KEY'
+  auto_cancel:
+    on_new_commit: none
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
+    - if: ` + debugTraceDenyRuleIf + `
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
+`)
+	result, changed, err := MergeMissingGitLabDebugTraceRule(existing)
+	require.NoError(t, err)
+	require.True(t, changed, "wrong order must be treated as missing, not already present")
+	s := string(result)
+
+	assert.Equal(t, 1, strings.Count(s, debugTraceDenyRuleIf), "must not leave a duplicate if: condition")
+	debugIdx := strings.Index(s, debugTraceDenyRuleIf)
+	scheduleIdx := strings.Index(s, `$CI_PIPELINE_SOURCE == "schedule"`)
+	require.NotEqual(t, -1, debugIdx)
+	require.NotEqual(t, -1, scheduleIdx)
+	assert.Less(t, debugIdx, scheduleIdx, "debug-trace deny must precede admit rules")
+	assert.Contains(t, s, "when: never")
+}
+
+func TestMergeMissingGitLabDebugTraceRule_NotFullsendOwnedNoAction(t *testing.T) {
+	// No workflow.name — fullsend can't prove it owns this workflow block,
+	// so a user's own configuration (missing the rule for its own reasons)
+	// must not be modified.
+	existing := []byte(`---
+include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+
+workflow:
+  auto_cancel:
+    on_new_commit: none
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
+    - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
+`)
+	result, changed, err := MergeMissingGitLabDebugTraceRule(existing)
+	require.NoError(t, err)
+	assert.False(t, changed)
+	assert.Equal(t, existing, result)
+}
+
+func TestMergeMissingGitLabDebugTraceRule_NoWorkflowBlockNoAction(t *testing.T) {
+	existing := []byte(`---
+include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+`)
+	result, changed, err := MergeMissingGitLabDebugTraceRule(existing)
+	require.NoError(t, err)
+	assert.False(t, changed)
+	assert.Equal(t, existing, result)
+}
+
+func TestMergeMissingGitLabDebugTraceRule_EmptyFileNoAction(t *testing.T) {
+	result, changed, err := MergeMissingGitLabDebugTraceRule(nil)
+	require.NoError(t, err)
+	assert.False(t, changed)
+	assert.Nil(t, result)
+}
+
+func TestMergeMissingGitLabDebugTraceRule_InvalidYAMLReturnsError(t *testing.T) {
+	existing := []byte("workflow: [1,2\n")
+	result, changed, err := MergeMissingGitLabDebugTraceRule(existing)
+	require.Error(t, err)
+	assert.False(t, changed)
+	assert.Nil(t, result)
+}
+
+func TestMergeMissingGitLabDebugTraceRule_CommentOnlyDocumentNoAction(t *testing.T) {
+	// A comment-only file parses without error but yields no document
+	// content node — must be treated as nothing-to-merge, not a panic on
+	// an empty doc.Content slice.
+	existing := []byte("# just a comment\n")
+	result, changed, err := MergeMissingGitLabDebugTraceRule(existing)
+	require.NoError(t, err)
+	assert.False(t, changed)
+	assert.Equal(t, existing, result)
+}
+
+func TestMergeMissingGitLabDebugTraceRule_RootNotMappingNoAction(t *testing.T) {
+	existing := []byte("- a\n- b\n")
+	result, changed, err := MergeMissingGitLabDebugTraceRule(existing)
+	require.NoError(t, err)
+	assert.False(t, changed)
+	assert.Equal(t, existing, result)
+}
+
 func TestMergeGitLabCI_SingleIncludeScalar(t *testing.T) {
 	existing := []byte(`---
 include: 'other.yml'
@@ -189,6 +427,44 @@ workflow:
 	assert.NotContains(t, s, "auto_cancel")
 	// merge_request_event left in place — no provenance signal.
 	assert.Contains(t, s, `$CI_PIPELINE_SOURCE == "merge_request_event"`)
+}
+
+func TestUnmergeGitLabCI_RemovesTriggerDispatcherRuleAndStage(t *testing.T) {
+	// #7771: uninstall removes the webhook dispatcher's trigger admit
+	// rule and dispatch stage along with the rest of fullsend's entries,
+	// leaving the user's own stage and rule in place.
+	existing := []byte(`---
+include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+
+stages:
+  - build
+  - dispatch
+  - poll
+  - agent
+
+workflow:
+  auto_cancel:
+    on_new_commit: none
+  rules:
+    - if: ` + debugTraceDenyRuleIf + `
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "push"
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
+    - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
+    - if: ` + triggerDispatcherRuleIf + `
+`)
+	result, err := UnmergeGitLabCI(existing)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	s := string(result)
+
+	assert.NotContains(t, s, `"trigger"`)
+	assert.NotContains(t, s, "- dispatch")
+	assert.NotContains(t, s, "- poll")
+	assert.NotContains(t, s, "- agent")
+	assert.Contains(t, s, "- build")
+	assert.Contains(t, s, `$CI_PIPELINE_SOURCE == "push"`)
 }
 
 func TestUnmergeGitLabCI_FullsendOnlyWithName(t *testing.T) {
@@ -452,14 +728,14 @@ func TestMergeGitLabCI_StagesAddedToExistingArray(t *testing.T) {
 	assert.Contains(t, s, "- build")
 	assert.Contains(t, s, "- test")
 
-	// Fullsend stages appended. dispatch is obsolete (#7337) and must
-	// not be newly installed.
-	assert.NotContains(t, s, "- dispatch")
-	assert.Contains(t, s, "- poll")
-	assert.Contains(t, s, "- agent")
+	// Fullsend stages appended, in order.
+	assert.Contains(t, s, "- build\n  - test\n  - dispatch\n  - poll\n  - agent")
 }
 
-func TestMergeGitLabCI_DoesNotAddObsoleteDispatchStage(t *testing.T) {
+func TestMergeGitLabCI_AddsDispatcherStage(t *testing.T) {
+	// #7771: the webhook dispatcher job runs on the dispatch stage. A
+	// root stages: list without it would make GitLab reject every
+	// source=trigger pipeline, so merge must add it.
 	existing := []byte(`stages:
   - build
   - test
@@ -468,9 +744,32 @@ func TestMergeGitLabCI_DoesNotAddObsoleteDispatchStage(t *testing.T) {
 	require.NoError(t, err)
 	s := string(result)
 
-	assert.NotContains(t, s, "- dispatch", "dispatch must not be added after #7337")
+	assert.Equal(t, 1, strings.Count(s, "- dispatch"), "dispatch must be added for the webhook dispatcher (#7771)")
 	assert.Contains(t, s, "- poll")
 	assert.Contains(t, s, "- agent")
+}
+
+func TestMergeGitLabCI_AddsTriggerDispatcherRule(t *testing.T) {
+	// #7771: an existing workflow: block gains the source=trigger admit
+	// rule, after the debug-trace deny.
+	existing := []byte(`---
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "push"
+`)
+	result, err := MergeGitLabCI(existing)
+	require.NoError(t, err)
+	s := string(result)
+
+	require.Contains(t, s, triggerDispatcherRuleIf)
+	assert.Equal(t, 1, strings.Count(s, triggerDispatcherRuleIf))
+	assert.Less(t, strings.Index(s, debugTraceDenyRuleIf), strings.Index(s, triggerDispatcherRuleIf),
+		"debug-trace deny must precede the trigger admit rule")
+
+	// Idempotent: a second merge does not duplicate it.
+	again, err := MergeGitLabCI(result)
+	require.NoError(t, err)
+	assert.Equal(t, 1, strings.Count(string(again), triggerDispatcherRuleIf))
 }
 
 func TestMergeGitLabCI_StagesDeduplicatesExisting(t *testing.T) {
@@ -483,8 +782,8 @@ func TestMergeGitLabCI_StagesDeduplicatesExisting(t *testing.T) {
 	require.NoError(t, err)
 	s := string(result)
 
-	// Leftover dispatch from a pre-#7337 install is left in place by
-	// merge (converge/uninstall strip it) and must not be duplicated.
+	// An existing dispatch stage (current again since #7771) must not
+	// be duplicated.
 	assert.Equal(t, 1, strings.Count(s, "- dispatch"), "dispatch stage should not be duplicated")
 
 	// Current fullsend stages added.
@@ -603,9 +902,13 @@ workflow:
   auto_cancel:
     on_new_commit: none
   rules:
+    - if: ` + debugTraceDenyRuleIf + `
+      when: never
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
     - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
+    - if: ` + childPipelineAgentRuleIf + `
+    - if: ` + triggerDispatcherRuleIf + `
 `
 	assert.True(t, HasFullsendEntries([]byte(yaml)))
 }
@@ -649,8 +952,9 @@ include:
 	assert.True(t, HasFullsendEntries([]byte(yaml)))
 }
 
-func TestHasFullsendEntries_ObsoleteDispatchNotRequired(t *testing.T) {
-	// After #7337, dispatch is no longer required for drift detection.
+func TestHasFullsendEntries_DispatchStageRequired(t *testing.T) {
+	// #7771 reinstated dispatch for the webhook dispatcher; a root
+	// stages: list without it is drift the merge path repairs.
 	yaml := `---
 include:
   - local: '.gitlab/ci/fullsend-pipeline.yml'
@@ -660,7 +964,24 @@ stages:
   - poll
   - agent
 `
-	assert.True(t, HasFullsendEntries([]byte(yaml)))
+	assert.False(t, HasFullsendEntries([]byte(yaml)))
+}
+
+func TestHasFullsendEntries_MissingTriggerDispatcherRule(t *testing.T) {
+	// #7771: a fullsend workflow: block without the source=trigger
+	// admit rule is drift — the dispatcher pipeline would never start.
+	yaml := `---
+include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+
+workflow:
+  rules:
+    - if: ` + debugTraceDenyRuleIf + `
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
+    - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
+`
+	assert.False(t, HasFullsendEntries([]byte(yaml)))
 }
 
 func TestHasFullsendEntries_WithoutObsoleteMRRule(t *testing.T) {
@@ -678,10 +999,68 @@ workflow:
   auto_cancel:
     on_new_commit: none
   rules:
+    - if: ` + debugTraceDenyRuleIf + `
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
+    - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
+    - if: ` + childPipelineAgentRuleIf + `
+    - if: ` + triggerDispatcherRuleIf + `
+`
+	assert.True(t, HasFullsendEntries([]byte(yaml)))
+}
+
+// An installation that predates child-pipeline dispatch (#8438) lacks the
+// source=pipeline workflow rule; it is drift, so convergence adds the rule.
+func TestHasFullsendEntries_MissingChildPipelineRule(t *testing.T) {
+	yaml := `---
+include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+
+stages:
+  - dispatch
+  - poll
+  - agent
+
+workflow:
+  auto_cancel:
+    on_new_commit: none
+  rules:
+    - if: ` + debugTraceDenyRuleIf + `
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
+    - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
+    - if: ` + triggerDispatcherRuleIf + `
+`
+	assert.False(t, HasFullsendEntries([]byte(yaml)),
+		"workflow rules without the child-pipeline agent rule are drift")
+}
+
+// The child-pipeline rule admits only source=pipeline on the protected
+// default branch with the stage input set.
+func TestChildPipelineAgentRuleIf(t *testing.T) {
+	assert.Contains(t, childPipelineAgentRuleIf, `$CI_PIPELINE_SOURCE == "pipeline"`)
+	assert.Contains(t, childPipelineAgentRuleIf, `$CI_COMMIT_REF_PROTECTED == "true"`)
+	assert.Contains(t, childPipelineAgentRuleIf, `$CI_COMMIT_REF_NAME == $CI_DEFAULT_BRANCH`)
+	assert.Contains(t, childPipelineAgentRuleIf, `$STAGE`)
+	assert.NotContains(t, childPipelineAgentRuleIf, "||")
+	assert.Contains(t, fullsendWorkflowRules, workflowRule{If: childPipelineAgentRuleIf})
+	assert.Contains(t, unmergeWorkflowRules, workflowRule{If: childPipelineAgentRuleIf})
+}
+
+func TestHasFullsendEntries_MissingDebugTraceDeny(t *testing.T) {
+	yaml := `---
+include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+
+workflow:
+  auto_cancel:
+    on_new_commit: none
+  rules:
     - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
     - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
 `
-	assert.True(t, HasFullsendEntries([]byte(yaml)))
+	assert.False(t, HasFullsendEntries([]byte(yaml)),
+		"workflow rules without the debug-trace deny are drift")
 }
 
 func TestHasFullsendEntries_MissingWorkflowRules(t *testing.T) {
@@ -792,8 +1171,8 @@ build:
 	assert.Contains(t, s, "# My project CI configuration")
 	assert.Contains(t, s, "# Build job")
 
-	// Fullsend stages added to existing array. dispatch is obsolete.
-	assert.NotContains(t, s, "- dispatch")
+	// Fullsend stages added to existing array.
+	assert.Contains(t, s, "- dispatch")
 	assert.Contains(t, s, "- poll")
 	assert.Contains(t, s, "- agent")
 }
@@ -945,7 +1324,47 @@ workflow:
 	assert.Contains(t, s, "fullsend $CI_PIPELINE_SOURCE $STAGE $RESOURCE_KEY")
 }
 
+// useHistoricalObsoleteDispatchStage restores the stage contract that was
+// in effect between #7337 and #7771 — "dispatch" obsolete, current stages
+// poll and agent — for the duration of a test. #7771 reinstated
+// "dispatch" for the webhook dispatcher, leaving obsoleteGitLabStages
+// empty, but the generic obsolete-stage migration machinery
+// (StripObsoleteGitLabStages, removeStages) must stay covered against a
+// non-empty obsolete list for the next stage fullsend retires.
+func useHistoricalObsoleteDispatchStage(t *testing.T) {
+	t.Helper()
+	prevObsolete, prevStages := obsoleteGitLabStages, fullsendStages
+	obsoleteGitLabStages = []string{"dispatch"}
+	fullsendStages = []string{"poll", "agent"}
+	t.Cleanup(func() {
+		obsoleteGitLabStages, fullsendStages = prevObsolete, prevStages
+	})
+}
+
+func TestStripObsoleteGitLabStages_CurrentDispatchStagePreserved(t *testing.T) {
+	// #7771 reinstated "dispatch" for the webhook dispatcher job, so a
+	// root that carries it must not have it stripped: the dispatcher's
+	// stage would vanish and GitLab would reject every trigger pipeline.
+	existing := []byte(`---
+include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+
+stages:
+  - build
+  - dispatch
+  - poll
+  - agent
+`)
+	result, changed, err := StripObsoleteGitLabStages(existing)
+	require.NoError(t, err)
+	assert.False(t, changed)
+	assert.Equal(t, string(existing), string(result))
+	assert.NotContains(t, obsoleteGitLabStages, "dispatch")
+	assert.Contains(t, fullsendStages, "dispatch")
+}
+
 func TestStripObsoleteGitLabStages_RemovesDispatch(t *testing.T) {
+	useHistoricalObsoleteDispatchStage(t)
 	existing := []byte(`---
 include:
   - local: '.gitlab/ci/fullsend-pipeline.yml'
@@ -969,6 +1388,7 @@ stages:
 }
 
 func TestStripObsoleteGitLabStages_NoObsoleteStage(t *testing.T) {
+	useHistoricalObsoleteDispatchStage(t)
 	existing := []byte(`---
 include:
   - local: '.gitlab/ci/fullsend-pipeline.yml'
@@ -985,6 +1405,7 @@ stages:
 }
 
 func TestStripObsoleteGitLabStages_NoStagesBlock(t *testing.T) {
+	useHistoricalObsoleteDispatchStage(t)
 	existing := []byte(`---
 include:
   - local: '.gitlab/ci/fullsend-pipeline.yml'
@@ -996,6 +1417,7 @@ include:
 }
 
 func TestStripObsoleteGitLabStages_EmptyFile(t *testing.T) {
+	useHistoricalObsoleteDispatchStage(t)
 	result, changed, err := StripObsoleteGitLabStages(nil)
 	require.NoError(t, err)
 	assert.False(t, changed)
@@ -1003,11 +1425,13 @@ func TestStripObsoleteGitLabStages_EmptyFile(t *testing.T) {
 }
 
 func TestStripObsoleteGitLabStages_InvalidYAML(t *testing.T) {
+	useHistoricalObsoleteDispatchStage(t)
 	_, _, err := StripObsoleteGitLabStages([]byte("not: valid: yaml: [["))
 	require.Error(t, err)
 }
 
 func TestStripObsoleteGitLabStages_NoIncludePreservesDispatch(t *testing.T) {
+	useHistoricalObsoleteDispatchStage(t)
 	// Without the fullsend pipeline include this is not an enrolled
 	// root CI file, so a dispatch stage is the repo's own.
 	existing := []byte(`---
@@ -1024,6 +1448,7 @@ stages:
 }
 
 func TestStripObsoleteGitLabStages_LoneDispatchPreserved(t *testing.T) {
+	useHistoricalObsoleteDispatchStage(t)
 	// Include is present but none of fullsend's current stages are, so
 	// dispatch is treated as the repo's own stage rather than a leftover
 	// from mergeStages.
@@ -1042,6 +1467,7 @@ stages:
 }
 
 func TestStripObsoleteGitLabStages_ReferencedByJobPreserved(t *testing.T) {
+	useHistoricalObsoleteDispatchStage(t)
 	// A merge-path-enrolled repo whose own job still runs on a stage
 	// literally named "dispatch" must not have that stage stripped —
 	// doing so would leave the job's stage: value out of stages: and
@@ -1067,6 +1493,7 @@ notify:
 }
 
 func TestStripObsoleteGitLabStages_HiddenJobReferenceIgnored(t *testing.T) {
+	useHistoricalObsoleteDispatchStage(t)
 	// A hidden (`.`-prefixed) key is a template meant to be pulled in via
 	// extends:, not a job that runs on its own — it should not block the
 	// obsolete-stage migration.
@@ -1095,6 +1522,7 @@ stages:
 }
 
 func TestStripObsoleteGitLabStages_PreservesUserStages(t *testing.T) {
+	useHistoricalObsoleteDispatchStage(t)
 	existing := []byte(`---
 include:
   - local: '.gitlab/ci/fullsend-pipeline.yml'
@@ -1120,6 +1548,7 @@ stages:
 }
 
 func TestStripObsoleteGitLabStages_StagesNotSequence(t *testing.T) {
+	useHistoricalObsoleteDispatchStage(t)
 	existing := []byte(`---
 include:
   - local: '.gitlab/ci/fullsend-pipeline.yml'
@@ -1133,6 +1562,7 @@ stages: build
 }
 
 func TestStripObsoleteGitLabStages_ScalarInclude(t *testing.T) {
+	useHistoricalObsoleteDispatchStage(t)
 	existing := []byte(`---
 include: '.gitlab/ci/fullsend-pipeline.yml'
 
@@ -1149,6 +1579,7 @@ stages:
 }
 
 func TestStripObsoleteGitLabStages_UnrelatedIncludePreservesDispatch(t *testing.T) {
+	useHistoricalObsoleteDispatchStage(t)
 	existing := []byte(`---
 include:
   - local: '.gitlab/ci/other.yml'
@@ -1165,6 +1596,7 @@ stages:
 }
 
 func TestStripObsoleteGitLabStages_WhitespaceOnly(t *testing.T) {
+	useHistoricalObsoleteDispatchStage(t)
 	existing := []byte("   \n\t\n")
 	result, changed, err := StripObsoleteGitLabStages(existing)
 	require.NoError(t, err)
@@ -1173,6 +1605,7 @@ func TestStripObsoleteGitLabStages_WhitespaceOnly(t *testing.T) {
 }
 
 func TestStripObsoleteGitLabStages_MappingInclude(t *testing.T) {
+	useHistoricalObsoleteDispatchStage(t)
 	existing := []byte(`---
 include:
   local: '.gitlab/ci/fullsend-pipeline.yml'
@@ -1190,6 +1623,7 @@ stages:
 }
 
 func TestStripObsoleteGitLabStages_NonMappingRoot(t *testing.T) {
+	useHistoricalObsoleteDispatchStage(t)
 	existing := []byte("- just a list\n")
 	result, changed, err := StripObsoleteGitLabStages(existing)
 	require.NoError(t, err)
@@ -1198,6 +1632,7 @@ func TestStripObsoleteGitLabStages_NonMappingRoot(t *testing.T) {
 }
 
 func TestStripObsoleteGitLabStages_ExtendsHiddenTemplatePreserved(t *testing.T) {
+	useHistoricalObsoleteDispatchStage(t)
 	// A visible job with no stage: of its own that extends a hidden
 	// template still compiles to that template's stage under GitLab's
 	// extends deep-merge, so it must count as a live reference.
@@ -1225,6 +1660,7 @@ notify:
 }
 
 func TestStripObsoleteGitLabStages_MergeKeyReferencePreserved(t *testing.T) {
+	useHistoricalObsoleteDispatchStage(t)
 	// A job that inherits stage: dispatch via the YAML merge key (<<:)
 	// rather than extends: must also count as a live reference.
 	existing := []byte(`---
@@ -1251,6 +1687,7 @@ notify:
 }
 
 func TestStripObsoleteGitLabStages_AliasJobReferencePreserved(t *testing.T) {
+	useHistoricalObsoleteDispatchStage(t)
 	// A job whose entire value is an alias to a hidden template (rather
 	// than its own mapping with extends:/<<:) must resolve through the
 	// alias to find the inherited stage.
@@ -1276,6 +1713,7 @@ notify: *dispatch_template
 }
 
 func TestStripObsoleteGitLabStages_PagesJobReferencePreserved(t *testing.T) {
+	useHistoricalObsoleteDispatchStage(t)
 	// pages is GitLab's reserved Pages *job*, not a pipeline keyword, so
 	// it must be scanned like any other job rather than skipped as
 	// configuration.
@@ -1300,6 +1738,7 @@ pages:
 }
 
 func TestStripObsoleteGitLabStages_OtherLocalIncludePreventsStrip(t *testing.T) {
+	useHistoricalObsoleteDispatchStage(t)
 	// A second local include can define jobs that stageReferencedByJob
 	// can't see (only the root file's top-level keys are scanned), so
 	// the migration must fail closed rather than risk stripping a stage
@@ -1322,6 +1761,7 @@ stages:
 }
 
 func TestStripObsoleteGitLabStages_AliasedStageValuePreserved(t *testing.T) {
+	useHistoricalObsoleteDispatchStage(t)
 	// A job's stage: value can itself be an alias (stage: *anchor) rather
 	// than a plain scalar. The alias must be dereferenced to the anchored
 	// scalar before comparing, otherwise the reference is invisible and
@@ -1349,6 +1789,7 @@ notify:
 }
 
 func TestStripObsoleteGitLabStages_ReferenceTagStagePreserved(t *testing.T) {
+	useHistoricalObsoleteDispatchStage(t)
 	// GitLab's `!reference [...]` tag lets a job pull its stage: value
 	// from elsewhere in the document. That value isn't a resolvable
 	// scalar or alias, so the effective stage can't be determined from
@@ -1378,6 +1819,7 @@ notify:
 }
 
 func TestStripObsoleteGitLabStages_MergeKeyAliasedSequencePreserved(t *testing.T) {
+	useHistoricalObsoleteDispatchStage(t)
 	// `<<: *seq` merges in a sequence of job mappings via a single alias
 	// to the whole sequence, rather than a literal `<<: [*a, *b]` at the
 	// use site. The alias must be dereferenced before its Kind is
@@ -1415,6 +1857,7 @@ notify:
 }
 
 func TestStripObsoleteGitLabStages_MergeKeyReferenceTagPreserved(t *testing.T) {
+	useHistoricalObsoleteDispatchStage(t)
 	// GitLab's `<<: !reference [...]` form merges in a value pulled from
 	// elsewhere in the document. Its Kind is a SequenceNode of
 	// path-component scalars (not job mappings), so scanning it as a list
@@ -1444,6 +1887,7 @@ notify:
 }
 
 func TestStripObsoleteGitLabStages_ExtendsReferenceTagPreserved(t *testing.T) {
+	useHistoricalObsoleteDispatchStage(t)
 	// GitLab's `extends: !reference [.setup, scaling]` form has the same
 	// SequenceNode shape as an ordinary two-name extends list, but its
 	// contents are a reference path (a nested lookup), not job/template
@@ -1476,6 +1920,7 @@ notify:
 }
 
 func TestStripObsoleteGitLabStages_JobReferenceTagPreserved(t *testing.T) {
+	useHistoricalObsoleteDispatchStage(t)
 	// GitLab's `!reference [...]` tag can stand in for a job's entire
 	// value, not just a single field's — `notify: !reference
 	// [.dispatch_template]` inlines the whole hidden template as this
@@ -1505,6 +1950,7 @@ notify: !reference [.dispatch_template]
 }
 
 func TestStripObsoleteGitLabStages_DuplicateStageKeyPreserved(t *testing.T) {
+	useHistoricalObsoleteDispatchStage(t)
 	// gopkg.in/yaml.v3 preserves duplicate mapping keys as separate
 	// Content pairs instead of collapsing them (the duplicate-key error
 	// only applies when decoding into a Go map/struct), and GitLab/Psych's
@@ -1535,6 +1981,7 @@ notify:
 }
 
 func TestStripObsoleteGitLabStages_DuplicateMergeKeyPreserved(t *testing.T) {
+	useHistoricalObsoleteDispatchStage(t)
 	// Two `<<:` keys on the same job is another case yaml.v3 preserves as
 	// separate Content pairs rather than collapsing. Only the second
 	// mapping supplies stage: dispatch; a first-match lookup would resolve
@@ -1568,6 +2015,7 @@ notify:
 }
 
 func TestStripObsoleteGitLabStages_DuplicateExtendsPreserved(t *testing.T) {
+	useHistoricalObsoleteDispatchStage(t)
 	// Same duplicate-key shape as above but for extends:. Only the second
 	// occurrence points at the template that sets stage: dispatch; a
 	// first-match lookup would resolve only the first extends: and miss
@@ -1600,6 +2048,7 @@ notify:
 }
 
 func TestStripObsoleteGitLabStages_AliasedJobNamePreserved(t *testing.T) {
+	useHistoricalObsoleteDispatchStage(t)
 	// A top-level job can be keyed by an alias to an anchored scalar
 	// (`*n: {...}`) rather than a plain literal key. stageReferencedByJob's
 	// top-level scan must resolve — or fail closed on — such a key instead
@@ -1628,6 +2077,7 @@ stages:
 }
 
 func TestStripObsoleteGitLabStages_AliasedHiddenTemplateExtendsPreserved(t *testing.T) {
+	useHistoricalObsoleteDispatchStage(t)
 	// A hidden template's own top-level key can itself be an AliasNode
 	// that resolves to a "."-prefixed scalar, rather than a literal ".name"
 	// key. The scan loop recognizes and skips it as a template (it resolves
@@ -1662,6 +2112,7 @@ notify:
 }
 
 func TestStripObsoleteGitLabStages_RootMergeKeyPreventsStrip(t *testing.T) {
+	useHistoricalObsoleteDispatchStage(t)
 	// A root-level YAML merge key (<<: *jobs) injects the anchor
 	// mapping's own keys — here a whole job definition — directly into
 	// the document mapping. gopkg.in/yaml.v3 preserves "<<" as a literal
@@ -1693,6 +2144,7 @@ stages:
 }
 
 func TestStripObsoleteGitLabStages_DuplicateTopLevelIncludeKeyPreserved(t *testing.T) {
+	useHistoricalObsoleteDispatchStage(t)
 	// Two top-level "include:" keys: gopkg.in/yaml.v3 preserves duplicate
 	// mapping keys as separate Content pairs, and GitLab/Psych is
 	// last-wins, so a first-match lookup (findMappingValue) would only see
@@ -1720,6 +2172,7 @@ stages:
 }
 
 func TestStripObsoleteGitLabStages_AliasedSecondIncludeKeyPreserved(t *testing.T) {
+	useHistoricalObsoleteDispatchStage(t)
 	// A second top-level "include:" key can itself be an AliasNode
 	// resolving to the scalar "include" rather than a literal "include:"
 	// key. A literal .Value=="include" check would never match the alias
@@ -1748,6 +2201,7 @@ stages:
 }
 
 func TestStripObsoleteGitLabStages_DuplicateLocalKeyInIncludePreserved(t *testing.T) {
+	useHistoricalObsoleteDispatchStage(t)
 	// A single include: mapping item with duplicate "local:" keys:
 	// GitLab/Psych's last-wins semantics mean the second local: value is
 	// the one that actually takes effect, but isFullsendPipelineInclude
@@ -1772,6 +2226,7 @@ stages:
 }
 
 func TestStripObsoleteGitLabStages_VariableInterpolatedStagePreserved(t *testing.T) {
+	useHistoricalObsoleteDispatchStage(t)
 	// A job's stage: value can use GitLab CI/CD variable interpolation
 	// (`$NOTIFY_STAGE`) instead of a literal stage name. The node is still
 	// a plain, untagged ScalarNode, but its .Value is the unevaluated
@@ -1802,6 +2257,7 @@ notify:
 }
 
 func TestStripObsoleteGitLabStages_ExtendsInterpolatedTemplatePreserved(t *testing.T) {
+	useHistoricalObsoleteDispatchStage(t)
 	// Like stage: $NOTIFY_STAGE, an extends: value can carry GitLab
 	// pipeline-input interpolation instead of a literal template name
 	// (`extends: $[[ inputs.template ]]`). The node is still a plain,
@@ -1835,6 +2291,7 @@ notify:
 }
 
 func TestStripObsoleteGitLabStages_ExtendsMixedInterpolatedSequencePreserved(t *testing.T) {
+	useHistoricalObsoleteDispatchStage(t)
 	// Same interpolation gap as above, but inside a sequence that also
 	// contains an ordinary literal name. Every item must resolve to a
 	// fully-literal scalar before the sequence can be trusted as a list of
@@ -1870,6 +2327,7 @@ notify:
 }
 
 func TestStripObsoleteGitLabStages_InterpolatedHiddenTemplateKeyPreserved(t *testing.T) {
+	useHistoricalObsoleteDispatchStage(t)
 	// A hidden-template key's own literal text can carry GitLab
 	// pipeline-input interpolation (`.$[[ inputs.template ]]`). Its raw
 	// .Value never string-matches the literal name a visible job's
@@ -1903,6 +2361,7 @@ notify:
 }
 
 func TestStripObsoleteGitLabStages_InterpolatedJobKeywordKeyPreserved(t *testing.T) {
+	useHistoricalObsoleteDispatchStage(t)
 	// A job-level key can itself carry GitLab pipeline-input interpolation
 	// (`$[[ inputs.keyword ]]: dispatch`) and evaluate to "stage" at
 	// pipeline time even though its raw .Value never string-matches
@@ -1931,6 +2390,7 @@ notify:
 }
 
 func TestStripObsoleteGitLabStages_DollarBearingJobNameStillScanned(t *testing.T) {
+	useHistoricalObsoleteDispatchStage(t)
 	// classifyTopLevelKey must not be blanket-replaced with
 	// isLiteralScalarValue: an ordinary, visible job whose *name* happens
 	// to contain "$" (not a "."-prefixed hidden template, and not a
@@ -1959,6 +2419,7 @@ weird$job:
 }
 
 func TestStripObsoleteGitLabStages_InterpolatedTopLevelMappingIncludePreserved(t *testing.T) {
+	useHistoricalObsoleteDispatchStage(t)
 	// A second top-level key whose literal text carries interpolation
 	// syntax (`$[[ inputs.extra ]]:`) can't be trusted as an ordinary job
 	// name: classifyTopLevelKeys must treat it as unclassifiable so the
@@ -1987,6 +2448,7 @@ $[[ inputs.extra ]]:
 }
 
 func TestStripObsoleteGitLabStages_InterpolatedIncludeMappingKeyPreserved(t *testing.T) {
+	useHistoricalObsoleteDispatchStage(t)
 	// An include-mapping item can carry a second, interpolated key
 	// alongside a legitimate "local: fullsend-pipeline.yml" — e.g.
 	// `$[[ inputs.k ]]: customer/other.yml`. isFullsendPipelineInclude
@@ -2012,6 +2474,7 @@ stages:
 }
 
 func TestStripObsoleteGitLabStages_InterpolatedMergeKeyInjectedJobPreserved(t *testing.T) {
+	useHistoricalObsoleteDispatchStage(t)
 	// A top-level key whose name is itself interpolated
 	// (`$[[ inputs.merge ]]: *jobs`) can alias to a mapping of further job
 	// definitions, effectively injecting jobs the way a merge key would.
@@ -2144,6 +2607,7 @@ func TestGitlabPipelineWrapperStillIncludesDispatch_NonMappingRootFailsClosed(t 
 }
 
 func TestStripObsoleteGitLabStages_ExtendsTargetAbsentFromRootPreserved(t *testing.T) {
+	useHistoricalObsoleteDispatchStage(t)
 	// A job's extends: can name a template that isn't a top-level key of
 	// this root file at all — e.g. one defined in the included fullsend
 	// pipeline wrapper or another local include. GitLab resolves extends:

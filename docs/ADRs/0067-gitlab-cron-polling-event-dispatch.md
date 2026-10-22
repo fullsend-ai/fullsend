@@ -24,6 +24,22 @@ Date: 2026-06-13
 
 Accepted
 
+The dispatch topology (native-CI two-path, then pure cron-polling after
+[#7322](https://github.com/fullsend-ai/fullsend/issues/7322)) is superseded
+by [ADR 0125](0125-gitlab-hybrid-webhook-poller-dispatch.md). The single-bot
+credential model is superseded by the three-role decision in
+[#7424](https://github.com/fullsend-ai/fullsend/issues/7424) and
+[#7496](https://github.com/fullsend-ai/fullsend/issues/7496) (see
+[gitlab-role-credentials.md](../contributing/gitlab-role-credentials.md));
+poller internals, HMAC dispatch signing, and forge-interface
+extensions remain current. Of this ADR's security guardrails, the
+protected/masked CI variable model, the poller reconciliation backstop, and
+the in-job dispatch gate remain current; the "no inbound attack surface / no
+webhook parser / no trigger token" and "events read only from the GitLab
+API, never from spoofable webhook payloads" properties are **superseded** by
+ADR 0125's webhook fast-path — see ADR 0125's trust boundaries and
+trigger-token threat model for the new inbound-surface controls.
+
 <!-- ADRs are point-in-time records, but not fully frozen after acceptance.
      Minor annotations are welcome: cross-references to related ADRs, short
      notes linking to newer decisions, or clarifying remarks. However, do not
@@ -31,6 +47,25 @@ Accepted
      the decision itself needs to change, write a new ADR that supersedes this
      one. For evolving design narrative, use docs/architecture.md. -->
 
+> **Update (2026-09, #7502 / #7424 / #7496):** The shared-identity
+> assumption in "Credential model" below is superseded. Fullsend uses
+> three built-in GitLab responsibility identities per repository —
+> **Poller**, **Analyst**, and **Coder** — decided in
+> [#7424](https://github.com/fullsend-ai/fullsend/issues/7424) and
+> implemented under [#7496](https://github.com/fullsend-ai/fullsend/issues/7496).
+> Administrator-registered custom roles are an optional extension of
+> the same registry, not a replacement of the three built-ins. Runtime
+> never authenticates as `FULLSEND_FORGE_TOKEN`. Separate identities do
+> not grant finer GitLab API permissions: every role token remains
+> Developer (30) with the `api` scope. See
+> [gitlab-role-credentials.md](../contributing/gitlab-role-credentials.md).
+>
+> **Update (2026-09, #7758):** Dispatch topology is superseded by
+> [ADR 0125](0125-gitlab-hybrid-webhook-poller-dispatch.md): a GitLab-native
+> webhook fast-path with this ADR's cron-poller as the reconciliation
+> backstop. The Decision below is the historical record; do not treat
+> poll-only dispatch as current.
+>
 > **Update (2026-07, #5556):** The child-pipeline output driver described in
 > this ADR was replaced by direct API-triggered pipelines
 > (`POST /projects/:id/pipeline`). The poller now creates standalone pipelines
@@ -136,6 +171,14 @@ Accepted
 > this fallback is an accepted consequence of that tradeoff rather than a
 > per-role-token gap to close.
 >
+> **Update (2026-09, #7502 / #7424):** The single-shared-PAT self-approval
+> trade-off above is superseded when Analyst and Coder are distinct GitLab
+> users: native `POST .../approve` can succeed because the Analyst token
+> is not the MR author. The pre-call identity check remains as a safety
+> net when those identities coincide (for example a Free-tier one-user
+> PAT arrangement). See
+> [configuring-gitlab.md](../guides/getting-started/configuring-gitlab.md#role-identities-and-gitlab-free).
+>
 > **Update (2026-09, #7322):** Native `merge_request_event` dispatch is
 > removed. After #7293 moved MR-open review to the poller, the only
 > remaining native path was best-effort `closed` → retro (a
@@ -146,7 +189,14 @@ Accepted
 > cron-polling), originally rejected for sub-second MR review latency
 > that #7293 already gave up. `fullsend-dispatch.yml` is retained as a
 > version-marker carrier and is no longer included by the pipeline
-> wrapper. Superseded sections: the two-path Decision, the native-CI
+> wrapper.
+>
+> **Update (2026-09, #7707):** The leftover `fullsend-dispatch.yml` stub
+> is no longer scaffolded. The `# fullsend-ref:` version marker now lives
+> in `fullsend-pipeline.yml`. Status, probe, and upgrade still read a
+> leftover dispatch stub so already-enrolled repos keep reporting a ref;
+> converge deletes the stub and writes the marker onto the pipeline
+> wrapper. Uninstall still removes the file when it is present. Superseded sections: the two-path Decision, the native-CI
 > architecture-diagram line, and the #5556 auto_cancel note's "MR
 > pipelines / MR dispatch jobs are fast (<30s)" claim above — no MR
 > pipelines or dispatch jobs exist anymore. ("MR review latency is
@@ -296,15 +346,28 @@ Credentials:
   Pipeline job → protected CI/CD variable FULLSEND_FORGE_TOKEN → bot PAT
 ```
 
-> **See also (#7497, #7498):** The registered-role credential contract
+> **See also (#7424, #7496, #7497, #7498):** The registered-role credential contract
 > (built-in Poller/Analyst/Coder plus administrator-registered custom
 > roles) is specified in
 > [gitlab-role-credentials.md](../contributing/gitlab-role-credentials.md).
 > `repos install` can provision those credentials additively without
-> revoking `FULLSEND_FORGE_TOKEN`. Job routing (#7499) selects the
-> registered role credential when the migration gate is `migrating` or
-> `enforced`; this ADR's single-bot identity remains the default while
-> the gate is unset, `disabled`, or `rollback`.
+> revoking `FULLSEND_FORGE_TOKEN`. Job routing (#7499, #7559) selects the
+> registered role credential when the gate is `migrating` or `enforced`
+> and fails closed if that secret is missing; this ADR's single-bot
+> identity remains the leftover/`rollback` path while the gate is unset,
+> leftover `disabled`, or explicit `rollback`.
+>
+> **Update (#7782):** The leftover/`rollback` single-bot-identity path
+> described above no longer applies to runtime credential selection.
+> Runtime job routing now requires the registered role credential in
+> every gate mode, including leftover unset/`disabled` and explicit
+> `rollback` — there is no shared-token fallback left. See
+> [gitlab-role-credentials.md](../contributing/gitlab-role-credentials.md).
+>
+> **Update (#7524 / #7559):** Ordinary `repos install` retires the
+> leftover shared `FULLSEND_FORGE_TOKEN` credential once all roles are
+> ready, and there is no public rollback control. See
+> [gitlab-role-credentials.md](../contributing/gitlab-role-credentials.md).
 
 ### Credential model
 
@@ -314,6 +377,13 @@ updates CI/CD variables (watermark and label state persistence) via the
 API, which requires Maintainer-level access. The bot PAT is stored as a
 protected, masked CI/CD variable (`FULLSEND_FORGE_TOKEN`).
 
+> **Update (2026-09, #7502 / #7424 / #7496):** The single bot PAT
+> described here is superseded by the three built-in responsibility
+> identities (Poller, Analyst, Coder) plus optional administrator-
+> registered custom roles. Runtime never authenticates as
+> `FULLSEND_FORGE_TOKEN`. See Status and
+> [gitlab-role-credentials.md](../contributing/gitlab-role-credentials.md).
+>
 > **Update (2026-09, #7343 / #7362 / #7381):** Poll-state persistence
 > (watermarks, dispatched/failed-key dedup, label state) moved off
 > CI/CD variables onto two per-mode, HMAC-signed `state.json`
@@ -336,6 +406,13 @@ protected, masked CI/CD variable (`FULLSEND_FORGE_TOKEN`).
 > The branch is always root + 1 commit; prior state commits become
 > unreachable. The commit message is suffixed `[skip ci]`. Force +
 > start point also creates the branch on first write.
+>
+> **Update (#7768 / [ADR 0125](0125-gitlab-hybrid-webhook-poller-dispatch.md)):** Install-time seeding still force-re-roots as
+> described above. Runtime persist is now conflict-detecting instead:
+> the write is parented at the loaded tip without `force`, and a 409
+> retries a merge of this writer's deltas rather than last-writer-wins
+> overwrite. See ADR 0125 for the current runtime persist design and
+> the residual risk this introduces for unbounded state-branch history.
 >
 > **HMAC.** Each document is HMAC-SHA256-signed with
 > `FULLSEND_DISPATCH_SECRET` (already provisioned for dispatch
@@ -375,6 +452,29 @@ protected, masked CI/CD variable (`FULLSEND_FORGE_TOKEN`).
 > configuration must grant Developers merge (or push) access to the
 > default branch, or keep the bot PAT at Maintainer (40), for dispatch
 > to keep working.
+>
+> **Update (#7665):** `repos install` now grants the poller
+> project-access-token user merge access (not push) on the protected
+> default branch when Developer-class merge/push is absent, and fails
+> closed if that grant is not possible. `repos status` reports
+> `protected-ref-pipeline` drift if the access is later removed.
+>
+> **Update (#8083):** under #7772 the Poller becomes a project service
+> account by default once its CLI activation change merges; a project access
+> token remains the fallback.
+>
+> **Update (#8242):** that CLI activation change has merged, so the Poller is a
+> project service account by default. Trigger creation and rotation as the
+> Poller remain deferred, and cron polling remains the dispatch path.
+>
+> **Update (#8243):** trigger creation and rotation are now enabled for
+> eligible projects through a fresh Poller service-account generation; cron
+> polling remains available as the fallback dispatch path.
+>
+> **Update (#7667):** a failed `CreatePipeline` (including that 403) now
+> fails the poll cycle after persisting retry state. The permission gap
+> is unchanged; the poll job no longer reports success when no agent
+> pipeline was created.
 
 Key properties:
 
@@ -399,6 +499,14 @@ Key properties:
   `Error code invalid_grant: Error connecting to the given credential's issuer`.
   Inference is not available for GitLab instances that are not
   resolvable in public DNS.
+
+  > **Update (2026-10, #8468):**
+  > The last sentence above is incorrect. Uploading the instance's public
+  > JWKS to the WIF provider (`--jwk-json-path`) lets STS verify tokens
+  > without contacting the issuer. This was tested on an internal instance
+  > in [#5897](https://github.com/fullsend-ai/fullsend/issues/5897). The
+  > operator must re-upload the keys whenever the instance rotates them. See
+  > [Configuring GitLab → Private OIDC issuers](../guides/getting-started/configuring-gitlab.md#private-oidc-issuers-uploaded-jwks).
 
 ### Cron poller (`gitlab-poll` input driver)
 
@@ -501,6 +609,13 @@ configuration.
 | MR merged | Cron poll (MR `merged_at` > watermark) | retro |
 | MR closed (unmerged) | Cron poll (MR `closed_at` > watermark, `merged_at` empty) | retro |
 | MR note with `<!-- fullsend:changes-requested -->` | Cron poll (note body marker) | fix (same-project MRs only) |
+
+> **Update (2026-10, [#8553](https://github.com/fullsend-ai/fullsend/issues/8553) / [ADR 0125](0125-gitlab-hybrid-webhook-poller-dispatch.md)):**
+> The events poll also acts as a backstop for a missed webhook issue-open
+> delivery: an issue opened after both the discovery watermark and a persisted
+> installation cutoff is dispatched as an issue-opened event. See the
+> [normalized event README](../normative/normalized-event/v1/README.md) for
+> details.
 
 Bot-authored comments are skipped to prevent re-triggering loops (exception:
 the `changes-requested` marker from the review agent).
@@ -627,6 +742,8 @@ injection > insider > drift > supply chain):
 > | Developer forges poll state | HMAC-SHA256 (`FULLSEND_DISPATCH_SECRET`) with per-branch and per-project domain separation. Secret unset → refuse load/write. Bad/absent signature → discard the branch and fail that cycle. |
 > | Missing poll-state branch | Not tampering: fresh baseline (watermark ~1h ago); next save recreates the branch. One-time re-scan / at-least-once re-dispatch, not a stall. |
 > | Unbounded history on state branches | Force-re-root every save on the repository's root commit (`force: true` + `start_sha`); branch stays at base + 1 commit. |
+> | ↳ **Update (#7768 / [ADR 0125](0125-gitlab-hybrid-webhook-poller-dispatch.md))** | Install-time seed still force-re-roots as above. Runtime persist is now CAS and no longer force-re-roots every save, so old HMAC-signed `state.json` commits stay reachable. See ADR 0125 for the current mitigation status and the accepted residual risk this introduces (old-signed-document replay by a Developer with push access). |
+> | Concurrent poller + webhook writers | Conflict-detecting persist ([ADR 0125](0125-gitlab-hybrid-webhook-poller-dispatch.md)): 409 / non-fast-forward reloads and unions dispatched keys; exhaustion fails closed. |
 > | `CI_DEBUG_TRACE` / protected-branch exposure of the bot PAT | Unchanged: `FULLSEND_FORGE_TOKEN` and `FULLSEND_DISPATCH_SECRET` remain protected CI/CD variables. |
 
 ### Forge abstraction
@@ -636,7 +753,7 @@ injection > insider > drift > supply chain):
 
 - `IsProtectedBranch` — maps to GitHub branch protection API and GitLab
   protected branches API
-- `CreatePipelineSchedule` / `DeletePipelineSchedule` — GitLab-native; GitHub
+- `CreatePipelineSchedule` / `DeletePipelineSchedule` / `UpdatePipelineSchedule` — GitLab-native; GitHub
   returns `ErrNotSupported`
 - `UpdateCIVariable` — for poll watermark management
   > **Update (2026-09, #7343):** Poll watermarks are no longer CI/CD
@@ -647,6 +764,11 @@ injection > insider > drift > supply chain):
   > `UpdateCIVariable`. `UpdateCIVariable` has no production callers;
   > it remains on `forge.Client` only for non-credential CI/CD-variable
   > operations, should any be added.
+  >
+  > **Update (#7768 / [ADR 0125](0125-gitlab-hybrid-webhook-poller-dispatch.md)):** Runtime persist is compare-and-swap
+  > (`CommitFileToBranch` parented at the loaded tip). `ForceCommitFileToBranch`
+  > remains the install-time seed primitive. Concurrent poller and webhook
+  > writers retry-merge dispatched keys on 409 and fail closed on exhaustion.
 
 A new `ErrNotSupported` sentinel (complementing the existing forge
 sentinel errors) allows forge
@@ -723,7 +845,10 @@ methods rather than adding forge-conditional logic.
    > refuses load/write; a missing or invalid signature discards the
    > branch and fails that cycle. A missing branch or file is not
    > tampering — the poller starts from a fresh baseline and the next
-   > save recreates the branch.
+   > save recreates the branch. The signature does not bind freshness, so
+   > a Developer *with* push access can still replay an old, validly-signed
+   > document rather than forge a new one — see the "Unbounded history on
+   > state branches" row above for that accepted residual risk.
 4. **Schedule modification.** A Maintainer could retarget the schedule to a
    non-protected branch. Mitigated by protected variable status (bot PAT
    not exposed on non-protected branches).
@@ -773,4 +898,5 @@ template scaffolding, and install flow.
 - [ADR 0054](0054-require-authorization-on-all-agent-dispatch-paths.md) — authorization on all dispatch paths (slash command ACL)
 - [ADR 0061](0061-harness-cel-dispatch.md) — harness CEL triggers, dispatch drivers, and NormalizedEvent schema
 - [ADR 0063](0063-polling-based-work-discovery.md) — polling-based work discovery via dispatch drivers (`fullsend poll`, input/output driver architecture)
+- [ADR 0125](0125-gitlab-hybrid-webhook-poller-dispatch.md) — hybrid GitLab dispatch (webhook fast-path + this ADR's poller as backstop)
 - [NormalizedEvent v1](../normative/normalized-event/v1/)

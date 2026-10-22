@@ -4,9 +4,10 @@ sandbox tool hook scripts (internal/security/hooks/*.py; ADR 0090,
 docs/contributing/runtime-implementation.md "Sandbox hook contract").
 
 Invoked by codex from `$CODEX_HOME/hooks.json`, one handler per
-`security.HookPlan` group:
+`security.HookPlan` group, plus one for the spawn policy of ADR 0126:
 
     python3 <this file> <phase> <script.py> [<script.py> ...]
+    python3 <this file> SpawnGuard
 
 The hook payload arrives as JSON on stdin. Everything else is derived from
 this file's own location, so nothing in the agent-writable environment can
@@ -28,7 +29,14 @@ codex-rs/hooks/src/{schema.rs,engine/output_parser.rs,events/*.rs}):
       be forwarded verbatim: codex treats any exit other than 0 and 2 as
       `Failed`, and a failed hook does **not** block (`events/pre_tool_use.rs`
       `parse_completed`), so exit 1 would be fail-open. An exit 2 with empty
-      stderr is also `Failed`, so the reason is never allowed to be empty.
+      stderr is also `Failed`, so `block()` writes the reason with a raw
+      `os.write(2, ...)` straight to the fd codex actually reads — `sys.stderr`
+      is never written to, since a successful write through it says nothing
+      about whether the bytes actually reached fd 2. That recovers the reason
+      whenever fd 2 itself is still live. If fd 2 has actually been torn down
+      at the OS level, no process-local write can put bytes on the other end
+      of it; that residual case still exits 2 but is indistinguishable from
+      `Failed` to codex — see `block()`'s docstring.
     - **allow** → exit 0 with stdout empty. On PostToolUse this is limited to
       rewrites whose metadata identifies them as context suppression or
       ANSI-only cleanup; every security-sensitive or unclassified rewrite
@@ -61,6 +69,7 @@ import contextlib
 import hashlib
 import json
 import os
+import signal
 import stat
 import subprocess
 import sys
@@ -70,14 +79,21 @@ from typing import Any
 
 ADAPTER_DIR = os.path.dirname(os.path.abspath(__file__))
 HOOKS_DIR = os.path.join(ADAPTER_DIR, "hooks")
+ROLES_DIR = os.path.join(ADAPTER_DIR, "agents")
 FINDINGS_PATH = "/sandbox/workspace/.security/findings.jsonl"
 
 # Set by CodexRuntime.Run in the launch command, after .env and before codex
 # starts, as "<name>:<sha256>" pairs. See verify_script_digest.
 HOOK_DIGESTS_ENV = "FULLSEND_CODEX_HOOK_DIGESTS"
 
-# The PATH captured before the agent-writable .env was sourced. See _child_env.
-PINNED_PATH_ENV = "FULLSEND_CODEX_PATH"
+# Set the same way, for the spawn guard: "hooks.json:<sha256>" plus one
+# "agents/<role>.toml:<sha256>" per registered role. The keys are the role
+# registry; the guard re-checks the values before every spawn.
+SPAWN_DIGESTS_ENV = "FULLSEND_CODEX_SPAWN_DIGESTS"
+
+# The launch PATH recorded before the agent-writable .env was read, without the
+# directories the agent can write. See _child_env.
+TRUSTED_PATH_ENV = "FULLSEND_TRUSTED_PATH"
 
 # Bound one script run, so a wedged stage cannot consume the budget of the
 # ones after it.
@@ -111,6 +127,35 @@ MAX_SCRIPT_BYTES = 1 << 20
 PHASE_PRE = "PreToolUse"
 PHASE_POST = "PostToolUse"
 
+# argv[1] of the spawn guard handler, which takes no script.
+MODE_SPAWN_GUARD = "SpawnGuard"
+# The only multi-agent tool the guard admits.
+SPAWN_TOOL_V1 = "spawn_agent"
+# Passed through from the root thread: each acts on an admitted child and
+# none can start or reopen one. Denied from a child. Every other
+# multi-agent tool is denied by name.
+SPAWN_GUARD_PASS = frozenset(
+    {
+        "multi_agent_v1wait_agent",
+        "multi_agent_v1close_agent",
+        "multi_agent_v1send_input",
+    }
+)
+# A spawn without agent_type asks codex for its `default` role.
+SPAWN_DEFAULT_ROLE = "default"
+
+# Logged for every admitted spawn. Codex keeps no record of hook outcomes,
+# so this line is the only one, and the runner reconciles it against the
+# spawns that completed.
+SPAWN_ADMIT_FINDING = "codex_spawn_guard_admit"
+# Codex kills a handler at the hooks.json timeout without treating that as
+# a block, so the guard denies on its own, shorter clock.
+SPAWN_GUARD_DEADLINE_S = HANDLER_TIMEOUT_S - BUDGET_MARGIN_S
+SPAWN_GUARD_DEADLINE_REASON = (
+    "fullsend: the spawn guard did not finish verifying the run's files inside "
+    "its deadline; refusing the spawn (fail closed)"
+)
+
 # codex tool name -> the Claude Code name security.HookGroup.Tools,
 # FULLSEND_TOOL_ALLOWLIST and the scripts are written in (#608).
 # codex-rs/core/src/tools/hook_names.rs: the shell tool is already `Bash`;
@@ -120,6 +165,12 @@ PHASE_POST = "PostToolUse"
 CLAUDE_TOOL_FOR_CODEX = {
     "apply_patch": "Edit",
     "spawn_agent": "Agent",
+    # Wait, close and send_input act on an admitted child, so the sandbox
+    # hooks see them as the Agent the spawn already is. The resume stays
+    # unmapped so an allowlist without its name blocks it.
+    "multi_agent_v1wait_agent": "Agent",
+    "multi_agent_v1close_agent": "Agent",
+    "multi_agent_v1send_input": "Agent",
 }
 
 
@@ -139,9 +190,10 @@ def _child_env() -> dict[str, str]:
     codex spawns the hook after the agent-writable .env has been sourced.
 
     LD_* goes the same way: it would load code into any dynamically linked
-    program a hook script runs — tirith, git — before its main. PATH is
-    inherited unchanged and is already the value the run command pinned before
-    sourcing .env, which is what makes `tirith` resolve to the real one.
+    program a hook script runs — tirith, git — before its main. PATH is set
+    from the value the run command recorded before reading .env, without the
+    directories the agent can write, which is what makes `tirith` resolve to
+    the image's own.
     """
     env = {
         k: v
@@ -151,16 +203,30 @@ def _child_env() -> dict[str, str]:
     # Inert under `-I`, which already ignores the user site directory. Kept as
     # a second latch so dropping the flag does not silently re-enable it.
     env["PYTHONNOUSERSITE"] = "1"
-    # PATH from the value the run command captured before .env was sourced,
-    # when it is available. The hook scripts resolve their tools by name —
+    # PATH from the value the run command recorded before .env was read, with
+    # the directories the agent user owns or can write left out (run_script
+    # blocks before spawning when it is missing).
+    # Codex's own PATH keeps those directories. The hook scripts resolve their tools by name —
     # tirith_check.py runs a bare `tirith` — so a PATH with a planted entry
     # ahead of the real one neuters the chain with every digest still green.
     # Taking it from here rather than from the inherited PATH means the
     # defence does not rest on nothing having touched PATH in between.
-    pinned = os.environ.get(PINNED_PATH_ENV, "").strip()
-    if pinned:
+    pinned = trusted_path()
+    if pinned is not None:
         env["PATH"] = pinned
     return env
+
+
+def trusted_path() -> str | None:
+    """The PATH the run command recorded before .env was read, or None when it
+    is missing, empty, or has an entry that is not an absolute directory (an
+    empty or relative entry would search the working directory). The run
+    command always sets it before codex starts, so None means the launch was
+    not the one fullsend built; run_script then blocks."""
+    value = os.environ.get(TRUSTED_PATH_ENV, "")
+    if not value or not all(d.startswith("/") for d in value.split(":")):
+        return None
+    return value
 
 
 # How a hook script is executed. `-I` alone is not enough and a bare script
@@ -202,10 +268,10 @@ _CHILD_BOOTSTRAP = (
 )
 
 
-def expected_digests() -> dict[str, str] | None:
+def expected_digests(env_name: str = HOOK_DIGESTS_ENV) -> dict[str, str] | None:
     """The name -> sha256 map the run command put in this process's
-    environment, or None when it is absent or unreadable."""
-    raw = os.environ.get(HOOK_DIGESTS_ENV, "").strip()
+    environment under env_name, or None when it is absent or unreadable."""
+    raw = os.environ.get(env_name, "").strip()
     if raw == "":
         return None
     digests: dict[str, str] = {}
@@ -336,27 +402,78 @@ def log_finding(name: str, severity: str, detail: str, action: str) -> None:
         "detail": detail[:MAX_TEXT],
         "action": action,
     }
-    try:
-        with open(FINDINGS_PATH, "a") as handle:
-            handle.write(json.dumps(finding) + "\n")
-    except OSError:
-        pass
+    # Non-blocking open of a regular file only: a FIFO planted in the
+    # agent-writable workspace would otherwise stall a deny until codex's
+    # timeout let the call through.
+    line = (json.dumps(finding) + "\n").encode()
+    with contextlib.suppress(OSError):
+        fd = os.open(
+            FINDINGS_PATH,
+            os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NONBLOCK | os.O_NOFOLLOW,
+            0o644,
+        )
+        try:
+            if stat.S_ISREG(os.fstat(fd).st_mode):
+                written = 0
+                while written < len(line):
+                    written += os.write(fd, line[written:])
+        finally:
+            os.close(fd)
 
 
 def block(reason: str) -> None:
     """Exit 2 with a non-empty reason on stderr — codex's blocking contract.
 
-    An empty stderr on exit 2 is reported as `Failed`, which does not block,
-    so a missing reason is replaced rather than passed through.
+    An empty stderr on exit 2 is reported as `Failed`, which does not block
+    (`events/pre_tool_use.rs` `parse_completed` requires `trimmed_non_empty`
+    stderr), so codex only honors this as a block when the reason actually
+    reaches fd 2 — the exit code alone is not enough.
 
-    The write is suppressed rather than allowed to raise: a stderr that is
-    already a broken pipe would otherwise take the interpreter down with exit
-    1, which codex records as `Failed` — and a failed hook does not block. A
-    block without its reason still beats a block that never happens."""
+    `sys.stderr` is not trusted to carry the reason: something upstream may
+    have set it to `None`, left a `TextIOWrapper`/`BufferedWriter` around an
+    fd that no longer refers to the process's real stderr, or left a working
+    wrapper around some other, unrelated fd — codex only ever reads the
+    process's real fd 2, never the Python object, so a visibly successful
+    `sys.stderr` write says nothing about whether it actually reached fd 2.
+    `block()` therefore never writes through `sys.stderr` at all: the reason
+    is delivered solely with a raw `os.write(2, ...)` straight to the real
+    fd, looping over partial writes until every byte is sent. That recovers
+    the reason whenever fd 2 itself is still a live pipe — a broken, nulled,
+    or misdirected Python wrapper around an otherwise-working fd — which is
+    the recoverable half of "unwritable stderr".
+
+    The other half is not recoverable: if fd 2 itself has been closed (the
+    OS-level pipe torn down, not just the Python object), no write from this
+    process can put bytes on the other end, because the transport itself is
+    gone. `os.write(2, ...)` then raises `OSError` (EBADF), which is
+    suppressed the same way. In that case codex necessarily sees exit 2 with
+    empty stderr and records `Failed`, not a block — no in-process fix
+    changes that. This still writes the reason to the findings log (see call
+    sites) so the attempted block is not silently lost, and still exits 2
+    rather than propagating an exception, which is strictly no worse than
+    the alternative and correct whenever the fd is not the one that's broken.
+
+    The write is suppressed rather than allowed to raise: an unhandled
+    exception here would take the interpreter down with exit 1, which codex
+    also records as `Failed`. After writing, the stream is closed and
+    detached — on interpreters that leave a live `TextIOWrapper` around a
+    closed fd 2 (pyenv-built CPython), an unclosed wrapper's shutdown flush
+    fails and overrides this exit 2 with 120, which is also `Failed`.
+    Closing and dropping the wrapper keeps the exit code fail-closed on
+    every CPython build regardless of whether the write above reached fd 2.
+    """
+    # An armed spawn-guard deadline firing during exit would kill the process
+    # by signal, which codex does not treat as a block.
+    signal.setitimer(signal.ITIMER_REAL, 0)
     text = (reason or "").strip() or "fullsend hook blocked this tool call"
+    truncated = text[:MAX_TEXT]
     with contextlib.suppress(BaseException):
-        sys.stderr.write(text[:MAX_TEXT])
-        sys.stderr.flush()
+        data = truncated.encode("utf-8", "replace")
+        while data:
+            data = data[os.write(2, data) :]
+    with contextlib.suppress(BaseException):
+        sys.stderr.close()
+    sys.stderr = None
     sys.exit(2)
 
 
@@ -382,6 +499,13 @@ def run_script(script: str, payload: dict[str, Any]) -> dict[str, Any]:
         digest_error = verify_hooks_dir()
     if digest_error is not None:
         return {"block": True, "reason": digest_error, "output": None}
+    if trusted_path() is None:
+        return {
+            "block": True,
+            "reason": f"fullsend: {TRUSTED_PATH_ENV} is missing or malformed, so hook "
+            f"{script} has no trusted PATH to run with (fail closed)",
+            "output": None,
+        }
     timeout = script_timeout(time.monotonic() - _START)
     if timeout is None:
         return {
@@ -560,6 +684,134 @@ def run_pre_tool_use(scripts: list[str], hook_input: dict[str, Any], tool_name: 
     sys.exit(0)
 
 
+def _spawn_guard_deadline_passed(signum: int, frame: object) -> None:
+    """SIGALRM: deny on the guard's deadline. _exit ends the process here so
+    nothing up the interrupted call stack can swallow the exit."""
+    log_finding("codex_spawn_guard_block", "critical", SPAWN_GUARD_DEADLINE_REASON, "block")
+    with contextlib.suppress(SystemExit):
+        block(SPAWN_GUARD_DEADLINE_REASON)
+    os._exit(2)
+
+
+def arm_spawn_guard_deadline() -> str | None:
+    """Arm SIGALRM for what is left of the guard's deadline, or return the
+    deny reason when it has already passed. Codex kills a handler at its
+    timeout without blocking the call, so the guard denies on its own clock."""
+    remaining = SPAWN_GUARD_DEADLINE_S - (time.monotonic() - _START)
+    if remaining <= 0:
+        return SPAWN_GUARD_DEADLINE_REASON
+    signal.signal(signal.SIGALRM, _spawn_guard_deadline_passed)
+    signal.setitimer(signal.ITIMER_REAL, remaining)
+    return None
+
+
+def verify_spawn_files(digests: dict[str, str]) -> str | None:
+    """Re-check hooks.json and every registered role file against the exported
+    digests, and that the roles directory holds only registered files; codex
+    re-reads both from agent-writable CODEX_HOME when a child starts."""
+    if "hooks.json" not in digests:
+        return (
+            "fullsend: hooks.json has no recorded digest, so the spawn cannot be "
+            "verified (fail closed)"
+        )
+    for key in sorted(digests):
+        if key != "hooks.json" and not (key.startswith("agents/") and key.endswith(".toml")):
+            return f"fullsend: {key} is not a file the spawn guard records (fail closed)"
+        try:
+            actual = _sha256_regular_file(os.path.join(ADAPTER_DIR, key))
+        except OSError as err:
+            return f"fullsend: {key} could not be read for verification (fail closed): {err}"
+        if actual != digests[key]:
+            return (
+                f"fullsend: {key} changed since the run started; refusing the spawn (fail closed)"
+            )
+    try:
+        entries = sorted(os.listdir(ROLES_DIR))
+    except FileNotFoundError:
+        # No roles and no directory: nothing to check.
+        entries = []
+    except OSError as err:
+        return f"fullsend: the roles directory could not be listed (fail closed): {err}"
+    for name in entries:
+        if f"agents/{name}" not in digests:
+            return (
+                f"fullsend: {name} in the roles directory is not a role the runner "
+                "registered (fail closed)"
+            )
+    return None
+
+
+def spawn_policy(hook_input: dict[str, Any], registered: dict[str, str]) -> str | None:
+    """The reason a multi-agent call is outside policy, or None for a V1 spawn
+    from the root thread of a registered role with fork_context false and no
+    model or effort argument. Reads no file: agent_type is never a path."""
+    tool = hook_input.get("tool_name")
+    if tool != SPAWN_TOOL_V1:
+        return (
+            f"fullsend: {tool!r} is not the V1 spawn tool; resuming a child, V2 "
+            "tools and unknown multi-agent tools are not allowed"
+        )
+    # Only a child's payload carries agent_id or agent_type.
+    if "agent_id" in hook_input or "agent_type" in hook_input:
+        return "fullsend: a child may not spawn agents; only the root thread dispatches"
+    args = hook_input.get("tool_input")
+    if not isinstance(args, dict):
+        return "fullsend: spawn_agent arguments are not an object (fail closed)"
+    if args.get("fork_context") is not False:
+        return (
+            "fullsend: spawn_agent must pass fork_context: false; a child starts "
+            "without the parent's context"
+        )
+    for key in ("model", "reasoning_effort"):
+        if key in args:
+            return (
+                f"fullsend: spawn_agent must not pass {key}; the runner binds each "
+                "child's model and effort"
+            )
+    role = args.get("agent_type", SPAWN_DEFAULT_ROLE)
+    if not isinstance(role, str) or f"agents/{role}.toml" not in registered:
+        return f"fullsend: spawn_agent role {role!r} is not one the runner registered"
+    return None
+
+
+def run_spawn_guard(hook_input: dict[str, Any]) -> None:
+    """Admit (exit 0) or deny (exit 2, reason on stderr) a multi-agent tool
+    call. Every path but the admit path ends in block()."""
+    tool = hook_input.get("tool_name")
+    if tool in SPAWN_GUARD_PASS:
+        if "agent_id" in hook_input:
+            denied = f"fullsend: {tool!r} is not allowed from a child (fail closed)"
+            log_finding("codex_spawn_guard_block", "critical", denied, "block")
+            block(denied)
+        sys.exit(0)
+    deadline = arm_spawn_guard_deadline()
+    if deadline is not None:
+        log_finding("codex_spawn_guard_block", "critical", deadline, "block")
+        block(deadline)
+    registered = expected_digests(SPAWN_DIGESTS_ENV)
+    if registered is None:
+        reason: str | None = (
+            f"fullsend: {SPAWN_DIGESTS_ENV} is missing or malformed, so no role is "
+            "registered (fail closed)"
+        )
+    else:
+        reason = verify_spawn_files(registered) or spawn_policy(hook_input, registered)
+    if reason is not None:
+        log_finding("codex_spawn_guard_block", "critical", reason, "block")
+        block(reason)
+    # spawn_policy validated tool_input and agent_type above.
+    role = hook_input["tool_input"].get("agent_type", SPAWN_DEFAULT_ROLE)
+    # Disarm before logging: a late alarm would deny a spawn already logged as admitted.
+    signal.setitimer(signal.ITIMER_REAL, 0)
+    log_finding(
+        SPAWN_ADMIT_FINDING,
+        "info",
+        f"admitted spawn tool_use_id={hook_input.get('tool_use_id')} agent_type={role}",
+        "allow",
+    )
+    sys.exit(0)
+
+
 def run_post_tool_use(scripts: list[str], hook_input: dict[str, Any], tool_name: str) -> None:
     tool_input = hook_input.get("tool_input")
     tool_input = tool_input if isinstance(tool_input, dict) else {}
@@ -606,6 +858,13 @@ def run_post_tool_use(scripts: list[str], hook_input: dict[str, Any], tool_name:
                 )
             if context_was_suppressed(verdict["output"]):
                 if script != CHAIN_SCRIPT or not stage_enabled("secret_redact_posttool.py"):
+                    log_finding(
+                        "codex_posttool_unverified_suppression",
+                        "critical",
+                        f"{script} suppressed context in the {tool_name} result without the "
+                        "redact stage available to verify it",
+                        "block",
+                    )
                     block(
                         "fullsend: context suppression could not prove the original tool output "
                         "safe on codex, so the result was withheld"
@@ -657,14 +916,14 @@ def run_post_tool_use(scripts: list[str], hook_input: dict[str, Any], tool_name:
 
 
 def main() -> None:
-    if len(sys.argv) < 3:
+    phase = sys.argv[1] if len(sys.argv) > 1 else ""
+    if phase != MODE_SPAWN_GUARD and len(sys.argv) < 3:
         # Misconfiguration, not a tool decision. Fail closed on the phase that
         # can block and stay quiet on the one that cannot.
         message = f"fullsend: {os.path.basename(__file__)} needs <phase> and at least one script"
         log_finding("codex_adapter_misconfigured", "critical", message, "block")
         block(message)
 
-    phase = sys.argv[1]
     scripts = sys.argv[2:]
 
     raw = sys.stdin.read()
@@ -692,6 +951,11 @@ def main() -> None:
         )
         log_finding("codex_adapter_bad_payload", "critical", message, "block")
         block(message)
+
+    if phase == MODE_SPAWN_GUARD:
+        # Before tool-name translation: the policy is written in codex's own
+        # names and a child's payload is told apart by untranslated fields.
+        run_spawn_guard(hook_input)
 
     codex_tool = hook_input.get("tool_name")
     codex_tool = codex_tool if isinstance(codex_tool, str) else ""

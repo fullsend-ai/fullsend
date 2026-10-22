@@ -99,10 +99,59 @@ type systemEvent struct {
 	Subtype           string `json:"subtype"`
 	Model             string `json:"model"`
 	ClaudeCodeVersion string `json:"claude_code_version"`
+	SessionID         string `json:"session_id"`
 	Attempt           int    `json:"attempt"`
 	MaxRetries        int    `json:"max_retries"`
 	RetryDelayMs      int    `json:"retry_delay_ms"`
 	Error             string `json:"error"`
+	// OriginalModel, FallbackModel and Trigger are set on a
+	// "model_fallback" event.
+	OriginalModel string `json:"original_model"`
+	FallbackModel string `json:"fallback_model"`
+	Trigger       string `json:"trigger"`
+	// PluginErrors stays raw so a malformed value cannot fail decoding of
+	// the whole init event; decodePluginErrors reads it entry by entry.
+	PluginErrors json.RawMessage `json:"plugin_errors"`
+}
+
+// claudePluginError is one entry of the init event's plugin_errors. path is
+// only present on --plugin-dir load failures from Claude Code 2.1.283 on.
+type claudePluginError struct {
+	Plugin  string `json:"plugin"`
+	Type    string `json:"type"`
+	Message string `json:"message"`
+	Path    string `json:"path"`
+}
+
+// decodePluginErrors converts the init event's plugin_errors into events.
+// It is tolerant: a value that is not an array yields nothing, and an entry
+// that does not decode, or names neither a plugin, a path nor a message, is
+// skipped without affecting the others.
+func decodePluginErrors(raw json.RawMessage) []PluginErrorEvent {
+	if len(raw) == 0 {
+		return nil
+	}
+	var entries []json.RawMessage
+	if err := json.Unmarshal(raw, &entries); err != nil {
+		return nil
+	}
+	var out []PluginErrorEvent
+	for _, entry := range entries {
+		var pe claudePluginError
+		if err := json.Unmarshal(entry, &pe); err != nil {
+			continue
+		}
+		if pe.Plugin == "" && pe.Path == "" && pe.Message == "" {
+			continue
+		}
+		out = append(out, PluginErrorEvent{
+			Plugin:  pe.Plugin,
+			Type:    pe.Type,
+			Path:    pe.Path,
+			Message: pe.Message,
+		})
+	}
+	return out
 }
 
 type contentItem struct {
@@ -129,6 +178,64 @@ type resultEvent struct {
 		CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 		CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 	} `json:"usage"`
+	// ModelUsage is keyed by model id and, unlike Usage (top-level loop
+	// only), includes sub-agent activity. Like TotalCostUSD it is a running
+	// total for the session, not a per-result delta.
+	ModelUsage map[string]claudeModelUsage `json:"modelUsage"`
+}
+
+// claudeModelUsage is one model's entry in the result event's modelUsage
+// map. Fields fullsend does not record (provider, ...) are not decoded.
+type claudeModelUsage struct {
+	InputTokens              int     `json:"inputTokens"`
+	OutputTokens             int     `json:"outputTokens"`
+	CacheReadInputTokens     int     `json:"cacheReadInputTokens"`
+	CacheCreationInputTokens int     `json:"cacheCreationInputTokens"`
+	ThinkingTokens           int     `json:"thinkingTokens"`
+	CostUSD                  float64 `json:"costUSD"`
+}
+
+// newClaudeResultEvent converts a decoded result event into a ResultEvent.
+// When modelUsage is present and non-empty, the token totals are its sum
+// (whole tree, sub-agents included) and PerModelUsage carries one entry per
+// model; ReasoningTokens is likewise the sum of thinkingTokens across entries.
+// Otherwise the parent-only usage block and the parser's reasoningTokens are
+// used as before. Requests is left zero: the result event has no counterpart for it.
+func newClaudeResultEvent(re resultEvent, reasoningTokens int) ResultEvent {
+	res := ResultEvent{
+		NumTurns:                 re.NumTurns,
+		TotalCostUSD:             re.TotalCostUSD,
+		IsError:                  re.IsError,
+		ErrorMessage:             re.Result,
+		Subtype:                  re.Subtype,
+		InputTokens:              re.Usage.InputTokens,
+		OutputTokens:             re.Usage.OutputTokens,
+		ReasoningTokens:          reasoningTokens,
+		CacheCreationInputTokens: re.Usage.CacheCreationInputTokens,
+		CacheReadInputTokens:     re.Usage.CacheReadInputTokens,
+	}
+	if len(re.ModelUsage) == 0 {
+		return res
+	}
+	res.InputTokens, res.OutputTokens = 0, 0
+	res.CacheCreationInputTokens, res.CacheReadInputTokens = 0, 0
+	res.ReasoningTokens = 0
+	res.PerModelUsage = make(map[string]ModelUsage, len(re.ModelUsage))
+	for model, u := range re.ModelUsage {
+		res.InputTokens += u.InputTokens
+		res.OutputTokens += u.OutputTokens
+		res.CacheCreationInputTokens += u.CacheCreationInputTokens
+		res.CacheReadInputTokens += u.CacheReadInputTokens
+		res.ReasoningTokens += u.ThinkingTokens
+		res.PerModelUsage[model] = ModelUsage{
+			InputTokens:              u.InputTokens,
+			OutputTokens:             u.OutputTokens,
+			CacheCreationInputTokens: u.CacheCreationInputTokens,
+			CacheReadInputTokens:     u.CacheReadInputTokens,
+			CostUSD:                  u.CostUSD,
+		}
+	}
+	return res
 }
 
 // parseClaudeStream reads NDJSON from Claude Code's stream-json output and
@@ -233,9 +340,19 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 			switch se.Subtype {
 			case "init":
 				onEvent(InitEvent{
-					Model:   se.Model,
-					Version: se.ClaudeCodeVersion,
+					Model:     se.Model,
+					Version:   se.ClaudeCodeVersion,
+					SessionID: se.SessionID,
 				})
+				for _, pe := range decodePluginErrors(se.PluginErrors) {
+					onEvent(pe)
+				}
+			case "model_fallback":
+				// Claude Code moved to the next --fallback-model entry
+				// within the session (2.1.296 does so on a Vertex 404 as
+				// "trigger":"last_resort"); the init event still names
+				// the model that failed.
+				onEvent(ModelFallbackEvent{From: se.OriginalModel, To: se.FallbackModel, Trigger: se.Trigger})
 			case "api_retry":
 				onEvent(RetryEvent{
 					Attempt:    se.Attempt,
@@ -285,17 +402,21 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 				case "thinking_delta":
 					onEvent(ThinkingEvent{Text: d.Thinking})
 				case "input_json_delta":
-					if toolInputJSON.Len() < maxToolInputSize {
-						toolInputJSON.WriteString(d.PartialJSON)
+					// Cut the delta that crosses the cap: the input is
+					// incomplete past it either way, and Arguments
+					// carries whatever accumulated.
+					if room := maxToolInputSize - toolInputJSON.Len(); room > 0 {
+						toolInputJSON.WriteString(d.PartialJSON[:min(room, len(d.PartialJSON))])
 					}
 				}
 
 			case "content_block_stop":
 				if currentToolName != "" {
 					onEvent(ToolUseEvent{
-						ID:      currentToolID,
-						Name:    currentToolName,
-						Summary: extractSafeContext(currentToolName, json.RawMessage(toolInputJSON.String())),
+						ID:        currentToolID,
+						Name:      currentToolName,
+						Summary:   extractSafeContext(currentToolName, json.RawMessage(toolInputJSON.String())),
+						Arguments: toolInputJSON.String(),
 					})
 					currentToolName = ""
 					currentToolID = ""
@@ -371,18 +492,7 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 				continue
 			}
 			seenResult = true
-			onEvent(ResultEvent{
-				NumTurns:                 re.NumTurns,
-				TotalCostUSD:             re.TotalCostUSD,
-				IsError:                  re.IsError,
-				ErrorMessage:             re.Result,
-				Subtype:                  re.Subtype,
-				InputTokens:              re.Usage.InputTokens,
-				OutputTokens:             re.Usage.OutputTokens,
-				ReasoningTokens:          totalReasoning,
-				CacheCreationInputTokens: re.Usage.CacheCreationInputTokens,
-				CacheReadInputTokens:     re.Usage.CacheReadInputTokens,
-			})
+			onEvent(newClaudeResultEvent(re, totalReasoning))
 
 		case "assistant":
 			if seenStreamEvent {
@@ -424,9 +534,10 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 					}
 				case "tool_use":
 					onEvent(ToolUseEvent{
-						ID:      item.ID,
-						Name:    item.Name,
-						Summary: extractSafeContext(item.Name, item.Input),
+						ID:        item.ID,
+						Name:      item.Name,
+						Summary:   extractSafeContext(item.Name, item.Input),
+						Arguments: string(item.Input),
 					})
 				}
 			}
@@ -533,29 +644,49 @@ func toolResultText(raw json.RawMessage) (text string, partial bool) {
 func progressParser(r io.Reader, printer *ui.Printer, metrics *RunMetrics) error {
 	renderer := NewEventRenderer(printer)
 	return parseClaudeStream(r, func(evt AgentEvent) {
-		switch e := evt.(type) {
-		case InitEvent:
-			if metrics.Model == "" {
-				metrics.Model = e.Model
-			}
-		case TokensEvent:
-			metrics.InputTokens = e.InputTokens
-			metrics.OutputTokens = e.OutputTokens
-			metrics.CacheReadInputTokens = e.CacheRead
-			metrics.CacheCreationInputTokens = e.CacheWrite
-		case ResultEvent:
-			metrics.NumTurns = e.NumTurns
-			metrics.TotalCostUSD = e.TotalCostUSD
-			metrics.InputTokens = e.InputTokens
-			metrics.OutputTokens = e.OutputTokens
-			metrics.ReasoningTokens = e.ReasoningTokens
-			metrics.CacheCreationInputTokens = e.CacheCreationInputTokens
-			metrics.CacheReadInputTokens = e.CacheReadInputTokens
-		case ToolUseEvent:
-			metrics.ToolCalls.Add(1)
-		}
+		recordClaudeMetrics(metrics, evt)
 		renderer.Handle(evt)
 	})
+}
+
+// recordClaudeMetrics folds one event from parseClaudeStream into metrics.
+// It is shared by progressParser and ClaudeRuntime.Run so both record the
+// same values.
+func recordClaudeMetrics(metrics *RunMetrics, evt AgentEvent) {
+	switch e := evt.(type) {
+	case InitEvent:
+		if metrics.Model == "" {
+			metrics.Model = e.Model
+		}
+	case ModelFallbackEvent:
+		if e.To != "" {
+			metrics.Model = e.To
+		}
+		metrics.recordFallback(e.From, claudeCodeFallbackReason(e.Trigger))
+	case TokensEvent:
+		// Capture cumulative token usage from the stream so cancelled
+		// runs (no ResultEvent) retain non-zero telemetry (#6905).
+		metrics.InputTokens = e.InputTokens
+		metrics.OutputTokens = e.OutputTokens
+		metrics.CacheReadInputTokens = e.CacheRead
+		metrics.CacheCreationInputTokens = e.CacheWrite
+	case ResultEvent:
+		// Authoritative totals from the result event overwrite the
+		// incremental snapshot. They are session running totals, so a
+		// later result (steered or retried run) replaces an earlier one —
+		// PerModelUsage included, which is assigned rather than merged so
+		// nothing is counted twice.
+		metrics.NumTurns = e.NumTurns
+		metrics.TotalCostUSD = e.TotalCostUSD
+		metrics.InputTokens = e.InputTokens
+		metrics.OutputTokens = e.OutputTokens
+		metrics.ReasoningTokens = e.ReasoningTokens
+		metrics.CacheCreationInputTokens = e.CacheCreationInputTokens
+		metrics.CacheReadInputTokens = e.CacheReadInputTokens
+		metrics.PerModelUsage = e.PerModelUsage
+	case ToolUseEvent:
+		metrics.ToolCalls.Add(1)
+	}
 }
 
 // progressRedactor scrubs secrets from tool context strings before display.

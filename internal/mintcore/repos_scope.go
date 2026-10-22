@@ -11,20 +11,12 @@ import (
 // sentinel to decide whether to try repo-level FOREIGN grants.
 var errPerRepoCrossRepo = errors.New("per-repo mint requires repos to be exactly the requesting repository")
 
-// Shape labels returned by validateReposScope. A non-empty shape signals that
-// the caller must take path-specific action (see each constant's doc).
-const (
-	// reposScopeShapeForeignRepoScoped is returned for foreign (cross-org)
-	// requests with non-empty repos. The caller MUST perform repo-level
-	// FOREIGN grant authorization (via mintTokenCrossOrg) before minting.
-	// Treating this shape as "fully authorized" without the follow-up check
-	// would bypass authorization entirely.
-	reposScopeShapeForeignRepoScoped = "foreign-repo-scoped"
-
-	reposScopeShapeFullsendAny      = "fullsend-any"
-	reposScopeShapeEnrolledFullsend = "enrolled-fullsend"
-	reposScopeShapeEnrolledPair     = "enrolled-pair"
-)
+// reposScopeShapeForeignRepoScoped is returned by validateReposScope for
+// foreign (cross-org) requests with non-empty repos. The caller MUST perform
+// repo-level FOREIGN grant authorization (via mintTokenCrossOrg) before
+// minting. Treating this shape as "fully authorized" without the follow-up
+// check would bypass authorization entirely.
+const reposScopeShapeForeignRepoScoped = "foreign-repo-scoped"
 
 // normalizeMintRepos treats a single "*" entry as an alias for an empty
 // repos list (installation-wide scope). Since repos is now required,
@@ -62,18 +54,11 @@ func repositoryBareName(repository string) string {
 // (installation-wide) return an empty shape; org-level FOREIGN authorization
 // is handled by mintTokenCrossOrg's own empty-repos path.
 //
-// Same-org requests differ based on whether the caller is per-repo or per-org:
-//
-//   - Per-repo callers (perRepo=true): must list exactly the requesting
-//     repository. No broader shapes are allowed.
-//   - Per-org callers (perRepo=false): may use org-mode shapes:
-//     caller .fullsend: any non-empty validated list;
-//     other callers: exactly [.fullsend] or {requestingBare, .fullsend}.
-//     Same-org installation-wide (empty repos) is always denied.
-//
-// On success, a non-empty shape signals a path-specific authorization
-// requirement (foreign-repo-scoped or org-mode exception).
-func validateReposScope(isTargetForeign bool, requestingRepo string, repos []string, perRepo bool) (shape string, err error) {
+// Same-org requests must list exactly the requesting repository. Same-org
+// installation-wide (empty repos) is always denied. Any other same-org
+// list returns errPerRepoCrossRepo so the handler can consult repo-level
+// FOREIGN grants for the requested repos.
+func validateReposScope(isTargetForeign bool, requestingRepo string, repos []string) (shape string, err error) {
 	if isTargetForeign {
 		if len(repos) > 0 {
 			// Non-empty repos → repo-scoped. Return the sentinel shape
@@ -95,26 +80,5 @@ func validateReposScope(isTargetForeign bool, requestingRepo string, repos []str
 		return "", nil
 	}
 
-	if perRepo {
-		return "", errPerRepoCrossRepo
-	}
-
-	// Per-org callers get org-mode shapes.
-	if strings.EqualFold(bare, ".fullsend") {
-		return reposScopeShapeFullsendAny, nil
-	}
-
-	if len(repos) == 1 && strings.EqualFold(repos[0], ".fullsend") {
-		return reposScopeShapeEnrolledFullsend, nil
-	}
-
-	if len(repos) == 2 {
-		a, b := repos[0], repos[1]
-		if (strings.EqualFold(a, bare) && strings.EqualFold(b, ".fullsend")) ||
-			(strings.EqualFold(b, bare) && strings.EqualFold(a, ".fullsend")) {
-			return reposScopeShapeEnrolledPair, nil
-		}
-	}
-
-	return "", fmt.Errorf("repos scope not allowed for per-org caller")
+	return "", errPerRepoCrossRepo
 }

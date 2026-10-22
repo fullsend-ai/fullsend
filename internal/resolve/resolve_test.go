@@ -2087,6 +2087,7 @@ func TestResolveHarness_LocalProfile(t *testing.T) {
 	require.Len(t, result.Profiles, 1)
 	assert.Equal(t, "test-profile", result.Profiles[0].ID)
 	assert.Equal(t, profilePath, result.Profiles[0].LocalPath)
+	assert.False(t, result.Profiles[0].FromURL, "a workspace profile is not URL content")
 
 	// Profiles slice should be cleared after resolution
 	assert.Nil(t, h.OpenShell.Profiles)
@@ -2115,10 +2116,39 @@ func TestResolveHarness_LocalAbsProvider(t *testing.T) {
 	assert.Equal(t, "test-provider", result.Providers[0].Def.Name)
 	assert.Equal(t, "custom", result.Providers[0].Def.Type)
 	assert.Equal(t, providerPath, result.Providers[0].LocalPath)
+	assert.False(t, result.Providers[0].FromURL, "a workspace provider is not URL content")
 
 	// Bare provider name kept in h.Providers
 	require.Len(t, h.Providers, 1)
 	assert.Equal(t, "bare-provider-name", h.Providers[0])
+}
+
+// TestResolveHarness_CacheProvider_FromURL: a URL base harness's relative
+// provider entry is rewritten by composition to a content-cache path; it is
+// URL content, so it is marked FromURL like a directly URL-resolved one.
+func TestResolveHarness_CacheProvider_FromURL(t *testing.T) {
+	root := t.TempDir()
+
+	providerContent := []byte("name: test-provider\ntype: custom\n")
+	require.NoError(t, fetch.CachePut(root, "https://example.com/providers/test-provider.yaml", providerContent))
+	cachePath, err := fetch.CachePath(root, fetch.ComputeSHA256(providerContent))
+	require.NoError(t, err)
+	contentPath := filepath.Join(cachePath, "content")
+
+	h := &harness.Harness{
+		Agent:     "/abs/path/agents/test.md",
+		Providers: []string{contentPath},
+	}
+
+	result, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+	})
+	require.NoError(t, err)
+
+	require.Len(t, result.Providers, 1)
+	assert.Equal(t, "test-provider", result.Providers[0].Def.Name)
+	assert.Equal(t, contentPath, result.Providers[0].LocalPath)
+	assert.True(t, result.Providers[0].FromURL)
 }
 
 func TestParseProviderDef(t *testing.T) {
@@ -2277,6 +2307,8 @@ func TestResolveHarness_LocalProfile_CachePathGetsYAMLExtension(t *testing.T) {
 		"cache-sourced profile should get .yaml extension, got %s", result.Profiles[0].LocalPath)
 	assert.NotEqual(t, contentPath, result.Profiles[0].LocalPath,
 		"extensionless cache path should have been renamed")
+	assert.True(t, result.Profiles[0].FromURL,
+		"a cache path holds URL content (a URL base harness's relative entry), not a repository file")
 
 	// Verify the symlinked file has the right content
 	got, err := os.ReadFile(result.Profiles[0].LocalPath)

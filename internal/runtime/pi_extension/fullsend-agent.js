@@ -38,11 +38,32 @@
 // PiRuntime.Bootstrap wrote (FULLSEND_PI_MANIFEST).
 import { spawn as nodeSpawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
-import { basename, dirname } from "node:path";
+import { appendFileSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, dirname, join } from "node:path";
 
 export const DEFAULT_MANIFEST_PATH = "/sandbox/pi-config/fullsend-manifest.json";
 export const DEPTH_ENV = "FULLSEND_SUBAGENT_DEPTH";
+
+// CHILD_BIN_ENV and CHILD_NODE_ENV carry the pi CLI and the node the launch
+// pinned before .env was read (piChildLaunchExport). Children start through
+// them: pi is a `#!/usr/bin/env node` script, so spawning it by path would
+// have env look node up on the PATH the parent inherited.
+export const CHILD_BIN_ENV = "FULLSEND_PI_CHILD_BIN";
+export const CHILD_NODE_ENV = "FULLSEND_PI_CHILD_NODE";
+
+// childLaunch returns the command and leading arguments a child starts with:
+// the pinned node and pi when a node was pinned, pi alone when it is empty
+// (pi is not a node script). It returns null, so no child starts, when the
+// pi path is missing or either value is not absolute.
+export function childLaunch(env) {
+  const bin = env?.[CHILD_BIN_ENV];
+  const node = env?.[CHILD_NODE_ENV] ?? "";
+  if (typeof bin !== "string" || !bin.startsWith("/")) return null;
+  if (node === "") return { command: bin, prefix: [] };
+  if (typeof node !== "string" || !node.startsWith("/")) return null;
+  return { command: node, prefix: [bin] };
+}
 // RESULT_MAX_BYTES caps the text handed back to the parent; pi's own
 // built-in tools truncate at 50 KB, and a reviewer's findings fit well
 // within this.
@@ -52,6 +73,9 @@ const STDERR_TAIL_BYTES = 4 * 1024;
 const LOG_PREFIX = "[fullsend-agent]";
 const DEFAULT_MAX_CONCURRENT = 4;
 const DEFAULT_TIMEOUT_SECONDS = 900;
+// MIN_FALLBACK_MS is the least a child fallback attempt is started with
+// (the runner's minFallbackAttemptTimeout).
+export const MIN_FALLBACK_MS = 1000;
 const DEFAULT_THINKING = "medium";
 const DEFAULT_EXPLORE_TOOLS = ["read", "grep", "find", "ls"];
 // Claude Code's built-in agent types, as the fleet's pinned CLI (2.1.258)
@@ -64,6 +88,20 @@ const TOOL_ALIAS = "Task";
 // Providers pi serves without an extension and with the same Vertex ADC
 // the sandbox already carries.
 const BUILTIN_PROVIDERS = ["google-vertex"];
+// GATEWAY_PROVIDER is the provider id the inference-gateway extension
+// registers. Its -e directory is named "inference-gateway", so the
+// extension basename never admits it (see allowedProviders).
+const GATEWAY_PROVIDER = "gateway";
+// The inference-gateway extension's config file and its local overlay,
+// both read from the config dir (PI_CODING_AGENT_DIR).
+export const GATEWAY_CONFIG_FILE = "inference-gateway.json";
+export const GATEWAY_LOCAL_CONFIG_FILE = "inference-gateway.local.json";
+// GATEWAY_CONFIG_FILE_ENV names the one config file the inference-gateway
+// extension (v0.1.2 and later) reads: with it set, no file in the config
+// dir and no overlay is read, and a missing file is an error.
+export const GATEWAY_CONFIG_FILE_ENV = "INFERENCE_GATEWAY_CONFIG_FILE";
+// VERTEX_PROVIDERS authenticate with the sandbox's Google ADC file.
+const VERTEX_PROVIDERS = new Set(["anthropic-vertex", "google-vertex", "xai-vertex"]);
 // DEFAULT_KILL_GRACE_MS is how long a child gets to handle SIGTERM (kill
 // its own detached bash grandchildren and flush the session) before SIGKILL.
 export const DEFAULT_KILL_GRACE_MS = 3000;
@@ -72,6 +110,23 @@ export const DEFAULT_KILL_GRACE_MS = 3000;
 // buffered: a child that emits an unbounded line must not grow the
 // orchestrator's heap without limit.
 export const MAX_STDOUT_LINE_CHARS = 1024 * 1024;
+// OVERSIZED_PREFIX_CHARS is how much of a dropped line is looked at, enough
+// to tell whether it was the agent_end envelope (see isAgentEndPrefix).
+export const OVERSIZED_PREFIX_CHARS = 256;
+// AGENT_END_PREFIX matches the start of pi's agent_end event as --mode json
+// writes it: every emitter builds it as `{ type: "agent_end", ... }` and
+// print mode serializes it with JSON.stringify, so `type` is the first key
+// (pi 0.99.2 dist/modes/print-mode.js, dist/core/agent-session.js,
+// pi-agent-core dist/agent-loop.js and dist/agent.js).
+const AGENT_END_PREFIX = /^\s*\{\s*"type"\s*:\s*"agent_end"\s*[,}]/;
+// MESSAGE_END_PREFIX and NON_ASSISTANT_END_PREFIX recognize a message_end
+// event the same way, and the ones whose message is provably a user,
+// toolResult, custom or system message (those never carry the stop reason or
+// the answer). A custom message can be queued during streaming and emitted
+// after the final assistant response (pi 0.99.2 sendCustomMessage), so it
+// must not be mistaken for a lost assistant message.
+const MESSAGE_END_PREFIX = /^\s*\{\s*"type"\s*:\s*"message_end"\s*[,}]/;
+const NON_ASSISTANT_END_PREFIX = /^\s*\{\s*"type"\s*:\s*"message_end"\s*,\s*"message"\s*:\s*\{\s*"role"\s*:\s*"(?:user|toolResult|custom|system)"/;
 // MAX_DESCRIPTION_BYTES caps the label copied into the usage file. Children
 // append to one file concurrently, and only a write below PIPE_BUF (4096 on
 // Linux) is atomic; the rest of a record is bounded by construction.
@@ -144,6 +199,18 @@ function allowedProviders(agent, parentSpec) {
   for (const spec of Object.values(agent?.models ?? {})) {
     if (typeof spec === "string" && spec.includes("/")) out.add(providerOf(spec));
   }
+  // Bootstrap lists openai ids only for configured children, and only when
+  // the run-scoped openai provider is attached (#7981). The ids themselves
+  // are still checked exactly by servableSpecs.
+  const openaiIDs = agent?.providerModels?.openai;
+  if (Array.isArray(openaiIDs) && openaiIDs.length > 0) out.add("openai");
+  // Bootstrap lists gateway ids only when an inference gateway run is
+  // registered (the rendered inference-gateway.json's models). The
+  // extension's -e directory is "inference-gateway", so the basename loop
+  // below never adds the provider id itself. servableSpecs still checks
+  // each id exactly.
+  const gatewayIDs = agent?.providerModels?.[GATEWAY_PROVIDER];
+  if (Array.isArray(gatewayIDs) && gatewayIDs.length > 0) out.add(GATEWAY_PROVIDER);
   for (const ext of agent?.extensions ?? []) {
     if (typeof ext !== "string" || ext.endsWith(".js") || ext.endsWith(".ts")) continue;
     const base = ext.replace(/\/+$/, "").split("/").pop();
@@ -160,6 +227,63 @@ function stripThinkingSuffix(spec) {
   if (i < 0) return spec;
   if (!PI_THINKING_LEVELS.has(spec.slice(i + 1).toLowerCase())) return spec;
   return spec.slice(0, i);
+}
+
+// childSessionDir is the session dir of child seq: "sessions/<persona>-<seq>"
+// for a persona dispatch, "sessions/agent-<seq>" otherwise.
+export function childSessionDir(agent, seq, personaName) {
+  return `${agent.sessionsDir}/${personaName ? personaName : "agent"}-${seq}`;
+}
+
+// isVertexModelUnavailable mirrors the runner's check (pi_run.go): the two
+// Vertex error shapes that mean the project does not serve the model — a
+// 404 "Publisher model ... not found" and a 403 "... data sharing to be
+// enabled for publisher ...". Any other error is not a fallback trigger.
+export function isVertexModelUnavailable(msg) {
+  const lower = typeof msg === "string" ? msg.toLowerCase() : "";
+  if (lower.includes("publisher model") && lower.includes("not found")) return true;
+  return lower.includes("data sharing") && lower.includes("enabled for publisher");
+}
+
+// childFallbacks returns the specs a child falls back to, in order, when
+// its model is not served (#8426): a persona's own chain when the persona
+// has a configured model, the alias's chain when the orchestrator named an
+// alias, subagents.default's chain when the child takes that default, and
+// nothing otherwise — a provider/id or bare id the orchestrator pinned,
+// and a child inheriting the parent's live model (the parent has already
+// fallen back, if it had to), never fall back. Bootstrap writes the chains.
+export function childFallbacks(agent, params, persona) {
+  const list = (v) => (Array.isArray(v) ? v.filter((s) => typeof s === "string" && s.trim() !== "") : []);
+  if (persona) {
+    const model = typeof persona.model === "string" ? persona.model.trim() : "";
+    return model === "" ? [] : list(persona.fallbacks);
+  }
+  let s = typeof params?.model === "string" ? params.model.trim() : "";
+  s = stripThinkingSuffix(cut(s, "@")[0]).trim();
+  if (s === "") {
+    const subagentDefault = typeof agent?.subagentDefault === "string" ? agent.subagentDefault.trim() : "";
+    return subagentDefault === "" ? [] : list(agent?.subagentDefaultFallbacks);
+  }
+  const key = s.toLowerCase();
+  if (key === "default" || s.includes("/")) return [];
+  return list(agent?.modelFallbacks?.[key]);
+}
+
+// childModelNotServed reports whether a child's run failed only because its
+// model is not served in this project: pi exited 0 with a complete stream
+// (agent_end read, no line dropped) whose error is one of the two "not
+// served" shapes, and the model produced nothing — no output tokens, no
+// text, no tool or thinking activity. Any other outcome — a timeout, a
+// kill, a non-zero exit, an incomplete stream, an assistant message lost
+// to the line cap, any output — is final, so a retry never repeats work a
+// first model may already have done.
+export function childModelNotServed(outcome) {
+  if (!outcome || outcome.spawnError || outcome.timedOut || outcome.exitCode !== 0) return false;
+  if ((Number(outcome.droppedLines) || 0) > 0) return false;
+  const state = outcome.state ?? {};
+  if (state.assistantLost || state.ended !== true || state.activity) return false;
+  if (state.stopReason !== "error" || !isVertexModelUnavailable(state.errorMessage)) return false;
+  return (Number(state.usage?.output) || 0) === 0 && (typeof state.text !== "string" || state.text.trim() === "");
 }
 
 // resolveModel turns the orchestrator's `model` argument into the pi spec
@@ -211,6 +335,14 @@ export function resolveModel(agent, spec, parentSpec) {
     if (name !== "default") aliases[name.toLowerCase()] = value;
     byBareID[cut(value, "/")[2] ? cut(value, "/")[1].toLowerCase() : value.toLowerCase()] = value;
   }
+  // The alias fallback chains' specs (#8426) were the alias defaults
+  // before; a child pinned to one by bare id keeps resolving, as Bootstrap's
+  // piChildSpecResolver does. An alias entry's own spec wins.
+  for (const value of fallbackSpecs(agent)) {
+    known.add(value);
+    const key = cut(value, "/")[2] ? cut(value, "/")[1].toLowerCase() : value.toLowerCase();
+    if (!byBareID[key]) byBareID[key] = value;
+  }
   const reject = (what) => {
     const names = Object.keys(aliases).join(", ");
     throw new Error(`model "${spec}": ${what}; use ${names || "the parent's model"}, or one of ${[...known].join(", ")}`);
@@ -242,22 +374,53 @@ export function resolveModel(agent, spec, parentSpec) {
   const allowed = allowedProviders(agent, parentSpec);
   // The normalized name, not the one written: "xai/grok-4.6" is a spec for
   // the xai-vertex provider and must be reported as one.
-  if (!allowed.has(provider)) return reject(`provider "${provider}" is not available in this run`);
+  if (!allowed.has(provider)) {
+    // The openai credential is attached only for a run whose parent or a
+    // configured child needs it (#7981), so name how to get one.
+    if (provider === "openai") {
+      return reject(`provider "openai" is not available in this run (declare "openai" in the harness providers and set the model on a persona or subagents.default in agents[].subagents, so the run attaches the openai credential)`);
+    }
+    return reject(`provider "${provider}" is not available in this run`);
+  }
   const canonical = servableSpecs(agent, parentSpec).get(normalized.toLowerCase());
   if (canonical) return canonical;
+  if (provider === "openai") {
+    // Only the ids configured children use are served (#7981).
+    return reject(`"${rest}" is not a model this run serves on "openai" (it serves the openai models configured on a persona or subagents.default; set this one there)`);
+  }
   return reject(`"${rest}" is not a model this run serves on "${provider}"`);
 }
 
+// fallbackSpecs lists every spec in the manifest's modelFallbacks table once,
+// in sorted alias order then chain order (Go's piFallbackSpecs).
+function fallbackSpecs(agent) {
+  const table = agent?.modelFallbacks;
+  if (!table || typeof table !== "object") return [];
+  const out = [];
+  for (const alias of Object.keys(table).sort()) {
+    const chain = table[alias];
+    if (!Array.isArray(chain)) continue;
+    for (const spec of chain) {
+      if (typeof spec !== "string") continue;
+      const s = spec.trim();
+      if (s !== "" && !out.includes(s)) out.push(s);
+    }
+  }
+  return out;
+}
+
 // servableSpecs maps the lowercased form of every full "provider/id" spec
-// this run can serve to the spec as written: the manifest's model table,
-// the parent's own model (whose credentials this iteration demonstrably
-// has), and each provider id listed in the manifest's providerModels.
+// this run can serve to the spec as written: the manifest's model table and
+// its alias fallback chains (modelFallbacks), the parent's own model (whose
+// credentials this iteration demonstrably has), and each provider id listed
+// in the manifest's providerModels.
 function servableSpecs(agent, parentSpec) {
   const out = new Map();
   const add = (spec) => {
     if (typeof spec === "string" && spec.includes("/")) out.set(spec.trim().toLowerCase(), spec.trim());
   };
   for (const spec of Object.values(agent?.models ?? {})) add(spec);
+  for (const spec of fallbackSpecs(agent)) add(spec);
   add(typeof parentSpec === "string" ? parentSpec.trim() : "");
   for (const [prov, ids] of Object.entries(agent?.providerModels ?? {})) {
     if (!Array.isArray(ids)) continue;
@@ -303,10 +466,9 @@ export function childTools(agent, subagentType) {
 // session dir becomes "sessions/<persona>-<seq>" instead of
 // "sessions/agent-<seq>" so transcripts are labelled by persona (#7031).
 export function childArgs(agent, { seq, modelSpec, tools, personaName }) {
-  const prefix = personaName ? personaName : "agent";
   const args = [
     "--print", "--mode", "json", "--no-approve", "--no-extensions", "--no-prompt-templates", "--no-themes",
-    "--session-dir", `${agent.sessionsDir}/${prefix}-${seq}`,
+    "--session-dir", childSessionDir(agent, seq, personaName),
   ];
   for (const ext of agent.extensions ?? []) args.push("-e", ext);
   // The edit-repair extension registers the edit tool, and pi does not
@@ -367,6 +529,36 @@ export function childEnv(base, modelSpec) {
   return env;
 }
 
+// vertexCredentialsUsable reports whether a Vertex child would find an ADC
+// file: GOOGLE_APPLICATION_CREDENTIALS (or its lowercase form) when set,
+// else gcloud's $HOME/.config/gcloud/application_default_credentials.json.
+// The file must be a non-empty regular file (#7980).
+export function vertexCredentialsUsable(env, stat = statSync) {
+  const usable = (path) => {
+    try {
+      const st = stat(path);
+      return st.isFile() && st.size > 0;
+    } catch {
+      return false;
+    }
+  };
+  // google-auth-library's order, values used verbatim; a set but unusable one does not fall through.
+  for (const key of ["GOOGLE_APPLICATION_CREDENTIALS", "google_application_credentials"]) {
+    const value = typeof env?.[key] === "string" ? env[key] : "";
+    if (value !== "") return usable(value);
+  }
+  const home = typeof env?.HOME === "string" ? env.HOME : "";
+  return home !== "" && usable(`${home}/.config/gcloud/application_default_credentials.json`);
+}
+
+// vertexChildAuthenticated reports whether a child on a Vertex provider can
+// authenticate: pi's google-vertex also takes GOOGLE_CLOUD_API_KEY before
+// ADC; anthropic-vertex and xai-vertex need the ADC file.
+export function vertexChildAuthenticated(provider, env, stat = statSync) {
+  if (provider === "google-vertex" && typeof env?.GOOGLE_CLOUD_API_KEY === "string" && env.GOOGLE_CLOUD_API_KEY.trim() !== "") return true;
+  return vertexCredentialsUsable(env, stat);
+}
+
 // lookupPersona returns the persona entry from the manifest's personas table
 // for the given subagent_type, or undefined if it is not a persona name. The
 // match is case-insensitive to mirror the CLI's key normalisation.
@@ -408,12 +600,22 @@ function newStreamState() {
     model: "",
     provider: "",
     ended: false,
+    // assistantLost is set when an assistant message_end was dropped for
+    // being over the line cap, and cleared by the next assistant message
+    // that is read. While set, text and stopReason may be stale.
+    assistantLost: false,
+    // activity is set once the stream shows the model did anything: a tool
+    // call or result, or an assistant message carrying a tool call or
+    // thinking. A child with activity is never retried on another model.
+    activity: false,
     usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
   };
 }
 
 function noteAssistant(state, msg) {
   if (!msg || msg.role !== "assistant") return;
+  state.assistantLost = false;
+  if (Array.isArray(msg.content) && msg.content.some((b) => b && (b.type === "toolCall" || b.type === "thinking"))) state.activity = true;
   const text = joinText(msg.content);
   if (text.trim() !== "") state.text = text;
   if (typeof msg.stopReason === "string") state.stopReason = msg.stopReason;
@@ -436,8 +638,13 @@ export function consumeLine(state, line) {
     return;
   }
   if (!evt || typeof evt !== "object") return;
+  if (typeof evt.type === "string" && evt.type.startsWith("tool_execution_")) {
+    state.activity = true;
+    return;
+  }
   if (evt.type === "message_end") {
     const msg = evt.message;
+    if (msg && msg.role === "toolResult") state.activity = true;
     if (msg && msg.role === "assistant") {
       const u = msg.usage ?? {};
       state.usage.input += Number(u.input) || 0;
@@ -457,6 +664,32 @@ export function consumeLine(state, line) {
       }
     }
   }
+}
+
+// isAgentEndPrefix reports whether a line dropped for being over
+// MAX_STDOUT_LINE_CHARS, given from its start, is the agent_end envelope.
+// That envelope grows with the whole run's messages and is the line most
+// likely to cross the cap; without this a child that finished cleanly
+// would be reported as "produced no agent_end". Only the completion marker
+// is taken from it. Its last assistant message was already emitted as a
+// message_end (pi emits one for every assistant message, failure ones
+// included), so the text and stop reason consumeLine would take from the
+// envelope are already in the state, unless that message_end was itself
+// dropped (see isAssistantMessageEndPrefix, which makes the run fail). Only the first OVERSIZED_PREFIX_CHARS
+// are examined, and the caller keeps the boolean, not the text, so nothing
+// of the dropped line outlives it.
+export function isAgentEndPrefix(lineStart) {
+  return AGENT_END_PREFIX.test(lineStart.slice(0, OVERSIZED_PREFIX_CHARS));
+}
+
+// isAssistantMessageEndPrefix reports whether a dropped line, given from its
+// start, may be an assistant message_end: any message_end not shown to be a
+// user, toolResult, custom or system message. Dropping one loses the text and stop reason it
+// carried, which nothing else repeats once the agent_end envelope is also
+// dropped, so a caller must not report success on top of it.
+export function isAssistantMessageEndPrefix(lineStart) {
+  const head = lineStart.slice(0, OVERSIZED_PREFIX_CHARS);
+  return MESSAGE_END_PREFIX.test(head) && !NON_ASSISTANT_END_PREFIX.test(head);
 }
 
 function capText(text) {
@@ -479,11 +712,32 @@ function signalChild(child, signal) {
   }
 }
 
+// ANSI_ESCAPE matches ANSI CSI sequences, OSC sequences and charset
+// designators (the runner's ansiEscRe).
+const ANSI_ESCAPE = /\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[()][A-Z0-9]/g;
+
+// sanitizeLogLine makes a log line safe for the runner's stderr, which
+// reaches the CI log as is: it strips ANSI escapes, breaks "::" so no GitHub
+// Actions workflow command can form, blanks encoded line breaks, and turns
+// every other control character into a space, as the runner's
+// sanitizeOutput does. Values in a log line come from the file system, the
+// manifest or the agent's own tool arguments.
+export function sanitizeLogLine(text) {
+  let s = String(text).replace(ANSI_ESCAPE, "");
+  // One pass can rebuild "::" at the seam of two replacements, so repeat
+  // until none is left.
+  while (s.includes("::")) s = s.replaceAll("::", ": :");
+  s = s.replace(/%0[AaDd]/g, " ");
+  return s.replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
+}
+
 // createAgentTool builds the dispatcher from a manifest. `spawn`, `log` and
-// `now` are injectable for tests. run() never throws for a failed child —
+// `now` are injectable for tests; every line passed to `log` goes through
+// sanitizeLogLine first. run() never throws for a failed child —
 // it returns { isError, error } — so the registered execute() decides how
 // to surface it (pi marks a result isError only when execute throws).
-export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => console.error(m), now = () => Date.now(), env = process.env, killGraceMs = DEFAULT_KILL_GRACE_MS, manifestPath = "", manifestSum = "" } = {}) {
+export function createAgentTool(manifest, { spawn = nodeSpawn, log: rawLog = (m) => console.error(m), now = () => Date.now(), env = process.env, stat = statSync, killGraceMs = DEFAULT_KILL_GRACE_MS, manifestPath = "", manifestSum = "", configDir = manifestPath ? dirname(manifestPath) : "" } = {}) {
+  const log = (m) => rawLog(sanitizeLogLine(m));
   const agent = manifest?.agent ?? {};
   const maxConcurrent = Math.max(1, Number(agent.maxConcurrent) || DEFAULT_MAX_CONCURRENT);
   const timeoutMs = Math.max(1, (Number(agent.timeoutSeconds) || DEFAULT_TIMEOUT_SECONDS) * 1000);
@@ -552,6 +806,93 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => cons
     ([file, want]) => typeof file === "string" && file !== "" && typeof want === "string" && want !== "",
   );
 
+  // gatewayConfigDigest is the digest of the inference-gateway.json the
+  // runner rendered, present only when an inference gateway run is
+  // registered. Children load the inference-gateway extension, which
+  // reads that file, and an inference-gateway.local.json overlay merged
+  // over it, from the agent-writable config dir. The runner's guard checks
+  // both once, before the parent starts, so they are re-checked here
+  // before every dispatch, like extensionDigests.
+  const gatewayConfigDigest = typeof agent.gatewayConfigDigest === "string" ? agent.gatewayConfigDigest : "";
+
+  // verifiedGatewayConfig is the runner-rendered config, read once when
+  // this extension loads (just after the run command's launch guard
+  // checked the same digest) and kept in memory. Children never read the
+  // agent-writable file: each gets its own copy of these bytes
+  // (writeChildGatewayConfig), named by INFERENCE_GATEWAY_CONFIG_FILE, so
+  // a file swapped in the config dir after load cannot reach a child.
+  // gatewayConfigLoadError is why it could not be read; every gateway
+  // dispatch is then refused.
+  let verifiedGatewayConfig = null;
+  let gatewayConfigLoadError = "";
+  if (gatewayConfigDigest) {
+    if (!configDir) {
+      gatewayConfigLoadError = "the inference gateway config is pinned but the config dir is unknown; refusing to dispatch";
+    } else {
+      const cfg = join(configDir, GATEWAY_CONFIG_FILE);
+      try {
+        const st = lstatSync(cfg);
+        if (!st.isFile()) throw new Error("not a regular file");
+        const bytes = readFileSync(cfg);
+        if (createHash("sha256").update(bytes).digest("hex") !== gatewayConfigDigest) throw new Error("its digest is not the one the runner rendered");
+        verifiedGatewayConfig = bytes;
+      } catch (err) {
+        gatewayConfigLoadError = `cannot load the runner's ${GATEWAY_CONFIG_FILE}: ${err.message}; refusing to dispatch`;
+      }
+    }
+  }
+
+  // writeChildGatewayConfig writes the verified config into a new private
+  // directory (mkdtemp, mode 0700; the file 0400) for one child and returns
+  // its path and a cleanup. The parent and its children run as one sandbox
+  // user, so this is not a permission boundary against a concurrent writer
+  // with that uid: what it removes is the shared, predictable, agent-
+  // writable path between verification and the child's read. The path is
+  // new per child and exists only while the child runs.
+  const writeChildGatewayConfig = () => {
+    const dir = mkdtempSync(join(tmpdir(), "fullsend-gateway-"));
+    const path = join(dir, GATEWAY_CONFIG_FILE);
+    try {
+      writeFileSync(path, verifiedGatewayConfig, { mode: 0o400, flag: "wx" });
+    } catch (err) {
+      rmSync(dir, { recursive: true, force: true });
+      throw err;
+    }
+    return { path, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  };
+
+  // gatewayConfigDrift reports why the gateway config may not be trusted
+  // for a child, or "" when it may. It fails closed: no config dir, a
+  // config that is not a regular file (a symlink included), a digest
+  // mismatch, or any overlay entry at all (a dangling symlink included).
+  const gatewayConfigDrift = () => {
+    if (!gatewayConfigDigest) return "";
+    if (gatewayConfigLoadError) return gatewayConfigLoadError;
+    const cfg = join(configDir, GATEWAY_CONFIG_FILE);
+    const local = join(configDir, GATEWAY_LOCAL_CONFIG_FILE);
+    try {
+      lstatSync(local);
+      return `${GATEWAY_LOCAL_CONFIG_FILE} is present in the pi config dir; refusing to dispatch`;
+    } catch (err) {
+      if (err?.code !== "ENOENT") return `cannot check ${local} before dispatching: ${err.message}`;
+    }
+    let st;
+    try {
+      st = lstatSync(cfg);
+    } catch (err) {
+      return `cannot check ${cfg} before dispatching: ${err.message}`;
+    }
+    if (!st.isFile()) return `${GATEWAY_CONFIG_FILE} is not a regular file; refusing to dispatch`;
+    let sum;
+    try {
+      sum = createHash("sha256").update(readFileSync(cfg)).digest("hex");
+    } catch (err) {
+      return `cannot re-read ${cfg} before dispatching: ${err.message}`;
+    }
+    if (sum !== gatewayConfigDigest) return `${GATEWAY_CONFIG_FILE} changed since the runner rendered it; refusing to dispatch`;
+    return "";
+  };
+
   // manifestDrift re-reads the manifest and the config-dir extensions it
   // names, and reports whether they still hash to what this extension
   // loaded. The launch guards in buildPiRunCommand check both once, before
@@ -586,7 +927,7 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => cons
       }
       if (sum !== want) return `${basename(file)} changed since load; refusing to dispatch`;
     }
-    return "";
+    return gatewayConfigDrift();
   };
 
   const recordUsage = (record) => {
@@ -599,18 +940,36 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => cons
     }
   };
 
-  // runChild spawns one child and resolves when it is gone. It resolves a
-  // handle synchronously through `out` so the caller can terminate the
-  // child on abort or shutdown while it is still running.
-  const runChild = (id, params, modelSpec, tools, out, personaName) =>
+  // runChild spawns one child and resolves when it is gone, stopping it as
+  // timed out after limitMs. It resolves a handle synchronously through
+  // `out` so the caller can terminate the child on abort or shutdown while
+  // it is still running.
+  const runChild = (id, params, modelSpec, tools, out, personaName, limitMs) =>
     new Promise((resolve) => {
       const state = newStreamState();
       const startedAt = now();
       const args = childArgs(agent, { seq: id, modelSpec, tools, personaName });
+      const spawnEnv = childEnv(env, modelSpec);
+      let gatewayCopy;
+      if (verifiedGatewayConfig) {
+        try {
+          gatewayCopy = writeChildGatewayConfig();
+        } catch (err) {
+          resolve({ state, startedAt, exitCode: null, signal: null, spawnError: `writing the child's inference gateway config: ${err.message}`, stderr: "", timedOut: false, pid: undefined, droppedLines: 0 });
+          return;
+        }
+        spawnEnv[GATEWAY_CONFIG_FILE_ENV] = gatewayCopy.path;
+      }
+      const launch = childLaunch(env);
+      if (launch === null) {
+        gatewayCopy?.cleanup();
+        resolve({ state, startedAt, exitCode: null, signal: null, spawnError: `${CHILD_BIN_ENV} and ${CHILD_NODE_ENV} do not name an absolute pi and node`, stderr: "", timedOut: false, pid: undefined, droppedLines: 0 });
+        return;
+      }
       let child;
       try {
-        child = spawn(agent.piBin || "pi", args, {
-          env: childEnv(env, modelSpec),
+        child = spawn(launch.command, [...launch.prefix, ...args], {
+          env: spawnEnv,
           // stdin carries the prompt; a child in the parent's process group
           // so `detached` is not set — a killed parent must not leave
           // children spending tokens, and the SIGTERM below is what makes
@@ -618,6 +977,7 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => cons
           stdio: ["pipe", "pipe", "pipe"],
         });
       } catch (err) {
+        gatewayCopy?.cleanup();
         resolve({ state, startedAt, exitCode: null, signal: null, spawnError: err.message, stderr: "", timedOut: false, pid: undefined, droppedLines: 0 });
         return;
       }
@@ -625,6 +985,9 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => cons
       let stderr = "";
       let buffered = "";
       let dropping = false;
+      // dropAgentEnd records whether the line being dropped began as an
+      // agent_end envelope, decided when the buffer first overflows.
+      let dropAgentEnd = false;
       let droppedLines = 0;
       let killTimer;
       // terminate is the whole stop sequence: SIGTERM first so pi runs its
@@ -643,7 +1006,7 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => cons
       const timer = setTimeout(() => {
         timedOut = true;
         terminate();
-      }, timeoutMs);
+      }, Math.max(1, limitMs));
       // The prompt is written and the pipe closed at once: pi reads stdin
       // to EOF before it starts. A child that dies first (or never drains a
       // prompt larger than the pipe buffer) makes this EPIPE, which is an
@@ -663,6 +1026,8 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => cons
           if (dropping) {
             dropping = false;
             droppedLines++;
+            if (dropAgentEnd) state.ended = true;
+            dropAgentEnd = false;
             continue;
           }
           // A complete oversized line (its newline arrived in the same
@@ -670,11 +1035,19 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => cons
           // has not terminated yet is dropped by the buffer cap below.
           if (line.length > MAX_STDOUT_LINE_CHARS) {
             droppedLines++;
+            if (isAgentEndPrefix(line)) state.ended = true;
+            if (isAssistantMessageEndPrefix(line)) state.assistantLost = true;
             continue;
           }
           consumeLine(state, line);
         }
         if (buffered.length > MAX_STDOUT_LINE_CHARS) {
+          // Only the first overflow holds the line's start; a later one
+          // (a line several times the cap) is mid-line content.
+          if (!dropping) {
+            dropAgentEnd = isAgentEndPrefix(buffered);
+            if (isAssistantMessageEndPrefix(buffered)) state.assistantLost = true;
+          }
           dropping = true;
           buffered = "";
         }
@@ -684,10 +1057,16 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => cons
         stderr = (stderr + chunk).slice(-STDERR_TAIL_BYTES);
       });
       const finish = (exitCode, signal, spawnError) => {
+        gatewayCopy?.cleanup();
         clearTimeout(timer);
         if (killTimer !== undefined) clearTimeout(killTimer);
         running.delete(handle);
         if (!dropping && buffered.trim() !== "") consumeLine(state, buffered);
+        // An oversized line still open at EOF is not taken as agent_end
+        // even if its prefix says so: pi writes each event and its newline
+        // in one write, so a missing newline means the envelope was cut
+        // short, and its end cannot be checked the way JSON.parse checks a
+        // short unterminated line above.
         if (dropping) droppedLines++;
         resolve({ state, startedAt, exitCode, signal, spawnError, stderr, timedOut, pid: child.pid, droppedLines });
       };
@@ -744,6 +1123,13 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => cons
         return { seq: id, isError: true, error: err.message, text: "", stopReason: "rejected", model: "" };
       }
     }
+    // A Vertex child without an ADC file would fail on its first call.
+    if (VERTEX_PROVIDERS.has(providerOf(modelSpec)) && !vertexChildAuthenticated(providerOf(modelSpec), env, stat)) {
+      const arg = typeof params?.model === "string" ? params.model.trim() : "";
+      const subject = persona ? `persona "${subagentType}"` : arg !== "" ? `model "${arg}"` : `the default sub-agent model "${modelSpec}"`;
+      const error = `${subject}: provider "${providerOf(modelSpec)}" is not available in this run (Vertex sub-agents need GOOGLE_APPLICATION_CREDENTIALS set on the runner and mounted in host_files)`;
+      return { seq: id, isError: true, error, text: "", stopReason: "rejected", model: "" };
+    }
     if (typeof params?.prompt !== "string" || params.prompt.trim() === "") {
       return { seq: id, isError: true, error: "prompt is required", text: "", stopReason: "rejected", model: modelSpec };
     }
@@ -783,7 +1169,35 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => cons
           return { seq: id, isError: true, error: drift, text: "", stopReason: "rejected", model: modelSpec };
         }
         log(`${LOG_PREFIX} #${id}${persona ? ` [${subagentType}]` : ""} ${modelSpec} start "${capBytes(description, MAX_DESCRIPTION_BYTES)}"`);
-        outcome = await runChild(id, params, modelSpec, tools, ticket, persona ? subagentType.trim().toLowerCase() : "");
+        const personaName = persona ? subagentType.trim().toLowerCase() : "";
+        // One deadline for the whole dispatch, set once it holds a slot:
+        // every attempt of the fallback chain shares it, so a chain never
+        // runs longer than a single child could.
+        const deadline = now() + timeoutMs;
+        outcome = await runChild(id, params, modelSpec, tools, ticket, personaName, timeoutMs);
+        // Walk the alias's fallback chain while the project does not serve
+        // the model (#8426). The abandoned attempt's session is removed so
+        // it is not extracted as an error on a dispatch that succeeded. A
+        // fallback is not started with less than MIN_FALLBACK_MS left; the
+        // abandoned attempt is then final.
+        const chain = childFallbacks(agent, params, persona).filter((s) => s !== modelSpec);
+        for (const next of chain) {
+          if (!childModelNotServed(outcome) || cancelled()) break;
+          const remainingMs = deadline - now();
+          if (remainingMs < MIN_FALLBACK_MS) break;
+          const nextDrift = manifestDrift();
+          if (nextDrift) {
+            return { seq: id, isError: true, error: nextDrift, text: "", stopReason: "rejected", model: modelSpec };
+          }
+          log(`${LOG_PREFIX} #${id} model ${modelSpec} is not available (not served in this project); falling back to ${next}`);
+          try {
+            rmSync(childSessionDir(agent, id, personaName), { recursive: true, force: true });
+          } catch (err) {
+            log(`${LOG_PREFIX} #${id} cannot remove the abandoned attempt's session: ${err.message}`);
+          }
+          modelSpec = next;
+          outcome = await runChild(id, params, modelSpec, tools, ticket, personaName, remainingMs);
+        }
       } finally {
         release();
       }
@@ -809,6 +1223,11 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log = (m) => cons
     } else if (exitCode !== 0) {
       error = `pi exited ${exitCode ?? `on ${exitSignal}`}${tail ? `: ${tail}` : ""}`;
       stopReason = stopReason || "error";
+    } else if (state.assistantLost) {
+      // The final assistant message was too large to read, so the text and
+      // stop reason in hand may be from an earlier message; fail closed.
+      error = `sub-agent's last assistant message exceeded ${MAX_STDOUT_LINE_CHARS} chars and was dropped; its result and stop reason are unknown`;
+      stopReason = "incomplete";
     } else if (stopReason === "error" || stopReason === "aborted") {
       error = state.errorMessage || `sub-agent stopped with stopReason ${stopReason}`;
     } else if (!state.ended) {
@@ -864,7 +1283,7 @@ export default function (pi) {
     manifestSum = createHash("sha256").update(bytes).digest("hex");
     manifest = JSON.parse(bytes.toString("utf8"));
   } catch (err) {
-    console.error(`${LOG_PREFIX} cannot read manifest: ${err.message}; the Agent tool is not registered`);
+    console.error(sanitizeLogLine(`${LOG_PREFIX} cannot read manifest: ${err.message}; the Agent tool is not registered`));
     return;
   }
   if (!manifest?.agent?.enabled) {

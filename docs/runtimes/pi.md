@@ -13,12 +13,15 @@ is what changes once you are on it.
 ## Models and providers
 
 A model on pi is `provider/id`. Aliases and bare ids still work — `opus`/`sonnet`/`haiku`/`fable`
-resolve through fullsend's pinned alias table, and a bare id gets the provider from
+resolve through fullsend's pinned alias table (`opus` → `claude-opus-5-5`, `sonnet` →
+`claude-sonnet-5-5`, `haiku` → `claude-haiku-5-5`, each falling back to the previous default when
+your project does not serve it; `fable` → `claude-fable-5-1`, with no built-in fallback; see
+[Per-repo alias overrides](#per-repo-alias-overrides)), and a bare id gets the provider from
 `FULLSEND_PI_PROVIDER` (default `anthropic-vertex`).
 
 | Model | Spec | Provider |
 |---|---|---|
-| Claude | `anthropic-vertex/claude-opus-4-6` | vendored extension |
+| Claude | `anthropic-vertex/claude-opus-5-5` | vendored extension |
 | Gemini | `google-vertex/gemini-3.8-flash` | pi built-in |
 | Grok | `xai-vertex/xai/grok-4.6` | vendored extension |
 | GPT | `openai/gpt-5.6-luna` | pi built-in |
@@ -48,8 +51,9 @@ actually called.
 > `providers: [openai]` on the harness; the sandbox can then reach `api.openai.com` for the
 > Responses API and nothing else, and never sees the credential
 > ([ADR 0092](../ADRs/0092-openai-wif-credential-delivery.md)). A custom harness must carry a
-> `policy:` (the fleet's `policies/base.yaml`); without one the image's default policy leaves an
-> uninspected route to `api.openai.com` and the run stops before the agent starts. **Exercised so
+> `policy:` (the fleet's `policies/base.yaml`); without one `fullsend run` fails at harness
+> validation before it starts the sandbox. The fleet base policy also avoids an uninspected route
+> to `api.openai.com`, which the gateway refuses to carry the credential over. **Exercised so
 > far:** the local static-key path end to end on 2026-08-27 (OpenShell 0.0.115, pi 0.84.3,
 > `gpt-5.6-luna`: placeholder in the sandbox, pi reading it from the runner-seeded `auth.json`, tool
 > calls through the hook adapter, run-scoped provider deleted at the end, expired in place under
@@ -57,14 +61,39 @@ actually called.
 > has no live run yet; `features/runtime/pi-openai.feature` stays gated on `runtime-pi-openai`
 > until an OpenAI organization is mapped to the pool repositories.
 
+> **Any model through an inference gateway (experimental).** A `gateway/<model>` spec sends the
+> model call through an OpenAI/Anthropic-compatible gateway (Praxis, LiteLLM, agentgateway, ...)
+> with the [pi-inference-gateway](https://github.com/fullsend-ai/pi-inference-gateway) extension.
+> On a run with a forge OIDC endpoint (a GitHub Actions job with `id-token: write`), the
+> `inference.gateway` block in `.fullsend/config.yaml` makes the runner own the route: it loads the
+> extension, puts the job's OIDC token behind a run-scoped provider and refreshes it
+> ([config reference](../reference/config-reference.md),
+> [ADR 0137](../ADRs/0137-inference-gateway-credential-route.md)). With `auth: api-key` the runner
+> owns the route on local runs too: it reads the gateway key from
+> `FULLSEND_INFERENCE_GATEWAY_API_KEY` and puts it behind the same run-scoped provider, with no
+> refresh ([ADR 0138](../ADRs/0138-inference-gateway-api-key-credential-mode.md)). Without the
+> block, a harness can still ship the extension as a plugin for local runs: see [Running agents locally › Using an
+> inference gateway](../guides/user/running-agents-locally.md#using-an-inference-gateway-experimental).
+
 Harness `model:` and `agents:` entry `model:` values accept the `provider/id` form directly
 (`xai-vertex/xai/grok-4.6`); a harness can also select a provider with a bare `model:` plus
 `FULLSEND_PI_PROVIDER`.
 
 ### Per-repo alias overrides
 
-fullsend pins what each alias means. Vertex enables models per project, so your project may be
-able to run a newer one than the pin — point the alias at it in `.fullsend/config.yaml`:
+fullsend pins what each alias means, and gives `opus`, `sonnet` and `haiku` a built-in fallback
+chain to the previous default:
+
+| Alias | Default | Built-in fallback chain |
+|---|---|---|
+| `opus` | `claude-opus-5-5` | `claude-opus-4-6` |
+| `sonnet` | `claude-sonnet-5-5` | `claude-sonnet-4-6` |
+| `haiku` | `claude-haiku-5-5` | `claude-haiku-4-5` |
+| `fable` | `claude-fable-5-1` | none |
+
+Vertex enables models per project, so a project that has not enabled the 5.5 models runs on the
+fallback without any config change. To run a different model, point the alias at it in
+`.fullsend/config.yaml`:
 
 ```yaml
 models:
@@ -86,13 +115,22 @@ models:
 
 **If it goes wrong.** A key or value the block does not accept stops `fullsend run` before the
 sandbox is created, naming the key (`models.aliases: unknown alias key "grok"`). A model your
-project cannot serve is not caught here: aliased models (opus, sonnet, etc.) fall back through
-`FULLSEND_FALLBACK_MODELS` when Vertex answers that it does not serve the model: the 404
-`Publisher model ... not found` or the 403 `... data sharing to be enabled for publisher ...`. Any
-other error, including a 403 `PERMISSION_DENIED`, fails the run. Pinned ids fail at the first
-model call. A fallback
-must resolve to the same pi provider as the primary model; others are ignored with a warning.
-Sub-agent children get no fallback: each is launched with the one model its alias maps to.
+project cannot serve is not caught here; at run time:
+
+- **Alias on its default:** falls back along the built-in chain above when Vertex answers that it
+  does not serve the model. `FULLSEND_FALLBACK_MODELS`, when set, replaces the chain.
+- **Retargeted alias, pinned id or `provider/id`:** no fallback (unless `FULLSEND_FALLBACK_MODELS`
+  is set for a retargeted alias); the run fails at the first model call.
+- **Any other error** (auth, quota, `PERMISSION_DENIED`): fails the run.
+- **A fallback on another pi provider** is ignored with a warning.
+- **What you see:** the plan block lists the chain, the run prints `model claude-opus-5-5 is not
+  available (not served in this project); falling back to claude-opus-4-6`, and `metrics.json`
+  records `fallback_from` with `fallback_reasons: ["not_served"]`.
+
+**Sub-agent children** that ask for an alias (directly, through a persona, or through
+`subagents.default`) fall back along the same built-in chain; the `[fullsend-agent]` log line names
+both models. A child that pins an id or inherits the parent's live model does not.
+`FULLSEND_FALLBACK_MODELS` applies to the parent run only.
 
 ### Each provider has its own GCP project
 
@@ -120,6 +158,21 @@ Vertex project, so Grok can be pointed at a project where it is actually enabled
 `xai-vertex` is fixed to the **global** endpoint — Vertex serves Grok only there, and regional
 endpoints answer `FAILED_PRECONDITION` — so region variables are deliberately ignored for it.
 
+### Prompt caching
+
+Claude on Vertex gets cache reads. **Grok 4.6 on Vertex does not.** It is a preview offering there;
+Google Cloud support confirmed caching is unsupported (2026-09-14), and the vendored
+[`pi-xai-vertex`](https://github.com/fullsend-ai/pi-xai-vertex) provider documents the same
+limitation. Occasional non-zero `cached_tokens` on a response are incidental — they cannot be
+requested or relied on. Affinity keys that steer cache hits on xAI's own API (`x-grok-conv-id`,
+`prompt_cache_key`) have no effect on Vertex.
+
+Budget every turn at full input price. Grok can still look cost-effective on short, low-turn
+tasks; on long, iterative, multi-file coding it is typically much more expensive than a
+cache-eligible Claude coder. One 98-turn `code` run on `xai-vertex/xai/grok-4.6`
+([PR #7664](https://github.com/fullsend-ai/fullsend/pull/7664)) processed 8.39M tokens with
+`cache_creation_input_tokens: 0` throughout.
+
 ## At a glance
 
 | | |
@@ -130,8 +183,8 @@ endpoints answer `FAILED_PRECONDITION` — so region variables are deliberately 
 | Extra knobs | `FULLSEND_PI_PROVIDER` (prefix for bare ids), `FULLSEND_PI_BASH_ALLOWLIST=enforce`, `FULLSEND_PI_SUBAGENT_THINKING` |
 | Plugins | The pi-format entries of the harness's `plugins:` list, uploaded and loaded with `-e` after a tree-hash preflight ([Plugins](#plugins-pi-extensions)) |
 | Sub-agents | `Agent` (alias `Task`) via a fullsend extension: children are `pi` processes with the same hooks, providers and tool allowlist ([Sub-agents](#sub-agents)) |
-| Fallback chains | Top-level run only: alias requests tried in order when Vertex does not serve the model (404/403, two messages only), same provider only; pinned ids and sub-agent children fail loudly |
-| Not supported | Claude-format plugins (named and skipped), Bedrock/Azure providers |
+| Fallback chains | Alias requests tried in order when Vertex does not serve the model (404/403, two messages only): `FULLSEND_FALLBACK_MODELS`, else the alias's built-in chain; same provider only; sub-agent children asking for an alias use its built-in chain; pinned ids and `models.aliases` retargets fail loudly |
+| Not supported | Claude-format plugins (named and skipped), Bedrock/Azure providers, [prompt caching for Grok on Vertex](#prompt-caching) |
 
 ## Running it locally
 
@@ -145,6 +198,7 @@ fullsend run triage \
   --target-repo /tmp/target-repo/ \
   --env-file fullsend-gcp.env \
   --env-file fullsend-triage.env \
+  --forge github \
   --runtime pi
 ```
 
@@ -153,7 +207,7 @@ print bare — and `metrics.json` records the same (`runtime`, `runtime_source`,
 `override_source`):
 
 ```
-    Model: opus
+    Model: opus → claude-opus-5-5 (built-in default)
     Effort: high
     Runtime: pi (from --runtime flag)
 ...
@@ -181,6 +235,25 @@ What a local pi run needs, beyond the guide:
 - **A sandbox image that includes pi** — `ghcr.io/fullsend-ai/fullsend-sandbox` v0.37.0+ (the image
   bakes `PI_VERSION`). A stale image fails preflight with `pi preflight: pi --version exited 127`;
   `podman pull ghcr.io/fullsend-ai/fullsend-sandbox:latest` fixes it.
+- **`python3` in the sandbox image** — the launch reads `.env` as data with a pinned `python3`
+  (`-I -S`), taken from a `PATH` directory the sandbox user neither owns nor can write; without
+  one it fails with `python3 not found in a PATH directory the agent cannot write` (exit 127).
+  It also needs `readlink` there as a regular file, not a symlink; without one the launch also
+  prints `no readlink that is a regular file in a PATH directory the agent cannot write`. The
+  fullsend sandbox image ships both.
+- **`pi` and `node` in directories the agent cannot write** — the launch pins
+  the first `pi` in a `PATH` directory the sandbox user neither owns nor can
+  write, judged by the file it resolves to and every directory above that
+  file. pi's CLI is a `#!/usr/bin/env node` script, so the launch also pins
+  `node` by the same rule and starts pi with it. It does not let `env` look
+  `node` up on the `PATH` left after `.env` is read. A `pi` or `node` found
+  only through an agent-writable directory, or a symlink into one, fails the
+  launch with `pi not found in a PATH directory the agent cannot write` or
+  `node not found in a PATH directory the agent cannot write` (exit 127). The
+  Agent tool starts its sub-agents with the same pinned `pi` and `node`. The
+  first line must be exactly `#!/usr/bin/env node`: any other line that starts
+  pi through `env` fails the launch with
+  `starts through env with a first line other than '#!/usr/bin/env node'`.
 - **Platforms** — verified end to end on macOS Apple Silicon (podman machine, Homebrew `openshell`)
   and Fedora with rootless Podman; the guide's platform notes apply unchanged.
 - **`review` and `retro`** run their real sub-agent roster through the `Agent` tool; the children
@@ -199,6 +272,13 @@ What a local pi run needs, beyond the guide:
 - **No permission system.** pi's posture is "run in a container". The sandbox, its egress policy and
   credential placeholders are the boundary ([ADR 0027](../ADRs/0027-allowed-and-disallowed-tools-for-agents.md));
   fullsend's hook adapter is defense-in-depth on top.
+- **Sandbox hook settings come from the harness, not `.env`.** With sandbox
+  hooks on, `TIRITH_FAIL_ON`, `TIRITH_REQUIRED`, `FULLSEND_EGRESS_ALLOWLIST`,
+  `FULLSEND_CANARY_TOKEN` and `FULLSEND_TOOL_ALLOWLIST` are taken from the
+  harness configuration at Bootstrap, before the first iteration. The launch
+  sets them again after it reads `.env`, and unsets any of them the harness did
+  not set. A value in `.env`, including one the agent wrote there, cannot change
+  them. The hook adapter and every sub-agent inherit those values.
 - **Reads `AGENTS.md` natively** — no `CLAUDE.md` bridge is injected.
 - **The agent body is appended** to pi's own system prompt rather than replacing it, so pi's default
   tool guidance stays. Claude Code's `--agent` replaces it.
@@ -216,6 +296,25 @@ What a local pi run needs, beyond the guide:
   loads `fullsend-edit-repair.js`, which parses the argument before pi validates it and logs each
   repair to stderr. Hooks still see the edits that get applied. It goes once the pinned pi handles
   both shapes.
+
+### What to write in `tools:`
+
+`tools:` is written in Claude Code's names on every runtime, and the runner translates. On pi:
+
+| You write | pi runs | Worth knowing |
+|---|---|---|
+| `Bash`, `Read`, `Write`, `Edit`, `Grep` | `bash`, `read`, `write`, `edit`, `grep` | — |
+| `MultiEdit` | `edit` | pi has one edit tool |
+| `Glob` | `find` | `find` takes a **glob pattern**, not a bare directory. A model that means "list this directory" and sends `{"path": "docs/"}` gets a validation error and has to retry |
+| `LS` | `ls` | The tool to grant for directory listing. Claude Code itself dropped `LS`, so the entry does nothing on that runtime, and codex lists through the shell — it is pi where it counts |
+| anything else | — | A persona naming a Claude-only tool (`WebFetch`, `TodoWrite`, ...) fails rather than silently losing it; see [Sub-agents troubleshooting](#troubleshooting-sub-agents) |
+
+So an agent that browses the tree wants `Glob` **and** `LS`: `Glob` to match a pattern, `LS` to see
+what is in a directory. With `Glob` alone the model tends to reach for a listing it cannot make.
+
+If your org enables the optional `tool_allowlist_pretool.py` hook, write `LS` in
+`FULLSEND_TOOL_ALLOWLIST` too — the hook's vocabulary is Claude Code's, and pi's `ls` arrives as
+`LS`.
 
 ## Plugins (pi extensions)
 
@@ -343,13 +442,14 @@ For a run that reaches all three Vertex providers:
 | `model` | The child runs on |
 |---|---|
 | `sonnet` (also `opus`, `haiku`) | Claude on Vertex, whatever provider the parent runs on |
-| `claude-sonnet-4-6` | the same — a bare Claude id resolves through that alias table, and a persona-style `@default` suffix is dropped |
+| `claude-sonnet-5-5`, `claude-sonnet-4-6` | the same — a bare Claude id resolves through the alias table or, for a previous default, the alias's built-in fallback chain; a persona-style `@default` suffix is dropped |
 | `google-vertex/gemini-3.8-flash` | Gemini, on pi's built-in provider |
 | `xai/grok-4.6` | Grok on Vertex — normalized to `xai-vertex/xai/grok-4.6`, as the runner does for the parent |
 
 Anything else is **rejected, with the accepted forms listed in the error**, so the orchestrator can
 correct itself instead of losing the dispatch. The accepted set is closed — the run's model table,
-the parent's own spec, and the ids registered for a provider that has no table entry — rather than a
+the built-in fallback chains of the aliases the repo does not retarget, the parent's own spec, and
+the ids registered for a provider that has no table entry — rather than a
 provider-prefix check, so an id the model invented (`google-vertex/gemini-9`,
 `anthropic-vertex/claude-sonnet-4-20250514`) is refused even under a provider the run can reach. A
 trailing `:<thinking level>` is dropped rather than passed through.
@@ -371,11 +471,13 @@ different vendor, or a newer generation — without touching the skill.
 
 #### Set it
 
-A repo where Grok is the cost-effective coder, Gemini Flash handles document checks, Opus is
-kept for detail work, and Sonnet is enough to orchestrate:
+A repo where Grok is the cost-effective coder on short, low-turn tasks (see
+[Prompt caching](#prompt-caching) before using it on long, iterative work), Gemini
+Flash handles document checks, Opus is kept for detail work, and Sonnet is enough
+to orchestrate:
 
 ```bash
-fullsend agent set review --fullsend-dir .fullsend --model sonnet \
+fullsend agent set review --model sonnet \
   --subagent challenger=xai/grok-4.6 \
   --subagent docs-currency=google-vertex/gemini-3.8-flash \
   --subagent style-conventions=google-vertex/gemini-3.8-flash
@@ -436,7 +538,7 @@ whose children name no persona and so carry no model of their own; there it is t
 way to move them off the parent's model:
 
 ```bash
-fullsend agent set retro --fullsend-dir .fullsend --subagent default=sonnet
+fullsend agent set retro --subagent default=sonnet
 ```
 
 ```console
@@ -457,13 +559,135 @@ each one at Bootstrap and checks it against the same closed set a `model` argume
 through, so a model this run cannot serve fails the run at Bootstrap — after the sandbox is
 created but before the agent starts — rather than at the first dispatch, when a
 half-finished review would already have cost you. A malformed key or model *reference* is
-caught earlier still, by config validation, before the sandbox exists.
+caught earlier still, by config validation, before the sandbox exists, and so is an `openai/`
+value when the harness declares no `openai` provider ([below](#route-a-persona-to-openai)).
+
+#### Route a persona to OpenAI
+
+Any parent can run an OpenAI persona: `opus` on Vertex with `challenger` on
+`openai/gpt-5.6-luna` works the same way as an OpenAI parent with Vertex personas. The rule:
+**the harness must declare the `openai` provider.** The runner creates the OpenAI credential
+for a run when the parent, a `subagents.<persona>` entry, `subagents.default`, or a persona's
+frontmatter `model:` resolves to `openai/` (after [`models.aliases`](#per-repo-alias-overrides)).
+It creates none otherwise, so declaring `openai` costs nothing on runs that never use it.
+
+The `review` and `retro` harnesses in `fullsend-ai/agents` already declare `openai`. A harness
+you wrote needs it in `providers:`:
+
+```yaml
+providers:
+  - providers/vertex-ai.yaml
+  - openai
+```
+
+Then route the persona:
+
+```bash
+fullsend agent set review --runtime pi --model opus \
+  --subagent challenger=openai/gpt-5.6-luna
+```
+
+```console
+  ✓ Set agent "review": runtime="pi" model="opus" effort="" (empty = inherit) subagents: challenger=openai/gpt-5.6-luna
+```
+
+A run creates the run-scoped OpenAI provider before the sandbox and resolves the persona to
+it. This excerpt is from a run with an `opus` parent:
+
+```console
+  • Resolving OpenAI credential for provider: openai
+  ✓ OpenAI credential ready (OPENAI_API_KEY from the runner environment)
+  • Ensuring run-scoped provider: openai-70dc947cc3b8
+  ✓ Provider ready: openai-70dc947cc3b8 (static, expires in 1h0m0s, 0.1s)
+  …
+subagents: challenger → openai/gpt-5.6-luna (from subagents.challenger)
+```
+
+If you route a persona with `--subagent` and the agent's harness is a local file that does not
+declare `openai`, `agent set` warns. The config is still written, so you can edit the harness
+afterwards. A harness fetched by URL, one with `base:`, `overlays:` or `forge:` blocks, and a
+persona from a skill fetched by URL are not checked here; the run checks them.
+
+```console
+  ✓ Set agent "my-review": runtime="pi" model="opus" effort="" (empty = inherit) subagents: challenger=openai/gpt-5.6-luna
+  ! subagents.challenger → openai/gpt-5.6-luna resolves to the openai provider, but harness/my-review.yaml declares no openai provider; runs will fail until you add "openai" to its providers list
+```
+
+A run of that agent stops before the sandbox is created:
+
+```console
+  ✗ Sub-agent model needs the openai provider
+Error: sub-agent model resolves to the openai provider, but the harness declares no openai provider: subagents.challenger → openai/gpt-5.6-luna; declare "openai" in the harness providers list, or move the sub-agent off openai/
+```
+
+A persona whose **own frontmatter** names `openai/` is different: nothing in your config asked
+for it, so a harness without `openai` or a runner without an OpenAI credential does not fail the
+run over it. When the harness declares `openai` and the runner has a credential, the persona runs
+on OpenAI, with the same requirements as any OpenAI run. Otherwise Bootstrap skips it with a warning, as it skips any persona whose model the
+run cannot serve, and a dispatch naming it is refused with the reason. On a runner with no OpenAI
+credential, the run says so first:
+
+```console
+  ✗ OpenAI credential unavailable for provider openai
+  ! Provider "openai" skipped: only persona frontmatter wanted it (provider "openai": no OpenAI credential: …); those personas will be skipped
+```
+
+A `model:` argument on an `Agent` call is not known before the run starts, so it never causes the
+credential to be created, and neither does a [`models.aliases`](#per-repo-alias-overrides) name used
+only in such an argument. Under a parent that is not on OpenAI, a call naming an `openai/` model a
+configured child already uses is served; with no configured OpenAI child it is refused mid-run with
+`provider "openai" is not available in this run`, followed by the fix. Route the child through a
+persona or `subagents.default` instead.
+
+| You see | Do this |
+|---|---|
+| `! … resolves to the openai provider, but harness/<file> declares no openai provider` (from `agent set`) | Add `- openai` to that harness's `providers:` list. |
+| `Error: sub-agent model resolves to the openai provider, but the harness declares no openai provider` | Same: declare `openai` in the harness, or move the persona off `openai/`. |
+| `! Provider "openai" skipped: only persona frontmatter wanted it` | Give the runner an OpenAI credential ([OpenAI via Workload Identity Federation](../guides/infrastructure/openai-workload-identity.md)), or ignore it if those personas need not run. |
+| `provider "openai" is not available in this run (declare "openai" in the harness providers …` | Set the model on a persona (`--subagent <persona>=openai/<id>`) or on `subagents.default`, not on the `Agent` call. |
 
 Once a run registers personas, the orchestrator dispatches one by name —
 `subagent_type: correctness` — and omits `model`; a `model` argument passed anyway is
 logged and ignored, because the runner's resolution is the authoritative one. `Explore`
 keeps its meaning, and any other unrecognised value is rejected naming the registered
 personas.
+
+#### Vertex sub-agents under an OpenAI parent
+
+A child on `anthropic-vertex`, `google-vertex` or `xai-vertex` (`sonnet`, for example) needs a
+GCP credential file in the sandbox, even when the parent runs on `openai/`. The harness mounts it
+from `${GOOGLE_APPLICATION_CREDENTIALS}`
+([bring your own agent › Pick a route](../guides/user/bring-your-own-agent.md#pick-a-route)).
+A `google-vertex` child can use `GOOGLE_CLOUD_API_KEY` in the sandbox instead. Without either:
+
+1. **A `subagents` entry on `anthropic-vertex` or `xai-vertex`, and the variable has no usable
+   file.** The run stops before the pre-script (a `google-vertex` entry is checked at dispatch):
+
+   ```console
+     ✗ Sub-agent model needs Vertex credentials
+   Error: sub-agent model resolves to Vertex, but GOOGLE_APPLICATION_CREDENTIALS is not set: subagents.default → anthropic-vertex/claude-sonnet-4-6; set GOOGLE_APPLICATION_CREDENTIALS to a credential file mounted in host_files, or move the sub-agent off Vertex
+   ```
+
+   Fix: set `GOOGLE_APPLICATION_CREDENTIALS` to a credential file, or move the entry off Vertex.
+2. **The variable has no usable file, and no `subagents` entry fails early.** The run
+   continues with one line:
+
+   ```console
+       Vertex sub-agents need a credential file: GOOGLE_APPLICATION_CREDENTIALS is not set
+   ```
+
+   Fix: nothing, unless you want Vertex children. Then set the variable.
+3. **An `Agent` call or a persona picks a Vertex model, and the sandbox has no credential file.**
+   The dispatch is refused, and the parent sees:
+
+   ```text
+   model "sonnet": provider "anthropic-vertex" is not available in this run (Vertex sub-agents need GOOGLE_APPLICATION_CREDENTIALS set on the runner and mounted in host_files)
+   ```
+
+   Fix: mount the file and set the variable, or move those sub-agents to `openai/`.
+
+On GitHub Actions, a failed credential setup adds `(Vertex credential setup failed; see the
+warning above)` to the reason.
 
 #### What you see
 
@@ -616,7 +840,7 @@ that project's Model Garden, or the provider resolved a different project than y
 
 **`[pi-anthropic-vertex] disabled: set GOOGLE_CLOUD_PROJECT ...`.** The sandbox environment comes
 from the harness (`host_files`, `env.sandbox`), not from `--env-file`, which only reaches the runner
-process (ADR 0055). Files sourced from `.env.d/` need `export` on each line. The fleet harnesses
+process (ADR 0055). Files read from `.env.d/` need `export` on each line. The fleet harnesses
 already wire this; a custom harness must too.
 
 **The run used Claude instead of pi.** The runtime falls back to `claude` when neither the config's

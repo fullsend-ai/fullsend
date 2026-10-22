@@ -650,7 +650,7 @@ func TestCommitRelativeResources_CommitsPolicyFile(t *testing.T) {
 		"agent: agents/triage.md\npolicy: policies/base.yaml\nrole: triage")
 	require.NoError(t, err)
 	assert.Equal(t, minimalAgentContent, string(scm.files["org/repo/agents/triage.md"]))
-	assert.Contains(t, string(scm.files["org/repo/policies/base.yaml"]), "Minimal policy")
+	assertBasePolicy(t, scm.files["org/repo/policies/base.yaml"])
 	assert.Equal(t, []string{"agents/triage.md", "policies/base.yaml"}, paths)
 }
 
@@ -1053,6 +1053,10 @@ func (f *fakeURLSCM) GetFileContent(_ context.Context, owner, repo, path string)
 	return data, nil
 }
 
+func (f *fakeURLSCM) GetFileContentAtRef(ctx context.Context, owner, repo, path, _ string) ([]byte, error) {
+	return f.GetFileContent(ctx, owner, repo, path)
+}
+
 func (f *fakeURLSCM) CreateRepo(_ context.Context, _, name, _ string) error {
 	if f.createRepoErr != nil {
 		return f.createRepoErr
@@ -1139,10 +1143,20 @@ func (f *fakeURLSCM) CloseIssue(context.Context, string, string, int) error { re
 func (f *fakeURLSCM) CreateFork(context.Context, string, string, string) (string, error) {
 	return "", nil
 }
+func (f *fakeURLSCM) CreateUserFork(context.Context, string, string) (string, string, error) {
+	return "", "", nil
+}
 func (f *fakeURLSCM) CommitFileToFork(context.Context, string, string, string, string, string, []byte) error {
 	return nil
 }
 func (f *fakeURLSCM) CreateForkChangeProposal(context.Context, string, string, string, string, string, string, string, string) (*forge.ChangeProposal, error) {
+	return nil, nil
+}
+func (f *fakeURLSCM) ListPullRequestCommits(context.Context, string, string, int) ([]string, error) {
+	return nil, nil
+}
+
+func (f *fakeURLSCM) ListPullRequestReviews(context.Context, string, string, int) ([]forge.PullRequestReview, error) {
 	return nil, nil
 }
 func (f *fakeURLSCM) ListIssueReactions(context.Context, string, string, int) ([]forge.Reaction, error) {

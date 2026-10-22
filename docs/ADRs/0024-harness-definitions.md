@@ -96,6 +96,8 @@ parts:
     redaction post-tool). Omitting the `security` block enables all scanners
     with fail-closed semantics. Individual scanners can be toggled off
     per-harness, but there is no global kill switch.
+    The actor-attributed source-record admission and per-record authorization
+    boundary is defined by [ADR 0133](0133-actor-attributed-data-security-boundary.md).
 14. **Validation loop** — an optional deterministic script that checks agent
     output and re-runs the same agent with feedback on failure. The current
     implementation supports re-running the previous agent with validation
@@ -776,7 +778,9 @@ intentionally deferred to keep scope manageable:
   files may need a `version` field for schema evolution (e.g. when fields are
   renamed or restructured). The team agreed this is important but not
   blocking — failed validation can surface schema drift without a version
-  field.
+  field. Decided in [ADR 0127](0127-harness-schema-versioning-and-field-types.md):
+  a planned `schema_version` field (absent = `1`) with field-level semantic
+  types. Type-violation checks in `Harness.Lint()` are not yet implemented.
 - **Protected vs. freely overridable fields
   ([#236](https://github.com/fullsend-ai/fullsend/issues/236)).** At each
   inheritance layer (fullsend defaults → org `.fullsend` → per-repo), which

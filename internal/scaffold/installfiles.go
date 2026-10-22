@@ -15,34 +15,6 @@ type InstallFile struct {
 // InstallFiles is the slice type returned by install collectors.
 type InstallFiles []InstallFile
 
-// CollectInstallFilesOptions controls which scaffold files are collected.
-type CollectInstallFilesOptions struct {
-	RenderOptions
-	PathPrefix string
-}
-
-// CollectInstallFiles gathers scaffold files for org or per-repo installation.
-func CollectInstallFiles(opts CollectInstallFilesOptions) (InstallFiles, error) {
-	var files InstallFiles
-	err := WalkFullsendRepo(func(path string, content []byte) error {
-		rendered, renderErr := RenderTemplate(path, content, opts.RenderOptions)
-		if renderErr != nil {
-			return fmt.Errorf("rendering %s: %w", path, renderErr)
-		}
-		files = append(files, InstallFile{
-			Path:    opts.PathPrefix + path,
-			Content: PrependManagedHeader(path, rendered),
-			Mode:    FileMode(path),
-		})
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	return files, nil
-}
-
 // perRepoThinCallers lists thin stage caller workflows installed directly
 // into per-repo repos (in addition to the per-repo shim). These are
 // workflows that receive workflow_dispatch events from external schedulers
@@ -62,7 +34,7 @@ func PerRepoThinCallerPaths() []string {
 
 // CollectPerRepoInstallFiles gathers files for per-repo installation.
 func CollectPerRepoInstallFiles(vendored bool, upstreamRef, upstreamTag string) (InstallFiles, error) {
-	opts := RenderOptionsForInstall(vendored, true, upstreamRef, upstreamTag)
+	opts := RenderOptionsForInstall(vendored, upstreamRef, upstreamTag)
 
 	shimRaw, err := PerRepoShimTemplate()
 	if err != nil {
@@ -119,11 +91,13 @@ func CollectPerRepoInstallFiles(vendored bool, upstreamRef, upstreamTag string) 
 // existing file (or creates a minimal one) instead of overwriting it.
 // See MergeGitLabCI in internal/repos/gitlabci.go.
 //
-// runnerTags specifies GitLab runner tags to inject into CI job definitions.
+// agentRunnerTags and controlRunnerTags specify GitLab runner tags to
+// inject into agent (data-plane) and control-plane CI job definitions.
 // upstreamRef and upstreamTag control the version marker embedded in the
-// dispatch file for upgrade/status drift detection.
-func CollectGitLabPerRepoInstallFiles(runnerTags []string, upstreamRef, upstreamTag string) (InstallFiles, error) {
-	tagYAML := FormatRunnerTags(runnerTags)
+// pipeline wrapper for upgrade/status drift detection.
+func CollectGitLabPerRepoInstallFiles(agentRunnerTags, controlRunnerTags []string, upstreamRef, upstreamTag string) (InstallFiles, error) {
+	agentTagYAML := FormatRunnerTags(agentRunnerTags)
+	controlTagYAML := FormatRunnerTags(controlRunnerTags)
 	versionMarker := FormatVersionMarker(upstreamRef, upstreamTag)
 	fullsendVersion := ResolveFullsendVersion(upstreamRef, upstreamTag)
 	var files InstallFiles
@@ -131,12 +105,13 @@ func CollectGitLabPerRepoInstallFiles(runnerTags []string, upstreamRef, upstream
 		if path == ".fullsend/config.yaml" || path == ".gitignore" || path == ".gitlab-ci.yml" {
 			return nil
 		}
-		rendered := strings.ReplaceAll(string(content), "__RUNNER_TAGS__", tagYAML)
+		rendered := strings.ReplaceAll(string(content), "__AGENT_RUNNER_TAGS__", agentTagYAML)
+		rendered = strings.ReplaceAll(rendered, "__CONTROL_RUNNER_TAGS__", controlTagYAML)
 		rendered = strings.ReplaceAll(rendered, "__FULLSEND_VERSION__", fullsendVersion)
-		// Embed a version marker in the dispatch file so that
+		// Embed a version marker in the pipeline wrapper so that
 		// extractWorkflowRef (via glWorkflowRefPattern) can detect
 		// the installed version for status and upgrade operations.
-		if path == ".gitlab/ci/fullsend-dispatch.yml" && versionMarker != "" {
+		if path == ".gitlab/ci/fullsend-pipeline.yml" && versionMarker != "" {
 			rendered = InsertAfterDocStart(rendered, versionMarker)
 		}
 		files = append(files, InstallFile{
@@ -198,8 +173,8 @@ func FormatRunnerTags(tags []string) string {
 }
 
 // ResolveFullsendVersion returns the version string for the
-// __FULLSEND_VERSION__ placeholder in GitLab CI templates. The templates'
-// before_script uses this to install the fullsend CLI at runtime: version
+// __FULLSEND_VERSION__ placeholder in GitLab CI templates. The shared
+// install-fullsend-cli.sh script uses this to install the CLI at runtime: version
 // tags (v0.42.0) trigger a pre-built binary download from GitHub Releases;
 // commit SHAs trigger a clone-and-build from source. Dev builds (both
 // inputs empty) return "latest" so the before_script resolves the newest
@@ -213,22 +188,4 @@ func ResolveFullsendVersion(upstreamRef, upstreamTag string) string {
 		return upstreamRef
 	}
 	return "latest"
-}
-
-// ManagedPaths returns embed-derived scaffold paths for analyze/sync.
-// Vendored content is reported separately by the vendor layer.
-func ManagedPaths(_ bool, pathPrefix string) ([]string, error) {
-	opts := CollectInstallFilesOptions{
-		RenderOptions: RenderOptionsForInstall(false, pathPrefix != "", "", ""),
-		PathPrefix:    pathPrefix,
-	}
-	files, err := CollectInstallFiles(opts)
-	if err != nil {
-		return nil, err
-	}
-	paths := make([]string, len(files))
-	for i, f := range files {
-		paths[i] = f.Path
-	}
-	return paths, nil
 }

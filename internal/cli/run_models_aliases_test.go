@@ -81,7 +81,8 @@ func TestRunAgent_ModelsAliases_FallbackChainEchoedRemapped(t *testing.T) {
 		"aliased fallback entry is shown remapped, literal id as written")
 }
 
-// An alias that is not remapped keeps the pre-#6882 plan line exactly.
+// An alias that is not remapped shows no models.aliases remap, only the
+// built-in default it resolves to (#8443).
 func TestRunAgent_ModelsAliases_UnrelatedAliasUnchanged(t *testing.T) {
 	usePreScriptStub(t)
 	dir := newSkipHarnessDir(t, "")
@@ -95,4 +96,75 @@ func TestRunAgent_ModelsAliases_UnrelatedAliasUnchanged(t *testing.T) {
 	assert.Contains(t, err.Error(), "creating sandbox")
 	assert.NotContains(t, buf.String(), "opus →", "no remap for an alias without an entry")
 	assert.NotContains(t, buf.String(), "models.aliases")
+	assert.Contains(t, buf.String(), "opus (from --model flag) → claude-opus-5-5 (built-in default)",
+		"plan block shows what the alias resolves to today")
+}
+
+// A retargeted alias shows only the models.aliases remap, not the built-in
+// default it no longer uses.
+func TestRunAgent_ModelsAliases_RemapHidesBuiltinDefault(t *testing.T) {
+	usePreScriptStub(t)
+	dir := newSkipHarnessDir(t, "")
+	writeModelsAliasesConfig(t, dir, "    sonnet: claude-sonnet-5\n")
+
+	var buf bytes.Buffer
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	err := runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags,
+		statusOpts{}, ui.New(&buf), false, runOverrideFlags{model: "sonnet"})
+	require.Error(t, err)
+	assert.NotContains(t, buf.String(), "built-in default")
+}
+
+// A rejected org-shaped config.yaml that carries an explicit deny-all
+// allowed_remote_resources must fail the run before agent-source
+// resolution: treating it as absent would substitute the default allowlist
+// and permit a first-party harness fetch.
+func TestRunAgent_RejectedConfigFailsBeforeAgentSourceResolution(t *testing.T) {
+	usePreScriptStub(t)
+	dir := newSkipHarnessDir(t, "")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"),
+		[]byte("version: \"1\"\ndefaults:\n  roles: [coder]\nrepos:\n  api:\n    enabled: true\nallowed_remote_resources: []\n"), 0o644))
+
+	var buf bytes.Buffer
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50, offline: true}
+	// "unregistered" has no local harness, so resolution would fall back
+	// to the agents repository if the config were treated as absent.
+	err := runAgent(context.Background(), "unregistered", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags,
+		statusOpts{}, ui.New(&buf), false, runOverrideFlags{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "loading fullsend config")
+	assert.NotContains(t, buf.String(), "agents repo")
+	assert.NotContains(t, buf.String(), "Fetching")
+}
+
+// A malformed base-only config (no config.yaml) must fail the run before
+// agent-source resolution instead of being treated as an absent config that
+// falls back to the default allowlist and the agents repository. The
+// base-only deny-all case is covered by TestLoadLockConfig_BaseLayer, which
+// exercises the loader shared with the run path.
+func TestRunAgent_BaseOnlyConfigFailsBeforeAgentSourceResolution(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		wantErr string
+	}{
+		{name: "malformed base-only config", content: "{{invalid yaml", wantErr: "parsing base config"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			usePreScriptStub(t)
+			dir := newSkipHarnessDir(t, "")
+			require.NoError(t, os.Remove(filepath.Join(dir, "config.yaml")))
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "config.base.yaml"), []byte(tt.content), 0o644))
+
+			var buf bytes.Buffer
+			rFlags := resolveFlags{maxDepth: 10, maxResources: 50, offline: true}
+			err := runAgent(context.Background(), "unregistered", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags,
+				statusOpts{}, ui.New(&buf), false, runOverrideFlags{})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+			assert.NotContains(t, buf.String(), "agents repo")
+			assert.NotContains(t, buf.String(), "Fetching")
+		})
+	}
 }

@@ -3,8 +3,6 @@ package cli
 import (
 	"bytes"
 	"context"
-	"os"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -70,15 +68,10 @@ func TestAppendStaleVendoredDeletes(t *testing.T) {
 	})
 }
 
-// Pruning must fire on every vendor commit path, not just acquireAndVendor —
-// prepareVendorFiles is the chokepoint, exercised here through
-// appendVendorTreeFiles and the combined-commit collect func.
+// Pruning must fire on every vendor commit path — prepareVendorFiles is the
+// chokepoint, exercised here through appendVendorTreeFiles.
 func TestVendorCommitPathsPruneStaleFiles(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("needs Linux ELF binary")
-	}
-	exe, err := os.Executable()
-	require.NoError(t, err)
+	exe := amd64VendorBinary(t)
 	ctx := context.Background()
 
 	seed := func() *forge.FakeClient {
@@ -100,12 +93,8 @@ func TestVendorCommitPathsPruneStaleFiles(t *testing.T) {
 		return n
 	}
 
-	out, _, err := appendVendorTreeFiles(ctx, seed(), ui.New(&strings.Builder{}), "org", "my-repo", nil, true, exe, "")
+	out, _, cleanup, err := appendVendorTreeFiles(ctx, seed(), ui.New(&strings.Builder{}), "org", "my-repo", nil, true, exe, "")
+	defer cleanup()
 	require.NoError(t, err)
 	assert.Equal(t, 1, countDeletes(out), "appendVendorTreeFiles must prune")
-
-	fn := makeVendorCollectFunc(exe, "")
-	out, _, err = fn(ctx, seed(), ui.New(&strings.Builder{}), "org", "my-repo")
-	require.NoError(t, err)
-	assert.Equal(t, 1, countDeletes(out), "combined collect func must prune")
 }

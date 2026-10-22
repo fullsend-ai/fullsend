@@ -2,6 +2,7 @@ package poll
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -24,6 +25,46 @@ func filterRoutableLabels(labels []string) []string {
 	return out
 }
 
+// labelAddEvents resolves each label's latest "add" resource label event —
+// its ID is the same occurrence identity the webhook builder keys on, so a
+// poll-discovered addition and the webhook for it share one dispatch key,
+// and its user is the actor of that exact occurrence. Both come from one
+// snapshot so identity and actor cannot refer to different additions.
+// A label with no add event is absent from the result and the event falls
+// back to a millisecond timestamp key and normalization-time actor
+// resolution. An API error is returned instead: a timestamp-keyed event
+// could not be matched against an ID-keyed dispatch of the same addition
+// (a webhook's), and normalization could later recover the actor without
+// the occurrence ID, so the caller must hold the labels back for retry.
+//
+// A label whose latest event is a removal contradicts the issue-list
+// snapshot that reported it as present: the snapshot predates that removal.
+// Falling back to a timestamp key for it would emit an addition that no
+// ID-keyed dispatch (a webhook's, for the preceding add) could suppress, so
+// it is returned in stale for the caller to hold back as well; a fresh
+// snapshot on the next cycle settles whether the label is really present.
+func (p *Poller) labelAddEvents(ctx context.Context, iid int, labels []string) (found map[string]ResourceLabelEvent, stale map[string]bool, err error) {
+	found = make(map[string]ResourceLabelEvent, len(labels))
+	stale = make(map[string]bool)
+	labelEvents, err := p.client.ListResourceLabelEvents(ctx, p.owner, p.repo, iid)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, label := range labels {
+		for i := len(labelEvents) - 1; i >= 0; i-- {
+			if labelEvents[i].Label.Name == label {
+				if labelEvents[i].Action == "add" {
+					found[label] = labelEvents[i]
+				} else {
+					stale[label] = true
+				}
+				break
+			}
+		}
+	}
+	return found, stale, nil
+}
+
 // discoverAllEvents finds all routable events since the given time.
 // Returns events, updated label state (for persistence after dispatch),
 // minSkippedAt (earliest UpdatedAt among skipped items), and error.
@@ -42,13 +83,65 @@ func (p *Poller) discoverAllEvents(ctx context.Context, owner, repo string, sinc
 
 	var minSkippedAt time.Time
 	for _, issue := range issues {
+		// Issue opens normally dispatch from the webhook fast-path; the
+		// poller recovers one whose delivery was missed (ADR 0125). The
+		// event matches webhookIssueEvents' (created_at time, author
+		// actor), so both share one Key() and a delivered webhook
+		// suppresses this dispatch. Bounding on created_at rather than
+		// updated_at keeps an unrelated edit of an older issue from
+		// re-emitting its open. Emitted before the notes fetch: a notes
+		// failure holds the watermark only to updated_at, which can pass
+		// created_at, so a later cycle would not rediscover the open.
+		// created_at must also follow the persisted installation cutoff, so
+		// an issue that predates installation is never triaged.
+		// A failed dispatch of a recovered open is retried through the
+		// watermark holdback and the failed-key retry count, not a durable
+		// pending handoff (only issue_label failures get one). That relies
+		// on events polls being serialized by the pipeline resource group,
+		// so no other writer persists a later watermark that would drop
+		// created_at out of the next cycle's window; MR events share the
+		// same assumption.
+		if !p.issueOpenCutoff.IsZero() && issue.State == "opened" &&
+			!issue.CreatedAt.IsZero() && issue.CreatedAt.After(since) &&
+			issue.CreatedAt.After(p.issueOpenCutoff) {
+			events = append(events, RoutableEvent{
+				Type:            "issue_event",
+				Action:          "opened",
+				IID:             issue.IID,
+				UpdatedAt:       issue.CreatedAt,
+				NoteAuthorID:    issue.Author.ID,
+				NoteAuthorLogin: issue.Author.Username,
+				IsBot:           issue.Author.Bot,
+				Labels:          issue.Labels,
+			})
+		}
+
 		notes, err := p.client.ListIssueNotes(ctx, owner, repo, issue.IID)
 		if err != nil {
 			log.Printf("list notes for issue %d: %v (skipping issue entirely)", issue.IID, err)
+			// The newly detected label additions are neither emitted nor
+			// recorded, so their occurrences are unresolved: presence a
+			// concurrent writer recorded for them may belong to a
+			// superseded occurrence (see Run's failedPresence), and
+			// holding the watermark alone cannot recover a re-addition
+			// the next cycle would treat as already seen. Queue an
+			// unresolved marker for each so the retry resolves the
+			// current occurrence.
+			if added := newLabels[issue.IID]; len(added) > 0 {
+				if p.unresolvedLabels == nil {
+					p.unresolvedLabels = make(LabelState)
+				}
+				p.unresolvedLabels[issue.IID] = append(p.unresolvedLabels[issue.IID], added...)
+			}
 			if prev, ok := previousLabels[issue.IID]; ok {
 				updatedLabelState[issue.IID] = prev
 			} else {
-				delete(updatedLabelState, issue.IID)
+				// Tombstone (present, empty), not delete: see the
+				// mergeLabelState comment in state.go. This writer could
+				// not confirm labels for this issue (notes fetch
+				// failed), so it must not leave a stale entry from the
+				// reloaded document in place at persist time.
+				updatedLabelState[issue.IID] = []string{}
 			}
 			if minSkippedAt.IsZero() || issue.UpdatedAt.Before(minSkippedAt) {
 				minSkippedAt = issue.UpdatedAt
@@ -57,14 +150,93 @@ func (p *Poller) discoverAllEvents(ctx context.Context, owner, repo string, sinc
 		}
 
 		if added, ok := newLabels[issue.IID]; ok {
+			addEvents, staleLabels, err := p.labelAddEvents(ctx, issue.IID, added)
+			if err == nil && len(staleLabels) > 0 {
+				// The label events end in a removal for these labels, so
+				// the issue snapshot is older than the forge. Hold them
+				// back for the next cycle: do not emit them and do not
+				// record them in label state, and keep the watermark so
+				// the issue is polled again.
+				log.Printf("WARNING: label events for issue %d end in a removal, newer than the issue snapshot (holding %d label addition(s) for retry)", issue.IID, len(staleLabels))
+				kept := make([]string, 0, len(added))
+				var heldLabels []string
+				for _, label := range added {
+					if staleLabels[label] {
+						heldLabels = append(heldLabels, label)
+					} else {
+						kept = append(kept, label)
+					}
+				}
+				added = kept
+				// Holding the watermark cannot recover a re-addition once a
+				// competing poll persists a later watermark, and this
+				// branch emitted no occurrence for the held labels. Queue
+				// an unresolved marker for each so the retry resolves the
+				// current occurrence (or clears it if the label is gone).
+				if p.unresolvedLabels == nil {
+					p.unresolvedLabels = make(LabelState)
+				}
+				p.unresolvedLabels[issue.IID] = append(p.unresolvedLabels[issue.IID], heldLabels...)
+				// Non-nil even when empty: a tombstone, as in the
+				// paths above.
+				held := make([]string, 0, len(updatedLabelState[issue.IID]))
+				for _, label := range updatedLabelState[issue.IID] {
+					if !staleLabels[label] {
+						held = append(held, label)
+					}
+				}
+				updatedLabelState[issue.IID] = held
+				if minSkippedAt.IsZero() || issue.UpdatedAt.Before(minSkippedAt) {
+					minSkippedAt = issue.UpdatedAt
+				}
+			}
+			if err != nil {
+				// Without occurrence IDs the additions cannot be keyed
+				// like the webhook's dispatches of them. Do not emit them
+				// and do not record them in label state, so the next
+				// cycle rediscovers them; hold the watermark so the issue
+				// is polled again. Notes below are unaffected (keyed by
+				// note ID).
+				log.Printf("WARNING: list label events for issue %d: %v (holding label additions for retry)", issue.IID, err)
+				p.discoveryErrs = append(p.discoveryErrs, fmt.Errorf("list label events for issue %d: %w", issue.IID, err))
+				// The additions' occurrences are unresolved, so presence a
+				// concurrent writer recorded for them may belong to a
+				// superseded occurrence (see Run's failedPresence).
+				if p.unresolvedLabels == nil {
+					p.unresolvedLabels = make(LabelState)
+				}
+				p.unresolvedLabels[issue.IID] = append(p.unresolvedLabels[issue.IID], added...)
+				if prev, ok := previousLabels[issue.IID]; ok {
+					updatedLabelState[issue.IID] = prev
+				} else {
+					// Tombstone, as in the notes-failure path above.
+					updatedLabelState[issue.IID] = []string{}
+				}
+				if minSkippedAt.IsZero() || issue.UpdatedAt.Before(minSkippedAt) {
+					minSkippedAt = issue.UpdatedAt
+				}
+				added = nil
+			}
 			for _, label := range added {
-				events = append(events, RoutableEvent{
+				ev := RoutableEvent{
 					Type:         "issue_label",
 					IID:          issue.IID,
 					UpdatedAt:    issue.UpdatedAt,
 					Labels:       issue.Labels,
 					ChangedLabel: label,
-				})
+				}
+				if add, ok := addEvents[label]; ok {
+					ev.LabelEventID = add.ID
+					ev.OccurredAt = add.CreatedAt
+					// Bind the actor of this exact occurrence; normalization
+					// must not re-resolve it from a later snapshot.
+					if add.User.ID != 0 && add.User.Username != "" {
+						ev.NoteAuthorID = add.User.ID
+						ev.NoteAuthorLogin = add.User.Username
+						ev.IsBot = add.User.Bot
+					}
+				}
+				events = append(events, ev)
 			}
 		}
 
@@ -305,6 +477,44 @@ func isProjectAccessTokenBot(username string) bool {
 	return strings.HasPrefix(username, "project_") && strings.Contains(username, "_bot_")
 }
 
+// needsIssueOpenBotLookup reports whether event is an issue open whose
+// author's bot status must still be read from the authoritative user record.
+func (p *Poller) needsIssueOpenBotLookup(event RoutableEvent) bool {
+	return event.Type == "issue_event" && event.Action == "opened" && !p.isBotEvent(event)
+}
+
+// enrichIssueOpenBot checks the authoritative user record for one issue open.
+// GitLab's nested issue author omits the bot flag on some instances, and
+// service accounts can have custom usernames that defeat name heuristics.
+// An unavailable or incomplete lookup fails closed so the caller can retry.
+func (p *Poller) enrichIssueOpenBot(ctx context.Context, event *RoutableEvent) error {
+	if !p.needsIssueOpenBotLookup(*event) {
+		return nil
+	}
+	if event.NoteAuthorID == 0 {
+		return fmt.Errorf("issue #%d has no author ID", event.IID)
+	}
+	bot, err := p.client.GetUserBot(ctx, event.NoteAuthorID)
+	if err != nil {
+		return fmt.Errorf("look up issue #%d author %d: %w", event.IID, event.NoteAuthorID, err)
+	}
+	event.IsBot = bot
+	return nil
+}
+
+// enrichIssueOpenBots enriches every issue open in events, failing on the
+// first lookup error. The webhook builder uses it because it fails the whole
+// payload closed; the poller enriches per event inside Run instead, so one
+// failing lookup cannot stop unrelated events.
+func (p *Poller) enrichIssueOpenBots(ctx context.Context, events []RoutableEvent) error {
+	for i := range events {
+		if err := p.enrichIssueOpenBot(ctx, &events[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // isBotEvent uses multiple signals for reliable bot detection: the API
 // Bot field (when available), the configured botUserID, and the
 // project access token username pattern.
@@ -343,6 +553,14 @@ func (p *Poller) filterBotEvents(events []RoutableEvent) []RoutableEvent {
 		// not a bot event, so genuine closed-unmerged MRs still reach
 		// retro.
 		if event.Type == "mr_event" && event.Action == "opened" {
+			filtered = append(filtered, event)
+			continue
+		}
+		// Bot-applied label additions (e.g. ready-to-code and
+		// ready-for-review) hand off between agents and must reach
+		// routing. Poll-discovered and webhook-built label events both
+		// carry their occurrence's actor and need the same outcome.
+		if event.Type == "issue_label" {
 			filtered = append(filtered, event)
 			continue
 		}

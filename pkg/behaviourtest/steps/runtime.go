@@ -39,6 +39,12 @@ func registerRuntimeSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^a codex agent "([^"]+)" defined as:$`, func(ctx context.Context, name, doc string) (context.Context, error) {
 		return ctx, givenRuntimeAgent(world.FromContext(ctx), name, doc)
 	})
+	sc.Step(`^a claude agent "([^"]+)" defined as:$`, func(ctx context.Context, name, doc string) (context.Context, error) {
+		return ctx, givenRuntimeAgent(world.FromContext(ctx), name, doc)
+	})
+	sc.Step(`^an opencode agent "([^"]+)" defined as:$`, func(ctx context.Context, name, doc string) (context.Context, error) {
+		return ctx, givenRuntimeAgent(world.FromContext(ctx), name, doc)
+	})
 	sc.Step(`^the repository agents are configured with:$`, func(ctx context.Context, doc string) (context.Context, error) {
 		return ctx, givenRepositoryAgentSettings(world.FromContext(ctx), doc)
 	})
@@ -51,8 +57,14 @@ func registerRuntimeSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the run requested model "([^"]+)" from "([^"]+)" and the provider reported a "([^"]+)" model$`, func(ctx context.Context, requested, source, reported string) (context.Context, error) {
 		return ctx, assertRunModelFrom(world.FromContext(ctx), requested, source, reported)
 	})
+	sc.Step(`^the run used model "([^"]+)" without a fallback$`, func(ctx context.Context, model string) (context.Context, error) {
+		return ctx, assertRunUsedModelWithoutFallback(world.FromContext(ctx), model)
+	})
 	sc.Step(`^the run metrics report tokens$`, func(ctx context.Context) (context.Context, error) {
 		return ctx, assertRunMetricsReportTokens(world.FromContext(ctx))
+	})
+	sc.Step(`^the run metrics report tokens unless the requested model is "([^"]+)"$`, func(ctx context.Context, model string) (context.Context, error) {
+		return ctx, assertRunMetricsReportTokensUnless(world.FromContext(ctx), model)
 	})
 	sc.Step(`^the pi session transcript records at least one tool call$`, func(ctx context.Context) (context.Context, error) {
 		return ctx, assertPiTranscriptHasToolCall(world.FromContext(ctx))
@@ -123,9 +135,9 @@ var fixturePlaceholder = regexp.MustCompile(`\{\{fixture:([^}]+)\}\}`)
 // this step runs after it and replaces the placeholder with a body whose
 // tool use is deliberate, so the transcript assertions are grounded.
 //
-// Nothing here is runtime-specific: the "a pi agent" and "a codex agent"
-// steps both land here, and the step wording only says which runtime the
-// scenario is exercising.
+// Nothing here is runtime-specific: the "a pi agent", "a codex agent" and
+// "a claude agent" steps all land here, and the step wording only says
+// which runtime the scenario is exercising.
 func givenRuntimeAgent(w *world.World, name, doc string) error {
 	if w.Org == "" || w.RepoName == "" {
 		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before agent operations")
@@ -264,7 +276,7 @@ func RestoreRuntime(w *world.World) error {
 	if err != nil {
 		return err
 	}
-	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, cfgPath, "behaviour: restore runtime", merged); err != nil {
+	if err := commitVerified(w, cfgPath, "behaviour: restore runtime", merged); err != nil {
 		return fmt.Errorf("updating config: %w", err)
 	}
 	return nil
@@ -286,8 +298,11 @@ type runMetrics struct {
 	OverrideSource string `json:"override_source"`
 	// NumTurns is 0 when the agent process produced no events (for pi,
 	// metrics.model is the resolved id echoed back, not a provider reply).
-	NumTurns   int `json:"num_turns"`
-	TokenUsage struct {
+	NumTurns int `json:"num_turns"`
+	// FallbackFrom lists the models the run moved off before Model took
+	// over; empty when the first model ran.
+	FallbackFrom []string `json:"fallback_from"`
+	TokenUsage   struct {
 		Input  int `json:"input"`
 		Output int `json:"output"`
 	} `json:"token_usage"`
@@ -367,6 +382,29 @@ func assertRunModelFrom(w *world.World, requested, source, reported string) erro
 	return nil
 }
 
+// assertRunUsedModelWithoutFallback requires the model that answered to be
+// exactly want (pi records the bare id, not provider/id) and no fallback_from:
+// the alias resolved to a model the project serves, so the run did not
+// quietly move to an older one.
+func assertRunUsedModelWithoutFallback(w *world.World, want string) error {
+	m, err := readRunMetrics(w)
+	if err != nil {
+		return err
+	}
+	if m.Model != want {
+		return fmt.Errorf("metrics.json model = %q, want %q", m.Model, want)
+	}
+	if len(m.FallbackFrom) > 0 {
+		return fmt.Errorf("metrics.json fallback_from = %q, want none (model %q was reached by falling back)", m.FallbackFrom, m.Model)
+	}
+	// As in assertRunModelFrom: model is recorded before the first reply,
+	// so require a turn to know the model answered.
+	if m.NumTurns <= 0 {
+		return fmt.Errorf("metrics.json num_turns = %d, want > 0 (model %q was resolved but never answered)", m.NumTurns, m.Model)
+	}
+	return nil
+}
+
 func assertRunMetricsReportTokens(w *world.World) error {
 	m, err := readRunMetrics(w)
 	if err != nil {
@@ -374,6 +412,26 @@ func assertRunMetricsReportTokens(w *world.World) error {
 	}
 	if m.TokenUsage.Input <= 0 || m.TokenUsage.Output <= 0 {
 		return fmt.Errorf("metrics.json token_usage = %+v, want input and output > 0", m.TokenUsage)
+	}
+	return nil
+}
+
+// assertRunMetricsReportTokensUnless is assertRunMetricsReportTokens, except
+// that a run whose requested model is exempt may report zero tokens as long
+// as it recorded a turn (num_turns > 0). A failed turn also counts, so pair
+// it with steps that prove the model answered (a successful workflow and a
+// recorded tool call). It is for a model whose usage the gateway delivers
+// after the finish chunk, which codex then records as 0.
+func assertRunMetricsReportTokensUnless(w *world.World, exempt string) error {
+	m, err := readRunMetrics(w)
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(m.RequestedModel, exempt) {
+		return assertRunMetricsReportTokens(w)
+	}
+	if m.NumTurns <= 0 {
+		return fmt.Errorf("metrics.json num_turns = %d, want > 0 (no turn recorded for model %q)", m.NumTurns, m.RequestedModel)
 	}
 	return nil
 }

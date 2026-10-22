@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,26 +12,32 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 var httpClient HTTPDoer = &http.Client{Timeout: 30 * time.Second}
 
 // MaxMintDuration is a practical upper bound on how long a single
 // MintToken call can take, informed by its retry schedule: fetchOIDCJWT
-// retries up to 3 times (1s+2s backoff between attempts) and callMint
-// retries up to 5 times (1s+2s+4s+8s backoff), for 18s of backoff spread
-// across up to 8 HTTP round trips — each individually bounded by
-// httpClient's 30s timeout (see doWithRetry, fetchOIDCJWT, callMint).
+// retries within oidcRetry (exponential backoff capped at 8s, and no new
+// attempt started more than 60s after the first — see oidcRetry), and callMint retries up to 5 times (1s+2s+4s+8s
+// backoff). Each HTTP round trip is individually bounded by httpClient's
+// 30s timeout (see doWithRetryPolicy, fetchOIDCJWT, callMint).
 //
-// The literal worst case — every one of the 8 attempts hanging for the
-// full 30s client timeout — is 258s, unrealistically long for a caller
-// to wait out during teardown. In practice a mint-service outage produces
-// fast failing responses dominated by the backoff schedule, not attempts
-// that each hang the full client timeout, so MaxMintDuration is a
-// documented practical ceiling rather than that literal worst case:
-// comfortably above the ~18s backoff-only estimate — leaving headroom for
-// real per-request latency across up to 8 round trips, including a slow
-// attempt or two — while remaining well inside a CI job's own timeout.
+// The OIDC phase therefore ends within about 60s plus one attempt (at most
+// 90s even if that final attempt hangs for the full client timeout), and
+// callMint adds 15s of backoff on top. The literal worst case — every
+// callMint attempt also hanging for the full 30s client timeout — is far
+// longer, unrealistically long for a caller to wait out during teardown.
+// In practice an outage produces fast failing responses dominated by the
+// backoff schedule, not attempts that each hang the full client timeout,
+// so MaxMintDuration is a documented practical ceiling rather than that
+// literal worst case: comfortably above the ~75s backoff-dominated
+// estimate (a minute-long OIDC endpoint outage followed by a few mint
+// retries), while remaining well inside a CI job's own timeout.
 //
 // Callers that bound MintToken with a context deadline (e.g. the
 // post-script remint in internal/cli, #7231) should use at least this
@@ -97,17 +104,84 @@ func MintToken(ctx context.Context, req MintRequest) (*MintResult, error) {
 		audience = defaultAudience
 	}
 
+	ctx, span := startClientSpan(ctx, "fullsend.mint.token",
+		attribute.String("http.request.method", http.MethodPost),
+		attribute.String("server.address", parsed.Hostname()),
+		attribute.String("fullsend.mint.role", req.Role),
+		attribute.Int("fullsend.mint.repo_count", len(req.Repos)),
+	)
+	defer span.End()
+
 	oidcJWT, err := fetchOIDCJWT(ctx, audience)
 	if err != nil {
+		recordSpanError(span, "oidc_token_request", err)
 		return nil, fmt.Errorf("fetching OIDC JWT: %w", err)
 	}
 
 	result, err := callMint(ctx, req.MintURL, oidcJWT, req)
 	if err != nil {
+		recordSpanError(span, "mint_request", err)
 		return nil, fmt.Errorf("calling mint service: %w", err)
 	}
 
 	return result, nil
+}
+
+// tracerName is the instrumentation scope for mint client spans.
+const tracerName = "github.com/fullsend-ai/fullsend/internal/mintclient"
+
+// startClientSpan starts a client span using the tracer provider of the
+// span already active in ctx. Without an active span the provider is a
+// no-op, so callers that do not trace pay nothing and send no trace
+// headers.
+func startClientSpan(ctx context.Context, name string, attrs ...attribute.KeyValue) (context.Context, trace.Span) {
+	return trace.SpanFromContext(ctx).TracerProvider().Tracer(tracerName).Start(ctx, name,
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(attrs...),
+	)
+}
+
+// recordSpanError marks span failed. Only the failure stage and an
+// allowlisted error class are recorded: client errors can embed an excerpt
+// of the upstream response, which must not be exported to the collector.
+// The HTTP status of mint calls is recorded separately by callMint.
+func recordSpanError(span trace.Span, stage string, err error) {
+	class := spanErrorClass(err)
+	span.SetAttributes(attribute.String("fullsend.mint.failure_stage", stage))
+	span.SetStatus(codes.Error, class)
+	span.AddEvent("exception", trace.WithAttributes(
+		attribute.String("exception.type", class),
+	))
+}
+
+// spanErrorClass maps err to a fixed, non-sensitive class name.
+func spanErrorClass(err error) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	}
+	var re *retryableError
+	if errors.As(err, &re) {
+		return "request_failed"
+	}
+	return "error"
+}
+
+// injectTraceContext writes W3C traceparent and tracestate headers for
+// the span context in ctx, so mint server spans join the caller's trace
+// and inherit its sampling decision. It writes nothing when ctx carries
+// no valid span context.
+func injectTraceContext(ctx context.Context, h http.Header) {
+	sc := trace.SpanContextFromContext(ctx)
+	if !sc.IsValid() {
+		return
+	}
+	h.Set("traceparent", "00-"+sc.TraceID().String()+"-"+sc.SpanID().String()+"-"+sc.TraceFlags().String())
+	if ts := sc.TraceState().String(); ts != "" {
+		h.Set("tracestate", ts)
+	}
 }
 
 type oidcTokenResponse struct {
@@ -136,7 +210,7 @@ func fetchOIDCJWT(ctx context.Context, audience string) (string, error) {
 
 	var body []byte
 	var statusCode int
-	err = doWithRetry(ctx, 3, func() error {
+	err = doWithRetryPolicy(ctx, oidcRetry, func() error {
 		httpReq, rerr := http.NewRequestWithContext(ctx, http.MethodGet, oidcURL, nil)
 		if rerr != nil {
 			return fmt.Errorf("creating request: %w", rerr)
@@ -208,13 +282,23 @@ func callMint(ctx context.Context, mintURL, oidcJWT string, req MintRequest) (*M
 
 	var body []byte
 	var statusCode int
-	err = doWithRetry(ctx, 5, func() error {
+	attempts := 0
+	span := trace.SpanFromContext(ctx)
+	defer func() {
+		span.SetAttributes(attribute.Int("fullsend.mint.attempts", attempts))
+		if statusCode != 0 {
+			span.SetAttributes(attribute.Int("http.response.status_code", statusCode))
+		}
+	}()
+	err = doWithRetry(ctx, callMintMaxAttempts, func() error {
+		attempts++
 		httpReq, rerr := http.NewRequestWithContext(ctx, http.MethodPost, mintEndpoint, bytes.NewReader(bodyBytes))
 		if rerr != nil {
 			return fmt.Errorf("creating request: %w", rerr)
 		}
 		httpReq.Header.Set("Authorization", "Bearer "+oidcJWT)
 		httpReq.Header.Set("Content-Type", "application/json")
+		injectTraceContext(ctx, httpReq.Header)
 
 		resp, rerr := httpClient.Do(httpReq)
 		if rerr != nil {
@@ -267,26 +351,96 @@ func (e *retryableError) Unwrap() error { return e.error }
 
 var retryBaseDelay = time.Second
 
+// callMintMaxAttempts is how many times callMint tries the mint service
+// before giving up on retryable (5xx or transport) failures.
+const callMintMaxAttempts = 5
+
+// retryPolicy bounds how long doWithRetryPolicy keeps retrying retryable
+// failures. Backoff doubles from retryBaseDelay after each failed attempt.
+type retryPolicy struct {
+	// maxAttempts is the most attempts made, including the first.
+	maxAttempts int
+	// maxDelay caps a single backoff delay. Zero leaves it uncapped.
+	maxDelay time.Duration
+	// window, when positive, starts no attempt more than window after the
+	// first attempt began, so the total retry time stays bounded even when
+	// each attempt is slow (e.g. an upstream proxy that takes ~10s to
+	// report a connection timeout). The last backoff is shortened so one
+	// final attempt starts at the window boundary (see nextDelay).
+	window time.Duration
+}
+
+// oidcRetry is the retry policy for fetching the GitHub Actions OIDC JWT.
+// The token endpoint has been seen returning 503s for about a minute at a
+// time (#8276), so retries span roughly that long instead of the few
+// seconds callMint's schedule gives. The window is what ends retries:
+// with fast failures, attempts start at 0, 1, 3, 7, 15, 23, ..., 55 and a
+// final one at 60s (11 attempts); with attempts that each take ~10s it is
+// about 5 attempts over ~65s. maxAttempts sits above the 11 the window
+// allows, as a backstop for when retryBaseDelay is zero (tests). A
+// variable so tests can shorten the window.
+var oidcRetry = retryPolicy{
+	maxAttempts: 15,
+	maxDelay:    8 * time.Second,
+	window:      60 * time.Second,
+}
+
+// nextDelay returns the backoff before the next attempt, given how many
+// attempts have been made and how long ago the first one began. ok is
+// false once the window has run out. A delay that would carry the next
+// attempt past the window is shortened to end at the window, so the last
+// attempt starts at the window boundary instead of up to maxDelay before it.
+func (p retryPolicy) nextDelay(attempts int, elapsed time.Duration) (delay time.Duration, ok bool) {
+	delay = time.Duration(1<<uint(attempts-1)) * retryBaseDelay
+	if p.maxDelay > 0 && delay > p.maxDelay {
+		delay = p.maxDelay
+	}
+	if p.window > 0 {
+		remaining := p.window - elapsed
+		if remaining <= 0 {
+			return 0, false
+		}
+		if delay > remaining {
+			delay = remaining
+		}
+	}
+	return delay, true
+}
+
 func doWithRetry(ctx context.Context, maxAttempts int, fn func() error) error {
+	return doWithRetryPolicy(ctx, retryPolicy{maxAttempts: maxAttempts}, fn)
+}
+
+// doWithRetryPolicy calls fn until it succeeds, returns a non-retryable
+// error, or p is exhausted. When retries run out on a retryable error, the
+// returned error wraps it and states how many attempts were made.
+func doWithRetryPolicy(ctx context.Context, p retryPolicy, fn func() error) error {
+	start := time.Now()
 	var lastErr error
-	for attempt := 0; attempt < maxAttempts; attempt++ {
+	attempts := 0
+	for attempts < p.maxAttempts {
 		lastErr = fn()
+		attempts++
 		if lastErr == nil {
 			return nil
 		}
 		if _, ok := lastErr.(*retryableError); !ok {
 			return lastErr
 		}
-		if attempt < maxAttempts-1 {
-			delay := time.Duration(1<<uint(attempt)) * retryBaseDelay
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(delay):
-			}
+		if attempts >= p.maxAttempts {
+			break
+		}
+		delay, ok := p.nextDelay(attempts, time.Since(start))
+		if !ok {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
 		}
 	}
-	return lastErr
+	return fmt.Errorf("giving up after %d attempts: %w", attempts, lastErr)
 }
 
 func truncateBody(b []byte, max int) string {
@@ -295,4 +449,193 @@ func truncateBody(b []byte, max int) string {
 		return s
 	}
 	return string([]rune(s)[:max]) + "..."
+}
+
+// StatusResult holds the response from GET /v1/status.
+type StatusResult struct {
+	Org               string   `json:"org,omitempty"`
+	Roles             []string `json:"roles,omitempty"`
+	WorkflowHostRepos []string `json:"workflow_host_repos,omitempty"`
+	Version           string   `json:"version,omitempty"`
+	Commit            string   `json:"commit,omitempty"`
+}
+
+// StatusRequest holds the parameters for querying GET /v1/status.
+type StatusRequest struct {
+	MintURL  string
+	Audience string // OIDC audience; defaults to the standard mint audience when empty.
+}
+
+// StatusAuthMethod describes which mechanism authenticated a
+// successful /v1/status call.
+type StatusAuthMethod string
+
+const (
+	// StatusAuthOIDC indicates authentication via GitHub Actions OIDC.
+	StatusAuthOIDC StatusAuthMethod = "OIDC"
+	// StatusAuthGitHub indicates authentication via a GitHub user token
+	// (GH_TOKEN, GITHUB_TOKEN, or gh auth token).
+	StatusAuthGitHub StatusAuthMethod = "GitHub"
+)
+
+// hasOIDCEnv reports whether the GitHub Actions OIDC environment
+// variables are present. QueryStatus uses this to decide whether to
+// attempt the OIDC auth path.
+func hasOIDCEnv() bool {
+	return envLookup("ACTIONS_ID_TOKEN_REQUEST_URL") != "" &&
+		envLookup("ACTIONS_ID_TOKEN_REQUEST_TOKEN") != ""
+}
+
+// QueryStatus calls GET /v1/status with auto-discovered authentication.
+//
+// Discovery order (per #5879):
+//  1. GitHub Actions OIDC — attempted when ACTIONS_ID_TOKEN_REQUEST_URL
+//     and ACTIONS_ID_TOKEN_REQUEST_TOKEN are set.
+//  2. GitHub user token — GH_TOKEN, GITHUB_TOKEN, or the output of
+//     `gh auth token`.
+//
+// The first mechanism that yields a 200 response wins. A 401 from the
+// first mechanism triggers fallback to the next. If all mechanisms
+// fail, the error lists what was attempted.
+//
+// resolveGitHubToken is a callback that resolves a GitHub user token.
+// The CLI passes its resolveToken function; tests supply a stub.
+func QueryStatus(ctx context.Context, req StatusRequest, resolveGitHubToken func() (string, error)) (*StatusResult, StatusAuthMethod, error) {
+	if req.MintURL == "" {
+		return nil, "", fmt.Errorf("mint URL is required")
+	}
+	parsed, err := url.Parse(req.MintURL)
+	if err != nil {
+		return nil, "", fmt.Errorf("invalid mint URL: %w", err)
+	}
+	isLocalhost := parsed.Hostname() == "localhost" || parsed.Hostname() == "127.0.0.1"
+	if parsed.Scheme != "https" && !isLocalhost {
+		return nil, "", fmt.Errorf("mint URL must use HTTPS")
+	}
+
+	statusEndpoint, err := url.JoinPath(req.MintURL, "/v1/status")
+	if err != nil {
+		return nil, "", fmt.Errorf("constructing status URL: %w", err)
+	}
+
+	audience := req.Audience
+	if audience == "" {
+		audience = defaultAudience
+	}
+
+	var attempted []string
+
+	// Attempt 1: OIDC
+	if hasOIDCEnv() {
+		oidcJWT, oidcErr := fetchOIDCJWT(ctx, audience)
+		if oidcErr == nil {
+			result, callErr := callStatus(ctx, statusEndpoint, oidcJWT)
+			if callErr == nil {
+				return result, StatusAuthOIDC, nil
+			}
+			// Only fall through on 401; other errors are terminal.
+			if !isUnauthorizedErr(callErr) {
+				return nil, "", fmt.Errorf("calling /v1/status with OIDC: %w", callErr)
+			}
+			attempted = append(attempted, "OIDC (rejected)")
+		} else {
+			if errors.Is(oidcErr, context.Canceled) || errors.Is(oidcErr, context.DeadlineExceeded) {
+				return nil, "", fmt.Errorf("fetching OIDC JWT: %w", oidcErr)
+			}
+			attempted = append(attempted, fmt.Sprintf("OIDC (%s)", oidcErr))
+		}
+	} else {
+		attempted = append(attempted, "OIDC (env vars not set)")
+	}
+
+	// Attempt 2: GitHub user token
+	if resolveGitHubToken != nil {
+		ghToken, ghErr := resolveGitHubToken()
+		if ghErr == nil && ghToken != "" {
+			result, callErr := callStatus(ctx, statusEndpoint, ghToken)
+			if callErr == nil {
+				return result, StatusAuthGitHub, nil
+			}
+			if !isUnauthorizedErr(callErr) {
+				return nil, "", fmt.Errorf("calling /v1/status with GitHub token: %w", callErr)
+			}
+			attempted = append(attempted, "GitHub token (rejected)")
+		} else {
+			if ghErr != nil {
+				attempted = append(attempted, fmt.Sprintf("GitHub token (%s)", ghErr))
+			} else {
+				attempted = append(attempted, "GitHub token (empty)")
+			}
+		}
+	}
+
+	return nil, "", fmt.Errorf("%w for /v1/status; attempted: %s", ErrAuthenticationFailed, strings.Join(attempted, ", "))
+}
+
+// ErrAuthenticationFailed indicates that every available authentication
+// mechanism was attempted and rejected (401) by the mint's /v1/status
+// endpoint. Callers can use errors.Is to distinguish this from other
+// terminal QueryStatus errors (e.g. network failures, non-2xx/non-401
+// responses, malformed URLs) that are not auth-related.
+var ErrAuthenticationFailed = errors.New("authentication failed")
+
+// errUnauthorized is returned by callStatus when the server responds
+// with 401. QueryStatus uses this to decide whether to fall through
+// to the next auth mechanism.
+var errUnauthorized = errors.New("unauthorized")
+
+// isUnauthorizedErr reports whether err wraps errUnauthorized.
+func isUnauthorizedErr(err error) bool {
+	return errors.Is(err, errUnauthorized)
+}
+
+// callStatus performs GET /v1/status with the given bearer token and
+// decodes the response into a StatusResult.
+func callStatus(ctx context.Context, statusURL, bearerToken string) (*StatusResult, error) {
+	var body []byte
+	var statusCode int
+	err := doWithRetry(ctx, 3, func() error {
+		httpReq, rerr := http.NewRequestWithContext(ctx, http.MethodGet, statusURL, nil)
+		if rerr != nil {
+			return fmt.Errorf("creating request: %w", rerr)
+		}
+		httpReq.Header.Set("Authorization", "Bearer "+bearerToken)
+		injectTraceContext(ctx, httpReq.Header)
+
+		resp, rerr := httpClient.Do(httpReq)
+		if rerr != nil {
+			return &retryableError{fmt.Errorf("requesting status: %w", rerr)}
+		}
+		defer resp.Body.Close()
+
+		body, rerr = io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+		if rerr != nil {
+			return fmt.Errorf("reading response: %w", rerr)
+		}
+		statusCode = resp.StatusCode
+
+		if statusCode >= 500 {
+			return &retryableError{fmt.Errorf("status endpoint returned HTTP %d: %s", statusCode, truncateBody(body, 200))}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if statusCode == http.StatusUnauthorized {
+		return nil, fmt.Errorf("status endpoint returned HTTP 401: %w", errUnauthorized)
+	}
+
+	if statusCode != http.StatusOK {
+		excerpt := truncateBody(body, 200)
+		return nil, fmt.Errorf("status endpoint returned HTTP %d: %s", statusCode, excerpt)
+	}
+
+	var result StatusResult
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("parsing status response: %w", err)
+	}
+
+	return &result, nil
 }

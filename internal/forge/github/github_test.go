@@ -4,11 +4,15 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -110,8 +114,10 @@ func TestCreateRepo(t *testing.T) {
 
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(map[string]any{
+			"id":             int64(4242),
 			"name":           "new-repo",
 			"full_name":      "myorg/new-repo",
+			"description":    "A repo",
 			"default_branch": "main",
 			"private":        true,
 		})
@@ -121,9 +127,170 @@ func TestCreateRepo(t *testing.T) {
 	client := newTestClient(t, srv)
 	repo, err := client.CreateRepo(context.Background(), "myorg", "new-repo", "A repo", true)
 	require.NoError(t, err)
+	assert.Equal(t, int64(4242), repo.ID)
+	assert.Equal(t, "A repo", repo.Description)
 	assert.Equal(t, "new-repo", repo.Name)
 	assert.Equal(t, "myorg/new-repo", repo.FullName)
 	assert.True(t, repo.Private)
+}
+
+func TestGetRepo_ReportsIDAndDescription(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/repos/myorg/slot", r.URL.Path)
+		json.NewEncoder(w).Encode(map[string]any{
+			"id":          int64(99),
+			"name":        "slot",
+			"full_name":   "myorg/slot",
+			"description": "lease marker",
+		})
+	}))
+	defer srv.Close()
+
+	repo, err := newTestClient(t, srv).GetRepo(context.Background(), "myorg", "slot")
+	require.NoError(t, err)
+	assert.Equal(t, int64(99), repo.ID)
+	assert.Equal(t, "lease marker", repo.Description)
+	assert.True(t, repo.CreatedAt.IsZero(), "created_at absent from the response")
+}
+
+func TestRepoCreatedAt(t *testing.T) {
+	created := time.Date(2026, 10, 20, 11, 0, 0, 0, time.UTC)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusCreated)
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"id":         int64(7),
+			"name":       "e2e-lock",
+			"full_name":  "myorg/e2e-lock",
+			"created_at": created.Format(time.RFC3339),
+		})
+	}))
+	defer srv.Close()
+	client := newTestClient(t, srv)
+
+	repo, err := client.GetRepo(context.Background(), "myorg", "e2e-lock")
+	require.NoError(t, err)
+	assert.True(t, created.Equal(repo.CreatedAt), "GetRepo CreatedAt = %v", repo.CreatedAt)
+
+	repo, err = client.CreateRepo(context.Background(), "myorg", "e2e-lock", "lock", false)
+	require.NoError(t, err)
+	assert.True(t, created.Equal(repo.CreatedAt), "CreateRepo CreatedAt = %v", repo.CreatedAt)
+}
+
+// contentsServer is a minimal Contents API for one file that enforces the
+// "sha" precondition the way GitHub does.
+type contentsServer struct {
+	t       *testing.T
+	mu      sync.Mutex
+	content []byte
+	exists  bool
+	puts    int
+	// failPut makes the next PUT answer with this status.
+	failPut int
+}
+
+func (s *contentsServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	assert.Equal(s.t, "/repos/o/r/contents/state/holders.json", r.URL.Path)
+	switch r.Method {
+	case http.MethodGet:
+		if !s.exists {
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(map[string]any{"message": "Not Found"})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"content": base64.StdEncoding.EncodeToString(s.content),
+			"sha":     forge.GitBlobSHA(s.content),
+		})
+	case http.MethodPut:
+		s.puts++
+		if s.failPut != 0 {
+			w.WriteHeader(s.failPut)
+			s.failPut = 0
+			return
+		}
+		var body struct {
+			Content string `json:"content"`
+			SHA     string `json:"sha"`
+		}
+		require.NoError(s.t, json.NewDecoder(r.Body).Decode(&body))
+		switch {
+		case s.exists && body.SHA == "":
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			json.NewEncoder(w).Encode(map[string]any{"message": "Invalid request.\n\n\"sha\" wasn't supplied."})
+			return
+		case s.exists && body.SHA != forge.GitBlobSHA(s.content):
+			w.WriteHeader(http.StatusConflict)
+			json.NewEncoder(w).Encode(map[string]any{"message": "state/holders.json does not match " + body.SHA})
+			return
+		}
+		data, err := base64.StdEncoding.DecodeString(body.Content)
+		require.NoError(s.t, err)
+		status := http.StatusOK
+		if !s.exists {
+			status = http.StatusCreated
+		}
+		s.content, s.exists = data, true
+		w.WriteHeader(status)
+		json.NewEncoder(w).Encode(map[string]any{})
+	default:
+		s.t.Errorf("unexpected %s", r.Method)
+	}
+}
+
+func (s *contentsServer) state() ([]byte, int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.content, s.puts
+}
+
+func TestUpdateFileIfMatch(t *testing.T) {
+	ctx := context.Background()
+	cs := &contentsServer{t: t}
+	srv := httptest.NewServer(cs)
+	defer srv.Close()
+	client := newTestClient(t, srv)
+	const path = "state/holders.json"
+
+	// Create only if absent.
+	require.NoError(t, client.UpdateFileIfMatch(ctx, "o", "r", path, "create", []byte("v1"), ""))
+	err := client.UpdateFileIfMatch(ctx, "o", "r", path, "create again", []byte("other"), "")
+	require.True(t, forge.IsConflict(err), "create over an existing file: %v", err)
+
+	// Update at the SHA of the content just read.
+	read, err := client.GetFileContent(ctx, "o", "r", path)
+	require.NoError(t, err)
+	staleSHA := forge.GitBlobSHA(read)
+	require.NoError(t, client.UpdateFileIfMatch(ctx, "o", "r", path, "update", []byte("v2"), staleSHA))
+
+	// A stale SHA is a conflict, sent exactly once, and leaves the file.
+	_, putsBefore := cs.state()
+	err = client.UpdateFileIfMatch(ctx, "o", "r", path, "stale", []byte("v3"), staleSHA)
+	require.True(t, forge.IsConflict(err), "stale SHA: %v", err)
+	content, puts := cs.state()
+	assert.Equal(t, putsBefore+1, puts, "a conflicting write must not be retried")
+	assert.Equal(t, "v2", string(content))
+
+	// A server error is not a conflict and is not replayed either.
+	cs.mu.Lock()
+	cs.failPut = http.StatusBadGateway
+	cs.mu.Unlock()
+	err = client.UpdateFileIfMatch(ctx, "o", "r", path, "ambiguous", []byte("v4"), forge.GitBlobSHA([]byte("v2")))
+	require.Error(t, err)
+	assert.False(t, forge.IsConflict(err))
+	content, after := cs.state()
+	assert.Equal(t, puts+1, after, "an ambiguous failure must not be replayed")
+	assert.Equal(t, "v2", string(content))
+}
+
+func TestIsFileConflict(t *testing.T) {
+	assert.True(t, isFileConflict(&APIError{StatusCode: http.StatusConflict}))
+	assert.True(t, isFileConflict(&APIError{StatusCode: http.StatusUnprocessableEntity, Message: `"sha" wasn't supplied.`}))
+	assert.False(t, isFileConflict(&APIError{StatusCode: http.StatusUnprocessableEntity, Message: "Validation Failed"}))
+	assert.False(t, isFileConflict(&APIError{StatusCode: http.StatusNotFound}))
 }
 
 func TestDeleteRepo(t *testing.T) {
@@ -461,6 +628,34 @@ func TestGetFileContent(t *testing.T) {
 	data, err := client.GetFileContent(context.Background(), "owner", "repo", "config.yaml")
 	require.NoError(t, err)
 	assert.Equal(t, "key: value", string(data))
+}
+
+func TestGetFileContent_EscapesPathSegments(t *testing.T) {
+	var gotURI string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotURI = r.RequestURI
+		json.NewEncoder(w).Encode(map[string]any{
+			"content":  base64.StdEncoding.EncodeToString([]byte("key: value")),
+			"encoding": "base64",
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	tests := []struct {
+		path string
+		want string
+	}{
+		{".github/workflows/custom#caller.yml", "/repos/owner/repo/contents/.github/workflows/custom%23caller.yml"},
+		{".github/workflows/what?.yml", "/repos/owner/repo/contents/.github/workflows/what%3F.yml"},
+		{".github/workflows/100%25.yml", "/repos/owner/repo/contents/.github/workflows/100%2525.yml"},
+	}
+	for _, tt := range tests {
+		data, err := client.GetFileContent(context.Background(), "owner", "repo", tt.path)
+		require.NoError(t, err, tt.path)
+		assert.Equal(t, "key: value", string(data))
+		assert.Equal(t, tt.want, gotURI, tt.path)
+	}
 }
 
 func TestGetRef(t *testing.T) {
@@ -1825,6 +2020,33 @@ func TestIsBranchProtectionError(t *testing.T) {
 			},
 			want: false,
 		},
+		{
+			name:   "bare protected wording on a ref update",
+			apiErr: &APIError{StatusCode: 422, Message: "Cannot update this protected ref."},
+			want:   true,
+		},
+		// Classic protection on PATCH /git/refs returns the failed checks
+		// alone as the top-level message.
+		{
+			name:   "classic require pull request and status check",
+			apiErr: &APIError{StatusCode: 422, Message: `Changes must be made through a pull request. Required status check "probe-check" is expected.`},
+			want:   true,
+		},
+		{
+			name:   "classic require pull request only",
+			apiErr: &APIError{StatusCode: 422, Message: "Changes must be made through a pull request."},
+			want:   true,
+		},
+		{
+			name:   "classic locked branch",
+			apiErr: &APIError{StatusCode: 422, Message: "Cannot change this locked branch"},
+			want:   true,
+		},
+		{
+			name:   "classic required signatures",
+			apiErr: &APIError{StatusCode: 422, Message: "Commits must have verified signatures."},
+			want:   true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -2137,6 +2359,395 @@ func TestSecondaryRateLimit_RetriedWithoutRetryAfterHeader(t *testing.T) {
 	assert.Equal(t, 3, attempts, "should have retried twice before succeeding")
 }
 
+func TestRateLimitError_CarriesUncappedRetryAfter(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "600")
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(map[string]string{"message": "You have exceeded a secondary rate limit"})
+	}))
+	defer srv.Close()
+
+	client := &LiveClient{
+		token:     "test-token",
+		baseURL:   srv.URL,
+		http:      srv.Client(),
+		afterFunc: noWaitAfter,
+	}
+
+	_, err := client.CreateRepo(context.Background(), "org", "test-repo", "desc", false)
+	require.Error(t, err)
+	assert.True(t, IsRateLimitError(err))
+	d, ok := RetryAfterFromError(err)
+	require.True(t, ok)
+	assert.Equal(t, 600*time.Second, d, "Retry-After beyond the client's wait cap is still reported")
+}
+
+func TestRetryAfterFromError_Absent(t *testing.T) {
+	_, ok := RetryAfterFromError(&APIError{StatusCode: http.StatusForbidden, Message: "rate limit"})
+	assert.False(t, ok)
+	_, ok = RetryAfterFromError(errors.New("other"))
+	assert.False(t, ok)
+	d, ok := RetryAfterFromError(fmt.Errorf("wrapped: %w", &APIError{StatusCode: http.StatusTooManyRequests, RetryAfter: 90 * time.Second}))
+	assert.True(t, ok)
+	assert.Equal(t, 90*time.Second, d)
+}
+
+func TestRateLimitBackoffInterrupted_KeepsRetryAfterAndContextError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "600")
+		w.WriteHeader(http.StatusTooManyRequests)
+		json.NewEncoder(w).Encode(map[string]string{"message": "API rate limit exceeded"})
+	}))
+	defer srv.Close()
+
+	client := &LiveClient{
+		token:   "test-token",
+		baseURL: srv.URL,
+		http:    srv.Client(),
+		// A wait that never fires, so only the context ends the backoff.
+		afterFunc: func(time.Duration) <-chan time.Time { return nil },
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	_, err := client.CreateRepo(ctx, "org", "test-repo", "desc", false)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, context.DeadlineExceeded))
+	assert.True(t, IsRateLimitError(err))
+	assert.False(t, forge.IsTransient(err))
+	d, ok := RetryAfterFromError(err)
+	require.True(t, ok)
+	assert.Equal(t, 600*time.Second, d)
+}
+
+func TestRateLimitBackoffInterrupted_HeaderlessLeavesRetryAfterUnset(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		json.NewEncoder(w).Encode(map[string]string{"message": "API rate limit exceeded"})
+	}))
+	defer srv.Close()
+
+	client := &LiveClient{
+		token:   "test-token",
+		baseURL: srv.URL,
+		http:    srv.Client(),
+		// A wait that never fires, so only the context ends the backoff.
+		afterFunc: func(time.Duration) <-chan time.Time { return nil },
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	_, err := client.CreateRepo(ctx, "org", "test-repo", "desc", false)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, context.DeadlineExceeded))
+	assert.True(t, IsRateLimitError(err))
+	// The client's own backoff delay is not a server deadline, so callers
+	// must see no Retry-After and apply their own default window.
+	_, ok := RetryAfterFromError(err)
+	assert.False(t, ok)
+}
+
+func TestWithoutAmbiguousRetry_DoesNotRetryServerError(t *testing.T) {
+	var attempts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer srv.Close()
+
+	client := &LiveClient{
+		token:     "test-token",
+		baseURL:   srv.URL,
+		http:      srv.Client(),
+		afterFunc: noWaitAfter,
+	}
+
+	err := client.DeleteRepo(forge.WithoutAmbiguousRetry(context.Background()), "org", "repo")
+	var apiErr *APIError
+	require.ErrorAs(t, err, &apiErr)
+	assert.Equal(t, http.StatusBadGateway, apiErr.StatusCode)
+	assert.Equal(t, int32(1), attempts.Load())
+
+	// Without the option the same failure is retried.
+	attempts.Store(0)
+	err = client.DeleteRepo(context.Background(), "org", "repo")
+	require.Error(t, err)
+	assert.Equal(t, int32(maxRetries), attempts.Load())
+}
+
+func TestWithoutAmbiguousRetry_DoesNotRetryTimeout(t *testing.T) {
+	var attempts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		time.Sleep(200 * time.Millisecond)
+	}))
+	defer srv.Close()
+
+	httpClient := srv.Client()
+	httpClient.Timeout = 50 * time.Millisecond
+	client := &LiveClient{
+		token:     "test-token",
+		baseURL:   srv.URL,
+		http:      httpClient,
+		afterFunc: noWaitAfter,
+	}
+
+	err := client.DeleteRepo(forge.WithoutAmbiguousRetry(context.Background()), "org", "repo")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not retried")
+	assert.Equal(t, int32(1), attempts.Load())
+}
+
+func TestWithRetryGuard_RunsBeforeEachResend(t *testing.T) {
+	var attempts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if attempts.Add(1) < 3 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	client := &LiveClient{
+		token:     "test-token",
+		baseURL:   srv.URL,
+		http:      srv.Client(),
+		afterFunc: noWaitAfter,
+	}
+
+	var guardCalls int
+	ctx := forge.WithRetryGuard(context.Background(), func(context.Context) error {
+		guardCalls++
+		return nil
+	})
+	require.NoError(t, client.DeleteRepo(ctx, "org", "repo"))
+	assert.Equal(t, int32(3), attempts.Load())
+	assert.Equal(t, 2, guardCalls, "the guard runs before each resend, not before the first attempt")
+}
+
+func TestWithRetryGuard_ErrorStopsResend(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{name: "429", status: http.StatusTooManyRequests},
+		{name: "rate-limit 403", status: http.StatusForbidden, body: `{"message":"You have exceeded a secondary rate limit"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var attempts atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				attempts.Add(1)
+				w.WriteHeader(tt.status)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer srv.Close()
+
+			client := &LiveClient{
+				token:     "test-token",
+				baseURL:   srv.URL,
+				http:      srv.Client(),
+				afterFunc: noWaitAfter,
+			}
+
+			stop := errors.New("target changed")
+			ctx := forge.WithRetryGuard(context.Background(), func(context.Context) error { return stop })
+			err := client.DeleteRepo(ctx, "org", "repo")
+			require.ErrorIs(t, err, stop)
+			assert.Contains(t, err.Error(), "not retried")
+			assert.Equal(t, int32(1), attempts.Load(), "the request is not resent after the guard refuses")
+		})
+	}
+}
+
+func TestWithRetryGuard_StopsCommitFilesRetryWaits(t *testing.T) {
+	// Every request after the repo read answers 404 (init race), so
+	// CommitFiles waits and would retry the branch-ref read.
+	var refReads atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/org/repo":
+			_, _ = w.Write([]byte(`{"default_branch":"main"}`))
+		default:
+			refReads.Add(1)
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"message":"Not Found"}`))
+		}
+	}))
+	defer srv.Close()
+
+	client := &LiveClient{token: "test-token", baseURL: srv.URL, http: srv.Client(), afterFunc: noWaitAfter}
+
+	var guardCalls int
+	stop := errors.New("target replaced")
+	ctx := forge.WithRetryGuard(context.Background(), func(context.Context) error {
+		guardCalls++
+		return stop
+	})
+	_, err := client.CommitFiles(ctx, "org", "repo", "msg", []forge.TreeFile{{Path: "a", Content: []byte("a")}})
+	require.ErrorIs(t, err, stop)
+	assert.Equal(t, 1, guardCalls, "the guard runs after the first repo-race wait")
+	assert.Equal(t, int32(1), refReads.Load(), "no branch-ref read follows a refused guard")
+}
+
+func TestWithRetryGuard_RunsBeforeFirstCommitMutation(t *testing.T) {
+	// The slot is replaced while CommitFiles reads the repo, ref, commit
+	// and tree. The guard must refuse the commit on the first attempt,
+	// before any write, not only after a retry wait.
+	var reads, writes atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writes.Add(1)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		reads.Add(1)
+		switch r.URL.Path {
+		case "/repos/org/repo":
+			_ = json.NewEncoder(w).Encode(map[string]string{"default_branch": "main"})
+		case "/repos/org/repo/git/ref/heads/main":
+			_ = json.NewEncoder(w).Encode(map[string]any{"object": map[string]string{"sha": "abc123"}})
+		case "/repos/org/repo/git/commits/abc123":
+			_ = json.NewEncoder(w).Encode(map[string]any{"tree": map[string]string{"sha": "tree000"}})
+		case "/repos/org/repo/git/trees/tree000":
+			_ = json.NewEncoder(w).Encode(map[string]any{"tree": []any{}, "truncated": false})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	client := &LiveClient{token: "test-token", baseURL: srv.URL, http: srv.Client(), afterFunc: noWaitAfter}
+
+	var guardCalls int
+	stop := errors.New("target replaced")
+	ctx := forge.WithRetryGuard(context.Background(), func(context.Context) error {
+		guardCalls++
+		return stop
+	})
+	_, err := client.CommitFiles(ctx, "org", "repo", "msg", []forge.TreeFile{{Path: "a", Content: []byte("a"), Mode: "100644"}})
+	require.ErrorIs(t, err, stop)
+	assert.Equal(t, 1, guardCalls, "the guard runs once, before the first write")
+	assert.Equal(t, int32(4), reads.Load(), "the preparatory reads all happened first")
+	assert.Zero(t, writes.Load(), "no write is sent after the guard refuses")
+}
+
+func TestWithRetryGuard_RunsBeforeEachDistinctWrite(t *testing.T) {
+	// A slot replaced between two requests of one operation must not
+	// receive the later write: the guard runs before every distinct
+	// mutating request, not only before retries.
+	stop := errors.New("target replaced")
+	// refuseAfter lets the first n guard calls pass, then refuses.
+	guardCtx := func(refuseAfter int, calls *int) context.Context {
+		return forge.WithRetryGuard(context.Background(), func(context.Context) error {
+			*calls++
+			if *calls > refuseAfter {
+				return stop
+			}
+			return nil
+		})
+	}
+
+	tests := []struct {
+		name        string
+		refuseAfter int
+		wantGuard   int
+		wantMethods []string
+		run         func(ctx context.Context, c *LiveClient) error
+	}{
+		{
+			name:        "variable POST fallback after PATCH",
+			refuseAfter: 1,
+			wantGuard:   2,
+			wantMethods: []string{http.MethodPatch},
+			run: func(ctx context.Context, c *LiveClient) error {
+				return c.CreateOrUpdateRepoVariable(ctx, "org", "repo", "V", "x")
+			},
+		},
+		{
+			name:        "variable PATCH",
+			refuseAfter: 0,
+			wantGuard:   1,
+			run: func(ctx context.Context, c *LiveClient) error {
+				return c.CreateOrUpdateRepoVariable(ctx, "org", "repo", "V", "x")
+			},
+		},
+		{
+			name:        "secret upload after public-key lookup",
+			refuseAfter: 0,
+			wantGuard:   1,
+			wantMethods: []string{http.MethodGet},
+			run: func(ctx context.Context, c *LiveClient) error {
+				return c.CreateRepoSecret(ctx, "org", "repo", "S", "x")
+			},
+		},
+		{
+			name:        "issue",
+			refuseAfter: 0,
+			wantGuard:   1,
+			run: func(ctx context.Context, c *LiveClient) error {
+				_, err := c.CreateIssue(ctx, "org", "repo", "t", "b")
+				return err
+			},
+		},
+		{
+			name:        "issue comment",
+			refuseAfter: 0,
+			wantGuard:   1,
+			run: func(ctx context.Context, c *LiveClient) error {
+				_, err := c.CreateIssueComment(ctx, "org", "repo", 1, "b")
+				return err
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var methods []string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				methods = append(methods, r.Method)
+				mu.Unlock()
+				switch {
+				case strings.HasSuffix(r.URL.Path, "/actions/secrets/public-key"):
+					key := base64.StdEncoding.EncodeToString(make([]byte, 32))
+					_ = json.NewEncoder(w).Encode(map[string]string{"key_id": "k", "key": key})
+				default:
+					// Every write the guard lets through is not found, so the
+					// variable path would fall back from PATCH to POST.
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer srv.Close()
+			client := newTestClient(t, srv)
+
+			var calls int
+			err := tt.run(guardCtx(tt.refuseAfter, &calls), client)
+			require.ErrorIs(t, err, stop)
+			assert.Equal(t, tt.wantGuard, calls)
+			mu.Lock()
+			defer mu.Unlock()
+			assert.Equal(t, tt.wantMethods, methods, "no request follows the one the guard refused")
+		})
+	}
+}
+
+func TestWithRetryGuard_StopsCommitRetryDelay(t *testing.T) {
+	c := &LiveClient{afterFunc: noWaitAfter}
+	stop := errors.New("target replaced")
+	ctx := forge.WithRetryGuard(context.Background(), func(context.Context) error { return stop })
+
+	var runs int
+	_, err := retryCommitOp(ctx, c, "commit", func() (bool, error) {
+		runs++
+		return false, forge.ErrNonFastForward
+	})
+	require.ErrorIs(t, err, stop)
+	assert.Equal(t, 1, runs, "the op is not rerun after the guard refuses")
+}
+
 func TestCreateFileOnBranch(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "PUT", r.Method)
@@ -2172,128 +2783,6 @@ func TestWithBaseURL(t *testing.T) {
 	client := New("token").WithBaseURL("https://custom.api.com/")
 	// Trailing slash should be trimmed
 	assert.Equal(t, "https://custom.api.com", client.baseURL)
-}
-
-func TestCreateOrgSecret(t *testing.T) {
-	callNum := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		callNum++
-		switch callNum {
-		case 1:
-			// GET org public key
-			assert.Equal(t, "GET", r.Method)
-			assert.Equal(t, "/orgs/myorg/actions/secrets/public-key", r.URL.Path)
-
-			pubKey := make([]byte, 32)
-			for i := range pubKey {
-				pubKey[i] = byte(i + 1)
-			}
-
-			json.NewEncoder(w).Encode(map[string]any{
-				"key_id": "org-key-123",
-				"key":    base64.StdEncoding.EncodeToString(pubKey),
-			})
-		case 2:
-			// PUT org secret
-			assert.Equal(t, "PUT", r.Method)
-			assert.Equal(t, "/orgs/myorg/actions/secrets/DISPATCH_TOKEN", r.URL.Path)
-
-			var body map[string]any
-			json.NewDecoder(r.Body).Decode(&body)
-			assert.Equal(t, "org-key-123", body["key_id"])
-			assert.NotEmpty(t, body["encrypted_value"])
-			assert.Equal(t, "selected", body["visibility"])
-
-			repoIDs, ok := body["selected_repository_ids"].([]any)
-			require.True(t, ok)
-			assert.Len(t, repoIDs, 2)
-			assert.Equal(t, float64(100), repoIDs[0])
-			assert.Equal(t, float64(200), repoIDs[1])
-
-			w.WriteHeader(http.StatusCreated)
-		}
-	}))
-	defer srv.Close()
-
-	client := newTestClient(t, srv)
-	err := client.CreateOrgSecret(context.Background(), "myorg", "DISPATCH_TOKEN", "token-value", []int64{100, 200})
-	require.NoError(t, err)
-}
-
-func TestCreateOrgSecret_NilRepoIDs_VisibilitySelected(t *testing.T) {
-	callNum := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		callNum++
-		switch callNum {
-		case 1:
-			// GET org public key
-			pubKey := make([]byte, 32)
-			for i := range pubKey {
-				pubKey[i] = byte(i + 1)
-			}
-			json.NewEncoder(w).Encode(map[string]any{
-				"key_id": "org-key-123",
-				"key":    base64.StdEncoding.EncodeToString(pubKey),
-			})
-		case 2:
-			// PUT org secret — should use visibility "selected" with empty repo IDs
-			// so that SetOrgSecretRepos can later update access without a 409 Conflict.
-			assert.Equal(t, "PUT", r.Method)
-
-			var body map[string]any
-			json.NewDecoder(r.Body).Decode(&body)
-			assert.Equal(t, "selected", body["visibility"],
-				"visibility should be 'selected' even when no repo IDs are specified")
-			repoIDs, ok := body["selected_repository_ids"].([]any)
-			require.True(t, ok, "selected_repository_ids should be an empty array, not nil")
-			assert.Empty(t, repoIDs, "selected_repository_ids should be empty")
-
-			w.WriteHeader(http.StatusCreated)
-		}
-	}))
-	defer srv.Close()
-
-	client := newTestClient(t, srv)
-	err := client.CreateOrgSecret(context.Background(), "myorg", "TOKEN", "value", nil)
-	require.NoError(t, err)
-}
-
-func TestCreateOrgSecret_EmptySliceRepoIDs_VisibilitySelected(t *testing.T) {
-	callNum := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		callNum++
-		switch callNum {
-		case 1:
-			// GET org public key
-			pubKey := make([]byte, 32)
-			for i := range pubKey {
-				pubKey[i] = byte(i + 1)
-			}
-			json.NewEncoder(w).Encode(map[string]any{
-				"key_id": "org-key-123",
-				"key":    base64.StdEncoding.EncodeToString(pubKey),
-			})
-		case 2:
-			// PUT org secret — empty slice should behave the same as nil:
-			// visibility "selected" with an empty repo ID array.
-			assert.Equal(t, "PUT", r.Method)
-
-			var body map[string]any
-			json.NewDecoder(r.Body).Decode(&body)
-			assert.Equal(t, "selected", body["visibility"],
-				"visibility should be 'selected' even with an empty slice")
-			repoIDs, ok := body["selected_repository_ids"].([]any)
-			require.True(t, ok, "selected_repository_ids should be an empty array, not nil")
-			assert.Empty(t, repoIDs, "selected_repository_ids should be empty")
-
-			w.WriteHeader(http.StatusCreated)
-		}
-	}))
-	defer srv.Close()
-
-	client := newTestClient(t, srv)
-	err := client.CreateOrgSecret(context.Background(), "myorg", "TOKEN", "value", []int64{})
-	require.NoError(t, err)
 }
 
 func TestOrgSecretExists(t *testing.T) {
@@ -2353,118 +2842,6 @@ func TestDeleteOrgSecret(t *testing.T) {
 	})
 }
 
-func TestSetOrgSecretRepos(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "PUT", r.Method)
-		assert.Equal(t, "/orgs/myorg/actions/secrets/TOKEN/repositories", r.URL.Path)
-
-		var body map[string]any
-		json.NewDecoder(r.Body).Decode(&body)
-
-		repoIDs, ok := body["selected_repository_ids"].([]any)
-		require.True(t, ok)
-		assert.Len(t, repoIDs, 3)
-		assert.Equal(t, float64(10), repoIDs[0])
-		assert.Equal(t, float64(20), repoIDs[1])
-		assert.Equal(t, float64(30), repoIDs[2])
-
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	defer srv.Close()
-
-	client := newTestClient(t, srv)
-	err := client.SetOrgSecretRepos(context.Background(), "myorg", "TOKEN", []int64{10, 20, 30})
-	require.NoError(t, err)
-}
-
-func TestCreateOrUpdateOrgVariable_Create(t *testing.T) {
-	callNum := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		callNum++
-		switch callNum {
-		case 1:
-			// PATCH (update) → 404 (variable doesn't exist yet)
-			assert.Equal(t, "PATCH", r.Method)
-			assert.Equal(t, "/orgs/myorg/actions/variables/DISPATCH_URL", r.URL.Path)
-			w.WriteHeader(http.StatusNotFound)
-			json.NewEncoder(w).Encode(map[string]any{"message": "Not Found"})
-		case 2:
-			// POST (create)
-			assert.Equal(t, "POST", r.Method)
-			assert.Equal(t, "/orgs/myorg/actions/variables", r.URL.Path)
-
-			var body map[string]any
-			json.NewDecoder(r.Body).Decode(&body)
-			assert.Equal(t, "DISPATCH_URL", body["name"])
-			assert.Equal(t, "https://func.example.com", body["value"])
-			assert.Equal(t, "selected", body["visibility"])
-
-			repoIDs, ok := body["selected_repository_ids"].([]any)
-			require.True(t, ok)
-			assert.Len(t, repoIDs, 2)
-			assert.Equal(t, float64(100), repoIDs[0])
-			assert.Equal(t, float64(200), repoIDs[1])
-
-			w.WriteHeader(http.StatusCreated)
-		}
-	}))
-	defer srv.Close()
-
-	client := newTestClient(t, srv)
-	err := client.CreateOrUpdateOrgVariable(context.Background(), "myorg", "DISPATCH_URL", "https://func.example.com", []int64{100, 200})
-	require.NoError(t, err)
-}
-
-func TestCreateOrUpdateOrgVariable_Update(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// PATCH (update) → 200 (variable exists)
-		assert.Equal(t, "PATCH", r.Method)
-		assert.Equal(t, "/orgs/myorg/actions/variables/DISPATCH_URL", r.URL.Path)
-
-		var body map[string]any
-		json.NewDecoder(r.Body).Decode(&body)
-		assert.Equal(t, "https://new-url.example.com", body["value"])
-		assert.Equal(t, "selected", body["visibility"])
-
-		repoIDs, ok := body["selected_repository_ids"].([]any)
-		require.True(t, ok)
-		assert.Len(t, repoIDs, 1)
-
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	defer srv.Close()
-
-	client := newTestClient(t, srv)
-	err := client.CreateOrUpdateOrgVariable(context.Background(), "myorg", "DISPATCH_URL", "https://new-url.example.com", []int64{300})
-	require.NoError(t, err)
-}
-
-func TestCreateOrUpdateOrgVariable_NilRepoIDs(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// PATCH → 404 → POST
-		if r.Method == "PATCH" {
-			w.WriteHeader(http.StatusNotFound)
-			json.NewEncoder(w).Encode(map[string]any{"message": "Not Found"})
-			return
-		}
-		assert.Equal(t, "POST", r.Method)
-
-		var body map[string]any
-		json.NewDecoder(r.Body).Decode(&body)
-		assert.Equal(t, "selected", body["visibility"])
-		repoIDs, ok := body["selected_repository_ids"].([]any)
-		require.True(t, ok, "selected_repository_ids should be an empty array, not nil")
-		assert.Empty(t, repoIDs)
-
-		w.WriteHeader(http.StatusCreated)
-	}))
-	defer srv.Close()
-
-	client := newTestClient(t, srv)
-	err := client.CreateOrUpdateOrgVariable(context.Background(), "myorg", "VAR", "value", nil)
-	require.NoError(t, err)
-}
-
 func TestCreateOrUpdateOrgVariableAll_Create(t *testing.T) {
 	callNum := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2511,19 +2888,20 @@ func TestCreateOrUpdateOrgVariableAll_Update(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestOrgVariableExists(t *testing.T) {
+func TestGetOrgVariable(t *testing.T) {
 	t.Run("exists", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			assert.Equal(t, "GET", r.Method)
 			assert.Equal(t, "/orgs/myorg/actions/variables/DISPATCH_URL", r.URL.Path)
-			json.NewEncoder(w).Encode(map[string]any{"name": "DISPATCH_URL"})
+			json.NewEncoder(w).Encode(map[string]any{"name": "DISPATCH_URL", "value": "https://func.example.com"})
 		}))
 		defer srv.Close()
 
 		client := newTestClient(t, srv)
-		exists, err := client.OrgVariableExists(context.Background(), "myorg", "DISPATCH_URL")
+		value, exists, err := client.GetOrgVariable(context.Background(), "myorg", "DISPATCH_URL")
 		require.NoError(t, err)
 		assert.True(t, exists)
+		assert.Equal(t, "https://func.example.com", value)
 	})
 
 	t.Run("not exists", func(t *testing.T) {
@@ -2534,9 +2912,10 @@ func TestOrgVariableExists(t *testing.T) {
 		defer srv.Close()
 
 		client := newTestClient(t, srv)
-		exists, err := client.OrgVariableExists(context.Background(), "myorg", "MISSING")
+		value, exists, err := client.GetOrgVariable(context.Background(), "myorg", "MISSING")
 		require.NoError(t, err)
 		assert.False(t, exists)
+		assert.Empty(t, value)
 	})
 }
 
@@ -2785,11 +3164,14 @@ func TestAPIError_IsTransient(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name string
-		code int
-		want bool
+		name  string
+		code  int
+		cause error
+		want  bool
 	}{
 		{name: "429 rate limit", code: 429, want: true},
+		{name: "429 backoff interrupted by cancellation", code: 429, cause: context.Canceled, want: false},
+		{name: "429 backoff interrupted by deadline", code: 429, cause: context.DeadlineExceeded, want: false},
 		{name: "500 internal server error", code: 500, want: true},
 		{name: "502 bad gateway", code: 502, want: true},
 		{name: "503 service unavailable", code: 503, want: true},
@@ -2803,8 +3185,9 @@ func TestAPIError_IsTransient(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			err := &APIError{StatusCode: tt.code, Message: http.StatusText(tt.code)}
+			err := &APIError{StatusCode: tt.code, Message: http.StatusText(tt.code), cause: tt.cause}
 			assert.Equal(t, tt.want, err.IsTransient())
+			assert.Equal(t, tt.want, forge.IsTransient(err))
 		})
 	}
 }
@@ -3129,6 +3512,18 @@ func TestBlobSHA(t *testing.T) {
 	assert.Equal(t, "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391", got)
 }
 
+func TestBlobSHAFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hello")
+	require.NoError(t, os.WriteFile(path, []byte("hello"), 0o644))
+	got, err := blobSHAFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, blobSHA([]byte("hello")), got)
+
+	_, err = blobSHAFile(filepath.Join(dir, "missing"))
+	require.Error(t, err)
+}
+
 func TestCommitFiles_AllNew(t *testing.T) {
 	var calls []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -3255,6 +3650,206 @@ func TestCommitFiles_BinaryUsesBlobAPI(t *testing.T) {
 	assert.True(t, committed)
 }
 
+func TestCommitFiles_LocalPathUsesBlobAPI(t *testing.T) {
+	binaryContent := []byte{0x7f, 0x45, 0x4c, 0x46, 0xff, 0xfe, 0x00}
+	blobSHAValue := blobSHA(binaryContent)
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "fullsend")
+	require.NoError(t, os.WriteFile(binPath, binaryContent, 0o755))
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo":
+			json.NewEncoder(w).Encode(map[string]string{"default_branch": "main"})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/ref/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{"object": map[string]string{"sha": "abc123"}})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/commits/abc123":
+			json.NewEncoder(w).Encode(map[string]any{"tree": map[string]string{"sha": "tree000"}})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/trees/tree000":
+			json.NewEncoder(w).Encode(map[string]any{"tree": []any{}, "truncated": false})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/blobs":
+			var body map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode blob body: %v", err)
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			assert.Equal(t, "base64", body["encoding"])
+			decoded, err := base64.StdEncoding.DecodeString(body["content"])
+			if err != nil {
+				t.Errorf("decode blob content: %v", err)
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			assert.Equal(t, binaryContent, decoded)
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"sha": blobSHAValue})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/trees":
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode tree body: %v", err)
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			entries, _ := body["tree"].([]any)
+			if len(entries) != 1 {
+				t.Errorf("expected 1 tree entry, got %d", len(entries))
+				http.Error(w, "unexpected tree entries", http.StatusBadRequest)
+				return
+			}
+			entry, _ := entries[0].(map[string]any)
+			assert.Equal(t, blobSHAValue, entry["sha"])
+			assert.NotContains(t, entry, "content")
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"sha": "newtree"})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/commits":
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"sha": "newcommit"})
+		case r.Method == "PATCH" && r.URL.Path == "/repos/org/repo/git/refs/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	committed, err := client.CommitFiles(context.Background(), "org", "repo", "vendor binary", []forge.TreeFile{
+		{Path: "bin/fullsend", LocalPath: binPath, Mode: "100755"},
+	})
+	require.NoError(t, err)
+	assert.True(t, committed)
+}
+
+func TestCommitFiles_LocalPathUnchanged(t *testing.T) {
+	content := []byte{0x7f, 0x45, 0x4c, 0x46, 0x00}
+	existingSHA := blobSHA(content)
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "fullsend")
+	require.NoError(t, os.WriteFile(binPath, content, 0o755))
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo":
+			json.NewEncoder(w).Encode(map[string]string{"default_branch": "main"})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/ref/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{"object": map[string]string{"sha": "abc123"}})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/commits/abc123":
+			json.NewEncoder(w).Encode(map[string]any{"tree": map[string]string{"sha": "tree000"}})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/trees/tree000":
+			json.NewEncoder(w).Encode(map[string]any{
+				"tree": []map[string]string{
+					{"path": "bin/fullsend", "mode": "100755", "sha": existingSHA},
+				},
+				"truncated": false,
+			})
+		default:
+			t.Errorf("unexpected request: %s %s (should not create blob/tree/commit)", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	committed, err := client.CommitFiles(context.Background(), "org", "repo", "no-op", []forge.TreeFile{
+		{Path: "bin/fullsend", LocalPath: binPath, Mode: "100755"},
+	})
+	require.NoError(t, err)
+	assert.False(t, committed)
+}
+
+func TestCommitFiles_LocalPathMissing(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo":
+			json.NewEncoder(w).Encode(map[string]string{"default_branch": "main"})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/ref/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{"object": map[string]string{"sha": "abc123"}})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/commits/abc123":
+			json.NewEncoder(w).Encode(map[string]any{"tree": map[string]string{"sha": "tree000"}})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/trees/tree000":
+			json.NewEncoder(w).Encode(map[string]any{"tree": []any{}, "truncated": false})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.CommitFiles(context.Background(), "org", "repo", "msg", []forge.TreeFile{
+		{Path: "bin/fullsend", LocalPath: filepath.Join(t.TempDir(), "missing"), Mode: "100755"},
+	})
+	require.Error(t, err)
+}
+
+func TestCommitFiles_LocalPathBlobError(t *testing.T) {
+	content := []byte{0x7f, 0x45, 0x4c, 0x46, 0xff}
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "fullsend")
+	require.NoError(t, os.WriteFile(binPath, content, 0o755))
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo":
+			json.NewEncoder(w).Encode(map[string]string{"default_branch": "main"})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/ref/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{"object": map[string]string{"sha": "abc123"}})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/commits/abc123":
+			json.NewEncoder(w).Encode(map[string]any{"tree": map[string]string{"sha": "tree000"}})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/trees/tree000":
+			json.NewEncoder(w).Encode(map[string]any{"tree": []any{}, "truncated": false})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/blobs":
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"message": "blob failed"})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.CommitFiles(context.Background(), "org", "repo", "vendor binary", []forge.TreeFile{
+		{Path: "bin/fullsend", LocalPath: binPath, Mode: "100755"},
+	})
+	require.Error(t, err)
+}
+
+func TestCommitFiles_LocalPathBlobDecodeError(t *testing.T) {
+	content := []byte{0x7f, 0x45, 0x4c, 0x46, 0xff}
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "fullsend")
+	require.NoError(t, os.WriteFile(binPath, content, 0o755))
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo":
+			json.NewEncoder(w).Encode(map[string]string{"default_branch": "main"})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/ref/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{"object": map[string]string{"sha": "abc123"}})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/commits/abc123":
+			json.NewEncoder(w).Encode(map[string]any{"tree": map[string]string{"sha": "tree000"}})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/trees/tree000":
+			json.NewEncoder(w).Encode(map[string]any{"tree": []any{}, "truncated": false})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/blobs":
+			w.WriteHeader(http.StatusCreated)
+			w.Write([]byte("not-json"))
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.CommitFiles(context.Background(), "org", "repo", "vendor binary", []forge.TreeFile{
+		{Path: "bin/fullsend", LocalPath: binPath, Mode: "100755"},
+	})
+	require.Error(t, err)
+}
+
 func TestCommitFiles_AllUnchanged(t *testing.T) {
 	content := []byte("existing content")
 	existingSHA := blobSHA(content)
@@ -3367,6 +3962,87 @@ func TestCommitFiles_Empty(t *testing.T) {
 	committed, err := client.CommitFiles(context.Background(), "org", "repo", "msg", nil)
 	require.NoError(t, err)
 	assert.False(t, committed)
+}
+
+func TestCommitFiles_RetriesTransientGetCommit404(t *testing.T) {
+	const failCount = 2
+	commitGets := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo":
+			json.NewEncoder(w).Encode(map[string]string{"default_branch": "main"})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/ref/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{
+				"object": map[string]string{"sha": "abc123"},
+			})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/commits/abc123":
+			commitGets++
+			if commitGets <= failCount {
+				w.WriteHeader(http.StatusNotFound)
+				json.NewEncoder(w).Encode(map[string]string{"message": "Not Found"})
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]any{
+				"tree": map[string]string{"sha": "tree000"},
+			})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/trees/tree000":
+			json.NewEncoder(w).Encode(map[string]any{
+				"tree":      []any{},
+				"truncated": false,
+			})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/trees":
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"sha": "newtree"})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/commits":
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"sha": "newcommit"})
+		case r.Method == "PATCH" && r.URL.Path == "/repos/org/repo/git/refs/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	committed, err := client.CommitFiles(context.Background(), "org", "repo", "msg", []forge.TreeFile{
+		// Mode 100755 pins the Git Data REST path (see usesGitDataPath).
+		{Path: "file.sh", Content: []byte("content"), Mode: "100755"},
+	})
+	require.NoError(t, err)
+	assert.True(t, committed)
+	assert.Equal(t, failCount+1, commitGets, "get commit should retry the transient 404s then succeed")
+}
+
+func TestCommitFiles_NoRetryOnNonTransientGetCommitError(t *testing.T) {
+	commitGets := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo":
+			json.NewEncoder(w).Encode(map[string]string{"default_branch": "main"})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/ref/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{
+				"object": map[string]string{"sha": "abc123"},
+			})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/commits/abc123":
+			commitGets++
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			json.NewEncoder(w).Encode(map[string]string{"message": "Validation Failed"})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.CommitFiles(context.Background(), "org", "repo", "msg", []forge.TreeFile{
+		{Path: "file.txt", Content: []byte("content"), Mode: "100644"},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "get commit")
+	assert.Equal(t, 1, commitGets, "non-transient get commit errors must not retry")
 }
 
 func TestListRepositoryFiles_Success(t *testing.T) {
@@ -3546,7 +4222,7 @@ func TestDeleteFiles_Empty(t *testing.T) {
 }
 
 func TestDeleteFiles_Atomic(t *testing.T) {
-	var treeCreated bool
+	var mutationSeen bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == "GET" && r.URL.Path == "/repos/org/repo":
@@ -3563,25 +4239,33 @@ func TestDeleteFiles_Atomic(t *testing.T) {
 				},
 				"truncated": false,
 			})
-		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/trees":
-			treeCreated = true
-			var body map[string]any
-			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
-			entries := body["tree"].([]any)
-			require.Len(t, entries, 2)
-			for _, raw := range entries {
-				entry := raw.(map[string]any)
-				assert.Equal(t, "blob", entry["type"])
-				assert.NotEmpty(t, entry["mode"])
-				assert.Nil(t, entry["sha"])
+		case r.Method == "POST" && r.URL.Path == "/graphql":
+			// Deletions always take the signed createCommitOnBranch path;
+			// the missing path must have been filtered out beforehand.
+			mutationSeen = true
+			var body struct {
+				Variables struct {
+					Input struct {
+						ExpectedHeadOid string `json:"expectedHeadOid"`
+						FileChanges     struct {
+							Additions []map[string]string `json:"additions"`
+							Deletions []map[string]string `json:"deletions"`
+						} `json:"fileChanges"`
+					} `json:"input"`
+				} `json:"variables"`
 			}
-			w.WriteHeader(http.StatusCreated)
-			json.NewEncoder(w).Encode(map[string]string{"sha": "newtree"})
-		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/commits":
-			w.WriteHeader(http.StatusCreated)
-			json.NewEncoder(w).Encode(map[string]string{"sha": "newcommit"})
-		case r.Method == "PATCH" && r.URL.Path == "/repos/org/repo/git/refs/heads/main":
-			json.NewEncoder(w).Encode(map[string]any{})
+			// assert, not require: this runs on the server goroutine.
+			if !assert.NoError(t, json.NewDecoder(r.Body).Decode(&body)) {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			assert.Equal(t, "commit", body.Variables.Input.ExpectedHeadOid)
+			assert.Empty(t, body.Variables.Input.FileChanges.Additions)
+			assert.Equal(t, []map[string]string{{"path": "bin/fullsend"}, {"path": ".defaults/action.yml"}},
+				body.Variables.Input.FileChanges.Deletions)
+			json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
+				"createCommitOnBranch": map[string]any{"commit": map[string]string{"oid": "newcommit"}},
+			}})
 		default:
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
@@ -3597,7 +4281,105 @@ func TestDeleteFiles_Atomic(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, 2, deleted)
-	assert.True(t, treeCreated)
+	assert.True(t, mutationSeen)
+}
+
+func TestGetIssueComment(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "GET", r.Method)
+		assert.Equal(t, "/repos/org/repo/issues/comments/42", r.URL.Path)
+		json.NewEncoder(w).Encode(map[string]any{
+			"id":         42,
+			"node_id":    "IC_42",
+			"html_url":   "https://github.com/org/repo/issues/1#issuecomment-42",
+			"body":       "playback-current: 3",
+			"user":       map[string]string{"login": "fullsend-bot"},
+			"created_at": "2026-01-01T00:00:00Z",
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	comment, err := client.GetIssueComment(context.Background(), "org", "repo", 42)
+	require.NoError(t, err)
+	assert.Equal(t, 42, comment.ID)
+	assert.Equal(t, "IC_42", comment.NodeID)
+	assert.Equal(t, "playback-current: 3", comment.Body)
+	assert.Equal(t, "fullsend-bot", comment.Author)
+}
+
+func TestGetIssueComment_NotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"message": "Not Found"})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.GetIssueComment(context.Background(), "org", "repo", 42)
+	require.Error(t, err)
+	assert.True(t, forge.IsNotFound(err))
+}
+
+func TestGetIssueComment_DecodeError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte("{not valid json"))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.GetIssueComment(context.Background(), "org", "repo", 42)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decode issue comment")
+}
+
+// TestGetIssueComment_EscapesOwnerAndRepo guards against a crafted owner
+// or repo value redirecting the request to a different path or smuggling
+// query data (e.g. an unescaped "?" terminating the path early). Both
+// fields are exercised independently.
+func TestGetIssueComment_EscapesOwnerAndRepo(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "GET", r.Method)
+		assert.Equal(t, "/repos/org%3Fevil/repo/issues/comments/42", r.URL.EscapedPath())
+		assert.Empty(t, r.URL.RawQuery, "a stray delimiter in owner must not start a query string")
+		json.NewEncoder(w).Encode(map[string]any{"id": 42, "body": "ok"})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.GetIssueComment(context.Background(), "org?evil", "repo", 42)
+	require.NoError(t, err)
+}
+
+func TestGetIssueComment_EscapesRepoField(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "GET", r.Method)
+		assert.Equal(t, "/repos/org/repo%3Fx=/issues/comments/42", r.URL.EscapedPath())
+		assert.Empty(t, r.URL.RawQuery, "a stray delimiter in repo must not start a query string")
+		json.NewEncoder(w).Encode(map[string]any{"id": 42, "body": "ok"})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.GetIssueComment(context.Background(), "org", "repo?x=", 42)
+	require.NoError(t, err)
+}
+
+// TestUpdateIssueComment_EscapesOwnerAndRepo is UpdateIssueComment's
+// counterpart to TestGetIssueComment_EscapesOwnerAndRepo.
+func TestUpdateIssueComment_EscapesOwnerAndRepo(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "PATCH", r.Method)
+		assert.Equal(t, "/repos/org%3Fevil/repo%3Fx=/issues/comments/42", r.URL.EscapedPath())
+		assert.Empty(t, r.URL.RawQuery, "a stray delimiter in owner/repo must not start a query string")
+		json.NewEncoder(w).Encode(map[string]any{"id": 42, "body": "updated"})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	err := client.UpdateIssueComment(context.Background(), "org?evil", "repo?x=", 42, "updated")
+	require.NoError(t, err)
 }
 
 func TestDeleteIssueComment(t *testing.T) {
@@ -3631,6 +4413,39 @@ func TestListOrgVariables(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, vars, 2)
 }
+
+func TestListInheritedRepoVariables(t *testing.T) {
+	pages := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/repos/myorg/myrepo/actions/organization-variables", r.URL.Path)
+		pages++
+		vars := []map[string]string{{"name": "A", "value": "1"}}
+		if r.URL.Query().Get("page") == "2" {
+			vars = []map[string]string{{"name": "B", "value": "2"}}
+		}
+		json.NewEncoder(w).Encode(map[string]any{"total_count": 2, "variables": vars})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	vars, err := client.ListInheritedRepoVariables(context.Background(), "myorg", "myrepo")
+	require.NoError(t, err)
+	nonblank := true
+	assert.Equal(t, []forge.OrgVariable{{Name: "A", Value: "1", NonBlank: &nonblank}, {Name: "B", Value: "2", NonBlank: &nonblank}}, vars)
+	assert.Equal(t, 2, pages)
+}
+
+func TestListInheritedRepoVariables_Error(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	_, err := newTestClient(t, srv).ListInheritedRepoVariables(context.Background(), "myorg", "myrepo")
+	require.Error(t, err)
+	assert.True(t, forge.IsForbidden(err))
+}
+
 func TestGetIssue(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/repos/org/repo/issues/7", r.URL.Path)
@@ -3697,6 +4512,265 @@ func TestListWorkflowRuns_IncludesEvent(t *testing.T) {
 	assert.Equal(t, "issues", runs[0].Event)
 }
 
+// TestListWorkflowRunsSince_PaginatesBeyondFirstPage is a regression test
+// (#7996 review): ListWorkflowRuns's live implementation requests only
+// per_page=10 with no pagination, so an eligible run older than the ten
+// newest runs would never be seen — e.g. by harnessRoundPollOnce's
+// earliest-round selection. ListWorkflowRunsSince must instead keep
+// paginating (ordered newest-first) until it reaches a run older than the
+// since boundary, so a run far older than a single page is still returned.
+func TestListWorkflowRunsSince_PaginatesBeyondFirstPage(t *testing.T) {
+	since := time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC)
+	var pageRequests []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pageRequests = append(pageRequests, r.URL.RawQuery)
+		switch r.URL.Query().Get("page") {
+		case "1":
+			// A full page of 100 runs, all newer than the boundary — this
+			// is more than ListWorkflowRuns's old per_page=10 cap ever saw.
+			runs := make([]map[string]any, 100)
+			for i := range runs {
+				runs[i] = map[string]any{
+					"id": 300 - i, "name": "fullsend", "event": "issues",
+					"status": "completed", "conclusion": "success",
+					"html_url": "https://example/run", "created_at": "2024-01-03T00:00:00Z",
+				}
+			}
+			json.NewEncoder(w).Encode(map[string]any{"workflow_runs": runs})
+		case "2":
+			// The earliest eligible run (id 100, at the boundary) plus one
+			// older run (id 99) that signals pagination can stop.
+			json.NewEncoder(w).Encode(map[string]any{
+				"workflow_runs": []map[string]any{
+					{
+						"id": 100, "name": "fullsend", "event": "issues",
+						"status": "completed", "conclusion": "success",
+						"html_url": "https://example/run/100", "created_at": "2024-01-02T00:00:00Z",
+					},
+					{
+						"id": 99, "name": "fullsend", "event": "issues",
+						"status": "completed", "conclusion": "success",
+						"html_url": "https://example/run/99", "created_at": "2024-01-01T00:00:00Z",
+					},
+				},
+			})
+		default:
+			t.Errorf("unexpected page request %q", r.URL.RawQuery)
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	runs, err := client.ListWorkflowRunsSince(context.Background(), "org", "repo", "fullsend.yaml", since)
+	require.NoError(t, err)
+	require.Len(t, runs, 101, "should include the 100 newer runs plus the earliest eligible run at the boundary")
+	assert.Equal(t, 100, runs[len(runs)-1].ID, "the earliest eligible run beyond the first page must be included")
+	for _, r := range runs {
+		assert.NotEqual(t, 99, r.ID, "a run older than the since boundary must not be included")
+	}
+	assert.Len(t, pageRequests, 2, "pagination must stop once a run older than since is seen")
+}
+
+// TestListWorkflowRunsSince_EscapesPathComponents is a regression test
+// (#7996 review): owner, repo, and workflowFile were interpolated
+// directly into the request path. A "#" or "?" delimiter character in one
+// of them would be parsed by url.Parse as the start of the fragment or
+// query component instead of literal path content, silently truncating
+// the request (observed: everything from "#" onward, including the
+// "runs" path suffix and the per_page/page query, was dropped). Escaping
+// each component keeps the delimiter inert so the intended path and
+// query survive intact.
+func TestListWorkflowRunsSince_EscapesPathComponents(t *testing.T) {
+	var gotPath, gotRawQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotRawQuery = r.URL.RawQuery
+		json.NewEncoder(w).Encode(map[string]any{"workflow_runs": []map[string]any{}})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.ListWorkflowRunsSince(context.Background(), "org/evil", "repo#frag", "file?.yml", time.Now())
+	require.NoError(t, err)
+	assert.Equal(t, "/repos/org/evil/repo#frag/actions/workflows/file?.yml/runs", gotPath,
+		"the full path must survive intact instead of being truncated at an unescaped '#' or '?'")
+	assert.Equal(t, "per_page=100&page=1", gotRawQuery,
+		"the per_page/page query must not be dropped by an unescaped delimiter earlier in the path")
+}
+
+func TestListWorkflowRunsSince_APIError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.ListWorkflowRunsSince(context.Background(), "org", "repo", "fullsend.yaml", time.Now())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "list workflow runs since")
+}
+
+func TestListWorkflowRunsSince_EmptyFirstPage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"workflow_runs": []map[string]any{}})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	runs, err := client.ListWorkflowRunsSince(context.Background(), "org", "repo", "fullsend.yaml", time.Now())
+	require.NoError(t, err)
+	assert.Empty(t, runs)
+}
+
+// TestListWorkflowRunsSince_PaginationExceeded guards the maxPages safety
+// valve: if every page is full and since is never reached, pagination must
+// stop with an error instead of looping indefinitely.
+func TestListWorkflowRunsSince_PaginationExceeded(t *testing.T) {
+	page := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page++
+		runs := make([]map[string]any, 100)
+		for i := range runs {
+			runs[i] = map[string]any{
+				"id": page*1000 + i, "name": "fullsend", "event": "issues",
+				"status": "completed", "conclusion": "success",
+				"html_url": "https://example/run", "created_at": "2024-01-03T00:00:00Z",
+			}
+		}
+		json.NewEncoder(w).Encode(map[string]any{"workflow_runs": runs})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	since := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	_, err := client.ListWorkflowRunsSince(context.Background(), "org", "repo", "fullsend.yaml", since)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "pagination exceeded")
+	assert.Equal(t, 100, page)
+}
+
+// TestGetCached_ConditionalRequestReuses304 exercises the #6702 fix
+// through ListWorkflowRuns: the first request has no If-None-Match, the
+// server returns 200 with an ETag; the second request must send that
+// exact ETag back, and on 304 the client must decode the cached body
+// rather than an empty one.
+func TestGetCached_ConditionalRequestReuses304(t *testing.T) {
+	const etag = `W/"abc123"`
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		switch calls {
+		case 1:
+			assert.Empty(t, r.Header.Get("If-None-Match"), "first request must not send If-None-Match")
+			w.Header().Set("ETag", etag)
+			json.NewEncoder(w).Encode(map[string]any{
+				"workflow_runs": []map[string]any{
+					{"id": 1, "status": "in_progress", "created_at": "2024-01-01T00:00:00Z"},
+				},
+			})
+		case 2:
+			assert.Equal(t, etag, r.Header.Get("If-None-Match"), "second request must echo the weak ETag verbatim")
+			w.Header().Set("ETag", etag)
+			w.WriteHeader(http.StatusNotModified)
+		default:
+			t.Errorf("unexpected call %d", calls)
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	first, err := client.ListWorkflowRuns(context.Background(), "org", "repo", "fullsend.yaml")
+	require.NoError(t, err)
+	require.Len(t, first, 1)
+
+	second, err := client.ListWorkflowRuns(context.Background(), "org", "repo", "fullsend.yaml")
+	require.NoError(t, err)
+	require.Len(t, second, 1, "304 must decode to the cached body, not an empty one")
+	assert.Equal(t, first[0].ID, second[0].ID)
+	assert.Equal(t, "in_progress", second[0].Status)
+	assert.Equal(t, 2, calls)
+}
+
+// TestGetCached_ChangedETagRefetchesBody guards against the flake class
+// this fix could reintroduce if done wrong: a status change must always
+// come with a new ETag from the (real) server, and the client must not
+// keep serving a stale cached body once the ETag changes.
+func TestGetCached_ChangedETagRefetchesBody(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		status := "in_progress"
+		etag := `"v1"`
+		if calls > 1 {
+			status = "completed"
+			etag = `"v2"`
+		}
+		w.Header().Set("ETag", etag)
+		json.NewEncoder(w).Encode(map[string]any{
+			"workflow_runs": []map[string]any{
+				{"id": 1, "status": status, "created_at": "2024-01-01T00:00:00Z"},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	first, err := client.ListWorkflowRuns(context.Background(), "org", "repo", "fullsend.yaml")
+	require.NoError(t, err)
+	require.Equal(t, "in_progress", first[0].Status)
+
+	second, err := client.ListWorkflowRuns(context.Background(), "org", "repo", "fullsend.yaml")
+	require.NoError(t, err)
+	require.Equal(t, "completed", second[0].Status)
+}
+
+// TestGetCached_NoETagNotCached ensures a response without an ETag
+// header is decoded normally and never triggers a conditional request
+// on the next call — there is nothing to send.
+func TestGetCached_NoETagNotCached(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		assert.Empty(t, r.Header.Get("If-None-Match"))
+		json.NewEncoder(w).Encode(map[string]any{
+			"workflow_runs": []map[string]any{
+				{"id": 1, "status": "in_progress", "created_at": "2024-01-01T00:00:00Z"},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.ListWorkflowRuns(context.Background(), "org", "repo", "fullsend.yaml")
+	require.NoError(t, err)
+	_, err = client.ListWorkflowRuns(context.Background(), "org", "repo", "fullsend.yaml")
+	require.NoError(t, err)
+	assert.Equal(t, 2, calls)
+}
+
+// TestEtagCache_Bounded ensures a long-lived client polling many
+// distinct URLs (one per workflow run, in the behaviour suite) does not
+// grow etagCache without bound.
+func TestEtagCache_Bounded(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"`+r.URL.Path+`"`)
+		json.NewEncoder(w).Encode(map[string]any{"jobs": []map[string]any{}})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	for i := range etagCacheLimit * 2 {
+		_, err := client.ListWorkflowRunJobs(context.Background(), "org", "repo", i)
+		require.NoError(t, err)
+	}
+	client.etagMu.Lock()
+	size := len(client.etagCache)
+	client.etagMu.Unlock()
+	assert.LessOrEqual(t, size, etagCacheLimit)
+}
+
 func TestListWorkflowRunJobs(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/repos/org/repo/actions/runs/42/jobs", r.URL.Path)
@@ -3732,6 +4806,87 @@ func TestListWorkflowRunJobs(t *testing.T) {
 	assert.Equal(t, "dispatch / Harness run (triage)", jobs[1].Name)
 }
 
+// TestGetWorkflowRunLogs_TruncationIsMarked verifies that an oversized job
+// log and a jobs listing that omits jobs are each reported in the returned
+// text, so callers can tell the snapshot is incomplete.
+func TestGetWorkflowRunLogs_TruncationIsMarked(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/org/repo/actions/runs/42/jobs":
+			assert.Equal(t, "100", r.URL.Query().Get("per_page"))
+			json.NewEncoder(w).Encode(map[string]any{
+				"total_count": 3,
+				"jobs": []map[string]any{
+					{"id": 1, "name": "big", "status": "completed", "conclusion": "success"},
+					{"id": 2, "name": "small", "status": "completed", "conclusion": "success"},
+				},
+			})
+		case "/repos/org/repo/actions/jobs/1/logs":
+			_, _ = w.Write([]byte(strings.Repeat("x", maxJobLogBytes+5)))
+		case "/repos/org/repo/actions/jobs/2/logs":
+			_, _ = w.Write([]byte("small log"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	logs, err := client.GetWorkflowRunLogs(context.Background(), "org", "repo", 42)
+	require.NoError(t, err)
+	assert.Equal(t, 1, strings.Count(logs, "[log truncated:"), "only the oversized log is marked")
+	assert.Contains(t, logs, "[log truncated: job 1 exceeds 1048576 bytes]")
+	assert.Contains(t, logs, "small log")
+	assert.Contains(t, logs, "[job list truncated: 2 of 3 jobs included]")
+}
+
+// TestGetWorkflowRunLogs_CompleteHasNoTruncationMarkers verifies that a
+// complete snapshot carries no truncation note.
+func TestGetWorkflowRunLogs_CompleteHasNoTruncationMarkers(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/org/repo/actions/runs/42/jobs":
+			json.NewEncoder(w).Encode(map[string]any{
+				"total_count": 1,
+				"jobs":        []map[string]any{{"id": 1, "name": "build", "status": "completed", "conclusion": "success"}},
+			})
+		case "/repos/org/repo/actions/jobs/1/logs":
+			_, _ = w.Write([]byte(strings.Repeat("x", maxJobLogBytes)))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	logs, err := client.GetWorkflowRunLogs(context.Background(), "org", "repo", 42)
+	require.NoError(t, err)
+	assert.NotContains(t, logs, "truncated")
+}
+
+// TestListWorkflowRunJobs_EscapesPathComponents is a regression test
+// (#7996 review): owner and repo were interpolated into the request URL
+// without escaping, so a delimiter-containing value (e.g. "#") could alter
+// the requested path or turn the jobs suffix and pagination query into a
+// URL fragment instead of part of the request.
+func TestListWorkflowRunJobs_EscapesPathComponents(t *testing.T) {
+	var gotPath, gotRawQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotRawQuery = r.URL.RawQuery
+		json.NewEncoder(w).Encode(map[string]any{"jobs": []map[string]any{}})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.ListWorkflowRunJobs(context.Background(), "org/evil", "repo#frag", 42)
+	require.NoError(t, err)
+	assert.Equal(t, "/repos/org/evil/repo#frag/actions/runs/42/jobs", gotPath,
+		"the full path must survive intact instead of being truncated at an unescaped '#'")
+	assert.Equal(t, "per_page=100&page=1", gotRawQuery,
+		"the per_page/page query must not be dropped by an unescaped delimiter earlier in the path")
+}
+
 func TestListWorkflowRunJobs_APIError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -3741,6 +4896,79 @@ func TestListWorkflowRunJobs_APIError(t *testing.T) {
 	client := newTestClient(t, srv)
 	_, err := client.ListWorkflowRunJobs(context.Background(), "org", "repo", 42)
 	require.Error(t, err)
+}
+
+// TestListWorkflowRunJobs_PaginatesBeyondFirstPage is a regression test
+// (#7996 review): ListWorkflowRunJobs previously issued a single
+// per_page=100 request with no pagination, so a run with more than 100
+// jobs (e.g. a large matrix build) would silently drop jobs beyond that
+// page — including, for earliest-round selection
+// (harnessRoundPollOnce), the earliest eligible run's matching agent job,
+// which could make the scan fall through to a later run whose matching
+// job had already succeeded. ListWorkflowRunJobs must instead keep
+// paginating until a short page signals the end of the listing, so a job
+// far beyond a single page is still returned.
+func TestListWorkflowRunJobs_PaginatesBeyondFirstPage(t *testing.T) {
+	var pageRequests []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pageRequests = append(pageRequests, r.URL.RawQuery)
+		switch r.URL.Query().Get("page") {
+		case "1":
+			// A full page of 100 unrelated jobs — more than the matching
+			// agent job ever needed to share a run with on the old,
+			// unpaginated per_page=100 request.
+			jobs := make([]map[string]any, 100)
+			for i := range jobs {
+				jobs[i] = map[string]any{
+					"id": i + 10, "name": "dispatch / Other", "status": "completed", "conclusion": "success",
+				}
+			}
+			json.NewEncoder(w).Encode(map[string]any{"jobs": jobs})
+		case "2":
+			// The earliest eligible run's matching agent job, beyond the
+			// first page.
+			json.NewEncoder(w).Encode(map[string]any{
+				"jobs": []map[string]any{
+					{"id": 1, "name": "dispatch / Harness run (review)", "status": "completed", "conclusion": "success"},
+				},
+			})
+		default:
+			t.Errorf("unexpected page request %q", r.URL.RawQuery)
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	jobs, err := client.ListWorkflowRunJobs(context.Background(), "org", "repo", 100)
+	require.NoError(t, err)
+	require.Len(t, jobs, 101, "should include the 100 jobs on the first page plus the matching job beyond it")
+	assert.Equal(t, "dispatch / Harness run (review)", jobs[len(jobs)-1].Name, "the matching job beyond the first page must be included")
+	assert.Len(t, pageRequests, 2, "pagination must stop once a short page is seen")
+}
+
+// TestListWorkflowRunJobs_PaginationExceeded guards the maxPages safety
+// valve: if every page is full, pagination must stop with an error instead
+// of looping indefinitely.
+func TestListWorkflowRunJobs_PaginationExceeded(t *testing.T) {
+	page := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page++
+		jobs := make([]map[string]any, 100)
+		for i := range jobs {
+			jobs[i] = map[string]any{
+				"id": page*1000 + i, "name": "dispatch / Other", "status": "completed", "conclusion": "success",
+			}
+		}
+		json.NewEncoder(w).Encode(map[string]any{"jobs": jobs})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.ListWorkflowRunJobs(context.Background(), "org", "repo", 100)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "pagination exceeded")
+	assert.Equal(t, 100, page)
 }
 
 func TestListWorkflowRunArtifacts(t *testing.T) {
@@ -3891,7 +5119,8 @@ func TestCommitFiles_NonFastForwardRetry(t *testing.T) {
 
 	client := newTestClient(t, srv)
 	committed, err := client.CommitFiles(context.Background(), "org", "repo", "msg", []forge.TreeFile{
-		{Path: "f.txt", Content: []byte("x"), Mode: "100644"},
+		// Mode 100755 pins the Git Data REST path (see usesGitDataPath).
+		{Path: "f.sh", Content: []byte("x"), Mode: "100755"},
 	})
 	require.NoError(t, err)
 	assert.True(t, committed)
@@ -3939,7 +5168,8 @@ func TestCommitFiles_StaleTreeSHARetry(t *testing.T) {
 
 	client := newTestClient(t, srv)
 	committed, err := client.CommitFiles(context.Background(), "org", "repo", "msg", []forge.TreeFile{
-		{Path: "f.txt", Content: []byte("x"), Mode: "100644"},
+		// Mode 100755 pins the Git Data REST path (see usesGitDataPath).
+		{Path: "f.sh", Content: []byte("x"), Mode: "100755"},
 	})
 	require.NoError(t, err)
 	assert.True(t, committed)
@@ -3987,7 +5217,8 @@ func TestCommitFiles_StaleTreeSHAOnCommitRetry(t *testing.T) {
 
 	client := newTestClient(t, srv)
 	committed, err := client.CommitFiles(context.Background(), "org", "repo", "msg", []forge.TreeFile{
-		{Path: "f.txt", Content: []byte("x"), Mode: "100644"},
+		// Mode 100755 pins the Git Data REST path (see usesGitDataPath).
+		{Path: "f.sh", Content: []byte("x"), Mode: "100755"},
 	})
 	require.NoError(t, err)
 	assert.True(t, committed)
@@ -4021,7 +5252,8 @@ func TestCommitFiles_NonFastForward(t *testing.T) {
 
 	client := newTestClient(t, srv)
 	_, err := client.CommitFiles(context.Background(), "org", "repo", "msg", []forge.TreeFile{
-		{Path: "file.txt", Content: []byte("content"), Mode: "100644"},
+		// Mode 100755 pins the Git Data REST path (see usesGitDataPath).
+		{Path: "file.sh", Content: []byte("content"), Mode: "100755"},
 	})
 	require.Error(t, err)
 	assert.True(t, forge.IsNonFastForward(err))
@@ -4043,10 +5275,12 @@ func TestCommitFiles_BranchProtected(t *testing.T) {
 		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/commits":
 			json.NewEncoder(w).Encode(map[string]string{"sha": "newcommit"})
 		case r.Method == "PATCH" && r.URL.Path == "/repos/org/repo/git/refs/heads/main":
+			// Classic "require a pull request" rejection, as GitHub returns it.
 			w.WriteHeader(http.StatusUnprocessableEntity)
 			json.NewEncoder(w).Encode(map[string]any{
-				"message": "Validation Failed",
-				"errors":  []map[string]string{{"message": "Protected branch update failed for refs/heads/main."}},
+				"message":           "Changes must be made through a pull request.",
+				"documentation_url": "https://docs.github.com/articles/about-protected-branches",
+				"status":            "422",
 			})
 		}
 	}))
@@ -4054,11 +5288,13 @@ func TestCommitFiles_BranchProtected(t *testing.T) {
 
 	client := newTestClient(t, srv)
 	_, err := client.CommitFiles(context.Background(), "org", "repo", "msg", []forge.TreeFile{
-		{Path: "file.txt", Content: []byte("content"), Mode: "100644"},
+		// Mode 100755 pins the Git Data REST path (see usesGitDataPath).
+		{Path: "file.sh", Content: []byte("content"), Mode: "100755"},
 	})
 	require.Error(t, err)
 	assert.True(t, forge.IsBranchProtected(err))
 	assert.False(t, forge.IsNonFastForward(err), "should not match non-fast-forward")
+	assert.False(t, forge.IsSignedCommitsRequired(err), "a plain protection rejection is not a signature requirement")
 }
 
 func TestListRepoVariables_SinglePage(t *testing.T) {
@@ -4230,6 +5466,46 @@ func TestGetCollaboratorPermission(t *testing.T) {
 		assert.Equal(t, "write", role)
 	})
 
+	t.Run("custom roles", func(t *testing.T) {
+		cases := []struct {
+			name, body, want string
+		}{
+			{"maintain flags", `{"permission":"write","user":{"login":"custom-role-maintainer","type":"User","permissions":{"admin":false,"maintain":true,"push":true,"triage":true,"pull":true},"role_name":"Repo Maintainer"},"role_name":"Repo Maintainer"}`, "maintain"},
+			{"admin flags", `{"permission":"admin","role_name":"Org Admin","user":{"permissions":{"admin":true,"maintain":true,"push":true,"triage":true,"pull":true}}}`, "admin"},
+			{"push flags", `{"permission":"write","role_name":"Dev","user":{"permissions":{"push":true,"pull":true}}}`, "write"},
+			{"triage flags", `{"permission":"read","role_name":"Helper","user":{"permissions":{"triage":true,"pull":true}}}`, "triage"},
+			{"pull flags", `{"permission":"read","role_name":"Viewer","user":{"permissions":{"pull":true}}}`, "read"},
+			{"legacy write only", `{"permission":"write","role_name":"Dev"}`, "write"},
+			{"legacy read only stays read", `{"permission":"read","role_name":"Helper"}`, "read"},
+			{"no signals", `{"role_name":"Mystery"}`, "none"},
+			{"all flags false ignores legacy", `{"permission":"write","role_name":"Dev","user":{"permissions":{"admin":false,"maintain":false,"push":false,"triage":false,"pull":false}}}`, "none"},
+			{"null flags fall back to legacy", `{"permission":"write","role_name":"Dev","user":{"permissions":null}}`, "write"},
+			{"built-in role wins over flags", `{"permission":"read","role_name":"triage","user":{"permissions":{"pull":true}}}`, "triage"},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					_, _ = w.Write([]byte(tc.body))
+				}))
+				defer srv.Close()
+
+				role, err := newTestClient(t, srv).GetCollaboratorPermission(context.Background(), "o", "r", "alice")
+				require.NoError(t, err)
+				assert.Equal(t, tc.want, role)
+			})
+		}
+	})
+
+	t.Run("malformed flags fail", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(`{"role_name":"Dev","user":{"permissions":{"push":"true"}}}`))
+		}))
+		defer srv.Close()
+
+		_, err := newTestClient(t, srv).GetCollaboratorPermission(context.Background(), "o", "r", "alice")
+		require.Error(t, err)
+	})
+
 	t.Run("not found", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNotFound)
@@ -4279,6 +5555,45 @@ func TestAddCollaborator(t *testing.T) {
 		client := newTestClient(t, srv)
 		err := client.AddCollaborator(context.Background(), "o", "r", "alice", "push")
 		require.ErrorContains(t, err, "add collaborator alice")
+	})
+}
+
+func TestGetOrgMembership(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, http.MethodGet, r.Method)
+			assert.Equal(t, "/orgs/halfsend-01/memberships/fstest-write", r.URL.Path)
+			json.NewEncoder(w).Encode(map[string]string{"state": "active", "role": "member"})
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		got, err := client.GetOrgMembership(context.Background(), "halfsend-01", "fstest-write")
+		require.NoError(t, err)
+		assert.Equal(t, forge.OrgMembership{State: "active", Role: "member"}, got)
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		_, err := client.GetOrgMembership(context.Background(), "org", "nobody")
+		require.Error(t, err)
+		assert.True(t, forge.IsNotFound(err))
+	})
+
+	t.Run("decode error", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprint(w, "not-json")
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		_, err := client.GetOrgMembership(context.Background(), "org", "alice")
+		require.ErrorContains(t, err, "decode org membership")
 	})
 }
 
@@ -4484,12 +5799,34 @@ func TestUnsupportedMethods(t *testing.T) {
 	client := New("test-token")
 	ctx := context.Background()
 
+	t.Run("GetProtectedBranch", func(t *testing.T) {
+		_, err := client.GetProtectedBranch(ctx, "o", "r", "main")
+		assert.ErrorIs(t, err, forge.ErrNotSupported)
+	})
+	t.Run("GrantProtectedBranchMergeUser", func(t *testing.T) {
+		err := client.GrantProtectedBranchMergeUser(ctx, "o", "r", "main", 1)
+		assert.ErrorIs(t, err, forge.ErrNotSupported)
+	})
+	t.Run("RevokeProtectedBranchMergeUserEntry", func(t *testing.T) {
+		err := client.RevokeProtectedBranchMergeUserEntry(ctx, "o", "r", "main", 5, 1)
+		assert.ErrorIs(t, err, forge.ErrNotSupported)
+	})
 	t.Run("CreatePipeline", func(t *testing.T) {
 		_, err := client.CreatePipeline(ctx, "o", "r", "main", nil)
 		assert.ErrorIs(t, err, forge.ErrNotSupported)
 	})
+	t.Run("CreatePipelineWithInputs", func(t *testing.T) {
+		_, err := client.CreatePipelineWithInputs(ctx, "o", "r", "main", map[string]forge.PipelineInputValue{
+			"STAGE": forge.StringInput("triage"),
+		})
+		assert.ErrorIs(t, err, forge.ErrNotSupported)
+	})
 	t.Run("CreatePipelineSchedule", func(t *testing.T) {
 		_, err := client.CreatePipelineSchedule(ctx, "o", "r", "main", "desc", "0 * * * *", nil)
+		assert.ErrorIs(t, err, forge.ErrNotSupported)
+	})
+	t.Run("CreatePipelineScheduleWithActive", func(t *testing.T) {
+		_, err := client.CreatePipelineScheduleWithActive(ctx, "o", "r", "main", "desc", "0 * * * *", nil, false)
 		assert.ErrorIs(t, err, forge.ErrNotSupported)
 	})
 	t.Run("DeletePipelineSchedule", func(t *testing.T) {
@@ -4500,6 +5837,10 @@ func TestUnsupportedMethods(t *testing.T) {
 		_, err := client.ListPipelineSchedules(ctx, "o", "r")
 		assert.ErrorIs(t, err, forge.ErrNotSupported)
 	})
+	t.Run("UpdatePipelineSchedule", func(t *testing.T) {
+		err := client.UpdatePipelineSchedule(ctx, "o", "r", 1, true)
+		assert.ErrorIs(t, err, forge.ErrNotSupported)
+	})
 	t.Run("UpdateCIVariable", func(t *testing.T) {
 		err := client.UpdateCIVariable(ctx, "o", "r", "KEY", "val", false)
 		assert.ErrorIs(t, err, forge.ErrNotSupported)
@@ -4508,8 +5849,56 @@ func TestUnsupportedMethods(t *testing.T) {
 		err := client.CreateProtectedCIVariable(ctx, "o", "r", "KEY", "val")
 		assert.ErrorIs(t, err, forge.ErrNotSupported)
 	})
+	t.Run("CreatePipelineTriggerToken", func(t *testing.T) {
+		_, err := client.CreatePipelineTriggerToken(ctx, "o", "r", "desc")
+		assert.ErrorIs(t, err, forge.ErrNotSupported)
+	})
+	t.Run("ListPipelineTriggerTokens", func(t *testing.T) {
+		_, err := client.ListPipelineTriggerTokens(ctx, "o", "r")
+		assert.ErrorIs(t, err, forge.ErrNotSupported)
+	})
+	t.Run("RevokePipelineTriggerToken", func(t *testing.T) {
+		err := client.RevokePipelineTriggerToken(ctx, "o", "r", 1)
+		assert.ErrorIs(t, err, forge.ErrNotSupported)
+	})
+	t.Run("CreateProjectHook", func(t *testing.T) {
+		_, err := client.CreateProjectHook(ctx, "o", "r", forge.ProjectHook{})
+		assert.ErrorIs(t, err, forge.ErrNotSupported)
+	})
+	t.Run("ListProjectHooks", func(t *testing.T) {
+		_, err := client.ListProjectHooks(ctx, "o", "r")
+		assert.ErrorIs(t, err, forge.ErrNotSupported)
+	})
+	t.Run("UpdateProjectHook", func(t *testing.T) {
+		_, err := client.UpdateProjectHook(ctx, "o", "r", 1, forge.ProjectHook{})
+		assert.ErrorIs(t, err, forge.ErrNotSupported)
+	})
+	t.Run("DeleteProjectHook", func(t *testing.T) {
+		err := client.DeleteProjectHook(ctx, "o", "r", 1)
+		assert.ErrorIs(t, err, forge.ErrNotSupported)
+	})
+	t.Run("GetPipelineVariablesMinimumOverrideRole", func(t *testing.T) {
+		_, err := client.GetPipelineVariablesMinimumOverrideRole(ctx, "o", "r")
+		assert.ErrorIs(t, err, forge.ErrNotSupported)
+	})
+	t.Run("SetPipelineVariablesMinimumOverrideRole", func(t *testing.T) {
+		err := client.SetPipelineVariablesMinimumOverrideRole(ctx, "o", "r", forge.PipelineVarOverrideOwner)
+		assert.ErrorIs(t, err, forge.ErrNotSupported)
+	})
+	t.Run("GetJobTokenRepositoryPushAllowed", func(t *testing.T) {
+		_, err := client.GetJobTokenRepositoryPushAllowed(ctx, "o", "r")
+		assert.ErrorIs(t, err, forge.ErrNotSupported)
+	})
+	t.Run("GetPushRuleBranchNameRegex", func(t *testing.T) {
+		_, err := client.GetPushRuleBranchNameRegex(ctx, "o", "r")
+		assert.ErrorIs(t, err, forge.ErrNotSupported)
+	})
 	t.Run("ForceCommitFileToBranch", func(t *testing.T) {
 		err := client.ForceCommitFileToBranch(ctx, "o", "r", "b", "p", "m", []byte("c"))
+		assert.ErrorIs(t, err, forge.ErrNotSupported)
+	})
+	t.Run("DeleteProjectServiceAccount", func(t *testing.T) {
+		err := client.DeleteProjectServiceAccount(ctx, "g", "p", 77)
 		assert.ErrorIs(t, err, forge.ErrNotSupported)
 	})
 }
@@ -4650,4 +6039,980 @@ func TestDo_ServerErrorExhaustedIsNotARateLimit(t *testing.T) {
 	assert.False(t, IsRateLimitError(err))
 	assert.NotContains(t, err.Error(), "rate limit:")
 	assert.Contains(t, err.Error(), "retryable error after 5 attempts")
+}
+
+// gitDataRaceServer serves the read side of the Git Data API for org/repo
+// and returns 404 for the first commitFails commit reads and the first
+// treeFails tree reads, the replica lag seen on a freshly auto_init'd
+// repo (#7861). Write endpoints used by CommitFiles succeed.
+func gitDataRaceServer(t *testing.T, commitFails, treeFails int, commitGets, treeGets *int) *httptest.Server {
+	t.Helper()
+	var repoGets int
+	return gitDataRaceServerWithRepo(t, 0, &repoGets, commitFails, treeFails, commitGets, treeGets)
+}
+
+// gitDataRaceServerWithRepo is gitDataRaceServer that also 404s the first
+// repoFails repo reads.
+func gitDataRaceServerWithRepo(t *testing.T, repoFails int, repoGets *int, commitFails, treeFails int, commitGets, treeGets *int) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo":
+			*repoGets++
+			if *repoGets <= repoFails {
+				w.WriteHeader(http.StatusNotFound)
+				json.NewEncoder(w).Encode(map[string]string{"message": "Not Found"})
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]string{"default_branch": "main"})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/ref/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{"object": map[string]string{"sha": "abc123"}})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/commits/abc123":
+			*commitGets++
+			if *commitGets <= commitFails {
+				w.WriteHeader(http.StatusNotFound)
+				json.NewEncoder(w).Encode(map[string]string{"message": "Not Found"})
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]any{"tree": map[string]string{"sha": "tree000"}})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/trees/tree000":
+			*treeGets++
+			if *treeGets <= treeFails {
+				w.WriteHeader(http.StatusNotFound)
+				json.NewEncoder(w).Encode(map[string]string{"message": "Not Found"})
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]any{
+				"tree":      []map[string]string{{"path": "README.md", "mode": "100644", "type": "blob", "sha": "r1"}},
+				"truncated": false,
+			})
+		case r.Method == "POST" && r.URL.Path == "/graphql":
+			// Regular inline files take the signed createCommitOnBranch path.
+			json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
+				"createCommitOnBranch": map[string]any{"commit": map[string]string{"oid": "newcommit"}},
+			}})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/trees":
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"sha": "newtree"})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/commits":
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"sha": "newcommit"})
+		case r.Method == "PATCH" && r.URL.Path == "/repos/org/repo/git/refs/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+}
+
+func TestCommitFiles_GetCommit404ExhaustsRetryBudget(t *testing.T) {
+	var commitGets, treeGets int
+	srv := gitDataRaceServer(t, 100, 0, &commitGets, &treeGets)
+	defer srv.Close()
+
+	_, err := newTestClient(t, srv).CommitFiles(context.Background(), "org", "repo", "msg", []forge.TreeFile{
+		{Path: "file.txt", Content: []byte("content"), Mode: "100644"},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "after 5 attempts")
+	assert.Equal(t, 5, commitGets, "a persistent 404 stops after the retry budget")
+	assert.Zero(t, treeGets)
+}
+
+func TestCommitFiles_RetriesTransientGetTree404(t *testing.T) {
+	var commitGets, treeGets int
+	srv := gitDataRaceServer(t, 0, 2, &commitGets, &treeGets)
+	defer srv.Close()
+
+	committed, err := newTestClient(t, srv).CommitFiles(context.Background(), "org", "repo", "msg", []forge.TreeFile{
+		{Path: "file.txt", Content: []byte("content"), Mode: "100644"},
+	})
+	require.NoError(t, err)
+	assert.True(t, committed)
+	assert.Equal(t, 3, treeGets, "get tree should retry the transient 404s then succeed")
+}
+
+func TestDeleteFiles_RetriesTransientGitData404(t *testing.T) {
+	var commitGets, treeGets int
+	srv := gitDataRaceServer(t, 1, 1, &commitGets, &treeGets)
+	defer srv.Close()
+
+	// No listed path exists in the tree, so DeleteFiles returns after the reads.
+	deleted, err := newTestClient(t, srv).DeleteFiles(context.Background(), "org", "repo", "msg", []string{"missing.txt"})
+	require.NoError(t, err)
+	assert.Zero(t, deleted)
+	assert.Equal(t, 2, commitGets)
+	assert.Equal(t, 2, treeGets)
+}
+
+func TestListRepositoryFiles_RetriesTransientGitData404(t *testing.T) {
+	var commitGets, treeGets int
+	srv := gitDataRaceServer(t, 1, 1, &commitGets, &treeGets)
+	defer srv.Close()
+
+	files, err := newTestClient(t, srv).ListRepositoryFiles(context.Background(), "org", "repo")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"README.md"}, files)
+	assert.Equal(t, 2, commitGets)
+	assert.Equal(t, 2, treeGets)
+}
+
+func TestDeleteFiles_GetTree404ExhaustsRetryBudget(t *testing.T) {
+	var commitGets, treeGets int
+	srv := gitDataRaceServer(t, 0, 100, &commitGets, &treeGets)
+	defer srv.Close()
+
+	_, err := newTestClient(t, srv).DeleteFiles(context.Background(), "org", "repo", "msg", []string{"missing.txt"})
+	require.Error(t, err)
+	assert.Equal(t, 5, treeGets, "a persistent tree 404 stops after the retry budget")
+	assert.Contains(t, err.Error(), "after 5 attempts")
+	assert.NotContains(t, err.Error(), "decode tree", "a GET failure must not be reported as a decode error")
+}
+
+func TestGetCommitTreeSHA_DecodeErrorIsNotRetried(t *testing.T) {
+	commitGets := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/repos/org/repo/git/commits/abc123" {
+			commitGets++
+			w.Write([]byte("not-json"))
+			return
+		}
+		t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+	}))
+	defer srv.Close()
+
+	_, err := newTestClient(t, srv).getCommitTreeSHA(context.Background(), "org", "repo", "abc123")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decode commit")
+	assert.NotContains(t, err.Error(), "after 5 attempts")
+	assert.Equal(t, 1, commitGets, "a decode error is not a replica-lag race")
+}
+
+// TestGitDataReads_RetryTransientGetRepo404 covers the repo read that
+// starts CommitFiles, DeleteFiles and ListRepositoryFiles: the "get repo:
+// 404" seen when committing to a just-created harness-hosting repo.
+func TestGitDataReads_RetryTransientGetRepo404(t *testing.T) {
+	calls := map[string]func(*LiveClient) error{
+		"CommitFiles": func(c *LiveClient) error {
+			_, err := c.CommitFiles(context.Background(), "org", "repo", "msg", []forge.TreeFile{
+				{Path: "file.txt", Content: []byte("content"), Mode: "100644"},
+			})
+			return err
+		},
+		"DeleteFiles": func(c *LiveClient) error {
+			_, err := c.DeleteFiles(context.Background(), "org", "repo", "msg", []string{"missing.txt"})
+			return err
+		},
+		"ListRepositoryFiles": func(c *LiveClient) error {
+			_, err := c.ListRepositoryFiles(context.Background(), "org", "repo")
+			return err
+		},
+	}
+	for name, call := range calls {
+		t.Run(name, func(t *testing.T) {
+			var repoGets, commitGets, treeGets int
+			srv := gitDataRaceServerWithRepo(t, 2, &repoGets, 0, 0, &commitGets, &treeGets)
+			defer srv.Close()
+
+			require.NoError(t, call(newTestClient(t, srv)))
+			assert.Equal(t, 3, repoGets, "get repo should retry the transient 404s then succeed")
+		})
+	}
+}
+
+// treeStatusServer serves the Git Data reads and writes for org/repo;
+// the first tree read answers with status and message, later reads
+// succeed.
+func treeStatusServer(t *testing.T, status int, message string, treeGets *int) *httptest.Server {
+	t.Helper()
+	return treeStatusServerBody(t, status, map[string]any{"message": message}, treeGets)
+}
+
+// treeStatusServerBody is treeStatusServer with a caller-supplied error
+// body for the first tree read.
+func treeStatusServerBody(t *testing.T, status int, body map[string]any, treeGets *int) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo":
+			json.NewEncoder(w).Encode(map[string]string{"default_branch": "main"})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/ref/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{"object": map[string]string{"sha": "abc123"}})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/commits/abc123":
+			json.NewEncoder(w).Encode(map[string]any{"tree": map[string]string{"sha": "tree000"}})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/trees/tree000":
+			*treeGets++
+			if *treeGets == 1 {
+				w.WriteHeader(status)
+				json.NewEncoder(w).Encode(body)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]any{
+				"tree":      []map[string]string{{"path": "README.md", "mode": "100644", "type": "blob", "sha": "r1"}},
+				"truncated": false,
+			})
+		case r.Method == "POST" && r.URL.Path == "/graphql":
+			// Regular inline files take the signed createCommitOnBranch path.
+			json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
+				"createCommitOnBranch": map[string]any{"commit": map[string]string{"oid": "newcommit"}},
+			}})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/trees":
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"sha": "newtree"})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/commits":
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"sha": "newcommit"})
+		case r.Method == "PATCH" && r.URL.Path == "/repos/org/repo/git/refs/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+}
+
+func TestListRepositoryFiles_RetriesInvalidObject422(t *testing.T) {
+	treeGets := 0
+	srv := treeStatusServer(t, http.StatusUnprocessableEntity,
+		"Invalid object requested. SHA must identify a commit or a tree.", &treeGets)
+	defer srv.Close()
+
+	files, err := newTestClient(t, srv).ListRepositoryFiles(context.Background(), "org", "repo")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"README.md"}, files)
+	assert.Equal(t, 2, treeGets, "a replica-lag 422 on a just-returned SHA is retried")
+}
+
+func TestListRepositoryFiles_OtherValidation422NotRetried(t *testing.T) {
+	treeGets := 0
+	srv := treeStatusServer(t, http.StatusUnprocessableEntity, "Validation Failed", &treeGets)
+	defer srv.Close()
+
+	_, err := newTestClient(t, srv).ListRepositoryFiles(context.Background(), "org", "repo")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Validation Failed")
+	assert.Equal(t, 1, treeGets, "any other 422 is a real error")
+}
+
+// TestCommitFiles_RetriesInvalidObject422 pins the production path: the
+// scaffold commit in github setup failed with this 422 on the tree read.
+func TestCommitFiles_RetriesInvalidObject422(t *testing.T) {
+	treeGets := 0
+	srv := treeStatusServer(t, http.StatusUnprocessableEntity,
+		"Invalid object requested. SHA must identify a commit or a tree.", &treeGets)
+	defer srv.Close()
+
+	committed, err := newTestClient(t, srv).CommitFiles(context.Background(), "org", "repo", "msg", []forge.TreeFile{
+		{Path: "file.txt", Content: []byte("content"), Mode: "100644"},
+	})
+	require.NoError(t, err)
+	assert.True(t, committed)
+	assert.Equal(t, 2, treeGets)
+}
+
+func TestIsGitDataReadLag(t *testing.T) {
+	tests := []struct {
+		name string
+		err  *APIError
+		want bool
+	}{
+		{"404", &APIError{StatusCode: http.StatusNotFound}, true},
+		{"409", &APIError{StatusCode: http.StatusConflict}, true},
+		{"422 invalid object", &APIError{StatusCode: 422, Message: "Invalid object requested. SHA must identify a commit or a tree."}, true},
+		{"422 other case", &APIError{StatusCode: 422, Message: "invalid OBJECT requested"}, true},
+		{"422 in errors envelope", &APIError{StatusCode: 422, Message: "Validation Failed",
+			Errors: []APIErrorDetail{{Message: "Invalid object requested. SHA must identify a commit or a tree."}}}, true},
+		{"422 validation", &APIError{StatusCode: 422, Message: "Validation Failed"}, false},
+		{"invalid object on 400", &APIError{StatusCode: http.StatusBadRequest, Message: "Invalid object requested"}, false},
+		{"403", &APIError{StatusCode: http.StatusForbidden}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, isGitDataReadLag(tc.err))
+		})
+	}
+}
+
+// runsBody is a minimal valid ListWorkflowRuns payload.
+func runsBody(status string) map[string]any {
+	return map[string]any{"workflow_runs": []map[string]any{
+		{"id": 1, "status": status, "created_at": "2024-01-01T00:00:00Z"},
+	}}
+}
+
+// TestGetCached_ConcurrentCallersShareOneRequest: concurrent pollers of
+// one URL share a single conditional GET, so they cannot race each
+// other's cache writes (and spend one request, not N).
+func TestGetCached_ConcurrentCallersShareOneRequest(t *testing.T) {
+	var calls atomic.Int32
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		<-release
+		w.Header().Set("ETag", `"v1"`)
+		json.NewEncoder(w).Encode(runsBody("in_progress"))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	const callers = 8
+	var wg sync.WaitGroup
+	errs := make([]error, callers)
+	for i := range callers {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, errs[i] = client.ListWorkflowRuns(context.Background(), "org", "repo", "fullsend.yaml")
+		}(i)
+	}
+	// Let every caller join the in-flight request before it completes.
+	time.Sleep(100 * time.Millisecond)
+	close(release)
+	wg.Wait()
+	for i, err := range errs {
+		require.NoError(t, err, "caller %d", i)
+	}
+	// Callers that joined before the response share it; a straggler that
+	// arrives after close(release) may start a second request.
+	assert.Less(t, calls.Load(), int32(callers), "concurrent callers of one URL share requests")
+}
+
+// TestGetCached_OlderResponseNeverOverwritesNewer: a later poll always
+// sees the newest state once a newer response has been cached.
+func TestGetCached_OlderResponseNeverOverwritesNewer(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := calls.Add(1)
+		if n == 1 {
+			w.Header().Set("ETag", `"v1"`)
+			json.NewEncoder(w).Encode(runsBody("in_progress"))
+			return
+		}
+		if r.Header.Get("If-None-Match") == `"v2"` {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set("ETag", `"v2"`)
+		json.NewEncoder(w).Encode(runsBody("completed"))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	ctx := context.Background()
+	for i, want := range []string{"in_progress", "completed", "completed", "completed"} {
+		runs, err := client.ListWorkflowRuns(ctx, "org", "repo", "fullsend.yaml")
+		require.NoError(t, err)
+		assert.Equal(t, want, runs[0].Status, "poll %d", i)
+	}
+}
+
+// TestGetCached_InvalidJSONNotCached: a malformed ETagged body is not
+// cached, so the next poll is a plain GET rather than a replay.
+func TestGetCached_InvalidJSONNotCached(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			w.Header().Set("ETag", `"bad"`)
+			w.Write([]byte("{not json"))
+			return
+		}
+		assert.Empty(t, r.Header.Get("If-None-Match"), "a malformed body must not be cached")
+		w.Header().Set("ETag", `"good"`)
+		json.NewEncoder(w).Encode(runsBody("in_progress"))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.ListWorkflowRuns(context.Background(), "org", "repo", "fullsend.yaml")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "list workflow runs: decode /repos/org/repo/actions/workflows/fullsend.yaml/runs")
+	runs, err := client.ListWorkflowRuns(context.Background(), "org", "repo", "fullsend.yaml")
+	require.NoError(t, err)
+	assert.Equal(t, "in_progress", runs[0].Status)
+}
+
+// TestGetCached_UndecodableCachedBodyEvicted: valid JSON that the caller
+// cannot decode is dropped from the cache instead of replayed on 304.
+func TestGetCached_UndecodableCachedBodyEvicted(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			w.Header().Set("ETag", `"odd"`)
+			w.Write([]byte(`{"workflow_runs":"not-a-list"}`))
+			return
+		}
+		assert.Empty(t, r.Header.Get("If-None-Match"), "an undecodable body must be evicted")
+		w.Header().Set("ETag", `"good"`)
+		json.NewEncoder(w).Encode(runsBody("in_progress"))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.ListWorkflowRuns(context.Background(), "org", "repo", "fullsend.yaml")
+	require.Error(t, err)
+	_, err = client.ListWorkflowRuns(context.Background(), "org", "repo", "fullsend.yaml")
+	require.NoError(t, err)
+}
+
+// TestGetCached_OversizeBodyReturnedNotRetained: a body larger than
+// etagMaxBodyBytes is returned intact but not cached.
+func TestGetCached_OversizeBodyReturnedNotRetained(t *testing.T) {
+	name := strings.Repeat("x", etagMaxBodyBytes)
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		assert.Empty(t, r.Header.Get("If-None-Match"), "an oversize body must not be cached")
+		w.Header().Set("ETag", `"big"`)
+		json.NewEncoder(w).Encode(map[string]any{"workflow_runs": []map[string]any{
+			{"id": 7, "name": name, "status": "queued", "created_at": "2024-01-01T00:00:00Z"},
+		}})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	for range 2 {
+		runs, err := client.ListWorkflowRuns(context.Background(), "org", "repo", "fullsend.yaml")
+		require.NoError(t, err)
+		require.Len(t, runs, 1)
+		assert.Equal(t, name, runs[0].Name, "the oversize body is returned intact")
+	}
+	assert.Equal(t, int32(2), calls.Load())
+	client.etagMu.Lock()
+	defer client.etagMu.Unlock()
+	assert.Empty(t, client.etagCache)
+	assert.Zero(t, client.etagBytes)
+}
+
+// cachedKeys returns the cached keys, most recently used first.
+func cachedKeys(c *LiveClient) []string {
+	c.etagMu.Lock()
+	defer c.etagMu.Unlock()
+	var keys []string
+	if c.etagLRU == nil {
+		return keys
+	}
+	for el := c.etagLRU.Front(); el != nil; el = el.Next() {
+		keys = append(keys, el.Value.(*etagEntry).key)
+	}
+	return keys
+}
+
+// TestEtagCache_EvictsLeastRecentlyUsed: a key that keeps being looked up
+// survives, and the least recently used one is evicted first.
+func TestEtagCache_EvictsLeastRecentlyUsed(t *testing.T) {
+	client := New("tok")
+	for i := range etagCacheLimit {
+		client.storeCachedETag(fmt.Sprintf("k%d", i), "e", []byte("1"))
+	}
+	// k0 is the oldest store, but it is hot: a lookup marks it recent.
+	_, ok := client.lookupCachedETag("k0")
+	require.True(t, ok)
+
+	client.storeCachedETag("new", "e", []byte("1"))
+	keys := cachedKeys(client)
+	assert.Len(t, keys, etagCacheLimit)
+	assert.Contains(t, keys, "k0", "a recently used entry survives eviction")
+	assert.NotContains(t, keys, "k1", "the least recently used entry is evicted first")
+	assert.Equal(t, "new", keys[0])
+}
+
+// TestEtagCache_EntryBoundEvicts: exceeding etagCacheLimit evicts only as
+// many entries as needed, not the whole cache.
+func TestEtagCache_EntryBoundEvicts(t *testing.T) {
+	client := New("tok")
+	for i := range etagCacheLimit + 3 {
+		client.storeCachedETag(fmt.Sprintf("k%d", i), "e", []byte("1"))
+	}
+	keys := cachedKeys(client)
+	assert.Len(t, keys, etagCacheLimit)
+	for i := range 3 {
+		assert.NotContains(t, keys, fmt.Sprintf("k%d", i))
+	}
+	assert.Contains(t, keys, "k3")
+	client.etagMu.Lock()
+	assert.Equal(t, etagCacheLimit, client.etagBytes)
+	client.etagMu.Unlock()
+}
+
+// TestEtagCache_ByteBoundEvicts: exceeding etagMaxTotalBytes evicts the
+// least recently used entries until the total fits.
+func TestEtagCache_ByteBoundEvicts(t *testing.T) {
+	client := New("tok")
+	body := make([]byte, etagMaxBodyBytes)
+	n := etagMaxTotalBytes / etagMaxBodyBytes
+	for i := range n {
+		client.storeCachedETag(fmt.Sprintf("k%d", i), "e", body)
+	}
+	require.Len(t, cachedKeys(client), n)
+
+	client.storeCachedETag("one-more", "e", []byte("x"))
+	keys := cachedKeys(client)
+	assert.NotContains(t, keys, "k0", "the least recently used entry makes room")
+	assert.Contains(t, keys, "k1")
+	assert.Contains(t, keys, "one-more")
+	client.etagMu.Lock()
+	defer client.etagMu.Unlock()
+	assert.LessOrEqual(t, client.etagBytes, etagMaxTotalBytes)
+	assert.Equal(t, (n-1)*etagMaxBodyBytes+1, client.etagBytes)
+}
+
+// TestEtagCache_ReplaceAdjustsBytes: storing over an existing key replaces
+// its byte count instead of adding to it.
+func TestEtagCache_ReplaceAdjustsBytes(t *testing.T) {
+	client := New("tok")
+	client.storeCachedETag("k", "e1", []byte("1"))
+	client.storeCachedETag("k", "e2", []byte("123"))
+	client.etagMu.Lock()
+	defer client.etagMu.Unlock()
+	assert.Equal(t, 3, client.etagBytes)
+	assert.Len(t, client.etagCache, 1)
+}
+
+// TestGetCached_CachedBodyNotAliased: the cache keeps its own copy of the
+// body, so mutating a fetched body cannot corrupt it.
+func TestGetCached_CachedBodyNotAliased(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("If-None-Match") == `"v1"` {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set("ETag", `"v1"`)
+		json.NewEncoder(w).Encode(runsBody("in_progress"))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	path := "/repos/org/repo/actions/runs?per_page=1"
+	res, err := client.fetchConditional(context.Background(), client.baseURL+path, path)
+	require.NoError(t, err)
+	for i := range res.body {
+		res.body[i] = 'X'
+	}
+	client.etagMu.Lock()
+	cached := client.etagCache[client.baseURL+path].Value.(*etagEntry).body
+	client.etagMu.Unlock()
+	assert.True(t, json.Valid(cached), "the cached body must not alias the returned one")
+
+	// A 304 returns the cached body; mutating that result must not reach
+	// the cache either.
+	notModified, err := client.fetchConditional(context.Background(), client.baseURL+path, path)
+	require.NoError(t, err)
+	for i := range notModified.body {
+		notModified.body[i] = 'X'
+	}
+	client.etagMu.Lock()
+	cached = client.etagCache[client.baseURL+path].Value.(*etagEntry).body
+	client.etagMu.Unlock()
+	assert.True(t, json.Valid(cached), "the 304 result must not alias the cache")
+}
+
+// TestGetCached_ReadErrorNamesPath: a body read failure says which
+// request failed.
+func TestGetCached_ReadErrorNamesPath(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"v1"`)
+		w.Header().Set("Content-Length", "1000")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"workflow_runs":`))
+		// Close with the body short of Content-Length.
+		hj, ok := w.(http.Hijacker)
+		if !assert.True(t, ok) {
+			return
+		}
+		conn, _, err := hj.Hijack()
+		if !assert.NoError(t, err) {
+			return
+		}
+		conn.Close()
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.ListWorkflowRuns(context.Background(), "org", "repo", "fullsend.yaml")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "read response /repos/org/repo/actions/workflows/fullsend.yaml/runs")
+}
+
+// TestGetCached_304AfterRetry: a retried conditional GET keeps its
+// If-None-Match, and a 304 after a 5xx retry serves the cached body.
+func TestGetCached_304AfterRetry(t *testing.T) {
+	var calls atomic.Int32
+	var inm []string
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := calls.Add(1)
+		mu.Lock()
+		inm = append(inm, r.Header.Get("If-None-Match"))
+		mu.Unlock()
+		switch n {
+		case 1:
+			w.Header().Set("ETag", `"v1"`)
+			json.NewEncoder(w).Encode(runsBody("in_progress"))
+		case 2:
+			w.WriteHeader(http.StatusBadGateway)
+		default:
+			w.WriteHeader(http.StatusNotModified)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	ctx := context.Background()
+	_, err := client.ListWorkflowRuns(ctx, "org", "repo", "fullsend.yaml")
+	require.NoError(t, err)
+	runs, err := client.ListWorkflowRuns(ctx, "org", "repo", "fullsend.yaml")
+	require.NoError(t, err)
+	assert.Equal(t, "in_progress", runs[0].Status, "the 304 after a retried 502 serves the cached body")
+	assert.Equal(t, int32(3), calls.Load())
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, []string{"", `"v1"`, `"v1"`}, inm, "the retry keeps If-None-Match")
+}
+
+// TestFetchConditional_InvalidJSONNotStored: the cache gate itself
+// rejects a malformed ETagged body, before any caller decodes it.
+func TestFetchConditional_InvalidJSONNotStored(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"bad"`)
+		w.Write([]byte("{not json"))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	path := "/repos/org/repo/actions/runs?per_page=1"
+	res, err := client.fetchConditional(context.Background(), client.baseURL+path, path)
+	require.NoError(t, err)
+	assert.Equal(t, "{not json", string(res.body), "the body is still returned to the caller")
+	client.etagMu.Lock()
+	defer client.etagMu.Unlock()
+	assert.Empty(t, client.etagCache)
+}
+
+// TestGetCached_LeaderCancelDoesNotFailWaiter: when the caller whose
+// request is shared gives up, a waiter with its own live context still
+// gets the result rather than the other caller's cancellation (#6797
+// review).
+func TestGetCached_LeaderCancelDoesNotFailWaiter(t *testing.T) {
+	received := make(chan struct{}, 1)
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received <- struct{}{}
+		<-release
+		w.Header().Set("ETag", `"v1"`)
+		json.NewEncoder(w).Encode(runsBody("in_progress"))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	leaderCtx, cancelLeader := context.WithCancel(context.Background())
+	leaderErr := make(chan error, 1)
+	go func() {
+		_, err := client.ListWorkflowRuns(leaderCtx, "org", "repo", "fullsend.yaml")
+		leaderErr <- err
+	}()
+	<-received // the leader's request is in flight
+
+	waiterErr := make(chan error, 1)
+	var waiterRuns []forge.WorkflowRun
+	go func() {
+		runs, err := client.ListWorkflowRuns(context.Background(), "org", "repo", "fullsend.yaml")
+		waiterRuns = runs
+		waiterErr <- err
+	}()
+	time.Sleep(50 * time.Millisecond) // let the waiter join the flight
+	cancelLeader()
+	select {
+	case err := <-leaderErr:
+		require.ErrorIs(t, err, context.Canceled, "the leader stops on its own context")
+	case <-time.After(5 * time.Second):
+		close(release)
+		t.Fatal("the leader did not stop on its own cancelled context")
+	}
+
+	close(release)
+	select {
+	case err := <-waiterErr:
+		require.NoError(t, err, "the waiter must not inherit the leader's cancellation")
+	case <-time.After(5 * time.Second):
+		t.Fatal("the waiter did not get the shared result")
+	}
+	require.Len(t, waiterRuns, 1)
+}
+
+// TestGetCached_WaiterHonoursOwnDeadline: a caller waiting on another
+// caller's in-flight request stops at its own deadline.
+func TestGetCached_WaiterHonoursOwnDeadline(t *testing.T) {
+	received := make(chan struct{}, 1)
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received <- struct{}{}
+		<-release
+		w.Header().Set("ETag", `"v1"`)
+		json.NewEncoder(w).Encode(runsBody("in_progress"))
+	}))
+	defer srv.Close()
+	defer close(release)
+
+	client := newTestClient(t, srv)
+	go client.ListWorkflowRuns(context.Background(), "org", "repo", "fullsend.yaml") //nolint:errcheck
+	<-received
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := client.ListWorkflowRuns(ctx, "org", "repo", "fullsend.yaml")
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the waiter did not return at its own deadline")
+	}
+}
+
+// TestFetchConditional_304WithoutEntryIsAnError: a 304 for a request sent
+// without If-None-Match is reported, not decoded as an empty body.
+func TestFetchConditional_304WithoutEntryIsAnError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotModified)
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.ListWorkflowRuns(context.Background(), "org", "repo", "fullsend.yaml")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "304 Not Modified without a cached entry")
+}
+
+// TestGetCached_CancelledCallerStartsNoFetch: a caller whose context
+// is already done returns at once without starting a request.
+func TestGetCached_CancelledCallerStartsNoFetch(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := client.ListWorkflowRuns(ctx, "org", "repo", "fullsend.yaml")
+	require.ErrorIs(t, err, context.Canceled)
+	time.Sleep(50 * time.Millisecond)
+	assert.Zero(t, calls.Load(), "no request is started for a caller that already gave up")
+}
+
+// TestGetCached_UncacheableResponseDropsStaleEntry: when a new 200 cannot
+// be cached (here: no ETag), the previous entry is dropped instead of
+// being sent as If-None-Match forever.
+func TestGetCached_UncacheableResponseDropsStaleEntry(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch calls.Add(1) {
+		case 1:
+			w.Header().Set("ETag", `"v1"`)
+			json.NewEncoder(w).Encode(runsBody("in_progress"))
+		case 2:
+			assert.Equal(t, `"v1"`, r.Header.Get("If-None-Match"))
+			json.NewEncoder(w).Encode(runsBody("completed")) // no ETag
+		default:
+			assert.Empty(t, r.Header.Get("If-None-Match"), "the stale entry must be dropped")
+			json.NewEncoder(w).Encode(runsBody("completed"))
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	ctx := context.Background()
+	for i, want := range []string{"in_progress", "completed", "completed"} {
+		runs, err := client.ListWorkflowRuns(ctx, "org", "repo", "fullsend.yaml")
+		require.NoError(t, err)
+		assert.Equal(t, want, runs[0].Status, "poll %d", i)
+	}
+	assert.Empty(t, cachedKeys(client))
+}
+
+// TestGetCached_AbandonedFetchStillFillsCache: when every caller leaves,
+// the detached fetch completes and caches its result for the next caller.
+func TestGetCached_AbandonedFetchStillFillsCache(t *testing.T) {
+	received := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			received <- struct{}{}
+			<-release
+			w.Header().Set("ETag", `"v1"`)
+			json.NewEncoder(w).Encode(runsBody("in_progress"))
+			return
+		}
+		assert.Equal(t, `"v1"`, r.Header.Get("If-None-Match"), "the abandoned fetch filled the cache")
+		w.WriteHeader(http.StatusNotModified)
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	ctx, cancel := context.WithCancel(context.Background())
+	errc := make(chan error, 1)
+	go func() {
+		_, err := client.ListWorkflowRuns(ctx, "org", "repo", "fullsend.yaml")
+		errc <- err
+	}()
+	<-received
+	cancel()
+	require.ErrorIs(t, <-errc, context.Canceled)
+	close(release)
+
+	require.Eventually(t, func() bool { return len(cachedKeys(client)) == 1 }, 5*time.Second, 10*time.Millisecond)
+	runs, err := client.ListWorkflowRuns(context.Background(), "org", "repo", "fullsend.yaml")
+	require.NoError(t, err)
+	assert.Equal(t, "in_progress", runs[0].Status)
+}
+
+func writeBlobTestFile(t *testing.T, size int) (string, []byte) {
+	t.Helper()
+	content := make([]byte, size)
+	for i := range content {
+		content[i] = byte(i * 7)
+	}
+	path := filepath.Join(t.TempDir(), "blob.bin")
+	require.NoError(t, os.WriteFile(path, content, 0o644))
+	return path, content
+}
+
+// assertBlobUpload validates a blob upload request. It is called from httptest
+// handler goroutines, so it uses nonfatal assertions and reports whether the
+// upload was valid so the handler can respond with an explicit error.
+func assertBlobUpload(t *testing.T, r *http.Request, want []byte) bool {
+	t.Helper()
+	body, err := io.ReadAll(r.Body)
+	if !assert.NoError(t, err) {
+		return false
+	}
+	ok := assert.Equal(t, int64(len(body)), r.ContentLength, "uploaded bytes must match ContentLength")
+	ok = assert.Equal(t, blobJSONLength(int64(len(want))), int64(len(body))) && ok
+	var parsed map[string]string
+	if !assert.NoError(t, json.Unmarshal(body, &parsed)) {
+		return false
+	}
+	ok = assert.Equal(t, "base64", parsed["encoding"]) && ok
+	decoded, err := base64.StdEncoding.DecodeString(parsed["content"])
+	if !assert.NoError(t, err) {
+		return false
+	}
+	return assert.Equal(t, want, decoded) && ok
+}
+
+func TestCreateBlobFromFile_RetryReplaysFullFile(t *testing.T) {
+	path, content := writeBlobTestFile(t, 200*1024+1)
+	var attempts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/repos/org/repo/git/blobs", r.URL.Path)
+		if attempts.Add(1) == 1 {
+			// Consume the first body fully, then ask for a retry.
+			_, _ = io.Copy(io.Discard, r.Body)
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		if !assertBlobUpload(t, r, content) {
+			http.Error(w, "invalid blob upload", http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]string{"sha": "blobsha"})
+	}))
+	defer srv.Close()
+
+	sha, err := newTestClient(t, srv).createBlobFromFile(context.Background(), "org", "repo", path)
+	require.NoError(t, err)
+	assert.Equal(t, "blobsha", sha)
+	assert.Equal(t, int32(2), attempts.Load())
+}
+
+func TestCreateBlobFromFile_RedirectReplaysBody(t *testing.T) {
+	path, content := writeBlobTestFile(t, 50*1024+2)
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/org/repo/git/blobs":
+			_, _ = io.Copy(io.Discard, r.Body)
+			http.Redirect(w, r, "/redirected/blobs", http.StatusTemporaryRedirect)
+		case "/redirected/blobs":
+			hits.Add(1)
+			assert.Equal(t, http.MethodPost, r.Method)
+			if !assertBlobUpload(t, r, content) {
+				http.Error(w, "invalid blob upload", http.StatusBadRequest)
+				return
+			}
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"sha": "blobsha"})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	sha, err := newTestClient(t, srv).createBlobFromFile(context.Background(), "org", "repo", path)
+	require.NoError(t, err)
+	assert.Equal(t, "blobsha", sha)
+	assert.Equal(t, int32(1), hits.Load())
+}
+
+func TestListInheritedRepoVariables_BlankValuePresence(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"total_count": 3, "variables": []map[string]string{{"name": "EMPTY", "value": ""}, {"name": "SPACE", "value": " \t"}, {"name": "SET", "value": "identifier"}}})
+	}))
+	defer srv.Close()
+	vars, err := newTestClient(t, srv).ListInheritedRepoVariables(context.Background(), "myorg", "myrepo")
+	require.NoError(t, err)
+	require.Len(t, vars, 3)
+	for i, expected := range []bool{false, false, true} {
+		require.NotNil(t, vars[i].NonBlank)
+		assert.Equal(t, expected, *vars[i].NonBlank)
+	}
+}
+
+func TestListInheritedRepoVariables_RateLimitIsNotForbidden(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(map[string]string{"message": "API rate limit exceeded"})
+	}))
+	defer srv.Close()
+	client := newTestClient(t, srv)
+	client.afterFunc = noWaitAfter
+	_, err := client.ListInheritedRepoVariables(context.Background(), "myorg", "myrepo")
+	require.Error(t, err)
+	assert.True(t, IsRateLimitError(err))
+	assert.False(t, forge.IsForbidden(err))
+}
+
+func TestGetRepoVariableInfo(t *testing.T) {
+	for _, status := range []int{http.StatusOK, http.StatusNotFound, http.StatusForbidden} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, "/repos/acme/api/actions/variables/IDENTIFIER", r.URL.Path)
+				w.WriteHeader(status)
+				json.NewEncoder(w).Encode(map[string]string{"value": "identifier"})
+			}))
+			defer srv.Close()
+			v, exists, err := newTestClient(t, srv).GetRepoVariableInfo(context.Background(), "acme", "api", "IDENTIFIER")
+			assert.False(t, v.FileType)
+			if status == http.StatusForbidden {
+				require.Error(t, err)
+				assert.False(t, exists)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, status == http.StatusOK, exists)
+			}
+			if exists {
+				assert.Equal(t, "identifier", v.Value)
+			}
+		})
+	}
 }

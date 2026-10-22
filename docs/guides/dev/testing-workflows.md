@@ -14,29 +14,31 @@ There are independent version reference inputs that control different parts of t
 When no release exists for `fullsend_version`, `action.yml` falls back to cloning
 and building from source at that ref (see the `install-method=source` path).
 
+The standalone prioritize workflow normally leaves inference credential preparation
+to the CLI. With an explicit `fullsend_version` override and both GCP credentials
+supplied, it also runs GCP preparation for compatibility with older Vertex CLIs.
+OpenAI-only callers without GCP credentials skip this step.
+
 If `uses:` and `fullsend_version` diverge, the workflows/agents and
 CLI diverge, potentially causing mismatch in behavior and failures.
 
 ## Vendored installs (recommended for PR testing)
 
-Install or re-install with `--vendor` to copy reusable workflows, actions, agent
-definitions, and the CLI binary from your local checkout into the config repo or
-`.fullsend/` directory:
+Install or re-install a test repository with `--vendor` to copy reusable
+workflows, actions, agent definitions, and the CLI binary from your checkout
+into its `.fullsend/` directory:
 
 ```bash
-go run ./cmd/fullsend admin install "$ORG" \
+go run ./cmd/fullsend github setup "$OWNER/$REPO" \
   --vendor \
   --fullsend-source "$PWD" \
-  --skip-app-setup \
-  --skip-mint-check \
-  --mint-url "$MINT_URL" \
-  # ... other flags
+  --mint-url "$MINT_URL"
 ```
 
-After changing reusable workflows or agent content, re-run install (or
-`go run ./cmd/fullsend github setup`) with `--vendor` to refresh vendored files.
-`go run ./cmd/fullsend github sync-scaffold` updates thin caller templates and auto-detects
-vendored vs layered mode from `.defaults/action.yml` presence.
+After changing reusable workflows or agent content, re-run the same
+`go run ./cmd/fullsend github setup "$OWNER/$REPO"` command above, including
+`--vendor` and `--fullsend-source "$PWD"`, to refresh the target repository's
+vendored files and workflow callers.
 
 Runtime skips the upstream sparse checkout when `.defaults/action.yml` is
 present (vendored install) and stages content from `.defaults/` instead.
@@ -52,8 +54,6 @@ change the `uses:` ref and matching `with:` inputs in the thin caller workflows.
 
 **Note**: for forks, change the `fullsend-ai/fullsend` portion to point to your fork.
 
-### Per-repo mode
-
 In your repository modify the dispatch job at `.github/workflows/fullsend.yaml`:
 
 ```yaml
@@ -68,26 +68,49 @@ jobs:
       # [...]
 ```
 
-### Per-org mode
+Push the change and trigger a Fullsend action on the test repository:
+`/fs-triage`, `/fs-code`, or another agent command. Revert the references to
+the desired release or branch before deleting or rewriting the test ref.
 
-**WARNING**: this impacts all repositories, so proceed with care. You can install
-your test repository using per-repo mode to avoid this problem.
+## Running CI checks locally
 
-In your `.fullsend` repository change the references for the `reusable-<stage>.yml` you want to
-test (triage in the example below):
+On macOS, or a Linux distribution other than Ubuntu, `ci-local` runs the PR
+CI checks in a container that matches the `ubuntu-24.04` runner, so local
+results predict CI.
 
-```yaml
-# .github/workflows/triage.yml
-jobs:
-  triage:
-    # [...]
-    uses: fullsend-ai/fullsend/.github/workflows/reusable-triage.yml@<YOUR_BRANCH>
-    with:
-      # [...]
-      fullsend_version: <YOUR_BRANCH>
-      # [...]
-```
+**Prerequisites:** Podman or Docker, set up as described in
+[`hack/ci-local/README.md`](../../../hack/ci-local/README.md#setup).
 
-Then push this change and trigger a Fullsend action on your test repository: `/fs-triage`, `/fs-code`, ...
-When the ref is deleted from fullsend-ai/fullsend (branch deleted or commit amended), revert this back
-to the desired reference.
+1. Run everything PR CI runs:
+
+   ```bash
+   make ci-local
+   ```
+
+2. Run selected targets while iterating:
+
+   ```bash
+   make ci-local T="go-test lint-all"
+   ```
+
+3. List all targets and options:
+
+   ```bash
+   hack/ci-local/ci-local help
+   ```
+
+   Common targets are `go-test`, `lint-all`, `script-test` and `docs`. Add
+   `-C <path>` to test another checkout or worktree, and `--amd64` to match
+   GitHub's x86_64 runners exactly. On Apple silicon, `--amd64` is emulated
+   and slow, and needs Docker Desktop's Rosetta emulation (see
+   [Setup](../../../hack/ci-local/README.md#setup)):
+
+   ```bash
+   CI_LOCAL_ENGINE=docker hack/ci-local/ci-local -C ../my-worktree --amd64 go-test
+   ```
+
+The first run builds the image, which takes a few minutes. Set
+`CI_LOCAL_ENGINE=docker` to use Docker when Podman is also installed.
+`CI_LOCAL_DNS` overrides the resolvers the container uses; see
+[DNS](../../../hack/ci-local/README.md#dns). The README also covers
+isolation, how tool versions follow CI, and `ci-local clean`.

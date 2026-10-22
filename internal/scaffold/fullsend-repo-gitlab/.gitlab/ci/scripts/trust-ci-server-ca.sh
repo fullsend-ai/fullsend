@@ -16,7 +16,11 @@
 # Source this file (do not execute it) so the exports persist.
 
 fullsend_trust_ci_server_ca() {
-  if [ "${FULLSEND_CI_SERVER_CA_TRUSTED:-}" = "1" ]; then
+  # Idempotency is a shell-local flag, not the exported
+  # FULLSEND_CI_SERVER_CA_TRUSTED env var: that name is in the same
+  # trigger-overridable class as other CI variables, so a caller who
+  # sets it to 1 must not skip CA pinning.
+  if [ "${_fullsend_trust_ci_server_ca_done:-}" = "1" ]; then
     return 0
   fi
 
@@ -75,6 +79,7 @@ fullsend_trust_ci_server_ca() {
   export REQUESTS_CA_BUNDLE="${combined}"
   export NODE_EXTRA_CA_CERTS="${combined}"
   export FULLSEND_CI_SERVER_CA_TRUSTED=1
+  _fullsend_trust_ci_server_ca_done=1
 
   echo "Trusted extra CA from CI_SERVER_TLS_CA_FILE (${ca_file}); combined bundle at ${combined}" >&2
 }

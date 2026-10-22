@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -41,8 +42,8 @@ type StatusNotificationsReader interface {
 
 // --- Composite read interface ---
 
-// ConfigReader is the common read interface for fields shared by both
-// orgConfig and perRepoConfig. Consumer packages should depend on this
+// ConfigReader is the common read interface for the general-purpose
+// configuration fields. Consumer packages should depend on this
 // interface rather than accessing struct fields directly.
 type ConfigReader interface {
 	AgentLister
@@ -51,21 +52,9 @@ type ConfigReader interface {
 	CreateIssuesReader
 	StatusNotificationsReader
 	ConfigVersion() string
-	IsOrgMode() bool
 }
 
-// --- Mode-specific read interfaces ---
-
-// OrgConfigReader extends ConfigReader with org-mode-specific fields.
-type OrgConfigReader interface {
-	ConfigReader
-	DispatchSettings() DispatchConfig
-	InferenceSettings() InferenceConfig
-	OrgRepoDefaults() RepoDefaults
-	RepoMap() map[string]RepoConfig
-	EnabledRepos() []string
-	DisabledRepos() []string
-}
+// --- Per-repo read interface ---
 
 // PerRepoConfigReader extends ConfigReader with per-repo-specific
 // fields. Methods are prefixed with "Config" to avoid conflicts with
@@ -83,6 +72,9 @@ type PerRepoConfigReader interface {
 	ConfigInferenceRegion() string
 	ConfigInferenceWIFProvider() string
 	ConfigInferenceOpenAI() OpenAIWIFConfig
+	// ConfigInferenceGateway returns the effective inference.gateway
+	// block, layered field by field (ADR 0137).
+	ConfigInferenceGateway() InferenceGatewayConfig
 	// ConfigModelAliases returns the effective model alias map, merged
 	// per-key through the parent chain. nil (the code default) means no
 	// aliases are configured: every alias resolves through the runtime's
@@ -95,8 +87,8 @@ type PerRepoConfigReader interface {
 
 // --- Write superset interfaces ---
 
-// ConfigWriter extends ConfigReader with mutation methods shared by
-// both config modes.
+// ConfigWriter extends ConfigReader with mutation methods for the
+// general-purpose configuration fields.
 type ConfigWriter interface {
 	ConfigReader
 	SetKillSwitch(bool)
@@ -105,18 +97,6 @@ type ConfigWriter interface {
 	SetStatusNotifications(*StatusNotificationConfig)
 	Marshal() ([]byte, error)
 	Validate() error
-}
-
-// OrgConfigWriter extends OrgConfigReader and ConfigWriter with
-// org-specific mutation methods.
-type OrgConfigWriter interface {
-	OrgConfigReader
-	ConfigWriter
-	SetDispatch(DispatchConfig)
-	SetInference(InferenceConfig)
-	SetDefaultRuntime(string)
-	SetRepo(name string, rc RepoConfig)
-	DeleteRepo(name string)
 }
 
 // PerRepoConfigWriter extends PerRepoConfigReader and ConfigWriter with
@@ -133,6 +113,10 @@ type PerRepoConfigWriter interface {
 	SetInferenceRegion(string)
 	SetInferenceWIFProvider(string)
 	SetInferenceOpenAI(OpenAIWIFConfig)
+	SetInferenceGateway(InferenceGatewayConfig)
+	// MergeInferenceGateway layers the set fields of g over this layer's
+	// own inference.gateway block, the way the layers merge.
+	MergeInferenceGateway(InferenceGatewayConfig)
 	SetModelAliases(map[string]string)
 	SetOwnersFileAuthEnabled(bool)
 }
@@ -140,99 +124,11 @@ type PerRepoConfigWriter interface {
 // --- Compile-time assertions ---
 
 var (
-	_ ConfigReader        = (*orgConfig)(nil)
 	_ ConfigReader        = (*perRepoConfig)(nil)
-	_ OrgConfigReader     = (*orgConfig)(nil)
 	_ PerRepoConfigReader = (*perRepoConfig)(nil)
-	_ ConfigWriter        = (*orgConfig)(nil)
 	_ ConfigWriter        = (*perRepoConfig)(nil)
-	_ OrgConfigWriter     = (*orgConfig)(nil)
 	_ PerRepoConfigWriter = (*perRepoConfig)(nil)
 )
-
-// --- orgConfig getter methods ---
-
-// AgentEntries returns the registered agent entries.
-func (c *orgConfig) AgentEntries() []AgentEntry { return c.Agents }
-
-// IsKillSwitchActive reports whether the kill switch is engaged.
-func (c *orgConfig) IsKillSwitchActive() bool { return c.KillSwitch }
-
-// AllowedResources returns the allowed remote resource prefixes.
-func (c *orgConfig) AllowedResources() []string { return c.AllowedRemoteResources }
-
-// IssueCreationConfig returns the cross-repo issue creation config.
-func (c *orgConfig) IssueCreationConfig() *CreateIssuesConfig { return c.CreateIssues }
-
-// ConfigVersion returns the config schema version.
-func (c *orgConfig) ConfigVersion() string { return c.Version }
-
-// IsOrgMode reports that this is an org-mode configuration.
-func (c *orgConfig) IsOrgMode() bool { return true }
-
-// DispatchSettings returns the dispatch configuration.
-func (c *orgConfig) DispatchSettings() DispatchConfig { return c.Dispatch }
-
-// InferenceSettings returns the inference provider configuration.
-func (c *orgConfig) InferenceSettings() InferenceConfig { return c.Inference }
-
-// OrgRepoDefaults returns the default settings applied to all repos.
-func (c *orgConfig) OrgRepoDefaults() RepoDefaults { return c.Defaults }
-
-// RepoMap returns the per-repo configuration map.
-func (c *orgConfig) RepoMap() map[string]RepoConfig { return c.Repos }
-
-// StatusNotifications returns the status notification configuration.
-func (c *orgConfig) StatusNotifications() *StatusNotificationConfig {
-	return c.Defaults.StatusNotifications
-}
-
-// --- orgConfig setter methods ---
-
-// SetKillSwitch sets the kill switch state.
-func (c *orgConfig) SetKillSwitch(v bool) { c.KillSwitch = v }
-
-// SetAgents replaces the registered agent entries.
-func (c *orgConfig) SetAgents(agents []AgentEntry) { c.Agents = agents }
-
-// SetAllowedRemoteResources replaces the allowed remote resource
-// prefixes.
-func (c *orgConfig) SetAllowedRemoteResources(resources []string) {
-	c.AllowedRemoteResources = resources
-}
-
-// SetDispatch replaces the dispatch configuration.
-func (c *orgConfig) SetDispatch(d DispatchConfig) { c.Dispatch = d }
-
-// SetInference replaces the inference provider configuration.
-func (c *orgConfig) SetInference(i InferenceConfig) { c.Inference = i }
-
-// SetDefaultRuntime replaces the default agent runtime.
-func (c *orgConfig) SetDefaultRuntime(rt string) { c.Defaults.Runtime = rt }
-
-// SetStatusNotifications sets the status notification configuration.
-func (c *orgConfig) SetStatusNotifications(sn *StatusNotificationConfig) {
-	c.Defaults.StatusNotifications = sn
-}
-
-// SetRepo adds or replaces a per-repo configuration entry.
-// Callers should use this method instead of mutating the map returned
-// by RepoMap() to keep mutations on the writer interface.
-func (c *orgConfig) SetRepo(name string, rc RepoConfig) {
-	if c.Repos == nil {
-		c.Repos = make(map[string]RepoConfig)
-	}
-	c.Repos[name] = rc
-}
-
-// DeleteRepo removes a per-repo configuration entry if it exists.
-// It is a no-op when the name is absent or Repos is nil.
-func (c *orgConfig) DeleteRepo(name string) {
-	if c.Repos == nil {
-		return
-	}
-	delete(c.Repos, name)
-}
 
 // --- perRepoConfig getter methods ---
 //
@@ -426,9 +322,6 @@ func (c *perRepoConfig) ConfigVersion() string {
 	return ""
 }
 
-// IsOrgMode reports that this is a per-repo configuration.
-func (c *perRepoConfig) IsOrgMode() bool { return false }
-
 // IsOwnersFileAuthEnabled returns whether OWNERS-file authorization is enabled.
 // Intentionally no parent fallback: OWNERS auth is a per-repo opt-in that must
 // not be inheritable from config.base.yaml.
@@ -585,6 +478,20 @@ func (c *perRepoConfig) ConfigInferenceOpenAI() OpenAIWIFConfig {
 	return out
 }
 
+// ConfigInferenceGateway returns the inference.gateway block. url and
+// audience resolve independently through the layers; the model list
+// (models or models_file) is one unit that a layer replaces as a whole.
+func (c *perRepoConfig) ConfigInferenceGateway() InferenceGatewayConfig {
+	var out InferenceGatewayConfig
+	if c.parent != nil {
+		out = c.parent.ConfigInferenceGateway()
+	}
+	if c.Inference != nil {
+		out = mergeGateway(out, c.Inference.Gateway)
+	}
+	return out
+}
+
 // ConfigModelAliases returns the effective model alias map, merged per
 // key through the parent chain. Each key in the local Models.Aliases
 // overrides the same key from the parent; unstated keys inherit the
@@ -713,6 +620,35 @@ func (c *perRepoConfig) SetInferenceOpenAI(ids OpenAIWIFConfig) {
 	inf.OpenAI = &cp
 }
 
+// SetInferenceGateway sets the inference.gateway block; a zero value
+// removes it.
+func (c *perRepoConfig) SetInferenceGateway(g InferenceGatewayConfig) {
+	inf := c.ensureInference()
+	if g.IsZero() {
+		inf.Gateway = nil
+		return
+	}
+	inf.Gateway = cloneGateway(&g)
+}
+
+// MergeInferenceGateway layers the set fields of g over this layer's own
+// inference.gateway block (not the inherited one): url and audience
+// replace individually, and a model list in either form replaces the
+// existing list. Fields g leaves unset keep their current value.
+func (c *perRepoConfig) MergeInferenceGateway(g InferenceGatewayConfig) {
+	inf := c.ensureInference()
+	var cur InferenceGatewayConfig
+	if inf.Gateway != nil {
+		cur = *inf.Gateway
+	}
+	merged := mergeGateway(cur, &g)
+	if merged.IsZero() {
+		inf.Gateway = nil
+		return
+	}
+	inf.Gateway = cloneGateway(&merged)
+}
+
 // ensureInference lazily initializes the Inference struct.
 func (c *perRepoConfig) ensureInference() *PerRepoInferenceConfig {
 	if c.Inference == nil {
@@ -736,10 +672,10 @@ type LoadOpts struct {
 }
 
 // LoadConfig reads config.yaml (and config.base.yaml if present) from
-// dir, returning a ConfigReader. For per-repo configs the parent chain
-// is wired as overlay (config.yaml) → base (config.base.yaml) →
-// code defaults. This is the preferred entry point for consumer
-// packages that only need read access.
+// dir, returning a ConfigReader. The parent chain is wired as overlay
+// (config.yaml) → base (config.base.yaml) → code defaults. A config.yaml
+// in the removed per-org format is rejected. This is the preferred
+// entry point for consumer packages that only need read access.
 func LoadConfig(dir string, opts LoadOpts) (ConfigReader, error) {
 	overlayData, haveOverlay, baseData, haveBase, err := readConfigFiles(dir)
 	if err != nil {
@@ -755,28 +691,19 @@ func LoadConfig(dir string, opts LoadOpts) (ConfigReader, error) {
 			&os.PathError{Op: "open", Path: filepath.Join(dir, "config.yaml"), Err: os.ErrNotExist})
 	}
 
-	// Detect malformed YAML before type detection so the error message
-	// names config.yaml rather than the misleading "parsing org config".
-	if haveOverlay {
-		var probe interface{}
-		if err := yaml.Unmarshal(overlayData, &probe); err != nil {
-			return nil, fmt.Errorf("parsing config.yaml: %w", err)
-		}
-	}
-
-	// Org-mode overlay: base layering does not apply.
-	if haveOverlay && !IsPerRepoYAML(overlayData) {
-		return ParseOrgConfig(overlayData)
+	if err := checkOverlayYAML(overlayData, haveOverlay); err != nil {
+		return nil, err
 	}
 
 	return loadPerRepoLayers(overlayData, haveOverlay, baseData, haveBase)
 }
 
 // LoadConfigWriter reads config.yaml (and config.base.yaml if present)
-// from dir, returning a ConfigWriter. For per-repo configs the parent
-// chain is wired as overlay (config.yaml) → base (config.base.yaml) →
-// code defaults. Only the overlay layer is mutable; base and defaults
-// are read-only via the parent pointer. This is the preferred entry
+// from dir, returning a ConfigWriter. The parent chain is wired as
+// overlay (config.yaml) → base (config.base.yaml) → code defaults, and
+// a config.yaml in the removed per-org format is rejected. Only the
+// overlay layer is mutable; base and defaults are read-only via the
+// parent pointer. This is the preferred entry
 // point for consumer packages that need read-write access (e.g. CLI
 // commands that modify and write-back config).
 func LoadConfigWriter(dir string, opts LoadOpts) (ConfigWriter, error) {
@@ -794,22 +721,33 @@ func LoadConfigWriter(dir string, opts LoadOpts) (ConfigWriter, error) {
 			&os.PathError{Op: "open", Path: filepath.Join(dir, "config.yaml"), Err: os.ErrNotExist})
 	}
 
-	// Detect malformed YAML before type detection so the error message
-	// names config.yaml rather than the misleading "parsing org config".
-	if haveOverlay {
-		var probe interface{}
-		if err := yaml.Unmarshal(overlayData, &probe); err != nil {
-			return nil, fmt.Errorf("parsing config.yaml: %w", err)
-		}
-	}
-
-	// Org-mode overlay: base layering does not apply.
-	if haveOverlay && !IsPerRepoYAML(overlayData) {
-		return ParseOrgConfigWriter(overlayData)
+	if err := checkOverlayYAML(overlayData, haveOverlay); err != nil {
+		return nil, err
 	}
 
 	return loadPerRepoLayers(overlayData, haveOverlay, baseData, haveBase)
 }
+
+// checkOverlayYAML rejects a config.yaml that is malformed YAML or that
+// uses the removed per-org configuration format (ADR 0044). Without the
+// format check, the per-org keys would be silently dropped and the file
+// would load as a mostly empty per-repo config.
+func checkOverlayYAML(overlayData []byte, haveOverlay bool) error {
+	if !haveOverlay {
+		return nil
+	}
+	var probe map[string]interface{}
+	if err := yaml.Unmarshal(overlayData, &probe); err != nil {
+		return fmt.Errorf("parsing config.yaml: %w", err)
+	}
+	if !IsPerRepoYAML(overlayData) {
+		return errPerOrgConfig
+	}
+	return nil
+}
+
+// errPerOrgConfig reports a config.yaml in the removed per-org format.
+var errPerOrgConfig = errors.New("config.yaml uses the removed per-org configuration format (top-level dispatch, repos or defaults keys); per-org installation is no longer supported, use a per-repo .fullsend/config.yaml")
 
 // readConfigFiles reads config.yaml and config.base.yaml from dir.
 // Returns data and existence flags for each file. Genuine I/O errors
@@ -865,13 +803,11 @@ func loadPerRepoLayers(overlayData []byte, haveOverlay bool, baseData []byte, ha
 	return &overlay, nil
 }
 
-// IsPerRepoYAML probes raw YAML for structural markers that distinguish
-// perRepoConfig from orgConfig. orgConfig has org-only top-level keys
-// (dispatch, repos, defaults); perRepoConfig never does. The "inference"
-// key is shared: orgConfig uses it for the provider name, perRepoConfig
-// uses it for nested inference backend settings. Org configs always
-// contain dispatch/repos/defaults (non-omitempty), so the remaining
-// markers are sufficient for detection.
+// IsPerRepoYAML reports whether raw YAML parses and is free of the
+// top-level keys of the removed per-org configuration format (dispatch,
+// repos, defaults). A per-repo config never has those keys, while a
+// per-org config always did, so their presence identifies a leftover
+// per-org file that must be rejected rather than loaded.
 func IsPerRepoYAML(data []byte) bool {
 	var probe map[string]interface{}
 	if err := yaml.Unmarshal(data, &probe); err != nil {

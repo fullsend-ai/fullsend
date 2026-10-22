@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/forge/jira"
@@ -32,6 +33,11 @@ type FakeJiraClient struct {
 	UpdatedCommentID string
 	UpdatedBody      string
 
+	// CreatedIssues records every CreateIssue input, in call order.
+	// CreateIssueError, when non-nil, is returned by CreateIssue.
+	CreatedIssues    []jira.CreateIssueInput
+	CreateIssueError error
+
 	// PropertyError, when non-nil, is returned by SetCommentProperty
 	// to simulate permission failures.
 	PropertyError error
@@ -39,6 +45,42 @@ type FakeJiraClient struct {
 	// UpdateError, when non-nil, is returned by UpdateComment to
 	// simulate update failures.
 	UpdateError error
+
+	// Myself is the account GetMyself returns and new comments are
+	// authored by; the zero value means FakeJiraBot. MyselfError, when
+	// non-nil, is returned by GetMyself.
+	Myself      jira.User
+	MyselfError error
+
+	// Links records every LinkIssues call in order. LinkError, when
+	// non-nil, is returned by LinkIssues instead of recording the link.
+	Links     []FakeJiraLink
+	LinkError error
+}
+
+// FakeJiraLink is an issue link recorded by FakeJiraClient.LinkIssues.
+type FakeJiraLink struct {
+	Type         string
+	InwardIssue  string
+	OutwardIssue string
+}
+
+// FakeJiraBot is the account a FakeJiraClient posts as by default.
+var FakeJiraBot = jira.User{AccountID: "fake-bot-account-id", DisplayName: "fullsend-bot"}
+
+func (f *FakeJiraClient) myself() jira.User {
+	if f.Myself.AccountID == "" && f.Myself.DisplayName == "" {
+		return FakeJiraBot
+	}
+	return f.Myself
+}
+
+func (f *FakeJiraClient) GetMyself(_ context.Context) (*jira.User, error) {
+	if f.MyselfError != nil {
+		return nil, f.MyselfError
+	}
+	me := f.myself()
+	return &me, nil
 }
 
 func (f *FakeJiraClient) GetIssue(_ context.Context, issueIDOrKey string) (*jira.Issue, error) {
@@ -47,6 +89,50 @@ func (f *FakeJiraClient) GetIssue(_ context.Context, issueIDOrKey string) (*jira
 		return nil, fmt.Errorf("get issue %s: %w", issueIDOrKey, forge.ErrNotFound)
 	}
 	return issue, nil
+}
+
+// CreateIssue stores a new issue under the first unused key
+// "<ProjectKey>-<n>" (n counting up from 1), with its description stored
+// as real ADF so GetIssue reads it back the way a live Jira instance would.
+func (f *FakeJiraClient) CreateIssue(_ context.Context, in jira.CreateIssueInput) (*jira.CreatedIssue, error) {
+	if f.CreateIssueError != nil {
+		return nil, f.CreateIssueError
+	}
+	f.CreatedIssues = append(f.CreatedIssues, in)
+	var description any
+	if strings.TrimSpace(in.Description) != "" {
+		adf, err := jira.MarkdownToADF(in.Description)
+		if err != nil {
+			return nil, err
+		}
+		description = adf
+	}
+	if f.Issues == nil {
+		f.Issues = make(map[string]*jira.Issue)
+	}
+	n := 1
+	for f.Issues[fmt.Sprintf("%s-%d", in.ProjectKey, n)] != nil {
+		n++
+	}
+	key := fmt.Sprintf("%s-%d", in.ProjectKey, n)
+	issueType := &jira.IssueType{}
+	isID := in.IssueType != ""
+	for _, r := range in.IssueType {
+		if r < '0' || r > '9' {
+			isID = false
+			break
+		}
+	}
+	if isID {
+		issueType.ID = in.IssueType
+	} else {
+		issueType.Name = in.IssueType
+	}
+	f.Issues[key] = &jira.Issue{
+		Key:    key,
+		Fields: jira.IssueFields{Summary: in.Summary, Description: description, IssueType: issueType},
+	}
+	return &jira.CreatedIssue{ID: fmt.Sprintf("%d", 10000+len(f.CreatedIssues)), Key: key}, nil
 }
 
 func (f *FakeJiraClient) ListComments(_ context.Context, issueIDOrKey string) ([]jira.Comment, error) {
@@ -82,7 +168,7 @@ func (f *FakeJiraClient) CreateCommentWithProperties(_ context.Context, issueIDO
 	comment := jira.Comment{
 		ID:      fmt.Sprintf("%d", len(f.Comments[issueIDOrKey])+1),
 		Body:    adf,
-		Author:  jira.User{DisplayName: "fullsend-bot"},
+		Author:  f.myself(),
 		Created: "2026-08-06T00:00:00.000+0000",
 	}
 	if f.Comments == nil {
@@ -155,6 +241,14 @@ func (f *FakeJiraClient) DeleteComment(_ context.Context, issueIDOrKey, commentI
 		}
 	}
 	return fmt.Errorf("delete comment %s on %s: %w", commentID, issueIDOrKey, forge.ErrNotFound)
+}
+
+func (f *FakeJiraClient) LinkIssues(_ context.Context, inwardIssueKey, outwardIssueKey, linkTypeName string) error {
+	if f.LinkError != nil {
+		return f.LinkError
+	}
+	f.Links = append(f.Links, FakeJiraLink{Type: linkTypeName, InwardIssue: inwardIssueKey, OutwardIssue: outwardIssueKey})
+	return nil
 }
 
 var _ jiraClient = (*FakeJiraClient)(nil)

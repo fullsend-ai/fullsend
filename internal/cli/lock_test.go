@@ -1294,8 +1294,8 @@ func TestRunLock_URLRefsNoOrgConfigError(t *testing.T) {
 }
 
 func TestRunLock_MalformedOrgConfig(t *testing.T) {
-	// A malformed config.yaml should produce a warning but not prevent
-	// local-only harnesses from locking.
+	// An existing config.yaml that fails to load must be reported rather
+	// than treated as absent, even for a local-only harness.
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 
@@ -1312,7 +1312,8 @@ func TestRunLock_MalformedOrgConfig(t *testing.T) {
 
 	printer := ui.New(os.Stdout)
 	err := runLock(context.Background(), "simple", dir, "", false, resolveFlags{}, printer)
-	require.NoError(t, err)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parsing config.yaml")
 }
 
 func TestRunLock_MalformedOrgConfigWithURLRefs(t *testing.T) {
@@ -2030,10 +2031,10 @@ func TestResolveFromLock_PluginSharedURLWithSkill(t *testing.T) {
 }
 
 func TestResolveFromLock_PluginRawContentURL(t *testing.T) {
-	// Base-composed plugins use raw.githubusercontent.com URLs ending in
-	// /plugin.json. resolveFromLock must parse these via ParseRawContentURL
-	// (not ParseForgeURL, which rejects non-github.com hosts) to extract
-	// the plugin directory name.
+	// Legacy base-composed plugin locks use raw.githubusercontent.com URLs
+	// ending in /plugin.json. resolveFromLock must parse these via
+	// ParseRawContentURL (not ParseForgeURL, which rejects non-github.com
+	// hosts) to extract the plugin directory name.
 	manifestJSON := []byte(`{"name": "gopls-lsp"}`)
 	pluginFiles := map[string][]byte{
 		"plugin.json": manifestJSON,
@@ -2080,9 +2081,10 @@ func TestResolveFromLock_SkillRawContentURL(t *testing.T) {
 	// Base-composed skills use raw.githubusercontent.com URLs ending in
 	// /SKILL.md (see fetchBaseSkill). resolveFromLock must strip the marker
 	// file to derive the skill directory name — otherwise every skill is
-	// materialized under a directory literally named "SKILL.md", which
-	// becomes the sandbox upload basename and collides across skills. Two
-	// skills reproduce the collision the fix exists to prevent.
+	// materialized under a directory literally named "SKILL.md", the
+	// identity fallback and the bootstrap log label, which collides for
+	// skills whose SKILL.md declares no valid name. Two skills reproduce
+	// the collision the fix exists to prevent.
 	putSkill := func(t *testing.T, root, slug string) lock.DependencyEntry {
 		t.Helper()
 		skillMD := []byte("---\nname: " + slug + "\n---\n")
@@ -2125,7 +2127,7 @@ func TestResolveFromLock_SkillRawContentURL(t *testing.T) {
 	assert.Equal(t, "pr-review", filepath.Base(h.Skills[0].Source),
 		"skill basename must be derived from the URL directory, not the SKILL.md marker file")
 	assert.Equal(t, "code-review", filepath.Base(h.Skills[1].Source),
-		"skills must keep distinct basenames — identical ones collide on sandbox upload")
+		"skills must keep distinct basenames — the basename is the identity fallback when SKILL.md declares no valid name")
 	for _, s := range h.Skills {
 		assert.False(t, harness.IsURL(s.Source))
 		assert.FileExists(t, filepath.Join(s.Source, "SKILL.md"))
@@ -2470,6 +2472,12 @@ func TestLockTreeDirName(t *testing.T) {
 			name:  "raw plugin.json marker stripped",
 			field: "plugins[0]",
 			url:   "https://raw.githubusercontent.com/org/repo/abc123/plugins/gopls-lsp/plugin.json",
+			want:  "gopls-lsp",
+		},
+		{
+			name:  "raw plugin directory URL uses directory basename",
+			field: "plugins[0]",
+			url:   "https://raw.githubusercontent.com/org/repo/abc123/plugins/gopls-lsp/",
 			want:  "gopls-lsp",
 		},
 		{

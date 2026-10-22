@@ -1,12 +1,12 @@
 // Package install provides pool-repo lifecycle management for behaviour
-// tests: lazy repo creation, fullsend installation, pool leasing, and
-// teardown.
+// tests: cross-org repo slot leasing (slotpool.go), per-org mint
+// deployment, fullsend installation, and teardown.
 //
 // # Credential context separation
 //
 // Two distinct credential contexts operate on pool repos. Understanding
 // this separation is essential when working on repo-readiness checks
-// after pool repo recreation.
+// on freshly created slot repos.
 //
 // The test suite holds an e2e GitHub App installation token, minted via
 // OIDC at CI job start. This token drives all suite-side API calls:
@@ -21,8 +21,9 @@
 // the triggering actor.
 //
 // These are independent credential contexts with independent permission
-// propagation graphs. When a pool repo is deleted and recreated
-// (resetRepo), the suite's e2e token can observe the new repo via
+// propagation graphs. When a slot repo is deleted at release and created
+// again by a later claim (slotpool.go), the suite's e2e token can
+// observe the new repo via
 // GetRepo (awaitCreation) as soon as the repo object propagates through
 // GitHub's eventual-consistency layer. However, the dispatch-side
 // GITHUB_TOKEN's view of collaborator permissions on the new repo ID
@@ -44,4 +45,16 @@
 // Any fix for dispatch-side permission propagation delays on freshly
 // recreated repos must operate on the dispatch side (e.g., retry within
 // the dispatch workflow itself) rather than from the suite side.
+//
+// # Test actor access
+//
+// Human-like test actors (fstest-write, fstest-triage) inherit write/triage
+// access from GitHub organization-level all-repository roles, not from
+// per-repo collaborator grants. Direct grants are deleted with the repo
+// and re-adding them creates pending invitations (#7777). The ensurer
+// verifies org membership once per org; it must not call AddCollaborator.
+// The all-repository role itself is verified only by
+// hack/setup-new-e2e-org.sh at setup time, not by the ensurer, so the e2e
+// GitHub App installation does not need the organization_custom_roles
+// permission. fstest-outsider must remain outside the organization.
 package install

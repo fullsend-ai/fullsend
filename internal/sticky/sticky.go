@@ -6,9 +6,11 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/statuscomment"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -21,6 +23,14 @@ type Config struct {
 	MaxSize      int    // max comment body size (default 65000)
 	DryRun       bool
 	KeepHistory  bool // when false, updates replace the body in-place with no "Previous run" history
+
+	// TrustedLeadingLine, when set, matches a marker line that the trusted
+	// caller places as the first line of the body. When the first line of
+	// the body matches it in full, that line is posted as is and only the
+	// rest of the body has its marker syntax escaped. A match anywhere else
+	// is escaped like any other marker. The pattern must be anchored with
+	// ^ and $ and must not match a line that could carry a second marker.
+	TrustedLeadingLine *regexp.Regexp
 }
 
 func (c Config) maxSize() int {
@@ -33,6 +43,14 @@ func (c Config) maxSize() int {
 // Post implements the sticky comment lifecycle: find an existing comment
 // bearing the marker, collapse old content into history, and create or
 // update in-place. Returns the HTML URL of the comment (empty on dry run).
+//
+// It never edits a comment it cannot verify as its own: an existing
+// comment matches only when it carries the marker and its author is
+// exactly the login this client posts as, so a comment anyone could plant
+// with the same marker is ignored. When that login cannot be resolved
+// (after a short retry) it returns an error and posts nothing — not even
+// on dry run, since dry run should not claim an edit would occur when none
+// safely could.
 func Post(ctx context.Context, client forge.Client, owner, repo string, number int, body string, cfg Config, printer *ui.Printer) (string, error) {
 	if strings.TrimSpace(body) == "" {
 		return "", fmt.Errorf("comment body is empty")
@@ -41,9 +59,12 @@ func Post(ctx context.Context, client forge.Client, owner, repo string, number i
 		return "", fmt.Errorf("marker is empty")
 	}
 
-	botUser, err := client.GetAuthenticatedUser(ctx)
+	// Without a verified identity nothing is posted at all: editing would
+	// trust an unverified comment, and creating a new one would orphan the
+	// earlier comment, whose stale content later runs would never update.
+	botUser, err := resolveBotUser(ctx, client)
 	if err != nil {
-		printer.StepInfo("Could not determine bot user, marker spoofing protection degraded")
+		return "", unverifiedBotUserError(err)
 	}
 
 	comments, err := client.ListIssueComments(ctx, owner, repo, number)
@@ -52,7 +73,10 @@ func Post(ctx context.Context, client forge.Client, owner, repo string, number i
 	}
 
 	existing := FindMarkedComment(comments, cfg.Marker, botUser)
-	markedBody := cfg.Marker + "\n" + body
+	// Escape marker syntax in the agent-written body before the runner's
+	// own marker is prepended, so the runner's marker is the only live one
+	// (apart from a validated trusted leading line, see neutralizeBody).
+	markedBody := cfg.Marker + "\n" + neutralizeBody(body, cfg)
 
 	if existing != nil {
 		printer.StepStart("Found existing comment, updating in-place")
@@ -88,13 +112,34 @@ func Post(ctx context.Context, client forge.Client, owner, repo string, number i
 	return created.HTMLURL, nil
 }
 
-// FindMarkedComment returns the first comment whose body contains the
-// given marker string, or nil if none is found. When botUser is non-empty,
-// only comments authored by that user are considered. This prevents
-// untrusted users from spoofing the marker in their own comments.
+// neutralizeBody escapes fullsend marker syntax in body. When
+// cfg.TrustedLeadingLine matches the whole first line of body, that line is
+// kept unescaped and only the text after it is escaped. The kept line ends
+// at the first newline, so escaping the rest cannot join with it.
+func neutralizeBody(body string, cfg Config) string {
+	if cfg.TrustedLeadingLine != nil {
+		first, rest, hasRest := strings.Cut(body, "\n")
+		if cfg.TrustedLeadingLine.MatchString(first) {
+			if !hasRest {
+				return first
+			}
+			return first + "\n" + statuscomment.NeutralizeMarkers(rest)
+		}
+	}
+	return statuscomment.NeutralizeMarkers(body)
+}
+
+// FindMarkedComment returns the first comment whose body contains the given
+// marker string and whose author is exactly botUser, or nil if none is
+// found. An empty botUser matches nothing: callers pass it only when
+// identity resolution failed, and matching on the marker alone would let
+// anyone's comment be treated as the bot's own and edited in-place.
 func FindMarkedComment(comments []forge.IssueComment, marker, botUser string) *forge.IssueComment {
+	if botUser == "" {
+		return nil
+	}
 	for i := range comments {
-		if botUser != "" && comments[i].Author != botUser {
+		if comments[i].Author != botUser {
 			continue
 		}
 		if strings.Contains(comments[i].Body, marker) {
@@ -102,6 +147,46 @@ func FindMarkedComment(comments []forge.IssueComment, marker, botUser string) *f
 		}
 	}
 	return nil
+}
+
+// botUserLookupBackoff is the wait before each retry of the bot identity
+// lookup; its length is the number of retries. Tests shorten it.
+var botUserLookupBackoff = []time.Duration{500 * time.Millisecond, time.Second}
+
+// resolveBotUser returns the exact login client posts as, retrying a failed
+// or empty lookup per botUserLookupBackoff so a transient error does not
+// degrade marker spoofing protection. This mirrors resolveTrackerSelf in
+// internal/cli/issues.go, but internal/cli imports this package, so the
+// retry logic is kept local here rather than shared, to avoid an import
+// cycle.
+func resolveBotUser(ctx context.Context, client forge.Client) (string, error) {
+	var lastErr error
+	for attempt := 0; ; attempt++ {
+		botUser, err := client.GetAuthenticatedUser(ctx)
+		if err == nil && botUser == "" {
+			err = fmt.Errorf("the authenticated user is empty")
+		}
+		if err == nil {
+			return botUser, nil
+		}
+		lastErr = err
+		if attempt >= len(botUserLookupBackoff) {
+			return "", fmt.Errorf("after %d attempts: %w", attempt+1, lastErr)
+		}
+		select {
+		case <-ctx.Done():
+			return "", fmt.Errorf("%w (last lookup error: %v)", ctx.Err(), lastErr)
+		case <-time.After(botUserLookupBackoff[attempt]):
+		}
+	}
+}
+
+// unverifiedBotUserError reports that the posting identity could not be
+// resolved, so nothing was posted or edited.
+func unverifiedBotUserError(err error) error {
+	return fmt.Errorf("cannot verify which identity this posts as, so no comment was posted or edited; "+
+		"rerun if the failure was transient, otherwise check that the token can read its own identity "+
+		"(the authenticated user): %w", err)
 }
 
 // History blocks are wrapped with sentinel comments so extraction is safe
@@ -132,7 +217,7 @@ func BuildUpdatedBody(oldBody, newBody string, cfg Config) string {
 		if cfg.FooterMarker != "" {
 			stripped, _ := strings.CutPrefix(oldBody, cfg.Marker+"\n")
 			stripped, _ = strings.CutPrefix(stripped, cfg.Marker)
-			if idx := strings.Index(stripped, cfg.FooterMarker); idx >= 0 {
+			if idx := strings.LastIndex(stripped, cfg.FooterMarker); idx >= 0 {
 				footer = stripped[idx:]
 			}
 		}
@@ -151,10 +236,12 @@ func BuildUpdatedBody(oldBody, newBody string, cfg Config) string {
 	oldContent, _ := strings.CutPrefix(oldBody, cfg.Marker+"\n")
 	oldContent, _ = strings.CutPrefix(oldContent, cfg.Marker)
 
-	// Strip footer if configured.
+	// Strip footer if configured. The footer is found by its last
+	// occurrence so a copy of the footer marker inside the content does
+	// not cut the old body short.
 	var footer string
 	if cfg.FooterMarker != "" {
-		if idx := strings.Index(oldContent, cfg.FooterMarker); idx >= 0 {
+		if idx := strings.LastIndex(oldContent, cfg.FooterMarker); idx >= 0 {
 			footer = oldContent[idx:]
 			oldContent = strings.TrimRight(oldContent[:idx], "\n")
 		}
@@ -170,12 +257,20 @@ func BuildUpdatedBody(oldBody, newBody string, cfg Config) string {
 		activeRe = legacyDetailsRe
 	}
 	for _, m := range matches {
-		historyBlocks = append(historyBlocks, m[1])
+		historyBlocks = append(historyBlocks, statuscomment.NeutralizeMarkers(m[1]))
 	}
 
 	// The "current" old content is everything minus the old <details> blocks.
 	currentOld := activeRe.ReplaceAllString(oldContent, "")
 	currentOld = strings.TrimSpace(currentOld)
+
+	// Escape marker syntax in each piece that moves into history. This
+	// runs after the runner's own marker and footer are removed above, so
+	// the exact-prefix strip keeps matching on later updates and no copy
+	// of the marker accumulates in history. It also runs after the
+	// <details> blocks are cut out, since removing a block can join the
+	// text on either side of it into a new marker opener.
+	currentOld = statuscomment.NeutralizeMarkers(currentOld)
 
 	// Assemble history entries and drop the oldest ones first if the
 	// combined body would exceed the size limit. This avoids blind

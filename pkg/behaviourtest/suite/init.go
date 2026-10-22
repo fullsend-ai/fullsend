@@ -2,12 +2,13 @@ package suite
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/cucumber/godog"
-	messages "github.com/cucumber/messages/go/v21"
+	messages "github.com/cucumber/messages/go/v34"
 
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/steps"
@@ -21,7 +22,7 @@ import (
 // enrolled test repository"), and the After hook deallocates on cleanup.
 func InitScenario(sc *godog.ScenarioContext, template *world.World) {
 	sc.Before(func(ctx context.Context, scenario *godog.Scenario) (context.Context, error) {
-		return beforeScenario(ctx, tagNames(scenario.Tags), template)
+		return beforeScenario(ctx, tagNames(scenario.Tags), template, scenario.Name)
 	})
 	sc.After(func(ctx context.Context, scenario *godog.Scenario, err error) (context.Context, error) {
 		return afterScenario(ctx, template.Driver, err)
@@ -29,23 +30,60 @@ func InitScenario(sc *godog.ScenarioContext, template *world.World) {
 	steps.Register(sc)
 }
 
-// beforeScenario clones the template World, resets scenario fields.
-// Repo allocation is handled by the step (via Driver.AllocateRepo),
-// not by the Before hook.
-func beforeScenario(ctx context.Context, tags []string, template *world.World) (context.Context, error) {
-	if err := SkipErrorForTagNames(tags, template); err != nil {
-		return ctx, err
+// beforeScenario clones the template World, resets scenario fields, and
+// records the scenario name. Repo allocation is handled by the step (via
+// Driver.AllocateRepo), not by the Before hook.
+//
+// name is the godog scenario name. In playback mode it is forwarded to
+// the PlaybackDriver via SetRepoHint so the driver can correlate its
+// per-repo bookkeeping back to the scenario that is running; for the
+// standard pool-based Driver, SetRepoHint is a no-op.
+func beforeScenario(ctx context.Context, tags []string, template *world.World, name string) (context.Context, error) {
+	tagErr := SkipErrorForTagNames(tags, template)
+	if errors.Is(tagErr, godog.ErrSkip) {
+		return ctx, tagErr
 	}
+	// A non-skip tag error (a malformed tag) fails the scenario. The World is
+	// still attached below so the After hook can write a failure summary for
+	// it, as it does for any other failed scenario.
 	w := template.Clone()
 	resetScenarioWorld(w)
+	w.ScenarioName = name
+
+	if pd, ok := w.Driver.(*install.PlaybackDriver); ok {
+		pd.SetRepoHint(name)
+	}
 
 	ctx = world.WithWorld(ctx, w)
-	return ctx, nil
+	return ctx, tagErr
 }
 
 // afterScenario runs scenario cleanup and deallocates the repo if one was
 // allocated. Deallocation errors are surfaced as test failures rather than
 // panicking the godog runner.
+//
+// Order: for a failed scenario, CollectFailureLogs first saves the logs
+// of the repository's workflow runs that in-scenario collection did not
+// already save (a wait that timed out, a failure before any run was
+// resolved) plus a failure summary; then CleanupScenario
+// (issues/PRs/forks/hosting repos) runs, and the deferred
+// DeallocateLease (DeallocateRepo for a driver that leases by name)
+// deletes the leased slot repo and frees the slot. All debug
+// collection (workflow logs via saveWorkflowRunLogs and
+// CollectFailureLogs, agent artifacts via ensureArtifacts) has finished
+// before the repo is deleted, so CI still has those files under
+// BEHAVIOUR_ARTIFACT_DIR after the leased repo is gone.
+//
+// A deallocation failure on an otherwise passing scenario also writes the
+// failure summary (the repo's workflow runs are collected best-effort, as
+// teardown has already been attempted).
+//
+// CleanupScenario mutates by name, so before it runs the After hook
+// hands it a lease-ownership check (World.LeaseOwned, from the driver's
+// install.LeaseVerifier). When another holder has replaced the slot, or
+// ownership cannot be verified, cleanup skips its mutations; the lease
+// is still released below, and the driver's release checks ownership
+// itself before deleting the slot repo.
 //
 // driver.DeallocateRepo is deferred so the lease is returned even if
 // steps.CleanupScenario panics. Named return values allow the deferred
@@ -57,24 +95,63 @@ func afterScenario(ctx context.Context, driver install.Driver, scenarioErr error
 		return ctx, retErr
 	}
 	if driver != nil && w.LeasedRepoName != "" {
-		name := w.LeasedRepoName
+		name, org := w.LeasedRepoName, w.LeasedRepoOrg
+		w.LeaseOwned = leaseOwnership(driver, org, name)
 		defer func() {
-			if deallocErr := driver.DeallocateRepo(ctx, name); deallocErr != nil {
+			var deallocErr error
+			if ld, ok := driver.(install.LeaseDriver); ok && org != "" {
+				deallocErr = ld.DeallocateLease(ctx, org, name)
+			} else {
+				deallocErr = driver.DeallocateRepo(ctx, name)
+			}
+			if deallocErr != nil {
 				if w.Logf != nil {
 					w.Logf("deallocating repo: %v", deallocErr)
 				}
 				if retErr == nil {
 					retErr = fmt.Errorf("deallocating repo: %w", deallocErr)
+					// The scenario passed, so no failure summary was written
+					// above; the deallocation failure turns it into a failed
+					// scenario, which must leave the same artifact.
+					steps.CollectFailureLogs(ctx, w, retErr)
 				}
 			}
 		}()
+	}
+	if scenarioErr != nil && !errors.Is(scenarioErr, godog.ErrSkip) {
+		steps.CollectFailureLogs(ctx, w, scenarioErr)
 	}
 	steps.CleanupScenario(w)
 	return ctx, retErr
 }
 
+// leaseOwnership returns the check scenario cleanup uses to confirm the
+// slot (org, name) is still this scenario's lease, or nil when the
+// driver leases by repo name alone (no shared slot to lose). A driver
+// that leases across orgs but cannot verify yields a check that always
+// fails, so cleanup fails closed rather than mutating by name.
+func leaseOwnership(driver install.Driver, org, name string) func(context.Context) (bool, error) {
+	if org == "" {
+		return nil
+	}
+	if lv, ok := driver.(install.LeaseVerifier); ok {
+		return func(ctx context.Context) (bool, error) {
+			return lv.StillOwnsLease(ctx, org, name)
+		}
+	}
+	if _, ok := driver.(install.LeaseDriver); ok {
+		return func(context.Context) (bool, error) {
+			return false, fmt.Errorf("%T cannot verify lease ownership of %s/%s", driver, org, name)
+		}
+	}
+	return nil
+}
+
 func resetScenarioWorld(w *world.World) {
 	w.ScenarioStart = time.Now()
+	w.ScenarioBegin = w.ScenarioStart
+	w.ScenarioName = ""
+	w.SavedLogRunIDs = nil
 	w.DummyOps = nil
 	w.IssueNumber = 0
 	w.IssueTitle = ""
@@ -88,6 +165,7 @@ func resetScenarioWorld(w *world.World) {
 	w.ForkRepo = ""
 	w.ForkPRNumber = 0
 	w.ForkPRBranch = ""
+	w.ForkSCM = nil
 	w.URLHarnessRepoOwner = ""
 	w.URLHarnessRepoName = ""
 	w.URLBaseHarnesses = nil
@@ -95,6 +173,11 @@ func resetScenarioWorld(w *world.World) {
 	w.CreatedBranches = nil
 	w.CreatedPRNumbers = nil
 	w.LeasedRepoName = ""
+	w.LeasedRepoOrg = ""
+	w.LeaseOwned = nil
+	w.MintURL = ""
+	w.MintStatusGroup = ""
+	w.MintWorkflowHostRepos = nil
 	w.KillSwitchActivated = false
 	w.RuntimeOverridden = false
 	w.RuntimeOriginal = ""
@@ -102,10 +185,20 @@ func resetScenarioWorld(w *world.World) {
 	w.AllowedResourcesOriginal = nil
 	w.AgentsOverridden = false
 	w.AgentsOriginal = nil
+	w.GatewayConfigOverridden = false
+	w.GatewayConfigOriginal = nil
+	w.GatewayAPIKeySecretSet = false
 	w.OwnersAuthActivated = false
 	w.JiraMockServer = nil
 	w.JiraMockState = nil
 	w.JiraConfigDir = ""
+	w.PlaybackEntries = nil
+	w.PlaybackCommitted = false
+	w.ConsumedHarnessRunIDs = nil
+	w.HarnessRunArtifactDirs = nil
+	w.StagePublishedSHA = nil
+	w.MintProbe = nil
+	w.MintStatus = nil
 }
 
 func tagNames(tags []*messages.PickleTag) []string {
@@ -121,13 +214,19 @@ func SkipErrorForTagNames(tags []string, w *world.World) error {
 	for _, tag := range tags {
 		name := strings.TrimPrefix(tag, "@")
 		switch {
-		case name == "skip:per-org" && w.Config.InstallMode == "per-org":
-			return godog.ErrSkip
 		case name == "skip:per-repo" && w.Config.InstallMode == "per-repo":
 			return godog.ErrSkip
-		case name == "requires:per-repo" && w.Config.InstallMode != "per-repo":
-			return godog.ErrSkip
 		case name == "skip:gitlab" && w.Config.SCM == "gitlab":
+			return godog.ErrSkip
+		case name == "playback" && !w.IsPlaybackMode():
+			// @playback scenarios replay canned results via the
+			// dummy-playback runtime and only make sense under the
+			// playback suite (pkg/behaviourtest.RunPlaybackSuite),
+			// whose template World wraps install.Driver in a
+			// *install.PlaybackDriver. Skip them under the standard
+			// behaviour suite regardless of GODOG_TAGS so a shared
+			// "features" directory can hold both without the normal
+			// suite trying (and failing) to run playback-only steps.
 			return godog.ErrSkip
 		case strings.HasPrefix(name, "requires:capability:"):
 			// Skip unless the runner declares the capability via

@@ -7,6 +7,8 @@ package poll
 import (
 	"context"
 	"time"
+
+	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
 // GitLabClient defines the GitLab API surface the poller requires.
@@ -37,9 +39,23 @@ type GitLabClient interface {
 	// tag, or SHA). Returns forge.ErrNotFound if the file or ref does
 	// not exist. Used to load the HMAC-signed poll-state document.
 	GetFileContentAtRef(ctx context.Context, owner, repo, path, ref string) ([]byte, error)
+	// GetBranchRef returns the HEAD commit SHA for the named branch.
+	// Returns forge.ErrNotFound if the branch does not exist. Used to
+	// pin the CAS parent SHA at poll-state load time.
+	GetBranchRef(ctx context.Context, owner, repo, branch string) (string, error)
+	// CommitFileToBranch commits a single file to branch without force.
+	// expectedSHA is the branch tip observed at load time and is sent as
+	// start_sha so a concurrent writer surfaces forge.ErrNonFastForward.
+	// An empty expectedSHA (no branch observed at load time) still commits
+	// with start_sha pinned to the repository root, but leaves force unset
+	// so a concurrent first writer racing branch creation surfaces the same
+	// forge.ErrNonFastForward instead of being silently overwritten.
+	// The commit message is suffixed with [skip ci] when not already present.
+	CommitFileToBranch(ctx context.Context, owner, repo, branch, path, message string, content []byte, expectedSHA string) error
 	// ForceCommitFileToBranch force-updates branch to a single-file
 	// commit re-rooted on a fixed base SHA. The branch is created if
 	// it does not exist. History is pruned to base + 1 commit.
+	// Used for install-time seeding; runtime persist uses CommitFileToBranch.
 	ForceCommitFileToBranch(ctx context.Context, owner, repo, branch, path, message string, content []byte) error
 	// DeleteRef deletes a git ref (e.g., "heads/fullsend-poll-state-slash").
 	// Returns forge.ErrNotFound if the ref does not exist. Used to
@@ -47,6 +63,9 @@ type GitLabClient interface {
 	DeleteRef(ctx context.Context, owner, repo, refPath string) error
 	GetAuthenticatedUser(ctx context.Context) (string, error)
 	GetAuthenticatedUserID(ctx context.Context) (int, error)
+	// GetUserBot reads the authoritative user bot flag. Issue and note author
+	// objects can omit it, including for project service accounts.
+	GetUserBot(ctx context.Context, userID int) (bool, error)
 	// CreateNoteAwardEmoji adds an emoji reaction. noteableType must be
 	// "Issue" or "MergeRequest" to select the correct API endpoint.
 	CreateNoteAwardEmoji(ctx context.Context, owner, repo string, noteableType string, noteableIID, noteID int, emoji string) error
@@ -61,6 +80,28 @@ type GitLabClient interface {
 	// CreatePipeline creates a new pipeline on the given ref with the
 	// given variables. Returns the pipeline ID and web URL.
 	CreatePipeline(ctx context.Context, owner, repo, ref string, variables map[string]string) (int64, string, error)
+	// CreatePipelineWithInputs creates a new pipeline on the given ref
+	// using typed GitLab CI/CD pipeline inputs (spec:inputs) instead of
+	// user-defined pipeline variables. Unlike CreatePipeline, this
+	// remains usable when a project's
+	// ci_pipeline_variables_minimum_override_role is
+	// forge.PipelineVarOverrideNoOneAllowed, because that setting does
+	// not govern pipeline inputs (#7850). dispatch() uses this for a
+	// target repository whose committed wrapper declares the typed
+	// contract (see usesTypedDispatch) and falls back to CreatePipeline
+	// otherwise, since a poller binary upgrade is not synchronized with
+	// that repository's own scaffold migration.
+	CreatePipelineWithInputs(ctx context.Context, owner, repo, ref string, inputs map[string]forge.PipelineInputValue) (int64, string, error)
+	// CreateChildPipelineWithInputs starts a downstream pipeline on ref
+	// through the pipeline trigger API, authenticated by the running
+	// job's CI_JOB_TOKEN rather than the client's PAT (#8438). GitLab
+	// records it with source "pipeline" and attributes it to the user who
+	// owns the calling job, so it runs on a protected branch whenever that
+	// user may, independently of the Poller credential's protected-ref
+	// access. Implementations MUST NOT retry: an ambiguous outcome could
+	// otherwise start a duplicate agent pipeline. Returns the pipeline ID
+	// and web URL.
+	CreateChildPipelineWithInputs(ctx context.Context, owner, repo, ref, jobToken string, inputs map[string]forge.PipelineInputValue) (int64, string, error)
 }
 
 // Issue represents a GitLab issue as returned by the API.
@@ -71,6 +112,9 @@ type Issue struct {
 	State     string    `json:"state"`
 	Labels    []string  `json:"labels"`
 	Author    UserRef   `json:"author"`
+	ClosedBy  UserRef   `json:"closed_by"`
+	ClosedAt  time.Time `json:"closed_at"`
+	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
@@ -138,5 +182,6 @@ type ResourceLabelEvent struct {
 	Label  struct {
 		Name string `json:"name"`
 	} `json:"label"`
-	User UserRef `json:"user"`
+	User      UserRef   `json:"user"`
+	CreatedAt time.Time `json:"created_at"`
 }

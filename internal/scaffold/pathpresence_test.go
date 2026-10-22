@@ -14,15 +14,15 @@ import (
 func TestComparePathPresence_AllPresent(t *testing.T) {
 	client := &forge.FakeClient{
 		FileContents: map[string][]byte{
-			"org/.fullsend/.defaults/action.yml":                  []byte("marker"),
-			"org/.fullsend/.github/workflows/reusable-triage.yml": []byte("wf"),
-			"org/.fullsend/bin/fullsend":                          []byte("binary"),
+			"org/.fullsend/.defaults/action.yml":                      []byte("marker"),
+			"org/.fullsend/.github/workflows/reusable-prioritize.yml": []byte("wf"),
+			"org/.fullsend/bin/fullsend":                              []byte("binary"),
 		},
 	}
 
 	missing, err := ComparePathPresence(context.Background(), client, "org", ".fullsend", []string{
 		".defaults/action.yml",
-		".github/workflows/reusable-triage.yml",
+		".github/workflows/reusable-prioritize.yml",
 		"bin/fullsend",
 	})
 	require.NoError(t, err)
@@ -39,14 +39,14 @@ func TestComparePathPresence_SomeMissing(t *testing.T) {
 
 	missing, err := ComparePathPresence(context.Background(), client, "org", ".fullsend", []string{
 		".defaults/action.yml",
-		".github/workflows/reusable-triage.yml",
-		".github/workflows/reusable-code.yml",
+		".github/workflows/reusable-prioritize.yml",
+		".github/workflows/reusable-dispatch.yml",
 		"bin/fullsend",
 	})
 	require.NoError(t, err)
 	assert.Equal(t, []string{
-		".github/workflows/reusable-code.yml",
-		".github/workflows/reusable-triage.yml",
+		".github/workflows/reusable-dispatch.yml",
+		".github/workflows/reusable-prioritize.yml",
 	}, missing)
 }
 

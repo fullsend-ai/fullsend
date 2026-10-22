@@ -69,14 +69,13 @@ use the same pinned dependencies.`,
 		},
 	}
 
-	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "path to the .fullsend configuration directory")
+	addFullsendDirFlag(cmd, &fullsendDir)
 	cmd.Flags().BoolVar(&update, "update", false, "force re-resolve even if lock entry is current")
 	cmd.Flags().BoolVar(&lockAll, "all", false, "lock all harness files in the .fullsend/harness/ directory")
 	cmd.Flags().StringVar(&forgeFlag, "forge", "", `forge platform to lock (e.g. "github"); omit to lock all forge variants`)
 	cmd.Flags().BoolVar(&rFlags.offline, "offline", false, "reject network fetches; only use cached remote resources")
 	cmd.Flags().IntVar(&rFlags.maxDepth, "max-depth", resolve.DefaultMaxDepth, "maximum dependency depth for transitive resolution (0 disables)")
 	cmd.Flags().IntVar(&rFlags.maxResources, "max-resources", resolve.DefaultMaxResources, "maximum total remote resources per harness")
-	_ = cmd.MarkFlagRequired("fullsend-dir")
 
 	return cmd
 }
@@ -149,6 +148,26 @@ func printResolvedDeps(printer *ui.Printer, deps []resolve.Dependency) {
 	}
 }
 
+// loadLockConfig loads the layered fullsend config (config.yaml over
+// config.base.yaml) from the directory containing path for locking, running,
+// and eval measurement. Unlike
+// tryLoadOrgConfig it distinguishes an absent config (nil, nil — neither
+// layer exists) from an existing config that cannot be loaded (nil, error),
+// so a rejected configuration is never mistaken for the removal of its
+// registered agents, and a base-only configuration (including an inherited
+// empty allowed_remote_resources) is honored.
+func loadLockConfig(path string) (config.ConfigWriter, error) {
+	writer, err := config.LoadConfigWriter(filepath.Dir(path), config.LoadOpts{MissingOK: false})
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("loading fullsend config: %w", err)
+	}
+	writer.SetAllowedRemoteResources(config.EnsureDefaultAllowedRemoteResources(writer.AllowedResources()))
+	return writer, nil
+}
+
 // lockOneAgent resolves dependencies for a single harness and returns the
 // lock entry without writing to disk. Returns nil (no error) when the harness
 // has no remote dependencies or the lock entry is already up to date.
@@ -156,7 +175,10 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 	// Load org config early — needed for config-driven agent resolution
 	// fallback and later for allowlist validation.
 	orgConfigPath := filepath.Join(absFullsendDir, "config.yaml")
-	orgCfg := tryLoadOrgConfig(orgConfigPath, printer)
+	orgCfg, err := loadLockConfig(orgConfigPath)
+	if err != nil {
+		return nil, err
+	}
 
 	policy := fetch.DefaultPolicy
 	policy.Offline = rFlags.offline
@@ -237,7 +259,7 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 		}
 
 		// Run lint diagnostics (non-fatal), deduplicating across forge variants
-		for _, diag := range h.Lint() {
+		for _, diag := range append(h.Lint(), reservedSandboxEnvDiagnostics(h)...) {
 			key := diag.String()
 			if !linted[key] {
 				linted[key] = true
@@ -439,7 +461,10 @@ func runLockAll(ctx context.Context, fullsendDir, forgeFlag string, update bool,
 	// Merge config-registered agent names so --all covers agents
 	// resolved from config entries (not just local harness files).
 	orgConfigPath := filepath.Join(absFullsendDir, "config.yaml")
-	orgCfg := tryLoadOrgConfig(orgConfigPath, printer)
+	orgCfg, err := loadLockConfig(orgConfigPath)
+	if err != nil {
+		return err
+	}
 	if orgCfg != nil {
 		registered, regErr := harness.RegisteredAgents(orgCfg)
 		if regErr != nil {
@@ -740,9 +765,9 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 	var providers []resolve.ResolvedProvider
 
 	for _, lockDep := range entry.Dependencies {
-		// Agent source URLs are validated against the org-level allowlist
+		// Agent source URLs are validated against the config-level allowlist
 		// during lock creation, not the harness's own AllowedRemoteResources.
-		// Skip both harness-level and org-level allowlist checks for
+		// Skip both harness-level and config-level allowlist checks for
 		// agent_source entries — they were validated at lock creation time.
 		if lockDep.Field != "agent_source" &&
 			h.MatchingAllowedPrefix(lockDep.URL) == "" &&
@@ -1140,10 +1165,10 @@ func isTreeLockField(field string) bool {
 // dependency (see isTreeLockField) from its recorded URL. Direct URL entries
 // use forge tree URLs whose deepest path segment is the directory name.
 // Base-composed entries (see fetchBaseSkill/fetchBasePlugin in
-// internal/harness/compose.go) record raw.githubusercontent.com URLs pointing
-// at the marker file (SKILL.md or plugin.json); only those two names are
-// treated as markers and stripped — any other raw URL keeps its last segment
-// as the directory name.
+// internal/harness/compose.go) record raw.githubusercontent.com URLs. Skills
+// point at the SKILL.md marker; current plugins point at their directory.
+// Legacy pre-#6754 plugin locks point at plugin.json, so both marker names are
+// stripped. Any other raw URL keeps its last segment as the directory name.
 func lockTreeDirName(field, lockURL string) (string, error) {
 	if forgeInfo, err := forge.ParseForgeURL(lockURL); err == nil {
 		if forgeInfo.Path == "" {

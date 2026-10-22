@@ -129,6 +129,150 @@ func TestGivenKillSwitchActive_CommitFileError(t *testing.T) {
 	assert.Contains(t, err.Error(), "updating config")
 }
 
+// --- givenKillSwitchActiveViaConfigBase / DeactivateKillSwitchBase tests ---
+//
+// These mirror the givenKillSwitchActive/DeactivateKillSwitch tests
+// above, but target .fullsend/config.base.yaml instead of config.yaml.
+// config.base.yaml is not part of the standard scaffold, so these also
+// cover the "file does not exist yet" path that config.yaml's
+// equivalents never need to (config.yaml always exists once a repo is
+// enrolled).
+
+func TestGivenKillSwitchActiveViaConfigBase_SetsKillSwitch(t *testing.T) {
+	scm := &fakeDispatchSCM{
+		fileContent: []byte("version: \"1\"\nroles:\n  - triage\n"),
+	}
+	w := &world.World{
+		SCM:      scm,
+		Org:      "org",
+		RepoName: "repo",
+	}
+	err := givenKillSwitchActiveViaConfigBase(w)
+	require.NoError(t, err)
+	assert.True(t, scm.commitCalled, "CommitFile should have been called")
+	assert.Contains(t, string(scm.committedContent), "kill_switch: true")
+	assert.True(t, w.KillSwitchBaseActivated, "KillSwitchBaseActivated should be set for cleanup")
+}
+
+func TestGivenKillSwitchActiveViaConfigBase_MissingFileTreatedAsEmpty(t *testing.T) {
+	scm := &fakeDispatchSCM{
+		getFileErr: forge.ErrNotFound,
+	}
+	w := &world.World{
+		SCM:      scm,
+		Org:      "org",
+		RepoName: "repo",
+	}
+	err := givenKillSwitchActiveViaConfigBase(w)
+	require.NoError(t, err, "a missing config.base.yaml should be treated as an empty starting point, not an error")
+	assert.True(t, scm.commitCalled, "CommitFile should have been called")
+	assert.Contains(t, string(scm.committedContent), "kill_switch: true")
+}
+
+func TestGivenKillSwitchActiveViaConfigBase_GetFileContentError(t *testing.T) {
+	scm := &fakeDispatchSCM{
+		getFileErr: fmt.Errorf("server error"),
+	}
+	w := &world.World{
+		SCM:      scm,
+		Org:      "org",
+		RepoName: "repo",
+	}
+	err := givenKillSwitchActiveViaConfigBase(w)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading base config")
+}
+
+func TestGivenKillSwitchActiveViaConfigBase_CommitFileError(t *testing.T) {
+	scm := &fakeDispatchSCM{
+		fileContent: []byte("version: \"1\"\nroles:\n  - triage\n"),
+		commitErr:   fmt.Errorf("commit failed"),
+	}
+	w := &world.World{
+		SCM:      scm,
+		Org:      "org",
+		RepoName: "repo",
+	}
+	err := givenKillSwitchActiveViaConfigBase(w)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "updating base config")
+}
+
+func TestGivenKillSwitchActiveViaConfigBase_EmptyIdentity(t *testing.T) {
+	t.Parallel()
+	w := &world.World{SCM: &fakeDispatchSCM{}}
+	err := givenKillSwitchActiveViaConfigBase(w)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no repo configured")
+}
+
+func TestDeactivateKillSwitchBase_ClearsKillSwitch(t *testing.T) {
+	scm := &fakeDispatchSCM{
+		fileContent: []byte("version: \"1\"\nkill_switch: true\n"),
+	}
+	w := &world.World{
+		SCM:      scm,
+		Org:      "org",
+		RepoName: "repo",
+	}
+	err := DeactivateKillSwitchBase(w)
+	require.NoError(t, err)
+	assert.True(t, scm.commitCalled, "CommitFile should have been called")
+	assert.Contains(t, string(scm.committedContent), "kill_switch: false")
+}
+
+func TestDeactivateKillSwitchBase_MissingFileTreatedAsEmpty(t *testing.T) {
+	scm := &fakeDispatchSCM{
+		getFileErr: forge.ErrNotFound,
+	}
+	w := &world.World{
+		SCM:      scm,
+		Org:      "org",
+		RepoName: "repo",
+	}
+	err := DeactivateKillSwitchBase(w)
+	require.NoError(t, err, "a missing config.base.yaml should be treated as an empty starting point, not an error")
+	assert.True(t, scm.commitCalled, "CommitFile should have been called")
+	assert.Contains(t, string(scm.committedContent), "kill_switch: false")
+}
+
+func TestDeactivateKillSwitchBase_GetFileContentError(t *testing.T) {
+	scm := &fakeDispatchSCM{
+		getFileErr: fmt.Errorf("server error"),
+	}
+	w := &world.World{
+		SCM:      scm,
+		Org:      "org",
+		RepoName: "repo",
+	}
+	err := DeactivateKillSwitchBase(w)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading base config")
+}
+
+func TestDeactivateKillSwitchBase_CommitFileError(t *testing.T) {
+	scm := &fakeDispatchSCM{
+		fileContent: []byte("version: \"1\"\nkill_switch: true\n"),
+		commitErr:   fmt.Errorf("commit failed"),
+	}
+	w := &world.World{
+		SCM:      scm,
+		Org:      "org",
+		RepoName: "repo",
+	}
+	err := DeactivateKillSwitchBase(w)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "updating base config")
+}
+
+func TestDeactivateKillSwitchBase_EmptyIdentity(t *testing.T) {
+	t.Parallel()
+	w := &world.World{SCM: &fakeDispatchSCM{}}
+	err := DeactivateKillSwitchBase(w)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no repo configured")
+}
+
 // --- empty identity guard tests ---
 
 func TestGivenKillSwitchActive_EmptyIdentity(t *testing.T) {
@@ -196,6 +340,9 @@ type fakeDispatchSCM struct {
 func (f *fakeDispatchSCM) GetFileContent(_ context.Context, _, _, _ string) ([]byte, error) {
 	return f.fileContent, f.getFileErr
 }
+func (f *fakeDispatchSCM) GetFileContentAtRef(_ context.Context, _, _, _, _ string) ([]byte, error) {
+	return f.fileContent, f.getFileErr
+}
 func (f *fakeDispatchSCM) CommitFile(_ context.Context, _, _, _, _ string, content []byte) error {
 	f.commitCalled = true
 	f.committedContent = content
@@ -229,10 +376,20 @@ func (f *fakeDispatchSCM) DeleteRepo(context.Context, string, string) error     
 func (f *fakeDispatchSCM) CreateFork(context.Context, string, string, string) (string, error) {
 	return "", nil
 }
+func (f *fakeDispatchSCM) CreateUserFork(context.Context, string, string) (string, string, error) {
+	return "", "", nil
+}
 func (f *fakeDispatchSCM) CommitFileToFork(context.Context, string, string, string, string, string, []byte) error {
 	return nil
 }
 func (f *fakeDispatchSCM) CreateForkChangeProposal(context.Context, string, string, string, string, string, string, string, string) (*forge.ChangeProposal, error) {
+	return nil, nil
+}
+func (f *fakeDispatchSCM) ListPullRequestCommits(context.Context, string, string, int) ([]string, error) {
+	return nil, nil
+}
+
+func (f *fakeDispatchSCM) ListPullRequestReviews(context.Context, string, string, int) ([]forge.PullRequestReview, error) {
 	return nil, nil
 }
 func (f *fakeDispatchSCM) CreateRepo(context.Context, string, string, string) error { return nil }
@@ -364,7 +521,7 @@ func TestGivenCustomHarness_CommitsAgentAndPolicy(t *testing.T) {
 
 	policyData := scm.files["test-org/test-repo/.fullsend/policies/test.md"]
 	require.NotNil(t, policyData, "policy resource should be committed")
-	assert.Contains(t, string(policyData), "Minimal policy")
+	assertBasePolicy(t, policyData)
 }
 
 func TestGivenCustomHarness_SkipsAbsoluteAgentPath(t *testing.T) {

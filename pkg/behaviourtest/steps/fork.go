@@ -8,15 +8,27 @@ import (
 
 	"github.com/cucumber/godog"
 
+	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
 func registerForkSteps(sc *godog.ScenarioContext) {
-	sc.Step(`^a fork "([^"]+)" of the enrolled test repository$`, func(ctx context.Context, forkName string) (context.Context, error) {
-		return ctx, givenFork(world.FromContext(ctx), forkName)
+	// The optional actor suffixes default to the e2e identity, so
+	// existing fork scenarios keep their behaviour.
+	sc.Step(`^a fork "([^"]+)" of the enrolled test repository(?: owned by the (`+actorAlternation+`))?$`, func(ctx context.Context, forkName, actor string) (context.Context, error) {
+		w := world.FromContext(ctx)
+		if actor == "" {
+			return ctx, givenFork(w, forkName)
+		}
+		return ctx, givenActorFork(w, actor)
 	})
-	sc.Step(`^a fork pull request is opened$`, func(ctx context.Context) (context.Context, error) {
-		return ctx, whenForkPullRequestOpened(world.FromContext(ctx))
+	sc.Step(`^a fork pull request is opened(?: by the (`+actorAlternation+`))?$`, func(ctx context.Context, actor string) (context.Context, error) {
+		w := world.FromContext(ctx)
+		if actor == "" {
+			return ctx, whenForkPullRequestOpened(w)
+		}
+		return ctx, whenForkPullRequestOpenedBy(w, actor)
 	})
 	sc.Step(`^a commit is pushed to the fork pull request$`, func(ctx context.Context) (context.Context, error) {
 		return ctx, whenCommitPushedToForkPR(world.FromContext(ctx))
@@ -46,9 +58,27 @@ const createBranchMaxAttempts = 5
 // createBranchPoll is the delay between CreateBranch retries.
 const createBranchPoll = 2 * time.Second
 
+// createForkMaxAttempts is how many times createFork retries
+// CreateFork when GitHub rejects the name as still taken after a
+// recent delete. GitHub's uniqueness constraint can lag the
+// DeleteRepo 404 by tens of seconds: GetRepo already reports the
+// fork gone while POST /forks still returns 403 "Name already
+// exists on this account".
+const createForkMaxAttempts = 15
+
+// createForkPoll is the delay between CreateFork retries on a
+// stale name-collision error.
+const createForkPoll = 2 * time.Second
+
 // givenFork creates a fork of the enrolled test repository if absent, or
 // reuses it if it already exists. The fork is created within the same
 // organization as the source repository.
+//
+// CreateFork is retried on stale name-collision errors (GitHub 403/422
+// "Name already exists on this account"). CleanupScenario deletes the
+// previous scenario's fork, but GitHub's uniqueness constraint can lag
+// the DeleteRepo 404, so a later scenario reusing the same target name
+// would otherwise fail even though GetRepo reports the name free.
 //
 // After creation, givenFork polls GetBranchRef until the fork's
 // default-branch git ref is readable. GitHub's fork API returns before
@@ -71,7 +101,7 @@ func givenFork(w *world.World, forkName string) error {
 	resolved := resolveForkName(w, forkName)
 
 	ctx := context.Background()
-	forkRepo, err := w.SCM.CreateFork(ctx, w.RepoOwner, w.RepoName, resolved)
+	forkRepo, err := createFork(ctx, w, w.RepoOwner, w.RepoName, resolved, createForkMaxAttempts, createForkPoll)
 	if err != nil {
 		return fmt.Errorf("creating fork %q: %w", resolved, err)
 	}
@@ -83,6 +113,48 @@ func givenFork(w *world.World, forkName string) error {
 	}
 
 	return nil
+}
+
+// givenActorFork creates a fork of the enrolled test repository in the
+// named test actor's own account, the way an outside contributor forks
+// a repository they cannot write to. The forge names the fork (by
+// default after the base repo), so the step's logical fork name is not
+// used. The actor's driver is recorded in World.ForkSCM so branch,
+// commit, and cleanup operations on the fork act as that actor: the e2e
+// installation token has no access to a personal account's
+// repositories.
+func givenActorFork(w *world.World, actor string) error {
+	if w.RepoOwner == "" || w.RepoName == "" {
+		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before fork operations")
+	}
+	actorSCM, _, err := actorIdentity(w, actor)
+	if err != nil {
+		return err
+	}
+
+	ctx := context.Background()
+	forkOwner, forkRepo, err := actorSCM.CreateUserFork(ctx, w.RepoOwner, w.RepoName)
+	if err != nil {
+		return fmt.Errorf("creating fork of %s/%s as the %s: %w", w.RepoOwner, w.RepoName, actor, err)
+	}
+	w.ForkOwner = forkOwner
+	w.ForkRepo = forkRepo
+	w.ForkSCM = actorSCM
+
+	if err := awaitForkReady(ctx, w, forkOwner, forkRepo, forkReadyMaxAttempts, forkReadyPoll); err != nil {
+		return fmt.Errorf("waiting for fork %s/%s readiness: %w", forkOwner, forkRepo, err)
+	}
+	return nil
+}
+
+// forkSCM returns the driver that owns the scenario's fork: the test
+// actor's driver for a fork created by givenActorFork, otherwise the
+// e2e identity's World.SCM.
+func forkSCM(w *world.World) scm.Driver {
+	if w.ForkSCM != nil {
+		return w.ForkSCM
+	}
+	return w.SCM
 }
 
 // awaitForkReady waits until the fork's default-branch git ref is
@@ -102,7 +174,7 @@ func awaitForkReady(ctx context.Context, w *world.World, owner, repo string, max
 	// retries immediately after fork creation.
 	var defaultBranch string
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		branch, err := w.SCM.GetDefaultBranch(ctx, owner, repo)
+		branch, err := forkSCM(w).GetDefaultBranch(ctx, owner, repo)
 		if err == nil {
 			defaultBranch = branch
 			break
@@ -126,7 +198,7 @@ func awaitForkReady(ctx context.Context, w *world.World, owner, repo string, max
 	// Poll the git ref until it is readable. This is the actual
 	// readiness signal — CreateBranch needs the ref to exist.
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		_, err := w.SCM.GetBranchRef(ctx, owner, repo, defaultBranch)
+		_, err := forkSCM(w).GetBranchRef(ctx, owner, repo, defaultBranch)
 		if err == nil {
 			return nil
 		}
@@ -172,6 +244,67 @@ func resolveForkName(w *world.World, logicalName string) string {
 	return w.RepoName + suffix
 }
 
+// isNameCollisionError reports whether err looks like GitHub still
+// holding a recently deleted repository name. The observed live
+// failure is 403 "Name already exists on this account"; the Contents
+// / repos API also emits 422 Validation Failed with the same detail.
+// GetRepo 404 is not a sufficient uniqueness signal, so CreateFork
+// itself must retry this class of error.
+//
+// ErrNotFork ("already exists and is not a fork") is a real collision
+// with a different repo and is not retried, even if forkName itself
+// ends in "name" (e.g. "foo-name"), which would otherwise make the
+// wrapped ErrNotFork message ("repo org/foo-name already exists and
+// is not a fork") match the substring check below. forge.IsNotFork is
+// checked first, before the substring heuristic, to avoid that false
+// positive.
+func isNameCollisionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if forge.IsNotFork(err) {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "name already exists")
+}
+
+// createFork wraps CreateFork with retry logic for stale name-collision
+// errors. After CleanupScenario deletes a per-scenario fork, GitHub can
+// still reject a recreate of the same name even though GetRepo 404s.
+// Retrying CreateFork is the only reliable probe: uniqueness lag is not
+// observable via GetRepo.
+//
+// Non-collision errors (permissions, ErrNotFork, network) fail
+// immediately. maxAttempts and poll are explicit parameters so that
+// unit tests can pass small values to avoid real sleeps.
+func createFork(ctx context.Context, w *world.World, owner, repo, forkName string, maxAttempts int, poll time.Duration) (string, error) {
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		forkRepo, err := w.SCM.CreateFork(ctx, owner, repo, forkName)
+		if err == nil {
+			return forkRepo, nil
+		}
+		lastErr = err
+		if !isNameCollisionError(lastErr) {
+			return "", lastErr
+		}
+		if attempt < maxAttempts {
+			select {
+			case <-ctx.Done():
+				return "", fmt.Errorf(
+					"context cancelled retrying CreateFork %q: %w",
+					forkName, ctx.Err(),
+				)
+			case <-time.After(poll):
+			}
+		}
+	}
+	return "", fmt.Errorf(
+		"fork %q creation failed after %d attempts: %w",
+		forkName, maxAttempts, lastErr,
+	)
+}
+
 // isReplicationError reports whether err looks like a GitHub fork
 // replication race — a 409 "Git Repository is empty" or a 422
 // "Object does not exist" / "Tree SHA does not exist". These are
@@ -199,7 +332,7 @@ func isReplicationError(err error) bool {
 func createForkBranch(ctx context.Context, w *world.World, owner, repo, branch string, maxAttempts int, poll time.Duration) error {
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		lastErr = w.SCM.CreateBranch(ctx, owner, repo, branch)
+		lastErr = forkSCM(w).CreateBranch(ctx, owner, repo, branch)
 		if lastErr == nil {
 			return nil
 		}
@@ -224,8 +357,27 @@ func createForkBranch(ctx context.Context, w *world.World, owner, repo, branch s
 }
 
 // whenForkPullRequestOpened commits a file to a new branch on the fork
-// and opens a cross-fork pull request against the base repository.
+// and opens a cross-fork pull request against the base repository as
+// the e2e identity.
 func whenForkPullRequestOpened(w *world.World) error {
+	return openForkPullRequest(w, w.SCM)
+}
+
+// whenForkPullRequestOpenedBy is whenForkPullRequestOpened with the
+// pull request opened by the named test actor, so the actor is both
+// the pull request's author and the sender of its opened event.
+func whenForkPullRequestOpenedBy(w *world.World, actor string) error {
+	actorSCM, _, err := actorIdentity(w, actor)
+	if err != nil {
+		return err
+	}
+	return openForkPullRequest(w, actorSCM)
+}
+
+// openForkPullRequest prepares the head branch on the fork through the
+// fork owner's driver (forkSCM) and opens the pull request through
+// opener.
+func openForkPullRequest(w *world.World, opener scm.Driver) error {
 	if w.ForkOwner == "" || w.ForkRepo == "" {
 		return fmt.Errorf("no fork created: use 'Given a fork' first")
 	}
@@ -248,11 +400,11 @@ func whenForkPullRequestOpened(w *world.World) error {
 	w.ForkPRBranch = branch
 
 	msg := fmt.Sprintf("behaviour fork pr %s", branch)
-	if err := w.SCM.CommitFileToFork(ctx, w.ForkOwner, w.ForkRepo, branch, "behaviour/fork-pr.txt", msg, []byte("behaviour fork test\n")); err != nil {
+	if err := forkSCM(w).CommitFileToFork(ctx, w.ForkOwner, w.ForkRepo, branch, "behaviour/fork-pr.txt", msg, []byte("behaviour fork test\n")); err != nil {
 		return fmt.Errorf("committing to fork branch: %w", err)
 	}
 
-	pr, err := w.SCM.CreateForkChangeProposal(ctx, w.RepoOwner, w.RepoName, "Behaviour fork test PR", "behaviour fork", w.ForkOwner, w.ForkRepo, branch, "main")
+	pr, err := opener.CreateForkChangeProposal(ctx, w.RepoOwner, w.RepoName, "Behaviour fork test PR", "behaviour fork", w.ForkOwner, w.ForkRepo, branch, "main")
 	if err != nil {
 		return fmt.Errorf("creating fork pull request: %w", err)
 	}
@@ -283,7 +435,7 @@ func whenCommitPushedToForkPR(w *world.World) error {
 
 	msg := fmt.Sprintf("behaviour: push to fork PR #%d", w.ForkPRNumber)
 	content := []byte(fmt.Sprintf("pushed at %d\n", time.Now().UnixNano()))
-	if err := w.SCM.CommitFileToFork(ctx, w.ForkOwner, w.ForkRepo, w.ForkPRBranch, "behaviour/fork-push.txt", msg, content); err != nil {
+	if err := forkSCM(w).CommitFileToFork(ctx, w.ForkOwner, w.ForkRepo, w.ForkPRBranch, "behaviour/fork-push.txt", msg, content); err != nil {
 		return fmt.Errorf("pushing commit to fork PR: %w", err)
 	}
 	return nil

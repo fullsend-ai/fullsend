@@ -25,12 +25,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
+
+	"github.com/fullsend-ai/fullsend/internal/inference/actionsoidc"
 )
 
 const (
@@ -43,21 +42,16 @@ const (
 	// a maintainer's live test.
 	defaultSubjectTokenType = "urn:ietf:params:oauth:token-type:jwt"
 
-	// maxResponseBytes bounds how many bytes we accept from either endpoint.
-	// Both responses are small JSON; a larger body is an error, not
-	// something to parse.
-	maxResponseBytes = 1 << 20 // 1 MiB
+	// maxResponseBytes bounds how many bytes we accept from either endpoint
+	// (actionsoidc.ReadBounded reads both).
+	maxResponseBytes = actionsoidc.MaxResponseBytes
 
 	// httpTimeout is the per-request timeout for both the OIDC assertion
 	// request and the OpenAI exchange.
-	httpTimeout = 30 * time.Second
+	httpTimeout = actionsoidc.HTTPTimeout
 
 	// maxTokenLifetime is the documented ceiling on an exchanged token.
 	maxTokenLifetime = time.Hour
-
-	// oidcHostSuffix is where GitHub serves ACTIONS_ID_TOKEN_REQUEST_URL
-	// (github.com only; GHES is not supported by fullsend).
-	oidcHostSuffix = ".actions.githubusercontent.com"
 )
 
 // Config holds the inputs for a WIF exchange. All fields except
@@ -110,11 +104,6 @@ type Token struct {
 	// Scope is the space-separated permission list the mapping granted
 	// (empty when the mapping does not narrow permissions). Not secret.
 	Scope string
-}
-
-// oidcResponse is the GitHub OIDC endpoint's JSON shape.
-type oidcResponse struct {
-	Value string `json:"value"`
 }
 
 // exchangeRequest is the OpenAI token endpoint's JSON request shape.
@@ -176,18 +165,18 @@ func Exchange(ctx context.Context, cfg Config) (*Token, error) {
 	if tokenEndpoint == "" {
 		tokenEndpoint = openAITokenEndpoint
 	}
-	if err := requireSecureURL("OIDC request URL", cfg.OIDCRequestURL); err != nil {
+	if err := actionsoidc.RequireSecureURL("OIDC request URL", cfg.OIDCRequestURL); err != nil {
 		return nil, fmt.Errorf("openaiwif: %w", err)
 	}
-	if err := requireGitHubOIDCHost(cfg.OIDCRequestURL); err != nil {
+	if err := actionsoidc.RequireGitHubOIDCHost(cfg.OIDCRequestURL); err != nil {
 		return nil, fmt.Errorf("openaiwif: %w", err)
 	}
-	if err := requireSecureURL("token endpoint", tokenEndpoint); err != nil {
+	if err := actionsoidc.RequireSecureURL("token endpoint", tokenEndpoint); err != nil {
 		return nil, fmt.Errorf("openaiwif: %w", err)
 	}
 
 	// Step 1: fetch the GitHub OIDC assertion.
-	assertion, err := fetchAssertion(ctx, client, cfg.OIDCRequestURL, cfg.OIDCRequestToken, cfg.Audience)
+	assertion, err := actionsoidc.Fetch(ctx, client, cfg.OIDCRequestURL, cfg.OIDCRequestToken, cfg.Audience)
 	if err != nil {
 		return nil, fmt.Errorf("openaiwif: assertion request failed: %w", err)
 	}
@@ -198,102 +187,6 @@ func Exchange(ctx context.Context, cfg Config) (*Token, error) {
 		return nil, fmt.Errorf("openaiwif: token exchange failed: %w", err)
 	}
 	return tok, nil
-}
-
-// requireSecureURL rejects anything but https, except plain http to a
-// loopback address (test servers).
-func requireSecureURL(what, raw string) error {
-	u, err := url.Parse(raw)
-	if err != nil {
-		return fmt.Errorf("parsing %s: %w", what, err)
-	}
-	switch {
-	case u.Scheme == "https":
-		return nil
-	case u.Scheme == "http" && isLoopback(u.Hostname()):
-		return nil
-	}
-	return fmt.Errorf("%s must use https (got scheme %q)", what, u.Scheme)
-}
-
-// requireGitHubOIDCHost rejects an assertion URL that does not point at
-// GitHub's Actions token service (loopback is allowed for tests). The URL
-// is runner-injected and deny-listed, so this is defence in depth against a
-// rewritten runner environment, not SSRF hardening.
-func requireGitHubOIDCHost(raw string) error {
-	u, err := url.Parse(raw)
-	if err != nil {
-		return fmt.Errorf("parsing OIDC request URL: %w", err)
-	}
-	host := strings.ToLower(u.Hostname())
-	if isLoopback(host) || strings.HasSuffix(host, oidcHostSuffix) {
-		return nil
-	}
-	return fmt.Errorf("OIDC request URL host %q is not GitHub's Actions token service (*%s)", u.Hostname(), oidcHostSuffix)
-}
-
-func isLoopback(host string) bool {
-	if host == "localhost" {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
-}
-
-// readBounded reads at most maxResponseBytes from r and errors when the
-// body is larger, so an oversized response is never parsed.
-func readBounded(r io.Reader) ([]byte, error) {
-	body, err := io.ReadAll(io.LimitReader(r, maxResponseBytes+1))
-	if err != nil {
-		return nil, fmt.Errorf("reading response: %w", err)
-	}
-	if len(body) > maxResponseBytes {
-		return nil, fmt.Errorf("response exceeds %d bytes", maxResponseBytes)
-	}
-	return body, nil
-}
-
-// fetchAssertion requests a GitHub OIDC JWT from the runner's token endpoint.
-func fetchAssertion(ctx context.Context, client *http.Client, oidcURL, oidcToken, audience string) (string, error) {
-	// GitHub hands the runner a URL that already carries api-version; the
-	// audience is one more query parameter, added through url.Values so it
-	// is encoded correctly whether or not a query string is present.
-	u, err := url.Parse(oidcURL)
-	if err != nil {
-		return "", fmt.Errorf("parsing OIDC request URL: %w", err)
-	}
-	q := u.Query()
-	q.Set("audience", audience)
-	u.RawQuery = q.Encode()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
-	if err != nil {
-		return "", fmt.Errorf("building request: %w", err)
-	}
-	req.Header.Set("Authorization", "bearer "+oidcToken)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("OIDC endpoint returned %d", resp.StatusCode)
-	}
-	body, err := readBounded(resp.Body)
-	if err != nil {
-		return "", err
-	}
-
-	var oidc oidcResponse
-	if err := json.Unmarshal(body, &oidc); err != nil {
-		return "", fmt.Errorf("parsing response: %w", err)
-	}
-	if oidc.Value == "" {
-		return "", fmt.Errorf("OIDC endpoint returned empty assertion")
-	}
-	return oidc.Value, nil
 }
 
 // exchangeToken performs the RFC 8693 token exchange at the OpenAI endpoint.
@@ -330,7 +223,7 @@ func exchangeToken(ctx context.Context, client *http.Client, endpoint, assertion
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("token endpoint returned %d", resp.StatusCode)
 	}
-	body, err := readBounded(resp.Body)
+	body, err := actionsoidc.ReadBounded(resp.Body)
 	if err != nil {
 		return nil, err
 	}

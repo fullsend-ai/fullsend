@@ -29,7 +29,9 @@ type OpenAICredentialSeeder interface {
 // every runtime without forcing an OpenAI credential on runs that never
 // call OpenAI (#6920).
 //
-// codex speaks only the OpenAI Responses API, so it always needs one. pi is
+// codex speaks only the OpenAI Responses API, so it needs one for every
+// model except a gateway/ one, which reaches the inference gateway through
+// the runner's gateway provider instead (ADR 0137, NeedsGatewayRoute). pi is
 // multi-provider: it needs one exactly when the effective model resolves to
 // its openai provider, which is the same resolution buildPiRunCommand gates
 // on (provider prefix, the FULLSEND_PI_PROVIDER default for a bare id).
@@ -46,10 +48,29 @@ type OpenAICredentialSeeder interface {
 func NeedsOpenAIProvider(backend, runModel, agentModel string, configAliases map[string]string) bool {
 	switch backend {
 	case "codex":
-		return true
+		return !isCodexGatewayModel(EffectiveModel(runModel, agentModel))
 	case "pi":
 		return piModelProvider(EffectiveModel(runModel, agentModel), configAliases) == piOpenAIProvider
 	default:
 		return false
 	}
+}
+
+// OpenAIChildren lists the configured pi children whose model resolves to
+// the openai provider: a repo `subagents.<persona>` entry,
+// `subagents.default`, or a discovered persona's own frontmatter `model:`
+// (#7981). It resolves them exactly as Bootstrap does — the same persona
+// discovery, the same model table built from the agent definition's model
+// and models.aliases, the same resolver — so the runner's provider gate,
+// its pre-sandbox check and the children's openai allowlist cannot drift.
+//
+// NeedsOpenAIProvider answers only for the parent. pi is multi-provider per
+// child, so a Vertex parent with an OpenAI persona needs the run-scoped
+// OpenAI provider too. The list is empty for every backend other than pi
+// (codex has no children; the rest never need the provider) and for an agent
+// without the Agent tool, which dispatches no children. A model an Agent
+// call names at dispatch time is not covered: it is not known before the
+// sandbox starts.
+func OpenAIChildren(backend, agentPath string, subagentsCfg map[string]*string, skillDirs []string, agentName string, configAliases map[string]string) []PiChild {
+	return piChildrenOn(backend, agentPath, subagentsCfg, skillDirs, agentName, configAliases, piOpenAIProvider)
 }

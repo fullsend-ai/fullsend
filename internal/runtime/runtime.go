@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -21,16 +22,31 @@ type RunMetrics struct {
 	CacheReadInputTokens     int     `json:"cache_read_input_tokens"`
 	Model                    string  `json:"model"`
 	// PerModelUsage breaks the totals above down by the model spec that
-	// spent them. Runtimes that dispatch sub-agents (pi's Agent tool) fill
-	// it with one entry per child model plus the parent's own, so a run
+	// spent them. Runtimes that dispatch sub-agents fill it — pi's Agent
+	// tool with one entry per child model plus the parent's own, claude
+	// with one entry per model id from the result's modelUsage — so a run
 	// whose cost is dominated by children is legible in metrics.json;
 	// runtimes without sub-agents leave it nil and the totals stand alone.
 	PerModelUsage map[string]ModelUsage `json:"per_model_usage,omitempty"`
+	// FallbackFrom lists, in the order they were tried, the models the run
+	// moved off before Model took over (#8426): models the Vertex project
+	// did not serve, and on Claude Code any model its own --fallback-model
+	// handling left (a "model_fallback" event, for example on overload).
+	// Empty when the first model ran.
+	FallbackFrom []string `json:"fallback_from,omitempty"`
+	// FallbackReasons says why the run moved off each FallbackFrom entry,
+	// at the same index: "not_served" when the runner retried because the
+	// Vertex project does not serve the model, "claude_code:<trigger>"
+	// when Claude Code switched itself (its model_fallback trigger, for
+	// example "claude_code:last_resort"). Add entries with recordFallback
+	// so the two stay aligned.
+	FallbackReasons []string `json:"fallback_reasons,omitempty"`
 }
 
 // ModelUsage is one model's token and cost contribution to a run. Requests
 // counts the agent invocations attributed to the model (one for the parent
-// iteration, one per sub-agent call).
+// iteration, one per sub-agent call); the claude runtime has no source for
+// it and leaves it zero.
 type ModelUsage struct {
 	Requests                 int     `json:"requests"`
 	InputTokens              int     `json:"input_tokens"`
@@ -64,7 +80,9 @@ type RunParams struct {
 	Effort        string
 	// FallbackModels is the ordered overload/retirement fallback chain
 	// (FULLSEND_FALLBACK_MODELS). Claude Code passes it as --fallback-model;
-	// runtimes without the capability ignore it with a warning.
+	// runtimes without the capability ignore it with a warning. On Claude
+	// Code and pi it also replaces an alias's built-in chain
+	// (ImplicitFallbackModels) when the alias is not served.
 	FallbackModels []string
 	RepoDir        string
 	FullsendDir    string
@@ -104,6 +122,17 @@ type RunParams struct {
 	// underlying CLI. An empty or nil map means no overrides; the
 	// runtime's compiled-in alias table is used as-is.
 	ModelAliases map[string]string
+	// ForgeClient is an authenticated forge.Client for the current Forge
+	// platform, used by runtimes that need to call forge APIs from the
+	// orchestrator process itself (as opposed to the agent's own tool use
+	// inside the sandbox). Per the forge-abstraction rule (AGENTS.md,
+	// docs/contributing/forge-abstraction.md), any such call must go
+	// through this client rather than shelling out to `gh`/`glab`. May be
+	// nil when no token could be resolved; callers must treat that as
+	// "forge operations unavailable" rather than failing outright, mirroring
+	// the fail-closed-but-non-fatal handling already used for the playback
+	// tracking comment.
+	ForgeClient forge.Client
 }
 
 // TranscriptError holds extracted error information from a runtime transcript.
@@ -157,7 +186,7 @@ type Backend struct {
 	Transcripts TranscriptHandler
 }
 
-// Default returns the Claude Code backend. Prefer ResolveFromConfig for org-aware selection.
+// Default returns the Claude Code backend. Prefer ResolveFromPerRepoConfig for config-aware selection.
 func Default() Backend {
 	r := ClaudeRuntime{}
 	return Backend{Runtime: r, Transcripts: r}
@@ -207,6 +236,23 @@ func WantsClaudeMDBridge(rt Runtime) bool {
 		return b.NeedsClaudeMDBridge()
 	}
 	return false
+}
+
+// HomeInstructionsBridger is implemented by runtimes that do not read the
+// target repo's AGENTS.md natively and load instructions from a file of their
+// own instead. HomeAgentsMDPath is where the runner copies the repo's
+// AGENTS.md (or the injected org-level one) inside the sandbox.
+type HomeInstructionsBridger interface {
+	HomeAgentsMDPath() string
+}
+
+// HomeAgentsMDPath returns rt's HomeAgentsMDPath, or "" for runtimes that
+// read AGENTS.md themselves.
+func HomeAgentsMDPath(rt Runtime) string {
+	if b, ok := rt.(HomeInstructionsBridger); ok {
+		return b.HomeAgentsMDPath()
+	}
+	return ""
 }
 
 // ProviderResolver is an optional Runtime extension for multi-provider

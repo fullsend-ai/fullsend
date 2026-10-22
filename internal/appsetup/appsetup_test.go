@@ -77,6 +77,25 @@ func TestAppSlug(t *testing.T) {
 	assert.Equal(t, "fullsend-review", AppSlug("fullsend", "review"))
 }
 
+func TestResolvePersistedAppSet(t *testing.T) {
+	tests := []struct {
+		name     string
+		explicit string
+		existing string
+		want     string
+	}{
+		{"explicit wins over existing", "custom", "other", "custom"},
+		{"explicit wins over absent", "custom", "", "custom"},
+		{"preserve existing when not explicit", "", "other", "other"},
+		{"default when both absent", "", "", DefaultAppSet},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, ResolvePersistedAppSet(tc.explicit, tc.existing))
+		})
+	}
+}
+
 func TestValidateAppSet(t *testing.T) {
 	tests := []struct {
 		name    string

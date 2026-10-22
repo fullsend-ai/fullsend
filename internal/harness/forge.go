@@ -118,20 +118,17 @@ func (h *Harness) validateForge() error {
 			if hf.Dest == "" {
 				return fmt.Errorf("forge.%s.host_files[%d]: dest is required", key, i)
 			}
+			if err := ValidateHostFileDest(hf.Dest); err != nil {
+				return fmt.Errorf("forge.%s.host_files[%d]: %w", key, i, err)
+			}
 			if IsURL(hf.Src) {
 				return fmt.Errorf("forge.%s.host_files[%d].src must be a local path, not a URL", key, i)
 			}
 		}
-		if fc.ValidationLoop != nil {
-			if fc.ValidationLoop.Script == "" {
-				return fmt.Errorf("forge.%s.validation_loop.script is required when validation_loop is set", key)
-			}
-			if IsURL(fc.ValidationLoop.Script) {
-				return fmt.Errorf("forge.%s.validation_loop.script must be a local path, not a URL", key)
-			}
-			if fc.ValidationLoop.Schema != "" && IsURL(fc.ValidationLoop.Schema) {
-				return fmt.Errorf("forge.%s.validation_loop.schema must be a local path, not a URL", key)
-			}
+		// Field-level merge inherits script from the top-level loop.
+		topHasScript := h.ValidationLoop != nil && h.ValidationLoop.Script != ""
+		if err := validateValidationLoop(fmt.Sprintf("forge.%s", key), fc.ValidationLoop, topHasScript); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -148,6 +145,15 @@ func (h *Harness) validateForge() error {
 // feature (ADR 0088 deprecated forge in favor of overlays), but the name
 // remains accurate: this function validates ForgeConfig fields.
 func validateOverlayForgeConfig(idx int, fc *ForgeConfig) error {
+	return validateOverlayForgeConfigInherit(idx, fc, false)
+}
+
+// validateOverlayForgeConfigInherit validates a ForgeConfig embedded in an
+// overlay entry, applying the same checks as validateForge per entry. When
+// inheritScript is true, an empty validation_loop.script is allowed because
+// field-level merge will inherit it from the top-level validation_loop (see
+// validateValidationLoop).
+func validateOverlayForgeConfigInherit(idx int, fc *ForgeConfig, inheritScript bool) error {
 	prefix := fmt.Sprintf("overlays[%d]", idx)
 	if fc.Policy != "" && IsURL(fc.Policy) {
 		if _, _, hasHash := ParseIntegrityHash(fc.Policy); !hasHash {
@@ -193,20 +199,35 @@ func validateOverlayForgeConfig(idx int, fc *ForgeConfig) error {
 		if hf.Dest == "" {
 			return fmt.Errorf("%s.host_files[%d]: dest is required", prefix, i)
 		}
+		if err := ValidateHostFileDest(hf.Dest); err != nil {
+			return fmt.Errorf("%s.host_files[%d]: %w", prefix, i, err)
+		}
 		if IsURL(hf.Src) {
 			return fmt.Errorf("%s.host_files[%d].src must be a local path, not a URL", prefix, i)
 		}
 	}
-	if fc.ValidationLoop != nil {
-		if fc.ValidationLoop.Script == "" {
+	return validateValidationLoop(prefix, fc.ValidationLoop, inheritScript)
+}
+
+// validateValidationLoop applies validation_loop field checks shared by both
+// forge platform blocks (validateForge) and overlay entries
+// (validateOverlayForgeConfigInherit): script is required unless
+// inheritScript allows an empty script to inherit from the top-level
+// validation_loop, script must not be a URL, and schema must not be a URL.
+// A nil vl is valid (no validation_loop set) and returns nil.
+func validateValidationLoop(prefix string, vl *ValidationLoop, inheritScript bool) error {
+	if vl == nil {
+		return nil
+	}
+	if vl.Script == "" {
+		if !inheritScript {
 			return fmt.Errorf("%s.validation_loop.script is required when validation_loop is set", prefix)
 		}
-		if IsURL(fc.ValidationLoop.Script) {
-			return fmt.Errorf("%s.validation_loop.script must be a local path, not a URL", prefix)
-		}
-		if fc.ValidationLoop.Schema != "" && IsURL(fc.ValidationLoop.Schema) {
-			return fmt.Errorf("%s.validation_loop.schema must be a local path, not a URL", prefix)
-		}
+	} else if IsURL(vl.Script) {
+		return fmt.Errorf("%s.validation_loop.script must be a local path, not a URL", prefix)
+	}
+	if vl.Schema != "" && IsURL(vl.Schema) {
+		return fmt.Errorf("%s.validation_loop.schema must be a local path, not a URL", prefix)
 	}
 	return nil
 }
@@ -243,7 +264,8 @@ func (h *Harness) validateOverlays() error {
 			return fmt.Errorf("overlays[%d].when must evaluate to bool, got %v", i, ast.OutputType())
 		}
 		fc := entry.ForgeConfig
-		if err := validateOverlayForgeConfig(i, &fc); err != nil {
+		inheritScript := h.ValidationLoop != nil && h.ValidationLoop.Script != ""
+		if err := validateOverlayForgeConfigInherit(i, &fc, inheritScript); err != nil {
 			return err
 		}
 	}
@@ -333,12 +355,12 @@ func (h *Harness) ResolveForge(platform string) error {
 //
 // Merge rules per ADR-0045:
 //   - Scalars: forge overrides if non-empty
-//   - Skills: top-level + forge (concatenated)
+//   - Skills: top-level + forge (merged by skill identity; forge overrides matching top-level)
 //   - Providers: top-level + forge (concatenated)
 //   - OpenShell.Profiles: top-level + forge (concatenated)
 //   - HostFiles: top-level + forge (concatenated with last-writer-wins dedup by Dest)
 //   - RunnerEnv: top-level merged with forge; forge keys win
-//   - ValidationLoop: forge replaces entirely if non-nil
+//   - ValidationLoop: field-level merge; forge non-zero fields win
 func mergeForgeConfig(h *Harness, fc *ForgeConfig) {
 	if fc.PreScript != "" {
 		h.PreScript = fc.PreScript
@@ -385,7 +407,7 @@ func mergeForgeConfig(h *Harness, fc *ForgeConfig) {
 	}
 
 	if fc.ValidationLoop != nil {
-		h.ValidationLoop = fc.ValidationLoop
+		h.ValidationLoop = mergeValidationLoop(h.ValidationLoop, fc.ValidationLoop)
 	}
 
 	// Env: merge sub-maps independently; forge keys win (ADR 0055)
@@ -408,7 +430,7 @@ func forgeKeyList(m map[string]*ForgeConfig) string {
 // BuildConfigMap extracts user-facing per-repo config fields for overlay
 // CEL evaluation (ADR 0088). The returned map is exposed to overlay when
 // expressions as the "config" variable. Returns nil when cfg is nil or
-// does not implement PerRepoConfigReader (e.g. org-mode configs).
+// does not implement PerRepoConfigReader.
 //
 // All safe per-repo config fields are exposed. Sensitive fields (mint_url,
 // inference provider details) are excluded. Per PR #6285 review feedback,

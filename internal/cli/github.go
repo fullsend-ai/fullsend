@@ -15,11 +15,8 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
-	"github.com/fullsend-ai/fullsend/internal/inference"
-	"github.com/fullsend-ai/fullsend/internal/inference/vertex"
 	"github.com/fullsend-ai/fullsend/internal/layers"
 	"github.com/fullsend-ai/fullsend/internal/maputil"
-	"github.com/fullsend-ai/fullsend/internal/mintcore"
 	"github.com/fullsend-ai/fullsend/internal/preset"
 	"github.com/fullsend-ai/fullsend/internal/repos"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
@@ -29,16 +26,11 @@ import (
 func newGitHubCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "github",
-		Short: "Manage GitHub org and repo configuration",
-		Long:  "Commands for configuring fullsend in a GitHub organization or repository. Requires only GitHub access — no GCP credentials needed.",
+		Short: "Manage GitHub repo configuration",
+		Long:  "Commands for configuring fullsend in a GitHub repository. Requires only GitHub access — no GCP credentials needed.",
 	}
 	cmd.AddCommand(newGitHubSetupCmd())
-	cmd.AddCommand(newGitHubEnrollCmd())
-	cmd.AddCommand(newGitHubUnenrollCmd())
 	cmd.AddCommand(newGitHubSetCmd())
-	cmd.AddCommand(newGitHubStatusCmd())
-	cmd.AddCommand(newGitHubUninstallCmd())
-	cmd.AddCommand(newGitHubSyncScaffoldCmd())
 	return cmd
 }
 
@@ -66,11 +58,7 @@ type githubSetupConfig struct {
 	openaiAudience           string
 	openaiIdentityProviderID string
 	openaiServiceAccountID   string
-	skipAppSetup             bool
-	publicApps               bool
 	appSet                   string
-	enrollAll                bool
-	enrollNone               bool
 	vendor                   bool
 	fullsendBinary           string
 	fullsendSource           string
@@ -81,6 +69,14 @@ type githubSetupConfig struct {
 	configPreset             string // --config: local path or HTTPS URL to a preset
 	configHash               string // --config-hash: SHA-256 hex digest for preset validation
 	signoff                  bool   // --signoff: add Signed-off-by trailer to scaffold commits
+
+	// Inference gateway block (ADR 0137), written to inference.gateway in
+	// .fullsend/config.yaml; url always, audience in the oidc auth mode.
+	gatewayURL        string
+	gatewayAudience   string
+	gatewayAuth       string
+	gatewayModels     []string
+	gatewayModelsFile string
 
 	// changedFlags records which flags were explicitly set on the
 	// command line (populated by RunE before calling the setup
@@ -93,24 +89,22 @@ func newGitHubSetupCmd() *cobra.Command {
 	var cfg githubSetupConfig
 
 	cmd := &cobra.Command{
-		Use:   "setup <org|owner/repo>",
-		Short: "Configure fullsend for a GitHub org or repo",
+		Use:   "setup <owner/repo>",
+		Short: "Configure fullsend for a GitHub repo",
 		Long: `Sets up the fullsend agentic development pipeline using only GitHub APIs.
 
-Per-org mode (argument is an org name, e.g. "acme"):
-  Creates the .fullsend config repo, workflow files, secrets, variables,
-  and repo enrollment. Uses pre-provisioned values from upstream commands
-  (fullsend mint deploy, fullsend inference provision-wif).
-
-Per-repo mode (argument is owner/repo, e.g. "acme/widget"):
-  Bootstraps a single repository with the shim workflow, configuration
-  directory, repo variables, and repo secrets.
+The argument is owner/repo (e.g. "acme/widget"). The repository is
+bootstrapped with the shim workflow, configuration directory, repo
+variables, and repo secrets.
 
 This command does NOT require GCP credentials. All infrastructure
 values (mint URL, WIF provider, project ID) are provided as flags.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg.target = args[0]
+			if _, _, isRepo := parseTarget(cfg.target); !isRepo {
+				return errOrgTargetRemoved("fullsend github setup", cfg.target)
+			}
 
 			if err := appsetup.ValidateAppSet(cfg.appSet); err != nil {
 				return fmt.Errorf("invalid --app-set: %w", err)
@@ -132,32 +126,11 @@ values (mint URL, WIF provider, project ID) are provided as flags.`,
 				return fmt.Errorf("--config-hash requires --config")
 			}
 
-			_, _, isRepoTarget := parseTarget(cfg.target)
-			if !isRepoTarget {
-				for _, name := range []string{"config", "config-hash", "signoff", "fullsend-ref"} {
-					if cmd.Flags().Changed(name) {
-						return fmt.Errorf("--%s is only valid for per-repo setup (fullsend github setup <owner/repo>)", name)
-					}
-				}
-			}
-
 			// Validate only when a non-empty mint URL is provided; an
 			// empty value is resolved to the code default later.
 			if cfg.mintURL != "" {
 				if err := validateMintURLHTTPS(cfg.mintURL); err != nil {
 					return err
-				}
-			}
-
-			_, _, isRepo := parseTarget(cfg.target)
-			if isRepo {
-				for _, name := range perOrgOnlyFlags {
-					if cmd.Flags().Changed(name) {
-						return fmt.Errorf("--%s is only valid for per-org setup (fullsend github setup <org>)", name)
-					}
-				}
-				if !cmd.Flags().Changed("agents") {
-					cfg.agents = strings.Join(config.PerRepoDefaultRoles(), ",")
 				}
 			}
 
@@ -178,15 +151,12 @@ values (mint URL, WIF provider, project ID) are provided as flags.`,
 			printer := ui.New(os.Stdout)
 			ctx := cmd.Context()
 
-			if isRepo {
-				return runGitHubSetupPerRepo(ctx, client, printer, cfg)
-			}
-			return runGitHubSetupPerOrg(ctx, client, printer, cfg)
+			return runGitHubSetupPerRepo(ctx, client, printer, cfg)
 		},
 	}
 
 	cmd.Flags().StringVar(&cfg.mintURL, "mint-url", "", "token mint URL (resolved to hosted public mint if unset)")
-	cmd.Flags().StringVar(&cfg.agents, "agents", strings.Join(config.DefaultAgentRoles(), ","), "comma-separated agent roles")
+	cmd.Flags().StringVar(&cfg.agents, "agents", strings.Join(config.PerRepoDefaultRoles(), ","), "comma-separated agent roles")
 	cmd.Flags().StringVar(&cfg.inferenceProvider, "inference-provider", "", "inference provider (resolved to vertex if unset)")
 	cmd.Flags().StringVar(&cfg.inferenceProject, "inference-project", "", "GCP project ID for inference")
 	cmd.Flags().StringVar(&cfg.inferenceRegion, "inference-region", "", "GCP region for inference (resolved to global if unset)")
@@ -194,16 +164,17 @@ values (mint URL, WIF provider, project ID) are provided as flags.`,
 	cmd.Flags().StringVar(&cfg.openaiAudience, "openai-audience", "", "OpenAI Workload Identity audience (GPT on pi or codex; with --openai-identity-provider-id and --openai-service-account-id)")
 	cmd.Flags().StringVar(&cfg.openaiIdentityProviderID, "openai-identity-provider-id", "", "OpenAI Workload Identity provider ID")
 	cmd.Flags().StringVar(&cfg.openaiServiceAccountID, "openai-service-account-id", "", "OpenAI service account ID the provider maps this repository to")
-	cmd.Flags().BoolVar(&cfg.skipAppSetup, "skip-app-setup", false, "skip GitHub App creation/setup")
-	cmd.Flags().BoolVar(&cfg.publicApps, "public", false, "create public (unlisted) GitHub Apps")
+	cmd.Flags().StringVar(&cfg.gatewayURL, "inference-gateway-url", "", "inference gateway URL, https://host or https://host/prefix on port 443 (a clean path prefix: no .., query, fragment, percent-encoding or trailing /v1; plain http and any port only for a loopback test host); gateway/ models on pi or Claude Code, with --inference-gateway-audience in the oidc auth mode")
+	cmd.Flags().StringVar(&cfg.gatewayAudience, "inference-gateway-audience", "", "OIDC audience the runner requests for the inference gateway (required in the oidc auth mode)")
+	cmd.Flags().StringVar(&cfg.gatewayAuth, "inference-gateway-auth", "", "inference gateway credential mode: oidc (default; the job's OIDC token) or api-key (FULLSEND_INFERENCE_GATEWAY_API_KEY; supported for gateways that cannot trust forge OIDC, but relies on a long-lived secret, so use with caution)")
+	cmd.Flags().StringArrayVar(&cfg.gatewayModels, "inference-gateway-model", nil, "inference gateway model as id=api (repeatable; api is openai-responses, anthropic-messages or openai-completions)")
+	cmd.Flags().StringVar(&cfg.gatewayModelsFile, "inference-gateway-models-file", "", "local pi-inference-gateway config file listing the gateway models; validated and committed as "+gatewayModelsFileRepoPath)
 	cmd.Flags().StringVar(&cfg.appSet, "app-set", appsetup.DefaultAppSet, "app set name prefix for GitHub Apps")
-	cmd.Flags().BoolVar(&cfg.enrollAll, "enroll-all", false, "enroll all repositories without prompting")
-	cmd.Flags().BoolVar(&cfg.enrollNone, "enroll-none", false, "skip repository enrollment without prompting")
 	cmd.Flags().BoolVar(&cfg.dryRun, "dry-run", false, "print actions without making changes")
 	cmd.Flags().BoolVar(&cfg.direct, "direct", false, "push scaffold files directly to the default branch instead of creating a PR")
-	cmd.Flags().StringVar(&cfg.runtime, "runtime", "", "agent runtime for per-repo config (claude, pi or codex; dummy is for behaviour-test installs only). Prompted on a terminal when omitted")
+	cmd.Flags().StringVar(&cfg.runtime, "runtime", "", "agent runtime for per-repo config (claude, pi, codex or opencode; dummy runtimes are for behaviour-test installs only). Prompted on a terminal when omitted")
 	addVendorFlags(cmd, &cfg.vendor, &cfg.fullsendBinary, &cfg.fullsendSource)
-	cmd.Flags().StringVar(&cfg.fullsendRef, "fullsend-ref", "", "per-repo fullsend workflow ref override (conflicts with --vendor)")
+	cmd.Flags().StringVar(&cfg.fullsendRef, "fullsend-ref", "", "per-repo fullsend workflow ref override (conflicts with --vendor); a ref to an older release needs the CLI from that release, because this CLI's shim passes secrets older reusable workflows do not declare")
 	cmd.Flags().StringVar(&cfg.configPreset, "config", "", "local file path or HTTPS URL to a vendor preset (committed as .fullsend/config.base.yaml)")
 	cmd.Flags().StringVar(&cfg.configHash, "config-hash", "", "SHA-256 hex digest to validate the preset content")
 	cmd.Flags().BoolVar(&cfg.signoff, "signoff", false, "add Signed-off-by trailer to scaffold commits (requires GitHub user identity)")
@@ -233,6 +204,10 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 	if err := validateCLISetupValues(cfg); err != nil {
 		return err
 	}
+	gatewayModelsFile, err := loadGatewayModelsFile(cfg)
+	if err != nil {
+		return err
+	}
 
 	printer.Banner(Version())
 	printer.Blank()
@@ -250,7 +225,7 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 	// existing .fullsend/config.yaml is kept verbatim unless a flag that
 	// targets a config key was passed, in which case only that key is
 	// changed on the loaded config. Managed workflow files still refresh.
-	existingCfg, err := loadExistingPerRepoConfig(ctx, client, owner, repo)
+	existingCfg, existingBase, err := loadExistingPerRepoConfig(ctx, client, owner, repo)
 	if err != nil {
 		if !cfg.dryRun {
 			return err
@@ -259,6 +234,7 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		// a first install rather than failing before printing the plan.
 		printer.StepWarn("Could not read existing .fullsend/config.yaml (planning as a first install): " + err.Error())
 		existingCfg = nil
+		existingBase = nil
 	}
 	configFlagsChanged := setupConfigFlagsChanged(cfg)
 	keepExistingConfig := existingCfg != nil && !configFlagsChanged
@@ -280,6 +256,22 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 	}
 	if cfg.runtime == "codex" {
 		printer.StepWarn("runtime codex needs a sandbox image that carries codex (fullsend-sandbox/fullsend-code built with CODEX_VERSION, #6920); harnesses pinning an older image will fail at preflight")
+	}
+
+	// Compare explicit persistent flags against the value they would
+	// inherit without this write: the --config preset if present,
+	// otherwise the repo's existing base layer, otherwise compiled
+	// defaults. Do this before applySetupFlagsToConfig so overlay
+	// values already on disk cannot mask a pin against the parent.
+	// The same parent is used below to compose the effective config, so
+	// a base-only repo (overlay missing) resolves omitted values from its
+	// base rather than compiled defaults.
+	inheritedBase := presetData
+	if len(inheritedBase) == 0 {
+		inheritedBase = existingBase
+	}
+	if configFlagsChanged {
+		warnPinnedSetupFlags(printer, cfg, inheritedSetupReader(inheritedBase), roles)
 	}
 
 	// --- Build config files ---
@@ -309,7 +301,10 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		// explicitly-set flags are written to the overlay; unset
 		// values fall through overlay → base → code defaults
 		// (ADR 0069 Decision 1, same pattern as buildPresetOverlay).
-		perRepoCfg := config.NewPerRepoConfig(roles, cfg.target)
+		perRepoCfg, err := newSetupOverlay(roles, cfg.target, inheritedBase)
+		if err != nil {
+			return err
+		}
 		if cfg.runtime != "" && !cfg.changedFlags["runtime"] {
 			perRepoCfg.SetRuntime(cfg.runtime)
 		}
@@ -343,11 +338,14 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		}
 	}
 
-	effective, err := composeSetupLayers(cfgYAML, overlay, presetData)
+	effective, err := composeSetupLayers(cfgYAML, overlay, inheritedBase)
 	if err != nil {
 		return err
 	}
 	if err := validateSetupValueFormats(effective, "composed config"); err != nil {
+		return err
+	}
+	if err := validateEffectiveGateway(cfg, effective); err != nil {
 		return err
 	}
 
@@ -396,6 +394,23 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 			Mode:    "100644",
 		})
 	}
+	if gatewayModelsFile != nil {
+		files = append(files, forge.TreeFile{
+			Path:    gatewayModelsFileRepoPath,
+			Content: gatewayModelsFile,
+			Mode:    "100644",
+		})
+	}
+	removeModelsFile, keptModelsFile, err := gatewayModelsFileRemoval(ctx, client, owner, repo, cfg, effective)
+	if err != nil {
+		return err
+	}
+	if keptModelsFile {
+		printer.StepInfo("Keeping " + gatewayModelsFileRepoPath + ": the inherited inference.gateway block still sets models_file to it")
+	}
+	if removeModelsFile {
+		files = append(files, forge.TreeFile{Path: gatewayModelsFileRepoPath, Delete: true})
+	}
 
 	// Mint/inference values are stored in layered config (ADR 0069
 	// Decision 1). Repo variables/secrets are ALSO written for backward
@@ -417,19 +432,59 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		forge.PerRepoGuardVar: "true",
 	}
 
+	// Determine the effective app set to persist as FULLSEND_APP_SET so
+	// scaffold workflows can derive bot identities, before resolving the
+	// review app's client ID below: both must agree on the same app set,
+	// or FULLSEND_REVIEW_CLIENT_ID would end up resolved against the
+	// wrong app on a re-run (e.g. the flag's default instead of a custom
+	// app set already persisted on the repo). When --app-set was passed
+	// explicitly, that value is authoritative; otherwise preserve any
+	// value already on the repo so a re-run does not silently overwrite a
+	// custom app set with the built-in default, falling back to the flag
+	// default only when the variable is genuinely absent. GetRepoVariable
+	// reports a missing variable as (\"\", false, nil); a non-nil error
+	// instead means the read failed, so we skip the write entirely rather
+	// than clobber a possibly-custom existing value with the flag default.
+	explicitAppSet := ""
+	if cfg.changedFlags["app-set"] {
+		explicitAppSet = cfg.appSet
+	}
+	existingAppSet := ""
+	writeAppSet := true
+	if explicitAppSet == "" {
+		var appSetErr error
+		existingAppSet, _, appSetErr = client.GetRepoVariable(ctx, owner, repo, forge.VarAppSet)
+		if appSetErr != nil {
+			writeAppSet = false
+		}
+		// Unlike explicitAppSet (validated via appsetup.ValidateAppSet
+		// before this function runs), existingAppSet comes straight from
+		// the repo variable. Reject a malformed value here, before it is
+		// preserved and used to build a GitHub App slug below, instead of
+		// trusting it unchecked.
+		if existingAppSet != "" && appsetup.ValidateAppSet(existingAppSet) != nil {
+			existingAppSet = ""
+		}
+	}
+	appSetToPersist := appsetup.ResolvePersistedAppSet(explicitAppSet, existingAppSet)
+
 	// Resolve the review app's client ID so pre-fetch-prior-review.sh
-	// can validate provenance of prior review comments. Best-effort:
-	// a missing client ID degrades incremental reviews but does not
-	// block installation.
-	if reviewClientID := resolveReviewAppClientID(ctx, client, cfg.appSet); reviewClientID != "" {
+	// can validate provenance of prior review comments, using the same
+	// effective app set computed above. Best-effort: a missing client ID
+	// degrades incremental reviews but does not block installation.
+	if reviewClientID := resolveReviewAppClientID(ctx, client, appSetToPersist); reviewClientID != "" {
 		repoVars["FULLSEND_REVIEW_CLIENT_ID"] = reviewClientID
 	}
 
+	if writeAppSet {
+		repoVars[forge.VarAppSet] = appSetToPersist
+	}
+
 	repoSecrets := make(map[string]string)
-	if !reuseProject {
+	if !reuseProject && effectiveInferenceProject(cfg, effective) != "" {
 		repoSecrets["FULLSEND_GCP_PROJECT_ID"] = effectiveInferenceProject(cfg, effective)
 	}
-	if !reuseWIF {
+	if !reuseWIF && effectiveInferenceWIF(cfg, effective) != "" {
 		repoSecrets["FULLSEND_GCP_WIF_PROVIDER"] = effectiveInferenceWIF(cfg, effective)
 	}
 
@@ -445,16 +500,9 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 	// trailer would cause the DCO check to fail with a confusing error.
 	var signOffTrailer string
 	if cfg.signoff {
-		id, idErr := client.GetAuthenticatedUserIdentity(ctx)
-		if idErr != nil {
-			return fmt.Errorf("--signoff requires a GitHub user identity (name and email) — this is not available for GitHub App tokens: %w", idErr)
-		}
-		if id.Name == "" || id.Email == "" {
-			return fmt.Errorf("--signoff requires a GitHub user identity with both name and email set (got name=%q, email=%q)", id.Name, id.Email)
-		}
-		trailer, trailerErr := id.SignOffTrailer()
+		trailer, trailerErr := resolveSignOffTrailer(ctx, client, "--signoff", "GitHub")
 		if trailerErr != nil {
-			return fmt.Errorf("--signoff: %w", trailerErr)
+			return trailerErr
 		}
 		signOffTrailer = trailer
 	}
@@ -463,6 +511,10 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		printer.StepInfo("Dry run — no changes will be made")
 		printer.Blank()
 		for _, f := range files {
+			if f.Delete {
+				printer.StepDone(fmt.Sprintf("Would delete: %s", f.Path))
+				continue
+			}
 			printer.StepDone(fmt.Sprintf("Would commit: %s (%d bytes)", f.Path, len(f.Content)))
 		}
 		if signOffTrailer != "" {
@@ -495,7 +547,11 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 
 	if cfg.vendor {
 		var vendorErr error
-		files, _, vendorErr = appendVendorTreeFiles(ctx, client, printer, owner, repo, files, cfg.vendor, cfg.fullsendBinary, cfg.fullsendSource)
+		var vendorCleanup func()
+		files, _, vendorCleanup, vendorErr = appendVendorTreeFiles(ctx, client, printer, owner, repo, files, cfg.vendor, cfg.fullsendBinary, cfg.fullsendSource)
+		if vendorCleanup != nil {
+			defer vendorCleanup()
+		}
 		if vendorErr != nil {
 			return fmt.Errorf("collecting vendored assets: %w", vendorErr)
 		}
@@ -506,7 +562,7 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 	}
 
 	if !cfg.vendor {
-		if err := removeStaleVendoredAssets(ctx, client, printer, owner, repo, true); err != nil {
+		if err := removeStaleVendoredAssets(ctx, client, printer, owner, repo); err != nil {
 			return err
 		}
 	}
@@ -519,7 +575,7 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 // setupConfigFlags are the flags that target a key in .fullsend/config.yaml.
 // Any of them being passed explicitly turns a re-run from "keep the file"
 // into "change that key on the existing file".
-var setupConfigFlags = []string{"runtime", "agents", "mint-url", "inference-provider", "inference-project", "inference-region", "inference-wif-provider", "openai-audience", "openai-identity-provider-id", "openai-service-account-id"}
+var setupConfigFlags = []string{"runtime", "agents", "mint-url", "inference-provider", "inference-project", "inference-region", "inference-wif-provider", "openai-audience", "openai-identity-provider-id", "openai-service-account-id", "inference-gateway-url", "inference-gateway-audience", "inference-gateway-auth", "inference-gateway-model", "inference-gateway-models-file"}
 
 // setupConfigFlagsChanged reports whether any config-targeting flag was
 // passed explicitly (cobra's Changed, recorded in changedFlags — value
@@ -539,37 +595,156 @@ func setupConfigFlagsChanged(cfg githubSetupConfig) bool {
 // ValidateAgentEntries sees the merged agent set — an overlay entry that
 // tunes a custom agent registered only in config.base.yaml would
 // otherwise fail with "is not a built-in agent".
-// Returns (nil, nil) when config.yaml does not exist (first install)
-// and an error when it exists but cannot be parsed — a re-run must not
-// silently regenerate over a file the repo edited.
-func loadExistingPerRepoConfig(ctx context.Context, client forge.Client, owner, repo string) (config.PerRepoConfigWriter, error) {
+// Returns a nil config.yaml writer when config.yaml does not exist (first
+// install, or an overlay that was removed while config.base.yaml remains)
+// and an error when config.yaml exists but cannot be parsed — a re-run
+// must not silently regenerate over a file the repo edited. baseData is
+// the raw config.base.yaml bytes when that file exists, returned even
+// when there is no overlay, so callers can compare explicit CLI flags
+// against the inherited lower layer.
+func loadExistingPerRepoConfig(ctx context.Context, client forge.Client, owner, repo string) (config.PerRepoConfigWriter, []byte, error) {
 	data, err := client.GetFileContent(ctx, owner, repo, ".fullsend/config.yaml")
 	if err != nil {
-		if forge.IsNotFound(err) {
-			return nil, nil
+		if !forge.IsNotFound(err) {
+			return nil, nil, fmt.Errorf("reading existing .fullsend/config.yaml: %w", err)
 		}
-		return nil, fmt.Errorf("reading existing .fullsend/config.yaml: %w", err)
+		// No overlay yet, but a base layer may still exist (overlay
+		// removed while base remains) — callers compare CLI flags
+		// against that base, so it must be returned even though there
+		// is no overlay to parse.
+		baseData, baseErr := readExistingPerRepoBase(ctx, client, owner, repo)
+		if baseErr != nil {
+			return nil, nil, baseErr
+		}
+		return nil, baseData, nil
 	}
 	if !config.IsPerRepoYAML(data) {
-		return nil, fmt.Errorf("existing .fullsend/config.yaml in %s/%s is not a per-repo config; fix or remove it before re-running setup", owner, repo)
+		return nil, nil, fmt.Errorf("existing .fullsend/config.yaml in %s/%s is not a per-repo config; fix or remove it before re-running setup", owner, repo)
 	}
 
 	// Fetch the base layer when present so validation sees the merged
 	// agent set (an overlay entry tuning a base-registered custom agent
 	// needs the base's source to pass ValidateAgentEntries).
-	var baseData []byte
-	baseContent, baseErr := client.GetFileContent(ctx, owner, repo, ".fullsend/config.base.yaml")
-	if baseErr == nil {
-		baseData = baseContent
-	} else if !forge.IsNotFound(baseErr) {
-		return nil, fmt.Errorf("reading existing .fullsend/config.base.yaml: %w", baseErr)
+	baseData, err := readExistingPerRepoBase(ctx, client, owner, repo)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	parsed, err := config.ParsePerRepoConfigWriterLayered(data, baseData)
 	if err != nil {
-		return nil, fmt.Errorf("existing .fullsend/config.yaml in %s/%s: %w — fix or remove it before re-running setup", owner, repo, err)
+		return nil, nil, fmt.Errorf("existing .fullsend/config.yaml in %s/%s: %w — fix or remove it before re-running setup", owner, repo, err)
 	}
-	return parsed, nil
+	return parsed, baseData, nil
+}
+
+// readExistingPerRepoBase fetches the repo's config.base.yaml, returning
+// nil data (and no error) when the file does not exist.
+func readExistingPerRepoBase(ctx context.Context, client forge.Client, owner, repo string) ([]byte, error) {
+	baseContent, baseErr := client.GetFileContent(ctx, owner, repo, ".fullsend/config.base.yaml")
+	if baseErr == nil {
+		return baseContent, nil
+	}
+	if forge.IsNotFound(baseErr) {
+		return nil, nil
+	}
+	return nil, fmt.Errorf("reading existing .fullsend/config.base.yaml: %w", baseErr)
+}
+
+// inheritedSetupReader is the lower layer an overlay write would inherit
+// from: empty overlay on the given base (and compiled defaults), or
+// compiled defaults alone when baseData is empty. Callers use this to
+// compare CLI values against the parent, not against overlay keys that
+// may already be set.
+func inheritedSetupReader(baseData []byte) config.PerRepoConfigReader {
+	if len(baseData) == 0 {
+		return config.NewEmptyPerRepoOverlay()
+	}
+	inherited, err := config.ParsePerRepoConfigWriterLayered([]byte("{}"), baseData)
+	if err != nil {
+		return config.NewEmptyPerRepoOverlay()
+	}
+	return inherited
+}
+
+// warnPinnedSetupFlags emits a warning for each explicitly passed
+// persistent setup flag whose normalized value equals the value the
+// overlay would otherwise inherit from a base layer or compiled
+// default. The write still happens; the warning exists so users know
+// the overlay will not pick up later changes to that lower layer.
+// Omitted flags and per-run flags are ignored.
+func warnPinnedSetupFlags(printer *ui.Printer, cfg githubSetupConfig, inherited config.PerRepoConfigReader, roles []string) {
+	for _, w := range pinnedSetupFlags(cfg, inherited, roles) {
+		printer.StepWarn(w)
+	}
+}
+
+// pinnedSetupFlags returns one warning per explicitly supplied
+// persistent setup value that matches the currently inherited value.
+func pinnedSetupFlags(cfg githubSetupConfig, inherited config.PerRepoConfigReader, roles []string) []string {
+	if inherited == nil || !setupConfigFlagsChanged(cfg) {
+		return nil
+	}
+	var warnings []string
+	if cfg.changedFlags["runtime"] && setupScalarEqual(cfg.runtime, inherited.ConfigRuntime()) {
+		warnings = append(warnings, setupPinWarning("runtime"))
+	}
+	// A nil roles slice (empty --agents) is never persisted: SetRoles(nil)
+	// leaves the overlay key unset, so the overlay still inherits.
+	if cfg.changedFlags["agents"] && roles != nil && slices.Equal(roles, inherited.ConfigRoles()) {
+		warnings = append(warnings, setupPinWarning("roles"))
+	}
+	if cfg.changedFlags["mint-url"] && setupScalarEqual(cfg.mintURL, inherited.ConfigMintURL()) {
+		warnings = append(warnings, setupPinWarning("mint_url"))
+	}
+	if cfg.changedFlags["inference-provider"] && setupScalarEqual(cfg.inferenceProvider, inherited.ConfigInferenceProvider()) {
+		warnings = append(warnings, setupPinWarning("inference.provider"))
+	}
+	if cfg.changedFlags["inference-project"] && setupScalarEqual(cfg.inferenceProject, inherited.ConfigInferenceProject()) {
+		warnings = append(warnings, setupPinWarning("inference.project"))
+	}
+	if cfg.changedFlags["inference-region"] && setupScalarEqual(cfg.inferenceRegion, inherited.ConfigInferenceRegion()) {
+		warnings = append(warnings, setupPinWarning("inference.region"))
+	}
+	if cfg.changedFlags["inference-wif-provider"] && setupScalarEqual(cfg.inferenceWIFProvider, inherited.ConfigInferenceWIFProvider()) {
+		warnings = append(warnings, setupPinWarning("inference.wif_provider"))
+	}
+	if openaiFlagsChanged(cfg) {
+		// Each identifier resolves independently through the layers, so
+		// compare each supplied one against its own inherited
+		// counterpart (both trimmed, matching how the block is persisted).
+		ids := cfg.openaiIDs()
+		inheritedIDs := inherited.ConfigInferenceOpenAI().Trimmed()
+		if ids.Audience != "" && ids.Audience == inheritedIDs.Audience {
+			warnings = append(warnings, setupPinWarning("inference.openai.audience"))
+		}
+		if ids.IdentityProviderID != "" && ids.IdentityProviderID == inheritedIDs.IdentityProviderID {
+			warnings = append(warnings, setupPinWarning("inference.openai.identity_provider_id"))
+		}
+		if ids.ServiceAccountID != "" && ids.ServiceAccountID == inheritedIDs.ServiceAccountID {
+			warnings = append(warnings, setupPinWarning("inference.openai.service_account_id"))
+		}
+	}
+	if gatewayFlagsChanged(cfg) {
+		inheritedGW := inherited.ConfigInferenceGateway().Trimmed()
+		if u := strings.TrimSpace(cfg.gatewayURL); u != "" && u == inheritedGW.URL {
+			warnings = append(warnings, setupPinWarning("inference.gateway.url"))
+		}
+		if a := strings.TrimSpace(cfg.gatewayAudience); a != "" && a == inheritedGW.Audience {
+			warnings = append(warnings, setupPinWarning("inference.gateway.audience"))
+		}
+	}
+	return warnings
+}
+
+// setupScalarEqual compares a CLI scalar with the inherited value
+// verbatim: scalar flags are persisted and resolved without
+// normalization, so a padded CLI value is a real override, not a restatement.
+func setupScalarEqual(cli, inherited string) bool {
+	return cli != "" && cli == inherited
+}
+
+func setupPinWarning(field string) string {
+	return field + " is being pinned in .fullsend/config.yaml to the currently inherited value; later changes from config.base.yaml or compiled defaults will not apply. Remove the key from the overlay to inherit again"
 }
 
 // applySetupFlagsToConfig sets the keys targeted by explicitly passed
@@ -607,6 +782,20 @@ func applySetupFlagsToConfig(cfg githubSetupConfig, w config.PerRepoConfigWriter
 	if openaiFlagsChanged(cfg) {
 		w.SetInferenceOpenAI(cfg.openaiIDs())
 		changed = append(changed, "inference.openai")
+	}
+	if gatewayFlagsChanged(cfg) {
+		// validateGatewaySetupFlags already ran, so the block parses.
+		if g, err := cfg.gatewayBlock(); err == nil {
+			if gatewayClearRequested(cfg, g) {
+				w.SetInferenceGateway(config.InferenceGatewayConfig{})
+			} else {
+				// Change only the keys the flags set: a url/audience
+				// re-run keeps the repository's model list, and a
+				// models-only run keeps (or inherits) url and audience.
+				w.MergeInferenceGateway(g)
+			}
+			changed = append(changed, "inference.gateway")
+		}
 	}
 	return changed
 }
@@ -699,7 +888,10 @@ func validateCLISetupValues(cfg githubSetupConfig) error {
 			return err
 		}
 	}
-	return validateOpenAISetupFlags(cfg)
+	if err := validateOpenAISetupFlags(cfg); err != nil {
+		return err
+	}
+	return validateGatewaySetupFlags(cfg)
 }
 
 // validateSetupValueFormats checks the mint URL and inference WIF
@@ -723,9 +915,33 @@ func validateSetupValueFormats(r config.PerRepoConfigReader, source string) erro
 	return nil
 }
 
+// newSetupOverlay creates the first-install overlay. When baseData is
+// non-empty (an on-disk config.base.yaml with no overlay) the overlay is
+// parented on that base so validation and value resolution see it. With a
+// base present the overlay is sparse (like the --config preset path): no
+// roles, create_issues targets, or remote-resource allowlist are
+// materialized, so they inherit from the base; the caller writes only
+// values passed through explicit flags.
+func newSetupOverlay(roles []string, target string, baseData []byte) (config.PerRepoConfigWriter, error) {
+	if len(baseData) == 0 {
+		return config.NewPerRepoConfig(roles, target), nil
+	}
+	w := config.NewEmptyPerRepoOverlay()
+	data, err := w.Marshal()
+	if err != nil {
+		return nil, fmt.Errorf("marshaling per-repo config: %w", err)
+	}
+	layered, err := config.ParsePerRepoConfigWriterLayered(data, baseData)
+	if err != nil {
+		return nil, fmt.Errorf("composing per-repo config with existing base: %w", err)
+	}
+	return layered, nil
+}
+
 // composeSetupLayers returns the effective per-repo config used for
 // required-value checks and install-time variable/secret generation.
-// overlay is the writable top layer; baseData is the --config preset.
+// overlay is the writable top layer; baseData is the inherited lower layer (the --config preset, or the
+// repo's existing config.base.yaml).
 func composeSetupLayers(overlayYAML []byte, overlay config.PerRepoConfigWriter, baseData []byte) (config.PerRepoConfigReader, error) {
 	if len(baseData) == 0 {
 		if overlay != nil {
@@ -747,9 +963,12 @@ func composeSetupLayers(overlayYAML []byte, overlay config.PerRepoConfigWriter, 
 // resolveInferenceReuse determines, for each of the GCP project and WIF
 // provider inference values, whether setup should reuse the existing
 // repo secret because neither the CLI flag nor the composed effective
-// config supplied a value. It errors if a value is missing and no
-// existing secret is found, since one or the other is required.
+// config supplied a value. When neither value is configured, GCP
+// credentials are optional and existing secrets are left untouched.
 func resolveInferenceReuse(ctx context.Context, client forge.Client, owner, repo string, cfg githubSetupConfig, effective config.PerRepoConfigReader) (reuseProject, reuseWIF bool, err error) {
+	if effectiveInferenceProject(cfg, effective) == "" && effectiveInferenceWIF(cfg, effective) == "" {
+		return false, false, nil
+	}
 	if effectiveInferenceProject(cfg, effective) == "" {
 		var exists bool
 		exists, err = client.RepoSecretExists(ctx, owner, repo, "FULLSEND_GCP_PROJECT_ID")
@@ -889,251 +1108,6 @@ func validateOpenAISetupFlags(cfg githubSetupConfig) error {
 	return nil
 }
 
-// runGitHubSetupPerOrg sets up fullsend for an entire organization.
-// This is the GitHub-only equivalent of admin install without GCP calls.
-func runGitHubSetupPerOrg(ctx context.Context, client forge.Client, printer *ui.Printer, cfg githubSetupConfig) error {
-	org := cfg.target
-	if err := validateOrgName(org); err != nil {
-		return err
-	}
-
-	roles, err := parseAgentRoles(cfg.agents)
-	if err != nil {
-		return err
-	}
-
-	if cfg.inferenceProject == "" && cfg.inferenceWIFProvider != "" {
-		return fmt.Errorf("--inference-wif-provider requires --inference-project to be set")
-	}
-	if cfg.inferenceWIFProvider != "" {
-		if err := validateWIFProvider(cfg.inferenceWIFProvider); err != nil {
-			return err
-		}
-	}
-	if err := validateOpenAISetupFlags(cfg); err != nil {
-		return err
-	}
-
-	if cfg.enrollAll && cfg.enrollNone {
-		return fmt.Errorf("--enroll-all and --enroll-none are mutually exclusive")
-	}
-
-	printer.Banner(Version())
-	printer.Blank()
-	printer.Header("Setting up fullsend for " + org)
-	printer.Blank()
-
-	// Determine enrollment choice: use flag if set, otherwise prompt.
-	var enrollAll bool
-	if cfg.enrollAll {
-		enrollAll = true
-	} else if cfg.enrollNone {
-		enrollAll = false
-	} else {
-		enrollAll, err = promptEnrollment(printer, os.Stdin)
-		if err != nil {
-			return err
-		}
-	}
-
-	allRepos, err := client.ListOrgRepos(ctx, org, false)
-	if err != nil {
-		return fmt.Errorf("listing org repos: %w", err)
-	}
-
-	repoNames := repoNameList(allRepos)
-
-	var enabledRepos []string
-	if enrollAll {
-		var skippedPerRepo, skippedErrors, eligibleCount int
-		for _, r := range allRepos {
-			if r.Name == forge.ConfigRepoName {
-				continue
-			}
-			eligibleCount++
-			guardVal, guardExists, guardErr := client.GetRepoVariable(ctx, org, r.Name, forge.PerRepoGuardVar)
-			if guardErr != nil {
-				printer.StepWarn(fmt.Sprintf("Could not check per-repo guard for %s: %v — skipping to be safe", r.Name, guardErr))
-				skippedPerRepo++
-				skippedErrors++
-				continue
-			}
-			if guardExists && guardVal == "true" {
-				printer.StepWarn(fmt.Sprintf("Skipping %s — per-repo installation active", r.Name))
-				skippedPerRepo++
-				continue
-			}
-			if guardExists {
-				printer.StepInfo(fmt.Sprintf("%s has per-repo guard set to %q (not active) — enrolling with per-org", r.Name, guardVal))
-			}
-			enabledRepos = append(enabledRepos, r.Name)
-		}
-		if eligibleCount > 0 && skippedErrors == eligibleCount {
-			return fmt.Errorf("all %d repos were skipped due to guard-check errors — verify your token has variables:read scope", eligibleCount)
-		}
-		msg := fmt.Sprintf("Enrolling %d repositories (excluding %s)", len(enabledRepos), forge.ConfigRepoName)
-		if skippedPerRepo-skippedErrors > 0 {
-			msg += fmt.Sprintf(", %d per-repo installed", skippedPerRepo-skippedErrors)
-		}
-		if skippedErrors > 0 {
-			msg += fmt.Sprintf(", %d guard-check errors", skippedErrors)
-		}
-		printer.StepInfo(msg)
-	} else {
-		printer.StepInfo("No repositories will be enrolled during setup")
-		printer.StepInfo("To enroll repositories later, use:")
-		printer.StepInfo(fmt.Sprintf("  fullsend github enroll %s <repo-name> [repo-name...]", org))
-	}
-	printer.Blank()
-
-	if enabledRepos == nil {
-		enabledRepos = loadExistingEnabledRepos(ctx, client, org)
-	}
-	if err := validateEnabledRepos(enabledRepos, repoNames); err != nil {
-		return err
-	}
-
-	// Resolve effective values: flags default to empty; code
-	// defaults fill in when unset (same pattern as per-repo).
-	effectiveMintURL := cfg.mintURL
-	if effectiveMintURL == "" {
-		effectiveMintURL = config.DefaultPerRepoMintURL
-	}
-	effectiveRegion := cfg.inferenceRegion
-	if effectiveRegion == "" {
-		effectiveRegion = config.DefaultPerRepoInferenceRegion
-	}
-
-	// Build config.
-	privateRepo := false
-	var inferenceProvider inference.Provider
-	var inferenceProviderName string
-	if cfg.inferenceProject != "" {
-		vcfg := vertex.Config{
-			ProjectID:   cfg.inferenceProject,
-			Region:      effectiveRegion,
-			WIFProvider: cfg.inferenceWIFProvider,
-		}
-		inferenceProvider = vertex.New(vcfg)
-		inferenceProviderName = "vertex"
-	} else {
-		inferenceProviderName = loadExistingInferenceProvider(ctx, client, org)
-	}
-
-	// Build dummy agent credentials for the layer stack.
-	var agentCreds []layers.AgentCredentials
-	for _, role := range roles {
-		agentCreds = append(agentCreds, layers.AgentCredentials{
-			Role: role,
-		})
-	}
-
-	orgCfg := config.NewOrgConfig(repoNames, enabledRepos, roles, inferenceProviderName, org)
-	{
-		d := orgCfg.DispatchSettings()
-		d.Mode = "oidc-mint"
-		orgCfg.SetDispatch(d)
-	}
-
-	user, err := client.GetAuthenticatedUser(ctx)
-	if err != nil {
-		return fmt.Errorf("getting authenticated user: %w", err)
-	}
-
-	enrolledRepoIDs := collectEnrolledRepoIDs(allRepos, enabledRepos)
-	dispatcher := &skipMintDispatcher{mintURL: effectiveMintURL}
-
-	var vendorFn layers.VendorFunc
-	var vendorCollect layers.VendorCollectFunc
-	if cfg.vendor {
-		vendorFn, vendorCollect = vendorStackArgs(true, cfg.fullsendBinary, cfg.fullsendSource)
-	}
-
-	stack := buildLayerStack(ctx, org, client, orgCfg, printer, user, privateRepo, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, cfg.vendor, vendorFn, vendorCollect, "", dispatcher, cfg.direct)
-
-	if cfg.dryRun {
-		printer.Header("Dry run — analyzing what setup would do")
-		printer.Blank()
-		if err := runPreflight(ctx, stack, layers.OpInstall, client, printer); err != nil {
-			return err
-		}
-		printer.Blank()
-		return printAnalysis(ctx, stack, printer)
-	}
-
-	if err := checkInstallScopes(ctx, client, printer); err != nil {
-		return err
-	}
-	printer.Blank()
-
-	if !cfg.skipAppSetup {
-		if err := ensureConfigRepoExists(ctx, client, printer, org); err != nil {
-			return err
-		}
-
-		creds, credErr := runAppSetup(ctx, client, printer, org, roles, "", effectiveMintURL, cfg.publicApps, nil, cfg.appSet, nil)
-		if credErr != nil {
-			return credErr
-		}
-
-		// Rebuild with real credentials.
-		agentCreds = creds
-		orgCfg = config.NewOrgConfig(repoNames, enabledRepos, roles, inferenceProviderName, org)
-		{
-			d := orgCfg.DispatchSettings()
-			d.Mode = "oidc-mint"
-			orgCfg.SetDispatch(d)
-		}
-
-		stack = buildLayerStack(ctx, org, client, orgCfg, printer, user, privateRepo, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, cfg.vendor, vendorFn, vendorCollect, "", dispatcher, cfg.direct)
-	}
-
-	if err := runPreflight(ctx, stack, layers.OpInstall, client, printer); err != nil {
-		return err
-	}
-	printer.Blank()
-
-	printer.Header("Installing")
-	printer.Blank()
-
-	if err := stack.InstallAll(ctx); err != nil {
-		return fmt.Errorf("setup failed: %w", err)
-	}
-
-	printer.Blank()
-	printer.Summary("Setup complete", []string{
-		fmt.Sprintf("Organization: %s", org),
-		fmt.Sprintf("Roles: %s", strings.Join(roles, ", ")),
-		fmt.Sprintf("Enabled repos: %d", len(enabledRepos)),
-	})
-
-	return nil
-}
-
-// --- enroll / unenroll commands ---
-
-func newGitHubEnrollCmd() *cobra.Command {
-	return newReposSubcommand(
-		"enroll <org> [repo...]",
-		"Enable repositories for fullsend enrollment",
-		"Enables the specified repositories for fullsend enrollment by updating config.yaml in the .fullsend repository. Use --all to enable all repositories (excluding .fullsend). This is a lightweight config toggle — it does NOT set secrets or variables.",
-		"enable all repositories (excluding .fullsend)",
-		runEnableRepos,
-		false,
-	)
-}
-
-func newGitHubUnenrollCmd() *cobra.Command {
-	return newReposSubcommand(
-		"unenroll <org> [repo...]",
-		"Disable repositories from fullsend enrollment",
-		"Disables the specified repositories from fullsend enrollment by updating config.yaml in the .fullsend repository. Use --all to disable all repositories. This is a lightweight config toggle — it does NOT remove secrets or variables.",
-		"disable all repositories",
-		runDisableRepos,
-		true,
-	)
-}
-
 // --- set command ---
 
 // configKeyStorage defines the storage type for a config key.
@@ -1157,18 +1131,16 @@ var configKeyMapping = map[string]configKeyInfo{
 	"FULLSEND_GCP_PROJECT_ID":   {storage: storageSecret},
 	"FULLSEND_GCP_WIF_PROVIDER": {storage: storageSecret},
 	openAIRepoSecretName:        {storage: storageSecret},
+	gatewayAPIKeyEnv:            {storage: storageSecret},
 }
 
 func newGitHubSetCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "set <org|owner/repo> <key> <value>",
+		Use:   "set <owner/repo> <key> <value>",
 		Short: "Update a config value (secret or variable)",
 		Long: `Sets a fullsend config value on a repo. The CLI maintains an internal
 mapping of which keys are stored as secrets vs variables, so the user
 doesn't need to know the storage type.
-
-Org-scope variables (like FULLSEND_MINT_URL) are managed by
-'fullsend github setup' to preserve repository access lists.
 
 Valid keys:
   FULLSEND_GCP_REGION         repo variable   GCP region for inference
@@ -1176,7 +1148,9 @@ Valid keys:
   FULLSEND_PER_REPO_INSTALL   repo variable   per-repo install marker
   FULLSEND_GCP_PROJECT_ID     repo secret     GCP project for inference
   FULLSEND_GCP_WIF_PROVIDER   repo secret     WIF provider resource name
-  FULLSEND_OPENAI_API_KEY     repo secret     opt-in OpenAI API key when WIF is unset`,
+  FULLSEND_OPENAI_API_KEY     repo secret     opt-in OpenAI API key when WIF is unset
+  FULLSEND_INFERENCE_GATEWAY_API_KEY
+                              repo secret     inference gateway key for auth: api-key`,
 		Args: cobra.ExactArgs(3),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			target := args[0]
@@ -1210,23 +1184,19 @@ func runGitHubSet(ctx context.Context, client forge.Client, printer *ui.Printer,
 		return fmt.Errorf("unknown config key %q; valid keys: %s", key, strings.Join(validKeys, ", "))
 	}
 
-	if key == openAIRepoSecretName && strings.TrimSpace(value) == "" {
+	if (key == openAIRepoSecretName || key == gatewayAPIKeyEnv) && strings.TrimSpace(value) == "" {
 		return fmt.Errorf("value for %s must not be empty", key)
 	}
 
 	owner, repo, isRepo := parseTarget(target)
-
-	if isRepo {
-		if !githubOwnerPattern.MatchString(owner) {
-			return fmt.Errorf("invalid owner name %q: must contain only alphanumeric characters and hyphens", owner)
-		}
-		if !githubRepoPattern.MatchString(repo) {
-			return fmt.Errorf("invalid repo name %q: must contain only alphanumeric characters, hyphens, dots, or underscores", repo)
-		}
-	} else {
-		if err := validateOrgName(owner); err != nil {
-			return err
-		}
+	if !isRepo {
+		return fmt.Errorf("fullsend github set requires an owner/repo target, got %q: per-org installation has been removed; set values on a repository with 'fullsend github set <owner/repo> <key> <value>'", target)
+	}
+	if !githubOwnerPattern.MatchString(owner) {
+		return fmt.Errorf("invalid owner name %q: must contain only alphanumeric characters and hyphens", owner)
+	}
+	if !githubRepoPattern.MatchString(repo) {
+		return fmt.Errorf("invalid repo name %q: must contain only alphanumeric characters, hyphens, dots, or underscores", repo)
 	}
 
 	switch key {
@@ -1238,9 +1208,6 @@ func runGitHubSet(ctx context.Context, client forge.Client, printer *ui.Printer,
 
 	switch info.storage {
 	case storageVariable:
-		if !isRepo {
-			repo = forge.ConfigRepoName
-		}
 		printer.StepStart(fmt.Sprintf("Setting repo variable %s on %s/%s", key, owner, repo))
 		if err := client.CreateOrUpdateRepoVariable(ctx, owner, repo, key, value); err != nil {
 			printer.StepFail(fmt.Sprintf("Failed to set repo variable %s", key))
@@ -1248,11 +1215,6 @@ func runGitHubSet(ctx context.Context, client forge.Client, printer *ui.Printer,
 		}
 		printer.StepDone(fmt.Sprintf("Set repo variable %s on %s/%s", key, owner, repo))
 	case storageSecret:
-		// Repo-scope secret.
-		if !isRepo {
-			// Default to .fullsend repo for org targets.
-			repo = forge.ConfigRepoName
-		}
 		printer.StepStart(fmt.Sprintf("Setting repo secret %s on %s/%s", key, owner, repo))
 		if err := client.CreateRepoSecret(ctx, owner, repo, key, value); err != nil {
 			printer.StepFail(fmt.Sprintf("Failed to set repo secret %s", key))
@@ -1264,387 +1226,10 @@ func runGitHubSet(ctx context.Context, client forge.Client, printer *ui.Printer,
 	return nil
 }
 
-// --- status command ---
-
-func newGitHubStatusCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "status <org>",
-		Short: "Analyze GitHub-side installation status",
-		Long:  "Checks the current state of fullsend's GitHub-side installation for an organization. Reports on config repo, workflows, org variables, inference secrets, and enrollment state. Does NOT check GCP resources.",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			org := args[0]
-			if err := validateOrgName(org); err != nil {
-				return err
-			}
-
-			token, err := resolveToken()
-			if err != nil {
-				return err
-			}
-
-			client := gh.New(token)
-			printer := ui.New(os.Stdout)
-
-			return runGitHubStatus(cmd.Context(), client, printer, org)
-		},
-	}
-
-	return cmd
-}
-
-// runGitHubStatus checks GitHub-side layers only.
-func runGitHubStatus(ctx context.Context, client forge.Client, printer *ui.Printer, org string) error {
-	printer.Banner(Version())
-	printer.Blank()
-	printer.Header("GitHub status for " + org)
-	printer.Blank()
-
-	// Check config repo.
-	_, err := client.GetRepo(ctx, org, forge.ConfigRepoName)
-	if err != nil {
-		if forge.IsNotFound(err) {
-			printer.StepFail(forge.ConfigRepoName + " repository not found")
-			printer.StepInfo("Run 'fullsend github setup " + org + "' to configure")
-			return nil
-		}
-		return fmt.Errorf("checking config repo: %w", err)
-	}
-	printer.StepDone(forge.ConfigRepoName + " repository exists")
-
-	// Check config.yaml.
-	cfgData, err := client.GetFileContent(ctx, org, forge.ConfigRepoName, "config.yaml")
-	if err != nil {
-		printer.StepFail("config.yaml not found in " + forge.ConfigRepoName)
-	} else {
-		cfg, parseErr := config.ParseOrgConfig(cfgData)
-		if parseErr != nil {
-			printer.StepWarn("config.yaml exists but is invalid: " + parseErr.Error())
-		} else {
-			printer.StepDone("config.yaml exists and is valid")
-
-			// Report enrollment state.
-			enabled := cfg.EnabledRepos()
-			printer.StepInfo(fmt.Sprintf("Enrolled repositories: %d", len(enabled)))
-			for _, name := range enabled {
-				printer.StepInfo(fmt.Sprintf("  - %s", name))
-			}
-		}
-	}
-
-	// Check org variables.
-	mintURLExists, err := client.OrgVariableExists(ctx, org, "FULLSEND_MINT_URL")
-	if err != nil {
-		printer.StepWarn("Could not check FULLSEND_MINT_URL: " + err.Error())
-	} else if mintURLExists {
-		printer.StepDone("FULLSEND_MINT_URL org variable exists")
-	} else {
-		printer.StepFail("FULLSEND_MINT_URL org variable not found")
-	}
-
-	vars, err := client.ListOrgVariables(ctx, org)
-	if err != nil {
-		printer.StepWarn("Could not list org variables: " + err.Error())
-	} else {
-		for _, v := range vars {
-			if _, ok := parseForeignVariableName(v.Name); ok {
-				entries := mintcore.ParseForeignAllowlist(v.Value)
-				printer.StepDone(fmt.Sprintf("%s: %s", v.Name, strings.Join(entries, ", ")))
-			}
-		}
-	}
-
-	// Check inference secrets on .fullsend repo.
-	inferenceSecrets := []string{"FULLSEND_GCP_PROJECT_ID", "FULLSEND_GCP_WIF_PROVIDER"}
-	for _, name := range inferenceSecrets {
-		exists, secErr := client.RepoSecretExists(ctx, org, forge.ConfigRepoName, name)
-		if secErr != nil {
-			printer.StepWarn(fmt.Sprintf("Could not check %s: %v", name, secErr))
-		} else if exists {
-			printer.StepDone(fmt.Sprintf("%s exists", name))
-		} else {
-			printer.StepInfo(fmt.Sprintf("%s not found (may use org-level inference)", name))
-		}
-	}
-
-	// Check inference region variable.
-	regionExists, err := client.RepoVariableExists(ctx, org, forge.ConfigRepoName, "FULLSEND_GCP_REGION")
-	if err != nil {
-		printer.StepWarn("Could not check FULLSEND_GCP_REGION: " + err.Error())
-	} else if regionExists {
-		printer.StepDone("FULLSEND_GCP_REGION variable exists")
-	} else {
-		printer.StepInfo("FULLSEND_GCP_REGION not found (using default)")
-	}
-
-	printer.Blank()
-	return nil
-}
-
-// --- uninstall command ---
-
-func newGitHubUninstallCmd() *cobra.Command {
-	var yolo bool
-	var appSet string
-
-	cmd := &cobra.Command{
-		Use:   "uninstall <org>",
-		Short: "Remove fullsend GitHub configuration from an organization",
-		Long:  "Deletes the .fullsend config repo and removes org-level variables. Guides the user to delete GitHub Apps via the browser.",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			org := args[0]
-			if err := validateOrgName(org); err != nil {
-				return err
-			}
-			if err := appsetup.ValidateAppSet(appSet); err != nil {
-				return fmt.Errorf("invalid --app-set: %w", err)
-			}
-
-			token, err := resolveToken()
-			if err != nil {
-				return err
-			}
-
-			client := gh.New(token)
-			printer := ui.New(os.Stdout)
-
-			if !yolo {
-				printer.StepWarn(fmt.Sprintf("This will permanently delete the %s repo and all stored secrets for %s.", forge.ConfigRepoName, org))
-				printer.StepInfo(fmt.Sprintf("Type the organization name (%s) to confirm:", org))
-				var confirmation string
-				if _, err := fmt.Scanln(&confirmation); err != nil {
-					return fmt.Errorf("reading confirmation: %w", err)
-				}
-				if confirmation != org {
-					return fmt.Errorf("confirmation did not match; aborting uninstall")
-				}
-			}
-
-			return runGitHubUninstall(cmd.Context(), client, printer, org, appSet)
-		},
-	}
-
-	cmd.Flags().BoolVar(&yolo, "yolo", false, "skip confirmation prompt")
-	cmd.Flags().StringVar(&appSet, "app-set", appsetup.DefaultAppSet, "app set name prefix for GitHub Apps")
-
-	return cmd
-}
-
-// runGitHubUninstall tears down the GitHub-side installation.
-func runGitHubUninstall(ctx context.Context, client forge.Client, printer *ui.Printer, org, appSet string) error {
-	printer.Banner(Version())
-	printer.Blank()
-	printer.Header("Uninstalling fullsend from " + org)
-	printer.Blank()
-
-	// Discover agent slugs from harness files, then default naming convention.
-	var agentSlugs []string
-
-	agentSlugs = discoverAgentSlugs(ctx, client, org, forge.ConfigRepoName, "main", appSet, printer)
-
-	if len(agentSlugs) == 0 {
-		for _, role := range config.DefaultAgentRoles() {
-			agentSlugs = append(agentSlugs, appsetup.AppSlug(appSet, role))
-		}
-	}
-
-	// Delete .fullsend repository.
-	_, err := client.GetRepo(ctx, org, forge.ConfigRepoName)
-	if err != nil {
-		if forge.IsNotFound(err) {
-			printer.StepInfo(forge.ConfigRepoName + " repository already deleted")
-		} else {
-			return fmt.Errorf("checking for config repo: %w", err)
-		}
-	} else {
-		printer.StepStart("Deleting " + forge.ConfigRepoName + " repository")
-		if err := client.DeleteRepo(ctx, org, forge.ConfigRepoName); err != nil {
-			if forge.IsNotFound(err) {
-				printer.StepInfo(forge.ConfigRepoName + " repository already deleted")
-			} else {
-				printer.StepFail("Failed to delete " + forge.ConfigRepoName)
-				return fmt.Errorf("deleting config repo: %w", err)
-			}
-		} else {
-			printer.StepDone("Deleted " + forge.ConfigRepoName + " repository")
-		}
-	}
-
-	// Delete org-level variables.
-	orgVars := []string{"FULLSEND_MINT_URL"}
-	for _, name := range orgVars {
-		exists, varErr := client.OrgVariableExists(ctx, org, name)
-		if varErr != nil {
-			printer.StepWarn(fmt.Sprintf("Could not check org variable %s: %v", name, varErr))
-			continue
-		}
-		if !exists {
-			printer.StepInfo(fmt.Sprintf("%s already deleted", name))
-			continue
-		}
-		printer.StepStart("Deleting org variable " + name)
-		if err := client.DeleteOrgVariable(ctx, org, name); err != nil {
-			printer.StepFail(fmt.Sprintf("Failed to delete org variable %s", name))
-			return fmt.Errorf("deleting org variable %s: %w", name, err)
-		}
-		printer.StepDone("Deleted org variable " + name)
-	}
-
-	// Delete org-level secrets created by the dispatch layer.
-	orgSecrets := []string{"FULLSEND_DISPATCH_TOKEN"}
-	for _, name := range orgSecrets {
-		exists, secErr := client.OrgSecretExists(ctx, org, name)
-		if secErr != nil {
-			printer.StepWarn(fmt.Sprintf("Could not check org secret %s: %v", name, secErr))
-			continue
-		}
-		if !exists {
-			continue
-		}
-		printer.StepStart("Deleting org secret " + name)
-		if err := client.DeleteOrgSecret(ctx, org, name); err != nil {
-			printer.StepFail(fmt.Sprintf("Failed to delete org secret %s", name))
-			return fmt.Errorf("deleting org secret %s: %w", name, err)
-		}
-		printer.StepDone("Deleted org secret " + name)
-	}
-
-	var installations []forge.Installation
-	var listErr error
-	if ghExt, ok := client.(forge.GitHubExtensions); ok {
-		installations, listErr = ghExt.ListOrgInstallations(ctx, org)
-	} else {
-		listErr = forge.ErrNotSupported
-	}
-	var existingSlugs []string
-	if forge.IsNotSupported(listErr) {
-		printer.StepInfo("App uninstall is not available on this forge — skipping")
-	} else if listErr == nil {
-		installedSet := make(map[string]bool, len(installations))
-		for _, inst := range installations {
-			installedSet[inst.AppSlug] = true
-		}
-		for _, slug := range agentSlugs {
-			if installedSet[slug] {
-				existingSlugs = append(existingSlugs, slug)
-			} else {
-				printer.StepInfo(fmt.Sprintf("App %s not found, skipping", slug))
-			}
-		}
-	} else {
-		printer.StepWarn("Could not verify which apps exist; showing all")
-		existingSlugs = agentSlugs
-	}
-	if len(existingSlugs) > 0 {
-		printer.Blank()
-		printer.Header("App cleanup")
-		printer.StepInfo("The following GitHub Apps should be deleted manually:")
-		for _, slug := range existingSlugs {
-			deleteURL := fmt.Sprintf("https://github.com/organizations/%s/settings/apps/%s/advanced", org, slug)
-			printer.StepInfo(fmt.Sprintf("  %s: %s", slug, deleteURL))
-		}
-	}
-
-	printer.Blank()
-	printer.Summary("Uninstall complete", []string{
-		fmt.Sprintf("Organization: %s", org),
-		"Config repo deleted",
-		"GCP resources (mint, inference) must be removed separately",
-	})
-
-	return nil
-}
-
-// --- sync-scaffold command ---
-
-func newGitHubSyncScaffoldCmd() *cobra.Command {
-	var directFlag bool
-
-	cmd := &cobra.Command{
-		Use:   "sync-scaffold <org>",
-		Short: "Update workflow templates in .fullsend",
-		Long:  "Re-commits scaffold files (shim and maintenance workflows) to the .fullsend repo without touching secrets, variables, or enrollment. Useful after fullsend version upgrades. Idempotent and safe to run repeatedly.\n\nBy default, changes are delivered via a pull request. Use --direct to push to the default branch instead.",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			org := args[0]
-			if err := validateOrgName(org); err != nil {
-				return err
-			}
-
-			token, err := resolveToken()
-			if err != nil {
-				return err
-			}
-
-			client := gh.New(token)
-			printer := ui.New(os.Stdout)
-
-			// Default is PR delivery; --direct overrides to direct push.
-			return runGitHubSyncScaffold(cmd.Context(), client, printer, org, directFlag)
-		},
-	}
-
-	cmd.Flags().BoolVar(&directFlag, "direct", false, "push scaffold files directly to the default branch instead of creating a PR")
-
-	return cmd
-}
-
-// runGitHubSyncScaffold runs only the WorkflowsLayer.
-func runGitHubSyncScaffold(ctx context.Context, client forge.Client, printer *ui.Printer, org string, direct bool) error {
-	printer.Banner(Version())
-	printer.Blank()
-	printer.Header("Syncing scaffold for " + org)
-	printer.Blank()
-
-	user, err := client.GetAuthenticatedUser(ctx)
-	if err != nil {
-		return fmt.Errorf("getting authenticated user: %w", err)
-	}
-
-	vendored := false
-	if _, err := client.GetFileContent(ctx, org, forge.ConfigRepoName, scaffold.VendoredMarkerPath()); err == nil {
-		vendored = true
-	} else if !forge.IsNotFound(err) {
-		return fmt.Errorf("checking vendored marker: %w", err)
-	}
-
-	if cfgData, cfgErr := client.GetFileContent(ctx, org, forge.ConfigRepoName, "config.yaml"); cfgErr == nil {
-		if _, parseErr := config.ParseOrgConfig(cfgData); parseErr != nil {
-			return fmt.Errorf("parsing config.yaml: %w", parseErr)
-		}
-	} else if !forge.IsNotFound(cfgErr) {
-		return fmt.Errorf("reading config.yaml: %w", cfgErr)
-	}
-
-	upstreamRef, upstreamTag := resolveUpstreamRef()
-	wfLayer := layers.NewWorkflowsLayer(org, client, printer, user, version, vendored).WithDirect(direct).WithUpstreamRef(upstreamRef, upstreamTag)
-	if id, idErr := client.GetAuthenticatedUserIdentity(ctx); idErr == nil {
-		wfLayer = wfLayer.WithSignOff(id.Name, id.Email)
-	}
-
-	if err := wfLayer.Install(ctx); err != nil {
-		return fmt.Errorf("syncing scaffold: %w", err)
-	}
-
-	printer.Blank()
-	printer.StepDone("Scaffold sync complete for " + org)
-	return nil
-}
-
 // resolveReviewAppClientID attempts to look up the review agent's OAuth
 // client ID via the GitHub API. Returns the client ID on success, or
 // an empty string if the lookup fails (best-effort — a missing client ID
 // degrades incremental reviews but does not block installation).
 func resolveReviewAppClientID(ctx context.Context, client forge.Client, appSet string) string {
-	ghExt, ok := client.(forge.GitHubExtensions)
-	if !ok {
-		return ""
-	}
-	slug := appsetup.AppSlug(appSet, "review")
-	clientID, err := ghExt.GetAppClientID(ctx, slug)
-	if err != nil {
-		return ""
-	}
-	return clientID
+	return appsetup.ResolveReviewAppClientID(ctx, client, appSet)
 }

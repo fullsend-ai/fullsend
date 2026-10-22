@@ -104,6 +104,34 @@ func TestDiscoverAllEvents_LabelEvents(t *testing.T) {
 	}
 }
 
+func TestDiscoverAllEvents_LabelEventsLookupFailureHoldsLabel(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	since := now.Add(-time.Minute)
+	mc := newMockClient()
+	mc.issues = []Issue{
+		{IID: 1, UpdatedAt: now, Labels: []string{"ready-to-code"}},
+	}
+	mc.notes[1] = []Note{}
+	mc.labelEventsErr[1] = fmt.Errorf("label events unavailable")
+
+	p := newEventsPoller(mc)
+	events, labelState, minSkipped, err := p.discoverAllEvents(context.Background(), "group", "project", since)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, e := range events {
+		if e.Type == "issue_label" {
+			t.Errorf("issue_label event %q emitted without an occurrence ID; it must be held for retry", e.Key())
+		}
+	}
+	if ls := labelState[1]; len(ls) != 0 {
+		t.Errorf("labelState[1] = %v, want empty so the label is rediscovered", ls)
+	}
+	if !minSkipped.Equal(now) {
+		t.Errorf("minSkippedAt = %v, want %v so the watermark is held back", minSkipped, now)
+	}
+}
+
 func TestDiscoverAllEvents_MRMergeEvents(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	since := now.Add(-time.Minute)
@@ -1082,6 +1110,19 @@ func TestFilterBotEvents_RemovesBotMergedMR(t *testing.T) {
 	filtered := p.filterBotEvents(events)
 	if len(filtered) != 0 {
 		t.Errorf("expected bot-authored MR merge to be removed, got %d events", len(filtered))
+	}
+}
+
+func TestFilterBotEvents_RetainsBotAppliedLabel(t *testing.T) {
+	mc := newMockClient()
+	p := newEventsPoller(mc) // botUserID = 100
+
+	events := []RoutableEvent{
+		{Type: "issue_label", IID: 5, ChangedLabel: "ready-to-code", IsBot: true, NoteAuthorID: 100},
+	}
+	filtered := p.filterBotEvents(events)
+	if len(filtered) != 1 {
+		t.Errorf("expected bot-applied label addition to be retained, got %d events", len(filtered))
 	}
 }
 

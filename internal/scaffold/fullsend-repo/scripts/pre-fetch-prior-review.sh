@@ -8,20 +8,35 @@
 #   - PR_NUM
 #   - REVIEW_APP_CLIENT_ID - review agent's GitHub ID
 #   - SOURCE_REPO
+#
+# Optional environment variables
+#
+#   - FULLSEND_APP_SET - configured GitHub App set prefix (apps named
+#     "{app-set}-{role}"). When set, the review bot login it implies
+#     ("${FULLSEND_APP_SET}-review[bot]") is also recognized alongside
+#     the org-specific and shared-vendor identities below. Unset is
+#     treated identically to pre-FULLSEND_APP_SET behavior.
 set -euo pipefail
 
 PRIOR_FILE=${GITHUB_WORKSPACE:-/tmp}/prior-review.txt
 REVIEW_BOT="${ORG_NAME}-review[bot]"
 SHARED_REVIEW_BOT="fullsend-ai-review[bot]"
+CUSTOM_REVIEW_BOT=""
+if [[ -n "${FULLSEND_APP_SET:-}" ]]; then
+    CUSTOM_REVIEW_BOT="${FULLSEND_APP_SET}-review[bot]"
+fi
 PROVENANCE="none"
 
 # Fetch full comment object (not just body) for provenance validation.
-# Match either the org-specific bot or the shared vendor App identity
-# (see ADR 0029/0059/0068 and #5550).
+# Match the org-specific bot, the shared vendor App identity, or the
+# configured custom app-set identity (see ADR 0029/0059/0068, #5550,
+# and #5480). Identity matching is exact — no wildcard bot matching.
 COMMENT_JSON=$(gh api "repos/${SOURCE_REPO}/issues/${PR_NUM}/comments" \
   --paginate --jq '.[]' \
-  | jq --arg bot "${REVIEW_BOT}" --arg shared_bot "${SHARED_REVIEW_BOT}" -s \
-    '[.[] | select((.user.login == $bot or .user.login == $shared_bot)
+  | jq --arg bot "${REVIEW_BOT}" --arg shared_bot "${SHARED_REVIEW_BOT}" \
+    --arg custom_bot "${CUSTOM_REVIEW_BOT}" -s \
+    '[.[] | select((.user.login == $bot or .user.login == $shared_bot
+        or ($custom_bot != "" and .user.login == $custom_bot))
       and (.body | contains("<!-- fullsend:review-agent -->")))] | last // empty' \
   2>/dev/null || echo "")
 

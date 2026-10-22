@@ -8,7 +8,7 @@ Testing application code is a solved problem with mature tooling: unit tests, in
 
 Today, if someone modifies a review agent's instructions, the only verification is human review of the prose change. There is no automated way to confirm the agent still behaves correctly after the modification. This is the equivalent of shipping code changes with no test suite — something we would never accept for application code.
 
-**Behaviour tests are orthogonal.** [ADR 0066](../ADRs/0066-behaviour-tests-with-gherkin-and-drivers.md) describes Gherkin end-to-end tests (framework in `pkg/behaviourtest/`, runner under `e2e/behaviour/`) that validate deterministic platform code (workflows, harness, sandbox policy, post-scripts) with inference explicitly removed via the dummy runtime. They do not evaluate instructions, prompts, or models, and they do not replace golden-set or statistical LLM evals described below.
+**Behaviour tests are orthogonal.** [ADR 0066](../ADRs/0066-behaviour-tests-with-gherkin-and-drivers.md) describes Gherkin end-to-end tests (framework in `pkg/behaviourtest/`, runner under `e2e/behaviour/`) that validate deterministic platform code (workflows, harness, sandbox policy, post-scripts) with inference explicitly removed via the dummy and dummy-playback ([ADR 0116](../ADRs/0116-dummy-playback-runtime.md)) runtimes. They do not evaluate instructions, prompts, or models, and they do not replace golden-set or statistical LLM evals described below.
 
 ## What makes agent testing hard
 
@@ -372,7 +372,7 @@ Beyond testing individual instruction changes, there's a need for ongoing monito
 
 - What's the right statistical threshold for non-deterministic tests? How many runs constitute a reliable signal, and what pass rate is acceptable? *(Partially explored in [experiment 0026](https://github.com/fullsend-ai/experiments/tree/main/0026-eval-statistical-significance): the required run count scales with the effect size you need to detect, and gating on the lower confidence bound beats the point estimate. The policy half — what pass rate is acceptable — remains open.)*
 - Can we use one LLM to test another's behavior reliably, or does LLM-as-judge just move the trust problem?
-- ~~How do we bootstrap the golden set? Do we start with synthetic examples, or do we capture real-world cases from early human-supervised agent operation?~~ Functional tests bootstrap with hand-crafted cases under `eval/`; see [ADR 0052](../ADRs/0052-functional-tests-for-agent-pipelines.md). Prompt-level evals and synthetic expansion remain open.
+- ~~How do we bootstrap the golden set? Do we start with synthetic examples, or do we capture real-world cases from early human-supervised agent operation?~~ Functional tests bootstrap with hand-crafted cases, now kept in the agents repository's functional-test suite; see [ADR 0052](../ADRs/0052-functional-tests-for-agent-pipelines.md) and [ADR 0139](../ADRs/0139-agent-functional-test-suite-lives-in-agents-repo.md). Prompt-level evals and synthetic expansion remain open.
 - Who maintains the test suite for each agent? Is it the agent's instruction author, a separate testing team, or the agent itself (self-testing)?
 - How do we handle model provider updates that change behavior without any instruction changes? Is periodic re-evaluation sufficient, or do we need real-time drift detection?
 - What's the cost budget for agent testing? Running hundreds of LLM evaluations per instruction change could be expensive — both in LLM API costs and in compute resources for running the evaluations in CI.

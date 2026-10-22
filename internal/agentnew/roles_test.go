@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
+	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
 )
 
@@ -42,9 +43,13 @@ func TestRoleTableMatchesMint(t *testing.T) {
 			if role.Image == "" {
 				t.Error("role has no image")
 			}
-			if len(role.Providers) != len(role.Profiles) {
-				t.Errorf("each provider needs a matching profile: %d providers, %d profiles",
-					len(role.Providers), len(role.Profiles))
+			for _, p := range role.Providers {
+				if harness.IsProviderPath(p) {
+					t.Errorf("role %q names provider %q by path; built-in providers are bare names (#7268)", name, p)
+				}
+			}
+			if !slices.Contains(role.Providers, OpenAIProviderName) {
+				t.Errorf("role %q must declare the openai provider by bare name, got %v", name, role.Providers)
 			}
 		})
 	}
@@ -122,7 +127,19 @@ func TestCoderUsesEmbeddedGithubProvider(t *testing.T) {
 			t.Errorf("coder must not reference %q; the embedded scaffold has no github-code provider", p)
 		}
 	}
-	if !slices.Contains(role.Providers, "providers/github.yaml") {
-		t.Errorf("coder should use providers/github.yaml, got %v", role.Providers)
+	if !slices.Contains(role.Providers, "github") {
+		t.Errorf("coder should use the bare github provider, got %v", role.Providers)
+	}
+}
+
+// TestReviewRoleMountsTheRepositoryReadOnly pins fleet parity: the review
+// harness in fullsend-ai/agents sets readonly_repo, and only the review role
+// does.
+func TestReviewRoleMountsTheRepositoryReadOnly(t *testing.T) {
+	for _, name := range RoleNames() {
+		want := name == "review"
+		if got := roleTable[name].ReadonlyRepo; got != want {
+			t.Errorf("role %q: ReadonlyRepo = %v, want %v", name, got, want)
+		}
 	}
 }

@@ -60,11 +60,25 @@ runs:
         BODY=$(jq -nc --arg role "$ROLE" --argjson repos "$REPOS_JSON" --arg level "$LEVEL" \
           '{role: $role, repos: $repos, level: $level}')
         echo "Requesting token: role=$ROLE level=$LEVEL repos=$REPOS"
-        MINT_RESPONSE=$(curl -sSf --retry 5 --retry-delay 5 --retry-all-errors \
+        BODY_FILE=$(mktemp)
+        trap 'rm -f "$BODY_FILE"' EXIT
+        # -o / -w keep the JSON body off stdout so a failed request still
+        # yields the HTTP status in HTTP_CODE. --fail-with-body (curl >=
+        # 7.76, present on GitHub-hosted runners) still writes the response
+        # body to BODY_FILE on a non-2xx status, unlike plain -f/--fail,
+        # which discards it. --retry-all-errors keeps retrying 422.
+        HTTP_CODE=$(curl -sS --fail-with-body -o "$BODY_FILE" -w "%{http_code}" \
+          --retry 5 --retry-delay 5 --retry-all-errors \
           -H "Authorization: Bearer $OIDC_TOKEN" \
           -H "Content-Type: application/json" \
           -d "$BODY" \
-          "${MINT_URL}/v1/token")
+          "${MINT_URL}/v1/token") || {
+          if [[ "$HTTP_CODE" == "422" ]]; then
+            printf '%s\n' "::error::A 422 error code usually means the GitHub App configured for role \"$ROLE\" is not installed for the repository. Check if it is installed in certain selected repositories."
+          fi
+          exit 1
+        }
+        MINT_RESPONSE=$(cat "$BODY_FILE")
         echo "::add-mask::$MINT_RESPONSE"
         TOKEN=$(echo "$MINT_RESPONSE" | jq -r '.token')
         if [[ -z "$TOKEN" || "$TOKEN" == "null" ]]; then

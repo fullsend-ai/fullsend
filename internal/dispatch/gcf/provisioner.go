@@ -8,6 +8,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"embed"
 	"encoding/hex"
@@ -21,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -44,7 +46,7 @@ const (
 // ErrFunctionNotFound is returned when the mint function does not exist.
 var ErrFunctionNotFound = errors.New("mint function not found")
 
-//go:embed mintsrc/go.mod.embed mintsrc/go.sum.embed mintsrc/main.go.embed mintsrc/mintcore/go.mod.embed mintsrc/mintcore/go.sum.embed mintsrc/mintcore/claims.go.embed mintsrc/mintcore/config.go.embed mintsrc/mintcore/env.go.embed mintsrc/mintcore/foreign.go.embed mintsrc/mintcore/gcp_pem.go.embed mintsrc/mintcore/github.go.embed mintsrc/mintcore/handler.go.embed mintsrc/mintcore/http_client.go.embed mintsrc/mintcore/interfaces.go.embed mintsrc/mintcore/jwks_verifier.go.embed mintsrc/mintcore/mintconsts/mintconsts.go.embed mintsrc/mintcore/oidc_verify.go.embed mintsrc/mintcore/patterns.go.embed mintsrc/mintcore/repos_scope.go.embed mintsrc/mintcore/status_auth.go.embed mintsrc/mintcore/status_consts.go.embed mintsrc/mintcore/status_github.go.embed mintsrc/mintcore/status_github_stub.go.embed mintsrc/mintcore/sts_verifier.go.embed mintsrc/mintcore/version.go.embed mintsrc/mintcore/wif.go.embed
+//go:embed mintsrc/go.mod.embed mintsrc/go.sum.embed mintsrc/main.go.embed mintsrc/trace_consts.go.embed mintsrc/mintcore/go.mod.embed mintsrc/mintcore/go.sum.embed mintsrc/mintcore/claims.go.embed mintsrc/mintcore/config.go.embed mintsrc/mintcore/env.go.embed mintsrc/mintcore/foreign.go.embed mintsrc/mintcore/gcp_pem.go.embed mintsrc/mintcore/github.go.embed mintsrc/mintcore/handler.go.embed mintsrc/mintcore/http_client.go.embed mintsrc/mintcore/interfaces.go.embed mintsrc/mintcore/jwks_verifier.go.embed mintsrc/mintcore/mintconsts/mintconsts.go.embed mintsrc/mintcore/oidc_verify.go.embed mintsrc/mintcore/patterns.go.embed mintsrc/mintcore/repos_scope.go.embed mintsrc/mintcore/status_auth.go.embed mintsrc/mintcore/status_consts.go.embed mintsrc/mintcore/status_github.go.embed mintsrc/mintcore/status_github_stub.go.embed mintsrc/mintcore/sts_verifier.go.embed mintsrc/mintcore/tracing.go.embed mintsrc/mintcore/version.go.embed mintsrc/mintcore/wif.go.embed
 var embeddedMintSource embed.FS
 
 // embeddedMintFiles maps embedded filenames (.embed suffix avoids
@@ -54,6 +56,7 @@ var embeddedMintFiles = map[string]string{
 	"go.mod.embed":                            "go.mod",
 	"go.sum.embed":                            "go.sum",
 	"main.go.embed":                           "main.go",
+	"trace_consts.go.embed":                   "trace_consts.go",
 	"mintcore/go.mod.embed":                   "mintcore/go.mod",
 	"mintcore/go.sum.embed":                   "mintcore/go.sum",
 	"mintcore/claims.go.embed":                "mintcore/claims.go",
@@ -75,6 +78,7 @@ var embeddedMintFiles = map[string]string{
 	"mintcore/status_github.go.embed":         "mintcore/status_github.go",
 	"mintcore/status_github_stub.go.embed":    "mintcore/status_github_stub.go",
 	"mintcore/sts_verifier.go.embed":          "mintcore/sts_verifier.go",
+	"mintcore/tracing.go.embed":               "mintcore/tracing.go",
 	"mintcore/version.go.embed":               "mintcore/version.go",
 	"mintcore/wif.go.embed":                   "mintcore/wif.go",
 }
@@ -118,7 +122,7 @@ type Config struct {
 	WIFPoolName       string // default: "fullsend-pool"
 	WIFProvider       string // default: "github-oidc"
 	GitHubOrgs        []string
-	Repo              string // per-repo mode: "owner/repo"; empty = per-org
+	Repo              string // "owner/repo" to register/scope WIF for one repo; empty = no repo registration (Provision) or org-scoped WIF (inference ProvisionWIF)
 	FunctionSourceDir string // path to Cloud Function source directory
 
 	// AgentPEMs maps role → PEM private key data for all agent Apps.
@@ -128,8 +132,8 @@ type Config struct {
 	AgentAppIDs map[string]string
 
 	// MintURL, if set, skips infrastructure deployment and uses the
-	// existing mint at this URL for PEM storage, org registration,
-	// per-repo WIF, and PEM auto-copy.
+	// existing mint at this URL for PEM storage, per-repo WIF, and PEM
+	// auto-copy.
 	MintURL string
 
 	// DeployMode controls function deployment: auto (default) or skip.
@@ -147,6 +151,124 @@ type Config struct {
 	// StatusGitHub holds the GitHub status auth config stamped into
 	// the source at bundle time alongside Version and Commit.
 	StatusGitHub StatusGitHubAuth
+
+	// Tracing configures OTLP trace export from the deployed function.
+	// The endpoint is stamped into the source at bundle time; header
+	// values are stored in Secret Manager, never in the source.
+	Tracing TracingConfig
+}
+
+// TracingConfig is the tracing input for a mint deploy.
+type TracingConfig struct {
+	// Endpoint is the full OTLP/HTTP traces URL. Empty disables tracing.
+	Endpoint string
+	// Headers is the collector authentication header content
+	// (OTEL_EXPORTER_OTLP_HEADERS syntax), stored in a new per-deploy
+	// secret (see NewTraceHeadersSecretID). Nil deploys without collector
+	// headers. Zeroed after Provision.
+	Headers []byte
+}
+
+// TraceHeadersSecretPrefix is the prefix of the per-deploy Secret Manager
+// secrets holding OTLP collector authentication headers for the mint
+// function.
+const TraceHeadersSecretPrefix = "fullsend-mint-otlp-headers-"
+
+// NewTraceHeadersSecretID returns a unique Secret Manager secret ID for the
+// collector headers of one deploy. Each deploy stamps its own ID into the
+// function source, so a deployed revision always reads the headers that
+// were stored for its endpoint: a later deploy for another collector, or
+// for another region, cannot change what an earlier revision reads at
+// cold start, and a retry after a partial failure stamps a new ID and so
+// always redeploys.
+func NewTraceHeadersSecretID() (string, error) {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("generating collector headers secret ID: %w", err)
+	}
+	return TraceHeadersSecretPrefix + hex.EncodeToString(b[:]), nil
+}
+
+// TracingStamp is the nonsecret tracing configuration generated into the
+// function source (trace_consts.go). An empty Endpoint disables tracing.
+type TracingStamp struct {
+	// Endpoint is the full OTLP/HTTP traces URL.
+	Endpoint string
+	// Deployment identifies the deployment on exported spans
+	// (fullsend.mint.deployment).
+	Deployment string
+	// HeadersSecret is the Secret Manager secret ID the function reads
+	// its collector headers from. Empty means no headers.
+	HeadersSecret string
+}
+
+// TraceDeploymentName returns the deployment identity recorded on spans
+// for the mint function in region.
+func TraceDeploymentName(region string) string {
+	if region == "" {
+		region = defaultRegion
+	}
+	return functionName + "/" + region
+}
+
+// tracingStamp derives the stamp for this deploy from the config.
+// headersSecret is the per-deploy secret ID for the collector headers, or
+// empty when the deploy has none.
+func (p *Provisioner) tracingStamp(headersSecret string) TracingStamp {
+	if p.cfg.Tracing.Endpoint == "" {
+		return TracingStamp{}
+	}
+	return TracingStamp{
+		Endpoint:      p.cfg.Tracing.Endpoint,
+		Deployment:    TraceDeploymentName(p.cfg.Region),
+		HeadersSecret: headersSecret,
+	}
+}
+
+// validateTracing checks the tracing config before anything is deployed.
+// The endpoint must be an absolute https URL without credentials, because
+// collector headers and trace payloads are sent to it.
+func (p *Provisioner) validateTracing() error {
+	endpoint := p.cfg.Tracing.Endpoint
+	if endpoint == "" {
+		if p.cfg.Tracing.Headers != nil {
+			return fmt.Errorf("collector headers require an OTLP traces endpoint")
+		}
+		return nil
+	}
+	if _, err := mintcore.NewTracer(mintcore.TracingConfig{Endpoint: endpoint}); err != nil {
+		return err
+	}
+	if u, err := url.Parse(endpoint); err != nil || u.Scheme != "https" {
+		return fmt.Errorf("invalid OTLP traces endpoint: must use https")
+	}
+	if p.cfg.Tracing.Headers != nil {
+		if _, err := mintcore.ParseOTLPHeaders(string(p.cfg.Tracing.Headers)); err != nil {
+			return fmt.Errorf("invalid collector headers: %w", err)
+		}
+	}
+	return nil
+}
+
+// storeTraceHeaders stores the collector headers in the new per-deploy
+// secret sid and grants the mint service account access, following the
+// agent PEM precedent. The secret is created for this deploy only and is
+// never updated afterwards, so the stamped ID binds the deployed endpoint
+// to these exact headers.
+func (p *Provisioner) storeTraceHeaders(ctx context.Context, sid string) error {
+	if err := p.gcpAPI.CreateSecret(ctx, p.cfg.ProjectID, sid); err != nil {
+		return fmt.Errorf("creating secret %s: %w", sid, err)
+	}
+	if err := p.gcpAPI.AddSecretVersion(ctx, p.cfg.ProjectID, sid, p.cfg.Tracing.Headers); err != nil {
+		return fmt.Errorf("adding secret version for %s: %w", sid, err)
+	}
+	saEmail := MintServiceAccountEmail(p.cfg.ProjectID)
+	secretResource := fmt.Sprintf("projects/%s/secrets/%s", p.cfg.ProjectID, sid)
+	if err := p.gcpAPI.SetSecretIAMBinding(ctx, secretResource,
+		"serviceAccount:"+saEmail, "roles/secretmanager.secretAccessor"); err != nil {
+		return fmt.Errorf("granting secret access for %s: %w", sid, err)
+	}
+	return nil
 }
 
 // StatusGitHubAuth bundles the GitHub status auth configuration
@@ -443,14 +565,6 @@ func mintDiscoveryFromEnvVars(uri string, envVars map[string]string) *MintDiscov
 	return result
 }
 
-func (p *Provisioner) resolveMintURI(ctx context.Context) (string, error) {
-	d, err := p.DiscoverMint(ctx)
-	if err != nil {
-		return "", err
-	}
-	return d.URL, nil
-}
-
 // GetFunctionURL returns the URL of the deployed mint function.
 func (p *Provisioner) GetFunctionURL(ctx context.Context) (string, error) {
 	d, err := p.DiscoverMint(ctx)
@@ -510,82 +624,26 @@ func isPublicMintEnv(envVars map[string]string) bool {
 	return false
 }
 
-// EnsureOrgInMint validates that a mint function exists at expectedURL and
-// that the given org is registered in ALLOWED_ORGS. If the org is missing,
-// it updates the function's env vars to include it.
-//
-// WARNING: read-modify-write without locking — concurrent calls from
-// parallel per-repo installs sharing the same mint can race, causing one
-// update to overwrite the other. Run installs sequentially when sharing
-// a mint, or accept that a lost update will be corrected on the next run.
-func (p *Provisioner) EnsureOrgInMint(ctx context.Context, expectedURL string, org string) error {
-	org = strings.ToLower(org)
-
-	mintURI, err := p.resolveMintURI(ctx)
+// verifyMintURL checks that the mint function in the configured project and
+// region exists and is served at expectedURL, so per-repo registration never
+// updates a different mint than the one the repo is configured to call.
+func (p *Provisioner) verifyMintURL(ctx context.Context, expectedURL string) error {
+	d, err := p.DiscoverMint(ctx)
 	if err != nil {
 		return fmt.Errorf("getting mint function: %w", err)
 	}
-	if mintURI == "" {
+	if d == nil || d.URL == "" {
 		return fmt.Errorf("mint function %q not found in project %s region %s", functionName, p.cfg.ProjectID, p.cfg.Region)
 	}
-
-	if mintURI != expectedURL {
-		return fmt.Errorf("mint URL mismatch: expected %q but function has %q", expectedURL, mintURI)
+	if d.URL != expectedURL {
+		return fmt.Errorf("mint URL mismatch: expected %q but function has %q", expectedURL, d.URL)
 	}
-
-	trafficEnvVars, err := p.gcpAPI.GetServiceTrafficEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
-	if err != nil {
-		return fmt.Errorf("reading traffic-serving env vars: %w", err)
-	}
-
-	if isPublicMintEnv(trafficEnvVars) {
-		return nil
-	}
-
-	allowedOrgs := trafficEnvVars["ALLOWED_ORGS"]
-	orgPresent := false
-	for _, o := range strings.Split(allowedOrgs, ",") {
-		if strings.EqualFold(strings.TrimSpace(o), org) {
-			orgPresent = true
-			break
-		}
-	}
-	if orgPresent {
-		return nil
-	}
-
-	updated := make(map[string]string, len(trafficEnvVars))
-	for k, v := range trafficEnvVars {
-		updated[k] = v
-	}
-
-	desired := map[string]string{
-		"ALLOWED_ORGS": org,
-	}
-	mergeAllowedOrgs(updated, desired)
-	updated["ALLOWED_ORGS"] = stripPlaceholderOrg(desired["ALLOWED_ORGS"])
-
-	if updated["ALLOWED_ROLES"] == "" {
-		updated["ALLOWED_ROLES"] = deriveAllowedRoles(updated["ROLE_APP_IDS"])
-	}
-	if updated["ALLOWED_WORKFLOW_FILES"] == "" {
-		updated["ALLOWED_WORKFLOW_FILES"] = "*"
-	}
-
-	rev, err := p.gcpAPI.UpdateServiceEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName, updated)
-	if err != nil {
-		if rev != "" {
-			return fmt.Errorf("updating mint env vars (revision %s created but traffic routing may have failed): %w", rev, err)
-		}
-		return fmt.Errorf("updating mint env vars: %w", err)
-	}
-
 	return nil
 }
 
 // RegisterPerRepoWIF adds a repo to the mint's PER_REPO_WIF_REPOS env var
-// so the mint routes OIDC tokens from that repo to a dedicated WIF provider
-// instead of the org-level default. Idempotent — skips repos already listed.
+// so the mint routes OIDC tokens from that repo to a dedicated WIF provider.
+// Idempotent — skips repos already listed.
 // Not safe for concurrent calls — run per-repo installs sequentially when
 // sharing a mint.
 func (p *Provisioner) RegisterPerRepoWIF(ctx context.Context, repo string) error {
@@ -639,18 +697,25 @@ func (p *Provisioner) RegisterPerRepoWIF(ctx context.Context, repo string) error
 // When MintURL is empty, deploys the full mint infrastructure:
 //  1. Look up project number
 //  2. Create/verify service account
-//  3. Create/verify WIF pool + provider
-//  4. Grant Agent Platform access to each org's WIF principalSet (direct WIF)
-//  5. Store all agent PEMs in Secret Manager
-//  6. Grant SA access to all role secrets
-//  7. Deploy Cloud Function
+//  3. Create/verify WIF pool + provider (no org entry is added to a new
+//     provider's condition, and an existing provider's condition is preserved)
+//  4. Store all agent PEMs in Secret Manager
+//  5. Grant SA access to all role secrets
+//  6. Deploy Cloud Function
+//  7. Register the repo for per-repo WIF when Repo is set
 //  8. Return FULLSEND_MINT_URL
+//
+// No org-level Agent Platform grants are created or modified.
 //
 // When MintURL is set, reuses an existing mint:
 //  1. Store all agent PEMs in Secret Manager
 //  2. Return the provided MintURL
 func (p *Provisioner) Provision(ctx context.Context) (map[string]string, error) {
 	defer p.zeroPEMs()
+	defer clear(p.cfg.Tracing.Headers)
+	if p.cfg.MintURL != "" && p.cfg.Tracing.Endpoint != "" {
+		return nil, fmt.Errorf("tracing requires deploying the mint function; it cannot be configured with an existing MintURL")
+	}
 
 	if len(p.cfg.GitHubOrgs) == 0 && !p.cfg.PublicMint {
 		return nil, fmt.Errorf("at least one GitHub org is required")
@@ -683,9 +748,9 @@ func (p *Provisioner) Provision(ctx context.Context) (map[string]string, error) 
 	return p.provisionSelfManaged(ctx)
 }
 
-// provisionWithExistingMint handles PEM storage, org registration, and
-// per-repo WIF registration for an existing mint. Shared by both per-org
-// (when auto-routed from provisionSelfManaged) and per-repo flows.
+// provisionWithExistingMint handles PEM storage and per-repo WIF
+// registration for an existing mint. Used directly when MintURL is set and
+// when auto-routed from provisionSelfManaged.
 func (p *Provisioner) provisionWithExistingMint(ctx context.Context) (map[string]string, error) {
 	if p.cfg.ProjectID == "" {
 		return nil, fmt.Errorf("GCP project ID is required for PEM storage")
@@ -728,11 +793,11 @@ func (p *Provisioner) provisionWithExistingMint(ctx context.Context) (map[string
 		}
 	}
 
-	// Register installing orgs in ALLOWED_ORGS (app IDs are shared per role).
-	for _, org := range p.cfg.GitHubOrgs {
-		if err := p.EnsureOrgInMint(ctx, p.cfg.MintURL, org); err != nil {
-			return nil, fmt.Errorf("registering org %s in mint: %w", org, err)
-		}
+	// Confirm the mint in this project serves MintURL before registering
+	// the repo, so PER_REPO_WIF_REPOS is never updated on a different mint
+	// than the one the repo is configured to call.
+	if err := p.verifyMintURL(ctx, p.cfg.MintURL); err != nil {
+		return nil, err
 	}
 
 	// Per-repo WIF registration — when cfg.Repo is set (not used in public mint mode).
@@ -772,6 +837,24 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 			return nil, fmt.Errorf("role %q has a PEM but no corresponding App ID", role)
 		}
 	}
+	if err := p.validateTracing(); err != nil {
+		return nil, err
+	}
+	if p.cfg.Tracing.Endpoint != "" && p.cfg.DeployMode == DeploySkip {
+		return nil, fmt.Errorf("tracing cannot be configured with --skip-mint-deploy: the endpoint is stamped into the function source")
+	}
+	// Each deploy with collector headers gets its own secret ID, stamped
+	// into the source. The ID changes the source hash, so a retry after a
+	// partial failure always redeploys.
+	headersSecret := ""
+	if p.cfg.Tracing.Headers != nil {
+		id, idErr := NewTraceHeadersSecretID()
+		if idErr != nil {
+			return nil, idErr
+		}
+		headersSecret = id
+	}
+	stamp := p.tracingStamp(headersSecret)
 
 	// Check existing function state before infrastructure setup.
 	existing, err := p.gcpAPI.GetFunction(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
@@ -795,47 +878,32 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 		return nil, fmt.Errorf("creating service account: %w", err)
 	}
 
-	// Step 2: Create/verify WIF pool + provider with merged org list.
-	for _, org := range p.cfg.GitHubOrgs {
-		if strings.ContainsAny(org, `'"`) {
-			return nil, fmt.Errorf("invalid GitHub org name %q: contains quotes", org)
-		}
-	}
-
-	// Save the orgs from this install run before merging with existing orgs.
-	// PEMs and app IDs belong to the current run's apps and must only be
-	// stored under the installing orgs' secret/env-var keys.
-	installingOrgs := make([]string, len(p.cfg.GitHubOrgs))
-	copy(installingOrgs, p.cfg.GitHubOrgs)
-
-	wifResult, err := p.ensureWIFPoolAndProvider(ctx, installingOrgs)
+	// Step 2: Create/verify the WIF pool + shared provider. Mint deployment
+	// never adds the installing owner to the provider condition and never
+	// grants org-level Agent Platform access; existing provider state is
+	// preserved as-is. Per-repo callers authenticate through per-repo
+	// providers registered via PER_REPO_WIF_REPOS.
+	wifResult, err := p.ensureMintWIFPoolAndProvider(ctx)
 	if err != nil {
 		return nil, err
 	}
 	projectNumber := wifResult.projectNumber
-	allOrgs := wifResult.allOrgs
 
-	// Step 3: Grant Agent Platform access to each installing org's .fullsend repo
-	// at the project level (direct WIF — no intermediate service account).
-	// IAM policy changes can take up to 7 minutes to propagate.
-	iamGrantCount := 0
-	if !p.cfg.PublicMint {
-		for _, org := range installingOrgs {
-			if org == PlaceholderOrg {
-				continue
-			}
-			if err := p.grantOrgVertexAIAccessWithNumber(ctx, projectNumber, org); err != nil {
-				return nil, err
-			}
-			iamGrantCount++
+	// Store collector headers in this deploy's own secret before any code
+	// deploy so new instances find them at cold start. The stamped secret
+	// ID is part of the source hash, so the function is always redeployed
+	// to pick them up.
+	if headersSecret != "" {
+		if err := p.storeTraceHeaders(ctx, headersSecret); err != nil {
+			return nil, err
 		}
 	}
-	log.Printf("granted roles/aiplatform.user to %d org(s) (propagation may take several minutes)", iamGrantCount)
 
 	// Determine if code deployment is needed. When the function already
 	// exists and is active with the same source hash, skip the code deploy
-	// path and use the lightweight provisionWithExistingMint for PEM + org
-	// registration. WIF infrastructure above always runs regardless.
+	// path and use the lightweight provisionWithExistingMint for PEM storage
+	// and per-repo WIF registration. WIF infrastructure above always runs
+	// regardless.
 	needsDeploy := true
 	var earlySourceZip []byte
 
@@ -848,10 +916,13 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 			switch {
 			case p.cfg.DeployMode == DeploySkip:
 				needsDeploy = false
-			case p.cfg.FunctionSourceDir == "":
+			case p.cfg.FunctionSourceDir == "" && p.cfg.Tracing.Endpoint == "":
+				// No source to compare. A tracing deploy must still
+				// compare the stamped source, so it falls through to
+				// the default case (embedded source).
 				needsDeploy = false
 			default: // DeployAuto
-				earlySourceZip, err = bundleFunctionSource(p.cfg.FunctionSourceDir, p.cfg.Version, p.cfg.Commit, p.cfg.StatusGitHub)
+				earlySourceZip, err = bundleFunctionSource(p.cfg.FunctionSourceDir, p.cfg.Version, p.cfg.Commit, p.cfg.StatusGitHub, stamp)
 				if err != nil {
 					return nil, fmt.Errorf("validating function source: %w", err)
 				}
@@ -870,7 +941,7 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 
 	// Code deployment path — bundle source.
 	if earlySourceZip == nil {
-		earlySourceZip, err = bundleFunctionSource(p.cfg.FunctionSourceDir, p.cfg.Version, p.cfg.Commit, p.cfg.StatusGitHub)
+		earlySourceZip, err = bundleFunctionSource(p.cfg.FunctionSourceDir, p.cfg.Version, p.cfg.Commit, p.cfg.StatusGitHub, stamp)
 		if err != nil {
 			return nil, fmt.Errorf("validating function source: %w", err)
 		}
@@ -908,7 +979,6 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 		"GCP_PROJECT_NUMBER": projectNumber,
 		"WIF_POOL_NAME":      p.cfg.WIFPoolName,
 		"WIF_PROVIDER_NAME":  p.cfg.WIFProvider,
-		"ALLOWED_ORGS":       strings.Join(allOrgs, ","),
 		"ROLE_APP_IDS":       roleAppIDsJSON,
 	}
 	if p.cfg.PublicMint {
@@ -920,7 +990,7 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 	sourceHash := sha256Hex(sourceZip)
 
 	if existing == nil && p.cfg.DeployMode != DeploySkip {
-		// First deploy: CreateFunction with full env vars including org registration.
+		// First deploy: CreateFunction with the full set of env vars.
 		// Mint's init() fatals on missing env vars, so we must set them all at once.
 		envVars["ALLOWED_ROLES"] = deriveAllowedRoles(envVars["ROLE_APP_IDS"])
 		if envVars["ALLOWED_WORKFLOW_FILES"] == "" {
@@ -958,9 +1028,9 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 			return nil, fmt.Errorf("function %s deployed but not found or has no URI", functionName)
 		}
 	} else if p.needsCodeDeploy(existing, sourceHash) {
-		// Code changed: start from existing env vars (preserves org data,
-		// PER_REPO_WIF_REPOS, etc.), then override infrastructure keys
-		// with current config values. EnsureOrgInMint handles org registration.
+		// Code changed: start from existing env vars (preserves
+		// PER_REPO_WIF_REPOS, ROLE_APP_IDS, etc.), then override
+		// infrastructure keys with current config values.
 		deployEnvVars := make(map[string]string, len(existing.EnvVars)+6)
 		for k, v := range existing.EnvVars {
 			deployEnvVars[k] = v
@@ -1019,15 +1089,6 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 	}
 	mintURL := existing.URI
 
-	// Register installing orgs in ALLOWED_ORGS.
-	if !p.cfg.PublicMint {
-		for _, org := range installingOrgs {
-			if err := p.EnsureOrgInMint(ctx, mintURL, org); err != nil {
-				return nil, fmt.Errorf("registering org %s in mint: %w", org, err)
-			}
-		}
-	}
-
 	if p.cfg.Repo != "" {
 		publicMint, err := p.isTrafficMintPublic(ctx)
 		if err != nil {
@@ -1063,33 +1124,6 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 	return map[string]string{
 		"FULLSEND_MINT_URL": mintURL,
 	}, nil
-}
-
-// mergeAllowedOrgs reads ALLOWED_ORGS from existing env vars and unions
-// with the desired env vars. Result is sorted and deduplicated.
-// An empty existing value is treated as an empty set (not a skip) so that
-// the desired orgs are always preserved — silently returning on empty
-// existing data would mask data loss when the source has diverged.
-func mergeAllowedOrgs(existing, desired map[string]string) {
-	prev := existing["ALLOWED_ORGS"]
-	seen := make(map[string]bool)
-	var merged []string
-	for _, org := range strings.Split(desired["ALLOWED_ORGS"], ",") {
-		org = strings.TrimSpace(org)
-		if org != "" && !seen[org] {
-			seen[org] = true
-			merged = append(merged, org)
-		}
-	}
-	for _, org := range strings.Split(prev, ",") {
-		org = strings.TrimSpace(org)
-		if org != "" && !seen[org] {
-			seen[org] = true
-			merged = append(merged, org)
-		}
-	}
-	sort.Strings(merged)
-	desired["ALLOWED_ORGS"] = strings.Join(merged, ",")
 }
 
 // removeRoleFromAppIDsJSON removes a role-only key from ROLE_APP_IDS JSON.
@@ -1171,24 +1205,10 @@ func deriveAllowedRoles(roleAppIDsJSON string) string {
 }
 
 // PlaceholderOrg is the deploy-time placeholder used in the WIF condition
-// and env vars before any real orgs are enrolled. Must pass mintcore.GitHubOrgPattern
+// before any real orgs are added. Must pass mintcore.GitHubOrgPattern
 // validation (used by Provision), but should not collide with any real
 // GitHub org. The CLI rejects this value at enrollment time.
 const PlaceholderOrg = "x0fullsend0placeholder"
-
-// stripPlaceholderOrg removes the deploy-time placeholder org from a
-// comma-separated ALLOWED_ORGS value. Called during enrollment so the
-// placeholder doesn't persist after real orgs are added.
-func stripPlaceholderOrg(orgs string) string {
-	var filtered []string
-	for _, o := range strings.Split(orgs, ",") {
-		o = strings.TrimSpace(o)
-		if o != "" && o != PlaceholderOrg {
-			filtered = append(filtered, o)
-		}
-	}
-	return strings.Join(filtered, ",")
-}
 
 // buildAttributeCondition constructs a WIF CEL condition scoped to the
 // organization level via repository_owner. This allows any repo in the
@@ -1247,7 +1267,6 @@ func parseConditionOrgs(condition string) []string {
 
 type wifMergeResult struct {
 	projectNumber string
-	allOrgs       []string
 }
 
 // ensureWIFPoolAndProvider creates or updates the WIF pool and provider,
@@ -1321,18 +1340,60 @@ func (p *Provisioner) ensureWIFPoolAndProvider(ctx context.Context, installingOr
 		return nil, fmt.Errorf("creating WIF provider: %w", err)
 	}
 
-	return &wifMergeResult{projectNumber: projectNumber, allOrgs: allOrgs}, nil
+	return &wifMergeResult{projectNumber: projectNumber}, nil
 }
 
-// GrantOrgVertexAIAccess grants roles/aiplatform.user to an org's .fullsend
-// repo principal so that enrolled org workflows can call Agent Platform.
-func (p *Provisioner) GrantOrgVertexAIAccess(ctx context.Context, org string) error {
+// ensureMintWIFPoolAndProvider creates or verifies the WIF pool and the shared
+// provider for mint deployment without writing org-scoped state:
+//   - A newly created provider gets the placeholder-only condition; the
+//     installing owner is not added.
+//   - An existing provider keeps its attribute condition exactly as-is
+//     (including any legacy org entries). It is still re-applied so audiences
+//     and enabled state converge. An empty or whitespace-only existing
+//     condition is replaced with the placeholder-only condition.
+//   - Public mint mode keeps its permissive condition.
+//
+// Org-scoped inference WIF goes through ensureWIFPoolAndProvider instead.
+func (p *Provisioner) ensureMintWIFPoolAndProvider(ctx context.Context) (*wifMergeResult, error) {
 	projectNumber, err := p.gcpAPI.GetProjectNumber(ctx, p.cfg.ProjectID)
 	if err != nil {
-		return fmt.Errorf("getting project number: %w", err)
+		return nil, fmt.Errorf("getting project number: %w", err)
 	}
 
-	return p.grantOrgVertexAIAccessWithNumber(ctx, projectNumber, org)
+	if err := p.gcpAPI.CreateWIFPool(ctx, projectNumber, p.cfg.WIFPoolName, "Fullsend GitHub OIDC Pool"); err != nil {
+		return nil, fmt.Errorf("creating WIF pool: %w", err)
+	}
+
+	existingProvider, getErr := p.gcpAPI.GetWIFProvider(ctx, projectNumber, p.cfg.WIFPoolName, p.cfg.WIFProvider)
+	if getErr != nil {
+		// A non-nil error means "unknown state" — proceeding could overwrite
+		// existing provider state. GetWIFProvider returns (nil, nil) for 404.
+		return nil, fmt.Errorf("reading existing WIF provider: %w", getErr)
+	}
+
+	var attrCondition string
+	switch {
+	case p.cfg.PublicMint:
+		attrCondition = buildPublicAttributeCondition()
+	case existingProvider != nil && strings.TrimSpace(existingProvider.AttributeCondition) != "":
+		attrCondition = existingProvider.AttributeCondition
+	default:
+		// New provider, or an existing one whose condition was emptied out of
+		// band: fall back to the placeholder-only condition rather than
+		// re-applying an empty (permissive) condition.
+		attrCondition = buildAttributeCondition([]string{PlaceholderOrg})
+	}
+
+	audiences := []string{mintconsts.OIDCAudience, iamAudience(projectNumber, p.cfg.WIFPoolName, p.cfg.WIFProvider)}
+	if err := p.gcpAPI.CreateWIFProvider(ctx, projectNumber, p.cfg.WIFPoolName, p.cfg.WIFProvider, OIDCProviderConfig{
+		IssuerURI:          oidcIssuer,
+		AttributeCondition: attrCondition,
+		AllowedAudiences:   audiences,
+	}); err != nil {
+		return nil, fmt.Errorf("creating WIF provider: %w", err)
+	}
+
+	return &wifMergeResult{projectNumber: projectNumber}, nil
 }
 
 func (p *Provisioner) grantOrgVertexAIAccessWithNumber(ctx context.Context, projectNumber, org string) error {
@@ -1351,51 +1412,6 @@ func (p *Provisioner) grantRepoVertexAIAccessWithNumber(ctx context.Context, pro
 		return fmt.Errorf("granting Agent Platform access for repo %s: %w", repo, err)
 	}
 	return nil
-}
-
-// EnsureOrgInWIFCondition adds an org to the org-level WIF provider's
-// attribute condition. Reads the existing condition, merges, and updates.
-// Strips the deploy-time placeholder (PlaceholderOrg) if present.
-// WARNING: read-modify-write without locking — concurrent calls may race.
-func (p *Provisioner) EnsureOrgInWIFCondition(ctx context.Context, org string) error {
-	projectNumber, err := p.gcpAPI.GetProjectNumber(ctx, p.cfg.ProjectID)
-	if err != nil {
-		return fmt.Errorf("getting project number: %w", err)
-	}
-
-	existing, err := p.gcpAPI.GetWIFProvider(ctx, projectNumber, p.cfg.WIFPoolName, p.cfg.WIFProvider)
-	if err != nil {
-		return fmt.Errorf("reading WIF provider: %w", err)
-	}
-	if existing == nil {
-		return fmt.Errorf("WIF provider %s not found — run 'inference provision' or 'mint deploy' first", p.cfg.WIFProvider)
-	}
-
-	existingOrgs := parseConditionOrgs(existing.AttributeCondition)
-	merged := make(map[string]string)
-	for _, o := range existingOrgs {
-		if o != PlaceholderOrg {
-			merged[strings.ToLower(o)] = o
-		}
-	}
-	merged[strings.ToLower(org)] = org
-
-	allOrgs := make([]string, 0, len(merged))
-	for _, o := range merged {
-		allOrgs = append(allOrgs, o)
-	}
-	sort.Strings(allOrgs)
-
-	newCondition := buildAttributeCondition(allOrgs)
-	if newCondition == existing.AttributeCondition {
-		return nil
-	}
-
-	audiences := []string{mintconsts.OIDCAudience, iamAudience(projectNumber, p.cfg.WIFPoolName, p.cfg.WIFProvider)}
-	return p.gcpAPI.UpdateWIFProvider(ctx, projectNumber, p.cfg.WIFPoolName, p.cfg.WIFProvider, OIDCProviderConfig{
-		AttributeCondition: newCondition,
-		AllowedAudiences:   audiences,
-	})
 }
 
 // RemoveOrgFromWIFCondition removes an org from the org-level WIF provider's
@@ -1539,24 +1555,58 @@ func (p *Provisioner) provisionRepoWIFProvider(ctx context.Context) (wifProvider
 	if err != nil {
 		return "", "", fmt.Errorf("getting project number: %w", err)
 	}
-	if err := p.gcpAPI.CreateWIFPool(ctx, projectNumber, p.cfg.WIFPoolName, "Fullsend GitHub OIDC Pool"); err != nil {
-		return "", "", fmt.Errorf("creating WIF pool: %w", err)
-	}
 	providerID := mintcore.BuildRepoProviderID(partsLower[0], partsLower[1])
-	attrCondition := fmt.Sprintf("assertion.repository == '%s'", p.cfg.Repo)
-	audiences := []string{mintconsts.OIDCAudience, iamAudience(projectNumber, p.cfg.WIFPoolName, providerID)}
-	if err := p.gcpAPI.CreateWIFProvider(ctx, projectNumber, p.cfg.WIFPoolName, providerID, OIDCProviderConfig{
+	desired := OIDCProviderConfig{
 		IssuerURI:          oidcIssuer,
-		AttributeCondition: attrCondition,
-		AllowedAudiences:   audiences,
-	}); err != nil {
-		return "", "", fmt.Errorf("creating WIF provider: %w", err)
+		AttributeCondition: fmt.Sprintf("assertion.repository == '%s'", p.cfg.Repo),
+		AllowedAudiences:   []string{mintconsts.OIDCAudience, iamAudience(projectNumber, p.cfg.WIFPoolName, providerID)},
 	}
-
 	wifProvider = fmt.Sprintf("projects/%s/locations/global/workloadIdentityPools/%s/providers/%s",
 		projectNumber, p.cfg.WIFPoolName, providerID)
 
+	// Read before write: an enrolled repo's provider already matches, and
+	// the create path below would otherwise issue four no-op IAM writes
+	// (pool create, provider create → conflict → undelete → update →
+	// enable) on every re-run, which exhausts the IAM write quota when
+	// many repos re-provision at once (#6179). The provider existing
+	// implies the pool exists. A read error falls through to the write
+	// path, which is idempotent.
+	existing, err := p.gcpAPI.GetWIFProvider(ctx, projectNumber, p.cfg.WIFPoolName, providerID)
+	if err != nil {
+		log.Printf("reading WIF provider %s before provisioning (continuing with create): %v", providerID, err)
+	} else if repoProviderMatches(existing, desired) {
+		return wifProvider, projectNumber, nil
+	}
+
+	if err := p.gcpAPI.CreateWIFPool(ctx, projectNumber, p.cfg.WIFPoolName, "Fullsend GitHub OIDC Pool"); err != nil {
+		return "", "", fmt.Errorf("creating WIF pool: %w", err)
+	}
+	if err := p.gcpAPI.CreateWIFProvider(ctx, projectNumber, p.cfg.WIFPoolName, providerID, desired); err != nil {
+		return "", "", fmt.Errorf("creating WIF provider: %w", err)
+	}
+
 	return wifProvider, projectNumber, nil
+}
+
+// repoProviderMatches reports whether an existing per-repo provider already
+// has the desired configuration and can exchange tokens, so provisioning
+// can skip every write. State must be exactly ACTIVE (an absent state falls
+// through to the idempotent write path). The condition is compared exactly, not
+// case-insensitively: the CEL == in the condition is case-sensitive, so a
+// re-run with a corrected repo case must still rewrite it. Audiences are
+// compared as a set.
+func repoProviderMatches(existing *WIFProviderInfo, desired OIDCProviderConfig) bool {
+	if existing == nil || existing.Disabled || existing.State != WIFProviderStateActive {
+		return false
+	}
+	if existing.IssuerURI != desired.IssuerURI || existing.AttributeCondition != desired.AttributeCondition {
+		return false
+	}
+	have := slices.Clone(existing.AllowedAudiences)
+	want := slices.Clone(desired.AllowedAudiences)
+	slices.Sort(have)
+	slices.Sort(want)
+	return slices.Equal(have, want)
 }
 
 // ProvisionWIF creates the WIF infrastructure (service account, pool, provider,
@@ -1649,57 +1699,6 @@ func ValidateRepoSlug(slug string) bool {
 	return true
 }
 
-// RemoveOrgFromMint removes an org from ALLOWED_ORGS. Role app IDs are shared
-// across orgs and are not modified. Uses read-modify-write via
-// UpdateServiceEnvVars (Cloud Run API, no rebuild).
-func (p *Provisioner) RemoveOrgFromMint(ctx context.Context, org string) error {
-	org = strings.ToLower(org)
-
-	fn, err := p.gcpAPI.GetFunction(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
-	if err != nil {
-		return fmt.Errorf("getting mint function: %w", err)
-	}
-	if fn == nil {
-		return fmt.Errorf("mint function %q not found in project %s region %s", functionName, p.cfg.ProjectID, p.cfg.Region)
-	}
-
-	// Read env vars from the traffic-serving revision to avoid stale data
-	// on partial failure or historical divergence (same fix as EnsureOrgInMint).
-	trafficEnvVars, err := p.gcpAPI.GetServiceTrafficEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
-	if err != nil {
-		return fmt.Errorf("reading traffic-serving env vars: %w", err)
-	}
-
-	if isPublicMintEnv(trafficEnvVars) {
-		return fmt.Errorf("cannot remove individual orgs when mint is in public mode (PER_REPO_WIF_REPOS=*); set an explicit org list instead")
-	}
-
-	updated := make(map[string]string, len(trafficEnvVars))
-	for k, v := range trafficEnvVars {
-		updated[k] = v
-	}
-
-	// Remove org from ALLOWED_ORGS.
-	var filteredOrgs []string
-	for _, o := range strings.Split(trafficEnvVars["ALLOWED_ORGS"], ",") {
-		o = strings.TrimSpace(o)
-		if o != "" && !strings.EqualFold(o, org) {
-			filteredOrgs = append(filteredOrgs, o)
-		}
-	}
-	sort.Strings(filteredOrgs)
-	updated["ALLOWED_ORGS"] = strings.Join(filteredOrgs, ",")
-
-	rev, err := p.gcpAPI.UpdateServiceEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName, updated)
-	if err != nil {
-		if rev != "" {
-			return fmt.Errorf("removing org from mint env vars (revision %s created but traffic routing may have failed): %w", rev, err)
-		}
-		return fmt.Errorf("removing org from mint env vars: %w", err)
-	}
-	return nil
-}
-
 // RemoveRepoFromMint removes a repo from PER_REPO_WIF_REPOS.
 // Uses read-modify-write via UpdateServiceEnvVars.
 func (p *Provisioner) RemoveRepoFromMint(ctx context.Context, repo string) error {
@@ -1714,7 +1713,7 @@ func (p *Provisioner) RemoveRepoFromMint(ctx context.Context, repo string) error
 	}
 
 	// Read env vars from the traffic-serving revision to avoid stale data
-	// on partial failure or historical divergence (same fix as EnsureOrgInMint).
+	// on partial failure or historical divergence.
 	trafficEnvVars, err := p.gcpAPI.GetServiceTrafficEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
 	if err != nil {
 		return fmt.Errorf("reading traffic-serving env vars: %w", err)
@@ -1905,15 +1904,16 @@ func sortedByteMapKeys(m map[string][]byte) []string {
 // Version and commit are stamped directly into the source by generating a
 // mintcore/version.go file in the zip, so the deployed code carries its own
 // version identity without relying on environment variables.
-func bundleFunctionSource(dir, version, commit string, statusGitHub StatusGitHubAuth) ([]byte, error) {
+// The tracing stamp is generated into trace_consts.go the same way.
+func bundleFunctionSource(dir, version, commit string, statusGitHub StatusGitHubAuth, tracing TracingStamp) ([]byte, error) {
 	if dir == "" {
-		return bundleEmbeddedMintSource(version, commit, statusGitHub)
+		return bundleEmbeddedMintSource(version, commit, statusGitHub, tracing)
 	}
 
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return bundleEmbeddedMintSource(version, commit, statusGitHub)
+			return bundleEmbeddedMintSource(version, commit, statusGitHub, tracing)
 		}
 		return nil, fmt.Errorf("reading function source dir: %w", err)
 	}
@@ -1930,6 +1930,10 @@ func bundleFunctionSource(dir, version, commit string, statusGitHub StatusGitHub
 			continue
 		}
 		if entry.Type()&os.ModeSymlink != 0 {
+			continue
+		}
+		// Generated below with the stamped tracing settings.
+		if entry.Name() == traceConstsFile {
 			continue
 		}
 		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
@@ -1982,6 +1986,11 @@ func bundleFunctionSource(dir, version, commit string, statusGitHub StatusGitHub
 	// Stamp status auth consts into the source.
 	if err := writeStatusConstsGoToZip(w, "mintcore/status_consts.go", statusGitHub.Group); err != nil {
 		return nil, fmt.Errorf("writing status_consts.go: %w", err)
+	}
+
+	// Stamp tracing settings into the source.
+	if err := writeTraceConstsGoToZip(w, traceConstsFile, tracing); err != nil {
+		return nil, fmt.Errorf("writing %s: %w", traceConstsFile, err)
 	}
 
 	// Select the correct status GitHub file based on config. Build
@@ -2081,7 +2090,7 @@ func addDirToZipRooted(w *zip.Writer, absRoot, srcDir, zipPrefix string, skip ma
 // toolchain from treating the directory as a module root, and are renamed
 // to their real names in the zip. The version.go entry is replaced with
 // generated content that stamps the provided version and commit.
-func bundleEmbeddedMintSource(version, commit string, statusGitHub StatusGitHubAuth) ([]byte, error) {
+func bundleEmbeddedMintSource(version, commit string, statusGitHub StatusGitHubAuth, tracing TracingStamp) ([]byte, error) {
 	var buf bytes.Buffer
 	w := zip.NewWriter(&buf)
 
@@ -2102,9 +2111,9 @@ func bundleEmbeddedMintSource(version, commit string, statusGitHub StatusGitHubA
 
 	for _, embeddedName := range keys {
 		realName := embeddedMintFiles[embeddedName]
-		// Skip generated files — version.go and status_consts.go are
-		// generated below with stamped values.
-		if realName == "mintcore/version.go" || realName == "mintcore/status_consts.go" {
+		// Skip generated files — version.go, status_consts.go and
+		// trace_consts.go are generated below with stamped values.
+		if realName == "mintcore/version.go" || realName == "mintcore/status_consts.go" || realName == traceConstsFile {
 			continue
 		}
 		// Skip the unwanted GitHub file; the wanted one is written
@@ -2133,6 +2142,11 @@ func bundleEmbeddedMintSource(version, commit string, statusGitHub StatusGitHubA
 	// Stamp status auth consts into the source.
 	if err := writeStatusConstsGoToZip(w, "mintcore/status_consts.go", statusGitHub.Group); err != nil {
 		return nil, fmt.Errorf("writing status_consts.go: %w", err)
+	}
+
+	// Stamp tracing settings into the source.
+	if err := writeTraceConstsGoToZip(w, traceConstsFile, tracing); err != nil {
+		return nil, fmt.Errorf("writing %s: %w", traceConstsFile, err)
 	}
 
 	// Write the selected status GitHub file with build constraint stripped.
@@ -2183,6 +2197,25 @@ func writeStatusConstsGoToZip(w *zip.Writer, path, githubGroup string) error {
 	return err
 }
 
+// traceConstsFile is the function-package file holding the stamped
+// tracing settings (internal/mint/trace_consts.go on disk).
+const traceConstsFile = "trace_consts.go"
+
+// writeTraceConstsGoToZip writes a generated trace_consts.go into the zip
+// archive with the nonsecret tracing settings. Collector header values
+// are deliberately not a parameter: they must never be written into the
+// function source.
+func writeTraceConstsGoToZip(w *zip.Writer, path string, tracing TracingStamp) error {
+	src := fmt.Sprintf("package function\n\nvar (\n\totlpTracesEndpoint = %q\n\ttraceDeployment    = %q\n\totlpHeadersSecret  = %q\n)\n",
+		tracing.Endpoint, tracing.Deployment, tracing.HeadersSecret)
+	f, err := w.Create(path)
+	if err != nil {
+		return err
+	}
+	_, err = f.Write([]byte(src))
+	return err
+}
+
 // writeStatusGitHubFileToZip writes either status_github.go or
 // status_github_stub.go into the zip, with build constraints stripped.
 // GCF compiles source server-side without custom build tags, so the
@@ -2211,8 +2244,8 @@ func sha256Hex(data []byte) string {
 }
 
 // needsCodeDeploy determines whether the Cloud Function code needs (re)deployment.
-// Only checks the source hash — org-level env vars (ALLOWED_ORGS, ROLE_APP_IDS)
-// are handled separately by EnsureOrgInMint. Infrastructure env vars set during
+// Only checks the source hash — enrollment env vars (PER_REPO_WIF_REPOS,
+// ROLE_APP_IDS) are handled separately. Infrastructure env vars set during
 // initial deploy (FULLSEND_SOURCE_HASH, GCP_PROJECT_ID) are NOT reconciled on
 // subsequent runs; a code redeploy is required to update them.
 func (p *Provisioner) needsCodeDeploy(existing *FunctionInfo, sourceHash string) bool {

@@ -168,6 +168,81 @@ func TestValidatePerRepoPostInstall_WrongRuntime(t *testing.T) {
 	assert.Contains(t, err.Error(), "want dummy")
 }
 
+func TestValidatePerRepoPostInstallWithRuntime_Playback(t *testing.T) {
+	client := forge.NewFakeClient()
+	org, repo := "acme", "test-repo"
+	perRepoCfg := config.NewPerRepoConfig(config.PerRepoDefaultRoles(), org+"/"+repo)
+	perRepoCfg.SetRuntime("dummy-playback")
+	cfg, err := perRepoCfg.Marshal()
+	require.NoError(t, err)
+
+	client.FileContents = map[string][]byte{
+		org + "/" + repo + "/.github/workflows/fullsend.yaml":  []byte("name: fullsend"),
+		org + "/" + repo + "/.fullsend/config.yaml":            cfg,
+		org + "/" + repo + "/" + scaffold.VendoredMarkerPath(): []byte("marker"),
+		org + "/" + repo + "/.fullsend/bin/fullsend":           []byte("binary"),
+	}
+
+	err = ValidatePerRepoPostInstallWithRuntime(context.Background(), client, org, repo, "dummy-playback")
+	require.NoError(t, err)
+}
+
+func TestValidatePerRepoPostInstallWithRuntime_EmptyDefaultsToDummy(t *testing.T) {
+	client := forge.NewFakeClient()
+	org, repo := "acme", "test-repo"
+	perRepoCfg := config.NewPerRepoConfig(config.PerRepoDefaultRoles(), org+"/"+repo)
+	perRepoCfg.SetRuntime("dummy")
+	cfg, err := perRepoCfg.Marshal()
+	require.NoError(t, err)
+
+	client.FileContents = map[string][]byte{
+		org + "/" + repo + "/.github/workflows/fullsend.yaml":  []byte("name: fullsend"),
+		org + "/" + repo + "/.fullsend/config.yaml":            cfg,
+		org + "/" + repo + "/" + scaffold.VendoredMarkerPath(): []byte("marker"),
+		org + "/" + repo + "/.fullsend/bin/fullsend":           []byte("binary"),
+	}
+
+	err = ValidatePerRepoPostInstallWithRuntime(context.Background(), client, org, repo, "")
+	require.NoError(t, err)
+}
+
+func TestValidatePerRepoPostInstallWithRuntime_MismatchFails(t *testing.T) {
+	client := forge.NewFakeClient()
+	org, repo := "acme", "test-repo"
+	perRepoCfg := config.NewPerRepoConfig(config.PerRepoDefaultRoles(), org+"/"+repo)
+	perRepoCfg.SetRuntime("dummy")
+	cfg, err := perRepoCfg.Marshal()
+	require.NoError(t, err)
+
+	client.FileContents = map[string][]byte{
+		org + "/" + repo + "/.github/workflows/fullsend.yaml":  []byte("name: fullsend"),
+		org + "/" + repo + "/.fullsend/config.yaml":            cfg,
+		org + "/" + repo + "/" + scaffold.VendoredMarkerPath(): []byte("marker"),
+		org + "/" + repo + "/.fullsend/bin/fullsend":           []byte("binary"),
+	}
+
+	err = ValidatePerRepoPostInstallWithRuntime(context.Background(), client, org, repo, "dummy-playback")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "want dummy-playback")
+}
+
+func TestValidatePerRepoPostInstallNonVendoredWithRuntime_Playback(t *testing.T) {
+	client := forge.NewFakeClient()
+	org, repo := "acme", "test-repo"
+	perRepoCfg := config.NewPerRepoConfig(config.PerRepoDefaultRoles(), org+"/"+repo)
+	perRepoCfg.SetRuntime("dummy-playback")
+	cfg, err := perRepoCfg.Marshal()
+	require.NoError(t, err)
+
+	client.FileContents = map[string][]byte{
+		org + "/" + repo + "/.github/workflows/fullsend.yaml": []byte("name: fullsend"),
+		org + "/" + repo + "/.fullsend/config.yaml":           cfg,
+	}
+
+	err = ValidatePerRepoPostInstallNonVendoredWithRuntime(context.Background(), client, org, repo, "dummy-playback")
+	require.NoError(t, err)
+}
+
 func TestParseInferenceStatusWIFProvider_OK(t *testing.T) {
 	out := `{
   "status": "healthy",

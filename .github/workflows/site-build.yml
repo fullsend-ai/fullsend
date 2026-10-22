@@ -32,11 +32,11 @@ permissions:
 
 concurrency:
   group: site-build-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: true
 
 jobs:
   build:
-    # Cold multi-version doc builds (mvb) on main need headroom to finish and save the cache.
+    # Cold mvb builds could take up to 30 minutes
     timeout-minutes: 30
     runs-on: ubuntu-24.04
     steps:
@@ -101,7 +101,7 @@ jobs:
           mkdir -p _bundle/worker
           cp -a cloudflare_site/worker/. _bundle/worker/
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: site
           path: _bundle/

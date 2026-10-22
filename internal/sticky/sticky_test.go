@@ -2,9 +2,11 @@ package sticky
 
 import (
 	"context"
+	"errors"
 	"io"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
@@ -52,8 +54,7 @@ func TestFindMarkedComment_EmptyBotUser(t *testing.T) {
 	}
 
 	found := FindMarkedComment(comments, "<!-- fullsend:test -->", "")
-	require.NotNil(t, found, "empty botUser should match any author")
-	assert.Equal(t, 1, found.ID)
+	assert.Nil(t, found, "an unresolved (empty) botUser must match nothing, not any author")
 }
 
 func TestFindMarkedComment_Empty(t *testing.T) {
@@ -304,6 +305,7 @@ func TestPost_UpdateExisting(t *testing.T) {
 
 func TestPost_DryRun(t *testing.T) {
 	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "bot"
 	printer := ui.New(io.Discard)
 
 	cfg := Config{Marker: "<!-- test -->", DryRun: true}
@@ -364,6 +366,7 @@ func TestPost_UpdateExisting_EmptyHTMLURL(t *testing.T) {
 
 func TestPost_DryRunExisting(t *testing.T) {
 	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "bot"
 	client.IssueComments = map[string][]forge.IssueComment{
 		"o/r/1": {{ID: 100, Body: "<!-- test -->\nOld.", Author: "bot"}},
 	}
@@ -374,5 +377,128 @@ func TestPost_DryRunExisting(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, commentURL)
 
+	assert.Empty(t, client.UpdatedComments)
+}
+
+// fastBotUserLookup shortens the identity-lookup retry backoff for a test.
+func fastBotUserLookup(t *testing.T) {
+	t.Helper()
+	saved := botUserLookupBackoff
+	botUserLookupBackoff = []time.Duration{time.Millisecond, time.Millisecond}
+	t.Cleanup(func() { botUserLookupBackoff = saved })
+}
+
+// flakyAuthClient fails GetAuthenticatedUser failures times, then defers to
+// the wrapped forge.Client.
+type flakyAuthClient struct {
+	forge.Client
+	failures int
+	calls    int
+}
+
+func (c *flakyAuthClient) GetAuthenticatedUser(ctx context.Context) (string, error) {
+	c.calls++
+	if c.calls <= c.failures {
+		return "", errors.New("502 Bad Gateway")
+	}
+	return c.Client.GetAuthenticatedUser(ctx)
+}
+
+func TestPost_PersistentIdentityFailure_ErrorsAndPostsNothing(t *testing.T) {
+	fastBotUserLookup(t)
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	fc.IssueComments = map[string][]forge.IssueComment{
+		"o/r/1": {{ID: 100, Body: "<!-- test -->\nOld.", Author: "bot"}},
+	}
+	client := &flakyAuthClient{Client: fc, failures: 1000}
+	printer := ui.New(io.Discard)
+
+	cfg := Config{Marker: "<!-- test -->", KeepHistory: true}
+	_, err := Post(context.Background(), client, "o", "r", 1, "New.", cfg, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot verify which identity")
+	assert.Contains(t, err.Error(), "502 Bad Gateway", "the error must name the cause")
+	assert.Equal(t, len(botUserLookupBackoff)+1, client.calls)
+
+	assert.Empty(t, fc.UpdatedComments, "no comment may be edited")
+	require.Len(t, fc.IssueComments["o/r/1"], 1, "no comment may be created")
+}
+
+func TestPost_TransientIdentityFailure_RetriesThenEdits(t *testing.T) {
+	fastBotUserLookup(t)
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	fc.IssueComments = map[string][]forge.IssueComment{
+		"o/r/1": {{ID: 100, Body: "<!-- test -->\nOld.", Author: "bot"}},
+	}
+	client := &flakyAuthClient{Client: fc, failures: len(botUserLookupBackoff)}
+	printer := ui.New(io.Discard)
+
+	cfg := Config{Marker: "<!-- test -->", KeepHistory: true}
+	_, err := Post(context.Background(), client, "o", "r", 1, "New.", cfg, printer)
+	require.NoError(t, err)
+	assert.Equal(t, len(botUserLookupBackoff)+1, client.calls, "every retry is used before success")
+
+	require.Len(t, fc.UpdatedComments, 1)
+	assert.Equal(t, 100, fc.UpdatedComments[0].CommentID)
+	assert.Contains(t, fc.UpdatedComments[0].Body, "New.")
+}
+
+func TestPost_IgnoresPlantedMarker_EditsOnlyOwnComment(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "bot"
+	client.IssueComments = map[string][]forge.IssueComment{
+		"o/r/1": {
+			{ID: 100, Body: "<!-- test -->\nplanted by attacker", Author: "attacker"},
+			{ID: 101, Body: "<!-- test -->\nOld.", Author: "bot"},
+		},
+	}
+	printer := ui.New(io.Discard)
+
+	cfg := Config{Marker: "<!-- test -->", KeepHistory: true}
+	_, err := Post(context.Background(), client, "o", "r", 1, "New.", cfg, printer)
+	require.NoError(t, err)
+
+	require.Len(t, client.UpdatedComments, 1)
+	assert.Equal(t, 101, client.UpdatedComments[0].CommentID, "only the bot's own comment may be edited")
+
+	comments := client.IssueComments["o/r/1"]
+	assert.NotContains(t, comments[0].Body, "New.", "the planted comment must be left untouched")
+}
+
+func TestPost_OnlyPlantedMarker_CreatesNewCommentWithoutTouchingPlanted(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "bot"
+	client.IssueComments = map[string][]forge.IssueComment{
+		"o/r/1": {{ID: 100, Body: "<!-- test -->\nplanted by attacker", Author: "attacker"}},
+	}
+	printer := ui.New(io.Discard)
+
+	cfg := Config{Marker: "<!-- test -->"}
+	commentURL, err := Post(context.Background(), client, "o", "r", 1, "New.", cfg, printer)
+	require.NoError(t, err)
+	assert.Contains(t, commentURL, "issuecomment-")
+
+	comments := client.IssueComments["o/r/1"]
+	require.Len(t, comments, 2, "a new comment is created; the planted one is left in place")
+	assert.NotContains(t, comments[0].Body, "New.", "the planted comment must be untouched")
+	assert.Contains(t, comments[1].Body, "New.")
+	assert.Empty(t, client.UpdatedComments)
+}
+
+func TestPost_DryRun_UnresolvedIdentity_Errors(t *testing.T) {
+	fastBotUserLookup(t)
+	client := forge.NewFakeClient()
+	client.IssueComments = map[string][]forge.IssueComment{
+		"o/r/1": {{ID: 100, Body: "<!-- test -->\nOld.", Author: "bot"}},
+	}
+	printer := ui.New(io.Discard)
+
+	cfg := Config{Marker: "<!-- test -->", DryRun: true}
+	commentURL, err := Post(context.Background(), client, "o", "r", 1, "New.", cfg, printer)
+	require.Error(t, err, "dry run must not imply an edit would occur when identity is unresolved")
+	assert.Contains(t, err.Error(), "cannot verify which identity")
+	assert.Empty(t, commentURL)
 	assert.Empty(t, client.UpdatedComments)
 }

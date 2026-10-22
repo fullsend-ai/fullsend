@@ -226,7 +226,17 @@ func evalMeasureFetchContext(fullsendDir string, offline bool, printer *ui.Print
 	}
 	orgAllowlist := config.DefaultAllowedRemoteResources()
 	if fullsendDir != "" && printer != nil {
-		if orgCfg := tryLoadOrgConfig(filepath.Join(abs, "config.yaml"), printer); orgCfg != nil {
+		cfgPath := filepath.Join(abs, "config.yaml")
+		orgCfg, loadErr := loadLockConfig(cfgPath)
+		if loadErr != nil {
+			// A config layer (config.yaml or config.base.yaml) exists but
+			// could not be loaded (malformed, unreadable, or a rejected
+			// per-org format). Fail closed rather than silently reverting
+			// to the default allowlist, which could override an explicit
+			// deny-all.
+			printer.StepWarn("Fullsend config could not be loaded; remote fetching denied: " + loadErr.Error())
+			orgAllowlist = []string{}
+		} else if orgCfg != nil {
 			orgAllowlist = orgCfg.AllowedResources()
 		}
 	}

@@ -13,6 +13,7 @@ import (
 	"github.com/cucumber/godog"
 	"gopkg.in/yaml.v3"
 
+	"github.com/fullsend-ai/fullsend/internal/agentnew"
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
@@ -118,7 +119,7 @@ func RestoreAllowedResources(w *world.World) error {
 	if err != nil {
 		return err
 	}
-	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, cfgPath, "behaviour: restore allowed_remote_resources", merged); err != nil {
+	if err := commitVerified(w, cfgPath, "behaviour: restore allowed_remote_resources", merged); err != nil {
 		return fmt.Errorf("updating config: %w", err)
 	}
 	return nil
@@ -145,7 +146,7 @@ func RestoreAgents(w *world.World) error {
 	if err != nil {
 		return err
 	}
-	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, cfgPath, "behaviour: restore agents", merged); err != nil {
+	if err := commitVerified(w, cfgPath, "behaviour: restore agents", merged); err != nil {
 		return fmt.Errorf("updating config: %w", err)
 	}
 	return nil
@@ -398,10 +399,10 @@ func commitRelativeResources(ctx context.Context, w *world.World, owner, repo, h
 
 	// Commit relative policy file if specified.
 	if h.Policy != "" && !strings.HasPrefix(h.Policy, "/") && !strings.HasPrefix(h.Policy, "https://") {
-		minimalPolicy := fmt.Sprintf("# Minimal policy for %s\n", harnessName)
+		policy := agentnew.BasePolicy()
 		if err := w.SCM.CommitFile(ctx, owner, repo, h.Policy,
 			fmt.Sprintf("behaviour: add policy resource for %s", harnessName),
-			[]byte(minimalPolicy)); err != nil {
+			policy); err != nil {
 			return nil, fmt.Errorf("committing policy resource %s: %w", h.Policy, err)
 		}
 		committed = append(committed, h.Policy)

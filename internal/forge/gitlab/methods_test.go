@@ -10,12 +10,32 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
+	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/normevent"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// handleTracked registers handler on mux and fails the test when the route
+// was never invoked, so an unmatched path cannot pass by coincidence (an
+// unmatched route answers 404, which several tests expect).
+func handleTracked(t *testing.T, mux *http.ServeMux, pattern string, handler http.HandlerFunc) {
+	t.Helper()
+	var called atomic.Bool
+	mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
+		called.Store(true)
+		handler(w, r)
+	})
+	t.Cleanup(func() {
+		assert.True(t, called.Load(), "route %s was never invoked", pattern)
+	})
+}
 
 // readJSONBody unmarshals the JSON body from a request into v.
 func readJSONBody(t *testing.T, r *http.Request, v any) {
@@ -67,6 +87,199 @@ func TestCreateIssue(t *testing.T) {
 	assert.Equal(t, "Something broke", issue.Body)
 	assert.Equal(t, "https://gitlab.com/myorg/myrepo/-/issues/42", issue.URL)
 	assert.Equal(t, []string{"bug", "urgent"}, issue.Labels)
+}
+
+func TestListPullRequestReviewThreads(t *testing.T) {
+	client, mux := setupTest(t)
+	actorRequests := map[string]int{}
+	roleRequests := map[string]int{}
+	mux.HandleFunc("/api/v4/users/", func(w http.ResponseWriter, r *http.Request) {
+		actorID := strings.TrimPrefix(r.URL.Path, "/api/v4/users/")
+		actorRequests[actorID]++
+		switch actorID {
+		case "10":
+			writeJSON(t, w, http.StatusOK, map[string]any{"id": 10, "username": "botuser", "bot": true})
+		case "20":
+			writeJSON(t, w, http.StatusOK, map[string]any{"id": 20, "username": "reviewer", "bot": false})
+		case "40":
+			writeJSON(t, w, http.StatusOK, map[string]any{"id": 40, "username": "unknown", "bot": nil})
+		case "50", "60":
+			writeJSON(t, w, http.StatusOK, map[string]any{"id": actorID, "username": "external-" + actorID, "bot": false})
+		default:
+			writeJSON(t, w, http.StatusNotFound, map[string]string{"message": "404 User Not Found"})
+		}
+	})
+	for _, actorID := range []string{"20", "50", "60"} {
+		actorID := actorID
+		mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/members/all/"+actorID, func(w http.ResponseWriter, _ *http.Request) {
+			roleRequests[actorID]++
+			switch actorID {
+			case "20":
+				writeJSON(t, w, http.StatusOK, map[string]any{"access_level": 30})
+			case "50":
+				writeJSON(t, w, http.StatusNotFound, map[string]string{"message": "404 Member Not Found"})
+			case "60":
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("{"))
+			}
+		})
+	}
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/42/discussions", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "100", r.URL.Query().Get("per_page"))
+		assert.Equal(t, "1", r.URL.Query().Get("page"))
+		writeJSON(t, w, http.StatusOK, []map[string]any{
+			{
+				"id": "discussion-1",
+				"notes": []map[string]any{
+					{
+						"id": 7, "body": "Please update this", "created_at": "2026-10-06T10:00:00Z",
+						"resolvable": true, "resolved": true,
+						"author":      map[string]any{"id": 10, "username": "botuser"},
+						"resolved_by": map[string]any{"id": 20, "username": "reviewer"},
+						"position":    map[string]any{"new_path": "main.go", "old_path": "main.go", "new_line": 17, "old_line": 16},
+					},
+				},
+			},
+			{
+				"id": "discussion-2",
+				"notes": []map[string]any{
+					{"id": 8, "body": "unresolved", "resolvable": true, "resolved": false, "author": map[string]any{"id": 20, "username": "reviewer"}, "position": map[string]any{"new_path": "unresolved.go", "new_line": 3}},
+				},
+			},
+			{
+				"id": "discussion-3",
+				"notes": []map[string]any{
+					{
+						"id": 9, "body": "resolved without actor type", "resolvable": true, "resolved": true,
+						"author":      map[string]any{"id": 20, "username": "reviewer"},
+						"resolved_by": map[string]any{"id": 30, "username": "unknown-resolver"},
+					},
+				},
+			},
+			{
+				"id": "discussion-4",
+				"notes": []map[string]any{
+					{"id": 10, "body": "system note", "system": true, "author": map[string]any{"id": 10, "username": "botuser"}},
+					{
+						"id": 11, "body": "resolved with unknown actors", "resolvable": true, "resolved": true,
+						"resolved_by": map[string]any{"id": 40, "username": "unknown-resolver"},
+						"position":    map[string]any{"new_path": "new.go", "old_path": "renamed.go", "old_line": 7},
+					},
+				},
+			},
+			{
+				"id": "discussion-5",
+				"notes": []map[string]any{
+					{
+						"id": 12, "body": "resolved note", "resolvable": true, "resolved": true,
+						"resolved_by": map[string]any{"id": 20, "username": "reviewer"},
+					},
+					{"id": 13, "body": "still open", "resolvable": true, "resolved": false},
+				},
+			},
+			{
+				"id": "discussion-6",
+				"notes": []map[string]any{
+					{"id": 14, "body": "external author", "resolvable": false, "author": map[string]any{"id": 50, "username": "external-50"}},
+					{"id": 15, "body": "unknown permission", "resolvable": false, "author": map[string]any{"id": 60, "username": "external-60"}},
+				},
+			},
+			{
+				"id": "discussion-7",
+				"notes": []map[string]any{
+					{"id": 16, "body": "older resolution", "resolvable": true, "resolved": true, "resolved_at": "2026-10-06T10:00:00Z", "resolved_by": map[string]any{"id": 20, "username": "older-resolver"}},
+					{"id": 17, "body": "latest resolution", "resolvable": true, "resolved": true, "resolved_at": "2026-10-06T11:00:00Z", "resolved_by": map[string]any{"id": 40, "username": "latest-resolver"}},
+				},
+			},
+			{
+				"id": "discussion-8",
+				"notes": []map[string]any{
+					{"id": 18, "body": "older resolution", "resolvable": true, "resolved": true, "resolved_at": "2026-10-06T10:00:00Z", "resolved_by": map[string]any{"id": 20, "username": "older-resolver"}},
+					{"id": 19, "body": "resolver unavailable", "resolvable": true, "resolved": true, "resolved_at": "2026-10-06T11:00:00Z", "resolved_by": nil},
+				},
+			},
+		})
+	})
+
+	got, err := client.ListPullRequestReviewThreads(context.Background(), "myorg", "myrepo", 42)
+	require.NoError(t, err)
+	require.Len(t, got.Threads, 8)
+	assert.Equal(t, "discussion-1", got.Threads[0].ID)
+	assert.True(t, got.Threads[0].IsResolved)
+	assert.Equal(t, "reviewer", got.Threads[0].ResolvedBy)
+	assert.Equal(t, "User", got.Threads[0].ResolvedByType)
+	assert.Equal(t, normevent.RoleWrite, got.Threads[0].ResolvedByRole)
+	assert.True(t, got.Threads[0].ResolvedByRoleVerified)
+	assert.Equal(t, "main.go", got.Threads[0].Path)
+	assert.Equal(t, 17, *got.Threads[0].Line)
+	assert.Equal(t, "Bot", got.Threads[0].Comments[0].AuthorType)
+	assert.Equal(t, normevent.RoleNone, got.Threads[0].Comments[0].AuthorRole)
+	assert.False(t, got.Threads[0].Comments[0].AuthorRoleVerified)
+	assert.False(t, got.Threads[1].IsResolved)
+	assert.Equal(t, "unresolved.go", got.Threads[1].Path, "position data is retained before unresolved notes are skipped")
+	require.NotNil(t, got.Threads[1].Line)
+	assert.Equal(t, 3, *got.Threads[1].Line)
+	assert.True(t, got.Threads[2].IsResolved)
+	assert.Equal(t, "Unknown", got.Threads[2].ResolvedByType)
+	assert.True(t, got.Threads[3].IsResolved)
+	assert.Equal(t, "renamed.go", got.Threads[3].Path)
+	require.Len(t, got.Threads[3].Comments, 1, "system notes must not be returned")
+	assert.Equal(t, "Unknown", got.Threads[3].Comments[0].AuthorType)
+	assert.Equal(t, "Unknown", got.Threads[3].ResolvedByType)
+	assert.Equal(t, normevent.RoleNone, got.Threads[3].ResolvedByRole)
+	assert.False(t, got.Threads[3].ResolvedByRoleVerified)
+	assert.False(t, got.Threads[4].IsResolved, "a discussion with an unresolved resolvable note is not resolved")
+	assert.Empty(t, got.Threads[4].ResolvedBy)
+	assert.Empty(t, got.Threads[4].ResolvedByType)
+	assert.Equal(t, 1, actorRequests["10"])
+	assert.Equal(t, 1, actorRequests["20"], "the actor lookup should be cached per request")
+	assert.Equal(t, 1, actorRequests["30"])
+	assert.Equal(t, 1, actorRequests["40"])
+	assert.Equal(t, normevent.RoleWrite, got.Threads[1].Comments[0].AuthorRole)
+	assert.True(t, got.Threads[1].Comments[0].AuthorRoleVerified)
+	assert.Equal(t, normevent.RoleNone, got.Threads[5].Comments[0].AuthorRole)
+	assert.True(t, got.Threads[5].Comments[0].AuthorRoleVerified)
+	assert.Equal(t, normevent.RoleNone, got.Threads[5].Comments[1].AuthorRole)
+	assert.False(t, got.Threads[5].Comments[1].AuthorRoleVerified)
+	assert.Equal(t, 1, roleRequests["20"], "member lookups should be cached per request")
+	assert.Equal(t, 1, roleRequests["50"])
+	assert.Equal(t, 1, roleRequests["60"])
+	assert.Zero(t, roleRequests["10"], "bot actors must not be treated as human permission actors")
+	assert.Equal(t, "latest-resolver", got.Threads[6].ResolvedBy, "the latest resolved note is the discussion resolver")
+	assert.Empty(t, got.Threads[7].ResolvedBy, "a missing latest resolver must not retain an older resolver")
+	assert.Equal(t, normevent.RoleNone, got.Threads[7].ResolvedByRole)
+}
+
+func TestListPullRequestReviewThreads_DecodeError(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/42/discussions", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("{"))
+	})
+
+	_, err := client.ListPullRequestReviewThreads(context.Background(), "myorg", "myrepo", 42)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decode discussions")
+}
+
+func TestListPullRequestReviewThreads_PaginatesAndCaps(t *testing.T) {
+	client, mux := setupTest(t)
+	var pages int
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/42/discussions", func(w http.ResponseWriter, r *http.Request) {
+		pages++
+		assert.Equal(t, strconv.Itoa(pages), r.URL.Query().Get("page"))
+		discussions := make([]map[string]any, 100)
+		for i := range discussions {
+			discussions[i] = map[string]any{"id": fmt.Sprintf("discussion-%d-%d", pages, i), "notes": []any{}}
+		}
+		writeJSON(t, w, http.StatusOK, discussions)
+	})
+
+	got, err := client.ListPullRequestReviewThreads(context.Background(), "myorg", "myrepo", 42)
+	require.NoError(t, err)
+	assert.Equal(t, 20, pages)
+	assert.True(t, got.Truncated)
+	assert.Len(t, got.Threads, 2000)
 }
 
 func TestCreateIssue_NoLabels(t *testing.T) {
@@ -359,6 +572,86 @@ func TestUpdateIssueComment(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// TestGetNoteOnParent_UsesExplicitParentDirectly guards against the
+// api-contract regression where a note's actual parent type differs from
+// the invocation context: the client defaults to the "issues" noteTarget,
+// but the requested note lives on a merge request. GetNoteOnParent must
+// address the merge_requests path directly from the explicit parentType
+// and parentIID, without scanning (an issues-list scan would both miss
+// the note and risk the 30s playback timeout on large projects).
+func TestGetNoteOnParent_UsesExplicitParentDirectly(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/7/notes/321", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodGet, r.Method)
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"id":         321,
+			"body":       "playback-current: 2",
+			"created_at": "2024-03-01T12:00:00Z",
+			"author":     map[string]string{"username": "botuser"},
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/issues", func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("GetNoteOnParent must not scan issues when the parent is already known")
+	})
+
+	comment, err := client.GetNoteOnParent(ctx, "myorg", "myrepo", "merge_requests", 7, 321)
+	require.NoError(t, err)
+	assert.Equal(t, 321, comment.ID)
+	assert.Equal(t, "playback-current: 2", comment.Body)
+	assert.Equal(t, "botuser", comment.Author)
+	assert.Contains(t, comment.HTMLURL, "/-/merge_requests/7#note_321")
+}
+
+func TestGetNoteOnParent_RejectsInvalidParentType(t *testing.T) {
+	client, _ := setupTest(t)
+	_, err := client.GetNoteOnParent(context.Background(), "myorg", "myrepo", "snippets", 1, 1)
+	require.Error(t, err)
+}
+
+// TestGetNoteOnParent_DecodeError guards the fetchNoteDirect decode-error
+// branch: a malformed note body must surface as an error rather than a
+// zero-value comment.
+func TestGetNoteOnParent_DecodeError(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/7/notes/321", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, "{not valid json")
+	})
+
+	_, err := client.GetNoteOnParent(context.Background(), "myorg", "myrepo", "merge_requests", 7, 321)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decode note")
+}
+
+// TestUpdateNoteOnParent_UsesExplicitParentDirectly is UpdateNoteOnParent's
+// counterpart to TestGetNoteOnParent_UsesExplicitParentDirectly.
+func TestUpdateNoteOnParent_UsesExplicitParentDirectly(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/7/notes/321", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPut, r.Method)
+		var body map[string]string
+		readJSONBody(t, r, &body)
+		assert.Equal(t, "playback-current: 3", body["body"])
+		writeJSON(t, w, http.StatusOK, map[string]any{"id": 321, "body": "playback-current: 3"})
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/issues", func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("UpdateNoteOnParent must not scan issues when the parent is already known")
+	})
+
+	err := client.UpdateNoteOnParent(ctx, "myorg", "myrepo", "merge_requests", 7, 321, "playback-current: 3")
+	require.NoError(t, err)
+}
+
+func TestUpdateNoteOnParent_RejectsInvalidParentType(t *testing.T) {
+	client, _ := setupTest(t)
+	err := client.UpdateNoteOnParent(context.Background(), "myorg", "myrepo", "snippets", 1, 1, "x")
+	require.Error(t, err)
+}
+
 func TestDeleteIssueComment(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()
@@ -386,6 +679,14 @@ func TestMinimizeComment(t *testing.T) {
 
 	err := client.MinimizeComment(ctx, "myorg", "myrepo")
 	require.ErrorIs(t, err, forge.ErrNotSupported)
+}
+
+func TestListPullRequestReviewThreads_APIError(t *testing.T) {
+	client, _ := setupTest(t)
+
+	_, err := client.ListPullRequestReviewThreads(context.Background(), "myorg", "myrepo", 42)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "list discussions for !42 page 1")
 }
 
 // ---------------------------------------------------------------------------
@@ -568,6 +869,49 @@ func TestListPullRequestFiles(t *testing.T) {
 	require.Len(t, files, 2)
 	assert.Equal(t, "new.go", files[0])
 	assert.Equal(t, "same.go", files[1])
+}
+
+func TestListPullRequestCommits(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/5/commits", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodGet, r.Method)
+		// GitLab reports newest first.
+		writeJSON(t, w, http.StatusOK, []map[string]any{
+			{"id": "second"},
+			{"id": "first"},
+		})
+	})
+
+	shas, err := client.ListPullRequestCommits(ctx, "myorg", "myrepo", 5)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"first", "second"}, shas, "must be reversed to oldest first")
+}
+
+func TestListPullRequestCommits_Errors(t *testing.T) {
+	t.Run("request error", func(t *testing.T) {
+		client, mux := setupTest(t)
+		mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/5/commits", func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(t, w, http.StatusInternalServerError, map[string]string{"message": "boom"})
+		})
+
+		_, err := client.ListPullRequestCommits(context.Background(), "myorg", "myrepo", 5)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "list merge request commits page 1")
+	})
+
+	t.Run("decode error", func(t *testing.T) {
+		client, mux := setupTest(t)
+		mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/5/commits", func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte("not json"))
+		})
+
+		_, err := client.ListPullRequestCommits(context.Background(), "myorg", "myrepo", 5)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "decode merge request commits page 1")
+	})
 }
 
 func TestListPullRequestFileDiffs(t *testing.T) {
@@ -1473,6 +1817,51 @@ func TestDeleteRepoSecret(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// TestRepoSecretCleanup_DuplicateKeysAcrossScopes covers switching away
+// from a credential whose key exists both with the wildcard scope and for a
+// specific environment. GitLab answers an unscoped request with a conflict
+// because the key is ambiguous, so the existence check and the deletion must
+// both name the wildcard scope and leave the environment-specific variable.
+func TestRepoSecretCleanup_DuplicateKeysAcrossScopes(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	wildcardPresent := true
+	var deleted bool
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/variables/DUP", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("filter[environment_scope]") != "*" {
+			writeJSON(t, w, http.StatusConflict, map[string]string{"message": "409 Conflict: There are multiple variables with provided parameters. Please use 'filter[environment_scope]'"})
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			if !wildcardPresent {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			writeJSON(t, w, http.StatusOK, map[string]string{"key": "DUP", "environment_scope": "*"})
+		case http.MethodDelete:
+			deleted = true
+			wildcardPresent = false
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("unexpected method %s", r.Method)
+		}
+	})
+
+	exists, err := client.RepoSecretExists(ctx, "myorg", "myrepo", "DUP")
+	require.NoError(t, err)
+	assert.True(t, exists)
+
+	require.NoError(t, client.DeleteRepoSecret(ctx, "myorg", "myrepo", "DUP"))
+	assert.True(t, deleted, "the scoped deletion must reach the handler")
+
+	// Only the environment-specific variable remains, which is ignored.
+	exists, err = client.RepoSecretExists(ctx, "myorg", "myrepo", "DUP")
+	require.NoError(t, err)
+	assert.False(t, exists)
+}
+
 func TestDeleteRepoSecret_AlreadyGone(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()
@@ -1545,6 +1934,43 @@ func TestGetRepoVariable_Found(t *testing.T) {
 	assert.Equal(t, "hello", value)
 }
 
+// A project variable is looked up by its wildcard scope, the one jobs without
+// an environment see. GitLab answers 404 when the key exists only for a named
+// environment scope, and returns the wildcard definition when several exist.
+func TestGetRepoVariable_RestrictsToWildcardEnvironmentScope(t *testing.T) {
+	scopes := map[string]string{"FULLSEND_OPENAI_AUDIENCE": "production"}
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		name := strings.TrimPrefix(r.URL.Path, "/api/v4/projects/myorg/myrepo/variables/")
+		if r.URL.Query().Get("filter[environment_scope]") != "*" {
+			// Without the filter GitLab does not say which scope it returns.
+			writeJSON(t, w, http.StatusOK, map[string]string{"key": name, "value": "unfiltered", "environment_scope": scopes[name]})
+			return
+		}
+		if scopes[name] != "" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		writeJSON(t, w, http.StatusOK, map[string]string{"key": name, "value": "wildcard", "environment_scope": "*"})
+	}
+
+	t.Run("environment-only variable does not exist", func(t *testing.T) {
+		client, mux := setupTest(t)
+		handleTracked(t, mux, "/api/v4/projects/myorg%2Fmyrepo/variables/FULLSEND_OPENAI_AUDIENCE", handler)
+		value, found, err := client.GetRepoVariable(context.Background(), "myorg", "myrepo", "FULLSEND_OPENAI_AUDIENCE")
+		require.NoError(t, err)
+		assert.False(t, found)
+		assert.Empty(t, value)
+	})
+	t.Run("wildcard variable is returned", func(t *testing.T) {
+		client, mux := setupTest(t)
+		handleTracked(t, mux, "/api/v4/projects/myorg%2Fmyrepo/variables/PLAIN", handler)
+		value, found, err := client.GetRepoVariable(context.Background(), "myorg", "myrepo", "PLAIN")
+		require.NoError(t, err)
+		assert.True(t, found)
+		assert.Equal(t, "wildcard", value)
+	})
+}
+
 func TestGetRepoVariable_NotFound(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()
@@ -1574,6 +2000,297 @@ func TestListRepoVariables(t *testing.T) {
 	vars, err := client.ListRepoVariables(ctx, "myorg", "myrepo")
 	require.NoError(t, err)
 	assert.Equal(t, map[string]string{"VAR1": "val1", "VAR2": "val2"}, vars)
+}
+
+func TestListGroupVariablesForTriggerSafety(t *testing.T) {
+	client, mux := setupTest(t)
+	calls := 0
+	mux.HandleFunc("/api/v4/groups/myorg%2Fsubgroup/variables", func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		assert.Equal(t, http.MethodGet, r.Method)
+		writeJSON(t, w, http.StatusOK, []map[string]string{{"key": "CI_PIPELINE_SOURCE", "value": "push"}})
+	})
+	vars, err := client.ListOrgVariables(context.Background(), "myorg/subgroup")
+	require.NoError(t, err)
+	require.Len(t, vars, 1)
+	require.Equal(t, "CI_PIPELINE_SOURCE", vars[0].Name)
+	require.Empty(t, vars[0].Value)
+	require.NotNil(t, vars[0].NonBlank)
+	require.True(t, *vars[0].NonBlank)
+	require.Equal(t, 1, calls)
+}
+
+func TestListInheritedRepoVariablesUsesGroupVariables(t *testing.T) {
+	client, mux := setupTest(t)
+	handleTracked(t, mux, "/api/v4/groups/myorg/variables", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusOK, []map[string]string{{"key": "FULLSEND_OPENAI_AUDIENCE", "value": "x"}})
+	})
+	handleTracked(t, mux, "/api/v4/admin/ci/variables", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	})
+	vars, err := client.ListInheritedRepoVariables(context.Background(), "myorg", "myrepo")
+	// The instance scope needs administrator access: the group variables
+	// are still returned, and the instance stays unverified.
+	require.Equal(t, []string{"instance"}, forge.UnverifiedScopes(err))
+	require.Len(t, vars, 1)
+	require.Equal(t, "FULLSEND_OPENAI_AUDIENCE", vars[0].Name)
+	require.Empty(t, vars[0].Value)
+	require.NotNil(t, vars[0].NonBlank)
+	require.True(t, *vars[0].NonBlank)
+}
+
+func TestListInheritedRepoVariablesSkipsEnvironmentScopedGroupVariables(t *testing.T) {
+	client, mux := setupTest(t)
+	handleTracked(t, mux, "/api/v4/groups/myorg/variables", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusOK, []map[string]string{
+			{"key": "FULLSEND_OPENAI_AUDIENCE", "environment_scope": "production"},
+			{"key": "FULLSEND_OPENAI_SERVICE_ACCOUNT_ID", "environment_scope": "*"},
+			{"key": "PLAIN"},
+		})
+	})
+	handleTracked(t, mux, "/api/v4/admin/ci/variables", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	})
+	vars, err := client.ListInheritedRepoVariables(context.Background(), "myorg", "myrepo")
+	require.Equal(t, []string{"instance"}, forge.UnverifiedScopes(err))
+	require.Equal(t, []forge.OrgVariable{
+		{Name: "FULLSEND_OPENAI_SERVICE_ACCOUNT_ID"},
+		{Name: "PLAIN"},
+	}, vars)
+}
+
+func TestListInheritedRepoVariablesNestedNamespaceAndInstance(t *testing.T) {
+	client, mux := setupTest(t)
+	handleTracked(t, mux, "/api/v4/groups/top/variables", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusOK, []map[string]string{{"key": "FULLSEND_OPENAI_AUDIENCE"}, {"key": "SHARED"}})
+	})
+	handleTracked(t, mux, "/api/v4/groups/top%2Fsub/variables", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusOK, []map[string]string{{"key": "FULLSEND_OPENAI_SERVICE_ACCOUNT_ID"}, {"key": "SHARED"}})
+	})
+	handleTracked(t, mux, "/api/v4/admin/ci/variables", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusOK, []map[string]string{{"key": "FULLSEND_OPENAI_IDENTITY_PROVIDER_ID"}})
+	})
+	// owner holds the first path component; repo carries the rest.
+	vars, err := client.ListInheritedRepoVariables(context.Background(), "top", "sub/proj")
+	require.NoError(t, err)
+	require.Equal(t, []forge.OrgVariable{
+		{Name: "FULLSEND_OPENAI_AUDIENCE"},
+		{Name: "SHARED"},
+		{Name: "FULLSEND_OPENAI_SERVICE_ACCOUNT_ID"},
+		{Name: "FULLSEND_OPENAI_IDENTITY_PROVIDER_ID"},
+	}, vars)
+}
+
+func TestListInheritedRepoVariablesAccessErrors(t *testing.T) {
+	instanceAllowed := func(t *testing.T, mux *http.ServeMux) {
+		handleTracked(t, mux, "/api/v4/admin/ci/variables", func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(t, w, http.StatusOK, []map[string]string{})
+		})
+	}
+	t.Run("verified personal namespace has no group variables", func(t *testing.T) {
+		client, mux := setupTest(t)
+		handleTracked(t, mux, "/api/v4/groups/alice/variables", func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+		})
+		handleTracked(t, mux, "/api/v4/namespaces/alice", func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(t, w, http.StatusOK, map[string]string{"kind": "user"})
+		})
+		instanceAllowed(t, mux)
+		vars, err := client.ListInheritedRepoVariables(context.Background(), "alice", "proj")
+		require.NoError(t, err)
+		require.Empty(t, vars)
+	})
+	t.Run("unverifiable not-found namespace is not assumed personal", func(t *testing.T) {
+		for name, handler := range map[string]http.HandlerFunc{
+			"group kind": func(w http.ResponseWriter, _ *http.Request) {
+				writeJSON(t, w, http.StatusOK, map[string]string{"kind": "group"})
+			},
+			"lookup fails": func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNotFound) },
+		} {
+			t.Run(name, func(t *testing.T) {
+				client, mux := setupTest(t)
+				handleTracked(t, mux, "/api/v4/groups/hidden/variables", func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusNotFound)
+				})
+				handleTracked(t, mux, "/api/v4/namespaces/hidden", handler)
+				instanceAllowed(t, mux)
+				_, err := client.ListInheritedRepoVariables(context.Background(), "hidden", "proj")
+				require.Equal(t, []string{"group hidden"}, forge.UnverifiedScopes(err))
+			})
+		}
+	})
+	t.Run("forbidden group is reported as unverified", func(t *testing.T) {
+		client, mux := setupTest(t)
+		handleTracked(t, mux, "/api/v4/groups/myorg/variables", func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusForbidden)
+		})
+		instanceAllowed(t, mux)
+		vars, err := client.ListInheritedRepoVariables(context.Background(), "myorg", "proj")
+		require.Equal(t, []string{"group myorg"}, forge.UnverifiedScopes(err))
+		require.Empty(t, vars)
+	})
+	t.Run("inaccessible parent does not hide a readable subgroup", func(t *testing.T) {
+		client, mux := setupTest(t)
+		handleTracked(t, mux, "/api/v4/groups/top/variables", func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusForbidden)
+		})
+		handleTracked(t, mux, "/api/v4/groups/top%2Fsub/variables", func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(t, w, http.StatusOK, []map[string]string{{"key": "FULLSEND_OPENAI_AUDIENCE"}})
+		})
+		instanceAllowed(t, mux)
+		vars, err := client.ListInheritedRepoVariables(context.Background(), "top", "sub/proj")
+		require.Equal(t, []string{"group top"}, forge.UnverifiedScopes(err))
+		require.Equal(t, []forge.OrgVariable{{Name: "FULLSEND_OPENAI_AUDIENCE"}}, vars)
+	})
+	t.Run("other group errors are fatal", func(t *testing.T) {
+		client, mux := setupTest(t)
+		handleTracked(t, mux, "/api/v4/groups/myorg/variables", func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		})
+		_, err := client.ListInheritedRepoVariables(context.Background(), "myorg", "proj")
+		require.Error(t, err)
+		require.Empty(t, forge.UnverifiedScopes(err))
+	})
+}
+
+func TestListGroupVariablesErrors(t *testing.T) {
+	for _, status := range []int{http.StatusForbidden, http.StatusOK} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			client, mux := setupTest(t)
+			calls := 0
+			mux.HandleFunc("/api/v4/groups/myorg/variables", func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				w.WriteHeader(status)
+				_, _ = w.Write([]byte("invalid JSON"))
+			})
+			_, err := client.ListOrgVariables(context.Background(), "myorg")
+			require.Error(t, err)
+			require.Equal(t, 1, calls)
+		})
+	}
+}
+
+func TestListInstanceVariables(t *testing.T) {
+	t.Run("lists names from the admin endpoint", func(t *testing.T) {
+		client, mux := setupTest(t)
+		calls := 0
+		mux.HandleFunc("/api/v4/admin/ci/variables", func(w http.ResponseWriter, r *http.Request) {
+			calls++
+			assert.Equal(t, http.MethodGet, r.Method)
+			writeJSON(t, w, http.StatusOK, []map[string]string{{"key": "CI_PIPELINE_SOURCE", "value": "push"}})
+		})
+		vars, err := client.ListInstanceVariables(context.Background())
+		require.NoError(t, err)
+		require.Len(t, vars, 1)
+		require.Equal(t, "CI_PIPELINE_SOURCE", vars[0].Name)
+		require.Empty(t, vars[0].Value)
+		require.NotNil(t, vars[0].NonBlank)
+		require.True(t, *vars[0].NonBlank)
+		require.Equal(t, 1, calls)
+	})
+
+	t.Run("forbidden without administrator access", func(t *testing.T) {
+		client, mux := setupTest(t)
+		calls := 0
+		mux.HandleFunc("/api/v4/admin/ci/variables", func(w http.ResponseWriter, r *http.Request) {
+			calls++
+			w.WriteHeader(http.StatusForbidden)
+		})
+		_, err := client.ListInstanceVariables(context.Background())
+		require.ErrorIs(t, err, forge.ErrForbidden)
+		require.Equal(t, 1, calls)
+	})
+
+	t.Run("gitlab.com has no instance variables to inspect", func(t *testing.T) {
+		client, err := New("tok")
+		require.NoError(t, err)
+		vars, err := client.ListInstanceVariables(context.Background())
+		require.NoError(t, err)
+		require.Empty(t, vars)
+	})
+}
+
+func TestListRepoVariables_WildcardScopeWinsOverEnvironmentScope(t *testing.T) {
+	for name, order := range map[string][]string{
+		"wildcard first": {"*", "production"},
+		"scoped first":   {"production", "*"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			client, mux := setupTest(t)
+			ctx := context.Background()
+
+			handlerCalls := 0
+			mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/variables", func(w http.ResponseWriter, r *http.Request) {
+				handlerCalls++
+				vars := make([]map[string]string, 0, len(order))
+				for _, scope := range order {
+					vars = append(vars, map[string]string{
+						"key":               forge.SecretTriggerToken,
+						"value":             "value-for-" + scope,
+						"environment_scope": scope,
+					})
+				}
+				writeJSON(t, w, http.StatusOK, vars)
+			})
+
+			got, err := client.ListRepoVariables(ctx, "myorg", "myrepo")
+			require.NoError(t, err)
+			assert.Equal(t, 1, handlerCalls)
+			assert.Equal(t, map[string]string{forge.SecretTriggerToken: "value-for-*"}, got)
+		})
+	}
+}
+
+func TestCreateRepoSecret_WebhookCredentialsRequireMasking(t *testing.T) {
+	for _, name := range []string{forge.SecretTriggerToken, forge.SecretWebhookSecret, forge.SecretGitLabTriggerAccountToken, forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken, "FULLSEND_GITLAB_ROLE_REVIEWER_TOKEN"} {
+		t.Run(name, func(t *testing.T) {
+			client, mux := setupTest(t)
+			ctx := context.Background()
+
+			handlerCalls := 0
+			mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/variables", func(w http.ResponseWriter, r *http.Request) {
+				handlerCalls++
+				var body map[string]any
+				readJSONBody(t, r, &body)
+				assert.Equal(t, true, body["masked"], "must never send masked:false")
+				writeJSON(t, w, http.StatusBadRequest, map[string]string{"message": "This variable can not be masked"})
+			})
+
+			err := client.CreateRepoSecret(ctx, "myorg", "myrepo", name, "abcdef0123456789")
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "must not be stored unmasked")
+			assert.Equal(t, 1, handlerCalls, "must not retry with masked:false")
+		})
+	}
+}
+
+func TestUpdateRepoSecret_WebhookCredentialsRequireMasking(t *testing.T) {
+	for _, name := range []string{forge.SecretTriggerToken, forge.SecretWebhookSecret, forge.SecretGitLabTriggerAccountToken, forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken, "FULLSEND_GITLAB_ROLE_REVIEWER_TOKEN"} {
+		t.Run(name, func(t *testing.T) {
+			client, mux := setupTest(t)
+			ctx := context.Background()
+
+			postCalls := 0
+			mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/variables", func(w http.ResponseWriter, r *http.Request) {
+				postCalls++
+				writeJSON(t, w, http.StatusConflict, map[string]string{"message": name + " has already been taken"})
+			})
+			putCalls := 0
+			mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/variables/"+name, func(w http.ResponseWriter, r *http.Request) {
+				putCalls++
+				var body map[string]any
+				readJSONBody(t, r, &body)
+				assert.Equal(t, true, body["masked"], "must never send masked:false")
+				writeJSON(t, w, http.StatusBadRequest, map[string]string{"message": "This variable can not be masked"})
+			})
+
+			err := client.CreateRepoSecret(ctx, "myorg", "myrepo", name, "abcdef0123456789")
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "must not be stored unmasked")
+			assert.Equal(t, 1, postCalls, "the initial create conflicts exactly once")
+			assert.Equal(t, 1, putCalls, "must not retry with masked:false")
+		})
+	}
 }
 
 func TestListRepoVariables_Pagination(t *testing.T) {
@@ -1653,6 +2370,91 @@ func TestCreatePipeline_NoVariables(t *testing.T) {
 	assert.Equal(t, int64(100), p.ID)
 }
 
+// TestCreatePipelineWithInputs_SerializesInputsSeparatelyFromVariables
+// verifies that inputs are sent under a dedicated "inputs" key, each
+// rendered as its underlying JSON primitive, and that no "variables" key
+// is present on the request at all — this is the dispatch path for a
+// project with ci_pipeline_variables_minimum_override_role=no_one_allowed,
+// where even an empty "variables" value must not appear.
+func TestCreatePipelineWithInputs_SerializesInputsSeparatelyFromVariables(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/pipeline", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		var body map[string]any
+		readJSONBody(t, r, &body)
+		assert.Equal(t, "main", body["ref"])
+		_, hasVariables := body["variables"]
+		assert.False(t, hasVariables, "request must not include a variables field")
+
+		inputs, ok := body["inputs"].(map[string]any)
+		require.True(t, ok, "inputs should be an object")
+		assert.Equal(t, "triage", inputs["STAGE"])
+		assert.Equal(t, true, inputs["IS_FORK"])
+		assert.InEpsilon(t, float64(3), inputs["RETRY_COUNT"], 0)
+		assert.Equal(t, []any{"a", "b"}, inputs["TAGS"])
+
+		writeJSON(t, w, http.StatusCreated, map[string]any{
+			"id":      101,
+			"web_url": "https://gitlab.com/myorg/myrepo/-/pipelines/101",
+		})
+	})
+
+	p, err := client.CreatePipelineWithInputs(ctx, "myorg", "myrepo", "main", map[string]forge.PipelineInputValue{
+		"STAGE":       forge.StringInput("triage"),
+		"IS_FORK":     forge.BoolInput(true),
+		"RETRY_COUNT": forge.NumberInput(3),
+		"TAGS":        forge.ArrayInput([]string{"a", "b"}),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int64(101), p.ID)
+	assert.Equal(t, "https://gitlab.com/myorg/myrepo/-/pipelines/101", p.WebURL)
+}
+
+// TestCreatePipelineWithInputs_NoUserDefinedVariables exercises the
+// no_one_allowed dispatch path: a pipeline can be created with zero
+// user-defined variables, carrying only inputs.
+func TestCreatePipelineWithInputs_NoUserDefinedVariables(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/pipeline", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		readJSONBody(t, r, &body)
+		_, hasVariables := body["variables"]
+		assert.False(t, hasVariables)
+		assert.Equal(t, map[string]any{}, body["inputs"])
+
+		writeJSON(t, w, http.StatusCreated, map[string]any{
+			"id":      102,
+			"web_url": "https://gitlab.com/myorg/myrepo/-/pipelines/102",
+		})
+	})
+
+	p, err := client.CreatePipelineWithInputs(ctx, "myorg", "myrepo", "main", nil)
+	require.NoError(t, err)
+	assert.Equal(t, int64(102), p.ID)
+}
+
+// TestCreatePipelineWithInputs_ErrorMapsToForgeError confirms GitLab API
+// error responses map to the shared typed forge errors, the same way
+// every other LiveClient method does via APIError.Unwrap.
+func TestCreatePipelineWithInputs_ErrorMapsToForgeError(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/pipeline", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusForbidden, map[string]string{"message": "403 Forbidden"})
+	})
+
+	_, err := client.CreatePipelineWithInputs(ctx, "myorg", "myrepo", "main", map[string]forge.PipelineInputValue{
+		"STAGE": forge.StringInput("triage"),
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, forge.ErrForbidden)
+}
+
 func TestCreatePipelineSchedule(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()
@@ -1700,6 +2502,37 @@ func TestCreatePipelineSchedule_NoVariables(t *testing.T) {
 	assert.Equal(t, int64(456), id)
 }
 
+func TestCreatePipelineScheduleWithActive_SendsActiveStateInCreateRequest(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	var bodies []map[string]any
+	var otherRequests int
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/pipeline_schedules", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		bodies = append(bodies, body)
+		writeJSON(t, w, http.StatusCreated, map[string]any{"id": 789})
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/pipeline_schedules/789", func(http.ResponseWriter, *http.Request) {
+		otherRequests++
+	})
+
+	id, err := client.CreatePipelineScheduleWithActive(ctx, "myorg", "myrepo", "main", "Disabled", "0 0 * * 0", nil, false)
+	require.NoError(t, err)
+	assert.Equal(t, int64(789), id)
+	_, err = client.CreatePipelineScheduleWithActive(ctx, "myorg", "myrepo", "main", "Enabled", "0 0 * * 0", nil, true)
+	require.NoError(t, err)
+	_, err = client.CreatePipelineSchedule(ctx, "myorg", "myrepo", "main", "Default", "0 0 * * 0", nil)
+	require.NoError(t, err)
+
+	require.Len(t, bodies, 3)
+	assert.Equal(t, false, bodies[0]["active"], "a disabled schedule is created disabled")
+	assert.NotContains(t, bodies[1], "active", "an active schedule keeps GitLab's default")
+	assert.NotContains(t, bodies[2], "active", "CreatePipelineSchedule is unchanged")
+	assert.Zero(t, otherRequests, "no separate request edits the schedule")
+}
+
 func TestDeletePipelineSchedule(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()
@@ -1713,6 +2546,35 @@ func TestDeletePipelineSchedule(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestUpdatePipelineSchedule(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/pipeline_schedules/123", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPut, r.Method)
+		var body map[string]any
+		readJSONBody(t, r, &body)
+		assert.Equal(t, true, body["active"])
+		writeJSON(t, w, http.StatusOK, map[string]any{"id": 123, "active": true})
+	})
+
+	err := client.UpdatePipelineSchedule(ctx, "myorg", "myrepo", 123, true)
+	require.NoError(t, err)
+}
+
+func TestUpdatePipelineSchedule_Error(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/pipeline_schedules/123", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPut, r.Method)
+		writeJSON(t, w, http.StatusInternalServerError, map[string]string{"message": "boom"})
+	})
+
+	err := client.UpdatePipelineSchedule(ctx, "myorg", "myrepo", 123, true)
+	require.Error(t, err)
+}
+
 func TestListPipelineSchedules(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()
@@ -1722,6 +2584,7 @@ func TestListPipelineSchedules(t *testing.T) {
 		writeJSON(t, w, http.StatusOK, []map[string]any{
 			{
 				"id":            int64(1),
+				"owner":         map[string]any{"id": int64(42)},
 				"description":   "Nightly",
 				"ref":           "main",
 				"cron":          "0 0 * * *",
@@ -1744,6 +2607,7 @@ func TestListPipelineSchedules(t *testing.T) {
 	require.Len(t, schedules, 2)
 
 	assert.Equal(t, int64(1), schedules[0].ID)
+	assert.Equal(t, int64(42), schedules[0].OwnerID)
 	assert.Equal(t, "Nightly", schedules[0].Description)
 	assert.Equal(t, "main", schedules[0].Ref)
 	assert.Equal(t, "0 0 * * *", schedules[0].Cron)
@@ -1751,6 +2615,7 @@ func TestListPipelineSchedules(t *testing.T) {
 	assert.True(t, schedules[0].Active)
 
 	assert.Equal(t, int64(2), schedules[1].ID)
+	assert.Zero(t, schedules[1].OwnerID)
 	assert.False(t, schedules[1].Active)
 }
 
@@ -1758,6 +2623,10 @@ func TestIsProtectedBranch_True(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()
 
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[]`))
+	})
 	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/main", func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, http.MethodGet, r.Method)
 		writeJSON(t, w, http.StatusOK, map[string]string{"name": "main"})
@@ -1775,6 +2644,10 @@ func TestIsProtectedBranch_False(t *testing.T) {
 	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/feature", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[]`))
+	})
 
 	protected, err := client.IsProtectedBranch(ctx, "myorg", "myrepo", "feature")
 	require.NoError(t, err)
@@ -1791,6 +2664,581 @@ func TestIsProtectedBranch_UnexpectedStatus(t *testing.T) {
 
 	_, err := client.IsProtectedBranch(ctx, "myorg", "myrepo", "main")
 	require.Error(t, err)
+}
+
+func TestGetProtectedBranch_AccessLevels(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+	userID := 42
+	groupID := 7
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[]`))
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/release%2Fv1", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodGet, r.Method)
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"name": "release/v1",
+			"push_access_levels": []map[string]any{
+				{"access_level": 0, "user_id": nil, "group_id": nil},
+			},
+			"merge_access_levels": []map[string]any{
+				{"access_level": 40, "user_id": nil, "group_id": nil},
+				{"access_level": 30, "user_id": userID, "group_id": nil},
+				{"access_level": 30, "user_id": nil, "group_id": groupID},
+			},
+		})
+	})
+
+	rule, err := client.GetProtectedBranch(ctx, "myorg", "myrepo", "release/v1")
+	require.NoError(t, err)
+	require.NotNil(t, rule)
+	assert.Equal(t, "release/v1", rule.Name)
+	require.Len(t, rule.PushAccessLevels, 1)
+	assert.Equal(t, 0, rule.PushAccessLevels[0].AccessLevel)
+	require.Len(t, rule.MergeAccessLevels, 3)
+	assert.Equal(t, 40, rule.MergeAccessLevels[0].AccessLevel)
+	assert.Equal(t, 0, rule.MergeAccessLevels[0].UserID)
+	assert.Equal(t, userID, rule.MergeAccessLevels[1].UserID)
+	assert.Equal(t, groupID, rule.MergeAccessLevels[2].GroupID)
+}
+
+func TestGetProtectedBranch_NotProtected(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	exactHandlerCalled := false
+	listHandlerCalled := false
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/dev", func(w http.ResponseWriter, r *http.Request) {
+		exactHandlerCalled = true
+		w.WriteHeader(http.StatusNotFound)
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches", func(w http.ResponseWriter, r *http.Request) {
+		listHandlerCalled = true
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[]`))
+	})
+
+	rule, err := client.GetProtectedBranch(ctx, "myorg", "myrepo", "dev")
+	require.NoError(t, err)
+	assert.Nil(t, rule)
+	assert.True(t, exactHandlerCalled, "handler was not called — URL path mismatch")
+	assert.True(t, listHandlerCalled, "handler was not called — URL path mismatch")
+}
+
+func TestGetProtectedBranch_WildcardMatch(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	exactHandlerCalled := false
+	listHandlerCalled := false
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/main", func(w http.ResponseWriter, r *http.Request) {
+		exactHandlerCalled = true
+		w.WriteHeader(http.StatusNotFound)
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches", func(w http.ResponseWriter, r *http.Request) {
+		listHandlerCalled = true
+		writeJSON(t, w, http.StatusOK, []map[string]any{
+			{
+				"name": "main*",
+				"merge_access_levels": []map[string]any{
+					{"access_level": 40},
+				},
+				"push_access_levels": []map[string]any{
+					{"access_level": 40},
+				},
+			},
+		})
+	})
+
+	rule, err := client.GetProtectedBranch(ctx, "myorg", "myrepo", "main")
+	require.NoError(t, err)
+	require.NotNil(t, rule, "a Maintainer-only wildcard rule matching the default branch must be reported as protected")
+	assert.Equal(t, "main*", rule.Name)
+	require.Len(t, rule.MergeAccessLevels, 1)
+	assert.Equal(t, 40, rule.MergeAccessLevels[0].AccessLevel)
+	assert.True(t, exactHandlerCalled, "handler was not called — URL path mismatch")
+	assert.True(t, listHandlerCalled, "handler was not called — URL path mismatch")
+}
+
+func TestGetProtectedBranch_WildcardStarMatch(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/main", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, []map[string]any{
+			{
+				"name": "*",
+				"merge_access_levels": []map[string]any{
+					{"access_level": 40},
+				},
+			},
+		})
+	})
+
+	rule, err := client.GetProtectedBranch(ctx, "myorg", "myrepo", "main")
+	require.NoError(t, err)
+	require.NotNil(t, rule, "a bare '*' wildcard rule must be reported as protecting the default branch")
+	assert.Equal(t, "*", rule.Name)
+}
+
+// TestGetProtectedBranch_UnionAcrossExactAndWildcard covers a project with
+// both a Maintainer-only exact-name rule for "main" and a Developer-allowed
+// "*" wildcard rule. GitLab's actual CreatePipeline access is the union of
+// every matching rule, so a Developer-level poller can create pipelines
+// here even though the exact-name rule alone would forbid it. Only
+// checking the exact-name rule (or only the first matching rule) would
+// wrongly report this as unprotectable by a Developer, causing a false
+// "repos status" drift or an unnecessary/incorrect grant attempt.
+func TestGetProtectedBranch_UnionAcrossExactAndWildcard(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/main", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"name": "main",
+			"merge_access_levels": []map[string]any{
+				{"access_level": 40},
+			},
+			"push_access_levels": []map[string]any{
+				{"access_level": 40},
+			},
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, []map[string]any{
+			{
+				"name": "*",
+				"merge_access_levels": []map[string]any{
+					{"access_level": 30},
+				},
+				"push_access_levels": []map[string]any{
+					{"access_level": 30},
+				},
+			},
+		})
+	})
+
+	rule, err := client.GetProtectedBranch(ctx, "myorg", "myrepo", "main")
+	require.NoError(t, err)
+	require.NotNil(t, rule)
+	assert.Equal(t, "main", rule.Name, "the exact-name rule is present, so the PATCH target must remain the branch itself")
+	require.Len(t, rule.MergeAccessLevels, 2, "must include both the exact rule's and the wildcard rule's access levels")
+	require.Len(t, rule.PushAccessLevels, 2, "must include both the exact rule's and the wildcard rule's access levels")
+	hasDeveloperMerge := false
+	for _, l := range rule.MergeAccessLevels {
+		if l.AccessLevel == 30 {
+			hasDeveloperMerge = true
+		}
+	}
+	assert.True(t, hasDeveloperMerge, "the Developer-allowed wildcard rule's access must survive the union despite the stricter exact rule")
+}
+
+// TestGetProtectedBranch_UnionAcrossMultipleWildcards covers a project with
+// no exact-name rule for "main" but two overlapping wildcard rules: a
+// Maintainer-only "*" and a Developer-allowed "main*". Only returning the
+// first matching wildcard from the list response (rather than every match)
+// can pick "*" and miss "main*"'s more permissive grant, depending on list
+// ordering.
+func TestGetProtectedBranch_UnionAcrossMultipleWildcards(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/main", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, []map[string]any{
+			{
+				"name": "*",
+				"merge_access_levels": []map[string]any{
+					{"access_level": 40},
+				},
+				"push_access_levels": []map[string]any{
+					{"access_level": 40},
+				},
+			},
+			{
+				"name": "main*",
+				"merge_access_levels": []map[string]any{
+					{"access_level": 30},
+				},
+				"push_access_levels": []map[string]any{
+					{"access_level": 30},
+				},
+			},
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/%2A", func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("must not PATCH the wildcard rule \"*\"; it covers branches beyond the default branch")
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/main%2A", func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("must not PATCH the wildcard rule \"main*\"; it covers branches beyond the default branch")
+	})
+
+	rule, err := client.GetProtectedBranch(ctx, "myorg", "myrepo", "main")
+	require.NoError(t, err)
+	require.NotNil(t, rule)
+	require.Len(t, rule.MergeAccessLevels, 2, "both overlapping wildcard rules must contribute to the union, not just the first one returned")
+	hasDeveloperMerge := false
+	for _, l := range rule.MergeAccessLevels {
+		if l.AccessLevel == 30 {
+			hasDeveloperMerge = true
+		}
+	}
+	assert.True(t, hasDeveloperMerge, "the Developer-allowed \"main*\" rule must be found even when a stricter \"*\" rule is listed first")
+
+	// A Developer-level poller can already create pipelines via the
+	// union, so granting merge access is unnecessary — confirm
+	// GrantProtectedBranchMergeUser still fails closed rather than
+	// PATCHing either wildcard if a grant were attempted anyway.
+	err = client.GrantProtectedBranchMergeUser(ctx, "myorg", "myrepo", "main", 99)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "only protected via wildcard rule")
+}
+
+func TestGetProtectedBranch_UnexpectedStatus(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/main", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	})
+
+	_, err := client.GetProtectedBranch(ctx, "myorg", "myrepo", "main")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "get protected branch")
+}
+
+func TestGetProtectedBranch_DecodeError(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/main", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("not-json"))
+	})
+
+	_, err := client.GetProtectedBranch(ctx, "myorg", "myrepo", "main")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decode protected branch")
+}
+
+func TestGrantProtectedBranchMergeUser(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+	patched := false
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[]`))
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/main", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			writeJSON(t, w, http.StatusOK, map[string]any{
+				"name": "main",
+				"merge_access_levels": []map[string]any{
+					{"access_level": 40},
+				},
+				"push_access_levels": []map[string]any{
+					{"access_level": 40},
+				},
+			})
+		case http.MethodPatch:
+			patched = true
+			var body map[string]any
+			readJSONBody(t, r, &body)
+			allowed, ok := body["allowed_to_merge"].([]any)
+			require.True(t, ok)
+			require.Len(t, allowed, 1)
+			entry := allowed[0].(map[string]any)
+			assert.Equal(t, float64(99), entry["user_id"])
+			writeJSON(t, w, http.StatusOK, map[string]any{"name": "main"})
+		default:
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+	})
+
+	err := client.GrantProtectedBranchMergeUser(ctx, "myorg", "myrepo", "main", 99)
+	require.NoError(t, err)
+	assert.True(t, patched)
+}
+
+// revokeServer serves the exact-name protected-branch record and records any
+// PATCH body, so revoke tests can assert exactly what was destroyed.
+func revokeServer(t *testing.T, mux *http.ServeMux, exact map[string]any) (patches *[]map[string]any) {
+	t.Helper()
+	patches = &[]map[string]any{}
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/main", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			if exact == nil {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			writeJSON(t, w, http.StatusOK, exact)
+		case http.MethodPatch:
+			var body map[string]any
+			readJSONBody(t, r, &body)
+			*patches = append(*patches, body)
+			writeJSON(t, w, http.StatusOK, map[string]any{"name": "main"})
+		default:
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+	})
+	return patches
+}
+
+func TestRevokeProtectedBranchMergeUserEntry(t *testing.T) {
+	ctx := context.Background()
+	rule := map[string]any{
+		"name": "main",
+		"merge_access_levels": []map[string]any{
+			{"id": 1, "access_level": 40},
+			{"id": 11, "access_level": 30, "user_id": 98},
+			{"id": 12, "access_level": 30, "user_id": 99},
+		},
+		"push_access_levels": []map[string]any{{"id": 2, "access_level": 40}},
+	}
+
+	t.Run("destroys exactly the identified entry", func(t *testing.T) {
+		client, mux := setupTest(t)
+		patches := revokeServer(t, mux, rule)
+		require.NoError(t, client.RevokeProtectedBranchMergeUserEntry(ctx, "myorg", "myrepo", "main", 12, 99))
+		require.Len(t, *patches, 1)
+		allowed, ok := (*patches)[0]["allowed_to_merge"].([]any)
+		require.True(t, ok)
+		require.Len(t, allowed, 1, "no other entry is part of the request")
+		assert.Equal(t, map[string]any{"id": float64(12), "_destroy": true}, allowed[0])
+		assert.NotContains(t, (*patches)[0], "allowed_to_push")
+	})
+
+	t.Run("refuses an entry that is not the user's", func(t *testing.T) {
+		client, mux := setupTest(t)
+		patches := revokeServer(t, mux, rule)
+		err := client.RevokeProtectedBranchMergeUserEntry(ctx, "myorg", "myrepo", "main", 11, 99)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not a grant for user")
+		assert.Empty(t, *patches)
+	})
+
+	t.Run("never removes a role entry", func(t *testing.T) {
+		client, mux := setupTest(t)
+		patches := revokeServer(t, mux, rule)
+		require.Error(t, client.RevokeProtectedBranchMergeUserEntry(ctx, "myorg", "myrepo", "main", 1, 99))
+		assert.Empty(t, *patches)
+	})
+
+	t.Run("an entry that is already gone is a no-op", func(t *testing.T) {
+		client, mux := setupTest(t)
+		patches := revokeServer(t, mux, rule)
+		require.NoError(t, client.RevokeProtectedBranchMergeUserEntry(ctx, "myorg", "myrepo", "main", 404, 99))
+		assert.Empty(t, *patches)
+	})
+
+	t.Run("a missing rule is a no-op", func(t *testing.T) {
+		client, mux := setupTest(t)
+		patches := revokeServer(t, mux, nil)
+		require.NoError(t, client.RevokeProtectedBranchMergeUserEntry(ctx, "myorg", "myrepo", "main", 12, 99))
+		assert.Empty(t, *patches)
+	})
+
+	t.Run("rejects invalid identifiers", func(t *testing.T) {
+		client, _ := setupTest(t)
+		require.Error(t, client.RevokeProtectedBranchMergeUserEntry(ctx, "myorg", "myrepo", "main", 0, 99))
+		require.Error(t, client.RevokeProtectedBranchMergeUserEntry(ctx, "myorg", "myrepo", "main", 12, 0))
+	})
+
+	t.Run("reports a failed lookup and a failed patch", func(t *testing.T) {
+		client, mux := setupTest(t)
+		mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/main", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet {
+				writeJSON(t, w, http.StatusOK, rule)
+				return
+			}
+			w.WriteHeader(http.StatusForbidden)
+		})
+		err := client.RevokeProtectedBranchMergeUserEntry(ctx, "myorg", "myrepo", "main", 12, 99)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "revoke protected branch merge")
+
+		client2, mux2 := setupTest(t)
+		mux2.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/main", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		})
+		require.Error(t, client2.RevokeProtectedBranchMergeUserEntry(ctx, "myorg", "myrepo", "main", 12, 99))
+	})
+}
+
+func TestGetProtectedBranchReportsEntryIDs(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[]`))
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/main", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"name": "main",
+			"merge_access_levels": []map[string]any{
+				{"id": 3, "access_level": 30, "user_id": 99},
+			},
+		})
+	})
+	rule, err := client.GetProtectedBranch(context.Background(), "myorg", "myrepo", "main")
+	require.NoError(t, err)
+	require.Len(t, rule.MergeAccessLevels, 1)
+	assert.Equal(t, forge.ProtectedBranchAccess{ID: 3, AccessLevel: 30, UserID: 99}, rule.MergeAccessLevels[0])
+}
+
+func TestGrantProtectedBranchMergeUser_Idempotent(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[]`))
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/main", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodGet, r.Method)
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"name": "main",
+			"merge_access_levels": []map[string]any{
+				{"user_id": 99},
+			},
+		})
+	})
+
+	err := client.GrantProtectedBranchMergeUser(ctx, "myorg", "myrepo", "main", 99)
+	require.NoError(t, err)
+}
+
+func TestGrantProtectedBranchMergeUser_IdempotentPushUser(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[]`))
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/main", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodGet, r.Method)
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"name": "main",
+			"push_access_levels": []map[string]any{
+				{"user_id": 99},
+			},
+		})
+	})
+
+	err := client.GrantProtectedBranchMergeUser(ctx, "myorg", "myrepo", "main", 99)
+	require.NoError(t, err)
+}
+
+func TestGrantProtectedBranchMergeUser_NotProtected(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	exactHandlerCalled := false
+	listHandlerCalled := false
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/main", func(w http.ResponseWriter, r *http.Request) {
+		exactHandlerCalled = true
+		w.WriteHeader(http.StatusNotFound)
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches", func(w http.ResponseWriter, r *http.Request) {
+		listHandlerCalled = true
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[]`))
+	})
+
+	err := client.GrantProtectedBranchMergeUser(ctx, "myorg", "myrepo", "main", 99)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "is not protected")
+	assert.True(t, exactHandlerCalled, "handler was not called — URL path mismatch")
+	assert.True(t, listHandlerCalled, "handler was not called — URL path mismatch")
+}
+
+// TestGrantProtectedBranchMergeUser_WildcardMatch covers a project whose
+// default branch is protected only through a wildcard rule (e.g. a
+// "main*" or "*" Maintainer-only rule) rather than an exact-name record.
+// PATCHing that wildcard rule would grant the poller merge access on every
+// branch the wildcard covers, not just the default branch, so this must
+// fail closed instead of PATCHing anything.
+func TestGrantProtectedBranchMergeUser_WildcardMatch(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/main", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, []map[string]any{
+			{
+				"name": "main*",
+				"merge_access_levels": []map[string]any{
+					{"access_level": 40},
+				},
+				"push_access_levels": []map[string]any{
+					{"access_level": 40},
+				},
+			},
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/main%2A", func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("must not PATCH the wildcard rule %q; it covers branches beyond the default branch", "main*")
+	})
+
+	err := client.GrantProtectedBranchMergeUser(ctx, "myorg", "myrepo", "main", 99)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "only protected via wildcard rule")
+	assert.Contains(t, err.Error(), "main*")
+}
+
+func TestGrantProtectedBranchMergeUser_InvalidUser(t *testing.T) {
+	client, _ := setupTest(t)
+	err := client.GrantProtectedBranchMergeUser(context.Background(), "myorg", "myrepo", "main", 0)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid user ID")
+}
+
+func TestGrantProtectedBranchMergeUser_GetError(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/main", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	err := client.GrantProtectedBranchMergeUser(context.Background(), "myorg", "myrepo", "main", 99)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "grant protected branch merge")
+}
+
+func TestGrantProtectedBranchMergeUser_PatchError(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[]`))
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/main", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			writeJSON(t, w, http.StatusOK, map[string]any{
+				"name": "main",
+				"merge_access_levels": []map[string]any{
+					{"access_level": 40},
+				},
+			})
+			return
+		}
+		w.WriteHeader(http.StatusForbidden)
+	})
+
+	err := client.GrantProtectedBranchMergeUser(ctx, "myorg", "myrepo", "main", 99)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "grant protected branch merge")
 }
 
 func TestGetOrgPlan_WithPlan(t *testing.T) {
@@ -1924,6 +3372,33 @@ func TestUpdateCIVariable_MissingFallsBackToCreate(t *testing.T) {
 	assert.True(t, created, "should have created the variable via POST")
 }
 
+// A variable defined only for a named environment must not be updated in
+// place: the update targets the wildcard scope, misses, and creates the
+// wildcard definition that GetRepoVariable reads.
+func TestUpdateCIVariable_TargetsWildcardScope(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	var created bool
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/variables/SCOPED_VAR", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPut, r.Method)
+		assert.Equal(t, "*", r.URL.Query().Get("filter[environment_scope]"))
+		writeJSON(t, w, http.StatusNotFound, map[string]string{"message": "404 Variable Not Found"})
+	})
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/variables", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		var body map[string]any
+		readJSONBody(t, r, &body)
+		assert.Equal(t, "*", body["environment_scope"])
+		created = true
+		writeJSON(t, w, http.StatusCreated, map[string]any{"key": "SCOPED_VAR"})
+	})
+
+	err := client.UpdateCIVariable(ctx, "myorg", "myrepo", "SCOPED_VAR", "val", true)
+	require.NoError(t, err)
+	assert.True(t, created, "should create the wildcard definition independently")
+}
+
 func TestUpdateCIVariable_NonNotFoundErrorPropagates(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()
@@ -1962,11 +3437,6 @@ func TestErrNotSupported_OrgMethods(t *testing.T) {
 	client, _ := setupTest(t)
 	ctx := context.Background()
 
-	t.Run("CreateOrgSecret", func(t *testing.T) {
-		err := client.CreateOrgSecret(ctx, "org", "secret", "val", nil)
-		require.ErrorIs(t, err, forge.ErrNotSupported)
-	})
-
 	t.Run("OrgSecretExists", func(t *testing.T) {
 		_, err := client.OrgSecretExists(ctx, "org", "secret")
 		require.ErrorIs(t, err, forge.ErrNotSupported)
@@ -1977,28 +3447,8 @@ func TestErrNotSupported_OrgMethods(t *testing.T) {
 		require.ErrorIs(t, err, forge.ErrNotSupported)
 	})
 
-	t.Run("SetOrgSecretRepos", func(t *testing.T) {
-		err := client.SetOrgSecretRepos(ctx, "org", "secret", nil)
-		require.ErrorIs(t, err, forge.ErrNotSupported)
-	})
-
-	t.Run("GetOrgSecretRepos", func(t *testing.T) {
-		_, err := client.GetOrgSecretRepos(ctx, "org", "secret")
-		require.ErrorIs(t, err, forge.ErrNotSupported)
-	})
-
-	t.Run("CreateOrUpdateOrgVariable", func(t *testing.T) {
-		err := client.CreateOrUpdateOrgVariable(ctx, "org", "var", "val", nil)
-		require.ErrorIs(t, err, forge.ErrNotSupported)
-	})
-
 	t.Run("CreateOrUpdateOrgVariableAll", func(t *testing.T) {
 		err := client.CreateOrUpdateOrgVariableAll(ctx, "org", "var", "val")
-		require.ErrorIs(t, err, forge.ErrNotSupported)
-	})
-
-	t.Run("OrgVariableExists", func(t *testing.T) {
-		_, err := client.OrgVariableExists(ctx, "org", "var")
 		require.ErrorIs(t, err, forge.ErrNotSupported)
 	})
 
@@ -2007,23 +3457,18 @@ func TestErrNotSupported_OrgMethods(t *testing.T) {
 		require.ErrorIs(t, err, forge.ErrNotSupported)
 	})
 
-	t.Run("ListOrgVariables", func(t *testing.T) {
-		_, err := client.ListOrgVariables(ctx, "org")
-		require.ErrorIs(t, err, forge.ErrNotSupported)
-	})
-
 	t.Run("DeleteOrgVariable", func(t *testing.T) {
 		err := client.DeleteOrgVariable(ctx, "org", "var")
 		require.ErrorIs(t, err, forge.ErrNotSupported)
 	})
+}
 
-	t.Run("SetOrgVariableRepos", func(t *testing.T) {
-		err := client.SetOrgVariableRepos(ctx, "org", "var", nil)
-		require.ErrorIs(t, err, forge.ErrNotSupported)
-	})
+func TestErrNotSupported_FileMethods(t *testing.T) {
+	client, _ := setupTest(t)
+	ctx := context.Background()
 
-	t.Run("GetOrgVariableRepos", func(t *testing.T) {
-		_, err := client.GetOrgVariableRepos(ctx, "org", "var")
+	t.Run("UpdateFileIfMatch", func(t *testing.T) {
+		err := client.UpdateFileIfMatch(ctx, "org", "repo", "f", "m", []byte("x"), "")
 		require.ErrorIs(t, err, forge.ErrNotSupported)
 	})
 }
@@ -2098,6 +3543,117 @@ func TestListWorkflowRuns(t *testing.T) {
 	assert.Equal(t, "failure", runs[1].Conclusion)
 }
 
+// TestListWorkflowRunsSince_PaginatesBeyondFirstPage is a regression test
+// (#7996 review): unlike ListWorkflowRuns's single page, ListWorkflowRunsSince
+// must paginate until it reaches a pipeline older than the since boundary,
+// so a pipeline far older than a single page is still returned.
+func TestListWorkflowRunsSince_PaginatesBeyondFirstPage(t *testing.T) {
+	client, mux := setupTest(t)
+	since := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	var pages []string
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines", func(w http.ResponseWriter, r *http.Request) {
+		pages = append(pages, r.URL.Query().Get("page"))
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Query().Get("page") {
+		case "1":
+			w.Header().Set("X-Next-Page", "2")
+			pipelines := make([]string, 100)
+			for i := range pipelines {
+				pipelines[i] = fmt.Sprintf(`{"id":%d,"status":"success","ref":"main","created_at":"2026-01-03T00:00:00Z"}`, 300-i)
+			}
+			fmt.Fprint(w, "["+strings.Join(pipelines, ",")+"]")
+		case "2":
+			fmt.Fprint(w, `[{"id":100,"status":"success","ref":"main","created_at":"2026-01-02T00:00:00Z"},`+
+				`{"id":99,"status":"success","ref":"main","created_at":"2026-01-01T00:00:00Z"}]`)
+		default:
+			t.Errorf("unexpected page request %q", r.URL.RawQuery)
+		}
+	})
+
+	runs, err := client.ListWorkflowRunsSince(context.Background(), "o", "r", "", since)
+	require.NoError(t, err)
+	require.Len(t, runs, 101, "should include the 100 newer pipelines plus the earliest eligible pipeline at the boundary")
+	assert.Equal(t, 100, runs[len(runs)-1].ID, "the earliest eligible pipeline beyond the first page must be included")
+	for _, r := range runs {
+		assert.NotEqual(t, 99, r.ID, "a pipeline older than the since boundary must not be included")
+	}
+	assert.Equal(t, []string{"1", "2"}, pages, "pagination must stop once a pipeline older than since is seen")
+}
+
+// TestListWorkflowRunsSince_WithRefFilter covers the branch where a
+// non-empty workflowFile (treated as a ref) is appended to the pipelines
+// query, mirroring ListWorkflowRuns's ref filter.
+func TestListWorkflowRunsSince_WithRefFilter(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "develop", r.URL.Query().Get("ref"))
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[{"id":10,"status":"success","ref":"develop","created_at":"2026-01-01T00:00:00Z"}]`)
+	})
+	runs, err := client.ListWorkflowRunsSince(context.Background(), "o", "r", "develop", time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
+	require.NoError(t, err)
+	require.Len(t, runs, 1)
+	assert.Equal(t, 10, runs[0].ID)
+}
+
+func TestListWorkflowRunsSince_Error(t *testing.T) {
+	client, mux := setupTest(t)
+	called := false
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines", func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	_, err := client.ListWorkflowRunsSince(context.Background(), "o", "r", "", time.Now())
+	require.Error(t, err)
+	assert.True(t, called, "the registered 500-response handler must have been invoked, not an unmatched route")
+	assert.Contains(t, err.Error(), "list pipelines since")
+}
+
+func TestListWorkflowRunsSince_DecodeError(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, "{not valid json")
+	})
+	_, err := client.ListWorkflowRunsSince(context.Background(), "o", "r", "", time.Now())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decode pipelines since")
+}
+
+func TestListWorkflowRunsSince_EmptyFirstPage(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, "[]")
+	})
+	runs, err := client.ListWorkflowRunsSince(context.Background(), "o", "r", "", time.Now())
+	require.NoError(t, err)
+	assert.Empty(t, runs)
+}
+
+// TestListWorkflowRunsSince_PaginationExceeded guards the maxPages safety
+// valve: if every page is full and since is never reached, pagination must
+// stop with an error instead of looping indefinitely.
+func TestListWorkflowRunsSince_PaginationExceeded(t *testing.T) {
+	client, mux := setupTest(t)
+	page := 0
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines", func(w http.ResponseWriter, r *http.Request) {
+		page++
+		pipelines := make([]string, 100)
+		for i := range pipelines {
+			pipelines[i] = fmt.Sprintf(`{"id":%d,"status":"success","ref":"main","created_at":"2026-01-03T00:00:00Z"}`, page*1000+i)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Next-Page", strconv.Itoa(page+1))
+		fmt.Fprint(w, "["+strings.Join(pipelines, ",")+"]")
+	})
+	since := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	_, err := client.ListWorkflowRunsSince(context.Background(), "o", "r", "", since)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "pagination exceeded")
+	assert.Equal(t, 100, page)
+}
+
 func TestListRecentWorkflowRuns(t *testing.T) {
 	client, mux := setupTest(t)
 	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines", func(w http.ResponseWriter, _ *http.Request) {
@@ -2123,6 +3679,31 @@ func TestListWorkflowRunJobs(t *testing.T) {
 	assert.Equal(t, "success", jobs[0].Conclusion)
 	assert.Equal(t, "test", jobs[1].Name)
 	assert.Equal(t, "failure", jobs[1].Conclusion)
+}
+
+func TestListWorkflowRunJobs_PaginatesBeyondFirstPage(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines/10/jobs", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Query().Get("page") {
+		case "1":
+			jobs := make([]string, 100)
+			for i := range jobs {
+				jobs[i] = fmt.Sprintf(`{"id":%d,"name":"job-%d","status":"success"}`, i+1, i+1)
+			}
+			w.Header().Set("X-Next-Page", "2")
+			fmt.Fprint(w, "["+strings.Join(jobs, ",")+"]")
+		case "2":
+			fmt.Fprint(w, `[{"id":101,"name":"fullsend review agent","status":"success"}]`)
+		default:
+			t.Errorf("unexpected page %q", r.URL.Query().Get("page"))
+		}
+	})
+
+	jobs, err := client.ListWorkflowRunJobs(context.Background(), "o", "r", 10)
+	require.NoError(t, err)
+	require.Len(t, jobs, 101)
+	assert.Equal(t, "fullsend review agent", jobs[100].Name)
 }
 
 func TestListWorkflowRunArtifacts(t *testing.T) {
@@ -2415,6 +3996,28 @@ func TestGetWorkflowRunLogs_TraceError(t *testing.T) {
 	// Job 1 should show an error, job 2 should show output
 	assert.Contains(t, logs, "error fetching trace")
 	assert.Contains(t, logs, "test output")
+}
+
+// TestGetWorkflowRunLogs_TruncatedTraceIsMarked verifies that a trace over
+// the per-job limit is cut and says so, so callers can tell the snapshot is
+// incomplete.
+func TestGetWorkflowRunLogs_TruncatedTraceIsMarked(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines/30/jobs", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[{"id":1,"name":"build","status":"success"},{"id":2,"name":"test","status":"success"}]`)
+	})
+	mux.HandleFunc("/api/v4/projects/o%2Fr/jobs/1/trace", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(strings.Repeat("x", 10<<20+5)))
+	})
+	mux.HandleFunc("/api/v4/projects/o%2Fr/jobs/2/trace", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("small trace"))
+	})
+	logs, err := client.GetWorkflowRunLogs(context.Background(), "o", "r", 30)
+	require.NoError(t, err)
+	assert.Equal(t, 1, strings.Count(logs, "trace truncated at"), "only the oversized trace is marked")
+	assert.Contains(t, logs, "Job 1 (build): trace truncated at 10485760 bytes")
+	assert.Contains(t, logs, "small trace")
 }
 
 func TestGetWorkflowRunLogs_ListJobsError(t *testing.T) {
@@ -3286,6 +4889,8 @@ func TestCreateRepoSecret_Upsert(t *testing.T) {
 		readJSONBody(t, r, &body)
 		assert.Equal(t, "newvalue", body["value"])
 		assert.Equal(t, true, body["protected"])
+		// Replacing a file-type variable must convert it to an env var.
+		assert.Equal(t, "env_var", body["variable_type"])
 		updated = true
 		writeJSON(t, w, http.StatusOK, map[string]any{"key": "MY_SECRET"})
 	})
@@ -3309,6 +4914,152 @@ func TestCreateRepoSecret_MaskedFallbackNotOnNonMaskError(t *testing.T) {
 	err := client.CreateRepoSecret(ctx, "myorg", "myrepo", "BAD_KEY!", "value")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "key is invalid")
+}
+
+func TestCreateRepoSecret_MaskingRequiredNoUnmaskedFallback(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	callCount := 0
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/variables", func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		var body map[string]any
+		readJSONBody(t, r, &body)
+		assert.Equal(t, true, body["masked"], "must never send masked:false")
+		writeJSON(t, w, http.StatusBadRequest, map[string]string{
+			"message": "This variable can not be masked",
+		})
+	})
+
+	err := client.CreateRepoSecret(ctx, "myorg", "myrepo", forge.SecretOpenAIAPIKey, "sk-valid-looking-key")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not be stored unmasked")
+	assert.Equal(t, 1, callCount, "must not retry with masked:false")
+}
+
+func TestUpdateRepoSecret_MaskingRequiredNoUnmaskedFallback(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/variables", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusConflict, map[string]string{
+			"message": forge.SecretOpenAIAPIKey + " has already been taken",
+		})
+	})
+
+	callCount := 0
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/variables/"+forge.SecretOpenAIAPIKey, func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		assert.Equal(t, http.MethodPut, r.Method)
+		var body map[string]any
+		readJSONBody(t, r, &body)
+		assert.Equal(t, true, body["masked"], "must never send masked:false")
+		writeJSON(t, w, http.StatusBadRequest, map[string]string{
+			"message": "This variable can not be masked",
+		})
+	})
+
+	err := client.CreateRepoSecret(ctx, "myorg", "myrepo", forge.SecretOpenAIAPIKey, "sk-valid-looking-key")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not be stored unmasked")
+	assert.Equal(t, 1, callCount, "must not retry with masked:false")
+}
+
+// genericValueInvalid is the 400 body some GitLab instances return when a
+// value cannot be masked (e.g. it is shorter than 8 characters), without
+// mentioning masking.
+var genericValueInvalid = map[string]any{"message": map[string]any{"value": []string{"is invalid"}}}
+
+func TestCreateRepoSecret_MaskedFallbackOnGenericValueInvalid(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	callCount := 0
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/variables", func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		var body map[string]any
+		readJSONBody(t, r, &body)
+		if body["masked"] == true {
+			writeJSON(t, w, http.StatusBadRequest, genericValueInvalid)
+			return
+		}
+		assert.Equal(t, "seqe-ai", body["value"])
+		assert.Equal(t, true, body["protected"])
+		writeJSON(t, w, http.StatusCreated, map[string]any{"key": forge.SecretGCPProjectID})
+	})
+
+	err := client.CreateRepoSecret(ctx, "myorg", "myrepo", forge.SecretGCPProjectID, "seqe-ai")
+	require.NoError(t, err)
+	assert.Equal(t, 2, callCount, "should retry with masked:false after generic value error")
+}
+
+func TestUpdateRepoSecret_MaskedFallbackOnGenericValueInvalid(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/variables", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusConflict, map[string]string{
+			"message": forge.SecretGCPProjectID + " has already been taken",
+		})
+	})
+
+	callCount := 0
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/variables/"+forge.SecretGCPProjectID, func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		assert.Equal(t, http.MethodPut, r.Method)
+		var body map[string]any
+		readJSONBody(t, r, &body)
+		if body["masked"] == true {
+			writeJSON(t, w, http.StatusBadRequest, genericValueInvalid)
+			return
+		}
+		writeJSON(t, w, http.StatusOK, map[string]any{"key": forge.SecretGCPProjectID})
+	})
+
+	err := client.CreateRepoSecret(ctx, "myorg", "myrepo", forge.SecretGCPProjectID, "seqe-ai")
+	require.NoError(t, err)
+	assert.Equal(t, 2, callCount, "should retry PUT with masked:false after generic value error")
+}
+
+func TestCreateRepoSecret_MaskingRequiredGenericValueInvalid(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	callCount := 0
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/variables", func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		var body map[string]any
+		readJSONBody(t, r, &body)
+		assert.Equal(t, true, body["masked"], "must never send masked:false")
+		writeJSON(t, w, http.StatusBadRequest, genericValueInvalid)
+	})
+
+	err := client.CreateRepoSecret(ctx, "myorg", "myrepo", forge.SecretOpenAIAPIKey, "short")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not be stored unmasked")
+	assert.Equal(t, 1, callCount, "must not retry with masked:false")
+}
+
+func TestIsMaskingError(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		msg    string
+		want   bool
+	}{
+		{name: "explicit mask message", status: http.StatusBadRequest, msg: "This variable can not be masked", want: true},
+		{name: "generic value invalid", status: http.StatusBadRequest, msg: "value: [is invalid]", want: true},
+		{name: "value invalid among other fields", status: http.StatusBadRequest, msg: "key: [is too long]; value: [is invalid]", want: true},
+		{name: "key invalid", status: http.StatusBadRequest, msg: "key: [is invalid]", want: false},
+		{name: "plain key is invalid", status: http.StatusBadRequest, msg: "key is invalid", want: false},
+		{name: "value too long", status: http.StatusBadRequest, msg: "value: [is too long]", want: false},
+		{name: "value invalid wrong status", status: http.StatusUnprocessableEntity, msg: "value: [is invalid]", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, isMaskingError(&APIError{StatusCode: tt.status, Message: tt.msg}))
+		})
+	}
 }
 
 func TestCreatePipelineSchedule_CleansUpOnVariableFailure(t *testing.T) {
@@ -3647,4 +5398,392 @@ func TestCreateCrossRepoChangeProposal_NotSupported(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, cp)
 	assert.ErrorIs(t, err, forge.ErrNotSupported)
+}
+
+func TestGetRepoSecretProtection(t *testing.T) {
+	ctx := context.Background()
+	const path = "/api/v4/projects/myorg%2Fmyrepo/variables/K"
+	for _, tc := range []struct {
+		name string
+		body map[string]any
+		want forge.SecretProtection
+	}{
+		{"masked and protected", map[string]any{"key": "K", "value": "v", "masked": true, "protected": true}, forge.SecretProtection{Exists: true, Masked: true, Protected: true}},
+		{"unmasked", map[string]any{"key": "K", "masked": false, "protected": true}, forge.SecretProtection{Exists: true, Protected: true}},
+		{"unprotected", map[string]any{"key": "K", "masked": true, "protected": false}, forge.SecretProtection{Exists: true, Masked: true}},
+		{"env var", map[string]any{"key": "K", "masked": true, "protected": true, "variable_type": "env_var"}, forge.SecretProtection{Exists: true, Masked: true, Protected: true}},
+		{"file type", map[string]any{"key": "K", "masked": true, "protected": true, "variable_type": "file"}, forge.SecretProtection{Exists: true, Masked: true, Protected: true, FileType: true}},
+		{"wildcard scope", map[string]any{"key": "K", "masked": true, "protected": true, "environment_scope": "*"}, forge.SecretProtection{Exists: true, Masked: true, Protected: true}},
+		{"environment scope", map[string]any{"key": "K", "masked": true, "protected": true, "environment_scope": "production"}, forge.SecretProtection{Exists: true, Masked: true, Protected: true, EnvironmentScoped: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client, mux := setupTest(t)
+			called := false
+			mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
+				called = true
+				assert.Equal(t, http.MethodGet, r.Method)
+				assert.Equal(t, "*", r.URL.Query().Get("filter[environment_scope]"), "the lookup must be limited to the wildcard scope")
+				writeJSON(t, w, http.StatusOK, tc.body)
+			})
+			got, err := client.GetRepoSecretProtection(ctx, "myorg", "myrepo", "K")
+			require.NoError(t, err)
+			assert.True(t, called, "the registered handler must serve the request")
+			assert.Equal(t, tc.want, got)
+		})
+	}
+
+	t.Run("missing", func(t *testing.T) {
+		client, mux := setupTest(t)
+		called := false
+		mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
+			called = true
+			w.WriteHeader(http.StatusNotFound)
+		})
+		got, err := client.GetRepoSecretProtection(ctx, "myorg", "myrepo", "K")
+		require.NoError(t, err)
+		assert.True(t, called, "the handler must report the 404, not ServeMux's default")
+		assert.False(t, got.Exists)
+	})
+
+	t.Run("unexpected status", func(t *testing.T) {
+		client, mux := setupTest(t)
+		mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		})
+		_, err := client.GetRepoSecretProtection(ctx, "myorg", "myrepo", "K")
+		require.Error(t, err)
+	})
+}
+
+func TestListProtectedBranches_IncludesWildcardRules(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	handlerCalls := 0
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches", func(w http.ResponseWriter, r *http.Request) {
+		handlerCalls++
+		assert.Equal(t, http.MethodGet, r.Method)
+		writeJSON(t, w, http.StatusOK, []map[string]any{
+			{"name": "main", "push_access_levels": []map[string]int{{"access_level": 40}}, "merge_access_levels": []map[string]int{{"access_level": 30}}},
+			{"name": "release/*", "push_access_levels": []map[string]int{{"access_level": 0}}, "merge_access_levels": []map[string]int{{"access_level": 40}}},
+		})
+	})
+
+	rules, err := client.ListProtectedBranches(ctx, "myorg", "myrepo")
+	require.NoError(t, err)
+	assert.Equal(t, 1, handlerCalls)
+	require.Len(t, rules, 2)
+	assert.Equal(t, "main", rules[0].Name)
+	assert.Equal(t, "release/*", rules[1].Name)
+	assert.Equal(t, 40, rules[1].MergeAccessLevels[0].AccessLevel)
+}
+
+func TestListProtectedBranches_ErrorStatus(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	handlerCalls := 0
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches", func(w http.ResponseWriter, r *http.Request) {
+		handlerCalls++
+		w.WriteHeader(http.StatusForbidden)
+	})
+
+	_, err := client.ListProtectedBranches(ctx, "myorg", "myrepo")
+	require.Error(t, err)
+	assert.Equal(t, 1, handlerCalls)
+}
+
+func TestListProtectedTags(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	handlerCalls := 0
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_tags", func(w http.ResponseWriter, r *http.Request) {
+		handlerCalls++
+		assert.Equal(t, http.MethodGet, r.Method)
+		writeJSON(t, w, http.StatusOK, []map[string]any{
+			{"name": "v1.0.0"},
+			{"name": "release-*"},
+		})
+	})
+
+	tags, err := client.ListProtectedTags(ctx, "myorg", "myrepo")
+	require.NoError(t, err)
+	assert.Equal(t, 1, handlerCalls)
+	assert.Equal(t, []string{"v1.0.0", "release-*"}, tags)
+}
+
+func TestListProtectedTags_ErrorStatus(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	handlerCalls := 0
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_tags", func(w http.ResponseWriter, r *http.Request) {
+		handlerCalls++
+		w.WriteHeader(http.StatusForbidden)
+	})
+
+	_, err := client.ListProtectedTags(ctx, "myorg", "myrepo")
+	require.Error(t, err)
+	assert.Equal(t, 1, handlerCalls)
+}
+
+func TestRepoVariableWildcardLifecyclePreservesNamedScope(t *testing.T) {
+	client, mux := setupTest(t)
+	values := map[string]string{"*": "old", "production": "keep"}
+	handleTracked(t, mux, "/api/v4/projects/myorg%2Fmyrepo/variables", func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodPost, r.Method)
+		var body map[string]string
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		require.Equal(t, "*", body["environment_scope"])
+		writeJSON(t, w, http.StatusConflict, map[string]string{"message": "duplicate"})
+	})
+	handleTracked(t, mux, "/api/v4/projects/myorg%2Fmyrepo/variables/MY_VAR", func(w http.ResponseWriter, r *http.Request) {
+		scope := r.URL.Query().Get("filter[environment_scope]")
+		require.Equal(t, "*", scope, "ambiguous multi-scope keys must be filtered")
+		switch r.Method {
+		case http.MethodGet:
+			writeJSON(t, w, http.StatusOK, map[string]string{"key": "MY_VAR", "value": values[scope], "environment_scope": scope})
+		case http.MethodPut:
+			var body map[string]string
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			values[scope] = body["value"]
+			writeJSON(t, w, http.StatusOK, map[string]string{"key": "MY_VAR"})
+		case http.MethodDelete:
+			delete(values, scope)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("unexpected method %s", r.Method)
+		}
+	})
+	ctx := context.Background()
+	value, present, err := client.GetRepoVariable(ctx, "myorg", "myrepo", "MY_VAR")
+	require.NoError(t, err)
+	require.True(t, present)
+	require.Equal(t, "old", value)
+	require.NoError(t, client.CreateOrUpdateRepoVariable(ctx, "myorg", "myrepo", "MY_VAR", "new"))
+	require.Equal(t, "new", values["*"])
+	require.Equal(t, "keep", values["production"])
+	require.NoError(t, client.DeleteRepoVariable(ctx, "myorg", "myrepo", "MY_VAR"))
+	require.Equal(t, map[string]string{"production": "keep"}, values)
+}
+
+func TestInheritedVariableNonBlankMetadataAndPrecedence(t *testing.T) {
+	client, mux := setupTest(t)
+	handleTracked(t, mux, "/api/v4/groups/top/variables", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusOK, []map[string]string{{"key": "FULLSEND_OPENAI_AUDIENCE", "value": "ancestor"}})
+	})
+	handleTracked(t, mux, "/api/v4/groups/top%2Fsub/variables", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusOK, []map[string]string{{"key": "FULLSEND_OPENAI_AUDIENCE", "value": " \n"}, {"key": "FULLSEND_OPENAI_SERVICE_ACCOUNT_ID", "value": "sensitive-placeholder"}})
+	})
+	handleTracked(t, mux, "/api/v4/admin/ci/variables", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusOK, []map[string]string{{"key": "FULLSEND_OPENAI_AUDIENCE", "value": "instance"}})
+	})
+	vars, err := client.ListInheritedRepoVariables(context.Background(), "top", "sub/proj")
+	require.NoError(t, err)
+	require.Len(t, vars, 2)
+	for _, v := range vars {
+		require.Empty(t, v.Value, "sensitive values must not escape the adapter")
+		require.NotNil(t, v.NonBlank)
+		require.Equal(t, v.Name == "FULLSEND_OPENAI_SERVICE_ACCOUNT_ID", *v.NonBlank)
+	}
+}
+
+func TestOpenAIWIFFileVariablePresence(t *testing.T) {
+	for _, value := range []string{"", " \n"} {
+		t.Run(fmt.Sprintf("value=%q", value), func(t *testing.T) {
+			client, mux := setupTest(t)
+			handleTracked(t, mux, "/api/v4/projects/myorg%2Fmyrepo/variables/FULLSEND_OPENAI_AUDIENCE", func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, "*", r.URL.Query().Get("filter[environment_scope]"))
+				writeJSON(t, w, http.StatusOK, map[string]string{"value": value, "variable_type": "file"})
+			})
+			variable, exists, err := client.GetRepoVariableInfo(context.Background(), "myorg", "myrepo", forge.VarOpenAIAudience)
+			require.NoError(t, err)
+			assert.True(t, exists)
+			assert.True(t, variable.FileType)
+			assert.Equal(t, value, variable.Value)
+			for _, scope := range []string{"group", "instance"} {
+				path := "/api/v4/groups/myorg/variables"
+				if scope == "instance" {
+					path = "/api/v4/admin/ci/variables"
+				}
+				handleTracked(t, mux, path, func(w http.ResponseWriter, _ *http.Request) {
+					writeJSON(t, w, http.StatusOK, []map[string]string{{"key": forge.VarOpenAIAudience, "value": value, "variable_type": "file", "environment_scope": "*"}})
+				})
+			}
+			vars, err := client.ListInheritedRepoVariables(context.Background(), "myorg", "myrepo")
+			require.NoError(t, err)
+			require.Len(t, vars, 1)
+			require.NotNil(t, vars[0].NonBlank)
+			assert.True(t, *vars[0].NonBlank)
+			assert.Empty(t, vars[0].Value)
+			instance, err := client.ListInstanceVariables(context.Background())
+			require.NoError(t, err)
+			require.Len(t, instance, 1)
+			require.NotNil(t, instance[0].NonBlank)
+			assert.True(t, *instance[0].NonBlank)
+		})
+	}
+}
+
+func TestProjectLease(t *testing.T) {
+	ctx := context.Background()
+	const collection = "/api/v4/projects/myorg%2Fmyrepo/variables"
+	const item = collection + "/LEASE"
+
+	t.Run("acquire creates the variable", func(t *testing.T) {
+		client, mux := setupTest(t)
+		called := false
+		mux.HandleFunc(collection, func(w http.ResponseWriter, r *http.Request) {
+			called = true
+			assert.Equal(t, http.MethodPost, r.Method)
+			var body map[string]any
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			assert.Equal(t, "LEASE", body["key"])
+			assert.Equal(t, "holder-a", body["value"])
+			writeJSON(t, w, http.StatusCreated, map[string]any{"key": "LEASE"})
+		})
+		ok, err := client.AcquireProjectLease(ctx, "myorg", "myrepo", "LEASE", "holder-a")
+		require.NoError(t, err)
+		assert.True(t, called, "the registered handler must serve the request")
+		assert.True(t, ok)
+	})
+
+	for name, status := range map[string]int{"conflict": http.StatusConflict, "already taken": http.StatusBadRequest} {
+		t.Run("acquire reports a held lease ("+name+")", func(t *testing.T) {
+			client, mux := setupTest(t)
+			called := false
+			mux.HandleFunc(collection, func(w http.ResponseWriter, r *http.Request) {
+				called = true
+				writeJSON(t, w, status, map[string]any{"message": map[string]any{"key": []string{"has already been taken"}}})
+			})
+			ok, err := client.AcquireProjectLease(ctx, "myorg", "myrepo", "LEASE", "holder-b")
+			require.NoError(t, err)
+			assert.True(t, called, "the registered handler must serve the request")
+			assert.False(t, ok)
+		})
+	}
+
+	t.Run("acquire reports other failures", func(t *testing.T) {
+		client, mux := setupTest(t)
+		called := false
+		mux.HandleFunc(collection, func(w http.ResponseWriter, r *http.Request) {
+			called = true
+			w.WriteHeader(http.StatusForbidden)
+		})
+		ok, err := client.AcquireProjectLease(ctx, "myorg", "myrepo", "LEASE", "holder-a")
+		require.Error(t, err)
+		assert.True(t, called, "the registered handler must serve the request")
+		assert.False(t, ok)
+	})
+
+	t.Run("release deletes only the holder's own lease", func(t *testing.T) {
+		client, mux := setupTest(t)
+		var current = "holder-a"
+		deleted := false
+		mux.HandleFunc(item, func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "*", r.URL.Query().Get("filter[environment_scope]"))
+			switch r.Method {
+			case http.MethodGet:
+				writeJSON(t, w, http.StatusOK, map[string]any{"key": "LEASE", "value": current})
+			case http.MethodDelete:
+				deleted = true
+				w.WriteHeader(http.StatusNoContent)
+			}
+		})
+		require.NoError(t, client.ReleaseProjectLease(ctx, "myorg", "myrepo", "LEASE", "holder-b"))
+		assert.False(t, deleted, "another holder's lease is left alone")
+		require.NoError(t, client.ReleaseProjectLease(ctx, "myorg", "myrepo", "LEASE", "holder-a"))
+		assert.True(t, deleted)
+	})
+
+	t.Run("release of a missing lease is a no-op", func(t *testing.T) {
+		client, mux := setupTest(t)
+		called := false
+		mux.HandleFunc(item, func(w http.ResponseWriter, r *http.Request) {
+			called = true
+			assert.Equal(t, http.MethodGet, r.Method)
+			w.WriteHeader(http.StatusNotFound)
+		})
+		require.NoError(t, client.ReleaseProjectLease(ctx, "myorg", "myrepo", "LEASE", "holder-a"))
+		assert.True(t, called, "the registered handler must serve the request")
+	})
+
+	t.Run("release reports lookup and delete failures", func(t *testing.T) {
+		client, mux := setupTest(t)
+		fail := http.MethodGet
+		mux.HandleFunc(item, func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet && fail == http.MethodGet {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			if r.Method == http.MethodGet {
+				writeJSON(t, w, http.StatusOK, map[string]any{"value": "holder-a"})
+				return
+			}
+			w.WriteHeader(http.StatusForbidden)
+		})
+		require.Error(t, client.ReleaseProjectLease(ctx, "myorg", "myrepo", "LEASE", "holder-a"))
+		fail = http.MethodDelete
+		require.Error(t, client.ReleaseProjectLease(ctx, "myorg", "myrepo", "LEASE", "holder-a"))
+	})
+
+	t.Run("release never retries an ambiguously completed delete", func(t *testing.T) {
+		client, mux := setupTest(t)
+		// A's first DELETE removes its lease server-side but the response is
+		// an error. B then acquires the variable. A must not retry the DELETE
+		// and thereby remove B's lease.
+		current := "holder-a"
+		deletes := 0
+		mux.HandleFunc(item, func(w http.ResponseWriter, r *http.Request) {
+			switch r.Method {
+			case http.MethodGet:
+				writeJSON(t, w, http.StatusOK, map[string]any{"key": "LEASE", "value": current})
+			case http.MethodDelete:
+				deletes++
+				current = "holder-b"
+				w.WriteHeader(http.StatusServiceUnavailable)
+			}
+		})
+		err := client.ReleaseProjectLease(ctx, "myorg", "myrepo", "LEASE", "holder-a")
+		require.Error(t, err)
+		assert.Equal(t, 1, deletes, "the lease DELETE is sent exactly once")
+		assert.Equal(t, "holder-b", current, "the new holder's lease is left alone")
+	})
+
+	// Documents the known limitation of a CI-variable backend: GitLab has no
+	// conditional delete, so a lease replaced between the holder check and the
+	// DELETE is removed. See the ReleaseProjectLease doc comment.
+	t.Run("release removes a lease replaced between the check and the delete", func(t *testing.T) {
+		client, mux := setupTest(t)
+		current := "holder-a"
+		deleted := false
+		mux.HandleFunc(item, func(w http.ResponseWriter, r *http.Request) {
+			switch r.Method {
+			case http.MethodGet:
+				writeJSON(t, w, http.StatusOK, map[string]any{"key": "LEASE", "value": current})
+				// Between the GET and the DELETE, holder-a's lease is replaced
+				// by holder-b's.
+				current = "holder-b"
+			case http.MethodDelete:
+				deleted = true
+				w.WriteHeader(http.StatusNoContent)
+			}
+		})
+		require.NoError(t, client.ReleaseProjectLease(ctx, "myorg", "myrepo", "LEASE", "holder-a"))
+		assert.True(t, deleted, "the unconditional DELETE removes whichever lease is present")
+		assert.Equal(t, "holder-b", current)
+	})
+
+	t.Run("release tolerates a lease deleted concurrently", func(t *testing.T) {
+		client, mux := setupTest(t)
+		mux.HandleFunc(item, func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet {
+				writeJSON(t, w, http.StatusOK, map[string]any{"value": "holder-a"})
+				return
+			}
+			w.WriteHeader(http.StatusNotFound)
+		})
+		require.NoError(t, client.ReleaseProjectLease(ctx, "myorg", "myrepo", "LEASE", "holder-a"))
+	})
 }

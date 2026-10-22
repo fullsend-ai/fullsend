@@ -22,7 +22,6 @@ func TestCheckBuiltinReadinessAllReady(t *testing.T) {
 	t.Parallel()
 	got := CheckBuiltinReadiness(allBuiltinSecretsPresent(), Registry{})
 	assert.True(t, got.Ready)
-	assert.True(t, got.SharedPresent)
 	assert.Empty(t, got.Missing)
 	require.Len(t, got.Roles, 3)
 	assert.Equal(t, []Role{RolePoller, RoleAnalyst, RoleCoder}, []Role{got.Roles[0].Name, got.Roles[1].Name, got.Roles[2].Name})
@@ -83,7 +82,6 @@ func TestCheckBuiltinReadinessMissingEachRole(t *testing.T) {
 			joined := strings.Join(got.Diagnostics, "\n")
 			assert.Contains(t, joined, "credential not provisioned ("+tc.drop+")")
 			assert.Contains(t, joined, "builtin roles ready: 2/3; missing="+string(tc.missing))
-			assert.Contains(t, joined, "not a substitute")
 			assertNoSecretLeak(t, got.Diagnostics)
 		})
 	}
@@ -95,11 +93,9 @@ func TestCheckBuiltinReadinessSharedTokenDoesNotSubstitute(t *testing.T) {
 		forge.SecretForgeToken: true,
 	}, Registry{})
 	assert.False(t, got.Ready)
-	assert.True(t, got.SharedPresent)
 	assert.Equal(t, []Role{RolePoller, RoleAnalyst, RoleCoder}, got.Missing)
 	joined := strings.Join(got.Diagnostics, "\n")
 	assert.Contains(t, joined, "builtin roles ready: 0/3; missing=poller,analyst,coder")
-	assert.Contains(t, joined, "shared credential FULLSEND_FORGE_TOKEN is present and is not a substitute")
 	assert.NotContains(t, joined, "glpat-")
 	for _, c := range got.Roles {
 		assert.False(t, c.Ready)
@@ -114,7 +110,6 @@ func TestCheckBuiltinReadinessPartialWithoutShared(t *testing.T) {
 		forge.SecretGitLabAnalystToken: true,
 	}, Registry{})
 	assert.False(t, got.Ready)
-	assert.False(t, got.SharedPresent)
 	assert.Equal(t, []Role{RoleCoder}, got.Missing)
 	joined := strings.Join(got.Diagnostics, "\n")
 	assert.Contains(t, joined, "builtin poller: ready")
@@ -128,7 +123,6 @@ func TestCheckBuiltinReadinessNilPresent(t *testing.T) {
 	t.Parallel()
 	got := CheckBuiltinReadiness(nil, BuiltinRegistry())
 	assert.False(t, got.Ready)
-	assert.False(t, got.SharedPresent)
 	assert.Len(t, got.Missing, 3)
 }
 
@@ -198,7 +192,7 @@ func TestCheckBuiltinRoleEnforcedResolveFailures(t *testing.T) {
 		spec.job = AgentJob("e2e")
 		got := checkBuiltinRole(present, reg, spec)
 		assert.False(t, got.Ready)
-		assert.Contains(t, strings.Join(got.Reasons, "\n"), "enforced resolve failed for a provisioned role")
+		assert.Contains(t, strings.Join(got.Reasons, "\n"), "role resolve failed for a provisioned role")
 	})
 	t.Run("wrong job identity", func(t *testing.T) {
 		t.Parallel()
@@ -207,7 +201,7 @@ func TestCheckBuiltinRoleEnforcedResolveFailures(t *testing.T) {
 		got := checkBuiltinRole(present, reg, spec)
 		assert.False(t, got.Ready)
 		joined := strings.Join(got.Reasons, "\n")
-		assert.Contains(t, joined, `enforced resolve selected role "analyst"`)
+		assert.Contains(t, joined, `role resolve selected role "analyst"`)
 		assert.Contains(t, joined, `want role "coder"`)
 		assert.Contains(t, joined, forge.SecretGitLabAnalystToken)
 		assert.Contains(t, joined, forge.SecretGitLabCoderToken)

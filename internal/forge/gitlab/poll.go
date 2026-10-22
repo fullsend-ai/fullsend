@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/poll"
 )
 
@@ -17,8 +18,8 @@ import (
 // not allow two methods with the same name and different return types on
 // a single struct, so PollClient shadows GetIssue with the poll-specific
 // version and inherits the remaining methods (ForceCommitFileToBranch,
-// GetFileContentAtRef, DeleteRef, GetAuthenticatedUser) from the
-// embedded LiveClient.
+// CommitFileToBranch, GetBranchRef, GetFileContentAtRef, DeleteRef,
+// GetAuthenticatedUser) from the embedded LiveClient.
 type PollClient struct {
 	*LiveClient
 }
@@ -29,6 +30,29 @@ var _ poll.GitLabClient = (*PollClient)(nil)
 // NewPollClient wraps a LiveClient for use with the cron poller.
 func NewPollClient(c *LiveClient) *PollClient {
 	return &PollClient{LiveClient: c}
+}
+
+// GetUserBot reads the full user record because nested issue author objects
+// omit bot on some GitLab versions. A missing field is not proof of a human.
+func (pc *PollClient) GetUserBot(ctx context.Context, userID int) (bool, error) {
+	if userID <= 0 {
+		return false, fmt.Errorf("invalid user ID %d", userID)
+	}
+	resp, err := pc.get(ctx, fmt.Sprintf("/users/%d", userID))
+	if err != nil {
+		return false, fmt.Errorf("get user %d: %w", userID, err)
+	}
+	var user struct {
+		ID  int   `json:"id"`
+		Bot *bool `json:"bot"`
+	}
+	if err := decodeJSON(resp, &user); err != nil {
+		return false, fmt.Errorf("decode user %d: %w", userID, err)
+	}
+	if user.ID != userID || user.Bot == nil {
+		return false, fmt.Errorf("user %d response lacks matching ID or bot flag", userID)
+	}
+	return *user.Bot, nil
 }
 
 const pollPerPage = 100
@@ -358,6 +382,29 @@ func (pc *PollClient) GetMergeRequest(ctx context.Context, owner, repo string, m
 // variables. Returns the pipeline ID and web URL.
 func (pc *PollClient) CreatePipeline(ctx context.Context, owner, repo, ref string, variables map[string]string) (int64, string, error) {
 	p, err := pc.LiveClient.CreatePipeline(ctx, owner, repo, ref, variables)
+	if err != nil {
+		return 0, "", err
+	}
+	return p.ID, p.WebURL, nil
+}
+
+// CreatePipelineWithInputs creates a new pipeline on the given ref using
+// typed GitLab CI/CD pipeline inputs instead of user-defined pipeline
+// variables. Returns the pipeline ID and web URL.
+func (pc *PollClient) CreatePipelineWithInputs(ctx context.Context, owner, repo, ref string, inputs map[string]forge.PipelineInputValue) (int64, string, error) {
+	p, err := pc.LiveClient.CreatePipelineWithInputs(ctx, owner, repo, ref, inputs)
+	if err != nil {
+		return 0, "", err
+	}
+	return p.ID, p.WebURL, nil
+}
+
+// CreateChildPipelineWithInputs starts a source=pipeline downstream
+// pipeline on ref, authenticated by jobToken (the running job's
+// CI_JOB_TOKEN) and parameterized by typed pipeline inputs. Returns the
+// pipeline ID and web URL.
+func (pc *PollClient) CreateChildPipelineWithInputs(ctx context.Context, owner, repo, ref, jobToken string, inputs map[string]forge.PipelineInputValue) (int64, string, error) {
+	p, err := pc.LiveClient.TriggerPipelineWithJobToken(ctx, owner, repo, ref, jobToken, inputs)
 	if err != nil {
 		return 0, "", err
 	}

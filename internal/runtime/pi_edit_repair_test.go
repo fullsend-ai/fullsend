@@ -40,7 +40,7 @@ func TestBuildPiRunCommand_EditRepairGate(t *testing.T) {
 	cmd := buildPiRunCommand(piTestParams(), &piManifest{AgentName: "code"}, declared, "")
 	guard := piEditRepairGuard(ext)
 	guardIdx := strings.Index(cmd, guard)
-	envIdx := strings.Index(cmd, ". '/sandbox/workspace/.env'")
+	envIdx := strings.Index(cmd, piEnvLoad)
 	require.True(t, guardIdx > 0 && envIdx > 0, cmd)
 	assert.Less(t, guardIdx, envIdx, "the guard runs before .env can shadow its tools")
 	assert.Contains(t, cmd, "-e '"+ext+"' -e '/sandbox/pi-config/extensions/go-diagnostics'",

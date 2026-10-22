@@ -3,8 +3,11 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -242,6 +245,7 @@ func (s stubBootstrapInput) Plugins() []PluginInput             { return nil }
 func (s stubBootstrapInput) ModelAliases() map[string]string    { return nil }
 func (s stubBootstrapInput) AgentSubagents() map[string]*string { return nil }
 func (s stubBootstrapInput) ParentModel() string                { return "" }
+func (s stubBootstrapInput) OpenAIProviderAttached() bool       { return false }
 
 func TestDummyRuntime_Bootstrap(t *testing.T) {
 	t.Parallel()
@@ -382,6 +386,52 @@ func TestDummyRuntime_RunOpFailureReturnsNilGoError(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestDummyRuntime_RunExpectedFailureExitsZero(t *testing.T) {
+	fullsendDir := t.TempDir()
+	scriptDir := filepath.Join(fullsendDir, "behaviour")
+	require.NoError(t, os.MkdirAll(scriptDir, 0o755))
+	script := `ops:
+- description: blocked fetch
+  op: url_get
+  args: https://example.com/blocked
+  expect_fail: true
+`
+	require.NoError(t, os.WriteFile(filepath.Join(scriptDir, "current-scenario.yaml"), []byte(script), 0o644))
+
+	var got BehaviourResults
+	rt := DummyRuntime{WriteResultsFn: func(_ string, r BehaviourResults) error { got = r; return nil }}
+	exit, err := rt.Run(context.Background(), RunParams{
+		SandboxName: "nonexistent-sandbox",
+		RepoDir:     t.TempDir(),
+		FullsendDir: fullsendDir,
+	}, ui.New(io.Discard), time.Now(), nil)
+	require.NoError(t, err)
+	assert.Equal(t, 0, exit)
+	require.Len(t, got.Operations, 1)
+	assert.False(t, got.Operations[0].Success, "the failure is still recorded")
+}
+
+func TestBehaviourExitCode(t *testing.T) {
+	t.Parallel()
+	script := &BehaviourScript{Ops: []BehaviourOperation{{Op: "url_get", ExpectFail: true}, {Op: "assert_env"}}}
+	tests := []struct {
+		name    string
+		results []BehaviourOpResult
+		want    int
+	}{
+		{"all pass", []BehaviourOpResult{{Success: true}, {Success: true}}, 0},
+		{"expected failure only", []BehaviourOpResult{{Success: false}, {Success: true}}, 0},
+		{"unexpected failure", []BehaviourOpResult{{Success: true}, {Success: false}}, 1},
+		{"both fail", []BehaviourOpResult{{Success: false}, {Success: false}}, 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, behaviourExitCode(script, BehaviourResults{Operations: tt.results}))
+		})
+	}
+}
+
 func TestExecuteBehaviourOp_URLGetNonZeroExit(t *testing.T) {
 	t.Parallel()
 
@@ -453,10 +503,10 @@ func TestWriteBehaviourResultsSuccess(t *testing.T) {
 func TestValidateHTTPURL(t *testing.T) {
 	t.Parallel()
 
-	require.NoError(t, validateHTTPURL("https://example.com/path"))
-	require.Error(t, validateHTTPURL("file:///etc/passwd"))
-	require.Error(t, validateHTTPURL(""))
-	require.Error(t, validateHTTPURL("://missing"))
+	require.NoError(t, validateHTTPURL("url_get", "https://example.com/path"))
+	require.Error(t, validateHTTPURL("url_get", "file:///etc/passwd"))
+	require.Error(t, validateHTTPURL("url_get", ""))
+	require.Error(t, validateHTTPURL("url_get", "://missing"))
 }
 
 func TestExecuteBehaviourOp_AssertEnvEmpty(t *testing.T) {
@@ -598,6 +648,23 @@ func runCheckoutBranchForReal(t *testing.T, repoDir, branch string) error {
 	})
 }
 
+// runGit runs git in dir without inheriting host signing or editor config.
+// Seed commits and tags must not depend on the caller's git configuration.
+func runGit(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t.invalid",
+		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t.invalid",
+		"GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_CONFIG_SYSTEM=/dev/null",
+		"GIT_EDITOR=true")
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "git %v: %s", args, out)
+	return strings.TrimSpace(string(out))
+}
+
 // initCheckoutBranchRepos creates a bare "origin" with an initial commit
 // on main plus a clone, and returns the clone path and origin path.
 func initCheckoutBranchRepos(t *testing.T) (clone, origin string) {
@@ -607,31 +674,19 @@ func initCheckoutBranchRepos(t *testing.T) (clone, origin string) {
 	clone = filepath.Join(base, "clone")
 	seed := filepath.Join(base, "seed")
 
-	run := func(dir string, args ...string) string {
-		t.Helper()
-		cmd := exec.Command("git", args...)
-		cmd.Dir = dir
-		cmd.Env = append(os.Environ(),
-			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t.invalid",
-			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t.invalid")
-		out, err := cmd.CombinedOutput()
-		require.NoError(t, err, "git %v: %s", args, out)
-		return strings.TrimSpace(string(out))
-	}
-
-	run(base, "init", "--bare", "-b", "main", origin)
-	run(base, "init", "-b", "main", seed)
+	runGit(t, base, "init", "--bare", "-b", "main", origin)
+	runGit(t, base, "init", "-b", "main", seed)
 	require.NoError(t, os.WriteFile(filepath.Join(seed, "README.md"), []byte("seed\n"), 0o644))
-	run(seed, "add", "README.md")
-	run(seed, "commit", "-m", "initial")
-	run(seed, "push", origin, "main")
+	runGit(t, seed, "add", "README.md")
+	runGit(t, seed, "commit", "-m", "initial")
+	runGit(t, seed, "push", origin, "main")
 	// Seed a remote-only branch with one extra commit.
-	run(seed, "checkout", "-b", "agent/7-existing")
+	runGit(t, seed, "checkout", "-b", "agent/7-existing")
 	require.NoError(t, os.WriteFile(filepath.Join(seed, "extra.txt"), []byte("extra\n"), 0o644))
-	run(seed, "add", "extra.txt")
-	run(seed, "commit", "-m", "extra")
-	run(seed, "push", origin, "agent/7-existing")
-	run(base, "clone", "-b", "main", origin, clone)
+	runGit(t, seed, "add", "extra.txt")
+	runGit(t, seed, "commit", "-m", "extra")
+	runGit(t, seed, "push", origin, "agent/7-existing")
+	runGit(t, base, "clone", "-b", "main", origin, clone)
 	return clone, origin
 }
 
@@ -689,14 +744,12 @@ func TestExecuteBehaviourOp_CheckoutBranchRealShellPrefersBranchOverSameNamedTag
 
 	// Tag the *initial* commit with the same name as the branch. Without
 	// scoping the fetch to refs/heads/, git's default ref disambiguation
-	// would resolve the tag ahead of the branch.
-	seedTagCmd := exec.Command("git", "tag", "agent/7-existing", "main")
-	seedTagCmd.Dir = filepath.Join(filepath.Dir(clone), "seed")
-	require.NoError(t, seedTagCmd.Run())
-	pushTagCmd := exec.Command("git", "push", origin, "refs/tags/agent/7-existing")
-	pushTagCmd.Dir = filepath.Join(filepath.Dir(clone), "seed")
-	out, err := pushTagCmd.CombinedOutput()
-	require.NoError(t, err, string(out))
+	// would resolve the tag ahead of the branch. Route through runGit so
+	// host tag.gpgsign / editor config cannot turn this into a signed
+	// annotated tag that requires a message.
+	seed := filepath.Join(filepath.Dir(clone), "seed")
+	runGit(t, seed, "tag", "agent/7-existing", "main")
+	runGit(t, seed, "push", origin, "refs/tags/agent/7-existing")
 
 	require.NoError(t, runCheckoutBranchForReal(t, clone, "agent/7-existing"))
 	assert.Equal(t, branchTip, gitOut(t, clone, "rev-parse", "HEAD~1"), "checkout must resolve the branch, not the same-named tag")
@@ -810,4 +863,382 @@ func TestDummyRuntime_ClearIterationArtifacts_SweepFailureIsNotAnError(t *testin
 	require.NoError(t, rt.ClearIterationArtifacts("sb"))
 	require.Len(t, cmds, 2)
 	assert.Contains(t, cmds[1], "rm -rf")
+}
+
+func TestParseHTTPProbeArgs(t *testing.T) {
+	t.Parallel()
+
+	p, err := ParseHTTPProbeArgs(`POST https://gw.example/v1/chat/completions INFERENCE_GATEWAY_API_KEY {"model": "echo", "x": 1}`)
+	require.NoError(t, err)
+	assert.Equal(t, "POST", p.Method)
+	assert.Equal(t, "https://gw.example/v1/chat/completions", p.URL)
+	assert.Equal(t, "INFERENCE_GATEWAY_API_KEY", p.HeaderEnv)
+	assert.Equal(t, `{"model": "echo", "x": 1}`, p.Body)
+
+	p, err = ParseHTTPProbeArgs("GET http://gw.example/v1/models INFERENCE_GATEWAY_API_KEY")
+	require.NoError(t, err)
+	assert.Empty(t, p.Body)
+
+	for _, bad := range []string{
+		"",
+		"GET http://gw.example/",
+		"DELETE http://gw.example/ OPENAI_API_KEY",
+		"GET ftp://gw.example/ OPENAI_API_KEY",
+		"GET http://gw.example/ BAD-NAME",
+		"GET http://gw.example/ $(id)",
+		"GET http://gw.example/ GITHUB_TOKEN",
+		"GET http://gw.example/ OPENAI_API_KEY body-on-get",
+	} {
+		_, err := ParseHTTPProbeArgs(bad)
+		assert.Error(t, err, bad)
+	}
+}
+
+func TestHTTPProbeHeaderEnvAllowlist(t *testing.T) {
+	t.Parallel()
+
+	for _, name := range httpProbeHeaderEnvs {
+		_, err := ParseHTTPProbeArgs("GET https://gw.example/v1/models " + name)
+		require.NoError(t, err, name)
+	}
+	_, err := ParseHTTPProbeArgs("GET https://gw.example/v1/models GITHUB_TOKEN")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `http_probe header_env "GITHUB_TOKEN" is not allowed`)
+}
+
+func TestValidateHTTPURLNamesOp(t *testing.T) {
+	t.Parallel()
+
+	for _, op := range []string{"url_get", "http_probe"} {
+		err := validateHTTPURL(op, "ftp://gw.example/")
+		require.Error(t, err)
+		assert.True(t, strings.HasPrefix(err.Error(), op+" requires http or https"), err.Error())
+		err = validateHTTPURL(op, "https://")
+		require.Error(t, err)
+		assert.Equal(t, op+" requires a host", err.Error())
+	}
+	_, err := ParseHTTPProbeArgs("GET ftp://gw.example/ OPENAI_API_KEY")
+	require.Error(t, err)
+	assert.True(t, strings.HasPrefix(err.Error(), "http_probe requires http or https"), err.Error())
+}
+
+func TestHTTPProbeFromOpPrefersFields(t *testing.T) {
+	t.Parallel()
+
+	p, err := httpProbeFromOp(BehaviourOperation{Op: "http_probe", Args: "ignored", Method: "POST", URL: "https://gw.example/x", HeaderEnv: "INFERENCE_GATEWAY_API_KEY", Body: "{}"})
+	require.NoError(t, err)
+	assert.Equal(t, HTTPProbe{Method: "POST", URL: "https://gw.example/x", HeaderEnv: "INFERENCE_GATEWAY_API_KEY", Body: "{}"}, p)
+
+	_, err = httpProbeFromOp(BehaviourOperation{Op: "http_probe", Method: "PUT", URL: "https://gw.example/x", HeaderEnv: "INFERENCE_GATEWAY_API_KEY"})
+	assert.Error(t, err)
+}
+
+func TestHTTPProbeCommandNeverInterpolatesValues(t *testing.T) {
+	t.Parallel()
+
+	cmd, err := httpProbeCommand(HTTPProbe{Method: "POST", URL: "https://gw.example/'; rm -rf /", HeaderEnv: "INFERENCE_GATEWAY_API_KEY", Body: `'$(id)'`})
+	require.NoError(t, err)
+	assert.True(t, strings.HasPrefix(cmd, "NODE_USE_ENV_PROXY=1 node -e "))
+	assert.NotContains(t, cmd, "rm -rf")
+	assert.NotContains(t, cmd, "$(id)")
+}
+
+func TestExecuteBehaviourScript_HTTPProbeRecordsStatusAndBody(t *testing.T) {
+	t.Parallel()
+
+	big := strings.Repeat("a", httpProbeBodyLimit+100)
+	responses := []string{
+		`{"status":200,"body":"{\"authorization\":\"Bearer stub\"}"}`,
+		`{"status":403,"body":"` + big + `"}`,
+		`{"error":"connect ECONNREFUSED"}`,
+		`not json`,
+	}
+	call := 0
+	rt := DummyRuntime{ExecFn: func(_, cmd string, _ time.Duration) (string, string, int, error) {
+		assert.Contains(t, cmd, "node -e ")
+		out := responses[call]
+		call++
+		code := 0
+		if strings.Contains(out, "error") {
+			code = 2
+		}
+		return "noise\n" + out + "\n", "stderr text", code, nil
+	}}
+	script := &BehaviourScript{Ops: []BehaviourOperation{
+		{Description: "ok", Op: "http_probe", Args: `POST https://gw.example/v1/chat/completions INFERENCE_GATEWAY_API_KEY {"model":"echo"}`},
+		{Description: "denied", Op: "http_probe", Method: "POST", URL: "https://gw.example/v1/chat/completions", HeaderEnv: "INFERENCE_GATEWAY_API_KEY"},
+		{Description: "refused", Op: "http_probe", Args: "GET https://other.example/ INFERENCE_GATEWAY_API_KEY"},
+		{Description: "garbled", Op: "http_probe", Args: "GET https://other.example/ INFERENCE_GATEWAY_API_KEY"},
+		{Description: "invalid", Op: "http_probe", Args: "PUT https://other.example/ INFERENCE_GATEWAY_API_KEY"},
+	}}
+	results, err := executeBehaviourScript(context.Background(), rt, "sb", "/sandbox/workspace/repo", script)
+	require.Error(t, err)
+	require.Len(t, results.Operations, 5)
+	assert.Equal(t, 4, call, "invalid op must not reach the sandbox")
+
+	assert.True(t, results.Operations[0].Success)
+	assert.Equal(t, 200, results.Operations[0].HTTPStatus)
+	assert.Contains(t, results.Operations[0].ResponseBody, "Bearer stub")
+
+	assert.False(t, results.Operations[1].Success)
+	assert.Equal(t, 403, results.Operations[1].HTTPStatus)
+	assert.Len(t, results.Operations[1].ResponseBody, httpProbeBodyLimit)
+	assert.Contains(t, results.Operations[1].Error, "HTTP 403")
+
+	assert.False(t, results.Operations[2].Success)
+	assert.Zero(t, results.Operations[2].HTTPStatus)
+	assert.Contains(t, results.Operations[2].Error, "ECONNREFUSED")
+
+	assert.False(t, results.Operations[3].Success)
+	assert.Contains(t, results.Operations[3].Error, "unreadable output")
+
+	assert.False(t, results.Operations[4].Success)
+	assert.Contains(t, results.Operations[4].Error, "GET or POST")
+	for _, res := range results.Operations {
+		assert.False(t, res.BodyHadJWT, res.Description)
+	}
+}
+
+// TestExecuteHTTPProbe_RedactsJWT checks the runner-side redaction: a
+// JWT-shaped substring in the sandbox's output never reaches the recorded
+// body, and the flag records that it was there.
+func TestExecuteHTTPProbe_RedactsJWT(t *testing.T) {
+	t.Parallel()
+
+	jwt := strings.Join([]string{"eyJhbGciOiJSUzI1NiJ9", "eyJzdWIiOiJyZXBvIn0", "c2ln"}, ".")
+	for _, tc := range []struct {
+		name   string
+		stdout string
+		hadJWT bool
+	}{
+		{"redacted here", `{"status":200,"body":"token=` + jwt + ` end"}`, true},
+		{"flagged by the sandbox", `{"status":200,"body":"token=<redacted-jwt> end","body_had_jwt":true}`, true},
+		{"no jwt", `{"status":200,"body":"eyJ alone is not a token"}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rt := DummyRuntime{ExecFn: func(_, _ string, _ time.Duration) (string, string, int, error) {
+				return tc.stdout + "\n", "", 0, nil
+			}}
+			status, body, hadJWT, err := executeHTTPProbe(rt, "sb", BehaviourOperation{Op: "http_probe", Args: "GET https://gw.example/v1/models INFERENCE_GATEWAY_API_KEY"})
+			require.NoError(t, err)
+			assert.Equal(t, 200, status)
+			assert.Equal(t, tc.hadJWT, hadJWT)
+			assert.NotContains(t, body, jwt)
+			if tc.hadJWT {
+				assert.Equal(t, "token="+httpProbeJWTRedaction+" end", body)
+			}
+		})
+	}
+}
+
+func TestExecuteHTTPProbe_ExecError(t *testing.T) {
+	t.Parallel()
+
+	rt := DummyRuntime{ExecFn: func(_, _ string, _ time.Duration) (string, string, int, error) {
+		return "", "", 0, errors.New("boom")
+	}}
+	_, _, _, err := executeHTTPProbe(rt, "sb", BehaviourOperation{Op: "http_probe", Args: "GET https://gw.example/ INFERENCE_GATEWAY_API_KEY"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "http_probe exec")
+}
+
+// TestExecuteHTTPProbe_RealNode runs the generated command through a real
+// shell and node against a local server, proving the fixed script reads
+// its argument, sends the bearer from the named variable and records the
+// status and capped body.
+func TestExecuteHTTPProbe_RealNode(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node not installed")
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		w.Header().Set("content-type", "application/json")
+		if r.URL.Path == "/denied" {
+			w.WriteHeader(http.StatusForbidden)
+		}
+		switch r.URL.Path {
+		case "/jwt":
+			// A JWT in the body and another cut off at the read limit.
+			pad := strings.Repeat("p", httpProbeBodyLimit-len(`{"t":"`+realNodeJWT+`","pad":"`)-10)
+			_, _ = w.Write([]byte(`{"t":"` + realNodeJWT + `","pad":"` + pad + `",` + realNodeJWT + `}`))
+			return
+		case "/endless":
+			// Far more than the limit: the probe must stop reading.
+			chunk := []byte(strings.Repeat("e", 64<<10))
+			for range 256 {
+				if _, err := w.Write(chunk); err != nil {
+					return
+				}
+			}
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"method":        r.Method,
+			"authorization": r.Header.Get("Authorization"),
+			"content_type":  r.Header.Get("Content-Type"),
+			"body":          string(body),
+			"pad":           strings.Repeat("p", 5000),
+		})
+	}))
+	defer srv.Close()
+
+	var env []string
+	for _, kv := range os.Environ() {
+		k := strings.ToUpper(strings.SplitN(kv, "=", 2)[0])
+		if strings.HasSuffix(k, "_PROXY") || k == "INFERENCE_GATEWAY_API_KEY" || k == "OPENAI_API_KEY" {
+			continue
+		}
+		env = append(env, kv)
+	}
+	env = append(env, "INFERENCE_GATEWAY_API_KEY=placeholder-value")
+	rt := DummyRuntime{ExecFn: func(_, cmd string, _ time.Duration) (string, string, int, error) {
+		c := exec.Command("sh", "-c", cmd)
+		c.Env = env
+		var stdout, stderr bytes.Buffer
+		c.Stdout, c.Stderr = &stdout, &stderr
+		err := c.Run()
+		code := 0
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			code, err = exitErr.ExitCode(), nil
+		}
+		return stdout.String(), stderr.String(), code, err
+	}}
+
+	status, body, hadJWT, err := executeHTTPProbe(rt, "sb", BehaviourOperation{Op: "http_probe", Args: "POST " + srv.URL + `/ok INFERENCE_GATEWAY_API_KEY {"model": "echo"}`})
+	require.NoError(t, err)
+	assert.Equal(t, 200, status)
+	assert.Len(t, body, httpProbeBodyLimit)
+	assert.Contains(t, body, `"authorization":"Bearer placeholder-value"`)
+	assert.Contains(t, body, `"content_type":"application/json"`)
+	assert.Contains(t, body, `"method":"POST"`)
+	assert.False(t, hadJWT)
+
+	status, _, _, err = executeHTTPProbe(rt, "sb", BehaviourOperation{Op: "http_probe", Args: "GET " + srv.URL + "/denied INFERENCE_GATEWAY_API_KEY"})
+	require.Error(t, err)
+	assert.Equal(t, 403, status)
+
+	_, _, _, err = executeHTTPProbe(rt, "sb", BehaviourOperation{Op: "http_probe", Args: "GET " + srv.URL + "/ok OPENAI_API_KEY"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "OPENAI_API_KEY is unset")
+
+	// JWT-shaped substrings are redacted in the sandbox, including one cut
+	// off at the read limit.
+	status, body, hadJWT, err = executeHTTPProbe(rt, "sb", BehaviourOperation{Op: "http_probe", Args: "GET " + srv.URL + "/jwt INFERENCE_GATEWAY_API_KEY"})
+	require.NoError(t, err)
+	assert.Equal(t, 200, status)
+	assert.True(t, hadJWT)
+	assert.NotContains(t, body, "eyJ")
+	assert.True(t, strings.HasPrefix(body, `{"t":"`+httpProbeJWTRedaction+`"`), body[:40])
+	assert.True(t, strings.HasSuffix(body, httpProbeJWTRedaction), "the cut-off JWT is redacted too")
+
+	// An endless reply is read only up to the limit.
+	status, body, _, err = executeHTTPProbe(rt, "sb", BehaviourOperation{Op: "http_probe", Args: "GET " + srv.URL + "/endless INFERENCE_GATEWAY_API_KEY"})
+	require.NoError(t, err)
+	assert.Equal(t, 200, status)
+	assert.Len(t, body, httpProbeBodyLimit)
+}
+
+// realNodeJWT is a JWT-shaped value the RealNode test server echoes. It is
+// joined at run time so secret scanners do not flag a fake token in source.
+var realNodeJWT = strings.Join([]string{"eyJhbGciOiJSUzI1NiJ9", "eyJzdWIiOiJyZXBvOmFjbWUvd2lkZ2V0In0", "c2lnbmF0dXJl"}, ".")
+
+func TestExecuteWait(t *testing.T) {
+	t.Parallel()
+	for _, bad := range []string{"", "0", "-1", "1.5", "x", "1201"} {
+		err := executeWait(context.Background(), BehaviourOperation{Op: "wait", Args: bad})
+		require.Error(t, err, "%q", bad)
+		assert.Contains(t, err.Error(), "whole number of seconds")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := executeWait(ctx, BehaviourOperation{Op: "wait", Args: "30"})
+	require.ErrorContains(t, err, "cancelled")
+	start := time.Now()
+	require.NoError(t, executeWait(context.Background(), BehaviourOperation{Op: "wait", Args: "1"}))
+	assert.GreaterOrEqual(t, time.Since(start), time.Second)
+}
+
+func TestExecuteBehaviourScript_Wait(t *testing.T) {
+	t.Parallel()
+	script := &BehaviourScript{Ops: []BehaviourOperation{{Op: "wait", Args: "nope", Description: "Wait"}}}
+	res, err := executeBehaviourScript(context.Background(), DummyRuntime{}, "sandbox", t.TempDir(), script)
+	require.Error(t, err)
+	require.Len(t, res.Operations, 1)
+	assert.False(t, res.Operations[0].Success)
+}
+
+// assertNotJWTCommand runs under a real sh: a placeholder value passes, a
+// JWT value or a token file holding one fails with its own exit code, and
+// an unset variable fails.
+func TestAssertNotJWTCommand(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not available")
+	}
+	dir := t.TempDir()
+	placeholderFile := filepath.Join(dir, "placeholder.token")
+	require.NoError(t, os.WriteFile(placeholderFile, []byte("openshell:resolve:env:v1_INFERENCE_GATEWAY_API_KEY"), 0o600))
+	jwtFile := filepath.Join(dir, "jwt.token")
+	require.NoError(t, os.WriteFile(jwtFile, []byte("eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.sig"), 0o600))
+	run := func(value string) int {
+		cmd := exec.Command("sh", "-c", assertNotJWTCommand("PROBE_VAR"))
+		cmd.Env = append(os.Environ(), "PROBE_VAR="+value)
+		err := cmd.Run()
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return exitErr.ExitCode()
+		}
+		require.NoError(t, err)
+		return 0
+	}
+	assert.Equal(t, 0, run("openshell:resolve:env:v1_INFERENCE_GATEWAY_API_KEY"))
+	assert.Equal(t, 0, run(placeholderFile))
+	assert.Equal(t, assertNotJWTFound, run("eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.sig"))
+	assert.Equal(t, assertNotJWTFound, run(jwtFile))
+	assert.Equal(t, assertNotJWTUnset, run(""))
+	// An absolute path that names no readable file cannot be inspected, so
+	// it must not pass.
+	assert.Equal(t, assertNotJWTUninspected, run(filepath.Join(dir, "missing.token")))
+	assert.Equal(t, assertNotJWTUninspected, run(dir))
+}
+
+// A grep that fails (exit above 1, here a missing binary on PATH is not
+// usable, so a stub grep exits 2) must fail the check, not pass it.
+func TestAssertNotJWTCommand_GrepFailure(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not available")
+	}
+	bin := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "grep"), []byte("#!/bin/sh\nexit 2\n"), 0o755))
+	cmd := exec.Command("sh", "-c", assertNotJWTCommand("PROBE_VAR"))
+	cmd.Env = append(os.Environ(), "PROBE_VAR=openshell:resolve:env:v1_X", "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	err := cmd.Run()
+	var exitErr *exec.ExitError
+	require.ErrorAs(t, err, &exitErr)
+	assert.Equal(t, assertNotJWTUninspected, exitErr.ExitCode())
+}
+
+func TestExecuteBehaviourOp_AssertNotJWT(t *testing.T) {
+	t.Parallel()
+	err := executeBehaviourOp(DummyRuntime{}, "sandbox", t.TempDir(), BehaviourOperation{Op: "assert_not_jwt"})
+	require.ErrorContains(t, err, "requires a variable name")
+	err = executeBehaviourOp(DummyRuntime{}, "sandbox", t.TempDir(), BehaviourOperation{Op: "assert_not_jwt", Args: "X; rm -rf /"})
+	require.ErrorContains(t, err, "invalid variable name")
+	for code, want := range map[int]string{0: "", assertNotJWTUnset: "unset or empty", assertNotJWTFound: "holds a JWT", assertNotJWTUninspected: "could not be inspected", 1: "failed"} {
+		rt := DummyRuntime{ExecFn: func(_ string, _ string, _ time.Duration) (string, string, int, error) {
+			return "", "boom", code, nil
+		}}
+		err := executeBehaviourOp(rt, "sandbox", t.TempDir(), BehaviourOperation{Op: "assert_not_jwt", Args: "INFERENCE_GATEWAY_TOKEN_FILE"})
+		if want == "" {
+			require.NoError(t, err)
+			continue
+		}
+		require.ErrorContains(t, err, want)
+	}
+	rt := DummyRuntime{ExecFn: func(_ string, _ string, _ time.Duration) (string, string, int, error) {
+		return "", "", -1, errors.New("exec down")
+	}}
+	err = executeBehaviourOp(rt, "sandbox", t.TempDir(), BehaviourOperation{Op: "assert_not_jwt", Args: "X"})
+	require.ErrorContains(t, err, "exec down")
 }

@@ -20,4 +20,5 @@ endpoints:
     access: read-only
     enforcement: enforce
 binaries:
+  - "**/git"
   - "**/pre-commit"

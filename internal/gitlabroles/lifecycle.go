@@ -65,9 +65,9 @@ type TokenSnapshot struct {
 //
 // Diagnostics still carry names, dates, and token IDs only — never
 // secret values. Runtime authentication failures stay ErrAuthFailed
-// and never fall back to the shared token.
-func DiagnoseLifecycle(mode Mode, present map[string]bool, reg Registry, tokens []TokenSnapshot, now time.Time, lead time.Duration) Report {
-	rep := Diagnose(mode, present, reg)
+// and never fall back to a different credential.
+func DiagnoseLifecycle(present map[string]bool, reg Registry, tokens []TokenSnapshot, now time.Time, lead time.Duration) Report {
+	rep := Diagnose(present, reg)
 	if tokens == nil {
 		return rep
 	}
@@ -133,6 +133,24 @@ func RoleDueForRotation(rr RoleReport) bool {
 	default:
 		return false
 	}
+}
+
+// AnnotateTokenLifecycle sets rr's lifecycle, expiry, and token IDs from the one
+// token tok, with the same expiry, revocation, and lead-time rules as
+// DiagnoseLifecycle. A lead of 0 uses DefaultRotationLead and a zero now uses
+// time.Now. Any lifecycle state already on rr (overlap, expiry, token IDs) is
+// discarded first, so re-annotating a report reflects only tok.
+func AnnotateTokenLifecycle(rr *RoleReport, tok TokenSnapshot, now time.Time, lead time.Duration) {
+	if lead <= 0 {
+		lead = DefaultRotationLead
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	rr.Overlapping = false
+	rr.ExpiresAt = ""
+	rr.TokenIDs = nil
+	annotateRoleLifecycle(rr, []TokenSnapshot{tok}, now.UTC(), lead)
 }
 
 func annotateRoleLifecycle(rr *RoleReport, matches []TokenSnapshot, now time.Time, lead time.Duration) {

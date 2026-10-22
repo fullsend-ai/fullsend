@@ -12,7 +12,7 @@ so you can pick the right one.
 | Teach agents your coding style, test commands, or architecture rules | [AGENTS.md](#agentsmd) | Low |
 | Give an agent domain-specific knowledge or a new capability | [Skills](#skills) | Low |
 | Change model, timeout, image, or add env vars to an existing agent | [Harness configuration](#harness-configuration) | Medium |
-| Build a completely new agent with its own trigger, scripts, and schema | [Bring Your Own Agent](#bring-your-own-agent) | High |
+| Build a completely new agent with its own trigger, scripts, and schema | [Bring Your Own Agent](#bring-your-own-agent) | Medium with `fullsend agent new`, high by hand |
 
 Start at the top and move down only when a lighter option doesn't cover your
 needs. Most teams only need AGENTS.md and perhaps a skill or two.
@@ -103,21 +103,38 @@ adding skills via harness, extending the sandbox image, disabling agents.
 ## Bring Your Own Agent
 
 When you need a completely new agent — with its own trigger, scripts, and
-output schema — build one from scratch. It still runs on the hosted mint if it
-assumes a built-in `role:`; a distinct GitHub App identity requires your own
-mint (see [Custom Agent Identity](custom-agent-identity.md)):
+output schema — start with the generator:
+
+```bash
+fullsend agent new my-agent --role triage
+```
+
+It writes the files below, registers the agent in `config.yaml`, and checks
+that the result loads. You then edit `agents/my-agent.md`, the instructions the
+agent follows; everything else is ready to run. See
+[`fullsend agent new`](../../cli/agent.md#agent-new) for the flags and the role
+table, and [Bring Your Own Agent](bring-your-own-agent.md) for a validated
+walkthrough.
 
 ```
 .fullsend/
-  harness/my-agent.yaml    # Execution config
-  agents/my-agent.md       # Agent prompt
-  policies/base.yaml       # Sandbox policy
-  scripts/pre-my-agent.sh  # Data fetching (before sandbox)
-  scripts/post-my-agent.sh # Action execution (after sandbox)
+  harness/my-agent.yaml         # Execution config, including the trigger
+  agents/my-agent.md            # Agent prompt — the file you edit
+  schemas/my-agent-result.schema.json  # What the agent must produce
+  scripts/post-my-agent.sh      # Turns the result into one comment
+  policies/base.yaml            # Sandbox policy (written when absent)
 ```
 
-Register it in `config.yaml` and it runs automatically when matching
-events arrive.
+The harness's `providers:` list is bare builtin names (`vertex-ai`,
+`github-ro` for `triage`) that resolve against fullsend's own embedded
+provider definitions and profiles, so no `providers/` or `profiles/` files
+are written. The provider pair depends on `--role`; see the [role
+table](../../cli/agent.md#roles) for the others.
+
+The agent runs automatically when matching events arrive. It runs on the
+hosted mint as long as it keeps a built-in `role:`; a distinct GitHub App
+identity requires your own mint (see
+[Custom Agent Identity](custom-agent-identity.md)).
 
 **Best for:** entirely new agent roles, custom triggers, specialized
 output schemas.
@@ -126,6 +143,7 @@ output schemas.
 
 ## See also
 
-- [Default, derived, and custom agents](../../agents/topics/default-vs-custom.md) — when does configuration cross into custom agent territory?
-- [Escalation ladder](../../agents/topics/escalation-ladder.md) — prove-it path before deriving or replacing a core agent
+- [Default, derived, and custom agents](default-vs-custom.md) — when does configuration cross into custom agent territory?
+- [Escalation ladder](escalation-ladder.md) — prove-it path before deriving or replacing a core agent
+- [OWNERS file authorization](owners-file-authorization.md) — control who can trigger agents via Prow-style OWNERS files
 - [Bugfix Workflow](bugfix-workflow.md) — how agents work together end to end

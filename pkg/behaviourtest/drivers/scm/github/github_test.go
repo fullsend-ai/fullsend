@@ -5,6 +5,9 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
@@ -33,6 +36,27 @@ func TestCreateFork_Error(t *testing.T) {
 	if err == nil || err.Error() != "create failed" {
 		t.Fatalf("expected create failed error, got %v", err)
 	}
+}
+
+func TestCreateUserFork(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "outsider"
+	d := New(fc)
+
+	owner, repo, err := d.CreateUserFork(context.Background(), "upstream", "repo")
+	require.NoError(t, err)
+	assert.Equal(t, "outsider", owner)
+	assert.Equal(t, "repo", repo)
+	assert.Equal(t, []string{"upstream/repo"}, fc.CreatedForks)
+}
+
+func TestCreateUserFork_Error(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.Errors["CreateFork"] = errors.New("create failed")
+	d := New(fc)
+
+	_, _, err := d.CreateUserFork(context.Background(), "upstream", "repo")
+	require.EqualError(t, err, "create failed")
 }
 
 func TestCommitFileToFork(t *testing.T) {
@@ -563,4 +587,117 @@ func TestSubmitPullRequestReview_CreateReviewError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when CreatePullRequestReview fails")
 	}
+}
+
+func TestListPullRequestReviews(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.PullRequestHeadSHA = "abc123"
+	d := New(fc)
+
+	require.NoError(t, d.SubmitPullRequestReview(context.Background(), "owner", "repo", 1, "APPROVE"))
+
+	reviews, err := d.ListPullRequestReviews(context.Background(), "owner", "repo", 1)
+	require.NoError(t, err)
+	require.Len(t, reviews, 1)
+	assert.Equal(t, "APPROVE", reviews[0].State)
+}
+
+func TestListPullRequestCommits(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.PRCommits = map[string][]string{"owner/repo/1": {"first", "second"}}
+	d := New(fc)
+
+	shas, err := d.ListPullRequestCommits(context.Background(), "owner", "repo", 1)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"first", "second"}, shas)
+}
+
+func TestListPullRequestCommits_Error(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.Errors["ListPullRequestCommits"] = errors.New("list failed")
+	d := New(fc)
+
+	_, err := d.ListPullRequestCommits(context.Background(), "owner", "repo", 1)
+	assert.ErrorContains(t, err, "list failed")
+}
+
+func TestListPullRequestReviews_Error(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.Errors["ListPullRequestReviews"] = errors.New("list failed")
+	d := New(fc)
+
+	_, err := d.ListPullRequestReviews(context.Background(), "owner", "repo", 1)
+	assert.ErrorContains(t, err, "list failed")
+}
+
+// laggingRepoClient returns ErrNotFound for the first fails GetRepo
+// calls, then delegates: GitHub's read-after-create lag (#7861).
+type laggingRepoClient struct {
+	forge.Client
+	fails int
+	err   error
+	calls int
+}
+
+func (c *laggingRepoClient) GetRepo(ctx context.Context, owner, repo string) (*forge.Repository, error) {
+	c.calls++
+	if c.calls <= c.fails {
+		if c.err != nil {
+			return nil, c.err
+		}
+		return nil, forge.ErrNotFound
+	}
+	return c.Client.GetRepo(ctx, owner, repo)
+}
+
+func noRepoVisibleDelay(t *testing.T) {
+	t.Helper()
+	orig := repoVisibleDelay
+	repoVisibleDelay = 0
+	t.Cleanup(func() { repoVisibleDelay = orig })
+}
+
+func newPublicRepoFake() *forge.FakeClient {
+	fc := forge.NewFakeClient()
+	fc.Repos = append(fc.Repos, forge.Repository{Name: "host", FullName: "org/host", Private: false})
+	return fc
+}
+
+func TestEnsureRepoPublic_RetriesNotFoundAfterCreate(t *testing.T) {
+	noRepoVisibleDelay(t)
+	c := &laggingRepoClient{Client: newPublicRepoFake(), fails: 2}
+
+	require.NoError(t, New(c).EnsureRepoPublic(context.Background(), "org", "host"))
+	assert.Equal(t, 3, c.calls)
+}
+
+func TestEnsureRepoPublic_NotFoundExhaustsBudget(t *testing.T) {
+	noRepoVisibleDelay(t)
+	c := &laggingRepoClient{Client: newPublicRepoFake(), fails: 100}
+
+	err := New(c).EnsureRepoPublic(context.Background(), "org", "host")
+	require.Error(t, err)
+	assert.True(t, forge.IsNotFound(err))
+	assert.Contains(t, err.Error(), "still not found 5 attempts after creation")
+	assert.Equal(t, repoVisibleAttempts, c.calls)
+}
+
+func TestEnsureRepoPublic_OtherErrorNotRetried(t *testing.T) {
+	noRepoVisibleDelay(t)
+	c := &laggingRepoClient{Client: newPublicRepoFake(), fails: 100, err: errors.New("forbidden")}
+
+	err := New(c).EnsureRepoPublic(context.Background(), "org", "host")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "forbidden")
+	assert.Equal(t, 1, c.calls)
+}
+
+func TestEnsureRepoPublic_ContextCancelledWhileWaiting(t *testing.T) {
+	c := &laggingRepoClient{Client: newPublicRepoFake(), fails: 100}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := New(c).EnsureRepoPublic(ctx, "org", "host")
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, 1, c.calls)
 }
