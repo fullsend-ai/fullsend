@@ -2,6 +2,7 @@ package install
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -15,12 +16,17 @@ import (
 )
 
 const (
-	// settleMaxAttempts is how many times awaitWorkflowReady polls
-	// GetWorkflow before giving up.
-	settleMaxAttempts = 30
+	// settleWorkflowActive is the GetWorkflow state that marks a
+	// workflow as able to receive events.
+	settleWorkflowActive = "active"
 
-	// settlePoll is the delay between GetWorkflow polls.
-	settlePoll = 5 * time.Second
+	// settleRecreateAttempts bounds how many times doEnsure builds the
+	// repo from scratch (reset, create, install, settle) when Actions
+	// never indexes the workflow within settleTimeout. A repo whose
+	// workflow is stuck unindexed is recreated, as the already-exists
+	// path in ensureRepoExists does (#7840), rather than failing the
+	// allocation on the first timeout (#8654).
+	settleRecreateAttempts = 2
 
 	// resetMaxAttempts bounds the read-after-write retries around a
 	// repo reset: GetRepo polls confirming deletion or creation, and
@@ -34,6 +40,22 @@ const (
 // polling GetRepo after delete or create. Doubled on each retry.
 // Overridden in tests to avoid slow retry loops.
 var resetRetryDelay = time.Second
+
+// Settle timing for awaitWorkflowReady. Polls start settlePollInitial
+// apart and double up to settlePollMax, until settleTimeout has passed.
+// With the defaults, polls run at about 0s, 5s, 15s, 35s, then every
+// 30s to 5m. Overridden in tests to avoid slow polling loops.
+var (
+	settleTimeout     = 5 * time.Minute
+	settlePollInitial = 5 * time.Second
+	settlePollMax     = 30 * time.Second
+)
+
+// errWorkflowNotReady marks a settle timeout: Actions never reported the
+// workflow as active within settleTimeout. doEnsure recreates the repo
+// on this error; any other settle error (e.g. context cancellation)
+// fails the ensure straight away.
+var errWorkflowNotReady = errors.New("workflow not active")
 
 // provisionGate serialises "inference provision" across every ensurer in
 // the process. A cold pool (or one whose providers were removed) would
@@ -78,7 +100,8 @@ type ensurer interface {
 
 // SettleFunc is called after a repo is freshly created or installed to
 // wait until GitHub Actions recognises the workflow file. The default
-// implementation polls GetWorkflow; tests inject a no-op.
+// implementation polls GetWorkflow; tests inject a no-op. An error
+// wrapping errWorkflowNotReady makes doEnsure recreate the repo.
 type SettleFunc func(ctx context.Context, client forge.Client, org, repo, workflowFile string, logf func(string, ...any)) error
 
 // InstallHooks lets a specialized driver (e.g. PlaybackDriver) run extra
@@ -235,7 +258,28 @@ func (e *repoEnsurer) DeleteRepo(ctx context.Context, org, repoName string) erro
 // this reset, leased repos that pass post-install validation keep a
 // stale install from a prior run, silently missing dispatch fixes on
 // the current branch.
+//
+// If Actions never indexes the workflow (the settle step returns
+// errWorkflowNotReady), the whole sequence runs again from the reset,
+// up to settleRecreateAttempts times. Any other error is returned
+// without a retry.
 func (e *repoEnsurer) doEnsure(ctx context.Context, org, repoName string) error {
+	target := org + "/" + repoName
+	var err error
+	for attempt := 1; attempt <= settleRecreateAttempts; attempt++ {
+		err = e.ensureOnce(ctx, org, repoName)
+		if err == nil || !errors.Is(err, errWorkflowNotReady) {
+			return err
+		}
+		if attempt < settleRecreateAttempts {
+			e.logf("[ensure] %s: %v — recreating the repo, attempt %d/%d", target, err, attempt+1, settleRecreateAttempts)
+		}
+	}
+	return fmt.Errorf("gave up on %s after %d repo creations: %w", target, settleRecreateAttempts, err)
+}
+
+// ensureOnce runs one reset + create + install + settle pass for doEnsure.
+func (e *repoEnsurer) ensureOnce(ctx context.Context, org, repoName string) error {
 	target := org + "/" + repoName
 
 	// Step 1: delete the existing repo to reset accumulated git history.
@@ -661,32 +705,68 @@ func (e *repoEnsurer) cacheWIFProvider(target, wifProvider string) {
 }
 
 // awaitWorkflowReady polls the forge's GetWorkflow API until the given
-// workflow file is visible and in "active" state, or until the attempt
-// limit is exhausted. On newly created repos, GitHub Actions takes a
-// variable amount of time to index committed workflow files; events
-// dispatched before the workflow is indexed are silently dropped.
+// workflow file is visible and in "active" state, or until settleTimeout
+// has passed. On newly created repos, GitHub Actions takes a variable
+// amount of time to index committed workflow files; events dispatched
+// before the workflow is indexed are silently dropped.
+//
+// Polls back off exponentially from settlePollInitial to settlePollMax.
+// A timeout returns an error wrapping errWorkflowNotReady so doEnsure
+// can recreate the repo, unless the last poll failed with an API error
+// other than forge.ErrNotFound; that error is returned unwrapped, like
+// context cancellation, because recreating the repo cannot fix it.
 func awaitWorkflowReady(ctx context.Context, client forge.Client, org, repo, workflowFile string, logf func(string, ...any)) error {
 	target := org + "/" + repo
 	logf("[ensure] waiting for Actions to recognise %s on %s", workflowFile, target)
 
-	for attempt := 1; attempt <= settleMaxAttempts; attempt++ {
+	start := time.Now()
+	deadline := start.Add(settleTimeout)
+	delay := settlePollInitial
+	var last string
+	// lastAPIErr is the last poll's GetWorkflow error when it was
+	// something other than "not found"; nil when the last poll saw a
+	// 404 or a workflow that is not active yet.
+	var lastAPIErr error
+	for attempt := 1; ; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("context cancelled while waiting for %s on %s: %w", workflowFile, target, err)
+		}
+
 		wf, err := client.GetWorkflow(ctx, org, repo, workflowFile)
-		if err == nil && wf != nil {
-			logf("[ensure] %s visible on %s after %d attempt(s) (state=%s)", workflowFile, target, attempt, wf.State)
+		lastAPIErr = nil
+		switch {
+		case errors.Is(err, forge.ErrNotFound):
+			last = err.Error()
+		case err != nil:
+			last = err.Error()
+			lastAPIErr = err
+		case wf == nil:
+			last = "no workflow returned"
+		case wf.State == settleWorkflowActive:
+			logf("[ensure] %s active on %s after %d attempt(s) in %v", workflowFile, target, attempt, time.Since(start).Round(time.Second))
 			return nil
+		default:
+			last = "state=" + wf.State
 		}
 
-		if attempt < settleMaxAttempts {
-			if ctx.Err() != nil {
-				return fmt.Errorf("context cancelled while waiting for %s on %s: %w", workflowFile, target, ctx.Err())
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			if lastAPIErr != nil {
+				// The API failed rather than reporting an unindexed
+				// workflow, so recreating the repo cannot help.
+				return fmt.Errorf("polling %s on %s failed after %d attempts over %v: %w",
+					workflowFile, target, attempt, settleTimeout, lastAPIErr)
 			}
-			select {
-			case <-ctx.Done():
-				return fmt.Errorf("context cancelled while waiting for %s on %s: %w", workflowFile, target, ctx.Err())
-			case <-time.After(settlePoll):
-			}
+			return fmt.Errorf("%w: %s on %s after %d attempts over %v (last: %s)",
+				errWorkflowNotReady, workflowFile, target, attempt, settleTimeout, last)
 		}
+		wait := min(delay, remaining)
+		logf("[ensure] %s not ready on %s (attempt %d, %s) — polling again in %v", workflowFile, target, attempt, last, wait)
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("context cancelled while waiting for %s on %s: %w", workflowFile, target, ctx.Err())
+		case <-time.After(wait):
+		}
+		delay = min(delay*2, settlePollMax)
 	}
-
-	return fmt.Errorf("workflow %s not visible on %s after %d attempts", workflowFile, target, settleMaxAttempts)
 }
