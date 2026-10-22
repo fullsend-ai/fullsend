@@ -101,6 +101,14 @@ var (
 		"EVENT_NAME": "issue_comment", "EVENT_ACTION": "created",
 		"COMMENT_BODY": "looks good", "ISSUE_IS_PR": "false",
 	}
+	celRouteTriageLabel = map[string]string{
+		"EVENT_NAME": "issues", "EVENT_ACTION": "labeled",
+		"TRIGGERING_LABEL": "ready-for-triage", "ISSUE_IS_PR": "false",
+	}
+	celRouteIssueOtherLabel = map[string]string{
+		"EVENT_NAME": "issues", "EVENT_ACTION": "labeled",
+		"TRIGGERING_LABEL": "documentation", "ISSUE_IS_PR": "false",
+	}
 )
 
 // finalizeEnv is the "Finalize stage" env for a bash stage and the CEL
@@ -121,7 +129,7 @@ func finalizeEnv(bashStage, configOutcome, routeOutcome, decision string) map[st
 
 // optInEnv is the opt-in step env for an event and bash stage.
 func optInEnv(eventName, issueIsPR, bashStage string) map[string]string {
-	return map[string]string{"EVENT_NAME": eventName, "ISSUE_IS_PR": issueIsPR, "BASH_STAGE": bashStage}
+	return map[string]string{"EVENT_NAME": eventName, "ISSUE_IS_PR": issueIsPR, "BASH_STAGE": bashStage, "COMMENT_BODY": ""}
 }
 
 // TestRouteJob_NoReviewEntryIsByteIdentical runs the real bash "Determine
@@ -134,15 +142,20 @@ func TestRouteJob_NoReviewEntryIsByteIdentical(t *testing.T) {
 	configs := map[string]string{
 		"no config":            "",
 		"no agents":            "version: \"1\"\n",
-		"other agents only":    "agents:\n  - name: triage\n    model: opus\n",
+		"other agents only":    "agents:\n  - name: code\n    model: opus\n",
 		"review settings only": "agents:\n  - name: review\n    model: sonnet\n",
+		"routable settings only": "agents:\n  - name: review\n    model: sonnet\n" +
+			"  - name: retro\n    model: sonnet\n  - name: triage\n    model: sonnet\n" +
+			"  - name: prioritize\n    model: sonnet\n",
 	}
 	for name, event := range map[string]map[string]string{
-		"review label":  celRouteReviewLabel,
-		"other label":   celRouteOtherLabel,
-		"closed":        celRouteClosed,
-		"PR comment":    celRoutePRComment,
-		"issue comment": celRouteIssueComment,
+		"review label":      celRouteReviewLabel,
+		"other label":       celRouteOtherLabel,
+		"closed":            celRouteClosed,
+		"PR comment":        celRoutePRComment,
+		"issue comment":     celRouteIssueComment,
+		"triage label":      celRouteTriageLabel,
+		"other issue label": celRouteIssueOtherLabel,
 	} {
 		for cfgName, cfg := range configs {
 			t.Run(name+"/"+cfgName, func(t *testing.T) {
@@ -207,14 +220,17 @@ func TestCELRouteOptIn(t *testing.T) {
 
 func TestCELRouteOptIn_EventGate(t *testing.T) {
 	requireYQ(t)
-	files := map[string]string{".fullsend/config.yaml": "agents:\n  - name: review\n    trigger: \"true\"\n  - name: retro\n    trigger: \"true\"\n"}
+	files := map[string]string{".fullsend/config.yaml": "agents:\n" +
+		"  - name: review\n    trigger: \"true\"\n" +
+		"  - name: retro\n    trigger: \"true\"\n" +
+		"  - name: triage\n    trigger: \"true\"\n" +
+		"  - name: prioritize\n    trigger: \"true\"\n"}
 	cases := []struct {
 		name, event, isPR, stage, action, comment, wantAgent string
 	}{
 		{"PR event with no bash stage", "pull_request_target", "false", "", "opened", "", "review"},
 		{"PR event routed to review", "pull_request_target", "false", "review", "synchronize", "", "review"},
 		{"PR comment", "issue_comment", "true", "", "created", "thanks", "review"},
-		{"issue comment", "issue_comment", "false", "", "created", "thanks", ""},
 		{"PR event routed to another stage", "pull_request_target", "false", "fix", "opened", "", ""},
 		{"PR closed routed to retro", "pull_request_target", "false", "retro", "closed", "", "retro"},
 		{"PR closed with no bash stage", "pull_request_target", "false", "", "closed", "", "retro"},
@@ -223,6 +239,20 @@ func TestCELRouteOptIn_EventGate(t *testing.T) {
 		{"/fs-retro on an issue", "issue_comment", "false", "retro", "created", "/fs-retro.", "retro"},
 		{"/fs-retro on a later line is a plain PR comment", "issue_comment", "true", "", "created", "see\n/fs-retro", "review"},
 		{"/fs-review on a PR", "issue_comment", "true", "review", "created", "/fs-review", "review"},
+		{"issue event with no bash stage", "issues", "false", "", "opened", "", "triage"},
+		{"issue event routed to triage", "issues", "false", "triage", "labeled", "", "triage"},
+		{"issue event routed to code", "issues", "false", "code", "labeled", "", ""},
+		{"issue comment", "issue_comment", "false", "", "created", "thanks", "triage"},
+		{"/fs-triage on an issue routed to triage", "issue_comment", "false", "triage", "created", "/fs-triage", "triage"},
+		{"/fs-triage on a PR with no bash stage", "issue_comment", "true", "", "created", "/fs-triage", "triage"},
+		{"/fs-triage on a PR routed to triage", "issue_comment", "true", "triage", "created", "/fs-triage", "triage"},
+		{"/fs-prioritize on an issue with no bash stage", "issue_comment", "false", "", "created", "/fs-prioritize now", "prioritize"},
+		{"/fs-prioritize on a PR routed to prioritize", "issue_comment", "true", "prioritize", "created", "/fs-prioritize", "prioritize"},
+		{"/fs-code on an issue routed to code", "issue_comment", "false", "code", "created", "/fs-code", ""},
+		{"/fs-fix on a PR routed to fix", "issue_comment", "true", "fix", "created", "/fs-fix", ""},
+		{"review stage on an issue comment does not fit", "issue_comment", "false", "review", "created", "/fs-review", ""},
+		{"retro stage on an open PR event does not fit", "pull_request_target", "false", "retro", "opened", "", ""},
+		{"review stage on a closed PR does not fit", "pull_request_target", "false", "review", "closed", "", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -234,6 +264,23 @@ func TestCELRouteOptIn_EventGate(t *testing.T) {
 			assert.Equal(t, map[bool]string{true: "true", false: "false"}[tc.wantAgent != ""], got.outputs["opt_in"])
 		})
 	}
+}
+
+// TestCELRouteOptIn_PerAgentEntry checks that the candidate entry must be
+// the chosen agent's: a triage entry does not opt a prioritize comment in.
+func TestCELRouteOptIn_PerAgentEntry(t *testing.T) {
+	requireYQ(t)
+	files := map[string]string{".fullsend/config.yaml": "agents:\n  - name: triage\n    trigger: \"true\"\n"}
+	env := optInEnv("issue_comment", "false", "")
+	env["COMMENT_BODY"] = "/fs-prioritize"
+	got := runRouteStep(t, "Detect CEL route opt-in", env, files)
+	assert.Equal(t, "prioritize", got.outputs["agent"])
+	assert.Equal(t, "false", got.outputs["opt_in"])
+
+	env["COMMENT_BODY"] = "/fs-triage"
+	got = runRouteStep(t, "Detect CEL route opt-in", env, files)
+	assert.Equal(t, "triage", got.outputs["agent"])
+	assert.Equal(t, "true", got.outputs["opt_in"])
 }
 
 func TestFinalizeStage_KeepsTriggerSource(t *testing.T) {
@@ -253,6 +300,10 @@ func TestFinalizeStage_CELRoute(t *testing.T) {
 	retro := func(bashStage, decision string) map[string]string {
 		env := finalizeEnv(bashStage, "success", "success", decision)
 		env["ROUTE_AGENT"] = "retro"
+		return env
+	}
+	withAgent := func(env map[string]string, agent string) map[string]string {
+		env["ROUTE_AGENT"] = agent
 		return env
 	}
 	badAgent := finalizeEnv("", "success", "success", "run")
@@ -329,6 +380,23 @@ func TestFinalizeStage_CELRoute(t *testing.T) {
 			env:  retro("retro", "bash"), wantStage: "retro", wantSummary: "retro_route=bash",
 		},
 		{
+			name: "run sets triage where bash chose nothing",
+			env:  withAgent(finalizeEnv("", "success", "success", "run"), "triage"), wantStage: "triage", wantSummary: "triage_route=cel",
+			wantLog: "::notice::CEL route (triage): bash=none cel=run",
+		},
+		{
+			name: "skip clears a bash triage stage",
+			env:  withAgent(finalizeEnv("triage", "success", "success", "skip"), "triage"), wantStage: "", wantSummary: "triage_route=cel",
+		},
+		{
+			name: "run sets prioritize where bash chose nothing",
+			env:  withAgent(finalizeEnv("", "success", "success", "run"), "prioritize"), wantStage: "prioritize", wantSummary: "prioritize_route=cel",
+		},
+		{
+			name: "skip clears a bash prioritize stage",
+			env:  withAgent(finalizeEnv("prioritize", "success", "success", "skip"), "prioritize"), wantStage: "", wantSummary: "prioritize_route=cel",
+		},
+		{
 			name: "an unexpected agent name keeps the bash stage",
 			env:  badAgent, wantStage: "", wantLog: "::error::CEL route failed",
 		},
@@ -390,7 +458,7 @@ func TestCELRouteStepsGatedAndIsolated(t *testing.T) {
 		assert.True(t, step.ContinueOnError, "step %q must continue on error", step.Name)
 		switch step.ID {
 		case "cel-opt-in":
-			assert.Equal(t, "${{ github.event_name == 'pull_request_target' || github.event_name == 'issue_comment' }}", step.If)
+			assert.Equal(t, "${{ github.event_name == 'pull_request_target' || github.event_name == 'issue_comment' || github.event_name == 'issues' }}", step.If)
 		case "cel-config":
 			assert.Equal(t, "steps.cel-opt-in.outputs.opt_in == 'true'", step.If)
 		default:

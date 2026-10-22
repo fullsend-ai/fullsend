@@ -48,8 +48,10 @@ type routableAgent struct {
 }
 
 var routableAgents = map[string]routableAgent{
-	"retro":  {accepts: retroRouteAccepts, role: "retro"},
-	"review": {accepts: reviewRouteAccepts, role: "review"},
+	"prioritize": {accepts: prioritizeRouteAccepts, role: "prioritize"},
+	"retro":      {accepts: retroRouteAccepts, role: "retro"},
+	"review":     {accepts: reviewRouteAccepts, role: "review"},
+	"triage":     {accepts: triageRouteAccepts, role: "triage"},
 }
 
 // retroRouteAccepts covers the events bash routes to retro: a pull request
@@ -71,6 +73,31 @@ func reviewRouteAccepts(e *normevent.Event) bool {
 		return true
 	}
 	return e.Transition.Kind == normevent.TransitionCommentAdded && e.Entity.LinkedChangeProposal != nil
+}
+
+// triageRouteAccepts covers issue events and comments on an issue or a pull
+// request: bash routes triage from issues opened, edited and labeled, and
+// /fs-triage on either. Pull request events (a label on a pull request
+// included) are not triage's.
+func triageRouteAccepts(e *normevent.Event) bool {
+	if e.Entity.Kind != normevent.EntityWorkItem {
+		return false
+	}
+	switch e.Transition.Kind {
+	case normevent.TransitionCommentAdded:
+		return true
+	case normevent.TransitionOpened, normevent.TransitionEdited, normevent.TransitionLabelChanged:
+		return e.Entity.LinkedChangeProposal == nil
+	default:
+		return false
+	}
+}
+
+// prioritizeRouteAccepts covers comments on an issue or a pull request: bash
+// routes /fs-prioritize on either. The scheduled scoring path calls
+// reusable-prioritize.yml directly and never reaches --route.
+func prioritizeRouteAccepts(e *normevent.Event) bool {
+	return e.Entity.Kind == normevent.EntityWorkItem && e.Transition.Kind == normevent.TransitionCommentAdded
 }
 
 // routableAgentNames lists the routable agents for error messages.

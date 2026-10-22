@@ -435,17 +435,17 @@ jobs:
       # from the bash rules above to a CEL trigger by setting agents[].trigger
       # on the agent's entry in config.yaml; a harness trigger: never does.
       # The opt-in step picks the agent whose CEL route covers this event
-      # (review or retro) and looks for that entry; only then do the other cel-*
-      # steps install the CLI and let `fullsend dispatch --route <agent>`
-      # decide. Every cel-* step continues on error: when a step or the
-      # config fails, "Finalize stage" keeps the bash stage, so a CEL failure
-      # never stops another stage. A trigger that compiles but fails to
-      # evaluate on the event is a CEL decision (skip), not a failure.
-      # Without a candidate entry "Finalize stage" passes the bash stage
-      # through unchanged.
+      # (review, retro, triage or prioritize) and looks for that entry; only
+      # then do the other cel-* steps install the CLI and let `fullsend
+      # dispatch --route <agent>` decide. Every cel-* step continues on error:
+      # when a step or the config fails, "Finalize stage" keeps the bash
+      # stage, so a CEL failure never stops another stage. A trigger that
+      # compiles but fails to evaluate on the event is a CEL decision (skip),
+      # not a failure. Without a candidate entry "Finalize stage" passes the
+      # bash stage through unchanged.
       - name: Detect CEL route opt-in
         id: cel-opt-in
-        if: ${{ github.event_name == 'pull_request_target' || github.event_name == 'issue_comment' }}
+        if: ${{ github.event_name == 'pull_request_target' || github.event_name == 'issue_comment' || github.event_name == 'issues' }}
         continue-on-error: true
         shell: bash
         env:
@@ -456,30 +456,72 @@ jobs:
           BASH_STAGE: ${{ steps.bash-route.outputs.stage }}
         run: |
           set -euo pipefail
-          # Pick the agent whose CEL route covers this event, among those
+          # Pick the one agent whose CEL route covers this event, among those
           # `fullsend dispatch --route` supports (routableAgents in
           # internal/cli/dispatch_route.go), and only when bash chose that
-          # stage or none. Adding an agent: a gate block here, its
-          # routableAgents entry, and this step's if: widened to the agent's
-          # events. Gates must be mutually exclusive: each requires
-          # BASH_STAGE to be empty or its own agent, and a later gate also
-          # requires that no earlier one picked an agent.
-          agent=""
-          # Same command parsing as "Determine stage".
+          # stage or none. Adding an agent: its events in the selection below,
+          # its routableAgents entry, and this step's if: widened to the
+          # agent's events.
+          #
+          # The selection picks at most one agent. An event can fit more than
+          # one (a comment on a pull request fits review, retro, triage and
+          # prioritize): the stage bash chose wins when the event fits it.
+          # When bash chose none, a comment's slash command picks retro,
+          # triage or prioritize, and otherwise review takes pull request
+          # comments and triage takes issue comments; an issue event goes to
+          # triage, a closed pull request to retro and any other pull request
+          # event to review.
           COMMAND=""
           if [[ -n "${COMMENT_BODY:-}" ]]; then
+            # Same parsing as "Determine stage".
             COMMAND="$(printf '%s\n' "${COMMENT_BODY}" | head -1 | tr -d '\r' | awk '{print $1}' | sed 's/[.,;:!?]*$//')"
           fi
-          # retro: a closed pull request, or /fs-retro on an issue or a pull
-          # request.
-          if [[ ( "${EVENT_NAME}" == "pull_request_target" && "${EVENT_ACTION:-}" == "closed" ) || ( "${EVENT_NAME}" == "issue_comment" && "${COMMAND}" == "/fs-retro" ) ]] \
-            && [[ -z "${BASH_STAGE}" || "${BASH_STAGE}" == "retro" ]]; then
-            agent="retro"
+          PR_CLOSED=false
+          if [[ "${EVENT_NAME}" == "pull_request_target" && "${EVENT_ACTION:-}" == "closed" ]]; then
+            PR_CLOSED=true
           fi
-          # review: pull request events and comments on a pull request.
-          if [[ -z "${agent}" ]] \
-            && [[ "${EVENT_NAME}" == "pull_request_target" || ( "${EVENT_NAME}" == "issue_comment" && "${ISSUE_IS_PR}" == "true" ) ]] \
-            && [[ -z "${BASH_STAGE}" || "${BASH_STAGE}" == "review" ]]; then
+          fits=""
+          # review: pull request events other than closed, and comments on a
+          # pull request.
+          if [[ ( "${EVENT_NAME}" == "pull_request_target" && "${PR_CLOSED}" == "false" ) || ( "${EVENT_NAME}" == "issue_comment" && "${ISSUE_IS_PR}" == "true" ) ]]; then
+            fits+=" review"
+          fi
+          # retro: a closed pull request, and comments on an issue or a pull
+          # request.
+          if [[ "${PR_CLOSED}" == "true" || "${EVENT_NAME}" == "issue_comment" ]]; then
+            fits+=" retro"
+          fi
+          # triage: issue events, and comments on an issue or a pull request.
+          if [[ "${EVENT_NAME}" == "issues" || "${EVENT_NAME}" == "issue_comment" ]]; then
+            fits+=" triage"
+          fi
+          # prioritize: comments on an issue or a pull request.
+          if [[ "${EVENT_NAME}" == "issue_comment" ]]; then
+            fits+=" prioritize"
+          fi
+          agent=""
+          if [[ -n "${BASH_STAGE}" ]]; then
+            if [[ "${fits} " == *" ${BASH_STAGE} "* ]]; then
+              agent="${BASH_STAGE}"
+            fi
+          elif [[ "${EVENT_NAME}" == "issue_comment" ]]; then
+            case "${COMMAND}" in
+              /fs-retro) agent="retro" ;;
+              /fs-triage) agent="triage" ;;
+              /fs-prioritize) agent="prioritize" ;;
+              *)
+                if [[ "${ISSUE_IS_PR}" == "true" ]]; then
+                  agent="review"
+                else
+                  agent="triage"
+                fi
+                ;;
+            esac
+          elif [[ "${EVENT_NAME}" == "issues" ]]; then
+            agent="triage"
+          elif [[ "${PR_CLOSED}" == "true" ]]; then
+            agent="retro"
+          elif [[ "${EVENT_NAME}" == "pull_request_target" ]]; then
             agent="review"
           fi
 

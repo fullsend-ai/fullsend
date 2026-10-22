@@ -443,6 +443,213 @@ func TestReviewRouteAccepts(t *testing.T) {
 	}
 }
 
+const (
+	routeIssueOpened = `{
+  "repo": "fullsend-ai/demo",
+  "entity": {"kind": "work_item", "id": 8, "url": "https://github.com/fullsend-ai/demo/issues/8"},
+  "transition": {"kind": "opened"},
+  "actor": {"id": "alice", "kind": "human", "role": "write", "is_entity_author": true},
+  "state": {"labels": []},
+  "source": {"system": "github", "raw_type": "issues", "raw_action": "opened"}
+}`
+	routeIssueTriageLabel = `{
+  "repo": "fullsend-ai/demo",
+  "entity": {"kind": "work_item", "id": 8, "url": "https://github.com/fullsend-ai/demo/issues/8"},
+  "transition": {"kind": "label_changed", "label": {"name": "ready-for-triage", "action": "added"}},
+  "actor": {"id": "fullsend-ai-triage[bot]", "kind": "bot", "role": "none", "is_entity_author": false},
+  "state": {"labels": ["ready-for-triage"]},
+  "source": {"system": "github", "raw_type": "issues", "raw_action": "labeled"}
+}`
+	routePRTriageLabel = `{
+  "repo": "fullsend-ai/demo",
+  "entity": {"kind": "change_proposal", "id": 7, "url": "https://github.com/fullsend-ai/demo/pull/7"},
+  "transition": {"kind": "label_changed", "label": {"name": "ready-for-triage", "action": "added"}},
+  "actor": {"id": "alice", "kind": "human", "role": "write", "is_entity_author": false},
+  "state": {"labels": ["ready-for-triage"]},
+  "source": {"system": "github", "raw_type": "pull_request_target", "raw_action": "labeled"}
+}`
+	routeIssueTriageComment = `{
+  "repo": "fullsend-ai/demo",
+  "entity": {"kind": "work_item", "id": 8, "url": "https://github.com/fullsend-ai/demo/issues/8"},
+  "transition": {"kind": "comment_added", "comment": {"id": "3", "command": "/fs-triage", "body": "/fs-triage"}},
+  "actor": {"id": "alice", "kind": "human", "role": "write", "is_entity_author": false},
+  "state": {"labels": []},
+  "source": {"system": "github", "raw_type": "issue_comment", "raw_action": "created"}
+}`
+	routePRPrioritizeComment = `{
+  "repo": "fullsend-ai/demo",
+  "entity": {"kind": "work_item", "id": 7, "url": "https://github.com/fullsend-ai/demo/issues/7",
+    "linked_change_proposal": {"id": 7, "url": "https://github.com/fullsend-ai/demo/pull/7"}},
+  "transition": {"kind": "comment_added", "comment": {"id": "4", "command": "/fs-prioritize", "body": "/fs-prioritize"}},
+  "actor": {"id": "alice", "kind": "human", "role": "write", "is_entity_author": false},
+  "state": {"labels": []},
+  "source": {"system": "github", "raw_type": "issue_comment", "raw_action": "created"}
+}`
+	routeBotTriageComment = `{
+  "repo": "fullsend-ai/demo",
+  "entity": {"kind": "work_item", "id": 8, "url": "https://github.com/fullsend-ai/demo/issues/8"},
+  "transition": {"kind": "comment_added", "comment": {"id": "5", "command": "/fs-triage", "body": "/fs-triage"}},
+  "actor": {"id": "helper[bot]", "kind": "bot", "role": "write", "is_entity_author": false},
+  "state": {"labels": []},
+  "source": {"system": "github", "raw_type": "issue_comment", "raw_action": "created"}
+}`
+	routeIssueOpenedNoRole = `{
+  "repo": "fullsend-ai/demo",
+  "entity": {"kind": "work_item", "id": 8, "url": "https://github.com/fullsend-ai/demo/issues/8"},
+  "transition": {"kind": "opened"},
+  "actor": {"id": "mallory", "kind": "human", "role": "none", "is_entity_author": true},
+  "state": {"labels": []},
+  "source": {"system": "github", "raw_type": "issues", "raw_action": "opened"}
+}`
+)
+
+func TestTriageRouteAccepts(t *testing.T) {
+	cases := map[string]struct {
+		event string
+		want  bool
+	}{
+		"issue opened":                 {routeIssueOpened, true},
+		"label added to an issue":      {routeIssueTriageLabel, true},
+		"comment on an issue":          {routeIssueTriageComment, true},
+		"comment on a PR":              {routePRPrioritizeComment, true},
+		"label added to a PR":          {routePRTriageLabel, false},
+		"PR opened":                    {routePROpened, false},
+		"comment on a change_proposal": {routeReviewComment, false},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, tc.want, triageRouteAccepts(routeEvent(t, tc.event)))
+		})
+	}
+}
+
+func TestPrioritizeRouteAccepts(t *testing.T) {
+	cases := map[string]struct {
+		event string
+		want  bool
+	}{
+		"comment on an issue":          {routeIssueTriageComment, true},
+		"comment on a PR":              {routePRPrioritizeComment, true},
+		"issue opened":                 {routeIssueOpened, false},
+		"label added to an issue":      {routeIssueTriageLabel, false},
+		"comment on a change_proposal": {routeReviewComment, false},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, tc.want, prioritizeRouteAccepts(routeEvent(t, tc.event)))
+		})
+	}
+}
+
+// TestRouteBuiltinAgent_TriageAndPrioritize runs the shared decision path for
+// the triage and prioritize agents with a config trigger; the harness is not
+// needed to decide.
+func TestRouteBuiltinAgent_TriageAndPrioritize(t *testing.T) {
+	triageTrigger := routeTrigger(t, "triage")
+	prioritizeTrigger := routeTrigger(t, "prioritize")
+	disabled := false
+	cases := []struct {
+		name         string
+		agent        string
+		entries      []config.AgentEntry
+		event        string
+		wantDecision string
+		wantReason   string
+	}{
+		{
+			name: "no triage entry stays on bash", agent: "triage",
+			event: routeIssueOpened, wantDecision: routeBash, wantReason: "no agents[].trigger",
+		},
+		{
+			name: "triage trigger runs on an issue opened", agent: "triage",
+			entries: []config.AgentEntry{{Name: "triage", Trigger: triageTrigger}},
+			event:   routeIssueOpened, wantDecision: routeRun, wantReason: "trigger matched",
+		},
+		{
+			name: "a bot's ready-for-triage label passes the label exception", agent: "triage",
+			entries: []config.AgentEntry{{Name: "triage", Trigger: triageTrigger}},
+			event:   routeIssueTriageLabel, wantDecision: routeRun,
+		},
+		{
+			name: "/fs-triage on an issue runs", agent: "triage",
+			entries: []config.AgentEntry{{Name: "triage", Trigger: triageTrigger}},
+			event:   routeIssueTriageComment, wantDecision: routeRun,
+		},
+		{
+			name: "an on-demand triage trigger skips an issue opened", agent: "triage",
+			entries: []config.AgentEntry{{Name: "triage", Trigger: `event.transition.kind == "comment_added"`}},
+			event:   routeIssueOpened, wantDecision: routeSkip, wantReason: "trigger did not match",
+		},
+		{
+			name: "a bot /fs-triage is skipped", agent: "triage",
+			entries: []config.AgentEntry{{Name: "triage", Trigger: "true"}},
+			event:   routeBotTriageComment, wantDecision: routeSkip, wantReason: "bot comments do not start triage",
+		},
+		{
+			name: "an unauthorized issue author is skipped", agent: "triage",
+			entries: []config.AgentEntry{{Name: "triage", Trigger: triageTrigger}},
+			event:   routeIssueOpenedNoRole, wantDecision: routeSkip, wantReason: "actor not authorized",
+		},
+		{
+			name: "a triage-role /fs-triage passes the triage harness threshold", agent: "triage",
+			entries: []config.AgentEntry{{Name: "triage", Trigger: triageTrigger}},
+			event:   strings.Replace(routeIssueTriageComment, `"role": "write"`, `"role": "triage"`, 1), wantDecision: routeRun,
+		},
+		{
+			name: "a triage-role /fs-prioritize is below the prioritize harness threshold", agent: "prioritize",
+			entries:      []config.AgentEntry{{Name: "prioritize", Trigger: prioritizeTrigger}},
+			event:        strings.Replace(routePRPrioritizeComment, `"role": "write"`, `"role": "triage"`, 1),
+			wantDecision: routeSkip, wantReason: "actor not authorized",
+		},
+		{
+			name: "a label on a PR is not triage's", agent: "triage",
+			entries: []config.AgentEntry{{Name: "triage", Trigger: "true"}},
+			event:   routePRTriageLabel, wantDecision: routeBash, wantReason: "event is not routable for triage",
+		},
+		{
+			name: "a disabled triage entry is left to bash", agent: "triage",
+			entries: []config.AgentEntry{{Name: "triage", Enabled: &disabled}},
+			event:   routeIssueOpened, wantDecision: routeBash, wantReason: "agent disabled in config",
+		},
+		{
+			name: "prioritize trigger runs on /fs-prioritize on a PR", agent: "prioritize",
+			entries: []config.AgentEntry{{Name: "prioritize", Trigger: prioritizeTrigger}},
+			event:   routePRPrioritizeComment, wantDecision: routeRun,
+		},
+		{
+			name: "prioritize trigger skips /fs-triage", agent: "prioritize",
+			entries: []config.AgentEntry{{Name: "prioritize", Trigger: prioritizeTrigger}},
+			event:   routeIssueTriageComment, wantDecision: routeSkip,
+		},
+		{
+			name: "an issue opened is not prioritize's", agent: "prioritize",
+			entries: []config.AgentEntry{{Name: "prioritize", Trigger: "true"}},
+			event:   routeIssueOpened, wantDecision: routeBash, wantReason: "event is not routable for prioritize",
+		},
+		{
+			name: "a triage trigger does not opt prioritize in", agent: "prioritize",
+			entries: []config.AgentEntry{{Name: "triage", Trigger: "true"}},
+			event:   routePRPrioritizeComment, wantDecision: routeBash, wantReason: "no agents[].trigger",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			neutralizeAgentsRepoFallback(t)
+			dir := writeRouteFixture(t, sourcedRouteFixture(tc.entries, tc.agent, routeTestHarnessFor(tc.agent)))
+			got, err := routeBuiltinAgent(context.Background(), routeOpts{
+				agent: tc.agent, configDir: dir, event: routeEvent(t, tc.event),
+				forgeClient: forge.NewFakeClient(), printer: ui.New(io.Discard),
+			})
+			require.NoError(t, err)
+			assert.Equal(t, tc.agent, got.Agent)
+			assert.Equal(t, tc.wantDecision, got.Decision, "reason: %s", got.Reason)
+			if tc.wantReason != "" {
+				assert.Equal(t, tc.wantReason, got.Reason)
+			}
+		})
+	}
+}
+
 func TestRouteBuiltinAgent_IssueCommentIsLeftToBash(t *testing.T) {
 	dir := writeRouteFixture(t, routeFixture{agents: []config.AgentEntry{{Name: "review", Trigger: "true"}}})
 	got, err := routeBuiltinAgent(context.Background(), routeOpts{
@@ -491,7 +698,7 @@ func TestRouteBuiltinAgent_Errors(t *testing.T) {
 	})
 	t.Run("unsupported agent", func(t *testing.T) {
 		_, err := routeBuiltinAgent(context.Background(), routeOpts{agent: "code", configDir: t.TempDir(), event: routeEvent(t, routePROpened)})
-		require.ErrorContains(t, err, `unsupported --route agent "code" (supported: retro, review)`)
+		require.ErrorContains(t, err, `unsupported --route agent "code" (supported: prioritize, retro, review, triage)`)
 	})
 	t.Run("nil event", func(t *testing.T) {
 		_, err := routeBuiltinAgent(context.Background(), routeOpts{agent: "review", configDir: t.TempDir()})
@@ -616,4 +823,79 @@ func TestRouteBuiltinAgent_HarnessRoleThreshold(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, routeRun, write.Decision, "a write user still passes the fail-closed threshold")
 	})
+}
+
+const (
+	routeTestTriageHarness = `agent: agents/triage.md
+role: triage
+slug: fullsend-ai-triage
+model: opus
+image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
+`
+	routeTestPrioritizeHarness = `agent: agents/prioritize.md
+role: prioritize
+slug: fullsend-ai-prioritize
+model: opus
+image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
+`
+)
+
+// routeTestHarnessFor returns a local harness body whose role: is agent's.
+func routeTestHarnessFor(agent string) string {
+	switch agent {
+	case "triage":
+		return routeTestTriageHarness
+	case "prioritize":
+		return routeTestPrioritizeHarness
+	case "retro":
+		return routeTestRetroHarness
+	default:
+		return routeTestHarnessBody
+	}
+}
+
+// TestRouteBuiltinAgent_ErrorsAndEvaluationFailures checks, for every
+// routable agent other than review (covered above), that an invalid
+// agents[].trigger is an error for every actor role, so the route job keeps
+// the bash stage, and that a valid trigger failing to evaluate on the event
+// is a skip.
+func TestRouteBuiltinAgent_ErrorsAndEvaluationFailures(t *testing.T) {
+	events := map[string]map[string]string{
+		"retro": {
+			"write actor":  routeRetroEvent(routeRetroPR, routeRetroClosed, routeRetroWriter, "pull_request_target", "closed"),
+			"triage actor": routeRetroEvent(routeRetroPR, routeRetroClosed, routeRetroTriager, "pull_request_target", "closed"),
+		},
+		"triage": {
+			"write actor":  routeIssueTriageComment,
+			"triage actor": strings.Replace(routeIssueTriageComment, `"role": "write"`, `"role": "triage"`, 1),
+		},
+		"prioritize": {
+			"write actor":  routePRPrioritizeComment,
+			"triage actor": strings.Replace(routePRPrioritizeComment, `"role": "write"`, `"role": "triage"`, 1),
+		},
+	}
+	for agent, byActor := range events {
+		for actor, event := range byActor {
+			t.Run(agent+"/invalid trigger/"+actor, func(t *testing.T) {
+				dir := writeRouteFixture(t, routeFixture{agents: []config.AgentEntry{{Name: agent, Trigger: "event.x =="}}})
+				_, err := routeBuiltinAgent(context.Background(), routeOpts{
+					agent: agent, configDir: dir, event: routeEvent(t, event), printer: ui.New(io.Discard),
+				})
+				require.ErrorContains(t, err, "invalid "+agent+" agents[].trigger")
+			})
+		}
+		t.Run(agent+"/evaluation failure", func(t *testing.T) {
+			neutralizeAgentsRepoFallback(t)
+			// Valid CEL that reads a key the event does not carry.
+			entries := []config.AgentEntry{{Name: agent, Trigger: `event.state.missing_key == "x"`}}
+			dir := writeRouteFixture(t, sourcedRouteFixture(entries, agent, routeTestHarnessFor(agent)))
+			got, err := routeBuiltinAgent(context.Background(), routeOpts{
+				agent: agent, configDir: dir, event: routeEvent(t, byActor["write actor"]),
+				forgeClient: forge.NewFakeClient(), printer: ui.New(io.Discard),
+			})
+			require.NoError(t, err)
+			assert.Equal(t, routeSkip, got.Decision)
+			assert.True(t, strings.HasPrefix(got.Reason, "trigger evaluation failed: "), "reason: %s", got.Reason)
+		})
+	}
 }

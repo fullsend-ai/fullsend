@@ -197,13 +197,14 @@ effort, sub-agent models and the trigger.
   segments joined by hyphens (max 64 chars).
 - **`trigger`** — A [CEL trigger](../guides/user/cel-triggers-reference.md)
   (a boolean over the normalized `event`). It decides routing for the
-  built-in review and retro agents only: on a `review` or `retro` entry it
-  opts the repository into CEL routing for that agent, so the trigger, not the
-  dispatch workflow's built-in rules, decides when the `Review` or `Retro` job
-  starts (see
-  [Choosing when review runs](../guides/user/customizing-agents.md#choosing-when-review-runs)
+  built-in review, retro, triage and prioritize agents only: on one of those
+  entries it opts the repository into CEL routing for that agent, so the
+  trigger, not the dispatch workflow's built-in rules, decides when the
+  agent's job starts (see
+  [Choosing when review runs](../guides/user/customizing-agents.md#choosing-when-review-runs),
+  [Choosing when retro runs](../guides/user/customizing-agents.md#choosing-when-retro-runs)
   and
-  [Choosing when retro runs](../guides/user/customizing-agents.md#choosing-when-retro-runs)).
+  [Choosing when triage and prioritize run](../guides/user/customizing-agents.md#choosing-when-triage-and-prioritize-run)).
   It does not change CEL dispatch: the harness `trigger:` keeps deciding when
   custom agents run and what the Jira poller dispatches. A trigger alone
   makes a valid override-only entry for a built-in agent. Validated when the

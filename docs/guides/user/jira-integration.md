@@ -21,12 +21,27 @@ Connect fullsend to a Jira project so that Jira issue activity — comments, lab
    behavior](customizing-agents.md#configuration-with-base-composition)). The
    poller reads only the harness `trigger:`. A `trigger` on an `agents:` entry
    in `config.yaml` does not affect it: that field decides routing for the
-   built-in review agent on GitHub only ([Choosing when review
-   runs](customizing-agents.md#choosing-when-review-runs)). Built-in harnesses
-   currently have none, so the poller produces zero dispatches until you add
-   them. See [CEL Triggers Reference](cel-triggers-reference.md). This step is
-   temporary: it goes away once the default agent suite ships native Jira
-   triggers ([#6672](https://github.com/fullsend-ai/fullsend/issues/6672)).
+   built-in review, retro, triage and prioritize agents on GitHub only
+   ([Choosing when review runs](customizing-agents.md#choosing-when-review-runs),
+   [Choosing when retro runs](customizing-agents.md#choosing-when-retro-runs),
+   [Choosing when triage and prioritize
+   run](customizing-agents.md#choosing-when-triage-and-prioritize-run)).
+   The poller produces zero dispatches for a harness with no trigger, its
+   own or inherited. See [CEL Triggers Reference](cel-triggers-reference.md).
+   Native Jira triggers for the default agent suite are tracked in
+   [#6672](https://github.com/fullsend-ai/fullsend/issues/6672).
+
+   > [!WARNING]
+   > After the agents release that follows v0.49.0, the default triage and
+   > prioritize harnesses ship triggers that also match Jira issues; the
+   > review and retro triggers need a pull request, so they never match one.
+   > A harness you registered with `source:` that points at the default
+   > triage harness, or composes it with `base:`, and sets no trigger of its
+   > own inherits that trigger when you re-pin its ref. From then on every
+   > Jira issue a person opens or edits dispatches triage, not only
+   > `/fs-triage`, and on GitHub an entry registered under another name, such
+   > as `my-triage`, is dispatched on every issue a person opens or edits.
+   > Set your own trigger to keep a narrower one.
 
 ## How it works
 
