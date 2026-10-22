@@ -86,7 +86,7 @@ ARG FULLSEND_VERSION=dev
 ARG FULLSEND_COMMIT=unknown
 RUN CGO_ENABLED=1 CGO_LDFLAGS="-L/usr/lib" GOOS=linux GOARCH=${TARGETARCH} \
     go build -trimpath -tags ORT \
-      -ldflags "-s -w -X github.com/fullsend-ai/fullsend/internal/cli.version=${FULLSEND_VERSION} -X github.com/fullsend-ai/fullsend/internal/cli.commitSHA=${FULLSEND_COMMIT}" \
+      -ldflags "-s -w -X github.com/fullsend-ai/fullsend/internal/buildinfo.version=${FULLSEND_VERSION} -X github.com/fullsend-ai/fullsend/internal/buildinfo.commitSHA=${FULLSEND_COMMIT}" \
       -o /out/fullsend ./cmd/fullsend/
 
 # ---------------------------------------------------------------------------

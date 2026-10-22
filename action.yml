@@ -12,6 +12,11 @@ inputs:
   agent:
     description: Agent name passed to fullsend run (e.g. triage, code, review).
     required: true
+  role:
+    description: >-
+      Mint role selected by dispatch. Used to reconcile an interrupted run
+      before fullsend can report its resolved harness role.
+    default: ""
   version:
     description: >-
       Release tag, version or long-form SHA: use latest, v0.0.1, 0.0.1 or a 40-char commit SHA.
@@ -51,7 +56,8 @@ inputs:
     description: >-
       PR head commit SHA, passed explicitly by per-repo (workflow_call)
       callers where GITHUB_EVENT_PATH lacks the dispatched event_payload
-      wrapper. Takes precedence over GITHUB_EVENT_PATH extraction.
+      wrapper. Takes precedence over native pull_request and
+      workflow_dispatch event extraction.
     default: ""
   gcp_wif_provider:
     description: Workload Identity Federation provider resource name, used only when the selected agent resolves to Vertex inference.
@@ -493,7 +499,8 @@ runs:
         if [[ -n "${MINT_URL}" ]]; then
           MINT_FLAGS+=(--mint-url "${MINT_URL}")
         fi
-        fullsend run "${AGENT}" \
+        # Replace this shell so Actions cancellation signals reach the CLI.
+        exec fullsend run "${AGENT}" \
           --fullsend-dir "${FULLSEND_DIR}" \
           --output-dir "${GITHUB_WORKSPACE}/output" \
           --target-repo "${TARGET_REPO}" \
@@ -584,6 +591,7 @@ runs:
         RUN_URL: ${{ inputs.run-url }}
         JOB_STATUS: ${{ job.status }}
         HARNESS_ROLE: ${{ steps.run.outputs.role }}
+        SUPPLIED_ROLE: ${{ inputs.role }}
         WAS_SKIPPED: ${{ steps.run.outputs.skipped }}
         PR_HEAD_SHA_INPUT: ${{ inputs.pr-head-sha }}
         FULLSEND_DIR: ${{ inputs.fullsend-dir }}
@@ -596,14 +604,16 @@ runs:
 
         # Resolve the correct commit SHA. Priority order:
         # 1. Explicit pr-head-sha input (per-repo workflow_call callers)
-        # 2. Extracted from .inputs.event_payload (workflow_dispatch payload)
-        # 3. GITHUB_SHA fallback
+        # 2. Native pull_request.head.sha
+        # 3. Extracted from .inputs.event_payload (workflow_dispatch payload)
+        # 4. GITHUB_SHA fallback, except for cancelled built-in reviews
         COMMIT_SHA=""
         if [[ -n "${PR_HEAD_SHA_INPUT}" ]]; then
           COMMIT_SHA="${PR_HEAD_SHA_INPUT}"
         elif [[ -f "${GITHUB_EVENT_PATH}" ]]; then
+          COMMIT_SHA=$(jq -r '.pull_request.head.sha // empty' "${GITHUB_EVENT_PATH}" 2>/dev/null) || true
           EVENT_PAYLOAD_RAW=$(jq -r '.inputs.event_payload // empty' "${GITHUB_EVENT_PATH}" 2>/dev/null) || true
-          if [[ -n "${EVENT_PAYLOAD_RAW}" ]]; then
+          if [[ -z "${COMMIT_SHA}" && -n "${EVENT_PAYLOAD_RAW}" ]]; then
             HAS_PR=$(printf '%s' "${EVENT_PAYLOAD_RAW}" | jq -r '.pull_request // empty' 2>/dev/null) || true
             if [[ -n "${HAS_PR}" && "${HAS_PR}" != "null" ]]; then
               COMMIT_SHA=$(printf '%s' "${EVENT_PAYLOAD_RAW}" | jq -r '.pull_request.head.sha // empty' 2>/dev/null) || true
@@ -614,12 +624,16 @@ runs:
           fi
         fi
         if [[ -z "${COMMIT_SHA}" ]]; then
-          COMMIT_SHA="${GITHUB_SHA}"
+          if [[ "${AGENT}" == "review" && "${JOB_STATUS}" == "cancelled" ]]; then
+            echo "::warning::PR head SHA unavailable; omitting cancellation review guidance"
+          else
+            COMMIT_SHA="${GITHUB_SHA}"
+          fi
         fi
 
         FULLSEND_DIR="${FULLSEND_DIR:-${GITHUB_WORKSPACE}}"
         RECONCILE_FLAGS=(--repo "${STATUS_REPO}" --number "${STATUS_NUMBER}" --run-id "${RUN_ID}")
-        RESOLVED_ROLE="${HARNESS_ROLE:-${AGENT}}"
+        RESOLVED_ROLE="${HARNESS_ROLE:-${SUPPLIED_ROLE:-${AGENT}}}"
         RECONCILE_FLAGS+=(--mint-url "${MINT_URL}" --role "${RESOLVED_ROLE}")
         RECONCILE_FLAGS+=(--fullsend-dir "${FULLSEND_DIR}")
         RECONCILE_FLAGS+=(--job-status "${JOB_STATUS}")
@@ -634,6 +648,13 @@ runs:
         fi
         if [[ "${JOB_STATUS}" == "cancelled" ]]; then
           RECONCILE_FLAGS+=(--reason cancelled)
+        fi
+        # Older released/vendored CLIs predate --review-run. Keep their
+        # reconciliation path working, but retain built-in-review retry
+        # guidance whenever the installed CLI supports it.
+        if [[ "${AGENT}" == "review" ]] \
+          && fullsend reconcile-status --help 2>&1 | grep -F -- '--review-run' >/dev/null; then
+          RECONCILE_FLAGS+=(--review-run)
         fi
         fullsend reconcile-status "${RECONCILE_FLAGS[@]+"${RECONCILE_FLAGS[@]}"}" || {
           echo "::warning::Could not reconcile orphaned status comment"

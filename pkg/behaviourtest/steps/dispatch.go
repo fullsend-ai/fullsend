@@ -102,7 +102,7 @@ func DeactivateKillSwitch(w *world.World) error {
 	if err != nil {
 		return err
 	}
-	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, cfgPath, "behaviour: deactivate kill switch", merged); err != nil {
+	if err := commitVerified(w, cfgPath, "behaviour: deactivate kill switch", merged); err != nil {
 		return fmt.Errorf("updating config: %w", err)
 	}
 	return nil
@@ -171,7 +171,7 @@ func DeactivateKillSwitchBase(w *world.World) error {
 	if err != nil {
 		return err
 	}
-	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, cfgPath, "behaviour: deactivate kill switch in config.base.yaml", merged); err != nil {
+	if err := commitVerified(w, cfgPath, "behaviour: deactivate kill switch in config.base.yaml", merged); err != nil {
 		return fmt.Errorf("updating base config: %w", err)
 	}
 	return nil

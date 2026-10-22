@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -546,6 +547,84 @@ func TestCommitFiles_GraphQL_RateLimitedHonoursCancelledContext(t *testing.T) {
 	_, err := New("test-token").WithBaseURL(srv.URL).WithAfterFunc(cancelInsteadOfWaiting).CommitFiles(ctx, "org", "repo", "msg", regularFile)
 	require.ErrorIs(t, err, context.Canceled)
 	assert.Equal(t, 1, mutations)
+}
+
+// rateLimitedOnceServer answers the first mutation with an HTTP-200
+// RATE_LIMITED and every later one with success. mutations counts the
+// mutation requests received.
+func rateLimitedOnceServer(t *testing.T) (*httptest.Server, *atomic.Int32) {
+	t.Helper()
+	var mutations atomic.Int32
+	srv, _ := graphqlCommitServer(t, "main", nil, func(w http.ResponseWriter, _ commitMutationInput) {
+		if mutations.Add(1) == 1 {
+			w.Header().Set("Retry-After", "1")
+			graphqlCommitError(w, "RATE_LIMITED", "API rate limit already exceeded for user ID 1.")
+			return
+		}
+		graphqlCommitOK(w, "newcommit")
+	})
+	return srv, &mutations
+}
+
+func TestCreateCommitOnBranch_RateLimitedResendsWithoutGuard(t *testing.T) {
+	srv, mutations := rateLimitedOnceServer(t)
+
+	oid, err := newTestClient(t, srv).createCommitOnBranch(context.Background(), "org", "repo", "main", "abc123", "msg", regularFile, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "newcommit", oid)
+	assert.Equal(t, int32(2), mutations.Load())
+}
+
+func TestCreateCommitOnBranch_RateLimitedGuardRunsAfterWaitAndAllowsResend(t *testing.T) {
+	srv, mutations := rateLimitedOnceServer(t)
+
+	var guardCalls, mutationsAtGuard atomic.Int32
+	ctx := forge.WithRetryGuard(context.Background(), func(context.Context) error {
+		guardCalls.Add(1)
+		mutationsAtGuard.Store(mutations.Load())
+		return nil
+	})
+	oid, err := newTestClient(t, srv).createCommitOnBranch(ctx, "org", "repo", "main", "abc123", "msg", regularFile, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "newcommit", oid)
+	assert.Equal(t, int32(1), guardCalls.Load(), "the guard runs once, after the rate-limit wait")
+	assert.Equal(t, int32(1), mutationsAtGuard.Load(), "the guard runs after the rate-limited mutation, before the resend")
+	assert.Equal(t, int32(2), mutations.Load())
+}
+
+func TestCreateCommitOnBranch_RateLimitedGuardRefusalStopsResend(t *testing.T) {
+	srv, mutations := rateLimitedOnceServer(t)
+
+	stop := errors.New("ownership lost")
+	var guardCalls atomic.Int32
+	ctx := forge.WithRetryGuard(context.Background(), func(context.Context) error {
+		guardCalls.Add(1)
+		return stop
+	})
+	oid, err := newTestClient(t, srv).createCommitOnBranch(ctx, "org", "repo", "main", "abc123", "msg", regularFile, nil)
+	require.ErrorIs(t, err, stop)
+	assert.Contains(t, err.Error(), "not retried")
+	assert.Empty(t, oid)
+	assert.Equal(t, int32(1), guardCalls.Load())
+	assert.Equal(t, int32(1), mutations.Load(), "the mutation is not resent after the guard refuses")
+}
+
+func TestCommitFiles_GraphQL_RateLimitedGuardRefusalAfterWaitStopsResend(t *testing.T) {
+	// CommitFiles also runs the guard before its first mutation; let that
+	// call pass and refuse the one after the rate-limit wait.
+	srv, mutations := rateLimitedOnceServer(t)
+
+	stop := errors.New("ownership lost")
+	ctx := forge.WithRetryGuard(context.Background(), func(context.Context) error {
+		if mutations.Load() > 0 {
+			return stop
+		}
+		return nil
+	})
+	committed, err := newTestClient(t, srv).CommitFiles(ctx, "org", "repo", "msg", regularFile)
+	require.ErrorIs(t, err, stop)
+	assert.False(t, committed)
+	assert.Equal(t, int32(1), mutations.Load(), "the mutation is not resent after the guard refuses")
 }
 
 // rateLimitHeaders sets the X-RateLimit-* headers GitHub sends with a

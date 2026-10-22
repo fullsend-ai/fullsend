@@ -530,7 +530,7 @@ func TestRunAgent_OpenAIProviderSkippedWhenRuntimeDoesNotNeedIt(t *testing.T) {
 
 			var out strings.Builder
 			rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
-			err := runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags, statusOpts{}, ui.New(&out), false, runOverrideFlags{})
+			err := runAgent(context.Background(), "code", dir, "", t.TempDir(), fakeSandboxBinary(t), nil, false, "", "", "", rFlags, statusOpts{}, ui.New(&out), false, runOverrideFlags{})
 			// The stub cannot bootstrap an agent, so the run still fails
 			// later; what matters is that it got past the provider block.
 			require.Error(t, err)
@@ -574,7 +574,7 @@ func TestRunAgent_OpenAIProviderNeededBySubagent(t *testing.T) {
 		"  - name: code\n    source: harness/code.yaml\n    subagents:\n      default: openai/gpt-5.6-luna\n"), 0o644))
 
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
-	err := runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags, statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
+	err := runAgent(context.Background(), "code", dir, "", t.TempDir(), fakeSandboxBinary(t), nil, false, "", "", "", rFlags, statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
 	// The stub cannot bootstrap an agent past sandbox creation, but the
 	// provider block (what this test checks) must have completed first.
 	require.Error(t, err)
@@ -657,7 +657,7 @@ func TestRunAgent_OpenAIFrontmatterChildWithoutCredential(t *testing.T) {
 				"version: \"1\"\nruntime: pi\nagents:\n  - name: code\n    source: harness/code.yaml\n"+tc.subagents), 0o644))
 
 			rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
-			err := runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags, statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
+			err := runAgent(context.Background(), "code", dir, "", t.TempDir(), fakeSandboxBinary(t), nil, false, "", "", "", rFlags, statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
 			require.Error(t, err, "the stub cannot bootstrap either way")
 			data, readErr := os.ReadFile(logPath)
 			require.NoError(t, readErr)
@@ -706,7 +706,7 @@ func TestRunAgent_OpenAIProviderIsRunScopedAndDeleted(t *testing.T) {
 			}
 
 			rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
-			err := runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags, statusOpts{}, ui.New(io.Discard), keep, runOverrideFlags{})
+			err := runAgent(context.Background(), "code", dir, "", t.TempDir(), fakeSandboxBinary(t), nil, false, "", "", "", rFlags, statusOpts{}, ui.New(io.Discard), keep, runOverrideFlags{})
 			// The run fails after sandbox creation (the stub cannot bootstrap
 			// an agent), but the provider block must have completed.
 			require.Error(t, err)
@@ -2409,7 +2409,7 @@ func TestRunAgent_OpenAIProviderFollowsTheAgentDefinitionModel(t *testing.T) {
 
 			var out strings.Builder
 			rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
-			err := runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags, statusOpts{}, ui.New(&out), false, runOverrideFlags{})
+			err := runAgent(context.Background(), "code", dir, "", t.TempDir(), fakeSandboxBinary(t), nil, false, "", "", "", rFlags, statusOpts{}, ui.New(&out), false, runOverrideFlags{})
 			require.Error(t, err, "the stub cannot bootstrap an agent; the provider block is what matters")
 
 			data, readErr := os.ReadFile(logPath)

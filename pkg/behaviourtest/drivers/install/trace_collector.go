@@ -163,8 +163,9 @@ func execCommandRunner(ctx context.Context, extraEnv []string, name string, args
 // traceSink is the composed driver's view of the trace collector.
 type traceSink interface {
 	// ConfigureRepo points a freshly installed repository's workflows
-	// at the collector.
-	ConfigureRepo(ctx context.Context, org, repo string) error
+	// at the collector, using client (the repository org's
+	// credentials).
+	ConfigureRepo(ctx context.Context, client forge.Client, org, repo string) error
 	// Stop flushes and stops the collector, copies the trace files
 	// under the artifact dir and removes the token from every
 	// artifact. Safe to call more than once.
@@ -173,7 +174,6 @@ type traceSink interface {
 
 // traceCollector owns the Collector and tunnel containers.
 type traceCollector struct {
-	client      forge.Client
 	logf        func(string, ...any)
 	run         commandRunner
 	httpClient  *http.Client
@@ -220,9 +220,8 @@ func traceCollectorEnabled(getenv func(string) string) (bool, error) {
 }
 
 // newTraceCollector returns a collector with production dependencies.
-func newTraceCollector(client forge.Client, artifactDir string, logf func(string, ...any)) *traceCollector {
+func newTraceCollector(artifactDir string, logf func(string, ...any)) *traceCollector {
 	return &traceCollector{
-		client:       client,
 		logf:         logf,
 		run:          execCommandRunner,
 		httpClient:   &http.Client{Timeout: 10 * time.Second},
@@ -231,17 +230,6 @@ func newTraceCollector(client forge.Client, artifactDir string, logf func(string
 		readyTimeout: 3 * time.Minute,
 		pollInterval: time.Second,
 	}
-}
-
-// withTraceCollector starts the job-scoped trace collector when the
-// environment enables it and attaches it to a composed driver. A
-// collector that cannot start is logged and skipped: trace collection
-// is diagnostic and must not fail the suite.
-func withTraceCollector(d Driver, client forge.Client, logf func(string, ...any)) Driver {
-	if _, ok := d.(*composedDriver); !ok {
-		return d
-	}
-	return startTraceCollector(client, logf).attach(d)
 }
 
 // traceStart is the outcome of starting the job-scoped collector before
@@ -255,8 +243,9 @@ type traceStart struct {
 }
 
 // startTraceCollector starts the collector when the environment enables
-// it. Failures are logged and leave started nil.
-func startTraceCollector(client forge.Client, logf func(string, ...any)) traceStart {
+// it. Failures are logged and leave started nil: trace collection is
+// diagnostic and must not fail the suite.
+func startTraceCollector(logf func(string, ...any)) traceStart {
 	enabled, err := traceCollectorEnabled(os.Getenv)
 	if err != nil {
 		logf("[trace-collector] WARNING: not collecting traces: %v", err)
@@ -269,8 +258,7 @@ func startTraceCollector(client forge.Client, logf func(string, ...any)) traceSt
 		logf("[trace-collector] WARNING: not collecting traces: podman not found: %v", err)
 		return traceStart{}
 	}
-	tc := newTraceCollector(client,
-		strings.TrimSpace(os.Getenv("BEHAVIOUR_ARTIFACT_DIR")), logf)
+	tc := newTraceCollector(strings.TrimSpace(os.Getenv("BEHAVIOUR_ARTIFACT_DIR")), logf)
 	// Bounds image pulls and readiness waits.
 	ctx, cancel := context.WithTimeout(context.Background(), traceCollectorStartTimeout)
 	defer cancel()
@@ -581,12 +569,13 @@ func (c *traceCollector) poll(ctx context.Context, what string, check func() (bo
 
 // ConfigureRepo sets the traces endpoint variable and the bearer-token
 // headers secret on a leased repository. The repository is deleted at
-// deallocation, which removes both.
-func (c *traceCollector) ConfigureRepo(ctx context.Context, org, repo string) error {
-	if err := c.client.CreateOrUpdateRepoVariable(ctx, org, repo, otelTracesEndpointVar, c.endpoint); err != nil {
+// deallocation, which removes both. client holds the repository org's
+// credentials.
+func (c *traceCollector) ConfigureRepo(ctx context.Context, client forge.Client, org, repo string) error {
+	if err := client.CreateOrUpdateRepoVariable(ctx, org, repo, otelTracesEndpointVar, c.endpoint); err != nil {
 		return fmt.Errorf("setting variable %s: %w", otelTracesEndpointVar, err)
 	}
-	if err := c.client.CreateRepoSecret(ctx, org, repo, otelTracesHeadersSecret, c.collectorHeaders()); err != nil {
+	if err := client.CreateRepoSecret(ctx, org, repo, otelTracesHeadersSecret, c.collectorHeaders()); err != nil {
 		return fmt.Errorf("setting secret %s: %w", otelTracesHeadersSecret, err)
 	}
 	return nil

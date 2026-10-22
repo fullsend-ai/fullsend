@@ -6,11 +6,24 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/fullsend-ai/fullsend/internal/buildinfo"
 	"github.com/fullsend-ai/fullsend/internal/telemetry"
 )
 
-var version = "dev"
-var commitSHA = "dev"
+// version and commitSHA retain the historical -ldflags -X targets for
+// packagers that still stamp internal/cli. New build sites stamp
+// internal/buildinfo; init copies those values here when the legacy targets
+// were not set.
+var version, commitSHA string
+
+func init() {
+	if version == "" {
+		version = buildinfo.Version()
+	}
+	if commitSHA == "" {
+		commitSHA = buildinfo.CommitSHA()
+	}
+}
 
 // upstreamRefOverride pins scaffold workflow refs to one fullsend-ai/fullsend
 // commit. It is set only through -ldflags: the e2e build stamps the commit
@@ -21,11 +34,6 @@ var upstreamRefOverride = ""
 // Version returns the CLI version string set at build time.
 func Version() string {
 	return version
-}
-
-// CommitSHA returns the git commit SHA set at build time.
-func CommitSHA() string {
-	return commitSHA
 }
 
 // resolveBuildVersion returns the commit SHA and normalized version tag

@@ -131,6 +131,38 @@ func TestRunIssuesCreate_JiraSubTask(t *testing.T) {
 	assert.Equal(t, "https://acme.atlassian.net/browse/TC-1", result.URL)
 }
 
+func TestRunIssuesCreate_JiraWhitespaceOnlyStdinBody(t *testing.T) {
+	tc, fake, err := tracker.NewFakeJiraClientWithFake("https://acme.atlassian.net")
+	require.NoError(t, err)
+	var buf bytes.Buffer
+
+	cfg := &issuesCreateConfig{
+		trackerName: trackerJira,
+		project:     "PROJ",
+		issueType:   "Task",
+		title:       "Whitespace body",
+		body:        "-",
+		testStdin:   strings.NewReader("  \n\t\n  "),
+		testClient:  tc,
+		testWriter:  &buf,
+	}
+	require.NoError(t, runIssuesCreate(context.Background(), cfg))
+
+	require.Len(t, fake.CreatedIssues, 1)
+	// The whitespace-only body is still passed through; the Jira client
+	// treats it as empty and omits the description from the request.
+	assert.Equal(t, "  \n\t\n  ", fake.CreatedIssues[0].Description)
+	// Issue is created successfully (no ADF conversion error).
+	result := decodeCreateResult(t, &buf)
+	assert.Equal(t, 1, result.Number)
+	assert.Equal(t, "PROJ-1", result.Key)
+	assert.Equal(t, "Whitespace body", result.Title)
+	// GetIssue should show no description (nil).
+	issue, err := tc.GetIssue(context.Background(), "PROJ", 1)
+	require.NoError(t, err)
+	assert.Empty(t, issue.Body)
+}
+
 // canonicalKeyClient mimics Jira returning a canonical key whose project
 // spelling differs from the requested one.
 type canonicalKeyClient struct {

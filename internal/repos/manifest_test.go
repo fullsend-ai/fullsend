@@ -1166,8 +1166,13 @@ func TestLoadManifest_OversizedResponse(t *testing.T) {
 }
 
 func TestLoadManifest_Timeout(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		time.Sleep(5 * time.Second)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Return once the client gives up, so srv.Close does not wait
+		// out the full delay.
+		select {
+		case <-r.Context().Done():
+		case <-time.After(5 * time.Second):
+		}
 		_, _ = w.Write([]byte(validManifest))
 	}))
 	defer srv.Close()

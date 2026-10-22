@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
@@ -55,6 +56,11 @@ type mintURLDriver struct {
 }
 
 func (d mintURLDriver) MintURL() string { return d.url }
+
+// noReporterDriver is a name-only Driver that reports no mint URL.
+type noReporterDriver struct {
+	install.Driver
+}
 
 func mintStatusClass(t *testing.T, err error) string {
 	t.Helper()
@@ -149,33 +155,58 @@ func TestMintStatusFeature_StepsMatchPatterns(t *testing.T) {
 func TestGivenMintStatusAddress(t *testing.T) {
 	w := &world.World{Driver: mintURLDriver{url: mintStatusTestURL + "/"}}
 
-	require.NoError(t, givenMintStatusAddress(w, mintStatusAddressSuite))
+	require.NoError(t, givenMintStatusAddress(context.Background(), w, mintStatusAddressSuite))
 	assert.Equal(t, mintStatusTestURL+"/", w.MintStatus.MintURL)
 
-	require.NoError(t, givenMintStatusAddress(w, mintStatusAddressNonMint))
+	require.NoError(t, givenMintStatusAddress(context.Background(), w, mintStatusAddressNonMint))
 	assert.Equal(t, mintStatusTestURL+mintStatusNonMintPath, w.MintStatus.MintURL)
 
-	require.NoError(t, givenMintStatusAddress(w, mintStatusAddressUnreachable))
+	require.NoError(t, givenMintStatusAddress(context.Background(), w, mintStatusAddressUnreachable))
 	assert.Equal(t, mintStatusUnreachableURL, w.MintStatus.MintURL)
 
-	assert.Error(t, givenMintStatusAddress(w, "some other address"))
+	assert.Error(t, givenMintStatusAddress(context.Background(), w, "some other address"))
+}
+
+func TestGivenMintStatusAddress_LeasesForOrgMint(t *testing.T) {
+	ld := &fakeLeaseDriver{lease: install.RepoLease{
+		Org: "halfsend-04", Repo: "test-repo-02", Token: "tok-04",
+		Client: forge.NewFakeClient(), MintURL: "https://mint.halfsend-04",
+	}}
+	w := &world.World{Driver: ld, Org: "halfsend-01", Logf: t.Logf}
+
+	require.NoError(t, givenMintStatusAddress(context.Background(), w, mintStatusAddressSuite))
+	assert.Equal(t, "https://mint.halfsend-04", w.MintStatus.MintURL, "the leased org's mint")
+	assert.Equal(t, "halfsend-04", w.Org)
+	assert.Equal(t, "halfsend-04", w.LeasedRepoOrg)
+	assert.Equal(t, 1, ld.allocs)
+
+	// A scenario that already leased reuses its lease's mint.
+	require.NoError(t, givenMintStatusAddress(context.Background(), w, mintStatusAddressSuite))
+	assert.Equal(t, 1, ld.allocs)
+}
+
+func TestGivenMintStatusAddress_LeaseFailureIsDeployment(t *testing.T) {
+	w := &world.World{Driver: &fakeLeaseDriver{allocErr: errors.New("pool exhausted")}}
+	err := givenMintStatusAddress(context.Background(), w, mintStatusAddressSuite)
+	assert.Equal(t, mintStatusClassDeployment, mintStatusClass(t, err))
+	assert.ErrorContains(t, err, "pool exhausted")
 }
 
 func TestGivenMintStatusAddress_UnknownSuiteMint(t *testing.T) {
 	for name, w := range map[string]*world.World{
 		"no driver":          {},
 		"no mint URL":        {Driver: mintURLDriver{url: "  "}},
-		"driver no reporter": {Driver: &install.PlaybackDriver{}},
+		"driver no reporter": {Driver: noReporterDriver{}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			err := givenMintStatusAddress(w, mintStatusAddressSuite)
+			err := givenMintStatusAddress(context.Background(), w, mintStatusAddressSuite)
 			assert.Equal(t, mintStatusClassDeployment, mintStatusClass(t, err))
 			assert.Nil(t, w.MintStatus)
 		})
 	}
 	// The unreachable address does not need the suite's mint.
 	w := &world.World{}
-	require.NoError(t, givenMintStatusAddress(w, mintStatusAddressUnreachable))
+	require.NoError(t, givenMintStatusAddress(context.Background(), w, mintStatusAddressUnreachable))
 }
 
 func TestMintStatusCredential(t *testing.T) {

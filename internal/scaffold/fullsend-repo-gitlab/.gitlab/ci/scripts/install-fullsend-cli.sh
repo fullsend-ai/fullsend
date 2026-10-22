@@ -119,7 +119,7 @@ case "${FULLSEND_VERSION}" in
     if ! git -C "${FSSRC}" fetch --depth 1 origin "${FULLSEND_VERSION}" \
       || ! git -C "${FSSRC}" -c core.hooksPath=/dev/null checkout FETCH_HEAD \
       || ! CGO_ENABLED=0 go build -C "${FSSRC}" \
-        -ldflags "-X github.com/fullsend-ai/fullsend/internal/cli.version=${FULLSEND_VERSION}" \
+        -ldflags "-X github.com/fullsend-ai/fullsend/internal/buildinfo.version=${FULLSEND_VERSION} -X github.com/fullsend-ai/fullsend/internal/cli.version=${FULLSEND_VERSION}" \
         -o /usr/local/bin/fullsend ./cmd/fullsend/; then
       rm -rf "${FSSRC}"
       echo "ERROR: source build of the fullsend CLI failed for untagged fullsend_ref ${FULLSEND_VERSION}" >&2

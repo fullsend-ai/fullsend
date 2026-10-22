@@ -1561,6 +1561,19 @@ Confirm:
   registered under Settings → CI/CD → Runners — when that tag differs
   from `gitlab.agent_runner_tags`, both need their own registered runner
   (see [Assigning runners](#assigning-runners)).
+* **Dispatcher pipelines** — With the webhook fast path enabled, every
+  issue, merge request, and comment event creates a `trigger` pipeline
+  that runs the dispatcher job. GitLab creates that pipeline before
+  Fullsend can read `TRIGGER_PAYLOAD`, so the pipeline appears even for
+  events that dispatch nothing. An issue edit that does not change labels
+  (title, description, assignee) is ignored: the job logs
+  `ignoring issue #N update without changes.labels` and succeeds without
+  starting an agent pipeline. A failed dispatcher job means the payload
+  was rejected, not ignored. Typical causes are a label change the API
+  re-fetch contradicts or cannot tie to the acting user, a stale or
+  replayed event, or an unsupported action such as a merge request edit
+  or an issue reopen. Nothing is dispatched for a rejected payload, and
+  the job log names the check that failed.
 * **Role identities** — On instances with project service accounts, a fresh
   install shows `fullsend-poller`, `fullsend-analyst`, and `fullsend-coder`
   (plus any `fullsend-role-*` accounts) under Project information → Members

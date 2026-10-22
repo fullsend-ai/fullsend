@@ -71,7 +71,6 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/e2etest"
 	"github.com/fullsend-ai/fullsend/internal/forge"
-	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 )
 
 const (
@@ -327,9 +326,9 @@ func (b *sharedOrgLock) create(ctx context.Context, client forge.Client, org str
 	// after every such wait, so a replacement during a wait stops the
 	// commit rather than letting it read the replacement's head. Requests
 	// issued back to back, with no wait between them, remain unguarded.
-	commitBase := gh.WithoutAmbiguousRetry(ctx)
+	commitBase := forge.WithoutAmbiguousRetry(ctx)
 	if repo != nil && repo.ID != 0 {
-		commitBase = gh.WithRetryGuard(commitBase, func(context.Context) error {
+		commitBase = forge.WithRetryGuard(commitBase, func(context.Context) error {
 			return b.checkLockID(ctx, client, org, repo.ID)
 		})
 	}
@@ -541,7 +540,7 @@ func (b *sharedOrgLock) deleteIfID(ctx context.Context, client forge.Client, org
 	}
 	// Look up on the caller's ctx, not the guarded request context, so the
 	// lookup is not itself guarded.
-	guarded := gh.WithRetryGuard(gh.WithoutAmbiguousRetry(ctx), func(context.Context) error {
+	guarded := forge.WithRetryGuard(forge.WithoutAmbiguousRetry(ctx), func(context.Context) error {
 		return b.checkLockID(ctx, client, org, id)
 	})
 	delCtx, cancelDel := b.bound(guarded)

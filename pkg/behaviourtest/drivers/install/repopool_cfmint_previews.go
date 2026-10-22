@@ -18,7 +18,6 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/e2etest"
 	"github.com/fullsend-ai/fullsend/internal/forge"
-	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install/common"
 )
 
 // cfmintConfig holds parameters for the CF mint driver. This is an
@@ -42,134 +41,87 @@ type cfmintConfig struct {
 	traceHeadersFile string
 }
 
-// NewRepoPoolCFMintPreviews is a Factory that deploys a CF preview
-// mint and returns a unified Driver owning allocation, deallocation,
-// ensure, and teardown.
+// NewRepoPoolCFMintPreviews is a Factory for the DEV pool. It returns
+// the shared slot-leasing Driver, which deploys one CF preview mint per
+// pool org, the first time a slot in that org is leased, and tears them
+// all down at Finalize.
 //
-// Driver-specific config is read from env: PEM dir from TEST_*_PEM
-// env vars (materialized internally), suite name from
-// BEHAVIOUR_SUITE_NAME (default "bt"), and app set from
-// BEHAVIOUR_APP_SET (default "fullsend-test"). Pool size defaults to
-// DefaultPoolSize. WIF and workflow-host repo lists are computed from
-// the org and pool size; the workflow-host list also carries each
-// slot's mint-probe host (see buildWorkflowHostRepoList).
-func NewRepoPoolCFMintPreviews(
-	org string,
-	client forge.Client,
-	token, binary, gcpProjectID string,
-	logf func(string, ...any),
-) (Driver, error) {
-	poolSize := envPoolSize(logf)
-
-	pemDir, err := setupCFMintPEMDir()
-	if err != nil {
-		return nil, fmt.Errorf("cfmint factory: materializing PEMs: %w", err)
+// Driver-specific config is read from env: PEMs from TEST_*_PEM env
+// vars (materialized for each deploy and removed after it), suite name
+// from BEHAVIOUR_SUITE_NAME (default "bt"), and app set from
+// BEHAVIOUR_APP_SET (default "fullsend-test"). Each org's mint lists
+// only that org's slots: WIF and workflow-host repo lists are computed
+// from the org and the layout's slots per org, and the workflow-host
+// list also carries each slot's mint-probe host (see
+// buildWorkflowHostRepoList). Its status group is the org's mint-status
+// team.
+func NewRepoPoolCFMintPreviews(pool PoolConfig) (Driver, error) {
+	if err := pool.validate(); err != nil {
+		return nil, fmt.Errorf("cfmint factory: %w", err)
 	}
-	// PEMs are only needed for mint deploy. Clean up as soon as the
-	// factory returns (deploy has completed or failed by that point).
-	if pemDir != "" {
-		defer os.RemoveAll(pemDir)
+	if !cfmintPEMsConfigured() {
+		return nil, fmt.Errorf("cfmint factory: PEMDir is required (no PEMs materialized: set the TEST_*_PEM env vars)")
+	}
+	logf := poolLogf(pool)
+	if err := prepareWranglerForMints(context.Background(), logf); err != nil {
+		return nil, fmt.Errorf("cfmint factory: %w", err)
 	}
 
-	// Start the trace collector before the mint so the preview mint can
+	// Start the trace collector before any mint so each preview mint can
 	// be deployed with it as its trace destination. Collection is
-	// diagnostic: if the headers file cannot be written, the mint is
+	// diagnostic: if the headers file cannot be written, a mint is
 	// deployed without tracing and the collector still serves workflows.
-	traces := startTraceCollector(client, logf)
-	traceEndpoint, traceHeadersFile, cleanupHeaders, err := traces.mintTracing()
-	if err != nil {
-		logf("[trace-collector] WARNING: preview mint will not export traces: %v", err)
-	}
-	defer cleanupHeaders()
+	traces := startTraceCollector(logf)
 
-	cfg := cfmintConfig{
-		pemDir:            pemDir,
-		suiteName:         envSuiteName(),
-		perRepoWIFRepos:   buildRepoList(org, poolSize),
-		workflowHostRepos: buildWorkflowHostRepoList(org, poolSize),
-		appSet:            envAppSet(),
-		statusGitHubGroup: mintStatusGitHubGroup(org),
-		traceEndpoint:     traceEndpoint,
-		traceHeadersFile:  traceHeadersFile,
-	}
-
-	md, err := newCFMintDriver(client, token, binary, gcpProjectID, logf, cfg)
-	if err != nil {
-		traces.abort()
-		return nil, fmt.Errorf("cfmint factory: creating mint driver: %w", err)
+	newMint := func(org string, cred orgCredential) (mintDriver, func(), error) {
+		pemDir, err := setupCFMintPEMDir()
+		if err != nil {
+			return nil, nil, fmt.Errorf("materializing PEMs: %w", err)
+		}
+		// PEMs (and the trace headers file) are only needed for the
+		// deploy; the caller runs cleanup as soon as it has finished.
+		removePEMs := func() {
+			if pemDir != "" {
+				_ = os.RemoveAll(pemDir)
+			}
+		}
+		traceEndpoint, traceHeadersFile, cleanupHeaders, err := traces.mintTracing()
+		if err != nil {
+			logf("[trace-collector] WARNING: preview mint for %s will not export traces: %v", org, err)
+		}
+		cleanup := func() {
+			cleanupHeaders()
+			removePEMs()
+		}
+		cfg := cfmintConfig{
+			pemDir:            pemDir,
+			suiteName:         envSuiteName(),
+			perRepoWIFRepos:   buildRepoList(org, pool.Layout.SlotsPerOrg),
+			workflowHostRepos: buildWorkflowHostRepoList(org, pool.Layout.SlotsPerOrg),
+			appSet:            envAppSet(),
+			statusGitHubGroup: mintStatusGitHubGroup(org),
+			traceEndpoint:     traceEndpoint,
+			traceHeadersFile:  traceHeadersFile,
+		}
+		md, err := newCFMintDriver(cred.client, cred.token, pool.Binary, pool.GCPProjectID, logf, cfg)
+		if err != nil {
+			cleanup()
+			return nil, nil, fmt.Errorf("creating mint driver: %w", err)
+		}
+		return md, cleanup, nil
 	}
 
 	// playbackSetupOpts returns normal "dummy"-runtime opts unless
 	// PLAYBACK_RUNTIME is set in the environment, in which case this same
 	// factory backs a playback suite (see NewPlaybackDriver) instead of
 	// the standard behaviour suite.
-	return buildCFMintDriverWithOpts(org, md, client, token, binary, gcpProjectID, poolSize, playbackSetupOpts(), traces, logf)
+	setupOpts := playbackSetupOpts()
+	setupOpts.AppSet = envAppSet()
+	return buildPoolDriver(pool, newMint, setupOpts, traces)
 }
 
 // Compile-time check: NewRepoPoolCFMintPreviews satisfies Factory.
 var _ Factory = NewRepoPoolCFMintPreviews
-
-// buildCFMintDriver deploys the mint and constructs the composed driver
-// with the standard vendored-mode GitHubSetupOpts. Extracted from
-// NewRepoPoolCFMintPreviews so the deploy → compose path can be tested
-// with a fake mintDriver.
-func buildCFMintDriver(
-	org string,
-	md mintDriver,
-	client forge.Client,
-	token, binary, gcpProjectID string,
-	poolSize int,
-	logf func(string, ...any),
-) (Driver, error) {
-	return buildCFMintDriverWithOpts(org, md, client, token, binary, gcpProjectID, poolSize, common.DefaultGitHubSetupOpts(), traceStart{}, logf)
-}
-
-// buildCFMintDriverWithOpts is like buildCFMintDriver but accepts the
-// GitHubSetupOpts to install with, so a playback-runtime caller can
-// install repos with the dummy-playback runtime and its tracking-issue
-// hook instead of the normal dummy runtime. traces is the already
-// started trace collector (if any): it is attached to the returned
-// driver, or stopped when construction fails.
-func buildCFMintDriverWithOpts(
-	org string,
-	md mintDriver,
-	client forge.Client,
-	token, binary, gcpProjectID string,
-	poolSize int,
-	setupOpts common.GitHubSetupOpts,
-	traces traceStart,
-	logf func(string, ...any),
-) (d Driver, err error) {
-	defer func() {
-		if err != nil {
-			traces.abort()
-		}
-	}()
-	setupOpts.AppSet = envAppSet()
-	ctx := context.Background()
-	mintURL, err := md.Install(ctx, org)
-	if err != nil {
-		return nil, fmt.Errorf("cfmint factory: deploying mint: %w", err)
-	}
-
-	// Create the ensurer with the deployed mint URL.
-	e2eCfg := e2etest.EnvConfig{
-		MintURL:      mintURL,
-		GCPProjectID: gcpProjectID,
-	}
-	ens, err := newRepoEnsurerWithOpts(e2eCfg, client, token, binary, setupOpts, logf,
-		playbackInstallHooks(setupOpts, logf))
-	if err != nil {
-		return nil, fmt.Errorf("cfmint factory: %w", err)
-	}
-
-	// Construct and return the composed driver.
-	d, err = newComposedDriver(org, md, ens, poolSize, logf)
-	if err != nil {
-		return nil, err
-	}
-	return traces.attach(withRateLimitReporter(withMintURL(d, mintURL), client)), nil
-}
 
 // cfmintMintDriver deploys a CF Worker preview mint and uses the derived
 // preview URL as the mint endpoint for fullsend github setup.
@@ -452,6 +404,18 @@ var cfmintPEMRoleEnvVars = map[string]string{
 	"review":     "TEST_REVIEW_PEM",
 	"retro":      "TEST_RETRO_PEM",
 	"prioritize": "TEST_PRIORITIZE_PEM",
+}
+
+// cfmintPEMsConfigured reports whether any TEST_*_PEM env var is set, so
+// the factories can fail before scenarios run instead of at an org's
+// first mint deploy.
+func cfmintPEMsConfigured() bool {
+	for _, envVar := range cfmintPEMRoleEnvVars {
+		if os.Getenv(envVar) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // setupCFMintPEMDir materializes TEST_*_PEM environment variables into

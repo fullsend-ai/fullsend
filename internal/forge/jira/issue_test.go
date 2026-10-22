@@ -90,6 +90,34 @@ func TestCreateIssue_TypeNameNoParentNoDescription(t *testing.T) {
 	assert.True(t, handlerCalled, "handler was not called — URL path mismatch")
 }
 
+func TestCreateIssue_WhitespaceOnlyDescriptionOmitted(t *testing.T) {
+	t.Parallel()
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	handlerCalled := false
+	mux.HandleFunc("/rest/api/3/issue", func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
+		var body struct {
+			Fields map[string]any `json:"fields"`
+		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		assert.NotContains(t, body.Fields, "description", "whitespace-only description must be omitted")
+
+		writeJSON(t, w, http.StatusCreated, CreatedIssue{ID: "10102", Key: "PROJ-45"})
+	})
+
+	created, err := client.CreateIssue(ctx, CreateIssueInput{
+		ProjectKey:  "PROJ",
+		IssueType:   "Task",
+		Summary:     "t",
+		Description: "  \n\t\n  ",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "PROJ-45", created.Key)
+	assert.True(t, handlerCalled, "handler was not called — URL path mismatch")
+}
+
 func TestCreateIssue_NotRetriedOnServerError(t *testing.T) {
 	t.Parallel()
 	client, mux := setupTest(t)

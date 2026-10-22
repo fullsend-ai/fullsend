@@ -7,7 +7,7 @@ This guide provides implementation details for fullsend CLI internals: command s
 ```
 fullsend
 ├── admin                                    # Manage fullsend installation for a repository
-│   ├── install      <org|owner/repo>        # Full infrastructure setup
+│   ├── install      <owner/repo>            # Deprecated: use inference provision + github setup / repos install (GitLab)
 │   └── foreign                              # Cross-org mint authorization (FULLSEND_FOREIGN_<ROLE>_REPOS)
 │       ├── allow                            # Authorize a foreign org/repo to mint for a role
 │       ├── list                             # List foreign caller allowlists
@@ -213,7 +213,8 @@ fullsend
     ├── --forge <platform>                   #   Forge platform (github, gitlab); auto-detected from CI env
     ├── --fullsend-dir <path>                #   Path to fullsend config directory (completion mode detection and tracker routing)
     ├── --job-status <string>                #   Job outcome from CI runner (e.g. success, failure, cancelled)
-    └── --was-skipped                        #   Pre-script decided to skip the run; forces synthesis under on_failure
+    ├── --was-skipped                        #   Pre-script decided to skip the run; forces synthesis under on_failure
+    └── --review-run                         #   Built-in GitHub review agent; enables current-HEAD-aware cancellation guidance
 ```
 
 ### Command Decomposition
@@ -240,7 +241,8 @@ The `mint`, `inference`, and `github` subcommands decompose setup into role-spec
 The typical handoff: a GCP admin runs `mint deploy`, `mint enroll`, and `inference provision`, then passes the mint URL and WIF provider resource name to a GitHub maintainer who runs `github setup --mint-url=... --inference-wif-provider=...`. See [Advanced setup](../infrastructure/advanced-setup.md).
 
 > **Deprecated:** The `admin install` command is deprecated. Use the
-> standalone commands above instead. See the
+> standalone commands above instead (GitLab projects: see
+> [Installing Fullsend](../getting-started/configuring-gitlab.md#installing-fullsend)). See the
 > [Unified Installation Flow](#unified-installation-flow) section below for
 > how the phases are structured internally.
 
@@ -423,7 +425,9 @@ Vendoring commit messages use title + body (upload and stale delete). `admin ins
 │  │                   │  profile — see #7218. On GitLab, a       │
 │  │                   │  fullsend-gitlab-forge profile is        │
 │  │                   │  auto-generated from the forge host URL  │
-│  │                   │  — see #6615)                            │
+│  │                   │  — see #6615 — and the forge host is     │
+│  │                   │  added to each profile that issues       │
+│  │                   │  GITLAB_TOKEN — see #8683)               │
 │  └──────┬───────────┘                                           │
 │         ▼                                                       │
 │  ┌──────────────────┐                                           │
@@ -634,7 +638,7 @@ details, see [Agent runtimes](../../runtimes.md).
 | `Upload()` | `openshell sandbox upload ...` | Copy files into sandbox |
 | `UploadDir()` | tar -czf + Upload + Exec extract | Copy directory preserving symlinks |
 | `Download()` | `openshell sandbox download ...` | Copy files out of sandbox |
-| `SafeDownload()` | Download + sanitize | Remove dangerous symlinks (absolute or repo-escaping), .git/hooks |
+| `SafeDownload()` | Staged download + sanitize | Retry into a fresh staging directory, remove dangerous symlinks (absolute or repo-escaping) and `.git/hooks/`, then publish the sanitized tree |
 | `CollectLogs()` | Download logs dir | Extract sandbox logs |
 | `ExtractTranscripts()` | Download transcripts | Extract conversation transcripts |
 | `Delete()` | `openshell sandbox delete` | Destroy container |

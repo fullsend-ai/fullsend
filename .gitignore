@@ -25,5 +25,7 @@ docs/.vitepress/cache/
 docs/.vitepress/.temp/
 docs/.vitepress/dist/
 coverage.out
+# make wasm-build output (also built by make mint-cf-worker-test).
+cmd/mint-wasm/mint.wasm
 # QualityFlow working directory; nothing under it belongs in a commit.
 outputs/

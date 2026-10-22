@@ -6,19 +6,16 @@
 // skipped and never reset or deleted. Each org installation's GitHub
 // rate-limit headers gate further claims there until the reported reset.
 //
-// This file provides the allocation layer. Wiring it into the behaviour
-// and playback suite runners (replacing exclusive org acquisition) is a
-// follow-up. Slots left behind by crashed runners are reclaimed from the
+// This file provides the allocation layer; the shared install driver
+// (composed.go) leases through it for the behaviour and playback suite
+// runners. Slots left behind by crashed runners are reclaimed from the
 // claim path by the GC in slotgc.go. Until legacy runners that take the
 // exclusive e2e-lock have drained, each lease also holds the org's
 // e2e-lock in shared mode (orglock.go).
 //
-// The existing ensurer (ensure.go: ensureRepoExists → deleteBlockingRepo
-// and resetRepo) deletes or resets existing test-repo-NN repos under the
-// same names. It must not run against orgs shared with this allocator: it
-// would delete actively leased repos and break the "occupied is never
-// deleted" rule. Removing that reset/delete path must happen in the same
-// change that wires the allocator in.
+// The ensurer (ensure.go) only installs into a slot repo this allocator
+// created for the lease; it never creates, deletes or resets a slot repo,
+// so the "occupied is never deleted" rule holds throughout provisioning.
 package install
 
 import (
@@ -884,11 +881,18 @@ func (a *slotAllocator) findOwn(ctx context.Context, client forge.Client, slot S
 // returned immediately. On cancellation the last capacity error is joined
 // to the context error.
 func (a *slotAllocator) Acquire(ctx context.Context) (Slot, forge.Client, error) {
+	var lastCapacity error
 	for {
 		slot, client, err := a.Claim(ctx)
+		if err != nil && !errors.Is(err, ErrPoolCapacityExhausted) && lastCapacity != nil && ctx.Err() != nil {
+			// The context ended inside a pass, so Claim returned only
+			// the context error; keep the last capacity error too.
+			return Slot{}, nil, errors.Join(err, lastCapacity)
+		}
 		if err == nil || !errors.Is(err, ErrPoolCapacityExhausted) {
 			return slot, client, err
 		}
+		lastCapacity = err
 		var capErr *CapacityError
 		if errors.As(err, &capErr) && capErr.Reclaimed > 0 {
 			a.logf("[slots] gc reclaimed %d slot(s), retrying now: %v", capErr.Reclaimed, err)
@@ -932,12 +936,7 @@ func (a *slotAllocator) Release(ctx context.Context, slot Slot) error {
 		return fmt.Errorf("releasing pool slot %s: not held by this allocator (possible double-release)", slot)
 	}
 
-	client := l.client
-	if fresh, err := a.clientFor(ctx, slot.Org); err != nil {
-		a.logf("[slots] re-resolving client for %s failed, using the claim-time client: %v", slot.Org, err)
-	} else if fresh != nil {
-		client = fresh
-	}
+	client := a.releaseClient(ctx, slot, l)
 
 	err := a.deleteLeasedRepo(ctx, client, slot, l)
 	if a.orgLock != nil && l.orgLock != nil {
@@ -946,6 +945,38 @@ func (a *slotAllocator) Release(ctx context.Context, slot Slot) error {
 		}
 	}
 	return err
+}
+
+// releaseClient returns the client to use for slot's release: the one
+// re-resolved through the OrgClientFunc, or the claim-time client when
+// that fails.
+func (a *slotAllocator) releaseClient(ctx context.Context, slot Slot, l lease) forge.Client {
+	client := l.client
+	if fresh, err := a.clientFor(ctx, slot.Org); err != nil {
+		a.logf("[slots] re-resolving client for %s failed, using the claim-time client: %v", slot.Org, err)
+	} else if fresh != nil {
+		client = fresh
+	}
+	return client
+}
+
+// StillOwns reports whether this allocator holds slot and the repository
+// currently under the slot's name is still this lease's (by ID, else by
+// the claim's description nonce). It changes no state. A false result
+// means the repo is gone or was replaced by another holder, so auxiliary
+// state named after the slot (such as its fork) must not be touched.
+func (a *slotAllocator) StillOwns(ctx context.Context, slot Slot) (bool, error) {
+	a.mu.Lock()
+	l, ok := a.held[slot]
+	a.mu.Unlock()
+	if !ok {
+		return false, nil
+	}
+	gone, err := a.repoGoneOrForeign(ctx, a.releaseClient(ctx, slot, l), slot, l)
+	if err != nil {
+		return false, err
+	}
+	return !gone, nil
 }
 
 // deleteLeasedRepo deletes the repository under slot's name if it still
@@ -967,7 +998,7 @@ func (a *slotAllocator) deleteLeasedRepo(ctx context.Context, client forge.Clien
 	// retried after a wait, during which the name may also have been
 	// deleted and recreated (e.g. by GC), so the guard re-verifies
 	// ownership before every resend.
-	delCtx := gh.WithRetryGuard(gh.WithoutAmbiguousRetry(ctx), func(context.Context) error {
+	delCtx := forge.WithRetryGuard(forge.WithoutAmbiguousRetry(ctx), func(context.Context) error {
 		// Look up on the caller's ctx, not the guarded request context,
 		// so the lookup is not itself guarded.
 		gone, checkErr := a.repoGoneOrForeign(ctx, client, slot, l)

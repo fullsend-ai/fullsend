@@ -76,7 +76,6 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
-	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 )
 
 const (
@@ -490,7 +489,7 @@ func (a *slotAllocator) reclaimSlot(ctx context.Context, client forge.Client, l 
 	// may have landed and the name may since have been recreated. Before a
 	// resend after a rate-limit wait, the lease and the identity are checked
 	// again. The guard looks up on ctx, not the guarded request context.
-	guarded := gh.WithRetryGuard(gh.WithoutAmbiguousRetry(ctx), func(context.Context) error {
+	guarded := forge.WithRetryGuard(forge.WithoutAmbiguousRetry(ctx), func(context.Context) error {
 		if err := a.checkGCLease(ctx, client, l); err != nil {
 			return err
 		}

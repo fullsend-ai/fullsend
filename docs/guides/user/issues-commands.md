@@ -122,7 +122,10 @@ JSON:
 Markdown, or `-` to read it from stdin (capped at 2 MiB). Jira issue
 descriptions are limited to 32 KiB of Markdown, whether supplied directly
 or through stdin. Fullsend converts that Markdown to Atlassian Document
-Format (ADF), Jira's structured format for rich text.
+Format (ADF), Jira's structured format for rich text. Whitespace-only
+`--body` input (including whitespace read from stdin) is treated as empty
+and omitted from the Jira request rather than triggering an ADF conversion
+error.
 
 ```bash
 fullsend issues create \

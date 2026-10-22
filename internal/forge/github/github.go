@@ -303,47 +303,33 @@ func IsPATForbiddenError(err error) bool {
 
 const maxRetries = 5
 
-type noAmbiguousRetryKey struct{}
-
-// WithoutAmbiguousRetry returns a context that stops the client from
-// retrying a request after an ambiguous failure: a transport timeout or a
-// 5xx response, where the server may already have applied the request.
-// Rate-limit rejections (429, rate-limit 403) are still retried because
-// the server did not process those. Use it for requests that must not be
-// replayed blindly, such as deleting a repository by name that another
-// party may have recreated; the caller re-checks state after the error.
-func WithoutAmbiguousRetry(ctx context.Context) context.Context {
-	return context.WithValue(ctx, noAmbiguousRetryKey{}, true)
-}
-
 func ambiguousRetryDisabled(ctx context.Context) bool {
-	v, _ := ctx.Value(noAmbiguousRetryKey{}).(bool)
-	return v
+	return forge.AmbiguousRetryDisabled(ctx)
 }
 
-type retryGuardKey struct{}
-
-// WithRetryGuard returns a context under which the client calls guard
-// after every retry wait (including rate-limit waits, repository-race
-// waits and commit-retry delays) and before resending the request or
-// rerunning the operation. A non-nil error from guard stops the retry:
-// nothing is resent and that error is returned, wrapped. Use it for requests
-// whose target may change while the client waits, such as deleting a
-// repository by name that another party may have deleted and recreated.
-// guard receives the request context; requests it makes on that context
-// are subject to the same guard, so it should use its own context.
-func WithRetryGuard(ctx context.Context, guard func(context.Context) error) context.Context {
-	return context.WithValue(ctx, retryGuardKey{}, guard)
-}
-
-// checkRetryGuard runs the WithRetryGuard guard on ctx, if any.
+// checkRetryGuard runs the forge.WithRetryGuard guard on ctx, if any.
 func checkRetryGuard(ctx context.Context, method, path string) error {
-	guard, _ := ctx.Value(retryGuardKey{}).(func(context.Context) error)
+	guard := forge.RetryGuard(ctx)
 	if guard == nil {
 		return nil
 	}
 	if err := guard(ctx); err != nil {
 		return fmt.Errorf("%s %s: not retried: %w", method, path, err)
+	}
+	return nil
+}
+
+// checkMutationGuard runs the WithRetryGuard guard on ctx, if any,
+// immediately before the first mutating request of an operation whose
+// earlier requests were reads, so a target replaced during those reads
+// is not written to.
+func checkMutationGuard(ctx context.Context, op string) error {
+	guard := forge.RetryGuard(ctx)
+	if guard == nil {
+		return nil
+	}
+	if err := guard(ctx); err != nil {
+		return fmt.Errorf("%s: not sent: %w", op, err)
 	}
 	return nil
 }
@@ -1598,6 +1584,15 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 		changes = append(changes, pendingChange{file: f, expectedSHA: expectedSHA, modeOnly: exists && info.sha == expectedSHA})
 	}
 
+	// Everything above was a read. Let a caller's guard confirm the target
+	// is still the one it meant before the first write, which a retry
+	// guard alone would not do until a later attempt.
+	if len(changes) > 0 {
+		if err := checkMutationGuard(ctx, fmt.Sprintf("commit to %s/%s@%s", owner, repo, branch)); err != nil {
+			return false, err
+		}
+	}
+
 	// 5. Signed GraphQL path unless a changed file needs the Git Data API
 	// (see usesGitDataPath).
 	changedFiles := make([]forge.TreeFile, 0, len(changes))
@@ -2000,7 +1995,7 @@ func (c *LiveClient) GetFileContent(ctx context.Context, owner, repo, path strin
 // rejects a stale SHA with 409 and a create over an existing file with a
 // 422 naming the missing "sha"; both are returned wrapping
 // forge.ErrConflict. The PUT is sent once: it bypasses retryOnRepoRace
-// (which would replay a 409) and runs with WithoutAmbiguousRetry so a
+// (which would replay a 409) and runs with forge.WithoutAmbiguousRetry so a
 // timeout or 5xx is not replayed either.
 func (c *LiveClient) UpdateFileIfMatch(ctx context.Context, owner, repo, path, message string, content []byte, expectedSHA string) error {
 	payload := map[string]any{
@@ -2011,7 +2006,7 @@ func (c *LiveClient) UpdateFileIfMatch(ctx context.Context, owner, repo, path, m
 		payload["sha"] = expectedSHA
 	}
 	apiPath := fmt.Sprintf("/repos/%s/%s/contents/%s", owner, repo, escapePathSegments(path))
-	resp, err := c.do(WithoutAmbiguousRetry(ctx), http.MethodPut, apiPath, payload)
+	resp, err := c.do(forge.WithoutAmbiguousRetry(ctx), http.MethodPut, apiPath, payload)
 	if err != nil {
 		return fmt.Errorf("conditional update of %s: %w", path, err)
 	}
@@ -2869,10 +2864,14 @@ func (c *LiveClient) CreateRepoSecret(ctx context.Context, owner, repo, name, va
 		return fmt.Errorf("encrypt secret: %w", err)
 	}
 
-	// Step 3: Upload the encrypted secret.
+	// Step 3: Upload the encrypted secret. The key lookup above was a
+	// read, so let a caller's guard confirm the target before the write.
 	payload := map[string]string{
 		"encrypted_value": base64.StdEncoding.EncodeToString(encrypted),
 		"key_id":          pubKey.KeyID,
+	}
+	if err := checkMutationGuard(ctx, fmt.Sprintf("create secret %s on %s/%s", name, owner, repo)); err != nil {
+		return err
 	}
 
 	resp, err := c.put(ctx, fmt.Sprintf("/repos/%s/%s/actions/secrets/%s", owner, repo, name), payload)
@@ -2917,6 +2916,12 @@ func (c *LiveClient) CreateOrUpdateRepoVariable(ctx context.Context, owner, repo
 		"value": value,
 	}
 
+	// Each distinct write is preceded by the caller's guard, so a target
+	// replaced during the PATCH is not written to by the POST fallback.
+	if err := checkMutationGuard(ctx, fmt.Sprintf("update variable %s on %s/%s", name, owner, repo)); err != nil {
+		return err
+	}
+
 	// Try PATCH first (update existing).
 	resp, err := c.patch(ctx, fmt.Sprintf("/repos/%s/%s/actions/variables/%s", owner, repo, name), payload)
 	if err == nil {
@@ -2932,6 +2937,9 @@ func (c *LiveClient) CreateOrUpdateRepoVariable(ctx context.Context, owner, repo
 	createPayload := map[string]string{
 		"name":  name,
 		"value": value,
+	}
+	if err := checkMutationGuard(ctx, fmt.Sprintf("create variable %s on %s/%s", name, owner, repo)); err != nil {
+		return err
 	}
 	resp2, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/actions/variables", owner, repo), createPayload)
 	if err != nil {
@@ -3184,11 +3192,17 @@ func (c *LiveClient) CreateIssue(ctx context.Context, owner, repo, title, body s
 	if len(labels) > 0 {
 		payload["labels"] = labels
 	}
+	if err := checkMutationGuard(ctx, fmt.Sprintf("create issue on %s/%s", owner, repo)); err != nil {
+		return nil, err
+	}
 	resp, err := c.post(ctx, path, payload)
 	if err != nil {
 		var apiErr *APIError
 		if len(labels) == 0 || !errors.As(err, &apiErr) || !isValidationErrorForField(apiErr, "labels") {
 			return nil, fmt.Errorf("create issue: %w", err)
+		}
+		if err := checkMutationGuard(ctx, fmt.Sprintf("create issue without labels on %s/%s", owner, repo)); err != nil {
+			return nil, err
 		}
 		resp, err = c.post(ctx, path, map[string]any{"title": title, "body": body})
 		if err != nil {
@@ -3478,6 +3492,9 @@ func (c *LiveClient) GetIssueComment(ctx context.Context, owner, repo string, co
 // CreateIssueComment creates a new comment on an issue or pull request.
 func (c *LiveClient) CreateIssueComment(ctx context.Context, owner, repo string, number int, body string) (*forge.IssueComment, error) {
 	payload := map[string]string{"body": body}
+	if err := checkMutationGuard(ctx, fmt.Sprintf("create comment on %s/%s#%d", owner, repo, number)); err != nil {
+		return nil, err
+	}
 	resp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/issues/%d/comments", owner, repo, number), payload)
 	if err != nil {
 		return nil, fmt.Errorf("create issue comment on #%d: %w", number, err)

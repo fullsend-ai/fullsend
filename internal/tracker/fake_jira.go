@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/forge/jira"
@@ -99,7 +100,7 @@ func (f *FakeJiraClient) CreateIssue(_ context.Context, in jira.CreateIssueInput
 	}
 	f.CreatedIssues = append(f.CreatedIssues, in)
 	var description any
-	if in.Description != "" {
+	if strings.TrimSpace(in.Description) != "" {
 		adf, err := jira.MarkdownToADF(in.Description)
 		if err != nil {
 			return nil, err

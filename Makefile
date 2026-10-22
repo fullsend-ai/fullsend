@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 .PHONY: help bootstrap ensure-hooks lint lint-all check fmt \
        mindmap go-build go-test go-fmt go-vet go-tidy \
-       lint-md-links script-test test \
+       lint-md-links script-test test ci-local \
        behaviour-test playback-test \
        wasm-build wasm-stage wasm-stage-traced mint-cf-worker-test
 
@@ -25,8 +25,9 @@ help:
 	@echo "  go-vet               - Run go vet"
 	@echo "  go-tidy              - Run go mod tidy"
 	@echo "  lint-md-links        - Check markdown files for broken in-repo links and anchors"
-	@echo "  script-test          - Run shell script tests (topissues, analyze-transcript, user-forum-whats-new, gitlint-rules, gateway doc configs, artifact redaction, kill_stray_processes)"
+	@echo "  script-test          - Run shell script tests (topissues, analyze-transcript, user-forum-whats-new, gitlint-rules, gateway doc configs, artifact redaction, kill_stray_processes, ci-local)"
 	@echo "  test                 - Run all checks: lint-all, go-test, script-test"
+	@echo "  ci-local             - Run CI checks in a container matching the ubuntu-24.04 runner (T=\"targets\"; see hack/ci-local)"
 	@echo "  behaviour-test       - Run Gherkin behaviour tests (installs fullsend per-repo; CI: OIDC mint)"
 	@echo "  playback-test        - Run @playback behaviour scenarios on the dummy-playback runtime (CI: OIDC mint)"
 	@echo "  wasm-build           - Build mintcore WASM binary and report gzip size vs Workers limits"
@@ -100,7 +101,7 @@ mindmap:
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 
 go-build:
-	go build -ldflags "-X github.com/fullsend-ai/fullsend/internal/cli.version=$(VERSION)" -o bin/fullsend ./cmd/fullsend/
+	go build -ldflags "-X github.com/fullsend-ai/fullsend/internal/buildinfo.version=$(VERSION)" -o bin/fullsend ./cmd/fullsend/
 
 go-test:
 	GH_TOKEN= GITHUB_TOKEN= \
@@ -197,6 +198,7 @@ script-test:
 	$(call run-timed,bash .github/scripts/pre-fetch-review-body-test.sh)
 	$(call run-timed,bash scripts/check-agents-gate-pin-test.sh)
 	$(call run-timed,bash scripts/verify-release-tag-test.sh)
+	$(call run-timed,bash skills/cutting-releases/scripts/prepend-release-highlights-test.sh)
 	$(call run-timed,bash scripts/renovate/update-go-checksums-test.sh)
 	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/pre-fetch-prior-review-test.sh)
 	$(call run-timed,bash internal/scaffold/fullsend-repo/.github/scripts/setup-agent-env-test.sh)
@@ -212,6 +214,7 @@ script-test:
 	$(call run-timed,bash hack/setup-e2e-inference-gateway_test.sh)
 	$(call run-timed,bash hack/setup-new-e2e-org_test.sh)
 	$(call run-timed,bash internal/runtime/kill_stray_processes_test.sh)
+	$(call run-timed,bash hack/ci-local/ci-local_test.sh)
 	$(call run-timed,python3 skills/topissues/scripts/topissues_test.py)
 	$(call run-timed,python3 skills/nextwork/scripts/nextwork_test.py)
 	$(call run-timed,python3 skills/adr-corner/scripts/adr_corner_test.py)
@@ -223,6 +226,12 @@ script-test:
 	$(call run-timed,node --test internal/runtime/pi_extension/*.test.mjs)
 
 test: lint-all go-test script-test
+
+# Run CI checks in a container matching the ubuntu-24.04 runner, for macOS and
+# non-Ubuntu Linux (#8479). Default: everything PR CI runs.
+#   make ci-local T="go-test lint-all"
+ci-local:
+	hack/ci-local/ci-local $(or $(T),ci)
 
 # Capabilities the runner declares for @requires:capability:<name> scenarios.
 # Declared here rather than in the e2e workflow so a PR that adds a gated
@@ -263,7 +272,8 @@ behaviour-test:
 # run both suites. RunPlaybackSuite fixes the @playback tag filter (GODOG_TAGS
 # is ignored), sets PLAYBACK_RUNTIME=dummy-playback, and otherwise reads the
 # same env as behaviour-test (ENVIRONMENT, BEHAVIOUR_*, E2E_*, GODOG_CONCURRENCY,
-# BEHAVIOUR_ARTIFACT_DIR) and reserves an org through the same pool lock.
+# BEHAVIOUR_ARTIFACT_DIR) and leases repo slots across the pool orgs through
+# the same shared install driver.
 # The timeout matches behaviour-test; a CI job running this target must use
 # the same timeout-minutes (see docs/guides/dev/behaviour-testing.md).
 playback-test:

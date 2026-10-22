@@ -852,11 +852,14 @@ Without activation, it uses the Poller-owned trigger on the `api` route.
 > has protected-branch merge permission, managed polling schedules move to
 > the trigger account. Otherwise they remain installer-owned on the Poller
 > route. Tracked by
-> [#8437](https://github.com/fullsend-ai/fullsend/issues/8437). It is
-> not yet validated against a real GitLab instance
-> ([#8245](https://github.com/fullsend-ai/fullsend/issues/8245)); the
-> fake does not show whether a project Maintainer can delete a deploy key
-> or trigger token owned by the service account.
+> [#8437](https://github.com/fullsend-ai/fullsend/issues/8437). Install,
+> rotation, status, and uninstall have real-instance evidence on GitLab.com
+> Free, self-managed EE, and self-managed CE under
+> [#8245](https://github.com/fullsend-ai/fullsend/issues/8245); see
+> [GitLab webhook validation status](../normative/normalized-event/v1/README.md#gitlab-webhook-validation-status).
+> Those runs do not show whether a project Maintainer, rather than the
+> installer identity used there, can delete a deploy key or trigger token
+> owned by the service account.
 
 **Command wiring.** Install, rotation, and uninstall each take the GitLab
 project lease (`LockGitLabProjectLease`) and pass the capability to the
@@ -1463,8 +1466,9 @@ version pins without matching upstream templates are rejected before writes.
 Agent input bridges explicitly disable expansion, and poll-job links are
 logged only after creator/HMAC authentication.
 The webhook fast-path's `TRIGGER_PAYLOAD` classification
-and the `CI_JOB_TOKEN` running-job identity pin are implemented, but live
-GitLab validation is still partial: see
+and the `CI_JOB_TOKEN` running-job identity pin are implemented. Live GitLab
+validation covers GitLab.com Free, self-managed EE, and self-managed CE; only
+stock agents on custom-port CE remain unverified: see
 [GitLab webhook validation status](../normative/normalized-event/v1/README.md#gitlab-webhook-validation-status)
 and ADR 0125 (Caveats). Flip the env var to `enforced` fleet-wide only after
 the remaining live-validation gates close. Poll jobs

@@ -1,0 +1,16 @@
+#!/bin/sh
+# sumof URL NAME: print NAME's SHA256 from a publisher's checksum file, or fail.
+# Accepts "<sum>  <name>", "<sum> *<name>" (binary-mode) and a lone "<sum>".
+# Copied into the ci-local image (see Containerfile); runs at build time.
+set -eu
+[ $# -eq 2 ] || { echo "usage: sumof URL NAME" >&2; exit 2; }
+# Downloaded on its own first: in a pipe, sh (no pipefail) would hide a curl
+# failure. HTTPS only, redirects included (file: is for the stub tests).
+body=$(curl -sSfL --proto '=https,file' --proto-redir '=https' "$1")
+s=$(printf '%s\n' "$body" | awk -v n="$2" '{f = $2; sub(/^\*/, "", f)} f == n || NF == 1 {print $1; exit}')
+[ -n "$s" ] || { echo "no checksum for $2 in $1" >&2; exit 1; }
+case $s in *[!0123456789abcdef]*) bad=yes ;; *) bad=no ;; esac
+if [ "$bad" = yes ] || [ ${#s} -ne 64 ]; then
+  echo "sumof: malformed checksum for $2 in $1" >&2; exit 1
+fi
+echo "$s"

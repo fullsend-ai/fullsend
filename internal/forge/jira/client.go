@@ -464,7 +464,7 @@ func (c *LiveClient) CreateIssue(ctx context.Context, in CreateIssueInput) (*Cre
 	if in.ParentKey != "" {
 		fields["parent"] = map[string]string{"key": in.ParentKey}
 	}
-	if in.Description != "" {
+	if strings.TrimSpace(in.Description) != "" {
 		adf, err := MarkdownToADF(in.Description)
 		if err != nil {
 			return nil, fmt.Errorf("convert issue description to ADF: %w", err)

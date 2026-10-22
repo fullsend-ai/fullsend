@@ -839,7 +839,7 @@ var WranglerWhoamiFn = runWranglerWhoami
 // runWranglerWhoami executes `npx wrangler whoami` and returns the
 // combined stdout+stderr output.
 func runWranglerWhoami(ctx context.Context) (string, error) {
-	cmd := exec.CommandContext(ctx, "npx", "wrangler", "whoami")
+	cmd := wranglerCommand(ctx, "whoami")
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
@@ -975,7 +975,7 @@ func (r *LiveWranglerRunner) Deploy(ctx context.Context, sourceDir, workerName s
 // does not support --secrets-file. The secrets parameter is accepted
 // for interface consistency but not used in the deploy command.
 func (r *LiveWranglerRunner) deployDurable(ctx context.Context, sourceDir, workerName string, envVars map[string]string, _ map[string][]byte) (string, error) {
-	args := []string{"wrangler", "deploy", "--name", workerName}
+	args := []string{"deploy", "--name", workerName}
 	// Always pass --keep-vars to preserve existing Worker secrets
 	// (e.g. PEM keys stored via StoreAgentPEM). Without this flag,
 	// wrangler overwrites all bindings on each deploy, wiping secrets.
@@ -986,7 +986,7 @@ func (r *LiveWranglerRunner) deployDurable(ctx context.Context, sourceDir, worke
 		args = append(args, "--var", fmt.Sprintf("%s:%s", k, v))
 	}
 
-	cmd := exec.CommandContext(ctx, "npx", args...)
+	cmd := wranglerCommand(ctx, args...)
 	cmd.Dir = sourceDir
 	cmd.Env = append(os.Environ(),
 		"CLOUDFLARE_ACCOUNT_ID="+r.AccountID,
@@ -1030,7 +1030,7 @@ func (r *LiveWranglerRunner) deployDurable(ctx context.Context, sourceDir, worke
 // Durable deploys DO use --keep-vars (see deployDurable) so that secrets
 // stored via StoreAgentPEM are not wiped on redeploy.
 func (r *LiveWranglerRunner) deployPreview(ctx context.Context, sourceDir, workerName, previewAlias string, envVars map[string]string, secrets map[string][]byte) (string, error) {
-	args := []string{"wrangler", "versions", "upload", "--name", workerName}
+	args := []string{"versions", "upload", "--name", workerName}
 	args = append(args, fmt.Sprintf("--preview-alias=%s", previewAlias))
 
 	// Pass env vars to wrangler via --var flags.
@@ -1048,7 +1048,7 @@ func (r *LiveWranglerRunner) deployPreview(ctx context.Context, sourceDir, worke
 		args = append(args, fmt.Sprintf("--secrets-file=%s", secretsPath))
 	}
 
-	cmd := exec.CommandContext(ctx, "npx", args...)
+	cmd := wranglerCommand(ctx, args...)
 	cmd.Dir = sourceDir
 	cmd.Env = append(os.Environ(),
 		"CLOUDFLARE_ACCOUNT_ID="+r.AccountID,
@@ -1083,7 +1083,7 @@ func (r *LiveWranglerRunner) deployPreview(ctx context.Context, sourceDir, worke
 // secret put. This command does not support --preview-alias; for preview
 // deploys, pass secrets through Deploy's secrets parameter instead.
 func (r *LiveWranglerRunner) PutSecret(ctx context.Context, workerName, secretName string, value []byte) error {
-	cmd := exec.CommandContext(ctx, "npx", "wrangler", "secret", "put", secretName, "--name", workerName)
+	cmd := wranglerCommand(ctx, "secret", "put", secretName, "--name", workerName)
 	cmd.Stdin = strings.NewReader(string(value))
 	cmd.Env = append(os.Environ(),
 		"CLOUDFLARE_ACCOUNT_ID="+r.AccountID,
@@ -1098,7 +1098,7 @@ func (r *LiveWranglerRunner) PutSecret(ctx context.Context, workerName, secretNa
 
 // Delete removes a Worker deployment via wrangler delete.
 func (r *LiveWranglerRunner) Delete(ctx context.Context, workerName string) error {
-	cmd := exec.CommandContext(ctx, "npx", "wrangler", "delete", "--name", workerName, "--force")
+	cmd := wranglerCommand(ctx, "delete", "--name", workerName, "--force")
 	cmd.Env = append(os.Environ(),
 		"CLOUDFLARE_ACCOUNT_ID="+r.AccountID,
 	)
@@ -1115,7 +1115,7 @@ func (r *LiveWranglerRunner) Delete(ctx context.Context, workerName string) erro
 // command succeeds, the Worker exists. If it fails with a "not found"
 // error, the Worker does not exist.
 func (r *LiveWranglerRunner) WorkerExists(ctx context.Context, workerName string) (bool, error) {
-	cmd := exec.CommandContext(ctx, "npx", "wrangler", "versions", "list", "--name", workerName)
+	cmd := wranglerCommand(ctx, "versions", "list", "--name", workerName)
 	cmd.Env = append(os.Environ(),
 		"CLOUDFLARE_ACCOUNT_ID="+r.AccountID,
 	)
@@ -1295,7 +1295,7 @@ func resolveSubdomainViaAPI(ctx context.Context, accountID, token string) (strin
 // authenticated via `wrangler login` (OAuth session) without requiring
 // CLOUDFLARE_API_TOKEN.
 func resolveSubdomainViaWrangler(ctx context.Context) (string, error) {
-	cmd := exec.CommandContext(ctx, "npx", "wrangler", "subdomain")
+	cmd := wranglerCommand(ctx, "subdomain")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("wrangler subdomain failed: %w\n%s", err, string(out))

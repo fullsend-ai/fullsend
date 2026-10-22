@@ -2462,7 +2462,7 @@ func TestWithoutAmbiguousRetry_DoesNotRetryServerError(t *testing.T) {
 		afterFunc: noWaitAfter,
 	}
 
-	err := client.DeleteRepo(WithoutAmbiguousRetry(context.Background()), "org", "repo")
+	err := client.DeleteRepo(forge.WithoutAmbiguousRetry(context.Background()), "org", "repo")
 	var apiErr *APIError
 	require.ErrorAs(t, err, &apiErr)
 	assert.Equal(t, http.StatusBadGateway, apiErr.StatusCode)
@@ -2492,7 +2492,7 @@ func TestWithoutAmbiguousRetry_DoesNotRetryTimeout(t *testing.T) {
 		afterFunc: noWaitAfter,
 	}
 
-	err := client.DeleteRepo(WithoutAmbiguousRetry(context.Background()), "org", "repo")
+	err := client.DeleteRepo(forge.WithoutAmbiguousRetry(context.Background()), "org", "repo")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not retried")
 	assert.Equal(t, int32(1), attempts.Load())
@@ -2517,7 +2517,7 @@ func TestWithRetryGuard_RunsBeforeEachResend(t *testing.T) {
 	}
 
 	var guardCalls int
-	ctx := WithRetryGuard(context.Background(), func(context.Context) error {
+	ctx := forge.WithRetryGuard(context.Background(), func(context.Context) error {
 		guardCalls++
 		return nil
 	})
@@ -2553,7 +2553,7 @@ func TestWithRetryGuard_ErrorStopsResend(t *testing.T) {
 			}
 
 			stop := errors.New("target changed")
-			ctx := WithRetryGuard(context.Background(), func(context.Context) error { return stop })
+			ctx := forge.WithRetryGuard(context.Background(), func(context.Context) error { return stop })
 			err := client.DeleteRepo(ctx, "org", "repo")
 			require.ErrorIs(t, err, stop)
 			assert.Contains(t, err.Error(), "not retried")
@@ -2582,7 +2582,7 @@ func TestWithRetryGuard_StopsCommitFilesRetryWaits(t *testing.T) {
 
 	var guardCalls int
 	stop := errors.New("target replaced")
-	ctx := WithRetryGuard(context.Background(), func(context.Context) error {
+	ctx := forge.WithRetryGuard(context.Background(), func(context.Context) error {
 		guardCalls++
 		return stop
 	})
@@ -2592,10 +2592,152 @@ func TestWithRetryGuard_StopsCommitFilesRetryWaits(t *testing.T) {
 	assert.Equal(t, int32(1), refReads.Load(), "no branch-ref read follows a refused guard")
 }
 
+func TestWithRetryGuard_RunsBeforeFirstCommitMutation(t *testing.T) {
+	// The slot is replaced while CommitFiles reads the repo, ref, commit
+	// and tree. The guard must refuse the commit on the first attempt,
+	// before any write, not only after a retry wait.
+	var reads, writes atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writes.Add(1)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		reads.Add(1)
+		switch r.URL.Path {
+		case "/repos/org/repo":
+			_ = json.NewEncoder(w).Encode(map[string]string{"default_branch": "main"})
+		case "/repos/org/repo/git/ref/heads/main":
+			_ = json.NewEncoder(w).Encode(map[string]any{"object": map[string]string{"sha": "abc123"}})
+		case "/repos/org/repo/git/commits/abc123":
+			_ = json.NewEncoder(w).Encode(map[string]any{"tree": map[string]string{"sha": "tree000"}})
+		case "/repos/org/repo/git/trees/tree000":
+			_ = json.NewEncoder(w).Encode(map[string]any{"tree": []any{}, "truncated": false})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	client := &LiveClient{token: "test-token", baseURL: srv.URL, http: srv.Client(), afterFunc: noWaitAfter}
+
+	var guardCalls int
+	stop := errors.New("target replaced")
+	ctx := forge.WithRetryGuard(context.Background(), func(context.Context) error {
+		guardCalls++
+		return stop
+	})
+	_, err := client.CommitFiles(ctx, "org", "repo", "msg", []forge.TreeFile{{Path: "a", Content: []byte("a"), Mode: "100644"}})
+	require.ErrorIs(t, err, stop)
+	assert.Equal(t, 1, guardCalls, "the guard runs once, before the first write")
+	assert.Equal(t, int32(4), reads.Load(), "the preparatory reads all happened first")
+	assert.Zero(t, writes.Load(), "no write is sent after the guard refuses")
+}
+
+func TestWithRetryGuard_RunsBeforeEachDistinctWrite(t *testing.T) {
+	// A slot replaced between two requests of one operation must not
+	// receive the later write: the guard runs before every distinct
+	// mutating request, not only before retries.
+	stop := errors.New("target replaced")
+	// refuseAfter lets the first n guard calls pass, then refuses.
+	guardCtx := func(refuseAfter int, calls *int) context.Context {
+		return forge.WithRetryGuard(context.Background(), func(context.Context) error {
+			*calls++
+			if *calls > refuseAfter {
+				return stop
+			}
+			return nil
+		})
+	}
+
+	tests := []struct {
+		name        string
+		refuseAfter int
+		wantGuard   int
+		wantMethods []string
+		run         func(ctx context.Context, c *LiveClient) error
+	}{
+		{
+			name:        "variable POST fallback after PATCH",
+			refuseAfter: 1,
+			wantGuard:   2,
+			wantMethods: []string{http.MethodPatch},
+			run: func(ctx context.Context, c *LiveClient) error {
+				return c.CreateOrUpdateRepoVariable(ctx, "org", "repo", "V", "x")
+			},
+		},
+		{
+			name:        "variable PATCH",
+			refuseAfter: 0,
+			wantGuard:   1,
+			run: func(ctx context.Context, c *LiveClient) error {
+				return c.CreateOrUpdateRepoVariable(ctx, "org", "repo", "V", "x")
+			},
+		},
+		{
+			name:        "secret upload after public-key lookup",
+			refuseAfter: 0,
+			wantGuard:   1,
+			wantMethods: []string{http.MethodGet},
+			run: func(ctx context.Context, c *LiveClient) error {
+				return c.CreateRepoSecret(ctx, "org", "repo", "S", "x")
+			},
+		},
+		{
+			name:        "issue",
+			refuseAfter: 0,
+			wantGuard:   1,
+			run: func(ctx context.Context, c *LiveClient) error {
+				_, err := c.CreateIssue(ctx, "org", "repo", "t", "b")
+				return err
+			},
+		},
+		{
+			name:        "issue comment",
+			refuseAfter: 0,
+			wantGuard:   1,
+			run: func(ctx context.Context, c *LiveClient) error {
+				_, err := c.CreateIssueComment(ctx, "org", "repo", 1, "b")
+				return err
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var methods []string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				methods = append(methods, r.Method)
+				mu.Unlock()
+				switch {
+				case strings.HasSuffix(r.URL.Path, "/actions/secrets/public-key"):
+					key := base64.StdEncoding.EncodeToString(make([]byte, 32))
+					_ = json.NewEncoder(w).Encode(map[string]string{"key_id": "k", "key": key})
+				default:
+					// Every write the guard lets through is not found, so the
+					// variable path would fall back from PATCH to POST.
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer srv.Close()
+			client := newTestClient(t, srv)
+
+			var calls int
+			err := tt.run(guardCtx(tt.refuseAfter, &calls), client)
+			require.ErrorIs(t, err, stop)
+			assert.Equal(t, tt.wantGuard, calls)
+			mu.Lock()
+			defer mu.Unlock()
+			assert.Equal(t, tt.wantMethods, methods, "no request follows the one the guard refused")
+		})
+	}
+}
+
 func TestWithRetryGuard_StopsCommitRetryDelay(t *testing.T) {
 	c := &LiveClient{afterFunc: noWaitAfter}
 	stop := errors.New("target replaced")
-	ctx := WithRetryGuard(context.Background(), func(context.Context) error { return stop })
+	ctx := forge.WithRetryGuard(context.Background(), func(context.Context) error { return stop })
 
 	var runs int
 	_, err := retryCommitOp(ctx, c, "commit", func() (bool, error) {

@@ -591,6 +591,15 @@ func AcquireOrg(ctx context.Context, cfg EnvConfig, runID string, pool []string,
 	return acquireOrg(ctx, cfg.internal(), runID, pool, timeout, logf)
 }
 
+// TokenForOrg returns an API token for operating on org: in GitHub
+// Actions a cross-org e2e installation token minted for that org,
+// locally the developer's own token. Behaviour suites lease repo slots
+// across pool orgs and resolve one token per org through it, without
+// taking the org's exclusive e2e-lock.
+func TokenForOrg(ctx context.Context, cfg EnvConfig, org string) (string, error) {
+	return tokenForOrg(ctx, cfg.internal(), org)
+}
+
 // OrgPool returns the halfsend org names used for parallel e2e runs.
 func OrgPool() []string {
 	return orgPool

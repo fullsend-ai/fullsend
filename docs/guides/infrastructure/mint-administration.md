@@ -80,7 +80,7 @@ The CLI defaults to this URL. You can also set the `FULLSEND_MINT_URL` repositor
 
   `roles/owner` covers all of the above for users with broad access.
 
-  **Behaviour / e2e pool orgs:** Enroll `halfsend-NN/test-repo` and `halfsend-NN/test-repo-01` … `test-repo-12` (lazily created and installed on demand by the unified `install.Driver` — see [behaviour-testing.md](../dev/behaviour-testing.md#repo-allocation-via-unified-driver)) on the hosted mint (`PER_REPO_WIF_REPOS`). For the STAGE environment, also enroll `halfsend/test-repo-01` … `test-repo-12` (see the STAGE enrollment block in [e2e-testing.md](../dev/e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment)). Run `fullsend mint enroll owner/repo` once per name — not from CI; do not enroll `*-fork` names. Repos need not exist at enrollment time — enroll is a mint allowlist / WIF-provider update only; the unified driver creates the repos when a behaviour scenario first leases them. See [e2e-testing.md](../dev/e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
+  **Behaviour / e2e pool orgs:** Enroll `halfsend-NN/test-repo` and `halfsend-NN/test-repo-01` … `test-repo-12` (created by each slot claim and installed on demand by the shared slot driver — see [behaviour-testing.md](../dev/behaviour-testing.md#repo-allocation-via-the-shared-slot-driver)) on the hosted mint (`PER_REPO_WIF_REPOS`). For the STAGE environment, also enroll `halfsend/test-repo-01` … `test-repo-12` (see the STAGE enrollment block in [e2e-testing.md](../dev/e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment)). Run `fullsend mint enroll owner/repo` once per name — not from CI; do not enroll `*-fork` names. Repos need not exist at enrollment time — enroll is a mint allowlist / WIF-provider update only; the unified driver creates the repos when a behaviour scenario first leases them. See [e2e-testing.md](../dev/e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
 
   An administrator can grant all required roles with a single script:
 
@@ -576,7 +576,11 @@ fullsend inference provision "$FIRST_ORG/$FIRST_REPO" --project="$GCP_PROJECT"
 # 4. Configure a repository and create public apps (installable by other orgs).
 #    `github setup` does not create GitHub Apps, so use `admin install`, which
 #    creates the apps (as public with --public) and configures the repository.
-#    It targets a single owner/repo; repeat per repository.
+#    It targets a single owner/repo; repeat per repository. `admin install`
+#    prints a deprecation warning; it still creates every role's app in one
+#    run. To create apps one role at a time on the deployed mint, use
+#    `fullsend mint add-role <role> --project "$GCP_PROJECT" --org "$FIRST_ORG"`
+#    (add --public / --app-set as needed).
 # $MINT_URL: the "Mint deployed at ..." URL printed by step 1.
 # $WIF_PROVIDER: the FULLSEND_GCP_WIF_PROVIDER value from step 3 — run
 #   `fullsend inference status "$FIRST_ORG/$FIRST_REPO" --project="$GCP_PROJECT" --format=env`

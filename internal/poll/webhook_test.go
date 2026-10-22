@@ -424,7 +424,6 @@ func TestBuildWebhookEvents_IssueLifecycle(t *testing.T) {
 		{"close without closed_by", "close", &Issue{IID: 9, State: "closed", ClosedAt: recent}, "not recorded"},
 		{"close without closed_at", "close", &Issue{IID: 9, State: "closed", ClosedBy: alice}, "close: state"},
 		{"reopen", "reopen", &Issue{IID: 9, State: "opened"}, "no event-time actor evidence"},
-		{"bare update", "update", &Issue{IID: 9, State: "opened"}, "uncheckable"},
 		{"unknown action", "frobnicate", &Issue{IID: 9, State: "opened"}, "not a checkable transition"},
 	}
 	for _, tt := range failures {
@@ -438,6 +437,27 @@ func TestBuildWebhookEvents_IssueLifecycle(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("bare update ignored", func(t *testing.T) {
+		mc := newMockClient()
+		// A re-fetch would fail: a bare update must not reach the API.
+		mc.issueErr[9] = fmt.Errorf("re-fetch must not be attempted")
+		p := newWebhookPoller(mc)
+		got, err := p.BuildWebhookEvents(context.Background(), issuePayload(t, "update", alice.ID, 9, nil))
+		if err != nil {
+			t.Fatalf("bare update must be ignored, got error: %v", err)
+		}
+		if len(got) != 0 {
+			t.Errorf("events = %+v, want none for a bare update", got)
+		}
+	})
+	t.Run("bare update without iid", func(t *testing.T) {
+		p := newWebhookPoller(newMockClient())
+		_, err := p.BuildWebhookEvents(context.Background(), issuePayload(t, "update", alice.ID, 0, nil))
+		if err == nil || !strings.Contains(err.Error(), "no valid iid") {
+			t.Fatalf("err = %v, want iid validation error", err)
+		}
+	})
 
 	t.Run("issue not found", func(t *testing.T) {
 		p := newWebhookPoller(newMockClient())

@@ -36,6 +36,12 @@ has no prompting event actor; event-backed dispatch authorization is unchanged.
 On GitLab, the low-latency webhook candidate path and poller backstop are
 [ADR 0125](0125-gitlab-hybrid-webhook-poller-dispatch.md).
 
+[ADR 0144](0144-reuse-poll-and-entity-bound-run-processes.md) clarifies that
+trusted, entity-bound `fullsend run` may recheck only its canonical entity with
+`event == null`. `fullsend poll` remains the broad candidate enumerator. Both
+eventless paths require eligible entity sources, trusted Fullsend invocation
+provenance, current actor filtering, and the same harness CEL predicate.
+
 ## Context
 
 [ADR 0061](0061-harness-cel-dispatch.md) made a `NormalizedEvent` the sole CEL

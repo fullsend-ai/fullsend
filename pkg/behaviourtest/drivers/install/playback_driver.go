@@ -62,11 +62,52 @@ func (d *PlaybackDriver) Finalize(ctx context.Context) error {
 	return d.base.Finalize(ctx)
 }
 
+// AllocateLease delegates to the wrapped Driver when it is a
+// LeaseDriver, so playback scenarios lease cross-org slots through the
+// same allocator as the behaviour suite. For any other Driver it falls
+// back to AllocateRepo and returns a lease with only Repo set; the
+// caller keeps its own org.
+func (d *PlaybackDriver) AllocateLease(ctx context.Context) (RepoLease, error) {
+	if ld, ok := d.base.(LeaseDriver); ok {
+		return ld.AllocateLease(ctx)
+	}
+	name, err := d.base.AllocateRepo(ctx)
+	if err != nil {
+		return RepoLease{}, err
+	}
+	return RepoLease{Repo: name}, nil
+}
+
+// DeallocateLease delegates to the wrapped Driver when it is a
+// LeaseDriver, and to DeallocateRepo otherwise.
+func (d *PlaybackDriver) DeallocateLease(ctx context.Context, org, repo string) error {
+	if ld, ok := d.base.(LeaseDriver); ok {
+		return ld.DeallocateLease(ctx, org, repo)
+	}
+	return d.base.DeallocateRepo(ctx, repo)
+}
+
+// StillOwnsLease delegates to the wrapped Driver when it is a
+// LeaseVerifier. A wrapped LeaseDriver that cannot verify is reported as
+// an error (not owned); a wrapped Driver that leases by repo name alone
+// has no shared slots to lose, so it owns its lease.
+func (d *PlaybackDriver) StillOwnsLease(ctx context.Context, org, repo string) (bool, error) {
+	if lv, ok := d.base.(LeaseVerifier); ok {
+		return lv.StillOwnsLease(ctx, org, repo)
+	}
+	if _, ok := d.base.(LeaseDriver); ok {
+		return false, fmt.Errorf("%T cannot verify lease ownership of %s/%s", d.base, org, repo)
+	}
+	return true, nil
+}
+
 // Capacity delegates to the wrapped Driver.
 func (d *PlaybackDriver) Capacity() int { return d.base.Capacity() }
 
-// Compile-time check: PlaybackDriver implements Driver.
-var _ Driver = (*PlaybackDriver)(nil)
+// Compile-time checks: PlaybackDriver implements LeaseDriver and
+// LeaseVerifier.
+var _ LeaseDriver = (*PlaybackDriver)(nil)
+var _ LeaseVerifier = (*PlaybackDriver)(nil)
 
 // playbackCommentPath is the repo-relative path the dummy-playback
 // runtime reads to find its tracking comment. The committed content is

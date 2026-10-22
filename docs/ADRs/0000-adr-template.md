@@ -26,6 +26,12 @@ Date: YYYY-MM-DD
 
 What is the issue that we're seeing that motivates this decision or change?
 
+_When describing current behavior, cite the implementing file or function at a
+commit SHA, not `main` (e.g., `internal/cli/repos.go` at `<SHA>`, or a
+permalink such as
+`https://github.com/fullsend-ai/fullsend/blob/<SHA>/internal/cli/repos.go`).
+Confirm the code at that SHA matches your description._
+
 ## Options
 
 _Optional. Include only when there are genuine alternatives worth documenting.
@@ -35,6 +41,13 @@ context. If the decision is obvious, skip this section._
 ## Decision
 
 What is the change that we're proposing and/or doing?
+
+## Forge scope
+
+_Required. State which forges (GitHub, GitLab, Forgejo) this decision applies
+to and how each is handled. For any forge left out, say so explicitly with a
+reason or a tracking issue (e.g., "GitHub only; GitLab tracked in #NNN"). If
+the decision is forge-neutral, say that._
 
 ## Consequences
 

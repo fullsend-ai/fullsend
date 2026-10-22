@@ -23,6 +23,8 @@ func TestCrossCompileArgs_StripsSymbolsAndStampsVersion(t *testing.T) {
 	fields := strings.Fields(ldflags)
 	assert.Contains(t, fields, "-s", "symbol table not stripped")
 	assert.Contains(t, fields, "-w", "DWARF not stripped")
-	assert.Contains(t, ldflags, "-X github.com/fullsend-ai/fullsend/internal/cli.version=1.2.3-vendored")
+	assert.Contains(t, ldflags, "-X github.com/fullsend-ai/fullsend/internal/buildinfo.version=1.2.3-vendored")
+	assert.Contains(t, ldflags, "-X github.com/fullsend-ai/fullsend/internal/cli.version=1.2.3-vendored",
+		"pre-buildinfo source trees still need the legacy stamp")
 	assert.Equal(t, []string{"-o", "/tmp/fullsend", "./cmd/fullsend/"}, args[len(args)-3:])
 }

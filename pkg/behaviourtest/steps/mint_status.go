@@ -120,7 +120,7 @@ const (
 
 func registerMintStatusSteps(sc *godog.ScenarioContext) {
 	sc.Step(mintStatusAddressStep, func(ctx context.Context, address string) (context.Context, error) {
-		return ctx, givenMintStatusAddress(world.FromContext(ctx), address)
+		return ctx, givenMintStatusAddress(ctx, world.FromContext(ctx), address)
 	})
 	sc.Step(mintStatusRunStep, func(ctx context.Context, credential string) (context.Context, error) {
 		return ctx, whenOperatorRunsMintStatus(ctx, world.FromContext(ctx), credential)
@@ -149,9 +149,26 @@ func mintStatusFailure(class, format string, args ...any) error {
 	return &mintStatusError{Class: class, Msg: fmt.Sprintf(format, args...)}
 }
 
-// suiteMintURL returns the URL of the mint the suite's install driver
-// deployed or was configured with.
-func suiteMintURL(w *world.World) (string, error) {
+// suiteMintURL returns the URL of the mint serving the leased repo's org
+// (World.MintURL, from the lease), or else the mint the suite's install
+// driver was configured with.
+func suiteMintURL(ctx context.Context, w *world.World) (string, error) {
+	if u := strings.TrimSpace(w.MintURL); u != "" {
+		return u, nil
+	}
+	// Every pool org has its own mint, deployed with the slot lease. A
+	// scenario that has not leased yet leases a slot here, so the mint it
+	// queries (and the status group in failure details, from w.Org) is
+	// the leased org's.
+	if _, ok := w.Driver.(install.LeaseDriver); ok && w.LeasedRepoName == "" {
+		if err := givenEnrolledTestRepository(ctx, w); err != nil {
+			return "", mintStatusFailure(mintStatusClassDeployment,
+				"suite mint address unknown: leasing a pool slot for its org's mint: %v", err)
+		}
+		if u := strings.TrimSpace(w.MintURL); u != "" {
+			return u, nil
+		}
+	}
 	reporter, ok := w.Driver.(install.MintURLReporter)
 	if !ok {
 		return "", mintStatusFailure(mintStatusClassDeployment,
@@ -167,11 +184,11 @@ func suiteMintURL(w *world.World) (string, error) {
 
 // givenMintStatusAddress records the mint address the operator will
 // pass as --mint-url.
-func givenMintStatusAddress(w *world.World, address string) error {
+func givenMintStatusAddress(ctx context.Context, w *world.World, address string) error {
 	var mintURL string
 	switch address {
 	case mintStatusAddressSuite, mintStatusAddressNonMint:
-		u, err := suiteMintURL(w)
+		u, err := suiteMintURL(ctx, w)
 		if err != nil {
 			return err
 		}
