@@ -198,7 +198,7 @@ func TestRouteBuiltinAgent(t *testing.T) {
 			fixture:      func(t *testing.T, u string) routeFixture { return routeFixture{allowlist: []string{u}} },
 			event:        routePROpened,
 			wantDecision: routeBash,
-			wantReason:   "no explicit trigger",
+			wantReason:   "no agents[].trigger",
 		},
 		{
 			name: "override-only entry without a trigger stays on bash",
@@ -207,10 +207,10 @@ func TestRouteBuiltinAgent(t *testing.T) {
 			},
 			event:        routeReviewComment,
 			wantDecision: routeBash,
-			wantReason:   "no explicit trigger",
+			wantReason:   "no agents[].trigger",
 		},
 		{
-			name: "sourced override that only inherits a base trigger stays on bash",
+			name: "sourced override that inherits a base trigger stays on bash",
 			fixture: func(t *testing.T, u string) routeFixture {
 				return sourcedReview(config.AgentEntry{}, map[string]string{
 					"harness/base-new.yaml": routeTestHarnessBody + reviewTriggerYAML(t),
@@ -219,8 +219,7 @@ func TestRouteBuiltinAgent(t *testing.T) {
 			},
 			event:        routePROpened,
 			wantDecision: routeBash,
-			wantReason:   "no explicit trigger (an inherited base trigger does not opt in)",
-			wantHarness:  "config:harness/review.yaml",
+			wantReason:   "no agents[].trigger",
 		},
 		{
 			name: "sourced override on an old base with scripts and a forge block stays on bash",
@@ -251,7 +250,7 @@ forge:
 			},
 			event:        routeReviewComment,
 			wantDecision: routeRun,
-			wantReason:   "trigger matched (agents[].trigger)",
+			wantReason:   "trigger matched",
 			wantHarness:  "agents@" + routeTestSHA[:12],
 		},
 		{
@@ -261,7 +260,7 @@ forge:
 			},
 			event:        routePROpened,
 			wantDecision: routeSkip,
-			wantReason:   "trigger did not match (agents[].trigger)",
+			wantReason:   "trigger did not match",
 		},
 		{
 			name: "config trigger wins over the harness trigger",
@@ -276,18 +275,18 @@ forge:
 		},
 		// --- explicit harness trigger ---
 		{
-			name: "explicit trigger in the sourced harness opts in",
+			name: "a trigger written in the sourced harness does not opt in",
 			fixture: func(t *testing.T, u string) routeFixture {
 				return sourcedReview(config.AgentEntry{}, map[string]string{
 					"harness/review.yaml": routeTestHarnessBody + routeTestCommentOnlyTrigger,
 				})
 			},
 			event:        routeReviewComment,
-			wantDecision: routeRun,
-			wantHarness:  "config:harness/review.yaml",
+			wantDecision: routeBash,
+			wantReason:   "no agents[].trigger",
 		},
 		{
-			name: "explicit trigger written over a base opts in",
+			name: "a trigger written over a base does not opt in",
 			fixture: func(t *testing.T, u string) routeFixture {
 				return sourcedReview(config.AgentEntry{}, map[string]string{
 					"harness/base-new.yaml": routeTestHarnessBody + reviewTriggerYAML(t),
@@ -295,8 +294,8 @@ forge:
 				})
 			},
 			event:        routePROpened,
-			wantDecision: routeSkip,
-			wantReason:   "trigger did not match (harness trigger:)",
+			wantDecision: routeBash,
+			wantReason:   "no agents[].trigger",
 		},
 		// --- gates ---
 		{
@@ -373,7 +372,7 @@ func TestRouteBuiltinAgent_TriggerFromConfigBase(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, routeSkip, got.Decision, "the base layer's trigger survives the overlay entry's merge")
-	assert.Equal(t, "trigger did not match (agents[].trigger)", got.Reason)
+	assert.Equal(t, "trigger did not match", got.Reason)
 }
 
 func TestRouteBuiltinAgent_NoTriggerNeedsNoNetwork(t *testing.T) {
@@ -441,30 +440,23 @@ func TestRouteBuiltinAgent_IssueCommentIsLeftToBash(t *testing.T) {
 }
 
 func TestRouteBuiltinAgent_Errors(t *testing.T) {
-	t.Run("fallback unavailable for a sourced entry is an error", func(t *testing.T) {
-		neutralizeAgentsRepoFallback(t)
-		dir := writeRouteFixture(t, routeFixture{agents: []config.AgentEntry{{Name: "review", Source: "harness/missing.yaml"}}})
-		_, err := routeBuiltinAgent(context.Background(), routeOpts{
-			agent: "review", configDir: dir, event: routeEvent(t, routePROpened),
-			forgeClient: forge.NewFakeClient(), printer: ui.New(io.Discard),
-		})
-		require.Error(t, err)
-	})
 	t.Run("invalid config trigger", func(t *testing.T) {
 		dir := writeRouteFixture(t, routeFixture{agents: []config.AgentEntry{{Name: "review", Trigger: "event.x =="}}})
 		_, err := routeBuiltinAgent(context.Background(), routeOpts{
 			agent: "review", configDir: dir, event: routeEvent(t, routePROpened), printer: ui.New(io.Discard),
 		})
-		require.ErrorContains(t, err, "invalid trigger")
+		require.ErrorContains(t, err, "evaluating review trigger")
 	})
-	t.Run("invalid explicit harness trigger", func(t *testing.T) {
-		dir := writeRouteFixture(t, sourcedReview(config.AgentEntry{}, map[string]string{
-			"harness/review.yaml": routeTestHarnessBody + "trigger: event.x ==\n",
-		}))
-		_, err := routeBuiltinAgent(context.Background(), routeOpts{
+	t.Run("an invalid unrelated entry does not affect routing", func(t *testing.T) {
+		dir := writeRouteFixture(t, routeFixture{agents: []config.AgentEntry{
+			{Name: "review", Trigger: "true"},
+			{Name: "lint", Source: "https://example.com/lint.yaml"},
+		}})
+		got, err := routeBuiltinAgent(context.Background(), routeOpts{
 			agent: "review", configDir: dir, event: routeEvent(t, routePROpened), printer: ui.New(io.Discard),
 		})
-		require.ErrorContains(t, err, "invalid review trigger")
+		require.NoError(t, err)
+		assert.Equal(t, routeRun, got.Decision)
 	})
 	t.Run("unsupported agent", func(t *testing.T) {
 		_, err := routeBuiltinAgent(context.Background(), routeOpts{agent: "code", configDir: t.TempDir(), event: routeEvent(t, routePROpened)})
@@ -484,9 +476,9 @@ func TestRunDispatch_RouteRejectsUnsupportedAgent(t *testing.T) {
 
 func TestRunDispatch_RoutePrintsOneJSONLine(t *testing.T) {
 	dir := writeRouteFixture(t, routeFixture{
-		agents: []config.AgentEntry{{Name: "review", Source: "harness/review.yaml"}},
+		agents: []config.AgentEntry{{Name: "review", Source: "harness/review.yaml", Trigger: strings.TrimPrefix(routeTestCommentOnlyTrigger, "trigger: >\n")}},
 		files: map[string]string{
-			"harness/review.yaml": routeTestHarnessBody + routeTestCommentOnlyTrigger,
+			"harness/review.yaml": routeTestHarnessBody,
 		},
 	})
 	eventPath := filepath.Join(t.TempDir(), "event.json")
@@ -517,7 +509,7 @@ func TestRunDispatch_RoutePrintsOneJSONLine(t *testing.T) {
 	assert.Equal(t, routeDecision{
 		Agent:    "review",
 		Decision: routeRun,
-		Reason:   "trigger matched (harness trigger:)",
+		Reason:   "trigger matched",
 		Harness:  "config:harness/review.yaml",
 	}, got)
 }

@@ -756,8 +756,10 @@ agents:
 ```
 
 `has(event.entity.linked_change_proposal)` keeps the trigger to comments on
-pull requests. The `Route` job also ignores a match on a comment that is not
-on a pull request, and never starts a review from a bot's comment.
+pull requests. The `Route` job evaluates the review trigger for every pull
+request event (opened, pushed to, edited, labeled, reopened, and so on) and
+every comment on a pull request, so a broad trigger can start reviews the
+default rules would not. It never starts a review from a bot's comment.
 
 The trigger is read from your default branch, so a pull request cannot change
 its own routing. After the change merges, open a pull request: no review
@@ -765,21 +767,20 @@ starts. Comment `/fs-review` on it: one review starts.
 
 ### What opts a repository in
 
-Only an explicit trigger moves review routing to CEL:
+Only a `trigger` on the `review` entry in `config.yaml` moves review routing
+to CEL:
 
 | Your configuration | Who decides |
 |---|---|
 | No `review` entry, or one with only `runtime`, `model`, `effort` or `subagents` | The dispatch workflow, as before |
 | `trigger` on the `review` entry | The trigger |
-| A `review` entry with `source:` whose harness file sets `trigger:` itself | That trigger (a `trigger` on the entry wins over it) |
-| A `review` entry with `source:` whose harness only inherits a `trigger` through `base:` | The dispatch workflow, as before |
+| A `review` entry with `source:` whose harness sets or inherits `trigger:` | The dispatch workflow, as before |
 
-The default review harness's own trigger does not opt you in, but a `trigger:`
-already written in your own review harness does. That includes a trigger you
-added for [Jira](jira-integration.md): it now also decides GitHub reviews, so
-move a Jira-only trigger to an agent with another name or widen it before you
-upgrade. The kill switch
-and `enabled: false` on the review entry keep working as before. The `Route`
+A harness `trigger:` field never changes when a built-in agent runs, whether
+your own harness writes it or inherits it through `base:`. To route review by
+a trigger you keep in a harness, copy the expression into the `review` entry's
+`trigger` in `config.yaml`. The kill switch and `enabled: false` on the review
+entry keep working as before. The `Route`
 job evaluates the trigger with the fullsend CLI built at the dispatch
 workflow's commit; if your workflow call pins `fullsend_version`, the `Review`
 job runs that version instead.
@@ -801,17 +802,17 @@ When a trigger is set, the `Route` job's "Finalize stage" step logs the
 decision for each pull request and pull request comment:
 
 ```text
-CEL route (review): bash=review cel=skip reason=trigger did not match (agents[].trigger) harness=agents@3c3081741e3c
+CEL route (review): bash=review cel=skip reason=trigger did not match harness=agents@3c3081741e3c
 ```
 
 The job summary shows `review_route=cel` when the trigger decided, or
 `review_route=bash` when the dispatch workflow did: the kill switch is on, the
-review entry is disabled, the trigger is only inherited, or the trigger
-matched a comment that is not on a pull request.
+review entry is disabled, or the event is not a pull request or a comment on
+one.
 
 | Log text | Meaning | Action |
 |---|---|---|
-| `cel=skip reason=trigger did not match` | The trigger left this event out | Expected for events your trigger excludes; otherwise fix the trigger. The reason ends with where the trigger came from: `agents[].trigger` or `harness trigger:` |
+| `cel=skip reason=trigger did not match` | The trigger left this event out | Expected for events your trigger excludes; otherwise fix the trigger |
 | `cel=skip reason=actor not authorized` | The actor failed the dispatch permission check | See the warning above for triage users and bots |
 | `CEL route failed; keeping the bash stage` | A CEL route step failed, so the dispatch workflow decided | Open the failed "… CEL route" step for the error, for example an invalid `trigger` or a harness that fails to load |
 

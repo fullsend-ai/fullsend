@@ -62,6 +62,11 @@ func TestPerRepoConfig_AgentEntries_TriggerLayeredMerge(t *testing.T) {
 	require.Len(t, merged, 1)
 	assert.Equal(t, overlayTrigger, merged[0].Trigger, "the last overlay trigger wins")
 	assert.Equal(t, parentTrigger, parent.Agents[0].Trigger, "the merge must not write to the parent layer")
+
+	blank := &perRepoConfig{parent: parent, Agents: []AgentEntry{{Name: "review", Trigger: "  \n"}}}
+	merged = blank.AgentEntries()
+	require.Len(t, merged, 1)
+	assert.Equal(t, parentTrigger, merged[0].Trigger, "a blank trigger inherits the parent's")
 }
 
 func TestPerRepoConfig_IsKillSwitchActive(t *testing.T) {

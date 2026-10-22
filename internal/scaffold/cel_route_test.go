@@ -93,6 +93,14 @@ var (
 		"EVENT_NAME": "pull_request_target", "EVENT_ACTION": "closed",
 		"PR_USER_LOGIN": "someone",
 	}
+	celRoutePRComment = map[string]string{
+		"EVENT_NAME": "issue_comment", "EVENT_ACTION": "created",
+		"COMMENT_BODY": "looks good", "ISSUE_IS_PR": "true",
+	}
+	celRouteIssueComment = map[string]string{
+		"EVENT_NAME": "issue_comment", "EVENT_ACTION": "created",
+		"COMMENT_BODY": "looks good", "ISSUE_IS_PR": "false",
+	}
 )
 
 // finalizeEnv is the "Finalize stage" env for a bash stage and the CEL
@@ -130,9 +138,11 @@ func TestRouteJob_NoReviewEntryIsByteIdentical(t *testing.T) {
 		"review settings only": "agents:\n  - name: review\n    model: sonnet\n",
 	}
 	for name, event := range map[string]map[string]string{
-		"review label": celRouteReviewLabel,
-		"other label":  celRouteOtherLabel,
-		"closed":       celRouteClosed,
+		"review label":  celRouteReviewLabel,
+		"other label":   celRouteOtherLabel,
+		"closed":        celRouteClosed,
+		"PR comment":    celRoutePRComment,
+		"issue comment": celRouteIssueComment,
 	} {
 		for cfgName, cfg := range configs {
 			t.Run(name+"/"+cfgName, func(t *testing.T) {
@@ -142,7 +152,11 @@ func TestRouteJob_NoReviewEntryIsByteIdentical(t *testing.T) {
 				}
 				bash := runRouteStep(t, "Determine stage", event, files)
 
-				optIn := runRouteStep(t, "Detect CEL route opt-in", optInEnv(event["EVENT_NAME"], "false", bash.outputs["stage"]), files)
+				isPR := event["ISSUE_IS_PR"]
+				if isPR == "" {
+					isPR = "false"
+				}
+				optIn := runRouteStep(t, "Detect CEL route opt-in", optInEnv(event["EVENT_NAME"], isPR, bash.outputs["stage"]), files)
 				assert.Equal(t, "false", optIn.outputs["opt_in"])
 				assert.Empty(t, optIn.stdout)
 
@@ -168,18 +182,17 @@ func TestCELRouteOptIn(t *testing.T) {
 	}{
 		{"named entry with a trigger", review("agents:\n  - name: Review\n    trigger: \"true\"\n"), "true"},
 		{"unquoted boolean trigger", review("agents:\n  - name: review\n    trigger: false\n"), "true"},
-		{"named entry with a source", review("agents:\n  - name: review\n    source: harness/r.yaml\n"), "true"},
-		{"string shorthand", review("agents:\n  - harness/review.yaml\n"), "true"},
-		{"unnamed URL source", review("agents:\n  - source: https://example.com/harness/Review.yml#sha256=ab\n"), "true"},
-		{"source with several # strips the last fragment", review("agents:\n  - source: a#b/review.yaml#sha256=ab\n"), "true"},
-		{"empty name falls back to the source", review("agents:\n  - name: \"\"\n    source: harness/review.yaml\n"), "true"},
+		{"unnamed source with a trigger", review("agents:\n  - source: https://example.com/harness/Review.yml#sha256=ab\n    trigger: x\n"), "true"},
+		{"source with several # strips the last fragment", review("agents:\n  - source: a#b/review.yaml#sha256=ab\n    trigger: x\n"), "true"},
+		{"empty name falls back to the source", review("agents:\n  - name: \"\"\n    source: harness/review.yaml\n    trigger: x\n"), "true"},
 		{"entry in config.base.yaml", map[string]string{".fullsend/config.base.yaml": "agents:\n  - name: review\n    trigger: \"true\"\n"}, "true"},
 		{"unreadable config lets the CLI decide", review("agents: [unterminated\n"), "true"},
-		{"review settings without trigger or source", review("agents:\n  - name: review\n    model: sonnet\n"), "false"},
+		{"a source without a trigger does not opt in", review("agents:\n  - name: review\n    source: harness/r.yaml\n"), "false"},
+		{"string shorthand does not opt in", review("agents:\n  - harness/review.yaml\n"), "false"},
+		{"review settings without a trigger", review("agents:\n  - name: review\n    model: sonnet\n"), "false"},
 		{"null trigger", review("agents:\n  - name: review\n    trigger: null\n"), "false"},
-		{"empty source", review("agents:\n  - name: review\n    source: \"\"\n"), "false"},
-		{"another agent named like review", review("agents:\n  - source: harness/review.v2.yaml\n"), "false"},
-		{"a name wins over the source file name", review("agents:\n  - name: lint\n    source: harness/review.yaml\n"), "false"},
+		{"another agent named like review", review("agents:\n  - source: harness/review.v2.yaml\n    trigger: x\n"), "false"},
+		{"a name wins over the source file name", review("agents:\n  - name: lint\n    source: harness/review.yaml\n    trigger: x\n"), "false"},
 		{"other agents", review("agents:\n  - name: triage\n    trigger: \"true\"\n"), "false"},
 		{"no config", nil, "false"},
 	}

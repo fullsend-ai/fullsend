@@ -432,12 +432,12 @@ jobs:
           echo "trigger_source=${TRIGGER_SOURCE}" >> "${GITHUB_OUTPUT}"
 
       # CEL routing (#8726). A repository moves a built-in stage's routing
-      # from the bash rules above to a CEL trigger with an explicit trigger:
-      # agents[].trigger on the agent's entry in config.yaml, or a trigger:
-      # key in its own source-registered harness. The opt-in step picks the
-      # agent whose CEL route covers this event (review today) and looks for
-      # a candidate entry; only then do the other cel-* steps install the CLI
-      # and let `fullsend dispatch --route <agent>` decide. Every cel-* step
+      # from the bash rules above to a CEL trigger by setting agents[].trigger
+      # on the agent's entry in config.yaml; a harness trigger: never does.
+      # The opt-in step picks the agent whose CEL route covers this event
+      # (review today) and looks for that entry; only then do the other cel-*
+      # steps install the CLI and let `fullsend dispatch --route <agent>`
+      # decide. Every cel-* step
       # continues on error: "Finalize stage" then keeps the bash stage, so a
       # CEL failure never stops another stage. Without a candidate entry
       # "Finalize stage" passes the bash stage through unchanged.
@@ -455,8 +455,10 @@ jobs:
           # Pick the agent whose CEL route covers this event, among those
           # `fullsend dispatch --route` supports (routableAgents in
           # internal/cli/dispatch_route.go), and only when bash chose that
-          # stage or none. Adding an agent: a gate block here plus its
-          # routableAgents entry.
+          # stage or none. Adding an agent: a gate block here, its
+          # routableAgents entry, and this step's if: widened to the agent's
+          # events. Gates must be mutually exclusive: each requires
+          # BASH_STAGE to be empty or its own agent.
           agent=""
           # review: pull request events and comments on a pull request.
           if [[ "${EVENT_NAME}" == "pull_request_target" || ( "${EVENT_NAME}" == "issue_comment" && "${ISSUE_IS_PR}" == "true" ) ]] \
@@ -464,33 +466,41 @@ jobs:
             agent="review"
           fi
 
-          # A candidate is the agent's entry with a trigger or a source,
-          # matched the way config.AgentEntry.DerivedName names entries: the
-          # name, else the source file name without its last #fragment and
-          # extension, case-insensitive. `fullsend dispatch --route` decides
-          # whether the entry's trigger opts in.
+          # A candidate is the agent's entry with an agents[].trigger, the only
+          # opt-in (a harness trigger: never routes a built-in), matched the
+          # way config.AgentEntry.DerivedName names entries: the name, else
+          # the source file name without its last #fragment and extension,
+          # case-insensitive. `fullsend dispatch --route` makes the decision.
           # shellcheck disable=SC2016
-          query='[.agents[]? | select(
-            ((tag == "!!str") and (sub("#[^#]*$"; "") | test("(?i)(^|/)" + strenv(AGENT) + "(\\.[^./]*)?$")))
-            or ((tag == "!!map")
-              and ((has("trigger") and ((.trigger | tostring) != "") and ((.trigger | tostring) != "null"))
-                or (has("source") and ((.source | tostring) != "") and ((.source | tostring) != "null")))
-              and ((has("name") and ((.name | tostring | downcase) == strenv(AGENT)))
-                or (((has("name") | not) or ((.name | tostring) == "") or ((.name | tostring) == "null"))
-                  and has("source")
-                  and (.source | tostring | sub("#[^#]*$"; "") | test("(?i)(^|/)" + strenv(AGENT) + "(\\.[^./]*)?$"))))))] | length'
+          query='[.agents[]? | select((tag == "!!map")
+            and has("trigger") and ((.trigger | tostring) != "") and ((.trigger | tostring) != "null")
+            and ((has("name") and ((.name | tostring | downcase) == strenv(AGENT)))
+              or (((has("name") | not) or ((.name | tostring) == "") or ((.name | tostring) == "null"))
+                and has("source")
+                and (.source | tostring | sub("#[^#]*$"; "") | test("(?i)(^|/)" + strenv(AGENT) + "(\\.[^./]*)?$")))))] | length'
           opt_in=false
+          if [[ -n "${agent}" && ! "${agent}" =~ ^[a-z][a-z0-9_-]*$ ]]; then
+            echo "::error::CEL route: invalid agent name '${agent}' in the opt-in gate"
+            exit 1
+          fi
           if [[ -n "${agent}" ]]; then
+            yq_err=$(mktemp)
             for f in .fullsend/config.yaml .fullsend/config.base.yaml; do
               if [[ ! -f "${f}" ]]; then
                 continue
               fi
               # An unreadable file lets the CLI decide and report it.
-              if ! count=$(AGENT="${agent}" yq "${query}" "${f}" 2>/dev/null) || [[ "${count}" != "0" ]]; then
+              if ! count=$(AGENT="${agent}" yq "${query}" "${f}" 2>"${yq_err}"); then
+                echo "::warning::CEL route: could not read ${f} with yq ($(head -c 300 "${yq_err}" | tr -d '\r\n')); letting fullsend dispatch decide"
+                opt_in=true
+                break
+              fi
+              if [[ "${count}" != "0" ]]; then
                 opt_in=true
                 break
               fi
             done
+            rm -f "${yq_err}"
           fi
           {
             echo "agent=${agent}"
@@ -670,7 +680,7 @@ jobs:
           if [[ "${CEL_OPT_IN_OUTCOME}" == "failure" ]]; then
             echo "::error::CEL route opt-in check failed; keeping the bash stage '${STAGE}'. See the CEL route steps."
           elif [[ -n "${CEL_CONFIG_OUTCOME}" && "${CEL_CONFIG_OUTCOME}" != "skipped" ]]; then
-            if [[ ! "${ROUTE_AGENT}" =~ ^[a-z]+$ || "${CEL_CONFIG_OUTCOME}" != "success" || "${CEL_ROUTE_OUTCOME}" != "success" ]]; then
+            if [[ ! "${ROUTE_AGENT}" =~ ^[a-z][a-z0-9_-]*$ || "${CEL_CONFIG_OUTCOME}" != "success" || "${CEL_ROUTE_OUTCOME}" != "success" ]]; then
               echo "::error::CEL route failed; keeping the bash stage '${STAGE}'. See the CEL route steps."
             else
               echo "::notice::CEL route (${ROUTE_AGENT}): bash=${STAGE:-none} cel=${CEL_ROUTE_DECISION} reason=${CEL_ROUTE_REASON} harness=${CEL_ROUTE_HARNESS}"
@@ -782,7 +792,8 @@ jobs:
           fi
           # An enabled entry may omit source when it only tunes a built-in
           # agent by name (runtime/model/effort/subagents, ADR 0091; trigger,
-          # #8726). Mirrors config.AgentEntry.HasSettings.
+          # #8726), the settings config.AgentEntry.HasSettings counts. The Go
+          # side also treats a blank trigger as unset.
           BAD_SOURCE=$(yq '.agents[] | select(type == "!!map" and .enabled != false and (.source == null or .source == "") and (.runtime == null and .model == null and .effort == null and .subagents == null and .trigger == null)) | line' .fullsend/config.yaml 2>/dev/null || echo "")
           if [[ -n "$BAD_SOURCE" ]]; then
             echo "::error::config.yaml: enabled agent entry without a source field (an entry with only a name must set runtime, model, effort, subagents or trigger to tune a built-in agent)"

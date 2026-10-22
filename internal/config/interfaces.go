@@ -205,7 +205,7 @@ func (c *perRepoConfig) AgentEntries() []AgentEntry {
 			if oi.entry.Effort != "" {
 				merged.Effort = oi.entry.Effort
 			}
-			if oi.entry.Trigger != "" {
+			if strings.TrimSpace(oi.entry.Trigger) != "" {
 				merged.Trigger = oi.entry.Trigger
 			}
 			// Subagents merge per key: overlay entries override or

@@ -50,6 +50,9 @@ func TestReviewRouteParity(t *testing.T) {
 		bash      bool   // reusable-dispatch.yml routes STAGE=review
 		cel       bool   // CEL route decision is run
 		diff      string // known, accepted difference; empty when cel == bash
+		// notRouted marks an event the review CEL route does not cover:
+		// --route answers bash and the bash router decides.
+		notRouted bool
 	}{
 		{
 			name:      "PR opened by a write author",
@@ -155,7 +158,7 @@ func TestReviewRouteParity(t *testing.T) {
 			name:      "/fs-review on an issue",
 			eventName: "issue_comment", action: "created",
 			payload: commentPayload(false, "writer", "User", "/fs-review"),
-			bash:    false, cel: false,
+			bash:    false, cel: false, notRouted: true,
 		},
 		{
 			name:      "/fs-fix on a PR",
@@ -190,7 +193,13 @@ func TestReviewRouteParity(t *testing.T) {
 			})
 			require.NoError(t, err)
 			// bash hands the event back to the bash router, so the
-			// effective decision is bash's.
+			// effective decision is bash's. Only rows the CEL route does not
+			// cover may answer bash.
+			if tc.notRouted {
+				require.Equal(t, routeBash, d.Decision, "reason: %s", d.Reason)
+			} else {
+				require.Contains(t, []string{routeRun, routeSkip}, d.Decision, "reason: %s", d.Reason)
+			}
 			got := d.Decision == routeRun
 			if d.Decision == routeBash {
 				got = tc.bash

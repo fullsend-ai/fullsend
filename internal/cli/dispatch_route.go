@@ -20,13 +20,14 @@ import (
 
 // Route decisions printed by `fullsend dispatch --route <agent>`.
 const (
-	// routeRun: the agent's explicit trigger matched an authorized event.
+	// routeRun: the agent's agents[].trigger matched an authorized event.
 	routeRun = "run"
 	// routeSkip: the agent must not run for this event.
 	routeSkip = "skip"
 	// routeBash: the bash router in reusable-dispatch.yml keeps deciding:
-	// the repository set no explicit trigger for the agent, or the kill
-	// switch or a disabled agent entry is left to the route job's own checks.
+	// the repository set no agents[].trigger for the agent, the event is not
+	// one the agent's CEL route covers, or the kill switch or a disabled
+	// agent entry is left to the route job's own checks.
 	routeBash = "bash"
 )
 
@@ -89,21 +90,17 @@ type routeOpts struct {
 }
 
 // routeBuiltinAgent decides whether a built-in agent runs for an event.
-// Routing moves to CEL only when the repository opts in with an explicit
-// trigger, in this order of precedence:
+// Routing moves to CEL only when the repository sets agents[].trigger on the
+// agent's entry in config.yaml. A harness trigger: never opts in, whether the
+// user's own harness writes it or inherits it through base: (the default
+// harnesses' triggers keep bash routing until the cutover, #2902).
 //
-//  1. agents[].trigger on the agent's entry in config.yaml;
-//  2. a trigger: key written in the agent's own source-registered harness
-//     file. A trigger inherited through base: does not opt in, so the
-//     default harness's trigger (and an override that only inherits it)
-//     keeps bash routing until the cutover (#2902).
-//
-// Without one the decision is routeBash. The kill switch and a disabled
-// entry also return routeBash, a bot's comment returns routeSkip, and
-// otherwise the event must pass the dispatch authorization gate and the
-// trigger must match. The harness is resolved the way `fullsend run` does
-// (a config entry with source:, else the agents-repo fallback at the
-// lockstep ref), so the decision names the harness that will run.
+// Without a config trigger the decision is routeBash, and so it is for the
+// kill switch, a disabled entry and an event outside the agent's CEL route.
+// A bot's comment returns routeSkip. Otherwise the event must pass the
+// dispatch authorization gate and the trigger must match. The harness is
+// resolved the way `fullsend run` does (a config entry with source:, else the
+// agents-repo fallback at the lockstep ref) only to name it in the decision.
 func routeBuiltinAgent(ctx context.Context, o routeOpts) (routeDecision, error) {
 	d := routeDecision{Agent: o.agent}
 	if o.event == nil {
@@ -126,16 +123,15 @@ func routeBuiltinAgent(ctx context.Context, o routeOpts) (routeDecision, error) 
 	if config.IsAgentExplicitlyDisabled(cfg.AgentEntries(), o.agent) {
 		return withDecision(d, routeBash, "agent disabled in config"), nil
 	}
-	if err := config.ValidateAgentEntries(cfg.AgentEntries(), cfg.AllowedResources()); err != nil {
-		return d, fmt.Errorf("invalid agent config: %w", err)
-	}
+	// Only the agent's own trigger is checked here (it is compiled when it
+	// is evaluated), so an unrelated invalid entry does not affect routing.
 	entry := findConfigAgentEntry(cfg.AgentEntries(), o.agent)
 	configTrigger := ""
 	if entry != nil {
 		configTrigger = strings.TrimSpace(entry.Trigger)
 	}
-	if entry == nil || (configTrigger == "" && entry.Source == "") {
-		return withDecision(d, routeBash, "no explicit trigger"), nil
+	if configTrigger == "" {
+		return withDecision(d, routeBash, "no agents[].trigger"), nil
 	}
 	if !agent.accepts(o.event) {
 		return withDecision(d, routeBash, "event is not routable for "+o.agent), nil
@@ -172,35 +168,13 @@ func routeBuiltinAgent(ctx context.Context, o routeOpts) (routeDecision, error) 
 	if printer == nil {
 		printer = ui.New(os.Stderr)
 	}
-	harnessPath, deps, err := resolveAgentSource(ctx, absConfigDir, o.agent, forgeClient, cfg, composeOpts, printer)
-	switch {
-	case err == nil:
+	// The decision needs only the config trigger; the harness is resolved
+	// to name it in the log, and the agent's job reports a resolution
+	// failure when it runs.
+	if _, deps, err := resolveAgentSource(ctx, absConfigDir, o.agent, forgeClient, cfg, composeOpts, printer); err == nil {
 		d.Harness = routeHarnessLabel(cfg, o.agent, deps)
-	case configTrigger != "":
-		// The decision needs only the config trigger; the harness is resolved
-		// to name it in the log. The Review job reports a resolution failure
-		// when it runs.
+	} else {
 		printer.StepWarn(fmt.Sprintf("Could not resolve the %s harness to name it: %v", o.agent, err))
-	default:
-		return d, err
-	}
-
-	trigger, from := configTrigger, "agents[].trigger"
-	if trigger == "" {
-		from = "harness trigger:"
-		// Only a trigger written in the registered harness file itself opts
-		// in; read it before base: composition.
-		raw, err := harness.LoadRaw(harnessPath)
-		if err != nil {
-			return d, fmt.Errorf("reading %s harness: %w", o.agent, err)
-		}
-		trigger = raw.Trigger
-	}
-	if strings.TrimSpace(trigger) == "" {
-		return withDecision(d, routeBash, "no explicit trigger (an inherited base trigger does not opt in)"), nil
-	}
-	if err := harness.ValidateTriggerExpression(trigger); err != nil {
-		return d, fmt.Errorf("invalid %s trigger: %w", o.agent, err)
 	}
 
 	if !harnessdispatch.AuthorizeEvent(o.configDir, cfg, o.event) {
@@ -210,14 +184,14 @@ func routeBuiltinAgent(ctx context.Context, o routeOpts) (routeDecision, error) 
 	if err != nil {
 		return d, err
 	}
-	matched, err := harness.EvaluateTrigger(trigger, eventMap)
+	matched, err := harness.EvaluateTrigger(configTrigger, eventMap)
 	if err != nil {
 		return d, fmt.Errorf("evaluating %s trigger: %w", o.agent, err)
 	}
 	if !matched {
-		return withDecision(d, routeSkip, "trigger did not match ("+from+")"), nil
+		return withDecision(d, routeSkip, "trigger did not match"), nil
 	}
-	return withDecision(d, routeRun, "trigger matched ("+from+")"), nil
+	return withDecision(d, routeRun, "trigger matched"), nil
 }
 
 func withDecision(d routeDecision, decision, reason string) routeDecision {

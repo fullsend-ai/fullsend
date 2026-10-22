@@ -42,10 +42,9 @@ GitLab routes agents through its own built-in router and does not evaluate
 `trigger` expressions.
 
 The review agent is the exception on GitHub: a `trigger` you set on the
-`review` entry in `config.yaml`, or write in your own source-registered review
-harness, decides whether the built-in `Review` job starts, in place of the
-stage-based rules. A trigger the review harness only inherits through `base:`
-does not. See
+`review` entry in `config.yaml` decides whether the built-in `Review` job
+starts, in place of the stage-based rules. A harness `trigger:` field never
+changes built-in routing; copy it into `config.yaml` to opt in. See
 [Choosing when review runs](customizing-agents.md#choosing-when-review-runs).
 
 You can also keep a hand-written workflow that invokes `fullsend run` with a fixed harness path. CEL-based dispatch and explicit harness invocation may run side by side in the same installation.

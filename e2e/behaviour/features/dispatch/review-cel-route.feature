@@ -4,7 +4,11 @@
 # (`fullsend dispatch --route review`). Here an on-demand trigger turns off the
 # automatic review when a pull request is opened and keeps /fs-review. The
 # write actor (TEST_ACTOR_WRITE_PAT) posts the comment: the e2e installation
-# identity's comments are bot comments, which never start a review.
+# identity's comments are bot comments, which never start a review. The pull
+# request is opened by the e2e installation identity, which bash routing
+# would review; that no review starts shows CEL took over the decision (the
+# trigger does not match, and a bot without a registered role is not
+# authorized on the CEL path either, #8329).
 Feature: Review routing by a config trigger
 
   Scenario: an on-demand review trigger skips the automatic review and keeps /fs-review
