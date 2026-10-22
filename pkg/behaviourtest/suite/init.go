@@ -188,6 +188,7 @@ func resetScenarioWorld(w *world.World) {
 	w.GatewayConfigOverridden = false
 	w.GatewayConfigOriginal = nil
 	w.GatewayAPIKeySecretSet = false
+	w.RepoVariablesOriginal = nil
 	w.OwnersAuthActivated = false
 	w.JiraMockServer = nil
 	w.JiraMockState = nil

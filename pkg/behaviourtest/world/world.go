@@ -224,6 +224,11 @@ type World struct {
 	// CleanupScenario deletes it before the leased repo is deallocated.
 	GatewayAPIKeySecretSet bool
 
+	// RepoVariablesOriginal maps each repository variable a scenario set
+	// to its pre-scenario value (nil when it did not exist).
+	// CleanupScenario restores them before the leased repo is deallocated.
+	RepoVariablesOriginal map[string]*string
+
 	// OwnersAuthActivated records whether this scenario committed an
 	// OWNERS file and/or added owners_file to the authorization providers in config.yaml.
 	// CleanupScenario removes both.

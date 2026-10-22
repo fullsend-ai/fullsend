@@ -600,6 +600,8 @@ The `fork-dispatch.feature` file defines the canonical fork-PR behaviour contrac
 
 **`the kill switch is active in config.base.yaml`** — Sets `kill_switch: true` in `config.base.yaml` (the central/base layer) instead, leaving `config.yaml` unset. Use this step to verify that a base-file kill switch halts dispatch the same way an overlay one does, since the two files are read independently.
 
+**`the repository variable "<NAME>" is "<value>"`** — Sets a repository variable on the enrolled repo, for example `FULLSEND_CEL_ROUTING_REVIEW` to `shadow` or `on`. The first time a scenario sets a name, the step records the previous value (or that the variable did not exist), and scenario cleanup restores it, so the slot's next scenario runs with the install defaults. Requires the GitHub SCM driver.
+
 ## Forge operational constraints
 
 When modifying behaviour test repo provisioning, fork handling, or workflow dispatch, be aware of these constraints. They are not enforced by the compiler or linter — violations surface as cryptic API errors or silently dropped events in CI.
