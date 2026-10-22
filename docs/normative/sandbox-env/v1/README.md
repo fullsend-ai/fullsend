@@ -100,7 +100,9 @@ matter:
 The enumerated runtimes are the runner's resolution registry minus test
 stubs. A runtime that exports nothing appears with an empty set — `opencode`
 — rather than being omitted. Registering a new runtime without a manifest
-decision fails the golden test.
+decision fails `TestEnvManifestRuntimeEnumeration`, which pins the
+collector's runtime list to the resolution registry; the golden test
+covers the committed manifest content.
 
 **`harness_delivered` — configuration, not guarantee.** These variables reach
 the sandbox only because stock harness configuration injects them:
