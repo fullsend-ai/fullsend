@@ -39,8 +39,11 @@ reference are exported by any released runner — a drift-control gap in the
 
 The lockstep with the fleet harnesses fullsend loads ([ADR 0058](0058-agent-registration.md))
 is enforced only by tribal knowledge; the topology this needs — released tag
-at PR time, `main` nightly ([ADR 0139](0139-agent-functional-test-suite-lives-in-agents-repo.md))
-— already exists for functional tests.
+at PR time via [ADR 0038](0038-universal-harness-access.md)'s pinned-URL
+mechanism, `main` nightly ([ADR 0139](0139-agent-functional-test-suite-lives-in-agents-repo.md))
+— already exists for functional tests. The proposed `FULLSEND_SKILLS_DIR`
+([fullsend-ai/agents#1672](https://github.com/fullsend-ai/agents/issues/1672))
+is a follow-up to close the remaining drift surface.
 
 ## Options
 
@@ -62,8 +65,9 @@ each production runtime's `EnvExports()`, the `fullsend agent new`
 Vertex scaffold, and the effective reserved-key set after the
 init-time merges — so the contract cannot disagree with the code
 that builds the environment. An always-on golden test byte-compares the
-committed file against collector output (`-update` regenerates), and fails
-when a runtime is newly registered without a manifest decision.
+committed file against collector output (`-update` regenerates); a
+companion runtime-enumeration test fails when a runtime is newly
+registered without a manifest decision.
 
 The manifest is fetchable at any tag via raw.githubusercontent.com
 (tag-pinned URLs complement the commit-SHA + integrity-hash
@@ -95,11 +99,3 @@ The fetch URL uses raw.githubusercontent.com because fullsend is hosted on
 GitHub; a GitLab or Forgejo deployment would use the equivalent raw-file
 endpoint. Consumer validation logic (parse, fail closed) is
 forge-independent.
-
-## References
-
-- [ADR 0038](0038-universal-harness-access.md) — URL-based resource access with commit-SHA + integrity-hash pinning
-- [ADR 0058](0058-agent-registration.md) — agent registration and the transitional fleet lockstep
-- [ADR 0139](0139-agent-functional-test-suite-lives-in-agents-repo.md) — cross-repo validation topology
-- [fullsend-ai/agents#1677](https://github.com/fullsend-ai/agents/issues/1677) — the drift incident
-- [fullsend-ai/agents#1672](https://github.com/fullsend-ai/agents/issues/1672) — proposed `FULLSEND_SKILLS_DIR` follow-up
