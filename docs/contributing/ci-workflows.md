@@ -233,6 +233,13 @@ The `check-e2e-authorization` gate job (`gate` in `e2e.yml`) mitigates the risk 
 - The gate does not inspect the PR diff — it trusts that maintainers reviewed the code before labeling `ok-to-test`.
 - The `ok-to-test` label check has a TOCTOU window: code can change between label application and job execution (mitigated by the stale-label removal on `synchronize` events, but not eliminated).
 
+**Validating gate changes (`pull_request_target`):** Because `pull_request_target`
+workflows execute the gate from the base branch (`main`), PR runs on a
+gate-modifying PR still execute `main`'s gate. PRs modifying
+`pull_request_target` gates must validate logic via unit tests pre-merge (e.g.,
+`scripts/check-e2e-authorization-test.sh`) and include a post-merge validation
+checklist in the PR description.
+
 ### Review checklist for secrets in behaviour/playback jobs
 
 When a PR adds or modifies secret references in a `pull_request_target` job, reviewers must verify:

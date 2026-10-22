@@ -1,38 +1,99 @@
 # AGENTS.md
 
-Fullsend is a platform for fully autonomous agentic development for Git-hosted organizations (GitHub, GitLab, Forgejo). It contains design documents organized by problem domain (`docs/`) and a Go CLI (`cmd/fullsend/`) that manages forge setup and org configuration. See [fullsend.sh](https://fullsend.sh) for the full documentation site.
+Fullsend is a platform for fully autonomous agentic development for Git-hosted
+organizations (GitHub, GitLab, Forgejo). It contains design documents organized
+by problem domain (`docs/`) and a Go CLI (`cmd/fullsend/`) that manages forge
+setup and org configuration. See [fullsend.sh](https://fullsend.sh) for the
+full documentation site.
 
 ## How to work in this repo
 
-- Problem documents (`docs/problems/`) should present multiple options with trade-offs, not prescribe single solutions.
-- Each problem document has an "Open questions" section — this is where unresolved issues live.
-- When adding new problem areas, create a new file in `docs/problems/`. The documentation site auto-discovers files in this directory.
-- For each existing problem doc that a new problem doc links to, add a reciprocal contextual backlink at the passage that motivated the outbound link in the same PR. Then run `grep -rn '<concept>' docs/problems/`, searching adjacent terms and synonyms as well as the new doc's title words, to find related passages the new doc does not already link to; wherever an existing doc *substantively discusses* the concept (not merely mentions it in passing), add a single contextual backlink at that passage, not a link at every match. This keeps cross-referencing bidirectional so readers can discover the new doc from its related contexts. When the new doc is organization-specific (`docs/problems/applied/<org-name>/`), frame any backlink you add to a core problem doc as an explicit org-specific pointer, so core docs stay organization-agnostic (see the organization-agnostic rule below).
-- The security threat model (threat priority: external injection > insider > drift > supply chain) should inform all other documents.
-- Keep core problem documents organization-agnostic. Organization-specific details belong in `docs/problems/applied/<org-name>/`.
-- The target audience for problem documents is any contributor community considering autonomous agents — keep language accessible and avoid presuming solutions.
-- Always stage your changes before running `make lint` and fix any failures. Pre-commit only checks staged files — without staging first, it stashes your work and finds nothing to lint.
-- When invoking the fullsend CLI from this checkout, **prefer** `go run ./cmd/fullsend …` from the repo root. Do **not** use a `fullsend` binary from mise, `$PATH`, `go install`, or another checkout — those often lag this tree. A stale CLI once rewrote hosted-mint `ALLOWED_ROLES` during enrollment (dropping `e2e`/`fix`) and broke e2e. Details: [Go Code](docs/contributing/go-code.md#running-the-fullsend-cli).
-- You **must** read and follow [COMMITS.md](COMMITS.md) when writing or
-  reviewing commit messages and PR titles. Getting the prefix right is not
-  optional — GoReleaser uses commit subjects, not PR titles, to build release
-  notes. Breaking changes **must** carry the `!` suffix in
-  both commit messages and PR titles; a missing `!` is an important-severity
-  review finding.
-- This repository requires a [Developer Certificate of Origin (DCO)](https://developercertificate.org/). Human-proposed commits **must** be signed off: use `git commit -s` (or add `Signed-off-by: Your Name <email>` as a trailer). Human-driven agent sessions (e.g., using Claude Code locally) should also sign off — the human directing the session is the one certifying the DCO. **Autonomous agent commits are exempt** and must never supply the DCO with `-s` or with `Signed-off-by`. These agents commit using the GitHub App's bot identity, which the [Probot DCO app](https://github.com/apps/dco) auto-skips.
-- **Go coverage gate:** When changing Go production code (files under `cmd/` or `internal/` that are not `_test.go`), you **must** verify approximate patch coverage meets the 80% target (75% enforced floor) from [`.codecov.yml`](.codecov.yml) before considering verification done. `make go-test` passing alone is not sufficient — it does not enforce Codecov thresholds. See [Verifying patch coverage locally](docs/contributing/go-code.md#verifying-patch-coverage-locally) for the exact commands. If coverage is below threshold, add tests for uncovered new/changed lines and re-check within the same run.
-- **Forge abstraction:** All forge operations (GitHub API calls, setting repository variables, PR comments, etc.) **must** go through `forge.Client` — never shell out to `gh` CLI or make direct API calls outside `internal/forge/github/`. If `forge.Client` lacks a method you need, add one to the interface, and add an entry for it to `fakeClientCalls` in `internal/forge/fake_test.go` (`TestFakeClient_CoversAllMethods` enforces this). See [Forge Abstraction](docs/contributing/forge-abstraction.md) for the full rules.
-- Never commit secrets (tokens, API keys, PEM keys, gcloud credentials) or sensitive data (GCP project names, service account identifiers, Model Armor template names, internal hostnames). Use environment variables with no defaults for sensitive values.
-- **Experiments issues:** Work on experiment source (the `experiments/` submodule, which tracks [`fullsend-ai/experiments`](https://github.com/fullsend-ai/experiments)) is filed in that repository. Submodule integration (`.gitmodules`, CODEOWNERS, Renovate bumps, docs-site wiring) and fullsend product work stay in this tracker. When the right tracker is unclear, file here and link the experiments issue tracker in the body. See [CONTRIBUTING.md § Where to file experiments-related issues](CONTRIBUTING.md#where-to-file-experiments-related-issues).
-- When adding a new doc under `docs/`, check `docs/.vitepress/config.ts` sidebar config. Sections using `getMarkdownFiles()` are auto-discovered, including nested directories (which become nested sidebar groups). All other sections need a manual `{ text, link }` entry. Also add the new folder's prefix to `search.options.scopes` in the same file so the folder's pages are reachable when search scope pills are active.
-- When adding, removing, renaming, or changing the behavior or output format of a CLI command, public API, or user-facing feature (including new configuration variables, flags, or environment variables), grep all documentation files under `docs/` for references to the affected feature area and update them to reflect the current behavior. For new additions, search for documentation tables or lists of similar items (e.g., repo variables, CLI flags) that should include the new entry. Pay special attention to `docs/cli/`, `docs/guides/`, and any getting-started or operations guides.
-- When modifying CLI flag help text, defaults, or behavior in `internal/cli/`, update the corresponding reference page in `docs/cli/` and search `docs/guides/` for tables or descriptions that reference the same flag. CLI reference pages are manually maintained and will not auto-update.
-- When extending a Go interface with new methods, see [Go Code § Interface documentation](docs/contributing/go-code.md) for sync requirements.
-- When adding a new skill under `skills/`, check the user-facing guides for relevant cross-reference opportunities: `docs/guides/user/customizing-with-skills.md` (skill catalog and usage), `docs/guides/user/bring-your-own-agent.md` (agent composition and tuning), and `docs/guides/README.md` (guide index). Add a brief cross-reference or section pointer if the new skill fills a gap in those guides.
-- When adding, removing, or modifying fields in `event_payload` (`buildEventPayload` in `internal/harnessdispatch/project.go`) or normalized-event structures (`internal/normevent/`), update the projection table in the normative event specification at `docs/normative/normalized-event/v1/README.md` and the resolution description in `docs/contributing/harness-fields.md`.
-- When adding a new `config.yaml` field (in `internal/config/`), document it in `docs/reference/config-reference.md`. The config reference is the canonical user-facing reference for `.fullsend/config.yaml` — every supported field must appear there with its purpose, valid values, and default.
-- **Per-org installation mode is deprecated** ([ADR 0044](docs/ADRs/0044-deprecate-per-org-installation-mode.md)) and is being removed. This applies to human contributors and agents alike: do not add or extend org-mode-specific content in docs or code, and when reviewing a PR that touches org-mode content, flag it as referencing deprecated functionality rather than engaging with the org/repo-mode distinction as active architecture. Per-repo is the sole supported installation model going forward.
-- When writing skills, documentation, or guides that reference the fullsend agent/skill/sub-agent inventory (agent names, skill names, harness configs, sub-agent rosters), use runtime discovery commands against `fullsend-ai/agents` rather than hardcoded tables or static listings. The agents repo evolves independently and hardcoded references go stale. See the `author-fullsend-augmentations` skill for discovery patterns.
+- Problem documents (`docs/problems/`) should present multiple options with
+  trade-offs, not prescribe single solutions.
+- Each problem document has an "Open questions" section — this is where
+  unresolved issues live.
+- When adding new problem areas, create a new file in `docs/problems/`. The
+  documentation site auto-discovers files in this directory.
+- For each existing problem doc that a new problem doc links to, add a
+  reciprocal contextual backlink at the passage that motivated the outbound link
+  in the same PR. Then run `grep -rn '<concept>' docs/problems/`, searching
+  adjacent terms and synonyms as well as the new doc's title words, to find
+  related passages the new doc does not already link to; wherever an existing
+  doc *substantively discusses* the concept (not merely mentions it in passing),
+  add a single contextual backlink at that passage, not a link at every match.
+  This keeps cross-referencing bidirectional so readers can discover the new doc
+  from its related contexts. When the new doc is organization-specific
+  (`docs/problems/applied/<org-name>/`), frame any backlink you add to a core
+  problem doc as an explicit org-specific pointer, so core docs stay
+  organization-agnostic (see the organization-agnostic rule below).
+- The security threat model (threat priority: external injection > insider >
+  drift > supply chain) should inform all other documents.
+- Keep core problem documents organization-agnostic. Organization-specific
+  details belong in `docs/problems/applied/<org-name>/`.
+- The target audience for problem documents is any contributor community
+  considering autonomous agents — keep language accessible and avoid presuming
+  solutions.
+- Always stage changes before running `make lint`. Pre-commit only checks
+  staged files; without staging first, it stashes your work and finds nothing
+  to lint.
+- When invoking the fullsend CLI from this checkout, always prefer
+  `go run ./cmd/fullsend …` from the repo root over an external or pre-built
+  binary to avoid stale state. See
+  [Go Code § Running the fullsend CLI](docs/contributing/go-code.md#running-the-fullsend-cli).
+- Follow [COMMITS.md](COMMITS.md) when writing or reviewing commit messages
+  and PR titles. Commit prefixes feed release notes; breaking changes require
+  the `!` marker in both commit subjects and PR titles; a missing `!` is an
+  important-severity review finding; forbidden combinations (e.g.
+  `fix(ci)`/`fix(e2e)`) are enforced as errors.
+- Human and human-driven agent commits require DCO sign-off (`git commit -s`);
+  autonomous bot commits are exempt and must never supply the DCO with `-s` or
+  `Signed-off-by`. See
+  [CONTRIBUTING.md § DCO](CONTRIBUTING.md#dco-developer-certificate-of-origin).
+- **Go coverage gate:** Go production changes (`cmd/`, `internal/`) must meet
+  the 80% patch coverage target (75% floor). Verify coverage locally before
+  committing; see
+  [Go Code § Verifying patch coverage locally](docs/contributing/go-code.md#verifying-patch-coverage-locally).
+- **Forge abstraction:** All forge operations must go through `forge.Client`;
+  never shell out to `gh` or make direct API calls outside
+  `internal/forge/github/`. See
+  [Forge Abstraction](docs/contributing/forge-abstraction.md).
+- Never commit secrets (tokens, API keys, PEM keys, gcloud credentials) or
+  sensitive data (GCP project names, service account identifiers, Model Armor
+  template names, internal hostnames). Use environment variables with no
+  defaults for sensitive values.
+- **Experiments issues:** File experiment source changes in
+  [`fullsend-ai/experiments`](https://github.com/fullsend-ai/experiments);
+  submodule integration and fullsend product work stay in this tracker. See
+  [CONTRIBUTING.md § Where to file experiments-related issues](CONTRIBUTING.md#where-to-file-experiments-related-issues).
+- When adding a new doc under `docs/`, update `docs/.vitepress/config.ts`
+  sidebar config and search scopes if not in an auto-discovered section. See
+  [Documentation § Adding new documentation pages](docs/contributing/documentation.md#adding-new-documentation-pages).
+- When modifying CLI commands, flags, public APIs, or configuration/environment
+  variables, update all documentation references across `docs/cli/` and
+  `docs/guides/`. Note that `docs/cli/` reference pages are manually maintained
+  and will not auto-update. See
+  [Documentation](docs/contributing/documentation.md).
+- When extending a Go interface with new methods, see
+  [Go Code § Interface documentation](docs/contributing/go-code.md) for sync
+  requirements.
+- When adding a new skill under `skills/`, check user-facing guides
+  (`docs/guides/user/customizing-with-skills.md`,
+  `docs/guides/user/bring-your-own-agent.md`, `docs/guides/README.md`) for
+  cross-reference opportunities.
+- When modifying fields in `event_payload` (`buildEventPayload` in
+  `internal/harnessdispatch/project.go`) or normalized-event structures
+  (`internal/normevent/`), update the projection table in
+  `docs/normative/normalized-event/v1/README.md` and resolution details in
+  [Harness Field Reference](docs/contributing/harness-fields.md).
+- Document every new `config.yaml` field in
+  [Config Reference](docs/reference/config-reference.md).
+- **Per-org installation mode is deprecated**
+  ([ADR 0044](docs/ADRs/0044-deprecate-per-org-installation-mode.md)) in favor
+  of per-repo mode; do not add or extend org-mode content, and flag org-mode
+  references in PR reviews.
+- Discover agent/skill/sub-agent inventory dynamically from
+  `fullsend-ai/agents` rather than hardcoding static lists. See the
+  `author-fullsend-augmentations` skill for discovery patterns.
 
 ## Topic-specific guidance
 
@@ -41,12 +102,11 @@ Detailed guidance lives in `docs/contributing/` and topic-specific guides under 
 | File | When to read |
 |------|-------------|
 | [Runtime Implementation](docs/contributing/runtime-implementation.md) | Adding or changing a `runtime.Runtime` backend — covers the security feature matrix every runtime must fill in, the runtime interfaces, the sandbox hook contract and wire protocol, and the sandbox workspace layout |
-| [Go Code](docs/contributing/go-code.md) | Changing Go code under `cmd/`, `internal/`, or `pkg/` — covers mint sync, the behaviourtest/mintcore module-boundary rule, interface documentation sync, coverage, vet, e2e tests, concurrency testing, concurrent error handling (`errors.Join` fan-out), context-aware blocking, suite-timeout policy, WASM binary size constraints, secure HTTP client construction, preferring `go run` for the CLI, and the per-repo config dual-validation pattern |
+| [Go Code](docs/contributing/go-code.md) | Changing Go code under `cmd/`, `internal/`, or `pkg/` — covers mint sync, the behaviourtest/mintcore module-boundary rule, interface documentation sync, coverage, vet, e2e tests, concurrency testing, concurrent error handling (`errors.Join` fan-out), context-aware blocking, suite-timeout policy, WASM binary size constraints, credential redaction for external content, secure HTTP client construction, preferring `go run` for the CLI, and the per-repo config dual-validation pattern |
 | [Mintcore Architecture](docs/contributing/mintcore.md) | Changing `internal/mintcore/`, `cmd/mint-wasm/`, `cmd/mint/`, `internal/mint/`, or mint deploy provisioners (`internal/dispatch/gcf/`, `internal/dispatch/cf/`) — covers platform accessors, load-site construction, WASM-safe wiring, and deploy-time build-metadata stamping |
-| [Go Code](docs/contributing/go-code.md) | Changing Go code under `cmd/` or `internal/` — covers mint sync, coverage, vet, e2e tests, concurrency testing, suite-timeout policy, WASM binary size constraints, credential redaction for external content, and preferring `go run` for the CLI |
 | [Behaviour Testing](docs/guides/dev/behaviour-testing.md) | Modifying behaviour test repo provisioning, fork handling, or workflow dispatch — covers forge API constraints (`auto_init`, fork name derivation, fork name uniqueness lag, Actions readiness, CI timeout budgeting) |
 | [Workflow Contracts](docs/contributing/workflow-contracts.md) | Changing GHA reusable workflows — covers dispatch routing, secret/input threading across caller chains, and review rules |
-| [Shell Scripting](docs/contributing/shell-scripting.md) | Writing or reviewing shell scripts — covers `gh api --paginate` pitfalls, jq patterns, and stdout contamination in command substitution |
+| [Shell Scripting](docs/contributing/shell-scripting.md) | Writing or reviewing shell scripts — covers `gh api --paginate` pitfalls, jq patterns, stdout contamination in command substitution, bot permissions, and concurrent label deletion |
 | [Forge Abstraction](docs/contributing/forge-abstraction.md) | Adding forge operations — covers `forge.Client` interface rules |
 | [Harness Composition](docs/contributing/harness-composition.md) | Changing merge functions in `internal/harness/` — covers the invariant between compose and forge merge functions |
 | [Harness Field Reference](docs/contributing/harness-fields.md) | Adding or modifying fields in `Harness` or `ForgeConfig` — covers field classifications, merge rules, and the `ForgeConfig` struct |

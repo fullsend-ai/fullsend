@@ -242,6 +242,26 @@ Overlay `when` expressions are evaluated with:
 `forge:` and `overlays:` must not coexist in the same harness (post-merge).
 `forge:` is deprecated; new harnesses should use `overlays:` instead.
 
+## Event payload and normalized-event resolution
+
+During dispatch, fullsend projects normalized events (`internal/normevent/`) into
+`event_payload` via `buildEventPayload` in `internal/harnessdispatch/project.go`.
+This payload provides backwards-compatible legacy forge fields (`issue`,
+`pull_request`, `comment`) alongside `_normalized_event` (the serialized
+`normevent.Event` map).
+
+When resolving CEL-guarded overlays via `ResolveOverlays(event, forgePlatform,
+config)`, the runtime passes the deserialized `normevent.Event` directly as
+the `event` variable in the CEL environment (see [CEL environment](#cel-environment)
+above). When adding, modifying, or removing fields in normalized event structures
+or `event_payload`:
+
+1. Update `buildEventPayload` in `internal/harnessdispatch/project.go` and its
+   unit tests in `internal/harnessdispatch/project_test.go`.
+2. Update the projection table in `docs/normative/normalized-event/v1/README.md`.
+3. If new event fields or properties are exposed to overlay CEL evaluation,
+   document them in the [CEL environment](#cel-environment) table above.
+
 ## Related
 
 - [ADR-0045](../ADRs/0045-forge-portable-harness-schema.md): Forge-portable

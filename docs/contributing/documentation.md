@@ -72,6 +72,22 @@ Do not rewrap existing documents wholesale. That produces the same large diffs
 this rule is meant to prevent. Write new content wrapped, and rewrap an
 existing paragraph only when you are already editing it.
 
+## CLI reference pages are manually maintained
+
+CLI reference pages under `docs/cli/` are manually maintained and will not
+auto-update. When modifying CLI commands, flag help text, defaults, or behavior
+in `internal/cli/`, update the corresponding reference page in `docs/cli/` as
+well as relevant tables and descriptions in `docs/guides/`.
+
+## Adding new documentation pages
+
+When adding a new doc under `docs/`, check `docs/.vitepress/config.ts` sidebar
+configuration. Sections using `getMarkdownFiles()` are auto-discovered,
+including nested directories (which become nested sidebar groups). All other
+sections require a manual `{ text, link }` entry. Also add the new folder's
+prefix to `search.options.scopes` in the same file so the folder's pages are
+reachable when search scope pills are active.
+
 ## Cross-reference by command group
 
 Each row lists the documentation touchpoints for a major CLI command group. The **Go source** column is where inline `Short`/`Long` help text lives.
