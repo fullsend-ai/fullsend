@@ -78,7 +78,8 @@ func givenEnrolledTestRepository(ctx context.Context, w *world.World) error {
 }
 
 // bindLease points the scenario World at a leased slot's org: Org,
-// Token and MintURL come from the lease, and SCM and CI are rebuilt from
+// Token, MintURL and the mint's status group and workflow hosts come
+// from the lease, and SCM and CI are rebuilt from
 // the lease's org client through World.OrgDrivers, so every scenario
 // operation and its cleanup use the credentials of the org that owns
 // the repo. A lease without an org (a driver that leases by name only)
@@ -103,6 +104,8 @@ func bindLease(w *world.World, lease install.RepoLease) error {
 		w.Token = lease.Token
 	}
 	w.MintURL = lease.MintURL
+	w.MintStatusGroup = lease.MintStatusGroup
+	w.MintWorkflowHostRepos = lease.MintWorkflowHostRepos
 	return nil
 }
 

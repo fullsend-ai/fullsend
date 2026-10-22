@@ -23,7 +23,7 @@ type fakeMintDriver struct {
 	teardownErr    error
 }
 
-func (f *fakeMintDriver) Install(_ context.Context, _ string) (string, error) {
+func (f *fakeMintDriver) Install(_ context.Context) (string, error) {
 	if f.mintURL != "" {
 		return f.mintURL, nil
 	}

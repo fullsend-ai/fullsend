@@ -176,6 +176,8 @@ func resetScenarioWorld(w *world.World) {
 	w.LeasedRepoOrg = ""
 	w.LeaseOwned = nil
 	w.MintURL = ""
+	w.MintStatusGroup = ""
+	w.MintWorkflowHostRepos = nil
 	w.KillSwitchActivated = false
 	w.RuntimeOverridden = false
 	w.RuntimeOriginal = ""

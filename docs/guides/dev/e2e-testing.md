@@ -285,7 +285,9 @@ a closed team.
 The STAGE and numbered test mints take these values as
 `--status-github-group=ORG/mint-status`. The behaviour suite's CF mint
 drivers pass it, with `--status-auth=oidc,github`, on every mint
-deploy. The
+deploy. The DEV driver picks one pool org's team at random once per
+job and uses it for every preview mint, so every numbered org needs
+the team. The
 [CLI mint status scenarios](behaviour-testing.md#cli-mint-status-scenarios)
 run `fullsend mint status --mint-url` with the writer PAT against that
 mint.

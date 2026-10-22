@@ -76,12 +76,16 @@ func NewRepoPoolCFMintStage(pool PoolConfig) (Driver, error) {
 	if !cfmintPEMsConfigured() {
 		return nil, fmt.Errorf("stage cfmint factory: PEMDir is required (no PEMs materialized: set the TEST_*_PEM env vars)")
 	}
+	plan, err := planCFMints(pool.Layout)
+	if err != nil {
+		return nil, fmt.Errorf("stage cfmint factory: %w", err)
+	}
 	logf := poolLogf(pool)
 	if err := prepareWranglerForMints(context.Background(), logf); err != nil {
 		return nil, fmt.Errorf("stage cfmint factory: %w", err)
 	}
 
-	newMint := func(org string, cred orgCredential) (mintDriver, func(), error) {
+	newMint := func(group mintGroup, cred orgCredential) (mintDriver, func(), error) {
 		pemDir, err := setupCFMintPEMDir()
 		if err != nil {
 			return nil, nil, fmt.Errorf("materializing PEMs: %w", err)
@@ -95,10 +99,10 @@ func NewRepoPoolCFMintStage(pool PoolConfig) (Driver, error) {
 		}
 		cfg := stageMintConfig{
 			pemDir:            pemDir,
-			perRepoWIFRepos:   buildRepoList(org, pool.Layout.SlotsPerOrg),
-			workflowHostRepos: buildWorkflowHostRepoList(org, pool.Layout.SlotsPerOrg),
+			perRepoWIFRepos:   buildRepoList(StageOrg, pool.Layout.SlotsPerOrg),
+			workflowHostRepos: group.workflowHostRepos,
 			appSet:            envAppSet(),
-			statusGitHubGroup: mintStatusGitHubGroup(org),
+			statusGitHubGroup: plan.statusGroup,
 		}
 		md, err := newStageMintDriver(cred.client, cred.token, pool.Binary, pool.GCPProjectID, logf, cfg)
 		if err != nil {
@@ -108,7 +112,7 @@ func NewRepoPoolCFMintStage(pool PoolConfig) (Driver, error) {
 		return md, cleanup, nil
 	}
 
-	return buildPoolDriver(pool, newMint, stageSetupOpts(), startTraceCollector(logf))
+	return buildPoolDriver(pool, plan, newMint, stageSetupOpts(), startTraceCollector(logf))
 }
 
 // Compile-time check: NewRepoPoolCFMintStage satisfies Factory.
@@ -203,7 +207,7 @@ func StageMintDeployArgs(cfg stageMintConfig) []string {
 	return args
 }
 
-func (d *stageMintMintDriver) Install(_ context.Context, _ string) (string, error) {
+func (d *stageMintMintDriver) Install(_ context.Context) (string, error) {
 	d.logf("[stage-cfmint] deploying durable mint at %s", StageMintURL)
 	args := StageMintDeployArgs(d.cfg)
 

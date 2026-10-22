@@ -117,6 +117,19 @@ type World struct {
 	// one per lease.
 	MintURL string
 
+	// MintStatusGroup is the ORG/TEAM the leased repository's mint was
+	// deployed with as --status-github-group
+	// (install.RepoLease.MintStatusGroup). It is chosen once per job and
+	// need not be the leased org's team. Empty when the driver does not
+	// report it.
+	MintStatusGroup string
+
+	// MintWorkflowHostRepos is the leased repository's mint's
+	// WORKFLOW_HOST_REPOS: the workflow hosts of every org of its mint
+	// group (install.RepoLease.MintWorkflowHostRepos). Nil when the
+	// driver does not report them.
+	MintWorkflowHostRepos []string
+
 	// OrgDrivers builds the SCM and CI drivers for one org from that
 	// org's forge client and token. When a scenario leases a slot, the
 	// lease step rebinds SCM and CI through it so every operation uses

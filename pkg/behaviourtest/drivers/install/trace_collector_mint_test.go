@@ -91,12 +91,12 @@ func TestTraceStart_Abort(t *testing.T) {
 }
 
 func TestBuildPoolDriver_TraceCollector(t *testing.T) {
-	newMint := func(string, orgCredential) (mintDriver, func(), error) {
+	newMint := func(mintGroup, orgCredential) (mintDriver, func(), error) {
 		return &testCFMintMintDriver{installMintURL: "https://mint.test"}, func() {}, nil
 	}
 	t.Run("attached on success", func(t *testing.T) {
 		tc := idleTraceCollector(t)
-		d, err := buildPoolDriver(testPoolConfig(t, StagePoolLayout(1)), newMint, playbackSetupOpts(), traceStart{started: tc})
+		d, err := buildPoolDriver(testPoolConfig(t, StagePoolLayout(1)), nil, newMint, playbackSetupOpts(), traceStart{started: tc})
 		require.NoError(t, err)
 		assert.Same(t, tc, d.(*composedDriver).traces)
 		assert.True(t, tc.cleanupPending(), "an attached collector runs until Finalize")
@@ -105,7 +105,7 @@ func TestBuildPoolDriver_TraceCollector(t *testing.T) {
 		tc := idleTraceCollector(t)
 		pending := &fakeTraceSink{}
 		bad := testPoolConfig(t, PoolLayout{})
-		_, err := buildPoolDriver(bad, newMint, playbackSetupOpts(), traceStart{started: tc, pending: pending})
+		_, err := buildPoolDriver(bad, nil, newMint, playbackSetupOpts(), traceStart{started: tc, pending: pending})
 		require.Error(t, err)
 		assert.False(t, tc.cleanupPending(), "collector must not outlive a failed factory")
 		assert.Equal(t, 1, pending.stopCalls)
@@ -114,28 +114,36 @@ func TestBuildPoolDriver_TraceCollector(t *testing.T) {
 
 func TestBuildPoolDriver_OrgSetupUsesOrgCredentialAndMint(t *testing.T) {
 	t.Setenv("TEST_ACTOR_OUTSIDER_PAT", "")
-	var gotOrg string
+	var gotGroup mintGroup
 	cleaned := false
 	mint := &testCFMintMintDriver{installMintURL: "https://mint.halfsend-03"}
-	newMint := func(org string, cred orgCredential) (mintDriver, func(), error) {
-		gotOrg = org
-		assert.Equal(t, "tok-"+org, cred.token)
+	newMint := func(group mintGroup, cred orgCredential) (mintDriver, func(), error) {
+		gotGroup = group
+		assert.Equal(t, "tok-halfsend-03", cred.token, "the deploy uses the triggering org's credential")
 		return mint, func() { cleaned = true }, nil
 	}
 	pool := testPoolConfig(t, DevPoolLayout(2))
 	pool.Binary = "/bin/fullsend"
 	pool.GCPProjectID = "proj"
-	d, err := buildPoolDriver(pool, newMint, playbackSetupOpts(), traceStart{})
+	groups, err := planMintGroups(pool.Layout, maxWorkerVarBytes)
+	require.NoError(t, err)
+	plan := newMintPlan(groups, "halfsend-07/mint-status")
+	d, err := buildPoolDriver(pool, plan, newMint, playbackSetupOpts(), traceStart{})
 	require.NoError(t, err)
 	cd := d.(*composedDriver)
 
 	client := forge.NewFakeClient()
 	env, err := cd.setup(context.Background(), "halfsend-03", orgCredential{token: "tok-halfsend-03", client: client})
 	require.NoError(t, err)
-	assert.Equal(t, "halfsend-03", gotOrg)
+	assert.Contains(t, gotGroup.orgs, "halfsend-03", "the org's group mint is deployed")
 	assert.True(t, cleaned, "deploy-only material removed after Install")
 	assert.Equal(t, "https://mint.halfsend-03", env.mintURL)
-	assert.Same(t, mint, env.mint)
+	ref, ok := env.mint.(*sharedMintRef)
+	require.True(t, ok, "orgs hold a reference to their group's shared mint")
+	assert.Same(t, mint, ref.shared.md)
+	assert.Equal(t, "halfsend-07/mint-status", env.statusGroup, "the job's status group, not the org's")
+	assert.Contains(t, env.workflowHostRepos, "halfsend-03/test-repo-01")
+	assert.Contains(t, env.workflowHostRepos, "halfsend-01/test-repo-02-mint-host", "the whole group's hosts")
 	ens, ok := env.ensurer.(*repoEnsurer)
 	require.True(t, ok)
 	assert.Same(t, client, ens.client, "the ensurer uses the org's client")
@@ -148,15 +156,15 @@ func TestBuildPoolDriver_OrgSetupUsesOrgCredentialAndMint(t *testing.T) {
 func TestBuildPoolDriver_FailedDeployTearsDown(t *testing.T) {
 	mint := &testCFMintMintDriver{installErr: fmt.Errorf("deploy boom")}
 	torn := &tearDownRecorder{testCFMintMintDriver: mint}
-	newMint := func(string, orgCredential) (mintDriver, func(), error) { return torn, func() {}, nil }
-	d, err := buildPoolDriver(testPoolConfig(t, StagePoolLayout(1)), newMint, playbackSetupOpts(), traceStart{})
+	newMint := func(mintGroup, orgCredential) (mintDriver, func(), error) { return torn, func() {}, nil }
+	d, err := buildPoolDriver(testPoolConfig(t, StagePoolLayout(1)), nil, newMint, playbackSetupOpts(), traceStart{})
 	require.NoError(t, err)
 	_, err = d.(*composedDriver).setup(context.Background(), StageOrg, orgCredential{token: "t", client: forge.NewFakeClient()})
 	require.ErrorContains(t, err, "deploying mint: deploy boom")
 	assert.True(t, torn.tornDown, "a failed deploy leaves nothing behind")
 
-	newMintErr := func(string, orgCredential) (mintDriver, func(), error) { return nil, nil, fmt.Errorf("no pems") }
-	d, err = buildPoolDriver(testPoolConfig(t, StagePoolLayout(1)), newMintErr, playbackSetupOpts(), traceStart{})
+	newMintErr := func(mintGroup, orgCredential) (mintDriver, func(), error) { return nil, nil, fmt.Errorf("no pems") }
+	d, err = buildPoolDriver(testPoolConfig(t, StagePoolLayout(1)), nil, newMintErr, playbackSetupOpts(), traceStart{})
 	require.NoError(t, err)
 	_, err = d.(*composedDriver).setup(context.Background(), StageOrg, orgCredential{})
 	require.ErrorContains(t, err, "no pems")

@@ -26,12 +26,12 @@ func NewRepoPoolExternalMint(pool PoolConfig) (Driver, error) {
 	if mintURL == "" {
 		return nil, fmt.Errorf("external mint: FULLSEND_MINT_URL is required")
 	}
-	newMint := func(string, orgCredential) (mintDriver, func(), error) {
+	newMint := func(mintGroup, orgCredential) (mintDriver, func(), error) {
 		return &externalMintDriver{mintURL: mintURL}, func() {}, nil
 	}
 	opts := common.DefaultGitHubSetupOpts()
 	opts.ConfigPreset = envConfigPreset()
-	return buildPoolDriver(pool, newMint, opts, traceStart{})
+	return buildPoolDriver(pool, nil, newMint, opts, traceStart{})
 }
 
 // Compile-time check: NewRepoPoolExternalMint satisfies Factory.
@@ -45,7 +45,7 @@ type externalMintDriver struct {
 // Compile-time check that externalMintDriver implements mintDriver.
 var _ mintDriver = (*externalMintDriver)(nil)
 
-func (d *externalMintDriver) Install(_ context.Context, _ string) (string, error) {
+func (d *externalMintDriver) Install(_ context.Context) (string, error) {
 	// The driver only provides the mint URL. Per-repo github setup and
 	// post-install validation are handled by the ensurer for each
 	// leased pool repo.

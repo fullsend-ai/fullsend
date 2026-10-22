@@ -146,7 +146,7 @@ func TestStageMintInstall_Success(t *testing.T) {
 		return "Worker deployed at https://stage-mint.fullsend-ai.workers.dev", nil
 	})
 
-	mintURL, err := d.Install(context.Background(), StageOrg)
+	mintURL, err := d.Install(context.Background())
 	require.NoError(t, err)
 	// The URL should be the custom domain, not the workers.dev URL.
 	assert.Equal(t, StageMintURL, mintURL)
@@ -157,7 +157,7 @@ func TestStageMintInstall_DeployFailure(t *testing.T) {
 		return "", fmt.Errorf("deploy exploded")
 	})
 
-	mintURL, err := d.Install(context.Background(), StageOrg)
+	mintURL, err := d.Install(context.Background())
 	require.Error(t, err)
 	assert.Empty(t, mintURL)
 	assert.Contains(t, err.Error(), "stage mint deploy")
