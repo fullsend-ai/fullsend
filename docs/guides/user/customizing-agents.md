@@ -114,6 +114,13 @@ validation_loop:
   schema: schemas/my-custom-schema.json
 ```
 
+> **Note:** the `preflight_check` in that list is the validation loop's nested
+> field. For a host-dependency probe that gates the whole run, set the
+> top-level `preflight_check` field: it runs once before `pre_script` and
+> sandbox creation and covers `pre_script`, `post_script`, and
+> `validation_loop`. See the
+> [Harness Field Reference](../../reference/harness-reference.md).
+
 ### What you can override
 
 Any harness field can be overridden. See the [field merge rules](../../reference/harness-reference.md#field-merge-rules-for-base-and-overlays) for how each field type combines with the base:

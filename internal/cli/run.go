@@ -1153,6 +1153,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if h.ValidationLoop != nil && strings.Contains(h.ValidationLoop.PreflightCheck, "${") {
 		h.ValidationLoop.PreflightCheck = os.Expand(h.ValidationLoop.PreflightCheck, expander)
 	}
+	// The top-level preflight_check expands with the same seam; validation
+	// above has already rejected unset and denied references, so only
+	// resolvable values are substituted before step 1d runs the check.
+	if strings.Contains(h.PreflightCheck, "${") {
+		h.PreflightCheck = os.Expand(h.PreflightCheck, expander)
+	}
 
 	if err := h.ValidateFilesExist(); err != nil {
 		printer.StepFail("File validation failed")
@@ -1410,31 +1416,24 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}
 
-	// 1d. Preflight dependency check for host-side scripts.
-	// When a validation_loop declares a preflight_check command, run it now
-	// to catch missing host dependencies (e.g. python3-jsonschema) before
-	// sandbox creation — not after the agent has already finished. See #5074.
-	if h.ValidationLoop != nil && h.ValidationLoop.PreflightCheck != "" {
-		printer.StepStart("Preflight: checking validation_loop dependencies")
-		preflightCtx, preflightCancel := context.WithTimeout(ctx, preflightCheckTimeout)
-		defer preflightCancel()
-		preflightCmd := exec.CommandContext(preflightCtx, "sh", "-c", h.ValidationLoop.PreflightCheck)
-		// Use childScriptEnv to strip OIDC credential vars (#5832).
-		preflightCmd.Env = childScriptEnv(h.RunnerEnv, "")
-		preflightOut, preflightErr := preflightCmd.CombinedOutput()
-		if preflightErr != nil {
-			printer.StepFail("Preflight dependency check failed")
-			if preflightCtx.Err() == context.DeadlineExceeded {
-				return fmt.Errorf("validation_loop.preflight_check timed out after %s: %s", preflightCheckTimeout, h.ValidationLoop.PreflightCheck)
-			}
-			// Redact before the message reaches the CLI error, the trace and
-			// the completion comment: the command runs with env.runner.
-			// Redact the raw capture first, because validationFailMessage
-			// trims it and a padded secret would then miss the literal match.
-			redactedOut := []byte(redactFeedback(string(preflightOut), h.RunnerEnv))
-			return fmt.Errorf("validation_loop.preflight_check failed: %s\n%s\nInstall the missing dependency before running this agent", h.ValidationLoop.PreflightCheck, redactFeedback(validationFailMessage(redactedOut, preflightErr), h.RunnerEnv))
+	// 1d. Preflight dependency checks for host-side scripts, run before
+	// pre_script (step 4) and sandbox creation (step 7). The top-level
+	// preflight_check is the single eager gate for the whole run — it
+	// probes pre_script, post_script, and validation_loop dependencies,
+	// including on runs a pre_script would skip (ADR 0129 Decision 3).
+	// A validation_loop's nested preflight_check follows it during
+	// migration. Either check catches missing host dependencies (e.g.
+	// python3-jsonschema) before sandbox creation — not after the agent
+	// has already finished. See #5074.
+	if h.PreflightCheck != "" {
+		if err := runPreflightCommand(ctx, printer, "preflight_check", h.PreflightCheck, h.RunnerEnv); err != nil {
+			return err
 		}
-		printer.StepDone("Preflight dependency check passed")
+	}
+	if h.ValidationLoop != nil && h.ValidationLoop.PreflightCheck != "" {
+		if err := runPreflightCommand(ctx, printer, "validation_loop.preflight_check", h.ValidationLoop.PreflightCheck, h.RunnerEnv); err != nil {
+			return err
+		}
 	}
 
 	// 2. Check openshell availability.
@@ -3966,6 +3965,44 @@ func escapeForDoubleQuotes(s string) string {
 	s = strings.ReplaceAll(s, `$`, `\$`)
 	s = strings.ReplaceAll(s, "`", "\\`")
 	return s
+}
+
+// runPreflightCommand runs one literal sh -c preflight command with the
+// credential-stripped child environment, the preflightCheckTimeout bound,
+// and redacted failure/timeout diagnostics. label names the harness field
+// in step and error messages (e.g. "validation_loop.preflight_check",
+// "preflight_check"). Both the command — which can embed credentials
+// after ${VAR} expansion — and the captured output are redacted via
+// redactFeedback before they reach the returned error, as ADR 0129
+// Decision 3 requires of both preflight paths. No working directory is
+// set: the command probes host dependencies from the host process cwd
+// (ADR 0128 literal-command semantics).
+func runPreflightCommand(ctx context.Context, printer *ui.Printer, label, command string, runnerEnv map[string]string) error {
+	printer.StepStart(fmt.Sprintf("Preflight: checking %s dependencies", label))
+	preflightCtx, preflightCancel := context.WithTimeout(ctx, preflightCheckTimeout)
+	defer preflightCancel()
+	preflightCmd := exec.CommandContext(preflightCtx, "sh", "-c", command)
+	// Use childScriptEnv to strip OIDC credential vars (#5832).
+	preflightCmd.Env = childScriptEnv(runnerEnv, "")
+	preflightOut, preflightErr := preflightCmd.CombinedOutput()
+	if preflightErr != nil {
+		printer.StepFail("Preflight dependency check failed")
+		// Redact the command too: after ${VAR} expansion it can embed
+		// env.runner credentials, which must not reach the CLI error,
+		// the trace or the completion comment (ADR 0129 Decision 3).
+		redactedCmd := redactFeedback(command, runnerEnv)
+		if preflightCtx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("%s timed out after %s: %s", label, preflightCheckTimeout, redactedCmd)
+		}
+		// Redact before the message reaches the CLI error, the trace and
+		// the completion comment: the command runs with env.runner.
+		// Redact the raw capture first, because validationFailMessage
+		// trims it and a padded secret would then miss the literal match.
+		redactedOut := []byte(redactFeedback(string(preflightOut), runnerEnv))
+		return fmt.Errorf("%s failed: %s\n%s\nInstall the missing dependency before running this agent", label, redactedCmd, redactFeedback(validationFailMessage(redactedOut, preflightErr), runnerEnv))
+	}
+	printer.StepDone("Preflight dependency check passed")
+	return nil
 }
 
 // validationFailMessage returns a human-readable message for a validation

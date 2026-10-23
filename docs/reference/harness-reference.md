@@ -42,6 +42,7 @@ openshell:                           # OpenShell sandbox profiles
     - https://example.com/profile.yaml#sha256=abc...
 
 # ── Scripts (local paths only) ────────────────────────────────
+preflight_check: 'python3 -c "import jsonschema"'  # Literal sh -c command (NOT a script path); host-dependency gate for pre_script, post_script, and validation_loop
 pre_script: scripts/pre-my-agent.sh
 post_script: scripts/post-my-agent.sh
 agent_input: inputs/my-agent/        # Local directory of files passed as agent input
@@ -56,7 +57,7 @@ privilege_levels:
 # ── Validation ────────────────────────────────────────────────
 validation_loop:
   script: scripts/validate-output-schema.sh
-  preflight_check: 'python3 -c "import jsonschema"'  # Literal sh -c command (NOT a script path); runs before sandbox creation
+  preflight_check: 'python3 -c "import jsonschema"'  # Deprecated: prefer the top-level preflight_check. Literal sh -c command (NOT a script path); runs before sandbox creation
   max_iterations: 2
   feedback_mode: append              # "none" (default) or "append" — append the
                                      # previous iteration's validation failure to
@@ -153,10 +154,46 @@ Most fields are self-explanatory from the inline comments above. This section ex
 
 **`validation_loop.max_iterations`** — The maximum number of agent runs in one invocation (default 1). A second run happens only when the agent finished and its output failed validation; an iteration the runner killed at `timeout_minutes` is not retried. See [`fullsend run` § Budget and deadline](../cli/run.md#budget-and-deadline) and [ADR 0105](../ADRs/0105-timed-out-iteration-ends-the-run.md).
 
-**`validation_loop.preflight_check`** — A host-dependency probe run before sandbox creation as a literal `sh -c` command ([ADR 0128](../ADRs/0128-preflight-check-literal-command.md)). It uses the host process's working directory and is not resolved through the resource-fetch pipeline. Prefer a self-contained probe such as `python3 -c "import jsonschema"`; a relative script command works only if its file is present in that host working directory.
+**`preflight_check`** — A single host-dependency gate for `pre_script`, `post_script`, and
+`validation_loop`, run once on the host as a literal `sh -c` command before `pre_script` and
+sandbox creation ([ADR 0129](../ADRs/0129-extend-preflight-coverage-to-pre-and-post-scripts.md)).
+A nonzero exit or a timeout (30 seconds) stops the run before `pre_script`, sandbox creation, and
+any nested check; when both are configured, the top-level check runs first and the nested
+`validation_loop.preflight_check` follows it. Like the nested field, it is a command, not a
+script path ([ADR 0128](../ADRs/0128-preflight-check-literal-command.md)): the runner expands
+`${VAR}` references from its permitted host environment before running the command, which uses
+the host process's working directory and is never fetched or staged — prefer a self-contained
+probe such as `python3 -c "import jsonschema"`. The check runs with the same credential-stripped
+environment as `pre_script` (`env.runner` values; no minted or provider tokens), and failure or
+timeout diagnostics redact both the command and its output. Because the gate is eager, it also
+probes `post_script` dependencies on runs a `pre_script` would otherwise skip — scope the probe
+to dependencies the run needs on every path. **Top level only** — it is not a `ForgeConfig`
+field, so a `preflight_check` key placed under `overlays:`/`forge:` is silently ignored; only
+`base:` composition can override it. A child value replaces the base's rather than appending,
+so an overriding child check must cover the dependencies of any inherited `pre_script`,
+`post_script`, or validation script still present in the composed harness.
+
+```yaml
+preflight_check: 'python3 -c "import jsonschema" && command -v jq'
+```
+
+**`validation_loop.preflight_check`** — **Deprecated:** prefer the top-level `preflight_check`
+instead ([ADR 0129](../ADRs/0129-extend-preflight-coverage-to-pre-and-post-scripts.md)). The
+nested field still works but emits a deprecation warning at lint time, and a configured nested
+check keeps running — after the top-level check when both are set — so harnesses are not broken
+before they move their probe. Keep the nested check in place until every pinned consumer runs a
+CLI that executes the top-level field (consumer rollout is external, tracked in
+[fullsend-ai/agents#1753](https://github.com/fullsend-ai/agents/issues/1753)); removal of the
+nested field happens via a separately decided version gate
+([ADR 0127](../ADRs/0127-harness-schema-versioning-and-field-types.md)). The field is a
+host-dependency probe run before sandbox creation as a literal `sh -c` command
+([ADR 0128](../ADRs/0128-preflight-check-literal-command.md)). It uses the host process's
+working directory and is not resolved through the resource-fetch pipeline. Prefer a
+self-contained probe such as `python3 -c "import jsonschema"`; a relative script command works
+only if its file is present in that host working directory.
 
 **`env.runner`** — Variables passed to host-side scripts (`pre_script`, `post_script`,
-`validation_loop.script` and `validation_loop.preflight_check`), layered over the `fullsend run`
+`validation_loop.script`, `validation_loop.preflight_check` and the top-level `preflight_check`), layered over the `fullsend run`
 process environment. A few named workflow secrets are **not** inherited from that environment:
 `JIRA_TOKEN`, `JIRA_USER_EMAIL`, and the OTLP collector headers `OTEL_EXPORTER_OTLP_HEADERS` /
 `OTEL_EXPORTER_OTLP_*_HEADERS` (for example `OTEL_EXPORTER_OTLP_TRACES_HEADERS`). A script
@@ -193,7 +230,7 @@ These rules make a run fail before `pre_script` starts:
   for where the proxy and TLS-trust settings go instead. Names are matched
   case-insensitively, so `path` or `github_token` is refused like `PATH` or
   `GITHUB_TOKEN`.
-- **Host side only.** The object's names may be referenced only from `env.runner` values. A reference from `env.sandbox`, `runner_env`, a provider's `credentials` or `config`, a `host_files` `src`, the content of a `host_files` entry with `expand: true`, or a `validation_loop` field is a validation error.
+- **Host side only.** The object's names may be referenced only from `env.runner` values. A reference from `env.sandbox`, `runner_env`, a provider's `credentials` or `config`, a `host_files` `src`, the content of a `host_files` entry with `expand: true`, or a `validation_loop` or `preflight_check` field is a validation error.
 - **Overlays.** An overlay that references one of the object's names may be guarded only by `runtime.forge` and `config`. An overlay that reads `event` or any other `runtime` field is refused, even when it does not match. This rule is interim until [ADR 0112](../ADRs/0112-overlays-may-set-any-harness-field.md)'s guarded-field check is implemented; until then an event-guarded overlay can still swap `pre_script`, `post_script` or `validation_loop`, and so choose which script receives a referenced value.
 - **Shape.** The value must be a JSON object whose values are strings, with no duplicate keys and no `null` values. Each value must be at least as long as the redactor's minimum (currently 8 characters), so it can be redacted. Errors name the offending key, never its value.
 
@@ -345,7 +382,7 @@ agent: https://raw.githubusercontent.com/org/repo/<sha>/agents/lint.md#sha256=ab
 
 **Scripts are local-only** — `pre_script`, `post_script`, and `validation_loop.script` must be local paths (they run on the trusted runner). Exception: scripts declared in a `base` harness fetched via URL are allowed.
 
-**`validation_loop.preflight_check` is a command, not a script resource** — The runner expands `${VAR}` references from its permitted host environment, then passes the result to `sh -c` on the host; it does not fetch or stage a file named by the command. Do not interpolate untrusted values or credentials, even within shell quotes: on failure or timeout the expanded command currently appears in diagnostics.
+**`preflight_check` is a command, not a script resource** — Both the top-level `preflight_check` and the nested `validation_loop.preflight_check` expand `${VAR}` references from the permitted host environment, then pass the result to `sh -c` on the host; neither fetches or stages a file named by the command. Do not interpolate untrusted values or credentials, even within shell quotes: on failure or timeout, diagnostics redact the expanded command and its output, but redaction matches registered values exactly, so a value the command transforms (base64, URL-encoded, a substring) can still appear.
 
 ## See also
 
