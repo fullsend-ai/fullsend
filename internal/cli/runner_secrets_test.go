@@ -490,6 +490,9 @@ func TestValidateRunnerSecretRefs(t *testing.T) {
 		"host_files[0].src":               {HostFiles: []harness.HostFile{{Src: "/tmp/${X}", Dest: "/d"}}},
 		"validation_loop.schema":          {ValidationLoop: &harness.ValidationLoop{Script: "s", Schema: "${X}"}},
 		"validation_loop.preflight_check": {ValidationLoop: &harness.ValidationLoop{Script: "s", PreflightCheck: "echo ${X}"}},
+		// No validation_loop: the top-level field is refused on its own
+		// (ADR 0129), exactly as the run path executes it without one.
+		"preflight_check": {PreflightCheck: "echo ${X}"},
 	}
 	for source, h := range refused {
 		t.Run(source, func(t *testing.T) {
@@ -731,6 +734,22 @@ func TestRunAgent_RunnerSecretRefusedFromSandbox(t *testing.T) {
 	assert.NoFileExists(t, marker)
 }
 
+// A runner secret referenced from the top-level preflight_check is refused
+// during harness validation, before the check itself, pre_script or any
+// other command runs: the top-level field follows the same env.runner-only
+// delivery rule as validation_loop fields (ADR 0136, ADR 0129).
+func TestRunAgent_RunnerSecretRefusedFromTopLevelPreflightCheck(t *testing.T) {
+	usePreScriptStub(t)
+	t.Setenv(runnerSecretsEnv, `{"X":"x-secret-value-1"}`)
+	marker := filepath.Join(t.TempDir(), "ran")
+	dir := newRunnerSecretHarnessDir(t, "preflight_check: \"echo ${X}\"\n", "touch "+marker+"\n")
+
+	err := runRunnerSecretAgent(t, dir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "preflight_check references runner secret X")
+	assert.NoFileExists(t, marker)
+}
+
 func TestRunAgent_RunnerSecretRefusedFromExpandedHostFile(t *testing.T) {
 	usePreScriptStub(t)
 	t.Setenv(runnerSecretsEnv, `{"X":"x-secret-value-1"}`)
@@ -894,7 +913,34 @@ func TestRunAgent_RunnerSecretPaddedPreflightFailureRedacted(t *testing.T) {
 	err := runRunnerSecretAgent(t, dir)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "preflight_check failed")
+	// The failing command itself still appears in the error: it holds no
+	// secret, so redaction masks nothing in it rather than dropping it.
+	assert.Contains(t, err.Error(), "printenv X; exit 1")
 	assert.NotContains(t, err.Error(), "x-secret-padded")
+}
+
+// A failing preflight_check whose ${VAR} expansion embeds a credential in
+// the command itself reports the command redacted, not the raw expansion:
+// ADR 0129 Decision 3 requires command and output redaction on both
+// preflight paths.
+func TestRunAgent_RunnerSecretPreflightCommandRedacted(t *testing.T) {
+	usePreScriptStub(t)
+	// The command expands ${PROBE_TOKEN} from the host environment, and
+	// env.runner carries the same value into h.RunnerEnv where
+	// redactFeedback finds it as a sensitive literal.
+	t.Setenv("PROBE_TOKEN", "x-secret-value-cmd")
+	validate := writePreScript(t, "exit 0\n")
+	dir := newRunnerSecretHarnessDir(t,
+		"env:\n  runner:\n    PROBE_TOKEN: \"${PROBE_TOKEN}\"\nvalidation_loop:\n  script: "+validate+"\n  preflight_check: \"echo ${PROBE_TOKEN}; exit 1\"\n",
+		"")
+
+	err := runRunnerSecretAgent(t, dir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "preflight_check failed")
+	// The command appears with its secret masked — not dropped — so the
+	// failure stays diagnosable without leaking the credential.
+	assert.Contains(t, err.Error(), "echo [REDACTED:PROBE_TOKEN]")
+	assert.NotContains(t, err.Error(), "x-secret-value-cmd")
 }
 
 // A pre-script output line that fails to parse is quoted in the error;

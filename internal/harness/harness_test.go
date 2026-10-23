@@ -691,6 +691,36 @@ func TestValidateRunnerEnvWith_SkipsValidationLoopPreflightCheck(t *testing.T) {
 	require.NoError(t, h.ValidateRunnerEnvWith(lookup))
 }
 
+func TestValidateRunnerEnvWith_ChecksTopLevelPreflightCheck(t *testing.T) {
+	// No validation_loop: the top-level field must validate on its own.
+	h := &Harness{
+		Agent:          "agents/test.md",
+		Role:           "test",
+		PreflightCheck: "test -d ${MISSING_DIR}",
+	}
+	lookup := func(key string) (string, bool) { return "", false }
+	err := h.ValidateRunnerEnvWith(lookup)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "MISSING_DIR")
+	assert.Contains(t, err.Error(), "preflight_check")
+}
+
+func TestValidateRunnerEnvWith_TopLevelPreflightCheckVarSet(t *testing.T) {
+	// No validation_loop: the top-level field must validate on its own.
+	h := &Harness{
+		Agent:          "agents/test.md",
+		Role:           "test",
+		PreflightCheck: "test -d ${FULLSEND_DIR}",
+	}
+	lookup := func(key string) (string, bool) {
+		if key == "FULLSEND_DIR" {
+			return "/opt/fullsend", true
+		}
+		return "", false
+	}
+	require.NoError(t, h.ValidateRunnerEnvWith(lookup))
+}
+
 func TestValidateRunnerEnvWith_NilEnvNoError(t *testing.T) {
 	h := &Harness{Agent: "agents/test.md", Role: "test"}
 	err := h.ValidateRunnerEnvWith(func(string) (string, bool) { return "", false })

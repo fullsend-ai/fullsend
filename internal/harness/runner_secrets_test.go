@@ -5,6 +5,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
 
 func TestEnvRefNames(t *testing.T) {
@@ -75,4 +76,36 @@ func TestValidateOverlayRunnerSecretRefs(t *testing.T) {
 			require.Error(t, err)
 		})
 	}
+}
+
+// The top-level preflight_check cannot ride an overlay past the runner
+// secret rules (ADR 0136; ADR 0129 D1 keeps the field top level only):
+// ForgeConfig has no preflight_check field, so a preflight_check key inside
+// an overlay entry is dropped at unmarshal time — unlike the nested
+// validation_loop.preflight_check the fields map above detects. A runner
+// secret referenced from a real top-level preflight_check is refused on
+// the resolved harness by the CLI's validateRunnerSecretRefs, before
+// expansion and before any command runs; this pins that an overlay can
+// neither deliver such a check nor steer one past the overlay guard.
+func TestValidateOverlayRunnerSecretRefs_TopLevelPreflightCheckKeyIsDropped(t *testing.T) {
+	names := map[string]bool{"X": true}
+	var h Harness
+	require.NoError(t, yaml.Unmarshal([]byte(`
+agent: agents/test.md
+role: test
+overlays:
+  - when: 'has(event.kind)'
+    preflight_check: "echo ${X}"
+`), &h))
+	require.Len(t, h.Overlays, 1)
+	assert.Empty(t, h.PreflightCheck, "a preflight_check key inside an overlay never populates the harness field")
+	assert.Empty(t, overlayRunnerSecretRefs(&h.Overlays[0].ForgeConfig, names),
+		"the dropped key carries no reference for the overlay walk to refuse")
+	require.NoError(t, ValidateOverlayRunnerSecretRefs(h.Overlays, names))
+	// Round-tripping the parsed entry proves the key is gone rather than
+	// silently retained: if PreflightCheck ever gains a ForgeConfig field,
+	// this fails and the overlay walk and merge rules need revisiting.
+	roundTrip, err := yaml.Marshal(h.Overlays[0])
+	require.NoError(t, err)
+	assert.NotContains(t, string(roundTrip), "preflight_check")
 }

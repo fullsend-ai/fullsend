@@ -355,10 +355,11 @@ func (e runnerSecretErrors) err() error {
 
 // validateRunnerSecretRefs enforces that the resolved harness references
 // runner secrets only from env.runner values (ADR 0136), so a passthrough
-// value stays on the host: env.sandbox, runner_env, host_files sources and
-// validation_loop fields may not reference one. An env.runner key that is
-// runner-owned may not receive one either, so a passthrough value cannot
-// shadow a runner variable in a host-side script.
+// value stays on the host: env.sandbox, runner_env, host_files sources, the
+// top-level preflight_check and validation_loop fields may not reference
+// one. An env.runner key that is runner-owned may not receive one either,
+// so a passthrough value cannot shadow a runner variable in a host-side
+// script.
 func validateRunnerSecretRefs(h *harness.Harness, secrets map[string]string) error {
 	if len(secrets) == 0 {
 		return nil
@@ -389,6 +390,10 @@ func validateRunnerSecretRefs(h *harness.Harness, secrets map[string]string) err
 		errs.refuse("validation_loop.schema", runnerSecretRefs(h.ValidationLoop.Schema, secrets))
 		errs.refuse("validation_loop.preflight_check", runnerSecretRefs(h.ValidationLoop.PreflightCheck, secrets))
 	}
+	// The top-level check gates the whole run with no validation_loop
+	// present (ADR 0129), so its refusal deliberately sits outside the
+	// guard above — the field must be refused on its own.
+	errs.refuse("preflight_check", runnerSecretRefs(h.PreflightCheck, secrets))
 	return errs.err()
 }
 

@@ -66,14 +66,14 @@ them under `forge:` or `overlays:` is ignored, not an error:
 | `slug`             | Kept top-level; per-forge slug differences handled via `base` composition |
 | `base`             | Composition is a structural concern                |
 | `doc`              | Documentation path, no runtime effect              |
-| `effort`           | Effort level                                       |
-| `readonly_repo`    | Repo access mode                                   |
-| `allow_runtime_fetch` | Runtime fetch opt-in                            |
-| `max_runtime_fetches` | Fetch cap                                       |
-| `trigger`          | CEL trigger expression, evaluated against normalized events (ADR-0061) |
-| `privilege_levels` | Mint privilege per run-stage (ADR-0073)            |
-| `schema_version`   | Schema contract version (ADR-0127); absent = version `1`. **Planned, not yet implemented** |
-| `preflight_check`  | Single host-dependency gate run once before sandbox creation for `pre_script`/`post_script`/`validation_loop`; a literal `sh -c` command, not a script path (ADR-0128, ADR-0129). **Planned, not yet implemented** ([#8722](https://github.com/fullsend-ai/fullsend/issues/8722)) |
+| `effort`           | Effort level is operational, not forge-specific     |
+| `readonly_repo`    | Repo access mode is forge-agnostic                 |
+| `allow_runtime_fetch` | Runtime fetch opt-in is forge-agnostic          |
+| `max_runtime_fetches` | Fetch cap is operational, not forge-specific     |
+| `trigger`          | CEL trigger expression is evaluated against normalized events, not forge-specific (ADR-0061) |
+| `privilege_levels` | Mint privilege per run-stage is forge-agnostic (ADR-0073). **Top level only** — not a `ForgeConfig` field |
+| `schema_version`   | Schema contract version, forge-agnostic (ADR-0127); absent = version `1`. **Planned, not yet implemented** |
+| `preflight_check`  | Single host-dependency gate run once before sandbox creation for `pre_script`/`post_script`/`validation_loop`; a literal `sh -c` command, not a script path (ADR-0128, ADR-0129). **Top level only** — not a `ForgeConfig` field, so it is not settable under `forge:` or `overlays:` (a `preflight_check` key there is ignored, not an error) |
 
 ## Semantic types (ADR 0127)
 
@@ -88,7 +88,7 @@ references are scalar values, not shell commands.
 
 | Semantic type | Meaning | Fields |
 |---|---|---|
-| inline command | Executed via `sh -c` on the host against the allowlisted preflight environment (credential-safe), not resource-resolved | `validation_loop.preflight_check`; top-level `preflight_check` (planned) |
+| inline command | Executed via `sh -c` on the host against the allowlisted preflight environment (credential-safe), not resource-resolved | `validation_loop.preflight_check`; top-level `preflight_check` |
 | runtime local path | Path to a file or directory in the local configuration, not a command | `pre_script`, `post_script`, `validation_loop.script`, `validation_loop.schema`, `agent_input` (directory), `host_files[].src` (host path, optional `${VAR}` expansion), `api_servers[].script` (path resolved, server startup planned) |
 | resource reference | Local path or pinned URL resolved/fetched as applicable | `agent`, `base`, `policy`, `skills[].source`, `plugins[].path`, `openshell.profiles[]`; `providers[]` has additional identifier semantics below |
 | skill override | Key is a path within the skill; value is a local file, pinned URL, or `null` to remove the file | `skills[].overrides[<path>]` |

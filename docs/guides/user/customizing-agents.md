@@ -114,7 +114,14 @@ validation_loop:
   schema: schemas/my-custom-schema.json
 ```
 
-Setting `validation_loop.preflight_check` swaps the dependency probe. It runs in a minimal, credential-safe environment, and an out-of-scope `${VAR}` reference fails the run before the probe executes. See the [harness reference](../../reference/harness-reference.md) for the full contract.
+Setting `validation_loop.preflight_check` swaps the dependency probe. It runs in a minimal, credential-safe environment, and an out-of-scope `${VAR}` reference fails the run before the probe executes.
+
+> **Note:** the `preflight_check` in that list is the validation loop's nested
+> field. For a host-dependency probe that gates the whole run, set the
+> top-level `preflight_check` field: it runs once before `pre_script` and
+> sandbox creation and covers `pre_script`, `post_script`, and
+> `validation_loop`. See the
+> [Harness Field Reference](../../reference/harness-reference.md).
 
 ### What you can override
 

@@ -862,6 +862,136 @@ validation_loop:
 		"Child's own preflight_check should override base's")
 }
 
+func TestLoadWithBase_NoBase_TopLevelPreflightCheck(t *testing.T) {
+	// A harness with a top-level preflight_check loads the field from YAML.
+	dir := t.TempDir()
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/test.md
+role: test
+preflight_check: "python3 -c 'import jsonschema'"
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
+	require.NoError(t, err)
+
+	assert.Equal(t, "python3 -c 'import jsonschema'", h.PreflightCheck,
+		"top-level preflight_check should load from YAML")
+}
+
+func TestLoadWithBase_LocalBase_TopLevelPreflightCheckCarryForward(t *testing.T) {
+	// When a child omits the top-level preflight_check, it inherits the
+	// base's value (scalar merge: empty inherits).
+	dir := t.TempDir()
+
+	writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+preflight_check: "python3 -c 'import jsonschema'"
+`)
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+model: opus
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
+	require.NoError(t, err)
+
+	assert.Equal(t, "python3 -c 'import jsonschema'", h.PreflightCheck,
+		"top-level preflight_check should be inherited from base when the child omits it")
+}
+
+func TestLoadWithBase_LocalBase_TopLevelPreflightCheckChildOverrides(t *testing.T) {
+	// When a child sets its own top-level preflight_check, it replaces the
+	// base's value (scalar merge: child non-empty wins, no append).
+	dir := t.TempDir()
+
+	writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+preflight_check: "python3 -c 'import jsonschema'"
+`)
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+preflight_check: "which jq"
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
+	require.NoError(t, err)
+
+	assert.Equal(t, "which jq", h.PreflightCheck,
+		"child's top-level preflight_check should override base's")
+}
+
+func TestLoadWithBase_LocalBase_TopLevelPreflightCheckChildOverrideKeepsInheritedPreScript(t *testing.T) {
+	// ADR 0129 Decision 4: a child that overrides the top-level
+	// preflight_check replaces the base's value outright — the composed
+	// harness carries only the child's check, never an appended
+	// combination. The base pre_script survives the override (scalar merge
+	// is per-field), so the overriding child check must cover the
+	// dependencies of the inherited script; this test pins the composed
+	// shape that responsibility assumes.
+	dir := t.TempDir()
+
+	writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+pre_script: base-pre.sh
+preflight_check: "python3 -c 'import jsonschema'"
+`)
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+preflight_check: "which jq"
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
+	require.NoError(t, err)
+
+	assert.Equal(t, "base-pre.sh", h.PreScript,
+		"base pre_script should be inherited when the child overrides only the preflight check")
+	assert.Equal(t, "which jq", h.PreflightCheck,
+		"child's top-level preflight_check should replace the base's, not append to it")
+}
+
+func TestLoadWithBase_LocalBase_TopLevelPreflightCheckWithOverlaySelectedPreScript(t *testing.T) {
+	// ADR 0129 Decision 4: a matching overlay replaces pre_script while the
+	// check stays top-level. ForgeConfig has no preflight_check field, so a
+	// scalar preflight_check key inside the overlay entry is ignored by
+	// YAML unmarshalling (like plugins and privilege_levels) and
+	// mergeForgeConfig cannot touch the harness value — the resolved
+	// harness keeps the inherited top-level check, and the author must
+	// cover the union of dependencies across possible matching overlays.
+	dir := t.TempDir()
+
+	writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+pre_script: base-pre.sh
+preflight_check: "python3 -c 'import jsonschema'"
+`)
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+overlays:
+  - when: 'runtime.forge == "github"'
+    pre_script: overlay-pre.sh
+    preflight_check: "which overlay-only-dep"
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		ForgePlatform: "github",
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, "overlay-pre.sh", h.PreScript,
+		"matching overlay should replace the inherited pre_script")
+	assert.Equal(t, "python3 -c 'import jsonschema'", h.PreflightCheck,
+		"top-level preflight_check should be unchanged by overlay resolution; a preflight_check key inside the overlay entry is ignored (ForgeConfig has no such field)")
+}
+
 func TestLoadWithBase_ChainedBases(t *testing.T) {
 	dir := t.TempDir()
 

@@ -4760,6 +4760,429 @@ func TestRunAgent_PreflightCheck_TimeoutRedactsDeclaredSecret(t *testing.T) {
 	assert.NotContains(t, err.Error(), "sentinel-secret-value-77")
 }
 
+// --- Top-level preflight_check (ADR 0129) ---
+
+func TestRunAgent_TopLevelPreflightCheck_Failing_StopsBeforePreScriptAndSandbox(t *testing.T) {
+	// A failing top-level preflight_check must stop the run at step 1d:
+	// sentinel A (written by the check) exists, sentinel B (written by
+	// pre_script) does not, and the error is the preflight failure — not
+	// the "creating sandbox" error a proceeding run hits under this stub.
+	// That proves the run never entered the pre_script/sandbox path. No
+	// validation_loop is configured: the top-level gate stands alone.
+	usePreScriptStub(t)
+	sentinelA := filepath.Join(t.TempDir(), "sentinel-a")
+	sentinelB := filepath.Join(t.TempDir(), "sentinel-b")
+	preScript := writePreScript(t, "touch "+sentinelB+"\n")
+	dir := preflightTestSetup(t, fmt.Sprintf(
+		"agent: agents/code.md\nrole: test\npreflight_check: \"touch %s && exit 1\"\npre_script: %s\n",
+		sentinelA, preScript))
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "preflight_check failed")
+	assert.NotContains(t, err.Error(), "creating sandbox")
+	assert.FileExists(t, sentinelA)
+	assert.NoFileExists(t, sentinelB)
+}
+
+func TestRunAgent_TopLevelPreflightCheck_RunsBeforeNestedCheck(t *testing.T) {
+	// With both checks configured and passing, the top-level sentinel must
+	// precede the nested sentinel: the top-level check runs first at step
+	// 1d and the nested check follows it during migration (ADR 0129). The
+	// run then proceeds past both to the openshell gateway check.
+	useFakeOpenshell(t)
+	orderFile := filepath.Join(t.TempDir(), "order.txt")
+	dir := preflightTestSetup(t, fmt.Sprintf(
+		"agent: agents/code.md\nrole: test\npreflight_check: \"echo top-level >> %s\"\nvalidation_loop:\n  script: scripts/validate.sh\n  preflight_check: \"echo nested >> %s\"\n  max_iterations: 2\n",
+		orderFile, orderFile))
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	require.Error(t, err)
+	// Both checks passed; the run proceeded past step 1d to the gateway.
+	assert.Contains(t, err.Error(), "openshell")
+	got, readErr := os.ReadFile(orderFile)
+	require.NoError(t, readErr)
+	assert.Equal(t, "top-level\nnested\n", string(got),
+		"top-level preflight sentinel must precede the nested sentinel")
+}
+
+func TestRunAgent_TopLevelPreflightCheck_Failing_LeavesNestedCheckUnrun(t *testing.T) {
+	// A failing top-level check must stop the run before the nested
+	// validation_loop check executes: the nested sentinel stays absent
+	// and the error names the top-level field, not the nested one.
+	useFakeOpenshell(t)
+	sentinelTop := filepath.Join(t.TempDir(), "sentinel-top")
+	sentinelNested := filepath.Join(t.TempDir(), "sentinel-nested")
+	dir := preflightTestSetup(t, fmt.Sprintf(
+		"agent: agents/code.md\nrole: test\npreflight_check: \"touch %s && exit 1\"\nvalidation_loop:\n  script: scripts/validate.sh\n  preflight_check: \"touch %s\"\n  max_iterations: 2\n",
+		sentinelTop, sentinelNested))
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "preflight_check failed")
+	assert.NotContains(t, err.Error(), "validation_loop.preflight_check")
+	assert.FileExists(t, sentinelTop)
+	assert.NoFileExists(t, sentinelNested)
+}
+
+func TestRunAgent_TopLevelPreflightCheck_Timeout(t *testing.T) {
+	// A top-level preflight_check that exceeds the context deadline must
+	// abort with a "timed out" error naming the field, before pre_script,
+	// sandbox creation, and the nested check. No validation_loop is
+	// configured: the timeout bound applies to the top-level gate alone.
+	useFakeOpenshell(t)
+	dir := preflightTestSetup(t, "agent: agents/code.md\nrole: test\npreflight_check: \"exec sleep 5\"\n")
+
+	// Shrink the real timeout so the "sleep 5" command genuinely outlives
+	// it, exercising the actual DeadlineExceeded branch rather than
+	// short-circuiting via an already-cancelled parent context.
+	original := preflightCheckTimeout
+	preflightCheckTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { preflightCheckTimeout = original })
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "preflight_check timed out")
+}
+
+func TestRunAgent_TopLevelPreflightCheck_NotConfigured_Proceeds(t *testing.T) {
+	// With no top-level preflight_check (and no nested one), the run must
+	// proceed with no preflight step: the pre_script sentinel exists and
+	// the run fails at sandbox creation — past pre_script — with no
+	// preflight diagnostics in the error.
+	usePreScriptStub(t)
+	sentinelB := filepath.Join(t.TempDir(), "sentinel-b")
+	preScript := writePreScript(t, "touch "+sentinelB+"\n")
+	dir := preflightTestSetup(t, fmt.Sprintf(
+		"agent: agents/code.md\nrole: test\npre_script: %s\n", preScript))
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "creating sandbox")
+	assert.NotContains(t, err.Error(), "preflight_check")
+	assert.FileExists(t, sentinelB)
+}
+
+func TestRunAgent_TopLevelPreflightCheck_EagerGate_RunsBeforeSkipRequestingPreScript(t *testing.T) {
+	// ADR 0129 Decision 3: the gate is eager. A pre_script that requests a
+	// run skip still sees the check execute first — the shared order file
+	// proves the check preceded the pre_script — and the run then takes
+	// the skip path cleanly (nil error, no sandbox creation).
+	usePreScriptStub(t)
+	orderFile := filepath.Join(t.TempDir(), "order.txt")
+	preScript := writePreScript(t,
+		"echo pre_script >> "+orderFile+"\n"+
+			`echo "skipped=true" >> "${FULLSEND_PRESCRIPT_OUTPUT}"`+"\n")
+	dir := preflightTestSetup(t, fmt.Sprintf(
+		"agent: agents/code.md\nrole: test\npreflight_check: \"echo preflight_check >> %s\"\npre_script: %s\n",
+		orderFile, preScript))
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	require.NoError(t, err, "a skip-requesting pre_script ends the run cleanly after the check ran")
+	got, readErr := os.ReadFile(orderFile)
+	require.NoError(t, readErr)
+	assert.Equal(t, "preflight_check\npre_script\n", string(got),
+		"the eager gate must run the check before the skip-requesting pre_script")
+}
+
+func TestRunAgent_TopLevelPreflightCheck_VarReferenceExpanded(t *testing.T) {
+	// A valid ${FULLSEND_DIR} reference in the top-level preflight_check
+	// must expand to the host value in the harness-load phase, before the
+	// command runs: the command probes the expanded directory and echoes
+	// it to a file, then the run proceeds past the gate to the openshell
+	// gateway check — the endpoint every passing top-level check reaches.
+	// The child env carries no FULLSEND_DIR, so an unexpanded reference
+	// would leave test -d with an empty argument and fail the check
+	// instead.
+	useFakeOpenshell(t)
+	expandedFile := filepath.Join(t.TempDir(), "expanded.txt")
+	dir := preflightTestSetup(t, fmt.Sprintf(
+		"agent: agents/code.md\nrole: test\npreflight_check: \"test -d ${FULLSEND_DIR} && echo ${FULLSEND_DIR} > %s\"\n", expandedFile))
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	// The check passed, so the run proceeded past step 1d to the gateway.
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openshell")
+	got, readErr := os.ReadFile(expandedFile)
+	require.NoError(t, readErr)
+	assert.Equal(t, dir, strings.TrimSpace(string(got)),
+		"${FULLSEND_DIR} must expand to the host fullsend dir before the check command runs")
+}
+
+func TestRunAgent_TopLevelPreflightCheck_UnsetVarFailsSetupBeforeExecution(t *testing.T) {
+	// An unset ${VAR} reference in the top-level preflight_check must
+	// fail run setup with an unresolved-variable error naming
+	// preflight_check — via ValidateRunnerEnvWith, before any command
+	// executes: the sentinel the check command would write stays absent,
+	// and the error is the env-validation failure, not the preflight or
+	// openshell failures a proceeding run reports.
+	useFakeOpenshell(t)
+	// Guaranteed unset during the test; t.Setenv restores any prior
+	// value afterwards.
+	t.Setenv("FULLSEND_TEST_UNSET_5568", "")
+	require.NoError(t, os.Unsetenv("FULLSEND_TEST_UNSET_5568"))
+	sentinel := filepath.Join(t.TempDir(), "sentinel")
+	dir := preflightTestSetup(t, fmt.Sprintf(
+		"agent: agents/code.md\nrole: test\npreflight_check: \"touch %s && test -d ${FULLSEND_TEST_UNSET_5568}\"\n", sentinel))
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unresolved host variable")
+	assert.Contains(t, err.Error(), "FULLSEND_TEST_UNSET_5568 is not set (referenced by preflight_check)")
+	assert.NotContains(t, err.Error(), "preflight_check failed")
+	assert.NotContains(t, err.Error(), "openshell")
+	assert.NoFileExists(t, sentinel)
+}
+
+// An excluded credential reference in the top-level preflight_check is
+// rejected before expansion: the workflow token (providerOnlyKeys — the
+// preserved pre-mint GitHub credential) and the OIDC request variables
+// (oidcDenyKeys — the mint machinery's inputs) are denied by
+// harnessEnvLookup even when set, so ValidateRunnerEnvWith fails run
+// setup naming preflight_check and no command executes. The error names
+// the variable, never its value. Rejecting the GH_TOKEN name itself is
+// #8721's allowlist-model scope; these are the keys the current
+// deny-list machinery excludes (ADR 0128 Decision 1, ADR 0129 Decision 3;
+// release-gate evidence for task 4.4).
+func TestRunAgent_TopLevelPreflightCheck_ExcludedCredentialRefRejectedBeforeExecution(t *testing.T) {
+	for _, key := range []string{
+		"GH_WORKFLOW_TOKEN",
+		"ACTIONS_ID_TOKEN_REQUEST_URL",
+		"ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+	} {
+		t.Run(key, func(t *testing.T) {
+			// Set the variable so the rejection demonstrably comes from the
+			// key being excluded, not from the variable happening to be unset.
+			const value = "credential-value-must-not-leak-8721"
+			t.Setenv(key, value)
+			useFakeOpenshell(t)
+			sentinel := filepath.Join(t.TempDir(), "sentinel")
+			dir := preflightTestSetup(t, fmt.Sprintf(
+				"agent: agents/code.md\nrole: test\npreflight_check: \"touch %s && test -n ${%s}\"\n",
+				sentinel, key))
+
+			rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+			printer := ui.New(io.Discard)
+			repoDir := t.TempDir()
+			err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "unresolved host variable")
+			assert.Contains(t, err.Error(), key+" is not set (referenced by preflight_check)")
+			assert.NotContains(t, err.Error(), value, "the rejection must name the variable, never its value")
+			// Rejected before execution: the error is the env-validation
+			// failure, not the preflight or gateway failures a proceeding
+			// run reports, and no command ran.
+			assert.NotContains(t, err.Error(), "preflight_check failed")
+			assert.NotContains(t, err.Error(), "openshell")
+			assert.NoFileExists(t, sentinel, "no preflight command may execute for an excluded reference")
+		})
+	}
+}
+
+// The sh -c child environment excludes the minted and inherited credential
+// variables — the workflow token and the OIDC request variables — via
+// childScriptEnv, whether they arrive from the inherited process
+// environment or from a harness-declared env.runner entry. A passing
+// top-level check dumps its own environment: the dump must carry a real,
+// selectively stripped environment (PATH, the forced
+// PYTHONDONTWRITEBYTECODE, a declared non-credential runner var) but none
+// of the credential keys or values (ADR 0128 Decision 1; #8721
+// release-gate evidence for task 4.4).
+func TestRunAgent_TopLevelPreflightCheck_ChildEnvExcludesCredentialVars(t *testing.T) {
+	useFakeOpenshell(t)
+	const inheritedToken = "wf-token-inherited-8721"
+	const declaredToken = "wf-token-declared-8721"
+	t.Setenv("GH_WORKFLOW_TOKEN", inheritedToken)
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://oidc.example.invalid/8721")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "oidc-request-token-8721")
+	envFile := filepath.Join(t.TempDir(), "child-env.txt")
+	dir := preflightTestSetup(t, fmt.Sprintf(
+		"agent: agents/code.md\nrole: test\npreflight_check: \"printenv > %s\"\nenv:\n  runner:\n    GH_WORKFLOW_TOKEN: %s\n    PROBE_SAFE_VAR: safe-runner-value\n",
+		envFile, declaredToken))
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	// The check passed, so the run proceeded past step 1d to the gateway.
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openshell")
+	got, readErr := os.ReadFile(envFile)
+	require.NoError(t, readErr, "the passing check must have dumped its child environment")
+	dump := string(got)
+	// Sanity: the check ran with a working environment that childScriptEnv
+	// strips selectively — not an empty one.
+	assert.Contains(t, dump, "PATH=", "childScriptEnv still delivers the inherited PATH")
+	assert.Contains(t, dump, "PYTHONDONTWRITEBYTECODE=1", "childScriptEnv forces PYTHONDONTWRITEBYTECODE")
+	assert.Contains(t, dump, "PROBE_SAFE_VAR=safe-runner-value", "a declared non-credential runner var reaches the check")
+	// Inherited credentials are excluded...
+	assert.NotContains(t, dump, "GH_WORKFLOW_TOKEN", "the workflow token must not reach the sh -c child")
+	assert.NotContains(t, dump, "ACTIONS_ID_TOKEN_REQUEST_URL", "the OIDC request URL must not reach the sh -c child")
+	assert.NotContains(t, dump, "ACTIONS_ID_TOKEN_REQUEST_TOKEN", "the OIDC request token must not reach the sh -c child")
+	assert.NotContains(t, dump, inheritedToken)
+	assert.NotContains(t, dump, "oidc.example.invalid")
+	assert.NotContains(t, dump, "oidc-request-token-8721")
+	// ...and so is a harness-declared value for the same key: the strip
+	// pass covers runnerEnv entries, not just inherited ones.
+	assert.NotContains(t, dump, declaredToken, "a declared env.runner credential value must be stripped too")
+}
+
+// Failure diagnostics carry the redacted form of both the command — which
+// embeds the credential after ${VAR} expansion — and its captured output:
+// the masked command stays diagnosable while neither surface leaks the
+// value. Top-level counterpart of TestRunAgent_RunnerSecretPreflightCommandRedacted
+// (ADR 0129 Decision 3; #8721 release-gate evidence for task 4.4).
+func TestRunAgent_TopLevelPreflightCheck_FailureDiagnosticsRedacted(t *testing.T) {
+	useFakeOpenshell(t)
+	t.Setenv("PROBE_TOKEN", "top-level-secret-failure-8721")
+	dir := preflightTestSetup(t,
+		"agent: agents/code.md\nrole: test\npreflight_check: \"echo ${PROBE_TOKEN}; exit 1\"\nenv:\n  runner:\n    PROBE_TOKEN: \"${PROBE_TOKEN}\"\n")
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "preflight_check failed")
+	// The command appears with its secret masked — not dropped — so the
+	// failure stays diagnosable without leaking the credential.
+	assert.Contains(t, err.Error(), "echo [REDACTED:PROBE_TOKEN]")
+	// The output the command printed is redacted too: the marker appears
+	// once for the command and once for the captured output.
+	assert.GreaterOrEqual(t, strings.Count(err.Error(), "[REDACTED:PROBE_TOKEN]"), 2,
+		"both the command and its output must appear in redacted form")
+	assert.NotContains(t, err.Error(), "top-level-secret-failure-8721")
+}
+
+// Timeout diagnostics carry the redacted form of the command: the expanded
+// credential must not reach the timeout error, and the output captured
+// before the kill is never surfaced raw (#8721 release-gate evidence for
+// task 4.4; the shrunken-timeout seam mirrors the other timeout tests).
+func TestRunAgent_TopLevelPreflightCheck_TimeoutDiagnosticsRedacted(t *testing.T) {
+	useFakeOpenshell(t)
+	t.Setenv("PROBE_TOKEN", "top-level-secret-timeout-8721")
+	// The command echoes the credential before hanging so a raw capture
+	// would hold it; exec replaces the shell so the context kill reaches
+	// sleep itself.
+	dir := preflightTestSetup(t,
+		"agent: agents/code.md\nrole: test\npreflight_check: \"echo ${PROBE_TOKEN}; exec sleep 5\"\nenv:\n  runner:\n    PROBE_TOKEN: \"${PROBE_TOKEN}\"\n")
+
+	original := preflightCheckTimeout
+	preflightCheckTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { preflightCheckTimeout = original })
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "preflight_check timed out")
+	assert.Contains(t, err.Error(), "echo [REDACTED:PROBE_TOKEN]",
+		"the timed-out command must appear in redacted form")
+	assert.NotContains(t, err.Error(), "top-level-secret-timeout-8721",
+		"neither the expanded command nor the captured output may leak the credential")
+}
+
+// --- runPreflightCheck helper unit tests (ADR 0129) ---
+// The runAgent-level tests above prove wiring, ordering, and redaction, but
+// their error assertions use the substring "preflight_check failed" — which
+// "validation_loop.preflight_check failed" also contains — so they cannot
+// catch a wrong or hardcoded label, and the nested timeout test asserts no
+// label at all. These unit tests pin the helper's own contract directly:
+// each branch (success, failure, timeout) runs for both field labels, and
+// the label must interpolate into the step and error messages verbatim.
+
+// preflightCheckLabels are the two field labels runPreflightCheck receives
+// from the two call sites; exercising both keeps the diagnostics honest
+// about which harness field failed.
+var preflightCheckLabels = []string{"preflight_check", "validation_loop.preflight_check"}
+
+func TestRunPreflightCommand_Success(t *testing.T) {
+	for _, label := range preflightCheckLabels {
+		t.Run(label, func(t *testing.T) {
+			var buf bytes.Buffer
+			printer := ui.New(&buf)
+			err := runPreflightCheck(context.Background(), printer, label, "exit 0", nil, "")
+			require.NoError(t, err)
+			out := buf.String()
+			assert.Contains(t, out, "Preflight: checking "+label+" dependencies",
+				"the step message must name the field being checked")
+			assert.Contains(t, out, "Preflight dependency check passed")
+			assert.NotContains(t, out, "Preflight dependency check failed")
+		})
+	}
+}
+
+func TestRunPreflightCommand_Failure(t *testing.T) {
+	for _, label := range preflightCheckLabels {
+		t.Run(label, func(t *testing.T) {
+			var buf bytes.Buffer
+			printer := ui.New(&buf)
+			err := runPreflightCheck(context.Background(), printer, label, "echo helper-failure-output; exit 1", nil, "")
+			require.Error(t, err)
+			// The label interpolates into the error prefix, naming the
+			// harness field so the failure is attributable; the command
+			// itself follows the colon.
+			assert.Contains(t, err.Error(), label+" failed: echo helper-failure-output; exit 1")
+			assert.Contains(t, err.Error(), "helper-failure-output",
+				"the captured output must surface for diagnosis")
+			assert.Contains(t, err.Error(), "Install the missing dependency before running this agent")
+			assert.Contains(t, buf.String(), "Preflight: checking "+label+" dependencies")
+			assert.Contains(t, buf.String(), "Preflight dependency check failed")
+		})
+	}
+}
+
+func TestRunPreflightCommand_Timeout(t *testing.T) {
+	for _, label := range preflightCheckLabels {
+		t.Run(label, func(t *testing.T) {
+			// Shrink the real timeout so "exec sleep 5" genuinely outlives
+			// it, exercising the DeadlineExceeded branch rather than an
+			// already-cancelled parent context. exec replaces the shell so
+			// the context kill reaches sleep itself.
+			original := preflightCheckTimeout
+			preflightCheckTimeout = 50 * time.Millisecond
+			t.Cleanup(func() { preflightCheckTimeout = original })
+
+			var buf bytes.Buffer
+			printer := ui.New(&buf)
+			err := runPreflightCheck(context.Background(), printer, label, "exec sleep 5", nil, "")
+			require.Error(t, err)
+			// The timeout error names the field and the bound, then the
+			// command — and must not take the failure wording.
+			assert.Contains(t, err.Error(), label+" timed out after 50ms: exec sleep 5")
+			assert.NotContains(t, err.Error(), "failed:")
+			assert.NotContains(t, err.Error(), "Install the missing dependency")
+			assert.Contains(t, buf.String(), "Preflight: checking "+label+" dependencies")
+			assert.Contains(t, buf.String(), "Preflight dependency check failed")
+		})
+	}
+}
+
 func TestBuildSandboxEnvLines_FromEnvSandbox(t *testing.T) {
 	h := &harness.Harness{
 		Agent: "agents/test.md",
