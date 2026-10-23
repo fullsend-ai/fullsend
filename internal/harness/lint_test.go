@@ -174,12 +174,16 @@ func TestLint_PreflightCheckLooksLikeScriptPath(t *testing.T) {
 	}
 
 	diags := h.Lint()
-	require.Len(t, diags, 1)
+	// The bare path draws the path-pattern error plus the nested-field
+	// deprecation warning (ADR 0129 Decision 3).
+	require.Len(t, diags, 2)
 	assert.Equal(t, SeverityError, diags[0].Severity)
 	assert.Equal(t, "validation_loop.preflight_check", diags[0].Field)
 	assert.Contains(t, diags[0].Message, "sh -c")
 	assert.Contains(t, diags[0].Message, "pre_script")
 	assert.Contains(t, diags[0].Message, "scripts/common-preflight.sh")
+	assert.Equal(t, SeverityWarning, diags[1].Severity)
+	assert.Equal(t, "validation_loop.preflight_check", diags[1].Field)
 }
 
 func TestLint_PreflightCheckLiteralCommand(t *testing.T) {
@@ -192,7 +196,12 @@ func TestLint_PreflightCheckLiteralCommand(t *testing.T) {
 		},
 	}
 
-	assert.Empty(t, h.Lint())
+	// A literal command draws no path-pattern error; the only diagnostic
+	// is the advisory deprecation warning for the nested field.
+	diags := h.Lint()
+	require.Len(t, diags, 1)
+	assert.Equal(t, SeverityWarning, diags[0].Severity)
+	assert.Equal(t, "validation_loop.preflight_check", diags[0].Field)
 }
 
 func TestLint_PreflightCheckPathLikeMatching(t *testing.T) {
@@ -215,18 +224,18 @@ func TestLint_PreflightCheckPathLikeMatching(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			// Top-level field: isolates the path heuristic from the
+			// nested-field deprecation warning, which fires for any
+			// non-empty nested value.
 			h := &Harness{
-				Agent: "agents/test.md",
-				Role:  "test",
-				ValidationLoop: &ValidationLoop{
-					Script:         "scripts/validate.sh",
-					PreflightCheck: tc.cmd,
-				},
+				Agent:          "agents/test.md",
+				Role:           "test",
+				PreflightCheck: tc.cmd,
 			}
 			diags := h.Lint()
 			if tc.want {
 				require.Len(t, diags, 1)
-				assert.Equal(t, "validation_loop.preflight_check", diags[0].Field)
+				assert.Equal(t, "preflight_check", diags[0].Field)
 				// Error even for paths that could execute on the host
 				// (e.g. /usr/local/bin/preflight.rb): a host-specific
 				// absolute path is undeclared host state (ADR 0128 Decision 2).
@@ -234,6 +243,180 @@ func TestLint_PreflightCheckPathLikeMatching(t *testing.T) {
 			} else {
 				assert.Empty(t, diags)
 			}
+		})
+	}
+}
+
+func TestLint_PreflightCheckPathPattern(t *testing.T) {
+	t.Run("top-level bare path flagged at error severity", func(t *testing.T) {
+		h := &Harness{PreflightCheck: "scripts/common-preflight.sh"}
+
+		diags := h.Lint()
+		require.Len(t, diags, 1)
+		assert.Equal(t, SeverityError, diags[0].Severity)
+		assert.Equal(t, "preflight_check", diags[0].Field)
+		assert.Contains(t, diags[0].Message, "scripts/common-preflight.sh")
+		assert.Contains(t, diags[0].Message, "literal sh -c command")
+		assert.Contains(t, diags[0].Message, "not fetched like pre_script")
+		assert.Contains(t, diags[0].Message, "inline the probe")
+	})
+
+	t.Run("nested bare path flagged at error severity", func(t *testing.T) {
+		h := &Harness{
+			ValidationLoop: &ValidationLoop{PreflightCheck: "scripts/common-preflight.sh"},
+		}
+
+		diags := h.Lint()
+		// The bare path draws the path-pattern error plus the nested-field
+		// deprecation warning.
+		require.Len(t, diags, 2)
+		assert.Equal(t, SeverityError, diags[0].Severity)
+		assert.Equal(t, "validation_loop.preflight_check", diags[0].Field)
+		assert.Contains(t, diags[0].Message, "scripts/common-preflight.sh")
+		assert.Contains(t, diags[0].Message, "literal sh -c command")
+		assert.Contains(t, diags[0].Message, "not fetched like pre_script")
+		assert.Contains(t, diags[0].Message, "inline the probe")
+		assert.Equal(t, SeverityWarning, diags[1].Severity)
+		assert.Equal(t, "validation_loop.preflight_check", diags[1].Field)
+	})
+
+	t.Run("both fields flagged independently", func(t *testing.T) {
+		h := &Harness{
+			PreflightCheck: "scripts/common-preflight.sh",
+			ValidationLoop: &ValidationLoop{PreflightCheck: "scripts/other-preflight.sh"},
+		}
+
+		diags := h.Lint()
+		// Both path-pattern errors plus the nested-field deprecation warning.
+		require.Len(t, diags, 3)
+		assert.Equal(t, "preflight_check", diags[0].Field)
+		assert.Equal(t, SeverityError, diags[0].Severity)
+		assert.Equal(t, "validation_loop.preflight_check", diags[1].Field)
+		assert.Equal(t, SeverityError, diags[1].Severity)
+		assert.Equal(t, "validation_loop.preflight_check", diags[2].Field)
+		assert.Equal(t, SeverityWarning, diags[2].Severity)
+	})
+
+	t.Run("inline command unflagged", func(t *testing.T) {
+		h := &Harness{PreflightCheck: "python3 -c 'import jsonschema'"}
+		assert.Empty(t, h.Lint())
+	})
+
+	t.Run("nested inline command unflagged", func(t *testing.T) {
+		h := &Harness{
+			ValidationLoop: &ValidationLoop{PreflightCheck: "python3 -c 'import jsonschema'"},
+		}
+		// No path-pattern error — the only diagnostic is the advisory
+		// deprecation warning for the nested field.
+		diags := h.Lint()
+		require.Len(t, diags, 1)
+		assert.Equal(t, SeverityWarning, diags[0].Severity)
+		assert.Equal(t, "validation_loop.preflight_check", diags[0].Field)
+	})
+
+	t.Run("validation loop without preflight check unflagged", func(t *testing.T) {
+		h := &Harness{ValidationLoop: &ValidationLoop{Script: "scripts/validate.sh"}}
+		assert.Empty(t, h.Lint())
+	})
+}
+
+// ADR 0129 Decision 3: the nested field is deprecated now that the
+// top-level replacement ships in the same version, so Lint must warn the
+// moment the replacement is usable. The warning is advisory — nested
+// checks still run during migration — and must say both things the ADR
+// requires: prefer the top-level preflight_check, and keep the nested
+// check in place until every pinned consumer runs a CLI that executes
+// the top-level field (consumer rollout is external, agents#1753).
+func TestLint_NestedPreflightCheckDeprecated(t *testing.T) {
+	t.Run("nested-only harness warns", func(t *testing.T) {
+		h := &Harness{
+			ValidationLoop: &ValidationLoop{
+				Script:         "scripts/validate.sh",
+				PreflightCheck: "python3 -c 'import jsonschema'",
+			},
+		}
+
+		diags := h.Lint()
+		require.Len(t, diags, 1)
+		assert.Equal(t, SeverityWarning, diags[0].Severity)
+		assert.Equal(t, "validation_loop.preflight_check", diags[0].Field)
+		assert.Contains(t, diags[0].Message, "deprecated")
+		// Both halves of the ADR 0129 wording, pinned so the diagnostic
+		// cannot drift into urging removal before consumer verification.
+		assert.Contains(t, diags[0].Message, "prefer the top-level preflight_check")
+		assert.Contains(t, diags[0].Message, "keep the nested check in place")
+		assert.Contains(t, diags[0].Message, "every pinned consumer")
+		assert.Contains(t, diags[0].Message, "fullsend-ai/agents#1753")
+		assert.Contains(t, diags[0].Message, "ADR 0129")
+	})
+
+	t.Run("warning also fires when both checks are set", func(t *testing.T) {
+		// A harness mid-migration still uses the deprecated nested field,
+		// so it still warns: the author can drop the nested check only
+		// after consumer verification finishes.
+		h := &Harness{
+			PreflightCheck: "python3 -c 'import jsonschema'",
+			ValidationLoop: &ValidationLoop{
+				Script:         "scripts/validate.sh",
+				PreflightCheck: "which jq",
+			},
+		}
+
+		var found bool
+		for _, d := range h.Lint() {
+			if d.Field == "validation_loop.preflight_check" && d.Severity == SeverityWarning {
+				found = true
+			}
+		}
+		assert.True(t, found, "nested field stays deprecated while both checks are configured")
+	})
+
+	t.Run("validation loop without a nested check does not warn", func(t *testing.T) {
+		h := &Harness{ValidationLoop: &ValidationLoop{Script: "scripts/validate.sh"}}
+		assert.Empty(t, h.Lint())
+	})
+
+	t.Run("top-level check alone does not warn", func(t *testing.T) {
+		h := &Harness{PreflightCheck: "python3 -c 'import jsonschema'"}
+		assert.Empty(t, h.Lint())
+	})
+}
+
+func TestLintPreflightCheckCommand(t *testing.T) {
+	cases := []struct {
+		name     string
+		value    string
+		wantFlag bool
+	}{
+		{"bare relative sh path", "scripts/common-preflight.sh", true},
+		{"bare filename", "common-preflight.sh", true},
+		{"dot-slash path", "./scripts/common-preflight.sh", true},
+		{"dot-dot path", "../scripts/common-preflight.sh", true},
+		{"absolute path", "/usr/local/lib/common-preflight.sh", true},
+		{"python script", "scripts/probe.py", true},
+		{"ruby script", "scripts/probe.rb", true},
+		{"js script", "scripts/probe.js", true},
+		{"inline python probe", "python3 -c 'import jsonschema'", false},
+		{"which command", "which jq", false},
+		{"test command with var ref", "test -d ${FULLSEND_DIR}", false},
+		{"explicit shell invocation", "sh scripts/probe.sh", false},
+		{"bash extension missed by heuristic", "scripts/probe.bash", false},
+		{"trailing arguments missed by heuristic", "scripts/probe.sh --verbose", false},
+		{"empty value", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := lintPreflightCheckCommand("preflight_check", tc.value)
+			if !tc.wantFlag {
+				assert.Nil(t, d)
+				return
+			}
+			require.NotNil(t, d)
+			assert.Equal(t, SeverityError, d.Severity)
+			assert.Equal(t, "preflight_check", d.Field)
+			assert.Contains(t, d.Message, "literal sh -c command")
+			assert.Contains(t, d.Message, "not fetched like pre_script")
+			assert.Contains(t, d.Message, "inline the probe")
 		})
 	}
 }

@@ -129,9 +129,34 @@ func (h *Harness) Lint() []Diagnostic {
 		}
 	}
 
+	// ADR 0128 Decision 2 (#7600): preflight_check is a literal sh -c
+	// command, never a fetched script resource, so a bare path-like value
+	// names a file the host will not have. One shared predicate covers the
+	// top-level field and the nested validation_loop.preflight_check.
+	// Non-fatal: lock/run print the diagnostic and continue.
+	if d := lintPreflightCheckCommand("preflight_check", h.PreflightCheck); d != nil {
+		diags = append(diags, *d)
+	}
 	if h.ValidationLoop != nil {
 		if d := lintPreflightCheckCommand("validation_loop.preflight_check", h.ValidationLoop.PreflightCheck); d != nil {
 			diags = append(diags, *d)
+		}
+		// ADR 0129 Decision 3: deprecate the nested field now that the
+		// top-level replacement ships in the same version ("only once
+		// the replacement is usable"). The warning is advisory — nested
+		// checks still run during migration, and ADR 0129 Decision 5
+		// requires keeping them until every pinned consumer is verified
+		// to run a CLI that executes the top-level field, so the wording
+		// says both things rather than urging immediate removal. Consumer
+		// rollout and harness migration are external
+		// (fullsend-ai/agents#1753); removal of the nested field needs a
+		// separately decided version gate (ADR 0127).
+		if h.ValidationLoop.PreflightCheck != "" {
+			diags = append(diags, Diagnostic{
+				Severity: SeverityWarning,
+				Field:    "validation_loop.preflight_check",
+				Message:  "validation_loop.preflight_check is deprecated; prefer the top-level preflight_check, and keep the nested check in place until every pinned consumer runs a CLI that executes the top-level field (consumer rollout is tracked in fullsend-ai/agents#1753; see ADR 0129)",
+			})
 		}
 	}
 
@@ -158,7 +183,7 @@ func lintPreflightCheckCommand(field, value string) *Diagnostic {
 	return &Diagnostic{
 		Severity: SeverityError,
 		Field:    field,
-		Message:  fmt.Sprintf("value %q looks like a script path; %s runs verbatim as `sh -c` on the host and is never fetched or resolved like pre_script/post_script — if a fetched harness script was intended, use pre_script; otherwise inline the command (e.g. python3 -c 'import jsonschema')", pc, field),
+		Message:  fmt.Sprintf("%q looks like a script path, but %s is a literal sh -c command and is not fetched like pre_script; inline the probe instead (e.g. python3 -c 'import jsonschema') (see ADR 0128)", pc, field),
 	}
 }
 

@@ -784,6 +784,9 @@ func mergeBaseIntoChild(base, child *Harness) {
 	if child.PostScript == "" {
 		child.PostScript = base.PostScript
 	}
+	if child.PreflightCheck == "" {
+		child.PreflightCheck = base.PreflightCheck
+	}
 	if child.AgentInput == "" {
 		child.AgentInput = base.AgentInput
 	}
