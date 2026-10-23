@@ -228,18 +228,19 @@ repo baseline and overrides)
   require one. Version-aware loaders reject unsupported versions before
   composition; older pinned consumers must be upgraded before receiving
   newer-version harnesses ([ADR 0127](ADRs/0127-harness-schema-versioning-and-field-types.md)).
-- `preflight_check` is a literal host command, not a script resource: it runs
-  via `sh -c` without setting a working directory and is not resource-resolved;
-  `Harness.Lint()` will flag path-like values (planned, not yet implemented;
-  non-fatal when it lands)
+- `preflight_check` is a literal host command, not a script resource: the
+  top-level field and the nested `validation_loop.preflight_check` both run
+  via `sh -c` without setting a working directory and are not
+  resource-resolved; `Harness.Lint()` will flag path-like values (planned,
+  not yet implemented; non-fatal when it lands)
   ([ADR 0128](ADRs/0128-preflight-check-literal-command.md)).
 - Preflight coverage for all scripts: a top-level `preflight_check` field is a
   single host-dependency gate for `pre_script`, `post_script`, and
   `validation_loop`, running before `pre_script` and before sandbox creation.
-  The field is planned but not yet implemented. Once it is usable, the nested
-  `validation_loop.preflight_check` is deprecated, but existing nested checks
-  continue running during migration. A separately named resource-delivered
-  preflight script for complex probes remains future work
+  The nested `validation_loop.preflight_check` is deprecated now that the
+  top-level field is implemented, but existing nested checks continue running
+  during migration. A separately named resource-delivered preflight script for
+  complex probes remains future work
   ([ADR 0129](ADRs/0129-extend-preflight-coverage-to-pre-and-post-scripts.md)).
 
 **Open questions:**
