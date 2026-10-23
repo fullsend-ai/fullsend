@@ -7,8 +7,10 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -646,4 +648,99 @@ func TestCacheNamedSymlink(t *testing.T) {
 		_, statErr := os.Lstat(filepath.Join(dir, "sub"))
 		assert.True(t, os.IsNotExist(statErr))
 	})
+}
+
+func TestCacheFindNewest(t *testing.T) {
+	root := t.TempDir()
+	put := func(url string, content []byte, fetched time.Time) string {
+		t.Helper()
+		require.NoError(t, CachePut(root, url, content))
+		hash := ComputeSHA256(content)
+		dir, err := CachePath(root, hash)
+		require.NoError(t, err)
+		meta, err := json.Marshal(CacheEntry{URL: url, FetchTime: fetched, SHA256: hash})
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "metadata.json"), meta, 0o600))
+		return hash
+	}
+	isWanted := func(url string) bool { return strings.HasSuffix(url, "/wanted.yaml") }
+	now := time.Now().UTC()
+
+	t.Run("missing cache is a miss", func(t *testing.T) {
+		content, entry, err := CacheFindNewest(t.TempDir(), isWanted)
+		require.NoError(t, err)
+		assert.Nil(t, content)
+		assert.Nil(t, entry)
+	})
+
+	t.Run("empty workspace root is a miss", func(t *testing.T) {
+		_, entry, err := CacheFindNewest("", isWanted)
+		require.NoError(t, err)
+		assert.Nil(t, entry)
+	})
+
+	put("https://example.com/v1/wanted.yaml", []byte("v1"), now.Add(-2*time.Hour))
+	put("https://example.com/v2/wanted.yaml", []byte("v2"), now.Add(-time.Hour))
+	put("https://example.com/v3/other.yaml", []byte("other"), now)
+	_, err := CachePutDir(root, "https://example.com/v4/wanted.yaml", map[string][]byte{"a": []byte("dir")})
+	require.NoError(t, err)
+
+	t.Run("newest matching single-file entry wins", func(t *testing.T) {
+		content, entry, err := CacheFindNewest(root, isWanted)
+		require.NoError(t, err)
+		require.NotNil(t, entry)
+		assert.Equal(t, []byte("v2"), content)
+		assert.Equal(t, "https://example.com/v2/wanted.yaml", entry.URL)
+	})
+
+	t.Run("corrupted candidate falls back to next newest", func(t *testing.T) {
+		hash := put("https://example.com/v5/wanted.yaml", []byte("v5"), now.Add(time.Hour))
+		dir, err := CachePath(root, hash)
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "content"), []byte("tampered"), 0o600))
+
+		content, entry, err := CacheFindNewest(root, isWanted)
+		require.NoError(t, err)
+		require.NotNil(t, entry)
+		assert.Equal(t, []byte("v2"), content)
+	})
+
+	t.Run("no match", func(t *testing.T) {
+		_, entry, err := CacheFindNewest(root, func(string) bool { return false })
+		require.NoError(t, err)
+		assert.Nil(t, entry)
+	})
+}
+
+func TestCacheFindNewest_SkipsMalformedEntries(t *testing.T) {
+	root := t.TempDir()
+	base := filepath.Join(root, ".fullsend-cache", "resources", "sha256")
+	require.NoError(t, os.MkdirAll(filepath.Join(base, "not-a-hash"), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(base, "stray-file"), nil, 0o600))
+	missingMeta := ComputeSHA256([]byte("no metadata"))
+	require.NoError(t, os.MkdirAll(filepath.Join(base, missingMeta), 0o700))
+	badJSON := ComputeSHA256([]byte("bad json"))
+	require.NoError(t, os.MkdirAll(filepath.Join(base, badJSON), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(base, badJSON, "metadata.json"), []byte("{"), 0o600))
+	// Metadata whose hash does not match its directory.
+	mismatch := ComputeSHA256([]byte("mismatch"))
+	require.NoError(t, os.MkdirAll(filepath.Join(base, mismatch), 0o700))
+	meta, err := json.Marshal(CacheEntry{URL: "https://example.com/x", SHA256: ComputeSHA256([]byte("other"))})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(base, mismatch, "metadata.json"), meta, 0o600))
+
+	_, entry, err := CacheFindNewest(root, func(string) bool { return true })
+	require.NoError(t, err)
+	assert.Nil(t, entry)
+}
+
+func TestCacheFindNewest_UnreadableCacheDir(t *testing.T) {
+	root := t.TempDir()
+	base := filepath.Join(root, ".fullsend-cache", "resources")
+	require.NoError(t, os.MkdirAll(base, 0o700))
+	// A file where the sha256 directory should be.
+	require.NoError(t, os.WriteFile(filepath.Join(base, "sha256"), nil, 0o600))
+
+	_, _, err := CacheFindNewest(root, func(string) bool { return true })
+	require.Error(t, err)
 }
