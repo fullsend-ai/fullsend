@@ -199,6 +199,7 @@ func resetScenarioWorld(w *world.World) {
 	w.StagePublishedSHA = nil
 	w.MintProbe = nil
 	w.MintStatus = nil
+	w.BotRoleProbe = nil
 }
 
 func tagNames(tags []*messages.PickleTag) []string {

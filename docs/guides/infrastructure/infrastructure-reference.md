@@ -243,6 +243,16 @@ A single mint instance can serve multiple orgs:
 - **Security:** OIDC returns only the requesting org. Non-OIDC returns the configured roles and workflow hosts (not individual role app IDs).
 - **Enabling optional validators:** Pass `--status-auth=github` to `mint deploy` along with `--status-github-group=ORG/TEAM`. This compiles the GitHub validator via the `github` build tag. Without these flags, OIDC is the only auth path.
 
+### Bot-Role Lookup Endpoint
+
+`POST /v1/bot-role` resolves a GitHub App bot login to the mint role registered for that App ([ADR 0107](../../ADRs/0107-bot-identity-resolution-for-dispatch-authorization.md)). Dispatch authorization uses it to recognize Fullsend's own bots.
+
+- **Authentication:** GitHub Actions OIDC bearer token, with the same per-repo enrollment and workflow-host checks as `POST /v1/token`.
+- **Request:** `{"actor_login": "<app-slug>[bot]", "repo": "owner/repo"}`. `repo` must be the token's `repository` claim (otherwise `403`). Other fields, such as `role`, are ignored.
+- **Matching:** The mint resolves the slug to an App ID with GitHub's public `GET /apps/{slug}` (authenticated with a metadata-read installation token, limited to `repo`, of one of the mint's own Apps when its key is readable and it is installed on `repo`, so the call does not share GitHub's anonymous per-IP rate limit; GitHub documents installation tokens, not App JWTs, for this endpoint) and compares it exactly against `ROLE_APP_IDS` for roles in `ALLOWED_ROLES`. When roles share an App, the lexicographically first role name wins. A matched role counts only if its App is installed on `repo`.
+- **Transient GitHub failures:** A transport error, 5xx or rate limit on the `/apps` or installation lookup is retried up to three attempts in all, honoring `Retry-After` (or `X-RateLimit-Reset` for an exhausted primary quota) and otherwise backing off from 500 ms. A wait over 5 seconds, or one the request deadline cannot cover, ends the retries with the failure. A rate-limit `403` is never treated as a rejected installation token: only a `401`, or a `403` that is not a rate limit, makes the `/apps` lookup fall back to an anonymous request.
+- **Response (200):** `{"outcome": "recognized", "role": "review"}` or `{"outcome": "no_match"}`. A failed GitHub lookup returns `502` with `{"error": "bot-role lookup failed"}`, which callers must not treat as a no-match. The endpoint returns role names only, never credentials.
+
 ---
 
 ## Inference — Agent Platform with Workload Identity Federation

@@ -66,7 +66,8 @@ export interface Env {
    */
   MINT_OTLP_HEADERS?: string;
   /**
-   * Native Workers rate limiter for POST /v1/token. Bound via
+   * Native Workers rate limiter for POST /v1/token and POST
+   * /v1/bot-role (one counter per path). Bound via
    * [[ratelimits]] in wrangler.toml. The key includes the request
    * hostname so preview aliases (which produce distinct hostnames)
    * get isolated counters without extra namespace_id patching.
@@ -705,6 +706,24 @@ class GoWasm {
 const goWasm = new GoWasm();
 
 /**
+ * Canonicalize a URL pathname once for endpoint matching and rate-limit
+ * keys. The Go handler routes on the decoded path, so the Worker must
+ * match on the same decoded form. Returns null for a path with an
+ * invalid percent-escape or an encoded "/" or "\" (%2F, %5C), which no
+ * legitimate client sends.
+ */
+function canonicalRoutePath(pathname: string): string | null {
+  if (/%(?:2f|5c)/i.test(pathname)) {
+    return null;
+  }
+  try {
+    return decodeURIComponent(pathname);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Return a JSON error response.
  */
 function errorResponse(status: number, message: string): Response {
@@ -757,17 +776,33 @@ export default {
       );
     }
 
-    // Rate-limit POST /v1/token before WASM init to avoid wasting
-    // CPU on abusive traffic. The key includes the hostname so that
-    // preview aliases (which produce distinct hostnames like
-    // <alias>-<worker>.<subdomain>.workers.dev) get isolated
-    // counters — concurrent BT preview instances do not affect each
-    // other. Durable deploys use a stable hostname.
+    // Rate-limit POST /v1/token and POST /v1/bot-role before WASM init
+    // to avoid wasting CPU (and shared GitHub API capacity, for the
+    // bot-role lookup) on abusive traffic. The key includes the
+    // hostname so that preview aliases (which produce distinct
+    // hostnames like <alias>-<worker>.<subdomain>.workers.dev) get
+    // isolated counters — concurrent BT preview instances do not
+    // affect each other. Durable deploys use a stable hostname. The
+    // key also includes the path, so each endpoint has its own counter.
+    // The gate and the key use the canonical (decoded) path, the same
+    // path the Go handler routes on, so a percent-encoded spelling such
+    // as /v1%2Fbot-role cannot skip the limiter. The POST / token alias
+    // shares the /v1/token counter.
     const url = new URL(request.url);
-    if (request.method === "POST" && url.pathname === "/v1/token") {
+    const routePath = canonicalRoutePath(url.pathname);
+    if (routePath === null) {
+      return errorResponse(400, "invalid_path");
+    }
+    if (
+      request.method === "POST" &&
+      (routePath === "/v1/token" ||
+        routePath === "/" ||
+        routePath === "/v1/bot-role")
+    ) {
       const rl = env.MINT_TOKEN_RATE_LIMITER;
       if (rl) {
-        const key = `${url.hostname}:/v1/token:${clientIp(request)}`;
+        const limitedPath = routePath === "/" ? "/v1/token" : routePath;
+        const key = `${url.hostname}:${limitedPath}:${clientIp(request)}`;
         const { success } = await rl.limit({ key });
         if (!success) {
           return errorResponse(429, "rate_limited");

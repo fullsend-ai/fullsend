@@ -754,19 +754,20 @@ triage roles cannot trigger credentialed CI runs automatically.
 
 ### Who needs `ok-to-test`
 
-Contributors without write access must have a maintainer with write access
-apply the **`ok-to-test`** label **after** the latest push. A label from
-anyone else (for example a triage-role user) is removed and does not authorize
-the run. The label must be created once in GitHub repo settings (Settings →
-Labels).
+Contributors without write access must have a user with write access (Write
+role or above) apply the **`ok-to-test`** label **after** the latest push. A
+label from anyone else (for example a triage-role user) is removed and does not
+authorize the run. The label must be created once in GitHub repo settings
+(Settings → Labels).
 
 ### Stale labels
 
 If new commits are pushed after `ok-to-test` was applied, the label is removed
-automatically and e2e is skipped until a maintainer re-applies it after
-reviewing the latest changes. Freshness compares the label timestamp against
-the frozen PR `updated_at` from the workflow event (`PR_UPDATED_AT`); the live
-API fallback may over-reject when non-push activity bumped `updated_at`.
+automatically and e2e is skipped until a user with write access re-applies it
+after reviewing the latest changes. Freshness compares the label timestamp
+against the frozen PR `updated_at` from the workflow event (`PR_UPDATED_AT`);
+the live API fallback may over-reject when non-push activity bumped
+`updated_at`.
 Applying the label triggers the **E2E ok-to-test** caller workflow, which
 `workflow_call`s into the main suite.
 
@@ -790,6 +791,19 @@ When the gate **runs** and denies authorization, a sticky PR comment (marker
 non-`ok-to-test` label event, where the thin caller skips without invoking the
 gate. Re-run the workflow or add/re-apply `ok-to-test` as appropriate.
 
+The comment names a reason. What to do next:
+
+| Reason | Label removed? | What to do next |
+|---|---|---|
+| `untrusted_labeler` | Yes, unless someone re-applied it since | The person who applied `ok-to-test` does not have write access (for example a Triage user). Do not re-apply it yourself. Ask a reviewer on this PR, or a maintainer listed in [MAINTAINERS.md](../../../MAINTAINERS.md), to apply it after reviewing the latest push. |
+| `stale_ok_to_test` | Yes | The PR changed after the label was applied, usually by a new push. A user with write access reviews the changes and re-applies `ok-to-test`. |
+| `error` | No | The GitHub API failed during the check. Re-run the workflow. |
+| `unauthorized` | No | The author does not have write access and there is no `ok-to-test` label. Ask a user with write access to review the PR and apply it. If you do have write access, the permission lookup may have failed: re-run the workflow first. |
+
+Unresolved review threads and reviews that request changes are **not** gate
+inputs: they only block merging, never e2e. To see which role you have, use
+the "How to check" links in [LADDER.md](../../../LADDER.md).
+
 ## CI architecture
 
 1. **PR open/sync** — **E2E Tests** runs the gate then suite jobs (trusted
@@ -811,7 +825,10 @@ The `fullsend-test-*` apps are **test-only** GitHub Apps owned by `fullsend-ai`,
 separate from the production `fullsend-ai-*` app set. They exist for temporary
 and test mints, including the Cloudflare Worker mint BT chain. There is **no
 `e2e` test app**. The `fix` role shares the coder test app and PEM (same as
-production).
+production). Because no test role uses it, the bot-role lookup feature uses
+the suite's own e2e App identity, discovered at runtime, as its unregistered
+third-party bot (see
+[GitHub bot-role lookup scenarios](behaviour-testing.md#github-bot-role-lookup-scenarios)).
 
 Pool organizations intentionally do not keep the production agent apps
 installed as baseline test infrastructure. The test mint uses the isolated

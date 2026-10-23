@@ -221,7 +221,7 @@ func givenMintProbe(ctx context.Context, w *world.World, forgeName, arrangement 
 }
 
 // createMintProbeHost creates a public host repository and commits the
-// reusable probe workflow to its default branch.
+// reusable mint probe workflow to its default branch.
 //
 // Host repositories are temporary repos named after the leased slot, not
 // leased pool slots (issue #8387 asks for probe workflows in leased repos).
@@ -229,8 +229,32 @@ func givenMintProbe(ctx context.Context, w *world.World, forgeName, arrangement 
 // hosts. A temporary repo is needed because the unapproved host must not
 // be on the mint's --workflow-host-repos list, and every pool repo is.
 func createMintProbeHost(ctx context.Context, w *world.World, p *world.MintProbe, host string) error {
+	return createProbeHost(ctx, w, probeHostSpec{
+		label:        "mint probe",
+		created:      &p.CreatedRepos,
+		workflowPath: mintProbeWorkflowPath,
+		workflow:     mintProbeWorkflow,
+	}, host)
+}
+
+// probeHostSpec describes the reusable workflow a probe host repository
+// carries. The mint probe and the bot-role probe share the host lifecycle.
+type probeHostSpec struct {
+	// label prefixes error messages ("mint probe", "bot-role probe").
+	label string
+	// created receives every host repository created, for cleanup.
+	created *[]string
+	// workflowPath and workflow are the reusable workflow committed to
+	// the host's default branch.
+	workflowPath string
+	workflow     []byte
+}
+
+// createProbeHost creates a public host repository and commits spec's
+// reusable workflow to its default branch.
+func createProbeHost(ctx context.Context, w *world.World, spec probeHostSpec, host string) error {
 	if host == w.RepoName {
-		return fmt.Errorf("mint probe: host repository %q must differ from the leased repository", host)
+		return fmt.Errorf("%s: host repository %q must differ from the leased repository", spec.label, host)
 	}
 	// The GitHub SCM driver's CreateRepo succeeds for a repository that
 	// already exists, so a leftover from an earlier run would otherwise be
@@ -238,31 +262,31 @@ func createMintProbeHost(ctx context.Context, w *world.World, p *world.MintProbe
 	// this run created is recorded for cleanup.
 	if _, err := w.SCM.GetDefaultBranch(ctx, w.Org, host); err == nil {
 		if err := w.SCM.DeleteRepo(ctx, w.Org, host); err != nil && !forge.IsNotFound(err) {
-			return fmt.Errorf("mint probe: deleting stale host repository %s/%s: %w", w.Org, host, err)
+			return fmt.Errorf("%s: deleting stale host repository %s/%s: %w", spec.label, w.Org, host, err)
 		}
 		// GitHub keeps serving, and can keep reserving, a deleted repo's
 		// name for a while, so wait for the deletion to propagate before
 		// creating the replacement.
-		if err := awaitMintProbeHostGone(ctx, w, host); err != nil {
+		if err := awaitProbeHostGone(ctx, w, spec.label, host); err != nil {
 			return err
 		}
 	} else if !forge.IsNotFound(err) {
-		return fmt.Errorf("mint probe: checking for an existing host repository %s/%s: %w", w.Org, host, err)
+		return fmt.Errorf("%s: checking for an existing host repository %s/%s: %w", spec.label, w.Org, host, err)
 	}
-	if err := createMintProbeHostRepo(ctx, w, p, host); err != nil {
+	if err := createProbeHostRepo(ctx, w, spec, host); err != nil {
 		return err
 	}
 	// Another repository can call a reusable workflow only when the
 	// host is public (or explicitly shared), and orgs may force new
 	// repositories private.
 	if err := w.SCM.EnsureRepoPublic(ctx, w.Org, host); err != nil {
-		return fmt.Errorf("mint probe: host repository %s/%s must be public: %w", w.Org, host, err)
+		return fmt.Errorf("%s: host repository %s/%s must be public: %w", spec.label, w.Org, host, err)
 	}
-	if err := w.SCM.CommitFile(ctx, w.Org, host, mintProbeWorkflowPath, "behaviour: add mint probe workflow", mintProbeWorkflow); err != nil {
-		return fmt.Errorf("mint probe: committing the probe workflow to %s/%s: %w", w.Org, host, err)
+	if err := w.SCM.CommitFile(ctx, w.Org, host, spec.workflowPath, "behaviour: add "+spec.label+" workflow", spec.workflow); err != nil {
+		return fmt.Errorf("%s: committing the probe workflow to %s/%s: %w", spec.label, w.Org, host, err)
 	}
-	if err := waitForFileAccessible(ctx, w, w.Org, host, mintProbeWorkflowPath); err != nil {
-		return fmt.Errorf("mint probe: %w", err)
+	if err := waitForFileAccessible(ctx, w, w.Org, host, spec.workflowPath); err != nil {
+		return fmt.Errorf("%s: %w", spec.label, err)
 	}
 	return nil
 }
@@ -275,11 +299,11 @@ var (
 	mintProbeRepoRetryDelay  = time.Second
 )
 
-// awaitMintProbeHostGone polls until the deleted host repository returns
+// awaitProbeHostGone polls until the deleted host repository returns
 // not-found, so the replacement is created against a free name. It fails
 // when the repository is still visible after the bounded backoff, since
 // creating then would run against a repository that is still being deleted.
-func awaitMintProbeHostGone(ctx context.Context, w *world.World, host string) error {
+func awaitProbeHostGone(ctx context.Context, w *world.World, label, host string) error {
 	delay := mintProbeRepoRetryDelay
 	for attempt := 1; attempt <= mintProbeRepoMaxAttempts; attempt++ {
 		_, err := w.SCM.GetDefaultBranch(ctx, w.Org, host)
@@ -287,19 +311,19 @@ func awaitMintProbeHostGone(ctx context.Context, w *world.World, host string) er
 			return nil
 		}
 		if err != nil {
-			return fmt.Errorf("mint probe: checking deletion of host repository %s/%s: %w", w.Org, host, err)
+			return fmt.Errorf("%s: checking deletion of host repository %s/%s: %w", label, w.Org, host, err)
 		}
 		if attempt < mintProbeRepoMaxAttempts {
 			if err := mintProbeSleep(ctx, delay); err != nil {
-				return fmt.Errorf("mint probe: waiting for host repository %s/%s to be deleted: %w", w.Org, host, err)
+				return fmt.Errorf("%s: waiting for host repository %s/%s to be deleted: %w", label, w.Org, host, err)
 			}
 			delay *= 2
 		}
 	}
-	return fmt.Errorf("mint probe: stale host repository %s/%s still visible after %d attempts to delete it", w.Org, host, mintProbeRepoMaxAttempts)
+	return fmt.Errorf("%s: stale host repository %s/%s still visible after %d attempts to delete it", label, w.Org, host, mintProbeRepoMaxAttempts)
 }
 
-// createMintProbeHostRepo creates the host repository and waits until it
+// createProbeHostRepo creates the host repository and waits until it
 // is visible. The GitHub SCM driver reports success when GitHub says the
 // name already exists, which is what a name still reserved after a delete
 // looks like, so a create that does not become visible is retried with
@@ -311,30 +335,30 @@ func awaitMintProbeHostGone(ctx context.Context, w *world.World, host string) er
 // leftover was already deleted by the caller, so a repo that exists at
 // this point is one this run created; cleanup tolerates a repo that
 // never became visible.
-func createMintProbeHostRepo(ctx context.Context, w *world.World, p *world.MintProbe, host string) error {
+func createProbeHostRepo(ctx context.Context, w *world.World, spec probeHostSpec, host string) error {
 	delay := mintProbeRepoRetryDelay
 	for attempt := 1; attempt <= mintProbeRepoMaxAttempts; attempt++ {
-		if err := w.SCM.CreateRepo(ctx, w.Org, host, "behaviour test: mint probe workflow host"); err != nil {
-			return fmt.Errorf("mint probe: creating host repository %s/%s: %w", w.Org, host, err)
+		if err := w.SCM.CreateRepo(ctx, w.Org, host, "behaviour test: "+spec.label+" workflow host"); err != nil {
+			return fmt.Errorf("%s: creating host repository %s/%s: %w", spec.label, w.Org, host, err)
 		}
-		if !slices.Contains(p.CreatedRepos, host) {
-			p.CreatedRepos = append(p.CreatedRepos, host)
+		if !slices.Contains(*spec.created, host) {
+			*spec.created = append(*spec.created, host)
 		}
 		_, err := w.SCM.GetDefaultBranch(ctx, w.Org, host)
 		if err == nil {
 			return nil
 		}
 		if !forge.IsNotFound(err) {
-			return fmt.Errorf("mint probe: checking new host repository %s/%s: %w", w.Org, host, err)
+			return fmt.Errorf("%s: checking new host repository %s/%s: %w", spec.label, w.Org, host, err)
 		}
 		if attempt < mintProbeRepoMaxAttempts {
 			if err := mintProbeSleep(ctx, delay); err != nil {
-				return fmt.Errorf("mint probe: waiting for host repository %s/%s to appear: %w", w.Org, host, err)
+				return fmt.Errorf("%s: waiting for host repository %s/%s to appear: %w", spec.label, w.Org, host, err)
 			}
 			delay *= 2
 		}
 	}
-	return fmt.Errorf("mint probe: host repository %s/%s not visible after %d create attempts", w.Org, host, mintProbeRepoMaxAttempts)
+	return fmt.Errorf("%s: host repository %s/%s not visible after %d create attempts", spec.label, w.Org, host, mintProbeRepoMaxAttempts)
 }
 
 // whenMintProbeRequests pushes the shim, waits for its run and reads the
@@ -615,7 +639,18 @@ func waitForMintProbeRun(ctx context.Context, lister ci.RunLister, owner, repo, 
 // its result. Artifacts can trail the run's completion briefly, so the
 // download is retried.
 func downloadMintProbeResult(ctx context.Context, w *world.World, runID int, artifact string) (*world.MintProbeResult, error) {
-	dir, err := os.MkdirTemp("", "mint-probe-*")
+	data, err := downloadProbeArtifact(ctx, w, runID, artifact, mintProbeResultFile)
+	if err != nil {
+		return nil, err
+	}
+	return parseMintProbeResult(data)
+}
+
+// downloadProbeArtifact downloads one probe job's artifact and returns
+// the content of file in it, retrying the download a bounded number of
+// times.
+func downloadProbeArtifact(ctx context.Context, w *world.World, runID int, artifact, file string) ([]byte, error) {
+	dir, err := os.MkdirTemp("", "probe-artifact-*")
 	if err != nil {
 		return nil, err
 	}
@@ -633,11 +668,11 @@ func downloadMintProbeResult(ctx context.Context, w *world.World, runID int, art
 	if err != nil {
 		return nil, fmt.Errorf("downloading artifact %q from run %d: %w", artifact, runID, err)
 	}
-	data, err := os.ReadFile(filepath.Join(dir, artifact, mintProbeResultFile))
+	data, err := os.ReadFile(filepath.Join(dir, artifact, file))
 	if err != nil {
 		return nil, fmt.Errorf("artifact %q: %w", artifact, err)
 	}
-	return parseMintProbeResult(data)
+	return data, nil
 }
 
 // parseMintProbeResult parses a probe result and rejects one that does not

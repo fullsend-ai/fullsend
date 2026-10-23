@@ -24,4 +24,5 @@ func Register(sc *godog.ScenarioContext) {
 	registerGatewaySteps(sc)
 	registerMintProbeSteps(sc)
 	registerMintStatusSteps(sc)
+	registerBotRoleProbeSteps(sc)
 }

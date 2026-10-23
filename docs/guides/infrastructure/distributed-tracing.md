@@ -659,6 +659,23 @@ records `fullsend.mint.attempts`.
 | `mint.github_app_auth` | Internal | `github_app_auth` |
 | `mint.installation_lookup` | Internal | `installation_lookup` |
 | `mint.create_installation_token` | Internal | `token_issuance` |
+| `mint.bot_role_config` | Internal | `bot_role_config` (`POST /v1/bot-role`: invalid role App ID registration) |
+| `mint.bot_role_credentials` | Internal | `bot_role_config`, `pem_access` or `github_app_auth`, only when the credential is required; an unavailable credential for the `/apps` lookup records `fullsend.bot_role.skip_reason` instead |
+| `mint.bot_role_apps_token` | Internal | `token_issuance`, never recorded as a failure: when no installation token can be obtained for the `/apps` lookup (the App is not installed on the repo, or the token request fails) the span records `fullsend.bot_role.failure_step` and `skip_reason` and the lookup is anonymous |
+| `mint.github_apps_lookup` | Internal | `github_apps_lookup` |
+
+`POST /v1/bot-role` also reuses `mint.installation_lookup`. The
+`mint.github_apps_lookup` and `mint.installation_lookup` spans of a bot-role
+request record `fullsend.bot_role.attempts`, `upstream_class` (`ok`,
+`not_found`, `transport`, `4xx`, `5xx`, `malformed_response`, `local`),
+`upstream_status`, `rate_limit` (`none`, `primary`, `secondary`, `other`),
+`retry_decision` (`succeeded`, `not_retryable`, `attempts_exhausted`,
+`wait_exceeds_bound`, `wait_exceeds_deadline`, `context_done`,
+`sleep_interrupted`), `wait_ms`, `wait_bound_ms` (the 5-second retry wait
+bound) and `result` (`ok`, `no_match`, `credential_rejected`, `error`), and
+carry one `attempt` event per try with the same per-attempt values. The
+`/apps` span adds `apps_auth` (`installation_token` or `anonymous`). None of these
+carry the actor login, App slug, repository, credentials or response bodies.
 
 `GET /health` is not traced. Unknown routes are recorded as `other`, so
 paths supplied by callers never reach the collector.

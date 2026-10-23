@@ -292,7 +292,7 @@ func StripObsoleteGitLabWorkflowRules(existing []byte) (result []byte, changed b
 		rulesVal.Content = kept
 	}
 
-	out, marshalErr := marshalGitLabDocuments(docs)
+	out, marshalErr := renderGitLabDocuments(existing, docs)
 	if marshalErr != nil {
 		return nil, false, marshalErr
 	}
@@ -383,7 +383,7 @@ func MergeMissingGitLabDebugTraceRule(existing []byte) (result []byte, changed b
 
 	mergeWorkflowRules(workflowVal)
 
-	out, marshalErr := marshalGitLabDocuments(docs)
+	out, marshalErr := renderGitLabDocuments(existing, docs)
 	if marshalErr != nil {
 		return nil, false, marshalErr
 	}
@@ -584,7 +584,7 @@ func StripObsoleteGitLabStages(existing []byte) (result []byte, changed bool, er
 	// from obsoleteGitLabStages.
 	stagesVal.Content = kept
 
-	out, marshalErr := marshalGitLabDocuments(docs)
+	out, marshalErr := renderGitLabDocuments(existing, docs)
 	if marshalErr != nil {
 		return nil, false, marshalErr
 	}
@@ -1154,8 +1154,9 @@ func HasFullsendEntries(existing []byte) bool {
 }
 
 // MergeGitLabCI merges fullsend's CI configuration into an existing
-// .gitlab-ci.yml. It uses yaml.v3's Node API to preserve comments and
-// formatting in the existing file.
+// .gitlab-ci.yml. It uses yaml.v3's Node API to preserve comments in the
+// existing file, and renderGitLabDocuments to keep its blank lines and to
+// return it byte-for-byte when nothing needs merging.
 //
 // The merge performs up to three operations:
 //  1. Appends an include entry for .gitlab/ci/fullsend-pipeline.yml
@@ -1185,6 +1186,10 @@ func mergeGitLabCIWithWrapper(existing, wrapper []byte) ([]byte, error) {
 	if len(bytes.TrimSpace(existing)) == 0 {
 		existing = []byte("include: []\nworkflow:\n  name: 'fullsend $CI_PIPELINE_SOURCE'\n")
 	}
+	// source is the content whose formatting the merged output keeps
+	// (see renderGitLabDocuments); it tracks the placeholder below when
+	// the existing file has no documents to merge into.
+	source := existing
 
 	docs, err := decodeGitLabDocuments(existing)
 	if err != nil {
@@ -1200,7 +1205,8 @@ func mergeGitLabCIWithWrapper(existing, wrapper []byte) ([]byte, error) {
 		// root forwarding inputs a pending legacy wrapper never declares,
 		// even though install already classified that wrapper as legacy.
 		// See the review finding on this fallback.
-		docs, err = decodeGitLabDocuments([]byte("include: []\nworkflow:\n  name: 'fullsend $CI_PIPELINE_SOURCE'\n"))
+		source = []byte("include: []\nworkflow:\n  name: 'fullsend $CI_PIPELINE_SOURCE'\n")
+		docs, err = decodeGitLabDocuments(source)
 		if err != nil {
 			return nil, fmt.Errorf("parsing placeholder .gitlab-ci.yml: %w", err)
 		}
@@ -1275,7 +1281,7 @@ func mergeGitLabCIWithWrapper(existing, wrapper []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	return marshalGitLabDocuments(docs)
+	return renderGitLabDocuments(source, docs)
 }
 
 func decodeGitLabDocuments(content []byte) ([]*yaml.Node, error) {
@@ -1900,7 +1906,7 @@ func UnmergeGitLabCI(existing []byte) ([]byte, error) {
 		return nil, nil
 	}
 
-	return marshalGitLabDocuments(docs)
+	return renderGitLabDocuments(existing, docs)
 }
 
 // yamlSubtreeHasSurvivingAlias reports whether any alias node in doc, outside

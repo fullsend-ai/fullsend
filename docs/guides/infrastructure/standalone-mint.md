@@ -310,6 +310,7 @@ When `FALLBACK_MINT_URL` is set, the standalone mint acts as a transparent proxy
 | `POST /v1/token` with an unknown role | Forwarded to `FALLBACK_MINT_URL` |
 | `GET /health` | Always handled locally |
 | `GET /v1/status` | Always handled locally |
+| `POST /v1/bot-role` | Always handled locally |
 
 The proxy forwards the original OIDC bearer token and request body to the upstream mint, and returns the upstream response verbatim. The upstream mint performs its own OIDC validation — the shared public GitHub Apps must be installed in your organization for proxied requests to succeed.
 

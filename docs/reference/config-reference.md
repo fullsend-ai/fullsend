@@ -264,8 +264,9 @@ The only provider is `owners_file`:
 
 - An `approvers` entry in the repo-root `OWNERS` file gets write-level access
   (every slash command and custom agent). A `reviewers` entry gets
-  triage-level access, which covers `/fs-triage` and `/fs-review` only:
-  custom agents under `agents:` still require write.
+  triage-level access, which covers `/fs-triage`, `/fs-review`, and custom
+  agents whose harness sets `role: triage` or `role: review`. Custom agents
+  with any other `role:` still require write.
 - An entry that names a key in `OWNERS_ALIASES` stands for that alias's
   members. A GitHub login equal to any alias key never matches, and nested
   aliases are not expanded.

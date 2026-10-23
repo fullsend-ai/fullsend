@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"slices"
+	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/fetch"
@@ -78,9 +80,9 @@ func DispatchResult(ctx context.Context, opts Options) (Result, error) {
 	}
 
 	// Compute the effective role for the auth gate without mutating the
-	// caller's event. The OWNERS-upgraded role is used only for
-	// IsAuthorized; downstream CEL evaluation sees the original
-	// collaborator-API role.
+	// caller's event. The OWNERS-upgraded role is used only for the
+	// event-level and per-harness auth checks; downstream CEL evaluation
+	// sees the original collaborator-API role.
 	repoRoot := filepath.Dir(opts.ConfigDir)
 	effectiveRole := opts.Event.Actor.Role
 	if pr, ok := dirCfg.(config.PerRepoConfigReader); ok && pr.IsOwnersFileAuthEnabled() && opts.Event.Actor.ID != "" {
@@ -97,8 +99,8 @@ func DispatchResult(ctx context.Context, opts Options) (Result, error) {
 
 	authCheck := *opts.Event
 	authCheck.Actor.Role = effectiveRole
-	authorized := IsAuthorized(&authCheck)
-	if !authorized && !opts.Event.AuthorizationAvailable() {
+	eventAuthorized := IsEventAuthorized(&authCheck)
+	if !eventAuthorized && !opts.Event.AuthorizationAvailable() {
 		return Result{}, nil
 	}
 
@@ -107,20 +109,45 @@ func DispatchResult(ctx context.Context, opts Options) (Result, error) {
 		// An already-denied event cannot launch anything, so an unavailable
 		// harness should not turn the denial-notification path into a failure.
 		// Authorized events still surface resolution errors normally.
-		if !authorized {
+		if !eventAuthorized {
 			return Result{}, nil
 		}
 		return Result{}, err
 	}
 
-	matched, err := MatchHarnesses(candidates, opts.Event)
+	if !eventAuthorized {
+		// Keep the execution gate fail-closed, but use a non-dispatching CEL
+		// probe to establish whether this denied event actually targeted a
+		// harness. A denial notice is only justified when both gates fail: an
+		// authorization failure and a matching trigger. No execution refs are
+		// projected from this branch.
+		matched, err := MatchHarnesses(candidates, opts.Event)
+		if err != nil {
+			return Result{}, err
+		}
+		return Result{AuthorizationDenied: len(matched) > 0}, nil
+	}
+
+	authorizedCandidates, deniedCandidates := partitionHarnessesByAuthorization(candidates, &authCheck)
+
+	matched, err := MatchHarnesses(authorizedCandidates, opts.Event)
 	if err != nil {
 		return Result{}, err
 	}
 
-	if !authorized {
-		return Result{AuthorizationDenied: len(matched) > 0}, nil
+	// The normal dispatch path evaluates CEL only for authorized candidates.
+	// For the notice path, evaluate denied candidates separately and never
+	// project their refs; this distinguishes a denied launch from an event
+	// that simply does not match any harness.
+	var authorizationDenied bool
+	if len(deniedCandidates) > 0 {
+		deniedMatches, err := MatchHarnesses(deniedCandidates, opts.Event)
+		if err != nil {
+			return Result{}, err
+		}
+		authorizationDenied = len(deniedMatches) > 0
 	}
+	matched = dropGitHubRoutedBuiltins(matched, opts.Event)
 
 	var refs []ExecutionRef
 	for _, m := range matched {
@@ -131,5 +158,46 @@ func DispatchResult(ctx context.Context, opts Options) (Result, error) {
 		}
 		refs = append(refs, ref)
 	}
-	return Result{Refs: refs}, nil
+	return Result{Refs: refs, AuthorizationDenied: authorizationDenied}, nil
+}
+
+// partitionHarnessesByAuthorization keeps the dispatch path's CEL input
+// restricted to authorized harnesses while retaining denied candidates for a
+// separate, non-dispatching notice probe.
+func partitionHarnessesByAuthorization(harnesses []TriggeredHarness, event *normevent.Event) (authorized, denied []TriggeredHarness) {
+	for _, harness := range harnesses {
+		role := ""
+		if harness.Harness != nil {
+			role = harness.Harness.Role
+		}
+		if IsHarnessAuthorized(event, role) {
+			authorized = append(authorized, harness)
+		} else {
+			denied = append(denied, harness)
+		}
+	}
+	return authorized, denied
+}
+
+// dropGitHubRoutedBuiltins removes matched harnesses registered under a
+// built-in agent name (config.ValidAgentNames, case-insensitive) when the
+// event comes from GitHub. On GitHub the built-in stages are already routed
+// by the route job in reusable-dispatch.yml; dispatching an override of a
+// built-in agent here as well would run it twice. Other sources are left
+// untouched: Jira polling has no stage routing and registers built-in names
+// with triggers on purpose.
+func dropGitHubRoutedBuiltins(matched []TriggeredHarness, event *normevent.Event) []TriggeredHarness {
+	if event.Source.System != normevent.SystemGitHub {
+		return matched
+	}
+	builtins := config.ValidAgentNames()
+	var kept []TriggeredHarness
+	for _, m := range matched {
+		if slices.Contains(builtins, strings.ToLower(m.Name)) {
+			log.Printf("harness dispatch: %s is a built-in agent; its GitHub stage routing handles this event", m.Name)
+			continue
+		}
+		kept = append(kept, m)
+	}
+	return kept
 }

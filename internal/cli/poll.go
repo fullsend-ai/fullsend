@@ -417,10 +417,11 @@ func newCELMatcher(ctx context.Context, fullsendDir string) (*celMatcher, error)
 // Match evaluates the event against all CEL trigger candidates and returns
 // dispatch records for each matching harness.
 func (m *celMatcher) Match(_ context.Context, event *normevent.Event) ([]jirapoll.DispatchRecord, error) {
-	if !harnessdispatch.IsAuthorized(event) {
+	if !harnessdispatch.IsEventAuthorized(event) {
 		return nil, nil
 	}
-	matched, err := harnessdispatch.MatchHarnesses(m.candidates, event)
+	candidates := harnessdispatch.FilterAuthorizedHarnesses(m.candidates, event)
+	matched, err := harnessdispatch.MatchHarnesses(candidates, event)
 	if err != nil {
 		return nil, err
 	}

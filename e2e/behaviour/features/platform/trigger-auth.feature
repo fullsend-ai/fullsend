@@ -1,8 +1,8 @@
 Feature: Platform trigger authorization
 
   Harness-dispatch authorization (ADR 0054) on platform trigger paths.
-  The shared dispatch gate requires a write-level actor for most
-  transitions, but authorizes label-added events without one. So the
+  The dispatch gate requires the harness's role-derived threshold for
+  most transitions, but authorizes label-added events without one. So the
   denial is exercised through the pull request opened transition,
   performed by the outsider (TEST_ACTOR_OUTSIDER_PAT, no collaborator
   access), on a pull request from the outsider's own fork.

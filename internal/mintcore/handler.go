@@ -224,6 +224,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	root := spanFromContext(r.Context())
 
+	if r.URL.Path == botRolePath {
+		h.handleBotRole(w, r)
+		return
+	}
+
 	if r.URL.Path != "/v1/token" && r.URL.Path != "/" && r.URL.Path != "/v1/status" {
 		writeError(w, http.StatusNotFound, "not found")
 		return

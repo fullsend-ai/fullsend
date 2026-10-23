@@ -51,7 +51,8 @@ identity. You usually don't:
   hosted mint — set its `role:` to the built-in role whose permissions match
   what it does. A code-writing agent uses `role: coder`; a triage-like agent
   uses `role: triage`. The agent's own name lives in `name:` in its `.md`, not
-  in `role:`.
+  in `role:`. `role:` also sets who may trigger the agent: `triage` or
+  `review` needs triage access, any other role needs write.
 - **Acting on the result after the run** — to re-run CI jobs, dispatch a
   workflow, deploy, and so on, chain your own workflow on the run's artifact;
   see [Chaining Follow-up Workflows](chaining-follow-up-workflows.md).

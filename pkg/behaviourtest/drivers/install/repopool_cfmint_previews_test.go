@@ -449,6 +449,7 @@ func TestEnvAppSet_Default(t *testing.T) {
 func TestEnvAppSet_Override(t *testing.T) {
 	t.Setenv("BEHAVIOUR_APP_SET", "my-app-set")
 	assert.Equal(t, "my-app-set", envAppSet())
+	assert.Equal(t, "my-app-set", AppSet())
 }
 
 func TestEnvConfigPreset_Unset(t *testing.T) {

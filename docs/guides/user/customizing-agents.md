@@ -733,12 +733,20 @@ disables nothing because no agent has that harness name.
 
 By default, fullsend checks the forge's permission API to decide who can
 trigger agents. Users with `write` or above can trigger all agents; users
-with `triage` can trigger observation agents (`/fs-triage`, `/fs-review`)
-only. This triage-level access applies to **GitHub webhook dispatch** (slash
-commands, label-triggered dispatch, and event-triggered dispatch). The Go
-poll path used for GitLab and Jira currently requires `write` for all
-non-exception transitions — it does not yet distinguish observation from
-mutation thresholds. On GitLab, the agent job also requires the event actor
+with `triage` can trigger the built-in observation agents (`/fs-triage`,
+`/fs-review`). This applies to **GitHub webhook dispatch** (slash commands,
+label-triggered dispatch, and event-triggered dispatch).
+
+On the CEL dispatch path (GitHub `fullsend dispatch` and the Jira poll), the
+threshold follows the harness `role:`:
+
+- `role: triage` or `role: review` — triage-level actors can trigger it,
+  including OWNERS reviewers on GitHub when
+  [OWNERS authorization](owners-file-authorization.md) is enabled.
+- Any other `role:` — the actor needs `write`.
+
+GitLab uses its own stage router, which applies the same triage and write
+split to slash commands. The GitLab agent job also requires the event actor
 to hold Developer access or higher for every stage except retro and
 prioritize, so automatic triage of a newly opened issue runs only when its
 author is a Developer, Maintainer, or Owner.

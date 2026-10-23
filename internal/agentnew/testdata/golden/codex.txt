@@ -77,11 +77,11 @@ env:
   runner:
     FULLSEND_FORGE: github
     GH_TOKEN: ${GH_TOKEN}
-    ISSUE_URL: ${GITHUB_ISSUE_URL}
+    ISSUE_URL: ${FULLSEND_WORK_ITEM_URL}
   sandbox:
     FULLSEND_FORGE: github
     ISSUE_NUMBER: ${ISSUE_NUMBER}
-    ISSUE_URL: ${GITHUB_ISSUE_URL}
+    ISSUE_URL: ${FULLSEND_WORK_ITEM_URL}
     REPO_FULL_NAME: ${REPO_FULL_NAME}
 timeout_minutes: 15
 trigger: |
@@ -160,7 +160,7 @@ trigger: |
 # iteration and only the last one counts.
 #
 # Required env:
-#   ISSUE_URL — HTML URL of the work item (the harness maps GITHUB_ISSUE_URL to it)
+#   ISSUE_URL — HTML URL of the work item (the harness maps FULLSEND_WORK_ITEM_URL to it)
 #   GH_TOKEN  — minted by fullsend from the harness `role:` field
 #
 # Optional env:

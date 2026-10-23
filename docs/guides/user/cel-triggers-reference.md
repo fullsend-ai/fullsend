@@ -33,6 +33,14 @@ When you register a custom agent and give it a `trigger` expression, fullsend ha
 
 Built-in agents (triage, code, review, fix, retro, prioritize) are routed by the dispatch workflow's stage-based routing logic. Custom agents with CEL triggers run alongside them — the two mechanisms coexist. A single event can trigger both a built-in agent via stage routing and one or more custom agents via CEL matching.
 
+On GitHub, CEL dispatch ignores the `trigger` of any agent registered under a
+built-in name (matched case-insensitively), including an override whose harness
+has one: that agent runs only where stage routing sends it, so it never runs
+twice. Jira polling, the only poll source that evaluates CEL triggers today, has
+no stage routing, so built-in names whose trigger matches are still dispatched.
+GitLab routes agents through its own built-in router and does not evaluate
+`trigger` expressions.
+
 You can also keep a hand-written workflow that invokes `fullsend run` with a fixed harness path. CEL-based dispatch and explicit harness invocation may run side by side in the same installation.
 
 ## Writing CEL triggers

@@ -100,7 +100,7 @@ func buildHarness(opts Options, role Role) (*harness.Harness, error) {
 	// gives gh a placeholder; the raw value stays in env.runner for the
 	// post-script.
 	sandboxEnv := map[string]string{
-		"ISSUE_URL": "${GITHUB_ISSUE_URL}",
+		"ISSUE_URL": "${FULLSEND_WORK_ITEM_URL}",
 		// ISSUE_NUMBER / REPO_FULL_NAME are the fetch arguments the
 		// generated prompt uses. A github.com URL in a `gh` command is
 		// blocked by the SSRF PreToolUse hook: the sandbox cannot
@@ -152,7 +152,7 @@ func buildHarness(opts Options, role Role) (*harness.Harness, error) {
 		Trigger:        opts.Trigger,
 		Env: &harness.EnvConfig{
 			Runner: map[string]string{
-				"ISSUE_URL":      "${GITHUB_ISSUE_URL}",
+				"ISSUE_URL":      "${FULLSEND_WORK_ITEM_URL}",
 				"GH_TOKEN":       "${GH_TOKEN}",
 				"FULLSEND_FORGE": "github",
 			},

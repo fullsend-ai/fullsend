@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -538,6 +539,92 @@ func FindInstallation(ctx context.Context, githubBaseURL, jwt, org, repo string)
 	return inst.ID, nil
 }
 
+// githubStatusError is a failed GitHub API call that callers may want to
+// classify: a transport failure (Status 0) or an unexpected HTTP status,
+// with the rate-limit signals GitHub sent. Its message is the plain
+// description of the call, so wrapping it does not change what is logged.
+type githubStatusError struct {
+	// Status is the HTTP status, or 0 for a transport failure.
+	Status int
+	// RateLimited reports a primary or secondary rate limit (429, or a 403
+	// carrying Retry-After, an exhausted X-RateLimit-Remaining, or a "rate
+	// limit" message). A rate-limit 403 is not a rejected credential.
+	RateLimited bool
+	// Exhausted reports X-RateLimit-Remaining: 0, so ResetAt is when the
+	// quota returns rather than just the end of a window with budget left.
+	Exhausted bool
+	// RetryAfter is the Retry-After header, or 0 when absent or invalid.
+	RetryAfter time.Duration
+	// ResetAt is X-RateLimit-Reset, or the zero time when absent.
+	ResetAt time.Time
+
+	msg string
+	err error
+}
+
+func (e *githubStatusError) Error() string { return e.msg }
+func (e *githubStatusError) Unwrap() error { return e.err }
+
+// telemetryMessage is the span-safe description of the failure: only the
+// status and rate-limit class, never the call description, which names the
+// App slug or repository.
+func (e *githubStatusError) telemetryMessage() string {
+	if e.Status == 0 {
+		return "GitHub request failed: transport failure"
+	}
+	msg := "GitHub request failed: status " + strconv.Itoa(e.Status)
+	if rl := e.rateLimitClass(); rl != "none" {
+		msg += " (rate limit: " + rl + ")"
+	}
+	return msg
+}
+
+// rateLimitClass names the rate-limit signal GitHub sent: "primary" for an
+// exhausted quota, "secondary" for a Retry-After, "other" for any remaining
+// rate-limit response, and "none" otherwise.
+func (e *githubStatusError) rateLimitClass() string {
+	switch {
+	case !e.RateLimited:
+		return "none"
+	case e.Exhausted:
+		return "primary"
+	case e.RetryAfter > 0:
+		return "secondary"
+	default:
+		return "other"
+	}
+}
+
+// Transient reports whether repeating the call after a short wait can
+// succeed: a transport failure, a rate limit or a 5xx from GitHub.
+func (e *githubStatusError) Transient() bool {
+	return e.Status == 0 || e.RateLimited ||
+		e.Status == http.StatusInternalServerError || e.Status == http.StatusBadGateway ||
+		e.Status == http.StatusServiceUnavailable || e.Status == http.StatusGatewayTimeout
+}
+
+// newGitHubStatusError classifies a non-success response, consuming (a
+// bounded part of) its body to recognize GitHub's "rate limit" message.
+func newGitHubStatusError(resp *http.Response, msg string) *githubStatusError {
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	e := &githubStatusError{Status: resp.StatusCode, msg: msg}
+	if secs, err := strconv.ParseInt(strings.TrimSpace(resp.Header.Get("Retry-After")), 10, 64); err == nil && secs >= 0 {
+		e.RetryAfter = time.Duration(secs) * time.Second
+	}
+	if secs, err := strconv.ParseInt(strings.TrimSpace(resp.Header.Get("X-RateLimit-Reset")), 10, 64); err == nil && secs > 0 {
+		e.ResetAt = time.Unix(secs, 0)
+	}
+	e.Exhausted = strings.TrimSpace(resp.Header.Get("X-RateLimit-Remaining")) == "0"
+	switch resp.StatusCode {
+	case http.StatusTooManyRequests:
+		e.RateLimited = true
+	case http.StatusForbidden:
+		e.RateLimited = resp.Header.Get("Retry-After") != "" || e.Exhausted ||
+			strings.Contains(strings.ToLower(string(body)), "rate limit")
+	}
+	return e
+}
+
 func findInstallationDetails(ctx context.Context, githubBaseURL, jwt, org, repo string) (installationResponse, error) {
 	reqURL := fmt.Sprintf("%s/repos/%s/%s/installation", githubBaseURL, org, repo)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
@@ -550,16 +637,17 @@ func findInstallationDetails(ctx context.Context, githubBaseURL, jwt, org, repo 
 
 	resp, err := mintHTTP(req)
 	if err != nil {
-		return installationResponse{}, fmt.Errorf("getting installation: %w", err)
+		return installationResponse{}, &githubStatusError{msg: fmt.Sprintf("getting installation: %v", err), err: err}
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 		if resp.StatusCode == http.StatusNotFound {
+			io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 			return installationResponse{}, fmt.Errorf("getting installation for %s/%s: %w", org, repo, ErrInstallationNotFound)
 		}
-		return installationResponse{}, fmt.Errorf("getting installation for %s/%s returned status %d", org, repo, resp.StatusCode)
+		return installationResponse{}, newGitHubStatusError(resp,
+			fmt.Sprintf("getting installation for %s/%s returned status %d", org, repo, resp.StatusCode))
 	}
 
 	var inst installationResponse

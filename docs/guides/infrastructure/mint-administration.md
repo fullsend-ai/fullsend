@@ -791,17 +791,24 @@ fullsend mint delete \
 
 ## Cloudflare Worker rate limiting
 
-The Cloudflare Worker deployment includes a native `[[ratelimits]]` binding (`MINT_TOKEN_RATE_LIMITER`) that rate-limits `POST /v1/token` requests. The binding is configured in `wrangler.toml` and enforced in the Worker before WASM initialization — no operator action is required.
+The Cloudflare Worker deployment includes a native `[[ratelimits]]` binding (`MINT_TOKEN_RATE_LIMITER`) that rate-limits `POST /v1/token` and `POST /v1/bot-role` requests. The binding is configured in `wrangler.toml` and enforced in the Worker before WASM initialization — no operator action is required.
 
 | Setting | Value |
 |---------|-------|
 | Binding name | `MINT_TOKEN_RATE_LIMITER` |
 | Limit | 60 requests per minute per key |
-| Key format | `{hostname}:/v1/token:{client-IP}` |
+| Key format | `{hostname}:{path}:{client-IP}` |
 
 The rate limit key incorporates the request hostname, so preview deployments (which produce distinct hostnames like `<alias>-<worker>.<subdomain>.workers.dev`) get isolated counters. Durable deploys use a stable hostname. When the rate limit is exceeded, the Worker returns HTTP 429 with `{"error":"rate_limited"}`.
 
 If the `[[ratelimits]]` section is removed from `wrangler.toml`, the Worker logs a warning and continues without rate limiting (fail-open).
+
+## Bot-role lookup endpoint
+
+`POST /v1/bot-role` resolves a bot login to a registered role for dispatch authorization ([ADR 0107](../../ADRs/0107-bot-identity-resolution-for-dispatch-authorization.md)). Callers authenticate with the same OIDC token as `/v1/token`.
+
+- **Canonical role.** The `role` field of a recognized response (`{"outcome": "recognized", "role": "review"}`) is the canonical role of the matching GitHub App; the dispatch adapter surfaces it as `actor.bot_role` in the normalized event. When several allowed roles share one App ID (for example `fix` reuses the `coder` App), the lexicographically first role name is returned, so `fix` resolves to `coder`. Treat this tie-break as a stable contract: renaming a role or registering a new role that sorts earlier for a shared App changes the `role` the endpoint returns.
+- **Rate limiting.** The Worker rate limiter described above also covers `POST /v1/bot-role`, with a separate counter per path, because each authenticated call makes outbound GitHub API requests.
 
 ## See Also
 

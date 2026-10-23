@@ -4,34 +4,164 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/normevent"
 )
 
-// IsAuthorized is the shared dispatch authorization gate before CEL evaluation.
-// It is intentionally agent-generic: stage-specific constraints (review state,
+// eventAuth is the outcome of the event-level part of the dispatch
+// authorization gate.
+type eventAuth int
+
+const (
+	// eventDenied: the event is denied for every harness.
+	eventDenied eventAuth = iota
+	// eventAllowed: an event-level exception authorizes the event for
+	// every matched harness, regardless of actor.role.
+	eventAllowed
+	// eventNeedsRoleThreshold: the actor.role must satisfy the threshold
+	// of each matched harness (see RequiredActorRole).
+	eventNeedsRoleThreshold
+)
+
+// authorizeEvent applies the event-level rules of the dispatch gate. It is
+// intentionally agent-generic: stage-specific constraints (review state,
 // bot identity, fork/label guards, etc.) belong in harness trigger CEL
 // expressions, not here. This layer only encodes cross-cutting GitHub rules
 // that bash routing applied before CEL existed and that are awkward to express
 // purely from normalized events alone.
 //
-// Most transitions require write-level actor.role from the collaborator
-// permission API. Label-added events are authorized without a write role because
-// GitHub label application needs triage/write access and bots often lack a
+// Label-added events are authorized without a role threshold because GitHub
+// label application needs triage/write access and bots often lack a
 // collaborator role in that API (mirroring bash label routing). Bot-submitted
-// pull_request_review events are also authorized without a write role so
+// pull_request_review events are also authorized without a role threshold so
 // downstream CEL can filter review state, bot identity, and other review-stage
 // guards.
-func IsAuthorized(event *normevent.Event) bool {
+//
+// A bot actor that carries an ADR 0107 bot-role lookup result
+// (actor.role_verified set) is authorized on non-label paths only when the
+// lookup completed and recognized a registered role (actor.bot_role). A
+// successful no-match and a failed lookup are both denied here, before CEL.
+// Bot events without a lookup result keep the legacy behavior above until
+// their adapter migrates.
+//
+// A human actor whose actor.role_verified is false is denied on non-label
+// paths regardless of the role string (the role lookup failed, so the role is
+// not authoritative). A human actor without the field is legacy input and
+// keeps the role-threshold check.
+//
+// Every remaining event falls through to the per-harness role threshold.
+func authorizeEvent(event *normevent.Event) eventAuth {
 	if event == nil {
-		return false
+		return eventDenied
+	}
+	if event.Source.System == normevent.SystemGitHub &&
+		event.Transition.Kind == normevent.TransitionLabelChanged &&
+		event.Transition.Label != nil &&
+		event.Transition.Label.Action == "added" {
+		return eventAllowed
+	}
+	if event.Actor.Kind == normevent.ActorBot && event.Actor.RoleVerified != nil {
+		if IsRecognizedBot(event.Actor) {
+			return eventAllowed
+		}
+		return eventDenied
+	}
+	if event.Actor.Kind == normevent.ActorHuman &&
+		event.Actor.RoleVerified != nil && !*event.Actor.RoleVerified {
+		return eventDenied
 	}
 	if event.Source.System == normevent.SystemGitHub {
-		if event.Transition.Kind == normevent.TransitionLabelChanged &&
-			event.Transition.Label != nil &&
-			event.Transition.Label.Action == "added" {
-			return true
-		}
 		if event.Transition.Kind == normevent.TransitionReviewSubmitted &&
 			event.Actor.Kind == normevent.ActorBot {
-			return true
+			return eventAllowed
 		}
 	}
-	return normevent.IsWriteAuthorized(event.Actor.Role)
+	return eventNeedsRoleThreshold
+}
+
+// RequiredActorRole returns the minimum actor.role a harness requires,
+// derived from its role: field per the authorization contract's default
+// thresholds. Observation roles (triage, review) require triage; every
+// other role, including an empty, unknown, or custom role, requires write
+// (fail closed).
+func RequiredActorRole(harnessRole string) normevent.ActorRole {
+	switch harnessRole {
+	case "triage", "review":
+		return normevent.RoleTriage
+	default:
+		return normevent.RoleWrite
+	}
+}
+
+// satisfiesThreshold reports whether role is at or above the minimum
+// returned by RequiredActorRole.
+func satisfiesThreshold(role, minimum normevent.ActorRole) bool {
+	if minimum == normevent.RoleTriage {
+		return normevent.IsTriageAuthorized(role)
+	}
+	return normevent.IsWriteAuthorized(role)
+}
+
+// IsEventAuthorized is the event-level dispatch gate, run once per event
+// before harness enumeration. It returns false when the event is denied for
+// every harness: a nil event, a bot whose ADR 0107 lookup did not recognize a
+// registered role, a human whose role lookup failed, or an actor.role below
+// the lowest per-harness threshold (triage). A true result means at least one
+// harness may be authorized; callers must still filter harnesses with
+// IsHarnessAuthorized or FilterAuthorizedHarnesses.
+func IsEventAuthorized(event *normevent.Event) bool {
+	switch authorizeEvent(event) {
+	case eventAllowed:
+		return true
+	case eventNeedsRoleThreshold:
+		return normevent.IsTriageAuthorized(event.Actor.Role)
+	default:
+		return false
+	}
+}
+
+// IsHarnessAuthorized reports whether event may dispatch a harness whose
+// role: field is harnessRole. Event-level exceptions (GitHub label-added,
+// recognized bots, GitHub bot review_submitted) authorize every harness;
+// event-level denials deny every harness; the remaining path requires
+// actor.role to satisfy RequiredActorRole(harnessRole).
+func IsHarnessAuthorized(event *normevent.Event, harnessRole string) bool {
+	switch authorizeEvent(event) {
+	case eventAllowed:
+		return true
+	case eventNeedsRoleThreshold:
+		return satisfiesThreshold(event.Actor.Role, RequiredActorRole(harnessRole))
+	default:
+		return false
+	}
+}
+
+// IsAuthorized reports whether event may dispatch a mutation harness (write
+// threshold). It is equivalent to IsHarnessAuthorized with an empty harness
+// role, which fails closed to write.
+func IsAuthorized(event *normevent.Event) bool {
+	return IsHarnessAuthorized(event, "")
+}
+
+// FilterAuthorizedHarnesses returns the subset of harnesses that event is
+// authorized to dispatch, keyed on each harness role: field. The execution
+// path runs it before its normal MatchHarnesses call; a separate
+// non-dispatching notice probe may evaluate denied candidates to establish
+// whether a denied event actually matched a harness.
+func FilterAuthorizedHarnesses(harnesses []TriggeredHarness, event *normevent.Event) []TriggeredHarness {
+	var out []TriggeredHarness
+	for _, m := range harnesses {
+		role := ""
+		if m.Harness != nil {
+			role = m.Harness.Role
+		}
+		if IsHarnessAuthorized(event, role) {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// IsRecognizedBot reports whether actor is a bot whose bot-role lookup
+// completed and resolved a registered canonical role (ADR 0107).
+func IsRecognizedBot(actor normevent.Actor) bool {
+	return actor.Kind == normevent.ActorBot &&
+		actor.RoleVerified != nil && *actor.RoleVerified &&
+		actor.BotRole != ""
 }

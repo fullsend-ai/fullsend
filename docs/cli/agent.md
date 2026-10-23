@@ -50,7 +50,7 @@ Next:
   2. Test locally, printing the result instead of commenting:
        POST_LINT_DOCS_DRY_RUN=1 fullsend run lint-docs \
          --target-repo . --env-file .env.local
-     .env.local needs GITHUB_ISSUE_URL, ISSUE_NUMBER, REPO_FULL_NAME,
+     .env.local needs FULLSEND_WORK_ITEM_URL, ISSUE_NUMBER, REPO_FULL_NAME,
      GH_TOKEN, ANTHROPIC_VERTEX_PROJECT_ID, CLOUD_ML_REGION, and
      GOOGLE_APPLICATION_CREDENTIALS pointing at a GCP credentials file;
      the run stops before it starts without them.

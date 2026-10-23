@@ -357,6 +357,14 @@ func envConfigPreset() string {
 	return os.Getenv("BEHAVIOUR_CONFIG_PRESET")
 }
 
+// AppSet returns the GitHub App set the behaviour mints are deployed
+// with: BEHAVIOUR_APP_SET, or "fullsend-test" when unset. Its role Apps
+// have the slugs "<app set>-<role>", so a registered bot's login is
+// "<app set>-<role>[bot]".
+func AppSet() string {
+	return envAppSet()
+}
+
 // envAppSet returns the app set for PEM bootstrap from env or a default.
 func envAppSet() string {
 	if v := os.Getenv("BEHAVIOUR_APP_SET"); v != "" {

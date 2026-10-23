@@ -181,6 +181,15 @@ dispatch paths from racing to create duplicate notices. The dispatch binary
 should emit only the metadata needed by that job; it should not introduce a
 second comment-posting implementation.
 
+The CEL path requires both sides of the denial signal: the pre-CEL
+authorization gate must reject the actor, and at least one harness trigger
+must match the event. A role failure by itself is not a launch attempt, and a
+CEL non-match is not an authorization failure; for example, an ordinary
+comment without the harness's slash command remains silent. The execution
+path still filters unauthorized harnesses before projecting refs. Dispatch
+uses a separate non-dispatching trigger evaluation only to decide whether
+denial metadata is warranted, and never emits refs from that probe.
+
 ### Kill-switch pause notices
 
 An engaged `kill_switch` is an intentional repository-wide pause, not a
@@ -224,13 +233,13 @@ Prefer short-lived narrowly-scoped credentials whenever possible. When long-live
 The `check-e2e-authorization` gate job (`gate` in `e2e.yml`) mitigates the risk by requiring authorization before the behaviour and playback jobs check out PR-head code:
 
 - **Trusted authors** — org members and repo collaborators are auto-authorized.
-- **External contributors** — require a maintainer with write access to apply the `ok-to-test` label after reviewing the PR diff; the gate checks the labeler's permission. The gate removes stale labels when new commits land.
+- **External contributors** — require a user with write access (Write role or above) to apply the `ok-to-test` label after reviewing the PR diff; the gate checks the labeler's permission. The gate removes stale labels when new commits land.
 - **Separation of concerns** — the gate job runs on the base-branch checkout with `pull-requests: write`; the behaviour/playback jobs run on the PR-head checkout without write permissions.
 
 **Limitations of the gate:**
 
 - The gate authorizes *authors*, not *code*. A trusted author whose account is compromised bypasses the gate.
-- The gate does not inspect the PR diff — it trusts that maintainers reviewed the code before labeling `ok-to-test`.
+- The gate does not inspect the PR diff — it trusts that the labeler reviewed the code before labeling `ok-to-test`.
 - The `ok-to-test` label check has a TOCTOU window: code can change between label application and job execution (mitigated by the stale-label removal on `synchronize` events, but not eliminated).
 
 **Validating gate changes (`pull_request_target`):** Because `pull_request_target`
