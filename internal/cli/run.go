@@ -7278,7 +7278,8 @@ func resolveAgentsRef() (displayRef, gitRef string) {
 // config changes from existing users.
 //
 // Returns (path, deps, true) on success, or ("", nil, false) if the fallback
-// should be skipped (offline, no forge client, agent not known, not allowlisted, etc.).
+// should be skipped (offline with no cached copy, no forge client, agent not
+// known, not allowlisted, etc.).
 // All errors are non-fatal — returns false to signal that this fallback path was not usable.
 func tryAgentsRepoFallback(ctx context.Context, agentName string, forgeClient forge.Client, composeOpts harness.ComposeOpts, printer *ui.Printer) (string, []harness.Dependency, bool) {
 	normalizedName := strings.ToLower(agentName)
@@ -7305,14 +7306,16 @@ func tryAgentsRepoMeasurementManifest(ctx context.Context, agentName string, for
 }
 
 // fetchPinnedAgentsRepoFile resolves the agents ref to a commit SHA and
-// fetches relPath from fullsend-ai/agents. All errors are non-fatal.
+// fetches relPath from fullsend-ai/agents. In offline mode it resolves
+// relPath from the cache instead (see cachedPinnedAgentsRepoFile). All
+// errors are non-fatal.
 func fetchPinnedAgentsRepoFile(ctx context.Context, relPath string, forgeClient forge.Client, composeOpts harness.ComposeOpts, printer *ui.Printer, noun string) (string, harness.Dependency, bool) {
 	var none harness.Dependency
 	if strings.Contains(relPath, "..") || strings.HasPrefix(relPath, "/") {
 		return "", none, false
 	}
 	if composeOpts.FetchPolicy.Offline {
-		return "", none, false
+		return cachedPinnedAgentsRepoFile(relPath, composeOpts, printer, noun)
 	}
 	if forgeClient == nil {
 		return "", none, false
@@ -7397,6 +7400,88 @@ func fetchPinnedAgentsRepoFile(ctx context.Context, relPath string, forgeClient 
 
 	printer.StepDone(fmt.Sprintf("%s resolved from %s/%s@%s", noun, defaultAgentsRepoOwner, defaultAgentsRepoName, displayRef))
 	return localPath, dep, true
+}
+
+// cachedPinnedAgentsRepoFile is the offline counterpart of
+// fetchPinnedAgentsRepoFile. The online path pins relPath to the commit SHA
+// of the agents ref, which needs a network call, so offline the URL cannot be
+// reconstructed. Instead the cache metadata is scanned for the most recently
+// fetched entry recorded under a SHA-pinned agents-repo URL for relPath. The
+// returned dependency carries that original URL, so companion files resolve
+// through the URL index exactly as they did online. The newest cached
+// revision may be behind the agents ref; the resolved short SHA is printed
+// so a stale revision is visible. All errors are non-fatal.
+func cachedPinnedAgentsRepoFile(relPath string, composeOpts harness.ComposeOpts, printer *ui.Printer, noun string) (string, harness.Dependency, bool) {
+	var none harness.Dependency
+	allowlist := composeOpts.OrgAllowlist
+
+	notAllowed := false
+	match := func(rawURL string) bool {
+		rest, ok := strings.CutPrefix(rawURL, defaultAgentsRepoURLPrefix)
+		if !ok {
+			return false
+		}
+		sha, tail, ok := strings.Cut(rest, "/")
+		if !ok || tail != relPath || !commitSHAPattern.MatchString(sha) {
+			return false
+		}
+		// Offline resolution honors the same allowlist the online path
+		// checks before fetching.
+		if harness.MatchingAllowedPrefixInList(rawURL, allowlist) == "" {
+			notAllowed = true
+			return false
+		}
+		return true
+	}
+
+	// CacheFindNewest re-verifies the content hash before returning a hit.
+	_, entry, err := fetch.CacheFindNewest(composeOpts.WorkspaceRoot, match)
+	if err != nil {
+		printer.StepWarn(fmt.Sprintf("Failed to search cache for %s: %v", noun, err))
+		return "", none, false
+	}
+	if entry == nil {
+		if notAllowed {
+			printer.StepWarn(fmt.Sprintf("Agents repo fallback skipped for %s: cached URL not in allowed_remote_resources", noun))
+		} else {
+			printer.StepInfo(fmt.Sprintf("No cached %s from %s/%s; offline mode cannot fetch it", noun, defaultAgentsRepoOwner, defaultAgentsRepoName))
+		}
+		return "", none, false
+	}
+
+	cachePath, err := fetch.CachePath(composeOpts.WorkspaceRoot, entry.SHA256)
+	if err != nil {
+		printer.StepWarn(fmt.Sprintf("Failed to resolve cache path for %s: %v", noun, err))
+		return "", none, false
+	}
+	localPath := filepath.Join(cachePath, "content")
+
+	if composeOpts.AuditLogPath != "" {
+		if err := fetch.AppendFetchAudit(composeOpts.AuditLogPath, fetch.FetchAuditEntry{
+			TraceID:   composeOpts.TraceID,
+			FetchTime: entry.FetchTime,
+			URL:       entry.URL,
+			SHA256:    entry.SHA256,
+			FetchType: "static",
+			AllowedBy: harness.MatchingAllowedPrefixInList(entry.URL, allowlist),
+			CacheHit:  true,
+		}); err != nil {
+			printer.StepWarn(fmt.Sprintf("Failed to write fetch audit log: %v", err))
+		}
+	}
+
+	sha, _, _ := strings.Cut(strings.TrimPrefix(entry.URL, defaultAgentsRepoURLPrefix), "/")
+	printer.StepDone(fmt.Sprintf("%s resolved from cache (%s/%s@%s, offline)", noun, defaultAgentsRepoOwner, defaultAgentsRepoName, sha[:12]))
+
+	return localPath, harness.Dependency{
+		Field:     "base",
+		URL:       entry.URL,
+		LocalPath: localPath,
+		SHA256:    entry.SHA256,
+		FetchedAt: entry.FetchTime,
+		CacheHit:  true,
+		Type:      "file",
+	}, true
 }
 
 func isFetchHTTPStatus(err error, code int) bool {

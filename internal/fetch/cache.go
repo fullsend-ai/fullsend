@@ -152,6 +152,64 @@ func CachePut(workspaceRoot, url string, content []byte) error {
 	return nil
 }
 
+// CacheFindNewest scans the metadata of every single-file entry in the
+// content-addressed cache and returns the content and metadata of the most
+// recently fetched entry whose recorded URL satisfies match. Directory
+// entries are skipped. A candidate that fails CacheGet's integrity
+// re-verification is skipped in favor of the next newest. It returns
+// (nil, nil, nil) when no entry matches — including when the cache does not
+// exist yet.
+//
+// Metadata records only the last URL an identical content hash was cached
+// from, so a match against an earlier URL is a conservative miss.
+func CacheFindNewest(workspaceRoot string, match func(url string) bool) ([]byte, *CacheEntry, error) {
+	if workspaceRoot == "" {
+		return nil, nil, nil
+	}
+	root := filepath.Join(workspaceRoot, ".fullsend-cache", "resources", "sha256")
+	dirEntries, err := os.ReadDir(root)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil, nil
+		}
+		return nil, nil, fmt.Errorf("reading cache directory: %w", err)
+	}
+
+	var candidates []CacheEntry
+	for _, de := range dirEntries {
+		if !de.IsDir() || validateHash(de.Name()) != nil {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(root, de.Name(), "metadata.json"))
+		if err != nil {
+			continue
+		}
+		var meta struct {
+			CacheEntry
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(data, &meta); err != nil || meta.Type == "directory" {
+			continue
+		}
+		if meta.SHA256 != de.Name() || !match(meta.URL) {
+			continue
+		}
+		candidates = append(candidates, meta.CacheEntry)
+	}
+
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].FetchTime.After(candidates[j].FetchTime)
+	})
+	for _, c := range candidates {
+		content, entry, err := CacheGet(workspaceRoot, c.SHA256)
+		if err != nil || content == nil || !match(entry.URL) {
+			continue
+		}
+		return content, entry, nil
+	}
+	return nil, nil, nil
+}
+
 // validateCachePath resolves symlinks on the cache directory and verifies
 // the resolved path stays within the workspace's cache root.
 func validateCachePath(workspaceRoot, dir string) error {
