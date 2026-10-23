@@ -588,6 +588,10 @@ Install runs in two phases:
 > repository, the install command creates a fork and submits the scaffold
 > PR from the fork. To avoid fork-based delivery, ensure you have write
 > (or admin) access to the target repositories before running install.
+> GitHub App installation tokens create a branch and PR in the target
+> repository. Install the App with contents and pull requests write
+> permissions on each target repository; fork creation requires additional
+> permissions and access to the destination account.
 
 Preview what would change without making modifications:
 

@@ -24,7 +24,8 @@ import (
 //
 // The in parameter enables interactive prompts (e.g., fork-vs-upstream choice).
 // Pass os.Stdin for interactive CLI callers; pass nil for non-interactive
-// callers (sync-scaffold), which default to forking without prompting.
+// callers (sync-scaffold). Installation tokens always deliver PRs on the
+// upstream repository; other non-interactive tokens may use a fork.
 //
 // The returned bool is true when files were committed directly to the default
 // branch (false for PR-based delivery, idempotent no-ops, or unchanged content).
@@ -98,6 +99,20 @@ func commitScaffoldViaPR(ctx context.Context, client forge.Client, printer *ui.P
 	// gates (/ok-to-test) that block CI on cross-fork PRs.
 	if hasWriteAccess(ctx, client, owner, repo, user) {
 		printer.StepInfo(fmt.Sprintf("User %s has write access — pushing directly to %s/%s", user, owner, repo))
+		return commitBranchAndPR(ctx, client, printer,
+			owner, repo, owner, repo, scaffoldBranch, defaultBranch,
+			commitMsg, prTitle, prBody, files)
+	}
+
+	// The collaborator endpoint does not report App installation permissions.
+	// Deliver through the upstream branch so a sync App needs only content and
+	// pull-request write access, without fork-creation permissions.
+	isInstallation, err := client.IsInstallationToken(ctx)
+	if err != nil {
+		return false, fmt.Errorf("checking installation token: %w", err)
+	}
+	if isInstallation {
+		printer.StepInfo("Installation token detected — pushing to upstream")
 		return commitBranchAndPR(ctx, client, printer,
 			owner, repo, owner, repo, scaffoldBranch, defaultBranch,
 			commitMsg, prTitle, prBody, files)

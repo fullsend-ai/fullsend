@@ -114,6 +114,23 @@ func TestCommitScaffoldViaPR_WriteAccessPushesDirect(t *testing.T) {
 	assert.Equal(t, "acme/widget/fullsend/scaffold-install", client.CreatedBranches[0])
 }
 
+func TestCommitScaffoldViaPR_InstallationTokenPushesUpstream(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "fullsend-ai-sync[bot]"
+	client.InstallationToken = true
+	printer, buf := newTestPrinter()
+
+	_, err := CommitScaffoldFiles(context.Background(), client, printer,
+		"acme", "widget", "main", testMeta("msg", "title", "body"), testFiles, false, nil)
+	require.NoError(t, err)
+
+	assert.Contains(t, buf.String(), "Installation token detected")
+	assert.Empty(t, client.CreatedForks)
+	require.Equal(t, []string{"acme/widget/fullsend/scaffold-install"}, client.CreatedBranches)
+	require.Len(t, client.CreatedProposals, 1)
+	assert.Equal(t, "fullsend/scaffold-install", client.CreatedProposals[0].Head)
+}
+
 func TestCommitScaffoldViaPR_AdminAccessPushesDirect(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.AuthenticatedUser = "contributor"
