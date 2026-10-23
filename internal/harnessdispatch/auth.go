@@ -140,8 +140,10 @@ func IsAuthorized(event *normevent.Event) bool {
 }
 
 // FilterAuthorizedHarnesses returns the subset of harnesses that event is
-// authorized to dispatch, keyed on each harness role: field. Run it before
-// MatchHarnesses so CEL only evaluates authorized harnesses.
+// authorized to dispatch, keyed on each harness role: field. The execution
+// path runs it before its normal MatchHarnesses call; a separate
+// non-dispatching notice probe may evaluate denied candidates to establish
+// whether a denied event actually matched a harness.
 func FilterAuthorizedHarnesses(harnesses []TriggeredHarness, event *normevent.Event) []TriggeredHarness {
 	var out []TriggeredHarness
 	for _, m := range harnesses {

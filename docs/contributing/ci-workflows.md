@@ -170,6 +170,39 @@ When refactoring between action types, audit every `job.*` and `github.*` refere
 - Never use `permissions: write-all` or omit permissions (which defaults to the repo's broad default token permissions).
 - Separate jobs that need elevated permissions (e.g., `pull-requests: write`) from jobs that check out untrusted code.
 
+### Serialized authorization notices
+
+When multiple dispatch paths can detect the same authorization denial, route their
+metadata to one notification job. The job should use the existing
+`fullsend issues post-comment` command, backed by `forge.Client`, for marker
+deduplication and comment creation. This may cost an additional runner, but it
+keeps the check-and-create operation serialized and prevents legacy and CEL
+dispatch paths from racing to create duplicate notices. The dispatch binary
+should emit only the metadata needed by that job; it should not introduce a
+second comment-posting implementation.
+
+The CEL path requires both sides of the denial signal: the pre-CEL
+authorization gate must reject the actor, and at least one harness trigger
+must match the event. A role failure by itself is not a launch attempt, and a
+CEL non-match is not an authorization failure; for example, an ordinary
+comment without the harness's slash command remains silent. The execution
+path still filters unauthorized harnesses before projecting refs. Dispatch
+uses a separate non-dispatching trigger evaluation only to decide whether
+denial metadata is warranted, and never emits refs from that probe.
+
+### Kill-switch pause notices
+
+An engaged `kill_switch` is an intentional repository-wide pause, not a
+permission failure by the person who requested an agent. The reusable workflow
+therefore keeps routing successful with an empty stage output, so an operator
+does not create a red CI run for every event during the pause. Explicit human
+launch commands still emit metadata to the serialized notification job. That
+job uses the same `fullsend issues post-comment` path and work-item
+concurrency, but a distinct `kill_switch` reason and marker, so the comment
+explains that dispatch is temporarily disabled rather than claiming the actor
+is unauthorized. Non-launch events do not produce comments, and callers must
+use the stage output—not route-job success alone—to decide whether an agent ran.
+
 ## Secrets in pull_request_target jobs
 
 Jobs triggered by `pull_request_target` that check out and execute PR-head code can expose secrets to untrusted authors. This is the well-documented "pwn request" vulnerability class. Five components form the attack chain:

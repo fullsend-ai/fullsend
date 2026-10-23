@@ -137,7 +137,16 @@ setup.
 Emergency stop. When set to `true`, all agent dispatch is disabled for the
 repository. Uses pointer semantics in the layered config system — `nil`
 (omitted) falls through to parent; an explicit `false` is a local decision
-that does not fall through.
+that does not fall through. In the reusable GitHub dispatch workflow, an active
+kill switch records a successful skip with an empty stage output rather than
+failing the routing job; callers must use the stage output to determine whether
+an agent ran. When a human explicitly requests an agent while the switch is
+active, the workflow uses the shared notification job to post one explanatory
+comment for that actor and work item. The comment says that dispatch is
+temporarily paused, rather than incorrectly saying that the actor is
+unauthorized. Ordinary events do not create pause comments. This keeps an
+intentional emergency stop quiet at the CI level while still giving a person
+who requested work an actionable explanation.
 
 ### `keep_history`
 

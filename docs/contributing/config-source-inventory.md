@@ -94,7 +94,13 @@ enroll every repository. Base file: no.
 
 ## File fields a workflow reads too narrowly
 
-The Go accessor layers these. The bash steps in `.github/workflows/reusable-dispatch.yml` read `.fullsend/config.yaml` and skip `config.base.yaml`. A baseline that exists only in the base file does not affect those steps. If `config.yaml` is missing, the role check exits without applying a base-file role list.
+The Go accessor layers these. The bash steps in
+`.github/workflows/reusable-dispatch.yml` still read only
+`.fullsend/config.yaml` for the fields below and skip `config.base.yaml`. A
+baseline that exists only in the base file does not affect those steps. The
+kill switch is intentionally excluded from this gap: both GitHub and GitLab
+now layer its direct read, and the GitHub workflow reports an explicit launch
+attempt as a paused-dispatch notice rather than an authorization denial.
 
 | Setting | Controls | Set from | Wins today | Read by | Decision | Base file? |
 |---|---|---|---|---|---|---|

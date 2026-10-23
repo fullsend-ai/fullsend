@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -103,17 +104,24 @@ func runDispatch(ctx context.Context, opts dispatchOpts) error {
 		return err
 	}
 
-	refs, err := harnessdispatch.Dispatch(ctx, harnessdispatch.Options{
+	result, err := harnessdispatch.DispatchResult(ctx, harnessdispatch.Options{
 		ConfigDir: opts.configDir,
 		Event:     event,
 	})
 	if err != nil {
 		return err
 	}
+	// Only gha-event has live GitHub authorization context. JSON evaluation
+	// remains read-only and never writes workflow notification metadata.
+	if inDriver == "gha-event" {
+		if err := writeDispatchOutput(event, result.AuthorizationDenied, result.DispatchBlockedReason); err != nil {
+			return err
+		}
+	}
 
 	switch strings.ToLower(opts.outputDriver) {
 	case "gha-matrix", "":
-		data, err := output.WriteGHAMatrix(refs)
+		data, err := output.WriteGHAMatrix(result.Refs)
 		if err != nil {
 			return err
 		}
@@ -124,11 +132,60 @@ func runDispatch(ctx context.Context, opts dispatchOpts) error {
 			fmt.Println()
 		}
 	case "json":
-		if err := output.WriteJSON(os.Stdout, refs); err != nil {
+		if err := output.WriteJSON(os.Stdout, result.Refs); err != nil {
 			return err
 		}
 	default:
 		return fmt.Errorf("unknown output driver %q", opts.outputDriver)
 	}
 	return nil
+}
+
+func writeDispatchOutput(event *normevent.Event, denied bool, blockedReason string) error {
+	if !isExplicitHumanSlashCommand(event) || (!denied && blockedReason != "kill_switch") {
+		return nil
+	}
+	path := os.Getenv("GITHUB_OUTPUT")
+	if path == "" || event.Entity.ID < 1 || event.Actor.NumericID < 1 || !validGitHubLogin(event.Actor.ID) {
+		return nil
+	}
+
+	outputs := [][2]string{
+		{"authorization_actor", event.Actor.ID},
+		{"authorization_actor_id", strconv.FormatInt(event.Actor.NumericID, 10)},
+		{"authorization_number", strconv.Itoa(event.Entity.ID)},
+	}
+	if blockedReason == "kill_switch" {
+		outputs = append([][2]string{{"dispatch_blocked_reason", blockedReason}}, outputs...)
+	} else {
+		outputs = append([][2]string{{"authorization_denied", "true"}}, outputs...)
+	}
+	for _, output := range outputs {
+		if err := writeGitHubOutput(path, output[0], output[1]); err != nil {
+			return fmt.Errorf("write authorization output %s: %w", output[0], err)
+		}
+	}
+	return nil
+}
+
+func isExplicitHumanSlashCommand(event *normevent.Event) bool {
+	if event == nil || event.Source.RawType != "issue_comment" ||
+		event.Transition.Kind != normevent.TransitionCommentAdded ||
+		event.Actor.Kind != normevent.ActorHuman || event.Transition.Comment == nil {
+		return false
+	}
+	command := strings.TrimSpace(event.Transition.Comment.Command)
+	return strings.HasPrefix(command, "/") && len(command) > 1
+}
+
+func validGitHubLogin(login string) bool {
+	if login == "" {
+		return false
+	}
+	for _, r := range login {
+		if (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '_' && r != '-' {
+			return false
+		}
+	}
+	return true
 }

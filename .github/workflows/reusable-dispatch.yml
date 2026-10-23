@@ -119,9 +119,16 @@ jobs:
       issues: read
       pull-requests: read
     outputs:
-      stage: ${{ steps.role-check.outputs.skipped != 'true' && steps.agent-check.outputs.skipped != 'true' && steps.route.outputs.stage || '' }}
+      stage: ${{ steps.kill-switch.outputs.skipped != 'true' && steps.role-check.outputs.skipped != 'true' && steps.agent-check.outputs.skipped != 'true' && steps.route.outputs.stage || '' }}
       trigger_source: ${{ steps.route.outputs.trigger_source }}
       event_payload: ${{ steps.payload.outputs.event_payload }}
+      authorization_denied: ${{ steps.authorization.outputs.authorization_denied || 'false' }}
+      authorization_actor: ${{ steps.authorization.outputs.authorization_actor || '' }}
+      authorization_actor_id: ${{ steps.authorization.outputs.authorization_actor_id || '' }}
+      authorization_number: ${{ steps.authorization.outputs.authorization_number || '' }}
+      dispatch_blocked_reason: ${{ steps.authorization.outputs.dispatch_blocked_reason || '' }}
+      legacy_command_applicable: ${{ steps.route.outputs.command_applicable || 'false' }}
+      authorization_check_failed: ${{ steps.route.outputs.authorization_check_failed || 'false' }}
     steps:
       - name: Validate event_action
         if: ${{ inputs.event_action == '' }}
@@ -155,6 +162,8 @@ jobs:
           COMMENT_BODY: ${{ github.event.comment.body }}
           COMMENT_USER_TYPE: ${{ github.event.comment.user.type }}
           COMMENT_USER_LOGIN: ${{ github.event.comment.user.login }}
+          COMMENT_USER_ID: ${{ github.event.comment.user.id }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
 
           ISSUE_LABELS: ${{ join(github.event.issue.labels.*.name, ',') }}
           PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
@@ -174,7 +183,10 @@ jobs:
           set -euo pipefail
 
           STAGE=""
+          REQUESTED_STAGE=""
           TRIGGER_SOURCE=""
+          AUTH_CHECK_FAILED=false
+          AUTHORIZATION_DENIED=false
 
           # Report whether the lowercased user is in an OWNERS list. An entry
           # that names an OWNERS_ALIASES key matches only that alias's members,
@@ -246,6 +258,7 @@ jobs:
 
             api_err=$(mktemp) || {
               echo "::warning::Failed to create temp file for permission check of ${username}" >&2
+              AUTH_CHECK_FAILED=true
               return 1
             }
             role=$(gh api "repos/${GITHUB_REPOSITORY}/collaborators/${username}/permission" \
@@ -263,6 +276,7 @@ jobs:
                     else "none" end
                   else "none" end' 2>"${api_err}") || {
               echo "::warning::Permission API call failed for ${username}: $(cat "${api_err}")" >&2
+              AUTH_CHECK_FAILED=true
               rm -f "${api_err}"
               return 1
             }
@@ -279,6 +293,23 @@ jobs:
           # Slash-command auth; optional $1 = write|triage (default write).
           is_authorized() {
             has_repo_permission "${COMMENT_USER_LOGIN}" "${1:-write}"
+          }
+
+          # Record an explicit denial at the point where the slash-command
+          # authorization check fails. Downstream steps must not infer this
+          # from an empty stage, because an empty stage also represents a
+          # kill-switch pause and other intentional skips.
+          set_command_stage() {
+            local stage="${1}" min="${2:-write}"
+            REQUESTED_STAGE="${stage}"
+            if [[ "${COMMENT_USER_TYPE}" == "Bot" ]]; then
+              return 0
+            fi
+            if is_authorized "${min}"; then
+              STAGE="${stage}"
+            elif [[ "${AUTH_CHECK_FAILED}" != "true" ]]; then
+              AUTHORIZATION_DENIED=true
+            fi
           }
 
           # Event-actor auth; $1=user, optional $2 = write|triage (default write).
@@ -301,45 +332,43 @@ jobs:
             COMMAND="$(printf '%s\n' "${COMMENT_BODY}" | head -1 | tr -d '\r' | awk '{print $1}' | sed 's/[.,;:!?]*$//')"
           fi
 
+          COMMAND_APPLICABLE=false
+
           case "${EVENT_NAME}" in
             issue_comment)
               case "${COMMAND}" in
                 /fs-triage)
-                  if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized triage; then
-                    STAGE="triage"
-                  fi
+                  COMMAND_APPLICABLE=true
+                  set_command_stage triage triage
                   ;;
                 /fs-code)
                   if [[ "${ISSUE_IS_PR}" == "false" ]]; then
-                    if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized; then
-                      STAGE="code"
-                    fi
+                    COMMAND_APPLICABLE=true
+                    set_command_stage code
                   fi
                   ;;
                 /fs-review)
                   if [[ "${ISSUE_IS_PR}" == "true" ]]; then
-                    if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized triage; then
-                      STAGE="review"
-                    fi
+                    COMMAND_APPLICABLE=true
+                    set_command_stage review triage
                   fi
                   ;;
                 /fs-fix)
                   if [[ "${ISSUE_IS_PR}" == "true" ]]; then
-                    if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized; then
-                      STAGE="fix"
+                    COMMAND_APPLICABLE=true
+                    set_command_stage fix
+                    if [[ "${STAGE}" == "fix" ]]; then
                       TRIGGER_SOURCE="${COMMENT_USER_LOGIN}"
                     fi
                   fi
                   ;;
                 /fs-retro)
-                  if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized; then
-                    STAGE="retro"
-                  fi
+                  COMMAND_APPLICABLE=true
+                  set_command_stage retro
                   ;;
                 /fs-prioritize)
-                  if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized; then
-                    STAGE="prioritize"
-                  fi
+                  COMMAND_APPLICABLE=true
+                  set_command_stage prioritize
                   ;;
                 *)
                   ;;
@@ -421,15 +450,34 @@ jobs:
               ;;
           esac
 
+          # Automatic webhook routes set STAGE directly. Mirror it into the
+          # requested-stage guard so kill-switch, role, and agent checks apply
+          # to those routes as well as explicit slash commands.
+          if [[ -z "${REQUESTED_STAGE}" && -n "${STAGE}" ]]; then
+            REQUESTED_STAGE="${STAGE}"
+          fi
+
           if [[ -z "${STAGE}" ]]; then
             echo "No stage matched — skipping dispatch"
-            echo "stage=" >> "${GITHUB_OUTPUT}"
+            {
+              echo "stage="
+              echo "requested_stage=${REQUESTED_STAGE}"
+              echo "command_applicable=${COMMAND_APPLICABLE}"
+              echo "authorization_check_failed=${AUTH_CHECK_FAILED}"
+              echo "authorization_denied=${AUTHORIZATION_DENIED}"
+            } >> "${GITHUB_OUTPUT}"
             exit 0
           fi
 
           echo "Routed to stage: ${STAGE}"
-          echo "stage=${STAGE}" >> "${GITHUB_OUTPUT}"
-          echo "trigger_source=${TRIGGER_SOURCE}" >> "${GITHUB_OUTPUT}"
+          {
+            echo "stage=${STAGE}"
+            echo "requested_stage=${REQUESTED_STAGE}"
+            echo "trigger_source=${TRIGGER_SOURCE}"
+            echo "command_applicable=${COMMAND_APPLICABLE}"
+            echo "authorization_check_failed=${AUTH_CHECK_FAILED}"
+            echo "authorization_denied=${AUTHORIZATION_DENIED}"
+          } >> "${GITHUB_OUTPUT}"
 
       - name: Validate routed stage
         if: steps.route.outputs.stage != ''
@@ -452,7 +500,10 @@ jobs:
           fi
 
       - name: Check kill switch
-        if: steps.route.outputs.stage != ''
+        id: kill-switch
+        if: steps.route.outputs.requested_stage != ''
+        env:
+          REQUESTED_STAGE: ${{ steps.route.outputs.requested_stage }}
         run: |
           set -euo pipefail
           # Mirrors internal/config's IsKillSwitchActive(): if
@@ -490,13 +541,17 @@ jobs:
           KILL_SWITCH="${KILL_SWITCH#\"}"
           KILL_SWITCH="${KILL_SWITCH%\"}"
           if [[ "$KILL_SWITCH" == "true" || "$KILL_SWITCH" == "yes" ]]; then
-            echo "::error::Kill switch is active — all agent dispatch halted"
-            echo "::error::Set kill_switch: false in .fullsend/config.yaml or .fullsend/config.base.yaml to resume"
-            exit 1
+            # An engaged kill switch is an intentional quiet pause, not a
+            # failed workflow. Leave the stage empty and let the shared
+            # notification job tell explicit launchers that dispatch is
+            # paused, without mislabeling them as unauthorized.
+            echo "::notice::Stage '${REQUESTED_STAGE}' skipped — kill switch is active"
+            echo "skipped=true" >> "${GITHUB_OUTPUT}"
           fi
 
       - name: Validate agents config
-        if: steps.route.outputs.stage != ''
+        id: validate-agents
+        if: steps.route.outputs.requested_stage != '' && steps.kill-switch.outputs.skipped != 'true'
         run: |
           set -euo pipefail
           if [[ ! -f .fullsend/config.yaml ]]; then
@@ -537,9 +592,9 @@ jobs:
 
       - name: Check role is enabled
         id: role-check
-        if: steps.route.outputs.stage != ''
+        if: steps.route.outputs.requested_stage != '' && steps.kill-switch.outputs.skipped != 'true'
         env:
-          STAGE: ${{ steps.route.outputs.stage }}
+          STAGE: ${{ steps.route.outputs.requested_stage }}
         run: |
           set -euo pipefail
           if [[ ! -f .fullsend/config.yaml ]]; then
@@ -563,9 +618,9 @@ jobs:
 
       - name: Check agent is enabled
         id: agent-check
-        if: steps.route.outputs.stage != '' && steps.role-check.outputs.skipped != 'true'
+        if: steps.route.outputs.requested_stage != '' && steps.kill-switch.outputs.skipped != 'true' && steps.role-check.outputs.skipped != 'true'
         env:
-          STAGE: ${{ steps.route.outputs.stage }}
+          STAGE: ${{ steps.route.outputs.requested_stage }}
         run: |
           set -euo pipefail
           if [[ ! -f .fullsend/config.yaml ]]; then
@@ -625,6 +680,60 @@ jobs:
             echo "${DELIM}"
           } >> "${GITHUB_OUTPUT}"
 
+      - name: Emit authorization denial metadata
+        id: authorization
+        if: always()
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          COMMENT_USER_TYPE: ${{ github.event.comment.user.type }}
+          COMMENT_USER_LOGIN: ${{ github.event.comment.user.login }}
+          COMMENT_USER_ID: ${{ github.event.comment.user.id }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          COMMAND_APPLICABLE: ${{ steps.route.outputs.command_applicable }}
+          REQUESTED_STAGE: ${{ steps.route.outputs.requested_stage }}
+          STAGE: ${{ steps.route.outputs.stage }}
+          AUTH_CHECK_FAILED: ${{ steps.route.outputs.authorization_check_failed }}
+          ROUTE_AUTHORIZATION_DENIED: ${{ steps.route.outputs.authorization_denied }}
+          KILL_SWITCH_SKIPPED: ${{ steps.kill-switch.outputs.skipped }}
+          ROLE_SKIPPED: ${{ steps.role-check.outputs.skipped }}
+          AGENT_SKIPPED: ${{ steps.agent-check.outputs.skipped }}
+        run: |
+          set -euo pipefail
+          echo "authorization_denied=false" >> "${GITHUB_OUTPUT}"
+          echo "dispatch_blocked_reason=" >> "${GITHUB_OUTPUT}"
+          if [[ "${EVENT_NAME}" != "issue_comment" \
+            || "${COMMENT_USER_TYPE}" == "Bot" \
+            || "${COMMAND_APPLICABLE}" != "true" \
+            || -z "${REQUESTED_STAGE}" \
+            || "${AUTH_CHECK_FAILED}" == "true" \
+            || ! "${COMMENT_USER_ID}" =~ ^[1-9][0-9]*$ \
+            || ! "${ISSUE_NUMBER}" =~ ^[1-9][0-9]*$ \
+            || ! "${COMMENT_USER_LOGIN}" =~ ^[A-Za-z0-9_-]+$ ]]; then
+            exit 0
+          fi
+          if [[ "${KILL_SWITCH_SKIPPED}" == "true" ]]; then
+            echo "::notice::User ${COMMENT_USER_LOGIN} requested an agent while dispatch is paused by the kill switch"
+            {
+              echo "dispatch_blocked_reason=kill_switch"
+              echo "authorization_actor=${COMMENT_USER_LOGIN}"
+              echo "authorization_actor_id=${COMMENT_USER_ID}"
+              echo "authorization_number=${ISSUE_NUMBER}"
+            } >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          if [[ "${ROUTE_AUTHORIZATION_DENIED}" != "true" \
+            || "${ROLE_SKIPPED}" == "true" \
+            || "${AGENT_SKIPPED}" == "true" ]]; then
+            exit 0
+          fi
+          echo "::notice::User ${COMMENT_USER_LOGIN} is not authorized to launch the requested agent"
+          {
+            echo "authorization_denied=true"
+            echo "authorization_actor=${COMMENT_USER_LOGIN}"
+            echo "authorization_actor_id=${COMMENT_USER_ID}"
+            echo "authorization_number=${ISSUE_NUMBER}"
+          } >> "${GITHUB_OUTPUT}"
+
       - name: Build event payload
         id: payload
         if: steps.route.outputs.stage != ''
@@ -659,6 +768,167 @@ jobs:
             echo "${EVENT_PAYLOAD}"
             echo "${DELIM}"
           } >> "${GITHUB_OUTPUT}"
+
+  authorization-notice:
+    name: Authorization notice
+    needs: [route, harness-dispatch]
+    if: >-
+      ${{ always() && !cancelled() &&
+          (needs.route.outputs.dispatch_blocked_reason == 'kill_switch' ||
+           needs.route.outputs.authorization_denied == 'true' ||
+           needs.harness-dispatch.outputs.dispatch_blocked_reason == 'kill_switch' ||
+           (needs.harness-dispatch.outputs.authorization_denied == 'true' &&
+            (needs.route.outputs.stage == '' ||
+             needs.route.outputs.legacy_command_applicable != 'true' ||
+             needs.route.outputs.authorization_check_failed == 'true'))) }}
+    runs-on: ${{ inputs.runner_image }}
+    permissions:
+      issues: write
+      contents: read
+    concurrency:
+      group: fullsend-authorization-notice-${{ github.repository }}-${{ needs.route.outputs.authorization_number || needs.harness-dispatch.outputs.authorization_number }}-${{ needs.route.outputs.authorization_actor_id || needs.harness-dispatch.outputs.authorization_actor_id }}
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY: ${{ github.repository }}
+      ISSUE_NUMBER: ${{ needs.route.outputs.authorization_number || needs.harness-dispatch.outputs.authorization_number }}
+      ACTOR_LOGIN: ${{ needs.route.outputs.authorization_actor || needs.harness-dispatch.outputs.authorization_actor }}
+      ACTOR_ID: ${{ needs.route.outputs.authorization_actor_id || needs.harness-dispatch.outputs.authorization_actor_id }}
+      BLOCKED_REASON: ${{ needs.route.outputs.dispatch_blocked_reason || needs.harness-dispatch.outputs.dispatch_blocked_reason || 'authorization_denied' }}
+    steps:
+      - name: Checkout caller repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
+          persist-credentials: false
+          allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
+          sparse-checkout: |
+            .fullsend/
+            .defaults/action.yml
+            .defaults/.github/actions/install-fullsend-cli/
+            .fullsend/.defaults/action.yml
+          sparse-checkout-cone-mode: false
+
+      - name: Detect authorization notice CLI mode
+        id: mode
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f .defaults/action.yml || -f .fullsend/.defaults/action.yml ]]; then
+            echo "mode=vendored" >> "${GITHUB_OUTPUT}"
+          else
+            echo "mode=upstream" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Guard vendored install
+        if: steps.mode.outputs.mode == 'vendored'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -f .fullsend/bin/fullsend ]]; then
+            echo "::error::broken --vendor install: vendored marker present but .fullsend/bin/fullsend is missing"
+            exit 1
+          fi
+
+      - name: Restore fullsend CLI cache
+        id: cli-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/fullsend-cache
+          key: fullsend-cli-${{ steps.mode.outputs.mode }}-${{ job.workflow_sha }}
+
+      - name: Install fullsend CLI (vendored defaults)
+        if: steps.mode.outputs.mode == 'vendored' && steps.cli-cache.outputs.cache-hit != 'true'
+        uses: ./.defaults/.github/actions/install-fullsend-cli
+        with:
+          mode: vendored
+          vendored_path: .fullsend/bin/fullsend
+          github_token: ${{ github.token }}
+
+      - name: Checkout upstream install action
+        if: steps.mode.outputs.mode == 'upstream' && steps.cli-cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .workflow-actions
+          fetch-depth: 1
+          sparse-checkout: |
+            .github/actions/install-fullsend-cli/
+          sparse-checkout-cone-mode: false
+
+      - name: Install fullsend CLI (upstream workflow)
+        if: steps.mode.outputs.mode == 'upstream' && steps.cli-cache.outputs.cache-hit != 'true'
+        uses: ./.workflow-actions/.github/actions/install-fullsend-cli
+        with:
+          mode: upstream
+          workflow_repository: ${{ job.workflow_repository }}
+          workflow_sha: ${{ job.workflow_sha }}
+          github_token: ${{ github.token }}
+
+      - name: Expose cached fullsend CLI
+        if: steps.cli-cache.outputs.cache-hit == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          install_dir="${RUNNER_TEMP}/fullsend"
+          mkdir -p "${install_dir}"
+          cp "${RUNNER_TEMP}/fullsend-cache/fullsend" "${install_dir}/fullsend"
+          chmod +x "${install_dir}/fullsend"
+          echo "${install_dir}" >> "${GITHUB_PATH}"
+
+      - name: Prepare fullsend CLI cache artifact
+        if: steps.cli-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/fullsend-cache"
+          cp "${RUNNER_TEMP}/fullsend/fullsend" "${RUNNER_TEMP}/fullsend-cache/fullsend"
+
+      - name: Save fullsend CLI cache
+        if: steps.cli-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/fullsend-cache
+          key: fullsend-cli-${{ steps.mode.outputs.mode }}-${{ job.workflow_sha }}
+
+      - name: Create first-denial comment
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "${ISSUE_NUMBER}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::warning::Skipping authorization notice: invalid issue number"
+            exit 0
+          fi
+          if [[ ! "${ACTOR_LOGIN}" =~ ^[A-Za-z0-9_-]+$ ]]; then
+            echo "::warning::Skipping authorization notice: invalid actor login"
+            exit 0
+          fi
+          if [[ ! "${ACTOR_ID}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::warning::Skipping authorization notice: invalid actor ID"
+            exit 0
+          fi
+
+          if [[ "${BLOCKED_REASON}" == "kill_switch" ]]; then
+            MARKER="<!-- fullsend:dispatch-paused:${ACTOR_ID} -->"
+            BODY_FILE="${RUNNER_TEMP}/dispatch-paused.md"
+            MESSAGE="@${ACTOR_LOGIN}, this agent request was not run because Fullsend agent dispatch is temporarily disabled for this repository. This is a repository-wide pause, not a permissions denial."
+          else
+            MARKER="<!-- fullsend:authorization-denied:${ACTOR_ID} -->"
+            BODY_FILE="${RUNNER_TEMP}/authorization-denied.md"
+            MESSAGE="@${ACTOR_LOGIN}, this agent launch was blocked because you are not authorized to launch Fullsend agents on this work item. Ask a repository maintainer for access."
+          fi
+          {
+            printf '%s\n\n' "${MARKER}"
+            printf '%s\n' "${MESSAGE}"
+          } > "${BODY_FILE}"
+          fullsend issues post-comment \
+            --tracker github \
+            --project "${REPOSITORY}" \
+            --number "${ISSUE_NUMBER}" \
+            --marker "${MARKER}" \
+            --result "${BODY_FILE}" \
+            --keep-history=false
 
   triage:
     name: Triage
@@ -1509,6 +1779,11 @@ jobs:
       pull-requests: read
     outputs:
       matrix: ${{ steps.dispatch.outputs.matrix }}
+      authorization_denied: ${{ steps.dispatch.outputs.authorization_denied || 'false' }}
+      dispatch_blocked_reason: ${{ steps.dispatch.outputs.dispatch_blocked_reason || '' }}
+      authorization_actor: ${{ steps.dispatch.outputs.authorization_actor || '' }}
+      authorization_actor_id: ${{ steps.dispatch.outputs.authorization_actor_id || '' }}
+      authorization_number: ${{ steps.dispatch.outputs.authorization_number || '' }}
     steps:
       - name: Validate event_action
         if: ${{ inputs.event_action == '' }}

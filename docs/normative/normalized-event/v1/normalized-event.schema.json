@@ -301,6 +301,11 @@
           "maxLength": 255,
           "description": "Forge login or service account identifier."
         },
+        "numeric_id": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Optional stable forge-native numeric actor identifier. GitHub adapters populate this from the event sender; it is metadata for identity-stable external bookkeeping, not an authorization input."
+        },
         "kind": {
           "type": "string",
           "enum": ["human", "bot"]

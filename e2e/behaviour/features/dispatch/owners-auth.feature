@@ -58,6 +58,7 @@ Feature: OWNERS file authorization for bash routing
     And an issue
     When the outsider posts "/fs-code" on the issue
     Then the dispatch run does not authorize via OWNERS
+    And the issue has a comment containing "not authorized to launch Fullsend agents on this work item"
 
   Scenario: Unlisted collaborator falls through to API authorization
     Given an OWNERS file listing the outsider as a reviewer only

@@ -28,23 +28,55 @@ type Options struct {
 	FetchPolicy *fetch.FetchPolicy
 }
 
+// Result describes a dispatch evaluation. AuthorizationDenied is set only
+// when a confirmed authorization failure prevents at least one matching
+// harness from running; kill-switch and no-trigger results leave it false.
+type Result struct {
+	Refs                  []ExecutionRef
+	AuthorizationDenied   bool
+	DispatchBlockedReason string
+}
+
 // Dispatch evaluates authorization, kill switch, harness triggers, and returns execution refs.
 // Returns empty slice (not error) when denied, kill-switched, or no triggers match.
 // Returns an error when every registered harness fails to resolve or load.
 func Dispatch(ctx context.Context, opts Options) ([]ExecutionRef, error) {
+	result, err := DispatchResult(ctx, opts)
+	return result.Refs, err
+}
+
+// DispatchResult evaluates authorization, kill switch, harness triggers, and
+// returns execution refs together with the reason an empty result occurred.
+func DispatchResult(ctx context.Context, opts Options) (Result, error) {
 	if opts.Event == nil {
-		return nil, fmt.Errorf("event is required")
+		return Result{}, fmt.Errorf("event is required")
 	}
 	if opts.ConfigDir == "" {
-		return nil, fmt.Errorf("config dir is required")
+		return Result{}, fmt.Errorf("config dir is required")
 	}
 
 	dirCfg, err := config.LoadConfig(opts.ConfigDir, config.LoadOpts{MissingOK: true})
 	if err != nil {
-		return nil, err
+		return Result{}, err
 	}
-	if dirCfg.IsKillSwitchActive() {
-		return nil, nil
+	killSwitchActive := dirCfg.IsKillSwitchActive()
+	if killSwitchActive {
+		// A kill switch blocks execution, but it must not turn every slash
+		// command into a paused-agent notice. Evaluate triggers first so the
+		// caller can distinguish an actual agent launch request from commands
+		// handled by another workflow, such as /fs-fix-stop.
+		candidates, err := ListTriggeredHarnesses(ctx, opts.ConfigDir, dirCfg, opts.FetchPolicy)
+		if err != nil {
+			return Result{}, nil
+		}
+		matched, err := MatchHarnesses(candidates, opts.Event)
+		if err != nil {
+			return Result{}, err
+		}
+		if len(matched) == 0 {
+			return Result{}, nil
+		}
+		return Result{DispatchBlockedReason: "kill_switch"}, nil
 	}
 
 	// Compute the effective role for the auth gate without mutating the
@@ -67,20 +99,53 @@ func Dispatch(ctx context.Context, opts Options) ([]ExecutionRef, error) {
 
 	authCheck := *opts.Event
 	authCheck.Actor.Role = effectiveRole
-	if !IsEventAuthorized(&authCheck) {
-		return nil, nil
+	eventAuthorized := IsEventAuthorized(&authCheck)
+	if !eventAuthorized && !opts.Event.AuthorizationAvailable() {
+		return Result{}, nil
 	}
 
 	candidates, err := ListTriggeredHarnesses(ctx, opts.ConfigDir, dirCfg, opts.FetchPolicy)
 	if err != nil {
-		return nil, err
+		// An already-denied event cannot launch anything, so an unavailable
+		// harness should not turn the denial-notification path into a failure.
+		// Authorized events still surface resolution errors normally.
+		if !eventAuthorized {
+			return Result{}, nil
+		}
+		return Result{}, err
 	}
 
-	candidates = FilterAuthorizedHarnesses(candidates, &authCheck)
+	if !eventAuthorized {
+		// Keep the execution gate fail-closed, but use a non-dispatching CEL
+		// probe to establish whether this denied event actually targeted a
+		// harness. A denial notice is only justified when both gates fail: an
+		// authorization failure and a matching trigger. No execution refs are
+		// projected from this branch.
+		matched, err := MatchHarnesses(candidates, opts.Event)
+		if err != nil {
+			return Result{}, err
+		}
+		return Result{AuthorizationDenied: len(matched) > 0}, nil
+	}
 
-	matched, err := MatchHarnesses(candidates, opts.Event)
+	authorizedCandidates, deniedCandidates := partitionHarnessesByAuthorization(candidates, &authCheck)
+
+	matched, err := MatchHarnesses(authorizedCandidates, opts.Event)
 	if err != nil {
-		return nil, err
+		return Result{}, err
+	}
+
+	// The normal dispatch path evaluates CEL only for authorized candidates.
+	// For the notice path, evaluate denied candidates separately and never
+	// project their refs; this distinguishes a denied launch from an event
+	// that simply does not match any harness.
+	var authorizationDenied bool
+	if len(deniedCandidates) > 0 {
+		deniedMatches, err := MatchHarnesses(deniedCandidates, opts.Event)
+		if err != nil {
+			return Result{}, err
+		}
+		authorizationDenied = len(deniedMatches) > 0
 	}
 	matched = dropGitHubRoutedBuiltins(matched, opts.Event)
 
@@ -89,11 +154,29 @@ func Dispatch(ctx context.Context, opts Options) ([]ExecutionRef, error) {
 		role := m.Harness.Role
 		ref, err := ProjectExecutionRef(m.Name, role, opts.Event)
 		if err != nil {
-			return nil, fmt.Errorf("projecting %s: %w", m.Name, err)
+			return Result{}, fmt.Errorf("projecting %s: %w", m.Name, err)
 		}
 		refs = append(refs, ref)
 	}
-	return refs, nil
+	return Result{Refs: refs, AuthorizationDenied: authorizationDenied}, nil
+}
+
+// partitionHarnessesByAuthorization keeps the dispatch path's CEL input
+// restricted to authorized harnesses while retaining denied candidates for a
+// separate, non-dispatching notice probe.
+func partitionHarnessesByAuthorization(harnesses []TriggeredHarness, event *normevent.Event) (authorized, denied []TriggeredHarness) {
+	for _, harness := range harnesses {
+		role := ""
+		if harness.Harness != nil {
+			role = harness.Harness.Role
+		}
+		if IsHarnessAuthorized(event, role) {
+			authorized = append(authorized, harness)
+		} else {
+			denied = append(denied, harness)
+		}
+	}
+	return authorized, denied
 }
 
 // dropGitHubRoutedBuiltins removes matched harnesses registered under a

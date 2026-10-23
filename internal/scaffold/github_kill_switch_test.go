@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 )
@@ -213,15 +214,95 @@ func TestCheckKillSwitchStep_ConsultsConfigBaseYAML(t *testing.T) {
 
 			scriptPath := filepath.Join(root, "check-kill-switch.sh")
 			require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0o755))
+			outputPath := filepath.Join(root, "github-output")
+			require.NoError(t, os.WriteFile(outputPath, nil, 0o600))
 
 			cmd := exec.Command("bash", scriptPath)
 			cmd.Dir = root
+			cmd.Env = append(os.Environ(), "REQUESTED_STAGE=code", "GITHUB_OUTPUT="+outputPath)
 			out, err := cmd.CombinedOutput()
+			output, readErr := os.ReadFile(outputPath)
+			require.NoError(t, readErr)
 
+			require.NoError(t, err, "stdout/stderr: %s", out)
 			if tc.wantHalt {
-				require.Error(t, err, "stdout/stderr: %s", out)
+				assert.Contains(t, string(output), "skipped=true")
 			} else {
-				require.NoError(t, err, "stdout/stderr: %s", out)
+				assert.NotContains(t, string(output), "skipped=true")
+			}
+		})
+	}
+}
+
+func TestAuthorizationMetadataStep_EmitsPauseForHumanLaunch(t *testing.T) {
+	script := extractReusableDispatchStepScript(t, "route", "Emit authorization denial metadata")
+	cases := []struct {
+		name         string
+		killSwitch   string
+		roleSkipped  string
+		agentSkipped string
+		wantPause    bool
+		wantDenied   bool
+	}{
+		{
+			name:       "kill switch emits pause notice metadata",
+			killSwitch: "true",
+			wantPause:  true,
+		},
+		{
+			name:        "disabled role suppresses denial",
+			roleSkipped: "true",
+		},
+		{
+			name:         "disabled agent suppresses denial",
+			agentSkipped: "true",
+		},
+		{
+			name:       "runnable unauthorized launch emits denial",
+			wantDenied: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			scriptPath := filepath.Join(root, "emit-authorization-metadata.sh")
+			require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0o755))
+			outputPath := filepath.Join(root, "github-output")
+			require.NoError(t, os.WriteFile(outputPath, nil, 0o600))
+
+			cmd := exec.Command("bash", scriptPath)
+			cmd.Dir = root
+			cmd.Env = append(os.Environ(),
+				"EVENT_NAME=issue_comment",
+				"COMMENT_USER_TYPE=User",
+				"COMMENT_USER_LOGIN=alice",
+				"COMMENT_USER_ID=1234",
+				"ISSUE_NUMBER=42",
+				"COMMAND_APPLICABLE=true",
+				"REQUESTED_STAGE=code",
+				"AUTH_CHECK_FAILED=false",
+				"ROUTE_AUTHORIZATION_DENIED=true",
+				"KILL_SWITCH_SKIPPED="+tc.killSwitch,
+				"ROLE_SKIPPED="+tc.roleSkipped,
+				"AGENT_SKIPPED="+tc.agentSkipped,
+				"GITHUB_OUTPUT="+outputPath,
+			)
+			out, err := cmd.CombinedOutput()
+			require.NoError(t, err, "stdout/stderr: %s", out)
+
+			output, err := os.ReadFile(outputPath)
+			require.NoError(t, err)
+			if tc.wantPause {
+				assert.Contains(t, string(output), "dispatch_blocked_reason=kill_switch\n")
+				assert.Contains(t, string(output), "authorization_actor=alice\n")
+				assert.Contains(t, string(output), "authorization_actor_id=1234\n")
+				assert.Contains(t, string(output), "authorization_number=42\n")
+			}
+			if tc.wantDenied {
+				assert.Contains(t, string(output), "authorization_denied=true\n")
+			} else {
+				assert.NotContains(t, string(output), "authorization_denied=true\n")
 			}
 		})
 	}

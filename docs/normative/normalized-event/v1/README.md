@@ -91,6 +91,11 @@ remains the normative stricter check.
 Adding a new `transition.kind` is **non-breaking** — CEL triggers use boolean
 expressions, not exhaustive enum matching.
 
+The optional `actor.numeric_id` field is an additive v1.x change under this
+policy. Existing payloads without it remain valid; consumers with pinned strict
+schema copies must update those copies before accepting payloads that include
+the field.
+
 Normalized-event and entity-context-snapshot v1 carry independently versioned
 copies of the actor-role vocabulary. The entity-context-snapshot `bot` marker
 is a non-authority kind marker, not a normalized-event repository permission,
@@ -237,6 +242,11 @@ carries both fields (omitted when unset), `internal/botidentity`
 gate denies a bot with `role_verified` set but no recognized `bot_role` on
 non-label paths. The production adapters do not emit the fields yet, so
 triggers that read them must guard with `has()`.
+
+GitHub adapters also populate the optional `actor.numeric_id` from the event
+sender's stable numeric account ID when it is present. This field is intended
+for identity-stable bookkeeping such as notification deduplication; it is not
+an authorization input and must not replace the login in user-facing mentions.
 
 ### Fork security (`state.change_proposal.is_fork`)
 

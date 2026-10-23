@@ -195,6 +195,36 @@ func TestThenIssueCommentAuthoredBy(t *testing.T) {
 	})
 }
 
+func TestThenIssueCommentContains(t *testing.T) {
+	t.Parallel()
+
+	newWorld := func(comments []forge.IssueComment, listErr error) *world.World {
+		w, drivers := actorWorld()
+		w.IssueNumber = 7
+		drivers["default"].comments = comments
+		drivers["default"].listErr = listErr
+		return w
+	}
+
+	t.Run("fragment found", func(t *testing.T) {
+		t.Parallel()
+		w := newWorld([]forge.IssueComment{{Body: "agent launch was blocked because you are not authorized"}}, nil)
+		require.NoError(t, thenIssueCommentContains(w, "not authorized"))
+	})
+
+	t.Run("fragment missing", func(t *testing.T) {
+		t.Parallel()
+		w := newWorld([]forge.IssueComment{{Body: "other"}}, nil)
+		require.ErrorContains(t, thenIssueCommentContains(w, "not authorized"), "no comment on issue #7 contains")
+	})
+
+	t.Run("list error", func(t *testing.T) {
+		t.Parallel()
+		w := newWorld(nil, errors.New("HTTP 502"))
+		require.ErrorContains(t, thenIssueCommentContains(w, "not authorized"), "listing comments on issue #7")
+	})
+}
+
 func TestWhenIssueOpenedForOwnersAuth_SelectsDriver(t *testing.T) {
 	t.Parallel()
 

@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/cucumber/godog"
@@ -29,6 +30,9 @@ func registerActorSteps(sc *godog.ScenarioContext) {
 	})
 	sc.Step(`^the comment "([^"]+)" on the issue is authored by the (`+actorAlternation+`)$`, func(ctx context.Context, body, actor string) (context.Context, error) {
 		return ctx, thenIssueCommentAuthoredBy(world.FromContext(ctx), body, actor)
+	})
+	sc.Step(`^the issue has a comment containing "([^"]+)"$`, func(ctx context.Context, fragment string) (context.Context, error) {
+		return ctx, thenIssueCommentContains(world.FromContext(ctx), fragment)
 	})
 }
 
@@ -130,4 +134,21 @@ func thenIssueCommentAuthoredBy(w *world.World, body, actor string) error {
 		return fmt.Errorf("no comment %q on issue #%d", body, w.IssueNumber)
 	}
 	return nil
+}
+
+func thenIssueCommentContains(w *world.World, fragment string) error {
+	if w.IssueNumber == 0 {
+		return fmt.Errorf("no issue created")
+	}
+	comments, err := w.SCM.ListComments(context.Background(),
+		w.RepoOwner, w.RepoName, w.IssueNumber)
+	if err != nil {
+		return fmt.Errorf("listing comments on issue #%d: %w", w.IssueNumber, err)
+	}
+	for _, comment := range comments {
+		if strings.Contains(comment.Body, fragment) {
+			return nil
+		}
+	}
+	return fmt.Errorf("no comment on issue #%d contains %q", w.IssueNumber, fragment)
 }

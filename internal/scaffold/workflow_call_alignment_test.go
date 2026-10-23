@@ -148,7 +148,7 @@ var dispatchStageConcurrencyExpectations = map[string]stageConcurrencyExpectatio
 // dispatchNonAgentJobs lists reusable-dispatch.yml jobs that intentionally
 // carry no concurrency expectation. Every other job in the workflow must have
 // an entry in dispatchStageConcurrencyExpectations.
-var dispatchNonAgentJobs = []string{"route", "harness-dispatch"}
+var dispatchNonAgentJobs = []string{"route", "harness-dispatch", "authorization-notice"}
 
 // stepDeclRe matches a YAML step declaration line: "      - name: <marker>".
 var stepDeclRe = regexp.MustCompile(`(?m)^      - name: (.+)$`)
@@ -957,6 +957,30 @@ func TestDispatchPerStageAuthorization(t *testing.T) {
 	for _, wc := range cases {
 		t.Run(wc.name, func(t *testing.T) {
 			s := string(wc.content(t))
+			assert.Contains(t, s, "authorization_denied",
+				"unauthorized slash commands must expose a route output for notification")
+			assert.Contains(t, s, "dispatch_blocked_reason",
+				"kill-switch launch attempts must expose a distinct notification reason")
+			assert.Contains(t, s, "fullsend-authorization-notice-",
+				"authorization notices must be serialized per work item")
+			assert.Contains(t, s, "fullsend:authorization-denied:",
+				"authorization notices must use the shared first-denial marker")
+			assert.Contains(t, s, "fullsend:dispatch-paused:",
+				"kill-switch notices must use a distinct first-pause marker")
+			assert.Regexp(t, `route:\n(?s:.*?)permissions:\n\s+contents: read\n\s+issues: read`, s,
+				"route must retain least-privilege issue read access")
+			assert.Regexp(t, `authorization-notice:\n(?s:.*?)permissions:\n\s+issues: write`, s,
+				"only the notification job needs issue-comment write access")
+			assert.Contains(t, s, "harness-dispatch:\n    name: Harness dispatch\n    if: ${{ inputs.matrix == '' }}",
+				"CEL dispatch must remain enabled for legacy slash-command events")
+			assert.Contains(t, s, "needs.route.outputs.authorization_number || needs.harness-dispatch.outputs.authorization_number",
+				"notification concurrency must use the CEL fallback work-item number")
+			assert.Contains(t, s, "needs.route.outputs.stage == ''",
+				"a CEL denial must remain visible when a legacy command is applicable but its stage is unavailable")
+			assert.Contains(t, s, "needs.route.outputs.authorization_check_failed == 'true'",
+				"a failed legacy permission lookup must not suppress a confirmed CEL denial")
+			assert.Contains(t, s, `if [[ -z "${REQUESTED_STAGE}" && -n "${STAGE}" ]]`,
+				"automatic routes must pass through the same stage availability checks as slash commands")
 
 			assert.Contains(t, s, "has_repo_permission",
 				"permission helper should be parameterized by min role")
@@ -964,12 +988,12 @@ func TestDispatchPerStageAuthorization(t *testing.T) {
 				"triage arm must return explicitly (not rely on [[ ]] exit status)")
 
 			// Observation slash commands (triage min level)
-			assert.Regexp(t, `/fs-triage\)\s*\n\s+if \[\[ "\$\{COMMENT_USER_TYPE\}" != "Bot" \]\] && is_authorized triage;`, s)
-			assert.Regexp(t, `is_authorized triage; then\s*\n\s+STAGE="review"`, s)
+			assert.Contains(t, s, "set_command_stage triage triage")
+			assert.Contains(t, s, "set_command_stage review triage")
 
 			// Mutation slash commands stay at write+ (default is_authorized)
-			assert.Regexp(t, `is_authorized; then\s*\n\s+STAGE="code"`, s)
-			assert.Regexp(t, `is_authorized; then\s*\n\s+STAGE="fix"`, s)
+			assert.Contains(t, s, "set_command_stage code")
+			assert.Contains(t, s, "set_command_stage fix")
 
 			// Auto-triage and auto-review event paths accept triage
 			assert.Contains(t, s, `is_event_actor_authorized "${ISSUE_USER_LOGIN}" triage`)
