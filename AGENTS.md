@@ -46,8 +46,9 @@ full documentation site.
   important-severity review finding; forbidden combinations (e.g.
   `fix(ci)`/`fix(e2e)`) are enforced as errors.
 - Human and human-driven agent commits require DCO sign-off (`git commit -s`);
-  autonomous bot commits are exempt and must never supply the DCO with `-s` or
-  `Signed-off-by`. See
+  a local `commit-msg` hook enforces this (`SKIP_DCO=1` or
+  `SKIP_COMMIT_MSG_HOOK=1` to bypass locally). Autonomous bot commits are
+  exempt and must never supply the DCO with `-s` or `Signed-off-by`. See
   [CONTRIBUTING.md § DCO](CONTRIBUTING.md#dco-developer-certificate-of-origin).
 - **Go coverage gate:** Go production changes (`cmd/`, `internal/`) must meet
   the 80% patch coverage target (75% floor). Verify coverage locally before
