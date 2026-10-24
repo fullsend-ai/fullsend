@@ -1167,9 +1167,13 @@ flowchart TB
   open-stdin hang pi needs `</dev/null` for.
 - **`codex exec` has no `--debug` flag.** Its tracing goes to stderr at **error level by default** —
   unlike pi, a codex run is not silent there: the denied `GET /v1/models` and every hook block are
-  logged — and `RUST_LOG` raises the level. Debug mode exports `RUST_LOG` and appends stderr to
+  logged — and `RUST_LOG` sets the level. The launch sets it outright after `.env` (codex's
+  default filter plus `codex_exec` and `codex_app_server::in_process` at warn, so a dropped stream
+  notification and a failed backfill are reported; a value from the environment or `.env` is
+  replaced); debug mode sets `info` and appends
+  stderr to
   `codex-debug.log`; without it those error lines reach the runner console, since `Run` hands
-  `os.Stderr` to the exec stream.
+  the exec stream a counting wrapper over `os.Stderr`.
 - **Model**: `openai/<id>` or a bare `<id>`, resolved through `EffectiveModel` — the same chain
   `NeedsOpenAIProvider` decides from, so the launch and the run-scoped provider decision cannot
   disagree about which model a run calls. The fallback is the **runner-held** copy of the agent
@@ -1340,6 +1344,23 @@ The spawn guard closes the same window for children. Codex re-reads `hooks.json`
 file when a child starts, so Run exports their digests as `FULLSEND_CODEX_SPAWN_DIGESTS` and the
 handler re-hashes them, and lists `agents/`, before applying the policy, on its own deadline below
 the hook timeout at which codex kills a handler and lets the call through. No role, no spawn.
+
+A handler codex kills at that timeout still lets the call through, so after each iteration the
+runner cross-checks the stream's completed `spawn_agent` items, read on the host, against the
+guard's `codex_spawn_guard_admit` lines in `/sandbox/workspace/.security/findings.jsonl` and fails
+the run (`codex_spawn_without_admission`) on a shortfall, a spawn not sent by the primary thread,
+a spawn item too long to read, or a failed read. The count spans the run's iterations, so
+`ClearIterationArtifacts` must leave `.security/` in place (it clears `output/`, the sessions
+directory and the debug log, nothing else under the workspace). Codex can drop a stream
+notification under backpressure and says so on stderr: the launch sets `RUST_LOG` outright after
+`.env` (codex's default filter with `codex_exec` and `codex_app_server::in_process` at warn; codex's
+commands inherit it), the runner scans that stderr on the host (the sandbox log under `--debug`)
+and warns on the line, and on exec's warning that its `thread/read` backfill of the turn's items
+failed. The check cannot catch a forged admission (the log is agent-writable), a surplus admission
+covering a later spawn (counts, not ids), a resume (a `wait` item in the stream), or a spawn both
+of whose notifications codex dropped, or whose dropped completed item the backfill did not bring
+back (it runs only for a completed turn on a non-ephemeral thread, and only when `thread/read`
+succeeds).
 
 **PATH is pinned across `.env` for the same reason the interpreter is.** The hook scripts resolve
 their tools by name — `tirith_check.py` runs a bare `tirith` — so a `.env` that prepends a directory

@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/fullsend-ai/fullsend/internal/sandbox"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -49,6 +50,7 @@ const (
 	codexChildNoModelID     = "01a06300-0000-7000-8000-0000000000a4"
 	codexChildForkedID      = "01a06300-0000-7000-8000-0000000000a5"
 	codexChildFailedSpawnID = "01a06300-0000-7000-8000-0000000000a9"
+	codexRootThreadID       = "01a06300-0000-7000-8000-000000000050"
 )
 
 // codexChildFixtures maps each child id to its rollout fixture.
@@ -273,6 +275,8 @@ func TestCodexChildIDs_CollectsCompletedSpawns(t *testing.T) {
 	assert.Equal(t, want, whole.IDs,
 		"the three completed spawns in stream order; the failed spawn's receiver is not a child; wait and close items name no new thread")
 	assert.NotContains(t, whole.IDs, codexChildFailedSpawnID)
+	assert.Equal(t, []string{codexRootThreadID, codexRootThreadID, codexRootThreadID}, whole.Senders,
+		"one sender per completed spawn; the failed spawn is not counted")
 
 	chunked := &codexChildIDs{}
 	for i := 0; i < len(stream); i += 7 {
@@ -280,6 +284,7 @@ func TestCodexChildIDs_CollectsCompletedSpawns(t *testing.T) {
 		require.NoError(t, err)
 	}
 	assert.Equal(t, want, chunked.IDs, "lines are reassembled across Write calls, as a TeeReader delivers them")
+	assert.Len(t, chunked.Senders, 3)
 }
 
 func TestCodexChildIDs_SkipsOverlongLine(t *testing.T) {
@@ -301,6 +306,26 @@ func TestCodexChildIDs_SkipsOverlongLine(t *testing.T) {
 	assert.Equal(t, []string{codexChildSameModelID}, c.IDs,
 		"a line at or past the parser's own bound is dropped whole, as parseCodexStream drops it, even when it names a child; the next line is still scanned")
 	assert.Empty(t, c.line, "nothing pending after a newline")
+	assert.True(t, c.UnreadSpawn, "the dropped lines opened as spawn_agent items, so the run cannot pass on the count")
+}
+
+func TestCodexChildIDs_NotesAnUnreadSpawnItem(t *testing.T) {
+	t.Parallel()
+
+	spawn := `{"type":"item.completed","item":{"id":"item_0","type":"collab_tool_call","tool":"spawn_agent","sender_thread_id":"` + codexRootThreadID + `","receiver_thread_ids":["` + codexChildOtherModelID + `"],"prompt":"` + strings.Repeat("a", streamBufSize) + `","agents_states":{},"status":"completed"}}` + "\n"
+	chunked := &codexChildIDs{}
+	for i := 0; i < len(spawn); i += 4096 {
+		_, err := chunked.Write([]byte(spawn[i:min(i+4096, len(spawn))]))
+		require.NoError(t, err)
+	}
+	assert.True(t, chunked.UnreadSpawn, "the item's opening is in the pending line when the bound is reached")
+	assert.Empty(t, chunked.Senders)
+
+	output := `{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"cat big","aggregated_output":"` + strings.Repeat("a", streamBufSize) + `","exit_code":0,"status":"completed"}}` + "\n"
+	other := &codexChildIDs{}
+	_, err := other.Write([]byte(output))
+	require.NoError(t, err)
+	assert.False(t, other.UnreadSpawn, "an overlong line of another item kind is dropped silently, as before")
 }
 
 // A failed child shows only as failed wait and close items and never fails
@@ -333,11 +358,16 @@ func TestParseCodexStream_FailedCollabItem(t *testing.T) {
 }
 
 // fakeOpenshellCodexChildren answers the manifest cat from storeDir, streams
-// streamFixture for the launch, and runs the read command under sh against
-// sessionsDir. FULLSEND_TEST_CHILD_READ_FAIL=1 makes the read exit 1 (with
+// streamFixture for the launch, and runs the usage read under sh against
+// sessionsDir, the admissions read against .security/findings.jsonl beside
+// it and the debug-log read against codex-debug.log beside it.
+// FULLSEND_TEST_CHILD_READ_FAIL=1 makes the usage read exit 1 (with
 // FULLSEND_TEST_CHILD_READ_STDERR on stderr), =after makes it time out after
-// printing; FULLSEND_TEST_CODEX_EXIT sets the launch's exit status (killed:
-// SIGKILL, as the budget's context kill ends it).
+// printing; FULLSEND_TEST_ADMISSIONS_READ_FAIL does the same to the
+// admissions read; FULLSEND_TEST_CODEX_EXIT sets the launch's exit status (killed:
+// SIGKILL, as the budget's context kill ends it); FULLSEND_TEST_CODEX_DROP=1
+// prints codex's dropped-notification warning on stderr before the stream,
+// FULLSEND_TEST_CODEX_BACKFILL_FAIL=1 exec's failed-backfill warning.
 func fakeOpenshellCodexChildren(t *testing.T, logPath, storeDir, streamFixture, sessionsDir string) {
 	t.Helper()
 	binDir := t.TempDir()
@@ -347,12 +377,19 @@ if [ "$2" = "exec" ]; then
   for last; do :; done
   case "$last" in
     cat\ *) f=$(printf '%s' "${last#cat }" | tr -d "'" | tr '/' '_'); cat '` + storeDir + `'/"$f"; exit $? ;;
-    *"exec --json"*) cat '` + streamFixture + `'; [ "${FULLSEND_TEST_CODEX_EXIT:-}" = killed ] && kill -9 $$; exit "${FULLSEND_TEST_CODEX_EXIT:-0}" ;;
+    *"exec --json"*) [ "${FULLSEND_TEST_CODEX_DROP:-}" = 1 ] && echo "2026-10-22T16:00:00Z  WARN codex_app_server::in_process: ` + codexDroppedNotification + `" >&2; [ "${FULLSEND_TEST_CODEX_BACKFILL_FAIL:-}" = 1 ] && echo "2026-10-22T16:00:01Z  WARN codex_exec: ` + codexBackfillFailed + ` for turn completion: boom" >&2; cat '` + streamFixture + `'; [ "${FULLSEND_TEST_CODEX_EXIT:-}" = killed ] && kill -9 $$; exit "${FULLSEND_TEST_CODEX_EXIT:-0}" ;;
     *` + codexChildUsageMarker + `*)
       if [ "${FULLSEND_TEST_CHILD_READ_FAIL:-}" = 1 ]; then echo "fake openshell: refusing the rollout read${FULLSEND_TEST_CHILD_READ_STDERR:+ $FULLSEND_TEST_CHILD_READ_STDERR}" >&2; exit 1; fi
       sh -c "$(printf '%s' "$last" | sed 's#` + CodexRuntime{}.codexSessionsDir() + `#` + sessionsDir + `#g')"; rc=$?
       if [ "${FULLSEND_TEST_CHILD_READ_FAIL:-}" = after ]; then exit 124; fi
       exit $rc ;;
+    *` + codexSpawnAdmitFinding + `*)
+      if [ "${FULLSEND_TEST_ADMISSIONS_READ_FAIL:-}" = 1 ]; then echo "fake openshell: refusing the admissions read${FULLSEND_TEST_CHILD_READ_STDERR:+ $FULLSEND_TEST_CHILD_READ_STDERR}" >&2; exit 1; fi
+      sh -c "$(printf '%s' "$last" | sed 's#` + codexFindingsLogPath + `#` + filepath.Join(filepath.Dir(sessionsDir), ".security", "findings.jsonl") + `#g')"; rc=$?
+      if [ "${FULLSEND_TEST_ADMISSIONS_READ_FAIL:-}" = after ]; then exit 124; fi
+      exit $rc ;;
+    *` + codexDebugLogFile + `*)
+      sh -c "$(printf '%s' "$last" | sed 's#` + sandbox.SandboxWorkspace + "/" + codexDebugLogFile + `#` + filepath.Join(filepath.Dir(sessionsDir), codexDebugLogFile) + `#g')"; exit $? ;;
   esac
   exit 0
 fi
@@ -704,10 +741,20 @@ func TestFoldCodexChildUsage_TwoIterationsSumToTotals(t *testing.T) {
 	assertCodexUsageSumsToTotals(t, sum)
 }
 
-// runCodexWithChildren runs Run against the fake with the rollouts of the
-// three children the stream spawns; delegating sets RoleFiles on the
-// runner-held digests. It returns the metrics, exit code, output and argv log.
-func runCodexWithChildren(t *testing.T, streamFixture string, delegating bool) (*RunMetrics, int, string, string) {
+// codexChildrenRunParams are the RunParams of the run-level tests.
+var codexChildrenRunParams = RunParams{
+	SandboxName: "sb",
+	RepoDir:     "/sandbox/workspace/repo",
+	Model:       "openai/gpt-5.6-luna",
+	Timeout:     time.Minute,
+}
+
+// tryCodexRunWithChildren runs Run against the fake with the rollouts of the
+// three children the stream spawns and a findings log holding admitted
+// admit lines (0: no file); delegating sets RoleFiles on the runner-held
+// digests. It returns the metrics, exit code, output, argv log and Run's
+// error.
+func tryCodexRunWithChildren(t *testing.T, streamFixture string, delegating bool, admitted int) (*RunMetrics, int, string, string, error) {
 	t.Helper()
 	logPath := filepath.Join(t.TempDir(), "openshell.log")
 	storeDir := t.TempDir()
@@ -720,23 +767,30 @@ func runCodexWithChildren(t *testing.T, streamFixture string, delegating bool) (
 		recordRunnerHeldDigests("sb", d)
 	}
 	sessions := writeCodexChildRollouts(t, codexChildSameModelID, codexChildOtherModelID, codexChildFailedID)
-	fakeOpenshellCodexChildren(t, logPath, storeDir, filepath.Join("testdata", "codex", streamFixture), sessions)
+	writeCodexSpawnAdmissions(t, sessions, admitted)
+	if !filepath.IsAbs(streamFixture) {
+		streamFixture = filepath.Join("testdata", "codex", streamFixture)
+	}
+	fakeOpenshellCodexChildren(t, logPath, storeDir, streamFixture, sessions)
 
 	var out bytes.Buffer
 	metrics := &RunMetrics{}
-	exit, err := r.Run(context.Background(), RunParams{
-		SandboxName: "sb",
-		RepoDir:     "/sandbox/workspace/repo",
-		Model:       "openai/gpt-5.6-luna",
-		Timeout:     time.Minute,
-	}, ui.New(&out), time.Now(), metrics)
+	exit, err := r.Run(context.Background(), codexChildrenRunParams, ui.New(&out), time.Now(), metrics)
+	return metrics, exit, out.String(), readFileString(t, logPath), err
+}
+
+// runCodexWithChildren is tryCodexRunWithChildren for a run that must not
+// fail.
+func runCodexWithChildren(t *testing.T, streamFixture string, delegating bool, admitted int) (*RunMetrics, int, string, string) {
+	t.Helper()
+	metrics, exit, out, log, err := tryCodexRunWithChildren(t, streamFixture, delegating, admitted)
 	require.NoError(t, err)
-	return metrics, exit, out.String(), readFileString(t, logPath)
+	return metrics, exit, out, log
 }
 
 // A spawn in the stream alone (no RoleFiles) triggers the read.
 func TestCodexRun_FoldsChildUsage(t *testing.T) {
-	metrics, exit, out, log := runCodexWithChildren(t, "collab_spawn.ndjson", false)
+	metrics, exit, out, log := runCodexWithChildren(t, "collab_spawn.ndjson", false, 3)
 
 	assert.Equal(t, 0, exit)
 	assert.Equal(t, "gpt-5.6-luna", metrics.Model)
@@ -751,6 +805,10 @@ func TestCodexRun_FoldsChildUsage(t *testing.T) {
 	assert.Equal(t, 1, metrics.NumTurns, "turns stay parent-only")
 	assert.Contains(t, out, "2 sub-agent thread(s) folded into the run metrics")
 	assert.Equal(t, 1, strings.Count(log, codexChildUsageMarker), "one read command, after the run")
+	assert.Equal(t, 1, strings.Count(log, codexSpawnAdmitFinding), "and one admissions read")
+	d, ok := lookupRunnerHeldDigests("sb")
+	require.True(t, ok)
+	assert.Equal(t, 3, d.CompletedSpawns, "the run's count, kept for a retry")
 	assert.Contains(t, log, shellQuote(codexChildFailedID), "the failed child's rollout is read too; it is its content that contributes nothing")
 	assert.NotContains(t, log, codexChildFailedSpawnID, "the failed spawn's receiver is never looked up")
 }
@@ -758,7 +816,7 @@ func TestCodexRun_FoldsChildUsage(t *testing.T) {
 // A delegating agent that spawned nothing gets the parent's entry and no
 // sandbox command.
 func TestCodexRun_DelegatingWithoutSpawnHasParentEntry(t *testing.T) {
-	metrics, exit, _, log := runCodexWithChildren(t, "basic_run.ndjson", true)
+	metrics, exit, _, log := runCodexWithChildren(t, "basic_run.ndjson", true, 0)
 
 	assert.Equal(t, 0, exit)
 	assert.Equal(t, map[string]ModelUsage{
@@ -766,11 +824,12 @@ func TestCodexRun_DelegatingWithoutSpawnHasParentEntry(t *testing.T) {
 	}, metrics.PerModelUsage, "the numbers TestApplyCodexMetrics pins for basic_run.ndjson")
 	assertCodexUsageSumsToTotals(t, metrics)
 	assert.NotContains(t, log, codexChildUsageMarker, "no id, no sandbox command")
+	assert.NotContains(t, log, codexSpawnAdmitFinding, "no completed spawn, no admissions read")
 }
 
 // A non-delegating agent with no spawn writes the same metrics.json as before.
 func TestCodexRun_NoSpawnNoBreakdown(t *testing.T) {
-	metrics, exit, _, log := runCodexWithChildren(t, "basic_run.ndjson", false)
+	metrics, exit, _, log := runCodexWithChildren(t, "basic_run.ndjson", false, 0)
 
 	assert.Equal(t, 0, exit)
 	assert.Nil(t, metrics.PerModelUsage)
@@ -778,6 +837,7 @@ func TestCodexRun_NoSpawnNoBreakdown(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, string(data), "per_model_usage", "omitempty keeps the key out")
 	assert.NotContains(t, log, codexChildUsageMarker)
+	assert.NotContains(t, log, codexSpawnAdmitFinding)
 }
 
 // A failed read is a warning; the iteration keeps its exit code and the
@@ -786,7 +846,7 @@ func TestCodexRun_ChildReadFailureIsAWarning(t *testing.T) {
 	token := "ghp_" + strings.Repeat("B", 36)
 	t.Setenv("FULLSEND_TEST_CHILD_READ_FAIL", "1")
 	t.Setenv("FULLSEND_TEST_CHILD_READ_STDERR", token)
-	metrics, exit, out, _ := runCodexWithChildren(t, "collab_spawn.ndjson", false)
+	metrics, exit, out, _ := runCodexWithChildren(t, "collab_spawn.ndjson", false, 3)
 
 	assert.Equal(t, 0, exit, "losing the children's tokens must not fail an iteration that succeeded")
 	assert.Contains(t, out, "! Sub-agent usage not fully counted: reading the child rollouts: exited 1: fake openshell: refusing the rollout read")
@@ -803,7 +863,7 @@ func TestCodexRun_ChildReadFailureIsAWarning(t *testing.T) {
 // breakdown still sums to the totals.
 func TestCodexRun_NonZeroExitStillReadsTheChildren(t *testing.T) {
 	t.Setenv("FULLSEND_TEST_CODEX_EXIT", "137")
-	failed, exit, out, log := runCodexWithChildren(t, "collab_spawn.ndjson", true)
+	failed, exit, out, log := runCodexWithChildren(t, "collab_spawn.ndjson", true, 3)
 
 	assert.Equal(t, 137, exit)
 	assert.Equal(t, map[string]ModelUsage{
@@ -816,7 +876,7 @@ func TestCodexRun_NonZeroExitStillReadsTheChildren(t *testing.T) {
 	assertCodexUsageSumsToTotals(t, failed)
 
 	t.Setenv("FULLSEND_TEST_CODEX_EXIT", "0")
-	retry, exit, _, _ := runCodexWithChildren(t, "collab_spawn.ndjson", true)
+	retry, exit, _, _ := runCodexWithChildren(t, "collab_spawn.ndjson", true, 3)
 	require.Equal(t, 0, exit)
 	assertCodexUsageSumsToTotals(t, sumCodexIterations(failed, retry))
 	assert.NotContains(t, out, "may be undercounted", "codex exited on its own; its children were done")
@@ -829,11 +889,308 @@ func TestCodexRun_BudgetStopWarnsOfLaterChildUsage(t *testing.T) {
 	for exitEnv, want := range map[string]int{"killed": -1, "124": 124} {
 		t.Run(exitEnv, func(t *testing.T) {
 			t.Setenv("FULLSEND_TEST_CODEX_EXIT", exitEnv)
-			_, exit, out, _ := runCodexWithChildren(t, "collab_spawn.ndjson", false)
+			_, exit, out, _ := runCodexWithChildren(t, "collab_spawn.ndjson", false, 3)
 
 			assert.Equal(t, want, exit)
 			assert.Contains(t, out, "2 sub-agent thread(s) folded into the run metrics")
 			assert.Contains(t, out, "! Sub-agent usage may be undercounted: codex was stopped")
 		})
 	}
+}
+
+// writeCodexSpawnAdmissions writes n admission lines in the adapter's
+// json.dumps spacing to .security/findings.jsonl beside the sessions tree,
+// where the fake maps the sandbox findings log. 0 writes no file.
+func writeCodexSpawnAdmissions(t *testing.T, sessions string, n int) {
+	t.Helper()
+	if n == 0 {
+		return
+	}
+	var b strings.Builder
+	for i := range n {
+		fmt.Fprintf(&b, `{"name": %q, "detail": "admitted spawn tool_use_id=call_1_%d agent_type=correctness"}`+"\n", codexSpawnAdmitFinding, i)
+	}
+	dir := filepath.Join(filepath.Dir(sessions), ".security")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "findings.jsonl"), []byte(b.String()), 0o600))
+}
+
+func TestCountCodexSpawnAdmissions(t *testing.T) {
+	t.Parallel()
+
+	data := string(readCodexFixture(t, "spawn_admissions.jsonl")) +
+		`{"name": "codex_spawn_guard_admit", "detail": "admitted spawn tool_use_id=call_9_0 agent_ty` // the head -c cut
+	assert.Equal(t, 3, countCodexSpawnAdmissions([]byte(data)),
+		"the admit lines by name; the block line, the secret_redact_posttool line and a cut line are not counted")
+	assert.Zero(t, countCodexSpawnAdmissions(nil), "no findings log: the command prints nothing")
+}
+
+func TestCompareCodexSpawnAdmissions(t *testing.T) {
+	t.Parallel()
+
+	root := codexRootThreadID
+	tests := []struct {
+		name                string
+		primary             string
+		senders             []string // this iteration's completed spawns
+		completed, admitted int      // the whole run's
+		want                string   // "" = no error
+	}{
+		{"equal counts", root, []string{root, root, root}, 3, 3, ""},
+		{"more admissions: an admitted spawn codex then refused", root, []string{root, root}, 2, 3, ""},
+		{"one completed spawn more than admissions", root, []string{root, root, root}, 3, 2,
+			"codex_spawn_without_admission: 3 completed spawn(s) in this run's stream(s) but 2 recorded admission(s)"},
+		{"an earlier iteration's spawns count", root, []string{root}, 4, 3,
+			"codex_spawn_without_admission: 4 completed spawn(s) in this run's stream(s) but 3 recorded admission(s)"},
+		{"a sender that is not the primary thread", root, []string{root, codexChildSameModelID}, 2, 3,
+			"codex_spawn_without_admission: a completed spawn was not sent by the primary thread"},
+		{"a spawn item without a sender", root, []string{""}, 1, 3,
+			"codex_spawn_without_admission: a completed spawn was not sent by the primary thread"},
+		{"the stream named no primary thread", "", []string{root}, 1, 3,
+			"codex_spawn_without_admission: a completed spawn was not sent by the primary thread"},
+		{"no sender and no primary thread", "", []string{""}, 1, 3,
+			"codex_spawn_without_admission: a completed spawn was not sent by the primary thread"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := compareCodexSpawnAdmissions(tt.primary, tt.senders, tt.completed, tt.admitted)
+			if tt.want == "" {
+				assert.NoError(t, err)
+				return
+			}
+			assert.EqualError(t, err, tt.want)
+		})
+	}
+}
+
+func TestCodexSpawnAdmissionsReadCommand_Executes(t *testing.T) {
+	t.Parallel()
+
+	findings := filepath.Join(t.TempDir(), "findings.jsonl")
+	require.NoError(t, os.WriteFile(findings, readCodexFixture(t, "spawn_admissions.jsonl"), 0o600))
+	cmd := codexSpawnAdmissionsReadCommand(findings)
+	assert.Contains(t, cmd, fmt.Sprintf("command -p head -c %d", codexChildUsageMaxBytes), "bounded inside the sandbox")
+
+	out, err := exec.Command("/bin/sh", "-c", cmd).Output()
+	require.NoError(t, err)
+	assert.Equal(t, 3, strings.Count(string(out), "\n"), "only the admit lines leave the sandbox")
+	assert.Equal(t, 3, countCodexSpawnAdmissions(out))
+}
+
+// checkCodexSpawnAdmissions through the fake: the read, the count and the
+// comparison together, and the read's two failures.
+func TestCheckCodexSpawnAdmissions_ThroughTheSandbox(t *testing.T) {
+	root := codexRootThreadID
+	three := []string{root, root, root}
+	for name, tc := range map[string]struct {
+		senders  []string
+		admitted int
+		want     string
+	}{
+		"every completed spawn admitted": {three, 3, ""},
+		"spawns, no findings log":        {three[:1], 0, "1 completed spawn(s) in this run's stream(s) but 0 recorded admission(s)"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			sessions := writeCodexChildRollouts(t)
+			writeCodexSpawnAdmissions(t, sessions, tc.admitted)
+			fakeOpenshellCodexChildren(t, filepath.Join(t.TempDir(), "openshell.log"), t.TempDir(), "", sessions)
+
+			err := checkCodexSpawnAdmissions("sb", root, tc.senders, len(tc.senders))
+			if tc.want == "" {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+
+	t.Run("openshell cannot start", func(t *testing.T) {
+		t.Setenv("PATH", t.TempDir())
+		err := checkCodexSpawnAdmissions("sb", root, three, 3)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "reading the spawn admissions: openshell exec failed to start")
+	})
+
+	t.Run("the read times out", func(t *testing.T) {
+		fakeOpenshellCodexChildren(t, filepath.Join(t.TempDir(), "openshell.log"), t.TempDir(), "", t.TempDir())
+		t.Setenv("FULLSEND_TEST_ADMISSIONS_READ_FAIL", "after")
+		assert.EqualError(t, checkCodexSpawnAdmissions("sb", root, three, 3), "reading the spawn admissions: command timed out after 10s")
+	})
+
+	t.Run("the read is cut", func(t *testing.T) {
+		sessions := writeCodexChildRollouts(t)
+		writeCodexSpawnAdmissions(t, sessions, 12000)
+		fakeOpenshellCodexChildren(t, filepath.Join(t.TempDir(), "openshell.log"), t.TempDir(), "", sessions)
+		err := checkCodexSpawnAdmissions("sb", root, three, 12000)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "recorded admission(s); the admissions read was cut at 1048576 bytes")
+	})
+
+	t.Run("the read exits non-zero", func(t *testing.T) {
+		token := "ghp_" + strings.Repeat("B", 36)
+		fakeOpenshellCodexChildren(t, filepath.Join(t.TempDir(), "openshell.log"), t.TempDir(), "", t.TempDir())
+		t.Setenv("FULLSEND_TEST_ADMISSIONS_READ_FAIL", "1")
+		t.Setenv("FULLSEND_TEST_CHILD_READ_STDERR", token)
+		err := checkCodexSpawnAdmissions("sb", root, three, 3)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "reading the spawn admissions: exited 1: fake openshell: refusing the admissions read")
+		assert.NotContains(t, err.Error(), token, "stderr goes through the shared secret redactor")
+	})
+}
+
+// A completed spawn with no admission fails the run whatever codex's exit:
+// with a validation loop a non-zero exit alone does not. The fold runs
+// first, so the metrics still carry the children.
+func TestCodexRun_SpawnWithoutAdmissionFailsTheRun(t *testing.T) {
+	for exitEnv, want := range map[string]int{"0": 0, "137": 137, "124": 124, "killed": -1} {
+		t.Run(exitEnv, func(t *testing.T) {
+			t.Setenv("FULLSEND_TEST_CODEX_EXIT", exitEnv)
+			metrics, exit, out, log, err := tryCodexRunWithChildren(t, "collab_spawn.ndjson", true, 2)
+
+			assert.EqualError(t, err, "codex_spawn_without_admission: 3 completed spawn(s) in this run's stream(s) but 2 recorded admission(s)",
+				"the failed spawn of the fixture is not counted")
+			assert.Equal(t, want, exit)
+			assert.Contains(t, out, "2 sub-agent thread(s) folded into the run metrics", "the fold ran first")
+			assert.Equal(t, 1, strings.Count(log, codexSpawnAdmitFinding))
+			assert.Equal(t, codexTokenTotals{1018, 1348, 391, 22996, 41590}, codexTotalsOf(metrics))
+		})
+	}
+}
+
+// The count spans the run: the findings log keeps the earlier iterations'
+// admissions, so a retry's spawns need admissions of their own.
+func TestCodexRun_RetrySpawnsNeedTheirOwnAdmissions(t *testing.T) {
+	runCodexWithChildren(t, "collab_spawn.ndjson", false, 3)
+
+	var out bytes.Buffer
+	_, err := CodexRuntime{}.Run(context.Background(), codexChildrenRunParams, ui.New(&out), time.Now(), &RunMetrics{})
+	assert.EqualError(t, err, "codex_spawn_without_admission: 6 completed spawn(s) in this run's stream(s) but 3 recorded admission(s)")
+}
+
+func TestCodexChildIDs_FlushScansTheTornLastLine(t *testing.T) {
+	t.Parallel()
+
+	spawn := `{"type":"item.completed","item":{"id":"item_1","type":"collab_tool_call","tool":"spawn_agent","sender_thread_id":"` + codexRootThreadID + `","receiver_thread_ids":["` + codexChildSameModelID + `"],"prompt":null,"agents_states":{},"status":"completed"}}`
+	c := &codexChildIDs{}
+	_, err := c.Write([]byte(spawn + "\n" + spawn))
+	require.NoError(t, err)
+	assert.Len(t, c.Senders, 1, "the last line has no newline yet")
+	c.flush()
+	assert.Equal(t, []string{codexChildSameModelID, codexChildSameModelID}, c.IDs, "codex killed mid-write leaves a completed spawn on the last line")
+	assert.Len(t, c.Senders, 2)
+	c.flush()
+	assert.Len(t, c.Senders, 2, "nothing pending")
+}
+
+// A spawn item too long to read fails the run: whether that spawn completed
+// is unknown, and the parent chooses the prompt's size.
+func TestCodexRun_UnreadSpawnItemFailsTheRun(t *testing.T) {
+	lines := bytes.Split(readCodexFixture(t, "collab_spawn.ndjson"), []byte("\n"))
+	padded := false
+	for i, line := range lines {
+		if bytes.Contains(line, []byte(`"tool":"spawn_agent"`)) && bytes.Contains(line, []byte(`"status":"completed"`)) {
+			lines[i] = bytes.Replace(line, []byte(`"prompt":"`), []byte(`"prompt":"`+strings.Repeat("a", streamBufSize)), 1)
+			padded = true
+			break
+		}
+	}
+	require.True(t, padded)
+	path := filepath.Join(t.TempDir(), "padded.ndjson")
+	require.NoError(t, os.WriteFile(path, bytes.Join(lines, []byte("\n")), 0o600))
+
+	_, exit, _, log, err := tryCodexRunWithChildren(t, path, false, 3)
+	assert.EqualError(t, err, "codex_spawn_without_admission: a spawn_agent item longer than 1048576 bytes could not be read")
+	assert.Equal(t, 0, exit)
+	assert.NotContains(t, log, codexSpawnAdmitFinding, "nothing to compare: the unread item fails the run before the read")
+}
+
+// The findings log the admission cross-check counts across iterations
+// survives ClearIterationArtifacts, which clears output/, the sessions
+// directory and the debug log, nothing else under the workspace.
+func TestCodexRuntime_ClearIterationArtifacts_KeepsTheFindingsLog(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "openshell.log")
+	fakeOpenshellCodexChildren(t, logPath, t.TempDir(), "", t.TempDir())
+	require.NoError(t, CodexRuntime{}.ClearIterationArtifacts("sb"))
+	var clear string
+	for _, line := range strings.Split(readFileString(t, logPath), "\n") {
+		if i := strings.Index(line, "rm -rf "); i >= 0 {
+			clear = line[i:]
+		}
+	}
+	require.NotEmpty(t, clear, "the file cleanup ran")
+
+	ws := t.TempDir()
+	for _, p := range []string{".security/findings.jsonl", "output/result.txt"} {
+		require.NoError(t, os.MkdirAll(filepath.Dir(filepath.Join(ws, p)), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(ws, p), []byte("x\n"), 0o600))
+	}
+	out, err := exec.Command("/bin/sh", "-c", strings.ReplaceAll(clear, sandbox.SandboxWorkspace, ws)).CombinedOutput()
+	require.NoError(t, err, string(out))
+	assert.FileExists(t, filepath.Join(ws, ".security", "findings.jsonl"), "the admissions of earlier iterations stay")
+	assert.NoFileExists(t, filepath.Join(ws, "output", "result.txt"))
+}
+
+func TestCodexStderrDrops_CountsAcrossChunks(t *testing.T) {
+	t.Parallel()
+
+	var sink bytes.Buffer
+	d := &codexStderrDrops{w: &sink}
+	msg := "WARN codex_app_server::in_process: " + codexDroppedNotification + "\n"
+	whole := "ERROR something else\n" + msg + "INFO dropping nothing\n" + msg
+	for i := 0; i < len(whole); i += 5 {
+		n, err := d.Write([]byte(whole[i:min(i+5, len(whole))]))
+		require.NoError(t, err)
+		assert.Equal(t, min(5, len(whole)-i), n)
+	}
+	assert.Equal(t, 2, d.Dropped, "one per line, however the writes split it")
+	assert.Equal(t, whole, sink.String(), "every byte still reaches the runner's stderr")
+	_, err := d.Write([]byte("WARN codex_exec: " + codexBackfillFailed + " for turn completion: boom\n"))
+	require.NoError(t, err)
+	assert.Equal(t, 1, d.BackfillFailed)
+	assert.Equal(t, 2, d.Dropped)
+
+	last := &codexStderrDrops{w: &sink}
+	_, err = last.Write([]byte("WARN " + codexDroppedNotification))
+	require.NoError(t, err)
+	assert.Equal(t, 0, last.Dropped, "no newline yet")
+	last.flush()
+	assert.Equal(t, 1, last.Dropped, "the last line is scanned once the stream has ended")
+}
+
+// A dropped stream notification can hide a completed spawn. Nothing can
+// spawn until the multi-agent tools are switched on, so the run warns and
+// the cross-check runs on what the stream did carry.
+func TestCodexRun_DroppedNotificationWarns(t *testing.T) {
+	t.Setenv("FULLSEND_TEST_CODEX_DROP", "1")
+	_, exit, out, log := runCodexWithChildren(t, "collab_spawn.ndjson", true, 3)
+	assert.Equal(t, 0, exit)
+	assert.Contains(t, out, "! codex dropped 1 stream notification(s) under backpressure; the progress log is incomplete")
+	assert.Equal(t, 1, strings.Count(log, codexSpawnAdmitFinding))
+
+	t.Setenv("FULLSEND_TEST_CODEX_BACKFILL_FAIL", "1")
+	_, _, out, _ = runCodexWithChildren(t, "collab_spawn.ndjson", true, 3)
+	assert.Contains(t, out, "! codex dropped 1 stream notification(s) under backpressure, and its backfill of the turn's items failed, so a dropped completed item stayed lost; the progress log is incomplete")
+}
+
+// Under --debug codex's stderr goes to the sandbox log, which is read back.
+func TestCodexRun_DroppedNotificationInTheDebugLog(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "openshell.log")
+	storeDir := t.TempDir()
+	r := CodexRuntime{}
+	seedCodexManifest(t, storeDir, r, nil)
+	sessions := writeCodexChildRollouts(t)
+	require.NoError(t, os.WriteFile(filepath.Join(filepath.Dir(sessions), codexDebugLogFile),
+		[]byte("WARN codex_app_server::in_process: "+codexDroppedNotification+"\nWARN codex_exec: "+codexBackfillFailed+" for turn completion: boom\n"), 0o600))
+	fakeOpenshellCodexChildren(t, logPath, storeDir, filepath.Join("testdata", "codex", "basic_run.ndjson"), sessions)
+
+	params := codexChildrenRunParams
+	params.Debug = "1"
+	var out bytes.Buffer
+	exit, err := r.Run(context.Background(), params, ui.New(&out), time.Now(), &RunMetrics{})
+	require.NoError(t, err)
+	assert.Equal(t, 0, exit)
+	assert.Contains(t, out.String(), "! codex dropped 1 stream notification(s) under backpressure, and its backfill of the turn's items failed")
+	assert.Contains(t, readFileString(t, logPath), "grep -a -c -F", "the counts came from the sandbox log")
 }

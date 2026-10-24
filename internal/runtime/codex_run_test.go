@@ -288,7 +288,12 @@ func TestBuildCodexRunCommand_OrderAndFlags(t *testing.T) {
 		assert.Contains(t, cmd, name+":"+digest)
 	}
 	assert.True(t, strings.HasSuffix(strings.TrimSpace(cmd), "-"), "the command must end with the stdin sentinel")
-	assert.NotContains(t, cmd, "RUST_LOG", "debug tracing is off unless the runner asks for it")
+	rustLog := `export RUST_LOG='error,opentelemetry_sdk=off,opentelemetry_otlp=off,codex_exec=warn,codex_app_server::in_process=warn'`
+	assert.Contains(t, cmd, rustLog,
+		"codex's default filter, plus exec and the in-process module at warn so a dropped notification and a failed backfill are reported")
+	assert.Greater(t, strings.Index(cmd, rustLog), strings.Index(cmd, codexEnvLoad), "set after .env, so .env cannot change it")
+	assert.NotContains(t, cmd, "${RUST_LOG", "never built on an inherited value")
+	assert.NotContains(t, cmd, "2>>", "stderr stays on the runner's stderr unless the runner asks for the log")
 }
 
 func TestBuildCodexRunCommand_HooksDisabled(t *testing.T) {
@@ -310,7 +315,7 @@ func TestBuildCodexRunCommand_DebugCapturesStderr(t *testing.T) {
 
 	cmd := buildCodexRunCommand(RunParams{RepoDir: "/repo", Debug: "1"}, codexModel{ID: "gpt-5.6-luna"}, "", false, testRunnerHeldDigests)
 	// codex exec has no --debug flag: tracing goes to stderr behind RUST_LOG.
-	assert.Contains(t, cmd, `export RUST_LOG="${RUST_LOG:-info}"`)
+	assert.Contains(t, cmd, `export RUST_LOG='info'`)
 	assert.Contains(t, cmd, "2>>'"+sandbox.SandboxWorkspace+"/"+codexDebugLogFile+"'")
 }
 

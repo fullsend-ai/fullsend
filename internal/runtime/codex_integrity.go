@@ -70,6 +70,11 @@ type codexRunnerHeldDigestSet struct {
 	// its role file, agents/<name>.toml under CODEX_HOME. Empty until a
 	// Bootstrap registers roles; the spawn guard admits only these.
 	RoleFiles map[string]string
+
+	// CompletedSpawns is the number of completed spawns the `exec --json`
+	// streams reported, summed over the run's iterations: the findings log
+	// the admission cross-check compares it with persists across them too.
+	CompletedSpawns int
 }
 
 // delegating reports whether Bootstrap registered native sub-agent roles for

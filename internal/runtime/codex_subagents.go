@@ -5,8 +5,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -134,12 +136,18 @@ func parseCodexChildUsage(data []byte) []codexChildUsage {
 
 // codexChildIDs collects the thread ids of completed spawn_agent items from
 // a tee of the `exec --json` stream: the parser's events carry no thread id.
-// A final line without a newline is not scanned; in codex it is the terminal
-// event.
+// Senders holds each completed spawn's sender_thread_id, in stream order, for
+// the admission cross-check.
+// A final line without a newline waits for flush, once the stream has ended:
+// codex killed mid-write can leave a completed spawn there.
 type codexChildIDs struct {
-	IDs      []string
-	line     []byte
-	overlong bool
+	IDs     []string
+	Senders []string
+	// UnreadSpawn marks a line too long to scan that opened as a spawn_agent
+	// item: whether that spawn completed is unknown, so the run fails.
+	UnreadSpawn bool
+	line        []byte
+	overlong    bool
 }
 
 func (c *codexChildIDs) Write(p []byte) (int, error) {
@@ -160,14 +168,106 @@ func (c *codexChildIDs) Write(p []byte) (int, error) {
 }
 
 // take appends to the pending line and drops a line that reaches
-// streamBufSize, as parseCodexStream does.
+// streamBufSize, as parseCodexStream does, noting one that opened as a
+// spawn_agent item (the parent chooses the prompt's size).
 func (c *codexChildIDs) take(b []byte) {
 	if c.overlong || len(c.line)+len(b) >= streamBufSize {
+		if !c.overlong {
+			var head [256]byte
+			n := copy(head[:], c.line)
+			n += copy(head[n:], b)
+			if bytes.Contains(head[:n], []byte(`"type":"collab_tool_call"`)) && bytes.Contains(head[:n], []byte(`"tool":"spawn_agent"`)) {
+				c.UnreadSpawn = true
+			}
+		}
 		c.overlong = true
 		c.line = c.line[:0]
 		return
 	}
 	c.line = append(c.line, b...)
+}
+
+// codexStderrDefaultFilter is codex exec's own stderr filter when RUST_LOG
+// is unset, kept as the base so the always-on module directive adds to it.
+const codexStderrDefaultFilter = "error,opentelemetry_sdk=off,opentelemetry_otlp=off"
+
+// codexDroppedNotification is the line codex logs, at warn, when its
+// in-process channel is full and it drops a stream notification: an item
+// then never reaches `exec --json`, and a completed spawn may be among them.
+const codexDroppedNotification = "dropping in-process server notification (queue full)"
+
+// codexBackfillFailed starts the line exec logs, at warn, when the read of
+// the turn's items that brings a dropped completed item back fails: such an
+// item then stays lost.
+const codexBackfillFailed = "thread/read failed while backfilling turn items"
+
+// codexStderrDrops forwards codex's stderr to the runner's and counts the
+// lines that carry codexDroppedNotification and codexBackfillFailed; flush
+// scans a final line without a newline once the stream has ended.
+type codexStderrDrops struct {
+	w              io.Writer
+	line           []byte
+	Dropped        int
+	BackfillFailed int
+}
+
+func (c *codexStderrDrops) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+	rest := p
+	for {
+		i := bytes.IndexByte(rest, '\n')
+		if i < 0 {
+			if len(c.line) < 64*1024 {
+				c.line = append(c.line, rest...)
+			}
+			return n, err
+		}
+		if len(c.line) < 64*1024 {
+			c.line = append(c.line, rest[:i]...)
+		}
+		c.flush()
+		rest = rest[i+1:]
+	}
+}
+
+func (c *codexStderrDrops) flush() {
+	switch {
+	case bytes.Contains(c.line, []byte(codexDroppedNotification)):
+		c.Dropped++
+	case bytes.Contains(c.line, []byte(codexBackfillFailed)):
+		c.BackfillFailed++
+	}
+	c.line = c.line[:0]
+}
+
+// codexCountDroppedInLog counts codexDroppedNotification and
+// codexBackfillFailed in the sandbox debug log, where codex's stderr goes
+// under --debug instead of the host. A log that is missing or has no such
+// line counts zero.
+func codexCountDroppedInLog(sandboxName string) (dropped, backfillFailed int, err error) {
+	log := shellQuote(sandbox.SandboxWorkspace + "/" + codexDebugLogFile)
+	cmd := fmt.Sprintf(`command -p grep -a -c -F -e %s -- %s 2>/dev/null; command -p grep -a -c -F -e %s -- %s 2>/dev/null; true`,
+		shellQuote(codexDroppedNotification), log, shellQuote(codexBackfillFailed), log)
+	stdout, _, _, err := sandbox.Exec(sandboxName, cmd, 10*time.Second)
+	if err != nil {
+		return 0, 0, err
+	}
+	counts := strings.Fields(stdout)
+	if len(counts) > 0 {
+		dropped, _ = strconv.Atoi(counts[0])
+	}
+	if len(counts) > 1 {
+		backfillFailed, _ = strconv.Atoi(counts[1])
+	}
+	return dropped, backfillFailed, nil
+}
+
+// flush scans the pending final line, if any.
+func (c *codexChildIDs) flush() {
+	if len(c.line) > 0 {
+		c.scan(c.line)
+	}
+	c.line, c.overlong = c.line[:0], false
 }
 
 func (c *codexChildIDs) scan(line []byte) {
@@ -179,7 +279,8 @@ func (c *codexChildIDs) scan(line []byte) {
 		Type string `json:"type"`
 		Item struct {
 			codexCollabToolCallItem
-			Type string `json:"type"`
+			Type           string `json:"type"`
+			SenderThreadID string `json:"sender_thread_id"`
 		} `json:"item"`
 	}
 	if json.Unmarshal(line, &evt) != nil || evt.Type != "item.completed" || evt.Item.Type != "collab_tool_call" ||
@@ -187,6 +288,7 @@ func (c *codexChildIDs) scan(line []byte) {
 		return
 	}
 	c.IDs = append(c.IDs, evt.Item.ReceiverThreadIDs...)
+	c.Senders = append(c.Senders, evt.Item.SenderThreadID)
 }
 
 // foldCodexChildUsage adds the parent's entry to m.PerModelUsage, always, so
@@ -290,4 +392,99 @@ func (r CodexRuntime) foldCodexChildUsage(sandboxName string, childIDs []string,
 		return folded, fmt.Errorf("reading the child rollouts: %s", strings.Join(lost, "; "))
 	}
 	return folded, nil
+}
+
+// The admission cross-check. Codex records no hook outcome in `exec --json`
+// or the rollout, so a spawn the guard never decided (a starved or failed
+// handler lets the call through) is found by comparing two records: the
+// completed spawns of the stream, read on the host, and the guard's admission
+// lines in the sandbox findings log. The log is agent-writable: a planted or
+// duplicated admission only raises the count, so a forged one is not caught,
+// while a torn, cut or missing log can only lower it: it can fail a run that
+// would have passed, never pass one that would have failed. The stream side
+// is not that strict: codex can drop an item notification under
+// backpressure, and the completed count is then too low; it says so on its
+// stderr, which Run scans (codexStderrDrops) and warns on. A completed item
+// codex saw start comes back when the turn completes, if exec's read of the
+// turn's items succeeds; exec warns when it does not, and Run counts that
+// line too. A spawn that lost both notifications, or whose dropped
+// completed item that read did not bring back, is not counted, and the
+// count cannot tell it from a harmless drop. A resume
+// that got through appears in the stream
+// as a wait item, so it is not caught either, nor is an overlong spawn line
+// whose first bytes do not show its type and tool. Counts are compared, not
+// ids: a stream item carries no tool_use_id.
+
+// codexSpawnAdmitFinding is the adapter's SPAWN_ADMIT_FINDING.
+const codexSpawnAdmitFinding = "codex_spawn_guard_admit"
+
+// codexFindingsLogPath is the adapter's FINDINGS_PATH.
+const codexFindingsLogPath = sandbox.SandboxWorkspace + "/.security/findings.jsonl"
+
+// codexSpawnWithoutAdmission starts the cross-check's error.
+const codexSpawnWithoutAdmission = "codex_spawn_without_admission"
+
+// codexSpawnAdmissionsReadCommand prints the findings log's lines that name
+// an admission, bounded like the usage read. A log grep cannot open prints
+// nothing and exits 0: the pipeline's status is head's.
+func codexSpawnAdmissionsReadCommand(findingsLog string) string {
+	return fmt.Sprintf(`command -p grep -a -e %s -- %s 2>/dev/null | command -p head -c %d`,
+		shellQuote(`"`+codexSpawnAdmitFinding+`"`), shellQuote(findingsLog), codexChildUsageMaxBytes)
+}
+
+// countCodexSpawnAdmissions counts the lines that decode as a finding named
+// codexSpawnAdmitFinding; a cut or planted line that does not decode, or
+// that only quotes the name, is not counted.
+func countCodexSpawnAdmissions(data []byte) int {
+	n := 0
+	for line := range bytes.Lines(data) {
+		var finding struct {
+			Name string `json:"name"`
+		}
+		if json.Unmarshal(line, &finding) == nil && finding.Name == codexSpawnAdmitFinding {
+			n++
+		}
+	}
+	return n
+}
+
+// compareCodexSpawnAdmissions returns an error for a spawn without a sender
+// or sent by any thread but the primary one (two unknown ids are not the
+// same thread), and for more completed spawns in the run than admissions.
+// More admissions is not an error: an admitted spawn codex then refused (at
+// the thread limit) completed nothing. No id is in the error: the stream
+// comes out of the sandbox. At the pinned codex the stream carries the
+// primary thread's items only, so the sender rule is defence in depth; a
+// child's spawn is the guard's deny.
+func compareCodexSpawnAdmissions(primary string, senders []string, completed, admitted int) error {
+	for _, sender := range senders {
+		if sender == "" || sender != primary {
+			return fmt.Errorf("%s: a completed spawn was not sent by the primary thread", codexSpawnWithoutAdmission)
+		}
+	}
+	if completed > admitted {
+		return fmt.Errorf("%s: %d completed spawn(s) in this run's stream(s) but %d recorded admission(s)",
+			codexSpawnWithoutAdmission, completed, admitted)
+	}
+	return nil
+}
+
+// checkCodexSpawnAdmissions reads the admissions and compares them with an
+// iteration's completed spawns (senders) and the run's (completed). Unlike
+// the usage read, a read that fails or times out fails the run: this is a
+// policy check, not a metric.
+func checkCodexSpawnAdmissions(sandboxName, primary string, senders []string, completed int) error {
+	stdout, stderr, exitCode, err := sandbox.Exec(sandboxName, codexSpawnAdmissionsReadCommand(codexFindingsLogPath), 10*time.Second)
+	if err != nil {
+		return fmt.Errorf("reading the spawn admissions: %w", err)
+	}
+	if exitCode != 0 {
+		return fmt.Errorf("reading the spawn admissions: exited %d: %s", exitCode, redactSummary(strings.TrimSpace(sanitizeOutput(stderr))))
+	}
+	admitted := countCodexSpawnAdmissions([]byte(stdout))
+	err = compareCodexSpawnAdmissions(primary, senders, completed, admitted)
+	if err != nil && admitted < completed && len(stdout) >= codexChildUsageMaxBytes {
+		return fmt.Errorf("%w; the admissions read was cut at %d bytes", err, codexChildUsageMaxBytes)
+	}
+	return err
 }

@@ -43,7 +43,11 @@ Codex **rollouts** (`$CODEX_HOME/sessions/**/rollout-*.jsonl`) for `foldCodexChi
 | `child_usage_forked.jsonl` | A forked child (hand-authored from codex 0.159.3's fork rules): the parent's `turn_context` (`gpt-5.6-luna`) and `token_count` copied ahead of the child's own `turn_context` (`gpt-5.6-terra`) and `token_usage_record`; its usage lands under `gpt-5.6-terra`. |
 
 The tests lay the rollouts out under a temporary sessions tree as
-`2026/09/29/rollout-2026-09-29T15-46-38-<thread id>.jsonl`, the name codex gives a rollout.
+`2026/09/29/rollout-2026-09-29T15-46-38-<thread id>.jsonl`, the name codex gives a rollout,
+and the findings log beside the tree as `.security/findings.jsonl`. `spawn_admissions.jsonl` is
+that log for a run whose spawn guard admitted three spawns and denied one, in the adapter's
+`log_finding` shape, plus one `secret_redact_posttool` finding; `countCodexSpawnAdmissions`
+counts the three `codex_spawn_guard_admit` lines by name.
 
 ## Event structs
 
@@ -51,7 +55,21 @@ Copied from `openai/codex` tag `rust-v0.152.1` and re-checked at `rust-v0.157.0`
 (both files are byte-identical between the `rust-v0.157.0` and `rust-v0.159.3` tags),
 `codex-rs/exec/src/exec_events.rs` (shapes) and
 `codex-rs/exec/src/event_processor_with_jsonl_output.rs` (when each event is
-emitted). Re-check both when `CODEX_VERSION` moves.
+emitted). Re-check both when `CODEX_VERSION` moves, and with them three facts the admission
+cross-check (`codex_subagents.go`) rests on at `rust-v0.159.3`: a resume reaches the stream as a
+`wait` item (`CollabAgentTool::ResumeAgent => CollabTool::Wait` in the same processor); in-process
+delivery guarantees only TurnCompleted, the thread-state notifications and async AgentMessage
+items, drops any other item notification (a collab item's `item.completed` included) when its
+channel is full, and logs `dropping in-process server notification (queue full)` at warn from
+`codex_app_server::in_process` (`codex-rs/app-server/src/in_process.rs`), which the runner scans
+for, while exec re-emits at `turn/completed` the completed items whose `item.started` it saw
+(`maybe_backfill_turn_completed_items`, `reconcile_unfinished_started_items`), only for a
+non-ephemeral thread and only when its `thread/read` succeeds (`should_backfill_turn_completed_items`;
+a failed read logs `thread/read failed while backfilling turn items for turn completion` at warn
+from `codex_exec`, which the runner counts too), so a spawn that lost both notifications or whose
+backfill failed is missing; and exec's default stderr filter is `error,opentelemetry_sdk=off,opentelemetry_otlp=off`
+(`codex-rs/exec/src/lib.rs`, `EXEC_DEFAULT_LOG_FILTER`), which the launch command keeps as its
+base.
 
 Top-level `ThreadEvent` — serde `tag = "type"`, the variant payload flattened
 next to it:

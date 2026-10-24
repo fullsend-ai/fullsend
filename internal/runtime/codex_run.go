@@ -431,12 +431,18 @@ func buildCodexRunCommand(params RunParams, model codexModel, effort string, hoo
 		// Again after .env, which runs in this shell and could recreate it.
 		"&& "+codexModelsCacheRemoval(r),
 	)
+	// codex exec has no --debug flag. Its tracing goes to stderr, at error
+	// level by default — a codex run is not silent there the way pi is — and
+	// RUST_LOG sets the level. It is set here outright, after .env, so neither
+	// .env nor the environment can lower it below what codexStderrDrops
+	// needs: exec and the in-process module at warn, where codex reports a
+	// dropped stream notification and a failed backfill; a value codex
+	// cannot parse would silently drop it to the default filter.
+	filter := codexStderrDefaultFilter + ",codex_exec=warn,codex_app_server::in_process=warn"
 	if params.Debug != "" {
-		// codex exec has no --debug flag. Its tracing goes to stderr, at
-		// error level by default — a codex run is not silent there the way pi
-		// is — and RUST_LOG raises it.
-		parts = append(parts, `&& export RUST_LOG="${RUST_LOG:-info}"`)
+		filter = "info"
 	}
+	parts = append(parts, `&& export RUST_LOG=`+shellQuote(filter))
 
 	prompt := DefaultAgentPrompt
 	if params.Prompt != "" {
@@ -584,7 +590,8 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 
 	cmd := buildCodexRunCommand(params, model, effort, hooksEnabled, digests)
 
-	stdout, execCmd, cancel, err := sandbox.ExecStreamReader(ctx, params.SandboxName, cmd, params.Timeout, os.Stderr)
+	stderr := &codexStderrDrops{w: os.Stderr}
+	stdout, execCmd, cancel, err := sandbox.ExecStreamReader(ctx, params.SandboxName, cmd, params.Timeout, stderr)
 	if err != nil {
 		return -1, err
 	}
@@ -636,7 +643,8 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 		innerHandler(evt)
 	}
 
-	if _, parseErr := parseCodexStream(reader, handler); parseErr != nil {
+	primaryThreadID, parseErr := parseCodexStream(reader, handler)
+	if parseErr != nil {
 		fmt.Fprintf(os.Stderr, "  progress parser: %v\n", sanitizeOutput(parseErr.Error()))
 		cancel()
 		io.Copy(io.Discard, reader)
@@ -646,6 +654,17 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 	exitCode := -1
 	if execCmd.ProcessState != nil {
 		exitCode = execCmd.ProcessState.ExitCode()
+	}
+	childIDs.flush()
+	stderr.flush()
+	if params.Debug != "" {
+		// Under --debug codex's stderr went to the sandbox log instead.
+		dropped, backfillFailed, derr := codexCountDroppedInLog(params.SandboxName)
+		if derr != nil {
+			printer.StepWarn("Could not read codex's log for dropped stream notifications: " + redactSummary(sanitizeOutput(derr.Error())))
+		}
+		stderr.Dropped += dropped
+		stderr.BackfillFailed += backfillFailed
 	}
 	if waitErr != nil && execCmd.ProcessState == nil {
 		return exitCode, fmt.Errorf("openshell exec failed: %w", waitErr)
@@ -676,6 +695,30 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 		// children can record more after the read.
 		if len(childIDs.IDs) > 0 && (ctx.Err() != nil || exitCode == 124 || exitCode == -1) {
 			printer.StepWarn("Sub-agent usage may be undercounted: codex was stopped, and its children can record more after the read")
+		}
+	}
+
+	// Checked whatever the exit code: with a validation loop an iteration's
+	// non-zero exit does not fail the run; an error from Run does, and a
+	// failed read or an unread spawn item is one too, unlike the usage read
+	// above. A dropped stream notification can hide a completed spawn, but
+	// nothing can spawn until the multi-agent tools are switched on, so it
+	// is a warning until then.
+	if stderr.Dropped > 0 {
+		msg := fmt.Sprintf("codex dropped %d stream notification(s) under backpressure", stderr.Dropped)
+		if stderr.BackfillFailed > 0 {
+			msg += ", and its backfill of the turn's items failed, so a dropped completed item stayed lost"
+		}
+		printer.StepWarn(msg + "; the progress log is incomplete")
+	}
+	if childIDs.UnreadSpawn {
+		return exitCode, fmt.Errorf("%s: a spawn_agent item longer than %d bytes could not be read", codexSpawnWithoutAdmission, streamBufSize)
+	}
+	if len(childIDs.Senders) > 0 {
+		digests.CompletedSpawns += len(childIDs.Senders)
+		recordRunnerHeldDigests(params.SandboxName, digests)
+		if err := checkCodexSpawnAdmissions(params.SandboxName, primaryThreadID, childIDs.Senders, digests.CompletedSpawns); err != nil {
+			return exitCode, err
 		}
 	}
 
