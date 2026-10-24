@@ -64,6 +64,7 @@ per-overlay:
 | `doc`              | Documentation path, no runtime effect              |
 | `effort`           | Effort level is operational, not forge-specific     |
 | `readonly_repo`    | Repo access mode is forge-agnostic                 |
+| `target_repo_required` | Planned top-level scalar capability (ADR-0150); defaults to `true`, and a child harness may override an inherited base value. It is not a `ForgeConfig` field, so legacy `forge:` blocks and `overlays:` cannot set it. **Planned, not yet implemented** |
 | `allow_runtime_fetch` | Runtime fetch opt-in is forge-agnostic          |
 | `max_runtime_fetches` | Fetch cap is operational, not forge-specific     |
 | `trigger`          | CEL trigger expression is evaluated against normalized events, not forge-specific (ADR-0061) |
@@ -91,7 +92,7 @@ references are scalar values, not shell commands.
 | source metadata path | Describes a path in the source repository; not runtime-resolved or delivered | `doc` |
 | destination path | Names a location inside the sandbox, not a host file to resolve | `host_files[].dest` |
 | structural | Contains nested fields, lists, maps, or conditions | `forge`, `overlays[]`, `validation_loop`, `host_files[]`, `api_servers[]`, `skills[]`, `plugins[]`, `plugins[].pi`, `openshell`, `security` and its nested scanner/hook/escalation/trace blocks, `runner_env`, `env`, `env.runner`, `env.sandbox`, `privilege_levels`, `api_servers[].env`, `plugins[].env`, `allowed_remote_resources`, `providers` |
-| scalar | Interpreted as a configuration value, never as a path solely because it resembles one | `role`, `slug`, `description`, `image`, `model`, `effort`, `timeout_minutes`, `readonly_repo`, `sandbox_timeout_seconds`, `allow_runtime_fetch`, `max_runtime_fetches`, `trigger` (CEL expression), `schema_version` (planned); `validation_loop.max_iterations`, `validation_loop.feedback_mode`, `host_files[].expand`, `host_files[].optional`, `api_servers[].name`, `api_servers[].port`, `api_servers[].env[<key>]`, `plugins[].env[<key>]`, `plugins[].pi.args[]`, `runner_env[<key>]`, `env.runner[<key>]`, `env.sandbox[<key>]`, `privilege_levels[<stage>]`, `allowed_remote_resources[]`, `overlays[].when` (CEL expression); all leaf values under `security` |
+| scalar | Interpreted as a configuration value, never as a path solely because it resembles one | `role`, `slug`, `description`, `image`, `model`, `effort`, `timeout_minutes`, `readonly_repo`, `target_repo_required` (planned; boolean, default `true`), `sandbox_timeout_seconds`, `allow_runtime_fetch`, `max_runtime_fetches`, `trigger` (CEL expression), `schema_version` (planned); `validation_loop.max_iterations`, `validation_loop.feedback_mode`, `host_files[].expand`, `host_files[].optional`, `api_servers[].name`, `api_servers[].port`, `api_servers[].env[<key>]`, `plugins[].env[<key>]`, `plugins[].pi.args[]`, `runner_env[<key>]`, `env.runner[<key>]`, `env.sandbox[<key>]`, `privilege_levels[<stage>]`, `allowed_remote_resources[]`, `overlays[].when` (CEL expression); all leaf values under `security` |
 
 For local harnesses, relative runtime paths resolve from the `.fullsend`
 configuration root (the parent of `harness/`), **not** from the YAML file's
@@ -161,6 +162,7 @@ Two independent precedence axes govern field resolution
 | `api_servers`    | Concatenated (base + child)                          | Absent (nil) = inherit |
 | `env`            | Sub-maps (`runner`, `sandbox`) merged independently; forge/child keys win (ADR-0055) | Absent (nil) = inherit |
 | `security`       | Child replaces base entirely (if non-nil)            | Absent (nil) = inherit |
+| `target_repo_required` | Top-level scalar; a child value overrides the inherited base value. It is not settable in legacy `forge:` blocks or `overlays:`; ADR-0112's non-empty/non-zero overlay rule therefore cannot apply its `false` relaxation. | Absent = inherit through base composition; if still absent, defaults to `true` (planned) |
 | `overlays`       | Concatenated (base + child); all matching entries merged at resolution with later precedence (ADR-0088) | Absent (nil) = inherit |
 
 ## `ForgeConfig` struct

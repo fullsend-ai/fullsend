@@ -21,6 +21,11 @@ Date: 2026-10-01
 
 Accepted
 
+[ADR 0150](0150-repository-less-agent-execution.md) adds
+`target_repo_required` to the top-level-only exceptions: it is resolved
+through base composition and cannot be set by `overlays:` or legacy `forge:`
+blocks. All other overlay field and merge rules remain unchanged.
+
 <!-- ADRs are point-in-time records, but not fully frozen after acceptance.
      Minor annotations are welcome: cross-references to related ADRs, short
      notes linking to newer decisions, or clarifying remarks. However, do not

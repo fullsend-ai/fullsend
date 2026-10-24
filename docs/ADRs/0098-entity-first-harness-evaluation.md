@@ -20,6 +20,12 @@ Date: 2026-09-03
 
 Accepted
 
+[ADR 0150](0150-repository-less-agent-execution.md) amends the attribution rule
+for repository-less execution: the target
+repository may be absent, while verified invocation identity, effective policy,
+harness revision, and resolved entity remain attributable. No sentinel
+repository is substituted.
+
 Partially supersedes [ADR 0061](0061-harness-cel-dispatch.md): a
 `NormalizedEvent` is no longer the sole CEL input to a harness trigger. ADR
 0061's remaining dispatch decisions remain current.
