@@ -82,7 +82,15 @@ See [Configuring with skills](guides/user/customizing-with-skills.md).
 
 ### Automerge
 
-The end-state goal where PRs that pass all agent review and CI checks are merged to the target branch without human intervention. Automerge is gated by the [autonomy spectrum](problems/autonomy-spectrum.md) — most workflows start with human-in-the-loop approval and graduate toward automerge as confidence increases. The team has explicitly decided not to implement automerge in the MVP; agents will comment that they approve, but a human must merge.
+The end-state goal where eligible pull requests are merged without a human
+watching the run. [ADR 0110](ADRs/0110-dedicated-auto-merge-authority-boundary.md)
+defines the planned dedicated Auto-Merge stage: a trusted semantic provider
+recommends whether unattended merging is appropriate, and trusted Fullsend
+runtime code hands the authorized request to the repository's native direct or
+merge-queue path. The dedicated stage is not yet operational everywhere. Until
+it is installed, repositories without another explicitly enabled autonomous
+path still require a human merge; the legacy `CODE_AUTO_MERGE*` Code-agent path
+remains a separate migration path until it is retired.
 See [autonomy-spectrum.md](problems/autonomy-spectrum.md).
 
 ## B
