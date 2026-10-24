@@ -423,10 +423,13 @@ may be public, so still do not put a credential in the path of a manifest
 URL on a recognized host. A manifest loaded from a local path records
 no source line, because its location on the operator's machine is not
 meaningful to readers and would differ between operators. The line is
-part of the managed content, so changing the manifest URL (or switching
-between a URL and a local path) is reported as drift and rewrites the
-file. A file written before this line existed still carries the
-ownership marker, so it converges as ordinary drift, not adoption.
+informational: `repos status` and `repos install` ignore it when comparing
+the installed file with the managed configuration, so changing the
+manifest URL (or switching between a URL and a local path for the same
+manifest content) is not reported as drift and does not rewrite the file.
+The line is updated the next time a configuration change rewrites the
+file. A file without this line still carries the ownership marker, so it
+never requires adoption.
 
 If a config-managed repository already has an existing
 `.fullsend/config.yaml` without that marker, `repos status` reports it as

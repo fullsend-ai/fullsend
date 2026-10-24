@@ -23,7 +23,10 @@ const ActionSafetyRejected = "safety-rejected"
 // write when a repository is config-managed and the installed
 // .fullsend/config.yaml differs from the canonical managed configuration.
 // Whole-file comparison: any content difference, including a single-key
-// change, is drift. Unmanaged repositories are a no-op so an existing
+// change, is drift, except the informational source-manifest line, which
+// managedConfigEquivalent ignores so a file installed from a local manifest
+// is not rewritten when the same manifest is loaded from a URL (#8785).
+// Unmanaged repositories are a no-op so an existing
 // file is left untouched.
 //
 // ADR-0122 adoption gate: an existing file that does not begin with
@@ -73,7 +76,7 @@ func convergeManagedConfigFiles(ctx context.Context, resolved ResolvedConfig, de
 		return nil, actions
 	}
 
-	if bytes.Equal(existing, desired) {
+	if managedConfigEquivalent(existing, desired) {
 		return nil, nil
 	}
 
@@ -153,7 +156,7 @@ func checkEstablishedOverlayGate(ctx context.Context, resolved ResolvedConfig, d
 			"or accept its removal, then remove or replace the file; nothing was written\n%s",
 			resolved.Owner, resolved.Repo, preset.OverlayPath, adoptionGuidance(ctx, resolved, existing, desired))
 	}
-	if bytes.Equal(existing, desired) {
+	if managedConfigEquivalent(existing, desired) {
 		return nil
 	}
 	if rejected := managedSafetyRejectedAction(ctx, resolved); rejected != nil {
@@ -163,7 +166,8 @@ func checkEstablishedOverlayGate(ctx context.Context, resolved ResolvedConfig, d
 }
 
 // checkManagedConfigDrift reports whole-file managed-configuration drift
-// when the repository is config-managed. Unmanaged repositories skip
+// when the repository is config-managed, ignoring only the informational
+// source-manifest line (managedConfigEquivalent). Unmanaged repositories skip
 // comparison so an existing file is left uncompared.
 //
 // ADR-0122 adoption gate: an existing file missing managedConfigMarker is
@@ -224,7 +228,7 @@ func checkManagedConfigDrift(ctx context.Context, cfg ResolvedConfig, status *Re
 		status.Drifts = append(status.Drifts, drift)
 		return
 	}
-	if bytes.Equal(existing, desired) {
+	if managedConfigEquivalent(existing, desired) {
 		return
 	}
 	if rejected := managedSafetyRejectedAction(ctx, cfg); rejected != nil {

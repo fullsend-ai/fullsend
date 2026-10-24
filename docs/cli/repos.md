@@ -55,7 +55,91 @@ Runs in two phases:
 1. **Select** — the repositories to converge are chosen from the entries declared in the manifest (see [Selecting repositories](#selecting-repositories)). Positional arguments only filter declared entries; they never create, copy, or carve out entries. Every selected repository must resolve an [inference authentication selection](#inference-authentication-selection), and its [effective infrastructure values](#effective-infrastructure-values) must be consistent, or that repository fails before any write.
 2. **Converge** — all selected repos are converged through a unified probe → diff → apply pipeline. Repos whose shim workflow is not yet on the default branch are freshly installed (scaffold files, variables, secrets, a declared configuration preset as `.fullsend/config.base.yaml`, and a canonical managed `.fullsend/config.yaml`) onto the initialization branch (`fullsend/scaffold-install`). That includes a re-run while the initialization PR/MR is still open: variables and secrets may already exist from the first run, but the installer still updates the same initialization PR rather than opening a competing upgrade PR. Repos whose workflow is already on the default branch are checked for drift (workflow, thin callers, variables, secrets, pipeline schedules, GitLab poller protected-ref pipeline access — repaired automatically, except a disabled GitLab schedule, which is reported as drift and reactivated only with `--reactivate-schedules`; typed GitLab dispatch's required pipeline-variable restriction and managed schedule-variable migration), scaffold content drift (repaired automatically, including structural rewrites of `.gitlab/ci/fullsend-pipeline.yml` at an unchanged template ref, and removal of a leftover `.gitlab/ci/fullsend-dispatch.yml` from installs predating #7707), declared configuration-preset drift against `.fullsend/config.base.yaml` (replaced wholesale; `.fullsend/config.yaml` is preserved), managed `.fullsend/config.yaml` drift (replaced wholesale; an existing file without the ownership marker stops that repository before any writes until it is adopted, while the other selected repositories still converge), and scaffold ref drift (upgraded automatically). When no configuration preset resolves for a repo, the desired state is no `.fullsend/config.base.yaml`. An existing base file then stops that repo's fresh or repeat install, including `--dry-run`, before any writes, with an error telling you to declare a `config_base` source or remove the file. A declared preset that cannot be loaded (fetch failure, `sha256` mismatch, invalid content) fails only that repository: install reports the error in that repository's result, converges the other selected repositories, and exits non-zero. An HTTPS preset fetch that fails at the transport level (for example, a dropped connection reported as `EOF`) is retried once, and the error names the phase that failed (DNS, connect, TLS handshake, awaiting the response), the remote address, and the elapsed time.
 
-`defaults.config`, `github.config`, `gitlab.config`, and per-repository `config` declare a sparse typed managed configuration for `.fullsend/config.yaml` ([ADR 0122](../ADRs/0122-declarative-repo-configuration.md)). Each accepts every per-repo config field, including `runtime` and `allowed_remote_resources`. Each field resolves through code defaults, the selected `config_base` preset, `defaults.config`, the repository's forge section `config` (`github.config` for GitHub repositories, `gitlab.config` for GitLab ones), and then the repository entry's `config` (glob entries included), using that field's normal layered merge rule: a more specific scalar wins, nested maps merge key by key, `allowed_remote_resources` unions a non-empty list with the inherited prefixes, and an explicit empty list (for example `allowed_remote_resources: []`) replaces the inherited value. Because the managed file is sparse and cannot record that reset, manifest validation rejects a non-empty `allowed_remote_resources` list declared in a more specific layer than an explicit empty one (for example `defaults.config` `[]` with a non-empty `github.config` or repository list) unless the most specific declared list is itself empty, which denies every remote resource whatever the earlier layers say; declare the full list in a single layer instead. Omitted values inherit and are not written into the managed file. Every repository selected from the manifest has a managed `.fullsend/config.yaml`; no `config` key is required. With no `config` declared, install renders the canonical sparse file carrying only the ownership marker (omitted values still inherit from a declared preset and the code defaults). When the manifest is loaded from an HTTPS URL, a `# Source manifest: <url>` comment follows the ownership marker, naming the manifest the file was rendered from; the line is recorded only for recognized raw-file URLs of public source hosts (`raw.githubusercontent.com`, `github.com/<owner>/<repo>/raw/...` and `gitlab.com/.../-/raw/...`, with no port and only plain `[A-Za-z0-9._~-]` path segments) and only the URL's scheme, host and path are written (userinfo, query string and fragment are removed). For any other manifest URL the line is omitted, since a credential in the path cannot be told apart from a directory name; do not put a credential in the path of a manifest URL on a recognized host. A manifest loaded from a local path records no source line. The line is part of the managed content, so a change of manifest URL is reported as drift and rewrites the file. Unknown fields and invalid values fail validation with an error naming the section (for example `github.config` or `github.repos[acme/api].config`). This is not `config_base`, which copies a preset to `.fullsend/config.base.yaml`. Every managed file carries an ownership marker; a pre-existing `.fullsend/config.yaml` that lacks the marker is reported by `repos status` as "managed configuration (adoption required)" rather than ordinary drift, and install skips that repository, with no manifest or forge write for it and the file left untouched, until it is adopted (manually edited to carry the marker, or replaced with the rendered managed body). This applies even when the repository has no `config` key. Install prints the adoption guidance (the proposed `repos.yaml` entry and the setting-level difference) for each skipped repository, lists it as `FAILED` in the summary, converges the other selected repositories, and exits non-zero; `--dry-run` does the same. Other configuration preflight problems (an unreadable, malformed or non-per-repo `.fullsend/config.yaml`, an existing `.fullsend/config.base.yaml` with no declared preset or with invalid content, and a selector that matches no declared repository) still stop the whole run before any write. Once a file carries the marker, install writes the canonical sparse file, `repos status` reports whole-file differences as drift, and convergence rewrites it. On a first install with no overlay yet, install records its one install-time default in the repository's `repos.yaml` entry before rendering, so the manifest stays the source of truth: with no `config_base` preset and no explicit `create_issues` declaration on GitHub it writes `config.create_issues.allow_targets.repos: [fullsend-ai/fullsend, fullsend-ai/agents]`; on GitLab it writes an explicit empty policy, `config.create_issues.allow_targets: {}` (the target repository is always allowed and is not listed). A glob-covered repository gets its own entry copied from the glob for this writeback; `--dry-run` shows the change without writing. If the manifest is an HTTPS URL or cannot be written, install fails before any manifest write or forge write and prints the exact entry or `config` edit to make in the manifest source, for repositories with an explicit entry or covered by a glob. See [Repo Management — Managed configuration](../guides/getting-started/repo-management.md#managed-configuration). Before any write of a managed file, install and converge also compare the candidate and current effective configurations through the full runtime accessor chain (`kill_switch`, `roles`, `allowed_remote_resources`, agent `enabled: false` suppressions, `create_issues.allow_targets`, `inference.gateway.url`, and `inference.gateway.audience`). A less-restrictive candidate is rejected unless the manifest explicitly declares that relaxation; a change to either `inference.gateway` field, including a preset introducing a gateway where an established installation has none configured, must be declared in the manifest; status and install output identify the affected keys. Adding a `config_base` preset to a repository that has no base file is compared the same way (an absent base is an empty layer), even when its managed overlay is unchanged. A pristine first install (no Fullsend installation, no overlay and no base) has no current effective configuration to relax, so it inherits permissions such as `create_issues` targets from its declared preset without a safety rejection. A fresh install that adoption or the safety gate blocks stops before any forge file, variable, secret or PR/MR write, in a dry run and a live run alike, and fails with an error.
+`defaults.config`, `github.config`, `gitlab.config`, and per-repository `config`
+declare a sparse typed managed configuration for `.fullsend/config.yaml` ([ADR
+0122](../ADRs/0122-declarative-repo-configuration.md)). Each accepts every
+per-repo config field, including `runtime` and `allowed_remote_resources`. Each
+field resolves through code defaults, the selected `config_base` preset,
+`defaults.config`, the repository's forge section `config` (`github.config` for
+GitHub repositories, `gitlab.config` for GitLab ones), and then the repository
+entry's `config` (glob entries included), using that field's normal layered
+merge rule: a more specific scalar wins, nested maps merge key by key,
+`allowed_remote_resources` unions a non-empty list with the inherited prefixes,
+and an explicit empty list (for example `allowed_remote_resources: []`) replaces
+the inherited value. Because the managed file is sparse and cannot record that
+reset, manifest validation rejects a non-empty `allowed_remote_resources` list
+declared in a more specific layer than an explicit empty one (for example
+`defaults.config` `[]` with a non-empty `github.config` or repository list)
+unless the most specific declared list is itself empty, which denies every
+remote resource whatever the earlier layers say; declare the full list in a
+single layer instead. Omitted values inherit and are not written into the
+managed file. Every repository selected from the manifest has a managed
+`.fullsend/config.yaml`; no `config` key is required. With no `config` declared,
+install renders the canonical sparse file carrying only the ownership marker
+(omitted values still inherit from a declared preset and the code defaults).
+When the manifest is loaded from an HTTPS URL, a `# Source manifest: <url>`
+comment follows the ownership marker, naming the manifest the file was rendered
+from; the line is recorded only for recognized raw-file URLs of public source
+hosts (`raw.githubusercontent.com`, `github.com/<owner>/<repo>/raw/...` and
+`gitlab.com/.../-/raw/...`, with no port and only plain `[A-Za-z0-9._~-]` path
+segments) and only the URL's scheme, host and path are written (userinfo, query
+string and fragment are removed). For any other manifest URL the line is
+omitted, since a credential in the path cannot be told apart from a directory
+name; do not put a credential in the path of a manifest URL on a recognized
+host. A manifest loaded from a local path records no source line. The line is
+informational: drift detection and convergence ignore it, so switching between a
+local path and a URL for the same manifest content (or changing the manifest
+URL) is not reported as drift and does not rewrite the file; the line is updated
+the next time a configuration change rewrites the file. Unknown fields and
+invalid values fail validation with an error naming the section (for example
+`github.config` or `github.repos[acme/api].config`). This is not `config_base`,
+which copies a preset to `.fullsend/config.base.yaml`. Every managed file
+carries an ownership marker; a pre-existing `.fullsend/config.yaml` that lacks
+the marker is reported by `repos status` as "managed configuration (adoption
+required)" rather than ordinary drift, and install skips that repository, with
+no manifest or forge write for it and the file left untouched, until it is
+adopted (manually edited to carry the marker, or replaced with the rendered
+managed body). This applies even when the repository has no `config` key.
+Install prints the adoption guidance (the proposed `repos.yaml` entry and the
+setting-level difference) for each skipped repository, lists it as `FAILED` in
+the summary, converges the other selected repositories, and exits non-zero;
+`--dry-run` does the same. Other configuration preflight problems (an
+unreadable, malformed or non-per-repo `.fullsend/config.yaml`, an existing
+`.fullsend/config.base.yaml` with no declared preset or with invalid content,
+and a selector that matches no declared repository) still stop the whole run
+before any write. Once a file carries the marker, install writes the canonical
+sparse file, `repos status` reports whole-file differences as drift, and
+convergence rewrites it. On a first install with no overlay yet, install records
+its one install-time default in the repository's `repos.yaml` entry before
+rendering, so the manifest stays the source of truth: with no `config_base`
+preset and no explicit `create_issues` declaration on GitHub it writes
+`config.create_issues.allow_targets.repos: [fullsend-ai/fullsend,
+fullsend-ai/agents]`; on GitLab it writes an explicit empty policy,
+`config.create_issues.allow_targets: {}` (the target repository is always
+allowed and is not listed). A glob-covered repository gets its own entry copied
+from the glob for this writeback; `--dry-run` shows the change without writing.
+If the manifest is an HTTPS URL or cannot be written, install fails before any
+manifest write or forge write and prints the exact entry or `config` edit to
+make in the manifest source, for repositories with an explicit entry or covered
+by a glob. See [Repo Management — Managed
+configuration](../guides/getting-started/repo-management.md#managed-configuration).
+Before any write of a managed file, install and converge also compare the
+candidate and current effective configurations through the full runtime accessor
+chain (`kill_switch`, `roles`, `allowed_remote_resources`, agent `enabled:
+false` suppressions, `create_issues.allow_targets`, `inference.gateway.url`, and
+`inference.gateway.audience`). A less-restrictive candidate is rejected unless
+the manifest explicitly declares that relaxation; a change to either
+`inference.gateway` field, including a preset introducing a gateway where an
+established installation has none configured, must be declared in the manifest;
+status and install output identify the affected keys. Adding a `config_base`
+preset to a repository that has no base file is compared the same way (an absent
+base is an empty layer), even when its managed overlay is unchanged. A pristine
+first install (no Fullsend installation, no overlay and no base) has no current
+effective configuration to relax, so it inherits permissions such as
+`create_issues` targets from its declared preset without a safety rejection. A
+fresh install that adoption or the safety gate blocks stops before any forge
+file, variable, secret or PR/MR write, in a dry run and a live run alike, and
+fails with an error.
 
 ```yaml
 version: 1
