@@ -360,6 +360,14 @@ Beyond testing individual instruction changes, there's a need for ongoing monito
 - **Production outcome tracking** — when a human overrides an agent's decision, log it as a potential test case. If the agent approved something a human rejected, that's a signal.
 - **Capability dashboards** — for each agent, track which capabilities are covered by tests and what their recent pass rates look like. Similar in spirit to the coverage dashboard referenced in [repo-readiness.md](repo-readiness.md).
 
+External judge results can become policy inputs: a
+[Gemara lab](../spikes/2026-10-24-gemara-auto-merge.md) assessed an aggregate
+judge pass rate against an owner-set threshold before allowing a merge. Its
+aggregate mixed experiment-wide scored approvals rather than a reliably
+isolated current-agent-version cohort, so it could not separate drift in the
+agent from drift in the population. Selection bias, skipped or unscored cases,
+judge and rubric drift, and the lack of human labels remain unresolved.
+
 ## Relationship to other problem areas
 
 - **[Governance](governance.md)** — Who is authorized to change agent instructions? Testing is the verification layer, but governance determines who can make changes and who reviews them.

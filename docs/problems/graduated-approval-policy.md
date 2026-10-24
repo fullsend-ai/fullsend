@@ -79,6 +79,16 @@ Ralph Bean noted on [PR #2012](https://github.com/fullsend-ai/fullsend/pull/2012
 
 This document intentionally stays at the problem level. The solution architecture, threshold design, and implementation approach belong in an ADR backed by evaluation evidence.
 
+A [public Gemara lab](../spikes/2026-10-24-gemara-auto-merge.md) is useful
+composition evidence but limited calibration evidence, and it does not replace
+the eval cases above. The lab kept three signals apart: the Review approval,
+a per-change risk assessment, and a historical judge-quality gate. It added the
+quality gate as an AND-composed condition after approval. It did not show that
+the review agent's confidence is calibrated, or that graduated scoring
+outperforms the current verdict. Its 90% threshold was an owner-selected
+experiment, not a recommended production setting or an improvement in review
+quality.
+
 ## Open questions
 
 - What eval cases best demonstrate the binary verdict's failure modes? The three issues cited above (#1462, #1453, #1143) are starting points, but more cases would strengthen the evidence.

@@ -164,6 +164,11 @@ Sub-agents don't approve or reject — they produce findings. A separate merge-d
 **Pros:** Separates analysis from decision. Findings are reusable. The decision logic can be a simple, auditable rule set rather than an LLM judgment.
 **Cons:** Adds another agent to the chain. The merge-decision agent/rules become the real authority and thus the real attack target.
 
+A [public lab](../spikes/2026-10-24-gemara-auto-merge.md) tested Gemara as a
+structured, deterministic assessment layer around externally produced findings
+and checks. It is one rule-engine option for this model. It is not a
+replacement for semantic review or a new reviewer.
+
 ## The confidence problem
 
 A human reviewer can say "I'm not sure about this, let me think" or "I need someone else to look at this." Agents need equivalent mechanisms:

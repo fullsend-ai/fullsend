@@ -73,6 +73,11 @@ These problems exist regardless of whether the system is native or external. The
 
 gh-aw shipped an experimental [`merge-pull-request`](https://github.github.com/gh-aw/reference/safe-outputs-pull-requests/) safe-output (introduced via [PR #27193](https://github.com/github/gh-aw/pull/27193), merged 2026-04-20, and refined further in the June 2026 v0.80.4/v0.81.0 releases) that merges a PR once configured policy gates pass — required status checks, review decision, unresolved review-thread state, label/title/branch constraints, and GitHub mergeability — with merges to the repository default branch always refused, and `gh aw compile` emitting an experimental-feature warning on use. Docs state explicit graduation criteria (end-to-end cross-repo test coverage, a full release cycle without schema/behavior changes) before it leaves experimental status. A [GitHub blog post](https://github.blog/ai-and-ml/generative-ai/code-review-in-the-age-of-ai-why-developers-will-always-own-the-merge-button/) argues developers will always own the merge button; gh-aw's own product has since partially moved past that editorial position by shipping the mechanism, gated on a prior human review decision rather than autonomous judgment. Fullsend's thesis — that for routine changes with sufficient verification, the merge decision itself (not just the mechanical merge click after a human has already approved) can be automated — remains differentiated, but the gap with gh-aw is narrower than it was.
 
+A [Gemara lab](../spikes/2026-10-24-gemara-auto-merge.md) separated these
+roles explicitly. A policy assessment decided eligibility, a GitHub App writer
+requested the merge, and GitHub's protected merge queue kept check enforcement
+and performed the merge.
+
 ### Intent verification
 
 Checking whether a change is authorized against a structured intent system — not just "is this change correct?" but "is this change one we actually want?" This is absent from every tool in the [landscape](../landscape.md), including gh-aw. A native system could implement it, but gh-aw's architecture does not. See [intent-representation.md](intent-representation.md).

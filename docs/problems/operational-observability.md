@@ -95,6 +95,12 @@ A key insight: much of an agent's input context is already stored durably in exi
 
 Traces need to be correlatable. A PR review workflow involving five agents needs a session-level view that shows all five traces, their ordering, and how their outputs composed into the final decision. This is the LLM equivalent of distributed tracing in microservices — but with the additional challenge that each "span" contains non-deterministic reasoning, not just timing and status.
 
+Historical telemetry can also become a policy input. A
+[Gemara lab](../spikes/2026-10-24-gemara-auto-merge.md) gated merges on an
+aggregate of judge scores read from trace metadata. Collecting or exporting
+those metrics is a different act from authorizing a merge, and the collector
+in that lab held only read credentials.
+
 ### Human feedback capture
 
 When a human overrides an agent decision — rejects a review, reverts a merge, manually fixes something the agent got wrong — that override is a signal. The observability system should capture:

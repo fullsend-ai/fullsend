@@ -582,6 +582,50 @@ The framework separates a **Control Plane** (signed policy distribution, authori
 
 The framework does not address fullsend's core differentiators (zero-trust agent composition, autonomous merge judgment, intent authorization tiering), so it is complementary rather than competing. The recommended action is to reference SAFE-MCP's taxonomy when discussing MCP-specific threats in fullsend documentation, and to evaluate whether its compliance crosswalks are useful for the applied docs of organizations with regulatory requirements.
 
+## Policy and assurance artifacts
+
+These projects define machine-readable controls, policies, and assessment
+results. They are neither code-review tools nor agent runtimes. They are
+relevant to the evidence-composition and policy-ownership questions in
+[trustworthiness-evidence.md](problems/trustworthiness-evidence.md) and
+[governance.md](problems/governance.md).
+
+### Gemara
+
+[GitHub](https://github.com/gemaraproj/gemara) |
+[Go SDK](https://github.com/gemaraproj/go-gemara)
+
+An OpenSSF data model for governance, risk, and compliance artifacts, defined
+as CUE schemas with a generated Go SDK. Its layers include control catalogs,
+policies, and evaluation logs that record whether an assessment passed,
+failed, or could not be determined.
+
+### OpenSSF Baseline
+
+[GitHub](https://github.com/ossf/security-baseline) |
+[Website](https://baseline.openssf.org/)
+
+The Open Source Project Security Baseline is a maintained catalog of security
+requirements for open source projects, each marked with the maturity levels
+it applies to. Gemara's README lists the Baseline as a control-catalog use
+case.
+
+### Schema reuse versus executable scanners
+
+Reusing a schema, an SDK, or requirement text is different from reusing an
+executable scanner. Gemara and the Baseline supply definitions and requirement
+text; a consumer still has to write or adopt the code that collects evidence
+and decides pass or fail for its forge. Executable scanners such as OpenSSF
+Scorecard, or the Baseline plugin for the Privateer tool listed in Gemara's
+README, run checks themselves.
+
+**Relevance to fullsend:** A public lab used Gemara artifacts and one
+Baseline requirement to gate auto-merge for Fullsend-reviewed PRs. The lab
+supplied the evidence adapters, trust boundaries, and merge path itself. See
+[the Gemara auto-merge spike](spikes/2026-10-24-gemara-auto-merge.md) for
+findings, limitations, and sources. Fullsend has not selected Gemara or any
+other policy format.
+
 ## Architectural patterns in the field
 
 Seven distinct approaches:
