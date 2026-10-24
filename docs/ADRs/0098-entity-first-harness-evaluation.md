@@ -42,6 +42,12 @@ trusted, entity-bound `fullsend run` may recheck only its canonical entity with
 eventless paths require eligible entity sources, trusted Fullsend invocation
 provenance, current actor filtering, and the same harness CEL predicate.
 
+[ADR 0149](0149-coalesce-entity-source-discovery-queries.md) partially
+supersedes the optional query sharing below: entity-source discovery requires
+one combined logical search per source scope and local per-harness routing.
+For source-backed harnesses, even an event-supplied candidate must pass a
+current local source-query membership check before sandbox admission.
+
 ## Context
 
 [ADR 0061](0061-harness-cel-dispatch.md) made a `NormalizedEvent` the sole CEL

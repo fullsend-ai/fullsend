@@ -29,6 +29,11 @@ Partially supersedes [ADR 0063](0063-polling-based-work-discovery.md):
 `fullsend poll` may remain resident instead of always exiting after one cycle.
 Its per-repository scope and driver architecture remain current.
 
+[ADR 0149](0149-coalesce-entity-source-discovery-queries.md) decides the
+entity-source discovery-query strategy left separate below and requires a
+current local query match, as well as true CEL, before a source-backed
+sandbox cycle.
+
 ## Context
 
 [ADR 0098](0098-entity-first-harness-evaluation.md) makes the current entity,

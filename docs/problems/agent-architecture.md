@@ -149,6 +149,10 @@ The repository's existing infrastructure provides all the coordination needed:
   harness predicates should be evaluated. Each predicate can inspect the
   resolved entity and an optional prompting event
   ([ADR 0098](../ADRs/0098-entity-first-harness-evaluation.md)).
+  [ADR 0149](../ADRs/0149-coalesce-entity-source-discovery-queries.md)
+  combines source queries into one logical candidate search and routes each
+  possible result locally. A bound run rechecks source-query membership,
+  including when an event supplies the candidate.
 
 No agent orchestrates other agents. Each agent independently observes the state of the PR and acts according to its role:
 
