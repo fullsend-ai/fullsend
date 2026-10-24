@@ -213,10 +213,10 @@ fullsend
     ├── --run-url <url>                      #   Workflow run URL (optional)
     ├── --sha <string>                       #   Commit SHA (optional)
     ├── --reason <string>                    #   Termination reason: terminated or cancelled (default: terminated)
-    ├── --mint-url <url>                     #   Mint service URL for on-demand token (default: $FULLSEND_MINT_URL)
-    ├── --role <string>                      #   Agent role for minting (required with --mint-url)
+    ├── --mint-url <url>                     #   Mint service URL for on-demand token (default: layered mint_url from --fullsend-dir, then $FULLSEND_MINT_URL)
+    ├── --role <string>                      #   Agent role for minting (required to mint a token)
     ├── --forge <platform>                   #   Forge platform (github, gitlab); auto-detected from CI env
-    ├── --fullsend-dir <path>                #   Path to fullsend config directory (completion mode detection and tracker routing)
+    ├── --fullsend-dir <path>                #   Path to fullsend config directory (completion mode detection, layered mint_url resolution, and tracker routing)
     ├── --job-status <string>                #   Job outcome from CI runner (e.g. success, failure, cancelled)
     ├── --was-skipped                        #   Pre-script decided to skip the run; forces synthesis under on_failure
     └── --review-run                         #   Built-in GitHub review agent; enables current-HEAD-aware cancellation guidance

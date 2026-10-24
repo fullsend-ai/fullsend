@@ -400,7 +400,7 @@ target issue/PR. These flags mirror what the CI workflows pass automatically:
 | `--run-url` | URL of the CI/CD run shown in the status comment |
 | `--status-repo` | Repository (`owner/repo`) to post status comments on |
 | `--status-number` | Issue or PR number for status comments |
-| `--mint-url` | Mint service URL for on-demand status comment tokens (default: `$FULLSEND_MINT_URL`) |
+| `--mint-url` | Mint service URL for on-demand status comment tokens (default: layered `mint_url` from `--fullsend-dir`, then `$FULLSEND_MINT_URL`) |
 | `--forge` | Forge platform (`github` or `gitlab`); when omitted, resolved from `forge:` in the `config.yaml` at the root of `--fullsend-dir`, then `GITHUB_ACTIONS`/`GITLAB_CI` |
 
 Example:

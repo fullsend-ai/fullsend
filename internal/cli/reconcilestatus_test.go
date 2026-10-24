@@ -55,7 +55,7 @@ func TestNewReconcileStatusCmd_ValidationErrors(t *testing.T) {
 		{
 			name:    "missing mint-url",
 			args:    []string{"--repo", "org/repo", "--number", "7", "--run-id", "run-1"},
-			wantErr: "--mint-url or FULLSEND_MINT_URL required",
+			wantErr: "--mint-url, a layered mint_url in config.yaml/config.base.yaml, or FULLSEND_MINT_URL required",
 		},
 		{
 			name:    "invalid number",
@@ -70,7 +70,7 @@ func TestNewReconcileStatusCmd_ValidationErrors(t *testing.T) {
 		{
 			name:    "mint-url without role",
 			args:    []string{"--repo", "org/repo", "--number", "7", "--run-id", "run-1", "--mint-url", "https://mint.example.com"},
-			wantErr: "--role is required when using --mint-url",
+			wantErr: "--role is required to mint a token",
 		},
 	}
 	for _, tt := range tests {
@@ -109,6 +109,53 @@ func TestNewReconcileStatusCmd_MintURLFromEnv(t *testing.T) {
 	// proves the env var was picked up and --role validation passed.
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "minting status token")
+}
+
+// TestNewReconcileStatusCmd_MintURLFromFile checks that reconcile-status must resolve mint_url from the
+// same layered config.yaml/config.base.yaml that fullsend run reads via
+// --fullsend-dir, not just --mint-url/FULLSEND_MINT_URL, so the two agree
+// on a mint endpoint within the same CI job.
+func TestNewReconcileStatusCmd_MintURLFromFile(t *testing.T) {
+	dir := t.TempDir()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("[]"))
+	}))
+	defer srv.Close()
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("version: \"1\"\nmint_url: "+srv.URL+"\n"), 0o644))
+
+	var capturedMintURL string
+	origMint := reconcileMintToken
+	reconcileMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
+		capturedMintURL = req.MintURL
+		return &mintclient.MintResult{Token: "ghs_file_minted_token"}, nil
+	}
+	defer func() { reconcileMintToken = origMint }()
+
+	origForge := reconcileNewForgeClient
+	reconcileNewForgeClient = func(token string) forge.Client {
+		return gh.New(token).WithBaseURL(srv.URL)
+	}
+	defer func() { reconcileNewForgeClient = origForge }()
+
+	// A stale/different value in the environment — simulating a repository
+	// variable the file has since overridden — must lose to the file.
+	t.Setenv("FULLSEND_MINT_URL", "https://mint-from-env.example.com")
+
+	cmd := newReconcileStatusCmd()
+	cmd.SetArgs([]string{
+		"--repo", "org/repo",
+		"--number", "7",
+		"--run-id", "run-1",
+		"--role", "review",
+		"--fullsend-dir", dir,
+	})
+
+	err := cmd.Execute()
+	require.NoError(t, err)
+	assert.Equal(t, srv.URL, capturedMintURL, "config.yaml's mint_url must win over FULLSEND_MINT_URL")
 }
 
 func TestNewReconcileStatusCmd_TokenFlagRemoved(t *testing.T) {

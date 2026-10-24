@@ -180,9 +180,11 @@ sequenceDiagram
 The dispatch workflow matches the comment against the `trigger:` of every
 registered harness and starts `fullsend run` for each match. `fullsend run`
 gets a short-lived GitHub token for the harness's `role:` from the mint (a
-local run without `--mint-url` or `FULLSEND_MINT_URL` skips this and uses
-your `GH_TOKEN`), sets up the providers on the OpenShell gateway, and starts
-the sandbox. For GitHub and OpenAI the agent never holds a real credential:
+local run with no mint URL from `--mint-url`, `config.yaml`/`config.base.yaml`,
+or `FULLSEND_MINT_URL` — or where GitHub Actions OIDC isn't available —
+skips this and uses your `GH_TOKEN`), sets up the providers on the OpenShell
+gateway, and starts the sandbox. For GitHub and OpenAI the agent never holds
+a real credential:
 the gateway gives it a placeholder and swaps in the real value on each
 request a declared provider covers. On the Vertex route the GCP credentials
 file is copied into the sandbox, and the model calls use it directly. After
