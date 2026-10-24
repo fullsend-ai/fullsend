@@ -246,6 +246,17 @@ type FakeClient struct {
 
 	// CollaboratorPermissions maps "owner/repo/username" → role_name for GetCollaboratorPermission.
 	CollaboratorPermissions map[string]string
+	// CollaboratorPermissionDetails maps "owner/repo/username" → raw API fields
+	// for GetCollaboratorPermissionDetail (e2e gate tests).
+	CollaboratorPermissionDetails map[string]GitHubCollaboratorPermissionDetail
+	// CollaboratorPermissionErrors maps "owner/repo/username" → injected errors.
+	CollaboratorPermissionErrors map[string]error
+	// PullRequestAuthContexts maps "owner/repo/number" → authorization context.
+	PullRequestAuthContexts map[string]PullRequestAuthorizationContext
+	// IssueLabelEvents maps "owner/repo/number" → labeled timeline events.
+	IssueLabelEvents map[string][]IssueLabelEvent
+	// RemovedIssueLabels records RemoveIssueLabel calls as "owner/repo/number/label".
+	RemovedIssueLabels []string
 	// AddedCollaborators records AddCollaborator calls as "owner/repo/username" → permission.
 	AddedCollaborators map[string]string
 	// OrgMemberships maps "org/username" → membership for GetOrgMembership.
@@ -1946,6 +1957,33 @@ func (f *FakeClient) ListIssueReactions(_ context.Context, owner, repo string, n
 	return reactions, nil
 }
 
+func (f *FakeClient) ListIssueLabelEvents(_ context.Context, owner, repo string, number int) ([]IssueLabelEvent, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("ListIssueLabelEvents"); e != nil {
+		return nil, e
+	}
+	if f.IssueLabelEvents != nil {
+		key := fmt.Sprintf("%s/%s/%d", owner, repo, number)
+		if events, ok := f.IssueLabelEvents[key]; ok {
+			out := make([]IssueLabelEvent, len(events))
+			copy(out, events)
+			return out, nil
+		}
+	}
+	return nil, nil
+}
+
+func (f *FakeClient) RemoveIssueLabel(_ context.Context, owner, repo string, number int, label string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("RemoveIssueLabel"); e != nil {
+		return e
+	}
+	f.RemovedIssueLabels = append(f.RemovedIssueLabels, fmt.Sprintf("%s/%s/%d/%s", owner, repo, number, label))
+	return nil
+}
+
 func (f *FakeClient) GetPullRequestInfo(_ context.Context, owner, repo string, number int) (*PullRequestInfo, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -1956,6 +1994,23 @@ func (f *FakeClient) GetPullRequestInfo(_ context.Context, owner, repo string, n
 		key := fmt.Sprintf("%s/%s/%d", owner, repo, number)
 		if info, ok := f.PullRequestInfos[key]; ok {
 			return &info, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+func (f *FakeClient) GetPullRequestAuthorizationContext(_ context.Context, owner, repo string, number int) (*PullRequestAuthorizationContext, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("GetPullRequestAuthorizationContext"); e != nil {
+		return nil, e
+	}
+	if f.PullRequestAuthContexts != nil {
+		key := fmt.Sprintf("%s/%s/%d", owner, repo, number)
+		if ctx, ok := f.PullRequestAuthContexts[key]; ok {
+			out := ctx
+			out.Labels = append([]string(nil), ctx.Labels...)
+			return &out, nil
 		}
 	}
 	return nil, ErrNotFound
@@ -2307,6 +2362,46 @@ func (f *FakeClient) GetCollaboratorPermission(_ context.Context, owner, repo, u
 		}
 	}
 	return "", ErrNotFound
+}
+
+func (f *FakeClient) GetCollaboratorPermissionDetail(_ context.Context, owner, repo, username string) (GitHubCollaboratorPermissionDetail, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("GetCollaboratorPermissionDetail"); e != nil {
+		return GitHubCollaboratorPermissionDetail{}, e
+	}
+
+	key := owner + "/" + repo + "/" + username
+	if f.CollaboratorPermissionErrors != nil {
+		if e, ok := f.CollaboratorPermissionErrors[key]; ok {
+			return GitHubCollaboratorPermissionDetail{}, e
+		}
+	}
+	if f.CollaboratorPermissionDetails != nil {
+		if detail, ok := f.CollaboratorPermissionDetails[key]; ok {
+			return detail, nil
+		}
+	}
+	if f.CollaboratorPermissions != nil {
+		if role, ok := f.CollaboratorPermissions[key]; ok {
+			return fakeCollaboratorDetailFromRole(role), nil
+		}
+	}
+	return GitHubCollaboratorPermissionDetail{}, ErrNotFound
+}
+
+func fakeCollaboratorDetailFromRole(role string) GitHubCollaboratorPermissionDetail {
+	switch role {
+	case "maintain":
+		return GitHubCollaboratorPermissionDetail{RoleName: "maintain", Permission: "write"}
+	case "triage":
+		return GitHubCollaboratorPermissionDetail{RoleName: "triage", Permission: "read"}
+	case "admin", "write", "read", "none":
+		return GitHubCollaboratorPermissionDetail{RoleName: role, Permission: role}
+	default:
+		return GitHubCollaboratorPermissionDetail{RoleName: role, Permission: role}
+	}
 }
 
 func (f *FakeClient) AddCollaborator(_ context.Context, owner, repo, username, permission string) error {
