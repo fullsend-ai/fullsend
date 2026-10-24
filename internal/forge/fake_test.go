@@ -335,6 +335,7 @@ func TestFakeClient_CreateCrossRepoChangeProposal(t *testing.T) {
 	assert.Equal(t, 1, cp.Number)
 	assert.Equal(t, "PR title", cp.Title)
 	assert.Equal(t, "head-owner:feature-branch", cp.Head)
+	assert.Equal(t, "head-owner/head-repo", cp.HeadRepo)
 	assert.Equal(t, "main", cp.Base)
 	assert.Contains(t, cp.URL, "base-owner/base-repo/pull/1")
 

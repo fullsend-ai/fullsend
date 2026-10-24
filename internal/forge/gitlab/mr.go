@@ -21,14 +21,49 @@ const requestChangesMarker = forge.ChangesRequestedMarker
 
 // CreateChangeProposal creates a merge request on GitLab.
 func (c *LiveClient) CreateChangeProposal(ctx context.Context, owner, repo, title, body, head, base string) (*forge.ChangeProposal, error) {
-	path := fmt.Sprintf("/projects/%s/merge_requests", projectPath(owner, repo))
-	payload := map[string]string{
+	payload := map[string]any{
 		"source_branch": head,
 		"target_branch": base,
 		"title":         title,
 		"description":   body,
 	}
+	return c.createMergeRequest(ctx, projectPath(owner, repo), payload)
+}
 
+// CreateCrossRepoChangeProposal opens a merge request whose source branch
+// lives in a fork (headOwner/headRepo) and whose target is
+// baseOwner/baseRepo. GitLab's MR API does not accept GitHub's
+// "owner:branch" head syntax: a fork MR is created on the source (fork)
+// project with a bare source_branch and target_project_id set to the
+// upstream project's numeric ID.
+func (c *LiveClient) CreateCrossRepoChangeProposal(ctx context.Context, baseOwner, baseRepo, headOwner, headRepo, title, body, headBranch, baseBranch string) (*forge.ChangeProposal, error) {
+	target, err := c.GetRepo(ctx, baseOwner, baseRepo)
+	if err != nil {
+		return nil, fmt.Errorf("create cross-repo merge request: resolve target project: %w", err)
+	}
+	if target.ID == 0 {
+		return nil, fmt.Errorf("create cross-repo merge request: target project %s/%s has no ID", baseOwner, baseRepo)
+	}
+
+	payload := map[string]any{
+		"source_branch":     headBranch,
+		"target_branch":     baseBranch,
+		"target_project_id": target.ID,
+		"title":             title,
+		"description":       body,
+	}
+	cp, err := c.createMergeRequest(ctx, projectPath(headOwner, headRepo), payload)
+	if err != nil {
+		return nil, err
+	}
+	cp.HeadRepo = headOwner + "/" + headRepo
+	return cp, nil
+}
+
+// createMergeRequest POSTs payload to the merge_requests endpoint of the
+// source project identified by projPath (an already-escaped project path).
+func (c *LiveClient) createMergeRequest(ctx context.Context, projPath string, payload map[string]any) (*forge.ChangeProposal, error) {
+	path := fmt.Sprintf("/projects/%s/merge_requests", projPath)
 	resp, err := c.post(ctx, path, payload)
 	if err != nil {
 		var apiErr *APIError
@@ -59,14 +94,6 @@ func (c *LiveClient) CreateChangeProposal(ctx context.Context, owner, repo, titl
 		Head:   mr.SourceBranch,
 		Base:   mr.TargetBranch,
 	}, nil
-}
-
-// CreateCrossRepoChangeProposal is not supported on GitLab. GitLab merge
-// requests between forks use the same source_branch / target_branch API as
-// same-repo MRs (the fork relationship is implicit in the project), so the
-// cross-repo variant is unnecessary. Returns forge.ErrNotSupported.
-func (c *LiveClient) CreateCrossRepoChangeProposal(_ context.Context, _, _, _, _, _, _, _, _ string) (*forge.ChangeProposal, error) {
-	return nil, fmt.Errorf("create cross-repo change proposal: %w", forge.ErrNotSupported)
 }
 
 // ListRepoPullRequests lists open merge requests for a project with pagination.

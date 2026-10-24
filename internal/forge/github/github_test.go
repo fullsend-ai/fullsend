@@ -1140,7 +1140,42 @@ func TestCreateCrossRepoChangeProposal(t *testing.T) {
 		)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "head ref must be a branch")
+		assert.False(t, forge.IsAlreadyExists(err))
+		assert.False(t, forge.IsNoChanges(err))
 	})
+
+	for _, tc := range []struct {
+		name    string
+		message string
+		check   func(error) bool
+	}{
+		{"graphql already exists maps to ErrAlreadyExists", "A pull request already exists for org:branch.", forge.IsAlreadyExists},
+		{"graphql no commits maps to ErrNoChanges", "No commits between main and branch", forge.IsNoChanges},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/"):
+					json.NewEncoder(w).Encode(map[string]any{"node_id": "NODE_test"})
+				case r.Method == "POST" && r.URL.Path == "/graphql":
+					json.NewEncoder(w).Encode(map[string]any{
+						"errors": []map[string]any{{"message": tc.message}},
+					})
+				}
+			}))
+			defer srv.Close()
+
+			client := newTestClient(t, srv)
+			_, err := client.CreateCrossRepoChangeProposal(
+				context.Background(),
+				"org", "repo", "contributor", "repo",
+				"title", "body", "branch", "main",
+			)
+			require.Error(t, err)
+			assert.True(t, tc.check(err), "unexpected error mapping: %v", err)
+			assert.Contains(t, err.Error(), tc.message)
+		})
+	}
 
 	t.Run("base repo not found", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

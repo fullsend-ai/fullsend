@@ -1239,11 +1239,12 @@ func (f *FakeClient) CreateCrossRepoChangeProposal(_ context.Context, baseOwner,
 
 	f.proposalCounter++
 	cp := ChangeProposal{
-		URL:    fmt.Sprintf("https://forge.example.com/%s/%s/pull/%d", baseOwner, baseRepo, f.proposalCounter),
-		Title:  title,
-		Number: f.proposalCounter,
-		Head:   headOwner + ":" + headBranch,
-		Base:   baseBranch,
+		URL:      fmt.Sprintf("https://forge.example.com/%s/%s/pull/%d", baseOwner, baseRepo, f.proposalCounter),
+		Title:    title,
+		Number:   f.proposalCounter,
+		Head:     headOwner + ":" + headBranch,
+		HeadRepo: headOwner + "/" + headRepo,
+		Base:     baseBranch,
 	}
 	f.CreatedProposals = append(f.CreatedProposals, cp)
 	return &cp, nil

@@ -2579,7 +2579,18 @@ func (c *LiveClient) CreateCrossRepoChangeProposal(ctx context.Context, baseOwne
 		return nil, fmt.Errorf("decode cross-repo pull request response: %w", err)
 	}
 	if len(gqlResult.Errors) > 0 {
-		return nil, fmt.Errorf("create cross-repo pull request: graphql: %s", gqlResult.Errors[0].Message)
+		msg := gqlResult.Errors[0].Message
+		// Map the same conditions the REST path surfaces as sentinel
+		// errors so callers can treat an existing PR or an empty diff
+		// identically regardless of which creation path was used.
+		lower := strings.ToLower(msg)
+		switch {
+		case strings.Contains(lower, "already exists"):
+			return nil, fmt.Errorf("create cross-repo pull request: graphql: %s: %w", msg, forge.ErrAlreadyExists)
+		case strings.Contains(lower, "no commits between"):
+			return nil, fmt.Errorf("create cross-repo pull request: graphql: %s: %w", msg, forge.ErrNoChanges)
+		}
+		return nil, fmt.Errorf("create cross-repo pull request: graphql: %s", msg)
 	}
 
 	pr := gqlResult.Data.CreatePullRequest.PullRequest

@@ -5395,14 +5395,98 @@ func TestDeleteBranch_NotFound(t *testing.T) {
 // CreateCrossRepoChangeProposal tests
 // ---------------------------------------------------------------------------
 
-func TestCreateCrossRepoChangeProposal_NotSupported(t *testing.T) {
-	client, _ := setupTest(t)
+func TestCreateCrossRepoChangeProposal(t *testing.T) {
+	client, mux := setupTest(t)
 	ctx := context.Background()
 
-	cp, err := client.CreateCrossRepoChangeProposal(ctx, "base-owner", "base-repo", "head-owner", "head-repo", "title", "body", "feature", "main")
+	// Upstream lives in a nested group; the fork has a different name to
+	// confirm the fork's own repo name (not upstream's) is used.
+	mux.HandleFunc("/api/v4/projects/kernel-qe%2Fsustaining-engineering%2Fseqe", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodGet, r.Method)
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"id": 4242, "name": "seqe", "path_with_namespace": "kernel-qe/sustaining-engineering/seqe",
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/iwienand%2Fseqe-fork/merge_requests", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		var body map[string]any
+		readJSONBody(t, r, &body)
+		// Bare branch name — never GitHub's "owner:branch" syntax.
+		assert.Equal(t, "fullsend/scaffold-install", body["source_branch"])
+		assert.Equal(t, "master", body["target_branch"])
+		assert.InDelta(t, 4242, body["target_project_id"], 0)
+		assert.Equal(t, "Scaffold", body["title"])
+		assert.Equal(t, "Scaffold body", body["description"])
+		assert.NotContains(t, body, "source_project_id")
+
+		writeJSON(t, w, http.StatusCreated, map[string]any{
+			"iid":           7,
+			"title":         "Scaffold",
+			"web_url":       "https://gitlab.example.com/kernel-qe/sustaining-engineering/seqe/-/merge_requests/7",
+			"source_branch": "fullsend/scaffold-install",
+			"target_branch": "master",
+		})
+	})
+
+	cp, err := client.CreateCrossRepoChangeProposal(ctx,
+		"kernel-qe/sustaining-engineering", "seqe", "iwienand", "seqe-fork",
+		"Scaffold", "Scaffold body", "fullsend/scaffold-install", "master")
+	require.NoError(t, err)
+	assert.Equal(t, 7, cp.Number)
+	assert.Equal(t, "Scaffold", cp.Title)
+	assert.Equal(t, "https://gitlab.example.com/kernel-qe/sustaining-engineering/seqe/-/merge_requests/7", cp.URL)
+	assert.Equal(t, "fullsend/scaffold-install", cp.Head)
+	assert.Equal(t, "iwienand/seqe-fork", cp.HeadRepo)
+	assert.Equal(t, "master", cp.Base)
+}
+
+func TestCreateCrossRepoChangeProposal_TargetNotFound(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/upstream%2Frepo", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusNotFound, map[string]string{"message": "404 Project Not Found"})
+	})
+	mux.HandleFunc("/api/v4/projects/fork%2Frepo/merge_requests", func(_ http.ResponseWriter, _ *http.Request) {
+		t.Error("merge request must not be created when the target project lookup fails")
+	})
+
+	cp, err := client.CreateCrossRepoChangeProposal(ctx, "upstream", "repo", "fork", "repo", "t", "b", "feature", "main")
 	require.Error(t, err)
 	assert.Nil(t, cp)
-	assert.ErrorIs(t, err, forge.ErrNotSupported)
+	assert.True(t, forge.IsNotFound(err), "expected ErrNotFound, got: %v", err)
+	assert.Contains(t, err.Error(), "resolve target project")
+}
+
+func TestCreateCrossRepoChangeProposal_MissingTargetID(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/upstream%2Frepo", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusOK, map[string]any{"name": "repo"})
+	})
+
+	_, err := client.CreateCrossRepoChangeProposal(ctx, "upstream", "repo", "fork", "repo", "t", "b", "feature", "main")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "has no ID")
+}
+
+func TestCreateCrossRepoChangeProposal_AlreadyExists(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/upstream%2Frepo", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusOK, map[string]any{"id": 1, "name": "repo"})
+	})
+	mux.HandleFunc("/api/v4/projects/fork%2Frepo/merge_requests", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusConflict, map[string]any{
+			"message": []string{"Another open merge request already exists for this source branch: !3"},
+		})
+	})
+
+	_, err := client.CreateCrossRepoChangeProposal(ctx, "upstream", "repo", "fork", "repo", "t", "b", "feature", "main")
+	require.Error(t, err)
+	assert.True(t, forge.IsAlreadyExists(err), "expected ErrAlreadyExists, got: %v", err)
 }
 
 func TestGetRepoSecretProtection(t *testing.T) {

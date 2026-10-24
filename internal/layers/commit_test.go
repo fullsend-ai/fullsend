@@ -390,6 +390,9 @@ func TestCommitScaffoldViaPR_CrossForkPRHead(t *testing.T) {
 		"acme/widget": "contributor",
 	}
 	client.BranchRefs["acme/widget/main"] = "upstream-sha"
+	// The fork path must use the cross-repo method, never the same-repo
+	// one with GitHub's "owner:branch" head syntax (which GitLab rejects).
+	client.Errors["CreateChangeProposal"] = fmt.Errorf("same-repo PR creation must not be used for forks")
 	printer, _ := newTestPrinter()
 
 	_, err := CommitScaffoldFiles(context.Background(), client, printer,
@@ -399,10 +402,48 @@ func TestCommitScaffoldViaPR_CrossForkPRHead(t *testing.T) {
 	// Verify the PR was created on upstream with cross-fork head.
 	require.Len(t, client.CreatedProposals, 1)
 	assert.Equal(t, "contributor:fullsend/scaffold-install", client.CreatedProposals[0].Head)
+	assert.Equal(t, "contributor/widget", client.CreatedProposals[0].HeadRepo)
 	assert.Equal(t, "main", client.CreatedProposals[0].Base)
 	// CommitFilesToBranch is called on the fork.
 	require.Len(t, client.CommittedFilesToBranch, 1)
 	assert.Equal(t, "contributor", client.CommittedFilesToBranch[0].Owner)
+}
+
+func TestCommitBranchAndPR_CrossForkRenamedFork(t *testing.T) {
+	// A fork whose repo name differs from upstream's must be identified by
+	// its own owner and repo name when opening the cross-repo PR.
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "contributor"
+	client.BranchRefs["acme/widget/main"] = "upstream-sha"
+	client.Errors["CreateChangeProposal"] = fmt.Errorf("same-repo PR creation must not be used for forks")
+	printer, _ := newTestPrinter()
+
+	_, err := commitBranchAndPR(context.Background(), client, printer,
+		"acme", "widget", "contributor", "widget-fork", "fullsend/scaffold-install", "main",
+		"msg", "title", "body", testFiles)
+	require.NoError(t, err)
+
+	require.Len(t, client.CreatedProposals, 1)
+	assert.Equal(t, "contributor/widget-fork", client.CreatedProposals[0].HeadRepo)
+	assert.Equal(t, "contributor:fullsend/scaffold-install", client.CreatedProposals[0].Head)
+	assert.Equal(t, "main", client.CreatedProposals[0].Base)
+	require.Len(t, client.CommittedFilesToBranch, 1)
+	assert.Equal(t, "contributor", client.CommittedFilesToBranch[0].Owner)
+}
+
+func TestCommitBranchAndPR_SameRepoUsesCreateChangeProposal(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
+	client.Errors["CreateCrossRepoChangeProposal"] = fmt.Errorf("cross-repo PR creation must not be used for same-repo PRs")
+	printer, _ := newTestPrinter()
+
+	_, err := commitBranchAndPR(context.Background(), client, printer,
+		"acme", "widget", "acme", "widget", "fullsend/scaffold-install", "main",
+		"msg", "title", "body", testFiles)
+	require.NoError(t, err)
+
+	require.Len(t, client.CreatedProposals, 1)
+	assert.Equal(t, "fullsend/scaffold-install", client.CreatedProposals[0].Head)
 }
 
 func TestCommitScaffoldViaPR_CrossForkUsesUpstreamSHA(t *testing.T) {
@@ -555,7 +596,7 @@ func TestCommitScaffoldViaPR_CrossForkNoChanges(t *testing.T) {
 	}
 	client.BranchRefs["acme/widget/main"] = "upstream-sha"
 	client.Errors = map[string]error{
-		"CreateChangeProposal": fmt.Errorf("no diff: %w", forge.ErrNoChanges),
+		"CreateCrossRepoChangeProposal": fmt.Errorf("no diff: %w", forge.ErrNoChanges),
 	}
 	printer, buf := newTestPrinter()
 
@@ -577,7 +618,7 @@ func TestCommitScaffoldViaPR_CrossForkPRAlreadyExistsUpdated(t *testing.T) {
 	client.BranchRefs["acme/widget/main"] = "upstream-sha"
 	// CommitFilesToBranch returns changed=true by default.
 	client.Errors = map[string]error{
-		"CreateChangeProposal": fmt.Errorf("pr exists: %w", forge.ErrAlreadyExists),
+		"CreateCrossRepoChangeProposal": fmt.Errorf("pr exists: %w", forge.ErrAlreadyExists),
 	}
 	printer, buf := newTestPrinter()
 
@@ -600,7 +641,7 @@ func TestCommitScaffoldViaPR_CrossForkPRAlreadyExistsNoUpdate(t *testing.T) {
 	noChange := false
 	client.CommitFilesChanged = &noChange
 	client.Errors = map[string]error{
-		"CreateChangeProposal": fmt.Errorf("pr exists: %w", forge.ErrAlreadyExists),
+		"CreateCrossRepoChangeProposal": fmt.Errorf("pr exists: %w", forge.ErrAlreadyExists),
 	}
 	printer, buf := newTestPrinter()
 

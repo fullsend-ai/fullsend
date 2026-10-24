@@ -313,8 +313,9 @@ func isKnownScaffoldBranch(branch string) bool {
 
 // commitBranchAndPR creates a branch on targetOwner/targetRepo, commits files,
 // and opens a PR against upstreamOwner/upstreamRepo. When target == upstream
-// (same-repo PR), head is the branch name. When target != upstream (cross-fork
-// PR), head is "forkOwner:branchName".
+// (same-repo PR), it uses CreateChangeProposal. When target != upstream
+// (cross-fork PR), it uses CreateCrossRepoChangeProposal with the fork's
+// owner and repo name.
 func commitBranchAndPR(ctx context.Context, client forge.Client, printer *ui.Printer,
 	upstreamOwner, upstreamRepo, targetOwner, targetRepo,
 	scaffoldBranch, defaultBranch, commitMsg, prTitle, prBody string,
@@ -423,14 +424,18 @@ func deliverBranchAndPR(ctx context.Context, client forge.Client, printer *ui.Pr
 		return false, fmt.Errorf("committing scaffold files to branch: %w", commitErr)
 	}
 
-	// For cross-fork PRs, head must be "forkOwner:branchName".
-	head := scaffoldBranch
-	if !strings.EqualFold(targetOwner, upstreamOwner) || !strings.EqualFold(targetRepo, upstreamRepo) {
-		head = targetOwner + ":" + scaffoldBranch
+	// Cross-fork PRs identify the head repository explicitly instead of
+	// relying on GitHub's "owner:branch" head syntax, which GitLab rejects
+	// and which is ambiguous for same-owner forks.
+	var proposal *forge.ChangeProposal
+	var prErr error
+	if isCrossRepo {
+		proposal, prErr = client.CreateCrossRepoChangeProposal(ctx, upstreamOwner, upstreamRepo,
+			targetOwner, targetRepo, prTitle, prBody, scaffoldBranch, defaultBranch)
+	} else {
+		proposal, prErr = client.CreateChangeProposal(ctx, upstreamOwner, upstreamRepo,
+			prTitle, prBody, scaffoldBranch, defaultBranch)
 	}
-
-	proposal, prErr := client.CreateChangeProposal(ctx, upstreamOwner, upstreamRepo,
-		prTitle, prBody, head, defaultBranch)
 	if prErr != nil {
 		if forge.IsNoChanges(prErr) {
 			printer.StepDone("Scaffold branch and PR up to date")
