@@ -101,6 +101,15 @@ The threat model establishes least-privilege as a cross-cutting principle
 
 If this decision builds on or relates to another ADR, say so in Context.
 
+### Keep implementation out of the ADR PR
+
+The recommendation is that implementation does **not** accompany an ADR. An
+ADR PR carries the decision record and the living-document updates. File
+follow-up issues to track the implementation, and land it in separate PRs.
+
+The exception is implementation that is really short and trivial. That will
+rarely be the case. When in doubt, split the implementation out.
+
 ### Normative specs (`docs/normative/`)
 
 - **Use** when the decision needs **byte-level or field-level** contracts, JSON
@@ -147,8 +156,12 @@ Follow these steps in order:
    decision applies to and how each is handled. For any forge left out, say so
    explicitly with a reason or a tracking issue (e.g., "GitHub only; GitLab
    tracked in #NNN").
-8. **Run linters.** Stage your changes, then execute `make lint` and fix any errors before committing.
-9. **If status is Accepted, update living documents** (see below).
+8. **Leave implementation out.** File follow-up issues for the implementation
+   instead of including it in the ADR PR, unless it is really short and
+   trivial (see [Keep implementation out of the ADR
+   PR](#keep-implementation-out-of-the-adr-pr)).
+9. **Run linters.** Stage your changes, then execute `make lint` and fix any errors before committing.
+10. **If status is Accepted, update living documents** (see below).
 
 ## Updating Living Documents After Acceptance
 
@@ -218,6 +231,7 @@ If the ADR partially answers a question, add a parenthetical:
 | Mistake | Fix |
 |---------|-----|
 | Bundling multiple decisions | Split into separate ADRs |
+| Bundling non-trivial implementation with the ADR | Land the decision record alone; track implementation in follow-up issues |
 | Verbose context | Link to problem docs |
 | Forgetting frontmatter `relates_to` | Check template, list problem doc filenames |
 | Not updating architecture.md | Follow the update checklist above |

@@ -6,6 +6,13 @@ These rules apply whenever you touch `docs/ADRs/` or review a PR that does. Full
 
 **New ADRs in pull requests:** Approval happens at **merge**, not when the branch is created. If the decision is made, set status to **Accepted** in the ADR you are proposing — not a lesser status merely because the PR is open. Valid statuses are **Accepted**, **Deprecated**, and **Superseded**. When status is Accepted, update `docs/architecture.md` and related problem docs in the same PR per the writing-adrs skill. When editing an ADR that has not yet merged to `main`, change the content directly — do not add "Revised" annotations, revision dates, or revision history sections. The ADR is still being authored; treat edits as normal authoring, not post-acceptance amendments.
 
+**Keep implementation out of ADR pull requests:** The recommendation is that
+implementation does **not** accompany an ADR. An ADR PR carries the decision
+record and the living-document updates. Track implementation in follow-up
+issues instead. The exception is implementation that is really short and
+trivial, which will rarely be the case. When in doubt, split the
+implementation into its own PR.
+
 **When reviewing PRs:** Flag substantial rewrites to Context, Decision, or
 Consequences on Accepted ADRs already on `main` as a policy violation. Allow
 minor annotations (cross-references, short notes, typo fixes), status updates,
