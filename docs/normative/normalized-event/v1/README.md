@@ -292,6 +292,13 @@ proposal is simply no match. `actor.role` says who triggered the event, not
 who wrote the change, so an overlay that loosens a guarded value on a change
 proposal should also require `!state.change_proposal.is_fork`.
 
+For a guarded overlay selecting the authorization-v2 `human_min_role`, raw
+`actor.role` is excluded even though it is listed as trusted here. A role
+guard must use the [v2 verified effective-role input](../../authorization/v2/README.md#platform-floor-and-per-harness-human-minimum),
+and a narrow label grant is not a role. A trusted-field dependency check also
+does not establish which truth value is safe: a change author can make
+`is_fork` true, while only a writer can make it false.
+
 ## CEL trigger examples
 
 Harness `trigger` expressions are CEL booleans over `event`:

@@ -38,6 +38,11 @@ resident or run within a deadline, and the reserved `--watch` option denotes
 the explicit resident poll lifecycle. The poll command, driver architecture,
 and per-repository scope remain current.
 
+[ADR 0147](0147-evaluate-entity-cel-over-selectively-acquired-data.md) requires
+durable retry or proven rediscovery for provisional entity-source handoffs. The
+`lastCheck` advance-on-schedule rule below remains for legacy event
+reconstruction.
+
 ## Context
 
 Fullsend's primary dispatch path is **event-driven**: forge webhooks are normalized

@@ -306,7 +306,21 @@ flowchart TB
 **Decided (implementation):**
 
 - The `fullsend run` runner delegates in-sandbox agent execution to a `runtime.Runtime` interface; production orgs default to Claude Code, with [pi](https://github.com/earendil-works/pi) available as an opt-in second runtime (`runtime: pi`, Claude-on-Vertex through the same WIF credential path), [codex](https://github.com/openai/codex) as a third (`runtime: codex`, OpenAI models through a custom model provider whose bearer token comes from a runner-seeded file, or `gateway/` models through a runner-owned gateway provider ([ADR 0137](ADRs/0137-inference-gateway-credential-route.md)), with the sandbox tool hooks behind a translating adapter — [ADR 0099](ADRs/0099-codex-agent-runtime.md) and [ADR 0100](ADRs/0100-codex-sandbox-hooks.md)), and [OpenCode](https://github.com/anomalyco/opencode) as a fourth (`runtime: opencode`, Claude-on-Vertex through the same WIF credential path; read-only agents only until the security-hook plugin adapter in [unbound-force#515](https://github.com/unbound-force/unbound-force/issues/515) lands). Runtime selection is configured per repo with `runtime:` in `.fullsend/config.yaml` (per-agent `runtime`/`model`/`effort`/`subagents` on the agent's `agents:` entry sit above it and below the `--runtime`/`--model`/`--effort` flags and `FULLSEND_*` variables, [ADR 0091](ADRs/0091-per-agent-runtime-model-effort.md)) and resolved via `runtime.ResolveForAgent()`. Test-only runtimes — **dummy** (scripted operations) and **dummy-playback** (playlist-based replay of canned results) — execute in the real OpenShell sandbox for behaviour tests without inference. Bootstrap uses a portable `BootstrapInput` interface with optional extensions such as `SandboxHooksBootstrap` for the runtime-neutral sandbox tool hooks ([ADR 0090](ADRs/0090-runtime-neutral-sandbox-hooks-contract.md)); runtimes declare further capabilities through small optional interfaces (`DebugLogNamer`, `ContextBridger`) rather than `Name()` checks in the runner. Transcript and debug artifact handling use a separate `TranscriptHandler` interface. See [runtimes.md](runtimes.md) for the per-runtime security feature matrix required when adding a new backend.
-- Harness `overlays:` ([ADR 0088](ADRs/0088-cel-guarded-overlays.md)) will be able to set any harness field except `base`, `trigger`, `overlays`, `slug`, `role` and `forge`; an overlay that sets a guarded field (any field except `model`, `effort`, `description` and `doc`) may read only trusted event and entity fields, `runtime.forge` and `config`, and every run will record an overlay resolution trace in the plan output and a dedicated span ([ADR 0112](ADRs/0112-overlays-may-set-any-harness-field.md)). Per-task model routing is overlays setting `model` and `effort`, and when a routed model isn't served the runner retries once with the model and effort the run would use without overlays, and `FULLSEND_FALLBACK_MODELS` applies as each runtime allows. Decided, not yet implemented.
+- Harness `overlays:` ([ADR 0088](ADRs/0088-cel-guarded-overlays.md)) will be
+  able to set any harness field except `base`, `trigger`, `overlays`, `slug`,
+  `role`, and `forge`. An overlay that sets a guarded field (any field except
+  `model`, `effort`, `description`, and `doc`) may read only trusted event and
+  entity fields, `runtime.forge`, and `config`; every run will record an
+  overlay resolution trace in the plan output and a dedicated span
+  ([ADR 0112](ADRs/0112-overlays-may-set-any-harness-field.md)).
+  `human_min_role` is a guarded field whose overlay must resolve from verified
+  pre-admission facts before the harness actor gate, with its selected value
+  pinned through the run
+  ([ADR 0151](ADRs/0151-common-actor-admission-floor.md)). Per-task model
+  routing is overlays setting `model` and `effort`; when a routed model is not
+  served, the runner retries once with the model and effort it would use
+  without overlays, and `FULLSEND_FALLBACK_MODELS` applies as each runtime
+  allows. Decided, not yet implemented.
 - Plugins are runtime-scoped harness resources: a harness declares `plugins:` as one list of directories in its own repository (same trust and fetch path as skills), and each entry's format decides which runtime loads it — a `plugin.json` bundle is Claude Code's, a directory pi's `-e` loader resolves is uploaded and loaded after a tree-hash preflight computed from the host copy. Each runtime names and skips the entries in the other format, so the list survives a runtime switch. Because `--no-extensions` plus explicit `-e` closes the set of code that can register tools, no per-tool declaration is needed ([ADR 0094](ADRs/0094-pi-extensions-are-harness-resources.md)).
 - Native Codex children run under a runner-owned policy: Bootstrap registers roles for an agent with the `Agent` tool, under harness security, whose parent model Codex resolves to collaboration V1 (a V2 or unlisted parent keeps the multi-agent tools off), and binds each child's model (a persona's own entry in its role file, the run-level default otherwise), and a mandatory dispatch hook admits only fresh-context V1 spawns of registered roles after checking `hooks.json` and the role files against runner-held digests ([ADR 0126](ADRs/0126-fullsend-owned-codex-subagents.md)); not yet implemented, so review and retro still run in one context on Codex ([#6970](https://github.com/fullsend-ai/fullsend/issues/6970)).
 
@@ -429,59 +443,105 @@ The existing design principle is that [the repo is the coordinator](problems/age
   `conversation.Client` — not a separate always-on chat bot and not an extension
   of `forge.Client`
   ([ADR 0086](ADRs/0086-conversation-surface-for-agent-participation.md)).
-- Event-backed dispatch authorization: event-triggered paths authorize the prompting
-  actor before dispatch. This includes schedule/manual dispatch represented as
-  a `NormalizedEvent`, whose actor is the configured service identity. GitHub
-  paths check the acting user's collaborator permission via the repository API
-  (`write` or above for mutation commands; `triage` or above for observation
-  stages); a repo that enables the `owners_file` authorization provider also
-  grants these roles to its Prow `OWNERS` approvers and reviewers. Non-GitHub
-  event paths map source-system roles to dispatch authorization roles (`read`,
-  `write`, `admin`) using source-native role resolution, with no cross-system
+- Event-backed dispatch authorization: event-triggered paths authorize the
+  prompting actor before dispatch. This includes schedule/manual dispatch
+  represented as a `NormalizedEvent`, whose actor is the configured service
+  identity. For ordinary human events, the target CEL path checks the actor's
+  verified effective normalized role against the platform `triage` floor and
+  the selected harness's `human_min_role` before CEL. The harness `role` selects
+  its run identity (a mint role on GitHub or registered role credentials on
+  GitLab); it defaults this human minimum to `triage` for `triage`
+  and `review`, and `write` for all other roles, including custom roles. A
+  top-level or trusted-fact-guarded overlay `human_min_role` may set `triage`,
+  `write`, `maintain`, or `admin` without lowering the platform floor. The
+  overlay is selected from verified metadata before the actor gate and its
+  result is pinned through the run. Token `privilege_levels` remain a
+  separate capability setting. The effective human role comes from the source
+  provider or a trusted configured permission source such as `OWNERS`; harness
+  CEL may narrow actor, target, or action conditions. Current GitHub bash
+  guards still use `triage` for observation stages and `write` for mutation
+  stages, except for its ungated retro close route. Go CEL dispatch now
+  applies the v1 role-derived default per harness before CEL for ordinary
+  human events; explicit or overlay minima remain target behavior. Non-GitHub
+  event paths map source-native roles to normalized roles without cross-system
   identity verification. Bot actors are migrating to provider-backed exact role
   resolution: adapters classify actors from source-native metadata; recognized bots receive a
   canonical `actor.bot_role` such as `review`, and bot actors retain
   `actor.role: none` with `actor.role_verified` reflecting completion of the
   bot-role lookup; unknown or unresolved bots fail closed on non-label paths.
-  The label-added exception remains permanent across source systems: provider-
-  positive bot classification is required, but the forge-authorized label
-  mutation and authoritative actor-to-transition provenance are sufficient
-  platform evidence; label-to-agent mapping remains harness/CEL routing. At the
-  time of ADR 0107, GitHub is the only production implementation. CEL may
+  A verified human label addition separately grants `triage`-equivalent
+  authority for its exact accepted transition and proven projection without
+  synthesizing a verified actor role; a higher harness minimum also requires
+  the labeler's verified effective role. Provider-verified bot label
+  handoffs use a separate grant for the exact transition and its proven
+  projection; label-to-agent mapping remains harness/CEL routing. At the time
+  of ADR 0107, GitHub is the only production implementation. CEL may
   further restrict recognized bot roles but cannot authorize an unknown bot on
   non-label paths ([ADR 0107](ADRs/0107-bot-identity-resolution-for-dispatch-authorization.md);
-  [Authorization Contract v1](normative/authorization/v1/);
-  [ADR 0054](ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)).
-- Data security boundary (target state): each source-system record is admitted
-  only when its actor attribution and current authorization meet the selected
-  harness threshold, regardless of whether it arrives through an event or a
-  proactive API read; unrecognized or unauthorized content is redacted.
+  [Authorization Contract v1](normative/authorization/v1/) for current dispatch;
+  [Authorization Contract v2](normative/authorization/v2/) for target CEL;
+  [ADR 0054](ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md);
+  [ADR 0151](ADRs/0151-common-actor-admission-floor.md)).
+- Data security boundary (target state): each source-system record that
+  Fullsend controls is admitted to model input only after its exact current
+  revision's actor and current authorization are verified. An ordinary human
+  actor must meet the platform `triage` floor and the selected harness's
+  effective `human_min_role`; registered bots use a separate provider-backed
+  exact-role check. Authorization is refreshed at model-bound checkpoints,
+  and a prompting event's CEL result does not authorize separate records.
+  Unrecognized, unauthorized, or unattributed content is redacted.
   Host-side filtering removes hidden characters, redacts sensitive data, scans
   for prompt injection, and applies size limits before filtered,
   provenance-labelled content reaches the model. This ADR does not govern
   model-initiated direct source-system calls; future ADRs may encourage use of
   platform-originated checked data or add filtering for model-originated
-  retrievals ([ADR 0133](ADRs/0133-actor-attributed-data-security-boundary.md)).
+  retrievals ([ADR 0133](ADRs/0133-actor-attributed-data-security-boundary.md),
+  partially superseded by
+  [ADR 0151](ADRs/0151-common-actor-admission-floor.md)).
 - Fullsend-originated entity evaluation (target state): `fullsend poll`
   enumerates candidates, while a bound `fullsend run` may recheck only its
   canonical entity with `event == null`. Both require verified,
   non-user-assertable Fullsend invocation provenance and effective platform
   eligibility; the actor of an earlier event does not authorize an eventless
-  cycle. Before each candidate harness's CEL predicate, the platform
-  fail-closed enumerates a closed superset of action-indicating entity
-  elements, resolves each actor's current permission, and removes elements
-  below that harness's observation or mutation threshold. Later input-selection
-  and injection filtering are defense in depth for prompt construction.
-  Entity-first execution remains disabled until its versioned normalized-entity
-  contract exists. Every run uses the harness's configured identity
+  cycle. The platform classifies action-indicating categories, but acquires
+  only entity data that can affect each harness's CEL predicate. The target
+  CEL view admits ordinary human-originated facts that could make the
+  predicate actionable only after their actors' verified effective roles meet
+  the platform `triage` floor and that harness's effective `human_min_role`.
+  Registered bot facts require their exact roles. The narrow label grants
+  above may instead satisfy a `triage` human minimum, or the separate bot
+  gate, only for exact accepted transitions and proven projections. A
+  harness may narrow conditions further in CEL. A below-threshold fact is
+  excluded, and unresolved authority for a potentially decisive fact cannot
+  prove a false or empty result. Raw service-clock state used only to defer
+  eligibility may be evaluated without unrelated history.
+  With an explicit versioned platform age policy, a host-owned cache may share
+  provider-verified actor roles, but not harness-specific authorization
+  decisions, across checks and `poll` and bound `run` processes for no more
+  than five minutes from the authoritative lookup's start. Without that policy,
+  cross-check reuse is disabled. Every harness reapplies its own minimum to a
+  reused role. A cache-dependent false CEL result must be rechecked after
+  expiry or known invalidation within a bounded reconciliation interval. Event
+  admission and model-bound content checks retain separate fresh gates.
+  Partial data yields a definitive result only with proven coverage; otherwise
+  `poll` or bound `run` fetches more relevant data or leaves the check
+  unresolved, without launching a sandbox. Later input selection and injection
+  filtering govern prompt construction. Entity-first execution remains
+  disabled until the versioned normalized-entity contract defines partial
+  data and coverage. Every run uses the harness's configured identity
   ([ADR 0098](ADRs/0098-entity-first-harness-evaluation.md),
-  [ADR 0144](ADRs/0144-reuse-poll-and-entity-bound-run-processes.md)).
+  [ADR 0144](ADRs/0144-reuse-poll-and-entity-bound-run-processes.md),
+  [ADR 0147](ADRs/0147-evaluate-entity-cel-over-selectively-acquired-data.md),
+  [ADR 0148](ADRs/0148-reuse-verified-actor-roles-for-entity-cel.md),
+  [ADR 0151](ADRs/0151-common-actor-admission-floor.md),
+  [Authorization Contract v2](normative/authorization/v2/)).
 
 **Open questions:**
 
-- What normative entity-history, query-planning, and handled-state contract
-  can support entity-first harness evaluation without unbounded provider reads
-  ([ADR 0098](ADRs/0098-entity-first-harness-evaluation.md))?
+- What field-level normalized-entity contract and provider query plans can
+  prove partial-history coverage and represent handled state? Selective
+  acquisition and its authorization rules are decided in
+  [ADR 0147](ADRs/0147-evaluate-entity-cel-over-selectively-acquired-data.md).
 - Is GitHub's event system sufficient for forge-native duplicate protection, or
   do we need additional coordination beyond label/state conventions and agent
   idempotency? (Jira polling per ADR 0063 uses entity-property locks and runner
@@ -545,10 +605,15 @@ Observability is a cross-cutting concern that touches every other component. Eac
 - Event-driven stage dispatch remains traceable end-to-end in the GitHub Actions UI by using synchronous `workflow_call` dispatch (see [ADR 0041](ADRs/0041-synchronous-workflow-call-event-dispatch.md)).
 - Scheduled entity-discovery runs are attributable to the verified Fullsend
   invocation identity, target repository, effective policy, harness revision,
-  and resolved entity; retained action-indicating elements preserve their actor
-  provenance. State-only predicates trace to the configured service identity
-  and versioned policy/harness configuration
-  ([ADR 0098](ADRs/0098-entity-first-harness-evaluation.md)).
+  and resolved entity. Their CEL checks record decision and coverage evidence;
+  identifiable positive witnesses retain actor provenance, while collection
+  results use bounded summaries rather than a full actor-history roster.
+  State-only predicates trace to the configured service identity and versioned
+  policy/harness configuration. When a shared actor-role result contributes to
+  CEL, the audit records its lookup time, age, and effective maximum age
+  ([ADR 0098](ADRs/0098-entity-first-harness-evaluation.md),
+  [ADR 0147](ADRs/0147-evaluate-entity-cel-over-selectively-acquired-data.md),
+  [ADR 0148](ADRs/0148-reuse-verified-actor-roles-for-entity-cel.md)).
 - Distributed tracing: framework-native OpenTelemetry instrumentation with zero-configuration baseline. Every run produces `run-telemetry.jsonl` locally; optional live OTLP export to any compatible backend. W3C trace context propagation links multi-agent pipelines into unified traces. OTEL GenAI semantic conventions enable LLM-aware backends ([ADR 0050](ADRs/0050-distributed-tracing-instrumentation.md)).
 - Eval measurements: the concept of scoring traces ([fail-open](glossary.md#fail-open)). [OTEL primary facts](glossary.md#otel-primary-facts) stay on the run trace (`run-telemetry.jsonl`); [OTEL derived products](glossary.md#otel-derived-products) are the scores (`eval-measurements.jsonl`) ([ADR 0087](ADRs/0087-eval-measurements-online-trace-scoring.md)). See [Eval Measurements](guides/infrastructure/eval-measurements.md). When `OTEL_EXPORTER_OTLP_*` is set, scores also export as `gen_ai.evaluation.result` span events on the same TraceID (same OTLP path as agent traces; fail-open).
 

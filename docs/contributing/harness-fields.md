@@ -16,6 +16,10 @@
 > overlays set any field except `base`, `trigger`, `overlays`, `slug`, `role`
 > and `forge`, with guarded fields limited to trusted inputs. The tables below
 > change when it is implemented.
+> [ADR 0151](../ADRs/0151-common-actor-admission-floor.md) adds the target
+> `human_min_role` field at the top level and in guarded overlays, with its
+> overlay selected before actor admission and pinned through the run. Legacy
+> `forge:` blocks cannot set it; the tables below remain current behavior.
 
 ## Field classification
 

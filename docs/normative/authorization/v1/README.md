@@ -2,13 +2,25 @@
 
 Normative rules governing which actors may trigger agent dispatch.
 
-This document is the single living contract for authorization policy.
+This document records the v1 contract for authorization policy.
 The historical decision and rationale are recorded in
 [ADR 0054](../../../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md).
 The [NormalizedEvent v1](../../normalized-event/v1/) specification defines the
 `actor.role`, `actor.kind`, `actor.role_verified`, and `actor.bot_role` fields
 consumed by this contract. Bot identity and role resolution are specified by
 [ADR 0107](../../../ADRs/0107-bot-identity-resolution-for-dispatch-authorization.md).
+
+> **Version note:** [Authorization Contract v2](../v2/README.md), adopted by
+> [ADR 0147](../../../ADRs/0147-evaluate-entity-cel-over-selectively-acquired-data.md),
+> supersedes v1's future full-history entity-evaluation and audit requirements.
+> [ADR 0148](../../../ADRs/0148-reuse-verified-actor-roles-for-entity-cel.md)
+> permits bounded actor-role reuse for entity-source CEL in v2.
+> [ADR 0151](../../../ADRs/0151-common-actor-admission-floor.md) keeps an
+> immutable `triage` human floor and applies the selected harness's effective
+> `human_min_role` to target event, entity-fact, and model-record admission.
+> Human labelers must meet that minimum; bot label grants remain separate.
+> Existing event-backed dispatch continues to use v1 until migrated; the v1
+> requirements below remain the record of this version's contract.
 
 > **ADR 0107 target contract — partially implemented:** The bot identity
 > fields, resolver outcomes, and bot-specific fail-closed rows below describe

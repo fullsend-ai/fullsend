@@ -421,6 +421,11 @@ export default defineConfig({
               items: getMarkdownFiles("ADRs", "ADRs"),
             },
             {
+              text: "Normative Specifications",
+              collapsed: true,
+              items: getMarkdownFiles("normative", "normative"),
+            },
+            {
               text: "Design Documents",
               collapsed: true,
               items: getMarkdownFiles("problems", "problems"),
