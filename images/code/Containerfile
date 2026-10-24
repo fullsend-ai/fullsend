@@ -131,6 +131,100 @@ RUN case "$TARGETARCH" in \
 # See images/sandbox/Containerfile for the pinned versions.
 
 # ---------------------------------------------------------------------------
+# Pre-commit hook cache — pre-provision at image-build time so agents don't
+# need outbound git-clone at runtime. The sandbox egress policy blocks raw
+# git-over-HTTPS fetches (HTTP 403), causing every agent run to fall back to
+# per-hook manual reimplementation (#7298). Baking the environments eliminates
+# that recurring cost and keeps the hook list authoritative via
+# .pre-commit-config.yaml rather than agent memory.
+#
+# PRE_COMMIT_HOME is placed under /sandbox (sandbox-user-owned) so the agent
+# can extend it at runtime when new hook revs appear. The seed config covers
+# only external repos; local hooks are repo-specific (gofmt, go vet, lychee,
+# custom scripts) and are installed on first run from the workspace.
+#
+# Build-time Go (for gitleaks, actionlint) and Python (for all other hooks)
+# are both available in this image layer.
+ENV PRE_COMMIT_HOME="/sandbox/pre-commit-cache"
+RUN install -d -o sandbox -g sandbox -m 0755 "${PRE_COMMIT_HOME}"
+# --chown so the sandbox user can unlink this from sticky /tmp after
+# install-hooks (root-owned files in sticky /tmp cannot be removed by
+# non-owners; without this the image build fails — #7344 review).
+COPY --chown=sandbox:sandbox pre-commit-seed.yaml /tmp/pre-commit-seed.yaml
+
+# ---------------------------------------------------------------------------
+# golangci-lint — Go linter aggregator (v2). Checksummed release binary,
+# same pattern as lychee/gitsign. Avoids go-install build/mod caches (~1 GB)
+# and ships a v2 binary that accepts `version: "2"` configs (v1.64.8 was the
+# final v1 and rejects them). To update: bump GOLANGCI_LINT_VERSION and
+# GOLANGCI_LINT_SHA256_{AMD64,ARM64} from:
+#   https://github.com/golangci/golangci-lint/releases
+ARG GOLANGCI_LINT_VERSION=2.15.0
+ARG GOLANGCI_LINT_SHA256_AMD64=9b7fe6a6bf6334b98decf8d86b11415ea7889afdabdd1959fdce23af2a9ebcea
+ARG GOLANGCI_LINT_SHA256_ARM64=b4d8f17068b35ee6060cc2f69a16fb48740d706fbba81661c318649c114a6998
+RUN case "$TARGETARCH" in \
+      amd64) GL_SHA="$GOLANGCI_LINT_SHA256_AMD64" ;; \
+      arm64) GL_SHA="$GOLANGCI_LINT_SHA256_ARM64" ;; \
+      *) echo "unsupported TARGETARCH=$TARGETARCH" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL \
+      "https://github.com/golangci/golangci-lint/releases/download/v${GOLANGCI_LINT_VERSION}/golangci-lint-${GOLANGCI_LINT_VERSION}-linux-${TARGETARCH}.tar.gz" \
+      -o /tmp/golangci-lint.tar.gz \
+    && echo "${GL_SHA}  /tmp/golangci-lint.tar.gz" | sha256sum -c - \
+    && tar xzf /tmp/golangci-lint.tar.gz -C /tmp \
+    && mv "/tmp/golangci-lint-${GOLANGCI_LINT_VERSION}-linux-${TARGETARCH}/golangci-lint" /usr/local/bin/golangci-lint \
+    && chmod +x /usr/local/bin/golangci-lint \
+    && rm -rf /tmp/golangci-lint.tar.gz "/tmp/golangci-lint-${GOLANGCI_LINT_VERSION}-linux-${TARGETARCH}" \
+    && golangci-lint --version
+
+# ---------------------------------------------------------------------------
+# uv / uvx — needed by the local `ty` pre-commit hook (entry: `uvx ty check`).
+# Pinned + checksummed; versions match
+# internal/scaffold/fullsend-repo/scripts/.pre-commit-tools.yaml.
+# To update: bump UV_VERSION and UV_SHA256_{AMD64,ARM64} from:
+#   https://github.com/astral-sh/uv/releases
+ARG UV_VERSION=0.11.14
+ARG UV_SHA256_AMD64=f3b623eb0e6141a7053d571d59a0bdc341e0f238ea8f5f0b4815ddbec9a2a296
+ARG UV_SHA256_ARM64=c4958f729e216f1610632574ed927b8cf0af1bd02cb88cb30d948571727aee43
+RUN case "$TARGETARCH" in \
+      amd64) UV_TRIPLE="x86_64-unknown-linux-gnu";  UV_SHA="$UV_SHA256_AMD64" ;; \
+      arm64) UV_TRIPLE="aarch64-unknown-linux-gnu"; UV_SHA="$UV_SHA256_ARM64" ;; \
+      *) echo "unsupported TARGETARCH=$TARGETARCH" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL \
+      "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-${UV_TRIPLE}.tar.gz" \
+      -o /tmp/uv.tar.gz \
+    && echo "${UV_SHA}  /tmp/uv.tar.gz" | sha256sum -c - \
+    && tar xzf /tmp/uv.tar.gz -C /tmp \
+    && mv "/tmp/uv-${UV_TRIPLE}/uv" /usr/local/bin/uv \
+    && mv "/tmp/uv-${UV_TRIPLE}/uvx" /usr/local/bin/uvx \
+    && chmod +x /usr/local/bin/uv /usr/local/bin/uvx \
+    && rm -rf /tmp/uv.tar.gz "/tmp/uv-${UV_TRIPLE}"
+
+# ---------------------------------------------------------------------------
+# pinact — needed by the local `pinact` pre-commit hook (language: system).
+# Pinned + checksummed; versions match
+# internal/scaffold/fullsend-repo/scripts/.pre-commit-tools.yaml.
+# To update: bump PINACT_VERSION and PINACT_SHA256_{AMD64,ARM64} from:
+#   https://github.com/suzuki-shunsuke/pinact/releases
+ARG PINACT_VERSION=4.1.0
+ARG PINACT_SHA256_AMD64=8fcbf1b3e95551c82fd995535e3c1defa70e23299ce36eb3afd6c98778de6ca0
+ARG PINACT_SHA256_ARM64=2807669cd423a3572bc12ea4a5eab80cd2f30d5644710e0c97a08a075fdadf10
+RUN case "$TARGETARCH" in \
+      amd64) PA_SHA="$PINACT_SHA256_AMD64" ;; \
+      arm64) PA_SHA="$PINACT_SHA256_ARM64" ;; \
+      *) echo "unsupported TARGETARCH=$TARGETARCH" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL \
+      "https://github.com/suzuki-shunsuke/pinact/releases/download/v${PINACT_VERSION}/pinact_linux_${TARGETARCH}.tar.gz" \
+      -o /tmp/pinact.tar.gz \
+    && echo "${PA_SHA}  /tmp/pinact.tar.gz" | sha256sum -c - \
+    && tar xzf /tmp/pinact.tar.gz -C /tmp pinact \
+    && mv /tmp/pinact /usr/local/bin/pinact \
+    && chmod +x /usr/local/bin/pinact \
+    && rm /tmp/pinact.tar.gz
+
+# ---------------------------------------------------------------------------
 # scan-secrets — gitleaks wrapper used by the code-implementation skill.
 # Baked into the image so the agent has it at /usr/local/bin without
 # needing host_files or network access. /usr is read-only in the
@@ -154,3 +248,17 @@ ENV GOPATH="/sandbox/go" \
 # allowing go build and go test to write the module cache.
 ARG GOPLS_VERSION=0.22.0
 RUN go install "golang.org/x/tools/gopls@v${GOPLS_VERSION}" && gopls version
+
+# ---------------------------------------------------------------------------
+# Pre-populate pre-commit hook environments from the seed config.
+# pre-commit install-hooks clones each external repo and builds its Python
+# venv or Go binary into PRE_COMMIT_HOME. A throwaway git repo is required
+# because pre-commit asserts it is running inside a git working tree.
+# The seed config and temp repo are deleted after the cache is populated;
+# pip's download cache is dropped so it is not baked into the image.
+RUN git init /tmp/pre-commit-seed-repo \
+    && cd /tmp/pre-commit-seed-repo \
+    && pre-commit install-hooks -c /tmp/pre-commit-seed.yaml \
+    && cd / \
+    && rm -rf /tmp/pre-commit-seed-repo /tmp/pre-commit-seed.yaml \
+        /sandbox/.cache/pip

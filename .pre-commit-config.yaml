@@ -118,6 +118,14 @@ repos:
         files: ^(internal/mint/|internal/mintcore/|internal/dispatch/gcf/mintsrc/)
         pass_filenames: false
 
+      - id: lint-precommit-seed-sync
+        name: lint pre-commit seed sync
+        entry: ./hack/lint-precommit-seed-sync
+        language: python
+        additional_dependencies: ["pyyaml>=6.0"]
+        files: ^(\.pre-commit-config\.yaml|images/code/pre-commit-seed\.yaml)$
+        pass_filenames: false
+
       - id: lint-interface-doc-sync
         name: lint interface doc sync
         entry: ./hack/lint-interface-doc-sync
