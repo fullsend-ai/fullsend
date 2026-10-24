@@ -650,6 +650,19 @@ The `fork-dispatch.feature` file defines the canonical fork-PR behaviour contrac
 
 **`the harness dispatch completes with an empty matrix`** — Waits for the harness workflow run(s) created since the last trigger step, then requires every run that was not cancelled or skipped (a skipped run, such as the shim run for a bot comment, ran no job) to have completed with its `Harness dispatch` job succeeded and no `Harness run (<agent>)` job scheduled. It fails if the dispatch job failed or an agent was scheduled, and keeps waiting while no run exists yet or a run is still in progress, so a denial is never inferred from a missing or failed run. Pair it with `agent did not run` and `dispatched exactly 0 times` for denial scenarios. It needs a CI driver that implements the optional `ci.EmptyMatrixWaiter`; the GitHub Actions driver does.
 
+**`the harness "<agent>" run was skipped by its pre-script`** — Downloads
+the `fullsend-<agent>` artifact of the workflow run the scenario is tracking
+and requires two things. First, the host-written `run-telemetry.jsonl` must
+record `fullsend.prescript.skipped=true` on its root `run` span. Second, no
+agent output (`agent-result.json`, or the dummy runtime's
+`behaviour-results.json`) may be present. A skipped run still uploads its
+artifact and its workflow still succeeds, so
+`the harness "<agent>" workflow completes successfully` passes either way.
+Use this step after that one, which records the run. On failure it reports
+what it found: `fullsend.prescript.skipped=false`, a missing attribute (the
+harness has no pre-script), missing telemetry, or the agent output files
+that were present.
+
 **`a changes-requested review is submitted on the pull request`** — Submits a `REQUEST_CHANGES` review on the scenario's pull request as the e2e identity, a bot that is not the registered review bot, and restarts the trigger time. GitHub only. GitHub refuses a changes-requested review on the reviewer's own pull request, so a test actor must open it (`the write actor opens a pull request`).
 
 **`the kill switch is active`** — Sets `kill_switch: true` in the repo's `config.yaml` (the overlay), causing `Dispatch` to return an empty matrix for *all* agents. Use this step in a dedicated scenario where no harness should run. Because the kill switch blocks everything, it cannot share a scenario with a positive-path harness.
