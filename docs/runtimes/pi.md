@@ -841,7 +841,9 @@ that project's Model Garden, or the provider resolved a different project than y
 **`[pi-anthropic-vertex] disabled: set GOOGLE_CLOUD_PROJECT ...`.** The sandbox environment comes
 from the harness (`host_files`, `env.sandbox`), not from `--env-file`, which only reaches the runner
 process (ADR 0055). Files read from `.env.d/` need `export` on each line. The fleet harnesses
-already wire this; a custom harness must too.
+already wire this; a custom harness must too. What the runner itself injects — pi's six
+runtime-specific exports included — and the keys it reserves from harness override are published
+in the generated [sandbox environment contract](../normative/sandbox-env/v1/README.md).
 
 **The run used Claude instead of pi.** The runtime falls back to `claude` when neither the config's
 `runtime:` (repo-wide or on the agent's `agents:` entry) nor `--runtime`/`FULLSEND_RUNTIME` selects
