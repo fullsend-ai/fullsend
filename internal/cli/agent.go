@@ -17,6 +17,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/harness"
+	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 	"github.com/fullsend-ai/fullsend/internal/urlutil"
 )
@@ -228,6 +229,17 @@ func runAgentSet(fullsendDir, agentName string, f agentSetFlags, printer *ui.Pri
 		effort = f.effort
 	}
 
+	// A runtime/model change that crosses the Vertex/OpenAI boundary leaves
+	// a stale harness behind: config.yaml would dispatch the new runtime
+	// against a harness still (or not yet) shaped for Vertex credentials
+	// (#7984). Checked before anything is written so a refusal leaves both
+	// files untouched. w (not cfg) is passed so the check can resolve the
+	// repo-wide runtime default and models.aliases the same way a real run
+	// would.
+	if err := checkVertexHarnessMove(absDir, agentName, current.Runtime, current.Model, runtimeName, model, current.Source, w, printer); err != nil {
+		return err
+	}
+
 	// Seed from the overlay's own entry: writing the merged map back
 	// would freeze the parent layer's entries into this config.
 	localSubagents, _ := config.AgentSettingsFor(localAgentEntries(cfg), agentName)
@@ -326,6 +338,178 @@ func formatSubagents(subagents map[string]*string) string {
 		}
 	}
 	return strings.Join(parts, " ")
+}
+
+// effectiveRuntimeName resolves the runtime that will actually dispatch an
+// agent: the per-agent agents: entry value when set, else the repo-wide
+// `runtime:` key, else the code default "claude" — the same fallback chain
+// runtime.ResolveForAgent applies at run time. An empty per-agent entry does
+// not mean "claude": it means "inherit whatever the repo configured" (#7984).
+func effectiveRuntimeName(entryRuntime, repoRuntime string) string {
+	if entryRuntime != "" {
+		return entryRuntime
+	}
+	if repoRuntime != "" {
+		return repoRuntime
+	}
+	return "claude"
+}
+
+// vertexEnvKeys are the env.sandbox variables a generated harness carries for
+// Vertex access (see agentnew.buildHarness).
+var vertexEnvKeys = []string{
+	"CLAUDE_CODE_USE_VERTEX", "ANTHROPIC_VERTEX_PROJECT_ID",
+	"CLOUD_ML_REGION", "GOOGLE_APPLICATION_CREDENTIALS",
+}
+
+// vertexHarnessSignals returns a human-readable name for each Vertex-shaped
+// field present in h: the provider list, GCP credential host_files mounts,
+// and Vertex sandbox env vars. An empty result means h carries no Vertex
+// configuration at all.
+func vertexHarnessSignals(h *harness.Harness) []string {
+	var found []string
+	for _, p := range h.Providers {
+		if strings.Contains(p, "vertex") {
+			found = append(found, "providers: "+p)
+		}
+	}
+	for _, hf := range h.HostFiles {
+		if strings.Contains(hf.Src, "GOOGLE_APPLICATION_CREDENTIALS") || strings.Contains(hf.Src, "GCP_OIDC_TOKEN_FILE") {
+			found = append(found, "host_files: "+hf.Dest)
+		}
+	}
+	if h.Env != nil {
+		for _, k := range vertexEnvKeys {
+			if _, ok := h.Env.Sandbox[k]; ok {
+				found = append(found, "env.sandbox: "+k)
+			}
+		}
+	}
+	return found
+}
+
+// displayRuntimeModel renders a runtime/model pair for an error message,
+// substituting the implied default runtime name so "" is never printed.
+func displayRuntimeModel(runtimeName, model string) string {
+	r := runtimeName
+	if r == "" {
+		r = "claude"
+	}
+	if model == "" {
+		return r
+	}
+	return r + " model=" + model
+}
+
+// checkVertexHarnessMove refuses an `agent set` that moves agentName across
+// the Vertex/OpenAI boundary while its on-disk harness still carries the old
+// shape. `fullsend agent new` shapes a generated harness for the runtime and
+// model it is given; `agent set` only ever wrote runtime/model/effort to
+// config.yaml and left the harness file untouched, so a runtime (or model)
+// change that crosses the boundary silently produced a harness the new
+// runtime cannot run (#7984).
+//
+// Both the old and new runtime/model are resolved to what would actually
+// execute — repo-wide runtime default (effectiveRuntimeName), models.aliases,
+// and the harness's own `model:` / agent frontmatter fallback
+// (runtime.EffectiveModel) — before classifying Vertex vs. OpenAI with
+// runtime.NeedsOpenAIProvider, the same function a real run consults.
+// Comparing the agents: entry's literal fields instead (as an earlier
+// version of this check did) misclassifies an inherited runtime as "claude"
+// and an aliased or harness-supplied model as whatever its literal spelling
+// looks like, which can both miss a real boundary crossing and refuse a
+// move that does not actually change anything.
+//
+// The harness is also composed with its full `base:` chain
+// (harness.LoadWithBase) rather than read raw: a child harness that inherits
+// Vertex providers, host_files, or env vars from a base declares none of
+// them in its own YAML. Base composition runs with FetchPolicy.Offline, so a
+// URL base that is not already cached is reported as "cannot determine"
+// rather than fetched (this pre-write guard has no event/forge-platform
+// context to resolve forge-scoped or overlay-scoped base config correctly)
+// or silently treated as compatible.
+//
+// Only agents with a local (non-URL) harness source can be checked: a
+// built-in agent with no source dispatches a harness this process has no
+// local copy of (it may be fetched from the agents fleet repo over the
+// network at run time, long after this command exits), and a URL source
+// would need a forge client this command does not take. Both are skipped —
+// not refused — because there is no way to tell whether the harness they
+// resolve to already matches the new runtime.
+func checkVertexHarnessMove(absDir, agentName, oldRuntime, oldModel, newRuntime, newModel, source string, cfg config.PerRepoConfigReader, printer *ui.Printer) error {
+	if source == "" || urlutil.IsURL(source) {
+		return nil
+	}
+	harnessPath, err := containedLocalPath(absDir, source)
+	if err != nil {
+		return nil
+	}
+
+	h, _, err := harness.LoadWithBase(context.Background(), harnessPath, harness.ComposeOpts{
+		WorkspaceRoot: absDir,
+		OrgAllowlist:  cfg.AllowedResources(),
+		FetchPolicy:   fetch.FetchPolicy{Offline: true},
+	})
+	if err != nil {
+		// The harness (or one of its base layers) could not be composed
+		// locally — most often a base: URL that isn't already cached.
+		// Report the limitation rather than refusing the move or treating
+		// the failure as proof the harness is compatible.
+		printer.StepWarn(fmt.Sprintf("agent %q: could not compose harness %s to check Vertex/OpenAI compatibility (%v); skipping the check", agentName, source, err))
+		return nil
+	}
+	repoRuntime := cfg.ConfigRuntime()
+	oldEffRuntime := effectiveRuntimeName(oldRuntime, repoRuntime)
+	newEffRuntime := effectiveRuntimeName(newRuntime, repoRuntime)
+
+	// EffectiveModel(entry, harness) reuses the same "first non-empty wins"
+	// precedence runtime.EffectiveModel applies between a run's resolved
+	// model and the agent's frontmatter model — here for the level above:
+	// the agents: entry's model overrides the harness's own `model:`.
+	// NeedsOpenAIProvider then falls further back to the agent definition's
+	// frontmatter model when that combined value is still empty, so the
+	// full chain (entry > harness model > frontmatter) matches what a real
+	// run resolves.
+	//
+	// The agent path is resolved against absDir (not via
+	// h.ResolveRelativeTo, which would also rewrite h.Providers and
+	// h.HostFiles to absolute paths and make vertexHarnessSignals's output
+	// below needlessly verbose) the same way harness paths resolve at run
+	// time: relative to the .fullsend directory, not the harness file's
+	// own directory.
+	aliases := cfg.ConfigModelAliases()
+	agentPath := h.Agent
+	if agentPath != "" && !filepath.IsAbs(agentPath) && !urlutil.IsURL(agentPath) {
+		agentPath = filepath.Join(absDir, agentPath)
+	}
+	agentDefModel := agentruntime.AgentDefinitionModel(agentPath)
+	oldRunModel := agentruntime.EffectiveModel(oldModel, h.Model)
+	newRunModel := agentruntime.EffectiveModel(newModel, h.Model)
+	oldVertex := !agentruntime.NeedsOpenAIProvider(oldEffRuntime, oldRunModel, agentDefModel, aliases)
+	newVertex := !agentruntime.NeedsOpenAIProvider(newEffRuntime, newRunModel, agentDefModel, aliases)
+	if oldVertex == newVertex {
+		// No boundary crossed: either this call does not touch runtime or
+		// model, or the new combination needs the same credentials as the
+		// old one once inheritance, aliasing, and harness/frontmatter
+		// fallback are accounted for. Nothing to check.
+		return nil
+	}
+
+	signals := vertexHarnessSignals(h)
+	if (len(signals) > 0) == newVertex {
+		// The harness — including anything inherited from a base — already
+		// matches what the new runtime/model needs. Nothing stale to
+		// report.
+		return nil
+	}
+	if newVertex {
+		return fmt.Errorf("agent %q: runtime %s needs Vertex (GCP) credentials, but %s has none configured "+
+			"(no providers/vertex-ai.yaml, GCP host_files, or Vertex env vars); add them, or keep a runtime/model that does not need Vertex",
+			agentName, displayRuntimeModel(newEffRuntime, newModel), source)
+	}
+	return fmt.Errorf("agent %q: runtime %s does not use Vertex, but %s still has:\n  %s\n"+
+		"edit the harness to remove them, or keep a runtime/model that still needs Vertex",
+		agentName, displayRuntimeModel(newEffRuntime, newModel), source, strings.Join(signals, "\n  "))
 }
 
 // localAgentEntries returns the entries the overlay itself declares (the
