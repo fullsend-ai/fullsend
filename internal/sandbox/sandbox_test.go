@@ -2272,6 +2272,60 @@ scope: workspace
 			exported: "id: p\ncredentials: [b]\n",
 			want:     false,
 		},
+		{
+			name:     "local object-form binaries vs exported scalar binaries",
+			local:    "id: p\nbinaries:\n  - path: \"**/python\"\n  - path: \"**/curl\"\n",
+			exported: "id: p\nbinaries:\n- '**/python'\n- '**/curl'\n",
+			want:     true,
+		},
+		{
+			name:     "mixed object and scalar local binaries vs scalar export",
+			local:    "id: p\nbinaries:\n  - path: \"**/python\"\n  - \"**/curl\"\n",
+			exported: "id: p\nbinaries:\n- '**/python'\n- '**/curl'\n",
+			want:     true,
+		},
+		{
+			name:     "object-form binaries in the full profile",
+			local:    strings.Replace(local, "  - \"**/gh\"\n", "  - path: \"**/gh\"\n", 1),
+			exported: exported,
+			want:     true,
+		},
+		{
+			name:     "object-form binary with a different path",
+			local:    "id: p\nbinaries:\n  - path: \"**/python\"\n  - path: \"**/wget\"\n",
+			exported: "id: p\nbinaries:\n- '**/python'\n- '**/curl'\n",
+			want:     false,
+		},
+		{
+			name:     "object-form binaries missing an exported path",
+			local:    "id: p\nbinaries:\n  - path: \"**/python\"\n",
+			exported: "id: p\nbinaries:\n- '**/python'\n- '**/curl'\n",
+			want:     false,
+		},
+		{
+			name:     "object-form binaries with an extra path",
+			local:    "id: p\nbinaries:\n  - path: \"**/python\"\n  - path: \"**/curl\"\n  - path: \"**/node\"\n",
+			exported: "id: p\nbinaries:\n- '**/python'\n- '**/curl'\n",
+			want:     false,
+		},
+		{
+			name:     "object-form binary with an extra key",
+			local:    "id: p\nbinaries:\n  - path: \"**/curl\"\n    mode: strict\n",
+			exported: "id: p\nbinaries:\n- '**/curl'\n",
+			want:     false,
+		},
+		{
+			name:     "object-form binary with a non-string path",
+			local:    "id: p\nbinaries:\n  - path: [\"**/curl\"]\n",
+			exported: "id: p\nbinaries:\n- '**/curl'\n",
+			want:     false,
+		},
+		{
+			name:     "object form outside the normalized fields compared exactly",
+			local:    "id: p\nendpoints:\n  - path: api.example.com\n",
+			exported: "id: p\nendpoints:\n- api.example.com\n",
+			want:     false,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

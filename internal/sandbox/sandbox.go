@@ -353,6 +353,40 @@ var gatewayDefaultFalseKeys = map[string]bool{
 	"allow_uninspected_credentials":   true,
 }
 
+// profileScalarObjectForms lists the top-level profile list fields whose
+// entries OpenShell accepts either as a scalar or as a single-key object
+// wrapping that scalar, and exports as the scalar (OpenShell 0.1.2). The
+// value is the object's key: `binaries: [{path: "**/curl"}]` is the
+// transitional input form of `binaries: ["**/curl"]` (see #8754).
+// normalizeProfileScalarForms rewrites an entry to its scalar only when it
+// is an object holding exactly that key with a string value, so any other
+// object shape still fails the comparison. Add a field here when OpenShell
+// documents another accepted alternative input form.
+var profileScalarObjectForms = map[string]string{
+	"binaries": "path",
+}
+
+// normalizeProfileScalarForms rewrites, in place, the entries of the list
+// fields in profileScalarObjectForms from their accepted object form to the
+// scalar form OpenShell exports.
+func normalizeProfileScalarForms(doc map[string]any) {
+	for field, key := range profileScalarObjectForms {
+		list, ok := doc[field].([]any)
+		if !ok {
+			continue
+		}
+		for i, entry := range list {
+			obj, ok := entry.(map[string]any)
+			if !ok || len(obj) != 1 {
+				continue
+			}
+			if s, ok := obj[key].(string); ok {
+				list[i] = s
+			}
+		}
+	}
+}
+
 // profileContentEqual reports whether the gateway's export of a profile
 // (exported) still carries the content of the local profile YAML document
 // (local). It is driven by the local file, not by knowledge of what OpenShell
@@ -374,6 +408,10 @@ var gatewayDefaultFalseKeys = map[string]bool{
 // a non-zero default; a new non-zero default OpenShell adds fails closed
 // rather than hiding a stale value.
 //
+// Before comparing, list entries written in an accepted alternative input
+// form (profileScalarObjectForms, e.g. `binaries: [{path: X}]`) are rewritten
+// in both documents to the scalar form the export uses.
+//
 // Unparseable input is an error, not a mismatch.
 func profileContentEqual(local, exported []byte) (bool, error) {
 	var localDoc map[string]any
@@ -389,6 +427,10 @@ func profileContentEqual(local, exported []byte) (bool, error) {
 	// file happens to carry a stale copy.
 	delete(localDoc, "resource_version")
 	delete(exportedDoc, "resource_version")
+
+	// Accepted alternative input forms compare as the form the export writes.
+	normalizeProfileScalarForms(localDoc)
+	normalizeProfileScalarForms(exportedDoc)
 
 	// Top-level fields the export fills in with a non-zero default when the
 	// local file omits them. Only the exact default value is tolerated.
