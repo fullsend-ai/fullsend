@@ -7,21 +7,25 @@ What empirical evidence exists for and against granting autonomous merge authori
 - [trustworthiness-evidence.md](trustworthiness-evidence.md) -- the structured portfolio model for composing trust signals
 - [code-review.md](code-review.md) -- review sub-agent decomposition and the confidence problem
 - [human-factors.md](human-factors.md) -- how human oversight effectiveness changes under automation
+- [adaptive-agent-selection.md](adaptive-agent-selection.md) -- fitness-function design for runtime and model configuration choices
+- [testing-agents.md](testing-agents.md) -- behavioral monitoring after instruction, model, or runtime changes
 
 ## The problem
 
 The [autonomy spectrum](autonomy-spectrum.md) defines a graduation model: repos move from human-reviewed to autonomous once they meet readiness criteria. The [trustworthiness evidence](trustworthiness-evidence.md) framework defines *types* of evidence (including configuration health, behavioral evaluation, track record) but not a concrete corpus of observations from real PRs.
 
-Without tracking specific evidence from real review outcomes, autonomy decisions rely on intuition rather than data. This document collects empirical observations from PRs where both agents and humans reviewed the same change, classifying each observation as evidence for or against autonomous review for specific change types.
+Without tracking specific evidence from real review outcomes, autonomy decisions rely on intuition rather than data. This document collects empirical observations from real PRs: agent-vs-human comparisons classified as evidence for or against autonomous review for specific change types, and same-diff comparisons of two review configurations that inform adaptive selection.
 
 The evidence here informs two questions:
 
 1. **Where is the review agent already sufficient?** Change types where agent review consistently matches human review are candidates for reduced oversight.
 2. **Where does the review agent fall short?** Change types where humans consistently find issues the agent misses require continued human review, regardless of other autonomy signals.
 
+A third, distinct question is whether a *change to the review configuration itself* (runtime, model, or sub-agent routing) moved quality. That comparison is two review configurations on the same diff, not agent vs. human, and belongs in its own subsection so it is not mistaken for autonomy-graduation evidence. It is intended as a version-tagged input to [adaptive agent selection](adaptive-agent-selection.md#fitness-function-design).
+
 ## Evidence corpus
 
-Each entry records a PR where agent and human review can be compared, the findings delta, and what the observation implies for autonomy policy.
+Each agent-vs-human entry records a PR where agent and human review can be compared, the findings delta, and what the observation implies for autonomy policy. Same-diff comparisons of two review *configurations* (runtime, model, or sub-agent routing) are recorded separately; they inform adaptive selection, not autonomy graduation.
 
 ### Counter-evidence (agent review insufficient)
 
@@ -119,6 +123,39 @@ The following PRs provide positive evidence that the review agent can match or e
 
 These PRs demonstrate that for simpler, more mechanical changes the review agent's findings align well with -- and in some cases exceed -- human review.
 
+### Runtime and configuration comparison evidence
+
+These entries compare two review configurations on the same diff. They do not speak to agent-vs-human sufficiency and must not be folded into the counter-evidence or positive-evidence tallies above.
+
+#### PR #6935: token-fallback regression test, re-reviewed after a runtime switch
+
+**PR:** [fix(#6932): move seenResult flag after successful unmarshal](https://github.com/fullsend-ai/fullsend/pull/6935)
+**Change type:** One-line production fix in `parseClaudeStream` plus a new regression test (`TestParseClaudeStreamMalformedResultFallsBackToTokensEvent`).
+**Tracking issue:** [#7307](https://github.com/fullsend-ai/fullsend/issues/7307)
+**Diff identity:** The second review's risk-assessment comment confirmed the PR's own files were byte-identical to the prior head SHA; the only intervening change was an unrelated merge commit from main.
+
+| Review | Date | Runtime / model | Effort / cost | Verdict |
+|--------|------|-----------------|---------------|---------|
+| [33688286645](https://github.com/fullsend-ai/fullsend/actions/runs/33688286645) | 2026-09-02 | claude / opus (`claude-opus-4-6`) | high / $2.50 | Looks good to me |
+| [34839926769](https://github.com/fullsend-ai/fullsend/actions/runs/34839926769) | 2026-09-14 | pi / sonnet (`claude-sonnet-5`) with sub-agent decomposition | high / $2.00 | Medium test-adequacy finding |
+
+**Finding the first review missed:** as originally reviewed in PR #6935 (before a follow-up commit corrected it), the new test's fixture summed to `3000+1600+400+100=5100`, which is at or above `tokenThreshold` (5000, `internal/runtime/claude_progress.go`). An incremental `TokensEvent` already satisfied the test's assertions, so the test would still pass if the #6932 bug (`seenResult = true` before a successful unmarshal) were reintroduced. The second review spelled out that arithmetic and the `total > lastEmittedTotal` EOF-fallback condition. A same-branch follow-up commit (`test(#6932): fix fixture so regression test actually exercises deferred TokensEvent`) fixed the hole before merge, so the fixture on `main` today sums to `1000+300+200+50=1550`, kept below `tokenThreshold` so the only `TokensEvent` observed is the deferred one.
+
+**Intervening configuration change:** [PR #7116](https://github.com/fullsend-ai/fullsend/pull/7116) (commit `80dcbef`, merged 2026-09-09) routed `review` (and `code`, `prioritize`) onto the `pi` runtime in `.fullsend/config.yaml`: orchestrator on `sonnet`, correctness/security/challenger on `xai/grok-4.6`, docs-currency/style-conventions on `google-vertex/gemini-3.8-flash`. `fix`/`triage`/`retro` stayed on `claude`/`sonnet`. #7116's merge gates cited local cost-parity and persona-resolution checks; they did not include a review-quality delta against the pre-switch baseline.
+
+**Implication:** A load-bearing config change (which runtime and model review every PR in this repo) shipped without a committed before/after quality measurement -- the gap [adaptive agent selection](adaptive-agent-selection.md) and this corpus are meant to close. The observation itself is that the post-#7116 review caught a real test-adequacy hole the pre-#7116 review missed on a byte-identical diff.
+
+**Confidence:** High for the observation (byte-identical diff plus reviewed arithmetic). Low for generalizing to "pi is better than claude for test-adequacy." N=1 cannot distinguish a genuine runtime/sub-agent effect from ordinary run-to-run verdict variance ([fullsend-ai/agents#1140](https://github.com/fullsend-ai/agents/issues/1140)) or from the second review simply getting a free second look.
+
+#### Re-evaluation checkpoint for PR #7116
+
+Trigger (whichever comes first):
+
+- [ ] 20 subsequent `review` runs on `fullsend-ai/fullsend` whose diffs include a test-adequacy-relevant change (new or modified tests)
+- [ ] 2026-10-15 (30 days after this entry)
+
+When the trigger fires, report whether pi-runtime reviews on this repo show a measurably different test-adequacy catch/miss rate than the pre-#7116 (claude/opus) baseline, and record that result here as a version-tagged data point for [adaptive agent selection](adaptive-agent-selection.md#fitness-function-design). Do not treat the #6935 pair as that measurement.
+
 ## Patterns emerging from the evidence
 
 ### Change types where agents underperform
@@ -167,7 +204,7 @@ Implementing such gates would require:
 2. Integration into the `post-review.sh` downgrade logic, parallel to the existing protected-path check
 3. A mechanism for periodic reassessment as agent capabilities improve
 
-These are not proposed as immediate implementations -- the evidence corpus is still small (3 counter-evidence, 3 positive-evidence data points). As more observations accumulate, the case for or against additional gates will strengthen.
+These are not proposed as immediate implementations -- the agent-vs-human evidence corpus is still small (3 counter-evidence, 3 positive-evidence data points). Runtime-comparison evidence is a separate tally (1 data point, N=1) and is not evidence for or against autonomous merge. As more observations accumulate, the case for or against additional gates will strengthen.
 
 ## Open questions
 
@@ -178,3 +215,4 @@ These are not proposed as immediate implementations -- the evidence corpus is st
 - How should the evidence corpus interact with the [trustworthiness evidence](trustworthiness-evidence.md) portfolio model? Is review delta tracking a sixth evidence type, or a specialization of historical track record?
 - What is the false negative rate for positive evidence? When an agent "matches" human review, how do we know the human did not also miss something?
 - Does the agent's stale-finding repetition (known issue tracked by [#1013](https://github.com/fullsend-ai/fullsend/issues/1013), [#2959](https://github.com/fullsend-ai/fullsend/issues/2959), [#5007](https://github.com/fullsend-ai/fullsend/issues/5007), [#5265](https://github.com/fullsend-ai/fullsend/issues/5265)) contribute to the depth gap by consuming context window with repeated low-value findings?
+- Did the #7116 runtime switch change the false-negative rate on test-adequacy, or is the #6935 pair ordinary re-run variance? The [re-evaluation checkpoint](#re-evaluation-checkpoint-for-pr-7116) defines the sample (20 test-adequacy-relevant review runs or 2026-10-15) after which a catch-rate delta should be recorded as a version-tagged input to [adaptive agent selection](adaptive-agent-selection.md#fitness-function-design).
