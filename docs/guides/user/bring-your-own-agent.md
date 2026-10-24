@@ -504,7 +504,26 @@ Key patterns to note:
 - **`policy: policies/triage.yaml`** is a per-agent policy that includes filesystem, landlock, process, and network rules (via inline `network_policies`). This agent predates the provider-based pattern — new agents can use `providers:` instead (see [Minimum viable agent](#minimum-viable-agent)).
 - **`host_files`** copy credentials from the trusted runner into the sandbox. `expand: true` resolves `${VAR}` references before copying.
 - **`validation_loop.schema`** references the JSON schema file directly — the validation script checks agent output against it.
-- **`overlays`** uses CEL `when` expressions to conditionally apply scripts, skills, providers, openshell, host_files, and env vars. Resolution merges all matching entries in order: every entry whose `when` evaluates to true is applied, with later matches taking precedence over earlier ones. The CEL environment exposes `event` (the triggering event), `runtime.forge` (the effective forge platform), and `config` (per-repo config from config.yaml). When running without an event context (e.g., `fullsend run` or `fullsend lock`), `event` is an empty map — use `has(event.source)` to guard event field access: `has(event.source) && event.source.system == "jira"` instead of just `event.source.system == "jira"` to avoid "no such key" errors.
+- **`overlays`** uses CEL `when` expressions to conditionally set any harness
+  field except `base`, `trigger`, `overlays`, `slug`, `role` and `forge`.
+  Resolution merges all matching entries in order: every entry whose `when`
+  evaluates to true is applied, with later matches taking precedence over
+  earlier ones. The CEL environment exposes `event` (the triggering event),
+  `runtime.forge` (the effective forge platform), and `config` (per-repo config
+  from config.yaml). An entry that sets anything other than `model`, `effort`,
+  `description` or `doc` is guarded: its `when` may read only `runtime.forge`,
+  `config`, the event's trusted fields (`repo`, `source.system`,
+  `entity.source.system`, which no v1 event carries yet, `actor.role`,
+  `state.change_proposal.base_repo` and `is_fork`), `event == null` /
+  `event != null`, and `has()` on a trusted field or a top-level event object,
+  or validation fails naming the field and the offending reference
+  ([ADR 0112](../../ADRs/0112-overlays-may-set-any-harness-field.md);
+  classification tiers in the
+  [field reference](../../contributing/harness-fields.md)). When running
+  without an event context (e.g., `fullsend run` or `fullsend lock`), `event` is
+  `null` and every evaluation error is a non-match. With an event, a missing
+  key is a non-match, and any other evaluation error in an entry that sets a
+  guarded field fails the run.
 - **`common/env/gcp-vertex.env`** is referenced by relative path because both files live in the same repo. If your agent lives in a different repo, reference it by URL (see [Harness Field Reference — Referencing resources](../../reference/harness-reference.md#referencing-resources-local-vs-remote)) or copy it locally.
 
 For the complete list of harness fields, see the [Harness Field Reference](../../reference/harness-reference.md).
@@ -570,7 +589,7 @@ timeout_minutes: 15
 
 Base chains support up to 5 levels (`MaxBaseDepth` in `internal/harness/compose.go`). Circular references are detected and rejected. Resolution order: base chain, child overrides, overlay resolution. See the [Harness Field Reference](../../reference/harness-reference.md#field-merge-rules-for-base-and-overlays) for how each field type combines.
 
-> **Overlay precedence with `base:`:** Overlays are concatenated base-first, child-appended — the same ordering as `plugins`, `providers`, and `api_servers`. Because `ResolveOverlays` merges all matching entries in order (later matches take precedence), child overlay entries override base overlay entries with the same condition. This follows the child-overrides-base convention used by scalar and map merges.
+> **Overlay precedence with `base:`:** Each layer resolves its own overlays before it is merged into the next ([layer-by-layer resolution](../../contributing/harness-composition.md#merge-side-harness-composition)), so a base's matching overlay values become that base's top-level values and the child's own values, including its matching overlays, override them. Within one layer `ResolveOverlays` merges all matching entries in order (later matches take precedence). A base layer's overlay fetch grants (`allowed_remote_resources`, `allow_runtime_fetch`, `max_runtime_fetches`) do not reach the child.
 
 > **Note:** `allowed_remote_resources`, `allow_runtime_fetch`, and `max_runtime_fetches` are NOT inherited from base harnesses — the child must declare its own. This prevents a base harness from injecting arbitrary URL prefixes or enabling runtime fetching in the child.
 

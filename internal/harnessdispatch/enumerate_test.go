@@ -611,3 +611,26 @@ skills:
 	require.NoError(t, err)
 	require.Len(t, out, 1)
 }
+
+// Without an event, a guarded overlay whose when: raises an evaluation error
+// other than a missing key is a non-match, so enumeration keeps the agent
+// (ADR 0112). With an event the same entry fails the run.
+func TestListTriggeredHarnesses_NoEvent_GuardedOverlayNonMissingError(t *testing.T) {
+	dir := t.TempDir()
+	writeHarnessConfig(t, dir, `agent: agents/triage.md
+role: triage
+slug: guarded-overlay-error
+image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
+trigger: 'event.entity.kind == "pr"'
+overlays:
+  - when: 'runtime.forge == "" && int("not a number") > 0'
+    image: ghcr.io/fullsend-ai/fullsend-sandbox-other:latest
+`)
+	dirCfg, err := config.LoadConfig(dir, config.LoadOpts{MissingOK: false})
+	require.NoError(t, err)
+
+	out, err := ListTriggeredHarnesses(context.Background(), dir, dirCfg, nil)
+	require.NoError(t, err)
+	require.Len(t, out, 1, "the agent must still be enumerated")
+	assert.Equal(t, "ghcr.io/fullsend-ai/fullsend-sandbox:latest", out[0].Harness.Image)
+}

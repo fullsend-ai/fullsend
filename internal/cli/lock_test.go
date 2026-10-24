@@ -2060,9 +2060,11 @@ func TestResolveFromLock_PluginRawContentURL(t *testing.T) {
 		},
 	}
 
+	// A base-composed plugin slot holds the cache directory base composition
+	// fetched it into (resolveBasePlugins), not a path the author wrote.
 	h := &harness.Harness{
 		Agent:                  "agents/code.md",
-		Plugins:                []harness.PluginSpec{{Path: "plugins/gopls-lsp"}},
+		Plugins:                []harness.PluginSpec{{Path: filepath.Join(root, ".fullsend-cache", "base", "gopls-lsp")}},
 		AllowedRemoteResources: []string{"https://raw.githubusercontent.com/fullsend-ai/"},
 	}
 
@@ -2601,4 +2603,334 @@ func TestResolveFromLock_ProfileAndProviderReconstruction(t *testing.T) {
 	assert.Equal(t, "my-provider", lockResult.Providers[0].Def.Name)
 	assert.Equal(t, "anthropic", lockResult.Providers[0].Def.Type)
 	require.Len(t, lockResult.Deps, 2)
+}
+
+func TestResolveFromLock_AgentRoutedByOverlay(t *testing.T) {
+	agentContent := []byte("You are a coding agent.")
+	agentHash := fetch.ComputeSHA256(agentContent)
+	root := t.TempDir()
+	require.NoError(t, fetch.CachePut(root, "https://example.com/agents/code.md", agentContent))
+
+	entry := &lock.HarnessLock{
+		Source: "harness/code.yaml",
+		SHA256: "abc",
+		Dependencies: []lock.DependencyEntry{{
+			Field:  "agent",
+			URL:    "https://example.com/agents/code.md",
+			SHA256: agentHash,
+		}},
+	}
+	printer := ui.New(os.Stdout)
+
+	t.Run("different URL is not locked", func(t *testing.T) {
+		h := &harness.Harness{
+			Agent:                  "https://example.com/agents/secure.md",
+			AllowedRemoteResources: []string{"https://example.com/"},
+		}
+		_, err := resolveFromLock(h, entry, root, nil, printer)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not the locked agent")
+		assert.Equal(t, "https://example.com/agents/secure.md", h.Agent, "the routed agent must not be replaced")
+	})
+
+	t.Run("local path is left alone", func(t *testing.T) {
+		h := &harness.Harness{
+			Agent:                  "agents/secure.md",
+			AllowedRemoteResources: []string{"https://example.com/"},
+		}
+		_, err := resolveFromLock(h, entry, root, nil, printer)
+		require.NoError(t, err)
+		assert.Equal(t, "agents/secure.md", h.Agent)
+	})
+}
+
+// fullsend lock composes without an event, so a guarded overlay keyed on the
+// event is a non-match there: the lock is written from the top-level values and the
+// overlay's field is not applied (ADR 0112).
+func TestRunLock_EventGuardedOverlayIsNonMatch(t *testing.T) {
+	agentContent := []byte("You are a coding agent.")
+	agentHash := fetch.ComputeSHA256(agentContent)
+	policyContent := []byte("sandbox: strict")
+	policyHash := fetch.ComputeSHA256(policyContent)
+
+	srv, policy := newLockTestServer(t, map[string][]byte{
+		"/agents/code.md":        agentContent,
+		"/policies/sandbox.yaml": policyContent,
+	})
+
+	dir := setupLockTestDir(t, srv, agentHash, policyHash)
+	harnessContent := fmt.Sprintf(`agent: "%s/agents/code.md#sha256=%s"
+role: test
+image: base:latest
+policy: "%s/policies/sandbox.yaml#sha256=%s"
+allowed_remote_resources:
+  - "%s/"
+overlays:
+  - when: 'event.repo == "org/x"'
+    image: overlay:latest
+`, srv.URL, agentHash, srv.URL, policyHash, srv.URL)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "code.yaml"), []byte(harnessContent), 0o644))
+
+	fetch.DefaultPolicy = policy
+	defer func() { fetch.DefaultPolicy = fetch.FetchPolicy{} }()
+
+	printer := ui.New(os.Stdout)
+	res, err := lockOneAgent(context.Background(), "code", dir, "", false, &lock.LockFile{}, resolveFlags{}, printer)
+	require.NoError(t, err, "a guarded overlay that cannot evaluate without an event must not fail the lock")
+	require.NotNil(t, res)
+	require.Len(t, res.harnessLock.Dependencies, 2, "the top-level agent and policy are recorded")
+	assert.Equal(t, "agent", res.harnessLock.Dependencies[0].Field)
+	assert.Equal(t, srv.URL+"/agents/code.md", res.harnessLock.Dependencies[0].URL)
+}
+
+func TestResolveFromLock_AgentPinMismatchLeavesHarnessUnchanged(t *testing.T) {
+	agentContent := []byte("You are a coding agent.")
+	agentHash := fetch.ComputeSHA256(agentContent)
+	policyContent := []byte("sandbox: strict")
+	policyHash := fetch.ComputeSHA256(policyContent)
+	root := t.TempDir()
+	require.NoError(t, fetch.CachePut(root, "https://example.com/agents/code.md", agentContent))
+	require.NoError(t, fetch.CachePut(root, "https://example.com/policies/sandbox.yaml", policyContent))
+
+	entry := &lock.HarnessLock{
+		Source: "harness/code.yaml",
+		SHA256: "abc",
+		Dependencies: []lock.DependencyEntry{
+			{Field: "policy", URL: "https://example.com/policies/sandbox.yaml", SHA256: policyHash},
+			{Field: "agent", URL: "https://example.com/agents/code.md", SHA256: agentHash},
+		},
+	}
+	otherPin := strings.Repeat("b", 64)
+	h := &harness.Harness{
+		Agent:                  "https://example.com/agents/code.md#sha256=" + otherPin,
+		Policy:                 "https://example.com/policies/sandbox.yaml#sha256=" + policyHash,
+		AllowedRemoteResources: []string{"https://example.com/"},
+	}
+
+	_, err := resolveFromLock(h, entry, root, nil, ui.New(os.Stdout))
+	require.Error(t, err, "the same URL under a different integrity pin is not the locked agent")
+	assert.Contains(t, err.Error(), "not the locked agent")
+	assert.Equal(t, "https://example.com/policies/sandbox.yaml#sha256="+policyHash, h.Policy,
+		"no mutation is applied before the agent check fails")
+}
+
+// A URL agent the lock has no agent entry for (an overlay that did not match
+// at lock time routed a local-agent harness to it) is not locked: replay must
+// fail so the caller falls back, rather than hand the unfetched URL on.
+func TestResolveFromLock_RoutedAgentWithoutLockEntryFallsBack(t *testing.T) {
+	policyContent := []byte("sandbox: strict")
+	policyHash := fetch.ComputeSHA256(policyContent)
+	root := t.TempDir()
+	require.NoError(t, fetch.CachePut(root, "https://example.com/policies/sandbox.yaml", policyContent))
+
+	entry := &lock.HarnessLock{
+		Source:       "harness/code.yaml",
+		SHA256:       "abc",
+		Dependencies: []lock.DependencyEntry{{Field: "policy", URL: "https://example.com/policies/sandbox.yaml", SHA256: policyHash}},
+	}
+	h := &harness.Harness{
+		Agent:                  "https://example.com/agents/secure.md#sha256=" + strings.Repeat("c", 64),
+		Policy:                 "https://example.com/policies/sandbox.yaml#sha256=" + policyHash,
+		AllowedRemoteResources: []string{"https://example.com/"},
+	}
+
+	_, err := resolveFromLock(h, entry, root, nil, ui.New(os.Stdout))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not the locked agent")
+	assert.Equal(t, "https://example.com/policies/sandbox.yaml#sha256="+policyHash, h.Policy, "no mutation is applied")
+}
+
+// lockPluginFixture caches a one-file plugin tree at url and returns its lock
+// entry and tree hash.
+func lockPluginFixture(t *testing.T, root, url string) (lock.DependencyEntry, string) {
+	t.Helper()
+	files := map[string][]byte{"index.ts": []byte("export default () => {}")}
+	treeHash := fetch.ComputeTreeHash(files)
+	_, err := fetch.CachePutDir(root, url, files)
+	require.NoError(t, err)
+	return lock.DependencyEntry{
+		Field:  "plugins[0]",
+		URL:    url,
+		SHA256: treeHash,
+		Type:   "directory",
+		Files:  []lock.FileEntry{{Path: "index.ts", SHA256: fetch.ComputeSHA256(files["index.ts"])}},
+	}, treeHash
+}
+
+// The same plugin URL under a different integrity pin is not the locked
+// plugin, and an overlay-selected URL plugin the lock never recorded is not
+// either: both fail before any mutation so the caller falls back.
+func TestResolveFromLock_UnlockedPluginRefused(t *testing.T) {
+	root := t.TempDir()
+	pluginURL := "https://github.com/acme/plugins/tree/main/pi-fff"
+	dep, _ := lockPluginFixture(t, root, pluginURL)
+	entry := &lock.HarnessLock{Dependencies: []lock.DependencyEntry{dep}}
+
+	cases := map[string]struct{ path, want string }{
+		"different pin": {pluginURL + "#sha256=" + strings.Repeat("d", 64), "pinned to a different tree"},
+		"not recorded":  {"https://github.com/acme/plugins/tree/main/other", "has no entry in the lock file"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			h := &harness.Harness{
+				Agent:                  "agents/code.md",
+				Plugins:                []harness.PluginSpec{{Path: tc.path}},
+				AllowedRemoteResources: []string{"https://github.com/acme/"},
+			}
+			_, err := resolveFromLock(h, entry, root, nil, ui.New(os.Stdout))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+			assert.Equal(t, tc.path, h.Plugins[0].Path, "the harness is unchanged")
+		})
+	}
+}
+
+// An overlay that adds plugins after lock time (here a local plugin) shifts the
+// plugin indexes after lock time, and a path the author wrote may share the
+// locked plugin's name. Replay must not write the locked plugin into a slot
+// that does not hold it: the other entry keeps its path and options, and a
+// URL entry for the locked plugin is resolved by identity.
+func TestResolveFromLock_PluginSlotNotOverwritten(t *testing.T) {
+	pluginURL := "https://github.com/acme/plugins/tree/main/pi-fff"
+	cases := map[string]struct {
+		plugins func(pin string) []harness.PluginSpec
+		wantURL bool
+	}{
+		"overlay plugin shifts the URL plugin": {
+			plugins: func(pin string) []harness.PluginSpec {
+				return []harness.PluginSpec{{Path: "plugins/scan", Env: map[string]string{"KEEP": "1"}}, {Path: pluginURL + pin}}
+			},
+			wantURL: true,
+		},
+		"same-named vendored plugin shifts the URL plugin": {
+			plugins: func(pin string) []harness.PluginSpec {
+				return []harness.PluginSpec{{Path: "vendor/pi-fff", Env: map[string]string{"KEEP": "1"}}, {Path: pluginURL + pin}}
+			},
+			wantURL: true,
+		},
+		"same-named vendored plugin, no URL entry": {
+			plugins: func(string) []harness.PluginSpec {
+				return []harness.PluginSpec{{Path: "vendor/pi-fff", Env: map[string]string{"KEEP": "1"}}}
+			},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			dep, treeHash := lockPluginFixture(t, root, pluginURL)
+			want := tc.plugins("#sha256=" + treeHash)
+			h := &harness.Harness{
+				Agent:                  "agents/code.md",
+				Plugins:                tc.plugins("#sha256=" + treeHash),
+				AllowedRemoteResources: []string{"https://github.com/acme/"},
+			}
+
+			_, err := resolveFromLock(h, &lock.HarnessLock{Dependencies: []lock.DependencyEntry{dep}}, root, nil, ui.New(os.Stdout))
+			require.NoError(t, err)
+			require.Len(t, h.Plugins, len(want))
+			assert.Equal(t, want[0].Path, h.Plugins[0].Path, "the other entry keeps its slot")
+			assert.Equal(t, map[string]string{"KEEP": "1"}, h.Plugins[0].Env)
+			if tc.wantURL {
+				assert.False(t, harness.IsURL(h.Plugins[1].Path), "the shifted URL plugin is resolved by identity")
+				assert.Equal(t, "pi-fff", filepath.Base(h.Plugins[1].Path))
+			}
+		})
+	}
+}
+
+// One agent entry replays: for a URL agent the entry for its URL (a URL
+// base's relative agent is recorded first), and for a base-composed agent the
+// entry whose sha256 names its cache directory. A base-composed agent whose
+// content no entry records (a URL-sourced child's own agent, or a base agent
+// that changed upstream since the lock) falls back.
+func TestResolveFromLock_AgentEntrySelection(t *testing.T) {
+	baseURL := "https://raw.githubusercontent.com/acme/base/abc/agents/shared.md"
+	childURL := "https://example.com/agents/code.md"
+	baseContent, childContent := []byte("BASE AGENT"), []byte("CHILD AGENT")
+	setup := func(t *testing.T) (string, []lock.DependencyEntry) {
+		root := t.TempDir()
+		require.NoError(t, fetch.CachePut(root, baseURL, baseContent))
+		require.NoError(t, fetch.CachePut(root, childURL, childContent))
+		return root, []lock.DependencyEntry{
+			{Field: "agent", URL: baseURL, SHA256: fetch.ComputeSHA256(baseContent)},
+			{Field: "agent", URL: childURL, SHA256: fetch.ComputeSHA256(childContent)},
+		}
+	}
+	replay := func(t *testing.T, root, agent string, deps []lock.DependencyEntry) (*harness.Harness, error) {
+		h := &harness.Harness{Agent: agent, AllowedRemoteResources: []string{"https://example.com/", "https://raw.githubusercontent.com/acme/"}}
+		_, err := resolveFromLock(h, &lock.HarnessLock{Dependencies: deps}, root, nil, ui.New(os.Stdout))
+		return h, err
+	}
+	// composedAt is where base composition puts an agent with this content:
+	// a link inside the content's sha256 directory.
+	composedAt := func(t *testing.T, root string, content []byte) string {
+		dir, err := fetch.CachePath(root, fetch.ComputeSHA256(content))
+		require.NoError(t, err)
+		return filepath.Join(dir, "content.md")
+	}
+	agentContent := func(t *testing.T, h *harness.Harness) []byte {
+		got, err := os.ReadFile(h.Agent)
+		require.NoError(t, err)
+		return got
+	}
+
+	t.Run("URL agent replays its own entry, not the first", func(t *testing.T) {
+		root, deps := setup(t)
+		h, err := replay(t, root, childURL+"#sha256="+fetch.ComputeSHA256(childContent), deps)
+		require.NoError(t, err)
+		assert.Equal(t, childContent, agentContent(t, h))
+	})
+	t.Run("base-composed agent among several entries replays its own", func(t *testing.T) {
+		root, deps := setup(t)
+		h, err := replay(t, root, composedAt(t, root, childContent), deps)
+		require.NoError(t, err)
+		assert.Equal(t, childContent, agentContent(t, h))
+	})
+	t.Run("base-composed agent no entry records falls back", func(t *testing.T) {
+		root, deps := setup(t)
+		_, err := replay(t, root, composedAt(t, root, []byte("URL-SOURCED CHILD AGENT")), deps[:1])
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not the locked agent")
+	})
+}
+
+// lockedBasePluginSlot accepts only a base-composed cache slot named for the
+// locked plugin, and only when no URL entry for that plugin is in the list.
+func TestLockedBasePluginSlot(t *testing.T) {
+	root := t.TempDir()
+	lockedURL := "https://github.com/acme/plugins/tree/main/pi-fff"
+	localPath := filepath.Join(root, ".fullsend-cache", "resources", "sha256", strings.Repeat("a", 64), "pi-fff")
+	cacheSlot := filepath.Join(root, ".fullsend-cache", "resources", "sha256", strings.Repeat("b", 64), "pi-fff")
+	otherSlot := filepath.Join(root, ".fullsend-cache", "resources", "sha256", strings.Repeat("b", 64), "pi-scan")
+	cases := map[string]struct {
+		plugins []harness.PluginSpec
+		want    bool
+	}{
+		"cache slot for the locked plugin":          {[]harness.PluginSpec{{Path: cacheSlot}}, true},
+		"cache slot for another plugin":             {[]harness.PluginSpec{{Path: otherSlot}}, false},
+		"author-written path of the same name":      {[]harness.PluginSpec{{Path: "vendor/pi-fff"}}, false},
+		"URL entry for the locked plugin elsewhere": {[]harness.PluginSpec{{Path: cacheSlot}, {Path: lockedURL + "#sha256=" + strings.Repeat("c", 64)}}, false},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, tc.want, lockedBasePluginSlot(tc.plugins, 0, lockedURL, localPath, root))
+		})
+	}
+}
+
+// A base-composed agent is left alone when the lock records no agent entry at
+// all: only a lock that records agents can say this one is not among them.
+func TestResolveFromLock_CachePathAgentWithoutAgentEntries(t *testing.T) {
+	root := t.TempDir()
+	pluginURL := "https://github.com/acme/plugins/tree/main/pi-fff"
+	dep, treeHash := lockPluginFixture(t, root, pluginURL)
+	agent := filepath.Join(root, ".fullsend-cache", "resources", "sha256", strings.Repeat("e", 64), "content.md")
+	h := &harness.Harness{
+		Agent:                  agent,
+		Plugins:                []harness.PluginSpec{{Path: pluginURL + "#sha256=" + treeHash}},
+		AllowedRemoteResources: []string{"https://github.com/acme/"},
+	}
+	_, err := resolveFromLock(h, &lock.HarnessLock{Dependencies: []lock.DependencyEntry{dep}}, root, nil, ui.New(os.Stdout))
+	require.NoError(t, err)
+	assert.Equal(t, agent, h.Agent)
 }

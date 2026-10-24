@@ -21,6 +21,17 @@ Date: 2026-10-01
 
 Accepted
 
+> **Update (2026-10-25, implementation of Decisions 1 and 2):** Among the
+> details that differ from the text below: an overlay applies
+> `allowed_remote_resources`, `allow_runtime_fetch` and `max_runtime_fetches`,
+> which base composition never passes to a child, because within one harness
+> they are the same author's and, as guarded fields, follow trusted facts
+> only. The guard also admits `event == null` (equivalent to negating
+> `event != null`) and `has()` on a trusted field. A nil event is CEL `null`.
+> The
+> [Harness Field Reference](../contributing/harness-fields.md#guarded-fields)
+> describes the implemented rules.
+
 <!-- ADRs are point-in-time records, but not fully frozen after acceptance.
      Minor annotations are welcome: cross-references to related ADRs, short
      notes linking to newer decisions, or clarifying remarks. However, do not

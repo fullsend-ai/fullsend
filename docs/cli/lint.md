@@ -47,9 +47,18 @@ Each enabled `agents:` entry is resolved and composed through the same machinery
 Diagnostics for an override-only entry come from the upstream harness, not from your
 `config.yaml`, so you cannot fix them in this repository.
 
-Disabled agents (`enabled: false`) are skipped. Overlay `when` expressions evaluate
-against an empty event with `runtime.forge` and `config` available, like other CLI
-flows without event context.
+Disabled agents (`enabled: false`) are skipped. Overlay `when` expressions
+evaluate with no event (`event` is CEL `null`) and with `runtime.forge` and
+`config` available, like other CLI flows without event context; see the
+[field reference](../contributing/harness-fields.md#resolution-pipeline).
+So a URL agent, plugin, skill or provider that only an overlay keyed on the
+event (or on `runtime.forge` when no platform is known) selects is not part
+of the harness `lint` checks: `lint` checks neither its
+`allowed_remote_resources` coverage nor its files. Loading still rejects such
+a URL without a `#sha256=` pin, and a plugin URL of an unsupported shape;
+`fullsend run` checks the rest. An overlay's own
+`allowed_remote_resources` entries are checked against `config.yaml`'s at
+load, in `lint` as in `fullsend run`.
 
 ## Path and file validation
 

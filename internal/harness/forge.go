@@ -1,13 +1,18 @@
 package harness
 
 import (
+	"cmp"
 	"fmt"
 	"log"
+	"maps"
+	"reflect"
+	"slices"
 	"sort"
 	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/google/cel-go/common/types"
+	"gopkg.in/yaml.v3"
 )
 
 // ForgeConfig holds platform-specific harness configuration.
@@ -28,16 +33,98 @@ type ForgeConfig struct {
 	Env            *EnvConfig        `yaml:"env,omitempty"`
 }
 
-// OverlayEntry is a CEL-guarded conditional config block (ADR 0088).
-// Each entry carries a CEL expression in When and the same override fields
-// as ForgeConfig. All entries whose When evaluates to true are merged
-// into the harness in order (later matches override earlier matches).
-// The When expression is evaluated against the overlay CEL environment:
-// event (normevent map), runtime.forge (platform string), and config
-// (per-repo config map).
+// OverlayFields holds the harness fields an overlay may set beyond ForgeConfig
+// (ADR 0112 Decision 1). OverlayFields, ForgeConfig and excludedOverlayKeys
+// together cover every Harness YAML key; TestOverlayFields_EveryHarnessFieldHasOneHome
+// fails when a new Harness field is placed in none of them.
+type OverlayFields struct {
+	Agent                  string            `yaml:"agent,omitempty"`
+	Doc                    string            `yaml:"doc,omitempty"`
+	Description            string            `yaml:"description,omitempty"`
+	Image                  string            `yaml:"image,omitempty"`
+	Plugins                []PluginSpec      `yaml:"plugins,omitempty"`
+	APIServers             []APIServer       `yaml:"api_servers,omitempty"`
+	Model                  string            `yaml:"model,omitempty"`
+	Effort                 string            `yaml:"effort,omitempty"`
+	PrivilegeLevels        map[string]string `yaml:"privilege_levels,omitempty"`
+	AgentInput             string            `yaml:"agent_input,omitempty"`
+	TimeoutMinutes         int               `yaml:"timeout_minutes,omitempty"`
+	SandboxTimeoutSeconds  int               `yaml:"sandbox_timeout_seconds,omitempty"`
+	Security               *SecurityConfig   `yaml:"security,omitempty"`
+	ReadonlyRepo           bool              `yaml:"readonly_repo,omitempty"`
+	AllowRuntimeFetch      bool              `yaml:"allow_runtime_fetch,omitempty"`
+	MaxRuntimeFetches      *int              `yaml:"max_runtime_fetches,omitempty"`
+	AllowedRemoteResources []string          `yaml:"allowed_remote_resources,omitempty"`
+}
+
+// OverlayEntry is a CEL-guarded conditional config block (ADR 0088, 0112).
+// Each entry carries a CEL expression in When and override fields from both
+// ForgeConfig and OverlayFields. All entries whose When evaluates to true
+// are merged into the harness in order (later matches override earlier
+// matches). The When expression is evaluated against the overlay CEL
+// environment: event (normevent map), runtime.forge (platform string),
+// and config (per-repo config map).
 type OverlayEntry struct {
-	When        string `yaml:"when"`
-	ForgeConfig `yaml:",inline"`
+	When          string `yaml:"when"`
+	ForgeConfig   `yaml:",inline"`
+	OverlayFields `yaml:",inline"`
+	excludedKeys  []string `yaml:"-"`
+}
+
+// excludedOverlayKeys are harness fields that may not appear in an overlay
+// because they govern how a harness is found, composed, or dispatched.
+var excludedOverlayKeys = map[string]bool{
+	"base": true, "trigger": true, "overlays": true,
+	"slug": true, "role": true, "forge": true,
+}
+
+// unguardedOverlayKeys are overlay-settable fields that do not require a
+// trusted when: expression (ADR 0112 Decision 2).
+var unguardedOverlayKeys = map[string]bool{
+	"model": true, "effort": true, "description": true, "doc": true,
+}
+
+// UnmarshalYAML decodes an overlay entry and detects excluded keys that
+// arrive through YAML merge keys, aliases, or tagged keys.
+func (oe *OverlayEntry) UnmarshalYAML(node *yaml.Node) error {
+	type plain OverlayEntry
+	if err := node.Decode((*plain)(oe)); err != nil {
+		return err
+	}
+	var raw map[string]yaml.Node
+	if err := node.Decode(&raw); err != nil {
+		return err
+	}
+	for key := range raw {
+		if excludedOverlayKeys[key] {
+			oe.excludedKeys = append(oe.excludedKeys, key)
+		}
+	}
+	// Map order is random; the error message must not depend on it.
+	sort.Strings(oe.excludedKeys)
+	return nil
+}
+
+// guardedFields returns the names of the guarded fields this overlay entry
+// sets: every ForgeConfig and OverlayFields field with a non-zero value
+// except the unguarded ones (ADR 0112 Decision 2). A field added to either
+// struct is guarded unless it is listed in unguardedOverlayKeys.
+func (oe *OverlayEntry) guardedFields() []string {
+	var out []string
+	for _, rv := range []reflect.Value{reflect.ValueOf(oe.ForgeConfig), reflect.ValueOf(oe.OverlayFields)} {
+		rt := rv.Type()
+		for i := 0; i < rt.NumField(); i++ {
+			f := rt.Field(i)
+			name := strings.Split(f.Tag.Get("yaml"), ",")[0]
+			if name == "-" || unguardedOverlayKeys[name] {
+				continue
+			}
+			if !rv.Field(i).IsZero() {
+				out = append(out, name)
+			}
+		}
+	}
+	return out
 }
 
 var validForgeKeys = map[string]bool{
@@ -233,9 +320,23 @@ func validateValidationLoop(prefix string, vl *ValidationLoop, inheritScript boo
 }
 
 // validateOverlays checks that the overlays section is well-formed:
-// mutual exclusion with forge, CEL expression compilation, and
-// ForgeConfig field validation per entry.
+// mutual exclusion with forge, excluded-key detection, trusted-field
+// guard for guarded fields, CEL expression compilation, and ForgeConfig
+// field validation per entry. It knows no org allowlist, so any overlay
+// allowed_remote_resources entry is refused; Validate and LoadWithOpts call
+// it, and the LoadWithBase sites call validateOverlaysWith with the
+// config-level list.
 func (h *Harness) validateOverlays() error {
+	return h.validateOverlaysWith(nil)
+}
+
+// validateOverlaysWith is validateOverlays given the config-level
+// allowed_remote_resources, which bounds every prefix an overlay adds to
+// allowed_remote_resources: the fetch service authorizes runtime fetches
+// against the merged list, so an overlay may widen it only within what the
+// config allows. Within that bound an overlay's list never authorizes a URL
+// the config-level list does not.
+func (h *Harness) validateOverlaysWith(orgAllowlist []string) error {
 	if len(h.Overlays) == 0 {
 		return nil
 	}
@@ -247,7 +348,19 @@ func (h *Harness) validateOverlays() error {
 		// for a one-time migration scenario.
 		return fmt.Errorf("forge and overlays cannot coexist in the same harness; migrate forge entries to overlays")
 	}
+	// A probe without any overlay tells whether the top-level values already
+	// fail the overlay-settable checks; then the per-entry probe below would
+	// only misattribute that to an overlay, so no entry is probed. Validate
+	// reports the top-level value, unless a matching overlay replaces it.
+	// Known limitation: in that case a non-matching entry's values go
+	// unchecked on this load; they are checked on any load where the top
+	// level is valid.
+	topLevelOK := h.overlayProbe(nil).validateOverlaySettable() == nil
 	for i, entry := range h.Overlays {
+		if len(entry.excludedKeys) > 0 {
+			return fmt.Errorf("overlays[%d]: %s cannot be set in an overlay (base, trigger, overlays, slug, role and forge decide how a harness is found, composed or dispatched)", i, quotedKeys(entry.excludedKeys))
+		}
+
 		when := strings.TrimSpace(entry.When)
 		if when == "" {
 			return fmt.Errorf("overlays[%d].when is required", i)
@@ -263,6 +376,25 @@ func (h *Harness) validateOverlays() error {
 		if !ast.OutputType().IsExactType(types.BoolType) {
 			return fmt.Errorf("overlays[%d].when must evaluate to bool, got %v", i, ast.OutputType())
 		}
+
+		if guarded := entry.guardedFields(); len(guarded) > 0 {
+			if ref, ok := guardedOverlayWhenTrusted(ast); !ok {
+				return fmt.Errorf("overlays[%d].when must read only trusted facts (runtime.forge, config and the trusted event fields) because the entry sets guarded %s; %q is not trusted", i, quotedKeys(guarded), ref)
+			}
+		}
+
+		if len(entry.AllowedRemoteResources) > 0 {
+			grant := &Harness{AllowedRemoteResources: entry.AllowedRemoteResources}
+			if err := grant.ValidateAllowedRemoteResources(orgAllowlist); err != nil {
+				return fmt.Errorf("overlays[%d]: %w", i, err)
+			}
+		}
+		if topLevelOK {
+			if err := h.overlayProbe(&entry.OverlayFields).validateOverlaySettable(); err != nil {
+				return fmt.Errorf("overlays[%d]: merged with the top-level values: %w", i, err)
+			}
+		}
+
 		fc := entry.ForgeConfig
 		inheritScript := h.ValidationLoop != nil && h.ValidationLoop.Script != ""
 		if err := validateOverlayForgeConfigInherit(i, &fc, inheritScript); err != nil {
@@ -272,55 +404,128 @@ func (h *Harness) validateOverlays() error {
 	return nil
 }
 
+// overlayProbe returns a copy of h with, when of is non-nil, that overlay's
+// OverlayFields merged in, so the merged values can be validated without
+// touching h. The checks it feeds read only top-level fields.
+func (h *Harness) overlayProbe(of *OverlayFields) *Harness {
+	probe := *h
+	if of != nil {
+		// mergeOverlayFields writes into the map; the lists it merges are new.
+		probe.PrivilegeLevels = maps.Clone(h.PrivilegeLevels)
+		mergeOverlayFields(&probe, of)
+	}
+	return &probe
+}
+
 // ResolveOverlays evaluates each overlay's When expression against the
 // overlay CEL environment (event, runtime.forge, config) and merges all
 // matching entries into the harness in order (later matches take
 // precedence over earlier matches). After resolution, h.Overlays is set
 // to nil (consumed). When h.Overlays is empty, this is a no-op. When
-// event is nil, an empty map is passed to CEL so overlays conditioned
-// only on runtime.forge or config can still match (e.g., CLI run/lock
-// flows that don't have an event context).
+// event is nil (CLI run/lock flows and dispatch enumeration without an
+// event context), CEL sees `event` as null: overlays conditioned only on
+// runtime.forge or config still match, `event != null` does not, has()
+// on an event field is false, an overlay that selects an event field or
+// uses event as a map does not match, and a comparison with a map changes
+// result (`event != {}` is true).
 //
-// CEL evaluation errors are treated as non-matching: the error is logged
-// and evaluation continues to the next entry. This matches the
-// MatchHarnesses pattern in harnessdispatch/enumerate.go and ensures that
-// a more-specific overlay (e.g., event.source.system == "jira" &&
-// runtime.forge == "github") that fails on key access when event is empty
-// does not prevent a broader fallback overlay from matching.
+// An evaluation error is classified by context (ADR 0112 Decision 2):
+// with no event every error is a non-match; with an event a missing key
+// ("no such key") is a non-match; any other error fails the run when the
+// entry sets a guarded field and is logged as a non-match otherwise. The
+// log-and-continue branches match the MatchHarnesses pattern in
+// harnessdispatch/enumerate.go, so a more-specific overlay that cannot
+// evaluate does not stop a broader fallback overlay from matching.
 func (h *Harness) ResolveOverlays(event map[string]any, forgePlatform string, config map[string]any) error {
 	if len(h.Overlays) == 0 {
 		h.Overlays = nil
 		return nil
 	}
-	// Use empty map if event is nil so overlays conditioned on runtime.forge
-	// or config can still evaluate and match (CLI paths without event context).
-	if event == nil {
-		event = make(map[string]any)
-	}
+	hasEvent := event != nil
 	for i, entry := range h.Overlays {
 		matched, err := EvaluateOverlay(entry.When, event, forgePlatform, config)
 		if err != nil {
-			// Intentional exception to the harness package's return-errors
-			// convention: CEL evaluation errors are logged and treated as
-			// non-matching, allowing evaluation to continue to the next
-			// entry. This matches the MatchHarnesses pattern in
-			// harnessdispatch/enumerate.go and enables fallback overlays
-			// to match when a more-specific overlay errors (e.g.,
-			// "event.source.system == 'jira'" fails with "no such key:
-			// source" when event is empty). Validation catches malformed
-			// CEL expressions at load time; runtime errors here are
-			// typically data-dependent (missing event keys) and should
-			// not prevent the harness from loading.
-			log.Printf("harness: overlay[%d].when eval failed: %v", i, err)
+			if !hasEvent {
+				log.Printf("harness: overlay[%d].when eval failed (no event, non-match): %v", i, err)
+				continue
+			}
+			if overlayMissingKey(err) {
+				log.Printf("harness: overlay[%d].when eval failed (missing key, non-match): %v", i, err)
+				continue
+			}
+			guarded := entry.guardedFields()
+			if len(guarded) > 0 {
+				return fmt.Errorf("overlays[%d].when: %w", i, err)
+			}
+			log.Printf("harness: overlay[%d].when eval failed (unguarded, non-match): %v", i, err)
 			continue
 		}
 		if matched {
 			fc := entry.ForgeConfig
 			mergeForgeConfig(h, &fc)
+			of := entry.OverlayFields
+			mergeOverlayFields(h, &of)
 		}
 	}
 	h.Overlays = nil
 	return nil
+}
+
+// mergeOverlayFields applies a matching overlay's OverlayFields onto the
+// harness with mergeBaseIntoChild's rules, the overlay standing in the child
+// position: a non-zero scalar replaces, lists concatenate, maps merge with
+// the overlay's keys winning, a non-nil security block replaces the whole
+// top-level block, and nothing is ever cleared. Unlike base composition it
+// does apply allowed_remote_resources, allow_runtime_fetch and
+// max_runtime_fetches: a child must not inherit a base's fetch grants, but an
+// overlay is the same harness author's and, as guarded fields, these follow
+// trusted facts only. It also applies readonly_repo, which base composition
+// drops (#7360). The guard itself is ADR 0112 Decision 2.
+func mergeOverlayFields(h *Harness, of *OverlayFields) {
+	h.Agent = cmp.Or(of.Agent, h.Agent)
+	h.Doc = cmp.Or(of.Doc, h.Doc)
+	h.Description = cmp.Or(of.Description, h.Description)
+	h.Image = cmp.Or(of.Image, h.Image)
+	h.Model = cmp.Or(of.Model, h.Model)
+	h.Effort = cmp.Or(of.Effort, h.Effort)
+	h.AgentInput = cmp.Or(of.AgentInput, h.AgentInput)
+	h.TimeoutMinutes = cmp.Or(of.TimeoutMinutes, h.TimeoutMinutes)
+	h.SandboxTimeoutSeconds = cmp.Or(of.SandboxTimeoutSeconds, h.SandboxTimeoutSeconds)
+	h.ReadonlyRepo = h.ReadonlyRepo || of.ReadonlyRepo
+	h.AllowRuntimeFetch = h.AllowRuntimeFetch || of.AllowRuntimeFetch
+	if of.MaxRuntimeFetches != nil {
+		h.MaxRuntimeFetches = of.MaxRuntimeFetches
+	}
+	if of.Plugins != nil {
+		h.Plugins = slices.Concat(h.Plugins, of.Plugins)
+	}
+	if of.APIServers != nil {
+		h.APIServers = slices.Concat(h.APIServers, of.APIServers)
+	}
+	if of.AllowedRemoteResources != nil {
+		h.AllowedRemoteResources = slices.Concat(h.AllowedRemoteResources, of.AllowedRemoteResources)
+	}
+	if of.PrivilegeLevels != nil {
+		if h.PrivilegeLevels == nil {
+			h.PrivilegeLevels = make(map[string]string, len(of.PrivilegeLevels))
+		}
+		maps.Copy(h.PrivilegeLevels, of.PrivilegeLevels)
+	}
+	if of.Security != nil {
+		h.Security = of.Security
+	}
+}
+
+// quotedKeys renders sorted keys as `key "a"` or `keys "a", "b"`.
+func quotedKeys(keys []string) string {
+	quoted := make([]string, len(keys))
+	for i, k := range keys {
+		quoted[i] = fmt.Sprintf("%q", k)
+	}
+	if len(keys) == 1 {
+		return "key " + quoted[0]
+	}
+	return "keys " + strings.Join(quoted, ", ")
 }
 
 // ResolveForge merges forge-specific overrides into the harness in place.

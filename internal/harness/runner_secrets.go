@@ -87,11 +87,13 @@ func overlayGuardReadsOnlyForgeOrConfig(when string) bool {
 		case celast.SelectKind:
 			sel := e.AsSelect()
 			op := sel.Operand()
-			if op.Kind() == celast.IdentKind && op.AsIdent() == "runtime" && sel.FieldName() == "forge" && !sel.IsTestOnly() {
+			if op.Kind() == celast.IdentKind && isOverlayRootIdent(op.AsIdent(), "runtime") && sel.FieldName() == "forge" && !sel.IsTestOnly() {
 				forgeOperand[op.ID()] = true
 			}
 		case celast.IdentKind:
-			switch e.AsIdent() {
+			// A leading dot names the global when a comprehension variable
+			// shadows it (isOverlayRootIdent).
+			switch strings.TrimPrefix(e.AsIdent(), ".") {
 			case "event":
 				ok = false
 			case "runtime":

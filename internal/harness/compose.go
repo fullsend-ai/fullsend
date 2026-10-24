@@ -80,9 +80,9 @@ type ComposeOpts struct {
 	SourceURL string
 
 	// Event is the normalized event data for CEL overlay resolution (ADR 0088).
-	// When nil, ResolveOverlays substitutes an empty map so overlays conditioned
-	// on runtime.forge or config can still evaluate and match (CLI flows without
-	// event context).
+	// When nil (CLI flows without event context), overlays see `event` as CEL
+	// null: those conditioned on runtime.forge or config still match, and any
+	// evaluation error is a non-match.
 	Event map[string]any
 
 	// Config is the per-repo config (from config.yaml) exposed to overlay
@@ -136,6 +136,11 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 	child, err := LoadRaw(path)
 	if err != nil {
 		return nil, nil, err
+	}
+	if opts.SourceURL != "" {
+		if err := RefuseURLOverlayPaths(child, opts.SourceURL); err != nil {
+			return nil, nil, fmt.Errorf("invalid harness: %w", err)
+		}
 	}
 
 	// A local harness's relative skill paths are resolved against the
@@ -196,10 +201,10 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 		if err := child.validateForge(); err != nil {
 			return nil, nil, fmt.Errorf("invalid harness: %w", err)
 		}
-		if err := child.validateOverlays(); err != nil {
+		if err := ValidateOverlayRunnerSecretRefs(child.Overlays, opts.RunnerSecretNames); err != nil {
 			return nil, nil, fmt.Errorf("invalid harness: %w", err)
 		}
-		if err := ValidateOverlayRunnerSecretRefs(child.Overlays, opts.RunnerSecretNames); err != nil {
+		if err := child.validateOverlaysWith(opts.OrgAllowlist); err != nil {
 			return nil, nil, fmt.Errorf("invalid harness: %w", err)
 		}
 		// Capture forge presence before ResolveForge nils the map so Lint()
@@ -319,10 +324,10 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 	if err := child.validateForge(); err != nil {
 		return nil, nil, fmt.Errorf("invalid harness: %w", err)
 	}
-	if err := child.validateOverlays(); err != nil {
+	if err := ValidateOverlayRunnerSecretRefs(child.Overlays, opts.RunnerSecretNames); err != nil {
 		return nil, nil, fmt.Errorf("invalid harness: %w", err)
 	}
-	if err := ValidateOverlayRunnerSecretRefs(child.Overlays, opts.RunnerSecretNames); err != nil {
+	if err := child.validateOverlaysWith(opts.OrgAllowlist); err != nil {
 		return nil, nil, fmt.Errorf("invalid harness: %w", err)
 	}
 	// mergeBaseIntoChild already propagated the base chain's marker; capture
@@ -386,6 +391,9 @@ func loadBaseChain(
 		base, err = parseHarnessContent(content)
 		if err != nil {
 			return nil, nil, fmt.Errorf("parsing base harness from %s: %w", cleanURL, err)
+		}
+		if err := RefuseURLOverlayPaths(base, cleanURL); err != nil {
+			return nil, nil, fmt.Errorf("invalid base harness: %w", err)
 		}
 
 		// Resolve script fields in the base by fetching them from the base's
@@ -553,6 +561,42 @@ func loadBaseChain(
 	return base, deps, nil
 }
 
+// RefuseURLOverlayPaths rejects the path-bearing OverlayFields (agent,
+// agent_input, plugins, api_servers) in the overlays of a harness fetched
+// from a URL, naming every one an entry sets. The resolveBase* functions
+// fetch top-level and ForgeConfig paths from the source and rewrite them to
+// cache paths, but not these: a value here would skip validateBaseRelPath and
+// resolve against the consuming repository instead of the source. The check
+// can go once agent, agent_input, plugins and api_servers scripts are fetched
+// from the source too.
+func RefuseURLOverlayPaths(h *Harness, source string) error {
+	for i, oe := range h.Overlays {
+		var fields []string
+		for _, f := range []struct {
+			name string
+			set  bool
+		}{
+			{"agent", oe.Agent != ""},
+			{"agent_input", oe.AgentInput != ""},
+			{"plugins", len(oe.Plugins) > 0},
+			{"api_servers", len(oe.APIServers) > 0},
+		} {
+			if f.set {
+				fields = append(fields, fmt.Sprintf("overlays[%d].%s", i, f.name))
+			}
+		}
+		switch len(fields) {
+		case 0:
+			continue
+		case 1:
+			return fmt.Errorf("%s is not supported in a harness fetched from a URL (%q): overlay resources are not fetched from the source", fields[0], source)
+		default:
+			return fmt.Errorf("%s are not supported in a harness fetched from a URL (%q): overlay resources are not fetched from the source", strings.Join(fields, ", "), source)
+		}
+	}
+	return nil
+}
+
 // resolveBaseForgeAndOverlays validates and resolves a base layer's forge and
 // overlay blocks in place, flattening them into top-level harness fields.
 // After this call, base.Forge is nil and base.Overlays is nil — the base is
@@ -579,8 +623,13 @@ func resolveBaseForgeAndOverlays(base *Harness, opts ComposeOpts) error {
 			return fmt.Errorf("invalid base harness: %w", err)
 		}
 	}
+	// The runner-secret check (ADR 0136) runs before the general overlay
+	// check so a secret-bearing overlay gets its own, more specific error.
 	if len(base.Overlays) > 0 {
-		if err := base.validateOverlays(); err != nil {
+		if err := ValidateOverlayRunnerSecretRefs(base.Overlays, opts.RunnerSecretNames); err != nil {
+			return fmt.Errorf("invalid base harness: %w", err)
+		}
+		if err := base.validateOverlaysWith(opts.OrgAllowlist); err != nil {
 			return fmt.Errorf("invalid base harness: %w", err)
 		}
 	}
@@ -604,9 +653,6 @@ func resolveBaseForgeAndOverlays(base *Harness, opts ComposeOpts) error {
 	// Resolve overlays: evaluate CEL conditions and merge matching
 	// entries into top-level fields.
 	if len(base.Overlays) > 0 {
-		if err := ValidateOverlayRunnerSecretRefs(base.Overlays, opts.RunnerSecretNames); err != nil {
-			return fmt.Errorf("invalid base harness: %w", err)
-		}
 		if err := base.ResolveOverlays(opts.Event, opts.ForgePlatform, opts.Config); err != nil {
 			return fmt.Errorf("resolving base overlays: %w", err)
 		}
@@ -915,6 +961,14 @@ func isFullsendCachePath(p, workspaceRoot string) bool {
 	}
 	rel, err := filepath.Rel(absCache, absP)
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// IsFullsendCachePath reports whether p lies under workspaceRoot's
+// .fullsend-cache, where base composition writes the resources it fetches
+// from a URL base; lock replay uses it to tell a base-composed path from one
+// the harness author wrote.
+func IsFullsendCachePath(p, workspaceRoot string) bool {
+	return isFullsendCachePath(p, workspaceRoot)
 }
 
 // resolveBaseScripts fetches script fields from a URL-referenced base harness.

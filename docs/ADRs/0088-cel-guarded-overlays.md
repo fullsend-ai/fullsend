@@ -141,7 +141,12 @@ warning when `forge:` is present, recommending migration to
 > **Update (2026-08-21):** The empty-event semantics described below have
 > evolved since this ADR was written. See
 > [Harness Field Reference](../contributing/harness-fields.md) for the
-> current behavior (nil event → empty map substitution).
+> behavior at that time (nil event → empty map substitution).
+>
+> **Update (2026-10-25, implementation of ADR 0112 Decisions 1 and 2):** A
+> nil event is now CEL `null` rather than an empty map; the
+> [Harness Field Reference](../contributing/harness-fields.md#resolution-pipeline)
+> describes what that changes.
 
 `LoadWithOpts` and `LoadWithBase` gain `Event normevent.Event` and
 `Config map[string]any` fields in their options structs. The pipeline

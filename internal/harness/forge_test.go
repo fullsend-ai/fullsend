@@ -1,13 +1,19 @@
 package harness
 
 import (
+	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
 
 func TestResolveForge_ScalarOverride(t *testing.T) {
@@ -1522,8 +1528,8 @@ func TestResolveOverlays_NilEventNoop(t *testing.T) {
 			{When: `runtime.forge == "github"`, ForgeConfig: ForgeConfig{PreScript: "scripts/gh.sh"}},
 		},
 	}
-	// Nil event is converted to empty map; overlays conditioned on runtime.forge
-	// or config can still match (ADR 0088 — overlays work in CLI paths without event).
+	// A nil event is bound as CEL null; overlays conditioned on runtime.forge
+	// or config still match (ADR 0088 — overlays work in CLI paths without event).
 	err := h.ResolveOverlays(nil, "github", nil)
 	require.NoError(t, err)
 	assert.Equal(t, "scripts/gh.sh", h.PreScript, "overlay should match on runtime.forge even when event is nil")
@@ -1997,4 +2003,466 @@ agents:
 	require.Len(t, registered, 1)
 	assert.Equal(t, "lint", registered[0].Name)
 	assert.Equal(t, "haiku", registered[0].Entry.Model)
+}
+
+func TestResolveOverlays_NilEventNonMissingError_IsNonMatch(t *testing.T) {
+	h := &Harness{
+		Image: "base:latest",
+		Overlays: []OverlayEntry{{
+			When:          `(1 / 0) == 0`,
+			OverlayFields: OverlayFields{Image: "overlay:latest"},
+		}},
+	}
+	err := h.ResolveOverlays(nil, "github", nil)
+	require.NoError(t, err)
+	assert.Equal(t, "base:latest", h.Image)
+}
+
+func TestResolveOverlays_UnguardedNonMissingError_IsNonMatch(t *testing.T) {
+	event := map[string]any{"source": map[string]any{"system": "github"}}
+	h := &Harness{
+		Model: "opus",
+		Overlays: []OverlayEntry{{
+			When:          `(1 / 0) == 0`,
+			OverlayFields: OverlayFields{Model: "sonnet"},
+		}},
+	}
+	err := h.ResolveOverlays(event, "github", nil)
+	require.NoError(t, err)
+	assert.Equal(t, "opus", h.Model)
+}
+
+func TestMergeOverlayFields_Semantics(t *testing.T) {
+	maxFetches := 5
+	h := &Harness{
+		Plugins:                []PluginSpec{{Path: "base-plugin"}},
+		APIServers:             []APIServer{{Name: "base-server"}},
+		AllowedRemoteResources: []string{"https://base.example.com"},
+		PrivilegeLevels:        map[string]string{"read": "allow", "write": "deny"},
+		ReadonlyRepo:           true,
+		AllowRuntimeFetch:      true,
+		MaxRuntimeFetches:      &maxFetches,
+		Security:               &SecurityConfig{FailMode: "closed"},
+	}
+	overlayMaxFetches := 10
+	of := &OverlayFields{
+		Plugins:                []PluginSpec{{Path: "overlay-plugin"}},
+		APIServers:             []APIServer{{Name: "overlay-server"}},
+		AllowedRemoteResources: []string{"https://overlay.example.com"},
+		PrivilegeLevels:        map[string]string{"write": "allow", "admin": "deny"},
+		Security:               &SecurityConfig{FailMode: "open"},
+		MaxRuntimeFetches:      &overlayMaxFetches,
+	}
+	mergeOverlayFields(h, of)
+
+	assert.Equal(t, []PluginSpec{{Path: "base-plugin"}, {Path: "overlay-plugin"}}, h.Plugins)
+	assert.Equal(t, []APIServer{{Name: "base-server"}, {Name: "overlay-server"}}, h.APIServers)
+	assert.Equal(t, []string{"https://base.example.com", "https://overlay.example.com"}, h.AllowedRemoteResources)
+	assert.Equal(t, map[string]string{"read": "allow", "write": "allow", "admin": "deny"}, h.PrivilegeLevels)
+	assert.Equal(t, &SecurityConfig{FailMode: "open"}, h.Security)
+	assert.True(t, h.ReadonlyRepo)
+	assert.True(t, h.AllowRuntimeFetch)
+	assert.Equal(t, &overlayMaxFetches, h.MaxRuntimeFetches)
+}
+
+// A set overlay scalar replaces the harness value; an unset one, and an unset
+// security block or max_runtime_fetches, leaves it alone.
+func TestMergeOverlayFields_ScalarPrecedence(t *testing.T) {
+	maxFetches := 5
+	security := &SecurityConfig{FailMode: "closed"}
+	base := func() *Harness {
+		return &Harness{
+			Agent: "agents/base.md", Doc: "base doc", Description: "base", Image: "base:1",
+			Model: "base-model", Effort: "low", AgentInput: "base input",
+			TimeoutMinutes: 10, SandboxTimeoutSeconds: 60,
+			MaxRuntimeFetches: &maxFetches, Security: security,
+		}
+	}
+	h := base()
+	mergeOverlayFields(h, &OverlayFields{
+		Agent: "agents/o.md", Doc: "o doc", Description: "o", Image: "o:1",
+		Model: "o-model", Effort: "high", AgentInput: "o input",
+		TimeoutMinutes: 20, SandboxTimeoutSeconds: 120,
+	})
+	assert.Equal(t, "agents/o.md", h.Agent)
+	assert.Equal(t, "o doc", h.Doc)
+	assert.Equal(t, "o", h.Description)
+	assert.Equal(t, "o:1", h.Image)
+	assert.Equal(t, "o-model", h.Model)
+	assert.Equal(t, "high", h.Effort)
+	assert.Equal(t, "o input", h.AgentInput)
+	assert.Equal(t, 20, h.TimeoutMinutes)
+	assert.Equal(t, 120, h.SandboxTimeoutSeconds)
+	assert.Same(t, &maxFetches, h.MaxRuntimeFetches)
+	assert.Same(t, security, h.Security)
+
+	h = base()
+	mergeOverlayFields(h, &OverlayFields{})
+	assert.Equal(t, base(), h)
+}
+
+// A malformed overlay entry fails to decode instead of being skipped.
+func TestOverlayEntry_UnmarshalYAMLDecodeError(t *testing.T) {
+	var h Harness
+	err := yaml.Unmarshal([]byte("agent: agents/test.md\noverlays:\n  - when: 'true'\n    model: [a, b]\n"), &h)
+	require.Error(t, err)
+}
+
+// A harness layer without an agent (a base) still has its non-matching
+// overlays' values checked.
+func TestValidateOverlays_AgentlessLayerChecksOverlayValues(t *testing.T) {
+	var h Harness
+	require.NoError(t, yaml.Unmarshal([]byte("role: fix\noverlays:\n  - when: 'runtime.forge == \"gitlab\"'\n    timeout_minutes: -5\n"), &h))
+	err := h.validateOverlays()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "timeout_minutes")
+}
+
+// ForgeConfig fields are guarded too (ADR 0112 Decision 2 names a looser
+// policy as the attack), and the error names the index, the field and the
+// offending reference.
+func TestValidateOverlays_GuardedForgeConfigFieldUntrustedWhen(t *testing.T) {
+	cases := []struct{ field, fieldYAML string }{
+		{"policy", "policy: policies/loose.yaml"},
+		{"pre_script", "pre_script: scripts/x.sh"},
+		{"runner_env", "runner_env:\n      FOO: bar"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.field, func(t *testing.T) {
+			yamlStr := fmt.Sprintf(`
+agent: agents/test.md
+role: fix
+overlays:
+  - when: 'event.entity.title == "x"'
+    %s
+`, tc.fieldYAML)
+			var h Harness
+			require.NoError(t, yaml.Unmarshal([]byte(yamlStr), &h))
+			err := h.validateOverlays()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "overlays[0]")
+			assert.Contains(t, err.Error(), fmt.Sprintf("%q", tc.field))
+			assert.Contains(t, err.Error(), `"event.entity.title"`)
+		})
+	}
+}
+
+func TestValidateOverlays_GuardedEventNullCheckPasses(t *testing.T) {
+	yamlStr := `
+agent: agents/test.md
+role: fix
+overlays:
+  - when: 'event != null && event.repo == "org/x"'
+    image: ghcr.io/guarded:latest
+`
+	var h Harness
+	require.NoError(t, yaml.Unmarshal([]byte(yamlStr), &h))
+	require.NoError(t, h.validateOverlays())
+}
+
+func TestResolveOverlays_GuardedForgeConfigNonMissingError_FailsRun(t *testing.T) {
+	h := &Harness{
+		Policy: "policies/strict.yaml",
+		Overlays: []OverlayEntry{{
+			When:        `(1 / 0) == 0`,
+			ForgeConfig: ForgeConfig{Policy: "policies/loose.yaml"},
+		}},
+	}
+	err := h.ResolveOverlays(map[string]any{"repo": "org/x"}, "github", nil)
+	require.Error(t, err, "a guarded ForgeConfig field must fail the run on a non-missing CEL error")
+	assert.Equal(t, "policies/strict.yaml", h.Policy)
+}
+
+// An overlay's own allowed_remote_resources cannot authorize a URL resource
+// it names beyond the config-level allowlist: every prefix it adds must lie
+// within that list, so the top-level list or the config-level list is what
+// covers the URL.
+func TestValidateOverlays_SelfAuthorizedURLRefused(t *testing.T) {
+	const hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	t.Run("overlay grant outside the config-level list", func(t *testing.T) {
+		yamlStr := `
+agent: agents/test.md
+role: fix
+overlays:
+  - when: 'runtime.forge == "github"'
+    allowed_remote_resources:
+      - https://example.com/
+    agent: https://example.com/agents/x.md#sha256=` + hash + `
+`
+		var h Harness
+		require.NoError(t, yaml.Unmarshal([]byte(yamlStr), &h))
+		err := h.validateOverlaysWith([]string{"https://other.example/"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `overlays[0]: allowed_remote_resources[0]: "https://example.com/" is not covered by the org allowlist`)
+	})
+
+	t.Run("covered by the top-level list", func(t *testing.T) {
+		yamlStr := `
+agent: agents/test.md
+role: fix
+allowed_remote_resources:
+  - https://example.com/
+overlays:
+  - when: 'runtime.forge == "github"'
+    allowed_remote_resources:
+      - https://example.com/agents/
+    agent: https://example.com/agents/x.md#sha256=` + hash + `
+`
+		var h Harness
+		require.NoError(t, yaml.Unmarshal([]byte(yamlStr), &h))
+		require.NoError(t, h.validateOverlaysWith([]string{"https://example.com/"}))
+	})
+
+	t.Run("covered by neither list is left to the allowlist check", func(t *testing.T) {
+		yamlStr := `
+agent: agents/test.md
+role: fix
+overlays:
+  - when: 'runtime.forge == "github"'
+    allowed_remote_resources:
+      - https://other.example/
+    agent: https://example.com/agents/x.md#sha256=` + hash + `
+`
+		var h Harness
+		require.NoError(t, yaml.Unmarshal([]byte(yamlStr), &h))
+		require.NoError(t, h.validateOverlaysWith([]string{"https://other.example/"}))
+	})
+}
+
+// A non-matching overlay's OverlayFields values get the checks Validate
+// gives top-level values (validateOverlaySettable).
+func TestValidateOverlays_OverlayFieldValuesValidated(t *testing.T) {
+	cases := []struct{ name, fieldYAML, want string }{
+		{"model", "model: 'bad model!'", "model"},
+		{"effort", "effort: extreme", "effort"},
+		{"timeout_minutes", "timeout_minutes: -1", "timeout_minutes"},
+		{"sandbox_timeout_seconds", "sandbox_timeout_seconds: 5", "sandbox_timeout_seconds"},
+		{"agent", "agent: agents/bad name.md", "agent name"},
+		{"privilege_levels", "privilege_levels:\n      bogus: read", "privilege_levels"},
+		{"plugins", "plugins:\n      - ../escape", "plugins[0]"},
+		{"security", "security:\n      fail_mode: maybe", "security"},
+		{"resource types", "agent: https://example.com/agents/x.md", "integrity hash"},
+		{"max_runtime_fetches", "max_runtime_fetches: 5000", "max_runtime_fetches"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// runtime.forge == "gitlab" never matches in the tests' github
+			// context: the value is checked without the overlay applying.
+			yamlStr := fmt.Sprintf(`
+agent: agents/test.md
+role: fix
+overlays:
+  - when: 'runtime.forge == "gitlab"'
+    %s
+`, tc.fieldYAML)
+			var h Harness
+			require.NoError(t, yaml.Unmarshal([]byte(yamlStr), &h))
+			err := h.validateOverlays()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "overlays[0]: merged with the top-level values: ")
+			assert.Contains(t, err.Error(), tc.want)
+			assert.Equal(t, "agents/test.md", h.Agent, "the probe must not touch the harness")
+		})
+	}
+}
+
+func TestValidateOverlays_TopLevelInvalidValueNotBlamedOnOverlay(t *testing.T) {
+	yamlStr := `
+agent: agents/test.md
+role: fix
+effort: extreme
+overlays:
+  - when: 'runtime.forge == "github"'
+    model: sonnet
+`
+	var h Harness
+	require.NoError(t, yaml.Unmarshal([]byte(yamlStr), &h))
+	require.NoError(t, h.validateOverlays(), "Validate reports the top-level effort itself")
+	err := h.Validate()
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "overlays[")
+}
+
+func TestValidateOverlays_ProbeDoesNotMutatePrivilegeLevels(t *testing.T) {
+	yamlStr := `
+agent: agents/test.md
+role: fix
+privilege_levels:
+  runtime: read
+overlays:
+  - when: 'runtime.forge == "gitlab"'
+    privilege_levels:
+      runtime: write
+`
+	var h Harness
+	require.NoError(t, yaml.Unmarshal([]byte(yamlStr), &h))
+	require.NoError(t, h.validateOverlays())
+	assert.Equal(t, map[string]string{"runtime": "read"}, h.PrivilegeLevels)
+}
+
+func TestValidateOverlays_ExcludedKeys_AllNamedInOrder(t *testing.T) {
+	yamlStr := `
+agent: agents/test.md
+role: fix
+overlays:
+  - when: 'runtime.forge == "github"'
+    role: other
+    slug: other
+    base: other.yaml
+`
+	for range 5 {
+		var h Harness
+		require.NoError(t, yaml.Unmarshal([]byte(yamlStr), &h))
+		err := h.validateOverlays()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `overlays[0]: keys "base", "role", "slug" cannot be set in an overlay`)
+	}
+}
+
+// The config-level allowlist authorizes an overlay's URL the way resolution
+// does, so a harness whose top-level list is narrower than the org's is not
+// refused for a URL the org allows.
+func TestValidateOverlays_OrgAllowlistAuthorizesOverlayURL(t *testing.T) {
+	yamlStr := `
+agent: agents/test.md
+role: fix
+overlays:
+  - when: 'runtime.forge == "github"'
+    allowed_remote_resources:
+      - https://example.com/
+    agent: https://example.com/agents/x.md#sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+`
+	var h Harness
+	require.NoError(t, yaml.Unmarshal([]byte(yamlStr), &h))
+	require.Error(t, h.validateOverlays(), "with no org allowlist the overlay grant is refused")
+	assert.Error(t, h.validateOverlaysWith([]string{"https://other.example/"}), "an org allowlist that does not cover the grant refuses it")
+	assert.NoError(t, h.validateOverlaysWith([]string{"https://example.com/"}))
+}
+
+// Without an event, CEL sees event as null, so `event != null` does not match
+// and `event == null` does; with an event the reverse holds (ADR 0112).
+func TestResolveOverlays_EventNullCheckReflectsMissingEvent(t *testing.T) {
+	resolve := func(event map[string]any) string {
+		h := &Harness{
+			Image: "base:latest",
+			Overlays: []OverlayEntry{
+				{When: `event != null`, OverlayFields: OverlayFields{Image: "with-event:latest"}},
+				{When: `event == null`, OverlayFields: OverlayFields{Description: "no event"}},
+			},
+		}
+		require.NoError(t, h.ResolveOverlays(event, "github", nil))
+		return h.Image + "|" + h.Description
+	}
+	assert.Equal(t, "base:latest|no event", resolve(nil))
+	assert.Equal(t, "with-event:latest|", resolve(map[string]any{"repo": "org/x"}))
+}
+
+// The excluded and unguarded key sets are the contract ADR 0112 Decisions 1
+// and 2 state; a change to either changes what an overlay may do, so it must
+// be deliberate.
+func TestOverlayKeySets_Pinned(t *testing.T) {
+	assert.Equal(t, []string{"base", "forge", "overlays", "role", "slug", "trigger"}, slices.Sorted(maps.Keys(excludedOverlayKeys)))
+	assert.Equal(t, []string{"description", "doc", "effort", "model"}, slices.Sorted(maps.Keys(unguardedOverlayKeys)))
+
+	// A new OverlayFields field fails here: decide whether it holds a path
+	// that RefuseURLOverlayPaths must refuse in a harness fetched from a URL.
+	var keys []string
+	for f := range reflect.TypeFor[OverlayFields]().Fields() {
+		keys = append(keys, strings.Split(f.Tag.Get("yaml"), ",")[0])
+	}
+	assert.Equal(t, []string{
+		"agent", "agent_input", "allow_runtime_fetch", "allowed_remote_resources", "api_servers",
+		"description", "doc", "effort", "image", "max_runtime_fetches", "model", "plugins",
+		"privilege_levels", "readonly_repo", "sandbox_timeout_seconds", "security", "timeout_minutes",
+	}, slices.Sorted(slices.Values(keys)))
+}
+
+// Every OverlayFields field reaches the Harness field of the same name through
+// mergeOverlayFields, so a field added to OverlayFields without a merge case
+// fails here rather than being guarded and validated but never applied.
+func TestMergeOverlayFields_CopiesEveryField(t *testing.T) {
+	var of OverlayFields
+	ov := reflect.ValueOf(&of).Elem()
+	for i := 0; i < ov.NumField(); i++ {
+		f := ov.Field(i)
+		switch f.Kind() {
+		case reflect.String:
+			f.SetString("x")
+		case reflect.Int:
+			f.SetInt(1)
+		case reflect.Bool:
+			f.SetBool(true)
+		case reflect.Pointer:
+			f.Set(reflect.New(f.Type().Elem()))
+		case reflect.Slice:
+			f.Set(reflect.MakeSlice(f.Type(), 1, 1))
+		case reflect.Map:
+			m := reflect.MakeMap(f.Type())
+			m.SetMapIndex(reflect.Zero(f.Type().Key()), reflect.Zero(f.Type().Elem()))
+			f.Set(m)
+		default:
+			t.Fatalf("OverlayFields.%s: kind %s has no test value; extend this test", ov.Type().Field(i).Name, f.Kind())
+		}
+	}
+	var h Harness
+	mergeOverlayFields(&h, &of)
+	hv := reflect.ValueOf(h)
+	for i := 0; i < ov.NumField(); i++ {
+		name := ov.Type().Field(i).Name
+		hf := hv.FieldByName(name)
+		require.True(t, hf.IsValid(), "Harness has no field %s", name)
+		assert.False(t, hf.IsZero(), "mergeOverlayFields does not apply OverlayFields.%s", name)
+	}
+}
+
+// An overlay's own allowed_remote_resources must lie within the config-level
+// allowlist, because runtime fetches are authorized against the merged list;
+// with no allowlist known, any overlay entry is refused.
+func TestValidateOverlays_OverlayAllowlistBoundByOrg(t *testing.T) {
+	load := func(t *testing.T, prefix string) *Harness {
+		t.Helper()
+		var h Harness
+		require.NoError(t, yaml.Unmarshal([]byte(`
+agent: agents/test.md
+role: fix
+overlays:
+  - when: 'runtime.forge == "github"'
+    allow_runtime_fetch: true
+    allowed_remote_resources:
+      - `+prefix+"\n"), &h))
+		return &h
+	}
+	org := []string{"https://github.com/acme/"}
+	assert.NoError(t, load(t, "https://github.com/acme/tools/").validateOverlaysWith(org))
+	for _, prefix := range []string{"https://evil.example/prefix/", "https:/", "https://github.com/acmecorp/"} {
+		err := load(t, prefix).validateOverlaysWith(org)
+		require.Error(t, err, prefix)
+		assert.Contains(t, err.Error(), "overlays[0]: allowed_remote_resources[0]", prefix)
+	}
+	require.Error(t, load(t, "https://github.com/acme/tools/").validateOverlays(), "no org allowlist known")
+}
+
+// has() on a trusted field under state.change_proposal matches only on events
+// that carry a change proposal, and its negation never matches: the missing
+// object is a missing-key error, which is a non-match.
+func TestResolveOverlays_HasOnTrustedFieldUnderOptionalObject(t *testing.T) {
+	issue := map[string]any{"repo": "org/r", "source": map[string]any{"system": "github"}, "state": map[string]any{}}
+	pr := map[string]any{"repo": "org/r", "source": map[string]any{"system": "github"},
+		"state": map[string]any{"change_proposal": map[string]any{"is_fork": false}}}
+	timeout := func(t *testing.T, when string, event map[string]any) int {
+		t.Helper()
+		h := &Harness{
+			Agent:          "agents/test.md",
+			Role:           "fix",
+			TimeoutMinutes: 10,
+			Overlays:       []OverlayEntry{{When: when, OverlayFields: OverlayFields{TimeoutMinutes: 45}}},
+		}
+		require.NoError(t, h.validateOverlays(), "the guard accepts %s", when)
+		require.NoError(t, h.ResolveOverlays(event, "github", nil))
+		return h.TimeoutMinutes
+	}
+	assert.Equal(t, 10, timeout(t, `has(event.state.change_proposal.is_fork)`, issue))
+	assert.Equal(t, 45, timeout(t, `has(event.state.change_proposal.is_fork)`, pr))
+	assert.Equal(t, 10, timeout(t, `!has(event.state.change_proposal.is_fork)`, issue), "the negation never matches")
+	assert.Equal(t, 10, timeout(t, `!has(event.state.change_proposal.is_fork)`, pr), "the negation never matches")
 }

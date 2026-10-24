@@ -1,8 +1,16 @@
 package harness
 
 import (
+	"encoding/json"
+	"fmt"
+	"maps"
+	"os"
+	"path/filepath"
+	"slices"
 	"testing"
 
+	"github.com/google/cel-go/cel"
+	celast "github.com/google/cel-go/common/ast"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -115,4 +123,167 @@ func TestNewOverlayEnv(t *testing.T) {
 	env, err := NewOverlayEnv()
 	require.NoError(t, err)
 	require.NotNil(t, env)
+}
+
+// --- overlayMissingKey tests ---
+
+func TestOverlayMissingKey_NilError(t *testing.T) {
+	assert.False(t, overlayMissingKey(nil))
+}
+
+func TestOverlayMissingKey_NoSuchKey(t *testing.T) {
+	assert.True(t, overlayMissingKey(fmt.Errorf("no such key: source")))
+}
+
+func TestOverlayMissingKey_OtherError(t *testing.T) {
+	assert.False(t, overlayMissingKey(fmt.Errorf("type mismatch")))
+}
+
+func TestOverlayMissingKey_Wrapped(t *testing.T) {
+	assert.True(t, overlayMissingKey(fmt.Errorf("overlays[0].when: %w", fmt.Errorf("no such key: source"))))
+}
+
+// The objects a guarded overlay may probe with has() are the normalized
+// event schema's required set, so the two cannot drift.
+func TestOverlayRequiredEventObjects_MatchSchema(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "docs", "normative", "normalized-event", "v1", "normalized-event.schema.json"))
+	require.NoError(t, err)
+	var schema struct {
+		Required []string `json:"required"`
+	}
+	require.NoError(t, json.Unmarshal(data, &schema))
+	want := make([]string, 0, len(schema.Required))
+	for _, name := range schema.Required {
+		want = append(want, "event."+name)
+	}
+	slices.Sort(want)
+	assert.Equal(t, want, slices.Sorted(maps.Keys(overlayRequiredEventObjects)))
+}
+
+// --- guardedOverlayWhenTrusted tests ---
+
+func compileOverlayExpr(t *testing.T, expr string) *cel.Ast {
+	t.Helper()
+	env, err := NewOverlayEnv()
+	require.NoError(t, err)
+	ast, issues := env.Compile(expr)
+	require.Nil(t, issues, "CEL compile: %v", issues)
+	return ast
+}
+
+func TestGuardedOverlayWhenTrusted_Trusted(t *testing.T) {
+	for _, expr := range []string{
+		`true`,
+		`event.repo == "org/repo"`,
+		`runtime.forge == "github" && config.tracker == "jira"`,
+		`has(event.source)`,
+		`has(event.source) && event.source.system == "jira"`,
+		`has(event.source.system)`,
+		`has(event.state.change_proposal.is_fork)`,
+		`event != null`,
+		`null != event`,
+		`event == null`,
+		`event != null && event.repo == "org/a"`,
+		`event.repo in ["org/a", "org/b"]`,
+		`{"github": true, "gitlab": false}[event.repo] == true`,
+		`["org/a", "org/b"].exists(r, r == event.repo)`,
+		`event.state.change_proposal.is_fork == true`,
+		`!event.state.change_proposal.is_fork && event.actor.role == "maintainer"`,
+		`event.repo.startsWith("org/")`,
+		`{event.repo: true}[event.repo]`,
+		`has(runtime.forge) && runtime.forge == "gitlab"`,
+		`config.teams.exists(team, team == "core")`,
+		`config.teams.map(team, team + "!").exists_one(name, name == "core!")`,
+		`[0].exists(a, [a].exists(b, b == a))`,
+		`config.teams.all(team, config.lead != team)`,
+		// A comprehension variable named event or runtime is the local.
+		`config.agents.exists(event, event.name == "code")`,
+		`config.agents.exists(runtime, runtime.name == "code")`,
+	} {
+		t.Run(expr, func(t *testing.T) {
+			ref, ok := guardedOverlayWhenTrusted(compileOverlayExpr(t, expr))
+			assert.True(t, ok, "offending reference: %q", ref)
+		})
+	}
+}
+
+// Every shape that reads an untrusted fact, including the ones that reach
+// it through a trusted path's parent object, is refused and names the
+// offending reference (ADR 0112 Decision 2).
+func TestGuardedOverlayWhenTrusted_Untrusted(t *testing.T) {
+	cases := map[string]string{
+		`event.entity.kind == "work_item"`:                                 "event.entity.kind",
+		`event.entity.kind in ["work_item"]`:                               "event.entity.kind",
+		`["bug"].exists(k, k == event.entity.kind)`:                        "event.entity.kind",
+		`event.repo.extra == "x"`:                                          "event.repo.extra",
+		`event == runtime`:                                                 "event",
+		`event["repo"] == "x"`:                                             "event",
+		`[event][0].repo == "x"`:                                           "event",
+		`has(event.custom)`:                                                "event.custom",
+		`has(event.state.change_proposal)`:                                 "event.state.change_proposal",
+		`event.entity["title"] == "x"`:                                     "event.entity",
+		`event.state.change_proposal["head_ref"] == "x"`:                   "event.state.change_proposal",
+		`"bug" in event.state["labels"]`:                                   "event.state",
+		`dyn(event.entity).title == "x"`:                                   "event.entity",
+		`(event.repo == "a" ? event.entity : event.entity).title == "x"`:   "event.entity",
+		`event.entity.exists(k, k == "title")`:                             "event.entity",
+		`"title" in event.entity`:                                          "event.entity",
+		`size(event.state) > 3`:                                            "event.state",
+		`string(event.entity) == "x"`:                                      "event.entity",
+		`event.entity == {"title": "x"}`:                                   "event.entity",
+		`event.state.change_proposal != null`:                              "event.state.change_proposal",
+		`event.actor.role == "maintainer" && event.actor["login"] == "me"`: "event.actor",
+		`{event.entity.kind: 1}.size() == 1`:                               "event.entity.kind",
+		`{"a": event.entity}.a == "x"`:                                     "event.entity",
+		// Only runtime.forge is a trusted runtime fact; the docs promise no
+		// other identifier, so a future variable is untrusted until listed.
+		`runtime.ci == "github-actions"`:             "runtime.ci",
+		`runtime == null`:                            "runtime",
+		`has(runtime.forge) && runtime.other == "x"`: "runtime.other",
+		`runtime.forge.platform == "github"`:         "runtime.forge.platform",
+		`runtime.forge["x"] == "x"`:                  "runtime.forge",
+		`event.repo[0] == "x"`:                       "event.repo",
+		// Comprehension scopes: the range is read in the outer scope, a
+		// comprehension variable does not outlive its macro, and nesting
+		// keeps the outer scope's rules.
+		`[event.entity.kind].exists(k, k == "x")`:                "event.entity.kind",
+		`[0].exists(runtime, runtime == 0) && runtime.ci == "x"`: "runtime.ci",
+		`[0].all(event, event == 0) && event.entity.kind == "x"`: "event.entity.kind",
+		`[0].exists(a, [a].exists(b, b == event.entity.kind))`:   "event.entity.kind",
+		`[0].map(config, .event.entity.kind).size() == 1`:        "event.entity.kind",
+		// An inner comprehension's variable does not leak into its parent.
+		`[0].exists(a, [a].exists(event, true) || event["entity"]["kind"] == "pr")`: "event",
+		// A type identifier is not a declared variable.
+		`type(config.x) == int`: "int",
+		// A comprehension variable named event shadows the global, and the
+		// checker keeps the global reference as ".event".
+		`[0].exists(event, .event.title == "please")`:                                                         "event.title",
+		`[0].exists(runtime, .runtime.other == "x")`:                                                          "runtime.other",
+		`[0].all(event, .event.entity.kind == "x")`:                                                           "event.entity.kind",
+		`google.protobuf.Value{string_value: event.entity.title} == google.protobuf.Value{string_value: "x"}`: "event.entity.title",
+	}
+	for expr, want := range cases {
+		t.Run(expr, func(t *testing.T) {
+			ref, ok := guardedOverlayWhenTrusted(compileOverlayExpr(t, expr))
+			assert.False(t, ok)
+			assert.Equal(t, want, ref)
+		})
+	}
+}
+
+// An expression kind the walker does not know is refused, not trusted.
+func TestWalkTrustedOverlayExpr_UnknownKindRefused(t *testing.T) {
+	ref, ok := walkTrustedOverlayExpr(celast.NewExprFactory().NewUnspecifiedExpr(1), nil)
+	assert.False(t, ok)
+	assert.Equal(t, "unsupported expression", ref)
+}
+
+// The trusted list is the normative spec's: the "Trusted fields" section of
+// docs/normative/normalized-event/v1/README.md and trustedOverlayEventPaths
+// must name the same paths.
+func TestTrustedOverlayEventPaths_MatchSpecDoc(t *testing.T) {
+	want := specTrustedOverlayEventPaths(t)
+	require.NotEmpty(t, want, "no bullets found under '### Trusted fields' in the spec")
+	assert.Equal(t, want, slices.Sorted(maps.Keys(trustedOverlayEventPaths)),
+		"trustedOverlayEventPaths in trigger.go must equal the spec's Trusted fields list")
 }

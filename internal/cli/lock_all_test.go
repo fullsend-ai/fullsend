@@ -914,6 +914,29 @@ func TestResolveHarnessForLock_FallsBackToConfigURL(t *testing.T) {
 	assert.Equal(t, "agent_source", deps[0].Field)
 }
 
+func TestRunLock_URLHarnessOverlayResourcePathRefused(t *testing.T) {
+	harnessContent := []byte("agent: agents/code.md\nrole: test\noverlays:\n  - when: 'runtime.forge == \"github\"'\n    agent: agents/other.md\n")
+	harnessHash := fetch.ComputeSHA256(harnessContent)
+
+	srv, policy := newLockTestServer(t, map[string][]byte{
+		"/harness/code.yaml": harnessContent,
+	})
+
+	dir := t.TempDir()
+	harnessURL := fmt.Sprintf("%s/harness/code.yaml#sha256=%s", srv.URL, harnessHash)
+	orgConfig := fmt.Sprintf("agents:\n  - name: code\n    source: \"%s\"\nallowed_remote_resources:\n  - \"%s/\"\n", harnessURL, srv.URL)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(orgConfig), 0o644))
+
+	fetch.DefaultPolicy = policy
+	defer func() { fetch.DefaultPolicy = fetch.FetchPolicy{} }()
+
+	err := runLock(context.Background(), "code", dir, "github", false, resolveFlags{}, ui.New(os.Stdout))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "overlays[0].agent is not supported in a harness fetched from a URL")
+	_, statErr := os.Stat(filepath.Join(dir, "lock.yaml"))
+	assert.True(t, os.IsNotExist(statErr), "no lock file is written")
+}
+
 func TestResolveHarnessForLock_NoConfigNoLocal(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))

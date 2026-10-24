@@ -30,7 +30,8 @@ and update the others as needed.
 | Function | File | Purpose |
 |----------|------|---------|
 | `mergeBaseIntoChild` | `internal/harness/compose.go` | Merges base harness fields into child during `base:` composition |
-| `mergeForgeConfig` | `internal/harness/forge.go` | Applies `forge.<platform>` or overlay overrides onto top-level harness fields |
+| `mergeForgeConfig` | `internal/harness/forge.go` | Applies `forge.<platform>` or overlay `ForgeConfig` overrides onto top-level harness fields |
+| `mergeOverlayFields` | `internal/harness/forge.go` | Applies a matching overlay's `OverlayFields` (`agent`, `model`, `image`, `plugins`, `security`, `privilege_levels`, ...) onto top-level harness fields with `mergeBaseIntoChild`'s rules, the overlay standing in the child position, except that it does apply `allowed_remote_resources`, `allow_runtime_fetch`, `max_runtime_fetches` and `readonly_repo`, which a base never passes to a child |
 | `mergeForgeConfigInto` | `internal/harness/compose.go` | **Deprecated** — was used to merge base `ForgeConfig` fields into child `ForgeConfig` during `base:` composition; no longer called after #6798 introduced per-layer resolution |
 | `mergeSkills` | `internal/harness/compose.go` | Deduplicates skills by identity (declared `SKILL.md` name when the directory is on disk, otherwise basename). Child entries override a matching *base* entry and merge file-level override maps (child keys win). Sibling entries that share a directory basename (nested forge skills such as `skills/issue-labels/github` and `skills/pr-review/github`) are kept; destination collisions fail at bootstrap. |
 | `mergeHostFiles` | `internal/harness/compose.go` | Deduplicates host files by dest path (base + child) |
@@ -51,9 +52,9 @@ and update the others as needed.
 | Function | File | Purpose |
 |----------|------|---------|
 | `validateForge` | `internal/harness/forge.go` | Validates `forge:` block keys and `ForgeConfig` field values |
-| `validateOverlays` | `internal/harness/forge.go` | Validates `overlays:` entries — CEL `when` expressions and `ForgeConfig` field values; enforces mutual exclusion with `forge:` |
+| `validateOverlays` | `internal/harness/forge.go` | Validates `overlays:` entries — rejects the excluded keys (`base`, `trigger`, `overlays`, `slug`, `role`, `forge`), compiles CEL `when` expressions, refuses a guarded field whose `when` reads anything but trusted facts (ADR 0112), refuses an overlay `allowed_remote_resources` entry the config-level allowlist does not cover, checks `ForgeConfig` field values per entry and the `OverlayFields` values on a probe merge (`validateOverlaySettable`, the same checks `Validate` runs at the top level); enforces mutual exclusion with `forge:` |
 | `ResolveForge` | `internal/harness/forge.go` | Merges the selected forge platform's config into the harness and nils the forge map |
-| `ResolveOverlays` | `internal/harness/forge.go` | Evaluates overlay `when` expressions against event/runtime/config CEL environment; merges all matching entries in order (later matches take precedence) and nils the overlays list. When event is nil (CLI flows without event context), an empty map is substituted so overlays conditioned on `runtime.forge` or `config` can still match. Use `has(event.source)` to guard event field access in `when` expressions. |
+| `ResolveOverlays` | `internal/harness/forge.go` | Evaluates overlay `when` expressions against event/runtime/config CEL environment; merges all matching entries in order (later matches take precedence) via `mergeForgeConfig` and `mergeOverlayFields`, and nils the overlays list. When event is nil (CLI flows without event context), `when:` sees `event` as CEL `null` (`event != null` is false) and every evaluation error is a non-match; with an event, a missing key is a non-match, any other error fails the run for an entry that sets a guarded field and is logged as a non-match otherwise. |
 
 ### How they correspond
 
@@ -63,7 +64,8 @@ append, map merge, struct replace).
 
 For example, if `mergeBaseIntoChild` gains handling for a new
 `foo_script` scalar field, then `mergeForgeConfig` must also
-handle `foo_script` if it appears inside `ForgeConfig`.
+handle `foo_script` if it appears inside `ForgeConfig`, and
+`mergeOverlayFields` must handle it if it appears inside `OverlayFields`.
 
 > **Note — resolve before merge.** Each base layer's forge and overlay
 > blocks are resolved (flattened into top-level fields) by
@@ -96,14 +98,26 @@ structs:
    composition.
 3. **Update `mergeForgeConfig`** if the field can appear under
    `forge.<platform>` blocks.
-4. **Update tests** in `compose_test.go` and `forge_test.go` to cover
+4. **Place the field** in `OverlayFields`, `ForgeConfig` or the excluded
+   set (`excludedOverlayKeys`); `TestOverlayFields_EveryHarnessFieldHasOneHome`
+   fails otherwise. Every overlay-settable field is guarded unless listed in
+   `unguardedOverlayKeys` (ADR 0112 Decision 2). An `OverlayFields` field
+   also needs a `mergeOverlayFields` case and, when `Validate` checks it at
+   the top level, a check in `validateOverlaySettable`; a `ForgeConfig`
+   field is applied by `mergeForgeConfig` and checked by
+   `validateOverlayForgeConfigInherit` (step 3). A new `OverlayFields` field
+   also fails `TestOverlayKeySets_Pinned`: if it holds a path resolved against
+   the harness, add it to `RefuseURLOverlayPaths` too, because overlay paths
+   of a harness fetched from a URL are not fetched from the source.
+5. **Update tests** in `compose_test.go` and `forge_test.go` to cover
    the new field in all affected functions.
-5. **Update the [Harness Field Reference](harness-fields.md)** — If the
+6. **Update the [Harness Field Reference](harness-fields.md)** — If the
    change adds a new field to `ForgeConfig`, moves a field between
    classification tiers (top-level-only → forge-overridable or vice
    versa), or changes merge semantics, update the relevant tables:
    - Field classification tables ("Fields that can appear at both
-     levels" vs "Fields that stay at top level only")
+     levels", "Fields settable in `overlays:` but not `forge:`" and
+     "Fields that stay at top level only")
    - Merge and inheritance rules table
    - `ForgeConfig` struct definition
 

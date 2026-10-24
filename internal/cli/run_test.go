@@ -316,6 +316,39 @@ func TestRunAgent_YMLFallback(t *testing.T) {
 	assert.Contains(t, err.Error(), "openshell")
 }
 
+// fullsend run stops on a corrupt dispatch payload before resolving the
+// harness, from either dispatch source: a guarded overlay may test
+// `event == null`, so a corrupt event must not read as no event.
+func TestRunAgent_InvalidEmbeddedEventStopsRun(t *testing.T) {
+	for _, tc := range []struct{ name, payload string }{
+		{"invalid _normalized_event", `{"_normalized_event": {"repo": ""}}`},
+		{"not JSON", `not json`},
+	} {
+		for _, source := range []string{"dispatch file", "GITHUB_EVENT_PATH"} {
+			t.Run(tc.name+"/"+source, func(t *testing.T) {
+				useFakeOpenshell(t)
+				dir := t.TempDir()
+				require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+				t.Setenv("GITHUB_EVENT_PATH", "")
+				if source == "dispatch file" {
+					require.NoError(t, os.MkdirAll(filepath.Join(dir, "dispatch"), 0o755))
+					require.NoError(t, os.WriteFile(filepath.Join(dir, "dispatch", "event-payload.json"), []byte(tc.payload), 0o644))
+				} else {
+					wrapper, err := json.Marshal(map[string]any{"inputs": map[string]any{"event_payload": tc.payload}})
+					require.NoError(t, err)
+					ghEvent := filepath.Join(t.TempDir(), "event.json")
+					require.NoError(t, os.WriteFile(ghEvent, wrapper, 0o644))
+					t.Setenv("GITHUB_EVENT_PATH", ghEvent)
+				}
+				err := runAgent(context.Background(), "nonexistent", dir, "", t.TempDir(), "", nil, false, "", "", "", resolveFlags{maxDepth: 10, maxResources: 50}, statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "dispatch payload")
+				assert.NotContains(t, err.Error(), "agents-repo fallback", "the run must stop before harness resolution")
+			})
+		}
+	}
+}
+
 func TestRunAgent_HarnessNotFound(t *testing.T) {
 	useFakeOpenshell(t)
 	dir := t.TempDir()
@@ -9244,7 +9277,8 @@ func TestExtractNormalizedEventFromPayload_Valid(t *testing.T) {
 			"source": {"system": "jira", "raw_type": "comment"}
 		}
 	}`)
-	m := extractNormalizedEventFromPayload(payload)
+	m, err := extractNormalizedEventFromPayload(payload)
+	require.NoError(t, err)
 	require.NotNil(t, m)
 	src, ok := m["source"].(map[string]any)
 	require.True(t, ok)
@@ -9254,13 +9288,27 @@ func TestExtractNormalizedEventFromPayload_Valid(t *testing.T) {
 func TestExtractNormalizedEventFromPayload_Missing(t *testing.T) {
 	// Legacy payload without _normalized_event should return nil.
 	payload := []byte(`{"issue": {"number": 42, "html_url": "https://example.com/issues/42"}}`)
-	assert.Nil(t, extractNormalizedEventFromPayload(payload))
+	m, err := extractNormalizedEventFromPayload(payload)
+	require.NoError(t, err)
+	assert.Nil(t, m)
 }
 
 func TestExtractNormalizedEventFromPayload_Invalid(t *testing.T) {
-	// Invalid _normalized_event (missing required fields) should return nil.
+	// An invalid _normalized_event (missing required fields) is an error, not
+	// "no event": a guarded overlay may test event == null.
 	payload := []byte(`{"_normalized_event": {"repo": ""}}`)
-	assert.Nil(t, extractNormalizedEventFromPayload(payload))
+	m, err := extractNormalizedEventFromPayload(payload)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid _normalized_event")
+	assert.Nil(t, m)
+}
+
+func TestExtractNormalizedEventFromPayload_NotJSON(t *testing.T) {
+	// A payload that is not JSON is an error too, not "no event".
+	m, err := extractNormalizedEventFromPayload([]byte(`not json`))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not a JSON object")
+	assert.Nil(t, m)
 }
 
 func TestExtractNormalizedEventFromFile_Valid(t *testing.T) {
@@ -9277,7 +9325,8 @@ func TestExtractNormalizedEventFromFile_Valid(t *testing.T) {
 			"source": {"system": "jira", "raw_type": "comment"}
 		}
 	}`), 0o644))
-	m := extractNormalizedEventFromFile(path)
+	m, err := extractNormalizedEventFromFile(path)
+	require.NoError(t, err)
 	require.NotNil(t, m)
 	src, ok := m["source"].(map[string]any)
 	require.True(t, ok)
@@ -9285,7 +9334,9 @@ func TestExtractNormalizedEventFromFile_Valid(t *testing.T) {
 }
 
 func TestExtractNormalizedEventFromFile_NoFile(t *testing.T) {
-	assert.Nil(t, extractNormalizedEventFromFile("/nonexistent/path"))
+	m, err := extractNormalizedEventFromFile("/nonexistent/path")
+	require.NoError(t, err)
+	assert.Nil(t, m)
 }
 
 func TestExtractNormalizedEventFromDispatch_DispatchFile(t *testing.T) {
@@ -9303,7 +9354,8 @@ func TestExtractNormalizedEventFromDispatch_DispatchFile(t *testing.T) {
 			"source": {"system": "jira", "raw_type": "comment"}
 		}
 	}`), 0o644))
-	m := extractNormalizedEventFromDispatch(dir)
+	m, err := extractNormalizedEventFromDispatch(dir)
+	require.NoError(t, err)
 	require.NotNil(t, m)
 	src, ok := m["source"].(map[string]any)
 	require.True(t, ok)
@@ -9324,7 +9376,8 @@ func TestExtractNormalizedEventFromDispatch_GHEventPath(t *testing.T) {
 	require.NoError(t, os.WriteFile(ghEventFile, wrapper, 0o644))
 	t.Setenv("GITHUB_EVENT_PATH", ghEventFile)
 
-	m := extractNormalizedEventFromDispatch(dir)
+	m, err := extractNormalizedEventFromDispatch(dir)
+	require.NoError(t, err)
 	require.NotNil(t, m)
 	src, ok := m["source"].(map[string]any)
 	require.True(t, ok)
@@ -9334,7 +9387,20 @@ func TestExtractNormalizedEventFromDispatch_GHEventPath(t *testing.T) {
 func TestExtractNormalizedEventFromDispatch_NeitherSource(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("GITHUB_EVENT_PATH", "")
-	assert.Nil(t, extractNormalizedEventFromDispatch(dir))
+	m, err := extractNormalizedEventFromDispatch(dir)
+	require.NoError(t, err)
+	assert.Nil(t, m)
+}
+
+func TestExtractNormalizedEventFromDispatch_InvalidEmbeddedEventIsError(t *testing.T) {
+	dir := t.TempDir()
+	dispatchDir := filepath.Join(dir, "dispatch")
+	require.NoError(t, os.MkdirAll(dispatchDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dispatchDir, "event-payload.json"), []byte(`{"_normalized_event": {"repo": ""}}`), 0o644))
+	t.Setenv("GITHUB_EVENT_PATH", "")
+	m, err := extractNormalizedEventFromDispatch(dir)
+	require.Error(t, err)
+	assert.Nil(t, m)
 }
 
 func TestResolveAgentSource_OverrideOnlyEntryUsesAgentsRepoFallback(t *testing.T) {

@@ -286,10 +286,12 @@ until it is listed here. For example `transition.comment` (its `body`,
 `actor.kind` (some adapters infer it from a display name),
 `actor.is_entity_author` (the author makes it true by acting), `state.labels`,
 `base_ref` (the author picks the target branch), `head_*` and the change facts
-are untrusted. A guarded overlay may test `has()` only on objects the schema
-always requires, such as `source`; reading `is_fork` when there is no change
-proposal is simply no match. `actor.role` says who triggered the event, not
-who wrote the change, so an overlay that loosens a guarded value on a change
+are untrusted. A guarded overlay may test `has()` only on a trusted field or
+on a top-level member the schema always requires (`repo`, `entity`,
+`transition`, `actor`, `state` and `source`); reading `is_fork`, or `has()`
+on it, when there is no change proposal is simply no match, so its negation
+never matches either. `actor.role` says who triggered the event, not who
+wrote the change, so an overlay that loosens a guarded value on a change
 proposal should also require `!state.change_proposal.is_fork`.
 
 ## CEL trigger examples

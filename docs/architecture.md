@@ -146,7 +146,8 @@ repo baseline and overrides)
   its children. `fullsend run` refuses runner-owned names, values too short
   to redact, and references from `env.sandbox`, provider credentials,
   expanded `host_files`, and overlays guarded by anything other than
-  `runtime.forge` or `config` (interim until ADR 0112's guarded-field check).
+  `runtime.forge` or `config` (narrower than ADR 0112's guarded-field check;
+  whether it stays as defence in depth is still open).
   GitLab is unchanged: one masked CI/CD variable per secret, none of these
   rules ([ADR 0136](ADRs/0136-runner-secrets-through-one-stored-secret.md)).
   The refusal does not consult the credential deny-list that the
@@ -213,9 +214,15 @@ repo baseline and overrides)
   constrained by [ADR 0133](ADRs/0133-actor-attributed-data-security-boundary.md)).
 - CEL-guarded overlays: an `overlays:` list of CEL-guarded config
   overlays generalizes the `forge:` block, letting harness authors
-  condition scripts, skills, env vars, and other fields on any event
-  property (source system, event type, etc.) rather than only the forge
-  platform. `forge:` is deprecated but remains functional
+  condition harness fields on event properties rather than only the forge
+  platform. An overlay may set any harness field except `base`, `trigger`,
+  `overlays`, `slug`, `role` and `forge`; one that sets a guarded field
+  (every field except `model`, `effort`, `description` and `doc`) may read
+  only the normalized event's trusted fields, `runtime.forge` and `config`,
+  and with an event present an evaluation error other than a missing key
+  fails the run ([ADR 0112](ADRs/0112-overlays-may-set-any-harness-field.md)
+  Decisions 1 and 2; the [field reference](contributing/harness-fields.md)
+  lists the classification tiers). `forge:` is deprecated but remains functional
   ([ADR 0088](ADRs/0088-cel-guarded-overlays.md)).
 - Harness schema versioning and field types: a `schema_version` field (absent
   = version `1`) is planned to make the harness a versioned contract, and every
@@ -306,7 +313,21 @@ flowchart TB
 **Decided (implementation):**
 
 - The `fullsend run` runner delegates in-sandbox agent execution to a `runtime.Runtime` interface; production orgs default to Claude Code, with [pi](https://github.com/earendil-works/pi) available as an opt-in second runtime (`runtime: pi`, Claude-on-Vertex through the same WIF credential path), [codex](https://github.com/openai/codex) as a third (`runtime: codex`, OpenAI models through a custom model provider whose bearer token comes from a runner-seeded file, or `gateway/` models through a runner-owned gateway provider ([ADR 0137](ADRs/0137-inference-gateway-credential-route.md)), with the sandbox tool hooks behind a translating adapter — [ADR 0099](ADRs/0099-codex-agent-runtime.md) and [ADR 0100](ADRs/0100-codex-sandbox-hooks.md)), and [OpenCode](https://github.com/anomalyco/opencode) as a fourth (`runtime: opencode`, Claude-on-Vertex through the same WIF credential path; read-only agents only until the security-hook plugin adapter in [unbound-force#515](https://github.com/unbound-force/unbound-force/issues/515) lands). Runtime selection is configured per repo with `runtime:` in `.fullsend/config.yaml` (per-agent `runtime`/`model`/`effort`/`subagents` on the agent's `agents:` entry sit above it and below the `--runtime`/`--model`/`--effort` flags and `FULLSEND_*` variables, [ADR 0091](ADRs/0091-per-agent-runtime-model-effort.md)) and resolved via `runtime.ResolveForAgent()`. Test-only runtimes — **dummy** (scripted operations) and **dummy-playback** (playlist-based replay of canned results) — execute in the real OpenShell sandbox for behaviour tests without inference. Bootstrap uses a portable `BootstrapInput` interface with optional extensions such as `SandboxHooksBootstrap` for the runtime-neutral sandbox tool hooks ([ADR 0090](ADRs/0090-runtime-neutral-sandbox-hooks-contract.md)); runtimes declare further capabilities through small optional interfaces (`DebugLogNamer`, `ContextBridger`) rather than `Name()` checks in the runner. Transcript and debug artifact handling use a separate `TranscriptHandler` interface. See [runtimes.md](runtimes.md) for the per-runtime security feature matrix required when adding a new backend.
-- Harness `overlays:` ([ADR 0088](ADRs/0088-cel-guarded-overlays.md)) will be able to set any harness field except `base`, `trigger`, `overlays`, `slug`, `role` and `forge`; an overlay that sets a guarded field (any field except `model`, `effort`, `description` and `doc`) may read only trusted event and entity fields, `runtime.forge` and `config`, and every run will record an overlay resolution trace in the plan output and a dedicated span ([ADR 0112](ADRs/0112-overlays-may-set-any-harness-field.md)). Per-task model routing is overlays setting `model` and `effort`, and when a routed model isn't served the runner retries once with the model and effort the run would use without overlays, and `FULLSEND_FALLBACK_MODELS` applies as each runtime allows. Decided, not yet implemented.
+- Harness `overlays:` ([ADR 0088](ADRs/0088-cel-guarded-overlays.md),
+  [ADR 0112](ADRs/0112-overlays-may-set-any-harness-field.md)) set any harness
+  field under the trusted-field guard (Decisions 1 and 2, implemented; see
+  CEL-guarded overlays above), so an overlay can route a task's `model` and
+  `effort`. Still decided, not yet implemented: every run records an overlay
+  resolution trace in the plan output and a dedicated span (Decision 3), and
+  when a routed model isn't served the runner retries once with the model and
+  effort the run would use without overlays, with `FULLSEND_FALLBACK_MODELS`
+  applying as each runtime allows (Decision 4).
+  Separately, and not as an ADR 0112 decision, `fullsend lock` is planned to
+  record the URL agent and plugins an overlay names whatever its `when:`
+  guard, so an event-selected agent replays offline; until then an overlay of
+  a URL-fetched harness may not set `agent`, `agent_input`, `plugins` or
+  `api_servers`, and lock replay falls back to normal resolution when an
+  overlay routed the agent or added a URL plugin the lock does not record.
 - Plugins are runtime-scoped harness resources: a harness declares `plugins:` as one list of directories in its own repository (same trust and fetch path as skills), and each entry's format decides which runtime loads it — a `plugin.json` bundle is Claude Code's, a directory pi's `-e` loader resolves is uploaded and loaded after a tree-hash preflight computed from the host copy. Each runtime names and skips the entries in the other format, so the list survives a runtime switch. Because `--no-extensions` plus explicit `-e` closes the set of code that can register tools, no per-tool declaration is needed ([ADR 0094](ADRs/0094-pi-extensions-are-harness-resources.md)).
 - Native Codex children run under a runner-owned policy: Bootstrap registers roles for an agent with the `Agent` tool, under harness security, whose parent model Codex resolves to collaboration V1 (a V2 or unlisted parent keeps the multi-agent tools off), and binds each child's model (a persona's own entry in its role file, the run-level default otherwise), and a mandatory dispatch hook admits only fresh-context V1 spawns of registered roles after checking `hooks.json` and the role files against runner-held digests ([ADR 0126](ADRs/0126-fullsend-owned-codex-subagents.md)); not yet implemented, so review and retro still run in one context on Codex ([#6970](https://github.com/fullsend-ai/fullsend/issues/6970)).
 

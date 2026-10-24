@@ -10399,3 +10399,253 @@ plugins:
 	h.Policy = writeTestPolicy(t, fullsendDir)
 	require.NoError(t, h.ValidateFilesExist())
 }
+
+func TestLoadWithBase_URLBase_OverlayResourcePathsRefused(t *testing.T) {
+	cases := []struct {
+		name, overlayYAML, field string
+	}{
+		{"agent", "    agent: agents/other.md", "agent"},
+		{"agent_input", "    agent_input: inputs/extra", "agent_input"},
+		{"plugins", "    plugins:\n      - plugins/extra", "plugins"},
+		{"api_servers", "    api_servers:\n      - name: proxy\n        script: scripts/proxy.sh\n        port: 8080", "api_servers"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			baseContent := []byte("agent: agents/remote.md\nrole: test\noverlays:\n  - when: 'true'\n" + tc.overlayYAML + "\n")
+			baseHash := computeHash(baseContent)
+
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/base.yaml":
+					w.WriteHeader(http.StatusOK)
+					w.Write(baseContent)
+				case "/agents/remote.md":
+					w.WriteHeader(http.StatusOK)
+					w.Write([]byte("You are a test agent.\n"))
+				default:
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer server.Close()
+
+			dir := t.TempDir()
+			baseURL := server.URL + "/base.yaml#sha256=" + baseHash
+			path := writeTestHarness(t, dir, "child.yaml", `
+base: `+baseURL+`
+allowed_remote_resources:
+  - `+server.URL+`/
+`)
+			policy := fetch.NewTestPolicy(
+				server.Client().Transport.(*http.Transport).TLSClientConfig,
+				[]string{"127.0.0.1"},
+				[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
+			)
+			_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+				WorkspaceRoot: filepath.Join(dir, "cache"),
+				ForgePlatform: "github",
+				FetchPolicy:   policy,
+				OrgAllowlist:  []string{server.URL + "/"},
+			})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "overlays[0]."+tc.field+" is not supported in a harness fetched from a URL")
+		})
+	}
+}
+
+// Without an event, every overlay evaluation error is a non-match on the
+// production load path, including an error other than a missing key on a
+// guarded entry; with an event the same entry fails the load (ADR 0112).
+func TestLoadWithBase_GuardedOverlayNonMissingError(t *testing.T) {
+	dir := t.TempDir()
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/test.md
+role: test
+image: base:latest
+overlays:
+  - when: 'runtime.forge == "github" && int("not a number") > 0'
+    image: overlay:latest
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{ForgePlatform: "github"})
+	require.NoError(t, err, "no event: the error is a non-match")
+	assert.Equal(t, "base:latest", h.Image)
+
+	_, _, err = LoadWithBase(context.Background(), path, ComposeOpts{
+		ForgePlatform: "github",
+		Event:         map[string]any{"repo": "org/x"},
+	})
+	require.Error(t, err, "with an event, a guarded entry's non-missing error fails the load")
+	assert.Contains(t, err.Error(), "overlays[0].when")
+}
+
+// A no-base harness loaded from a URL (SourceURL) is refused too when an
+// overlay sets a path field the source fetch does not cover.
+func TestLoadWithBase_SourceURL_OverlayResourcePathRefused(t *testing.T) {
+	dir := t.TempDir()
+	path := writeTestHarness(t, dir, "test.yaml", `
+role: test
+agent: agents/remote.md
+overlays:
+  - when: 'runtime.forge == "github"'
+    agent: agents/other.md
+`)
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: dir,
+		SourceURL:     "https://example.com/harness/test.yaml",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "overlays[0].agent is not supported in a harness fetched from a URL")
+}
+
+// An entry that sets several path-bearing fields is refused once, naming all
+// of them.
+func TestLoadWithBase_SourceURL_OverlayResourcePathsAllNamed(t *testing.T) {
+	dir := t.TempDir()
+	path := writeTestHarness(t, dir, "test.yaml", `
+role: test
+agent: agents/remote.md
+overlays:
+  - when: 'runtime.forge == "github"'
+    agent: agents/other.md
+    plugins:
+      - plugins/extra
+    api_servers:
+      - name: proxy
+        script: scripts/proxy.sh
+        port: 8080
+`)
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: dir,
+		SourceURL:     "https://example.com/harness/test.yaml",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "overlays[0].agent, overlays[0].plugins, overlays[0].api_servers are not supported in a harness fetched from a URL")
+}
+
+// The config-level allowlist reaches the overlay check at all three
+// LoadWithBase sites (a harness without a base, a child merged with its base,
+// and a base layer that carries the overlay), so an overlay grant the org
+// allows loads and one it does not is refused.
+func TestLoadWithBase_OrgAllowlistAuthorizesOverlayURL(t *testing.T) {
+	const overlay = `
+overlays:
+  - when: 'runtime.forge == "gitlab"'
+    allowed_remote_resources:
+      - https://example.com/
+    agent: https://example.com/agents/x.md#sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+`
+	cases := []struct {
+		name  string
+		files map[string]string
+	}{
+		{"no base", map[string]string{"child.yaml": "role: test\nagent: agents/local.md\n" + overlay}},
+		{"child with a base", map[string]string{"base.yaml": "role: test\nagent: agents/local.md\n", "child.yaml": "base: base.yaml\n" + overlay}},
+		{"base", map[string]string{"base.yaml": "role: test\nagent: agents/local.md\n" + overlay, "child.yaml": "base: base.yaml\n"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for name, content := range tc.files {
+				writeTestHarness(t, dir, name, content)
+			}
+			path := filepath.Join(dir, "child.yaml")
+			_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{WorkspaceRoot: dir, ForgePlatform: "github"})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "is not covered by the org allowlist")
+
+			_, _, err = LoadWithBase(context.Background(), path, ComposeOpts{WorkspaceRoot: dir, ForgePlatform: "github", OrgAllowlist: []string{"https://example.com/"}})
+			require.NoError(t, err)
+		})
+	}
+}
+
+// An overlay can grant runtime fetch only within the config-level allowlist,
+// at all three LoadWithBase sites: a harness without a base, a child merged
+// with its base, and a base layer that carries the overlay.
+func TestLoadWithBase_OverlayFetchGrantBoundByOrgAllowlist(t *testing.T) {
+	overlay := func(prefix string) string {
+		return `
+overlays:
+  - when: 'runtime.forge == "github"'
+    allow_runtime_fetch: true
+    allowed_remote_resources:
+      - ` + prefix + "\n"
+	}
+	cases := []struct {
+		name  string
+		files func(grant string) map[string]string
+	}{
+		{"no base", func(g string) map[string]string {
+			return map[string]string{"child.yaml": "role: test\nagent: agents/local.md\n" + g}
+		}},
+		{"child with a base", func(g string) map[string]string {
+			return map[string]string{"base.yaml": "role: test\nagent: agents/local.md\n", "child.yaml": "base: base.yaml\n" + g}
+		}},
+		{"base", func(g string) map[string]string {
+			return map[string]string{"base.yaml": "role: test\nagent: agents/local.md\n" + g, "child.yaml": "base: base.yaml\n"}
+		}},
+	}
+	load := func(t *testing.T, files map[string]string) error {
+		dir := t.TempDir()
+		for name, content := range files {
+			writeTestHarness(t, dir, name, content)
+		}
+		_, _, err := LoadWithBase(context.Background(), filepath.Join(dir, "child.yaml"), ComposeOpts{
+			WorkspaceRoot: dir,
+			ForgePlatform: "github",
+			OrgAllowlist:  []string{"https://github.com/acme/"},
+		})
+		return err
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, prefix := range []string{"https://evil.example/prefix/", "https:/"} {
+				err := load(t, tc.files(overlay(prefix)))
+				require.Error(t, err, prefix)
+				assert.Contains(t, err.Error(), "overlays[0]: allowed_remote_resources[0]")
+			}
+			require.NoError(t, load(t, tc.files(overlay("https://github.com/acme/tools/"))))
+		})
+	}
+}
+
+// The ADR 0136 runner-secret check runs before the general overlay check, so
+// a secret-bearing overlay with an untrusted when: gets the runner-secret
+// error, in the child and in a local base alike.
+func TestLoadWithBase_RunnerSecretCheckPrecedesGuard(t *testing.T) {
+	overlay := `
+overlays:
+  - when: 'event.entity.title == "x"'
+    env:
+      runner:
+        TOKEN: "${S}"
+`
+	opts := func(dir string) ComposeOpts {
+		return ComposeOpts{WorkspaceRoot: dir, ForgePlatform: "github", RunnerSecretNames: map[string]bool{"S": true}}
+	}
+
+	t.Run("child", func(t *testing.T) {
+		dir := t.TempDir()
+		path := writeTestHarness(t, dir, "child.yaml", "agent: agents/test.md\nrole: test\n"+overlay)
+		_, _, err := LoadWithBase(context.Background(), path, opts(dir))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "references runner secret(s) S")
+	})
+	t.Run("child with a base", func(t *testing.T) {
+		dir := t.TempDir()
+		writeTestHarness(t, dir, "base.yaml", "agent: agents/test.md\nrole: test\n")
+		path := writeTestHarness(t, dir, "child.yaml", "base: base.yaml\n"+overlay)
+		_, _, err := LoadWithBase(context.Background(), path, opts(dir))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "references runner secret(s) S")
+	})
+	t.Run("base", func(t *testing.T) {
+		dir := t.TempDir()
+		writeTestHarness(t, dir, "base.yaml", "agent: agents/test.md\nrole: test\n"+overlay)
+		path := writeTestHarness(t, dir, "child.yaml", "base: base.yaml\n")
+		_, _, err := LoadWithBase(context.Background(), path, opts(dir))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid base harness")
+		assert.Contains(t, err.Error(), "references runner secret(s) S")
+	})
+}

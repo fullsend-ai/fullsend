@@ -479,9 +479,15 @@ them into the sandbox. Matching is case-insensitive. It warns twice:
 
 `fullsend lock` prints the load-time warning when it composes a harness. A
 current lock entry is not composed; run `fullsend lock --update` to check its
-keys. `lock` composes without event context, so a key added by an overlay
-guarded on `event` is reported only by `fullsend run`. The reserved names are
-listed in the `env.sandbox` note in [Customizing
+keys. `lock` composes without event context, and without `--forge` and a
+`forge:` block also without a platform, so a key added by an overlay guarded
+on `event` (or on `runtime.forge` in that case) is reported only by
+`fullsend run`. For the same reason a URL agent or plugin that only such an
+overlay selects is not in the lock, and
+`fullsend run` falls back to network resolution with a warning, as it does
+when a URL base's agent changed upstream since the lock ([Running agents
+locally](../guides/user/running-agents-locally.md#remote-resource-flags)).
+The reserved names are listed in the `env.sandbox` note in [Customizing
 agents](../guides/user/customizing-agents.md#reserved-envsandbox-names);
 where blocked proxy and certificate settings go instead is in [Migrating proxy
 and certificate

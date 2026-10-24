@@ -195,6 +195,19 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 	}
 	harnessHash := fetch.ComputeSHA256(harnessData)
 
+	// Lock loads a URL-fetched harness without ComposeOpts.SourceURL, so
+	// apply run's refusal of overlay resource paths here: lock must not
+	// record a harness that run will refuse.
+	if len(agentSourceDeps) > 0 && agentSourceDeps[0].URL != "" {
+		raw, err := harness.LoadRaw(harnessPath)
+		if err != nil {
+			return nil, err
+		}
+		if err := harness.RefuseURLOverlayPaths(raw, agentSourceDeps[0].URL); err != nil {
+			return nil, fmt.Errorf("invalid harness: %w", err)
+		}
+	}
+
 	if !update && lf != nil {
 		if entry := lf.Lookup(agentName); entry != nil && !entry.IsStale(harnessHash) {
 			printer.StepDone(fmt.Sprintf("Lock entry for %s is up to date (%d dependencies)", agentName, len(entry.Dependencies)))
@@ -745,6 +758,23 @@ func lockForgePlatforms(harnessPath, forgePlatform string) ([]string, error) {
 	return platforms, nil
 }
 
+// lockedBasePluginSlot reports whether plugins[idx] is a base-composed slot
+// for the locked plugin: a path under the workspace .fullsend-cache with the
+// cached plugin's directory name, and no URL entry for the locked plugin
+// anywhere in the list. A URL entry for it, at idx or shifted by an
+// overlay that added plugins after lock time, is resolved by
+// identity instead, and a path the harness author wrote (a vendored plugin of
+// the same name, say) is never overwritten.
+func lockedBasePluginSlot(plugins []harness.PluginSpec, idx int, lockedURL, localPath, workspaceRoot string) bool {
+	for _, p := range plugins {
+		if cleanURL, _, _ := harness.ParseIntegrityHash(p.Path); harness.IsURL(p.Path) && cleanURL == lockedURL {
+			return false
+		}
+	}
+	slot := plugins[idx].Path
+	return harness.IsFullsendCachePath(slot, workspaceRoot) && filepath.Base(slot) == filepath.Base(localPath)
+}
+
 // resolveFromLock resolves harness dependencies using a lock file entry instead
 // of fetching from the network. For each pinned dependency, it verifies the
 // content exists in the local cache and replaces the harness URL field with the
@@ -757,6 +787,8 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 	type mutation struct {
 		field     string
 		localPath string
+		url       string
+		sha256    string
 	}
 
 	var mutations []mutation
@@ -849,7 +881,7 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 		// ResolvedProfile list, not by mutating a harness field. Keep it a
 		// no-op if that switch ever grows a profile case, or move this append
 		// after the rename.
-		mutations = append(mutations, mutation{field: lockDep.Field, localPath: localPath})
+		mutations = append(mutations, mutation{field: lockDep.Field, localPath: localPath, url: lockDep.URL, sha256: lockDep.SHA256})
 		dep := resolve.Dependency{
 			Field:     lockDep.Field,
 			URL:       lockDep.URL,
@@ -913,18 +945,24 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 	// Pre-validate plugin URL entries before applying any mutations,
 	// preserving the collect-then-apply contract: a validation failure
 	// here returns with the harness unchanged.
-	resolvedURLs := make(map[string]string, len(deps))
+	lockedDeps := make(map[string]resolve.Dependency, len(deps))
 	for _, d := range deps {
-		resolvedURLs[d.URL] = d.LocalPath
+		lockedDeps[d.URL] = d
 	}
 	for i, e := range h.Plugins {
 		if p := e.Path; harness.IsURL(p) {
-			cleanURL, _, _ := harness.ParseIntegrityHash(p)
+			cleanURL, hash, _ := harness.ParseIntegrityHash(p)
 			if cleanURL == "" {
 				cleanURL = p
 			}
-			if _, ok := resolvedURLs[cleanURL]; !ok {
-				return resolve.ResolveResult{}, fmt.Errorf("plugins[%d] (%s) has no entry in the lock file — run 'fullsend lock' to update", i, p)
+			locked, ok := lockedDeps[cleanURL]
+			if !ok {
+				return resolve.ResolveResult{}, fmt.Errorf("plugins[%d] %q has no entry in the lock file — run 'fullsend lock' to update; the lock does not yet record a plugin an overlay selected", i, p)
+			}
+			// The same URL under another integrity pin (an overlay naming a
+			// different revision) is not the locked plugin.
+			if hash != "" && hash != locked.SHA256 {
+				return resolve.ResolveResult{}, fmt.Errorf("plugins[%d] %q is pinned to a different tree than the lock file records — run 'fullsend lock' to update; the lock does not yet record a plugin an overlay selected", i, p)
 			}
 			forgeInfo, parseErr := forge.ParseForgeURL(cleanURL)
 			if parseErr == nil {
@@ -936,12 +974,62 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 		}
 	}
 
+	// Choose the one agent entry that replays before any mutation. A lock can
+	// hold several `agent` entries (a URL base's relative agent is recorded
+	// before the child's own), and an overlay may have routed the run to an
+	// agent the lock never saw: `fullsend lock` composes without an event (and
+	// without --forge or a forge: block, without a platform), so an overlay
+	// keyed on those never matches there (ADR 0112).
+	//   - A URL agent replays the entry for that URL under the same (or no)
+	//     integrity pin; with none, the caller falls back to normal resolution.
+	//   - A base-composed agent (a path under .fullsend-cache, in the
+	//     content-addressed directory of its sha256) replays the entry whose
+	//     sha256 names that directory. With agent entries but none for its
+	//     content the caller falls back.
+	//     Known limitation: identity is by content, so two causes look the
+	//     same and both fall back: a URL-sourced child's own agent (which
+	//     `fullsend lock` composes without the source URL) and a base agent
+	//     whose content changed upstream since the lock (its relative path
+	//     has no pin of its own). Telling them apart needs the lock to record the
+	//     agent's fetch URL.
+	//   - A path the harness author wrote is left alone.
+	var agentPath string
+	var agentEntries []mutation
+	for _, m := range mutations {
+		if m.field == "agent" {
+			agentEntries = append(agentEntries, m)
+		}
+	}
+	switch {
+	case harness.IsURL(h.Agent):
+		cleanURL, hash, _ := harness.ParseIntegrityHash(h.Agent)
+		for _, m := range agentEntries {
+			if cleanURL == m.url && (hash == "" || hash == m.sha256) {
+				agentPath = m.localPath
+			}
+		}
+		if agentPath == "" {
+			return resolve.ResolveResult{}, fmt.Errorf("agent %q is not the locked agent: an overlay routed the run to an agent the lock does not record (the lock does not yet record overlay-selected agents)", h.Agent)
+		}
+	case harness.IsFullsendCachePath(h.Agent, workspaceRoot) && len(agentEntries) > 0:
+		composed := filepath.Base(filepath.Dir(h.Agent))
+		for _, m := range agentEntries {
+			if composed == m.sha256 {
+				agentPath = m.localPath
+			}
+		}
+		if agentPath == "" {
+			return resolve.ResolveResult{}, fmt.Errorf("agent %q is not the locked agent: no agent entry in the lock file records its content (the base's agent changed since 'fullsend lock', or it is a URL-sourced harness's own agent, which the lock does not yet record)", h.Agent)
+		}
+	}
+
 	// All deps confirmed in cache — apply mutations to the harness.
 	urlResolvedPlugins := make(map[string]bool)
 	for _, m := range mutations {
 		switch {
 		case m.field == "agent":
-			h.Agent = m.localPath
+			// The entry that replays was chosen above and is applied after
+			// this loop.
 		case m.field == "policy":
 			h.Policy = m.localPath
 		case strings.HasPrefix(m.field, "policy["):
@@ -1009,10 +1097,17 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 			var idx int
 			// Index was validated during collection; Sscanf is safe here.
 			fmt.Sscanf(m.field, "plugins[%d]", &idx)
-			// Only the path is replaced: the entry's env and pi options are
-			// the harness author's and survive resolution.
-			h.Plugins[idx].Path = m.localPath
-			urlResolvedPlugins[m.localPath] = true
+			// Only a base-composed slot is replaced by index; a URL entry for
+			// the locked plugin, at idx or shifted by an overlay that added
+			// plugins after lock time, is resolved by identity
+			// below. Writing by index there would put this plugin in another
+			// entry's slot under its env and pi options. Only the path is
+			// replaced: the entry's env and pi options are the harness
+			// author's and survive resolution.
+			if lockedBasePluginSlot(h.Plugins, idx, m.url, m.localPath, workspaceRoot) {
+				h.Plugins[idx].Path = m.localPath
+				urlResolvedPlugins[m.localPath] = true
+			}
 		case strings.HasPrefix(m.field, "forge.") && strings.Contains(m.field, ".skills["):
 			// Forge-scoped skills are resolved during LoadWithBase and merged
 			// into h.Skills by ResolveForge before resolveFromLock runs; the
@@ -1058,6 +1153,10 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 		}
 	}
 
+	if agentPath != "" {
+		h.Agent = agentPath
+	}
+
 	// Remove any remaining URL entries from skills. In diamond dependency
 	// scenarios (same URL referenced both transitively and directly), the
 	// lock file deduplicates by URL, so the direct reference has no lock
@@ -1080,8 +1179,8 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 			if cleanURL == "" {
 				cleanURL = p
 			}
-			h.Plugins[i].Path = resolvedURLs[cleanURL]
-			urlResolvedPlugins[resolvedURLs[cleanURL]] = true
+			h.Plugins[i].Path = lockedDeps[cleanURL].LocalPath
+			urlResolvedPlugins[lockedDeps[cleanURL].LocalPath] = true
 		}
 	}
 

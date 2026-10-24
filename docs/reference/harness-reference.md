@@ -108,6 +108,8 @@ overlays:
     runner:
       GH_TOKEN: "${GH_TOKEN}"
       JIRA_TOKEN: "${JIRA_TOKEN}"
+- when: 'event.actor.role in ["admin", "maintain"] && event.source.system == "github"'
+  timeout_minutes: 45                 # Guarded field: when reads trusted facts only
 - when: 'runtime.forge == "github"'
   pre_script: scripts/pre-gh.sh
   post_script: scripts/post-gh.sh
@@ -143,7 +145,24 @@ Most fields are self-explanatory from the inline comments above. This section ex
 
 **`role`** — The agent's identity within fullsend. Dispatch uses the role to match config-registered agents to built-in defaults (same-name config agents take precedence). The role also determines which GitHub App credentials **and permissions** the mint service issues. It must be a role the mint serves: on the hosted mint that is the fixed built-in set (`triage`, `coder`, `review`, `retro`, `prioritize`, `fullsend`); custom roles require your own mint. An unserved role returns `403`. See [Custom Agent Identity](../guides/user/custom-agent-identity.md).
 
-**`privilege_levels`** — Maps run-stages to named mint privilege levels so the LLM sandbox can receive a narrower token than host-side scripts. Keys: `pre_script`, `runtime`, `post_script`, and `default` (covers unlisted stages). `validation_loop` is not a key — it inherits `runtime` because it shares that stage's security context. Level names are lowercase identifiers (`read` and `write` on every role; custom roles may define more). When the field is omitted, every stage gets `write`, matching pre-ADR-0073 behavior. The runner mints the `runtime` token **before** provider credential expansion and `host_files` with `expand: true`, remints around `pre_script` when that stage differs, and remints for `post_script` after sandbox teardown. A remint failure is fatal (aborts the run) whenever the configured stage level differs from the currently active token's level; it is non-fatal — falling back to the existing token — only when the levels match (a same-level expiry refresh). **Top level only** — it is not a `ForgeConfig` field, so a `privilege_levels` key placed under `overlays:`/`forge:` is silently ignored; only `base:` composition (see the merge table below) can override it. See [ADR 0073](../ADRs/0073-named-mint-privilege-levels.md).
+**`privilege_levels`** — Maps run-stages to named mint privilege levels so the
+LLM sandbox can receive a narrower token than host-side scripts. Keys:
+`pre_script`, `runtime`, `post_script`, and `default` (covers unlisted stages).
+`validation_loop` is not a key — it inherits `runtime` because it shares that
+stage's security context. Level names are lowercase identifiers (`read` and
+`write` on every role; custom roles may define more). When the field is omitted,
+every stage gets `write`, matching pre-ADR-0073 behavior. The runner mints the
+`runtime` token **before** provider credential expansion and `host_files` with
+`expand: true`, remints around `pre_script` when that stage differs, and remints
+for `post_script` after sandbox teardown. A remint failure is fatal (aborts the
+run) whenever the configured stage level differs from the currently active
+token's level; it is non-fatal — falling back to the existing token — only when
+the levels match (a same-level expiry refresh). Not a `ForgeConfig` field, so a
+`forge:` block cannot set it; an `overlays:` entry can ([ADR
+0112](../ADRs/0112-overlays-may-set-any-harness-field.md); it is a guarded
+field, so the entry's `when:` may read only trusted facts), merging its map with
+overlay keys winning, as `base:` composition does (see the merge table below).
+See [ADR 0073](../ADRs/0073-named-mint-privilege-levels.md).
 
 **`slug`** — Install-time hint used by `fullsend github setup` to find or name the GitHub App. The `<org>-<role>` convention keeps slugs unique when multiple orgs share a mint. The **mint does not read `slug`** when issuing a token — identity and permissions come from `role`, so changing `slug` alone changes neither. For a custom GitHub App identity, see [Custom Agent Identity](../guides/user/custom-agent-identity.md).
 
@@ -196,7 +215,15 @@ These rules make a run fail before `pre_script` starts:
   case-insensitively, so `path` or `github_token` is refused like `PATH` or
   `GITHUB_TOKEN`.
 - **Host side only.** The object's names may be referenced only from `env.runner` values. A reference from `env.sandbox`, `runner_env`, a provider's `credentials` or `config`, a `host_files` `src`, the content of a `host_files` entry with `expand: true`, or a `validation_loop` field is a validation error.
-- **Overlays.** An overlay that references one of the object's names may be guarded only by `runtime.forge` and `config`. An overlay that reads `event` or any other `runtime` field is refused, even when it does not match. This rule is interim until [ADR 0112](../ADRs/0112-overlays-may-set-any-harness-field.md)'s guarded-field check is implemented; until then an event-guarded overlay can still swap `pre_script`, `post_script` or `validation_loop`, and so choose which script receives a referenced value.
+- **Overlays.** An overlay that references one of the object's names may be
+  guarded only by `runtime.forge` and `config`. An overlay that reads `event` or
+  any other `runtime` field is refused, even when it does not match. This rule
+  is narrower than [ADR
+  0112](../ADRs/0112-overlays-may-set-any-harness-field.md)'s general guard,
+  which already limits an overlay that sets any guarded field (`pre_script`,
+  `post_script` and `validation_loop` included) to trusted event fields,
+  `runtime.forge` and `config`; whether the narrower rule stays as defence in
+  depth is still open.
 - **Shape.** The value must be a JSON object whose values are strings, with no duplicate keys and no `null` values. Each value must be at least as long as the redactor's minimum (currently 8 characters), so it can be redacted. Errors name the offending key, never its value.
 
 `fullsend run` masks each value, and each line of a multi-line value, in the GitHub Actions log. It also registers the value, its lines and its JSON-escaped form for redaction from pre-script failure detail and validation feedback. Both match exact strings: a value a script transforms (base64, URL-encoded, a substring) is not hidden, and a line shorter than that minimum is masked but not redacted.
@@ -288,7 +315,18 @@ A pi-format entry must also satisfy pi's own loader rule:
 - **`pi.args`** — flags the extension registered with `pi.registerFlag`, each `--flag` or `--flag=value` (pi has no single-dash options), never one of pi's own option names, with no value starting with `-` or `@`. One bare word may follow a `--flag` written without `=`; any other bare word is prompt text pi would prepend to the agent's prompt.
 - **`env` keys** match `^[A-Z_][A-Z0-9_]*$` and may not name the interpreter environment (`PATH`, `HOME`, `TMPDIR`, `ENV`, `BASH_ENV`, `SHELL`, `IFS`, `CDPATH`, `PROMPT_COMMAND`, `LD_*`, `DYLD_*`, `PYTHON*`, `NODE_*`, `SSL_*`, `JITI_*`, `GIT_*`, `JAVA_TOOL_OPTIONS`, `RUBYOPT`, `PERL5OPT`), a credential- or proxy-shaped name (`*_API_KEY`, `*_TOKEN`, `*_SECRET*`, `*_PROXY`), a trust-store or resolver name (`HOSTALIASES`, `OPENSSL_CONF`, `SSLKEYLOGFILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GOPROXY`, `GOFLAGS`), or a runner/provider family (`PI_*`, `FULLSEND_*`, `TIRITH_*`, `GOOGLE_*`, `GCLOUD_*`, `CLOUDSDK_*`, `ANTHROPIC_*`, `XAI_*`, `OPENAI_*`, `AZURE_*`, `AWS_*`, `CLOUD_ML_REGION`).
 
-`plugins` is a top-level field only: it is not part of `ForgeConfig`, so a `plugins:` key under `forge:` or `overlays:` is silently ignored. Walkthrough for the pi side: [Pi § Plugins (pi extensions)](../runtimes/pi.md#plugins-pi-extensions). Rationale and run-time mechanics: [Runtime Implementation § Pi extensions](../contributing/runtime-implementation.md#pi-extensions-adr-0094).
+`plugins` is not part of `ForgeConfig`, so a `forge:` block cannot set it; an
+`overlays:` entry can ([ADR
+0112](../ADRs/0112-overlays-may-set-any-harness-field.md); guarded), and its
+entries are concatenated after the top-level list. An overlay of a harness
+fetched from a URL may not set `agent`, `agent_input`, `plugins` or
+`api_servers` yet, because overlay resources are not fetched from the source.
+Delete the key (it had no effect before), or set it in an overlay of a local
+harness that composes the URL harness through `base:`. Walkthrough for the pi
+side: [Pi § Plugins (pi
+extensions)](../runtimes/pi.md#plugins-pi-extensions). Rationale and run-time
+mechanics: [Runtime Implementation § Pi
+extensions](../contributing/runtime-implementation.md#pi-extensions-adr-0094).
 
 **`max_runtime_fetches`** — Caps the number of runtime fetches per run. Only meaningful when `allow_runtime_fetch` is `true`.
 
@@ -319,6 +357,33 @@ is applied in declaration order, with later matches taking precedence over
 earlier ones for scalar fields. Cross-concern scenarios (e.g. JIRA-specific
 scripts *and* GitHub-specific runner env) can use separate overlay entries.
 More-specific entries go last so they override broader defaults.
+An overlay may set any field except `base`, `trigger`, `overlays`, `slug`,
+`role` and `forge`, which fail validation inside an overlay. Every
+overlay-settable field except `model`, `effort`, `description` and `doc` is
+guarded: the entry's `when:` may read only `runtime.forge`, `config` and the
+normalized event's
+[trusted fields](../normative/normalized-event/v1/README.md#trusted-fields),
+test `event == null` or `event != null`, and call `has()` on a trusted field
+or on a top-level member the event schema always requires
+([ADR 0112](../ADRs/0112-overlays-may-set-any-harness-field.md);
+classification tiers and merge details in the
+[field reference](../contributing/harness-fields.md)).
+The values an entry sets are validated whether or not its `when:` matches,
+so a malformed value in a never-matching overlay fails the load when the
+top-level values are valid. The two rules that span fields
+(`allow_runtime_fetch` needs an `allowed_remote_resources` entry,
+`max_runtime_fetches` needs `allow_runtime_fetch`) are checked only on the
+resolved harness, so `fullsend lint` misses them in an overlay it does not
+match. A fullsend release older than the one that
+introduced these rules ignores the overlay keys it does not know, so upgrade
+fullsend before pinning harness content whose overlays set them: an older
+binary would run without the overlay's `security`, `privilege_levels`,
+`image` or `plugins`. In the other direction, the fullsend binary a workflow
+installs is not pinned with the harness, so run `fullsend lint` with the new
+release on pinned harness content first: a harness these rules refuse fails
+`fullsend run`, is skipped with an `::error::` annotation by harness
+dispatch, and on a built-in agent's CEL route counts as unavailable, so an
+actor below write access is skipped with a warning.
 
 | Field type | Behavior |
 |-----------|----------|
@@ -328,10 +393,10 @@ More-specific entries go last so they override broader defaults.
 | `plugins`, `api_servers` | Concatenated (base + child); each entry keeps its own `env`/`pi` |
 | `host_files` | Concatenated; child overrides by `dest` |
 | `env`, `runner_env` (deprecated) | Merged; child keys win |
-| `privilege_levels` | Merged; child keys win. Omitted entirely defaults every stage to `write`. Top-level only — not a `ForgeConfig` field, so this merge applies only to `base:` composition; an `overlays:`/`forge:` entry is silently ignored |
+| `privilege_levels` | Merged; child keys win. Omitted entirely defaults every stage to `write`. Not a `ForgeConfig` field, so `forge:` cannot set it; `base:` composition and `overlays:` entries merge it this way |
 | `validation_loop` | Field-level merge; child/overlay non-zero values win, omitted fields inherit |
 | `security` | Child replaces entirely |
-| `allowed_remote_resources`, `allow_runtime_fetch`, `max_runtime_fetches` | NOT inherited (child must declare its own); however, the config-level `allowed_remote_resources` from repository-local configuration acts as a fallback for URL resolution |
+| `allowed_remote_resources`, `allow_runtime_fetch`, `max_runtime_fetches` | NOT inherited from a `base:` (child must declare its own); however, the config-level `allowed_remote_resources` from repository-local configuration acts as a fallback for URL resolution. A matching `overlays:` entry does apply them (list concatenated, `allow_runtime_fetch` turned on, `max_runtime_fetches` replaced); they are guarded, and every entry an overlay adds must lie within the config-level allowlist. A base layer's overlay that sets them has no effect on the child |
 
 ## Referencing resources: local vs. remote
 

@@ -603,7 +603,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// GITHUB_EVENT_PATH (workflow_call path where event_payload is nested
 	// in inputs).
 	if eventMap == nil {
-		eventMap = extractNormalizedEventFromDispatch(absFullsendDir)
+		var extractErr error
+		eventMap, extractErr = extractNormalizedEventFromDispatch(absFullsendDir)
+		if extractErr != nil {
+			return extractErr
+		}
 	}
 
 	// For the fallback path, also extract tracker provenance from the
@@ -6673,21 +6677,23 @@ func prHeadSHAFromEventPath(path string) string {
 // In both cases, the function looks for a top-level "_normalized_event" key
 // that was added by buildEventPayload. If found, the value is validated via
 // normevent.ParseJSON and converted to a map for CEL evaluation. Returns nil
-// if the normalized event is absent or invalid (best-effort; overlays fall
-// back to the empty-map behavior documented in ResolveOverlays).
-func extractNormalizedEventFromDispatch(fullsendDir string) map[string]any {
+// when no normalized event is embedded (overlays then see event as CEL null,
+// as documented in ResolveOverlays), and an error when the payload is not JSON
+// or the embedded event is invalid: a guarded overlay may test
+// `event == null`, so a corrupt payload must not read as no event.
+func extractNormalizedEventFromDispatch(fullsendDir string) (map[string]any, error) {
 	// Try 1: on-disk dispatch event-payload.json (reusable-dispatch path).
-	if m := extractNormalizedEventFromFile(filepath.Join(fullsendDir, "dispatch", "event-payload.json")); m != nil {
-		return m
+	if m, err := extractNormalizedEventFromFile(filepath.Join(fullsendDir, "dispatch", "event-payload.json")); m != nil || err != nil {
+		return m, err
 	}
 	// Try 2: GITHUB_EVENT_PATH → inputs.event_payload (workflow_call path).
 	ghEventPath := os.Getenv("GITHUB_EVENT_PATH")
 	if ghEventPath == "" {
-		return nil
+		return nil, nil
 	}
 	data, err := os.ReadFile(ghEventPath)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 	var wrapper struct {
 		Inputs struct {
@@ -6695,46 +6701,48 @@ func extractNormalizedEventFromDispatch(fullsendDir string) map[string]any {
 		} `json:"inputs"`
 	}
 	if err := json.Unmarshal(data, &wrapper); err != nil || wrapper.Inputs.EventPayload == "" {
-		return nil
+		return nil, nil
 	}
 	return extractNormalizedEventFromPayload([]byte(wrapper.Inputs.EventPayload))
 }
 
 // extractNormalizedEventFromFile reads a JSON file and extracts _normalized_event.
-func extractNormalizedEventFromFile(path string) map[string]any {
+func extractNormalizedEventFromFile(path string) (map[string]any, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 	return extractNormalizedEventFromPayload(data)
 }
 
 // extractNormalizedEventFromPayload extracts and validates the _normalized_event
-// field from a legacy event-payload JSON blob.
-func extractNormalizedEventFromPayload(payload []byte) map[string]any {
+// field from a legacy event-payload JSON blob. A payload without the field
+// returns nil; a payload that is not JSON, or a field that fails validation,
+// is an error.
+func extractNormalizedEventFromPayload(payload []byte) (map[string]any, error) {
 	var raw map[string]any
 	if err := json.Unmarshal(payload, &raw); err != nil {
-		return nil
+		return nil, fmt.Errorf("the dispatch payload is not a JSON object: %w", err)
 	}
 	normRaw, ok := raw["_normalized_event"]
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	// Re-serialize and validate through normevent.ParseJSON so we get
 	// the same validation as --event-file, then convert to map.
 	normBytes, err := json.Marshal(normRaw)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("invalid _normalized_event in the dispatch payload: %w", err)
 	}
 	ev, err := normevent.ParseJSON(normBytes)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("invalid _normalized_event in the dispatch payload: %w", err)
 	}
 	m, err := ev.ToMap()
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("invalid _normalized_event in the dispatch payload: %w", err)
 	}
-	return m
+	return m, nil
 }
 
 // emitDiagnostic prints a harness lint diagnostic with severity-appropriate formatting.

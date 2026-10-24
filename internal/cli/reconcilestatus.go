@@ -76,8 +76,10 @@ finalized, this is a no-op.`,
 			// wrapping a forge client. This runs before --number
 			// validation so Jira callers can omit --number (the
 			// number is derived from entity.key).
+			// An invalid embedded event is left to fullsend run, which
+			// stops on it; status routing falls back to the forge.
 			var trackerSource string
-			eventMap := extractNormalizedEventFromDispatch(fullsendDir)
+			eventMap, _ := extractNormalizedEventFromDispatch(fullsendDir)
 			if eventMap != nil {
 				trackerSource = extractMapString(eventMap, "source", "system")
 				if trackerSource == "jira" {

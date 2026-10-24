@@ -29,6 +29,10 @@ func TestOverlayGuardReadsOnlyForgeOrConfig(t *testing.T) {
 		`has(runtime.forge)`,
 		`runtime.forge == "github" || runtime == {}`,
 		`not valid cel ((`,
+		// A shadowing comprehension variable makes the checker keep the
+		// global reference as ".event" / ".runtime".
+		`[0].exists(event, .event.kind == "x")`,
+		`[0].exists(runtime, .runtime.other == "x")`,
 	}
 	for _, when := range refused {
 		assert.False(t, overlayGuardReadsOnlyForgeOrConfig(when), when)

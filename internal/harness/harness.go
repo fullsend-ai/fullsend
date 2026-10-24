@@ -430,7 +430,10 @@ type LoadOpts struct {
 // validation. The pipeline is: Unmarshal → validateForge → ResolveForge →
 // Validate. validateForge runs first to reject malformed forge maps before
 // ResolveForge consumes (nils out) the map. When ForgePlatform is empty,
-// ResolveForge is a no-op but validateForge still runs.
+// ResolveForge is a no-op but validateForge still runs. No production loader
+// calls it; LoadWithBase is the production path. The URL-overlay-path
+// refusal does not apply because path is a local file, and no org allowlist
+// is known here, so any overlay allowed_remote_resources entry is refused.
 func LoadWithOpts(path string, opts LoadOpts) (*Harness, error) {
 	h, err := LoadRaw(path)
 	if err != nil {
@@ -499,20 +502,8 @@ func (h *Harness) Validate() error {
 	if h.Agent == "" {
 		return fmt.Errorf("agent field is required")
 	}
-	// Agent name (filename without .md) must be safe for shell interpolation.
-	// Skip name validation when agent is a URL — the resolver will replace it
-	// with a local cache path before it reaches the shell.
-	if !IsURL(h.Agent) {
-		agentBase := strings.TrimSuffix(filepath.Base(h.Agent), ".md")
-		if !validAgentName.MatchString(agentBase) {
-			return fmt.Errorf("agent name %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -)", agentBase)
-		}
-	}
-	if h.Model != "" && !config.ValidModelRef(h.Model) {
-		return fmt.Errorf("model %q contains invalid characters (allowed: segments of a-z, A-Z, 0-9, _, -, ., @ joined by /)", h.Model)
-	}
-	if h.Effort != "" && !validEffortLevel(h.Effort) {
-		return fmt.Errorf("effort %q is not valid (allowed: %s)", h.Effort, strings.Join(validEffortLevels, ", "))
+	if err := h.validateAgentModelEffort(); err != nil {
+		return err
 	}
 	if h.Role == "" {
 		return fmt.Errorf("role field is required")
@@ -540,11 +531,8 @@ func (h *Harness) Validate() error {
 			return fmt.Errorf("providers[%d] name %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -)", i, p)
 		}
 	}
-	if h.TimeoutMinutes < 0 {
-		return fmt.Errorf("timeout_minutes must be non-negative, got %d", h.TimeoutMinutes)
-	}
-	if h.SandboxTimeoutSeconds != 0 && (h.SandboxTimeoutSeconds < 30 || h.SandboxTimeoutSeconds > 600) {
-		return fmt.Errorf("sandbox_timeout_seconds must be 0 (default) or between 30 and 600, got %d", h.SandboxTimeoutSeconds)
+	if err := h.validateTimeouts(); err != nil {
+		return err
 	}
 	for i, hf := range h.HostFiles {
 		if hf.Src == "" {
@@ -577,13 +565,11 @@ func (h *Harness) Validate() error {
 	if h.AllowRuntimeFetch && len(h.AllowedRemoteResources) == 0 {
 		return fmt.Errorf("allow_runtime_fetch requires at least one entry in allowed_remote_resources")
 	}
-	if h.MaxRuntimeFetches != nil {
-		if !h.AllowRuntimeFetch {
-			return fmt.Errorf("max_runtime_fetches requires allow_runtime_fetch to be true")
-		}
-		if *h.MaxRuntimeFetches <= 0 || *h.MaxRuntimeFetches > 1000 {
-			return fmt.Errorf("max_runtime_fetches must be between 1 and 1000, got %d", *h.MaxRuntimeFetches)
-		}
+	if h.MaxRuntimeFetches != nil && !h.AllowRuntimeFetch {
+		return fmt.Errorf("max_runtime_fetches requires allow_runtime_fetch to be true")
+	}
+	if err := h.validateMaxRuntimeFetchesRange(); err != nil {
+		return err
 	}
 	if err := h.validateForge(); err != nil {
 		return err
@@ -596,6 +582,73 @@ func (h *Harness) Validate() error {
 	}
 	// ValidateAllowedRemoteResources requires the org allowlist and is called
 	// by the integration layer, not here.
+	return nil
+}
+
+// validateOverlaySettable checks the values of the fields an overlay may set
+// (OverlayFields) with the checks Validate runs on them at the top level, in
+// Validate's order. Validate calls the same helpers inline at the positions
+// the checks had before overlays could set these fields, so the first error
+// a harness reports is unchanged; validateOverlays runs this on a probe
+// harness per entry, so a non-matching overlay's values are checked too.
+// Cross-field rules (agent required, allow_runtime_fetch needs an
+// allowlist, max_runtime_fetches needs allow_runtime_fetch) stay in Validate,
+// which runs on the merged harness.
+func (h *Harness) validateOverlaySettable() error {
+	for _, check := range []func() error{
+		h.validateAgentModelEffort,
+		h.validatePrivilegeLevels,
+		h.validatePlugins,
+		h.validateTimeouts,
+		h.validateSecurity,
+		h.ValidateResourceTypes,
+		h.validateMaxRuntimeFetchesRange,
+	} {
+		if err := check(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateAgentModelEffort checks the agent name, model and effort values.
+func (h *Harness) validateAgentModelEffort() error {
+	// Agent name (filename without .md) must be safe for shell interpolation.
+	// Skip name validation when agent is a URL — the resolver will replace it
+	// with a local cache path before it reaches the shell.
+	if h.Agent != "" && !IsURL(h.Agent) {
+		agentBase := strings.TrimSuffix(filepath.Base(h.Agent), ".md")
+		if !validAgentName.MatchString(agentBase) {
+			return fmt.Errorf("agent name %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -)", agentBase)
+		}
+	}
+	if h.Model != "" && !config.ValidModelRef(h.Model) {
+		return fmt.Errorf("model %q contains invalid characters (allowed: segments of a-z, A-Z, 0-9, _, -, ., @ joined by /)", h.Model)
+	}
+	if h.Effort != "" && !validEffortLevel(h.Effort) {
+		return fmt.Errorf("effort %q is not valid (allowed: %s)", h.Effort, strings.Join(validEffortLevels, ", "))
+	}
+	return nil
+}
+
+// validateTimeouts checks timeout_minutes and sandbox_timeout_seconds.
+func (h *Harness) validateTimeouts() error {
+	if h.TimeoutMinutes < 0 {
+		return fmt.Errorf("timeout_minutes must be non-negative, got %d", h.TimeoutMinutes)
+	}
+	if h.SandboxTimeoutSeconds != 0 && (h.SandboxTimeoutSeconds < 30 || h.SandboxTimeoutSeconds > 600) {
+		return fmt.Errorf("sandbox_timeout_seconds must be 0 (default) or between 30 and 600, got %d", h.SandboxTimeoutSeconds)
+	}
+	return nil
+}
+
+// validateMaxRuntimeFetchesRange checks a set max_runtime_fetches against its
+// 1..1000 range; whether it needs allow_runtime_fetch is Validate's
+// cross-field rule.
+func (h *Harness) validateMaxRuntimeFetchesRange() error {
+	if h.MaxRuntimeFetches != nil && (*h.MaxRuntimeFetches <= 0 || *h.MaxRuntimeFetches > 1000) {
+		return fmt.Errorf("max_runtime_fetches must be between 1 and 1000, got %d", *h.MaxRuntimeFetches)
+	}
 	return nil
 }
 

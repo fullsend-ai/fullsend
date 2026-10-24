@@ -390,6 +390,17 @@ When the lock entry is current (harness SHA256 matches), dependencies are
 resolved from the local cache without network access. If the harness has changed
 or a cached artifact is missing, `fullsend run` falls back to normal network
 resolution and prints a warning suggesting you re-run `fullsend lock`.
+`fullsend lock` composes the harness without an event or source URL, and
+without `--forge` and a `forge:` block also without a platform, so a URL agent
+or plugin that only an overlay keyed on the event (or on `runtime.forge` in
+that case) selects is not recorded; when a run's overlay selects one,
+`fullsend run` falls back the same way. It
+also falls back when a URL base's agent or a plugin's integrity pin changed
+upstream since the lock, because the lock then records no entry for the
+content the run composed, and on every run of a URL-sourced harness whose own
+agent sits over a URL base, because the lock recorded the base's agent
+instead. Recording overlay-selected resources, and telling a changed base
+apart from a URL-sourced harness's own agent, is planned.
 
 Use `--update` to force re-resolution even if the lock entry appears current.
 A current entry is also not composed, so `fullsend lock` does not check it for
