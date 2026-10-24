@@ -20,19 +20,25 @@ This project uses [Conventional Commits](https://www.conventionalcommits.org/). 
 
 ## DCO (Developer Certificate of Origin)
 
-This project uses the [Probot DCO app](https://github.com/apps/dco) to enforce sign-off on commits. Add `Signed-off-by` to your commits with `git commit -s`.
+This project uses the [Probot DCO app](https://github.com/apps/dco) to enforce
+sign-off on commits. Add `Signed-off-by` to your commits with `git commit -s`.
+A local `commit-msg` pre-commit hook enforces sign-off on non-bot commits
+before they are created. You can temporarily bypass the local check using
+`SKIP_DCO=1` or `SKIP_COMMIT_MSG_HOOK=1` (e.g. `SKIP_DCO=1 git commit`), but the
+Probot DCO check in CI will still require sign-off before PRs can merge.
 
-**Human-driven agent sessions** (e.g., using Claude Code locally) should sign off — the human directing the session is the one certifying the DCO, just as they would for any other commit.
+**Human-driven agent sessions** (e.g., using Claude Code locally) should sign
+off — the human directing the session is the one certifying the DCO, just as
+they would for any other commit.
 
 **Autonomous agent commits are exempt** and must never supply the DCO with
 `-s` or with `Signed-off-by`. The fullsend code and fix agents run without a
 human in the loop at commit time. The DCO is a human attestation — it certifies
 personhood and legal authority to contribute. No one is present to make that
 certification in an autonomous session. These agents commit using the GitHub
-App's bot identity (`<id>+<slug>[bot]@users.noreply.github.com`), which GitHub
-recognizes as `author.type: "Bot"`. The Probot DCO app auto-skips bot-authored
-commits. The human who merges an agent PR accepts responsibility for the
-contribution.
+App's bot identity (`<id>+<slug>[bot]@users.noreply.github.com`), which both
+the local hook and the Probot DCO app recognize as a bot and auto-skip.
+The human who merges an agent PR accepts responsibility for the contribution.
 
 ## Pull request workflow
 

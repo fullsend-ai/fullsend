@@ -76,9 +76,9 @@ bootstrap:
 ensure-hooks:
 	@if [ -z "$$CI" ] && [ -z "$$(git config --get core.hooksPath 2>/dev/null)" ]; then \
 		hooks_dir=$$(git rev-parse --git-path hooks 2>/dev/null); \
-		if [ -n "$$hooks_dir" ] && [ ! -f "$$hooks_dir/pre-commit" ]; then \
+		if [ -n "$$hooks_dir" ] && { [ ! -f "$$hooks_dir/pre-commit" ] || [ ! -f "$$hooks_dir/commit-msg" ]; }; then \
 			echo "==> Installing pre-commit hooks..."; \
-			pre-commit install; \
+			pre-commit install -t pre-commit -t commit-msg; \
 		fi; \
 	fi
 
@@ -198,6 +198,8 @@ script-test:
 	$(call run-timed,bash .github/scripts/pre-fetch-review-body-test.sh)
 	$(call run-timed,bash scripts/check-agents-gate-pin-test.sh)
 	$(call run-timed,bash scripts/verify-release-tag-test.sh)
+	$(call run-timed,bash hack/check-dco-signoff_test.sh)
+	$(call run-timed,bash hack/lint-pinact_test.sh)
 	$(call run-timed,bash skills/cutting-releases/scripts/prepend-release-highlights-test.sh)
 	$(call run-timed,bash scripts/renovate/update-go-checksums-test.sh)
 	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/pre-fetch-prior-review-test.sh)

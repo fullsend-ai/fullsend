@@ -1,0 +1,211 @@
+#!/usr/bin/env bash
+# check-dco-signoff — Validate DCO sign-off trailer on human commits
+#
+# Validates that non-bot commits carry a Signed-off-by trailer matching
+# the git author or committer name and email in accordance with the Developer
+# Certificate of Origin (DCO).
+#
+# Skips:
+#   - Autonomous bot commits ([bot] in author or committer name/email)
+#   - Active merge commits (when MERGE_HEAD is present)
+#   - Autosquash commits (subject starting with fixup!, squash!, amend!)
+#   - Empty commit messages
+#   - When SKIP_DCO=1 or SKIP_COMMIT_MSG_HOOK=1 is set
+#
+# Usage:
+#   hack/check-dco-signoff <commit-msg-file>
+
+set -euo pipefail
+
+COMMIT_MSG_FILE="${1:-}"
+
+if [[ -z "${COMMIT_MSG_FILE}" ]] || [[ ! -f "${COMMIT_MSG_FILE}" ]]; then
+  echo "Usage: check-dco-signoff <commit-msg-file>" >&2
+  exit 1
+fi
+
+# Allow skipping validation via environment variable
+if [[ -n "${SKIP_DCO:-}" ]] || [[ -n "${SKIP_COMMIT_MSG_HOOK:-}" ]]; then
+  exit 0
+fi
+
+# Skip during active git merge (MERGE_HEAD is present until commit completes)
+if [[ -f "$(git rev-parse --git-path MERGE_HEAD 2>/dev/null || true)" ]]; then
+  exit 0
+fi
+
+# Resolve comment character (handles core.commentChar=auto by inspecting git-generated instructions)
+COMMENT_CHAR="$(git config core.commentChar 2>/dev/null || echo '#')"
+if [[ "${COMMENT_CHAR}" == "auto" ]]; then
+  auto_char=$(grep -oE "with '[^']+' will be ignored" "${COMMIT_MSG_FILE}" 2>/dev/null | head -1 | sed -E "s/with '([^']+)' will be ignored/\1/" || true)
+  if [[ -n "${auto_char}" ]]; then
+    COMMENT_CHAR="${auto_char}"
+  else
+    COMMENT_CHAR="#"
+  fi
+fi
+
+# Strip comment lines by checking the first non-whitespace character literally
+# and stop at git's scissors line in verbose mode (commit.verbose=true)
+msg_content=""
+while IFS= read -r line || [[ -n "${line}" ]]; do
+  # Scissors line marks the start of the diff in verbose commits; stop reading
+  case "${line}" in
+    *" >8 "*|*" 8< "*)
+      break
+      ;;
+  esac
+
+  trimmed="${line#"${line%%[![:space:]]*}"}"
+  if [[ -n "${trimmed}" ]] && [[ "${trimmed:0:1}" == "${COMMENT_CHAR}" ]]; then
+    continue
+  fi
+  msg_content+="${line}"$'\n'
+done < "${COMMIT_MSG_FILE}"
+
+# Check for empty commit message (ignoring comments)
+non_empty=$(printf '%s' "${msg_content}" | grep -v '^[[:space:]]*$' || true)
+if [[ -z "${non_empty}" ]]; then
+  # Empty commit message — git will reject this anyway.
+  exit 0
+fi
+
+# Extract first line without pipes to avoid SIGPIPE on large messages
+IFS= read -r subject <<< "${non_empty}"
+
+# Skip autosquash commits
+case "${subject}" in
+  fixup!*|squash!*|amend!*)
+    exit 0
+    ;;
+esac
+
+# Determine author and committer names and emails.
+# git var formats as "Name <email> timestamp tz".
+AUTHOR_IDENT="$(git var GIT_AUTHOR_IDENT 2>/dev/null || true)"
+AUTHOR=""
+if [[ -n "${AUTHOR_IDENT}" ]]; then
+  AUTHOR="$(echo "${AUTHOR_IDENT}" | sed -E 's/ [0-9]+ [+-][0-9]{4}$//')"
+fi
+
+if [[ -z "${AUTHOR}" ]]; then
+  NAME="${GIT_AUTHOR_NAME:-$(git config user.name 2>/dev/null || true)}"
+  EMAIL="${GIT_AUTHOR_EMAIL:-$(git config user.email 2>/dev/null || true)}"
+  if [[ -n "${NAME}" ]] && [[ -n "${EMAIL}" ]]; then
+    AUTHOR="${NAME} <${EMAIL}>"
+  fi
+fi
+
+COMMITTER_IDENT="$(git var GIT_COMMITTER_IDENT 2>/dev/null || true)"
+COMMITTER=""
+if [[ -n "${COMMITTER_IDENT}" ]]; then
+  COMMITTER="$(echo "${COMMITTER_IDENT}" | sed -E 's/ [0-9]+ [+-][0-9]{4}$//')"
+fi
+
+if [[ -z "${COMMITTER}" ]]; then
+  CNAME="${GIT_COMMITTER_NAME:-${NAME:-$(git config user.name 2>/dev/null || true)}}"
+  CEMAIL="${GIT_COMMITTER_EMAIL:-${EMAIL:-$(git config user.email 2>/dev/null || true)}}"
+  if [[ -n "${CNAME}" ]] && [[ -n "${CEMAIL}" ]]; then
+    COMMITTER="${CNAME} <${CEMAIL}>"
+  fi
+fi
+
+# Skip autonomous bot commits (e.g. renovate[bot], fullsend-ai-coder[bot], github-actions[bot])
+case "${AUTHOR}" in
+  *"[bot]"*|*"[BOT]"*|*"renovate["*|*"dependabot["*)
+    exit 0
+    ;;
+esac
+case "${COMMITTER}" in
+  *"[bot]"*|*"[BOT]"*|*"renovate["*|*"dependabot["*)
+    exit 0
+    ;;
+esac
+
+if [[ -z "${AUTHOR}" ]] && [[ -z "${COMMITTER}" ]]; then
+  echo "ERROR: Git author/committer identity is not configured." >&2
+  echo "Run: git config user.name \"Your Name\" && git config user.email \"your@email.com\"" >&2
+  exit 1
+fi
+
+# Extract the trailer block from non-comment lines using git interpret-trailers
+trailers=$(printf '%s' "${msg_content}" | git interpret-trailers --parse)
+
+# Extract all Signed-off-by trailer lines (case-insensitive) from trailer block
+signoffs=$(echo "${trailers}" | grep -i '^[[:space:]]*Signed-off-by:' || true)
+
+if [[ -z "${signoffs}" ]]; then
+  echo "ERROR: Commit message is missing DCO sign-off trailer." >&2
+  echo "" >&2
+  echo "This repository requires human commits to certify the Developer Certificate of Origin (DCO)." >&2
+  echo "Expected trailer matching author or committer:" >&2
+  echo "  Signed-off-by: ${AUTHOR}" >&2
+  if [[ -n "${COMMITTER}" ]] && [[ "${AUTHOR}" != "${COMMITTER}" ]]; then
+    echo "  (or Signed-off-by: ${COMMITTER})" >&2
+  fi
+  echo "" >&2
+  echo "To fix this, commit with '-s':" >&2
+  echo "  git commit -s" >&2
+  echo "or amend an existing commit:" >&2
+  echo "  git commit -s --amend" >&2
+  echo "" >&2
+  echo "For more details, see:" >&2
+  echo "  https://developercertificate.org/" >&2
+  echo "  CONTRIBUTING.md#dco-developer-certificate-of-origin" >&2
+  exit 1
+fi
+
+matched=false
+while IFS= read -r line; do
+  [[ -z "${line}" ]] && continue
+  trailer_val=$(echo "${line}" | sed -E 's/^[[:space:]]*[Ss][Ii][Gg][Nn][Ee][Dd]-[Oo][Ff][Ff]-[Bb][Yy]:[[:space:]]*//' | sed -E 's/[[:space:]]+$//')
+  if [[ "${trailer_val}" == "${AUTHOR}" ]] || [[ "${trailer_val}" == "${COMMITTER}" ]]; then
+    matched=true
+    break
+  fi
+  # Case-insensitive comparison (e.g. for email casing differences)
+  val_lower=$(echo "${trailer_val}" | tr '[:upper:]' '[:lower:]')
+  if [[ -n "${AUTHOR}" ]]; then
+    author_lower=$(echo "${AUTHOR}" | tr '[:upper:]' '[:lower:]')
+    if [[ "${author_lower}" == "${val_lower}" ]]; then
+      matched=true
+      break
+    fi
+  fi
+  if [[ -n "${COMMITTER}" ]]; then
+    committer_lower=$(echo "${COMMITTER}" | tr '[:upper:]' '[:lower:]')
+    if [[ "${committer_lower}" == "${val_lower}" ]]; then
+      matched=true
+      break
+    fi
+  fi
+done <<< "${signoffs}"
+
+if [[ "${matched}" != "true" ]]; then
+  echo "ERROR: DCO Signed-off-by trailer does not match git author or committer." >&2
+  echo "" >&2
+  if [[ "${AUTHOR}" == "${COMMITTER}" ]] || [[ -z "${COMMITTER}" ]]; then
+    echo "Git author/committer: ${AUTHOR}" >&2
+  else
+    echo "Git author:          ${AUTHOR}" >&2
+    echo "Git committer:       ${COMMITTER}" >&2
+  fi
+  echo "Found trailer(s):" >&2
+  echo "${signoffs}" >&2
+  echo "" >&2
+  echo "Expected trailer matching author or committer:" >&2
+  echo "  Signed-off-by: ${AUTHOR}" >&2
+  if [[ -n "${COMMITTER}" ]] && [[ "${AUTHOR}" != "${COMMITTER}" ]]; then
+    echo "  (or Signed-off-by: ${COMMITTER})" >&2
+  fi
+  echo "" >&2
+  echo "To fix this, amend your commit with '-s':" >&2
+  echo "  git commit -s --amend" >&2
+  echo "" >&2
+  echo "For more details, see:" >&2
+  echo "  https://developercertificate.org/" >&2
+  echo "  CONTRIBUTING.md#dco-developer-certificate-of-origin" >&2
+  exit 1
+fi
+
+exit 0
