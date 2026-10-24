@@ -230,9 +230,17 @@ must treat `truncated: true` as an incomplete result. GitLab merge-request
 discussions are mapped to the same thread model, including resolution state,
 comments, positions, and resolver identity when GitLab provides it. Each comment
 also includes `author_role` and `author_role_verified`; resolved threads include
-`resolved_by_role` and `resolved_by_role_verified`. A role is `none` with
-`verified: true` for an authoritative non-member result, and `verified: false`
-when the actor is a bot/unknown or the permission lookup fails.
+`resolved_by_role` and `resolved_by_role_verified`. `verified: true` means the
+forge authoritatively established the role, not merely that the lookup request
+succeeded. On GitHub, a built-in role, or a custom role that normalizes through
+effective permission flags or the legacy `permission` field, is reported with
+`verified: true`. A role is `none` with `verified: true` only for an
+authoritative non-member result: a 404 from the collaborator permission
+endpoint, or an explicit `role_name: none` with no conflicting `permission`. A
+role is `none` with `verified: false` when the actor is a bot/unknown, the
+permission lookup fails, or a successful response has missing, contradictory,
+or unnormalizable permission data. Consumers must treat unverified roles as
+untrusted (fail closed).
 
 The `mint`, `inference`, and `github` subcommands decompose setup into role-specific operations for organizations that separate GCP and GitHub responsibilities:
 
