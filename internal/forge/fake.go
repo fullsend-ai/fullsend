@@ -2076,19 +2076,29 @@ func (f *FakeClient) ListPullRequestReviewThreads(_ context.Context, owner, repo
 			for i := range threads.Threads {
 				t := &threads.Threads[i]
 				t.Comments = slices.Clone(t.Comments)
-				if t.Line != nil {
-					l := *t.Line
-					t.Line = &l
-				}
-				if t.OriginalLine != nil {
-					l := *t.OriginalLine
-					t.OriginalLine = &l
-				}
+				t.Side = clonePtr(t.Side)
+				t.Line = clonePtr(t.Line)
+				t.StartSide = clonePtr(t.StartSide)
+				t.StartLine = clonePtr(t.StartLine)
+				t.OriginalLine = clonePtr(t.OriginalLine)
+				t.OriginalStartLine = clonePtr(t.OriginalStartLine)
+				t.OldLine = clonePtr(t.OldLine)
+				t.NewLine = clonePtr(t.NewLine)
+				t.IsOutdated = clonePtr(t.IsOutdated)
 			}
 			return threads, nil
 		}
 	}
 	return ReviewThreadPage{}, nil
+}
+
+// clonePtr returns a pointer to a copy of *p, or nil when p is nil.
+func clonePtr[T any](p *T) *T {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
 }
 
 func (f *FakeClient) DismissPullRequestReview(_ context.Context, owner, repo string, number, reviewID int, message string) error {

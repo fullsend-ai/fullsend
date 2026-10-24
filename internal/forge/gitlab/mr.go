@@ -772,6 +772,37 @@ func (c *LiveClient) ListPullRequestReviews(ctx context.Context, owner, repo str
 	return result, nil
 }
 
+// gitlabLineRangePoint is one end of a GitLab multi-line position range.
+type gitlabLineRangePoint struct {
+	Type    string `json:"type"`
+	OldLine *int   `json:"old_line"`
+	NewLine *int   `json:"new_line"`
+}
+
+// gitlabSideLine maps a GitLab diff position to the normalized side and the
+// line number on that side. lineType is a line_range point's "old" or "new"
+// type; it is empty for unchanged context lines and for the top-level
+// position, in which case the new side wins whenever a new line exists. A
+// position with only old_line is a removed line on the left side.
+func gitlabSideLine(lineType string, oldLine, newLine *int) (*forge.DiffSide, *int) {
+	var side forge.DiffSide
+	var line *int
+	switch {
+	case lineType == "old" && oldLine != nil:
+		side, line = forge.DiffSideLeft, oldLine
+	case lineType == "new" && newLine != nil:
+		side, line = forge.DiffSideRight, newLine
+	case newLine != nil:
+		side, line = forge.DiffSideRight, newLine
+	case oldLine != nil:
+		side, line = forge.DiffSideLeft, oldLine
+	default:
+		return nil, nil
+	}
+	value := *line
+	return &side, &value
+}
+
 type gitlabDiscussionActor struct {
 	ID       int    `json:"id"`
 	Username string `json:"username"`
@@ -856,10 +887,13 @@ func (c *LiveClient) ListPullRequestReviewThreads(ctx context.Context, owner, re
 				Author     gitlabDiscussionActor  `json:"author"`
 				ResolvedBy *gitlabDiscussionActor `json:"resolved_by"`
 				Position   *struct {
-					NewPath string `json:"new_path"`
-					OldPath string `json:"old_path"`
-					NewLine *int   `json:"new_line"`
-					OldLine *int   `json:"old_line"`
+					NewPath   string `json:"new_path"`
+					OldPath   string `json:"old_path"`
+					NewLine   *int   `json:"new_line"`
+					OldLine   *int   `json:"old_line"`
+					LineRange *struct {
+						Start *gitlabLineRangePoint `json:"start"`
+					} `json:"line_range"`
 				} `json:"position"`
 			} `json:"notes"`
 		}
@@ -925,8 +959,16 @@ func (c *LiveClient) ListPullRequestReviewThreads(ctx context.Context, owner, re
 					} else if thread.Path == "" {
 						thread.Path = note.Position.OldPath
 					}
-					thread.Line = note.Position.NewLine
-					thread.OriginalLine = note.Position.OldLine
+					thread.OldLine = note.Position.OldLine
+					thread.NewLine = note.Position.NewLine
+					thread.Side, thread.Line = gitlabSideLine("", note.Position.OldLine, note.Position.NewLine)
+					thread.StartSide, thread.StartLine = nil, nil
+					if lr := note.Position.LineRange; lr != nil && lr.Start != nil {
+						startSide, startLine := gitlabSideLine(lr.Start.Type, lr.Start.OldLine, lr.Start.NewLine)
+						if startLine != nil && (thread.Line == nil || *startLine != *thread.Line || *startSide != *thread.Side) {
+							thread.StartSide, thread.StartLine = startSide, startLine
+						}
+					}
 				}
 			}
 			result.Threads = append(result.Threads, thread)

@@ -18,7 +18,7 @@ func TestFetchReviewThreadsCommand(t *testing.T) {
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, http.MethodPost, r.Method)
 		assert.Equal(t, "/api/graphql", r.URL.Path)
-		_, _ = w.Write([]byte(`{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":[{"id":"thread-1","isResolved":true,"path":"main.go","line":12,"originalLine":11,"resolvedBy":{"login":"reviewer"},"comments":{"pageInfo":{"hasNextPage":false},"nodes":[]}}]}}}}}`))
+		_, _ = w.Write([]byte(`{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":[{"id":"thread-1","isResolved":true,"path":"main.go","diffSide":"RIGHT","line":12,"originalLine":11,"isOutdated":false,"resolvedBy":{"login":"reviewer"},"comments":{"pageInfo":{"hasNextPage":false},"nodes":[]}}]}}}}}`))
 	}))
 	defer srv.Close()
 
@@ -43,6 +43,20 @@ func TestFetchReviewThreadsCommand(t *testing.T) {
 	require.Len(t, got.Threads, 1)
 	assert.Equal(t, "thread-1", got.Threads[0].ID)
 	assert.True(t, got.Threads[0].IsResolved)
+
+	var raw struct {
+		Threads []map[string]any `json:"threads"`
+	}
+	require.NoError(t, json.Unmarshal(output.Bytes(), &raw))
+	require.Len(t, raw.Threads, 1)
+	thread := raw.Threads[0]
+	for _, key := range []string{"side", "line", "start_side", "start_line", "original_line", "original_start_line", "old_line", "new_line", "is_outdated"} {
+		assert.Contains(t, thread, key, "documented position field %q", key)
+	}
+	assert.Equal(t, "right", thread["side"])
+	assert.Equal(t, float64(12), thread["new_line"])
+	assert.Nil(t, thread["old_line"])
+	assert.Equal(t, false, thread["is_outdated"])
 }
 
 func TestFetchReviewThreadsCommand_DefaultsToGitHubForge(t *testing.T) {

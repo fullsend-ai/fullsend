@@ -3947,8 +3947,13 @@ func (c *LiveClient) ListPullRequestReviewThreads(ctx context.Context, owner, re
 						id
 						isResolved
 						path
+						diffSide
 						line
+						startDiffSide
+						startLine
 						originalLine
+						originalStartLine
+						isOutdated
 						resolvedBy { login __typename }
 						comments(first: 100) {
 							pageInfo { hasNextPage }
@@ -3965,12 +3970,17 @@ func (c *LiveClient) ListPullRequestReviewThreads(ctx context.Context, owner, re
 	}`
 
 	type gqlThread struct {
-		ID           string `json:"id"`
-		IsResolved   bool   `json:"isResolved"`
-		Path         string `json:"path"`
-		Line         *int   `json:"line"`
-		OriginalLine *int   `json:"originalLine"`
-		ResolvedBy   *struct {
+		ID                string  `json:"id"`
+		IsResolved        bool    `json:"isResolved"`
+		Path              string  `json:"path"`
+		DiffSide          string  `json:"diffSide"`
+		Line              *int    `json:"line"`
+		StartDiffSide     *string `json:"startDiffSide"`
+		StartLine         *int    `json:"startLine"`
+		OriginalLine      *int    `json:"originalLine"`
+		OriginalStartLine *int    `json:"originalStartLine"`
+		IsOutdated        bool    `json:"isOutdated"`
+		ResolvedBy        *struct {
 			Login string `json:"login"`
 			Type  string `json:"__typename"`
 		} `json:"resolvedBy"`
@@ -4063,9 +4073,28 @@ func (c *LiveClient) ListPullRequestReviewThreads(ctx context.Context, owner, re
 				ResolvedByRole:    normevent.RoleNone,
 				IsResolved:        thread.IsResolved,
 				Path:              thread.Path,
+				Side:              githubDiffSide(thread.DiffSide),
 				Line:              thread.Line,
+				StartLine:         thread.StartLine,
 				OriginalLine:      thread.OriginalLine,
+				OriginalStartLine: thread.OriginalStartLine,
+				IsOutdated:        &thread.IsOutdated,
 				CommentsTruncated: thread.Comments.PageInfo.HasNextPage,
+			}
+			// Outdated multi-line threads have a null startLine but may still
+			// report startDiffSide and originalStartLine, so do not gate on
+			// startLine.
+			if thread.StartDiffSide != nil {
+				converted.StartSide = githubDiffSide(*thread.StartDiffSide)
+			}
+			// GitHub reports the current line on one side only.
+			if converted.Side != nil && thread.Line != nil {
+				line := *thread.Line
+				if *converted.Side == forge.DiffSideLeft {
+					converted.OldLine = &line
+				} else {
+					converted.NewLine = &line
+				}
 			}
 			if thread.ResolvedBy != nil {
 				converted.ResolvedBy = thread.ResolvedBy.Login
@@ -4099,6 +4128,21 @@ func (c *LiveClient) ListPullRequestReviewThreads(ctx context.Context, owner, re
 		}
 	}
 	return result, nil
+}
+
+// githubDiffSide maps GitHub's DiffSide enum (LEFT, RIGHT) to the normalized
+// forge.DiffSide. Unknown or empty values map to nil.
+func githubDiffSide(side string) *forge.DiffSide {
+	var normalized forge.DiffSide
+	switch side {
+	case "LEFT":
+		normalized = forge.DiffSideLeft
+	case "RIGHT":
+		normalized = forge.DiffSideRight
+	default:
+		return nil
+	}
+	return &normalized
 }
 
 // DismissPullRequestReview dismisses a review, changing its state to DISMISSED.

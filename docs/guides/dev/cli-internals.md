@@ -234,6 +234,43 @@ also includes `author_role` and `author_role_verified`; resolved threads include
 `verified: true` for an authoritative non-member result, and `verified: false`
 when the actor is a bot/unknown or the permission lookup fails.
 
+Each thread carries the same position fields on every forge. A `null` value
+means the forge did not report that value. `left` is the old (base) version of
+the file and `right` is the new (head) version. Line numbers "on a side" count
+lines in that side's version of the file.
+
+| Field | Meaning | GitHub source | GitLab source |
+|-------|---------|---------------|---------------|
+| `side` | Diff side that `line` and `original_line` refer to (`left` or `right`) | `diffSide`, lowercased | `right` when `new_line` is set, otherwise `left` when `old_line` is set |
+| `line` | Last line of the thread's range on `side` in the current diff; `null` when the thread no longer maps onto the current diff | `line` (`null` for outdated threads) | `new_line` on the right side, `old_line` on the left side |
+| `start_side` | Side of the first line of a multi-line range; `null` for single-line threads | `startDiffSide`, lowercased | `line_range.start.type` (`old` is `left`, `new` is `right`), otherwise the same rule as `side` |
+| `start_line` | First line of a multi-line range on `start_side`; `null` for single-line threads and for outdated multi-line GitHub threads (which keep `start_side` and `original_start_line`) | `startLine` | `line_range.start` line on `start_side`, when it differs from the end |
+| `original_line` | Line on `side` in the diff the thread was created against | `originalLine` | Always `null` (not exposed) |
+| `original_start_line` | Start line on `start_side` in the diff the thread was created against; for cross-side ranges this is a different file version than `original_line` | `originalStartLine` | Always `null` (not exposed) |
+| `old_line` | Current line number in the old (left) file | `line` when `side` is `left` | `old_line` |
+| `new_line` | Current line number in the new (right) file | `line` when `side` is `right` | `new_line` |
+| `is_outdated` | Whether later pushes made the thread outdated | `isOutdated` | Always `null` (not exposed) |
+
+To match a finding reported against the head revision, compare `path` and
+`new_line`. The table distinguishes the cases the two forges previously
+conflated:
+
+- A GitHub outdated thread has `is_outdated: true`, a `null` `line`, and its
+  creation position in `original_line`.
+- A GitLab removed-line discussion has `side: "left"`, `old_line` set,
+  `new_line: null`, and `is_outdated: null`. A `null` `new_line` alone never
+  means a thread is outdated.
+- A GitLab comment on an unchanged context line has both `old_line` and
+  `new_line`. GitHub reports only the line on the thread's `side`, so the other
+  field is `null`.
+
+**Migration from the earlier model.** Earlier releases emitted only `line` and
+`original_line`, with forge-specific meanings. On GitHub, `line` and
+`original_line` keep their meaning. On GitLab, read the old-file line from
+`old_line` instead of `original_line`, which is now always `null`. Read the
+new-file line from `new_line` instead of `line`: for a removed-line discussion,
+`line` is now the old-file line on the `left` side rather than `null`.
+
 The `mint`, `inference`, and `github` subcommands decompose setup into role-specific operations for organizations that separate GCP and GitHub responsibilities:
 
 | Install Phase | Standalone Command | Required Access |
