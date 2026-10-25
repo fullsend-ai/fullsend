@@ -826,6 +826,26 @@ func TestLogRedacted(t *testing.T) {
 	assert.NotPanics(t, func() { logRedacted(&world.World{}, "no logger %s", token) })
 }
 
+// TestRedactText_RedactsRegisteredSecretLiteral checks the exported helper
+// masks a message containing literals registered by the debug-log
+// collection's registration path — a full-length token the shared redactor
+// accepts, and a short sensitive value it declines and this package masks
+// locally — so failure messages recorded at record time get the same
+// redaction as the artifacts.
+func TestRedactText_RedactsRegisteredSecretLiteral(t *testing.T) {
+	token := "opaqueredactliteral6b3f8c2e4a"
+	short := "rt5#k9"
+	t.Setenv("SOME_RUNNER_API_TOKEN", short)
+
+	registerRedactionLiterals(&world.World{Token: token})
+
+	got := RedactText(fmt.Sprintf("dispatch failed with token %s and pin %s", token, short))
+	assert.NotContains(t, got, token)
+	assert.NotContains(t, got, short)
+	assert.Contains(t, got, "dispatch failed with token")
+	assert.Contains(t, got, "and pin")
+}
+
 // TestCollectFailureLogs_RedactsConsoleLogs checks that errors, scenario
 // names and summary paths reach World.Logf redacted.
 func TestCollectFailureLogs_RedactsConsoleLogs(t *testing.T) {

@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -15,8 +17,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/fullsend-ai/fullsend/internal/behaviourfail"
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/env"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
@@ -533,6 +537,201 @@ func TestAfterScenario_NoFailureSummaryForPassingOrSkippedScenario(t *testing.T)
 	entries, err := os.ReadDir(artifactDir)
 	require.NoError(t, err)
 	assert.Empty(t, entries, "only failed scenarios write a failure summary")
+}
+
+// --- failure classification recording (afterScenario records every
+// non-skip failure with its class; see recordScenarioFailure) ---
+
+// captureLogf returns a World.Logf that appends formatted lines to logs.
+func captureLogf(logs *[]string) func(string, ...any) {
+	return func(format string, args ...any) {
+		*logs = append(*logs, fmt.Sprintf(format, args...))
+	}
+}
+
+// failureClassLines returns the labelled [failure-class] log lines.
+func failureClassLines(logs []string) []string {
+	var labelled []string
+	for _, line := range logs {
+		if strings.Contains(line, "[failure-class]") {
+			labelled = append(labelled, line)
+		}
+	}
+	return labelled
+}
+
+// requireRecordedFailure asserts the recorder holds exactly one failure
+// record with the given class, the "scenario" source label, and the given
+// scenario name, returning that record.
+func requireRecordedFailure(t *testing.T, rec *behaviourfail.Recorder, class behaviourfail.Class, scenario string) behaviourfail.FailureRecord {
+	t.Helper()
+	records := rec.Snapshot()
+	require.Len(t, records, 1)
+	assert.Equal(t, class, records[0].Class)
+	assert.Equal(t, "scenario", records[0].Source)
+	assert.Equal(t, scenario, records[0].Scenario)
+	return records[0]
+}
+
+// TestAfterScenario_RecordsRateLimitScenarioFailureAsInfrastructure
+// checks that a scenario failing with a rate-limit error records exactly
+// one infrastructure failure with the redacted error message, and logs
+// one labelled line naming the scenario and its class.
+func TestAfterScenario_RecordsRateLimitScenarioFailureAsInfrastructure(t *testing.T) {
+	artifactDir := t.TempDir()
+	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
+
+	driver := newFakeDriver(1)
+	name, err := driver.AllocateRepo(context.Background())
+	require.NoError(t, err)
+
+	rec := &behaviourfail.Recorder{}
+	var logs []string
+	w := &world.World{
+		LeasedRepoName: name,
+		ScenarioName:   "collaborator invite rate limited",
+		Failures:       rec,
+		Logf:           captureLogf(&logs),
+	}
+	ctx := world.WithWorld(context.Background(), w)
+
+	scenarioErr := fmt.Errorf("add label: %w", &gh.APIError{
+		StatusCode: http.StatusTooManyRequests,
+		Message:    "too many requests",
+	})
+	_, err = afterScenario(ctx, driver, scenarioErr)
+	assert.Equal(t, scenarioErr, err)
+
+	record := requireRecordedFailure(t, rec, behaviourfail.Infrastructure, "collaborator invite rate limited")
+	assert.Contains(t, record.Message, "add label")
+	assert.Contains(t, record.Message, "too many requests")
+
+	lines := failureClassLines(logs)
+	require.Len(t, lines, 1, "one labelled line per failed scenario")
+	assert.Contains(t, lines[0], `"collaborator invite rate limited"`)
+	assert.Contains(t, lines[0], "infrastructure")
+}
+
+// TestAfterScenario_RecordsAssertionScenarioFailureAsScenario checks
+// that a scenario failing with a plain assertion error records exactly
+// one scenario failure — the conservative default that keeps product
+// regressions visible instead of retried.
+func TestAfterScenario_RecordsAssertionScenarioFailureAsScenario(t *testing.T) {
+	artifactDir := t.TempDir()
+	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
+
+	rec := &behaviourfail.Recorder{}
+	var logs []string
+	w := &world.World{
+		ScenarioName: "issue gets labelled",
+		Failures:     rec,
+		Logf:         captureLogf(&logs),
+	}
+	ctx := world.WithWorld(context.Background(), w)
+
+	scenarioErr := errors.New("issue 42 missing label")
+	_, err := afterScenario(ctx, nil, scenarioErr)
+	assert.Equal(t, scenarioErr, err)
+
+	record := requireRecordedFailure(t, rec, behaviourfail.Scenario, "issue gets labelled")
+	assert.Equal(t, "issue 42 missing label", record.Message)
+
+	lines := failureClassLines(logs)
+	require.Len(t, lines, 1, "one labelled line per failed scenario")
+	assert.Contains(t, lines[0], ": scenario")
+}
+
+// TestAfterScenario_SkippedScenarioRecordsNothing checks that a skipped
+// scenario leaves the run's failure recorder untouched — skips are not
+// failures.
+func TestAfterScenario_SkippedScenarioRecordsNothing(t *testing.T) {
+	artifactDir := t.TempDir()
+	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
+
+	rec := &behaviourfail.Recorder{}
+	var logs []string
+	w := &world.World{
+		ScenarioName: "skipped by tag",
+		Failures:     rec,
+		Logf:         captureLogf(&logs),
+	}
+	ctx := world.WithWorld(context.Background(), w)
+
+	_, err := afterScenario(ctx, nil, godog.ErrSkip)
+	assert.ErrorIs(t, err, godog.ErrSkip)
+
+	assert.Nil(t, rec.Snapshot())
+	infrastructure, scenario := rec.Counts()
+	assert.Zero(t, infrastructure)
+	assert.Zero(t, scenario)
+	assert.Empty(t, failureClassLines(logs))
+}
+
+// TestAfterScenario_RecordsDeallocationFailureOnPassingScenario checks
+// that the deferred deallocation failure which fails an otherwise
+// passing scenario is recorded — same source label and scenario name as
+// a scenario failure, with the deallocation origin in the message.
+func TestAfterScenario_RecordsDeallocationFailureOnPassingScenario(t *testing.T) {
+	artifactDir := t.TempDir()
+	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
+
+	driver := newFakeDriver(2)
+	name, err := driver.AllocateRepo(context.Background())
+	require.NoError(t, err)
+	// Deallocate before After — the hook's own deallocation then fails.
+	require.NoError(t, driver.DeallocateRepo(context.Background(), name))
+
+	rec := &behaviourfail.Recorder{}
+	var logs []string
+	w := &world.World{
+		LeasedRepoName: name,
+		ScenarioName:   "passes but leaks",
+		Failures:       rec,
+		Logf:           captureLogf(&logs),
+	}
+	ctx := world.WithWorld(context.Background(), w)
+
+	_, err = afterScenario(ctx, driver, nil)
+	require.Error(t, err)
+
+	record := requireRecordedFailure(t, rec, behaviourfail.Scenario, "passes but leaks")
+	assert.Contains(t, record.Message, "deallocating repo")
+
+	lines := failureClassLines(logs)
+	require.Len(t, lines, 1, "one labelled line per failed scenario")
+	assert.Contains(t, lines[0], ": scenario")
+}
+
+// TestAfterScenario_DeallocationFailureOnFailedScenarioRecordsOnce
+// checks that when the scenario already failed, the deallocation error
+// does not add a second record for the same scenario: only the
+// scenario's own error is recorded. The World carries no Logf, which
+// also covers that recording works without a console logger.
+func TestAfterScenario_DeallocationFailureOnFailedScenarioRecordsOnce(t *testing.T) {
+	artifactDir := t.TempDir()
+	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
+
+	driver := newFakeDriver(2)
+	name, err := driver.AllocateRepo(context.Background())
+	require.NoError(t, err)
+	// Deallocate before After — the hook's own deallocation fails too,
+	// but the scenario error is what the run must record.
+	require.NoError(t, driver.DeallocateRepo(context.Background(), name))
+
+	rec := &behaviourfail.Recorder{}
+	w := &world.World{
+		LeasedRepoName: name,
+		ScenarioName:   "fails and leaks",
+		Failures:       rec,
+	}
+	ctx := world.WithWorld(context.Background(), w)
+
+	scenarioErr := errors.New("issue 42 missing label")
+	_, err = afterScenario(ctx, driver, scenarioErr)
+	assert.Equal(t, scenarioErr, err)
+
+	record := requireRecordedFailure(t, rec, behaviourfail.Scenario, "fails and leaks")
+	assert.Equal(t, "issue 42 missing label", record.Message)
 }
 
 // TestBeforeToAfter_MalformedCapabilityTagWritesFailureSummary checks that a

@@ -11,6 +11,7 @@ import (
 	messages "github.com/cucumber/messages/go/v34"
 
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/failclass"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/steps"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
@@ -61,6 +62,12 @@ func beforeScenario(ctx context.Context, tags []string, template *world.World, n
 // afterScenario runs scenario cleanup and deallocates the repo if one was
 // allocated. Deallocation errors are surfaced as test failures rather than
 // panicking the godog runner.
+//
+// Every non-skip failure the hook sees — the scenario's own error, or a
+// deallocation error that fails an otherwise passing scenario — is first
+// recorded on the run's shared failure recorder with its classification
+// and a redacted message, and logs one labelled line, via
+// recordScenarioFailure.
 //
 // Order: for a failed scenario, CollectFailureLogs first saves the logs
 // of the repository's workflow runs that in-scenario collection did not
@@ -113,16 +120,38 @@ func afterScenario(ctx context.Context, driver install.Driver, scenarioErr error
 					// The scenario passed, so no failure summary was written
 					// above; the deallocation failure turns it into a failed
 					// scenario, which must leave the same artifact.
+					recordScenarioFailure(w, retErr)
 					steps.CollectFailureLogs(ctx, w, retErr)
 				}
 			}
 		}()
 	}
 	if scenarioErr != nil && !errors.Is(scenarioErr, godog.ErrSkip) {
+		recordScenarioFailure(w, scenarioErr)
 		steps.CollectFailureLogs(ctx, w, scenarioErr)
 	}
 	steps.CleanupScenario(w)
 	return ctx, retErr
+}
+
+// recordScenarioFailure records one classified failure for a failed
+// scenario on the run's shared recorder (World.Failures) and logs a
+// single labelled [failure-class] line, so the suite's console output
+// and the failure-class report agree on the same per-failure record.
+//
+// Both call sites label the source "scenario": a deallocation failure
+// fails the scenario it tore down, and its recorded message
+// ("deallocating repo: ...") names the origin, so no third source label
+// is needed beside "scenario" and "bootstrap". The recorder is
+// nil-receiver-safe, so Worlds built without one record nothing; a nil
+// Logf suppresses only the console line. The scenario name is redacted
+// in the log line because it is forge-supplied text.
+func recordScenarioFailure(w *world.World, err error) {
+	class := failclass.Classify(err)
+	w.Failures.RecordFailure("scenario", w.ScenarioName, class, steps.RedactText(err.Error()))
+	if w.Logf != nil {
+		w.Logf("[failure-class] scenario %q: %s", steps.RedactText(w.ScenarioName), class)
+	}
 }
 
 // leaseOwnership returns the check scenario cleanup uses to confirm the

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/behaviourfail"
 	"github.com/fullsend-ai/fullsend/internal/mintclient"
 )
 
@@ -133,12 +134,23 @@ func resolveE2EToken(ctx context.Context, mintURL, targetOrg string) (string, er
 		TargetOrg: targetOrg,
 	})
 	if err != nil {
-		return "", err
+		// A failure of the mint exchange or token download — the OIDC JWT
+		// fetch, the mint service call, or a download timeout of either
+		// (#7491's bootstrap class) — is an environment condition, marked
+		// infrastructure per design D3 of the behaviour-infra-retry change
+		// so the suite may retry the run. The mint-URL guard above is
+		// harness configuration validation, not a mint failure, and stays
+		// unmarked so it classifies as a scenario failure.
+		return "", behaviourfail.Mark(err, "bootstrap: token mint or download")
 	}
 	return result.Token, nil
 }
 
-// tokenForOrg returns an API token for operating on a pool org.
+// tokenForOrg returns an API token for operating on a pool org. The mint
+// path's terminal failures are infrastructure-marked at their source in
+// resolveE2EToken (the mark is applied once there, not re-wrapped here);
+// the local path's only failure is missing credentials — configuration
+// validation — which stays scenario-classified.
 func tokenForOrg(ctx context.Context, cfg envConfig, org string) (string, error) {
 	if cfg.useMint {
 		return resolveE2EToken(ctx, cfg.mintURL, org)
