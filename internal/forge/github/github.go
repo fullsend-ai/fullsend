@@ -4786,6 +4786,13 @@ func (p collaboratorPermission) effectiveRole() string {
 	return "none"
 }
 
+// ErrInvitationPending reports that AddCollaborator's PUT answered
+// 201: GitHub sent an invitation, and access starts only once the
+// invitee accepts it. Match it with errors.Is; the behaviour-suite
+// failure classifier treats it as an infrastructure mode (#8036)
+// because the suite cannot grant access its invitee has not accepted.
+var ErrInvitationPending = errors.New("invitation pending")
+
 func (c *LiveClient) AddCollaborator(ctx context.Context, owner, repo, username, permission string) error {
 	path := fmt.Sprintf("/repos/%s/%s/collaborators/%s",
 		url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(username))
@@ -4796,7 +4803,7 @@ func (c *LiveClient) AddCollaborator(ctx context.Context, owner, repo, username,
 	resp.Body.Close()
 	// 201 means GitHub sent an invitation; access starts only once it is accepted.
 	if resp.StatusCode == http.StatusCreated {
-		return fmt.Errorf("add collaborator %s: invitation pending, access not granted", username)
+		return fmt.Errorf("add collaborator %s: %w, access not granted", username, ErrInvitationPending)
 	}
 	return nil
 }

@@ -290,7 +290,7 @@ func whenOperatorRunsMintStatus(ctx context.Context, w *world.World, credential 
 	ms.Credential = credential
 	ms.Ran = true
 	ms.CredentialInOutput = strings.Contains(raw, token)
-	ms.Output = strings.ReplaceAll(redactText(raw), token, "***")
+	ms.Output = strings.ReplaceAll(RedactText(raw), token, "***")
 	ms.TimedOut = errors.Is(runCtx.Err(), context.DeadlineExceeded)
 	ms.ExitCode = 0
 	if runErr != nil {
@@ -600,7 +600,7 @@ func thenMintStatusCredentialAbsent(w *world.World) error {
 	}
 	if len(found) > 0 {
 		return mintStatusFailure(mintStatusClassAssertion, "%s",
-			redactText(fmt.Sprintf("write actor PAT found in behaviour artifacts: %s", strings.Join(found, ", "))))
+			RedactText(fmt.Sprintf("write actor PAT found in behaviour artifacts: %s", strings.Join(found, ", "))))
 	}
 	return nil
 }

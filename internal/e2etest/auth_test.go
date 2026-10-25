@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/fullsend-ai/fullsend/internal/behaviourfail"
 	"github.com/fullsend-ai/fullsend/internal/cli"
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
 )
@@ -85,6 +86,14 @@ func TestResolveE2EToken_MintTokenError(t *testing.T) {
 
 	_, err := resolveE2EToken(context.Background(), "https://mint.example.com", "test-org")
 	require.Error(t, err)
+	// Task 2.3: whatever stage of the mint call fails — here the OIDC
+	// fetch — the error leaves resolveE2EToken infrastructure-marked, the
+	// single source of the bootstrap token path's mark. The
+	// classification contract (failclass.Classify) is pinned in
+	// auth_infraclass_ext_test.go; failclass cannot be imported here
+	// because it pulls drivers/install, which imports this package.
+	assert.True(t, behaviourfail.Is(err),
+		"a mint-exchange failure leaves resolveE2EToken infrastructure-marked")
 }
 
 func TestRunningInGitHubActions(t *testing.T) {
@@ -163,6 +172,11 @@ func TestTokenForOrg_WithMint(t *testing.T) {
 	_, err := tokenForOrg(context.Background(), cfg, "test-org")
 	// Fails because OIDC env vars are not set, but exercises the mint path.
 	require.Error(t, err)
+	// tokenForOrg surfaces resolveE2EToken's source mark unchanged: the
+	// bootstrap's per-org token path is infrastructure-marked without a
+	// second wrap (the dispatcher does not re-mark).
+	assert.True(t, behaviourfail.Is(err),
+		"tokenForOrg's mint path surfaces resolveE2EToken's infrastructure mark")
 }
 
 func TestTokenForOrg_WithoutMint(t *testing.T) {

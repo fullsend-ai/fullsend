@@ -189,6 +189,7 @@ script-test:
 	$(call run-timed,bash scripts/check-live-test-relevance-test.sh)
 	$(call run-timed,bash scripts/check-e2e-authorization-test.sh)
 	$(call run-timed,bash scripts/redact-behaviour-artifacts-test.sh)
+	$(call run-timed,bash scripts/run-with-infra-retry-test.sh)
 	$(call run-timed,bash .github/scripts/check-fix-eligibility-test.sh)
 	$(call run-timed,bash .github/scripts/count-fix-commits-test.sh)
 	$(call run-timed,bash .github/scripts/pre-fetch-review-body-test.sh)
@@ -260,8 +261,15 @@ ci-local:
 # published from main; then add it here (one small haiku run on Vertex).
 BEHAVIOUR_CAPABILITIES ?= runtime-pi,inference-gateway,inference-gateway-api-key
 
+# Runs through scripts/run-with-infra-retry.sh: a failed attempt whose
+# failure-class report classifies the run as infrastructure is re-run
+# exactly once; scenario-classified failures and missing reports fail
+# immediately without a retry. Each go test attempt keeps its own
+# -timeout 45m, so one infra-classified retry can double the wall time —
+# see the timeout budgeting discussion in
+# docs/guides/dev/behaviour-testing.md.
 behaviour-test:
-	BEHAVIOUR_CAPABILITIES="$(BEHAVIOUR_CAPABILITIES)" go test -tags behaviour -race -v -count=1 -timeout 45m ./e2e/behaviour/
+	BEHAVIOUR_CAPABILITIES="$(BEHAVIOUR_CAPABILITIES)" ./scripts/run-with-infra-retry.sh go test -tags behaviour -race -v -count=1 -timeout 45m ./e2e/behaviour/
 
 # Dummy-playback behaviour suite (e2e/behaviour/playback_suite_test.go ->
 # behaviourtest.RunPlaybackSuite). Built with -tags playback only, never
@@ -272,6 +280,10 @@ behaviour-test:
 # BEHAVIOUR_ARTIFACT_DIR) and leases repo slots across the pool orgs through
 # the same shared install driver.
 # The timeout matches behaviour-test; a CI job running this target must use
-# the same timeout-minutes (see docs/guides/dev/behaviour-testing.md).
+# the same timeout-minutes. Like behaviour-test, this target routes through
+# scripts/run-with-infra-retry.sh: an infrastructure-classified failed run
+# is re-run exactly once, each go test attempt keeps its own -timeout 45m,
+# and one retry can double the wall time — see the timeout budgeting
+# discussion in docs/guides/dev/behaviour-testing.md.
 playback-test:
-	go test -tags playback -race -v -count=1 -timeout 45m ./e2e/behaviour/
+	./scripts/run-with-infra-retry.sh go test -tags playback -race -v -count=1 -timeout 45m ./e2e/behaviour/
