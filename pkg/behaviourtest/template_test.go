@@ -1,3 +1,5 @@
+//go:build behaviour || playback
+
 package behaviourtest
 
 import (
@@ -30,7 +32,7 @@ func TestNewTemplateWorld_FallsBackWhenFirstOrgTokenFails(t *testing.T) {
 	}
 	cfg := env.RunnerConfig{SCM: "github", CI: "githubactions"}
 
-	w := newTemplateWorld(t, context.Background(), cfg, pool, nil, SuiteOptions{})
+	w := newTemplateWorld(t, "behaviour", context.Background(), cfg, pool, nil, SuiteOptions{})
 	assert.Equal(t, []string{"halfsend-01", "halfsend-02"}, minted)
 	assert.Equal(t, "halfsend-02", w.Org, "the template points at the first org with working credentials")
 	assert.Equal(t, "halfsend-02", w.RepoOwner)
@@ -51,7 +53,7 @@ func TestNewTemplateWorld(t *testing.T) {
 	cfg := env.RunnerConfig{SCM: "github", CI: "githubactions"}
 	opts := SuiteOptions{FixturesRoot: "e2e/behaviour", FeaturePaths: []string{"features"}}
 
-	w := newTemplateWorld(t, context.Background(), cfg, pool, nil, opts)
+	w := newTemplateWorld(t, "behaviour", context.Background(), cfg, pool, nil, opts)
 	assert.Equal(t, []string{"halfsend-01"}, minted, "the template points at the pool's first org until a lease")
 	assert.Equal(t, "halfsend-01", w.Org)
 	assert.Equal(t, "halfsend-01", w.RepoOwner)

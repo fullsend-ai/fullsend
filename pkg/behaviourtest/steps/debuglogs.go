@@ -212,7 +212,7 @@ var sensitiveEnvNames = []string{
 // secret redactor. Prefix and structural patterns
 // cannot recognise an opaque credential, which would otherwise survive in
 // summaries, diagnostics and name-derived directory names. Values the shared
-// redactor declines as too short are masked locally by redactText.
+// redactor declines as too short are masked locally by RedactText.
 func registerRedactionLiterals(w *world.World) {
 	if w != nil && w.Token != "" {
 		registerSecretForms(w.Token)
@@ -252,7 +252,7 @@ func registerSecretForms(value string) {
 // minLocalSecretLen is the shortest sensitive literal masked locally. The
 // shared redactor refuses values under 8 bytes because masking them can
 // mangle ordinary text; for a value known to be sensitive, failing open is
-// worse, so redactText masks values of at least this length itself. Shorter
+// worse, so RedactText masks values of at least this length itself. Shorter
 // values would erase single characters or common fragments across every
 // artifact, so they cannot be masked without destroying the diagnostics.
 const minLocalSecretLen = 4
@@ -276,8 +276,32 @@ func registerSecretLiteral(value string) {
 	}
 }
 
-// redactText passes s through the secret redactor.
-func redactText(s string) string {
+// RedactText masks secrets in s with the same redaction the debug-log
+// collection applies to everything it writes: failure messages recorded at
+// record time get the same treatment as the collected artifacts.
+//
+// The guarantee has two parts:
+//
+//   - Pattern-based redaction (security.NewSecretRedactor().Scan) runs
+//     unconditionally and needs no initialization: secrets with a
+//     recognizable shape — token prefixes such as ghp_ or sk_, credential
+//     assignments, private key blocks — are masked whether or not anything
+//     was registered.
+//   - Exact-literal replacement depends on prior registration in the same
+//     process. Literals of at least 8 bytes are registered process-wide
+//     with the shared redactor, whose scan masks them; shorter sensitive
+//     values (down to four bytes) are kept in package-level state guarded
+//     by shortSecretsMu and masked here. RedactText registers nothing
+//     itself: both sets are populated by this package's debug-log
+//     collection — CollectFailureLogs, the workflow-log saving steps and
+//     the mint-status steps register the World token and sensitive runner
+//     environment values before writing artifacts.
+//
+// Callers cannot assume a stronger guarantee than the tooling provides: in
+// a process where no secrets were registered — a consumer binary that only
+// calls RedactText, for example — both literal sets are empty and an
+// opaque credential that no pattern recognizes passes through unredacted.
+func RedactText(s string) string {
 	if res := security.NewSecretRedactor().Scan(s); res.Sanitized != "" {
 		s = res.Sanitized
 	}
@@ -311,7 +335,7 @@ func logRedacted(w *world.World, format string, args ...any) {
 	if w.Logf == nil {
 		return
 	}
-	w.Logf("%s", sanitizeConsole(redactText(fmt.Sprintf(format, args...))))
+	w.Logf("%s", sanitizeConsole(RedactText(fmt.Sprintf(format, args...))))
 }
 
 // CollectFailureLogs is called by the suite's After hook for a failed
@@ -339,7 +363,7 @@ func CollectFailureLogs(ctx context.Context, w *world.World, scenarioErr error) 
 	registerRedactionLiterals(w)
 	artifactDir := strings.TrimSpace(os.Getenv("BEHAVIOUR_ARTIFACT_DIR"))
 	if artifactDir == "" {
-		logRedacted(w, "collect failure logs: BEHAVIOUR_ARTIFACT_DIR unset, skipping log collection for failed scenario %q", redactText(w.ScenarioName))
+		logRedacted(w, "collect failure logs: BEHAVIOUR_ARTIFACT_DIR unset, skipping log collection for failed scenario %q", RedactText(w.ScenarioName))
 		return
 	}
 
@@ -363,7 +387,7 @@ func CollectFailureLogs(ctx context.Context, w *world.World, scenarioErr error) 
 		logRedacted(w, "collect failure logs: %v", err)
 		return
 	}
-	logRedacted(w, "collect failure logs: failure summary for scenario %q saved to %s", redactText(w.ScenarioName), summaryPath)
+	logRedacted(w, "collect failure logs: failure summary for scenario %q saved to %s", RedactText(w.ScenarioName), summaryPath)
 }
 
 // collectScenarioRunLogs saves the logs of the scenario's runs that are
@@ -475,7 +499,7 @@ func inScenarioWindow(run forge.WorkflowRun, begin time.Time) bool {
 // would change the representation of a registered credential and let it
 // evade exact-string matching in the final whole-message scan.
 func describeRun(run forge.WorkflowRun) string {
-	s := fmt.Sprintf("run %d %q (status %q, conclusion %q)", run.ID, redactText(run.Name), redactText(run.Status), redactText(run.Conclusion))
+	s := fmt.Sprintf("run %d %q (status %q, conclusion %q)", run.ID, RedactText(run.Name), RedactText(run.Status), RedactText(run.Conclusion))
 	if run.HTMLURL != "" {
 		s += " " + run.HTMLURL
 	}
@@ -493,7 +517,7 @@ func runLabel(run forge.WorkflowRun) string {
 func pathSlug(s string, maxLen int, fallback string) string {
 	var b strings.Builder
 	dash := false
-	for _, r := range strings.ToLower(redactText(s)) {
+	for _, r := range strings.ToLower(RedactText(s)) {
 		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
 			b.WriteRune(r)
 			dash = false
@@ -549,7 +573,7 @@ func writeRedactedArtifact(path, content string) error {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 	tmpName := tmp.Name()
-	_, writeErr := tmp.WriteString(redactText(content))
+	_, writeErr := tmp.WriteString(RedactText(content))
 	closeErr := tmp.Close()
 	if err := errors.Join(writeErr, closeErr); err != nil {
 		_ = os.Remove(tmpName)

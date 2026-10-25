@@ -24,13 +24,21 @@ pkg/behaviourtest/   # RunSuite public entry (build tag: behaviour);
   artifacts/         # Artifact lookup helpers
   drivers/           # SCM, CI, env, install interfaces + v1 impls
   suite/             # InitScenario (tags, hooks, step registration)
+  failclass/         # Failure classification: infrastructure vs scenario
 ```
 
 In-repo live-test infrastructure (not a public API):
 
 ```
-internal/e2etest/    # Org pool, CLI runner, cleanup
+internal/e2etest/          # Org pool, CLI runner, cleanup
+internal/behaviourfail/    # Infrastructure-failure marker + shared recorder
 ```
+
+`failclass` is the composite classifier; `internal/behaviourfail` is its
+stdlib-only marker leaf, which the producers of context-dependent failures
+(`drivers/install`, `internal/e2etest`) mark errors with and which holds the
+run's shared failure recorder. See [Failure classification and
+infrastructure retry](#failure-classification-and-infrastructure-retry).
 
 In-repo runner and scenarios:
 
@@ -297,7 +305,7 @@ The dummy-playback scenarios (`@playback`, e.g. `features/runtime/playback.featu
 make playback-test
 ```
 
-The target runs `go test -tags playback -race -v -count=1 -timeout 45m ./e2e/behaviour/`. It uses only the `playback` build tag, so only `TestPlaybackSuite` (`behaviourtest.RunPlaybackSuite`) is compiled and `TestBehaviourSuite` is left out. Do not add `behaviour` to the tag list; that would run both suites. `RunPlaybackSuite` fixes the godog tag filter to `@playback` (`GODOG_TAGS` is ignored) and sets `PLAYBACK_RUNTIME=dummy-playback` for the install driver. Everything else is configured from the same environment as `make behaviour-test`: `ENVIRONMENT`, `BEHAVIOUR_SCM` / `BEHAVIOUR_CI` / `BEHAVIOUR_INSTALL_MODE`, `E2E_GCP_*`, `GODOG_CONCURRENCY`, `BEHAVIOUR_ARTIFACT_DIR`, and the role PEM / Cloudflare credentials the install factories need. `E2E_LOCK_TIMEOUT` does not apply, because neither suite acquires the org lock (see the slot leasing bullet under [Running the playback suite in CI](#running-the-playback-suite-in-ci)). `make behaviour-test` skips `@playback` scenarios, so the two targets never run the same scenario.
+The target runs `go test -tags playback -race -v -count=1 -timeout 45m ./e2e/behaviour/` through `scripts/run-with-infra-retry.sh`, so an infrastructure-classified failed run is retried exactly once and each attempt keeps its own 45-minute `-timeout` (see [Failure classification and infrastructure retry](#failure-classification-and-infrastructure-retry)). It uses only the `playback` build tag, so only `TestPlaybackSuite` (`behaviourtest.RunPlaybackSuite`) is compiled and `TestBehaviourSuite` is left out. Do not add `behaviour` to the tag list; that would run both suites. `RunPlaybackSuite` fixes the godog tag filter to `@playback` (`GODOG_TAGS` is ignored) and sets `PLAYBACK_RUNTIME=dummy-playback` for the install driver. Everything else is configured from the same environment as `make behaviour-test`: `ENVIRONMENT`, `BEHAVIOUR_SCM` / `BEHAVIOUR_CI` / `BEHAVIOUR_INSTALL_MODE`, `E2E_GCP_*`, `GODOG_CONCURRENCY`, `BEHAVIOUR_ARTIFACT_DIR`, and the role PEM / Cloudflare credentials the install factories need. `E2E_LOCK_TIMEOUT` does not apply, because neither suite acquires the org lock (see the slot leasing bullet under [Running the playback suite in CI](#running-the-playback-suite-in-ci)). `make behaviour-test` skips `@playback` scenarios, so the two targets never run the same scenario.
 
 #### Running the playback suite in CI
 
@@ -309,7 +317,7 @@ The `playback` job mirrors the `behaviour` job in [`.github/workflows/e2e.yml`](
 - **Change detection.** Reuse the behaviour job's file filter (its `grep -qE` path list and the `push.paths` entries under the same `SYNC-WITH` comment). It already covers `e2e/behaviour/` (playback features, fixtures and results), `pkg/behaviourtest/`, `internal/runtime/` (the `dummy-playback` runtime), and `Makefile`. Keep the two filters in sync, and keep the behaviour job's fallback of running the tests when the file list cannot be fetched or may be truncated.
 - **Cancellation.** The job inherits the workflow-level `concurrency` group and `cancel-in-progress` expression. A cancelled or killed run cannot run `t.Cleanup`, so its slot repos stay occupied until the [repo-slot GC](#repo-slot-gc) reclaims them, exactly as for the behaviour job. Gate post-test steps on `always()` rather than `success()` so that redaction still runs after a failure.
 - **Artifacts.** Before uploading, redact the playback artifact directory with the base-branch `scripts/redact-behaviour-artifacts.sh`, run through `env -i` with the full secret list, as described in [Behaviour debug artifact redaction](../../contributing/ci-workflows.md#behaviour-debug-artifact-redaction). Upload only when `steps.redact.outcome == 'success'` and the suite step failed, with `if-no-files-found: ignore`. Use an artifact name distinct from `behaviour-artifacts-*`, for example `playback-artifacts-<pr-or-run-id>`.
-- **Timeout.** Set `timeout-minutes: 45` to match the target's `go test -timeout` (see [CI timeout budgeting](#ci-timeout-budgeting-for-lazy-provisioning)).
+- **Timeout.** Set `timeout-minutes: 90` so one infrastructure-classified retry fits: the target's second `go test` attempt keeps its own 45-minute `-timeout` (see [Failure classification and infrastructure retry](#failure-classification-and-infrastructure-retry) and [CI timeout budgeting](#ci-timeout-budgeting-for-lazy-provisioning)).
 
 To run playback from a trusted PR branch before merging, dispatch the existing E2E workflow with that branch as the ref:
 
@@ -322,9 +330,149 @@ This runs the branch's workflow and test target in the dev environment. The regu
 
 In CI, the test runner mints cross-org `e2e` installation tokens via OIDC for GitHub API operations. Triage workflows on the pool org's `test-repo` mint same-org `triage` tokens from vendored reusable workflows; those require per-repo mint enrollment (`PER_REPO_WIF_REPOS`) on the hosted mint project. Pool `test-repo` repos are enrolled once by a GCP admin — not during CI install. Before `github setup`, the install driver resolves the repo-scoped inference WIF provider: it runs `fullsend inference status` and runs `fullsend inference provision` only when the provider is not healthy. Provisions are serialised across the process. A just-provisioned repo can briefly still report `not_provisioned`, so after a provision the driver re-reads `fullsend inference status` with a bounded backoff (up to 60 s of waiting) until the provider is healthy; the re-reads run after the provision lock is released, so a slow repo does not hold up other repos' provisions. The resolved provider is cached per repo name for the rest of the run, including after the repo is deleted and recreated, because the provider ID, its attribute condition and the Vertex AI grant are all keyed by `owner/repo`, not by repo ID (`Provisioner.ProvisionWIF` in `internal/dispatch/gcf/provisioner.go` creates the provider and the grant, and is the source of truth for these bindings). See [e2e-testing.md](e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
 
+### Failure classification and infrastructure retry
+
+Behaviour tests run against live infrastructure — the GitHub API, Actions
+runners, GCP WIF and the mint — and historically about one required-check
+failure in four came from that environment rather than from product
+behaviour ([#8036](https://github.com/fullsend-ai/fullsend/issues/8036)).
+The suite classifies every failure, labels the class in its output, and
+grants an infrastructure-classified run exactly one automatic retry. Both
+`make behaviour-test` and `make playback-test` route their `go test`
+invocation through
+[`scripts/run-with-infra-retry.sh`](../../../scripts/run-with-infra-retry.sh),
+so the contract below applies to CI and local runs alike.
+
+Classification is an allowlist with a conservative default. A failure is
+`infrastructure` only when it matches a mode the suite has observed in CI;
+everything else stays `scenario` — never retried, never masked.
+
+| Infrastructure mode | Recognized by |
+|---------------------|---------------|
+| GitHub API rate limit: 429 or secondary-rate-limit 403 | `gh.IsRateLimitError` on the forge client's `APIError` |
+| Pool capacity exhausted — every org rate-limited, denied or failed | `install.CapacityError` (all causes) |
+| Collaborator invitation pending (access requested, not yet granted) | the `gh.ErrInvitationPending` sentinel |
+| Terminal setup-poll exhaustion — repo never visible after creation, or dispatch workflow never settles | `behaviourfail.Mark` in the install ensure path |
+| GCP WIF quota or rate limit during inference provisioning (provision and status wait) | `behaviourfail.Mark` on matched CLI stderr signatures |
+| e2e auth-token mint or download failure at bootstrap | `behaviourfail.Mark` at the e2etest token source |
+
+Everything else classifies as `scenario`: assertion failures (expected
+state not observed), unrecognized API errors (a 500 is a product or forge
+defect, not an environment condition), lease races (`errLeaseLost`,
+`errForkReplaced`), unexplained failures of the test repo's workflow runs,
+and errors whose message merely mentions a rate limit without a structural
+match. Unexplained workflow-run failures stay scenario deliberately: a
+dispatch workflow failing without its artifact may be exactly the product
+regression a scenario exists to catch. The per-failure report below makes
+their frequency and shape measurable, so a follow-up can decide with data
+whether to classify them.
+
+The **run** class is decided at completion: `infrastructure` only when at
+least one failure was recorded and none of them is scenario. A mixed run —
+any scenario failure beside infrastructure failures — stays `scenario` and
+is never retried. A clean run reports `success`.
+
+The classification lives in the two packages shown in
+[Layout](#layout): `pkg/behaviourtest/failclass` holds `Classify`, the
+composite recognizer of the structural error types, and
+`internal/behaviourfail` is the stdlib-only marker leaf (`Mark`/`Is` for
+the context-dependent modes) plus the concurrency-safe `Recorder` the run's
+scenario Worlds share. Adding a mode is one `Classify` rule, or one `Mark`
+at the producing call site; a drifted GCP quota signature degrades to
+`scenario`, the safe direction.
+
+#### Labels, report, and redaction
+
+Each failed scenario is classified in the godog After hook and recorded on
+the shared recorder; the hook also logs one labelled line, so the console
+output and the report agree on the same per-failure record:
+
+```
+[failure-class] scenario "issue triage is dispatched": infrastructure
+```
+
+Suite-bootstrap failures (config validation, driver creation, actor
+resolution, pool token minting) are classified at their `t.Fatalf` sites
+with source `bootstrap`. When the suite fails, the final test-output
+message names the class and the per-class counts, so a red check states
+its failure mode instead of a generic suite failure:
+
+```
+behaviour suite failed with status 1: infrastructure failure (2 infrastructure, 0 scenario); report: <artifact-dir>/failure-class.json
+```
+
+At completion — pass or fail — the runner writes a machine-readable report
+as `failure-class.json` under `BEHAVIOUR_ARTIFACT_DIR` (mode `0600`, like
+the other artifacts; CI uploads it with them) and, when
+`BEHAVIOUR_FAILURE_CLASS_FILE` is set, to that path as well. The report
+records the run class, the per-class counts, and each failure's source
+(`scenario` or `bootstrap`), scenario name, class, and redacted message:
+
+```json
+{
+  "class": "infrastructure",
+  "infrastructure_failures": 1,
+  "scenario_failures": 0,
+  "failures": [
+    {
+      "source": "scenario",
+      "scenario": "issue triage is dispatched",
+      "class": "infrastructure",
+      "message": "…redacted failure message…"
+    }
+  ]
+}
+```
+
+A successful run writes the report too (class `success`), so a fresh
+marker always exists at completion and a stale one is detectable.
+
+When GitHub Actions makes `GITHUB_STEP_SUMMARY` available, the runner also
+appends a short section to the job summary. It carries **only** the class
+label, the per-class counts, and the suite name — never failure messages
+or scenario names, which are forge- and error-supplied text and a
+markdown-injection surface. The report artifact carries the detail; the
+summary carries the label.
+
+**Redaction guarantee:** recorded failure messages are redacted at record
+time with the same `steps.RedactText` machinery the debug-log collection
+uses (the registered secret literals, the runner's `World.Token`, and the
+values of credential-named environment variables), and are written
+verbatim thereafter. The summary never carries messages at all. No
+tokens, credentials, or GCP identifiers reach the report or the summary.
+
+#### The single automatic retry
+
+`scripts/run-with-infra-retry.sh` wraps the `go test` invocation of both
+Make targets. It resolves the marker path —
+`$BEHAVIOUR_ARTIFACT_DIR/failure-class.json` when the artifact dir is set,
+else a private temp file exported as `BEHAVIOUR_FAILURE_CLASS_FILE`, so
+local runs get the retry without flipping the suite's "artifact dir unset ⇒
+skip debug artifacts" behavior — deletes any stale marker, and runs the
+command. On failure it reads the marker's `class`:
+
+- `infrastructure` on attempt 1 → log the labelled retry notice and re-run
+  the command exactly once. A passing retry ends the run green (the
+  infrastructure failure masked nothing); a failing retry ends it red with
+  the label. The final exit status is attempt 2's.
+- `scenario`, a missing report (a crash, cancellation, or hard timeout that
+  killed the binary before the report write), or an unparseable report →
+  fail immediately, no retry.
+
+Scenario assertion failures are therefore never retried and never masked,
+and there is no configuration knob: the count is exactly one, per #8036.
+
+The retry is a process restart, not an in-process re-run: a fresh process
+re-leases slots, re-mints tokens, and exercises the real cold-start path
+the flakes live in. The cost is that a retried run re-runs every scenario,
+so the worst-case wall time doubles — the CI jobs' `timeout-minutes: 90`
+budgets for it, while each `go test` attempt keeps its own 45-minute
+`-timeout` (see [CI timeout
+budgeting](#ci-timeout-budgeting-for-lazy-provisioning)).
+
 ### Repo allocation via the shared slot driver
 
-`RunSuite` and `RunPlaybackSuite` build one shared install driver (`install.Factory` over an `install.PoolConfig`) for the environment's pool. On `dev` the pool is the derived orgs `halfsend-01` … `halfsend-12`, and on `stage` it is the single unsuffixed `halfsend` org, each with `test-repo-01` … `test-repo-NN` slots (`install.PoolLayoutForEnvironment`; `BEHAVIOUR_POOL_SIZE` sets the slots per org). The driver resolves one installation token per org (`e2etest.TokenForOrg`, minted once per org and kept for the run, since a token outlives the 45-minute job). It builds one forge client per org from that token. The `Given the enrolled test repository` step calls `install.LeaseDriver.AllocateLease(ctx)`, which:
+`RunSuite` and `RunPlaybackSuite` build one shared install driver (`install.Factory` over an `install.PoolConfig`) for the environment's pool. On `dev` the pool is the derived orgs `halfsend-01` … `halfsend-12`, and on `stage` it is the single unsuffixed `halfsend` org, each with `test-repo-01` … `test-repo-NN` slots (`install.PoolLayoutForEnvironment`; `BEHAVIOUR_POOL_SIZE` sets the slots per org). The driver resolves one installation token per org (`e2etest.TokenForOrg`, minted once per org and kept for the run, since a token outlives a 45-minute `go test` attempt; the infra-retry's fresh process mints its own). It builds one forge client per org from that token. The `Given the enrolled test repository` step calls `install.LeaseDriver.AllocateLease(ctx)`, which:
 
 1. Claims a free slot through the cross-org allocator (`slotpool.go`), blocking until one is free or ctx is cancelled. The claim *creates* the slot repo (the forge's `auto_init` provides the initial commit). A slot whose repo already exists belongs to another holder, possibly another suite. It is skipped for the whole of provisioning and is never reset or deleted. Orgs whose installation's rate-limit headers show the quota nearly spent are skipped until their reset, so leases move to orgs with quota left.
 2. On the first lease in any org of a mint group, deploys the group's mint: a public preview mint on `dev` and the durable STAGE mint on `stage`. The driver packs the pool orgs into the fewest groups whose `WORKFLOW_HOST_REPOS` fits in 5,000 bytes, recomputed from the layout on every run (two groups for the 12 DEV orgs at 12 slots each, one for STAGE). Every mint's `--status-github-group` is the `mint-status` team of one pool org, picked at random once per job. Concurrent first leases in a group share one deploy. A failed deploy is torn down and retried by the group's next lease, and `Finalize` tears each deployed mint down once.
@@ -382,7 +530,7 @@ Scenarios that never lease a repo (for example the CLI mint status scenarios) st
 
 **Credential context separation:** The suite's e2e installation token and dispatch's per-repo `GITHUB_TOKEN` are distinct credential contexts with independent permission propagation graphs. After a pool repo is deleted and recreated, the suite can confirm the repo exists (via `GetRepo`), but it **cannot** observe or predict when dispatch-side collaborator permissions will be ready. Do not add `GetCollaboratorPermission` polling to the suite-side readiness checks — the suite's token resolves permissions through a different GitHub subsystem than dispatch's token. See the [package doc comment](../../../pkg/behaviourtest/drivers/install/doc.go) for details and the empirical evidence from [#6701](https://github.com/fullsend-ai/fullsend/issues/6701).
 
-**Suite duration:** Because each lease of `test-repo-NN` pays create + `github setup` (not only the first use in a run), serial godog suites take longer than a shared-repo model. CI budgets **45 minutes** for the behaviour job (`timeout-minutes` and `go test -timeout`) to match.
+**Suite duration:** Because each lease of `test-repo-NN` pays create + `github setup` (not only the first use in a run), serial godog suites take longer than a shared-repo model. CI budgets **45 minutes per `go test` attempt** and **90 minutes for the behaviour job** so one infrastructure-classified retry fits (see [Failure classification and infrastructure retry](#failure-classification-and-infrastructure-retry)).
 
 Runner env (defaults shown):
 
@@ -392,6 +540,7 @@ BEHAVIOUR_CI=githubactions        # also: gitlabci; future: tekton
 BEHAVIOUR_INSTALL_MODE=per-repo
 BEHAVIOUR_APP_SET=fullsend-test # app identities for both mint deployment and github setup; must match the supplied role PEMs
 BEHAVIOUR_ARTIFACT_DIR=        # CI upload-artifact root for debug logs and run artifacts; temp dir when unset
+BEHAVIOUR_FAILURE_CLASS_FILE=  # extra direct path for failure-class.json; the retry wrapper sets it to a private temp file when BEHAVIOUR_ARTIFACT_DIR is unset
 BEHAVIOUR_TRACE_COLLECTOR=     # job-scoped OTel Collector: unset = on in GitHub Actions when BEHAVIOUR_ARTIFACT_DIR is set; true/false to force
 BEHAVIOUR_CONFIG_PRESET=       # optional local path or HTTPS URL forwarded as github setup --config
 PLAYBACK_RUNTIME=              # unset: normal "dummy" runtime; "dummy-playback": install.PlaybackDriver's installation runtime
@@ -488,17 +637,22 @@ single unsuffixed STAGE org use the same code path.
   must also not be archived and must be at least **1 hour** old. Anything
   else, including a failed or throttled lookup, stays occupied. The reason
   appears in the capacity error and in the `[slots] gc` log lines.
-- **Age bound.** The hour is the 45-minute limit of the suites that hold
+- **Age bound.** The hour is the 45-minute limit of the processes that hold
   leases plus a 15-minute margin. That limit is the Makefile `go test -timeout
-  45m` and the `timeout-minutes: 45` of the `behaviour` and `playback` jobs in
-  `e2e.yml`. The first panics the test binary and the second kills the runner,
-  so a slot repository, which never outlives the process that claimed it,
-  cannot be live after 45 minutes. A Godog context deadline would not stop a
-  step, so it is not the bound. The margin covers requests still in flight
-  when a job is killed, and clock skew. `TestSlotReclaimAgeCoversJobLimits`
-  fails if either limit rises above 45 minutes. Raise the bound in
-  `slotgc.go` together with them, and do not run the suites with a longer or
-  disabled `-timeout` against shared orgs.
+  45m`, which panics the test binary, so a slot repository, which never
+  outlives the process that claimed it, cannot be live 45 minutes past its
+  claim. The `behaviour` and `playback` jobs' `timeout-minutes: 90` in
+  `e2e.yml` exceeds it because one [infrastructure-classified
+  retry](#failure-classification-and-infrastructure-retry) runs a second,
+  sequential `go test` process after the first exits — each attempt keeps
+  its own `-timeout`, and a job kill can only shorten a process, never
+  extend a slot repository past the per-attempt bound. A Godog context
+  deadline would not stop a step, so it is not the bound. The margin covers
+  requests still in flight when a job is killed, and clock skew.
+  `TestSlotReclaimAgeCoversJobLimits` fails if the per-attempt `-timeout`
+  rises above 45 minutes, or a job budget past the two attempts it may run.
+  Raise the bound in `slotgc.go` together with them, and do not run the
+  suites with a longer or disabled `-timeout` against shared orgs.
 - **One collector per org.** The lease is `collector-lease.json` in the
   org's persistent `behaviour-slot-gc` repository. It changes only through
   `forge.Client.UpdateFileIfMatch`. A collector skips the org while another
@@ -721,7 +875,9 @@ Reference: [`awaitWorkflowReady`](../../../pkg/behaviourtest/drivers/install/ens
 
 Each lease of a pool repo adds approximately 3–5 minutes of overhead (delete leftover state + create + `github setup` + Actions settle; the first lease of each name also resolves inference WIF), including when a later scenario reuses the same `test-repo-NN` name. The behaviour job's `timeout-minutes` in `e2e.yml` and the `go test -timeout` in the Makefile must account for this overhead across all leases in the suite.
 
-Current budget: **45 minutes** for both the CI job timeout and `go test -timeout`. If adding scenarios that lease additional repos (or increase reuse of the 12-slot pool), verify that the total provisioning overhead plus test execution time fits within this budget. The [GitHub mint scope scenarios](#github-mint-scope-scenarios) and the [GitHub bot-role lookup scenarios](#github-bot-role-lookup-scenarios) lease one repo per Examples row. Adjust both values together — a `go test -timeout` higher than the CI `timeout-minutes` means the Go process is killed mid-test with no artifact collection. The same rule applies to the `playback-test` target (also 45 minutes) and to any CI job that runs it.
+Current budget: **45 minutes per `go test` attempt** and **90 minutes for the CI job**. The job budget carries one [infrastructure-classified retry](#failure-classification-and-infrastructure-retry): both Make targets run through `scripts/run-with-infra-retry.sh`, and a retried run executes a second `go test` with its own 45-minute `-timeout`, so a retried run's worst-case wall time doubles. Keep `go test -timeout` at or below 45 minutes — it is the per-attempt bound the [repo-slot GC](#repo-slot-gc) age guarantee rests on — and never above the job's `timeout-minutes`, or the Go process is killed mid-test with no artifact collection. If adding scenarios that lease additional repos (or increase reuse of the 12-slot pool), verify that the total provisioning overhead plus test execution time fits within one attempt's budget. The [GitHub mint scope scenarios](#github-mint-scope-scenarios) and the [GitHub bot-role lookup scenarios](#github-bot-role-lookup-scenarios) lease one repo per Examples row. The same rule applies to the `playback-test` target and to any CI job that runs it.
+
+Because `pull_request_target` runs `e2e.yml` from `main`, the 90-minute job timeout lags the retry: the Makefile and wrapper script come from the PR head and take effect immediately, but until the workflow change reaches `main` — possibly via a human PR, as [#8036](https://github.com/fullsend-ai/fullsend/issues/8036) anticipates — a retried PR run can still be killed by the old 45-minute job timeout. The transitional risk is accepted because infrastructure failures overwhelmingly occur in the early setup minutes.
 
 Reference: [`.github/workflows/e2e.yml`](../../../.github/workflows/e2e.yml) behaviour job `timeout-minutes` and `Makefile` `behaviour-test` target.
 

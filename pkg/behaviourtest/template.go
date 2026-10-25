@@ -1,3 +1,5 @@
+//go:build behaviour || playback
+
 package behaviourtest
 
 import (
@@ -6,6 +8,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/fullsend-ai/fullsend/internal/behaviourfail"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/env"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
@@ -15,13 +18,16 @@ import (
 const fullsendModulePath = "github.com/fullsend-ai/fullsend"
 
 // newTemplateWorld builds the template World shared by RunSuite and
-// RunPlaybackSuite. A scenario that leases a slot is rebound to the
-// slot's org (Org, Token, MintURL, and SCM/CI through OrgDrivers; see
+// RunPlaybackSuite. suiteName ("behaviour" or "playback") labels the
+// bootstrap failure report failRun writes when no pool org's token can
+// be minted. A scenario that leases a slot is rebound to the slot's org
+// (Org, Token, MintURL, and SCM/CI through OrgDrivers; see
 // steps.bindLease). Until then the World points at the first pool org
 // whose token can be minted, with drivers built from that token, so steps
 // a scenario runs without a lease still have working drivers.
 func newTemplateWorld(
 	t *testing.T,
+	suiteName string,
 	ctx context.Context,
 	cfg env.RunnerConfig,
 	pool install.PoolConfig,
@@ -45,7 +51,10 @@ func newTemplateWorld(
 		break
 	}
 	if defaultOrg == "" {
-		t.Fatalf("minting a token for any pool org: %v", errors.Join(mintErrs...))
+		// The World is built below from the minted token, so none exists
+		// here yet; failRun handles a nil World by installing a fresh
+		// recorder for the bootstrap record.
+		failRun(t, nil, suiteName, fmt.Errorf("minting a token for any pool org: %w", errors.Join(mintErrs...)))
 	}
 	orgDrivers := orgDriversFor(cfg.SCM, cfg.CI)
 	scmDriver, ciDriver, err := orgDrivers(pool.NewClient(token), token)
@@ -59,6 +68,7 @@ func newTemplateWorld(
 		CI:           ciDriver,
 		OrgDrivers:   orgDrivers,
 		Driver:       driver,
+		Failures:     &behaviourfail.Recorder{},
 		Org:          defaultOrg,
 		Token:        token,
 		Logf:         t.Logf,

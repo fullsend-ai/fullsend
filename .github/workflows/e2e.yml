@@ -119,7 +119,10 @@ jobs:
     # Scalar form keeps default deployment: true so runs list under Environments.
     environment: ${{ github.event_name == 'push' && 'stage' || 'dev' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # 90m: one infra-classified retry via scripts/run-with-infra-retry.sh
+    # (each go test attempt keeps its own 45m -timeout) plus redaction and
+    # upload overhead.
+    timeout-minutes: 90
     permissions:
       contents: read
       id-token: write
@@ -303,7 +306,10 @@ jobs:
     # Scalar form keeps default deployment: true so runs list under Environments.
     environment: ${{ github.event_name == 'push' && 'stage' || 'dev' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # 90m: one infra-classified retry via scripts/run-with-infra-retry.sh
+    # (each go test attempt keeps its own 45m -timeout) plus redaction and
+    # upload overhead.
+    timeout-minutes: 90
     permissions:
       contents: read
       id-token: write
