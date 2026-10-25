@@ -781,12 +781,16 @@ func (p pollErrors) describe(current error, what string) string {
 
 // harnessTimeoutDiagnostics builds the diagnostic tail of a harness-wait
 // timeout error: the runs after the trigger time with the agent's job
-// state, the artifact-listing classification, and the errors recorded
-// during the wait. Lookups made here can fail the same way the polls
-// did (the token may still be rate limited), so each gets its own
-// lookupBudget inside the timeoutDiagnosticsBudget envelope, and a
-// lookup that is itself cut short reports the last poll error as the
-// headline rather than its own cutoff.
+// state, the artifact-listing classification, the errors recorded during
+// the wait, and finally the client's last-seen GitHub rate-limit state
+// when it tracks one (describeRateLimitState), so every wait site that
+// reports a timeout carries the quota it observed — including the
+// no-poll-failure timeouts that otherwise carry no quota information at
+// all. Lookups made here can fail the same way the polls did (the token
+// may still be rate limited), so each gets its own lookupBudget inside
+// the timeoutDiagnosticsBudget envelope, and a lookup that is itself cut
+// short reports the last poll error as the headline rather than its own
+// cutoff.
 func (d *Driver) harnessTimeoutDiagnostics(ctx context.Context, owner, repo, agent string, after time.Time, runsErrs, artifactErrs, lookupErrs pollErrors) string {
 	ctx, cancel := context.WithTimeout(ctx, timeoutDiagnosticsBudget)
 	defer cancel()
@@ -823,6 +827,12 @@ func (d *Driver) harnessTimeoutDiagnostics(ctx context.Context, owner, repo, age
 	if tail := lookupErrs.describe(nil, "lookups"); tail != "" {
 		b.WriteString("; run lookups" + tail)
 	}
+	// The rate-limit state is read outside the lookup-budget envelope:
+	// RateLimit() is in-memory client state, so it costs no API call and
+	// is still appended when every budgeted lookup above was cut short.
+	if line := d.describeRateLimitState(); line != "" {
+		b.WriteString("; " + line)
+	}
 	return b.String()
 }
 
@@ -833,6 +843,39 @@ func lastPollError(p pollErrors) string {
 		return ""
 	}
 	return fmt.Sprintf("; last poll error (%d of %d polls failed): %v", p.failed, p.calls, p.last)
+}
+
+// describeRateLimitState renders the polling client's last-seen GitHub
+// rate-limit state as the final section of a harness-wait timeout tail.
+// The client is consumed by type assertion — the same pattern as the slot
+// allocator's quota gate — because requiring the reporter in the driver's
+// constructor would break every other client and test fake for a
+// diagnostic-only need: a client that does not implement
+// forge.RateLimitReporter (the GitLab client, and the plain fakes) adds no
+// line and its timeout errors are unchanged, while a client that tracks
+// rate limits but has not seen the headers yet renders an explicit
+// unknown, matching the boundary-summary convention, so "tracks, nothing
+// observed" stays distinguishable from "does not track". The body reuses
+// RateLimit.String so timeout errors and lease-boundary summaries share
+// one format; only the observed-age clause is added here, omitted
+// defensively when the observation carries no timestamp. RateLimit() is
+// an in-memory read, so it is made outside the diagnostics lookup-budget
+// envelope and can neither be cut short nor spend the budget of a real
+// lookup.
+func (d *Driver) describeRateLimitState() string {
+	reporter, ok := d.Client.(forge.RateLimitReporter)
+	if !ok {
+		return ""
+	}
+	rl, seen := reporter.RateLimit()
+	if !seen {
+		return "github rate limit: unknown (no observation yet)"
+	}
+	line := "github rate limit: " + rl.String()
+	if !rl.Observed.IsZero() {
+		line += fmt.Sprintf(", observed %s ago", d.now().Sub(rl.Observed).Round(time.Second))
+	}
+	return line
 }
 
 // harnessJobSuffix returns the job name suffix used by the harness workflow

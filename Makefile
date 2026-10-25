@@ -195,6 +195,7 @@ script-test:
 	$(call run-timed,bash scripts/check-agents-gate-pin-test.sh)
 	$(call run-timed,bash scripts/verify-release-tag-test.sh)
 	$(call run-timed,bash skills/cutting-releases/scripts/prepend-release-highlights-test.sh)
+	$(call run-timed,bash skills/e2e-health/scripts/scan-ratelimit-evidence_test.sh)
 	$(call run-timed,bash scripts/renovate/update-go-checksums-test.sh)
 	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/pre-fetch-prior-review-test.sh)
 	$(call run-timed,bash internal/scaffold/fullsend-repo/.github/scripts/setup-agent-env-test.sh)

@@ -335,7 +335,7 @@ In CI, the test runner mints cross-org `e2e` installation tokens via OIDC for Gi
 
 The `dev` preview mints are deployed with `--public` (`PER_REPO_WIF_REPOS=*`), which broadens *caller* eligibility, not anonymous access. OIDC verification, the workflow-host allowlist (an explicit `--workflow-host-repos`, kept separate from callers per [ADR 0082](../../ADRs/0082-workflow-host-allow-list.md)), role permissions, and requested-repo and FOREIGN scope checks all still apply, and the status endpoint's GitHub-team authorization is independent of this mode. The accepted trade-off: the `fullsend-test-*` Apps are installed on every repo in the pool orgs, so an unrelated repo there that uses an approved workflow host could mint a token for *itself* through a live preview URL. The previews are temporary and the identities test-only. The [GitHub mint scope scenarios](#github-mint-scope-scenarios) keep the denials for another repository or org without the required FOREIGN grant and for unapproved workflow hosts. Grouped orgs share a preview hostname and its 60 requests/minute/IP native rate limiter, so validate 429s with live traffic rather than assuming the per-org traffic pattern still holds.
 
-Godog concurrency stays independent of slot capacity. The default is the slots per org (12), and `GODOG_CONCURRENCY` overrides it. Capacity is every slot of the pool (144 on `dev`), and a concurrency above capacity only makes workers wait. The allocator logs each claim and release with its org/repo and that org's quota (`[slots] claimed halfsend-03/test-repo-05 (quota …)`). An exhausted pass logs the per-org breakdown: occupied, rate-limited until, denied, failed, e2e-lock excluded, and GC results. `Finalize` logs every org's last observed rate limit.
+Godog concurrency stays independent of slot capacity. The default is the slots per org (12), and `GODOG_CONCURRENCY` overrides it. Capacity is every slot of the pool (144 on `dev`), and a concurrency above capacity only makes workers wait. The allocator logs each claim and release with its org/repo and that org's quota (`[slots] claimed halfsend-03/test-repo-05 (quota …)`). An exhausted pass logs the per-org breakdown: occupied, rate-limited until, denied, failed, e2e-lock excluded, and GC results. `Finalize` logs every org's last observed rate limit (see [Rate-limit observability](#rate-limit-observability)).
 
 The After hook runs `CleanupScenario` (issues, PRs, ephemeral forks, hosting
 repos) and then `LeaseDriver.DeallocateLease(org, repo)`. Cleanup changes the
@@ -541,6 +541,111 @@ The tested Fullsend workflows run on separate GitHub-hosted runners, so the suit
 `BEHAVIOUR_TRACE_COLLECTOR` controls the collector. When unset, it runs only in GitHub Actions and only when `BEHAVIOUR_ARTIFACT_DIR` is set. Set it to `true` to run the collector locally (requires Podman and `BEHAVIOUR_ARTIFACT_DIR`), or `false` to turn it off. Trace collection is diagnostic: if the collector cannot start (no Podman, image pull or tunnel failure), the suite logs a warning and runs without it. If a repository cannot be configured, the suite logs that and continues. A suite killed by the `go test` timeout skips `t.Cleanup`, so no trace files are saved for that run.
 
 To check the per-trace routing against the pinned Collector image, run `BT_OTELCOL_INTEGRATION=1 go test ./pkg/behaviourtest/drivers/install -run PerTraceFilesWithRealCollector` (requires Podman). The test sends interleaved spans of two trace IDs across several export requests and verifies that every span is preserved and each trace ID has its own file. The test is skipped otherwise.
+
+### Rate-limit observability
+
+When a pool org's installation token exhausts its GitHub API budget
+mid-suite, harness waits fail blind: polls return 403s that surface only as
+`no recent workflow runs found after trigger time` timeouts
+([#6702](https://github.com/fullsend-ai/fullsend/issues/6702)). The suite
+instruments every point where that exhaustion manifests, so a run's logs
+and timeout errors always show the budget the suite observed.
+
+**Lease boundaries and teardown.** The slot allocator logs the org's
+last-observed quota with every claim and release
+([`slotpool.go`](../../../pkg/behaviourtest/drivers/install/slotpool.go),
+[#8578](https://github.com/fullsend-ai/fullsend/issues/8578)) —
+`[slots] claimed halfsend-03/test-repo-05 (quota remaining=1234/5000
+reset=2026-10-25T18:00:00Z resource=core)`, or `quota unknown` before the
+org's client has seen rate-limit headers — and the composed driver repeats
+the summary on its `[driver] allocated` and `[driver] deallocated` lines
+([`composed.go`](../../../pkg/behaviourtest/drivers/install/composed.go)).
+At teardown, `Finalize` logs the last observation of every org the suite
+used ([#8622](https://github.com/fullsend-ai/fullsend/issues/8622)):
+
+```
+[driver] per-org rate limits at finalize:
+halfsend-01: remaining=4987/5000 reset=2026-10-25T18:00:00Z resource=core
+halfsend-03: remaining=12/5000 reset=2026-10-25T19:00:00Z resource=core
+```
+
+**Harness-wait timeout errors.** Every harness-wait timeout error the
+GitHub Actions CI driver reports ends with the polling client's last-seen
+rate-limit state (`describeRateLimitState` in
+[`githubactions.go`](../../../pkg/behaviourtest/drivers/ci/githubactions/githubactions.go)):
+
+```
+github rate limit: remaining=1234/5000 reset=2026-10-25T18:00:00Z resource=core, observed 34s ago
+```
+
+The line is appended even when no poll during the wait failed. The GitHub
+client implements `forge.RateLimitReporter` (`internal/forge/forge.go`;
+`RateLimit` carries the `Observed` timestamp the age is computed from), so
+a client that tracks rate limits but has not observed the headers yet
+renders `github rate limit: unknown (no observation yet)` — the same
+explicit-unknown convention as the boundary summaries — while a client
+that does not implement the reporter (the GitLab driver) adds no line and
+its timeout errors are unchanged. The read is in-memory client state, made
+outside the timeout-diagnostics lookup budget, so it costs no API call.
+Timeout errors also report the API failures recorded during the wait
+([#6697](https://github.com/fullsend-ai/fullsend/issues/6697),
+[#6698](https://github.com/fullsend-ai/fullsend/issues/6698)): a failed
+run listing is named as `run listing failed: …`, and failures that repeat
+one identical error render `(same error on N of M polls during the wait)`
+— the per-run lookups made while building the diagnostics render the same
+shape counting `lookups`. Those strings land in the behaviour job's step
+log and in the failure summaries the After hook writes under
+`BEHAVIOUR_ARTIFACT_DIR`.
+
+#### The marker strings are the scanner's contract
+
+The rate-limit evidence scanner greps the behaviour job's logs for exactly
+those rendered strings: `run listing failed:` and
+`(same error on N of M polls during the wait)`, polls and lookups variants
+both. The near-miss `(failed on N of M polls during the wait; last: …)`
+that non-identical failures render instead is deliberately not a marker —
+#6702's criterion targets the blind-wait signature of identical repetition,
+not individual poll failures. Because the scanner matches the rendered
+text, any wording change in `harnessTimeoutDiagnostics` or
+`pollErrors.describe` must keep the marker strings in sync. The paired
+hermetic test `skills/e2e-health/scripts/scan-ratelimit-evidence_test.sh`
+(also run by `make script-test`) pins the patterns against fixture logs,
+including the near-misses that must not match — run it whenever either
+side changes.
+
+#### Running the evidence check
+
+The evidence check is `skills/e2e-health/scripts/scan-ratelimit-evidence.sh`.
+It is read-only (`gh` GETs, on your own token rather than the installation
+token it measures) and runs from any checkout with ordinary `gh` auth:
+
+```bash
+bash skills/e2e-health/scripts/scan-ratelimit-evidence.sh          # default: 20 runs
+bash skills/e2e-health/scripts/scan-ratelimit-evidence.sh --runs 2 # window size, 1-100
+```
+
+Pass `--repo OWNER/NAME` to scan an explicit repository; the default is
+the one `gh` resolves from the checkout. The scan enumerates completed
+`e2e.yml` runs on `main`, keeps the most recent ones whose `behaviour` job
+actually ran, and walks every attempt of each kept run —
+infrastructure-classified failures retry once, so a passing later attempt
+can mask a rate-limited first one. Run conclusions come from run and
+attempt metadata, never from log parsing. stdout carries only the JSON
+report (`script > report.json` captures it); stderr carries progress and
+the summary table (`2> summary.txt`). Exit 0 means the scan completed;
+exit 1 means it failed or the report is incomplete — a behaviour-job log
+could not be fetched, the affected attempts carry `log_error` entries, and
+the verdict may undercount.
+
+The verdict reports both signal levels from one scan. **Strict**
+(`runs_with_markers`) counts any marker occurrence; **lenient**
+(`runs_with_markers_that_passed`) counts marker-bearing runs that
+ultimately passed — the retry-masked occurrences. Which level counts as a
+violation is the closure-rule decision recorded alongside the report, not
+a scanner behavior. The skill-facing procedure — when to run the scan and
+how to read a saved report — is documented in the
+[`e2e-health` skill](../../../skills/e2e-health/SKILL.md#rate-limit-evidence-scan);
+this section is its contributor-facing counterpart.
 
 ### Test actor account permission scope
 
