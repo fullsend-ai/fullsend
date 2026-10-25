@@ -3536,6 +3536,234 @@ func TestHarnessTimeoutDiagnostics_CutShortVsLiveDeadlineError(t *testing.T) {
 	})
 }
 
+// rateLimitReportingClient wraps FakeClient with a configurable
+// forge.RateLimitReporter implementation, standing in for the live GitHub
+// client's X-RateLimit-* header observation. FakeClient — and every other
+// fake in this file — deliberately does not implement the reporter; that
+// non-implementing shape pins the no-state-line branch.
+type rateLimitReportingClient struct {
+	*forge.FakeClient
+	rateLimit     forge.RateLimit
+	rateLimitSeen bool
+}
+
+// RateLimit reports the configured observation, mirroring the reporter
+// contract: ok stays false until the client has seen a response carrying
+// rate-limit headers.
+func (c *rateLimitReportingClient) RateLimit() (forge.RateLimit, bool) {
+	return c.rateLimit, c.rateLimitSeen
+}
+
+// TestHarnessTimeoutDiagnostics_RateLimitStateLine pins the rendering of
+// the timeout tail's final section: the last-seen state with its
+// observation age for a reporting client, an explicit unknown for one
+// that has not observed headers yet, and no line at all for a
+// non-reporting client, whose tail is otherwise unchanged. The section is
+// appended whether or not any poll failed; these cases all use empty
+// pollErrors to exercise the no-failure shape.
+func TestHarnessTimeoutDiagnostics_RateLimitStateLine(t *testing.T) {
+	t.Parallel()
+
+	// Nothing else in the diagnostics path reads the clock, so the
+	// stepping clock's first reading — start — is the one the age clause
+	// is computed from: an observation at start-34s renders as 34s.
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	cases := []struct {
+		name        string
+		client      forge.Client
+		contains    string
+		notContains string
+	}{
+		{
+			name: "reporting client with an observation",
+			client: &rateLimitReportingClient{
+				FakeClient: forge.NewFakeClient(),
+				rateLimit: forge.RateLimit{
+					Limit:     5000,
+					Remaining: 1234,
+					Reset:     time.Date(2026, 10, 25, 18, 0, 0, 0, time.UTC),
+					Resource:  "core",
+					Observed:  start.Add(-34 * time.Second),
+				},
+				rateLimitSeen: true,
+			},
+			// The full tail pins the state line as the final section.
+			contains: "no recent workflow runs found after trigger time; no repository artifacts listed; " +
+				"github rate limit: remaining=1234/5000 reset=2026-10-25T18:00:00Z resource=core, observed 34s ago",
+		},
+		{
+			name: "observation without a timestamp omits the age",
+			client: &rateLimitReportingClient{
+				FakeClient:    forge.NewFakeClient(),
+				rateLimit:     forge.RateLimit{Remaining: 42},
+				rateLimitSeen: true,
+			},
+			contains:    "github rate limit: remaining=42 reset=unknown resource=unknown",
+			notContains: "observed",
+		},
+		{
+			name:     "reporting client with no observation yet",
+			client:   &rateLimitReportingClient{FakeClient: forge.NewFakeClient()},
+			contains: "github rate limit: unknown (no observation yet)",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			d := newTimeoutTestDriver(tc.client)
+			got := d.harnessTimeoutDiagnostics(context.Background(), "org", "repo", "triage", start, pollErrors{}, pollErrors{}, pollErrors{})
+			assert.Contains(t, got, tc.contains)
+			if tc.notContains != "" {
+				assert.NotContains(t, got, tc.notContains)
+			}
+		})
+	}
+
+	// A client that does not implement the reporter adds no line and the
+	// tail is otherwise unchanged.
+	d := newTimeoutTestDriver(forge.NewFakeClient())
+	got := d.harnessTimeoutDiagnostics(context.Background(), "org", "repo", "triage", start, pollErrors{}, pollErrors{}, pollErrors{})
+	assert.Equal(t, "no recent workflow runs found after trigger time; no repository artifacts listed", got)
+}
+
+// TestWaitForHarnessAgent_TimeoutIncludesRateLimitStateWithNoPollFailures
+// enforces the "Timeout with no poll failures" scenario of the
+// behaviour-ratelimit-observability spec's requirement that harness-wait
+// timeout errors include the last-seen rate-limit state: a wait that
+// times out with every poll succeeding and a client that has observed
+// rate-limit headers still reports the last-observed remaining/limit,
+// reset time, resource, and observation age. Unlike
+// TestHarnessTimeoutDiagnostics_RateLimitStateLine, which pins the
+// rendering at the diagnostics level, this case drives the full
+// WaitForHarnessAgent wait path — the no-failure timeout is the shape
+// that otherwise carries no quota information at all.
+func TestWaitForHarnessAgent_TimeoutIncludesRateLimitStateWithNoPollFailures(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	// No configured runs, artifacts, or errors: every poll of the wait
+	// succeeds and finds nothing, so the timeout carries no
+	// poll-failure tail at all.
+	client := &rateLimitReportingClient{
+		FakeClient: forge.NewFakeClient(),
+		rateLimit: forge.RateLimit{
+			Limit:     5000,
+			Remaining: 1234,
+			Reset:     time.Date(2026, 10, 25, 18, 0, 0, 0, time.UTC),
+			Resource:  "core",
+			Observed:  after.Add(-34 * time.Second),
+		},
+		rateLimitSeen: true,
+	}
+
+	d := newTimeoutTestDriver(client)
+	_, err := d.WaitForHarnessAgent(context.Background(), "org", "repo", "triage", after)
+	require.Error(t, err)
+	msg := err.Error()
+	assert.Contains(t, msg, `harness agent "triage" did not complete successfully`)
+	assert.NotContains(t, msg, "failed on", "every poll of the wait succeeded")
+	assert.NotContains(t, msg, "cut short", "no poll ran against an exhausted budget")
+	// The state rides along on the plain no-failure timeout shape and
+	// keeps its place as the tail's final section. Only the presence of
+	// the age clause is pinned, not its value: how many clock readings a
+	// timed-out wait makes before the state line is a poll-loop detail.
+	assert.Contains(t, msg, "no recent workflow runs found after trigger time; no repository artifacts listed; "+
+		"github rate limit: remaining=1234/5000 reset=2026-10-25T18:00:00Z resource=core")
+	assert.Regexp(t, `, observed \S+ ago$`, msg, "the observation age is part of the state line")
+}
+
+// TestWaitForHarnessAgent_TimeoutAgesStaleRateLimitObservation enforces
+// the "Stale observation is aged" scenario of the
+// behaviour-ratelimit-observability spec's requirement that harness-wait
+// timeout errors include the last-seen rate-limit state: when the last
+// observation predates the timeout by a non-trivial interval, the state
+// in the timeout error reports that age, so a reader can tell how
+// current the numbers are. The reported age is extracted and checked
+// against the configured staleness rather than pinned to an exact
+// rendering, because the number of clock readings a timed-out wait
+// makes before the state line is a poll-loop detail.
+func TestWaitForHarnessAgent_TimeoutAgesStaleRateLimitObservation(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	// The observation is already stale when the wait begins, and the
+	// stepped clock only moves forward from there.
+	const stale = 47 * time.Minute
+	client := &rateLimitReportingClient{
+		FakeClient: forge.NewFakeClient(),
+		rateLimit: forge.RateLimit{
+			Limit:     5000,
+			Remaining: 60,
+			Reset:     time.Date(2026, 10, 25, 18, 0, 0, 0, time.UTC),
+			Resource:  "core",
+			Observed:  after.Add(-stale),
+		},
+		rateLimitSeen: true,
+	}
+
+	d := newTimeoutTestDriver(client)
+	_, err := d.WaitForHarnessAgent(context.Background(), "org", "repo", "triage", after)
+	require.Error(t, err)
+	msg := err.Error()
+	assert.Contains(t, msg, "github rate limit: remaining=60/5000 reset=2026-10-25T18:00:00Z resource=core")
+	m := regexp.MustCompile(`, observed (\S+) ago$`).FindStringSubmatch(msg)
+	require.NotNil(t, m, "the state line must end with an observed-age clause: %s", msg)
+	age, err := time.ParseDuration(m[1])
+	require.NoError(t, err, "the reported age must be a parseable duration: %q", m[1])
+	// Anything younger than the configured staleness means the age
+	// clause is not computed from the observation time.
+	assert.GreaterOrEqual(t, age, stale, "a stale observation must report an age at least as old as itself")
+	// The age is measured on the wait's stepped clock, which cannot
+	// advance far past the wait budget; a wall-clock reading (months,
+	// given the 2026 fixtures) fails this bound.
+	assert.LessOrEqual(t, age, stale+2*dispatchWait, "the age must come from the wait's clock, not wall-clock time")
+}
+
+// TestWaitForHarnessAgent_TimeoutUnchangedWithoutRateLimitReporter
+// enforces the "Client does not track rate limits" scenario of the
+// behaviour-ratelimit-observability spec's requirement that harness-wait
+// timeout errors include the last-seen rate-limit state: when the
+// suite's forge client does not implement forge.RateLimitReporter, the
+// timeout error contains no rate-limit state line and is otherwise
+// unchanged. FakeClient — like the GitLab client — does not implement
+// the reporter, and the exact-equality assertion is what pins
+// "otherwise unchanged".
+func TestWaitForHarnessAgent_TimeoutUnchangedWithoutRateLimitReporter(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	d := newTimeoutTestDriver(forge.NewFakeClient())
+	_, err := d.WaitForHarnessAgent(context.Background(), "org", "repo", "triage", after)
+	require.Error(t, err)
+	assert.Equal(t,
+		`harness agent "triage" did not complete successfully; no recent workflow runs found after trigger time; no repository artifacts listed`,
+		err.Error())
+}
+
+// TestWaitForHarnessAgent_TimeoutReportsRateLimitUnknownWhenNotYetObserved
+// enforces the no-observation shape of the behaviour-ratelimit-observability
+// spec's requirement that harness-wait timeout errors include the
+// last-seen rate-limit state: a client that implements
+// forge.RateLimitReporter but has not observed rate-limit headers yet
+// renders the spec's explicit unknown marker ("an explicit unknown
+// marker when no observation exists yet") rather than omitting the line,
+// so "tracks, nothing observed" stays distinguishable from the
+// non-reporting client above.
+func TestWaitForHarnessAgent_TimeoutReportsRateLimitUnknownWhenNotYetObserved(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	// rateLimitSeen stays false: the reporter exists, but no response
+	// has carried rate-limit headers yet.
+	client := &rateLimitReportingClient{FakeClient: forge.NewFakeClient()}
+	d := newTimeoutTestDriver(client)
+	_, err := d.WaitForHarnessAgent(context.Background(), "org", "repo", "triage", after)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(),
+		"no repository artifacts listed; github rate limit: unknown (no observation yet)")
+}
+
 func TestWaitForFailedHarnessAgent_TimeoutReportsListingErrors(t *testing.T) {
 	t.Parallel()
 
