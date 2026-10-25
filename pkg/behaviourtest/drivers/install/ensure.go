@@ -10,6 +10,7 @@ import (
 
 	"golang.org/x/sync/singleflight"
 
+	"github.com/fullsend-ai/fullsend/internal/behaviourfail"
 	"github.com/fullsend-ai/fullsend/internal/e2etest"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install/common"
@@ -130,13 +131,18 @@ type OwnerCheck func(ctx context.Context) (bool, error)
 // errForkReplaced is returned by the fork delete's retry guard when the
 // fork under the slot's fork name is gone or is a different repository
 // than the one being deleted, or when the slot's base repo is no longer
-// this lease's.
+// this lease's. It is deliberately not behaviourfail-marked: lease races
+// stay scenario-classified (design D3 of the behaviour-infra-retry
+// change; see its Open Questions).
 var errForkReplaced = errors.New("fork repo gone or replaced")
 
 // errLeaseLost is returned by EnsureRepo when the repository under the
 // slot's name is no longer this lease's (replaced by another holder or
 // gone) or its ownership could not be verified, so provisioning stops
-// before writing to the slot or deleting its fork.
+// before writing to the slot or deleting its fork. It is deliberately
+// not behaviourfail-marked: lease races stay scenario-classified
+// (design D3 of the behaviour-infra-retry change; see its Open
+// Questions).
 var errLeaseLost = errors.New("slot repo is no longer this lease's")
 
 // requireOwnership fails closed with errLeaseLost unless stillOwns (when
@@ -633,7 +639,15 @@ func (e *repoEnsurer) awaitCreation(ctx context.Context, org, repoName, target s
 			delay *= 2
 		}
 	}
-	return fmt.Errorf("repo %s not visible after %d attempts following creation", target, resetMaxAttempts)
+	// The claim created the repo but the API never made it visible: a
+	// terminal setup-poll condition (#8036's "setup 404s"), marked
+	// infrastructure per design D3 of the behaviour-infra-retry change.
+	// The scenario has asserted nothing yet, so classifying (and
+	// retrying) this as environment cannot mask a product regression.
+	return behaviourfail.Mark(
+		fmt.Errorf("repo %s not visible after %d attempts following creation", target, resetMaxAttempts),
+		"setup: repo never visible",
+	)
 }
 
 // installFullsend resolves the inference WIF provider (when a GCP
@@ -898,8 +912,14 @@ func awaitWorkflowReady(ctx context.Context, client forge.Client, org, repo, wor
 				return fmt.Errorf("polling %s on %s failed after %d attempts over %v: %w",
 					workflowFile, target, attempt, settleTimeout, lastAPIErr)
 			}
-			return fmt.Errorf("%w: %s on %s after %d attempts over %v (last: %w)",
-				errWorkflowNotReady, workflowFile, target, attempt, settleTimeout, last)
+			// Actions never indexed the dispatch workflow: terminal
+			// setup-poll exhaustion, marked infrastructure for the same
+			// reason as awaitCreation's read-after-create mark (design
+			// D3). The mark keeps errWorkflowNotReady reachable, so
+			// AllocateLease still claims a fresh repo first (#8654).
+			return behaviourfail.Mark(fmt.Errorf("%w: %s on %s after %d attempts over %v (last: %w)",
+				errWorkflowNotReady, workflowFile, target, attempt, settleTimeout, last),
+				"setup: workflow never settled")
 		}
 		wait := min(delay, remaining)
 		logf("[ensure] %s not ready on %s (attempt %d, %v) — polling again in %v", workflowFile, target, attempt, last, wait)
