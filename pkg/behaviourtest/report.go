@@ -75,7 +75,10 @@ func failRun(t *testing.T, w *world.World, suite string, err error) {
 // (bootstrap failures happen before any scenario runs), mirroring
 // suite.recordScenarioFailure for the After hook. The message is redacted
 // at record time — the completion report renders recorded messages
-// verbatim, so this is the only redaction they get.
+// verbatim, so this is the only redaction they get — and the World's
+// credential literals are registered first, so a bootstrap failure
+// recorded before any debug-log collection still masks an opaque token
+// that no pattern recognizes.
 //
 // w may be nil, or carry a nil recorder, when bootstrap failed before the
 // template World existed; a fresh recorder is installed in that case so
@@ -95,6 +98,7 @@ func recordBootstrapFailure(w *world.World, err error) *world.World {
 		// records across two recorders mid-run.
 		w.Failures = &behaviourfail.Recorder{}
 	}
+	steps.RegisterRedactionLiterals(w)
 	w.Failures.RecordFailure(bootstrapSource, "", class, steps.RedactText(err.Error()))
 	return w
 }
@@ -220,7 +224,7 @@ func runClass(rec *behaviourfail.Recorder, runErr error, status int) behaviourfa
 func appendStepSummary(path, suite string, report behaviourfail.Report, logf func(string, ...any)) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "## %s suite result\n\n", sanitizeSummaryText(suite))
-	fmt.Fprintf(&b, "- Failure class: %s\n", report.Class)
+	fmt.Fprintf(&b, "- Failure class: %s\n", sanitizeSummaryText(string(report.Class)))
 	fmt.Fprintf(&b, "- Infrastructure failures: %d\n", report.InfrastructureFailures)
 	fmt.Fprintf(&b, "- Scenario failures: %d\n\n", report.ScenarioFailures)
 

@@ -268,7 +268,7 @@ func whenOperatorRunsMintStatus(ctx context.Context, w *world.World, credential 
 	if err != nil {
 		return err
 	}
-	registerRedactionLiterals(w)
+	RegisterRedactionLiterals(w)
 	registerSecretForms(token)
 
 	home, err := os.MkdirTemp("", "behaviour-mint-status-home-*")

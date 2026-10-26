@@ -139,6 +139,11 @@ func afterScenario(ctx context.Context, driver install.Driver, scenarioErr error
 // single labelled [failure-class] line, so the suite's console output
 // and the failure-class report agree on the same per-failure record.
 //
+// The World's credential literals are registered before the message is
+// redacted, so the very first failure a process records — before any
+// debug-log collection has registered anything — still masks an opaque
+// token that no pattern recognizes.
+//
 // Both call sites label the source "scenario": a deallocation failure
 // fails the scenario it tore down, and its recorded message
 // ("deallocating repo: ...") names the origin, so no third source label
@@ -147,6 +152,7 @@ func afterScenario(ctx context.Context, driver install.Driver, scenarioErr error
 // Logf suppresses only the console line. The scenario name is redacted
 // in the log line because it is forge-supplied text.
 func recordScenarioFailure(w *world.World, err error) {
+	steps.RegisterRedactionLiterals(w)
 	class := failclass.Classify(err)
 	w.Failures.RecordFailure("scenario", w.ScenarioName, class, steps.RedactText(err.Error()))
 	if w.Logf != nil {
