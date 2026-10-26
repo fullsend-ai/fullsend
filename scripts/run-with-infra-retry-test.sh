@@ -29,6 +29,8 @@ export COUNT_FILE MODES_FILE
 #                     STUB_FAIL_STATUS; distinct values prove the wrapper
 #                     exits with the FINAL attempt's status)
 #   STUB_PASS_ON      invocation number at which the stub starts succeeding
+#   STUB_EMIT         text to print before failing (fatal-pattern coverage)
+#   STUB_EMIT_FD      stdout | stderr — where STUB_EMIT goes (default stdout)
 cat >"${STUB}" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -74,6 +76,14 @@ case "${STUB_MODE:-missing}" in
     exit 99
     ;;
 esac
+
+if [[ -n "${STUB_EMIT:-}" ]]; then
+  if [[ "${STUB_EMIT_FD:-stdout}" == "stderr" ]]; then
+    echo "${STUB_EMIT}" >&2
+  else
+    echo "${STUB_EMIT}"
+  fi
+fi
 
 if [[ "${n}" -gt 1 && -n "${STUB_FAIL_STATUS_2:-}" ]]; then
   exit "${STUB_FAIL_STATUS_2}"
@@ -173,6 +183,44 @@ else
   sed 's/^/    /' <<<"${WRAPPER_OUTPUT}"
   FAILURES=$((FAILURES + 1))
 fi
+
+# --- Fatal output patterns refuse the retry (PR #8801 review) ---
+
+# A race warning, panic, or hard-timeout line in attempt 1's output forbids
+# the retry even when the marker class says infrastructure: a report written
+# before the process died cannot authorize retrying a product defect.
+export STUB_MODE=write STUB_CLASS=infrastructure STUB_FAIL_STATUS=7
+export STUB_EMIT="WARNING: DATA RACE"
+run_wrapper
+check "data-race output does not retry despite infrastructure marker" 7 1 "no"
+if grep -q 'fatal pattern' <<<"${WRAPPER_OUTPUT}"; then
+  echo "PASS: fatal-pattern refusal surfaces a notice"
+else
+  echo "FAIL: fatal-pattern refusal surfaces a notice"
+  echo "  wrapper output:"
+  sed 's/^/    /' <<<"${WRAPPER_OUTPUT}"
+  FAILURES=$((FAILURES + 1))
+fi
+
+export STUB_EMIT="panic: suite fixture exploded"
+run_wrapper
+check "panic output does not retry despite infrastructure marker" 7 1 "no"
+
+export STUB_EMIT="panic: test timed out after 45m0s"
+run_wrapper
+check "test-timeout output does not retry despite infrastructure marker" 7 1 "no"
+
+# The race detector writes to stderr; the fatal-pattern check must see it.
+export STUB_EMIT_FD=stderr
+run_wrapper
+check "fatal pattern on stderr does not retry" 7 1 "no"
+unset STUB_EMIT_FD
+
+# Clean output plus an infrastructure marker still retries: the fatal check
+# must not over-trigger and starve the retry the class authorizes.
+unset STUB_EMIT
+run_wrapper
+check "clean output with infrastructure marker still retries" 8 2 "yes"
 
 # --- Artifact-dir path: BEHAVIOUR_ARTIFACT_DIR set, as in CI ---
 
