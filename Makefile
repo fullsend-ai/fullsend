@@ -2,7 +2,7 @@
 .PHONY: help bootstrap ensure-hooks lint lint-all check fmt \
        go-build go-test go-fmt go-vet go-tidy \
        lint-md-links script-test test ci-local \
-       behaviour-test playback-test \
+       behaviour-test playback-test behaviour-test-unit \
        wasm-build wasm-stage wasm-stage-traced mint-cf-worker-test
 
 # Let Go automatically download the toolchain version required by go.mod.
@@ -29,6 +29,7 @@ help:
 	@echo "  ci-local             - Run CI checks in a container matching the ubuntu-24.04 runner (T=\"targets\"; see hack/ci-local)"
 	@echo "  behaviour-test       - Run Gherkin behaviour tests (installs fullsend per-repo; CI: OIDC mint)"
 	@echo "  playback-test        - Run @playback behaviour scenarios on the dummy-playback runtime (CI: OIDC mint)"
+	@echo "  behaviour-test-unit  - Run behaviour-tagged pkg/behaviourtest unit tests (mirrors lint.yml)"
 	@echo "  wasm-build           - Build mintcore WASM binary and report gzip size vs Workers limits"
 	@echo "  wasm-stage           - Build and stage WASM + wasm_exec.js into CF Worker source tree"
 	@echo "  mint-cf-worker-test  - Build WASM, install deps, and run CF Worker bridge smoke tests"
@@ -287,3 +288,10 @@ behaviour-test:
 # discussion in docs/guides/dev/behaviour-testing.md.
 playback-test:
 	./scripts/run-with-infra-retry.sh go test -tags playback -race -v -count=1 -timeout 45m ./e2e/behaviour/
+
+# Unit tests behind the behaviour build tag - the same tagged
+# invocation lint.yml's unit-tests job runs in CI. Covers the tagged
+# pkg/behaviourtest tests (report, template) that the untagged go-test
+# target skips; internal/forge is included to match the CI step.
+behaviour-test-unit:
+	go test -race -tags behaviour ./pkg/behaviourtest/... ./internal/forge/...
