@@ -66,12 +66,20 @@ output_matches_fatal_pattern() {
   return 1
 }
 
-# Attempt 1, tee'ing the combined output so the retry decision can inspect
-# it for fatal patterns. `|| status=$?` keeps set -e from aborting the script
-# on the command's failure while still capturing its exit status (an `if`
-# guard would reset $? to the if-statement's own status).
+# Attempt 1, captured through a single tee so the retry decision can inspect
+# the combined output for fatal patterns. One tee means one writer: two tee
+# process substitutions on the same file would each open it O_TRUNC and write
+# at independent offsets, silently clobbering each other's bytes, and every
+# fatal pattern arrives on stderr, the lower-volume stream a verbose run's
+# stdout would overwrite. The foreground pipeline is also the barrier: bash
+# waits for both the command and the tee before the pattern grep runs. `2>&1`
+# merges stderr into the captured stream. `|| status=$?` keeps set -e from
+# aborting the script on the command's failure while still capturing its exit
+# status (pipefail, already set above, makes the pipeline's status the
+# command's rather than the tee's; an `if` guard would reset $? to the
+# if-statement's own status).
 status=0
-"$@" > >(tee "${OUTPUT_FILE}") 2> >(tee "${OUTPUT_FILE}" >&2) || status=$?
+"$@" 2>&1 | tee "${OUTPUT_FILE}" || status=$?
 
 if [[ "${status}" -eq 0 ]]; then
   exit 0

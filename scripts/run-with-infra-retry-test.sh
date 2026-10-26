@@ -31,6 +31,8 @@ export COUNT_FILE MODES_FILE
 #   STUB_PASS_ON      invocation number at which the stub starts succeeding
 #   STUB_EMIT         text to print before failing (fatal-pattern coverage)
 #   STUB_EMIT_FD      stdout | stderr — where STUB_EMIT goes (default stdout)
+#   STUB_EMIT_NOISE   count of filler stdout lines printed after STUB_EMIT
+#                     (competing-traffic coverage for the capture race)
 cat >"${STUB}" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -83,6 +85,15 @@ if [[ -n "${STUB_EMIT:-}" ]]; then
   else
     echo "${STUB_EMIT}"
   fi
+fi
+
+if [[ -n "${STUB_EMIT_NOISE:-}" ]]; then
+  # Filler stdout lines after the emitted pattern, emulating a verbose run's
+  # volume: in a two-writer capture this traffic overwrites the pattern's
+  # bytes at overlapping offsets, so the guard must survive it.
+  for ((i = 0; i < STUB_EMIT_NOISE; i++)); do
+    echo "noise line ${i}"
+  done
 fi
 
 if [[ "${n}" -gt 1 && -n "${STUB_FAIL_STATUS_2:-}" ]]; then
@@ -214,6 +225,15 @@ check "test-timeout output does not retry despite infrastructure marker" 7 1 "no
 export STUB_EMIT_FD=stderr
 run_wrapper
 check "fatal pattern on stderr does not retry" 7 1 "no"
+
+# Heavy stdout traffic after the stderr pattern must not bury it: a verbose
+# run floods stdout while the fatal line lands on stderr, and the single-tee
+# capture keeps both. A two-tee capture clobbered the streams at independent
+# offsets, exactly the race this case pins down.
+export STUB_EMIT_NOISE=5000
+run_wrapper
+check "fatal pattern on stderr under heavy stdout traffic does not retry" 7 1 "no"
+unset STUB_EMIT_NOISE
 unset STUB_EMIT_FD
 
 # Clean output plus an infrastructure marker still retries: the fatal check
