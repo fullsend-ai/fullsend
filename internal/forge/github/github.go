@@ -221,6 +221,11 @@ type APIErrorDetail struct {
 	Message  string `json:"message"`
 }
 
+// ErrInvitationPending reports that AddCollaborator's PUT answered
+// 201: GitHub sent an invitation, and access starts only once the
+// invitee accepts it. Match it with errors.Is.
+var ErrInvitationPending = errors.New("invitation pending")
+
 func (e *APIError) Error() string {
 	s := fmt.Sprintf("github api: %d %s", e.StatusCode, e.Message)
 	for _, d := range e.Errors {
@@ -4785,13 +4790,6 @@ func (p collaboratorPermission) effectiveRole() string {
 	}
 	return "none"
 }
-
-// ErrInvitationPending reports that AddCollaborator's PUT answered
-// 201: GitHub sent an invitation, and access starts only once the
-// invitee accepts it. Match it with errors.Is; the behaviour-suite
-// failure classifier treats it as an infrastructure mode (#8036)
-// because the suite cannot grant access its invitee has not accepted.
-var ErrInvitationPending = errors.New("invitation pending")
 
 func (c *LiveClient) AddCollaborator(ctx context.Context, owner, repo, username, permission string) error {
 	path := fmt.Sprintf("/repos/%s/%s/collaborators/%s",
