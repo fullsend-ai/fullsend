@@ -93,8 +93,11 @@ func beforeScenario(ctx context.Context, tags []string, template *world.World, n
 // itself before deleting the slot repo.
 //
 // driver.DeallocateRepo is deferred so the lease is returned even if
-// steps.CleanupScenario panics. Named return values allow the deferred
-// closure to surface a deallocation error when no scenario error exists.
+// steps.CleanupScenario panics. A deallocation failure is always
+// recorded: with no scenario error it becomes the scenario's error,
+// and beside a scenario error it is recorded separately, so a
+// scenario-classified teardown failure keeps the run non-retryable
+// (#8036's no-masking contract).
 func afterScenario(ctx context.Context, driver install.Driver, scenarioErr error) (_ context.Context, retErr error) {
 	retErr = scenarioErr
 	w := world.FromContext(ctx)
@@ -115,13 +118,20 @@ func afterScenario(ctx context.Context, driver install.Driver, scenarioErr error
 				if w.Logf != nil {
 					w.Logf("deallocating repo: %v", deallocErr)
 				}
+				deallocFailure := fmt.Errorf("deallocating repo: %w", deallocErr)
 				if retErr == nil {
-					retErr = fmt.Errorf("deallocating repo: %w", deallocErr)
+					retErr = deallocFailure
 					// The scenario passed, so no failure summary was written
 					// above; the deallocation failure turns it into a failed
 					// scenario, which must leave the same artifact.
 					recordScenarioFailure(w, retErr)
 					steps.CollectFailureLogs(ctx, w, retErr)
+				} else {
+					// The scenario's own failure was recorded above. Record
+					// the teardown failure too: when it classifies as
+					// scenario it must keep the whole run non-retryable, so
+					// an infrastructure retry cannot mask it.
+					recordScenarioFailure(w, deallocFailure)
 				}
 			}
 		}()
@@ -144,7 +154,7 @@ func afterScenario(ctx context.Context, driver install.Driver, scenarioErr error
 // debug-log collection has registered anything — still masks an opaque
 // token that no pattern recognizes.
 //
-// Both call sites label the source "scenario": a deallocation failure
+// Every call site labels the source "scenario": a deallocation failure
 // fails the scenario it tore down, and its recorded message
 // ("deallocating repo: ...") names the origin, so no third source label
 // is needed beside "scenario" and "bootstrap". The recorder is
