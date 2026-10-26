@@ -4,10 +4,12 @@
 # sourced (main only runs when the script is executed directly), and main's
 # window bounding end to end against a stubbed gh.
 #
-# Covers: the marker contract — run-listing failures, the same-error poll and
-# lookup tails, several hits on one diagnostic line and across lines, and the
-# near-miss "(failed on N of M polls during the wait; last: ...)" that must
-# NOT match; snippet bounding and tab/CRLF collapsing (the TSV hand-off to jq
+# Covers: the marker contract — run-listing failures, the same-error polls
+# tail, the counted-failures lookups tail, several hits on one diagnostic
+# line and across lines, and the near-miss "(failed on N of M polls during
+# the wait; last: ...)" that must NOT match; the jobs-page envelope check
+# (a 200 error body is not a jobs page); snippet bounding and tab/CRLF
+# collapsing (the TSV hand-off to jq
 # holds); a clean run; a retry-masked occurrence (markers on the first
 # attempt of an ultimately-passing run); a failing run with markers; the
 # report's window statement (a thinned window stays visible) and the
@@ -93,12 +95,17 @@ EOF
 
 # A rate-limited attempt: one timeout line carrying every marker kind (the
 # run-listing failure with its same-error polls tail, the artifact listing's
-# polls tail, and the run-lookups tail), then a summary step quoting the
-# run-listing failure again — several hits per line and across lines.
+# polls tail, and the run-lookups counted-failures tail), then a summary
+# step quoting the run-listing failure again — several hits per line and
+# across lines. Shapes copied verbatim from harnessTimeoutDiagnostics
+# (githubactions.go): the lookup tail renders the counted-failures form
+# because the diagnostics pass no current lookup error, and the closing
+# rate-limit line is describeRateLimitState's rendering of
+# forge.RateLimit.String().
 cat > "${LOGS}/rate-limited.txt" <<'EOF'
 2026-10-20T12:00:01.1234567Z ##[group]Run behaviour suite
 2026-10-20T12:00:02.0000000Z e2e: provisioned repo o/test-repo-01 (run 9876543)
-2026-10-20T12:15:03.7654321Z ##[error]harness wait exceeded its budget: waiting for the run: context deadline exceeded; run listing failed: github api: 403 retryable error after 5 attempts on GET /repos/o/r/actions/workflows/fullsend.yaml/runs (last delay: 54s) (same error on 14 of 14 polls during the wait); artifact listing failed: github api: 403 retryable error after 5 attempts on GET /repos/o/r/actions/artifacts (last delay: 7s) (same error on 14 of 14 polls during the wait); run lookups (same error on 6 of 6 lookups during the wait); github rate limit: 6 remaining of 5000, resets in 8m12s (observed 45s ago)
+2026-10-20T12:15:03.7654321Z ##[error]harness wait exceeded its budget: waiting for the run: context deadline exceeded; run listing failed: github api: 403 retryable error after 5 attempts on GET /repos/o/r/actions/workflows/fullsend.yaml/runs (last delay: 54s) (same error on 14 of 14 polls during the wait); artifact listing failed: github api: 403 retryable error after 5 attempts on GET /repos/o/r/actions/artifacts (last delay: 7s) (same error on 14 of 14 polls during the wait); run lookups (failed on 6 of 6 lookups during the wait; last: github api: 403 retryable error after 5 attempts on GET /repos/o/r/actions/runs/104954029 (last delay: 31s)); github rate limit: remaining=6/5000 reset=2026-10-20T12:23:15Z resource=core, observed 45s ago
 2026-10-20T12:15:04.0000000Z ##[error]behaviour suite failed: the harness wait exceeded its budget
 2026-10-20T12:15:05.0000000Z ##[group]Publish behaviour summary
 2026-10-20T12:15:06.0000000Z behaviour summary: the harness wait timed out; run listing failed: github api: 403 retryable error after 5 attempts on GET /repos/o/r/actions/workflows/fullsend.yaml/runs (last delay: 54s) (same error on 14 of 14 polls during the wait)
@@ -106,12 +113,14 @@ cat > "${LOGS}/rate-limited.txt" <<'EOF'
 EOF
 
 # A flaky, not rate-limited, attempt: the run listing succeeded and the
-# polls failed with differing errors — the near-miss shapes that must not
+# polls failed with differing errors — the poll near-miss that must not
 # match (the criterion targets the blind-wait signature of identical
-# repetition).
+# repetition). It carries no run-lookups tail: a counted-failures lookup
+# tail is a marker under the current contract, so its absence is what keeps
+# this fixture clean.
 cat > "${LOGS}/near-miss.txt" <<'EOF'
 2026-10-20T09:00:01.0000000Z ##[group]Run behaviour suite
-2026-10-20T09:10:02.0000000Z ##[error]harness wait exceeded its budget: waiting for the run: context deadline exceeded; 1 run since the trigger, agent job "behaviour" queued (failed on 3 of 3 polls during the wait; last: github api: 502 server error on GET /repos/o/r/actions/workflows/fullsend.yaml/runs); run lookups (failed on 3 of 3 lookups during the wait; last: github api: 502 server error on GET /repos/o/r/actions/runs/104954029); github rate limit: 4987 remaining of 5000, resets in 58m1s (observed 2m10s ago)
+2026-10-20T09:10:02.0000000Z ##[error]harness wait exceeded its budget: waiting for the run: context deadline exceeded; 1 run since the trigger, agent job "behaviour" queued (failed on 3 of 3 polls during the wait; last: github api: 502 server error on GET /repos/o/r/actions/workflows/fullsend.yaml/runs); github rate limit: remaining=4987/5000 reset=2026-10-20T10:08:00Z resource=core, observed 2m10s ago
 2026-10-20T09:10:03.0000000Z ##[endgroup]
 EOF
 
@@ -120,7 +129,7 @@ EOF
 # the carriage return.
 printf '2026-10-21T08:00:00Z provisioned repo o/test-repo-02 (run 9876550)\n' \
   > "${LOGS}/tabbed.txt"
-printf '2026-10-21T08:10:00Z harness wait exceeded its budget: waiting for the run:\tcontext deadline exceeded; run lookups (same error on 2 of 2 lookups during the wait); github rate limit: unknown (no observation yet)\r\n' \
+printf '2026-10-21T08:10:00Z harness wait exceeded its budget: waiting for the run:\tcontext deadline exceeded; run lookups (failed on 2 of 2 lookups during the wait; last: github api: 403 retryable error after 5 attempts on GET /repos/o/r/actions/runs/1049550 (last delay: 8s)); github rate limit: unknown (no observation yet)\r\n' \
   >> "${LOGS}/tabbed.txt"
 
 # --- gh stub -----------------------------------------------------------------
@@ -221,7 +230,7 @@ expect_jq "rate-limited log: every hit is found (two lines, six hits)" \
   'length' "${RATE_LIMITED_MARKERS}" "6"
 expect_jq "rate-limited log: hits keep log order across kinds and lines" \
   'map(.marker) | join(",")' "${RATE_LIMITED_MARKERS}" \
-  "run-listing-failed,same-error-polls,same-error-polls,same-error-lookups,run-listing-failed,same-error-polls"
+  "run-listing-failed,same-error-polls,same-error-polls,failed-lookups,run-listing-failed,same-error-polls"
 expect_jq "rate-limited log: one entry per run-listing failure" \
   '[.[] | select(.marker == "run-listing-failed")] | length' \
   "${RATE_LIMITED_MARKERS}" "2"
@@ -229,12 +238,12 @@ expect_jq "rate-limited log: one entry per same-error polls tail" \
   '[.[] | select(.marker == "same-error-polls")] | length' \
   "${RATE_LIMITED_MARKERS}" "3"
 expect_jq "rate-limited log: the lookup tail is its own marker kind" \
-  '[.[] | select(.marker == "same-error-lookups")] | length' \
+  '[.[] | select(.marker == "failed-lookups")] | length' \
   "${RATE_LIMITED_MARKERS}" "1"
 expect_jq "rate-limited log: the run-listing snippet carries the matched text" \
   '.[0].snippet | contains("run listing failed:")' "${RATE_LIMITED_MARKERS}" "true"
 expect_jq "rate-limited log: the lookup hit's snippet carries its matched text" \
-  '.[3].snippet | contains("same error on 6 of 6 lookups during the wait")' \
+  '.[3].snippet | contains("failed on 6 of 6 lookups during the wait")' \
   "${RATE_LIMITED_MARKERS}" "true"
 expect_jq "rate-limited log: a long line's snippet is bounded on both sides" \
   '.[0].snippet | startswith("...") and endswith("...")' "${RATE_LIMITED_MARKERS}" "true"
@@ -243,8 +252,8 @@ NEAR_MISS_MARKERS="${TMP}/markers-near-miss.json"
 analyze_log < "${LOGS}/near-miss.txt" > "${NEAR_MISS_MARKERS}"
 expect_line "near-miss fixture carries the non-marker poll tail" \
   'failed on 3 of 3 polls during the wait; last:' "${LOGS}/near-miss.txt"
-expect_line "near-miss fixture carries the non-marker lookup tail" \
-  'failed on 3 of 3 lookups during the wait; last:' "${LOGS}/near-miss.txt"
+expect_absent "near-miss fixture carries no lookup tail (it would be a marker)" \
+  'failed on [0-9]+ of [0-9]+ lookups during the wait' "${LOGS}/near-miss.txt"
 expect_jq "near-miss log: differing poll errors are not markers" \
   'length' "${NEAR_MISS_MARKERS}" "0"
 
@@ -257,13 +266,36 @@ TABBED_MARKERS="${TMP}/markers-tabbed.json"
 analyze_log < "${LOGS}/tabbed.txt" > "${TABBED_MARKERS}"
 expect_jq "tabbed log: the lookup marker is found" 'length' "${TABBED_MARKERS}" "1"
 expect_jq "tabbed log: the marker kind distinguishes lookups from polls" \
-  '.[0].marker' "${TABBED_MARKERS}" "same-error-lookups"
+  '.[0].marker' "${TABBED_MARKERS}" "failed-lookups"
 expect_jq "tabbed log: a tab in the window does not cut the snippet short" \
   '.[0].snippet | contains("context deadline exceeded; run lookups")' "${TABBED_MARKERS}" "true"
 expect_jq "tabbed log: tabs are collapsed" \
   'any(.[]; .snippet | contains("\t"))' "${TABBED_MARKERS}" "false"
 expect_jq "tabbed log: carriage returns are stripped" \
   'any(.[]; .snippet | contains("\r"))' "${TABBED_MARKERS}" "false"
+
+# --- 1b. jobs_page_shape_ok: a 200 error envelope is not a jobs page -----------
+
+cat > "${LOGS}/jobs-valid.json" <<'EOF'
+{"total_count": 3, "jobs": [
+  {"id": 1, "name": "lint", "conclusion": "success"},
+  {"id": 2, "name": "behaviour", "conclusion": "failure"},
+  {"id": 3, "name": "teardown", "conclusion": "success"}]}
+EOF
+cat > "${LOGS}/jobs-error-envelope.json" <<'EOF'
+{"message": "temporary upstream failure"}
+EOF
+
+if jobs_page_shape_ok "${LOGS}/jobs-valid.json"; then
+  pass "jobs page shape: a well-formed single-page listing passes"
+else
+  fail "jobs page shape: a well-formed single-page listing must pass"
+fi
+if jobs_page_shape_ok "${LOGS}/jobs-error-envelope.json"; then
+  fail "jobs page shape: a 200 error envelope must not pass as a jobs page"
+else
+  pass "jobs page shape: a 200 error envelope must not pass as a jobs page"
+fi
 
 # --- 2. build_attempt_record ---------------------------------------------------
 
@@ -383,7 +415,7 @@ expect_jq "masked run: the markers are on attempt 1, with their kinds" \
   '.runs[] | select(.run_id == 402) | .attempts[] | select(.attempt == 1)
      | .markers | map(.marker) | join(",")' \
   "${REPORT}" \
-  "run-listing-failed,same-error-polls,same-error-polls,same-error-lookups,run-listing-failed,same-error-polls"
+  "run-listing-failed,same-error-polls,same-error-polls,failed-lookups,run-listing-failed,same-error-polls"
 expect_jq "masked run: the evidence carries a snippet of the matching line" \
   '.runs[] | select(.run_id == 402) | .attempts[] | select(.attempt == 1)
      | .markers[0].snippet | contains("run listing failed:")' \
