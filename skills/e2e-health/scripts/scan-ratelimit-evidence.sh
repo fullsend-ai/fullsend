@@ -35,15 +35,18 @@
 # because a behaviour-job log could not be fetched (the verdict may
 # undercount — see the per-attempt log_error entries in the report).
 #
-# Marker contract — the two production strings of harnessTimeoutDiagnostics
+# Marker contract — the production strings of harnessTimeoutDiagnostics
 # (pkg/behaviourtest/drivers/ci/githubactions/githubactions.go), reported as:
 #   run-listing-failed   "run listing failed:"
 #   same-error-polls     "(same error on N of M polls during the wait)"
-#   same-error-lookups   "(same error on N of M lookups during the wait)"
-# The lookup tail of the timeout diagnostics counts "lookups", not "polls";
-# both counted units are markers. The near-miss "(failed on N of M polls
-# during the wait; last: …)" is deliberately not a marker: the criterion
-# targets the blind-wait signature of identical repetition.
+#   failed-lookups       "(failed on N of M lookups during the wait; last: …)"
+# The poll tails render the same-error shape only when identical poll errors
+# repeat, so the poll near-miss "(failed on N of M polls during the wait;
+# last: …)" is deliberately not a marker: the criterion targets the
+# blind-wait signature of identical repetition. The lookup tail always
+# renders the counted-failures shape — the diagnostics pass no current
+# lookup error, so the identical-repetition variant cannot appear for
+# lookups — and that counted shape is itself the rate-limit evidence.
 #
 # The verdict reports both signal levels from one scan: runs with markers
 # (the strict reading of the closure criterion) and runs with markers that
@@ -79,8 +82,8 @@ say() {
 # analyze_log — stdin: one behaviour-job log; stdout: a JSON array of
 # {marker, snippet}, one entry per marker hit in log order. A single line can
 # carry several hits (a run-listing failure whose describe() tail repeats on
-# the same line, or several wait sections concatenated), so both checks run
-# and the poll-marker match loops. Snippets are bounded windows (60 chars
+# the same line, or several wait sections concatenated), so every check runs
+# and each marker match loops. Snippets are bounded windows (60 chars
 # before the match through 110 after) so long diagnostic lines stay
 # readable; tabs are collapsed so the TSV hand-off to jq holds.
 analyze_log() {
@@ -92,10 +95,18 @@ analyze_log() {
       if (at > 0)
         emit("run-listing-failed", line, at)
       pos = 1
-      while (match(substr(line, pos), /\(same error on [0-9]+ of [0-9]+ (polls|lookups) during the wait\)/)) {
+      while (match(substr(line, pos), /\(same error on [0-9]+ of [0-9]+ polls during the wait\)/)) {
         at = pos + RSTART - 1
-        hit = substr(line, at, RLENGTH)
-        emit(index(hit, "lookups") > 0 ? "same-error-lookups" : "same-error-polls", line, at)
+        emit("same-error-polls", line, at)
+        pos = at + RLENGTH
+      }
+      # The last: error text of the lookup tail can itself contain parens,
+      # so this match stops at the counted-units phrase rather than
+      # requiring the closing paren of the full parenthetical.
+      pos = 1
+      while (match(substr(line, pos), /\(failed on [0-9]+ of [0-9]+ lookups during the wait/)) {
+        at = pos + RSTART - 1
+        emit("failed-lookups", line, at)
         pos = at + RLENGTH
       }
     }
@@ -109,6 +120,16 @@ analyze_log() {
       printf "%s\t%s\n", kind, snip
     }
   ' | jq -Rn '[inputs | split("\t") | {marker: .[0], snippet: (.[1] // "")}]'
+}
+
+# jobs_page_shape_ok FILE — exit 0 when FILE holds a well-formed jobs-page
+# envelope: an object whose jobs field is an array and whose total_count is
+# a number. GitHub returns this shape for every successful jobs listing; a
+# 200 response carrying an error envelope ({"message": …}) fails here, so
+# the scan dies instead of classifying the attempt's behaviour job as
+# absent and silently excluding the run. Pure: file in, exit status out.
+jobs_page_shape_ok() {
+  jq -e 'type == "object" and (.jobs | type) == "array" and (.total_count | type) == "number"' "$1" >/dev/null
 }
 
 # build_attempt_record ATTEMPT CONCLUSION JOB_STATE MARKERS_JSON [LOG_ERROR]
@@ -243,7 +264,15 @@ scan_run() {
         > "${dir}/jobs-${nn}.json" 2>"${ERRFILE}"; then
       die "listing the jobs of run ${run_id} attempt ${n} failed: $(<"${ERRFILE}")"
     fi
-    if ! jq -e '(.total_count // (.jobs | length)) <= (.jobs | length)' \
+    # Validate the envelope before extracting anything from it: a 200
+    # response can still carry an error body ({"message": …}) with no jobs
+    # array, which must fail the scan instead of classifying the attempt's
+    # behaviour job as absent — that would silently exclude the run and let
+    # an older one fill the window.
+    if ! jobs_page_shape_ok "${dir}/jobs-${nn}.json"; then
+      die "the jobs listing of run ${run_id} attempt ${n} is not a jobs page (expected an object with a jobs array and a numeric total_count): $(head -c 200 "${dir}/jobs-${nn}.json")"
+    fi
+    if ! jq -e '.total_count <= (.jobs | length)' \
         "${dir}/jobs-${nn}.json" >/dev/null; then
       die "the jobs listing of run ${run_id} attempt ${n} spans more than one page; the scanner needs pagination support"
     fi
@@ -303,38 +332,32 @@ main() {
     case "$1" in
       --runs)
         if [[ $# -lt 2 ]]; then
-          printf 'Error: %s needs a value.\n' "$1" >&2
-          exit 1
+          die "--runs needs a value."
         fi
         runs="$2"; shift 2 ;;
       --runs=*) runs="${1#--runs=}"; shift ;;
       --repo)
         if [[ $# -lt 2 ]]; then
-          printf 'Error: %s needs a value.\n' "$1" >&2
-          exit 1
+          die "--repo needs a value."
         fi
         repo="$2"; shift 2 ;;
       --repo=*) repo="${1#--repo=}"; shift ;;
       -h|--help) usage; exit 0 ;;
       *)
-        printf 'Error: unknown argument: %s\n' "$1" >&2
         usage >&2
-        exit 1 ;;
+        die "unknown argument: ${1}" ;;
     esac
   done
   if ! [[ "${runs}" =~ ^[1-9][0-9]*$ ]] || (( runs > 100 )); then
-    printf 'Error: --runs must be an integer between 1 and 100 (got %s).\n' "${runs}" >&2
-    exit 1
+    die "--runs must be an integer between 1 and 100 (got ${runs})."
   fi
   if [[ -n "${repo}" ]] && ! [[ "${repo}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
-    printf 'Error: --repo must look like OWNER/NAME (got %s).\n' "${repo}" >&2
-    exit 1
+    die "--repo must look like OWNER/NAME (got ${repo})."
   fi
   local tool
   for tool in gh jq; do
     if ! command -v "${tool}" >/dev/null; then
-      printf 'Error: %s is required.\n' "${tool}" >&2
-      exit 1
+      die "${tool} is required."
     fi
   done
 
@@ -379,6 +402,13 @@ main() {
       rm -rf "${dir}"
       say "run ${rid}: behaviour job did not run in any attempt — excluded from the window"
       continue
+    elif (( rc != 0 )); then
+      # Bash suspends errexit for scan_run on the left of ||, so a failing
+      # command inside it that is not itself a die() call lands here: any
+      # exit status other than the no-behaviour-job sentinel 2 must fail
+      # the scan rather than keep a run whose evidence.json is missing or
+      # incomplete.
+      die "scanning run ${rid} failed with exit code ${rc}"
     fi
     kept=$(( kept + 1 ))
     printf '%s\n' "${dir}" >> "${WORKDIR}/kept-dirs.txt"
