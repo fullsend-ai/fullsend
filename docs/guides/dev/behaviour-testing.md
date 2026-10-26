@@ -590,28 +590,32 @@ outside the timeout-diagnostics lookup budget, so it costs no API call.
 Timeout errors also report the API failures recorded during the wait
 ([#6697](https://github.com/fullsend-ai/fullsend/issues/6697),
 [#6698](https://github.com/fullsend-ai/fullsend/issues/6698)): a failed
-run listing is named as `run listing failed: …`, and failures that repeat
-one identical error render `(same error on N of M polls during the wait)`
-— the per-run lookups made while building the diagnostics render the same
-shape counting `lookups`. Those strings land in the behaviour job's step
-log and in the failure summaries the After hook writes under
-`BEHAVIOUR_ARTIFACT_DIR`.
+run listing is named as `run listing failed: …`, poll failures that repeat
+one identical error render `(same error on N of M polls during the wait)`,
+and the per-run lookups made while building the diagnostics render
+`(failed on N of M lookups during the wait; last: …)` — the lookup tail
+counts failed lookups and names the last one, because the diagnostics pass
+no current lookup error to compare against. Those strings land in the
+behaviour job's step log and in the failure summaries the After hook
+writes under `BEHAVIOUR_ARTIFACT_DIR`.
 
 #### The marker strings are the scanner's contract
 
 The rate-limit evidence scanner greps the behaviour job's logs for exactly
-those rendered strings: `run listing failed:` and
-`(same error on N of M polls during the wait)`, polls and lookups variants
-both. The near-miss `(failed on N of M polls during the wait; last: …)`
-that non-identical failures render instead is deliberately not a marker —
-#6702's criterion targets the blind-wait signature of identical repetition,
-not individual poll failures. Because the scanner matches the rendered
-text, any wording change in `harnessTimeoutDiagnostics` or
-`pollErrors.describe` must keep the marker strings in sync. The paired
-hermetic test `skills/e2e-health/scripts/scan-ratelimit-evidence_test.sh`
-(also run by `make script-test`) pins the patterns against fixture logs,
-including the near-misses that must not match — run it whenever either
-side changes.
+those rendered strings: `run listing failed:`, `(same error on N of M
+polls during the wait)`, and `(failed on N of M lookups during the wait;
+last: …)`. The poll near-miss `(failed on N of M polls during the wait;
+last: …)` that non-identical poll failures render instead is deliberately
+not a marker — #6702's criterion targets the blind-wait signature of
+identical repetition, not individual poll failures — while the lookup
+counted-failures shape is a marker, because the lookup tail has no
+current-error comparison and always renders that shape. Because the
+scanner matches the rendered text, any wording change in
+`harnessTimeoutDiagnostics` or `pollErrors.describe` must keep the marker
+strings in sync. The paired hermetic test
+`skills/e2e-health/scripts/scan-ratelimit-evidence_test.sh` (also run by
+`make script-test`) pins the patterns against fixture logs, including the
+near-misses that must not match — run it whenever either side changes.
 
 #### Running the evidence check
 
