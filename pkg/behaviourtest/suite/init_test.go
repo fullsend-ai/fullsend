@@ -959,3 +959,26 @@ func TestLeaseOwnership(t *testing.T) {
 	require.ErrorContains(t, err, "cannot verify lease ownership of o/r")
 	assert.False(t, owns)
 }
+
+// TestRecordScenarioFailure_RedactsWorldTokenWithoutPriorRegistration
+// pins the recording site's redaction ordering (PR #8801 review): the
+// scenario failure's message is redacted with the World's credential
+// literals registered first, so an opaque token that no pattern
+// recognizes is masked even in the very first failure the process
+// records, before any debug-log collection has run.
+func TestRecordScenarioFailure_RedactsWorldTokenWithoutPriorRegistration(t *testing.T) {
+	token := "opaquescefirstrecording4c8d1e6f"
+	rec := &behaviourfail.Recorder{}
+	w := &world.World{
+		Token:        token,
+		ScenarioName: "first recorded failure",
+		Failures:     rec,
+	}
+
+	recordScenarioFailure(w, fmt.Errorf("step failed with token %s", token))
+
+	record := requireRecordedFailure(t, rec, behaviourfail.Scenario, "first recorded failure")
+	assert.NotContains(t, record.Message, token,
+		"the opaque token must be masked by registration, not by pattern luck")
+	assert.Contains(t, record.Message, "step failed with token")
+}
