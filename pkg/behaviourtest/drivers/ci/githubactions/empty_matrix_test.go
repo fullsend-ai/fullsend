@@ -150,6 +150,42 @@ func TestWaitForHarnessEmptyMatrix_PendingRunTimesOut(t *testing.T) {
 	assert.Contains(t, err.Error(), "still in progress")
 }
 
+// TestWaitForHarnessEmptyMatrix_TimeoutIncludesRateLimitState extends the
+// pending-run timeout case to a client that implements
+// forge.RateLimitReporter: the timeout error must carry the last-seen
+// rate-limit state as its final section, mirroring the WaitForHarnessAgent
+// timeout contract, so a reader of the failure can tell whether GitHub API
+// quota exhaustion contributed to the wait never settling. Only the
+// presence of the age clause is pinned, not its value: how many clock
+// readings a timed-out wait makes before the state line is a poll-loop
+// detail.
+func TestWaitForHarnessEmptyMatrix_TimeoutIncludesRateLimitState(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	client := &rateLimitReportingClient{
+		FakeClient: emptyMatrixClient(
+			[]forge.WorkflowRun{{ID: 10, Status: "in_progress", CreatedAt: "2026-01-02T00:00:00Z"}},
+			nil,
+		),
+		rateLimit: forge.RateLimit{
+			Limit:     5000,
+			Remaining: 1234,
+			Reset:     time.Date(2026, 10, 25, 18, 0, 0, 0, time.UTC),
+			Resource:  "core",
+			Observed:  after.Add(-34 * time.Second),
+		},
+		rateLimitSeen: true,
+	}
+
+	_, err := newTimeoutTestDriver(client).WaitForHarnessEmptyMatrix(context.Background(), "org", "repo", after)
+	require.Error(t, err)
+	msg := err.Error()
+	assert.Contains(t, msg, "still in progress")
+	assert.Contains(t, msg, "github rate limit: remaining=1234/5000 reset=2026-10-25T18:00:00Z resource=core")
+	assert.Regexp(t, `, observed \S+ ago$`, msg, "the observation age is part of the state line")
+}
+
 func TestWaitForHarnessEmptyMatrix_MissingDispatchJobTimesOut(t *testing.T) {
 	t.Parallel()
 

@@ -2519,6 +2519,50 @@ func TestCountHarnessDispatches_ContextCancelledWhilePending(t *testing.T) {
 	assert.ErrorIs(t, err, context.Canceled)
 }
 
+// TestCountHarnessDispatches_TimeoutIncludesRateLimitState pins the
+// rate-limit contract on the count-settle timeout path: a pending run that
+// never settles past the wait budget must time out with the reporting
+// client's last-seen rate-limit state appended as the error's final
+// section, so a reader of the failure can tell whether GitHub API quota
+// exhaustion contributed to the count never settling. The wait's clock and
+// timers are injectable like the other harness waits, so the timeout is
+// reached deterministically without sleeping. Only the presence of the age
+// clause is pinned, not its value: how many clock readings a timed-out
+// wait makes before the state line is a poll-loop detail.
+func TestCountHarnessDispatches_TimeoutIncludesRateLimitState(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	fake := forge.NewFakeClient()
+	fake.WorkflowRunsList = map[string][]forge.WorkflowRun{
+		"org/repo/fullsend.yaml": {
+			{ID: 10, Status: "in_progress", CreatedAt: "2026-01-02T00:00:00Z"},
+		},
+	}
+	fake.WorkflowRunJobs = map[int][]forge.WorkflowJob{
+		10: {{ID: 1, Name: "dispatch / Harness run (triage)", Status: "in_progress"}},
+	}
+	client := &rateLimitReportingClient{
+		FakeClient: fake,
+		rateLimit: forge.RateLimit{
+			Limit:     5000,
+			Remaining: 1234,
+			Reset:     time.Date(2026, 10, 25, 18, 0, 0, 0, time.UTC),
+			Resource:  "core",
+			Observed:  after.Add(-34 * time.Second),
+		},
+		rateLimitSeen: true,
+	}
+
+	d := newTimeoutTestDriver(client)
+	_, err := d.CountHarnessDispatches(context.Background(), "org", "repo", "triage", after)
+	require.Error(t, err)
+	msg := err.Error()
+	assert.Contains(t, msg, `harness "triage" dispatch count did not settle: 1 run(s) still pending`)
+	assert.Contains(t, msg, "github rate limit: remaining=1234/5000 reset=2026-10-25T18:00:00Z resource=core")
+	assert.Regexp(t, `, observed \S+ ago$`, msg, "the observation age is part of the state line")
+}
+
 func TestIsConcurrencySuperseded(t *testing.T) {
 	t.Parallel()
 
