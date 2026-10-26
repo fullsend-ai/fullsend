@@ -290,8 +290,9 @@ playback-test:
 	./scripts/run-with-infra-retry.sh go test -tags playback -race -v -count=1 -timeout 45m ./e2e/behaviour/
 
 # Unit tests behind the behaviour build tag - the same tagged
-# invocation lint.yml's unit-tests job runs in CI. Covers the tagged
-# pkg/behaviourtest tests (report, template) that the untagged go-test
-# target skips; internal/forge is included to match the CI step.
+# invocation lint.yml's test job runs in CI (Run behaviour-tagged unit
+# tests step). Covers the tagged pkg/behaviourtest tests (report,
+# template) that the untagged go-test target skips, plus internal/forge
+# in the same invocation.
 behaviour-test-unit:
 	go test -race -tags behaviour ./pkg/behaviourtest/... ./internal/forge/...
