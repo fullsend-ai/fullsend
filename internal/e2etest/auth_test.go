@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"testing"
 
@@ -266,6 +267,30 @@ func TestIsTransientMintError(t *testing.T) {
 		"context cancelled": {
 			err:  fmt.Errorf("calling mint service: %w", context.Canceled),
 			want: false,
+		},
+		"transport-wrapped cancellation": {
+			err: fmt.Errorf("calling mint service: %w", &url.Error{
+				Op:  "Get",
+				URL: "https://mint.example.test/v1/token",
+				Err: context.Canceled,
+			}),
+			want: false,
+		},
+		"malformed mint URL": {
+			err: fmt.Errorf("calling mint service: %w", &url.Error{
+				Op:  "parse",
+				URL: "https://mint example.test/v1/token",
+				Err: errors.New("invalid character \" \" in host name"),
+			}),
+			want: false,
+		},
+		"transport-wrapped connection failure": {
+			err: fmt.Errorf("calling mint service: %w", &url.Error{
+				Op:  "Get",
+				URL: "https://mint.example.test/v1/token",
+				Err: timeoutErr{},
+			}),
+			want: true,
 		},
 	}
 	for name, tc := range tests {
