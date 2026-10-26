@@ -8,7 +8,10 @@
 # tail, the counted-failures lookups tail, several hits on one diagnostic
 # line and across lines, and the near-miss "(failed on N of M polls during
 # the wait; last: ...)" that must NOT match; the jobs-page envelope check
-# (a 200 error body is not a jobs page); snippet bounding and tab/CRLF
+# (a 200 error body is not a jobs page); the analyzer-failure degradation
+# (a failing analyze_log discards partial output, records a per-attempt
+# log_error, and flags the report incomplete instead of reporting a clean,
+# marker-free run); snippet bounding and tab/CRLF
 # collapsing (the TSV hand-off to jq
 # holds); a clean run; a retry-masked occurrence (markers on the first
 # attempt of an ultimately-passing run); a failing run with markers; the
@@ -614,6 +617,41 @@ expect_line "end to end: the masked run's progress line" \
   'scanned run 4003: success, 2 attempt\(s\), 6 marker\(s\) \[2/3\]' "${E2E_STDERR}"
 expect_line "end to end: the verdict table goes to stderr" \
   'verdict: 2 run\(s\) with markers \(strict signal: any occurrence\)' "${E2E_STDERR}"
+
+# --- 9. Analyzer failure degrades the attempt, not the verdict ------------------
+
+# scan_run runs on the left of || in main, so errexit is suspended inside
+# it; a failing analyzer would otherwise be masked (jq emits [] for a dead
+# awk, and the function returns its last pipeline's status, which the rc
+# check in main cannot see). Override analyze_log to die mid-stream and
+# assert the attempt degrades exactly like an unfetchable log: empty
+# markers, a recorded log_error, INCOMPLETE, an operator warning.
+ANALYZER_DIR=$(mktemp -d "${TMP}/analyzer.XXXXXX")
+# Invoked indirectly: scan_run (sourced from the scanner) resolves this
+# analyze_log override at call time and consumes the ERRFILE global, so
+# static analysis sees both as unused.
+# shellcheck disable=SC2317,SC2329,SC2034
+(
+  set +e
+  analyze_log() {
+    printf 'same-error-polls\tpartial output before dying\n'
+    return 3
+  }
+  INCOMPLETE=0
+  ERRFILE="${ANALYZER_DIR}/err.txt"
+  scan_run "o/r" "$(run_row 4004 1 success)" "${ANALYZER_DIR}"
+  printf '%s\n' "$?" > "${ANALYZER_DIR}/rc"
+  printf '%s\n' "${INCOMPLETE}" > "${ANALYZER_DIR}/incomplete"
+) 2> "${ANALYZER_DIR}/stderr.txt"
+expect_eq "analyzer failure: scan_run completes" "$(cat "${ANALYZER_DIR}/rc")" "0"
+expect_eq "analyzer failure: the scan is flagged incomplete" "$(cat "${ANALYZER_DIR}/incomplete")" "1"
+expect_jq "analyzer failure: partial output is discarded, not reported" \
+  '.attempts[0].markers | length' "${ANALYZER_DIR}/evidence.json" "0"
+expect_jq "analyzer failure: the attempt records the analyzer error" \
+  '.attempts[0].log_error' "${ANALYZER_DIR}/evidence.json" "log analyzer failed (exit 3)"
+expect_line "analyzer failure: the operator sees the warning" \
+  'warning: the behaviour-job log of run 4004 attempt 1 could not be analyzed: log analyzer failed \(exit 3\)' \
+  "${ANALYZER_DIR}/stderr.txt"
 
 echo
 if [[ "${FAILURES}" -gt 0 ]]; then

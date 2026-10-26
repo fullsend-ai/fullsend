@@ -29,11 +29,11 @@
 #           runs_scanned, incomplete, one entry per run (conclusion,
 #           per-attempt markers with snippets, derived has_markers and
 #           ultimately_passed), and the verdict at both signal levels
-#   stderr  per-run progress, log-fetch warnings, the summary table
+#   stderr  per-run progress, log-fetch and analyzer warnings, the summary table
 #
 # Exit codes: 0 scan complete; 1 the scan failed, or the report is incomplete
-# because a behaviour-job log could not be fetched (the verdict may
-# undercount — see the per-attempt log_error entries in the report).
+# because a behaviour-job log could not be fetched or analyzed (the verdict
+# may undercount — see the per-attempt log_error entries in the report).
 #
 # Marker contract — the production strings of harnessTimeoutDiagnostics
 # (pkg/behaviourtest/drivers/ci/githubactions/githubactions.go), reported as:
@@ -301,7 +301,16 @@ scan_run() {
       ran_any=1
       if gh api "repos/${repo}/actions/jobs/${job_id}/logs" \
           > "${dir}/log-${nn}.txt" 2>"${ERRFILE}"; then
-        markers=$(analyze_log < "${dir}/log-${nn}.txt")
+        # scan_run runs on the left of || in main, so errexit is suspended
+        # here: an analyzer failure must be handled explicitly, or jq turns
+        # a dead awk into [] and the scan reports a clean, marker-free run.
+        markers=$(analyze_log < "${dir}/log-${nn}.txt") || {
+          analyzer_rc=$?
+          markers='[]'
+          log_error="log analyzer failed (exit ${analyzer_rc})"
+          INCOMPLETE=1
+          say "warning: the behaviour-job log of run ${run_id} attempt ${n} could not be analyzed: ${log_error}"
+        }
       else
         log_error=$(head -n 1 "${ERRFILE}")
         if [[ -z "${log_error}" ]]; then
@@ -355,7 +364,7 @@ main() {
     die "--repo must look like OWNER/NAME (got ${repo})."
   fi
   local tool
-  for tool in gh jq; do
+  for tool in gh jq awk; do
     if ! command -v "${tool}" >/dev/null; then
       die "${tool} is required."
     fi
