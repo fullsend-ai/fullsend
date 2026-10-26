@@ -164,11 +164,28 @@ func resolveE2EToken(ctx context.Context, mintURL, targetOrg string) (string, er
 // the same bounded string-match design D3 sanctions for the GCP quota
 // signatures, where drift degrades to scenario (the safe direction). A
 // deterministic rejection (403 not-enrolled, 401, a malformed request,
-// an empty token) and a cancelled context stay unmarked: a retry cannot
-// clear them, and marking them would mask a mint-service regression.
+// an empty token), a cancelled context, and a URL parse failure stay
+// unmarked: a retry cannot clear them, and marking them would mask a
+// mint-service or harness-configuration regression. Cancellation and
+// parse failures are excluded explicitly before the net.Error match
+// because *url.Error implements net.Error: a transport-shaped wrapper
+// around context.Canceled, and url.Parse's Op "parse" failure, would
+// otherwise classify as transport.
 func isTransientMintError(err error) bool {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return true
+	}
+	// A cancelled context is never transient however it is wrapped: a
+	// retry cannot clear it.
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+	// A URL parse failure is request construction, not transport: a
+	// malformed mint URL is a deterministic configuration defect, and
+	// url.Parse reports it as *url.Error with Op "parse".
+	var parseErr *url.Error
+	if errors.As(err, &parseErr) && parseErr.Op == "parse" {
+		return false
 	}
 	var netErr net.Error
 	if errors.As(err, &netErr) {
