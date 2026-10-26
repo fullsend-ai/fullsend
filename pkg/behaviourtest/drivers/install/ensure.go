@@ -700,7 +700,16 @@ func (e *repoEnsurer) installFullsend(ctx context.Context, target string, stillO
 		}
 		delay *= 2
 	}
-	return fmt.Errorf("github setup for %s still hit the read-after-create 404 after %d attempts: %w", target, resetMaxAttempts, lastErr)
+	// The read-after-create 404 was the recognized failure on every
+	// attempt (isGitHubSetupRepoInfo404 gated each retry above), so this
+	// is the known setup-404 exhaustion mode, marked infrastructure per
+	// design D3 so the suite's single automatic retry can clear it.
+	// Other setup failures return unmarked above and stay scenario;
+	// ownership-loss errors likewise stay unmarked (D3).
+	return behaviourfail.Mark(
+		fmt.Errorf("github setup for %s still hit the read-after-create 404 after %d attempts: %w", target, resetMaxAttempts, lastErr),
+		"setup: read-after-create 404",
+	)
 }
 
 // isGitHubSetupRepoInfo404 reports whether err is github setup's
@@ -852,6 +861,20 @@ func awaitWorkflowReady(ctx context.Context, client forge.Client, org, repo, wor
 		if err == nil && wf != nil {
 			logf("[ensure] %s visible on %s after %d attempt(s) (state=%s)", workflowFile, target, attempt, wf.State)
 			return nil
+		}
+
+		// Only the expected not-found lag is a poll-through condition;
+		// gh.APIError maps a 404 to forge.ErrNotFound, so both the
+		// sentinel and a real 404 response are covered. Any other
+		// GetWorkflow failure — a 500, a permission 403, a malformed
+		// response — is a forge or product defect, not settle lag:
+		// return it unmarked, preserving the cause, so it classifies
+		// as a scenario failure instead of spinning the poll and being
+		// infra-marked at exhaustion. A rate-limit error also returns
+		// here unmarked and still classifies as infrastructure through
+		// failclass's structural rule.
+		if err != nil && !forge.IsNotFound(err) {
+			return fmt.Errorf("getting workflow %s on %s: %w", workflowFile, target, err)
 		}
 
 		if attempt < settleMaxAttempts {

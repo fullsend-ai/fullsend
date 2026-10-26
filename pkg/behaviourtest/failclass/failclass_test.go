@@ -94,3 +94,52 @@ func TestClassifyScenario(t *testing.T) {
 		})
 	}
 }
+
+// TestClassifyJoinedErrors pins the join semantics (PR #8801 review):
+// a joined error classifies as infrastructure only when every branch
+// independently does. A scenario branch — a lease race joined with a
+// rate-limited release — is an independent cause that keeps the whole
+// error scenario, so the single automatic retry never masks it (spec
+// R4). Both branch orders are covered because errors.Join order must
+// not change the class.
+func TestClassifyJoinedErrors(t *testing.T) {
+	t.Parallel()
+
+	marked := behaviourfail.Mark(errors.New("iam 429"), "setup: gcp wif quota")
+	rateLimit := &gh.APIError{StatusCode: http.StatusTooManyRequests, Message: "too many requests"}
+	capacity := &install.CapacityError{Denied: map[string]error{"fullsend-pool-1": errors.New("forbidden")}}
+	assertion := errors.New("issue 42 missing label")
+	leaseLost := errors.New("slot repo is no longer this lease's")
+
+	scenarioJoined := map[string]error{
+		"assertion joined with marked error":           errors.Join(assertion, marked),
+		"marked error joined with assertion, reversed": errors.Join(marked, assertion),
+		"rate limit joined with assertion":             errors.Join(rateLimit, assertion),
+		"lease lost joined with rate-limited release":  errors.Join(leaseLost, rateLimit),
+		"rate-limited release joined with lease lost":  errors.Join(rateLimit, leaseLost),
+		"capacity joined with assertion":               errors.Join(capacity, assertion),
+		"wrapped join keeps the scenario branch":       fmt.Errorf("triage: %w", errors.Join(assertion, marked)),
+		"scenario branch nested through two wraps":     fmt.Errorf("outer: %w", fmt.Errorf("inner: %w", errors.Join(marked, assertion))),
+		"empty join classifies scenario":               errors.Join(),
+	}
+	for name, err := range scenarioJoined {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, behaviourfail.Scenario, Classify(err))
+		})
+	}
+
+	infraJoined := map[string]error{
+		"marked joined with rate limit": errors.Join(marked, rateLimit),
+		"marked joined with capacity":   errors.Join(marked, capacity),
+		"three infra branches":          errors.Join(marked, rateLimit, capacity),
+		"infra join wrapped":            fmt.Errorf("bootstrap: %w", errors.Join(marked, rateLimit)),
+		"mark on the join itself wins":  behaviourfail.Mark(errors.Join(assertion, marked), "setup: whole failure is environmental"),
+	}
+	for name, err := range infraJoined {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, behaviourfail.Infrastructure, Classify(err))
+		})
+	}
+}

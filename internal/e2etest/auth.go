@@ -2,10 +2,14 @@ package e2etest
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -134,16 +138,90 @@ func resolveE2EToken(ctx context.Context, mintURL, targetOrg string) (string, er
 		TargetOrg: targetOrg,
 	})
 	if err != nil {
-		// A failure of the mint exchange or token download — the OIDC JWT
-		// fetch, the mint service call, or a download timeout of either
-		// (#7491's bootstrap class) — is an environment condition, marked
-		// infrastructure per design D3 of the behaviour-infra-retry change
-		// so the suite may retry the run. The mint-URL guard above is
-		// harness configuration validation, not a mint failure, and stays
-		// unmarked so it classifies as a scenario failure.
-		return "", behaviourfail.Mark(err, "bootstrap: token mint or download")
+		// Only transient mint failures are environment conditions marked
+		// infrastructure per design D3: a context deadline, a transport
+		// failure reaching the mint or OIDC endpoints, or an HTTP 429/5xx
+		// from either endpoint. A deterministic rejection — a 403
+		// not-enrolled, a 401, a malformed request — is a product or
+		// configuration defect and stays unmarked so it classifies as
+		// scenario and is never retried (#8036's no-masking contract).
+		// The mint-URL guard above is harness configuration validation
+		// and likewise stays unmarked.
+		if isTransientMintError(err) {
+			return "", behaviourfail.Mark(err, "bootstrap: token mint or download")
+		}
+		return "", err
 	}
 	return result.Token, nil
+}
+
+// isTransientMintError reports whether a mint failure is a transient
+// environment condition: a context deadline, a transport failure
+// reaching the mint or OIDC endpoint (net.Error, which *url.Error and
+// *net.OpError both implement), or an HTTP 429/5xx from either
+// endpoint. The mint client surfaces endpoint statuses only in message
+// text, so those are matched on mintclient's bounded message shapes —
+// the same bounded string-match design D3 sanctions for the GCP quota
+// signatures, where drift degrades to scenario (the safe direction). A
+// deterministic rejection (403 not-enrolled, 401, a malformed request,
+// an empty token) and a cancelled context stay unmarked: a retry cannot
+// clear them, and marking them would mask a mint-service regression.
+func isTransientMintError(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return true
+	}
+	return anyTransientMintStatus(err.Error())
+}
+
+// mintStatusPrefixes are the message shapes mintclient uses to surface
+// an endpoint HTTP status; the status follows the prefix as digits.
+var mintStatusPrefixes = [...]string{"mint returned HTTP ", "OIDC endpoint returned HTTP "}
+
+// anyTransientMintStatus reports whether msg mentions a mint or OIDC
+// endpoint HTTP status that is transient (429 or any 5xx).
+func anyTransientMintStatus(msg string) bool {
+	for _, prefix := range mintStatusPrefixes {
+		rest := msg
+		for {
+			i := strings.Index(rest, prefix)
+			if i < 0 {
+				break
+			}
+			digits := rest[i+len(prefix):]
+			if code, n := leadingInt(digits); n > 0 && isTransientHTTPStatus(code) {
+				return true
+			}
+			rest = digits
+		}
+	}
+	return false
+}
+
+// isTransientHTTPStatus reports whether an endpoint status is a
+// transient condition: a rate limit or a server error.
+func isTransientHTTPStatus(code int) bool {
+	return code == http.StatusTooManyRequests || code >= http.StatusInternalServerError
+}
+
+// leadingInt parses the leading decimal digits of s, reporting how many
+// digits it consumed (0 when s does not start with a digit).
+func leadingInt(s string) (int, int) {
+	i := 0
+	for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+		i++
+	}
+	if i == 0 {
+		return 0, 0
+	}
+	code, err := strconv.Atoi(s[:i])
+	if err != nil {
+		return 0, 0
+	}
+	return code, i
 }
 
 // tokenForOrg returns an API token for operating on a pool org. The mint
