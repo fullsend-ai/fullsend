@@ -69,6 +69,88 @@ func TestResolveForge_PolicyNotOverriddenWhenEmpty(t *testing.T) {
 	assert.Equal(t, "policies/default.yaml", h.Policy)
 }
 
+// TestResolveForge_PreflightCheckNotSettableFromForgeConfig pins the
+// compose/forge merge-function invariant (docs/contributing/harness-composition.md,
+// research.md D7) on the forge side for the top-level preflight_check:
+// ForgeConfig has no preflight field, so mergeForgeConfig — the single merge
+// every forge.<platform> and overlay value flows through — cannot set or
+// change Harness.PreflightCheck. The invariant is preserved by omission:
+// the documented pairing of compose and forge merge functions applies to
+// fields present in both functions, and preflight_check is present in
+// neither.
+//
+// Go structs make "field absent" a compile-level guarantee — there is no
+// fc.PreflightCheck to read — so the runtime assertions below characterize
+// the omission rather than create it: each subtest first proves the forge
+// merge demonstrably ran (its mergeable fields apply, from the scalar block
+// where a preflight line would sit next to PreScript/PostScript through the
+// RunnerEnv map merge), then asserts the gate is identical to the top-level
+// declaration — or stays unset. If someone ever adds a preflight field to
+// ForgeConfig, this test plus T022 (overlay selection, compose_test.go) and
+// T023 (loader ignored-key, compose_test.go) should fail or force a
+// conscious decision: FR-009 forbids conditional setters for the gate, so
+// the field must not silently flow through mergeForgeConfig.
+func TestResolveForge_PreflightCheckNotSettableFromForgeConfig(t *testing.T) {
+	// Distinct literal command so a set, replaced, or combined gate would
+	// be detectable in the merged value (mirrors T020–T023).
+	const topLevelCheck = "echo top-level-check"
+
+	// newHarness builds the shared shape: a top-level gate (possibly unset)
+	// plus a ForgeConfig populated across mergeForgeConfig's merge kinds —
+	// the scalars PreScript/PostScript/Policy from the block where a
+	// preflight line would sit, and the RunnerEnv map merge — so each
+	// subtest can prove the merge demonstrably ran before asserting the
+	// gate is untouched.
+	newHarness := func(preflight string) *Harness {
+		return &Harness{
+			Agent:          "agents/test.md",
+			PreflightCheck: preflight,
+			Forge: map[string]*ForgeConfig{
+				"github": {
+					PreScript:  "scripts/pre-gh.sh",
+					PostScript: "scripts/post-gh.sh",
+					Policy:     "policies/gh.yaml",
+					RunnerEnv:  map[string]string{"GH_TOKEN": "${GH_TOKEN}"},
+				},
+			},
+		}
+	}
+
+	// assertForgeMerged proves the forge side of the merge fully applied:
+	// this is what makes "the gate is unchanged" meaningful rather than
+	// vacuous — the merge ran; it simply has nothing to say about the gate.
+	assertForgeMerged := func(t *testing.T, h *Harness) {
+		t.Helper()
+		assert.Equal(t, "scripts/pre-gh.sh", h.PreScript)
+		assert.Equal(t, "scripts/post-gh.sh", h.PostScript)
+		assert.Equal(t, "policies/gh.yaml", h.Policy)
+		assert.Equal(t, "${GH_TOKEN}", h.RunnerEnv["GH_TOKEN"])
+		assert.Nil(t, h.Forge, "forge map consumed after resolution")
+	}
+
+	t.Run("top-level set: forge merge cannot change the gate", func(t *testing.T) {
+		h := newHarness(topLevelCheck)
+
+		require.NoError(t, h.ResolveForge("github"))
+
+		assertForgeMerged(t, h)
+		// The gate is identical to the top-level declaration: the forge
+		// config can neither replace it nor leave any trace of its own.
+		assert.Equal(t, topLevelCheck, h.PreflightCheck)
+	})
+
+	t.Run("top-level unset: forge merge cannot set the gate", func(t *testing.T) {
+		h := newHarness("")
+
+		require.NoError(t, h.ResolveForge("github"))
+
+		assertForgeMerged(t, h)
+		// No conditional value can create a gate: the merged harness
+		// carries none.
+		assert.Empty(t, h.PreflightCheck)
+	})
+}
+
 func TestResolveForge_SkillsConcat(t *testing.T) {
 	h := &Harness{
 		Agent:  "agents/test.md",

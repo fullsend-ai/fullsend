@@ -129,6 +129,34 @@ func (h *Harness) Lint() []Diagnostic {
 		}
 	}
 
+	// A path-shaped top-level preflight_check usually means the author
+	// expected pre_script-style fetch/resolution — the same confusion
+	// the nested guard below flags (#7600). It is not provably broken —
+	// the path may resolve on the host — so warn, don't fail; ADR 0128
+	// Decision 2 keeps the diagnostic advisory in `fullsend lock`/`run`.
+	if pc := strings.TrimSpace(h.PreflightCheck); pc != "" && preflightPathLike.MatchString(pc) {
+		diags = append(diags, Diagnostic{
+			Severity: SeverityWarning,
+			Field:    "preflight_check",
+			Message:  fmt.Sprintf("value %q looks like a script path; preflight_check runs verbatim as `sh -c` on the host and is never fetched or resolved like pre_script/post_script — if a fetched harness script was intended, use pre_script; otherwise inline the command (e.g. python3 -c 'import jsonschema')", pc),
+		})
+	}
+
+	// The nested validation_loop.preflight_check is deprecated in favor of
+	// the top-level preflight_check (ADR 0129 Decision 3): the top-level
+	// field runs before pre_script, sandbox creation, and the validation
+	// loop, so it gates everything the nested check gates. The warning
+	// ships with this change because the replacement field ships with it;
+	// removing the nested field entirely stays behind a separately decided
+	// schema-version gate (ADR 0127), so like the runner_env/forge
+	// deprecations above this is a non-fatal warning.
+	if h.ValidationLoop != nil && strings.TrimSpace(h.ValidationLoop.PreflightCheck) != "" {
+		diags = append(diags, Diagnostic{
+			Severity: SeverityWarning,
+			Field:    "validation_loop.preflight_check",
+			Message:  "validation_loop.preflight_check is deprecated; use the top-level preflight_check instead (see ADR 0129)",
+		})
+	}
 	if h.ValidationLoop != nil {
 		if d := lintPreflightCheckCommand("validation_loop.preflight_check", h.ValidationLoop.PreflightCheck); d != nil {
 			diags = append(diags, *d)
