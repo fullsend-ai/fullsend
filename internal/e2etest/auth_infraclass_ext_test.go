@@ -89,3 +89,60 @@ func TestInfraClassMintURLNotConfiguredStaysScenario(t *testing.T) {
 		"an unconfigured mint URL is harness misconfiguration, not an environment condition")
 	assert.False(t, behaviourfail.Is(err), "config-validation errors stay unmarked")
 }
+
+// driveMintStatus drives the real TokenForOrg mint path against an OIDC
+// stub that answers successfully and a mint stub that answers with the
+// given HTTP status, and returns the resulting error.
+func driveMintStatus(t *testing.T, status int) error {
+	t.Helper()
+	oidc := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"value":"test-oidc-jwt"}`))
+	}))
+	t.Cleanup(oidc.Close)
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", oidc.URL)
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "oidc-request-token")
+
+	mint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.WriteHeader(status)
+	}))
+	t.Cleanup(mint.Close)
+
+	_, err := e2etest.TokenForOrg(context.Background(), e2etest.EnvConfig{UseMint: true, MintURL: mint.URL}, "test-org")
+	return err
+}
+
+// TestInfraClassMintRateLimitMarkedInfra pins the mint path's transient
+// boundary (PR #8801 review): an HTTP 429 from the mint service is a
+// retryable environment condition and stays infrastructure-marked at
+// the source.
+func TestInfraClassMintRateLimitMarkedInfra(t *testing.T) {
+	err := driveMintStatus(t, http.StatusTooManyRequests)
+	require.Error(t, err, "a rate-limited mint must fail the token path")
+
+	assert.Equal(t, behaviourfail.Infrastructure, failclass.Classify(err),
+		"a mint rate limit at bootstrap is an environment condition, not a scenario assertion")
+
+	var infra *behaviourfail.InfraError
+	require.ErrorAs(t, err, &infra)
+	assert.Equal(t, "bootstrap: token mint or download", infra.Reason)
+	assert.Contains(t, err.Error(), "mint returned HTTP 429",
+		"the surfaced error names the mint endpoint's status")
+}
+
+// TestInfraClassMintRejectionStaysScenario pins the mint path's
+// transient boundary (PR #8801 review): a deterministic rejection such
+// as a 403 not-enrolled is a product or configuration defect, so it
+// stays unmarked and scenario-classified — a retry cannot clear it, and
+// marking it would mask a mint-service regression.
+func TestInfraClassMintRejectionStaysScenario(t *testing.T) {
+	err := driveMintStatus(t, http.StatusForbidden)
+	require.Error(t, err, "a rejected mint must fail the token path")
+
+	assert.Equal(t, behaviourfail.Scenario, failclass.Classify(err),
+		"a deterministic mint rejection is a product or configuration defect, not an environment condition")
+	assert.False(t, behaviourfail.Is(err), "deterministic rejections are not marked")
+	assert.Contains(t, err.Error(), "mint returned HTTP 403",
+		"the surfaced error names the mint endpoint's status")
+}
