@@ -41,6 +41,7 @@ on:
       - '.github/actions/check-e2e-authorization/**'
       - 'scripts/check-e2e-authorization.sh'
       - 'scripts/redact-behaviour-artifacts.sh'
+      - 'scripts/run-with-infra-retry.sh'
   pull_request_target:
     # labeled / ok-to-test is handled by e2e-ok-to-test.yml via workflow_call.
     types: [opened, synchronize, reopened]
@@ -163,7 +164,7 @@ jobs:
           # Any Go change runs the suite: shared dependencies extend beyond
           # the explicit non-Go paths. Keep both filters in sync and covered
           # by scripts/check-live-test-relevance-test.sh.
-          if echo "$FILES" | grep -qE '\.go$|^e2e/behaviour/|^internal/e2etest/|^pkg/behaviourtest/|^internal/runtime/|^internal/sandbox/|^internal/config/|^internal/cli/|^internal/layers/|^internal/scaffold/fullsend-repo/|^internal/forge/|^internal/harness/|^internal/harnessdispatch/|^internal/normevent/|^internal/dispatch/|^internal/security/hooks/|^internal/mintclient/|^cmd/fullsend/|^go\.(mod|sum)$|^internal/sentencetoken/english\.json$|^Makefile$|^action\.yml$|^\.github/scripts/|^scripts/redact-behaviour-artifacts\.sh$|^\.github/workflows/e2e\.yml$|^\.github/workflows/e2e-ok-to-test\.yml$|^\.github/workflows/reusable-dispatch\.yml$|^\.github/actions/check-e2e-authorization/|^scripts/check-e2e-authorization\.sh$'; then
+          if echo "$FILES" | grep -qE '\.go$|^e2e/behaviour/|^internal/e2etest/|^pkg/behaviourtest/|^internal/runtime/|^internal/sandbox/|^internal/config/|^internal/cli/|^internal/layers/|^internal/scaffold/fullsend-repo/|^internal/forge/|^internal/harness/|^internal/harnessdispatch/|^internal/normevent/|^internal/dispatch/|^internal/security/hooks/|^internal/mintclient/|^cmd/fullsend/|^go\.(mod|sum)$|^internal/sentencetoken/english\.json$|^Makefile$|^action\.yml$|^\.github/scripts/|^scripts/redact-behaviour-artifacts\.sh$|^\.github/workflows/e2e\.yml$|^\.github/workflows/e2e-ok-to-test\.yml$|^\.github/workflows/reusable-dispatch\.yml$|^\.github/actions/check-e2e-authorization/|^scripts/check-e2e-authorization\.sh$|^scripts/run-with-infra-retry\.sh$'; then
             echo "relevant=true" >> "$GITHUB_OUTPUT"
           else
             echo "::notice::No behaviour-relevant files changed — skipping behaviour tests"
@@ -350,7 +351,7 @@ jobs:
           # Any Go change runs the suite: shared dependencies extend beyond
           # the explicit non-Go paths. Keep both filters in sync and covered
           # by scripts/check-live-test-relevance-test.sh.
-          if echo "$FILES" | grep -qE '\.go$|^e2e/behaviour/|^internal/e2etest/|^pkg/behaviourtest/|^internal/runtime/|^internal/sandbox/|^internal/config/|^internal/cli/|^internal/layers/|^internal/scaffold/fullsend-repo/|^internal/forge/|^internal/harness/|^internal/harnessdispatch/|^internal/normevent/|^internal/dispatch/|^internal/security/hooks/|^internal/mintclient/|^cmd/fullsend/|^go\.(mod|sum)$|^internal/sentencetoken/english\.json$|^Makefile$|^action\.yml$|^\.github/scripts/|^scripts/redact-behaviour-artifacts\.sh$|^\.github/workflows/e2e\.yml$|^\.github/workflows/e2e-ok-to-test\.yml$|^\.github/workflows/reusable-dispatch\.yml$|^\.github/actions/check-e2e-authorization/|^scripts/check-e2e-authorization\.sh$'; then
+          if echo "$FILES" | grep -qE '\.go$|^e2e/behaviour/|^internal/e2etest/|^pkg/behaviourtest/|^internal/runtime/|^internal/sandbox/|^internal/config/|^internal/cli/|^internal/layers/|^internal/scaffold/fullsend-repo/|^internal/forge/|^internal/harness/|^internal/harnessdispatch/|^internal/normevent/|^internal/dispatch/|^internal/security/hooks/|^internal/mintclient/|^cmd/fullsend/|^go\.(mod|sum)$|^internal/sentencetoken/english\.json$|^Makefile$|^action\.yml$|^\.github/scripts/|^scripts/redact-behaviour-artifacts\.sh$|^\.github/workflows/e2e\.yml$|^\.github/workflows/e2e-ok-to-test\.yml$|^\.github/workflows/reusable-dispatch\.yml$|^\.github/actions/check-e2e-authorization/|^scripts/check-e2e-authorization\.sh$|^scripts/run-with-infra-retry\.sh$'; then
             echo "relevant=true" >> "$GITHUB_OUTPUT"
           else
             echo "::notice::No playback-relevant files changed — skipping playback tests"
