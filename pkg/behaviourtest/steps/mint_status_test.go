@@ -15,8 +15,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/fullsend-ai/fullsend/internal/behaviourfail"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/failclass"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
@@ -60,6 +62,49 @@ func (d mintURLDriver) MintURL() string { return d.url }
 // noReporterDriver is a name-only Driver that reports no mint URL.
 type noReporterDriver struct {
 	install.Driver
+}
+
+// failingLeaseDriver is a Driver whose slot allocation always fails
+// with a fixed error, so suiteMintURL's leasing path can be driven
+// without a pool.
+type failingLeaseDriver struct {
+	install.Driver
+	err error
+}
+
+func (d failingLeaseDriver) AllocateLease(context.Context) (install.RepoLease, error) {
+	return install.RepoLease{}, d.err
+}
+
+func (d failingLeaseDriver) DeallocateLease(context.Context, string, string) error {
+	return nil
+}
+
+var _ install.LeaseDriver = failingLeaseDriver{}
+
+// TestSuiteMintURL_LeaseFailureKeepsClassification checks that a slot
+// allocation failure surfaced through suiteMintURL keeps its error
+// type for the After-hook classifier: an infrastructure-marked
+// allocation failure classifies infrastructure and an unmarked one
+// stays scenario, instead of both degrading to rendered message text
+// (PR #8801 review).
+func TestSuiteMintURL_LeaseFailureKeepsClassification(t *testing.T) {
+	t.Run("marked allocation failure stays infrastructure", func(t *testing.T) {
+		allocErr := behaviourfail.Mark(errors.New("slot pool exhausted"), "slot allocation")
+		_, err := suiteMintURL(context.Background(), &world.World{Driver: failingLeaseDriver{err: allocErr}})
+		require.Error(t, err)
+		assert.ErrorIs(t, err, allocErr)
+		assert.Equal(t, mintStatusClassDeployment, mintStatusClass(t, err))
+		assert.Equal(t, behaviourfail.Infrastructure, failclass.Classify(err))
+	})
+
+	t.Run("unmarked allocation failure stays scenario", func(t *testing.T) {
+		allocErr := errors.New("slot allocator not configured")
+		_, err := suiteMintURL(context.Background(), &world.World{Driver: failingLeaseDriver{err: allocErr}})
+		require.Error(t, err)
+		assert.ErrorIs(t, err, allocErr)
+		assert.Equal(t, behaviourfail.Scenario, failclass.Classify(err))
+	})
 }
 
 func mintStatusClass(t *testing.T, err error) string {
