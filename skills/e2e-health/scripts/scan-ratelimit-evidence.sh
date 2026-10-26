@@ -250,7 +250,7 @@ scan_run() {
   fi
   mkdir -p "${dir}"
 
-  local n nn job_id job_conclusion job_state attempt_conclusion markers log_error
+  local n nn job_id job_conclusion job_state attempt_conclusion markers log_error analyzer_rc
   local ran_any=0
   n=0
   while (( n < attempt_count )); do
