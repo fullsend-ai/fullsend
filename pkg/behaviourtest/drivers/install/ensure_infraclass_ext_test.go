@@ -1,12 +1,14 @@
 package install_test
 
 import (
+	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/fullsend-ai/fullsend/internal/behaviourfail"
+	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/failclass"
 )
@@ -82,4 +84,80 @@ func TestInfraClassForkReplacedStaysScenario(t *testing.T) {
 	assert.Equal(t, behaviourfail.Scenario, failclass.Classify(err),
 		"lease races stay scenario-classified by design (D3): a retry cannot clear a replaced fork")
 	assert.False(t, behaviourfail.Is(err), "errForkReplaced is deliberately unmarked")
+}
+
+// TestInfraClassWorkflowGetErrorSurfaced pins awaitWorkflowReady's
+// poll-through boundary (PR #8801 review): only the expected not-found
+// lag is polled through to the infra-marked exhaustion; every other
+// GetWorkflow failure is returned unmarked, preserving the cause, so
+// the classifier decides from the real error.
+func TestInfraClassWorkflowGetErrorSurfaced(t *testing.T) {
+	tests := map[string]struct {
+		err        error
+		wantClass  behaviourfail.Class
+		wantMarked bool
+		wantMsg    string
+	}{
+		"api 404 polls through to infra exhaustion": {
+			err:        &gh.APIError{StatusCode: http.StatusNotFound, Message: "Not Found"},
+			wantClass:  behaviourfail.Infrastructure,
+			wantMarked: true,
+			wantMsg:    "not visible on",
+		},
+		"rate limit 429 surfaces unmarked and classifies infra": {
+			err:        &gh.APIError{StatusCode: http.StatusTooManyRequests, Message: "too many requests"},
+			wantClass:  behaviourfail.Infrastructure,
+			wantMarked: false,
+			wantMsg:    "getting workflow fullsend.yaml on org/repo",
+		},
+		"permission 403 surfaces unmarked and classifies scenario": {
+			err:        &gh.APIError{StatusCode: http.StatusForbidden, Message: "resource not accessible by integration"},
+			wantClass:  behaviourfail.Scenario,
+			wantMarked: false,
+			wantMsg:    "getting workflow fullsend.yaml on org/repo",
+		},
+		"server 500 surfaces unmarked and classifies scenario": {
+			err:        &gh.APIError{StatusCode: http.StatusInternalServerError, Message: "boom"},
+			wantClass:  behaviourfail.Scenario,
+			wantMarked: false,
+			wantMsg:    "getting workflow fullsend.yaml on org/repo",
+		},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			err := install.AwaitWorkflowGetErrorForTest(t, tc.err)
+			require.Error(t, err, "an unexpected GetWorkflow failure must fail the ensure")
+			assert.Equal(t, tc.wantClass, failclass.Classify(err))
+			assert.Equal(t, tc.wantMarked, behaviourfail.Is(err))
+			assert.Contains(t, err.Error(), tc.wantMsg,
+				"the surfaced error names the failing call and preserves the cause")
+		})
+	}
+}
+
+// TestInfraClassSetup404Exhaustion pins installFullsend's terminal
+// read-after-create 404 (PR #8801 review): the narrowly recognized
+// setup-404 exhaustion is marked infrastructure so the known mode gets
+// the single retry, while other setup failures stay unmarked scenario.
+func TestInfraClassSetup404Exhaustion(t *testing.T) {
+	t.Run("404 exhaustion is marked infra", func(t *testing.T) {
+		err := install.InstallFullsendSetup404ExhaustedForTest(t)
+		require.Error(t, err)
+		assert.Equal(t, behaviourfail.Infrastructure, failclass.Classify(err),
+			"the known read-after-create setup-404 mode is an environment condition (#8036 acceptance)")
+		var infra *behaviourfail.InfraError
+		require.ErrorAs(t, err, &infra)
+		assert.Equal(t, "setup: read-after-create 404", infra.Reason)
+		assert.Contains(t, err.Error(), "still hit the read-after-create 404",
+			"the terminal message survives wrapping for diagnosis")
+		assert.Contains(t, err.Error(), "404 Not Found",
+			"the CLI subprocess text stays reachable through the wrap chain")
+	})
+	t.Run("non-404 setup failure stays scenario", func(t *testing.T) {
+		err := install.InstallFullsendSetupFailureForTest(t)
+		require.Error(t, err)
+		assert.Equal(t, behaviourfail.Scenario, failclass.Classify(err),
+			"unrecognized setup failures stay scenario so a retry cannot mask them")
+		assert.False(t, behaviourfail.Is(err), "non-404 setup failures are not marked")
+	})
 }

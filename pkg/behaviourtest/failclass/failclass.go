@@ -40,6 +40,17 @@ import (
 //   - the gh.ErrInvitationPending sentinel: collaborator access
 //     awaits an accepted invitation.
 //
+// Joined errors (errors.Join, or fmt.Errorf with multiple %w verbs)
+// classify as infrastructure only when every branch independently
+// matches an infrastructure rule. A scenario branch joined beside an
+// infra branch — a lease race joined with a rate-limited release, for
+// example — is an independent cause that keeps the whole error
+// scenario-classified, so the single automatic retry never masks it
+// (spec R4: any scenario-classified failure fails immediately). A
+// behaviourfail mark placed on the joined error itself still wins:
+// the mark is the producer's explicit statement that the whole
+// failure is environmental.
+//
 // Everything else classifies as scenario: nil, plain assertion
 // failures, unrecognized API errors (a 500 is a product or forge
 // defect, not an environment condition), and errors whose message
@@ -58,23 +69,51 @@ func Classify(err error) behaviourfail.Class {
 	if err == nil {
 		return behaviourfail.Scenario
 	}
-	if behaviourfail.Is(err) {
-		return behaviourfail.Infrastructure
-	}
-	// A rate-limit API error: primary 429 or secondary-rate-limit 403.
-	// errors.As pins the rule to the structural *gh.APIError type, so
-	// an error whose message merely mentions "429" or "rate limit"
-	// without an APIError in its chain stays scenario.
-	var apiErr *gh.APIError
-	if errors.As(err, &apiErr) && gh.IsRateLimitError(err) {
-		return behaviourfail.Infrastructure
-	}
-	var capacity *install.CapacityError
-	if errors.As(err, &capacity) {
-		return behaviourfail.Infrastructure
-	}
-	if errors.Is(err, gh.ErrInvitationPending) {
-		return behaviourfail.Infrastructure
+	return classifyTree(err)
+}
+
+// classifyTree walks err's chain node by node. A joined error
+// (errors.Join, or fmt.Errorf with multiple %w verbs) classifies as
+// infrastructure only when every branch independently does; any
+// scenario branch is an independent cause that keeps the whole tree
+// scenario. A single-chain error classifies as infrastructure when
+// any node in its chain matches an allowlist rule.
+func classifyTree(err error) behaviourfail.Class {
+	for err != nil {
+		if joined, ok := err.(interface{ Unwrap() []error }); ok {
+			branches := joined.Unwrap()
+			if len(branches) == 0 {
+				return behaviourfail.Scenario
+			}
+			for _, branch := range branches {
+				if classifyTree(branch) == behaviourfail.Scenario {
+					return behaviourfail.Scenario
+				}
+			}
+			return behaviourfail.Infrastructure
+		}
+		if infraRuleAt(err) {
+			return behaviourfail.Infrastructure
+		}
+		err = errors.Unwrap(err)
 	}
 	return behaviourfail.Scenario
+}
+
+// infraRuleAt reports whether err itself — not its wrapped chain —
+// matches one allowlist rule. Checking per node is what keeps an
+// errors.Join branch independent: errors.As on the joined error would
+// otherwise reach into every branch and let one infra cause mask the
+// scenario cause joined beside it.
+func infraRuleAt(err error) bool {
+	if _, ok := err.(*behaviourfail.InfraError); ok {
+		return true
+	}
+	if apiErr, ok := err.(*gh.APIError); ok && gh.IsRateLimitError(apiErr) {
+		return true
+	}
+	if _, ok := err.(*install.CapacityError); ok {
+		return true
+	}
+	return err == gh.ErrInvitationPending
 }

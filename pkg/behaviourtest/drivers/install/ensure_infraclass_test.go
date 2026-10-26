@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install/common"
 )
 
 // This file bridges unexported ensure-path error producers to the external
@@ -102,3 +103,51 @@ func IsLeaseLostForTest(err error) bool { return errors.Is(err, errLeaseLost) }
 
 // IsForkReplacedForTest reports whether err is the errForkReplaced sentinel.
 func IsForkReplacedForTest(err error) bool { return errors.Is(err, errForkReplaced) }
+
+// AwaitWorkflowGetErrorForTest runs the real awaitWorkflowReady poll
+// against a client whose GetWorkflow fails with err instead of the
+// expected not-found lag, and returns the error the ensurer surfaces
+// for that unexpected GetWorkflow failure.
+func AwaitWorkflowGetErrorForTest(t *testing.T, err error) error {
+	t.Helper()
+	speedUpSettlePoll(t)
+	sc := &stubClient{installed: false, getWorkflowErr: err}
+	return awaitWorkflowReady(context.Background(), sc, "org", "repo", "fullsend.yaml", t.Logf)
+}
+
+// InstallFullsendSetup404ExhaustedForTest runs the real installFullsend
+// retry loop against a runCLI stub whose github setup always fails with
+// the read-after-create repo-info 404, and returns the terminal error
+// the ensurer produces when every bounded attempt hit that 404. The
+// zero-value WIF configuration keeps the resolver branch out of the
+// loop; vendored setup opts pass RunGitHubSetupWithOpts's mode
+// validation so the stub's failure is the only failure.
+func InstallFullsendSetup404ExhaustedForTest(t *testing.T) error {
+	t.Helper()
+	speedUpResetRetries(t)
+	e := &repoEnsurer{
+		setupOpts: common.GitHubSetupOpts{Vendor: true},
+		runCLI: func(_, _ string, _ ...string) (string, error) {
+			return "", fmt.Errorf("github setup org/repo failed: exit status 1\nError: getting repo info: get repo org/repo: 404 Not Found")
+		},
+		logf: t.Logf,
+	}
+	return e.installFullsend(context.Background(), "org/repo", nil)
+}
+
+// InstallFullsendSetupFailureForTest runs the real installFullsend
+// attempt against a runCLI stub whose github setup fails with a
+// non-404 error, and returns the unmarked error the ensurer surfaces
+// (a single attempt: only the read-after-create 404 is retried).
+func InstallFullsendSetupFailureForTest(t *testing.T) error {
+	t.Helper()
+	speedUpResetRetries(t)
+	e := &repoEnsurer{
+		setupOpts: common.GitHubSetupOpts{Vendor: true},
+		runCLI: func(_, _ string, _ ...string) (string, error) {
+			return "", fmt.Errorf("github setup org/repo failed: exit status 1\nError: writing workflow file: 422 Validation Failed")
+		},
+		logf: t.Logf,
+	}
+	return e.installFullsend(context.Background(), "org/repo", nil)
+}
