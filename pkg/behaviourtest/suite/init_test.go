@@ -702,12 +702,15 @@ func TestAfterScenario_RecordsDeallocationFailureOnPassingScenario(t *testing.T)
 	assert.Contains(t, lines[0], ": scenario")
 }
 
-// TestAfterScenario_DeallocationFailureOnFailedScenarioRecordsOnce
+// TestAfterScenario_DeallocationFailureOnFailedScenarioRecordsBoth
 // checks that when the scenario already failed, the deallocation error
-// does not add a second record for the same scenario: only the
-// scenario's own error is recorded. The World carries no Logf, which
-// also covers that recording works without a console logger.
-func TestAfterScenario_DeallocationFailureOnFailedScenarioRecordsOnce(t *testing.T) {
+// is still recorded beside it: the scenario error here is
+// infrastructure-classified, so the scenario-classified teardown
+// failure is what keeps the run non-retryable — an infrastructure
+// retry cannot mask it (#8036's no-masking contract). The World
+// carries no Logf, which also covers that recording works without a
+// console logger.
+func TestAfterScenario_DeallocationFailureOnFailedScenarioRecordsBoth(t *testing.T) {
 	artifactDir := t.TempDir()
 	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
 
@@ -715,7 +718,7 @@ func TestAfterScenario_DeallocationFailureOnFailedScenarioRecordsOnce(t *testing
 	name, err := driver.AllocateRepo(context.Background())
 	require.NoError(t, err)
 	// Deallocate before After — the hook's own deallocation fails too,
-	// but the scenario error is what the run must record.
+	// and both failures must be recorded.
 	require.NoError(t, driver.DeallocateRepo(context.Background(), name))
 
 	rec := &behaviourfail.Recorder{}
@@ -726,12 +729,19 @@ func TestAfterScenario_DeallocationFailureOnFailedScenarioRecordsOnce(t *testing
 	}
 	ctx := world.WithWorld(context.Background(), w)
 
-	scenarioErr := errors.New("issue 42 missing label")
+	scenarioErr := fmt.Errorf("add label: %w", &gh.APIError{
+		StatusCode: http.StatusTooManyRequests,
+		Message:    "too many requests",
+	})
 	_, err = afterScenario(ctx, driver, scenarioErr)
 	assert.Equal(t, scenarioErr, err)
 
-	record := requireRecordedFailure(t, rec, behaviourfail.Scenario, "fails and leaks")
-	assert.Equal(t, "issue 42 missing label", record.Message)
+	records := rec.Snapshot()
+	require.Len(t, records, 2, "the scenario failure and the teardown failure are both recorded")
+	assert.Equal(t, behaviourfail.Infrastructure, records[0].Class)
+	assert.Contains(t, records[0].Message, "add label")
+	assert.Equal(t, behaviourfail.Scenario, records[1].Class)
+	assert.Contains(t, records[1].Message, "deallocating repo")
 }
 
 // TestBeforeToAfter_MalformedCapabilityTagWritesFailureSummary checks that a
