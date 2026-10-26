@@ -1581,7 +1581,7 @@ func (d *Driver) failedHarnessPollOnce(ctx context.Context, remaining time.Durat
 // classified by its final conclusion instead of being counted while its
 // cancellation is still in progress.
 func (d *Driver) CountHarnessDispatches(ctx context.Context, owner, repo, agent string, after time.Time) (int, error) {
-	deadline := time.Now().Add(dispatchWait)
+	deadline := d.now().Add(dispatchWait)
 	for {
 		count, pending, err := d.settleHarnessDispatchCount(ctx, owner, repo, agent, after)
 		if err != nil {
@@ -1590,14 +1590,18 @@ func (d *Driver) CountHarnessDispatches(ctx context.Context, owner, repo, agent 
 		if pending == 0 {
 			return count, nil
 		}
-		if time.Now().After(deadline) {
-			return 0, fmt.Errorf("harness %q dispatch count did not settle: %d run(s) still pending after %s",
+		if d.now().After(deadline) {
+			msg := fmt.Sprintf("harness %q dispatch count did not settle: %d run(s) still pending after %s",
 				agent, pending, dispatchWait)
+			if line := d.describeRateLimitState(); line != "" {
+				msg += "; " + line
+			}
+			return 0, errors.New(msg)
 		}
 		select {
 		case <-ctx.Done():
 			return 0, ctx.Err()
-		case <-time.After(countSettlePoll):
+		case <-d.timerAfter(countSettlePoll):
 		}
 	}
 }
@@ -1690,6 +1694,9 @@ func (d *Driver) WaitForHarnessEmptyMatrix(ctx context.Context, owner, repo stri
 	msg := fmt.Sprintf("harness dispatch did not settle with an empty matrix within %s: %s", dispatchWait, state)
 	if lastErr != nil {
 		msg += fmt.Sprintf(" (last lookup error: %v)", lastErr)
+	}
+	if line := d.describeRateLimitState(); line != "" {
+		msg += "; " + line
 	}
 	return nil, errors.New(msg)
 }
