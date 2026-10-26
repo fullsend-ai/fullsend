@@ -362,24 +362,31 @@ func (dst *EnvConfig) mergeEnvFrom(src *EnvConfig, srcWins bool) {
 // Harness is the per-agent configuration that the runner reads to provision
 // a sandbox and launch one agent. It follows the ADR-0017 schema.
 type Harness struct {
-	Agent                  string                  `yaml:"agent"`
-	Doc                    string                  `yaml:"doc,omitempty"`
-	Description            string                  `yaml:"description,omitempty"`
-	Role                   string                  `yaml:"role,omitempty"`
-	Slug                   string                  `yaml:"slug,omitempty"`
-	Base                   string                  `yaml:"base,omitempty"`
-	Image                  string                  `yaml:"image,omitempty"`
-	Policy                 string                  `yaml:"policy,omitempty"`
-	Skills                 []SkillEntry            `yaml:"skills,omitempty"`
-	Plugins                []PluginSpec            `yaml:"plugins,omitempty"` // runtime-scoped plugin directories (ADR 0094)
-	Providers              []string                `yaml:"providers,omitempty"`
-	OpenShell              *OpenShellConfig        `yaml:"openshell,omitempty"`
-	HostFiles              []HostFile              `yaml:"host_files,omitempty"`
-	APIServers             []APIServer             `yaml:"api_servers,omitempty"`
-	Model                  string                  `yaml:"model,omitempty"`
-	Effort                 string                  `yaml:"effort,omitempty"`
-	PreScript              string                  `yaml:"pre_script,omitempty"`
-	PostScript             string                  `yaml:"post_script,omitempty"`
+	Agent       string           `yaml:"agent"`
+	Doc         string           `yaml:"doc,omitempty"`
+	Description string           `yaml:"description,omitempty"`
+	Role        string           `yaml:"role,omitempty"`
+	Slug        string           `yaml:"slug,omitempty"`
+	Base        string           `yaml:"base,omitempty"`
+	Image       string           `yaml:"image,omitempty"`
+	Policy      string           `yaml:"policy,omitempty"`
+	Skills      []SkillEntry     `yaml:"skills,omitempty"`
+	Plugins     []PluginSpec     `yaml:"plugins,omitempty"` // runtime-scoped plugin directories (ADR 0094)
+	Providers   []string         `yaml:"providers,omitempty"`
+	OpenShell   *OpenShellConfig `yaml:"openshell,omitempty"`
+	HostFiles   []HostFile       `yaml:"host_files,omitempty"`
+	APIServers  []APIServer      `yaml:"api_servers,omitempty"`
+	Model       string           `yaml:"model,omitempty"`
+	Effort      string           `yaml:"effort,omitempty"`
+	PreScript   string           `yaml:"pre_script,omitempty"`
+	PostScript  string           `yaml:"post_script,omitempty"`
+	// PreflightCheck is an optional string holding a literal host command
+	// (semantic type: inline command, ADR 0127/0128). It is the single eager
+	// host-dependency gate for pre_script, post_script, and validation_loop
+	// (ADR 0129). Default absent: no gate, status-quo behavior. No working
+	// directory is set; the value is never resource-resolved and is passed
+	// verbatim to `sh -c`, unlike pre_script (which may be a fetched path).
+	PreflightCheck         string                  `yaml:"preflight_check,omitempty"`
 	PrivilegeLevels        map[string]string       `yaml:"privilege_levels,omitempty"` // run-stage → mint privilege level (ADR 0073)
 	AgentInput             string                  `yaml:"agent_input,omitempty"`
 	ValidationLoop         *ValidationLoop         `yaml:"validation_loop,omitempty"`
@@ -826,8 +833,13 @@ func (h *Harness) ResolveRelativeTo(baseDir string) error {
 // Env.Runner, Env.Sandbox, and HostFiles.Src are defined in the host
 // environment using the provided lookup function. Variables set to an empty
 // string are allowed; only truly unset variables produce an error.
-// validation_loop.preflight_check references are not checked here; the
-// preflight allowlist scan in internal/cli is their single reference gate.
+// Neither preflight field — top-level preflight_check nor nested
+// validation_loop.preflight_check — is checked here: this runs before the
+// ADR 0055 env.runner merge with a host-environment-only lookup, so it
+// cannot see the harness-level env.runner declarations that preflight
+// references must resolve against. Both are gated solely by the preflight
+// allowlist scan in internal/cli (runPreflightCheck), their single
+// reference gate (ADR 0128).
 func (h *Harness) ValidateRunnerEnvWith(lookup func(string) (string, bool)) error {
 	references := make(map[string][]string)
 	checkVarRefs := func(source, value string) {
@@ -851,10 +863,12 @@ func (h *Harness) ValidateRunnerEnvWith(lookup func(string) (string, bool)) erro
 	if h.ValidationLoop != nil && h.ValidationLoop.Schema != "" {
 		checkVarRefs("validation_loop.schema", h.ValidationLoop.Schema)
 	}
-	// validation_loop.preflight_check is deliberately not checked here: its
-	// references are validated by the preflight allowlist scan in
-	// internal/cli (runPreflightCheck), the single reference gate for that
-	// field (D9, preflight-check-credential-safety change).
+	// Both preflight fields — top-level preflight_check and nested
+	// validation_loop.preflight_check — are deliberately not checked here:
+	// their references are validated solely by the preflight allowlist scan
+	// in internal/cli (runPreflightCheck), the single reference gate for
+	// both fields (ADR 0128; D9 of preflight-check-credential-safety, D5
+	// of top-level-preflight-check).
 	if h.Env != nil {
 		for k, v := range h.Env.Runner {
 			checkVarRefs(fmt.Sprintf("env.runner[%s]", k), v)

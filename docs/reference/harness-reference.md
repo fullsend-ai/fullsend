@@ -41,6 +41,9 @@ openshell:                           # OpenShell sandbox profiles
   profiles:
     - https://example.com/profile.yaml#sha256=abc...
 
+# ── Preflight (host-dependency gate, ADR 0129) ────────────────
+preflight_check: 'python3 -c "import jsonschema"'  # Literal sh -c command (NOT a script path); host-dependency gate, runs once before pre_script and sandbox creation
+
 # ── Scripts (local paths only) ────────────────────────────────
 pre_script: scripts/pre-my-agent.sh
 post_script: scripts/post-my-agent.sh
@@ -56,7 +59,7 @@ privilege_levels:
 # ── Validation ────────────────────────────────────────────────
 validation_loop:
   script: scripts/validate-output-schema.sh
-  preflight_check: 'python3 -c "import jsonschema"'  # Literal sh -c command (NOT a script path); runs before sandbox creation in the allowlisted preflight environment
+  preflight_check: 'python3 -c "import jsonschema"'  # ⚠ Deprecated: use the top-level preflight_check. Literal sh -c command (NOT a script path); runs before sandbox creation in the allowlisted preflight environment
   max_iterations: 2
   feedback_mode: append              # "none" (default) or "append" — append the
                                      # previous iteration's validation failure to
@@ -149,17 +152,69 @@ Most fields are self-explanatory from the inline comments above. This section ex
 
 **`doc`** — Path to a human-readable document describing the agent's purpose and design. Resolved in the source repo only; the runtime ignores it. Useful for documentation indexes and discoverability.
 
+**`preflight_check`** — A single eager host-dependency gate for `pre_script`,
+`post_script`, and `validation_loop`
+([ADR 0129](../ADRs/0129-extend-preflight-coverage-to-pre-and-post-scripts.md)).
+The value is a literal command, executed verbatim via `sh -c` on the host
+with no working directory set, so relative paths resolve against the
+runner's working directory. It is never fetched or staged the way
+`pre_script` is — a value like `scripts/check.sh` runs as command text, not
+as a delivered file; inline a self-contained probe such as
+`python3 -c "import jsonschema"` instead (lint flags a bare path-like
+value; [ADR 0128](../ADRs/0128-preflight-check-literal-command.md)). The
+check runs exactly once per run, before `pre_script` (when present), before
+sandbox creation and repository checkout, and before any nested
+`validation_loop.preflight_check`; a nonzero exit or a timeout (30 seconds)
+stops the run before all of them — and before a pre-script skip decision,
+so the gate intentionally probes post-script dependencies even on runs the
+pre-script would skip. An absent, empty, or whitespace-only value means no
+gate: run behavior is unchanged.
+
+The command runs in the same minimal allowlisted environment as the nested
+check: the host `PATH`, `HOME`, and `TMPDIR` (when set), the runner-forced
+`FULLSEND_DIR` and `PYTHONDONTWRITEBYTECODE`, and non-credential variables
+declared under `env.runner`/`runner_env` — nothing else is inherited from
+the process environment, and credential names (forge, mint, and provider
+tokens, runner secrets, and the OIDC/trigger names) are excluded even when
+declared. Plain `${VAR}` references are validated and expanded before any
+shell executes: a reference to a name outside that environment fails the
+run beforehand, naming the variable (never its value); a runner-secret
+name is refused at harness validation. On failure or timeout, diagnostics
+carry only redacted command text and output. The brace-form, bare-`$VAR`,
+and redaction semantics are those described under
+`validation_loop.preflight_check` below; the two fields share one executor.
+
+In `base:` composition the field merges as a scalar: a child's non-empty
+value replaces the base's, an absent child inherits the base's, and values
+never append or combine. An overriding child check must therefore cover the
+dependencies of any inherited `pre_script`, `post_script`, or validation
+script still present in the composed harness, and of every script a
+matching overlay may select — the single top-level check gates whichever
+scripts the overlays selected. It is top level only — not a `ForgeConfig`
+field, so a `preflight_check:` key under `overlays:` or `forge:` is
+silently ignored.
+
+`validation_loop.preflight_check` is deprecated in favor of this field: the
+nested field still works, but lint emits a deprecation warning naming the
+top-level replacement, and removal is separately gated
+([ADR 0127](../ADRs/0127-harness-schema-versioning-and-field-types.md)).
+During migration, when both fields are set the top-level check runs first
+and the nested check runs after it only if the top-level one passed; a
+failing top-level check prevents the nested check from running at all. A
+harness that sets only the nested field behaves exactly as before.
+
 **`validation_loop.feedback_mode`** — Controls how validation script output reaches the agent for its next iteration. `none` (default): no feedback; `append`: the previous iteration's validation failure is appended to the agent prompt on retry. See [Configuring agent behavior](../guides/user/customizing-agents.md) for examples.
 
 **`validation_loop.max_iterations`** — The maximum number of agent runs in one invocation (default 1). A second run happens only when the agent finished and its output failed validation; an iteration the runner killed at `timeout_minutes` is not retried. See [`fullsend run` § Budget and deadline](../cli/run.md#budget-and-deadline) and [ADR 0105](../ADRs/0105-timed-out-iteration-ends-the-run.md).
 
-**`validation_loop.preflight_check`** — A host-dependency probe run before sandbox creation as a literal `sh -c` command ([ADR 0128](../ADRs/0128-preflight-check-literal-command.md)). It uses the host process's working directory and is not resolved through the resource-fetch pipeline. Prefer a self-contained probe such as `python3 -c "import jsonschema"`; a relative script command works only if its file is present in that host working directory. The probe runs in a minimal allowlisted environment: the host `PATH`, `HOME`, and `TMPDIR` (when set), the runner-forced `FULLSEND_DIR` and `PYTHONDONTWRITEBYTECODE`, and non-credential variables declared under `env.runner`/`runner_env` — nothing else is inherited from the process environment. Credential names (`GH_TOKEN`, `GITHUB_TOKEN`, `GITLAB_TOKEN`, the minted role tokens `PUSH_TOKEN` and `REVIEW_TOKEN`, `FULLSEND_FORGE_TOKEN`, `FULLSEND_FETCH_TOKEN`, `FULLSEND_GITLAB_*` role tokens, `OPENAI_API_KEY`, `GH_WORKFLOW_TOKEN`, and the OIDC/trigger/runner-secret names) are excluded even when declared under `env.runner`. Plain `${VAR}` references are validated and expanded before the command runs: a plain reference to a name outside the allowlisted environment fails the run before any shell executes, naming the variable (never its value) and pointing to the allowlist and the `env.runner` declaration channel. Non-plain brace forms such as `${VAR:-default}` are not validated and silently expand to empty rather than failing the run. On failure or timeout, diagnostics carry only redacted command text and output. When the command contains no `${...}` reference, bare `$VAR` references are left to the shell, where every non-allowlisted name is unset; once a brace reference is present, bare references are also resolved against the preflight environment before the shell runs, and a bare reference to a name outside it expands to empty, matching the shell's unset semantics.
+**`validation_loop.preflight_check`** — **Deprecated:** use the top-level `preflight_check` above instead; the nested field still works, but lint emits a deprecation warning naming the top-level replacement, and removal is separately gated ([ADR 0127](../ADRs/0127-harness-schema-versioning-and-field-types.md)). A host-dependency probe run before sandbox creation as a literal `sh -c` command ([ADR 0128](../ADRs/0128-preflight-check-literal-command.md)). It uses the host process's working directory and is not resolved through the resource-fetch pipeline. Prefer a self-contained probe such as `python3 -c "import jsonschema"`; a relative script command works only if its file is present in that host working directory. The probe runs in a minimal allowlisted environment: the host `PATH`, `HOME`, and `TMPDIR` (when set), the runner-forced `FULLSEND_DIR` and `PYTHONDONTWRITEBYTECODE`, and non-credential variables declared under `env.runner`/`runner_env` — nothing else is inherited from the process environment. Credential names (`GH_TOKEN`, `GITHUB_TOKEN`, `GITLAB_TOKEN`, the minted role tokens `PUSH_TOKEN` and `REVIEW_TOKEN`, `FULLSEND_FORGE_TOKEN`, `FULLSEND_FETCH_TOKEN`, `FULLSEND_GITLAB_*` role tokens, `OPENAI_API_KEY`, `GH_WORKFLOW_TOKEN`, and the OIDC/trigger/runner-secret names) are excluded even when declared under `env.runner`. Plain `${VAR}` references are validated and expanded before the command runs: a plain reference to a name outside the allowlisted environment fails the run before any shell executes, naming the variable (never its value) and pointing to the allowlist and the `env.runner` declaration channel. Non-plain brace forms such as `${VAR:-default}` are not validated and silently expand to empty rather than failing the run. On failure or timeout, diagnostics carry only redacted command text and output. When the command contains no `${...}` reference, bare `$VAR` references are left to the shell, where every non-allowlisted name is unset; once a brace reference is present, bare references are also resolved against the preflight environment before the shell runs, and a bare reference to a name outside it expands to empty, matching the shell's unset semantics.
 
 **`env.runner`** — Variables passed to host-side scripts (`pre_script`, `post_script`,
 and `validation_loop.script`), layered over the `fullsend run`
-process environment. (`validation_loop.preflight_check` also reads `env.runner`
-declarations, but atop its own allowlisted environment — see above, not the
-process environment.) A few named workflow secrets are **not** inherited from that environment:
+process environment. (The preflight checks — top-level `preflight_check` and
+`validation_loop.preflight_check` — also read `env.runner` declarations, but
+atop their own allowlisted environment; see above, not the process
+environment.) A few named workflow secrets are **not** inherited from that environment:
 `JIRA_TOKEN`, `JIRA_USER_EMAIL`, and the OTLP collector headers `OTEL_EXPORTER_OTLP_HEADERS` /
 `OTEL_EXPORTER_OTLP_*_HEADERS` (for example `OTEL_EXPORTER_OTLP_TRACES_HEADERS`). A script
 receives one only when the harness declares it, e.g. `JIRA_TOKEN: "${JIRA_TOKEN}"` under
@@ -456,6 +511,7 @@ More-specific entries go last so they override broader defaults.
 | Field type | Behavior |
 |-----------|----------|
 | Scalars (`model`, `pre_script`, `policy`, `image`, etc.) | Child wins if non-empty |
+| `preflight_check` | Child wins if non-empty; an absent child inherits the base value — never appended or combined. Top level only — not a `ForgeConfig` field, so this merge applies only to `base:` composition; an `overlays:`/`forge:` entry is silently ignored |
 | `skills` | Merged with deduplication by skill identity (declared `SKILL.md` name when on disk, otherwise basename). Child overrides a matching base entry; sibling nested dirs that share a leaf name are kept; two entries with one identity in a single list are both kept and fail at bootstrap |
 | `providers`, `openshell.profiles` | Concatenated (base + child); also applies per matched overlay |
 | `plugins`, `api_servers` | Concatenated (base + child); each entry keeps its own `env`/`pi` |
@@ -480,7 +536,7 @@ agent: https://raw.githubusercontent.com/org/repo/<sha>/agents/lint.md#sha256=ab
 
 **Scripts are local-only** — `pre_script`, `post_script`, and `validation_loop.script` must be local paths (they run on the trusted runner). Exception: scripts declared in a `base` harness fetched via URL are allowed.
 
-**`validation_loop.preflight_check` is a command, not a script resource** — The runner validates `${VAR}` references against the preflight allowlist environment (host `PATH`/`HOME`/`TMPDIR`, runner-forced `FULLSEND_DIR`/`PYTHONDONTWRITEBYTECODE`, and `env.runner` declarations), expands them, and passes the result to `sh -c` on the host; it does not fetch or stage a file named by the command. A reference outside that environment — including any credential name, whether inherited from the process environment or declared under `env.runner` — fails the run before the command executes. Do not interpolate untrusted values, even within shell quotes: on failure or timeout the diagnostics embed the command and output with declared secret values redacted.
+**`preflight_check` (top level) and `validation_loop.preflight_check` are commands, not script resources** — The runner validates `${VAR}` references against the preflight allowlist environment (host `PATH`/`HOME`/`TMPDIR`, runner-forced `FULLSEND_DIR`/`PYTHONDONTWRITEBYTECODE`, and `env.runner` declarations), expands them, and passes the result to `sh -c` on the host; it does not fetch or stage a file named by the command. A reference outside that environment — including any credential name, whether inherited from the process environment or declared under `env.runner` — fails the run before the command executes. Do not interpolate untrusted values, even within shell quotes: on failure or timeout the diagnostics embed the command and output with declared secret values redacted.
 
 ## See also
 

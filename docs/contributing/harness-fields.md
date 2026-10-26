@@ -73,7 +73,7 @@ them under `forge:` or `overlays:` is ignored, not an error:
 | `trigger`          | CEL trigger expression, evaluated against normalized events (ADR-0061) |
 | `privilege_levels` | Mint privilege per run-stage (ADR-0073)            |
 | `schema_version`   | Schema contract version (ADR-0127); absent = version `1`. **Planned, not yet implemented** |
-| `preflight_check`  | Single host-dependency gate run once before sandbox creation for `pre_script`/`post_script`/`validation_loop`; a literal `sh -c` command, not a script path (ADR-0128, ADR-0129). **Planned, not yet implemented** ([#8722](https://github.com/fullsend-ai/fullsend/issues/8722)) |
+| `preflight_check`  | Single host-dependency gate run once before sandbox creation for `pre_script`/`post_script`/`validation_loop`; a literal `sh -c` command, not a script path (ADR-0128, ADR-0129). **Top level only** — not a `ForgeConfig` field, so it is not settable under `forge:` or `overlays:` (a `preflight_check:` key there is ignored, not an error) |
 
 ## Semantic types (ADR 0127)
 
@@ -88,7 +88,7 @@ references are scalar values, not shell commands.
 
 | Semantic type | Meaning | Fields |
 |---|---|---|
-| inline command | Executed via `sh -c` on the host against the allowlisted preflight environment (credential-safe), not resource-resolved | `validation_loop.preflight_check`; top-level `preflight_check` (planned) |
+| inline command | Executed via `sh -c` on the host against the allowlisted preflight environment (credential-safe), not resource-resolved | `validation_loop.preflight_check`; top-level `preflight_check` |
 | runtime local path | Path to a file or directory in the local configuration, not a command | `pre_script`, `post_script`, `validation_loop.script`, `validation_loop.schema`, `agent_input` (directory), `host_files[].src` (host path, optional `${VAR}` expansion), `api_servers[].script` (path resolved, server startup planned) |
 | resource reference | Local path or pinned URL resolved/fetched as applicable | `agent`, `base`, `policy`, `skills[].source`, `plugins[].path`, `openshell.profiles[]`; `providers[]` has additional identifier semantics below |
 | skill override | Key is a path within the skill; value is a local file, pinned URL, or `null` to remove the file | `skills[].overrides[<path>]` |
@@ -157,6 +157,7 @@ Two independent precedence axes govern field resolution
 | `skills`         | Merged with deduplication by skill identity (declared `SKILL.md` name, otherwise directory basename; `skill.SandboxName`). Relative entries are resolved against the fullsend directory before the merge, so a local override matches by declared name too. Two entries with one identity in a single list are both kept and fail at bootstrap. A relative entry reached through a symlink that leaves the fullsend directory, or that has an absolute target, at any component including the marker file, keeps its directory basename as its merge identity. Forge/child overrides a matching top-level/base entry. Sibling nested dirs that share a leaf name are kept. | Absent (nil) = inherit; `skills: []` = empty list merged with base (base entries are returned) |
 | `runner_env`     | Top-level/base map merged with forge/child map; forge/child keys win  | Absent (nil) = inherit; `runner_env: {}` = no forge-specific keys (top-level env still inherited) |
 | `privilege_levels` | Top-level/base map merged with child map; child keys win (not in `ForgeConfig`, so no forge/overlay override) | Absent (nil) = inherit from base; omitted entirely at every layer defaults every run-stage to `write` |
+| `preflight_check` | Scalar merge: child's non-empty value replaces the base's; never appends or combines (ADR-0129). Not in `ForgeConfig`, so no forge/overlay override (a `preflight_check:` key under `forge:`/`overlays:` is ignored) | Absent or empty = inherit from base; there is no way to disable an inherited check |
 | `validation_loop`| Field-level merge; forge/child non-zero values win, base/top-level fills gaps | Absent (nil) = inherit from top level / base; `validation_loop: {}` inherits all fields (zero-value-as-unset). Post-merge `Validate()` still requires `script`. There is no way to disable an inherited validation loop. |
 | `providers`      | Concatenated (top-level/base + forge/child)           | Absent (nil) = inherit; `providers: []` = no forge-specific additions (top-level providers still apply) |
 | `openshell`      | `profiles` concatenated (top-level/base + forge/child) | Absent (nil) = inherit; empty `profiles: []` = no forge-specific additions |

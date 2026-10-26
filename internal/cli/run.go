@@ -1470,6 +1470,22 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}
 
+	// Top-level preflight_check gate (ADR 0129): one eager host-dependency
+	// probe for pre_script, post_script, and validation_loop, running before
+	// the nested check (1d), the pre-script, and sandbox creation — so also
+	// before a pre-script skip decision, the trade-off ADR 0129 accepts. A
+	// nonzero exit or timeout returns below, gating every later stage. Empty
+	// or whitespace-only values mean no gate; only the emptiness decision
+	// trims, since the command must run verbatim as authored. Reusing the
+	// nested check's executor keeps one credential-safe reference gate (ADR
+	// 0128 release requirement) with field-qualified diagnostics; the merged
+	// h.RunnerEnv (ADR 0055 env.runner merge) is already in effect here.
+	if strings.TrimSpace(h.PreflightCheck) != "" {
+		if err := runPreflightCheck(ctx, printer, "preflight_check", h.PreflightCheck, h.RunnerEnv, absFullsendDir); err != nil {
+			return err
+		}
+	}
+
 	// 1d. Preflight dependency check for host-side scripts.
 	// When a validation_loop declares a preflight_check command, run it now
 	// to catch missing host dependencies (e.g. python3-jsonschema) before

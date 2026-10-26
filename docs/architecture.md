@@ -230,9 +230,7 @@ repo baseline and overrides)
   newer-version harnesses ([ADR 0127](ADRs/0127-harness-schema-versioning-and-field-types.md)).
 - `preflight_check` is a literal host command, not a script resource: it runs
   via `sh -c` without setting a working directory and is not resource-resolved;
-  `Harness.Lint()` flags path-like values at error severity, so `fullsend
-  lint` fails on them; `fullsend lock` and `fullsend run` print the diagnostic
-  and continue
+  `Harness.Lint()` flags path-like values as a non-fatal warning
   ([ADR 0128](ADRs/0128-preflight-check-literal-command.md)). The nested
   `validation_loop.preflight_check` runs in a minimal allowlisted environment —
   host `PATH`, `HOME`, and `TMPDIR`, runner-forced `FULLSEND_DIR` and
@@ -243,11 +241,16 @@ repo baseline and overrides)
   diagnostics carry only redacted command text and output.
 - Preflight coverage for all scripts: a top-level `preflight_check` field is a
   single host-dependency gate for `pre_script`, `post_script`, and
-  `validation_loop`, running before `pre_script` and before sandbox creation.
-  The field is planned but not yet implemented. Once it is usable, the nested
-  `validation_loop.preflight_check` is deprecated, but existing nested checks
-  continue running during migration. A separately named resource-delivered
-  preflight script for complex probes remains future work
+  `validation_loop`, running exactly once per run — before `pre_script` and
+  before sandbox creation — with the same literal-command semantics,
+  path-like lint guard, and credential-safe environment as the nested check.
+  In `base:` composition the field merges as a scalar: a child's non-empty
+  value replaces the base's, an absent child inherits the base's, and values
+  never append or combine. The nested `validation_loop.preflight_check` is
+  deprecated — `Harness.Lint()` warns and names the top-level replacement, and
+  removal is separately gated — but existing nested checks continue to run
+  after the top-level check during migration. A separately named
+  resource-delivered preflight script for complex probes remains future work
   ([ADR 0129](ADRs/0129-extend-preflight-coverage-to-pre-and-post-scripts.md)).
 
 **Open questions:**
