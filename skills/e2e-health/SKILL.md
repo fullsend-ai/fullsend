@@ -4,7 +4,7 @@ description: >
   Use when checking e2e test health or reviewing recent e2e failures on
   main, and when scanning behaviour runs for GitHub API rate-limit
   exhaustion evidence (the #6702 validation).
-allowed-tools: Bash(bash skills/e2e-health/scripts/list-runs.sh:*), Bash(gh run view:*), Bash(bash skills/e2e-health/scripts/scan-ratelimit-evidence.sh:*), Bash(bash skills/e2e-health/scripts/scan-ratelimit-evidence_test.sh:*), Bash(gh repo view:*), Bash(gh run list:*), Bash(gh api repos/*/actions/runs/*/attempts/*:*), Bash(gh api repos/*/actions/jobs/*/logs:*), Bash(jq:*)
+allowed-tools: Bash(bash skills/e2e-health/scripts/list-runs.sh:*), Bash(gh run view:*), Bash(bash skills/e2e-health/scripts/scan-ratelimit-evidence.sh:*), Bash(bash skills/e2e-health/scripts/scan-ratelimit-evidence_test.sh:*)
 ---
 
 # E2E Health
@@ -65,11 +65,13 @@ rate-limit exhaustion in behaviour-test runs (#6702's validation program).
 Over a window of completed `e2e.yml` runs on `main` it walks every attempt
 of each run (retries can mask a rate-limited first attempt), fetches the
 `behaviour` job's logs, and reports the blind-wait diagnostic markers that
-harness-wait timeouts emit — `run listing failed:` and
-`(same error on N of M polls during the wait)`, polls and lookups variants
-both. Run conclusions come from run and attempt metadata, never from log
-parsing. The scan is read-only (gh GETs only) and runs from any checkout
-with ordinary `gh` auth.
+harness-wait timeouts emit — `run listing failed:`,
+`(same error on N of M polls during the wait)`, and
+`(failed on N of M lookups during the wait; last: …)` (the lookup tail
+always renders the counted-failures shape, because the diagnostics pass no
+current lookup error). Run conclusions come from run and attempt metadata,
+never from log parsing. The scan is read-only (gh GETs only) and runs from
+any checkout with ordinary `gh` auth.
 
 ### When to run it
 
@@ -107,8 +109,8 @@ fetched, the verdict may undercount, and the affected attempts carry
 
 The verdict is rendered at both levels from one scan, so either reading
 of the closure criterion applies to the same report without re-scanning.
-The summary table (stderr) ends with both lines; from a saved report,
-`jq '.verdict' report.json` prints the counts.
+The summary table (stderr) ends with both lines; from a saved report, the
+`verdict` object in `report.json` carries the counts.
 
 - **Strict — `runs_with_markers`**: "N run(s) with markers". Any marker
   occurrence at all, on any attempt of any scanned run. Zero here means
