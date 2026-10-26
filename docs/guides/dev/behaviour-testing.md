@@ -265,6 +265,30 @@ Given a dummy agent that would:
 
 The first row proves execution via an auxiliary file; the second row emits the schema-valid `agent-result.json` that the harness post-script requires.
 
+## Prerequisites
+
+The procedures in this guide need the following before the first step:
+
+- **Go toolchain.** The repo's Go version (see `go.mod`), used by the
+  `make behaviour-test`, `make playback-test`, and
+  `make behaviour-test-unit` targets.
+- **`jq`.** `scripts/run-with-infra-retry.sh` reads the failure-class
+  report with `jq` when deciding whether a failed attempt can be retried.
+- **GitHub credentials.** Locally, `gh auth login` or export
+  `GH_TOKEN`/`GITHUB_TOKEN` with access to the `halfsend` org pool. In
+  CI, the suite mints per-org tokens through the mint service
+  (`id-token: write` and `ACTIONS_ID_TOKEN_REQUEST_URL`).
+- **Driver credentials.** The install factories read the role PEM files
+  (`TEST_*_PEM`) and Cloudflare credentials (`TEST_CLOUDFLARE_*`), and
+  `E2E_GCP_*` configures the GCP side, as described in
+  [Running the playback suite in CI](#running-the-playback-suite-in-ci).
+- **Sandbox image.** Scenario runtimes run in `fullsend-sandbox:latest`,
+  pulled by the install driver.
+- **Artifact directory.** Set `BEHAVIOUR_ARTIFACT_DIR` to choose where
+  `failure-class.json` and debug artifacts land (mode `0600`); without
+  it the retry wrapper falls back to `BEHAVIOUR_FAILURE_CLASS_FILE` for
+  the class marker alone, and the report is written to a fresh temp file.
+
 ## Running locally
 
 ```bash
