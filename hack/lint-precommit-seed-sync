@@ -1,0 +1,95 @@
+#!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.12"
+# dependencies = ["pyyaml>=6.0"]
+# ///
+"""Ensure images/code/pre-commit-seed.yaml covers every external repo+rev
+from the root .pre-commit-config.yaml.
+
+The seed is used at image-build time to pre-populate PRE_COMMIT_HOME so
+code/fix agents can run `pre-commit` without outbound git clones
+(#7298). If the root config gains or bumps an external repo without a
+matching seed update, runtime pre-commit re-clones (HTTP 403) and the
+smoke test still passes because it only checks that the cache is
+non-empty. This script fails the build/lint when the two drift.
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+
+import yaml
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT_CFG = os.path.join(REPO_ROOT, ".pre-commit-config.yaml")
+SEED_CFG = os.path.join(REPO_ROOT, "images", "code", "pre-commit-seed.yaml")
+
+
+def external_repo_revs(path: str) -> dict[str, str]:
+    """Map repo URL -> rev for every non-local entry."""
+    with open(path, encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    out: dict[str, str] = {}
+    for entry in data.get("repos") or []:
+        repo = entry.get("repo")
+        rev = entry.get("rev")
+        if not repo or repo == "local":
+            continue
+        if not rev:
+            print(f"ERROR: {path}: repo {repo!r} has no rev", file=sys.stderr)
+            sys.exit(1)
+        if repo in out and out[repo] != rev:
+            print(
+                f"ERROR: {path}: duplicate repo {repo!r} with conflicting revs "
+                f"{out[repo]!r} vs {rev!r}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        out[repo] = str(rev)
+    return out
+
+
+def main() -> int:
+    root = external_repo_revs(ROOT_CFG)
+    seed = external_repo_revs(SEED_CFG)
+    rc = 0
+
+    for repo, rev in sorted(root.items()):
+        if repo not in seed:
+            print(
+                f"DESYNC: {repo}@{rev} is in .pre-commit-config.yaml but "
+                f"missing from images/code/pre-commit-seed.yaml",
+                file=sys.stderr,
+            )
+            rc = 1
+        elif seed[repo] != rev:
+            print(
+                f"DESYNC: {repo} rev mismatch: "
+                f".pre-commit-config.yaml={rev!r} "
+                f"pre-commit-seed.yaml={seed[repo]!r}",
+                file=sys.stderr,
+            )
+            rc = 1
+
+    # Extra seed entries are allowed only if they match a root rev; warn
+    # about seed-only repos so stale entries get cleaned up.
+    for repo, rev in sorted(seed.items()):
+        if repo not in root:
+            print(
+                f"DESYNC: {repo}@{rev} is in images/code/pre-commit-seed.yaml "
+                f"but not in .pre-commit-config.yaml — remove the stale entry",
+                file=sys.stderr,
+            )
+            rc = 1
+
+    if rc == 0:
+        print(
+            f"OK: pre-commit seed covers {len(root)} external "
+            f"repo(s) from .pre-commit-config.yaml"
+        )
+    return rc
+
+
+if __name__ == "__main__":
+    sys.exit(main())
