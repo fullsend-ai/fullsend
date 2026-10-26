@@ -76,7 +76,7 @@ func saveWorkflowRunLogs(ctx context.Context, w *world.World, label string, run 
 	if run == nil {
 		return
 	}
-	registerRedactionLiterals(w)
+	RegisterRedactionLiterals(w)
 
 	if strings.TrimSpace(os.Getenv("BEHAVIOUR_ARTIFACT_DIR")) == "" {
 		logRedacted(w, "save workflow run logs: BEHAVIOUR_ARTIFACT_DIR unset, skipping log collection for %s run %d", label, run.ID)
@@ -206,14 +206,19 @@ var sensitiveEnvNames = []string{
 	"CLOUDFLARE_ACCOUNT_ID",
 }
 
-// registerRedactionLiterals registers the runner's known credential literals
+// RegisterRedactionLiterals registers the runner's known credential literals
 // — w.Token, the values of sensitive-looking environment variables and the
 // explicitly listed infrastructure identifiers — with the process-wide
 // secret redactor. Prefix and structural patterns
 // cannot recognise an opaque credential, which would otherwise survive in
 // summaries, diagnostics and name-derived directory names. Values the shared
 // redactor declines as too short are masked locally by RedactText.
-func registerRedactionLiterals(w *world.World) {
+//
+// The failure-recording sites — the suite's After hook and the bootstrap
+// recorder — also call this before redacting a message at record time, so
+// the first failure a process records is redacted with the World's literals
+// already registered, not only after debug-log collection has run.
+func RegisterRedactionLiterals(w *world.World) {
 	if w != nil && w.Token != "" {
 		registerSecretForms(w.Token)
 	}
@@ -295,7 +300,9 @@ func registerSecretLiteral(value string) {
 //     itself: both sets are populated by this package's debug-log
 //     collection — CollectFailureLogs, the workflow-log saving steps and
 //     the mint-status steps register the World token and sensitive runner
-//     environment values before writing artifacts.
+//     environment values before writing artifacts — and by the
+//     failure-recording sites, which call RegisterRedactionLiterals before
+//     redacting a message at record time.
 //
 // Callers cannot assume a stronger guarantee than the tooling provides: in
 // a process where no secrets were registered — a consumer binary that only
@@ -360,7 +367,7 @@ func CollectFailureLogs(ctx context.Context, w *world.World, scenarioErr error) 
 	if w == nil {
 		return
 	}
-	registerRedactionLiterals(w)
+	RegisterRedactionLiterals(w)
 	artifactDir := strings.TrimSpace(os.Getenv("BEHAVIOUR_ARTIFACT_DIR"))
 	if artifactDir == "" {
 		logRedacted(w, "collect failure logs: BEHAVIOUR_ARTIFACT_DIR unset, skipping log collection for failed scenario %q", RedactText(w.ScenarioName))

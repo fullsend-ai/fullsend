@@ -404,3 +404,24 @@ func TestReportBootstrapFailureMessage(t *testing.T) {
 	assert.Contains(t, msg, "scenario failure")
 	assert.NotContains(t, msg, "report:", "no report-path suffix when nothing was written")
 }
+
+// TestReportRecordBootstrapFailure_RedactsWorldTokenWithoutPriorRegistration
+// pins the bootstrap recording site's redaction ordering (PR #8801
+// review): a bootstrap failure recorded on a World carrying a token is
+// redacted with the token registered first, so no prior registration
+// from debug-log collection is assumed.
+func TestReportRecordBootstrapFailure_RedactsWorldTokenWithoutPriorRegistration(t *testing.T) {
+	clearReportDestinations(t)
+	token := "opaquebootstrapfirstrecd5a9e2c3"
+	rec := &behaviourfail.Recorder{}
+	w := &world.World{Token: token, Failures: rec}
+
+	recordBootstrapFailure(w, fmt.Errorf("bootstrap failed with token %s", token))
+
+	snapshot := rec.Snapshot()
+	require.Len(t, snapshot, 1)
+	assert.Equal(t, bootstrapSource, snapshot[0].Source)
+	assert.NotContains(t, snapshot[0].Message, token,
+		"the opaque token must be masked by registration, not by pattern luck")
+	assert.Contains(t, snapshot[0].Message, "bootstrap failed with token")
+}

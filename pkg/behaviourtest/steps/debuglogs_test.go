@@ -837,7 +837,7 @@ func TestRedactText_RedactsRegisteredSecretLiteral(t *testing.T) {
 	short := "rt5#k9"
 	t.Setenv("SOME_RUNNER_API_TOKEN", short)
 
-	registerRedactionLiterals(&world.World{Token: token})
+	RegisterRedactionLiterals(&world.World{Token: token})
 
 	got := RedactText(fmt.Sprintf("dispatch failed with token %s and pin %s", token, short))
 	assert.NotContains(t, got, token)
