@@ -73,7 +73,7 @@ them under `forge:` or `overlays:` is ignored, not an error:
 | `trigger`          | CEL trigger expression, evaluated against normalized events (ADR-0061) |
 | `privilege_levels` | Mint privilege per run-stage (ADR-0073)            |
 | `schema_version`   | Schema contract version (ADR-0127); absent = version `1`. **Planned, not yet implemented** |
-| `preflight_check`  | Single host-dependency gate run once before sandbox creation for `pre_script`/`post_script`/`validation_loop`; a literal `sh -c` command, not a script path (ADR-0128, ADR-0129). **Top level only** — not a `ForgeConfig` field, so it is not settable under `forge:` or `overlays:` (a `preflight_check:` key there is ignored, not an error) |
+| `preflight_check`  | Single host-dependency gate run once before sandbox creation for `pre_script`/`post_script`/`validation_loop`; a literal `sh -c` command, not a script path (ADR-0128, ADR-0129). **Top level only** |
 
 ## Semantic types (ADR 0127)
 
