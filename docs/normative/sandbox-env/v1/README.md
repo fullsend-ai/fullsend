@@ -51,7 +51,7 @@ document):
 {
   "schema_version": 1,
   "exports": {
-    "always": ["FULLSEND_OUTPUT_DIR", "FULLSEND_ROLE", "PATH"],
+    "always": ["FULLSEND_OUTPUT_DIR", "FULLSEND_ROLE", "FULLSEND_TARGET_REPO_DIR", "PATH"],
     "conditional": {
       "FULLSEND_FETCH_URL": "the runtime fetch service is enabled (ADR 0038)"
     },
