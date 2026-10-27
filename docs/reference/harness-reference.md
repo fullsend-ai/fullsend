@@ -9,6 +9,7 @@ role: triage                        # A role the mint serves (built-in on the ho
 policy: policies/base.yaml          # Sandbox policy; required
 
 # ── Identity & metadata ──────────────────────────────────────
+schema_version: 1                   # Schema contract version (ADR 0127); absent = 1
 slug: my-org-my-role                # Install-time App discovery (convention: <org>-<role>); not read by the mint
 description: One-line summary       # Human-readable description
 doc: docs/agents/my-agent.md        # Source-repo-only; not resolved at runtime
@@ -152,6 +153,34 @@ Most fields are self-explanatory from the inline comments above. This section ex
 **`slug`** — Install-time hint used by `fullsend github setup` to find or name the GitHub App. The `<org>-<role>` convention keeps slugs unique when multiple orgs share a mint. The **mint does not read `slug`** when issuing a token — identity and permissions come from `role`, so changing `slug` alone changes neither. For a custom GitHub App identity, see [Custom Agent Identity](../guides/user/custom-agent-identity.md).
 
 **`doc`** — Path to a human-readable document describing the agent's purpose and design. Resolved in the source repo only; the runtime ignores it. Useful for documentation indexes and discoverability.
+
+**`schema_version`** — Declares the schema contract version of the harness
+document. A scalar integer; the maximum supported version is currently `1`,
+and an absent field means version `1` — the implicit contract of every
+harness written before the field existed — so existing harnesses remain
+valid. `schema_version: null` and `schema_version: ~` count as absent too.
+An invalid `schema_version` value fails at parse time as a load failure —
+not a `Harness.Lint()` finding — in every raw composition layer, before
+layers merge and before forge/overlay resolution. The error shapes:
+
+- **Malformed** — a non-integer value (a string, a fractional number such
+  as `1.5`, or a mapping) fails with the YAML type error naming the
+  offending line (`line N: cannot unmarshal ...`), wrapped under the
+  loader's `parsing harness YAML:` prefix.
+- **Zero or negative** — fails with
+  `schema_version must be a positive integer, got N`.
+- **Unsupported** — a version above the maximum supported fails naming the
+  declared version, the maximum, and the remedy: upgrade fullsend to a
+  release that supports it, or pin harness content declaring a supported
+  version.
+
+**Top level only** — it is not a `ForgeConfig` field, so a `schema_version`
+key placed under `overlays:`/`forge:` is silently ignored; only `base:`
+composition carries it. A `base:` layer whose effective version differs
+from the harness composing it is rejected at load time with an error naming
+both versions and the layer, so mixed-version layers never merge; a child
+that leaves the field absent inherits the base layer's explicit declaration.
+See [ADR 0127](../ADRs/0127-harness-schema-versioning-and-field-types.md).
 
 **`validation_loop.feedback_mode`** — Controls how validation script output reaches the agent for its next iteration. `none` (default): no feedback; `append`: the previous iteration's validation failure is appended to the agent prompt on retry. See [Configuring agent behavior](../guides/user/customizing-agents.md) for examples.
 
