@@ -73,11 +73,35 @@ Comments and changelog entries from the **authenticated poller account** are cla
 
 The `event_type` field in dispatch records (e.g. `"comment_added"`, `"label_changed"`) describes the Jira-side activity that **triggered** the dispatch — it is an **input** event, not a description of what the agent will do. When you see `event_type: "comment_added"` in `dispatches.json`, it means "a comment was added to a Jira issue, and that comment matched a routing rule." It says nothing about the agent's output.
 
-Currently, agents process Jira-sourced dispatches and write substantive results — comments, labels, pull requests, and so on — back to **GitHub** by default. Run-status notifications (start, completion, and orphan reconciliation) are routed through `tracker.Client` to the tracker that originated the event, so Jira-triggered runs update the Jira issue as well. The Jira issue does not receive the agent's substantive output automatically.
+Run-status notifications (start, completion, and orphan reconciliation) are
+routed through `tracker.Client` to the tracker that originated the event, so
+every Jira-triggered run updates the Jira issue with its status. Where the
+agent's substantive output goes depends on the agent. Each default harness
+in [fullsend-ai/agents](https://github.com/fullsend-ai/agents) that supports
+Jira selects a Jira overlay when `event.source.system` is `jira`:
 
-The CLI primitive for posting comments to Jira exists — `fullsend issues post-comment --tracker jira` — along with the underlying `tracker.Client` Jira implementation ([#5989](https://github.com/fullsend-ai/fullsend/issues/5989)). However, the built-in agent pipeline does not use it yet: agent pre/post scripts still expect a GitHub issue number, not a Jira key ([#2264](https://github.com/fullsend-ai/fullsend/issues/2264)).
+- **Triage** reads the Jira issue and writes its result back to it: the
+  triage comment, labels, components, and closing the issue when triage
+  marks it a duplicate, not planned, or split into new issues.
+- **Code** reads the Jira issue through a read-only Jira credential and opens
+  its pull request on the GitHub repo. The branch is named
+  `agent/<KEY>-<slug>`, the pull request title carries the Jira key, and the
+  body links the Jira issue
+  ([#2265](https://github.com/fullsend-ai/fullsend/issues/2265)). It does not
+  comment on the Jira issue, so check the linked GitHub repo for the pull
+  request.
+- **Prioritize** has no Jira overlay yet. It scores issues on a GitHub
+  Project, so it does not support Jira-dispatched runs
+  ([#2266](https://github.com/fullsend-ai/fullsend/issues/2266)).
+- **Review, fix, and retro** act on a pull request or only on GitHub and
+  GitLab, so a Jira issue does not dispatch them (see
+  [How it works](#how-it-works)).
 
-This means the person who commented `/fs-triage` on a Jira issue will see the run-status updates in Jira, but needs to check the linked GitHub repo for the triage result. Until agent-pipeline integration lands ([#2264](https://github.com/fullsend-ai/fullsend/issues/2264)), treat Jira as a **trigger source for substantive built-in-agent output**: it can start agent work, while that output appears in GitHub. Custom agents can use `fullsend issues post-comment --tracker jira` directly to post results back to Jira, and `fullsend issues create --tracker jira` to create Jira issues and sub-tasks. See [Issue commands](issues-commands.md) for usage.
+Custom agents can use `fullsend issues post-comment --tracker jira` to post
+results back to Jira, and `fullsend issues create --tracker jira` to create
+Jira issues and sub-tasks. Both use the `tracker.Client` Jira implementation
+([#5989](https://github.com/fullsend-ai/fullsend/issues/5989)). See
+[Issue commands](issues-commands.md) for usage.
 
 ## Prerequisites
 
@@ -109,7 +133,18 @@ The wildcard host (`*.atlassian.net`) permits egress to any Atlassian Cloud tena
 
 ## Repo configuration
 
-The Jira poller produces the same [NormalizedEvents](../../normative/normalized-event/v1/) that GitHub and GitLab do, so routing works the same way. Until built-in harnesses ship native Jira `trigger` expressions ([#6672](https://github.com/fullsend-ai/fullsend/issues/6672)), each agent that should handle Jira events still needs a matching `trigger` — see [Setup overview](#setup-overview) step 6. Built-in agent output is currently written to GitHub only, while run-status notifications route to Jira for Jira-triggered runs. See [Event semantics — input only](#event-semantics--input-only) for details. Additionally, the built-in agents' pre/post scripts do not yet understand Jira work-item payloads (they expect a GitHub issue number, not a Jira key — [#2264](https://github.com/fullsend-ai/fullsend/issues/2264)), so dispatched agent runs will not complete successfully until that follow-up lands. See the Troubleshooting section below.
+The Jira poller produces the same
+[NormalizedEvents](../../normative/normalized-event/v1/) that GitHub and
+GitLab do, so routing works the same way. Until built-in harnesses ship
+native Jira `trigger` expressions
+([#6672](https://github.com/fullsend-ai/fullsend/issues/6672)), each agent
+that should handle Jira events still needs a matching `trigger`. See
+[Setup overview](#setup-overview) step 6. The default code harness has no
+`trigger` at all, so a repo that wants `/fs-code` or the `ready-to-code`
+label on a Jira issue to start the code agent must add one in a harness
+override. Triage and code handle Jira work items; prioritize does not yet.
+See [Event semantics — input only](#event-semantics--input-only) for where
+each agent writes its output.
 
 If your repo already has a `.fullsend/config.yaml` from `fullsend github setup`, add a harness override with the Jira `trigger` expressions from step 6 (see [Configuring agent behavior](customizing-agents.md#configuration-with-base-composition)) and you are ready to receive dispatches.
 
@@ -455,7 +490,8 @@ However, more pollers against the same Jira project means more API calls per cyc
 | Duplicate dispatches | `lastCheck` was cleared or missing | The poller treats a missing `lastCheck` as "never polled" and processes all recent changes. This is self-correcting — the next cycle advances `lastCheck` past the duplicates |
 | Old comment or label change on a newly polled issue never dispatches | Activity predates the first-poll backfill window | On an issue's first poll, activity older than the 24-hour backfill window is permanently skipped (the checkpoint advances past it). To pick up older activity, scope the initial `--jql` to recently updated issues and widen it gradually, or have someone re-trigger by commenting again |
 | Activity during a long outage or disabled workflow is missing after resume | Poller gap exceeded the 24-hour backfill window | The same 24-hour window that bounds a first poll also bounds resumption — any `lastCheck` older than 24 hours is clamped forward. Check the run log for `predates the backfill window` — if present, events in the gap are permanently lost. Have affected users re-trigger by commenting again. See [Poll coordination](#poll-coordination) |
-| Dispatched agent workflow fails immediately | Agent pre/post scripts don't understand Jira-keyed payloads yet | Known limitation, tracked in [#2264](https://github.com/fullsend-ai/fullsend/issues/2264). The dispatch step above still runs the workflow and produces a `NormalizedEvent`, but built-in agent scripts expect a GitHub issue number, not a Jira key |
+| `/fs-code` or `ready-to-code` on a Jira issue dispatches nothing | The default code harness has no `trigger` | Add a `trigger` in a code harness override registered with `source:`. See [Setup overview](#setup-overview) step 6 |
+| `/fs-prioritize` on a Jira issue does not score it | The default prioritize harness has no Jira overlay yet and scores issues on a GitHub Project | Known limitation, tracked in [#2266](https://github.com/fullsend-ai/fullsend/issues/2266). Triage and code handle Jira work items |
 
 ## See also
 
