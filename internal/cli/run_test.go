@@ -4769,7 +4769,7 @@ func TestRunAgent_PreflightCheck_TimeoutRedactsDeclaredSecret(t *testing.T) {
 // loudly, so the run ending with "creating sandbox" proves it passed the
 // eager gate and the pre-script and reached sandbox creation; the order
 // file then proves the sequence, and the marker count proves the check is
-// not repeated. RED until the top-level run gate lands (T009).
+// not repeated.
 func TestRunAgent_PreflightCheck_TopLevelRunsOnceBeforePreScriptAndSandbox(t *testing.T) {
 	usePreScriptStub(t)
 	t.Setenv("FULLSEND_RUNTIME", "codex")
@@ -4810,7 +4810,6 @@ func TestRunAgent_PreflightCheck_TopLevelRunsOnceBeforePreScriptAndSandbox(t *te
 // exists. The nested check writes its own sentinel, so its absence proves
 // the eager gate fired before step 1d; the command embeds a declared
 // runner-env secret so the failure diagnostics exercise redaction (SC-003).
-// RED until the top-level run gate lands (T009).
 func TestRunAgent_PreflightCheck_TopLevelFailureGatesAllLaterStages(t *testing.T) {
 	usePreScriptStub(t)
 	t.Setenv("FULLSEND_RUNTIME", "codex")
@@ -4853,8 +4852,7 @@ func TestRunAgent_PreflightCheck_TopLevelFailureGatesAllLaterStages(t *testing.T
 // the field-qualified timeout — source label "preflight_check" with the
 // redacted command text (data-model.md Diagnostics) — and the gating is
 // identical, so no sentinel from the pre-script, the sandbox-creation
-// stub, or the nested validation_loop.preflight_check exists. RED until
-// the top-level run gate lands (T009).
+// stub, or the nested validation_loop.preflight_check exists.
 func TestRunAgent_PreflightCheck_TopLevelTimeoutGatesAllLaterStages(t *testing.T) {
 	usePreScriptStub(t)
 	t.Setenv("FULLSEND_RUNTIME", "codex")
@@ -4905,8 +4903,7 @@ func TestRunAgent_PreflightCheck_TopLevelTimeoutGatesAllLaterStages(t *testing.T
 // skip. The run itself stays a neutral skip (issue #4718): runAgent
 // returns nil and relays skipped=true to GITHUB_OUTPUT, and no sandbox is
 // created, so the order file carries the check's sentinel ahead of the
-// pre-script's and no sandbox-create line. RED until the top-level run
-// gate lands (T009).
+// pre-script's and no sandbox-create line.
 func TestRunAgent_PreflightCheck_TopLevelRunsBeforePreScriptSkip(t *testing.T) {
 	usePreScriptStub(t)
 	t.Setenv("FULLSEND_RUNTIME", "codex")
@@ -4962,8 +4959,7 @@ func TestRunAgent_PreflightCheck_TopLevelRunsBeforePreScriptSkip(t *testing.T) {
 // silent sh -c success — neither an error nor a sentinel could expose a
 // wrongly-entered gate — and it pins the data-model.md emptiness rule
 // ("absent, empty, or whitespace-only ⇒ treated as unset") against an
-// untrimmed != "" guard. Characterization test: green before the
-// top-level run gate lands (T009) and it must stay green after.
+// untrimmed != "" guard. Characterization test: it must stay green.
 func TestRunAgent_PreflightCheck_TopLevelAbsentOrWhitespaceKeepsStatusQuo(t *testing.T) {
 	cases := []struct {
 		name          string

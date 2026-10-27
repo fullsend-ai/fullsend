@@ -491,7 +491,7 @@ func TestValidateRunnerSecretRefs(t *testing.T) {
 		"validation_loop.schema":          {ValidationLoop: &harness.ValidationLoop{Script: "s", Schema: "${X}"}},
 		"validation_loop.preflight_check": {ValidationLoop: &harness.ValidationLoop{Script: "s", PreflightCheck: "echo ${X}"}},
 		// The top-level preflight_check follows the same refusal rule
-		// (FR-006, ADR 0136). RED until the top-level refusal lands (T017).
+		// (FR-006, ADR 0136).
 		"preflight_check": {PreflightCheck: "echo ${X}"},
 	}
 	for source, h := range refused {
@@ -505,7 +505,7 @@ func TestValidateRunnerSecretRefs(t *testing.T) {
 	// The top-level refusal is field-qualified: it reports under the
 	// top-level field's own name — never the nested field's label — and
 	// names every refused secret, brace or bare form (data-model.md
-	// Diagnostics). RED until the top-level refusal lands (T017).
+	// Diagnostics).
 	t.Run("preflight_check names every refused secret", func(t *testing.T) {
 		two := map[string]string{"X": "value-123456", "Y": "value-654321"}
 		h := &harness.Harness{PreflightCheck: "echo ${X} $Y"}
