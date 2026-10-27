@@ -41,8 +41,22 @@ json.dump({"reason": text}, sys.stdout)
 function checkBash(command, allowlist) {
   if (!allowlist?.length) return;
   if (typeof command !== "string" || !command.trim()) deny("empty Bash command");
-  if (/[`$(){}\\]|<<|<\(|>\(/.test(command)) deny("Bash allowlist rejects substitutions, groups, escapes and heredocs");
-  for (const segment of command.split(/\r?\n|&&|\|\||;|\|&|\||(?<![<>|])&(?!>)/)) {
+  // Single-quoted arguments contain no executable shell syntax. Keep their
+  // quotes so quoted/concatenated program names still fail the first-token check.
+  let syntax = "";
+  let quote = null;
+  for (const char of command) {
+    if (quote === "'") {
+      if (char === "'") { quote = null; syntax += char; }
+      continue;
+    }
+    if (char === "'" && quote !== '"') { quote = "'"; syntax += char; continue; }
+    syntax += char;
+    if (char === '"') quote = quote === '"' ? null : '"';
+  }
+  if (quote !== null) deny("Bash allowlist rejects unterminated quotes");
+  if (/[`$(){}\\]|<<|<\(|>\(/.test(syntax)) deny("Bash allowlist rejects substitutions, groups, escapes and heredocs");
+  for (const segment of syntax.split(/\r?\n|&&|\|\||;|\|&|\||(?<![<>|])&(?!>)/)) {
     if (!segment.trim()) continue;
     const first = segment.trim().split(/\s+/)[0];
     if (!allowlist.includes(first) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(first) ||
@@ -144,7 +158,14 @@ export default async ({ directory }) => {
       // An LS-only parent may list directories, but must not gain file reads.
       if (input.tool === "read" && cfg.tools?.includes("LS") && !cfg.tools.includes("Read")) {
         const target = args.filePath ?? args.file_path;
-        if (typeof target === "string" && statSync(path.resolve(cwd, target)).isDirectory()) canonical = "LS";
+        if (typeof target !== "string" || !target) deny("missing read target");
+        let info;
+        try { info = statSync(path.resolve(cwd, target)); } catch (error) {
+          if (error.code === "ENOENT" || error.code === "ENOTDIR") deny("read target does not exist");
+          deny("read target could not be inspected");
+        }
+        if (!info.isDirectory()) deny("LS-only read target is not a directory");
+        canonical = "LS";
       }
       if (cfg.tools && !cfg.tools.includes(canonical) && !(canonical === "Agent" && cfg.tools.includes("Task"))) deny("tool is outside the parent allowlist");
       checkPermission(cfg, input.tool, args);
@@ -192,6 +213,13 @@ export default async ({ directory }) => {
     }
     return value;
   };
+  // Bind cached text to the entire scanned payload, not just a reusable part ID.
+  // Keep both raw and rewritten keys because OpenCode may reload raw history.
+  const errorCache = new Map();
+  const errorKey = (part) => digest(JSON.stringify([
+    part.id, part.callID, part.tool, part.state.input ?? {},
+    part.state.error, part.state.metadata ?? {},
+  ]));
   return {
     "shell.env": async (_input, output) => {
       // Use the bootstrap-captured command HOME and avoid shell-startup code.
@@ -216,12 +244,17 @@ export default async ({ directory }) => {
           if (part.type !== "tool" || part.state?.status !== "error") continue;
           const state = part.state;
           try {
-            const sanitized = chain("PostToolUse", names[part.tool] ?? part.tool,
-              state.input ?? {}, { output: state.error, metadata: state.metadata ?? {}, exit_code: 1 });
-            if (typeof sanitized.output !== "string") deny("unexpected tool-error output shape");
-            state.error = sanitized.output;
+            const key = errorKey(part);
+            const sanitized = errorCache.get(key) ?? chain("PostToolUse", names[part.tool] ?? part.tool,
+              state.input ?? {}, { output: state.error, metadata: state.metadata ?? {}, exit_code: 1 }).output;
+            if (typeof sanitized !== "string") deny("unexpected tool-error output shape");
+            state.error = sanitized;
             state.metadata = {};
             part.metadata = {};
+            errorCache.set(key, sanitized);
+            errorCache.set(errorKey(part), sanitized);
+            // Bound retention in long-lived parent and Task sessions.
+            while (errorCache.size > 512) errorCache.delete(errorCache.keys().next().value);
           } catch (error) {
             state.error = "Tool error withheld by Fullsend";
             state.metadata = {};
