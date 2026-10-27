@@ -29,7 +29,7 @@ const (
 	envManifestSandboxName = "fs-env-manifest"
 	envManifestTraceID     = "01234567-89ab-4cde-8f01-23456789abcd"
 	envManifestTraceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
-	envManifestProvenance  = "fullsend agent new Vertex scaffold (internal/agentnew); the fleet delivers the same variables through env/gcp-vertex.env in fullsend-ai/agents"
+	envManifestProvenance  = "fullsend agent new Vertex scaffold (internal/agentnew); the fleet delivers these plus GOOGLE_CLOUD_PROJECT and ANTHROPIC_DEFAULT_SONNET_MODEL through env/gcp-vertex.env in fullsend-ai/agents"
 )
 
 // productionSandboxRuntimes lists every runtime the sandbox env contract must
@@ -38,9 +38,8 @@ const (
 // design's D5 stub exclusion — exactly dummy and dummy-playback. opencode is
 // not a stub for this manifest even though the registry's config validation
 // groups it with the stubs and keeps it out of config.ValidRuntimes: it
-// resolves in the registry, so it stays in the production set with its empty
-// export set. TestEnvManifestRuntimeEnumeration pins the enumeration to the
-// registry.
+// resolves in the registry, so it stays in the production set.
+// TestEnvManifestRuntimeEnumeration pins the enumeration to the registry.
 var (
 	productionSandboxRuntimes = []string{"claude", "codex", "opencode", "pi"}
 	excludedSandboxRuntimes   = []string{"dummy", "dummy-playback"}
@@ -58,9 +57,9 @@ var sandboxEnvGates = map[string]string{
 	"FULLSEND_FETCH_URL":          "the runtime fetch service is enabled (ADR 0038)",
 	"FULLSEND_FETCH_TOKEN":        "the runtime fetch service is enabled (ADR 0038)",
 	"FULLSEND_TRACE_ID":           "trace-ID injection succeeds; the run warns and continues when it fails",
-	"TIRITH_FAIL_ON":              "security.sandbox_hooks.tirith.fail_on is set",
-	"TIRITH_REQUIRED":             "Tirith scanning is required (security.sandbox_hooks.tirith.enabled, default true)",
-	"FULLSEND_EGRESS_ALLOWLIST":   "an SSRF egress allowlist is configured, including the auto-merged forge egress entry",
+	"TIRITH_FAIL_ON":              "security.sandbox_hooks.tirith.fail_on is set; only the claude, codex, and pi bootstraps append hook env, so it is unreachable under opencode",
+	"TIRITH_REQUIRED":             "Tirith scanning is required (security.sandbox_hooks.tirith.enabled, default true); only the claude, codex, and pi bootstraps append hook env, so it is unreachable under opencode",
+	"FULLSEND_EGRESS_ALLOWLIST":   "an SSRF egress allowlist is configured, including the auto-merged forge egress entry; only the claude, codex, and pi bootstraps append hook env, so it is unreachable under opencode",
 	"FULLSEND_ITERATION_DEADLINE": "writeIterationEnv succeeds; the run warns and continues when it fails",
 	"FULLSEND_TIMEOUT_MINUTES":    "writeIterationEnv succeeds; the run warns and continues when it fails",
 	"TRACEPARENT":                 "writeIterationEnv succeeds; the run warns and continues when it fails",
@@ -142,19 +141,38 @@ func TestEnvManifestCollector(t *testing.T) {
 			want    []string
 		}{
 			{"claude", []string{"CLAUDE_CONFIG_DIR"}},
-			{"codex", []string{"CODEX_HOME"}},
+			{"codex", []string{
+				"CODEX_HOME",
+				"FULLSEND_CODEX_HOOK_DIGESTS",
+				"FULLSEND_CODEX_SPAWN_DIGESTS",
+				"FULLSEND_RUNTIME",
+				"RUST_LOG",
+			}},
 			{"opencode", []string{
+				"FULLSEND_RUNTIME",
+				"GOOGLE_CLOUD_LOCATION",
+				"GOOGLE_CLOUD_PROJECT",
 				"OPENCODE_CONFIG_DIR",
 				"OPENCODE_DISABLE_EXTERNAL_SKILLS",
 				"OPENCODE_DISABLE_PROJECT_CONFIG",
 			}},
 			{"pi", []string{
+				"FULLSEND_PI_CHILD_BIN",
+				"FULLSEND_PI_CHILD_NODE",
+				"FULLSEND_PI_HOOK_PATH",
+				"FULLSEND_PI_HOOK_PYTHON",
+				"FULLSEND_PI_MANIFEST",
+				"FULLSEND_PI_MANIFEST_SHA256",
+				"FULLSEND_RUNTIME",
+				"GOOGLE_CLOUD_LOCATION",
+				"GOOGLE_CLOUD_PROJECT",
 				"JITI_FS_CACHE",
 				"PI_CODING_AGENT_DIR",
 				"PI_CODING_AGENT_SESSION_DIR",
 				"PI_OFFLINE",
 				"PI_SKIP_VERSION_CHECK",
 				"PI_TELEMETRY",
+				"XAI_VERTEX_PROJECT_ID",
 			}},
 		} {
 			t.Run(tc.runtime, func(t *testing.T) {
@@ -392,7 +410,11 @@ func collectSandboxEnvManifest(t *testing.T) *envmanifest.Manifest {
 	for _, name := range productionSandboxRuntimes {
 		backend, err := agentruntime.Resolve(name)
 		require.NoError(t, err, "resolving runtime %q", name)
-		b.AddRuntimeSpecific(name, parseExportedEnvKeys(backend.EnvExports()...)...)
+		// runtime_specific unions the runtime's EnvExports statements with
+		// the bare names its launch command sets (LaunchEnvExporter); the
+		// builder normalizes the combined list.
+		keys := append(parseExportedEnvKeys(backend.EnvExports()...), agentruntime.LaunchEnvExportsFor(backend.Runtime)...)
+		b.AddRuntimeSpecific(name, keys...)
 	}
 
 	for _, key := range harnessDeliveredKeys(t) {

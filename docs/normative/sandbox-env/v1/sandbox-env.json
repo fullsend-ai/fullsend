@@ -8,7 +8,7 @@
       "PATH"
     ],
     "conditional": {
-      "FULLSEND_EGRESS_ALLOWLIST": "an SSRF egress allowlist is configured, including the auto-merged forge egress entry",
+      "FULLSEND_EGRESS_ALLOWLIST": "an SSRF egress allowlist is configured, including the auto-merged forge egress entry; only the claude, codex, and pi bootstraps append hook env, so it is unreachable under opencode",
       "FULLSEND_FETCH_TOKEN": "the runtime fetch service is enabled (ADR 0038)",
       "FULLSEND_FETCH_URL": "the runtime fetch service is enabled (ADR 0038)",
       "FULLSEND_ITERATION_DEADLINE": "writeIterationEnv succeeds; the run warns and continues when it fails",
@@ -17,8 +17,8 @@
       "FULLSEND_SLUG": "the harness sets a slug",
       "FULLSEND_TIMEOUT_MINUTES": "writeIterationEnv succeeds; the run warns and continues when it fails",
       "FULLSEND_TRACE_ID": "trace-ID injection succeeds; the run warns and continues when it fails",
-      "TIRITH_FAIL_ON": "security.sandbox_hooks.tirith.fail_on is set",
-      "TIRITH_REQUIRED": "Tirith scanning is required (security.sandbox_hooks.tirith.enabled, default true)",
+      "TIRITH_FAIL_ON": "security.sandbox_hooks.tirith.fail_on is set; only the claude, codex, and pi bootstraps append hook env, so it is unreachable under opencode",
+      "TIRITH_REQUIRED": "Tirith scanning is required (security.sandbox_hooks.tirith.enabled, default true); only the claude, codex, and pi bootstraps append hook env, so it is unreachable under opencode",
       "TRACEPARENT": "writeIterationEnv succeeds; the run warns and continues when it fails"
     },
     "runtime_specific": {
@@ -26,38 +26,55 @@
         "CLAUDE_CONFIG_DIR"
       ],
       "codex": [
-        "CODEX_HOME"
+        "CODEX_HOME",
+        "FULLSEND_CODEX_HOOK_DIGESTS",
+        "FULLSEND_CODEX_SPAWN_DIGESTS",
+        "FULLSEND_RUNTIME",
+        "RUST_LOG"
       ],
       "opencode": [
+        "FULLSEND_RUNTIME",
+        "GOOGLE_CLOUD_LOCATION",
+        "GOOGLE_CLOUD_PROJECT",
         "OPENCODE_CONFIG_DIR",
         "OPENCODE_DISABLE_EXTERNAL_SKILLS",
         "OPENCODE_DISABLE_PROJECT_CONFIG"
       ],
       "pi": [
+        "FULLSEND_PI_CHILD_BIN",
+        "FULLSEND_PI_CHILD_NODE",
+        "FULLSEND_PI_HOOK_PATH",
+        "FULLSEND_PI_HOOK_PYTHON",
+        "FULLSEND_PI_MANIFEST",
+        "FULLSEND_PI_MANIFEST_SHA256",
+        "FULLSEND_RUNTIME",
+        "GOOGLE_CLOUD_LOCATION",
+        "GOOGLE_CLOUD_PROJECT",
         "JITI_FS_CACHE",
         "PI_CODING_AGENT_DIR",
         "PI_CODING_AGENT_SESSION_DIR",
         "PI_OFFLINE",
         "PI_SKIP_VERSION_CHECK",
-        "PI_TELEMETRY"
+        "PI_TELEMETRY",
+        "XAI_VERTEX_PROJECT_ID"
       ]
     }
   },
   "harness_delivered": {
     "ANTHROPIC_VERTEX_PROJECT_ID": {
-      "provenance": "fullsend agent new Vertex scaffold (internal/agentnew); the fleet delivers the same variables through env/gcp-vertex.env in fullsend-ai/agents",
+      "provenance": "fullsend agent new Vertex scaffold (internal/agentnew); the fleet delivers these plus GOOGLE_CLOUD_PROJECT and ANTHROPIC_DEFAULT_SONNET_MODEL through env/gcp-vertex.env in fullsend-ai/agents",
       "runner_guaranteed": false
     },
     "CLAUDE_CODE_USE_VERTEX": {
-      "provenance": "fullsend agent new Vertex scaffold (internal/agentnew); the fleet delivers the same variables through env/gcp-vertex.env in fullsend-ai/agents",
+      "provenance": "fullsend agent new Vertex scaffold (internal/agentnew); the fleet delivers these plus GOOGLE_CLOUD_PROJECT and ANTHROPIC_DEFAULT_SONNET_MODEL through env/gcp-vertex.env in fullsend-ai/agents",
       "runner_guaranteed": false
     },
     "CLOUD_ML_REGION": {
-      "provenance": "fullsend agent new Vertex scaffold (internal/agentnew); the fleet delivers the same variables through env/gcp-vertex.env in fullsend-ai/agents",
+      "provenance": "fullsend agent new Vertex scaffold (internal/agentnew); the fleet delivers these plus GOOGLE_CLOUD_PROJECT and ANTHROPIC_DEFAULT_SONNET_MODEL through env/gcp-vertex.env in fullsend-ai/agents",
       "runner_guaranteed": false
     },
     "GOOGLE_APPLICATION_CREDENTIALS": {
-      "provenance": "fullsend agent new Vertex scaffold (internal/agentnew); the fleet delivers the same variables through env/gcp-vertex.env in fullsend-ai/agents",
+      "provenance": "fullsend agent new Vertex scaffold (internal/agentnew); the fleet delivers these plus GOOGLE_CLOUD_PROJECT and ANTHROPIC_DEFAULT_SONNET_MODEL through env/gcp-vertex.env in fullsend-ai/agents",
       "runner_guaranteed": false
     }
   },

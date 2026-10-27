@@ -20,8 +20,9 @@ rather than assumed
   running every code path that injects environment variables into the
   sandbox — the bootstrap `.env` emission, the per-iteration env,
   trace-ID injection, the security-hook env, every production
-  runtime's `EnvExports()`, the `fullsend agent new` Vertex scaffold,
-  and the effective reserved-key set after the init-time merges.
+  runtime's `EnvExports()` and launch-command exports, the
+  `fullsend agent new` Vertex scaffold, and the effective reserved-key
+  set after the init-time merges.
 - **Golden invariant:** `internal/cli/env_manifest_golden_test.go`
   byte-compares the committed file against collector output on every test
   run, so the published contract cannot drift from the code that builds the
@@ -38,7 +39,7 @@ rather than assumed
 | `schema_version` | integer | Shape version of this document; currently `1`. Check it before interpreting anything else — a version the consumer does not understand is a contract it cannot validate. |
 | `exports.always` | array of strings | Variables the runner injects into every sandbox it builds (four in v1). |
 | `exports.conditional` | object: variable name → gate description | Variables the runner injects only when the described gate holds (twelve in v1). Each description is the emitter's actual guard, transcribed from the production code. |
-| `exports.runtime_specific` | object: runtime name → array of strings | Variables emitted only by the named runtime's `EnvExports()`: `claude`, `codex`, `opencode`, `pi`. |
+| `exports.runtime_specific` | object: runtime name → array of strings | Variables emitted only by the named runtime — its `EnvExports()` plus the environment its launch command sets: `claude`, `codex`, `opencode`, `pi`. |
 | `harness_delivered` | object: variable name → `{ "provenance": string, "runner_guaranteed": boolean }` | Variables delivered by stock harness configuration, not by the runner (four in v1). `runner_guaranteed` is always `false` — a label, not a toggle: a variable the runner guarantees belongs in `exports` instead. `provenance` names the configuration that delivers it. |
 | `reserved` | array of strings | Keys the runner reserves from harness override (62 in v1): `env.sandbox` cannot set them. The set merges the base runner-infrastructure keys, the OIDC-denied and provider-only credential keys, and the security-critical credential keys (`IsReservedCredentialKey`) at startup. |
 | `deprecated` | array of strings | Variables that are deprecated and scheduled for removal in a future version. Consumers should migrate away from these variables. Empty when no deprecations are active. |
@@ -61,7 +62,7 @@ document):
   },
   "harness_delivered": {
     "GOOGLE_APPLICATION_CREDENTIALS": {
-      "provenance": "fullsend agent new Vertex scaffold (internal/agentnew); the fleet delivers the same variables through env/gcp-vertex.env in fullsend-ai/agents",
+      "provenance": "fullsend agent new Vertex scaffold (internal/agentnew); the fleet delivers these plus GOOGLE_CLOUD_PROJECT and ANTHROPIC_DEFAULT_SONNET_MODEL through env/gcp-vertex.env in fullsend-ai/agents",
       "runner_guaranteed": false
     }
   },
@@ -84,32 +85,37 @@ runtime fetch service is enabled
 `FULLSEND_TRACE_ID` when trace-ID injection succeeds (injection is
 best-effort; on failure the run warns and continues). Within their gates,
 these two categories are universally reachable: a harness may rely on them
-under any runtime.
+under any runtime. The security-hook variables are the exception: only the
+claude, codex, and pi bootstraps append hook env, so `TIRITH_FAIL_ON`,
+`TIRITH_REQUIRED`, and `FULLSEND_EGRESS_ALLOWLIST` never reach an opencode
+sandbox.
 
 **`runtime_specific` — guaranteed only when that runtime runs.** Both halves
 matter:
 
 - When dispatch executes under a runtime, that runtime's listed variables are
-  guaranteed: a run under `claude` always has `CLAUDE_CONFIG_DIR`; a run
-  under `pi` always has its six listed variables.
+  reachable: a run under `claude` always has `CLAUDE_CONFIG_DIR`; a run
+  under `pi` sees its listed variables, with provider-path names like
+  `GOOGLE_CLOUD_PROJECT` set only on the paths that select them.
 - Across runtimes, they are a portability gap, not a guarantee: nothing
   promises `CLAUDE_CONFIG_DIR` under `codex` or `pi`. A harness that reads a
   runtime-specific variable is coupled to that runtime and breaks when
   configuration changes the runtime.
 
 The enumerated runtimes are the runner's resolution registry minus test
-stubs. A runtime that exports nothing appears with an empty set — `opencode`
-— rather than being omitted. Registering a new runtime without a manifest
-decision fails `TestEnvManifestRuntimeEnumeration`, which pins the
-collector's runtime list to the resolution registry; the golden test
-covers the committed manifest content.
+stubs. A runtime that emits nothing appears with an empty set rather than
+being omitted. Registering a new runtime without a manifest decision
+fails `TestEnvManifestRuntimeEnumeration`, which pins the collector's
+runtime list to the resolution registry; the golden test covers the
+committed manifest content.
 
 **`harness_delivered` — configuration, not guarantee.** These variables reach
 the sandbox only because stock harness configuration injects them:
 `GOOGLE_APPLICATION_CREDENTIALS`, `CLAUDE_CODE_USE_VERTEX`,
 `ANTHROPIC_VERTEX_PROJECT_ID`, and `CLOUD_ML_REGION` are delivered by the
 `fullsend agent new` Vertex scaffold through `env.sandbox` plus a host file,
-and fleet harnesses deliver the same variables through `env/gcp-vertex.env`
+and fleet harnesses deliver these plus `GOOGLE_CLOUD_PROJECT` and
+`ANTHROPIC_DEFAULT_SONNET_MODEL` through `env/gcp-vertex.env`
 in fullsend-ai/agents (see each entry's `provenance`). The runner never
 injects them — `runner_guaranteed: false` — so a hand-authored harness that
 omits that configuration will not see them.
@@ -118,10 +124,11 @@ omits that configuration will not see them.
 entries naming these keys are skipped with a warning: the runner removes
 them so harness configuration cannot shadow runner infrastructure, inject
 OIDC and provider credentials, or override security-critical process
-variables (e.g. `HTTPS_PROXY`, `LD_PRELOAD`, `NODE_OPTIONS`). A key may appear both here and in an export
-category — `PATH` is exported by the runner *and* reserved against harness
-override. The categories answer different questions: `exports` asks "does
-the runner set it?", `reserved` asks "may the harness set it?".
+variables (e.g. `HTTPS_PROXY`, `LD_PRELOAD`, `NODE_OPTIONS`). A key may
+appear both here and in an export category — `PATH` is exported by the
+runner *and* reserved against harness override. The categories answer
+different questions: `exports` asks "does the runner set it?",
+`reserved` asks "may the harness set it?".
 
 **`deprecated` — scheduled for removal.** Variables listed here still
 function but are slated for removal in a future version. Consumers

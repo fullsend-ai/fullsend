@@ -61,7 +61,7 @@ A build-time collector generates the manifest by running every code
 path that injects environment variables into the sandbox — the
 [`bootstrapEnv` `.env` emission](https://github.com/fullsend-ai/fullsend/blob/487169a9da/internal/cli/run.go#L3836-L3871),
 the per-iteration env, trace-ID injection, the security-hook env,
-each production runtime's `EnvExports()`, the `fullsend agent new`
+each production runtime's `EnvExports()` and launch-command exports, the `fullsend agent new`
 Vertex scaffold, and the effective reserved-key set after the
 init-time merges — so the contract cannot disagree with the code
 that builds the environment. An always-on golden test byte-compares the

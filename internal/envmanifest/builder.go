@@ -36,8 +36,9 @@ func (b *Builder) AddConditional(name, gate string) *Builder {
 	return b
 }
 
-// AddRuntimeSpecific records the variables a runtime's EnvExports emits. A
-// runtime that exports nothing is recorded with an empty set rather than
+// AddRuntimeSpecific records the variables a runtime emits beyond the shared
+// set: its EnvExports statements plus the names its launch command sets. A
+// runtime that emits nothing is recorded with an empty set rather than
 // omitted.
 func (b *Builder) AddRuntimeSpecific(runtime string, names ...string) *Builder {
 	if b.runtimeSpecific == nil {
