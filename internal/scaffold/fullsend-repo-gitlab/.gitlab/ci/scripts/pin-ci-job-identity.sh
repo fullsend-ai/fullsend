@@ -31,20 +31,19 @@
 # pipeline variables (same outrankable class as CI_PROJECT_ID, ADR
 # 0125). See run-poll-job.sh and run-agent-job.sh for that reuse.
 #
-# Trust model (ADR 0125):
-#   The GitLab-side pipeline-variable restriction
-#   (ci_pipeline_variables_minimum_override_role=owner, with the
-#   poller/dispatcher on an Owner-role PAT and the webhook trigger
-#   token minted under a sub-Owner identity) is the REQUIRED control
-#   that stops a trigger-token holder from outranking CI_JOB_TOKEN,
-#   CI_API_V4_URL, and dispatch secrets. This repo's install/converge
-#   path (internal/repos/gitlab_pipeline_var_restriction.go) reads and
-#   can converge that setting, but active enforcement defaults to
-#   report-only (an opt-in environment variable switches it to enforced)
-#   until the poller/dispatcher identity is separately raised to Owner —
-#   see that file and docs/contributing/gitlab-role-credentials.md for
-#   the open credential-cost decision tracked in #7769. This helper is
-#   defense-in-depth: it
+# Trust model (ADR 0125, ADR 0131):
+#   The GitLab project setting
+#   ci_pipeline_variables_minimum_override_role=no_one_allowed is the
+#   REQUIRED control that stops any caller, including a webhook
+#   trigger-token holder, from outranking CI_JOB_TOKEN, CI_API_V4_URL,
+#   and dispatch secrets with pipeline variables. Dispatch data travels
+#   as typed pipeline inputs instead (ADR 0131), so the Poller keeps
+#   Developer access and no Owner-role credential is used. Install and
+#   converge (internal/repos/gitlab_pipeline_var_restriction.go) refuse
+#   to deliver runnable typed jobs unless that setting reads back as
+#   no_one_allowed, and install provisions the webhook trigger only
+#   after the same check (internal/repos/gitlab_webhook.go). This
+#   helper is defense-in-depth: it
 #   takes project, pipeline, and ref from GET /api/v4/job (the job
 #   that owns the supplied token) rather than from the overridable
 #   CI_PROJECT_ID / CI_PIPELINE_ID / CI_COMMIT_REF_PROTECTED env
@@ -55,11 +54,12 @@
 #   GET /api/v4/job still needs a bootstrap URL (CI_API_V4_URL).
 #   That URL is in the same overridable class; the restriction is
 #   what makes the bootstrap trustworthy. An invalid CI_JOB_TOKEN
-#   override fails closed here (the lookup 401s/404s). A valid
-#   foreign job token would mis-resolve the pin to that foreign
+#   override is expected to fail closed here (the lookup 401s/404s). A
+#   valid foreign job token would mis-resolve the pin to that foreign
 #   job — residual, closed by the restriction rather than by this
-#   script. Live verification of the valid-foreign-token case is
-#   tracked as follow-up once a second job token can be minted.
+#   script. Neither override case has been tested on a target GitLab
+#   version; see the ADR 0125 security-gate status in
+#   docs/normative/normalized-event/v1/README.md (#8835).
 #
 # Transport: gate curls ignore trigger-influenced proxy settings
 # (--noproxy '*', proxy env stripped), disable curlrc (-q, CURLRC/
