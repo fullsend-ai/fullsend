@@ -495,9 +495,8 @@ allowed_remote_resources:
 // message shape (contract §7). Unlike the nested sibling, no script file
 // fixture is needed: the top-level value is never fetched or stat-checked
 // (that is exactly the confusion the warning flags), so the diagnostic must
-// fire even though the path does not exist on disk. RED until the top-level
-// lint guard lands in internal/harness/lint.go (T018); the harness-level
-// diagnostic shape is pinned by the T011 tests.
+// fire even though the path does not exist on disk. The harness-level
+// diagnostic shape is pinned by the harness-side tests.
 func TestLintCommand_PreflightCheck_TopLevelPathLikeWarns(t *testing.T) {
 	dir := t.TempDir()
 	cfg := `version: "1"
@@ -536,17 +535,15 @@ preflight_check: scripts/common-preflight.sh
 // surfacing of the nested-field deprecation warning (FR-007, US4-1/US4-3):
 // fullsend lint must print the migration signal for a harness that sets
 // validation_loop.preflight_check — SeverityWarning, Field
-// "validation_loop.preflight_check", and exactly this message, which T029
-// implements verbatim (pinned harness-side by the T027 tests):
+// "validation_loop.preflight_check", and exactly this message (pinned
+// harness-side by the harness-level tests):
 //
 //	validation_loop.preflight_check is deprecated; use the top-level
 //	preflight_check instead (see ADR 0129)
 //
 // The nested value is a literal command, not a bare script path, so the
-// path-like guard (this family's T012 concern) stays quiet and the
-// deprecation is the sole diagnostic — exactly 1 warning under --strict.
-// RED until T029 lands: lint currently prints nothing for a set nested
-// field holding a literal command.
+// path-like guard stays quiet and the deprecation is the sole diagnostic —
+// exactly 1 warning under --strict.
 func TestLintCommand_PreflightCheck_NestedFieldDeprecationWarns(t *testing.T) {
 	dir := t.TempDir()
 	cfg := `version: "1"

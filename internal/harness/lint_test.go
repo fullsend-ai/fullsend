@@ -279,8 +279,7 @@ func TestLint_PreflightCheckPathLikeMatching(t *testing.T) {
 // accident of the runner's working directory. The diagnostic mirrors the
 // nested field's guard — SeverityWarning, Field "preflight_check", the
 // nested message shape — and stays advisory: ADR 0128 Decision 2 keeps
-// it non-fatal in fullsend lock/run. RED until the top-level lint guard
-// lands (T018).
+// it non-fatal in fullsend lock/run.
 func TestLint_PreflightCheck_TopLevelLooksLikeScriptPath(t *testing.T) {
 	h := &Harness{
 		Agent:          "agents/test.md",
@@ -346,11 +345,10 @@ func TestLint_PreflightCheck_TopLevelWhitespaceOnly(t *testing.T) {
 //	preflight_check instead (see ADR 0129)
 //
 // The negative subtests pin the concern's scope: a migrated harness
-// (top-level only — a literal command, so the T018 path-like guard stays
+// (top-level only — a literal command, so the path-like guard stays
 // quiet), a harness with neither field, and a whitespace-only nested
 // value, which is unset by the lint TrimSpace emptiness convention the
-// path-like guards use. RED until T029 lands: Lint currently emits no
-// diagnostic for a set nested field holding a literal command.
+// path-like guards use.
 func TestLint_PreflightCheck_NestedFieldDeprecation(t *testing.T) {
 	// noDeprecation asserts the concern-scoped negative: no diagnostic on
 	// the nested field for this harness.
