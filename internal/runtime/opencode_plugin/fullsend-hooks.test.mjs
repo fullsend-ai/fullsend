@@ -52,6 +52,27 @@ test("parent tool and trusted policy ceilings apply to every session", async (t)
   await assert.rejects(h.before("write", { filePath: "file" }), /parent allowlist/);
 });
 
+test("Bash accepts single-quoted GraphQL literals without hiding executable syntax", async (t) => {
+  const h = await setup(t, { bashAllowlist: ["gh", "jq"] });
+  for (const command of [
+    "gh api graphql -f query='query($owner: String!) { repository(owner: $owner) { name } }'",
+    "gh api graphql -f query='{ viewer { login } }' | jq '.data.viewer'",
+    "gh api -f note='literal $(rm file); `rm file` | rm file \\ text'",
+  ]) {
+    await h.before("bash", { command });
+  }
+  for (const command of [
+    "gh api graphql -f query='{ viewer { login } }'; rm file",
+    "gh api -f query='literal'$(rm file)",
+    'gh api -f query="$(rm file)"',
+    'gh api -f query="\'$(rm file)\'"',
+    "'gh' api user", "g'h' api user", "gh api -f query='unterminated",
+    'gh api -f query="unterminated',
+  ]) {
+    await assert.rejects(h.before("bash", { command }), /fullsend-hooks/, command);
+  }
+});
+
 test("LS-only parents can list directories without gaining file reads", async (t) => {
   const h = await setup(t, { tools: ["LS"], permission: { "*": "deny", read: "allow" } });
   writeFileSync(path.join(h.workspace, "private.txt"), "not available through LS");
@@ -61,9 +82,13 @@ test("LS-only parents can list directories without gaining file reads", async (t
     await h.before("read", { filePath });
     await h.after("read", { filePath }, "directory listing");
   }
-  for (const filePath of ["private.txt", "file-link", "missing"]) {
-    await assert.rejects(h.before("read", { filePath }), /fullsend-hooks/);
+  for (const filePath of ["private.txt", "file-link"]) {
+    await assert.rejects(h.before("read", { filePath }), /not a directory/);
   }
+  for (const filePath of ["missing", "private.txt/child"]) {
+    await assert.rejects(h.before("read", { filePath }), /target does not exist/);
+  }
+  await assert.rejects(h.before("read", {}), /missing read target/);
   await assert.rejects(h.before("write", { filePath: "new.txt" }), /parent allowlist/);
 });
 
@@ -202,6 +227,52 @@ test("failed-tool history is sanitized before a model request or withheld on fai
   failed.state.error = "original-secret";
   await assert.rejects(failedStage.messages([failed]), /sanitizer failed/);
   assert.equal(failed.state.error, "Tool error withheld by Fullsend");
+});
+
+test("unchanged historical errors reuse only successful sanitization", async (t) => {
+  const source = "import json,os,sys\np=json.load(sys.stdin)\nwith open(os.path.join(p['cwd'],'scans'),'a') as f: f.write('scan\\n')\nv=p['tool_response']; v['output']=v['output'].replace('secret','masked')\nprint(json.dumps({'hookSpecificOutput':{'updatedToolOutput':v}}))\n";
+  const h = await setup(t, { groups: [{ Phase: "PostToolUse", Tools: ["*"], Scripts: ["post.py"] }] }, { "post.py": source });
+  const part = () => ({ id: "part-1", callID: "call-1", type: "tool", tool: "bash",
+    metadata: { raw: "secret" },
+    state: { status: "error", input: { command: "gh api user" }, error: "secret", metadata: { raw: "secret" } } });
+  const failed = part();
+  const scans = () => readFileSync(path.join(h.workspace, "scans"), "utf8").trim().split("\n").length;
+  await h.messages([failed]);
+  assert.equal(failed.state.error, "masked");
+  await h.messages([failed]);
+  const reloaded = part();
+  await h.messages([reloaded]);
+  assert.equal(reloaded.state.error, "masked");
+  assert.deepEqual(reloaded.state.metadata, {});
+  assert.deepEqual(reloaded.metadata, {});
+  assert.equal(scans(), 1, "unchanged and reloaded history must not rerun Python");
+
+  failed.state.error = "new secret";
+  await h.messages([failed]);
+  assert.equal(failed.state.error, "new masked");
+  assert.equal(scans(), 2, "changed error text must be rescanned");
+  failed.state.metadata = { raw: "new secret metadata" };
+  await h.messages([failed]);
+  assert.equal(scans(), 3, "new metadata must not bypass sanitization");
+  failed.state.input.command = "gh api repos";
+  await h.messages([failed]);
+  assert.equal(scans(), 4, "changed tool input must be rescanned");
+
+  writeFileSync(path.join(h.dir, "post.py"), "# tampered");
+  await assert.rejects(h.messages([failed]), /modified/);
+});
+
+test("a failed historical-error scan is never cached", async (t) => {
+  const source = "import json,os,sys\np=json.load(sys.stdin)\nwith open(os.path.join(p['cwd'],'scans'),'a') as f: f.write('scan\\n')\nsys.exit(7)\n";
+  const h = await setup(t, { groups: [{ Phase: "PostToolUse", Tools: ["*"], Scripts: ["post.py"] }] }, { "post.py": source });
+  const failed = { id: "failed-part", type: "tool", tool: "bash",
+    state: { status: "error", input: {}, error: "secret" } };
+  for (let attempt = 0; attempt < 2; attempt++) {
+    failed.state.error = "secret";
+    await assert.rejects(h.messages([failed]), /blocked by post.py/);
+    assert.equal(failed.state.error, "Tool error withheld by Fullsend");
+  }
+  assert.equal(readFileSync(path.join(h.workspace, "scans"), "utf8"), "scan\nscan\n");
 });
 
 test("command environment does not import shell startup code", async (t) => {
