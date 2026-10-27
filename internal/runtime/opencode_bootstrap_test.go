@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/sandbox"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -32,13 +33,21 @@ if [ "$2" = "upload" ]; then
 fi
 if [ "$2" = "exec" ]; then
   for last; do :; done
+  if [ -n "${FULLSEND_OPENCODE_TEST_FAIL:-}" ]; then
+    case "$last" in *"$FULLSEND_OPENCODE_TEST_FAIL"*) exit 41 ;; esac
+  fi
   case "$last" in
     "mkdir -m 700 -- /tmp/"*|"mkdir -m 700 -- '/tmp/"*|"rm -f -- '/tmp/fs-upload-"*) sh -c "$last"; exit $? ;;
     "test -f '/tmp/fs-upload-"*)
       sh -c 'mkdir() { :; }; mv() { shift; shift; cp -- "$1" '\''` + storeDir + `/'\''"$(printf "%s" "$2" | tr / _)"; }; '"$last"
       exit $? ;;
     *"opencode debug agent"*) printf '{"name":"triage","mode":"primary","permission":{"bash":"allow","read":"allow"}}'; exit 0 ;;
-    "opencode --version") echo "0.1.0"; exit 0 ;;
+    "/usr/local/bin/opencode --version") echo "1.19.1"; exit 0 ;;
+    "command -v python3") echo "/usr/bin/python3"; exit 0 ;;
+    *sys.version_info*) echo "3.11"; exit 0 ;;
+    "printf '%s' "*HOME*) printf '%s' '/sandbox'; exit 0 ;;
+    "printf '%s' "*) printf '%s' '/usr/bin:/bin'; exit 0 ;;
+    *fullsend-env-sep*) printf '%s' 'probe-canary|fullsend-env-sep|Bash,Read'; exit 0 ;;
     *fullsend-opencode-env-sep*) printf '%s' '{"permission":{"*":"deny","bash":"allow","read":"allow","glob":"allow","grep":"allow","skill":"allow"}}|fullsend-opencode-env-sep|/runner/adc.json'; exit 0 ;;
   esac
   exit 0
@@ -76,14 +85,17 @@ func TestOpenCodeRuntimeBootstrap_WritesAgentDefinition(t *testing.T) {
 		skillDirs:   []string{skillDir},
 		plugins:     claudePlugins("/tmp/some-plugin"),
 	}
-	require.NoError(t, OpenCodeRuntime{}.Bootstrap(in))
+	var bootstrapErr error
+	warning := captureStderr(t, func() { bootstrapErr = OpenCodeRuntime{}.Bootstrap(in) })
+	require.NoError(t, bootstrapErr)
+	assert.Contains(t, warning, `Plugin "some-plugin" (claude): skipped`)
 
 	r := OpenCodeRuntime{}
 	agentMD := string(storedUpload(t, store, r.openCodeAgentPath("triage")))
 	assert.Contains(t, agentMD, `"mode": "primary"`)
 	assert.Contains(t, agentMD, `"description": "Inspect an issue."`)
 	assert.Contains(t, agentMD, `"model": "opus"`)
-	assert.Contains(t, agentMD, `"bash": "allow"`)
+	assert.Contains(t, agentMD, `"gh *": "allow"`)
 	assert.Contains(t, agentMD, `"read": "allow"`)
 	assert.Contains(t, agentMD, `"skill": "allow"`)
 	assert.Contains(t, agentMD, "You are the triage agent. Use gh.")
@@ -102,13 +114,9 @@ func TestOpenCodeRuntimeBootstrap_WritesAgentDefinition(t *testing.T) {
 	assert.Equal(t, "/runner/adc.json", trustedEnv.CredentialsPath)
 }
 
-func TestOpenCodeBashAllowlistWarning(t *testing.T) {
+func TestOpenCodeBashPatterns(t *testing.T) {
 	t.Parallel()
-
-	warning := openCodeBashAllowlistWarning([]string{"gh", "jq"})
-	assert.Contains(t, warning, "Bash allowlist (gh, jq) is recorded but not enforced")
-	assert.Contains(t, warning, "bare bash: \"allow\"")
-	assert.Contains(t, warning, "unbound-force/unbound-force#515")
+	assert.JSONEq(t, `{"*":"deny","gh":"allow","gh *":"allow","jq":"allow","jq *":"allow"}`, string(openCodeBashPatterns([]string{"gh", "jq"})))
 }
 
 func TestOpenCodeRuntimeBootstrap_EmptyAgentPath(t *testing.T) {
@@ -219,7 +227,7 @@ fi
 if [ "$2" = "exec" ]; then
   for last; do :; done
   case "$last" in
-    "opencode --version") echo "0.1.0"; exit 0 ;;
+    "/usr/local/bin/opencode --version") echo "1.19.1"; exit 0 ;;
     *fullsend-opencode-env-sep*) printf '%s' '{}|fullsend-opencode-env-sep|/runner/adc.json'; exit 0 ;;
   esac
   exit 0
@@ -311,7 +319,7 @@ func TestOpenCodePreflightVersionFailure(t *testing.T) {
 if [ "$2" = "exec" ]; then
   for last; do :; done
   case "$last" in
-    "opencode --version") echo "boom" >&2; exit 1 ;;
+    "/usr/local/bin/opencode --version") echo "boom" >&2; exit 1 ;;
   esac
   exit 0
 fi
@@ -396,8 +404,8 @@ exit 0
 func TestOpenCodePathHelpers(t *testing.T) {
 	t.Parallel()
 	r := OpenCodeRuntime{}
-	assert.Equal(t, "/sandbox/opencode-config/agent/triage.md", r.openCodeAgentPath("triage"))
-	assert.Equal(t, "/sandbox/opencode-config/skills", r.openCodeSkillsPath())
+	assert.Equal(t, sandbox.SandboxOpenCodeConfig+"/agent/triage.md", r.openCodeAgentPath("triage"))
+	assert.Equal(t, sandbox.SandboxOpenCodeConfig+"/skills", r.openCodeSkillsPath())
 	assert.True(t, strings.HasPrefix(r.openCodeHooksExtensionPath(), r.ConfigDir()+"/plugins/"))
 }
 
@@ -408,6 +416,7 @@ func fakeOpenshellOpenCodeStream(t *testing.T, streamFixture string) {
 	recordOpenCodeTrustedEnv("sb", openCodeTrustedEnv{
 		ConfigContent:   `{"permission":{"*":"deny"}}`,
 		CredentialsPath: "/runner/adc.json",
+		Hooks:           openCodeHookPolicy(OpenCodeRuntime{}.ConfigDir()+"/hooks", "/sandbox/workspace", &piAgentDef{}, nil),
 	})
 	t.Cleanup(func() { forgetOpenCodeTrustedEnv("sb") })
 	binDir := t.TempDir()
@@ -479,6 +488,7 @@ func TestOpenCodeRuntimeRun_RestoresAgentAndRejectsFallback(t *testing.T) {
 		CredentialsPath: "/runner/adc.json",
 		AgentPath:       agentPath,
 		AgentDefinition: "---\n{\"mode\":\"primary\"}\n---\n",
+		Hooks:           openCodeHookPolicy(OpenCodeRuntime{}.ConfigDir()+"/hooks", "/sandbox/workspace", &piAgentDef{}, nil),
 	})
 	t.Cleanup(func() { forgetOpenCodeTrustedEnv("sb") })
 	binDir := t.TempDir()
@@ -504,7 +514,10 @@ exit 0
 
 	calls, readErr := os.ReadFile(logPath)
 	require.NoError(t, readErr)
-	assert.Contains(t, string(calls), OpenCodeRuntime{}.ConfigDir()+"/mode", "agent overrides cleared before the run")
+	assert.Contains(t, string(calls), "refusing to run unhooked", "adapter checked before debug verification")
+	env, ok := lookupOpenCodeTrustedEnv("sb")
+	require.True(t, ok)
+	assert.Contains(t, string(calls), openCodeHookGuardCommand(env.Hooks), "adapter guard pins its utilities before restore")
 	assert.Contains(t, string(calls), agentPath, "agent file re-uploaded before the run")
 	assert.Contains(t, string(calls), "debug agent", "agent re-verified before the run")
 }
@@ -671,8 +684,9 @@ if [ "$2" = "exec" ]; then
   for last; do :; done
   case "$last" in
     *"opencode debug agent"*) printf '{"name":"default","mode":"agent","permission":{"*":"allow"}}'; exit 0 ;;
-    "opencode --version") echo "0.1.0"; exit 0 ;;
+    "/usr/local/bin/opencode --version") echo "1.19.1"; exit 0 ;;
     *fullsend-opencode-env-sep*) printf '%s' '{"permission":{"*":"deny","bash":"allow"}}|fullsend-opencode-env-sep|/runner/adc.json'; exit 0 ;;
+    "printf '%s' "*HOME*) printf '%s' '/sandbox'; exit 0 ;;
   esac
   exit 0
 fi

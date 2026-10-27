@@ -12,7 +12,8 @@
 #     and build-time assertion as Claude Code — stub runtime, see #6920)
 #   - OpenCode (GitHub release, SHA256-verified glibc build via
 #     OPENCODE_VERSION + per-arch checksum ARGs; opt-in runtime, see
-#     unbound-force#510)
+#     unbound-force#510) + @opencode-ai/plugin SDK (npm, version-matched to
+#     OPENCODE_VERSION; baked at /sandbox/opencode-config/node_modules)
 #   - jq (JSON parsing in agent scripts and skills)
 #   - ripgrep + fd (backends of pi's built-in grep/find tools; SHA256-verified
 #     static builds, versions asserted at build time)
@@ -336,6 +337,8 @@ RUN mkdir -p /etc/codex \
 # (same shadow-proof pattern as Claude Code above).
 # To update: bump OPENCODE_VERSION and OPENCODE_SHA256_{AMD64,ARM64} from:
 #   https://github.com/anomalyco/opencode/releases
+# The same version selects the baked @opencode-ai/plugin SDK; verify that the
+# matching package version exists on npm before updating this pin.
 ARG OPENCODE_VERSION=1.19.1
 ARG OPENCODE_SHA256_AMD64=6f1904b860bdbd32e90e679c9e1b0e64e78269a353e1497d5ea792dfa449538c
 ARG OPENCODE_SHA256_ARM64=3840e9afb2462a666d31816b20bc13b91af9845c329cff660a972aa9cfaee3a2
@@ -354,6 +357,7 @@ RUN case "$TARGETARCH" in \
        fi \
     && rm -f /usr/local/bin/opencode \
     && tar xzf /tmp/opencode.tar.gz -C /usr/local/bin opencode \
+    && chown root:root /usr/local/bin/opencode \
     && chmod 0755 /usr/local/bin/opencode \
     && rm -f /tmp/opencode.tar.gz \
     && GOT_VER="$(opencode --version)" \
@@ -362,18 +366,18 @@ RUN case "$TARGETARCH" in \
          exit 1; \
        fi
 
-# OpenCode hygiene defaults. OPENCODE_CONFIG_DIR must match
-# sandbox.SandboxOpenCodeConfig (internal/sandbox/sandbox.go).
-# Root-owned, group-writable (0775): Bootstrap and the run prelude create
-# subdirectories and write opencode.json as the sandbox user (gid sandbox).
-# The run prelude re-pins OPENCODE_CONFIG_DIR after sourcing .env so the
-# agent cannot redirect the config path; per-run agent tampering with
-# opencode.json is overwritten at the next iteration. Full config-dir
-# lockdown is deferred to the hook adapter (#7824).
+# OPENCODE_CONFIG_DIR must match sandbox.SandboxOpenCodeConfig
+# (internal/sandbox/sandbox.go). Match pi's bootstrap-uploaded adapter model:
+# the runner installs and verifies the adapter/scripts here; this writable
+# config tree is not an OS boundary.
 RUN install -d -o root -g sandbox -m 0775 /sandbox/opencode-config
+# OpenCode installs its plugin SDK during config discovery even when a local
+# plugin imports only builtins. Bake it in so startup needs no npm egress.
+RUN npm install --prefix /sandbox/opencode-config --save-exact --ignore-scripts --no-audit --no-fund \
+      "@opencode-ai/plugin@${OPENCODE_VERSION}"
 # OPENCODE_DISABLE_MODELS_FETCH: the sandbox cannot reach models.opencode.ai,
-# so skip the refresh. With no cached models.json (the runner removes it
-# before each iteration), OpenCode uses the catalog built into the binary.
+# so skip the refresh. The runner removes cached models.json before each
+# iteration so OpenCode uses the catalog built into the binary.
 ENV OPENCODE_CONFIG_DIR="/sandbox/opencode-config" \
     OPENCODE_DISABLE_PROJECT_CONFIG="true" \
     OPENCODE_DISABLE_MODELS_FETCH="true"
@@ -452,6 +456,7 @@ RUN case "$TARGETARCH" in \
     && echo "${FD_SHA}  /tmp/fd.tar.gz" | sha256sum -c - \
     && tar xzf /tmp/fd.tar.gz -C /usr/local/bin --strip-components=1 "fd-v${FD_VERSION}-${RS_ARCH}-unknown-linux-musl/fd" \
     && rm /tmp/fd.tar.gz \
+    && chown root:root /usr/local/bin/rg \
     && chmod 755 /usr/local/bin/rg /usr/local/bin/fd \
     && rg --version | grep -q "^ripgrep ${RIPGREP_VERSION} " \
     && fd --version | grep -q "^fd ${FD_VERSION}$"
@@ -489,6 +494,7 @@ RUN case "$TARGETARCH" in \
       -o /tmp/tirith.tar.gz \
     && echo "${TI_SHA}  /tmp/tirith.tar.gz" | sha256sum -c - \
     && tar xzf /tmp/tirith.tar.gz -C /usr/local/bin tirith \
+    && chown root:root /usr/local/bin/tirith \
     && chmod +x /usr/local/bin/tirith \
     && rm /tmp/tirith.tar.gz
 

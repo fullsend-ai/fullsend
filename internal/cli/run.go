@@ -1016,6 +1016,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 		return runtimeErr
 	}
+	if err := validateOpenCodeSecurity(runtimeBackend.Runtime.Name(), h.SecurityEnabled()); err != nil {
+		printer.StepFail(err.Error())
+		return err
+	}
 
 	// Apply the agents: entry's model/effort for this agent to the composed
 	// harness: flag > env > agents: entry > harness. The same loaded config

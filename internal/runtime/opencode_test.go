@@ -45,6 +45,9 @@ func TestOpenCodeRuntimeEnvExports(t *testing.T) {
 	assert.Contains(t, env, "export OPENCODE_DISABLE_EXTERNAL_SKILLS=true")
 	assert.Contains(t, env, "export OPENCODE_CONFIG_CONTENT")
 	assert.Contains(t, env, "export GOOGLE_APPLICATION_CREDENTIALS")
+	for _, export := range env {
+		assert.NotContains(t, export, "unset ", "EnvExports must not emit shell cleanup commands")
+	}
 }
 
 func TestOpenCodeRuntimeResolvesFromRegistry(t *testing.T) {
@@ -359,21 +362,20 @@ func TestBuildOpenCodeRunCommand(t *testing.T) {
 	// CLOUD_ML_REGION is mapped to GOOGLE_CLOUD_LOCATION for Vertex region parity.
 	assert.Contains(t, cmd, openCodeCloudLocationExport)
 
-	// Runner-owned opencode.json with instructions pointing at workspace
-	// AGENTS.md is rewritten after .env is sourced.
+	// Bootstrap files follow pi's writable layout; repo instructions are
+	// rewritten after .env without widening the pinned permission policy.
 	configPath := OpenCodeRuntime{}.ConfigDir() + "/" + openCodeConfigFile
 	assert.Contains(t, cmd, "> "+shellQuote(configPath))
 	expectedJSON := openCodeInstructionsConfig(params.RepoDir)
 	assert.Contains(t, cmd, shellQuote(expectedJSON))
-	// The config write must appear after .env sourcing.
+	// The config write must appear after .env is read.
 	configIdx := strings.Index(cmd, shellQuote(configPath))
 	envIdx := strings.Index(cmd, "&& "+openCodeEnvLoad)
 	require.NotEqual(t, -1, configIdx, "config write must be present")
-	require.NotEqual(t, -1, envIdx, ".env source must be present")
-	assert.Greater(t, configIdx, envIdx, "runner-owned opencode.json must be rewritten after .env is sourced")
-	assert.Contains(t, cmd, `"$`+openCodePrintfVar+`" '%s' `+shellQuote(expectedJSON))
+	require.NotEqual(t, -1, envIdx, ".env data load must be present")
 	assert.Less(t, strings.Index(cmd, "&& "+openCodeBinaryPin()), envIdx, "opencode binary must be pinned before .env")
 	assert.Less(t, strings.Index(cmd, "&& "+openCodeTrustedEnvPin(trustedEnv)), envIdx, "trusted values must be pinned before .env")
+	assert.Greater(t, strings.Index(cmd, "> "+shellQuote(configPath)), envIdx, "config must be written after .env")
 	// HOME and PATH pins are embedded inside openCodeTrustedEnvPin; verify the
 	// pin variables appear before .env so a hostile .env cannot redirect them.
 	assert.Less(t, strings.Index(cmd, openCodeHomePinVar+`="$HOME"`), envIdx, "HOME pin must appear before .env")
@@ -385,7 +387,7 @@ func TestBuildOpenCodeRunCommand(t *testing.T) {
 	for _, envExport := range (OpenCodeRuntime{}).EnvExports() {
 		exportIdx := strings.Index(cmd, "&& "+envExport)
 		require.NotEqual(t, -1, exportIdx, "EnvExports entry %q must be present", envExport)
-		assert.Greater(t, exportIdx, envIdx, "EnvExports entry %q must appear after .env sourcing", envExport)
+		assert.Greater(t, exportIdx, envIdx, "EnvExports entry %q must appear after .env data load", envExport)
 	}
 }
 
@@ -580,8 +582,8 @@ func TestOpenCodeTrustedEnvRestore(t *testing.T) {
 	require.Len(t, lines, 4, "only four non-empty lines expected (pinned values); dangerous vars must be empty: %s", strings.Join(lines, "|"))
 	assert.Equal(t, `{"permission":{"*":"deny"}}`, lines[0], "OPENCODE_CONFIG_CONTENT must be restored from pin")
 	assert.Equal(t, "/runner/adc.json", lines[1], "GOOGLE_APPLICATION_CREDENTIALS must be restored from pin")
-	assert.Equal(t, origHome, lines[2], "HOME must be restored to the pre-.env value")
-	assert.Equal(t, origPath, lines[3], "PATH must be restored to the pre-.env value")
+	assert.Equal(t, origHome, lines[2], "HOME must be restored from before .env")
+	assert.Equal(t, origPath, lines[3], "PATH must be restored from before .env")
 }
 
 func TestOpenCodeReadTrustedEnvErrors(t *testing.T) {
@@ -735,9 +737,9 @@ func TestBuildOpenCodeRunCommand_HooksGuard(t *testing.T) {
 	params := RunParams{
 		AgentBaseName:     "fix",
 		RepoDir:           "/repo",
-		HooksSettingsPath: "/sandbox/opencode-config/hooks.json",
+		HooksSettingsPath: "enabled",
 	}
-	cmd := buildOpenCodeRunCommand(params, "fix", openCodeTrustedEnv{})
+	cmd := buildOpenCodeRunCommand(params, "fix", openCodeTrustedEnv{Hooks: openCodeHookPolicy(OpenCodeRuntime{}.ConfigDir()+"/hooks", "/sandbox/workspace", &piAgentDef{}, nil)})
 	// The sha256 fail-closed guard is emitted before and after .env is sourced.
 	firstGuardIdx := strings.Index(cmd, "refusing to run unhooked")
 	lastGuardIdx := strings.LastIndex(cmd, "refusing to run unhooked")
@@ -747,6 +749,7 @@ func TestBuildOpenCodeRunCommand_HooksGuard(t *testing.T) {
 	assert.Equal(t, 2, strings.Count(cmd, "refusing to run unhooked"))
 	assert.Less(t, firstGuardIdx, envIdx, "integrity guard must run before .env is sourced")
 	assert.Greater(t, lastGuardIdx, envIdx, "integrity guard must run again after .env is sourced")
+	assert.NotContains(t, cmd, "&& . "+shellQuote(sandbox.SandboxWorkspace+"/.env"), "the agent-writable .env must not be sourced")
 	assert.Contains(t, cmd, `"$`+openCodeSHA256Var+`"`)
 	assert.Contains(t, cmd, openCodeUtilityPin())
 	assert.Contains(t, cmd, OpenCodeRuntime{}.openCodeHooksExtensionPath())
@@ -756,16 +759,18 @@ func TestBuildOpenCodeRunCommand_HooksGuard(t *testing.T) {
 func TestBuildOpenCodeRunCommand_ResetsOverridesAfterEnv(t *testing.T) {
 	t.Setenv(openCodeProviderEnv, "")
 
-	env := openCodeTrustedEnv{AgentPath: "/sandbox/opencode-config/agent/triage.md", AgentDefinition: "---\n{}\n---\nbody\n"}
+	env := openCodeTrustedEnv{AgentPath: sandbox.SandboxOpenCodeConfig + "/agent/triage.md", AgentDefinition: "---\n{}\n---\nbody\n"}
 	cmd := buildOpenCodeRunCommand(RunParams{AgentBaseName: "triage", RepoDir: "/repo"}, "triage", env)
 	envIdx := strings.Index(cmd, "&& "+openCodeEnvLoad)
 	resetIdx := strings.Index(cmd, `"$`+openCodeRmVar+`" -rf -- `+OpenCodeRuntime{}.openCodeOverridePaths(false))
 	guardIdx := strings.Index(cmd, openCodeAgentGuard(env.AgentPath, env.AgentDefinition))
 	require.NotEqual(t, -1, resetIdx)
 	require.NotEqual(t, -1, guardIdx)
-	assert.Greater(t, resetIdx, envIdx, "reset must run after .env")
+	assert.Greater(t, resetIdx, envIdx, "overrides must be cleared after .env")
+	assert.Less(t, resetIdx, guardIdx, "agent must be checked after overrides are cleared")
+	assert.Greater(t, guardIdx, envIdx, "agent guard must run after .env")
 	configPath := OpenCodeRuntime{}.ConfigDir() + "/" + openCodeConfigFile
-	assert.Greater(t, strings.Index(cmd, "> "+shellQuote(configPath)), resetIdx, "the reset clears opencode.json before the runner rewrites it")
+	assert.Contains(t, cmd, "> "+shellQuote(configPath), "repo instructions must be restored after .env")
 	assert.Less(t, guardIdx, strings.Index(cmd, " run --format json"), "agent is checked before opencode starts")
 	assert.NotContains(t, cmd, shellQuote(env.AgentDefinition), "the agent body is not inlined (openshell argument limit)")
 }
@@ -881,27 +886,23 @@ func TestOpenCodeRuntimeRunRequiresBootstrapState(t *testing.T) {
 func TestOpenCodeHooksExtensionPath(t *testing.T) {
 	t.Parallel()
 	r := OpenCodeRuntime{}
-	assert.Equal(t, "/sandbox/opencode-config/plugins/fullsend-hooks.ts", r.openCodeHooksExtensionPath())
+	assert.Equal(t, sandbox.SandboxOpenCodeConfig+"/plugins/fullsend-hooks.ts", r.openCodeHooksExtensionPath())
 }
 
 func TestOpenCodeRunFailsClosedWhenHooksEnabledButAdapterMissing(t *testing.T) {
 	t.Parallel()
-	// When a harness enables hooks (HooksSettingsPath non-empty) but the
-	// adapter bytes are nil (not yet available — #515), Run must refuse to
-	// start rather than running unhooked.
-	require.Nil(t, openCodeHooksExtensionBytes(), "precondition: adapter bytes are nil until #515")
+	require.NotEmpty(t, openCodeHooksExtensionBytes())
 
 	r := OpenCodeRuntime{}
 	params := RunParams{
 		AgentBaseName:     "fix",
 		RepoDir:           "/repo",
-		HooksSettingsPath: "/sandbox/opencode-config/hooks.json",
+		HooksSettingsPath: "enabled",
 	}
 	exitCode, err := r.Run(t.Context(), params, nil, time.Now(), &RunMetrics{})
 	require.Error(t, err)
 	assert.Equal(t, -1, exitCode)
-	assert.Contains(t, err.Error(), "hooks adapter not yet available")
-	assert.Contains(t, err.Error(), "#515")
+	assert.Contains(t, err.Error(), "trusted environment was not recorded")
 }
 
 func TestParseOpenCodeTranscriptFile(t *testing.T) {

@@ -24,17 +24,16 @@ const (
 	// openCodeSkillsDir mirrors the layout OpenCode's skill tool discovers
 	// under a config dir.
 	openCodeSkillsDir = "skills"
-	// openCodePluginsDir is reserved for #515's hook plugin adapter, which is
-	// not installed yet.
+	// openCodePluginsDir contains only the bootstrap-installed security adapter.
 	openCodePluginsDir = "plugins"
 	// openCodeHooksExtensionFile is the SHA-256-gated hook plugin adapter
-	// #515 will install under openCodePluginsDir.
+	// installed under openCodePluginsDir.
 	openCodeHooksExtensionFile = "fullsend-hooks.ts"
 	// openCodeDebugLogFile captures OpenCode's stderr when --debug is set;
 	// ExtractDebugLog downloads it.
 	openCodeDebugLogFile = "opencode-debug.log"
-	// openCodeConfigFile is the runner-owned opencode.json the run prelude
-	// writes to ConfigDir (see openCodeInstructionsConfig).
+	// openCodeConfigFile re-attaches repo instructions after mutable config
+	// overrides are cleared each iteration.
 	openCodeConfigFile = "opencode.json"
 )
 
@@ -48,7 +47,7 @@ func (r OpenCodeRuntime) openCodeSkillsPath() string {
 	return r.ConfigDir() + "/" + openCodeSkillsDir
 }
 
-// openCodeHooksExtensionPath is the reserved path of #515's hook plugin
+// openCodeHooksExtensionPath is the path of the sandbox hook plugin
 // adapter. Run verifies its SHA-256 before .env is read, fail-closed, like
 // pi's piHooksGuard.
 func (r OpenCodeRuntime) openCodeHooksExtensionPath() string {
@@ -60,8 +59,7 @@ func (r OpenCodeRuntime) openCodeHooksExtensionPath() string {
 // It preflights the opencode binary so a broken image fails here rather than
 // as a silent zero-turn run.
 //
-// It installs no hooks: OpenCode has no native PreToolUse/PostToolUse hooks,
-// and the plugin adapter that bridges security.HookPlan is #515.
+// It uploads the plugin/scripts and selects the runtime-neutral plan, like pi.
 func (r OpenCodeRuntime) Bootstrap(input BootstrapInput) error {
 	if input == nil {
 		return fmt.Errorf("bootstrap input is required")
@@ -115,12 +113,25 @@ func (r OpenCodeRuntime) Bootstrap(input BootstrapInput) error {
 	}
 
 	trustedRules := parseTrustedPermissionPolicy(trustedEnv.ConfigContent)
+	if err := codexExecOK(sandboxName, "rm -rf -- "+r.openCodeOverridePaths(true), "clearing OpenCode bootstrap overrides"); err != nil {
+		return err
+	}
+	if err := codexExecOK(sandboxName, r.openCodeSDKCacheRestore(), "preparing OpenCode plugin SDK cache"); err != nil {
+		return err
+	}
 	agentMD, err := openCodeAgentMarkdown(agentName, def, trustedRules)
 	if err != nil {
 		return err
 	}
 	if err := uploadBytes(sandboxName, r.openCodeAgentPath(agentName), agentMD); err != nil {
 		return fmt.Errorf("writing opencode agent definition: %w", err)
+	}
+	trustedEnv.Hooks, err = r.installOpenCodeHooks(input, def, trustedRules)
+	if err != nil {
+		return err
+	}
+	if err := codexExecOK(sandboxName, openCodeHookGuardCommand(trustedEnv.Hooks), "verifying OpenCode hooks before agent verification"); err != nil {
+		return err
 	}
 	if err := openCodeVerifyAgent(sandboxName, agentName, r); err != nil {
 		return err
@@ -134,10 +145,6 @@ func (r OpenCodeRuntime) Bootstrap(input BootstrapInput) error {
 		if p.Path != "" {
 			fmt.Fprintf(os.Stderr, "Plugin %q (%s): skipped — OpenCode does not support harness plugins (see docs/runtimes.md)\n", p.SandboxName(), p.Kind)
 		}
-	}
-
-	if len(def.BashAllowlist) > 0 {
-		fmt.Fprintln(os.Stderr, openCodeBashAllowlistWarning(def.BashAllowlist))
 	}
 
 	trustedEnv.AgentPath = r.openCodeAgentPath(agentName)
@@ -163,11 +170,13 @@ type openCodeAgentFrontmatter struct {
 // record is capped by the trusted policy (see intersectPermissionRecord).
 func openCodeAgentMarkdown(agentName string, def *piAgentDef, trustedRules []openCodePermissionRule) ([]byte, error) {
 	rec := openCodePermissionRecord(def.Tools)
+	permission := intersectPermissionRecord(rec, trustedRules)
+	openCodeApplyBashPatterns(permission, def.BashAllowlist, trustedRules)
 	fm := openCodeAgentFrontmatter{
 		Description: def.Description,
 		Mode:        "primary",
 		Model:       def.Model,
-		Permission:  intersectPermissionRecord(rec, trustedRules),
+		Permission:  permission,
 	}
 	front, err := json.MarshalIndent(fm, "", "  ")
 	if err != nil {
@@ -192,9 +201,9 @@ var openCodeAllToolIDs = []string{
 
 // openCodePermissionRecord translates the Claude tool allowlist into OpenCode's
 // {toolID: "allow"|"deny"} record: mapped tools are allowed, everything else
-// is denied, and unmapped Claude names are dropped with a warning. Per-argument
-// Bash restrictions (Bash(gh,jq)) cannot be expressed and collapse to bare
-// bash: "allow". A nil list (unrestricted agent) returns an empty record,
+// is denied, and unmapped Claude names are dropped with a warning. Bash command
+// restrictions are applied separately by openCodeApplyBashPatterns and the
+// native hook adapter. A nil list (unrestricted agent) returns an empty record,
 // which OpenCode treats as "use defaults".
 func openCodePermissionRecord(claudeTools []string) map[string]string {
 	if claudeTools == nil {
@@ -396,17 +405,11 @@ func openCodeInstructionsConfig(repoDir string) string {
 	return string(data)
 }
 
-func openCodeBashAllowlistWarning(allowlist []string) string {
-	return fmt.Sprintf(
-		"Agent Bash allowlist (%s) is recorded but not enforced on opencode — per-argument restrictions collapse to bare bash: \"allow\" until the hook adapter in unbound-force/unbound-force#515 enforces them (see docs/contributing/runtime-implementation.md)",
-		strings.Join(allowlist, ", "))
-}
-
 // openCodeVerifyAgent runs `opencode debug agent <name>` and checks the agent
 // loaded as mode "primary". It catches a silent fallback to the default agent
 // (*:allow) from a frontmatter parse failure or mode:subagent.
 func openCodeVerifyAgent(sandboxName, agentName string, r OpenCodeRuntime) error {
-	cmd := fmt.Sprintf("cd %s && OPENCODE_CONFIG_DIR=%s opencode debug agent %s 2>/dev/null",
+	cmd := codexHookScriptsGuard(r.ConfigDir()+"/plugins", map[string]string{openCodeHooksExtensionFile: codexAssetSHA256(openCodeHookAdapter)}) + " && " + strings.Join(r.EnvExports(), " && ") + " && " + fmt.Sprintf("cd %s && OPENCODE_CONFIG_DIR=%s command "+openCodeBinaryPath+" debug agent %s 2>/dev/null",
 		shellQuote(r.WorkspaceDir()),
 		shellQuote(r.ConfigDir()),
 		shellQuote(openCodeValidatedArg(agentName)))
@@ -427,13 +430,15 @@ func openCodeVerifyAgent(sandboxName, agentName string, r OpenCodeRuntime) error
 // openCodePreflightVersion runs `opencode --version` so a missing or broken
 // binary is reported before any iteration, not as an empty transcript.
 func openCodePreflightVersion(sandboxName string) error {
-	stdout, stderr, exitCode, err := sandbox.Exec(sandboxName, "opencode --version", 30*time.Second)
+	stdout, stderr, exitCode, err := sandbox.Exec(sandboxName, openCodeBinaryPath+" --version", 30*time.Second)
 	if err != nil {
 		return fmt.Errorf("opencode preflight: %w", err)
 	}
 	if exitCode != 0 {
 		return fmt.Errorf("opencode preflight: `opencode --version` exited %d: %s", exitCode, strings.TrimSpace(sanitizeOutput(stderr)))
 	}
-	_ = stdout
+	if version := strings.TrimSpace(stdout); version != openCodeHookRuntimeVersion {
+		return fmt.Errorf("opencode hook adapter requires version %s, got %q", openCodeHookRuntimeVersion, sanitizeOutput(version))
+	}
 	return nil
 }
