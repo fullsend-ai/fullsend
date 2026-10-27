@@ -337,8 +337,9 @@ RUN mkdir -p /etc/codex \
 # (same shadow-proof pattern as Claude Code above).
 # To update: bump OPENCODE_VERSION and OPENCODE_SHA256_{AMD64,ARM64} from:
 #   https://github.com/anomalyco/opencode/releases
-# The same version selects the baked @opencode-ai/plugin SDK; verify that the
-# matching package version exists on npm before updating this pin.
+# The baked @opencode-ai/plugin SDK must match this version. Update
+# opencode-sdk/package.json and regenerate its package-lock.json on each bump
+# (see images/README.md); npm ci verifies the locked transitive integrity hashes.
 ARG OPENCODE_VERSION=1.19.1
 ARG OPENCODE_SHA256_AMD64=6f1904b860bdbd32e90e679c9e1b0e64e78269a353e1497d5ea792dfa449538c
 ARG OPENCODE_SHA256_ARM64=3840e9afb2462a666d31816b20bc13b91af9845c329cff660a972aa9cfaee3a2
@@ -373,8 +374,9 @@ RUN case "$TARGETARCH" in \
 RUN install -d -o root -g sandbox -m 0775 /sandbox/opencode-config
 # OpenCode installs its plugin SDK during config discovery even when a local
 # plugin imports only builtins. Bake it in so startup needs no npm egress.
-RUN npm install --prefix /sandbox/opencode-config --save-exact --ignore-scripts --no-audit --no-fund \
-      "@opencode-ai/plugin@${OPENCODE_VERSION}"
+COPY opencode-sdk/package.json opencode-sdk/package-lock.json /sandbox/opencode-config/
+RUN node -e 'if (require("/sandbox/opencode-config/package.json").dependencies["@opencode-ai/plugin"] !== process.argv[1]) throw new Error("OpenCode SDK pin must match OPENCODE_VERSION")' "${OPENCODE_VERSION}" \
+    && npm ci --prefix /sandbox/opencode-config --ignore-scripts --no-audit --no-fund
 # OPENCODE_DISABLE_MODELS_FETCH: the sandbox cannot reach models.opencode.ai,
 # so skip the refresh. The runner removes cached models.json before each
 # iteration so OpenCode uses the catalog built into the binary.

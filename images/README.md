@@ -158,6 +158,7 @@ Every binary downloaded during the build is **version-pinned** and
 | Claude Code | `CLAUDE_CODE_VERSION` ARG + npm version pin | npm registry integrity check |
 | pi (opt-in runtime, #6464) | `PI_VERSION` ARG + npm version pin (`--ignore-scripts`; package ships `npm-shrinkwrap.json`) | npm registry integrity check |
 | Codex (opt-in runtime, #6920) | `CODEX_VERSION` ARG + npm version pin; replaces the `@openai/codex` the OpenShell base image installs under the same npm prefix | npm registry integrity check + `codex --version` assertion against the pin |
+| OpenCode and plugin SDK | `OPENCODE_VERSION` + `OPENCODE_SHA256_{AMD64,ARM64}`; SDK manifest and lockfile in `sandbox/opencode-sdk/` | Binary SHA256 + version assertion; SDK pin assertion and `npm ci --ignore-scripts` with locked dependency integrity hashes |
 | pi-anthropic-vertex extension (#6464; fullsend-owned since #7019) | `PI_ANTHROPIC_VERTEX_VERSION` (git tag) + `PI_ANTHROPIC_VERTEX_SHA256` of the tag tarball; deps via `npm ci --omit=dev --omit=peer --ignore-scripts` from the vendored lockfile (26 packages: `google-auth-library` and its tree). The lockfile is not Renovate-managed here — run `npm audit --omit=dev --omit=peer` in the extension dir when reviewing a bump | `sha256sum -c` + npm registry integrity check |
 | acli | `ACLI_VERSION` + `ACLI_SHA256_{AMD64,ARM64}` | `sha256sum -c` |
 | pre-commit, gitlint, pyyaml | pip version pins | pip integrity check |
@@ -177,6 +178,17 @@ source URL for checksums.  When bumping a version:
 2. Update both `*_SHA256_AMD64` and `*_SHA256_ARM64` ARGs.
 3. The base image digest can be updated by running
    `podman manifest inspect <image>:<tag>` and extracting the index digest.
+
+For OpenCode, update the SDK manifest and lockfile alongside the binary pin.
+From the repository root, replace `<version>` with the new `OPENCODE_VERSION`:
+
+```bash
+npm install --prefix images/sandbox/opencode-sdk --package-lock-only \
+  --save-exact --ignore-scripts --no-audit --no-fund "@opencode-ai/plugin@<version>"
+```
+
+Review the lockfile changes before rebuilding. The image build rejects an SDK
+manifest pin that differs from `OPENCODE_VERSION`.
 
 OpenShell is partially automated: `OPENSHELL_VERSION` is tracked by a
 Renovate customManager, and `OPENSHELL_SHA` (the commit SHA used by

@@ -1,2 +1,5 @@
 *
 !Containerfile
+!opencode-sdk/
+!opencode-sdk/package.json
+!opencode-sdk/package-lock.json
