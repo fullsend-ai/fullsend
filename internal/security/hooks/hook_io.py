@@ -142,10 +142,14 @@ def looks_failed(value: Any, text: str) -> bool:
     v1 adapters prefix failures with ``Exit code``. Under Claude Code a
     non-zero-exit Bash call does not reach PostToolUse at all (it fires
     PostToolUseFailure), and ``interrupted`` marks a cancelled tool.
+    OpenCode's structured tool-error payload carries ``exit_code`` instead.
     """
     if text.startswith("Exit code"):
         return True
-    return isinstance(value, dict) and value.get("interrupted") is True
+    if not isinstance(value, dict):
+        return False
+    exit_code = value.get("exit_code")
+    return value.get("interrupted") is True or (isinstance(exit_code, int) and exit_code != 0)
 
 
 def transform_strings(
