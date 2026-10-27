@@ -6,14 +6,35 @@
 # run also proves an agent that declares Bash keeps the trusted pattern rules
 # rather than losing bash to its own "*": "deny".
 #
-# OpenCode has no sandbox tool hooks yet (unbound-force#515), so the harness
-# sets security.enabled: false, as docs/runtimes/opencode.md requires.
+# OpenCode requires security.enabled: true; see docs/runtimes/opencode.md.
 #
 # Gated on the `runtime-opencode` capability, which the Makefile does not
 # declare: fullsend-sandbox:latest carries OpenCode only once the image change
 # is published from main. Enable with BEHAVIOUR_CAPABILITIES=runtime-opencode
 # (costs one small haiku run on Vertex).
 Feature: OpenCode runtime runs an agent unattended
+
+  Scenario: opencode rejects disabled sandbox security before sandbox creation
+    Given the enrolled test repository
+    And the repository runtime is "opencode"
+    And a custom harness "opencode-security-disabled" with:
+      """
+      agent: agents/opencode-smoke.md
+      role: triage
+      slug: fullsend-ai-opencode-security-disabled
+      model: haiku
+      image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
+      policy: policies/base.yaml
+      trigger: |
+        event.entity.kind == "work_item"
+        && event.transition.kind == "label_changed"
+        && event.transition.label.name == "ready-for-opencode-security-disabled"
+      security:
+        enabled: false
+      """
+    And an issue
+    When the issue is labeled "ready-for-opencode-security-disabled"
+    Then the harness "opencode-security-disabled" workflow fails reporting "OpenCode requires security.enabled: true"
 
   @requires:capability:runtime-opencode
   Scenario: opencode run selects the runtime, calls a pattern-allowed tool, and reports metrics
@@ -37,7 +58,7 @@ Feature: OpenCode runtime runs an agent unattended
       providers:
         - providers/vertex-ai.yaml
       security:
-        enabled: false
+        enabled: true
       host_files:
         - src: ${GOOGLE_APPLICATION_CREDENTIALS}
           dest: /tmp/.gcp-credentials.json
