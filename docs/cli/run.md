@@ -32,7 +32,6 @@ fullsend run <agent-name> [flags]
 | `--max-depth` | Maximum dependency depth for transitive resolution (0 disables) |
 
 ## Plan block
-
 At startup, `fullsend run` prints a plan block summarizing the resolved configuration:
 
 ```
@@ -47,6 +46,10 @@ Image:     fullsend-sandbox:latest
 The **Runtime** line shows which runtime was selected and the config source it was read from. When no `config.yaml` exists, the source reads `default (config not found)`.
 
 ## Runtime selection
+
+OpenCode runs require `security.enabled: true` for every role. The former security-disabled
+workaround is rejected before sandbox creation. See [OpenCode](../runtimes/opencode.md) for
+the supported version and security controls.
 
 The runtime for a run is resolved once, in this order: `--runtime` flag, `FULLSEND_RUNTIME`, `runtime:` on the agent's `agents:` entry in `config.yaml` / `.fullsend/config.yaml`, the repo-wide `runtime:` there, then the built-in `claude`. The same order applies to the model (`--model`, `FULLSEND_MODEL`, `model:` on the agent's `agents:` entry, harness `model:`, agent frontmatter; `FULLSEND_PI_MODEL` on pi and `FULLSEND_CODEX_MODEL` on codex are lower-precedence aliases, each read only when that runtime is the one selected) and to effort (`--effort`, `FULLSEND_EFFORT`, `effort:` on the agent's `agents:` entry, harness `effort:`). `<agent>` is the name given to `fullsend run` (`triage`, `code`, …); see [Runtimes — per-agent settings](../runtimes.md#per-agent-runtime-model-and-effort). `FULLSEND_FALLBACK_MODELS=a,b` becomes Claude Code's `--fallback-model`; pi uses it for aliased models on the top-level run when Vertex does not serve the model (two specific 404/403 messages, same provider only; sub-agent children get none); codex ignores it with a warning.
 

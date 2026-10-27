@@ -9,7 +9,7 @@ sandbox, the credentials, and the verdict.
 | **[`claude`](runtimes/claude.md)** | Production agent runs (Claude Code) | Default |
 | **[`pi`](runtimes/pi.md)** | Second runtime, opt-in per repo — Claude, Grok and Gemini on Vertex; GPT via OpenAI WIF (wired, not yet exercised live) | Supported for all roles |
 | **[`codex`](runtimes/codex.md)** | Third runtime, opt-in per repo or agent — OpenAI models via the same secretless credential path (wired, not yet exercised live), or Responses-capable models through an inference gateway (`gateway/<model>`) | Opt-in |
-| **[`opencode`](runtimes/opencode.md)** | Fourth runtime, opt-in per repo or agent — reads `AGENTS.md` natively | Experimental; read-only agents (`triage`, `prioritize`) until the security-hook adapter lands (#7824) |
+| **[`opencode`](runtimes/opencode.md)** | Fourth runtime, opt-in per repo or agent — reads `AGENTS.md` natively | OpenCode 1.19.1; shared sandbox hooks and write-capable agents; security must remain enabled |
 | `dummy` | Behaviour tests — scripted ops, no inference | Internal |
 | `dummy-playback` | Behaviour tests — replays canned agent results from a playlist, no inference | Internal |
 
@@ -70,9 +70,8 @@ sequenceDiagram
 All four run unattended in the same sandbox, behind the same egress allowlist. Choose `pi` when you
 want a non-Anthropic model, several vendors from one runtime, or its `Agent`/`Task` sub-agent roster.
 Choose `codex` when you want OpenAI models specifically and codex's shell-centric way of working.
-Choose `opencode` for an experimental open-source runtime backed by configurable providers; it is
-currently limited to read-only agents (`triage`, `prioritize`) until the security-hook adapter
-lands ([#7824](https://github.com/fullsend-ai/fullsend/issues/7824)).
+Choose `opencode` for an open-source runtime backed by configurable providers. Its native plugin
+bridges the shared sandbox hooks on OpenCode 1.19.1; all roles require security enabled.
 
 ## Selecting a runtime and model
 
@@ -244,14 +243,18 @@ and are omitted from this table.
 |---|---|---|---|---|
 | `model` | `--model` | alias table (merged with `models.aliases`), then `provider/id`; see [Models](#models) | `--model <id>`; OpenAI ids and `gateway/<model>` only | alias table, then `provider/model` (default provider `google-vertex-anthropic`); passthrough for `provider/model` |
 | `effort` | `--effort` | `--thinking` (superset of the harness levels; `high` when unset) | `model_reasoning_effort` (same levels) | `--variant` (model reasoning variant) |
-| `tools:` | Native Claude permission syntax | `--tools` (strict) + a first-token Bash allowlist | No native allowlist. `Bash(...)` lists are recorded but not enforced, entries with no codex tool are dropped with a warning, and the tool-allowlist hook is opt-in (`FULLSEND_TOOL_ALLOWLIST`) | agent frontmatter `permission:` record (`{toolID: "allow"\|"deny"}`); Claude names mapped to OpenCode IDs; per-argument Bash restrictions collapse to plain `bash` with a warning; restrict commands with a policy pattern map |
-| `skills` | `CLAUDE_CONFIG_DIR/skills/` | `PI_CODING_AGENT_DIR/skills/`, discovered natively | `CODEX_HOME/skills/`, discovered natively | `OPENCODE_CONFIG_DIR/skills/`, discovered natively |
+| `tools:` | Native Claude permission syntax | `--tools` (strict) + a first-token Bash allowlist | No native allowlist. `Bash(...)` lists are recorded but not enforced, entries with no codex tool are dropped with a warning, and the tool-allowlist hook is opt-in (`FULLSEND_TOOL_ALLOWLIST`) | Native agent permissions capped by trusted policy; `Bash(...)` command restrictions enforced by patterns and the hook adapter, including nested sessions |
+| `skills` | `CLAUDE_CONFIG_DIR/skills/` | `PI_CODING_AGENT_DIR/skills/`, discovered natively | `CODEX_HOME/skills/`, discovered natively | `OPENCODE_CONFIG_DIR/skills/`, uploaded during bootstrap and discovered natively |
 | `plugins` | Loads the `plugin.json` directories (marketplace layout) | Loads the extension directories: uploaded to `PI_CODING_AGENT_DIR/extensions/`, tree-hash preflight, `-e` ([Plugins](runtimes/pi.md#plugins-pi-extensions), ADR 0094) | Unsupported — warned and skipped | Unsupported — warned and skipped |
-| `security.sandbox_hooks` | `hooks.json` via `--settings` | Hook scripts + manifest + adapter extension | `hooks.json` + adapter script under `CODEX_HOME` | Not wired yet (#7824) |
+| `security.sandbox_hooks` | `hooks.json` via `--settings` | Hook scripts + manifest + adapter extension | `hooks.json` + adapter script under `CODEX_HOME` | Native plugin invoking shared scripts from `HookPlan`; policy is runner-held and files are digest-checked |
 | `validation_loop.feedback_mode` | Replaces the prompt on retry | Same | Same | Same (`RunParams.Prompt` honored) |
 
 On OpenCode the `OPENCODE_CONFIG_CONTENT` policy must allow every tool the agent needs: without a
 TTY, OpenCode rejects any tool call the policy does not allow ([OpenCode](runtimes/opencode.md)).
+The adapter and selected scripts are uploaded into `/sandbox/opencode-config`, following pi's
+bootstrap pattern. Runner-held digests detect changes; this writable tree is not an OS-level
+permission boundary. The runner restores instructions/config on retries and rejects additional
+native plugins.
 
 Full per-key detail, including the exact `--tools` mapping and allowlist parsing rules, is in
 [Implementing an agent runtime](contributing/runtime-implementation.md).
