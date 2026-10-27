@@ -76,6 +76,14 @@ def test_looks_failed_successful_bash_object():
     assert not hook_io.looks_failed(value, hook_io.scan_text(value))
 
 
+def test_looks_failed_opencode_exit_code():
+    for exit_code in (1, 2, -9):
+        value = {"output": "no secrets found", "exit_code": exit_code}
+        assert hook_io.looks_failed(value, hook_io.scan_text(value))
+    value = {"output": "no secrets found", "exit_code": 0}
+    assert not hook_io.looks_failed(value, hook_io.scan_text(value))
+
+
 def test_redact_canary_empty_token_is_noop():
     value = {"stdout": "hello", "stderr": "world"}
     assert hook_io.redact_canary(value, "") is value
