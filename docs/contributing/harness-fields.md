@@ -72,7 +72,7 @@ them under `forge:` or `overlays:` is ignored, not an error:
 | `max_runtime_fetches` | Fetch cap                                       |
 | `trigger`          | CEL trigger expression, evaluated against normalized events (ADR-0061) |
 | `privilege_levels` | Mint privilege per run-stage (ADR-0073)            |
-| `schema_version`   | Schema contract version (ADR-0127); absent = version `1`. **Planned, not yet implemented** |
+| `schema_version`   | Schema contract version, forge-agnostic (ADR-0127); absent = version `1`, and loaders reject malformed, zero, negative, and unsupported versions at parse time. **Top level only** — not a `ForgeConfig` field, so it is not settable under `forge:` or `overlays:` (a `schema_version` key there is ignored, not an error) |
 | `preflight_check`  | Single host-dependency gate run once before sandbox creation for `pre_script`/`post_script`/`validation_loop`; a literal `sh -c` command, not a script path (ADR-0128, ADR-0129). **Planned, not yet implemented** ([#8722](https://github.com/fullsend-ai/fullsend/issues/8722)) |
 
 ## Semantic types (ADR 0127)
@@ -95,7 +95,7 @@ references are scalar values, not shell commands.
 | source metadata path | Describes a path in the source repository; not runtime-resolved or delivered | `doc` |
 | destination path | Names a location inside the sandbox, not a host file to resolve | `host_files[].dest` |
 | structural | Contains nested fields, lists, maps, or conditions | `forge`, `overlays[]`, `validation_loop`, `host_files[]`, `api_servers[]`, `skills[]`, `plugins[]`, `plugins[].pi`, `openshell`, `security` and its nested scanner/hook/escalation/trace blocks, `runner_env`, `env`, `env.runner`, `env.sandbox`, `privilege_levels`, `api_servers[].env`, `plugins[].env`, `allowed_remote_resources`, `providers` |
-| scalar | Interpreted as a configuration value, never as a path solely because it resembles one | `role`, `slug`, `description`, `image`, `model`, `effort`, `timeout_minutes`, `readonly_repo`, `sandbox_timeout_seconds`, `allow_runtime_fetch`, `max_runtime_fetches`, `trigger` (CEL expression), `schema_version` (planned); `validation_loop.max_iterations`, `validation_loop.feedback_mode`, `host_files[].expand`, `host_files[].optional`, `api_servers[].name`, `api_servers[].port`, `api_servers[].env[<key>]`, `plugins[].env[<key>]`, `plugins[].pi.args[]`, `runner_env[<key>]`, `env.runner[<key>]`, `env.sandbox[<key>]`, `privilege_levels[<stage>]`, `allowed_remote_resources[]`, `overlays[].when` (CEL expression); all leaf values under `security` |
+| scalar | Interpreted as a configuration value, never as a path solely because it resembles one | `role`, `slug`, `description`, `image`, `model`, `effort`, `timeout_minutes`, `readonly_repo`, `sandbox_timeout_seconds`, `allow_runtime_fetch`, `max_runtime_fetches`, `trigger` (CEL expression), `schema_version`; `validation_loop.max_iterations`, `validation_loop.feedback_mode`, `host_files[].expand`, `host_files[].optional`, `api_servers[].name`, `api_servers[].port`, `api_servers[].env[<key>]`, `plugins[].env[<key>]`, `plugins[].pi.args[]`, `runner_env[<key>]`, `env.runner[<key>]`, `env.sandbox[<key>]`, `privilege_levels[<stage>]`, `allowed_remote_resources[]`, `overlays[].when` (CEL expression); all leaf values under `security` |
 
 For local harnesses, relative runtime paths resolve from the `.fullsend`
 configuration root (the parent of `harness/`), **not** from the YAML file's
@@ -124,21 +124,24 @@ a single-key map of that source to file overrides; a `plugins[]` entry can be
 a path string or a `{path, env, pi}` map. Scalar security leaf values retain
 their own validation and defaults; this type table does not override them.
 
-The planned `schema_version` field (absent = `1` once implemented) will declare
-this contract; an incompatible field-type change will require a version bump
-and an update to this table in the same change. Backward-compatible field
-additions do not require a bump; [ADR 0127](../ADRs/0127-harness-schema-versioning-and-field-types.md)
-leaves other breaking schema changes for a separate versioning policy. Once
-version-aware loaders are implemented, they will reject malformed or
-unsupported versions in each raw composition layer before merging; older
-pinned consumers must be upgraded before harness content using a new version
-is published to them.
+The `schema_version` field (absent = `1`) declares this contract; an
+incompatible field-type change requires a version bump and an update to this
+table in the same change. Backward-compatible field additions do not require a
+bump; [ADR 0127](../ADRs/0127-harness-schema-versioning-and-field-types.md)
+leaves other breaking schema changes for a separate versioning policy. Loaders
+reject malformed, zero, negative, and unsupported versions in each raw
+composition layer at parse time — a load failure, not a `Harness.Lint()`
+finding — and mixed-version `base:` composition is rejected before any merge
+runs. Older pinned consumers must be upgraded before harness content using a
+new version is published to them.
 
 ## Merge and inheritance rules
 
 When a forge block or overlay is merged into the harness top level, each
 field type follows specific merge semantics. The same rules apply during
-`base:` composition (base → child merging).
+`base:` composition (base → child merging). All `base:` layers in a
+composition chain must share a single effective schema version; mixed-version
+composition is rejected at load time (ADR-0127).
 
 Two independent precedence axes govern field resolution
 (see [#6798](https://github.com/fullsend-ai/fullsend/issues/6798)):
