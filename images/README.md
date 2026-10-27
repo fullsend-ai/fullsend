@@ -78,6 +78,7 @@ regardless of trigger event.
   push to main ───────────► :dev  :sha  :latest
   tag push (v*) ──────────► :dev  :sha  :X.Y.Z  :X.Y
   pull_request ───────────► (build only, no push)
+  merge_group ────────────► base candidate :merge-queue-<run>-<attempt> only
 ```
 
 ## How images are built
@@ -87,20 +88,25 @@ Each image is built per platform on a native runner (`ubuntu-24.04` for
 publishes the multi-arch index. The jobs run in this order:
 
 1. **`build-base`** builds `fullsend-sandbox` from `images/sandbox/Containerfile`,
-   one leg per platform. On push/dispatch each leg pushes its image by digest.
+   one leg per platform. On push/dispatch and merge-queue runs, each leg pushes
+   its image by digest.
 
 2. **`merge-base`** waits for both legs, publishes the multi-arch index under
    the release tags with `docker buildx imagetools create`, and outputs the
    index's immutable digest (`@sha256:...`) for the next job. It refuses to
    publish unless both platform digests are present.
+   Merge-queue runs use a run-scoped `merge-queue-<run>-<attempt>` candidate tag
+   instead of the normal release tags.
 
 3. **`build-code`** builds `fullsend-code` from `images/code/Containerfile`,
    one leg per platform, passing the base image reference as
-   `--build-arg BASE_IMAGE=<ref>`. On push/dispatch it uses the digest from
-   `merge-base`. On PRs (where nothing was pushed), it falls back to the
+   `--build-arg BASE_IMAGE=<ref>`. On push/dispatch and merge-queue runs it uses
+   the digest from `merge-base`. On PRs (where nothing was pushed), it falls back to the
    `:dev` tag on the registry. Each leg smoke-tests its own image.
 
-4. **`merge-code`** publishes the `fullsend-code` index once both legs pass.
+4. **`merge-code`** publishes the `fullsend-code` index once both legs pass,
+   except on PR and merge-queue runs. Merge-queue code builds and smoke tests
+   consume the candidate base digest without publishing normal image tags.
 
 `runner-image.yml` follows the same pattern with `build-runner` and
 `merge-runner`.
