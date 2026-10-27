@@ -32,7 +32,7 @@ Agents don't operate alone. The review sub-agents described in [code-review.md](
 
 ### Model updates
 
-Even without any instruction changes, a model update from the provider can change agent behavior. Instructions that worked well with one model version may produce different results with another. This means agent testing isn't just about catching instruction regressions — it's about ongoing behavioral monitoring.
+Even without any instruction changes, a model update from the provider can change agent behavior. Instructions that worked well with one model version may produce different results with another. This means agent testing isn't just about catching instruction regressions — it's about ongoing behavioral monitoring. A runtime or model switch is the same class of change: [review autonomy evidence](review-autonomy-evidence.md#runtime-and-configuration-comparison-evidence) records a same-diff comparison of two review configurations after a runtime switch that shipped without a quality measurement, which is the gap this monitoring is meant to close.
 
 ## What needs testing
 
