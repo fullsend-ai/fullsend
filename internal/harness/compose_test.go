@@ -86,6 +86,151 @@ model: opus
 	assert.Empty(t, h.Base)
 }
 
+// TestLoadWithBase_SchemaVersionEqualEffectiveVersionsCompose verifies that a
+// base chain composes when every layer's effective schema version is 1 (ADR
+// 0127 Decision 1, design D3): absent means version 1, so an explicit
+// schema_version: 1 on either side of the merge must not block composition.
+// The chain's one explicit declaration survives onto the merged harness via
+// design D4's scalar slot.
+func TestLoadWithBase_SchemaVersionEqualEffectiveVersionsCompose(t *testing.T) {
+	tests := []struct {
+		name      string
+		baseBody  string
+		childBody string
+	}{
+		{
+			name: "explicit one base with absent child",
+			baseBody: `
+schema_version: 1
+agent: agents/base.md
+role: test
+model: base-model
+`,
+			childBody: `
+base: base.yaml
+agent: agents/child.md
+`,
+		},
+		{
+			name: "absent base with explicit one child",
+			baseBody: `
+agent: agents/base.md
+role: test
+model: base-model
+`,
+			childBody: `
+base: base.yaml
+schema_version: 1
+agent: agents/child.md
+`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeTestHarness(t, dir, "base.yaml", tt.baseBody)
+			path := writeTestHarness(t, dir, "child.yaml", tt.childBody)
+
+			h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
+			require.NoError(t, err)
+
+			// The merge ran: the child inherited the base's model.
+			assert.Equal(t, "base-model", h.Model)
+			// The chain's single explicit declaration survives the merge
+			// (design D4), and the merged harness reports version 1.
+			require.NotNil(t, h.SchemaVersion)
+			assert.Equal(t, schemaVersionValue(1), *h.SchemaVersion)
+			assert.Equal(t, 1, h.EffectiveSchemaVersion())
+		})
+	}
+}
+
+// TestLoadWithBase_LocalBase_UnsupportedSchemaVersion verifies that a base
+// layer declaring a version this build does not interpret fails the child's
+// whole load (ADR 0127 Decision 1; design D3's parse-boundary integration
+// test). The base file's own parse rejects schema_version 2 (design D2), and
+// loadBaseChain surfaces that failure through the child's LoadWithBase,
+// naming the offending base file. The guard's mixed-version error is not
+// reachable through parse while every version above 1 is rejected at load;
+// TestCheckSchemaVersionCompatibility_ConstructedMixedVersions covers that
+// path directly.
+func TestLoadWithBase_LocalBase_UnsupportedSchemaVersion(t *testing.T) {
+	dir := t.TempDir()
+
+	writeTestHarness(t, dir, "base.yaml", `
+schema_version: 2
+agent: agents/base.md
+role: test
+`)
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+schema_version: 1
+agent: agents/child.md
+`)
+
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
+	require.Error(t, err)
+
+	// The base's own parse rejection surfaces, with the field-named message.
+	assert.ErrorContains(t, err, "parsing harness YAML:")
+	assert.ErrorContains(t, err, "schema_version 2 is not supported by this version of fullsend")
+	assert.ErrorContains(t, err, "maximum supported schema_version: 1")
+	// The error names the offending base file via the base-chain load wraps.
+	assert.ErrorContains(t, err, "loading base chain")
+	assert.ErrorContains(t, err, "loading base harness")
+	assert.ErrorContains(t, err, "base.yaml")
+}
+
+// TestCheckSchemaVersionCompatibility_ConstructedMixedVersions reaches the
+// D3 guard directly with constructed Harness values: parse rejects every
+// effective version above 1 (design D2), so a base with effective version 2
+// cannot come from a file — this is the state LoadWithBase would hand the
+// guard once a version 2 exists. The child is absent (effective version 1,
+// the spelling of every harness that predates the field), and the guard must
+// reject the pair with an error naming both versions and the layer label.
+// schemaversion_test.go covers the explicit-1-child spelling.
+func TestCheckSchemaVersionCompatibility_ConstructedMixedVersions(t *testing.T) {
+	child := &Harness{}                                  // absent — effective version 1
+	base := &Harness{SchemaVersion: schemaVersionPtr(2)} // parse would reject this; constructed directly
+
+	err := checkSchemaVersionCompatibility(child, base, "bases/parent.yaml")
+
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "base layer bases/parent.yaml declares schema_version 2")
+	assert.ErrorContains(t, err, "incompatible with schema_version 1 of the harness composing it")
+	assert.ErrorContains(t, err, "mixed-version base composition is not supported")
+}
+
+// TestMergeBaseIntoChild_SchemaVersion pins design D4's scalar slot: an
+// absent child inherits the base's explicit declaration, and an explicit
+// child declaration is preserved. The D3 guard has already established equal
+// effective versions at both merge sites, so the slot only affects whether
+// the merged harness declares the version explicitly.
+func TestMergeBaseIntoChild_SchemaVersion(t *testing.T) {
+	t.Run("absent child inherits the base's explicit declaration", func(t *testing.T) {
+		base := &Harness{SchemaVersion: schemaVersionPtr(1)}
+		child := &Harness{}
+
+		mergeBaseIntoChild(base, child)
+
+		require.NotNil(t, child.SchemaVersion)
+		assert.Equal(t, schemaVersionValue(1), *child.SchemaVersion)
+	})
+	t.Run("explicit child declaration is preserved", func(t *testing.T) {
+		childVer := schemaVersionPtr(1)
+		base := &Harness{SchemaVersion: schemaVersionPtr(1)}
+		child := &Harness{SchemaVersion: childVer}
+
+		mergeBaseIntoChild(base, child)
+
+		// Same pointer out as in: the merge leaves a non-nil child
+		// declaration untouched rather than swapping in the base's.
+		assert.Same(t, childVer, child.SchemaVersion)
+		assert.Equal(t, schemaVersionValue(1), *child.SchemaVersion)
+	})
+}
+
 func TestLoadWithBase_LocalBase_SkillsConcat(t *testing.T) {
 	dir := t.TempDir()
 

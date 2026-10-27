@@ -18,7 +18,6 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/gitfetch"
 	"github.com/fullsend-ai/fullsend/internal/pluginformat"
 	"github.com/fullsend-ai/fullsend/internal/skill"
-	"gopkg.in/yaml.v3"
 )
 
 // MaxBaseDepth is the maximum depth of base chain inheritance.
@@ -253,6 +252,15 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 			return nil, nil, fmt.Errorf("resolving URL-sourced skills before base composition: %w", err)
 		}
 		deps = append(deps, skillDeps...)
+	}
+
+	// Reject mixed-version composition before the merge runs (design D3,
+	// ADR 0127 Decision 1): the child and its base must declare compatible
+	// effective schema versions (absent = 1). child.Base still names the
+	// base reference for the error label; it is cleared below. A failure
+	// here fails the load, so no merge runs.
+	if err := checkSchemaVersionCompatibility(child, base, child.Base); err != nil {
+		return nil, nil, err
 	}
 
 	// Merge base into child (child overrides base)
@@ -532,6 +540,16 @@ func loadBaseChain(
 		}
 		deps = append(deps, ancestorDeps...)
 
+		// Reject mixed-version composition before the merge runs (design
+		// D3, ADR 0127 Decision 1): this layer and its ancestor must
+		// declare compatible effective schema versions (absent = 1).
+		// base.Base still names the ancestor reference for the error
+		// label; it is cleared below. A failure here fails the whole
+		// chain's load, so no merge runs.
+		if err := checkSchemaVersionCompatibility(base, ancestorBase, base.Base); err != nil {
+			return nil, nil, err
+		}
+
 		// Merge ancestor into base. The recursive call already resolved
 		// the ancestor's forge/overlays, so ancestorBase is flat (no
 		// forge or overlay blocks remain).
@@ -702,13 +720,12 @@ func fetchBaseURL(ctx context.Context, rawURL string, allowlist []string, opts C
 	return dep, content, nil
 }
 
-// parseHarnessContent parses harness YAML content without validation.
+// parseHarnessContent parses harness YAML content without validation. It
+// delegates to parseRaw so URL-fetched base layers pass the same
+// schema_version check as every other parse path (ADR 0127 Decision 1);
+// loadBaseChain wraps the returned error with the base reference.
 func parseHarnessContent(content []byte) (*Harness, error) {
-	var h Harness
-	if err := yaml.Unmarshal(content, &h); err != nil {
-		return nil, err
-	}
-	return &h, nil
+	return parseRaw(content)
 }
 
 // matchingAllowedPrefix checks if a URL matches any prefix in the allowlist.
@@ -762,6 +779,18 @@ func mergeBaseIntoChild(base, child *Harness) {
 	}
 	if child.Slug == "" {
 		child.Slug = base.Slug
+	}
+	// SchemaVersion (design D4, ADR 0127): an absent child inherits the base's
+	// explicit declaration — the merge table's scalar row, where child non-nil
+	// wins and base fills the gap. checkSchemaVersionCompatibility (design D3)
+	// has already run at both merge sites (LoadWithBase and loadBaseChain), so
+	// the effective versions are equal and the inheritance only affects
+	// explicitness. Forge-path counterpart check (harness-composition
+	// invariant): schema_version is top-level only and not a ForgeConfig
+	// field — the same asymmetry as privilege_levels — so mergeForgeConfig
+	// needs no matching slot.
+	if child.SchemaVersion == nil {
+		child.SchemaVersion = base.SchemaVersion
 	}
 	if child.Image == "" {
 		child.Image = base.Image
