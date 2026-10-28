@@ -119,7 +119,7 @@ func TestRenderBotActorWorkflow(t *testing.T) {
 		assert.Equal(t, spec.Name, doc.Name)
 		assert.Equal(t, []string{spec.Branch}, doc.On.Push.Branches)
 		job := doc.Jobs["act"]
-		assert.Equal(t, map[string]string{"contents": "read", "id-token": "write"}, job.Permissions)
+		assert.Equal(t, map[string]string{"id-token": "write"}, job.Permissions)
 		require.Len(t, job.Steps, 1)
 		env := job.Steps[0].Env
 		assert.Equal(t, "review", env["ROLE"])
@@ -132,6 +132,18 @@ func TestRenderBotActorWorkflow(t *testing.T) {
 		assert.Contains(t, job.Steps[0].Run, `${MINT_URL%/}/v1/token`)
 		assert.Contains(t, job.Steps[0].Run, "http_code}", "the revoke command keeps its curl format")
 		assert.Contains(t, job.Steps[0].Run, tc.apiPath)
+
+		// Each value is checked against the token allowlist before it is
+		// masked, so a response cannot inject a workflow command.
+		run := job.Steps[0].Run
+		assert.Contains(t, run, `token_re='^[A-Za-z0-9._~+/=-]+$'`)
+		for _, name := range []string{"oidc_token", "minted"} {
+			guard := strings.Index(run, `usable_token "${`+name+`}"`)
+			mask := strings.Index(run, `echo "::add-mask::${`+name+`}"`)
+			require.GreaterOrEqual(t, guard, 0, "no token guard for %s", name)
+			require.GreaterOrEqual(t, mask, 0, "no add-mask for %s", name)
+			assert.Less(t, guard, mask, "%s is guarded before it is masked", name)
+		}
 	}
 }
 
@@ -226,7 +238,7 @@ func TestWhenBotActs_Review(t *testing.T) {
 	t.Run("role bot", func(t *testing.T) {
 		w, scmDriver := botActorTestWorld(&forge.WorkflowRun{ID: 7, Status: "completed", Conclusion: "success"})
 		w.PRNumber = 5
-		require.NoError(t, whenBotActs(context.Background(), w, actorTriageBot, botActionReview, botReviewBody))
+		require.NoError(t, whenBotActs(context.Background(), w, actorReviewBot, botActionReview, botReviewBody))
 
 		assert.Empty(t, scmDriver.reviews, "a role bot reviews from its workflow, not through the suite's driver")
 		var workflow string
@@ -236,7 +248,7 @@ func TestWhenBotActs_Review(t *testing.T) {
 			}
 		}
 		require.NotEmpty(t, workflow)
-		assert.Contains(t, workflow, "ROLE: 'triage'")
+		assert.Contains(t, workflow, "ROLE: 'review'")
 		assert.Contains(t, workflow, "ISSUE: '5'", "the pull request number is the target")
 		assert.Contains(t, workflow, "ACTION: 'review'")
 		assert.Contains(t, workflow, "VALUE: '"+botReviewBody+"'")
@@ -409,6 +421,10 @@ func TestBotActorAuthorizationFeature_RowsMatchSteps(t *testing.T) {
 
 	require.Equal(t, []string{"actor", "needs-review-bot", "needs-coder-bot", "needs-triage-bot", "on-label"}, scenarios[0].header)
 	require.Equal(t, []string{"actor", "harness", "needs-review-bot", "needs-coder-bot", "needs-triage-bot"}, scenarios[1].header)
+	// The triage bot's token cannot submit a review, so it has no row.
+	for _, row := range scenarios[1].rows {
+		assert.NotEqual(t, actorTriageBot, row[0], "the triage bot cannot submit a review")
+	}
 	for actor := range botActorRoles {
 		assert.True(t, actors[actor], "no row for %s", actor)
 	}

@@ -108,7 +108,12 @@ Feature: Bot actor authorization
   # A pull request review is a bot transition the shim forwards to
   # `fullsend dispatch`, so it reaches the dispatch-time bot-role lookup. A
   # registered role bot is recognized and dispatches the harness of its own
-  # role, and the unrestricted "on-review" harness, in every row.
+  # role, and the unrestricted "on-review" harness, in every row. The triage
+  # bot has no row: its write-level token has no pull_requests permission, so
+  # GitHub rejects its review and no pull_request_review event is produced.
+  # Its other transitions never reach the lookup (the shim drops bot
+  # comments and label-added events skip it), and the production role
+  # permissions are not widened for a test.
   Scenario Outline: registered <actor> submits a review comment on a pull request
     Given a pull request is opened
     When the <actor> submits a review comment on the pull request
@@ -123,7 +128,6 @@ Feature: Bot actor authorization
       | actor      | harness          | needs-review-bot | needs-coder-bot | needs-triage-bot |
       | review bot | needs-review-bot | 1                | 0               | 0                |
       | coder bot  | needs-coder-bot  | 0                | 1               | 0                |
-      | triage bot | needs-triage-bot | 0                | 0               | 1                |
 
   # The e2e bot has no registered role, so the lookup denies its review
   # before CEL: even "on-review", whose trigger matches every review,

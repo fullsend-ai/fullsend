@@ -860,14 +860,42 @@ The probe uploads only the request fields, `oidc_verified`, the two OIDC claims,
 
 ### Bot actor steps
 
-`the <bot> posts "<text>" on the issue` and `the <bot> labels the issue "<label>"` make a bot act on the scenario's issue, the way `the <actor> posts ...` does for the human test actors. `the <bot> submits a review comment on the pull request` submits a COMMENT review on the scenario's pull request (open it first with `a pull request is opened`); unlike a bot's comment, the shim forwards a bot's review. The bots are `review bot`, `coder bot`, `triage bot` and `e2e bot`.
+`the <bot> posts "<text>" on the issue` and `the <bot> labels the issue
+"<label>"` make a bot act on the scenario's issue, the way `the <actor> posts
+...` does for the human test actors. `the <bot> submits a review comment on the
+pull request` submits a COMMENT review on the scenario's pull request (open it
+first with `a pull request is opened`); unlike a bot's comment, the shim
+forwards a bot's review. The bots are `review bot`, `coder bot`, `triage bot`
+and `e2e bot`. The triage bot's token has no `pull_requests` permission, so it
+cannot submit a review and has no row in the review scenario.
 
-- The `e2e bot` is the suite's own installation identity behind `World.SCM`. No role of the app set uses it, so the mint has no registered role for it.
-- A role bot acts through the GitHub App of its role. The step pushes a workflow (`bot-actor-<nonce>`, triggered by a push to the temporary branch `behaviour/bot-actor-<nonce>`) to the leased repository and waits for its run to succeed. The job exchanges its Actions OIDC token at the mint (`POST /v1/token`, the role at the `write` level, the leased repository only), masks the minted token, calls the GitHub API with it and revokes it. The leased repository is on the mint's workflow-host list and the suite's mints accept any workflow basename, so no host repository is needed. The branch is removed with the scenario's other branches.
+- The `e2e bot` is the suite's own installation identity behind `World.SCM`. No
+  role of the app set uses it, so the mint has no registered role for it.
+- A role bot acts through the GitHub App of its role. The step pushes a
+  workflow (`bot-actor-<nonce>`, triggered by a push to the temporary branch
+  `behaviour/bot-actor-<nonce>`) to the leased repository and waits for its run
+  to succeed. The job exchanges its Actions OIDC token at the mint
+  (`POST /v1/token`, the role at the `write` level, the leased repository
+  only), masks the minted token, calls the GitHub API with it and revokes it.
+  The job checks the OIDC token and the minted token against a character
+  allowlist before it masks them. The leased repository is on the mint's
+  workflow-host list and the suite's mints accept any workflow basename, so no
+  host repository is needed. The branch is removed with the scenario's other
+  branches.
 
-Two more steps cover the unregistered e2e bot's loss of the bot-review exception. `the label "<label>" exists` makes the e2e identity create the label with a throwaway issue (closed again), because the triage actor cannot create labels; run it before `an issue`, so the throwaway issue's workflow runs predate `ScenarioStart`. `the <actor> submits a review comment on the pull request` submits a COMMENT review as a human test actor, where `a review comment is submitted on the pull request` makes the e2e bot do so, and the bot-role lookup now denies that bot's review before CEL.
+Two more steps cover the unregistered e2e bot's loss of the bot-review
+exception. `the label "<label>" exists` makes the e2e identity create the label
+with a throwaway issue (closed again), because the triage actor cannot create
+labels; run it before `an issue`, so the throwaway issue's workflow runs predate
+`ScenarioStart`. `the <actor> submits a review comment on the pull request`
+submits a COMMENT review as a human test actor, where `a review comment is
+submitted on the pull request` makes the e2e bot do so, and the bot-role lookup
+now denies that bot's review before CEL.
 
-`ScenarioStart` is set before a comment, and before a label when no comment set it, so the dispatch counts cover both events. `TestBotActorAuthorizationFeature_RowsMatchSteps` checks every Examples row against the registered step patterns.
+`ScenarioStart` is set before a comment, and before a label when no comment set
+it, so the dispatch counts cover both events.
+`TestBotActorAuthorizationFeature_RowsMatchSteps` checks every Examples row
+against the registered step patterns.
 
 ## Version pinning for `fullsend-ai/agents`
 

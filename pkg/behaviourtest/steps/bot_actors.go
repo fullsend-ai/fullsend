@@ -227,7 +227,6 @@ jobs:
   act:
     runs-on: ubuntu-24.04
     permissions:
-      contents: read
       id-token: write
     timeout-minutes: 10
     steps:
@@ -243,6 +242,16 @@ jobs:
         run: |
           set -euo pipefail
           token=''
+
+          # usable_token VALUE succeeds for a non-empty token made only of
+          # characters that appear in OIDC JWTs and GitHub installation
+          # tokens. Anything else (whitespace, control characters, "%%"
+          # escapes, ":") could smuggle a workflow command into add-mask.
+          token_re='^[A-Za-z0-9._~+/=-]+$'
+          usable_token() {
+            [[ -n "$1" && "$1" =~ ${token_re} ]]
+          }
+
           revoke_token() {
             local attempt code
             [[ -n "${token}" ]] || return 0
@@ -268,6 +277,10 @@ jobs:
           oidc_token="$(curl -sS --fail --retry 3 --retry-delay 2 --retry-all-errors \
             -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
             "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=fullsend-mint" | jq -er '.value')"
+          if ! usable_token "${oidc_token}"; then
+            echo "the OIDC token response is not a usable token"
+            exit 1
+          fi
           echo "::add-mask::${oidc_token}"
 
           request="$(jq -nc --arg role "${ROLE}" --arg repo "${REPO_NAME}" \
@@ -277,6 +290,10 @@ jobs:
             -H "Content-Type: application/json" \
             -d "${request}" \
             "${MINT_URL%%/}/v1/token" | jq -er '.token')"
+          if ! usable_token "${minted}"; then
+            echo "the mint token response is not a usable token"
+            exit 1
+          fi
           echo "::add-mask::${minted}"
           token="${minted}"
 
