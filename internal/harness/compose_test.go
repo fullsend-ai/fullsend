@@ -6154,6 +6154,7 @@ func TestMergeBaseIntoChild_TriggerEmptyBaseNoEffect(t *testing.T) {
 //
 //	base unset + child unset = unset
 //	base A     + child unset = A (inherit)
+//	base A     + child whitespace-only = A (whitespace counts as unset)
 //	base A     + child B     = B (child overrides — never `A && B`, never concatenation)
 //	base unset + child B     = B
 //
@@ -6205,6 +6206,15 @@ func TestMergeBaseIntoChild_PreflightCheckScalarOverrideAndInheritance(t *testin
 		mergeBaseIntoChild(base, child)
 
 		assert.Equal(t, childCheck, child.PreflightCheck)
+	})
+
+	t.Run("base set, child whitespace-only (inherits base)", func(t *testing.T) {
+		base := &Harness{PreflightCheck: baseCheck}
+		child := &Harness{PreflightCheck: "   "}
+
+		mergeBaseIntoChild(base, child)
+
+		assert.Equal(t, baseCheck, child.PreflightCheck)
 	})
 }
 
