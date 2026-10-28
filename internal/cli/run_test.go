@@ -4761,8 +4761,8 @@ func TestRunAgent_PreflightCheck_TimeoutRedactsDeclaredSecret(t *testing.T) {
 }
 
 // A passing top-level preflight_check runs exactly once per run, before
-// pre_script (when present) and before sandbox creation (FR-002/FR-011,
-// spec US1-1). Every stage appends one marker line to a shared order file:
+// pre_script (when present) and before sandbox creation (ADR 0129
+// Decision 3). Every stage appends one marker line to a shared order file:
 // the check's own command, the pre-script body, and the sandbox-creation
 // stub, which appends via the FULLSEND_TEST_SANDBOX_SENTINEL env var it
 // inherits from this process. usePreScriptStub makes sandbox creation fail
@@ -4802,14 +4802,14 @@ func TestRunAgent_PreflightCheck_TopLevelRunsOnceBeforePreScriptAndSandbox(t *te
 		"the check's sentinel action must fire exactly once per run")
 }
 
-// A failing top-level preflight_check gates every later stage (FR-003,
-// spec US1-2): the run stops with the field-qualified error — source
-// label "preflight_check" with redacted command text and output
-// (data-model.md Diagnostics) — and no sentinel from the pre-script,
+// A failing top-level preflight_check gates every later stage (ADR 0129
+// Decision 3): the run stops with the field-qualified error — source
+// label "preflight_check" with redacted command text and output — and
+// no sentinel from the pre-script,
 // the sandbox-creation stub, or the nested validation_loop.preflight_check
 // exists. The nested check writes its own sentinel, so its absence proves
 // the eager gate fired before step 1d; the command embeds a declared
-// runner-env secret so the failure diagnostics exercise redaction (SC-003).
+// runner-env secret so the failure diagnostics exercise redaction.
 func TestRunAgent_PreflightCheck_TopLevelFailureGatesAllLaterStages(t *testing.T) {
 	usePreScriptStub(t)
 	t.Setenv("FULLSEND_RUNTIME", "codex")
@@ -4832,7 +4832,7 @@ func TestRunAgent_PreflightCheck_TopLevelFailureGatesAllLaterStages(t *testing.T
 	err := runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags,
 		statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
 	require.Error(t, err)
-	// Field-qualified failure (data-model.md error identity): the source
+	// Field-qualified failure: the source
 	// label names the top-level field, never the nested one.
 	assert.Contains(t, err.Error(), "preflight_check failed")
 	assert.NotContains(t, err.Error(), "validation_loop.preflight_check failed")
@@ -4848,9 +4848,9 @@ func TestRunAgent_PreflightCheck_TopLevelFailureGatesAllLaterStages(t *testing.T
 }
 
 // A top-level preflight_check that exceeds its execution bound stops the
-// run exactly like a nonzero exit (FR-003, spec US1-3): the run reports
+// run exactly like a nonzero exit (ADR 0129 Decision 3): the run reports
 // the field-qualified timeout — source label "preflight_check" with the
-// redacted command text (data-model.md Diagnostics) — and the gating is
+// redacted command text — and the gating is
 // identical, so no sentinel from the pre-script, the sandbox-creation
 // stub, or the nested validation_loop.preflight_check exists.
 func TestRunAgent_PreflightCheck_TopLevelTimeoutGatesAllLaterStages(t *testing.T) {
@@ -4884,7 +4884,7 @@ func TestRunAgent_PreflightCheck_TopLevelTimeoutGatesAllLaterStages(t *testing.T
 	err := runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags,
 		statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
 	require.Error(t, err)
-	// Field-qualified timeout (data-model.md error identity): the source
+	// Field-qualified timeout: the source
 	// label names the top-level field, never the nested one.
 	assert.Contains(t, err.Error(), "preflight_check timed out")
 	assert.NotContains(t, err.Error(), "validation_loop.preflight_check timed out")
@@ -4897,7 +4897,7 @@ func TestRunAgent_PreflightCheck_TopLevelTimeoutGatesAllLaterStages(t *testing.T
 }
 
 // A pre-script that requests a run skip (exit 78) still observes the
-// top-level check's sentinel (FR-011, spec US1-5): the eager gate runs
+// top-level check's sentinel: the eager gate runs
 // before the skip decision — the ADR 0129 trade-off that intentionally
 // checks post-script dependencies even on runs the pre-script would
 // skip. The run itself stays a neutral skip (issue #4718): runAgent
@@ -4949,7 +4949,7 @@ func TestRunAgent_PreflightCheck_TopLevelRunsBeforePreScriptSkip(t *testing.T) {
 
 // A harness with no top-level preflight_check — and one whose value is
 // empty or whitespace-only — behaves exactly as before the field existed
-// (FR-001, spec US1-4, SC-002): no gate subprocess is spawned and stage
+// (#8722): no gate subprocess is spawned and stage
 // ordering is unchanged. The no-gate observable is the shared executor's
 // StepStart line: runPreflightCheck emits "Preflight: checking <source>
 // dependencies" before it spawns the sh -c child, so the top-level
@@ -4957,8 +4957,9 @@ func TestRunAgent_PreflightCheck_TopLevelRunsBeforePreScriptSkip(t *testing.T) {
 // was never entered. That printer line is the only faithful observable
 // for the whitespace-only case, because a whitespace command runs as a
 // silent sh -c success — neither an error nor a sentinel could expose a
-// wrongly-entered gate — and it pins the data-model.md emptiness rule
-// ("absent, empty, or whitespace-only ⇒ treated as unset") against an
+// wrongly-entered gate — and it pins the emptiness rule
+// ("absent, empty, or whitespace-only ⇒ treated as unset",
+// docs/contributing/harness-fields.md) against an
 // untrimmed != "" guard. Characterization test: it must stay green.
 func TestRunAgent_PreflightCheck_TopLevelAbsentOrWhitespaceKeepsStatusQuo(t *testing.T) {
 	cases := []struct {
@@ -5025,11 +5026,11 @@ func TestRunAgent_PreflightCheck_TopLevelAbsentOrWhitespaceKeepsStatusQuo(t *tes
 }
 
 // A harness setting both the top-level preflight_check and the nested
-// validation_loop.preflight_check runs them in the order FR-008 pins for
-// migration (spec US4-2, ADR 0129 Decision 3): the nested check keeps
+// validation_loop.preflight_check runs them in the order ADR 0129
+// Decision 3 pins for migration: the nested check keeps
 // running, after the top-level check. When both pass, the top-level
 // sentinel precedes the nested one — both ahead of the pre-script and
-// sandbox creation, composing the US1 ordering sequence (the top-level
+// sandbox creation, composing the eager top-level gate with the
 // gate first) with the pre-feature status-quo sequence that keeps the
 // nested check in its original position ahead of the pre-script. When
 // the top-level check fails, the eager gate stops the run before the
@@ -5037,8 +5038,8 @@ func TestRunAgent_PreflightCheck_TopLevelAbsentOrWhitespaceKeepsStatusQuo(t *tes
 // carries the top-level source label only. The pre-existing nested-only
 // failure tests pin the complementary direction — top-level passes,
 // nested fails, stop at the nested check, status quo — so this pair
-// completes the both-fields matrix. Characterization test: the T009 gate
-// sits immediately above the nested block, so this must already be
+// completes the both-fields matrix. Characterization test: the top-level
+// gate sits immediately above the nested block, so this must already be
 // green; a failure means the ordering drifted, not that the expectation
 // is wrong.
 func TestRunAgent_PreflightCheck_BothFieldsOrderingAndGating(t *testing.T) {
@@ -5097,7 +5098,7 @@ func TestRunAgent_PreflightCheck_BothFieldsOrderingAndGating(t *testing.T) {
 		err := runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags,
 			statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
 		require.Error(t, err)
-		// Field-qualified failure (data-model.md error identity): the
+		// Field-qualified failure: the
 		// source label names the top-level field, never the nested one.
 		assert.Contains(t, err.Error(), "preflight_check failed")
 		assert.NotContains(t, err.Error(), "validation_loop.preflight_check failed")

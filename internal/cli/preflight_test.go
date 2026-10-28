@@ -322,8 +322,8 @@ func TestRunPreflightCheck_TimeoutBoundedWithNonExecChild(t *testing.T) {
 
 // TestRunPreflightCheck_TopLevelRejectsOutOfAllowlistBeforeExecution
 // characterizes the pre-execution reference gate for the top-level call site
-// (FR-005, spec US2-1): runAgent invokes this shared executor with source
-// label "preflight_check" (research.md D2), so a ${VAR} brace reference to a
+// (issue #8722): runAgent invokes this shared executor with source
+// label "preflight_check", so a ${VAR} brace reference to a
 // name outside the preflight environment — here a host-set credential, which
 // the allowlist excludes even when set — fails the run before any shell
 // executes. The error names the variable, never a value, and points to the
@@ -335,7 +335,7 @@ func TestRunPreflightCheck_TopLevelRejectsOutOfAllowlistBeforeExecution(t *testi
 	raw := "touch ${SENTINEL} && echo ${GH_TOKEN}"
 	err := runPreflightCheck(context.Background(), printer, "preflight_check", raw, map[string]string{"SENTINEL": sentinelPath}, "/fs/dir")
 	require.Error(t, err)
-	// Field-qualified rejection (data-model.md error identity): the source
+	// Field-qualified rejection: the source
 	// label names the top-level field, never the nested one, and the error
 	// names the variable.
 	assert.Contains(t, err.Error(), "preflight_check references ${GH_TOKEN}")
@@ -353,8 +353,8 @@ func TestRunPreflightCheck_TopLevelRejectsOutOfAllowlistBeforeExecution(t *testi
 }
 
 // TestRunPreflightCheck_TopLevelBareRefsLeftToShell characterizes the
-// bare-$VAR edge case for the top-level call site (FR-005, spec US2-1 edge
-// case): bare references are deliberately outside the pre-execution rejection
+// bare-$VAR edge case for the top-level call site: bare references are
+// deliberately outside the pre-execution rejection
 // scan, so the command is not validated before execution — the child shell
 // expands them, where unset means empty. A host-set credential never reaches
 // the child environment, so probes like `test -z "$GH_TOKEN"` keep working,
@@ -371,8 +371,8 @@ func TestRunPreflightCheck_TopLevelBareRefsLeftToShell(t *testing.T) {
 }
 
 // TestRunPreflightCheck_TopLevelNonPlainBraceFormNotValidated characterizes
-// the non-plain brace edge case for the top-level call site (FR-005, spec
-// US2-1 edge case): ${VAR:-default} is not a plain ${NAME} reference, so the
+// the non-plain brace edge case for the top-level call site: ${VAR:-default}
+// is not a plain ${NAME} reference, so the
 // pre-execution rejection scan does not match it even though VAR is outside
 // the preflight environment. The command runs, and os.Expand treats the whole
 // brace content as an unset name — the form expands to empty, never to its
@@ -389,8 +389,8 @@ func TestRunPreflightCheck_TopLevelNonPlainBraceFormNotValidated(t *testing.T) {
 
 // TestRunPreflightCheck_TopLevelChildEnvExclusion characterizes the
 // credential-safe child-environment contract for the top-level call site
-// (FR-004, spec US2-3): runAgent invokes the shared executor with source
-// label "preflight_check" (research.md D2), so the check's child process
+// (#8721, #8722): runAgent invokes the shared executor with source
+// label "preflight_check", so the check's child process
 // sees exactly the host PATH, HOME, and TMPDIR (only when set), the
 // runner-forced FULLSEND_DIR and PYTHONDONTWRITEBYTECODE, and non-credential
 // variables declared via env.runner (or the deprecated runner_env — both
@@ -551,9 +551,9 @@ func captureTopLevelPreflightChildEnv(t *testing.T, runnerEnv map[string]string)
 }
 
 // TestRunPreflightCheck_TopLevelDiagnosticRedaction characterizes the
-// diagnostic-redaction contract for the top-level call site (FR-004, spec
-// US2-2, SC-003): runAgent invokes the shared executor with source label
-// "preflight_check" (research.md D2), so a failing or timing-out top-level
+// diagnostic-redaction contract for the top-level call site
+// (#8721, #8722): runAgent invokes the shared executor with source label
+// "preflight_check", so a failing or timing-out top-level
 // check whose declared runner-env values include a secret reports only
 // redacted command text and output — the secret value never appears in the
 // failure or timeout diagnostic. SENTINEL_SECRET is a non-credential name,
@@ -561,7 +561,7 @@ func captureTopLevelPreflightChildEnv(t *testing.T, runnerEnv map[string]string)
 // TestRunPreflightCheck_TopLevelChildEnvExclusion's contract, not this
 // one): that is what splices the value into the expanded command text and
 // the captured output, the two channels the diagnostics report. The source
-// label field-qualifies both shapes (data-model.md Diagnostics):
+// label field-qualifies both shapes:
 // `preflight_check failed: <redacted cmd>` and `preflight_check timed out
 // after <bound>: <redacted cmd>`.
 func TestRunPreflightCheck_TopLevelDiagnosticRedaction(t *testing.T) {
@@ -575,7 +575,7 @@ func TestRunPreflightCheck_TopLevelDiagnosticRedaction(t *testing.T) {
 		// masked, never the value.
 		err := runPreflightCheck(context.Background(), printer, "preflight_check", "echo ${SENTINEL_SECRET}; exit 1", runnerEnv, "/fs/dir")
 		require.Error(t, err)
-		// Field-qualified failure (data-model.md error identity): the source
+		// Field-qualified failure: the source
 		// label names the top-level field, never the nested one.
 		assert.Contains(t, err.Error(), "preflight_check failed")
 		assert.NotContains(t, err.Error(), "validation_loop.preflight_check")

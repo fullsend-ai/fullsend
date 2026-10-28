@@ -812,10 +812,10 @@ func TestValidateRunnerEnvWith_ValidationLoopSchemaVarSet(t *testing.T) {
 }
 
 func TestValidateRunnerEnvWith_SkipsValidationLoopPreflightCheck(t *testing.T) {
-	// D9 of the preflight-check-credential-safety change: preflight_check
-	// references are validated by the allowlist scan in internal/cli
-	// (runPreflightCheck), not by this host-env validation, so an unset
-	// reference in the command is not an error at this gate.
+	// preflight_check references are validated by the allowlist scan in
+	// internal/cli (runPreflightCheck), not by this host-env validation
+	// (#8722), so an unset reference in the command is not an error at
+	// this gate.
 	h := &Harness{
 		Agent: "agents/test.md",
 		Role:  "test",
@@ -829,8 +829,7 @@ func TestValidateRunnerEnvWith_SkipsValidationLoopPreflightCheck(t *testing.T) {
 }
 
 func TestValidateRunnerEnvWith_SkipsTopLevelPreflightCheck(t *testing.T) {
-	// D5 of the top-level-preflight-check change, mirroring D9 of the
-	// preflight-check-credential-safety change for the nested field: the
+	// Mirroring the nested field (#8722): the
 	// top-level preflight_check is not scanned by this host-env validation.
 	// ValidateRunnerEnvWith runs before the ADR 0055 env.runner merge with
 	// a host-environment-only lookup, so it cannot see harness declarations —
@@ -1329,7 +1328,7 @@ preflight_check: 'python3 -c "import jsonschema"'
 
 	h, err := Load(path)
 	require.NoError(t, err)
-	// Load-only (data-model.md): preflight_check carries no structural
+	// Load-only: preflight_check carries no structural
 	// Validate() rule, so a document setting it must load cleanly and the
 	// literal host command must arrive verbatim (ADR 0128).
 	assert.Equal(t, `python3 -c "import jsonschema"`, h.PreflightCheck)
@@ -1346,7 +1345,7 @@ role: test
 
 	h, err := Load(path)
 	require.NoError(t, err)
-	// Absent key leaves the empty string: no gate, status-quo behavior (FR-001).
+	// Absent key leaves the empty string: no gate, status-quo behavior (#8722).
 	assert.Empty(t, h.PreflightCheck)
 }
 
