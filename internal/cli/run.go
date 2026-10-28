@@ -1229,6 +1229,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// Collected there (not here) so value-based deprecation checks still
 	// see declared references; emitted here (before env.runner is merged
 	// into RunnerEnv) so runner_env diagnostics reflect the declared YAML.
+	// The preflight_check fields also stay unexpanded here: their ${VAR}
+	// references are validated and expanded inside runPreflightCheck at
+	// step 1d, after this pass, so Lint() path-guards the authored command
+	// and run and lock lint the same value — a substituted host value can
+	// never reach the diagnostic.
 	// reservedSandboxEnvDiagnostics rides along: it names the env.sandbox
 	// keys this run will drop instead of exporting them (#3373).
 	for _, diag := range append(lintDiags, reservedSandboxEnvDiagnostics(h)...) {
