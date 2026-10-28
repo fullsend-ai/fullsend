@@ -45,7 +45,7 @@ func TestValidateSchemaVersion(t *testing.T) {
 			wantErrs: []string{
 				"schema_version 2 is not supported by this version of fullsend",
 				"maximum supported schema_version: 1",
-				"upgrade fullsend to a release that supports schema_version 2",
+				"upgrade fullsend to a release that supports it",
 			},
 		},
 		{
@@ -54,7 +54,7 @@ func TestValidateSchemaVersion(t *testing.T) {
 			wantErrs: []string{
 				"schema_version 99 is not supported by this version of fullsend",
 				"maximum supported schema_version: 1",
-				"upgrade fullsend to a release that supports schema_version 99",
+				"upgrade fullsend to a release that supports it",
 			},
 		},
 	}

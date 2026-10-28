@@ -71,7 +71,7 @@ func validateSchemaVersion(v *schemaVersionValue) error {
 		return fmt.Errorf("schema_version must be a positive integer, got %d", *v)
 	}
 	if *v > MaxSupportedSchemaVersion {
-		return fmt.Errorf("schema_version %d is not supported by this version of fullsend (maximum supported schema_version: %d); upgrade fullsend to a release that supports schema_version %d, or pin harness content declaring a supported version", *v, MaxSupportedSchemaVersion, *v)
+		return fmt.Errorf("schema_version %d is not supported by this version of fullsend (maximum supported schema_version: %d); upgrade fullsend to a release that supports it, or pin harness content declaring a supported version", *v, MaxSupportedSchemaVersion)
 	}
 	return nil
 }
