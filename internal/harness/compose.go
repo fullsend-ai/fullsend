@@ -780,18 +780,17 @@ func mergeBaseIntoChild(base, child *Harness) {
 	if child.Slug == "" {
 		child.Slug = base.Slug
 	}
-	// SchemaVersion (design D4, ADR 0127): an absent child inherits the base's
-	// explicit declaration — the merge table's scalar row, where child non-nil
-	// wins and base fills the gap. checkSchemaVersionsCompose (design D3)
-	// has already run at both merge sites (LoadWithBase and loadBaseChain), so
-	// the effective versions are equal and the inheritance only affects
-	// explicitness. Forge-path counterpart check (harness-composition
-	// invariant): schema_version is top-level only and not a ForgeConfig
-	// field — the same asymmetry as privilege_levels — so mergeForgeConfig
-	// needs no matching slot.
-	if child.SchemaVersion == nil {
-		child.SchemaVersion = base.SchemaVersion
-	}
+	// SchemaVersion (ADR 0127): deliberately not inherited. The merged
+	// harness keeps the child's own declaration — an absent child stays
+	// absent, which spells version 1, the same effective version
+	// checkSchemaVersionsCompose (already run at both merge sites,
+	// LoadWithBase and loadBaseChain) required the base to match. ADR 0127
+	// Decision 1 defers cross-version behavior to an explicit compatibility
+	// rule, so an explicit base declaration is never copied onto an absent
+	// child. Forge-path counterpart check (harness-composition invariant):
+	// schema_version is top-level only and not a ForgeConfig field — the
+	// same asymmetry as privilege_levels — so mergeForgeConfig needs no
+	// matching slot.
 	if child.Image == "" {
 		child.Image = base.Image
 	}
