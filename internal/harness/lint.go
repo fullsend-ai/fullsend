@@ -145,7 +145,7 @@ func (h *Harness) Lint() []Diagnostic {
 		diags = append(diags, Diagnostic{
 			Severity: SeverityWarning,
 			Field:    "validation_loop.preflight_check",
-			Message:  "validation_loop.preflight_check is deprecated; use the top-level preflight_check instead (see ADR 0129)",
+			Message:  "validation_loop.preflight_check is deprecated; use the top-level preflight_check instead and keep the nested check in place until every pinned consumer runs a CLI that executes the top-level field (see ADR 0129)",
 		})
 	}
 

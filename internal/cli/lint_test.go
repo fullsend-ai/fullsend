@@ -531,7 +531,9 @@ preflight_check: scripts/common-preflight.sh
 // harness-side by the harness-level tests):
 //
 //	validation_loop.preflight_check is deprecated; use the top-level
-//	preflight_check instead (see ADR 0129)
+//	preflight_check instead and keep the nested check in place until
+//	every pinned consumer runs a CLI that executes the top-level field
+//	(see ADR 0129)
 //
 // The nested value is a literal command, not a bare script path, so the
 // path-like guard stays quiet and the deprecation is the sole diagnostic —

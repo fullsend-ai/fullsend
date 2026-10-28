@@ -339,7 +339,9 @@ func TestLint_PreflightCheck_TopLevelWhitespaceOnly(t *testing.T) {
 // exactly this message:
 //
 //	validation_loop.preflight_check is deprecated; use the top-level
-//	preflight_check instead (see ADR 0129)
+//	preflight_check instead and keep the nested check in place until
+//	every pinned consumer runs a CLI that executes the top-level field
+//	(see ADR 0129)
 //
 // The negative subtests pin the concern's scope: a migrated harness
 // (top-level only — a literal command, so the path-like guard stays
@@ -375,6 +377,9 @@ func TestLint_PreflightCheck_NestedFieldDeprecation(t *testing.T) {
 		// "deprecated" plus the top-level preflight_check field.
 		assert.Contains(t, diags[0].Message, "deprecated")
 		assert.Contains(t, diags[0].Message, "top-level preflight_check")
+		// The retention clause keeps the migration window explicit
+		// (ADR 0129 Decision 5).
+		assert.Contains(t, diags[0].Message, "keep the nested check in place")
 	})
 
 	t.Run("top-level only emits no deprecation", func(t *testing.T) {
