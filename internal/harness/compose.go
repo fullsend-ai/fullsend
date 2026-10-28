@@ -259,7 +259,7 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 	// effective schema versions (absent = 1). child.Base still names the
 	// base reference for the error label; it is cleared below. A failure
 	// here fails the load, so no merge runs.
-	if err := checkSchemaVersionCompatibility(child, base, child.Base); err != nil {
+	if err := checkSchemaVersionsCompose(child, base, child.Base); err != nil {
 		return nil, nil, err
 	}
 
@@ -546,7 +546,7 @@ func loadBaseChain(
 		// base.Base still names the ancestor reference for the error
 		// label; it is cleared below. A failure here fails the whole
 		// chain's load, so no merge runs.
-		if err := checkSchemaVersionCompatibility(base, ancestorBase, base.Base); err != nil {
+		if err := checkSchemaVersionsCompose(base, ancestorBase, base.Base); err != nil {
 			return nil, nil, err
 		}
 
@@ -782,7 +782,7 @@ func mergeBaseIntoChild(base, child *Harness) {
 	}
 	// SchemaVersion (design D4, ADR 0127): an absent child inherits the base's
 	// explicit declaration — the merge table's scalar row, where child non-nil
-	// wins and base fills the gap. checkSchemaVersionCompatibility (design D3)
+	// wins and base fills the gap. checkSchemaVersionsCompose (design D3)
 	// has already run at both merge sites (LoadWithBase and loadBaseChain), so
 	// the effective versions are equal and the inheritance only affects
 	// explicitness. Forge-path counterpart check (harness-composition
