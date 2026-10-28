@@ -17,9 +17,15 @@ consumed by this contract. Bot identity and role resolution are specified by
 > `BotRoleResolver` contract in `internal/botidentity`, the mint's GitHub
 > `POST /v1/bot-role` lookup, and a non-label bot branch in `IsEventAuthorized()`.
 > That branch applies only to events that carry a lookup result
-> (`actor.role_verified` set). No production adapter performs the lookup yet,
-> so existing compatibility behavior remains authoritative for current events.
-> Non-GitHub lookup is not implemented.
+> (`actor.role_verified` set). On GitHub, `fullsend dispatch` performs the
+> lookup for bot actors of `gha-event` input through the mint at
+> `FULLSEND_MINT_URL`, before both `--route` decisions and harness dispatch,
+> except on label-added events. A no-match or a failed lookup denies the bot
+> (a `--route` skip with reason `bot has no registered role` or
+> `bot-role lookup failed`), never a command error. Other adapters (the
+> `json` input driver, pollers) do not perform the lookup yet, so their
+> compatibility behavior remains authoritative. Non-GitHub lookup is not
+> implemented.
 
 ## Role ordering
 
@@ -245,10 +251,13 @@ and may further narrow the dispatch.
 
 ### Bot-submitted reviews (GitHub)
 
-**Current compatibility behavior:** Until the resolver is implemented,
-`fullsend dispatch` continues to authorize a GitHub `review_submitted` event
-from a bot without requiring a collaborator permission or `actor.bot_role`.
-This existing exception is not evidence that the bot identity was resolved.
+**Current compatibility behavior:** With `gha-event` input, `fullsend
+dispatch` resolves the bot first, so the target behavior below applies. For
+events that carry no lookup result (`actor.role_verified` unset, such as
+`json` input), `fullsend dispatch` still authorizes a GitHub
+`review_submitted` event from a bot without requiring a collaborator
+permission or `actor.bot_role`. This compatibility exception is not evidence
+that the bot identity was resolved.
 
 **ADR 0107 target behavior:** After the resolver is implemented, a GitHub
 review event is authorized only when the provider classifies the actor as a

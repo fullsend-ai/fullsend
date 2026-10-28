@@ -5,6 +5,7 @@ import (
 	"errors"
 	"regexp"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -22,6 +23,7 @@ type fakeActorSCM struct {
 	comments     []forge.IssueComment
 	listErr      error
 	addedBodies  []string
+	addedLabels  []string
 	createdIssue []string
 	branches     []string
 	commits      []string
@@ -29,6 +31,11 @@ type fakeActorSCM struct {
 	prBodies     []string
 	paths        []string
 	commitErr    error
+}
+
+func (f *fakeActorSCM) AddIssueLabels(_ context.Context, _, _ string, _ int, labels ...string) error {
+	f.addedLabels = append(f.addedLabels, labels...)
+	return nil
 }
 
 func (f *fakeActorSCM) CreateBranch(_ context.Context, _, _, branch string) error {
@@ -153,6 +160,31 @@ func TestWhenActorPostsComment_Errors(t *testing.T) {
 	require.ErrorContains(t, whenActorPostsComment(w, actorTriage, "hello"), "no issue created")
 
 	err := whenActorPostsComment(&world.World{IssueNumber: 7}, actorTriage, "hello")
+	require.ErrorContains(t, err, "TEST_ACTOR_TRIAGE_PAT not set")
+}
+
+func TestWhenActorLabelsIssue(t *testing.T) {
+	t.Parallel()
+
+	for _, actor := range []string{actorWrite, actorTriage} {
+		w, drivers := actorWorld()
+		w.IssueNumber = 7
+		require.NoError(t, whenActorLabelsIssue(w, actor, "do-it"), actor)
+		assert.Equal(t, []string{"do-it"}, drivers[actor].addedLabels, actor)
+		assert.Empty(t, drivers["default"].addedLabels, actor)
+		assert.False(t, w.ScenarioStart.IsZero(), actor)
+	}
+
+	w, _ := actorWorld()
+	w.IssueNumber = 7
+	start := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	w.ScenarioStart = start
+	require.NoError(t, whenActorLabelsIssue(w, actorWrite, "do-it"))
+	assert.Equal(t, start, w.ScenarioStart, "an earlier trigger time is kept")
+
+	w, _ = actorWorld()
+	require.ErrorContains(t, whenActorLabelsIssue(w, actorTriage, "do-it"), "no issue created")
+	err := whenActorLabelsIssue(&world.World{IssueNumber: 7}, actorTriage, "do-it")
 	require.ErrorContains(t, err, "TEST_ACTOR_TRIAGE_PAT not set")
 }
 
@@ -328,4 +360,76 @@ func TestWhenIssueOpenedForOwnersAuth_SelectsDriver(t *testing.T) {
 
 	err := whenIssueOpenedForOwnersAuth(&world.World{RepoOwner: "org", RepoName: "repo"}, actorTriage)
 	require.ErrorContains(t, err, "TEST_ACTOR_TRIAGE_PAT not set")
+}
+
+// reviewLabelSCM records the label-carrying issue, the closed issue and
+// the submitted reviews.
+type reviewLabelSCM struct {
+	fakeActorSCM
+
+	issueLabels []string
+	closed      []int
+	reviews     []string
+	createErr   error
+	closeErr    error
+}
+
+func (f *reviewLabelSCM) CreateIssue(_ context.Context, _, _, _, _ string, labels ...string) (*forge.Issue, error) {
+	if f.createErr != nil {
+		return nil, f.createErr
+	}
+	f.issueLabels = append(f.issueLabels, labels...)
+	return &forge.Issue{Number: 77}, nil
+}
+
+func (f *reviewLabelSCM) CloseIssue(_ context.Context, _, _ string, number int) error {
+	f.closed = append(f.closed, number)
+	return f.closeErr
+}
+
+func (f *reviewLabelSCM) SubmitPullRequestReview(_ context.Context, _, _ string, _ int, event string) error {
+	f.reviews = append(f.reviews, event)
+	return nil
+}
+
+func TestGivenLabelExists(t *testing.T) {
+	t.Parallel()
+
+	d := &reviewLabelSCM{}
+	w := &world.World{SCM: d, RepoOwner: "org", RepoName: "repo"}
+	require.NoError(t, givenLabelExists(w, "do-it"))
+	assert.Equal(t, []string{"do-it"}, d.issueLabels)
+	assert.Equal(t, []int{77}, d.closed, "the throwaway issue is closed")
+	assert.Zero(t, w.IssueNumber, "the scenario's issue is left alone")
+
+	require.ErrorContains(t, givenLabelExists(&world.World{SCM: d}, "do-it"), "no repo configured")
+
+	failing := &reviewLabelSCM{createErr: errors.New("boom")}
+	err := givenLabelExists(&world.World{SCM: failing, RepoOwner: "org", RepoName: "repo"}, "do-it")
+	require.ErrorContains(t, err, `creating label "do-it"`)
+
+	closeFails := &reviewLabelSCM{closeErr: errors.New("nope")}
+	require.ErrorContains(t, givenLabelExists(&world.World{SCM: closeFails, RepoOwner: "org", RepoName: "repo"}, "do-it"), "nope")
+}
+
+func TestWhenActorSubmitsReviewComment(t *testing.T) {
+	t.Parallel()
+
+	write := &reviewLabelSCM{}
+	w := &world.World{
+		SCM:        &reviewLabelSCM{},
+		WriteSCM:   write,
+		WriteLogin: "fstest-write",
+		RepoOwner:  "org",
+		RepoName:   "repo",
+		PRNumber:   5,
+	}
+	before := time.Now().Truncate(time.Second)
+	require.NoError(t, whenActorSubmitsReviewComment(w, actorWrite))
+	assert.Equal(t, []string{"COMMENT"}, write.reviews)
+	assert.False(t, w.ScenarioStart.Before(before))
+
+	w.PRNumber = 0
+	require.ErrorContains(t, whenActorSubmitsReviewComment(w, actorWrite), "no pull request opened")
+	require.ErrorContains(t, whenActorSubmitsReviewComment(w, actorTriage), "TEST_ACTOR_TRIAGE_PAT not set")
 }

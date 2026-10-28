@@ -642,6 +642,15 @@ threshold follows the harness `role:`:
   [OWNERS authorization](owners-file-authorization.md) is enabled.
 - Any other `role:` — the actor needs `write`.
 
+These thresholds apply to human actors. On GitHub, `fullsend dispatch` does
+not read a permission level for a bot. For a non-label event, it asks the mint
+for the Fullsend role registered for the bot, using the `FULLSEND_MINT_URL`
+variable and the job's Actions OIDC token, and exposes it to triggers as
+`event.actor.bot_role`. A bot that is not registered with a Fullsend role, or
+whose lookup fails, gets `actor.role: "none"` and is denied. Label-added events
+skip the lookup. See
+[ADR 0107](../../ADRs/0107-bot-identity-resolution-for-dispatch-authorization.md).
+
 GitLab uses its own stage router, which applies the same triage and write
 split to slash commands. The GitLab agent job also requires the event actor
 to hold Developer access or higher for every stage except retro and

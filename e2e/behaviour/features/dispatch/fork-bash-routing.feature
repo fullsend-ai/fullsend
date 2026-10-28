@@ -2,7 +2,9 @@ Feature: Fork PR bash routing smoke
 
   Verify that a fork pull request dispatches through the bash routing
   path (reusable-dispatch.yml route job) on a per-repo installation.
-  This is a time-boxed guard until harness CEL cutover (#2902).
+  This is a time-boxed guard until harness CEL cutover (#2902). It
+  owns bash routing only; actor authorization is owned by
+  platform/actor-authorization.feature.
 
   Background:
     Given the enrolled test repository

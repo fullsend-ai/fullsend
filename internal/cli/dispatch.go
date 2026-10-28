@@ -116,13 +116,21 @@ func runDispatch(ctx context.Context, opts dispatchOpts) error {
 		return err
 	}
 
+	printer := ui.New(os.Stderr)
+	// Resolve a GitHub bot actor's registered role before CEL routing and
+	// harness dispatch authorization (ADR 0107). A failed lookup denies
+	// the bot instead of failing the command.
+	if inDriver == "gha-event" {
+		applyBotRoleLookup(ctx, event, newDispatchBotRoleResolverFn(), printer)
+	}
+
 	if route != "" {
 		decision, err := routeBuiltinAgent(ctx, routeOpts{
 			agent:       route,
 			configDir:   opts.configDir,
 			event:       event,
 			forgeClient: client,
-			printer:     ui.New(os.Stderr),
+			printer:     printer,
 		})
 		if err != nil {
 			return err

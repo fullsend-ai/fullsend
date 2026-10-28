@@ -26,9 +26,11 @@ scope covers GitHub, GitLab, and Jira** (see [Scope](#scope-v1)).
 > **ADR 0107 target contract — partially implemented:** The bot-specific actor
 > fields and lookup semantics described below are normative design. The Go
 > event types (`bot_role`, `role_verified` on the actor) and the dispatch
-> authorization gate that enforces them exist, but no production adapter emits
-> the fields yet. Existing compatibility behavior remains authoritative until
-> adapters are migrated.
+> authorization gate that enforces them exist. GitHub `gha-event` input to
+> `fullsend dispatch` runs the bot-role lookup and sets both fields for bot
+> actors on non-label events; other adapters do not emit them yet. Existing
+> compatibility behavior remains authoritative until those adapters are
+> migrated.
 
 ## Scope (v1)
 
@@ -147,8 +149,9 @@ Authorization therefore follows the identity kind: human permission thresholds
 for humans, and recognized bot identity for bots.
 `fullsend dispatch` applies the same identity lookup as webhook paths.
 If that lookup returns no recognized role or fails/unverifiable, authorization
-is denied. These lookup and denial rules are ADR 0107 target behavior and are
-not yet enforced by the production runtime.
+is denied. The GitHub `gha-event` path of `fullsend dispatch` enforces these
+lookup and denial rules for bot actors on non-label events; other adapters
+still follow the compatibility contract until they adopt ADR 0107.
 
 ### Transition sub-objects
 
@@ -237,7 +240,8 @@ This is the ADR 0107 target representation. The Go `normevent.Actor` type
 carries both fields (omitted when unset), `internal/botidentity`
 (`ApplyBotRoleResult`) projects a lookup outcome onto them, and the dispatch
 gate denies a bot with `role_verified` set but no recognized `bot_role` on
-non-label paths. The production adapters do not emit the fields yet, so
+non-label paths. Only the GitHub `gha-event` path of `fullsend dispatch`
+sets the fields today, and only for bot actors on non-label events, so
 triggers that read them must guard with `has()`.
 
 ### Fork security (`state.change_proposal.is_fork`)
@@ -331,8 +335,9 @@ fixtures for ADR 0107 are under
 ## Examples
 
 See [`examples/`](examples/). The `examples/adr-0107/` subdirectory contains
-target representations and is not emitted until an adapter adopts the ADR 0107
-target implementation.
+target representations. Only the GitHub `gha-event` path of `fullsend
+dispatch` emits them today; other adapters do not emit them until they adopt
+the ADR 0107 target implementation.
 
 ## Execution ref projection
 
