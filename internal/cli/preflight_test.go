@@ -121,7 +121,9 @@ func TestPreflightEnv_InvalidKeysSkipped(t *testing.T) {
 	}
 	assert.Equal(t, "declared", env["SENTINEL"])
 	assert.Equal(t, "/fs/dir", env["FULLSEND_DIR"])
+}
 
+func TestBuildPreflightEnv_InvalidKeysSkipped(t *testing.T) {
 	list := buildPreflightEnv(map[string]string{"GH_TOKEN=": "smuggled-token", "FULLSEND_DIR=": "/smuggled/dir"}, "/fs/dir")
 	joined := strings.Join(list, "\n")
 	assert.NotContains(t, joined, "smuggled-token", "a key containing = must not smuggle a refused credential into the child")
