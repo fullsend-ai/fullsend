@@ -152,7 +152,7 @@ agent: agents/child.md
 // loadBaseChain surfaces that failure through the child's LoadWithBase,
 // naming the offending base file. The guard's mixed-version error is not
 // reachable through parse while every version above 1 is rejected at load;
-// TestCheckSchemaVersionCompatibility_ConstructedMixedVersions covers that
+// TestCheckSchemaVersionsCompose_ConstructedMixedVersions covers that
 // path directly.
 func TestLoadWithBase_LocalBase_UnsupportedSchemaVersion(t *testing.T) {
 	dir := t.TempDir()
@@ -182,7 +182,7 @@ agent: agents/child.md
 	assert.ErrorContains(t, err, "base.yaml")
 }
 
-// TestCheckSchemaVersionCompatibility_ConstructedMixedVersions reaches the
+// TestCheckSchemaVersionsCompose_ConstructedMixedVersions reaches the
 // D3 guard directly with constructed Harness values: parse rejects every
 // effective version above 1 (design D2), so a base with effective version 2
 // cannot come from a file — this is the state LoadWithBase would hand the
