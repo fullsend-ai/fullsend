@@ -1,0 +1,146 @@
+{
+  "schema_version": 1,
+  "exports": {
+    "always": [
+      "FULLSEND_OUTPUT_DIR",
+      "FULLSEND_ROLE",
+      "FULLSEND_TARGET_REPO_DIR",
+      "PATH"
+    ],
+    "conditional": {
+      "FULLSEND_EGRESS_ALLOWLIST": "an SSRF egress allowlist is configured, including the auto-merged forge egress entry; only the claude, codex, and pi bootstraps append hook env, so it is unreachable under opencode",
+      "FULLSEND_FETCH_TOKEN": "the runtime fetch service is enabled (ADR 0038)",
+      "FULLSEND_FETCH_URL": "the runtime fetch service is enabled (ADR 0038)",
+      "FULLSEND_ITERATION_DEADLINE": "writeIterationEnv succeeds; the run warns and continues when it fails",
+      "FULLSEND_OUTPUT_FILE": "the legacy runner_env FULLSEND_OUTPUT_FILE is set",
+      "FULLSEND_OUTPUT_SCHEMA": "an output schema is configured (validation_loop.schema, or the legacy FULLSEND_OUTPUT_SCHEMA runner env) and its file uploads into the sandbox",
+      "FULLSEND_SLUG": "the harness sets a slug",
+      "FULLSEND_TIMEOUT_MINUTES": "writeIterationEnv succeeds; the run warns and continues when it fails",
+      "FULLSEND_TRACE_ID": "trace-ID injection succeeds; the run warns and continues when it fails",
+      "TIRITH_FAIL_ON": "security.sandbox_hooks.tirith.fail_on is set; only the claude, codex, and pi bootstraps append hook env, so it is unreachable under opencode",
+      "TIRITH_REQUIRED": "Tirith scanning is required (security.sandbox_hooks.tirith.enabled, default true); only the claude, codex, and pi bootstraps append hook env, so it is unreachable under opencode",
+      "TRACEPARENT": "writeIterationEnv succeeds; the run warns and continues when it fails"
+    },
+    "runtime_specific": {
+      "claude": [
+        "CLAUDE_CONFIG_DIR"
+      ],
+      "codex": [
+        "CODEX_HOME",
+        "FULLSEND_CODEX_HOOK_DIGESTS",
+        "FULLSEND_CODEX_SPAWN_DIGESTS",
+        "FULLSEND_RUNTIME",
+        "RUST_LOG"
+      ],
+      "opencode": [
+        "FULLSEND_RUNTIME",
+        "GOOGLE_CLOUD_LOCATION",
+        "GOOGLE_CLOUD_PROJECT",
+        "OPENCODE_CONFIG_DIR",
+        "OPENCODE_DISABLE_EXTERNAL_SKILLS",
+        "OPENCODE_DISABLE_PROJECT_CONFIG"
+      ],
+      "pi": [
+        "FULLSEND_PI_CHILD_BIN",
+        "FULLSEND_PI_CHILD_NODE",
+        "FULLSEND_PI_HOOK_PATH",
+        "FULLSEND_PI_HOOK_PYTHON",
+        "FULLSEND_PI_MANIFEST",
+        "FULLSEND_PI_MANIFEST_SHA256",
+        "FULLSEND_RUNTIME",
+        "GOOGLE_CLOUD_LOCATION",
+        "GOOGLE_CLOUD_PROJECT",
+        "JITI_FS_CACHE",
+        "PI_CODING_AGENT_DIR",
+        "PI_CODING_AGENT_SESSION_DIR",
+        "PI_OFFLINE",
+        "PI_SKIP_VERSION_CHECK",
+        "PI_TELEMETRY",
+        "XAI_VERTEX_PROJECT_ID"
+      ]
+    }
+  },
+  "harness_delivered": {
+    "ANTHROPIC_VERTEX_PROJECT_ID": {
+      "provenance": "fullsend agent new Vertex scaffold (internal/agentnew); the fleet delivers these plus GOOGLE_CLOUD_PROJECT and ANTHROPIC_DEFAULT_SONNET_MODEL through env/gcp-vertex.env in fullsend-ai/agents",
+      "runner_guaranteed": false
+    },
+    "CLAUDE_CODE_USE_VERTEX": {
+      "provenance": "fullsend agent new Vertex scaffold (internal/agentnew); the fleet delivers these plus GOOGLE_CLOUD_PROJECT and ANTHROPIC_DEFAULT_SONNET_MODEL through env/gcp-vertex.env in fullsend-ai/agents",
+      "runner_guaranteed": false
+    },
+    "CLOUD_ML_REGION": {
+      "provenance": "fullsend agent new Vertex scaffold (internal/agentnew); the fleet delivers these plus GOOGLE_CLOUD_PROJECT and ANTHROPIC_DEFAULT_SONNET_MODEL through env/gcp-vertex.env in fullsend-ai/agents",
+      "runner_guaranteed": false
+    },
+    "GOOGLE_APPLICATION_CREDENTIALS": {
+      "provenance": "fullsend agent new Vertex scaffold (internal/agentnew); the fleet delivers these plus GOOGLE_CLOUD_PROJECT and ANTHROPIC_DEFAULT_SONNET_MODEL through env/gcp-vertex.env in fullsend-ai/agents",
+      "runner_guaranteed": false
+    }
+  },
+  "reserved": [
+    "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+    "ACTIONS_ID_TOKEN_REQUEST_URL",
+    "ALL_PROXY",
+    "BASH_ENV",
+    "CDPATH",
+    "CURL_CA_BUNDLE",
+    "DYLD_INSERT_LIBRARIES",
+    "ENV",
+    "FULLSEND_FETCH_TOKEN",
+    "FULLSEND_FETCH_URL",
+    "FULLSEND_GCP_OIDC_AUTH_FILE",
+    "FULLSEND_GCP_OIDC_URL",
+    "FULLSEND_GCP_PROJECT_ID",
+    "FULLSEND_GCP_WIF_PROVIDER",
+    "FULLSEND_GITHUB_RUNNER_SECRETS",
+    "FULLSEND_GITHUB_RUNNER_SECRETS_FILE",
+    "FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN",
+    "FULLSEND_INFERENCE_GATEWAY_API_KEY",
+    "FULLSEND_ITERATION_DEADLINE",
+    "FULLSEND_OPENAI_API_KEY",
+    "FULLSEND_OPENAI_AUDIENCE",
+    "FULLSEND_OPENAI_IDENTITY_PROVIDER_ID",
+    "FULLSEND_OPENAI_SERVICE_ACCOUNT_ID",
+    "FULLSEND_OUTPUT_DIR",
+    "FULLSEND_OUTPUT_FILE",
+    "FULLSEND_OUTPUT_SCHEMA",
+    "FULLSEND_ROLE",
+    "FULLSEND_RUNNER_PATH",
+    "FULLSEND_SLUG",
+    "FULLSEND_TARGET_REPO_DIR",
+    "FULLSEND_TIMEOUT_MINUTES",
+    "FULLSEND_TRIGGER_TOKEN",
+    "FULLSEND_WEBHOOK_SECRET",
+    "GH_WORKFLOW_TOKEN",
+    "GIT_ASKPASS",
+    "GIT_CONFIG_GLOBAL",
+    "GIT_EXEC_PATH",
+    "GIT_SSH_COMMAND",
+    "GIT_TEMPLATE_DIR",
+    "HOME",
+    "HOSTALIASES",
+    "HTTPS_PROXY",
+    "HTTP_PROXY",
+    "IFS",
+    "JAVA_TOOL_OPTIONS",
+    "LD_AUDIT",
+    "LD_LIBRARY_PATH",
+    "LD_PRELOAD",
+    "NODE_EXTRA_CA_CERTS",
+    "NODE_OPTIONS",
+    "NO_PROXY",
+    "OPENAI_API_KEY",
+    "PATH",
+    "PERL5OPT",
+    "PROMPT_COMMAND",
+    "PYTHONPATH",
+    "PYTHONSTARTUP",
+    "RUBYOPT",
+    "SHELL",
+    "SSL_CERT_DIR",
+    "SSL_CERT_FILE",
+    "TRACEPARENT"
+  ],
+  "deprecated": []
+}

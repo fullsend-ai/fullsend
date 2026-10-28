@@ -615,6 +615,12 @@ Vendoring commit messages use title + body (upload and stale delete). `admin ins
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+The `bootstrapEnv()` writes and the `iteration.env` names in this diagram are
+the runner's exports. The full, machine-checkable inventory — what every
+sandbox receives, per gate and per runtime, and what arrives only through
+harness configuration — is the generated [sandbox environment
+contract](../../normative/sandbox-env/v1/README.md).
+
 ### Sandbox Constants
 
 ```go

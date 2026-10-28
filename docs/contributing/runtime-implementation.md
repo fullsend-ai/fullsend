@@ -61,6 +61,14 @@ content that must be updated whenever a runtime is added or renamed.
   if the runtime is user-selectable).
 - [x] `internal/config/config_test.go` — update any assertion on
   `ValidRuntimes()` to include the new name.
+- [x] `internal/cli/env_manifest_collector_test.go` and
+  `internal/cli/env_manifest_golden_test.go` — the runtime's `EnvExports()`
+  names must land in the generated
+  [sandbox environment contract](../normative/sandbox-env/v1/README.md);
+  registering a runtime without a manifest decision fails
+  `TestEnvManifestRuntimeEnumeration`, and `TestEnvManifestGolden` pins the
+  committed manifest content (regenerate with
+  `go test ./internal/cli -run TestEnvManifestGolden -update`).
 
 **CLI:**
 
@@ -212,6 +220,7 @@ Harness `security.fail_mode` controls whether critical findings **block** the ru
 | `runtime.GatewayRouteRuntime` | Optional — for a runtime that carries the inference gateway route (ADR 0137). `PrepareGatewayRun(sandboxName, GatewayRun)` receives the resolved `inference.gateway` block, the committed `models_file` bytes and the gateway base URL before Bootstrap, and `ClearGatewayRun` releases it at the end of the run. `GatewayCredentialSeed() CredentialSeed` names the route's placeholder env key, `sh` seed fragment and credential file, which the runner re-runs after each token refresh, independently of the OpenAI route's seed (`OpenAIRouteSeed`). pi, codex and Claude Code implement it. pi and Claude Code read the placeholder before the agent-writable `.env` and own the route's environment after it. pi, and Claude Code in the `oidc` mode, seed the placeholder into a token file with the shared `gatewayTokenSeed`, and codex with its own seed; both write through `orderedSeedWrite`; Claude Code in the `api-key` mode writes no token file: it captures the placeholder in a readonly shell variable and exports it as `ANTHROPIC_AUTH_TOKEN` after `.env` (as `ANTHROPIC_API_KEY`, with `ANTHROPIC_AUTH_TOKEN` cleared, when the block sets `messages_auth_header: x-api-key`). Claude Code ignores the block's model list, and its `GatewayRun` registration also feeds its `--settings` document: the route pins and the helper, merged with the hooks and passed inline on gateway runs, never as the uploaded `hooks.json` path. The runner refuses a `gateway/` model on a runtime that does not implement it |
 
 | `runtime.ProviderResolver` | Optional — multi-provider runtimes return the OTEL GenAI serving-endpoint identity for the model the run will call (`ProviderFor`). The runner writes it as both `gen_ai.system` and `gen_ai.provider.name`. Single-vendor runtimes omit this and `GenAISystemFor` falls back to `System()` |
+| `runtime.LaunchEnvExporter` | Optional — a runtime whose launch command exports environment variables beyond `EnvExports()` lists those bare names via `LaunchEnvExports()` (flat list, including provider-conditional names). The sandbox env manifest collector unions them into that runtime's `runtime_specific` set (`docs/normative/sandbox-env/v1/`). pi, codex, and opencode implement it; runtimes whose launch commands export nothing new omit it |
 
 **Per-iteration cleanup contract.** When a validation retry reuses the sandbox, the runner calls `ClearIterationArtifacts` before the next iteration. Every runtime runs the shared `clearStrayProcesses` sweep first (it terminates the processes the previous iteration left running as the sandbox user, sparing the exec channel and the `sandbox.KeepAliveCommand` main process), then deletes the iteration's output, sessions and debug log. A failed sweep is reported as a warning and never fails the iteration. The runner holds its sandbox lock (`withSandboxLock` in `internal/cli/run.go`) across the call so the credential refreshers' uploads are never killed mid-write. The same sweep runs as `TerminateStrayProcesses` right after an iteration ends at its budget: OpenShell's exec timeout drops the relay but leaves the agent's processes running, and a killed iteration is not followed by another `ClearIterationArtifacts` (see [`fullsend run` § Budget and deadline](../cli/run.md#budget-and-deadline)).
 
@@ -381,6 +390,12 @@ Two traps when reproducing by hand:
 | `FULLSEND_TOOL_ALLOWLIST` | `tool_allowlist_pretool.py` | fail-closed when unset |
 | `FULLSEND_CANARY_TOKEN` | both canary hooks | no-ops when empty; supply it via harness `env.sandbox`/`host_files` |
 | `FULLSEND_TRACE_ID` | all scripts | correlates findings with the run |
+
+The runner-written rows in this table are entries in the generated
+[sandbox environment contract](../normative/sandbox-env/v1/README.md) — the
+machine-checkable manifest of every variable the runner injects into the
+sandbox, per gate and per runtime, and of the keys it reserves from harness
+override. The manifest is the source of truth; this table is prose.
 
 ### Suppression reachability
 

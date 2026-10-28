@@ -106,6 +106,21 @@ func (r CodexRuntime) OpenAIAuthSeed() string {
 		`fullsend: writing the codex token file failed`, "exit 1")
 }
 
+// LaunchEnvExports implements LaunchEnvExporter: the environment names
+// buildCodexRunCommand sets beyond EnvExports. RUST_LOG is always set
+// (stderr filtering for the codex server); the two digest variables are
+// conditional on sandbox hooks being enabled and are recorded flat anyway:
+// runtime_specific asks whether the runtime can set the name, not whether
+// every configuration does.
+func (CodexRuntime) LaunchEnvExports() []string {
+	return []string{
+		codexRuntimeEnv,
+		"RUST_LOG",
+		codexHookDigestsEnv,
+		codexSpawnDigestsEnv,
+	}
+}
+
 // Compile-time interface assertions.
 var (
 	_ Runtime           = CodexRuntime{}
@@ -113,5 +128,6 @@ var (
 	_ DebugLogNamer     = CodexRuntime{}
 	_ ProviderResolver  = CodexRuntime{}
 
+	_ LaunchEnvExporter      = CodexRuntime{}
 	_ OpenAICredentialSeeder = CodexRuntime{}
 )
