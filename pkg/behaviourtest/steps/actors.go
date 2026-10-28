@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/cucumber/godog"
@@ -151,6 +152,16 @@ func givenLabelExists(w *world.World, label string) error {
 		"Creates the label "+label+" for a behaviour scenario.", label)
 	if err != nil {
 		return fmt.Errorf("creating label %q: %w", label, err)
+	}
+	// The forge's CreateIssue retries without labels when it rejects them
+	// and still succeeds, so check that the issue carries the label.
+	if !slices.Contains(issue.Labels, label) {
+		closeErr := w.SCM.CloseIssue(ctx, w.RepoOwner, w.RepoName, issue.Number)
+		err := fmt.Errorf("creating label %q: issue #%d was created without it (labels %v)", label, issue.Number, issue.Labels)
+		if closeErr != nil {
+			err = fmt.Errorf("%w; closing the throwaway issue: %v", err, closeErr)
+		}
+		return err
 	}
 	return w.SCM.CloseIssue(ctx, w.RepoOwner, w.RepoName, issue.Number)
 }

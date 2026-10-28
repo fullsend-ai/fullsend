@@ -3,6 +3,7 @@ package steps
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -47,6 +48,12 @@ type botActorSCM struct {
 
 	comments []string
 	labels   []string
+	reviews  []string
+}
+
+func (f *botActorSCM) SubmitPullRequestReview(_ context.Context, _, _ string, number int, event string) error {
+	f.reviews = append(f.reviews, fmt.Sprintf("#%d %s", number, event))
+	return nil
 }
 
 func (f *botActorSCM) AddComment(_ context.Context, _, _ string, _ int, body string) (*forge.IssueComment, error) {
@@ -165,7 +172,16 @@ func TestRenderBotActorWorkflow_RejectsUnsafeValues(t *testing.T) {
 		"name":           func(s *botActorWorkflowSpec) { s.Name = "a b" },
 		"repo name":      func(s *botActorWorkflowSpec) { s.RepoName = "a/b" },
 		"branch":         func(s *botActorWorkflowSpec) { s.Branch = "x'y" },
+		"branch form":    func(s *botActorWorkflowSpec) { s.Branch = "behaviour/bot-actor-0a1b2c3d/../x" },
+		"branch other":   func(s *botActorWorkflowSpec) { s.Branch = "feature/other" },
+		"branch name":    func(s *botActorWorkflowSpec) { s.Branch = "behaviour/bot-actor-ffffffff" },
+		"branch glob":    func(s *botActorWorkflowSpec) { s.Branch = "behaviour/bot-actor-*" },
 		"repo mismatch":  func(s *botActorWorkflowSpec) { s.Repo = "halfsend-03/other" },
+		"repo quote":     func(s *botActorWorkflowSpec) { s.Repo = "halfsend-03' x/test-repo-07" },
+		"repo newline":   func(s *botActorWorkflowSpec) { s.Repo = "halfsend-03\nx/test-repo-07" },
+		"repo expr":      func(s *botActorWorkflowSpec) { s.Repo = "${{ x }}/test-repo-07" },
+		"repo no owner":  func(s *botActorWorkflowSpec) { s.Repo = "test-repo-07" },
+		"repo nested":    func(s *botActorWorkflowSpec) { s.Repo = "a/b/test-repo-07" },
 	} {
 		spec := validBotActorSpec()
 		mutate(&spec)
@@ -192,6 +208,45 @@ func TestWhenBotActs_E2EBot(t *testing.T) {
 	assert.Equal(t, start, w.ScenarioStart, "a label keeps the start the comment set")
 
 	assert.ErrorContains(t, e2eBotActs(context.Background(), w, "delete", "x"), "unknown bot action")
+}
+
+func TestWhenBotActs_Review(t *testing.T) {
+	fastMintProbePolls(t)
+
+	t.Run("e2e bot", func(t *testing.T) {
+		w, scmDriver := botActorTestWorld(nil)
+		w.PRNumber = 5
+		before := time.Now().Truncate(time.Second)
+		require.NoError(t, whenBotActs(context.Background(), w, actorE2EBot, botActionReview, botReviewBody))
+
+		assert.Equal(t, []string{"#5 COMMENT"}, scmDriver.reviews)
+		assert.Empty(t, scmDriver.branches, "the e2e bot acts directly, without a workflow")
+		assert.False(t, w.ScenarioStart.Before(before))
+	})
+	t.Run("role bot", func(t *testing.T) {
+		w, scmDriver := botActorTestWorld(&forge.WorkflowRun{ID: 7, Status: "completed", Conclusion: "success"})
+		w.PRNumber = 5
+		require.NoError(t, whenBotActs(context.Background(), w, actorTriageBot, botActionReview, botReviewBody))
+
+		assert.Empty(t, scmDriver.reviews, "a role bot reviews from its workflow, not through the suite's driver")
+		var workflow string
+		for key, content := range scmDriver.branchFiles {
+			if strings.Contains(key, ".github/workflows/bot-actor-") {
+				workflow = string(content)
+			}
+		}
+		require.NotEmpty(t, workflow)
+		assert.Contains(t, workflow, "ROLE: 'triage'")
+		assert.Contains(t, workflow, "ISSUE: '5'", "the pull request number is the target")
+		assert.Contains(t, workflow, "ACTION: 'review'")
+		assert.Contains(t, workflow, "VALUE: '"+botReviewBody+"'")
+		assert.Contains(t, workflow, "/pulls/${ISSUE}/reviews")
+	})
+	t.Run("no pull request", func(t *testing.T) {
+		w, scmDriver := botActorTestWorld(nil)
+		assert.ErrorContains(t, whenBotActs(context.Background(), w, actorE2EBot, botActionReview, botReviewBody), "no pull request opened")
+		assert.Empty(t, scmDriver.reviews)
+	})
 }
 
 func TestWhenBotActs_RoleBot(t *testing.T) {
@@ -266,53 +321,57 @@ func TestBotActorAuthorizationFeature_RowsMatchSteps(t *testing.T) {
 	require.NoError(t, err)
 	defer f.Close()
 
-	var steps, header []string
-	var rows [][]string
-	inOutline := false
+	// scenario is one Scenario or Scenario Outline of the feature. A plain
+	// scenario has no header or rows and is expanded once as written.
+	type scenario struct {
+		name   string
+		steps  []string
+		header []string
+		rows   [][]string
+	}
+	var scenarios []*scenario
+	var current *scenario
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		switch {
-		case strings.HasPrefix(line, "Scenario Outline:"):
-			inOutline = true
-		case inOutline && (strings.HasPrefix(line, "Given ") || strings.HasPrefix(line, "When ") ||
+		case strings.HasPrefix(line, "Scenario Outline:"), strings.HasPrefix(line, "Scenario:"):
+			current = &scenario{name: line}
+			scenarios = append(scenarios, current)
+		case current != nil && (strings.HasPrefix(line, "Given ") || strings.HasPrefix(line, "When ") ||
 			strings.HasPrefix(line, "Then ") || strings.HasPrefix(line, "And ")):
-			steps = append(steps, line[strings.Index(line, " ")+1:])
-		case inOutline && strings.HasPrefix(line, "|"):
+			current.steps = append(current.steps, line[strings.Index(line, " ")+1:])
+		case current != nil && strings.HasPrefix(line, "|"):
 			var cells []string
 			for _, c := range strings.Split(strings.Trim(line, "|"), "|") {
 				cells = append(cells, strings.TrimSpace(c))
 			}
-			if header == nil {
-				header = cells
+			if current.header == nil {
+				current.header = cells
 			} else {
-				rows = append(rows, cells)
+				current.rows = append(current.rows, cells)
 			}
 		}
 	}
 	require.NoError(t, scanner.Err())
-	require.Equal(t, []string{"actor", "needs-review-bot", "needs-coder-bot", "needs-triage-bot", "on-label"}, header)
-	require.NotEmpty(t, rows)
+	require.Len(t, scenarios, 3, "the label outline, the registered bot review outline and the e2e bot review scenario")
 
 	patterns := []*regexp.Regexp{
 		regexp.MustCompile(`^the (` + actorAlternation + `) posts "([^"]+)" on the issue$`),
 		regexp.MustCompile(`^the (` + actorAlternation + `) labels the issue "([^"]+)"$`),
+		regexp.MustCompile(`^the (` + actorAlternation + `) submits a review comment on the pull request$`),
 		regexp.MustCompile(`^the (` + botActorAlternation + `) posts "([^"]+)" on the issue$`),
 		regexp.MustCompile(`^the (` + botActorAlternation + `) labels the issue "([^"]+)"$`),
+		regexp.MustCompile(`^the (` + botActorAlternation + `) submits a review comment on the pull request$`),
 		regexp.MustCompile(`^an issue$`),
+		regexp.MustCompile(`^a pull request is opened$`),
 		regexp.MustCompile(`^the label "([^"]+)" exists$`),
 		regexp.MustCompile(`^the harness "([^"]+)" workflow completes successfully$`),
+		regexp.MustCompile(`^the harness dispatch completes with an empty matrix$`),
 		regexp.MustCompile(`^the harness "([^"]+)" was dispatched exactly (\d+) times?$`),
 	}
-	actors := map[string]bool{}
-	for _, row := range rows {
-		require.Len(t, row, len(header))
-		values := map[string]string{}
-		for i, h := range header {
-			values[h] = row[i]
-		}
-		actors[values["actor"]] = true
-		for _, step := range steps {
+	requireStepsMatch := func(sc *scenario, values map[string]string) {
+		for _, step := range sc.steps {
 			expanded := step
 			for h, v := range values {
 				expanded = strings.ReplaceAll(expanded, "<"+h+">", v)
@@ -322,9 +381,34 @@ func TestBotActorAuthorizationFeature_RowsMatchSteps(t *testing.T) {
 			for _, p := range patterns {
 				matched = matched || p.MatchString(expanded)
 			}
-			assert.True(t, matched, "no step matches %q", expanded)
+			assert.True(t, matched, "%s: no step matches %q", sc.name, expanded)
 		}
 	}
+
+	actors := map[string]bool{}
+	for _, sc := range scenarios {
+		if sc.header == nil {
+			requireStepsMatch(sc, nil)
+			continue
+		}
+		require.Contains(t, sc.header, "actor", sc.name)
+		require.NotEmpty(t, sc.rows, sc.name)
+		for _, row := range sc.rows {
+			require.Len(t, row, len(sc.header), sc.name)
+			values := map[string]string{}
+			for i, h := range sc.header {
+				values[h] = row[i]
+			}
+			actors[values["actor"]] = true
+			requireStepsMatch(sc, values)
+		}
+	}
+	// The e2e bot's review is a plain scenario, so its actor is not in a row.
+	assert.Contains(t, scenarios[2].steps, "the e2e bot submits a review comment on the pull request")
+	actors[actorE2EBot] = true
+
+	require.Equal(t, []string{"actor", "needs-review-bot", "needs-coder-bot", "needs-triage-bot", "on-label"}, scenarios[0].header)
+	require.Equal(t, []string{"actor", "harness", "needs-review-bot", "needs-coder-bot", "needs-triage-bot"}, scenarios[1].header)
 	for actor := range botActorRoles {
 		assert.True(t, actors[actor], "no row for %s", actor)
 	}

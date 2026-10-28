@@ -43,11 +43,27 @@ const botActorAlternation = actorReviewBot + "|" + actorCoderBot + "|" + actorTr
 const (
 	botActionComment = "comment"
 	botActionLabel   = "label"
+	// botActionReview submits a COMMENT review on the scenario's pull
+	// request. The dispatch shim forwards a bot's pull_request_review
+	// event, unlike a bot's comment, so it reaches the dispatch-time
+	// bot-role lookup.
+	botActionReview = "review"
 )
+
+// botReviewBody is the body of the review a role bot submits.
+const botReviewBody = "Behaviour test review."
 
 // botActorValueRe bounds a comment body or label interpolated into the
 // pushed workflow: no quotes, backslashes, expression braces or newlines.
 var botActorValueRe = regexp.MustCompile(`^[A-Za-z0-9/._ -]+$`)
+
+// botActorRepoRe bounds the owner/repo of the leased repository
+// interpolated into the pushed workflow: two allowlisted components.
+var botActorRepoRe = regexp.MustCompile(`^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$`)
+
+// botActorBranchRe is the only branch form the pushed workflow accepts: the
+// generated "behaviour/bot-actor-<nonce>" name (see mintProbeNonce).
+var botActorBranchRe = regexp.MustCompile(`^behaviour/bot-actor-[0-9a-f]{8}$`)
 
 func registerBotActorSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the (`+botActorAlternation+`) posts "([^"]+)" on the issue$`, func(ctx context.Context, actor, body string) (context.Context, error) {
@@ -56,17 +72,27 @@ func registerBotActorSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the (`+botActorAlternation+`) labels the issue "([^"]+)"$`, func(ctx context.Context, actor, label string) (context.Context, error) {
 		return ctx, whenBotActs(ctx, world.FromContext(ctx), actor, botActionLabel, label)
 	})
+	sc.Step(`^the (`+botActorAlternation+`) submits a review comment on the pull request$`, func(ctx context.Context, actor string) (context.Context, error) {
+		return ctx, whenBotActs(ctx, world.FromContext(ctx), actor, botActionReview, botReviewBody)
+	})
 }
 
 // whenBotActs makes the named bot comment on or label the scenario's
-// issue. ScenarioStart is set before the bot acts, so the harness runs
-// the action starts are counted; a label leaves an earlier start alone,
-// so a comment and a label by the same bot count as one window.
+// issue, or submit a review on its pull request. ScenarioStart is set
+// before the bot acts, so the harness runs the action starts are counted;
+// a label leaves an earlier start alone, so a comment and a label by the
+// same bot count as one window.
 func whenBotActs(ctx context.Context, w *world.World, actor, action, value string) error {
-	if w.IssueNumber == 0 {
+	number := w.IssueNumber
+	if action == botActionReview {
+		if w.PRNumber == 0 {
+			return fmt.Errorf("no pull request opened")
+		}
+		number = w.PRNumber
+	} else if number == 0 {
 		return fmt.Errorf("no issue created")
 	}
-	if action == botActionComment || w.ScenarioStart.IsZero() {
+	if action == botActionComment || action == botActionReview || w.ScenarioStart.IsZero() {
 		// Run created_at has second precision (#7957).
 		w.ScenarioStart = time.Now().Truncate(time.Second)
 	}
@@ -77,7 +103,7 @@ func whenBotActs(ctx context.Context, w *world.World, actor, action, value strin
 	if !ok {
 		return fmt.Errorf("unknown bot actor %q", actor)
 	}
-	return roleBotActs(ctx, w, role, action, value)
+	return roleBotActs(ctx, w, role, action, value, number)
 }
 
 // e2eBotActs acts as the suite's own installation identity.
@@ -88,14 +114,16 @@ func e2eBotActs(ctx context.Context, w *world.World, action, value string) error
 		return err
 	case botActionLabel:
 		return w.SCM.AddIssueLabels(ctx, w.RepoOwner, w.RepoName, w.IssueNumber, value)
+	case botActionReview:
+		return w.SCM.SubmitPullRequestReview(ctx, w.RepoOwner, w.RepoName, w.PRNumber, "COMMENT")
 	default:
 		return fmt.Errorf("unknown bot action %q", action)
 	}
 }
 
-// roleBotActs pushes a workflow that acts as the role's bot and waits for
-// its run to succeed.
-func roleBotActs(ctx context.Context, w *world.World, role, action, value string) error {
+// roleBotActs pushes a workflow that acts as the role's bot on the issue or
+// pull request number and waits for its run to succeed.
+func roleBotActs(ctx context.Context, w *world.World, role, action, value string, number int) error {
 	if err := ensureScenarioRepo(w); err != nil {
 		return err
 	}
@@ -115,7 +143,7 @@ func roleBotActs(ctx context.Context, w *world.World, role, action, value string
 		Role:     role,
 		Repo:     w.RepoOwner + "/" + w.RepoName,
 		RepoName: w.RepoName,
-		Issue:    w.IssueNumber,
+		Issue:    number,
 		Action:   action,
 		Value:    value,
 	})
@@ -147,7 +175,7 @@ type botActorWorkflowSpec struct {
 	Role         string
 	Repo         string // owner/repo of the leased repository
 	RepoName     string
-	Issue        int
+	Issue        int // issue number, or the pull request number for a review
 	Action       string
 	Value        string
 }
@@ -160,11 +188,11 @@ func renderBotActorWorkflow(s botActorWorkflowSpec) ([]byte, error) {
 	if !mintProbeRoleRe.MatchString(s.Role) {
 		return nil, fmt.Errorf("bot actor: invalid role %q", s.Role)
 	}
-	if s.Action != botActionComment && s.Action != botActionLabel {
+	if s.Action != botActionComment && s.Action != botActionLabel && s.Action != botActionReview {
 		return nil, fmt.Errorf("bot actor: unknown action %q", s.Action)
 	}
 	if s.Issue <= 0 {
-		return nil, fmt.Errorf("bot actor: invalid issue number %d", s.Issue)
+		return nil, fmt.Errorf("bot actor: invalid issue or pull request number %d", s.Issue)
 	}
 	if !botActorValueRe.MatchString(s.Value) {
 		return nil, fmt.Errorf("bot actor: invalid %s value %q", s.Action, s.Value)
@@ -172,11 +200,11 @@ func renderBotActorWorkflow(s botActorWorkflowSpec) ([]byte, error) {
 	if !mintProbeRepoRe.MatchString(s.Name) || !mintProbeRepoRe.MatchString(s.RepoName) {
 		return nil, fmt.Errorf("bot actor: invalid name %q or repository %q", s.Name, s.RepoName)
 	}
-	if s.Branch == "" || strings.ContainsAny(s.Branch, "'\"\n\r\t {}$") {
+	if !botActorBranchRe.MatchString(s.Branch) || s.Branch != "behaviour/"+s.Name {
 		return nil, fmt.Errorf("bot actor: invalid branch %q", s.Branch)
 	}
-	if !strings.HasSuffix(s.Repo, "/"+s.RepoName) {
-		return nil, fmt.Errorf("bot actor: repository %q does not end in %q", s.Repo, s.RepoName)
+	if !botActorRepoRe.MatchString(s.Repo) || !strings.HasSuffix(s.Repo, "/"+s.RepoName) {
+		return nil, fmt.Errorf("bot actor: repository %q is not owner/%s", s.Repo, s.RepoName)
 	}
 	return []byte(fmt.Sprintf(botActorWorkflowTemplate,
 		s.Name, s.Branch, s.Role, s.Repo, s.RepoName, s.Issue, s.Action, s.Value)), nil
@@ -260,6 +288,10 @@ jobs:
             label)
               url="https://api.github.com/repos/${REPO}/issues/${ISSUE}/labels"
               payload="$(jq -nc --arg label "${VALUE}" '{labels: [$label]}')"
+              ;;
+            review)
+              url="https://api.github.com/repos/${REPO}/pulls/${ISSUE}/reviews"
+              payload="$(jq -nc --arg body "${VALUE}" '{event: "COMMENT", body: $body}')"
               ;;
             *)
               echo "unknown action ${ACTION}"

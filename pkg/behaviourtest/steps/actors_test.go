@@ -372,6 +372,9 @@ type reviewLabelSCM struct {
 	reviews     []string
 	createErr   error
 	closeErr    error
+	// dropLabels makes CreateIssue succeed without the requested labels,
+	// as the GitHub client does after a label validation error.
+	dropLabels bool
 }
 
 func (f *reviewLabelSCM) CreateIssue(_ context.Context, _, _, _, _ string, labels ...string) (*forge.Issue, error) {
@@ -379,7 +382,10 @@ func (f *reviewLabelSCM) CreateIssue(_ context.Context, _, _, _, _ string, label
 		return nil, f.createErr
 	}
 	f.issueLabels = append(f.issueLabels, labels...)
-	return &forge.Issue{Number: 77}, nil
+	if f.dropLabels {
+		return &forge.Issue{Number: 77}, nil
+	}
+	return &forge.Issue{Number: 77, Labels: labels}, nil
 }
 
 func (f *reviewLabelSCM) CloseIssue(_ context.Context, _, _ string, number int) error {
@@ -410,6 +416,17 @@ func TestGivenLabelExists(t *testing.T) {
 
 	closeFails := &reviewLabelSCM{closeErr: errors.New("nope")}
 	require.ErrorContains(t, givenLabelExists(&world.World{SCM: closeFails, RepoOwner: "org", RepoName: "repo"}, "do-it"), "nope")
+
+	// An issue created without the label fails setup and is still closed.
+	dropped := &reviewLabelSCM{dropLabels: true}
+	err = givenLabelExists(&world.World{SCM: dropped, RepoOwner: "org", RepoName: "repo"}, "do-it")
+	require.ErrorContains(t, err, `creating label "do-it": issue #77 was created without it`)
+	assert.Equal(t, []int{77}, dropped.closed, "the throwaway issue is closed")
+
+	droppedCloseFails := &reviewLabelSCM{dropLabels: true, closeErr: errors.New("nope")}
+	err = givenLabelExists(&world.World{SCM: droppedCloseFails, RepoOwner: "org", RepoName: "repo"}, "do-it")
+	require.ErrorContains(t, err, "was created without it")
+	require.ErrorContains(t, err, "nope")
 }
 
 func TestWhenActorSubmitsReviewComment(t *testing.T) {
