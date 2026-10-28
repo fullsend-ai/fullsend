@@ -488,16 +488,16 @@ allowed_remote_resources:
 	})
 }
 
-// TestLintCommand_PreflightCheck_TopLevelPathLikeWarns mirrors the nested
-// field's CLI surfacing test above for the top-level preflight_check
-// (FR-007, US2-4): fullsend lint must print the path-like authoring
-// warning — SeverityWarning, Field "preflight_check", the nested guard's
-// message shape (contract §7). Unlike the nested sibling, no script file
+// TestLintCommand_PreflightCheck_TopLevelPathLikeFails mirrors the nested
+// field's CLI surfacing test above for the top-level preflight_check:
+// fullsend lint fails on the path-like authoring diagnostic —
+// SeverityError, Field "preflight_check", the shared guard message shape
+// (ADR 0128 Decision 2). Unlike the nested sibling, no script file
 // fixture is needed: the top-level value is never fetched or stat-checked
-// (that is exactly the confusion the warning flags), so the diagnostic must
-// fire even though the path does not exist on disk. The harness-level
+// (that is exactly the confusion the diagnostic flags), so the diagnostic
+// must fire even though the path does not exist on disk. The harness-level
 // diagnostic shape is pinned by the harness-side tests.
-func TestLintCommand_PreflightCheck_TopLevelPathLikeWarns(t *testing.T) {
+func TestLintCommand_PreflightCheck_TopLevelPathLikeFails(t *testing.T) {
 	dir := t.TempDir()
 	cfg := `version: "1"
 agents:
@@ -514,25 +514,17 @@ preflight_check: scripts/common-preflight.sh
 `
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "my-agent.yaml"), []byte(harnessYAML), 0o644))
 
-	t.Run("warning without strict", func(t *testing.T) {
-		cmd := newLintCmd()
-		out, err := executeCmd(cmd, []string{"--fullsend-dir", dir})
-		require.NoError(t, err)
-		assert.Contains(t, out, "warning: preflight_check")
-		assert.Contains(t, out, "looks like a script path")
-		assert.Contains(t, out, "sh -c")
-	})
-
-	t.Run("fails with strict", func(t *testing.T) {
-		cmd := newLintCmd()
-		_, err := executeCmd(cmd, []string{"--fullsend-dir", dir, "--strict"})
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "lint found 1 warning-level diagnostic(s) (--strict)")
-	})
+	cmd := newLintCmd()
+	out, err := executeCmd(cmd, []string{"--fullsend-dir", dir})
+	require.Error(t, err)
+	assert.Contains(t, out, "error: preflight_check")
+	assert.Contains(t, out, "looks like a script path")
+	assert.Contains(t, out, "sh -c")
+	assert.Contains(t, err.Error(), "lint found 1 error-level diagnostic(s)")
 }
 
 // TestLintCommand_PreflightCheck_NestedFieldDeprecationWarns pins the CLI
-// surfacing of the nested-field deprecation warning (FR-007, US4-1/US4-3):
+// surfacing of the nested-field deprecation warning (ADR 0129 Decision 3):
 // fullsend lint must print the migration signal for a harness that sets
 // validation_loop.preflight_check — SeverityWarning, Field
 // "validation_loop.preflight_check", and exactly this message (pinned
@@ -554,7 +546,7 @@ agents:
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(cfg), 0o644))
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 	// The harness loads and validates cleanly — the deprecation is an
-	// advisory migration signal, not a load error (FR-008: the nested field
+	// advisory migration signal, not a load error (the nested field
 	// keeps working; removal is behind a separate version gate, ADR 0127).
 	// validation_loop requires a script on disk, and the literal command
 	// value keeps the path-like guard quiet, so the deprecation is the only
@@ -577,7 +569,7 @@ validation_loop:
 		require.NoError(t, err)
 		assert.Contains(t, out, "warning: validation_loop.preflight_check")
 		assert.Contains(t, out, "deprecated")
-		// FR-007: the warning names the top-level replacement field.
+		// The warning names the top-level replacement field.
 		assert.Contains(t, out, "top-level preflight_check")
 	})
 

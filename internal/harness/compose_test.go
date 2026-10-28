@@ -6149,18 +6149,17 @@ func TestMergeBaseIntoChild_TriggerEmptyBaseNoEffect(t *testing.T) {
 }
 
 // TestMergeBaseIntoChild_PreflightCheckScalarOverrideAndInheritance pins the
-// data-model.md composition merge table for the top-level preflight_check
-// (FR-009, US3-1/US3-2), one subtest per row:
+// composition merge contract for the top-level preflight_check
+// (ADR 0129 Decision 4), one subtest per row:
 //
 //	base unset + child unset = unset
 //	base A     + child unset = A (inherit)
 //	base A     + child B     = B (child overrides — never `A && B`, never concatenation)
 //	base unset + child B     = B
 //
-// The inherit row is the red-first case for T025 (research.md D7): it fails
-// until mergeBaseIntoChild gains the scalar inherit line. ADR 0129 Decision 4
-// forbids appending or combining the base and child commands, so the override
-// row also guards against concatenation via the base command's distinct token.
+// ADR 0129 Decision 4 forbids appending or combining the base and child
+// commands, so the override row also guards against concatenation via the
+// base command's distinct token.
 func TestMergeBaseIntoChild_PreflightCheckScalarOverrideAndInheritance(t *testing.T) {
 	// Distinct literal commands so an append/combine regression would be
 	// detectable in the composed value.
@@ -6210,23 +6209,21 @@ func TestMergeBaseIntoChild_PreflightCheckScalarOverrideAndInheritance(t *testin
 }
 
 // TestMergeBaseIntoChild_PreflightCheckChildOverrideWithInheritedPreScript
-// pins FR-012 part 1 (spec.md US3-2): a base declaring both a top-level
-// preflight_check and a pre_script, composed with a child that sets only
-// the check. The composed harness carries the child's command as the single
+// pins the composition contract (ADR 0129 Decision 4): a base declaring
+// both a top-level preflight_check and a pre_script, composed with a child
+// that sets only the check. The composed harness carries the child's command as the single
 // gate while the base's pre_script is inherited untouched — overriding the
 // gate never blocks script inheritance, and the two commands are never
 // combined.
 //
-// Per data-model.md Composition constraints (ADR 0129 Decision 4), the
+// Per ADR 0129 Decision 4, the
 // overriding author owns the child command covering the dependencies of the
 // inherited pre_script still present in the composed harness. That ownership
 // is a documented contract, not an enforced one: this test asserts the
 // composed data shape only, and no enforcement may be derived from it.
 //
-// Expected green before T025: the merge never overwrites a child scalar the
-// child itself set, and PreScript inheritance already exists in the scalar
-// block; only base-gate inheritance (T020's inherit row) needs the T025
-// merge line.
+// The merge never overwrites a child scalar the child itself set, and
+// pre_script inheritance is an independent scalar merge.
 func TestMergeBaseIntoChild_PreflightCheckChildOverrideWithInheritedPreScript(t *testing.T) {
 	// Distinct literal values so an append/combine regression or an
 	// accidental cross-field clobber would be detectable in the composed
@@ -6271,8 +6268,8 @@ func TestMergeBaseIntoChild_PreflightCheckChildOverrideWithInheritedPreScript(t 
 }
 
 // TestResolveOverlays_PreflightCheckUnchangedByStageScriptSelection pins
-// FR-012 part 2 (spec.md US3-3, data-model.md Composition constraints,
-// ADR 0129 Decision 4): a harness whose overlays select different stage
+// the composition contract (ADR 0129 Decision 4): a harness whose overlays
+// select different stage
 // scripts per condition while preflight_check stays top-level. Whichever
 // overlay matches, the composed check value stays identical to the
 // top-level declaration — overlay-selected stage scripts never move or
@@ -6283,8 +6280,9 @@ func TestMergeBaseIntoChild_PreflightCheckChildOverrideWithInheritedPreScript(t 
 //
 // Expected green without new implementation: the overlay merge path
 // (ResolveOverlays → mergeForgeConfig) carries no preflight_check
-// handling — the field is absent from ForgeConfig (research.md D1/D7) —
-// so an overlay structurally cannot set or change it. T023 pins the
+// handling — the field is absent from ForgeConfig —
+// so an overlay structurally cannot set or change it.
+// TestLoadWithBase_PreflightCheckIgnoredInForgeAndOverlays pins the
 // loader's ignored-key side of the same guarantee.
 func TestResolveOverlays_PreflightCheckUnchangedByStageScriptSelection(t *testing.T) {
 	// A single literal gate value shared by both selections: any change
@@ -6352,8 +6350,9 @@ func TestResolveOverlays_PreflightCheckUnchangedByStageScriptSelection(t *testin
 	})
 }
 
-// TestLoadWithBase_PreflightCheckIgnoredInForgeAndOverlays pins FR-009 /
-// spec.md US3-4: a preflight_check key placed inside a forge: block or an
+// TestLoadWithBase_PreflightCheckIgnoredInForgeAndOverlays pins the
+// top-level-only field contract (ADR 0129 Decision 4, #8722): a
+// preflight_check key placed inside a forge: block or an
 // overlays: entry is ignored, never honored — the field is top level only,
 // and conditional values cannot replace the gate. Each misplaced key sits
 // alongside a valid sibling field (pre_script) that DOES apply, so every
@@ -6361,15 +6360,18 @@ func TestResolveOverlays_PreflightCheckUnchangedByStageScriptSelection(t *testin
 // the gate key alone was dropped: PreflightCheck stays empty when the top
 // level is unset, and equals the top-level value when set.
 //
-// Characterization (research.md D1, expected green): ForgeConfig carries no
-// preflight field (T002) and the loader is a non-strict yaml.Unmarshal, so
+// Characterization: ForgeConfig carries no
+// preflight field and the loader is a non-strict yaml.Unmarshal, so
 // ignore-by-omission is the existing behavior this test guards against
-// drift — the loader's half of the same guarantee T022 pins on the merge
-// side. A strict loader would fail the load; a ForgeConfig field would leak
+// drift — the loader's half of the same guarantee
+// TestResolveOverlays_PreflightCheckUnchangedByStageScriptSelection pins on
+// the merge side. A strict loader would fail the load; a ForgeConfig field would leak
 // the misplaced value into the gate; either regression surfaces here.
 func TestLoadWithBase_PreflightCheckIgnoredInForgeAndOverlays(t *testing.T) {
 	// Distinct literal commands so a leaked, replaced, or combined gate
-	// would be detectable in the loaded value (mirrors T020/T021).
+	// would be detectable in the loaded value (mirrors
+	// TestMergeBaseIntoChild_PreflightCheckScalarOverrideAndInheritance and
+	// TestMergeBaseIntoChild_PreflightCheckChildOverrideWithInheritedPreScript).
 	const (
 		topLevelCheck  = "echo top-level-check"
 		misplacedCheck = "echo misplaced-check"
@@ -6378,8 +6380,8 @@ func TestLoadWithBase_PreflightCheckIgnoredInForgeAndOverlays(t *testing.T) {
 	// load runs a document through the non-strict loader plus forge/overlay
 	// resolution (ForgePlatform github so the conditional blocks genuinely
 	// match and merge) and fails the subtest on any load error: the ignored
-	// key must be dropped silently, never rejected (FR-009: ignored, never
-	// honored — and never a load failure).
+	// key must be dropped silently, never rejected — ignored, never
+	// honored, and never a load failure.
 	load := func(t *testing.T, content string) *Harness {
 		t.Helper()
 		dir := t.TempDir()
@@ -6387,7 +6389,7 @@ func TestLoadWithBase_PreflightCheckIgnoredInForgeAndOverlays(t *testing.T) {
 		h, _, err := LoadWithBase(context.Background(), path,
 			ComposeOpts{ForgePlatform: "github"})
 		require.NoError(t, err,
-			"the non-strict loader must silently ignore a preflight_check key inside forge:/overlays: (FR-009, research.md D1)")
+			"the non-strict loader must silently ignore a preflight_check key inside forge:/overlays:")
 		return h
 	}
 

@@ -867,8 +867,7 @@ func (h *Harness) ValidateRunnerEnvWith(lookup func(string) (string, bool)) erro
 	// validation_loop.preflight_check — are deliberately not checked here:
 	// their references are validated solely by the preflight allowlist scan
 	// in internal/cli (runPreflightCheck), the single reference gate for
-	// both fields (ADR 0128; D9 of preflight-check-credential-safety, D5
-	// of top-level-preflight-check).
+	// both fields (ADR 0128, issue #8722).
 	if h.Env != nil {
 		for k, v := range h.Env.Runner {
 			checkVarRefs(fmt.Sprintf("env.runner[%s]", k), v)

@@ -71,7 +71,7 @@ func TestResolveForge_PolicyNotOverriddenWhenEmpty(t *testing.T) {
 
 // TestResolveForge_PreflightCheckNotSettableFromForgeConfig pins the
 // compose/forge merge-function invariant (docs/contributing/harness-composition.md,
-// research.md D7) on the forge side for the top-level preflight_check:
+// ADR 0129 Decision 4) on the forge side for the top-level preflight_check:
 // ForgeConfig has no preflight field, so mergeForgeConfig — the single merge
 // every forge.<platform> and overlay value flows through — cannot set or
 // change Harness.PreflightCheck. The invariant is preserved by omission:
@@ -86,13 +86,17 @@ func TestResolveForge_PolicyNotOverriddenWhenEmpty(t *testing.T) {
 // where a preflight line would sit next to PreScript/PostScript through the
 // RunnerEnv map merge), then asserts the gate is identical to the top-level
 // declaration — or stays unset. If someone ever adds a preflight field to
-// ForgeConfig, this test plus T022 (overlay selection, compose_test.go) and
-// T023 (loader ignored-key, compose_test.go) should fail or force a
-// conscious decision: FR-009 forbids conditional setters for the gate, so
-// the field must not silently flow through mergeForgeConfig.
+// ForgeConfig, this test plus the overlay-selection and loader
+// ignored-key tests in compose_test.go
+// (TestResolveOverlays_PreflightCheckUnchangedByStageScriptSelection,
+// TestLoadWithBase_PreflightCheckIgnoredInForgeAndOverlays) should
+// fail or force a conscious decision: the gate is a top-level-only
+// declaration (ADR 0129 Decision 4), so the field must not silently
+// flow through mergeForgeConfig.
 func TestResolveForge_PreflightCheckNotSettableFromForgeConfig(t *testing.T) {
 	// Distinct literal command so a set, replaced, or combined gate would
-	// be detectable in the merged value (mirrors T020–T023).
+	// be detectable in the merged value (mirrors the compose- and
+	// loader-side characterization tests in compose_test.go).
 	const topLevelCheck = "echo top-level-check"
 
 	// newHarness builds the shared shape: a top-level gate (possibly unset)

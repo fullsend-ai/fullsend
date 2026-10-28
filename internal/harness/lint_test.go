@@ -174,7 +174,7 @@ func TestLint_PreflightCheckLooksLikeScriptPath(t *testing.T) {
 	}
 
 	diags := h.Lint()
-	// Since T029 a set nested value also carries the deprecation warning
+	// A set nested value also carries the deprecation warning
 	// (TestLint_PreflightCheck_NestedFieldDeprecation), so this test
 	// scopes to the path-like diagnostic, found by message rather than
 	// by total count.
@@ -202,8 +202,8 @@ func TestLint_PreflightCheckLiteralCommand(t *testing.T) {
 		},
 	}
 
-	// A literal command never triggers the path-like heuristic, so since
-	// T029 the set nested field's deprecation warning — and nothing else —
+	// A literal command never triggers the path-like heuristic, so the
+	// set nested field's deprecation warning — and nothing else —
 	// is the expected diagnostic (pinned in full by
 	// TestLint_PreflightCheck_NestedFieldDeprecation).
 	diags := h.Lint()
@@ -242,7 +242,7 @@ func TestLint_PreflightCheckPathLikeMatching(t *testing.T) {
 				},
 			}
 			diags := h.Lint()
-			// Since T029 a set nested value always carries the deprecation
+			// A set nested value always carries the deprecation
 			// warning too (TestLint_PreflightCheck_NestedFieldDeprecation),
 			// so this table scopes to the path-like diagnostic — found by
 			// message, not by total count.
@@ -272,14 +272,14 @@ func TestLint_PreflightCheckPathLikeMatching(t *testing.T) {
 	}
 }
 
-// A bare path-like top-level preflight_check value warns at lint time
-// (FR-007, spec US2-4): the author probably expected pre_script-style
+// A bare path-like top-level preflight_check value fails at lint time
+// (ADR 0128 Decision 2): the author probably expected pre_script-style
 // fetch/resolution, but the check runs verbatim as `sh -c` on the host
-// and is never fetched (contract §7), so the value would only work by
+// and is never fetched, so the value would only work by
 // accident of the runner's working directory. The diagnostic mirrors the
-// nested field's guard — SeverityWarning, Field "preflight_check", the
-// nested message shape — and stays advisory: ADR 0128 Decision 2 keeps
-// it non-fatal in fullsend lock/run.
+// nested field's guard (lintPreflightCheckCommand) — SeverityError,
+// Field "preflight_check", the shared message shape — while
+// `fullsend lock`/`run` stay non-fatal (print and continue).
 func TestLint_PreflightCheck_TopLevelLooksLikeScriptPath(t *testing.T) {
 	h := &Harness{
 		Agent:          "agents/test.md",
@@ -289,9 +289,9 @@ func TestLint_PreflightCheck_TopLevelLooksLikeScriptPath(t *testing.T) {
 
 	diags := h.Lint()
 	require.Len(t, diags, 1)
-	assert.Equal(t, SeverityWarning, diags[0].Severity)
+	assert.Equal(t, SeverityError, diags[0].Severity)
 	assert.Equal(t, "preflight_check", diags[0].Field)
-	// The nested guard's message shape (contract §7): the value looks like
+	// The guard's message shape: the value looks like
 	// a script path; the check runs verbatim as `sh -c` and is never
 	// fetched — use pre_script for a fetched script or inline the command.
 	assert.Contains(t, diags[0].Message, "looks like a script path")
@@ -303,10 +303,8 @@ func TestLint_PreflightCheck_TopLevelLooksLikeScriptPath(t *testing.T) {
 }
 
 // A literal inline command is the intended authoring pattern (ADR 0128,
-// agents#1418) and must not warn. Boundary test for the T018 guard:
-// green before the guard lands (Lint ignores the field) and it must stay
-// green after — the path-like heuristic may not fire on a command with
-// arguments or quoting.
+// agents#1418) and must stay lint-clean: the path-like heuristic may not
+// fire on a command with arguments or quoting.
 func TestLint_PreflightCheck_TopLevelLiteralCommand(t *testing.T) {
 	h := &Harness{
 		Agent:          "agents/test.md",
@@ -318,10 +316,9 @@ func TestLint_PreflightCheck_TopLevelLiteralCommand(t *testing.T) {
 }
 
 // A whitespace-only value is unset by the lint emptiness convention —
-// strings.TrimSpace, matching the nested guard — and must not warn
-// (data-model.md: absent, empty, or whitespace-only is treated as
-// unset). Boundary test for the T018 guard: green before the guard lands
-// and it must stay green after.
+// strings.TrimSpace, matching the nested guard — and must stay lint-clean
+// (docs/contributing/harness-fields.md: absent, empty, or whitespace-only
+// is treated as unset).
 func TestLint_PreflightCheck_TopLevelWhitespaceOnly(t *testing.T) {
 	h := &Harness{
 		Agent:          "agents/test.md",
@@ -333,13 +330,13 @@ func TestLint_PreflightCheck_TopLevelWhitespaceOnly(t *testing.T) {
 }
 
 // A harness that sets the nested validation_loop.preflight_check gets a
-// non-fatal migration signal naming its replacement (FR-007, spec
-// US4-1/US4-3): the top-level preflight_check is usable once this feature
-// ships, so every nested use is deprecated (ADR 0129 Decision 3; removal
+// non-fatal migration signal naming its replacement (ADR 0129
+// Decision 3): the top-level preflight_check is usable once this feature
+// ships, so every nested use is deprecated (removal
 // stays behind a separately decided version gate, ADR 0127). The
 // diagnostic mirrors this file's deprecation house style (runner_env,
 // forge) — SeverityWarning, Field "validation_loop.preflight_check", and
-// exactly this message, which T029 implements verbatim:
+// exactly this message:
 //
 //	validation_loop.preflight_check is deprecated; use the top-level
 //	preflight_check instead (see ADR 0129)
@@ -374,7 +371,7 @@ func TestLint_PreflightCheck_NestedFieldDeprecation(t *testing.T) {
 		require.Len(t, diags, 1)
 		assert.Equal(t, SeverityWarning, diags[0].Severity)
 		assert.Equal(t, "validation_loop.preflight_check", diags[0].Field)
-		// The message names the replacement (data-model.md Diagnostics):
+		// The message names the replacement:
 		// "deprecated" plus the top-level preflight_check field.
 		assert.Contains(t, diags[0].Message, "deprecated")
 		assert.Contains(t, diags[0].Message, "top-level preflight_check")
