@@ -52,7 +52,8 @@ func TestOpenCodeNativeHooks(t *testing.T) {
 
 	for _, scenario := range []string{"pre-block", "rewrite", "post-block", "nested", "ls-only",
 		"bash-patterns", "native-bash-patterns", "trusted-bash-patterns", "native-trusted-bash-patterns",
-		"error-rewrite", "error-canary", "error-scanner-failure", "nested-error", "repo-config-isolation"} {
+		"error-rewrite", "error-canary", "error-scanner-failure", "nested-error", "repo-config-isolation",
+		"bash-failed-verification", "trusted-file-patterns"} {
 		t.Run(scenario, func(t *testing.T) {
 			runOpenCodeHookProbe(t, binary, gotVersion, scenario)
 		})
@@ -78,6 +79,8 @@ func runOpenCodeHookProbe(t *testing.T, binary, version, scenario string) {
 	work := filepath.Join(dir, "workspace")
 	configDir := filepath.Join(dir, "config")
 	configIsolation := scenario == "repo-config-isolation"
+	failedVerification := scenario == "bash-failed-verification"
+	filePatterns := scenario == "trusted-file-patterns"
 	patternProbe := strings.Contains(scenario, "bash-patterns")
 	trustedProbe := strings.Contains(scenario, "trusted-bash-patterns")
 	nativeOnly := strings.HasPrefix(scenario, "native-")
@@ -122,6 +125,17 @@ func runOpenCodeHookProbe(t *testing.T, binary, version, scenario string) {
 		require.NoError(t, os.MkdirAll(filepath.Join(work, "directory-only-entry"), 0o700))
 		require.NoError(t, os.WriteFile(filepath.Join(work, "private.txt"), []byte("FULLSEND_LS_PRIVATE_CONTENT"), 0o600))
 	}
+	if failedVerification {
+		def.BashAllowlist = append(def.BashAllowlist, "scan-secrets")
+		require.NoError(t, os.MkdirAll(filepath.Join(work, "bin"), 0o700))
+		require.NoError(t, os.WriteFile(filepath.Join(work, "bin", "scan-secrets"), []byte("#!/bin/sh\nprintf 'No leaks found\\n'\nexit 1\n"), 0o700))
+	}
+	if filePatterns {
+		git := exec.CommandContext(t.Context(), "git", "init", "--quiet", work)
+		out, err := git.CombinedOutput()
+		require.NoError(t, err, "%s", out)
+		trustedPolicy = json.RawMessage(`{"*":"deny","bash":"allow","read":{"*":"deny","src/*":"allow"},"edit":{"*":"deny","src/*":"allow","src/private*":"deny"}}`)
+	}
 	rules := parseTrustedPermissionPolicy(`{"permission":` + string(trustedPolicy) + `}`)
 	agent, err := openCodeAgentMarkdown("probe-parent", def, rules)
 	require.NoError(t, err)
@@ -130,6 +144,9 @@ func runOpenCodeHookProbe(t *testing.T, binary, version, scenario string) {
 	policy.Python = python
 	policy.ShellHome = dir
 	policy.Env = map[string]string{"PATH": os.Getenv("PATH"), "FULLSEND_CANARY_TOKEN": "FULLSEND_PROBE_ORIGINAL_post-block"}
+	if failedVerification {
+		policy.Env["PATH"] = filepath.Join(work, "bin") + string(os.PathListSeparator) + policy.Env["PATH"]
+	}
 	policy.Groups = security.HookPlan(hooks)
 	require.NoError(t, os.MkdirAll(policy.Dir, 0o700))
 	for file, content := range security.HookFiles(hooks) {
@@ -222,10 +239,24 @@ func runOpenCodeHookProbe(t *testing.T, binary, version, scenario string) {
 		require.NoError(t, os.WriteFile(poison, []byte("import {writeFileSync} from 'node:fs'; export default async()=>{writeFileSync("+strconv.Quote(filepath.Join(work, "poison-loaded"))+",'loaded'); return {};};"), 0o600))
 		poisonConfig, _ := json.Marshal(map[string]any{"plugin": []string{"file://" + poison}})
 		require.NoError(t, os.WriteFile(filepath.Join(work, "poison.json"), poisonConfig, 0o600))
-		require.NoError(t, os.WriteFile(filepath.Join(work, ".env"), []byte("OPENCODE_CONFIG="+filepath.Join(work, "poison.json")+"\n"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(work, ".env"), []byte("OPENCODE_CONFIG="+filepath.Join(work, "poison.json")+"\nOPENCODE_PURE=true\n"), 0o600))
 		require.NoError(t, os.MkdirAll(filepath.Join(work, ".opencode"), 0o700))
 		require.NoError(t, os.WriteFile(filepath.Join(work, ".opencode", "opencode.json"), poisonConfig, 0o600))
 		steps["root"] = []openCodeProbeCall{stepsForAllowedProbe(), probeCall("rewrite")}
+	}
+	if failedVerification {
+		steps["root"] = []openCodeProbeCall{stepsForAllowedProbe(), {name: "bash", args: map[string]any{
+			"command": "scan-secrets file.go", "description": "probe-failed-verification",
+		}}}
+	}
+	if filePatterns {
+		steps["root"] = []openCodeProbeCall{
+			stepsForAllowedProbe(),
+			{name: "write", args: map[string]any{"filePath": filepath.Join(work, "src", "allowed.txt"), "content": "path-scoped allowed"}},
+			{name: "read", args: map[string]any{"filePath": filepath.Join(work, "src", "allowed.txt")}},
+			{name: "write", args: map[string]any{"filePath": filepath.Join(work, "src", "private.txt"), "content": "must not be written"}},
+			{name: "write", args: map[string]any{"filePath": filepath.Join(work, "denied.txt"), "content": "must not be written"}},
+		}
 	}
 
 	var mu sync.Mutex
@@ -311,6 +342,16 @@ func runOpenCodeHookProbe(t *testing.T, binary, version, scenario string) {
 	}
 	args = append(args, "FULLSEND_NATIVE_HOOK_PARENT: execute the scripted probe.")
 	cmd := exec.CommandContext(ctx, binary, args...)
+	if configIsolation {
+		// Exercise the runner's .env drop/restore path before starting the real
+		// pinned runtime, including an inherited plugin-disable flag.
+		trusted := openCodeTrustedEnv{ConfigContent: string(configJSON)}
+		launch := []string{shellQuote(binary)}
+		for _, arg := range args {
+			launch = append(launch, shellQuote(arg))
+		}
+		cmd = exec.CommandContext(ctx, "/bin/sh", "-c", openCodeTrustedEnvPin(trusted)+" && "+envDataTrustedPin()+" && "+envDataLoad(filepath.Join(work, ".env"), openCodeEnvDataDrop...)+" && "+openCodeTrustedEnvRestore()+" && exec "+strings.Join(launch, " "))
+	}
 	cmd.Dir = work
 	// Do not inherit provider credentials, user plugins, or the harness config.
 	cmd.Env = []string{
@@ -325,6 +366,9 @@ func runOpenCodeHookProbe(t *testing.T, binary, version, scenario string) {
 		"FULLSEND_PROBE_EVENTS=" + eventsPath,
 		"FULLSEND_PROBE_ERROR_FILE=" + errorFile,
 		openCodeHookConfigEnv + "=" + openCodeHookConfigJSON(policy),
+	}
+	if configIsolation {
+		cmd.Env = append(cmd.Env, "OPENCODE_PURE=true")
 	}
 	output, err := cmd.CombinedOutput()
 	if !stopBeforeSend {
@@ -406,8 +450,49 @@ func runOpenCodeHookProbe(t *testing.T, binary, version, scenario string) {
 	if lsProbe {
 		assert.Contains(t, string(captured), "directory-only-entry", "LS must produce a real directory listing")
 		assert.NotContains(t, string(captured), "FULLSEND_LS_PRIVATE_CONTENT", "LS must not permit file reads")
-		assert.Contains(t, string(captured), "tool is outside the parent allowlist")
+		denied := map[string]bool{}
+		for _, body := range bytes.Split(captured, []byte("\n")) {
+			var request struct {
+				Messages []struct {
+					Content []struct {
+						Type      string `json:"type"`
+						ToolUseID string `json:"tool_use_id"`
+						IsError   bool   `json:"is_error"`
+					} `json:"content"`
+				} `json:"messages"`
+			}
+			require.NoError(t, json.Unmarshal(body, &request))
+			for _, message := range request.Messages {
+				for _, part := range message.Content {
+					if part.Type == "tool_result" && part.IsError {
+						denied[part.ToolUseID] = true
+					}
+				}
+			}
+		}
+		assert.Len(t, denied, 2, "file read and write must both return tool errors, regardless of which enforcement layer denies them")
 		t.Log("LS-only generated agent listed a directory and was denied file reads and writes")
+		return
+	}
+	if failedVerification {
+		assert.Contains(t, string(captured), "No leaks found", "failed verification output must reach the model")
+		assert.NotContains(t, string(captured), "scan-secrets: passed", "nonzero exit must prevent success suppression")
+		var phases []string
+		for _, event := range events {
+			if event.Description == "probe-failed-verification" {
+				phases = append(phases, event.Phase)
+			}
+		}
+		assert.Equal(t, []string{"before", "after"}, phases, "nonzero Bash exit must exercise the native after hook")
+		return
+	}
+	if filePatterns {
+		allowed, err := os.ReadFile(filepath.Join(work, "src", "allowed.txt"))
+		require.NoError(t, err, "path-scoped trusted edit rule must allow native writes")
+		assert.Equal(t, "path-scoped allowed", string(allowed))
+		assert.Contains(t, string(captured), "path-scoped allowed", "path-scoped trusted read rule must allow native reads")
+		assert.NoFileExists(t, filepath.Join(work, "src", "private.txt"))
+		assert.NoFileExists(t, filepath.Join(work, "denied.txt"))
 		return
 	}
 	kinds := []string{scenario}

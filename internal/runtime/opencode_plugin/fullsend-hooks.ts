@@ -35,8 +35,8 @@ else:
 json.dump({"reason": text}, sys.stdout)
 `;
 
-// A deliberately conservative first-token check, matching pi's Bash(...)
-// semantics. Refuse syntax that can hide executable commands rather than
+// Enforce Bash(...) program names; pi makes this advisory by default.
+// Refuse syntax that can hide executable commands rather than
 // treating a prefix match ("gh *") as validation of an entire shell program.
 function checkBash(command, allowlist) {
   if (!allowlist?.length) return;
@@ -81,15 +81,42 @@ function checkFiles(cfg) {
   }
 }
 
-function checkPermission(cfg, tool, args) {
+function writeTargets(tool, args) {
+  if (["write", "edit", "multiedit"].includes(tool)) return [args.filePath ?? args.file_path];
+  if (tool !== "apply_patch") return [];
+  const targets = [];
+  for (const line of String(args.patchText ?? args.patch ?? "").split("\n")) {
+    const header = /^\*\*\* (?:Add File|Update File|Delete File|Move to):([\s\S]*)$/.exec(line);
+    if (header) targets.push(header[1].trim());
+    else if (line.startsWith("*** ") && !["*** Begin Patch", "*** End Patch", "*** End of File"].includes(line.trimEnd())) {
+      deny("unrecognized write patch header");
+    }
+  }
+  if (!targets.length) deny("unrecognized write patch");
+  return targets;
+}
+
+function checkPermission(cfg, tool, args, cwd, worktree, targets) {
   const id = ["write", "apply_patch", "multiedit"].includes(tool) ? "edit" : tool;
   const rule = cfg.permission[id] ?? cfg.permission["*"];
   const match = (pattern, text) => new RegExp("^" + pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".") + "$", "s").test(text);
   let action = rule;
   if (rule && typeof rule === "object") {
     action = "deny";
-    const value = args.command ?? args.filePath ?? args.path ?? args.subagent_type ?? args.url ?? "*";
-    for (const [pattern, next] of Object.entries(rule)) if (match(pattern, value)) action = next;
+    let values = [args.command ?? args.filePath ?? args.path ?? args.subagent_type ?? args.url ?? "*"];
+    if (["read", "write", "edit", "multiedit", "apply_patch"].includes(tool)) {
+      const paths = tool === "read" ? [args.filePath ?? args.file_path] : targets;
+      values = paths.map((target) => {
+        if (typeof target !== "string" || !target) deny("missing permission path");
+        const relative = path.relative(worktree, path.resolve(cwd, target));
+        return tool === "apply_patch" ? relative.replaceAll("\\", "/") : relative;
+      });
+    }
+    for (const value of values) {
+      action = "deny";
+      for (const [pattern, next] of Object.entries(rule)) if (match(pattern, value)) action = next;
+      if (action === "deny" || action === "ask") deny("tool denied by trusted permission policy");
+    }
   }
   if (action === "deny" || action === "ask") deny("tool denied by trusted permission policy");
 }
@@ -107,13 +134,7 @@ function resolved(target, depth = 0) {
   }
 }
 
-function checkWrites(cfg, tool, args, cwd) {
-  let targets = [];
-  if (["write", "edit", "multiedit"].includes(tool)) targets = [args.filePath ?? args.file_path];
-  if (tool === "apply_patch") {
-    targets = [...String(args.patchText ?? args.patch ?? "").matchAll(/^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+)$/gm)].map((m) => m[1]);
-    if (!targets.length) deny("unrecognized write patch");
-  }
+function checkWrites(cfg, targets, cwd) {
   const workspace = resolved(cfg.workspace);
   for (const target of targets) {
     if (typeof target !== "string" || !target) deny("missing write path");
@@ -126,10 +147,11 @@ function checkWrites(cfg, tool, args, cwd) {
   }
 }
 
-export default async ({ directory }) => {
+export default async ({ directory, worktree }) => {
   let cfg;
   try { cfg = JSON.parse(process.env.FULLSEND_OPENCODE_HOOK_CONFIG ?? "null"); } catch { /* all calls fail closed below */ }
   const cwd = directory ?? process.cwd();
+  const permissionRoot = worktree ?? cwd;
   // Never inherit loader, Python, pager, provider or agent-modified variables.
   const env = { PATH: "/usr/local/bin:/usr/bin:/bin", ...cfg?.env };
   const blockReason = (script, reason) => {
@@ -168,9 +190,10 @@ export default async ({ directory }) => {
         canonical = "LS";
       }
       if (cfg.tools && !cfg.tools.includes(canonical) && !(canonical === "Agent" && cfg.tools.includes("Task"))) deny("tool is outside the parent allowlist");
-      checkPermission(cfg, input.tool, args);
+      const targets = writeTargets(input.tool, args);
+      checkPermission(cfg, input.tool, args, cwd, permissionRoot, targets);
       if (input.tool === "bash") checkBash(args.command, cfg.bashAllowlist);
-      checkWrites(cfg, input.tool, args, cwd);
+      checkWrites(cfg, targets, cwd);
       return canonical;
     } catch (error) {
       // File-read errors can carry paths, never tool output or secret bytes.
@@ -272,6 +295,9 @@ export default async ({ directory }) => {
       // Scan every string field, not just stdout: native metadata, titles
       // and attachments can otherwise carry an alternate copy of a secret.
       const original = { ...output };
+      if (input.tool === "bash" && Number.isInteger(output.metadata?.exit)) {
+        original.exit_code = output.metadata.exit;
+      }
       try {
         const tool = validate(input, input.args);
         const sanitized = chain("PostToolUse", tool, input.args, original);

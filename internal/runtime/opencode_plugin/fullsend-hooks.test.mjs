@@ -23,7 +23,7 @@ async function setup(t, extra = {}, scripts = {}) {
     env: { PATH: "/usr/bin:/bin" }, groups: [], digests, tools: null,
     bashAllowlist: null, permission: { "*": "allow" }, ...extra };
   process.env.FULLSEND_OPENCODE_HOOK_CONFIG = JSON.stringify(cfg);
-  const hooks = await plugin({ directory: workspace });
+  const hooks = await plugin({ directory: workspace, worktree: workspace });
   const before = (tool, args = {}) => hooks["tool.execute.before"]({ tool }, { args });
   const after = async (tool, args, output = "original") => {
     const result = { output, metadata: { output }, attachments: [{ url: output }], title: output };
@@ -105,6 +105,60 @@ test("native write paths resolve symlinks and protect runner state", async (t) =
   }
   await assert.rejects(h.before("apply_patch", { patchText: "*** Add File: ../escape\n+x" }), /write path/);
   await assert.rejects(h.before("apply_patch", { patchText: "unrecognized" }), /unrecognized/);
+});
+
+test("patch targets use native header recognition and trimming", async (t) => {
+  const h = await setup(t);
+  for (const spacing of ["", " ", "\t"]) {
+    for (const suffix of ["", " ", "\t", "\r"]) {
+      for (const header of ["Add File", "Update File", "Delete File", "Move to"]) {
+        for (const target of [".env", ".security/findings.jsonl", "runner-state/file", "../escape"]) {
+          const patchText = `*** Begin Patch\n*** Add File: safe.txt\n+safe\n*** ${header}:${spacing}${target}${suffix}\n*** End Patch`;
+          await assert.rejects(h.before("apply_patch", { patchText }), /write path/, patchText);
+        }
+      }
+    }
+  }
+  await h.before("apply_patch", { patchText: "*** Begin Patch\n*** Update File:\tsrc/old.txt \n*** Move to:src/new.txt\n@@\n-old\n+new\n*** End of File\n*** End Patch" });
+  await assert.rejects(h.before("apply_patch", { patchText: "*** Add File: safe\n+x\n*** Unknown File: .env" }), /unrecognized/);
+  await assert.rejects(h.before("apply_patch", { patchText: "*** Add File: \t" }), /missing write path/);
+});
+
+test("trusted file permissions use worktree-relative paths for every patch target", async (t) => {
+  const scoped = { "*": "deny", "src/*": "allow", "src/private*": "deny", "src/review*": "ask" };
+  const h = await setup(t, { permission: { "*": "deny", read: scoped, edit: scoped } });
+  for (const tool of ["read", "write", "edit", "multiedit"]) {
+    for (const filePath of ["src/app.go", path.join(h.workspace, "src/app.go")]) {
+      await h.before(tool, { filePath });
+    }
+    for (const filePath of ["other/app.go", "src/private.go", "src/review.go"]) {
+      await assert.rejects(h.before(tool, { filePath }), /trusted permission/);
+    }
+  }
+  await h.before("apply_patch", { patchText: "*** Add File:src/one.go\n+one\n*** Update File: src/two.go\n*** Move to:\tsrc/three.go " });
+  for (const header of ["Add File", "Update File", "Delete File", "Move to"]) {
+    await assert.rejects(h.before("apply_patch", { patchText: `*** Add File: src/ok.go\n+ok\n*** ${header}: other/denied.go` }), /trusted permission/);
+  }
+  const nested = await plugin({ directory: path.join(h.workspace, "src"), worktree: h.workspace });
+  await nested["tool.execute.before"]({ tool: "edit" }, { args: { filePath: "app.go" } });
+  await assert.rejects(nested["tool.execute.before"]({ tool: "edit" }, { args: { filePath: "../other/app.go" } }), /trusted permission/);
+});
+
+test("native Bash exit metadata prevents false success suppression", async (t) => {
+  const hooksDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "../../security/hooks");
+  const scripts = Object.fromEntries(["hook_io.py", "context_suppress_posttool.py"].map((file) =>
+    [file, readFileSync(path.join(hooksDir, file), "utf8")]));
+  const h = await setup(t, { groups: [{ Phase: "PostToolUse", Tools: ["Bash"], Scripts: ["context_suppress_posttool.py"] }] }, scripts);
+  const text = "ok\tgithub.com/example/pkg\t0.1s\n";
+  for (const exit of [0, 1, -9]) {
+    const output = { output: text, metadata: { output: text, exit }, title: "go test ./..." };
+    await h.hooks["tool.execute.after"]({ tool: "bash", args: { command: "go test ./..." } }, output);
+    if (exit === 0) assert.notEqual(output.output, text, "successful output should be summarized");
+    else {
+      assert.equal(output.output, text, "failed verification output must not be suppressed");
+      assert.equal(output.metadata.exit, exit);
+    }
+  }
 });
 
 test("scripts receive translated v2 payload, isolated environment and chained output", async (t) => {
