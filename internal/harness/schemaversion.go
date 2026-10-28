@@ -48,7 +48,7 @@ func (v *schemaVersionValue) UnmarshalYAML(node *yaml.Node) error {
 }
 
 // EffectiveSchemaVersion returns the harness's effective schema version: the
-// declared schema_version, or 1 when the field is absent (ADR 0127 Decision 1).
+// declared schema_version, or 1 when the field is absent.
 // Absent is the correct spelling of version 1, so every harness written before
 // the field existed reports 1.
 func (h *Harness) EffectiveSchemaVersion() int {
@@ -60,7 +60,7 @@ func (h *Harness) EffectiveSchemaVersion() int {
 
 // validateSchemaVersion rejects an explicitly declared schema_version that is
 // zero, negative, or unsupported. A nil pointer (absent) is version 1 and
-// valid (ADR 0127 Decision 1). Non-integer values never reach this check:
+// valid. Non-integer values never reach this check:
 // schemaVersionValue.UnmarshalYAML fails them during unmarshaling with the
 // offending line identified.
 func validateSchemaVersion(v *schemaVersionValue) error {
@@ -77,16 +77,16 @@ func validateSchemaVersion(v *schemaVersionValue) error {
 }
 
 // schemaVersionsCompatible reports whether a base layer declaring baseVer can
-// compose into a layer declaring childVer (ADR 0127 Decision 1). Equal
-// versions are always compatible; no cross-version rule exists yet — ADR 0127
-// requires mixed-version layers to be rejected unless an explicit
+// compose into a layer declaring childVer. Equal
+// versions are always compatible; no cross-version rule exists yet —
+// mixed-version layers are rejected unless an explicit
 // compatibility rule exists for that combination.
 func schemaVersionsCompatible(childVer, baseVer int) bool {
 	return childVer == baseVer
 }
 
 // checkSchemaVersionCompatibility rejects composing child with a base layer
-// whose effective schema version is incompatible (ADR 0127 Decision 1).
+// whose effective schema version is incompatible.
 // layerLabel names the base reference (path or URL) in the error so the
 // harness author can locate the offending layer.
 func checkSchemaVersionCompatibility(child, base *Harness, layerLabel string) error {
