@@ -347,7 +347,13 @@ variables is deployed.
 
 ## How a run ends
 
-After the last iteration, `fullsend run` returns an error, and so exits non-zero, in these cases.
+A failing preflight check (top-level `preflight_check` or
+`validation_loop.preflight_check`) aborts the run before the first
+iteration, before any script or sandbox runs. A non-zero exit produces a
+`preflight_check failed: ...` error and exceeding the 30-second budget
+produces a `preflight_check timed out after 30s: ...` error. After the
+last iteration, `fullsend run` returns an error, and so exits non-zero,
+in these cases.
 
 | Harness | Run fails when | Error |
 |---|---|---|
