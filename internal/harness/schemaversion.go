@@ -93,5 +93,5 @@ func checkSchemaVersionsCompose(child, base *Harness, layerLabel string) error {
 	if schemaVersionsCompose(childVer, baseVer) {
 		return nil
 	}
-	return fmt.Errorf("base layer %s declares schema_version %d, which is incompatible with schema_version %d of the harness composing it; mixed-version base composition is not supported", layerLabel, baseVer, childVer)
+	return fmt.Errorf("base layer %q declares schema_version %d, which is incompatible with schema_version %d of the harness composing it; mixed-version base composition is not supported", layerLabel, baseVer, childVer)
 }
