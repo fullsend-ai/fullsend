@@ -115,9 +115,8 @@ const (
 	openCodePathPinVar            = "FULLSEND_OPENCODE_PATH"
 )
 
-// openCodeEnvDataDrop are the read-only pins the OpenCode launch and the
-// trusted-env read set before .env is read. envDataLoad drops assignments to
-// them: eval'ing one would abort the shell on the read-only variable.
+// openCodeEnvDataDrop protects the launch pins and prevents .env from
+// disabling the required plugin during bootstrap or a later iteration.
 var openCodeEnvDataDrop = []string{
 	openCodeBinaryVar,
 	openCodeNodeVar,
@@ -132,6 +131,7 @@ var openCodeEnvDataDrop = []string{
 	openCodeCredentialsPathPinVar,
 	openCodeHomePinVar,
 	openCodePathPinVar,
+	"OPENCODE_PURE",
 }
 
 // Sandbox-side layout. The transcript and the exit-code file live under
@@ -342,6 +342,7 @@ func openCodeTrustedEnvPin(env openCodeTrustedEnv) string {
 // paths, or inject code (CWE-15, CWE-426). HOME and PATH are re-pinned
 // instead. Keep in sync with upstream config/config.ts and src/plugin.
 var openCodeDangerousEnvVars = []string{
+	"OPENCODE_PURE",
 	"OPENCODE_PERMISSION",
 	"OPENCODE_CONFIG",
 	"OPENCODE_TUI_CONFIG",
