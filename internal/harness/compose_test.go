@@ -88,15 +88,16 @@ model: opus
 
 // TestLoadWithBase_SchemaVersionEqualEffectiveVersionsCompose verifies that a
 // base chain composes when every layer's effective schema version is 1 (ADR
-// 0127 Decision 1, design D3): absent means version 1, so an explicit
-// schema_version: 1 on either side of the merge must not block composition.
-// The chain's one explicit declaration survives onto the merged harness via
-// design D4's scalar slot.
+// 0127 Decision 1): absent means version 1, so an explicit schema_version: 1
+// on either side of the merge must not block composition. The merged harness
+// keeps the child's own declaration: an absent child stays absent, and a
+// child that spelled the version explicitly keeps it.
 func TestLoadWithBase_SchemaVersionEqualEffectiveVersionsCompose(t *testing.T) {
 	tests := []struct {
-		name      string
-		baseBody  string
-		childBody string
+		name           string
+		baseBody       string
+		childBody      string
+		expectExplicit bool
 	}{
 		{
 			name: "explicit one base with absent child",
@@ -110,6 +111,7 @@ model: base-model
 base: base.yaml
 agent: agents/child.md
 `,
+			expectExplicit: false,
 		},
 		{
 			name: "absent base with explicit one child",
@@ -123,6 +125,7 @@ base: base.yaml
 schema_version: 1
 agent: agents/child.md
 `,
+			expectExplicit: true,
 		},
 	}
 	for _, tt := range tests {
@@ -136,10 +139,14 @@ agent: agents/child.md
 
 			// The merge ran: the child inherited the base's model.
 			assert.Equal(t, "base-model", h.Model)
-			// The chain's single explicit declaration survives the merge
-			// (design D4), and the merged harness reports version 1.
-			require.NotNil(t, h.SchemaVersion)
-			assert.Equal(t, schemaVersionValue(1), *h.SchemaVersion)
+			// The merged harness keeps the child's own declaration: an
+			// absent child stays absent, an explicit child keeps it.
+			if tt.expectExplicit {
+				require.NotNil(t, h.SchemaVersion)
+				assert.Equal(t, schemaVersionValue(1), *h.SchemaVersion)
+			} else {
+				require.Nil(t, h.SchemaVersion)
+			}
 			assert.Equal(t, 1, h.EffectiveSchemaVersion())
 		})
 	}
@@ -202,20 +209,21 @@ func TestCheckSchemaVersionsCompose_ConstructedMixedVersions(t *testing.T) {
 	assert.ErrorContains(t, err, "mixed-version base composition is not supported")
 }
 
-// TestMergeBaseIntoChild_SchemaVersion pins design D4's scalar slot: an
-// absent child inherits the base's explicit declaration, and an explicit
-// child declaration is preserved. The D3 guard has already established equal
-// effective versions at both merge sites, so the slot only affects whether
-// the merged harness declares the version explicitly.
+// TestMergeBaseIntoChild_SchemaVersion pins the kept-child slot: an absent
+// child stays absent — its effective version 1 is what the composition guard
+// required the base to match — and an explicit child declaration is
+// preserved untouched. schema_version is never inherited from the base:
+// ADR 0127 Decision 1 defers cross-version behavior to an explicit
+// compatibility rule.
 func TestMergeBaseIntoChild_SchemaVersion(t *testing.T) {
-	t.Run("absent child inherits the base's explicit declaration", func(t *testing.T) {
+	t.Run("absent child stays absent, keeping effective version 1", func(t *testing.T) {
 		base := &Harness{SchemaVersion: schemaVersionPtr(1)}
 		child := &Harness{}
 
 		mergeBaseIntoChild(base, child)
 
-		require.NotNil(t, child.SchemaVersion)
-		assert.Equal(t, schemaVersionValue(1), *child.SchemaVersion)
+		require.Nil(t, child.SchemaVersion)
+		assert.Equal(t, 1, child.EffectiveSchemaVersion())
 	})
 	t.Run("explicit child declaration is preserved", func(t *testing.T) {
 		childVer := schemaVersionPtr(1)

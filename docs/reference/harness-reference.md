@@ -178,8 +178,9 @@ layers merge and before forge/overlay resolution. The error shapes:
 key placed under `overlays:`/`forge:` is silently ignored; only `base:`
 composition carries it. A `base:` layer whose effective version differs
 from the harness composing it is rejected at load time with an error naming
-both versions and the layer, so mixed-version layers never merge; a child
-that leaves the field absent inherits the base layer's explicit declaration.
+both versions and the layer, so mixed-version layers never merge. The merged
+harness keeps the child's own declaration — an absent child stays absent
+(version `1`).
 See [ADR 0127](../ADRs/0127-harness-schema-versioning-and-field-types.md).
 
 **`validation_loop.feedback_mode`** — Controls how validation script output reaches the agent for its next iteration. `none` (default): no feedback; `append`: the previous iteration's validation failure is appended to the agent prompt on retry. See [Configuring agent behavior](../guides/user/customizing-agents.md) for examples.
