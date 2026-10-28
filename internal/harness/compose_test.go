@@ -190,11 +190,11 @@ agent: agents/child.md
 // the spelling of every harness that predates the field), and the guard must
 // reject the pair with an error naming both versions and the layer label.
 // schemaversion_test.go covers the explicit-1-child spelling.
-func TestCheckSchemaVersionCompatibility_ConstructedMixedVersions(t *testing.T) {
+func TestCheckSchemaVersionsCompose_ConstructedMixedVersions(t *testing.T) {
 	child := &Harness{}                                  // absent — effective version 1
 	base := &Harness{SchemaVersion: schemaVersionPtr(2)} // parse would reject this; constructed directly
 
-	err := checkSchemaVersionCompatibility(child, base, "bases/parent.yaml")
+	err := checkSchemaVersionsCompose(child, base, "bases/parent.yaml")
 
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "base layer bases/parent.yaml declares schema_version 2")

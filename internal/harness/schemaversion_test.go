@@ -85,25 +85,25 @@ func TestEffectiveSchemaVersion(t *testing.T) {
 	})
 }
 
-func TestSchemaVersionsCompatible(t *testing.T) {
-	t.Run("equal versions are compatible", func(t *testing.T) {
-		assert.True(t, schemaVersionsCompatible(1, 1))
+func TestSchemaVersionsCompose(t *testing.T) {
+	t.Run("equal versions compose", func(t *testing.T) {
+		assert.True(t, schemaVersionsCompose(1, 1))
 	})
-	t.Run("mixed versions are incompatible", func(t *testing.T) {
-		assert.False(t, schemaVersionsCompatible(1, 2))
+	t.Run("mixed versions do not compose", func(t *testing.T) {
+		assert.False(t, schemaVersionsCompose(1, 2))
 	})
 }
 
-func TestCheckSchemaVersionCompatibility(t *testing.T) {
-	t.Run("compatible pair returns nil", func(t *testing.T) {
+func TestCheckSchemaVersionsCompose(t *testing.T) {
+	t.Run("composable pair returns nil", func(t *testing.T) {
 		child := &Harness{}                                  // absent — effective version 1
 		base := &Harness{SchemaVersion: schemaVersionPtr(1)} // explicit version 1
-		assert.NoError(t, checkSchemaVersionCompatibility(child, base, "bases/parent.yaml"))
+		assert.NoError(t, checkSchemaVersionsCompose(child, base, "bases/parent.yaml"))
 	})
 	t.Run("mixed pair names both versions and the layer label", func(t *testing.T) {
 		child := &Harness{SchemaVersion: schemaVersionPtr(1)}
 		base := &Harness{SchemaVersion: schemaVersionPtr(2)}
-		err := checkSchemaVersionCompatibility(child, base, "bases/parent.yaml")
+		err := checkSchemaVersionsCompose(child, base, "bases/parent.yaml")
 		require.Error(t, err)
 		assert.ErrorContains(t, err, "base layer bases/parent.yaml declares schema_version 2")
 		assert.ErrorContains(t, err, "incompatible with schema_version 1 of the harness composing it")
