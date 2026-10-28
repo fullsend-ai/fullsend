@@ -356,7 +356,7 @@ per run, before `pre_script` and sandbox creation.
 | Timeout | 30 seconds |
 | Failure | A non-zero exit or a timeout stops the run before the agent starts: `preflight_check failed: …` or `preflight_check timed out after 30s: …`, with the command text and output redacted |
 | Environment | A minimal, credential-safe environment: the host `PATH`, `HOME`, and `TMPDIR`, plus `FULLSEND_DIR` and `PYTHONDONTWRITEBYTECODE`, and the harness's `env.runner` entries except credential-named values |
-| Variables | `${VAR}` references expand from the merged runner environment; a reference that is not present fails the run before the command executes |
+| Variables | `${VAR}` references expand against the credential-safe preflight environment from the Environment row; a reference that is not present fails the run before the command executes, naming the variable, never its value |
 
 The older nested `validation_loop.preflight_check` runs after the top-level
 gate during migration. It is deprecated: `fullsend lint` warns and names the
