@@ -115,11 +115,15 @@ func TestGeneratedHarnessLoadsWithValidationLoop(t *testing.T) {
 	if err := h.ValidateFilesExist(); err != nil {
 		t.Fatalf("ValidateFilesExist: %v", err)
 	}
-	if diags := h.Lint(); len(diags) != 0 {
-		t.Errorf("generated harness produces lint diagnostics: %v", diags)
+	diags := h.Lint()
+	if len(diags) != 1 || diags[0].Severity != harness.SeverityWarning || diags[0].Field != "validation_loop.preflight_check" {
+		t.Errorf("generated harness must produce exactly the nested-field deprecation warning, got: %v", diags)
 	}
 	if h.PreflightCheck == "" {
 		t.Error("generated harness must set the top-level preflight_check")
+	}
+	if h.ValidationLoop == nil || h.ValidationLoop.PreflightCheck == "" {
+		t.Error("generated harness must keep the nested validation_loop.preflight_check during the migration window")
 	}
 }
 
