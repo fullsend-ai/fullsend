@@ -207,7 +207,7 @@ you would add or change it by hand.
 | File | Field | Written by `agent new`? | Set by | Add or change by hand when |
 |------|-------|--------------------------|--------|------------------------------|
 | `harness/<name>.yaml` | `agent:` | always | `agents/<name>.md` | — |
-| `harness/<name>.yaml` | `policy:` | always, `policies/base.yaml` | — | point it at another policy file, or a pinned URL |
+| `harness/<name>.yaml` | `policy:` | always, `../policies/base.yaml` | — | point it at another policy file, or a pinned URL |
 | `harness/<name>.yaml` | `readonly_repo:` | for `--role review` | `--role` | — |
 | `harness/<name>.yaml` | `description:` | always | `--description` / spec `description` | — |
 | `harness/<name>.yaml` | `role:` | always | `--role` / spec `role` | — |
@@ -215,7 +215,7 @@ you would add or change it by hand.
 | `harness/<name>.yaml` | `image:` | always; the default image is pinned to a digest | `--image` / spec `image` | run a different image |
 | `harness/<name>.yaml` | `providers:` | always | `--runtime` / `--model` (see [Pick a route](#pick-a-route)) | a provider the route doesn't cover — see [Remote providers and profiles](customizing-agents.md#remote-providers-and-profiles) |
 | `harness/<name>.yaml` | `model:`, `effort:` | always | `--model` / `--effort` or spec keys | — |
-| `harness/<name>.yaml` | `post_script:` | always, `scripts/post-<name>.sh` | — | a `pre_script:` — never generated, see [Scripts](#scripts) |
+| `harness/<name>.yaml` | `post_script:` | always, `../scripts/post-<name>.sh` | — | a `pre_script:` — never generated, see [Scripts](#scripts) |
 | `harness/<name>.yaml` | `host_files:` | Vertex routes only: the GCP credentials file, marked `optional: true` | `--runtime` / `--model` | a file your prompt reads, such as pre-script output |
 | `harness/<name>.yaml` | `env.runner`, `env.sandbox` | always: the GitHub variables, plus the Vertex variables on a Vertex route | `--runtime` / `--model` | a variable your prompt reads beyond those |
 | `harness/<name>.yaml` | `timeout_minutes:` | always | `--timeout-minutes` / spec `timeout_minutes` | — |
@@ -248,7 +248,7 @@ in the code block below the table, not in a cell.
 | `unknown role "..."` from `agent new` | Same as above, caught at generation time | See the role table in [`agent new`](../../cli/agent.md#roles) |
 | `validating files: policy field is required` | The composed harness has no `policy:`, and fullsend ships no default | Commit a copy of the fleet policy from [fullsend-ai/agents](https://github.com/fullsend-ai/agents), or set `policy:` to its URL with a `#sha256=` hash under `allowed_remote_resources`. A child that inherits `policy:` from its `base:` already has one |
 | `validating files: policy: ... declares no fields` | The policy file is empty or comment-only | Replace it with a copy of the fleet policy from [fullsend-ai/agents](https://github.com/fullsend-ai/agents) |
-| `validating files: policy: stat .../policies/base.yaml: no such file or directory` | The harness points at a policy file that isn't committed next to it | Commit `policies/base.yaml` with the agent, or point `policy:` at a committed or pinned URL |
+| `validating files: policy: stat .../policies/base.yaml: no such file or directory` | The harness points at a policy file that isn't committed beside the harness's parent directory | Commit `.fullsend/policies/base.yaml`, or point `policy:` at a committed or pinned URL |
 | `host_files[0]: GOOGLE_APPLICATION_CREDENTIALS is empty; mark the mount optional or provide a credential file` | pi on `openai/`, Vertex sub-agent block uncommented, no credentials file set | Set `GOOGLE_APPLICATION_CREDENTIALS` — see [Pick a route](#pick-a-route). Don't mark the mount optional |
 | `validating env:` followed by unresolved host variables at `fullsend run` | A `${VAR}` in the harness is unset | Supply it via `--env-file` locally. In CI, the variables a generated harness uses come from the setup commands in [Pick a route](#pick-a-route) |
 | `provider credentials are not declared by profile '<profile-id>'` | The provider supplies credential keys the profile does not declare; stale copies under built-in names or IDs may still use `_NOOP_*` placeholder credentials | For stale built-in overrides, finish [Upgrading agents generated before built-in providers](#upgrading-agents-generated-before-built-in-providers). For custom profiles, align the provider's credential keys with the profile's declarations |
@@ -369,11 +369,14 @@ You need a harness, an agent definition, and one supporting file. [`fullsend age
 
 Commit all three. `fullsend github setup` creates none of them.
 
+The harness lives in `harness/`, so its local paths use `../` to reach the
+sibling `agents/` and `policies/` directories.
+
 **`harness/my-agent.yaml`:**
 ```yaml
-agent: agents/my-agent.md
+agent: ../agents/my-agent.md
 image: ghcr.io/fullsend-ai/fullsend-sandbox:latest  # Pin to a digest before CI use
-policy: policies/base.yaml
+policy: ../policies/base.yaml
 providers:
   - vertex-ai
 role: triage                        # a role your mint SERVES — not the agent's name (see note below)
@@ -445,6 +448,9 @@ Network access (which APIs the agent can reach) is controlled by provider profil
 ### Real-world example: the triage agent
 
 The [fullsend-ai/agents](https://github.com/fullsend-ai/agents) triage agent is a full production agent. The harness below is adapted from the current [`harness/triage.yaml`](https://github.com/fullsend-ai/agents/blob/main/harness/triage.yaml) (field order adjusted for readability):
+
+The upstream harness sits at the repository root beside its resources. If you
+copy this example into `.fullsend/harness/`, prefix each local path with `../`.
 
 ```yaml
 agent: agents/triage.md
@@ -538,7 +544,11 @@ skills/issue-labels/
   references/         # Optional: reference data
 ```
 
-Reference in the agent frontmatter by name (`skills: [issue-labels]`) and in the harness by path (`skills: [skills/issue-labels]`). Skills can also be URLs with integrity hashes. See [Configuring with Skills](customizing-with-skills.md) for details on creating and managing skills.
+Reference in the agent frontmatter by name (`skills: [issue-labels]`) and in
+the harness by path (`skills: [../skills/issue-labels]` when the harness is in
+`.fullsend/harness/`). Skills can also be URLs with integrity hashes. See
+[Configuring with Skills](customizing-with-skills.md) for details on creating
+and managing skills.
 
 For details on skill authoring, precedence, and extension points, see
 [Configuring with Skills](customizing-with-skills.md).
@@ -564,7 +574,7 @@ base: https://raw.githubusercontent.com/fullsend-ai/agents/<sha>/harness/triage.
 model: sonnet
 slug: my-org-triage
 skills:
-  - skills/my-enhancement
+  - ../skills/my-enhancement
 timeout_minutes: 15
 ```
 

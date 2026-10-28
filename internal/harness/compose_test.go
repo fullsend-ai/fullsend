@@ -369,12 +369,9 @@ func TestLoadWithBase_LocalSkillPathOutsideRootIsRejected(t *testing.T) {
 	assert.Contains(t, err.Error(), `skills[0]: path "../outside" resolves outside fullsend directory`)
 }
 
-// A relative skill entry that is a symlink leaving the root is not read
-// for its declared name: it keeps its basename identity and stays relative
-// for ResolveRelativeTo, as before the merge-time resolution. A relative
-// symlink inside the root resolves like a directory (os.Root follows
-// relative link targets only).
-func TestLoadWithBase_LocalSkillSymlinkOutsideRootIsNotRead(t *testing.T) {
+// A relative skill entry that is a symlink leaving the root is rejected.
+// A relative symlink inside the root resolves like a directory.
+func TestLoadWithBase_LocalSkillSymlinkOutsideRootIsRejected(t *testing.T) {
 	dir := t.TempDir()
 	baseSkill := writeSkill(t, filepath.Join(dir, "cache", "issue-labels", "github"), "issue-labels")
 	writeTestHarness(t, dir, "base.yaml", fmt.Sprintf("agent: agents/base.md\nrole: review\nskills:\n  - %s\n", baseSkill))
@@ -384,25 +381,24 @@ func TestLoadWithBase_LocalSkillSymlinkOutsideRootIsNotRead(t *testing.T) {
 	require.NoError(t, os.Symlink(outside, filepath.Join(dir, "skills", "link")))
 	path := writeTestHarness(t, dir, "review.yaml", "base: ./base.yaml\nrole: review\nskills:\n  - skills/link\n")
 
-	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{WorkspaceRoot: dir})
-	require.NoError(t, err)
-	assert.Equal(t, []string{baseSkill, "skills/link"}, SkillSources(h.Skills))
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{WorkspaceRoot: dir})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `skills[0]: path "skills/link" resolves outside fullsend directory`)
 
 	writeSkill(t, filepath.Join(dir, "skills", "real"), "issue-labels")
 	require.NoError(t, os.Symlink("real", filepath.Join(dir, "skills", "alias")))
 	path = writeTestHarness(t, dir, "review2.yaml", "base: ./base.yaml\nrole: review\nskills:\n  - skills/alias\n")
 
-	h, _, err = LoadWithBase(context.Background(), path, ComposeOpts{WorkspaceRoot: dir})
-	require.NoError(t, err)
+	h, _, loadErr := LoadWithBase(context.Background(), path, ComposeOpts{WorkspaceRoot: dir})
+	require.NoError(t, loadErr)
 	assert.Equal(t, []string{filepath.Join(dir, "skills", "alias")}, SkillSources(h.Skills))
 }
 
 // The containment check opens each marker spelling under an os.Root at the
-// workspace root, so no symlink leaving it is read for a declared name
-// wherever it sits: the marker file itself, a parent component, a `..`
-// entry routed through an in-root link, or a link with an absolute target.
-// Every entry keeps its basename identity and the base skill survives.
-func TestLoadWithBase_LocalSkillMarkerSymlinkOutsideRootIsNotRead(t *testing.T) {
+// workspace root, so a symlink leaving it is rejected wherever it sits: in
+// the marker file, a parent component, a `..` entry routed through an
+// in-root link, or a link with an absolute target.
+func TestLoadWithBase_LocalSkillMarkerSymlinkOutsideRootIsRejected(t *testing.T) {
 	dir := t.TempDir()
 	baseSkill := writeSkill(t, filepath.Join(dir, "cache", "issue-labels", "github"), "issue-labels")
 	writeTestHarness(t, dir, "base.yaml", fmt.Sprintf("agent: agents/base.md\nrole: review\nskills:\n  - %s\n", baseSkill))
@@ -420,10 +416,9 @@ func TestLoadWithBase_LocalSkillMarkerSymlinkOutsideRootIsNotRead(t *testing.T) 
 	path := writeTestHarness(t, dir, "review.yaml", "base: ./base.yaml\nrole: review\nskills:\n"+
 		"  - skills/marker\n  - skills/parent/elsewhere\n  - skills/alias/../dir\n  - skills/absalias\n")
 
-	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{WorkspaceRoot: dir})
-	require.NoError(t, err)
-	assert.Equal(t, []string{baseSkill, "skills/marker", "skills/parent/elsewhere", "skills/alias/../dir", "skills/absalias"},
-		SkillSources(h.Skills))
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{WorkspaceRoot: dir})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `skills[1]: path "skills/parent/elsewhere" resolves outside fullsend directory`)
 }
 
 // TestMergeSkills_RelativeChildCannotSpoofBaseIdentity is a regression test
@@ -9574,7 +9569,7 @@ plugins:
 		OrgAllowlist:  []string{"https://example.com/"},
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "resolving URL-sourced plugins")
+	assert.Contains(t, err.Error(), `plugins[0]: path "../../../etc/shadow" must not contain path traversal segments`)
 }
 
 func TestLoadWithBase_URLBase_PluginPathTraversalAfterMerge(t *testing.T) {
@@ -9611,7 +9606,7 @@ plugins:
 		SourceURL:     "https://example.com/harness/child.yaml",
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "resolving URL-sourced plugins after base composition")
+	assert.Contains(t, err.Error(), `plugins[0]: path "../../../etc/shadow" must not contain path traversal segments`)
 }
 
 func TestChmodPluginDir_NonexistentSymlink(t *testing.T) {
@@ -9731,9 +9726,9 @@ overlays:
 	})
 	require.NoError(t, err)
 	// Both base and child overlays match; child comes later and overrides
-	assert.Equal(t, "scripts/child-gh.sh", h.PreScript)
+	assert.Equal(t, filepath.Join(dir, "scripts", "child-gh.sh"), h.PreScript)
 	// Child overlay's post_script is also applied
-	assert.Equal(t, "scripts/child-post.sh", h.PostScript)
+	assert.Equal(t, filepath.Join(dir, "scripts", "child-post.sh"), h.PostScript)
 }
 
 func TestLoadWithBase_OverlayConcatOnlyBaseHasOverlays(t *testing.T) {
@@ -9757,7 +9752,7 @@ base: base.yaml
 		Event:         map[string]any{"source": map[string]any{"system": "github"}},
 	})
 	require.NoError(t, err)
-	assert.Equal(t, "scripts/gh.sh", h.PreScript)
+	assert.Equal(t, filepath.Join(dir, "scripts", "gh.sh"), h.PreScript)
 }
 
 func TestLoadWithBase_OverlayConcatOnlyChildHasOverlays(t *testing.T) {
@@ -9782,7 +9777,7 @@ overlays:
 		Event:         map[string]any{"source": map[string]any{"system": "github"}},
 	})
 	require.NoError(t, err)
-	assert.Equal(t, "scripts/child-gh.sh", h.PreScript)
+	assert.Equal(t, filepath.Join(dir, "scripts", "child-gh.sh"), h.PreScript)
 }
 
 func TestLoadWithBase_OverlayResolution(t *testing.T) {
@@ -9807,7 +9802,7 @@ overlays:
 		Event:         map[string]any{"source": map[string]any{"system": "github"}},
 	})
 	require.NoError(t, err)
-	assert.Equal(t, "scripts/gh.sh", h.PreScript)
+	assert.Equal(t, filepath.Join(dir, "scripts", "gh.sh"), h.PreScript)
 	assert.Nil(t, h.Overlays)
 }
 

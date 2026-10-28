@@ -69,7 +69,8 @@ func ListTriggeredHarnesses(ctx context.Context, configDir string, cfg config.Co
 	for _, agent := range registered {
 		resolved, err := harness.ResolveRegisteredPath(ctx, configDir, agent.Entry, allowlist, composeOpts)
 		if err != nil {
-			fmt.Fprintf(annotationWriter, "::error::harness dispatch: skipping agent %s: resolve failed: %v\n", agent.Name, err)
+			fmt.Fprintf(annotationWriter, "::error::harness dispatch: skipping agent %s: resolve failed: %v\n",
+				escapeWorkflowCommandData(agent.Name), escapeWorkflowCommandData(err.Error()))
 			loadErrs = append(loadErrs, fmt.Errorf("agent %s: resolve failed: %w", agent.Name, err))
 			continue
 		}
@@ -83,9 +84,14 @@ func ListTriggeredHarnesses(ctx context.Context, configDir string, cfg config.Co
 		}
 		h, _, err := harness.LoadWithBase(ctx, resolved.Path, loadOpts)
 		if err != nil {
-			fmt.Fprintf(annotationWriter, "::error::harness dispatch: skipping agent %s: load failed: %v\n", agent.Name, err)
+			fmt.Fprintf(annotationWriter, "::error::harness dispatch: skipping agent %s: load failed: %v\n",
+				escapeWorkflowCommandData(agent.Name), escapeWorkflowCommandData(err.Error()))
 			loadErrs = append(loadErrs, fmt.Errorf("agent %s: load failed: %w", agent.Name, err))
 			continue
+		}
+		for _, diagnostic := range h.PathDiagnostics() {
+			fmt.Fprintf(annotationWriter, "::warning::harness dispatch: agent %s: %s\n",
+				escapeWorkflowCommandData(agent.Name), escapeWorkflowCommandData(diagnostic.String()))
 		}
 		loaded++
 		if strings.TrimSpace(h.Trigger) == "" {
@@ -106,6 +112,14 @@ func ListTriggeredHarnesses(ctx context.Context, configDir string, cfg config.Co
 	return out, nil
 }
 
+func escapeWorkflowCommandData(value string) string {
+	return strings.NewReplacer(
+		"%", "%25",
+		"\r", "%0D",
+		"\n", "%0A",
+	).Replace(value)
+}
+
 // MatchHarnesses evaluates CEL triggers and returns matching harnesses.
 func MatchHarnesses(candidates []TriggeredHarness, event *normevent.Event) ([]TriggeredHarness, error) {
 	eventMap, err := event.ToMap()
@@ -116,7 +130,8 @@ func MatchHarnesses(candidates []TriggeredHarness, event *normevent.Event) ([]Tr
 	for _, c := range candidates {
 		ok, err := harness.EvaluateTrigger(c.Harness.Trigger, eventMap)
 		if err != nil {
-			fmt.Fprintf(annotationWriter, "::error::harness dispatch: skipping agent %s: trigger eval failed: %v\n", c.Name, err)
+			fmt.Fprintf(annotationWriter, "::error::harness dispatch: skipping agent %s: trigger eval failed: %v\n",
+				escapeWorkflowCommandData(c.Name), escapeWorkflowCommandData(err.Error()))
 			continue
 		}
 		if ok {

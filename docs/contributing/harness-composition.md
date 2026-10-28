@@ -45,6 +45,9 @@ and update the others as needed.
 > values (forge/overlay) override same-layer top-level values
 > (specificity). Across layers, child values override inherited base
 > values (derivation).
+> Local path fields are also resolved per layer before merging, so a base
+> layer's relative paths keep the base harness directory as their origin
+> while child paths keep the child harness directory.
 
 ### Validation and resolution side
 

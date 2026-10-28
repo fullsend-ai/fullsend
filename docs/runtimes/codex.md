@@ -197,7 +197,7 @@ What a local codex run needs, beyond the guide:
   starts, with ``codex preflight: `codex --version` exited 127``; `podman pull
   ghcr.io/fullsend-ai/fullsend-sandbox:latest` fixes it.
 - **A harness that declares the provider and a policy** — `providers: [openai]` and
-  `policy: policies/base.yaml`. The fleet's agents carry both from the first fullsend release after
+  `policy: ../policies/base.yaml` for a harness in `.fullsend/harness/`. The fleet's agents carry both from the first fullsend release after
   v0.43.0; up to v0.43.0 they carry only the policy. `fullsend run` materializes the credential only
   when the harness lists the provider, so on those releases add it on a
   [child harness](../guides/user/customizing-agents.md#configuration-with-base-composition) (a
@@ -361,7 +361,7 @@ hold a gateway placeholder. Check that the harness declares `providers: [openai]
 
 **The run stops before the agent starts, naming `api.openai.com`.** The effective sandbox policy
 admits `api.openai.com:443` without protocol inspection, so the gateway refuses to carry the
-credential over it. Add `policy: policies/base.yaml` to the harness.
+credential over it. Add `policy: ../policies/base.yaml` to a harness in `.fullsend/harness/`.
 
 **`codex takes OpenAI model ids or gateway/<model> only ...`.** The resolved model is a Claude alias (`opus` and
 friends), carries another provider's prefix, or is missing entirely. The message names the fixes:

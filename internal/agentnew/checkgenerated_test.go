@@ -15,7 +15,7 @@ func loadAndCheck(t *testing.T, dir, name string) ([]harness.Diagnostic, error) 
 	if err != nil {
 		return nil, err
 	}
-	return harness.CheckGenerated(h, dir)
+	return harness.CheckGenerated(h, filepath.Join(dir, "harness", name+".yaml"), dir)
 }
 
 func generateInto(t *testing.T, dir string, opts Options) {

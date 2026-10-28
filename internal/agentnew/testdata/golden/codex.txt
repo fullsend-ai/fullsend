@@ -61,18 +61,18 @@ post-script performs every side effect; your only output is this file.
 #
 # This agent handles GitHub only. To add GitLab or Jira, see
 # docs/guides/user/bring-your-own-agent.md.
-agent: agents/lint-docs.md
+agent: ../agents/lint-docs.md
 description: Check docs changes for broken links
 role: triage
 slug: my-org-lint-docs
 image: ghcr.io/fullsend-ai/fullsend-sandbox@sha256:bcf8cd84a37623d761d38f2a6f51d20283f8798b7d3eeb9c509a2503c074bd55
-policy: policies/base.yaml
+policy: ../policies/base.yaml
 providers:
   - github-ro
   - openai
 model: openai/gpt-5.6-luna
 effort: high
-post_script: scripts/post-lint-docs.sh
+post_script: ../scripts/post-lint-docs.sh
 env:
   runner:
     FULLSEND_FORGE: github

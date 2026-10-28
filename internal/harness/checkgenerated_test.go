@@ -14,15 +14,15 @@ func writeGeneratedTree(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	files := map[string]string{
-		"harness/demo.yaml": `agent: agents/demo.md
+		"harness/demo.yaml": `agent: ../agents/demo.md
 role: triage
-policy: policies/base.yaml
-post_script: scripts/post-demo.sh
+policy: ../policies/base.yaml
+post_script: ../scripts/post-demo.sh
 providers:
-  - providers/vertex-ai.yaml
+  - ../providers/vertex-ai.yaml
 openshell:
   profiles:
-    - profiles/fullsend-vertex-ai.yaml
+    - ../profiles/fullsend-vertex-ai.yaml
 trigger: |
   event.entity.kind == "work_item"
 `,
@@ -53,9 +53,14 @@ func loadDemo(t *testing.T, dir string) *Harness {
 	return h
 }
 
+func checkDemo(t *testing.T, dir string, h *Harness) ([]Diagnostic, error) {
+	t.Helper()
+	return CheckGenerated(h, filepath.Join(dir, "harness", "demo.yaml"), dir)
+}
+
 func TestCheckGeneratedHappyPath(t *testing.T) {
 	dir := writeGeneratedTree(t)
-	diags, err := CheckGenerated(loadDemo(t, dir), dir)
+	diags, err := checkDemo(t, dir, loadDemo(t, dir))
 	if err != nil {
 		t.Fatalf("a complete tree should validate: %v", err)
 	}
@@ -80,7 +85,7 @@ func TestCheckGeneratedMissingFiles(t *testing.T) {
 			if err := os.Remove(filepath.Join(dir, victim)); err != nil {
 				t.Fatal(err)
 			}
-			_, err := CheckGenerated(loadDemo(t, dir), dir)
+			_, err := checkDemo(t, dir, loadDemo(t, dir))
 			if err == nil {
 				t.Fatalf("removing %s was not detected", victim)
 			}
@@ -98,7 +103,7 @@ func TestCheckGeneratedReturnsLintDiagnostics(t *testing.T) {
 	h := loadDemo(t, dir)
 	h.RunnerEnv = map[string]string{"LEGACY": "value"} // deprecated by ADR 0055
 
-	diags, err := CheckGenerated(h, dir)
+	diags, err := checkDemo(t, dir, h)
 	if err != nil {
 		t.Fatalf("a deprecated shape must not be fatal: %v", err)
 	}
@@ -123,7 +128,7 @@ func TestCheckGeneratedRejectsEscapingPaths(t *testing.T) {
 	h := loadDemo(t, dir)
 	h.Policy = "../../etc/shadow"
 
-	if _, err := CheckGenerated(h, dir); err == nil {
+	if _, err := checkDemo(t, dir, h); err == nil {
 		t.Fatal("a path escaping the fullsend directory should be refused")
 	} else if !strings.Contains(err.Error(), "resolves outside") {
 		t.Errorf("unexpected error: %v", err)
@@ -138,7 +143,7 @@ func TestCheckGeneratedSkipsBareProviderNames(t *testing.T) {
 	h.Providers = []string{"vertex-ai"}
 	h.OpenShell = nil
 
-	if _, err := CheckGenerated(h, dir); err != nil {
+	if _, err := checkDemo(t, dir, h); err != nil {
 		t.Errorf("a bare provider name should not be stat-ed: %v", err)
 	}
 }

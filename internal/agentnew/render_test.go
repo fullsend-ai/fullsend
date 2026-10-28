@@ -67,17 +67,16 @@ func TestGeneratedHarnessLoads(t *testing.T) {
 			}
 			writeTree(t, dir, files)
 
-			h, err := harness.Load(filepath.Join(dir, "harness", "lint-docs.yaml"))
+			harnessPath := filepath.Join(dir, "harness", "lint-docs.yaml")
+			h, err := harness.Load(harnessPath)
 			if err != nil {
 				t.Fatalf("generated harness does not load: %v", err)
 			}
-			if err := h.ResolveRelativeTo(dir); err != nil {
-				t.Fatalf("ResolveRelativeTo: %v", err)
+			diags, err := harness.CheckGenerated(h, harnessPath, dir)
+			if err != nil {
+				t.Fatalf("CheckGenerated: %v", err)
 			}
-			if err := h.ValidateFilesExist(); err != nil {
-				t.Fatalf("ValidateFilesExist: %v", err)
-			}
-			if diags := h.Lint(); len(diags) != 0 {
+			if len(diags) != 0 {
 				t.Errorf("generated harness produces lint diagnostics: %v", diags)
 			}
 			if h.Role != role {
@@ -174,7 +173,7 @@ func TestGeneratedHarnessHasNoDeprecatedShapes(t *testing.T) {
 			t.Errorf("generated harness contains %q:\n%s", banned, yaml)
 		}
 	}
-	if !strings.Contains(yaml, "policy: policies/base.yaml") {
+	if !strings.Contains(yaml, "policy: ../policies/base.yaml") {
 		t.Error("generated harness must always set policy:")
 	}
 }
@@ -224,7 +223,7 @@ func TestValidationLoopIsOptional(t *testing.T) {
 		t.Fatal(err)
 	}
 	yaml := string(fileByPath(t, on, "harness/lint-docs.yaml").Data)
-	if !strings.Contains(yaml, "validation_loop:") || !strings.Contains(yaml, "script: scripts/validate-output-schema.sh") {
+	if !strings.Contains(yaml, "validation_loop:") || !strings.Contains(yaml, "script: ../scripts/validate-output-schema.sh") {
 		t.Errorf("validation_loop block missing or incomplete:\n%s", yaml)
 	}
 	if !hasPath(on, "scripts/validate-output-schema.sh") {
@@ -374,7 +373,8 @@ func TestCodexHarnessOmitsVertexCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generated codex harness does not load: %v", err)
 	}
-	if _, err := harness.CheckGenerated(h, dir); err != nil {
+	harnessPath := filepath.Join(dir, "harness", "lint-docs.yaml")
+	if _, err := harness.CheckGenerated(h, harnessPath, dir); err != nil {
 		t.Fatalf("generated codex tree does not validate: %v", err)
 	}
 	if !slices.Contains(h.Providers, OpenAIProviderName) {
@@ -703,7 +703,7 @@ func TestPiOpenAIHarnessVertexBlock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("uncommented harness does not load: %v", err)
 	}
-	if _, err := harness.CheckGenerated(h, dir); err != nil {
+	if _, err := harness.CheckGenerated(h, path, dir); err != nil {
 		t.Fatalf("uncommented harness does not validate: %v", err)
 	}
 	if err := h.ResolveOverlays(nil, "github", nil); err != nil {

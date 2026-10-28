@@ -94,6 +94,9 @@ it ships with marked sections to fill in. Everything else is complete.
 | `scripts/validate-output-schema.sh` | with `--validation-loop`, when absent | **no** |
 | `config.yaml` `agents:` entry | unless `--no-register` | n/a |
 
+Generated local paths resolve from `harness/<name>.yaml`, so they use `../`
+to reference sibling directories such as `agents/` and `policies/`.
+
 The generated harness's `providers:` entries are bare names (`vertex-ai`,
 `github-ro`, ...), not paths, and no `providers/` or `profiles/` files are
 written. `fullsend run` resolves each built-in name to the provider

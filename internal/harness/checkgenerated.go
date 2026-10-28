@@ -25,12 +25,12 @@ import (
 // FULLSEND_WORK_ITEM_URL is unset would make the command unusable for its main
 // audience. The consequence is that an unset variable surfaces at
 // `fullsend run` time instead; the generated docs say so.
-func CheckGenerated(h *Harness, absDir string) ([]Diagnostic, error) {
+func CheckGenerated(h *Harness, harnessPath, containmentRoot string) ([]Diagnostic, error) {
+	if err := h.resolveLocalPathsRelativeTo(filepath.Dir(harnessPath), containmentRoot); err != nil {
+		return h.Lint(), fmt.Errorf("resolving paths: %w", err)
+	}
 	diags := h.Lint()
 
-	if err := h.ResolveRelativeTo(absDir); err != nil {
-		return diags, fmt.Errorf("resolving paths: %w", err)
-	}
 	if err := h.ValidateFilesExist(); err != nil {
 		return diags, fmt.Errorf("validating files: %w", err)
 	}

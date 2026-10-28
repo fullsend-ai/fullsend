@@ -45,7 +45,7 @@ Create a thin harness that inherits from the upstream code agent and adds your s
 base: https://raw.githubusercontent.com/fullsend-ai/agents/<sha>/harness/code.yaml#sha256=abc...
 
 skills:
-  - skills/my-custom-linting        # Merged with base skills (child overrides by skill identity)
+  - ../skills/my-custom-linting      # Merged with base skills (child overrides by skill identity)
 
 timeout_minutes: 45                 # Override timeout (scalar: child wins)
 ```
@@ -111,7 +111,7 @@ Setting a single `validation_loop` field inherits the rest from the base
 base: https://raw.githubusercontent.com/fullsend-ai/agents/<sha>/harness/code.yaml#sha256=abc...
 
 validation_loop:
-  schema: schemas/my-custom-schema.json
+  schema: ../schemas/my-custom-schema.json
 ```
 
 Setting `validation_loop.preflight_check` swaps the dependency probe. It runs in a minimal, credential-safe environment, and an out-of-scope `${VAR}` reference fails the run before the probe executes. See the [harness reference](../../reference/harness-reference.md) for the full contract.
@@ -140,7 +140,7 @@ Providers and openshell profiles can be referenced from remote URLs, enabling fu
 ```yaml
 providers:
   - vertex                       # Local name: loaded from providers/vertex.yaml
-  - providers/custom.yaml        # Local path: resolved relative to harness
+  - ../providers/custom.yaml     # Local path: resolved relative to harness
   - "https://github.com/org/repo/tree/main/providers/claude.yaml#sha256=abc..."  # Remote
 ```
 
@@ -149,7 +149,7 @@ providers:
 ```yaml
 openshell:
   profiles:
-    - profiles/claude-code.yaml    # Local path (resolved relative to harness)
+    - ../profiles/claude-code.yaml  # Local path (resolved relative to harness)
     - "https://github.com/org/profiles/tree/main/claude-code.yaml#sha256=abc..."
 ```
 
@@ -158,7 +158,13 @@ When using `base:` composition, the base harness can declare its own providers a
 - **Profiles:** base + child lists are concatenated; deduplicated by profile `id` (child wins)
 - **Providers:** base + child lists are concatenated; local names shadow URL-resolved names of the same `name`
 
-Only profiles listed in `openshell.profiles` are imported. A YAML file that merely exists under the `profiles/` directory is **not** imported unless the harness names it. To use a local profile as a per-repo override, list it explicitly under its own `id` (e.g., `profiles/myorg-vertex-ai.yaml`); the child-wins dedup rule applies by `id`. The `fullsend-<name>` ids of the built-in profiles are reserved: list a copy under one and `fullsend run` warns and uses it for now, and a later release rejects it.
+Only profiles listed in `openshell.profiles` are imported. A YAML file that
+merely exists under the `profiles/` directory is **not** imported unless the
+harness names it. To use a local profile as a per-repo override, list it
+explicitly under its own `id` (for example, `../profiles/myorg-vertex-ai.yaml`);
+the child-wins dedup rule applies by `id`. The `fullsend-<name>` ids of the
+built-in profiles are reserved: list a copy under one and `fullsend run` warns
+and uses it for now, and a later release rejects it.
 
 Remote URLs must include a `#sha256=...` integrity hash and match an `allowed_remote_resources` prefix in the same config. The integrity hash is checked on every resolution to ensure the content hasn't been tampered with since it was pinned.
 
@@ -248,12 +254,12 @@ onto `code` and `fix`.
    base: https://raw.githubusercontent.com/fullsend-ai/agents/<sha>/harness/code.yaml#sha256=abc...
 
    providers:
-     - providers/github-packages.yaml
+     - ../providers/github-packages.yaml
    openshell:
      profiles:
-       - profiles/fullsend-github-packages.yaml
+       - ../profiles/fullsend-github-packages.yaml
    host_files:
-     - src: env/npmrc-github-packages
+     - src: ../env/npmrc-github-packages
        dest: /sandbox/workspace/.npmrc
        expand: false
    env:
@@ -389,7 +395,7 @@ available as a command on Claude and pi runs, drop it there:
 
    ```yaml
    host_files:
-     - src: scripts/my-tool.sh
+     - src: ../scripts/my-tool.sh
        dest: /sandbox/workspace/bin/my-tool.sh
    ```
 
@@ -425,7 +431,7 @@ When you need a directory outside `/sandbox/workspace/bin` on the `PATH`
 
    ```yaml
    host_files:
-     - src: env/extra-path.env
+     - src: ../env/extra-path.env
        dest: /sandbox/workspace/.env.d/extra-path.env
    ```
 

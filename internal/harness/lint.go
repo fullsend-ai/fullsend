@@ -69,6 +69,7 @@ func (d Diagnostic) String() string {
 // Returns nil when no diagnostics are found.
 func (h *Harness) Lint() []Diagnostic {
 	var diags []Diagnostic
+	diags = append(diags, h.pathDiagnostics...)
 
 	if len(h.RunnerEnv) > 0 {
 		msg := "runner_env is deprecated; use env.runner instead (see ADR 0055)"

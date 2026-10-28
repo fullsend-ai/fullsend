@@ -137,7 +137,8 @@ built-in skill's identity exactly.
 > directory basename: `skills/issue-labels/github` declares `issue-labels`.
 > Your override replaces it when its own `SKILL.md` declares `issue-labels`,
 > whatever its directory is called. Relative `skills:` entries are resolved
-> against the `.fullsend` directory before the match.
+> against the declaring harness file's directory before the match; a harness
+> in `.fullsend/harness/` therefore uses `../skills/...`.
 
 See [Bring Your Own Agent](bring-your-own-agent.md) for the full
 composition model and config-driven registration.

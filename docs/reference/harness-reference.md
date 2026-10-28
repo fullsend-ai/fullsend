@@ -473,6 +473,12 @@ More-specific entries go last so they override broader defaults.
 agent: agents/triage.md              # → {base}/agents/triage.md
 ```
 
+Resolved local paths must remain inside the `.fullsend` configuration root. If
+a harness-file-relative path does not exist but the same relative path exists
+at the `.fullsend` root, Fullsend temporarily uses that legacy target and emits
+a deprecation warning. Move companion files next to the harness or update the
+path; the fallback will be removed.
+
 **Remote URLs** require a `#sha256=...` integrity hash:
 ```yaml
 agent: https://raw.githubusercontent.com/org/repo/<sha>/agents/lint.md#sha256=abc...

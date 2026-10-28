@@ -136,17 +136,17 @@ func buildHarness(opts Options, role Role) (*harness.Harness, error) {
 	}
 
 	h := &harness.Harness{
-		Agent:          "agents/" + opts.Name + ".md",
+		Agent:          "../agents/" + opts.Name + ".md",
 		Description:    opts.Description,
 		Role:           role.Name,
 		Slug:           opts.Slug,
 		Image:          opts.Image,
-		Policy:         "policies/base.yaml",
+		Policy:         "../policies/base.yaml",
 		Providers:      providers,
 		HostFiles:      hostFiles,
 		Model:          opts.Model,
 		Effort:         opts.Effort,
-		PostScript:     "scripts/post-" + opts.Name + ".sh",
+		PostScript:     "../scripts/post-" + opts.Name + ".sh",
 		TimeoutMinutes: opts.TimeoutMinutes,
 		ReadonlyRepo:   role.ReadonlyRepo,
 		Trigger:        opts.Trigger,
@@ -161,8 +161,8 @@ func buildHarness(opts Options, role Role) (*harness.Harness, error) {
 	}
 	if opts.ValidationLoop {
 		h.ValidationLoop = &harness.ValidationLoop{
-			Script:        "scripts/validate-output-schema.sh",
-			Schema:        "schemas/" + opts.Name + "-result.schema.json",
+			Script:        "../scripts/validate-output-schema.sh",
+			Schema:        "../schemas/" + opts.Name + "-result.schema.json",
 			MaxIterations: 2,
 			// The validation script hard-fails when python3 or the
 			// jsonschema package is missing, and it does so only after the

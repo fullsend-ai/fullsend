@@ -238,6 +238,9 @@ func routeBuiltinAgent(ctx context.Context, o routeOpts) (routeDecision, error) 
 		}
 		if h, _, err := harness.LoadWithBase(ctx, path, composeOpts); err == nil {
 			harnessRole = h.Role
+			for _, diagnostic := range h.PathDiagnostics() {
+				printer.StepWarn(fmt.Sprintf("%s harness: %s", o.agent, diagnostic.String()))
+			}
 		} else {
 			harnessUnavailable = true
 			printer.StepWarn(fmt.Sprintf("Could not load the %s harness to read its role, requiring write access: %v", o.agent, err))

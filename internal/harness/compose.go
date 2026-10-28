@@ -138,13 +138,23 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 		return nil, nil, err
 	}
 
-	// A local harness's relative skill paths are resolved against the
-	// workspace root now, so every merge below compares declared names;
-	// ResolveRelativeTo later finds them absolute. The root comes from the
-	// caller, never from the process working directory. A URL-sourced
-	// harness's skills are fetched instead, below.
-	if opts.SourceURL == "" && opts.WorkspaceRoot != "" {
-		if err := child.resolveSkillSourcesWithin(opts.WorkspaceRoot); err != nil {
+	// Validate path shapes while values are still relative. Local layers may
+	// use contained parent segments to reference sibling directories; the
+	// resolver enforces the workspace-root boundary immediately below. Remote
+	// and legacy resolution paths retain the strict no-parent-segment rule.
+	allowParentSegments := opts.SourceURL == "" && opts.WorkspaceRoot != "" &&
+		harnessDirWithinContainmentRoot(childDir, opts.WorkspaceRoot)
+	if err := child.validateResourceTypes(allowParentSegments); err != nil {
+		return nil, nil, fmt.Errorf("invalid harness: %w", err)
+	}
+
+	// Resolve every path in a local layer before merging so each field keeps
+	// the directory of the harness that declared it. Containment still uses
+	// the workspace root supplied by the caller. A URL-sourced harness's
+	// resources are fetched instead, below.
+	if opts.SourceURL == "" && opts.WorkspaceRoot != "" &&
+		harnessDirWithinContainmentRoot(childDir, opts.WorkspaceRoot) {
+		if err := child.resolveSelectedLocalPathsRelativeTo(childDir, opts.WorkspaceRoot, pathSelectionFromOpts(opts)); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -513,10 +523,12 @@ func loadBaseChain(
 		if err != nil {
 			return nil, nil, fmt.Errorf("loading base harness %s: %w", resolvedBasePath, err)
 		}
-		// Same root as the child's skills: a local base's relative skill
-		// paths resolve against the workspace root after the merge.
-		if opts.WorkspaceRoot != "" {
-			if err := base.resolveSkillSourcesWithin(opts.WorkspaceRoot); err != nil {
+		if opts.WorkspaceRoot != "" &&
+			harnessDirWithinContainmentRoot(filepath.Dir(resolvedBasePath), opts.WorkspaceRoot) {
+			if err := base.validateResourceTypes(true); err != nil {
+				return nil, nil, fmt.Errorf("base harness %s: %w", resolvedBasePath, err)
+			}
+			if err := base.resolveSelectedLocalPathsRelativeTo(filepath.Dir(resolvedBasePath), opts.WorkspaceRoot, pathSelectionFromOpts(opts)); err != nil {
 				return nil, nil, fmt.Errorf("base harness %s: %w", resolvedBasePath, err)
 			}
 		}
@@ -746,6 +758,10 @@ func mergeBaseIntoChild(base, child *Harness) {
 	if base.hadForgeBeforeResolve {
 		child.hadForgeBeforeResolve = true
 	}
+
+	// Propagate path-resolution diagnostics from every base layer so callers
+	// that only inspect the final harness still see deprecated fallbacks.
+	child.pathDiagnostics = append(child.pathDiagnostics, base.pathDiagnostics...)
 
 	// Scalars: child overrides if non-zero
 	if child.Agent == "" {
@@ -2363,14 +2379,14 @@ func mergeSkills(base, child []SkillEntry) []SkillEntry {
 	result := make([]SkillEntry, 0, len(base)+len(child))
 
 	for _, s := range base {
-		name := skill.SandboxName(s.Source)
+		name := skillMergeName(s)
 		baseIndex[name] = len(result)
 		result = append(result, s)
 	}
 
 	// Child entries override base slots only, never other child entries.
 	for _, s := range child {
-		name := skill.SandboxName(s.Source)
+		name := skillMergeName(s)
 		if idx, exists := baseIndex[name]; exists {
 			if filepath.Base(result[idx].Source) != filepath.Base(s.Source) {
 				log.Printf("harness: skill %q (%q) replaces base skill at %q: both declare the skill name %q",
@@ -2379,6 +2395,7 @@ func mergeSkills(base, child []SkillEntry) []SkillEntry {
 			merged := SkillEntry{
 				Source:    s.Source,
 				Overrides: mergeOverrides(result[idx].Overrides, s.Overrides),
+				mergeName: s.mergeName,
 			}
 			result[idx] = merged
 			delete(baseIndex, name)
@@ -2388,6 +2405,13 @@ func mergeSkills(base, child []SkillEntry) []SkillEntry {
 	}
 
 	return result
+}
+
+func skillMergeName(entry SkillEntry) string {
+	if entry.mergeName != "" {
+		return entry.mergeName
+	}
+	return skill.SandboxName(entry.Source)
 }
 
 // mergeHostFiles concatenates base and child host files, with child entries

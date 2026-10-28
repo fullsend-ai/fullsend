@@ -93,14 +93,16 @@ references are scalar values, not shell commands.
 | structural | Contains nested fields, lists, maps, or conditions | `forge`, `overlays[]`, `validation_loop`, `host_files[]`, `api_servers[]`, `skills[]`, `plugins[]`, `plugins[].pi`, `openshell`, `security` and its nested scanner/hook/escalation/trace blocks, `runner_env`, `env`, `env.runner`, `env.sandbox`, `privilege_levels`, `api_servers[].env`, `plugins[].env`, `allowed_remote_resources`, `providers` |
 | scalar | Interpreted as a configuration value, never as a path solely because it resembles one | `role`, `slug`, `description`, `image`, `model`, `effort`, `timeout_minutes`, `readonly_repo`, `sandbox_timeout_seconds`, `allow_runtime_fetch`, `max_runtime_fetches`, `trigger` (CEL expression), `schema_version` (planned); `validation_loop.max_iterations`, `validation_loop.feedback_mode`, `host_files[].expand`, `host_files[].optional`, `api_servers[].name`, `api_servers[].port`, `api_servers[].env[<key>]`, `plugins[].env[<key>]`, `plugins[].pi.args[]`, `runner_env[<key>]`, `env.runner[<key>]`, `env.sandbox[<key>]`, `privilege_levels[<stage>]`, `allowed_remote_resources[]`, `overlays[].when` (CEL expression); all leaf values under `security` |
 
-For local harnesses, relative runtime paths resolve from the `.fullsend`
-configuration root (the parent of `harness/`), **not** from the YAML file's
-directory. The same rule applies to local resource references except a local
-`base:`, which resolves relative to the child harness YAML's directory. Direct
-resource URLs use the allowlisted, hash-verified fetch pipeline; a URL `base:`
-hash verifies the harness YAML, not the relative files fetched alongside it.
-Use an immutable commit ref for a URL base whose relative resources will run on
-the host. For URL `base:` layers,
+For local harnesses, relative runtime and resource paths resolve from the
+directory containing the harness YAML, while remaining contained within the
+`.fullsend` configuration root. Each `base:` layer keeps its own directory as
+the resolution origin. As a temporary compatibility fallback, a relative path
+whose harness-file-relative target is absent may resolve from the `.fullsend`
+root when that legacy target exists; this emits a deprecation warning and will
+be removed. Direct resource URLs use the allowlisted, hash-verified fetch
+pipeline; a URL `base:` hash verifies the harness YAML, not the relative files
+fetched alongside it. Use an immutable commit ref for a URL base whose relative
+resources will run on the host. For URL `base:` layers,
 relative `pre_script`, `post_script`, `validation_loop.script`/`schema`,
 `host_files[].src` (except `${VAR}` sources), `agent`, `policy`, skills
 (including overrides), `plugins[].path`, `openshell.profiles[]`, and path-form
@@ -150,7 +152,7 @@ Two independent precedence axes govern field resolution
 | Field type       | Merge behavior                                       | Nil vs empty                                          |
 |------------------|------------------------------------------------------|-------------------------------------------------------|
 | Scalar fields    | Forge/child value overrides top-level/base value     | Absent = inherit from top level / base                |
-| `skills`         | Merged with deduplication by skill identity (declared `SKILL.md` name, otherwise directory basename; `skill.SandboxName`). Relative entries are resolved against the fullsend directory before the merge, so a local override matches by declared name too. Two entries with one identity in a single list are both kept and fail at bootstrap. A relative entry reached through a symlink that leaves the fullsend directory, or that has an absolute target, at any component including the marker file, keeps its directory basename as its merge identity. Forge/child overrides a matching top-level/base entry. Sibling nested dirs that share a leaf name are kept. | Absent (nil) = inherit; `skills: []` = empty list merged with base (base entries are returned) |
+| `skills`         | Merged with deduplication by skill identity (declared `SKILL.md` name, otherwise directory basename; `skill.SandboxName`). Relative entries are resolved against their originating harness directory before the merge, so a local override matches by declared name too. Two entries with one identity in a single list are both kept and fail at bootstrap. A relative entry reached through a symlink that leaves the fullsend directory, or that has an absolute target, at any component including the marker file, keeps its directory basename as its merge identity. Forge/child overrides a matching top-level/base entry. Sibling nested dirs that share a leaf name are kept. | Absent (nil) = inherit; `skills: []` = empty list merged with base (base entries are returned) |
 | `runner_env`     | Top-level/base map merged with forge/child map; forge/child keys win  | Absent (nil) = inherit; `runner_env: {}` = no forge-specific keys (top-level env still inherited) |
 | `privilege_levels` | Top-level/base map merged with child map; child keys win (not in `ForgeConfig`, so no forge/overlay override) | Absent (nil) = inherit from base; omitted entirely at every layer defaults every run-stage to `write` |
 | `validation_loop`| Field-level merge; forge/child non-zero values win, base/top-level fills gaps | Absent (nil) = inherit from top level / base; `validation_loop: {}` inherits all fields (zero-value-as-unset). Post-merge `Validate()` still requires `script`. There is no way to disable an inherited validation loop. |

@@ -39,6 +39,9 @@ A custom agent is composed of six parts:
 
 Register agents in `config.yaml` with a local `source:` path. For agents that extend a default, use `base:` composition to inherit from the upstream harness and override only what differs. See [Bring Your Own Agent](bring-your-own-agent.md) for the config-driven approach and [Harness Field Reference](../../reference/harness-reference.md) for the complete harness YAML reference.
 
+The harness lives in `.fullsend/harness/`, so its local paths use `../` to
+reach sibling directories such as `agents/`, `policies/`, and `scripts/`.
+
 The key security invariant: agents run inside an untrusted [sandbox](../../glossary.md#sandbox) with no credentials. Pre-scripts fetch data *before* the sandbox starts; post-scripts act on agent output *after* the sandbox exits. Agents never have direct write access to external systems. See the [security threat model](../../problems/security-threat-model.md) for the full trust model.
 
 ## Step 1: Write the agent prompt
@@ -141,11 +144,11 @@ Write to `$FULLSEND_OUTPUT_DIR/agent-result.json`:
 Create `.fullsend/harness/my-agent.yaml`:
 
 ```yaml
-agent: agents/my-agent.md
+agent: ../agents/my-agent.md
 model: opus
 effort: high                        # optional: low, medium, high, xhigh, max (claude runtime only)
 image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
-policy: policies/my-agent.yaml
+policy: ../policies/my-agent.yaml
 role: triage                        # a role the mint serves — not the agent's name (see Custom Agent Identity)
 
 providers:
@@ -156,7 +159,7 @@ providers:
 
 host_files:
   # GCP credentials for Vertex AI (required for model access)
-  - src: env/gcp-vertex.env
+  - src: ../env/gcp-vertex.env
     dest: /sandbox/workspace/.env.d/gcp-vertex.env
     expand: true
   - src: ${GOOGLE_APPLICATION_CREDENTIALS}
@@ -170,16 +173,16 @@ host_files:
     optional: true
 
 skills:
-  - skills/my-skill
+  - ../skills/my-skill
 
-pre_script: scripts/pre-my-agent.sh
+pre_script: ../scripts/pre-my-agent.sh
 
 validation_loop:
-  script: scripts/validate-output-schema.sh
-  schema: schemas/my-agent-result.schema.json
+  script: ../scripts/validate-output-schema.sh
+  schema: ../schemas/my-agent-result.schema.json
   max_iterations: 2
 
-post_script: scripts/post-my-agent.sh
+post_script: ../scripts/post-my-agent.sh
 
 # Optional: give the sandbox a read-only token (default is write everywhere).
 # privilege_levels:
@@ -261,14 +264,18 @@ to exist under `profiles/`:
 
 ```yaml
 providers:
-  - my-service
+  - ../providers/my-service.yaml
 
 openshell:
   profiles:
-    - profiles/my-service.yaml
+    - ../profiles/my-service.yaml
 ```
 
-> **Note:** A profile YAML file in `profiles/` is **not** imported automatically by its presence alone. Only profiles listed in the harness under `openshell.profiles` (or resolved via base composition) are imported. To use a custom profile, add it to your harness's `openshell.profiles` list (e.g., `profiles/my-custom-profile.yaml`).
+> **Note:** A profile YAML file in `profiles/` is **not** imported
+> automatically by its presence alone. Only profiles listed in the harness
+> under `openshell.profiles` (or resolved via base composition) are imported.
+> To use a custom profile, add it to your harness's `openshell.profiles` list
+> (for example, `../profiles/my-custom-profile.yaml`).
 
 For services not covered by a builtin or custom profile, you can either create a custom profile or use inline `network_policies` in your policy YAML (both approaches work — composition is additive).
 
@@ -504,7 +511,9 @@ The post-script runs on the trusted runner with full credentials, but reads outp
 
 [Skills](../../glossary.md#skill) are Markdown documents mounted into the sandbox that provide domain knowledge the agent can reference. See [Configuring Agent Behavior — Adding a skill](customizing-agents.md#adding-a-skill) for how to create one.
 
-Place your skill at `.fullsend/skills/my-skill/SKILL.md`, then reference it in both the agent frontmatter (`skills: [my-skill]`) and the harness (`skills: [skills/my-skill]`).
+Place your skill at `.fullsend/skills/my-skill/SKILL.md`, then reference it in
+both the agent frontmatter (`skills: [my-skill]`) and the harness
+(`skills: [../skills/my-skill]`).
 
 ## Step 7: Run it in CI
 

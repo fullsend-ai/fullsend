@@ -87,7 +87,8 @@ func TestAgentNewEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generated harness does not load: %v", err)
 	}
-	if _, err := harness.CheckGenerated(h, dir); err != nil {
+	harnessPath := filepath.Join(dir, "harness", "lint-docs.yaml")
+	if _, err := harness.CheckGenerated(h, harnessPath, dir); err != nil {
 		t.Fatalf("generated tree does not validate: %v", err)
 	}
 

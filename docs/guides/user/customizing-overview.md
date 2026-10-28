@@ -54,7 +54,7 @@ base: https://raw.githubusercontent.com/fullsend-ai/agents/<sha>/harness/code.ya
 model: sonnet
 timeout_minutes: 45
 skills:
-  - skills/my-custom-linting
+  - ../skills/my-custom-linting
 env:
   sandbox:
     JIRA_PROJECT: "MYPROJ"

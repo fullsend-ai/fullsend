@@ -325,8 +325,8 @@ harness ships its own under the same `plugins:` key Claude Code plugins use
 ```yaml
 # harness/code.yaml
 plugins:
-  - extensions/go-diagnostics                 # directory in the harness repo
-  - path: extensions/pi-fff                   # object form only when env or a flag is needed
+  - ../extensions/go-diagnostics              # sibling of the harness directory
+  - path: ../extensions/pi-fff                # object form only when env or a flag is needed
     env:
       FFF_MULTIGREP: "1"
     pi:
@@ -365,9 +365,10 @@ ever picked up from the target repository.
   and `-`. Also do not register a tool named `edit`: pi rejects two extensions that register the
   same tool name, and the runner's own `fullsend-edit-repair` extension already registers `edit`
   whenever the agent has the edit tool.
-- **Give a path or a pinned URL, not a package source.** Entries are paths relative to the harness
-  repository, or forge `/tree/` URLs pinned with `#sha256=` — the `skills:` rule. `npm:`/`git:`/`ssh:`
-  sources and `..` segments are refused: pi would fetch them from the network at startup.
+- **Give a path or a pinned URL, not a package source.** Local entries are relative to the declaring
+  harness file's directory (`../extensions/...` from `.fullsend/harness/`), or forge `/tree/` URLs
+  pinned with `#sha256=` — the `skills:` rule. `npm:`/`git:`/`ssh:` sources are refused; local `..`
+  segments are allowed only when they stay inside the workspace root.
 
 ### `pi.args` and `env`
 
@@ -576,7 +577,7 @@ you wrote needs it in `providers:`:
 
 ```yaml
 providers:
-  - providers/vertex-ai.yaml
+  - ../providers/vertex-ai.yaml
   - openai
 ```
 

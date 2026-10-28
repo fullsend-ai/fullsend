@@ -254,11 +254,12 @@ func validateInTempTree(absDir string, opts Options, files []File, result *Resul
 		}
 	}
 
-	h, err := harness.Load(filepath.Join(tmp, "harness", opts.Name+".yaml"))
+	harnessPath := filepath.Join(tmp, "harness", opts.Name+".yaml")
+	h, err := harness.Load(harnessPath)
 	if err != nil {
 		return fmt.Errorf("the generated harness is not valid — this is a bug in `fullsend agent new`: %w", err)
 	}
-	diags, err := harness.CheckGenerated(h, tmp)
+	diags, err := harness.CheckGenerated(h, harnessPath, tmp)
 	result.Diagnostics = diags
 	if err != nil {
 		return fmt.Errorf("the generated agent did not validate — this is a bug in `fullsend agent new`: %w", err)

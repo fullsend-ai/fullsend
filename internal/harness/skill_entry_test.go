@@ -301,7 +301,7 @@ func TestValidateSkillOverrides_AbsoluteValueSkippedPostResolution(t *testing.T)
 }
 
 func TestValidateOverrideValue_AbsoluteValueRejected(t *testing.T) {
-	err := validateOverrideValue("skills[0]", "sub-agents/security.md", "/absolute/path/override.md")
+	err := validateOverrideValue("skills[0]", "sub-agents/security.md", "/absolute/path/override.md", false)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "relative")
 }

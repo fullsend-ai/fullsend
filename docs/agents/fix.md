@@ -227,7 +227,7 @@ files in your repo's `.fullsend/` directory:
 # .fullsend/harness/code.yaml  (register as source: harness/code.yaml in config.yaml)
 base: https://raw.githubusercontent.com/fullsend-ai/agents/<tag>/harness/code.yaml#sha256=…
 image: ghcr.io/your-org/your-fullsend-image@sha256:…
-policy: policies/base.yaml
+policy: ../policies/base.yaml
 providers:
   - vertex-ai
   - github
@@ -236,7 +236,7 @@ providers:
 # .fullsend/harness/fix.yaml  (register as source: harness/fix.yaml in config.yaml)
 base: https://raw.githubusercontent.com/fullsend-ai/agents/<tag>/harness/fix.yaml#sha256=…
 image: ghcr.io/your-org/your-fullsend-image@sha256:…
-policy: policies/base.yaml   # same file — edit once, both agents use it
+policy: ../policies/base.yaml # same file — edit once, both agents use it
 providers:
   - vertex-ai
   - github

@@ -64,12 +64,12 @@ to catch schema violations while you can still fix them.
 #
 # This agent handles GitHub only. To add GitLab or Jira, see
 # docs/guides/user/bring-your-own-agent.md.
-agent: agents/lint-docs.md
+agent: ../agents/lint-docs.md
 description: Check docs changes for broken links
 role: triage
 slug: my-org-lint-docs
 image: ghcr.io/fullsend-ai/fullsend-sandbox@sha256:bcf8cd84a37623d761d38f2a6f51d20283f8798b7d3eeb9c509a2503c074bd55
-policy: policies/base.yaml
+policy: ../policies/base.yaml
 providers:
   - vertex-ai
   - github-ro
@@ -83,10 +83,10 @@ host_files:
     optional: true
 model: opus
 effort: high
-post_script: scripts/post-lint-docs.sh
+post_script: ../scripts/post-lint-docs.sh
 validation_loop:
-  script: scripts/validate-output-schema.sh
-  schema: schemas/lint-docs-result.schema.json
+  script: ../scripts/validate-output-schema.sh
+  schema: ../schemas/lint-docs-result.schema.json
   max_iterations: 2
   preflight_check: python3 -c "import jsonschema"
 env:

@@ -625,6 +625,25 @@ func TestRunAgent_OpenAISubagentWithoutOpenAIProviderFailsBeforeSandbox(t *testi
 	assert.NotContains(t, string(data), "provider create --name openai-")
 }
 
+func TestWarnOpenAISubagentWithoutProviderUsesHarnessWorkspaceRoot(t *testing.T) {
+	dir := writeOpenAIFullsendDirFor(t, false, "pi", "anthropic-vertex/claude-opus-4-6")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: test\npolicy: policies/base.yaml\nmodel: anthropic-vertex/claude-opus-4-6\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(""+
+		"version: \"1\"\nruntime: pi\nagents:\n"+
+		"  - name: code\n    source: harness/code.yaml\n    subagents:\n      default: openai/gpt-5.6-luna\n"), 0o644))
+	cfg, err := loadAgentConfig(filepath.Join(dir, "config.yaml"))
+	require.NoError(t, err)
+	var output strings.Builder
+	childModel := "openai/gpt-5.6-luna"
+
+	warnOpenAISubagentWithoutProvider(cfg, dir, "code", "pi", map[string]*string{
+		"default": &childModel,
+	}, ui.New(&output))
+
+	assert.Contains(t, output.String(), "code.yaml declares no openai provider")
+}
+
 // TestRunAgent_OpenAIFrontmatterChildWithoutCredential covers the #7981
 // compatibility rule: a persona whose own frontmatter names openai widens
 // the provider gate, but a runner with no OpenAI credential does not fail

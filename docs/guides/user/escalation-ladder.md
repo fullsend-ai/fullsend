@@ -111,8 +111,8 @@ override identity-defining fields:
 base: https://raw.githubusercontent.com/fullsend-ai/fullsend/<sha>/internal/scaffold/fullsend-repo/harness/code.yaml#sha256=abc...
 
 # Override identity-defining components:
-agent: agents/my-code-agent.md          # Custom system prompt
-post_script: scripts/post-my-code.sh    # Custom post-processing
+agent: ../agents/my-code-agent.md          # Custom system prompt
+post_script: ../scripts/post-my-code.sh    # Custom post-processing
 slug: my-org-code                       # Custom identity
 ```
 
