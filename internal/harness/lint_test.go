@@ -399,6 +399,7 @@ func TestLintPreflightCheckCommand(t *testing.T) {
 		{"inline python probe", "python3 -c 'import jsonschema'", false},
 		{"which command", "which jq", false},
 		{"test command with var ref", "test -d ${FULLSEND_DIR}", false},
+		{"var-ref that expands to a bare path", "${FULLSEND_DIR}/x.sh", false},
 		{"explicit shell invocation", "sh scripts/probe.sh", false},
 		{"bash extension missed by heuristic", "scripts/probe.bash", false},
 		{"trailing arguments missed by heuristic", "scripts/probe.sh --verbose", false},
