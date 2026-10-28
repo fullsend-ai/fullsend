@@ -25,7 +25,7 @@ func fakeOpenshellOpenCode(t *testing.T, logPath, storeDir string) {
 	require.NoError(t, os.MkdirAll(storeDir, 0o755))
 	binDir := t.TempDir()
 	script := `#!/bin/sh
-echo "$@" >> '` + logPath + `'
+printf '%s\n' "$*" >> '` + logPath + `'
 if [ "$2" = "upload" ]; then
   case "$6" in /tmp/fs-upload-*/) cp -- "$5" "$6/"; exit $? ;; esac
   cp "$5" '` + storeDir + `'/"$(printf '%s' "$6" | tr '/' '_')"
