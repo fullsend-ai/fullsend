@@ -9,7 +9,7 @@ role: triage                        # A role the mint serves (built-in on the ho
 policy: policies/base.yaml          # Sandbox policy; required
 
 # ── Identity & metadata ──────────────────────────────────────
-schema_version: 1                   # Schema contract version (ADR 0127); absent = 1
+schema_version: 1                   # Schema contract version (ADR 0127); defaults to `1`
 slug: my-org-my-role                # Install-time App discovery (convention: <org>-<role>); not read by the mint
 description: One-line summary       # Human-readable description
 doc: docs/agents/my-agent.md        # Source-repo-only; not resolved at runtime
@@ -163,8 +163,8 @@ An invalid `schema_version` value fails at parse time as a load failure —
 not a `Harness.Lint()` finding — in every raw composition layer, before
 layers merge and before forge/overlay resolution. The error shapes:
 
-- **Malformed** — a non-integer value (a string, a fractional number such
-  as `1.5`, or a mapping) fails with the YAML type error naming the
+- **Malformed** — a non-integer value (a string, any float — including
+  `1.0` and `1.5` — or a mapping) fails with the YAML type error naming the
   offending line (`line N: cannot unmarshal ...`), wrapped under the
   loader's `parsing harness YAML:` prefix.
 - **Zero or negative** — fails with
