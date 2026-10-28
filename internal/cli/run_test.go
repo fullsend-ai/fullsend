@@ -4930,6 +4930,32 @@ func TestRunAgent_TopLevelPreflightCheck_VarReferenceExpanded(t *testing.T) {
 		"${FULLSEND_DIR} must expand to the host fullsend dir before the check command runs")
 }
 
+// A ${VAR} reference that expands to a bare path-looking command must not
+// draw the lint path-pattern diagnostic: run lints the authored,
+// unexpanded preflight_check (the expansion happens after the lint pass),
+// so run and lock lint the same value and the diagnostic can never print
+// a substituted host value. The sentinel proves the expanded path still
+// resolves when the check executes at step 1d.
+func TestRunAgent_TopLevelPreflightCheck_LintSeesUnexpandedVarRef(t *testing.T) {
+	useFakeOpenshell(t)
+	sentinel := filepath.Join(t.TempDir(), "sentinel")
+	dir := preflightTestSetup(t, "agent: agents/code.md\nrole: test\npreflight_check: \"${FULLSEND_DIR}/check.sh\"\n")
+	script := filepath.Join(dir, "check.sh")
+	require.NoError(t, os.WriteFile(script, []byte("#!/bin/sh\ntouch "+sentinel+"\n"), 0o755))
+
+	var out bytes.Buffer
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(&out)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	// The check passed, so the run proceeded past step 1d to the gateway.
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openshell")
+	assert.FileExists(t, sentinel, "the expanded path must still resolve when the check runs")
+	assert.NotContains(t, out.String(), "looks like a script path",
+		"run must lint the authored preflight_check, not the expanded command")
+}
+
 func TestRunAgent_TopLevelPreflightCheck_UnsetVarFailsSetupBeforeExecution(t *testing.T) {
 	// An unset ${VAR} reference in the top-level preflight_check must
 	// fail run setup with an unresolved-variable error naming
