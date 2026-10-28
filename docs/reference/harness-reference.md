@@ -174,6 +174,14 @@ layers merge and before forge/overlay resolution. The error shapes:
   release that supports it, or pin harness content declaring a supported
   version.
 
+Compatibility also runs backward by construction: a build loads any declared
+`schema_version` from `1` through its maximum supported version, and that
+maximum only grows across releases, so newer binaries read older files.
+Whether a future schema version may stop interpreting older-version field
+semantics — and whether a deprecation floor can ever retire an older declared
+version — is deliberately left to the cross-version policy that ADR 0127
+does not set.
+
 **Top level only** — it is not a `ForgeConfig` field, so a `schema_version`
 key placed under `overlays:`/`forge:` is silently ignored; only `base:`
 composition carries it. A `base:` layer whose effective version differs
