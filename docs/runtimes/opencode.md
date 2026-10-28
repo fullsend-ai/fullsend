@@ -125,6 +125,10 @@ example above.
   the plugin independently enforces the allowlist and rejects ambiguous shell syntax, environment
   assignments, command substitutions and shell wrappers. Trusted pattern maps remain a ceiling.
   This restricts executable names, not every capability of an allowed program.
+  Unlike pi's advisory default, OpenCode enforces the declared list without an
+  opt-in switch. Agent instructions must use the commands they declare; see
+  [agents#1821](https://github.com/fullsend-ai/agents/issues/1821) for the scribe
+  compatibility follow-up.
 - **Directory listing stays distinct from file reading.** OpenCode uses `read` for both.
   An agent declaring only `LS` can list directories, including directory symlinks, but cannot
   read regular files or file symlinks through that tool.
@@ -154,6 +158,7 @@ inside `/sandbox/opencode-config`. Hooks use the bootstrap-captured interpreter,
 isolated Python mode and a fixed system PATH. Default plugins are disabled and
 nonempty native `plugin` configuration is rejected; use the harness provider/environment
 credential route. Shell-startup injection variables are cleared for tool subprocesses.
+The launch also clears `OPENCODE_PURE`, which would disable the hook plugin.
 
 **Deployment decision:** this adapter uses pi's existing bootstrap-and-hash-check model.
 The config tree remains writable by the sandbox user. Checks detect modifications but cannot
@@ -161,6 +166,11 @@ prevent a deliberate change between verification and loading. Image-owned or sep
 privileged storage is separate hardening work, not a guarantee provided by this adapter.
 The OpenShell filesystem and egress policies remain the primary boundary for Bash and other
 writable state; native path checks and command scanning supplement those controls.
+
+Harness skills under `/sandbox/opencode-config/skills/` remain writable and
+persist across iterations, as they do in pi. They are uploaded at bootstrap but
+are not restored or digest-checked before each run. The adapter's integrity
+checks cover its plugin and selected hook scripts, not skill contents.
 
 Native exceptions skip the after hook, so `experimental.chat.messages.transform` scans failed-tool
 history before model requests, including Task sessions. Credentials are redacted; canary hits,
