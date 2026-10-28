@@ -105,7 +105,7 @@ func TestCheckSchemaVersionsCompose(t *testing.T) {
 		base := &Harness{SchemaVersion: schemaVersionPtr(2)}
 		err := checkSchemaVersionsCompose(child, base, "bases/parent.yaml")
 		require.Error(t, err)
-		assert.ErrorContains(t, err, "base layer bases/parent.yaml declares schema_version 2")
+		assert.ErrorContains(t, err, `base layer "bases/parent.yaml" declares schema_version 2`)
 		assert.ErrorContains(t, err, "incompatible with schema_version 1 of the harness composing it")
 		assert.ErrorContains(t, err, "mixed-version base composition is not supported")
 	})
