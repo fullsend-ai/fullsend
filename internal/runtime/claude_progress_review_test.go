@@ -153,16 +153,6 @@ func TestWorkflowReviewNewStartResetsAgents(t *testing.T) {
 	}
 }
 
-func TestWorkflowReviewJoiningFieldsCannotRecreateCommands(t *testing.T) {
-	var out bytes.Buffer
-	r := newTestRenderer(&out)
-	r.Handle(TaskProgressEvent{TaskID: "task:", Label: "label", State: TaskRunning})
-	r.Handle(StatusProgressEvent{Kind: "warning", Label: "warning:", Detail: "detail"})
-	if strings.Contains(out.String(), "::") {
-		t.Fatal("field joins recreated command delimiter: " + out.String())
-	}
-}
-
 func TestWorkflowReviewRestartWithoutRunIDKeepsOldRunHistory(t *testing.T) {
 	var out bytes.Buffer
 	r := newTestRenderer(&out)

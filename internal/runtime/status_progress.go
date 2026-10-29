@@ -1,28 +1,12 @@
 package runtime
 
-import (
-	"crypto/sha256"
-	"fmt"
-	"os"
-)
+import "crypto/sha256"
 
-// StatusProgressEvent is advisory runtime display metadata. It carries no
-// tool output, prompts, result bodies, or authoritative run/usage outcomes.
-type StatusProgressEvent struct {
-	Kind   string
-	ID     string
-	Label  string
-	State  string
-	Detail string
-	// Clear resets the row silently. Recovery is displayed only after a
-	// prior status, avoiding a routine initial "allowed" rate-limit message.
-	Clear    bool
-	Recovery bool
-	// Occurrence is an unkeyed one-off message, not a state snapshot.
-	Occurrence bool
+type statusProgressDisplay struct {
+	message string
+	subject string
+	context string
 }
-
-func (StatusProgressEvent) agentEvent() {}
 
 func (r *EventRenderer) statusProgress(e StatusProgressEvent) {
 	if e.Kind == "" {
@@ -34,12 +18,26 @@ func (r *EventRenderer) statusProgress(e StatusProgressEvent) {
 		delete(r.statusProgressSeen, key)
 		return
 	}
-	if e.Recovery && previous == "" {
+	if e.Recovery && previous.message == "" {
 		return
 	}
 	msg := r.progressText(e.Label, 120)
 	if msg == "" {
 		return
+	}
+	subject := r.progressText(e.Subject, 120)
+	context := r.progressText(e.Context, 80)
+	if subject == "" && !e.SubjectSet {
+		subject = previous.subject
+	}
+	if context == "" && !e.ContextSet {
+		context = previous.context
+	}
+	if subject != "" {
+		msg += " " + subject
+	}
+	if context != "" {
+		msg += " [" + context + "]"
 	}
 	if state := r.progressText(e.State, 60); state != "" {
 		msg += " — " + state
@@ -48,25 +46,17 @@ func (r *EventRenderer) statusProgress(e StatusProgressEvent) {
 		msg += ": " + detail
 	}
 	msg = sanitizeOutput(msg)
-	if !e.Occurrence && previous == msg {
+	if !e.Occurrence && previous.message == msg {
 		return
 	}
 	if !e.Occurrence {
 		if r.statusProgressSeen == nil {
-			r.statusProgressSeen = make(map[[sha256.Size]byte]string)
+			r.statusProgressSeen = make(map[[sha256.Size]byte]statusProgressDisplay)
 		}
 		if len(r.statusProgressSeen) >= maxTaskProgressEntries {
 			clear(r.statusProgressSeen)
 		}
-		r.statusProgressSeen[key] = msg
+		r.statusProgressSeen[key] = statusProgressDisplay{message: msg, subject: subject, context: context}
 	}
 	r.printProgress(msg)
-}
-
-func (r *EventRenderer) printProgress(msg string) {
-	r.endBlock()
-	if r.isCI {
-		fmt.Fprintf(os.Stderr, "::notice::%s\n", msg)
-	}
-	r.printer.ToolProgress(msg)
 }

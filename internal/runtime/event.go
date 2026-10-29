@@ -160,3 +160,84 @@ type PluginErrorEvent struct {
 }
 
 func (PluginErrorEvent) agentEvent() {}
+
+// TaskState describes task/agent progress, not validated business completion.
+type TaskState string
+
+const (
+	TaskPending   TaskState = "pending"
+	TaskPaused    TaskState = "paused"
+	TaskRunning   TaskState = "running"
+	TaskCompleted TaskState = "completed"
+	TaskFailed    TaskState = "failed"
+	TaskStopped   TaskState = "stopped"
+	TaskQueued    TaskState = "queued"
+	TaskRetrying  TaskState = "retrying"
+	TaskSkipped   TaskState = "skipped"
+)
+
+// TaskProgressEvent carries live background task or Workflow agent metadata.
+// An empty AgentID and zero AgentIndex describe the task itself. Phase is
+// agent attribution, never an inventory of declared phases. Progress does not
+// update token/cost accounting and carries no prompts or tool result bodies.
+// Consumers receive repeated snapshots and partial patches, not reconciled
+// transitions. EventRenderer merges and deduplicates after caller-specific
+// credential redaction; custom OnEvent consumers must reconcile their own
+// state. Nonempty values are supplied values; the Set flags distinguish an
+// explicitly empty string/false flag from absent optional metadata. Agent
+// error/blocked/cached fields are state-relative: omitted values survive
+// repeated snapshots of the same state, but not a state transition.
+type TaskProgressEvent struct {
+	TaskID      string
+	RunID       string
+	AgentID     string
+	AgentIndex  int
+	Label       string
+	Phase       string
+	State       TaskState
+	ToolName    string
+	ToolSummary string
+	Summary     string
+	Detail      string
+	Blocked     bool
+	Cached      bool
+	// Update is a task lifecycle patch; it retains prior tool context.
+	// LabelSet/DetailSet apply to task and agent metadata; Phase/Tool/Blocked/
+	// Cached Set flags apply only to agent snapshots. Started is task-level.
+	Update         bool
+	LabelSet       bool
+	DetailSet      bool
+	PhaseSet       bool
+	ToolNameSet    bool
+	ToolSummarySet bool
+	BlockedSet     bool
+	CachedSet      bool
+	Started        bool
+	Hidden         bool
+}
+
+func (TaskProgressEvent) agentEvent() {}
+
+// StatusProgressEvent is advisory runtime display metadata. It carries no
+// tool output, prompts, result bodies, or authoritative run/usage outcomes.
+type StatusProgressEvent struct {
+	Kind   string
+	ID     string
+	Label  string
+	State  string
+	Detail string
+	// Subject/Context attribute a status, such as a hook name and event.
+	// Set flags permit clearing; omitted fields retain sanitized prior values.
+	Subject    string
+	Context    string
+	SubjectSet bool
+	ContextSet bool
+	// Clear resets the row silently. Recovery is displayed only after a
+	// prior status, avoiding a routine initial "allowed" rate-limit message.
+	Clear    bool
+	Recovery bool
+	// Occurrence is an unkeyed one-off message, not a state snapshot.
+	Occurrence bool
+}
+
+func (StatusProgressEvent) agentEvent() {}
