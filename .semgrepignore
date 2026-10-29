@@ -1,0 +1,10 @@
+# Keep test code and Semgrep's own vendored rules out of the source scan.
+*_test.go
+**/test/
+**/tests/
+.semgrep/
+
+# These are synthetic repositories and captured outcomes used as behaviour
+# test fixtures, not maintained Fullsend source.
+e2e/behaviour/fixtures/
+e2e/behaviour/results/

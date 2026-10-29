@@ -63,10 +63,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	// Used only to jitter shared-lock retry delays.
-	"math/rand/v2" // nosemgrep: go.lang.security.audit.crypto.math_random.math-random-used
 	"strings"
 	"time"
+
+	"github.com/fullsend-ai/fullsend/internal/randutil"
 
 	"github.com/google/uuid"
 
@@ -447,7 +447,7 @@ func (b *sharedOrgLock) leave(ctx context.Context, client forge.Client, m *orgLo
 
 // retryPause waits a random time up to sharedLockRetryDelay.
 func retryPause(ctx context.Context) error {
-	d := time.Duration(rand.Int64N(int64(sharedLockRetryDelay) + 1))
+	d := time.Duration(randutil.RandomInt64N(int64(sharedLockRetryDelay) + 1))
 	select {
 	case <-ctx.Done():
 		return ctx.Err()

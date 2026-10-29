@@ -213,6 +213,11 @@ checkout (`fullsend-ci-local-nm-*-<checkout-hash>`), so concurrent runs in two
 worktrees never share one. Remove them all with
 `podman volume rm $(podman volume ls -q | grep '^fullsend-ci-local')`.
 
+The `lint` and `lint-all` targets skip `check-gateway-doc-configs` and
+`semgrep`, matching `lint.yml`: the gateway check and full Semgrep scan run in
+separate CI jobs. Pre-commit still runs Semgrep on changed, non-test source
+files.
+
 Not covered: `behaviour-test` / `playback-test` (they need a real GitHub org,
 the OIDC mint and secrets) and `check-gateway-doc-configs` (it starts its own
 container; the main lint job skips it too).

@@ -10,8 +10,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	// Used only to reduce collisions between temporary upload filenames.
-	"math/rand/v2" // nosemgrep: go.lang.security.audit.crypto.math_random.math-random-used
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,6 +21,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/randutil"
 	"gopkg.in/yaml.v3"
 )
 
@@ -1711,7 +1710,7 @@ const letterBytes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 func randStringBytes(n int) string {
 	b := make([]byte, n)
 	for i := range b {
-		b[i] = letterBytes[rand.IntN(len(letterBytes))]
+		b[i] = letterBytes[randutil.RandomIntN(len(letterBytes))]
 	}
 	return string(b)
 }

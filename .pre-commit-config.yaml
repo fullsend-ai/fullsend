@@ -48,10 +48,11 @@ repos:
   - repo: local
     hooks:
       - id: semgrep
-        name: semgrep security scan (p/security-audit, Semgrep 1.182.1)
-        entry: uvx --from semgrep==1.182.1 semgrep scan --config p/security-audit --metrics=off --disable-version-check -j 1 --timeout 15 --error
+        name: semgrep security scan (p/security-audit snapshot)
+        entry: ./scripts/semgrep-scan
         language: system
         files: '[.](go|py|js|jsx|ts|tsx|mjs|cjs)$'
+        exclude: '(^|/)([^/]*_test\.go|tests?(/|$))|^e2e/behaviour/(fixtures|results)/'
 
   - repo: https://github.com/zricethezav/gitleaks
     rev: v8.30.0

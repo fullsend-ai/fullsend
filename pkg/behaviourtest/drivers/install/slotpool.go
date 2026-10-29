@@ -22,14 +22,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	// Used for nonsecret lease identifiers and work-order shuffling.
-	"math/rand/v2" // nosemgrep: go.lang.security.audit.crypto.math_random.math-random-used
 	"net/http"
 	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/fullsend-ai/fullsend/internal/randutil"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
@@ -347,7 +347,7 @@ func (l lease) owns(repo *forge.Repository) bool {
 
 // newLeaseDescription returns SlotRepoDescription with a unique nonce.
 func newLeaseDescription() string {
-	return fmt.Sprintf("%s%s%016x%016x", SlotRepoDescription, leaseDescriptionSep, rand.Uint64(), rand.Uint64())
+	return fmt.Sprintf("%s%s%016x%016x", SlotRepoDescription, leaseDescriptionSep, randutil.RandomUint64(), randutil.RandomUint64())
 }
 
 // newSlotAllocator returns an allocator over layout that resolves
@@ -368,7 +368,7 @@ func newSlotAllocator(layout PoolLayout, clientFor OrgClientFunc, logf func(stri
 		logf:      logf,
 		now:       time.Now,
 		shuffle: func(s []Slot) {
-			rand.Shuffle(len(s), func(i, j int) { s[i], s[j] = s[j], s[i] })
+			randutil.RandomShuffle(len(s), func(i, j int) { s[i], s[j] = s[j], s[i] })
 		},
 		held:         make(map[Slot]lease),
 		blockedUntil: make(map[string]time.Time),

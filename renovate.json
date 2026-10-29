@@ -290,6 +290,16 @@
       "depNameTemplate": "sigstore/cosign",
       "datasourceTemplate": "github-releases",
       "extractVersionTemplate": "^v(?<version>.*)$"
+    },
+    {
+      "customType": "regex",
+      "description": "Track the Semgrep engine version used by the pre-commit and CI wrapper.",
+      "managerFilePatterns": ["/^scripts/semgrep-scan$/"],
+      "matchStrings": [
+        "SEMGREP_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "depNameTemplate": "semgrep",
+      "datasourceTemplate": "pypi"
     }
   ]
 }

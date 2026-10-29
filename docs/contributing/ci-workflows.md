@@ -256,6 +256,21 @@ This recursion is by design but interacts with the convergence non-idempotence t
 
 ## Additional conventions
 
+### Semgrep security scan
+
+`scripts/semgrep-scan` is the shared entry point for the pinned Semgrep engine
+and the vendored `p/security-audit` ruleset snapshot. Renovate tracks the engine
+version in that script; ruleset updates are reviewed separately so upstream
+changes cannot alter the gate between repository changes.
+
+The pre-commit hook scans changed Go, Python, JavaScript, and TypeScript source
+files. CI scans the repository in a separate job, so Semgrep findings do not
+prevent the regular lint and test jobs from reporting their results.
+`.semgrepignore` excludes Go test files, test directories, the vendored rules,
+and synthetic behaviour fixtures and captured results. CI retains a SARIF
+report artifact for 30 days. Both scans use `--strict` so parse errors and rule
+timeouts fail the gate instead of passing with partial analysis.
+
 - Always include the workflow file itself in its own `paths:` filter so changes to the workflow trigger its own CI.
 - Use `ubuntu-24.04` (specific version), not `ubuntu-latest`, for reproducible builds.
 - Environment variables that hold secrets must use `${{ secrets.NAME }}` — never hardcode sensitive values or use environment variables with defaults for secrets.
