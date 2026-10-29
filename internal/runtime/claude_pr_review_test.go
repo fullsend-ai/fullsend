@@ -110,3 +110,29 @@ func TestClaudeReviewAgentRecoveryClearsTransientMetadata(t *testing.T) {
 		t.Fatal(out.String())
 	}
 }
+
+// The internal 2.1.312 producer keys Workflow entries by type:index. This
+// reduced sequence models its queued/start/done shapes; it is not a newly
+// recorded live 2.1.312 run.
+func TestClaudeReviewLateAgentIDUsesOneIndexedRow(t *testing.T) {
+	stream := `{"type":"system","subtype":"task_progress","task_id":"wf","run_id":"run","workflow_progress":[{"type":"workflow_agent","index":1,"state":"start","label":"read","phaseTitle":"Read"}]}
+{"type":"system","subtype":"task_progress","task_id":"wf","run_id":"run","workflow_progress":[{"type":"workflow_agent","index":1,"agentId":"a1","state":"start","label":"read","phaseTitle":"Read"}]}
+{"type":"system","subtype":"task_progress","task_id":"wf","run_id":"run","workflow_progress":[{"type":"workflow_agent","index":1,"state":"done","label":"read","phaseTitle":"Read"}]}
+`
+	var out bytes.Buffer
+	r := newTestRenderer(&out)
+	if err := parseClaudeStream(strings.NewReader(stream), r.Handle); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(out.String(), "— running") != 1 || strings.Count(out.String(), "— completed") != 1 || len(r.taskProgressSeen) != 1 {
+		t.Fatal("late ID split agent row: " + out.String())
+	}
+	for _, row := range r.taskProgressSeen {
+		if row.event.AgentID != "a1" || row.event.State != TaskCompleted || row.event.AgentIndex != 1 {
+			t.Fatalf("lost agent identity or completion: %+v", row.event)
+		}
+	}
+	if !strings.Contains(out.String(), "a1") {
+		t.Fatal("known agent ID missing from completion display")
+	}
+}

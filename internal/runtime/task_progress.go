@@ -17,8 +17,8 @@ type taskProgressKey struct {
 }
 
 type taskProgressDisplay struct {
-	event   TaskProgressEvent
-	message string
+	event       TaskProgressEvent
+	fingerprint [sha256.Size]byte
 }
 
 func (r *EventRenderer) taskProgress(e TaskProgressEvent) {
@@ -83,11 +83,32 @@ func (r *EventRenderer) taskProgress(e TaskProgressEvent) {
 		r.taskProgressSeen[key] = taskProgressDisplay{event: e}
 		return
 	}
+	msg := taskProgressMessage(e)
+	comparison := msg
+	if e.AgentIndex > 0 {
+		// An ID arriving late is attribution, not a second progress transition.
+		indexed := e
+		indexed.AgentID = ""
+		comparison = taskProgressMessage(indexed)
+	}
+	fingerprint := sha256.Sum256([]byte(comparison))
+	r.taskProgressSeen[key] = taskProgressDisplay{event: e, fingerprint: fingerprint}
+	if previous.fingerprint == fingerprint {
+		return
+	}
+	r.printProgress(msg)
+}
+
+// taskProgressMessage formats only already-redacted, bounded display fields.
+func taskProgressMessage(e TaskProgressEvent) string {
 	msg := "Task " + e.TaskID
-	if e.AgentID != "" {
-		msg += " / agent " + e.AgentID
-	} else if e.AgentIndex > 0 {
+	if e.AgentIndex > 0 {
 		msg += fmt.Sprintf(" / agent #%d", e.AgentIndex)
+		if e.AgentID != "" {
+			msg += " (" + e.AgentID + ")"
+		}
+	} else if e.AgentID != "" {
+		msg += " / agent " + e.AgentID
 	}
 	if e.Phase != "" {
 		msg += " [" + e.Phase + "]"
@@ -119,12 +140,7 @@ func (r *EventRenderer) taskProgress(e TaskProgressEvent) {
 	if e.Detail != "" {
 		msg += " — " + e.Detail
 	}
-	msg = sanitizeOutput(msg)
-	r.taskProgressSeen[key] = taskProgressDisplay{event: e, message: msg}
-	if previous.message == msg {
-		return
-	}
-	r.printProgress(msg)
+	return sanitizeOutput(msg)
 }
 
 // Resolve optional run IDs without splitting a task when its first run ID
@@ -179,7 +195,15 @@ func (r *EventRenderer) taskProgressIdentity(e *TaskProgressEvent) taskProgressK
 			}
 		}
 	}
-	return taskProgressKey{task: task, run: run, agent: sha256.Sum256([]byte(e.AgentID)), index: e.AgentIndex}
+	// Workflow entries are keyed by type:index in the producer. agentId is
+	// absent while queued and can also be omitted in subsequent snapshots.
+	agent := sha256.Sum256(nil)
+	index := e.AgentIndex
+	if index <= 0 {
+		index = 0
+		agent = sha256.Sum256([]byte(e.AgentID))
+	}
+	return taskProgressKey{task: task, run: run, agent: agent, index: index}
 }
 
 // mergeAgentProgress retains already-sanitized optional metadata when a
@@ -187,6 +211,9 @@ func (r *EventRenderer) taskProgressIdentity(e *TaskProgressEvent) taskProgressK
 // Error/blocked/cached metadata is state-relative: a transition drops omitted
 // transient values instead of describing a recovered agent as still blocked.
 func mergeAgentProgress(e *TaskProgressEvent, old TaskProgressEvent) {
+	if e.AgentID == "" {
+		e.AgentID = old.AgentID
+	}
 	if !e.PhaseSet && e.Phase == "" {
 		e.Phase = old.Phase
 	}

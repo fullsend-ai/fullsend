@@ -118,9 +118,9 @@ prints task identity, agent labels, attributed phases, state changes, and
 available tool names/context. For example:
 
 ```console
-  ⚙ Task wf-example / agent reader [Read]: read input — running
-  ⚙ Task wf-example / agent reader [Read]: read input — completed
-  ⚙ Task wf-example / agent creator [Create]: strategy-create — running (tool: Bash: python3 create.py)
+  ⚙ Task wf-example / agent #1 (reader) [Read]: read input — running
+  ⚙ Task wf-example / agent #1 (reader) [Read]: read input — completed
+  ⚙ Task wf-example / agent #2 (creator) [Create]: strategy-create — running (tool: Bash: python3 create.py)
 ```
 
 Unchanged snapshots and counter-only updates do not repeat the same display
@@ -139,15 +139,27 @@ progress/completion messages for the same hook ID.
 
 The display handles these structured Claude events when the runtime emits
 them. Task progress shapes were checked against Claude Code 2.1.296 capture
-and the embedded 2.1.312 emitter/schema; availability varies by version.
+and the embedded 2.1.312 emitter/schema; this is version-bound compatibility,
+not a promise of a stable public protocol. In particular, `workflow_progress`
+(including `workflow_agent` metadata) and `system/task_summary` are
+**undocumented internal Claude Code extensions**, not public Agent SDK
+contracts in the inspected version. They may change or disappear without
+notice in any Claude patch release. Support is best-effort; unsupported
+shapes are ignored for display and raw events remain available for diagnosis.
+A newly recorded live 2.1.312 Workflow stream has not been qualified here.
+
+Workflow agents use their positive index as stable identity within a task/run.
+A late `agentId` is retained as display attribution, and learning it alone
+does not add another progress line. If the index is absent, the agent ID is
+the identity fallback.
 
 | Event | Console behavior |
 | --- | --- |
 | `task_started` | Task identity and description; ambient/hidden starts suppress subsequent progress while tracked. |
-| `task_progress` | Task description, last tool and progress summary; Workflow agent phase, tool context, state, blocked/error and cached-result metadata. |
+| `task_progress` | Task description, last tool and progress summary; best-effort decoding of the undocumented internal `workflow_progress` agent metadata. |
 | `task_updated` | Pending, running, paused, completed, failed and killed states; description-only patches and bounded errors. |
 | `task_notification` | Completion, failure or stop, including a worker-restart cause when supplied; full result summary excluded. |
-| `task_summary` | Changed mid-turn summary; a null/empty value clears deduplication silently. |
+| `task_summary` | Undocumented internal mid-turn summary; best-effort display, with null/empty values clearing deduplication silently. |
 | `background_tasks_changed` | Count of reported non-ambient background tasks; membership is not execution or completion evidence. |
 | `hook_started`, `hook_progress`, `hook_response` | Hook name/event, running/outcome and exit code; stdout/stderr/output excluded. |
 | `permission_denied` | Tool/agent identity and bounded decision reason; tool-result body excluded. |
