@@ -678,6 +678,7 @@ func TestOpenCodeValidateTrustedEnv(t *testing.T) {
 		{name: "string permission", env: openCodeTrustedEnv{ConfigContent: `{"permission":"deny"}`, CredentialsPath: valid.CredentialsPath}, want: "invalid permission policy"},
 		{name: "invalid action", env: openCodeTrustedEnv{ConfigContent: `{"permission":{"bash":"sometimes"}}`, CredentialsPath: valid.CredentialsPath}, want: "invalid permission action"},
 		{name: "invalid pattern action", env: openCodeTrustedEnv{ConfigContent: `{"permission":{"bash":{"*":"sometimes"}}}`, CredentialsPath: valid.CredentialsPath}, want: "invalid permission action"},
+		{name: "MCP server", env: openCodeTrustedEnv{ConfigContent: `{"permission":{"bash":"allow"},"mcp":{"server":{}}}`, CredentialsPath: valid.CredentialsPath}, want: "MCP servers are not supported"},
 		{name: "empty pattern map", env: openCodeTrustedEnv{ConfigContent: `{"permission":{"bash":{}}}`, CredentialsPath: valid.CredentialsPath}, want: "must be an action or non-empty pattern map"},
 		{name: "non-string pattern value", env: openCodeTrustedEnv{ConfigContent: `{"permission":{"bash":{"*":1}}}`, CredentialsPath: valid.CredentialsPath}, want: "must be an action or non-empty pattern map"},
 		{name: "non-object non-string tool value", env: openCodeTrustedEnv{ConfigContent: `{"permission":{"bash":true}}`, CredentialsPath: valid.CredentialsPath}, want: "must be an action or non-empty pattern map"},
