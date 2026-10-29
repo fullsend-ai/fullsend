@@ -2723,6 +2723,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		collector.attachInput(agentSpan, agentPrompt, promptHidesAlterations(validationFeedback, promptSanitized))
 		toolSpans := newToolSpanTracker(tracer, agentCtx)
 		toolSpans.runnerEnv = h.RunnerEnv
+		renderer := agentruntime.NewEventRenderer(printer)
+		renderer.RedactProgress = func(text string) string {
+			return redactSecretLiterals(text, h.RunnerEnv)
+		}
 		var metrics agentruntime.RunMetrics
 		hooksSettings := ""
 		if h.SecurityEnabled() {
@@ -2747,7 +2751,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			Forge:             forgePlatform,
 			ModelAliases:      configModelAliases,
 			ForgeClient:       playbackForgeClient,
-			OnEvent:           iterationEventHandler(agentruntime.NewEventRenderer(printer).Handle, collector, toolSpans),
+			OnEvent:           iterationEventHandler(renderer.Handle, collector, toolSpans),
 		}, printer, agentStart, &metrics)
 		close(heartbeatDone)
 		lastIterElapsed = time.Since(agentStart)

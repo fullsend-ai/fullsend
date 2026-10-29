@@ -10,6 +10,12 @@ fullsend run triage --model opus --effort high
 Choosing between runtimes is in [Agent runtimes](../runtimes.md). Selection, precedence and the
 config keys live there too.
 
+Background Workflow phase/agent changes and runtime lifecycle/status notices
+are displayed from Claude's structured event stream. See
+[live Workflow progress](../cli/run.md#live-claude-workflow-progress)
+for the display behavior and its limits; it does not include full nested tool
+stdout/stderr.
+
 ## Models
 
 Pass an alias or a model id. fullsend resolves `opus`, `sonnet` and `haiku` itself and passes the
