@@ -660,6 +660,71 @@ func TestRouteBuiltinAgent_IssueCommentIsLeftToBash(t *testing.T) {
 	assert.Equal(t, "event is not routable for review", got.Reason)
 }
 
+// A bot the lookup denied is skipped before config or trigger validation, so
+// an invalid trigger or agent list cannot keep the route job's bash stage.
+func TestRouteBuiltinAgent_BotRoleDenialPrecedesConfigErrors(t *testing.T) {
+	verified := true
+	unverified := false
+	configs := map[string][]config.AgentEntry{
+		"invalid trigger": {{Name: "review", Trigger: "event.x =="}},
+		"invalid agents list": {
+			{Name: "review", Trigger: "true"},
+			{Name: "lint", Source: "https://example.com/lint.yaml"},
+		},
+		"no trigger": {{Name: "review"}},
+	}
+	lookups := map[string]struct {
+		verified   *bool
+		wantReason string
+	}{
+		"no registered role": {&verified, "bot has no registered role"},
+		"failed lookup":      {&unverified, "bot-role lookup failed"},
+	}
+	for cfgName, entries := range configs {
+		for lookupName, lookup := range lookups {
+			t.Run(cfgName+"/"+lookupName, func(t *testing.T) {
+				dir := writeRouteFixture(t, routeFixture{agents: entries})
+				ev := routeEvent(t, routePROpened)
+				ev.Actor.Kind = normevent.ActorBot
+				ev.Actor.RoleVerified = lookup.verified
+				got, err := routeBuiltinAgent(context.Background(), routeOpts{
+					agent: "review", configDir: dir, event: ev, printer: ui.New(io.Discard),
+				})
+				require.NoError(t, err)
+				assert.Equal(t, routeSkip, got.Decision)
+				assert.Equal(t, lookup.wantReason, got.Reason)
+			})
+		}
+	}
+}
+
+// The permanent label-added exception is not subject to the early bot-role
+// denial, even for hand-built json input that carries failed-lookup or
+// no-match actor fields.
+func TestRouteBuiltinAgent_BotRoleDenialSparesLabelAdded(t *testing.T) {
+	verified := true
+	unverified := false
+	lookups := map[string]*bool{
+		"failed lookup":      &unverified,
+		"no registered role": &verified,
+	}
+	for name, roleVerified := range lookups {
+		t.Run(name, func(t *testing.T) {
+			neutralizeAgentsRepoFallback(t)
+			entries := []config.AgentEntry{{Name: "triage", Trigger: routeTrigger(t, "triage")}}
+			dir := writeRouteFixture(t, sourcedRouteFixture(entries, "triage", routeTestHarnessFor("triage")))
+			ev := routeEvent(t, routeIssueTriageLabel)
+			ev.Actor.RoleVerified = roleVerified
+			got, err := routeBuiltinAgent(context.Background(), routeOpts{
+				agent: "triage", configDir: dir, event: ev,
+				forgeClient: forge.NewFakeClient(), printer: ui.New(io.Discard),
+			})
+			require.NoError(t, err)
+			assert.Equal(t, routeRun, got.Decision, "reason: %s", got.Reason)
+		})
+	}
+}
+
 func TestRouteBuiltinAgent_Errors(t *testing.T) {
 	// An invalid config is an error for every actor role, so the route job
 	// keeps the bash stage either way.

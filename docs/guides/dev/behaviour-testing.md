@@ -633,13 +633,16 @@ The `fork-dispatch.feature` file defines the canonical fork-PR behaviour contrac
 | Disabled harness (`enabled: false`) on fork event | Empty matrix, exit 0 | Disabled harness in positive scenario; assert agent did not run |
 | Fork PR `synchronize` + label dispatches harness | Harness dispatched exactly 1 time; workflow completes | Separate scenario with sync commit + label |
 | CEL `is_fork` exclusion (`!event.state.change_proposal.is_fork`) | Empty matrix, exit 0 | Harness with `is_fork` guard in positive scenario; assert agent did not run |
-| Fork PR matches CEL `trigger` on `pull_request_target`; unauthorized actor ([ADR 0054](../../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)) | Empty matrix, exit 0 — no agent run | `platform/trigger-auth.feature`. The outsider opens a PR from its own fork; assert the harness dispatch completed with an empty matrix, the agent did not run, and it was dispatched exactly 0 times, then a label as the positive control |
+| Fork PR matches CEL `trigger` on `pull_request_target`; unauthorized actor ([ADR 0054](../../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)) | Empty matrix, exit 0 — no agent run | `platform/actor-authorization.feature`. The outsider opens a PR from its own fork; assert the harness dispatch completed with an empty matrix, the agent did not run, and it was dispatched exactly 0 times, then a label as the positive control |
+| Human actors at each permission level comment `/fs-do` and add a label | Each harness is dispatched or not by the actor's role: the write actor starts the triage-level and write-level harnesses, the triage actor only the triage-level one, the outsider none; the label harness runs for both labelers | `platform/actor-authorization.feature`, the `<actor> comments "/fs-do" and labels the issue` outline |
+| Bot actors (review, coder and triage role bots, the e2e bot) and the write actor as a control comment `/fs-do` and add a label | One harness per bot role triggers on `/fs-do` with `event.actor.bot_role == "<role>"`; one harness triggers on the label. The matrix counts the dispatches of each harness per actor. The shim drops bot comments, so the role harnesses are not dispatched for any actor; every actor's label dispatches the label harness | `platform/bot-actor-authorization.feature`, the `<actor> posts "/fs-do" and labels the issue "do-it"` outline. See [Bot actor steps](#bot-actor-steps) |
+| The three role bots and the e2e bot submit a review comment on a pull request, with the write actor's review as a control | A pull request review is a bot transition the shim forwards, so it reaches the dispatch-time bot-role lookup. Each registered role bot dispatches the harness of its own role (`event.actor.bot_role`) and the unrestricted `on-review` harness. The unregistered e2e bot dispatches nothing, not even `on-review`, until the write actor's review dispatches it. A failed lookup cannot be induced against the deployed mint; the unit tests of the gate cover it | `platform/bot-actor-authorization.feature`, the `registered <actor> submits a review comment on a pull request` outline and the `unregistered e2e bot submits a review comment on a pull request` scenario |
 
 **Kill switch vs disabled harness:** These are distinct mechanisms. The **kill switch** (`kill_switch: true`, settable in either `config.yaml` or `config.base.yaml`) is a global emergency stop that blocks *all* harness dispatch for the repo — tested in its own scenario because no positive harness can run alongside it. A **disabled harness** (`enabled: false` per agent entry) only prevents that single agent from running — tested as a piggyback negative assertion in the positive-path scenario.
 
 **Consolidation pattern:** To conserve parallel execution slots, add negative-path harnesses (disabled agent, CEL exclusion) alongside the positive-path harness in a single scenario rather than creating separate scenarios. The positive harness wait acts as the settle window for negative assertions (piggyback pattern — see `negativeSettleDuration` in `dispatch.go`). The kill switch scenario cannot be consolidated because it blocks all harnesses.
 
-**Unauthorized-actor denial:** The row lives in `e2e/behaviour/features/platform/trigger-auth.feature`, the home for platform trigger authorization scenarios, rather than in `fork-dispatch.feature`. The dispatch gate (`harnessdispatch.IsEventAuthorized`, then the per-harness `role:` threshold from `IsHarnessAuthorized`) authorizes label-added events without any role. So the denial can only be exercised through a transition that needs one — for the `fork-auth-probe` harness (`role: triage`), the `triage` threshold: the PR `opened` event, sent by the outsider when it opens the PR from its own fork. The harness trigger matches both `opened` and a label, and the scenario orders its steps as follows:
+**Unauthorized-actor denial:** The row lives in `e2e/behaviour/features/platform/actor-authorization.feature`, the canonical default platform actor authorization matrix, rather than in `fork-dispatch.feature`. The dispatch gate (`harnessdispatch.IsEventAuthorized`, then the per-harness `role:` threshold from `IsHarnessAuthorized`) authorizes label-added events without any role. So the denial can only be exercised through a transition that needs one — for the `fork-auth-probe` harness (`role: triage`), the `triage` threshold: the PR `opened` event, sent by the outsider when it opens the PR from its own fork. The harness trigger matches both `opened` and a label, and the scenario orders its steps as follows:
 
 1. The denial assertions (`the harness dispatch completes with an empty matrix`, then `agent did not run`, then `dispatched exactly 0 times`) run before the label is added. The first is the one that checks the required outcome: the other two also pass when the dispatch job errored or when no run was created, because neither counts a run without an agent job. `harness-run` uses a `cancel-in-progress` concurrency group per agent and PR, and the dispatch count excludes cancelled jobs. A leaked `opened` dispatch that the label run cancelled would therefore not be counted.
 2. The label, added afterwards by the e2e identity, must dispatch. This positive control shows that the harness is registered and its trigger matches the PR, so the denial cannot pass just because the harness never loaded.
@@ -853,7 +856,46 @@ The steps register the credential with the secret redactor. They store only reda
 
 The same run makes a **control** lookup of the registered review bot, which must answer 200 `recognized` with role `review`, from a token the probe verified, with the leased repository as the OIDC `repository` claim. Otherwise the row fails as an infrastructure failure. As in the mint probe, each job verifies its own OIDC token first (`oidc_verified`). Probe-side configuration, OIDC and transport failures are always infrastructure failures, and so is a lookup-mode answer that `botidentity.ParseMintBotRoleResponse` rejects. A forced failure counts as `lookup-failed` only for a verified token answered 401 `authentication failed`. Any other status is an infrastructure failure, and a 200 fails the row because the mint accepted an invalid credential. No infrastructure failure can satisfy an expected outcome.
 
-The probe uploads only the request fields, `oidc_verified`, the two OIDC claims, the HTTP status, the `outcome`, `role` and `error` strings of the mint's body (each at most 300 characters), and a probe-side error class. It never writes a token. The remaining steps project the subject's outcome onto a normalized actor with `botidentity.ApplyBotRoleResult`, and check the event-level pre-CEL gate (`harnessdispatch.IsEventAuthorized`) for a non-label `review_submitted` event. A `no-match` and a `lookup-failed` are both denied before CEL, and `role_verified` (`true` and `false`) keeps them apart. `TestBotRoleLookupFeature_RowsMatchSteps` checks every Examples row against the step patterns and classification. Each of the 4 rows leases a pool repository.
+The probe uploads only the request fields, `oidc_verified`, the two OIDC claims, the HTTP status, the `outcome`, `role` and `error` strings of the mint's body (each at most 300 characters), and a probe-side error class. It never writes a token. The remaining steps project the subject's outcome onto a normalized actor with `botidentity.ApplyBotRoleResult`, and check the event-level pre-CEL gate (`harnessdispatch.IsEventAuthorized`) for a non-label `review_submitted` event. A `no-match` and a `lookup-failed` are both denied before CEL, and `role_verified` (`true` and `false`) keeps them apart. `fullsend dispatch` runs the same lookup for bot actors of `gha-event` input, before CEL routing and harness dispatch; its Go path is covered by `internal/cli/dispatch_botrole_test.go`. `TestBotRoleLookupFeature_RowsMatchSteps` checks every Examples row against the step patterns and classification. Each of the 4 rows leases a pool repository.
+
+### Bot actor steps
+
+`the <bot> posts "<text>" on the issue` and `the <bot> labels the issue
+"<label>"` make a bot act on the scenario's issue, the way `the <actor> posts
+...` does for the human test actors. `the <bot> submits a review comment on the
+pull request` submits a COMMENT review on the scenario's pull request (open it
+first with `a pull request is opened`); unlike a bot's comment, the shim
+forwards a bot's review. The bots are `review bot`, `coder bot`, `triage bot`
+and `e2e bot`. The triage bot's token has no `pull_requests` permission, so it
+cannot submit a review and has no row in the review scenario.
+
+- The `e2e bot` is the suite's own installation identity behind `World.SCM`. No
+  role of the app set uses it, so the mint has no registered role for it.
+- A role bot acts through the GitHub App of its role. The step pushes a
+  workflow (`bot-actor-<nonce>`, triggered by a push to the temporary branch
+  `behaviour/bot-actor-<nonce>`) to the leased repository and waits for its run
+  to succeed. The job exchanges its Actions OIDC token at the mint
+  (`POST /v1/token`, the role at the `write` level, the leased repository
+  only), masks the minted token, calls the GitHub API with it and revokes it.
+  The job checks the OIDC token and the minted token against a character
+  allowlist before it masks them. The leased repository is on the mint's
+  workflow-host list and the suite's mints accept any workflow basename, so no
+  host repository is needed. The branch is removed with the scenario's other
+  branches.
+
+Two more steps cover the unregistered e2e bot's loss of the bot-review
+exception. `the label "<label>" exists` makes the e2e identity create the label
+with a throwaway issue (closed again), because the triage actor cannot create
+labels; run it before `an issue`, so the throwaway issue's workflow runs predate
+`ScenarioStart`. `the <actor> submits a review comment on the pull request`
+submits a COMMENT review as a human test actor, where `a review comment is
+submitted on the pull request` makes the e2e bot do so, and the bot-role lookup
+now denies that bot's review before CEL.
+
+`ScenarioStart` is set before a comment, and before a label when no comment set
+it, so the dispatch counts cover both events.
+`TestBotActorAuthorizationFeature_RowsMatchSteps` checks every Examples row
+against the registered step patterns.
 
 ## Version pinning for `fullsend-ai/agents`
 

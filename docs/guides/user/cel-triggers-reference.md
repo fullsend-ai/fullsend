@@ -87,10 +87,11 @@ The `event` variable has the following top-level fields:
 | `event.state.conversation` | object | Required when `entity.kind == "conversation"` (includes `category.name`; optional `category.id` / `slug` / `format`) |
 | `event.source.system` | string | `"github"`, `"gitlab"`, `"jira"`, `"manual"`, or `"schedule"` |
 
-> `actor.bot_role` and `actor.role_verified` are ADR 0107 target fields and
-> are not yet emitted by the production runtime. The target contract uses
-> `actor.role: "none"` for bots, but current adapters may still populate a
-> forge/project permission there during migration. `role_verified` is not
+> `actor.bot_role` and `actor.role_verified` are ADR 0107 fields. On GitHub,
+> `fullsend dispatch` sets them for bot actors (with `actor.role: "none"`)
+> on every transition except label-added; other adapters do not emit them
+> yet and may still populate a forge/project permission in `actor.role`
+> during migration. `role_verified` is not
 > authorization evidence by itself: for bots it only indicates lookup
 > completion, not recognition. The permanent label-added exception
 > does not require bot-role lookup; its provider-positive bot classification
@@ -321,8 +322,9 @@ the dispatch workflow's built-in rules:
 > [!WARNING]
 > Opt in only after
 > [#8329](https://github.com/fullsend-ai/fullsend/issues/8329) ships, or
-> accept that pushes from the fix agent no longer start a re-review. Until
-> then the trigger path does not look up a bot's role.
+> accept that pushes from the fix agent no longer start a re-review. The
+> trigger path looks up a bot's role, and a bot without a registered role or
+> with a failed lookup is skipped.
 
 #### Checking the decision
 
@@ -343,6 +345,8 @@ the review entry is disabled.
 |---|---|---|
 | `cel=skip reason=trigger did not match` | The trigger left this event out | Expected for events your trigger excludes; otherwise fix the trigger |
 | `cel=skip reason=actor not authorized` | The actor failed the dispatch permission check | See [Known differences from the default rules](#known-differences-from-the-default-rules) for bots |
+| `cel=skip reason=bot has no registered role` | The bot lookup found no fullsend role for the bot that sent a non-label event | Expected for third-party bots; register the bot's role if it should run agents |
+| `cel=skip reason=bot-role lookup failed` | The bot-role lookup could not complete, so the bot is denied | Check the route step's warning for the lookup error |
 | `cel=skip reason=harness unavailable; actor below write` | The review harness could not be fetched or loaded, so only write access passes | Check the route step's warning for the harness error |
 | `cel=skip reason=trigger evaluation failed: …` | The trigger compiles but failed on this event, for example it reads a field the event lacks without `has()`; this counts as no match | Guard optional fields with `has()` |
 | `CEL route failed; keeping the bash stage` | A CEL route step failed or the configuration is invalid, so the dispatch workflow decided | Open the failed "… CEL route" step for the error, for example an invalid `trigger` or another invalid `agents:` entry |

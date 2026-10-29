@@ -1,5 +1,11 @@
 Feature: Fork PR dispatch
 
+  Owns fork pull request CEL matching (is_fork, entity kind, disabled
+  harnesses), the kill switch and synchronize handling for harness
+  dispatch. Every scenario dispatches through the label-added exception.
+  Which actors may trigger a harness on a fork pull request is owned by
+  platform/actor-authorization.feature.
+
   Background:
     Given the enrolled test repository
     And a fork "test-repo-fork" of the enrolled test repository
