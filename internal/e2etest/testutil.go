@@ -6,7 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math/rand/v2"
+	// Used only to shuffle candidate organizations and spread test load.
+	"math/rand/v2" // nosemgrep: go.lang.security.audit.crypto.math_random.math-random-used
 	"net/http"
 	"os"
 	"os/exec"

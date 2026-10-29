@@ -22,7 +22,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math/rand/v2"
+	// Used for nonsecret lease identifiers and work-order shuffling.
+	"math/rand/v2" // nosemgrep: go.lang.security.audit.crypto.math_random.math-random-used
 	"net/http"
 	"slices"
 	"sort"

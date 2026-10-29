@@ -28,8 +28,9 @@ type treeEntry struct {
 	mode string
 }
 
+// blobSHA computes the Git blob object SHA-1 required by the GitLab API.
 func blobSHA(content []byte) string {
-	h := sha1.New()
+	h := sha1.New() // nosemgrep: go.lang.security.audit.crypto.use_of_weak_crypto.use-of-sha1
 	fmt.Fprintf(h, "blob %d\x00", len(content))
 	h.Write(content)
 	return fmt.Sprintf("%x", h.Sum(nil))
@@ -45,7 +46,7 @@ func blobSHAFile(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	h := sha1.New()
+	h := sha1.New() // nosemgrep: go.lang.security.audit.crypto.use_of_weak_crypto.use-of-sha1
 	fmt.Fprintf(h, "blob %d\x00", info.Size())
 	if _, err := io.Copy(h, f); err != nil {
 		return "", err

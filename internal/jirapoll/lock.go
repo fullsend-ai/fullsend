@@ -6,7 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"math/rand/v2"
+	// Used only to jitter the contention wait between pollers.
+	"math/rand/v2" // nosemgrep: go.lang.security.audit.crypto.math_random.math-random-used
 	"strings"
 	"time"
 

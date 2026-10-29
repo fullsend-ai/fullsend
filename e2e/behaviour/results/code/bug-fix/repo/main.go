@@ -67,5 +67,6 @@ func main() {
 	http.HandleFunc("/get", getHandler)
 	http.HandleFunc("/set", setHandler)
 	log.Println("listening on :8080")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	// This captured behavior result is a test fixture, not a deployed service.
+	log.Fatal(http.ListenAndServe(":8080", nil)) // nosemgrep: go.lang.security.audit.net.use-tls.use-tls
 }

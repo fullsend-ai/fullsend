@@ -63,7 +63,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/rand/v2"
+	// Used only to jitter shared-lock retry delays.
+	"math/rand/v2" // nosemgrep: go.lang.security.audit.crypto.math_random.math-random-used
 	"strings"
 	"time"
 

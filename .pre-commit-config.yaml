@@ -45,6 +45,14 @@ repos:
         args: ["-r", "hack/", "--skip", "B101,B404,B603"]
         pass_filenames: false
 
+  - repo: local
+    hooks:
+      - id: semgrep
+        name: semgrep security scan (p/security-audit, Semgrep 1.182.1)
+        entry: uvx --from semgrep==1.182.1 semgrep scan --config p/security-audit --metrics=off --disable-version-check -j 1 --timeout 15 --error
+        language: system
+        files: '[.](go|py|js|jsx|ts|tsx|mjs|cjs)$'
+
   - repo: https://github.com/zricethezav/gitleaks
     rev: v8.30.0
     hooks:

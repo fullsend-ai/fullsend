@@ -42,11 +42,14 @@ jobs:
           echo "8fcbf1b3e95551c82fd995535e3c1defa70e23299ce36eb3afd6c98778de6ca0  /tmp/pinact.tar.gz" | sha256sum -c
           tar xzf /tmp/pinact.tar.gz -C /usr/local/bin pinact
 
+      - name: Run Semgrep SAST
+        run: uvx --from semgrep==1.182.1 semgrep scan --config p/security-audit --metrics=off --disable-version-check -j 1 --timeout 15 --error .
+
       # The gateway doc config check pulls an agentgateway image, so it runs
       # in its own job, only when its files change.
       - run: make lint-all
         env:
-          SKIP: check-gateway-doc-configs
+          SKIP: check-gateway-doc-configs,semgrep
 
       - name: Run Go tests with coverage
         run: go test -race -coverprofile=coverage.out ./...

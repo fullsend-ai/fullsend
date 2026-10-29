@@ -3,7 +3,8 @@ package install
 import (
 	"context"
 	"fmt"
-	"math/rand/v2"
+	// Used only to distribute mint-status checks across candidate orgs.
+	"math/rand/v2" // nosemgrep: go.lang.security.audit.crypto.math_random.math-random-used
 	"strings"
 	"sync"
 )
