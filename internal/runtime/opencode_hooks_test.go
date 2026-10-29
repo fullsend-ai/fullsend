@@ -43,6 +43,35 @@ func TestOpenCodeApplyBashPatternsPreservesTrustedPatterns(t *testing.T) {
 	assert.Equal(t, map[string]any{"gh *": "allow", "*": "deny"}, permission["bash"])
 }
 
+func TestOpenCodeApplyBashPatterns(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name      string
+		action    string
+		allowlist []string
+		trusted   string
+		want      string
+	}{
+		{name: "no agent restriction", action: "allow", want: `"allow"`},
+		{name: "deny stays denied", action: "deny", allowlist: []string{"gh"}, want: `"deny"`},
+		{name: "ask stays gated", action: "ask", allowlist: []string{"gh"}, want: `"ask"`},
+		{name: "restrict flat allow", action: "allow", allowlist: []string{"gh"}, trusted: `"allow"`, want: `{"*":"deny","gh":"allow","gh *":"allow"}`},
+		{name: "restrict without trusted rule", action: "allow", allowlist: []string{"gh"}, want: `{"*":"deny","gh":"allow","gh *":"allow"}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			permission := map[string]any{"bash": tt.action}
+			var rules []openCodePermissionRule
+			if tt.trusted != "" {
+				rules = []openCodePermissionRule{{Key: "bash", Value: json.RawMessage(tt.trusted)}}
+			}
+			openCodeApplyBashPatterns(permission, tt.allowlist, rules)
+			data, err := json.Marshal(permission["bash"])
+			require.NoError(t, err)
+			assert.JSONEq(t, tt.want, string(data))
+		})
+	}
+}
+
 func TestOpenCodeBootstrapHookPlan(t *testing.T) {
 	work := t.TempDir()
 	store := filepath.Join(work, "store")
@@ -68,13 +97,29 @@ func TestOpenCodeBootstrapHookPlan(t *testing.T) {
 }
 
 func TestOpenCodeBootstrapHookFailure(t *testing.T) {
-	for _, failure := range []string{"rm -rf -- '/sandbox/opencode-config/hooks'", "sys.version_info", "fullsend-env-sep", `printf '%s' "$HOME"`, "rm -rf -- '/sandbox/opencode-config/plugins'"} {
-		t.Run(failure, func(t *testing.T) {
+	for _, tt := range []struct {
+		failure string
+		want    string
+	}{
+		{"rm -rf -- '/sandbox/opencode-config/hooks'", "resetting OpenCode hook scripts"},
+		{"/sandbox/opencode-config/hooks/hook_io.py", "copying hook hook_io.py to sandbox"},
+		{hookInterpreterSep, "resolving python3 for the hooks"},
+		{"sys.version_info", "checking the hook interpreter version"},
+		{"fullsend-env-sep", "reading the harness hook environment"},
+		{`printf '%s' "$HOME"`, "reading OpenCode command HOME"},
+		{"rm -rf -- '/sandbox/opencode-config/plugins'", "resetting OpenCode hook plugins"},
+		{"rm -rf -- '/sandbox/opencode-config/agent'", "clearing OpenCode bootstrap overrides"},
+		{"OpenCode plugin SDK missing", "preparing OpenCode plugin SDK cache"},
+		{"'/sandbox/opencode-config/plugins/fullsend-hooks.ts'", "installing OpenCode hook adapter"},
+		{"refusing to run unhooked", "verifying OpenCode hooks before agent verification"},
+		{"opencode debug agent", "opencode debug agent"},
+	} {
+		t.Run(tt.failure, func(t *testing.T) {
 			work := t.TempDir()
 			fakeOpenshellOpenCode(t, filepath.Join(work, "log"), filepath.Join(work, "store"))
-			t.Setenv("FULLSEND_OPENCODE_TEST_FAIL", failure)
+			t.Setenv("FULLSEND_OPENCODE_TEST_FAIL", tt.failure)
 			in := hooksBootstrapInput{bootstrapInput: bootstrapInput{sandboxName: "sb", agentName: "triage", agentPath: writeAgentFile(t, openCodeTestAgentDef)}}
-			require.Error(t, OpenCodeRuntime{}.Bootstrap(in))
+			require.ErrorContains(t, OpenCodeRuntime{}.Bootstrap(in), tt.want)
 			_, ok := lookupOpenCodeTrustedEnv("sb")
 			assert.False(t, ok, "failed bootstrap must not leave a runnable policy")
 		})
