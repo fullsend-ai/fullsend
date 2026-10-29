@@ -52,6 +52,17 @@ test("parent tool and trusted policy ceilings apply to every session", async (t)
   await assert.rejects(h.before("write", { filePath: "file" }), /parent allowlist/);
 });
 
+test("trusted permission patterns use native values and trailing wildcard semantics", async (t) => {
+  const patterns = { "*": "deny", "safe *": "allow" };
+  const h = await setup(t, { permission: { bash: { "*": "deny", "printf *": "allow" }, skill: patterns, glob: patterns, grep: patterns, websearch: patterns } });
+  await h.before("bash", { command: "printf" });
+  await h.before("skill", { name: "safe" });
+  await h.before("glob", { pattern: "safe" });
+  await h.before("grep", { pattern: "safe" });
+  await h.before("websearch", { query: "safe" });
+  await assert.rejects(h.before("websearch", { query: "unsafe" }), /trusted permission/);
+});
+
 test("Bash accepts single-quoted GraphQL literals without hiding executable syntax", async (t) => {
   const h = await setup(t, { bashAllowlist: ["gh", "jq"] });
   for (const command of [
@@ -150,7 +161,7 @@ test("native Bash exit metadata prevents false success suppression", async (t) =
     [file, readFileSync(path.join(hooksDir, file), "utf8")]));
   const h = await setup(t, { groups: [{ Phase: "PostToolUse", Tools: ["Bash"], Scripts: ["context_suppress_posttool.py"] }] }, scripts);
   const text = "ok\tgithub.com/example/pkg\t0.1s\n";
-  for (const exit of [0, 1, -9]) {
+  for (const exit of [0, 1, -9, null]) {
     const output = { output: text, metadata: { output: text, exit }, title: "go test ./..." };
     await h.hooks["tool.execute.after"]({ tool: "bash", args: { command: "go test ./..." } }, output);
     if (exit === 0) assert.notEqual(output.output, text, "successful output should be summarized");
@@ -159,6 +170,12 @@ test("native Bash exit metadata prevents false success suppression", async (t) =
       assert.equal(output.metadata.exit, exit);
     }
   }
+});
+
+test("unsupported MCP-style tool results fail closed", async (t) => {
+  const h = await setup(t);
+  const output = { content: [{ type: "text", text: "original-secret" }], metadata: {} };
+  await assert.rejects(h.hooks["tool.execute.after"]({ tool: "mcp_tool", args: {} }, output), /unsupported tool result shape/);
 });
 
 test("scripts receive translated v2 payload, isolated environment and chained output", async (t) => {
