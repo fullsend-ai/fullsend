@@ -9,6 +9,8 @@ on:
     paths:
       - "images/sandbox/**"
       - "images/code/**"
+      - "internal/runtime/**"
+      - "internal/security/**"
       - ".github/workflows/sandbox-images.yml"
       - go.mod
       - go.sum
@@ -16,6 +18,8 @@ on:
     paths:
       - "images/sandbox/**"
       - "images/code/**"
+      - "internal/runtime/**"
+      - "internal/security/**"
       - ".github/workflows/sandbox-images.yml"
       - go.mod
       - go.sum
@@ -67,7 +71,8 @@ jobs:
         run: |
           relevant=true
           if [ "$EVENT" = merge_group ]; then
-            if git diff --quiet "$BASE_SHA" "$HEAD_SHA" -- images/sandbox images/code .github/workflows/sandbox-images.yml go.mod go.sum; then
+            # SYNC-WITH: push.paths / pull_request.paths filters above
+            if git diff --quiet "$BASE_SHA" "$HEAD_SHA" -- images/sandbox images/code internal/runtime internal/security .github/workflows/sandbox-images.yml go.mod go.sum; then
               relevant=false
             else
               status=$?
@@ -96,6 +101,10 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
@@ -182,6 +191,31 @@ jobs:
               cp /sandbox/opencode-config/package.json /sandbox/opencode-config/package-lock.json "$HOME/.config/opencode/"
               ln -s /sandbox/opencode-config/node_modules "$HOME/.config/opencode/node_modules"
               timeout 45 opencode --print-logs --log-level DEBUG debug agent build
+            '
+
+      - name: Build native OpenCode hook probe
+        timeout-minutes: 10
+        env:
+          CGO_ENABLED: "0"
+        run: go test -c ./internal/runtime -o "${RUNNER_TEMP}/opencode-native-hooks.test"
+
+      # Reuse the scripted local provider and production adapter. The probe
+      # checks that SSRF denial prevents a file side effect, not just a curl failure.
+      - name: Validate OpenCode adapter in sandbox image
+        timeout-minutes: 3
+        run: |
+          timeout 150 docker run --rm --network none \
+            --volume "${GITHUB_WORKSPACE}:/workspace:ro" \
+            --volume "${RUNNER_TEMP}/opencode-native-hooks.test:/tmp/opencode-native-hooks.test:ro" \
+            --workdir /workspace/internal/runtime \
+            --env OPENCODE_HOOK_PROBE_BINARY=/usr/local/bin/opencode \
+            --env BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 \
+            --entrypoint /bin/sh \
+            fullsend-sandbox:ci-smoke -ec '
+              test "$(id -un)" = sandbox
+              /tmp/opencode-native-hooks.test \
+                -test.v -test.timeout=2m \
+                -test.run "^TestOpenCodeNativeHooks$/^pre-block$"
             '
 
       - name: Export digest
