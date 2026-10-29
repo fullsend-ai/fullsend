@@ -145,3 +145,30 @@ func TestTaskProgressHiddenAgentCannotReplaceParent(t *testing.T) {
 		t.Fatal(out.String())
 	}
 }
+
+func TestTaskProgressIndexIdentityScopesAndIDFallback(t *testing.T) {
+	var out bytes.Buffer
+	r := newTestRenderer(&out)
+	for _, e := range []TaskProgressEvent{
+		{TaskID: "one", RunID: "first", AgentIndex: 1, AgentID: "shared", Label: "Work", State: TaskRunning},
+		{TaskID: "one", RunID: "first", AgentIndex: 2, AgentID: "shared", Label: "Work", State: TaskRunning},
+		{TaskID: "two", RunID: "first", AgentIndex: 1, AgentID: "shared", Label: "Work", State: TaskRunning},
+		{TaskID: "one", RunID: "second", AgentIndex: 1, AgentID: "shared", Label: "Work", State: TaskRunning},
+		{TaskID: "one", RunID: "second", AgentID: "shared", Label: "Work", State: TaskRunning},
+		{TaskID: "one", RunID: "second", AgentID: "fallback-a", Label: "Work", State: TaskRunning},
+		{TaskID: "one", RunID: "second", AgentID: "fallback-b", Label: "Work", State: TaskRunning},
+	} {
+		r.Handle(e)
+	}
+	if len(r.taskProgressSeen) != 7 || strings.Count(out.String(), "— running") != 7 {
+		t.Fatal("distinct slots/tasks/runs/fallback IDs collapsed: " + out.String())
+	}
+	r.Handle(TaskProgressEvent{TaskID: "one", RunID: "first", AgentIndex: 1, AgentID: "learned", Label: "Work", State: TaskRunning})
+	if len(r.taskProgressSeen) != 7 || strings.Count(out.String(), "— running") != 7 {
+		t.Fatal("ID-only indexed change created another row")
+	}
+	r.Handle(TaskProgressEvent{TaskID: "one", RunID: "first", AgentIndex: 1, Label: "Work", State: TaskCompleted})
+	if !strings.Contains(out.String(), "agent #1 (learned): Work — completed") {
+		t.Fatal("known display ID was lost: " + out.String())
+	}
+}

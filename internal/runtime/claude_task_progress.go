@@ -8,16 +8,19 @@ import (
 // Optional snapshots remain raw so malformed entries cannot discard a useful
 // lifecycle event. Prompt/result bodies and terminal summaries are not decoded.
 type claudeTaskProgress struct {
-	TaskID           string          `json:"task_id"`
-	RunID            string          `json:"run_id"`
-	Description      string          `json:"description"`
-	Status           string          `json:"status"`
-	LastToolName     string          `json:"last_tool_name"`
-	Summary          json.RawMessage `json:"summary"`
-	Reason           string          `json:"reason"`
-	Ambient          bool            `json:"ambient"`
-	SkipTranscript   bool            `json:"skip_transcript"`
-	Patch            json.RawMessage `json:"patch"`
+	TaskID         string          `json:"task_id"`
+	RunID          string          `json:"run_id"`
+	Description    string          `json:"description"`
+	Status         string          `json:"status"`
+	LastToolName   string          `json:"last_tool_name"`
+	Summary        json.RawMessage `json:"summary"`
+	Reason         string          `json:"reason"`
+	Ambient        bool            `json:"ambient"`
+	SkipTranscript bool            `json:"skip_transcript"`
+	Patch          json.RawMessage `json:"patch"`
+	// WorkflowProgress is an undocumented internal Claude Code payload, not
+	// a public Agent SDK contract. It may change or disappear without notice
+	// in any patch release; decoding is best-effort and raw capture is retained.
 	WorkflowProgress json.RawMessage `json:"workflow_progress"`
 }
 

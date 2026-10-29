@@ -177,9 +177,13 @@ const (
 )
 
 // TaskProgressEvent carries live background task or Workflow agent metadata.
-// An empty AgentID and zero AgentIndex describe the task itself. Phase is
-// agent attribution, never an inventory of declared phases. Progress does not
-// update token/cost accounting and carries no prompts or tool result bodies.
+// An empty AgentID and zero AgentIndex describe the task itself. A positive
+// AgentIndex is the stable Workflow row identity within a task/run; AgentID
+// is optional display attribution and is the identity fallback only when
+// index is absent. Learning an ID alone is not a new display transition.
+// Phase is agent attribution, never an inventory of declared phases.
+// Progress does not update token/cost accounting and carries no prompts or
+// tool result bodies.
 // Consumers receive repeated snapshots and partial patches, not reconciled
 // transitions. EventRenderer merges and deduplicates after caller-specific
 // credential redaction; custom OnEvent consumers must reconcile their own

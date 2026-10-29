@@ -56,6 +56,9 @@ func decodeClaudeStatusProgress(line []byte, subtype string) (StatusProgressEven
 			}
 		}
 	case "task_summary":
+		// Undocumented internal Claude Code message from the inspected 2.1.312
+		// embedded schema, not a public Agent SDK contract. It may change or
+		// disappear in any patch release; unknown display shapes are ignored.
 		var wire struct {
 			Detail  *string `json:"detail"`
 			Summary *string `json:"summary"`
