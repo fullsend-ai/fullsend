@@ -99,11 +99,20 @@ function writeTargets(tool, args) {
 function checkPermission(cfg, tool, args, cwd, worktree, targets) {
   const id = ["write", "apply_patch", "multiedit"].includes(tool) ? "edit" : tool;
   const rule = cfg.permission[id] ?? cfg.permission["*"];
-  const match = (pattern, text) => new RegExp("^" + pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".") + "$", "s").test(text);
+  const match = (pattern, text) => {
+    let expression = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
+    if (expression.endsWith(" .*")) expression = expression.slice(0, -3) + "( .*)?";
+    return new RegExp("^" + expression + "$", "s").test(text);
+  };
   let action = rule;
   if (rule && typeof rule === "object") {
     action = "deny";
-    let values = [args.command ?? args.filePath ?? args.path ?? args.subagent_type ?? args.url ?? "*"];
+    let values = [
+      args.command ?? args.filePath ?? args.path ?? args.subagent_type ?? args.url ??
+      (tool === "skill" ? args.name : undefined) ??
+      (["glob", "grep"].includes(tool) ? args.pattern : undefined) ??
+      (tool === "websearch" ? args.query : undefined) ?? "*",
+    ];
     if (["read", "write", "edit", "multiedit", "apply_patch"].includes(tool)) {
       const paths = tool === "read" ? [args.filePath ?? args.file_path] : targets;
       values = paths.map((target) => {
@@ -294,9 +303,11 @@ export default async ({ directory, worktree }) => {
     "tool.execute.after": async (input, output) => {
       // Scan every string field, not just stdout: native metadata, titles
       // and attachments can otherwise carry an alternate copy of a secret.
+      if (Array.isArray(output.content) || typeof output.output !== "string") deny("unsupported tool result shape");
       const original = { ...output };
-      if (input.tool === "bash" && Number.isInteger(output.metadata?.exit)) {
-        original.exit_code = output.metadata.exit;
+      if (input.tool === "bash") {
+        if (Number.isInteger(output.metadata?.exit)) original.exit_code = output.metadata.exit;
+        else original.interrupted = true;
       }
       try {
         const tool = validate(input, input.args);

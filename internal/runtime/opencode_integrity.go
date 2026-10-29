@@ -100,6 +100,12 @@ func validateOpenCodeTrustedEnv(env openCodeTrustedEnv) error {
 			return fmt.Errorf("reading the trusted OpenCode environment: additional native plugins are not supported with sandbox hooks")
 		}
 	}
+	if raw, ok := config["mcp"]; ok {
+		var servers map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &servers); err != nil || len(servers) > 0 {
+			return fmt.Errorf("reading the trusted OpenCode environment: MCP servers are not supported with sandbox hooks")
+		}
+	}
 	permission, ok := config["permission"]
 	if !ok {
 		return fmt.Errorf("reading the trusted OpenCode environment: OPENCODE_CONFIG_CONTENT has no permission policy")
