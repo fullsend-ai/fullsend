@@ -13,7 +13,6 @@ import (
 	"io"
 	"log"
 	"math"
-	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"os"
@@ -26,6 +25,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
+	"github.com/fullsend-ai/fullsend/internal/randutil"
 	"golang.org/x/crypto/nacl/box"
 	"golang.org/x/sync/singleflight"
 )
@@ -443,7 +443,7 @@ func (c *LiveClient) doRequest(ctx context.Context, method, path string, content
 				}
 				base := time.Duration(math.Pow(2, float64(attempt))) * time.Second
 				half := base / 2
-				delay := half + time.Duration(rand.Int64N(int64(half)+1))
+				delay := half + time.Duration(randutil.RandomInt64N(int64(half)+1))
 				select {
 				case <-c.afterFunc(delay):
 				case <-ctx.Done():
@@ -681,7 +681,7 @@ func retryDelay(resp *http.Response, attempt int) time.Duration {
 	// Add jitter: randomize between 50-100% of base to desynchronize
 	// concurrent callers (e.g. parallel e2e test runners).
 	half := base / 2
-	return half + time.Duration(rand.Int64N(int64(half)+1))
+	return half + time.Duration(randutil.RandomInt64N(int64(half)+1))
 }
 
 // checkStatus verifies the response has an acceptable status code and returns
@@ -1529,7 +1529,7 @@ func retryCommitOp[T any](ctx context.Context, c *LiveClient, label string, op f
 	var err error
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		if attempt > 0 {
-			jitter := time.Duration(100+rand.IntN(400)) * time.Millisecond
+			jitter := time.Duration(100+randutil.RandomIntN(400)) * time.Millisecond
 			select {
 			case <-ctx.Done():
 				var zero T
@@ -1941,16 +1941,16 @@ func isNoChangesError(apiErr *APIError) bool {
 	return strings.Contains(lowerAPIErrorText(apiErr), "no commits between")
 }
 
-// blobSHA computes the Git blob object SHA-1 for the given content.
+// blobSHA computes the Git blob object SHA-1 required by the forge Git API.
 func blobSHA(content []byte) string {
-	h := sha1.New()
+	h := sha1.New() // nosemgrep: go.lang.security.audit.crypto.use_of_weak_crypto.use-of-sha1
 	fmt.Fprintf(h, "blob %d\x00", len(content))
 	h.Write(content)
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
 func blobSHAReader(r io.Reader, size int64) (string, error) {
-	h := sha1.New()
+	h := sha1.New() // nosemgrep: go.lang.security.audit.crypto.use_of_weak_crypto.use-of-sha1
 	fmt.Fprintf(h, "blob %d\x00", size)
 	if _, err := io.Copy(h, r); err != nil {
 		return "", err

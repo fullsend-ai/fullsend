@@ -3,6 +3,7 @@
 package repos
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -53,6 +54,34 @@ func TestCreateManifestTemp_IsPrivate(t *testing.T) {
 	info, err := f.Stat()
 	require.NoError(t, err)
 	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+}
+
+func TestCreateManifestTemp_RetriesNameCollision(t *testing.T) {
+	dir := t.TempDir()
+	collision := filepath.Join(dir, fmt.Sprintf(".repos.yaml.tmp.%d", 1))
+	require.NoError(t, os.WriteFile(collision, []byte("keep"), 0o600))
+
+	values := []uint64{1, 2}
+	index := 0
+	f, err := createManifestTempWithRandom(dir, 0o600, func() uint64 {
+		value := values[index]
+		index++
+		return value
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { os.Remove(f.Name()) })
+	assert.Equal(t, filepath.Join(dir, ".repos.yaml.tmp.2"), f.Name())
+	require.NoError(t, f.Close())
+}
+
+func TestCreateManifestTemp_TooManyCollisions(t *testing.T) {
+	dir := t.TempDir()
+	collision := filepath.Join(dir, fmt.Sprintf(".repos.yaml.tmp.%d", 1))
+	require.NoError(t, os.WriteFile(collision, []byte("keep"), 0o600))
+
+	f, err := createManifestTempWithRandom(dir, 0o600, func() uint64 { return 1 })
+	assert.Nil(t, f)
+	assert.EqualError(t, err, "creating temporary manifest: too many name collisions")
 }
 
 // Under umask 022 a restrictive manifest stays restrictive and a new one is

@@ -45,6 +45,15 @@ repos:
         args: ["-r", "hack/", "--skip", "B101,B404,B603"]
         pass_filenames: false
 
+  - repo: local
+    hooks:
+      - id: semgrep
+        name: semgrep security scan (p/security-audit snapshot)
+        entry: ./scripts/semgrep-scan
+        language: system
+        files: '[.](go|py|js|jsx|ts|tsx|mjs|cjs)$'
+        exclude: '(^|/)([^/]*_test\.go|tests?(/|$))|^e2e/behaviour/(fixtures|results)/'
+
   - repo: https://github.com/zricethezav/gitleaks
     rev: v8.30.0
     hooks:

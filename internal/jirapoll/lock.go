@@ -6,11 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"math/rand/v2"
 	"strings"
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/randutil"
 )
 
 // escapeKeySegment escapes dots in an owner/repo segment so the
@@ -77,7 +77,7 @@ func (p *Poller) attemptLock(ctx context.Context, issueKey, lockID string) (bool
 	}
 
 	// Jitter sleep: 500-1500ms to allow concurrent pollers to write.
-	jitter := time.Duration(500+rand.IntN(1000)) * time.Millisecond
+	jitter := time.Duration(500+randutil.RandomIntN(1000)) * time.Millisecond
 	p.sleepFn(ctx, jitter)
 
 	// Re-read and verify our UUID still holds.

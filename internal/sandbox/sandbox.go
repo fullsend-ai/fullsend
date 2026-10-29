@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"math/rand/v2"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,6 +21,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/randutil"
 	"gopkg.in/yaml.v3"
 )
 
@@ -1710,7 +1710,7 @@ const letterBytes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 func randStringBytes(n int) string {
 	b := make([]byte, n)
 	for i := range b {
-		b[i] = letterBytes[rand.IntN(len(letterBytes))]
+		b[i] = letterBytes[randutil.RandomIntN(len(letterBytes))]
 	}
 	return string(b)
 }

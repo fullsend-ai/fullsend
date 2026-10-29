@@ -9,13 +9,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math/rand/v2"
 	"net/http"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/randutil"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 )
@@ -212,7 +212,7 @@ func defaultRetryDelay(attempt int) time.Duration {
 	)
 	delay := min(baseDelay<<uint(attempt), maxDelay) // 1s, 2s, 4s, 10s
 	half := delay / 2
-	return half + time.Duration(rand.Int64N(int64(half)+1))
+	return half + time.Duration(randutil.RandomInt64N(int64(half)+1))
 }
 
 // isRetryableTransportError reports whether a client.Do error is

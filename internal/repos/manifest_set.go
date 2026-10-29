@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -14,9 +13,10 @@ import (
 	"strconv"
 	"strings"
 
-	"gopkg.in/yaml.v3"
-
 	"github.com/fullsend-ai/fullsend/internal/config"
+	"github.com/fullsend-ai/fullsend/internal/randutil"
+
+	"gopkg.in/yaml.v3"
 )
 
 // This file implements `fullsend repos set`: a schema-aware editor for any
@@ -255,8 +255,12 @@ func newManifestMode(dir string) (os.FileMode, error) {
 // createManifestTemp exclusively creates a temp file in dir with the given
 // mode filtered by the process umask.
 func createManifestTemp(dir string, mode os.FileMode) (*os.File, error) {
+	return createManifestTempWithRandom(dir, mode, randutil.RandomUint64)
+}
+
+func createManifestTempWithRandom(dir string, mode os.FileMode, nextRandom func() uint64) (*os.File, error) {
 	for range 100 {
-		name := filepath.Join(dir, fmt.Sprintf(".repos.yaml.tmp.%d", rand.Uint64()))
+		name := filepath.Join(dir, fmt.Sprintf(".repos.yaml.tmp.%d", nextRandom()))
 		f, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
 		if errors.Is(err, os.ErrExist) {
 			continue

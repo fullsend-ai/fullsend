@@ -3,9 +3,10 @@ package install
 import (
 	"context"
 	"fmt"
-	"math/rand/v2"
 	"strings"
 	"sync"
+
+	"github.com/fullsend-ai/fullsend/internal/randutil"
 )
 
 // maxWorkerVarBytes is the ceiling for a mint's serialized
@@ -108,7 +109,7 @@ func groupWorkflowHostRepos(orgs []string, slotsPerOrg int) string {
 // pickStatusOrg picks the org whose mint-status team every mint of the
 // job authorizes. Overridable in tests.
 var pickStatusOrg = func(orgs []string) string {
-	return orgs[rand.IntN(len(orgs))]
+	return orgs[randutil.RandomIntN(len(orgs))]
 }
 
 // planCFMints builds the CF mint drivers' plan for layout: packed

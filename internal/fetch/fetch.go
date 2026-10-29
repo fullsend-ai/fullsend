@@ -13,13 +13,14 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/fullsend-ai/fullsend/internal/randutil"
 
 	"github.com/fullsend-ai/fullsend/internal/netutil"
 )
@@ -374,7 +375,7 @@ func retryBackoff(base time.Duration, attempt int) time.Duration {
 		backoff = maxBackoff
 	}
 	half := backoff / 2
-	return half + time.Duration(rand.Int64N(int64(half)+1))
+	return half + time.Duration(randutil.RandomInt64N(int64(half)+1))
 }
 
 // ComputeSHA256 returns the lowercase hex-encoded SHA-256 digest of data.
