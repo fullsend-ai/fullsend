@@ -10,7 +10,8 @@ import (
 	"io"
 	"log"
 	"math"
-	"math/rand/v2"
+	// Used only for retry backoff jitter.
+	"math/rand/v2" // nosemgrep: go.lang.security.audit.crypto.math_random.math-random-used
 	"net"
 	"net/http"
 	"net/url"

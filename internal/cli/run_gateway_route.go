@@ -5,7 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math/rand/v2"
+	// Used only to jitter credential refresh timing, not for secret generation.
+	"math/rand/v2" // nosemgrep: go.lang.security.audit.crypto.math_random.math-random-used
 	"os"
 	"path/filepath"
 	"slices"

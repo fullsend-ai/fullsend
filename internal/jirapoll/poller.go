@@ -9,7 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"math/rand/v2"
+	// Used only to shuffle work selection and spread polling load.
+	"math/rand/v2" // nosemgrep: go.lang.security.audit.crypto.math_random.math-random-used
 	"os"
 	"regexp"
 	"time"

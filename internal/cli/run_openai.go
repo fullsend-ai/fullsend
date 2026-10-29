@@ -4,7 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math/rand/v2"
+	// Used only to jitter token-refresh scheduling, not for security-sensitive values.
+	"math/rand/v2" // nosemgrep: go.lang.security.audit.crypto.math_random.math-random-used
 	"os"
 	"regexp"
 	"slices"

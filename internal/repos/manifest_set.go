@@ -5,7 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math/rand/v2"
+	// O_EXCL handles collisions; this value is a temp filename, not a secret.
+	"math/rand/v2" // nosemgrep: go.lang.security.audit.crypto.math_random.math-random-used
 	"os"
 	"path/filepath"
 	"reflect"

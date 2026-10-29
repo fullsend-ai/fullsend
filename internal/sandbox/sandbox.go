@@ -10,7 +10,8 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"math/rand/v2"
+	// Used only to reduce collisions between temporary upload filenames.
+	"math/rand/v2" // nosemgrep: go.lang.security.audit.crypto.math_random.math-random-used
 	"os"
 	"os/exec"
 	"path/filepath"

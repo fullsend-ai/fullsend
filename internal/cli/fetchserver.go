@@ -34,7 +34,8 @@ func startFetchService(_ context.Context, cfg fetchsvc.ServiceConfig) (addr stri
 
 	// ADR-0046: bind to 0.0.0.0 so the sandbox container can reach the host.
 	// Loopback binding will be possible once NVIDIA/OpenShell#1633 ships.
-	ln, err := net.Listen("tcp", "0.0.0.0:0")
+	// This ephemeral, bearer-authenticated listener must be reachable from the sandbox.
+	ln, err := net.Listen("tcp", "0.0.0.0:0") // nosemgrep: go.lang.security.audit.net.bind_all.avoid-bind-to-all-interfaces
 	if err != nil {
 		return "", "", nil, fmt.Errorf("listening for fetch service: %w", err)
 	}

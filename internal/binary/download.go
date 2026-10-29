@@ -244,7 +244,8 @@ func extractSourceTree(r io.Reader, destDir string) error {
 			if err != nil {
 				return fmt.Errorf("creating file %s: %w", rel, err)
 			}
-			n, err := io.Copy(f, io.LimitReader(tr, int64(maxDownloadSize)+1))
+			// The extra byte detects overflow; per-file and aggregate limits are checked below.
+			n, err := io.Copy(f, io.LimitReader(tr, int64(maxDownloadSize)+1)) // nosemgrep: go.lang.security.decompression_bomb.potential-dos-via-decompression-bomb
 			if err != nil {
 				f.Close()
 				return fmt.Errorf("extracting %s: %w", rel, err)
@@ -331,7 +332,8 @@ func ExtractFullsendFromTarGz(r io.Reader, destPath string) error {
 			if err != nil {
 				return fmt.Errorf("creating %s: %w", destPath, err)
 			}
-			n, copyErr := io.Copy(f, io.LimitReader(tr, maxBinarySize+1))
+			// The extra byte detects overflow and triggers removal of the oversized binary below.
+			n, copyErr := io.Copy(f, io.LimitReader(tr, maxBinarySize+1)) // nosemgrep: go.lang.security.decompression_bomb.potential-dos-via-decompression-bomb
 			if copyErr != nil {
 				f.Close()
 				return fmt.Errorf("extracting fullsend: %w", copyErr)
