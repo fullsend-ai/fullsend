@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"os"
 
@@ -12,11 +13,19 @@ import (
 // It tracks block state (text/thinking) so transitions between event
 // types produce clean output boundaries.
 type EventRenderer struct {
-	printer    *ui.Printer
-	isCI       bool
-	inText     bool
-	inThinking bool
-	seenInit   bool
+	// RedactProgress removes caller-owned credential literals from progress
+	// metadata before normalization/truncation. Pattern and registered
+	// runtime-secret redaction apply even when this callback is nil.
+	RedactProgress func(string) string
+
+	printer            *ui.Printer
+	isCI               bool
+	inText             bool
+	inThinking         bool
+	seenInit           bool
+	taskProgressSeen   map[taskProgressKey]taskProgressDisplay
+	taskProgressRuns   map[[sha256.Size]byte][sha256.Size]byte
+	statusProgressSeen map[[sha256.Size]byte]string
 }
 
 // NewEventRenderer creates a renderer that writes to the given printer.
@@ -34,6 +43,10 @@ var (
 // Handle dispatches a single AgentEvent to the appropriate rendering method.
 func (r *EventRenderer) Handle(evt AgentEvent) {
 	switch e := evt.(type) {
+	case StatusProgressEvent:
+		r.statusProgress(e)
+	case TaskProgressEvent:
+		r.taskProgress(e)
 	case InitEvent:
 		if r.seenInit {
 			return

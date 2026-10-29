@@ -338,6 +338,16 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 				continue
 			}
 			switch se.Subtype {
+			case "task_started", "task_progress", "task_updated", "task_notification":
+				for _, progress := range decodeClaudeTaskProgress(line, se.Subtype) {
+					onEvent(progress)
+				}
+			case "hook_started", "hook_progress", "hook_response", "task_summary",
+				"informational", "notification", "status", "session_state_changed",
+				"permission_denied", "background_tasks_changed":
+				if progress, ok := decodeClaudeStatusProgress(line, se.Subtype); ok {
+					onEvent(progress)
+				}
 			case "init":
 				onEvent(InitEvent{
 					Model:     se.Model,
@@ -360,6 +370,11 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 					DelayMs:    se.RetryDelayMs,
 					Error:      se.Error,
 				})
+			}
+
+		case "rate_limit_event":
+			if progress, ok := decodeClaudeRateLimit(line); ok {
+				onEvent(progress)
 			}
 
 		case "stream_event":
