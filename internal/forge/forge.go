@@ -587,6 +587,28 @@ type Issue struct {
 	StateReason string
 }
 
+// PullRequestAuthorizationContext carries PR fields used by the e2e CI
+// authorization gate (author identity, label set, frozen updated_at).
+type PullRequestAuthorizationContext struct {
+	AuthorLogin string
+	UpdatedAt   string
+	Labels      []string
+}
+
+// IssueLabelEvent is a labeled timeline event on an issue or pull request.
+type IssueLabelEvent struct {
+	LabelName  string
+	ActorLogin string
+	CreatedAt  string
+}
+
+// GitHubCollaboratorPermissionDetail is the raw collaborator permission API
+// subset used by the e2e gate's strict role_name/permission cross-check.
+type GitHubCollaboratorPermissionDetail struct {
+	RoleName   string
+	Permission string
+}
+
 // IssueComment represents a comment on an issue.
 type IssueComment struct {
 	ID        int
@@ -1216,9 +1238,18 @@ type Client interface {
 	// pull request. Returns forge.ErrNotSupported if the forge has no
 	// equivalent concept.
 	ListIssueReactions(ctx context.Context, owner, repo string, number int) ([]Reaction, error)
+	// ListIssueLabelEvents returns labeled events on an issue or pull request,
+	// oldest first within each page and pages in API order.
+	ListIssueLabelEvents(ctx context.Context, owner, repo string, number int) ([]IssueLabelEvent, error)
+	// RemoveIssueLabel removes a single label from an issue or pull request.
+	// Returns forge.ErrNotFound when the label is already absent.
+	RemoveIssueLabel(ctx context.Context, owner, repo string, number int, label string) error
 
 	// Pull request operations
 	GetPullRequestInfo(ctx context.Context, owner, repo string, number int) (*PullRequestInfo, error)
+	// GetPullRequestAuthorizationContext returns author login, updated_at, and
+	// label names for a pull request. Used by the e2e CI authorization gate.
+	GetPullRequestAuthorizationContext(ctx context.Context, owner, repo string, number int) (*PullRequestAuthorizationContext, error)
 	GetPullRequestHeadSHA(ctx context.Context, owner, repo string, number int) (string, error)
 	// ListPullRequestFiles returns the relative file paths changed by a pull
 	// request. On GitHub, the API caps results at 3000 files total.
@@ -1655,6 +1686,12 @@ type GitHubExtensions interface {
 	// owner/repo, resolving custom role names from effective permissions.
 	// Returns forge.ErrNotFound when the user has no explicit permission.
 	GetCollaboratorPermission(ctx context.Context, owner, repo, username string) (role string, err error)
+
+	// GetCollaboratorPermissionDetail returns role_name and permission from
+	// the GitHub collaborator permission API without resolving custom roles.
+	// Used by the e2e CI gate, which applies a stricter built-in cross-check
+	// than GetCollaboratorPermission. Returns forge.ErrNotFound for HTTP 404.
+	GetCollaboratorPermissionDetail(ctx context.Context, owner, repo, username string) (GitHubCollaboratorPermissionDetail, error)
 
 	// AddCollaborator grants username a direct collaborator permission
 	// (pull, triage, push, maintain, admin) on owner/repo. It returns an

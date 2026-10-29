@@ -3450,6 +3450,62 @@ func (c *LiveClient) ListOpenIssues(ctx context.Context, owner, repo string, lab
 	return result, nil
 }
 
+// ListIssueLabelEvents returns labeled events on an issue or pull request.
+func (c *LiveClient) ListIssueLabelEvents(ctx context.Context, owner, repo string, number int) ([]forge.IssueLabelEvent, error) {
+	var result []forge.IssueLabelEvent
+
+	for page := 1; page <= 100; page++ {
+		resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/issues/%d/events?per_page=100&page=%d", owner, repo, number, page))
+		if err != nil {
+			return nil, fmt.Errorf("list issue label events page %d: %w", page, err)
+		}
+		var raw []struct {
+			Event     string `json:"event"`
+			CreatedAt string `json:"created_at"`
+			Label     struct {
+				Name string `json:"name"`
+			} `json:"label"`
+			Actor struct {
+				Login string `json:"login"`
+			} `json:"actor"`
+		}
+		if err := decodeJSON(resp, &raw); err != nil {
+			return nil, fmt.Errorf("decode issue label events page %d: %w", page, err)
+		}
+
+		for _, r := range raw {
+			if r.Event != "labeled" {
+				continue
+			}
+			result = append(result, forge.IssueLabelEvent{
+				LabelName:  r.Label.Name,
+				ActorLogin: r.Actor.Login,
+				CreatedAt:  r.CreatedAt,
+			})
+		}
+
+		if len(raw) < 100 {
+			break
+		}
+	}
+	return result, nil
+}
+
+// RemoveIssueLabel removes a label from an issue or pull request.
+func (c *LiveClient) RemoveIssueLabel(ctx context.Context, owner, repo string, number int, label string) error {
+	path := fmt.Sprintf("/repos/%s/%s/issues/%d/labels/%s",
+		url.PathEscape(owner), url.PathEscape(repo), number, url.PathEscape(label))
+	resp, err := c.do(ctx, http.MethodDelete, path, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return forge.ErrNotFound
+	}
+	return checkStatus(resp, http.StatusNoContent, http.StatusOK)
+}
+
 // ListIssueComments returns all comments on an issue, paginating automatically.
 func (c *LiveClient) ListIssueComments(ctx context.Context, owner, repo string, number int) ([]forge.IssueComment, error) {
 	var result []forge.IssueComment
@@ -3744,6 +3800,32 @@ func (c *LiveClient) GetPullRequestInfo(ctx context.Context, owner, repo string,
 		HeadSHA:  pr.Head.SHA,
 		AuthorID: pr.User.Login,
 		IsFork:   isFork,
+	}, nil
+}
+
+// GetPullRequestAuthorizationContext returns fields used by the e2e CI gate.
+func (c *LiveClient) GetPullRequestAuthorizationContext(ctx context.Context, owner, repo string, number int) (*forge.PullRequestAuthorizationContext, error) {
+	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/pulls/%d", owner, repo, number))
+	if err != nil {
+		return nil, fmt.Errorf("get pull request #%d for authorization: %w", number, err)
+	}
+
+	var pr struct {
+		UpdatedAt string `json:"updated_at"`
+		User      struct {
+			Login string `json:"login"`
+		} `json:"user"`
+		Labels []struct {
+			Name string `json:"name"`
+		} `json:"labels"`
+	}
+	if err := decodeJSON(resp, &pr); err != nil {
+		return nil, fmt.Errorf("decode pull request #%d for authorization: %w", number, err)
+	}
+	return &forge.PullRequestAuthorizationContext{
+		AuthorLogin: pr.User.Login,
+		UpdatedAt:   pr.UpdatedAt,
+		Labels:      labelNames(pr.Labels),
 	}, nil
 }
 
@@ -4686,20 +4768,46 @@ func (c *LiveClient) GetAppClientID(ctx context.Context, slug string) (string, e
 }
 
 func (c *LiveClient) GetCollaboratorPermission(ctx context.Context, owner, repo, username string) (string, error) {
-	path := fmt.Sprintf("/repos/%s/%s/collaborators/%s/permission",
-		url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(username))
-	resp, err := c.get(ctx, path)
+	perm, err := c.fetchCollaboratorPermission(ctx, owner, repo, username)
 	if err != nil {
-		return "", fmt.Errorf("get collaborator permission for %s: %w", username, err)
-	}
-	var perm collaboratorPermission
-	if err := decodeJSON(resp, &perm); err != nil {
-		return "", fmt.Errorf("decode collaborator permission for %s: %w", username, err)
+		return "", err
 	}
 	if perm.RoleName == "" {
 		return "", fmt.Errorf("%w: no permission for %s", forge.ErrNotFound, username)
 	}
 	return perm.baseRole(), nil
+}
+
+func (c *LiveClient) GetCollaboratorPermissionDetail(ctx context.Context, owner, repo, username string) (forge.GitHubCollaboratorPermissionDetail, error) {
+	perm, err := c.fetchCollaboratorPermission(ctx, owner, repo, username)
+	if err != nil {
+		return forge.GitHubCollaboratorPermissionDetail{}, err
+	}
+	if perm.Permission == "" {
+		return forge.GitHubCollaboratorPermissionDetail{}, fmt.Errorf("decode collaborator permission for %s: missing permission field", username)
+	}
+	return forge.GitHubCollaboratorPermissionDetail{
+		RoleName:   perm.RoleName,
+		Permission: perm.Permission,
+	}, nil
+}
+
+func (c *LiveClient) fetchCollaboratorPermission(ctx context.Context, owner, repo, username string) (collaboratorPermission, error) {
+	path := fmt.Sprintf("/repos/%s/%s/collaborators/%s/permission",
+		url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(username))
+	resp, err := c.get(ctx, path)
+	if err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+			return collaboratorPermission{}, fmt.Errorf("%w: collaborator %s", forge.ErrNotFound, username)
+		}
+		return collaboratorPermission{}, fmt.Errorf("get collaborator permission for %s: %w", username, err)
+	}
+	var perm collaboratorPermission
+	if err := decodeJSON(resp, &perm); err != nil {
+		return collaboratorPermission{}, fmt.Errorf("decode collaborator permission for %s: %w", username, err)
+	}
+	return perm, nil
 }
 
 // collaboratorPermission is the subset of GitHub's collaborator permission
