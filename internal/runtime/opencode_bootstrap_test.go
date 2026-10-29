@@ -27,6 +27,9 @@ func fakeOpenshellOpenCode(t *testing.T, logPath, storeDir string) {
 	script := `#!/bin/sh
 printf '%s\n' "$*" >> '` + logPath + `'
 if [ "$2" = "upload" ]; then
+  if [ -n "${FULLSEND_OPENCODE_TEST_FAIL:-}" ]; then
+    case "$6" in *"$FULLSEND_OPENCODE_TEST_FAIL"*) exit 41 ;; esac
+  fi
   case "$6" in /tmp/fs-upload-*/) cp -- "$5" "$6/"; exit $? ;; esac
   cp "$5" '` + storeDir + `'/"$(printf '%s' "$6" | tr '/' '_')"
   exit 0
@@ -520,6 +523,38 @@ exit 0
 	assert.Contains(t, string(calls), openCodeHookGuardCommand(env.Hooks), "adapter guard pins its utilities before restore")
 	assert.Contains(t, string(calls), agentPath, "agent file re-uploaded before the run")
 	assert.Contains(t, string(calls), "debug agent", "agent re-verified before the run")
+}
+
+func TestOpenCodeRuntimeRun_RestoreFailurePreventsLaunch(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		failure string
+		want    string
+	}{
+		{"hook integrity", "refusing to run unhooked", "verifying OpenCode hooks before agent restore"},
+		{"override cleanup", "rm -rf -- '/sandbox/opencode-config/agent'", "clearing OpenCode agent overrides"},
+		{"SDK cache", "OpenCode plugin SDK missing", "restoring OpenCode plugin SDK cache"},
+		{"agent upload", "test -f '/tmp/fs-upload-", "restoring agent definition"},
+		{"agent verification", "opencode debug agent", "opencode debug agent"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			work := t.TempDir()
+			logPath := filepath.Join(work, "calls.log")
+			fakeOpenshellOpenCode(t, logPath, filepath.Join(work, "store"))
+			in := hooksBootstrapInput{bootstrapInput: bootstrapInput{
+				sandboxName: "sb", agentName: "triage", agentPath: writeAgentFile(t, openCodeTestAgentDef),
+			}}
+			require.NoError(t, OpenCodeRuntime{}.Bootstrap(in))
+			t.Setenv("FULLSEND_OPENCODE_TEST_FAIL", tt.failure)
+			params := RunParams{SandboxName: "sb", AgentBaseName: "triage", HooksSettingsPath: "enabled"}
+			exit, err := OpenCodeRuntime{}.Run(t.Context(), params, ui.New(&strings.Builder{}), time.Now(), &RunMetrics{})
+			require.ErrorContains(t, err, tt.want)
+			assert.Equal(t, -1, exit)
+			calls, err := os.ReadFile(logPath)
+			require.NoError(t, err)
+			assert.NotContains(t, string(calls), "--format json", "restore failure must prevent model invocation")
+		})
+	}
 }
 
 func TestOpenCodeRuntimeRun_TeesToOutputPath(t *testing.T) {
