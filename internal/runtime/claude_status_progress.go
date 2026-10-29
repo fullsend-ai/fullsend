@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// This is an explicit display allowlist, not a generic JSON dump. In
+// decodeClaudeStatusProgress applies an explicit display allowlist. In
 // particular hook stdout/stderr/output, prompts, terminal summaries, and
 // arbitrary future payloads must stay out of console/CI annotations.
 func decodeClaudeStatusProgress(line []byte, subtype string) (StatusProgressEvent, bool) {
@@ -15,11 +15,11 @@ func decodeClaudeStatusProgress(line []byte, subtype string) (StatusProgressEven
 	switch subtype {
 	case "hook_started", "hook_progress", "hook_response":
 		var wire struct {
-			HookID    string `json:"hook_id"`
-			HookName  string `json:"hook_name"`
-			HookEvent string `json:"hook_event"`
-			Outcome   string `json:"outcome"`
-			ExitCode  *int   `json:"exit_code"`
+			HookID    string  `json:"hook_id"`
+			HookName  *string `json:"hook_name"`
+			HookEvent *string `json:"hook_event"`
+			Outcome   string  `json:"outcome"`
+			ExitCode  *int    `json:"exit_code"`
 		}
 		if json.Unmarshal(line, &wire) != nil {
 			return e, false
@@ -30,9 +30,14 @@ func decodeClaudeStatusProgress(line []byte, subtype string) (StatusProgressEven
 		}
 		e.Kind = "hook"
 		e.ID = wire.HookID
-		e.Label = "Hook " + wire.HookName
-		if wire.HookEvent != "" {
-			e.Label += " [" + wire.HookEvent + "]"
+		e.Label = "Hook"
+		if wire.HookName != nil {
+			e.Subject = *wire.HookName
+			e.SubjectSet = true
+		}
+		if wire.HookEvent != nil {
+			e.Context = *wire.HookEvent
+			e.ContextSet = true
 		}
 		e.State = "running"
 		if subtype == "hook_response" {

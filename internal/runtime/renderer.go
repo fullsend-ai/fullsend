@@ -25,7 +25,7 @@ type EventRenderer struct {
 	seenInit           bool
 	taskProgressSeen   map[taskProgressKey]taskProgressDisplay
 	taskProgressRuns   map[[sha256.Size]byte][sha256.Size]byte
-	statusProgressSeen map[[sha256.Size]byte]string
+	statusProgressSeen map[[sha256.Size]byte]statusProgressDisplay
 }
 
 // NewEventRenderer creates a renderer that writes to the given printer.
@@ -177,4 +177,12 @@ func (r *EventRenderer) endBlock() {
 		r.inText = false
 		r.inThinking = false
 	}
+}
+
+func (r *EventRenderer) printProgress(msg string) {
+	r.endBlock()
+	if r.isCI {
+		fmt.Fprintf(os.Stderr, "::notice::%s\n", msg)
+	}
+	r.printer.ToolProgress(msg)
 }

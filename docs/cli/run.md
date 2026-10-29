@@ -128,7 +128,14 @@ line. Text is sanitized, credential-redacted, and bounded before display or
 retention in the bounded display cache. Concurrent tasks and agents retain
 separate identities. Partial lifecycle patches retain known task labels and
 state; explicit starts can reset an identity. Late running snapshots do not
-reopen a known terminal task or agent.
+reopen a known terminal task or agent. Sparse agent snapshots retain known
+labels, phases and tool context. Error, blocked and cached metadata persists
+within a state; state changes clear omitted transient metadata. Explicit
+empty strings and false flags also clear their corresponding fields.
+Visibility belongs to each run: promoting its first late run ID preserves
+its hidden classification, while a distinct named run does not inherit an
+older run's visibility. Hook names and event attribution survive sparse
+progress/completion messages for the same hook ID.
 
 The display handles these structured Claude events when the runtime emits
 them. Task progress shapes were checked against Claude Code 2.1.296 capture

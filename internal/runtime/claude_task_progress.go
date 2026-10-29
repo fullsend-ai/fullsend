@@ -22,17 +22,17 @@ type claudeTaskProgress struct {
 }
 
 type claudeWorkflowAgentProgress struct {
-	Type            string `json:"type"`
-	Index           int    `json:"index"`
-	AgentID         string `json:"agentId"`
-	Label           string `json:"label"`
-	PhaseTitle      string `json:"phaseTitle"`
-	State           string `json:"state"`
-	LastToolName    string `json:"lastToolName"`
-	LastToolSummary string `json:"lastToolSummary"`
-	Error           string `json:"error"`
-	Blocked         bool   `json:"blocked"`
-	Cached          bool   `json:"cached"`
+	Type            string  `json:"type"`
+	Index           int     `json:"index"`
+	AgentID         string  `json:"agentId"`
+	Label           *string `json:"label"`
+	PhaseTitle      *string `json:"phaseTitle"`
+	State           string  `json:"state"`
+	LastToolName    *string `json:"lastToolName"`
+	LastToolSummary *string `json:"lastToolSummary"`
+	Error           *string `json:"error"`
+	Blocked         *bool   `json:"blocked"`
+	Cached          *bool   `json:"cached"`
 }
 
 func decodeClaudeTaskProgress(line []byte, subtype string) []TaskProgressEvent {
@@ -106,12 +106,36 @@ func decodeClaudeTaskProgress(line []byte, subtype string) []TaskProgressEvent {
 		if state == "" {
 			continue
 		}
-		events = append(events, TaskProgressEvent{
-			TaskID: task.TaskID, RunID: task.RunID, AgentID: agent.AgentID, AgentIndex: agent.Index,
-			Label: agent.Label, Phase: agent.PhaseTitle, State: state,
-			ToolName: agent.LastToolName, ToolSummary: agent.LastToolSummary,
-			Detail: agent.Error, Blocked: agent.Blocked, Cached: agent.Cached,
-		})
+		event := TaskProgressEvent{TaskID: task.TaskID, RunID: task.RunID, AgentID: agent.AgentID, AgentIndex: agent.Index, State: state}
+		if agent.Label != nil {
+			event.Label = *agent.Label
+			event.LabelSet = true
+		}
+		if agent.PhaseTitle != nil {
+			event.Phase = *agent.PhaseTitle
+			event.PhaseSet = true
+		}
+		if agent.LastToolName != nil {
+			event.ToolName = *agent.LastToolName
+			event.ToolNameSet = true
+		}
+		if agent.LastToolSummary != nil {
+			event.ToolSummary = *agent.LastToolSummary
+			event.ToolSummarySet = true
+		}
+		if agent.Error != nil {
+			event.Detail = *agent.Error
+			event.DetailSet = true
+		}
+		if agent.Blocked != nil {
+			event.Blocked = *agent.Blocked
+			event.BlockedSet = true
+		}
+		if agent.Cached != nil {
+			event.Cached = *agent.Cached
+			event.CachedSet = true
+		}
+		events = append(events, event)
 	}
 	return events
 }

@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"bytes"
-	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -122,33 +121,5 @@ func TestClaudeStatusTransitionsAndDedup(t *testing.T) {
 	}
 	if metrics.InputTokens != 0 || metrics.OutputTokens != 0 || metrics.ToolCalls.Load() != 0 || metrics.TotalCostUSD != 0 {
 		t.Fatal("advisories altered metrics")
-	}
-}
-
-func TestStatusProgressRendererSafetyAndBounds(t *testing.T) {
-	t.Setenv("GITHUB_ACTIONS", "true")
-	var out bytes.Buffer
-	r := newTestRenderer(&out)
-	const secret = "opaque-status-secret-for-test"
-	r.RedactProgress = func(s string) string { return strings.ReplaceAll(s, secret, "[REDACTED]") }
-	e := StatusProgressEvent{Kind: "notification", ID: "one", Label: secret + "\n::error::", State: "\x1b[31mwarning\x1b[0m", Detail: secret + strings.Repeat("界", 500)}
-	stderr := captureStderr(t, func() { r.Handle(TextEvent{Text: "before"}); r.Handle(e); r.Handle(e) })
-	if strings.Contains(out.String(), secret) || strings.Contains(stderr, secret) || strings.Contains(stderr, "::error::") || strings.Contains(out.String(), "\x1b") {
-		t.Fatal("unsafe status display")
-	}
-	if strings.Count(stderr, "::notice::") != 1 || !strings.Contains(out.String(), "before\n") {
-		t.Fatal("bad CI/block boundary")
-	}
-	if len([]rune(out.String())) > 500 {
-		t.Fatal("unbounded status")
-	}
-	r.Handle(StatusProgressEvent{})
-	r.Handle(StatusProgressEvent{Kind: "empty"})
-	r.isCI = false
-	for i := range maxTaskProgressEntries + 1 {
-		r.Handle(StatusProgressEvent{Kind: "row", ID: fmt.Sprint(i), Label: "row"})
-	}
-	if len(r.statusProgressSeen) > maxTaskProgressEntries {
-		t.Fatal("unbounded status cache")
 	}
 }

@@ -7,50 +7,6 @@ import (
 	"unicode/utf8"
 )
 
-// TaskState describes task/agent progress, not validated business completion.
-type TaskState string
-
-const (
-	TaskPending   TaskState = "pending"
-	TaskPaused    TaskState = "paused"
-	TaskRunning   TaskState = "running"
-	TaskCompleted TaskState = "completed"
-	TaskFailed    TaskState = "failed"
-	TaskStopped   TaskState = "stopped"
-	TaskQueued    TaskState = "queued"
-	TaskRetrying  TaskState = "retrying"
-	TaskSkipped   TaskState = "skipped"
-)
-
-// TaskProgressEvent carries live background task or Workflow agent metadata.
-// An empty AgentID and zero AgentIndex describe the task itself. Phase is
-// agent attribution, never an inventory of declared phases. Progress does not
-// update token/cost accounting and carries no prompts or tool result bodies.
-type TaskProgressEvent struct {
-	TaskID      string
-	RunID       string
-	AgentID     string
-	AgentIndex  int
-	Label       string
-	Phase       string
-	State       TaskState
-	ToolName    string
-	ToolSummary string
-	Summary     string
-	Detail      string
-	Blocked     bool
-	Cached      bool
-	// Update carries a partial lifecycle patch. Missing fields retain their
-	// sanitized display values. LabelSet/DetailSet permit explicit empty fields.
-	Update    bool
-	LabelSet  bool
-	DetailSet bool
-	Started   bool
-	Hidden    bool
-}
-
-func (TaskProgressEvent) agentEvent() {}
-
 // Bound retained display state even if a runtime sends unlimited identities.
 // Hashing IDs also avoids retaining arbitrarily large sandbox strings as keys.
 const maxTaskProgressEntries = 1024
@@ -75,7 +31,7 @@ func (r *EventRenderer) taskProgress(e TaskProgressEvent) {
 	previous := r.taskProgressSeen[key]
 	parentKey := taskProgressKey{task: taskHash, run: runHash, agent: sha256.Sum256(nil)}
 	parent := r.taskProgressSeen[parentKey].event
-	if !e.Started && (parent.Hidden || (e.State != "" && !terminalTaskState(e.State) && (terminalTaskState(parent.State) || terminalTaskState(previous.event.State)))) {
+	if !e.Started && (parent.Hidden || previous.event.Hidden || (e.State != "" && !terminalTaskState(e.State) && (terminalTaskState(parent.State) || terminalTaskState(previous.event.State)))) {
 		return
 	}
 	// Sanitize before retaining metadata, not just before printing it. This
@@ -106,6 +62,9 @@ func (r *EventRenderer) taskProgress(e TaskProgressEvent) {
 				e.Detail = old.Detail
 			}
 		}
+		if e.AgentID != "" || e.AgentIndex > 0 {
+			mergeAgentProgress(&e, old)
+		}
 		if e.RunID == "" {
 			e.RunID = old.RunID
 		}
@@ -121,7 +80,7 @@ func (r *EventRenderer) taskProgress(e TaskProgressEvent) {
 		r.taskProgressRuns[taskHash] = runHash
 	}
 	if e.Hidden {
-		r.taskProgressSeen[parentKey] = taskProgressDisplay{event: e}
+		r.taskProgressSeen[key] = taskProgressDisplay{event: e}
 		return
 	}
 	msg := "Task " + e.TaskID
@@ -213,15 +172,39 @@ func (r *EventRenderer) taskProgressIdentity(e *TaskProgressEvent) taskProgressK
 							r.taskProgressSeen[key] = display
 						}
 					}
-				} else {
-					parent := taskProgressKey{task: task, run: current, agent: sha256.Sum256(nil)}
-					e.Hidden = r.taskProgressSeen[parent].event.Hidden
 				}
+				// Distinct named runs have independent visibility. Only promotion of
+				// anonymous rows above carries visibility within the same generation.
 				r.taskProgressRuns[task] = run
 			}
 		}
 	}
 	return taskProgressKey{task: task, run: run, agent: sha256.Sum256([]byte(e.AgentID)), index: e.AgentIndex}
+}
+
+// mergeAgentProgress retains already-sanitized optional metadata when a
+// snapshot only changes counters. Explicit empty/false fields can clear it.
+// Error/blocked/cached metadata is state-relative: a transition drops omitted
+// transient values instead of describing a recovered agent as still blocked.
+func mergeAgentProgress(e *TaskProgressEvent, old TaskProgressEvent) {
+	if !e.PhaseSet && e.Phase == "" {
+		e.Phase = old.Phase
+	}
+	if !e.ToolNameSet && e.ToolName == "" {
+		e.ToolName = old.ToolName
+	}
+	if !e.ToolSummarySet && e.ToolSummary == "" && e.ToolName == old.ToolName {
+		e.ToolSummary = old.ToolSummary
+	}
+	if !e.DetailSet && e.Detail == "" && e.State == old.State {
+		e.Detail = old.Detail
+	}
+	if !e.BlockedSet && !e.Blocked && e.State == old.State {
+		e.Blocked = old.Blocked
+	}
+	if !e.CachedSet && !e.Cached && e.State == old.State {
+		e.Cached = old.Cached
+	}
 }
 
 func terminalTaskState(state TaskState) bool {
