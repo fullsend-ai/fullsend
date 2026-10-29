@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(CDPATH='' cd -- "${SCRIPT_DIR}/.." && pwd)"
+SEMGREP_VERSION=1.182.1
+
+exec uvx --from "semgrep==${SEMGREP_VERSION}" semgrep scan \
+	--config "${REPO_ROOT}/.semgrep/security-audit.yml" \
+	--metrics=off \
+	--disable-version-check \
+	-j 1 \
+	--timeout 15 \
+	--strict \
+	--error \
+	"$@"

@@ -31,8 +31,8 @@ Targets (each maps to the command CI or the Makefile runs):
   go-build       make go-build
   coverage       make go-test, then per-file coverage of .go files changed vs origin/main,
                  including uncommitted and new files
-  lint-all       make lint-all with SKIP=check-gateway-doc-configs (as lint.yml)
-  lint           make lint with SKIP=check-gateway-doc-configs (pre-commit on staged files)
+  lint-all       make lint-all with SKIP=check-gateway-doc-configs,semgrep (as lint.yml)
+  lint           make lint with SKIP=check-gateway-doc-configs,semgrep (pre-commit on staged files)
   check          make check (ruff + ty on hack/)
   lint-md-links  make lint-md-links (lychee --offline)
   script-test    make script-test (shell, python, node:test suites)
@@ -359,7 +359,7 @@ EOF
   # Both lint targets run the lint-staged hook, which lints the *staged*
   # docs/.vitepress/ files (even under --all-files) with prettier and
   # stylelint from node_modules, whose volume is empty until `web` runs.
-  lint-all|lint) echo 'if git diff --cached --name-only | grep -q "^docs/\.vitepress/" && [ ! -x node_modules/.bin/lint-staged ]; then npm ci --no-audit --no-fund || exit 1; fi; SKIP=check-gateway-doc-configs make '"$1" ;;
+  lint-all|lint) echo 'if git diff --cached --name-only | grep -q "^docs/\.vitepress/" && [ ! -x node_modules/.bin/lint-staged ]; then npm ci --no-audit --no-fund || exit 1; fi; SKIP=check-gateway-doc-configs,semgrep make '"$1" ;;
   check) echo 'make check' ;;
   lint-md-links) echo 'make lint-md-links' ;;
   # make -i runs every suite even after one fails, so one failure cannot hide the rest.

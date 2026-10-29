@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	// Used only to jitter token-refresh scheduling, not for security-sensitive values.
-	"math/rand/v2" // nosemgrep: go.lang.security.audit.crypto.math_random.math-random-used
 	"os"
 	"regexp"
 	"slices"
@@ -19,6 +17,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/inference/openaiwif"
+	"github.com/fullsend-ai/fullsend/internal/randutil"
 	"github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
@@ -1152,7 +1151,7 @@ func runOpenAIRefresh(ctx context.Context, h openAIProviderHandle, printer *ui.P
 	for {
 		jitter := time.Duration(0)
 		if openAIRefreshJitter > 0 {
-			jitter = time.Duration(rand.Int64N(int64(openAIRefreshJitter)))
+			jitter = time.Duration(randutil.RandomInt64N(int64(openAIRefreshJitter)))
 		}
 		now := wallNowFn()
 		delay := openAIRefreshDelay(expiresAt, now, jitter)
