@@ -754,10 +754,48 @@ func TestCommitScaffoldViaPR_CrossForkUnsyncedRefusesRestoringForkContent(t *tes
 	_, err := CommitScaffoldFiles(context.Background(), client, printer,
 		"acme", "widget", "main", testMeta("msg", "title", "body"), testFiles, false, nil)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "differs upstream")
+	assert.Contains(t, err.Error(), "differs between the fork and upstream")
 	assert.Contains(t, err.Error(), "sync the fork")
 	assert.Empty(t, client.CreatedBranches)
 	assert.Empty(t, client.CommittedFilesToBranch)
+}
+
+func TestCommitScaffoldViaPR_CrossForkUnsyncedRefusesPartialRestoration(t *testing.T) {
+	// The fork and upstream both have the file but with independent changes
+	// in different sections; the delivery requests content matching neither
+	// (restoring one section, changing another). The merge-base diff would
+	// only carry the changed section, so a clean merge would keep upstream's
+	// version of the restored one.
+	client := newUnsyncedForkClient()
+	client.FileContentsRef = map[string][]byte{
+		"contributor/widget/.github/workflows/ci.yml@fork-sha": []byte("setting=old\nother=old\n"),
+		"acme/widget/.github/workflows/ci.yml@upstream-sha":    []byte("setting=new\nother=old\n"),
+	}
+	files := []forge.TreeFile{
+		{Path: ".github/workflows/ci.yml", Content: []byte("setting=old\nother=new\n"), Mode: "100644"},
+	}
+	printer, _ := newTestPrinter()
+
+	_, err := CommitScaffoldFiles(context.Background(), client, printer,
+		"acme", "widget", "main", testMeta("msg", "title", "body"), files, false, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "differs between the fork and upstream")
+	assert.Empty(t, client.CreatedBranches)
+	assert.Empty(t, client.CommittedFilesToBranch)
+}
+
+func TestCommitScaffoldViaPR_CrossForkUnsyncedRefusesFileRemovedUpstream(t *testing.T) {
+	client := newUnsyncedForkClient()
+	client.FileContentsRef = map[string][]byte{
+		"contributor/widget/.github/workflows/ci.yml@fork-sha": []byte("ci"),
+	}
+	printer, _ := newTestPrinter()
+
+	_, err := CommitScaffoldFiles(context.Background(), client, printer,
+		"acme", "widget", "main", testMeta("msg", "title", "body"), testFiles, false, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "differs between the fork and upstream")
+	assert.Empty(t, client.CreatedBranches)
 }
 
 func TestCommitScaffoldViaPR_CrossForkUnsyncedAllowsFilesMatchingBothSides(t *testing.T) {

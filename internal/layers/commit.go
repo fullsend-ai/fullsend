@@ -495,13 +495,17 @@ func deliverBranchAndPR(ctx context.Context, client forge.Client, printer *ui.Pr
 //     be named differently from upstream's) cannot be shown to be an ancestor
 //     of the upstream commit: fork-only commits would otherwise become part of
 //     the scaffold change request.
-//   - a requested file already has the requested content at the fork tip but
-//     differs upstream: the commit would be skipped as a no-op and the change
-//     request would not restore the file upstream.
+//   - a requested file that exists at the fork tip differs between the fork
+//     and upstream: the merge-base diff cannot express the requested result
+//     for the parts upstream changed (or for a file whose requested content
+//     already matches the fork), so a clean merge would silently keep
+//     upstream's version. File modes are not compared: the forge client
+//     exposes content only.
 //
-// When the fallback is allowed, the fork tip is an ancestor of upstream, so
-// the change request diff (computed from the merge base) contains only the
-// scaffold changes; the fork being behind can at worst cause merge conflicts.
+// When the fallback is allowed, the fork tip is an ancestor of upstream and
+// every existing requested file is identical on both sides, so the change
+// request diff (computed from the merge base) contains only the scaffold
+// changes; the fork being behind can at worst cause merge conflicts.
 func checkUnsyncedForkFallback(ctx context.Context, client forge.Client,
 	upstreamOwner, upstreamRepo, targetOwner, targetRepo, upstreamSHA string,
 	files []forge.TreeFile) (string, error) {
@@ -535,14 +539,16 @@ func checkUnsyncedForkFallback(ctx context.Context, client forge.Client,
 			targetOwner, targetRepo, upstreamSHA, forkBranch, forkSHA, status, err, syncHint)
 	}
 
-	// A file that already matches the requested content at the fork tip is
-	// skipped by the commit and shows no change in the merge-base diff. That
-	// is only harmless when upstream has the same content.
+	// The change request diff is computed from the merge base (the fork
+	// tip), so any part of an existing file that upstream changed after the
+	// fork point is invisible to it: a clean merge keeps upstream's version of
+	// that part even when the delivery meant to restore the fork's. Whole-file
+	// no-ops are skipped by the commit for the same reason. Delivery cannot
+	// guarantee the requested result unless every existing requested file is
+	// identical in the fork and upstream, so refuse otherwise. Files absent at
+	// the fork tip are added by the commit and surface as a merge conflict
+	// rather than being silently dropped, so they are not checked.
 	for _, f := range files {
-		want, err := f.Bytes()
-		if err != nil {
-			return "", fmt.Errorf("reading content of %s: %w", f.Path, err)
-		}
 		forkContent, err := client.GetFileContentAtRef(ctx, targetOwner, targetRepo, f.Path, forkSHA)
 		if forge.IsNotFound(err) {
 			continue // absent at the fork tip: the commit will add it
@@ -551,14 +557,15 @@ func checkUnsyncedForkFallback(ctx context.Context, client forge.Client,
 			return "", fmt.Errorf("fork %s/%s does not contain upstream commit %s and %s could not be read at the fork tip (%w); %s",
 				targetOwner, targetRepo, upstreamSHA, f.Path, err, syncHint)
 		}
-		if !bytes.Equal(forkContent, want) {
-			continue
-		}
 		upstreamContent, err := client.GetFileContentAtRef(ctx, upstreamOwner, upstreamRepo, f.Path, upstreamSHA)
-		if err == nil && bytes.Equal(upstreamContent, want) {
+		if err != nil && !forge.IsNotFound(err) {
+			return "", fmt.Errorf("fork %s/%s does not contain upstream commit %s and %s could not be read upstream (%w); %s",
+				targetOwner, targetRepo, upstreamSHA, f.Path, err, syncHint)
+		}
+		if err == nil && bytes.Equal(upstreamContent, forkContent) {
 			continue
 		}
-		return "", fmt.Errorf("fork %s/%s does not contain upstream commit %s and %s already has the requested content in the fork but differs upstream, so the change would not restore it; %s",
+		return "", fmt.Errorf("fork %s/%s does not contain upstream commit %s and %s differs between the fork and upstream, so the change could not be applied faithfully to the stale fork; %s",
 			targetOwner, targetRepo, upstreamSHA, f.Path, syncHint)
 	}
 	return forkSHA, nil
