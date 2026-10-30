@@ -3,13 +3,26 @@ package runtime
 import (
 	"crypto/sha256"
 	"fmt"
+	"slices"
 	"strings"
+	"unicode/utf16"
 	"unicode/utf8"
 )
 
 // Bound retained display state even if a runtime sends unlimited identities.
 // Hashing IDs also avoids retaining arbitrarily large sandbox strings as keys.
 const maxTaskProgressEntries = 1024
+
+// Retain ordering text only when bounded and unchanged by sanitization and
+// credential redaction. Non-comparable IDs cannot implicitly replace a run.
+const maxTaskRunOrderBytes = 1024
+
+type taskProgressRun struct {
+	watermark [sha256.Size]byte
+	hash      [sha256.Size]byte
+	order     string
+	named     bool
+}
 
 type taskProgressKey struct {
 	task, run, agent [sha256.Size]byte
@@ -25,7 +38,10 @@ func (r *EventRenderer) taskProgress(e TaskProgressEvent) {
 	if e.TaskID == "" || (e.State == "" && !e.Update) {
 		return
 	}
-	key := r.taskProgressIdentity(&e)
+	key, accepted := r.taskProgressIdentity(&e)
+	if !accepted {
+		return
+	}
 	taskHash := key.task
 	runHash := key.run
 	previous := r.taskProgressSeen[key]
@@ -81,13 +97,6 @@ func (r *EventRenderer) taskProgress(e TaskProgressEvent) {
 	}
 	if e.State != "" && e.State != TaskRunning {
 		e.Summary = ""
-	}
-	if len(r.taskProgressSeen) >= maxTaskProgressEntries {
-		clear(r.taskProgressSeen)
-		clear(r.taskProgressRuns)
-	}
-	if _, exists := r.taskProgressRuns[taskHash]; !exists {
-		r.taskProgressRuns[taskHash] = runHash
 	}
 	if e.Hidden {
 		r.taskProgressSeen[key] = taskProgressDisplay{event: e}
@@ -166,58 +175,67 @@ func taskProgressMessage(e TaskProgressEvent) string {
 	return sanitizeOutput(msg)
 }
 
-// Resolve optional run IDs without splitting a task when its first run ID
-// arrives late. An explicit new start resets its run's agent rows too. Known
-// older runs remain addressable, but cannot steal later run-less updates.
-func (r *EventRenderer) taskProgressIdentity(e *TaskProgressEvent) taskProgressKey {
+// Resolve optional run IDs. SDK 0.3.314 orders a task's run IDs by plain
+// JavaScript string comparison. Reject superseded frames before changing any
+// identity, visibility or dedup state. Anonymous restarts retain the previous
+// named watermark until a newer name adopts the anonymous generation's rows.
+func (r *EventRenderer) taskProgressIdentity(e *TaskProgressEvent) (taskProgressKey, bool) {
 	if r.taskProgressSeen == nil {
 		r.taskProgressSeen = make(map[taskProgressKey]taskProgressDisplay)
-		r.taskProgressRuns = make(map[[sha256.Size]byte][sha256.Size]byte)
+		r.taskProgressRuns = make(map[[sha256.Size]byte]taskProgressRun)
+	}
+	if len(r.taskProgressSeen) >= maxTaskProgressEntries {
+		clear(r.taskProgressSeen)
+		clear(r.taskProgressRuns)
 	}
 	task := sha256.Sum256([]byte(e.TaskID))
-	run := r.taskProgressRuns[task]
+	current := r.taskProgressRuns[task]
+	run := current.hash
 	zero := [sha256.Size]byte{}
+	order := ""
 	if e.RunID != "" {
 		run = sha256.Sum256([]byte(e.RunID))
+		// Even an unorderable name cannot reclaim a newer anonymous run when
+		// its hash identifies the prior named generation exactly.
+		if current.named && current.hash == zero && run == current.watermark {
+			return taskProgressKey{}, false
+		}
+		order = r.taskRunOrder(e.RunID)
+		if current.named && run != current.hash {
+			comparable := order != "" && current.order != ""
+			comparison := compareTaskRunIDs(order, current.order)
+			if (!e.Started && (!comparable || comparison <= 0)) ||
+				(e.Started && comparable && (comparison < 0 || (current.hash == zero && comparison == 0))) {
+				return taskProgressKey{}, false
+			}
+		}
 	}
 	if e.Started {
 		if e.RunID == "" {
 			run = zero
+			current.hash = zero
+		} else {
+			current = taskProgressRun{hash: run, watermark: run, order: order, named: true}
 		}
 		for key := range r.taskProgressSeen {
 			if key.task == task && key.run == run {
 				delete(r.taskProgressSeen, key)
 			}
 		}
-		r.taskProgressRuns[task] = run
-	} else if e.RunID != "" {
-		current := r.taskProgressRuns[task]
-		if current != run {
-			known := false
-			for key := range r.taskProgressSeen {
-				if key.task == task && key.run == run {
-					known = true
-					break
+	} else if e.RunID != "" && current.hash != run {
+		if current.hash == zero {
+			// The first late ID promotes only this anonymous generation's rows.
+			for key, display := range r.taskProgressSeen {
+				if key.task == task && key.run == zero {
+					delete(r.taskProgressSeen, key)
+					key.run = run
+					r.taskProgressSeen[key] = display
 				}
-			}
-			if !known {
-				if current == zero {
-					// Keep old named runs when an anonymous restart is active. Only a
-					// genuinely unseen run may adopt the anonymous generation's rows.
-					for key, display := range r.taskProgressSeen {
-						if key.task == task && key.run == zero {
-							delete(r.taskProgressSeen, key)
-							key.run = run
-							r.taskProgressSeen[key] = display
-						}
-					}
-				}
-				// Distinct named runs have independent visibility. Only promotion of
-				// anonymous rows above carries visibility within the same generation.
-				r.taskProgressRuns[task] = run
 			}
 		}
+		current = taskProgressRun{hash: run, watermark: run, order: order, named: true}
 	}
+	r.taskProgressRuns[task] = current
 	// Workflow entries are keyed by type:index in the producer. agentId is
 	// absent while queued and can also be omitted in subsequent snapshots.
 	agent := sha256.Sum256(nil)
@@ -226,7 +244,23 @@ func (r *EventRenderer) taskProgressIdentity(e *TaskProgressEvent) taskProgressK
 		index = 0
 		agent = sha256.Sum256([]byte(e.AgentID))
 	}
-	return taskProgressKey{task: task, run: run, agent: agent, index: index}
+	return taskProgressKey{task: task, run: run, agent: agent, index: index}, true
+}
+
+func (r *EventRenderer) taskRunOrder(id string) string {
+	if len(id) > maxTaskRunOrderBytes || !utf8.ValidString(id) {
+		return ""
+	}
+	clean := r.progressText(id, maxTaskRunOrderBytes)
+	if clean != id {
+		return ""
+	}
+	return clean
+}
+
+func compareTaskRunIDs(a, b string) int {
+	// Go compares UTF-8 bytes; the SDK's producer uses UTF-16 code units.
+	return slices.Compare(utf16.Encode([]rune(a)), utf16.Encode([]rune(b)))
 }
 
 // mergeAgentProgress retains already-sanitized optional metadata when a

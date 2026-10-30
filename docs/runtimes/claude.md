@@ -351,6 +351,8 @@ reopen a known terminal task or agent. Sparse agent snapshots retain known
 labels, phases and tool context. Error, blocked and cached metadata persists
 within a state; state changes clear omitted transient metadata. Explicit
 empty strings and false flags also clear their corresponding fields.
+Run IDs follow the Agent SDK opening order; late frames from superseded
+runs are ignored, so they cannot steal later updates without a run ID.
 Visibility belongs to each run: promoting its first late run ID preserves
 its hidden classification, while a distinct named run does not inherit an
 older run's visibility. Hook names and event attribution survive sparse

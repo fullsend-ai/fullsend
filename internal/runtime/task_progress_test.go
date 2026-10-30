@@ -39,7 +39,7 @@ func TestTaskProgressRendererIdentityAndLifecycle(t *testing.T) {
 		{TaskID: "one", AgentID: "different", Label: "review", State: TaskRunning},
 		{TaskID: "one", AgentIndex: 1, Label: "review", State: TaskQueued},
 		{TaskID: "one", AgentIndex: 2, Label: "review", State: TaskQueued},
-		{TaskID: "one", AgentID: "worker", RunID: "another-run", Label: "review", State: TaskRunning},
+		{TaskID: "one", AgentID: "worker", RunID: "second-run", Label: "review", State: TaskRunning},
 		{TaskID: "one", State: TaskFailed},
 		{TaskID: "two", State: TaskStopped},
 	} {
@@ -163,11 +163,11 @@ func TestTaskProgressIndexIdentityScopesAndIDFallback(t *testing.T) {
 	if len(r.taskProgressSeen) != 7 || strings.Count(out.String(), "— running") != 7 {
 		t.Fatal("distinct slots/tasks/runs/fallback IDs collapsed: " + out.String())
 	}
-	r.Handle(TaskProgressEvent{TaskID: "one", RunID: "first", AgentIndex: 1, AgentID: "learned", Label: "Work", State: TaskRunning})
+	r.Handle(TaskProgressEvent{TaskID: "one", RunID: "second", AgentIndex: 1, AgentID: "learned", Label: "Work", State: TaskRunning})
 	if len(r.taskProgressSeen) != 7 || strings.Count(out.String(), "— running") != 7 {
 		t.Fatal("ID-only indexed change created another row")
 	}
-	r.Handle(TaskProgressEvent{TaskID: "one", RunID: "first", AgentIndex: 1, Label: "Work", State: TaskCompleted})
+	r.Handle(TaskProgressEvent{TaskID: "one", RunID: "second", AgentIndex: 1, Label: "Work", State: TaskCompleted})
 	if !strings.Contains(out.String(), "agent #1 (learned): Work — completed") {
 		t.Fatal("known display ID was lost: " + out.String())
 	}
