@@ -46,6 +46,7 @@ if [ "$2" = "exec" ]; then
       exit $? ;;
     *"opencode debug agent"*) printf '{"name":"triage","mode":"primary","permission":{"bash":"allow","read":"allow"}}'; exit 0 ;;
     "/usr/local/bin/opencode --version") echo "1.19.1"; exit 0 ;;
+	*fullsend-hook-sep*) printf '%s' '/usr/bin/python3|fullsend-hook-sep|/usr/local/bin:/usr/bin:/bin'; exit 0 ;;
     "command -v python3") echo "/usr/bin/python3"; exit 0 ;;
     *sys.version_info*) echo "3.11"; exit 0 ;;
     "printf '%s' "*HOME*) printf '%s' '/sandbox'; exit 0 ;;

@@ -64,16 +64,16 @@ func (r OpenCodeRuntime) installOpenCodeHooks(input BootstrapInput, def *piAgent
 		if err := installHookScripts(name, cfg.Dir, hooks); err != nil {
 			return nil, err
 		}
-		python, _, err := claudePreflightInterpreter(name)
+		python, _, err := hookPreflightInterpreter(name)
 		if err != nil {
 			return nil, err
 		}
 		cfg.Python, cfg.Env["PATH"] = python, "/usr/local/bin:/usr/bin:/bin"
-		env, err := codexReadHarnessSecurityEnv(name)
+		env, err := bootstrapHookEnv(name, hooks)
 		if err != nil {
 			return nil, err
 		}
-		for _, pair := range append(codexSecurityEnv(hooks), env...) {
+		for _, pair := range env {
 			cfg.Env[pair.Key] = pair.Value
 		}
 		if groups := security.HookPlan(hooks); groups != nil {
