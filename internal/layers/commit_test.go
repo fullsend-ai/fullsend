@@ -578,6 +578,11 @@ func newUnsyncedForkClient() *forge.FakeClient {
 		"acme/widget": "contributor",
 	}
 	client.BranchRefs["acme/widget/main"] = "upstream-sha"
+	// The fork's default branch is an older ancestor of upstream's.
+	client.BranchRefs["contributor/widget/main"] = "fork-sha"
+	client.CommitAncestry = map[string]string{
+		"acme/widget/fork-sha/upstream-sha": "ahead",
+	}
 	client.Errors = map[string]error{
 		"CreateBranchFromSHA": fmt.Errorf("create branch from SHA: commit %w", forge.ErrNotFound),
 	}
@@ -630,6 +635,65 @@ func TestCommitScaffoldViaPR_CrossForkUnsyncedFallbackError(t *testing.T) {
 	assert.Contains(t, err.Error(), "internal server error")
 	assert.Empty(t, client.CommittedFilesToBranch)
 	assert.Contains(t, buf.String(), "Failed to create scaffold branch")
+}
+
+func TestCommitScaffoldViaPR_CrossForkUnsyncedRefusesDeletions(t *testing.T) {
+	client := newUnsyncedForkClient()
+	printer, buf := newTestPrinter()
+
+	files := append([]forge.TreeFile{{Path: "gone.yaml", Delete: true}}, testFiles...)
+	_, err := CommitScaffoldFiles(context.Background(), client, printer,
+		"acme", "widget", "main", testMeta("msg", "title", "body"), files, false, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "deletes files")
+	assert.Contains(t, err.Error(), "sync the fork")
+	assert.Empty(t, client.CreatedBranches)
+	assert.Empty(t, client.CommittedFilesToBranch)
+	assert.Empty(t, client.CreatedProposals)
+	assert.Contains(t, buf.String(), "Failed to create scaffold branch")
+}
+
+func TestCommitScaffoldViaPR_CrossForkUnsyncedRefusesDivergedFork(t *testing.T) {
+	for _, status := range []string{"diverged", "behind"} {
+		t.Run(status, func(t *testing.T) {
+			client := newUnsyncedForkClient()
+			client.CommitAncestry["acme/widget/fork-sha/upstream-sha"] = status
+			printer, _ := newTestPrinter()
+
+			_, err := CommitScaffoldFiles(context.Background(), client, printer,
+				"acme", "widget", "main", testMeta("msg", "title", "body"), testFiles, false, nil)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "not an ancestor of upstream")
+			assert.Contains(t, err.Error(), "sync the fork")
+			assert.Empty(t, client.CreatedBranches)
+			assert.Empty(t, client.CommittedFilesToBranch)
+		})
+	}
+}
+
+func TestCommitScaffoldViaPR_CrossForkUnsyncedRefusesUnknownForkCommit(t *testing.T) {
+	client := newUnsyncedForkClient()
+	// A fork-only commit is unknown to upstream, so the comparison fails.
+	client.CommitAncestry = nil
+	printer, _ := newTestPrinter()
+
+	_, err := CommitScaffoldFiles(context.Background(), client, printer,
+		"acme", "widget", "main", testMeta("msg", "title", "body"), testFiles, false, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not an ancestor of upstream")
+	assert.Empty(t, client.CreatedBranches)
+}
+
+func TestCommitScaffoldViaPR_CrossForkUnsyncedRefusesUnresolvableForkBranch(t *testing.T) {
+	client := newUnsyncedForkClient()
+	delete(client.BranchRefs, "contributor/widget/main")
+	printer, _ := newTestPrinter()
+
+	_, err := CommitScaffoldFiles(context.Background(), client, printer,
+		"acme", "widget", "main", testMeta("msg", "title", "body"), testFiles, false, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "could not be resolved")
+	assert.Empty(t, client.CreatedBranches)
 }
 
 func TestCommitScaffoldViaPR_CrossForkCommitFilesProtected(t *testing.T) {

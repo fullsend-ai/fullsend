@@ -371,9 +371,15 @@ func deliverBranchAndPR(ctx context.Context, client forge.Client, printer *ui.Pr
 			}
 			// The fork does not contain the upstream commit (a GitLab
 			// fork that has not been synced does not share upstream's
-			// later objects). Fall back to the fork's own default
-			// branch: the merge request diff is computed from the merge
-			// base, so it still contains only the scaffold changes.
+			// later objects). Falling back to the fork's own default
+			// branch is only safe when it is a plain, older ancestor of
+			// upstream and the delivery has no deletions; otherwise
+			// refuse and ask the user to sync the fork.
+			if fbErr := checkUnsyncedForkFallback(ctx, client,
+				upstreamOwner, upstreamRepo, targetOwner, targetRepo,
+				defaultBranch, upstreamSHA, files); fbErr != nil {
+				return fbErr
+			}
 			printer.StepWarn(fmt.Sprintf(
 				"Upstream commit %s is not in fork %s/%s; creating scaffold branch from the fork's default branch (sync the fork to avoid merge conflicts)",
 				upstreamSHA, targetOwner, targetRepo))
@@ -468,6 +474,51 @@ func deliverBranchAndPR(ctx context.Context, client forge.Client, printer *ui.Pr
 		printer.StepInfo("Merge the PR to apply these changes")
 	}
 	return false, nil
+}
+
+// checkUnsyncedForkFallback decides whether a scaffold branch may be created
+// from the fork's default branch because the fork lacks upstreamSHA. It
+// returns nil when the fallback is safe, and an actionable error otherwise.
+//
+// The fallback is refused when:
+//   - files contains a deletion: a file added upstream after the fork point
+//     is absent from the fork's tree, so the deletion would be silently
+//     dropped and the resulting change request would be incomplete.
+//   - the fork's default branch tip cannot be shown to be an ancestor of the
+//     upstream commit (the fork diverged, or its default branch differs):
+//     fork-only commits would otherwise become part of the scaffold change
+//     request.
+//
+// When the fallback is allowed, the fork tip is an ancestor of upstream, so
+// the change request diff (computed from the merge base) contains only the
+// scaffold changes; the fork being behind can at worst cause merge conflicts.
+func checkUnsyncedForkFallback(ctx context.Context, client forge.Client,
+	upstreamOwner, upstreamRepo, targetOwner, targetRepo, defaultBranch, upstreamSHA string,
+	files []forge.TreeFile) error {
+
+	const syncHint = "sync the fork with upstream and re-run"
+
+	for _, f := range files {
+		if f.Delete {
+			return fmt.Errorf("fork %s/%s does not contain upstream commit %s and the change deletes files, which cannot be applied to a stale fork; %s",
+				targetOwner, targetRepo, upstreamSHA, syncHint)
+		}
+	}
+
+	forkSHA, err := client.GetBranchRef(ctx, targetOwner, targetRepo, defaultBranch)
+	if err != nil {
+		return fmt.Errorf("fork %s/%s does not contain upstream commit %s and its %s branch could not be resolved (%w); %s",
+			targetOwner, targetRepo, upstreamSHA, defaultBranch, err, syncHint)
+	}
+	// The fork tip must be an ancestor of (or identical to) the upstream
+	// commit. A fork-only commit is unknown to upstream, so the comparison
+	// fails or reports a non-linear history — both refuse the fallback.
+	status, err := client.CompareCommits(ctx, upstreamOwner, upstreamRepo, forkSHA, upstreamSHA)
+	if err != nil || (status != "ahead" && status != "identical") {
+		return fmt.Errorf("fork %s/%s does not contain upstream commit %s and its %s branch (%s) is not an ancestor of upstream (comparison status %q, error: %v); %s",
+			targetOwner, targetRepo, upstreamSHA, defaultBranch, forkSHA, status, err, syncHint)
+	}
+	return nil
 }
 
 // recreateStaleScaffoldBranch deletes and recreates scaffoldBranch when
