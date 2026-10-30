@@ -346,16 +346,36 @@ func terminalTaskState(state TaskState) bool {
 }
 
 func (r *EventRenderer) progressText(s string, limit int) string {
-	if r.RedactProgress != nil {
-		s = r.RedactProgress(s)
-	}
-	return taskProgressText(s, limit)
+	return redactProgressText(s, limit, r.RedactProgress)
 }
 
-// Sanitize and redact complete fields before truncation, so an escape, CI
-// command, or credential cannot be exposed by chopping off its suffix first.
 func taskProgressText(s string, limit int) string {
-	s = strings.Join(strings.Fields(sanitizeOutput(s)), " ")
+	return redactProgressText(s, limit, nil)
+}
+
+// Redact complete raw literals before cleanup, then repeat after cleanup:
+// removing ANSI and normalizing whitespace can reconstruct an opaque secret.
+// Both passes precede truncation and cache retention. The caller's redactor
+// uses display-safe replacement markers, such as [REDACTED] or ***.
+func redactProgressText(s string, limit int, redact func(string) string) string {
+	normalized := NormalizeProgressText(s)
+	if redact != nil {
+		raw := redact(s)
+		cleanedRaw := NormalizeProgressText(raw)
+		cleaned := redact(normalized)
+		switch {
+		case raw != s && cleaned != normalized && cleanedRaw != cleaned:
+			// Different passes masked different spans (for example nested secrets).
+			// Neither candidate proves the other one's residual text is safe.
+			s = "[REDACTED]"
+		case cleaned != normalized:
+			s = cleaned
+		default:
+			s = cleanedRaw
+		}
+	} else {
+		s = normalized
+	}
 	if result := progressRedactor.Scan(s); !result.Safe {
 		s = result.Sanitized
 	}
@@ -365,4 +385,11 @@ func taskProgressText(s string, limit int) string {
 	// strings.Fields/Join can return a short slice of the sanitizer's large
 	// allocation. Cache only storage proportional to the bounded final value.
 	return strings.Clone(s)
+}
+
+// NormalizeProgressText applies the same cleanup to display text and caller
+// credential literals. Redactors must match both original and normalized
+// values, because cleanup can rewrite whitespace, escapes and CI markers.
+func NormalizeProgressText(s string) string {
+	return strings.Join(strings.Fields(sanitizeOutput(s)), " ")
 }
