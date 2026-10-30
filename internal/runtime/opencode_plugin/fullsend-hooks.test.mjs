@@ -349,12 +349,13 @@ test("a failed historical-error scan is never cached", async (t) => {
 test("command environment does not import shell startup code", async (t) => {
   const h = await setup(t, { shellHome: "/sandbox", env: { PATH: "/usr/local/bin:/usr/bin:/bin" } });
   process.env["BASH_FUNC_gh%%"] = "() { echo unexpected; }";
-  const output = { env: { BASH_ENV: "/sandbox/startup.sh", SHELLOPTS: "xtrace" } };
+  const output = { env: { BASH_ENV: "/sandbox/startup.sh", SHELLOPTS: "xtrace", FULLSEND_OPENCODE_HOOK_CONFIG: "sensitive" } };
   try {
     await h.hooks["shell.env"]({}, output);
     assert.equal(output.env.BASH_ENV, "");
     assert.equal(output.env.SHELLOPTS, "");
     assert.equal(output.env["BASH_FUNC_gh%%"], "");
+    assert.equal(Object.hasOwn(output.env, "FULLSEND_OPENCODE_HOOK_CONFIG"), false);
     assert.equal(output.env.HOME, "/sandbox");
     assert.equal(output.env.PATH, "/usr/local/bin:/usr/bin:/bin:" + path.join(h.workspace, "bin"));
   } finally {

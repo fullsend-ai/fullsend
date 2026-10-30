@@ -254,6 +254,8 @@ export default async ({ directory, worktree }) => {
   ]));
   return {
     "shell.env": async (_input, output) => {
+      // The plugin has already read this runner-to-plugin transport value.
+      delete output.env.FULLSEND_OPENCODE_HOOK_CONFIG;
       // Use the bootstrap-captured command HOME and avoid shell-startup code.
       if (cfg?.shellHome) {
         for (const key of ["BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS", "CDPATH", "PS4"]) output.env[key] = "";
