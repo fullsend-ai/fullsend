@@ -153,10 +153,7 @@ func runPreflightCheck(ctx context.Context, printer *ui.Printer, source, rawCmd 
 		if preflightCtx.Err() == context.DeadlineExceeded {
 			return fmt.Errorf("%s timed out after %s: %s", source, preflightCheckTimeout, redactedCmd)
 		}
-		// Redact the raw capture first, because validationFailMessage
-		// trims it and a padded secret would then miss the literal match.
-		redactedOut := []byte(redactFeedback(string(out), runnerEnv))
-		return fmt.Errorf("%s failed: %s\n%s\nInstall the missing dependency before running this agent", source, redactedCmd, redactFeedback(validationFailMessage(redactedOut, execErr), runnerEnv))
+		return fmt.Errorf("%s failed: %s\n%s\nInstall the missing dependency before running this agent", source, redactedCmd, redactedValidationFailMessage(out, execErr, runnerEnv))
 	}
 	printer.StepDone("Preflight dependency check passed")
 	return nil

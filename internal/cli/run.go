@@ -4017,6 +4017,17 @@ func validationFailMessage(output []byte, execErr error) string {
 	return execErr.Error()
 }
 
+// redactedValidationFailMessage is validationFailMessage with the
+// redaction a trust boundary needs. The raw capture is redacted before
+// validationFailMessage trims it (#8165): a literal secret with leading
+// or trailing whitespace, printed at the very start or end of the output,
+// would lose that whitespace to the trim and no longer match. The result
+// is redacted again, because the exec error it falls back to was not.
+func redactedValidationFailMessage(output []byte, execErr error, runnerEnv map[string]string) string {
+	redactedOut := []byte(redactFeedback(string(output), runnerEnv))
+	return redactFeedback(validationFailMessage(redactedOut, execErr), runnerEnv)
+}
+
 // feedbackDelimiterOpen and feedbackDelimiterClose fence validation output
 // inside the agent prompt, marking it as data — not instructions. Chosen to
 // be visually unambiguous and unlikely to collide with real validator output.
@@ -4254,19 +4265,18 @@ func preScriptLogResult(res prescript.Result, runnerEnv map[string]string) presc
 // (runner secrets among them). Unlike redactFeedback it runs no pattern
 // scan, so text that merely looks like a secret is left alone.
 func redactSecretLiterals(feedback string, runnerEnv map[string]string) string {
-	// All exact literals are replaced in one pass, longest first, so a
+	// All exact literals are masked in one pass, longest first, so a
 	// value that is a substring of another never leaves part of the longer
 	// one visible, whichever source each came from. envLiterals covers
 	// RunnerEnv and the provider-only keys kept out of it (#6649);
 	// registered runtime secrets, such as runner secrets referenced under a
 	// key sensitiveEnvKey does not match, join the same pass.
-	type literal struct{ value, mask string }
-	var literals []literal
+	var literals []secretLiteral
 	seen := map[string]bool{}
 	add := func(value, mask string) {
 		if len(value) >= minRedactableSecretLen && !seen[value] {
 			seen[value] = true
-			literals = append(literals, literal{value, mask})
+			literals = append(literals, secretLiteral{value, mask})
 		}
 	}
 	for _, l := range envLiterals(runnerEnv) {
@@ -4275,11 +4285,76 @@ func redactSecretLiterals(feedback string, runnerEnv map[string]string) string {
 	for _, value := range security.RuntimeSecrets() {
 		add(value, "***")
 	}
-	slices.SortStableFunc(literals, func(a, b literal) int { return cmp.Compare(len(b.value), len(a.value)) })
-	for _, l := range literals {
-		feedback = strings.ReplaceAll(feedback, l.value, l.mask)
-	}
+	slices.SortStableFunc(literals, func(a, b secretLiteral) int { return cmp.Compare(len(b.value), len(a.value)) })
+	feedback, _ = maskSecretLiterals(feedback, literals)
 	return feedback
+}
+
+// secretLiteral is one exact value the literal pass masks, with the text
+// that replaces it.
+type secretLiteral struct{ value, mask string }
+
+// maskSecretLiterals masks every occurrence of each literal in text and
+// reports, by index, which literals occurred. literals must be sorted
+// longest first.
+//
+// Match ranges are all found in the original text before anything is
+// replaced, overlapping ranges are merged, and each merged range is
+// masked once (#8165). Replacing one literal at a time would leave a
+// fragment of two values that overlap in the text without either
+// containing the other: masking the first breaks the second's match. A
+// merged range takes the mask of the longest literal in it (the earliest
+// in literals on a tie), so a value inside a longer one is masked as the
+// longer one. Ranges that only touch are not merged and keep their own
+// masks.
+func maskSecretLiterals(text string, literals []secretLiteral) (string, []bool) {
+	type span struct{ start, end, lit int }
+	var spans []span
+	found := make([]bool, len(literals))
+	for i, l := range literals {
+		if l.value == "" {
+			continue
+		}
+		// Advance one byte past each match start, not past the match, so a
+		// value that overlaps itself in the text ("aaaa" in "aaaaa") is
+		// covered whole.
+		for off := 0; off < len(text); {
+			j := strings.Index(text[off:], l.value)
+			if j < 0 {
+				break
+			}
+			start := off + j
+			spans = append(spans, span{start, start + len(l.value), i})
+			found[i] = true
+			off = start + 1
+		}
+	}
+	if len(spans) == 0 {
+		return text, found
+	}
+	slices.SortFunc(spans, func(a, b span) int {
+		return cmp.Or(cmp.Compare(a.start, b.start), cmp.Compare(a.lit, b.lit))
+	})
+	var b strings.Builder
+	last := 0
+	cur := spans[0]
+	flush := func() {
+		b.WriteString(text[last:cur.start])
+		b.WriteString(literals[cur.lit].mask)
+		last = cur.end
+	}
+	for _, s := range spans[1:] {
+		if s.start < cur.end {
+			cur.end = max(cur.end, s.end)
+			cur.lit = min(cur.lit, s.lit)
+			continue
+		}
+		flush()
+		cur = s
+	}
+	flush()
+	b.WriteString(text[last:])
+	return b.String(), found
 }
 
 // replaceEnvSecrets is the literal pass: the value of each sensitive runner
@@ -4290,13 +4365,17 @@ func redactSecretLiterals(feedback string, runnerEnv map[string]string) string {
 // order: a value that contains another is replaced whole, whichever source
 // holds it, and the text is the same on every run.
 func replaceEnvSecrets(text string, runnerEnv map[string]string) (string, []string) {
+	envLits := envLiterals(runnerEnv)
+	literals := make([]secretLiteral, len(envLits))
+	for i, l := range envLits {
+		literals[i] = secretLiteral{l.value, "[REDACTED:" + l.key + "]"}
+	}
+	text, found := maskSecretLiterals(text, literals)
 	var replaced []string
-	for _, l := range envLiterals(runnerEnv) {
-		if !strings.Contains(text, l.value) {
-			continue
+	for i, ok := range found {
+		if ok {
+			replaced = append(replaced, envLits[i].key)
 		}
-		text = strings.ReplaceAll(text, l.value, "[REDACTED:"+l.key+"]")
-		replaced = append(replaced, l.key)
 	}
 	return text, replaced
 }
@@ -4336,7 +4415,7 @@ func envLiterals(runnerEnv map[string]string) []envLiteral {
 // credentials either. The write is best-effort: failures are logged but do
 // not block the retry loop.
 func writeValidationFeedback(iterDir string, valOut []byte, valErr error, runnerEnv map[string]string, printer *ui.Printer) string {
-	feedback := redactFeedback(validationFailMessage(valOut, valErr), runnerEnv)
+	feedback := redactedValidationFailMessage(valOut, valErr, runnerEnv)
 	feedbackPath := filepath.Join(iterDir, validationFeedbackFile)
 	if err := os.WriteFile(feedbackPath, []byte(feedback), 0o600); err != nil {
 		printer.StepWarn("Failed to write validation feedback: " + err.Error())
@@ -4400,7 +4479,7 @@ func postLoopValidationSweep(h *harness.Harness, runDir string, runCount int, cu
 			}
 			return sweepResult{passed: true, validatedIter: i, repoExtractedOK: repoOK}
 		}
-		printer.StepWarn(fmt.Sprintf("Post-loop validation failed (iteration %d): %s", i, redactFeedback(validationFailMessage(valOut, valErr), h.RunnerEnv)))
+		printer.StepWarn(fmt.Sprintf("Post-loop validation failed (iteration %d): %s", i, redactedValidationFailMessage(valOut, valErr, h.RunnerEnv)))
 	}
 	return sweepResult{passed: false, repoExtractedOK: currentRepoExtractedOK}
 }
