@@ -74,6 +74,7 @@ them under `forge:` or `overlays:` is ignored, not an error:
 | `privilege_levels` | Mint privilege per run-stage (ADR-0073)            |
 | `schema_version`   | Schema contract version (ADR-0127); absent = version `1`. **Planned, not yet implemented** |
 | `preflight_check`  | Single host-dependency gate run once before sandbox creation for `pre_script`/`post_script`/`validation_loop`; a literal `sh -c` command, not a script path (ADR-0128, ADR-0129). **Planned, not yet implemented** ([#8722](https://github.com/fullsend-ai/fullsend/issues/8722)) |
+| `target_repo_required` | Planned top-level scalar capability (ADR-0150); defaults to `true`, and a child harness may override an inherited base value. It is not a `ForgeConfig` field, so legacy `forge:` blocks and `overlays:` cannot set it. **Planned, not yet implemented** |
 
 ## Semantic types (ADR 0127)
 

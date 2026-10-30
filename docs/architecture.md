@@ -50,6 +50,12 @@ sole supported installation model
   existing `repos.yaml` v1 format directly through `repos.Manifest`. Whether
   to offer the service, its source of truth, and its delivery mechanism remain
   open ([ADR 0123](ADRs/0123-tenant-configuration-from-repos-yaml.md)).
+- Repository-less execution (target state): will use an explicit
+  `--no-target-repo` mode. The runner will always provide a sandbox workspace
+  root and an execution directory, but target-repository identity will be
+  optional and never inferred from the CI host; harnesses must explicitly opt
+  into repository-less execution ([ADR
+  0150](ADRs/0150-repository-less-agent-execution.md)).
 - Forge abstraction: all forge operations go through the `forge.Client` interface, keeping the rest of the codebase forge-agnostic ([ADR 0005](ADRs/0005-forge-abstraction-layer.md)).
 - Conversation surface: agents participate in GitHub Discussions and later other chat systems through a narrow `conversation.Client` (parallel to `tracker.Client` for issue content), not by extending `forge.Client` ([ADR 0086](ADRs/0086-conversation-surface-for-agent-participation.md)). A **conversation** is the container (Discussion / Slack channel) with exactly one category and optional M:M labels; a **thread** is the top-level message plus replies that share its `parent_id` (`parent_id == id` on the root message).
 - Event-source routing for status notifications: the notification destination for run-status comments and reactions is dynamically determined by event provenance — a Jira-triggered run posts status to Jira, a GitHub-triggered run posts to GitHub — rather than being hardwired to the code-output forge. Status notifications route through `tracker.Client`; reactions are an optional `tracker.Reactor` capability (Jira Cloud supports comment reactions but not issue reactions, so `Reactor` is not implemented for Jira currently) ([ADR 0093](ADRs/0093-tracker-routed-status-notifications.md)).
