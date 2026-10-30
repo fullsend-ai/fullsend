@@ -140,6 +140,15 @@ func (h *Harness) Lint() []Diagnostic {
 	return diags
 }
 
+// PreflightCheckDiagnostic returns the preflight_check path-shape
+// diagnostic for value under the given field label, or nil when value is
+// not path-shaped. Lint() applies it to the declared value; fullsend run
+// also applies it to the ${VAR}-expanded command, which Lint() never sees
+// (#8747). Both share this helper so the heuristic and message stay in sync.
+func PreflightCheckDiagnostic(field, value string) *Diagnostic {
+	return lintPreflightCheckCommand(field, value)
+}
+
 // lintPreflightCheckCommand returns an error-level diagnostic when value, a
 // preflight_check command, looks like a bare script path — usually meaning
 // the author expected pre_script-style fetch/resolution (#7600). Referenced
