@@ -95,11 +95,11 @@ func TestClaudeTaskLifecycle(t *testing.T) {
 }
 
 func TestClaudeWorkflowProgressToleratesMalformedEntries(t *testing.T) {
-	line := `{"type":"system","subtype":"task_progress","task_id":"task-one","run_id":"run-one","workflow_progress":[null,42,{"type":"workflow_phase","title":"Not started"},{"type":"workflow_agent","state":"start"},{"type":"workflow_agent","index":4,"state":"future-state"},{"type":"workflow_agent","index":3,"state":"done","label":"first","phaseTitle":"Read","lastToolName":"Read","lastToolSummary":"input.json"},{"type":"workflow_agent","agentId":"child","state":"queued","label":"second"}]}`
+	line := `{"type":"system","subtype":"task_progress","task_id":"task-one","run_id":"run-one","workflow_progress":[null,42,{"type":"workflow_phase","title":"Not started"},{"type":"workflow_agent","state":"start"},{"type":"workflow_agent","index":4,"state":"future-state"},{"type":"workflow_agent","index":3,"state":"done","label":"first","phaseTitle":"Read","lastToolName":"Read","lastToolSummary":"input.json"},{"type":"workflow_agent","agentId":"child","state":"start","queuedAt":1,"label":"second"}]}`
 	got := decodeClaudeTaskProgress([]byte(line), "task_progress")
 	want := []TaskProgressEvent{
 		{TaskID: "task-one", RunID: "run-one", AgentIndex: 3, Label: "first", Phase: "Read", State: TaskCompleted, ToolName: "Read", ToolSummary: "input.json", LabelSet: true, PhaseSet: true, ToolNameSet: true, ToolSummarySet: true},
-		{TaskID: "task-one", RunID: "run-one", AgentID: "child", Label: "second", State: TaskQueued, LabelSet: true},
+		{TaskID: "task-one", RunID: "run-one", AgentID: "child", Label: "second", State: TaskQueued, LabelSet: true, QueuedAt: 1, QueuedAtSet: true},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %+v, want %+v", got, want)
@@ -121,7 +121,7 @@ func TestClaudeTaskStates(t *testing.T) {
 		{"start", TaskRunning}, {"started", TaskRunning}, {"progress", TaskRunning}, {"running", TaskRunning},
 		{"done", TaskCompleted}, {"completed", TaskCompleted}, {"error", TaskFailed}, {"failed", TaskFailed},
 		{"killed", TaskStopped}, {"stopped", TaskStopped}, {"cancelled", TaskStopped}, {"canceled", TaskStopped},
-		{"queued", TaskQueued}, {"retrying", TaskRetrying}, {"skipped", TaskSkipped}, {"unknown", ""},
+		{"queued", ""}, {"retrying", ""}, {"skipped", ""}, {"unknown", ""},
 	} {
 		if got := claudeTaskState(pair.wire); got != pair.want {
 			t.Errorf("%s = %s, want %s", pair.wire, got, pair.want)

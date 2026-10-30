@@ -44,13 +44,13 @@ func TestClaudeTaskPartialUpdatesAndResume(t *testing.T) {
 }
 
 func TestClaudeWorkflowAgentDetails(t *testing.T) {
-	line := `{"type":"system","subtype":"task_progress","task_id":"one","workflow_progress":[{"type":"workflow_agent","index":1,"state":"error","blocked":true,"error":"schema refused","label":"Create"},{"type":"workflow_agent","index":2,"state":"done","cached":true,"label":"Read","resultPreview":"PRIVATE"},{"type":"workflow_agent","index":3,"state":"paused","label":"Review"}]}`
+	line := `{"type":"system","subtype":"task_progress","task_id":"one","workflow_progress":[{"type":"workflow_agent","index":1,"state":"error","blocked":true,"error":"schema refused","label":"Create"},{"type":"workflow_agent","index":2,"state":"done","cached":true,"label":"Read","resultPreview":"PRIVATE"},{"type":"workflow_agent","index":3,"state":"start","queuedAt":1,"label":"Review"}]}`
 	var out bytes.Buffer
 	r := newTestRenderer(&out)
 	if err := parseClaudeStream(strings.NewReader(line+"\n"), r.Handle); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"failed (blocked)", "schema refused", "completed (cached)", "Review — paused"} {
+	for _, want := range []string{"failed (blocked)", "schema refused", "completed (cached)", "Review — queued"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("missing %q: %s", want, out.String())
 		}

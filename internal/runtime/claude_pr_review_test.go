@@ -92,9 +92,9 @@ func TestClaudeReviewHookIdentityExplicitClear(t *testing.T) {
 }
 
 func TestClaudeReviewAgentRecoveryClearsTransientMetadata(t *testing.T) {
-	stream := `{"type":"system","subtype":"task_progress","task_id":"one","workflow_progress":[{"type":"workflow_agent","index":1,"state":"retrying","label":"Create","error":"rate limited","blocked":true,"cached":true}]}
-{"type":"system","subtype":"task_progress","task_id":"one","workflow_progress":[{"type":"workflow_agent","index":1,"state":"start","label":"Create","lastToolName":"Bash"}]}
-{"type":"system","subtype":"task_progress","task_id":"one","workflow_progress":[{"type":"workflow_agent","index":1,"state":"done","label":"Create"}]}
+	stream := `{"type":"system","subtype":"task_progress","task_id":"one","workflow_progress":[{"type":"workflow_agent","index":1,"state":"start","startedAt":100,"attempt":2,"lastAttemptReason":"throttled","label":"Create","error":"rate limited","blocked":true,"cached":true}]}
+{"type":"system","subtype":"task_progress","task_id":"one","workflow_progress":[{"type":"workflow_agent","index":1,"state":"progress","startedAt":100,"attempt":2,"label":"Create","lastToolName":"Bash"}]}
+{"type":"system","subtype":"task_progress","task_id":"one","workflow_progress":[{"type":"workflow_agent","index":1,"state":"done","startedAt":100,"attempt":2,"label":"Create"}]}
 `
 	var out bytes.Buffer
 	r := newTestRenderer(&out)
@@ -115,9 +115,9 @@ func TestClaudeReviewAgentRecoveryClearsTransientMetadata(t *testing.T) {
 // reduced sequence models its queued/start/done shapes; it is not a newly
 // recorded live 2.1.312 run.
 func TestClaudeReviewLateAgentIDUsesOneIndexedRow(t *testing.T) {
-	stream := `{"type":"system","subtype":"task_progress","task_id":"wf","run_id":"run","workflow_progress":[{"type":"workflow_agent","index":1,"state":"start","label":"read","phaseTitle":"Read"}]}
-{"type":"system","subtype":"task_progress","task_id":"wf","run_id":"run","workflow_progress":[{"type":"workflow_agent","index":1,"agentId":"a1","state":"start","label":"read","phaseTitle":"Read"}]}
-{"type":"system","subtype":"task_progress","task_id":"wf","run_id":"run","workflow_progress":[{"type":"workflow_agent","index":1,"state":"done","label":"read","phaseTitle":"Read"}]}
+	stream := `{"type":"system","subtype":"task_progress","task_id":"wf","run_id":"run","workflow_progress":[{"type":"workflow_agent","index":1,"state":"start","queuedAt":100,"label":"read","phaseTitle":"Read"}]}
+{"type":"system","subtype":"task_progress","task_id":"wf","run_id":"run","workflow_progress":[{"type":"workflow_agent","index":1,"agentId":"a1","state":"start","queuedAt":100,"startedAt":101,"attempt":1,"label":"read","phaseTitle":"Read"}]}
+{"type":"system","subtype":"task_progress","task_id":"wf","run_id":"run","workflow_progress":[{"type":"workflow_agent","index":1,"state":"done","queuedAt":100,"startedAt":101,"attempt":1,"label":"read","phaseTitle":"Read"}]}
 `
 	var out bytes.Buffer
 	r := newTestRenderer(&out)
