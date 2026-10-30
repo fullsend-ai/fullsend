@@ -318,6 +318,8 @@ func TestLoadRunnerSecrets_RefusedNames(t *testing.T) {
 		"CI_JOB_TOKEN",
 		"LD_PRELOAD",
 		"GH_TOKEN",
+		"GH_ENTERPRISE_TOKEN",
+		"GITHUB_ENTERPRISE_TOKEN",
 		"PUSH_TOKEN",
 		"PUSH_TOKEN_SOURCE",
 		"REVIEW_TOKEN",
@@ -515,6 +517,17 @@ func TestValidateRunnerSecretRefs(t *testing.T) {
 		assert.Contains(t, err.Error(), "env.runner[PUSH_TOKEN] receives runner secret X")
 	})
 
+	// #8952: the mint owns the enterprise token names, so a runner secret
+	// must not land in them and shadow the minted token in child scripts.
+	for _, name := range []string{"GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"} {
+		t.Run("refused env.runner key "+name, func(t *testing.T) {
+			h := &harness.Harness{Env: &harness.EnvConfig{Runner: map[string]string{name: "${X}"}}}
+			err := validateRunnerSecretRefs(h, secrets)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "env.runner["+name+"] receives runner secret X")
+		})
+	}
+
 	t.Run("refused env.runner key without secret is unchanged", func(t *testing.T) {
 		h := &harness.Harness{Env: &harness.EnvConfig{Runner: map[string]string{"GH_TOKEN": "${GH_TOKEN}"}}}
 		require.NoError(t, validateRunnerSecretRefs(h, secrets))
@@ -613,7 +626,10 @@ func TestRunnerSecretRefusedNames_DerivedFromRoleTokens(t *testing.T) {
 			assert.True(t, runnerSecretRefusedNames[tv.Name], tv.Name)
 		}
 	}
-	for _, name := range []string{"GH_TOKEN", "GITLAB_TOKEN", "PATH"} {
+	for _, name := range agentTokenEnvVars {
+		assert.True(t, runnerSecretRefusedNames[name], name)
+	}
+	for _, name := range []string{"GH_TOKEN", "GH_ENTERPRISE_TOKEN", "GITLAB_TOKEN", "PATH"} {
 		assert.True(t, runnerSecretRefusedNames[name], name)
 	}
 }
