@@ -192,13 +192,19 @@ const (
 // error/blocked/cached fields are state-relative: omitted values survive
 // repeated snapshots of the same state, but not a state transition.
 type TaskProgressEvent struct {
-	TaskID      string
-	RunID       string
-	AgentID     string
-	AgentIndex  int
-	Label       string
-	Phase       string
-	State       TaskState
+	TaskID     string
+	RunID      string
+	AgentID    string
+	AgentIndex int
+	Label      string
+	Phase      string
+	State      TaskState
+	// AgentState preserves the Workflow producer's four-value lifecycle
+	// (start/progress/done/error). State is a per-snapshot approximation;
+	// renderers reconcile optional metadata before deriving display state.
+	AgentState  string
+	Skipped     bool
+	SkippedSet  bool
 	ToolName    string
 	ToolSummary string
 	Summary     string
@@ -217,7 +223,7 @@ type TaskProgressEvent struct {
 	StartedAtSet         bool
 	// Update is a task lifecycle patch; it retains prior tool context.
 	// LabelSet/DetailSet apply to task and agent metadata; Phase/Tool/Blocked/
-	// Cached Set flags apply only to agent snapshots. Started is task-level.
+	// Cached/Skipped Set flags apply only to agent snapshots. Started is task-level.
 	Update         bool
 	LabelSet       bool
 	DetailSet      bool

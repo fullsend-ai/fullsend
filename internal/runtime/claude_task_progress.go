@@ -114,7 +114,7 @@ func decodeClaudeTaskProgress(line []byte, subtype string) []TaskProgressEvent {
 		if state == "" {
 			continue
 		}
-		event := TaskProgressEvent{TaskID: task.TaskID, RunID: task.RunID, AgentID: agent.AgentID, AgentIndex: agent.Index, State: state}
+		event := TaskProgressEvent{TaskID: task.TaskID, RunID: task.RunID, AgentID: agent.AgentID, AgentIndex: agent.Index, State: state, AgentState: agent.State}
 		if agent.QueuedAt != nil && *agent.QueuedAt >= 0 {
 			event.QueuedAt = *agent.QueuedAt
 			event.QueuedAtSet = true
@@ -133,6 +133,10 @@ func decodeClaudeTaskProgress(line []byte, subtype string) []TaskProgressEvent {
 			case "stalled", "throttled", "user-retry":
 				event.LastAttemptReason = *agent.LastAttemptReason
 			}
+		}
+		if agent.Skipped != nil {
+			event.Skipped = *agent.Skipped
+			event.SkippedSet = true
 		}
 		if agent.Label != nil {
 			event.Label = *agent.Label
