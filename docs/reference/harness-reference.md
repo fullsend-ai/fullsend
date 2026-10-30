@@ -213,7 +213,8 @@ interpreter, loader and shell-behavior names such as `HTTPS_PROXY`,
 `SSL_CERT_FILE`, `GIT_SSH_COMMAND`, `NODE_OPTIONS` and `IFS`). `fullsend run`
 warns once when the harness loads, naming every dropped key, and once per key on
 stderr as it writes the sandbox environment; `fullsend lock` prints the
-load-time warning when it composes a harness. The full list is in [Reserved
+load-time warning when it composes a harness, and `fullsend lint` reports it as
+a read-only check. The full list is in [Reserved
 `env.sandbox` names](#reserved-envsandbox-names), where blocked proxy and
 certificate settings go instead is in [Migrating proxy and certificate
 settings](#migrating-proxy-and-certificate-settings), and the warnings are
@@ -346,12 +347,17 @@ name is not necessarily safe.
 drop, and warns again on stderr for each key as it writes the sandbox
 environment. To check the harness without starting an agent:
 
-1. Run `fullsend lock <agent-name>`. It reports the same lint warning when it
+1. Run `fullsend lint`. It reports the same warning as a diagnostics-only check
+   that does not fetch dependencies or touch `lock.yaml`, and
+   `fullsend lint --strict` exits non-zero on it. Lint checks the declared
+   YAML, so a key added by an overlay guarded on `event` is reported only by
+   `fullsend run`.
+2. Run `fullsend lock <agent-name>`. It reports the same lint warning when it
    loads and composes the harness. Locking may fetch dependencies and write the
    lock file. If the entry is already current, it skips composition and does
    not check the keys. `lock` composes without event context, so a key added
    by an overlay guarded on `event` is reported only by `fullsend run`.
-2. Run `fullsend lock <agent-name> --update` (or
+3. Run `fullsend lock <agent-name> --update` (or
    `fullsend lock --all --update`) to check the composed harness when the entry
    is current. This forces dependency re-resolution and may change the lock
    file; it is not a diagnostics-only operation.
