@@ -195,6 +195,19 @@ func TestLint_PreflightCheckLiteralCommand(t *testing.T) {
 	assert.Empty(t, h.Lint())
 }
 
+func TestPreflightCheckDiagnostic(t *testing.T) {
+	d := PreflightCheckDiagnostic("validation_loop.preflight_check", "scripts/validate.sh")
+	require.NotNil(t, d)
+	assert.Equal(t, SeverityError, d.Severity)
+	assert.Equal(t, "validation_loop.preflight_check", d.Field)
+	assert.Contains(t, d.Message, "scripts/validate.sh")
+
+	assert.Nil(t, PreflightCheckDiagnostic("validation_loop.preflight_check", "sh scripts/validate.sh"))
+	// A ${VAR} reference never matches the heuristic, which is why run
+	// also checks the expanded value (#8747).
+	assert.Nil(t, PreflightCheckDiagnostic("validation_loop.preflight_check", "${PREFLIGHT_CMD}"))
+}
+
 func TestLint_PreflightCheckPathLikeMatching(t *testing.T) {
 	cases := []struct {
 		name string
