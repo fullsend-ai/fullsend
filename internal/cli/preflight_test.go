@@ -442,6 +442,38 @@ func TestRunPreflightCheck_ShellFailsBeforeTimeoutBackgroundChildOutlivesIt(t *t
 		"the background child must not outlive runPreflightCheck after a timeout (#8875)")
 }
 
+// TestRunPreflightCheck_ContextDoneBeforeStart covers a context that is
+// already canceled or expired when runPreflightCheck is called. Start then
+// fails without creating a process, so cmd.Process is nil and the group kill
+// must be skipped instead of panicking (#8875).
+func TestRunPreflightCheck_ContextDoneBeforeStart(t *testing.T) {
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	expired, cancelExpired := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer cancelExpired()
+	<-expired.Done()
+
+	tests := []struct {
+		name string
+		ctx  context.Context
+		want string
+	}{
+		{"canceled", canceled, "preflight_check failed"},
+		{"expired", expired, "preflight_check timed out"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			printer := ui.New(io.Discard)
+			var err error
+			require.NotPanics(t, func() {
+				err = runPreflightCheck(tt.ctx, printer, "preflight_check", "true", nil, "/fs/dir")
+			})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.want)
+		})
+	}
+}
+
 // TestRunPreflightCheck_SuccessWithLingeringBackgroundChild covers #8875: a
 // check that exits 0 but leaves a background child holding its output makes
 // Wait return exec.ErrWaitDelay. The check passed, so it must not be reported

@@ -172,7 +172,10 @@ func runPreflightCheck(ctx context.Context, printer *ui.Printer, source, rawCmd 
 		printer.StepWarn("Preflight dependency check passed, but " + source + " left a background process holding its output")
 		return nil
 	}
-	if execErr != nil && preflightCtx.Err() != nil {
+	if execErr != nil && preflightCtx.Err() != nil && cmd.Process != nil {
+		// cmd.Process is nil when Start failed because the context was already
+		// canceled or expired, in which case there is no group to kill.
+		//
 		// If sh exited before the deadline, os/exec stopped watching the
 		// context and never called Cancel, but a background child can still
 		// have held the output pipe past it. That surfaces as exec.ErrWaitDelay
