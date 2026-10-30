@@ -109,10 +109,10 @@ func TestWorkflowReviewRunIDPromotionPreservesHiddenAndTerminal(t *testing.T) {
 func TestWorkflowReviewNewRunWithoutStartReceivesOptionalCompletion(t *testing.T) {
 	var out bytes.Buffer
 	r := newTestRenderer(&out)
-	stream := `{"type":"system","subtype":"task_started","task_id":"one","run_id":"old","description":"Old"}
-{"type":"system","subtype":"task_notification","task_id":"one","run_id":"old","status":"completed"}
-{"type":"system","subtype":"task_progress","task_id":"one","run_id":"new","description":"New"}
-{"type":"system","subtype":"task_progress","task_id":"one","run_id":"old","description":"LATE OLD"}
+	stream := `{"type":"system","subtype":"task_started","task_id":"one","run_id":"r1","description":"Old"}
+{"type":"system","subtype":"task_notification","task_id":"one","run_id":"r1","status":"completed"}
+{"type":"system","subtype":"task_progress","task_id":"one","run_id":"r2","description":"New"}
+{"type":"system","subtype":"task_progress","task_id":"one","run_id":"r1","description":"LATE OLD"}
 {"type":"system","subtype":"task_notification","task_id":"one","status":"completed"}
 `
 	if err := parseClaudeStream(strings.NewReader(stream), r.Handle); err != nil {

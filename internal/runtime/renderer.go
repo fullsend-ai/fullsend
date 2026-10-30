@@ -26,7 +26,7 @@ type EventRenderer struct {
 	inThinking         bool
 	seenInit           bool
 	taskProgressSeen   map[taskProgressKey]taskProgressDisplay
-	taskProgressRuns   map[[sha256.Size]byte][sha256.Size]byte
+	taskProgressRuns   map[[sha256.Size]byte]taskProgressRun
 	statusProgressSeen map[[sha256.Size]byte]statusProgressDisplay
 }
 

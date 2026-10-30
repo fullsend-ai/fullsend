@@ -47,10 +47,10 @@ func TestClaudeReviewAgentCounterSnapshotRetainsContext(t *testing.T) {
 }
 
 func TestClaudeReviewDistinctRunDoesNotInheritHiddenParent(t *testing.T) {
-	stream := `{"type":"system","subtype":"task_started","task_id":"one","run_id":"old","ambient":true,"description":"PRIVATE"}
-{"type":"system","subtype":"task_progress","task_id":"one","run_id":"new","workflow_progress":[{"type":"workflow_agent","index":1,"state":"done","label":"New worker"}]}
-{"type":"system","subtype":"task_progress","task_id":"one","run_id":"new","description":"Visible new run"}
-{"type":"system","subtype":"task_progress","task_id":"one","run_id":"old","description":"PRIVATE"}
+	stream := `{"type":"system","subtype":"task_started","task_id":"one","run_id":"r1","ambient":true,"description":"PRIVATE"}
+{"type":"system","subtype":"task_progress","task_id":"one","run_id":"r2","workflow_progress":[{"type":"workflow_agent","index":1,"state":"done","label":"New worker"}]}
+{"type":"system","subtype":"task_progress","task_id":"one","run_id":"r2","description":"Visible new run"}
+{"type":"system","subtype":"task_progress","task_id":"one","run_id":"r1","description":"PRIVATE"}
 `
 	var out bytes.Buffer
 	r := newTestRenderer(&out)
