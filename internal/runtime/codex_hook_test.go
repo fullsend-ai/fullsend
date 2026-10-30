@@ -113,11 +113,16 @@ func (h *codexAdapterHarness) run(phase string, input map[string]any, scripts ..
 	return codexAdapterResult{exitCode: exitCode, stdout: stdout.String(), stderr: stderr.String()}
 }
 
+// codexAdapterTrustedPath is the trusted PATH the adapter tests export. It is
+// a fixed value rather than the developer's own PATH, which can hold an empty
+// or relative entry (a trailing ':', say) that the adapter rightly rejects.
+const codexAdapterTrustedPath = "/usr/local/bin:/usr/bin:/bin"
+
 // codexAdapterBaseEnv is the test process environment plus the trusted PATH
 // the run command exports before codex starts (the adapter blocks without
-// it); here it is the test's own PATH, so hook scripts find their tools.
+// it).
 func codexAdapterBaseEnv() []string {
-	return append(os.Environ(), envDataTrustedPathVar+"="+os.Getenv("PATH"))
+	return append(os.Environ(), envDataTrustedPathVar+"="+codexAdapterTrustedPath)
 }
 
 // The adapter blocks rather than inherit PATH when the trusted PATH is
@@ -129,7 +134,13 @@ func TestCodexAdapter_BlocksWithoutTrustedPath(t *testing.T) {
 sys.exit(0)`)
 	payload, err := json.Marshal(codexBashInput("ls"))
 	require.NoError(t, err)
-	for name, value := range map[string]string{"unset": "", "empty entry": "/usr/bin::/bin", "relative entry": "bin:/usr/bin"} {
+	for name, value := range map[string]string{
+		"unset":          "",
+		"empty entry":    "/usr/bin::/bin",
+		"trailing colon": "/usr/bin:",
+		"leading colon":  ":/usr/bin",
+		"relative entry": "bin:/usr/bin",
+	} {
 		t.Run(name, func(t *testing.T) {
 			env := []string{}
 			for _, kv := range os.Environ() {
@@ -1034,7 +1045,7 @@ sys.exit(0)`)
 	assert.NotContains(t, env, "PYTHONPATH")
 	assert.Equal(t, "keep-me", env["FULLSEND_CANARY_TOKEN"],
 		"the scripts' own configuration must still reach them")
-	assert.Equal(t, os.Getenv("PATH"), env["PATH"], "PATH is the trusted value the run command recorded before .env")
+	assert.Equal(t, codexAdapterTrustedPath, env["PATH"], "PATH is the trusted value the run command recorded before .env")
 }
 
 // TestCodexAdapter_UsesThePinnedPathForChildren is the adapter half of the

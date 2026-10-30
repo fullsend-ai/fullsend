@@ -389,7 +389,7 @@ Two traps when reproducing by hand:
 | the same message, from a `-d`, `-F` or `--data-binary` argument | a variable expanded inside a data or form argument | resolve it first and pass the value literally; `-K` does not help |
 | `Tirith blocked command (exit code 1): ... expected a list` / `an object` / `a string` | the installed tirith reports a shape this hook does not know | check `tirith --version` against the pin; a bumped pin needs `tirith_check.py` updated before it ships |
 | `Hook error (fail-closed): <ExceptionName>` | an error with no specific guard | the traceback is on the hook's stderr and a `hook_error` finding is in `findings.jsonl`; file both with the command |
-| Commands block only in the sandbox, never locally | `TIRITH_REQUIRED=1` is set there and the binary is missing or timing out | check the binary is on `PATH` inside the sandbox |
+| Commands block only in the sandbox, never locally | `TIRITH_REQUIRED=1` is set there and the binary is missing or timing out | check the binary is in a `PATH` directory inside the sandbox that the sandbox user neither owns nor can write; the hooks run under a `PATH` without the agent-writable directories, so a `tirith` installed only in one of them is reported as missing |
 
 ### Environment
 
@@ -518,7 +518,7 @@ The sandbox has two key directories that map to Claude Code's config levels (plu
     │   (codex's npm launcher and pi). .env puts workspace/bin
     │   last on PATH and restores the runner's PATH in front after .env.d
     │   (what claude and pi run under; codex restores its pre-.env PATH;
-    │   the Claude Code and codex hooks run under the trusted PATH);
+    │   the Claude Code, codex and pi hooks run under the trusted PATH);
     │   host_files may only target /sandbox/ or /tmp/ and not the runner's
     │   paths (harness.ValidateHostFileDest).
     │
