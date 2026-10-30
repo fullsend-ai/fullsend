@@ -42,9 +42,11 @@ import (
 // `${NAME:-default}`) is dropped and reported on stderr by file and line
 // only, never by content, since a dropped line can carry a credential. An
 // assignment whose value contains a NUL byte, which the launch shell could
-// not hold, is dropped and reported the same way. A dropped statement whose
-// quotes span lines is skipped to where a shell would end it, so its later
-// lines are not read as statements of their own.
+// not hold, is dropped and reported the same way, and leaves the name's
+// export state as it was: neither its own `export` nor a later bare
+// `export NAME` exports the earlier value. A dropped statement whose quotes
+// or backtick command substitution span lines is skipped to where a shell
+// would end it, so its later lines are not read as statements of their own.
 //
 // A name is exported when it was in the launch environment or is marked by
 // `export`, as in a POSIX shell. Any other assignment is still set as a shell
@@ -252,6 +254,7 @@ NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 values = dict(os.environ)
 exported = set(os.environ)
 readonly = set()
+nul_dropped = set()
 order = []
 failed = []
 def warn(path, line, why):
@@ -261,13 +264,16 @@ def taken(name):
 def assign(path, line, name, value):
 	if not taken(name):
 		warn(path, line, "%s is not taken from .env" % name)
-		return
+		return False
 	if "\0" in value:
 		warn(path, line, "the value of %s contains a NUL byte" % name)
-		return
+		nul_dropped.add(name)
+		return False
 	values[name] = value
+	nul_dropped.discard(name)
 	if name not in order:
 		order.append(name)
+	return True
 def expand(s, i):
 	if s.startswith("{", i):
 		m = NAME.match(s, i + 1)
@@ -350,9 +356,14 @@ def skip_statement(s, i, eol):
 				stack.pop()
 		elif c == "\\":
 			i += 1
+		elif top == "\x60":
+			if c == "\x60":
+				stack.pop()
 		elif c == "$" and s.startswith(("{", "("), i + 1):
 			stack.append("}" if s[i + 1] == "{" else ")")
 			i += 1
+		elif c == "\x60":
+			stack.append(c)
 		elif top == "\"":
 			if c == "\"":
 				stack.pop()
@@ -386,8 +397,7 @@ def statement(path, line, s, i, eol):
 	if j < len(s) and s[j] == "=":
 		v, j = value(s, j + 1)
 		j = end_of_statement(s, j)
-		assign(path, line, name, v)
-		if export and taken(name):
+		if assign(path, line, name, v) and export:
 			exported.add(name)
 		return j
 	if not export:
@@ -396,7 +406,7 @@ def statement(path, line, s, i, eol):
 	if not all(NAME.fullmatch(n) for n in names):
 		raise ValueError("not a NAME=value assignment")
 	for n in names:
-		if taken(n):
+		if taken(n) and n not in nul_dropped:
 			exported.add(n)
 			if n in values and n not in order:
 				order.append(n)
