@@ -2,11 +2,13 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"regexp"
 	"strings"
+	"syscall"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/ui"
@@ -141,10 +143,35 @@ func runPreflightCheck(ctx context.Context, printer *ui.Printer, source, rawCmd 
 	defer preflightCancel()
 	cmd := exec.CommandContext(preflightCtx, "sh", "-c", expanded)
 	cmd.Env = buildPreflightEnv(runnerEnv, fullsendDir)
-	// Without WaitDelay, a grandchild that inherits the output pipe keeps
-	// CombinedOutput blocked past the deadline even after sh is killed.
+	// Run the check in its own process group and kill the whole group on
+	// deadline (#8875). Killing only sh would orphan non-exec children
+	// (e.g. the sleep in "sleep 300; true"), which would keep running on the
+	// host with the preflight environment. Where signalling a group is not
+	// permitted (some sandboxes refuse it), fall back to killing sh alone so
+	// the deadline still holds; WaitDelay then bounds the orphan's pipe.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		if errors.Is(err, syscall.ESRCH) {
+			return os.ErrProcessDone
+		}
+		if err != nil {
+			return cmd.Process.Kill()
+		}
+		return nil
+	}
+	// Without WaitDelay, a descendant that inherits the output pipe and
+	// escapes the process group (e.g. via setsid) keeps CombinedOutput
+	// blocked past the deadline even after the group is killed.
 	cmd.WaitDelay = preflightWaitDelay
 	out, execErr := cmd.CombinedOutput()
+	if errors.Is(execErr, exec.ErrWaitDelay) && preflightCtx.Err() == nil {
+		// sh exited successfully, but a background child still held the
+		// output pipe when WaitDelay elapsed. The check itself passed, so
+		// do not report it as a missing dependency (#8875).
+		printer.StepWarn("Preflight dependency check passed, but " + source + " left a background process holding its output")
+		return nil
+	}
 	if execErr != nil {
 		printer.StepFail("Preflight dependency check failed")
 		// Redact before the message reaches the CLI error, the trace and

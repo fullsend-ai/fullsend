@@ -1,12 +1,17 @@
 package cli
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -311,11 +316,107 @@ func TestRunPreflightCheck_TimeoutBoundedWithNonExecChild(t *testing.T) {
 		preflightWaitDelay = oldWaitDelay
 	})
 
+	// The nested sh records its PID and then execs sleep, so the recorded
+	// PID is the non-exec child of the outer shell. The sleep only has to
+	// outlast the 10s bound below; a short one keeps a regression from
+	// blocking the test for minutes.
+	pidFile := filepath.Join(t.TempDir(), "child.pid")
+	command := "sh -c 'echo $$ > " + pidFile + "; exec sleep 20'; true"
+
 	printer := ui.New(io.Discard)
 	start := time.Now()
-	err := runPreflightCheck(context.Background(), printer, "preflight_check", "sleep 300; true", nil, "/fs/dir")
+	err := runPreflightCheck(context.Background(), printer, "preflight_check", command, nil, "/fs/dir")
 	elapsed := time.Since(start)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "preflight_check timed out")
 	assert.Less(t, elapsed, 10*time.Second, "teardown must be bounded by timeout + WaitDelay, not by the grandchild's lifetime")
+
+	pidBytes, readErr := os.ReadFile(pidFile)
+	require.NoError(t, readErr)
+	pid, convErr := strconv.Atoi(strings.TrimSpace(string(pidBytes)))
+	require.NoError(t, convErr)
+	if !processGroupKillPermitted(t) {
+		// runPreflightCheck fell back to killing sh alone; reap the orphan so
+		// the test leaves nothing behind.
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+		t.Skip("signalling a process group is not permitted on this host; skipping the orphan assertion")
+	}
+	assert.Eventually(t, func() bool { return processGone(pid) }, 5*time.Second, 20*time.Millisecond,
+		"the check's child process must not outlive runPreflightCheck (#8875)")
+}
+
+// TestRunPreflightCheck_TimeoutKillsProcessGroup covers #8875: on deadline
+// the whole process group is killed, not only sh. WaitDelay is set far above
+// the test bound, so the call can only return promptly if the forked sleep
+// died and released the output pipe.
+func TestRunPreflightCheck_TimeoutKillsProcessGroup(t *testing.T) {
+	if !processGroupKillPermitted(t) {
+		t.Skip("signalling a process group is not permitted on this host")
+	}
+	oldTimeout := preflightCheckTimeout
+	oldWaitDelay := preflightWaitDelay
+	preflightCheckTimeout = 50 * time.Millisecond
+	preflightWaitDelay = time.Minute
+	t.Cleanup(func() {
+		preflightCheckTimeout = oldTimeout
+		preflightWaitDelay = oldWaitDelay
+	})
+
+	printer := ui.New(io.Discard)
+	start := time.Now()
+	err := runPreflightCheck(context.Background(), printer, "preflight_check", "sleep 20; true", nil, "/fs/dir")
+	elapsed := time.Since(start)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "preflight_check timed out")
+	assert.Less(t, elapsed, 10*time.Second, "killing the process group must release the output pipe without waiting for WaitDelay")
+}
+
+// TestRunPreflightCheck_SuccessWithLingeringBackgroundChild covers #8875: a
+// check that exits 0 but leaves a background child holding its output makes
+// Wait return exec.ErrWaitDelay. The check passed, so it must not be reported
+// as a missing dependency.
+func TestRunPreflightCheck_SuccessWithLingeringBackgroundChild(t *testing.T) {
+	oldWaitDelay := preflightWaitDelay
+	preflightWaitDelay = 100 * time.Millisecond
+	t.Cleanup(func() { preflightWaitDelay = oldWaitDelay })
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	err := runPreflightCheck(context.Background(), printer, "validation_loop.preflight_check", "echo hi; sleep 2 & true", nil, "/fs/dir")
+	require.NoError(t, err)
+	assert.Contains(t, buf.String(), "left a background process holding its output")
+}
+
+// processGroupKillPermitted reports whether this host lets the test process
+// signal a whole process group. Some sandboxes refuse kill(-pgid, ...), in
+// which case runPreflightCheck falls back to killing sh alone.
+func processGroupKillPermitted(t *testing.T) bool {
+	t.Helper()
+	cmd := exec.Command("sleep", "5")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	require.NoError(t, cmd.Start())
+	err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	if err != nil {
+		_ = cmd.Process.Kill()
+	}
+	_ = cmd.Wait()
+	return err == nil
+}
+
+// processGone reports whether pid no longer names a live process. A zombie
+// counts as gone: it has been killed and only awaits reaping, which a
+// container's PID 1 may never do.
+func processGone(pid int) bool {
+	if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
+		return true
+	}
+	stat, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
+	if err != nil {
+		return false
+	}
+	// The state field follows the parenthesised command name.
+	if i := bytes.LastIndexByte(stat, ')'); i >= 0 && i+2 < len(stat) {
+		return stat[i+2] == 'Z'
+	}
+	return false
 }
