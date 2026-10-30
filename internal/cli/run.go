@@ -2725,7 +2725,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		toolSpans.runnerEnv = h.RunnerEnv
 		renderer := agentruntime.NewEventRenderer(printer)
 		renderer.RedactProgress = func(text string) string {
-			return redactSecretLiterals(text, h.RunnerEnv)
+			return redactProgressSecretLiterals(text, h.RunnerEnv)
 		}
 		var metrics agentruntime.RunMetrics
 		hooksSettings := ""
@@ -4261,6 +4261,15 @@ func preScriptLogResult(res prescript.Result, runnerEnv map[string]string) presc
 // (runner secrets among them). Unlike redactFeedback it runs no pattern
 // scan, so text that merely looks like a secret is left alone.
 func redactSecretLiterals(feedback string, runnerEnv map[string]string) string {
+	return redactSecretLiteralsWithNormalizer(feedback, runnerEnv, nil)
+}
+
+// Progress cleanup can alter a secret itself, so mask both literal forms.
+func redactProgressSecretLiterals(feedback string, runnerEnv map[string]string) string {
+	return redactSecretLiteralsWithNormalizer(feedback, runnerEnv, agentruntime.NormalizeProgressText)
+}
+
+func redactSecretLiteralsWithNormalizer(feedback string, runnerEnv map[string]string, normalize func(string) string) string {
 	// All exact literals are replaced in one pass, longest first, so a
 	// value that is a substring of another never leaves part of the longer
 	// one visible, whichever source each came from. envLiterals covers
@@ -4271,9 +4280,19 @@ func redactSecretLiterals(feedback string, runnerEnv map[string]string) string {
 	var literals []literal
 	seen := map[string]bool{}
 	add := func(value, mask string) {
-		if len(value) >= minRedactableSecretLen && !seen[value] {
-			seen[value] = true
-			literals = append(literals, literal{value, mask})
+		if len(value) < minRedactableSecretLen {
+			return
+		}
+		values := []string{value}
+		if normalize != nil {
+			values = append(values, normalize(value))
+		}
+		for _, value := range values {
+			// An eligible original may normalize to a short sensitive value.
+			if value != "" && !seen[value] {
+				seen[value] = true
+				literals = append(literals, literal{value, mask})
+			}
 		}
 	}
 	for _, l := range envLiterals(runnerEnv) {

@@ -14,7 +14,9 @@ import (
 // types produce clean output boundaries.
 type EventRenderer struct {
 	// RedactProgress removes caller-owned credential literals from progress
-	// metadata before normalization/truncation. Pattern and registered
+	// metadata before and after normalization, before truncation. The callback
+	// must match original and NormalizeProgressText-normalized literals and
+	// use display-safe replacement markers. Pattern and registered
 	// runtime-secret redaction apply even when this callback is nil.
 	RedactProgress func(string) string
 
