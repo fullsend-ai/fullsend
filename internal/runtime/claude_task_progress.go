@@ -12,7 +12,7 @@ type claudeTaskProgress struct {
 	RunID          string          `json:"run_id"`
 	Description    string          `json:"description"`
 	Status         string          `json:"status"`
-	LastToolName   string          `json:"last_tool_name"`
+	LastToolName   json.RawMessage `json:"last_tool_name"`
 	Summary        json.RawMessage `json:"summary"`
 	Reason         string          `json:"reason"`
 	Ambient        bool            `json:"ambient"`
@@ -56,8 +56,8 @@ func decodeClaudeTaskProgress(line []byte, subtype string) []TaskProgressEvent {
 		event.Hidden = task.Ambient || task.SkipTranscript
 	case "task_progress":
 		event.State = TaskRunning
-		event.ToolName = task.LastToolName
-		_ = json.Unmarshal(task.Summary, &event.Summary)
+		event.ToolName, event.ToolNameSet = claudeProgressString(task.LastToolName)
+		event.Summary, event.SummarySet = claudeProgressString(task.Summary)
 	case "task_updated":
 		var patch struct {
 			Status      *string `json:"status"`
@@ -94,7 +94,7 @@ func decodeClaudeTaskProgress(line []byte, subtype string) []TaskProgressEvent {
 		return nil
 	}
 	var events []TaskProgressEvent
-	useful := event.LabelSet || event.DetailSet || event.Detail != "" || event.ToolName != "" || event.Summary != ""
+	useful := event.ToolNameSet || event.SummarySet || event.LabelSet || event.DetailSet || event.Detail != "" || event.ToolName != "" || event.Summary != ""
 	if (event.State != "" || useful) && (subtype != "task_progress" || task.Description != "" || useful) {
 		events = append(events, event)
 	}
@@ -215,4 +215,14 @@ func claudeTaskState(state string) TaskState {
 	default:
 		return ""
 	}
+}
+
+// claudeProgressString treats null/malformed metadata as absent; empty strings
+// clear prior progress without discarding the rest of a valid snapshot.
+func claudeProgressString(raw json.RawMessage) (string, bool) {
+	var value *string
+	if json.Unmarshal(raw, &value) != nil || value == nil {
+		return "", false
+	}
+	return *value, true
 }

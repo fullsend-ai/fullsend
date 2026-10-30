@@ -345,12 +345,25 @@ available tool names/context. For example:
 Unchanged snapshots and counter-only updates do not repeat the same display
 line. Text is sanitized, credential-redacted, and bounded before display or
 retention in the bounded display cache. Concurrent tasks and agents retain
-separate identities. Partial lifecycle patches retain known task labels and
-state; explicit starts can reset an identity. Late running snapshots do not
-reopen a known terminal task or agent. Sparse agent snapshots retain known
+separate identities. Task tool/status fields retain omitted values;
+explicit empty strings clear them. Pausing hides the last summary until the
+task resumes; a terminal state or new run clears it. Partial lifecycle
+patches retain known task labels and state; explicit starts can reset an
+identity. Late running snapshots do not reopen known terminal tasks or
+agents. Sparse agent snapshots retain known
 labels, phases and tool context. Error, blocked and cached metadata persists
 within a state; state changes clear omitted transient metadata. Explicit
 empty strings and false flags also clear their corresponding fields.
+
+Task visibility, terminal state and run watermarks are retained separately
+from agent display rows. New runs and terminal task states retire old agent
+rows. Tracking admits up to 1,024 task identities and 1,024 agents per task,
+with a shared 16,384-row threshold for admitting new agent rows. At a limit,
+new identities or agent rows are suppressed; tracked rows and task guards
+remain.
+Agent-row capacity becomes available when tasks finish or open new runs.
+Task-identity slots stay reserved for the renderer's lifetime.
+
 Run IDs follow the Agent SDK opening order; late frames from superseded
 runs are ignored, so they cannot steal later updates without a run ID.
 Visibility belongs to each run: promoting its first late run ID preserves
