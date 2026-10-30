@@ -180,9 +180,10 @@ func TestRelay_WritesSkippedAndOutputs(t *testing.T) {
 		Skipped: true,
 		Reason:  "duplicate",
 		Outputs: map[string]string{
-			"skipped": "true",
-			"reason":  "duplicate",
-			"pr":      "42",
+			"skipped":  "true",
+			"disabled": "true",
+			"reason":   "duplicate",
+			"pr":       "42",
 		},
 	}
 	relayed, err := Relay(res)
@@ -191,7 +192,7 @@ func TestRelay_WritesSkippedAndOutputs(t *testing.T) {
 
 	data, err := os.ReadFile(out)
 	require.NoError(t, err)
-	assert.Equal(t, "skipped=true\npr=42\nreason=duplicate\n", string(data))
+	assert.Equal(t, "skipped=true\ndisabled=true\npr=42\nreason=duplicate\n", string(data))
 }
 
 func TestRelay_AppendsToExistingFile(t *testing.T) {
@@ -254,7 +255,7 @@ func TestParseFile_HyphenatedKeysAllowed(t *testing.T) {
 func TestParseFile_MiscasedReservedKeyIsHardError(t *testing.T) {
 	t.Parallel()
 
-	for _, line := range []string{"SKIPPED=true\n", "Skipped=true\n", "REASON=dup\n"} {
+	for _, line := range []string{"SKIPPED=true\n", "Skipped=true\n", "REASON=dup\n", "Disabled=true\n"} {
 		_, err := ParseFile(writeOutput(t, line))
 		require.ErrorContains(t, err, "differs only in case", "input %q", line)
 	}
@@ -265,6 +266,27 @@ func TestParseFile_HeredocSyntaxNamesTheLimitation(t *testing.T) {
 
 	_, err := ParseFile(writeOutput(t, "skipped=true\nreason<<EOF\nline one\nEOF\n"))
 	require.ErrorContains(t, err, "heredoc syntax")
+}
+
+// The disabled key is reserved for CLI use (when an agent is disabled in
+// config) and must not be emitted by pre-scripts.
+func TestParseFile_DisabledKeyIsReservedForCLI(t *testing.T) {
+	t.Parallel()
+
+	_, err := ParseFile(writeOutput(t, "disabled=true\n"))
+	require.ErrorContains(t, err, `key "disabled" is reserved for CLI use and must not be emitted by pre-scripts`)
+}
+
+func TestDisabledResult(t *testing.T) {
+	t.Parallel()
+
+	res := DisabledResult("agent disabled in config")
+	assert.True(t, res.Skipped)
+	assert.Equal(t, "agent disabled in config", res.Reason)
+	assert.Equal(t, map[string]string{
+		disabledKey: "true",
+		"reason":    "agent disabled in config",
+	}, res.Outputs)
 }
 
 // Whitespace around the value is insignificant, matching the key side —

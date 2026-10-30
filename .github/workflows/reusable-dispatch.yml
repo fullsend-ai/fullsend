@@ -123,7 +123,7 @@ jobs:
       issues: read
       pull-requests: read
     outputs:
-      stage: ${{ steps.agent-check.outputs.skipped != 'true' && steps.route.outputs.stage || '' }}
+      stage: ${{ steps.fix-check.outputs.skipped != 'true' && steps.route.outputs.stage || '' }}
       trigger_source: ${{ steps.route.outputs.trigger_source }}
       event_payload: ${{ steps.payload.outputs.event_payload }}
     steps:
@@ -909,9 +909,14 @@ jobs:
             exit 1
           fi
 
-      - name: Check agent is enabled
-        id: agent-check
-        if: steps.route.outputs.stage != ''
+      # TODO: remove once disabled agents stop hitting always-failing setup
+      # steps. A disabled fix agent must not hard-fail the route job on
+      # fork-PR and PR-fetch checks (pr-head) or the fix stage job on
+      # fork-block / eligibility checks before `fullsend run` can skip it.
+      # Scoped to fix only; every other stage reaches the CLI skip.
+      - name: Check fix agent is enabled
+        id: fix-check
+        if: steps.route.outputs.stage == 'fix'
         env:
           STAGE: ${{ steps.route.outputs.stage }}
         run: |
@@ -919,27 +924,19 @@ jobs:
           if [[ ! -f .fullsend/config.yaml ]]; then
             exit 0
           fi
-          YQ_ERR=$(mktemp)
-          AGENT_ENABLED=$(yq "
-            .agents[] |
-            select((.name | downcase) == \"$STAGE\") |
-            .enabled
-          " .fullsend/config.yaml 2>"$YQ_ERR" | tail -1) || {
+          FIX_ENABLED=$(yq '.agents[] | select((.name | downcase) == "fix") | .enabled' .fullsend/config.yaml 2>/dev/null | tail -1) || {
             echo "::warning::yq failed checking agents[].enabled — see logs"
-            cat "$YQ_ERR" >&2
-            rm -f "$YQ_ERR"
             exit 0
           }
-          rm -f "$YQ_ERR"
-          if [[ "$AGENT_ENABLED" == "false" ]]; then
-            echo "::notice::Stage '$STAGE' skipped — agent '$STAGE' is disabled in config"
+          if [[ "${FIX_ENABLED}" == "false" ]]; then
+            echo "::notice::Stage '${STAGE}' skipped — agent 'fix' is disabled in config"
             echo "skipped=true" >> "${GITHUB_OUTPUT}"
             exit 0
           fi
 
       - name: Resolve PR head for issue_comment events
         id: pr-head
-        if: steps.route.outputs.stage != '' && steps.agent-check.outputs.skipped != 'true' && github.event_name == 'issue_comment' && github.event.issue.pull_request
+        if: steps.route.outputs.stage != '' && github.event_name == 'issue_comment' && github.event.issue.pull_request
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_REPO: ${{ github.repository }}
