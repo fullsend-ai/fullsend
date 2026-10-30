@@ -35,6 +35,9 @@ func (r *EventRenderer) taskProgress(e TaskProgressEvent) {
 	if isAgent && staleAgentSnapshot(e, previous.event) {
 		return
 	}
+	if isAgent && e.AgentState != "" {
+		reconcileAgentLifecycle(&e, previous.event)
+	}
 	resumable := isAgent && previous.event.State == TaskFailed && agentExecutionAdvanced(e, previous.event)
 	if !e.Started && (parent.Hidden || previous.event.Hidden || (e.State != "" && !terminalTaskState(e.State) && (terminalTaskState(parent.State) || (terminalTaskState(previous.event.State) && !resumable)))) {
 		return
@@ -52,6 +55,7 @@ func (r *EventRenderer) taskProgress(e TaskProgressEvent) {
 	e.Detail = r.progressText(e.Detail, 200)
 	e.LastAttemptReason = r.progressText(e.LastAttemptReason, 60)
 	e.State = TaskState(r.progressText(string(e.State), 40))
+	e.AgentState = r.progressText(e.AgentState, 40)
 	if !e.Started {
 		old := previous.event
 		if e.Label == "" && !e.LabelSet {
@@ -231,20 +235,8 @@ func (r *EventRenderer) taskProgressIdentity(e *TaskProgressEvent) taskProgressK
 // transient values instead of describing a recovered agent as still blocked.
 func mergeAgentProgress(e *TaskProgressEvent, old TaskProgressEvent) {
 	advanced := agentExecutionAdvanced(*e, old)
-	if !e.AttemptSet {
-		e.Attempt = old.Attempt
-		e.AttemptSet = old.AttemptSet
-	}
-	if !e.LastAttemptReasonSet && !advanced {
-		e.LastAttemptReason = old.LastAttemptReason
-	}
-	if !e.QueuedAtSet && !advanced {
-		e.QueuedAt = old.QueuedAt
-		e.QueuedAtSet = old.QueuedAtSet
-	}
-	if !e.StartedAtSet && e.State != TaskQueued && !advanced {
-		e.StartedAt = old.StartedAt
-		e.StartedAtSet = old.StartedAtSet
+	if e.AgentState == "" {
+		mergeAgentLifecycle(e, old, advanced)
 	}
 	if e.AgentID == "" && !advanced {
 		e.AgentID = old.AgentID
@@ -270,6 +262,56 @@ func mergeAgentProgress(e *TaskProgressEvent, old TaskProgressEvent) {
 	}
 }
 
+// reconcileAgentLifecycle merges presence-aware lifecycle metadata before
+// deriving display state. Fresh executions do not inherit prior-attempt data.
+func reconcileAgentLifecycle(e *TaskProgressEvent, old TaskProgressEvent) {
+	advanced := agentExecutionAdvanced(*e, old)
+	mergeAgentLifecycle(e, old, advanced)
+	if !e.SkippedSet && !advanced && e.AgentState == old.AgentState {
+		e.Skipped = old.Skipped
+	}
+	switch e.AgentState {
+	case "start":
+		switch {
+		case e.QueuedAtSet && !e.StartedAtSet:
+			e.State = TaskQueued
+		case e.StartedAtSet && e.Attempt > 1:
+			e.State = TaskRetrying
+		default:
+			e.State = TaskRunning
+		}
+	case "progress":
+		e.State = TaskRunning
+	case "done":
+		e.State = TaskCompleted
+	case "error":
+		e.State = TaskFailed
+		if e.Skipped {
+			e.State = TaskSkipped
+		}
+	}
+}
+
+// mergeAgentLifecycle retains optional numeric/retry metadata within one
+// execution; callers determine advancement before filling omitted fields.
+func mergeAgentLifecycle(e *TaskProgressEvent, old TaskProgressEvent, advanced bool) {
+	if !e.AttemptSet {
+		e.Attempt = old.Attempt
+		e.AttemptSet = old.AttemptSet
+	}
+	if !e.LastAttemptReasonSet && !advanced {
+		e.LastAttemptReason = old.LastAttemptReason
+	}
+	if !e.QueuedAtSet && !advanced {
+		e.QueuedAt = old.QueuedAt
+		e.QueuedAtSet = old.QueuedAtSet
+	}
+	if !e.StartedAtSet && e.State != TaskQueued && !advanced {
+		e.StartedAt = old.StartedAt
+		e.StartedAtSet = old.StartedAtSet
+	}
+}
+
 // agentExecutionAdvanced permits an intermediate failed attempt to resume,
 // while completed/skipped tasks and terminal parent workflows remain closed.
 // The producer can also emit a fresh queue while waiting out a quota limit.
@@ -280,7 +322,7 @@ func agentExecutionAdvanced(e, old TaskProgressEvent) bool {
 	if e.StartedAtSet && (old.StartedAtSet && e.StartedAt > old.StartedAt || !old.StartedAtSet && old.State == TaskFailed) {
 		return true
 	}
-	return e.State == TaskQueued && e.QueuedAtSet && old.QueuedAtSet && e.QueuedAt > old.QueuedAt && (!old.StartedAtSet || e.QueuedAt > old.StartedAt)
+	return e.State == TaskQueued && e.QueuedAtSet && (!old.QueuedAtSet || e.QueuedAt > old.QueuedAt) && (!old.StartedAtSet || e.QueuedAt > old.StartedAt)
 }
 
 // staleAgentSnapshot rejects prior-attempt deliveries and a queued snapshot
@@ -320,5 +362,7 @@ func taskProgressText(s string, limit int) string {
 	if utf8.RuneCountInString(s) > limit {
 		s = string([]rune(s)[:limit]) + "…"
 	}
-	return s
+	// strings.Fields/Join can return a short slice of the sanitizer's large
+	// allocation. Cache only storage proportional to the bounded final value.
+	return strings.Clone(s)
 }
