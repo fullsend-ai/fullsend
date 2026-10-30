@@ -67,8 +67,8 @@ func TestTaskProgressRendererBoundedState(t *testing.T) {
 	for i := range maxTaskProgressEntries + 1 {
 		r.Handle(TaskProgressEvent{TaskID: fmt.Sprint(i), State: TaskRunning})
 	}
-	if len(r.taskProgressSeen) > maxTaskProgressEntries {
-		t.Fatalf("unbounded dedup state: %d", len(r.taskProgressSeen))
+	if len(r.taskProgressSeen) > maxTaskProgressEntries || len(r.taskProgressRuns) > maxTaskProgressEntries {
+		t.Fatalf("unbounded task/parent state: %d rows, %d controls", len(r.taskProgressSeen), len(r.taskProgressRuns))
 	}
 }
 
@@ -160,11 +160,11 @@ func TestTaskProgressIndexIdentityScopesAndIDFallback(t *testing.T) {
 	} {
 		r.Handle(e)
 	}
-	if len(r.taskProgressSeen) != 7 || strings.Count(out.String(), "— running") != 7 {
-		t.Fatal("distinct slots/tasks/runs/fallback IDs collapsed: " + out.String())
+	if len(r.taskProgressSeen) != 5 || strings.Count(out.String(), "— running") != 7 {
+		t.Fatal("distinct active slots/tasks/fallback IDs collapsed: " + out.String())
 	}
 	r.Handle(TaskProgressEvent{TaskID: "one", RunID: "second", AgentIndex: 1, AgentID: "learned", Label: "Work", State: TaskRunning})
-	if len(r.taskProgressSeen) != 7 || strings.Count(out.String(), "— running") != 7 {
+	if len(r.taskProgressSeen) != 5 || strings.Count(out.String(), "— running") != 7 {
 		t.Fatal("ID-only indexed change created another row")
 	}
 	r.Handle(TaskProgressEvent{TaskID: "one", RunID: "second", AgentIndex: 1, Label: "Work", State: TaskCompleted})

@@ -222,13 +222,15 @@ type TaskProgressEvent struct {
 	QueuedAtSet          bool
 	StartedAtSet         bool
 	// Update is a task lifecycle patch; it retains prior tool context.
-	// LabelSet/DetailSet apply to task and agent metadata; Phase/Tool/Blocked/
-	// Cached/Skipped Set flags apply only to agent snapshots. Started is task-level.
+	// Label/Detail/ToolName/ToolSummary Set flags apply to task and agent
+	// metadata; SummarySet applies to task snapshots. Phase/Blocked/Cached/
+	// Skipped Set flags apply only to agents. Started is task-level.
 	Update         bool
 	LabelSet       bool
 	DetailSet      bool
 	PhaseSet       bool
 	ToolNameSet    bool
+	SummarySet     bool
 	ToolSummarySet bool
 	BlockedSet     bool
 	CachedSet      bool

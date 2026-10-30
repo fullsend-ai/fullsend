@@ -13,6 +13,11 @@ import (
 // Hashing IDs also avoids retaining arbitrarily large sandbox strings as keys.
 const maxTaskProgressEntries = 1024
 
+// Task controls outlive row retention. Overflow rows/tasks are not admitted;
+// already tracked state is never flushed by an oversized snapshot.
+const maxTaskProgressAgentsPerTask = 1024
+const maxTaskProgressRows = 16 * 1024
+
 // Retain ordering text only when bounded and unchanged by sanitization and
 // credential redaction. Non-comparable IDs cannot implicitly replace a run.
 const maxTaskRunOrderBytes = 1024
@@ -22,6 +27,8 @@ type taskProgressRun struct {
 	hash      [sha256.Size]byte
 	order     string
 	named     bool
+	agents    int
+	parent    taskProgressDisplay
 }
 
 type taskProgressKey struct {
@@ -43,11 +50,17 @@ func (r *EventRenderer) taskProgress(e TaskProgressEvent) {
 		return
 	}
 	taskHash := key.task
-	runHash := key.run
+	current := r.taskProgressRuns[taskHash]
 	previous := r.taskProgressSeen[key]
-	parentKey := taskProgressKey{task: taskHash, run: runHash, agent: sha256.Sum256(nil)}
-	parent := r.taskProgressSeen[parentKey].event
+	parent := current.parent.event
 	isAgent := e.AgentID != "" || e.AgentIndex > 0
+	if !isAgent {
+		previous = current.parent
+	}
+	// Parent lifecycle/visibility lives outside the agent dedup row budget.
+	if isAgent && terminalTaskState(parent.State) {
+		return
+	}
 	if isAgent && staleAgentSnapshot(e, previous.event) {
 		return
 	}
@@ -57,6 +70,15 @@ func (r *EventRenderer) taskProgress(e TaskProgressEvent) {
 	resumable := isAgent && previous.event.State == TaskFailed && agentExecutionAdvanced(e, previous.event)
 	if !e.Started && (parent.Hidden || previous.event.Hidden || (e.State != "" && !terminalTaskState(e.State) && (terminalTaskState(parent.State) || (terminalTaskState(previous.event.State) && !resumable)))) {
 		return
+	}
+	if isAgent {
+		if _, exists := r.taskProgressSeen[key]; !exists {
+			if current.agents >= maxTaskProgressAgentsPerTask || len(r.taskProgressSeen) >= maxTaskProgressRows {
+				return
+			}
+			current.agents++
+			r.taskProgressRuns[taskHash] = current
+		}
 	}
 	// Sanitize before retaining metadata, not just before printing it. This
 	// cache contains bounded display fields and hashed raw identities only.
@@ -80,26 +102,23 @@ func (r *EventRenderer) taskProgress(e TaskProgressEvent) {
 		if e.State == "" {
 			e.State = old.State
 		}
-		if e.Update {
-			e.ToolName = old.ToolName
-			e.ToolSummary = old.ToolSummary
-			e.Summary = old.Summary
-			if !e.DetailSet {
-				e.Detail = old.Detail
-			}
+		if e.Update && !e.DetailSet {
+			e.Detail = old.Detail
 		}
 		if e.AgentID != "" || e.AgentIndex > 0 {
 			mergeAgentProgress(&e, old)
+		} else {
+			mergeTaskProgress(&e, old)
 		}
 		if e.RunID == "" {
 			e.RunID = old.RunID
 		}
 	}
-	if e.State != "" && e.State != TaskRunning {
+	if terminalTaskState(e.State) || (isAgent && e.State != "" && e.State != TaskRunning) {
 		e.Summary = ""
 	}
 	if e.Hidden {
-		r.taskProgressSeen[key] = taskProgressDisplay{event: e}
+		r.storeTaskProgress(key, taskProgressDisplay{event: e}, isAgent)
 		return
 	}
 	msg := taskProgressMessage(e)
@@ -111,7 +130,7 @@ func (r *EventRenderer) taskProgress(e TaskProgressEvent) {
 		comparison = taskProgressMessage(indexed)
 	}
 	fingerprint := sha256.Sum256([]byte(comparison))
-	r.taskProgressSeen[key] = taskProgressDisplay{event: e, fingerprint: fingerprint}
+	r.storeTaskProgress(key, taskProgressDisplay{event: e, fingerprint: fingerprint}, isAgent)
 	if previous.fingerprint == fingerprint {
 		return
 	}
@@ -166,7 +185,7 @@ func taskProgressMessage(e TaskProgressEvent) string {
 		}
 		msg += ")"
 	}
-	if e.Summary != "" {
+	if e.Summary != "" && e.State == TaskRunning {
 		msg += " — " + e.Summary
 	}
 	if e.Detail != "" {
@@ -184,11 +203,10 @@ func (r *EventRenderer) taskProgressIdentity(e *TaskProgressEvent) (taskProgress
 		r.taskProgressSeen = make(map[taskProgressKey]taskProgressDisplay)
 		r.taskProgressRuns = make(map[[sha256.Size]byte]taskProgressRun)
 	}
-	if len(r.taskProgressSeen) >= maxTaskProgressEntries {
-		clear(r.taskProgressSeen)
-		clear(r.taskProgressRuns)
-	}
 	task := sha256.Sum256([]byte(e.TaskID))
+	if _, exists := r.taskProgressRuns[task]; !exists && len(r.taskProgressRuns) >= maxTaskProgressEntries {
+		return taskProgressKey{}, false
+	}
 	current := r.taskProgressRuns[task]
 	run := current.hash
 	zero := [sha256.Size]byte{}
@@ -211,16 +229,14 @@ func (r *EventRenderer) taskProgressIdentity(e *TaskProgressEvent) (taskProgress
 		}
 	}
 	if e.Started {
+		r.retireTaskProgressRows(task, false)
+		current.parent = taskProgressDisplay{}
+		current.agents = 0
 		if e.RunID == "" {
 			run = zero
 			current.hash = zero
 		} else {
 			current = taskProgressRun{hash: run, watermark: run, order: order, named: true}
-		}
-		for key := range r.taskProgressSeen {
-			if key.task == task && key.run == run {
-				delete(r.taskProgressSeen, key)
-			}
 		}
 	} else if e.RunID != "" && current.hash != run {
 		if current.hash == zero {
@@ -232,8 +248,15 @@ func (r *EventRenderer) taskProgressIdentity(e *TaskProgressEvent) (taskProgress
 					r.taskProgressSeen[key] = display
 				}
 			}
+		} else {
+			r.retireTaskProgressRows(task, false)
+			current.parent = taskProgressDisplay{}
+			current.agents = 0
 		}
-		current = taskProgressRun{hash: run, watermark: run, order: order, named: true}
+		current.hash = run
+		current.watermark = run
+		current.order = order
+		current.named = true
 	}
 	r.taskProgressRuns[task] = current
 	// Workflow entries are keyed by type:index in the producer. agentId is
