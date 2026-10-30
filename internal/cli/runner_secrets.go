@@ -68,16 +68,20 @@ var workflowSetEnvNames = []string{
 }
 
 // runnerSecretRefusedNames are minted role tokens and other runner-owned
-// names outside the refused families: GH_TOKEN, every role token in
-// roleTokenVars, GITLAB_TOKEN, PATH and workflowSetEnvNames. oidcDenyKeys,
-// providerOnlyKeys and reservedSandboxKeys are refused as well
+// names outside the refused families: every agentTokenEnvVars name (GH_TOKEN,
+// GITHUB_TOKEN, GH_ENTERPRISE_TOKEN, GITHUB_ENTERPRISE_TOKEN), every role
+// token in roleTokenVars, GITLAB_TOKEN, PATH and workflowSetEnvNames.
+// oidcDenyKeys, providerOnlyKeys and reservedSandboxKeys are refused as well
 // (runnerSecretNameRefused), which keeps GH_WORKFLOW_TOKEN (ADR 0114)
-// unforgeable.
+// unforgeable. Deriving the agent token names from agentTokenEnvVars keeps
+// this set from drifting when the mint takes over another name (#8952).
 var runnerSecretRefusedNames = func() map[string]bool {
 	names := map[string]bool{
-		"GH_TOKEN":     true,
 		"GITLAB_TOKEN": true,
 		"PATH":         true,
+	}
+	for _, n := range agentTokenEnvVars {
+		names[n] = true
 	}
 	for _, n := range workflowSetEnvNames {
 		names[n] = true
