@@ -383,7 +383,7 @@ Coordinate these changes with the operator of your OpenShell gateway:
   the version it pins in
   [`.github/scripts/openshell-version.sh`](https://github.com/fullsend-ai/fullsend/blob/main/.github/scripts/openshell-version.sh)
   at your release tag.
-  The [OpenShell gateway configuration reference](https://github.com/NVIDIA/OpenShell/blob/v0.1.4/docs/how-it-works/gateways/configuration.mdx)
+  The [OpenShell gateway configuration reference](https://github.com/NVIDIA/OpenShell/blob/v0.1.6/docs/how-it-works/gateways/configuration.mdx)
   for that version describes proxy chaining for policy-approved TLS
   connections using the HTTP CONNECT method to establish a tunnel. Plain-HTTP
   destination traffic remains direct. These are not fullsend harness fields or
