@@ -74,6 +74,13 @@ via base, overlay, or forge composition are reported at the merged top-level fie
 (`env.runner`, `env.sandbox`, `runner_env`); unconsumed forge sections report their own
 position (`forge[<name>].…`).
 
+The `GITHUB_ISSUE_URL` check is the exception. It reads each harness file
+before composition, so it reports every forge variant and overlay once, at
+the position where it is declared (`forge[<name>].…`, `overlays[<n>].…`).
+This holds whether or not the variant or overlay matches the current
+platform or event. Content declared in a base harness gets one `base.`
+prefix per level (`base.env.runner`, `base.overlays[<n>].…`).
+
 | Field | Severity | Message |
 |-------|----------|---------|
 | `runner_env` | warning | `runner_env` is deprecated; use `env.runner` instead ([ADR 0055](../ADRs/0055-unified-env-var-delivery.md)) |
@@ -81,7 +88,7 @@ position (`forge[<name>].…`).
 | `allowed_remote_resources` | warning | `allowed_remote_resources` is declared without `allow_runtime_fetch: true`; the implicit runtime fetch service start is deprecated — add `allow_runtime_fetch: true` to silence it |
 | `forge` | warning | `forge` is deprecated; use overlays with CEL `when` expressions instead ([ADR 0088](../ADRs/0088-cel-guarded-overlays.md)) |
 | `validation_loop.preflight_check` | error | The value looks like a bare script path (for example `scripts/common-preflight.sh`) rather than a self-contained command; `preflight_check` runs verbatim as a `sh -c` command on the host and is never fetched or resolved like `pre_script`/`post_script` — if a fetched harness script was intended, use `pre_script`; otherwise inline the command (for example `python3 -c 'import jsonschema'`) |
-| `runner_env`, `env.runner`, `env.sandbox`, `host_files[<n>].src`, `forge[<name>].…` | warning | An env entry named `GITHUB_ISSUE_URL`, or a value or `host_files` source referencing it (`$GITHUB_ISSUE_URL` / `${GITHUB_ISSUE_URL}`), which is deprecated; use `FULLSEND_WORK_ITEM_URL` instead |
+| `runner_env`, `env.runner`, `env.sandbox`, `host_files[<n>].src`, `forge[<name>].…`, `overlays[<n>].…`, `base.…` | warning | An env entry named `GITHUB_ISSUE_URL`, or a value or `host_files` source referencing it (`$GITHUB_ISSUE_URL` / `${GITHUB_ISSUE_URL}`), which is deprecated; use `FULLSEND_WORK_ITEM_URL` instead |
 | `config.yaml` | error | Semantic validation of `config.yaml` fails — for example an unsupported `version`, an unknown `runtime`, or an `agents[]` entry whose `trigger` does not compile or does not return a boolean. Merged `agents[]` entries and model aliases are validated, including those inherited from `config.base.yaml`; other inherited settings (such as `version` or `runtime`) are not. Errors are labelled `config.yaml` even when the entry comes from the base file. When an `agents[]` entry is invalid, no agent harness is resolved, because every agent would fail with the same error |
 
 ## Exit codes
