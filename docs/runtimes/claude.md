@@ -248,6 +248,13 @@ with `claude not found in a PATH directory the agent cannot write` (exit 127). W
 hooks on, that `python3` must also be 3.11 or newer; an older one fails Bootstrap with
 `hook interpreter ... needs at least 3.11`. The fullsend sandbox image ships both.
 
+With sandbox hooks on and Tirith enabled (the default, which sets `TIRITH_REQUIRED=1`), the
+image also needs `tirith` in a `PATH` directory the sandbox user neither owns nor can write. The
+hooks run under a `PATH` without the agent-writable directories, so a `tirith` installed only in
+one of them is not found and every Bash call blocks with
+`tirith binary not found but TIRITH_REQUIRED=1 (expected in sandbox image)`. The fullsend sandbox
+image installs it in `/usr/local/bin`.
+
 The `claude` CLI is held to the same rule. The launch pins the first `claude`
 in a `PATH` directory the sandbox user neither owns nor can write, judged by
 the file it resolves to and every directory above that file. A `claude` found

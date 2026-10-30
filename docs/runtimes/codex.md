@@ -330,6 +330,12 @@ What a local codex run needs, beyond the guide:
   prints `no readlink that is a regular file in a PATH directory the agent cannot write`.
   With sandbox hooks on, that `python3` must also be 3.11 or newer; an older one fails Bootstrap
   with `hook interpreter ... needs at least 3.11`.
+  With sandbox hooks on and Tirith enabled (the default, which sets `TIRITH_REQUIRED=1`), the
+  image also needs `tirith` in a `PATH` directory the sandbox user neither owns nor can write.
+  The hooks run under `FULLSEND_TRUSTED_PATH`, which leaves out the agent-writable directories,
+  so a `tirith` installed only in one of them is not found and every Bash call blocks with
+  `tirith binary not found but TIRITH_REQUIRED=1 (expected in sandbox image)`. The fullsend
+  sandbox image installs it in `/usr/local/bin`.
 - **Sandbox hook settings come from the harness, not `.env`.** With sandbox
   hooks on, `TIRITH_FAIL_ON`, `TIRITH_REQUIRED`, `FULLSEND_EGRESS_ALLOWLIST`,
   `FULLSEND_CANARY_TOKEN` and `FULLSEND_TOOL_ALLOWLIST` are taken from the
