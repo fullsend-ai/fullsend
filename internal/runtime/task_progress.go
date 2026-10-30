@@ -31,7 +31,12 @@ func (r *EventRenderer) taskProgress(e TaskProgressEvent) {
 	previous := r.taskProgressSeen[key]
 	parentKey := taskProgressKey{task: taskHash, run: runHash, agent: sha256.Sum256(nil)}
 	parent := r.taskProgressSeen[parentKey].event
-	if !e.Started && (parent.Hidden || previous.event.Hidden || (e.State != "" && !terminalTaskState(e.State) && (terminalTaskState(parent.State) || terminalTaskState(previous.event.State)))) {
+	isAgent := e.AgentID != "" || e.AgentIndex > 0
+	if isAgent && staleAgentSnapshot(e, previous.event) {
+		return
+	}
+	resumable := isAgent && previous.event.State == TaskFailed && agentExecutionAdvanced(e, previous.event)
+	if !e.Started && (parent.Hidden || previous.event.Hidden || (e.State != "" && !terminalTaskState(e.State) && (terminalTaskState(parent.State) || (terminalTaskState(previous.event.State) && !resumable)))) {
 		return
 	}
 	// Sanitize before retaining metadata, not just before printing it. This
@@ -45,6 +50,7 @@ func (r *EventRenderer) taskProgress(e TaskProgressEvent) {
 	e.ToolSummary = r.progressText(e.ToolSummary, 160)
 	e.Summary = r.progressText(e.Summary, 200)
 	e.Detail = r.progressText(e.Detail, 200)
+	e.LastAttemptReason = r.progressText(e.LastAttemptReason, 60)
 	e.State = TaskState(r.progressText(string(e.State), 40))
 	if !e.Started {
 		old := previous.event
@@ -134,6 +140,19 @@ func taskProgressMessage(e TaskProgressEvent) string {
 		}
 		msg += ")"
 	}
+	if e.Attempt > 0 || e.LastAttemptReason != "" {
+		msg += " ("
+		if e.Attempt > 0 {
+			msg += fmt.Sprintf("attempt %d", e.Attempt)
+		}
+		if e.LastAttemptReason != "" {
+			if e.Attempt > 0 {
+				msg += "; "
+			}
+			msg += "retry: " + e.LastAttemptReason
+		}
+		msg += ")"
+	}
 	if e.Summary != "" {
 		msg += " — " + e.Summary
 	}
@@ -211,27 +230,73 @@ func (r *EventRenderer) taskProgressIdentity(e *TaskProgressEvent) taskProgressK
 // Error/blocked/cached metadata is state-relative: a transition drops omitted
 // transient values instead of describing a recovered agent as still blocked.
 func mergeAgentProgress(e *TaskProgressEvent, old TaskProgressEvent) {
-	if e.AgentID == "" {
+	advanced := agentExecutionAdvanced(*e, old)
+	if !e.AttemptSet {
+		e.Attempt = old.Attempt
+		e.AttemptSet = old.AttemptSet
+	}
+	if !e.LastAttemptReasonSet && !advanced {
+		e.LastAttemptReason = old.LastAttemptReason
+	}
+	if !e.QueuedAtSet && !advanced {
+		e.QueuedAt = old.QueuedAt
+		e.QueuedAtSet = old.QueuedAtSet
+	}
+	if !e.StartedAtSet && e.State != TaskQueued && !advanced {
+		e.StartedAt = old.StartedAt
+		e.StartedAtSet = old.StartedAtSet
+	}
+	if e.AgentID == "" && !advanced {
 		e.AgentID = old.AgentID
 	}
 	if !e.PhaseSet && e.Phase == "" {
 		e.Phase = old.Phase
 	}
-	if !e.ToolNameSet && e.ToolName == "" {
+	if !e.ToolNameSet && e.ToolName == "" && !advanced {
 		e.ToolName = old.ToolName
 	}
-	if !e.ToolSummarySet && e.ToolSummary == "" && e.ToolName == old.ToolName {
+	if !e.ToolSummarySet && e.ToolSummary == "" && e.ToolName == old.ToolName && !advanced {
 		e.ToolSummary = old.ToolSummary
 	}
-	if !e.DetailSet && e.Detail == "" && e.State == old.State {
+	sameState := e.State == old.State && !advanced
+	if !e.DetailSet && e.Detail == "" && sameState {
 		e.Detail = old.Detail
 	}
-	if !e.BlockedSet && !e.Blocked && e.State == old.State {
+	if !e.BlockedSet && !e.Blocked && sameState {
 		e.Blocked = old.Blocked
 	}
-	if !e.CachedSet && !e.Cached && e.State == old.State {
+	if !e.CachedSet && !e.Cached && sameState {
 		e.Cached = old.Cached
 	}
+}
+
+// agentExecutionAdvanced permits an intermediate failed attempt to resume,
+// while completed/skipped tasks and terminal parent workflows remain closed.
+// The producer can also emit a fresh queue while waiting out a quota limit.
+func agentExecutionAdvanced(e, old TaskProgressEvent) bool {
+	if e.AttemptSet && e.Attempt > 1 && e.Attempt > old.Attempt {
+		return true
+	}
+	if e.StartedAtSet && (old.StartedAtSet && e.StartedAt > old.StartedAt || !old.StartedAtSet && old.State == TaskFailed) {
+		return true
+	}
+	return e.State == TaskQueued && e.QueuedAtSet && old.QueuedAtSet && e.QueuedAt > old.QueuedAt && (!old.StartedAtSet || e.QueuedAt > old.StartedAt)
+}
+
+// staleAgentSnapshot rejects prior-attempt deliveries and a queued snapshot
+// that predates the known execution. An index stays stable across attempts.
+func staleAgentSnapshot(e, old TaskProgressEvent) bool {
+	if e.AttemptSet && old.AttemptSet && e.Attempt < old.Attempt {
+		return true
+	}
+	higherAttempt := e.AttemptSet && e.Attempt > old.Attempt
+	if old.QueuedAtSet && !old.StartedAtSet && !higherAttempt && ((e.QueuedAtSet && e.QueuedAt < old.QueuedAt) || (e.StartedAtSet && e.StartedAt < old.QueuedAt)) {
+		return true
+	}
+	if e.State == TaskQueued && e.QueuedAtSet && old.StartedAtSet && e.QueuedAt <= old.StartedAt && !higherAttempt {
+		return true
+	}
+	return e.StartedAtSet && old.StartedAtSet && e.StartedAt < old.StartedAt && !(e.AttemptSet && e.Attempt > old.Attempt)
 }
 
 func terminalTaskState(state TaskState) bool {

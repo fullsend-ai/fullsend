@@ -25,17 +25,22 @@ type claudeTaskProgress struct {
 }
 
 type claudeWorkflowAgentProgress struct {
-	Type            string  `json:"type"`
-	Index           int     `json:"index"`
-	AgentID         string  `json:"agentId"`
-	Label           *string `json:"label"`
-	PhaseTitle      *string `json:"phaseTitle"`
-	State           string  `json:"state"`
-	LastToolName    *string `json:"lastToolName"`
-	LastToolSummary *string `json:"lastToolSummary"`
-	Error           *string `json:"error"`
-	Blocked         *bool   `json:"blocked"`
-	Cached          *bool   `json:"cached"`
+	Type              string   `json:"type"`
+	Index             int      `json:"index"`
+	AgentID           string   `json:"agentId"`
+	Label             *string  `json:"label"`
+	PhaseTitle        *string  `json:"phaseTitle"`
+	State             string   `json:"state"`
+	LastToolName      *string  `json:"lastToolName"`
+	LastToolSummary   *string  `json:"lastToolSummary"`
+	Error             *string  `json:"error"`
+	Blocked           *bool    `json:"blocked"`
+	Cached            *bool    `json:"cached"`
+	QueuedAt          *float64 `json:"queuedAt"`
+	StartedAt         *float64 `json:"startedAt"`
+	Attempt           *int     `json:"attempt"`
+	LastAttemptReason *string  `json:"lastAttemptReason"`
+	Skipped           *bool    `json:"skipped"`
 }
 
 func decodeClaudeTaskProgress(line []byte, subtype string) []TaskProgressEvent {
@@ -105,11 +110,30 @@ func decodeClaudeTaskProgress(line []byte, subtype string) []TaskProgressEvent {
 		if json.Unmarshal(entry, &agent) != nil || agent.Type != "workflow_agent" || (agent.AgentID == "" && agent.Index <= 0) {
 			continue
 		}
-		state := claudeTaskState(agent.State)
+		state := claudeWorkflowAgentState(agent)
 		if state == "" {
 			continue
 		}
 		event := TaskProgressEvent{TaskID: task.TaskID, RunID: task.RunID, AgentID: agent.AgentID, AgentIndex: agent.Index, State: state}
+		if agent.QueuedAt != nil && *agent.QueuedAt >= 0 {
+			event.QueuedAt = *agent.QueuedAt
+			event.QueuedAtSet = true
+		}
+		if agent.StartedAt != nil && *agent.StartedAt >= 0 {
+			event.StartedAt = *agent.StartedAt
+			event.StartedAtSet = true
+		}
+		if agent.Attempt != nil && *agent.Attempt > 0 {
+			event.Attempt = *agent.Attempt
+			event.AttemptSet = true
+		}
+		if agent.LastAttemptReason != nil {
+			event.LastAttemptReasonSet = true
+			switch *agent.LastAttemptReason {
+			case "stalled", "throttled", "user-retry":
+				event.LastAttemptReason = *agent.LastAttemptReason
+			}
+		}
 		if agent.Label != nil {
 			event.Label = *agent.Label
 			event.LabelSet = true
@@ -143,6 +167,33 @@ func decodeClaudeTaskProgress(line []byte, subtype string) []TaskProgressEvent {
 	return events
 }
 
+// claudeWorkflowAgentState follows the internal four-value producer enum.
+// Queue/retry/skip are metadata, not additional workflow_agent.state values.
+func claudeWorkflowAgentState(agent claudeWorkflowAgentProgress) TaskState {
+	switch agent.State {
+	case "start":
+		if agent.QueuedAt != nil && *agent.QueuedAt >= 0 && agent.StartedAt == nil {
+			return TaskQueued
+		}
+		if agent.StartedAt != nil && *agent.StartedAt >= 0 && agent.Attempt != nil && *agent.Attempt > 1 {
+			return TaskRetrying
+		}
+		return TaskRunning
+	case "progress":
+		return TaskRunning
+	case "done":
+		return TaskCompleted
+	case "error":
+		if agent.Skipped != nil && *agent.Skipped {
+			return TaskSkipped
+		}
+		return TaskFailed
+	default:
+		return ""
+	}
+}
+
+// claudeTaskState maps task lifecycle statuses, not workflow_agent states.
 func claudeTaskState(state string) TaskState {
 	switch state {
 	case "start", "started", "progress", "running":
@@ -153,16 +204,10 @@ func claudeTaskState(state string) TaskState {
 		return TaskFailed
 	case "killed", "stopped", "cancelled", "canceled":
 		return TaskStopped
-	case "queued":
-		return TaskQueued
 	case "pending":
 		return TaskPending
 	case "paused":
 		return TaskPaused
-	case "retrying":
-		return TaskRetrying
-	case "skipped":
-		return TaskSkipped
 	default:
 		return ""
 	}

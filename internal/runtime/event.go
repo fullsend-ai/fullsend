@@ -205,6 +205,16 @@ type TaskProgressEvent struct {
 	Detail      string
 	Blocked     bool
 	Cached      bool
+	// Workflow attempts are one-based. Timestamps are producer epoch-ms
+	// metadata used only for lifecycle reconciliation, never usage accounting.
+	Attempt              int
+	LastAttemptReason    string
+	QueuedAt             float64
+	StartedAt            float64
+	AttemptSet           bool
+	LastAttemptReasonSet bool
+	QueuedAtSet          bool
+	StartedAtSet         bool
 	// Update is a task lifecycle patch; it retains prior tool context.
 	// LabelSet/DetailSet apply to task and agent metadata; Phase/Tool/Blocked/
 	// Cached Set flags apply only to agent snapshots. Started is task-level.

@@ -111,75 +111,11 @@ cases fail earlier:
 See
 [pi § Per-persona model configuration](../runtimes/pi.md#per-persona-model-configuration).
 
-## Live Claude Workflow progress
+## Live progress
 
-When Claude Code emits background task and Workflow progress, `fullsend run`
-prints task identity, agent labels, attributed phases, state changes, and
-available tool names/context. For example:
-
-```console
-  ⚙ Task wf-example / agent #1 (reader) [Read]: read input — running
-  ⚙ Task wf-example / agent #1 (reader) [Read]: read input — completed
-  ⚙ Task wf-example / agent #2 (creator) [Create]: strategy-create — running (tool: Bash: python3 create.py)
-```
-
-Unchanged snapshots and counter-only updates do not repeat the same display
-line. Text is sanitized, credential-redacted, and bounded before display or
-retention in the bounded display cache. Concurrent tasks and agents retain
-separate identities. Partial lifecycle patches retain known task labels and
-state; explicit starts can reset an identity. Late running snapshots do not
-reopen a known terminal task or agent. Sparse agent snapshots retain known
-labels, phases and tool context. Error, blocked and cached metadata persists
-within a state; state changes clear omitted transient metadata. Explicit
-empty strings and false flags also clear their corresponding fields.
-Visibility belongs to each run: promoting its first late run ID preserves
-its hidden classification, while a distinct named run does not inherit an
-older run's visibility. Hook names and event attribution survive sparse
-progress/completion messages for the same hook ID.
-
-The display handles these structured Claude events when the runtime emits
-them. Task progress shapes were checked against Claude Code 2.1.296 capture
-and the embedded 2.1.312 emitter/schema; this is version-bound compatibility,
-not a promise of a stable public protocol. In particular, `workflow_progress`
-(including `workflow_agent` metadata) and `system/task_summary` are
-**undocumented internal Claude Code extensions**, not public Agent SDK
-contracts in the inspected version. They may change or disappear without
-notice in any Claude patch release. Support is best-effort; unsupported
-shapes are ignored for display and raw events remain available for diagnosis.
-A newly recorded live 2.1.312 Workflow stream has not been qualified here.
-
-Workflow agents use their positive index as stable identity within a task/run.
-A late `agentId` is retained as display attribution, and learning it alone
-does not add another progress line. If the index is absent, the agent ID is
-the identity fallback.
-
-| Event | Console behavior |
-| --- | --- |
-| `task_started` | Task identity and description; ambient/hidden starts suppress subsequent progress while tracked. |
-| `task_progress` | Task description, last tool and progress summary; best-effort decoding of the undocumented internal `workflow_progress` agent metadata. |
-| `task_updated` | Pending, running, paused, completed, failed and killed states; description-only patches and bounded errors. |
-| `task_notification` | Completion, failure or stop, including a worker-restart cause when supplied; full result summary excluded. |
-| `task_summary` | Undocumented internal mid-turn summary; best-effort display, with null/empty values clearing deduplication silently. |
-| `background_tasks_changed` | Count of reported non-ambient background tasks; membership is not execution or completion evidence. |
-| `hook_started`, `hook_progress`, `hook_response` | Hook name/event, running/outcome and exit code; stdout/stderr/output excluded. |
-| `permission_denied` | Tool/agent identity and bounded decision reason; tool-result body excluded. |
-| `status`, `session_state_changed` | Compaction, session state and action-required transitions; per-request status chatter excluded. |
-| `informational`, `notification` | Salient notices, suggestions, warnings and text notifications; unkeyed occurrences repeat, transcript-only info excluded. |
-| `rate_limit_event` | Warnings, rejection, supplied reset time and subsequent recovery; routine initial allowed status suppressed. |
-
-Declared `workflow_phase` records do not prove live advancement and are not
-rendered as phase starts. Internal `workflow_log` entries are filtered out
-of SDK progress by the inspected Claude 2.1.312 producer; Fullsend cannot
-display records absent from its input stream. This is not a stream of full
-nested tool stdout/stderr, prompts, result bodies or hook output. Unknown
-message kinds/states and malformed records are ignored for display; raw
-events remain in `output.jsonl` for diagnosis and future compatibility work.
-
-Task completion and session idle are distinct from the run's validated
-business result. Progress counters do not add to token/cost totals. The
-periodic `Agent running (...)` heartbeat still reports elapsed time rather
-than proving progress. The display is advisory, not a durable task registry;
-very large sessions can evict cached identity and deduplication state.
+Progress display depends on the selected runtime. See
+[Claude Workflow progress](../runtimes/claude.md#live-claude-workflow-progress)
+for Claude background tasks, agent lifecycle metadata and display limits.
 
 ## Output artifacts
 
