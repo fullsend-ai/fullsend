@@ -8,6 +8,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/fullsend-ai/fullsend/internal/harness"
 )
 
 func TestRootCommand_HasLintSubcommand(t *testing.T) {
@@ -478,6 +480,57 @@ allowed_remote_resources:
 		require.NoError(t, err)
 		assert.Contains(t, out, "warning: allowed_remote_resources")
 		assert.Contains(t, out, "deprecated")
+	})
+
+	t.Run("fails with strict", func(t *testing.T) {
+		cmd := newLintCmd()
+		_, err := executeCmd(cmd, []string{"--fullsend-dir", dir, "--strict"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "lint found 1 warning-level diagnostic(s) (--strict)")
+	})
+}
+
+// TestLintCommand_ReportsReservedSandboxEnvKeys pins the wiring in the lint
+// loop: run and lock already report the env.sandbox keys the gate drops, and
+// lint must report the same warning so the loss is visible at commit time.
+func TestLintCommand_ReportsReservedSandboxEnvKeys(t *testing.T) {
+	dir := t.TempDir()
+	cfg := `version: "1"
+agents:
+  - name: my-agent
+    source: harness/my-agent.yaml
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(cfg), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	writeLintAgentFixture(t, dir, "my-agent")
+	// HTTPS_PROXY is on the credential deny-list; https_proxy checks the
+	// case-insensitive match; MY_TOOL_SETTING survives the gate.
+	harnessYAML := `role: triage
+agent: agents/my-agent.md
+policy: policies/base.yaml
+env:
+  sandbox:
+    HTTPS_PROXY: http://proxy.example:8080
+    https_proxy: http://proxy.example:8080
+    MY_TOOL_SETTING: keep-me
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "my-agent.yaml"), []byte(harnessYAML), 0o644))
+
+	want := reservedSandboxEnvDiagnostics(&harness.Harness{Env: &harness.EnvConfig{Sandbox: map[string]string{
+		"HTTPS_PROXY":     "http://proxy.example:8080",
+		"https_proxy":     "http://proxy.example:8080",
+		"MY_TOOL_SETTING": "keep-me",
+	}}})
+	require.Len(t, want, 1, "precondition: the fixture declares reserved keys")
+
+	t.Run("warning without strict", func(t *testing.T) {
+		cmd := newLintCmd()
+		out, err := executeCmd(cmd, []string{"--fullsend-dir", dir})
+		require.NoError(t, err, "the reserved-key diagnostic is a warning")
+		assert.Contains(t, out, "my-agent: warning: env.sandbox")
+		assert.Contains(t, out, want[0].Message, "lint must report the same warning as run and lock")
+		assert.Contains(t, out, "HTTPS_PROXY, https_proxy")
+		assert.NotContains(t, out, "MY_TOOL_SETTING", "a key that survives must not be named")
 	})
 
 	t.Run("fails with strict", func(t *testing.T) {

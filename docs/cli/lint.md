@@ -78,6 +78,7 @@ position (`forge[<name>].…`).
 |-------|----------|---------|
 | `runner_env` | warning | `runner_env` is deprecated; use `env.runner` instead ([ADR 0055](../ADRs/0055-unified-env-var-delivery.md)) |
 | `env.sandbox` | warning | `env.sandbox` coexists with a `host_files` entry delivering `.env.d/` files; `env.sandbox` values take precedence on key collision |
+| `env.sandbox` | warning | One or more `env.sandbox` keys are reserved (runner infrastructure names or the sandbox credential deny-list, matched case-insensitively) and will be dropped instead of exported into the sandbox; the message names every dropped key. `fullsend run` and `fullsend lock` report the same warning. Because it is a warning, `--strict` fails on it |
 | `allowed_remote_resources` | warning | `allowed_remote_resources` is declared without `allow_runtime_fetch: true`; the implicit runtime fetch service start is deprecated — add `allow_runtime_fetch: true` to silence it |
 | `forge` | warning | `forge` is deprecated; use overlays with CEL `when` expressions instead ([ADR 0088](../ADRs/0088-cel-guarded-overlays.md)) |
 | `validation_loop.preflight_check` | error | The value looks like a bare script path (for example `scripts/common-preflight.sh`) rather than a self-contained command; `preflight_check` runs verbatim as a `sh -c` command on the host and is never fetched or resolved like `pre_script`/`post_script` — if a fetched harness script was intended, use `pre_script`; otherwise inline the command (for example `python3 -c 'import jsonschema'`) |
