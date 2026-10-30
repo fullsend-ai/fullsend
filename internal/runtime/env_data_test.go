@@ -517,6 +517,34 @@ func TestEnvDataLoad_RejectedBacktickStatementSkippedWhole(t *testing.T) {
 	}
 }
 
+// A comment inside a rejected $(...) statement is skipped without opening
+// quote or backtick spans, so the statement still resyncs at its closing
+// parenthesis (#8604).
+func TestEnvDataLoad_RejectedStatementCommentInsideSubstitution(t *testing.T) {
+	f := newEnvDataFixture(t)
+	f.write(t, ".env", strings.Join([]string{
+		"export X=$(printf x # lone `backtick",
+		"export INSIDE_BT=1",
+		")",
+		"export Y=$(printf y # it's a lone quote",
+		"export INSIDE_SQ=1",
+		")",
+		"export KEEP=1",
+	}, "\n")+"\n")
+	env, stderr := f.envOf(t)
+	for _, name := range []string{"X", "INSIDE_BT", "Y", "INSIDE_SQ"} {
+		_, ok := env[name]
+		assert.False(t, ok, "%s was taken from .env", name)
+	}
+	assert.Equal(t, "1", env["KEEP"])
+	for _, line := range []string{"line 1:", "line 4:"} {
+		assert.Contains(t, stderr, line)
+	}
+	for _, line := range []string{"line 2:", "line 3:", "line 5:", "line 6:", "line 7:"} {
+		assert.NotContains(t, stderr, line)
+	}
+}
+
 // An .env.d directory that exists but cannot be listed, or whose files
 // cannot be examined, fails the launch instead of losing every setting in it.
 func TestEnvDataLoad_UnreadableEnvDirFails(t *testing.T) {
