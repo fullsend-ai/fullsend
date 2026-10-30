@@ -568,6 +568,70 @@ func TestCommitScaffoldViaPR_CrossForkCreateBranchGenericError(t *testing.T) {
 	assert.Contains(t, buf.String(), "Failed to create scaffold branch")
 }
 
+// newUnsyncedForkClient returns a fake client whose fork does not contain the
+// upstream HEAD commit: CreateBranchFromSHA reports ErrNotFound, as the GitLab
+// client does for a fork that has not been synced (#8841).
+func newUnsyncedForkClient() *forge.FakeClient {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "contributor"
+	client.ExistingForks = map[string]string{
+		"acme/widget": "contributor",
+	}
+	client.BranchRefs["acme/widget/main"] = "upstream-sha"
+	client.Errors = map[string]error{
+		"CreateBranchFromSHA": fmt.Errorf("create branch from SHA: commit %w", forge.ErrNotFound),
+	}
+	return client
+}
+
+func TestCommitScaffoldViaPR_CrossForkUnsyncedFallsBackToForkDefaultBranch(t *testing.T) {
+	client := newUnsyncedForkClient()
+	printer, buf := newTestPrinter()
+
+	_, err := CommitScaffoldFiles(context.Background(), client, printer,
+		"acme", "widget", "main", testMeta("msg", "title", "body"), testFiles, false, nil)
+	require.NoError(t, err)
+
+	assert.Empty(t, client.CreatedBranchSHAs)
+	require.Equal(t, []string{"contributor/widget/fullsend/scaffold-install"}, client.CreatedBranches,
+		"scaffold branch should be created from the fork's default branch")
+	require.Len(t, client.CommittedFilesToBranch, 1)
+	assert.Equal(t, "contributor", client.CommittedFilesToBranch[0].Owner)
+	require.Len(t, client.CreatedProposals, 1)
+	assert.Equal(t, "contributor/widget", client.CreatedProposals[0].HeadRepo)
+	assert.Equal(t, "main", client.CreatedProposals[0].Base)
+	assert.Contains(t, buf.String(), "Upstream commit upstream-sha is not in fork contributor/widget")
+}
+
+func TestCommitScaffoldViaPR_CrossForkUnsyncedExistingBranchRecreated(t *testing.T) {
+	client := newUnsyncedForkClient()
+	client.ExistingBranches["contributor/widget/fullsend/scaffold-install"] = true
+	printer, buf := newTestPrinter()
+
+	_, err := CommitScaffoldFiles(context.Background(), client, printer,
+		"acme", "widget", "main", testMeta("msg", "title", "body"), testFiles, false, nil)
+	require.NoError(t, err)
+
+	require.Equal(t, []string{"contributor/widget/fullsend/scaffold-install"}, client.DeletedBranches)
+	require.Equal(t, []string{"contributor/widget/fullsend/scaffold-install"}, client.CreatedBranches)
+	require.Len(t, client.CommittedFilesToBranch, 1)
+	assert.Contains(t, buf.String(), "Recreated scaffold branch")
+}
+
+func TestCommitScaffoldViaPR_CrossForkUnsyncedFallbackError(t *testing.T) {
+	client := newUnsyncedForkClient()
+	client.Errors["CreateBranch"] = fmt.Errorf("internal server error")
+	printer, buf := newTestPrinter()
+
+	_, err := CommitScaffoldFiles(context.Background(), client, printer,
+		"acme", "widget", "main", testMeta("msg", "title", "body"), testFiles, false, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "creating scaffold branch")
+	assert.Contains(t, err.Error(), "internal server error")
+	assert.Empty(t, client.CommittedFilesToBranch)
+	assert.Contains(t, buf.String(), "Failed to create scaffold branch")
+}
+
 func TestCommitScaffoldViaPR_CrossForkCommitFilesProtected(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.AuthenticatedUser = "contributor"

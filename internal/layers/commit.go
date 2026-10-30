@@ -365,7 +365,19 @@ func deliverBranchAndPR(ctx context.Context, client forge.Client, printer *ui.Pr
 				upstreamOwner, upstreamRepo, defaultBranch, shaErr)
 		}
 		createBranch = func() error {
-			return client.CreateBranchFromSHA(ctx, targetOwner, targetRepo, scaffoldBranch, upstreamSHA)
+			err := client.CreateBranchFromSHA(ctx, targetOwner, targetRepo, scaffoldBranch, upstreamSHA)
+			if !forge.IsNotFound(err) {
+				return err
+			}
+			// The fork does not contain the upstream commit (a GitLab
+			// fork that has not been synced does not share upstream's
+			// later objects). Fall back to the fork's own default
+			// branch: the merge request diff is computed from the merge
+			// base, so it still contains only the scaffold changes.
+			printer.StepWarn(fmt.Sprintf(
+				"Upstream commit %s is not in fork %s/%s; creating scaffold branch from the fork's default branch (sync the fork to avoid merge conflicts)",
+				upstreamSHA, targetOwner, targetRepo))
+			return client.CreateBranch(ctx, targetOwner, targetRepo, scaffoldBranch)
 		}
 	} else {
 		createBranch = func() error {
