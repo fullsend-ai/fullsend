@@ -13,6 +13,21 @@ func TestEnvRefNames(t *testing.T) {
 	assert.Equal(t, []string{"X"}, EnvRefNames("Bearer ${X}"))
 }
 
+// overlayGuardReadsOnlyForgeOrConfig is a denylist: it refuses event and
+// any runtime read but runtime.forge, and lets every other identifier
+// through. That is correct only while NewOverlayEnv declares exactly
+// event, runtime and config. If this test fails, revisit the guard before
+// updating the expected set: a new variable would pass it unchecked.
+func TestNewOverlayEnv_VariablesPinnedForRunnerSecretGuard(t *testing.T) {
+	env, err := NewOverlayEnv()
+	require.NoError(t, err)
+	var names []string
+	for _, v := range env.Variables() {
+		names = append(names, v.Name())
+	}
+	assert.ElementsMatch(t, []string{"event", "runtime", "config"}, names)
+}
+
 func TestOverlayGuardReadsOnlyForgeOrConfig(t *testing.T) {
 	allowed := []string{
 		`runtime.forge == "github"`,

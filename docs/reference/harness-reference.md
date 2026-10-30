@@ -177,7 +177,8 @@ These rules make a run fail before `pre_script` starts:
   covers `GH_WORKFLOW_TOKEN`, the OIDC request variables, provider-only keys
   such as `OPENAI_API_KEY`, the `FULLSEND_*`, `GITHUB_*`, `ACTIONS_*`,
   `RUNNER_*`, `CI_*`, `LD_*`, `DYLD_*`, `OTEL_*`, `GOOGLE_*` and `CLOUDSDK_*`
-  families, the minted role tokens (`GH_TOKEN`, `PUSH_TOKEN`,
+  families, `GCLOUD_PROJECT` and `GCP_PROJECT` (also exported by
+  `google-github-actions/auth`), the minted role tokens (`GH_TOKEN`, `PUSH_TOKEN`,
   `PUSH_TOKEN_SOURCE`, `REVIEW_TOKEN`, `GITLAB_TOKEN`), `PATH`, the
   runner-infrastructure names (`HOME`, `SHELL`, `BASH_ENV`, `ENV`,
   `TRACEPARENT`), and every name the reusable workflow sets on the `fullsend

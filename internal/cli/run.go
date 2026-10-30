@@ -500,6 +500,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}
 
+	// The inline bundle is meant for local runs; warn, without refusing,
+	// when a CI marker says otherwise. Checked before loadRunnerSecrets
+	// removes the variable.
+	if marker, ok := inlineRunnerSecretsCIMarker(); ok {
+		printer.StepWarn(fmt.Sprintf("%s is set inline while %s is set: the inline variable is for local runs only, because in CI its value stays readable in /proc/<pid>/environ; pass the bundle as a file through %s instead",
+			runnerSecretsEnv, marker, runnerSecretsFileEnv))
+	}
+
 	// Unpack the runner secrets bundle (ADR 0136) before any child process
 	// starts: loadRunnerSecrets deletes the bundle file and removes both
 	// bundle variables from the environment.
