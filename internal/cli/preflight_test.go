@@ -371,6 +371,43 @@ func TestRunPreflightCheck_TimeoutKillsProcessGroup(t *testing.T) {
 	assert.Less(t, elapsed, 10*time.Second, "killing the process group must release the output pipe without waiting for WaitDelay")
 }
 
+// TestRunPreflightCheck_ShellExitsBeforeTimeoutBackgroundChildOutlivesIt covers
+// #8875: sh exits before the deadline, so os/exec never calls Cancel, but a
+// background child holds the output pipe until after the deadline. The call
+// must report the timeout and kill that child.
+func TestRunPreflightCheck_ShellExitsBeforeTimeoutBackgroundChildOutlivesIt(t *testing.T) {
+	if !processGroupKillPermitted(t) {
+		t.Skip("signalling a process group is not permitted on this host")
+	}
+	oldTimeout := preflightCheckTimeout
+	oldWaitDelay := preflightWaitDelay
+	preflightCheckTimeout = 500 * time.Millisecond
+	preflightWaitDelay = 600 * time.Millisecond
+	t.Cleanup(func() {
+		preflightCheckTimeout = oldTimeout
+		preflightWaitDelay = oldWaitDelay
+	})
+
+	// The background sh records its PID and execs sleep, so the recorded PID
+	// is the lingering child. The outer shell exits after 0.1s, well before
+	// the 0.5s deadline, and WaitDelay elapses at about 0.7s, after it.
+	pidFile := filepath.Join(t.TempDir(), "child.pid")
+	command := "sh -c 'echo $$ > " + pidFile + "; exec sleep 20' & sleep 0.1; true"
+
+	printer := ui.New(io.Discard)
+	err := runPreflightCheck(context.Background(), printer, "preflight_check", command, nil, "/fs/dir")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "preflight_check timed out")
+
+	pidBytes, readErr := os.ReadFile(pidFile)
+	require.NoError(t, readErr)
+	pid, convErr := strconv.Atoi(strings.TrimSpace(string(pidBytes)))
+	require.NoError(t, convErr)
+	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+	assert.Eventually(t, func() bool { return processGone(pid) }, 5*time.Second, 20*time.Millisecond,
+		"the background child must not outlive runPreflightCheck after a timeout (#8875)")
+}
+
 // TestRunPreflightCheck_SuccessWithLingeringBackgroundChild covers #8875: a
 // check that exits 0 but leaves a background child holding its output makes
 // Wait return exec.ErrWaitDelay. The check passed, so it must not be reported
