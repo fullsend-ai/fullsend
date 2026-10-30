@@ -7328,6 +7328,107 @@ func TestMintAgentToken_NestedRemintRestoresGitHubTokenPerMint(t *testing.T) {
 	assert.False(t, githubSet, "cleanup unsets GITHUB_TOKEN that was unset before the first mint")
 }
 
+// TestMintAgentToken_SwapsEnterpriseTokens covers #8952: gh reads
+// GH_ENTERPRISE_TOKEN/GITHUB_ENTERPRISE_TOKEN instead of GH_TOKEN/GITHUB_TOKEN
+// on hosts other than github.com, so the mint must set them too, and cleanup
+// must restore a pre-set value or unset a name that was unset.
+func TestMintAgentToken_SwapsEnterpriseTokens(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	const minted = "ghs_enterprise_minted_token"
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return &mintclient.MintResult{Token: minted, ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GITHUB_ACTIONS", "")
+	t.Setenv("GH_TOKEN", "ghp_caller_gh_token")
+	unsetEnvForTest(t, "GITHUB_TOKEN")
+	t.Setenv("GH_ENTERPRISE_TOKEN", "ghp_caller_enterprise_token")
+	unsetEnvForTest(t, "GITHUB_ENTERPRISE_TOKEN")
+
+	printer := ui.New(io.Discard)
+	ok, cleanup, err := mintAgentToken(context.Background(), "triage", "https://mint.example.com", "", printer)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.NotNil(t, cleanup)
+	defer cleanup()
+
+	for _, name := range []string{"GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"} {
+		assert.Equal(t, minted, os.Getenv(name), "%s must hold the minted token", name)
+	}
+
+	cleanup()
+	assert.Equal(t, "ghp_caller_gh_token", os.Getenv("GH_TOKEN"), "cleanup restores the pre-mint GH_TOKEN")
+	assert.Equal(t, "ghp_caller_enterprise_token", os.Getenv("GH_ENTERPRISE_TOKEN"), "cleanup restores the pre-mint GH_ENTERPRISE_TOKEN")
+	_, githubSet := os.LookupEnv("GITHUB_TOKEN")
+	assert.False(t, githubSet, "cleanup unsets GITHUB_TOKEN that was unset before the mint")
+	_, enterpriseSet := os.LookupEnv("GITHUB_ENTERPRISE_TOKEN")
+	assert.False(t, enterpriseSet, "cleanup unsets GITHUB_ENTERPRISE_TOKEN that was unset before the mint")
+}
+
+// TestRemintAgentTokenForPostScript_RefreshesEnterpriseTokens covers #8952:
+// after a remint, the enterprise token names hold the refreshed token both
+// in the process env and in a runner_env declaration, so the post-script's
+// gh calls on a GitHub Enterprise Server host use it; the remint's cleanup
+// restores the first mint's token.
+func TestRemintAgentTokenForPostScript_RefreshesEnterpriseTokens(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	const callerToken = "ghp_caller_enterprise_token"
+	var calls int
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		calls++
+		if calls == 1 {
+			return &mintclient.MintResult{Token: "ghs_original_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+		}
+		return &mintclient.MintResult{Token: "ghs_refreshed_token", ExpiresAt: "2026-06-15T13:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GITHUB_ACTIONS", "")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("GH_ENTERPRISE_TOKEN", callerToken)
+	t.Setenv("GITHUB_ENTERPRISE_TOKEN", callerToken)
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+
+	printer := ui.New(io.Discard)
+	ok, cleanup, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", "", printer)
+	require.NoError(t, err)
+	require.True(t, ok)
+	defer cleanup()
+
+	declared := &harness.Harness{
+		Role:      "coder",
+		RunnerEnv: map[string]string{"GH_ENTERPRISE_TOKEN": os.Getenv("GH_ENTERPRISE_TOKEN")},
+	}
+	inherited := &harness.Harness{Role: "coder"}
+
+	remintCleanup, remintErr := remintAgentTokenForPostScript(context.Background(), declared, "https://mint.example.com", "", "write", printer)
+	require.NoError(t, remintErr)
+	require.Equal(t, 2, calls)
+	assert.Equal(t, "ghs_refreshed_token", declared.RunnerEnv["GH_ENTERPRISE_TOKEN"], "syncRunnerEnvTokens refreshes a declared GH_ENTERPRISE_TOKEN")
+
+	for name, h := range map[string]*harness.Harness{"declared": declared, "inherited": inherited} {
+		env := postScriptEnv(h, "")
+		for _, key := range []string{"GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"} {
+			assert.NotContains(t, env, key+"="+callerToken, "%s: the caller's %s must not reach the post-script", name, key)
+			assert.Equal(t, "ghs_refreshed_token", envLast(env, key), "%s: post-script %s is the freshly minted token", name, key)
+		}
+	}
+
+	remintCleanup()
+	assert.Equal(t, "ghs_original_token", os.Getenv("GH_ENTERPRISE_TOKEN"), "remintCleanup restores the first mint's GH_ENTERPRISE_TOKEN")
+	assert.Equal(t, "ghs_original_token", os.Getenv("GITHUB_ENTERPRISE_TOKEN"), "remintCleanup restores the first mint's GITHUB_ENTERPRISE_TOKEN")
+
+	cleanup()
+	assert.Equal(t, callerToken, os.Getenv("GH_ENTERPRISE_TOKEN"), "cleanup restores the pre-mint GH_ENTERPRISE_TOKEN")
+	assert.Equal(t, callerToken, os.Getenv("GITHUB_ENTERPRISE_TOKEN"), "cleanup restores the pre-mint GITHUB_ENTERPRISE_TOKEN")
+}
+
 // TestMintAgentToken_PreservesWorkflowTokenFromGitHubToken covers #8530: on
 // Actions, a caller that exports only GITHUB_TOKEN (GH_TOKEN unset or empty)
 // still gets GH_WORKFLOW_TOKEN preserved, masked and registered.

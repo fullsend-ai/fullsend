@@ -6833,7 +6833,13 @@ type tokenVar struct {
 // the minted token for every role. GITHUB_TOKEN is included so a caller
 // workflow that exports it does not leave the job token in place for tools
 // that read it instead of GH_TOKEN, or for pre/post scripts (#8530).
-var agentTokenEnvVars = []string{"GH_TOKEN", "GITHUB_TOKEN"}
+// GH_ENTERPRISE_TOKEN and GITHUB_ENTERPRISE_TOKEN are included because gh
+// reads those instead of GH_TOKEN/GITHUB_TOKEN for any host other than
+// github.com and *.ghe.com (GitHub Enterprise Server); without them gh on
+// such a host keeps the caller's credential after the mint (#8952). They
+// are set unconditionally, so no host detection is needed; gh ignores them
+// for github.com.
+var agentTokenEnvVars = []string{"GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"}
 
 // roleTokenVars maps canonical role names to the additional env vars they
 // require beyond agentTokenEnvVars. These match the vars declared in
@@ -7035,9 +7041,10 @@ func mintAgentToken(ctx context.Context, role, mintURL, forgePlatform string, pr
 // The caller should defer cleanup() to clear tokens from the process env.
 // forgePlatform controls platform-specific env vars: PUSH_TOKEN_SOURCE is
 // set to "github-app" for GitHub and "pat" for GitLab.
-// The minted token replaces every agentTokenEnvVars name (GH_TOKEN and
-// GITHUB_TOKEN); cleanup restores each to its value before this call, or
-// unsets it if it was unset (#8530).
+// The minted token replaces every agentTokenEnvVars name (GH_TOKEN,
+// GITHUB_TOKEN, GH_ENTERPRISE_TOKEN and GITHUB_ENTERPRISE_TOKEN); cleanup
+// restores each to its value before this call, or unsets it if it was
+// unset (#8530, #8952).
 // On GitHub Actions the pre-mint GH_TOKEN (or, when that is unset or empty,
 // the pre-mint GITHUB_TOKEN) is copied to GH_WORKFLOW_TOKEN for provider
 // credential expansion (#6649); cleanup unsets it. Remint-safe:
@@ -7137,8 +7144,9 @@ func mintAgentTokenAtLevel(ctx context.Context, role, mintURL, forgePlatform, le
 			}
 		}
 	}
-	// GITHUB_TOKEN is set even when the caller did not export it, so no
-	// tool that reads it instead of GH_TOKEN keeps the job token (#8530).
+	// GITHUB_TOKEN and the enterprise names are set even when the caller
+	// did not export them, so no tool that reads one instead of GH_TOKEN
+	// keeps the job token (#8530), whichever host gh targets (#8952).
 	for _, name := range agentTokenEnvVars {
 		os.Setenv(name, result.Token)
 	}

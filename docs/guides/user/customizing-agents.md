@@ -179,7 +179,8 @@ workflow token as `GH_WORKFLOW_TOKEN`, a *provider-only* credential:
   refused in `runner_env`, `env.runner`, `env.sandbox`, `host_files` and
   `validation_loop.schema`, and pre/post/validation scripts never see it.
 - `gh` and the post-script keep using the minted token (`GH_TOKEN`,
-  `GITHUB_TOKEN`, `PUSH_TOKEN`).
+  `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`,
+  `PUSH_TOKEN`).
 - Outside GitHub Actions the variable is left alone; a local PAT is never
   copied into it. Set it yourself only for a local run against GitHub Packages.
 - Any provider definition in `.fullsend` may reference it, the same way one
