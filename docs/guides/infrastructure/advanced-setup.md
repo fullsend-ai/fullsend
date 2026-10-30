@@ -195,6 +195,8 @@ fullsend github setup "$ORG_NAME/$REPO_NAME" \
 
 > **Deprecated.** The `fullsend admin install` all-in-one command that provisions GCP mint, inference, and GitHub in a single invocation is deprecated. Use the [standalone commands](../getting-started/operations.md#standalone-commands) instead: `fullsend inference provision` + `fullsend github setup <owner/repo>`. Per-org installation has been removed, so `fullsend admin install` and `fullsend github setup` accept only `owner/repo` targets. See [Getting Started](../getting-started/configuring-github.md) for the recommended per-repo flow. For GitLab projects, follow [Installing Fullsend](../getting-started/configuring-gitlab.md#installing-fullsend) in the GitLab guide (set `gitlab.url`, `gitlab.inference.auth` and the project in `repos.yaml`, then run `fullsend repos install`). To create GitHub Apps, use `fullsend mint add-role <role> --project <gcp-project> --org <org>` per role, or the deprecated `admin install` to create every role's app in one run (see [Mint administration](mint-administration.md)).
 
+Re-running `fullsend admin install` on a repository that already has a `.fullsend/config.yaml` keeps that file unchanged, as `fullsend github setup` does. Only an explicit `--runtime` or `--agents` changes the matching key (`runtime` or `roles`), and the rest of the file is kept. Comments are not preserved when a key changes. If the existing file cannot be parsed, the run fails instead of overwriting it.
+
 ## See Also
 
 - [Getting Started](../getting-started/) — Standard per-repo installation

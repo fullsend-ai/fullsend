@@ -1232,6 +1232,199 @@ func TestRunPerRepoInstall_ScaffoldCommitError(t *testing.T) {
 	assert.Contains(t, err.Error(), "getting repo info")
 }
 
+// customAdminInstallConfig is a hand-edited per-repo config with a custom
+// agent, a non-default runtime and a comment — content a regenerated
+// default config would drop.
+const customAdminInstallConfig = `version: "1"
+# hand-written comment that must survive a rerun
+runtime: pi
+roles:
+  - triage
+  - coder
+agents:
+  - name: lint
+    source: https://raw.githubusercontent.com/acme/agents/main/harness/lint.yaml#sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+allowed_remote_resources:
+  - https://raw.githubusercontent.com/acme/agents/
+`
+
+// committedAdminConfig returns the .fullsend/config.yaml content from the
+// single direct scaffold commit recorded on client.
+func committedAdminConfig(t *testing.T, client *forge.FakeClient) string {
+	t.Helper()
+	require.Len(t, client.CommittedFiles, 1)
+	for _, f := range client.CommittedFiles[0].Files {
+		if f.Path == ".fullsend/config.yaml" {
+			return string(f.Content)
+		}
+	}
+	require.Fail(t, "scaffold commit has no .fullsend/config.yaml")
+	return ""
+}
+
+func newAdminRerunClient(configYAML string) *forge.FakeClient {
+	client := forge.NewFakeClient()
+	client.Repos = []forge.Repository{
+		{Name: "widget", FullName: "acme/widget", DefaultBranch: "main"},
+	}
+	client.VariableValues = map[string]string{
+		"acme/widget/FULLSEND_MINT_URL": "https://mint.example.com/v1/token",
+	}
+	if configYAML != "" {
+		client.FileContents["acme/widget/.fullsend/config.yaml"] = []byte(configYAML)
+	}
+	return client
+}
+
+func TestRunPerRepoInstall_RerunKeepsExistingConfig(t *testing.T) {
+	client := newAdminRerunClient(customAdminInstallConfig)
+
+	cfg := perRepoTestBase()
+	cfg.testClient = client
+	cfg.Direct = true
+
+	require.NoError(t, runPerRepoInstall(context.Background(), cfg))
+	assert.Equal(t, customAdminInstallConfig, committedAdminConfig(t, client),
+		"a rerun without config-targeting flags must keep config.yaml byte-for-byte")
+}
+
+func TestRunPerRepoInstall_NoExistingConfigGeneratesDefaults(t *testing.T) {
+	client := newAdminRerunClient("")
+
+	cfg := perRepoTestBase()
+	cfg.testClient = client
+	cfg.Direct = true
+
+	require.NoError(t, runPerRepoInstall(context.Background(), cfg))
+	got := committedAdminConfig(t, client)
+	parsed, err := config.ParsePerRepoConfigWriterLayered([]byte(got), nil)
+	require.NoError(t, err)
+	assert.Equal(t, config.PerRepoDefaultRoles(), parsed.ConfigRoles())
+}
+
+func TestRunPerRepoInstall_RerunExplicitFlagsChangeOnlyTargetedKeys(t *testing.T) {
+	client := newAdminRerunClient(customAdminInstallConfig)
+
+	cfg := perRepoTestBase()
+	cfg.testClient = client
+	cfg.Direct = true
+	cfg.Runtime = "claude"
+	cfg.Agents = "triage,coder,review"
+	cfg.AgentsExplicit = true
+
+	require.NoError(t, runPerRepoInstall(context.Background(), cfg))
+	parsed, err := config.ParsePerRepoConfigWriterLayered([]byte(committedAdminConfig(t, client)), nil)
+	require.NoError(t, err)
+	assert.Equal(t, "claude", parsed.ConfigRuntime())
+	assert.Equal(t, []string{"triage", "coder", "review"}, parsed.ConfigRoles())
+	agents := parsed.AgentEntries()
+	require.Len(t, agents, 1, "the custom agent must survive a flag-driven update")
+	assert.Equal(t, "lint", agents[0].Name)
+}
+
+func TestRunPerRepoInstall_RerunAgentsDefaultKeepsRoles(t *testing.T) {
+	client := newAdminRerunClient(customAdminInstallConfig)
+
+	cfg := perRepoTestBase()
+	cfg.testClient = client
+	cfg.Direct = true
+	// --agents carries only its flag default: the roles in the existing
+	// config must not be replaced by the default role list.
+	cfg.AgentsExplicit = false
+
+	require.NoError(t, runPerRepoInstall(context.Background(), cfg))
+	assert.Equal(t, customAdminInstallConfig, committedAdminConfig(t, client))
+}
+
+func TestRunPerRepoInstall_RerunExistingConfigErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		config  string
+		readErr error
+		want    string
+	}{
+		{
+			name:   "unparseable config",
+			config: "version: \"1\"\nroles: [triage\n",
+			want:   "fix or remove it",
+		},
+		{
+			name:   "org-style config",
+			config: "version: \"1\"\ndispatch:\n  platform: github\ndefaults:\n  roles: [triage]\nrepos: {}\n",
+			want:   "not a per-repo config",
+		},
+		{
+			name:    "non-404 read error",
+			readErr: fmt.Errorf("github api: 500"),
+			want:    "reading existing .fullsend/config.yaml",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := newAdminRerunClient(tt.config)
+			if tt.readErr != nil {
+				client.GetFileContentErrors = map[string]error{
+					"acme/widget/.fullsend/config.yaml": tt.readErr,
+				}
+			}
+
+			cfg := perRepoTestBase()
+			cfg.testClient = client
+			cfg.Direct = true
+
+			err := runPerRepoInstall(context.Background(), cfg)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.want)
+			assert.Empty(t, client.CommittedFiles, "an unreadable config.yaml must not be overwritten")
+		})
+	}
+}
+
+func TestRunPerRepoInstall_RerunInvalidFlagUpdateFails(t *testing.T) {
+	client := newAdminRerunClient(customAdminInstallConfig)
+
+	cfg := perRepoTestBase()
+	cfg.testClient = client
+	cfg.Direct = true
+	cfg.Agents = "triage,coder,bogus"
+	cfg.AgentsExplicit = true
+
+	err := runPerRepoInstall(context.Background(), cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid config")
+	assert.Empty(t, client.CommittedFiles)
+}
+
+func TestRunPerRepoInstall_DryRunExistingConfig(t *testing.T) {
+	var out bytes.Buffer
+	client := newAdminRerunClient(customAdminInstallConfig)
+
+	cfg := perRepoTestBase()
+	cfg.testClient = client
+	cfg.testPrinter = ui.New(&out)
+	cfg.DryRun = true
+
+	require.NoError(t, runPerRepoInstall(context.Background(), cfg))
+	assert.Contains(t, out.String(), "Keeping existing .fullsend/config.yaml unchanged")
+	assert.Contains(t, out.String(), fmt.Sprintf("Would write: .fullsend/config.yaml (%d bytes)", len(customAdminInstallConfig)))
+}
+
+func TestRunPerRepoInstall_DryRunConfigReadErrorPlansFirstInstall(t *testing.T) {
+	var out bytes.Buffer
+	client := newAdminRerunClient("")
+	client.GetFileContentErrors = map[string]error{
+		"acme/widget/.fullsend/config.yaml": fmt.Errorf("github api: 403"),
+	}
+
+	cfg := perRepoTestBase()
+	cfg.testClient = client
+	cfg.testPrinter = ui.New(&out)
+	cfg.DryRun = true
+
+	require.NoError(t, runPerRepoInstall(context.Background(), cfg))
+	assert.Contains(t, out.String(), "planning as a first install")
+}
+
 func TestFilterSlugsByAppSet(t *testing.T) {
 	tests := []struct {
 		name   string
