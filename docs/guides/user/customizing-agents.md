@@ -461,8 +461,9 @@ sandbox. Matching is case-insensitive, and `fullsend run` warns about every
 key it drops. The gate covers `env.sandbox` only; it is not a reason to move
 those settings into `.env.d` files.
 
-For the full list, how to check a harness with `fullsend lint` or `fullsend lock`, and where
-proxy and certificate settings go instead, see [Reserved `env.sandbox`
+For the full list, how to check a harness with `fullsend lint` or
+`fullsend lock`, and where proxy and certificate settings go instead, see
+[Reserved `env.sandbox`
 names](../../reference/harness-reference.md#reserved-envsandbox-names) and
 [Migrating proxy and certificate
 settings](../../reference/harness-reference.md#migrating-proxy-and-certificate-settings)

@@ -481,10 +481,11 @@ them into the sandbox. Matching is case-insensitive. It warns twice:
 - As it writes the sandbox environment, one stderr line per key:
   `WARNING: env.sandbox key "NAME" is reserved (runner infrastructure or security deny-list); skipping`
 
-`fullsend lint` also reports the load-time warning, and `fullsend lint --strict`
-exits non-zero on it. `fullsend lock` prints the load-time warning when it
-composes a harness. A current lock entry is not composed; run `fullsend lock --update` to check its
-keys. `lock` composes without event context, so a key added by an overlay
+`fullsend lint` also reports the load-time warning, and
+`fullsend lint --strict` exits non-zero on it. `fullsend lock` prints the
+load-time warning when it composes a harness. A current lock entry is not
+composed; run `fullsend lock --update` to check its keys. `lock` composes
+without event context, so a key added by an overlay
 guarded on `event` is reported only by `fullsend run`. The reserved names are
 listed in [Harness Field Reference § Reserved `env.sandbox`
 names](../reference/harness-reference.md#reserved-envsandbox-names); where
