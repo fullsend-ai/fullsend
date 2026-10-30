@@ -95,10 +95,29 @@ type ComposeOpts struct {
 	// empty disables the check.
 	RunnerSecretNames map[string]bool
 
+	// OfflineMissHint replaces the default "run 'fullsend lock' first"
+	// remedy in the error returned when offline mode finds a URL-sourced
+	// companion missing from the cache. Empty keeps the default.
+	OfflineMissHint string
+
 	// allowSelfAllowlist permits using the child harness's own AllowedRemoteResources
 	// when OrgAllowlist is empty. This is for testing only; production callers should
 	// always provide OrgAllowlist from config.yaml. Unexported to prevent misuse.
 	allowSelfAllowlist bool
+}
+
+// ErrOfflineCacheMiss is wrapped by the error LoadWithBase returns when
+// offline mode needs a URL-sourced resource that is not in the cache.
+var ErrOfflineCacheMiss = errors.New("not in cache and offline mode is enabled")
+
+// offlineMissError reports an offline cache miss for a base companion,
+// naming the remedy from opts.OfflineMissHint (default: fullsend lock).
+func offlineMissError(opts ComposeOpts, field, rawURL string) error {
+	hint := opts.OfflineMissHint
+	if hint == "" {
+		hint = "run 'fullsend lock' first"
+	}
+	return fmt.Errorf("base %s: URL %s %w (%s)", field, rawURL, ErrOfflineCacheMiss, hint)
 }
 
 // defaultTreeFetchFn is used when ComposeOpts.TreeFetcher is nil.
@@ -644,7 +663,7 @@ func fetchBaseURL(ctx context.Context, rawURL string, allowlist []string, opts C
 	if content == nil {
 		// Offline mode check
 		if opts.FetchPolicy.Offline {
-			return Dependency{}, nil, fmt.Errorf("base URL %s not in cache and offline mode is enabled", cleanURL)
+			return Dependency{}, nil, fmt.Errorf("base URL %s %w", cleanURL, ErrOfflineCacheMiss)
 		}
 
 		// Fetch
@@ -1676,7 +1695,7 @@ func fetchBaseFile(ctx context.Context, field, baseURLDir, relPath string, allow
 	}
 
 	if opts.FetchPolicy.Offline {
-		return Dependency{}, "", fmt.Errorf("base %s: URL %s not in cache and offline mode is enabled (run 'fullsend lock' first)", field, fileURL)
+		return Dependency{}, "", offlineMissError(opts, field, fileURL)
 	}
 
 	content, err := fetch.FetchURL(ctx, fileURL, opts.FetchPolicy)
@@ -1945,7 +1964,7 @@ func fetchBaseSkill(ctx context.Context, field, baseURLDir, skillPath string, al
 		if staleFallback != nil {
 			return *staleFallback, staleFallbackPath, nil
 		}
-		return Dependency{}, "", fmt.Errorf("base %s: URL %s not in cache and offline mode is enabled (run 'fullsend lock' first)", field, skillFileURL)
+		return Dependency{}, "", offlineMissError(opts, field, skillFileURL)
 	}
 
 	dep, dirPath, err := fetchBaseSkillDir(ctx, field, skillDirURL, skillFileURL, skillPath, allowedBy, allowlist, opts)
@@ -2143,7 +2162,7 @@ func fetchBaseDir(ctx context.Context, kind baseDirKind, field, baseURLDir, dirP
 		// staleFallback is only set when Offline=false (line above), so it
 		// is always nil here; skip the nil guard and go straight to the
 		// cache-miss error.
-		return Dependency{}, "", fmt.Errorf("base %s: URL %s not in cache and offline mode is enabled (run 'fullsend lock' first)", field, keyURL)
+		return Dependency{}, "", offlineMissError(opts, field, keyURL)
 	}
 
 	dep, dirPath, err := fetchBaseDirTree(ctx, kind, field, dirURL, keyURL, dirPath, allowedBy, allowlist, opts)
@@ -2313,6 +2332,29 @@ func urlIndexLookup(workspaceRoot, rawURL string) (string, bool) {
 	}
 	hash, ok := index[rawURL]
 	return hash, ok
+}
+
+// URLIndexEntries returns every key→value mapping in the URL-to-hash index
+// file, or nil when the index is missing or unreadable.
+func URLIndexEntries(workspaceRoot string) map[string]string {
+	if workspaceRoot == "" {
+		return nil
+	}
+	data, err := os.ReadFile(urlIndexPath(workspaceRoot))
+	if err != nil {
+		return nil
+	}
+	var index map[string]string
+	if err := json.Unmarshal(data, &index); err != nil {
+		return nil
+	}
+	return index
+}
+
+// RecordURLIndex records a key→value mapping in the URL-to-hash index file,
+// replacing any earlier value for the key.
+func RecordURLIndex(workspaceRoot, key, value string) error {
+	return urlIndexPut(workspaceRoot, key, value)
 }
 
 // urlIndexPut records a URL→SHA256 mapping in the index file.

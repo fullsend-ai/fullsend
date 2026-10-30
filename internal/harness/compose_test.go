@@ -5590,6 +5590,34 @@ func TestURLIndexLookup_EmptyWorkspaceRoot(t *testing.T) {
 	assert.Empty(t, hash)
 }
 
+func TestRecordURLIndexAndEntries(t *testing.T) {
+	assert.Nil(t, URLIndexEntries(""))
+
+	root := t.TempDir()
+	assert.Nil(t, URLIndexEntries(root), "missing index")
+
+	require.NoError(t, RecordURLIndex(root, "https://example.com/a.yaml", "hash-a"))
+	require.NoError(t, RecordURLIndex(root, "https://example.com/b.yaml", "hash-b"))
+	require.NoError(t, RecordURLIndex(root, "https://example.com/a.yaml", "hash-a2"))
+	assert.Equal(t, map[string]string{
+		"https://example.com/a.yaml": "hash-a2",
+		"https://example.com/b.yaml": "hash-b",
+	}, URLIndexEntries(root))
+
+	require.NoError(t, os.WriteFile(urlIndexPath(root), []byte("{"), 0o600))
+	assert.Nil(t, URLIndexEntries(root), "malformed index")
+}
+
+func TestOfflineMissError(t *testing.T) {
+	err := offlineMissError(ComposeOpts{}, "agent", "https://example.com/a.md")
+	require.ErrorIs(t, err, ErrOfflineCacheMiss)
+	assert.Equal(t, "base agent: URL https://example.com/a.md not in cache and offline mode is enabled (run 'fullsend lock' first)", err.Error())
+
+	err = offlineMissError(ComposeOpts{OfflineMissHint: "warm the cache"}, "agent", "https://example.com/a.md")
+	require.ErrorIs(t, err, ErrOfflineCacheMiss)
+	assert.Equal(t, "base agent: URL https://example.com/a.md not in cache and offline mode is enabled (warm the cache)", err.Error())
+}
+
 func brokenAuditPath(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()

@@ -233,9 +233,7 @@ func routeBuiltinAgent(ctx context.Context, o routeOpts) (routeDecision, error) 
 	harnessUnavailable := false
 	if path, deps, err := resolveAgentSource(ctx, absConfigDir, o.agent, forgeClient, cfg, composeOpts, printer); err == nil {
 		d.Harness = routeHarnessLabel(cfg, o.agent, deps)
-		if len(deps) > 0 && deps[0].URL != "" {
-			composeOpts.SourceURL = deps[0].URL
-		}
+		composeOpts = agentComposeOpts(composeOpts, deps)
 		if h, _, err := harness.LoadWithBase(ctx, path, composeOpts); err == nil {
 			harnessRole = h.Role
 		} else {
