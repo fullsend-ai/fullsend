@@ -408,6 +408,40 @@ func TestRunPreflightCheck_ShellExitsBeforeTimeoutBackgroundChildOutlivesIt(t *t
 		"the background child must not outlive runPreflightCheck after a timeout (#8875)")
 }
 
+// TestRunPreflightCheck_ShellFailsBeforeTimeoutBackgroundChildOutlivesIt is the
+// nonzero-exit variant of the test above (#8875). With a nonzero exit, Wait
+// returns sh's *exec.ExitError rather than exec.ErrWaitDelay when WaitDelay
+// elapses, so the group kill must not depend on the error type.
+func TestRunPreflightCheck_ShellFailsBeforeTimeoutBackgroundChildOutlivesIt(t *testing.T) {
+	if !processGroupKillPermitted(t) {
+		t.Skip("signalling a process group is not permitted on this host")
+	}
+	oldTimeout := preflightCheckTimeout
+	oldWaitDelay := preflightWaitDelay
+	preflightCheckTimeout = 500 * time.Millisecond
+	preflightWaitDelay = 600 * time.Millisecond
+	t.Cleanup(func() {
+		preflightCheckTimeout = oldTimeout
+		preflightWaitDelay = oldWaitDelay
+	})
+
+	pidFile := filepath.Join(t.TempDir(), "child.pid")
+	command := "sh -c 'echo $$ > " + pidFile + "; exec sleep 20' & sleep 0.1; exit 1"
+
+	printer := ui.New(io.Discard)
+	err := runPreflightCheck(context.Background(), printer, "preflight_check", command, nil, "/fs/dir")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "preflight_check timed out")
+
+	pidBytes, readErr := os.ReadFile(pidFile)
+	require.NoError(t, readErr)
+	pid, convErr := strconv.Atoi(strings.TrimSpace(string(pidBytes)))
+	require.NoError(t, convErr)
+	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+	assert.Eventually(t, func() bool { return processGone(pid) }, 5*time.Second, 20*time.Millisecond,
+		"the background child must not outlive runPreflightCheck after a timeout (#8875)")
+}
+
 // TestRunPreflightCheck_SuccessWithLingeringBackgroundChild covers #8875: a
 // check that exits 0 but leaves a background child holding its output makes
 // Wait return exec.ErrWaitDelay. The check passed, so it must not be reported
