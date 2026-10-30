@@ -50,6 +50,14 @@ func TestOpenCodeRuntimeEnvExports(t *testing.T) {
 	}
 }
 
+func TestOpenCodeRuntimeEnvExportsLoadAsEnvData(t *testing.T) {
+	f := newEnvDataFixture(t)
+	require.NoError(t, os.WriteFile(f.envFile, []byte(strings.Join(OpenCodeRuntime{}.EnvExports(), "\n")+"\n"), 0o644))
+
+	_, stderr := f.envOf(t, openCodeEnvDataDrop...)
+	assert.NotContains(t, stderr, "ignored", "runtime exports must be valid data-only .env entries")
+}
+
 func TestOpenCodeRuntimeResolvesFromRegistry(t *testing.T) {
 	t.Parallel()
 
