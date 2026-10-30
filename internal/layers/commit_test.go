@@ -583,8 +583,13 @@ func newUnsyncedForkClient() *forge.FakeClient {
 	client.CommitAncestry = map[string]string{
 		"acme/widget/fork-sha/upstream-sha": "ahead",
 	}
-	client.Errors = map[string]error{
-		"CreateBranchFromSHA": fmt.Errorf("create branch from SHA: commit %w", forge.ErrNotFound),
+	client.Repos = append(client.Repos, forge.Repository{
+		Name: "widget", FullName: "contributor/widget", DefaultBranch: "main", Fork: true,
+	})
+	// Only the upstream commit is missing from the fork; the fork's own tip
+	// is, of course, present.
+	client.CreateBranchFromSHAErrors = map[string]error{
+		"contributor/widget/upstream-sha": fmt.Errorf("create branch from SHA: commit %w", forge.ErrNotFound),
 	}
 	return client
 }
@@ -597,9 +602,11 @@ func TestCommitScaffoldViaPR_CrossForkUnsyncedFallsBackToForkDefaultBranch(t *te
 		"acme", "widget", "main", testMeta("msg", "title", "body"), testFiles, false, nil)
 	require.NoError(t, err)
 
-	assert.Empty(t, client.CreatedBranchSHAs)
 	require.Equal(t, []string{"contributor/widget/fullsend/scaffold-install"}, client.CreatedBranches,
 		"scaffold branch should be created from the fork's default branch")
+	require.Len(t, client.CreatedBranchSHAs, 1)
+	assert.Equal(t, "fork-sha", client.CreatedBranchSHAs[0].SHA,
+		"scaffold branch must be based on the validated fork tip")
 	require.Len(t, client.CommittedFilesToBranch, 1)
 	assert.Equal(t, "contributor", client.CommittedFilesToBranch[0].Owner)
 	require.Len(t, client.CreatedProposals, 1)
@@ -625,7 +632,7 @@ func TestCommitScaffoldViaPR_CrossForkUnsyncedExistingBranchRecreated(t *testing
 
 func TestCommitScaffoldViaPR_CrossForkUnsyncedFallbackError(t *testing.T) {
 	client := newUnsyncedForkClient()
-	client.Errors["CreateBranch"] = fmt.Errorf("internal server error")
+	client.Errors = map[string]error{"CreateBranchFromSHA": fmt.Errorf("internal server error")}
 	printer, buf := newTestPrinter()
 
 	_, err := CommitScaffoldFiles(context.Background(), client, printer,
@@ -694,6 +701,77 @@ func TestCommitScaffoldViaPR_CrossForkUnsyncedRefusesUnresolvableForkBranch(t *t
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "could not be resolved")
 	assert.Empty(t, client.CreatedBranches)
+}
+
+func TestCommitScaffoldViaPR_CrossForkUnsyncedValidatesForkOwnDefaultBranch(t *testing.T) {
+	// The fork's default branch is named differently from upstream's. An
+	// ancestral fork "main" must not vouch for the diverged "develop" branch
+	// the fork actually uses.
+	client := newUnsyncedForkClient()
+	client.Repos = []forge.Repository{
+		{Name: "widget", FullName: "contributor/widget", DefaultBranch: "develop", Fork: true},
+	}
+	client.BranchRefs["contributor/widget/develop"] = "diverged-sha"
+	client.CommitAncestry["acme/widget/diverged-sha/upstream-sha"] = "diverged"
+	printer, _ := newTestPrinter()
+
+	_, err := CommitScaffoldFiles(context.Background(), client, printer,
+		"acme", "widget", "main", testMeta("msg", "title", "body"), testFiles, false, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not an ancestor of upstream")
+	assert.Contains(t, err.Error(), "develop")
+	assert.Empty(t, client.CreatedBranches)
+	assert.Empty(t, client.CommittedFilesToBranch)
+}
+
+func TestCommitScaffoldViaPR_CrossForkUnsyncedBranchesFromForkOwnDefaultBranchTip(t *testing.T) {
+	client := newUnsyncedForkClient()
+	client.Repos = []forge.Repository{
+		{Name: "widget", FullName: "contributor/widget", DefaultBranch: "develop", Fork: true},
+	}
+	client.BranchRefs["contributor/widget/develop"] = "develop-sha"
+	client.CommitAncestry["acme/widget/develop-sha/upstream-sha"] = "ahead"
+	printer, _ := newTestPrinter()
+
+	_, err := CommitScaffoldFiles(context.Background(), client, printer,
+		"acme", "widget", "main", testMeta("msg", "title", "body"), testFiles, false, nil)
+	require.NoError(t, err)
+	require.Len(t, client.CreatedBranchSHAs, 1)
+	assert.Equal(t, "develop-sha", client.CreatedBranchSHAs[0].SHA)
+}
+
+func TestCommitScaffoldViaPR_CrossForkUnsyncedRefusesRestoringForkContent(t *testing.T) {
+	// The file is "ci" at the fork tip, was changed upstream, and the
+	// delivery restores "ci". Branching from the fork tip would make the
+	// commit a no-op and silently leave upstream's version in place.
+	client := newUnsyncedForkClient()
+	client.FileContentsRef = map[string][]byte{
+		"contributor/widget/.github/workflows/ci.yml@fork-sha": []byte("ci"),
+		"acme/widget/.github/workflows/ci.yml@upstream-sha":    []byte("ci-upstream-changed"),
+	}
+	printer, _ := newTestPrinter()
+
+	_, err := CommitScaffoldFiles(context.Background(), client, printer,
+		"acme", "widget", "main", testMeta("msg", "title", "body"), testFiles, false, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "differs upstream")
+	assert.Contains(t, err.Error(), "sync the fork")
+	assert.Empty(t, client.CreatedBranches)
+	assert.Empty(t, client.CommittedFilesToBranch)
+}
+
+func TestCommitScaffoldViaPR_CrossForkUnsyncedAllowsFilesMatchingBothSides(t *testing.T) {
+	client := newUnsyncedForkClient()
+	client.FileContentsRef = map[string][]byte{
+		"contributor/widget/.github/workflows/ci.yml@fork-sha": []byte("ci"),
+		"acme/widget/.github/workflows/ci.yml@upstream-sha":    []byte("ci"),
+	}
+	printer, _ := newTestPrinter()
+
+	_, err := CommitScaffoldFiles(context.Background(), client, printer,
+		"acme", "widget", "main", testMeta("msg", "title", "body"), testFiles, false, nil)
+	require.NoError(t, err)
+	require.Len(t, client.CreatedBranchSHAs, 1)
 }
 
 func TestCommitScaffoldViaPR_CrossForkCommitFilesProtected(t *testing.T) {
