@@ -2,7 +2,31 @@
 
 When should agents auto-merge, and when should they escalate to humans?
 
+## Dedicated Auto-Merge authority
+
+The repository decides whether unattended merging is enabled and what scope,
+risk, and repository-defined policy it permits. SCM remains responsible for
+mechanical merge gates such as required checks, formal reviews, conversation
+resolution, branch freshness, mergeability, protected paths, and merge queues.
+The dedicated Auto-Merge stage adds the semantic authorization that SCM cannot
+derive from the change's intent, risk, bounded review rationale, or trusted
+human coordination context ([ADR 0110](../ADRs/0110-dedicated-auto-merge-authority-boundary.md)).
+
+Auto-Merge does not run without a trusted semantic provider. Fullsend Review is
+the default provider, but a repository may configure another provider through a
+trusted normalized adapter. An ordinary approval or comment is not a provider
+attestation. Explicit human holds are considered only when the commenter is
+verified as a maintainer, owner, or approved team member and the hold language
+matches the supported policy; comments from unknown users or ambiguous
+discussion are context rather than automatic vetoes.
+
 ## The model: binary with CODEOWNERS
+
+> **Note:** [ADR 0110](../ADRs/0110-dedicated-auto-merge-authority-boundary.md)
+> decides the merge mechanism: a dedicated `auto-merge` stage. The agent
+> recommends whether to merge, while trusted Fullsend runtime code performs the
+> final checks and GitHub action. Code and Review do not merge the change. The
+> graduation and cohort questions in this document remain open.
 
 The autonomy model is **binary per-repo** with **CODEOWNERS as the escape hatch**:
 
