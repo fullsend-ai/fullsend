@@ -121,6 +121,11 @@ When agents can implement a proposed feature in hours rather than weeks, the vol
 
 The intent system's `proposed/` to `approved/` workflow assumes someone is filtering proposals. The priority intake model determines who that someone is and what criteria they use.
 
+When agents are given private downstream planning context, access to that
+context does not itself authorize public disclosure or a veto over upstream
+changes. [Private context in public agent workflows](private-context-public-workflows.md)
+examines that confidentiality boundary separately from priority reconciliation.
+
 ### Fork economics under cheap code
 
 AI changes the economics of forking in ways that affect all priority models. Before AI, maintaining a fork was expensive — it required sustained engineering effort to track upstream, resolve conflicts, and maintain custom patches. This cost meant that forking was a last resort, and the threat of forking had limited credibility.
