@@ -4,6 +4,105 @@ title: Documentation
 
 # Documentation
 
+## Plain-language style
+
+These rules make the documentation readable for a wide audience. Plain
+language helps accessibility, and it keeps technical detail. A sentence can be
+plain and still precise. Humans and autonomous agents both read these docs, and
+short, unambiguous sentences serve both.
+
+New content must follow these rules. When you edit existing prose, you decide
+how far to apply them. Rewriting whole paragraphs to match can make a review
+harder, so the person making the change judges what to rewrite.
+
+Each rule comes with a NO/YES example pair.
+
+### Active voice
+
+Write in plain language. Use the active voice and say who does what.
+
+- NO: Resources are deleted by fullsend when the label is removed.
+- YES: Fullsend deletes resources when you remove the label.
+
+### Short sentences
+
+Keep sentences short. Put one idea in each sentence.
+
+- NO: The agent reads the issue, which triage has already labeled, and then
+  opens a pull request after the tests pass.
+- YES: The agent reads the labeled issue. It runs the tests. When they pass,
+  it opens a pull request.
+
+### Plain words
+
+Use plain words, such as "use" instead of "utilize".
+
+- NO: Utilize the `--dry-run` flag to facilitate validation of the
+  configuration.
+- YES: Use the `--dry-run` flag to check the configuration.
+
+### Noun clusters
+
+Expand long noun clusters into a phrase.
+
+- NO: Set the agent sandbox network egress policy file path.
+- YES: Set the path to the file that controls which hosts the agent sandbox
+  can reach.
+
+### Terms and idioms
+
+Define a term on first use. Use literal wording instead of idioms.
+
+- NO: The mint is a one-stop shop for tokens.
+- YES: The mint, the service that issues short-lived forge tokens, provides
+  every token an agent needs.
+
+### Present tense
+
+Use present tense, not future or past.
+
+- NO: When configured in this way fullsend will delete resources.
+- YES: When configured in this way fullsend deletes resources.
+
+### Second and third person
+
+Use the second person to address the reader and the third person to describe
+things. Avoid the first person.
+
+- NO: We create the following configuration file.
+- YES: Create the following configuration file.
+
+### Positive phrases
+
+Use positive phrases. Negative phrases can confuse readers, and two negatives
+in one sentence confuse them most.
+
+- NO: If the label is not present, the agent does not run.
+- YES: The agent runs only when the label is present.
+
+### Cautious claims
+
+Use cautious language for performance, benefits, best practices, and security.
+
+- NO: Caching improves the speed of agent runs.
+- YES: Caching can improve the speed of agent runs.
+
+### Recommendations
+
+State what to do instead of saying that it is recommended.
+
+- NO: It is recommended that you pin actions to a commit SHA.
+- YES: Pin actions to a commit SHA.
+
+### Abbreviations
+
+Use English abbreviations, not Latin ones.
+
+- NO: Set a forge token, e.g. a GitHub App token.
+- YES: Set a forge token, for example a GitHub App token.
+
+## Keeping references in sync
+
 When adding, removing, renaming, or changing the behavior of CLI commands,
 flags, configuration variables, or environment variables, you must update
 every documentation file that references the affected feature. CLI commands
