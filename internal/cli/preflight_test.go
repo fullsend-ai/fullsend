@@ -107,6 +107,35 @@ func TestPreflightEnv_DeclaredCredentialsRefused(t *testing.T) {
 	assert.Equal(t, "declared", env["SENTINEL"], "non-credential declarations reach the preflight environment")
 }
 
+func TestPreflightEnv_InvalidKeysSkipped(t *testing.T) {
+	env := preflightEnv(map[string]string{
+		"GH_TOKEN=":     "smuggled-token",
+		"FULLSEND_DIR=": "/smuggled/dir",
+		"BAD KEY":       "x",
+		"1LEADING":      "x",
+		"SENTINEL":      "declared",
+	}, "/fs/dir")
+	for _, key := range []string{"GH_TOKEN=", "FULLSEND_DIR=", "BAD KEY", "1LEADING"} {
+		_, ok := env[key]
+		assert.False(t, ok, "runner-env key %q is not a valid identifier and must be skipped", key)
+	}
+	assert.Equal(t, "declared", env["SENTINEL"])
+	assert.Equal(t, "/fs/dir", env["FULLSEND_DIR"])
+}
+
+func TestBuildPreflightEnv_InvalidKeysSkipped(t *testing.T) {
+	list := buildPreflightEnv(map[string]string{"GH_TOKEN=": "smuggled-token", "FULLSEND_DIR=": "/smuggled/dir"}, "/fs/dir")
+	joined := strings.Join(list, "\n")
+	assert.NotContains(t, joined, "smuggled-token", "a key containing = must not smuggle a refused credential into the child")
+	assert.NotContains(t, joined, "/smuggled/dir", "a key containing = must not override a pinned key in the child")
+}
+
+func TestRunPreflightCheck_KeyWithEqualsCannotSmuggleCredential(t *testing.T) {
+	printer := ui.New(io.Discard)
+	err := runPreflightCheck(context.Background(), printer, "validation_loop.preflight_check", `test -z "$GH_TOKEN" && test "$FULLSEND_DIR" = /fs/dir`, map[string]string{"GH_TOKEN=": "smuggled-token", "FULLSEND_DIR=": "/smuggled/dir"}, "/fs/dir")
+	require.NoError(t, err, "keys containing = must neither reach the child as a refused name nor override a pinned key")
+}
+
 func TestBuildPreflightEnv_SortedAndMinimal(t *testing.T) {
 	t.Setenv("GH_TOKEN", "ghs_host_secret_value")
 	t.Setenv("HOME", "/host/home")
@@ -191,16 +220,25 @@ func TestExpandPreflightCommand_RejectsDeclaredRoleToken(t *testing.T) {
 	assert.NotContains(t, err.Error(), "declared-review-secret")
 }
 
-func TestExpandPreflightCommand_NonPlainBraceFormSilentlyEmpties(t *testing.T) {
-	env := preflightEnv(map[string]string{"SENTINEL": "/tmp/sentinel-42"}, "/fs/dir")
-	// ${SENTINEL:-fallback} is not a plain ${NAME} reference: the rejection
-	// scan does not match it, and os.Expand treats the whole brace content as
-	// an unset name, so it expands to empty rather than falling back.
-	got, err := expandPreflightCommand("echo ${SENTINEL:-fallback} ${SENTINEL}", env)
-	require.NoError(t, err)
-	assert.NotContains(t, got, "fallback", "a non-plain brace form expands empty, not to its default")
-	assert.NotContains(t, got, "${")
-	assert.Contains(t, got, "/tmp/sentinel-42")
+func TestExpandPreflightCommand_RejectsNonPlainBraceForms(t *testing.T) {
+	env := preflightEnv(map[string]string{"SENTINEL": "/tmp/sentinel-42", "TOOL": "tool-value-13"}, "/fs/dir")
+	for _, raw := range []string{
+		`echo ${SENTINEL:-fallback} ${SENTINEL}`,
+		`: "${TOOL:?missing}"`,
+		`${PY:-python3} -c "import jsonschema"`,
+		`echo ${#SENTINEL}`,
+		`echo ${SENTINEL}${TOOL:+literal-secret-in-word}`,
+		`echo '${'`,
+	} {
+		got, err := expandPreflightCommand(raw, env)
+		require.Error(t, err, "a non-plain brace form must fail closed: %s", raw)
+		assert.Empty(t, got)
+		assert.Contains(t, err.Error(), "plain ${NAME}")
+		assert.NotContains(t, err.Error(), raw, "the rejection must not echo the raw command")
+		assert.NotContains(t, err.Error(), "literal-secret-in-word", "operator words can carry literal values and must not reach diagnostics")
+		assert.NotContains(t, err.Error(), "/tmp/sentinel-42")
+		assert.NotContains(t, err.Error(), "tool-value-13")
+	}
 }
 
 func TestExpandPreflightCommand_RejectsAllowlistedButUnset(t *testing.T) {
@@ -223,12 +261,12 @@ func TestExpandPreflightCommand_BareRefsLeftToShell(t *testing.T) {
 	assert.Equal(t, raw, got)
 	assert.NotContains(t, got, "ghs_host_secret_value")
 
-	// Once a ${...} ref is present, os.Expand also expands bare refs, which
-	// matches the shell's unset-to-empty semantics for the child env.
-	got, err = expandPreflightCommand("echo ${FULLSEND_DIR} $GH_TOKEN", env)
+	// Once a ${...} ref is present, only the validated plain ${NAME} matches
+	// are substituted; bare refs, $? and positional parameters stay verbatim
+	// for the child shell (#8771).
+	got, err = expandPreflightCommand("echo ${FULLSEND_DIR} $GH_TOKEN $? $1", env)
 	require.NoError(t, err)
-	assert.Contains(t, got, "/fs/dir")
-	assert.NotContains(t, got, "GH_TOKEN", "a bare ref to a name outside the preflight env expands empty, like an unset shell variable")
+	assert.Equal(t, "echo /fs/dir $GH_TOKEN $? $1", got)
 	assert.NotContains(t, got, "ghs_host_secret_value")
 }
 
@@ -242,6 +280,26 @@ func TestRunPreflightCheck_DeclaredValueReachesChild(t *testing.T) {
 	printer := ui.New(io.Discard)
 	err := runPreflightCheck(context.Background(), printer, "validation_loop.preflight_check", "test \"$SENTINEL\" = \"reaches-child\"", map[string]string{"SENTINEL": "reaches-child"}, "/fs/dir")
 	require.NoError(t, err, "an env.runner-declared, host-unset variable must reach the preflight child")
+}
+
+func TestRunPreflightCheck_BareRefsBesideBraceRefReachShell(t *testing.T) {
+	printer := ui.New(io.Discard)
+	fullsendDir := t.TempDir()
+	err := runPreflightCheck(context.Background(), printer, "validation_loop.preflight_check", `x=1; test "$x" = 1 && test -d "${FULLSEND_DIR}"`, nil, fullsendDir)
+	require.NoError(t, err, "a bare shell variable beside a ${NAME} reference must be expanded by the shell, not blanked by the runner")
+}
+
+func TestRunPreflightCheck_RejectsNonPlainBraceFormBeforeExecution(t *testing.T) {
+	sentinelPath := filepath.Join(t.TempDir(), "side-effect")
+	printer := ui.New(io.Discard)
+	raw := `touch ${SENTINEL}; : "${TOOL:?missing}"`
+	err := runPreflightCheck(context.Background(), printer, "validation_loop.preflight_check", raw, map[string]string{"SENTINEL": sentinelPath}, "/fs/dir")
+	require.Error(t, err, "a non-plain brace form must stop the run rather than exit 0")
+	assert.Contains(t, err.Error(), "validation_loop.preflight_check")
+	assert.NotContains(t, err.Error(), raw)
+	assert.NotContains(t, err.Error(), sentinelPath)
+	_, statErr := os.Stat(sentinelPath)
+	assert.True(t, os.IsNotExist(statErr), "no part of a rejected command may execute")
 }
 
 func TestRunPreflightCheck_DeclaredRoleTokenExcludedFromChild(t *testing.T) {
