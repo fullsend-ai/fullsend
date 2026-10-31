@@ -258,6 +258,24 @@ func TestValidateSkillOverrides(t *testing.T) {
 		}
 		assert.NoError(t, ValidateSkillOverrides(entries))
 	})
+
+	// Two keys must not name one file, so only the path.Clean form passes.
+	for key, want := range map[string]string{
+		"./sub-agents/x.md": `must be in clean form ("sub-agents/x.md")`,
+		"sub-agents//x.md":  "must be in clean form",
+		"sub-agents/":       "must be in clean form",
+		"sub-agents/./x.md": "must be in clean form",
+		".":                 "must name a file in the skill",
+	} {
+		t.Run("unclean key rejected "+key, func(t *testing.T) {
+			err := ValidateSkillOverrides([]SkillEntry{{
+				Source:    "skills/pr-review",
+				Overrides: map[string]*string{key: nil},
+			}})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), want)
+		})
+	}
 }
 
 func TestValidateSkillOverrides_ValueTraversal(t *testing.T) {
@@ -434,4 +452,9 @@ func TestMergeOverrides(t *testing.T) {
 
 func strPtr(s string) *string {
 	return &s
+}
+
+func TestValidateOverrideKey_Exported(t *testing.T) {
+	assert.NoError(t, ValidateOverrideKey("skills[0]", "sub-agents/security.md"))
+	assert.ErrorContains(t, ValidateOverrideKey("skills[0]", "../x.md"), "skills[0]: override file path \"../x.md\" must not contain path traversal segments")
 }

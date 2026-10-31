@@ -510,6 +510,10 @@ The sandbox has two key directories that map to Claude Code's config levels (plu
 └── workspace/                       ← SandboxWorkspace
     ├── .env                            Environment variables (read as data before claude)
     ├── .env.d/                         Additional env files (host_files expand)
+    ├── .fullsend/                      Runner-owned, outside the repo checkout (host_files cannot target it)
+    │   ├── output-schema.json          Output schema for the agent result
+    │   └── personas.json               Persona manifest (FULLSEND_PERSONAS_FILE); written every run (#6158)
+    ├── .dummy/skills/<name>/           Harness skills (dummy runtime only; staged trees, as on the other runtimes)
     │
     │   claude is resolved on the trusted PATH before .env (the first one
     │   the agent cannot write, binaryPin) and launched by that path
@@ -529,6 +533,37 @@ The sandbox has two key directories that map to Claude Code's config levels (plu
         │   └── custom-lint/SKILL.md
         └── src/...                     Target repo source code
 ```
+
+### Staged skill trees and the persona manifest
+
+Runtimes upload the directories `BootstrapInput.SkillDirs()` returns and
+must not assume those are the harness's source paths. For a `skills:` entry
+with per-file overrides, `fullsend run` copies the resolved skill to
+`<runDir>/skills/<index>/<sandbox-name>` (where `<runDir>` is
+`<output-dir>/<sandbox-name>`) right after harness resolution, applies the
+overrides there, and passes that copy in `SkillDirs()`. The pi child routing
+checks (`OpenAIChildren`, `VertexChildren`, `GatewayChildren`) read the same
+staged directories. Entries without overrides keep their resolved path. The fetch
+cache and the `.fullsend` directory are never written. Upload rules, naming
+and collision checks are unchanged (`uploadHarnessSkills`, shared by the
+dummy runtime through `uploadHarnessSkillsWith`), so a runtime needs no
+override-specific code.
+
+Every run writes `<runDir>/personas.json`, one entry per persona that
+`runtime.DiscoverPersonas` (the pi and codex discovery) registers from the
+staged skills, and uploads it to
+`/sandbox/workspace/.fullsend/personas.json`. The runner exports
+`FULLSEND_PERSONAS_FILE`:
+
+| Where | Value | Set by |
+|-------|-------|--------|
+| Pre-script, post-script and validation script environment | Absolute host path of `<runDir>/personas.json` | The runner, after `runner_env`/`env.runner`, so those cannot replace it |
+| Sandbox `/sandbox/workspace/.env` | `/sandbox/workspace/.fullsend/personas.json` | The runner; reserved, so an `env.sandbox` entry with this name is dropped |
+
+The post-run output scan skips `<runDir>/skills/` and
+`<runDir>/personas.json`, which are runner input. The manifest schema,
+origins and warnings are documented in
+[Configuring with Skills § The persona list file](../guides/user/customizing-with-skills.md#the-persona-list-file).
 
 ## Agent rule layering
 
@@ -597,6 +632,7 @@ The `dummy` runtime executes a YAML script of operations inside the real sandbox
 | `assert_env` | `VAR_NAME` | Assert env var is set and non-empty in the sandbox |
 | `assert_file` | `path` | Assert file exists and is readable under the workspace |
 | `assert_json` | `path,json_path` | Assert JSON file exists and dot-path field is present and non-null (uses `jq`) |
+| `assert_jq` | `path,jq_filter` | Assert the jq filter (everything after the first comma) yields neither `false` nor `null` for the JSON file, via `jq -e`; filters that read the environment or other inputs are refused. Escape `\|` inside a Gherkin table cell |
 
 ## Dummy-playback runtime
 

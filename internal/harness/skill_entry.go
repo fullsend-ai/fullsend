@@ -2,6 +2,7 @@ package harness
 
 import (
 	"fmt"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -160,6 +161,12 @@ func isResolvedPath(p string) bool {
 	return filepath.IsAbs(p)
 }
 
+// ValidateOverrideKey exposes validateOverrideKey to the runner, which
+// checks every key again when it applies overrides to a staged skill tree.
+func ValidateOverrideKey(field, key string) error {
+	return validateOverrideKey(field, key)
+}
+
 // validateOverrideKey checks that a file path within a skill is a safe
 // relative path: no leading slash, no ".." segments, no null bytes.
 func validateOverrideKey(field, key string) error {
@@ -176,6 +183,14 @@ func validateOverrideKey(field, key string) error {
 		if seg == ".." {
 			return fmt.Errorf("%s: override file path %q must not contain path traversal segments", field, key)
 		}
+	}
+	// Only the clean form is accepted, so two keys cannot name one file.
+	clean := path.Clean(key)
+	if clean != key {
+		return fmt.Errorf("%s: override file path %q must be in clean form (%q)", field, key, clean)
+	}
+	if clean == "." {
+		return fmt.Errorf("%s: override file path %q must name a file in the skill", field, key)
 	}
 	return nil
 }

@@ -36,9 +36,27 @@ Feature: Per-agent runtime and model on agents: entries in config.yaml
   # `haiku`, so a passing run proves both the runtime and the model of one
   # agent came from config.yaml, not from the harness or the repo-wide key.
   # Gated like pi.feature: one small haiku run on Vertex per suite run.
+  #
+  # The same run covers file-level skill overrides on a real runtime (#6158)
+  # at no extra model cost: the harness mounts the shipped pr-review skill
+  # from fullsend-ai/agents (pinned as in skill-overrides.feature) with
+  # sub-agents/user-experience.md removed, and the agent has the Agent tool,
+  # so pi registers the staged sub-agents as personas before the model
+  # starts. The runner logs one `subagents: <name> → <model>` line per
+  # registered persona: correctness must be among them, user-experience must
+  # not. The agents: entry pins `subagents: {correctness: haiku}` so the
+  # correctness line does not hang on its frontmatter model resolving in
+  # this run, and a correctness file that failed to register fails the run
+  # instead of only dropping the line. pi prints these lines as one block at
+  # bootstrap; the step reads only that block, requires an ordinary log line
+  # on both sides of it so it was not cut off, and fails if it is missing,
+  # so truncation elsewhere in the job log does not matter. Skill directories
+  # are fetched by github.com tree URL, which the default allowlist does not
+  # cover, so the repository allowlist gains it.
   @requires:capability:runtime-pi
   Scenario: an agents: entry puts one custom agent on pi with its own model
     Given the enrolled test repository
+    And the repository allows remote resources from "https://github.com/fullsend-ai/agents/"
     And a custom harness "pi-override" with:
       """
       agent: agents/pi-override.md
@@ -74,13 +92,18 @@ Feature: Per-agent runtime and model on agents: entries in config.yaml
           GOOGLE_CLOUD_PROJECT: ${ANTHROPIC_VERTEX_PROJECT_ID}
           CLOUD_ML_REGION: ${CLOUD_ML_REGION}
           GOOGLE_APPLICATION_CREDENTIALS: /tmp/.gcp-credentials.json
+      allowed_remote_resources:
+        - https://github.com/fullsend-ai/agents/
+      skills:
+        - https://github.com/fullsend-ai/agents/tree/4a6645268c6c8063c15ce5cb1b88a4f3930c74da/skills/pr-review#sha256=d0a639e6870c3e204db83855cdf1e4e10e6eb3ecfaee1695bbf8630843cb5c6c:
+            sub-agents/user-experience.md: null
       """
     And a pi agent "pi-override" defined as:
       """
       ---
       name: pi-override
       description: Behaviour agent proving a per-agent config entry selects pi and a model for one agent.
-      tools: Bash(ls), Write
+      tools: Bash(ls), Write, Agent
       ---
       You are an unattended smoke-test agent. Do exactly the following, in
       order, then stop. Do not ask questions, do not explain, do not read or
@@ -97,6 +120,8 @@ Feature: Per-agent runtime and model on agents: entries in config.yaml
       pi-override:
         runtime: pi
         model: haiku
+        subagents:
+          correctness: haiku
       """
     And an issue
     When the issue is labeled "ready-for-pi-override"
@@ -105,3 +130,4 @@ Feature: Per-agent runtime and model on agents: entries in config.yaml
     And the run requested model "haiku" from "agents.pi-override" and the provider reported a "haiku" model
     And the pi session transcript records at least one tool call
     And the run metrics report tokens
+    And the harness "pi-override" workflow logs register persona "correctness" and not "user-experience"

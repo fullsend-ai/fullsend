@@ -122,6 +122,9 @@ Any harness field can be overridden. See the [field merge rules](../../reference
 
 - **Change model, timeout, image, scripts** — scalars replace the base value.
 - **Add skills** — your entries are merged with the base's by skill identity (declared `SKILL.md` name when on disk, otherwise directory basename); a matching child skill overrides the base entry. Nested forge skills that share a leaf directory name are kept alongside each other. **Add plugins or host_files** — your entries are concatenated with the base's, base first.
+- **Override files inside a skill** — repeat the skill's entry in map form
+  with [per-file overrides](customizing-with-skills.md#overriding-single-files-in-a-skill);
+  the child's override keys merge with any the base declares, child keys win.
 - **Add or override env vars** — maps are merged; your keys win on collision.
 - **Override validation_loop fields** — child non-zero values win; omitted fields inherit from the base (for example, set only `schema` to swap the schema without copying `script`). **Replace security config** — child replaces the entire block.
 
@@ -332,15 +335,18 @@ are actually changing:
    orchestrator uses a fixed roster). Do not invent a parallel
    `*/SKILL.md` that embeds the same content.
 5. **Prefer the lightest shipping path** the current docs support —
-   upstream contribution, file-level skill override when available, or
-   whole-skill fork only when that is still required.
+   upstream contribution, file-level skill override, or whole-skill fork
+   only when that is still required.
 
-> **Planned:** File-level overrides inside a pinned skill directory (add or
-> replace a single `sub-agents/<name>.md` without vendoring the whole tree)
-> are tracked in [#6158](https://github.com/fullsend-ai/fullsend/issues/6158)
-> / [#6157](https://github.com/fullsend-ai/fullsend/issues/6157). Until that
-> lands, fixed-roster sub-agent changes usually need an upstream PR or a
-> whole-skill pin.
+To add, replace or remove a single `sub-agents/<name>.md` without vendoring
+the whole skill, list
+[per-file overrides](customizing-with-skills.md#overriding-single-files-in-a-skill)
+on the skill's `skills:` entry. Each run also writes a persona manifest that
+pre-scripts, post-scripts and skills read through `FULLSEND_PERSONAS_FILE`,
+so a roster change made by an override is visible to them
+([#6158](https://github.com/fullsend-ai/fullsend/issues/6158)). An
+orchestrator whose dispatch list is hard-coded still needs a parent-skill
+change to call an added persona.
 
 **Authoring help:** the contributor skill
 [`author-fullsend-augmentations`](../../../skills/author-fullsend-augmentations/SKILL.md)

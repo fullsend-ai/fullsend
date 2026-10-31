@@ -57,7 +57,7 @@ Given a dummy agent that would:
 | Column | Meaning |
 |--------|---------|
 | `description` | Human label matched by assertion steps |
-| `op` | `read_file`, `url_get`, `write_fixture`, `assert_env`, `assert_not_jwt`, `assert_file`, `assert_json`, `checkout_branch`, `http_probe`, `wait` |
+| `op` | `read_file`, `url_get`, `write_fixture`, `assert_env`, `assert_not_jwt`, `assert_file`, `assert_json`, `assert_jq`, `checkout_branch`, `http_probe`, `wait` |
 | `args` | Op-specific; see below |
 | `expect` | Optional. `fail` marks a step the scenario expects to fail, such as a fetch the sandbox blocks. The failure is still recorded for `the agent will fail to ...`, but it does not make the agent exit non-zero, so the run still succeeds. |
 
@@ -66,6 +66,8 @@ Given a dummy agent that would:
 **`wait`:** `SECONDS` — sleeps for a whole number of seconds (1 to 1200) between the ops before and after it, for example to outlast a credential's lifetime before probing again.
 
 **`http_probe`:** `METHOD URL HEADER_ENV [BODY]` — `GET` or `POST` (body only with `POST`), sent through `node` from inside the sandbox with `Authorization: Bearer $HEADER_ENV`. `HEADER_ENV` must be `INFERENCE_GATEWAY_API_KEY` or `OPENAI_API_KEY`, the variables that hold OpenShell credential placeholders, so a scenario cannot send any other sandbox variable to a host of its choosing. `<gateway>` expands to `E2E_INFERENCE_GATEWAY_URL`. The HTTP status and the first 4 KiB of the response body are recorded in `behaviour-results.json` (the body is read only up to that limit); JWT-shaped substrings in the body are replaced by `<redacted-jwt>` and `body_had_jwt` records that one was there. The op succeeds only on a 2xx. Assert with `the agent's probe "<description>" returned HTTP <code>` and `... response contains|does not contain "<text>"`; a needle starting with `eyJ` also matches a redacted JWT. `features/runtime/inference-gateway-api-key.feature` runs the gateway's `api-key` mode (ADR 0138): `the test inference gateway is configured for the repository with an API key` commits `url` and `auth: api-key`, and the probe asserts that the echo upstream reports `STUB_KEY`, the gateway's own credential: a positive check, since the runner redacts the test key from the recorded results. It is gated on `inference-gateway-api-key` and skips when `E2E_INFERENCE_GATEWAY_TEST_KEY` is unset. The key must be authorised for the `echo` model only. The step sets it as the leased repository's `FULLSEND_INFERENCE_GATEWAY_API_KEY` secret, which the reusable workflow passes to the runner, and scenario cleanup deletes it, so the pool holds no standing key. Each gateway scenario starts with `the test inference gateway is available` (or `... available with an API key`), which skips before a repository is leased when the settings are unset, so runs without them spend no API calls on the gateway scenarios.
+
+**`assert_jq`:** `path, jq_filter` — runs `jq -e` with the filter (everything after the first comma) on the JSON file at `path`, relative to the sandbox workspace, and succeeds when the last output is neither `false` nor `null`. Use it where `assert_json`'s dotted field path is not enough, such as `any(.personas[]; .path == "sub-agents/security.md")` against `.fullsend/personas.json`. Filters that read the environment, other inputs or modules are refused. Write a `|` inside a table cell as `\|`.
 
 **`write_fixture`:** `dest_path, fixtures/...` — content lives in `e2e/behaviour/fixtures/`, embedded in the committed scenario script at `.fullsend/behaviour/current-scenario.yaml`.
 
@@ -87,6 +89,8 @@ And the agent will output issues.out with:
   expected content
   """
 ```
+
+`Then the harness "<agent>" workflow logs contain "<text>"` (or `... do not contain "<text>"`) searches the harness workflow's job logs. A `do not contain` check fails when the log snapshot is incomplete, rather than passing on missing data. `Then the harness "<agent>" workflow logs register persona "<name>" and not "<other>"` reads only the block of `subagents: <name> → <model>` lines pi prints when it registers personas: the block must be found with an ordinary log line on both sides, must list `<name>` and must not list `<other>`, so a job log truncated elsewhere does not fail it. `Given the repository allows remote resources from "<prefix>"` adds a prefix to the leased repository's `.fullsend/config.yaml` `allowed_remote_resources` for the scenario, so a custom harness can fetch URL skills; see `features/runtime/skill-overrides.feature`.
 
 ### Runtime steps
 
@@ -645,6 +649,8 @@ The `fork-dispatch.feature` file defines the canonical fork-PR behaviour contrac
 2. The label, added afterwards by the e2e identity, must dispatch. This positive control shows that the harness is registered and its trigger matches the PR, so the denial cannot pass just because the harness never loaded.
 
 ### Dispatch step reference
+
+**`a fullsend file "<path>" with:`** — Commits the doc string to `.fullsend/<path>` in the test repository, for a file a harness names by a path relative to the fullsend directory, such as a skill override source. The path must stay inside `.fullsend`.
 
 **`a disabled custom harness "<name>" with:`** — Registers the harness YAML under `.fullsend/harness/<name>.yaml` and adds an agent entry with `enabled: false` to the repo's `config.yaml`. Use this step for negative dispatch assertions where a single agent should be excluded while other agents in the same scenario continue to run. This is *not* the kill switch; for the global emergency stop that blocks all harnesses, use `the kill switch is active`.
 

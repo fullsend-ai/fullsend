@@ -267,6 +267,66 @@ func TestDummyRuntime_Bootstrap_NonZeroExit(t *testing.T) {
 	assert.Contains(t, err.Error(), "sandbox not found")
 }
 
+type skillsBootstrapInput struct {
+	stubBootstrapInput
+	skillDirs []string
+}
+
+func (s skillsBootstrapInput) SkillDirs() []string { return s.skillDirs }
+
+func TestDummyRuntime_Bootstrap_UploadsSkills(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	review := filepath.Join(root, "pr-review")
+	lint := filepath.Join(root, "lint")
+	require.NoError(t, os.MkdirAll(review, 0o755))
+	require.NoError(t, os.MkdirAll(lint, 0o755))
+
+	var mkdir string
+	type upload struct{ local, remote string }
+	var uploads []upload
+	rt := DummyRuntime{
+		ExecFn: func(_ string, cmd string, _ time.Duration) (string, string, int, error) {
+			mkdir = cmd
+			return "", "", 0, nil
+		},
+		UploadFn: func(_ string, local, remote string) error {
+			uploads = append(uploads, upload{local, remote})
+			return nil
+		},
+	}
+	err := rt.Bootstrap(skillsBootstrapInput{
+		stubBootstrapInput: stubBootstrapInput{sandboxName: "sb"},
+		skillDirs:          []string{review, lint},
+	})
+	require.NoError(t, err)
+	assert.Contains(t, mkdir, rt.ConfigDir()+"/skills")
+	assert.Equal(t, []upload{
+		{review, rt.ConfigDir() + "/skills/pr-review"},
+		{lint, rt.ConfigDir() + "/skills/lint"},
+	}, uploads)
+}
+
+func TestDummyRuntime_Bootstrap_SkillUploadError(t *testing.T) {
+	t.Parallel()
+
+	rt := DummyRuntime{
+		ExecFn: func(_ string, _ string, _ time.Duration) (string, string, int, error) {
+			return "", "", 0, nil
+		},
+		UploadFn: func(_ string, _, _ string) error {
+			return errors.New("upload refused")
+		},
+	}
+	err := rt.Bootstrap(skillsBootstrapInput{
+		stubBootstrapInput: stubBootstrapInput{sandboxName: "sb"},
+		skillDirs:          []string{filepath.Join(t.TempDir(), "pr-review")},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "upload refused")
+}
+
 func TestDummyRuntime_RunMissingScript(t *testing.T) {
 	t.Parallel()
 
