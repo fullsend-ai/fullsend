@@ -79,6 +79,11 @@ This matters for fullsend because review agents and code agents process forge co
 - **Output scanning** — the existing `SecretRedactor` pipeline should apply to all agent output, not just to content the agent explicitly identifies as sensitive. This is already the design intent (see [ADR 0022](../ADRs/0022-harness-level-output-schema-enforcement.md)), but the indirect disclosure pattern underscores why output-side scanning is not optional.
 - **Content-aware redaction** — agents processing forge content should redact PII patterns (SSNs, bank accounts, addresses) from their output regardless of whether the input was explicitly marked as sensitive.
 
+The same disclosure boundary arises when an authorized agent reads a private
+tracker while working on a public repository, even without adversarial input.
+See [Private context in public agent workflows](private-context-public-workflows.md)
+for the log, artifact and publication paths that must preserve that boundary.
+
 ### Disproportionate response via social pressure
 
 A variant that exploits alignment training rather than injecting instructions. Shapira et al. (2026) document agents that, under expressions of urgency or distress from non-owners, escalated corrective actions far beyond what was proportionate — disabling an entire email system to protect one secret, or agreeing to stop serving all users because one person expressed disappointment. The mechanism is not adversarial text but emotional framing that triggers the model's helpfulness and compliance training.
