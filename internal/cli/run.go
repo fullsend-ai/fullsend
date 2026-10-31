@@ -1229,6 +1229,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// Collected there (not here) so value-based deprecation checks still
 	// see declared references; emitted here (before env.runner is merged
 	// into RunnerEnv) so runner_env diagnostics reflect the declared YAML.
+	// The preflight_check fields also stay unexpanded here: their ${VAR}
+	// references are validated and expanded inside runPreflightCheck at
+	// step 1d, after this pass, so Lint() path-guards the authored command
+	// and run and lock lint the same value — a substituted host value can
+	// never reach the diagnostic.
 	// reservedSandboxEnvDiagnostics rides along: it names the env.sandbox
 	// keys this run will drop instead of exporting them (#3373).
 	for _, diag := range append(lintDiags, reservedSandboxEnvDiagnostics(h)...) {
@@ -1470,13 +1475,23 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}
 
-	// 1d. Preflight dependency check for host-side scripts.
-	// When a validation_loop declares a preflight_check command, run it now
-	// to catch missing host dependencies (e.g. python3-jsonschema) before
-	// sandbox creation — not after the agent has already finished. See #5074.
-	// The command runs against the preflight allowlist environment; its
-	// ${VAR} references are validated and expanded in runPreflightCheck,
-	// which rejects credential references before any shell sees them.
+	// 1d. Preflight dependency checks for host-side scripts, run before
+	// pre_script (step 4) and sandbox creation (step 7). The top-level
+	// preflight_check is the single eager gate for the whole run — it
+	// probes pre_script, post_script, and validation_loop dependencies,
+	// including on runs a pre_script would skip (ADR 0129 Decision 3).
+	// A validation_loop's nested preflight_check follows it during
+	// migration. Either check catches missing host dependencies (e.g.
+	// python3-jsonschema) before sandbox creation — not after the agent
+	// has already finished. See #5074. The commands run against the
+	// preflight allowlist environment; their ${VAR} references are
+	// validated and expanded in runPreflightCheck, which rejects
+	// credential references before any shell sees them.
+	if h.PreflightCheck != "" {
+		if err := runPreflightCheck(ctx, printer, "preflight_check", h.PreflightCheck, h.RunnerEnv, absFullsendDir); err != nil {
+			return err
+		}
+	}
 	if h.ValidationLoop != nil && h.ValidationLoop.PreflightCheck != "" {
 		if err := runPreflightCheck(ctx, printer, "validation_loop.preflight_check", h.ValidationLoop.PreflightCheck, h.RunnerEnv, absFullsendDir); err != nil {
 			return err
@@ -4008,6 +4023,44 @@ func escapeForDoubleQuotes(s string) string {
 	s = strings.ReplaceAll(s, `$`, `\$`)
 	s = strings.ReplaceAll(s, "`", "\\`")
 	return s
+}
+
+// runPreflightCommand runs one literal sh -c preflight command with the
+// credential-stripped child environment, the preflightCheckTimeout bound,
+// and redacted failure/timeout diagnostics. label names the harness field
+// in step and error messages (e.g. "validation_loop.preflight_check",
+// "preflight_check"). Both the command — which can embed credentials
+// after ${VAR} expansion — and the captured output are redacted via
+// redactFeedback before they reach the returned error, as ADR 0129
+// Decision 3 requires of both preflight paths. No working directory is
+// set: the command probes host dependencies from the host process cwd
+// (ADR 0128 literal-command semantics).
+func runPreflightCommand(ctx context.Context, printer *ui.Printer, label, command string, runnerEnv map[string]string) error {
+	printer.StepStart(fmt.Sprintf("Preflight: checking %s dependencies", label))
+	preflightCtx, preflightCancel := context.WithTimeout(ctx, preflightCheckTimeout)
+	defer preflightCancel()
+	preflightCmd := exec.CommandContext(preflightCtx, "sh", "-c", command)
+	// Use childScriptEnv to strip OIDC credential vars (#5832).
+	preflightCmd.Env = childScriptEnv(runnerEnv, "")
+	preflightOut, preflightErr := preflightCmd.CombinedOutput()
+	if preflightErr != nil {
+		printer.StepFail("Preflight dependency check failed")
+		// Redact the command too: after ${VAR} expansion it can embed
+		// env.runner credentials, which must not reach the CLI error,
+		// the trace or the completion comment (ADR 0129 Decision 3).
+		redactedCmd := redactFeedback(command, runnerEnv)
+		if preflightCtx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("%s timed out after %s: %s", label, preflightCheckTimeout, redactedCmd)
+		}
+		// Redact before the message reaches the CLI error, the trace and
+		// the completion comment: the command runs with env.runner.
+		// Redact the raw capture first, because validationFailMessage
+		// trims it and a padded secret would then miss the literal match.
+		redactedOut := []byte(redactFeedback(string(preflightOut), runnerEnv))
+		return fmt.Errorf("%s failed: %s\n%s\nInstall the missing dependency before running this agent", label, redactedCmd, redactFeedback(validationFailMessage(redactedOut, preflightErr), runnerEnv))
+	}
+	printer.StepDone("Preflight dependency check passed")
+	return nil
 }
 
 // validationFailMessage returns a human-readable message for a validation
