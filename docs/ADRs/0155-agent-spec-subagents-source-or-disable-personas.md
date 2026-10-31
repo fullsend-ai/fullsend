@@ -27,27 +27,21 @@ Accepted
 
 ## Context
 
-The review agent's orchestrator skill (`pr-review`) dispatches one sub-agent
-persona per review dimension
-([code-review.md](../problems/code-review.md#review-sub-agent-decomposition)),
-and its roster is prose inside the skill. At
-`12a09ace3e26b1e52442ee628ac570f794f856f6`, `agents[].subagents`
-(`AgentEntry.Subagents` in `internal/config/config.go`, a
-`map[string]*string`) maps a persona name to a model string
+Each agent entry's `subagents` map sets a model per persona
 ([ADR 0104](0104-per-persona-model-resolution.md)). It cannot point a persona
-at another file or turn one off. Harness `skills:` entries in map form
-(`SkillEntry.Overrides` in `internal/harness/skill_entry.go`) can replace or
-remove a file inside a pinned skill, and they are parsed, resolved and
-locked. Staging does not apply them yet
-([#6158](https://github.com/fullsend-ai/fullsend/issues/6158)). So today the
-only way to add, replace or remove a persona is to copy the whole skill. A
-downstream fork that did this still has the LLM choosing among its personas,
-and every upstream change to the skill has to be ported to the fork by hand.
+at a different file or turn one off. Harness `skills:` entries can replace or
+remove files inside a pinned skill, but staging does not apply those overrides
+yet ([#6158](https://github.com/fullsend-ai/fullsend/issues/6158)). So today
+the only way to add, replace or remove a review persona
+([review sub-agent decomposition](../problems/code-review.md#review-sub-agent-decomposition))
+is to copy the whole skill, and every upstream change to the skill must then
+be ported by hand. Copying does not make selection deterministic either: the
+orchestrator still chooses among the copied personas.
 
 The review skill already departs from the scripted pipeline of
 [ADR 0018](0018-scripted-pipeline-for-multi-agent-orchestration.md) and
 relies on a fixed roster instead. With this decision the roster is still
-fixed for each run: it is the staged set, read from the base branch, not
+fixed for each run: it is the staged set, read from the trusted ref, not
 something the change's author picks. This ADR does not supersede ADR 0018.
 
 This ADR aims to let a repository replace, add or disable a persona from its
@@ -78,32 +72,48 @@ the skill.
 1. **Two forms.** `agents[].subagents.<persona>` accepts a string, which is
    the model exactly as today (ADR 0104's string form and resolution order are
    unchanged). It also accepts an object `{model, source, enabled}`. Every
-   field is optional, and `model` means the same as the string form.
+   field is optional, and `model` means the same as the string form. A string
+   value is shorthand for `{model: <value>}`. The reserved `default` key
+   accepts only the string form.
 2. **Compiles into skill file overrides.** At staging, the runner turns
-   `source` and `enabled: false` into the #6158 skill file overrides. They
-   replace, add or remove `sub-agents/<persona>.md` in the skill that ships
-   the persona, or add the file to the agent's orchestrator skill. There is
-   one mechanism underneath: `subagents` is the recommended surface, and
-   harness `skills:` overrides stay available.
-3. **`source` is a guarded field** in the sense of
-   [ADR 0112](0112-overlays-may-set-any-harness-field.md). It is one of:
-   - a repository path that resolves inside the repository (no `..`, no
-     absolute path, no symlink escape);
+   `source` and `enabled: false` into the harness skill file overrides. They
+   replace or remove `sub-agents/<persona>.md` in the skill that ships the
+   persona. A `source` for a persona that no staged skill ships adds
+   `sub-agents/<persona>.md` to the agent's first skill that already ships
+   personas. The sourced file's frontmatter `name` must equal the key. The
+   overrides are applied before persona discovery, so discovery and model
+   resolution see the staged tree. There is one mechanism underneath:
+   `subagents` is the recommended surface, and harness `skills:` overrides stay
+   available.
+3. **`source` crosses a trust boundary.** Like the guarded fields of
+   [ADR 0112](0112-overlays-may-set-any-harness-field.md), it is accepted only
+   from config at the trusted ref (the same ref `config.yaml` and the harness
+   are read from), and never from an overlay, a CLI flag, an environment
+   variable or the change under review. It is one of:
+   - a repository path, resolved against the same `.fullsend/` directory as
+     harness skill overrides, which must not leave it (no `..`, no absolute
+     path, no symlink escape);
    - a URL pinned with `#sha256=`, whose prefix is on
-     `allowed_remote_resources`, with a lock entry recorded the same way as
-     harness bases and skills.
+     `allowed_remote_resources`, with a lock entry. `fullsend lock` runs the
+     same compile step as the run, and a run fails on an unlocked or
+     mismatched `source`.
 
-   The config, the path and the URL allowlist are all read from the base
-   branch (the trusted ref), so a pull request cannot change its own review.
+   Because the config, the path and the URL allowlist are all read from the
+   trusted ref, a pull request cannot change its own review.
 4. **`enabled: false` is a host guarantee.** The persona file is not staged,
-   so the agent has no prompt for it. The runner records the staged personas,
-   and the review post-script drops any finding whose dimension names a
-   persona that was not staged. This does not stop the parent agent from
-   doing the work itself or spawning an anonymous helper, and it does not need
-   to: such output carries no staged dimension.
+   so no child can be dispatched as that persona. As a backstop, findings
+   record the persona that produced them in a `dimension` field that the
+   review skill fills in, and the review post-script drops findings whose
+   `dimension` names a persona that was not staged. The field is reported by
+   the agent, so this filters mislabelled output and is not proof of what ran.
+   This does not stop the parent agent from doing the work itself or spawning
+   an anonymous helper, and it does not need to: such output carries no staged
+   dimension.
 5. **Layering.** Org and repo layers merge per field, so a repo can set only
-   `model` on a `source` the org supplies. `key: ~` removes the whole
-   inherited entry, as ADR 0104 defines.
+   `model` on a `source` the org supplies. ADR 0104's rule that a shared
+   preset must not carry `subagents` entries still holds for `model` and
+   `source` entries until the merge records which layer a key came from.
+   `key: ~` removes the whole inherited entry, as ADR 0104 defines.
 6. **No persona semantics in the runner.** fullsend checks only the shape:
    types, the `source` trust rules and duplicate persona names. It does not
    know which personas a skill needs. If, for example, the skill's
@@ -111,44 +121,50 @@ the skill.
 7. **Selection is unchanged.** The review agent still chooses which
    dimensions to run on a given change, but only from the staged personas.
    This ADR does not make selection deterministic.
-8. **One existing error is relaxed.** Today a `subagents` key naming a
-   persona the run did not discover is fatal (`resolvePersonaModels` in
-   `internal/runtime/pi_personas.go`, `resolveCodexChildModels` in
-   `internal/runtime/codex_personas.go`). That stays fatal for an entry that
-   sets `model` or `source`. An `enabled: false` entry on a persona the skill
-   does not ship is a no-op, so an org can disable a persona that the skills
-   in some of its repositories lack.
+8. **One existing error is relaxed.** Today a `subagents` key that names a
+   persona the run did not discover is an error. Three cases follow:
+   - a `model`-only entry that names no persona in the staged tree stays an
+     error;
+   - an entry with `source` defines the persona, so it is never undiscovered;
+   - an `enabled: false` entry for a persona that no staged skill ships is
+     ignored, with a warning in the run log naming the discovered personas.
+     An org-wide disable then still works in repositories without the
+     persona, and a typo shows up.
+9. **Runtimes.** `source` and `enabled` act at staging, so they apply on every
+   runtime. `model` applies where ADR 0104's resolution is implemented (pi,
+   and codex when the agent delegates); elsewhere it is ignored as today.
 
 ```yaml
 agents:
   - name: review
     subagents:
       default: sonnet                     # string form, as in ADR 0104
-      style:
-        enabled: false                    # not staged; its findings are dropped
+      style-conventions:
+        enabled: false                    # not staged; if no staged skill ships it, ignored with a warning
       correctness:
         source: .fullsend/personas/correctness.md   # repository path
-      licensing:                          # adds a persona the skill does not ship
+      licensing:                          # source defines the persona, so it is never undiscovered
         model: opus
-        source: https://github.com/example-org/personas/raw/<sha>/licensing.md#sha256=<sha256>
+        source: https://raw.githubusercontent.com/example-org/personas/<sha>/licensing.md#sha256=<sha256>
 ```
 
 ## Forge scope
 
-Forge-neutral. The decision covers config, staging and a host post-script,
-which work the same way on GitHub, GitLab and Forgejo.
+Forge-neutral: config, staging and the post-script do not depend on the
+forge. It applies on GitHub and GitLab, each with its own trusted ref, and on
+Forgejo once that forge lands.
 
 ## Consequences
 
 - A repository can add, replace or disable a review persona from config
   without copying the skill, and keeps upstream updates for everything else.
-- Disabling is enforced on the host (the persona is not staged and its
-  findings are dropped), while choosing dimensions stays the review agent's
-  judgement.
+- Disabling is enforced on the host because the persona is not staged, with a
+  finding drop on the `dimension` field as a backstop, while choosing
+  dimensions stays the review agent's judgement.
 - A `source` change crosses a trust boundary and gets the same review,
   pinning and locking as a skill or harness base.
-- The CLI gains `fullsend agent set --subagent-source` and
-  `--subagent-disable`, implemented after this ADR is approved.
-- Before an added persona can be selected, the skill must build its roster
-  from the staged personas rather than from prose, which is work in the
-  agents repository.
+- The CLI gains a way to set `source` and to disable a persona, implemented
+  after this ADR is approved.
+- Disabling or adding a persona takes effect only once the review skill builds
+  its roster from the staged persona files and fills in `dimension`, which is
+  agents-repository work that must ship first.
