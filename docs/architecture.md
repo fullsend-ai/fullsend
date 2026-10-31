@@ -314,8 +314,8 @@ flowchart TB
   trusted ref (a path inside `.fullsend/`, or a `#sha256=`-pinned URL on
   `allowed_remote_resources`). A disabled persona is not staged, so no child
   can be dispatched as it; as a backstop, the review post-script drops
-  findings whose agent-reported `dimension` names a persona that was not
-  staged ([ADR 0155](ADRs/0155-agent-spec-subagents-source-or-disable-personas.md)).
+  findings below high whose agent-reported `dimension` names a persona that
+  was not staged, and logs each drop ([ADR 0155](ADRs/0155-agent-spec-subagents-source-or-disable-personas.md)).
   Decided, not yet implemented.
 - Harness `overlays:` ([ADR 0088](ADRs/0088-cel-guarded-overlays.md)) will be
   able to set any harness field except `base`, `trigger`, `overlays`, `slug`,

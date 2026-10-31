@@ -217,9 +217,18 @@ effort, sub-agent models and the trigger.
   delegates, the values must be OpenAI ids and a key must name a registered
   persona or `default`; see
   [Codex › Child models](../runtimes/codex.md#child-models).
-  An object form (`model`, `source`, `enabled`) is decided in
-  [ADR 0155](../ADRs/0155-agent-spec-subagents-source-or-disable-personas.md)
-  but not yet implemented.
+  **Object form** (decided in
+  [ADR 0155](../ADRs/0155-agent-spec-subagents-source-or-disable-personas.md),
+  not yet implemented): a value may also be an object with these optional
+  fields.
+  - `model` (string): the same as the string form.
+  - `source` (string): a path inside `.fullsend/`, or a `#sha256=`-pinned URL
+    on `allowed_remote_resources`. It replaces the persona's prompt file, or
+    adds a new persona.
+  - `enabled` (bool, default `true`): `false` keeps the persona out of the
+    agent's sandbox.
+
+  Example: `security: {source: .fullsend/personas/security.md, model: opus}`.
 - **`trigger`** — A [CEL trigger](../guides/user/cel-triggers-reference.md)
   (a boolean over the normalized `event`). It decides routing for the
   built-in review, retro, triage and prioritize agents only: on one of those
