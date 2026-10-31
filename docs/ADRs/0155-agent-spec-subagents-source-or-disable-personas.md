@@ -74,19 +74,23 @@ the skill.
    ADR 0104's resolution is unchanged and still applies only where it is
    implemented (pi, and codex when the agent delegates). The `default` key
    takes only the string form.
-2. **Compiles into skill file overrides.** At staging, before persona
-   discovery and on every runtime, the runner turns `source` and
-   `enabled: false` into harness skill file overrides. These replace or remove
-   `sub-agents/<persona>.md` in the skill that ships the persona. A `source` for
+2. **Compiles into skill file overrides.** The runner turns `source` and
+   `enabled: false` into harness skill file overrides when it composes the
+   harness, in the step `fullsend lock` shares. These overrides win over a
+   harness `skills:` override for the same file. Staging applies them before
+   persona discovery, on every runtime. `enabled: false` removes
+   `sub-agents/<persona>.md` from every staged skill that ships it, and
+   `source` replaces the file in the first skill that ships it. A `source` for
    a persona that no staged skill ships adds the file to the agent's first
-   skill that has personas, and the file's frontmatter `name` must equal the
-   key.
-3. **`source` crosses a trust boundary.** Like the guarded fields of
-   [ADR 0112](0112-overlays-may-set-any-harness-field.md), it is read only from
-   config at the trusted ref. It is never read from an overlay, a flag, an
-   environment variable or the change under review, so a pull request cannot
-   change its own review. It is either a path that stays inside `.fullsend/`
-   (no `..`, no absolute path, no symlink escape), or a URL pinned with
+   skill that has personas, and the run fails if there is none. A `source`
+   file whose frontmatter `name` differs from its `subagents` key is an error.
+3. **`source` and `enabled: false` cross a trust boundary.** Like the guarded
+   fields of [ADR 0112](0112-overlays-may-set-any-harness-field.md), they are
+   read only from config at the trusted ref, and so is the file a `source`
+   path names. They are never read from an overlay, a flag, an environment
+   variable or the change under review, so a pull request cannot change its
+   own review. A `source` is either a path that stays inside `.fullsend/` (no
+   `..`, no absolute path, no symlink escape), or a URL pinned with
    `#sha256=`, on `allowed_remote_resources`, with a lock entry that
    `fullsend lock` writes and the run checks.
 4. **`enabled: false` is a host guarantee.** The persona file is not staged,
@@ -96,10 +100,12 @@ the skill.
    what ran.
 5. **Layering.** Layers merge per field, and `key: ~` removes an inherited
    entry (ADR 0104). ADR 0104's rule against `subagents` entries in shared
-   presets still holds for `model` and `source`.
-6. **No persona semantics in the runner.** fullsend checks shape only: types,
-   the `source` trust rules and duplicate names. The skill decides what to do
-   when, for example, `correctness` is missing.
+   presets still holds for every entry except `enabled: false`.
+6. **No persona semantics in the runner.** fullsend checks shape only: types
+   and the `source` trust rules. A persona's frontmatter `name` must match its
+   file name, and when two skills ship the same name the first wins, with a
+   warning. The skill decides what to do when, for example, `correctness` is
+   missing.
 7. **Selection is unchanged.** The review agent still chooses which dimensions
    run, now only from the staged personas.
 8. **Unknown keys.** A key without `enabled: false` that names a persona the
