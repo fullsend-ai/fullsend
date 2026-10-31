@@ -25,6 +25,10 @@ decides when a knob should be an `{AGENT}_` env var at all versus a
 which narrows the "CI workflow injection" delivery mechanism to
 infrastructure values.*
 
+*Amended by [ADR 0154](0154-agent-entries-may-overlay-harness-fields.md):
+besides `base` composition, an `agents:` entry's `harness:` block can
+override a harness `env` default.*
+
 ## Context
 
 Agents need behavioral knobs — settings that tune *how* they work without

@@ -27,6 +27,11 @@ resolved from verified pre-admission facts and pinned before the harness's
 actor gate; the deprecated `forge:` block cannot set it. The other overlay
 rules remain current.
 
+*See also [ADR 0154](0154-agent-entries-may-overlay-harness-fields.md),
+the separate work on overriding harness settings without a custom harness:
+an `agents:` entry's `harness:` block overrides `env` values from config with
+the overlay `env` merge.*
+
 <!-- ADRs are point-in-time records, but not fully frozen after acceptance.
      Minor annotations are welcome: cross-references to related ADRs, short
      notes linking to newer decisions, or clarifying remarks. However, do not

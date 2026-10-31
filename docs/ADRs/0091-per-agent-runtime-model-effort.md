@@ -17,6 +17,10 @@ Date: 2026-08-25
 
 Accepted
 
+*Amended by [ADR 0154](0154-agent-entries-may-overlay-harness-fields.md):
+an `agents:` entry may also carry a `harness:` block that overrides harness
+`env` values without a `base:` harness.*
+
 ## Context
 
 `.fullsend/config.yaml` could not express per-agent `model`, `runtime`, or
