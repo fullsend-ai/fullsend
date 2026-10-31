@@ -308,14 +308,17 @@ flowchart TB
 
 - The `fullsend run` runner delegates in-sandbox agent execution to a `runtime.Runtime` interface; production orgs default to Claude Code, with [pi](https://github.com/earendil-works/pi) available as an opt-in second runtime (`runtime: pi`, Claude-on-Vertex through the same WIF credential path), [codex](https://github.com/openai/codex) as a third (`runtime: codex`, OpenAI models through a custom model provider whose bearer token comes from a runner-seeded file, or `gateway/` models through a runner-owned gateway provider ([ADR 0137](ADRs/0137-inference-gateway-credential-route.md)), with the sandbox tool hooks behind a translating adapter — [ADR 0099](ADRs/0099-codex-agent-runtime.md) and [ADR 0100](ADRs/0100-codex-sandbox-hooks.md)), and [OpenCode](https://github.com/anomalyco/opencode) as a fourth (`runtime: opencode`, Claude-on-Vertex through the same WIF credential path; read-only agents only until the security-hook plugin adapter in [unbound-force#515](https://github.com/unbound-force/unbound-force/issues/515) lands). Runtime selection is configured per repo with `runtime:` in `.fullsend/config.yaml` (per-agent `runtime`/`model`/`effort`/`subagents` on the agent's `agents:` entry sit above it and below the `--runtime`/`--model`/`--effort` flags and `FULLSEND_*` variables, [ADR 0091](ADRs/0091-per-agent-runtime-model-effort.md)) and resolved via `runtime.ResolveForAgent()`. Test-only runtimes — **dummy** (scripted operations) and **dummy-playback** (playlist-based replay of canned results) — execute in the real OpenShell sandbox for behaviour tests without inference. Bootstrap uses a portable `BootstrapInput` interface with optional extensions such as `SandboxHooksBootstrap` for the runtime-neutral sandbox tool hooks ([ADR 0090](ADRs/0090-runtime-neutral-sandbox-hooks-contract.md)); runtimes declare further capabilities through small optional interfaces (`DebugLogNamer`, `ContextBridger`) rather than `Name()` checks in the runner. Transcript and debug artifact handling use a separate `TranscriptHandler` interface. See [runtimes.md](runtimes.md) for the per-runtime security feature matrix required when adding a new backend.
 - A per-agent `subagents` entry will accept an object `{model, source,
-  enabled}` as well as today's model string. At staging, `source` and
-  `enabled: false` compile into skill file overrides that replace, add or
-  remove a `sub-agents/<persona>.md`. `source` is read only from config at the
-  trusted ref (a path inside `.fullsend/`, or a `#sha256=`-pinned URL on
-  `allowed_remote_resources`). A disabled persona is not staged, so no child
-  can be dispatched as it; as a backstop, the review post-script drops
-  findings below high whose agent-reported `dimension` names a persona that
-  was not staged, and logs each drop ([ADR 0155](ADRs/0155-agent-spec-subagents-source-or-disable-personas.md)).
+  enabled}` as well as today's model string. When the harness is composed,
+  `source` and `enabled: false` compile into skill file overrides that
+  replace, add or remove a `sub-agents/<persona>.md`; staging applies them.
+  Both are read only from config at the trusted ref, and `source` is a path
+  inside `.fullsend/` or a `#sha256=`-pinned URL on
+  `allowed_remote_resources`. A disabled persona is not staged, so its prompt
+  never reaches the sandbox; a child started under its name runs only as an
+  anonymous helper. As a backstop, the review post-script drops findings
+  below high whose agent-reported `dimension` names a persona that was not
+  staged, and logs each drop
+  ([ADR 0155](ADRs/0155-agent-spec-subagents-source-or-disable-personas.md)).
   Decided, not yet implemented.
 - Harness `overlays:` ([ADR 0088](ADRs/0088-cel-guarded-overlays.md)) will be
   able to set any harness field except `base`, `trigger`, `overlays`, `slug`,
