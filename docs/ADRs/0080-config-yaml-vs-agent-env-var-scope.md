@@ -20,6 +20,11 @@ Amends: [ADR 0049](0049-agent-configuration-env-var-convention.md)
 
 Accepted
 
+*Amended by [ADR 0154](0154-agent-entries-may-overlay-harness-fields.md):
+besides `base:` composition, an `agents:` entry's `harness:` block can
+override a single-agent knob in `env.runner`/`env.sandbox`. The knob is still
+one harness variable, not a parallel `config.yaml` field.*
+
 ## Context
 
 [fullsend-ai/agents#567](https://github.com/fullsend-ai/agents/pull/567)

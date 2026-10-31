@@ -166,8 +166,15 @@ repo baseline and overrides)
   infrastructure plumbing (credentials, project IDs, regions) and values
   computable only at CI runtime; agent behavior defaults are set via
   harness `env.runner`/`env.sandbox` and overridden through `base:`
-  composition, never the workflow file
+  composition or an entry's `harness:` block (below), never the workflow
+  file
   ([ADR 0081](ADRs/0081-reserve-workflow-env-for-infra-plumbing.md)).
+- Harness overrides from config: an `agents:` entry may carry a `harness:`
+  block that overrides harness `env` values, merged after `base:`, `forge:`
+  and the harness's overlays, so a repo can change an agent knob without
+  pinning a harness. Other fields need a later decision. The block wins
+  over the harness value
+  ([ADR 0154](ADRs/0154-agent-entries-may-overlay-harness-fields.md)).
 - Agent-driven branch targeting: the code agent writes its chosen target
   branch to structured output. The post-script validates the choice against
   an allowlist and falls back to the repo's auto-detected default branch.

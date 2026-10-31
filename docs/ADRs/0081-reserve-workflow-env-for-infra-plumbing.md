@@ -20,6 +20,11 @@ Amends: [ADR 0049](0049-agent-configuration-env-var-convention.md)
 
 Accepted
 
+*Amended by [ADR 0154](0154-agent-entries-may-overlay-harness-fields.md):
+besides `base:` composition, an `agents:` entry's `harness:` block can
+override `env.runner`/`env.sandbox` defaults. The workflow `env:` block
+stays reserved for infrastructure plumbing.*
+
 ## Context
 
 [ADR 0080](0080-config-yaml-vs-agent-env-var-scope.md) states that a
