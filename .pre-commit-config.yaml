@@ -23,6 +23,14 @@ repos:
       - id: gitlint
         stages: [commit-msg]
 
+  - repo: local
+    hooks:
+      - id: check-dco-signoff
+        name: check DCO sign-off
+        entry: ./hack/check-dco-signoff
+        language: script
+        stages: [commit-msg]
+
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.15.7
     hooks:
@@ -60,8 +68,8 @@ repos:
     hooks:
       - id: pinact
         name: pinact (SHA-pin check)
-        entry: pinact run --fix=false --no-api
-        language: system
+        entry: ./hack/lint-pinact
+        language: script
         files: |
           (?x)^(
             \.github/workflows/
