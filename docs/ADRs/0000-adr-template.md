@@ -30,11 +30,11 @@ _Close the Context with one sentence stating what this ADR aims to achieve
 (e.g., "This ADR aims to ..."). The reader needs it before the Options,
 because Options are judged against it._
 
-_When describing current behavior, cite the implementing file or function at a
-commit SHA, not `main` (e.g., `internal/cli/repos.go` at `<SHA>`, or a
-permalink such as
-`https://github.com/fullsend-ai/fullsend/blob/<SHA>/internal/cli/repos.go`).
-Confirm the code at that SHA matches your description._
+_When describing current behavior, verify each claim against the code at a
+commit SHA, not `main`. Here, describe that behavior in plain language and link
+the PR, issue, or ADR that introduced it. Put the file or function evidence at
+that SHA in the PR description, not in this ADR: no line-pinned permalinks
+(`blob/<SHA>/path#L…`) in Context or Decision._
 
 ## Options
 
