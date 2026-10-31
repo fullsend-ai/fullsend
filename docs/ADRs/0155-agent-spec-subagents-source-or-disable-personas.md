@@ -115,8 +115,9 @@ agents:
      symlink escape.
    - A URL pinned with `#sha256=`, on `allowed_remote_resources`, with a lock
      entry the run checks.
-7. **Disable is a host guarantee.** A disabled persona is not staged, so no
-   child can be dispatched as it. As a backstop, the review post-script drops
+7. **Disable is a host guarantee.** A disabled persona is not staged, so its
+   prompt never reaches the sandbox; a child started under its name runs only
+   as an anonymous helper. As a backstop, the review post-script drops
    findings below high whose agent-reported `dimension` (the persona name a
    finding records) names a persona that was not staged, and logs each drop.
 8. **Layering.** Layers merge per field, and `key: ~` removes an inherited
