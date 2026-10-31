@@ -111,6 +111,12 @@ cases fail earlier:
 See
 [pi § Per-persona model configuration](../runtimes/pi.md#per-persona-model-configuration).
 
+## Live progress
+
+Progress display depends on the selected runtime. See
+[Claude Workflow progress](../runtimes/claude.md#live-claude-workflow-progress)
+for Claude background tasks, agent lifecycle metadata and display limits.
+
 ## Output artifacts
 
 Each run produces artifacts in the output directory. Relative `--output-dir`
