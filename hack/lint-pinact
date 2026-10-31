@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# lint-pinact - Run pinact SHA-pin check on GitHub Actions workflows
+#
+# If pinact is not installed locally, skip with a warning so local development
+# is not blocked. In CI (CI=true), fail if pinact is not installed.
+
+set -euo pipefail
+
+if ! command -v pinact >/dev/null 2>&1; then
+  echo "WARNING: pinact is not installed; skipping SHA-pin check." >&2
+  echo "To install pinact: run 'make bootstrap' or see https://github.com/suzuki-shunsuke/pinact" >&2
+  if [ -n "${CI:-}" ]; then
+    echo "ERROR: pinact is required in CI" >&2
+    exit 1
+  fi
+  exit 0
+fi
+
+exec pinact run --fix=false --no-api "$@"

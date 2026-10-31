@@ -1,0 +1,316 @@
+#!/usr/bin/env bash
+# check-dco-signoff — Validate DCO sign-off trailer on human commits
+#
+# Validates that non-bot commits carry a Signed-off-by trailer matching
+# the git author or committer name and email in accordance with the Developer
+# Certificate of Origin (DCO).
+#
+# Skips:
+#   - Autonomous bot commits ([bot] in author name/email)
+#   - Active merge commits (when MERGE_HEAD is present)
+#   - Autosquash commits (subject starting with fixup!, squash!, amend!)
+#   - Truly empty / whitespace-only commit messages
+#   - When SKIP_DCO=1 or SKIP_COMMIT_MSG_HOOK=1 is set
+#
+# Usage:
+#   hack/check-dco-signoff <commit-msg-file>
+
+set -euo pipefail
+
+COMMIT_MSG_FILE="${1:-}"
+
+if [[ -z "${COMMIT_MSG_FILE}" ]] || [[ ! -f "${COMMIT_MSG_FILE}" ]]; then
+  echo "Usage: check-dco-signoff <commit-msg-file>" >&2
+  exit 1
+fi
+
+# Allow skipping validation via environment variable
+if [[ -n "${SKIP_DCO:-}" ]] || [[ -n "${SKIP_COMMIT_MSG_HOOK:-}" ]]; then
+  exit 0
+fi
+
+# Exit 0 ONLY when the raw file itself has no non-whitespace content.
+# If the raw file has non-whitespace content (even if comment-prefixed or scissors),
+# do NOT exit 0 here; it must fall through to sign-off validation.
+if ! grep -q '[^[:space:]]' "${COMMIT_MSG_FILE}"; then
+  exit 0
+fi
+
+# Skip during active git merge (MERGE_HEAD is present until commit completes)
+if [[ -f "$(git rev-parse --git-path MERGE_HEAD 2>/dev/null || true)" ]]; then
+  exit 0
+fi
+
+# Read lines into array
+lines=()
+while IFS= read -r line || [[ -n "${line}" ]]; do
+  lines+=("${line}")
+done < "${COMMIT_MSG_FILE}"
+
+# Resolve comment character (handles core.commentChar=auto without language-dependent regexes)
+COMMENT_CHAR="$(git config core.commentChar 2>/dev/null || echo '#')"
+if [[ "${COMMENT_CHAR}" == "auto" ]]; then
+  candidates=('#' ';' '@' '!' '$' '%' '^' '&' '|' ':')
+  num_lines=${#lines[@]}
+
+  for c in "${candidates[@]}"; do
+    first_trailing=${num_lines}
+
+    # If there is a scissors line starting with c with comments around it,
+    # the trailing block starts at or above that scissors line.
+    for (( i = 0; i < num_lines; i++ )); do
+      line="${lines[i]}"
+      if [[ "${line:0:1}" == "${c}" ]] && [[ "${line:1}" == " ------------------------ >8 ------------------------"* || "${line:1}" == " ------------------------ 8< ------------------------"* ]]; then
+        has_c_around=false
+        if (( i + 1 < num_lines )) && [[ "${lines[i+1]:0:1}" == "${c}" ]]; then
+          has_c_around=true
+        elif (( i > 0 )) && [[ "${lines[i-1]:0:1}" == "${c}" ]]; then
+          has_c_around=true
+        fi
+        if ${has_c_around}; then
+          first_trailing=${i}
+          while (( first_trailing > 0 )); do
+            prev="${lines[first_trailing-1]}"
+            if [[ -z "${prev//[[:space:]]/}" ]] || [[ "${prev:0:1}" == "${c}" ]]; then
+              first_trailing=$((first_trailing - 1))
+            else
+              break
+            fi
+          done
+          break
+        fi
+      fi
+    done
+
+    # If no scissors block was found, check trailing lines backward from the end
+    if (( first_trailing == num_lines )); then
+      for (( i = num_lines - 1; i >= 0; i-- )); do
+        line="${lines[i]}"
+        if [[ -z "${line//[[:space:]]/}" ]]; then
+          continue
+        fi
+        if [[ "${line:0:1}" == "${c}" ]]; then
+          first_trailing=${i}
+        else
+          break
+        fi
+      done
+    fi
+
+    # Check if c starts any line before first_trailing (literal check at column 1)
+    has_c_before=false
+    for (( i = 0; i < first_trailing; i++ )); do
+      line="${lines[i]}"
+      if [[ "${line:0:1}" == "${c}" ]]; then
+        has_c_before=true
+        break
+      fi
+    done
+
+    if [[ "${has_c_before}" == "false" ]]; then
+      COMMENT_CHAR="${c}"
+      break
+    fi
+  done
+  [[ "${COMMENT_CHAR}" == "auto" ]] && COMMENT_CHAR="#"
+fi
+
+# Function to test whether a scissors marker is an active Git cut line
+is_git_scissors() {
+  local idx="$1"
+  local cleanup_mode
+  cleanup_mode="$(git config commit.cleanup 2>/dev/null || echo 'default')"
+  if [[ "${cleanup_mode}" == "scissors" ]]; then
+    return 0
+  fi
+  # If cleanup is not explicitly scissors:
+  # In git commit -v, the line immediately following scissors starts with COMMENT_CHAR.
+  # If the next non-empty line does NOT start with COMMENT_CHAR, and a Signed-off-by
+  # trailer exists later in the file, treat scissors as user body text (git commit -F).
+  local num_lines=${#lines[@]}
+  local next_line=""
+  local j
+  for (( j = idx + 1; j < num_lines; j++ )); do
+    if [[ -n "${lines[j]//[[:space:]]/}" ]]; then
+      next_line="${lines[j]}"
+      break
+    fi
+  done
+
+  if [[ -n "${next_line}" ]] && [[ "${next_line:0:${#COMMENT_CHAR}}" != "${COMMENT_CHAR}" ]]; then
+    for (( j = idx + 1; j < num_lines; j++ )); do
+      if echo "${lines[j]}" | grep -qi '^[[:space:]]*Signed-off-by:'; then
+        return 1
+      fi
+    done
+  fi
+  return 0
+}
+
+# Strip comment lines by checking the first character literally at column 1.
+# Stop reading if Git's scissors marker is reached (commit.verbose=true or cleanup=scissors).
+msg_content=""
+scissors_marker="${COMMENT_CHAR} ------------------------ >8 ------------------------"
+scissors_marker_alt="${COMMENT_CHAR} ------------------------ 8< ------------------------"
+num_lines=${#lines[@]}
+
+for (( i = 0; i < num_lines; i++ )); do
+  line="${lines[i]}"
+  # A line is a comment only when it starts with COMMENT_CHAR at column 1 (indented lines preserved)
+  if [[ -n "${COMMENT_CHAR}" ]] && [[ "${line:0:${#COMMENT_CHAR}}" == "${COMMENT_CHAR}" ]]; then
+    # Exact scissors marker check at column 1
+    if [[ "${line}" == "${scissors_marker}"* ]] || [[ "${line}" == "${scissors_marker_alt}"* ]]; then
+      if is_git_scissors "${i}"; then
+        break
+      fi
+    fi
+    continue
+  fi
+  msg_content+="${line}"$'\n'
+done
+
+# Non-empty lines after stripping comments/scissors
+non_empty=$(printf '%s' "${msg_content}" | grep -v '^[[:space:]]*$' || true)
+
+# Extract first line without pipes to avoid SIGPIPE on large messages
+subject=""
+if [[ -n "${non_empty}" ]]; then
+  IFS= read -r subject <<< "${non_empty}"
+fi
+
+# Skip autosquash commits
+case "${subject}" in
+  fixup!*|squash!*|amend!*)
+    exit 0
+    ;;
+esac
+
+# Determine author and committer names and emails.
+# git var formats as "Name <email> timestamp tz".
+AUTHOR_IDENT="$(git var GIT_AUTHOR_IDENT 2>/dev/null || true)"
+AUTHOR=""
+if [[ -n "${AUTHOR_IDENT}" ]]; then
+  AUTHOR="$(echo "${AUTHOR_IDENT}" | sed -E 's/ [0-9]+ [+-][0-9]{4}$//')"
+fi
+
+if [[ -z "${AUTHOR}" ]]; then
+  NAME="${GIT_AUTHOR_NAME:-$(git config user.name 2>/dev/null || true)}"
+  EMAIL="${GIT_AUTHOR_EMAIL:-$(git config user.email 2>/dev/null || true)}"
+  if [[ -n "${NAME}" ]] && [[ -n "${EMAIL}" ]]; then
+    AUTHOR="${NAME} <${EMAIL}>"
+  fi
+fi
+
+COMMITTER_IDENT="$(git var GIT_COMMITTER_IDENT 2>/dev/null || true)"
+COMMITTER=""
+if [[ -n "${COMMITTER_IDENT}" ]]; then
+  COMMITTER="$(echo "${COMMITTER_IDENT}" | sed -E 's/ [0-9]+ [+-][0-9]{4}$//')"
+fi
+
+if [[ -z "${COMMITTER}" ]]; then
+  CNAME="${GIT_COMMITTER_NAME:-${NAME:-$(git config user.name 2>/dev/null || true)}}"
+  CEMAIL="${GIT_COMMITTER_EMAIL:-${EMAIL:-$(git config user.email 2>/dev/null || true)}}"
+  if [[ -n "${CNAME}" ]] && [[ -n "${CEMAIL}" ]]; then
+    COMMITTER="${CNAME} <${CEMAIL}>"
+  fi
+fi
+
+# Skip autonomous bot commits (checks AUTHOR only, matching Probot DCO's author.type check)
+case "${AUTHOR}" in
+  *"[bot]"*|*"[BOT]"*|*"renovate["*|*"dependabot["*)
+    exit 0
+    ;;
+esac
+
+if [[ -z "${AUTHOR}" ]] && [[ -z "${COMMITTER}" ]]; then
+  echo "ERROR: Git author/committer identity is not configured." >&2
+  echo "Run: git config user.name \"Your Name\" && git config user.email \"your@email.com\"" >&2
+  exit 1
+fi
+
+# Extract the trailer block from non-comment lines using git interpret-trailers.
+# -c trailer.separators=: ensures custom separators do not break DCO trailer parsing.
+# --no-divider ensures that '---' horizontal rules in the body do not hide trailers.
+trailers=""
+if [[ -n "${msg_content}" ]]; then
+  trailers=$(printf '%s' "${msg_content}" | git -c trailer.separators=: interpret-trailers --parse --no-divider)
+fi
+
+# Extract all Signed-off-by trailer lines (case-insensitive) from trailer block
+signoffs=$(echo "${trailers}" | grep -i '^[[:space:]]*Signed-off-by:' || true)
+
+if [[ -z "${signoffs}" ]]; then
+  echo "ERROR: Commit message is missing DCO sign-off trailer." >&2
+  echo "" >&2
+  echo "This repository requires human commits to certify the Developer Certificate of Origin (DCO)." >&2
+  echo "Expected trailer matching author or committer:" >&2
+  echo "  Signed-off-by: ${AUTHOR}" >&2
+  if [[ -n "${COMMITTER}" ]] && [[ "${AUTHOR}" != "${COMMITTER}" ]]; then
+    echo "  (or Signed-off-by: ${COMMITTER})" >&2
+  fi
+  echo "" >&2
+  echo "To fix this, commit with '-s':" >&2
+  echo "  git commit -s" >&2
+  echo "or amend an existing commit:" >&2
+  echo "  git commit -s --amend" >&2
+  echo "" >&2
+  echo "For more details, see:" >&2
+  echo "  https://developercertificate.org/" >&2
+  echo "  CONTRIBUTING.md#dco-developer-certificate-of-origin" >&2
+  exit 1
+fi
+
+matched=false
+while IFS= read -r line; do
+  [[ -z "${line}" ]] && continue
+  trailer_val=$(echo "${line}" | sed -E 's/^[[:space:]]*[Ss][Ii][Gg][Nn][Ee][Dd]-[Oo][Ff][Ff]-[Bb][Yy]:[[:space:]]*//' | sed -E 's/[[:space:]]+$//')
+  if [[ "${trailer_val}" == "${AUTHOR}" ]] || [[ "${trailer_val}" == "${COMMITTER}" ]]; then
+    matched=true
+    break
+  fi
+  # Case-insensitive comparison (e.g. for email casing differences)
+  val_lower=$(echo "${trailer_val}" | tr '[:upper:]' '[:lower:]')
+  if [[ -n "${AUTHOR}" ]]; then
+    author_lower=$(echo "${AUTHOR}" | tr '[:upper:]' '[:lower:]')
+    if [[ "${author_lower}" == "${val_lower}" ]]; then
+      matched=true
+      break
+    fi
+  fi
+  if [[ -n "${COMMITTER}" ]]; then
+    committer_lower=$(echo "${COMMITTER}" | tr '[:upper:]' '[:lower:]')
+    if [[ "${committer_lower}" == "${val_lower}" ]]; then
+      matched=true
+      break
+    fi
+  fi
+done <<< "${signoffs}"
+
+if [[ "${matched}" != "true" ]]; then
+  echo "ERROR: DCO Signed-off-by trailer does not match git author or committer." >&2
+  echo "" >&2
+  if [[ "${AUTHOR}" == "${COMMITTER}" ]] || [[ -z "${COMMITTER}" ]]; then
+    echo "Git author/committer: ${AUTHOR}" >&2
+  else
+    echo "Git author:          ${AUTHOR}" >&2
+    echo "Git committer:       ${COMMITTER}" >&2
+  fi
+  echo "Found trailer(s):" >&2
+  echo "${signoffs}" >&2
+  echo "" >&2
+  echo "Expected trailer matching author or committer:" >&2
+  echo "  Signed-off-by: ${AUTHOR}" >&2
+  if [[ -n "${COMMITTER}" ]] && [[ "${AUTHOR}" != "${COMMITTER}" ]]; then
+    echo "  (or Signed-off-by: ${COMMITTER})" >&2
+  fi
+  echo "" >&2
+  echo "To fix this, amend your commit with '-s':" >&2
+  echo "  git commit -s --amend" >&2
+  echo "" >&2
+  echo "For more details, see:" >&2
+  echo "  https://developercertificate.org/" >&2
+  echo "  CONTRIBUTING.md#dco-developer-certificate-of-origin" >&2
+  exit 1
+fi
+
+exit 0
