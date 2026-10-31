@@ -311,7 +311,7 @@ flowchart TB
   enabled}` as well as today's model string. At staging, `source` and
   `enabled: false` compile into skill file overrides that replace, add or
   remove a `sub-agents/<persona>.md`. `source` is read only from config at the
-  trusted ref (an in-repo path, or a `#sha256=`-pinned URL on
+  trusted ref (a path inside `.fullsend/`, or a `#sha256=`-pinned URL on
   `allowed_remote_resources`). A disabled persona is not staged, so no child
   can be dispatched as it; as a backstop, the review post-script drops
   findings whose agent-reported `dimension` names a persona that was not
