@@ -650,7 +650,7 @@ func TestCacheNamedSymlink(t *testing.T) {
 	})
 }
 
-func TestCacheFindNewest(t *testing.T) {
+func TestCacheFindMatching(t *testing.T) {
 	root := t.TempDir()
 	put := func(url string, content []byte, fetched time.Time) string {
 		t.Helper()
@@ -664,55 +664,59 @@ func TestCacheFindNewest(t *testing.T) {
 		return hash
 	}
 	isWanted := func(url string) bool { return strings.HasSuffix(url, "/wanted.yaml") }
+	urls := func(entries []CacheEntry) []string {
+		var out []string
+		for _, e := range entries {
+			out = append(out, e.URL)
+		}
+		return out
+	}
 	now := time.Now().UTC()
 
 	t.Run("missing cache is a miss", func(t *testing.T) {
-		content, entry, err := CacheFindNewest(t.TempDir(), isWanted)
+		entries, err := CacheFindMatching(t.TempDir(), isWanted)
 		require.NoError(t, err)
-		assert.Nil(t, content)
-		assert.Nil(t, entry)
+		assert.Empty(t, entries)
 	})
 
 	t.Run("empty workspace root is a miss", func(t *testing.T) {
-		_, entry, err := CacheFindNewest("", isWanted)
+		entries, err := CacheFindMatching("", isWanted)
 		require.NoError(t, err)
-		assert.Nil(t, entry)
+		assert.Empty(t, entries)
 	})
 
 	put("https://example.com/v1/wanted.yaml", []byte("v1"), now.Add(-2*time.Hour))
-	put("https://example.com/v2/wanted.yaml", []byte("v2"), now.Add(-time.Hour))
+	v2 := put("https://example.com/v2/wanted.yaml", []byte("v2"), now.Add(-time.Hour))
 	put("https://example.com/v3/other.yaml", []byte("other"), now)
 	_, err := CachePutDir(root, "https://example.com/v4/wanted.yaml", map[string][]byte{"a": []byte("dir")})
 	require.NoError(t, err)
 
-	t.Run("newest matching single-file entry wins", func(t *testing.T) {
-		content, entry, err := CacheFindNewest(root, isWanted)
+	t.Run("matching single-file entries newest first", func(t *testing.T) {
+		entries, err := CacheFindMatching(root, isWanted)
 		require.NoError(t, err)
-		require.NotNil(t, entry)
-		assert.Equal(t, []byte("v2"), content)
-		assert.Equal(t, "https://example.com/v2/wanted.yaml", entry.URL)
+		assert.Equal(t, []string{"https://example.com/v2/wanted.yaml", "https://example.com/v1/wanted.yaml"}, urls(entries))
+		assert.Equal(t, v2, entries[0].SHA256)
 	})
 
-	t.Run("corrupted candidate falls back to next newest", func(t *testing.T) {
+	t.Run("corrupted candidate is left out", func(t *testing.T) {
 		hash := put("https://example.com/v5/wanted.yaml", []byte("v5"), now.Add(time.Hour))
 		dir, err := CachePath(root, hash)
 		require.NoError(t, err)
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "content"), []byte("tampered"), 0o600))
 
-		content, entry, err := CacheFindNewest(root, isWanted)
+		entries, err := CacheFindMatching(root, isWanted)
 		require.NoError(t, err)
-		require.NotNil(t, entry)
-		assert.Equal(t, []byte("v2"), content)
+		assert.Equal(t, []string{"https://example.com/v2/wanted.yaml", "https://example.com/v1/wanted.yaml"}, urls(entries))
 	})
 
 	t.Run("no match", func(t *testing.T) {
-		_, entry, err := CacheFindNewest(root, func(string) bool { return false })
+		entries, err := CacheFindMatching(root, func(string) bool { return false })
 		require.NoError(t, err)
-		assert.Nil(t, entry)
+		assert.Empty(t, entries)
 	})
 }
 
-func TestCacheFindNewest_SkipsMalformedEntries(t *testing.T) {
+func TestCacheFindMatching_SkipsMalformedEntries(t *testing.T) {
 	root := t.TempDir()
 	base := filepath.Join(root, ".fullsend-cache", "resources", "sha256")
 	require.NoError(t, os.MkdirAll(filepath.Join(base, "not-a-hash"), 0o700))
@@ -729,18 +733,18 @@ func TestCacheFindNewest_SkipsMalformedEntries(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(base, mismatch, "metadata.json"), meta, 0o600))
 
-	_, entry, err := CacheFindNewest(root, func(string) bool { return true })
+	entries, err := CacheFindMatching(root, func(string) bool { return true })
 	require.NoError(t, err)
-	assert.Nil(t, entry)
+	assert.Empty(t, entries)
 }
 
-func TestCacheFindNewest_UnreadableCacheDir(t *testing.T) {
+func TestCacheFindMatching_UnreadableCacheDir(t *testing.T) {
 	root := t.TempDir()
 	base := filepath.Join(root, ".fullsend-cache", "resources")
 	require.NoError(t, os.MkdirAll(base, 0o700))
 	// A file where the sha256 directory should be.
 	require.NoError(t, os.WriteFile(filepath.Join(base, "sha256"), nil, 0o600))
 
-	_, _, err := CacheFindNewest(root, func(string) bool { return true })
+	_, err := CacheFindMatching(root, func(string) bool { return true })
 	require.Error(t, err)
 }

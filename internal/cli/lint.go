@@ -142,10 +142,7 @@ func runLint(cmd *cobra.Command, fullsendDir, forgeFlag string, strict, offline 
 			errs = append(errs, fmt.Errorf("resolving harness for agent %q: %w", agentName, err))
 			continue
 		}
-		agentOpts := composeOpts
-		if len(fetchDeps) > 0 && fetchDeps[0].URL != "" {
-			agentOpts.SourceURL = fetchDeps[0].URL
-		}
+		agentOpts := agentComposeOpts(composeOpts, fetchDeps)
 		h, _, err := harness.LoadWithBase(cmd.Context(), harnessPath, agentOpts)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("loading harness for agent %q: %w", agentName, err))

@@ -674,9 +674,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// If the agent was fetched from a URL, forward the source URL so
 	// LoadWithBase can resolve relative resources even without a base:
 	// field (ADR-0045 resource resolution for config-registered agents).
-	if len(fetchDeps) > 0 && fetchDeps[0].URL != "" {
-		composeOpts.SourceURL = fetchDeps[0].URL
-	}
+	composeOpts = agentComposeOpts(composeOpts, fetchDeps)
 
 	// If the harness has a URL base and org config failed to load,
 	// load it strictly now so LoadWithBase gets a proper error path
@@ -7387,7 +7385,7 @@ func tryAgentsRepoFallback(ctx context.Context, agentName string, forgeClient fo
 	if !defaultAgentsRepoKnownAgents[normalizedName] {
 		return "", nil, false
 	}
-	path, dep, ok := fetchPinnedAgentsRepoFile(ctx, "harness/"+normalizedName+".yaml", forgeClient, composeOpts, printer, "agent "+agentName)
+	path, dep, ok := fetchPinnedAgentsRepoFile(ctx, "harness/"+normalizedName+".yaml", forgeClient, composeOpts, printer, "agent "+agentName, offlineHarnessProbe(ctx, composeOpts))
 	if !ok {
 		return "", nil, false
 	}
@@ -7402,21 +7400,78 @@ func tryAgentsRepoMeasurementManifest(ctx context.Context, agentName string, for
 	if !defaultAgentsRepoKnownAgents[normalizedName] {
 		return "", false
 	}
-	path, _, ok := fetchPinnedAgentsRepoFile(ctx, "eval/measurements/"+normalizedName+".yaml", forgeClient, composeOpts, printer, "eval measurement manifest for "+agentName)
+	path, _, ok := fetchPinnedAgentsRepoFile(ctx, "eval/measurements/"+normalizedName+".yaml", forgeClient, composeOpts, printer, "eval measurement manifest for "+agentName, nil)
 	return path, ok
+}
+
+// agentsRepoOfflineMissHint is the remedy named when an offline load of a
+// harness from the agents repo misses a companion file. `fullsend lock`
+// pins config-registered harnesses only, so it cannot fill the gap.
+const agentsRepoOfflineMissHint = "warm the cache with an online run using the same --forge; 'fullsend lock' does not cover harnesses from the agents repo"
+
+// agentsRefIndexKey is the url-index.json key under which the online path
+// records the commit SHA it resolved gitRef to, so offline resolution can
+// prefer the revision this build pins.
+func agentsRefIndexKey(gitRef string) string {
+	return "agents-ref:" + defaultAgentsRepoURLPrefix + gitRef
+}
+
+// parsePinnedAgentsRepoURL splits a <agents prefix><40-hex SHA>/<relPath>
+// URL into its commit SHA and relative path.
+func parsePinnedAgentsRepoURL(rawURL string) (sha, relPath string, ok bool) {
+	rest, ok := strings.CutPrefix(rawURL, defaultAgentsRepoURLPrefix)
+	if !ok {
+		return "", "", false
+	}
+	sha, relPath, ok = strings.Cut(rest, "/")
+	if !ok || !commitSHAPattern.MatchString(sha) {
+		return "", "", false
+	}
+	return sha, relPath, true
+}
+
+// agentComposeOpts returns the options for loading a harness that
+// resolveAgentSource returned. A URL-sourced harness resolves its relative
+// companions against its source URL, and an offline load of a harness from
+// the agents repo names agentsRepoOfflineMissHint when a companion is
+// missing.
+func agentComposeOpts(opts harness.ComposeOpts, deps []harness.Dependency) harness.ComposeOpts {
+	if len(deps) == 0 || deps[0].URL == "" {
+		return opts
+	}
+	opts.SourceURL = deps[0].URL
+	if _, _, ok := parsePinnedAgentsRepoURL(deps[0].URL); ok && opts.FetchPolicy.Offline {
+		opts.OfflineMissHint = agentsRepoOfflineMissHint
+	}
+	return opts
+}
+
+// offlineHarnessProbe returns a check that loads a cached agents-repo
+// harness offline, exactly as the caller will, so cachedPinnedAgentsRepoFile
+// can pass over a revision whose companions for the effective forge are not
+// all cached. Audit logging is off for the probe; the caller's own load
+// writes the audit entries.
+func offlineHarnessProbe(ctx context.Context, composeOpts harness.ComposeOpts) func(path, rawURL string) error {
+	return func(path, rawURL string) error {
+		probeOpts := agentComposeOpts(composeOpts, []harness.Dependency{{URL: rawURL}})
+		probeOpts.AuditLogPath = ""
+		_, _, err := harness.LoadWithBase(ctx, path, probeOpts)
+		return err
+	}
 }
 
 // fetchPinnedAgentsRepoFile resolves the agents ref to a commit SHA and
 // fetches relPath from fullsend-ai/agents. In offline mode it resolves
-// relPath from the cache instead (see cachedPinnedAgentsRepoFile). All
-// errors are non-fatal.
-func fetchPinnedAgentsRepoFile(ctx context.Context, relPath string, forgeClient forge.Client, composeOpts harness.ComposeOpts, printer *ui.Printer, noun string) (string, harness.Dependency, bool) {
+// relPath from the cache instead (see cachedPinnedAgentsRepoFile), using
+// probe, when non-nil, to pass over incomplete revisions. All errors are
+// non-fatal.
+func fetchPinnedAgentsRepoFile(ctx context.Context, relPath string, forgeClient forge.Client, composeOpts harness.ComposeOpts, printer *ui.Printer, noun string, probe func(path, rawURL string) error) (string, harness.Dependency, bool) {
 	var none harness.Dependency
 	if strings.Contains(relPath, "..") || strings.HasPrefix(relPath, "/") {
 		return "", none, false
 	}
 	if composeOpts.FetchPolicy.Offline {
-		return cachedPinnedAgentsRepoFile(relPath, composeOpts, printer, noun)
+		return cachedPinnedAgentsRepoFile(relPath, composeOpts, printer, noun, probe)
 	}
 	if forgeClient == nil {
 		return "", none, false
@@ -7468,6 +7523,14 @@ func fetchPinnedAgentsRepoFile(ctx context.Context, relPath string, forgeClient 
 		printer.StepWarn(fmt.Sprintf("Failed to cache agents repo content: %v", err))
 		return "", none, false
 	}
+	// Cache metadata keeps only the last URL per content hash, so index the
+	// URL and the ref's SHA: offline resolution lists every cached revision
+	// of relPath from the index and prefers the one this build pins.
+	if err := harness.RecordURLIndex(composeOpts.WorkspaceRoot, rawURL, contentHash); err != nil {
+		printer.StepWarn(fmt.Sprintf("Failed to index agents repo content: %v", err))
+	} else if err := harness.RecordURLIndex(composeOpts.WorkspaceRoot, agentsRefIndexKey(gitRef), resolvedSHA); err != nil {
+		printer.StepWarn(fmt.Sprintf("Failed to index agents repo content: %v", err))
+	}
 
 	cachePath, err := fetch.CachePath(composeOpts.WorkspaceRoot, contentHash)
 	if err != nil {
@@ -7505,43 +7568,36 @@ func fetchPinnedAgentsRepoFile(ctx context.Context, relPath string, forgeClient 
 
 // cachedPinnedAgentsRepoFile is the offline counterpart of
 // fetchPinnedAgentsRepoFile. The online path pins relPath to the commit SHA
-// of the agents ref, which needs a network call, so offline the URL cannot be
-// reconstructed. Instead the cache metadata is scanned for the most recently
-// fetched entry recorded under a SHA-pinned agents-repo URL for relPath. The
-// returned dependency carries that original URL, so companion files resolve
-// through the URL index exactly as they did online. The newest cached
-// revision need not match the ref this build pins online; the resolved short
-// SHA is printed so the revision is visible. All errors are non-fatal.
-func cachedPinnedAgentsRepoFile(relPath string, composeOpts harness.ComposeOpts, printer *ui.Printer, noun string) (string, harness.Dependency, bool) {
+// of the agents ref, which needs a network call, so offline it chooses among
+// the revisions of relPath already in the cache (cachedAgentsRepoRevisions):
+// the SHA the online path last resolved for this build's ref first, then the
+// rest, newest first. When probe is non-nil, a revision whose probe reports
+// an offline cache miss (a companion for the effective forge was never
+// cached) is passed over for the next one. Any other probe result accepts
+// the revision, so a load error that is not a missing companion surfaces
+// from the caller's own load. When every revision misses, the first is
+// returned so the caller's load names the missing file. Choosing a revision
+// other than the build ref's prints a warning. The returned dependency
+// carries the original SHA-pinned URL, so companion files resolve through
+// the URL index exactly as they did online. All errors are non-fatal.
+func cachedPinnedAgentsRepoFile(relPath string, composeOpts harness.ComposeOpts, printer *ui.Printer, noun string, probe func(path, rawURL string) error) (string, harness.Dependency, bool) {
 	var none harness.Dependency
 	allowlist := composeOpts.OrgAllowlist
+	root := composeOpts.WorkspaceRoot
 
-	notAllowed := false
-	match := func(rawURL string) bool {
-		rest, ok := strings.CutPrefix(rawURL, defaultAgentsRepoURLPrefix)
-		if !ok {
-			return false
-		}
-		sha, tail, ok := strings.Cut(rest, "/")
-		if !ok || tail != relPath || !commitSHAPattern.MatchString(sha) {
-			return false
-		}
-		// Offline resolution honors the same allowlist the online path
-		// checks before fetching.
-		if harness.MatchingAllowedPrefixInList(rawURL, allowlist) == "" {
-			notAllowed = true
-			return false
-		}
-		return true
+	displayRef, gitRef := resolveAgentsRef()
+	index := harness.URLIndexEntries(root)
+	refSHA := index[agentsRefIndexKey(gitRef)]
+	if !commitSHAPattern.MatchString(refSHA) {
+		refSHA = ""
 	}
 
-	// CacheFindNewest re-verifies the content hash before returning a hit.
-	_, entry, err := fetch.CacheFindNewest(composeOpts.WorkspaceRoot, match)
+	candidates, notAllowed, err := cachedAgentsRepoRevisions(root, relPath, allowlist, index, refSHA)
 	if err != nil {
 		printer.StepWarn(fmt.Sprintf("Failed to search cache for %s: %v", noun, err))
 		return "", none, false
 	}
-	if entry == nil {
+	if len(candidates) == 0 {
 		if notAllowed {
 			printer.StepWarn(fmt.Sprintf("Agents repo fallback skipped for %s: cached URL not in allowed_remote_resources", noun))
 		} else {
@@ -7550,12 +7606,38 @@ func cachedPinnedAgentsRepoFile(relPath string, composeOpts harness.ComposeOpts,
 		return "", none, false
 	}
 
-	cachePath, err := fetch.CachePath(composeOpts.WorkspaceRoot, entry.SHA256)
+	contentPath := func(hash string) (string, error) {
+		cachePath, err := fetch.CachePath(root, hash)
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(cachePath, "content"), nil
+	}
+
+	entry := candidates[0]
+	refIncomplete := false
+	if probe != nil {
+		for _, c := range candidates {
+			path, err := contentPath(c.SHA256)
+			if err != nil {
+				continue
+			}
+			if err := probe(path, c.URL); errors.Is(err, harness.ErrOfflineCacheMiss) {
+				if sha, _, _ := parsePinnedAgentsRepoURL(c.URL); sha == refSHA {
+					refIncomplete = true
+				}
+				continue
+			}
+			entry = c
+			break
+		}
+	}
+
+	localPath, err := contentPath(entry.SHA256)
 	if err != nil {
 		printer.StepWarn(fmt.Sprintf("Failed to resolve cache path for %s: %v", noun, err))
 		return "", none, false
 	}
-	localPath := filepath.Join(cachePath, "content")
 
 	if composeOpts.AuditLogPath != "" {
 		if err := fetch.AppendFetchAudit(composeOpts.AuditLogPath, fetch.FetchAuditEntry{
@@ -7571,7 +7653,18 @@ func cachedPinnedAgentsRepoFile(relPath string, composeOpts harness.ComposeOpts,
 		}
 	}
 
-	sha, _, _ := strings.Cut(strings.TrimPrefix(entry.URL, defaultAgentsRepoURLPrefix), "/")
+	sha, _, _ := parsePinnedAgentsRepoURL(entry.URL)
+	if sha != refSHA {
+		repo := defaultAgentsRepoOwner + "/" + defaultAgentsRepoName
+		switch {
+		case refSHA == "":
+			printer.StepWarn(fmt.Sprintf("No cached %s is from the %s revision this build pins (%s); using %s@%s", noun, repo, displayRef, repo, sha[:12]))
+		case refIncomplete:
+			printer.StepWarn(fmt.Sprintf("Cached %s from %s@%s (%s) is missing companion files offline; falling back to %s@%s", noun, repo, refSHA[:12], displayRef, repo, sha[:12]))
+		default:
+			printer.StepWarn(fmt.Sprintf("No cached %s from %s@%s (%s); falling back to %s@%s", noun, repo, refSHA[:12], displayRef, repo, sha[:12]))
+		}
+	}
 	printer.StepDone(fmt.Sprintf("%s resolved from cache (%s/%s@%s, offline)", noun, defaultAgentsRepoOwner, defaultAgentsRepoName, sha[:12]))
 
 	return localPath, harness.Dependency{
@@ -7583,6 +7676,64 @@ func cachedPinnedAgentsRepoFile(relPath string, composeOpts harness.ComposeOpts,
 		CacheHit:  true,
 		Type:      "file",
 	}, true
+}
+
+// cachedAgentsRepoRevisions lists the cached revisions of relPath: every
+// SHA-pinned agents-repo URL for relPath in the URL index, plus any that
+// only the cache metadata records (caches written before the online path
+// indexed these files). Each revision's content is re-verified against its
+// hash, and a URL outside allowlist is skipped, as the online path checks
+// before fetching (notAllowed reports such a skip). refSHA's revision sorts
+// first, then the newest fetch; ties sort by URL so the order is stable.
+func cachedAgentsRepoRevisions(root, relPath string, allowlist []string, index map[string]string, refSHA string) ([]fetch.CacheEntry, bool, error) {
+	notAllowed := false
+	match := func(rawURL string) bool {
+		if _, tail, ok := parsePinnedAgentsRepoURL(rawURL); !ok || tail != relPath {
+			return false
+		}
+		if harness.MatchingAllowedPrefixInList(rawURL, allowlist) == "" {
+			notAllowed = true
+			return false
+		}
+		return true
+	}
+
+	revisions, err := fetch.CacheFindMatching(root, match)
+	if err != nil {
+		return nil, false, err
+	}
+	seen := make(map[string]bool, len(revisions))
+	for _, r := range revisions {
+		seen[r.URL] = true
+	}
+	for rawURL, hash := range index {
+		if seen[rawURL] || !match(rawURL) {
+			continue
+		}
+		// CacheGet re-verifies the content hash. The metadata may record a
+		// different URL for identical content, but its fetch time is still
+		// the best age estimate the cache has.
+		if _, entry, err := fetch.CacheGet(root, hash); err == nil && entry != nil {
+			revisions = append(revisions, fetch.CacheEntry{URL: rawURL, FetchTime: entry.FetchTime, SHA256: hash})
+			seen[rawURL] = true
+		}
+	}
+
+	isRef := func(rawURL string) bool {
+		sha, _, _ := parsePinnedAgentsRepoURL(rawURL)
+		return refSHA != "" && sha == refSHA
+	}
+	sort.SliceStable(revisions, func(i, j int) bool {
+		a, b := revisions[i], revisions[j]
+		if aRef, bRef := isRef(a.URL), isRef(b.URL); aRef != bRef {
+			return aRef
+		}
+		if !a.FetchTime.Equal(b.FetchTime) {
+			return a.FetchTime.After(b.FetchTime)
+		}
+		return a.URL < b.URL
+	})
+	return revisions, notAllowed, nil
 }
 
 func isFetchHTTPStatus(err error, code int) bool {
