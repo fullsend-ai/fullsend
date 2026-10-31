@@ -26,10 +26,10 @@ func TestProgressCacheOwnsNormalizedStrings(t *testing.T) {
 		r.Handle(TaskProgressEvent{TaskID: fmt.Sprint(i), Label: padded, State: TaskRunning})
 		r.Handle(StatusProgressEvent{Kind: "hook", ID: fmt.Sprint(i), Label: "Hook", Subject: padded, Context: padded})
 	}
-	for _, row := range r.taskProgressSeen {
+	for _, row := range r.progress.taskProgressSeen {
 		check(row.event.Label)
 	}
-	for _, row := range r.statusProgressSeen {
+	for _, row := range r.progress.statusProgressSeen {
 		check(row.subject)
 		check(row.context)
 	}

@@ -185,7 +185,7 @@ const (
 // Progress does not update token/cost accounting and carries no prompts or
 // tool result bodies.
 // Consumers receive repeated snapshots and partial patches, not reconciled
-// transitions. EventRenderer merges and deduplicates after caller-specific
+// transitions. A display reconciler merges snapshots after caller-specific
 // credential redaction; custom OnEvent consumers must reconcile their own
 // state. Nonempty values are supplied values; the Set flags distinguish an
 // explicitly empty string/false flag from absent optional metadata. Agent

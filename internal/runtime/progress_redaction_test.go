@@ -16,6 +16,9 @@ func TestProgressCallerRedactionAfterCleanup(t *testing.T) {
 		{"raw whitespace literal", "opaque\trunner credential for test", "opaque\trunner credential for test"},
 		{"split whitespace literal", "opaque\trunner credential for test", "opaque\trun\x1b[31mner credential for test"},
 		{"split rewritten markers", "opaque::runner%0Acredential", "opaque:\x1b[31m:runner%0Acredential"},
+		{"Unicode split", "opaque-runner-credential-for-test", "opaque-runner-\u202ecredential-for-test"},
+		{"Unicode literal", "opaque-\u200bcredential", "opaque-\u200bcred\u2066ential"},
+		{"compatibility split", "opaque-runner-credential-for-test", "ｏｐａｑｕｅ-runner-credential-for-test"},
 		{"before truncation", "opaque-" + strings.Repeat("long-credential", 30), "opaque-\x1b[31m" + strings.Repeat("long-credential", 30)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -40,10 +43,10 @@ func TestProgressCallerRedactionAfterCleanup(t *testing.T) {
 			if !strings.Contains(out.String(), "[REDACTED]") || !strings.Contains(stderr, "[REDACTED]") {
 				t.Fatal("missing redaction marker")
 			}
-			for _, row := range r.taskProgressSeen {
+			for _, row := range r.progress.taskProgressSeen {
 				check("task cache", fmt.Sprintf("%+v", row.event))
 			}
-			for _, row := range r.statusProgressSeen {
+			for _, row := range r.progress.statusProgressSeen {
 				check("status cache", fmt.Sprintf("%+v", row))
 			}
 		})
@@ -58,12 +61,12 @@ func TestProgressCallerRedactionDifferentSpans(t *testing.T) {
 	r.RedactProgress = redact
 	// The raw pass masks the inner secret, the independent normalized pass
 	// sees the outer secret. Do not print the remnants of either candidate.
-	if got := r.progressText("context opaque-prefix-\x1b[31mshortsecret-tail", 160); got != "[REDACTED]" {
+	if got := redactProgressText("context opaque-prefix-\x1b[31mshortsecret-tail", 160, r.RedactProgress); got != "[REDACTED]" {
 		t.Fatalf("conflicting redaction left residual text: %q", got)
 	}
 	// A raw-only match must still protect a literal that cleanup would alter.
 	r.RedactProgress = func(s string) string { return strings.ReplaceAll(s, "opaque\tcredential", "[REDACTED]") }
-	if got := r.progressText("opaque\tcredential", 160); got != "[REDACTED]" {
+	if got := redactProgressText("opaque\tcredential", 160, r.RedactProgress); got != "[REDACTED]" {
 		t.Fatalf("lost raw-only masking: %q", got)
 	}
 }

@@ -25,7 +25,7 @@ func TestClaudeTaskSparseToolAndSummary(t *testing.T) {
 	if strings.Count(out.String(), "Task one") != 1 || !strings.Contains(out.String(), "tool: Bash") || !strings.Contains(out.String(), "Running tests") {
 		t.Fatal("sparse task erased progress: " + out.String())
 	}
-	for _, row := range r.taskProgressSeen {
+	for _, row := range r.progress.taskProgressSeen {
 		if row.event.ToolName != "Bash" || row.event.Summary != "Running tests" {
 			t.Fatalf("sparse cache erased metadata: %+v", row.event)
 		}

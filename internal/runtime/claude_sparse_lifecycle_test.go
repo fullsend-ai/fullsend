@@ -29,7 +29,7 @@ func TestClaudeWorkflowSparseLifecycle(t *testing.T) {
 			if strings.Count(out.String(), "Task wf") != 1 {
 				t.Fatalf("sparse snapshot fabricated transition: %s", out.String())
 			}
-			for _, row := range r.taskProgressSeen {
+			for _, row := range r.progress.taskProgressSeen {
 				if row.event.State != tc.want {
 					t.Fatalf("state %s, want %s", row.event.State, tc.want)
 				}
@@ -65,7 +65,7 @@ func TestClaudeWorkflowSparseLifecycleTransitions(t *testing.T) {
 		if err := parseClaudeStream(strings.NewReader(raw), r.Handle); err != nil {
 			t.Fatal(err)
 		}
-		for _, row := range r.taskProgressSeen {
+		for _, row := range r.progress.taskProgressSeen {
 			if row.event.State != step.want {
 				t.Fatalf("%s: state %s, want %s; output: %s", step.fields, row.event.State, step.want, out.String())
 			}

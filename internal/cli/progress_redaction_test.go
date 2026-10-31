@@ -14,6 +14,8 @@ func TestRedactProgressSecretLiterals(t *testing.T) {
 	for _, tc := range []struct{ name, secret, input string }{
 		{"split tab", "opaque\trunner credential", "opaque\trun\x1b[31mner credential"},
 		{"split markers", "opaque::runner%0Acredential", "opaque:\x1b[31m:runner%0Acredential"},
+		{"Unicode literal", "opaque-\u200bcredential", "opaque-\u200bcred\u2066ential"},
+		{"compatibility literal", "ｏｐａｑｕｅ-credential", "ｏｐａｑｕｅ-cred\u202eential"},
 		{"short normalized value", "opaque\x1b[31m", "opaque"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -19,11 +19,11 @@ func TestTaskProgressCacheAdmissionRetainsGuardsAndDedup(t *testing.T) {
 			r.Handle(TaskProgressEvent{TaskID: id, RunID: "r2", AgentIndex: index + 1, State: TaskRunning, Label: "Worker"})
 		}
 	}
-	if len(r.taskProgressSeen) > maxTaskProgressRows+maxTaskProgressEntries || len(r.taskProgressRuns) > maxTaskProgressEntries {
+	if len(r.progress.taskProgressSeen) > maxTaskProgressRows+maxTaskProgressEntries || len(r.progress.taskProgressRuns) > maxTaskProgressEntries {
 		t.Fatal("unbounded cache/control state")
 	}
 	before := out.String()
-	for _, row := range r.taskProgressSeen {
+	for _, row := range r.progress.taskProgressSeen {
 		if row.event.AgentIndex > 0 {
 			r.Handle(row.event)
 		}
@@ -61,7 +61,7 @@ func TestTaskProgressRelaunchRetiresSupersededRows(t *testing.T) {
 	for run := 1; run <= 4; run++ {
 		id := fmt.Sprintf("r%d", run)
 		r.Handle(TaskProgressEvent{TaskID: "one", RunID: id, Started: true, State: TaskRunning, Label: "Current"})
-		if len(r.taskProgressSeen) != 1 {
+		if len(r.progress.taskProgressSeen) != 1 {
 			t.Fatal("new generation retained superseded rows")
 		}
 		for index := range 1000 {
@@ -71,7 +71,7 @@ func TestTaskProgressRelaunchRetiresSupersededRows(t *testing.T) {
 		for index := range 1000 {
 			r.Handle(TaskProgressEvent{TaskID: "one", RunID: id, AgentIndex: index + 1, State: TaskRunning, Label: "Worker"})
 		}
-		if out.String() != before || len(r.taskProgressSeen) != 1001 {
+		if out.String() != before || len(r.progress.taskProgressSeen) != 1001 {
 			t.Fatal("relaunched workflow lost dedup")
 		}
 	}
@@ -86,7 +86,7 @@ func TestTaskControlAdmissionNeverFlushesExistingTasks(t *testing.T) {
 	}
 	before := out.String()
 	r.Handle(TaskProgressEvent{TaskID: "hidden", State: TaskRunning, Label: "PRIVATE"})
-	if out.String() != before || len(r.taskProgressRuns) != maxTaskProgressEntries {
+	if out.String() != before || len(r.progress.taskProgressRuns) != maxTaskProgressEntries {
 		t.Fatal("task admission evicted hidden control")
 	}
 }
