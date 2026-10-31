@@ -205,9 +205,10 @@ forge:
 		cmd := newLintCmd()
 		out, err := executeCmd(cmd, []string{"--fullsend-dir", dir, "--forge", "github"})
 		require.NoError(t, err)
-		// With a platform, the forge section is merged into the top-level
-		// env before linting, so the diagnostic reports the merged field.
-		assert.Contains(t, out, "env.runner: GITHUB_ISSUE_URL is deprecated")
+		// The forge section is merged into the top-level env, but the
+		// GITHUB_ISSUE_URL check reads the harness before the merge, so the
+		// diagnostic reports the forge-positioned field (#8742).
+		assert.Contains(t, out, "forge[github].env.runner: GITHUB_ISSUE_URL is deprecated")
 	})
 
 	t.Run("forge not applied without platform", func(t *testing.T) {
@@ -231,7 +232,7 @@ forge:
 		require.NoError(t, err)
 		// GITHUB_ACTIONS=true selects the github platform without --forge,
 		// so the forge section merges like the explicit-flag case.
-		assert.Contains(t, out, "env.runner: GITHUB_ISSUE_URL is deprecated")
+		assert.Contains(t, out, "forge[github].env.runner: GITHUB_ISSUE_URL is deprecated")
 	})
 }
 
@@ -259,7 +260,9 @@ overlays:
 	cmd := newLintCmd()
 	out, err := executeCmd(cmd, []string{"--fullsend-dir", dir, "--forge", "github"})
 	require.NoError(t, err)
-	assert.Contains(t, out, "GITHUB_ISSUE_URL is deprecated")
+	assert.Contains(t, out, "overlays[0].env.runner: GITHUB_ISSUE_URL is deprecated")
+	assert.Equal(t, 1, strings.Count(out, "GITHUB_ISSUE_URL is deprecated"),
+		"a matched overlay must be reported once, not also at the merged env.runner")
 }
 
 func TestLintCommand_LoadsHarness_WithDiagnostic(t *testing.T) {

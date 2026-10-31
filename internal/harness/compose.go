@@ -572,6 +572,10 @@ func resolveBaseForgeAndOverlays(base *Harness, opts ComposeOpts) error {
 	if base.Forge != nil {
 		base.hadForgeBeforeResolve = true
 	}
+	// Likewise record this layer's GITHUB_ISSUE_URL diagnostics while its
+	// forge and overlay blocks are still present (#8742). No-op when an
+	// ancestor merge in loadBaseChain already captured them.
+	base.captureDeprecatedIssueURL()
 	// Validate forge and overlays before resolving. Validation must run
 	// while both are still present so mutual-exclusion checks fire.
 	if base.Forge != nil {
@@ -745,6 +749,17 @@ func mergeBaseIntoChild(base, child *Harness) {
 	// marker is the only trace left for Lint().
 	if base.hadForgeBeforeResolve {
 		child.hadForgeBeforeResolve = true
+	}
+
+	// GITHUB_ISSUE_URL diagnostics (#8742): record the child's own before
+	// base fields are merged into its top level, then append the base's
+	// under a "base." prefix. The base was flattened, so its snapshot is
+	// the only trace of its forge variants and overlays, and the prefix
+	// keeps its overlay indices distinct from the child's.
+	child.captureDeprecatedIssueURL()
+	for _, d := range base.lintDeprecatedIssueURL() {
+		d.Field = "base." + d.Field
+		child.issueURLDiags = append(child.issueURLDiags, d)
 	}
 
 	// Scalars: child overrides if non-zero
