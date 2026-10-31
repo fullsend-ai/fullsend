@@ -24,9 +24,9 @@ in new ADRs:
 - A missing or implicit **Forge scope**: GitHub-only discussion that does not
   say whether GitLab and Forgejo are covered, excluded (with a reason or
   tracking issue), or unaffected.
-- Claims about current behavior that lack file or function evidence at a
-  commit SHA (not `main`) in the PR description, or that do not match the code
-  at that SHA. Verify the claims against that evidence.
-- Line-pinned code permalinks (`blob/<sha>/path#L…`) in Context or Decision.
-  The ADR body describes current behavior in plain language and links the PR,
-  issue, or ADR that introduced it.
+- Claims about current behavior with no file or function evidence at a commit
+  SHA (not `main`) in the PR description, or that do not match the code at
+  that SHA.
+- Code permalinks (`blob/<sha>/…`, with or without `#L`) in Context or Decision;
+  the ADR describes the behavior in plain language and links the PR, issue, or
+  ADR that introduced it.

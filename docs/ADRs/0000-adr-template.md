@@ -30,11 +30,10 @@ _Close the Context with one sentence stating what this ADR aims to achieve
 (e.g., "This ADR aims to ..."). The reader needs it before the Options,
 because Options are judged against it._
 
-_When describing current behavior, verify each claim against the code at a
-commit SHA, not `main`. Here, describe that behavior in plain language and link
-the PR, issue, or ADR that introduced it. Put the file or function evidence at
-that SHA in the PR description, not in this ADR: no line-pinned permalinks
-(`blob/<SHA>/path#L…`) in Context or Decision._
+_When describing current behavior, verify it against the code at a commit SHA
+(reading `main` is fine; record its SHA). Describe it here in plain language and
+link the PR, issue, or ADR that introduced it; the file or function evidence
+goes in the PR description, not as code permalinks (`blob/<sha>/…`)._
 
 ## Options
 

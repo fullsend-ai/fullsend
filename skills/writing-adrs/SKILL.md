@@ -171,14 +171,12 @@ Follow these steps in order:
    Options section only when there are genuine alternatives worth documenting;
    if the decision is obvious, just decide it.
 5. **Write the ADR.** Follow the conciseness rules above.
-6. **Cite current behavior.** When the Context or Decision describes how
-   fullsend works today, verify each claim against the code at a specific
-   commit SHA, not `main`. Do not describe an existing mechanism from general
-   knowledge of the underlying tool. In the ADR, describe that behavior in
-   plain language and link the PR, issue, or ADR that introduced it. Put the
-   file or function evidence at that SHA in the PR description, where
-   reviewers check it. Do not put line-pinned permalinks
-   (`blob/<sha>/path#L…`) in Context or Decision.
+6. **Cite current behavior.** Verify each claim about how fullsend works today
+   against the code at a specific commit SHA (reading `main` is fine; record
+   its SHA), not general knowledge of the underlying tool. In the ADR, describe
+   it in plain language and link the PR, issue, or ADR that introduced it; put
+   the file or function evidence at that SHA in the PR description, never as
+   code permalinks (`blob/<sha>/…`) in Context or Decision.
 7. **Fill in Forge scope.** State which forges (GitHub, GitLab, Forgejo) the
    decision applies to and how each is handled. For any forge left out, say so
    explicitly with a reason or a tracking issue (e.g., "GitHub only; GitLab
@@ -280,6 +278,6 @@ If the ADR partially answers a question, add a parenthetical:
 | Leading zeros in title number | Use `"1. Title"` not `"0001. Title"` — zero-padded numbers are only for filenames |
 | Missing or implicit forge scope (only GitHub mechanisms discussed) | Fill in Forge scope; name every forge left out with a reason or tracking issue |
 | Unverified claims about how fullsend works today, or checking only `main` | Verify against the code at a commit SHA; put the file/function evidence in the PR description |
-| Line-pinned code permalinks (`blob/<sha>/path#L…`) in Context or Decision | Describe the behavior in plain prose and link the PR, issue, or ADR that introduced it |
+| Code permalinks (`blob/<sha>/…`, with or without `#L`) in Context or Decision | Describe the behavior in plain prose and link the PR, issue, or ADR that introduced it |
 | File slug names an option the ADR rejected | Name the slug after the chosen decision |
-| Implementation-status blocks such as "Planned:" in Context | Keep it to one sentence at most; status belongs in `docs/architecture.md` "(target state)" and in issues |
+| Implementation-status blocks such as "Planned:" in Context | Keep status in Context to one sentence at most; it belongs in `docs/architecture.md` "(target state)" and in issues |
