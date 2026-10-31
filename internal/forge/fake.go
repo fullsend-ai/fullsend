@@ -339,6 +339,11 @@ type FakeClient struct {
 	// Key is "owner/repo", checked before the generic Errors map.
 	CreateBranchErrors map[string]error
 
+	// CreateBranchFromSHAErrors injects per-commit errors for
+	// CreateBranchFromSHA. Key is "owner/repo/sha", checked before the
+	// generic Errors map.
+	CreateBranchFromSHAErrors map[string]error
+
 	// DeleteFilesErrors injects per-repo errors for DeleteFiles.
 	// Key is "owner/repo", checked before the generic Errors map.
 	DeleteFilesErrors map[string]error
@@ -1121,6 +1126,11 @@ func (f *FakeClient) CreateBranchFromSHA(_ context.Context, owner, repo, branchN
 
 	if f.CreateBranchErrors != nil {
 		if e, ok := f.CreateBranchErrors[owner+"/"+repo]; ok {
+			return e
+		}
+	}
+	if f.CreateBranchFromSHAErrors != nil {
+		if e, ok := f.CreateBranchFromSHAErrors[owner+"/"+repo+"/"+sha]; ok {
 			return e
 		}
 	}
