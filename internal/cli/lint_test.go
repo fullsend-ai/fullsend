@@ -488,6 +488,101 @@ allowed_remote_resources:
 	})
 }
 
+// TestLintCommand_PreflightCheck_TopLevelPathLikeFails mirrors the nested
+// field's CLI surfacing test above for the top-level preflight_check:
+// fullsend lint fails on the path-like authoring diagnostic —
+// SeverityError, Field "preflight_check", the shared guard message shape
+// (ADR 0128 Decision 2). Unlike the nested sibling, no script file
+// fixture is needed: the top-level value is never fetched or stat-checked
+// (that is exactly the confusion the diagnostic flags), so the diagnostic
+// must fire even though the path does not exist on disk. The harness-level
+// diagnostic shape is pinned by the harness-side tests.
+func TestLintCommand_PreflightCheck_TopLevelPathLikeFails(t *testing.T) {
+	dir := t.TempDir()
+	cfg := `version: "1"
+agents:
+  - name: my-agent
+    source: harness/my-agent.yaml
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(cfg), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	writeLintAgentFixture(t, dir, "my-agent")
+	harnessYAML := `role: triage
+agent: agents/my-agent.md
+policy: policies/base.yaml
+preflight_check: scripts/common-preflight.sh
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "my-agent.yaml"), []byte(harnessYAML), 0o644))
+
+	cmd := newLintCmd()
+	out, err := executeCmd(cmd, []string{"--fullsend-dir", dir})
+	require.Error(t, err)
+	assert.Contains(t, out, "error: preflight_check")
+	assert.Contains(t, out, "looks like a script path")
+	assert.Contains(t, out, "sh -c")
+	assert.Contains(t, err.Error(), "lint found 1 error-level diagnostic(s)")
+}
+
+// TestLintCommand_PreflightCheck_NestedFieldDeprecationWarns pins the CLI
+// surfacing of the nested-field deprecation warning (ADR 0129 Decision 3):
+// fullsend lint must print the migration signal for a harness that sets
+// validation_loop.preflight_check — SeverityWarning, Field
+// "validation_loop.preflight_check", and exactly this message (pinned
+// harness-side by the harness-level tests):
+//
+//	validation_loop.preflight_check is deprecated; use the top-level
+//	preflight_check instead and keep the nested check in place until
+//	every pinned consumer runs a CLI that executes the top-level field
+//	(see ADR 0129)
+//
+// The nested value is a literal command, not a bare script path, so the
+// path-like guard stays quiet and the deprecation is the sole diagnostic —
+// exactly 1 warning under --strict.
+func TestLintCommand_PreflightCheck_NestedFieldDeprecationWarns(t *testing.T) {
+	dir := t.TempDir()
+	cfg := `version: "1"
+agents:
+  - name: my-agent
+    source: harness/my-agent.yaml
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(cfg), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	// The harness loads and validates cleanly — the deprecation is an
+	// advisory migration signal, not a load error (the nested field
+	// keeps working; removal is behind a separate version gate, ADR 0127).
+	// validation_loop requires a script on disk, and the literal command
+	// value keeps the path-like guard quiet, so the deprecation is the only
+	// warning printed.
+	writeLintAgentFixture(t, dir, "my-agent")
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "scripts"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "scripts", "validate.sh"), []byte("#!/bin/sh\n"), 0o644))
+	harnessYAML := `role: triage
+agent: agents/my-agent.md
+policy: policies/base.yaml
+validation_loop:
+  script: scripts/validate.sh
+  preflight_check: 'python3 -c "import jsonschema"'
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "my-agent.yaml"), []byte(harnessYAML), 0o644))
+
+	t.Run("warning without strict", func(t *testing.T) {
+		cmd := newLintCmd()
+		out, err := executeCmd(cmd, []string{"--fullsend-dir", dir})
+		require.NoError(t, err)
+		assert.Contains(t, out, "warning: validation_loop.preflight_check")
+		assert.Contains(t, out, "deprecated")
+		// The warning names the top-level replacement field.
+		assert.Contains(t, out, "top-level preflight_check")
+	})
+
+	t.Run("fails with strict", func(t *testing.T) {
+		cmd := newLintCmd()
+		_, err := executeCmd(cmd, []string{"--fullsend-dir", dir, "--strict"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "lint found 1 warning-level diagnostic(s) (--strict)")
+	})
+}
+
 func TestLintCommand_MissingPolicyFails(t *testing.T) {
 	dir := t.TempDir()
 	cfg := `version: "1"

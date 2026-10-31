@@ -490,6 +490,9 @@ func TestValidateRunnerSecretRefs(t *testing.T) {
 		"host_files[0].src":               {HostFiles: []harness.HostFile{{Src: "/tmp/${X}", Dest: "/d"}}},
 		"validation_loop.schema":          {ValidationLoop: &harness.ValidationLoop{Script: "s", Schema: "${X}"}},
 		"validation_loop.preflight_check": {ValidationLoop: &harness.ValidationLoop{Script: "s", PreflightCheck: "echo ${X}"}},
+		// The top-level preflight_check follows the same refusal rule
+		// (ADR 0136).
+		"preflight_check": {PreflightCheck: "echo ${X}"},
 	}
 	for source, h := range refused {
 		t.Run(source, func(t *testing.T) {
@@ -498,6 +501,20 @@ func TestValidateRunnerSecretRefs(t *testing.T) {
 			assert.Contains(t, err.Error(), source+" references runner secret X")
 		})
 	}
+
+	// The top-level refusal is field-qualified: it reports under the
+	// top-level field's own name — never the nested field's label — and
+	// names every refused secret, brace or bare form.
+	t.Run("preflight_check names every refused secret", func(t *testing.T) {
+		two := map[string]string{"X": "value-123456", "Y": "value-654321"}
+		h := &harness.Harness{PreflightCheck: "echo ${X} $Y"}
+		err := validateRunnerSecretRefs(h, two)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "preflight_check references runner secret X")
+		assert.Contains(t, err.Error(), "preflight_check references runner secret Y")
+		assert.NotContains(t, err.Error(), "validation_loop.preflight_check",
+			"the top-level gate reports under its own field name")
+	})
 
 	// A destination key with '=' would let the child read a different
 	// variable name than the one the reserved-name check saw.

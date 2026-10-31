@@ -675,10 +675,10 @@ func TestValidateRunnerEnvWith_ValidationLoopSchemaVarSet(t *testing.T) {
 }
 
 func TestValidateRunnerEnvWith_SkipsValidationLoopPreflightCheck(t *testing.T) {
-	// D9 of the preflight-check-credential-safety change: preflight_check
-	// references are validated by the allowlist scan in internal/cli
-	// (runPreflightCheck), not by this host-env validation, so an unset
-	// reference in the command is not an error at this gate.
+	// preflight_check references are validated by the allowlist scan in
+	// internal/cli (runPreflightCheck), not by this host-env validation
+	// (#8722), so an unset reference in the command is not an error at
+	// this gate.
 	h := &Harness{
 		Agent: "agents/test.md",
 		Role:  "test",
@@ -687,6 +687,29 @@ func TestValidateRunnerEnvWith_SkipsValidationLoopPreflightCheck(t *testing.T) {
 			PreflightCheck: "test -d ${MISSING_DIR}",
 		},
 	}
+	lookup := func(key string) (string, bool) { return "", false }
+	require.NoError(t, h.ValidateRunnerEnvWith(lookup))
+}
+
+func TestValidateRunnerEnvWith_SkipsTopLevelPreflightCheck(t *testing.T) {
+	// Mirroring the nested field (#8722): the
+	// top-level preflight_check is not scanned by this host-env validation.
+	// ValidateRunnerEnvWith runs before the ADR 0055 env.runner merge with
+	// a host-environment-only lookup, so it cannot see harness declarations —
+	// a ${VAR} declared only in env.runner would false-fail here. The
+	// preflight allowlist scan in internal/cli (runPreflightCheck) is the
+	// single reference gate for this field.
+	h := &Harness{
+		Agent:          "agents/test.md",
+		Role:           "test",
+		PreflightCheck: `python3 -c "import ${PREFLIGHT_LIB}"`,
+		Env: &EnvConfig{
+			Runner: map[string]string{"PREFLIGHT_LIB": "jsonschema"},
+		},
+	}
+	// The lookup simulates the host environment before the ADR 0055 merge:
+	// PREFLIGHT_LIB is declared only in env.runner, so the host lookup
+	// cannot resolve it; the exclusion keeps that from failing here.
 	lookup := func(key string) (string, bool) { return "", false }
 	require.NoError(t, h.ValidateRunnerEnvWith(lookup))
 }
@@ -1154,6 +1177,39 @@ validation_loop:
 	require.NoError(t, err)
 	require.NotNil(t, h.ValidationLoop)
 	assert.Empty(t, h.ValidationLoop.PreflightCheck)
+}
+
+func TestLoad_TopLevelPreflightCheck(t *testing.T) {
+	content := `
+agent: agents/test.md
+role: test
+preflight_check: 'python3 -c "import jsonschema"'
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	h, err := Load(path)
+	require.NoError(t, err)
+	// Load-only: preflight_check carries no structural
+	// Validate() rule, so a document setting it must load cleanly and the
+	// literal host command must arrive verbatim (ADR 0128).
+	assert.Equal(t, `python3 -c "import jsonschema"`, h.PreflightCheck)
+}
+
+func TestLoad_TopLevelPreflightCheckAbsent(t *testing.T) {
+	content := `
+agent: agents/test.md
+role: test
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	h, err := Load(path)
+	require.NoError(t, err)
+	// Absent key leaves the empty string: no gate, status-quo behavior (#8722).
+	assert.Empty(t, h.PreflightCheck)
 }
 
 func TestValidateFilesExist_BareProviderNameSkipped(t *testing.T) {

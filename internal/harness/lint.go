@@ -129,6 +129,26 @@ func (h *Harness) Lint() []Diagnostic {
 		}
 	}
 
+	if d := lintPreflightCheckCommand("preflight_check", h.PreflightCheck); d != nil {
+		diags = append(diags, *d)
+	}
+
+	// The nested validation_loop.preflight_check is deprecated in favor of
+	// the top-level preflight_check (ADR 0129 Decision 3): the top-level
+	// field runs before pre_script, sandbox creation, and the validation
+	// loop, so it gates everything the nested check gates. The warning
+	// ships with this change because the replacement field ships with it;
+	// removing the nested field entirely stays behind a separately decided
+	// schema-version gate (ADR 0127), so like the runner_env/forge
+	// deprecations above this is a non-fatal warning.
+	if h.ValidationLoop != nil && strings.TrimSpace(h.ValidationLoop.PreflightCheck) != "" {
+		diags = append(diags, Diagnostic{
+			Severity: SeverityWarning,
+			Field:    "validation_loop.preflight_check",
+			Message:  "validation_loop.preflight_check is deprecated; use the top-level preflight_check instead and keep the nested check in place until every pinned consumer runs a CLI that executes the top-level field (see ADR 0129)",
+		})
+	}
+
 	if h.ValidationLoop != nil {
 		if d := lintPreflightCheckCommand("validation_loop.preflight_check", h.ValidationLoop.PreflightCheck); d != nil {
 			diags = append(diags, *d)

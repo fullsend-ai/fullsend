@@ -84,6 +84,7 @@ host_files:
 model: opus
 effort: high
 post_script: scripts/post-lint-docs.sh
+preflight_check: python3 -c "import jsonschema"
 validation_loop:
   script: scripts/validate-output-schema.sh
   schema: schemas/lint-docs-result.schema.json

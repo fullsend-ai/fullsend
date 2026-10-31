@@ -6148,6 +6148,335 @@ func TestMergeBaseIntoChild_TriggerEmptyBaseNoEffect(t *testing.T) {
 	assert.Equal(t, `event.entity.kind == "work_item"`, child.Trigger)
 }
 
+// TestMergeBaseIntoChild_PreflightCheckScalarOverrideAndInheritance pins the
+// composition merge contract for the top-level preflight_check
+// (ADR 0129 Decision 4), one subtest per row:
+//
+//	base unset + child unset = unset
+//	base A     + child unset = A (inherit)
+//	base A     + child whitespace-only = A (whitespace counts as unset)
+//	base A     + child B     = B (child overrides — never `A && B`, never concatenation)
+//	base unset + child B     = B
+//
+// ADR 0129 Decision 4 forbids appending or combining the base and child
+// commands, so the override row also guards against concatenation via the
+// base command's distinct token.
+func TestMergeBaseIntoChild_PreflightCheckScalarOverrideAndInheritance(t *testing.T) {
+	// Distinct literal commands so an append/combine regression would be
+	// detectable in the composed value.
+	const (
+		baseCheck  = "echo base-check"
+		childCheck = "echo child-check"
+	)
+
+	t.Run("base unset, child unset", func(t *testing.T) {
+		base := &Harness{}
+		child := &Harness{}
+
+		mergeBaseIntoChild(base, child)
+
+		assert.Empty(t, child.PreflightCheck)
+	})
+
+	t.Run("base set, child unset (inherit)", func(t *testing.T) {
+		base := &Harness{PreflightCheck: baseCheck}
+		child := &Harness{}
+
+		mergeBaseIntoChild(base, child)
+
+		assert.Equal(t, baseCheck, child.PreflightCheck)
+	})
+
+	t.Run("base set, child set (child overrides)", func(t *testing.T) {
+		base := &Harness{PreflightCheck: baseCheck}
+		child := &Harness{PreflightCheck: childCheck}
+
+		mergeBaseIntoChild(base, child)
+
+		assert.Equal(t, childCheck, child.PreflightCheck)
+		// Scalar override only: the composed gate must carry no trace of the
+		// base command (no `A && B`, no `A; B`, no plain concatenation).
+		assert.NotContains(t, child.PreflightCheck, "base-check")
+	})
+
+	t.Run("base unset, child set", func(t *testing.T) {
+		base := &Harness{}
+		child := &Harness{PreflightCheck: childCheck}
+
+		mergeBaseIntoChild(base, child)
+
+		assert.Equal(t, childCheck, child.PreflightCheck)
+	})
+
+	t.Run("base set, child whitespace-only (inherits base)", func(t *testing.T) {
+		base := &Harness{PreflightCheck: baseCheck}
+		child := &Harness{PreflightCheck: "   "}
+
+		mergeBaseIntoChild(base, child)
+
+		assert.Equal(t, baseCheck, child.PreflightCheck)
+	})
+}
+
+// TestMergeBaseIntoChild_PreflightCheckChildOverrideWithInheritedPreScript
+// pins the composition contract (ADR 0129 Decision 4): a base declaring
+// both a top-level preflight_check and a pre_script, composed with a child
+// that sets only the check. The composed harness carries the child's command as the single
+// gate while the base's pre_script is inherited untouched — overriding the
+// gate never blocks script inheritance, and the two commands are never
+// combined.
+//
+// Per ADR 0129 Decision 4, the
+// overriding author owns the child command covering the dependencies of the
+// inherited pre_script still present in the composed harness. That ownership
+// is a documented contract, not an enforced one: this test asserts the
+// composed data shape only, and no enforcement may be derived from it.
+//
+// The merge never overwrites a child scalar the child itself set, and
+// pre_script inheritance is an independent scalar merge.
+func TestMergeBaseIntoChild_PreflightCheckChildOverrideWithInheritedPreScript(t *testing.T) {
+	// Distinct literal values so an append/combine regression or an
+	// accidental cross-field clobber would be detectable in the composed
+	// harness.
+	const (
+		baseCheck  = "echo base-check"
+		childCheck = "echo child-check"
+		basePre    = "./scripts/setup.sh"
+	)
+
+	t.Run("child check is the single composed gate", func(t *testing.T) {
+		base := &Harness{
+			PreflightCheck: baseCheck,
+			PreScript:      basePre,
+		}
+		child := &Harness{PreflightCheck: childCheck}
+
+		mergeBaseIntoChild(base, child)
+
+		assert.Equal(t, childCheck, child.PreflightCheck)
+		// Scalar override only: the composed gate must carry no trace of the
+		// base command (no `A && B`, no `A; B`, no plain concatenation).
+		assert.NotContains(t, child.PreflightCheck, "base-check")
+	})
+
+	t.Run("base pre_script inherited alongside the override", func(t *testing.T) {
+		base := &Harness{
+			PreflightCheck: baseCheck,
+			PreScript:      basePre,
+		}
+		child := &Harness{PreflightCheck: childCheck}
+
+		mergeBaseIntoChild(base, child)
+
+		// The gate override and script inheritance are independent scalar
+		// merges: the base's pre_script is carried into the composed harness
+		// as-is. This is exactly why the overriding author — not the merge —
+		// owns covering the inherited script's dependencies (documented
+		// contract, not enforced).
+		assert.Equal(t, basePre, child.PreScript)
+	})
+}
+
+// TestResolveOverlays_PreflightCheckUnchangedByStageScriptSelection pins
+// the composition contract (ADR 0129 Decision 4): a harness whose overlays
+// select different stage
+// scripts per condition while preflight_check stays top-level. Whichever
+// overlay matches, the composed check value stays identical to the
+// top-level declaration — overlay-selected stage scripts never move or
+// replace the gate — so the author must cover the union of dependencies
+// across all possible matching overlays. That union is a documented
+// contract, not an enforced one: this test asserts the composed data
+// shape only, and no enforcement may be derived from it.
+//
+// Expected green without new implementation: the overlay merge path
+// (ResolveOverlays → mergeForgeConfig) carries no preflight_check
+// handling — the field is absent from ForgeConfig —
+// so an overlay structurally cannot set or change it.
+// TestLoadWithBase_PreflightCheckIgnoredInForgeAndOverlays pins the
+// loader's ignored-key side of the same guarantee.
+func TestResolveOverlays_PreflightCheckUnchangedByStageScriptSelection(t *testing.T) {
+	// A single literal gate value shared by both selections: any change
+	// the overlay merge made to it — replacement, appending, or clearing —
+	// would be detectable against this constant.
+	const unionCheck = "echo union-check"
+
+	// Both subtests resolve the same harness shape so the only variable
+	// is which overlay's condition matches (mirrors the
+	// TestResolveOverlays_* precedents in forge_test.go).
+	newHarness := func() *Harness {
+		return &Harness{
+			PreflightCheck: unionCheck,
+			Overlays: []OverlayEntry{
+				{
+					When: `config.os == "mac"`,
+					ForgeConfig: ForgeConfig{
+						PreScript:  "./scripts/setup-mac.sh",
+						PostScript: "./scripts/teardown-mac.sh",
+					},
+				},
+				{
+					When: `config.os == "linux"`,
+					ForgeConfig: ForgeConfig{
+						PreScript:  "./scripts/setup-linux.sh",
+						PostScript: "./scripts/teardown-linux.sh",
+					},
+				},
+			},
+		}
+	}
+
+	t.Run("mac overlay selected", func(t *testing.T) {
+		h := newHarness()
+
+		err := h.ResolveOverlays(nil, "", map[string]any{"os": "mac"})
+		require.NoError(t, err)
+
+		// The matching overlay selected the mac stage scripts...
+		assert.Equal(t, "./scripts/setup-mac.sh", h.PreScript)
+		assert.Equal(t, "./scripts/teardown-mac.sh", h.PostScript)
+		// ...while the single top-level gate is unchanged by the
+		// selection: identical to the top-level declaration, so the one
+		// check gates whichever scripts the overlays selected. This is
+		// exactly why the author — not the merge — owns covering the
+		// union of dependencies across possible matching overlays
+		// (documented contract, not enforced).
+		assert.Equal(t, unionCheck, h.PreflightCheck)
+		assert.Nil(t, h.Overlays, "overlays are consumed after resolution")
+	})
+
+	t.Run("linux overlay selected", func(t *testing.T) {
+		h := newHarness()
+
+		err := h.ResolveOverlays(nil, "", map[string]any{"os": "linux"})
+		require.NoError(t, err)
+
+		// The other selection swaps the stage scripts...
+		assert.Equal(t, "./scripts/setup-linux.sh", h.PreScript)
+		assert.Equal(t, "./scripts/teardown-linux.sh", h.PostScript)
+		// ...and still cannot touch the gate: the composed check value is
+		// identical across both selections.
+		assert.Equal(t, unionCheck, h.PreflightCheck)
+		assert.Nil(t, h.Overlays, "overlays are consumed after resolution")
+	})
+}
+
+// TestLoadWithBase_PreflightCheckIgnoredInForgeAndOverlays pins the
+// top-level-only field contract (ADR 0129 Decision 4, #8722): a
+// preflight_check key placed inside a forge: block or an
+// overlays: entry is ignored, never honored — the field is top level only,
+// and conditional values cannot replace the gate. Each misplaced key sits
+// alongside a valid sibling field (pre_script) that DOES apply, so every
+// subtest proves the loader parsed and resolved the conditional block while
+// the gate key alone was dropped: PreflightCheck stays empty when the top
+// level is unset, and equals the top-level value when set.
+//
+// Characterization: ForgeConfig carries no
+// preflight field and the loader is a non-strict yaml.Unmarshal, so
+// ignore-by-omission is the existing behavior this test guards against
+// drift — the loader's half of the same guarantee
+// TestResolveOverlays_PreflightCheckUnchangedByStageScriptSelection pins on
+// the merge side. A strict loader would fail the load; a ForgeConfig field would leak
+// the misplaced value into the gate; either regression surfaces here.
+func TestLoadWithBase_PreflightCheckIgnoredInForgeAndOverlays(t *testing.T) {
+	// Distinct literal commands so a leaked, replaced, or combined gate
+	// would be detectable in the loaded value (mirrors
+	// TestMergeBaseIntoChild_PreflightCheckScalarOverrideAndInheritance and
+	// TestMergeBaseIntoChild_PreflightCheckChildOverrideWithInheritedPreScript).
+	const (
+		topLevelCheck  = "echo top-level-check"
+		misplacedCheck = "echo misplaced-check"
+	)
+
+	// load runs a document through the non-strict loader plus forge/overlay
+	// resolution (ForgePlatform github so the conditional blocks genuinely
+	// match and merge) and fails the subtest on any load error: the ignored
+	// key must be dropped silently, never rejected — ignored, never
+	// honored, and never a load failure.
+	load := func(t *testing.T, content string) *Harness {
+		t.Helper()
+		dir := t.TempDir()
+		path := writeTestHarness(t, dir, "harness.yaml", content)
+		h, _, err := LoadWithBase(context.Background(), path,
+			ComposeOpts{ForgePlatform: "github"})
+		require.NoError(t, err,
+			"the non-strict loader must silently ignore a preflight_check key inside forge:/overlays:")
+		return h
+	}
+
+	t.Run("forge block ignored, top level unset", func(t *testing.T) {
+		h := load(t, `
+agent: agents/test.md
+role: test
+forge:
+  github:
+    pre_script: scripts/forge-pre.sh
+    preflight_check: '`+misplacedCheck+`'
+`)
+		// The forge block was parsed and resolved — its valid sibling field
+		// applies and the map is consumed — ...
+		assert.Equal(t, "scripts/forge-pre.sh", h.PreScript)
+		assert.Nil(t, h.Forge, "forge map consumed after resolution")
+		// ... but the misplaced gate key mapped to no ForgeConfig field, so
+		// the loaded harness carries no gate at all.
+		assert.Empty(t, h.PreflightCheck)
+	})
+
+	t.Run("forge block ignored, top level set", func(t *testing.T) {
+		h := load(t, `
+agent: agents/test.md
+role: test
+preflight_check: '`+topLevelCheck+`'
+forge:
+  github:
+    pre_script: scripts/forge-pre.sh
+    preflight_check: '`+misplacedCheck+`'
+`)
+		assert.Equal(t, "scripts/forge-pre.sh", h.PreScript)
+		assert.Nil(t, h.Forge, "forge map consumed after resolution")
+		// The gate is exactly the top-level declaration: the resolved forge
+		// block can neither replace it nor leave any trace of its own value.
+		assert.Equal(t, topLevelCheck, h.PreflightCheck)
+		assert.NotContains(t, h.PreflightCheck, "misplaced-check")
+	})
+
+	t.Run("overlay entry ignored, top level unset", func(t *testing.T) {
+		h := load(t, `
+agent: agents/test.md
+role: test
+overlays:
+  - when: 'runtime.forge == "github"'
+    pre_script: scripts/overlay-pre.sh
+    preflight_check: '`+misplacedCheck+`'
+`)
+		// The overlay's condition matches the platform, so the entry merged —
+		// its valid sibling field applies and the list is consumed — ...
+		assert.Equal(t, "scripts/overlay-pre.sh", h.PreScript)
+		assert.Nil(t, h.Overlays, "overlays consumed after resolution")
+		// ... yet the conditional gate key was dropped at load: even an
+		// applied overlay cannot create a gate.
+		assert.Empty(t, h.PreflightCheck)
+	})
+
+	t.Run("overlay entry ignored, top level set", func(t *testing.T) {
+		h := load(t, `
+agent: agents/test.md
+role: test
+preflight_check: '`+topLevelCheck+`'
+overlays:
+  - when: 'runtime.forge == "github"'
+    pre_script: scripts/overlay-pre.sh
+    preflight_check: '`+misplacedCheck+`'
+`)
+		assert.Equal(t, "scripts/overlay-pre.sh", h.PreScript)
+		assert.Nil(t, h.Overlays, "overlays consumed after resolution")
+		// Even a matching overlay cannot replace the gate: the loaded value
+		// stays the top-level declaration with no trace of the conditional
+		// value.
+		assert.Equal(t, topLevelCheck, h.PreflightCheck)
+		assert.NotContains(t, h.PreflightCheck, "misplaced-check")
+	})
+}
+
 func TestFetchBaseSkill_FullDirectory(t *testing.T) {
 	dir := t.TempDir()
 	cacheDir := filepath.Join(dir, "cache")

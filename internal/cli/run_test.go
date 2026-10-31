@@ -4760,6 +4760,356 @@ func TestRunAgent_PreflightCheck_TimeoutRedactsDeclaredSecret(t *testing.T) {
 	assert.NotContains(t, err.Error(), "sentinel-secret-value-77")
 }
 
+// A passing top-level preflight_check runs exactly once per run, before
+// pre_script (when present) and before sandbox creation (ADR 0129
+// Decision 3). Every stage appends one marker line to a shared order file:
+// the check's own command, the pre-script body, and the sandbox-creation
+// stub, which appends via the FULLSEND_TEST_SANDBOX_SENTINEL env var it
+// inherits from this process. usePreScriptStub makes sandbox creation fail
+// loudly, so the run ending with "creating sandbox" proves it passed the
+// eager gate and the pre-script and reached sandbox creation; the order
+// file then proves the sequence, and the marker count proves the check is
+// not repeated.
+func TestRunAgent_PreflightCheck_TopLevelRunsOnceBeforePreScriptAndSandbox(t *testing.T) {
+	usePreScriptStub(t)
+	t.Setenv("FULLSEND_RUNTIME", "codex")
+	t.Setenv("GITHUB_ACTIONS", "true")
+	t.Setenv("GITHUB_OUTPUT", filepath.Join(t.TempDir(), "github-output"))
+
+	orderFile := filepath.Join(t.TempDir(), "stage-order")
+	t.Setenv("FULLSEND_TEST_SANDBOX_SENTINEL", orderFile)
+
+	preScript := writePreScript(t, fmt.Sprintf("echo pre-script >> %q\n", orderFile))
+	dir := preflightTestSetup(t, fmt.Sprintf(
+		"agent: agents/code.md\nrole: test\npreflight_check: 'echo preflight-check >> %q'\npre_script: %s\n",
+		orderFile, preScript))
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	err := runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags,
+		statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
+	// The stub never creates a sandbox, so a run that passed the top-level
+	// check and the pre-script still ends here — the loud failure that
+	// proves the earlier stages ran.
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "creating sandbox")
+
+	order, readErr := os.ReadFile(orderFile)
+	require.NoError(t, readErr, "the check, the pre-script, and sandbox creation must all have run")
+	assert.Equal(t, []string{"preflight-check", "pre-script", "sandbox-create"},
+		strings.Split(strings.TrimSpace(string(order)), "\n"),
+		"the top-level check must run first, before the pre-script and sandbox creation")
+	assert.Equal(t, 1, strings.Count(string(order), "preflight-check\n"),
+		"the check's sentinel action must fire exactly once per run")
+}
+
+// A failing top-level preflight_check gates every later stage (ADR 0129
+// Decision 3): the run stops with the field-qualified error — source
+// label "preflight_check" with redacted command text and output — and
+// no sentinel from the pre-script,
+// the sandbox-creation stub, or the nested validation_loop.preflight_check
+// exists. The nested check writes its own sentinel, so its absence proves
+// the eager gate fired before step 1d; the command embeds a declared
+// runner-env secret so the failure diagnostics exercise redaction.
+func TestRunAgent_PreflightCheck_TopLevelFailureGatesAllLaterStages(t *testing.T) {
+	usePreScriptStub(t)
+	t.Setenv("FULLSEND_RUNTIME", "codex")
+	t.Setenv("GITHUB_ACTIONS", "true")
+	t.Setenv("GITHUB_OUTPUT", filepath.Join(t.TempDir(), "github-output"))
+
+	orderFile := filepath.Join(t.TempDir(), "stage-order")
+	t.Setenv("FULLSEND_TEST_SANDBOX_SENTINEL", orderFile)
+
+	preScript := writePreScript(t, fmt.Sprintf("echo pre-script >> %q\n", orderFile))
+	dir := preflightTestSetup(t, fmt.Sprintf(
+		"agent: agents/code.md\nrole: test\n"+
+			"env:\n  runner:\n    SENTINEL_SECRET: \"top-level-secret-value-9\"\n"+
+			"preflight_check: 'echo ${SENTINEL_SECRET}; exit 1'\n"+
+			"pre_script: %s\n"+
+			"validation_loop:\n  script: scripts/validate.sh\n  preflight_check: 'echo nested-preflight >> %q'\n  max_iterations: 2\n",
+		preScript, orderFile))
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	err := runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags,
+		statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
+	require.Error(t, err)
+	// Field-qualified failure: the source
+	// label names the top-level field, never the nested one.
+	assert.Contains(t, err.Error(), "preflight_check failed")
+	assert.NotContains(t, err.Error(), "validation_loop.preflight_check failed")
+	// Redacted command text and output: the declared secret never
+	// appears; its redaction marker does.
+	assert.Contains(t, err.Error(), "[REDACTED:SENTINEL_SECRET]")
+	assert.NotContains(t, err.Error(), "top-level-secret-value-9")
+	// No later stage ran: neither the pre-script, nor the sandbox-creation
+	// stub, nor the nested check appended a sentinel line.
+	order, readErr := os.ReadFile(orderFile)
+	assert.True(t, os.IsNotExist(readErr),
+		"a failing top-level check must leave no stage sentinel; order file contents: %q", order)
+}
+
+// A top-level preflight_check that exceeds its execution bound stops the
+// run exactly like a nonzero exit (ADR 0129 Decision 3): the run reports
+// the field-qualified timeout — source label "preflight_check" with the
+// redacted command text — and the gating is
+// identical, so no sentinel from the pre-script, the sandbox-creation
+// stub, or the nested validation_loop.preflight_check exists.
+func TestRunAgent_PreflightCheck_TopLevelTimeoutGatesAllLaterStages(t *testing.T) {
+	usePreScriptStub(t)
+	t.Setenv("FULLSEND_RUNTIME", "codex")
+	t.Setenv("GITHUB_ACTIONS", "true")
+	t.Setenv("GITHUB_OUTPUT", filepath.Join(t.TempDir(), "github-output"))
+
+	orderFile := filepath.Join(t.TempDir(), "stage-order")
+	t.Setenv("FULLSEND_TEST_SANDBOX_SENTINEL", orderFile)
+
+	// Shrink the real timeout (mirroring the nested timeout test above) so
+	// the "sleep 5" command genuinely outlives it, exercising the actual
+	// DeadlineExceeded branch of the shared executor rather than
+	// short-circuiting via an already-cancelled parent context. exec
+	// replaces the shell, so the context kill reaches sleep itself; a
+	// forked sleep would keep the output pipe open for the full 5s.
+	original := preflightCheckTimeout
+	preflightCheckTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { preflightCheckTimeout = original })
+
+	preScript := writePreScript(t, fmt.Sprintf("echo pre-script >> %q\n", orderFile))
+	dir := preflightTestSetup(t, fmt.Sprintf(
+		"agent: agents/code.md\nrole: test\n"+
+			"preflight_check: 'exec sleep 5'\n"+
+			"pre_script: %s\n"+
+			"validation_loop:\n  script: scripts/validate.sh\n  preflight_check: 'echo nested-preflight >> %q'\n  max_iterations: 2\n",
+		preScript, orderFile))
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	err := runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags,
+		statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
+	require.Error(t, err)
+	// Field-qualified timeout: the source
+	// label names the top-level field, never the nested one.
+	assert.Contains(t, err.Error(), "preflight_check timed out")
+	assert.NotContains(t, err.Error(), "validation_loop.preflight_check timed out")
+	// Gating identical to a nonzero exit: no later stage ran — neither
+	// the pre-script, nor the sandbox-creation stub, nor the nested check
+	// appended a sentinel line.
+	order, readErr := os.ReadFile(orderFile)
+	assert.True(t, os.IsNotExist(readErr),
+		"a timed-out top-level check must leave no stage sentinel; order file contents: %q", order)
+}
+
+// A pre-script that requests a run skip (exit 78) still observes the
+// top-level check's sentinel: the eager gate runs
+// before the skip decision — the ADR 0129 trade-off that intentionally
+// checks post-script dependencies even on runs the pre-script would
+// skip. The run itself stays a neutral skip (issue #4718): runAgent
+// returns nil and relays skipped=true to GITHUB_OUTPUT, and no sandbox is
+// created, so the order file carries the check's sentinel ahead of the
+// pre-script's and no sandbox-create line.
+func TestRunAgent_PreflightCheck_TopLevelRunsBeforePreScriptSkip(t *testing.T) {
+	usePreScriptStub(t)
+	t.Setenv("FULLSEND_RUNTIME", "codex")
+	t.Setenv("GITHUB_ACTIONS", "true")
+	outputFile := filepath.Join(t.TempDir(), "github-output")
+	t.Setenv("GITHUB_OUTPUT", outputFile)
+
+	orderFile := filepath.Join(t.TempDir(), "stage-order")
+	t.Setenv("FULLSEND_TEST_SANDBOX_SENTINEL", orderFile)
+
+	// The pre-script records its own sentinel, then requests a neutral
+	// skip via exit 78; its last stdout line becomes the skip reason
+	// (docs/normative/prescript-output/v1).
+	preScript := writePreScript(t, fmt.Sprintf(
+		"echo pre-script >> %q\necho \"nothing to do\"\nexit 78\n", orderFile))
+	dir := preflightTestSetup(t, fmt.Sprintf(
+		"agent: agents/code.md\nrole: test\npreflight_check: 'echo preflight-check >> %q'\npre_script: %s\n",
+		orderFile, preScript))
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	err := runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags,
+		statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
+	// A skip is neutral: the passing eager gate must neither fail the
+	// run nor push it past the skip into a full run.
+	require.NoError(t, err)
+
+	// The skip decision was made and relayed, with the stdout-derived
+	// reason — proving the run genuinely took the pre-script skip path.
+	relayed, relayErr := os.ReadFile(outputFile)
+	require.NoError(t, relayErr, "the skip decision must be relayed to GITHUB_OUTPUT")
+	assert.Contains(t, string(relayed), "skipped=true")
+	assert.Contains(t, string(relayed), "reason=nothing to do")
+
+	// The eager gate ran before the skip decision: the check's sentinel
+	// exists ahead of the pre-script's, and the skip still returned
+	// before sandbox creation (no sandbox-create line).
+	order, readErr := os.ReadFile(orderFile)
+	require.NoError(t, readErr, "the top-level check and the pre-script must both have run")
+	assert.Equal(t, []string{"preflight-check", "pre-script"},
+		strings.Split(strings.TrimSpace(string(order)), "\n"),
+		"the top-level check must run before the pre-script's skip decision, and the skip must leave no sandbox-create sentinel")
+}
+
+// A harness with no top-level preflight_check — and one whose value is
+// empty or whitespace-only — behaves exactly as before the field existed
+// (#8722): no gate subprocess is spawned and stage
+// ordering is unchanged. The no-gate observable is the shared executor's
+// StepStart line: runPreflightCheck emits "Preflight: checking <source>
+// dependencies" before it spawns the sh -c child, so the top-level
+// source label's absence from the printer output proves the gate path
+// was never entered. That printer line is the only faithful observable
+// for the whitespace-only case, because a whitespace command runs as a
+// silent sh -c success — neither an error nor a sentinel could expose a
+// wrongly-entered gate — and it pins the emptiness rule
+// ("absent, empty, or whitespace-only ⇒ treated as unset",
+// docs/contributing/harness-fields.md) against an
+// untrimmed != "" guard. Characterization test: it must stay green.
+func TestRunAgent_PreflightCheck_TopLevelAbsentOrWhitespaceKeepsStatusQuo(t *testing.T) {
+	cases := []struct {
+		name          string
+		preflightLine string
+	}{
+		{name: "absent", preflightLine: ""},
+		{name: "empty", preflightLine: "preflight_check: ''\n"},
+		// YAML double-quoted style: \t is the TAB escape, so the parsed
+		// value is space, TAB, space — non-empty and whitespace-only.
+		{name: "whitespace only", preflightLine: "preflight_check: \" \\t \"\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			usePreScriptStub(t)
+			t.Setenv("FULLSEND_RUNTIME", "codex")
+			t.Setenv("GITHUB_ACTIONS", "true")
+			t.Setenv("GITHUB_OUTPUT", filepath.Join(t.TempDir(), "github-output"))
+
+			orderFile := filepath.Join(t.TempDir(), "stage-order")
+			t.Setenv("FULLSEND_TEST_SANDBOX_SENTINEL", orderFile)
+
+			preScript := writePreScript(t, fmt.Sprintf("echo pre-script >> %q\n", orderFile))
+			dir := preflightTestSetup(t, fmt.Sprintf(
+				"agent: agents/code.md\nrole: test\n"+
+					tc.preflightLine+
+					"pre_script: %s\n"+
+					"validation_loop:\n  script: scripts/validate.sh\n  preflight_check: 'echo nested-preflight >> %q'\n  max_iterations: 2\n",
+				preScript, orderFile))
+
+			// The printer buffer carries the no-gate observable: the
+			// StepStart line naming the top-level source label appears
+			// only when the gate path is entered.
+			var runOutput bytes.Buffer
+			printer := ui.New(&runOutput)
+
+			rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+			err := runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags,
+				statusOpts{}, printer, false, runOverrideFlags{})
+			// Status-quo terminal state: the run proceeded through every
+			// stage to the loud sandbox-stub refusal, exactly as before
+			// the feature.
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "creating sandbox")
+
+			// No gate subprocess for the top-level field; the nested gate
+			// still runs, exactly as before.
+			assert.NotContains(t, runOutput.String(), "Preflight: checking preflight_check dependencies",
+				"an unset (absent, empty, or whitespace-only) top-level field must not enter the gate path")
+			assert.Contains(t, runOutput.String(), "Preflight: checking validation_loop.preflight_check dependencies",
+				"the nested check must keep running exactly as before the feature")
+
+			// Unchanged stage ordering: nested check, pre-script, sandbox
+			// creation — no top-level gate stage ahead of them.
+			order, readErr := os.ReadFile(orderFile)
+			require.NoError(t, readErr, "the nested check, the pre-script, and sandbox creation must all have run")
+			assert.Equal(t, []string{"nested-preflight", "pre-script", "sandbox-create"},
+				strings.Split(strings.TrimSpace(string(order)), "\n"),
+				"stage ordering must match the pre-feature sequence with no top-level gate stage")
+			assert.Equal(t, 1, strings.Count(string(order), "nested-preflight\n"),
+				"the nested check must run exactly once, as before")
+		})
+	}
+}
+
+// A harness setting both the top-level preflight_check and the nested
+// validation_loop.preflight_check runs them in the order ADR 0129
+// Decision 3 pins for migration: the nested check keeps
+// running, after the top-level check. When both pass, the top-level
+// sentinel precedes the nested one — both ahead of the pre-script and
+// sandbox creation, composing the eager top-level gate with the
+// gate first) with the pre-feature status-quo sequence that keeps the
+// nested check in its original position ahead of the pre-script. When
+// the top-level check fails, the eager gate stops the run before the
+// nested check fires, so the nested sentinel is absent and the error
+// carries the top-level source label only. The pre-existing nested-only
+// failure tests pin the complementary direction — top-level passes,
+// nested fails, stop at the nested check, status quo — so this pair
+// completes the both-fields matrix. Characterization test: the top-level
+// gate sits immediately above the nested block, so this must already be
+// green; a failure means the ordering drifted, not that the expectation
+// is wrong.
+func TestRunAgent_PreflightCheck_BothFieldsOrderingAndGating(t *testing.T) {
+	t.Run("both pass, top-level sentinel precedes nested sentinel", func(t *testing.T) {
+		usePreScriptStub(t)
+		t.Setenv("FULLSEND_RUNTIME", "codex")
+		t.Setenv("GITHUB_ACTIONS", "true")
+		t.Setenv("GITHUB_OUTPUT", filepath.Join(t.TempDir(), "github-output"))
+
+		orderFile := filepath.Join(t.TempDir(), "stage-order")
+		t.Setenv("FULLSEND_TEST_SANDBOX_SENTINEL", orderFile)
+
+		preScript := writePreScript(t, fmt.Sprintf("echo pre-script >> %q\n", orderFile))
+		dir := preflightTestSetup(t, fmt.Sprintf(
+			"agent: agents/code.md\nrole: test\n"+
+				"preflight_check: 'echo top-level-preflight >> %q'\n"+
+				"pre_script: %s\n"+
+				"validation_loop:\n  script: scripts/validate.sh\n  preflight_check: 'echo nested-preflight >> %q'\n  max_iterations: 2\n",
+			orderFile, preScript, orderFile))
+
+		rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+		err := runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags,
+			statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
+		// Both checks pass and the pre-script runs; the stub never creates
+		// a sandbox, so the run still ends at the loud sandbox refusal.
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "creating sandbox")
+
+		order, readErr := os.ReadFile(orderFile)
+		require.NoError(t, readErr, "both preflight checks, the pre-script, and sandbox creation must all have run")
+		assert.Equal(t, []string{"top-level-preflight", "nested-preflight", "pre-script", "sandbox-create"},
+			strings.Split(strings.TrimSpace(string(order)), "\n"),
+			"the top-level check must precede the nested check, and both must precede the pre-script and sandbox creation")
+		assert.Equal(t, 1, strings.Count(string(order), "top-level-preflight\n"),
+			"the top-level check must run exactly once per run")
+		assert.Equal(t, 1, strings.Count(string(order), "nested-preflight\n"),
+			"the nested check must keep running exactly once, in its pre-feature position")
+	})
+
+	t.Run("top-level fails, nested sentinel absent", func(t *testing.T) {
+		usePreScriptStub(t)
+		t.Setenv("FULLSEND_RUNTIME", "codex")
+		t.Setenv("GITHUB_ACTIONS", "true")
+		t.Setenv("GITHUB_OUTPUT", filepath.Join(t.TempDir(), "github-output"))
+
+		orderFile := filepath.Join(t.TempDir(), "stage-order")
+		t.Setenv("FULLSEND_TEST_SANDBOX_SENTINEL", orderFile)
+
+		dir := preflightTestSetup(t, fmt.Sprintf(
+			"agent: agents/code.md\nrole: test\n"+
+				"preflight_check: 'exit 1'\n"+
+				"validation_loop:\n  script: scripts/validate.sh\n  preflight_check: 'echo nested-preflight >> %q'\n  max_iterations: 2\n",
+			orderFile))
+
+		rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+		err := runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags,
+			statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
+		require.Error(t, err)
+		// Field-qualified failure: the
+		// source label names the top-level field, never the nested one.
+		assert.Contains(t, err.Error(), "preflight_check failed")
+		assert.NotContains(t, err.Error(), "validation_loop.preflight_check failed")
+		// The eager gate stopped the run before the nested check could
+		// append its sentinel — and before the sandbox-creation stub.
+		order, readErr := os.ReadFile(orderFile)
+		assert.True(t, os.IsNotExist(readErr),
+			"a failing top-level check must stop the run before the nested check runs; order file contents: %q", order)
+	})
+}
+
 func TestBuildSandboxEnvLines_FromEnvSandbox(t *testing.T) {
 	h := &harness.Harness{
 		Agent: "agents/test.md",

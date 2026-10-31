@@ -343,6 +343,26 @@ variables is deployed.
 | `clearing stale iteration deadline (iteration N): ...` | The write failed and the previous iteration's file could not be removed either. The run stops rather than let the agent read a stale deadline. | Same as above. |
 | `FULLSEND_ITERATION_DEADLINE` unset inside the agent | The agent's shell was started without sourcing `/sandbox/workspace/.env`. | Runtimes that fullsend ships always load it; a custom command must do the same. |
 
+## Preflight check
+
+A harness can gate host dependencies before the run starts with a top-level
+`preflight_check` field: a literal command that `fullsend run` executes once
+per run, before `pre_script` and sandbox creation.
+
+| Aspect | Behavior |
+|---|---|
+| Form | The value runs verbatim under `sh -c` on the host; it is never fetched or resolved like a script resource |
+| When | Once per run, before the pre-script and sandbox creation |
+| Timeout | 30 seconds |
+| Failure | A non-zero exit or a timeout stops the run before the agent starts: `preflight_check failed: …` or `preflight_check timed out after 30s: …`, with the command text and output redacted |
+| Environment | A minimal, credential-safe environment: the host `PATH`, `HOME`, and `TMPDIR`, plus `FULLSEND_DIR` and `PYTHONDONTWRITEBYTECODE`, and the harness's `env.runner` entries except credential-named values |
+| Variables | `${VAR}` references expand against the credential-safe preflight environment from the Environment row; a reference that is not present fails the run before the command executes, naming the variable, never its value |
+
+The older nested `validation_loop.preflight_check` runs after the top-level
+gate during migration. It is deprecated: `fullsend lint` warns and names the
+top-level replacement. See the
+[harness reference](../reference/harness-reference.md) for the full contract.
+
 ## How a run ends
 
 After the last iteration, `fullsend run` returns an error, and so exits non-zero, in these cases.
