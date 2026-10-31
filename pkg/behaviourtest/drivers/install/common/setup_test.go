@@ -3,12 +3,15 @@ package common
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/fullsend-ai/fullsend/internal/behaviourfail"
 )
 
 func TestDefaultGitHubSetupOpts_HasVendor(t *testing.T) {
@@ -495,4 +498,95 @@ func TestWaitInferenceHealthy_ContextCancelledDuringBackoff(t *testing.T) {
 	assert.Contains(t, err.Error(), `status="not_provisioned"`, "error keeps the last status")
 	assert.Equal(t, 1, statusCalls, "no status read after cancellation")
 	assert.Less(t, time.Since(start), postProvisionStatusDelays[0], "the real backoff is cut short")
+}
+
+// TestIsGCPWIFQuotaError pins the bounded signature list behind the GCP WIF
+// quota mark (task 2.2 / design D3 of the behaviour-infra-retry change):
+// every known quota/rate-limit text from the inference CLI calls matches,
+// and the errors those call sites can also produce — parse failures and
+// unrelated CLI failures — must not. The realistic messages below mimic the
+// CLI runner's error shape (e2etest.tryRunCLIFromDir embeds the command's
+// combined output, where cobra prints "Error: <message>", in the error
+// string); classification through failclass.Classify is covered in
+// setup_infraclass_ext_test.go because failclass cannot be imported here.
+func TestIsGCPWIFQuotaError(t *testing.T) {
+	for name, tc := range map[string]struct {
+		err  error
+		want bool
+	}{
+		"iam write retry exhaustion": {
+			err:  fmt.Errorf("inference provision org/repo: [cli] fullsend inference provision org/repo --project proj failed: exit status 1\nError: rate limited (HTTP 429) after 7 attempts"),
+			want: true,
+		},
+		"gcp quota body": {
+			err:  fmt.Errorf("inference provision org/repo: [cli] fullsend inference provision org/repo --project proj failed: exit status 1\nError: Quota exceeded for quota project '123456789' and limit 'CreateWorkloadIdentityPool' of service 'iam.googleapis.com'"),
+			want: true,
+		},
+		"iam read returns 429": {
+			err:  fmt.Errorf("inference status org/repo: [cli] fullsend inference status org/repo --project proj --format json failed: exit status 1\nError: getting WIF provider returned 429: too many requests"),
+			want: true,
+		},
+		"unwrapped 429 status": {
+			err:  fmt.Errorf("unexpected status 429 deleting WIF pool: backend error"),
+			want: true,
+		},
+		"gcp rate limit body": {
+			err:  fmt.Errorf("inference provision org/repo: [cli] fullsend inference provision org/repo --project proj failed: exit status 1\nError: Rate limit exceeded for consumer"),
+			want: true,
+		},
+		"nil error": {
+			err: nil,
+		},
+		"unhealthy status is not quota": {
+			err: fmt.Errorf(`expected healthy status, got "unhealthy"`),
+		},
+		"missing provider is not quota": {
+			err: fmt.Errorf(`missing FULLSEND_GCP_WIF_PROVIDER (status="not_provisioned")`),
+		},
+		"unrelated cli failure": {
+			err: fmt.Errorf("inference provision org/repo: [cli] fullsend inference provision org/repo --project proj failed: exit status 1\nError: creating WIF pool returned 403: Permission 'iam.workloadIdentityPools.create' denied"),
+		},
+		"other status code is not quota": {
+			err: fmt.Errorf("getting WIF provider returned 404: provider not found"),
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, tc.want, isGCPWIFQuotaError(tc.err))
+		})
+	}
+}
+
+// TestMarkGCPWIFQuota covers the wrap rule the two inference call sites
+// share: quota-signature errors gain the "setup: gcp wif quota" mark, and
+// everything else — nil, unrelated errors, and already-marked errors —
+// passes through unchanged.
+func TestMarkGCPWIFQuota(t *testing.T) {
+	quotaErr := errors.New("rate limited (HTTP 429) after 7 attempts")
+
+	t.Run("quota error is marked with the setup reason", func(t *testing.T) {
+		marked := markGCPWIFQuota(quotaErr)
+		require.Error(t, marked)
+		assert.True(t, behaviourfail.Is(marked))
+		var infra *behaviourfail.InfraError
+		require.ErrorAs(t, marked, &infra)
+		assert.Equal(t, "setup: gcp wif quota", infra.Reason)
+		assert.ErrorIs(t, marked, quotaErr, "the CLI failure stays reachable through the mark")
+	})
+
+	t.Run("nil passes through", func(t *testing.T) {
+		assert.NoError(t, markGCPWIFQuota(nil))
+	})
+
+	t.Run("unrelated error passes through unchanged", func(t *testing.T) {
+		plain := fmt.Errorf(`expected healthy status, got "unhealthy"`)
+		got := markGCPWIFQuota(plain)
+		assert.Same(t, plain, got)
+		assert.False(t, behaviourfail.Is(got))
+	})
+
+	t.Run("already-marked error is not wrapped again", func(t *testing.T) {
+		marked := behaviourfail.Mark(quotaErr, "setup: gcp wif quota")
+		got := markGCPWIFQuota(marked)
+		assert.Same(t, marked, got, "WaitInferenceHealthy's marked error flows through ResolveInferenceWIFProvider unwrapped")
+	})
 }
