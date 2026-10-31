@@ -362,11 +362,18 @@ func (dst *EnvConfig) mergeEnvFrom(src *EnvConfig, srcWins bool) {
 // Harness is the per-agent configuration that the runner reads to provision
 // a sandbox and launch one agent. It follows the ADR-0017 schema.
 type Harness struct {
-	Agent                  string                  `yaml:"agent"`
-	Doc                    string                  `yaml:"doc,omitempty"`
-	Description            string                  `yaml:"description,omitempty"`
-	Role                   string                  `yaml:"role,omitempty"`
-	Slug                   string                  `yaml:"slug,omitempty"`
+	Agent       string `yaml:"agent"`
+	Doc         string `yaml:"doc,omitempty"`
+	Description string `yaml:"description,omitempty"`
+	Role        string `yaml:"role,omitempty"`
+	Slug        string `yaml:"slug,omitempty"`
+	// SchemaVersion is the declared harness schema_version (ADR 0127 Decision 1):
+	// top-level only and forge-agnostic, absent = version 1. It is not a
+	// ForgeConfig field, so it cannot be set under forge: or overlays: — a
+	// schema_version key there is ignored like any unknown key. The named
+	// schemaVersionValue type rejects non-integer values during parsing; read
+	// the effective version through EffectiveSchemaVersion.
+	SchemaVersion          *schemaVersionValue     `yaml:"schema_version,omitempty"`
 	Base                   string                  `yaml:"base,omitempty"`
 	Image                  string                  `yaml:"image,omitempty"`
 	Policy                 string                  `yaml:"policy,omitempty"`
@@ -401,22 +408,25 @@ type Harness struct {
 }
 
 // Load reads a harness YAML file from path, unmarshals it, and validates it.
+// Parsing is funneled through parseRaw so schema_version rejection applies
+// here identically to every other parse-level entry point (ADR 0127
+// Decision 1).
 func Load(path string) (*Harness, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading harness file: %w", err)
 	}
 
-	var h Harness
-	if err := yaml.Unmarshal(data, &h); err != nil {
-		return nil, fmt.Errorf("parsing harness YAML: %w", err)
+	h, err := parseRaw(data)
+	if err != nil {
+		return nil, err
 	}
 
 	if err := h.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid harness: %w", err)
 	}
 
-	return &h, nil
+	return h, nil
 }
 
 // LoadOpts configures forge-aware and overlay-aware harness loading.
@@ -466,11 +476,16 @@ func LoadWithOpts(path string, opts LoadOpts) (*Harness, error) {
 }
 
 // parseRaw unmarshals raw YAML bytes into a Harness without validation or
-// forge resolution. Use this when you already have the bytes (e.g. from a
+// forge resolution, rejecting an invalid schema_version under the standard
+// parse wrap (ADR 0127 Decision 1) so every parse-level entry point shares
+// one version check. Use this when you already have the bytes (e.g. from a
 // forge API call); use LoadRaw for filesystem-based loading.
 func parseRaw(data []byte) (*Harness, error) {
 	var h Harness
 	if err := yaml.Unmarshal(data, &h); err != nil {
+		return nil, fmt.Errorf("parsing harness YAML: %w", err)
+	}
+	if err := validateSchemaVersion(h.SchemaVersion); err != nil {
 		return nil, fmt.Errorf("parsing harness YAML: %w", err)
 	}
 	return &h, nil
