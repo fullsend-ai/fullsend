@@ -124,10 +124,10 @@ func TestClaudeReviewLateAgentIDUsesOneIndexedRow(t *testing.T) {
 	if err := parseClaudeStream(strings.NewReader(stream), r.Handle); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Count(out.String(), "— running") != 1 || strings.Count(out.String(), "— completed") != 1 || len(r.taskProgressSeen) != 1 {
+	if strings.Count(out.String(), "— running") != 1 || strings.Count(out.String(), "— completed") != 1 || len(r.progress.taskProgressSeen) != 1 {
 		t.Fatal("late ID split agent row: " + out.String())
 	}
-	for _, row := range r.taskProgressSeen {
+	for _, row := range r.progress.taskProgressSeen {
 		if row.event.AgentID != "a1" || row.event.State != TaskCompleted || row.event.AgentIndex != 1 {
 			t.Fatalf("lost agent identity or completion: %+v", row.event)
 		}

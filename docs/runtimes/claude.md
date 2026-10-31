@@ -344,7 +344,15 @@ available tool names/context. For example:
 
 Unchanged snapshots and counter-only updates do not repeat the same display
 line. Text is sanitized, credential-redacted, and bounded before display or
-retention in the bounded display cache. Concurrent tasks and agents retain
+retention in the bounded display cache. Progress text uses Unicode cleanup:
+bidirectional overrides, invisible format characters and Unicode tags are
+removed, and compatibility characters are normalized. The CLI applies the
+same cleanup to credential literals before matching.
+A dedicated reconciler owns lifecycle and deduplication; the renderer prints
+its safe messages. Parser/`OnEvent` callbacks and captured stream bytes keep
+their original snapshot content.
+
+Concurrent tasks and agents retain
 separate identities. Task tool/status fields retain omitted values;
 explicit empty strings clear them. Pausing hides the last summary until the
 task resumes; a terminal state or new run clears it. Partial lifecycle

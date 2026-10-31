@@ -9,7 +9,6 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -703,9 +702,6 @@ func recordClaudeMetrics(metrics *RunMetrics, evt AgentEvent) {
 		metrics.ToolCalls.Add(1)
 	}
 }
-
-// progressRedactor scrubs secrets from tool context strings before display.
-var progressRedactor = security.NewSecretRedactor()
 
 // extractSafeContext returns a safe, non-secret string for progress display.
 // The result is run through SecretRedactor to scrub tokens, keys, and

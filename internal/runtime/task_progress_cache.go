@@ -5,7 +5,7 @@ import "crypto/sha256"
 // retireTaskProgressRows removes rows without discarding authoritative run and
 // visibility control. A completed task needs no agent rows: all subsequent
 // agent frames are blocked by its retained terminal parent state.
-func (r *EventRenderer) retireTaskProgressRows(task [sha256.Size]byte, agentsOnly bool) {
+func (r *progressReconciler) retireTaskProgressRows(task [sha256.Size]byte, agentsOnly bool) {
 	parentAgent := sha256.Sum256(nil)
 	for key := range r.taskProgressSeen {
 		if key.task == task && (!agentsOnly || key.index > 0 || key.agent != parentAgent) {
@@ -14,7 +14,7 @@ func (r *EventRenderer) retireTaskProgressRows(task [sha256.Size]byte, agentsOnl
 	}
 }
 
-func (r *EventRenderer) storeTaskProgress(key taskProgressKey, display taskProgressDisplay, isAgent bool) {
+func (r *progressReconciler) storeTaskProgress(key taskProgressKey, display taskProgressDisplay, isAgent bool) {
 	if !isAgent {
 		control := r.taskProgressRuns[key.task]
 		control.parent = display

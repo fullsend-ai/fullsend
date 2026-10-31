@@ -92,7 +92,7 @@ func TestTaskRunOrderUnsafeIDsNeedExplicitStart(t *testing.T) {
 				t.Fatal("unorderable unseen frame replaced current: " + out.String())
 			}
 			r.Handle(TaskProgressEvent{TaskID: "one", RunID: id, Started: true, State: TaskRunning, Label: "Explicit"})
-			for _, run := range r.taskProgressRuns {
+			for _, run := range r.progress.taskProgressRuns {
 				if run.order != "" {
 					t.Fatalf("retained unsafe order text: %q", run.order)
 				}

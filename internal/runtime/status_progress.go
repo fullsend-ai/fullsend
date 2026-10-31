@@ -8,25 +8,25 @@ type statusProgressDisplay struct {
 	context string
 }
 
-func (r *EventRenderer) statusProgress(e StatusProgressEvent) {
+func (r *progressReconciler) status(e StatusProgressEvent, redact func(string) string) (string, bool) {
 	if e.Kind == "" {
-		return
+		return "", false
 	}
 	key := sha256.Sum256([]byte(e.Kind + "\x00" + e.ID))
 	previous := r.statusProgressSeen[key]
 	if e.Clear {
 		delete(r.statusProgressSeen, key)
-		return
+		return "", false
 	}
 	if e.Recovery && previous.message == "" {
-		return
+		return "", false
 	}
-	msg := r.progressText(e.Label, 120)
+	msg := redactProgressText(e.Label, 120, redact)
 	if msg == "" {
-		return
+		return "", false
 	}
-	subject := r.progressText(e.Subject, 120)
-	context := r.progressText(e.Context, 80)
+	subject := redactProgressText(e.Subject, 120, redact)
+	context := redactProgressText(e.Context, 80, redact)
 	if subject == "" && !e.SubjectSet {
 		subject = previous.subject
 	}
@@ -39,15 +39,15 @@ func (r *EventRenderer) statusProgress(e StatusProgressEvent) {
 	if context != "" {
 		msg += " [" + context + "]"
 	}
-	if state := r.progressText(e.State, 60); state != "" {
+	if state := redactProgressText(e.State, 60, redact); state != "" {
 		msg += " — " + state
 	}
-	if detail := r.progressText(e.Detail, 240); detail != "" {
+	if detail := redactProgressText(e.Detail, 240, redact); detail != "" {
 		msg += ": " + detail
 	}
 	msg = sanitizeOutput(msg)
 	if !e.Occurrence && previous.message == msg {
-		return
+		return "", false
 	}
 	if !e.Occurrence {
 		if r.statusProgressSeen == nil {
@@ -58,5 +58,5 @@ func (r *EventRenderer) statusProgress(e StatusProgressEvent) {
 		}
 		r.statusProgressSeen[key] = statusProgressDisplay{message: msg, subject: subject, context: context}
 	}
-	r.printProgress(msg)
+	return msg, true
 }

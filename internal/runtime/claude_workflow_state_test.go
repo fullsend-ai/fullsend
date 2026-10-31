@@ -101,7 +101,7 @@ func TestClaudeWorkflowAgentQuotaWaitAndStaleSnapshots(t *testing.T) {
 	if strings.Count(out.String(), "— queued") != 2 || strings.Count(out.String(), "— completed") != 1 || !strings.Contains(out.String(), "attempt 2; retry: throttled") {
 		t.Fatal(out.String())
 	}
-	for _, row := range r.taskProgressSeen {
+	for _, row := range r.progress.taskProgressSeen {
 		if row.event.State != TaskCompleted || row.event.Attempt != 2 {
 			t.Fatalf("stale attempt changed final state: %+v", row.event)
 		}

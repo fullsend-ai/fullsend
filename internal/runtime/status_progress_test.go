@@ -30,7 +30,7 @@ func TestStatusProgressRendererSafetyAndBounds(t *testing.T) {
 	for i := range maxTaskProgressEntries + 1 {
 		r.Handle(StatusProgressEvent{Kind: "row", ID: fmt.Sprint(i), Label: "row"})
 	}
-	if len(r.statusProgressSeen) > maxTaskProgressEntries {
+	if len(r.progress.statusProgressSeen) > maxTaskProgressEntries {
 		t.Fatal("unbounded status cache")
 	}
 }
@@ -58,7 +58,7 @@ func TestStatusProgressAttributionRedactedBeforeRetention(t *testing.T) {
 	if strings.Contains(out.String(), secret) || strings.Contains(stderr, secret) || strings.Contains(stderr, "::error::") || strings.Count(stderr, "::notice::") != 2 {
 		t.Fatal("unsafe hook attribution")
 	}
-	for _, display := range r.statusProgressSeen {
+	for _, display := range r.progress.statusProgressSeen {
 		if strings.Contains(display.subject+display.context+display.message, secret) || len([]rune(display.subject)) > 121 || len([]rune(display.context)) > 81 {
 			t.Fatal("unsafe or unbounded cached attribution")
 		}

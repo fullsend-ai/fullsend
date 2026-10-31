@@ -2,9 +2,7 @@ package runtime
 
 import (
 	"crypto/sha256"
-	"fmt"
 	"slices"
-	"strings"
 	"unicode/utf16"
 	"unicode/utf8"
 )
@@ -41,13 +39,13 @@ type taskProgressDisplay struct {
 	fingerprint [sha256.Size]byte
 }
 
-func (r *EventRenderer) taskProgress(e TaskProgressEvent) {
+func (r *progressReconciler) task(e TaskProgressEvent, redact func(string) string) (string, bool) {
 	if e.TaskID == "" || (e.State == "" && !e.Update) {
-		return
+		return "", false
 	}
-	key, accepted := r.taskProgressIdentity(&e)
+	key, accepted := r.taskProgressIdentity(&e, redact)
 	if !accepted {
-		return
+		return "", false
 	}
 	taskHash := key.task
 	current := r.taskProgressRuns[taskHash]
@@ -59,22 +57,22 @@ func (r *EventRenderer) taskProgress(e TaskProgressEvent) {
 	}
 	// Parent lifecycle/visibility lives outside the agent dedup row budget.
 	if isAgent && terminalTaskState(parent.State) {
-		return
+		return "", false
 	}
 	if isAgent && staleAgentSnapshot(e, previous.event) {
-		return
+		return "", false
 	}
 	if isAgent && e.AgentState != "" {
 		reconcileAgentLifecycle(&e, previous.event)
 	}
 	resumable := isAgent && previous.event.State == TaskFailed && agentExecutionAdvanced(e, previous.event)
 	if !e.Started && (parent.Hidden || previous.event.Hidden || (e.State != "" && !terminalTaskState(e.State) && (terminalTaskState(parent.State) || (terminalTaskState(previous.event.State) && !resumable)))) {
-		return
+		return "", false
 	}
 	if isAgent {
 		if _, exists := r.taskProgressSeen[key]; !exists {
 			if current.agents >= maxTaskProgressAgentsPerTask || len(r.taskProgressSeen) >= maxTaskProgressRows {
-				return
+				return "", false
 			}
 			current.agents++
 			r.taskProgressRuns[taskHash] = current
@@ -82,18 +80,18 @@ func (r *EventRenderer) taskProgress(e TaskProgressEvent) {
 	}
 	// Sanitize before retaining metadata, not just before printing it. This
 	// cache contains bounded display fields and hashed raw identities only.
-	e.TaskID = r.progressText(e.TaskID, 80)
-	e.RunID = r.progressText(e.RunID, 80)
-	e.AgentID = r.progressText(e.AgentID, 80)
-	e.Label = r.progressText(e.Label, 160)
-	e.Phase = r.progressText(e.Phase, 80)
-	e.ToolName = r.progressText(e.ToolName, 50)
-	e.ToolSummary = r.progressText(e.ToolSummary, 160)
-	e.Summary = r.progressText(e.Summary, 200)
-	e.Detail = r.progressText(e.Detail, 200)
-	e.LastAttemptReason = r.progressText(e.LastAttemptReason, 60)
-	e.State = TaskState(r.progressText(string(e.State), 40))
-	e.AgentState = r.progressText(e.AgentState, 40)
+	e.TaskID = redactProgressText(e.TaskID, 80, redact)
+	e.RunID = redactProgressText(e.RunID, 80, redact)
+	e.AgentID = redactProgressText(e.AgentID, 80, redact)
+	e.Label = redactProgressText(e.Label, 160, redact)
+	e.Phase = redactProgressText(e.Phase, 80, redact)
+	e.ToolName = redactProgressText(e.ToolName, 50, redact)
+	e.ToolSummary = redactProgressText(e.ToolSummary, 160, redact)
+	e.Summary = redactProgressText(e.Summary, 200, redact)
+	e.Detail = redactProgressText(e.Detail, 200, redact)
+	e.LastAttemptReason = redactProgressText(e.LastAttemptReason, 60, redact)
+	e.State = TaskState(redactProgressText(string(e.State), 40, redact))
+	e.AgentState = redactProgressText(e.AgentState, 40, redact)
 	if !e.Started {
 		old := previous.event
 		if e.Label == "" && !e.LabelSet {
@@ -119,7 +117,7 @@ func (r *EventRenderer) taskProgress(e TaskProgressEvent) {
 	}
 	if e.Hidden {
 		r.storeTaskProgress(key, taskProgressDisplay{event: e}, isAgent)
-		return
+		return "", false
 	}
 	msg := taskProgressMessage(e)
 	comparison := msg
@@ -132,73 +130,16 @@ func (r *EventRenderer) taskProgress(e TaskProgressEvent) {
 	fingerprint := sha256.Sum256([]byte(comparison))
 	r.storeTaskProgress(key, taskProgressDisplay{event: e, fingerprint: fingerprint}, isAgent)
 	if previous.fingerprint == fingerprint {
-		return
+		return "", false
 	}
-	r.printProgress(msg)
-}
-
-// taskProgressMessage formats only already-redacted, bounded display fields.
-func taskProgressMessage(e TaskProgressEvent) string {
-	msg := "Task " + e.TaskID
-	if e.AgentIndex > 0 {
-		msg += fmt.Sprintf(" / agent #%d", e.AgentIndex)
-		if e.AgentID != "" {
-			msg += " (" + e.AgentID + ")"
-		}
-	} else if e.AgentID != "" {
-		msg += " / agent " + e.AgentID
-	}
-	if e.Phase != "" {
-		msg += " [" + e.Phase + "]"
-	}
-	if e.Label != "" {
-		msg += ": " + e.Label
-	}
-	if e.State != "" {
-		msg += " — " + string(e.State)
-	} else {
-		msg += " — updated"
-	}
-	if e.Blocked {
-		msg += " (blocked)"
-	}
-	if e.Cached {
-		msg += " (cached)"
-	}
-	if e.ToolName != "" {
-		msg += " (tool: " + e.ToolName
-		if e.ToolSummary != "" {
-			msg += ": " + e.ToolSummary
-		}
-		msg += ")"
-	}
-	if e.Attempt > 0 || e.LastAttemptReason != "" {
-		msg += " ("
-		if e.Attempt > 0 {
-			msg += fmt.Sprintf("attempt %d", e.Attempt)
-		}
-		if e.LastAttemptReason != "" {
-			if e.Attempt > 0 {
-				msg += "; "
-			}
-			msg += "retry: " + e.LastAttemptReason
-		}
-		msg += ")"
-	}
-	if e.Summary != "" && e.State == TaskRunning {
-		msg += " — " + e.Summary
-	}
-	if e.Detail != "" {
-		msg += " — " + e.Detail
-	}
-	return sanitizeOutput(msg)
+	return msg, true
 }
 
 // Resolve optional run IDs. SDK 0.3.314 orders a task's run IDs by plain
 // JavaScript string comparison. Reject superseded frames before changing any
 // identity, visibility or dedup state. Anonymous restarts retain the previous
 // named watermark until a newer name adopts the anonymous generation's rows.
-func (r *EventRenderer) taskProgressIdentity(e *TaskProgressEvent) (taskProgressKey, bool) {
+func (r *progressReconciler) taskProgressIdentity(e *TaskProgressEvent, redact func(string) string) (taskProgressKey, bool) {
 	if r.taskProgressSeen == nil {
 		r.taskProgressSeen = make(map[taskProgressKey]taskProgressDisplay)
 		r.taskProgressRuns = make(map[[sha256.Size]byte]taskProgressRun)
@@ -218,7 +159,7 @@ func (r *EventRenderer) taskProgressIdentity(e *TaskProgressEvent) (taskProgress
 		if current.named && current.hash == zero && run == current.watermark {
 			return taskProgressKey{}, false
 		}
-		order = r.taskRunOrder(e.RunID)
+		order = r.taskRunOrder(e.RunID, redact)
 		if current.named && run != current.hash {
 			comparable := order != "" && current.order != ""
 			comparison := compareTaskRunIDs(order, current.order)
@@ -270,11 +211,11 @@ func (r *EventRenderer) taskProgressIdentity(e *TaskProgressEvent) (taskProgress
 	return taskProgressKey{task: task, run: run, agent: agent, index: index}, true
 }
 
-func (r *EventRenderer) taskRunOrder(id string) string {
+func (r *progressReconciler) taskRunOrder(id string, redact func(string) string) string {
 	if len(id) > maxTaskRunOrderBytes || !utf8.ValidString(id) {
 		return ""
 	}
-	clean := r.progressText(id, maxTaskRunOrderBytes)
+	clean := redactProgressText(id, maxTaskRunOrderBytes, redact)
 	if clean != id {
 		return ""
 	}
@@ -400,53 +341,4 @@ func staleAgentSnapshot(e, old TaskProgressEvent) bool {
 
 func terminalTaskState(state TaskState) bool {
 	return state == TaskCompleted || state == TaskFailed || state == TaskStopped || state == TaskSkipped
-}
-
-func (r *EventRenderer) progressText(s string, limit int) string {
-	return redactProgressText(s, limit, r.RedactProgress)
-}
-
-func taskProgressText(s string, limit int) string {
-	return redactProgressText(s, limit, nil)
-}
-
-// Redact complete raw literals before cleanup, then repeat after cleanup:
-// removing ANSI and normalizing whitespace can reconstruct an opaque secret.
-// Both passes precede truncation and cache retention. The caller's redactor
-// uses display-safe replacement markers, such as [REDACTED] or ***.
-func redactProgressText(s string, limit int, redact func(string) string) string {
-	normalized := NormalizeProgressText(s)
-	if redact != nil {
-		raw := redact(s)
-		cleanedRaw := NormalizeProgressText(raw)
-		cleaned := redact(normalized)
-		switch {
-		case raw != s && cleaned != normalized && cleanedRaw != cleaned:
-			// Different passes masked different spans (for example nested secrets).
-			// Neither candidate proves the other one's residual text is safe.
-			s = "[REDACTED]"
-		case cleaned != normalized:
-			s = cleaned
-		default:
-			s = cleanedRaw
-		}
-	} else {
-		s = normalized
-	}
-	if result := progressRedactor.Scan(s); !result.Safe {
-		s = result.Sanitized
-	}
-	if utf8.RuneCountInString(s) > limit {
-		s = string([]rune(s)[:limit]) + "…"
-	}
-	// strings.Fields/Join can return a short slice of the sanitizer's large
-	// allocation. Cache only storage proportional to the bounded final value.
-	return strings.Clone(s)
-}
-
-// NormalizeProgressText applies the same cleanup to display text and caller
-// credential literals. Redactors must match both original and normalized
-// values, because cleanup can rewrite whitespace, escapes and CI markers.
-func NormalizeProgressText(s string) string {
-	return strings.Join(strings.Fields(sanitizeOutput(s)), " ")
 }

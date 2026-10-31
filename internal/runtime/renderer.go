@@ -1,7 +1,6 @@
 package runtime
 
 import (
-	"crypto/sha256"
 	"fmt"
 	"os"
 
@@ -20,14 +19,12 @@ type EventRenderer struct {
 	// runtime-secret redaction apply even when this callback is nil.
 	RedactProgress func(string) string
 
-	printer            *ui.Printer
-	isCI               bool
-	inText             bool
-	inThinking         bool
-	seenInit           bool
-	taskProgressSeen   map[taskProgressKey]taskProgressDisplay
-	taskProgressRuns   map[[sha256.Size]byte]taskProgressRun
-	statusProgressSeen map[[sha256.Size]byte]statusProgressDisplay
+	printer    *ui.Printer
+	isCI       bool
+	inText     bool
+	inThinking bool
+	seenInit   bool
+	progress   progressReconciler
 }
 
 // NewEventRenderer creates a renderer that writes to the given printer.
@@ -46,9 +43,13 @@ var (
 func (r *EventRenderer) Handle(evt AgentEvent) {
 	switch e := evt.(type) {
 	case StatusProgressEvent:
-		r.statusProgress(e)
+		if msg, show := r.progress.status(e, r.RedactProgress); show {
+			r.printProgress(msg)
+		}
 	case TaskProgressEvent:
-		r.taskProgress(e)
+		if msg, show := r.progress.task(e, r.RedactProgress); show {
+			r.printProgress(msg)
+		}
 	case InitEvent:
 		if r.seenInit {
 			return
