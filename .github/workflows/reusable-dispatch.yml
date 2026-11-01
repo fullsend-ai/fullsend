@@ -2141,8 +2141,19 @@ jobs:
         shell: bash
         env:
           EVENT_PAYLOAD: ${{ matrix.event_payload }}
+          MATRIX_JSON: ${{ inputs.matrix != '' && inputs.matrix || needs.harness-dispatch.outputs.matrix }}
+          MATRIX_AGENT: ${{ matrix.agent }}
+          MATRIX_JOB_INDEX: ${{ strategy.job-index }}
         run: |
           set -euo pipefail
+          # Keep names unchanged for distinct agents; repeated agents need
+          # unique artifact names.
+          SAME_AGENT_COUNT=$(printf '%s' "${MATRIX_JSON}" \
+            | jq --arg agent "${MATRIX_AGENT}" '[.include[]? | select(.agent == $agent)] | length')
+          ARTIFACT_SUFFIX=""
+          if (( SAME_AGENT_COUNT > 1 )); then
+            ARTIFACT_SUFFIX="${MATRIX_JOB_INDEX}"
+          fi
           URL=$(printf '%s' "${EVENT_PAYLOAD}" | jq -r '.issue.html_url // .pull_request.html_url // empty')
           if [[ -z "${URL}" ]]; then
             echo "::error::event_payload missing issue or pull_request html_url"
@@ -2160,6 +2171,7 @@ jobs:
             printf '%s' "${URL}"
             echo
             echo "${DELIM}"
+            echo "artifact_suffix=${ARTIFACT_SUFFIX}"
             echo "work_item_key<<${DELIM}"
             printf '%s' "${WORK_ITEM_KEY}"
             echo
@@ -2200,6 +2212,7 @@ jobs:
           JIRA_BASE_URL: ${{ inputs.jira_base_url || vars.JIRA_BASE_URL }}
         with:
           agent: ${{ matrix.agent }}
+          artifact-suffix: ${{ steps.dispatch-env.outputs.artifact_suffix }}
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
           gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           role: ${{ matrix.role }}

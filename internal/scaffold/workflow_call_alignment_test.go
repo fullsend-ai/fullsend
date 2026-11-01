@@ -1276,6 +1276,46 @@ func TestActionPRHeadSHAInput(t *testing.T) {
 		"reconcile step must pass PR_HEAD_SHA_INPUT env from input")
 }
 
+// TestActionArtifactSuffixInput validates that action.yml declares the
+// optional artifact-suffix input and that the upload step keeps the
+// fullsend-<agent> name when it is empty, so several same-agent jobs in
+// one run can upload distinct artifacts (#8961).
+func TestActionArtifactSuffixInput(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join("..", "..", "action.yml"))
+	require.NoError(t, err)
+	var action struct {
+		Inputs map[string]struct {
+			Default *string `yaml:"default"`
+		} `yaml:"inputs"`
+		Runs struct {
+			Steps []struct {
+				Name string            `yaml:"name"`
+				With map[string]string `yaml:"with"`
+			} `yaml:"steps"`
+		} `yaml:"runs"`
+	}
+	require.NoError(t, yaml.Unmarshal(content, &action))
+
+	input, ok := action.Inputs["artifact-suffix"]
+	require.True(t, ok, "action.yml must declare the artifact-suffix input")
+	require.NotNil(t, input.Default, "artifact-suffix must declare a default")
+	assert.Empty(t, *input.Default, "artifact-suffix must default to empty so existing callers keep fullsend-<agent>")
+
+	var name string
+	found := false
+	for _, step := range action.Runs.Steps {
+		if step.Name == "Upload fullsend artifacts" {
+			name = step.With["name"]
+			found = true
+			break
+		}
+	}
+	require.True(t, found, "action.yml must have an Upload fullsend artifacts step")
+	assert.Equal(t,
+		"fullsend-${{ inputs.agent }}${{ inputs.artifact-suffix != '' && format('-{0}', inputs.artifact-suffix) || '' }}",
+		name, "upload must append -<suffix> only when artifact-suffix is set")
+}
+
 func TestActionReconcileStatusUsesSuppliedRoleFallback(t *testing.T) {
 	content, err := os.ReadFile(filepath.Join("..", "..", "action.yml"))
 	require.NoError(t, err)
