@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -1488,6 +1490,163 @@ func TestRunLock_URLBaseOnlyDepsWithPlatform(t *testing.T) {
 	require.NotNil(t, entry)
 	require.Len(t, entry.Dependencies, 2)
 	assert.Equal(t, "base", entry.Dependencies[0].Field)
+}
+
+// setupThinChildOverForgeBase writes a thin child harness (no forge: block)
+// over a URL base that declares forge.github and forge.gitlab files, the
+// setup from docs/guides/user/customizing-with-skills.md (#8988).
+func setupThinChildOverForgeBase(t *testing.T) (dir, harnessPath, srvURL string) {
+	t.Helper()
+	baseContent := []byte(`agent: agents/shared.md
+role: test
+forge:
+  github:
+    policy: policies/github.yaml
+    host_files:
+      - src: files/gh.conf
+        dest: /tmp/gh.conf
+  gitlab:
+    policy: policies/gitlab.yaml
+`)
+	baseHash := fetch.ComputeSHA256(baseContent)
+
+	srv, policy := newLockTestServer(t, map[string][]byte{
+		"/base.yaml":            baseContent,
+		"/agents/shared.md":     []byte("# shared agent"),
+		"/policies/github.yaml": []byte("github: policy\n"),
+		"/policies/gitlab.yaml": []byte("gitlab: policy\n"),
+		"/files/gh.conf":        []byte("gh conf\n"),
+	})
+
+	dir = t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	harnessPath = filepath.Join(dir, "harness", "thin.yaml")
+	childContent := fmt.Sprintf("base: \"%s/base.yaml#sha256=%s\"\n", srv.URL, baseHash)
+	require.NoError(t, os.WriteFile(harnessPath, []byte(childContent), 0o644))
+
+	orgConfig := fmt.Sprintf("allowed_remote_resources:\n  - \"%s/\"\n", srv.URL)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(orgConfig), 0o644))
+
+	fetch.DefaultPolicy = policy
+	t.Cleanup(func() { fetch.DefaultPolicy = fetch.FetchPolicy{} })
+	return dir, harnessPath, srv.URL
+}
+
+// lockedFields returns the lock entry's dependency fields keyed by URL.
+func lockedFields(t *testing.T, dir, agentName string) map[string]string {
+	t.Helper()
+	lf, err := lock.Load(filepath.Join(dir, "lock.yaml"))
+	require.NoError(t, err)
+	require.NotNil(t, lf)
+	entry := lf.Lookup(agentName)
+	require.NotNil(t, entry)
+	fields := make(map[string]string, len(entry.Dependencies))
+	for _, dep := range entry.Dependencies {
+		fields[dep.URL] = dep.Field
+	}
+	return fields
+}
+
+// loadThinChildOffline composes the harness as fullsend run --forge github
+// does with no network access, so base files must come from the cache.
+func loadThinChildOffline(dir, harnessPath, srvURL string) (*harness.Harness, error) {
+	policy := fetch.DefaultPolicy
+	policy.Offline = true
+	h, _, err := harness.LoadWithBase(context.Background(), harnessPath, harness.ComposeOpts{
+		WorkspaceRoot: dir,
+		FetchPolicy:   policy,
+		ForgePlatform: "github",
+		OrgAllowlist:  []string{srvURL + "/"},
+	})
+	return h, err
+}
+
+func TestRunLock_ThinChildLocksBaseForgeVariants(t *testing.T) {
+	dir, harnessPath, srvURL := setupThinChildOverForgeBase(t)
+	printer := ui.New(io.Discard)
+
+	require.NoError(t, runLock(context.Background(), "thin", dir, "", false, resolveFlags{}, printer))
+
+	assert.Equal(t, map[string]string{
+		srvURL + "/base.yaml":            "base",
+		srvURL + "/agents/shared.md":     "agent",
+		srvURL + "/policies/github.yaml": "forge.github.policy",
+		srvURL + "/files/gh.conf":        "forge.github.host_files[0].src",
+		srvURL + "/policies/gitlab.yaml": "forge.gitlab.policy",
+	}, lockedFields(t, dir, "thin"))
+
+	h, err := loadThinChildOffline(dir, harnessPath, srvURL)
+	require.NoError(t, err)
+	policyData, err := os.ReadFile(h.Policy)
+	require.NoError(t, err)
+	assert.Equal(t, "github: policy\n", string(policyData))
+	require.Len(t, h.HostFiles, 1)
+	hostData, err := os.ReadFile(h.HostFiles[0].Src)
+	require.NoError(t, err)
+	assert.Equal(t, "gh conf\n", string(hostData))
+}
+
+// TestRunLock_ThinChildLockHintsPinBaseForgeFiles checks that the lock hints
+// (the stale-entry hint in fullsend run, which suggests fullsend lock, and the
+// offline "not in cache" errors, which suggest fullsend lock first) pin a
+// base forge file when followed without --forge. A --forge gitlab lock stands
+// in for an entry that is missing the github variant.
+func TestRunLock_ThinChildLockHintsPinBaseForgeFiles(t *testing.T) {
+	githubFields := []string{"forge.github.policy", "forge.github.host_files[0].src"}
+
+	t.Run("lock after stale entry", func(t *testing.T) {
+		dir, harnessPath, srvURL := setupThinChildOverForgeBase(t)
+		printer := ui.New(io.Discard)
+		require.NoError(t, runLock(context.Background(), "thin", dir, "gitlab", false, resolveFlags{}, printer))
+
+		data, err := os.ReadFile(harnessPath)
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(harnessPath, append(data, []byte("# edited\n")...), 0o644))
+
+		require.NoError(t, runLock(context.Background(), "thin", dir, "", false, resolveFlags{}, printer))
+		fields := lockedFields(t, dir, "thin")
+		for _, field := range githubFields {
+			assert.Contains(t, slices.Collect(maps.Values(fields)), field)
+		}
+		_, err = loadThinChildOffline(dir, harnessPath, srvURL)
+		require.NoError(t, err)
+	})
+
+	t.Run("lock --update after offline cache miss", func(t *testing.T) {
+		dir, harnessPath, srvURL := setupThinChildOverForgeBase(t)
+		printer := ui.New(io.Discard)
+		require.NoError(t, runLock(context.Background(), "thin", dir, "gitlab", false, resolveFlags{}, printer))
+
+		_, err := loadThinChildOffline(dir, harnessPath, srvURL)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "forge.github.policy")
+		assert.Contains(t, err.Error(), "run 'fullsend lock' first")
+
+		require.NoError(t, runLock(context.Background(), "thin", dir, "", true, resolveFlags{}, printer))
+		fields := lockedFields(t, dir, "thin")
+		for _, field := range githubFields {
+			assert.Contains(t, slices.Collect(maps.Values(fields)), field)
+		}
+		_, err = loadThinChildOffline(dir, harnessPath, srvURL)
+		require.NoError(t, err)
+	})
+}
+
+// TestRunLock_ChildForgeKeysLimitBaseVariants checks that a child with its
+// own forge block locks only its own platforms: a run on a platform the child
+// does not list fails in ResolveForge, so the base's other platforms are not
+// locked (and locking them would fail).
+func TestRunLock_ChildForgeKeysLimitBaseVariants(t *testing.T) {
+	dir, harnessPath, srvURL := setupThinChildOverForgeBase(t)
+	data, err := os.ReadFile(harnessPath)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(harnessPath, append(data, []byte("forge:\n  gitlab:\n    model: opus\n")...), 0o644))
+
+	require.NoError(t, runLock(context.Background(), "thin", dir, "", false, resolveFlags{}, ui.New(io.Discard)))
+
+	fields := lockedFields(t, dir, "thin")
+	assert.Equal(t, "forge.gitlab.policy", fields[srvURL+"/policies/gitlab.yaml"])
+	assert.NotContains(t, fields, srvURL+"/policies/github.yaml")
 }
 
 func TestRunLock_URLRefsNoOrgConfigError(t *testing.T) {

@@ -389,7 +389,9 @@ fullsend if the version is newer. A missing lock file is not an error.
 
 When `--forge` is specified, only that platform variant is locked. When omitted,
 all forge variants defined in the harness are resolved and the union of their
-dependencies is locked.
+dependencies is locked. A harness with no `forge:` block of its own, such as a
+thin child over a `base:` harness, locks every forge variant declared anywhere
+in its base chain, so the base's `forge.<platform>.*` files are pinned too.
 
 When the lock entry is current (harness SHA256 matches), dependencies are
 resolved from the local cache without network access. If the harness has changed

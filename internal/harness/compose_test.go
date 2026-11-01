@@ -1244,6 +1244,89 @@ model: opus
 	assert.Equal(t, "gl-pre.sh", h.PreScript)
 }
 
+// TestLoadWithBase_BaseForgePlatforms verifies that the forge keys of every
+// base layer survive composition, which consumes the layers' forge blocks,
+// so fullsend lock can lock each platform the base chain configures (#8988).
+func TestLoadWithBase_BaseForgePlatforms(t *testing.T) {
+	t.Run("union across nested base layers", func(t *testing.T) {
+		dir := t.TempDir()
+		writeTestHarness(t, dir, "grandparent.yaml", `
+agent: agents/test.md
+role: test
+forge:
+  gitlab:
+    pre_script: gl-pre.sh
+`)
+		writeTestHarness(t, dir, "parent.yaml", `
+base: grandparent.yaml
+forge:
+  github:
+    pre_script: gh-pre.sh
+`)
+		path := writeTestHarness(t, dir, "child.yaml", `
+base: parent.yaml
+model: opus
+`)
+
+		for _, platform := range []string{"", "github", "gitlab"} {
+			h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{ForgePlatform: platform})
+			require.NoError(t, err, "platform %q", platform)
+			assert.Equal(t, []string{"github", "gitlab"}, h.BaseForgePlatforms(), "platform %q", platform)
+			assert.Nil(t, h.Forge, "platform %q", platform)
+		}
+	})
+
+	t.Run("child forge keys are not base platforms", func(t *testing.T) {
+		dir := t.TempDir()
+		writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+forge:
+  github:
+    pre_script: gh-pre.sh
+`)
+		path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+forge:
+  gitlab:
+    pre_script: gl-pre.sh
+`)
+
+		h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
+		require.NoError(t, err)
+		assert.Equal(t, []string{"github"}, h.BaseForgePlatforms())
+	})
+
+	t.Run("no base forge blocks", func(t *testing.T) {
+		dir := t.TempDir()
+		writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+`)
+		path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+forge:
+  github:
+    pre_script: gh-pre.sh
+`)
+
+		h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{ForgePlatform: "github"})
+		require.NoError(t, err)
+		assert.Nil(t, h.BaseForgePlatforms())
+
+		noBase := writeTestHarness(t, dir, "standalone.yaml", `
+agent: agents/test.md
+role: test
+forge:
+  github:
+    pre_script: gh-pre.sh
+`)
+		h, _, err = LoadWithBase(context.Background(), noBase, ComposeOpts{})
+		require.NoError(t, err)
+		assert.Nil(t, h.BaseForgePlatforms())
+	})
+}
+
 // TestLoadWithBase_ChildTopLevelOverridesInheritedForge verifies that base
 // forge/overlay values are resolved before merging into the child, so they
 // participate as top-level values and do not override the child's explicit

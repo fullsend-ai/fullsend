@@ -578,6 +578,16 @@ func resolveBaseForgeAndOverlays(base *Harness, opts ComposeOpts) error {
 	if base.Forge != nil {
 		base.hadForgeBeforeResolve = true
 	}
+	// Record this layer's forge keys before the map is niled below so
+	// callers can still see which platforms the base chain configures
+	// (fullsend lock locks each of them; #8988). mergeBaseIntoChild
+	// propagates them up the chain.
+	for key := range base.Forge {
+		if base.baseForgePlatforms == nil {
+			base.baseForgePlatforms = make(map[string]bool)
+		}
+		base.baseForgePlatforms[key] = true
+	}
 	// Validate forge and overlays before resolving. Validation must run
 	// while both are still present so mutual-exclusion checks fire.
 	if base.Forge != nil {
@@ -756,6 +766,12 @@ func mergeBaseIntoChild(base, child *Harness) error {
 	// marker is the only trace left for Lint().
 	if base.hadForgeBeforeResolve {
 		child.hadForgeBeforeResolve = true
+	}
+	for key := range base.baseForgePlatforms {
+		if child.baseForgePlatforms == nil {
+			child.baseForgePlatforms = make(map[string]bool)
+		}
+		child.baseForgePlatforms[key] = true
 	}
 
 	// Scalars: child overrides if non-zero

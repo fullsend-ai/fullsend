@@ -42,7 +42,9 @@ Use --all to lock every harness in the harness directory at once.
 
 When --forge is specified, the named platform's forge overrides are applied
 before locking. When --forge is omitted and the harness has a forge: section,
-all forge variants are resolved and the union of dependencies is locked.
+all forge variants are resolved and the union of dependencies is locked. A
+harness with no forge: section of its own locks the forge variants declared
+anywhere in its base chain, as well as the harness without a platform.
 
 The lock file should be committed to version control so all environments
 use the same pinned dependencies.
@@ -235,7 +237,7 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 		}
 	}
 
-	forgePlatforms, err := lockForgePlatforms(harnessPath, forgeFlag)
+	forgePlatforms, addBasePlatforms, err := lockForgePlatforms(harnessPath, forgeFlag)
 	if err != nil {
 		return nil, err
 	}
@@ -275,7 +277,10 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 		}
 	}
 
-	for _, platform := range forgePlatforms {
+	// Indexed loop: composing the empty-platform variant may append the
+	// base chain's forge platforms to forgePlatforms.
+	for i := 0; i < len(forgePlatforms); i++ {
+		platform := forgePlatforms[i]
 		h, baseDeps, loadErr := harness.LoadWithBase(ctx, harnessPath, harness.ComposeOpts{
 			WorkspaceRoot: absFullsendDir,
 			FetchPolicy:   policy,
@@ -289,6 +294,13 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 		if loadErr != nil {
 			printer.StepFail(fmt.Sprintf("Failed to load harness (forge: %s)", platform))
 			return nil, fmt.Errorf("loading harness for forge %q: %w", platform, loadErr)
+		}
+
+		// A harness without its own forge block runs on every platform its
+		// base chain configures, composing that platform's base forge files.
+		// Lock each of those variants too (#8988).
+		if platform == "" && addBasePlatforms {
+			forgePlatforms = append(forgePlatforms, h.BaseForgePlatforms()...)
 		}
 
 		// Run lint diagnostics (non-fatal), deduplicating across forge variants
@@ -752,29 +764,36 @@ func isHarnessUpToDate(absFullsendDir, name string, entry *lock.HarnessLock, pri
 // loads the raw harness to discover forge keys and returns all of them.
 // If the harness has no forge section, returns a single empty string
 // (lock the harness as-is).
-func lockForgePlatforms(harnessPath, forgePlatform string) ([]string, error) {
+//
+// addBasePlatforms reports that the harness declares no forge block at
+// all, so it runs on any platform with whatever the base chain configures
+// for it. Those platforms are only known once the chain is composed; the
+// caller adds them after composing the empty-platform variant. A harness
+// with its own forge block cannot run on a platform it does not list, so
+// its keys are the complete set.
+func lockForgePlatforms(harnessPath, forgePlatform string) (platforms []string, addBasePlatforms bool, err error) {
 	if forgePlatform != "" {
-		return []string{forgePlatform}, nil
+		return []string{forgePlatform}, false, nil
 	}
 
 	h, err := harness.LoadRaw(harnessPath)
 	if err != nil {
-		return nil, fmt.Errorf("loading harness for forge discovery: %w", err)
+		return nil, false, fmt.Errorf("loading harness for forge discovery: %w", err)
 	}
 
 	if len(h.Forge) == 0 {
-		return []string{""}, nil
+		return []string{""}, h.Forge == nil, nil
 	}
 
-	platforms := make([]string, 0, len(h.Forge))
+	platforms = make([]string, 0, len(h.Forge))
 	for key := range h.Forge {
 		if !harness.ValidForgePlatform(key) {
-			return nil, fmt.Errorf("forge: unrecognized key %q in harness (valid: %s)", key, harness.ForgeKeyList())
+			return nil, false, fmt.Errorf("forge: unrecognized key %q in harness (valid: %s)", key, harness.ForgeKeyList())
 		}
 		platforms = append(platforms, key)
 	}
 	sort.Strings(platforms)
-	return platforms, nil
+	return platforms, false, nil
 }
 
 // lockCleanURL strips a #sha256= fragment, the form lock and resolve key
