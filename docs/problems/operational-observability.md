@@ -103,7 +103,7 @@ fail another's under [ADR 0151](../ADRs/0151-harness-human-role-minimums.md).
 
 Traces need to be correlatable. A PR review workflow involving five agents needs a session-level view that shows all five traces, their ordering, and how their outputs composed into the final decision. This is the LLM equivalent of distributed tracing in microservices — but with the additional challenge that each "span" contains non-deterministic reasoning, not just timing and status.
 
-[ADR 0152](../ADRs/0152-correlate-work-item-and-behaviour-scenario-traces.md)
+[ADR 0154](../ADRs/0154-correlate-work-item-and-behaviour-scenario-traces.md)
 chooses a stable trace context for each work item, with explicit links for items
 Fullsend creates from other issues and one shared trace for each behaviour-test
 scenario and its created items. Backend retention for these long-lived traces

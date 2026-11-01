@@ -10,7 +10,7 @@ Today, if someone modifies a review agent's instructions, the only verification 
 
 **Behaviour tests are orthogonal.** [ADR 0066](../ADRs/0066-behaviour-tests-with-gherkin-and-drivers.md) describes Gherkin end-to-end tests (framework in `pkg/behaviourtest/`, runner under `e2e/behaviour/`) that validate deterministic platform code (workflows, harness, sandbox policy, post-scripts) with inference explicitly removed via the dummy and dummy-playback ([ADR 0116](../ADRs/0116-dummy-playback-runtime.md)) runtimes. They do not evaluate instructions, prompts, or models, and they do not replace golden-set or statistical LLM evals described below.
 
-[ADR 0152](../ADRs/0152-correlate-work-item-and-behaviour-scenario-traces.md)
+[ADR 0154](../ADRs/0154-correlate-work-item-and-behaviour-scenario-traces.md)
 calls for grouping a behaviour test's Fullsend and test-driver operations,
 including work items it creates, under one scenario trace for end-to-end
 diagnosis.
