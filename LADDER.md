@@ -282,3 +282,7 @@ reasons include:
 Revocation is not punitive — it reflects current activity level. A
 contributor whose access is revoked for inactivity can re-request it
 through the normal process.
+
+For maintainers, removal for inactivity follows the notification and
+grace-period process in
+[MAINTAINERS.md § Inactivity and removal](MAINTAINERS.md#inactivity-and-removal).
