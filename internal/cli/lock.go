@@ -1118,6 +1118,11 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 			// would duplicate the skill under the cache's internal tree name.
 		case strings.HasPrefix(m.field, "overlays[") && strings.Contains(m.field, ".providers["):
 		case strings.HasPrefix(m.field, "overlays[") && strings.Contains(m.field, ".openshell.profiles["):
+		case isHostFileLockField(m.field):
+			// Relative host_files from a URL base (top-level, forge-scoped
+			// or overlay-scoped) are fetched by resolveBaseHostFiles during
+			// LoadWithBase, which already rewrote each src to its cached
+			// path. This entry exists for cache verification only.
 		case strings.Contains(m.field, ".overrides["):
 			// Skill file overrides are set by URL after this loop
 			// (planSkillOverrideReplay), not by the field's index.
@@ -1125,10 +1130,12 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 			var idx int
 			if _, err := fmt.Sscanf(m.field, "skills[%d]", &idx); err == nil && idx >= 0 && idx < len(h.Skills) && m.field == fmt.Sprintf("skills[%d]", idx) {
 				h.Skills[idx].Source = m.localPath
-			} else {
+			} else if isTransitiveSkillLockField(m.field) {
 				// Transitive skill dependency — append as additional skill.
 				h.Skills = append(h.Skills, harness.SkillEntry{Source: m.localPath})
 			}
+			// Any other field has no harness slot to update: its cache
+			// entry was verified above, and it must not become a skill.
 		}
 	}
 
@@ -1227,6 +1234,43 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 		Profiles:  profiles,
 		Providers: providers,
 	}, nil
+}
+
+// isHostFileLockField reports whether a lock dependency field names a
+// host_files src fetched from a URL base by resolveBaseHostFiles in
+// internal/harness/compose.go: host_files[N].src,
+// forge.<platform>.host_files[N].src or overlays[N].host_files[M].src.
+func isHostFileLockField(field string) bool {
+	if !strings.HasSuffix(field, ".src") {
+		return false
+	}
+	return strings.HasPrefix(field, "host_files[") ||
+		(strings.HasPrefix(field, "forge.") && strings.Contains(field, ".host_files[")) ||
+		(strings.HasPrefix(field, "overlays[") && strings.Contains(field, ".host_files["))
+}
+
+// isTransitiveSkillLockField reports whether a lock dependency field names a
+// transitive skill dependency, recorded by resolveSkillTransitiveDeps in
+// internal/resolve as skills[<parentURL>:dep<N>].
+func isTransitiveSkillLockField(field string) bool {
+	if !strings.HasPrefix(field, "skills[") || !strings.HasSuffix(field, "]") {
+		return false
+	}
+	inner := field[len("skills[") : len(field)-1]
+	i := strings.LastIndex(inner, ":dep")
+	if i <= 0 {
+		return false
+	}
+	n := inner[i+len(":dep"):]
+	if n == "" {
+		return false
+	}
+	for _, c := range n {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // isTreeLockField reports whether a lock dependency field names a cached

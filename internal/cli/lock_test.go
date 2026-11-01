@@ -2829,3 +2829,162 @@ func TestResolveFromLock_ProfileAndProviderReconstruction(t *testing.T) {
 	assert.Equal(t, "anthropic", lockResult.Providers[0].Def.Type)
 	require.Len(t, lockResult.Deps, 2)
 }
+
+func TestResolveFromLock_URLBaseHostFilesNotSkills(t *testing.T) {
+	// A URL base's relative host_files are fetched by resolveBaseHostFiles
+	// and locked as host_files[N].src, forge.<platform>.host_files[N].src
+	// and overlays[N].host_files[M].src. LoadWithBase already rewrites each
+	// src to its cached path, so replaying the lock must leave h.Skills and
+	// h.HostFiles unchanged instead of appending the files as skills.
+	// forge and overlays cannot coexist in one harness, so each scope is
+	// its own base.
+	tests := []struct {
+		name  string
+		field string
+		block string
+	}{
+		{
+			name:  "top-level",
+			field: "host_files[0].src",
+			block: "host_files:\n  - src: files/data.txt\n    dest: /tmp/data.txt\n",
+		},
+		{
+			name:  "forge",
+			field: "forge.github.host_files[0].src",
+			block: "forge:\n  github:\n    host_files:\n      - src: files/data.txt\n        dest: /tmp/data.txt\n",
+		},
+		{
+			name:  "overlays",
+			field: "overlays[0].host_files[0].src",
+			block: "overlays:\n  - when: 'runtime.forge == \"github\"'\n    host_files:\n      - src: files/data.txt\n        dest: /tmp/data.txt\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testURLBaseHostFileReplay(t, tt.block, tt.field)
+		})
+	}
+}
+
+func testURLBaseHostFileReplay(t *testing.T, hostFilesBlock, wantField string) {
+	t.Helper()
+	baseContent := []byte("agent: agents/shared.md\nrole: test\n" + hostFilesBlock)
+	baseHash := fetch.ComputeSHA256(baseContent)
+	policyContent := []byte("version: 1\n")
+	policyHash := fetch.ComputeSHA256(policyContent)
+
+	srv, policy := newLockTestServer(t, map[string][]byte{
+		"/harness/base.yaml": baseContent,
+		"/agents/shared.md":  []byte("# shared agent"),
+		"/files/data.txt":    []byte("data"),
+		"/policies/p.yaml":   policyContent,
+	})
+
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	childContent := fmt.Sprintf("base: \"%s/harness/base.yaml#sha256=%s\"\npolicy: \"%s/policies/p.yaml#sha256=%s\"\nallowed_remote_resources:\n  - \"%s/\"\n",
+		srv.URL, baseHash, srv.URL, policyHash, srv.URL)
+	harnessPath := filepath.Join(dir, "harness", "code.yaml")
+	require.NoError(t, os.WriteFile(harnessPath, []byte(childContent), 0o644))
+	orgConfig := fmt.Sprintf("allowed_remote_resources:\n  - \"%s/\"\n", srv.URL)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(orgConfig), 0o644))
+
+	fetch.DefaultPolicy = policy
+	defer func() { fetch.DefaultPolicy = fetch.FetchPolicy{} }()
+
+	printer := ui.New(os.Stdout)
+	require.NoError(t, runLock(context.Background(), "code", dir, "github", false, resolveFlags{}, printer))
+
+	lf, err := lock.Load(filepath.Join(dir, "lock.yaml"))
+	require.NoError(t, err)
+	require.NotNil(t, lf)
+	entry := lf.Lookup("code")
+	require.NotNil(t, entry)
+	fields := make([]string, 0, len(entry.Dependencies))
+	for _, d := range entry.Dependencies {
+		fields = append(fields, d.Field)
+	}
+	require.Contains(t, fields, wantField)
+
+	// Replay offline, as fullsend run does.
+	orgAllowlist := []string{srv.URL + "/"}
+	h, _, err := harness.LoadWithBase(context.Background(), harnessPath, harness.ComposeOpts{
+		WorkspaceRoot: dir,
+		FetchPolicy:   fetch.FetchPolicy{Offline: true},
+		ForgePlatform: "github",
+		OrgAllowlist:  orgAllowlist,
+	})
+	require.NoError(t, err)
+	require.NoError(t, h.ResolveRelativeTo(dir))
+
+	require.Len(t, h.HostFiles, 1)
+	assert.True(t, strings.HasPrefix(h.HostFiles[0].Src, filepath.Join(dir, ".fullsend-cache")),
+		"host file must point into the cache before replay, got %s", h.HostFiles[0].Src)
+	assert.Equal(t, "/tmp/data.txt", h.HostFiles[0].Dest)
+	hostFilesBefore := append([]harness.HostFile(nil), h.HostFiles...)
+	skillsBefore := append([]harness.SkillEntry(nil), h.Skills...)
+
+	_, err = resolveFromLock(h, entry, dir, orgAllowlist, printer)
+	require.NoError(t, err)
+
+	assert.Equal(t, skillsBefore, h.Skills, "host_files lock entries must not be appended as skills")
+	assert.Equal(t, hostFilesBefore, h.HostFiles, "host_files must keep their cached paths")
+}
+
+func TestResolveFromLock_UnknownFieldNotSkill(t *testing.T) {
+	// A lock entry whose field has no harness slot is cache-verified but
+	// must not be appended to h.Skills.
+	content := []byte("unknown dependency")
+	hash := fetch.ComputeSHA256(content)
+
+	root := t.TempDir()
+	require.NoError(t, fetch.CachePut(root, "https://example.com/unknown", content))
+
+	entry := &lock.HarnessLock{
+		Dependencies: []lock.DependencyEntry{
+			{Field: "mystery[0].src", URL: "https://example.com/unknown", SHA256: hash},
+		},
+	}
+
+	h := &harness.Harness{
+		Agent:                  "agents/code.md",
+		AllowedRemoteResources: []string{"https://example.com/"},
+	}
+
+	lockResult, err := resolveFromLock(h, entry, root, nil, ui.New(os.Stdout))
+	require.NoError(t, err)
+	require.Len(t, lockResult.Deps, 1)
+	assert.Empty(t, h.Skills)
+}
+
+func TestIsHostFileLockField(t *testing.T) {
+	for field, want := range map[string]bool{
+		"host_files[0].src":               true,
+		"forge.github.host_files[2].src":  true,
+		"overlays[1].host_files[0].src":   true,
+		"host_files[0]":                   false,
+		"forge.github.skills[0]":          false,
+		"skills[0]":                       false,
+		"overlays[0].pre_script":          false,
+		"providers[0].host_files[0].src":  false,
+		"forge.github.host_files[0].dest": false,
+	} {
+		assert.Equal(t, want, isHostFileLockField(field), field)
+	}
+}
+
+func TestIsTransitiveSkillLockField(t *testing.T) {
+	for field, want := range map[string]bool{
+		"skills[https://example.com/main:dep0]":  true,
+		"skills[https://example.com/main:dep12]": true,
+		"skills[0]":                              false,
+		"skills[https://example.com/main:dep]":   false,
+		"skills[https://example.com/main:depx]":  false,
+		"skills[:dep0]":                          false,
+		"skills[0].overrides[a.md]":              false,
+		"host_files[0].src":                      false,
+		"forge.github.skills[x:dep0]":            false,
+	} {
+		assert.Equal(t, want, isTransitiveSkillLockField(field), field)
+	}
+}
