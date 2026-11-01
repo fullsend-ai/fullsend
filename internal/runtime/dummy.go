@@ -189,7 +189,7 @@ func (r DummyRuntime) Bootstrap(input BootstrapInput) error {
 		}
 	}
 
-	mkdirCmd := fmt.Sprintf("mkdir -p %s/output %s/.dummy", sandbox.SandboxWorkspace, sandbox.SandboxWorkspace)
+	mkdirCmd := fmt.Sprintf("mkdir -p %s/output %s/.dummy %s/skills", sandbox.SandboxWorkspace, sandbox.SandboxWorkspace, r.ConfigDir())
 	_, stderr, exitCode, err := r.execFn()(sandboxName, mkdirCmd, 10*time.Second)
 	if err != nil {
 		return fmt.Errorf("bootstrap exec: %w", err)
@@ -197,7 +197,9 @@ func (r DummyRuntime) Bootstrap(input BootstrapInput) error {
 	if exitCode != 0 {
 		return fmt.Errorf("bootstrap failed: %s", strings.TrimSpace(stderr))
 	}
-	return nil
+	// Stage the harness skills like the agent runtimes do, so behaviour
+	// scenarios can inspect the staged (override-merged) tree (#6158).
+	return uploadHarnessSkillsWith(r.uploadFn(), sandboxName, r.ConfigDir()+"/skills", input.SkillDirs())
 }
 
 func (r DummyRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printer, _ time.Time, _ *RunMetrics) (int, error) {
@@ -464,6 +466,8 @@ func executeBehaviourOp(rt DummyRuntime, sandboxName, repoDir string, op Behavio
 			return fmt.Errorf("assert_json %s at %s: %s", jsonPath, path, strings.TrimSpace(stderr))
 		}
 		return nil
+	case "assert_jq":
+		return executeAssertJQ(rt, sandboxName, op.Args)
 	// http_probe is not handled here: executeBehaviourScript runs it
 	// through executeHTTPProbe, which also returns what it records.
 	default:

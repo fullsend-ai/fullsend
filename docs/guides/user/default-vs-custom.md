@@ -71,6 +71,7 @@ agent is custom by definition — regardless of how similar it looks.
 | Add repo-level skills in `.agents/skills/` | Configured default | Discovered under Claude Code and Codex; a repo skill whose name matches a harness-listed skill (by declared `SKILL.md` name or basename) is shadowed (no fail-fast; Claude Code emits a warning), and `runtime: pi` does not read `.agents/skills` (see [Repo Skill](../../glossary.md#repo-skill)). |
 | Add project instructions via `AGENTS.md` | Configured default | All agents read `AGENTS.md`. This is the standard customization path. |
 | Override a built-in skill via config-driven registration | Configured default | Documented extension point ([Configuring with Skills](customizing-with-skills.md#overriding-built-in-skills)). |
+| Add, replace or remove files inside a skill via per-file overrides on a `skills:` entry | Configured default | The upstream skill stays in place; only the listed files change in each run's copy ([Configuring with Skills](customizing-with-skills.md#overriding-single-files-in-a-skill)). |
 | Replace the sandbox image with one based on the default image | Configured default | The agent's behavior is unchanged; the environment is augmented. |
 | Add plugins via `plugins:` | Configured default | Plugins extend tooling without changing the agent's identity. |
 | Add host files via `host_files:` | Configured default | Additional data for the sandbox. The agent itself is unchanged. |

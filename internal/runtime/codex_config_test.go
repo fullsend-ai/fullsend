@@ -65,7 +65,7 @@ func TestRenderCodexConfig_ParsesAsTOML(t *testing.T) {
 
 	// A directory name can carry quotes, backslashes and a newline too.
 	nastyRepo := sandbox.SandboxWorkspace + "/re\"po\\\\x]\ntrust_level = \"trusted\""
-	data, err := renderCodexConfig(sandbox.SandboxCodexConfig, nastyRepo, nasty, "")
+	data, err := renderCodexConfig(sandbox.SandboxCodexConfig, nastyRepo, nasty, "", nil, "", "")
 	require.NoError(t, err)
 
 	path := filepath.Join(t.TempDir(), "config.toml")
@@ -113,7 +113,7 @@ print(json.dumps({
 }
 
 func TestRenderCodexConfig_PinsProviderAndHygieneKeys(t *testing.T) {
-	data, err := renderCodexConfig(sandbox.SandboxCodexConfig, "/sandbox/workspace/repo", "body", "")
+	data, err := renderCodexConfig(sandbox.SandboxCodexConfig, "/sandbox/workspace/repo", "body", "", nil, "", "")
 	require.NoError(t, err)
 	rendered := string(data)
 
@@ -130,8 +130,8 @@ func TestRenderCodexConfig_PinsProviderAndHygieneKeys(t *testing.T) {
 		"[skills.bundled]",
 		// The curated plugin marketplace is fetched from GitHub at startup.
 		"[features]\nplugins = false",
-		// codex turns its multi-agent tools on by default; no sub-agent
-		// roster is wired on codex.
+		// codex turns its multi-agent tools on by default; an agent without
+		// a roster keeps them off.
 		"[agents]\nenabled = false",
 		// codex checks this feature before agents.enabled; when it is on the
 		// V2 collaboration tools come back.
@@ -168,7 +168,7 @@ func TestRenderCodexConfig_PinsProviderAndHygieneKeys(t *testing.T) {
 // codex reads; the gateway provider is the default.
 func TestRenderCodexConfig_GatewayProvider(t *testing.T) {
 	python := pythonWithTomllib(t)
-	data, err := renderCodexConfig(sandbox.SandboxCodexConfig, "/sandbox/workspace/repo", "body", testCodexGatewayBaseURL)
+	data, err := renderCodexConfig(sandbox.SandboxCodexConfig, "/sandbox/workspace/repo", "body", testCodexGatewayBaseURL, nil, "", "")
 	require.NoError(t, err)
 	rendered := string(data)
 	assert.NotContains(t, rendered, "env_key", "the gateway credential comes from the auth script, never the environment")
@@ -214,12 +214,12 @@ print(json.dumps({"default": cfg["model_provider"], "providers": cfg["model_prov
 // refuses the openai-only config in its place and vice versa: rendering a
 // second provider does not loosen it.
 func TestCodexConfigGuard_GatewayConfig(t *testing.T) {
-	plain, err := renderCodexConfig(sandbox.SandboxCodexConfig, "/sandbox/workspace/repo", "body", "")
+	plain, err := renderCodexConfig(sandbox.SandboxCodexConfig, "/sandbox/workspace/repo", "body", "", nil, "", "")
 	require.NoError(t, err)
-	withGateway, err := renderCodexConfig(sandbox.SandboxCodexConfig, "/sandbox/workspace/repo", "body", testCodexGatewayBaseURL)
+	withGateway, err := renderCodexConfig(sandbox.SandboxCodexConfig, "/sandbox/workspace/repo", "body", testCodexGatewayBaseURL, nil, "", "")
 	require.NoError(t, err)
 	assert.NotEqual(t, codexAssetSHA256(plain), codexAssetSHA256(withGateway))
-	other, err := renderCodexConfig(sandbox.SandboxCodexConfig, "/sandbox/workspace/repo", "body", "https://evil.example.com/v1")
+	other, err := renderCodexConfig(sandbox.SandboxCodexConfig, "/sandbox/workspace/repo", "body", "https://evil.example.com/v1", nil, "", "")
 	require.NoError(t, err)
 	assert.NotEqual(t, codexAssetSHA256(withGateway), codexAssetSHA256(other), "the gateway base_url is covered by the digest")
 }
@@ -435,7 +435,7 @@ func writeFileForTest(path string, data []byte) error {
 }
 
 func TestRenderCodexConfig_RequiresRepoDir(t *testing.T) {
-	_, err := renderCodexConfig(sandbox.SandboxCodexConfig, "", "body", "")
+	_, err := renderCodexConfig(sandbox.SandboxCodexConfig, "", "body", "", nil, "", "")
 	require.Error(t, err, "an empty path would leave the project's trust unset")
 }
 
@@ -477,4 +477,126 @@ func TestCodexHooksJSON_SpawnGuardIsFirst(t *testing.T) {
 	for _, name := range []string{"wait_agent", "exec", "wait", "spawn_agent_status", "Bash", "apply_patch"} {
 		assert.False(t, pattern.MatchString(name), "the guard must not run for %s", name)
 	}
+}
+
+// codexTestDelegatingRoles is a sorted roster of three roles for the
+// config.toml tests; explore carries codexExploreRoleDescription.
+func codexTestDelegatingRoles() []codexRole {
+	return []codexRole{
+		{Name: "correctness", Description: "Evaluates logic correctness, edge cases, nil handling, API contracts, test adequacy/integrity.", Instructions: "i"},
+		{Name: "default", Description: "A generic child for a task that names no persona.", Instructions: "i"},
+		{Name: "explore", Description: codexExploreRoleDescription, Instructions: "i"},
+	}
+}
+
+// The run's effort is bound for every child right after the run-level child
+// model; with no effort the key is absent, so the bytes are unchanged.
+func TestCodexAgentsBlock_ChildEffort(t *testing.T) {
+	t.Parallel()
+	with := codexAgentsBlock(sandbox.SandboxCodexConfig, codexTestDelegatingRoles(), "gpt-5.6-luna", "high")
+	assert.Contains(t, with, "default_subagent_model = \"gpt-5.6-luna\"\ndefault_subagent_reasoning_effort = \"high\"\n")
+	without := codexAgentsBlock(sandbox.SandboxCodexConfig, codexTestDelegatingRoles(), "gpt-5.6-luna", "")
+	assert.NotContains(t, without, "reasoning_effort")
+	assert.Equal(t, strings.Replace(with, "default_subagent_reasoning_effort = \"high\"\n", "", 1), without)
+	assert.Equal(t, "[agents]\nenabled = false", codexAgentsBlock(sandbox.SandboxCodexConfig, nil, "", "high"),
+		"an agent that does not delegate gets no child settings")
+}
+
+// TestRenderCodexConfig_DelegatingAgentsBlock pins the [agents] block of a
+// delegating agent: enabled = true, the two limits ADR 0126 fixes, the
+// run-level child model, one [agents."<name>"] table per role with its
+// description and the absolute path of its role file, in the roster's order;
+// the untrusted project pin stays.
+func TestRenderCodexConfig_DelegatingAgentsBlock(t *testing.T) {
+	data, err := renderCodexConfig(sandbox.SandboxCodexConfig, "/sandbox/workspace/repo", "body", "",
+		codexTestDelegatingRoles(), "gpt-5.6-luna", "")
+	require.NoError(t, err)
+	rendered := string(data)
+
+	want := "[features]\nplugins = false\nmulti_agent_v2 = false\n\n" +
+		"[agents]\n" +
+		"enabled = true\n" +
+		"max_concurrent_threads_per_session = 4\n" +
+		"max_depth = 1\n" +
+		"default_subagent_model = \"gpt-5.6-luna\"\n" +
+		"\n" +
+		"[agents.\"correctness\"]\n" +
+		"description = \"Evaluates logic correctness, edge cases, nil handling, API contracts, test adequacy/integrity.\"\n" +
+		"config_file = \"/sandbox/codex-config/agents/correctness.toml\"\n" +
+		"\n" +
+		"[agents.\"default\"]\n" +
+		"description = \"A generic child for a task that names no persona.\"\n" +
+		"config_file = \"/sandbox/codex-config/agents/default.toml\"\n" +
+		"\n" +
+		"[agents.\"explore\"]\n" +
+		"description = \"Investigation of the repository by reading only; reports findings. Instruction-only: nothing enforces read-only on a child.\"\n" +
+		"config_file = \"/sandbox/codex-config/agents/explore.toml\"\n" +
+		"\n" +
+		"[projects.\"/sandbox/workspace/repo\"]\ntrust_level = \"untrusted\"\n"
+	assert.Contains(t, rendered, want)
+	assert.NotContains(t, rendered, "enabled = false\n\n[projects", "the one [agents] table is the delegating one")
+	assert.Equal(t, 1, strings.Count(rendered, "\n[agents]\n"))
+	// The shapes codexConfigGuard pins are unchanged by the block.
+	assert.Equal(t, 1, strings.Count(rendered, "\nbase_url "))
+	assert.Equal(t, 1, strings.Count(rendered, "\ncommand "))
+
+	// No roles: the same bytes as before, whatever the default model argument.
+	none, err := renderCodexConfig(sandbox.SandboxCodexConfig, "/sandbox/workspace/repo", "body", "", nil, "", "")
+	require.NoError(t, err)
+	empty, err := renderCodexConfig(sandbox.SandboxCodexConfig, "/sandbox/workspace/repo", "body", "", []codexRole{}, "gpt-5.6-luna", "")
+	require.NoError(t, err)
+	assert.Equal(t, none, empty)
+	assert.Contains(t, string(none), "[features]\nplugins = false\nmulti_agent_v2 = false\n\n[agents]\nenabled = false\n\n[projects.")
+}
+
+// TestRenderCodexConfig_DelegatingParsesAsTOML round-trips the block through
+// tomllib, with a description that carries quotes and a backslash: the
+// escaper, not the block, keeps a persona description from breaking out.
+func TestRenderCodexConfig_DelegatingParsesAsTOML(t *testing.T) {
+	python := pythonWithTomllib(t)
+	roles := codexTestDelegatingRoles()
+	roles[0].Description = `Checks "edge" cases \ and [agents."evil"] config_file = "x"`
+	data, err := renderCodexConfig(sandbox.SandboxCodexConfig, "/sandbox/workspace/repo", "body", "", roles, "gpt-6-astra", "")
+	require.NoError(t, err)
+
+	path := filepath.Join(t.TempDir(), "config.toml")
+	require.NoError(t, writeFileForTest(path, data))
+	script := `
+import json, sys, tomllib
+with open(sys.argv[1], "rb") as fh:
+    cfg = tomllib.load(fh)
+a = cfg["agents"]
+print(json.dumps({
+    "enabled": a["enabled"],
+    "open": a["max_concurrent_threads_per_session"],
+    "depth": a["max_depth"],
+    "default": a["default_subagent_model"],
+    "roles": sorted(k for k in a if isinstance(a[k], dict)),
+    "correctness": a["correctness"],
+    "projects": cfg["projects"],
+}))
+`
+	out, err := exec.Command(python, "-c", script, path).CombinedOutput()
+	require.NoError(t, err, "rendered config.toml did not parse: %s", out)
+
+	var got struct {
+		Enabled     bool                         `json:"enabled"`
+		Open        int                          `json:"open"`
+		Depth       int                          `json:"depth"`
+		Default     string                       `json:"default"`
+		Roles       []string                     `json:"roles"`
+		Correctness map[string]string            `json:"correctness"`
+		Projects    map[string]map[string]string `json:"projects"`
+	}
+	require.NoError(t, json.Unmarshal(out, &got))
+	assert.True(t, got.Enabled)
+	assert.Equal(t, 4, got.Open)
+	assert.Equal(t, 1, got.Depth)
+	assert.Equal(t, "gpt-6-astra", got.Default)
+	assert.Equal(t, []string{"correctness", "default", "explore"}, got.Roles, "exactly the roster, no table smuggled in by a description")
+	assert.Equal(t, map[string]string{
+		"description": roles[0].Description,
+		"config_file": "/sandbox/codex-config/agents/correctness.toml",
+	}, got.Correctness)
+	assert.Equal(t, map[string]map[string]string{"/sandbox/workspace/repo": {"trust_level": "untrusted"}}, got.Projects)
 }

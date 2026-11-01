@@ -71,7 +71,7 @@ the first line after the command (same rules as
 |-------|--------|
 | `actor.id` | Jira `accountId` (preferred) or `name` when accountId unavailable |
 | `actor.kind` | For the target adapter contract, `bot` only when Jira's authoritative account metadata identifies an app or the adapter configuration identifies the authenticated poller as a verified service identity; otherwise `human`. A display-name automation pattern alone is insufficient. The current compatibility poller may retain its legacy heuristics until it adopts the ADR 0107 target implementation. |
-| `actor.role` | `none` for target bots; for humans, derived from the actor's Jira project role: `admin` for Administrators, `write` for Developers, `read` for other named project roles, `external` when the actor does not hold any project role. Cross-system identity resolution (Jira user → GitHub user → repo permission) is not performed; the Jira project is the authorization boundary for Jira-sourced events. |
+| `actor.role` | `none` for target bots; for humans, from the source the `jira` authorization provider selects ([Authorization v1](../../authorization/v1/README.md#forge-native-permission-mapping), [ADR 0153](../../../ADRs/0153-authorize-jira-poll-actors-without-project-administration.md)): from its lists, `write` or `triage` for listed actors and `none` otherwise; from the Jira project role, `admin` for Administrators, `write` for Developers, `read` for other named project roles, `external` when the actor does not hold any project role; `none` when the role is not resolved (label additions under a `jira` entry's `labels: jira_editors`, and non-command events when a `jira` entry sets no lists and not `labels: project_roles`). With no `jira` entry, every event takes its role from the Jira project role. Cross-system identity resolution (Jira user → GitHub user → repo permission) is not performed; the Jira project is the authorization boundary for Jira-sourced events. |
 | `actor.bot_role` | Provider lookup of the verified bot identity; the canonical Fullsend role when recognized, otherwise `null` |
 | `actor.role_verified` | `true` when bot-role or Jira project-role lookup completed, including a no-match result; `false` when resolution failed |
 | `actor.is_entity_author` | `true` when actor is the issue reporter |
@@ -107,6 +107,27 @@ Harnesses and pre-scripts that require forge-agnostic work item URLs SHOULD use
 `GITHUB_ISSUE_URL`. The dispatch workflow sets `FULLSEND_WORK_ITEM_URL` and
 `FULLSEND_WORK_ITEM_KEY` from the normalized entity for Jira events. For
 forge-native events, the generic key and `ISSUE_NUMBER` carry the same value.
+
+`fullsend run` reads the normalized event embedded in the dispatch payload.
+On GitLab, the agent job extracts it from the signed `jira_*` dispatch payload
+and passes it with `--event-file`.
+For a Jira event it sets `FULLSEND_WORK_ITEM_SOURCE`, `FULLSEND_WORK_ITEM_KEY`,
+and `FULLSEND_WORK_ITEM_URL` from that event, replacing any inherited values.
+It also clears `ISSUE_NUMBER` before pre-scripts, post-scripts, and harness
+env expansion run. Neither the numeric Jira entity ID nor the numeric suffix
+of the key reaches scripts as a forge issue number. The run fails before any
+script runs in three cases:
+
+- `entity.key` is missing or is not a Jira key such as `PROJ-123`. The key
+  must match `^[A-Z][A-Z0-9_]+-[1-9][0-9]*$`, so single-character project keys
+  such as `P-1` are rejected.
+- `entity.url` is missing or is not an `https` URL.
+- The payload declares `source.system: jira`, but its normalized event fails
+  validation.
+
+For forge-native events, `fullsend run` only fills in
+`FULLSEND_WORK_ITEM_SOURCE` when the caller left it unset. It uses
+`source.system`, or the detected forge when no normalized event is present.
 
 ## Example
 

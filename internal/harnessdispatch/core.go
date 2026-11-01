@@ -44,12 +44,16 @@ func Dispatch(ctx context.Context, opts Options) ([]ExecutionRef, error) {
 	if dirCfg.IsKillSwitchActive() {
 		return nil, nil
 	}
+	if err := config.ValidateRuntimeAuthorization(dirCfg); err != nil {
+		return nil, fmt.Errorf("invalid authorization config: %w", err)
+	}
 
 	// The OWNERS-upgraded role is used only for the event-level and
 	// per-harness auth checks; downstream CEL evaluation sees the original
 	// collaborator-API role.
 	authCheck := AuthCheckEvent(opts.ConfigDir, dirCfg, opts.Event)
-	if !IsEventAuthorized(&authCheck) {
+	authOpts := AuthOptionsFor(dirCfg)
+	if !IsEventAuthorizedWith(&authCheck, authOpts) {
 		return nil, nil
 	}
 
@@ -58,7 +62,7 @@ func Dispatch(ctx context.Context, opts Options) ([]ExecutionRef, error) {
 		return nil, err
 	}
 
-	candidates = FilterAuthorizedHarnesses(candidates, &authCheck)
+	candidates = FilterAuthorizedHarnessesWith(candidates, &authCheck, authOpts)
 
 	matched, err := MatchHarnesses(candidates, opts.Event)
 	if err != nil {

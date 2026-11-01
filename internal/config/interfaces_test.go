@@ -381,6 +381,40 @@ func TestPerRepoConfig_MintURL_Fallback(t *testing.T) {
 	})
 }
 
+// TestPerRepoConfig_MintURLFromFile_Fallback checks that
+// ConfigMintURLFromFile stops at "" instead of reaching the compiled
+// default — it never asks the perRepoDefaults layer for a value.
+func TestPerRepoConfig_MintURLFromFile_Fallback(t *testing.T) {
+	t.Run("empty falls through to parent", func(t *testing.T) {
+		parent := &perRepoConfig{
+			MintURL: "https://mint.example.com",
+			parent:  &perRepoDefaults{},
+		}
+		overlay := &perRepoConfig{parent: parent}
+		assert.Equal(t, "https://mint.example.com", overlay.ConfigMintURLFromFile())
+	})
+
+	t.Run("local overrides parent", func(t *testing.T) {
+		parent := &perRepoConfig{
+			MintURL: "https://base-mint.example.com",
+			parent:  &perRepoDefaults{},
+		}
+		overlay := &perRepoConfig{
+			MintURL: "https://overlay-mint.example.com",
+			parent:  parent,
+		}
+		assert.Equal(t, "https://overlay-mint.example.com", overlay.ConfigMintURLFromFile())
+	})
+
+	t.Run("empty when neither file sets it, unlike ConfigMintURL", func(t *testing.T) {
+		cfg := &perRepoConfig{parent: &perRepoDefaults{}}
+		assert.Empty(t, cfg.ConfigMintURLFromFile())
+		// Sanity check that this genuinely differs from ConfigMintURL,
+		// not just a copy-paste of the same assertion.
+		assert.Equal(t, DefaultPerRepoMintURL, cfg.ConfigMintURL())
+	})
+}
+
 // --- Inference provider fallback ---
 
 func TestPerRepoConfig_InferenceProvider_Fallback(t *testing.T) {

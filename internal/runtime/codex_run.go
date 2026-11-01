@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -513,8 +514,8 @@ func buildCodexRunCommand(params RunParams, model codexModel, effort string, hoo
 }
 
 // Run executes one agent iteration and normalizes codex's `exec --json` stream
-// into AgentEvents. codex exits 0 on a failed turn and on an interrupted one,
-// so the stream's verdict overrides the exit code, as it does for pi.
+// into AgentEvents. The stream's verdict overrides a zero exit code, as it
+// does for pi, so a failed turn fails the run whatever codex exits.
 func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printer, start time.Time, metrics *RunMetrics) (int, error) {
 	m, err := readCodexManifest(params.SandboxName, r.codexManifestPath())
 	if err != nil {
@@ -680,11 +681,23 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 			r.ConfigDir())
 	}
 
+	// The children on disk are read whatever the exit code, for a delegating
+	// agent and whenever the stream shows a spawn: a child that started a turn
+	// leaves a rollout even when the stream lost its spawn item, which is how
+	// the admission check below and the usage fold see it.
+	checkSpawns := digests.delegating() || len(childIDs.Senders) > 0
+	diskChildren, diskIDs := 0, []string(nil)
+	var rolloutsErr error
+	if checkSpawns {
+		diskChildren, diskIDs, rolloutsErr = r.readCodexChildRollouts(params.SandboxName, primaryThreadID, childIDs.Receivers)
+	}
+	foldIDs := slices.Compact(slices.Sorted(slices.Values(slices.Concat(childIDs.IDs, diskIDs))))
+
 	// The fold runs whatever the exit code: codex writes a child's usage as
 	// each response completes, and the parent's entry keeps per_model_usage
 	// summing to the totals across a retry. A read failure is a warning.
-	if digests.delegating() || len(childIDs.IDs) > 0 {
-		n, ferr := r.foldCodexChildUsage(params.SandboxName, childIDs.IDs, metrics)
+	if digests.delegating() || len(foldIDs) > 0 {
+		n, ferr := r.foldCodexChildUsage(params.SandboxName, foldIDs, metrics)
 		if ferr != nil {
 			printer.StepWarn("Sub-agent usage not fully counted: " + redactSummary(sanitizeOutput(ferr.Error())))
 		}
@@ -693,7 +706,7 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 		}
 		// At the budget or on a cancel OpenShell kills nothing, so codex's
 		// children can record more after the read.
-		if len(childIDs.IDs) > 0 && (ctx.Err() != nil || exitCode == 124 || exitCode == -1) {
+		if len(foldIDs) > 0 && (ctx.Err() != nil || exitCode == 124 || exitCode == -1) {
 			printer.StepWarn("Sub-agent usage may be undercounted: codex was stopped, and its children can record more after the read")
 		}
 	}
@@ -701,9 +714,11 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 	// Checked whatever the exit code: with a validation loop an iteration's
 	// non-zero exit does not fail the run; an error from Run does, and a
 	// failed read or an unread spawn item is one too, unlike the usage read
-	// above. A dropped stream notification can hide a completed spawn, but
-	// nothing can spawn until the multi-agent tools are switched on, so it
-	// is a warning until then.
+	// above. Each iteration adds its spawns seen on either side, each counted
+	// once per thread: the stream's spawn items (completed or failed: each
+	// passed the guard) and the children on disk. A dropped stream
+	// notification is a warning, as settled on #8712: most drops hide no
+	// spawn.
 	if stderr.Dropped > 0 {
 		msg := fmt.Sprintf("codex dropped %d stream notification(s) under backpressure", stderr.Dropped)
 		if stderr.BackfillFailed > 0 {
@@ -714,8 +729,13 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 	if childIDs.UnreadSpawn {
 		return exitCode, fmt.Errorf("%s: a spawn_agent item longer than %d bytes could not be read", codexSpawnWithoutAdmission, streamBufSize)
 	}
-	if len(childIDs.Senders) > 0 {
-		digests.CompletedSpawns += len(childIDs.Senders)
+	if rolloutsErr != nil {
+		return exitCode, fmt.Errorf("%s: counting the child rollouts: %w", codexSpawnWithoutAdmission, rolloutsErr)
+	}
+	spawned := slices.Compact(slices.Sorted(slices.Values(slices.Concat(childIDs.Receivers, diskIDs))))
+	union := len(spawned) + childIDs.NoReceiver + (diskChildren - len(diskIDs))
+	if children := max(len(childIDs.Senders), diskChildren, union); checkSpawns && children > 0 {
+		digests.CompletedSpawns += children
 		recordRunnerHeldDigests(params.SandboxName, digests)
 		if err := checkCodexSpawnAdmissions(params.SandboxName, primaryThreadID, childIDs.Senders, digests.CompletedSpawns); err != nil {
 			return exitCode, err

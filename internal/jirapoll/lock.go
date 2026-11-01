@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"math/rand/v2"
+	"net/url"
 	"strings"
 	"time"
 
@@ -33,6 +34,48 @@ func lastCheckPropertyKey(owner, repo string) string {
 	return fmt.Sprintf("fullsend.poll.%s.%s.lastCheck", escapeKeySegment(owner), escapeKeySegment(repo))
 }
 
+// gitlabPropertyKeyPrefix returns the entity property key prefix for a
+// GitLab target. It adds a "gitlab" segment and the instance (host plus any
+// path prefix of a self-managed URL) ahead of the project path, so a GitLab
+// project never shares lock or checkpoint state with a GitHub repository,
+// or with a project of the same path on another GitLab instance. Every
+// segment has its dots escaped, so these keys always have four segments
+// between "fullsend.poll." and the suffix, while GitHub keys have two.
+func gitlabPropertyKeyPrefix(instance, owner, repo string) string {
+	return fmt.Sprintf("fullsend.poll.gitlab.%s.%s.%s", escapeKeySegment(instance), escapeKeySegment(owner), escapeKeySegment(repo))
+}
+
+// gitlabInstanceSegment returns the host and path prefix of a GitLab
+// instance URL, lowercasing the host and dropping the scheme and any
+// trailing slash, for use in the coordination namespace.
+func gitlabInstanceSegment(gitlabURL string) string {
+	u, err := url.Parse(gitlabURL)
+	if err != nil || u.Host == "" {
+		return strings.TrimRight(gitlabURL, "/")
+	}
+	return strings.ToLower(u.Host) + strings.TrimRight(u.Path, "/")
+}
+
+// lockKey returns the lock entity property key for the poller's target.
+// GitHub targets keep the original fullsend.poll.{owner}.{repo} namespace.
+func (p *Poller) lockKey() string {
+	owner, repo := splitOwnerRepo(p.opts.TargetRepo)
+	if p.opts.TargetForge == TargetForgeGitLab {
+		return gitlabPropertyKeyPrefix(gitlabInstanceSegment(p.opts.GitLabURL), owner, repo) + ".lock"
+	}
+	return lockPropertyKey(owner, repo)
+}
+
+// lastCheckKey returns the lastCheck entity property key for the poller's
+// target. GitHub targets keep the original namespace.
+func (p *Poller) lastCheckKey() string {
+	owner, repo := splitOwnerRepo(p.opts.TargetRepo)
+	if p.opts.TargetForge == TargetForgeGitLab {
+		return gitlabPropertyKeyPrefix(gitlabInstanceSegment(p.opts.GitLabURL), owner, repo) + ".lastCheck"
+	}
+	return lastCheckPropertyKey(owner, repo)
+}
+
 // splitOwnerRepo splits "owner/repo" into owner and repo.
 func splitOwnerRepo(slug string) (string, string) {
 	idx := strings.LastIndex(slug, "/")
@@ -45,8 +88,7 @@ func splitOwnerRepo(slug string) (string, string) {
 // attemptLock tries to acquire a lock on the issue using write-then-verify.
 // Returns true if the lock was acquired successfully.
 func (p *Poller) attemptLock(ctx context.Context, issueKey, lockID string) (bool, error) {
-	owner, repo := splitOwnerRepo(p.opts.TargetRepo)
-	propKey := lockPropertyKey(owner, repo)
+	propKey := p.lockKey()
 
 	// Re-check for a live lock immediately before writing. filterLocked's
 	// read of this issue can be tens of seconds stale by the time we reach
@@ -114,8 +156,7 @@ func (p *Poller) attemptLock(ctx context.Context, issueKey, lockID string) (bool
 // the lock is only deleted if its ID still matches, preventing a slow poller
 // from deleting a lock that a faster concurrent poller has already replaced.
 func (p *Poller) releaseLock(ctx context.Context, issueKey, expectedID string) error {
-	owner, repo := splitOwnerRepo(p.opts.TargetRepo)
-	propKey := lockPropertyKey(owner, repo)
+	propKey := p.lockKey()
 
 	if expectedID != "" {
 		raw, err := p.client.GetEntityProperty(ctx, issueKey, propKey)
@@ -143,8 +184,7 @@ func (p *Poller) releaseLock(ctx context.Context, issueKey, expectedID string) e
 
 // readLastCheck reads the lastCheck timestamp for an issue.
 func (p *Poller) readLastCheck(ctx context.Context, issueKey string) (time.Time, error) {
-	owner, repo := splitOwnerRepo(p.opts.TargetRepo)
-	propKey := lastCheckPropertyKey(owner, repo)
+	propKey := p.lastCheckKey()
 
 	raw, err := p.client.GetEntityProperty(ctx, issueKey, propKey)
 	if err != nil {
@@ -197,9 +237,7 @@ func (p *Poller) readLastCheck(ctx context.Context, issueKey string) (time.Time,
 
 // advanceLastCheck updates the lastCheck timestamp for an issue.
 func (p *Poller) advanceLastCheck(ctx context.Context, issueKey string, t time.Time) error {
-	owner, repo := splitOwnerRepo(p.opts.TargetRepo)
-	propKey := lastCheckPropertyKey(owner, repo)
-	return p.client.SetEntityProperty(ctx, issueKey, propKey, t.UTC().Format(time.RFC3339Nano))
+	return p.client.SetEntityProperty(ctx, issueKey, p.lastCheckKey(), t.UTC().Format(time.RFC3339Nano))
 }
 
 // isLockStale checks if a lock has exceeded the stale threshold. The lock
@@ -225,8 +263,7 @@ func isLockStale(lock LockValue, threshold time.Duration) bool {
 
 // readLock reads the lock value for an issue. Returns nil if no lock exists.
 func (p *Poller) readLock(ctx context.Context, issueKey string) (*LockValue, error) {
-	owner, repo := splitOwnerRepo(p.opts.TargetRepo)
-	propKey := lockPropertyKey(owner, repo)
+	propKey := p.lockKey()
 
 	raw, err := p.client.GetEntityProperty(ctx, issueKey, propKey)
 	if err != nil {

@@ -5733,6 +5733,17 @@ func TestGetCollaboratorPermission(t *testing.T) {
 		require.Error(t, err)
 		assert.True(t, forge.IsNotFound(err))
 	})
+
+	t.Run("missing role name is not found", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(`{"permission":"write"}`))
+		}))
+		defer srv.Close()
+
+		_, err := newTestClient(t, srv).GetCollaboratorPermission(context.Background(), "o", "r", "alice")
+		require.Error(t, err)
+		assert.True(t, forge.IsNotFound(err))
+	})
 }
 
 func TestAddCollaborator(t *testing.T) {

@@ -18,6 +18,7 @@ type harnessBootstrap struct {
 	modelAliases   map[string]string
 	agentSubagents map[string]*string
 	parentModel    string
+	effort         string
 	repoDir        string
 	// openAIProviderAttached is whether the run-scoped OpenAI provider was
 	// created for this run; see runtime.BootstrapInput.OpenAIProviderAttached.
@@ -37,6 +38,7 @@ func (b *harnessBootstrap) Plugins() []runtime.PluginInput     { return b.plugin
 func (b *harnessBootstrap) ModelAliases() map[string]string    { return b.modelAliases }
 func (b *harnessBootstrap) AgentSubagents() map[string]*string { return b.agentSubagents }
 func (b *harnessBootstrap) ParentModel() string                { return b.parentModel }
+func (b *harnessBootstrap) Effort() string                     { return b.effort }
 func (b *harnessBootstrap) RepoDir() string                    { return b.repoDir }
 func (b *harnessBootstrap) OpenAIProviderAttached() bool       { return b.openAIProviderAttached }
 
@@ -79,7 +81,9 @@ func pluginInputs(specs []harness.PluginSpec) ([]runtime.PluginInput, error) {
 	return out, nil
 }
 
-func newHarnessBootstrap(h *harness.Harness, sandboxName, agentName, forgeEgressEntry string, modelAliases map[string]string, agentSubagents map[string]*string, parentModel, repoDir string, openAIProviderAttached bool) (runtime.BootstrapInput, error) {
+// skillDirs are the directories the runtime uploads: the staged trees from
+// stageRunSkills, not harness.SkillSources(h.Skills) (#6158).
+func newHarnessBootstrap(h *harness.Harness, skillDirs []string, sandboxName, agentName, forgeEgressEntry string, modelAliases map[string]string, agentSubagents map[string]*string, parentModel, repoDir string, openAIProviderAttached bool) (runtime.BootstrapInput, error) {
 	plugins, err := pluginInputs(h.Plugins)
 	if err != nil {
 		return nil, err
@@ -88,11 +92,12 @@ func newHarnessBootstrap(h *harness.Harness, sandboxName, agentName, forgeEgress
 		sandboxName:            sandboxName,
 		agentPath:              h.Agent,
 		agentName:              agentName,
-		skillDirs:              harness.SkillSources(h.Skills),
+		skillDirs:              skillDirs,
 		plugins:                plugins,
 		modelAliases:           modelAliases,
 		agentSubagents:         agentSubagents,
 		parentModel:            parentModel,
+		effort:                 h.Effort,
 		repoDir:                repoDir,
 		openAIProviderAttached: openAIProviderAttached,
 	}

@@ -6,6 +6,7 @@ package jirapoll
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math/rand/v2"
@@ -62,6 +63,8 @@ type Poller struct {
 	roleMembership      map[string]string                    // accountID → Jira project role name
 	roleGroups          map[string][]string                  // Jira role name → group IDs for per-actor resolution
 	roleGroupsChecked   map[string]bool                      // accountID → group membership already fetched this cycle
+	rolesLoaded         bool                                 // project role roster loaded (or skipped for a missing project key) this cycle
+	userGroups          map[string][]jira.UserGroupInfo      // accountID → GetUserGroups result, cached per cycle
 	statusCategoryCache map[string]string                    // status name → statusCategory key, reset each cycle
 	selfAccountID       string                               // authenticated Jira account from GetMyself; used to classify self-authored events as bot
 }
@@ -107,6 +110,8 @@ func (p *Poller) Run(ctx context.Context) error {
 	p.roleMembership = make(map[string]string)
 	p.roleGroups = make(map[string][]string)
 	p.roleGroupsChecked = make(map[string]bool)
+	p.rolesLoaded = false
+	p.userGroups = make(map[string][]jira.UserGroupInfo)
 
 	// Auth preflight: verify credentials before any discovery, lock, or
 	// checkpoint operations. Without this, bad credentials cause Jira to
@@ -141,32 +146,14 @@ func (p *Poller) Run(ctx context.Context) error {
 	// Step 3: Randomly select min(N, len(unlocked)) candidates.
 	selected := selectRandom(unlocked, p.opts.N)
 
-	// Load project role structure for actor role resolution. Uses
-	// per-actor resolution instead of full group member enumeration to
-	// avoid the 100-page pagination cap on the group/member endpoint
-	// (see issue #6041). Direct user actors are resolved immediately;
-	// group-based membership is resolved lazily per actor in
-	// processIssue via GetUserGroups.
-	//
-	// Deferred until after selection so a cycle with nothing to process
-	// doesn't spend Jira API calls resolving roles that end up unused.
-	// A load FAILURE fails the whole cycle rather than degrading to an
-	// empty map: with no membership every actor resolves to "external",
-	// write-gated events (slash commands, ready-to-code labels) route to
-	// nothing, and the checkpoint would still advance past them —
-	// permanently dropping real events over a transient roles-API error.
-	// Failing the cycle leaves checkpoints untouched so the next cron
-	// run retries. (A missing project key is different: JQL-only mode
-	// is documented as always-external, so that path proceeds.)
-	if len(selected) > 0 {
-		if p.opts.JiraProject != "" {
-			if err := p.loadRoleStructure(ctx, p.opts.JiraProject); err != nil {
-				return fmt.Errorf("load project roles for %s: %w", p.opts.JiraProject, err)
-			}
-		} else {
-			log.Printf("WARNING: no Jira project key set, cannot resolve actor roles (defaulting to external)")
-		}
-	}
+	// The project role roster (GET /project/{key}/role, which Jira Cloud
+	// serves only with the Administer Projects permission) is not loaded
+	// here. processIssue loads it on first use, only when an event needs
+	// project-role resolution (see roleSourceFor), so a setup whose jira
+	// authorization entry uses the lists, or only label triggers under
+	// the jira_editors rule, never calls it. A load FAILURE fails the whole
+	// cycle (see ensureRoleStructure), leaving checkpoints untouched so
+	// the next cron run retries.
 
 	// Step 4: Process each selected issue. Checkpoint advances are not
 	// committed to Jira here — detectChanges/routing only compute the
@@ -179,15 +166,18 @@ func (p *Poller) Run(ctx context.Context) error {
 	var pending []pendingCheckpoint
 	var processErrors int
 	for _, issue := range selected {
+		start := len(p.dispatches)
 		checkpoint, err := p.processIssue(ctx, issue, cycleID)
 		if err != nil {
+			var rle *roleLoadError
+			if errors.As(err, &rle) {
+				return fmt.Errorf("load project roles for %s: %w", p.opts.JiraProject, rle.err)
+			}
 			log.Printf("WARNING: processing %s: %v", issue.Key, err)
 			processErrors++
 			continue
 		}
-		if !checkpoint.IsZero() {
-			pending = append(pending, pendingCheckpoint{issueKey: issue.Key, t: checkpoint})
-		}
+		pending = append(pending, pendingCheckpoint{issueKey: issue.Key, t: checkpoint, records: p.dispatches[start:len(p.dispatches):len(p.dispatches)]})
 	}
 	if processErrors > 0 && processErrors == len(selected) {
 		return fmt.Errorf("all %d selected issues failed to process", processErrors)
@@ -208,7 +198,30 @@ func (p *Poller) Run(ctx context.Context) error {
 	// follow-up), a failure in that downstream step will silently drop the
 	// event instead of being retried. Local persistence of dispatches.json
 	// itself is durable before Step 6 below commits any checkpoint.
-	if len(p.dispatches) > 0 {
+	//
+	// With an output driver (Options.Dispatcher, used for GitLab targets)
+	// the records are scheduled here instead, and an issue's checkpoint is
+	// committed only when all of its records were dispatched. A failed
+	// dispatch leaves that issue's checkpoint untouched so the next cycle
+	// retries it; records of the same issue that did dispatch may then be
+	// dispatched again.
+	var dispatchErrors int
+	var firstDispatchErr error
+	if p.opts.Dispatcher != nil {
+		for i := range pending {
+			for _, record := range pending[i].records {
+				if err := p.opts.Dispatcher.Dispatch(ctx, record); err != nil {
+					log.Printf("WARNING: dispatching %s for %s: %v (lastCheck not advanced; the issue is retried next cycle)", record.Agent, pending[i].issueKey, err)
+					pending[i].dispatchFailed = true
+					dispatchErrors++
+					if firstDispatchErr == nil {
+						firstDispatchErr = err
+					}
+					break
+				}
+			}
+		}
+	} else if len(p.dispatches) > 0 {
 		log.Printf("WARNING: committing checkpoints for %d dispatch(es) not yet confirmed as scheduled downstream; see KNOWN LIMITATION note in Run", len(p.dispatches))
 	}
 
@@ -218,8 +231,12 @@ func (p *Poller) Run(ctx context.Context) error {
 	// dispatches are already persisted, so an uncommitted checkpoint means
 	// the next cycle re-detects the same activity and emits duplicates,
 	// which should not masquerade as a clean run.
-	var advanceErrors int
+	var advanceErrors, advanceAttempts int
 	for _, pc := range pending {
+		if pc.t.IsZero() || pc.dispatchFailed {
+			continue
+		}
+		advanceAttempts++
 		if err := p.advanceLastCheck(ctx, pc.issueKey, pc.t); err != nil {
 			log.Printf("WARNING: advancing lastCheck for %s: %v", pc.issueKey, err)
 			advanceErrors++
@@ -228,17 +245,24 @@ func (p *Poller) Run(ctx context.Context) error {
 
 	log.Printf("poll complete: %d candidates, %d unlocked, %d selected, %d dispatches",
 		len(candidates), len(unlocked), len(selected), len(p.dispatches))
+	if dispatchErrors > 0 {
+		return fmt.Errorf("failed to dispatch records for %d issue(s); their lastCheck was not advanced, so they are retried next cycle: %w", dispatchErrors, firstDispatchErr)
+	}
 	if advanceErrors > 0 {
-		return fmt.Errorf("failed to commit lastCheck for %d of %d issues; their activity will be re-detected (and re-dispatched) next cycle", advanceErrors, len(pending))
+		return fmt.Errorf("failed to commit lastCheck for %d of %d issues; their activity will be re-detected (and re-dispatched) next cycle", advanceErrors, advanceAttempts)
 	}
 	return nil
 }
 
 // pendingCheckpoint holds a computed lastCheck value for an issue, deferred
-// until the dispatch file write succeeds (see Run).
+// until the dispatch file write succeeds (see Run), together with the
+// dispatch records the issue produced this cycle. A zero t means there is
+// no checkpoint to advance.
 type pendingCheckpoint struct {
-	issueKey string
-	t        time.Time
+	issueKey       string
+	t              time.Time
+	records        []DispatchRecord
+	dispatchFailed bool // set when Options.Dispatcher failed one of records
 }
 
 // maxRolePriority is the highest value jira.RolePriority can return
@@ -255,6 +279,12 @@ func (p *Poller) loadRoleStructure(ctx context.Context, projectKey string) error
 	actors, err := p.client.GetProjectRoleActors(ctx, projectKey)
 	if err != nil {
 		return err
+	}
+	if p.roleMembership == nil {
+		p.roleMembership = make(map[string]string)
+	}
+	if p.roleGroups == nil {
+		p.roleGroups = make(map[string][]string)
 	}
 	for roleName, ra := range actors {
 		for aid := range ra.DirectUsers {
@@ -292,7 +322,7 @@ func (p *Poller) resolveActorRoles(ctx context.Context, actorIDs []string) error
 	var lastErr error
 	var errorCount int
 	for _, aid := range actorIDs {
-		groups, err := p.client.GetUserGroups(ctx, aid)
+		groups, err := p.userGroupsFor(ctx, aid)
 		if err != nil {
 			log.Printf("WARNING: getting groups for actor %s: %v", aid, err)
 			lastErr = err
@@ -467,37 +497,20 @@ func (p *Poller) processIssue(ctx context.Context, issue jira.Issue, cycleID str
 		events = events[:maxEventsPerIssue]
 	}
 
-	// Resolve per-actor roles for actors below the highest possible
-	// priority (Administrators). A direct role assignment doesn't rule
-	// out also belonging to a higher-priority group, so every such actor
-	// is checked, not just ones with no role yet — otherwise a direct
-	// Developers member who is also in an Administrators-mapped group
-	// would never have their groups checked. This handles group-based
-	// role membership by checking each actor's groups against the
-	// role-assigned groups, avoiding the 100-page group/member
-	// pagination cap that truncated large groups. roleGroupsChecked
-	// skips actors already resolved via groups earlier this cycle, since
-	// group membership can't change mid-cycle and re-checking would
-	// repeat the same GetUserGroups call for no new information. Any
-	// lookup failure — partial or total — fails this issue's processing
-	// so it's retried next cycle rather than silently dispatching a
-	// downgraded role for the failed actor.
-	if p.opts.JiraProject != "" && len(p.roleGroups) > 0 {
-		seen := make(map[string]bool)
-		var candidateActors []string
-		for _, event := range events {
-			aid := actorID(event)
-			if aid == "" || seen[aid] || p.roleGroupsChecked[aid] {
-				continue
-			}
-			seen[aid] = true
-			if jira.RolePriority(p.roleMembership[aid]) < maxRolePriority {
-				candidateActors = append(candidateActors, aid)
-			}
+	// Resolve what each event's actor.role needs: the jira lists' group
+	// memberships and, only when an event uses it, the project role
+	// roster plus per-actor group checks against its role-assigned
+	// groups (avoiding the 100-page group/member pagination cap that
+	// truncated large groups). Any group lookup failure fails this
+	// issue's processing so it's retried next cycle rather than silently
+	// dispatching a downgraded role for the failed actor. A roster load
+	// failure is a *roleLoadError, which fails the whole cycle in Run.
+	if err := p.resolveEventRoles(ctx, events); err != nil {
+		var rle *roleLoadError
+		if errors.As(err, &rle) {
+			return time.Time{}, err
 		}
-		if err := p.resolveActorRoles(ctx, candidateActors); err != nil {
-			return time.Time{}, fmt.Errorf("resolve actor roles for %s: %w", issue.Key, err)
-		}
+		return time.Time{}, fmt.Errorf("resolve actor roles for %s: %w", issue.Key, err)
 	}
 
 	// Convert, match harness triggers, dispatch. A transiently failing

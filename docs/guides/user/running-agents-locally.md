@@ -382,14 +382,34 @@ To lock all harnesses in the directory at once:
 fullsend lock --all --fullsend-dir /path/to/.fullsend
 ```
 
+If `lock.yaml` exists but cannot be parsed, or declares a version this
+fullsend does not understand, `fullsend lock` exits with an error and
+leaves the file unchanged. Delete the file to regenerate it, or upgrade
+fullsend if the version is newer. A missing lock file is not an error.
+
 When `--forge` is specified, only that platform variant is locked. When omitted,
 all forge variants defined in the harness are resolved and the union of their
-dependencies is locked.
+dependencies is locked. If your agent's forge-specific files come only from a
+`base:` harness (your harness has no `forge:` block), pass `--forge <platform>`,
+for example `--forge github`, so `fullsend lock` pins them. Without it, the run
+warns that the lock entry does not pin them.
 
 When the lock entry is current (harness SHA256 matches), dependencies are
 resolved from the local cache without network access. If the harness has changed
 or a cached artifact is missing, `fullsend run` falls back to normal network
 resolution and prints a warning suggesting you re-run `fullsend lock`.
+
+A current lock entry also pins the files a URL `base:` (or an agent fetched from
+a URL) names by relative path: agent, policy, skills, skill file overrides,
+scripts, plugins and the rest. They resolve to the locked content even when the
+cache has since fetched newer content for the same URL. `fullsend run` prints
+`Pinning N dependencies from lock file` when it applies these pins. If locked
+content is missing from the cache, an `--offline` run fails and asks you to run
+`fullsend lock --update`, and an online run re-fetches it and fails if it no
+longer matches the lock (`fullsend lock --update` re-pins it). A lock entry for
+an agent fetched from a URL that was written before fullsend recorded these
+files does not pin them; run `fullsend lock --update` to add them. `fullsend run`
+warns when a current lock entry leaves any of these files unpinned.
 
 Use `--update` to force re-resolution even if the lock entry appears current.
 A current entry is also not composed, so `fullsend lock` does not check it for
@@ -406,7 +426,7 @@ target issue/PR. These flags mirror what the CI workflows pass automatically:
 | `--run-url` | URL of the CI/CD run shown in the status comment |
 | `--status-repo` | Repository (`owner/repo`) to post status comments on |
 | `--status-number` | Issue or PR number for status comments |
-| `--mint-url` | Mint service URL for on-demand status comment tokens (default: `$FULLSEND_MINT_URL`) |
+| `--mint-url` | Mint service URL for on-demand status comment tokens (default: layered `mint_url` from `--fullsend-dir`, then `$FULLSEND_MINT_URL`) |
 | `--forge` | Forge platform (`github` or `gitlab`); when omitted, resolved from `forge:` in the `config.yaml` at the root of `--fullsend-dir`, then `GITHUB_ACTIONS`/`GITLAB_CI` |
 
 Example:
@@ -436,8 +456,7 @@ Status comment behavior is configured via `status_notifications` in
 > `.fullsend/config.yaml` instead (see the [config reference](../../reference/config-reference.md)).
 > For the CI setup, see [Using an inference gateway](inference-gateway.md).
 > A local run can use that block too with `auth: api-key`, which reads the gateway key from
-> `FULLSEND_INFERENCE_GATEWAY_API_KEY` and needs no OIDC endpoint
-> ([ADR 0138](../../ADRs/0138-inference-gateway-api-key-credential-mode.md)).
+> `FULLSEND_INFERENCE_GATEWAY_API_KEY` and needs no OIDC endpoint.
 
 On the [pi](../../runtimes/pi.md) runtime, an agent can reach its model through an
 OpenAI/Anthropic-compatible inference gateway (Praxis, LiteLLM, agentgateway, ...). The

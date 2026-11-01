@@ -181,9 +181,11 @@ sequenceDiagram
 The dispatch workflow matches the comment against the `trigger:` of every
 registered harness and starts `fullsend run` for each match. `fullsend run`
 gets a short-lived GitHub token for the harness's `role:` from the mint (a
-local run without `--mint-url` or `FULLSEND_MINT_URL` skips this and uses
-your `GH_TOKEN`), sets up the providers on the OpenShell gateway, and starts
-the sandbox. For GitHub and OpenAI the agent never holds a real credential:
+local run with no mint URL from `--mint-url`, `config.yaml`/`config.base.yaml`,
+or `FULLSEND_MINT_URL` — or where GitHub Actions OIDC isn't available —
+skips this and uses your `GH_TOKEN`), sets up the providers on the OpenShell
+gateway, and starts the sandbox. For GitHub and OpenAI the agent never holds
+a real credential:
 the gateway gives it a placeholder and swaps in the real value on each
 request a declared provider covers. On the Vertex route the GCP credentials
 file is copied into the sandbox, and the model calls use it directly. After
@@ -813,18 +815,14 @@ for the full preference order and sanitization rules.
 
 **Pre-script context is a snapshot.** The pre-script sees the work item as it
 was when the run started. Changes made after that (a new push, an edited title
-or body) arrive only through a later run
-([ADR 0106](../../ADRs/0106-serialize-agent-runs-and-coalesce-subsequent-events.md)).
+or body) arrive only through a later run.
 When a script decides something from the work item, read the head SHA, title
 and body from the forge API (for example
 `gh pr view "$PR_NUMBER" --repo "$REPO_FULL_NAME" --json headRefOid,title,body`),
 not from the event payload, which can be older still. Do not stage that content
-where the agent reads it:
-[ADR 0133](../../ADRs/0133-actor-attributed-data-security-boundary.md) forbids
-exposing unfiltered source content to the model, and forge context for the
-agent will come from the runner's filtered snapshot
-([ADR 0141](../../ADRs/0141-deterministic-filtered-entity-context-staging.md),
-not yet implemented).
+where the agent reads it: unfiltered source content must never reach the
+model. Forge context for the agent will come from a filtered snapshot that the
+runner stages (not yet implemented).
 
 #### Post-script
 
@@ -932,7 +930,8 @@ variables to the runner:
 |----------|-------------|
 | `FULLSEND_WORK_ITEM_URL` | Canonical, tracker-agnostic work item URL (`https://...`) |
 | `FULLSEND_WORK_ITEM_KEY` | Canonical key (`42` on GitHub, `PROJ-123` on Jira) |
-| `ISSUE_NUMBER` | Numeric GitHub issue/PR number; empty for Jira work items (use `FULLSEND_WORK_ITEM_KEY` in tracker-independent scripts) |
+| `FULLSEND_WORK_ITEM_SOURCE` | Tracker the work item came from (`github`, `gitlab`, `jira`); set by `fullsend run` from `_normalized_event.source.system`, or the detected forge when there is no normalized event |
+| `ISSUE_NUMBER` | Numeric GitHub issue/PR number; empty for Jira work items, where `fullsend run` clears it (use `FULLSEND_WORK_ITEM_KEY` in tracker-independent scripts) |
 | `REPO_FULL_NAME` | Repository slug (`owner/repo`) |
 | `GITHUB_ISSUE_URL` | Deprecated, use `FULLSEND_WORK_ITEM_URL` instead. |
 
@@ -978,8 +977,7 @@ the value. `fullsend run` deletes the file as soon as it has read it, so the
 object is never in the environment of `fullsend run` or of any process it
 starts. A host-side script receives only the names its harness references in
 `env.runner`, as ordinary environment variables. The values never enter the
-sandbox
-([ADR 0136](../../ADRs/0136-runner-secrets-through-one-stored-secret.md)).
+sandbox.
 
 The example below is a review harness whose pre-script fetches the Jira issue
 named in the pull request title.
@@ -1032,8 +1030,7 @@ named in the pull request title.
    This example uses the token for a decision: it skips the review when the
    Jira issue named in the pull request title (for example
    `PROJ-123: fix login`) is already done. It hands the agent nothing, because
-   raw forge or Jira content must not reach the model
-   ([ADR 0133](../../ADRs/0133-actor-attributed-data-security-boundary.md)):
+   raw forge or Jira content must not reach the model:
 
    ```bash
    #!/usr/bin/env bash

@@ -210,6 +210,8 @@ func givenRepositoryAgentSettings(w *world.World, doc string) error {
 		Model   string `yaml:"model"`
 		Effort  string `yaml:"effort"`
 		Trigger string `yaml:"trigger"`
+		// Subagents maps persona names to models (agents[].subagents).
+		Subagents map[string]*string `yaml:"subagents"`
 	}
 	if err := yaml.Unmarshal([]byte(doc), &settings); err != nil {
 		return fmt.Errorf("parsing agent settings docstring: %w", err)
@@ -241,7 +243,11 @@ func givenRepositoryAgentSettings(w *world.World, doc string) error {
 		if st.Effort != "" {
 			effort = st.Effort
 		}
-		agents = config.UpsertAgentSettings(agents, name, runtimeName, model, effort, nil)
+		subagents := current.Subagents
+		if st.Subagents != nil {
+			subagents = st.Subagents
+		}
+		agents = config.UpsertAgentSettings(agents, name, runtimeName, model, effort, subagents)
 		if st.Trigger != "" {
 			setAgentTrigger(agents, name, st.Trigger)
 		}

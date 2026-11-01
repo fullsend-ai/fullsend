@@ -71,9 +71,11 @@ type codexRunnerHeldDigestSet struct {
 	// Bootstrap registers roles; the spawn guard admits only these.
 	RoleFiles map[string]string
 
-	// CompletedSpawns is the number of completed spawns the `exec --json`
-	// streams reported, summed over the run's iterations: the findings log
-	// the admission cross-check compares it with persists across them too.
+	// CompletedSpawns is the run's spawn count, summed over its iterations:
+	// per iteration the spawns the `exec --json` stream (completed or failed
+	// items) and the children on disk show, each counted once per thread.
+	// The findings log the admission cross-check compares it with persists
+	// across them too.
 	CompletedSpawns int
 }
 

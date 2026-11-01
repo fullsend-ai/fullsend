@@ -1,8 +1,7 @@
 # Layered Configuration Reference
 
 This guide documents how fullsend resolves per-repo configuration fields
-through the layered config system introduced by
-[ADR 0069](../../ADRs/0069-ready-made-configuration-presets.md) Decision 2.
+through the layered config system.
 
 For initial setup instructions, see
 [Configuring GitHub](../getting-started/configuring-github.md) or
@@ -66,8 +65,7 @@ manifest repository, including before first install. See
 
 Fleet manifests may also declare managed configuration via
 `defaults.config`, `github.config`, `gitlab.config`, and per-repository
-`config` ([ADR 0122](../../ADRs/0122-declarative-repo-configuration.md)),
-resolved in that order above `config_base` and code defaults; a forge
+`config`, resolved in that order above `config_base` and code defaults; a forge
 section's `config` applies only to that forge's repositories.
 Those blocks are not `config_base` presets: `config` is a sparse overlay
 written to `.fullsend/config.yaml`, while `config_base` copies a preset
@@ -231,7 +229,7 @@ unset, the accessor falls through to the base layer, then to code defaults.
     "Previous run" blocks add unwanted noise (e.g., when comments are
     synced to Jira where `<details>` does not render as collapsible).
 
-### `mint_url` and `inference` — scalar override (ADR 0069 Decision 1)
+### `mint_url` and `inference` — scalar override
 
 **`mint_url`** stores the token mint URL. It is a flat string field on
 `perRepoConfig` and follows the same scalar override semantics as `runtime`:
@@ -258,16 +256,16 @@ through scalar override semantics:
   account it impersonates. Unset (`""`) falls through to parent; with no
   value the agent job keeps `aud: "fullsend"` and direct federation.
 - **`inference.openai.{audience,identity_provider_id,service_account_id}`**:
-  the OpenAI Workload Identity identifiers for GPT on pi or codex (ADR 0092), written
+  the OpenAI Workload Identity identifiers for GPT on pi or codex, written
   by `fullsend github setup --openai-*`; they can also come from configuration
   presets or managed config, and `fullsend repos install` validates them for
   `openai-wif` repos. Each resolves independently through
   the layers; a run needs all three from one source. The `FULLSEND_OPENAI_*`
   runner variables, when any is set, replace the resolved block entirely.
 - **`inference.gateway.{url,audience,auth,messages_auth_header}`**: the inference gateway
-  credential route (ADR 0137), written by `fullsend github setup
+  credential route, written by `fullsend github setup
   --inference-gateway-*`. `auth` selects the credential mode, `oidc` (the
-  default) or `api-key` (ADR 0138). In the `oidc` mode the runner owns the
+  default) or `api-key`. In the `oidc` mode the runner owns the
   route when the resolved block is complete and the run has a forge OIDC
   endpoint. In the `api-key` mode it owns the route on every run, local
   runs included (see the
@@ -277,7 +275,7 @@ through scalar override semantics:
   own `auth`. The resolved block needs `url`, plus `audience` in the `oidc`
   mode. `messages_auth_header` selects the header the credential travels in
   on Messages-dialect requests: `authorization` (the default when empty) or
-  `x-api-key` (ADR 0142). The resolved block accepts `x-api-key` only with
+  `x-api-key`. The resolved block accepts `x-api-key` only with
   `auth: api-key`, and the two fields can come from different layers, so the
   check runs on the resolved block: an org preset that sets `x-api-key` while a
   repository resolves to the `oidc` mode is a config error. There is no
@@ -508,7 +506,7 @@ The `status_notifications` field uses the same replace-if-set semantics as
 The `authorization` field is a list of authorization providers that
 supplement the default collaborator-API permission check. Native GitHub
 collaborator-API auth always runs implicitly; the list names additional
-backends. Currently one provider is supported:
+backends. Two providers are supported, `owners_file` and `jira`:
 
 - `owners_file` — the dispatch routing logic checks the repo-root
   `OWNERS` file (and `OWNERS_ALIASES` if present) before falling back
@@ -519,6 +517,15 @@ backends. Currently one provider is supported:
   an `OWNERS_ALIASES` key matches only that alias's members. A login
   equal to any alias key never matches, and nested aliases are not
   expanded.
+- `jira` — decides which Jira users may trigger agents through the
+  `jira-poll` input driver, from `write` and `triage` lists of Jira groups
+  and account IDs and a `labels` rule (`jira_editors`, the default,
+  `allowlist`, or `project_roles`) for label-added events. It is opt-in: with
+  no `jira` entry, every Jira event resolves through the project role
+  roster. It applies only to Jira events. Like `owners_file` it is overlay-only: it is never
+  inherited from `config.base.yaml`, so there is no base fallback. See the
+  [`authorization` field](../../reference/config-reference.md#authorization)
+  for the keys and their effects.
 
 Both the bash routing path (built-in stages) and the Go harness-dispatch
 path (custom agents) consult OWNERS. The Go path keys the threshold on the
@@ -538,9 +545,6 @@ Example:
 authorization:
   - provider: owners_file
 ```
-
-See [ADR 0054](../../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)
-for the full design rationale.
 
 ## Code defaults reference
 

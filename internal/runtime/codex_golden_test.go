@@ -75,13 +75,23 @@ func TestCodexGolden(t *testing.T) {
 	}{
 		{"config.toml", func(t *testing.T) string {
 			data, err := renderCodexConfig(sandbox.SandboxCodexConfig, repo,
-				codexDeveloperInstructions("triage", def), "")
+				codexDeveloperInstructions("triage", def, nil), "", nil, "", "")
 			require.NoError(t, err)
 			return string(data)
 		}},
 		{"config-gateway.toml", func(t *testing.T) string {
 			data, err := renderCodexConfig(sandbox.SandboxCodexConfig, repo,
-				codexDeveloperInstructions("triage", def), testCodexGatewayBaseURL)
+				codexDeveloperInstructions("triage", def, nil), testCodexGatewayBaseURL, nil, "", "")
+			require.NoError(t, err)
+			return string(data)
+		}},
+		{"config-delegating.toml", func(t *testing.T) string {
+			review, err := parsePiAgent([]byte(codexTestDelegatingAgentDef))
+			require.NoError(t, err)
+			roles, defaultModel, _, err := resolveCodexChildModels(codexGoldenRoles(t), nil, nil, "", "", codexTestCatalog())
+			require.NoError(t, err)
+			data, err := renderCodexConfig(sandbox.SandboxCodexConfig, repo,
+				codexDeveloperInstructions("review", review, roles), "", roles, defaultModel, "")
 			require.NoError(t, err)
 			return string(data)
 		}},
@@ -111,6 +121,13 @@ func TestCodexGolden(t *testing.T) {
 		{"roles/correctness.toml", func(t *testing.T) string { return string(codexGoldenRoles(t)[0].toml()) }},
 		{"roles/default.toml", func(t *testing.T) string { return string(codexGoldenRoles(t)[1].toml()) }},
 		{"roles/explore.toml", func(t *testing.T) string { return string(codexGoldenRoles(t)[2].toml()) }},
+		{"roles/correctness-model.toml", func(t *testing.T) string {
+			resolved, _, _, err := resolveCodexChildModels(codexGoldenRoles(t), nil,
+				map[string]*string{"correctness": strp("openai/gpt-5.6-sol")}, "", "", codexTestCatalog())
+			require.NoError(t, err)
+			require.Equal(t, "correctness", resolved[0].Name, "codexRoles sorts by name")
+			return string(resolved[0].toml())
+		}},
 		{"launch-delegating.txt", func(t *testing.T) string {
 			return codexGoldenLaunch(buildCodexRunCommand(hooksOn, codexModel{ID: "gpt-5.6-luna"}, "high", true, codexGoldenDelegatingDigests(t)))
 		}},
@@ -144,7 +161,8 @@ func codexGoldenRoles(t *testing.T) []codexRole {
 	t.Helper()
 	skill := t.TempDir()
 	writePersonaFile(t, skill, "correctness", codexTestPersona)
-	return codexRoles([]string{skill}, "review")
+	roles, _ := codexRoles([]string{skill}, "review")
+	return roles
 }
 
 // codexGoldenDelegatingDigests is testRunnerHeldDigests plus the role

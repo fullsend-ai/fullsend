@@ -356,7 +356,7 @@ for tool in gcloud python3 curl timeout sha256sum; do
     _missing=1
   fi
 done
-for _f in setup.sh create-gcp-vm.sh gitlab-runner-version.sh podman-prune.sh grow-root-fs.sh \
+for _f in setup.sh create-gcp-vm.sh gitlab-runner-version.sh podman-prune.sh os-update.sh grow-root-fs.sh \
   executor/job_id.sh executor/prepare.sh executor/run.sh executor/cleanup.sh executor/gateway.sh; do
   if [ ! -f "${SCRIPT_DIR}/${_f}" ]; then
     echo "ERROR: required file not found: ${SCRIPT_DIR}/${_f}" >&2
@@ -824,6 +824,7 @@ cp "${SCRIPT_DIR}/setup.sh" "${_stage_dir}/"
 cp "${SCRIPT_DIR}/create-gcp-vm.sh" "${_stage_dir}/"
 cp "${SCRIPT_DIR}/gitlab-runner-version.sh" "${_stage_dir}/"
 cp "${SCRIPT_DIR}/podman-prune.sh" "${_stage_dir}/"
+cp "${SCRIPT_DIR}/os-update.sh" "${_stage_dir}/"
 mkdir -p "${_stage_dir}/executor"
 for file in job_id.sh prepare.sh run.sh cleanup.sh gateway.sh; do
   cp "${SCRIPT_DIR}/executor/${file}" "${_stage_dir}/executor/"
@@ -851,7 +852,7 @@ trap cleanup_runner ERR
 trap 'cleanup_runner; exit 130' INT
 trap 'cleanup_runner; exit 143' TERM
 
-with_backoff gce_ssh "$(as_runner "chmod +x ~/gitlab-runner-vm/setup.sh ~/gitlab-runner-vm/create-gcp-vm.sh ~/gitlab-runner-vm/podman-prune.sh ~/gitlab-runner-vm/executor/*.sh ~/gitlab-runner-vm/.github/scripts/*.sh")"
+with_backoff gce_ssh "$(as_runner "chmod +x ~/gitlab-runner-vm/setup.sh ~/gitlab-runner-vm/create-gcp-vm.sh ~/gitlab-runner-vm/podman-prune.sh ~/gitlab-runner-vm/os-update.sh ~/gitlab-runner-vm/executor/*.sh ~/gitlab-runner-vm/.github/scripts/*.sh")"
 
 # Verify every copy against a locally computed manifest before running it.
 # A dropped SSH channel can leave a truncated setup.sh that then executes an
@@ -859,7 +860,7 @@ with_backoff gce_ssh "$(as_runner "chmod +x ~/gitlab-runner-vm/setup.sh ~/gitlab
 echo "==> Verifying copied files"
 verify_copied_files() {
   {
-    (cd "${SCRIPT_DIR}" && sha256sum setup.sh create-gcp-vm.sh gitlab-runner-version.sh podman-prune.sh \
+    (cd "${SCRIPT_DIR}" && sha256sum setup.sh create-gcp-vm.sh gitlab-runner-version.sh podman-prune.sh os-update.sh \
       executor/job_id.sh executor/prepare.sh executor/run.sh executor/cleanup.sh executor/gateway.sh)
     (cd "${REPO_ROOT}/.github/scripts" \
       && sha256sum install-openshell.sh openshell-version.sh \

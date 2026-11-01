@@ -68,10 +68,14 @@ admin > maintain > write > triage > read > none > external
 | | Developer | `write` |
 | | Reporter | `triage` |
 | | Guest | `read` |
-| **Jira** | Administrators | `admin` |
+| **Jira** (project roles) | Administrators | `admin` |
 | | Developers | `write` |
 | | _(other named role)_ | `read` |
 | | _(no project membership)_ | `external` |
+| **Jira** (`jira` provider lists) | listed under `write` | `write` |
+| | listed only under `triage` | `triage` |
+| | _(not listed)_ | `none` |
+| **Jira** _(role not resolved)_ | — | `none` |
 
 On GitHub the mapping source is the collaborator permission API
 (`GET /repos/{owner}/{repo}/collaborators/{username}/permission`), which
@@ -109,13 +113,44 @@ key never matches, and nested aliases are not expanded. The files are read from 
 from the default branch otherwise, so a PR cannot add its author. See the
 [`authorization` field](../../../reference/config-reference.md#authorization).
 
-On Jira the mapping source is the project's role membership roster,
-resolved once per poll cycle for the configured `--jira-project`. An
-actor is matched by Jira account ID. Role names are matched
-case-insensitively against the names above; unrecognized role names fall
-through to `read`. Actors with no membership in the configured project —
-or whose issue belongs to a different project — are mapped to `external`
-(fail-closed). See the
+On Jira the `jira` provider under `authorization` in `.fullsend/config.yaml`
+([ADR 0153](../../../ADRs/0153-authorize-jira-poll-actors-without-project-administration.md))
+is opt-in. It applies only to events with `source.system: jira`. With no
+`jira` entry, every Jira event, label-added included, takes its role from the
+project role roster (see **Without lists** below), and a label-added event
+takes the ordinary per-harness threshold. With a `jira` entry, the mapping
+source for each event is chosen by the provider:
+
+- **Label-added events** follow the provider's `labels` rule. Under
+  `jira_editors`, the default once the entry is present, the
+  role is not resolved. The event is authorized by the
+  [label exception](#label-application) instead. Under `allowlist` the role
+  comes from the provider's lists, and under `project_roles` from the
+  project role roster.
+- **Every other event**, slash commands included, takes its role from the
+  provider's `write` and `triage` lists when the provider sets either list
+  (an empty list counts as set). The lists are then authoritative: the project role roster is not
+  consulted. An actor named under `write` (by account ID, or by membership in
+  a listed Jira group) is `write`. An actor named only under `triage` is
+  `triage`. Anyone else is `none`. Group membership comes from
+  `GET /rest/api/3/user/groups` and is read once per actor per poll cycle.
+- **Without lists**, and every event when no `jira` entry exists, the role
+  comes from the project's role roster, resolved once per poll cycle for the
+  configured `--jira-project` and only when such an event is present. An
+  actor is matched by Jira account ID. Role names are matched
+  case-insensitively against the names above, and unrecognized role names
+  fall through to `read`. Actors with no membership in the configured
+  project, or whose issue belongs to a different project, are mapped to
+  `external` (fail-closed). When a `jira` entry exists but sets no lists, only
+  a slash-command comment uses the roster and any other event's role is not
+  resolved, except that an entry with `labels: project_roles` and no lists
+  resolves every event through the roster, exactly as with no `jira` entry.
+  That entry is the explicit way to keep the no-entry behavior.
+
+An event whose role is not resolved carries `actor.role: none`, which no
+threshold admits. Reading the roster (`GET /rest/api/3/project/<KEY>/role`)
+requires Jira's Administer Projects permission; a failed read fails the
+poll cycle without advancing checkpoints. See the
 [Jira integration guide](../../../guides/user/jira-integration.md) for
 details on the name-based matching limitation.
 
@@ -182,7 +217,11 @@ The bash dispatch implementation uses a parameterized
 > webhook routing do not use `harnessdispatch`: `dispatch.HarnessRouter`
 > gates slash commands per stage (triage and review at `triage`, other stages
 > at `write`) and label routes at `write`, and the agent job then requires
-> Developer access for every stage except retro and prioritize. The bash path (GitHub webhook
+> Developer access for every stage except retro and prioritize. The one
+> exception to that agent-job check is Jira work items dispatched to GitLab
+> (`jira_*` events): the Jira poller authorizes the actor by Jira project role
+> during polling, and the agent job skips the Developer-access check for these
+> signed events. The bash path (GitHub webhook
 > dispatch) applies the same thresholds per stage through
 > `has_repo_permission`.
 > Among the Go paths, only `fullsend dispatch --route retro` applies the
@@ -254,6 +293,20 @@ positively classify it using provider-controlled metadata, but `actor.bot_role`
 lookup is not required. The platform gate MUST NOT inspect the label name or
 maintain an agent-role label allowlist; harness/CEL routing owns that mapping
 and may further narrow the dispatch.
+
+**Jira:** A Jira `label_changed` event with `label.action: added` is
+authorized the same way, regardless of `actor.role`, because Jira requires
+the Edit Issues permission to change an issue's labels. This applies only
+when the repository has a `jira` provider entry whose `labels` rule is
+`jira_editors`, the default once the entry is present
+([ADR 0153](../../../ADRs/0153-authorize-jira-poll-actors-without-project-administration.md)).
+It is often broader than Jira's Developers role. A repository with no `jira`
+entry, or one that sets `labels: allowlist` or `labels: project_roles`, does
+not get the exception: those label events take the ordinary per-harness
+threshold against the role resolved from the project role roster or the
+lists. The poller's own
+account's events are classified as bot events and dropped before
+authorization.
 
 ### Bot-submitted reviews (GitHub)
 
@@ -481,7 +534,9 @@ authorization boundary. A repository can disable a stage entirely but
 cannot make it available to unauthorized users.
 
 A repository can add permission sources through the `authorization`
-field (today only `owners_file`). These sources extend the
+field (`owners_file`, and `jira` for Jira events; see
+[ADR 0153](../../../ADRs/0153-authorize-jira-poll-actors-without-project-administration.md)).
+These sources extend the
 `has_repo_permission` helper and the Go `IsEventAuthorized` gate and
 per-harness filter; they do not
 bypass the gate or change the thresholds.

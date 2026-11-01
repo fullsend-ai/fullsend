@@ -112,15 +112,17 @@ const codexAuthTimeoutMS = 5000
 // on roles whose GitHub profile allows git fetches, it would pull content
 // fullsend does not control into the sandbox.
 //
-// `[agents] enabled = false` removes codex's multi-agent tools (spawn_agent,
-// wait_agent, ...), which are on by default. fullsend wires no sub-agent
-// roster on codex, and a child's token usage is not in the parent's
-// turn.completed. `[features] multi_agent = false` is not enough: the model's
-// catalog entry overrides it (verified on 0.157.0, 0.158.0 and 0.159.3).
+// The `[agents]` table is codexAgentsBlock: `enabled = false` for an agent
+// that does not delegate, which removes codex's multi-agent tools
+// (spawn_agent, wait_agent, ...) that are on by default; for a delegating
+// agent (ADR 0126) `enabled = true` with the roster, depth one, four open
+// children and the run-level child model. `[features] multi_agent = false`
+// is not enough to turn the tools off: the model's catalog entry overrides
+// it (verified on 0.157.0, 0.158.0 and 0.159.3).
 //
-// `[features] multi_agent_v2 = false` states codex's default so that
-// `[agents] enabled = false` holds: codex checks this feature first, and when
-// it is on the V2 collaboration tools come back for every model (verified on
+// `[features] multi_agent_v2 = false` states codex's default so that the
+// `[agents]` table decides: codex checks this feature first, and when it is
+// on the V2 collaboration tools come back for every model (verified on
 // 0.159.3). On its own the key removes nothing.
 //
 // `[model_providers.fullsend-gateway]` is rendered only when an
@@ -160,8 +162,7 @@ enabled = false
 plugins = false
 multi_agent_v2 = false
 
-[agents]
-enabled = false
+{{ .AgentsBlock }}
 
 [projects.{{ .ProjectKey }}]
 trust_level = "untrusted"
@@ -201,8 +202,10 @@ type codexConfigData struct {
 	DeveloperInstructions string
 	AuthCommand           string
 	ProjectKey            string
-	RefreshIntervalMS     int
-	TimeoutMS             int
+	// AgentsBlock arrives rendered by codexAgentsBlock, its strings quoted.
+	AgentsBlock       string
+	RefreshIntervalMS int
+	TimeoutMS         int
 	// GatewayProviderID, GatewayBaseURL and GatewayAuthCommand render the
 	// fullsend-gateway provider; GatewayBaseURL (quoted) is empty when no
 	// inference.gateway block applies, and then nothing of it is rendered.
@@ -216,8 +219,10 @@ type codexConfigData struct {
 // codex runs in. developerInstructions is the agent definition's body, which
 // is arbitrary markdown from the harness. gatewayBaseURL is the
 // fullsend-gateway provider's base_url (codexGatewayBaseURL), or "" when no
-// inference.gateway block applies.
-func renderCodexConfig(configDir, repoDir, developerInstructions, gatewayBaseURL string) ([]byte, error) {
+// inference.gateway block applies. roles is the roster Bootstrap registers
+// for a delegating agent (empty otherwise) and defaultSubagentModel the
+// run-level child model it resolved with them.
+func renderCodexConfig(configDir, repoDir, developerInstructions, gatewayBaseURL string, roles []codexRole, defaultSubagentModel, childEffort string) ([]byte, error) {
 	if repoDir == "" {
 		return nil, fmt.Errorf("rendering codex %s: the target repository path is required", codexConfigFile)
 	}
@@ -228,6 +233,7 @@ func renderCodexConfig(configDir, repoDir, developerInstructions, gatewayBaseURL
 		DeveloperInstructions: codexTOMLString(developerInstructions),
 		AuthCommand:           codexTOMLString(configDir + "/" + codexAuthScriptFile),
 		ProjectKey:            codexTOMLKey(repoDir),
+		AgentsBlock:           codexAgentsBlock(configDir, roles, defaultSubagentModel, childEffort),
 		RefreshIntervalMS:     codexAuthRefreshIntervalMS,
 		TimeoutMS:             codexAuthTimeoutMS,
 	}
@@ -243,6 +249,37 @@ func renderCodexConfig(configDir, repoDir, developerInstructions, gatewayBaseURL
 		return nil, fmt.Errorf("rendering codex %s: %w", codexConfigFile, err)
 	}
 	return []byte(buf.String()), nil
+}
+
+// ADR 0126: one level of children, four open at once.
+const (
+	codexMaxOpenChildren = 4
+	codexMaxChildDepth   = 1
+)
+
+// codexAgentsBlock renders the [agents] table: off without roles; with
+// roles, on under the ADR 0126 limits, with the run-level child model, the
+// run's effort for every child when the run has one, and one table per
+// role file Bootstrap writes under <configDir>/agents.
+// Strings go through codexTOMLString and table keys through codexTOMLKey;
+// the boolean and the two limits are bare. No trailing newline: the
+// template supplies the blank line that follows.
+func codexAgentsBlock(configDir string, roles []codexRole, defaultSubagentModel, childEffort string) string {
+	if len(roles) == 0 {
+		return "[agents]\nenabled = false"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "[agents]\nenabled = true\nmax_concurrent_threads_per_session = %d\nmax_depth = %d\ndefault_subagent_model = %s\n",
+		codexMaxOpenChildren, codexMaxChildDepth, codexTOMLString(defaultSubagentModel))
+	if childEffort != "" {
+		fmt.Fprintf(&b, "default_subagent_reasoning_effort = %s\n", codexTOMLString(childEffort))
+	}
+	for _, role := range roles {
+		fmt.Fprintf(&b, "\n[agents.%s]\ndescription = %s\nconfig_file = %s\n",
+			codexTOMLKey(role.Name), codexTOMLString(role.Description),
+			codexTOMLString(configDir+"/agents/"+role.Name+".toml"))
+	}
+	return strings.TrimSuffix(b.String(), "\n")
 }
 
 // codexTOMLString renders s as a TOML basic string, quotes included. A value

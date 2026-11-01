@@ -16,11 +16,11 @@ agents:
       model: sonnet
       subagents:
         challenger: opus
-        correctness: openai/gpt-6.1-sol
+        correctness: gateway/gpt-6.1-sol
         docs-currency: google-vertex/gemini-3.8-flash
         intent-coherence: google-vertex/gemini-3.8-flash
         risk-assessment: google-vertex/gemini-3.8-flash
-        security: openai/gpt-6.1-sol
+        security: gateway/gpt-6.1-sol
         style-conventions: google-vertex/gemini-3.8-flash
     - name: retro
       enabled: true
@@ -39,3 +39,10 @@ status_notifications:
     reaction:
         start: enabled
         completion: enabled
+inference:
+    gateway:
+        url: https://fullsend-inference-gateway-155031062349.us-central1.run.app
+        audience: fullsend-inference-gateway
+        models:
+            gpt-6.1-sol:
+                api: openai-responses

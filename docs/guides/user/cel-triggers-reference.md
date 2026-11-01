@@ -70,15 +70,15 @@ The `event` variable has the following top-level fields:
 | Field | Type | Description |
 |---|---|---|
 | `event.repo` | string | Repository path (`owner/repo`) |
-| `event.entity.kind` | string | `"work_item"` (issue), `"change_proposal"` (PR), or `"conversation"` (Discussion / Slack channel; [ADR 0086](../../ADRs/0086-conversation-surface-for-agent-participation.md)) |
+| `event.entity.kind` | string | `"work_item"` (issue), `"change_proposal"` (PR), or `"conversation"` (Discussion / Slack channel) |
 | `event.entity.id` | int | Issue, PR, or conversation number |
 | `event.transition.kind` | string | What happened — see [transition kinds](#transition-kinds) |
 | `event.transition.label` | object | Present only when `kind == "label_changed"` |
-| `event.transition.comment` | object | Present only when `kind == "comment_added"` (conversation comments carry `id` and `parent_id`, with `parent_id == id` for thread roots; [ADR 0086](../../ADRs/0086-conversation-surface-for-agent-participation.md)) |
+| `event.transition.comment` | object | Present only when `kind == "comment_added"` (conversation comments carry `id` and `parent_id`, with `parent_id == id` for thread roots) |
 | `event.transition.review` | object | Present only when `kind == "review_submitted"` |
 | `event.actor.id` | string | Forge login of the user or bot that triggered the event |
 | `event.actor.kind` | string | `"human"` or `"bot"` |
-| `event.actor.role` | string | Human repository permission: `admin`, `maintain`, `write`, `triage`, `read`, `none`, `external`. Current adapters may populate a bot's forge/project permission when lookup succeeds, or `none` when it is unavailable; ADR 0107 target behavior is `none` for bots. |
+| `event.actor.role` | string | Human repository permission: `admin`, `maintain`, `write`, `triage`, `read`, `none`, `external`. Current adapters may populate a bot's forge/project permission when lookup succeeds, or `none` when it is unavailable; the planned behavior is `none` for bots. |
 | `event.actor.bot_role` | string or null | Optional provider-resolved canonical bot role such as `review`; absent/null for humans and unrecognized bots |
 | `event.actor.role_verified` | boolean | Optional lookup status. For humans, true means `actor.role` is a trusted forge permission; for bots, true means bot-role lookup completed, including a successful no-match result |
 | `event.actor.is_entity_author` | boolean | True when the actor is the author of the work item, change proposal, or conversation |
@@ -87,7 +87,7 @@ The `event` variable has the following top-level fields:
 | `event.state.conversation` | object | Required when `entity.kind == "conversation"` (includes `category.name`; optional `category.id` / `slug` / `format`) |
 | `event.source.system` | string | `"github"`, `"gitlab"`, `"jira"`, `"manual"`, or `"schedule"` |
 
-> `actor.bot_role` and `actor.role_verified` are ADR 0107 target fields and
+> `actor.bot_role` and `actor.role_verified` are planned fields and
 > are not yet emitted by the production runtime. The target contract uses
 > `actor.role: "none"` for bots, but current adapters may still populate a
 > forge/project permission there during migration. `role_verified` is not

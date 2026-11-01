@@ -128,7 +128,13 @@ vertex_params() {
 # --- Fixed names and versions ---------------------------------------------
 NAME="fullsend-e2e-gateway"
 AUDIENCE="fullsend-e2e-gateway"
-AGW_VERSION="v1.6.0"
+AGW_VERSION="v1.7.0"
+# The multi-arch index digest of that release (the same value
+# hack/check-gateway-doc-configs pins for the operator guide's version). A run
+# refuses an upstream tag that resolves to anything else. Bump it together with
+# AGW_VERSION; the version in the config header is masked, so a bump is not a
+# frozen change.
+AGW_DIGEST="sha256:60216aafb03d37f94e952ff3d51d2f630a65b10ecaebdc0a864882f92610c45b"
 UPSTREAM_IMAGE="ghcr.io/agentgateway/agentgateway:${AGW_VERSION}"
 CONFIG_SECRET="${NAME}-config"
 KEY_SECRET="${NAME}-stub-upstream-key"
@@ -246,7 +252,7 @@ pool_cel() {
 }
 
 # Cost cap: per real model, RATE_RPM requests and RATE_TPM tokens per minute.
-# agentgateway v1.6.0 has no per-model limit, so these are llm-wide rules whose
+# agentgateway v1.7.0 has no per-model limit, so these are llm-wide rules whose
 # CEL key picks the bucket. The request rule runs before the LLM request is
 # parsed and before model authorization, so its key reads the model from the
 # body. Each bucket is a (real model, caller class) pair. The caller class is
@@ -344,7 +350,7 @@ fi
 
 # api_key_policy prints the llm apiKey policy for the configured key hashes.
 # jwtAuth runs first and strips a valid JWT, so a key never reaches JWT
-# validation and a JWT never reaches the key check. agentgateway v1.6.0
+# validation and a JWT never reaches the key check. agentgateway v1.7.0
 # rejects a key budget without config.database, so keys carry none.
 api_key_policy() {
   [[ "${HAS_KEYS}" == "true" ]] || return 0
@@ -771,6 +777,7 @@ mask_config() {
     --argjson real "$(printf '%s\n' "${VERTEX_MODELS[@]}" | jq -R . | jq -sc .)" \
     --arg allow "      - allow: '${REAL_KEY_CEL}'" '
     (split($pool) | [.[0]] + (.[1:] | map(sub("^(, \"[^\"]*\")*\\]"; "]"))) | join($pool))
+    | sub("(?<h># fullsend-e2e-gateway \\(fullsend#8285\\): agentgateway )v[^,]+,"; "\(.h)<version>,")
     | split("\n") | . as $l
     | def real_model($m): $m != null and ($real | index([$m])) != null;
       reduce range(0; length) as $i ({out: [], skip: 0, type: "", model: null};
@@ -928,6 +935,8 @@ echo "==> agentgateway ${AGW_VERSION} image..."
 skopeo inspect --raw "docker://${UPSTREAM_IMAGE}" >"${TMP}/upstream.manifest" \
   || die "could not read ${UPSTREAM_IMAGE}."
 upstream_digest="sha256:$(sha256 < "${TMP}/upstream.manifest")"
+[[ "${upstream_digest}" == "${AGW_DIGEST}" ]] \
+  || die "${UPSTREAM_IMAGE} is ${upstream_digest}, not the pinned ${AGW_DIGEST}. Refusing to continue; investigate before re-running."
 # Cloud Run resolves the index to its linux/amd64 image for each revision.
 upstream_amd64=$(jq -r '[.manifests[]? | select(.platform.os == "linux" and .platform.architecture == "amd64") | .digest][0] // empty' \
   "${TMP}/upstream.manifest") || die "could not parse the ${UPSTREAM_IMAGE} index."
@@ -1209,11 +1218,14 @@ else
 fi
 
 # probe sends one request and expects a 401 from the gateway itself (not an
-# HTML page from Cloud Run's front end) whose text/plain body starts with
-# the given prefix. It prints the real status and body.
+# HTML page from Cloud Run's front end) whose text/plain body is
+# AUTH_FAILED_BODY. Since v1.7.0, agentgateway answers every jwtAuth and
+# apiKey refusal with that same body and logs the reason instead. It prints
+# the real status and body.
+AUTH_FAILED_BODY="authentication failed"
 probe() {
-  local label="$1" prefix="$2"
-  shift 2
+  local label="$1"
+  shift
   local status ctype body
   : > "${TMP}/probe.body"
   status=$(curl -sS -m 30 -o "${TMP}/probe.body" -w '%{http_code} %{content_type}' "$@" "${URL}/v1/models") \
@@ -1229,7 +1241,7 @@ probe() {
   elif [[ "${ctype}" == text/html* ]] || grep -qi '<html' "${TMP}/probe.body"; then
     echo "    FAIL: 401 is an HTML page; the invoker IAM check is still on." >&2
     verify_failed=1
-  elif [[ "${ctype}" != text/plain* ]] || ! grep -q "^${prefix}" "${TMP}/probe.body"; then
+  elif [[ "${ctype}" != text/plain* ]] || [[ "$(cat "${TMP}/probe.body")" != "${AUTH_FAILED_BODY}" ]]; then
     echo "    FAIL: 401 is not agentgateway's text/plain authentication failure." >&2
     verify_failed=1
   fi
@@ -1238,11 +1250,11 @@ if [[ -n "${URL}" && "${HAS_KEYS}" == "true" ]]; then
   # With keys, no credential passes authentication (and is refused per
   # model), so the probe that must fail is a bearer that is neither a
   # valid JWT nor a configured key.
-  probe "wrong key" 'api key authentication failure: ' -H "authorization: Bearer not-a-configured-key"
+  probe "wrong key" -H "authorization: Bearer not-a-configured-key"
 elif [[ -n "${URL}" ]]; then
-  probe "no token" 'authentication failure: '
-  probe "x-api-key only" 'authentication failure: ' -H "x-api-key: ${STUB_UPSTREAM_KEY}"
-  probe "non-JWT bearer" 'authentication failure: ' -H "authorization: Bearer not-a-jwt"
+  probe "no token"
+  probe "x-api-key only" -H "x-api-key: ${STUB_UPSTREAM_KEY}"
+  probe "non-JWT bearer" -H "authorization: Bearer not-a-jwt"
 fi
 echo
 

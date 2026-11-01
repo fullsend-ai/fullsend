@@ -39,17 +39,91 @@ type JiraClient interface {
 // Compile-time interface check.
 var _ JiraClient = (*jira.LiveClient)(nil)
 
+// Target forges a Jira poller can dispatch agents to.
+const (
+	TargetForgeGitHub = "github"
+	TargetForgeGitLab = "gitlab"
+)
+
+// RecordDispatcher schedules dispatch records directly on the target forge
+// (an output driver). When Options.Dispatcher is set, Run hands each issue's
+// records to it after the dispatch file is written, and commits an issue's
+// lastCheck only when every one of its records was dispatched.
+type RecordDispatcher interface {
+	Dispatch(ctx context.Context, record DispatchRecord) error
+}
+
 // Options configures the Jira poller.
 type Options struct {
-	TargetRepo              string        // GitHub repo slug where agents run (e.g., "acme/platform")
-	JiraBaseURL             string        // Jira instance base URL
-	JiraProject             string        // Jira project key for default JQL
-	JQL                     string        // Custom JQL override
-	OutputPath              string        // Path to write dispatch records JSON
-	M                       int           // Max candidate issues per cycle (default: 50)
-	N                       int           // Max issues to process per cycle (default: 5)
-	StaleThreshold          time.Duration // Lock stale threshold (default: 900s)
-	FirstPollBackfillWindow time.Duration // How far back to backfill comments/changelog on an issue's first poll (default: 24h)
+	TargetRepo              string           // Repo where agents run: a GitHub owner/repo slug, or the full GitLab project path (nested groups allowed)
+	TargetForge             string           // TargetForgeGitHub (default when empty) or TargetForgeGitLab
+	GitLabURL               string           // GitLab instance URL when TargetForge is TargetForgeGitLab; part of the coordination namespace
+	Dispatcher              RecordDispatcher // Optional output driver that schedules records directly (GitLab)
+	JiraBaseURL             string           // Jira instance base URL
+	JiraProject             string           // Jira project key for default JQL
+	JQL                     string           // Custom JQL override
+	OutputPath              string           // Path to write dispatch records JSON
+	M                       int              // Max candidate issues per cycle (default: 50)
+	N                       int              // Max issues to process per cycle (default: 5)
+	StaleThreshold          time.Duration    // Lock stale threshold (default: 900s)
+	FirstPollBackfillWindow time.Duration    // How far back to backfill comments/changelog on an issue's first poll (default: 24h)
+
+	// Authorization holds the jira authorization provider from
+	// config.yaml. The zero value (no provider entry) resolves every event
+	// through the Jira project role roster.
+	Authorization Authorization
+}
+
+// Values of Authorization.Labels. They match the config package's
+// JiraLabels* constants, kept separate so jirapoll does not depend on
+// config.
+const (
+	LabelsJiraEditors  = "jira_editors"
+	LabelsAllowlist    = "allowlist"
+	LabelsProjectRoles = "project_roles"
+)
+
+// ActorList is a set of Jira groups (names or IDs) and account IDs.
+type ActorList struct {
+	Groups   []string
+	Accounts []string
+}
+
+// Authorization is the poller's view of the jira authorization provider:
+// the write and triage lists and the label-added event rule.
+type Authorization struct {
+	// Configured records that a jira provider entry is present in
+	// config.yaml; the zero value means no entry and selects the
+	// project-role model for every event.
+	Configured bool
+	Write      ActorList
+	Triage     ActorList
+	// ListsConfigured records that the jira provider set a write: or
+	// triage: list, even an empty one. It keeps the lists authoritative
+	// (deny everyone not named) after the last entry is removed, instead of
+	// silently re-enabling the project role fallback.
+	ListsConfigured bool
+	// Labels is LabelsJiraEditors (also the meaning of ""),
+	// LabelsAllowlist, or LabelsProjectRoles.
+	Labels string
+}
+
+// HasLists reports whether the jira lists are authoritative: the provider
+// configured a write or triage list (ListsConfigured), or a list names at
+// least one group or account. When it does, the lists decide every event
+// that does not use the label rule, and an actor they do not name is denied.
+func (a Authorization) HasLists() bool {
+	return a.ListsConfigured ||
+		len(a.Write.Groups)+len(a.Write.Accounts)+len(a.Triage.Groups)+len(a.Triage.Accounts) > 0
+}
+
+// labelMode returns Labels with the empty value resolved to
+// LabelsJiraEditors.
+func (a Authorization) labelMode() string {
+	if a.Labels == "" {
+		return LabelsJiraEditors
+	}
+	return a.Labels
 }
 
 // JiraEvent is the intermediate event representation, analogous to poll.RoutableEvent.

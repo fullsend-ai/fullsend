@@ -142,6 +142,14 @@ trigger-token threat model for the new inbound-surface controls.
 > Consequences. Push-to-open-MR (GitHub `synchronize`) is not detected
 > by the poller; use `/fs-review`.
 >
+> **Update (2026-10, #7681):** The poller now detects pushes to open MRs
+> from merge request diff versions and dispatches review as
+> `transition.kind: synchronized`, keyed on the head SHA. Automatic
+> dispatch applies only to same-project MRs; re-review of fork MR
+> pushes is currently unsupported, because the router also denies
+> slash commands on fork MRs. See
+> [review agent](../agents/review.md).
+>
 > **Update (2026-09, #7323):** The single shared bot PAT (see "Credential
 > model" below) means GitLab's own `merge_requests_author_approval=false`
 > default always rejects `POST .../approve` with 401 whenever the

@@ -145,7 +145,7 @@ can request more discussion but cannot unilaterally grant write access.
 ### Maintainer
 
 **What it means:** You have merge and approval rights and are a member
-of the [@fullsend-ai/core](https://github.com/orgs/fullsend-ai/teams/core)
+of the [@fullsend-ai/maintainers](https://github.com/orgs/fullsend-ai/teams/maintainers)
 team. You are expected to be an active regular participant in the
 project and to help review contributions you are not driving.
 
@@ -158,8 +158,8 @@ project and to help review contributions you are not driving.
 **Criteria and process:** See [MAINTAINERS.md](MAINTAINERS.md) for the
 full eligibility criteria, nomination process, and time commitment.
 
-**How to check:** Your GitHub username is listed under `maintainers`
-of the `core` team in
+**How to check:** Your GitHub username is listed in the `maintainers`
+team in
 [peribolos.yaml](https://github.com/fullsend-ai/org/blob/main/peribolos.yaml)
 in the [fullsend-ai/org](https://github.com/fullsend-ai/org) repository.
 
@@ -167,7 +167,7 @@ in the [fullsend-ai/org](https://github.com/fullsend-ai/org) repository.
 [Maintainer Nomination](https://github.com/fullsend-ai/org/issues/new?template=maintainer-request.yml)
 issue in [fullsend-ai/org](https://github.com/fullsend-ai/org). Existing
 maintainers discuss and reach consensus; if approved, your username is
-added to the `core` team in `peribolos.yaml`.
+added to the `maintainers` team in `peribolos.yaml`.
 
 ## Demonstrating readiness
 

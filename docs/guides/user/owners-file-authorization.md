@@ -7,8 +7,11 @@ introduce these files whether your project already uses Prow or not.
 > **GitHub only.** The `owners_file` provider is read on the GitHub
 > webhook dispatch path (slash commands, label triggers, and event
 > triggers) and by GitHub CEL dispatch. Jira polling and GitLab routing do
-> not read OWNERS — authorization on those platforms uses native forge roles
-> only.
+> not read OWNERS. GitLab authorization uses native forge roles only. Jira
+> polling uses Jira project roles, or the separate opt-in `jira` authorization
+> provider (and Jira's Edit Issues permission for label triggers once that
+> provider is configured); see the
+> [`authorization` field](../../reference/config-reference.md#authorization).
 
 For background on the default forge-permission model (write vs. triage
 thresholds, dispatch-path differences), see

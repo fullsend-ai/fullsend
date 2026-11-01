@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 
@@ -556,8 +557,27 @@ func cloneAuthorizationSlice(in []AuthorizationProvider) []AuthorizationProvider
 		return nil
 	}
 	out := make([]AuthorizationProvider, len(in))
-	copy(out, in)
+	for i, p := range in {
+		out[i] = cloneAuthorizationProvider(p)
+	}
 	return out
+}
+
+// cloneAuthorizationProvider deep-copies p so the jira provider's lists
+// are not shared between layers.
+func cloneAuthorizationProvider(p AuthorizationProvider) AuthorizationProvider {
+	cloneList := func(l *JiraActorList) *JiraActorList {
+		if l == nil {
+			return nil
+		}
+		return &JiraActorList{
+			Groups:   slices.Clone(l.Groups),
+			Accounts: slices.Clone(l.Accounts),
+		}
+	}
+	p.Write = cloneList(p.Write)
+	p.Triage = cloneList(p.Triage)
+	return p
 }
 
 func cloneAgentEntries(in []AgentEntry) []AgentEntry {

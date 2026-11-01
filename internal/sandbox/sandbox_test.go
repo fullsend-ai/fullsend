@@ -785,19 +785,19 @@ func TestEffectiveReadyTimeout_NegativeEnvVar(t *testing.T) {
 func TestCreateWithRetry_OpenshellNotInPath(t *testing.T) {
 	t.Setenv("PATH", "")
 
-	err := CreateWithRetry("test-sandbox", nil, "", "", 1, 0)
+	err := CreateWithRetry("test-sandbox", nil, "", "", 1, 0, false)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "sandbox creation failed after 1 attempts")
 }
 
 func TestCreateWithRetry_ZeroAttempts(t *testing.T) {
-	err := CreateWithRetry("test-sandbox", nil, "", "", 0, 0)
+	err := CreateWithRetry("test-sandbox", nil, "", "", 0, 0, false)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "maxAttempts must be >= 1")
 }
 
 func TestCreateWithRetry_NegativeAttempts(t *testing.T) {
-	err := CreateWithRetry("test-sandbox", nil, "", "", -1, 0)
+	err := CreateWithRetry("test-sandbox", nil, "", "", -1, 0, false)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "maxAttempts must be >= 1")
 }
@@ -810,7 +810,7 @@ func TestCreateWithRetry_SleepsBetweenAttempts(t *testing.T) {
 	RetrySleepFn = func(d time.Duration) { sleeps = append(sleeps, d) }
 	t.Cleanup(func() { RetrySleepFn = orig })
 
-	err := CreateWithRetry("test-sandbox", nil, "", "", 3, 0)
+	err := CreateWithRetry("test-sandbox", nil, "", "", 3, 0, false)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "sandbox creation failed after 3 attempts")
 	assert.Equal(t, []time.Duration{retryInitialBackoff, retryInitialBackoff * 2}, sleeps)
@@ -970,6 +970,95 @@ exit 0
 	// Must detect the terminal phase and fail fast, well within the 30s timeout.
 	assert.Less(t, elapsed, 10*time.Second,
 		"terminal phase detection must short-circuit polling")
+}
+
+// TestCreateOnce_TerminalPhaseIncludesLogs asserts the terminal-phase fast
+// failure carries the same supervisor/gateway/container logs as the timeout
+// failure: CreateWithRetry deletes the sandbox right after, so this error is
+// the only place they survive.
+func TestCreateOnce_TerminalPhaseIncludesLogs(t *testing.T) {
+	dir := t.TempDir()
+
+	// Fake openshell: create succeeds, get shows Error phase, and logs
+	// answers per source (`openshell logs <name> --source <src> -n 0`).
+	script := `#!/bin/sh
+if [ "$2" = "create" ]; then
+  exit 0
+fi
+if [ "$2" = "get" ]; then
+  echo "Phase: Error"
+  exit 0
+fi
+if [ "$1" = "logs" ]; then
+  echo "$4-log-line"
+  exit 0
+fi
+exit 0
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", dir)
+
+	err := createOnce("test-sandbox", nil, "", "", 30*time.Second)
+	require.Error(t, err)
+	msg := err.Error()
+	assert.Contains(t, msg, "terminal phase")
+	assert.Contains(t, msg, "supervisor logs: supervisor-log-line")
+	assert.Contains(t, msg, "gateway logs: gateway-log-line")
+	assert.Contains(t, msg, "container logs: (podman not available on this host)")
+}
+
+// writeTerminalPhaseOpenshell installs a fake openshell whose sandbox always
+// reaches the Error phase, and returns the path of the file recording each
+// create and delete call.
+func writeTerminalPhaseOpenshell(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	callsFile := filepath.Join(dir, "calls")
+	script := fmt.Sprintf(`#!/bin/sh
+if [ "$2" = "create" ] || [ "$2" = "delete" ]; then
+  echo "$2" >> %s
+  exit 0
+fi
+if [ "$2" = "get" ]; then
+  echo "Phase: Error"
+  exit 0
+fi
+exit 0
+`, callsFile)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", dir)
+
+	orig := RetrySleepFn
+	RetrySleepFn = func(time.Duration) {}
+	t.Cleanup(func() { RetrySleepFn = orig })
+	return callsFile
+}
+
+func TestCreateWithRetry_KeepStopsWithoutDelete(t *testing.T) {
+	callsFile := writeTerminalPhaseOpenshell(t)
+
+	err := CreateWithRetry("test-sandbox", nil, "", "", 3, 5*time.Second, true)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sandbox kept")
+	assert.Contains(t, err.Error(), "terminal phase")
+
+	data, readErr := os.ReadFile(callsFile)
+	require.NoError(t, readErr)
+	assert.Equal(t, "create\n", string(data),
+		"keep mode must make one attempt and never delete the failed sandbox")
+}
+
+func TestCreateWithRetry_TerminalPhaseDeletesAndRetries(t *testing.T) {
+	callsFile := writeTerminalPhaseOpenshell(t)
+
+	err := CreateWithRetry("test-sandbox", nil, "", "", 3, 5*time.Second, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sandbox creation failed after 3 attempts")
+
+	data, readErr := os.ReadFile(callsFile)
+	require.NoError(t, readErr)
+	assert.Equal(t, strings.Repeat("create\ndelete\n", 3), string(data),
+		"without keep each failed attempt is deleted and retried")
 }
 
 func TestCreateOnce_DiagnosticPreservation(t *testing.T) {
@@ -1288,7 +1377,7 @@ exit 0
 	RetrySleepFn = func(d time.Duration) {}
 	t.Cleanup(func() { RetrySleepFn = orig })
 
-	err := CreateWithRetry("test-sandbox", nil, "", "/path/to/policy.yaml", 3, 5*time.Second)
+	err := CreateWithRetry("test-sandbox", nil, "", "/path/to/policy.yaml", 3, 5*time.Second, false)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, errPolicyGlobal)
 

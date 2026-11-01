@@ -268,7 +268,10 @@ This command does not uninstall GitHub Apps from organizations or update any rep
 
 ## Enrolling repositories
 
-`fullsend mint enroll` registers a repository in the mint and configures WIF to accept OIDC tokens from it. Only `owner/repo` targets are accepted; a bare org argument is rejected because org enrollment was removed with per-org installation ([ADR 0044](../../ADRs/0044-deprecate-per-org-installation-mode.md)).
+`fullsend mint enroll` registers a repository in the mint and configures WIF
+to accept OIDC tokens from it. Only `owner/repo` targets are accepted; a bare
+org argument is rejected because org enrollment was removed with per-org
+installation.
 
 ```bash
 fullsend mint enroll acme-corp/my-repo --project="$GCP_PROJECT"
@@ -317,7 +320,11 @@ Enroll repositories serially — do not run concurrent enrollment commands again
 
 ## Unenrolling repositories
 
-`fullsend mint unenroll` removes a repository from the mint. Only `owner/repo` targets are accepted. A bare org argument is rejected because per-org unenrollment was removed with per-org installation ([ADR 0044](../../ADRs/0044-deprecate-per-org-installation-mode.md)). To clean up org entries that an older CLI left behind, see [Cleaning up legacy per-org mint state](#cleaning-up-legacy-per-org-mint-state).
+`fullsend mint unenroll` removes a repository from the mint. Only `owner/repo`
+targets are accepted. A bare org argument is rejected because per-org
+unenrollment was removed with per-org installation. To clean up org entries
+that an older CLI left behind, see
+[Cleaning up legacy per-org mint state](#cleaning-up-legacy-per-org-mint-state).
 
 ```bash
 fullsend mint unenroll acme-corp/my-repo --project="$GCP_PROJECT"
@@ -337,7 +344,8 @@ Unenroll removes the repository from `PER_REPO_WIF_REPOS` and disables its repo-
 
 ## Cleaning up legacy per-org mint state
 
-Per-org mint enrollment was removed along with per-org installation ([ADR 0044](../../ADRs/0044-deprecate-per-org-installation-mode.md)). This is a breaking change for scripts and automation:
+Per-org mint enrollment was removed along with per-org installation. This is a
+breaking change for scripts and automation:
 
 - `fullsend mint enroll <org>` and `fullsend mint unenroll <org>` with a bare org argument now fail. Enroll and unenroll each repository with an `owner/repo` target.
 - `fullsend mint deploy --allowed-orgs` was removed. Passing it fails with `unknown flag: --allowed-orgs`.
@@ -805,7 +813,8 @@ If the `[[ratelimits]]` section is removed from `wrangler.toml`, the Worker logs
 
 ## Bot-role lookup endpoint
 
-`POST /v1/bot-role` resolves a bot login to a registered role for dispatch authorization ([ADR 0107](../../ADRs/0107-bot-identity-resolution-for-dispatch-authorization.md)). Callers authenticate with the same OIDC token as `/v1/token`.
+`POST /v1/bot-role` resolves a bot login to a registered role for dispatch
+authorization. Callers authenticate with the same OIDC token as `/v1/token`.
 
 - **Canonical role.** The `role` field of a recognized response (`{"outcome": "recognized", "role": "review"}`) is the canonical role of the matching GitHub App; the dispatch adapter surfaces it as `actor.bot_role` in the normalized event. When several allowed roles share one App ID (for example `fix` reuses the `coder` App), the lexicographically first role name is returned, so `fix` resolves to `coder`. Treat this tie-break as a stable contract: renaming a role or registering a new role that sorts earlier for a shared App changes the `role` the endpoint returns.
 - **Rate limiting.** The Worker rate limiter described above also covers `POST /v1/bot-role`, with a separate counter per path, because each authenticated call makes outbound GitHub API requests.

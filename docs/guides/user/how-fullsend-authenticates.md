@@ -69,9 +69,8 @@ sandbox.
     variables; see [Configuring GitLab](../getting-started/configuring-gitlab.md#role-identity-model-and-credential-lifecycle).
   - OpenAI Workload Identity is GitHub Actions only. GitLab uses an API key in
     `FULLSEND_OPENAI_API_KEY`.
-  - The gateway works with `auth: api-key`. `auth: oidc` does not apply on GitLab: GitLab ID
-    tokens on the gateway route are deferred
-    ([ADR 0137](../../ADRs/0137-inference-gateway-credential-route.md#deferred)).
+  - The gateway works with `auth: api-key`. `auth: oidc` does not apply on
+    GitLab: the gateway route does not accept GitLab ID tokens yet.
 
 ## Who does what
 
@@ -91,11 +90,11 @@ If you have no OpenAI platform access at all, see
 
 ## Not supported yet: gateway token exchange
 
-The inference gateway does not do WIF. A gateway credential mode based on token exchange, for
-gateways that trust only their own identity provider, is deferred. ADR 0137 lists it under
-[Deferred](../../ADRs/0137-inference-gateway-credential-route.md#deferred): "a gateway credential
-exchanged through a WIF or STS service instead of the forge OIDC token itself". Today the gateway
-either validates the forge OIDC token directly (`auth: oidc`) or takes a static key
+The inference gateway does not do WIF. A gateway credential mode based on
+token exchange, for gateways that trust only their own identity provider, is
+not available: Fullsend cannot exchange the forge OIDC token for a gateway
+credential through a WIF or STS service. Today the gateway either validates
+the forge OIDC token directly (`auth: oidc`) or takes a static key
 (`auth: api-key`).
 
 ## Related

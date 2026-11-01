@@ -127,7 +127,9 @@ The standalone mint is configured entirely through environment variables:
 Set `PER_REPO_WIF_REPOS=*` to enable public mint mode:
 
 - Any repository may request tokens (installation lookup still scopes tokens to the requesting org)
-- `job_workflow_ref` validation is the same as in enrolled mode: only the upstream `fullsend-ai/fullsend` and repos in `WORKFLOW_HOST_REPOS` are accepted, and the `ALLOWED_WORKFLOW_FILES` basename gate applies ([ADR 0082](../../ADRs/0082-workflow-host-allow-list.md) §2)
+- `job_workflow_ref` validation is the same as in enrolled mode: only the
+  upstream `fullsend-ai/fullsend` and repos in `WORKFLOW_HOST_REPOS` are
+  accepted, and the `ALLOWED_WORKFLOW_FILES` basename gate applies
 - No WIF or GCP STS setup is required — standalone mint validates OIDC via GitHub JWKS directly
 
 ### Example: local roles with fallback proxy

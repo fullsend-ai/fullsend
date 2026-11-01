@@ -750,8 +750,7 @@ completion bodies. That foundation is intentional: fitness scores must trust
 the trace before quality scores can. **Planned:** content-aware scorers that
 consume Level 3 prompt/completion capture once Level 3 is implemented —
 that is where the real quality signal lives. See
-[Eval Measurements](./eval-measurements.md) and
-[ADR 0087](../../ADRs/0087-eval-measurements-online-trace-scoring.md).
+[Eval Measurements](./eval-measurements.md).
 
 ## Mint tracing
 

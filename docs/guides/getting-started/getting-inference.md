@@ -41,7 +41,8 @@ GPT models on the pi or codex runtime use OpenAI Workload Identity Federation in
 OpenAI agent run needs no GCP credentials and stores no key on the recommended path; see
 [OpenAI Workload Identity](../infrastructure/openai-workload-identity.md). Initial repository
 setup can omit the GCP project and WIF provider pair. If you cannot enrol an OpenAI WIF
-provider, that guide's Route C uses a `FULLSEND_OPENAI_API_KEY` repository secret.
+provider, that guide's Route C uses a `FULLSEND_OPENAI_API_KEY` repository secret; on GitHub we
+recommend keeping that key behind an [inference gateway](#inference-gateway) instead.
 
 For **GitLab repos**, create the GCP project as described below, but skip
 `fullsend inference provision`, which is GitHub-only. A platform operator creates a shared

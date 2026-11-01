@@ -309,8 +309,7 @@ repositories it can also supply `inference.wif_audience` and
 
 ### Managed configuration
 
-`repos.yaml` can also declare a sparse managed `.fullsend/config.yaml`
-([ADR 0122](../../ADRs/0122-declarative-repo-configuration.md)) in
+`repos.yaml` can also declare a sparse managed `.fullsend/config.yaml` in
 `defaults.config`, `github.config`, `gitlab.config`, and each repository
 entry's `config`. Every section uses the same schema as per-repo
 `config.yaml`, including `runtime` and `allowed_remote_resources`, and
@@ -973,7 +972,7 @@ Common causes:
   `config_base: {sha256: <value>}`, for both `defaults` and per-repo
   entries. A mapping-shaped `config:` block is separate and still
   valid — that is the [managed configuration](#managed-configuration)
-  syntax (ADR 0122), not the old preset key:
+  syntax, not the old preset key:
 
   ```yaml
   # Before

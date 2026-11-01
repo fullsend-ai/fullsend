@@ -154,7 +154,7 @@ Two independent precedence axes govern field resolution
 | Field type       | Merge behavior                                       | Nil vs empty                                          |
 |------------------|------------------------------------------------------|-------------------------------------------------------|
 | Scalar fields    | Forge/child value overrides top-level/base value     | Absent = inherit from top level / base                |
-| `skills`         | Merged with deduplication by skill identity (declared `SKILL.md` name, otherwise directory basename; `skill.SandboxName`). Relative entries are resolved against the fullsend directory before the merge, so a local override matches by declared name too. Two entries with one identity in a single list are both kept and fail at bootstrap. A relative entry reached through a symlink that leaves the fullsend directory, or that has an absolute target, at any component including the marker file, keeps its directory basename as its merge identity. Forge/child overrides a matching top-level/base entry. Sibling nested dirs that share a leaf name are kept. | Absent (nil) = inherit; `skills: []` = empty list merged with base (base entries are returned) |
+| `skills`         | Merged with deduplication by skill identity (declared `SKILL.md` name, otherwise directory basename; `skill.SandboxName`). Relative entries are resolved against the fullsend directory before the merge, so a local override matches by declared name too. Two entries with one identity in a single list are both kept and fail at bootstrap. A relative entry reached through a symlink that leaves the fullsend directory, or that has an absolute target, at any component including the marker file, keeps its directory basename as its merge identity. Forge/child overrides a matching top-level/base entry, and the two entries' per-file override maps merge (`mergeOverrides`; forge/child keys win). A map-form forge/child entry whose path has no `SKILL.md` keeps the matched entry's source and adds only its overrides (#6158); If such an entry matches no key, it can match the one pinned-URL entry of its name (ignoring `#fragment` and `?query`); two or more candidates are an error that names them and asks for the full base URL as the map key (#8973). Sibling nested dirs that share a leaf name are kept. | Absent (nil) = inherit; `skills: []` = empty list merged with base (base entries are returned) |
 | `runner_env`     | Top-level/base map merged with forge/child map; forge/child keys win  | Absent (nil) = inherit; `runner_env: {}` = no forge-specific keys (top-level env still inherited) |
 | `privilege_levels` | Top-level/base map merged with child map; child keys win (not in `ForgeConfig`, so no forge/overlay override) | Absent (nil) = inherit from base; omitted entirely at every layer defaults every run-stage to `write` |
 | `validation_loop`| Field-level merge; forge/child non-zero values win, base/top-level fills gaps | Absent (nil) = inherit from top level / base; `validation_loop: {}` inherits all fields (zero-value-as-unset). Post-merge `Validate()` still requires `script`. There is no way to disable an inherited validation loop. |
@@ -248,6 +248,16 @@ This payload provides backwards-compatible legacy forge fields (`issue`,
 `pull_request`, `comment`) alongside `_normalized_event` (the serialized
 `normevent.Event` map).
 
+GitLab has a second, separate builder: `buildEventPayload` in
+`internal/poll/dispatch.go`, shared by the poller and the webhook dispatcher.
+It emits a minimal payload, and its `_normalized_event` is a partial map that
+carries only `transition.comment.body` (see
+`docs/normative/normalized-event/v1/README.md`). Its unit tests are in
+`internal/poll/dispatch_test.go` and `internal/poll/webhook_dispatch_test.go`;
+`run-agent-job.sh` reads the body in
+`internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/scripts/`, and
+`internal/scaffold/gitlab_fix_instruction_test.go` covers that script.
+
 When resolving CEL-guarded overlays via `ResolveOverlays(event, forgePlatform,
 config)`, the runtime passes the deserialized `normevent.Event` directly as
 the `event` variable in the CEL environment (see [CEL environment](#cel-environment)
@@ -255,7 +265,9 @@ above). When adding, modifying, or removing fields in normalized event structure
 or `event_payload`:
 
 1. Update `buildEventPayload` in `internal/harnessdispatch/project.go` and its
-   unit tests in `internal/harnessdispatch/project_test.go`.
+   unit tests in `internal/harnessdispatch/project_test.go`. If the change
+   affects GitLab dispatch, also update `buildEventPayload` in
+   `internal/poll/dispatch.go` and its tests.
 2. Update the projection table in `docs/normative/normalized-event/v1/README.md`.
 3. If new event fields or properties are exposed to overlay CEL evaluation,
    document them in the [CEL environment](#cel-environment) table above.

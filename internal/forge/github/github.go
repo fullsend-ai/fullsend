@@ -3958,8 +3958,13 @@ func (c *LiveClient) ListPullRequestReviewThreads(ctx context.Context, owner, re
 						id
 						isResolved
 						path
+						diffSide
 						line
+						startDiffSide
+						startLine
 						originalLine
+						originalStartLine
+						isOutdated
 						resolvedBy { login __typename }
 						comments(first: 100) {
 							pageInfo { hasNextPage }
@@ -3976,12 +3981,17 @@ func (c *LiveClient) ListPullRequestReviewThreads(ctx context.Context, owner, re
 	}`
 
 	type gqlThread struct {
-		ID           string `json:"id"`
-		IsResolved   bool   `json:"isResolved"`
-		Path         string `json:"path"`
-		Line         *int   `json:"line"`
-		OriginalLine *int   `json:"originalLine"`
-		ResolvedBy   *struct {
+		ID                string  `json:"id"`
+		IsResolved        bool    `json:"isResolved"`
+		Path              string  `json:"path"`
+		DiffSide          string  `json:"diffSide"`
+		Line              *int    `json:"line"`
+		StartDiffSide     *string `json:"startDiffSide"`
+		StartLine         *int    `json:"startLine"`
+		OriginalLine      *int    `json:"originalLine"`
+		OriginalStartLine *int    `json:"originalStartLine"`
+		IsOutdated        bool    `json:"isOutdated"`
+		ResolvedBy        *struct {
 			Login string `json:"login"`
 			Type  string `json:"__typename"`
 		} `json:"resolvedBy"`
@@ -4032,7 +4042,7 @@ func (c *LiveClient) ListPullRequestReviewThreads(ctx context.Context, owner, re
 		if cached, ok := roleCache[login]; ok {
 			return cached.role, cached.verified
 		}
-		permission, err := c.GetCollaboratorPermission(ctx, owner, repo, login)
+		perm, err := c.fetchCollaboratorPermission(ctx, owner, repo, login)
 		if err != nil {
 			verified := forge.IsNotFound(err)
 			roleCache[login] = struct {
@@ -4041,12 +4051,18 @@ func (c *LiveClient) ListPullRequestReviewThreads(ctx context.Context, owner, re
 			}{normevent.RoleNone, verified}
 			return normevent.RoleNone, verified
 		}
-		role := normevent.MapGitHubPermission(permission)
+		// A successful response is verified only when it authoritatively
+		// establishes the role; unnormalizable data stays RoleNone unverified.
+		permission, verified := perm.normalizedRole()
+		role := normevent.RoleNone
+		if verified {
+			role = normevent.MapGitHubPermission(permission)
+		}
 		roleCache[login] = struct {
 			role     normevent.ActorRole
 			verified bool
-		}{role, true}
-		return role, true
+		}{role, verified}
+		return role, verified
 	}
 	for page := 1; page <= 20; page++ {
 		variables := map[string]any{
@@ -4074,9 +4090,28 @@ func (c *LiveClient) ListPullRequestReviewThreads(ctx context.Context, owner, re
 				ResolvedByRole:    normevent.RoleNone,
 				IsResolved:        thread.IsResolved,
 				Path:              thread.Path,
+				Side:              githubDiffSide(thread.DiffSide),
 				Line:              thread.Line,
+				StartLine:         thread.StartLine,
 				OriginalLine:      thread.OriginalLine,
+				OriginalStartLine: thread.OriginalStartLine,
+				IsOutdated:        &thread.IsOutdated,
 				CommentsTruncated: thread.Comments.PageInfo.HasNextPage,
+			}
+			// Outdated multi-line threads have a null startLine but may still
+			// report startDiffSide and originalStartLine, so do not gate on
+			// startLine.
+			if thread.StartDiffSide != nil {
+				converted.StartSide = githubDiffSide(*thread.StartDiffSide)
+			}
+			// GitHub reports the current line on one side only.
+			if converted.Side != nil && thread.Line != nil {
+				line := *thread.Line
+				if *converted.Side == forge.DiffSideLeft {
+					converted.OldLine = &line
+				} else {
+					converted.NewLine = &line
+				}
 			}
 			if thread.ResolvedBy != nil {
 				converted.ResolvedBy = thread.ResolvedBy.Login
@@ -4110,6 +4145,21 @@ func (c *LiveClient) ListPullRequestReviewThreads(ctx context.Context, owner, re
 		}
 	}
 	return result, nil
+}
+
+// githubDiffSide maps GitHub's DiffSide enum (LEFT, RIGHT) to the normalized
+// forge.DiffSide. Unknown or empty values map to nil.
+func githubDiffSide(side string) *forge.DiffSide {
+	var normalized forge.DiffSide
+	switch side {
+	case "LEFT":
+		normalized = forge.DiffSideLeft
+	case "RIGHT":
+		normalized = forge.DiffSideRight
+	default:
+		return nil
+	}
+	return &normalized
 }
 
 // DismissPullRequestReview dismisses a review, changing its state to DISMISSED.
@@ -4642,20 +4692,30 @@ func (c *LiveClient) GetAppClientID(ctx context.Context, slug string) (string, e
 }
 
 func (c *LiveClient) GetCollaboratorPermission(ctx context.Context, owner, repo, username string) (string, error) {
-	path := fmt.Sprintf("/repos/%s/%s/collaborators/%s/permission",
-		url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(username))
-	resp, err := c.get(ctx, path)
+	perm, err := c.fetchCollaboratorPermission(ctx, owner, repo, username)
 	if err != nil {
-		return "", fmt.Errorf("get collaborator permission for %s: %w", username, err)
-	}
-	var perm collaboratorPermission
-	if err := decodeJSON(resp, &perm); err != nil {
-		return "", fmt.Errorf("decode collaborator permission for %s: %w", username, err)
+		return "", err
 	}
 	if perm.RoleName == "" {
 		return "", fmt.Errorf("%w: no permission for %s", forge.ErrNotFound, username)
 	}
 	return perm.baseRole(), nil
+}
+
+// fetchCollaboratorPermission returns the decoded collaborator permission
+// response without interpreting it.
+func (c *LiveClient) fetchCollaboratorPermission(ctx context.Context, owner, repo, username string) (collaboratorPermission, error) {
+	path := fmt.Sprintf("/repos/%s/%s/collaborators/%s/permission",
+		url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(username))
+	resp, err := c.get(ctx, path)
+	if err != nil {
+		return collaboratorPermission{}, fmt.Errorf("get collaborator permission for %s: %w", username, err)
+	}
+	var perm collaboratorPermission
+	if err := decodeJSON(resp, &perm); err != nil {
+		return collaboratorPermission{}, fmt.Errorf("decode collaborator permission for %s: %w", username, err)
+	}
+	return perm, nil
 }
 
 // collaboratorPermission is the subset of GitHub's collaborator permission
@@ -4679,10 +4739,31 @@ type collaboratorPermission struct {
 // legacy permission field, else "none". Keep in sync with has_repo_permission
 // in reusable-dispatch.yml.
 func (p collaboratorPermission) baseRole() string {
+	role, _ := p.normalizedRole()
+	return role
+}
+
+// normalizedRole returns baseRole plus whether the response authoritatively
+// establishes that role. Built-in role names and custom role names that
+// normalize to a real role through effective flags or the legacy permission
+// are authoritative. "none" is authoritative only when GitHub explicitly
+// reports role_name "none" with no conflicting legacy permission; a custom
+// role whose data cannot be normalized, or a missing role_name, is not.
+func (p collaboratorPermission) normalizedRole() (string, bool) {
 	switch p.RoleName {
 	case "admin", "maintain", "write", "triage", "read":
-		return p.RoleName
+		return p.RoleName, true
 	}
+	role := p.effectiveRole()
+	if role != "none" {
+		return role, p.RoleName != "" && p.RoleName != "none"
+	}
+	return role, p.RoleName == "none" && (p.Permission == "" || p.Permission == "none")
+}
+
+// effectiveRole resolves a non-built-in role name from GitHub's effective
+// permission flags when present, otherwise from the legacy permission field.
+func (p collaboratorPermission) effectiveRole() string {
 	if f := p.User.Permissions; f != nil {
 		switch {
 		case f.Admin:

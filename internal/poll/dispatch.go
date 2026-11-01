@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/normevent"
 	"gopkg.in/yaml.v3"
 )
 
@@ -55,6 +56,12 @@ func (p *Poller) dispatch(ctx context.Context, owner, repo, stage string, event 
 		return fmt.Errorf("build event payload: %w", err)
 	}
 	encoded := base64.StdEncoding.EncodeToString(payload)
+	if budget := maxEventPayloadChunks * dispatchPayloadChunkSize; len(encoded) > budget {
+		// Only a /fs-* command body is carried untruncated, so this
+		// rejects a command that cannot be transported intact rather
+		// than letting the agent run on a shortened instruction.
+		return fmt.Errorf("event payload for %s/%s needs %d base64 characters, exceeding the %d-character dispatch budget; refusing to dispatch a truncated note body", stage, resourceKey(event), len(encoded), budget)
+	}
 	// Fork detection applies only to MR events. Issue events never
 	// populate MRSource/MRTarget — they are "not applicable", not
 	// "unknown". For MR events, fail-closed: unknown project IDs
@@ -120,18 +127,9 @@ func (p *Poller) dispatch(ctx context.Context, owner, repo, stage string, event 
 		return fmt.Errorf("dispatch for %s/%s requires the typed pipeline-input contract in %s at ref %q; the legacy pipeline-variable dispatch path is no longer supported, so pin the repository's fullsend_ref to %s or later (or remove the pin) and rerun repos install", stage, rk, fullsendPipelineIncludePath, p.opts.PipelineRef, firstTypedDispatchRelease)
 	}
 
-	inputs, inputsErr := dispatchInputs(variables)
-	if inputsErr != nil {
-		return fmt.Errorf("build dispatch inputs for %s/%s: %w", stage, rk, inputsErr)
-	}
-	var webURL string
-	if p.opts.ChildDispatchJobToken != "" {
-		_, webURL, err = p.client.CreateChildPipelineWithInputs(ctx, owner, repo, p.opts.PipelineRef, p.opts.ChildDispatchJobToken, inputs)
-	} else {
-		_, webURL, err = p.client.CreatePipelineWithInputs(ctx, owner, repo, p.opts.PipelineRef, inputs)
-	}
+	webURL, err := p.createAgentPipeline(ctx, owner, repo, stage, rk, variables)
 	if err != nil {
-		return fmt.Errorf("create pipeline for %s/%s: %w", stage, rk, err)
+		return err
 	}
 
 	entityPrefix := "#"
@@ -151,6 +149,29 @@ func (p *Poller) dispatch(ctx context.Context, owner, repo, stage string, event 
 		IID:             event.IID,
 	})
 	return nil
+}
+
+// createAgentPipeline converts the signed dispatch variables into typed
+// pipeline inputs and creates the agent pipeline at p.opts.PipelineRef on
+// the selected route: the CI_JOB_TOKEN child-pipeline route when
+// ChildDispatchJobToken is set, otherwise the Poller API route. It returns
+// the created pipeline's web URL. Callers sign variables and confirm the
+// typed pipeline-input contract first.
+func (p *Poller) createAgentPipeline(ctx context.Context, owner, repo, stage, rk string, variables map[string]string) (string, error) {
+	inputs, err := dispatchInputs(variables)
+	if err != nil {
+		return "", fmt.Errorf("build dispatch inputs for %s/%s: %w", stage, rk, err)
+	}
+	var webURL string
+	if p.opts.ChildDispatchJobToken != "" {
+		_, webURL, err = p.client.CreateChildPipelineWithInputs(ctx, owner, repo, p.opts.PipelineRef, p.opts.ChildDispatchJobToken, inputs)
+	} else {
+		_, webURL, err = p.client.CreatePipelineWithInputs(ctx, owner, repo, p.opts.PipelineRef, inputs)
+	}
+	if err != nil {
+		return "", fmt.Errorf("create pipeline for %s/%s: %w", stage, rk, err)
+	}
+	return webURL, nil
 }
 
 // usesTypedDispatch reports whether the target repository's committed
@@ -283,14 +304,15 @@ const (
 	// independently of how many chunks any given dispatch actually
 	// fills in. This bounds the largest EVENT_PAYLOAD_B64 dispatch() can
 	// transport to maxEventPayloadChunks*dispatchPayloadChunkSize base64
-	// characters, which is why buildEventPayload truncates the note body
-	// to a smaller bound than before this limit was enforced (see its
-	// truncate call): a truncate(event.NoteBody, 800) note body, after
-	// JSON escaping (Go's encoder expands a run of HTML-sensitive runes
-	// like '<' up to 6x) and base64 encoding (4/3x), still leaves margin
-	// for the payload's other fields within the 9-chunk budget.
-	// dispatch() fails closed with an error rather than silently
-	// dropping data if a payload ever needs more.
+	// characters, which is why buildEventPayload truncates a non-command
+	// note body to a smaller bound than before this limit was enforced
+	// (see noteBodyTransportLimit): an 800-rune note body, after JSON
+	// escaping (Go's encoder expands a run of HTML-sensitive runes like
+	// '<' up to 6x) and base64 encoding (4/3x), still leaves margin for
+	// the payload's other fields within the 9-chunk budget. A /fs-*
+	// command body is never truncated — run-agent-job.sh derives the
+	// human instruction from it — so dispatch() fails closed with an
+	// error rather than silently dropping data if a payload needs more.
 	maxEventPayloadChunks = 9
 )
 
@@ -356,21 +378,34 @@ func computeDispatchHMAC(secret string, variables map[string]string) string {
 }
 
 // noteBodyTruncationNotice is appended by truncateNoteBody when it
-// actually shortens a note body. run-agent-job.sh derives /fs-fix
-// instructions and retro comments directly from the dispatched note_body
-// (see buildEventPayload); without an in-band indicator, a note cut off
-// at the 800-character dispatch limit is indistinguishable from one that
-// was always that short, and the consumer silently acts on a shortened
-// instruction with no way to detect the loss.
+// actually shortens a note body. run-agent-job.sh reads retro comments
+// directly from the dispatched comment body (see buildEventPayload);
+// without an in-band indicator, a note cut off at the dispatch limit is
+// indistinguishable from one that was always that short.
 const noteBodyTruncationNotice = " […truncated]"
+
+// noteBodyTransportLimit is the rune bound buildEventPayload applies to a
+// note body that is not a /fs-* command. 800, not the 4096 convert.go uses
+// for display truncation: this payload travels as event_payload_chunk_NN
+// pipeline inputs (see maxEventPayloadChunks), which GitLab's 20-input
+// ceiling caps at 9 chunks of dispatchPayloadChunkSize base64 characters
+// — far less room than a bare 4096-byte note body's worst-case
+// JSON-escaped, base64-encoded size would need.
+const noteBodyTransportLimit = 800
+
+// isFullsendCommandBody reports whether body is a /fs-* slash command,
+// matching the poller's slash-command detection (isSlashCommandEvent).
+func isFullsendCommandBody(body string) bool {
+	return strings.HasPrefix(strings.TrimSpace(body), "/fs-")
+}
 
 // truncateNoteBody truncates s to at most maxLen runes, appending
 // noteBodyTruncationNotice (counted against maxLen) when s actually had to
 // be cut. Unlike the shared truncate helper — used where silent truncation
 // is acceptable (e.g. convert.go's display-only 4096-character bound) —
-// this is used only for the dispatch-transport note_body (see
-// buildEventPayload), where a consumer parses the truncated text as an
-// instruction and needs to know it may be incomplete.
+// this is used only for dispatch-transport comment bodies (see
+// buildEventPayload and encodeJiraEventPayload), where a consumer reads
+// the truncated text and needs to know it may be incomplete.
 func truncateNoteBody(s string, maxLen int) string {
 	r := []rune(s)
 	if len(r) <= maxLen {
@@ -386,6 +421,18 @@ func truncateNoteBody(s string, maxLen int) string {
 
 // buildEventPayload creates a JSON payload from a RoutableEvent,
 // including only non-zero/non-empty optional fields.
+//
+// A note body travels only at the canonical normalized comment path,
+// _normalized_event.transition.comment.body, which run-agent-job.sh reads
+// for /fs-fix instructions and retro comments. Both the scheduled poller
+// and the webhook dispatcher reach this function with the body they read
+// from the GitLab notes API (the webhook path re-fetches the note after
+// validating its ID and actor), never the raw webhook note text. A /fs-*
+// command body is carried intact; dispatch() rejects a command whose
+// payload does not fit the transport budget instead of truncating it.
+// Any other body (for example a bot review note) is bounded to
+// noteBodyTransportLimit runes, with noteBodyTruncationNotice appended
+// when it is actually cut.
 func buildEventPayload(event RoutableEvent) ([]byte, error) {
 	m := map[string]interface{}{
 		"type":       event.Type,
@@ -393,18 +440,16 @@ func buildEventPayload(event RoutableEvent) ([]byte, error) {
 		"updated_at": event.UpdatedAt.Format(time.RFC3339),
 	}
 	if event.NoteBody != "" {
-		// 800, not the 4096 convert.go uses for display truncation:
-		// this payload travels as event_payload_chunk_NN pipeline
-		// inputs (see maxEventPayloadChunks), which GitLab's 20-input
-		// ceiling caps at 9 chunks of dispatchPayloadChunkSize base64
-		// characters — far less room than a bare 4096-byte note body's
-		// worst-case JSON-escaped, base64-encoded size would need.
-		// truncateNoteBody (not the shared truncate helper) appends
-		// noteBodyTruncationNotice when it actually cuts the body, so a
-		// consumer deriving a /fs-fix instruction or retro comment from
-		// this field (run-agent-job.sh) can tell the instruction was
-		// shortened instead of silently acting on a truncated one.
-		m["note_body"] = truncateNoteBody(event.NoteBody, 800)
+		body := event.NoteBody
+		if !isFullsendCommandBody(body) {
+			body = truncateNoteBody(body, noteBodyTransportLimit)
+		}
+		m["_normalized_event"] = map[string]any{
+			"transition": normevent.Transition{
+				Kind:    normevent.TransitionCommentAdded,
+				Comment: &normevent.Comment{Body: body},
+			},
+		}
 	}
 	if event.NoteID != 0 {
 		m["note_id"] = event.NoteID

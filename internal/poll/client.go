@@ -32,6 +32,11 @@ type GitLabClient interface {
 	// ListIssueNotes MUST return notes in ascending created_at order.
 	ListIssueNotes(ctx context.Context, owner, repo string, issueIID int) ([]Note, error)
 	ListMergeRequestNotes(ctx context.Context, owner, repo string, mrIID int) ([]Note, error)
+	// ListMergeRequestDiffVersions returns every diff version of the
+	// merge request. GitLab records a new version each time the source
+	// branch is pushed, so the versions reveal pushes to an open MR.
+	// Order is not significant: callers order versions by ID.
+	ListMergeRequestDiffVersions(ctx context.Context, owner, repo string, mrIID int) ([]MergeRequestDiffVersion, error)
 	// ListResourceLabelEvents MUST return events in ascending ID order
 	// (the poller iterates in reverse to find the most recent "add").
 	ListResourceLabelEvents(ctx context.Context, owner, repo string, issueIID int) ([]ResourceLabelEvent, error)
@@ -141,6 +146,15 @@ type Note struct {
 	Body      string    `json:"body"`
 	Author    UserRef   `json:"author"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+// MergeRequestDiffVersion is one diff version of a merge request, as
+// returned by the merge request versions API. Version IDs increase with
+// creation order.
+type MergeRequestDiffVersion struct {
+	ID            int       `json:"id"`
+	HeadCommitSHA string    `json:"head_commit_sha"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 // UserRef is a minimal user reference from the GitLab API.

@@ -158,9 +158,9 @@ func (r CodexRuntime) Bootstrap(input BootstrapInput) error {
 	// on. Part two needs the pinned CLI's catalog: codex must resolve the
 	// model Run will launch to collaboration V1, the only version whose spawn
 	// tool the guard admits (its entry selects V1, or carries no version and
-	// codex's multi_agent feature, on by default, supplies V1). A V2 or
-	// unlisted parent keeps the multi-agent tools off and runs in one context,
-	// as every agent does today.
+	// codex's multi_agent feature, on by default, supplies V1). A V2,
+	// unlisted or gateway/ parent keeps the multi-agent tools off and runs in
+	// one context, as an agent that does not delegate does.
 	_, securityOn := input.(SandboxHooksBootstrap)
 	var catalog codexCatalog
 	delegating := false
@@ -170,13 +170,25 @@ func (r CodexRuntime) Bootstrap(input BootstrapInput) error {
 		}
 		var reason string
 		if delegating, reason = codexParentResolvesV1(catalog, input.ParentModel(), def.Model); !delegating {
-			fmt.Fprintf(os.Stderr, "sub-agents: %s; native sub-agents need a parent Codex resolves to collaboration V1, running in one context\n", reason)
+			fmt.Fprintf(os.Stderr, "sub-agents: %s, running in one context\n", reason)
+		}
+	}
+	// Resolved before config.toml is written: a bad subagents value fails here.
+	var roles []codexRole
+	defaultSubagentModel, childEffort := "", ""
+	if delegating {
+		discovered, skipped := codexRoles(input.SkillDirs(), agentName)
+		roles, defaultSubagentModel, childEffort, err = resolveCodexChildModels(
+			discovered, skipped, input.AgentSubagents(), os.Getenv(codexSubagentModelEnv), input.Effort(), catalog)
+		if err != nil {
+			return err
 		}
 	}
 	// The gateway provider is rendered only when the runner registered an
 	// inference.gateway block for this sandbox (PrepareGatewayRun).
 	gatewayBaseURL := codexGatewayRunFor(sandboxName)
-	configTOML, err := renderCodexConfig(cfg, repoInput.RepoDir(), codexDeveloperInstructions(agentName, def), gatewayBaseURL)
+	configTOML, err := renderCodexConfig(cfg, repoInput.RepoDir(),
+		codexDeveloperInstructions(agentName, def, roles), gatewayBaseURL, roles, defaultSubagentModel, childEffort)
 	if err != nil {
 		return err
 	}
@@ -285,14 +297,12 @@ func (r CodexRuntime) Bootstrap(input BootstrapInput) error {
 		digests.HooksJSON = codexAssetSHA256(hooksJSON)
 		// The role files are agent-writable, so their digests join the
 		// runner-held set the spawn guard re-checks before every spawn.
-		// Codex's multi-agent tools stay off in config.toml until the
-		// dispatch note lands (#6970).
-		if delegating {
+		if len(roles) > 0 {
 			if err := codexExecOK(sandboxName, "mkdir -p "+shellQuote(r.codexRolesDir()), "creating codex roles dir"); err != nil {
 				return err
 			}
 			digests.RoleFiles = map[string]string{}
-			for _, role := range codexRoles(input.SkillDirs(), agentName) {
+			for _, role := range roles {
 				data := role.toml()
 				if err := uploadBytes(sandboxName, r.codexRolesDir()+"/"+role.Name+".toml", data); err != nil {
 					return fmt.Errorf("writing role %q: %w", role.Name, err)
@@ -342,8 +352,9 @@ func codexExecOK(sandboxName, cmd, what string) error {
 // slot for caller-supplied instructions, which it composes with its own base
 // prompt and tool guidance — the same relationship pi's APPEND_SYSTEM.md has,
 // and a deliberate difference from Claude Code, where the body *is* the system
-// prompt.
-func codexDeveloperInstructions(agentName string, def *piAgentDef) string {
+// prompt. roles is the registered roster of a delegating agent; empty means
+// the agent runs in one context and gets codexNoSubagentNote.
+func codexDeveloperInstructions(agentName string, def *piAgentDef, roles []codexRole) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Agent: %s\n\n", agentName)
 	if def.Description != "" {
@@ -352,15 +363,20 @@ func codexDeveloperInstructions(agentName string, def *piAgentDef) string {
 	}
 	b.WriteString(def.Body)
 	b.WriteString("\n")
-	b.WriteString(codexNoSubagentNote)
+	if len(roles) == 0 {
+		b.WriteString(codexNoSubagentNote)
+	} else {
+		b.WriteString(codexSubagentNote(roles))
+	}
 	return b.String()
 }
 
-// codexNoSubagentNote makes the absence of a sub-agent tool explicit so skills
-// written for Claude Code's Agent tool (pr-review, retro) take their
+// codexNoSubagentNote makes the absence of a sub-agent roster explicit so
+// skills written for Claude Code's Agent tool (pr-review, retro) take their
 // single-context path deliberately instead of recording a failed dispatch.
-// codex does have a spawn_agent tool, but fullsend wires no sub-agent roster
-// for it in v1, the same position pi was in (#6527).
+// Every agent the ADR 0126 gate declines gets it (tools without Agent,
+// security off, a V2 or unlisted parent); a delegating agent gets
+// codexSubagentNote.
 const codexNoSubagentNote = "\n## Runtime note\n\n" +
 	"This agent runs on the codex runtime (FULLSEND_RUNTIME=codex). No fullsend sub-agent " +
 	"roster is available. When a skill says to dispatch sub-agents, execute each sub-agent " +
@@ -385,6 +401,44 @@ const codexChunkedReadNote = "When reading a SKILL.md or other instruction file,
 	"output for a truncation warning before advancing; if a range is truncated, split it into " +
 	"smaller contiguous windows that together still cover its start through end — never skip " +
 	"the back half — and read those windows before moving on to the next range.\n"
+
+// codexSubagentNote is the dispatch bridge for a delegating agent (#6970,
+// ADR 0126): it maps the skills' "dispatch a sub-agent" onto codex's native
+// tools and states the policy the spawn guard enforces, so the parent passes
+// the arguments the guard admits and handles a denial without retrying. The
+// first two sentences and the denied-spawn sentence are what the agents
+// repository's pr-review skill will key on once its codex wording lands;
+// change them only together with that skill. roles is the registered
+// roster, sorted by name (codexRoles). The child contract is in every role
+// file (codexChildNote), not here.
+func codexSubagentNote(roles []codexRole) string {
+	names := make([]string, len(roles))
+	for i, role := range roles {
+		names[i] = role.Name
+	}
+	return "\n## Runtime note\n\n" +
+		"This agent runs on the codex runtime (FULLSEND_RUNTIME=codex). " +
+		"Registered sub-agent roles: " + strings.Join(names, ", ") + ". " +
+		"Sub-agents are native Codex children. When a skill says to dispatch a sub-agent, call " +
+		"`spawn_agent` with `agent_type` set to a role listed above — the persona's name, or `explore` " +
+		"where the skill asks for an `Explore` pass (instruction-only; nothing enforces read-only on " +
+		"a child); for a task that names no persona, omit `agent_type` — and `message` carrying that " +
+		"sub-agent's whole context package: a child starts with nothing but that message. Pass " +
+		"`fork_context: false` explicitly on every spawn, and never pass a `model` or " +
+		"`reasoning_effort` argument: the runner has bound each role's model. Use only the roles " +
+		"listed above; `explorer` and `worker` are not registered and are denied. Spawn only the " +
+		"sub-agents the skill selected; a role being registered is not a reason to spawn it.\n\n" +
+		"At most four children can be open at once, and a finished child keeps its slot until it " +
+		"is closed. Start up to four, `wait_agent` on one child at a time (one target id per call), " +
+		"`close_agent` each child once it has reported, then start the remaining ones. Close every " +
+		"child you spawned and never resume one. A `wait_agent` that returns `timed_out: true` and " +
+		"no status has timed out, not failed: call it again. A child whose status is `errored` is " +
+		"final for that role. " +
+		"A denied spawn is final for that role: do not retry it, execute that sub-agent " +
+		"definition yourself with the same context package, and treat the output as that " +
+		"sub-agent's result.\n\n" +
+		codexChunkedReadNote
+}
 
 // codexUnsupportedTools returns the Claude tool names from an agent
 // definition that have no codex tool. Unlike pi, nothing is dropped from an

@@ -323,7 +323,7 @@ flowchart TB
   without overlays, and `FULLSEND_FALLBACK_MODELS` applies as each runtime
   allows. Decided, not yet implemented.
 - Plugins are runtime-scoped harness resources: a harness declares `plugins:` as one list of directories in its own repository (same trust and fetch path as skills), and each entry's format decides which runtime loads it — a `plugin.json` bundle is Claude Code's, a directory pi's `-e` loader resolves is uploaded and loaded after a tree-hash preflight computed from the host copy. Each runtime names and skips the entries in the other format, so the list survives a runtime switch. Because `--no-extensions` plus explicit `-e` closes the set of code that can register tools, no per-tool declaration is needed ([ADR 0094](ADRs/0094-pi-extensions-are-harness-resources.md)).
-- Native Codex children run under a runner-owned policy: Bootstrap registers roles for an agent with the `Agent` tool, under harness security, whose parent model Codex resolves to collaboration V1 (a V2 or unlisted parent keeps the multi-agent tools off), and binds each child's model (a persona's own entry in its role file, the run-level default otherwise), and a mandatory dispatch hook admits only fresh-context V1 spawns of registered roles after checking `hooks.json` and the role files against runner-held digests ([ADR 0126](ADRs/0126-fullsend-owned-codex-subagents.md)); not yet implemented, so review and retro still run in one context on Codex ([#6970](https://github.com/fullsend-ai/fullsend/issues/6970)).
+- Native Codex children run under a runner-owned policy: Bootstrap registers roles for an agent with the `Agent` tool, under harness security, whose parent model Codex resolves to collaboration V1 on the direct route (a V2, unlisted or `gateway/` parent keeps the multi-agent tools off), and binds each child's model (a persona's own entry in its role file, the run-level default otherwise) and the run's effort, and a mandatory dispatch hook admits only fresh-context V1 spawns of registered roles after checking `hooks.json` and the role files against runner-held digests; after each iteration the runner checks the spawns seen in the stream or in the children's rollouts on disk, each child once, against the hook's admissions ([ADR 0126](ADRs/0126-fullsend-owned-codex-subagents.md), [#6970](https://github.com/fullsend-ai/fullsend/issues/6970)).
 
 ### Behaviour testing
 
@@ -334,7 +334,19 @@ End-to-end **behaviour tests** use the shared framework in `pkg/behaviourtest/` 
 - Is the runtime a single model call, a loop (plan-act-observe), or something more structured?
 - How does the runtime interact with the sandbox boundaries — does it know what it can't do, or does it just hit walls? (For tool access: both — prose instructions inform the runtime, and `permissions.deny` hard-blocks execution; see [ADR 0027](ADRs/0027-allowed-and-disallowed-tools-for-agents.md). Broader sandbox interaction remains open.)
 - How do we swap model providers or versions without changing the rest of the stack?
-- What is the interface between the harness and the runtime? (A system prompt? A configuration file? An API contract?) (Decided: the runner-side contract is `runtime.Runtime` + `BootstrapInput`, the runtime-neutral sandbox tool-hook contract in [ADR 0090](ADRs/0090-runtime-neutral-sandbox-hooks-contract.md), and optional capability interfaces. Each runtime translates the harness prompt into its own instruction slot — pi's `APPEND_SYSTEM.md`, codex's `developer_instructions` ([ADR 0099](ADRs/0099-codex-agent-runtime.md)) — rather than a shared format.)
+- What is the interface between the harness and the runtime? (A system prompt? A
+  configuration file? An API contract?) (Decided: the runner-side contract is
+  `runtime.Runtime` + `BootstrapInput`, the runtime-neutral sandbox tool-hook
+  contract in [ADR 0090](ADRs/0090-runtime-neutral-sandbox-hooks-contract.md), and
+  optional capability interfaces.
+  Each runtime translates the harness prompt into its own instruction slot — pi's
+  `APPEND_SYSTEM.md`, codex's `developer_instructions` ([ADR
+  0099](ADRs/0099-codex-agent-runtime.md)) — rather than a shared format.
+  Hook scripts on every runtime resolve their interpreter and `PATH` from
+  agent-unwritable directories — Claude Code bakes them into the digest-checked
+  `hooks.json` at Bootstrap, while Codex and pi export trusted values and deny
+  each hook call when they are absent ([ADR
+  0152](ADRs/0152-hook-interpreter-trust.md)).)
 
 ## Agent Identity Provider
 
@@ -409,6 +421,17 @@ The existing design principle is that [the repo is the coordinator](problems/age
   via source-native write-then-verify locks, and feeds the same dispatch pipeline
   as webhooks ([ADR 0063](ADRs/0063-polling-based-work-discovery.md)). Initial
   scope is per-repo mode only.
+- Jira poll actor authorization does not require the poller to administer the
+  Jira project once a repository opts in with a `jira` provider under
+  `authorization:`. With no `jira` entry, every Jira event resolves through the
+  admin-only project role roster. The entry lists Jira groups and account IDs
+  for the `write` and `triage` roles, which are authoritative for slash
+  commands and other non-label events, and Jira label-added events are
+  authorized by Jira's Edit Issues permission by default. With an entry, the
+  roster is loaded only for slash commands without lists or under
+  `labels: project_roles` (which, with no lists, resolves every event through
+  the roster, as with no entry)
+  ([ADR 0153](ADRs/0153-authorize-jira-poll-actors-without-project-administration.md)).
 - Process lifecycle (target state): bound `fullsend run` and `fullsend poll`
   support once, resident polling, and deadline-bounded polling. Bare
   `fullsend poll` and non-CI bound runs default to once; a CI bound run with
@@ -1166,7 +1189,7 @@ See [runtimes.md](runtimes.md) for the control-by-control security matrix, the c
 
 ## Repository layout (design workspace vs. web delivery)
 
-The repository combines design documents, Go CLI code, and a small **public web** surface. **Decided:** Browser-oriented static source lives under **`web/`** (the landing page is `web/public/index.html` at `/`, the interactive document graph is `web/public/graph.html` at `/graph.html`, and the custom 404 page is `web/public/404.html`). The user-facing documentation site is built from **`docs/`** by VitePress (`npm run docs:build`) and served under `/docs/`. Cloudflare Wrangler configuration and deploy-time static assets live under **`cloudflare_site/`** (single `wrangler.toml` with `not_found_handling = "404-page"`; CI stages **`_bundle/`** on the deploy runner and copies only **`public/`** and **`worker/`** from the artifact into that tree so **`wrangler.toml` is never taken from the PR-built zip**). See [ADR 0019](ADRs/0019-web-source-and-cloudflare-site-layout.md).
+The repository combines design documents, Go CLI code, and a small **public web** surface. **Decided:** Browser-oriented static source lives under **`web/`** (the landing page is `web/public/index.html` at `/` and the custom 404 page is `web/public/404.html`). The user-facing documentation site is built from **`docs/`** by VitePress (`npm run docs:build`) and served under `/docs/`. Cloudflare Wrangler configuration and deploy-time static assets live under **`cloudflare_site/`** (single `wrangler.toml` with `not_found_handling = "404-page"`; CI stages **`_bundle/`** on the deploy runner and copies only **`public/`** and **`worker/`** from the artifact into that tree so **`wrangler.toml` is never taken from the PR-built zip**). See [ADR 0019](ADRs/0019-web-source-and-cloudflare-site-layout.md).
 
 The **admin installation SPA** that formerly lived under `web/admin/` was removed on
 2026-08-20, together with the OAuth BFF it required in the site Worker. The site Worker

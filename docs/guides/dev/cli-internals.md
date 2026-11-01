@@ -134,7 +134,7 @@ fullsend
 │   ├── --run-url <url>                      #   CI/CD run URL for status comments
 │   ├── --status-repo <owner/repo>           #   Repository for status comments
 │   ├── --status-number <int>                #   Issue/PR number for status comments
-│   └── --mint-url <url>                     #   Mint service URL for on-demand status tokens
+│   └── --mint-url <url>                     #   Mint service URL for agent and status tokens (default: layered mint_url, then $FULLSEND_MINT_URL)
 ├── fetch-skill      <url>                    # Fetch a skill at runtime (in-sandbox)
 ├── scan                                     # Run security scanner on input/output
 │   ├── input                                # Scan event payload for prompt injection
@@ -213,10 +213,10 @@ fullsend
     ├── --run-url <url>                      #   Workflow run URL (optional)
     ├── --sha <string>                       #   Commit SHA (optional)
     ├── --reason <string>                    #   Termination reason: terminated or cancelled (default: terminated)
-    ├── --mint-url <url>                     #   Mint service URL for on-demand token (default: $FULLSEND_MINT_URL)
-    ├── --role <string>                      #   Agent role for minting (required with --mint-url)
+    ├── --mint-url <url>                     #   Mint service URL for on-demand token (default: layered mint_url from --fullsend-dir, then $FULLSEND_MINT_URL)
+    ├── --role <string>                      #   Agent role for minting (required to mint a token)
     ├── --forge <platform>                   #   Forge platform (github, gitlab); auto-detected from CI env
-    ├── --fullsend-dir <path>                #   Path to fullsend config directory (completion mode detection and tracker routing)
+    ├── --fullsend-dir <path>                #   Path to fullsend config directory (completion mode detection, layered mint_url resolution, and tracker routing)
     ├── --job-status <string>                #   Job outcome from CI runner (e.g. success, failure, cancelled)
     ├── --was-skipped                        #   Pre-script decided to skip the run; forces synthesis under on_failure
     └── --review-run                         #   Built-in GitHub review agent; enables current-HEAD-aware cancellation guidance
@@ -230,9 +230,54 @@ must treat `truncated: true` as an incomplete result. GitLab merge-request
 discussions are mapped to the same thread model, including resolution state,
 comments, positions, and resolver identity when GitLab provides it. Each comment
 also includes `author_role` and `author_role_verified`; resolved threads include
-`resolved_by_role` and `resolved_by_role_verified`. A role is `none` with
-`verified: true` for an authoritative non-member result, and `verified: false`
-when the actor is a bot/unknown or the permission lookup fails.
+`resolved_by_role` and `resolved_by_role_verified`. `verified: true` means the
+forge authoritatively established the role, not merely that the lookup request
+succeeded. On GitHub, a built-in role, or a custom role that normalizes through
+effective permission flags or the legacy `permission` field, is reported with
+`verified: true`. A role is `none` with `verified: true` only for an
+authoritative non-member result: a 404 from the collaborator permission
+endpoint, or an explicit `role_name: none` with no conflicting `permission`. A
+role is `none` with `verified: false` when the actor is a bot/unknown, the
+permission lookup fails, or a successful response has missing, contradictory,
+or unnormalizable permission data. Consumers must treat unverified roles as
+untrusted (fail closed).
+
+Each thread carries the same position fields on every forge. A `null` value
+means the forge did not report that value. `left` is the old (base) version of
+the file and `right` is the new (head) version. Line numbers "on a side" count
+lines in that side's version of the file.
+
+| Field | Meaning | GitHub source | GitLab source |
+|-------|---------|---------------|---------------|
+| `side` | Diff side that `line` and `original_line` refer to (`left` or `right`) | `diffSide`, lowercased | `right` when `new_line` is set, otherwise `left` when `old_line` is set |
+| `line` | Last line of the thread's range on `side` in the current diff; `null` when the thread no longer maps onto the current diff | `line` (`null` for outdated threads) | `new_line` on the right side, `old_line` on the left side |
+| `start_side` | Side of the first line of a multi-line range; `null` for single-line threads | `startDiffSide`, lowercased | `line_range.start.type` (`old` is `left`, `new` is `right`), otherwise the same rule as `side` |
+| `start_line` | First line of a multi-line range on `start_side`; `null` for single-line threads and for outdated multi-line GitHub threads (which keep `start_side` and `original_start_line`) | `startLine` | `line_range.start` line on `start_side`, when it differs from the end |
+| `original_line` | Line on `side` in the diff the thread was created against | `originalLine` | Always `null` (not exposed) |
+| `original_start_line` | Start line on `start_side` in the diff the thread was created against; for cross-side ranges this is a different file version than `original_line` | `originalStartLine` | Always `null` (not exposed) |
+| `old_line` | Current line number in the old (left) file | `line` when `side` is `left` | `old_line` |
+| `new_line` | Current line number in the new (right) file | `line` when `side` is `right` | `new_line` |
+| `is_outdated` | Whether later pushes made the thread outdated | `isOutdated` | Always `null` (not exposed) |
+
+To match a finding reported against the head revision, compare `path` and
+`new_line`. The table distinguishes the cases the two forges previously
+conflated:
+
+- A GitHub outdated thread has `is_outdated: true`, a `null` `line`, and its
+  creation position in `original_line`.
+- A GitLab removed-line discussion has `side: "left"`, `old_line` set,
+  `new_line: null`, and `is_outdated: null`. A `null` `new_line` alone never
+  means a thread is outdated.
+- A GitLab comment on an unchanged context line has both `old_line` and
+  `new_line`. GitHub reports only the line on the thread's `side`, so the other
+  field is `null`.
+
+**Migration from the earlier model.** Earlier releases emitted only `line` and
+`original_line`, with forge-specific meanings. On GitHub, `line` and
+`original_line` keep their meaning. On GitLab, read the old-file line from
+`old_line` instead of `original_line`, which is now always `null`. Read the
+new-file line from `new_line` instead of `line`: for a removed-line discussion,
+`line` is now the old-file line on the `left` side rather than `null`.
 
 The `mint`, `inference`, and `github` subcommands decompose setup into role-specific operations for organizations that separate GCP and GitHub responsibilities:
 

@@ -95,7 +95,7 @@ func (p *Poller) toNormalizedEvent(ctx context.Context, event RoutableEvent) (di
 	case "mr_event":
 		authorID = event.NoteAuthorID
 		switch event.Action {
-		case "opened", "closed":
+		case "opened", "closed", "synchronized":
 			actorLogin = event.NoteAuthorLogin
 			if actorLogin == "" {
 				actorLogin = event.MRAuthorLogin
@@ -141,6 +141,13 @@ func (p *Poller) toNormalizedEvent(ctx context.Context, event RoutableEvent) (di
 	if event.Type == "mr_note" || event.Type == "mr_event" {
 		cpState, err := p.buildChangeProposalState(ctx, event)
 		if err != nil {
+			// A synchronized event routes only with a known same-project
+			// origin, so a lookup failure must fail the event (recording
+			// the failure and holding the watermark) rather than be
+			// silently routed to no stages and consumed.
+			if event.Type == "mr_event" && event.Action == "synchronized" {
+				return dispatch.NormalizedEvent{}, 0, fmt.Errorf("build change proposal state: %w", err)
+			}
 			log.Printf("WARNING: buildChangeProposalState for %s IID %d: %v", event.Type, event.IID, err)
 		} else {
 			ne.State.ChangeProposal = cpState
@@ -166,6 +173,8 @@ func translateEventType(event RoutableEvent) string {
 			return "opened"
 		case "closed":
 			return "closed"
+		case "synchronized":
+			return "synchronized"
 		default:
 			return "merged"
 		}
@@ -287,6 +296,8 @@ func mapRawAction(event RoutableEvent) string {
 			return "opened"
 		case "closed":
 			return "closed"
+		case "synchronized":
+			return "synchronized"
 		default:
 			return "merged"
 		}

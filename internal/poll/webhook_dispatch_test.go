@@ -3,6 +3,7 @@ package poll
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"log"
@@ -861,5 +862,36 @@ func TestReadWebhookPayloadFile(t *testing.T) {
 				t.Fatalf("err = %v, want containing %q", err, f.wantErr)
 			}
 		})
+	}
+}
+
+// TestRunWebhook_FixCommandCarriesRefetchedBodyAtCanonicalPath checks that
+// a webhook-delivered /fs-fix dispatch carries the multiline note body the
+// handler re-fetched from the GitLab API at the canonical normalized
+// comment path — never the raw webhook object_attributes.note text, and
+// never the legacy note_body field.
+func TestRunWebhook_FixCommandCarriesRefetchedBodyAtCanonicalPath(t *testing.T) {
+	mc := newMockClient()
+	mc.memberLevel[alice.ID] = 30
+	mc.mr[3] = sameProjectMR(3, "opened")
+	mc.projectPaths[7] = "group/project"
+	mc.mrNotes[3] = []Note{{ID: 21, Body: multilineFixBody, Author: alice, CreatedAt: recent}}
+	mc.setSlashState(persistedPollState{LastPollAtFast: beforeRecent})
+
+	if err := newWebhookPoller(mc).RunWebhook(context.Background(), notePayload(t, "MergeRequest", alice.ID, 21, 3)); err != nil {
+		t.Fatalf("RunWebhook: %v", err)
+	}
+	if len(mc.pipelineCalls) != 1 || mc.pipelineCalls[0].Variables["STAGE"] != "fix" {
+		t.Fatalf("pipeline calls = %+v, want one fix dispatch", mc.pipelineCalls)
+	}
+	payload, err := base64.StdEncoding.DecodeString(mc.pipelineCalls[0].Variables["EVENT_PAYLOAD_B64"])
+	if err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if got, ok := payloadCommentBody(t, payload); !ok || got != multilineFixBody {
+		t.Errorf("canonical comment body = %q (present %v), want the re-fetched %q", got, ok, multilineFixBody)
+	}
+	if bytes.Contains(payload, []byte("payload body must not be used")) || bytes.Contains(payload, []byte(`"note_body"`)) {
+		t.Errorf("payload carries the raw webhook note or legacy note_body: %s", payload)
 	}
 }

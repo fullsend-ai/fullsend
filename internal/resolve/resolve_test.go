@@ -2648,3 +2648,44 @@ func TestResolveHarness_MixedAllowlists(t *testing.T) {
 	assert.Equal(t, "agent", result.Deps[0].Field)
 	assert.Equal(t, "policy", result.Deps[1].Field)
 }
+
+// TestResolveHarness_OverrideURLFailures checks that a URL file override
+// with a missing hash, a wrong hash, or a URL off allowed_remote_resources
+// fails resolution with the override's field named (#6158).
+func TestResolveHarness_OverrideURLFailures(t *testing.T) {
+	content := []byte("override body")
+	srv, policy := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(content)
+	}))
+	goodHash := fetch.ComputeSHA256(content)
+	wrongHash := fetch.ComputeSHA256([]byte("something else"))
+	const field = "skills[0].overrides[sub-agents/security.md]"
+
+	for name, tc := range map[string]struct {
+		url     string
+		allowed []string
+		want    string
+	}{
+		"missing hash":  {srv.URL + "/overrides/security.md", []string{srv.URL + "/"}, "integrity hash"},
+		"wrong hash":    {srv.URL + "/overrides/security.md#sha256=" + wrongHash, []string{srv.URL + "/"}, "integrity check failed"},
+		"off allowlist": {srv.URL + "/overrides/security.md#sha256=" + goodHash, []string{"https://other-domain.com/"}, "not in allowed_remote_resources"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			url := tc.url
+			h := &harness.Harness{
+				Skills: []harness.SkillEntry{{
+					Source:    "/local/skills/pr-review",
+					Overrides: map[string]*string{"sub-agents/security.md": &url},
+				}},
+				AllowedRemoteResources: tc.allowed,
+			}
+			_, err := ResolveHarness(context.Background(), h, ResolveOpts{
+				WorkspaceRoot: t.TempDir(),
+				FetchPolicy:   policy,
+			})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), field)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}

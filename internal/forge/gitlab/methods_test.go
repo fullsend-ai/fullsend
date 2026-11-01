@@ -250,6 +250,129 @@ func TestListPullRequestReviewThreads(t *testing.T) {
 	assert.Equal(t, normevent.RoleNone, got.Threads[7].ResolvedByRole)
 }
 
+func TestListPullRequestReviewThreads_PositionContract(t *testing.T) {
+	client, mux := setupTest(t)
+	note := func(position map[string]any) map[string]any {
+		n := map[string]any{"id": 1, "body": "comment", "resolvable": true, "resolved": false}
+		if position != nil {
+			n["position"] = position
+		}
+		return n
+	}
+	handleTracked(t, mux, "/api/v4/projects/myorg%2Fmyrepo/merge_requests/42/discussions", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusOK, []map[string]any{
+			{"id": "context-line", "notes": []map[string]any{note(map[string]any{
+				"new_path": "main.go", "old_path": "main.go", "new_line": 17, "old_line": 16,
+			})}},
+			{"id": "removed-line", "notes": []map[string]any{note(map[string]any{
+				"new_path": "new.go", "old_path": "old.go", "new_line": nil, "old_line": 7,
+			})}},
+			{"id": "multi-line-new", "notes": []map[string]any{note(map[string]any{
+				"new_path": "main.go", "old_path": "main.go", "new_line": 12,
+				"line_range": map[string]any{
+					"start": map[string]any{"type": "new", "new_line": 10},
+					"end":   map[string]any{"type": "new", "new_line": 12},
+				},
+			})}},
+			{"id": "multi-line-mixed", "notes": []map[string]any{note(map[string]any{
+				"new_path": "main.go", "old_path": "main.go", "new_line": 6,
+				"line_range": map[string]any{
+					"start": map[string]any{"type": "old", "old_line": 5},
+					"end":   map[string]any{"type": "new", "new_line": 6},
+				},
+			})}},
+			{"id": "single-line-range", "notes": []map[string]any{note(map[string]any{
+				"new_path": "main.go", "old_path": "main.go", "new_line": 4, "old_line": 4,
+				"line_range": map[string]any{
+					"start": map[string]any{"type": nil, "old_line": 4, "new_line": 4},
+					"end":   map[string]any{"type": nil, "old_line": 4, "new_line": 4},
+				},
+			})}},
+			{"id": "general", "notes": []map[string]any{note(nil)}},
+		})
+	})
+
+	got, err := client.ListPullRequestReviewThreads(context.Background(), "myorg", "myrepo", 42)
+	require.NoError(t, err)
+	require.Len(t, got.Threads, 6)
+	for _, thread := range got.Threads {
+		assert.Nil(t, thread.IsOutdated, "%s: GitLab does not expose outdated state", thread.ID)
+		assert.Nil(t, thread.OriginalLine, "%s: GitLab does not expose the original position", thread.ID)
+		assert.Nil(t, thread.OriginalStartLine, "%s", thread.ID)
+	}
+
+	contextLine := got.Threads[0]
+	require.NotNil(t, contextLine.Side)
+	assert.Equal(t, forge.DiffSideRight, *contextLine.Side)
+	assert.Equal(t, 17, *contextLine.Line)
+	assert.Equal(t, 16, *contextLine.OldLine, "old_line keeps GitLab's old-file meaning")
+	assert.Equal(t, 17, *contextLine.NewLine, "new_line keeps GitLab's new-file meaning")
+	assert.Nil(t, contextLine.StartSide)
+	assert.Nil(t, contextLine.StartLine)
+
+	removed := got.Threads[1]
+	assert.Equal(t, "old.go", removed.Path)
+	require.NotNil(t, removed.Side)
+	assert.Equal(t, forge.DiffSideLeft, *removed.Side, "a removed-line discussion is on the old side")
+	assert.Equal(t, 7, *removed.Line)
+	assert.Equal(t, 7, *removed.OldLine)
+	assert.Nil(t, removed.NewLine)
+
+	multiNew := got.Threads[2]
+	assert.Equal(t, forge.DiffSideRight, *multiNew.Side)
+	assert.Equal(t, 12, *multiNew.Line)
+	require.NotNil(t, multiNew.StartSide)
+	assert.Equal(t, forge.DiffSideRight, *multiNew.StartSide)
+	assert.Equal(t, 10, *multiNew.StartLine)
+
+	multiMixed := got.Threads[3]
+	assert.Equal(t, forge.DiffSideRight, *multiMixed.Side)
+	assert.Equal(t, 6, *multiMixed.Line)
+	require.NotNil(t, multiMixed.StartSide)
+	assert.Equal(t, forge.DiffSideLeft, *multiMixed.StartSide)
+	assert.Equal(t, 5, *multiMixed.StartLine)
+
+	singleRange := got.Threads[4]
+	assert.Equal(t, 4, *singleRange.Line)
+	assert.Nil(t, singleRange.StartSide, "a range covering one line is not multi-line")
+	assert.Nil(t, singleRange.StartLine)
+
+	general := got.Threads[5]
+	assert.Nil(t, general.Side)
+	assert.Nil(t, general.Line)
+	assert.Nil(t, general.OldLine)
+	assert.Nil(t, general.NewLine)
+	assert.Nil(t, general.StartLine)
+}
+
+func TestGitLabSideLine(t *testing.T) {
+	one, two := 1, 2
+	tests := []struct {
+		name     string
+		lineType string
+		oldLine  *int
+		newLine  *int
+		wantSide *forge.DiffSide
+		wantLine *int
+	}{
+		{name: "context prefers new", oldLine: &one, newLine: &two, wantSide: ptrSide(forge.DiffSideRight), wantLine: &two},
+		{name: "old type", lineType: "old", oldLine: &one, newLine: &two, wantSide: ptrSide(forge.DiffSideLeft), wantLine: &one},
+		{name: "new type", lineType: "new", newLine: &two, wantSide: ptrSide(forge.DiffSideRight), wantLine: &two},
+		{name: "old type without old line falls back", lineType: "old", newLine: &two, wantSide: ptrSide(forge.DiffSideRight), wantLine: &two},
+		{name: "removed line", oldLine: &one, wantSide: ptrSide(forge.DiffSideLeft), wantLine: &one},
+		{name: "no lines"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			side, line := gitlabSideLine(tt.lineType, tt.oldLine, tt.newLine)
+			assert.Equal(t, tt.wantSide, side)
+			assert.Equal(t, tt.wantLine, line)
+		})
+	}
+}
+
+func ptrSide(side forge.DiffSide) *forge.DiffSide { return &side }
+
 func TestListPullRequestReviewThreads_DecodeError(t *testing.T) {
 	client, mux := setupTest(t)
 	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/42/discussions", func(w http.ResponseWriter, _ *http.Request) {

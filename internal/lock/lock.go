@@ -49,8 +49,33 @@ type FileEntry struct {
 
 const currentVersion = 1
 
+// ParseError is returned by Load when path exists but is not valid YAML.
+type ParseError struct {
+	Err error
+}
+
+func (e *ParseError) Error() string {
+	return fmt.Sprintf("parsing lock file: %v", e.Err)
+}
+
+func (e *ParseError) Unwrap() error { return e.Err }
+
+// UnsupportedVersionError is returned by Load when path declares a lock
+// format version this binary does not understand.
+type UnsupportedVersionError struct {
+	Version  int
+	Expected int
+}
+
+func (e *UnsupportedVersionError) Error() string {
+	return fmt.Sprintf("unsupported lock file version %d (expected %d)", e.Version, e.Expected)
+}
+
 // Load reads a lock file from path. Returns nil (no error) if the file
-// does not exist.
+// does not exist. Parse failures return *ParseError. A version other than
+// currentVersion returns *UnsupportedVersionError. Callers that would
+// rewrite the file must abort on any error so an unreadable lock is not
+// replaced.
 func Load(path string) (*LockFile, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -62,11 +87,11 @@ func Load(path string) (*LockFile, error) {
 
 	var lf LockFile
 	if err := yaml.Unmarshal(data, &lf); err != nil {
-		return nil, fmt.Errorf("parsing lock file: %w", err)
+		return nil, &ParseError{Err: err}
 	}
 
 	if lf.Version != currentVersion {
-		return nil, fmt.Errorf("unsupported lock file version %d (expected %d)", lf.Version, currentVersion)
+		return nil, &UnsupportedVersionError{Version: lf.Version, Expected: currentVersion}
 	}
 
 	return &lf, nil

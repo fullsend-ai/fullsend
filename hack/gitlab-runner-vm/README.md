@@ -453,12 +453,16 @@ No VM resume is needed when Fullsend publishes a release or bumps OpenShell.
 - `delete-openshift-vm.sh` — drain in-flight jobs, then OpenShift VM teardown + runner deregistration
 - `create-gcp-vm.sh` — end-to-end VM creation on GCE + runner registration + setup
 - `delete-gcp-vm.sh` — drain in-flight jobs, then GCE VM teardown + runner deregistration
-- `setup.sh` — standalone VM configuration (called by create-openshift-vm.sh / create-gcp-vm.sh). Idempotent and safe to re-run in place as a debug convenience; recreation is the compliance path (see #7257). Re-running it on an already-provisioned VM also installs/refreshes the Podman prune timer.
+- `setup.sh` — standalone VM configuration (called by create-openshift-vm.sh / create-gcp-vm.sh). Idempotent and safe to re-run in place as a debug convenience; recreation is the compliance path (see #7257). Re-running it on an already-provisioned VM also installs/refreshes the Podman prune timer and the daily package update timer.
 - `setup_test.sh` — unit tests for setup.sh idempotency hygiene (backup, executor path reconciliation and verification, gateway seed skip, Fedora repo repair)
 - `create-openshift-vm_test.sh` — end-to-end tests for create-openshift-vm.sh against stubbed `oc`/`virtctl`/GitLab API (shared-token path, cloud-init package repair, `--resume`)
 - `create-gcp-vm_test.sh` — end-to-end tests for create-gcp-vm.sh against stubbed `gcloud`/GitLab API (fresh create, `--resume` disk growth, service-user detection, both registration modes)
 - `podman-prune.sh` — reclaims unused rootless Podman containers and images; installed as a user systemd timer by setup.sh and invoked from prepare/cleanup
 - `podman-prune_test.sh` — unit tests for the prune script and timer install
+- `os-update.sh` — applies Fedora package updates within the installed
+  release without interrupting jobs; installed as a daily system timer by
+  setup.sh (see [Daily Fedora package updates](#daily-fedora-package-updates))
+- `os-update_test.sh` — unit tests for the update script and timer install
 - `grow-root-fs.sh` — grows the root partition and Btrfs filesystem to fill the disk and verifies capacity; run by create-gcp-vm.sh and used to repair existing GCE runners (see [GCE boot disk size and repair](#gce-boot-disk-size-and-repair))
 - `grow-root-fs_test.sh` — unit tests for grow-root-fs.sh (unexpanded, already-expanded, failed growth, unsupported layouts)
 - `gitlab-runner-version.sh` — central pin for the gitlab-runner version
@@ -558,6 +562,80 @@ first timer tick:
 ```bash
 systemctl --user start fullsend-podman-prune.service
 ```
+
+## Daily Fedora package updates
+
+Runner VMs get their packages at provisioning time. To keep them patched
+between recreations, `setup.sh` installs
+`/usr/local/libexec/fullsend/os-update.sh` and a system timer,
+`fullsend-os-update.timer`, which runs once a day (#8963).
+
+Recreation (drain, delete, create) is still the compliance path for
+provisioning changes (#7257). The daily update only updates installed
+packages within the VM's current Fedora release. It never passes
+`--releasever` or runs `dnf system-upgrade`. A Fedora major-version upgrade
+is a separate lifecycle change: recreate the VM from the newer image.
+
+**Schedule.** Each VM gets a random time of day (UTC) across the full
+24 hours, so the fleet does not drain at the same time. Runner jobs come
+from around the world, so there is no quiet hour to target. The time is
+picked on the first `setup.sh` run and saved in
+`/var/lib/fullsend-gitlab-runner/os-update-time`. Later `setup.sh` runs and
+reboots keep it. The timer has no `Persistent=`, so a run missed while the
+VM was off is not made up at boot. To see a VM's time:
+
+```bash
+systemctl list-timers fullsend-os-update.timer
+```
+
+**Each run:**
+
+1. Runs `dnf check-upgrade`. Exit `0` (no updates) leaves the runner alone.
+   Any exit other than `0` or `100` is reported as an error (the unit fails)
+   and also leaves the runner alone.
+2. Exit `100` means updates are available. If a job is running (an executor
+   stage running under gitlab-runner, or a running `runner-*` container),
+   the script waits and checks again every 10 minutes. It does not drain
+   while it waits. If the runner is still busy after 6 hours, the update is
+   deferred to the next day's run.
+3. When the runner is idle, it drains it the same way `drain_runner_vm` in
+   `lib.sh` does: `shutdown_timeout` is raised, then gitlab-runner gets
+   `SIGQUIT`, which stops it taking new jobs and lets any job that just
+   started finish. It never uses `systemctl stop`. A hold file
+   (`/var/lib/fullsend-gitlab-runner/os-update.hold`) together with the
+   drop-in `gitlab-runner.service.d/os-update-hold.conf`
+   (`ConditionPathExists=!<hold file>`) keeps `Restart=always` from starting
+   the runner again. If the drain takes longer than 6 hours, the job is
+   left running, the hold is removed, and the update is deferred. Starting
+   the unit again does not cancel a graceful shutdown already under way, so
+   `shutdown_timeout` is raised to the drain cap plus
+   `FULLSEND_OS_UPDATE_JOB_MAX_SEC` (default 24 hours). Set it to at least
+   your longest job timeout; a job that runs past it is killed.
+4. Runs `dnf -y upgrade`, then `dnf needs-restarting -r`. If a reboot is
+   needed, or the check cannot tell, the VM reboots while still drained. The
+   hold file keeps gitlab-runner from starting at boot.
+5. Before the runner takes jobs again, `os-update.sh` checks that rootless
+   Podman works as the runner user and that `gitlab-runner verify` reports
+   the runner as valid with GitLab. It then removes the hold and starts
+   gitlab-runner. After a reboot, `fullsend-os-update-resume.service` runs
+   this step. If the checks keep failing, the runner stays drained and the
+   unit fails.
+
+If gitlab-runner is not running when the timer fires (for example, an
+operator stopped it), the script makes no changes.
+
+Check the result of recent runs, or release a runner that was left drained
+after fixing the cause:
+
+```bash
+journalctl -u fullsend-os-update.service -u fullsend-os-update-resume.service
+sudo FULLSEND_RUNNER_USER="$(systemctl show -p User --value gitlab-runner)" \
+  /usr/local/libexec/fullsend/os-update.sh --resume
+```
+
+To install the timer on an already-provisioned VM, copy the updated
+`hack/gitlab-runner-vm/` files onto the VM and re-run `setup.sh`. Use the
+same `GITLAB_URL` / `RUNNER_IMAGE` as at provision time.
 
 ## GCE boot disk size and repair
 

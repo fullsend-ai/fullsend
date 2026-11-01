@@ -84,6 +84,27 @@ decide..." or "We also require...", stop. That is a second ADR.
 | Consequences | 3-5 one-sentence bullets | Essay-length explanations |
 | Forge scope | A few sentences, or one line per forge | Per-forge essays |
 
+### State the aim, then the choice
+
+Close the Context with one sentence stating what this ADR aims to achieve
+(e.g., "This ADR aims to …"). The reader needs it before the Options, because
+Options are judged against it. Then open the Decision with the choice and its
+purpose in one line ("We adopt X to do Y"), before any mechanics.
+
+```markdown
+# Good (end of Context)
+This ADR aims to stop requiring the Administer Projects permission on the
+long-lived Jira polling credential.
+
+# Good (start of Decision)
+We authorize Jira actors through config-owned lists and Jira's own label
+permission to drop that requirement.
+
+# Bad (start of Decision)
+Jira actors are authorized without the project role roster unless a
+repository opts into it: [immediately lists three numbered mechanisms]
+```
+
 ### Link, don't repeat
 
 Problem docs exist. Architecture.md exists. Reference them:
@@ -216,6 +237,8 @@ If the ADR partially answers a question, add a parenthetical:
 
 ## Red Flags -- Stop and Reconsider
 
+- Context ends without saying what the ADR aims to fix -- close it with "This ADR aims to …"
+- Decision opens with mechanics instead of the choice -- lead with "We adopt X to do Y"
 - Context section restates information from problem docs at length
 - You wrote "Additionally, we decide..." -- split into two ADRs
 - You're rewriting a section of architecture.md -- make a surgical edit instead
@@ -232,6 +255,8 @@ If the ADR partially answers a question, add a parenthetical:
 |---------|-----|
 | Bundling multiple decisions | Split into separate ADRs |
 | Bundling non-trivial implementation with the ADR | Land the decision record alone; track implementation in follow-up issues |
+| Context ends without stating the aim | Close it with a "This ADR aims to …" sentence |
+| Decision opens with mechanics, choice buried | Lead with "We adopt X to do Y" |
 | Verbose context | Link to problem docs |
 | Forgetting frontmatter `relates_to` | Check template, list problem doc filenames |
 | Not updating architecture.md | Follow the update checklist above |

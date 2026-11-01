@@ -334,7 +334,7 @@ gh api /orgs/halfsend-01/teams/mint-status/memberships/fstest-write --jq .state
 The inference gateway behaviour tests
 ([#8280](https://github.com/fullsend-ai/fullsend/issues/8280),
 [ADR 0137](../../ADRs/0137-inference-gateway-credential-route.md)) call a
-durable [agentgateway](https://github.com/agentgateway/agentgateway) v1.6.0
+durable [agentgateway](https://github.com/agentgateway/agentgateway) v1.7.0
 instance on Cloud Run in the E2E GCP project. The gateway accepts GitHub
 Actions OIDC tokens from the pool repositories only.
 `hack/setup-e2e-inference-gateway.sh` creates it, or adopts an existing one
@@ -362,7 +362,10 @@ changes:
 - **Pool change:** a new pool org, or a different `DefaultPoolSize`
   (`pkg/behaviourtest/drivers/install/driver.go`). Edit `POOL_ORGS` or
   `POOL_REPOS` at the top of the script.
-- **agentgateway bump:** change `AGW_VERSION`.
+- **agentgateway bump:** change `AGW_VERSION`, and `AGW_DIGEST` to the
+  release's multi-arch index digest. The version in the config header is
+  masked, so a bump passes the frozen-path diff and needs no
+  `--allow-frozen-change`.
 - **Model change:** edit `VERTEX_MODELS`, plus `vertex_params` for a
   model-as-a-service model.
 
@@ -407,9 +410,9 @@ defaults to `us-east5`. The durable gateway serves the Vertex models, so pass
    ==> Artifact Registry repository fullsend-e2e-gateway...
        OK: repository fullsend-e2e-gateway exists
 
-   ==> agentgateway v1.6.0 image...
-       upstream ghcr.io/agentgateway/agentgateway:v1.6.0 is sha256:9d3e6044ddcdc0878b1787f77bd401252b95e22684203fb5e874c4c42d2ed90c
-       OK: us-east5-docker.pkg.dev/example-project/fullsend-e2e-gateway/agentgateway:v1.6.0 matches upstream
+   ==> agentgateway v1.7.0 image...
+       upstream ghcr.io/agentgateway/agentgateway:v1.7.0 is sha256:60216aafb03d37f94e952ff3d51d2f630a65b10ecaebdc0a864882f92610c45b
+       OK: us-east5-docker.pkg.dev/example-project/fullsend-e2e-gateway/agentgateway:v1.7.0 matches upstream
 
    ==> Service account fullsend-e2e-gateway@example-project.iam.gserviceaccount.com...
        OK: service account exists
@@ -429,11 +432,11 @@ defaults to `us-east5`. The durable gateway serves the Vertex models, so pass
    ==> Verifying...
        service Ready condition: True, revision fullsend-e2e-gateway-00009-abc
        no token: GET /v1/models -> HTTP 401 text/plain
-         body: authentication failure: no bearer token found
+         body: authentication failed
        x-api-key only: GET /v1/models -> HTTP 401 text/plain
-         body: authentication failure: no bearer token found
+         body: authentication failed
        non-JWT bearer: GET /v1/models -> HTTP 401 text/plain
-         body: authentication failure: the token header is malformed: Error(InvalidToken)
+         body: authentication failed
 
    ==> No changes: everything was already in place.
 
@@ -468,7 +471,9 @@ defaults to `us-east5`. The durable gateway serves the Vertex models, so pass
    > gateway was deployed by hand with the same names and settings, and the
    > dry run above shows the script adopts it unchanged.
 
-The 401s must be `text/plain` from agentgateway. An HTML 401 comes from
+The 401s must be `text/plain` from agentgateway, with the body
+`authentication failed`. agentgateway v1.7.0 gives every jwtAuth and apiKey
+authentication refusal that same body and writes the reason to its access log. An HTML 401 comes from
 Cloud Run's invoker check, which means `--no-invoker-iam-check` is missing,
 and the script fails. The probes need no token, so a positive check is left
 to the behaviour test, which mints a GitHub Actions OIDC token for a pool
@@ -486,7 +491,7 @@ with no credential passes authentication and each model then refuses it
 with a 403. That is a test-gateway arrangement, not a recommendation. An
 OIDC-only gateway keeps strict `jwtAuth`, and a gateway that does mix the
 modes must have authorization rules that deny anonymous requests. The probe
-therefore expects a 401 (`api key authentication failure: ...`) for a
+therefore expects a 401 (`authentication failed`) for a
 bearer that is neither a valid token nor a configured key, instead of the
 three probes above.
 
@@ -584,7 +589,7 @@ whatever they had.
 
 | Resource | Name | Settings |
 |----------|------|----------|
-| Artifact Registry repository | `fullsend-e2e-gateway` | Holds `ghcr.io/agentgateway/agentgateway:v1.6.0`, copied unchanged with `skopeo copy --all --preserve-digests`. Every run checks that the copy's digest matches upstream, and refuses to continue if it does not. |
+| Artifact Registry repository | `fullsend-e2e-gateway` | Holds `ghcr.io/agentgateway/agentgateway:v1.7.0`, copied unchanged with `skopeo copy --all --preserve-digests`. Every run checks that the upstream tag is the digest pinned in `AGW_DIGEST` and that the copy's digest matches upstream, and refuses to continue if either does not. |
 | Service account | `fullsend-e2e-gateway@<project>.iam.gserviceaccount.com` | Runtime identity. With `--with-vertex`, it holds `roles/aiplatform.user`. |
 | Secret | `fullsend-e2e-gateway-config` | The generated agentgateway config. |
 | Secret | `fullsend-e2e-gateway-stub-upstream-key` | The stub upstream key, a fixed non-secret value: `e2e-stub-upstream-key`. |

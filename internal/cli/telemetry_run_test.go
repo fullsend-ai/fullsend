@@ -53,6 +53,9 @@ func TestResolveWorkItemID(t *testing.T) {
 	cases := []struct {
 		name           string
 		issueKey       string
+		wiSource       string
+		wiKey          string
+		wiURL          string
 		repoFull       string
 		issueNumber    string
 		issueURL       string
@@ -115,6 +118,27 @@ func TestResolveWorkItemID(t *testing.T) {
 			want:        "octo/repo#9",
 		},
 		{
+			name:     "Jira work item key with legacy issue env unset",
+			wiSource: "jira",
+			wiKey:    "PROJ-123",
+			wiURL:    "https://example.atlassian.net/browse/PROJ-123",
+			repoFull: "octo/status-repo",
+			want:     "PROJ-123",
+		},
+		{
+			name:     "Jira work item URL when key is absent",
+			wiSource: "jira",
+			wiURL:    "https://example.atlassian.net/browse/PROJ-123",
+			want:     "https://example.atlassian.net/browse/PROJ-123",
+		},
+		{
+			name:     "work item vars ignored for non-Jira source",
+			wiSource: "github",
+			wiKey:    "ignored",
+			wiURL:    "https://github.com/octo/repo/issues/1",
+			want:     evalmeasure.UnknownSentinel,
+		},
+		{
 			name: "unknown when nothing is set",
 			want: evalmeasure.UnknownSentinel,
 		},
@@ -138,6 +162,9 @@ func TestResolveWorkItemID(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("ISSUE_KEY", tc.issueKey)
+			t.Setenv("FULLSEND_WORK_ITEM_SOURCE", tc.wiSource)
+			t.Setenv("FULLSEND_WORK_ITEM_KEY", tc.wiKey)
+			t.Setenv("FULLSEND_WORK_ITEM_URL", tc.wiURL)
 			t.Setenv("REPO_FULL_NAME", tc.repoFull)
 			t.Setenv("ISSUE_NUMBER", tc.issueNumber)
 			t.Setenv("GITHUB_ISSUE_URL", tc.issueURL)

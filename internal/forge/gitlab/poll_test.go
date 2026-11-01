@@ -355,6 +355,47 @@ func TestListMergeRequestNotes(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// ListMergeRequestDiffVersions
+// ---------------------------------------------------------------------------
+
+func TestListMergeRequestDiffVersions(t *testing.T) {
+	pc, mux := setupPollTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/10/versions", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodGet, r.Method)
+		assert.Equal(t, "100", r.URL.Query().Get("per_page"))
+
+		writeJSON(t, w, http.StatusOK, []map[string]any{
+			{"id": 2, "head_commit_sha": "bbb", "created_at": "2024-06-01T16:00:00Z"},
+			{"id": 1, "head_commit_sha": "aaa", "created_at": "2024-06-01T15:00:00Z"},
+		})
+	})
+
+	versions, err := pc.ListMergeRequestDiffVersions(ctx, "myorg", "myrepo", 10)
+	require.NoError(t, err)
+	require.Len(t, versions, 2)
+	assert.Equal(t, 2, versions[0].ID)
+	assert.Equal(t, "bbb", versions[0].HeadCommitSHA)
+	assert.Equal(t, time.Date(2024, 6, 1, 16, 0, 0, 0, time.UTC), versions[0].CreatedAt)
+}
+
+func TestListMergeRequestDiffVersions_Error(t *testing.T) {
+	pc, mux := setupPollTest(t)
+	ctx := context.Background()
+
+	handlerCalled := false
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/10/versions", func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
+		writeJSON(t, w, http.StatusNotFound, map[string]any{"message": "404 Not Found"})
+	})
+
+	_, err := pc.ListMergeRequestDiffVersions(ctx, "myorg", "myrepo", 10)
+	require.Error(t, err)
+	assert.True(t, handlerCalled)
+}
+
+// ---------------------------------------------------------------------------
 // ListResourceLabelEvents
 // ---------------------------------------------------------------------------
 

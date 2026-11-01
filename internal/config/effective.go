@@ -47,8 +47,20 @@ func EffectiveYAML(r PerRepoConfigReader) ([]byte, error) {
 	if aliases := r.ConfigModelAliases(); len(aliases) > 0 {
 		out["models"] = map[string]any{"aliases": aliases}
 	}
+	var authProviders []any
 	if r.IsOwnersFileAuthEnabled() {
-		out["authorization"] = []string{"owners_file"}
+		authProviders = append(authProviders, AuthProviderOwnersFile)
+	}
+	if jira := r.JiraAuthorization(); jira != nil {
+		// Render the lists (a set but empty list stays distinct from an
+		// unset one) and the effective labels rule, so a policy change
+		// shows up in the effective configuration.
+		entry := *jira
+		entry.Labels = jira.EffectiveJiraLabels()
+		authProviders = append(authProviders, entry)
+	}
+	if len(authProviders) > 0 {
+		out["authorization"] = authProviders
 	}
 	inference := map[string]any{}
 	for key, val := range map[string]string{

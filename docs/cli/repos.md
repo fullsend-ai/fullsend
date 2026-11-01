@@ -388,6 +388,19 @@ To upgrade an `openai-api-key` GitLab project that used `OPENAI_API_KEY`:
 2. Re-run `fullsend repos install` so the project gets the updated `.gitlab/ci/scripts/run-agent-job.sh`.
 3. If no other job uses it, delete the old `OPENAI_API_KEY` variable yourself.
 
+#### GitLab: comment body moved to `_normalized_event.transition.comment.body` (breaking)
+
+The GitLab dispatch payload built by the poller and the webhook dispatcher no longer carries a top-level `note_body` field. The comment body now travels only at `_normalized_event.transition.comment.body`, and the scaffolded `.gitlab/ci/scripts/run-agent-job.sh` reads only that path for `/fs-fix` instructions and the retro comment. The old script and the new payload do not interoperate: `/fs-fix` runs dispatch successfully but start with no human instruction, and the retro agent receives an empty comment. Nothing reports an error, because the payload carries no version marker.
+
+Upgrade the scaffold and the poller or webhook dispatcher CLI together:
+
+1. Upgrade the `fullsend` CLI that runs the poller or webhook dispatcher. A pipeline that installs a floating version such as `FULLSEND_VERSION="latest"` picks up the new payload on its next run.
+2. Re-run `fullsend repos install` for every GitLab project so each gets the updated `.gitlab/ci/scripts/run-agent-job.sh`.
+
+The reverse skew behaves the same way: a new scaffold paired with an old poller finds no body at the canonical path and drops the instruction.
+
+A `/fs-*` command body is also no longer truncated to 800 characters in transport. The dispatcher refuses to dispatch a command whose payload exceeds the chunk budget instead of running the agent on a shortened instruction. Other bodies, such as bot review notes, keep the 800-character bound and the truncation marker.
+
 #### `runtime` and `allowed_remote_resources` moved into `config` (breaking)
 
 `runtime` and `allowed_remote_resources` are no longer sibling keys under `defaults` or a repository entry. Loading a manifest that still uses `defaults.runtime`, `defaults.allowed_remote_resources`, or the repository-entry equivalents fails with an error naming the replacement path (for example `defaults.runtime is no longer supported; move it to defaults.config.runtime`). The old spellings are not migrated automatically and are not accepted as aliases. `repos install` no longer accepts `--runtime` or `--allowed-remote-resources`, and `repos set` rejects `defaults.runtime` and `defaults.allowed_remote_resources` with the replacement path; set `defaults.config.runtime` or `defaults.config.allowed_remote_resources` instead.

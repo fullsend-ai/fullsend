@@ -34,7 +34,7 @@ type Options struct {
 // NormalizedEvent conversion and dispatch.
 type RoutableEvent struct {
 	Type         string
-	Action       string // MR lifecycle action for Type=="mr_event": "opened", "closed", or empty (merged)
+	Action       string // MR lifecycle action for Type=="mr_event": "opened", "closed", "synchronized", or empty (merged)
 	IID          int
 	UpdatedAt    time.Time
 	Labels       []string // full label set at event time
@@ -69,6 +69,10 @@ type RoutableEvent struct {
 	MRAuthorID      int
 	MRAuthorLogin   string
 	MergedByLogin   string
+	// HeadSHA is the MR head commit a push moved the source branch to
+	// (Type=="mr_event" with Action=="synchronized" only). It keys the
+	// event, so a head that was already dispatched is never re-run.
+	HeadSHA string
 }
 
 // Key returns a deduplication key for the event.
@@ -77,8 +81,10 @@ type RoutableEvent struct {
 // event, hence a new key); otherwise on a millisecond timestamp so a
 // re-add within one second is still distinct. MR open events include
 // Action so they do not collide with a merge of the same IID in the same
-// second. MR merge events use type+IID+timestamp (Action empty) for
-// stable dispatched-key persistence.
+// second. MR synchronized events are keyed on the new head SHA, so the
+// same head is dispatched at most once however often it is rediscovered.
+// MR merge events use type+IID+timestamp (Action empty) for stable
+// dispatched-key persistence.
 //
 // Keys persisted by earlier versions carry Unix-second label timestamps;
 // see LegacyLabelKey and labelKeyAtOrAfter for how those stay recognised.
@@ -91,6 +97,9 @@ func (e RoutableEvent) Key() string {
 			return fmt.Sprintf("%s-%d-%s-e%d", e.Type, e.IID, e.ChangedLabel, e.LabelEventID)
 		}
 		return fmt.Sprintf("%s-%d-%s-%d", e.Type, e.IID, e.ChangedLabel, e.UpdatedAt.UnixMilli())
+	}
+	if e.Action == "synchronized" && e.HeadSHA != "" {
+		return fmt.Sprintf("%s-%d-%s-%s", e.Type, e.IID, e.Action, e.HeadSHA)
 	}
 	if e.Action != "" {
 		return fmt.Sprintf("%s-%d-%s-%d", e.Type, e.IID, e.Action, e.UpdatedAt.Unix())

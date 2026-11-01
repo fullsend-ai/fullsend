@@ -1,6 +1,7 @@
 package lock
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -58,6 +59,8 @@ func TestLoad_MalformedYAML(t *testing.T) {
 	_, err := Load(path)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "parsing lock file")
+	var parse *ParseError
+	require.ErrorAs(t, err, &parse)
 }
 
 func TestLoad_UnsupportedVersion(t *testing.T) {
@@ -71,6 +74,34 @@ harnesses: {}
 	_, err := Load(path)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported lock file version 99")
+	var ver *UnsupportedVersionError
+	require.ErrorAs(t, err, &ver)
+	assert.Equal(t, 99, ver.Version)
+	assert.Equal(t, currentVersion, ver.Expected)
+}
+
+func TestLoad_EmptyFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "lock.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(""), 0o644))
+
+	_, err := Load(path)
+	require.Error(t, err)
+	var ver *UnsupportedVersionError
+	require.ErrorAs(t, err, &ver)
+	assert.Equal(t, 0, ver.Version)
+	assert.Equal(t, currentVersion, ver.Expected)
+}
+
+func TestLoad_PathIsDirectory(t *testing.T) {
+	_, err := Load(t.TempDir())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading lock file")
+}
+
+func TestParseError_Unwrap(t *testing.T) {
+	inner := errors.New("boom")
+	err := &ParseError{Err: inner}
+	assert.ErrorIs(t, err, inner)
 }
 
 func TestSave_RoundTrip(t *testing.T) {

@@ -49,6 +49,11 @@ type BootstrapInput interface {
 	// parent's own model is accepted even when that model is outside the
 	// alias table (#7031).
 	ParentModel() string
+	// Effort returns the reasoning effort the run's agent runs at (the
+	// harness effort after the agents: entry and --effort, the value Run
+	// receives as RunParams.Effort), or "" when none is set. The codex
+	// runtime binds it as every native child's effort (#8836).
+	Effort() string
 	// OpenAIProviderAttached reports whether the run-scoped OpenAI
 	// provider was created for this run (the harness declares an
 	// openai-type provider and the run needs it, parent or child — see

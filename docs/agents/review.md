@@ -70,9 +70,18 @@ in place as the reconciliation backstop. When a webhook delivery is missed or
 the fast path is not provisioned, review fires once the poller sees an MR whose
 `created_at` is newer than the watermark (up to one poll interval of delay).
 Native `merge_request_event` pipeline dispatch was removed.
-Push-to-open-MR (GitHub `synchronize`) is not auto-detected: the poller does not
-detect it, and the webhook dispatcher rejects merge request updates. Comment
-`/fs-review` to re-review after new commits.
+A push to an open MR (GitHub `synchronize`) also triggers automatic review,
+through the poller only, so expect up to one poll interval of delay. The
+webhook dispatcher rejects merge request updates. GitLab records a new diff
+version on each push. When the newest version moves the MR head and was created
+after the watermark, the poller dispatches review for that head. This includes
+fix-agent pushes to bot-authored MRs, and the fix stage's iteration cap bounds
+the loop. Dispatch is keyed on the head SHA, so later polls that see the same
+head do not review it again. Diff versions do not record who pushed, so the
+poller cannot authorize the pusher. It therefore reviews pushes only to
+same-project MRs, where any pusher already has project push access. A push to
+a fork MR is not reviewed automatically, and re-review of fork MR pushes is
+currently unsupported (the router also denies slash commands on fork MRs).
 
 ## Control labels
 

@@ -62,8 +62,16 @@ func (d *perRepoDefaults) StatusNotifications() *StatusNotificationConfig { retu
 // IsOwnersFileAuthEnabled returns false — OWNERS auth is off by default.
 func (d *perRepoDefaults) IsOwnersFileAuthEnabled() bool { return false }
 
+// JiraAuthorization returns nil — no jira authorization provider by default.
+func (d *perRepoDefaults) JiraAuthorization() *AuthorizationProvider { return nil }
+
 // ConfigMintURL returns the default mint URL (hosted public mint).
 func (d *perRepoDefaults) ConfigMintURL() string { return DefaultPerRepoMintURL }
+
+// ConfigMintURLFromFile returns "" — the compiled-defaults layer has no
+// file to read from, so it is always the terminal "nothing in the file"
+// case for ConfigMintURLFromFile's overlay/base-only chain.
+func (d *perRepoDefaults) ConfigMintURLFromFile() string { return "" }
 
 // ConfigInferenceProvider returns the default inference provider.
 func (d *perRepoDefaults) ConfigInferenceProvider() string { return DefaultPerRepoInferenceProvider }
