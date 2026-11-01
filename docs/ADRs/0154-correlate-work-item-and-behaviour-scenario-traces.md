@@ -33,8 +33,12 @@ which work produced a change.
 
 [ADR 0050](0050-distributed-tracing-instrumentation.md) establishes OpenTelemetry
 instrumentation and W3C context propagation; [ADR 0144](0144-reuse-poll-and-entity-bound-run-processes.md)
-keeps follow-up cycles in one process. Neither gives a work item a context that
-survives independent launches or gives a behaviour-test scenario a root span.
+keeps follow-up cycles in one process. Today, `fullsend run` creates a run span
+from a valid inbound `TRACEPARENT`, labels it with the work-item ID, and
+propagates iteration spans to its agents ([`internal/cli/run.go` at
+`52e7aca06e6b60231789eabc783564e8b95856b5`](https://github.com/fullsend-ai/fullsend/blob/52e7aca06e6b60231789eabc783564e8b95856b5/internal/cli/run.go)).
+Those spans cover one invocation; they do not give a work item durable context
+for independent launches or give a behaviour-test scenario a root span.
 Trace context in an editable description or comment is external input: a valid
 `traceparent` does not authenticate its contents, and its sampling flag is
 caller-provided ([W3C Trace Context](https://www.w3.org/TR/trace-context/#trace-flags)).
