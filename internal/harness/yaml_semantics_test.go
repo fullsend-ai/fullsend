@@ -502,3 +502,24 @@ func TestYAMLSemantics_PointerBools(t *testing.T) {
 		assert.True(t, *h.Security.SandboxHooks.ToolAllowlistPreTool.Enabled)
 	})
 }
+
+func TestYAMLSemantics_SchemaVersion(t *testing.T) {
+	t.Run("schema_version/absent_is_nil", func(t *testing.T) {
+		h := unmarshalHarness(t, `agent: test.md`)
+		assert.Nil(t, h.SchemaVersion)
+	})
+	t.Run("schema_version/null_is_nil", func(t *testing.T) {
+		h := unmarshalHarness(t, "agent: test.md\nschema_version: null")
+		assert.Nil(t, h.SchemaVersion)
+	})
+	t.Run("schema_version/tilde_is_nil", func(t *testing.T) {
+		h := unmarshalHarness(t, "agent: test.md\nschema_version: ~")
+		assert.Nil(t, h.SchemaVersion)
+	})
+	t.Run("schema_version/explicit_one", func(t *testing.T) {
+		h := unmarshalHarness(t, "agent: test.md\nschema_version: 1")
+		require.NotNil(t, h.SchemaVersion)
+		// EqualValues: the field is a named schemaVersionValue, not a bare int.
+		assert.EqualValues(t, 1, *h.SchemaVersion)
+	})
+}
