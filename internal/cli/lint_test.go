@@ -1,11 +1,14 @@
 package cli
 
 import (
+	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -851,4 +854,186 @@ func TestLintCommand_RejectsPositionalArgs(t *testing.T) {
 	cmd := newLintCmd()
 	_, err := executeCmd(cmd, []string{"garbage"})
 	require.Error(t, err)
+}
+
+func executeLintStreams(cmd *cobra.Command, args []string) (stdout, stderr string, err error) {
+	var outBuf, errBuf bytes.Buffer
+	cmd.SetOut(&outBuf)
+	cmd.SetErr(&errBuf)
+	cmd.SetArgs(args)
+	cmd.SilenceUsage = true
+	cmd.SilenceErrors = true
+	err = cmd.Execute()
+	return outBuf.String(), errBuf.String(), err
+}
+
+func parseLintJSON(t *testing.T, stdout string) lintJSONReport {
+	t.Helper()
+	dec := json.NewDecoder(strings.NewReader(stdout))
+	var report lintJSONReport
+	require.NoError(t, dec.Decode(&report), "stdout must be one JSON document, got %q", stdout)
+	assert.False(t, dec.More(), "stdout must not contain a second JSON value")
+	return report
+}
+
+func TestLintCommand_JSONFormat_Success(t *testing.T) {
+	stubLintGitHubToken(t, "test-token")
+	dir := t.TempDir()
+	cfg := `version: "1"
+agents:
+  - name: my-agent
+    source: harness/my-agent.yaml
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(cfg), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	writeLintAgentFixture(t, dir, "my-agent")
+	harnessYAML := `role: triage
+agent: agents/my-agent.md
+policy: policies/base.yaml
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "my-agent.yaml"), []byte(harnessYAML), 0o644))
+
+	stdout, stderr, err := executeLintStreams(newLintCmd(), []string{
+		"--fullsend-dir", dir, "--format", "json",
+	})
+	require.NoError(t, err)
+	assert.Contains(t, stderr, "my-agent resolved from config (local path)")
+	assert.NotContains(t, stdout, "resolved from config")
+	report := parseLintJSON(t, stdout)
+	assert.Equal(t, lintJSONSchemaVersion, report.SchemaVersion)
+	assert.True(t, report.Success)
+	assert.Equal(t, 0, report.Summary.Errors)
+	assert.Equal(t, 0, report.Summary.Warnings)
+	assert.Empty(t, report.Diagnostics)
+}
+
+func TestLintCommand_JSONFormat_Warning(t *testing.T) {
+	dir := t.TempDir()
+	cfg := `version: "1"
+agents:
+  - name: my-agent
+    source: harness/my-agent.yaml
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(cfg), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	writeLintAgentFixture(t, dir, "my-agent")
+	harnessYAML := `role: triage
+agent: agents/my-agent.md
+policy: policies/base.yaml
+allowed_remote_resources:
+  - "https://raw.githubusercontent.com/fullsend-ai/agents/"
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "my-agent.yaml"), []byte(harnessYAML), 0o644))
+
+	t.Run("warning without strict", func(t *testing.T) {
+		stdout, _, err := executeLintStreams(newLintCmd(), []string{
+			"--fullsend-dir", dir, "--format", "json",
+		})
+		require.NoError(t, err)
+		report := parseLintJSON(t, stdout)
+		assert.True(t, report.Success)
+		assert.Equal(t, 0, report.Summary.Errors)
+		assert.Equal(t, 1, report.Summary.Warnings)
+		require.Len(t, report.Diagnostics, 1)
+		assert.Equal(t, "my-agent", report.Diagnostics[0].Agent)
+		assert.Equal(t, "warning", report.Diagnostics[0].Severity)
+		assert.Equal(t, "allowed_remote_resources", report.Diagnostics[0].Field)
+		assert.Contains(t, report.Diagnostics[0].Message, "deprecated")
+	})
+
+	t.Run("fails with strict", func(t *testing.T) {
+		stdout, _, err := executeLintStreams(newLintCmd(), []string{
+			"--fullsend-dir", dir, "--format", "json", "--strict",
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "lint found 1 warning-level diagnostic(s) (--strict)")
+		report := parseLintJSON(t, stdout)
+		assert.False(t, report.Success)
+		assert.Equal(t, 0, report.Summary.Errors)
+		assert.Equal(t, 1, report.Summary.Warnings)
+		require.Len(t, report.Diagnostics, 1)
+		assert.Equal(t, "warning", report.Diagnostics[0].Severity)
+	})
+}
+
+func TestLintCommand_JSONFormat_Error(t *testing.T) {
+	stubLintGitHubToken(t, "test-token")
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("version: \"999\"\n"), 0o644))
+
+	stdout, _, err := executeLintStreams(newLintCmd(), []string{
+		"--fullsend-dir", dir, "--format", "json",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "lint found 1 error-level diagnostic(s)")
+	report := parseLintJSON(t, stdout)
+	assert.False(t, report.Success)
+	assert.Equal(t, 1, report.Summary.Errors)
+	assert.Equal(t, 0, report.Summary.Warnings)
+	require.Len(t, report.Diagnostics, 1)
+	assert.Equal(t, "config", report.Diagnostics[0].Agent)
+	assert.Equal(t, "error", report.Diagnostics[0].Severity)
+	assert.Equal(t, "config.yaml", report.Diagnostics[0].Field)
+	assert.Contains(t, report.Diagnostics[0].Message, `unsupported version "999"`)
+}
+
+func TestLintCommand_JSONFormat_ResolveError(t *testing.T) {
+	dir := t.TempDir()
+	cfg := `version: "1"
+agents:
+  - name: my-agent
+    source: harness/missing.yaml
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(cfg), 0o644))
+
+	stdout, _, err := executeLintStreams(newLintCmd(), []string{
+		"--fullsend-dir", dir, "--format", "json",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `resolving harness for agent "my-agent"`)
+	report := parseLintJSON(t, stdout)
+	assert.False(t, report.Success)
+	assert.Equal(t, 1, report.Summary.Errors)
+	require.Len(t, report.Diagnostics, 1)
+	assert.Equal(t, "my-agent", report.Diagnostics[0].Agent)
+	assert.Equal(t, "error", report.Diagnostics[0].Severity)
+	assert.Empty(t, report.Diagnostics[0].Field)
+	assert.Contains(t, report.Diagnostics[0].Message, `resolving harness for agent "my-agent"`)
+}
+
+func TestLintCommand_JSONFormat_InvalidFormat(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("version: \"1\"\n"), 0o644))
+
+	stdout, _, err := executeLintStreams(newLintCmd(), []string{
+		"--fullsend-dir", dir, "--format", "yaml",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `--format must be one of: text, json (got "yaml")`)
+	assert.Empty(t, stdout)
+}
+
+func TestLintCommand_JSONFormat_DefaultRemainsText(t *testing.T) {
+	stubLintGitHubToken(t, "test-token")
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("version: \"999\"\n"), 0o644))
+
+	out, err := executeCmd(newLintCmd(), []string{"--fullsend-dir", dir})
+	require.Error(t, err)
+	assert.Contains(t, out, "config: error: config.yaml")
+	assert.NotContains(t, out, `"schema_version"`)
+}
+
+func TestLintJSONReport_EmptyDiagnosticsMarshalsAsArray(t *testing.T) {
+	e := &lintEmitter{
+		jsonMode: true,
+		report: lintJSONReport{
+			SchemaVersion: lintJSONSchemaVersion,
+			Diagnostics:   []lintJSONDiagnostic{},
+		},
+	}
+	var buf bytes.Buffer
+	require.NoError(t, e.writeJSON(&buf, true))
+	assert.Contains(t, buf.String(), `"diagnostics": []`)
+	assert.NotContains(t, buf.String(), `"diagnostics": null`)
 }
