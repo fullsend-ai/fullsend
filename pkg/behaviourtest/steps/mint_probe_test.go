@@ -1345,9 +1345,31 @@ func TestMintProbeWorkflowScript_RecordsHSTS(t *testing.T) {
 		assert.Equal(t, hsts, res.TokenHSTS)
 		assert.Empty(t, res.HealthHSTS)
 	})
-	t.Run("unsafe characters are dropped", func(t *testing.T) {
+	t.Run("unsafe characters are rejected", func(t *testing.T) {
+		for _, bad := range []string{"max-age=1::error::x", hsts + ":"} {
+			res, _, _ := runMintProbeScript(t, probeScriptRun{mintStatus: "200", mintBody: probeMintedBody, revoke: "ok",
+				mintHSTS: bad, healthHSTS: hsts})
+			assert.Empty(t, res.TokenHSTS, bad)
+			assert.Equal(t, hsts, res.HealthHSTS)
+		}
+	})
+	t.Run("a duplicate field is rejected", func(t *testing.T) {
+		// The fake curl writes the value verbatim, so a CRLF-joined value
+		// becomes two header fields in one response block.
+		for _, dup := range []string{
+			"max-age=0\r\nStrict-Transport-Security: " + hsts,
+			hsts + "\r\nStrict-Transport-Security: max-age=0",
+			hsts + "\r\nstrict-transport-security: " + hsts,
+		} {
+			res, _, _ := runMintProbeScript(t, probeScriptRun{mintStatus: "200", mintBody: probeMintedBody, revoke: "ok",
+				mintHSTS: dup, healthHSTS: dup})
+			assert.Empty(t, res.TokenHSTS, dup)
+			assert.Empty(t, res.HealthHSTS, dup)
+		}
+	})
+	t.Run("an overlong value is rejected", func(t *testing.T) {
 		res, _, _ := runMintProbeScript(t, probeScriptRun{mintStatus: "200", mintBody: probeMintedBody, revoke: "ok",
-			mintHSTS: "max-age=1::error::x", healthHSTS: hsts})
-		assert.Equal(t, "max-age=1errorx", res.TokenHSTS)
+			mintHSTS: hsts + "; " + strings.Repeat("a", 200), healthHSTS: hsts})
+		assert.Empty(t, res.TokenHSTS)
 	})
 }

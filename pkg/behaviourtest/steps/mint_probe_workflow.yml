@@ -97,17 +97,20 @@ jobs:
 
           # hsts_value FILE prints the Strict-Transport-Security value of the
           # last response in a curl --dump-header FILE (a retried request
-          # leaves one header block per attempt), or nothing. The value is
-          # limited to header-value characters and 200 bytes, since it lands
-          # in the result artifact.
+          # leaves one header block per attempt), or nothing. A response
+          # with more than one such field yields nothing, since a client
+          # honours only the first and the other fields cannot be vouched
+          # for. So does a value with a character outside the header-value
+          # set, or one over 200 bytes, since the value lands in the result
+          # artifact.
           hsts_value() {
             local v
             [[ -f "$1" ]] || return 0
-            v="$(tr -d '\r' <"$1" | awk '
-              /^HTTP\// { v = "" }
-              tolower($0) ~ /^strict-transport-security:/ { sub(/^[^:]*:[ \t]*/, ""); sub(/[ \t]+$/, ""); v = $0 }
-              END { print v }' | tr -cd 'A-Za-z0-9=;,. _-')" || v=''
-            printf '%s' "${v:0:200}"
+            v="$(tr -d '\r' <"$1" | LC_ALL=C awk '
+              /^HTTP\// { v = ""; n = 0 }
+              tolower($0) ~ /^strict-transport-security:/ { sub(/^[^:]*:[ \t]*/, ""); sub(/[ \t]+$/, ""); v = $0; n++ }
+              END { if (n != 1 || v !~ /^[A-Za-z0-9=;,. _-]*$/ || length(v) > 200) v = ""; print v }')" || v=''
+            printf '%s' "${v}"
           }
 
           # b64url_decode VALUE decodes unpadded base64url to stdout.
