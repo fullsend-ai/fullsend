@@ -25,6 +25,11 @@ Feature: GitHub mint scope and workflow-host authorization
   checks the granted permissions against the role's canonical set and
   reports only compact fields; no token is kept.
 
+  Every /v1/token response the probe gets (the control's 200 and the
+  subject's answer, including 401 and 403 denials) and the mint's
+  /health response must carry the documented Strict-Transport-Security
+  value, with no includeSubDomains or preload.
+
   Scenario Outline: <role> at <level> for <repos> through the <workflow host> workflow host
     Given the enrolled test repository
     And a "<forge>" mint probe through the <workflow host> workflow host
@@ -32,6 +37,7 @@ Feature: GitHub mint scope and workflow-host authorization
     Then the mint probe outcome is "<outcome>"
     And the mint probe target repository is "<target repo>"
     And the mint probe repository selection is "<selection>"
+    And the mint probe responses carry Strict-Transport-Security "max-age=31536000"
 
     Examples:
       | forge  | role       | repos      | level | workflow host | outcome      | target repo | selection |

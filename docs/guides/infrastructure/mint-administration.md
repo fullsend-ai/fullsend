@@ -174,6 +174,37 @@ The mint URL is stable across redeploys within the same project and region — u
 
 Deploying to a **different region** (e.g., changing `--region` from `us-central1` to `us-east5`) creates a new Cloud Run service with a different URL. All enrolled repos store the mint URL in a repo or org variable (`FULLSEND_MINT_URL`), so changing the region requires updating every enrolled repo's variable. Avoid changing `--region` after initial deployment unless you plan to update all consumers.
 
+### HTTP Strict Transport Security
+
+Mint responses from the Cloud Function and the Cloudflare Worker carry
+this header, success and error responses alike:
+
+```
+Strict-Transport-Security: max-age=31536000
+```
+
+The shared mint handler sets it (`hstsHeaderValue` in
+`internal/mintcore/handler.go`) on every response it writes. The
+Cloudflare Worker also sets it on the error responses it writes before
+the handler runs, such as `429 rate_limited`.
+
+- **`max-age=31536000` (one year):** after one HTTPS response, a browser
+  or HSTS-aware client upgrades `http://` requests for the mint hostname to
+  HTTPS for a year. Clients that ignore HSTS still get the HTTP-to-HTTPS
+  redirect at the edge.
+- **No `includeSubDomains`:** the policy applies only to the mint's own
+  hostname (for example `mint.fullsend.sh`). It never extends to sibling
+  or child hostnames.
+- **No `preload`:** the mint does not ask to be added to browser preload
+  lists. Preloading covers the whole registrable domain, including the
+  public website, and is hard to undo.
+
+Clients ignore the header on plain-HTTP responses, so a self-hosted mint
+served without TLS is unaffected. The
+[GitHub mint scope behaviour scenarios](../dev/behaviour-testing.md#github-mint-scope-scenarios)
+check the header on `/v1/token` and `/health` against each deployed
+behaviour-test mint.
+
 ## Managing roles
 
 Agent roles on the mint are **global** — each role maps to a GitHub App PEM secret (`fullsend-{role}-app-pem`) and an entry in the shared `ROLE_APP_IDS` environment variable. Use `fullsend mint add-role` and `fullsend mint remove-role` to manage individual roles after the mint is deployed.

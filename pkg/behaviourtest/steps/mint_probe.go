@@ -173,6 +173,9 @@ func registerMintProbeSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the mint probe repository selection is "([^"]*)"$`, func(ctx context.Context, selection string) (context.Context, error) {
 		return ctx, thenMintProbeSelection(world.FromContext(ctx), selection)
 	})
+	sc.Step(`^the mint probe responses carry Strict-Transport-Security "([^"]*)"$`, func(ctx context.Context, value string) (context.Context, error) {
+		return ctx, thenMintProbeHSTS(world.FromContext(ctx), value)
+	})
 }
 
 // givenMintProbe creates the probe host repositories for the leased
@@ -912,6 +915,37 @@ func thenMintProbeSelection(w *world.World, selection string) error {
 	}
 	if p.Subject.RepositorySelection != selection {
 		return fmt.Errorf("mint probe: repository_selection is %q, want %q", p.Subject.RepositorySelection, selection)
+	}
+	return nil
+}
+
+// thenMintProbeHSTS checks the Strict-Transport-Security value of the
+// mint's /v1/token and /health responses seen by both probe jobs. The
+// control's response is a minted 200 and the subject's is the row's
+// policy answer, so a denial row covers the mint's error responses too.
+func thenMintProbeHSTS(w *world.World, want string) error {
+	if want == "" {
+		return fmt.Errorf("mint probe: the expected Strict-Transport-Security value is empty")
+	}
+	p, err := requireMintProbeResults(w)
+	if err != nil {
+		return err
+	}
+	for _, job := range []struct {
+		name string
+		res  *world.MintProbeResult
+	}{{"control", p.Control}, {"subject", p.Subject}} {
+		if job.res.HTTPStatus == 0 {
+			return fmt.Errorf("mint probe %s: no /v1/token response to check Strict-Transport-Security on (outcome %q)", job.name, job.res.Outcome)
+		}
+		if job.res.TokenHSTS != want {
+			return fmt.Errorf("mint probe %s: /v1/token response (HTTP %d) has Strict-Transport-Security %q, want %q",
+				job.name, job.res.HTTPStatus, job.res.TokenHSTS, want)
+		}
+		if job.res.HealthHSTS != want {
+			return fmt.Errorf("mint probe %s: /health response has Strict-Transport-Security %q, want %q",
+				job.name, job.res.HealthHSTS, want)
+		}
 	}
 	return nil
 }

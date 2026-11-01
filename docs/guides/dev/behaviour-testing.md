@@ -783,7 +783,17 @@ The install driver's internal ensurer always re-vendors the CLI binary (`github 
 | `target repo` | `shim repo` or `none` |
 | `selection` | The token's `repository_selection` (`selected`), or `none` |
 
-Every role mints at both levels for its own repository. Wildcard and other-repository scopes are denied (`scope-denied`), and an unapproved workflow host is denied (`host-denied`). Out of scope: the deprecated per-org installation mode, the infrastructure-only `e2e` role, cross-organization minting, and GitLab or Forgejo minting.
+Every role mints at both levels for its own repository. Wildcard and other-repository scopes are denied (`scope-denied`), and an unapproved workflow host is denied (`host-denied`).
+
+Every row also checks the mint's `Strict-Transport-Security` header
+against the value in the step (`max-age=31536000`, see
+[HTTP Strict Transport Security](../infrastructure/mint-administration.md#http-strict-transport-security)).
+Each probe job records the header of its `/v1/token` response and of a
+`GET /health` it makes first. The step requires the exact value from both
+jobs. The control's 200 covers a success response, and the subject's 401
+or 403 in denial rows covers error responses.
+
+Out of scope: the deprecated per-org installation mode, the infrastructure-only `e2e` role, cross-organization minting, and GitLab or Forgejo minting.
 
 ### Probe topology
 
@@ -797,7 +807,7 @@ The leased repository is the OIDC `repository` claim (the shim) and the host rep
 
 ### Telling denials from failures
 
-Each probe job requests one token with the job's OIDC token, then masks and revokes any token it gets. It uploads a compact JSON result: the outcome (`minted`, `denied` or `error`), the mint's HTTP status and error message, the two claims, and a minted token's `repository_selection`, granted repositories and granted permissions. No token is kept. The job exits 0 whatever the mint answers, and the upload requires the result file, so a missing result fails the run.
+Each probe job requests one token with the job's OIDC token, then masks and revokes any token it gets. It uploads a compact JSON result: the outcome (`minted`, `denied` or `error`), the mint's HTTP status and error message, the two claims, a minted token's `repository_selection`, granted repositories and granted permissions, and the `Strict-Transport-Security` values of the `/v1/token` and `/health` responses (`hsts_token`, `hsts_health`). No token is kept. The job exits 0 whatever the mint answers, and the upload requires the result file, so a missing result fails the run.
 
 The steps report a policy denial separately from an infrastructure failure. These are infrastructure failures, and none can satisfy an expected denial:
 

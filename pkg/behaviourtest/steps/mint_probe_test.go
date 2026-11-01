@@ -304,6 +304,7 @@ func TestMintScopeFeature_RowsMatchSteps(t *testing.T) {
 		regexp.MustCompile(`^the mint probe outcome is "([^"]*)"$`),
 		regexp.MustCompile(`^the mint probe target repository is "([^"]*)"$`),
 		regexp.MustCompile(`^the mint probe repository selection is "([^"]*)"$`),
+		regexp.MustCompile(`^the mint probe responses carry Strict-Transport-Security "max-age=31536000"$`),
 	}
 
 	minted := map[string]bool{}
@@ -641,6 +642,54 @@ func TestThenMintProbeTargetRepoAndSelection(t *testing.T) {
 	assert.ErrorContains(t, thenMintProbeSelection(denied, "selected"), "no token was minted")
 }
 
+func TestThenMintProbeHSTS(t *testing.T) {
+	const host, hsts = "test-repo-07-mint-host", "max-age=31536000"
+	withHSTS := func(r *world.MintProbeResult, token, health string) *world.MintProbeResult {
+		r.TokenHSTS, r.HealthHSTS = token, health
+		return r
+	}
+	minted := func() *world.MintProbeResult { return withHSTS(mintedResult("triage", "write", host), hsts, hsts) }
+	denied := func() *world.MintProbeResult {
+		return withHSTS(deniedResult(403, "same-org mint requires non-empty repos", host), hsts, hsts)
+	}
+
+	for _, tc := range []struct {
+		name    string
+		control *world.MintProbeResult
+		subject *world.MintProbeResult
+		want    string
+		wantErr string
+	}{
+		{name: "minted subject", control: minted(), subject: minted(), want: hsts},
+		{name: "denied subject", control: minted(), subject: denied(), want: hsts},
+		{name: "control token response without the header", control: withHSTS(mintedResult("triage", "write", host), "", hsts),
+			subject: denied(), want: hsts, wantErr: `mint probe control: /v1/token response (HTTP 200) has Strict-Transport-Security ""`},
+		{name: "error response without the header", control: minted(),
+			subject: withHSTS(deniedResult(401, "authentication failed", host), "", hsts),
+			want:    hsts, wantErr: `mint probe subject: /v1/token response (HTTP 401) has Strict-Transport-Security ""`},
+		{name: "unexpected directives", control: minted(),
+			subject: withHSTS(deniedResult(403, "role not allowed", host), hsts+"; includeSubDomains; preload", hsts),
+			want:    hsts, wantErr: "includeSubDomains"},
+		{name: "health response without the header", control: minted(), subject: withHSTS(mintedResult("triage", "write", host), hsts, ""),
+			want: hsts, wantErr: `mint probe subject: /health response has Strict-Transport-Security ""`},
+		{name: "no mint response", control: minted(),
+			subject: &world.MintProbeResult{Outcome: "error", Error: "transport", HealthHSTS: hsts},
+			want:    hsts, wantErr: "no /v1/token response"},
+		{name: "empty expected value", control: minted(), subject: minted(), want: "", wantErr: "expected Strict-Transport-Security value is empty"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := thenMintProbeHSTS(probeWorld("approved", tc.control, tc.subject), tc.want)
+			if tc.wantErr == "" {
+				assert.NoError(t, err)
+				return
+			}
+			assert.ErrorContains(t, err, tc.wantErr)
+		})
+	}
+
+	assert.ErrorContains(t, thenMintProbeHSTS(mintProbeTestWorld(nil, nil), hsts), "no completed request")
+}
+
 // --- Given / When steps ---
 
 func TestGivenMintProbe_CreatesHosts(t *testing.T) {
@@ -900,12 +949,30 @@ func TestCleanupScenario_DeletesMintProbeHosts(t *testing.T) {
 const fakeCurlScript = `#!/usr/bin/env bash
 url="${@: -1}"
 out=''
+dump=''
 prev=''
 for a in "$@"; do
   if [[ "$prev" == -o ]]; then out="$a"; fi
+  if [[ "$prev" == -D ]]; then dump="$a"; fi
   prev="$a"
 done
+# write_headers STATUS HSTS writes a CRLF header block to the -D file,
+# preceded by FAKE_RETRY_BLOCK (an earlier attempt's block) when set.
+write_headers() {
+  [[ -n "$dump" ]] || return 0
+  {
+    if [[ -n "${FAKE_RETRY_BLOCK}" ]]; then printf '%b' "${FAKE_RETRY_BLOCK}"; fi
+    printf 'HTTP/2 %s\r\ncontent-type: application/json\r\n' "$1"
+    if [[ -n "$2" ]]; then printf 'Strict-Transport-Security: %s\r\n' "$2"; fi
+    printf '\r\n'
+  } >"$dump"
+}
 case "$url" in
+  */health)
+    echo health >>"${FAKE_LOG}"
+    [[ "${FAKE_HEALTH_FAIL}" == 1 ]] && exit 7
+    write_headers 200 "${FAKE_HEALTH_HSTS}"
+    ;;
   *audience=*)
     printf '%s' "${FAKE_OIDC_RESPONSE}"
     ;;
@@ -915,6 +982,7 @@ case "$url" in
     ;;
   */v1/token)
     echo mint >>"${FAKE_LOG}"
+    write_headers "${FAKE_MINT_STATUS}" "${FAKE_MINT_HSTS}"
     printf '%s' "${FAKE_MINT_BODY}" >"$out"
     printf '%s' "${FAKE_MINT_STATUS}"
     ;;
@@ -935,6 +1003,11 @@ type probeScriptRun struct {
 	mintStatus string
 	mintBody   string
 	revoke     string // ok, http-error or transport
+
+	mintHSTS   string // Strict-Transport-Security of the /v1/token response; "" omits it
+	healthHSTS string // Strict-Transport-Security of the /health response; "" omits it
+	healthFail bool   // the /health request fails in transport
+	retryBlock string // an earlier attempt's header block written before each response's
 }
 
 // probeOIDC shapes the signed OIDC token and the signing keys the fake
@@ -1070,6 +1143,10 @@ func runMintProbeScript(t *testing.T, tc probeScriptRun) (*world.MintProbeResult
 		"FAKE_MINT_BODY="+tc.mintBody,
 		"FAKE_REVOKE="+tc.revoke,
 		"FAKE_LOG="+logPath,
+		"FAKE_MINT_HSTS="+tc.mintHSTS,
+		"FAKE_HEALTH_HSTS="+tc.healthHSTS,
+		"FAKE_HEALTH_FAIL="+map[bool]string{true: "1", false: "0"}[tc.healthFail],
+		"FAKE_RETRY_BLOCK="+tc.retryBlock,
 	)
 	output, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(output))
@@ -1217,4 +1294,60 @@ func TestMintProbeWorkflowScript_RejectsUnsafeTokens(t *testing.T) {
 			assert.NotContains(t, out, "::add-mask::abc")
 		})
 	}
+}
+
+// TestMintProbeWorkflowScript_RecordsHSTS covers the Strict-Transport-Security
+// values the probe records from the mint's /v1/token and /health responses.
+func TestMintProbeWorkflowScript_RecordsHSTS(t *testing.T) {
+	for _, tool := range []string{"jq", "openssl"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("%s is not installed", tool)
+		}
+	}
+	const hsts = "max-age=31536000"
+
+	t.Run("minted", func(t *testing.T) {
+		res, _, out := runMintProbeScript(t, probeScriptRun{mintStatus: "200", mintBody: probeMintedBody, revoke: "ok",
+			mintHSTS: hsts, healthHSTS: hsts})
+		assert.Equal(t, "minted", res.Outcome)
+		assert.Equal(t, hsts, res.TokenHSTS)
+		assert.Equal(t, hsts, res.HealthHSTS)
+		assert.NotContains(t, out, hsts, "the value is kept in the artifact, not the step log")
+	})
+	t.Run("denied", func(t *testing.T) {
+		res, _, _ := runMintProbeScript(t, probeScriptRun{mintStatus: "401", mintBody: `{"error":"authentication failed"}`, revoke: "ok",
+			mintHSTS: hsts, healthHSTS: hsts})
+		assert.Equal(t, "denied", res.Outcome)
+		assert.Equal(t, hsts, res.TokenHSTS)
+		assert.Equal(t, hsts, res.HealthHSTS)
+	})
+	t.Run("directives are kept", func(t *testing.T) {
+		res, _, _ := runMintProbeScript(t, probeScriptRun{mintStatus: "403", mintBody: `{"error":"role not allowed"}`, revoke: "ok",
+			mintHSTS: hsts + "; includeSubDomains; preload", healthHSTS: hsts})
+		assert.Equal(t, hsts+"; includeSubDomains; preload", res.TokenHSTS)
+	})
+	t.Run("missing header", func(t *testing.T) {
+		res, _, _ := runMintProbeScript(t, probeScriptRun{mintStatus: "200", mintBody: probeMintedBody, revoke: "ok"})
+		assert.Equal(t, "minted", res.Outcome)
+		assert.Empty(t, res.TokenHSTS)
+		assert.Empty(t, res.HealthHSTS)
+	})
+	t.Run("only the last attempt's headers count", func(t *testing.T) {
+		res, _, _ := runMintProbeScript(t, probeScriptRun{mintStatus: "401", mintBody: `{"error":"authentication failed"}`, revoke: "ok",
+			retryBlock: `HTTP/2 503\r\nStrict-Transport-Security: ` + hsts + `\r\n\r\n`})
+		assert.Empty(t, res.TokenHSTS)
+		assert.Empty(t, res.HealthHSTS)
+	})
+	t.Run("health request failure", func(t *testing.T) {
+		res, _, _ := runMintProbeScript(t, probeScriptRun{mintStatus: "200", mintBody: probeMintedBody, revoke: "ok",
+			mintHSTS: hsts, healthFail: true})
+		assert.Equal(t, "minted", res.Outcome)
+		assert.Equal(t, hsts, res.TokenHSTS)
+		assert.Empty(t, res.HealthHSTS)
+	})
+	t.Run("unsafe characters are dropped", func(t *testing.T) {
+		res, _, _ := runMintProbeScript(t, probeScriptRun{mintStatus: "200", mintBody: probeMintedBody, revoke: "ok",
+			mintHSTS: "max-age=1::error::x", healthHSTS: hsts})
+		assert.Equal(t, "max-age=1errorx", res.TokenHSTS)
+	})
 }
