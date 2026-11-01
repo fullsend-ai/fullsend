@@ -411,7 +411,9 @@ When `BEHAVIOUR_CONFIG_PRESET` is set to a local path or HTTPS URL, install driv
 
 When `ENVIRONMENT=stage`, the suite selects the `RepoPoolCFMintStage` driver which deploys a durable CF Worker mint at `stage-mint.fullsend.sh` and uses the `halfsend` org with a non-vendored per-repo install (referencing main HEAD via `--fullsend-ref=main`). The `halfsend` org uses the same repo pool pattern as the DEV pool orgs.
 
-Triage scenarios apply the `ready-for-triage` label (not `/fs-triage` comments) because the per-repo shim ignores `issue_comment` events from bot users and CI uses minted e2e installation tokens.
+Triage scenarios apply the `ready-for-triage` label (not `/fs-triage` comments)
+because reusable dispatch filters bot-authored `/fs-triage` comments before
+starting the triage stage, and CI uses minted e2e installation tokens.
 
 ### Shared org lock bridge (temporary)
 
