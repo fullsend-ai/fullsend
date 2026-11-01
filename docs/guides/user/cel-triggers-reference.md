@@ -273,12 +273,14 @@ agents:
 pull requests. The `Route` job evaluates the review trigger for the events
 the fullsend workflow receives: a pull request opened, pushed to
 (`synchronize`), marked ready for review, labeled or unlabeled, and a `/fs-*`
-comment on a pull request from a user who is not a bot. It does so only when
-the default rules chose review or no stage, and not for a closed pull request
-or a `/fs-retro`, `/fs-triage` or `/fs-prioritize` comment (see
-[Which trigger decides](#which-trigger-decides)), so a broad trigger can start
-reviews the default rules would not. It
-never starts a review from a bot's comment.
+comment on a pull request. The workflow starts dispatch for these comments
+from both people and bots, but the current dispatcher skips bot-authored issue
+comments before evaluating CEL triggers. For other events, it evaluates the
+review trigger only when the default rules chose review or no stage, and not
+for a closed pull request or a `/fs-retro`, `/fs-triage` or `/fs-prioritize`
+comment (see [Which trigger decides](#which-trigger-decides)), so a broad
+trigger can start reviews the default rules would not. It never starts a
+review from a bot's comment.
 
 The trigger is read from your default branch, so a pull request cannot change
 its own routing. After the change merges, open a pull request: no review
@@ -406,11 +408,13 @@ that trigger, not the dispatch workflow's built-in rules, decides whether the
 before you merge, see
 [Checking a trigger before you merge](#checking-a-trigger-before-you-merge).
 
-A trigger only sees the events that reach the `Route` job. The workflow that
-`fullsend` installs in your repository forwards issues opened, edited and
-labeled, and comments that start with `/fs-` from people, not bots. So a
-prioritize trigger only decides `/fs-prioritize`, and on a pull request only
-`/fs-triage` asks the triage trigger.
+A trigger only sees events that pass the dispatcher's routing and
+authorization checks. The workflow that `fullsend` installs starts dispatch
+for issues opened, edited and labeled, and comments that start with `/fs-`
+from both people and bots. The current dispatcher skips bot-authored issue
+comments before evaluating CEL triggers. So a prioritize trigger only decides
+`/fs-prioritize`, and on a pull request only `/fs-triage` asks the triage
+trigger.
 
 By default the dispatch workflow starts:
 
