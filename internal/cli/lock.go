@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
@@ -898,10 +899,14 @@ func unpinnedDeps(deps []harness.Dependency, pins map[string]harness.LockedPin) 
 // content exists in the local cache and replaces the harness URL field with the
 // cache path. Returns an error if any pinned dependency is missing from cache.
 //
-// Mutations are collected first and applied only after all dependencies are
-// confirmed present in cache, so a partial failure leaves the harness unchanged
-// and the caller can safely fall back to network-based resolution.
-func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot string, orgAllowlist []string, printer *ui.Printer) (resolve.ResolveResult, error) {
+// All changes are made on a working copy of target (lockReplayCopy), which
+// replaces *target only when replay succeeds. Any error therefore leaves
+// target exactly as it was passed in, and the caller can safely fall back to
+// network-based resolution with it. Cache-side effects (named symlinks, file
+// permissions) may still have been applied.
+func resolveFromLock(target *harness.Harness, entry *lock.HarnessLock, workspaceRoot string, orgAllowlist []string, printer *ui.Printer) (resolve.ResolveResult, error) {
+	h := lockReplayCopy(target)
+
 	type mutation struct {
 		field     string
 		url       string
@@ -1314,11 +1319,41 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 		h.OpenShell.Profiles = remaining
 	}
 
+	*target = *h
 	return resolve.ResolveResult{
 		Deps:      deps,
 		Profiles:  profiles,
 		Providers: providers,
 	}, nil
+}
+
+// lockReplayCopy returns a copy of h that resolveFromLock can change without
+// changing h. It shares nothing with h that the replay writes: the skills
+// slice and each skill's override map, the plugins and providers slices, and
+// the openshell and validation_loop structs are copied. Scalar fields are
+// copied by value. Anything else is shared, so a field the replay starts to
+// write must be copied here too.
+func lockReplayCopy(h *harness.Harness) *harness.Harness {
+	c := *h
+	if h.Skills != nil {
+		c.Skills = make([]harness.SkillEntry, len(h.Skills))
+		for i, s := range h.Skills {
+			s.Overrides = maps.Clone(s.Overrides)
+			c.Skills[i] = s
+		}
+	}
+	c.Plugins = slices.Clone(h.Plugins)
+	c.Providers = slices.Clone(h.Providers)
+	if h.OpenShell != nil {
+		openShell := *h.OpenShell
+		openShell.Profiles = slices.Clone(h.OpenShell.Profiles)
+		c.OpenShell = &openShell
+	}
+	if h.ValidationLoop != nil {
+		validationLoop := *h.ValidationLoop
+		c.ValidationLoop = &validationLoop
+	}
+	return &c
 }
 
 // lockFieldHolds reports whether a harness field value is the URL a lock
