@@ -397,7 +397,25 @@ type Harness struct {
 	Trigger                string                  `yaml:"trigger,omitempty"`  // optional CEL boolean over normevent (ADR 0061)
 
 	// Runtime-only fields (not serialized to YAML)
-	hadForgeBeforeResolve bool `yaml:"-"` // true if Forge was non-nil before ResolveForge; used by Lint()
+	hadForgeBeforeResolve bool            `yaml:"-"` // true if Forge was non-nil before ResolveForge; used by Lint()
+	baseForgePlatforms    map[string]bool `yaml:"-"` // forge keys the base chain declared before composition consumed them; see BaseForgePlatforms
+}
+
+// BaseForgePlatforms returns the sorted forge platform keys declared by any
+// layer of the harness's base chain. LoadWithBase consumes each base layer's
+// forge block while composing, so after composition this is the only record
+// of which platforms the base chain configures. The child's own forge keys
+// are not included. It returns nil when no base layer declares a forge block.
+func (h *Harness) BaseForgePlatforms() []string {
+	if len(h.baseForgePlatforms) == 0 {
+		return nil
+	}
+	platforms := make([]string, 0, len(h.baseForgePlatforms))
+	for key := range h.baseForgePlatforms {
+		platforms = append(platforms, key)
+	}
+	sort.Strings(platforms)
+	return platforms
 }
 
 // Load reads a harness YAML file from path, unmarshals it, and validates it.
