@@ -373,6 +373,36 @@ class TestPassthrough:
         )
         assert out is None
 
+    def test_opencode_failure_keeps_success_looking_error_text(self):
+        response = {
+            "output": "No secrets found\nscanner could not finish\n",
+            "metadata": {},
+            "exit_code": 1,
+        }
+        out = run_hook(
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": "scan-secrets foo.go"},
+                "tool_response": response,
+                "tool_result": response,
+            }
+        )
+        assert out is None  # no replacement: the adapter retains the error text
+
+    def test_opencode_success_can_still_be_summarized(self):
+        response = {"output": "No secrets found\n", "metadata": {}, "exit_code": 0}
+        out = run_hook(
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": "scan-secrets foo.go"},
+                "tool_response": response,
+            }
+        )
+        assert out is not None
+        updated = out["hookSpecificOutput"]["updatedToolOutput"]
+        assert updated["output"] == "scan-secrets: passed (no findings)"
+        assert updated["exit_code"] == 0
+
     def test_bash_object_success_clears_stderr(self):
         out = run_hook(
             {

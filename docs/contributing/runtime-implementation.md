@@ -147,8 +147,8 @@ flowchart TB
 
 | Feature | Where it runs | Claude Code | OpenCode | Pi | Codex | Notes for future runtimes |
 |---------|---------------|-------------|-----------------|----|-------|---------------------------|
-| **Host-side context injection scan** (unicode, SSRF patterns on repo context files) | Host + sandbox `scan context` | ✓ | ✗ — disabled by the required `security.enabled: false` workaround; the host scanner and `scan context` pass do not run until #515 lands (see [docs/runtimes/opencode.md](../runtimes/opencode.md)) | ✓ | ✓ — runner-side, so identical to Claude Code and pi | Harness `security.host_scanners`; heuristic scanners only — the DeBERTa ML model was removed from the sandbox in #6522 (its only consumer is the host-side `scan input`, not `scan context`) |
-| **Host-side runtime content scan** (agent def, SKILL.md, and every text file of each declared plugin — `node_modules` included — before upload) | Host (`scanRuntimeContent`) | ✓ | ✗ — disabled by the required `security.enabled: false` workaround; the pre-upload scan does not run until #515 lands (see [docs/runtimes/opencode.md](../runtimes/opencode.md)) | ✓ | ✓ — runner-side, so identical to Claude Code and pi | Uses `security.InputPipeline()`; not part of the `Runtime` interface. Extension files over 1 MiB are noted and skipped, and a tree above 20k files is refused in either `fail_mode` |
+| **Host-side context injection scan** (unicode, SSRF patterns on repo context files) | Host + sandbox `scan context` | ✓ | ✓ — security enabled for every role | ✓ | ✓ — runner-side, so identical to Claude Code and pi | Harness `security.host_scanners`; heuristic scanners only — the DeBERTa ML model was removed from the sandbox in #6522 (its only consumer is the host-side `scan input`, not `scan context`) |
+| **Host-side runtime content scan** (agent def, SKILL.md, and every text file of each declared plugin — `node_modules` included — before upload) | Host (`scanRuntimeContent`) | ✓ | ✓ — security enabled for every role | ✓ | ✓ — runner-side, so identical to Claude Code and pi | Uses `security.InputPipeline()`; not part of the `Runtime` interface. Extension files over 1 MiB are noted and skipped, and a tree above 20k files is refused in either `fail_mode` |
 | **Prompt injection (DeBERTa)** | Host `fullsend scan input` only | ✓ in the runner image (built `CGO_ENABLED=1 -tags ORT` with `libtokenizers.a` + ONNX Runtime >= 1.28); ✗ in the release tarballs, which stay `CGO_ENABLED=0` and untagged (#6522) | Same as Claude Code — host-side, not a runtime distinction | Same as Claude Code — host-side, not a runtime distinction | Same as Claude Code — host-side, not a runtime distinction | Shipped enabled only in `ghcr.io/fullsend-ai/fullsend-runner`; the release tarball the composite action downloads has it compiled out, so CI runs never reach it. **Not an active control on the `fullsend run` path either way**: `RunMLScan` is called only from `fullsend scan input`, which nothing in this repo or `fullsend-ai/agents` invokes. See #6506 (decision), #6522 (build constraints) |
 
 ### Sandbox tool hooks (per runtime)
@@ -156,7 +156,22 @@ flowchart TB
 How the shared PostToolUse chain reaches each runtime — the three sanitizer rows below share it:
 
 - **Claude Code:** `posttool_chain.py` runs on successful tool calls (#6357). On failed calls the same driver runs on `PostToolUseFailure`, where it detects, logs to `findings.jsonl` and warns the agent via `additionalContext` — Claude Code does not let a hook rewrite a failed call's output.
-- **OpenCode:** not wired yet; the plugin adapter is owned by unbound-force#515. Until it lands, OpenCode is limited to read-only agents.
+- **OpenCode 1.19.1:** native `tool.execute.before/after` plugin invokes `HookPlan` scripts.
+  Bootstrap uploads the embedded `plugins/fullsend-hooks.ts` and selected Python files under
+  `/sandbox/opencode-config/hooks`, following pi's existing deployment model. The runner captures
+  the plan, environment and expected digests. Guards run before agent verification and before
+  and after `.env`; each intercepted tool call also verifies the script directory. Hooks use the
+  bootstrap-captured Python interpreter with isolated mode and a fixed system PATH. Only selected
+  stage files are installed, so the shared chain retains its presence-based stage selection.
+  The message-transform hook also sanitizes native failed-tool parts before model sending;
+  canary/scanner failures stop the request. These controls cover nested Task sessions.
+  **Scope decision:** the adapter matches pi's bootstrap-and-hash-check pattern rather than
+  introducing image-owned enforcement storage. Files remain writable by the same sandbox user;
+  the verification-to-load race is explicitly unresolved. Stronger OS-backed storage is left for
+  separate cross-runtime review and is not claimed as part of #7824.
+- **OpenCode migration:** harnesses that previously set `security.enabled: false` must remove that
+  workaround or set it to `true`. Additional native `OPENCODE_CONFIG_CONTENT.plugin` entries are
+  rejected; the runner supplies and verifies the required adapter itself.
 - **OpenCode runner-held environment:** Bootstrap reads the pristine harness-delivered
   `OPENCODE_CONFIG_CONTENT` and `GOOGLE_APPLICATION_CREDENTIALS` values before any agent iteration,
   stores them on the runner keyed by sandbox name, and Run restores them after reading the
@@ -178,19 +193,19 @@ How the shared PostToolUse chain reaches each runtime — the three sanitizer ro
 
 | Feature | Where it runs | Claude Code | OpenCode | Pi | Codex | Notes for future runtimes |
 |---------|---------------|-------------|-----------------|----|-------|---------------------------|
-| **Tirith** (Bash command scanning) | Sandbox PreToolUse hook | ✓ (loaded via `--settings`, #6358) | ✗ — not wired; adapter owned by unbound-force#515 | ✓ via `fullsend-hooks.js` (pi `tool_call` → `HookPlan` PreToolUse scripts) | ✓ via `fullsend-codex-hook.py` (a `PreToolUse` handler per `HookPlan` group in `$CODEX_HOME/hooks.json`; the script's `exit 1` + `decision:block` is translated to **exit 2 + reason on stderr**, the only reliable block on codex) | `tirith_check.py`; harness `security.sandbox_hooks.tirith`; fails open on missing binary/timeout unless `TIRITH_REQUIRED=1` |
-| **SSRF pre-tool** | Sandbox PreToolUse hook | ✓ (`hooks-loaded.feature` runs under the dummy runtime, which installs no hooks — it guards the sandbox egress boundary; the hook itself is unit-tested) | ✗ — not wired; adapter owned by unbound-force#515 | ✓ via `fullsend-hooks.js` | ✓ via `fullsend-codex-hook.py`; the group's `WebFetch` tool is dropped from the matcher because codex has no such tool — it fetches through the shell, which the `Bash` matcher already covers | `ssrf_pretool.py`; default on; when DNS resolution fails for a host on the `FULLSEND_EGRESS_ALLOWLIST`, the hook defers to the L7 egress proxy instead of failing closed — all other SSRF checks (scheme, hostname blocklist, IP blocklist, DNS rebinding) still apply. On GitLab CI, the runner adds the forge host and port to every imported provider profile that issues `GITLAB_TOKEN` (#8683), so the attached GitLab provider opens the L7 proxy for the forge API and its placeholder resolves there. The auto-generated `fullsend-gitlab-forge` profile (#6615) is imported too, but it applies only when a provider names its type |
-| **Canary token detection** | Sandbox Pre/PostToolUse hooks | pre ✓; post-tool via `posttool_chain.py` on successful tool calls (`tool_response` / `updatedToolOutput`, #6357); failed calls: the same driver on `PostToolUseFailure` (detect + halt; the error text cannot be rewritten) | ✗ — not wired; adapter owned by unbound-force#515 | ✓ pre via `tool_call`; post via `tool_result` (sequential chain, block withholds the result) | ✓ pre and post via `fullsend-codex-hook.py`. A post-tool hit **blocks**, which on codex replaces the tool result with the reason, so the flagged output never reaches the model — stronger than Claude Code. In the **artifacts** the canary is only pattern-redacted if it happens to look like a credential, not withheld: artifact filtering is redaction, not the chain. It does **not halt the session**: `continue:false` is unsupported on PreToolUse and inert on PostToolUse, so codex has no hook-driven stop ([ADR 0100](../ADRs/0100-codex-sandbox-hooks.md)) | `canary_pretool.py` / `canary_posttool.py`; both inert unless `FULLSEND_CANARY_TOKEN` is set — on Claude Code, pi and codex that value is read at bootstrap and re-exported after `.env`, so an agent cannot clear it for a later iteration. Post-tool canary is an in-process chain stage so it cannot race sanitizer rewrites. Claude Code `decision:block` does not hide PostToolUse output, so the chain also redacts the token in `updatedToolOutput` |
-| **Secret redaction** | Sandbox PostToolUse hook | ✓ shared chain (above) | ✗ — not wired; adapter owned by unbound-force#515 | ✓ shared chain (above) | Model context: detect + withhold — codex cannot rewrite a built-in tool's output, so the adapter blocks the result instead of exposing the original secret. Artifacts: `output.jsonl` and the extracted rollout are filtered through the same Go `security.SecretRedactor` the progress parsers use, because codex's artifacts keep raw tool output where Claude Code's stream carries the post-hook result | `secret_redact_posttool.py` |
-| **Unicode normalization** | Sandbox PostToolUse hook | ✓ shared chain (above) | ✗ — not wired; adapter owned by unbound-force#515 | ✓ shared chain (above) | Unsafe hidden Unicode and OSC: detect + withhold. ANSI-only cleanup passes the original result because codex cannot apply the benign rewrite. Plain `fullwidth` findings keep their text and do not block; NFKC escape reassembly has its own unsafe category | `unicode_posttool.py` |
-| **Context suppression** | Sandbox PostToolUse hook | ✓ shared chain (above) | ✗ — not wired; adapter owned by unbound-force#515 | ✓ shared chain (above) | ✗ — it exists only to rewrite output, which codex does not allow for built-in tools; the stage still runs and its findings are logged, but nothing is condensed | `context_suppress_posttool.py` |
-| **Tool allowlist** | Sandbox PreToolUse hook | opt-in; ✓ when enabled | ✗ — not wired; adapter owned by unbound-force#515. Until then `Bash(a,b)` emits a warning and widens to bare `bash: "allow"`; #515 must preserve the command restriction | ✓ `tool_allowlist_pretool.py` via `tool_call` (names translated to Claude vocabulary first, #608) plus pi's native `--tools` from the agent `tools:` and the `Bash(a,b)` first-token allowlist enforced in the extension | opt-in; ✓ when enabled, via `fullsend-codex-hook.py` (names translated to Claude vocabulary first, #608). Unlike pi there is **no native allowlist**: codex has no `--tools`, so an agent's `tools:` frontmatter is documentation unless the harness enables this hook, and the `Bash(a,b)` first-token allowlist is recorded in the manifest but **not wired**. Note `apply_patch` arrives as `Edit`, so an agent allowlisted only for `Write` is blocked | `tool_allowlist_pretool.py`; requires `FULLSEND_TOOL_ALLOWLIST` (fail-closed when unset) |
+| **Tirith** (Bash command scanning) | Sandbox PreToolUse hook | ✓ (loaded via `--settings`, #6358) | ✓ shared script via native before hook; pinned `TIRITH_REQUIRED` | ✓ via `fullsend-hooks.js` (pi `tool_call` → `HookPlan` PreToolUse scripts) | ✓ via `fullsend-codex-hook.py` (a `PreToolUse` handler per `HookPlan` group in `$CODEX_HOME/hooks.json`; the script's `exit 1` + `decision:block` is translated to **exit 2 + reason on stderr**, the only reliable block on codex) | `tirith_check.py`; harness `security.sandbox_hooks.tirith`; fails open on missing binary/timeout unless `TIRITH_REQUIRED=1` |
+| **SSRF pre-tool** | Sandbox PreToolUse hook | ✓ (`hooks-loaded.feature` runs under the dummy runtime, which installs no hooks — it guards the sandbox egress boundary; the hook itself is unit-tested) | ✓ shared script via native before hook | ✓ via `fullsend-hooks.js` | ✓ via `fullsend-codex-hook.py`; the group's `WebFetch` tool is dropped from the matcher because codex has no such tool — it fetches through the shell, which the `Bash` matcher already covers | `ssrf_pretool.py`; default on; when DNS resolution fails for a host on the `FULLSEND_EGRESS_ALLOWLIST`, the hook defers to the L7 egress proxy instead of failing closed — all other SSRF checks (scheme, hostname blocklist, IP blocklist, DNS rebinding) still apply. On GitLab CI, the forge host is also covered by the auto-generated `fullsend-gitlab-forge` provider profile (#6615), which opens the L7 proxy for the forge API |
+| **Canary token detection** | Sandbox Pre/PostToolUse hooks | pre ✓; post-tool via `posttool_chain.py` on successful tool calls (`tool_response` / `updatedToolOutput`, #6357); failed calls: the same driver on `PostToolUseFailure` (detect + halt; the error text cannot be rewritten) | ✓ shared pre/post scripts and failed-part transform; canary/scanner failures prevent the next model request, including in Task children | ✓ pre via `tool_call`; post via `tool_result` (sequential chain, block withholds the result) | ✓ pre and post via `fullsend-codex-hook.py`. A post-tool hit **blocks**, which on codex replaces the tool result with the reason, so the flagged output never reaches the model — stronger than Claude Code. In the **artifacts** the canary is only pattern-redacted if it happens to look like a credential, not withheld: artifact filtering is redaction, not the chain. It does **not halt the session**: `continue:false` is unsupported on PreToolUse and inert on PostToolUse, so codex has no hook-driven stop ([ADR 0100](../ADRs/0100-codex-sandbox-hooks.md)) | `canary_pretool.py` / `canary_posttool.py`; both inert unless `FULLSEND_CANARY_TOKEN` is set — on codex that value is read at bootstrap and re-exported after `.env`, so an agent cannot clear it for a later iteration. Post-tool canary is an in-process chain stage so it cannot race sanitizer rewrites. Claude Code `decision:block` does not hide PostToolUse output, so the chain also redacts the token in `updatedToolOutput` |
+| **Secret redaction** | Sandbox PostToolUse hook | ✓ shared chain (above) | ✓ shared chain rewrites model-visible text; alternate metadata and attachments cleared on a rewrite | ✓ shared chain (above) | Model context: detect + withhold — codex cannot rewrite a built-in tool's output, so the adapter blocks the result instead of exposing the original secret. Artifacts: `output.jsonl` and the extracted rollout are filtered through the same Go `security.SecretRedactor` the progress parsers use, because codex's artifacts keep raw tool output where Claude Code's stream carries the post-hook result | `secret_redact_posttool.py` |
+| **Unicode normalization** | Sandbox PostToolUse hook | ✓ shared chain (above) | ✓ shared chain rewrites tool text | ✓ shared chain (above) | Unsafe hidden Unicode and OSC: detect + withhold. ANSI-only cleanup passes the original result because codex cannot apply the benign rewrite. Plain `fullwidth` findings keep their text and do not block; NFKC escape reassembly has its own unsafe category | `unicode_posttool.py` |
+| **Context suppression** | Sandbox PostToolUse hook | ✓ shared chain (above) | ✓ shared chain rewrites tool text | ✓ shared chain (above) | ✗ — it exists only to rewrite output, which codex does not allow for built-in tools; the stage still runs and its findings are logged, but nothing is condensed | `context_suppress_posttool.py` |
+| **Tool allowlist** | Sandbox PreToolUse hook | opt-in; ✓ when enabled | ✓ native permissions plus parent tool/Bash ceiling in the plugin; optional shared tool-allowlist script uses Claude names | ✓ `tool_allowlist_pretool.py` via `tool_call` (names translated to Claude vocabulary first, #608) plus pi's native `--tools` from the agent `tools:` and the `Bash(a,b)` first-token allowlist enforced in the extension | opt-in; ✓ when enabled, via `fullsend-codex-hook.py` (names translated to Claude vocabulary first, #608). Unlike pi there is **no native allowlist**: codex has no `--tools`, so an agent's `tools:` frontmatter is documentation unless the harness enables this hook, and the `Bash(a,b)` first-token allowlist is recorded in the manifest but **not wired**. Note `apply_patch` arrives as `Edit`, so an agent allowlisted only for `Write` is blocked | `tool_allowlist_pretool.py`; requires `FULLSEND_TOOL_ALLOWLIST` (fail-closed when unset) |
 
 ### Bootstrap and artifacts (per runtime)
 
 | Feature | Where it runs | Claude Code | OpenCode | Pi | Codex | Notes for future runtimes |
 |---------|---------------|-------------|-----------------|----|-------|---------------------------|
-| **Sandbox tool hooks wiring** | `SandboxHooksBootstrap` type assert in `Bootstrap` | ✓ scripts at `claude-config/hooks/`, wiring at `claude-config/hooks.json` via `--settings` (#6358); both digest-checked before every launch, fail-closed on a missing or altered file (exit 97, #8259) | ✗ — **not wired**; the runner-owned, sha256-gated plugin adapter is owned by unbound-force#515. Until it lands, OpenCode installs no sandbox tool hooks and is limited to read-only agents | ✓ see [pi: hook adapter contract](#hook-adapter-contract) — scripts under `/sandbox/pi-config/hooks/`, `HookPlan` in `fullsend-manifest.json`, embedded `fullsend-hooks.js` loaded with `-e` under `--no-extensions`; fail-closed on a missing/altered adapter (exit 97) or a manifest without a hook plan (exit -1) | ✓ see [codex: hook adapter contract](#codex-hook-adapter-contract) — scripts under `/sandbox/codex-config/hooks/`, wiring in `$CODEX_HOME/hooks.json` rendered from `HookPlan`, embedded `fullsend-codex-hook.py` loaded with `--dangerously-bypass-hook-trust`; fail-closed on a missing or altered adapter, auth script or wiring (exit 97), on a tampered `config.toml` (exit 98) and on a manifest without a hook plan (exit -1) | Hook scripts and wiring plan are runtime-neutral (see [Sandbox hook contract](#sandbox-hook-contract)); a runtime that ignores `SandboxHooksBootstrap` installs **no** sandbox tool hooks — say so explicitly here |
+| **Sandbox tool hooks wiring** | `SandboxHooksBootstrap` type assert in `Bootstrap` | ✓ scripts at `claude-config/hooks/`, wiring at `claude-config/hooks.json` via `--settings` (#6358); both digest-checked before every launch, fail-closed on a missing or altered file (exit 97, #8259) | ✓ bootstrap-uploaded `plugins/fullsend-hooks.ts` and selected `hooks/` under `/sandbox/opencode-config`; runner-held plan/digests, launch guards (exit 97), per-call script checks | ✓ see [pi: hook adapter contract](#hook-adapter-contract) — scripts under `/sandbox/pi-config/hooks/`, `HookPlan` in `fullsend-manifest.json`, embedded `fullsend-hooks.js` loaded with `-e` under `--no-extensions`; fail-closed on a missing/altered adapter (exit 97) or a manifest without a hook plan (exit -1) | ✓ see [codex: hook adapter contract](#codex-hook-adapter-contract) — scripts under `/sandbox/codex-config/hooks/`, wiring in `$CODEX_HOME/hooks.json` rendered from `HookPlan`, embedded `fullsend-codex-hook.py` loaded with `--dangerously-bypass-hook-trust`; fail-closed on a missing or altered adapter, auth script or wiring (exit 97), on a tampered `config.toml` (exit 98) and on a manifest without a hook plan (exit -1) | Hook scripts and wiring plan are runtime-neutral (see [Sandbox hook contract](#sandbox-hook-contract)); a runtime that ignores `SandboxHooksBootstrap` installs **no** sandbox tool hooks — say so explicitly here |
 | **Transcript / debug artifacts** | `TranscriptHandler` (+ optional `DebugLogNamer`) | ✓ (stream-json, `claude-debug.log`) | ✓ interim `output.jsonl` tee (`ExtractTranscripts`), `opencode-debug.log` (`DebugLogNamer`; OpenCode's stderr when `--debug` is set). `ParseTranscriptFile` replays the tee'd `--format json` stream through `parseOpenCodeStream`; full-fidelity redesign is deferred to unbound-force#513 | ✓ session JSONL under `PI_CODING_AGENT_SESSION_DIR` (`ExtractTranscripts`), `pi-debug.log` (`DebugLogNamer`; pi's stderr when `--debug` is set), `ParseTranscriptFile` judges the tee'd `--mode json` stream and session files | ✓ rollout session JSONL under `$CODEX_HOME/sessions/` (`ExtractTranscripts`; plain `.jsonl` only, each validated as a rollout envelope and redacted before it is kept), `codex-debug.log` (`DebugLogNamer`; codex has no debug flag, so Run exports `RUST_LOG` and captures stderr — redacted too), `ParseTranscriptFile` judges the tee'd `exec --json` stream | Format-specific; not shared across runtimes. Debug-log filename defaults to `agent-debug.log` unless the runtime implements `DebugLogNamer` |
 | **Agent-writable `.env` at launch** | `envDataLoad` (`internal/runtime/env_data.go`) in the run command | ✓ read as data (#8498) | ✓ read as data (#8574); the run prelude still re-pins its exports, restores the trusted values and re-checks the agent file after it | ✓ read as data (#8498) | ✓ read as data (#8498) | Never `. .env` in the launch shell: code there runs before the launch checks finish and can `exec` the CLI itself. The runner's in-sandbox probes that read the run's environment (the pre-agent context scan, the GitHub preflight, codex's harness hook-variable read and OpenCode's trusted-env read) use the same loader (`runtime.EnvDataLoad` from `internal/cli`), so they see the values the launch does and run no `.env` or `.env.d` line either. `envDataLoad` runs a `python3` pinned before `.env` (the first one, resolved with a regular-file `readlink` held to the same rule, that sits in no directory the agent user owns or can write) with `-I -S`, takes only `[export ]NAME=value` lines (quoted values, `$NAME`/`${NAME}`, a leading `~`) plus the runner's own control lines (`EnvDataControlLines`: PATH capture and restore, the `.env.d` files, `iteration.env`), and prints single-quoted exports the launch `eval`s. Other lines are ignored and reported by file and line, never by content. `LD_PRELOAD`, `LD_LIBRARY_PATH`, `LD_AUDIT`, every `PYTHON*` variable, `BASH_ENV`, `ENV`, `IFS` and the launch's read-only pins are never taken from it. The post-`.env` unsets and the second guard passes stay as a second layer |
 
@@ -313,7 +328,7 @@ pinning only `python3`.
 | Claude Code | `hookPreflightInterpreter` resolves the absolute `python3` via the launch's `envDataPin` at Bootstrap; `GenerateHooksConfigPinned` renders `PATH='<trusted>' <python> -E -s -B <script>` into `hooks.json`, protected by the digest check (#8261) | Baked into `hooks.json` at Bootstrap, covered by its digest | Bootstrap fails with an actionable error when no trusted `python3` exists or it is below the 3.11 floor |
 | Codex | Same `hookPreflightInterpreter` for the interpreter; written into `hooks.json` at Bootstrap | `FULLSEND_TRUSTED_PATH` (the launch `PATH` minus agent-writable directories), recorded read-only before `.env` by `envDataTrustedPin` within `codexBinaryPin` (post-#8633; at `bbe0ab242` it was recorded by `envDataLoad`), exported after it; the adapter sets its children's `PATH` from it | Adapter denies each hooked call when the trusted `PATH` is missing, empty, or has non-absolute entries; Codex itself still starts |
 | pi | `FULLSEND_PI_HOOK_PYTHON` (the launch's `envDataPin` result, #8589); exported after `.env`, on the loader drop list | `FULLSEND_PI_HOOK_PATH` (the trusted `PATH`, #8589); same export discipline | Adapter blocks each hook (fail closed) when either variable is missing or not an absolute path; pi still starts |
-| OpenCode | Not wired; installs no sandbox tool hooks (unbound-force#515) | — | — |
+| OpenCode | Bootstrap captures a trusted interpreter and uploads the native hook adapter | Fixed system `PATH`, reasserted through the runner-held hook policy | The adapter blocks intercepted calls when its trusted hook configuration is missing or invalid |
 
 Gaps against the rules are tracked in
 [#8763](https://github.com/fullsend-ai/fullsend/issues/8763) and
@@ -329,6 +344,88 @@ Gaps against the rules are tracked in
 | `posttool_chain.py` canary stage | fails **closed** whenever `FULLSEND_CANARY_TOKEN` is set: input the driver cannot read blocks (`exit 1`, `continue: false`) instead of skipping detection; with no canary token configured it stays fail-open | a scan that raises is treated as a hit; a hit whose redaction cannot be verified clean withholds the output entirely; `exit 1` is unconditional |
 
 Also: empty/whitespace-only stdin is treated as "no tool call" and allowed by every script; a payload without `tool_name` blocks only in the allowlist hook; adapters must not treat a sanitizer's empty stdout as an error; detection and redaction share one case-insensitive matcher (`hook_io.canary_pattern`), so a token that is detected is always one that can be redacted.
+
+### OpenCode native hook probe (#7824)
+
+The implementation target for #7824 is the sandbox-pinned **OpenCode 1.19.1**. The v2
+comparison below records exploratory findings only; v2-specific hook tests, plugin and tool
+migration, and a sandbox version upgrade are outside this PR's scope and belong in follow-up work.
+
+`TestOpenCodeNativeHooks` runs a real OpenCode binary with the embedded production adapter,
+shared hook scripts and a scripted local Anthropic endpoint. The endpoint supplies deterministic tool calls and records
+the subsequent model requests. No model credentials or live forge installation are needed.
+The subprocess uses temporary home, config, data and cache directories and does not inherit
+provider credentials or the developer's OpenCode configuration.
+
+Run it from the repository root with a binary matching `OPENCODE_VERSION` in the sandbox
+Containerfile. The test skips unless the binary path is supplied and fails on a version mismatch:
+
+```bash
+OPENCODE_HOOK_PROBE_BINARY=/absolute/path/to/opencode \
+  go test ./internal/runtime -run '^TestOpenCodeNativeHooks$' -count=1 -v
+```
+
+For a version comparison, select another binary and its exact version explicitly:
+
+```bash
+OPENCODE_HOOK_PROBE_BINARY=/absolute/path/to/other/opencode \
+OPENCODE_HOOK_PROBE_VERSION='X.Y.Z' \
+  go test ./internal/runtime -run '^TestOpenCodeNativeHooks$' -count=1 -v
+```
+
+The probe checks a successful Bash control call, pre-tool denial with no file side effect,
+post-tool output replacement, and post-tool denial by throwing an error. It also repeats all
+three interception cases inside a Task child, checking that the parent Task and child Bash
+events have distinct session IDs. Original output markers must be absent from every captured
+model request; replacement and denial markers must appear in the continuations.
+
+On Linux arm64 with the checksum-verified sandbox binary, OpenCode **1.19.1** passed all fourteen
+scenarios on 2026-10-21. A pre-tool exception prevented execution. A post-tool exception
+withheld the result and surfaced the denial reason as a tool error; mutating the post-tool
+output replaced what the model received. All three behaviors also held in a Task child session.
+
+The permission scenarios load the actual generated agent markdown, rather than inline agent
+permissions. An LS-only agent can list a directory but cannot read a file or write one. Bash
+tests cover bare commands, arguments, allowed composition, denied commands, denied composition,
+and a trusted pattern map whose later deny must win. Each Bash policy runs with the production
+adapter and with only the observation plugin, so native permission evaluation is verified
+independently of hook enforcement.
+
+Four failure scenarios use a test-only tool that genuinely throws without firing the after hook.
+They verify credential redaction, canary withholding, fail-closed scanner-error metadata, and
+nested Task errors at the model boundary. The repo-config isolation scenario verifies that a
+target repo's `.env` and `.opencode` files cannot inject an extra plugin during startup.
+
+Denial diagnostics use a separate bounded Python invocation of the verified shared redactor,
+not the PostToolUse chain. Canary detection, missing sanitizer files, timeout, malformed replies
+or interpreter failure retain a fixed generic diagnostic. Tests verify useful details reach
+the model while credentials, canaries, terminal controls and raw stderr do not.
+
+A separate startup check used the actual pinned SDK with distinct global/custom config paths.
+Seeding global SDK bookkeeping from that installation avoided a background registry download.
+The image smoke checks exercise the same dependency setup without model credentials.
+
+OpenCode **2.0.32** is publicly available as npm package `@opencode/cli`, rather than the v1
+package `opencode-ai`. A comparison on the same host stopped at the successful-control assertion:
+v2 rejected the scripted `bash` call because that tool is no longer available. V2 uses `shell`
+and `subagent` in place of `bash` and `task`, and its plugin API uses `Plugin.define` with
+`ctx.tool.hook` registrations rather than the v1 hook object. The probe accepts v2's version
+output and uses `--standalone` to avoid starting a persistent background service, but the
+adapter and scripted calls still target v1. Testing v2 hook enforcement requires a separate adapter and tool-call
+translation; this compatibility failure is not evidence that v2 fails to enforce hooks.
+
+The current v1 probe uses the production adapter and `HookPlan`: SSRF blocks a command before
+its file side effect, the shared chain redacts a credential-shaped marker, and a canary result
+is withheld. A second plugin only records session IDs and phases; it makes no policy decisions.
+Unit tests cover Bash restrictions, native write paths, environment isolation, bootstrap wiring,
+tampered scripts/plugins and the security-enabled gate. These tests do not establish sandbox
+isolation or transcript redaction. Native exceptions are now covered at the model boundary;
+stored session data and output artifacts still require the separate #7320 work.
+
+Deployment completion still requires a successful pinned-image build, the capability-gated
+`runtime-opencode` behaviour test against that image, and a write-capable run in the target
+OpenShell environment. Peer review must also cover the documented residual risks. The local
+native probe does not substitute for these checks.
 
 ### Tirith: accepted shell dialect
 
@@ -471,7 +568,7 @@ The inference profiles (`profiles/fullsend-vertex-ai.yaml` in this repo and in f
 
 ## Sandbox workspace layout
 
-The sandbox has two key directories that map to Claude Code's config levels (plus a runner-owned config directory per additional runtime, e.g. `pi-config/` for pi and `codex-config/` for codex):
+The sandbox has two key directories that map to Claude Code's config levels (plus a runner-owned config directory per additional runtime, e.g. `pi-config/` for pi, `codex-config/` for codex, and `opencode-config/` for OpenCode):
 
 ```
 /sandbox/
@@ -494,6 +591,10 @@ The sandbox has two key directories that map to Claude Code's config levels (plu
 │                                       populated by CodexRuntime.Bootstrap (#6920, follow-up PR)
 │   └── agents/<role>.toml              Native sub-agent roles (skill personas plus default and explore), written only
 │                                       when the ADR 0126 gate holds; runner-held digests, checked by the spawn guard (#6970)
+│
+├── opencode-config/                 ← OPENCODE_CONFIG_DIR (OpenCode runtime)
+│   ├── plugins/fullsend-hooks.ts       Native security hook adapter, uploaded and digest-verified by Bootstrap
+│   └── hooks/*.py                      Selected shared security hook scripts, uploaded and digest-verified by Bootstrap
 │
 ├── claude-config/                   ← CLAUDE_CONFIG_DIR (personal level)
 │   ├── agents/
