@@ -1240,10 +1240,12 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 				if lockFieldHolds(h.Skills[idx].Source, m.url) {
 					h.Skills[idx].Source = m.localPath
 				}
-			} else {
+			} else if isTransitiveSkillLockField(m.field) {
 				// Transitive skill dependency — append as additional skill.
 				h.Skills = append(h.Skills, harness.SkillEntry{Source: m.localPath})
 			}
+			// Any other field has no harness slot to update: its cache
+			// entry was verified above, and it must not become a skill.
 		}
 	}
 
@@ -1379,6 +1381,30 @@ func lockFieldHolds(value, lockURL string) bool {
 		value = value[:i]
 	}
 	return value == lockURL
+}
+
+// isTransitiveSkillLockField reports whether a lock dependency field names a
+// transitive skill dependency, recorded by resolveSkillTransitiveDeps in
+// internal/resolve as skills[<parentURL>:dep<N>].
+func isTransitiveSkillLockField(field string) bool {
+	if !strings.HasPrefix(field, "skills[") || !strings.HasSuffix(field, "]") {
+		return false
+	}
+	inner := field[len("skills[") : len(field)-1]
+	i := strings.LastIndex(inner, ":dep")
+	if i <= 0 {
+		return false
+	}
+	n := inner[i+len(":dep"):]
+	if n == "" {
+		return false
+	}
+	for _, c := range n {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // isTreeLockField reports whether a lock dependency field names a cached
