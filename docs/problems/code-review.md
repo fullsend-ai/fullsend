@@ -54,6 +54,10 @@ Different review concerns require different context. A correctness reviewer need
 
 Six specialized sub-agents (implemented from a conceptual decomposition of nine axes), each independently evaluating the change from its own perspective. High-stakes adversarial dimensions (correctness, security) run on opus; mechanical-matching dimensions run on sonnet.
 
+A repository will be able to replace, add or disable one of these personas
+from its `agents[].subagents` config without forking the review skill
+([ADR 0155](../ADRs/0155-agent-spec-subagents-source-or-disable-personas.md)).
+
 ### Correctness agent (opus)
 
 Evaluates whether the code does what it claims to do.
