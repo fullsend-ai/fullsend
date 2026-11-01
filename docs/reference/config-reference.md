@@ -234,6 +234,10 @@ effort, sub-agent models and the trigger.
   invalid `model` or `effort`, an invalid `trigger` makes every agent run in
   the repository fail with `invalid agent config`, not only built-in routing, so
   check the expression before you merge the change.
+- **`harness`** — Decided, not yet implemented:
+  [ADR 0154](../ADRs/0154-agent-entries-may-overlay-harness-fields.md) adds a
+  block that overrides the agent's harness `env.runner` and `env.sandbox`
+  values without a `base:` harness.
 
 In the layered config system, agents use keyed merge by `DerivedName()` — see
 [Layered Config Reference](../guides/infrastructure/layered-config-reference.md).
