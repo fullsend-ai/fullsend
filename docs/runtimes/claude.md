@@ -10,6 +10,12 @@ fullsend run triage --model opus --effort high
 Choosing between runtimes is in [Agent runtimes](../runtimes.md). Selection, precedence and the
 config keys live there too.
 
+Background Workflow phase/agent changes and runtime lifecycle/status notices
+are displayed from Claude's structured event stream. See
+[live Workflow progress](#live-claude-workflow-progress)
+for the display behavior and its limits; it does not include full nested tool
+stdout/stderr.
+
 ## Models
 
 Pass an alias or a model id. fullsend resolves `opus`, `sonnet` and `haiku` itself and passes the
@@ -323,6 +329,110 @@ These are the places Claude Code differs from pi — useful when comparing a run
 - **The repo's own `.claude/settings.json` still auto-loads** from the working directory. fullsend's
   hook wiring is passed explicitly with `--settings` so it loads regardless, but repo-supplied hooks
   are a separate exposure to be aware of.
+
+## Live Claude Workflow progress
+
+When Claude Code emits background task and Workflow progress, `fullsend run`
+prints task identity, agent labels, attributed phases, state changes, and
+available tool names/context. For example:
+
+```console
+  ⚙ Task wf-example / agent #1 (reader) [Read]: read input — running (attempt 1)
+  ⚙ Task wf-example / agent #1 (reader) [Read]: read input — completed (attempt 1)
+  ⚙ Task wf-example / agent #2 (creator) [Create]: strategy-create — running (tool: Bash: python3 create.py) (attempt 1)
+```
+
+Unchanged snapshots and counter-only updates do not repeat the same display
+line. Text is sanitized, credential-redacted, and bounded before display or
+retention in the bounded display cache. Progress text uses Unicode cleanup:
+bidirectional overrides, invisible format characters and Unicode tags are
+removed, and compatibility characters are normalized. The CLI applies the
+same cleanup to credential literals before matching.
+A dedicated reconciler owns lifecycle and deduplication; the renderer prints
+its safe messages. Parser/`OnEvent` callbacks and captured stream bytes keep
+their original snapshot content.
+
+Concurrent tasks and agents retain
+separate identities. Task tool/status fields retain omitted values;
+explicit empty strings clear them. Pausing hides the last summary until the
+task resumes; a terminal state or new run clears it. Partial lifecycle
+patches retain known task labels and state; explicit starts can reset an
+identity. Late running snapshots do not reopen known terminal tasks or
+agents. Sparse agent snapshots retain known
+labels, phases and tool context. Error, blocked and cached metadata persists
+within a state; state changes clear omitted transient metadata. Explicit
+empty strings and false flags also clear their corresponding fields.
+
+Task visibility, terminal state and run watermarks are retained separately
+from agent display rows. New runs and terminal task states retire old agent
+rows. Tracking admits up to 1,024 task identities and 1,024 agents per task,
+with a shared 16,384-row threshold for admitting new agent rows. At a limit,
+new identities or agent rows are suppressed; tracked rows and task guards
+remain.
+Agent-row capacity becomes available when tasks finish or open new runs.
+Task-identity slots stay reserved for the renderer's lifetime.
+
+Run IDs follow the Agent SDK opening order; late frames from superseded
+runs are ignored, so they cannot steal later updates without a run ID.
+Visibility belongs to each run: promoting its first late run ID preserves
+its hidden classification, while a distinct named run does not inherit an
+older run's visibility. Hook names and event attribution survive sparse
+progress/completion messages for the same hook ID.
+
+Workflow agent wire states are only `start`, `progress`, `done` and `error`.
+A `start` record with `queuedAt` and no `startedAt` is queued; a record with
+`startedAt` is executing. Started agents display their one-based `attempt`
+when supplied. A retry start has an `attempt` greater than one; its display
+includes `attempt` and the supplied `lastAttemptReason`
+(`stalled`, `throttled` or `user-retry`). Later progress is running, with the
+attempt retained, and each new attempt is visible even when its label and
+tool are unchanged. `error` plus `skipped: true` is skipped, not failed.
+Older records without timing metadata retain the best-effort running display.
+These derived statuses do not assume extra values in the agent wire enum.
+
+The display handles these structured Claude events when the runtime emits
+them. Task progress shapes were checked against Claude Code 2.1.296 capture
+and the embedded 2.1.312 emitter/schema; this is version-bound compatibility,
+not a promise of a stable public protocol. In particular, `workflow_progress`
+(including `workflow_agent` metadata) and `system/task_summary` are
+**undocumented internal Claude Code extensions**, not public Agent SDK
+contracts in the inspected version. They may change or disappear without
+notice in any Claude patch release. Support is best-effort; unsupported
+shapes are ignored for display and raw events remain available for diagnosis.
+A newly recorded live 2.1.312 Workflow stream has not been qualified here.
+
+Workflow agents use their positive index as stable identity within a task/run.
+A late `agentId` is retained as display attribution, and learning it alone
+does not add another progress line. If the index is absent, the agent ID is
+the identity fallback.
+
+| Event | Console behavior |
+| --- | --- |
+| `task_started` | Task identity and description; ambient/hidden starts suppress subsequent progress while tracked. |
+| `task_progress` | Task description, last tool and progress summary; best-effort decoding of the undocumented internal `workflow_progress` agent metadata. |
+| `task_updated` | Pending, running, paused, completed, failed and killed states; description-only patches and bounded errors. |
+| `task_notification` | Completion, failure or stop, including a worker-restart cause when supplied; full result summary excluded. |
+| `task_summary` | Undocumented internal mid-turn summary; best-effort display, with null/empty values clearing deduplication silently. |
+| `background_tasks_changed` | Count of reported non-ambient background tasks; membership is not execution or completion evidence. |
+| `hook_started`, `hook_progress`, `hook_response` | Hook name/event, running/outcome and exit code; stdout/stderr/output excluded. |
+| `permission_denied` | Tool/agent identity and bounded decision reason; tool-result body excluded. |
+| `status`, `session_state_changed` | Compaction, session state and action-required transitions; per-request status chatter excluded. |
+| `informational`, `notification` | Salient notices, suggestions, warnings and text notifications; unkeyed occurrences repeat, transcript-only info excluded. |
+| `rate_limit_event` | Warnings, rejection, supplied reset time and subsequent recovery; routine initial allowed status suppressed. |
+
+Declared `workflow_phase` records do not prove live advancement and are not
+rendered as phase starts. Internal `workflow_log` entries are filtered out
+of SDK progress by the inspected Claude 2.1.312 producer; Fullsend cannot
+display records absent from its input stream. This is not a stream of full
+nested tool stdout/stderr, prompts, result bodies or hook output. Unknown
+message kinds/states and malformed records are ignored for display; raw
+events remain in `output.jsonl` for diagnosis and future compatibility work.
+
+Task completion and session idle are distinct from the run's validated
+business result. Progress counters do not add to token/cost totals. The
+periodic `Agent running (...)` heartbeat still reports elapsed time rather
+than proving progress. The display is advisory, not a durable task registry;
+very large sessions can evict cached identity and deduplication state.
 
 ## Troubleshooting
 
