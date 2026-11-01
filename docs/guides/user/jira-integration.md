@@ -6,14 +6,14 @@ Connect fullsend to a Jira project so that Jira issue activity — comments, lab
 
 ## Setup overview
 
-1. **Create a Jira service account** and an API token. Store the credentials as GitHub Actions secrets. See [Credential setup](#credential-setup).
+1. **Create a dedicated Jira account** for fullsend and an API token. Store the credentials as GitHub Actions secrets. See [Credential setup](#credential-setup) and [Use a dedicated account for the poller](#use-a-dedicated-account-for-the-poller).
 2. **Grant it the minimum Jira permissions** in the target project, usually
    through the **Developers** project role. The poller needs Browse
    Projects, Edit Issues, Add Comments, and Edit Own Comments to operate on
    issues and write the entity properties it uses for lock and checkpoint
    coordination. Then choose how Jira users are authorized:
    - **Recommended:** list who may trigger agents under a `jira` provider in
-     `.fullsend/config.yaml`. The service account then also needs the
+     `.fullsend/config.yaml`. The poller account then also needs the
      Browse users and groups global permission, but only if the lists name
      groups.
    - **Project roles:** with no `jira` entry, every Jira event is authorized by
@@ -117,7 +117,7 @@ comment on the issue. A custom agent's `trigger` can test
 `event.transition.comment.instruction`.
 A command buried mid-sentence ("please /fs-triage this") or on a later line does not trigger. Slash commands follow the `/fs-{agent}` pattern for stages that can legitimately run against a bare Jira issue. `review`, `fix`, and `retro` are **not** among them: per the [jira-poll adapter spec](../../normative/normalized-event/v1/jira-poll-adapter.md#state), those stages are change-proposal-scoped (they act on an existing PR) and harness CEL triggers for them MUST require `entity.kind == 'change_proposal'` — which a Jira issue comment alone never has. A `/fs-review` comment on a Jira issue is not expected to dispatch anything.
 
-Comments and changelog entries from the **authenticated poller account** are classified as `actor.kind: bot` and do not dispatch agents. The poller learns that identity from Jira's `/myself` endpoint during the auth preflight, so a regular Atlassian service account (plain display name, `accountType: atlassian`) is recognized without renaming it or adding display-name heuristics. This is the invariant that a mutation performed by fullsend — applying `needs-info`, posting a triage comment, writing a run-status update — cannot trigger the same agent again. Human comments, including `/fs-triage`, still dispatch. Filtered self-authored events still advance the per-issue checkpoint, so they are not reconsidered on the next poll.
+Comments and changelog entries from the **authenticated poller account** are classified as `actor.kind: bot` and do not dispatch agents. The poller learns that identity from Jira's `/myself` endpoint during the auth preflight, so a dedicated regular Atlassian account (plain display name, `accountType: atlassian`) is recognized without renaming it or adding display-name heuristics. This is the invariant that a mutation performed by fullsend — applying `needs-info`, posting a triage comment, writing a run-status update — cannot trigger the same agent again. Human comments, including `/fs-triage`, still dispatch. Filtered self-authored events still advance the per-issue checkpoint, so they are not reconsidered on the next poll.
 
 The poller also classifies an actor as a bot, and drops its events, when
 either of these holds:
@@ -133,10 +133,17 @@ either of these holds:
 
 ### Use a dedicated account for the poller
 
-Give the poller a Jira account of its own, such as an Atlassian service
-account, rather than a person's API token. The poller and the built-in agents'
-Jira writes both authenticate as `JIRA_USER_EMAIL` / `JIRA_TOKEN`, and the
-poller treats that account as a bot. If the token belongs to a person:
+Give the poller a Jira account of its own, rather than a person's API token.
+Today that means a dedicated non-human account: a regular Atlassian user
+account (often called a bot account) created for fullsend, with its own email
+and API token. It is not an Atlassian-managed service account. Those
+authenticate through `api.atlassian.com` with scoped API tokens or OAuth 2.0,
+which fullsend does not support yet; see
+[#9007](https://github.com/fullsend-ai/fullsend/issues/9007).
+
+The poller and the built-in agents' Jira writes both authenticate as
+`JIRA_USER_EMAIL` / `JIRA_TOKEN`, and the poller treats that account as a
+bot. If the token belongs to a person:
 
 - That person's own comments and label changes never dispatch agents,
   including their `/fs-triage` and `/fs-code` commands.
@@ -237,11 +244,11 @@ implementation
 - A GitHub repo with fullsend installed (`fullsend github setup` completed).
 - A Jira Cloud instance. **Jira Data Center is not currently supported** — the client is hard-wired to Cloud-only APIs (REST v3, cursor-based search pagination, `groupId`-based group lookup), so requests against a Data Center instance will fail. Tracked as future work.
 - A Jira API token ([Create API token](https://id.atlassian.com/manage-profile/security/api-tokens))
-  for a dedicated service account with the
-  [minimum Jira permissions](#minimum-jira-permissions). That is usually the
-  **Developers** project role. The **Administrators** role is needed only
-  when project roles are used: with no `jira` entry, for slash commands when
-  the `jira` entry sets no lists, or for `labels: project_roles`.
+  for a [dedicated non-human account](#use-a-dedicated-account-for-the-poller)
+  with the [minimum Jira permissions](#minimum-jira-permissions). That is
+  usually the **Developers** project role. The **Administrators** role is
+  needed only when project roles are used: with no `jira` entry, for slash
+  commands when the `jira` entry sets no lists, or for `labels: project_roles`.
 
 ## Credential setup
 
@@ -863,8 +870,9 @@ However, more pollers against the same Jira project means more API calls per cyc
 | 200 on `/myself` but 403 on issue search | Org restricts personal API tokens for project data | Ask your Atlassian org admin to allow API token access for project data |
 | No dispatches produced | No changes since last poll | Check the `lastCheck` entity property on the issue — the poller only dispatches for changes newer than this timestamp |
 | Agent comments or label changes re-dispatch in a loop | A different Jira account posted the agent output than the one the poller authenticates as | The poller classifies its own `/myself` account as `actor.kind: bot` and filters those events. Confirm `JIRA_USER_EMAIL` / `JIRA_TOKEN` are the same account that posts comments and labels. Human follow-up, including `/fs-triage`, still dispatches |
-| `load project roles for PROJ: ... 401 You cannot edit the configuration of this project` | The poller read Jira project roles without Administer Projects. That happens with no `jira` entry in `.fullsend/config.yaml`, with `labels: project_roles`, or on a slash command when the entry sets no lists | Add a `jira` entry with `write`/`triage` lists so project roles are not read, or grant the service account the **Administrators** project role. See [Minimum Jira permissions](#minimum-jira-permissions) |
-| `resolve jira list groups: ... get user groups` errors | The `jira` lists name groups, or project-role resolution found a role granted to a group, but the service account lacks the Browse users and groups global permission | Grant Browse users and groups, or list account IDs instead of groups |
+| Your own comments or label changes never dispatch | `JIRA_USER_EMAIL` / `JIRA_TOKEN` belong to your own Jira account | The poller classifies its own `/myself` account as `actor.kind: bot`, so that account's comments (including `/fs-triage`) and label changes are filtered with no error. Give the poller a dedicated account; see [Use a dedicated account for the poller](#use-a-dedicated-account-for-the-poller) |
+| `load project roles for PROJ: ... 401 You cannot edit the configuration of this project` | The poller read Jira project roles without Administer Projects. That happens with no `jira` entry in `.fullsend/config.yaml`, with `labels: project_roles`, or on a slash command when the entry sets no lists | Add a `jira` entry with `write`/`triage` lists so project roles are not read, or grant the poller account the **Administrators** project role. See [Minimum Jira permissions](#minimum-jira-permissions) |
+| `resolve jira list groups: ... get user groups` errors | The `jira` lists name groups, or project-role resolution found a role granted to a group, but the poller account lacks the Browse users and groups global permission | Grant Browse users and groups, or list account IDs instead of groups |
 | Slash command ignored (with `jira` lists) | Actor is not in the `write` list (or the `triage` list for triage-level agents) | Add the actor's account ID or one of their groups to the right list — see [Actor role resolution](#actor-role-resolution) |
 | Slash command ignored (without `jira` lists) | Actor lacks `write` role in Jira project | The actor must be a member of a Jira project role named exactly "Developers" or "Administrators" — see [Project role mapping](#project-role-mapping) if you use custom role names |
 | Issue opened or edited on Jira never dispatches triage | A `jira` entry is present but sets no `write` or `triage` list and not `labels: project_roles`, so opened and edited events are unresolved (with no `jira` entry, or with `labels: project_roles` and no lists, they resolve through project roles) | Add `write`/`triage` lists to the entry, or set `labels: project_roles`. See [Actor role resolution](#actor-role-resolution) |
