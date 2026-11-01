@@ -14,7 +14,7 @@ func TestRootCommand_HasLintSubcommand(t *testing.T) {
 	cmd := newRootCmd()
 	found := false
 	for _, sub := range cmd.Commands() {
-		if sub.Use == "lint" {
+		if sub.Name() == "lint" {
 			found = true
 			break
 		}
@@ -847,8 +847,248 @@ env:
 	assert.Contains(t, err.Error(), `validating env for agent "my-agent"`)
 }
 
-func TestLintCommand_RejectsPositionalArgs(t *testing.T) {
+func TestLintCommand_RejectsExtraPositionalArgs(t *testing.T) {
 	cmd := newLintCmd()
-	_, err := executeCmd(cmd, []string{"garbage"})
+	_, err := executeCmd(cmd, []string{"one", "two"})
 	require.Error(t, err)
+}
+
+// writeScopedLintFixture writes a config registering the given agents[]
+// YAML plus a valid local harness for each of the named agents: each
+// harness carries one warning-level diagnostic (GITHUB_ISSUE_URL), so the
+// output shows which agents were linted.
+func writeScopedLintFixture(t *testing.T, agentsYAML string, harnessAgents ...string) string {
+	t.Helper()
+	dir := t.TempDir()
+	cfg := "version: \"1\"\nagents:\n" + agentsYAML
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(cfg), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	for _, name := range harnessAgents {
+		writeLintAgentFixture(t, dir, name)
+		harnessYAML := "role: triage\nagent: agents/" + name + ".md\npolicy: policies/base.yaml\n" +
+			"env:\n  runner:\n    GITHUB_ISSUE_URL: ${GITHUB_ISSUE_URL}\n"
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", name+".yaml"), []byte(harnessYAML), 0o644))
+	}
+	return dir
+}
+
+func TestLintCommand_ScopedLintsOnlySelectedAgent(t *testing.T) {
+	stubLintGitHubToken(t, "test-token")
+	dir := writeScopedLintFixture(t, `  - name: alpha
+    source: harness/alpha.yaml
+  - name: beta
+    source: harness/beta.yaml
+`, "alpha", "beta")
+
+	t.Run("no name lints every agent", func(t *testing.T) {
+		out, err := executeCmd(newLintCmd(), []string{"--fullsend-dir", dir})
+		require.NoError(t, err)
+		assert.Contains(t, out, "alpha: warning:")
+		assert.Contains(t, out, "beta: warning:")
+	})
+
+	t.Run("name lints only that agent", func(t *testing.T) {
+		out, err := executeCmd(newLintCmd(), []string{"--fullsend-dir", dir, "beta"})
+		require.NoError(t, err)
+		assert.Contains(t, out, "beta: warning:")
+		assert.NotContains(t, out, "alpha")
+	})
+
+	t.Run("name matches case-insensitively", func(t *testing.T) {
+		out, err := executeCmd(newLintCmd(), []string{"--fullsend-dir", dir, "BETA"})
+		require.NoError(t, err)
+		assert.Contains(t, out, "beta: warning:")
+		assert.NotContains(t, out, "alpha")
+	})
+}
+
+func TestLintCommand_ScopedSkipsBrokenSiblingHarness(t *testing.T) {
+	stubLintGitHubToken(t, "test-token")
+	// broken has a valid agents[] entry whose harness does not exist: only
+	// per-agent resolution finds that, and a scoped lint does not resolve
+	// other agents.
+	dir := writeScopedLintFixture(t, `  - name: broken
+    source: harness/missing.yaml
+  - name: ok
+    source: harness/ok.yaml
+`, "ok")
+
+	out, err := executeCmd(newLintCmd(), []string{"--fullsend-dir", dir, "ok"})
+	require.NoError(t, err)
+	assert.Contains(t, out, "ok: warning:")
+	assert.NotContains(t, out, "broken")
+	assert.NotContains(t, out, "other agent")
+
+	_, err = executeCmd(newLintCmd(), []string{"--fullsend-dir", dir})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `resolving harness for agent "broken"`)
+}
+
+func TestLintCommand_ScopedReportsInvalidSiblingEntriesAsWarning(t *testing.T) {
+	stubLintGitHubToken(t, "test-token")
+	cases := []struct {
+		name     string
+		siblings string
+		want     string
+	}{
+		{
+			name: "one sibling",
+			siblings: `  - name: review
+    trigger: '"yes"'
+`,
+			want: "config: warning: agents: 1 other agent has lint errors; run `fullsend lint` to inspect them",
+		},
+		{
+			name: "two siblings",
+			siblings: `  - name: review
+    trigger: '"yes"'
+  - name: insecure
+    source: http://example.com/insecure.yaml
+`,
+			want: "config: warning: agents: 2 other agents have lint errors; run `fullsend lint` to inspect them",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeScopedLintFixture(t, tc.siblings+`  - name: my-agent
+    source: harness/my-agent.yaml
+`, "my-agent")
+
+			out, err := executeCmd(newLintCmd(), []string{"--fullsend-dir", dir, "my-agent"})
+			require.NoError(t, err, "sibling entry errors are warnings in a scoped lint")
+			assert.Contains(t, out, tc.want)
+			assert.Contains(t, out, "my-agent: warning:", "the selected agent is still linted")
+
+			_, err = executeCmd(newLintCmd(), []string{"--fullsend-dir", dir, "my-agent", "--strict"})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "(--strict)")
+
+			// The full lint still reports the invalid entry as an error.
+			_, err = executeCmd(newLintCmd(), []string{"--fullsend-dir", dir, "--offline"})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "lint found 1 error-level diagnostic(s)")
+		})
+	}
+}
+
+func TestLintCommand_ScopedUnknownAgentFails(t *testing.T) {
+	stubLintGitHubToken(t, "test-token")
+
+	t.Run("lists enabled agents", func(t *testing.T) {
+		dir := writeScopedLintFixture(t, `  - name: review
+    source: harness/review.yaml
+  - name: alpha
+    source: harness/alpha.yaml
+  - name: off
+    source: harness/off.yaml
+    enabled: false
+`, "review", "alpha")
+
+		out, err := executeCmd(newLintCmd(), []string{"--fullsend-dir", dir, "revieww"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `agent "revieww" is not registered in config.yaml; registered agents that can be linted: alpha, review`)
+		assert.NotContains(t, err.Error(), "off")
+		assert.NotContains(t, out, "warning:", "no agent is linted")
+	})
+
+	t.Run("no enabled agents", func(t *testing.T) {
+		dir := writeScopedLintFixture(t, `  - name: off
+    source: harness/off.yaml
+    enabled: false
+`)
+		_, err := executeCmd(newLintCmd(), []string{"--fullsend-dir", dir, "review"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `agent "review" is not registered in config.yaml, and no enabled agents are`)
+	})
+
+	t.Run("empty name", func(t *testing.T) {
+		dir := writeScopedLintFixture(t, `  - name: review
+    source: harness/review.yaml
+`, "review")
+		_, err := executeCmd(newLintCmd(), []string{"--fullsend-dir", dir, ""})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "agent name must not be empty")
+	})
+}
+
+func TestLintCommand_ScopedDisabledAgentFails(t *testing.T) {
+	stubLintGitHubToken(t, "test-token")
+	cases := []struct {
+		name   string
+		agents string
+	}{
+		{name: "enabled false", agents: `  - name: off
+    source: harness/off.yaml
+    enabled: false
+`},
+		{name: "later disable wins", agents: `  - name: off
+    source: harness/off.yaml
+  - name: off
+    enabled: false
+`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeScopedLintFixture(t, tc.agents, "off")
+			out, err := executeCmd(newLintCmd(), []string{"--fullsend-dir", dir, "off"})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), `agent "off" is disabled in config.yaml (enabled: false)`)
+			assert.NotContains(t, out, "off: warning:", "a disabled agent is not linted")
+		})
+	}
+}
+
+func TestLintCommand_ScopedSelectedAgentErrorsFail(t *testing.T) {
+	stubLintGitHubToken(t, "test-token")
+
+	t.Run("invalid entry", func(t *testing.T) {
+		dir := writeScopedLintFixture(t, `  - name: review
+    trigger: '"yes"'
+`)
+		_, err := executeCmd(newLintCmd(), []string{"--fullsend-dir", dir, "review", "--offline"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid agent config")
+		assert.Contains(t, err.Error(), "must evaluate to bool")
+		assert.NotContains(t, err.Error(), "resolving harness")
+	})
+
+	t.Run("harness error", func(t *testing.T) {
+		dir := writeScopedLintFixture(t, `  - name: ok
+    source: harness/ok.yaml
+  - name: broken
+    source: harness/missing.yaml
+`, "ok")
+		_, err := executeCmd(newLintCmd(), []string{"--fullsend-dir", dir, "broken"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `resolving harness for agent "broken"`)
+	})
+}
+
+func TestLintCommand_ScopedStillValidatesConfig(t *testing.T) {
+	stubLintGitHubToken(t, "test-token")
+
+	t.Run("invalid yaml", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("invalid:\n  - yaml: ["), 0o644))
+		_, err := executeCmd(newLintCmd(), []string{"--fullsend-dir", dir, "review"})
+		require.Error(t, err)
+	})
+
+	t.Run("unsupported version", func(t *testing.T) {
+		dir := writeScopedLintFixture(t, `  - name: my-agent
+    source: harness/my-agent.yaml
+`, "my-agent")
+		cfg := `version: "999"
+agents:
+  - name: my-agent
+    source: harness/my-agent.yaml
+`
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(cfg), 0o644))
+
+		out, err := executeCmd(newLintCmd(), []string{"--fullsend-dir", dir, "my-agent"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "lint found 1 error-level diagnostic(s)")
+		assert.Contains(t, out, `config: error: config.yaml: unsupported version "999"`)
+		assert.Contains(t, out, "my-agent: warning:", "the selected agent is still linted")
+	})
 }

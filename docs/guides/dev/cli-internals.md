@@ -107,7 +107,7 @@ fullsend
 │   │   └── --effort <level>                 #   Effort level for this agent
 │   ├── update       <name> [sha]             # Re-pin URL agent or local harness base
 │   └── remove       <name>                   # Unregister agent from config
-├── lint                                      # Lint config.yaml and harness definitions
+├── lint             [agent-name]              # Lint config.yaml and harness definitions
 │   ├── --fullsend-dir <path>                #   .fullsend configuration directory (default: .fullsend)
 │   ├── --forge <platform>                   #   Forge platform (github, gitlab); auto-detected from CI env
 │   ├── --strict                             #   Exit non-zero on warning-level diagnostics

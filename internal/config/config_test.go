@@ -103,6 +103,19 @@ func TestPerRepoConfigValidate_InvalidVersion(t *testing.T) {
 	assert.Contains(t, err.Error(), "unsupported version")
 }
 
+func TestPerRepoConfigValidateGlobal_SkipsAgentEntries(t *testing.T) {
+	invalidAgent := []AgentEntry{{Name: "review", Trigger: `"yes"`}}
+
+	cfg := &perRepoConfig{Version: "1", Agents: invalidAgent}
+	require.Error(t, cfg.Validate())
+	assert.NoError(t, cfg.ValidateGlobal())
+
+	cfg = &perRepoConfig{Version: "2", Agents: invalidAgent}
+	err := cfg.ValidateGlobal()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported version")
+}
+
 func TestPerRepoConfigValidate_InvalidRole(t *testing.T) {
 	cfg := &perRepoConfig{
 		Version: "1",
