@@ -455,14 +455,20 @@ On GitHub Actions, `fullsend run` copies the pre-mint `GH_TOKEN` (the job's work
 unset or empty it copies the pre-mint `GITHUB_TOKEN` instead. Provider
 credentials may expand `${GH_WORKFLOW_TOKEN}`; every other harness `${}` site refuses it, and
 pre/post/validation child environments never receive it. Outside Actions the variable is not
-derived from a local PAT — a caller may set it explicitly. `GH_TOKEN`, `GITHUB_TOKEN` and
-`PUSH_TOKEN` still receive the minted App identity.
+derived from a local PAT — a caller may set it explicitly. `GH_TOKEN`, `GITHUB_TOKEN`,
+`GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN` and `PUSH_TOKEN` still receive the minted App
+identity.
 
-Every mint sets both `GH_TOKEN` and `GITHUB_TOKEN` to the minted token, even when the caller
-workflow did not export `GITHUB_TOKEN`. When the mint is cleaned up, each one goes back to the value
-it held before that mint, or is unset if it was unset. A caller workflow that exports
-`GITHUB_TOKEN` for its own pre- or post-script therefore gets the minted App token in that
-variable, not the job token.
+Every mint sets `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN` and
+`GITHUB_ENTERPRISE_TOKEN` to the minted token, even when the caller workflow
+did not export them. `gh` reads `GH_TOKEN` and `GITHUB_TOKEN` for `github.com`
+and `*.ghe.com`, and `GH_ENTERPRISE_TOKEN` and `GITHUB_ENTERPRISE_TOKEN` for
+any other host (GitHub Enterprise Server), so `gh` calls made after the mint
+use the minted token on every host. When the mint is cleaned up, each one goes
+back to the value it held before that mint, or is unset if it was unset. A
+caller workflow that exports any of these variables for its own pre- or
+post-script therefore gets the minted App token in that variable, not the job
+token.
 
 Host-side scripts (pre/post and validation) also no longer inherit `JIRA_TOKEN`,
 `JIRA_USER_EMAIL`, or the OTLP collector headers (`OTEL_EXPORTER_OTLP_HEADERS` and
