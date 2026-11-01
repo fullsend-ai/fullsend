@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/behaviourfail"
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/runtime"
@@ -146,6 +147,16 @@ type World struct {
 	// (like other driver fields) and safe for concurrent use.
 	// Nil when no driver is configured.
 	Driver install.Driver
+
+	// Failures records classified suite failures — infrastructure vs
+	// scenario — for the whole run. It is initialized once on the
+	// template World (newTemplateWorld) so both suite runners get one
+	// recorder per run, and shared by reference through Clone (a
+	// shallow copy): every scenario clone appends to the same recorder.
+	// Scenarios run concurrently, so the recorder is mutex-protected;
+	// its methods are nil-receiver-safe, so hand-built Worlds without a
+	// recorder keep working.
+	Failures *behaviourfail.Recorder
 
 	// OutsiderSCM is an SCM driver authenticated as fstest-outsider, a
 	// GitHub User with no collaborator access. Used by the OWNERS
@@ -482,11 +493,12 @@ type MintProbeResult struct {
 }
 
 // Clone creates a shallow copy of w. Drivers and shared state (SCM,
-// CI, Driver) are shared by reference — this is safe because the
-// production implementations are immutable wrappers:
+// CI, Driver, Failures) are shared by reference — this is safe because
+// the shared types are safe for concurrent use:
 //   - scm/github.Driver holds only a forge.Client (concurrent-safe).
 //   - ci/githubactions.Driver holds a forge.Client and an immutable Token.
 //   - install.Driver is concurrent-safe by contract.
+//   - behaviourfail.Recorder is mutex-protected.
 //
 // Race tests in each driver package (TestConcurrentAccess,
 // TestConcurrentStateAccess) verify the real types under -race with

@@ -221,6 +221,11 @@ type APIErrorDetail struct {
 	Message  string `json:"message"`
 }
 
+// ErrInvitationPending reports that AddCollaborator's PUT answered
+// 201: GitHub sent an invitation, and access starts only once the
+// invitee accepts it. Match it with errors.Is.
+var ErrInvitationPending = errors.New("invitation pending")
+
 func (e *APIError) Error() string {
 	s := fmt.Sprintf("github api: %d %s", e.StatusCode, e.Message)
 	for _, d := range e.Errors {
@@ -4796,7 +4801,7 @@ func (c *LiveClient) AddCollaborator(ctx context.Context, owner, repo, username,
 	resp.Body.Close()
 	// 201 means GitHub sent an invitation; access starts only once it is accepted.
 	if resp.StatusCode == http.StatusCreated {
-		return fmt.Errorf("add collaborator %s: invitation pending, access not granted", username)
+		return fmt.Errorf("add collaborator %s: %w, access not granted", username, ErrInvitationPending)
 	}
 	return nil
 }
