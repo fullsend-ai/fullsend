@@ -59,6 +59,15 @@ inputs:
       wrapper. Takes precedence over native pull_request and
       workflow_dispatch event extraction.
     default: ""
+  artifact-suffix:
+    description: >-
+      Optional suffix for the uploaded artifact name. Empty uploads
+      fullsend-<agent>; set uploads fullsend-<agent>-<suffix>. Set a
+      per-job value when one workflow run invokes this action more than
+      once for the same agent (for example, a dispatch matrix with
+      several records for one agent), because a run cannot hold two
+      artifacts with the same name.
+    default: ""
   gcp_wif_provider:
     description: Workload Identity Federation provider resource name, used only when the selected agent resolves to Vertex inference.
     required: false
@@ -574,7 +583,7 @@ runs:
       if: always() && inputs.agent != '__install_only__'
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
-        name: fullsend-${{ inputs.agent }}
+        name: fullsend-${{ inputs.agent }}${{ inputs.artifact-suffix != '' && format('-{0}', inputs.artifact-suffix) || '' }}
         path: ${{ github.workspace }}/output
 
     - name: Finalize orphaned status comment

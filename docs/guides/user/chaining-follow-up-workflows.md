@@ -37,12 +37,21 @@ token within a role, so it does not replace a follow-up workflow. See
 
 ## What a run publishes
 
-Every agent run uploads the artifact **`fullsend-<agent>`**, where `<agent>`
-is the agent's name in `.fullsend/config.yaml`. It is uploaded even when the
-run fails, so check the run's conclusion before trusting its contents.
+An agent run uploads **`fullsend-<agent>`**, where `<agent>` is the agent's
+name in `.fullsend/config.yaml`. The reusable dispatch workflow appends the
+matrix job index when a matrix contains that agent more than once, producing
+a distinct **`fullsend-<agent>-<suffix>`** artifact for each of its records.
+The artifact is uploaded even when the run fails, so check the run's
+conclusion before trusting its contents.
+
+If a custom workflow runs the composite action more than once for the same
+agent in one run, give each job a distinct `artifact-suffix` input because a
+run cannot hold two artifacts with the same name. The `fullsend-*` pattern in
+Step 2 matches both forms. The exact-name gate in Step 3 accepts both forms
+and processes every matching artifact.
 
 ```text
-fullsend-<agent>/
+fullsend-<agent>[-<suffix>]/
 └── <run-dir>/                       # generated per run, e.g. fs-rev-09c9f0671390
     ├── iteration-1/
     │   ├── output/
@@ -225,46 +234,75 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RUN_ID: ${{ github.event.workflow_run.id }}
         run: |
+          set -euo pipefail
           names=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts" --jq '.artifacts[].name')
-          name=$(grep -Fx "fullsend-$AGENT" <<<"$names" || true)
-          echo "artifact=$name" >> "$GITHUB_OUTPUT"
-          echo "${name:-no $AGENT result on run $RUN_ID; nothing to do}"
+          matches=$(grep -Ex "fullsend-${AGENT}(-.+)?" <<<"$names" || true)
+          if [[ -n "$matches" ]]; then
+            delimiter="ARTIFACTS_$(openssl rand -hex 8)"
+            {
+              echo "artifacts<<${delimiter}"
+              printf '%s\n' "$matches"
+              echo "$delimiter"
+            } >> "$GITHUB_OUTPUT"
+          fi
+          echo "${matches:-no $AGENT result on run $RUN_ID; nothing to do}"
 
-      - uses: actions/download-artifact@v4
-        if: steps.find.outputs.artifact != ''
-        with:
-          name: ${{ steps.find.outputs.artifact }}
-          run-id: ${{ github.event.workflow_run.id }}
-          github-token: ${{ github.token }}
-          path: result
+      - name: Download matching agent artifacts
+        if: steps.find.outputs.artifacts != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          ARTIFACTS: ${{ steps.find.outputs.artifacts }}
+        run: |
+          set -euo pipefail
+          mkdir -p result
+          index=0
+          while IFS= read -r artifact; do
+            [[ -n "$artifact" ]] || continue
+            mkdir -p "result/$index"
+            gh run download "$RUN_ID" --name "$artifact" --repo "$GITHUB_REPOSITORY" --dir "result/$index"
+            index=$((index + 1))
+          done <<<"$ARTIFACTS"
 
       - name: Re-run jobs the agent classified as flaky
-        if: steps.find.outputs.artifact != ''
+        if: steps.find.outputs.artifacts != ''
         env:
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}   # the commit the agent ran on
         run: |
-          f=""
-          for d in $(printf '%s\n' result/*/iteration-*/output | sort -Vr); do   # newest first
-            if jq -e '(.recommended_action | IN("retry", "none"))
-                      and (.retry_targets | type == "array" and all(.[]; (.job_id | type == "number") and (.job_name | type == "string")))' \
-                 "$d/ci-retry-result.json" >/dev/null 2>&1; then
-              f="$d/ci-retry-result.json"; break
+          set -euo pipefail
+          declare -A seen_jobs=()
+          for artifact_dir in result/*; do
+            [ -d "$artifact_dir" ] || continue
+            result_file=""
+            while IFS= read -r candidate; do
+              if jq -e '(.recommended_action | IN("retry", "none"))
+                        and (.retry_targets | type == "array" and all(.[]; (.job_id | type == "number") and (.job_name | type == "string")))' \
+                   "$candidate" >/dev/null 2>&1; then
+                result_file="$candidate"
+                break
+              fi
+            done < <(find "$artifact_dir" -type f -path '*/iteration-*/output/ci-retry-result.json' | sort -Vr)
+            if [ -z "$result_file" ]; then
+              echo "no result matches the schema in $artifact_dir; skipping"
+              continue
             fi
-          done
-          [ -n "$f" ] || { echo "no result matches the schema; nothing to do"; exit 0; }
-          echo "using $f"
-          [ "$(jq -r .recommended_action "$f")" = retry ] || exit 0
-          for id in $(jq -r '.retry_targets[].job_id | numbers' "$f"); do
-            job=$(gh api "repos/$GITHUB_REPOSITORY/actions/jobs/$id") || continue        # confirm against the API
-            [ "$(jq -r .conclusion <<<"$job")" = failure ] || continue
-            [ "$(jq -r .workflow_name <<<"$job")" = "$CI_WORKFLOW" ] || continue
-            [ "$(jq -r .head_sha <<<"$job")" = "$HEAD_SHA" ] || continue
-            case " $CI_JOBS " in *" $(jq -r .name <<<"$job") "*) ;; *) continue ;; esac
-            run=$(jq -r .run_id <<<"$job")
-            attempt=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run" --jq .run_attempt) || continue
-            [ "$attempt" -le 2 ] || continue                                             # budget
-            gh run rerun "$run" --job "$id" --repo "$GITHUB_REPOSITORY"
+            echo "using $result_file"
+            [ "$(jq -r .recommended_action "$result_file")" = retry ] || continue
+            while IFS= read -r id; do
+              [ -n "$id" ] || continue
+              [ -z "${seen_jobs[$id]:-}" ] || continue
+              job=$(gh api "repos/$GITHUB_REPOSITORY/actions/jobs/$id") || continue        # confirm against the API
+              [ "$(jq -r .conclusion <<<"$job")" = failure ] || continue
+              [ "$(jq -r .workflow_name <<<"$job")" = "$CI_WORKFLOW" ] || continue
+              [ "$(jq -r .head_sha <<<"$job")" = "$HEAD_SHA" ] || continue
+              case " $CI_JOBS " in *" $(jq -r .name <<<"$job") "*) ;; *) continue ;; esac
+              run=$(jq -r .run_id <<<"$job")
+              attempt=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run" --jq .run_attempt) || continue
+              [ "$attempt" -le 2 ] || continue                                             # budget
+              gh run rerun "$run" --job "$id" --repo "$GITHUB_REPOSITORY"
+              seen_jobs[$id]=1
+            done < <(jq -r '.retry_targets[].job_id | numbers' "$result_file")
           done
 ```
 
@@ -272,13 +310,15 @@ What each guard does:
 
 - **`conclusion == 'success'`** skips failed agent runs; a run whose output
   never validated fails.
-- **The gate step** checks the run's artifact list for `fullsend-<agent>`
-  before anything is downloaded; other agents' runs and routing-only runs stop
-  there. An API error fails the step instead of reading as "nothing to do".
-- **The iteration walk** uses the newest result that matches the schema, so
-  an invalid later iteration is skipped. Mirror your harness schema in the
-  `jq -e` check. The schema is a filter, not a trust boundary: every guard
-  below still applies to a result that passes it.
+- **The gate step** checks the run's artifact list for `fullsend-<agent>` and
+  `fullsend-<agent>-<suffix>` before anything is downloaded; other agents'
+  runs and routing-only runs stop there. It passes every matching name to the
+  download step. An API error fails the step instead of reading as "nothing
+  to do".
+- **The iteration walk** uses the newest result that matches the schema in
+  each matching artifact, so an invalid later iteration is skipped. Mirror
+  your harness schema in the `jq -e` check. The schema is a filter, not a
+  trust boundary: every guard below still applies to a result that passes it.
 - **`numbers`** drops any id that is not a number before it reaches a URL.
 - **The API lookup** confirms each id is a failed job in this repository, in
   the workflow named by `CI_WORKFLOW`, with a name listed in `CI_JOBS`.
