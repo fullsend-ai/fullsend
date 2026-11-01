@@ -702,6 +702,148 @@ func TestResolveFromLock_DiamondDependency(t *testing.T) {
 	assert.True(t, strings.HasSuffix(h.Skills[0].Source, "/content"))
 }
 
+func TestResolveFromLock_SkillAtDifferentIndicesAcrossForgeVariants(t *testing.T) {
+	// The same skill URL sits at a different index in each forge variant.
+	// The lock keeps one entry per URL under the first field it was seen
+	// at, so both skills are recorded at skills[0]. Replay must match by
+	// URL so each variant keeps all of its skills.
+	skillFiles := map[string]map[string][]byte{
+		"skills/xskill": {"SKILL.md": []byte("---\nname: xskill\n---\n")},
+		"skills/yskill": {"SKILL.md": []byte("---\nname: yskill\n---\n")},
+	}
+	xURL := "https://github.com/example-org/skills/tree/main/skills/xskill"
+	yURL := "https://github.com/example-org/skills/tree/main/skills/yskill"
+	xHash := fetch.ComputeTreeHash(skillFiles["skills/xskill"])
+	yHash := fetch.ComputeTreeHash(skillFiles["skills/yskill"])
+
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	harnessContent := fmt.Sprintf(`agent: agents/code.md
+role: test
+allowed_remote_resources:
+  - "https://github.com/example-org/"
+forge:
+  github:
+    skills:
+      - "%[2]s#sha256=%[4]s"
+  gitlab:
+    skills:
+      - "%[1]s#sha256=%[3]s"
+      - "%[2]s#sha256=%[4]s"
+`, xURL, yURL, xHash, yHash)
+	harnessPath := filepath.Join(dir, "harness", "code.yaml")
+	require.NoError(t, os.WriteFile(harnessPath, []byte(harnessContent), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"),
+		[]byte("allowed_remote_resources:\n  - \"https://github.com/example-org/\"\n"), 0o644))
+
+	fakeFetcher := func(_ context.Context, _, path, _, _ string) (map[string][]byte, error) {
+		files, ok := skillFiles[path]
+		if !ok {
+			return nil, fmt.Errorf("unexpected path %q", path)
+		}
+		return files, nil
+	}
+
+	printer := ui.New(os.Stdout)
+	require.NoError(t, runLock(context.Background(), "code", dir, "", false,
+		resolveFlags{treeFetcher: gitfetch.TreeFetchFunc(fakeFetcher)}, printer))
+
+	lf, err := lock.Load(filepath.Join(dir, "lock.yaml"))
+	require.NoError(t, err)
+	entry := lf.Lookup("code")
+	require.NotNil(t, entry)
+	fields := make(map[string]string, len(entry.Dependencies))
+	for _, d := range entry.Dependencies {
+		fields[d.URL] = d.Field
+	}
+	require.Equal(t, map[string]string{yURL: "skills[0]", xURL: "skills[0]"}, fields,
+		"precondition: both skills are locked at slot 0")
+
+	for platform, want := range map[string][]string{
+		"github": {"yskill"},
+		"gitlab": {"xskill", "yskill"},
+	} {
+		t.Run(platform, func(t *testing.T) {
+			h, _, err := harness.LoadWithBase(context.Background(), harnessPath, harness.ComposeOpts{
+				WorkspaceRoot: dir,
+				ForgePlatform: platform,
+			})
+			require.NoError(t, err)
+			require.NoError(t, h.ResolveRelativeTo(dir))
+
+			_, err = resolveFromLock(h, entry, dir, nil, printer)
+			require.NoError(t, err)
+
+			got := make([]string, len(h.Skills))
+			for i, s := range h.Skills {
+				assert.False(t, harness.IsURL(s.Source), "skills[%d] should hold a cached path", i)
+				assert.FileExists(t, filepath.Join(s.Source, "SKILL.md"))
+				got[i] = filepath.Base(s.Source)
+			}
+			assert.Equal(t, want, got)
+		})
+	}
+}
+
+func TestResolveFromLock_DuplicateDirectSkillURL(t *testing.T) {
+	// A harness listing the same skill URL twice keeps one entry, as
+	// resolve.ResolveHarness does.
+	skillContent := []byte("skill A content")
+	skillHash := fetch.ComputeSHA256(skillContent)
+
+	root := t.TempDir()
+	require.NoError(t, fetch.CachePut(root, "https://example.com/skills/a", skillContent))
+
+	entry := &lock.HarnessLock{
+		Dependencies: []lock.DependencyEntry{
+			{Field: "skills[0]", URL: "https://example.com/skills/a", SHA256: skillHash},
+		},
+	}
+
+	skillURL := "https://example.com/skills/a#sha256=" + skillHash
+	h := &harness.Harness{
+		Agent:                  "agents/code.md",
+		Skills:                 []harness.SkillEntry{{Source: skillURL}, {Source: skillURL}},
+		AllowedRemoteResources: []string{"https://example.com/"},
+	}
+
+	_, err := resolveFromLock(h, entry, root, nil, ui.New(os.Stdout))
+	require.NoError(t, err)
+	require.Len(t, h.Skills, 1)
+	assert.True(t, strings.HasSuffix(h.Skills[0].Source, "/content"))
+}
+
+func TestResolveFromLock_UnlockedSkillURLErrors(t *testing.T) {
+	// A URL skill with no lock entry must fail the lock replay, leaving the
+	// harness unchanged, instead of being silently dropped.
+	skillContent := []byte("skill A content")
+	skillHash := fetch.ComputeSHA256(skillContent)
+
+	root := t.TempDir()
+	require.NoError(t, fetch.CachePut(root, "https://example.com/skills/a", skillContent))
+
+	entry := &lock.HarnessLock{
+		Dependencies: []lock.DependencyEntry{
+			{Field: "skills[0]", URL: "https://example.com/skills/a", SHA256: skillHash},
+		},
+	}
+
+	skillA := "https://example.com/skills/a#sha256=" + skillHash
+	skillB := "https://example.com/skills/b#sha256=" + skillHash
+	h := &harness.Harness{
+		Agent:                  "agents/code.md",
+		Skills:                 []harness.SkillEntry{{Source: skillA}, {Source: skillB}},
+		AllowedRemoteResources: []string{"https://example.com/"},
+	}
+
+	_, err := resolveFromLock(h, entry, root, nil, ui.New(os.Stdout))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "skills[1]")
+	assert.Contains(t, err.Error(), "has no entry in the lock file")
+	assert.Equal(t, []harness.SkillEntry{{Source: skillA}, {Source: skillB}}, h.Skills,
+		"harness must be unchanged so the caller can fall back")
+}
+
 func TestResolveFromLock_OverrideSlots(t *testing.T) {
 	overrideContent := []byte("custom security agent")
 	overrideHash := fetch.ComputeSHA256(overrideContent)

@@ -788,6 +788,7 @@ func lockForgePlatforms(harnessPath, forgePlatform string) ([]string, error) {
 func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot string, orgAllowlist []string, printer *ui.Printer) (resolve.ResolveResult, error) {
 	type mutation struct {
 		field     string
+		url       string
 		localPath string
 	}
 
@@ -881,7 +882,7 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 		// ResolvedProfile list, not by mutating a harness field. Keep it a
 		// no-op if that switch ever grows a profile case, or move this append
 		// after the rename.
-		mutations = append(mutations, mutation{field: lockDep.Field, localPath: localPath})
+		mutations = append(mutations, mutation{field: lockDep.Field, url: lockDep.URL, localPath: localPath})
 		dep := resolve.Dependency{
 			Field:     lockDep.Field,
 			URL:       lockDep.URL,
@@ -965,6 +966,39 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 					return resolve.ResolveResult{}, fmt.Errorf("plugins[%d]: basename %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -)", i, dirName)
 				}
 			}
+		}
+	}
+
+	// Pre-validate URL skills the same way. The lock keeps one entry per
+	// URL, recorded under the first field it was seen at — possibly a
+	// skills[N] index from another forge variant, or a transitive
+	// skills[<parent>:depN] field. A URL skill covered by neither would be
+	// silently dropped by the URL filter below, so refuse the lock instead
+	// and let the caller fall back to normal resolution.
+	directSkillURLs := make(map[string]bool)
+	transitiveSkillURLs := make(map[string]bool)
+	for _, m := range mutations {
+		if !strings.HasPrefix(m.field, "skills[") || strings.Contains(m.field, ".overrides[") {
+			continue
+		}
+		if _, ok := directSkillLockIndex(m.field); ok {
+			directSkillURLs[m.url] = true
+		} else {
+			transitiveSkillURLs[m.url] = true
+		}
+	}
+	urlSkillSlot := make([]bool, len(h.Skills))
+	for i, s := range h.Skills {
+		if !harness.IsURL(s.Source) {
+			continue
+		}
+		urlSkillSlot[i] = true
+		cleanURL, _, _ := harness.ParseIntegrityHash(s.Source)
+		if cleanURL == "" {
+			cleanURL = s.Source
+		}
+		if !directSkillURLs[cleanURL] && !transitiveSkillURLs[cleanURL] {
+			return resolve.ResolveResult{}, fmt.Errorf("skills[%d] (%s) has no entry in the lock file — run 'fullsend lock' to update", i, s.Source)
 		}
 	}
 
@@ -1080,21 +1114,34 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 			resolved := m.localPath
 			h.Skills[idx].Overrides[key] = &resolved
 		default:
-			var idx int
-			if _, err := fmt.Sscanf(m.field, "skills[%d]", &idx); err == nil && idx >= 0 && idx < len(h.Skills) && m.field == fmt.Sprintf("skills[%d]", idx) {
-				h.Skills[idx].Source = m.localPath
-			} else {
+			idx, direct := directSkillLockIndex(m.field)
+			if !direct {
 				// Transitive skill dependency — append as additional skill.
 				h.Skills = append(h.Skills, harness.SkillEntry{Source: m.localPath})
+				break
+			}
+			// Replay by URL, not index: the recorded index may belong to
+			// another forge variant whose skills list differs. Only the
+			// first slot holding the URL is replaced; later duplicates are
+			// dropped by the URL filter below, mirroring
+			// resolve.ResolveHarness.
+			if i := firstURLSkillSlot(h.Skills, m.url); i >= 0 {
+				h.Skills[i].Source = m.localPath
+			} else if idx < len(urlSkillSlot) && !urlSkillSlot[idx] {
+				// Base-composed skills are already local paths after
+				// LoadWithBase; their entries keep the index replay.
+				h.Skills[idx].Source = m.localPath
 			}
 		}
 	}
 
-	// Remove any remaining URL entries from skills. In diamond dependency
-	// scenarios (same URL referenced both transitively and directly), the
-	// lock file deduplicates by URL, so the direct reference has no lock
-	// entry. The transitive dep was appended above; the direct URL is
-	// redundant and must be filtered out, mirroring resolve.ResolveHarness.
+	// Remove any remaining URL entries from skills. The pre-validation
+	// above guarantees each one duplicates a skill already resolved: either
+	// a later slot repeating a direct skill URL, or a diamond dependency
+	// (same URL referenced both transitively and directly) where the lock
+	// file deduplicates by URL and the transitive dep was appended above.
+	// Both are redundant and must be filtered out, mirroring
+	// resolve.ResolveHarness.
 	filteredSkills := h.Skills[:0]
 	for _, s := range h.Skills {
 		if !harness.IsURL(s.Source) {
@@ -1178,6 +1225,37 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 		Profiles:  profiles,
 		Providers: providers,
 	}, nil
+}
+
+// directSkillLockIndex reports whether a lock dependency field is a direct
+// skill slot (exactly skills[N], N >= 0) and returns N. Transitive fields
+// (skills[<parent>:depN]) and override fields (skills[N].overrides[key])
+// are not direct slots.
+func directSkillLockIndex(field string) (int, bool) {
+	var idx int
+	if _, err := fmt.Sscanf(field, "skills[%d]", &idx); err != nil || idx < 0 || field != fmt.Sprintf("skills[%d]", idx) {
+		return 0, false
+	}
+	return idx, true
+}
+
+// firstURLSkillSlot returns the index of the first skill whose source is a
+// URL that resolves to lockURL once its integrity fragment is stripped, or
+// -1 if no skill holds that URL.
+func firstURLSkillSlot(skills []harness.SkillEntry, lockURL string) int {
+	for i, s := range skills {
+		if !harness.IsURL(s.Source) {
+			continue
+		}
+		cleanURL, _, _ := harness.ParseIntegrityHash(s.Source)
+		if cleanURL == "" {
+			cleanURL = s.Source
+		}
+		if cleanURL == lockURL {
+			return i
+		}
+	}
+	return -1
 }
 
 // isTreeLockField reports whether a lock dependency field names a cached
