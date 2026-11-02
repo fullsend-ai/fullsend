@@ -49,6 +49,7 @@ if [ "$2" = "exec" ]; then
     "command -v python3") echo "/usr/bin/python3"; exit 0 ;;
     *sys.version_info*) echo "3.11"; exit 0 ;;
     "printf '%s' "*HOME*) printf '%s' '/sandbox'; exit 0 ;;
+    *FULLSEND_TRACE_ID*) printf '%s' 'trace-id'; exit 0 ;;
     "printf '%s' "*) printf '%s' '/usr/bin:/bin'; exit 0 ;;
     *fullsend-env-sep*) printf '%s' 'probe-canary|fullsend-env-sep|Bash,Read'; exit 0 ;;
     *fullsend-opencode-env-sep*) printf '%s' '{"permission":{"*":"deny","bash":"allow","read":"allow","glob":"allow","grep":"allow","skill":"allow"}}|fullsend-opencode-env-sep|/runner/adc.json'; exit 0 ;;

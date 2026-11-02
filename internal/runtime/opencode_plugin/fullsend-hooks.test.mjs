@@ -63,6 +63,23 @@ test("trusted permission patterns use native values and trailing wildcard semant
   await assert.rejects(h.before("websearch", { query: "unsafe" }), /trusted permission/);
 });
 
+test("trusted permission patterns use tool-specific values when optional fields coexist", async (t) => {
+  const h = await setup(t, { permission: {
+    task: { "*": "deny", explore: "allow" },
+    grep: { "*": "deny", "TODO*": "allow" },
+    glob: { "*": "deny", "src/*": "allow" },
+  } });
+  await h.before("task", { command: "ignored", subagent_type: "explore" });
+  await h.before("grep", { path: "ignored", pattern: "TODO*" });
+  await h.before("glob", { path: "ignored", pattern: "src/*" });
+  await assert.rejects(h.before("task", { command: "explore", subagent_type: "general" }), /trusted permission/);
+});
+
+test("Edit-only parents can use apply_patch", async (t) => {
+  const h = await setup(t, { tools: ["Edit"], permission: { "*": "allow", edit: "allow" } });
+  await h.before("apply_patch", { patchText: "*** Update File: file.txt\n@@\n-old\n+new" });
+});
+
 test("Bash accepts single-quoted GraphQL literals without hiding executable syntax", async (t) => {
   const h = await setup(t, { bashAllowlist: ["gh", "jq"] });
   for (const command of [
@@ -80,6 +97,15 @@ test("Bash accepts single-quoted GraphQL literals without hiding executable synt
     "'gh' api user", "g'h' api user", "gh api -f query='unterminated",
     'gh api -f query="unterminated',
   ]) {
+    await assert.rejects(h.before("bash", { command }), /fullsend-hooks/, command);
+  }
+});
+
+test("Bash accepts double-quoted literal punctuation without accepting expansions", async (t) => {
+  const h = await setup(t, { bashAllowlist: ["git", "gh"] });
+  await h.before("bash", { command: 'git commit -m "fix(ci): x"' });
+  await h.before("bash", { command: 'gh pr comment 1 --body "a; b"' });
+  for (const command of ['git commit -m "$(rm file)"', 'gh pr comment 1 --body "`rm file`"', 'gh pr comment 1 --body "a\\ b"']) {
     await assert.rejects(h.before("bash", { command }), /fullsend-hooks/, command);
   }
 });
@@ -186,11 +212,11 @@ test("unsupported MCP-style tool results fail closed", async (t) => {
 
 test("scripts receive translated v2 payload, isolated environment and chained output", async (t) => {
   const scripts = {
-    "pre.py": "import json,os,sys\np=json.load(sys.stdin)\nassert p['tool_name']=='Read' and p['tool_input']['file_path']=='file'\nassert 'PYTHONPATH' not in os.environ\nassert os.environ['FULLSEND_CANARY_TOKEN']=='trusted'\n",
+    "pre.py": "import json,os,sys\np=json.load(sys.stdin)\nassert p['tool_name']=='Read' and p['tool_input']['file_path']=='file'\nassert 'PYTHONPATH' not in os.environ\nassert os.environ['FULLSEND_CANARY_TOKEN']=='trusted'\nassert os.environ['FULLSEND_TRACE_ID']=='trace-1'\n",
     "post.py": "import json,sys\np=json.load(sys.stdin)\nassert p['tool_response']==p['tool_result']\nv=p['tool_response']; v['output']=v['output'].replace('original','sanitized')\nprint(json.dumps({'hookSpecificOutput':{'updatedToolOutput':v}}))\n",
   };
   const h = await setup(t, {
-    env: { PATH: "/usr/bin:/bin", FULLSEND_CANARY_TOKEN: "trusted" },
+    env: { PATH: "/usr/bin:/bin", FULLSEND_CANARY_TOKEN: "trusted", FULLSEND_TRACE_ID: "trace-1" },
     groups: [{ Phase: "PreToolUse", Tools: ["Read"], Scripts: ["pre.py"] },
       { Phase: "PostToolUse", Tools: ["*"], Scripts: ["post.py", "post.py"] }],
   }, scripts);
@@ -355,15 +381,18 @@ test("a failed historical-error scan is never cached", async (t) => {
 test("command environment does not import shell startup code", async (t) => {
   const h = await setup(t, { shellHome: "/sandbox", env: { PATH: "/usr/local/bin:/usr/bin:/bin" } });
   process.env["BASH_FUNC_gh%%"] = "() { echo unexpected; }";
-  const output = { env: { BASH_ENV: "/sandbox/startup.sh", SHELLOPTS: "xtrace" } };
+  process.env.FULLSEND_OPENCODE_HOOK_CONFIG = "secret-policy";
+  const output = { env: {} };
   try {
     await h.hooks["shell.env"]({}, output);
     assert.equal(output.env.BASH_ENV, "");
     assert.equal(output.env.SHELLOPTS, "");
     assert.equal(output.env["BASH_FUNC_gh%%"], "");
+    assert.equal(output.env.FULLSEND_OPENCODE_HOOK_CONFIG, "");
     assert.equal(output.env.HOME, "/sandbox");
     assert.equal(output.env.PATH, "/usr/local/bin:/usr/bin:/bin:" + path.join(h.workspace, "bin"));
   } finally {
     delete process.env["BASH_FUNC_gh%%"];
+    delete process.env.FULLSEND_OPENCODE_HOOK_CONFIG;
   }
 });

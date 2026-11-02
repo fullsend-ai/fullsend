@@ -76,6 +76,13 @@ func (r OpenCodeRuntime) installOpenCodeHooks(input BootstrapInput, def *piAgent
 		for _, pair := range append(configHookEnv(hooks), env...) {
 			cfg.Env[pair.Key] = pair.Value
 		}
+		traceID, err := readOpenCodeTraceID(name)
+		if err != nil {
+			return nil, err
+		}
+		if traceID != "" {
+			cfg.Env["FULLSEND_TRACE_ID"] = traceID
+		}
 		if groups := security.HookPlan(hooks); groups != nil {
 			cfg.Groups = groups
 		}
@@ -96,6 +103,20 @@ func (r OpenCodeRuntime) installOpenCodeHooks(input BootstrapInput, def *piAgent
 	}
 	cfg.ShellHome = strings.TrimSpace(stdout)
 	return cfg, nil
+}
+
+// readOpenCodeTraceID captures the runner-injected value before an agent can
+// edit .env. It is not a hook setting shared by the other runtime adapters.
+func readOpenCodeTraceID(sandboxName string) (string, error) {
+	cmd := EnvDataLoad(sandbox.SandboxWorkspace+"/.env") + ` && printf '%s' "${FULLSEND_TRACE_ID:-}"`
+	stdout, stderr, exitCode, err := sandbox.Exec(sandboxName, cmd, 10*time.Second)
+	if err != nil {
+		return "", fmt.Errorf("reading OpenCode trace ID: %w", err)
+	}
+	if exitCode != 0 {
+		return "", fmt.Errorf("reading OpenCode trace ID: exited %d: %s", exitCode, strings.TrimSpace(sanitizeOutput(stderr)))
+	}
+	return strings.TrimSpace(stdout), nil
 }
 
 func openCodeHookConfigJSON(cfg *openCodeHookConfig) string {
