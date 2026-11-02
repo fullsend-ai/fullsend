@@ -157,6 +157,23 @@ func TestBuildEventPayload_FullEventKeepsCommandIntact(t *testing.T) {
 	}
 }
 
+func TestBuildEventPayload_FullEventCommentMatchesTransportedBody(t *testing.T) {
+	// convert.go bounds the instruction at 4096 runes for display; the
+	// payload re-derives it from the body it actually carries.
+	event, ne := mrNote(multilineFixBody)
+	ne.Transition.Comment.Command = ""
+	ne.Transition.Comment.Instruction = "stale"
+	data, err := buildEventPayload(event, &ne)
+	if err != nil {
+		t.Fatalf("buildEventPayload: %v", err)
+	}
+	c := payloadEvent(t, data).Transition.Comment
+	cmd, instruction := extractCommand(multilineFixBody)
+	if c == nil || c.Command != cmd || c.Instruction != instruction {
+		t.Errorf("comment = %+v, want command %q and instruction %q from the body", c, cmd, instruction)
+	}
+}
+
 func TestBuildEventPayload_FallsBackToCommentOnlyEvent(t *testing.T) {
 	cases := map[string]func(*RoutableEvent, *dispatch.NormalizedEvent){
 		// fullsend run would reject it, so it must not be sent.

@@ -462,9 +462,10 @@ as a full NormalizedEvent. Both forms carry the note body at
 the `/fs-fix` instruction and the retro comment.
 
 A body that starts with `/fs-` is carried untruncated, and dispatch fails closed
-when the payload exceeds the chunk budget. Any other body, and in the complete
-form its `instruction`, is bounded to 800 Unicode code points, with a truncation
-marker appended when it is cut.
+when the payload exceeds the chunk budget. Any other body is bounded to 800
+Unicode code points, with a truncation marker appended when it is cut. In the
+complete form, `transition.comment.command` and `instruction` are derived from
+the transported body, so they always match what `run-agent-job.sh` reads.
 
 ## GitLab adapter notes
 

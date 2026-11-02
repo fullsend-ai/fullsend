@@ -490,50 +490,52 @@ func buildEventPayload(event RoutableEvent, ne *dispatch.NormalizedEvent) ([]byt
 	if event.Action != "" {
 		m["action"] = event.Action
 	}
-	if norm := transportNormalizedEvent(ne, body); norm != nil {
+	norm, err := transportNormalizedEvent(ne, body)
+	switch {
+	case err != nil:
+		log.Printf("WARNING: %s event on IID %d: sending the comment-only normalized event; the complete event is invalid: %v", event.Type, event.IID, err)
+	case norm != nil:
 		full := maps.Clone(m)
 		full["_normalized_event"] = norm
 		data, err := json.Marshal(full)
 		if err != nil {
 			return nil, err
 		}
-		if base64.StdEncoding.EncodedLen(len(data)) <= maxEventPayloadChunks*dispatchPayloadChunkSize {
+		budget := maxEventPayloadChunks * dispatchPayloadChunkSize
+		n := base64.StdEncoding.EncodedLen(len(data))
+		if n <= budget {
 			return data, nil
 		}
+		log.Printf("WARNING: %s event on IID %d: sending the comment-only normalized event; the complete event needs %d base64 characters, over the %d-character budget", event.Type, event.IID, n, budget)
 	}
 	return json.Marshal(m)
 }
 
 // transportNormalizedEvent returns ne as a payload's _normalized_event map,
-// with its comment body replaced by the transport-bounded body, or nil when
-// ne is nil or would fail normevent.ParseJSON — the check fullsend run
-// applies to --event-file — so run-agent-job.sh never hands run an event it
-// would refuse. A non-command comment's instruction is bounded like its
-// body; a /fs-* command's is carried intact, as its body is.
-func transportNormalizedEvent(ne *dispatch.NormalizedEvent, body string) map[string]any {
+// with its comment body replaced by the transport-bounded body and the
+// command and instruction re-derived from that body, so they always agree
+// with what run-agent-job.sh reads. It returns nil and no error when ne is
+// nil, and an error when ne would fail normevent.ParseJSON — the check
+// fullsend run applies to --event-file — so run-agent-job.sh never hands run
+// an event it would refuse.
+func transportNormalizedEvent(ne *dispatch.NormalizedEvent, body string) (map[string]any, error) {
 	if ne == nil {
-		return nil
+		return nil, nil
 	}
 	ev := *ne
 	if ev.Transition.Comment != nil {
 		c := *ev.Transition.Comment
 		c.Body = body
-		if !isFullsendCommandBody(body) {
-			c.Instruction = truncateNoteBody(c.Instruction, noteBodyTransportLimit)
-		}
+		c.Command, c.Instruction = extractCommand(body)
 		ev.Transition.Comment = &c
 	}
 	data, err := json.Marshal(ev)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	parsed, err := normevent.ParseJSON(data)
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	m, err := parsed.ToMap()
-	if err != nil {
-		return nil
-	}
-	return m
+	return parsed.ToMap()
 }

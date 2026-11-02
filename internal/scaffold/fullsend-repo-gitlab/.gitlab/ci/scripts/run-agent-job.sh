@@ -1108,6 +1108,9 @@ else
   if printf '%s' "${EVENT_PAYLOAD_B64:-}" | base64 -d 2>/dev/null \
     | jq -e '._normalized_event | select(type == "object" and .source.system == "gitlab")' > "${GITLAB_EVENT_FILE}" 2>/dev/null; then
     _FS_RUN_EVENT_ARGS=(--event-file "${GITLAB_EVENT_FILE}")
+  else
+    rm -f "${GITLAB_EVENT_FILE}"
+    GITLAB_EVENT_FILE=""
   fi
 fi
 
@@ -1133,6 +1136,10 @@ fullsend run "${STAGE}" \
   ${_FS_RUN_EVENT_ARGS[@]+"${_FS_RUN_EVENT_ARGS[@]}"}
 RUN_STATUS=$?
 set -e
+# Persistent runners keep RUNNER_TEMP between jobs.
+if [ -n "${GITLAB_EVENT_FILE:-}" ]; then
+  rm -f "${GITLAB_EVENT_FILE}"
+fi
 
 MEASURE_ARGS=(--agent "${STAGE}" --output-dir "${CI_PROJECT_DIR}/output")
 if [ -n "${DEFAULT_BRANCH_SHA}" ]; then
