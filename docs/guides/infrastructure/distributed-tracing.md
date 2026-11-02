@@ -379,6 +379,21 @@ The `agent` span's provider identity reflects only the parent run's serving endp
 | `fullsend.tool.result_oversized` | `execute_tool` | Present (`true`) when the result's stream line exceeded the parser's 1 MiB bound: the call was answered but nothing of the result was decoded, so the span has no status and no `error.type` |
 | `fullsend.tool_spans.dropped` | `agent` | Present when the iteration hit the 1,024-span cap and at least one id-bearing call was refused a span: the number of `tool_use` events with a usable id that arrived past the cap, each counted once whatever its result later does; a result with no open span past the cap is not counted |
 
+### Forge and CI attributes
+
+Set on the root `run` span when they apply, and omitted (never empty) when they do not. Names follow the OpenTelemetry [VCS](https://opentelemetry.io/docs/specs/semconv/registry/attributes/vcs/) and [CICD](https://opentelemetry.io/docs/specs/semconv/registry/attributes/cicd/) semantic conventions. Repository, change and refs come from the normalized event, so GitHub and GitLab runs carry the same keys.
+
+| Attribute | Present on | Description |
+|-----------|------------|-------------|
+| `vcs.provider.name` | `run` | Code-hosting forge: `github` or `gitlab` |
+| `vcs.repository.url.full` | `run` | Target repository URL (e.g. `https://github.com/owner/repo`), without credentials |
+| `vcs.change.id` | `run` | Pull request or merge request number, when the run is about one |
+| `vcs.ref.head.name` | `run` | Head branch of that change |
+| `vcs.ref.base.name` | `run` | Base branch of that change |
+| `vcs.ref.head.revision` | `run` | Head commit SHA of that change. Never `GITHUB_SHA` or `CI_COMMIT_SHA`, which name a merge or base commit on pull request and merged-results pipelines |
+| `cicd.pipeline.run.id` | `run` | CI run executing fullsend: `GITHUB_RUN_ID` on GitHub Actions, `CI_PIPELINE_ID` on GitLab CI. This can be a different repository or forge from the target |
+| `cicd.pipeline.run.url.full` | `run` | URL of that CI run: `--run-url` when given, otherwise built from the CI environment |
+
 ### Common attributes
 
 | Attribute | Present on | Description |
