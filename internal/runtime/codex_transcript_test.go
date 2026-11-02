@@ -743,6 +743,7 @@ func TestCodexExtractTranscripts_NamesChildrenByRole(t *testing.T) {
 		{day + "rollout-2026-09-29T15-46-48-0006.jsonl", "not a rollout\n"},
 		{day + "rollout-2026-09-29T15-46-50-0007.jsonl", child("0007", `"default"`)},                       // reserved name
 		{day + "rollout-2026-09-29T15-46-52-0008.jsonl", child("0008", `"sk-abcdefghijklmnopqrstuvwxyz"`)}, // credential-shaped
+		{day + "rollout-2026-09-29T15-46-54-0009.jsonl", child("0009", `"explore"`)},                       // built-in, kept apart from default
 		// A crafted basename equal to a child name, listed after that child
 		// was saved: skipped, so the saved transcript is not truncated.
 		{day + "sub1-correctness.jsonl", meta(`"id":"planted"`)},
@@ -766,8 +767,9 @@ func TestCodexExtractTranscripts_NamesChildrenByRole(t *testing.T) {
 		"review-rollout-2026-09-29T15-46-46-0005.jsonl",
 		"review-sub5-generic.jsonl",
 		"review-sub6-generic.jsonl",
+		"review-sub7-explore.jsonl",
 	}, names, "the root keeps its basename; children are numbered in basename order and named by their validated role, generic otherwise")
-	assert.Equal(t, 9, strings.Count(readFileString(t, logPath), " download "),
+	assert.Equal(t, 10, strings.Count(readFileString(t, logPath), " download "),
 		"every listed rollout is fetched, except one whose name was already saved; naming happens after validation, not before the download")
 
 	got, err := os.ReadFile(filepath.Join(outDir, "review-sub1-correctness.jsonl"))

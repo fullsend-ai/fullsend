@@ -34,6 +34,7 @@ func newPollCmd() *cobra.Command {
 		jiraProject string
 		jqlOverride string
 		targetRepo  string
+		targetForge string
 		modeFlag    string
 
 		printDispatchRoutes bool
@@ -54,6 +55,21 @@ func newPollCmd() *cobra.Command {
 				return nil
 			}
 			if inputDriver == "jira-poll" {
+				if targetForge == jirapoll.TargetForgeGitLab {
+					return runJiraPollGitLab(cmd, jiraPollGitLabFlags{
+						jiraURL:     jiraURL,
+						jiraProject: jiraProject,
+						jqlOverride: jqlOverride,
+						targetRepo:  targetRepo,
+						projectPath: projectPath,
+						gitlabURL:   gitlabURL,
+						outputPath:  outputPath,
+						fullsendDir: fullsendDir,
+					})
+				}
+				if targetForge != jirapoll.TargetForgeGitHub {
+					return fmt.Errorf("--target-forge must be %q or %q (got %q)", jirapoll.TargetForgeGitHub, jirapoll.TargetForgeGitLab, targetForge)
+				}
 				return runJiraPoll(cmd, jiraURL, jiraProject, jqlOverride, targetRepo, outputPath, fullsendDir)
 			}
 
@@ -140,15 +156,16 @@ func newPollCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&printDispatchRoutes, "print-dispatch-routes", false, "Print the GitLab agent dispatch routes this CLI supports (one per line) and exit; used by the job scripts to detect an older CLI before selecting a route")
 	cmd.Flags().StringVar(&forgeFlag, "forge", "", "Forge platform (gitlab)")
 	cmd.Flags().StringVar(&inputDriver, "input-driver", "", "Poll input driver (jira-poll or gitlab-webhook)")
-	cmd.Flags().StringVar(&projectPath, "project", "", "GitLab project path (default: $CI_PROJECT_PATH for --forge gitlab; required for --input-driver gitlab-webhook)")
+	cmd.Flags().StringVar(&projectPath, "project", "", "GitLab project path (default: $CI_PROJECT_PATH for --forge gitlab and for --input-driver jira-poll --target-forge gitlab; required for --input-driver gitlab-webhook)")
 	cmd.Flags().StringVar(&gitlabURL, "gitlab-url", "https://gitlab.com", "GitLab instance URL")
-	cmd.Flags().StringVar(&outputPath, "output", "", "Path to write dispatches JSON (jira-poll only; ignored by --forge gitlab)")
+	cmd.Flags().StringVar(&outputPath, "output", "", "Path to write dispatches JSON (jira-poll only; required for --target-forge github, optional for --target-forge gitlab; ignored by --forge gitlab)")
 	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "path to the .fullsend configuration directory")
 	_ = cmd.MarkFlagRequired("fullsend-dir")
 	cmd.Flags().StringVar(&jiraURL, "jira-url", "", "Jira instance base URL (default: $JIRA_BASE_URL)")
 	cmd.Flags().StringVar(&jiraProject, "jira-project", "", "Jira project key for JQL scoping")
 	cmd.Flags().StringVar(&jqlOverride, "jql", "", "Custom JQL override")
-	cmd.Flags().StringVar(&targetRepo, "target-repo", "", "GitHub repo slug where agents run (default: $GITHUB_REPOSITORY)")
+	cmd.Flags().StringVar(&targetRepo, "target-repo", "", "GitHub repo slug where agents run (default: $GITHUB_REPOSITORY; jira-poll with --target-forge github only)")
+	cmd.Flags().StringVar(&targetForge, "target-forge", jirapoll.TargetForgeGitHub, "Forge the jira-poll driver dispatches agents to: 'github' (write --output for reusable-dispatch.yml) or 'gitlab' (start the project's protected agent pipelines; uses --project and --gitlab-url)")
 	cmd.Flags().StringVar(&modeFlag, "mode", "", "Poll mode: 'slash' (slash commands only) or 'events' (labels, merges, non-slash notes)")
 	cmd.MarkFlagsOneRequired("forge", "input-driver")
 
@@ -172,15 +189,7 @@ func runJiraPoll(cmd *cobra.Command, jiraURL, jiraProject, jqlOverride, targetRe
 		return fmt.Errorf("build CEL matcher: %w", err)
 	}
 
-	opts := jirapoll.Options{
-		TargetRepo:  args.targetRepo,
-		JiraBaseURL: args.jiraURL,
-		JiraProject: args.jiraProject,
-		JQL:         args.jqlOverride,
-		OutputPath:  args.outputPath,
-	}
-
-	poller := jirapoll.New(jiraClient, matcher, opts)
+	poller := jirapoll.New(jiraClient, matcher, jiraPollOptions(args, matcher))
 	return poller.Run(cmd.Context())
 }
 
@@ -424,6 +433,10 @@ func buildRouter(fullsendDir string) (*dispatch.HarnessRouter, error) {
 // loaded once at construction and reused for every event in the cycle.
 type celMatcher struct {
 	candidates []harnessdispatch.TriggeredHarness
+	// jiraAuth is the jira authorization provider from config.yaml, or
+	// nil when none is listed. It configures the poller's actor role
+	// resolution and the gate's Jira label rule.
+	jiraAuth *config.AuthorizationProvider
 }
 
 // newCELMatcher loads harness files with CEL triggers from the config
@@ -433,25 +446,84 @@ func newCELMatcher(ctx context.Context, fullsendDir string) (*celMatcher, error)
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
 	}
+	if err := config.ValidateRuntimeAuthorization(cfg); err != nil {
+		return nil, fmt.Errorf("invalid authorization config: %w", err)
+	}
+	var jiraAuth *config.AuthorizationProvider
+	if pr, ok := cfg.(config.PerRepoConfigReader); ok {
+		jiraAuth = pr.JiraAuthorization()
+	}
 	if cfg.IsKillSwitchActive() {
 		// Kill switch active: return a matcher with no candidates so all
 		// events are silently dropped (no dispatches).
-		return &celMatcher{}, nil
+		return &celMatcher{jiraAuth: jiraAuth}, nil
 	}
 	candidates, err := harnessdispatch.ListTriggeredHarnesses(ctx, fullsendDir, cfg, nil)
 	if err != nil {
 		return nil, fmt.Errorf("list triggered harnesses: %w", err)
 	}
-	return &celMatcher{candidates: candidates}, nil
+	return &celMatcher{candidates: candidates, jiraAuth: jiraAuth}, nil
+}
+
+// authOptions returns the dispatch gate policy for the configured jira
+// provider: with no jira entry, Jira label-added events take the
+// per-harness role threshold as before; with an entry, they are authorized
+// by Jira's Edit Issues permission under labels: jira_editors (the default)
+// and take the role threshold under allowlist or project_roles, where the
+// poller resolves the label author's role from that source.
+func (m *celMatcher) authOptions() harnessdispatch.AuthOptions {
+	return harnessdispatch.AuthOptions{
+		JiraLabelsByEditPermission: m.jiraAuth != nil &&
+			m.jiraAuth.EffectiveJiraLabels() == config.JiraLabelsEditors,
+	}
+}
+
+// jiraPollOptions builds the poller options every jira-poll target forge
+// shares: the Jira connection, the query, the output path and the jira
+// authorization provider the matcher loaded. Forge-specific callers set
+// their own TargetForge, GitLabURL and Dispatcher on the result, so the
+// authorization lists reach the poller on every target.
+func jiraPollOptions(args jiraPollArgs, matcher *celMatcher) jirapoll.Options {
+	return jirapoll.Options{
+		TargetRepo:  args.targetRepo,
+		JiraBaseURL: args.jiraURL,
+		JiraProject: args.jiraProject,
+		JQL:         args.jqlOverride,
+		OutputPath:  args.outputPath,
+
+		Authorization: jiraPollAuthorization(matcher.jiraAuth),
+	}
+}
+
+// jiraPollAuthorization converts the jira authorization provider to the
+// poller's option type. A nil provider is the zero value.
+func jiraPollAuthorization(p *config.AuthorizationProvider) jirapoll.Authorization {
+	if p == nil {
+		return jirapoll.Authorization{}
+	}
+	list := func(l *config.JiraActorList) jirapoll.ActorList {
+		if l == nil {
+			return jirapoll.ActorList{}
+		}
+		return jirapoll.ActorList{Groups: l.Groups, Accounts: l.Accounts}
+	}
+	return jirapoll.Authorization{
+		Configured:      true,
+		Write:           list(p.Write),
+		Triage:          list(p.Triage),
+		ListsConfigured: p.Write != nil || p.Triage != nil,
+		Labels:          p.EffectiveJiraLabels(),
+	}
 }
 
 // Match evaluates the event against all CEL trigger candidates and returns
 // dispatch records for each matching harness.
 func (m *celMatcher) Match(_ context.Context, event *normevent.Event) ([]jirapoll.DispatchRecord, error) {
-	if !harnessdispatch.IsEventAuthorized(event) {
+	opts := m.authOptions()
+	if !harnessdispatch.IsEventAuthorizedWith(event, opts) {
 		return nil, nil
 	}
-	candidates := harnessdispatch.FilterAuthorizedHarnesses(m.candidates, event)
+	candidates := harnessdispatch.FilterAuthorizedHarnessesWith(m.candidates, event, opts)
 	matched, err := harnessdispatch.MatchHarnesses(candidates, event)
 	if err != nil {
 		return nil, err

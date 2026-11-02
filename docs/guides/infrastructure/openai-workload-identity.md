@@ -316,6 +316,14 @@ runner uses it only when the three `FULLSEND_OPENAI_*` WIF identifiers are unset
 errors — a typo cannot fall through to the key. When the trio and the secret are both set, WIF wins
 and the secret is unused.
 
+> **Recommended on GitHub: keep the key behind an inference gateway.** Instead of a repository
+> secret, run an inference gateway that holds the OpenAI key in a secret store and accepts each
+> job's GitHub Actions OIDC token, so no repository secret holds the key at all. See
+> [Using an inference gateway](../user/inference-gateway.md) and the
+> [operator guide](inference-gateway-operator.md). The trade-off is infrastructure you run: a cloud
+> project, a gateway service and its config to maintain. The repository secret below stays supported
+> when you cannot take that on.
+
 1. If the repository's workflow files predate OpenAI credential forwarding, update them before
    running the agent. Re-running `fullsend github setup <owner/repo>` (or `fullsend repos install`
    for a manifest-managed repository) can sync them without GCP credentials. A Vertex run still
@@ -563,9 +571,7 @@ to carry the credential over.
   iteration follows a refresh.
 - **Bound to one endpoint.** The gateway substitutes the placeholder only on requests to
   `api.openai.com` `/v1/responses` — the endpoint the profile names — so even a compromised agent
-  cannot get the token resolved against another host its policy allows. The design and what was
-  verified against OpenShell 0.0.115 are in
-  [ADR 0092](../../ADRs/0092-openai-wif-credential-delivery.md).
+  cannot get the token resolved against another host its policy allows.
 
 ## Troubleshooting
 

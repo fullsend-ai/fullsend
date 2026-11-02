@@ -204,17 +204,27 @@ func extractCommand(body string) (command, instruction string) {
 	return command, instruction
 }
 
-// resolveRole maps the event actor's Jira project role to an ADR 0054 role.
+// resolveRole maps the event actor to an ADR 0054 role from the source
+// roleSourceFor picks: the jira authorization lists (write, triage, or
+// "none"), no resolution ("none", for label-added events the dispatch gate
+// authorizes by Jira's Edit Issues permission), or the Jira project role.
 //
 // roleMembership is loaded once per cycle for a single p.opts.JiraProject.
 // A --jql spanning multiple projects can still surface issues outside that
-// project, so an actor's role is only honored for issues in the configured
-// project; anything else fails closed to "external" rather than leaking a
-// role granted in one project onto an issue in another (see PR #5778 review).
+// project, so an actor's project role is only honored for issues in the
+// configured project; anything else fails closed to "external" rather than
+// leaking a role granted in one project onto an issue in another (see PR
+// #5778 review).
 func (p *Poller) resolveRole(event JiraEvent) string {
 	aid := actorID(event)
 	if aid == "" {
 		return "external"
+	}
+	switch p.roleSourceFor(event) {
+	case roleNotResolved:
+		return unresolvedRole
+	case roleFromLists:
+		return p.listRole(aid)
 	}
 	if p.opts.JiraProject != "" && issueProjectKey(event.IssueKey) != p.opts.JiraProject {
 		return "external"

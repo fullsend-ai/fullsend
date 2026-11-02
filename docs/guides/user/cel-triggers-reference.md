@@ -70,15 +70,15 @@ The `event` variable has the following top-level fields:
 | Field | Type | Description |
 |---|---|---|
 | `event.repo` | string | Repository path (`owner/repo`) |
-| `event.entity.kind` | string | `"work_item"` (issue), `"change_proposal"` (PR), or `"conversation"` (Discussion / Slack channel; [ADR 0086](../../ADRs/0086-conversation-surface-for-agent-participation.md)) |
+| `event.entity.kind` | string | `"work_item"` (issue), `"change_proposal"` (PR), or `"conversation"` (Discussion / Slack channel) |
 | `event.entity.id` | int | Issue, PR, or conversation number |
 | `event.transition.kind` | string | What happened — see [transition kinds](#transition-kinds) |
 | `event.transition.label` | object | Present only when `kind == "label_changed"` |
-| `event.transition.comment` | object | Present only when `kind == "comment_added"` (conversation comments carry `id` and `parent_id`, with `parent_id == id` for thread roots; [ADR 0086](../../ADRs/0086-conversation-surface-for-agent-participation.md)) |
+| `event.transition.comment` | object | Present only when `kind == "comment_added"` (conversation comments carry `id` and `parent_id`, with `parent_id == id` for thread roots) |
 | `event.transition.review` | object | Present only when `kind == "review_submitted"` |
 | `event.actor.id` | string | Forge login of the user or bot that triggered the event |
 | `event.actor.kind` | string | `"human"` or `"bot"` |
-| `event.actor.role` | string | Human repository permission: `admin`, `maintain`, `write`, `triage`, `read`, `none`, `external`. Current adapters may populate a bot's forge/project permission when lookup succeeds, or `none` when it is unavailable; ADR 0107 target behavior is `none` for bots. |
+| `event.actor.role` | string | Human repository permission: `admin`, `maintain`, `write`, `triage`, `read`, `none`, `external`. Current adapters may populate a bot's forge/project permission when lookup succeeds, or `none` when it is unavailable; the planned behavior is `none` for bots. |
 | `event.actor.bot_role` | string or null | Optional provider-resolved canonical bot role such as `review`; absent/null for humans and unrecognized bots |
 | `event.actor.role_verified` | boolean | Optional lookup status. For humans, true means `actor.role` is a trusted forge permission; for bots, true means bot-role lookup completed, including a successful no-match result |
 | `event.actor.is_entity_author` | boolean | True when the actor is the author of the work item, change proposal, or conversation |
@@ -87,7 +87,7 @@ The `event` variable has the following top-level fields:
 | `event.state.conversation` | object | Required when `entity.kind == "conversation"` (includes `category.name`; optional `category.id` / `slug` / `format`) |
 | `event.source.system` | string | `"github"`, `"gitlab"`, `"jira"`, `"manual"`, or `"schedule"` |
 
-> `actor.bot_role` and `actor.role_verified` are ADR 0107 target fields and
+> `actor.bot_role` and `actor.role_verified` are planned fields and
 > are not yet emitted by the production runtime. The target contract uses
 > `actor.role: "none"` for bots, but current adapters may still populate a
 > forge/project permission there during migration. `role_verified` is not
@@ -273,12 +273,14 @@ agents:
 pull requests. The `Route` job evaluates the review trigger for the events
 the fullsend workflow receives: a pull request opened, pushed to
 (`synchronize`), marked ready for review, labeled or unlabeled, and a `/fs-*`
-comment on a pull request from a user who is not a bot. It does so only when
-the default rules chose review or no stage, and not for a closed pull request
-or a `/fs-retro`, `/fs-triage` or `/fs-prioritize` comment (see
-[Which trigger decides](#which-trigger-decides)), so a broad trigger can start
-reviews the default rules would not. It
-never starts a review from a bot's comment.
+comment on a pull request. The workflow starts dispatch for these comments
+from both people and bots, but the current dispatcher skips bot-authored issue
+comments before evaluating CEL triggers. For other events, it evaluates the
+review trigger only when the default rules chose review or no stage, and not
+for a closed pull request or a `/fs-retro`, `/fs-triage` or `/fs-prioritize`
+comment (see [Which trigger decides](#which-trigger-decides)), so a broad
+trigger can start reviews the default rules would not. It never starts a
+review from a bot's comment.
 
 The trigger is read from your default branch, so a pull request cannot change
 its own routing. After the change merges, open a pull request: no review
@@ -406,11 +408,13 @@ that trigger, not the dispatch workflow's built-in rules, decides whether the
 before you merge, see
 [Checking a trigger before you merge](#checking-a-trigger-before-you-merge).
 
-A trigger only sees the events that reach the `Route` job. The workflow that
-`fullsend` installs in your repository forwards issues opened, edited and
-labeled, and comments that start with `/fs-` from people, not bots. So a
-prioritize trigger only decides `/fs-prioritize`, and on a pull request only
-`/fs-triage` asks the triage trigger.
+A trigger only sees events that pass the dispatcher's routing and
+authorization checks. The workflow that `fullsend` installs starts dispatch
+for issues opened, edited and labeled, and comments that start with `/fs-`
+from both people and bots. The current dispatcher skips bot-authored issue
+comments before evaluating CEL triggers. So a prioritize trigger only decides
+`/fs-prioritize`, and on a pull request only `/fs-triage` asks the triage
+trigger.
 
 By default the dispatch workflow starts:
 

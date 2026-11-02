@@ -97,6 +97,12 @@ feature:
 > enforce unicode → canary → suppress → redact in `posttool_chain.py`. See
 > [runtimes.md](../contributing/runtime-implementation.md#sandbox-hook-contract).
 
+> **Implementation note ([ADR 0152](0152-hook-interpreter-trust.md)):**
+> the interpreter and `PATH` that hook scripts run under now resolve from
+> agent-unwritable directories on every runtime implementing this contract,
+> and startup is fail-closed without them. See
+> [the conformance table](../contributing/runtime-implementation.md#hook-interpreter-and-path-conformance).
+
 > **Done ([#608](https://github.com/fullsend-ai/fullsend/issues/608)):**
 > The canonical Claude tool-name vocabulary is recorded once in
 > `security.CanonicalClaudeTools` (with `security.LegacyClaudeTools` for

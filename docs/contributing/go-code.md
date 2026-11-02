@@ -655,3 +655,51 @@ check that validation fires on the run path — not only in `Validate()`.
 Flag a missing run-path validation call as a **medium-severity** finding.
 The fix is to add inline validation in `runAgent()` and a corresponding
 integration test.
+
+## Install/uninstall parity in `internal/repos/`
+
+When you add a repository variable or secret to the install path, add it
+to the matching uninstall list in the same change. The two sides are
+maintained separately, so nothing but review catches a missing cleanup
+entry, and the symptom only appears on user repositories after
+`fullsend uninstall` leaves orphaned variables behind.
+
+### Where each side lives
+
+- **Variables.** Install builds them in `managedVarsForForge`
+  (`install.go`), the single source of truth for variable classification.
+  Uninstall reads `uninstallVariables` (GitHub and default) or
+  `gitlabUninstallVars`, selected by `UninstallVarsForForge`.
+- **Secrets.** The two sides are built differently, so a new inference
+  secret has to be added in both. Uninstall derives from
+  `managedInferenceSecrets`, which loops `inferenceSecretsForAuth`;
+  install builds its own map in `installSecretsForForge`, which names the
+  secrets directly and calls neither function. Add the secret to
+  `inferenceSecretsForAuth` so uninstall deletes it, and to
+  `installSecretsForForge` so install writes it.
+- **Values provisioned outside those builders.** GitLab installs
+  `FULLSEND_DISPATCH_SECRET` through `seedGitLabPollState`, not through
+  `managedVarsForForge`. Anything added by a similar out-of-band path
+  needs a cleanup entry too, and needs naming in the parity test, which
+  cannot discover it.
+
+### The invariant is one-way
+
+Everything install writes must be deleted on uninstall. The reverse is
+false by design: the uninstall lists deliberately retain names install no
+longer writes, so repositories installed by earlier versions are still
+cleaned up — `gitlabRetiredLegacyVars` and the `forge.VarLegacy*` names.
+Two omissions are also deliberate and documented where they are defined:
+`gitlabUninstallVars` excludes the legacy shared forge token, and
+`gitlabUninstallSecrets` excludes the unprefixed `OPENAI_API_KEY`, which
+jobs unrelated to Fullsend in the same project may depend on.
+
+`TestInstallUninstallVariableParity` and
+`TestInstallUninstallSecretParity`
+(`internal/repos/install_uninstall_parity_test.go`) enforce the one-way
+invariant across every forge and inference auth. They catch a name that
+install writes and uninstall does not delete. They do not catch the
+opposite, a name added to `inferenceSecretsForAuth` that
+`installSecretsForForge` never writes, so that case still depends on
+review. If you add a name that is intentionally not cleaned up, extend
+the comment in that file rather than weakening the assertion.

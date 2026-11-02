@@ -26,6 +26,10 @@ Date: YYYY-MM-DD
 
 What is the issue that we're seeing that motivates this decision or change?
 
+_Close the Context with one sentence stating what this ADR aims to achieve
+(e.g., "This ADR aims to ..."). The reader needs it before the Options,
+because Options are judged against it._
+
 _When describing current behavior, cite the implementing file or function at a
 commit SHA, not `main` (e.g., `internal/cli/repos.go` at `<SHA>`, or a
 permalink such as
@@ -41,6 +45,9 @@ context. If the decision is obvious, skip this section._
 ## Decision
 
 What is the change that we're proposing and/or doing?
+
+_Open with the choice and its purpose in one line ("We adopt X to do Y"),
+before any mechanics._
 
 ## Forge scope
 

@@ -71,11 +71,19 @@ func (s *State) AddComment(issueKey, body string) {
 // the given account. Used to test role resolution for actors other than
 // the default canned commenter.
 func (s *State) AddCommentFromActor(issueKey, body, accountID, displayName string) {
+	s.AddCommentFromActorAt(issueKey, body, accountID, displayName, time.Now())
+}
+
+// AddCommentFromActorAt is AddCommentFromActor with an explicit creation
+// time. Tests that run several poll cycles use it to place each comment
+// before the poller's change-detection safety margin and after the
+// previous cycle's checkpoint.
+func (s *State) AddCommentFromActorAt(issueKey, body, accountID, displayName string, at time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	id := strconv.Itoa(len(s.comments[issueKey]) + 1)
-	now := time.Now().Format("2006-01-02T15:04:05.000-0700")
+	now := at.Format("2006-01-02T15:04:05.000-0700")
 
 	s.comments[issueKey] = append(s.comments[issueKey], jira.Comment{
 		ID:   id,
@@ -119,6 +127,11 @@ func (s *State) SetUserGroups(accountID string, groupIDs ...string) {
 // AddLabelChange appends a changelog entry representing a label addition
 // and updates the issue's label list.
 func (s *State) AddLabelChange(issueKey, label string) {
+	s.AddLabelChangeAt(issueKey, label, time.Now())
+}
+
+// AddLabelChangeAt is AddLabelChange with an explicit changelog time.
+func (s *State) AddLabelChangeAt(issueKey, label string, at time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -133,7 +146,7 @@ func (s *State) AddLabelChange(issueKey, label string) {
 	toLabels := strings.Join(issue.Fields.Labels, " ")
 
 	id := strconv.Itoa(len(s.changelog[issueKey]) + 1)
-	now := time.Now().Format("2006-01-02T15:04:05.000-0700")
+	now := at.Format("2006-01-02T15:04:05.000-0700")
 
 	s.changelog[issueKey] = append(s.changelog[issueKey], jira.ChangelogEntry{
 		ID: id,

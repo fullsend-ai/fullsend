@@ -83,8 +83,12 @@ derived from the harness after `.env` so the agent's copy cannot win.
   entirely, unlike Claude Code — but the run continues.
 - Codex is **stricter on hook integrity than Claude Code and pi**: the scripts are checked by name
   before every invocation, the hooks directory must hold exactly the installed files, and the
-  interpreter, `PATH` and the scripts' own configuration are all pinned past `.env`. On the other
-  two runtimes each of those is agent-writable between iterations with no check.
+  interpreter, `PATH` and the scripts' own configuration are all pinned past `.env`. On the
+  other two runtimes each of those is agent-writable between iterations with no check.
+  > **Implementation note ([ADR 0152](0152-hook-interpreter-trust.md)):** the interpreter
+  > and `PATH` now resolve from agent-unwritable directories on every runtime carrying sandbox
+  > tool hooks (Claude Code, Codex, pi). The scripts' own configuration remains
+  > runtime-specific.
 - The harness-supplied `FULLSEND_CANARY_TOKEN` and `FULLSEND_TOOL_ALLOWLIST` are covered too, even
   though `SandboxHookConfig` does not carry them: Bootstrap reads them back from the workspace
   `.env` while that file is still exactly what the runner wrote, before any iteration has run.

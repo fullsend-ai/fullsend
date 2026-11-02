@@ -32,6 +32,27 @@ func tryLoadFullsendConfig(path string, printer *ui.Printer) config.ConfigWriter
 // tryLoadOrgConfig is an alias of tryLoadFullsendConfig (best-effort).
 var tryLoadOrgConfig = tryLoadFullsendConfig
 
+// tryLoadLayeredFullsendConfig attempts to load the layered fullsend
+// config (config.yaml over config.base.yaml) from fullsendDir.
+// Unlike tryLoadFullsendConfig, it does not require config.yaml to
+// exist on disk: a base-only layout (config.base.yaml present,
+// config.yaml absent) is honored, matching loadLockConfig's semantics.
+// Returns nil without error when neither layer exists, or when the
+// config is malformed (best-effort, with a warning printed via
+// printer in the malformed case). The returned ConfigWriter has
+// ensured defaults.
+func tryLoadLayeredFullsendConfig(fullsendDir string, printer *ui.Printer) config.ConfigWriter {
+	writer, err := config.LoadConfigWriter(fullsendDir, config.LoadOpts{MissingOK: false})
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			printer.StepWarn("Config malformed (remote resource allowlist unavailable): " + err.Error())
+		}
+		return nil
+	}
+	writer.SetAllowedRemoteResources(config.EnsureDefaultAllowedRemoteResources(writer.AllowedResources()))
+	return writer
+}
+
 // requireFullsendConfig loads a .fullsend config.yaml from the
 // given path with strict error handling. Returns differentiated errors
 // for missing files, unreadable files, and parse failures.

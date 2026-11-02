@@ -62,14 +62,19 @@ var codexChildFixtures = map[string]string{
 	codexChildForkedID:     "child_usage_forked.jsonl",
 }
 
+// codexRootRolloutHead is the first line of collab_spawn.ndjson's root
+// rollout: a session_meta record with no parent.
+const codexRootRolloutHead = `{"timestamp":"2026-09-29T15:46:30.000Z","type":"session_meta","payload":{"id":"` + codexRootThreadID + `","cwd":"/sandbox/workspace/repo","originator":"codex_exec","cli_version":"0.159.3"}}` + "\n"
+
 // writeCodexChildRollouts lays the child fixtures out as codex would under a
-// sessions directory (YYYY/MM/DD/rollout-<start>-<thread id>.jsonl) and
-// returns that directory.
+// sessions directory (YYYY/MM/DD/rollout-<start>-<thread id>.jsonl), beside
+// the root thread's own rollout, and returns that directory.
 func writeCodexChildRollouts(t *testing.T, ids ...string) string {
 	t.Helper()
 	sessions := filepath.Join(t.TempDir(), "sessions")
 	day := filepath.Join(sessions, "2026", "09", "29")
 	require.NoError(t, os.MkdirAll(day, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(day, "rollout-2026-09-29T15-46-30-"+codexRootThreadID+".jsonl"), []byte(codexRootRolloutHead), 0o644))
 	for _, id := range ids {
 		name := "rollout-2026-09-29T15-46-38-" + id + ".jsonl"
 		require.NoError(t, os.WriteFile(filepath.Join(day, name), readCodexFixture(t, codexChildFixtures[id]), 0o644))
@@ -275,8 +280,10 @@ func TestCodexChildIDs_CollectsCompletedSpawns(t *testing.T) {
 	assert.Equal(t, want, whole.IDs,
 		"the three completed spawns in stream order; the failed spawn's receiver is not a child; wait and close items name no new thread")
 	assert.NotContains(t, whole.IDs, codexChildFailedSpawnID)
-	assert.Equal(t, []string{codexRootThreadID, codexRootThreadID, codexRootThreadID}, whole.Senders,
-		"one sender per completed spawn; the failed spawn is not counted")
+	assert.Equal(t, []string{codexRootThreadID, codexRootThreadID, codexRootThreadID, codexRootThreadID}, whole.Senders,
+		"one sender per handled spawn item: the three completed and the failed one, which passed the guard")
+	assert.Equal(t, []string{codexChildSameModelID, codexChildOtherModelID, codexChildFailedID, codexChildFailedSpawnID}, whole.Receivers, "every handled item's receivers, for counting")
+	assert.Zero(t, whole.NoReceiver)
 
 	chunked := &codexChildIDs{}
 	for i := 0; i < len(stream); i += 7 {
@@ -284,7 +291,7 @@ func TestCodexChildIDs_CollectsCompletedSpawns(t *testing.T) {
 		require.NoError(t, err)
 	}
 	assert.Equal(t, want, chunked.IDs, "lines are reassembled across Write calls, as a TeeReader delivers them")
-	assert.Len(t, chunked.Senders, 3)
+	assert.Len(t, chunked.Senders, 4)
 }
 
 func TestCodexChildIDs_SkipsOverlongLine(t *testing.T) {
@@ -367,7 +374,11 @@ func TestParseCodexStream_FailedCollabItem(t *testing.T) {
 // admissions read; FULLSEND_TEST_CODEX_EXIT sets the launch's exit status (killed:
 // SIGKILL, as the budget's context kill ends it); FULLSEND_TEST_CODEX_DROP=1
 // prints codex's dropped-notification warning on stderr before the stream,
-// FULLSEND_TEST_CODEX_BACKFILL_FAIL=1 exec's failed-backfill warning.
+// FULLSEND_TEST_CODEX_BACKFILL_FAIL=1 exec's failed-backfill warning;
+// FULLSEND_TEST_DEBUG_LOG_READ_FAIL=1 makes the debug-log read exit 1, and
+// =garbled print one count instead of two; FULLSEND_TEST_ROLLOUTS_READ_FAIL=1
+// makes the child-rollout read exit 1. The child-rollout read runs under sh
+// against sessionsDir.
 func fakeOpenshellCodexChildren(t *testing.T, logPath, storeDir, streamFixture, sessionsDir string) {
 	t.Helper()
 	binDir := t.TempDir()
@@ -378,6 +389,9 @@ if [ "$2" = "exec" ]; then
   case "$last" in
     cat\ *) f=$(printf '%s' "${last#cat }" | tr -d "'" | tr '/' '_'); cat '` + storeDir + `'/"$f"; exit $? ;;
     *"exec --json"*) [ "${FULLSEND_TEST_CODEX_DROP:-}" = 1 ] && echo "2026-10-22T16:00:00Z  WARN codex_app_server::in_process: ` + codexDroppedNotification + `" >&2; [ "${FULLSEND_TEST_CODEX_BACKFILL_FAIL:-}" = 1 ] && echo "2026-10-22T16:00:01Z  WARN codex_exec: ` + codexBackfillFailed + ` for turn completion: boom" >&2; cat '` + streamFixture + `'; [ "${FULLSEND_TEST_CODEX_EXIT:-}" = killed ] && kill -9 $$; exit "${FULLSEND_TEST_CODEX_EXIT:-0}" ;;
+    *` + codexChildRolloutsMarker + `*)
+      if [ "${FULLSEND_TEST_ROLLOUTS_READ_FAIL:-}" = 1 ]; then echo "fake openshell: refusing the rollouts read" >&2; exit 1; fi
+      sh -c "$(printf '%s' "$last" | sed 's#` + CodexRuntime{}.codexSessionsDir() + `#` + sessionsDir + `#g')"; exit $? ;;
     *` + codexChildUsageMarker + `*)
       if [ "${FULLSEND_TEST_CHILD_READ_FAIL:-}" = 1 ]; then echo "fake openshell: refusing the rollout read${FULLSEND_TEST_CHILD_READ_STDERR:+ $FULLSEND_TEST_CHILD_READ_STDERR}" >&2; exit 1; fi
       sh -c "$(printf '%s' "$last" | sed 's#` + CodexRuntime{}.codexSessionsDir() + `#` + sessionsDir + `#g')"; rc=$?
@@ -389,6 +403,8 @@ if [ "$2" = "exec" ]; then
       if [ "${FULLSEND_TEST_ADMISSIONS_READ_FAIL:-}" = after ]; then exit 124; fi
       exit $rc ;;
     *` + codexDebugLogFile + `*)
+      if [ "${FULLSEND_TEST_DEBUG_LOG_READ_FAIL:-}" = 1 ]; then echo "fake openshell: refusing the log read" >&2; exit 1; fi
+      if [ "${FULLSEND_TEST_DEBUG_LOG_READ_FAIL:-}" = garbled ]; then echo 7; exit 0; fi
       sh -c "$(printf '%s' "$last" | sed 's#` + sandbox.SandboxWorkspace + "/" + codexDebugLogFile + `#` + filepath.Join(filepath.Dir(sessionsDir), codexDebugLogFile) + `#g')"; exit $? ;;
   esac
   exit 0
@@ -790,7 +806,7 @@ func runCodexWithChildren(t *testing.T, streamFixture string, delegating bool, a
 
 // A spawn in the stream alone (no RoleFiles) triggers the read.
 func TestCodexRun_FoldsChildUsage(t *testing.T) {
-	metrics, exit, out, log := runCodexWithChildren(t, "collab_spawn.ndjson", false, 3)
+	metrics, exit, out, log := runCodexWithChildren(t, "collab_spawn.ndjson", false, 4)
 
 	assert.Equal(t, 0, exit)
 	assert.Equal(t, "gpt-5.6-luna", metrics.Model)
@@ -806,9 +822,10 @@ func TestCodexRun_FoldsChildUsage(t *testing.T) {
 	assert.Contains(t, out, "2 sub-agent thread(s) folded into the run metrics")
 	assert.Equal(t, 1, strings.Count(log, codexChildUsageMarker), "one read command, after the run")
 	assert.Equal(t, 1, strings.Count(log, codexSpawnAdmitFinding), "and one admissions read")
+	assert.Equal(t, 1, strings.Count(log, codexChildRolloutsMarker), "and one read of the children on disk")
 	d, ok := lookupRunnerHeldDigests("sb")
 	require.True(t, ok)
-	assert.Equal(t, 3, d.CompletedSpawns, "the run's count, kept for a retry")
+	assert.Equal(t, 4, d.CompletedSpawns, "the run's count, kept for a retry: four handled spawn items (one failed) beat three child rollouts")
 	assert.Contains(t, log, shellQuote(codexChildFailedID), "the failed child's rollout is read too; it is its content that contributes nothing")
 	assert.NotContains(t, log, codexChildFailedSpawnID, "the failed spawn's receiver is never looked up")
 }
@@ -846,7 +863,7 @@ func TestCodexRun_ChildReadFailureIsAWarning(t *testing.T) {
 	token := "ghp_" + strings.Repeat("B", 36)
 	t.Setenv("FULLSEND_TEST_CHILD_READ_FAIL", "1")
 	t.Setenv("FULLSEND_TEST_CHILD_READ_STDERR", token)
-	metrics, exit, out, _ := runCodexWithChildren(t, "collab_spawn.ndjson", false, 3)
+	metrics, exit, out, _ := runCodexWithChildren(t, "collab_spawn.ndjson", false, 4)
 
 	assert.Equal(t, 0, exit, "losing the children's tokens must not fail an iteration that succeeded")
 	assert.Contains(t, out, "! Sub-agent usage not fully counted: reading the child rollouts: exited 1: fake openshell: refusing the rollout read")
@@ -863,7 +880,7 @@ func TestCodexRun_ChildReadFailureIsAWarning(t *testing.T) {
 // breakdown still sums to the totals.
 func TestCodexRun_NonZeroExitStillReadsTheChildren(t *testing.T) {
 	t.Setenv("FULLSEND_TEST_CODEX_EXIT", "137")
-	failed, exit, out, log := runCodexWithChildren(t, "collab_spawn.ndjson", true, 3)
+	failed, exit, out, log := runCodexWithChildren(t, "collab_spawn.ndjson", true, 4)
 
 	assert.Equal(t, 137, exit)
 	assert.Equal(t, map[string]ModelUsage{
@@ -876,7 +893,7 @@ func TestCodexRun_NonZeroExitStillReadsTheChildren(t *testing.T) {
 	assertCodexUsageSumsToTotals(t, failed)
 
 	t.Setenv("FULLSEND_TEST_CODEX_EXIT", "0")
-	retry, exit, _, _ := runCodexWithChildren(t, "collab_spawn.ndjson", true, 3)
+	retry, exit, _, _ := runCodexWithChildren(t, "collab_spawn.ndjson", true, 4)
 	require.Equal(t, 0, exit)
 	assertCodexUsageSumsToTotals(t, sumCodexIterations(failed, retry))
 	assert.NotContains(t, out, "may be undercounted", "codex exited on its own; its children were done")
@@ -889,7 +906,7 @@ func TestCodexRun_BudgetStopWarnsOfLaterChildUsage(t *testing.T) {
 	for exitEnv, want := range map[string]int{"killed": -1, "124": 124} {
 		t.Run(exitEnv, func(t *testing.T) {
 			t.Setenv("FULLSEND_TEST_CODEX_EXIT", exitEnv)
-			_, exit, out, _ := runCodexWithChildren(t, "collab_spawn.ndjson", false, 3)
+			_, exit, out, _ := runCodexWithChildren(t, "collab_spawn.ndjson", false, 4)
 
 			assert.Equal(t, want, exit)
 			assert.Contains(t, out, "2 sub-agent thread(s) folded into the run metrics")
@@ -932,24 +949,24 @@ func TestCompareCodexSpawnAdmissions(t *testing.T) {
 	tests := []struct {
 		name                string
 		primary             string
-		senders             []string // this iteration's completed spawns
+		senders             []string // this iteration's spawn items
 		completed, admitted int      // the whole run's
 		want                string   // "" = no error
 	}{
 		{"equal counts", root, []string{root, root, root}, 3, 3, ""},
-		{"more admissions: an admitted spawn codex then refused", root, []string{root, root}, 2, 3, ""},
-		{"one completed spawn more than admissions", root, []string{root, root, root}, 3, 2,
-			"codex_spawn_without_admission: 3 completed spawn(s) in this run's stream(s) but 2 recorded admission(s)"},
+		{"more admissions: an admitted call codex rejected before its item", root, []string{root, root}, 2, 3, ""},
+		{"one spawn more than admissions", root, []string{root, root, root}, 3, 2,
+			"codex_spawn_without_admission: 3 spawn(s) in this run (the stream's spawn items and the child rollouts on disk, each child counted once) but 2 recorded admission(s)"},
 		{"an earlier iteration's spawns count", root, []string{root}, 4, 3,
-			"codex_spawn_without_admission: 4 completed spawn(s) in this run's stream(s) but 3 recorded admission(s)"},
+			"codex_spawn_without_admission: 4 spawn(s) in this run (the stream's spawn items and the child rollouts on disk, each child counted once) but 3 recorded admission(s)"},
 		{"a sender that is not the primary thread", root, []string{root, codexChildSameModelID}, 2, 3,
-			"codex_spawn_without_admission: a completed spawn was not sent by the primary thread"},
+			"codex_spawn_without_admission: a spawn was not sent by the primary thread"},
 		{"a spawn item without a sender", root, []string{""}, 1, 3,
-			"codex_spawn_without_admission: a completed spawn was not sent by the primary thread"},
+			"codex_spawn_without_admission: a spawn was not sent by the primary thread"},
 		{"the stream named no primary thread", "", []string{root}, 1, 3,
-			"codex_spawn_without_admission: a completed spawn was not sent by the primary thread"},
+			"codex_spawn_without_admission: a spawn was not sent by the primary thread"},
 		{"no sender and no primary thread", "", []string{""}, 1, 3,
-			"codex_spawn_without_admission: a completed spawn was not sent by the primary thread"},
+			"codex_spawn_without_admission: a spawn was not sent by the primary thread"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -989,7 +1006,7 @@ func TestCheckCodexSpawnAdmissions_ThroughTheSandbox(t *testing.T) {
 		want     string
 	}{
 		"every completed spawn admitted": {three, 3, ""},
-		"spawns, no findings log":        {three[:1], 0, "1 completed spawn(s) in this run's stream(s) but 0 recorded admission(s)"},
+		"spawns, no findings log":        {three[:1], 0, "1 spawn(s) in this run (the stream's spawn items and the child rollouts on disk, each child counted once) but 0 recorded admission(s)"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			sessions := writeCodexChildRollouts(t)
@@ -1049,8 +1066,8 @@ func TestCodexRun_SpawnWithoutAdmissionFailsTheRun(t *testing.T) {
 			t.Setenv("FULLSEND_TEST_CODEX_EXIT", exitEnv)
 			metrics, exit, out, log, err := tryCodexRunWithChildren(t, "collab_spawn.ndjson", true, 2)
 
-			assert.EqualError(t, err, "codex_spawn_without_admission: 3 completed spawn(s) in this run's stream(s) but 2 recorded admission(s)",
-				"the failed spawn of the fixture is not counted")
+			assert.EqualError(t, err, "codex_spawn_without_admission: 4 spawn(s) in this run (the stream's spawn items and the child rollouts on disk, each child counted once) but 2 recorded admission(s)",
+				"the fixture's failed spawn is counted: codex refused it after the guard admitted it")
 			assert.Equal(t, want, exit)
 			assert.Contains(t, out, "2 sub-agent thread(s) folded into the run metrics", "the fold ran first")
 			assert.Equal(t, 1, strings.Count(log, codexSpawnAdmitFinding))
@@ -1062,11 +1079,11 @@ func TestCodexRun_SpawnWithoutAdmissionFailsTheRun(t *testing.T) {
 // The count spans the run: the findings log keeps the earlier iterations'
 // admissions, so a retry's spawns need admissions of their own.
 func TestCodexRun_RetrySpawnsNeedTheirOwnAdmissions(t *testing.T) {
-	runCodexWithChildren(t, "collab_spawn.ndjson", false, 3)
+	runCodexWithChildren(t, "collab_spawn.ndjson", false, 4)
 
 	var out bytes.Buffer
 	_, err := CodexRuntime{}.Run(context.Background(), codexChildrenRunParams, ui.New(&out), time.Now(), &RunMetrics{})
-	assert.EqualError(t, err, "codex_spawn_without_admission: 6 completed spawn(s) in this run's stream(s) but 3 recorded admission(s)")
+	assert.EqualError(t, err, "codex_spawn_without_admission: 8 spawn(s) in this run (the stream's spawn items and the child rollouts on disk, each child counted once) but 4 recorded admission(s)")
 }
 
 func TestCodexChildIDs_FlushScansTheTornLastLine(t *testing.T) {
@@ -1171,18 +1188,25 @@ func TestCodexStderrDrops_CountsAcrossChunks(t *testing.T) {
 	assert.Equal(t, 1, last.Dropped, "the last line is scanned once the stream has ended")
 }
 
-// A dropped stream notification can hide a completed spawn. Nothing can
-// spawn until the multi-agent tools are switched on, so the run warns and
-// the cross-check runs on what the stream did carry.
+// A dropped stream notification is a warning, for a delegating run too, as
+// settled on #8712: most drops hide no spawn.
 func TestCodexRun_DroppedNotificationWarns(t *testing.T) {
 	t.Setenv("FULLSEND_TEST_CODEX_DROP", "1")
-	_, exit, out, log := runCodexWithChildren(t, "collab_spawn.ndjson", true, 3)
-	assert.Equal(t, 0, exit)
-	assert.Contains(t, out, "! codex dropped 1 stream notification(s) under backpressure; the progress log is incomplete")
-	assert.Equal(t, 1, strings.Count(log, codexSpawnAdmitFinding))
+	for _, delegating := range []bool{false, true} {
+		_, exit, out, log := runCodexWithChildren(t, "collab_spawn.ndjson", delegating, 4)
+		assert.Equal(t, 0, exit)
+		assert.Contains(t, out, "! codex dropped 1 stream notification(s) under backpressure; the progress log is incomplete")
+		assert.Equal(t, 1, strings.Count(log, codexSpawnAdmitFinding), "the cross-check still runs")
+	}
+}
 
+// A failed backfill leaves a dropped completed item lost from the stream;
+// the warning says so, and the child's rollout still counts it.
+func TestCodexRun_FailedBackfillWarns(t *testing.T) {
+	t.Setenv("FULLSEND_TEST_CODEX_DROP", "1")
 	t.Setenv("FULLSEND_TEST_CODEX_BACKFILL_FAIL", "1")
-	_, _, out, _ = runCodexWithChildren(t, "collab_spawn.ndjson", true, 3)
+	_, exit, out, _ := runCodexWithChildren(t, "collab_spawn.ndjson", true, 4)
+	assert.Equal(t, 0, exit)
 	assert.Contains(t, out, "! codex dropped 1 stream notification(s) under backpressure, and its backfill of the turn's items failed, so a dropped completed item stayed lost; the progress log is incomplete")
 }
 
@@ -1205,4 +1229,453 @@ func TestCodexRun_DroppedNotificationInTheDebugLog(t *testing.T) {
 	assert.Equal(t, 0, exit)
 	assert.Contains(t, out.String(), "! codex dropped 1 stream notification(s) under backpressure, and its backfill of the turn's items failed")
 	assert.Contains(t, readFileString(t, logPath), "grep -a -c -F", "the counts came from the sandbox log")
+}
+
+// Under --debug a log the runner could not read is no zero count: the run
+// says so, for a delegating agent too, whose admission check rests on the
+// children on disk. The directory case runs the real script under sh: grep
+// cannot read a directory, and its status is kept.
+func TestCodexRun_UnreadDebugLogWarns(t *testing.T) {
+	for name, tc := range map[string]struct {
+		env, warn string
+		dirAtLog  bool
+	}{
+		"openshell exits 1":        {env: "1", warn: "exited 1: fake openshell: refusing the log read"},
+		"a directory at the log":   {dirAtLog: true, warn: "exited 3: "},
+		"output that is no counts": {env: "garbled", warn: "read 1 counts, want 2"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("FULLSEND_TEST_DEBUG_LOG_READ_FAIL", tc.env)
+			storeDir := t.TempDir()
+			r := CodexRuntime{}
+			seedCodexManifest(t, storeDir, r, nil)
+			sessions := writeCodexChildRollouts(t)
+			if tc.dirAtLog {
+				require.NoError(t, os.Mkdir(filepath.Join(filepath.Dir(sessions), codexDebugLogFile), 0o755))
+			}
+			fakeOpenshellCodexChildren(t, filepath.Join(t.TempDir(), "openshell.log"), storeDir, filepath.Join("testdata", "codex", "basic_run.ndjson"), sessions)
+			params := codexChildrenRunParams
+			params.Debug = "1"
+
+			for _, delegating := range []bool{false, true} {
+				if delegating {
+					d, ok := lookupRunnerHeldDigests("sb")
+					require.True(t, ok)
+					d.RoleFiles = map[string]string{"default": "d0d0", "explore": "e0e0"}
+					recordRunnerHeldDigests("sb", d)
+				}
+				var out bytes.Buffer
+				exit, err := r.Run(context.Background(), params, ui.New(&out), time.Now(), &RunMetrics{})
+				require.NoError(t, err)
+				assert.Equal(t, 0, exit)
+				assert.Contains(t, out.String(), "! Could not read codex's log for dropped stream notifications: "+tc.warn)
+			}
+		})
+	}
+}
+
+// A missing debug log (the agent may delete it) counts zero, as before: a
+// delegating run passes, with no warning about the read.
+func TestCodexRun_MissingDebugLogCountsZero(t *testing.T) {
+	storeDir := t.TempDir()
+	r := CodexRuntime{}
+	seedCodexManifest(t, storeDir, r, nil)
+	d, ok := lookupRunnerHeldDigests("sb")
+	require.True(t, ok)
+	d.RoleFiles = map[string]string{"default": "d0d0", "explore": "e0e0"}
+	recordRunnerHeldDigests("sb", d)
+	sessions := writeCodexChildRollouts(t)
+	logPath := filepath.Join(t.TempDir(), "openshell.log")
+	fakeOpenshellCodexChildren(t, logPath, storeDir, filepath.Join("testdata", "codex", "basic_run.ndjson"), sessions)
+	params := codexChildrenRunParams
+	params.Debug = "1"
+
+	var out bytes.Buffer
+	exit, err := r.Run(context.Background(), params, ui.New(&out), time.Now(), &RunMetrics{})
+	require.NoError(t, err)
+	assert.Equal(t, 0, exit)
+	assert.NotContains(t, out.String(), "Could not read codex's log")
+	assert.Contains(t, readFileString(t, logPath), codexDebugLogFile, "the log read ran")
+}
+
+// codexRolloutLine is a rollout's first line: a session_meta record for id,
+// with parent_thread_id when parent is set.
+func codexRolloutLine(id, parent string) string {
+	extra := ""
+	if parent != "" {
+		extra = `,"parent_thread_id":"` + parent + `","agent_role":"default"`
+	}
+	return `{"timestamp":"2026-09-29T15:46:31.000Z","type":"session_meta","payload":{"id":"` + id + `","cwd":"/sandbox/workspace/repo"` + extra + `,"base_instructions":{"text":"quoted \"parent_thread_id\":\"` + codexRootThreadID + `\" stays inert"}}}` + "\n"
+}
+
+// writeCodexRollout writes one more rollout under sessions/<day>.
+func writeCodexRollout(t *testing.T, sessions, day, id, content string) {
+	t.Helper()
+	dir := filepath.Join(sessions, day)
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "rollout-2026-09-29T15-46-40-"+id+".jsonl"), []byte(content), 0o644))
+}
+
+// codexStreamWithout returns collab_spawn.ndjson without the lines that
+// contain drop, written to a temp file: a stream that lost those items.
+func codexStreamWithout(t *testing.T, drop string) string {
+	t.Helper()
+	var kept [][]byte
+	for _, line := range bytes.Split(readCodexFixture(t, "collab_spawn.ndjson"), []byte("\n")) {
+		if !bytes.Contains(line, []byte(drop)) {
+			kept = append(kept, line)
+		}
+	}
+	path := filepath.Join(t.TempDir(), "stream.ndjson")
+	require.NoError(t, os.WriteFile(path, bytes.Join(kept, []byte("\n")), 0o600))
+	return path
+}
+
+// runCodexChildrenCase runs Run against the fake with stream, the given
+// child rollouts and admissions, after setup has added files under the
+// sessions directory.
+func runCodexChildrenCase(t *testing.T, stream string, delegating bool, admitted int, children []string, setup func(sessions string)) (*RunMetrics, string, string, error) {
+	t.Helper()
+	logPath := filepath.Join(t.TempDir(), "openshell.log")
+	storeDir := t.TempDir()
+	r := CodexRuntime{}
+	seedCodexManifest(t, storeDir, r, nil)
+	if delegating {
+		d, ok := lookupRunnerHeldDigests("sb")
+		require.True(t, ok)
+		d.RoleFiles = map[string]string{"default": "d0d0", "explore": "e0e0"}
+		recordRunnerHeldDigests("sb", d)
+	}
+	sessions := writeCodexChildRollouts(t, children...)
+	writeCodexSpawnAdmissions(t, sessions, admitted)
+	if setup != nil {
+		setup(sessions)
+	}
+	if !filepath.IsAbs(stream) {
+		stream = filepath.Join("testdata", "codex", stream)
+	}
+	fakeOpenshellCodexChildren(t, logPath, storeDir, stream, sessions)
+	var out bytes.Buffer
+	metrics := &RunMetrics{}
+	_, err := r.Run(context.Background(), codexChildrenRunParams, ui.New(&out), time.Now(), metrics)
+	return metrics, out.String(), readFileString(t, logPath), err
+}
+
+// countCodexChildRollouts counts children of the primary thread and of
+// counted children, and files whose first line is not a session_meta record,
+// each thread once; a head without a usable id takes its file name's thread
+// id; roots and other parents are not children of this iteration.
+func TestCountCodexChildRollouts(t *testing.T) {
+	t.Parallel()
+	const (
+		root, other = codexRootThreadID, "01a06300-0000-7000-8000-0000000000ff"
+		a1, a2, g1  = codexChildSameModelID, codexChildOtherModelID, "01a06300-0000-7000-8000-0000000000b1"
+		o1          = "01a06300-0000-7000-8000-0000000000c1"
+	)
+	tests := []struct {
+		name    string
+		heads   []codexRolloutHead
+		primary string
+		want    int
+		wantIDs []string
+		wantErr string
+	}{
+		{"root and two children", []codexRolloutHead{{Meta: true, ID: root}, {Meta: true, ID: a1, Parent: root}, {Meta: true, ID: a2, Parent: root}}, root, 2, []string{a1, a2}, ""},
+		{"a previous iteration's root and child are not counted", []codexRolloutHead{{Meta: true, ID: root}, {Meta: true, ID: other}, {Meta: true, ID: o1, Parent: other}}, root, 0, nil, ""},
+		{"a root with no parent is not counted", []codexRolloutHead{{Meta: true, ID: root}, {Meta: true, ID: other}}, root, 0, nil, ""},
+		{"a grandchild of a counted child is counted", []codexRolloutHead{{Meta: true, ID: g1, Parent: a1}, {Meta: true, ID: a1, Parent: root}}, root, 2, []string{a1, g1}, ""},
+		{"a first line that is not session_meta is counted", []codexRolloutHead{{Meta: true, ID: root}, {}}, root, 1, nil, ""},
+		{"an empty or cut first line counts under its name's thread id", []codexRolloutHead{{Meta: true, ID: root}, {NameID: a1}}, root, 1, []string{a1}, ""},
+		{"the primary's own file with a cut first line is not a child", []codexRolloutHead{{NameID: root}}, root, 0, nil, ""},
+		{"two heads with no id count twice", []codexRolloutHead{{}, {}}, root, 2, nil, ""},
+		{"two files of one thread count once", []codexRolloutHead{{Meta: true, ID: a1, Parent: root}, {Meta: true, ID: a1, Parent: root, NameID: a1}, {NameID: a1}}, root, 1, []string{a1}, ""},
+		{"a whole session_meta line with no parent is a root, whatever its name", []codexRolloutHead{{Meta: true, NameID: a1}}, root, 0, nil, ""},
+		{"a session_meta line cut before its parent counts under its name", []codexRolloutHead{{Meta: true, Cut: true, ID: a1, NameID: a1}}, root, 1, []string{a1}, ""},
+		{"a cut session_meta line under the primary's own name is not a child", []codexRolloutHead{{Meta: true, Cut: true, ID: root, NameID: root}}, root, 0, nil, ""},
+		{"a cut session_meta line that names its parent is read by content", []codexRolloutHead{{Meta: true, Cut: true, ID: a1, Parent: root, NameID: a2}}, root, 1, []string{a1}, ""},
+		{"a cut session_meta line with no name id takes its content id", []codexRolloutHead{{Meta: true, Cut: true, ID: a1}}, root, 1, []string{a1}, ""},
+		{"empty primary with a cut session_meta line", []codexRolloutHead{{Meta: true, Cut: true, ID: a1, NameID: a1}}, "", 0, nil, "the run's primary thread id is unknown"},
+		{"a counted session_meta head with no usable id takes its name's id", []codexRolloutHead{{Meta: true, ID: "x", Parent: root, NameID: a1}}, root, 1, []string{a1}, ""},
+		{"a counted head naming the primary counts with no id", []codexRolloutHead{{Meta: true, Parent: root, NameID: root}, {Meta: true, ID: root, Parent: root}}, root, 2, nil, ""},
+		{"a child known only by its name is not a parent", []codexRolloutHead{{NameID: a1}, {Meta: true, ID: g1, Parent: a1}}, root, 1, []string{a1}, ""},
+		{"a readable head keeps its content id whatever its name", []codexRolloutHead{{Meta: true, ID: a1, Parent: root}, {Meta: true, ID: g1, Parent: root, NameID: a1}}, root, 2, []string{a1, g1}, ""},
+		{"empty primary with an empty file", []codexRolloutHead{{NameID: a1}}, "", 0, nil, "the run's primary thread id is unknown"},
+		{"empty primary with a child-shaped file", []codexRolloutHead{{Meta: true, ID: a1, Parent: root}}, "", 0, nil, "the run's primary thread id is unknown"},
+		{"empty primary with an undecodable file", []codexRolloutHead{{}}, "", 0, nil, "the run's primary thread id is unknown"},
+		{"empty primary with roots only", []codexRolloutHead{{Meta: true, ID: root}}, "", 0, nil, ""},
+		{"a primary that is not a thread id", []codexRolloutHead{{Meta: true, ID: a1, Parent: "x"}}, "x", 0, nil, "the run's primary thread id is unknown"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, ids, err := countCodexChildRollouts(tt.heads, tt.primary, nil)
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+			assert.ElementsMatch(t, tt.wantIDs, ids)
+		})
+	}
+}
+
+// A child known by its file name is a parent in the walk when the stream's
+// receivers name it, so a grandchild under a child with a cut first line is
+// counted; a name the stream does not show (the agent's own codex exec, a
+// leftover) pulls in nothing under it.
+func TestCountCodexChildRollouts_NameKnownParentNeedsTheStream(t *testing.T) {
+	t.Parallel()
+	const g1, other = "01a06300-0000-7000-8000-0000000000b1", "01a06300-0000-7000-8000-0000000000ff"
+	heads := []codexRolloutHead{{NameID: codexChildSameModelID}, {Meta: true, ID: g1, Parent: codexChildSameModelID}}
+	n, ids, err := countCodexChildRollouts(heads, codexRootThreadID, []string{codexChildSameModelID})
+	require.NoError(t, err)
+	assert.Equal(t, 2, n)
+	assert.Equal(t, []string{codexChildSameModelID, g1}, ids)
+	n, ids, err = countCodexChildRollouts(heads, codexRootThreadID, []string{other})
+	require.NoError(t, err)
+	assert.Equal(t, 1, n, "a name the stream does not show is counted, not followed")
+	assert.Equal(t, []string{codexChildSameModelID}, ids)
+}
+
+// The read command under /bin/sh: recursive over date directories, one line
+// per file, a quoted key inside a string inert, an empty, undecodable or
+// unreadable first line, or a session_meta line cut before its parent, known
+// by its file name's thread id, an unclosed line that names its parent read
+// by content, a revert's second
+// file of a thread counted once, a name that carries no thread id read by
+// content, a missing directory empty, and a find that cannot read a directory
+// exits 3.
+func TestCodexChildRolloutsReadCommand_UnderSh(t *testing.T) {
+	t.Parallel()
+	const (
+		torn, empty, spaced = "01a06300-0000-7000-8000-0000000000ee", "01a06300-0000-7000-8000-0000000000e1", "01a06300-0000-7000-8000-0000000000e2"
+		locked, revert      = "01a06300-0000-7000-8000-0000000000e3", "01a06300-0000-7000-8000-0000000000e4"
+		cutMeta, unclosed   = "01a06300-0000-7000-8000-0000000000e5", "01a06300-0000-7000-8000-0000000000e6"
+	)
+	sessions := writeCodexChildRollouts(t)
+	writeCodexRollout(t, sessions, "2026/09/29", codexChildSameModelID, codexRolloutLine(codexChildSameModelID, codexRootThreadID))
+	writeCodexRollout(t, sessions, "2026/09/30", codexChildOtherModelID, codexRolloutLine(codexChildOtherModelID, codexRootThreadID))
+	writeCodexRollout(t, sessions, "2026/09/30", torn, "not json\n")
+	writeCodexRollout(t, sessions, "2026/09/30", empty, "")
+	writeCodexRollout(t, sessions, "2026/09/30", codexChildSameModelID+"_"+revert, "")
+	writeCodexRollout(t, sessions, "2026/09/30", spaced+" copy", codexRolloutLine(spaced, codexRootThreadID))
+	writeCodexRollout(t, sessions, "2026/09/30", cutMeta, `{"timestamp":"2026-09-29T15:46:31.000Z","type":"session_meta","payload":{"id":"`+cutMeta+`"`)
+	writeCodexRollout(t, sessions, "2026/09/30", unclosed, strings.TrimSuffix(codexRolloutLine(unclosed, codexRootThreadID), "\n"))
+	want := []string{codexChildSameModelID, codexChildOtherModelID, torn, empty, spaced, cutMeta, unclosed}
+	if os.Geteuid() != 0 {
+		writeCodexRollout(t, sessions, "2026/09/30", locked, codexRolloutLine(locked, ""))
+		lockedPath := filepath.Join(sessions, "2026/09/30", "rollout-2026-09-29T15-46-40-"+locked+".jsonl")
+		require.NoError(t, os.Chmod(lockedPath, 0o000))
+		t.Cleanup(func() { _ = os.Chmod(lockedPath, 0o644) })
+		want = append(want, locked)
+	}
+	out, err := exec.Command("/bin/sh", "-c", codexChildRolloutsReadCommand(sessions)).Output()
+	require.NoError(t, err)
+	n, ids, err := countCodexChildRollouts(parseCodexRolloutHeads(out), codexRootThreadID, nil)
+	require.NoError(t, err)
+	assert.Equal(t, len(want), n, "two children across two date directories, the cut, empty and unreadable files by name, the spaced name by content, the revert's file once; the root is not counted")
+	assert.ElementsMatch(t, want, ids)
+
+	out, err = exec.Command("/bin/sh", "-c", codexChildRolloutsReadCommand(filepath.Join(t.TempDir(), "missing"))).Output()
+	require.NoError(t, err)
+	assert.Empty(t, out)
+
+	if os.Geteuid() != 0 {
+		locked := filepath.Join(sessions, "locked")
+		require.NoError(t, os.Mkdir(locked, 0o000))
+		t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+		cmd := exec.Command("/bin/sh", "-c", codexChildRolloutsReadCommand(sessions))
+		err = cmd.Run()
+		var exitErr *exec.ExitError
+		require.ErrorAs(t, err, &exitErr)
+		assert.Equal(t, 3, exitErr.ExitCode(), "a find that fails is not a count")
+	}
+}
+
+// The admission check counts per iteration the spawns seen in the stream
+// (handled items) or on disk, each child once, for a delegating run even
+// when the stream shows no spawn.
+func TestCodexRun_AdmissionCheckCountsTheChildrenOnDisk(t *testing.T) {
+	children := []string{codexChildSameModelID, codexChildOtherModelID, codexChildFailedID}
+	lostSpawns := func(t *testing.T) string { return codexStreamWithout(t, `"tool":"spawn_agent"`) }
+	msg := func(n, admitted int) string {
+		return fmt.Sprintf("codex_spawn_without_admission: %d spawn(s) in this run (the stream's spawn items and the child rollouts on disk, each child counted once) but %d recorded admission(s)", n, admitted)
+	}
+
+	t.Run("the stream lost every spawn: the files count", func(t *testing.T) {
+		metrics, _, log, err := runCodexChildrenCase(t, lostSpawns(t), true, 0, children, nil)
+		assert.EqualError(t, err, msg(3, 0))
+		assert.Equal(t, 1, strings.Count(log, codexChildRolloutsMarker))
+		assert.Contains(t, metrics.PerModelUsage, "gpt-5.6-terra", "the lost spawn's child is folded from its rollout")
+	})
+	t.Run("the stream lost every spawn, admitted", func(t *testing.T) {
+		metrics, out, _, err := runCodexChildrenCase(t, lostSpawns(t), true, 3, children, nil)
+		require.NoError(t, err)
+		assert.Contains(t, out, "2 sub-agent thread(s) folded into the run metrics", "usage of the children the stream lost is folded")
+		assertCodexUsageSumsToTotals(t, metrics)
+	})
+	t.Run("a deleted rollout: the stream counts", func(t *testing.T) {
+		_, _, _, err := runCodexChildrenCase(t, "collab_spawn.ndjson", true, 3, children[:2], nil)
+		assert.EqualError(t, err, msg(4, 3), "four handled items beat two files")
+	})
+	t.Run("a refused spawn used its admission", func(t *testing.T) {
+		_, _, _, err := runCodexChildrenCase(t, "collab_spawn.ndjson", true, 3, children, nil)
+		assert.EqualError(t, err, msg(4, 3))
+	})
+	t.Run("a child only on disk is not covered by a spawn only in the stream", func(t *testing.T) {
+		const lost = "01a06300-0000-7000-8000-0000000000d1"
+		_, _, _, err := runCodexChildrenCase(t, "collab_spawn.ndjson", true, 4, children, func(sessions string) {
+			writeCodexRollout(t, sessions, "2026/09/29", lost, codexRolloutLine(lost, codexRootThreadID))
+		})
+		assert.EqualError(t, err, msg(5, 4), "a1-a3 and a9 in the stream, the lost child on disk: five spawns")
+	})
+	t.Run("a refused spawn does not cover a lost child", func(t *testing.T) {
+		const lost = "01a06300-0000-7000-8000-0000000000d1"
+		item := func(id, receivers, status string) string {
+			return `{"type":"item.completed","item":{"id":"` + id + `","type":"collab_tool_call","tool":"spawn_agent","sender_thread_id":"` + codexRootThreadID + `","receiver_thread_ids":[` + receivers + `],"prompt":"p","agents_states":{},"status":"` + status + `"}}`
+		}
+		stream := filepath.Join(t.TempDir(), "refused.ndjson")
+		require.NoError(t, os.WriteFile(stream, []byte(strings.Join([]string{
+			`{"type":"thread.started","thread_id":"` + codexRootThreadID + `"}`, `{"type":"turn.started"}`,
+			item("item_0", `"`+codexChildSameModelID+`"`, "completed"), item("item_1", "", "failed"),
+			`{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":1,"reasoning_output_tokens":0}}`,
+		}, "\n")+"\n"), 0o600))
+		addLost := func(sessions string) {
+			writeCodexRollout(t, sessions, "2026/09/29", lost, codexRolloutLine(lost, codexRootThreadID))
+		}
+		_, _, _, err := runCodexChildrenCase(t, stream, true, 2, []string{codexChildSameModelID}, addLost)
+		assert.EqualError(t, err, msg(3, 2), "the completed spawn, the refused one and the lost child")
+		_, _, _, err = runCodexChildrenCase(t, stream, true, 3, []string{codexChildSameModelID}, addLost)
+		require.NoError(t, err)
+	})
+	oneSpawn := func(t *testing.T) string {
+		stream := filepath.Join(t.TempDir(), "one.ndjson")
+		require.NoError(t, os.WriteFile(stream, []byte(strings.Join([]string{
+			`{"type":"thread.started","thread_id":"` + codexRootThreadID + `"}`, `{"type":"turn.started"}`,
+			`{"type":"item.completed","item":{"id":"item_0","type":"collab_tool_call","tool":"spawn_agent","sender_thread_id":"` + codexRootThreadID + `","receiver_thread_ids":["` + codexChildSameModelID + `"],"prompt":"p","agents_states":{},"status":"completed"}}`,
+			`{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":1,"reasoning_output_tokens":0}}`,
+		}, "\n")+"\n"), 0o600))
+		return stream
+	}
+	for name, head := range map[string]string{"empty": "", "cut": `{"timestamp":"2026-09-29T15:46:31.000Z","ordi`} {
+		t.Run("a stream spawn whose rollout is "+name+" counts once", func(t *testing.T) {
+			rollout := func(sessions string) { writeCodexRollout(t, sessions, "2026/09/29", codexChildSameModelID, head) }
+			_, _, _, err := runCodexChildrenCase(t, oneSpawn(t), true, 1, nil, rollout)
+			require.NoError(t, err, "the file's name names the stream's receiver")
+			_, _, _, err = runCodexChildrenCase(t, oneSpawn(t), true, 0, nil, rollout)
+			assert.EqualError(t, err, msg(1, 0))
+		})
+	}
+	const cutChild = "01a06300-0000-7000-8000-0000000000d2"
+	fragment := `{"timestamp":"2026-09-29T15:46:31.000Z","type":"session_meta","payload":{"id":"` + cutChild + `"`
+	for name, content := range map[string]string{
+		"still being written":                  fragment,
+		"closed by codex after a failed write": fragment + "\n" + codexRolloutLine(cutChild, codexRootThreadID),
+	} {
+		t.Run("a child cut after the session_meta marker, "+name+", its spawn lost from the stream, still counts", func(t *testing.T) {
+			head := func(sessions string) { writeCodexRollout(t, sessions, "2026/09/29", cutChild, content) }
+			_, _, _, err := runCodexChildrenCase(t, lostSpawns(t), true, 0, nil, head)
+			assert.EqualError(t, err, msg(1, 0), "a cut line proves no root: the file counts under its name")
+			_, _, _, err = runCodexChildrenCase(t, lostSpawns(t), true, 1, nil, head)
+			require.NoError(t, err)
+		})
+	}
+	t.Run("a cut root of the agent's own codex exec does not pull in its children", func(t *testing.T) {
+		const inner, innerChild = "01a06300-0000-7000-8000-0000000000c3", "01a06300-0000-7000-8000-0000000000c4"
+		_, _, _, err := runCodexChildrenCase(t, oneSpawn(t), true, 2, []string{codexChildSameModelID}, func(sessions string) {
+			writeCodexRollout(t, sessions, "2026/09/29", inner, `{"timestamp":"2026-09-29T15:46:50.000Z","ordi`+"\n"+codexRolloutLine(inner, ""))
+			writeCodexRollout(t, sessions, "2026/09/29", innerChild, codexRolloutLine(innerChild, inner))
+		})
+		require.NoError(t, err, "the stream's child and the cut root by its name; the inner child's admission covers the root's count")
+	})
+	t.Run("leftovers and another root are not counted", func(t *testing.T) {
+		_, _, _, err := runCodexChildrenCase(t, lostSpawns(t), true, 3, children, func(sessions string) {
+			const prev = "01a06300-0000-7000-8000-0000000000ff"
+			writeCodexRollout(t, sessions, "2026/09/28", prev, codexRolloutLine(prev, ""))
+			writeCodexRollout(t, sessions, "2026/09/28", "01a06300-0000-7000-8000-0000000000c1", codexRolloutLine("01a06300-0000-7000-8000-0000000000c1", prev))
+			writeCodexRollout(t, sessions, "2026/09/29", "01a06300-0000-7000-8000-0000000000c2", codexRolloutLine("01a06300-0000-7000-8000-0000000000c2", ""))
+		})
+		require.NoError(t, err)
+	})
+	t.Run("a grandchild and an undecodable file are counted", func(t *testing.T) {
+		_, _, _, err := runCodexChildrenCase(t, lostSpawns(t), true, 3, children, func(sessions string) {
+			writeCodexRollout(t, sessions, "2026/09/29", "01a06300-0000-7000-8000-0000000000b1", codexRolloutLine("01a06300-0000-7000-8000-0000000000b1", codexChildSameModelID))
+			writeCodexRollout(t, sessions, "2026/09/30", "01a06300-0000-7000-8000-0000000000ee", "torn\n")
+		})
+		assert.EqualError(t, err, msg(5, 3))
+	})
+	t.Run("an unknown primary thread with a child on disk", func(t *testing.T) {
+		_, _, _, err := runCodexChildrenCase(t, codexStreamWithout(t, `"type":"thread.started"`), true, 4, children, nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "codex_spawn_without_admission: counting the child rollouts: the run's primary thread id is unknown")
+	})
+	t.Run("the read fails", func(t *testing.T) {
+		t.Setenv("FULLSEND_TEST_ROLLOUTS_READ_FAIL", "1")
+		_, _, _, err := runCodexChildrenCase(t, "collab_spawn.ndjson", true, 4, children, nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "codex_spawn_without_admission: counting the child rollouts: exited 1: fake openshell: refusing the rollouts read")
+	})
+	t.Run("no sessions directory, no spawn", func(t *testing.T) {
+		_, _, _, err := runCodexChildrenCase(t, "basic_run.ndjson", true, 0, nil, func(sessions string) { require.NoError(t, os.RemoveAll(sessions)) })
+		require.NoError(t, err)
+	})
+	t.Run("not delegating, no spawn: no read", func(t *testing.T) {
+		_, _, log, err := runCodexChildrenCase(t, "basic_run.ndjson", false, 0, nil, nil)
+		require.NoError(t, err)
+		assert.NotContains(t, log, codexChildRolloutsMarker)
+	})
+	t.Run("not delegating, a spawn in the stream, no admission", func(t *testing.T) {
+		_, _, _, err := runCodexChildrenCase(t, "collab_spawn.ndjson", false, 0, children, nil)
+		assert.EqualError(t, err, msg(4, 0))
+	})
+}
+
+// Two iterations: each adds its spawns from both sides, so a spawn the first
+// iteration's stream lost still needs its admission.
+func TestCodexRun_AdmissionCountSpansIterations(t *testing.T) {
+	for admitted, wantErr := range map[int]bool{6: false, 5: true} {
+		t.Run(fmt.Sprint(admitted), func(t *testing.T) {
+			children := []string{codexChildSameModelID, codexChildOtherModelID, codexChildFailedID}
+			_, _, _, err := runCodexChildrenCase(t, codexStreamWithout(t, `"tool":"spawn_agent"`), true, admitted, children, nil)
+			require.NoError(t, err, "iteration 1: three children on disk, admitted")
+			var out bytes.Buffer
+			_, err = CodexRuntime{}.Run(context.Background(), codexChildrenRunParams, ui.New(&out), time.Now(), &RunMetrics{})
+			if wantErr {
+				assert.EqualError(t, err, "codex_spawn_without_admission: 6 spawn(s) in this run (the stream's spawn items and the child rollouts on disk, each child counted once) but 5 recorded admission(s)")
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+// A line that is not four fields is a head with nothing usable, so it counts
+// with no id; a name field that is not a thread id is none; a blank line is
+// no file.
+func TestParseCodexRolloutHeads(t *testing.T) {
+	t.Parallel()
+	const named = "01a06300-0000-7000-8000-0000000000e1"
+	out := "1 \"id\":\"" + codexChildSameModelID + "\" \"parent_thread_id\":\"" + codexRootThreadID + "\" " + codexChildSameModelID + "\n" +
+		"1 none none " + named + "\n" +
+		"0 none none " + named + "\n" +
+		"0 none none 01a06300\n" +
+		"2 \"id\":\"" + codexChildOtherModelID + "\" none none\n" +
+		"\n" +
+		"0 none none\n" +
+		"/sandbox/weird name\n"
+	heads := parseCodexRolloutHeads([]byte(out))
+	assert.Equal(t, []codexRolloutHead{
+		{Meta: true, ID: codexChildSameModelID, Parent: codexRootThreadID, NameID: codexChildSameModelID},
+		{Meta: true, NameID: named},
+		{NameID: named},
+		{},
+		{Meta: true, Cut: true, ID: codexChildOtherModelID},
+		{},
+		{},
+	}, heads)
+	n, ids, err := countCodexChildRollouts(heads, codexRootThreadID, nil)
+	require.NoError(t, err)
+	assert.Equal(t, 6, n, "the child, the head known by its name, the cut session_meta line by its content id, and the three without an id; the whole root-shaped line is not counted, whatever its name")
+	assert.Equal(t, []string{named, codexChildOtherModelID, codexChildSameModelID}, ids)
 }

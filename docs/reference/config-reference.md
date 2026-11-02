@@ -47,7 +47,7 @@ agents:                              # Registered agent sources and per-agent tu
     runtime: claude                  # Per-agent runtime override
     model: opus                      # Per-agent model override (model id or provider/id)
     effort: high                     # Per-agent reasoning effort: low, medium, high, xhigh, max
-    subagents:                       # Per-agent sub-agent model map
+    subagents:                       # Per-agent sub-agent model map (pi and codex)
       default: sonnet                # Fallback model for personas without an explicit entry
       code-reviewer: opus            # Model for a specific persona
     # trigger: <CEL expression>      # When the built-in review agent runs (review entry only)
@@ -67,8 +67,16 @@ create_issues:
       - fullsend-ai/agents
 
 # ── Authorization ────────────────────────────────────────────
-authorization:                       # Extra sources of slash-command permission, checked before the collaborator API
-  - provider: owners_file            # Grant access from the repo-root Prow OWNERS file (only provider)
+authorization:                       # Extra sources of permission for triggering agents
+  - provider: owners_file            # GitHub: grant access from the repo-root Prow OWNERS file, checked before the collaborator API
+  - provider: jira                   # Jira (jira-poll): who may trigger agents from Jira events
+    write:                           # Fullsend role write
+      groups: [example-team-developers]  # Jira group names (or group IDs)
+      accounts: ["5f7c012e0b2a4c001f3d9876"]  # Jira account IDs
+    triage:                          # Fullsend role triage
+      groups: [example-team]
+      accounts: []
+    labels: jira_editors             # Label-added events: jira_editors (default), allowlist, project_roles
 
 # ── Status notifications ─────────────────────────────────────
 status_notifications:
@@ -205,7 +213,10 @@ effort, sub-agent models and the trigger.
 - **`subagents`** — Map of persona names to model references. The `default`
   key sets the fallback for personas without an explicit entry. A `~` (null)
   value tombstones an inherited entry. Keys must be lowercase alphanumeric
-  segments joined by hyphens (max 64 chars).
+  segments joined by hyphens (max 64 chars). On codex, for an agent that
+  delegates, the values must be OpenAI ids and a key must name a registered
+  persona or `default`; see
+  [Codex › Child models](../runtimes/codex.md#child-models).
 - **`trigger`** — A [CEL trigger](../guides/user/cel-triggers-reference.md)
   (a boolean over the normalized `event`). It decides routing for the
   built-in review, retro, triage and prioritize agents only: on one of those
@@ -278,9 +289,12 @@ not managed through `fullsend repos`. Preserve any other targets you need.
 
 ### `authorization`
 
-Lists extra sources of permission for triggering agents. The GitHub
-collaborator API always applies; a provider listed here is checked first.
-The only provider is `owners_file`:
+Lists extra sources of permission for triggering agents. There are two
+providers: `owners_file` for GitHub events and `jira` for Jira events.
+
+#### `owners_file`
+
+The GitHub collaborator API always applies; this provider is checked first:
 
 - An `approvers` entry in the repo-root `OWNERS` file gets write-level access
   (every slash command and custom agent). A `reviewers` entry gets
@@ -297,11 +311,62 @@ The only provider is `owners_file`:
 - Only the flat root `approvers`/`reviewers` lists are read. Prow `filters:`
   blocks and per-directory `OWNERS` files are ignored.
 
-Default: absent (collaborator API only). The field is not inherited from
-`config.base.yaml`: each repo opts in in its own `config.yaml`. Unknown or
-duplicate providers fail config validation. See
+#### `jira`
+
+Decides which Jira users may trigger agents through the `jira-poll` input
+driver. It applies only to events from Jira and does not change GitHub or
+GitLab authorization
+([ADR 0153](../ADRs/0153-authorize-jira-poll-actors-without-project-administration.md)).
+
+| Key | Meaning |
+|---|---|
+| `write.groups`, `write.accounts` | Jira groups (by name or group ID) and Jira account IDs granted the Fullsend `write` role |
+| `triage.groups`, `triage.accounts` | Jira groups and account IDs granted the Fullsend `triage` role |
+| `labels` | How a label-added event is authorized: `jira_editors` (default once the entry is present), `allowlist`, or `project_roles` |
+
+- **Slash commands and other non-label events:** when the entry sets a
+  `write` or `triage` list (an empty list counts as set, so it denies
+  everyone), the lists decide. An actor listed
+  under `write` gets `write`. An actor listed only under `triage` gets
+  `triage`, which covers `/fs-triage` and custom agents whose
+  harness sets `role: triage` or `role: review`. Anyone else is denied. The
+  Jira project roles are not consulted. When neither list is set, slash
+  commands use the Jira project role lookup instead. That lookup needs
+  Administer Projects. Other non-label events, such as an issue being opened
+  or edited, are then not authorized for any agent, unless the entry sets
+  `labels: project_roles`: with that value and no lists, every event
+  (labels, slash commands, opened, edited, closed, reopened, plain comments,
+  label removals) resolves through the project role lookup, exactly as with
+  no `jira` entry.
+- **Label-added events**: `jira_editors` authorizes anyone who could add the
+  label, which needs Jira's Edit Issues permission. `allowlist` checks the
+  label author against the same lists as slash commands. `project_roles`
+  uses the Jira project role lookup.
+- Group entries are resolved with Jira's user-groups API, once per actor per
+  poll cycle. That needs the poller account to hold the Browse users and
+  groups global permission. Account entries need no Jira call. Project-role
+  resolution calls the same API for an actor when a project role is granted
+  to a group.
+
+To keep today's behavior explicitly, use the two-line entry
+`- provider: jira` with `labels: project_roles` and no lists.
+
+The provider is opt-in. Without a `jira` entry, every Jira event, including
+label-added events, resolves through the project role lookup and takes the
+per-harness role threshold, which needs Administer Projects. Unknown keys in a `jira` entry, an
+unknown `labels` value, and empty group or account entries fail config
+loading. See
+[Jira integration](../guides/user/jira-integration.md#actor-role-resolution)
+for the permissions each setting needs.
+
+Default: absent (`owners_file` off; Jira resolves every event through the
+project role lookup). The field is
+not inherited from `config.base.yaml`: each repo opts in in its own
+`config.yaml`. Unknown or duplicate providers fail config validation, and also fail
+`jira-poll` and harness dispatch at load time, and
+`write`, `triage`, and `labels` are valid only on the `jira` provider. See
 [OWNERS file authorization](../guides/user/owners-file-authorization.md)
-for a setup walkthrough.
+for an `owners_file` setup walkthrough.
 
 ### `status_notifications`
 

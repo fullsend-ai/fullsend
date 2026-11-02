@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/normevent"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
 
@@ -614,7 +615,6 @@ func TestBuildEventPayload_IncludesAllFields(t *testing.T) {
 	checks := map[string]interface{}{
 		"type":                 "issue_note",
 		"iid":                  float64(7),
-		"note_body":            "/fs-triage",
 		"note_id":              float64(200),
 		"note_author_id":       float64(55),
 		"mr_source_project_id": float64(100),
@@ -629,6 +629,13 @@ func TestBuildEventPayload_IncludesAllFields(t *testing.T) {
 		if got != want {
 			t.Errorf("%s: got %v, want %v", key, got, want)
 		}
+	}
+
+	if got, ok := payloadCommentBody(t, data); !ok || got != "/fs-triage" {
+		t.Errorf("canonical comment body = %q (present %v), want %q", got, ok, "/fs-triage")
+	}
+	if _, ok := m["note_body"]; ok {
+		t.Errorf("payload still emits the legacy note_body field: %v", m["note_body"])
 	}
 
 	// Check updated_at.
@@ -672,7 +679,7 @@ func TestBuildEventPayload_OmitsZeroOptionalFields(t *testing.T) {
 	}
 
 	// Must NOT have optional fields when zero.
-	optionals := []string{"note_body", "note_id", "note_author_id", "labels", "mr_source_project_id", "mr_target_project_id"}
+	optionals := []string{"note_body", "_normalized_event", "note_id", "note_author_id", "labels", "mr_source_project_id", "mr_target_project_id"}
 	for _, key := range optionals {
 		if _, ok := m[key]; ok {
 			t.Errorf("expected optional key %q to be omitted, but it was present", key)
@@ -680,57 +687,150 @@ func TestBuildEventPayload_OmitsZeroOptionalFields(t *testing.T) {
 	}
 }
 
-func TestBuildEventPayload_NoteBodyUnderLimitUntouched(t *testing.T) {
-	ts := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
-	body := "/fs-fix make it faster"
-	event := RoutableEvent{Type: "issue_note", IID: 1, UpdatedAt: ts, NoteBody: body}
-
-	data, err := buildEventPayload(event)
-	if err != nil {
-		t.Fatalf("buildEventPayload: %v", err)
+// payloadCommentBody returns the canonical normalized comment body,
+// _normalized_event.transition.comment.body, from a buildEventPayload
+// result — the only field run-agent-job.sh reads it from.
+func payloadCommentBody(t *testing.T, data []byte) (string, bool) {
+	t.Helper()
+	var p struct {
+		Norm *struct {
+			Transition struct {
+				Kind    string `json:"kind"`
+				Comment *struct {
+					Body *string `json:"body"`
+				} `json:"comment"`
+			} `json:"transition"`
+		} `json:"_normalized_event"`
 	}
-	var m map[string]interface{}
-	if err := json.Unmarshal(data, &m); err != nil {
+	if err := json.Unmarshal(data, &p); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if got := m["note_body"]; got != body {
-		t.Errorf("note_body = %q, want unchanged %q", got, body)
+	if p.Norm == nil || p.Norm.Transition.Comment == nil || p.Norm.Transition.Comment.Body == nil {
+		return "", false
+	}
+	if p.Norm.Transition.Kind != string(normevent.TransitionCommentAdded) {
+		t.Errorf("transition.kind = %q, want %q", p.Norm.Transition.Kind, normevent.TransitionCommentAdded)
+	}
+	return *p.Norm.Transition.Comment.Body, true
+}
+
+// multilineFixBody is a /fs-fix command whose instruction spans lines;
+// the instruction run-agent-job.sh derives from it must keep them.
+const multilineFixBody = "/fs-fix only address the nil check\n\n- keep the public API\n- add a regression test"
+
+func TestBuildEventPayload_CommandBodyAtCanonicalPath(t *testing.T) {
+	ts := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
+	for _, eventType := range []string{"issue_note", "mr_note"} {
+		t.Run(eventType, func(t *testing.T) {
+			event := RoutableEvent{Type: eventType, IID: 1, UpdatedAt: ts, NoteBody: multilineFixBody, NoteID: 9, NoteAuthorID: 3}
+
+			data, err := buildEventPayload(event)
+			if err != nil {
+				t.Fatalf("buildEventPayload: %v", err)
+			}
+			got, ok := payloadCommentBody(t, data)
+			if !ok || got != multilineFixBody {
+				t.Errorf("canonical comment body = %q (present %v), want %q", got, ok, multilineFixBody)
+			}
+			var m map[string]any
+			if err := json.Unmarshal(data, &m); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			for _, legacy := range []string{"note_body", "comment", "instruction", "object_attributes"} {
+				if _, ok := m[legacy]; ok {
+					t.Errorf("payload emits non-canonical field %q: %v", legacy, m[legacy])
+				}
+			}
+		})
 	}
 }
 
-func TestBuildEventPayload_NoteBodyOverLimitTruncatedWithNotice(t *testing.T) {
-	// Consumer-contract test: run-agent-job.sh derives /fs-fix instructions
-	// and retro comments straight from this dispatched note_body. A note
-	// over the 800-character dispatch limit must still carry an in-band
-	// signal that it was cut, not just silently end mid-sentence.
+func TestBuildEventPayload_CommandBodyOverNoteLimitNotTruncated(t *testing.T) {
+	// run-agent-job.sh derives the /fs-fix instruction from this body, so
+	// a command must never be shortened in transport.
 	ts := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
-	body := "/fs-fix " + strings.Repeat("x", 900)
-	event := RoutableEvent{Type: "issue_note", IID: 1, UpdatedAt: ts, NoteBody: body}
+	body := "/fs-fix " + strings.Repeat("x", 2*noteBodyTransportLimit)
+	event := RoutableEvent{Type: "mr_note", IID: 1, UpdatedAt: ts, NoteBody: body}
 
 	data, err := buildEventPayload(event)
 	if err != nil {
 		t.Fatalf("buildEventPayload: %v", err)
 	}
-	var m map[string]interface{}
-	if err := json.Unmarshal(data, &m); err != nil {
-		t.Fatalf("unmarshal: %v", err)
+	if got, ok := payloadCommentBody(t, data); !ok || got != body {
+		t.Errorf("canonical comment body has %d runes (present %v), want the intact %d-rune command", len([]rune(got)), ok, len([]rune(body)))
 	}
-	got, ok := m["note_body"].(string)
+}
+
+func TestBuildEventPayload_NonCommandBodyOverLimitTruncatedWithNotice(t *testing.T) {
+	// A non-command body (such as a bot review note) is bounded for
+	// transport and carries an in-band signal that it was cut.
+	ts := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
+	body := "Changes requested\n" + strings.Repeat("x", 900)
+	event := RoutableEvent{Type: "mr_note", IID: 1, UpdatedAt: ts, NoteBody: body, IsBot: true}
+
+	data, err := buildEventPayload(event)
+	if err != nil {
+		t.Fatalf("buildEventPayload: %v", err)
+	}
+	got, ok := payloadCommentBody(t, data)
 	if !ok {
-		t.Fatalf("note_body missing or not a string: %v", m["note_body"])
+		t.Fatal("canonical comment body missing")
 	}
-	if len([]rune(got)) > 800 {
-		t.Errorf("note_body has %d runes, want at most 800", len([]rune(got)))
+	if n := len([]rune(got)); n > noteBodyTransportLimit {
+		t.Errorf("comment body has %d runes, want at most %d", n, noteBodyTransportLimit)
 	}
 	if !strings.HasSuffix(got, noteBodyTruncationNotice) {
-		t.Errorf("note_body = %q, want it to end with the truncation notice %q", got, noteBodyTruncationNotice)
+		t.Errorf("comment body = %q, want it to end with the truncation notice %q", got, noteBodyTruncationNotice)
 	}
-	if strings.HasPrefix(got, "/fs-fix") {
-		// Sanity: the instruction prefix a human typed must survive
-		// truncation (truncation cuts from the end), so the shell's
-		// `/fs-fix*` match in run-agent-job.sh still fires.
-	} else {
-		t.Errorf("note_body = %q, want it to still start with the original /fs-fix prefix", got)
+	if !strings.HasPrefix(got, "Changes requested\n") {
+		t.Errorf("comment body = %q, want truncation to cut from the end", got)
+	}
+}
+
+func TestDispatch_RejectsCommandTooLargeToTransportIntact(t *testing.T) {
+	mc := newMockClient()
+	p := newTestPoller(mc, Options{})
+
+	event := RoutableEvent{
+		Type:         "mr_note",
+		IID:          10,
+		UpdatedAt:    time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC),
+		NoteBody:     "/fs-fix " + strings.Repeat("y", maxEventPayloadChunks*dispatchPayloadChunkSize),
+		NoteID:       5,
+		NoteAuthorID: 3,
+	}
+
+	err := p.dispatch(context.Background(), "owner", "repo", "fix", event)
+	if err == nil || !strings.Contains(err.Error(), "refusing to dispatch a truncated note body") {
+		t.Fatalf("dispatch error = %v, want a refusal to dispatch a truncated note body", err)
+	}
+	if len(mc.pipelineCalls) != 0 || len(p.dispatches) != 0 {
+		t.Errorf("pipeline calls = %d, dispatches = %d, want none", len(mc.pipelineCalls), len(p.dispatches))
+	}
+}
+
+func TestDispatch_MultilineCommandCarriedIntact(t *testing.T) {
+	mc := newMockClient()
+	p := newTestPoller(mc, Options{})
+
+	event := RoutableEvent{
+		Type:         "mr_note",
+		IID:          10,
+		UpdatedAt:    time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC),
+		NoteBody:     multilineFixBody,
+		NoteID:       5,
+		NoteAuthorID: 3,
+	}
+
+	if err := p.dispatch(context.Background(), "owner", "repo", "fix", event); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	payload, err := base64.StdEncoding.DecodeString(p.dispatches[0].EventPayloadB64)
+	if err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if got, ok := payloadCommentBody(t, payload); !ok || got != multilineFixBody {
+		t.Errorf("dispatched canonical comment body = %q (present %v), want %q", got, ok, multilineFixBody)
 	}
 }
 

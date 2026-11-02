@@ -122,6 +122,9 @@ Any harness field can be overridden. See the [field merge rules](../../reference
 
 - **Change model, timeout, image, scripts** — scalars replace the base value.
 - **Add skills** — your entries are merged with the base's by skill identity (declared `SKILL.md` name when on disk, otherwise directory basename); a matching child skill overrides the base entry. Nested forge skills that share a leaf directory name are kept alongside each other. **Add plugins or host_files** — your entries are concatenated with the base's, base first.
+- **Override files inside a skill** — repeat the skill's entry in map form
+  with [per-file overrides](customizing-with-skills.md#overriding-single-files-in-a-skill);
+  the child's override keys merge with any the base declares, child keys win.
 - **Add or override env vars** — maps are merged; your keys win on collision.
 - **Override validation_loop fields** — child non-zero values win; omitted fields inherit from the base (for example, set only `schema` to swap the schema without copying `script`). **Replace security config** — child replaces the entire block.
 
@@ -282,13 +285,11 @@ Register the overlay in `.fullsend/config.yaml` as usual (`name: code` /
   to one sandbox without a duplicate-key rejection.
 - *Read-only.* Both registry hosts are `access: read-only`.
 - *Readable by the agent.* This is the standard exposure of any static
-  OpenShell credential
-  ([ADR 0025](../../ADRs/0025-provider-credential-delivery-for-sandboxed-agents.md)):
-  a placeholder resolves wherever it appears in a request to a bound host,
-  and the registry echoes unknown package names in its 404 body. A value read
-  back that way is the job's own workflow token until the job ends, and
-  through the proxy it can only reach the hosts the role's profiles allow; see
-  [ADR 0114](../../ADRs/0114-github-packages-via-host-bound-workflow-token-provider.md).
+  OpenShell credential: a placeholder resolves wherever it appears in a
+  request to a bound host, and the registry echoes unknown package names in
+  its 404 body. A value read back that way is the job's own workflow token
+  until the job ends, and through the proxy it can only reach the hosts the
+  role's profiles allow.
 
 **Notes.**
 
@@ -334,15 +335,18 @@ are actually changing:
    orchestrator uses a fixed roster). Do not invent a parallel
    `*/SKILL.md` that embeds the same content.
 5. **Prefer the lightest shipping path** the current docs support —
-   upstream contribution, file-level skill override when available, or
-   whole-skill fork only when that is still required.
+   upstream contribution, file-level skill override, or whole-skill fork
+   only when that is still required.
 
-> **Planned:** File-level overrides inside a pinned skill directory (add or
-> replace a single `sub-agents/<name>.md` without vendoring the whole tree)
-> are tracked in [#6158](https://github.com/fullsend-ai/fullsend/issues/6158)
-> / [#6157](https://github.com/fullsend-ai/fullsend/issues/6157). Until that
-> lands, fixed-roster sub-agent changes usually need an upstream PR or a
-> whole-skill pin.
+To add, replace or remove a single `sub-agents/<name>.md` without vendoring
+the whole skill, list
+[per-file overrides](customizing-with-skills.md#overriding-single-files-in-a-skill)
+on the skill's `skills:` entry. Each run also writes a persona manifest that
+pre-scripts, post-scripts and skills read through `FULLSEND_PERSONAS_FILE`,
+so a roster change made by an override is visible to them
+([#6158](https://github.com/fullsend-ai/fullsend/issues/6158)). An
+orchestrator whose dispatch list is hard-coded still needs a parent-skill
+change to call an added persona.
 
 **Authoring help:** the contributor skill
 [`author-fullsend-augmentations`](../../../skills/author-fullsend-augmentations/SKILL.md)
@@ -646,7 +650,10 @@ GitLab uses its own stage router, which applies the same triage and write
 split to slash commands. The GitLab agent job also requires the event actor
 to hold Developer access or higher for every stage except retro and
 prioritize, so automatic triage of a newly opened issue runs only when its
-author is a Developer, Maintainer, or Owner.
+author is a Developer, Maintainer, or Owner. Jira work items dispatched to a
+GitLab project skip that check, because their actor has no GitLab account; the
+Jira poller authorizes them by Jira project role (see
+[Jira integration](jira-integration.md#gitlab-runtime)).
 See the
 [Authorization Contract](../../normative/authorization/v1/README.md) for the
 full role hierarchy, exception rules, and implementation notes.

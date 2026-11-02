@@ -32,6 +32,7 @@ type bootstrapInput struct {
 	repoDir                string
 	agentSubagents         map[string]*string
 	parentModel            string
+	effort                 string
 	openAIProviderAttached bool
 }
 
@@ -43,6 +44,7 @@ func (b bootstrapInput) Plugins() []PluginInput             { return b.plugins }
 func (b bootstrapInput) ModelAliases() map[string]string    { return b.modelAliases }
 func (b bootstrapInput) AgentSubagents() map[string]*string { return b.agentSubagents }
 func (b bootstrapInput) ParentModel() string                { return b.parentModel }
+func (b bootstrapInput) Effort() string                     { return b.effort }
 func (b bootstrapInput) OpenAIProviderAttached() bool       { return b.openAIProviderAttached }
 func (b bootstrapInput) RepoDir() string {
 	if b.repoDir == "" {

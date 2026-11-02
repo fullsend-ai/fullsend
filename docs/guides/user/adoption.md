@@ -98,7 +98,7 @@ Not every team will need all of these. Many teams find that a good AGENTS.md and
 
 **Enable the retro agent** — it reviews agent runs and surfaces systematic problems, so you're not manually auditing agent behavior anymore. Its post-script files issues from retro findings automatically, following your team's conventions — right labels, context, and acceptance criteria.
 
-**Custom agents for specific SDLC gaps (advanced):** If your workflow uses tooling outside GitHub that default agents don't cover, this is where you might start exploring derived or custom agents — for example, a triage agent that bridges to Jira, or a prioritization agent that reads from your planning tool. See [Bring Your Own Agent](bring-your-own-agent.md) and [default vs custom agents](default-vs-custom.md) for guidance.
+**Custom agents for specific SDLC gaps (advanced):** If your workflow uses tooling outside GitHub that default agents don't cover, this is where you might start exploring derived or custom agents — for example, a triage agent for a tracker other than GitHub, GitLab, or Jira, or a prioritization agent that reads from your planning tool. See [Bring Your Own Agent](bring-your-own-agent.md) and [default vs custom agents](default-vs-custom.md) for guidance.
 
 **What you're learning:**
 
@@ -167,7 +167,14 @@ Start small — docs-only paths, or dependency update paths already covered by R
 
 The team always retains control — CODEOWNERS and branch protection are the safety net, and auto-merge scope can be dialed back at any time by editing CODEOWNERS.
 
-For more granular control, the review agent includes a [PR-level risk assessment](../../ADRs/0089-pr-risk-assessment-scoring.md) sub-agent that produces a composite risk score based on blast radius, path sensitivity, CI impact, dependency risk, test coverage, and author context. This score can further gate auto-merge eligibility beyond file-path matching. The team is still gathering evidence on graduation criteria for autonomous merging — see the [autonomy spectrum](../../problems/autonomy-spectrum.md) for the open questions.
+For more granular control, the review agent includes a PR-level risk
+assessment sub-agent that produces a composite risk score based on blast
+radius, path sensitivity, CI impact, dependency risk, test coverage, and
+author context. This score can further gate auto-merge eligibility beyond
+file-path matching. The team is still gathering evidence on graduation
+criteria for autonomous merging — see the
+[autonomy spectrum](../../problems/autonomy-spectrum.md) for the open
+questions.
 
 ### Bring Your Own Agents
 

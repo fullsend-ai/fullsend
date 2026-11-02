@@ -676,6 +676,25 @@ func TestDiscardSandbox(t *testing.T) {
 	assert.Contains(t, out.String(), "Sandbox cleanup failed: boom")
 }
 
+func TestKeepFailedSandbox(t *testing.T) {
+	var logged []string
+	origDelete, origLogs := deleteSandboxFn, collectOpenshellLogsFn
+	deleteSandboxFn = func(name string) error {
+		t.Errorf("a kept sandbox must not be deleted: %s", name)
+		return nil
+	}
+	collectOpenshellLogsFn = func(name, runDir string, _ *ui.Printer) {
+		logged = append(logged, name+"@"+runDir)
+	}
+	t.Cleanup(func() { deleteSandboxFn, collectOpenshellLogsFn = origDelete, origLogs })
+
+	var out bytes.Buffer
+	keepFailedSandbox("sb-failed", "/run", ui.New(&out))
+	assert.Equal(t, []string{"sb-failed@/run"}, logged)
+	assert.Contains(t, out.String(), "Sandbox kept (--keep-sandbox): sb-failed")
+	assert.Contains(t, out.String(), "openshell sandbox exec --tty --name sb-failed -- bash")
+}
+
 func TestValidateVertexGCPCredentials(t *testing.T) {
 	h := &harness.Harness{HostFiles: []harness.HostFile{{
 		Src:      "${GOOGLE_APPLICATION_CREDENTIALS}",

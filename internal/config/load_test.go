@@ -486,11 +486,53 @@ inference:
 
 	// Overlay overrides mint_url.
 	assert.Equal(t, "https://overlay-mint.example.com", pcr.ConfigMintURL())
+	assert.Equal(t, "https://overlay-mint.example.com", pcr.ConfigMintURLFromFile())
 	// Inference fields fall through to base.
 	assert.Equal(t, "vertex", pcr.ConfigInferenceProvider())
 	assert.Equal(t, "base-project", pcr.ConfigInferenceProject())
 	assert.Equal(t, "us-central1", pcr.ConfigInferenceRegion())
 	assert.Equal(t, "projects/123/locations/global/workloadIdentityPools/pool/providers/prov", pcr.ConfigInferenceWIFProvider())
+}
+
+// TestConfigMintURLFromFile_BaseOnly checks that when the overlay
+// is silent on mint_url, ConfigMintURLFromFile falls through to the base
+// file, same as ConfigMintURL.
+func TestConfigMintURLFromFile_BaseOnly(t *testing.T) {
+	dir := t.TempDir()
+	base := "version: \"1\"\nmint_url: https://base-mint.example.com\n"
+	overlay := "version: \"1\"\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.base.yaml"), []byte(base), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(overlay), 0o644))
+
+	cfg, err := LoadConfig(dir, LoadOpts{})
+	require.NoError(t, err)
+
+	pcr, ok := cfg.(PerRepoConfigReader)
+	require.True(t, ok)
+
+	assert.Equal(t, "https://base-mint.example.com", pcr.ConfigMintURL())
+	assert.Equal(t, "https://base-mint.example.com", pcr.ConfigMintURLFromFile())
+}
+
+// TestConfigMintURLFromFile_NeitherSet is the critical divergence from
+// ConfigMintURL: when neither config.yaml nor config.base.yaml sets
+// mint_url, ConfigMintURL falls through to the compiled default
+// (DefaultPerRepoMintURL), but ConfigMintURLFromFile stops at "" — it
+// never consults the compiled-defaults layer. This is what lets
+// fullsend run distinguish "the file is silent" from "the file resolves
+// to the default".
+func TestConfigMintURLFromFile_NeitherSet(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("version: \"1\"\n"), 0o644))
+
+	cfg, err := LoadConfig(dir, LoadOpts{})
+	require.NoError(t, err)
+
+	pcr, ok := cfg.(PerRepoConfigReader)
+	require.True(t, ok)
+
+	assert.Equal(t, DefaultPerRepoMintURL, pcr.ConfigMintURL())
+	assert.Empty(t, pcr.ConfigMintURLFromFile())
 }
 
 func TestLoadConfig_OnlyBase_MintInference(t *testing.T) {

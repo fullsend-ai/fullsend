@@ -420,7 +420,20 @@ fi
 # ACTOR_ID is the generic actor identity, populated from MR_AUTHOR_ID
 # for MR events or NoteAuthorID for issue/note events. Falls back to
 # MR_AUTHOR_ID for backward compatibility with older dispatch pipelines.
-if [ "${STAGE}" != "retro" ] && [ "${STAGE}" != "prioritize" ]; then
+#
+# Jira work-item dispatches (EVENT_TYPE jira_*, #8919) carry no ACTOR_ID:
+# a Jira actor has no GitLab user ID. The Jira poller already authorized
+# the actor against its Jira project role before dispatching, and
+# EVENT_TYPE is part of the HMAC-verified dispatch message above, so only
+# the poller holding FULLSEND_DISPATCH_SECRET can select this branch. As on
+# GitHub, the Jira project is the authorization boundary for these events.
+JIRA_DISPATCH=false
+case "${EVENT_TYPE:-}" in
+  jira_*) JIRA_DISPATCH=true ;;
+esac
+if [ "${JIRA_DISPATCH}" = "true" ]; then
+  echo "Jira work-item dispatch — actor authorized by the Jira poller's project-role check"
+elif [ "${STAGE}" != "retro" ] && [ "${STAGE}" != "prioritize" ]; then
   AUTH_ACTOR_ID="${ACTOR_ID:-${MR_AUTHOR_ID:-}}"
   if [ -z "${AUTH_ACTOR_ID}" ]; then
     echo "WARNING: No actor identity available — skipping stage (fail-closed)"
@@ -486,6 +499,22 @@ export RUNNER_TEMP="${RUNNER_TEMP:-/tmp}"
 # not "0" — inventing …/issues/0 passes EM-001's work_item check.
 GITLAB_ISSUE_URL=""
 case "${EVENT_TYPE:-}" in
+  jira_*)
+    # A Jira work item has no GitLab issue or merge request. Run status
+    # goes to the Jira issue (fullsend run reads the normalized event
+    # passed with --event-file below), so leave GITLAB_ISSUE_URL empty and
+    # keep the overridable merge-request variables from steering any
+    # GitLab note to a merge request. Merge-request stages have nothing to
+    # act on.
+    case "${STAGE}" in
+      review|fix)
+        echo "ERROR: the ${STAGE} stage needs a merge request — refusing to run it for a Jira work item" >&2
+        exit 1
+        ;;
+    esac
+    unset CI_MERGE_REQUEST_IID
+    export FULLSEND_NOTE_TARGET="issues"
+    ;;
   issue_*)
     if [[ -n "${STATUS_IID:-}" && "${STATUS_IID}" != "0" ]]; then
       GITLAB_ISSUE_URL="${FULLSEND_PINNED_GITLAB_URL}/${FULLSEND_PINNED_PROJECT_PATH}/-/issues/${STATUS_IID}"
@@ -536,11 +565,40 @@ case "${EVENT_TYPE:-}" in
 esac
 export GITLAB_ISSUE_URL
 
+# fullsend_payload_comment_body prints the raw comment body from the
+# base64 event payload in $1, or nothing when it has none. The only
+# accepted source is the canonical normalized comment path,
+# ._normalized_event.transition.comment.body, which the poller and
+# webhook dispatcher fill from the note they read from the GitLab API.
+# Legacy or custom fields (.note_body, .object_attributes.note,
+# top-level .comment.body, .instruction) are deliberately not read.
+fullsend_payload_comment_body() {
+  printf '%s' "${1}" | base64 -d 2>/dev/null \
+    | jq -j '._normalized_event.transition.comment.body? | strings' 2>/dev/null || true
+}
+
+# fullsend_fix_instruction prints the human instruction that follows an
+# exact /fs-fix command token at the start of the raw comment body in
+# $1, preserving its line breaks. It returns non-zero, printing nothing,
+# when the body does not start with that exact token — /fs-fix-extra
+# and similar commands do not match.
+fullsend_fix_instruction() {
+  local _fs_body="${1#"${1%%[![:space:]]*}"}"
+  local _fs_rest
+  case "${_fs_body}" in
+    /fs-fix) return 0 ;;
+    /fs-fix[[:space:]]*) _fs_rest="${_fs_body#/fs-fix}" ;;
+    *) return 1 ;;
+  esac
+  printf '%s' "${_fs_rest#"${_fs_rest%%[![:space:]]*}"}"
+}
+
 # Extract the comment body for the retro agent. On GitHub,
 # RETRO_COMMENT is set from the event payload's comment.body field;
-# on GitLab the equivalent data is note_body inside EVENT_PAYLOAD_B64.
+# on GitLab it is the canonical normalized comment body inside
+# EVENT_PAYLOAD_B64.
 if [ "${STAGE}" = "retro" ] && [ -n "${EVENT_PAYLOAD_B64:-}" ]; then
-  RETRO_COMMENT=$(printf '%s' "${EVENT_PAYLOAD_B64}" | base64 -d | jq -r '.note_body // ""')
+  RETRO_COMMENT=$(fullsend_payload_comment_body "${EVENT_PAYLOAD_B64}")
   export RETRO_COMMENT
 fi
 
@@ -928,23 +986,23 @@ if [ "${STAGE}" = "fix" ]; then
   fi
   export TRIGGER_SOURCE
 
-  # Human instruction — extracted from the /fs-fix note body in
-  # the event payload. Default to "none" so the env var is always
-  # non-empty (the fullsend binary rejects empty runner_env values).
-  # Bot-triggered runs always get "none" (matching the fix job in reusable-dispatch.yml).
+  # Human instruction — the text after the exact /fs-fix command
+  # token in the canonical normalized comment body of the event
+  # payload (see fullsend_payload_comment_body). Default to "none" so
+  # the env var is always non-empty (the fullsend binary rejects empty
+  # runner_env values). Bot-triggered runs always get "none" and work
+  # from the review body (matching the fix job in reusable-dispatch.yml).
+  # A body without the exact /fs-fix token injects no instruction.
   HUMAN_INSTRUCTION="none"
   if [ "${_IS_BOT_TRIGGER}" != "true" ] && [ -n "${EVENT_PAYLOAD_B64:-}" ]; then
-    _NOTE_BODY=$(printf '%s' "${EVENT_PAYLOAD_B64}" | base64 -d \
-      | jq -r '.note_body // empty' 2>/dev/null || echo "")
-    case "${_NOTE_BODY}" in
-      /fs-fix*)
-        _INSTRUCTION="${_NOTE_BODY#/fs-fix}"
-        _INSTRUCTION="${_INSTRUCTION#"${_INSTRUCTION%%[![:space:]]*}"}"
-        if [ -n "${_INSTRUCTION}" ]; then
-          HUMAN_INSTRUCTION="${_INSTRUCTION}"
-        fi
-        ;;
-    esac
+    _NOTE_BODY=$(fullsend_payload_comment_body "${EVENT_PAYLOAD_B64}")
+    if _INSTRUCTION=$(fullsend_fix_instruction "${_NOTE_BODY}"); then
+      if [ -n "${_INSTRUCTION}" ]; then
+        HUMAN_INSTRUCTION="${_INSTRUCTION}"
+      fi
+    elif [ -n "${_NOTE_BODY}" ]; then
+      echo "WARNING: comment body does not start with an exact /fs-fix command — no human instruction injected"
+    fi
   fi
   export HUMAN_INSTRUCTION
 
@@ -1023,6 +1081,24 @@ if [ "${STAGE}" = "fix" ]; then
   _FS_TARGET_REPO="${FIX_TARGET_REPO}"
 fi
 mkdir -p "${CI_PROJECT_DIR}/output"
+
+# Jira work-item dispatch (#8919): hand fullsend run the normalized Jira
+# event from the HMAC-verified payload. fullsend run validates it, exports
+# the tracker-independent work-item identity (source, key, URL), clears
+# ISSUE_NUMBER, and routes run status to the Jira issue. A payload without
+# a Jira normalized event fails closed rather than running as a GitLab
+# issue.
+_FS_RUN_EVENT_ARGS=()
+if [ "${JIRA_DISPATCH}" = "true" ]; then
+  JIRA_EVENT_FILE=$(mktemp "${RUNNER_TEMP}/fullsend-jira-event.XXXXXX")
+  if ! printf '%s' "${EVENT_PAYLOAD_B64:-}" | base64 -d 2>/dev/null \
+    | jq -e '._normalized_event | select(type == "object" and .source.system == "jira")' > "${JIRA_EVENT_FILE}" 2>/dev/null; then
+    echo "ERROR: Jira dispatch payload has no Jira normalized event — refusing to run (fail-closed)" >&2
+    exit 1
+  fi
+  _FS_RUN_EVENT_ARGS=(--event-file "${JIRA_EVENT_FILE}")
+fi
+
 set +e
 # --status-repo uses the pinned project path (from the CI_JOB_TOKEN
 # job record), not the overridable CI_PROJECT_PATH pipeline variable
@@ -1041,7 +1117,8 @@ fullsend run "${STAGE}" \
   --forge gitlab \
   --run-url "${CI_PIPELINE_URL}" \
   --status-repo "${FULLSEND_PINNED_PROJECT_PATH}" \
-  --status-number "${MR_NUMBER:-${STATUS_IID:-0}}"
+  --status-number "${MR_NUMBER:-${STATUS_IID:-0}}" \
+  ${_FS_RUN_EVENT_ARGS[@]+"${_FS_RUN_EVENT_ARGS[@]}"}
 RUN_STATUS=$?
 set -e
 

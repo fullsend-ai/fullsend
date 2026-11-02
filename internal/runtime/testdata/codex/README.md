@@ -69,7 +69,23 @@ a failed read logs `thread/read failed while backfilling turn items for turn com
 from `codex_exec`, which the runner counts too), so a spawn that lost both notifications or whose
 backfill failed is missing; and exec's default stderr filter is `error,opentelemetry_sdk=off,opentelemetry_otlp=off`
 (`codex-rs/exec/src/lib.rs`, `EXEC_DEFAULT_LOG_FILTER`), which the launch command keeps as its
-base.
+base. The disk side of the cross-check rests on four more: a PreToolUse block returns before the
+tool handler runs, so a blocked spawn creates no thread and emits no item
+(`codex-rs/core/src/tools/registry.rs`); a spawn refused at the thread limit fails at
+`reserve_spawn_slot` before any thread exists (`codex-rs/core/src/agent/control/spawn.rs`); a
+child's rollout is `sessions/YYYY/MM/DD/rollout-<ts>-<thread id>.jsonl` (`_<rollout id>` appended
+after a `thread/revert`; `codex-rs/rollout/src/rollout_file_name.rs`), created at its first
+recorded item before its first line is written; that line, a `session_meta` carrying
+`parent_thread_id`, waits on git info, and a failed write leaves the file empty until a retry or
+with a cut first line for good (codex ends the fragment and writes `session_meta` on the next
+line), so the name is the identity of a file without a usable first line; each line is written
+whole with its newline in one `write_all`, and every `SessionMeta` field before `parent_thread_id`
+is a scalar, so a first line that does not end in `}` and its newline is cut, whether read while it
+is written or closed by codex after a failed write (`codex-rs/rollout/src/recorder.rs`:
+`write_pending_once`, `write_session_meta`, `ensure_rollout_is_newline_terminated`,
+`JsonlWriter::write_line`; `codex-rs/protocol/src/protocol.rs`, `SessionMeta`); and in an exec run
+with approvals off and memories off by default only the root and its spawned children write
+rollouts there.
 
 Top-level `ThreadEvent` — serde `tag = "type"`, the variant payload flattened
 next to it:

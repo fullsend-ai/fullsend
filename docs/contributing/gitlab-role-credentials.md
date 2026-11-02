@@ -1030,7 +1030,8 @@ The route is implemented and selected per job:
   never selects or admits the route on its own. The gate is a point-in-time
   check: a later weakening is detected, and the activation withdrawn, on the
   next install run.
-- `fullsend poll` (both the cron and `gitlab-webhook` drivers) then starts
+- `fullsend poll` (the cron and `gitlab-webhook` drivers, and
+  `--input-driver jira-poll --target-forge gitlab`) then starts
   agent pipelines with `CI_JOB_TOKEN` and the same signed typed inputs as the
   Poller route. The request is sent once, without the Poller PAT, and the job
   token travels only in the request body. The route requires the typed
@@ -1317,6 +1318,7 @@ ledger fails closed.
 | --- | --- |
 | GitLab poller/controller (`fullsend poll`, `fullsend-poll.yml`) | Poller |
 | GitLab webhook dispatcher (`fullsend poll --input-driver gitlab-webhook`, `fullsend-dispatcher.yml`) | Poller |
+| GitLab Jira poller (`fullsend poll --input-driver jira-poll --target-forge gitlab`) | Poller |
 | Agents / harness roles `review`, `triage`, `prioritize`, `retro`, `scribe` | Analyst |
 | Agents / harness roles `code`, `fix`, `coder` | Coder |
 | Custom agent whose name or harness `role:` is listed on a registered custom role | That custom role |

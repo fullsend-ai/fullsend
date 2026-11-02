@@ -316,7 +316,9 @@ func (h *Harness) ResolveOverlays(event map[string]any, forgePlatform string, co
 		}
 		if matched {
 			fc := entry.ForgeConfig
-			mergeForgeConfig(h, &fc)
+			if err := mergeForgeConfig(h, &fc); err != nil {
+				return fmt.Errorf("overlay[%d]: %w", i, err)
+			}
 		}
 	}
 	h.Overlays = nil
@@ -345,7 +347,9 @@ func (h *Harness) ResolveForge(platform string) error {
 		return fmt.Errorf("forge platform %q not configured (available: %s)", platform, forgeKeyList(h.Forge))
 	}
 	if fc != nil {
-		mergeForgeConfig(h, fc)
+		if err := mergeForgeConfig(h, fc); err != nil {
+			return fmt.Errorf("forge.%s: %w", platform, err)
+		}
 	}
 	h.Forge = nil
 	return nil
@@ -361,7 +365,10 @@ func (h *Harness) ResolveForge(platform string) error {
 //   - HostFiles: top-level + forge (concatenated with last-writer-wins dedup by Dest)
 //   - RunnerEnv: top-level merged with forge; forge keys win
 //   - ValidationLoop: field-level merge; forge non-zero fields win
-func mergeForgeConfig(h *Harness, fc *ForgeConfig) {
+//
+// It returns mergeSkills' error for a map-form forge skill that matches
+// more than one pinned-URL top-level skill.
+func mergeForgeConfig(h *Harness, fc *ForgeConfig) error {
 	if fc.PreScript != "" {
 		h.PreScript = fc.PreScript
 	}
@@ -373,7 +380,11 @@ func mergeForgeConfig(h *Harness, fc *ForgeConfig) {
 	}
 
 	if fc.Skills != nil {
-		h.Skills = mergeSkills(h.Skills, fc.Skills)
+		skills, err := mergeSkills(h.Skills, fc.Skills)
+		if err != nil {
+			return err
+		}
+		h.Skills = skills
 	}
 
 	if fc.Providers != nil {
@@ -417,6 +428,7 @@ func mergeForgeConfig(h *Harness, fc *ForgeConfig) {
 		}
 		h.Env.mergeEnvFrom(fc.Env, true)
 	}
+	return nil
 }
 
 func forgeKeyList(m map[string]*ForgeConfig) string {

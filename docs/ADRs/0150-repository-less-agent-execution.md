@@ -30,10 +30,10 @@ repository does not remove entity attribution or content filtering.
 
 `fullsend run` currently requires a local target directory: the CLI declares
 `--target-repo` and marks it required in [`internal/cli/run.go` at
-5e05c5487](https://github.com/fullsend-ai/fullsend/blob/5e05c54876ee6f6824d1baf10ce4929e4826a6b7/internal/cli/run.go#L451-L471).
+efb495b14](https://github.com/fullsend-ai/fullsend/blob/efb495b14cfeefdb136fd3f9020ba50de05b4c60/internal/cli/run.go#L457-L477).
 The CLI also auto-detects a forge from CI environment variables when `--forge`
 is omitted ([`detectForgePlatform` in `run.go` at
-5e05c5487](https://github.com/fullsend-ai/fullsend/blob/5e05c54876ee6f6824d1baf10ce4929e4826a6b7/internal/cli/run.go#L6331-L6361)),
+efb495b14](https://github.com/fullsend-ai/fullsend/blob/efb495b14cfeefdb136fd3f9020ba50de05b4c60/internal/cli/run.go#L6450-L6480)),
 which is execution-host metadata, not proof that the host checkout is the
 target. Treating that checkout as a target would conflate configuration,
 execution, code, status, and credential scope. Some Jira, tenant, and
@@ -46,6 +46,13 @@ that execution path part of this change. See
 [agent-infrastructure.md](../problems/agent-infrastructure.md) and
 [agent-architecture.md](../problems/agent-architecture.md) for the broader
 problems.
+
+The configuration source and the invocation entity are not necessarily the
+target entity. A Jira issue, tenant context, or unified backlog can trigger a
+run without naming one customer code repository. The goal is to keep the
+configuration and supporting files Git-managed without assigning a placeholder
+repository as the target. This ADR does not remove Git or define a complete
+repository-free system for configuration, triggers, results, and logs.
 
 This ADR aims to let configured agents run without a target code repository
 while keeping configuration, execution, and target context separate and
@@ -74,9 +81,9 @@ explicitly selects it as the target.
 Rejected. A separate runner would duplicate the existing `runAgent`
 orchestration: the entrypoint loads run configuration and starts harness
 resolution ([`runAgent` at
-5e05c5487](https://github.com/fullsend-ai/fullsend/blob/5e05c54876ee6f6824d1baf10ce4929e4826a6b7/internal/cli/run.go#L476-L527)),
+efb495b14](https://github.com/fullsend-ai/fullsend/blob/efb495b14cfeefdb136fd3f9020ba50de05b4c60/internal/cli/run.go#L482-L548)),
 then composes and resolves the harness
-([`runAgent` at the same commit](https://github.com/fullsend-ai/fullsend/blob/5e05c54876ee6f6824d1baf10ce4929e4826a6b7/internal/cli/run.go#L627-L646)).
+([`runAgent` at the same commit](https://github.com/fullsend-ai/fullsend/blob/efb495b14cfeefdb136fd3f9020ba50de05b4c60/internal/cli/run.go#L647-L718)).
 Those responsibilities should remain shared while target-specific behavior
 becomes explicit.
 
@@ -84,7 +91,9 @@ becomes explicit.
 
 We adopt an explicit repository-less run mode to let harnesses execute without
 a target code repository while preserving existing repository-targeted
-behavior.
+behavior. This is an experimental capability: it records a contract for a
+follow-up implementation and does not make every built-in agent
+repository-independent.
 
 `fullsend run` requires exactly one of:
 
@@ -96,10 +105,10 @@ The runner distinguishes three runtime concepts:
 - **Sandbox workspace root** is the existing `WorkspaceDir()` runtime API,
   backed by `sandbox.SandboxWorkspace` (`/sandbox/workspace`). Its meaning
   remains unchanged: it is the root for runner-managed files and output (see
-  [`runtime.Runtime.WorkspaceDir`](https://github.com/fullsend-ai/fullsend/blob/5e05c54876ee6f6824d1baf10ce4929e4826a6b7/internal/runtime/runtime.go#L176),
-  [`ClaudeRuntime.WorkspaceDir`](https://github.com/fullsend-ai/fullsend/blob/5e05c54876ee6f6824d1baf10ce4929e4826a6b7/internal/runtime/claude.go#L85),
-  and [`sandbox.SandboxWorkspace`](https://github.com/fullsend-ai/fullsend/blob/5e05c54876ee6f6824d1baf10ce4929e4826a6b7/internal/sandbox/sandbox.go#L29-L30)
-  at 5e05c5487).
+  [`runtime.Runtime.WorkspaceDir`](https://github.com/fullsend-ai/fullsend/blob/efb495b14cfeefdb136fd3f9020ba50de05b4c60/internal/runtime/runtime.go#L179-L184),
+  [`ClaudeRuntime.WorkspaceDir`](https://github.com/fullsend-ai/fullsend/blob/efb495b14cfeefdb136fd3f9020ba50de05b4c60/internal/runtime/claude.go#L83-L85),
+  and [`sandbox.SandboxWorkspace`](https://github.com/fullsend-ai/fullsend/blob/efb495b14cfeefdb136fd3f9020ba50de05b4c60/internal/sandbox/sandbox.go#L29-L30)
+  at efb495b14).
 - **Execution directory** is a runner-owned directory that is always present
   for the agent process. A repository-targeted run may use the target checkout
   as this directory. A repository-less run uses an empty scratch directory
@@ -107,8 +116,8 @@ The runner distinguishes three runtime concepts:
   which remains the target-repository path and is empty without a target. The
   current Codex configuration renderer rejects an empty `RepoDir` ([`RunParams`
   and `renderCodexConfig` at
-  5e05c5487](https://github.com/fullsend-ai/fullsend/blob/5e05c54876ee6f6824d1baf10ce4929e4826a6b7/internal/runtime/runtime.go#L75-L88),
-  [same commit](https://github.com/fullsend-ai/fullsend/blob/5e05c54876ee6f6824d1baf10ce4929e4826a6b7/internal/runtime/codex_config.go#L214-L222)).
+  efb495b14](https://github.com/fullsend-ai/fullsend/blob/efb495b14cfeefdb136fd3f9020ba50de05b4c60/internal/runtime/runtime.go#L75-L92),
+  [same commit](https://github.com/fullsend-ai/fullsend/blob/efb495b14cfeefdb136fd3f9020ba50de05b4c60/internal/runtime/codex_config.go#L217-L228)).
   The implementation must pass the execution directory separately to the
   runtime rather than redefining `RepoDir`.
 - **Target repository** is optional target identity and content. It is absent
@@ -136,8 +145,8 @@ repository, and repository-dependent harnesses never receive a fabricated one.
 `--fullsend-dir` supplies the harness, agent, skill, and policy configuration.
 `runAgent` resolves it as the workspace root and uses it to load configuration
 and resolve the harness ([`runAgent` at
-5e05c5487](https://github.com/fullsend-ai/fullsend/blob/5e05c54876ee6f6824d1baf10ce4929e4826a6b7/internal/cli/run.go#L476-L527),
-[`harness.ComposeOpts` and harness resolution at the same commit](https://github.com/fullsend-ai/fullsend/blob/5e05c54876ee6f6824d1baf10ce4929e4826a6b7/internal/cli/run.go#L627-L646)).
+efb495b14](https://github.com/fullsend-ai/fullsend/blob/efb495b14cfeefdb136fd3f9020ba50de05b4c60/internal/cli/run.go#L482-L548),
+[`harness.ComposeOpts` and harness resolution at the same commit](https://github.com/fullsend-ai/fullsend/blob/efb495b14cfeefdb136fd3f9020ba50de05b4c60/internal/cli/run.go#L647-L718)).
 It remains independent of the execution directory and target repository.
 
 In repository-less mode, no forge is selected unless the caller supplies

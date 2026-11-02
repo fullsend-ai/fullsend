@@ -407,3 +407,68 @@ func writeHarnessConfigSubdir(t *testing.T, repoRoot, harnessYAML string, opts .
 	writeHarnessConfig(t, configDir, harnessYAML, opts...)
 	return configDir
 }
+
+// appendConfigYAML appends top-level YAML to dir/config.yaml.
+func appendConfigYAML(t *testing.T, dir, extra string) {
+	t.Helper()
+	path := filepath.Join(dir, "config.yaml")
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, append(data, []byte(extra)...), 0o644))
+}
+
+func jiraReadyForPingEvent(t *testing.T) *normevent.Event {
+	t.Helper()
+	ev := mustEvent(t, "ready-to-code-labeled.json")
+	ev.Source.System = normevent.SystemJira
+	ev.Transition.Label.Name = "ready-for-ping"
+	ev.State.Labels = []string{"ready-for-ping"}
+	ev.Actor.Role = normevent.RoleNone
+	return ev
+}
+
+func TestDispatch_JiraLabelPolicyFromConfig(t *testing.T) {
+	tests := []struct {
+		name      string
+		authYAML  string
+		wantAgent bool
+	}{
+		{name: "no jira provider requires a role", authYAML: "", wantAgent: false},
+		{name: "jira_editors", authYAML: "authorization:\n  - provider: jira\n", wantAgent: true},
+		{name: "allowlist requires a role", authYAML: "authorization:\n  - provider: jira\n    labels: allowlist\n", wantAgent: false},
+		{name: "project_roles requires a role", authYAML: "authorization:\n  - provider: jira\n    labels: project_roles\n", wantAgent: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeHarnessConfig(t, dir, issuePingHarnessYAML())
+			appendConfigYAML(t, dir, tt.authYAML)
+
+			refs, err := Dispatch(context.Background(), Options{ConfigDir: dir, Event: jiraReadyForPingEvent(t)})
+			require.NoError(t, err)
+			if tt.wantAgent {
+				require.Len(t, refs, 1)
+			} else {
+				assert.Empty(t, refs)
+			}
+		})
+	}
+}
+
+func TestDispatch_RejectsInvalidAuthorizationConfig(t *testing.T) {
+	for name, authYAML := range map[string]string{
+		"misspelled provider": "authorization:\n  - provider: jria\n    labels: allowlist\n",
+		"duplicate jira":      "authorization:\n  - provider: jira\n  - provider: jira\n    labels: allowlist\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeHarnessConfig(t, dir, issuePingHarnessYAML())
+			appendConfigYAML(t, dir, authYAML)
+
+			refs, err := Dispatch(context.Background(), Options{ConfigDir: dir, Event: jiraReadyForPingEvent(t)})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "invalid authorization config")
+			assert.Empty(t, refs)
+		})
+	}
+}

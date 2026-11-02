@@ -727,6 +727,13 @@ func skillDestNames(skillDirs []string) []nameEntry {
 // Every destination name must be a single sandbox-safe path segment
 // (skill.ValidName) and collisions fail, both before any upload.
 func uploadHarnessSkills(sandboxName, skillsRoot string, skillDirs []string) error {
+	return uploadHarnessSkillsWith(sandbox.Upload, sandboxName, skillsRoot, skillDirs)
+}
+
+// uploadHarnessSkillsWith is uploadHarnessSkills with the upload function
+// injected, so runtimes that stub sandbox uploads in tests (dummy) share
+// the same naming and collision rules.
+func uploadHarnessSkillsWith(upload sandboxUploadFunc, sandboxName, skillsRoot string, skillDirs []string) error {
 	entries := skillDestNames(skillDirs)
 	for _, e := range entries {
 		if !skill.ValidName(e.name) {
@@ -742,7 +749,7 @@ func uploadHarnessSkills(sandboxName, skillsRoot string, skillDirs []string) err
 		}
 		name := skill.SandboxName(skillPath)
 		dest := skillsRoot + "/" + name
-		if err := sandbox.Upload(sandboxName, skillPath, dest); err != nil {
+		if err := upload(sandboxName, skillPath, dest); err != nil {
 			return fmt.Errorf("copying skill %q: %w", skillPath, err)
 		}
 		if base := filepath.Base(skillPath); base != name {

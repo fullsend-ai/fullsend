@@ -8,7 +8,8 @@ custom agent scripts using `fullsend issues get`,
 ## When to use
 
 The built-in agent pipeline handles comment posting automatically for
-GitHub-sourced events. Use these commands when:
+GitHub-sourced events and for Jira-sourced triage and code runs. Use these
+commands when:
 
 - A custom agent needs to post results back to **Jira** or **GitLab**.
 - An agent script needs to **read** issue content (title, body, labels,

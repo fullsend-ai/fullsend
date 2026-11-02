@@ -207,6 +207,66 @@ func TestListPullRequestReviewThreads_RoleLookupFailures(t *testing.T) {
 	assert.False(t, got.Threads[0].Comments[1].AuthorRoleVerified, "bots do not use human permission roles")
 }
 
+func TestListPullRequestReviewThreads_RoleVerification(t *testing.T) {
+	cases := []struct {
+		name         string
+		body         string
+		status       int
+		wantRole     normevent.ActorRole
+		wantVerified bool
+	}{
+		{name: "built-in admin", body: `{"permission":"admin","role_name":"admin"}`, wantRole: normevent.RoleAdmin, wantVerified: true},
+		{name: "built-in maintain", body: `{"permission":"write","role_name":"maintain"}`, wantRole: normevent.RoleMaintain, wantVerified: true},
+		{name: "built-in write", body: `{"permission":"write","role_name":"write"}`, wantRole: normevent.RoleWrite, wantVerified: true},
+		{name: "built-in triage", body: `{"permission":"read","role_name":"triage"}`, wantRole: normevent.RoleTriage, wantVerified: true},
+		{name: "built-in read", body: `{"permission":"read","role_name":"read"}`, wantRole: normevent.RoleRead, wantVerified: true},
+		{name: "custom maintain flags", body: `{"permission":"write","role_name":"Repo Maintainer","user":{"permissions":{"maintain":true,"push":true,"triage":true,"pull":true}}}`, wantRole: normevent.RoleMaintain, wantVerified: true},
+		{name: "custom write flags", body: `{"permission":"write","role_name":"Dev","user":{"permissions":{"push":true,"pull":true}}}`, wantRole: normevent.RoleWrite, wantVerified: true},
+		{name: "custom legacy permission", body: `{"permission":"write","role_name":"Dev","user":{"permissions":null}}`, wantRole: normevent.RoleWrite, wantVerified: true},
+		{name: "explicit none", body: `{"permission":"none","role_name":"none"}`, wantRole: normevent.RoleNone, wantVerified: true},
+		{name: "authoritative non-member 404", status: http.StatusNotFound, wantRole: normevent.RoleNone, wantVerified: true},
+		{name: "custom role without usable data", body: `{"role_name":"Mystery"}`, wantRole: normevent.RoleNone, wantVerified: false},
+		{name: "custom role with unknown legacy permission", body: `{"permission":"none","role_name":"Mystery"}`, wantRole: normevent.RoleNone, wantVerified: false},
+		{name: "custom role with all flags false", body: `{"permission":"write","role_name":"Dev","user":{"permissions":{"admin":false,"maintain":false,"push":false,"triage":false,"pull":false}}}`, wantRole: normevent.RoleNone, wantVerified: false},
+		{name: "none role with conflicting legacy permission", body: `{"permission":"write","role_name":"none"}`, wantRole: normevent.RoleNone, wantVerified: false},
+		{name: "none role with conflicting flags", body: `{"role_name":"none","user":{"permissions":{"push":true}}}`, wantRole: normevent.RoleNone, wantVerified: false},
+		{name: "missing role name", body: `{"permission":"write"}`, wantRole: normevent.RoleNone, wantVerified: false},
+		{name: "malformed response", body: `{"role_name":"Dev","user":{"permissions":{"push":"true"}}}`, wantRole: normevent.RoleNone, wantVerified: false},
+		{name: "transient lookup failure", status: http.StatusInternalServerError, wantRole: normevent.RoleNone, wantVerified: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			lookups := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet {
+					require.Equal(t, "/repos/owner/repo/collaborators/alice/permission", r.URL.Path)
+					lookups++
+					if tc.status != 0 {
+						w.WriteHeader(tc.status)
+						return
+					}
+					_, _ = w.Write([]byte(tc.body))
+					return
+				}
+				_, _ = w.Write([]byte(`{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":[{"id":"thread-1","isResolved":true,"resolvedBy":{"login":"alice","__typename":"User"},"comments":{"pageInfo":{"hasNextPage":false},"nodes":[{"author":{"login":"alice","__typename":"User"},"body":"comment","createdAt":"2026-10-06T10:00:00Z"}]}}]}}}}}`))
+			}))
+			defer srv.Close()
+
+			got, err := newTestClient(t, srv).ListPullRequestReviewThreads(context.Background(), "owner", "repo", 1)
+			require.NoError(t, err)
+			require.Len(t, got.Threads, 1)
+			require.Len(t, got.Threads[0].Comments, 1)
+			assert.Equal(t, tc.wantRole, got.Threads[0].ResolvedByRole)
+			assert.Equal(t, tc.wantVerified, got.Threads[0].ResolvedByRoleVerified)
+			assert.Equal(t, tc.wantRole, got.Threads[0].Comments[0].AuthorRole)
+			assert.Equal(t, tc.wantVerified, got.Threads[0].Comments[0].AuthorRoleVerified)
+			if tc.status != http.StatusInternalServerError {
+				assert.Equal(t, 1, lookups, "role lookups are cached per login")
+			}
+		})
+	}
+}
+
 func TestListPullRequestReviewThreads_PaginatesAndCaps(t *testing.T) {
 	var calls int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -7,8 +7,10 @@
 # --dry-run changes nothing; a config change adds a secret version and rolls
 # one revision; spec drift and a not-Ready service redeploy; a run without a
 # Vertex flag never removes the Vertex models; --delete removes exactly the
-# named resources; an image digest mismatch, an HTML 401 from Cloud Run's
-# front end and an unreadable resource fail the run; REAL_KEY_MODEL decides
+# named resources; an image digest mismatch, an upstream tag that is not the
+# pinned AGW_DIGEST, an HTML 401 from Cloud Run's front end, a 401 body other
+# than agentgateway's "authentication failed" and an unreadable resource fail
+# the run; REAL_KEY_MODEL decides
 # the one model the real key may call; the config turns off agentgateway's
 # admin, stats and readiness listeners. Change control: a config change that
 # touches a frozen part exits 4 (the real key's rule or entry beyond one real
@@ -229,6 +231,7 @@ case "$1" in
     case "${ref}" in
       docker://ghcr.io/*)
         [[ -f "${S}/upstream_down" ]] && { echo "FATAL: connection refused" >&2; exit 1; }
+        [[ -f "${S}/upstream_moved" ]] && UPSTREAM="${S}/upstream_moved"
         cat "${UPSTREAM}"; [[ -f "${S}/trailing_newline" ]] && printf '\n'; true ;;
       *) [[ -f "${S}/image_raw" ]] || { echo "FATAL: manifest unknown" >&2; exit 1; }
          cat "${S}/image_raw"; [[ -f "${S}/trailing_newline" ]] && printf '\n'; true ;;
@@ -280,12 +283,12 @@ elif [[ -f "${S}/json_401" ]]; then
 elif [[ -f "${S}/html_401" ]]; then
   echo '<html><body>401 Unauthorized</body></html>' > "${out}"
   printf '401 text/html; charset=UTF-8'
-elif [[ "${bearer}" == true ]] && grep -q 'mode: permissive' \
-    "${S}/secrets/fullsend-e2e-gateway-config.v$(cat "${S}/secrets/fullsend-e2e-gateway-config.latest")"; then
-  echo 'api key authentication failure: invalid key' > "${out}"
+elif [[ -f "${S}/old_body_401" ]]; then
+  echo 'authentication failure: no bearer token found' > "${out}"
   printf '401 text/plain'
 else
-  echo 'authentication failure: no bearer token found' > "${out}"
+  # agentgateway v1.7.0 answers every jwtAuth and apiKey refusal alike.
+  printf 'authentication failed' > "${out}"
   printf '401 text/plain'
 fi
 EOF
@@ -319,6 +322,13 @@ chmod +x "${SHIM_DIR}"/*
 
 stub_sha256() { if command -v sha256sum >/dev/null; then sha256sum | cut -d' ' -f1; else shasum -a 256 | cut -d' ' -f1; fi; }
 UPSTREAM_DIGEST="sha256:$(stub_sha256 < "${SHIM_DIR}/upstream.json")"
+# The stub index cannot hash to the real pinned AGW_DIGEST, so the tests run a
+# copy of the script pinned to the stub's digest instead.
+mkdir "${SHIM_DIR}/pinned"
+sed "s|^AGW_DIGEST=.*|AGW_DIGEST=\"${UPSTREAM_DIGEST}\"|" "${SETUP}" > "${SHIM_DIR}/pinned/setup-e2e-inference-gateway.sh"
+if grep -qx "AGW_DIGEST=\"${UPSTREAM_DIGEST}\"" "${SHIM_DIR}/pinned/setup-e2e-inference-gateway.sh"; then
+  pass "the script pins the upstream image digest"; else fail "no AGW_DIGEST line in ${SETUP}"; fi
+SETUP="${SHIM_DIR}/pinned/setup-e2e-inference-gateway.sh"
 SA="serviceAccount:fullsend-e2e-gateway@${PROJECT}.iam.gserviceaccount.com"
 CFG_SECRET="fullsend-e2e-gateway-config"
 KEY_SECRET="fullsend-e2e-gateway-stub-upstream-key"
@@ -363,7 +373,7 @@ fresh_state
 if run_setup --project "${PROJECT}" --without-vertex; then pass "fresh run succeeds"; else
   fail "fresh run failed"; cat "${STATE}/out" >&2; fi
 expect_out "creates the repository" "created Artifact Registry repository fullsend-e2e-gateway"
-expect_out "copies the image" "copied ghcr.io/agentgateway/agentgateway:v1.6.0 to us-east5-docker.pkg.dev/${PROJECT}/fullsend-e2e-gateway/agentgateway:v1.6.0"
+expect_out "copies the image" "copied ghcr.io/agentgateway/agentgateway:v1.7.0 to us-east5-docker.pkg.dev/${PROJECT}/fullsend-e2e-gateway/agentgateway:v1.7.0"
 expect_out "creates the service account" "created service account"
 expect_out "creates the config secret" "created secret ${CFG_SECRET}"
 expect_out "creates the stub key secret" "created secret ${KEY_SECRET}"
@@ -371,6 +381,7 @@ expect_out "creates the service" "created Cloud Run service fullsend-e2e-gateway
 expect_out "prints the URL variable" "E2E_INFERENCE_GATEWAY_URL=https://gw.example.test"
 expect_out "prints the audience variable" "E2E_INFERENCE_GATEWAY_AUDIENCE=fullsend-e2e-gateway"
 expect_out "prints the no-token probe" "no token: GET /v1/models -> HTTP 401 text/plain"
+expect_out "prints the no-token probe body" "body: authentication failed"
 expect_out "prints the x-api-key probe" "x-api-key only: GET /v1/models -> HTTP 401"
 
 CFG="${STATE}/secrets/${CFG_SECRET}.v1"
@@ -584,7 +595,7 @@ for s in "${CFG_SECRET}" "${KEY_SECRET}"; do
   : > "${STATE}/secrets/${s}.exists"
   echo "roles/secretmanager.secretAccessor ${SA}" > "${STATE}/secrets/${s}.policy"
 done
-jq -n --arg img "us-east5-docker.pkg.dev/${PROJECT}/fullsend-e2e-gateway/agentgateway:v1.6.0" \
+jq -n --arg img "us-east5-docker.pkg.dev/${PROJECT}/fullsend-e2e-gateway/agentgateway:v1.7.0" \
   --arg sa "${SA#serviceAccount:}" --arg cfg "${CFG_SECRET}" --arg key "${KEY_SECRET}" '
   def vol($n; $s; $f): {name: $n, secret: {secretName: $s, items: [{key: "latest", path: $f}]}};
   {metadata: {labels: {purpose: "fullsend-e2e-gateway", "cloud.googleapis.com/location": "us-east5"},
@@ -604,7 +615,13 @@ run_setup --project "${PROJECT}" --with-vertex || fail "adopt run failed"
 expect_out "adopt run reports no changes" "No changes: everything was already in place"
 expect_no_mutations "adopt run mutates nothing" 0
 touch "${STATE}/trailing_newline"
+# The upstream index now ends in a newline too, so pin its digest with it.
+NL_DIGEST="sha256:$({ cat "${SHIM_DIR}/upstream.json"; printf '\n'; } | stub_sha256)"
+sed "s|^AGW_DIGEST=.*|AGW_DIGEST=\"${NL_DIGEST}\"|" "${SETUP}" > "${SHIM_DIR}/pinned/setup-nl.sh"
+PINNED_SETUP="${SETUP}"
+SETUP="${SHIM_DIR}/pinned/setup-nl.sh"
 run_setup --project "${PROJECT}" --with-vertex || fail "trailing-newline manifest run failed"
+SETUP="${PINNED_SETUP}"
 expect_out "a manifest ending in a newline still matches upstream" "matches upstream"
 rm "${STATE}/trailing_newline"
 if run_setup --project "${PROJECT}"; then fail "adopt without a Vertex flag accepted"; else
@@ -684,9 +701,16 @@ expect_out "--dry-run on an empty project plans the service" "WOULD: created Clo
 expect_no_mutations "--dry-run on an empty project mutates nothing" 0
 
 fresh_state
+printf '{"manifests":[]}' > "${STATE}/upstream_moved"
+if run_setup --project "${PROJECT}" --without-vertex; then fail "a moved upstream tag accepted"; else
+  expect_out "an upstream tag that is not the pinned digest fails" "not the pinned ${UPSTREAM_DIGEST}"; fi
+if ! grep -q '^skopeo copy' "${STATE}/skopeo.log" && ! grep -q ' run deploy ' "${STATE}/gcloud.log"; then
+  pass "a moved upstream tag is neither copied nor deployed"; else fail "a moved upstream tag was copied or deployed"; fi
+
+fresh_state
 touch "${STATE}/upstream_down"
 if run_setup --project "${PROJECT}" --without-vertex; then fail "unreadable upstream accepted"; else
-  expect_out "unreadable upstream fails" "could not read ghcr.io/agentgateway/agentgateway:v1.6.0"; fi
+  expect_out "unreadable upstream fails" "could not read ghcr.io/agentgateway/agentgateway:v1.7.0"; fi
 
 fresh_state
 run_setup --project "${PROJECT}" --without-vertex || fail "setup before curl failure failed"
@@ -699,6 +723,11 @@ fresh_state
 touch "${STATE}/json_401"
 if run_setup --project "${PROJECT}" --without-vertex; then fail "non-agentgateway 401 accepted"; else
   expect_out "a 401 that is not agentgateway's fails verification" "not agentgateway's text/plain"; fi
+
+fresh_state
+touch "${STATE}/old_body_401"
+if run_setup --project "${PROJECT}" --without-vertex; then fail "a pre-v1.7.0 401 body accepted"; else
+  expect_out "a 401 body other than 'authentication failed' fails verification" "not agentgateway's text/plain"; fi
 
 fresh_state
 touch "${STATE}/html_401"
@@ -767,6 +796,9 @@ CC_SEED="${SHIM_DIR}/cc-seed"
 fresh_state
 ECHO_KEY_HASH="${ECHO_HASH}" run_setup --project "${PROJECT}" --with-vertex \
   || { fail "change-control seed failed"; cat "${STATE}/out" >&2; }
+expect_out "the keyed gateway probes a wrong key" "wrong key: GET /v1/models -> HTTP 401 text/plain"
+if grep -E -- '-H authorization: Bearer .*/v1/models$' "${STATE}/curl.log" | grep -vq -- '-X POST'; then
+  pass "the wrong-key probe sends an authorization bearer"; else fail "wrong-key probe sent no bearer"; fi
 if [[ "$(grep -c 'OK: no credential: POST .* -> HTTP 403' "${STATE}/out")" == "12" ]]; then
   pass "the post-deploy check makes 12 anonymous calls, each refused with 403"; else fail "anonymous calls"; fi
 for m in claude-haiku-5-5 gemini-3.8-flash gpt-oss-120b echo; do
@@ -843,6 +875,12 @@ expect_out "adding REAL_KEY_HASH passes the diff" "only where a change is allowe
 cc_run || fail "removing REAL_KEY_HASH failed"
 expect_out "removing REAL_KEY_HASH passes the diff" "only where a change is allowed"
 if [[ "$(cfg_version)" == "$((seed_version + 2))" ]]; then pass "both real key changes roll out"; else fail "real key versions"; fi
+
+# Allowed: an agentgateway version bump changes only the masked config header.
+cc_reset
+live_edit 's|agentgateway v1.7.0, llm mode|agentgateway v1.6.0, llm mode|'
+cc_run || fail "agentgateway bump run failed"
+expect_out "an agentgateway bump passes the diff" "only where a change is allowed"
 
 # Frozen: the echo key hash, the pool list, the auth mode and the RPM cap.
 cc_reset

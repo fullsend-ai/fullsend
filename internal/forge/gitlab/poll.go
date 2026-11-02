@@ -221,6 +221,37 @@ func (pc *PollClient) ListMergeRequestNotes(ctx context.Context, owner, repo str
 	return result, nil
 }
 
+// ListMergeRequestDiffVersions returns every diff version of the given
+// merge request. GitLab records a new version on each push to the source
+// branch.
+func (pc *PollClient) ListMergeRequestDiffVersions(ctx context.Context, owner, repo string, mrIID int) ([]poll.MergeRequestDiffVersion, error) {
+	proj := projectPath(owner, repo)
+	var result []poll.MergeRequestDiffVersion
+
+	for page := 1; page <= 100; page++ {
+		path := fmt.Sprintf("/projects/%s/merge_requests/%d/versions?per_page=%d&page=%d",
+			proj, mrIID, pollPerPage, page)
+
+		resp, err := pc.get(ctx, path)
+		if err != nil {
+			return nil, fmt.Errorf("list merge request diff versions page %d: %w", page, err)
+		}
+
+		var raw []poll.MergeRequestDiffVersion
+		if err := decodeJSON(resp, &raw); err != nil {
+			return nil, fmt.Errorf("decode merge request diff versions page %d: %w", page, err)
+		}
+
+		result = append(result, raw...)
+
+		if len(raw) < pollPerPage {
+			break
+		}
+	}
+
+	return result, nil
+}
+
 // ListResourceLabelEvents returns all resource label events for the
 // given issue in ascending ID order.
 func (pc *PollClient) ListResourceLabelEvents(ctx context.Context, owner, repo string, issueIID int) ([]poll.ResourceLabelEvent, error) {

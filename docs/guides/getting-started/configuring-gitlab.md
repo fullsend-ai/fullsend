@@ -91,9 +91,11 @@ The transport declares eleven metadata inputs and nine base64 chunks, at
 most 1000 characters each. All three template layers validate the chunk
 alphabet and length; fixed code reconstructs the payload as data. Variable
 bridges disable expansion, and creator/HMAC authentication precedes caller
-link logging and credential selection. Note bodies are bounded to 800 Unicode
-characters with a truncation marker and note ID; oversized payloads fail
-before a pipeline is created. GitLab's 20-input limit leaves no spare root
+link logging and credential selection. Non-command note bodies, such as bot
+review notes, are bounded to 800 Unicode characters with a truncation marker.
+A `/fs-*` command body is carried untruncated, and the dispatcher fails closed
+before a pipeline is created when a command payload exceeds the nine-chunk
+budget. Other oversized payloads also fail before a pipeline is created. GitLab's 20-input limit leaves no spare root
 inputs: conflicting declarations or excess inputs fail explicitly.
 
 Compatible user input declarations, jobs, includes, and header settings
@@ -118,10 +120,9 @@ and typed pins predating the secured contract are unsupported.
 > enroll each role with a token that has `api` scope, and run
 > `fullsend poll` on an external scheduler (a VM cron job or Kubernetes
 > CronJob) instead of relying on in-CI pipeline schedules — see
-> [Off-system polling](#off-system-polling) below and
-> [ADR 0067](../../ADRs/0067-gitlab-cron-polling-event-dispatch.md) for
-> the design. A runner with sufficient CI capacity is still required for
-> the scheduled jobs themselves.
+> [Off-system polling](#off-system-polling) below. A runner with
+> sufficient CI capacity is still required for the scheduled jobs
+> themselves.
 >
 > This gap does not stay quiet: only the *first* `repos install` merely
 > warns when schedule creation fails and still exits successfully. Any
@@ -228,7 +229,7 @@ Install then converges the project:
   re-enable it. Leave that flag unset on repos using [Off-system
   polling](#off-system-polling), where the schedules are disabled on
   purpose.
-* Provisions the webhook fast path ([ADR 0125](../../ADRs/0125-gitlab-hybrid-webhook-poller-dispatch.md)):
+* Provisions the webhook fast path:
   a pipeline trigger token stored as the protected, masked
   `FULLSEND_TRIGGER_TOKEN` variable, a generated `FULLSEND_WEBHOOK_SECRET`,
   and a project webhook (issues, merge requests, comments) that triggers a
@@ -305,8 +306,7 @@ pipeline variables:
   the webhook dispatcher start agent pipelines with a Developer-level
   credential: through the API with the Poller credential, or with the
   trigger-only account's `CI_JOB_TOKEN` once its dispatch activation is
-  recorded. Dispatch fields travel as declared typed pipeline inputs
-  ([ADR 0131](../../ADRs/0131-gitlab-dispatch-pipeline-inputs-no-owner-role.md)),
+  recorded. Dispatch fields travel as declared typed pipeline inputs,
   never as pipeline variables.
 * **User-defined pipeline variables are rejected.**
   `ci_pipeline_variables_minimum_override_role=no_one_allowed` makes GitLab
@@ -754,12 +754,12 @@ cannot be verified leaves `retiring_user_id` in place for the next install to
 retry. An account that owns an administrator-supplied credential is never
 deleted. Polling continues with the current Poller throughout.
 
-Retirement also enforces the GitLab Free-tier account quota. ADR 0125 sets no
-numeric Free-tier limit, so the bound is that at most one old/new pair of
-Poller accounts exists at a time: the current Poller plus either one pending
-replacement or one retiring Poller. At most three abandoned replacements may
-also await deletion. Repeated installs and rotations therefore return to a
-single Poller instead of accumulating service accounts.
+Retirement also enforces the GitLab Free-tier account quota. Fullsend does not
+rely on a numeric Free-tier limit, so the bound is that at most one old/new
+pair of Poller accounts exists at a time: the current Poller plus either one
+pending replacement or one retiring Poller. At most three abandoned
+replacements may also await deletion. Repeated installs and rotations
+therefore return to a single Poller instead of accumulating service accounts.
 
 The current Poller is not raised, so its own credentials do not block the
 handoff. The checks that guard the temporary Maintainer elevation apply to the

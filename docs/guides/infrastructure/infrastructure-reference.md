@@ -206,7 +206,9 @@ Mode is inferred from `PER_REPO_WIF_REPOS` — there is no separate trust-mode f
 **Public mint**: `PER_REPO_WIF_REPOS` is `*`.
 
 - **PER_REPO_WIF_REPOS**: Any repository may mint (cross-org isolation still enforced at installation lookup). For the GCF mint, all repos use `WIF_PROVIDER_NAME`
-- **job_workflow_ref validation**: Same as tight mode — the upstream plus repos listed in `WORKFLOW_HOST_REPOS` (defaults to `fullsend-ai/fullsend`). `ALLOWED_WORKFLOW_FILES` basename gate applies ([ADR 0082](../../ADRs/0082-workflow-host-allow-list.md) §2, revised 2026-08-05)
+- **job_workflow_ref validation**: Same as tight mode — the upstream plus
+  repos listed in `WORKFLOW_HOST_REPOS` (defaults to `fullsend-ai/fullsend`).
+  `ALLOWED_WORKFLOW_FILES` basename gate applies
 - **WORKFLOW_HOST_REPOS**: Same semantics as tight mode — controls which repos may host workflows. Defaults to `fullsend-ai/fullsend` when unset
 - **mint enroll**: Succeeds without changing mint configuration (repository registration is unnecessary); **mint unenroll** for individual repositories is not supported in public mode
 
@@ -245,7 +247,9 @@ A single mint instance can serve multiple orgs:
 
 ### Bot-Role Lookup Endpoint
 
-`POST /v1/bot-role` resolves a GitHub App bot login to the mint role registered for that App ([ADR 0107](../../ADRs/0107-bot-identity-resolution-for-dispatch-authorization.md)). Dispatch authorization uses it to recognize Fullsend's own bots.
+`POST /v1/bot-role` resolves a GitHub App bot login to the mint role
+registered for that App. Dispatch authorization uses it to recognize
+Fullsend's own bots.
 
 - **Authentication:** GitHub Actions OIDC bearer token, with the same per-repo enrollment and workflow-host checks as `POST /v1/token`.
 - **Request:** `{"actor_login": "<app-slug>[bot]", "repo": "owner/repo"}`. `repo` must be the token's `repository` claim (otherwise `403`). Other fields, such as `role`, are ignored.
@@ -339,8 +343,13 @@ Secrets and variables are deployed on the target repository.
 - `FULLSEND_GCP_PROJECT_ID`
 - `FULLSEND_GCP_WIF_PROVIDER`
 - `FULLSEND_OPENAI_API_KEY` — static OpenAI API key for repos whose `inference.auth` is `openai-api-key` (written by `repos install --openai-api-key`; not set by `github setup`)
-- `FULLSEND_INFERENCE_GATEWAY_API_KEY` — inference gateway API key for repos whose `inference.gateway.auth` is `api-key` ([ADR 0138](../../ADRs/0138-inference-gateway-api-key-credential-mode.md); set by the repository admin, not by `github setup`)
-- `FULLSEND_GITHUB_RUNNER_SECRETS` — optional, set by you: a JSON object of name → literal value for host-side scripts, resolved through each harness's `env.runner` ([ADR 0136](../../ADRs/0136-runner-secrets-through-one-stored-secret.md); [setup](../user/bring-your-own-agent.md#pass-secrets-to-host-side-scripts-github))
+- `FULLSEND_INFERENCE_GATEWAY_API_KEY` — inference gateway API key for repos
+  whose `inference.gateway.auth` is `api-key` (set by the repository admin,
+  not by `github setup`)
+- `FULLSEND_GITHUB_RUNNER_SECRETS` — optional, set by you: a JSON object of
+  name → literal value for host-side scripts, resolved through each harness's
+  `env.runner`
+  ([setup](../user/bring-your-own-agent.md#pass-secrets-to-host-side-scripts-github))
 
 Repos whose `inference.auth` is `openai-wif` need no Fullsend-managed inference secret: they authenticate with the user-managed `FULLSEND_OPENAI_*` identifier variables or `inference.openai` configuration, and the GCP secrets above are written only when Vertex sub-agents are configured.
 
@@ -360,7 +369,7 @@ Ordinary unflagged `repos install` provisions role credentials; it does not remo
 - `FULLSEND_TRIGGER_TOKEN` — GitLab pipeline trigger token for the webhook fast-path dispatcher. Stored as a masked, protected CI/CD variable when the fast-path is enabled, and deleted once the webhook uses the trigger-only account's token (`FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN`). Never logged.
 - `FULLSEND_WEBHOOK_SECRET` — GitLab project-webhook secret (`X-Gitlab-Token`) for the webhook fast-path. Stored as a masked, protected CI/CD variable when the fast-path is enabled. Never logged.
 - `FULLSEND_POLL_MODE` — Job-local variable (`"slash"` or `"events"`), selected by job rules from `CI_PIPELINE_SCHEDULE_DESCRIPTION`; managed schedules do not submit pipeline variables. Typed activation refuses while a legacy schedule-level override remains; remove it manually.
-- `FULLSEND_GITLAB_DISPATCH_ROUTE` — Job-local variable (`"child-pipeline"` or `"api"`), exported by `pin-ci-job-identity.sh` in the poll and dispatcher jobs and read by `fullsend poll` in both the cron and webhook drivers. `child-pipeline` is selected only when the trigger account ledger is ready, the `FULLSEND_GITLAB_DISPATCH_ACTIVATION` record names that exact ledger generation, the installed CLI reports support for the route (`fullsend poll --print-dispatch-routes`; an older CLI makes the job stop before any dispatch), and both the pipeline creator and the running job's user are the trigger account; otherwise `api` keeps dispatch on the Poller credential. Never a CI/CD variable ([gitlab-role-credentials.md](../../contributing/gitlab-role-credentials.md#trigger-only-service-account)).
+- `FULLSEND_GITLAB_DISPATCH_ROUTE` — Job-local variable (`"child-pipeline"` or `"api"`), exported by `pin-ci-job-identity.sh` in the poll and dispatcher jobs and read by `fullsend poll` in both the cron and webhook drivers, and by `fullsend poll --input-driver jira-poll --target-forge gitlab`. `child-pipeline` is selected only when the trigger account ledger is ready, the `FULLSEND_GITLAB_DISPATCH_ACTIVATION` record names that exact ledger generation, the installed CLI reports support for the route (`fullsend poll --print-dispatch-routes`; an older CLI makes the job stop before any dispatch), and both the pipeline creator and the running job's user are the trigger account; otherwise `api` keeps dispatch on the Poller credential. Never a CI/CD variable ([gitlab-role-credentials.md](../../contributing/gitlab-role-credentials.md#trigger-only-service-account)).
 - `FULLSEND_GITLAB_ANALYST_USER_ID` — Job-local numeric GitLab user ID of the registered Analyst identity. `pin-ci-job-identity.sh` exports it in the poll and dispatcher jobs, resolving it with the Analyst credential before that credential is blanked. `fullsend poll` reads it in both the cron and webhook drivers. Only a `<!-- fullsend:changes-requested -->` marker note authored by this identity reaches the fix stage. Unset (lookup failed, or an older job script) means no marker is retained, and a malformed value fails the command. Never a CI/CD variable ([gitlab-role-credentials.md](../../contributing/gitlab-role-credentials.md#how-a-job-selects-its-credential)).
 - `FULLSEND_GITLAB_DISPATCH_ACTIVATION` — protected, unmasked activation record for the trigger-account dispatch route (the ledger generation it was recorded for: nonce, account, deploy key, grant and trigger token IDs; no secrets). `repos install` writes it only after the activation gate passes; every install, repair, rotation, containment pass and uninstall deletes it first. It is separate from the ledger because older CLIs reject unknown ledger fields; a record that no longer matches the ledger is ignored ([gitlab-role-credentials.md](../../contributing/gitlab-role-credentials.md#trigger-only-service-account)).
 - `FULLSEND_GITLAB_POLLER_TOKEN`, `FULLSEND_GITLAB_ANALYST_TOKEN`, `FULLSEND_GITLAB_CODER_TOKEN`, `FULLSEND_GITLAB_ROLE_<NAME>_TOKEN` — masked, protected role PATs provisioned by `repos install` ([gitlab-role-credentials.md](../../contributing/gitlab-role-credentials.md)). Fresh installs provision these role tokens directly, with no shared token to retire. Existing installs that predate the role-only model and still have the shared token get the missing role tokens provisioned, but `FULLSEND_FORGE_TOKEN` is left in place — an administrator must revoke it manually. GitLab CI poll/agent jobs (`select-gitlab-role-token.sh`) and `fullsend poll` / `fullsend run` authenticate with the matching role token and fail closed if it is missing. Custom `own` roles use `FULLSEND_GITLAB_ROLE_<NAME>_TOKEN`; `reuse` roles share another registered credential.
@@ -417,7 +426,7 @@ lives in a single HMAC-signed `state.json` document per poll mode on
 `fullsend-poll-state-slash` and `fullsend-poll-state-events`. The
 signature reuses `FULLSEND_DISPATCH_SECRET` with per-branch,
 per-project domain separation, so the poller can run at Developer
-access instead of Maintainer. See ADR 0067.
+access instead of Maintainer.
 - `FULLSEND_LAST_POLL_AT_FAST` — Legacy; superseded by `last_poll_at_fast` in `state.json` on `fullsend-poll-state-slash`
 - `FULLSEND_LAST_POLL_AT_FULL` — Legacy; superseded by `last_poll_at_full` in `state.json` on `fullsend-poll-state-events`
 - `FULLSEND_LABEL_STATE` — Legacy; superseded by `label_state` in `state.json` on `fullsend-poll-state-events`

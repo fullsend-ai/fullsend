@@ -667,3 +667,54 @@ func TestCommitLocalHarnessResources_CommitsScaffoldProfilesAndProviders(t *test
 		"agent: https://example.com/a.md\nrole: triage\nopenshell:\n  profiles:\n    - https://example.com/p.yaml#sha256=abc\n"))
 	assert.Empty(t, scm2.files)
 }
+
+func TestThenHarnessWorkflowLogsContain(t *testing.T) {
+	const logs = "2026-10-31T00:00:00Z subagents: correctness → google-vertex/claude-opus (from frontmatter)\n"
+	completed := &forge.WorkflowRun{ID: 9, Status: "completed", Conclusion: "success"}
+	newWorld := func(run *forge.WorkflowRun, logs string, logsErr error) *world.World {
+		return &world.World{
+			Org:         "org",
+			RepoName:    "repo",
+			WorkflowRun: run,
+			CI:          &fakeDebugCI{logs: logs, logsErr: logsErr},
+		}
+	}
+
+	require.NoError(t, thenHarnessWorkflowLogsContain(newWorld(completed, logs, nil), "pi", "subagents: correctness →", true))
+	require.NoError(t, thenHarnessWorkflowLogsContain(newWorld(completed, logs, nil), "pi", "subagents: user-experience →", false))
+
+	err := thenHarnessWorkflowLogsContain(newWorld(completed, logs, nil), "pi", "subagents: user-experience →", true)
+	require.ErrorContains(t, err, `do not contain "subagents: user-experience →"`)
+	assert.NotContains(t, err.Error(), "incomplete")
+
+	err = thenHarnessWorkflowLogsContain(newWorld(completed, logs, nil), "pi", "subagents: correctness →", false)
+	require.ErrorContains(t, err, "unexpectedly contain")
+
+	// A truncated snapshot cannot prove absence, and a miss on one says so.
+	partial := logs + "[log truncated: 1 MiB]\n"
+	err = thenHarnessWorkflowLogsContain(newWorld(completed, partial, nil), "pi", "subagents: user-experience →", false)
+	require.ErrorContains(t, err, "cannot show")
+	err = thenHarnessWorkflowLogsContain(newWorld(completed, partial, nil), "pi", "subagents: security →", true)
+	require.ErrorContains(t, err, "snapshot is incomplete")
+	require.NoError(t, thenHarnessWorkflowLogsContain(newWorld(completed, partial, nil), "pi", "subagents: correctness →", true))
+
+	err = thenHarnessWorkflowLogsContain(newWorld(completed, "", fmt.Errorf("HTTP 502")), "pi", "x", true)
+	require.ErrorContains(t, err, "HTTP 502")
+
+	// No recorded run: the step waits for the harness run first, which
+	// needs a trigger time.
+	err = thenHarnessWorkflowLogsContain(newWorld(nil, logs, nil), "pi", "x", true)
+	require.ErrorContains(t, err, "no workflow trigger time recorded")
+}
+
+func TestGivenFullsendFile(t *testing.T) {
+	scm := &fakeURLSCM{files: map[string][]byte{}}
+	w := &world.World{Org: "org", RepoName: "repo", SCM: scm}
+	require.NoError(t, givenFullsendFile(w, "personas/./rbac-review.md", "---\nname: rbac-review\n---"))
+	assert.Equal(t, "---\nname: rbac-review\n---\n", string(scm.files["org/repo/.fullsend/personas/rbac-review.md"]))
+
+	for _, bad := range []string{"", "/etc/x", "..", "../x", "a/../../x"} {
+		assert.Error(t, givenFullsendFile(w, bad, "x"), bad)
+	}
+	assert.Error(t, givenFullsendFile(&world.World{SCM: scm}, "a.md", "x"))
+}
