@@ -36,6 +36,15 @@ depends on a password and two-factor setup that someone must own, and its
 token is an unscoped user credential that organizations may limit in
 lifetime or forbid for automation.
 
+A person's own Atlassian account authenticates the same way and is
+indistinguishable from a bot account to Fullsend. It is not a supported
+choice: the poller treats the account it authenticates as as itself, so
+that person's own comments and label changes never dispatch agents (see
+the Jira guide's
+[Use a dedicated account for the poller](../guides/user/jira-integration.md#use-a-dedicated-account-for-the-poller)).
+This ADR uses "bot account" for a regular account created for Fullsend
+alone.
+
 A **service account** is an Atlassian-managed identity created by an
 organization administrator (Atlassian Administration > Directory > Service
 accounts). It has no password login. Its credentials are a scoped API token
@@ -85,7 +94,8 @@ host.
 ## Decision
 
 We support both kinds of identity, chosen per deployment, so that a team can
-use whichever its organization provides.
+use whichever its organization provides. Both are dedicated non-human
+identities; a person's account is not an option this ADR supports.
 
 The bot-account path keeps working unchanged: existing settings, secrets,
 and the `atlassian-cloud` sandbox credential need no migration. The
