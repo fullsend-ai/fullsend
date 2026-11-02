@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -1215,6 +1216,121 @@ func TestResolveFromLock_NoPartialMutation(t *testing.T) {
 
 	// Harness should be unchanged — no partial mutations.
 	assert.Equal(t, originalAgent, h.Agent)
+}
+
+// TestResolveFromLock_ErrorAfterMutationLeavesHarnessUnchanged forces each
+// error that fires after replay has started rewriting harness fields and
+// checks the harness still equals its input, so the run's fallback resolves
+// the original URLs (#8992).
+func TestResolveFromLock_ErrorAfterMutationLeavesHarnessUnchanged(t *testing.T) {
+	const (
+		agentURL    = "https://example.com/agents/code.md"
+		sharedURL   = "https://example.com/skills/shared.md"
+		overrideURL = "https://example.com/overrides/x.md"
+		scriptsURL  = "https://raw.githubusercontent.com/org/repo/main/scripts"
+		pluginURL   = "https://github.com/org/repo/tree/main/plugins/broken"
+	)
+	agentContent := []byte("agent content")
+	sharedContent := []byte("shared skill content")
+	overrideContent := []byte("override content")
+	agentHash := fetch.ComputeSHA256(agentContent)
+	sharedHash := fetch.ComputeSHA256(sharedContent)
+	overrideHash := fetch.ComputeSHA256(overrideContent)
+
+	// The script tree has no missing.sh, so chmod on the named script fails.
+	scriptFiles := map[string][]byte{"other.sh": []byte("#!/bin/sh\n")}
+	scriptHash := fetch.ComputeTreeHash(scriptFiles)
+	scriptURL := scriptsURL + "/missing.sh"
+
+	pluginFiles := map[string][]byte{"plugin.json": []byte(`{"name": "broken"}`)}
+	pluginHash := fetch.ComputeTreeHash(pluginFiles)
+
+	// These entries are applied before the failing one: the agent is
+	// rewritten, the transitive skill appended and the override planned.
+	commonDeps := []lock.DependencyEntry{
+		{Field: "agent", URL: agentURL, SHA256: agentHash},
+		{Field: "skills[https://example.com/parent:dep0]", URL: sharedURL, SHA256: sharedHash},
+		{Field: "skills[0].overrides[x.md]", URL: overrideURL, SHA256: overrideHash},
+	}
+	scriptDep := func(field string) lock.DependencyEntry {
+		return lock.DependencyEntry{Field: field, URL: scriptURL, SHA256: scriptHash, Type: "directory"}
+	}
+
+	tests := []struct {
+		name    string
+		failing lock.DependencyEntry
+		set     func(h *harness.Harness)
+		wantErr string
+	}{
+		{
+			name:    "pre_script chmod",
+			failing: scriptDep("pre_script"),
+			set:     func(h *harness.Harness) { h.PreScript = scriptURL },
+			wantErr: "cached pre_script",
+		},
+		{
+			name:    "post_script chmod",
+			failing: scriptDep("post_script"),
+			set:     func(h *harness.Harness) { h.PostScript = scriptURL },
+			wantErr: "cached post_script",
+		},
+		{
+			name:    "validation_loop.script chmod",
+			failing: scriptDep("validation_loop.script"),
+			set:     func(h *harness.Harness) { h.ValidationLoop.Script = scriptURL },
+			wantErr: "cached validation_loop.script",
+		},
+		{
+			name:    "plugin chmodDirFiles",
+			failing: lock.DependencyEntry{Field: "plugins[1]", URL: pluginURL, SHA256: pluginHash, Type: "directory"},
+			set: func(h *harness.Harness) {
+				h.Plugins = append(h.Plugins, harness.PluginSpec{Path: pluginURL + "#sha256=" + pluginHash})
+			},
+			wantErr: "setting plugin permissions",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			require.NoError(t, fetch.CachePut(root, agentURL, agentContent))
+			require.NoError(t, fetch.CachePut(root, sharedURL, sharedContent))
+			require.NoError(t, fetch.CachePut(root, overrideURL, overrideContent))
+			_, err := fetch.CachePutDir(root, scriptsURL, scriptFiles)
+			require.NoError(t, err)
+			_, err = fetch.CachePutDir(root, pluginURL, pluginFiles)
+			require.NoError(t, err)
+
+			// A dangling symlink in the plugin tree is skipped by the cache
+			// integrity walk but makes chmodDirFiles fail.
+			pluginTree, _, err := fetch.CacheGetDir(root, pluginHash)
+			require.NoError(t, err)
+			require.NoError(t, os.Symlink("does-not-exist", filepath.Join(pluginTree, "dangling")))
+
+			newHarness := func() *harness.Harness {
+				h := &harness.Harness{
+					Agent: agentURL + "#sha256=" + agentHash,
+					Skills: []harness.SkillEntry{
+						{Source: "skills/local", Overrides: map[string]*string{"x.md": strPtr(overrideURL + "#sha256=" + overrideHash)}},
+						{Source: sharedURL + "#sha256=" + sharedHash},
+					},
+					Plugins:                []harness.PluginSpec{{Path: "plugins/local", Env: map[string]string{"A": "1"}}},
+					Providers:              []string{"https://example.com/providers/p.yaml", "bare"},
+					OpenShell:              &harness.OpenShellConfig{Profiles: []string{"https://example.com/profiles/p.yaml", "profiles/local.yaml"}},
+					ValidationLoop:         &harness.ValidationLoop{Script: "scripts/validate.sh", MaxIterations: 2},
+					AllowedRemoteResources: []string{"https://example.com/", "https://github.com/", "https://raw.githubusercontent.com/"},
+				}
+				tt.set(h)
+				return h
+			}
+
+			entry := &lock.HarnessLock{Dependencies: append(slices.Clone(commonDeps), tt.failing)}
+			h := newHarness()
+			_, err = resolveFromLock(h, entry, root, nil, ui.New(io.Discard))
+			require.ErrorContains(t, err, tt.wantErr)
+			assert.Equal(t, newHarness(), h, "harness must equal its input after a lock replay error")
+		})
+	}
 }
 
 func TestRunLock_WithLocalBase(t *testing.T) {
