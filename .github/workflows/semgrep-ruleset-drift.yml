@@ -11,6 +11,7 @@ permissions:
 jobs:
   compare:
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     outputs:
       drift: ${{ steps.compare.outputs.drift }}
       expected: ${{ steps.compare.outputs.expected }}
@@ -27,7 +28,7 @@ jobs:
           set -euo pipefail
           url="$(tr -d '[:space:]' < "$RULESET_URL_FILE")"
           expected="$(tr -d '[:space:]' < "$RULESET_SHA256_FILE")"
-          actual="$(curl --fail --location --silent --show-error "$url" | sha256sum | cut -d ' ' -f 1)"
+          actual="$(curl --connect-timeout 10 --max-time 60 --fail --location --silent --show-error "$url" | sha256sum | cut -d ' ' -f 1)"
           echo "expected=$expected" >> "$GITHUB_OUTPUT"
           echo "actual=$actual" >> "$GITHUB_OUTPUT"
           if [[ "$actual" == "$expected" ]]; then

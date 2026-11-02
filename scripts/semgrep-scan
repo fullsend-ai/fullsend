@@ -62,7 +62,8 @@ if [[ "$RULESET_ACTUAL_SHA256" != "$RULESET_SHA256" ]]; then
 	if ! RULESET_TMP="$(mktemp "${RULESET_CACHE_ROOT}/.security-audit.XXXXXX")"; then
 		ruleset_failure "cannot create a temporary ruleset file"
 	fi
-	if ! curl --fail --location --silent --show-error "$RULESET_URL" \
+	if ! curl --connect-timeout 10 --max-time 60 \
+		--fail --location --silent --show-error "$RULESET_URL" \
 		--output "$RULESET_TMP"; then
 		ruleset_failure "unable to download the pinned ruleset from ${RULESET_URL}"
 	fi

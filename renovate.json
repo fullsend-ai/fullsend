@@ -4,6 +4,13 @@
   "automergeType": "pr",
   "platformAutomerge": true,
   "prHourlyLimit": 1,
+  "pep621": {
+    "lockFileMaintenance": {
+      "enabled": true,
+      "schedule": ["before 4am on monday"]
+    },
+    "automerge": false
+  },
   "packageRules": [
     {
       "description": "Automerge low-risk updates (patch bumps and pin updates)",
@@ -13,15 +20,6 @@
     {
       "description": "Keep Semgrep dependency updates human-reviewed.",
       "matchPackageNames": ["semgrep"],
-      "automerge": false
-    },
-    {
-      "description": "Refresh PEP 621 lock files weekly for transitive dependencies.",
-      "matchManagers": ["pep621"],
-      "lockFileMaintenance": {
-        "enabled": true,
-        "schedule": ["before 4am on monday"]
-      },
       "automerge": false
     },
     {
