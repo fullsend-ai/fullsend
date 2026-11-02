@@ -18,6 +18,12 @@ Date: 2026-04-02
 
 Accepted
 
+**Read-only token sharing:**
+[ADR 0071](0071-share-github-api-cache-with-read-only-mint-tokens.md)
+introduces a limited exception: roles authorized for identical read
+permissions and scope may share a minted token; write credentials remain
+per-role.
+
 ## Context
 
 Agents need forge credentials to act on repos. A single shared credential for all agent roles violates least-privilege: a review agent would hold write permissions it should never use. The identity model must scope permissions per role while keeping setup automatable. See [agent-architecture.md](../problems/agent-architecture.md) and [security-threat-model.md](../problems/security-threat-model.md).
