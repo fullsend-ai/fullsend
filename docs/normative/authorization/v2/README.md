@@ -29,10 +29,15 @@ The [NormalizedEvent v1](../../normalized-event/v1/) specification defines the
 consumed by this contract. Bot identity and role resolution are specified by
 [ADR 0107](../../../ADRs/0107-bot-identity-resolution-for-dispatch-authorization.md).
 
-> **ADR 0107 target contract — not yet implemented:** The bot identity fields,
-> resolver outcomes, and bot-specific fail-closed rows below describe the
-> behavior to be implemented by the adapters and dispatch path. Until that
-> migration lands, existing compatibility behavior remains authoritative.
+> **ADR 0107 target contract — partially implemented:** The bot identity
+> fields, resolver outcomes, and bot-specific fail-closed rows below describe
+> the target behavior. On GitHub, `fullsend dispatch` performs the lookup for
+> bot actors of `gha-event` input through the mint (a layered `mint_url`,
+> else `FULLSEND_MINT_URL`), before both `--route` decisions and harness dispatch, except on label-added
+> events. A no-match or a failed lookup denies the bot, never a command
+> error. Other adapters (the `json` input driver, pollers) do not perform the
+> lookup yet, so their existing compatibility behavior remains authoritative.
+> Non-GitHub lookup is not implemented.
 
 ## Role ordering
 
@@ -507,10 +512,13 @@ and may further narrow the dispatch.
 
 ### Bot-submitted reviews (GitHub)
 
-**Current compatibility behavior:** Until the resolver is implemented,
-`fullsend dispatch` continues to authorize a GitHub `review_submitted` event
-from a bot without requiring a collaborator permission or `actor.bot_role`.
-This existing exception is not evidence that the bot identity was resolved.
+**Current compatibility behavior:** With `gha-event` input, `fullsend
+dispatch` resolves the bot first, so the target behavior below applies. For
+events that carry no lookup result (`actor.role_verified` unset, such as
+`json` input), `fullsend dispatch` still authorizes a GitHub
+`review_submitted` event from a bot without requiring a collaborator
+permission or `actor.bot_role`. This compatibility exception is not evidence
+that the bot identity was resolved.
 
 **ADR 0107 target behavior:** After the resolver is implemented, a GitHub
 review event is authorized only when the provider classifies the actor as a
