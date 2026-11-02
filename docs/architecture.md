@@ -782,7 +782,13 @@ ADR 0002: [Building block 13](ADRs/0002-initial-fullsend-design.md#13-observabil
 
 ### 14. retro agent runtime
 
-Retrospective analyst — examines completed or in-progress agent workflows, identifies improvement opportunities, and files proposals as GitHub issues. Runs automatically on PR close (merged or rejected) when the closing actor has write access, and on-demand via `/fs-retro` from a user with write access. Analyzes the full workflow graph (triage, code, review, fix agent interactions and human interventions) and posts a summary comment on the originating PR/issue linking to all filed proposals.
+Retrospective analyst — examines completed or in-progress agent workflows,
+identifies improvement opportunities, and files proposals as GitHub issues.
+Runs automatically on PR close (merged or rejected) when the closing actor has
+write access, and on-demand via `/fs-retro` from a user with write access.
+Analyzes the full workflow graph (triage, code, review, fix agent interactions
+and human interventions) and posts a summary comment on the originating PR or
+issue linking to all filed proposals.
 
 ## Configuration layering
 

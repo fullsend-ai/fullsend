@@ -776,8 +776,7 @@ jobs:
           STAGE="${BASH_STAGE}"
           TRIGGER_SOURCE="${BASH_TRIGGER_SOURCE}"
 
-          # A closed-PR retro cannot fall back to bash when CEL routing
-          # fails. The close route only runs after the same write check above.
+          # A closed-PR retro cannot fall back to bash when CEL routing fails.
           fail_closed_pr_retro_on_cel_error() {
             if [[ "${CLOSED_PULL_REQUEST}" == "true" ]]; then
               STAGE=""
@@ -803,7 +802,15 @@ jobs:
               echo "::notice::CEL route (${ROUTE_AGENT}): bash=$(gha_text "${STAGE:-none}") cel=$(gha_text "${CEL_ROUTE_DECISION}") reason=$(gha_text "${CEL_ROUTE_REASON}") harness=$(gha_text "${CEL_ROUTE_HARNESS}")"
               ROUTE_SOURCE="cel"
               case "${CEL_ROUTE_DECISION}" in
-                run) STAGE="${ROUTE_AGENT}" ;;
+                run)
+                  if [[ "${CLOSED_PULL_REQUEST}" == "true" && "${ROUTE_AGENT}" == "retro" && "${BASH_STAGE}" != "retro" ]]; then
+                    STAGE=""
+                    TRIGGER_SOURCE=""
+                    echo "::warning::CEL retro run denied because the Bash route did not authorize closed-PR retro"
+                  else
+                    STAGE="${ROUTE_AGENT}"
+                  fi
+                  ;;
                 skip)
                   if [[ "${STAGE}" == "${ROUTE_AGENT}" ]]; then
                     STAGE=""

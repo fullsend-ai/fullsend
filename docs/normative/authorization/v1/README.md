@@ -335,8 +335,12 @@ role and review state are accepted.
 
 A closed pull request may trigger retro only when the closing actor meets the
 standard write-level permission threshold. The bash dispatch path checks the
-event sender's repository permission; the GitHub CEL route applies the
-ordinary harness authorization gate, where the retro role requires write.
+event sender's repository permission; the GitHub CEL route applies a fixed
+write floor before the ordinary event and harness authorization gates. A
+custom retro harness role cannot lower this floor.
+This also applies to automated merge or close senders: a bot without
+write-level repository permission is denied, and a write-authorized user can
+start retro afterward with `/fs-retro`.
 Permission lookup failures deny dispatch. If CEL opt-in, configuration, or
 route evaluation fails for a close event, the workflow clears the Bash stage
 and skips retro. With no CEL route candidate, the authorized Bash route runs

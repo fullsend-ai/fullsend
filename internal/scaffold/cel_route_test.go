@@ -437,12 +437,13 @@ func TestFinalizeStage_CELRoute(t *testing.T) {
 			wantLog: "::notice::CEL route (retro): bash=retro cel=skip",
 		},
 		{
-			name: "retro run keeps a /fs-retro bash stage",
+			name: "authorized close keeps retro when CEL trigger matches",
 			env:  retro("retro", "run"), wantStage: "retro", wantSummary: "retro_route=cel",
 		},
 		{
-			name: "retro run sets the stage where bash chose nothing",
-			env:  retro("", "run"), wantStage: "retro", wantSummary: "retro_route=cel",
+			name: "closed PR retro run cannot promote an empty bash stage",
+			env:  retro("", "run"), wantStage: "", wantSummary: "retro_route=cel",
+			wantLog: "CEL retro run denied because the Bash route did not authorize closed-PR retro",
 		},
 		{
 			name: "retro bash decision keeps the bash stage",

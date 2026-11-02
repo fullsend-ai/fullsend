@@ -412,8 +412,9 @@ print('true' if str(active).lower() in ('true', 'yes', '1', 'on') else 'false')
 fi
 
 # Authorization gate (ADR 0054) — check actor has Developer access.
-# Read-only stages (retro, prioritize) are exempt to match GitHub
-# behavior where any closer may trigger retro.
+# Prioritize is read-only. Retro is exempt from this Developer-access
+# check in the current GitLab path; GitHub PR-close retro requires a
+# write-authorized closer under its separate routing policy.
 # Runs here (not in dispatch) because the Members API requires the
 # bot PAT (from FULLSEND_JOB_TOKEN, selected by role).
 # Fail-closed: API failure → access_level 0 → reject.

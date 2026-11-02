@@ -463,7 +463,7 @@ func TestToNormalizedEvent_MREventClosedActorFallback(t *testing.T) {
 	// closed event carries empty NoteAuthor* (see discoverAllEvents), so
 	// toNormalizedEvent falls back to the MR author to resolve the actor.
 	// The MR author is the bot, so Actor.Kind is "bot", but routeMerge has
-	// no actor-kind gate — retro (read-only) still runs. This pins the
+	// no actor-kind gate — retro still runs. This pins the
 	// closed-specific fallback so a future refactor splitting the shared
 	// "opened"/"closed" branch cannot silently regress #7322's
 	// human-rejects-the-agent's-work path.

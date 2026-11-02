@@ -172,11 +172,12 @@ func (r *HarnessRouter) routeLabel(event *NormalizedEvent) ([]string, error) {
 	return []string{stage}, nil
 }
 
-// routeMerge does not verify the merge/close actor's role — retro is a
-// read-only analysis stage, so dispatching it carries no mutation risk.
-// Both merged and closed-unmerged transitions dispatch retro. Only
-// change proposals reach retro: a closed work item (issue close, which
-// the GitLab webhook builder can emit) is not a retro trigger.
+// routeMerge preserves the current GitLab behavior and does not verify the
+// merge/close actor's role. Retro can write issues and comments, so this
+// GitLab path has a separate authorization policy from GitHub PR-close
+// routing. Both merged and closed-unmerged transitions dispatch retro. Only
+// change proposals reach retro: a closed work item (issue close, which the
+// GitLab webhook builder can emit) is not a retro trigger.
 func (r *HarnessRouter) routeMerge(event *NormalizedEvent) ([]string, error) {
 	if event.Entity.Kind != "change_proposal" {
 		return nil, nil

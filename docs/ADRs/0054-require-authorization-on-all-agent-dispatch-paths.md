@@ -205,14 +205,10 @@ permission list, not by bypassing the check.
 > Mutation stages (code, fix, and other write-gated slash commands)
 > remain at `min=write`. Label-triggered `ready-to-code` requires a
 > write+ labeler (or a bot, for agent handoff). Exception:
-> `pull_request_target.closed` → retro stays intentionally ungated so
-> any closer can trigger read-only lifecycle accounting. This follows
-> the extension path above rather than bypassing the check.
-
-> **Update (2026-11-02, [#8912](https://github.com/fullsend-ai/fullsend/issues/8912)):**
-> Closed-pull-request retro dispatch now requires the closing actor to have
-> write access. If CEL routing fails for a close event, the workflow skips
-> retro instead of falling back to the Bash route.
+> `pull_request_target.closed` → retro was intentionally ungated so any
+> closer could trigger what was then described as read-only lifecycle
+> accounting (superseded by [#8912](https://github.com/fullsend-ai/fullsend/issues/8912)).
+> This followed the extension path above rather than bypassing the check.
 
 > **Note (2026-08-10, [#6042](https://github.com/fullsend-ai/fullsend/issues/6042)):**
 > Prow-based repositories (e.g., OpenShift) use OWNERS files rather than
@@ -242,7 +238,6 @@ permission list, not by bypassing the check.
 > v1 limitation: only repo-root flat `approvers`/`reviewers` lists are
 > read. Prow `filters:` blocks and nested per-directory OWNERS files
 > are not supported.
-
 > **Note (2026-09-27, ADR 0107):** Non-label bot authorization is being
 > migrated from `[bot]` naming and transition-specific exceptions to
 > provider-backed exact bot-role resolution. The existing GitHub label-added
@@ -250,6 +245,11 @@ permission list, not by bypassing the check.
 > classification is required, but the forge's accepted label mutation remains
 > sufficient platform evidence and no bot-role lookup or label allowlist is
 > introduced.
+
+> **Update (2026-11-02, [#8912](https://github.com/fullsend-ai/fullsend/issues/8912)):**
+> Closed-pull-request retro dispatch now requires the closing actor to have
+> write access. If CEL routing fails for a close event, the workflow skips
+> retro instead of falling back to the Bash route.
 
 ## Consequences
 

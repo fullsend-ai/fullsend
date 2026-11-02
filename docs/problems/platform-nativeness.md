@@ -102,7 +102,16 @@ These are shared concerns where gh-aw's native position provides a structural ad
 
 GitHub Actions has no built-in approval gate for `issue_comment` or `issues.opened` triggers — unlike `pull_request` from public forks, which can require a maintainer's approval before running. Any user who can comment on an issue or open one fires the workflow immediately, full stop. [GitHub Security Lab documented a related class of vulnerability in 2021](https://securitylab.github.com/resources/github-actions-preventing-pwn-requests/) that they named "pwn request" — focused specifically on privilege escalation via `pull_request_target` code execution. The underlying issue is broader: an absent trigger-level authorization gate, which extends to `issue_comment` and `issues.opened` as well. There the risk isn't code execution, it's unauthorized cost and abuse exposure — for a workflow that runs paid LLM inference, an attacker doesn't need a security bug, just a repo they can comment on.
 
-Fullsend closes this itself: dispatch paths — slash commands and automatic event triggers alike — check collaborator repository permission before starting an agent. Observation stages such as triage and review require `triage`+, while mutation stages such as code, fix, and retro require `write`+ ([ADR 0054](../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)). Label-triggered handoffs rely on the permission needed to apply the label. The `issue_comment` needs-info re-triage path was removed in [#6740](https://github.com/fullsend-ai/fullsend/issues/6740) — re-triage after providing requested information now requires an explicit `/fs-triage` command. A CEL routing failure on PR close skips retro instead of falling back to the Bash route.
+Fullsend closes this itself: dispatch paths — slash commands and automatic
+event triggers alike — check collaborator repository permission before starting
+an agent. Observation stages such as triage and review require `triage`+, while
+mutation stages such as code, fix, and retro require `write`+ ([ADR
+0054](../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)).
+Label-triggered handoffs rely on the permission needed to apply the label. The
+`issue_comment` needs-info re-triage path was removed in [#6740](https://github.com/fullsend-ai/fullsend/issues/6740)
+— re-triage after providing requested information now requires an explicit
+`/fs-triage` command. A CEL routing failure on PR close skips retro instead of
+falling back to the Bash route.
 
 gh-aw's docs now define [`on.roles`/`on.skip-roles`](https://github.github.com/gh-aw/reference/triggers/) — an actor-authorization allowlist against the triggering user's repository role, defaulting to `[admin, maintainer, write]` — automatically enforced by default for `push`, `issues`, and `pull_request` triggers, closing the gap for `issues.opened`. However, `issue_comment` (the event slash commands and comment-driven automation use — the primary "pwn request" vector this section describes) is not in that default-enforced list; a workflow author must explicitly add `roles:` to gate comment-triggered workflows, or they inherit the same ungated-trigger behavior as any other GitHub Actions workflow.
 

@@ -254,10 +254,11 @@ triggers that read them must guard with `has()`.
 ### Fork security (`state.change_proposal.is_fork`)
 
 `is_fork` is `true` when `head_repo` differs from `base_repo` (fork-based
-change proposal). Write-capable agents (code, fix) that push commits or open
-follow-up PRs **must** gate on `!state.change_proposal.is_fork` in harness
-`trigger` expressions or rely on dispatch-level authorization per ADR 0054.
-Read-only agents (triage, review, retro) may run on fork PRs when policy allows.
+change proposal). Agents that push commits or open follow-up PRs **must** gate
+on `!state.change_proposal.is_fork` in harness `trigger` expressions or rely on
+dispatch-level authorization per ADR 0054. Triage and review are observation
+agents. Retro can create issues and comments, so its dispatch authorization
+must be considered separately; GitHub PR-close retro requires write access.
 
 ### Change facts (`state.change_proposal.diff`, `state.change_proposal.linked_work_items`)
 

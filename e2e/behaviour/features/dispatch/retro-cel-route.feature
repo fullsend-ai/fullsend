@@ -1,11 +1,11 @@
 # Retro routing by an explicit config trigger (#8726). A retro entry in
 # .fullsend/config.yaml with agents[].trigger moves the decision of whether the
 # Retro job starts from the route job's bash rules to that CEL trigger
-# (`fullsend dispatch --route retro`). The e2e installation identity closes the
-# pull request, so the closer is a bot without collaborator write access and
-# the close must not start retro. The write actor (TEST_ACTOR_WRITE_PAT) posts
-# the comment: the e2e installation identity's comments are bot comments, which
-# never start a retro.
+# (`fullsend dispatch --route retro`). The first scenario closes as the write
+# actor to prove an authorized close can still skip on a trigger mismatch. The
+# second closes as the e2e installation bot, which has no collaborator write
+# access. The write actor (TEST_ACTOR_WRITE_PAT) also posts the comment: the
+# installation identity's comments are bot comments, which never start retro.
 # A review trigger of "false" keeps the opened pull request from starting a
 # review this feature does not test.
 Feature: Retro routing by a config trigger
@@ -27,7 +27,7 @@ Feature: Retro routing by a config trigger
       | description     | op            | args                                                  |
       | Emit retro JSON | write_fixture | output/agent-result.json, fixtures/retro/summary.json |
     And a pull request is opened
-    When the pull request is closed
+    When the write actor closes the pull request
     Then the harness "retro" agent did not run
     And the harness "retro" was dispatched exactly 0 times
     When the write actor posts "/fs-retro" on the pull request

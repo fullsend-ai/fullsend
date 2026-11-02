@@ -28,6 +28,7 @@ type fakeActorSCM struct {
 	branches     []string
 	commits      []string
 	openedPRs    []string
+	closedIssues []int
 	prBodies     []string
 	paths        []string
 	commitErr    error
@@ -56,6 +57,11 @@ func (f *fakeActorSCM) CreateChangeProposal(_ context.Context, _, _, _, body, he
 	f.openedPRs = append(f.openedPRs, head)
 	f.prBodies = append(f.prBodies, body)
 	return &forge.ChangeProposal{Number: 11}, nil
+}
+
+func (f *fakeActorSCM) CloseIssue(_ context.Context, _, _ string, number int) error {
+	f.closedIssues = append(f.closedIssues, number)
+	return nil
 }
 
 func (f *fakeActorSCM) AddComment(_ context.Context, _, _ string, _ int, body string) (*forge.IssueComment, error) {
@@ -220,6 +226,23 @@ func TestWhenActorOpensPullRequest_LinkedToIssue(t *testing.T) {
 	assert.Contains(t, write.prBodies[0], "Closes #42")
 	assert.Equal(t, 11, w.PRNumber)
 	assert.Equal(t, []int{11}, w.CreatedPRNumbers)
+}
+
+func TestWhenActorClosesPullRequest(t *testing.T) {
+	t.Parallel()
+
+	w, drivers := actorWorld()
+	require.ErrorContains(t, whenActorClosesPullRequest(w), "no pull request opened")
+	assert.Empty(t, drivers[actorWrite].closedIssues)
+
+	w.PRNumber = 17
+	require.NoError(t, whenActorClosesPullRequest(w))
+	assert.Equal(t, []int{17}, drivers[actorWrite].closedIssues)
+	assert.Empty(t, drivers["default"].closedIssues, "the write actor must close the PR")
+	assert.False(t, w.ScenarioStart.IsZero())
+
+	err := whenActorClosesPullRequest(&world.World{PRNumber: 17})
+	require.ErrorContains(t, err, "TEST_ACTOR_WRITE_PAT not set")
 }
 
 func TestActorOpensPullRequestPattern(t *testing.T) {

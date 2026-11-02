@@ -65,6 +65,18 @@ func retroRouteAccepts(e *normevent.Event) bool {
 		e.Transition.Comment != nil && e.Transition.Comment.Command == "/fs-retro"
 }
 
+// isGitHubClosedPRRetro reports whether retro routing is deciding a GitHub
+// pull-request close or merge. These events require a fixed write floor even
+// when the selected harness has a lower role or the actor is a registered bot.
+func isGitHubClosedPRRetro(agent string, event *normevent.Event) bool {
+	if agent != "retro" || event == nil || event.Source.System != normevent.SystemGitHub ||
+		event.Entity.Kind != normevent.EntityChangeProposal {
+		return false
+	}
+	return event.Transition.Kind == normevent.TransitionClosed ||
+		event.Transition.Kind == normevent.TransitionMerged
+}
+
 // reviewRouteAccepts covers pull request events and comments on a pull
 // request: bash routes /fs-review only on pull requests, and a review needs
 // one. It accepts a closed pull request, but the route job's opt-in step
@@ -259,11 +271,15 @@ func routeBuiltinAgent(ctx context.Context, o routeOpts) (routeDecision, error) 
 		printer.StepWarn(fmt.Sprintf("Could not resolve the %s harness, requiring write access: %v", o.agent, err))
 	}
 
-	// Same gate as harness dispatch: the event-level rules, then the
-	// harness role threshold (IsHarnessAuthorized applies both), on the
-	// OWNERS-upgraded role. An unavailable harness leaves the role empty,
-	// which fails closed to the write threshold.
+	// Apply a fixed write floor to GitHub PR-close retro before the ordinary
+	// event and harness gates. This prevents registered-bot exceptions and a
+	// lower role: on the retro harness from bypassing the Bash close check.
 	authCheck := harnessdispatch.AuthCheckEvent(o.configDir, cfg, o.event)
+	if isGitHubClosedPRRetro(o.agent, o.event) && !normevent.IsWriteAuthorized(authCheck.Actor.Role) {
+		return withDecision(d, routeSkip, "closed pull request retro requires write"), nil
+	}
+	// The harness authorization gate still applies on the OWNERS-upgraded
+	// role. An unavailable harness leaves the role empty, which requires write.
 	if !harnessdispatch.IsHarnessAuthorized(&authCheck, harnessRole) {
 		if reason := botRoleDenialReason(authCheck.Actor); reason != "" {
 			return withDecision(d, routeSkip, reason), nil

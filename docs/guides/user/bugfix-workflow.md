@@ -171,7 +171,15 @@ For details on what the fix agent reads, what it ignores, and how URLs in instru
 
 Once the PR is merged (by human, merge queue, or automation per org governance), the automated pipeline for this issue is complete.
 
-The **retro agent** ([#131](https://github.com/fullsend-ai/fullsend/issues/131)) runs automatically when a PR is closed (merged or rejected) by someone with write access, and can also be triggered on-demand via `/fs-retro` by a user with write access. It analyzes the full workflow graph — triage, code, review, and fix agent interactions plus any human interventions — to identify improvement opportunities. Proposals are filed as GitHub issues in the appropriate repo, and a summary comment is posted on the originating PR/issue linking to all proposals.
+The **retro agent** ([#131](https://github.com/fullsend-ai/fullsend/issues/131))
+runs automatically when a PR is closed (merged or rejected) by someone with
+write access, and can also be triggered on-demand via `/fs-retro` by a user with
+write access. It analyzes the full workflow graph — triage, code, review, and
+fix agent interactions plus any human interventions — to identify improvement
+opportunities. Proposals are filed as GitHub issues in the appropriate repo,
+and a summary comment is posted on the originating PR or issue linking to all
+proposals. If an automated merge or close event has no write-authorized actor,
+automatic retro is skipped; a write-authorized user can run `/fs-retro`.
 
 ## Intervening in the pipeline
 
