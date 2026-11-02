@@ -463,7 +463,7 @@ expansion: before it creates the sandbox, on GitHub Actions, when the harness `i
 `ghcr.io`, it pulls the image with the token through Podman (a run-scoped auth file in a private
 temporary directory, removed after the pull), so the image can be a private package. Only the
 shipped code and fix workflows grant `packages: read`, so a private image works on code and fix
-harnesses; on other agents the pull is denied and sandbox creation fails. The package must also
+harnesses; on other agents a private image is denied and sandbox creation fails. The package must also
 allow Actions access from the repository. If the pull fails, the runner logs a warning and the
 OpenShell gateway attempts its own unauthenticated pull, so public images keep working. For images
 on other registries the runner adds no credentials. See
