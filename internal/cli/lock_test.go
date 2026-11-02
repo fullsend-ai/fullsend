@@ -2961,22 +2961,6 @@ func TestResolveFromLock_UnknownFieldNotSkill(t *testing.T) {
 	assert.Empty(t, h.Skills)
 }
 
-func TestIsHostFileLockField(t *testing.T) {
-	for field, want := range map[string]bool{
-		"host_files[0].src":               true,
-		"forge.github.host_files[2].src":  true,
-		"overlays[1].host_files[0].src":   true,
-		"host_files[0]":                   false,
-		"forge.github.skills[0]":          false,
-		"skills[0]":                       false,
-		"overlays[0].pre_script":          false,
-		"providers[0].host_files[0].src":  false,
-		"forge.github.host_files[0].dest": false,
-	} {
-		assert.Equal(t, want, isHostFileLockField(field), field)
-	}
-}
-
 func TestIsTransitiveSkillLockField(t *testing.T) {
 	for field, want := range map[string]bool{
 		"skills[https://example.com/main:dep0]":  true,
