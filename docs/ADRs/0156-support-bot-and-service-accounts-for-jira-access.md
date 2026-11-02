@@ -56,16 +56,16 @@ people. Its weaknesses are that it requires organization-administrator
 provisioning, that a site must have the feature enabled, and that callers
 must know the site's cloud ID and reach a second host.
 
-At `6f45fa15b`, Fullsend supports only the first kind: `buildJiraClient`
-(`internal/cli/poll.go`) requires `JIRA_USER_EMAIL` and `JIRA_TOKEN`,
-`LiveClient.apiURL` and `setAuth` (`internal/forge/jira/client.go`) build
-every request from the site URL and send Basic `email:token`, and the
-`fullsend-atlassian-cloud` sandbox profile allows egress only to
-`*.atlassian.net`. A team that has a service account can use it today only
-through an unsupported workaround: pointing the site URL setting at the
-gateway, which Fullsend does not detect, at the cost of wrong links to
-issues and no Jira access from the sandbox
-([#9007](https://github.com/fullsend-ai/fullsend/issues/9007)).
+Today (verified at `6f45fa15b`) Fullsend supports only the first kind. The
+Jira client requires an account email and an API token, sends every request
+to the site URL with Basic authentication, and the sandbox profile for Jira
+allows egress only to `*.atlassian.net`
+([#9007](https://github.com/fullsend-ai/fullsend/issues/9007) records the
+gap, with the file-level evidence in this ADR's pull request). A team that
+has a service account can use it today only through an unsupported
+workaround: pointing the site URL setting at the gateway, which Fullsend
+does not detect, at the cost of wrong links to issues and no Jira access
+from the sandbox.
 
 This ADR aims to settle which kinds of Jira identity Fullsend commits to
 supporting, so that implementation and documentation can proceed against a
