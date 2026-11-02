@@ -370,6 +370,9 @@ func (p *Poller) buildChangeProposalState(ctx context.Context, event RoutableEve
 		BaseRepo: baseRepo,
 		HeadRef:  event.SourceBranch,
 		BaseRef:  event.TargetBranch,
+		// Set only where discovery read it (a synchronized event's diff
+		// version); empty otherwise and omitted from the event.
+		HeadSHA:  event.HeadSHA,
 		AuthorID: event.MRAuthorLogin,
 		IsFork:   event.MRSource == 0 || event.MRTarget == 0 || event.MRSource != event.MRTarget,
 	}, nil

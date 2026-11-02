@@ -395,7 +395,7 @@ func (p *Poller) Run(ctx context.Context) error {
 				continue
 			}
 			allSkipped = false
-			if err := p.dispatch(ctx, p.owner, p.repo, stage, event); err != nil {
+			if err := p.dispatch(ctx, p.owner, p.repo, stage, event, &normalizedEvent); err != nil {
 				log.Printf("dispatch %s for %s failed: %v", stage, eventKey, err)
 				recordEventFailure(&cycleErrs, failedKeys, mirrors, event, &minFailedAt, failedLabelEvents,
 					fmt.Errorf("dispatch %s for %s failed: %w", stage, eventKey, err))

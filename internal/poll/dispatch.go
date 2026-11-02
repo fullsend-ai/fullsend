@@ -10,10 +10,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"maps"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/dispatch"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
 	"gopkg.in/yaml.v3"
@@ -50,8 +52,8 @@ func resourceKey(event RoutableEvent) string {
 // dispatcher credential even when that setting is
 // forge.PipelineVarOverrideNoOneAllowed. It logs a clickable URL to the
 // created pipeline and appends a Dispatch record for tracking.
-func (p *Poller) dispatch(ctx context.Context, owner, repo, stage string, event RoutableEvent) error {
-	payload, err := buildEventPayload(event)
+func (p *Poller) dispatch(ctx context.Context, owner, repo, stage string, event RoutableEvent, ne *dispatch.NormalizedEvent) error {
+	payload, err := buildEventPayload(event, ne)
 	if err != nil {
 		return fmt.Errorf("build event payload: %w", err)
 	}
@@ -433,17 +435,24 @@ func truncateNoteBody(s string, maxLen int) string {
 // Any other body (for example a bot review note) is bounded to
 // noteBodyTransportLimit runes, with noteBodyTruncationNotice appended
 // when it is actually cut.
-func buildEventPayload(event RoutableEvent) ([]byte, error) {
+//
+// When ne is the event's normalized form and passes fullsend run's
+// validation, the payload carries it whole as _normalized_event (#9014), so
+// run-agent-job.sh can hand it to fullsend run as --event-file the way the
+// Jira path does. If it is missing, invalid, or would not fit the transport
+// budget, the payload falls back to the comment-only _normalized_event, so
+// such a dispatch behaves as it did before.
+func buildEventPayload(event RoutableEvent, ne *dispatch.NormalizedEvent) ([]byte, error) {
 	m := map[string]interface{}{
 		"type":       event.Type,
 		"iid":        event.IID,
 		"updated_at": event.UpdatedAt.Format(time.RFC3339),
 	}
-	if event.NoteBody != "" {
-		body := event.NoteBody
-		if !isFullsendCommandBody(body) {
-			body = truncateNoteBody(body, noteBodyTransportLimit)
-		}
+	body := event.NoteBody
+	if body != "" && !isFullsendCommandBody(body) {
+		body = truncateNoteBody(body, noteBodyTransportLimit)
+	}
+	if body != "" {
 		m["_normalized_event"] = map[string]any{
 			"transition": normevent.Transition{
 				Kind:    normevent.TransitionCommentAdded,
@@ -481,5 +490,52 @@ func buildEventPayload(event RoutableEvent) ([]byte, error) {
 	if event.Action != "" {
 		m["action"] = event.Action
 	}
+	norm, err := transportNormalizedEvent(ne, body)
+	switch {
+	case err != nil:
+		log.Printf("WARNING: %s event on IID %d: sending the comment-only normalized event; the complete event is invalid: %v", event.Type, event.IID, err)
+	case norm != nil:
+		full := maps.Clone(m)
+		full["_normalized_event"] = norm
+		data, err := json.Marshal(full)
+		if err != nil {
+			return nil, err
+		}
+		budget := maxEventPayloadChunks * dispatchPayloadChunkSize
+		n := base64.StdEncoding.EncodedLen(len(data))
+		if n <= budget {
+			return data, nil
+		}
+		log.Printf("WARNING: %s event on IID %d: sending the comment-only normalized event; the complete event needs %d base64 characters, over the %d-character budget", event.Type, event.IID, n, budget)
+	}
 	return json.Marshal(m)
+}
+
+// transportNormalizedEvent returns ne as a payload's _normalized_event map,
+// with its comment body replaced by the transport-bounded body and the
+// command and instruction re-derived from that body, so they always agree
+// with what run-agent-job.sh reads. It returns nil and no error when ne is
+// nil, and an error when ne would fail normevent.ParseJSON — the check
+// fullsend run applies to --event-file — so run-agent-job.sh never hands run
+// an event it would refuse.
+func transportNormalizedEvent(ne *dispatch.NormalizedEvent, body string) (map[string]any, error) {
+	if ne == nil {
+		return nil, nil
+	}
+	ev := *ne
+	if ev.Transition.Comment != nil {
+		c := *ev.Transition.Comment
+		c.Body = body
+		c.Command, c.Instruction = extractCommand(body)
+		ev.Transition.Comment = &c
+	}
+	data, err := json.Marshal(ev)
+	if err != nil {
+		return nil, err
+	}
+	parsed, err := normevent.ParseJSON(data)
+	if err != nil {
+		return nil, err
+	}
+	return parsed.ToMap()
 }

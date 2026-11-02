@@ -194,9 +194,10 @@ This moves instruction extraction from downstream workflow steps (e.g.
 [ADR 0061 Consequences](../../../ADRs/0061-harness-cel-dispatch.md).
 
 This applies to the GitHub projection. For GitLab dispatch,
-`_normalized_event.transition.comment` carries only `body`; the dispatcher
-populates neither `command` nor `instruction`, and `run-agent-job.sh` extracts
-the instruction downstream from the body (see
+`_normalized_event.transition.comment` carries `command` and `instruction` only
+when the payload embeds the complete event; the comment-only fallback carries
+just `body`. Either way, `run-agent-job.sh` extracts the instruction
+downstream from the body (see
 [GitLab dispatch payload](#gitlab-dispatch-payload)).
 
 ### Actor role mapping (GitHub)
@@ -442,20 +443,34 @@ separate shape, described next.
 #### GitLab dispatch payload
 
 `buildEventPayload` in `internal/poll/dispatch.go` builds the base64
-`EVENT_PAYLOAD_B64` payload for GitLab dispatch. It does not embed a complete
-NormalizedEvent and emits no `event_payload.comment` and no `note_body`. For a
-note event it adds a **partial** `_normalized_event` containing only
-`transition`, with `transition.kind` set to `comment_added` and
-`transition.comment.body` set to the note body. The envelope fields (`source`,
-`kind`, and the rest) are absent, and `transition.comment` omits `command` and
-`instruction`. Consumers MUST NOT treat this key as a full NormalizedEvent;
-they read `_normalized_event.transition.comment.body` and derive the command
-and instruction from it. `run-agent-job.sh` does this for the `/fs-fix`
-instruction and the retro comment.
+`EVENT_PAYLOAD_B64` payload for GitLab dispatch. It emits no
+`event_payload.comment` and no `note_body`. `_normalized_event` takes one of
+two forms:
+
+- **Complete.** When the event's NormalizedEvent passes the validation
+  `fullsend run` applies to `--event-file` and the payload fits the chunk
+  budget, `_normalized_event` is that complete event, with
+  `source.system` set to `gitlab` and, for merge request events,
+  `state.change_proposal` (including `head_sha` where the poller discovered
+  it). `run-agent-job.sh` passes it to `fullsend run --event-file`, so
+  overlays and root-span telemetry see the same fields as on GitHub.
+- **Comment-only fallback.** Otherwise, for a note event, `_normalized_event`
+  is a **partial** map containing only `transition`, with `transition.kind`
+  set to `comment_added` and `transition.comment.body` set to the note body.
+  Non-note events then carry no `_normalized_event`. `run-agent-job.sh` passes
+  no `--event-file`, and the run behaves as it did before the complete form
+  existed.
+
+Consumers MUST check `_normalized_event.source.system` before treating the key
+as a full NormalizedEvent. Both forms carry the note body at
+`_normalized_event.transition.comment.body`, which `run-agent-job.sh` reads for
+the `/fs-fix` instruction and the retro comment.
 
 A body that starts with `/fs-` is carried untruncated, and dispatch fails closed
 when the payload exceeds the chunk budget. Any other body is bounded to 800
-Unicode code points, with a truncation marker appended when it is cut.
+Unicode code points, with a truncation marker appended when it is cut. In the
+complete form, `transition.comment.command` and `instruction` are derived from
+the transported body, so they always match what `run-agent-job.sh` reads.
 
 ## GitLab adapter notes
 
