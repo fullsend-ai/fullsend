@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"os/exec"
@@ -16,27 +17,22 @@ import (
 // token can read its private packages when the job grants packages: read.
 const ghcrRegistry = "ghcr.io"
 
-// ghcrDefaultUsername is the login name used when GITHUB_ACTOR is unset.
-// ghcr.io authenticates the token, not the username.
-const ghcrDefaultUsername = "github-actions"
+// ghcrAuthUsername is the user name stored beside the token in the auth
+// file. ghcr.io authenticates the token, not the username.
+const ghcrAuthUsername = "github-actions"
 
-// sandboxImagePullTimeout bounds the login and pull, matching the OpenShell
-// Podman driver's own pull timeout.
+// sandboxImagePullTimeout bounds the pull, matching the OpenShell Podman
+// driver's own pull timeout (OpenShell 0.1.4).
 const sandboxImagePullTimeout = 10 * time.Minute
 
 // imagePullLookPathFn locates the podman binary. Override in tests to
 // simulate podman being present or missing without touching the host PATH.
 var imagePullLookPathFn = exec.LookPath
 
-// runPodmanFn runs podman with args, feeding stdin when it is non-empty, and
-// returns the combined output. Override in tests to avoid running a real
-// podman binary.
-var runPodmanFn = func(ctx context.Context, stdin string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "podman", args...)
-	if stdin != "" {
-		cmd.Stdin = strings.NewReader(stdin)
-	}
-	return cmd.CombinedOutput()
+// runPodmanFn runs podman with args and returns the combined output.
+// Override in tests to avoid running a real podman binary.
+var runPodmanFn = func(ctx context.Context, args ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, "podman", args...).CombinedOutput()
 }
 
 // isGHCRImage reports whether image is a reference on ghcr.io.
@@ -49,12 +45,19 @@ func isGHCRImage(image string) bool {
 // Podman store with the Actions workflow token, so harness images published
 // as private GitHub packages can be used (#9019).
 //
-// The OpenShell Podman driver pulls the sandbox image through the libpod API
-// without registry credentials, using the "missing" pull policy by default.
-// Once the image is in the local store, that pull is a no-op. The token goes
-// to podman only on stdin, and the auth file lives in a private temporary
-// directory removed on every return path, so no credential outlives the
-// pull or reaches the runner user's shared Podman auth file.
+// At the pinned OpenShell (0.1.4) the Podman driver pulls the sandbox image
+// through the libpod API without registry credentials, using the "missing"
+// pull policy by default. Once the image is in the local store, that pull
+// is a no-op. The token is written to an auth file in a private temporary
+// directory that is removed on every return path, so no credential outlives
+// the pull or reaches the runner user's shared Podman auth file. The file
+// is written here rather than by `podman login`, which stores credentials
+// wherever registries.conf's credential-helpers point.
+//
+// Known limitation: podman consults --authfile only under the default
+// containers-auth.json credential helper. A registries.conf that names
+// other helpers makes the pull run anonymously; it then fails for a private
+// image and the warning below is the only trace.
 //
 // It runs only on GitHub Actions, for ghcr.io images, when GH_WORKFLOW_TOKEN
 // is set. Failures are warnings: the gateway still attempts its own
@@ -76,7 +79,7 @@ func prePullGHCRImage(ctx context.Context, image string, printer *ui.Printer) {
 	defer cancel()
 
 	// Already present: the gateway's default pull policy reuses it too.
-	if _, err := runPodmanFn(ctx, "", "image", "exists", image); err == nil {
+	if _, err := runPodmanFn(ctx, "image", "exists", image); err == nil {
 		return
 	}
 
@@ -97,18 +100,15 @@ func prePullGHCRImage(ctx context.Context, image string, printer *ui.Printer) {
 	defer os.RemoveAll(dir)
 	authFile := filepath.Join(dir, "auth.json")
 
-	username := os.Getenv("GITHUB_ACTOR")
-	if username == "" {
-		username = ghcrDefaultUsername
+	auth := base64.StdEncoding.EncodeToString([]byte(ghcrAuthUsername + ":" + token))
+	authJSON := fmt.Sprintf(`{"auths":{%q:{"auth":%q}}}`, ghcrRegistry, auth)
+	if err := os.WriteFile(authFile, []byte(authJSON), 0o600); err != nil {
+		warn("writing registry auth file", nil, err)
+		return
 	}
 
 	printer.StepStart("Pulling sandbox image with the workflow token: " + image)
-	if out, err := runPodmanFn(ctx, token, "login", "--authfile", authFile,
-		"--username", username, "--password-stdin", ghcrRegistry); err != nil {
-		warn(ghcrRegistry+" login", out, err)
-		return
-	}
-	if out, err := runPodmanFn(ctx, "", "pull", "--quiet", "--authfile", authFile, image); err != nil {
+	if out, err := runPodmanFn(ctx, "pull", "--quiet", "--authfile", authFile, image); err != nil {
 		warn("pulling "+image, out, err)
 		return
 	}

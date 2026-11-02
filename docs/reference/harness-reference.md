@@ -145,7 +145,7 @@ security:
 
 Most fields are self-explanatory from the inline comments above. This section expands on fields where additional context helps.
 
-**`image`** — The sandbox container image. It can be a private package on `ghcr.io`: on GitHub Actions, `fullsend run` logs in with the job's workflow token (`GH_WORKFLOW_TOKEN`) and pulls the image before it creates the sandbox. The job must grant `packages: read`, and the package must allow Actions access from the repository. If the login or pull fails, `fullsend run` warns and the sandbox gateway pulls the image without credentials, so public images keep working; images on other registries are always pulled without credentials. See [Extending the sandbox image](../guides/user/customizing-agents.md#extending-the-sandbox-image).
+**`image`** — The sandbox container image. On GitHub Actions a private `ghcr.io` package works on code and fix harnesses, whose shipped workflows grant `packages: read`; see [GitHub Packages credentials](../cli/run.md#github-packages-credentials).
 
 **`role`** — The agent's identity within fullsend. Dispatch uses the role to match config-registered agents to built-in defaults (same-name config agents take precedence). The role also determines which GitHub App credentials **and permissions** the mint service issues. It must be a role the mint serves: on the hosted mint that is the fixed built-in set (`triage`, `coder`, `review`, `retro`, `prioritize`, `fullsend`); custom roles require your own mint. An unserved role returns `403`. See [Custom Agent Identity](../guides/user/custom-agent-identity.md).
 

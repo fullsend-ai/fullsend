@@ -3,6 +3,8 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -17,32 +19,35 @@ import (
 
 const testWorkflowToken = "fake-workflow-token-for-tests"
 
-type podmanCall struct {
-	stdin string
-	args  []string
+const privateImage = "ghcr.io/example-org/fullsend-code-node24@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+// podmanResponse is what the fake returns for one podman subcommand.
+type podmanResponse struct {
+	out []byte
+	err error
 }
 
 // fakePodman records podman invocations and answers each by its first
-// argument. responses maps a subcommand ("image", "login", "pull") to the
-// output and error that call returns; missing entries succeed.
+// argument. responses maps a subcommand ("image", "pull") to the output and
+// error that call returns; missing entries succeed. authFiles records the
+// --authfile path of every call that passed one, and authJSON and authMode
+// the content and permissions of that file as they were when the call ran.
 type fakePodman struct {
-	calls     []podmanCall
-	responses map[string]struct {
-		out []byte
-		err error
-	}
+	calls     [][]string
+	responses map[string]podmanResponse
 	authFiles []string
+	authJSON  []byte
+	authMode  os.FileMode
 }
 
-func (f *fakePodman) run(_ context.Context, stdin string, args ...string) ([]byte, error) {
-	f.calls = append(f.calls, podmanCall{stdin: stdin, args: append([]string(nil), args...)})
+func (f *fakePodman) run(_ context.Context, args ...string) ([]byte, error) {
+	f.calls = append(f.calls, append([]string(nil), args...))
 	for i, a := range args {
 		if a == "--authfile" && i+1 < len(args) {
 			f.authFiles = append(f.authFiles, args[i+1])
-			if args[0] == "login" {
-				// podman login writes the auth file; mimic it so cleanup is
-				// observable.
-				_ = os.WriteFile(args[i+1], []byte(`{"auths":{}}`), 0o600)
+			f.authJSON, _ = os.ReadFile(args[i+1])
+			if info, err := os.Stat(args[i+1]); err == nil {
+				f.authMode = info.Mode().Perm()
 			}
 		}
 	}
@@ -54,21 +59,15 @@ func (f *fakePodman) run(_ context.Context, stdin string, args ...string) ([]byt
 
 func (f *fakePodman) respond(sub string, out string, err error) {
 	if f.responses == nil {
-		f.responses = map[string]struct {
-			out []byte
-			err error
-		}{}
+		f.responses = map[string]podmanResponse{}
 	}
-	f.responses[sub] = struct {
-		out []byte
-		err error
-	}{[]byte(out), err}
+	f.responses[sub] = podmanResponse{[]byte(out), err}
 }
 
 func (f *fakePodman) subcommands() []string {
 	var subs []string
 	for _, c := range f.calls {
-		subs = append(subs, c.args[0])
+		subs = append(subs, c[0])
 	}
 	return subs
 }
@@ -89,14 +88,11 @@ func setupImagePull(t *testing.T) (*fakePodman, *bytes.Buffer, *ui.Printer) {
 
 	t.Setenv("GITHUB_ACTIONS", "true")
 	t.Setenv(workflowTokenEnv, testWorkflowToken)
-	t.Setenv("GITHUB_ACTOR", "octocat")
 	t.Setenv("TMPDIR", t.TempDir())
 
 	var buf bytes.Buffer
 	return fake, &buf, ui.New(&buf)
 }
-
-const privateImage = "ghcr.io/example-org/fullsend-code-node24@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 func TestIsGHCRImage(t *testing.T) {
 	tests := map[string]bool{
@@ -113,74 +109,53 @@ func TestIsGHCRImage(t *testing.T) {
 	}
 }
 
-func TestPrePullGHCRImage_LoginThenPullWithTokenOnStdin(t *testing.T) {
+func TestPrePullGHCRImage_PullsWithRunScopedAuthFile(t *testing.T) {
 	fake, buf, printer := setupImagePull(t)
 
 	prePullGHCRImage(context.Background(), privateImage, printer)
 
-	require.Equal(t, []string{"image", "login", "pull"}, fake.subcommands())
+	require.Equal(t, []string{"image", "pull"}, fake.subcommands())
+	assert.Equal(t, []string{"image", "exists", privateImage}, fake.calls[0])
 
-	login := fake.calls[1]
-	assert.Equal(t, testWorkflowToken, login.stdin, "token must reach podman on stdin")
-	assert.Contains(t, login.args, "--password-stdin")
-	assert.Contains(t, login.args, "octocat")
-	assert.Equal(t, ghcrRegistry, login.args[len(login.args)-1])
-
-	pull := fake.calls[2]
-	assert.Empty(t, pull.stdin)
-	assert.Equal(t, privateImage, pull.args[len(pull.args)-1])
-
+	pull := fake.calls[1]
+	assert.Equal(t, privateImage, pull[len(pull)-1])
 	for _, c := range fake.calls {
-		assert.NotContains(t, strings.Join(c.args, " "), testWorkflowToken, "token must never appear in argv")
+		assert.NotContains(t, strings.Join(c, " "), testWorkflowToken, "token must never appear in argv")
 	}
 
-	// Login and pull share one run-scoped auth file, removed afterwards.
-	require.Len(t, fake.authFiles, 2)
-	assert.Equal(t, fake.authFiles[0], fake.authFiles[1])
-	_, err := os.Stat(filepath.Dir(fake.authFiles[0]))
+	// The auth file held the token for ghcr.io while the pull ran, in the
+	// user:token form podman reads, and was removed afterwards.
+	require.Len(t, fake.authFiles, 1)
+	var authFile struct {
+		Auths map[string]struct{ Auth string } `json:"auths"`
+	}
+	require.NoError(t, json.Unmarshal(fake.authJSON, &authFile))
+	require.Contains(t, authFile.Auths, ghcrRegistry)
+	decoded, err := base64.StdEncoding.DecodeString(authFile.Auths[ghcrRegistry].Auth)
+	require.NoError(t, err)
+	assert.Equal(t, ghcrAuthUsername+":"+testWorkflowToken, string(decoded))
+	assert.Equal(t, os.FileMode(0o600), fake.authMode)
+	_, err = os.Stat(filepath.Dir(fake.authFiles[0]))
 	assert.True(t, os.IsNotExist(err), "auth directory must be removed after a successful pull")
 
 	assert.Contains(t, buf.String(), "Pulled sandbox image")
 	assert.NotContains(t, buf.String(), testWorkflowToken)
 }
 
-func TestPrePullGHCRImage_DefaultUsername(t *testing.T) {
-	fake, _, printer := setupImagePull(t)
-	t.Setenv("GITHUB_ACTOR", "")
-
-	prePullGHCRImage(context.Background(), privateImage, printer)
-
-	require.Len(t, fake.calls, 3)
-	assert.Contains(t, fake.calls[1].args, ghcrDefaultUsername)
-}
-
-func TestPrePullGHCRImage_LoginFailureRedactsTokenAndCleansUp(t *testing.T) {
+func TestPrePullGHCRImage_PullFailureRedactsTokenAndCleansUp(t *testing.T) {
 	fake, buf, printer := setupImagePull(t)
-	fake.respond("login", "Error: logging into ghcr.io: invalid credentials "+testWorkflowToken, errors.New("exit status 125"))
+	fake.respond("pull", "Error: initializing source: unauthorized "+testWorkflowToken, errors.New("exit status 125"))
 
 	prePullGHCRImage(context.Background(), privateImage, printer)
 
-	assert.Equal(t, []string{"image", "login"}, fake.subcommands(), "no pull after a failed login")
+	assert.Equal(t, []string{"image", "pull"}, fake.subcommands())
 	out := buf.String()
-	assert.Contains(t, out, "ghcr.io login failed")
+	assert.Contains(t, out, "pulling "+privateImage+" failed")
 	assert.Contains(t, out, "***")
+	assert.Contains(t, out, "without registry credentials")
 	assert.NotContains(t, out, testWorkflowToken)
 
 	require.NotEmpty(t, fake.authFiles)
-	_, err := os.Stat(filepath.Dir(fake.authFiles[0]))
-	assert.True(t, os.IsNotExist(err), "auth directory must be removed after a failed login")
-}
-
-func TestPrePullGHCRImage_PullFailureWarnsAndCleansUp(t *testing.T) {
-	fake, buf, printer := setupImagePull(t)
-	fake.respond("pull", "", errors.New("exit status 125"))
-
-	prePullGHCRImage(context.Background(), privateImage, printer)
-
-	assert.Equal(t, []string{"image", "login", "pull"}, fake.subcommands())
-	assert.Contains(t, buf.String(), "exit status 125")
-	assert.Contains(t, buf.String(), "without registry credentials")
-
 	_, err := os.Stat(filepath.Dir(fake.authFiles[0]))
 	assert.True(t, os.IsNotExist(err), "auth directory must be removed after a failed pull")
 }
@@ -240,17 +215,13 @@ func TestPrePullGHCRImage_TempDirFailure(t *testing.T) {
 	assert.Contains(t, buf.String(), "creating registry auth directory failed")
 }
 
-func TestRunPodmanFn_PassesArgsAndStdin(t *testing.T) {
+func TestRunPodmanFn_PassesArgs(t *testing.T) {
 	bin := t.TempDir()
-	script := "#!/bin/sh\necho \"args:$*\"\ncat\n"
+	script := "#!/bin/sh\necho \"args:$*\"\n"
 	require.NoError(t, os.WriteFile(filepath.Join(bin, "podman"), []byte(script), 0o755))
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	out, err := runPodmanFn(context.Background(), "secret-on-stdin", "login", "--password-stdin", ghcrRegistry)
-	require.NoError(t, err)
-	assert.Equal(t, "args:login --password-stdin ghcr.io\nsecret-on-stdin", string(out))
-
-	out, err = runPodmanFn(context.Background(), "", "image", "exists", "img")
+	out, err := runPodmanFn(context.Background(), "image", "exists", "img")
 	require.NoError(t, err)
 	assert.Equal(t, "args:image exists img\n", string(out))
 }
