@@ -20,7 +20,7 @@ Accepted
 
 The opt-in rule (a repository with no `jira` entry keeps the previous
 behaviour) is superseded by
-[ADR 0156](0156-require-jira-authorization-entry-for-jira-poll.md), which
+[ADR 0157](0157-require-jira-authorization-entry-for-jira-poll.md), which
 deprecates running the `jira-poll` driver without an entry and makes the
 entry required. The lists, `labels:` rules and roster loading decided here
 are unchanged.

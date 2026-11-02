@@ -1,5 +1,5 @@
 ---
-title: "156. Require a jira authorization entry when the jira-poll driver runs"
+title: "157. Require a jira authorization entry when the jira-poll driver runs"
 status: Accepted
 relates_to:
   - security-threat-model
@@ -10,7 +10,7 @@ topics:
   - deprecation
 ---
 
-# 156. Require a jira authorization entry when the jira-poll driver runs
+# 157. Require a jira authorization entry when the jira-poll driver runs
 
 Date: 2026-11-02
 

@@ -435,7 +435,7 @@ The existing design principle is that [the repo is the coordinator](problems/age
   Running the `jira-poll` driver with no `jira` entry is deprecated: the
   poller warns at start, and a later release requires the entry, with the
   two-line `labels: project_roles` entry as the migration
-  ([ADR 0156](ADRs/0156-require-jira-authorization-entry-for-jira-poll.md),
+  ([ADR 0157](ADRs/0157-require-jira-authorization-entry-for-jira-poll.md),
   rollout in [#9005](https://github.com/fullsend-ai/fullsend/issues/9005)
   and [#9006](https://github.com/fullsend-ai/fullsend/issues/9006)).
 - Process lifecycle (target state): bound `fullsend run` and `fullsend poll`
