@@ -24,57 +24,48 @@ the rest of that ADR stands. See Context.
 
 ## Context
 
-Teams are starting to run Fullsend agents from Jira: someone comments
-`/fs-code` on an epic, or adds a label, and an agent goes to work in the
-repository. For that to happen, a Fullsend bot account has to watch the Jira
-project and decide, for each comment or label, whether the person behind it
-is allowed to start an agent. Two things have to be true for a team to adopt
-this. The bot must not need more Jira permission than a Jira administrator
-is willing to give a bot, and the team must know, and have chosen, how the
-bot decides who is trusted. Until recently the first was false: the bot had
-to be a project administrator just to look up who people were. Fullsend now
-offers a way around that, but it is optional and nothing tells a team whether
-they are using it. This ADR closes that gap by making the choice explicit,
-so that no team ends up in the admin-only mode by accident, and no team's
-trust rules change without them editing a file.
+Until recently, Fullsend had exactly one way to decide who may use the Jira
+poller to run agents: the actor's Jira project role, matched by name in the
+project's role roster. That way is bad on two counts. Reading the roster
+needs the Administer Projects permission, so a bot that only watches a
+project had to be one of its administrators
+([#8401](https://github.com/fullsend-ai/fullsend/issues/8401)). And the
+match is on role names, so a project whose roles are not literally called
+Administrators or Developers downgrades everyone to `read` and ignores their
+slash commands.
 
-In Fullsend terms, the bot is the `jira-poll` input driver
-([ADR 0063](0063-polling-based-work-discovery.md)), and its trust decision
-is the authorization contract every dispatch path uses
-([ADR 0054](0054-require-authorization-on-all-agent-dispatch-paths.md)).
-The least-privilege principle of the
-[security threat model](../problems/security-threat-model.md) says the
-driver's Jira account should hold only the permission that decision needs.
-Until recently it needed far more: the only way to learn who an actor was in
-the project was the project role roster, which Jira Cloud serves only to
-accounts with Administer Projects, so a bot that merely watched a project had
-to be one of its administrators
-([#8401](https://github.com/fullsend-ai/fullsend/issues/8401)).
-
-[ADR 0153](0153-authorize-jira-poll-actors-without-project-administration.md)
-fixed that for repositories that ask for it. A `jira` entry under
-`authorization:` in `.fullsend/config.yaml` names the Jira groups and
-accounts allowed to run agents, and lets Jira's own Edit Issues permission
-vouch for anyone who adds a label, so the poller never needs the roster. To
-avoid changing any existing setup, the entry is opt-in: a repository with no
-entry keeps the old behaviour, every event resolved through the admin-only
-roster. That leaves a gap. The absence of an entry is a silent choice. A
-repository that sets up the poller and skips the authorization step runs in
-the admin-only mode with nothing saying so, and learns of it from a `401` in
-the poll log, by granting the poller a project role it should not hold, or
-by never seeing a dispatch. "Not configured" and "project roles for every
-event" are the same config file. The review of
-[#8892](https://github.com/fullsend-ai/fullsend/pull/8892) raised this
+[#8892](https://github.com/fullsend-ai/fullsend/pull/8892)
+([ADR 0153](0153-authorize-jira-poll-actors-without-project-administration.md))
+added better alternatives. A repository can list, in its own config, the
+Jira groups and accounts allowed to run agents, and it can let Jira's own
+Edit Issues permission vouch for anyone who adds a label. To keep that change
+non-breaking, the old way stayed the default: a repository that configures
+nothing still gets project roles, and still needs an administrator bot. So
+Fullsend now has a bad default, and a silent one. A repository cannot tell
+"I chose project roles" from "I configured nothing", because they are the
+same config file, and a team that skips the authorization step learns which
+mode it is in from a `401` in the poll log, by granting the bot a role it
+should not hold, or by never seeing a dispatch. The review of #8892 raised
+this
 ([comment](https://github.com/fullsend-ai/fullsend/pull/8892#issuecomment-6496078895)),
 and [#9004](https://github.com/fullsend-ai/fullsend/issues/9004) proposed
 the decision recorded here.
 
-In code, at `d7394b881b4e68aa78976ee82ffb226cfbcb42c6`,
-`jiraPollAuthorization` (`internal/cli/poll.go`) leaves
-`Authorization.Configured` false when config.yaml has no `jira` provider,
-and `roleSourceFor` (`internal/jirapoll/auth.go`) then selects the project
-role roster (`GET /rest/api/3/project/<KEY>/role`) as the role source for
-every event.
+This ADR deprecates and removes that default. It does not put a different
+default in its place: a repository that runs the poller must say which way
+it uses, and the old way stays available as an explicit choice.
+
+In Fullsend terms, the poller is the `jira-poll` input driver
+([ADR 0063](0063-polling-based-work-discovery.md)), and its trust decision
+is the authorization contract every dispatch path uses
+([ADR 0054](0054-require-authorization-on-all-agent-dispatch-paths.md)),
+under the least-privilege principle of the
+[security threat model](../problems/security-threat-model.md). At
+`d7394b881b4e68aa78976ee82ffb226cfbcb42c6`, `jiraPollAuthorization`
+(`internal/cli/poll.go`) leaves `Authorization.Configured` false when
+`.fullsend/config.yaml` has no `jira` provider, and `roleSourceFor`
+(`internal/jirapoll/auth.go`) then selects the project role roster
+(`GET /rest/api/3/project/<KEY>/role`) as the role source for every event.
 
 This ADR aims to make a repository's Jira authorization source an explicit
 choice whenever the `jira-poll` driver runs, without changing who may
