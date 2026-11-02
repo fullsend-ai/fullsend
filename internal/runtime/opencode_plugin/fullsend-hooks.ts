@@ -117,7 +117,7 @@ function checkPermission(cfg, tool, args, cwd, worktree, targets) {
       const paths = tool === "read" ? [args.filePath ?? args.file_path] : targets;
       values = paths.map((target) => {
         if (typeof target !== "string" || !target) deny("missing permission path");
-        const relative = path.relative(worktree, path.resolve(cwd, target));
+        const relative = path.relative(worktree, resolved(path.resolve(cwd, target)));
         return tool === "apply_patch" ? relative.replaceAll("\\", "/") : relative;
       });
     }

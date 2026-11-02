@@ -138,6 +138,9 @@ test("patch targets use native header recognition and trimming", async (t) => {
 test("trusted file permissions use worktree-relative paths for every patch target", async (t) => {
   const scoped = { "*": "deny", "src/*": "allow", "src/private*": "deny", "src/review*": "ask" };
   const h = await setup(t, { permission: { "*": "deny", read: scoped, edit: scoped } });
+  mkdirSync(path.join(h.workspace, "src"));
+  writeFileSync(path.join(h.root, "secret.txt"), "outside the trusted scope");
+  symlinkSync(path.join(h.root, "secret.txt"), path.join(h.workspace, "src/external.txt"));
   for (const tool of ["read", "write", "edit", "multiedit"]) {
     for (const filePath of ["src/app.go", path.join(h.workspace, "src/app.go")]) {
       await h.before(tool, { filePath });
@@ -149,6 +152,9 @@ test("trusted file permissions use worktree-relative paths for every patch targe
   await h.before("apply_patch", { patchText: "*** Add File:src/one.go\n+one\n*** Update File: src/two.go\n*** Move to:\tsrc/three.go " });
   for (const header of ["Add File", "Update File", "Delete File", "Move to"]) {
     await assert.rejects(h.before("apply_patch", { patchText: `*** Add File: src/ok.go\n+ok\n*** ${header}: other/denied.go` }), /trusted permission/);
+  }
+  for (const tool of ["read", "edit"]) {
+    await assert.rejects(h.before(tool, { filePath: "src/external.txt" }), /trusted permission/);
   }
   const nested = await plugin({ directory: path.join(h.workspace, "src"), worktree: h.workspace });
   await nested["tool.execute.before"]({ tool: "edit" }, { args: { filePath: "app.go" } });
