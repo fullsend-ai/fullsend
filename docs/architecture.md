@@ -446,9 +446,14 @@ The existing design principle is that [the repo is the coordinator](problems/age
   attempt is fresh, while one `fullsend run` call publishes only its latest
   selected cycle's validated result through the existing artifact shape and
   joins all sandbox traces under a run-level parent. A long-lived poll lifecycle
-  may update that result at idle or within a response window. Current CLI and
-  workflows remain one-shot
-  ([ADR 0144](ADRs/0144-reuse-poll-and-entity-bound-run-processes.md)).
+  may update that result at idle or within a response window. On GitHub
+  Actions, the invocation layer of a bound `run` also lists its shim
+  workflow's run records for the same canonical entity as an in-memory change
+  signal; the read never fills the newest-pending slot or consumes pending
+  work, and uses a host-held credential that never reaches the sandbox.
+  Current CLI and workflows remain one-shot
+  ([ADR 0144](ADRs/0144-reuse-poll-and-entity-bound-run-processes.md),
+  [ADR 0119](ADRs/0119-signal-github-actions-events-to-a-running-cycle.md)).
 - Harness routing uses one CEL predicate over a required normalized entity and
   an optional prompting event. Webhooks provide low-latency candidates;
   `fullsend poll` and its input drivers enumerate and resolve scheduled
