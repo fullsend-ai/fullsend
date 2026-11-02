@@ -432,6 +432,12 @@ The existing design principle is that [the repo is the coordinator](problems/age
   `labels: project_roles` (which, with no lists, resolves every event through
   the roster, as with no entry)
   ([ADR 0153](ADRs/0153-authorize-jira-poll-actors-without-project-administration.md)).
+- The Jira identity Fullsend authenticates as may be either a regular bot
+  account (classic API token at the site URL, unchanged) or an
+  Atlassian-managed service account (scoped token or OAuth 2.0 through the
+  Atlassian API gateway), chosen explicitly per deployment with the
+  bot-account path as the default
+  ([ADR 0156](ADRs/0156-support-bot-and-service-accounts-for-jira-access.md)).
 - Process lifecycle (target state): bound `fullsend run` and `fullsend poll`
   support once, resident polling, and deadline-bounded polling. Bare
   `fullsend poll` and non-CI bound runs default to once; a CI bound run with
