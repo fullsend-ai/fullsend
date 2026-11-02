@@ -26,9 +26,17 @@ an agent to repeat or summarize protected material.
 
 [ADR 0021](../ADRs/0021-jsonl-reasoning-trace-exposure.md) chooses access control
 for full-fidelity transcripts rather than relying on heuristic sanitization.
-It also calls for declared suppression for protected external sources. This
-is design intent; it should not be taken as evidence that every execution
-path already enforces such a switch.
+It also specifies opt-in suppression of the JSONL transcript artifact,
+declared in agent configuration for protected external sources. That decision
+does not cover console output, reviews, traces or other forge writes, and does
+not establish that every execution path implements the suppression mechanism.
+
+The existing [private-repositories guide](../guides/infrastructure/private-repositories.md)
+provides operator guidance: `AGENTS.md` disclosure rules, per-agent risk
+recommendations, output checks and the harness `SecretRedactor`. Those controls
+depend on agents following the instructions and on patterns the scanner can
+recognize. The guide's lower-risk recommendations for repo-local output do not
+establish safety when a public repository's agents consume private sources.
 
 Live runtime-event rendering shipped through
 [PR #3186](https://github.com/fullsend-ai/fullsend/pull/3186).
@@ -61,6 +69,11 @@ ordinary private prose or determine whether a derived business conclusion
 may be published. Moving a runner onto private infrastructure also does not
 change the audience of logs published by a public-repository workflow.
 
+Input access and publication permission are separate controls. Protected
+context can enter through deterministic prefetch code as well as an agent's
+retrieval tools. Restricting tool access alone does not protect prefetched
+content; suppressing output does not reduce what the agent can read.
+
 ## Options and trade-offs
 
 ### Keep protected processing in a private execution environment
@@ -82,6 +95,29 @@ This gives the public agent information it can explain and cite. Someone must
 maintain the projection, prevent stale requirements and decide what may be
 released. It may omit context needed for private policy decisions.
 
+Making the entire source public is a separate disclosure decision: existing
+descriptions, comments, attachments and future updates would all need a
+publication policy. It is not equivalent to approving a limited projection.
+
+### Mediate access to protected context
+
+Have trusted pipeline code select the context before execution, or expose a
+restricted retrieval interface whose source permissions and network controls
+prevent broader access. Neither approach requires giving the agent unrestricted
+access to an entire tracker or document store.
+
+Context needs vary by task. A change may need one work item's approved fields,
+while duplicate detection or retrospective analysis may need a broader corpus.
+Compare a bounded prefetch with scoped retrieval for both task effectiveness
+and disclosure risk rather than assuming either is sufficient for every agent.
+
+Source-specific controls may operate at issue, comment or field granularity.
+Their visibility settings must be interpreted explicitly: a source's
+"public" audience may still require authentication, and permission to read
+does not itself authorize publication. Classification needs to travel with
+selected context and derived work items. These controls reduce exposure but
+do not make all information received by the agent safe for public output.
+
 ### Allow protected context with controlled output destinations
 
 Route full evidence to private storage and internal trace endpoints. Possible
@@ -94,6 +130,33 @@ requires enforcement across every lifecycle stage and publication path,
 including custom scripts and failures. Public fallback when private storage
 fails would defeat the boundary. Trusted policy must apply before private
 reads and cannot be weakened by the untrusted PR or agent.
+
+Another option is to suppress selected artifacts or disable their publication
+for protected runs. Suppressing collection and disabling public upload are
+different choices: the former removes retained evidence needed for debugging,
+retro analysis and resumption; the latter can preserve an authorized private
+copy. Neither prevents disclosure through logs, public comments or generated
+code. An artifact switch is a partial mitigation, not a confidential mode.
+
+### Separate private planning and public contribution loops
+
+Keep private planning stages and their work items within a private execution
+and tracking environment. An authorized release step produces an approved
+public work item. Public contribution agents work only from public material;
+a separate private process can ingest public progress and update private
+tracking without publishing the private linkage.
+
+The release step could be implemented by a person, trusted pipeline code or a
+constrained agent. A handoff limited to creating public issues need not also
+have permission to push code or merge changes. This is a separation of trust
+domains, not just a private runner targeting a public repository, and does not
+require choosing new agent roles here.
+
+This limits which stages handle private context, but the release step remains
+a disclosure boundary requiring validation or approval. Keeping work items
+current adds coordination cost. Public agents may miss relevant private
+dependencies until approved information is relayed, so the effectiveness of
+the handoff also needs evaluation.
 
 ### Separate public technical review from private policy evaluation
 
@@ -111,6 +174,20 @@ These options can be combined. A project might use public requirements for
 technical review, private execution for planning checks and private evidence
 storage for the latter. The choice depends on the permitted disclosures and
 the project's governance.
+
+## Indirect disclosure through derived work
+
+Removing explicit private identifiers does not necessarily remove the
+information they reveal. For a hypothetical example, a private requirement
+could lead to a distinctive compatibility exception in an intermediate work
+item, then a matching code branch or test in a public PR. An observer familiar
+with that constraint could infer the private context without seeing its name.
+
+This can happen across several planning and coding stages without a direct
+quotation or a credential leak. Public-release review must therefore consider
+derived requirements and observable behavior as well as text. Source labels,
+prompt instructions and pattern-based redaction alone do not establish that
+the released result cannot reveal protected information.
 
 ## Example: a private roadmap affects a public PR
 
@@ -165,6 +242,11 @@ approval alone cannot demonstrate the required confidentiality property.
   before private data is read? What happens when sensitivity changes mid-run?
 - Which policy belongs in repository, harness or operator configuration, and
   which trusted authority can approve an exception?
+- Which tasks can use a bounded prefetch, and which need scoped retrieval?
+  What evidence would justify expanding the selected context?
+- Who approves a private-to-public work-item handoff, and how are its content,
+  derived behavior and subsequent updates checked without exposing private
+  rationale or linkage?
 - What console metadata is acceptable, including errors and timing signals?
 - How should fixed public results be bound to a revision and authorized
   publisher, and how should stale or unavailable evidence affect merge?
