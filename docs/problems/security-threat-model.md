@@ -67,14 +67,6 @@ The attack surface is the same as for visible prompt injection — PR descriptio
 - **Human-in-the-loop for untrusted sources** — PRs from non-org-members could require higher scrutiny or human approval regardless
 - **Canary/tripwire patterns** — embed known-good test cases that should never change; if they do, something is wrong
 - **Immutable agent configuration** — agent system prompts and rules must not be modifiable through the same channels agents process (PRs, issues, comments)
-- **Kubernetes repository boundaries** —
-  [ADR 0037](../ADRs/0037-kubernetes-repository-security-boundaries.md) assigns
-  each repository a namespace; the mint derives the namespace name from the
-  requested repository URL and compares it with the verified service account
-  token using the full SHA-256 digest, without namespace metadata reads or
-  per-repository enrollment at a public mint. Trusted issuers and provisioners
-  establish repository authority; workloads cannot create arbitrary namespaces
-  or change the RBAC, network, and admission controls enforcing the boundary.
 
 ### Indirect information disclosure
 
@@ -116,6 +108,12 @@ In fullsend's architecture, this is mitigated by several design decisions: agent
   0133](../ADRs/0133-actor-attributed-data-security-boundary.md)).
 - How do we handle the case where legitimate code contains text that looks like prompt injection? (e.g., a test for prompt injection defenses)
 - What's the blast radius if an injection succeeds? How do we limit it? (Credential exposure mitigated by keeping credentials out of sandboxes entirely — see [ADR 0017](../ADRs/0017-credential-isolation-for-sandboxed-agents.md); model-provider credentials for runtimes that need one follow the same rule through a run-scoped provider and a placeholder the agent never resolves — see [ADR 0092](../ADRs/0092-openai-wif-credential-delivery.md) and, for codex, [ADR 0099](../ADRs/0099-codex-agent-runtime.md); an inference gateway that accepts the job's OIDC token keeps reusable provider keys off the forge, though the gateway itself becomes a concentrated risk — see [ADR 0137](../ADRs/0137-inference-gateway-credential-route.md); a gateway that cannot trust forge OIDC can instead take an opt-in API key, which relies on a long-lived secret held by the forge — see [ADR 0138](../ADRs/0138-inference-gateway-api-key-credential-mode.md); the Actions workflow token used for GitHub Packages has its *placeholder* bound the same way, resolving only at the two registry hosts; but a value recovered through the registry's error echo is the job's own `GITHUB_TOKEN` and is replayable against whatever hosts the running role's forge profile already allows — read-write for `coder` — see [ADR 0114](../ADRs/0114-github-packages-via-host-bound-workflow-token-provider.md). Tool access limited by `permissions.deny` hard-blocks — see [ADR 0027](../ADRs/0027-allowed-and-disallowed-tools-for-agents.md). User secrets reach only host-side scripts that reference them, never the sandbox — see [ADR 0136](../ADRs/0136-runner-secrets-through-one-stored-secret.md). Other blast radius dimensions remain open.)
+  For Kubernetes execution,
+  [ADR 0037](../ADRs/0037-kubernetes-repository-security-boundaries.md) limits
+  cross-repository impact through repository namespaces with protected RBAC,
+  network and admission policies, alongside per-agent sandboxing. This boundary
+  assumes trusted cluster issuers and namespace provisioners; it does not
+  prevent prompt injection or protect against a compromised control plane.
 - Should agents operate on Unicode-normalized text with non-rendering characters stripped, or on raw text with a separate detection pass? ([ADR 0133](../ADRs/0133-actor-attributed-data-security-boundary.md) decides that model-bound source content is the filtered representation and that raw text is never exposed; strip versus detect-and-preserve remains deferred to the versioned content-filter contract.)
 - How do we handle invisible Unicode in code itself (source files, not just metadata)? Some non-rendering characters are legitimate in string literals for internationalization. What heuristics distinguish malicious use from legitimate use? [ADR 0133](../ADRs/0133-actor-attributed-data-security-boundary.md) defines the source-content boundary; code-content handling remains open.
 

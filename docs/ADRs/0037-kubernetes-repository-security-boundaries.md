@@ -89,8 +89,9 @@ and unsupported adapters must reject requests.
 
 - Public mints can authenticate Kubernetes workloads without per-repository
   enrollment or a namespace-to-repository registry at the mint.
-- Mint requests carry the complete repository URL, allowing namespace-name
-  validation without Kubernetes metadata lookups or label encoding constraints.
+- Identity follows the repository URL, so v1 accepts the residual risk that old
+  workload tokens can authorize access to a replacement repository at that URL
+  until old token issuance stops and the remaining credentials expire.
 - The full digest leaves seven characters for the namespace's readable core,
   with longer repository names available in labels.
 - Repository moves require workload migration, and immediate Kubernetes

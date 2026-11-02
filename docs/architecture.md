@@ -37,18 +37,6 @@ The compute and orchestration layer that runs agent workloads. Responsible for p
 
 This is the "where do agents physically run" question — whether that's a managed platform, internal Kubernetes, CI runners repurposed for agent work, or something purpose-built.
 
-**Decided:** Kubernetes-hosted execution assigns one namespace per repository,
-with deterministic names and readable repository labels. The mint verifies
-projected service account tokens through the trusted cluster's JWKS, derives
-the expected namespace name from the canonical repository URL in the request,
-and compares it with the verified token's namespace using the full SHA-256
-digest encoded in base32
-([ADR 0037](ADRs/0037-kubernetes-repository-security-boundaries.md)). Public
-mints require no per-repository enrollment or namespace metadata lookup;
-issuer and namespace-provisioner trust remain required. Namespace RBAC, network
-and admission policies complement per-agent sandboxing; this decision does not
-select an orchestration backend.
-
 Forge-native infrastructure platform choice and configuration live in each
 target repository's **`.fullsend/`** directory. Per-repo installation is the
 sole supported installation model
@@ -58,6 +46,14 @@ sole supported installation model
 
 **Decided:**
 
+- Kubernetes execution uses one namespace per repository. The mint verifies a
+  projected service account token through a trusted issuer's JWKS and compares
+  its namespace with the name derived from the requested canonical repository
+  URL, including the full SHA-256 digest. Public mints require no per-repository
+  enrollment or namespace metadata lookup; issuer and provisioner trust remain
+  required. Namespace RBAC, network and admission policies complement per-agent
+  sandboxing ([ADR 0037](ADRs/0037-kubernetes-repository-security-boundaries.md),
+  [identity contract](normative/kubernetes-repository-identity/v1/README.md)).
 - Tenant configuration for a possible centrally managed service reuses the
   existing `repos.yaml` v1 format directly through `repos.Manifest`. Whether
   to offer the service, its source of truth, and its delivery mechanism remain

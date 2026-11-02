@@ -94,7 +94,8 @@ losslessly and neither labels nor annotations participate in mint authorization.
 ## Mint authentication and scoping
 
 1. The trusted runner uses a short-lived, pod-bound projected service account
-   token with the mint's audience, reloading it when Kubernetes rotates it.
+   token with the mint's audience and a requested lifetime of at most one hour,
+   reloading it when Kubernetes rotates it.
    Keep this token outside the agent sandbox under
    [ADR 0017](../../../ADRs/0017-credential-isolation-for-sandboxed-agents.md).
    Each request includes the full canonical HTTPS repository URL, including
@@ -106,9 +107,11 @@ losslessly and neither labels nor annotations participate in mint authorization.
    served by those issuers, subject to forge installation and permission checks.
    It verifies the signature against that issuer's [discovered JWKS][discovery],
    checks the signing algorithm, exact issuer, audience, expiry, not-before,
-   issued-at, and maximum permitted lifetime, and requires consistent namespace
-   and service account claims and `sub`. Token-supplied URLs cannot introduce
-   a new issuer or key source.
+   issued-at, and maximum permitted lifetime (`0 < exp - iat <= 3600` seconds),
+   and requires consistent namespace and service account claims and `sub`.
+   Reject tokens exceeding this lifetime even if the issuer extends their
+   requested expiry. Token-supplied URLs cannot introduce a new issuer or key
+   source.
 3. Treat the requested repository URL as untrusted until validated. Require its
    canonical form under the supported forge's URL rules, derive the provider ID
    from a recognized forge origin rather than a caller-supplied prefix, and
@@ -150,8 +153,29 @@ retains issuer and provisioner trust without a repository registry at the mint.
 
 Renames and transfers require migration into the namespace derived from the new
 URL and retirement of the old workloads. The provisioner tracks immutable forge
-repository identity to detect URL reuse; a namespace or URL must not be assigned
-to a different repository while old workload credentials remain usable.
+repository identity, revalidates it before admission and during workload
+execution, and stops old workloads and further token issuance when the
+repository disappears or the identity at its URL changes. Existing workloads
+must not be rebound to a replacement repository; replacements require fresh
+admission.
+
+**Accepted URL-reuse risk:** v1 binds mint authority to the canonical repository
+URL, not to an immutable forge repository ID. A holder of an old workload token
+can therefore obtain credentials for a replacement repository at the same URL
+if the mint's other authorization checks pass, even without authority to delete
+or recreate repositories. Provisioner detection cannot prevent forge URL reuse,
+and Kubernetes TokenReview alone does not establish forge repository identity.
+We accept this residual risk as a limitation of v1's URL-only identity contract.
+
+After issuance and renewal of old workload tokens have stopped, the remaining
+exposure is bounded by their remaining lifetime plus the lifetime of credentials
+minted from them, including any allowed verification clock skew. With the
+one-hour workload-token cap and [GitHub's one-hour installation tokens][github-ttl],
+this can approach two hours, plus clock skew. Lifecycle detection and shutdown
+delay add to the window measured from the forge change; continued Kubernetes
+token rotation prevents a fixed bound from that change. Each forge adapter must
+document its credential lifetime and revocation behavior rather than assume
+GitHub's lifetime applies to GitLab or Forgejo.
 
 A namespace is the unit at which repository policy is applied, not sufficient
 containment by itself. Require namespace-scoped least-privilege RBAC, enforced
@@ -169,3 +193,4 @@ administrators and the control plane remain trusted infrastructure.
 [tenancy]: https://kubernetes.io/docs/concepts/security/multi-tenancy/
 [base32]: https://www.rfc-editor.org/rfc/rfc4648.html#section-6
 [hash-strength]: https://csrc.nist.gov/projects/hash-functions
+[github-ttl]: https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app
