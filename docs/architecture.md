@@ -323,6 +323,12 @@ flowchart TB
   without overlays, and `FULLSEND_FALLBACK_MODELS` applies as each runtime
   allows. Decided, not yet implemented.
 - Plugins are runtime-scoped harness resources: a harness declares `plugins:` as one list of directories in its own repository (same trust and fetch path as skills), and each entry's format decides which runtime loads it — a `plugin.json` bundle is Claude Code's, a directory pi's `-e` loader resolves is uploaded and loaded after a tree-hash preflight computed from the host copy. Each runtime names and skips the entries in the other format, so the list survives a runtime switch. Because `--no-extensions` plus explicit `-e` closes the set of code that can register tools, no per-tool declaration is needed ([ADR 0094](ADRs/0094-pi-extensions-are-harness-resources.md)).
+- Steering (target state) is an optional `runtime.Steerer` capability with
+  `Steer` and `Settle`. Claude Code and pi take each steer through an
+  in-sandbox mailbox their stdin tails; Codex stops, starts, and resumes the
+  sandbox session and fails its cycle closed if the sandbox comes back in an
+  Error phase; OpenCode and the dummy runtimes are not steerable
+  ([ADR 0118](ADRs/0118-steer-runtime-interface.md)).
 - Native Codex children run under a runner-owned policy: Bootstrap registers roles for an agent with the `Agent` tool, under harness security, whose parent model Codex resolves to collaboration V1 on the direct route (a V2, unlisted or `gateway/` parent keeps the multi-agent tools off), and binds each child's model (a persona's own entry in its role file, the run-level default otherwise) and the run's effort, and a mandatory dispatch hook admits only fresh-context V1 spawns of registered roles after checking `hooks.json` and the role files against runner-held digests; after each iteration the runner checks the spawns seen in the stream or in the children's rollouts on disk, each child once, against the hook's admissions ([ADR 0126](ADRs/0126-fullsend-owned-codex-subagents.md), [#6970](https://github.com/fullsend-ai/fullsend/issues/6970)).
 
 ### Behaviour testing
@@ -331,6 +337,8 @@ End-to-end **behaviour tests** use the shared framework in `pkg/behaviourtest/` 
 
 **Open questions:**
 
+- Can an OpenShell `exec` write the steer mailbox as a user other than the agent, so the mailbox can be agent-immutable on every runtime ([ADR 0118](ADRs/0118-steer-runtime-interface.md))?
+- Do agent definitions need a sandbox variable saying steering is active, or is the steer envelope's opening line enough?
 - Is the runtime a single model call, a loop (plan-act-observe), or something more structured?
 - How does the runtime interact with the sandbox boundaries — does it know what it can't do, or does it just hit walls? (For tool access: both — prose instructions inform the runtime, and `permissions.deny` hard-blocks execution; see [ADR 0027](ADRs/0027-allowed-and-disallowed-tools-for-agents.md). Broader sandbox interaction remains open.)
 - How do we swap model providers or versions without changing the rest of the stack?
