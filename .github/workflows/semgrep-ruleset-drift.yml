@@ -52,12 +52,14 @@ jobs:
         run: |
           set -euo pipefail
           title="Semgrep ruleset drift"
-          issue="$(gh issue list --repo fullsend-ai/fullsend --state open --search "in:title $title" --json number --jq '.[0].number // empty')"
+          issue="$(gh issue list --repo fullsend-ai/fullsend --state open --author app/github-actions --search "in:title $title" --json number,title,body --jq 'map(select(.title == "Semgrep ruleset drift" and ((.body // "") | contains("<!-- fullsend-semgrep-ruleset-drift -->")))) | .[0].number // empty')"
 
           if [[ "$RULESET_DRIFT" == "true" ]]; then
             body_file="$(mktemp)"
             trap 'rm -f "$body_file"' EXIT
             cat > "$body_file" <<EOF
+          <!-- fullsend-semgrep-ruleset-drift -->
+
           The Semgrep Registry response differs from the reviewed SHA-256 pin.
 
           - Pinned SHA-256: $RULESET_EXPECTED

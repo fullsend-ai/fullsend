@@ -42,12 +42,17 @@ ruleset_failure() {
 	exit 0
 }
 
+ruleset_integrity_failure() {
+	echo "semgrep-scan: $1; refusing to scan with an unverified ruleset" >&2
+	exit 1
+}
+
 if ! mkdir -p "$RULESET_CACHE_ROOT"; then
 	ruleset_failure "cannot create the local ruleset cache"
 fi
 if [[ -f "$RULESET_FILE" ]]; then
 	if ! RULESET_ACTUAL_SHA256="$(sha256_file "$RULESET_FILE")"; then
-		ruleset_failure "cannot verify cached ruleset"
+		ruleset_integrity_failure "cannot verify cached ruleset"
 	fi
 else
 	RULESET_ACTUAL_SHA256=
@@ -62,10 +67,10 @@ if [[ "$RULESET_ACTUAL_SHA256" != "$RULESET_SHA256" ]]; then
 		ruleset_failure "unable to download the pinned ruleset from ${RULESET_URL}"
 	fi
 	if ! RULESET_ACTUAL_SHA256="$(sha256_file "$RULESET_TMP")"; then
-		ruleset_failure "cannot verify downloaded ruleset"
+		ruleset_integrity_failure "cannot verify downloaded ruleset"
 	fi
 	if [[ "$RULESET_ACTUAL_SHA256" != "$RULESET_SHA256" ]]; then
-		ruleset_failure "downloaded ruleset SHA-256 does not match the pin (expected ${RULESET_SHA256}, got ${RULESET_ACTUAL_SHA256})"
+		ruleset_integrity_failure "downloaded ruleset SHA-256 does not match the pin (expected ${RULESET_SHA256}, got ${RULESET_ACTUAL_SHA256})"
 	fi
 	if ! mkdir -p "$RULESET_DIR"; then
 		ruleset_failure "cannot create the verified ruleset cache directory"

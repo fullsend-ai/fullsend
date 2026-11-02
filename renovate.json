@@ -11,6 +11,20 @@
       "automerge": true
     },
     {
+      "description": "Keep Semgrep dependency updates human-reviewed.",
+      "matchPackageNames": ["semgrep"],
+      "automerge": false
+    },
+    {
+      "description": "Refresh PEP 621 lock files weekly for transitive dependencies.",
+      "matchManagers": ["pep621"],
+      "lockFileMaintenance": {
+        "enabled": true,
+        "schedule": ["before 4am on monday"]
+      },
+      "automerge": false
+    },
+    {
       "description": "Automerge minor GitHub Actions updates (SHA-pinned, low-risk)",
       "matchManagers": ["github-actions"],
       "matchUpdateTypes": ["minor"],
@@ -290,16 +304,6 @@
       "depNameTemplate": "sigstore/cosign",
       "datasourceTemplate": "github-releases",
       "extractVersionTemplate": "^v(?<version>.*)$"
-    },
-    {
-      "customType": "regex",
-      "description": "Track the pinned Semgrep engine used by the pre-commit and CI scan.",
-      "managerFilePatterns": ["/^tools\\/semgrep\\/pyproject\\.toml$/"],
-      "matchStrings": [
-        "semgrep==(?<currentValue>\\d+\\.\\d+\\.\\d+)"
-      ],
-      "depNameTemplate": "semgrep",
-      "datasourceTemplate": "pypi"
     }
   ]
 }

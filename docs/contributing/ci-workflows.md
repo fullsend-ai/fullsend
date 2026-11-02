@@ -266,11 +266,13 @@ This recursion is by design but interacts with the convergence non-idempotence t
 `scripts/semgrep-scan` is the shared entry point for the pinned Semgrep engine
 and the Semgrep Registry's `p/security-audit` ruleset. It verifies downloaded
 rules against the SHA-256 in `scripts/semgrep-ruleset.sha256` and caches a
-verified copy locally under that hash. CI fails closed on a missing or changed
-ruleset; a local cache miss warns and skips if the pinned bytes are unavailable.
-The scheduled `Semgrep Ruleset Drift` workflow opens or updates an issue when
-the live registry response changes. Renovate tracks the engine version and its
-transitive dependencies through `tools/semgrep/pyproject.toml` and `uv.lock`.
+verified copy locally under that hash. A downloaded hash mismatch fails both
+local and CI scans. CI also fails closed if it cannot fetch the pinned ruleset;
+a local cache miss warns and skips when the pinned bytes are unavailable. The
+scheduled `Semgrep Ruleset Drift` workflow opens or updates an issue when the
+live registry response changes. Renovate PEP 621 updates keep the Semgrep
+version and `uv.lock` together; weekly lock maintenance refreshes transitive
+dependencies, and Semgrep updates stay out of automerge.
 
 The pre-commit hook scans changed files of all types, except paths matched by
 its `exclude:` expression in `.pre-commit-config.yaml`. Semgrep's full-directory
@@ -278,8 +280,11 @@ scan in CI honors `.semgrepignore`; explicit file arguments bypass it, so keep
 the hook expression aligned with that file. CI scans in a separate job, leaving
 lint and test results visible if Semgrep fails, and retains a SARIF artifact
 for 30 days. Both scans use `--strict` so parse errors and rule timeouts fail
-the scan instead of passing with partial analysis. For an offline local run,
-use `SKIP=semgrep make test` or `SKIP=semgrep pre-commit run --all-files`.
+the scan instead of passing with partial analysis. The job reports failures
+independently; a failing check blocks merges only when the branch ruleset
+requires it. The main ruleset will require Semgrep after this workflow merges.
+For an offline local run, use `SKIP=semgrep make test` or
+`SKIP=semgrep pre-commit run --all-files`.
 
 - Always include the workflow file itself in its own `paths:` filter so changes to the workflow trigger its own CI.
 - Use `ubuntu-24.04` (specific version), not `ubuntu-latest`, for reproducible builds.
