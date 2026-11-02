@@ -162,16 +162,43 @@ func lintPreflightCheckCommand(field, value string) *Diagnostic {
 	}
 }
 
-// lintDeprecatedIssueURL reports env entries and host_files sources that
+// lintDeprecatedIssueURL returns the GITHUB_ISSUE_URL deprecation
+// diagnostics for the harness (#6610). Every loader consumes the forge and
+// overlay blocks before Lint() runs: matched sections are merged into the
+// top-level fields and the rest are dropped. So when the diagnostics were
+// captured before that consumption (captureDeprecatedIssueURL), the
+// snapshot is returned; it reports every forge variant and overlay —
+// matched or not — once, at its declared position (#8742). Otherwise
+// (plain Load, or a harness built in memory) the current state is scanned.
+func (h *Harness) lintDeprecatedIssueURL() []Diagnostic {
+	if h.issueURLDiagsCaptured {
+		return append([]Diagnostic(nil), h.issueURLDiags...)
+	}
+	return h.scanDeprecatedIssueURL()
+}
+
+// captureDeprecatedIssueURL records the harness's GITHUB_ISSUE_URL
+// diagnostics for Lint() before its forge and overlay blocks are consumed
+// (#8742). Call it on the raw harness, before ResolveForge, ResolveOverlays,
+// base flattening, or merging a base into it. Only the first call records
+// anything: a later call would see already-merged top-level fields and
+// report forge or overlay content a second time, at the wrong position.
+func (h *Harness) captureDeprecatedIssueURL() {
+	if h.issueURLDiagsCaptured {
+		return
+	}
+	h.issueURLDiags = h.scanDeprecatedIssueURL()
+	h.issueURLDiagsCaptured = true
+}
+
+// scanDeprecatedIssueURL reports env entries and host_files sources that
 // reference the deprecated GITHUB_ISSUE_URL variable, either as the entry
 // key itself or as a $GITHUB_ISSUE_URL / ${GITHUB_ISSUE_URL} expansion
-// in the value (#6610). Checked across the top-level
-// harness and unconsumed forge sections. Overlays are not scanned: every
-// loader runs ResolveOverlays before Lint(), which merges matched overlays
-// into the top-level fields (scanned there) and drops the rest (#8742).
+// in the value (#6610). Checked across the top-level harness and whatever
+// forge sections and overlays are still present.
 // The offending entry key is quoted in the message so harness-controlled key text cannot inject
 // control characters into diagnostic output.
-func (h *Harness) lintDeprecatedIssueURL() []Diagnostic {
+func (h *Harness) scanDeprecatedIssueURL() []Diagnostic {
 	var diags []Diagnostic
 
 	checkEnv := func(m map[string]string, field string) {
@@ -226,6 +253,9 @@ func (h *Harness) lintDeprecatedIssueURL() []Diagnostic {
 		for _, k := range forgeKeys {
 			checkForgeConfig(h.Forge[k], fmt.Sprintf("forge[%s]", k))
 		}
+	}
+	for i := range h.Overlays {
+		checkForgeConfig(&h.Overlays[i].ForgeConfig, fmt.Sprintf("overlays[%d]", i))
 	}
 	return diags
 }
