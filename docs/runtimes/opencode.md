@@ -184,8 +184,9 @@ not covered by this model-boundary check (see #7320). Denials identify the block
 script and include a bounded, credential-redacted reason when the verified shared sanitizer is
 available. Reasons containing the canary, missing sanitizer files, and sanitization failures
 produce only the script name; raw hook stderr is never reflected.
-The image includes the pinned plugin SDK. Bootstrap restores global SDK bookkeeping from
-that installation after clearing user config, so startup needs no registry download.
+The image keeps the pinned plugin SDK under the root-owned, sandbox-user-unwritable
+`/usr/local/share/opencode-sdk`. Bootstrap restores global SDK bookkeeping from that
+installation after clearing user config, so startup needs no registry download.
 
 ## Troubleshooting
 
@@ -196,7 +197,7 @@ that installation after clearing user config, so startup needs no registry downl
 | `OpenCode requires security.enabled: true` | Remove the old security-disabled workaround or set it to `true` |
 | `opencode hook adapter requires version 1.19.1` | Use the pinned sandbox image; v2 needs a separate adapter migration |
 | Hook adapter/scripts missing or modified (exit 97) | A security file changed after bootstrap. Recreate the sandbox; do not disable security |
-| `OpenCode plugin SDK missing` | Use an image with the pinned plugin SDK installed under `/sandbox/opencode-config` |
+| `OpenCode plugin SDK missing` | Use an image with the pinned plugin SDK installed under `/usr/local/share/opencode-sdk` |
 | `ProviderModelNotFoundError` | The id is not in OpenCode's built-in catalog. Use an id from the table above |
 | Vertex `404 NOT_FOUND` for the model | Your project does not serve it. Name one it serves |
 | `Falling back to default agent` | OpenCode could not load the agent, and the iteration fails. Rerun with `--debug='*'` and read `opencode-debug.log` |

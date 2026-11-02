@@ -159,6 +159,7 @@ jobs:
             fullsend-sandbox:ci-smoke -ec '
               id
               test -w /sandbox/opencode-config
+              test ! -w /usr/local/share/opencode-sdk
               for binary in /usr/local/bin/opencode /usr/local/bin/rg /usr/local/bin/tirith; do
                 test "$(stat -c %U "$binary")" = root
               done
@@ -169,7 +170,7 @@ jobs:
             --entrypoint node \
             fullsend-sandbox:ci-smoke -e '
               const { execFileSync } = require("node:child_process");
-              const root = "/sandbox/opencode-config/node_modules";
+              const root = "/usr/local/share/opencode-sdk/node_modules";
               const sdk = require(root + "/@opencode-ai/plugin/package.json");
               const version = execFileSync("opencode", ["--version"], { encoding: "utf8" }).trim();
               if (sdk.version !== version) throw new Error(`unexpected SDK version: ${sdk.version}`);
@@ -188,8 +189,8 @@ jobs:
             -ec '
               rm -rf "$HOME/.config/opencode"
               mkdir -p "$HOME/.config/opencode"
-              cp /sandbox/opencode-config/package.json /sandbox/opencode-config/package-lock.json "$HOME/.config/opencode/"
-              ln -s /sandbox/opencode-config/node_modules "$HOME/.config/opencode/node_modules"
+              cp /usr/local/share/opencode-sdk/package.json /usr/local/share/opencode-sdk/package-lock.json "$HOME/.config/opencode/"
+              ln -s /usr/local/share/opencode-sdk/node_modules "$HOME/.config/opencode/node_modules"
               timeout 45 opencode --print-logs --log-level DEBUG debug agent build
             '
 
@@ -199,8 +200,8 @@ jobs:
           CGO_ENABLED: "0"
         run: go test -c ./internal/runtime -o "${RUNNER_TEMP}/opencode-native-hooks.test"
 
-      # Reuse the scripted local provider and production adapter. The probe
-      # checks that SSRF denial prevents a file side effect, not just a curl failure.
+      # Reuse the scripted local provider and production adapter to exercise
+      # every native OpenCode hook, permission, and isolation scenario.
       - name: Validate OpenCode adapter in sandbox image
         timeout-minutes: 3
         run: |
@@ -215,7 +216,7 @@ jobs:
               test "$(id -un)" = sandbox
               /tmp/opencode-native-hooks.test \
                 -test.v -test.timeout=2m \
-                -test.run "^TestOpenCodeNativeHooks$/^pre-block$"
+                -test.run "^TestOpenCodeNativeHooks$"
             '
 
       - name: Export digest

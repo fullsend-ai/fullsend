@@ -145,7 +145,7 @@ func TestOpenCodeSDKCacheRestore(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(sdk, name), []byte(`{"test":"metadata"}`), 0o600))
 	}
 	home := t.TempDir()
-	command := strings.ReplaceAll(OpenCodeRuntime{}.openCodeSDKCacheRestore(), OpenCodeRuntime{}.ConfigDir(), sdk)
+	command := openCodeSDKCacheRestoreFrom(sdk)
 	run := func() ([]byte, error) {
 		cmd := exec.Command("sh", "-c", command)
 		cmd.Env = append(os.Environ(), "HOME="+home)
@@ -166,6 +166,12 @@ func TestOpenCodeSDKCacheRestore(t *testing.T) {
 	var exit *exec.ExitError
 	require.ErrorAs(t, err, &exit, "%s", out)
 	assert.Equal(t, 127, exit.ExitCode())
+}
+
+func TestOpenCodeSDKCacheRestore_UsesImageOwnedSDK(t *testing.T) {
+	command := OpenCodeRuntime{}.openCodeSDKCacheRestore()
+	assert.Contains(t, command, shellQuote(openCodeSDKDir+"/node_modules"))
+	assert.NotContains(t, command, OpenCodeRuntime{}.ConfigDir()+"/node_modules")
 }
 
 func TestOpenCodeRejectsAdditionalNativePlugins(t *testing.T) {
