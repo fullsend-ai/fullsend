@@ -37,6 +37,18 @@ The compute and orchestration layer that runs agent workloads. Responsible for p
 
 This is the "where do agents physically run" question — whether that's a managed platform, internal Kubernetes, CI runners repurposed for agent work, or something purpose-built.
 
+**Decided:** Kubernetes-hosted execution assigns one namespace per repository,
+with deterministic names and readable repository labels. The mint verifies
+projected service account tokens through the trusted cluster's JWKS, derives
+the expected namespace name from the canonical repository URL in the request,
+and compares it with the verified token's namespace using the full SHA-256
+digest encoded in base32
+([ADR 0037](ADRs/0037-kubernetes-repository-security-boundaries.md)). Public
+mints require no per-repository enrollment or namespace metadata lookup;
+issuer and namespace-provisioner trust remain required. Namespace RBAC, network
+and admission policies complement per-agent sandboxing; this decision does not
+select an orchestration backend.
+
 Forge-native infrastructure platform choice and configuration live in each
 target repository's **`.fullsend/`** directory. Per-repo installation is the
 sole supported installation model

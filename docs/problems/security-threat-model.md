@@ -67,6 +67,14 @@ The attack surface is the same as for visible prompt injection — PR descriptio
 - **Human-in-the-loop for untrusted sources** — PRs from non-org-members could require higher scrutiny or human approval regardless
 - **Canary/tripwire patterns** — embed known-good test cases that should never change; if they do, something is wrong
 - **Immutable agent configuration** — agent system prompts and rules must not be modifiable through the same channels agents process (PRs, issues, comments)
+- **Kubernetes repository boundaries** —
+  [ADR 0037](../ADRs/0037-kubernetes-repository-security-boundaries.md) assigns
+  each repository a namespace; the mint derives the namespace name from the
+  requested repository URL and compares it with the verified service account
+  token using the full SHA-256 digest, without namespace metadata reads or
+  per-repository enrollment at a public mint. Trusted issuers and provisioners
+  establish repository authority; workloads cannot create arbitrary namespaces
+  or change the RBAC, network, and admission controls enforcing the boundary.
 
 ### Indirect information disclosure
 
