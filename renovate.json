@@ -293,10 +293,10 @@
     },
     {
       "customType": "regex",
-      "description": "Track the Semgrep engine version used by the pre-commit and CI wrapper.",
-      "managerFilePatterns": ["/^scripts/semgrep-scan$/"],
+      "description": "Track the pinned Semgrep engine used by the pre-commit and CI scan.",
+      "managerFilePatterns": ["/^tools\\/semgrep\\/pyproject\\.toml$/"],
       "matchStrings": [
-        "SEMGREP_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)"
+        "semgrep==(?<currentValue>\\d+\\.\\d+\\.\\d+)"
       ],
       "depNameTemplate": "semgrep",
       "datasourceTemplate": "pypi"

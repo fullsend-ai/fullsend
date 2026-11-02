@@ -1,0 +1,76 @@
+name: Semgrep Ruleset Drift
+
+on:
+  schedule:
+    - cron: "17 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    outputs:
+      drift: ${{ steps.compare.outputs.drift }}
+      expected: ${{ steps.compare.outputs.expected }}
+      actual: ${{ steps.compare.outputs.actual }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Compare registry ruleset with its pin
+        id: compare
+        env:
+          RULESET_URL_FILE: scripts/semgrep-ruleset-url
+          RULESET_SHA256_FILE: scripts/semgrep-ruleset.sha256
+        run: |
+          set -euo pipefail
+          url="$(tr -d '[:space:]' < "$RULESET_URL_FILE")"
+          expected="$(tr -d '[:space:]' < "$RULESET_SHA256_FILE")"
+          actual="$(curl --fail --location --silent --show-error "$url" | sha256sum | cut -d ' ' -f 1)"
+          echo "expected=$expected" >> "$GITHUB_OUTPUT"
+          echo "actual=$actual" >> "$GITHUB_OUTPUT"
+          if [[ "$actual" == "$expected" ]]; then
+            echo "drift=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "drift=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  report:
+    needs: compare
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      issues: write
+    steps:
+      - name: Create, update, or close the drift issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RULESET_DRIFT: ${{ needs.compare.outputs.drift }}
+          RULESET_EXPECTED: ${{ needs.compare.outputs.expected }}
+          RULESET_ACTUAL: ${{ needs.compare.outputs.actual }}
+        run: |
+          set -euo pipefail
+          title="Semgrep ruleset drift"
+          issue="$(gh issue list --repo fullsend-ai/fullsend --state open --search "in:title $title" --json number --jq '.[0].number // empty')"
+
+          if [[ "$RULESET_DRIFT" == "true" ]]; then
+            body_file="$(mktemp)"
+            trap 'rm -f "$body_file"' EXIT
+            cat > "$body_file" <<EOF
+          The Semgrep Registry response differs from the reviewed SHA-256 pin.
+
+          - Pinned SHA-256: $RULESET_EXPECTED
+          - Current SHA-256: $RULESET_ACTUAL
+          - Source file: scripts/semgrep-ruleset-url
+
+          Review the ruleset and scan results before updating scripts/semgrep-ruleset.sha256.
+          EOF
+            if [[ -n "$issue" ]]; then
+              gh issue edit "$issue" --repo fullsend-ai/fullsend --body-file "$body_file"
+            else
+              gh issue create --repo fullsend-ai/fullsend --title "$title" --body-file "$body_file"
+            fi
+          elif [[ -n "$issue" ]]; then
+            gh issue close "$issue" --repo fullsend-ai/fullsend --comment "The registry response matches the current SHA-256 pin again."
+          fi

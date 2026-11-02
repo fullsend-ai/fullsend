@@ -47,6 +47,7 @@ repos:
 
   - repo: local
     hooks:
+      # Explicit filenames bypass .semgrepignore; keep this exclude aligned with it.
       - id: semgrep
         name: semgrep security scan (p/security-audit)
         entry: ./scripts/semgrep-scan

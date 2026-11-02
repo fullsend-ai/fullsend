@@ -264,18 +264,22 @@ This recursion is by design but interacts with the convergence non-idempotence t
 ### Semgrep security scan
 
 `scripts/semgrep-scan` is the shared entry point for the pinned Semgrep engine
-and the Semgrep Registry's `p/security-audit` ruleset. It downloads the ruleset
-to a temporary file and verifies its SHA-256 against the pin in the script
-before scanning. Renovate tracks the engine version; ruleset updates require a
-reviewed change to the pin and accepted baseline.
+and the Semgrep Registry's `p/security-audit` ruleset. It verifies downloaded
+rules against the SHA-256 in `scripts/semgrep-ruleset.sha256` and caches a
+verified copy locally under that hash. CI fails closed on a missing or changed
+ruleset; a local cache miss warns and skips if the pinned bytes are unavailable.
+The scheduled `Semgrep Ruleset Drift` workflow opens or updates an issue when
+the live registry response changes. Renovate tracks the engine version and its
+transitive dependencies through `tools/semgrep/pyproject.toml` and `uv.lock`.
 
-The pre-commit hook scans changed files of all types. CI scans the repository in
-a separate job, so Semgrep findings do not prevent the regular lint and test
-jobs from reporting their results. `.semgrepignore` excludes Go test files,
-test directories, the `.semgrep/` configuration directory, and synthetic
-behaviour fixtures and captured results. CI retains a SARIF report artifact for
-30 days. Both scans use `--strict` so parse errors and rule timeouts fail the
-scan instead of passing with partial analysis.
+The pre-commit hook scans changed files of all types, except paths matched by
+its `exclude:` expression in `.pre-commit-config.yaml`. Semgrep's full-directory
+scan in CI honors `.semgrepignore`; explicit file arguments bypass it, so keep
+the hook expression aligned with that file. CI scans in a separate job, leaving
+lint and test results visible if Semgrep fails, and retains a SARIF artifact
+for 30 days. Both scans use `--strict` so parse errors and rule timeouts fail
+the scan instead of passing with partial analysis. For an offline local run,
+use `SKIP=semgrep make test` or `SKIP=semgrep pre-commit run --all-files`.
 
 - Always include the workflow file itself in its own `paths:` filter so changes to the workflow trigger its own CI.
 - Use `ubuntu-24.04` (specific version), not `ubuntu-latest`, for reproducible builds.

@@ -1,38 +1,118 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SEMGREP_VERSION=1.182.1
-RULESET_URL=https://semgrep.dev/c/p/security-audit
-RULESET_SHA256=83d7cde9157b3c79cc5cfaea26e7bd2ba9c740f2ba07635ad475b2585556c32d
-
-RULESET_DIR="$(mktemp -d "${TMPDIR:-/tmp}/fullsend-semgrep-rules.XXXXXX")"
-trap 'rm -rf "$RULESET_DIR"' EXIT
+SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(CDPATH='' cd -- "${SCRIPT_DIR}/.." && pwd)"
+RULESET_URL="$(tr -d '[:space:]' < "${SCRIPT_DIR}/semgrep-ruleset-url")"
+RULESET_SHA256="$(tr -d '[:space:]' < "${SCRIPT_DIR}/semgrep-ruleset.sha256")"
+RULESET_CACHE_ROOT="${XDG_CACHE_HOME:-${HOME}/.cache}/fullsend/semgrep"
+RULESET_DIR="${RULESET_CACHE_ROOT}/${RULESET_SHA256}"
 RULESET_FILE="${RULESET_DIR}/security-audit.yml"
+RULESET_TMP=
 
-curl --fail --location --silent --show-error "$RULESET_URL" \
-	--output "$RULESET_FILE"
+cleanup() {
+	if [[ -n "$RULESET_TMP" ]]; then
+		rm -f "$RULESET_TMP"
+	fi
+}
+trap cleanup EXIT
 
-if command -v sha256sum >/dev/null 2>&1; then
-	RULESET_ACTUAL_SHA256="$(sha256sum "$RULESET_FILE" | cut -d ' ' -f 1)"
-elif command -v shasum >/dev/null 2>&1; then
-	RULESET_ACTUAL_SHA256="$(shasum -a 256 "$RULESET_FILE" | cut -d ' ' -f 1)"
+sha256_file() {
+	if command -v sha256sum >/dev/null 2>&1; then
+		sha256sum "$1" | cut -d ' ' -f 1
+	elif command -v shasum >/dev/null 2>&1; then
+		shasum -a 256 "$1" | cut -d ' ' -f 1
+	else
+		echo "semgrep-scan: sha256sum or shasum is required to verify the ruleset" >&2
+		return 1
+	fi
+}
+
+is_ci=false
+if [[ "${CI:-}" == "true" || "${GITHUB_ACTIONS:-}" == "true" ]]; then
+	is_ci=true
+fi
+
+ruleset_failure() {
+	if [[ "$is_ci" == true ]]; then
+		echo "semgrep-scan: $1; failing the CI scan" >&2
+		exit 1
+	fi
+	echo "semgrep-scan: warning: $1; skipping the local scan" >&2
+	exit 0
+}
+
+if ! mkdir -p "$RULESET_CACHE_ROOT"; then
+	ruleset_failure "cannot create the local ruleset cache"
+fi
+if [[ -f "$RULESET_FILE" ]]; then
+	if ! RULESET_ACTUAL_SHA256="$(sha256_file "$RULESET_FILE")"; then
+		ruleset_failure "cannot verify cached ruleset"
+	fi
 else
-	echo "semgrep-scan: sha256sum or shasum is required to verify the ruleset" >&2
-	exit 1
+	RULESET_ACTUAL_SHA256=
 fi
 
 if [[ "$RULESET_ACTUAL_SHA256" != "$RULESET_SHA256" ]]; then
-	echo "semgrep-scan: downloaded ruleset SHA-256 does not match the pin" >&2
-	echo "semgrep-scan: expected $RULESET_SHA256, got $RULESET_ACTUAL_SHA256" >&2
-	exit 1
+	if ! RULESET_TMP="$(mktemp "${RULESET_CACHE_ROOT}/.security-audit.XXXXXX")"; then
+		ruleset_failure "cannot create a temporary ruleset file"
+	fi
+	if ! curl --fail --location --silent --show-error "$RULESET_URL" \
+		--output "$RULESET_TMP"; then
+		ruleset_failure "unable to download the pinned ruleset from ${RULESET_URL}"
+	fi
+	if ! RULESET_ACTUAL_SHA256="$(sha256_file "$RULESET_TMP")"; then
+		ruleset_failure "cannot verify downloaded ruleset"
+	fi
+	if [[ "$RULESET_ACTUAL_SHA256" != "$RULESET_SHA256" ]]; then
+		ruleset_failure "downloaded ruleset SHA-256 does not match the pin (expected ${RULESET_SHA256}, got ${RULESET_ACTUAL_SHA256})"
+	fi
+	if ! mkdir -p "$RULESET_DIR"; then
+		ruleset_failure "cannot create the verified ruleset cache directory"
+	fi
+	if ! mv "$RULESET_TMP" "$RULESET_FILE"; then
+		ruleset_failure "cannot cache the verified ruleset"
+	fi
+	RULESET_TMP=
 fi
 
-uvx --from "semgrep==${SEMGREP_VERSION}" semgrep scan \
-	--config "$RULESET_FILE" \
+SCAN_ARGS=()
+while (($#)); do
+	case "$1" in
+	--sarif-output | --json-output | --output)
+		if (($# < 2)); then
+			echo "semgrep-scan: $1 requires an output path" >&2
+			exit 2
+		fi
+		output_path="$2"
+		if [[ "$output_path" != /* ]]; then
+			output_path="${REPO_ROOT}/${output_path}"
+		fi
+		SCAN_ARGS+=("$1" "$output_path")
+		shift 2
+		;;
+	-*)
+		SCAN_ARGS+=("$1")
+		shift
+		;;
+	*)
+		target_path="$1"
+		if [[ "$target_path" != /* ]]; then
+			target_path="${REPO_ROOT}/${target_path}"
+		fi
+		SCAN_ARGS+=("$target_path")
+		shift
+		;;
+	esac
+done
+
+cd "$RULESET_DIR"
+uv run --project "${REPO_ROOT}/tools/semgrep" --locked semgrep scan \
+	--config security-audit.yml \
 	--metrics=off \
 	--disable-version-check \
 	-j 1 \
 	--timeout 15 \
 	--strict \
 	--error \
-	"$@"
+	"${SCAN_ARGS[@]}"

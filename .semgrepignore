@@ -1,4 +1,6 @@
-# Keep test code and Semgrep's own vendored rules out of the source scan.
+# Keep these exclusions aligned with the semgrep hook exclude in
+# .pre-commit-config.yaml; explicit hook targets bypass this file.
+# Keep tests and Semgrep setup notes out of the repository-wide source scan.
 *_test.go
 **/test/
 **/tests/

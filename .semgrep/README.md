@@ -1,17 +1,24 @@
 # Semgrep configuration
 
 `scripts/semgrep-scan` downloads the Semgrep Registry's `p/security-audit`
-configuration from `https://semgrep.dev/c/p/security-audit` into a temporary
-directory. It verifies the downloaded bytes against the SHA-256 pin in the
-script before scanning. The pin prevents unreviewed registry changes from
-silently changing local or CI results; a changed response fails closed.
+configuration from the URL in `scripts/semgrep-ruleset-url` and verifies it
+against the SHA-256 in `scripts/semgrep-ruleset.sha256`. CI fails closed if it
+cannot download the pinned ruleset. Local runs reuse a verified cache keyed by
+the SHA-256; if a cache miss cannot fetch the pinned bytes, the hook warns and
+skips the scan. Use `SKIP=semgrep` with pre-commit or `make test` to skip the
+hook explicitly while offline.
 
-To update the ruleset, fetch the URL over HTTPS, review the configuration and
-new findings, then update the SHA-256 pin and accepted baseline in the same
-change. The rules are fetched at runtime and are not stored in this repository.
+The scheduled `Semgrep Ruleset Drift` workflow compares the live response with
+the pin and opens or updates an issue when it changes. To update the ruleset,
+review the new configuration and scan results, update the pin, and fix new
+findings or add reviewed `nosemgrep: <rule-id>` comments with their rationale.
+There is no separate baseline file. The rules are fetched at runtime and are
+not stored in this repository.
 
-The pre-commit hook scans changed files of all types. CI scans the repository
-in a separate job, and uploads the SARIF report as a run artifact for 30 days.
-Both use `.semgrepignore` to exclude Go test files, `test/` and `tests/`
-directories, the `.semgrep/` configuration directory, and synthetic behaviour
-fixtures and captured results.
+The pre-commit hook scans changed files of all types, except paths matched by
+its `exclude:` expression in `.pre-commit-config.yaml`. Semgrep's directory
+scan in CI honors `.semgrepignore`; explicit paths passed to Semgrep bypass
+that file, so keep the pre-commit expression aligned with `.semgrepignore`.
+Both exclude Go test files, `test/` and `tests/` directories, `.semgrep/`, and
+synthetic behaviour fixtures and captured results. CI uploads the SARIF report
+as a run artifact for 30 days.
