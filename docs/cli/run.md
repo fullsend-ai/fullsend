@@ -460,12 +460,13 @@ derived from a local PAT — a caller may set it explicitly. `GH_TOKEN`, `GITHUB
 
 The runner itself also reads `GH_WORKFLOW_TOKEN` for one purpose besides provider credential
 expansion: before it creates the sandbox, on GitHub Actions, when the harness `image:` is on
-`ghcr.io`, it logs in to `ghcr.io` with the token through Podman (token on stdin, temporary auth
-file deleted after the pull) and pulls the image, so the image can be a private package. The job
-must grant `packages: read`, and the package must allow Actions access from the repository. If the
-login or pull fails, the runner logs a warning and the sandbox gateway attempts its own
-unauthenticated pull, so public images keep working. Images on other registries are always pulled
-without credentials. See
+`ghcr.io`, it pulls the image with the token through Podman (a run-scoped auth file in a private
+temporary directory, removed after the pull), so the image can be a private package. Only the
+shipped code and fix workflows grant `packages: read`, so a private image works on code and fix
+harnesses; on other agents the pull is denied and sandbox creation fails. The package must also
+allow Actions access from the repository. If the pull fails, the runner logs a warning and the
+OpenShell gateway attempts its own unauthenticated pull, so public images keep working. For images
+on other registries the runner adds no credentials. See
 [Extending the sandbox image](../guides/user/customizing-agents.md#extending-the-sandbox-image).
 
 Every mint sets both `GH_TOKEN` and `GITHUB_TOKEN` to the minted token, even when the caller
