@@ -74,8 +74,10 @@ trigger agents under any existing configuration.
 ## Options
 
 - **Keep the provider opt-in.** No change. The admin-only default stays
-  invisible, and the least-privilege gain of [ADR 0153](0153-authorize-jira-poll-actors-without-project-administration.md) reaches only
-  repositories that happen to read the guide's authorization step.
+  invisible, and the least-privilege gain of
+  [ADR 0153](0153-authorize-jira-poll-actors-without-project-administration.md)
+  reaches only repositories that happen to read the guide's authorization
+  step.
 - **Flip the default.** With no entry, label-added events would be
   authorized by Jira's Edit Issues permission (`labels: jira_editors`), as
   they are once an entry exists. No repository needs a config change, but in
@@ -118,7 +120,9 @@ The requirement arrives in two steps, each in its own release:
    This is a breaking change and is marked as one.
 
 The migration for a repository that wants today's behaviour is the entry
-[ADR 0153](0153-authorize-jira-poll-actors-without-project-administration.md) already defines for it:
+that
+[ADR 0153](0153-authorize-jira-poll-actors-without-project-administration.md)
+already defines for it:
 
 ```yaml
 authorization:
@@ -127,8 +131,10 @@ authorization:
 ```
 
 The meaning of an entry does not change. Lists, `labels:` values and roster
-loading stay as [ADR 0153](0153-authorize-jira-poll-actors-without-project-administration.md) decided them, and the two-line entry resolves every
-event through the project role roster exactly as no entry does today.
+loading stay as
+[ADR 0153](0153-authorize-jira-poll-actors-without-project-administration.md)
+decided them, and the two-line entry resolves every event through the
+project role roster exactly as no entry does today.
 
 ## Forge scope
 
