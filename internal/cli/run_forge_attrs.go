@@ -17,13 +17,15 @@ import (
 // OpenTelemetry VCS and CICD semantic conventions, so backends that know
 // those conventions read them without a Fullsend-specific mapping.
 //
-// Repository, change and refs come from the normalized event, which the
-// GitHub and GitLab dispatch paths both produce, so neither forge needs its
-// own code here. The head revision is the change's head commit, never
-// GITHUB_SHA or CI_COMMIT_SHA, which name a merge or base commit on pull
-// request and merged-results pipelines. The pipeline run comes from the
-// environment of the CI system running fullsend, which can differ from the
-// forge the run targets (a Jira-triggered run on GitHub Actions, for one).
+// Repository, change and refs come from the normalized event, so no forge
+// needs its own code here. GitHub dispatch delivers that event to run; GitLab
+// dispatch does not yet, so GitLab runs carry only the provider, the
+// pipeline run and a head revision from CI variables. The head revision is
+// the change's head commit, never GITHUB_SHA or CI_COMMIT_SHA, which name a
+// merge or base commit on pull request and merged-results pipelines. The
+// pipeline run comes from the environment of the CI system running fullsend,
+// which can differ from the forge the run targets (a Jira-triggered run on
+// GitHub Actions, for one).
 // An attribute that does not apply is omitted rather than emitted empty.
 func forgePointerAttrs(eventMap map[string]any, forgePlatform, runURL string, getenv func(string) string) []attribute.KeyValue {
 	var ev normevent.Event
@@ -43,13 +45,18 @@ func forgePointerAttrs(eventMap map[string]any, forgePlatform, runURL string, ge
 	}
 
 	provider := string(ev.Source.System)
-	if provider != string(normevent.SystemGitHub) && provider != string(normevent.SystemGitLab) {
+	forgeEvent := provider == string(normevent.SystemGitHub) || provider == string(normevent.SystemGitLab)
+	if !forgeEvent {
 		provider = forgePlatform
 	}
 	if provider == "github" || provider == "gitlab" {
 		add("vcs.provider.name", provider)
 	}
-	add("vcs.repository.url.full", repositoryURL(ev.Entity.URL, ev.Repo))
+	// Only a forge event's entity URL is on the repository's host; a Jira
+	// event pairs its issue URL with the target repository path.
+	if forgeEvent {
+		add("vcs.repository.url.full", repositoryURL(ev.Entity.URL, ev.Repo))
+	}
 
 	cp := ev.State.ChangeProposal
 	switch {
@@ -57,6 +64,10 @@ func forgePointerAttrs(eventMap map[string]any, forgePlatform, runURL string, ge
 		add("vcs.change.id", strconv.Itoa(ev.Entity.ID))
 	case cp != nil && cp.ID > 0:
 		add("vcs.change.id", strconv.Itoa(cp.ID))
+	case ev.Entity.LinkedChangeProposal != nil && ev.Entity.LinkedChangeProposal.ID > 0:
+		// A comment on a pull request keeps the PR number here even when
+		// the pull request lookup that fills State.ChangeProposal failed.
+		add("vcs.change.id", strconv.Itoa(ev.Entity.LinkedChangeProposal.ID))
 	}
 
 	headSHA := ""

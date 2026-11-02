@@ -147,8 +147,32 @@ func TestForgePointerAttrs_SelfHostedGitLabMergeRequest(t *testing.T) {
 	}, got)
 }
 
+func TestForgePointerAttrs_PRCommentKeepsLinkedChangeID(t *testing.T) {
+	// The pull request lookup failed, so only the linked id survives.
+	ev := normevent.Event{
+		Repo: "fullsend-ai/fullsend",
+		Entity: normevent.Entity{
+			Kind: normevent.EntityWorkItem,
+			ID:   9011,
+			URL:  "https://github.com/fullsend-ai/fullsend/pull/9011",
+			LinkedChangeProposal: &normevent.LinkedChangeProposal{
+				ID:  9011,
+				URL: "https://github.com/fullsend-ai/fullsend/pull/9011",
+			},
+		},
+		Source: normevent.Source{System: normevent.SystemGitHub, RawType: "issue_comment"},
+	}
+	got := attrValues(forgePointerAttrs(eventMapFor(t, ev), "github", "", envFrom(nil)))
+	assert.Equal(t, "9011", got["vcs.change.id"])
+	_, ok := got["vcs.ref.head.name"]
+	assert.False(t, ok)
+}
+
 func TestForgePointerAttrs_JiraEventUsesForgePlatformAndCIRun(t *testing.T) {
 	ev := normevent.Event{
+		// Jira events carry the target repository with a Jira issue URL;
+		// joining them would name a repository on the Jira host.
+		Repo:   "org/target",
 		Entity: normevent.Entity{Kind: normevent.EntityWorkItem, Key: "PROJ-123", URL: "https://example.atlassian.net/browse/PROJ-123"},
 		Source: normevent.Source{System: normevent.SystemJira},
 	}
@@ -228,6 +252,15 @@ func TestForgePointerAttrs_RepositoryURLDropsEntityCredentials(t *testing.T) {
 	ev.Entity.URL = "https://user:secret@github.com/fullsend-ai/fullsend/pull/8594?x=1"
 	got := attrValues(forgePointerAttrs(eventMapFor(t, ev), "github", "", envFrom(nil)))
 	assert.Equal(t, "https://github.com/fullsend-ai/fullsend", got["vcs.repository.url.full"])
+}
+
+func TestForgePointerAttrs_RepositoryURLNeedsHTTPEntityURL(t *testing.T) {
+	for _, entityURL := range []string{"", "not a url", "ssh://git@github.com/fullsend-ai/fullsend"} {
+		ev := githubPREvent()
+		ev.Entity.URL = entityURL
+		_, ok := attrValues(forgePointerAttrs(eventMapFor(t, ev), "github", "", envFrom(nil)))["vcs.repository.url.full"]
+		assert.False(t, ok, entityURL)
+	}
 }
 
 func TestForgePointerAttrs_BoundsLongValues(t *testing.T) {

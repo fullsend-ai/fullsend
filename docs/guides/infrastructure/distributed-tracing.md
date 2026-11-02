@@ -381,7 +381,29 @@ The `agent` span's provider identity reflects only the parent run's serving endp
 
 ### Forge and CI attributes
 
-Set on the root `run` span when they apply, and omitted (never empty) when they do not. Names follow the OpenTelemetry [VCS](https://opentelemetry.io/docs/specs/semconv/registry/attributes/vcs/) and [CICD](https://opentelemetry.io/docs/specs/semconv/registry/attributes/cicd/) semantic conventions. Repository, change and refs come from the normalized event, so GitHub and GitLab runs carry the same keys.
+Set on the root `run` span when they apply, and omitted (never empty) when
+they do not. Names follow the OpenTelemetry
+[VCS](https://opentelemetry.io/docs/specs/semconv/registry/attributes/vcs/)
+and
+[CICD](https://opentelemetry.io/docs/specs/semconv/registry/attributes/cicd/)
+semantic conventions. Repository, change and refs come from the normalized
+event, so GitHub and GitLab runs carry the same keys once the event reaches
+`fullsend run`. GitLab dispatch does not deliver it yet, so GitLab runs record
+only `vcs.provider.name`, the pipeline run, and a head revision when
+`CI_MERGE_REQUEST_SOURCE_BRANCH_SHA` is set.
+
+Inputs, in order of precedence:
+
+- **Head revision:** the normalized event's
+  `state.change_proposal.head_sha`, then `PR_HEAD_SHA`, then
+  `pull_request.head.sha` in the event at `GITHUB_EVENT_PATH` (GitHub), or
+  `CI_MERGE_REQUEST_SOURCE_BRANCH_SHA` (GitLab). Values that are not a 40- or
+  64-character hex SHA are dropped.
+- **Pipeline run:** on GitHub Actions (`GITHUB_ACTIONS=true`),
+  `GITHUB_RUN_ID`, with the URL from `--run-url` or else
+  `GITHUB_SERVER_URL/GITHUB_REPOSITORY/actions/runs/GITHUB_RUN_ID`. On GitLab
+  CI (`GITLAB_CI=true`), `CI_PIPELINE_ID`, with the URL from `--run-url` or
+  else `CI_PIPELINE_URL`.
 
 | Attribute | Present on | Description |
 |-----------|------------|-------------|
