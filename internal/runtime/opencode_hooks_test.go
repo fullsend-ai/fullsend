@@ -96,6 +96,16 @@ func TestOpenCodeBootstrapHookPlan(t *testing.T) {
 		assert.Equal(t, content, storedUpload(t, store, env.Hooks.Dir+"/"+name))
 	}
 	assert.Contains(t, openCodeHookEnvExport(env.Hooks), "FULLSEND_CANARY_TOKEN")
+	assert.Contains(t, openCodeHookEnvExport(env.Hooks), "FULLSEND_TRACE_ID=trace-id")
+}
+
+func TestReadOpenCodeTraceID(t *testing.T) {
+	work := t.TempDir()
+	fakeOpenshellOpenCode(t, filepath.Join(work, "log"), filepath.Join(work, "store"))
+
+	traceID, err := readOpenCodeTraceID("sb")
+	require.NoError(t, err)
+	assert.Equal(t, "trace-id", traceID)
 }
 
 func TestOpenCodeBootstrapHookFailure(t *testing.T) {

@@ -159,6 +159,11 @@ isolated Python mode and a fixed system PATH. Default plugins are disabled and
 nonempty native `plugin` configuration is rejected; use the harness provider/environment
 credential route. Shell-startup injection variables are cleared for tool subprocesses.
 The launch also clears `OPENCODE_PURE`, which would disable the hook plugin.
+Disabling OpenCode default plugins is a compatibility constraint: harnesses
+must use the configured provider/environment credential route rather than
+relying on a default plugin to provide authentication or provider behavior.
+OpenCode Bash tool calls use a fixed trusted system PATH with
+`/sandbox/workspace/bin` appended; `.env.d` PATH additions do not apply.
 
 **Deployment decision:** this adapter uses pi's existing bootstrap-and-hash-check model.
 The config tree remains writable by the sandbox user. Checks detect modifications but cannot

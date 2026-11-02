@@ -6,7 +6,7 @@ import path from "node:path";
 
 const names = {
   bash: "Bash", read: "Read", write: "Write", edit: "Edit",
-  apply_patch: "Write", multiedit: "MultiEdit", glob: "Glob", grep: "Grep",
+  apply_patch: "Edit", multiedit: "MultiEdit", glob: "Glob", grep: "Grep",
   webfetch: "WebFetch", websearch: "WebSearch", task: "Agent",
   skill: "Skill", todowrite: "TodoWrite", lsp: "LSP",
 };
@@ -41,8 +41,8 @@ json.dump({"reason": text}, sys.stdout)
 function checkBash(command, allowlist) {
   if (!allowlist?.length) return;
   if (typeof command !== "string" || !command.trim()) deny("empty Bash command");
-  // Single-quoted arguments contain no executable shell syntax. Keep their
-  // quotes so quoted/concatenated program names still fail the first-token check.
+  // Quoted arguments are data, except expansion syntax that remains active in
+  // double quotes. Keep quote markers so quoted/concatenated program names fail.
   let syntax = "";
   let quote = null;
   for (const char of command) {
@@ -50,9 +50,14 @@ function checkBash(command, allowlist) {
       if (char === "'") { quote = null; syntax += char; }
       continue;
     }
+    if (quote === '"') {
+      if (char === '"') { quote = null; syntax += char; }
+      else if (char === "$" || char === "`" || char === "\\") syntax += char;
+      continue;
+    }
     if (char === "'" && quote !== '"') { quote = "'"; syntax += char; continue; }
     syntax += char;
-    if (char === '"') quote = quote === '"' ? null : '"';
+    if (char === '"') quote = '"';
   }
   if (quote !== null) deny("Bash allowlist rejects unterminated quotes");
   if (/[`$(){}\\]|<<|<\(|>\(/.test(syntax)) deny("Bash allowlist rejects substitutions, groups, escapes and heredocs");
@@ -107,12 +112,16 @@ function checkPermission(cfg, tool, args, cwd, worktree, targets) {
   let action = rule;
   if (rule && typeof rule === "object") {
     action = "deny";
-    let values = [
-      args.command ?? args.filePath ?? args.path ?? args.subagent_type ?? args.url ??
-      (tool === "skill" ? args.name : undefined) ??
-      (["glob", "grep"].includes(tool) ? args.pattern : undefined) ??
-      (tool === "websearch" ? args.query : undefined) ?? "*",
-    ];
+    const value = {
+      bash: args.command,
+      task: args.subagent_type,
+      glob: args.pattern,
+      grep: args.pattern,
+      webfetch: args.url,
+      websearch: args.query,
+      skill: args.name,
+    }[tool] ?? "*";
+    let values = [value];
     if (["read", "write", "edit", "multiedit", "apply_patch"].includes(tool)) {
       const paths = tool === "read" ? [args.filePath ?? args.file_path] : targets;
       values = paths.map((target) => {
@@ -258,6 +267,8 @@ export default async ({ directory, worktree }) => {
       if (cfg?.shellHome) {
         for (const key of ["BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS", "CDPATH", "PS4"]) output.env[key] = "";
         for (const key of Object.keys(process.env)) if (key.startsWith("BASH_FUNC_")) output.env[key] = "";
+        // shell.env overrides inherited variables only when it supplies a value.
+        output.env.FULLSEND_OPENCODE_HOOK_CONFIG = "";
         output.env.PATH = `${env.PATH}:${path.join(cfg.workspace, "bin")}`;
         output.env.HOME = cfg.shellHome;
         output.env.XDG_CONFIG_HOME = path.join(cfg.shellHome, ".config");
