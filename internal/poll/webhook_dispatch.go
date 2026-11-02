@@ -224,7 +224,7 @@ func (p *Poller) dispatchWebhookEvents(ctx context.Context, slash bool, events [
 				anyDispatched = true
 				continue
 			}
-			if err := p.dispatch(ctx, p.owner, p.repo, stage, event); err != nil {
+			if err := p.dispatch(ctx, p.owner, p.repo, stage, event, &we.Normalized); err != nil {
 				errs = append(errs, fmt.Errorf("dispatch %s for %s failed: %w", stage, eventKey, err))
 				eventFailed = true
 				continue

@@ -10,10 +10,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"maps"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/dispatch"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
 	"gopkg.in/yaml.v3"
@@ -50,8 +52,8 @@ func resourceKey(event RoutableEvent) string {
 // dispatcher credential even when that setting is
 // forge.PipelineVarOverrideNoOneAllowed. It logs a clickable URL to the
 // created pipeline and appends a Dispatch record for tracking.
-func (p *Poller) dispatch(ctx context.Context, owner, repo, stage string, event RoutableEvent) error {
-	payload, err := buildEventPayload(event)
+func (p *Poller) dispatch(ctx context.Context, owner, repo, stage string, event RoutableEvent, ne *dispatch.NormalizedEvent) error {
+	payload, err := buildEventPayload(event, ne)
 	if err != nil {
 		return fmt.Errorf("build event payload: %w", err)
 	}
@@ -433,17 +435,24 @@ func truncateNoteBody(s string, maxLen int) string {
 // Any other body (for example a bot review note) is bounded to
 // noteBodyTransportLimit runes, with noteBodyTruncationNotice appended
 // when it is actually cut.
-func buildEventPayload(event RoutableEvent) ([]byte, error) {
+//
+// When ne is the event's normalized form and passes fullsend run's
+// validation, the payload carries it whole as _normalized_event (#9014), so
+// run-agent-job.sh can hand it to fullsend run as --event-file the way the
+// Jira path does. If it is missing, invalid, or would not fit the transport
+// budget, the payload falls back to the comment-only _normalized_event, so
+// such a dispatch behaves as it did before.
+func buildEventPayload(event RoutableEvent, ne *dispatch.NormalizedEvent) ([]byte, error) {
 	m := map[string]interface{}{
 		"type":       event.Type,
 		"iid":        event.IID,
 		"updated_at": event.UpdatedAt.Format(time.RFC3339),
 	}
-	if event.NoteBody != "" {
-		body := event.NoteBody
-		if !isFullsendCommandBody(body) {
-			body = truncateNoteBody(body, noteBodyTransportLimit)
-		}
+	body := event.NoteBody
+	if body != "" && !isFullsendCommandBody(body) {
+		body = truncateNoteBody(body, noteBodyTransportLimit)
+	}
+	if body != "" {
 		m["_normalized_event"] = map[string]any{
 			"transition": normevent.Transition{
 				Kind:    normevent.TransitionCommentAdded,
@@ -481,5 +490,50 @@ func buildEventPayload(event RoutableEvent) ([]byte, error) {
 	if event.Action != "" {
 		m["action"] = event.Action
 	}
+	if norm := transportNormalizedEvent(ne, body); norm != nil {
+		full := maps.Clone(m)
+		full["_normalized_event"] = norm
+		data, err := json.Marshal(full)
+		if err != nil {
+			return nil, err
+		}
+		if base64.StdEncoding.EncodedLen(len(data)) <= maxEventPayloadChunks*dispatchPayloadChunkSize {
+			return data, nil
+		}
+	}
 	return json.Marshal(m)
+}
+
+// transportNormalizedEvent returns ne as a payload's _normalized_event map,
+// with its comment body replaced by the transport-bounded body, or nil when
+// ne is nil or would fail normevent.ParseJSON — the check fullsend run
+// applies to --event-file — so run-agent-job.sh never hands run an event it
+// would refuse. A non-command comment's instruction is bounded like its
+// body; a /fs-* command's is carried intact, as its body is.
+func transportNormalizedEvent(ne *dispatch.NormalizedEvent, body string) map[string]any {
+	if ne == nil {
+		return nil
+	}
+	ev := *ne
+	if ev.Transition.Comment != nil {
+		c := *ev.Transition.Comment
+		c.Body = body
+		if !isFullsendCommandBody(body) {
+			c.Instruction = truncateNoteBody(c.Instruction, noteBodyTransportLimit)
+		}
+		ev.Transition.Comment = &c
+	}
+	data, err := json.Marshal(ev)
+	if err != nil {
+		return nil
+	}
+	parsed, err := normevent.ParseJSON(data)
+	if err != nil {
+		return nil
+	}
+	m, err := parsed.ToMap()
+	if err != nil {
+		return nil
+	}
+	return m
 }

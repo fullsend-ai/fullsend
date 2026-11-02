@@ -250,10 +250,12 @@ This payload provides backwards-compatible legacy forge fields (`issue`,
 
 GitLab has a second, separate builder: `buildEventPayload` in
 `internal/poll/dispatch.go`, shared by the poller and the webhook dispatcher.
-It emits a minimal payload, and its `_normalized_event` is a partial map that
+It emits a minimal payload. Its `_normalized_event` is the complete event when
+that validates and fits the transport budget, and otherwise a partial map that
 carries only `transition.comment.body` (see
 `docs/normative/normalized-event/v1/README.md`). Its unit tests are in
-`internal/poll/dispatch_test.go` and `internal/poll/webhook_dispatch_test.go`;
+`internal/poll/dispatch_test.go`, `internal/poll/dispatch_normalized_test.go`
+and `internal/poll/webhook_dispatch_test.go`;
 `run-agent-job.sh` reads the body in
 `internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/scripts/`, and
 `internal/scaffold/gitlab_fix_instruction_test.go` covers that script.

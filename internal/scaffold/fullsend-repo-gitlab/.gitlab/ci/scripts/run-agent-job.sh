@@ -1097,6 +1097,18 @@ if [ "${JIRA_DISPATCH}" = "true" ]; then
     exit 1
   fi
   _FS_RUN_EVENT_ARGS=(--event-file "${JIRA_EVENT_FILE}")
+else
+  # GitLab dispatch (#9014): the poller embeds the event's full normalized
+  # form when it validates and fits the transport budget. Hand it to
+  # fullsend run the same way, so overlays and root-span telemetry see the
+  # repository, change and refs. A payload with only the comment-only
+  # _normalized_event (an older poller, or an event that did not fit) has
+  # no source.system, gets no --event-file, and runs as before.
+  GITLAB_EVENT_FILE=$(mktemp "${RUNNER_TEMP}/fullsend-gitlab-event.XXXXXX")
+  if printf '%s' "${EVENT_PAYLOAD_B64:-}" | base64 -d 2>/dev/null \
+    | jq -e '._normalized_event | select(type == "object" and .source.system == "gitlab")' > "${GITLAB_EVENT_FILE}" 2>/dev/null; then
+    _FS_RUN_EVENT_ARGS=(--event-file "${GITLAB_EVENT_FILE}")
+  fi
 fi
 
 set +e
