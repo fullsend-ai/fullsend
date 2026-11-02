@@ -2474,6 +2474,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepFail("Failed to bootstrap sandbox")
 		return err
 	}
+	// The hook adapters capture this runner-created value during Bootstrap.
+	if err := injectTraceID(sandboxName, securityTraceID); err != nil {
+		printer.StepWarn("Could not inject trace ID into sandbox: " + err.Error())
+	}
 	if err := uploadPersonaManifest(sandbox.Exec, sandbox.UploadFile, sandboxName, runDir); err != nil {
 		printer.StepFail("Failed to bootstrap sandbox")
 		return err
@@ -2615,9 +2619,6 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 	// 9a. Display trace ID (generated earlier for fetch service audit logging).
 	printer.KeyValue("Trace ID", securityTraceID)
-	if err := injectTraceID(sandboxName, securityTraceID); err != nil {
-		printer.StepWarn("Could not inject trace ID into sandbox: " + err.Error())
-	}
 
 	// 9b. Pre-agent security scan (sandbox-internal, Path B).
 	// Scans context files (CLAUDE.md, AGENTS.md, .cursorrules, agent defs,

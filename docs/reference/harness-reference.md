@@ -294,7 +294,22 @@ keys](../cli/run.md#reserved-envsandbox-keys).
 
 **`agent_input`** — A local directory, not a file. When a URL `base:` harness declares it, the inherited value is cleared rather than fetched; supply the directory in the child harness if needed. See [Harness field semantic types](../contributing/harness-fields.md#semantic-types-adr-0127).
 
-**`host_files[].dest`** — An absolute path under `/sandbox/` or `/tmp/`. Paths the runner writes or puts on `PATH` ahead of the image are refused when the harness loads: `/sandbox/workspace/.env`, the runner and runtime binaries in `/sandbox/workspace/bin` (`claude`, `codex`, `pi`, `opencode`, `fullsend`, `fullsend-check-output`), and anything under `/sandbox/claude-config`, `/sandbox/codex-config`, `/sandbox/pi-config`, `/sandbox/workspace/.fullsend`, `/sandbox/workspace/.security`, `/sandbox/.venv` or `/sandbox/go/bin`. A `dest` containing a `..` path component is refused as well. The same rule applies to `host_files` under `overlays:`, `forge:` and inherited from `base:`. On Claude and pi runs `/sandbox/workspace/bin` is last on the agent's `PATH`, so a file there adds a command but does not replace one the image provides. Codex and OpenCode runs restore the `PATH` from before `.env`, so `/sandbox/workspace/bin` and `.env.d` additions are not on the codex or OpenCode agent's `PATH`. See [Adding executables](../guides/user/customizing-agents.md#adding-executables).
+**`host_files[].dest`** — An absolute path under `/sandbox/` or `/tmp/`. Paths
+the runner writes or puts on `PATH` ahead of the image are refused when the
+harness loads: `/sandbox/workspace/.env`, the runner and runtime binaries in
+`/sandbox/workspace/bin` (`claude`, `codex`, `pi`, `opencode`, `fullsend`,
+`fullsend-check-output`), and anything under `/sandbox/claude-config`,
+`/sandbox/codex-config`, `/sandbox/pi-config`,
+`/sandbox/workspace/.fullsend`, `/sandbox/workspace/.security`,
+`/sandbox/.venv` or `/sandbox/go/bin`. A `dest` containing a `..` path
+component is refused as well. The same rule applies to `host_files` under
+`overlays:`, `forge:` and inherited from `base:`. On Claude and pi runs
+`/sandbox/workspace/bin` is last on the agent's `PATH`, so a file there adds a
+command but does not replace one the image provides. Codex restores the `PATH`
+from before `.env`, so workspace-bin and `.env.d` additions are not on the
+Codex agent PATH. OpenCode Bash tool calls append `/sandbox/workspace/bin` to a
+fixed trusted system PATH but do not inherit `.env.d` PATH additions. See
+[Adding executables](../guides/user/customizing-agents.md#adding-executables).
 
 **`.env.d` host files** — A `host_files` entry with a `dest` in
 `/sandbox/workspace/.env.d/` ending in `.env` is read before the runtime starts.

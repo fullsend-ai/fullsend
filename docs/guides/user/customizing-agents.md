@@ -391,10 +391,11 @@ failure behaviour: [GitHub Packages credentials](../../cli/run.md#github-package
 On Claude and pi runs the sandbox already has `/sandbox/workspace/bin` on its
 `PATH`, after the image's own directories. A file there adds a command; it
 does not replace a command the image already provides, such as `git`,
-`python3` or `node`. Codex and OpenCode runs restore the `PATH` from before
-the workspace `.env` is read, so `/sandbox/workspace/bin` is not on the codex
-or OpenCode agent's `PATH`; call the script by its absolute path there. To make a script
-available as a command on Claude and pi runs, drop it there:
+`python3` or `node`. Codex restores the `PATH` from before the workspace `.env`
+is read, so call scripts by their absolute path there. OpenCode Bash tool calls
+append `/sandbox/workspace/bin` to a fixed trusted system path, but do not
+inherit `.env.d` PATH additions. To make a script available as a command on
+Claude and pi runs, drop it there:
 
 1. Create your script (e.g. `scripts/my-tool.sh`):
 
