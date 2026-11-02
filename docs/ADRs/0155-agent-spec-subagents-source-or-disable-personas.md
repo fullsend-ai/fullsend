@@ -30,14 +30,15 @@ Accepted
 Each agent entry's `subagents` map sets a model per persona, where a persona
 is one `sub-agents/<name>.md` prompt file inside a skill
 ([ADR 0104](0104-per-persona-model-resolution.md)). It cannot point a persona
-at a different file or turn one off. Harness `skills:` entries can replace or
-remove files inside a pinned skill, but staging does not apply those overrides
-yet ([#6158](https://github.com/fullsend-ai/fullsend/issues/6158)). So today
-the only way to add, replace or remove a review persona
+at a different file or turn one off. The harness has the basic support: its
+`skills:` file overrides can add, replace or remove a review persona
 ([review sub-agent decomposition](../problems/code-review.md#review-sub-agent-decomposition))
-is to copy the whole skill, and every upstream change to the skill must then
-be ported by hand. Copying does not make selection deterministic either: the
-orchestrator still chooses among the copied personas.
+inside a pinned skill
+([#6158](https://github.com/fullsend-ai/fullsend/issues/6158)). But they work
+on file paths, not personas. The user has to know which skill ships the
+persona and where its file sits, and disabling a persona means mapping that
+file path to null. A persona's model, its file and whether it runs are set in
+two places.
 
 The review skill already departs from the scripted pipeline of
 [ADR 0018](0018-scripted-pipeline-for-multi-agent-orchestration.md) by relying
@@ -46,8 +47,8 @@ personas staged (copied into the agent's sandbox) from the trusted ref (the
 commit config is read from), not something the change's author picks. This ADR
 does not supersede ADR 0018.
 
-This ADR aims to let a repository replace, add or disable a persona from its
-agent spec without forking the skill that ships it.
+This ADR gives each persona one entry in the agent spec to replace, add or
+disable it by name, compiled into those harness overrides.
 
 ## Options
 
@@ -59,17 +60,17 @@ agent spec without forking the skill that ships it.
   `REVIEW_UX_ENABLED`): rejected. One flag per persona does not scale, cannot
   add or replace a persona, and each flag needs matching code in the skill
   and the post-script.
-- **Harness `skills:` overrides only**: works once #6158 lands, but it needs a
-  custom harness and knowledge of the skill's internal file layout. It stays
-  the low-level mechanism, not the user surface.
+- **Harness `skills:` overrides only**: works today, but it is keyed by file
+  path, so it needs knowledge of the skill's internal file layout, and
+  disabling means mapping a path to null. It stays the low-level mechanism,
+  not the user surface.
 - **Object form on `agents[].subagents`** (chosen): one user surface, one
   mechanism underneath and one host gate.
 
 ## Decision
 
 We extend `agents[].subagents` so that each persona entry is a string or an
-object, to let a repository replace, add or disable a persona without forking
-the skill.
+object, to let a repository replace, add or disable a persona by name.
 
 ```yaml
 agents:
