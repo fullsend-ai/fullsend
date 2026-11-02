@@ -110,6 +110,8 @@ type ConfigWriter interface {
 	SetStatusNotifications(*StatusNotificationConfig)
 	Marshal() ([]byte, error)
 	Validate() error
+	// ValidateGlobal is Validate without the agents[] entry checks.
+	ValidateGlobal() error
 }
 
 // PerRepoConfigWriter extends PerRepoConfigReader and ConfigWriter with

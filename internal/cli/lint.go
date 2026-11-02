@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -47,16 +48,33 @@ func newLintCmd() *cobra.Command {
 	var format string
 
 	cmd := &cobra.Command{
-		Use:   "lint",
+		Use:   "lint [agent-name]",
 		Short: "Lint configuration and harness definitions",
-		Args:  cobra.NoArgs,
+		Long: `Lint config.yaml and the harness definitions of the agents it registers.
+
+With no argument, every enabled agent is resolved, composed, and linted.
+
+With an agent name, only that registered agent is resolved, composed, and
+linted. config.yaml itself is still validated, and an invalid file still
+fails the command. An unknown or disabled agent name is an error. Invalid
+agents[] entries for other agents do not stop the selected agent from
+being linted: they are reported as a single warning (an error with
+--strict); run fullsend lint without an argument to inspect them.`,
+		Args: cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			agentName := ""
+			if len(args) == 1 {
+				agentName = args[0]
+				if agentName == "" {
+					return errors.New("agent name must not be empty")
+				}
+			}
 			switch format {
 			case "text", "json":
 			default:
 				return fmt.Errorf("--format must be one of: text, json (got %q)", format)
 			}
-			return runLint(cmd, fullsendDir, forgeFlag, strict, offline, format)
+			return runLint(cmd, fullsendDir, forgeFlag, agentName, strict, offline, format)
 		},
 	}
 
@@ -154,7 +172,10 @@ func (e *lintEmitter) writeJSON(w io.Writer, success bool) error {
 // validation (ResolveRelativeTo, ValidateFilesExist) so a harness run
 // would reject fails lint too, and reports harness lint diagnostics per
 // agent.
-func runLint(cmd *cobra.Command, fullsendDir, forgeFlag string, strict, offline bool, format string) error {
+//
+// When only is non-empty, the per-agent work is scoped to the registered
+// agent it names; see selectLintAgent.
+func runLint(cmd *cobra.Command, fullsendDir, forgeFlag, only string, strict, offline bool, format string) error {
 	absFullsendDir, err := filepath.Abs(fullsendDir)
 	if err != nil {
 		return err
@@ -210,8 +231,16 @@ func runLint(cmd *cobra.Command, fullsendDir, forgeFlag string, strict, offline 
 	// enforce: loadPerRepoLayers only unmarshals, so without this a
 	// config.yaml with an unsupported version or an unknown runtime
 	// lints clean. Reported as a diagnostic (not a load error) so the
-	// agents still lint and every problem is reported together.
-	configErr := cfg.Validate()
+	// agents still lint and every problem is reported together. A scoped
+	// lint skips the agents[] checks here: selectLintAgent validates the
+	// selected agent's entries itself and reports other agents' as a
+	// warning.
+	var configErr error
+	if only == "" {
+		configErr = cfg.Validate()
+	} else {
+		configErr = cfg.ValidateGlobal()
+	}
 	if configErr != nil {
 		emitter.diagnostic("config", harness.Diagnostic{
 			Severity: harness.SeverityError,
@@ -220,12 +249,36 @@ func runLint(cmd *cobra.Command, fullsendDir, forgeFlag string, strict, offline 
 		})
 	}
 	entries := cfg.AgentEntries()
-	// resolveAgentSource validates the whole agents list before resolving
-	// any one agent, so an invalid entry (for example a trigger that does
-	// not compile) would fail every agent with the same error. Report it
-	// once — not at all when cfg.Validate already reported the same error — and skip
-	// per-agent resolution.
-	if err := config.ValidateAgentEntries(entries, cfg.AllowedResources()); err != nil {
+	// resolveCfg is what per-agent resolution sees. A scoped lint narrows
+	// its agents list to the selected agent's entries, because
+	// resolveAgentSource validates the whole list and would otherwise
+	// fail on another agent's invalid entry.
+	var resolveCfg config.ConfigReader = cfg
+	if only != "" {
+		selected, siblingErrs, err := selectLintAgent(entries, only, cfg.AllowedResources())
+		if siblingErrs > 0 {
+			noun, verb := "agents", "have"
+			if siblingErrs == 1 {
+				noun, verb = "agent", "has"
+			}
+			emitter.diagnostic("config", harness.Diagnostic{
+				Severity: harness.SeverityWarning,
+				Field:    "agents",
+				Message:  fmt.Sprintf("%d other %s %s lint errors; run `fullsend lint` to inspect them", siblingErrs, noun, verb),
+			})
+		}
+		if err != nil {
+			errs = append(errs, err)
+			emitter.failure("config", err)
+		}
+		entries = selected
+		resolveCfg = lintScopedConfig{ConfigReader: cfg, entries: selected}
+	} else if err := config.ValidateAgentEntries(entries, cfg.AllowedResources()); err != nil {
+		// resolveAgentSource validates the whole agents list before
+		// resolving any one agent, so an invalid entry (for example a
+		// trigger that does not compile) would fail every agent with the
+		// same error. Report it once — not at all when cfg.Validate already
+		// reported the same error — and skip per-agent resolution.
 		if configErr == nil || !strings.Contains(configErr.Error(), err.Error()) {
 			wrapped := fmt.Errorf("invalid agent config: %w", err)
 			errs = append(errs, wrapped)
@@ -244,7 +297,7 @@ func runLint(cmd *cobra.Command, fullsendDir, forgeFlag string, strict, offline 
 		if config.IsAgentExplicitlyDisabled(entries, agentName) {
 			continue
 		}
-		harnessPath, fetchDeps, err := resolveAgentSource(cmd.Context(), absFullsendDir, agentName, fallbackForgeClient, cfg, composeOpts, printer)
+		harnessPath, fetchDeps, err := resolveAgentSource(cmd.Context(), absFullsendDir, agentName, fallbackForgeClient, resolveCfg, composeOpts, printer)
 		if err != nil {
 			wrapped := fmt.Errorf("resolving harness for agent %q: %w", agentName, err)
 			errs = append(errs, wrapped)
@@ -339,6 +392,69 @@ func runLint(cmd *cobra.Command, fullsendDir, forgeFlag string, strict, offline 
 		}
 	}
 	return joined
+}
+
+// lintScopedConfig narrows a config's agents list to one agent's entries
+// for a scoped lint; every other setting comes from the full config.
+type lintScopedConfig struct {
+	config.ConfigReader
+	entries []config.AgentEntry
+}
+
+func (c lintScopedConfig) AgentEntries() []config.AgentEntry { return c.entries }
+
+// selectLintAgent picks the agents[] entries registering name (matched
+// case-insensitively, as agent names are) for a scoped lint. It returns
+// those entries when they are valid and the agent is enabled, and an error
+// when name is not registered, its entries are invalid, or it is disabled.
+// siblingErrs counts the other agents whose entries fail validation: they
+// are not linted, but are reported so a scoped lint does not hide them.
+//
+// Entries are validated per agent because ValidateAgentEntries keys every
+// check, including duplicate detection, on the entry's name: validating
+// each name's entries on their own reports exactly the errors validating
+// the whole list would, without one agent's error masking the others.
+func selectLintAgent(entries []config.AgentEntry, name string, allowlist []string) ([]config.AgentEntry, int, error) {
+	groups := make(map[string][]config.AgentEntry)
+	var order []string
+	for _, e := range entries {
+		key := strings.ToLower(e.DerivedName())
+		if _, ok := groups[key]; !ok {
+			order = append(order, key)
+		}
+		groups[key] = append(groups[key], e)
+	}
+
+	selectedKey := strings.ToLower(name)
+	siblingErrs := 0
+	for _, key := range order {
+		if key != selectedKey && config.ValidateAgentEntries(groups[key], allowlist) != nil {
+			siblingErrs++
+		}
+	}
+
+	selected, ok := groups[selectedKey]
+	if !ok {
+		var enabled []string
+		for _, key := range order {
+			group := groups[key]
+			if n := group[len(group)-1].DerivedName(); n != "" && !config.IsAgentExplicitlyDisabled(group, n) {
+				enabled = append(enabled, n)
+			}
+		}
+		if len(enabled) == 0 {
+			return nil, siblingErrs, fmt.Errorf("agent %q is not registered in config.yaml, and no enabled agents are", name)
+		}
+		sort.Strings(enabled)
+		return nil, siblingErrs, fmt.Errorf("agent %q is not registered in config.yaml; registered agents that can be linted: %s", name, strings.Join(enabled, ", "))
+	}
+	if err := config.ValidateAgentEntries(selected, allowlist); err != nil {
+		return nil, siblingErrs, fmt.Errorf("invalid agent config: %w", err)
+	}
+	if config.IsAgentExplicitlyDisabled(selected, name) {
+		return nil, siblingErrs, fmt.Errorf("agent %q is disabled in config.yaml (enabled: false); enable it to lint it", name)
+	}
+	return selected, siblingErrs, nil
 }
 
 // validateURLReferencesAllowed applies run's per-URL allowlist check

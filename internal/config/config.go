@@ -1117,6 +1117,14 @@ func (c *perRepoConfig) Validate() error {
 	return validateAgentEntries(c.AgentEntries(), c.AllowedResources(), true, true)
 }
 
+// ValidateGlobal runs Validate's checks except the agents[] entry
+// validation, so a caller that validates agent entries itself (for
+// example per agent, with ValidateAgentEntries) can still reject an
+// invalid configuration file.
+func (c *perRepoConfig) ValidateGlobal() error {
+	return c.validateLocalFields()
+}
+
 // ValidateAuthorization checks the authorization: providers: known provider
 // names, no duplicates, and the jira-only fields only on the jira provider.
 // Validate runs it, and runtime config loaders (the jira-poll driver and
