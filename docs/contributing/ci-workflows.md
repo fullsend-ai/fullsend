@@ -261,6 +261,10 @@ This recursion is by design but interacts with the convergence non-idempotence t
 
 ## Additional conventions
 
+- Always include the workflow file itself in its own `paths:` filter so changes to the workflow trigger its own CI.
+- Use `ubuntu-24.04` (specific version), not `ubuntu-latest`, for reproducible builds.
+- Environment variables that hold secrets must use `${{ secrets.NAME }}` — never hardcode sensitive values or use environment variables with defaults for secrets.
+
 ### Semgrep security scan
 
 `scripts/semgrep-scan` is the shared entry point for the pinned Semgrep engine
@@ -285,7 +289,3 @@ independently; a failing check blocks merges only when the branch ruleset
 requires it. The main ruleset will require Semgrep after this workflow merges.
 For an offline local run, use `SKIP=semgrep make test` or
 `SKIP=semgrep pre-commit run --all-files`.
-
-- Always include the workflow file itself in its own `paths:` filter so changes to the workflow trigger its own CI.
-- Use `ubuntu-24.04` (specific version), not `ubuntu-latest`, for reproducible builds.
-- Environment variables that hold secrets must use `${{ secrets.NAME }}` — never hardcode sensitive values or use environment variables with defaults for secrets.

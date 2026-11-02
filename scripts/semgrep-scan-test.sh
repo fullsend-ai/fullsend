@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
+# semgrep-scan-test.sh — Tests for semgrep-scan
+# Run from the repo root: bash scripts/semgrep-scan-test.sh
 set -euo pipefail
 
 REPO_ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/semgrep-scan-test.XXXXXX")"
+TEST_ROOT="$(CDPATH='' cd -- "$(mktemp -d "${TMPDIR:-/tmp}/semgrep-scan-test.XXXXXX")" && pwd -P)"
 trap 'rm -rf "$TEST_ROOT"' EXIT
 
 FIXTURE_ROOT="${TEST_ROOT}/repo"
@@ -16,7 +18,11 @@ printf '%s\n' 'https://example.invalid/semgrep-rules.yml' \
 printf '%s\n' 'package main' > "${FIXTURE_ROOT}/src/main.go"
 printf '%s\n' 'rules: []' > "${TEST_ROOT}/valid-rules.yml"
 printf '%s\n' 'rules: [not-the-pinned-rules]' > "${TEST_ROOT}/wrong-rules.yml"
-EXPECTED_SHA="$(sha256sum "${TEST_ROOT}/valid-rules.yml" | cut -d ' ' -f 1)"
+if command -v sha256sum >/dev/null 2>&1; then
+	EXPECTED_SHA="$(sha256sum "${TEST_ROOT}/valid-rules.yml" | cut -d ' ' -f 1)"
+else
+	EXPECTED_SHA="$(shasum -a 256 "${TEST_ROOT}/valid-rules.yml" | cut -d ' ' -f 1)"
+fi
 printf '%s\n' "$EXPECTED_SHA" > "${FIXTURE_ROOT}/scripts/semgrep-ruleset.sha256"
 
 cat > "${STUB_BIN}/curl" <<'CURL_STUB'
@@ -42,7 +48,7 @@ CURL_STUB
 cat > "${STUB_BIN}/uv" <<'UV_STUB'
 #!/usr/bin/env bash
 set -euo pipefail
-printf '%s\n' "$PWD" > "$UV_CWD_FILE"
+pwd -P > "$UV_CWD_FILE"
 printf '%s\n' "$@" > "$UV_ARGS_FILE"
 UV_STUB
 chmod +x "${STUB_BIN}/curl" "${STUB_BIN}/uv"
@@ -91,7 +97,10 @@ run_scan "$GOOD_CACHE" fail "${TEST_ROOT}/valid-rules.yml" \
 [[ "$(wc -l < "$GOOD_CALLS")" -eq 1 ]] || fail "cached ruleset triggered another download"
 [[ "$(cat "${GOOD_UV}.cwd")" == "${GOOD_CACHE}/fullsend/semgrep/${EXPECTED_SHA}" ]] || \
 	fail "Semgrep did not run from the stable SHA-keyed ruleset directory"
-mapfile -t UV_ARGS < "${GOOD_UV}.args"
+UV_ARGS=()
+while IFS= read -r arg; do
+	UV_ARGS[${#UV_ARGS[@]}]="$arg"
+done < "${GOOD_UV}.args"
 found_sarif_path=false
 for ((i = 0; i + 1 < ${#UV_ARGS[@]}; i++)); do
 	if [[ "${UV_ARGS[i]}" == --sarif-output && "${UV_ARGS[i + 1]}" == "${FIXTURE_ROOT}/report.sarif" ]]; then
@@ -99,7 +108,8 @@ for ((i = 0; i + 1 < ${#UV_ARGS[@]}; i++)); do
 	fi
 done
 [[ "$found_sarif_path" == true ]] || fail "relative SARIF output path was not rooted at the repository"
-[[ "${UV_ARGS[-1]}" == "${FIXTURE_ROOT}/src/main.go" ]] || \
+last_arg_index=$((${#UV_ARGS[@]} - 1))
+[[ "${UV_ARGS[$last_arg_index]}" == "${FIXTURE_ROOT}/src/main.go" ]] || \
 	fail "relative target path was not rooted at the repository"
 pass "verified cache reuse and relative output/target path resolution"
 
