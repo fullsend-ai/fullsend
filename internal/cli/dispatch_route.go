@@ -139,17 +139,19 @@ type routeOpts struct {
 // user's own harness writes it or inherits it through base: (the default
 // harnesses' triggers keep bash routing until the cutover, #2902).
 //
-// Without a config trigger the decision is routeBash, and so it is for the
-// kill switch, a disabled entry and an event outside the agent's CEL route.
-// A bot's comment returns routeSkip. Otherwise the event must pass the
+// A bot denied by the bot-role lookup (no registered role, or a failed
+// lookup) returns routeSkip first, ahead of every error and bash decision
+// below. Without a config trigger the decision is routeBash, and so it is for
+// the kill switch, a disabled entry and an event outside the agent's CEL
+// route. A bot's comment returns routeSkip. Otherwise the event must pass the
 // dispatch authorization gate, including the threshold for the harness
 // role:, and the trigger must match. The harness is resolved the way
 // `fullsend run` does (a config entry with source:, else the agents-repo
 // fallback at the lockstep ref) to name it in the decision and read its
 // role.
 //
-// An invalid trigger or agent list is an error for every actor, so the
-// route job keeps the bash stage. A valid trigger that fails to evaluate on
+// An invalid trigger or agent list is an error for every actor except such a
+// denied bot, so the route job keeps the bash stage. A valid trigger that fails to evaluate on
 // the event returns routeSkip.
 func routeBuiltinAgent(ctx context.Context, o routeOpts) (routeDecision, error) {
 	d := routeDecision{Agent: o.agent}
@@ -159,6 +161,19 @@ func routeBuiltinAgent(ctx context.Context, o routeOpts) (routeDecision, error) 
 	agent, ok := routableAgents[o.agent]
 	if !ok {
 		return d, fmt.Errorf("unsupported --route agent %q (supported: %s)", o.agent, routableAgentNames())
+	}
+
+	// A bot the lookup denied is skipped before any config or trigger
+	// validation can return an error or the bash decision, either of which
+	// keeps the route job's bash stage, and bash admits bot authors. The
+	// retro lifecycle-close exception keeps its place in the gate below. The
+	// permanent label-added exception skips the denial the same way, as in
+	// harnessdispatch.authorizeEvent, which allows label-added before it reads
+	// the lookup fields.
+	if reason := botRoleDenialReason(o.event.Actor); reason != "" &&
+		!isGitHubLabelAdded(o.event) &&
+		!(o.agent == "retro" && harnessdispatch.IsLifecycleCloseAuthorized(o.event, agent.role)) {
+		return withDecision(d, routeSkip, reason), nil
 	}
 
 	cfg, err := config.LoadConfig(o.configDir, config.LoadOpts{MissingOK: true})
@@ -262,6 +277,9 @@ func routeBuiltinAgent(ctx context.Context, o routeOpts) (routeDecision, error) 
 	lifecycleClose := o.agent == "retro" && harnessdispatch.IsLifecycleCloseAuthorized(o.event, exceptionRole)
 	if !lifecycleClose &&
 		!harnessdispatch.IsHarnessAuthorized(&authCheck, harnessRole) {
+		if reason := botRoleDenialReason(authCheck.Actor); reason != "" {
+			return withDecision(d, routeSkip, reason), nil
+		}
 		if harnessUnavailable {
 			return withDecision(d, routeSkip, "harness unavailable; actor below write"), nil
 		}
