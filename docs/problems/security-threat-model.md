@@ -427,6 +427,8 @@ Agentic DOS requires defenses beyond standard infrastructure hardening (sandbox 
   dispatch can trigger an agent ([ADR 0054](../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)).
   GitHub PR-close retro dispatch also requires write access because retro can
   create issues, post comments, and apply labels with its repository token.
+  GitHub's merge-queue bot is accepted only for a completed queued merge,
+  which GitHub performs after a write-authorized user enqueues the PR.
   This closes the prior path where an untrusted PR author could trigger retro
   by closing their own PR; CEL routing failures also skip the close-event
   stage. A write-authorized closer can still cause retro inference and its
@@ -514,8 +516,10 @@ None of these is a complete answer. They are options with different failure mode
   anyone can file; observation/mutation dispatch requires the stage's
   permission threshold, and slash commands and issue/PR-open dispatch are
   gated the same way. GitHub PR-close retro now requires write access because
-  it can create issues, comment, and apply labels; CEL routing failures skip
-  that event instead of falling back. Any write-authorized closer can still
+  it can create issues, comment, and apply labels; a completed merge by
+  GitHub's merge-queue bot is accepted after a write-authorized user queues it.
+  CEL routing failures skip that event instead of falling back. Any
+  write-authorized closer can still
   cause retro inference and its bounded repository writes. Maintainers still
   spend attention. Drive-by bug reports still arrive.
 - **Contributor allowlists / attestation for PRs.** Close or ignore PRs from unattested accounts. Variants range from a maintained username file to cryptographic attestation. Trade-off: friction for legitimate first-time contributors; attested accounts are not thereby honest; a campaign that invests in getting attested has passed the gate.

@@ -91,6 +91,16 @@ func TestRetroRouteAccepts(t *testing.T) {
 	}
 }
 
+func TestIsGitHubMergeQueueMergedPR(t *testing.T) {
+	event := routeEvent(t, routeRetroEvent(
+		routeRetroPR, routeRetroMerged,
+		`{"id":"github-merge-queue[bot]","kind":"bot","role":"none","is_entity_author":false}`,
+		"pull_request_target", "closed",
+	))
+	assert.True(t, isGitHubMergeQueueMergedPR("retro", event))
+	assert.False(t, isGitHubMergeQueueMergedPR("review", event))
+}
+
 func TestRouteBuiltinAgent_Retro(t *testing.T) {
 	cases := []struct {
 		name         string
@@ -293,10 +303,28 @@ func TestRetroRouteParity(t *testing.T) {
 		lookupErr bool
 	}{
 		{
-			name:      "PR merged by a write user (merge queue: the user who enqueued it)",
+			name:      "PR merged by a write user",
 			eventName: "pull_request_target", action: "closed",
 			payload: merged(prPayload("closed", "dep-updater[bot]", "writer", "")),
 			bash:    true, cel: true,
+		},
+		{
+			name:      "PR merged by GitHub merge queue",
+			eventName: "pull_request_target", action: "closed",
+			payload: merged(prPayload("closed", "writer", "github-merge-queue[bot]", "")),
+			bash:    true, cel: true,
+		},
+		{
+			name:      "GitHub merge queue bot closing without a merge is denied",
+			eventName: "pull_request_target", action: "closed",
+			payload: prPayload("closed", "writer", "github-merge-queue[bot]", ""),
+			bash:    false, cel: false,
+		},
+		{
+			name:      "unregistered app bot cannot merge a PR to start retro",
+			eventName: "pull_request_target", action: "closed",
+			payload: merged(prPayload("closed", "writer", "dep-updater[bot]", "")),
+			bash:    false, cel: false,
 		},
 		{
 			name:      "PR closed by its read-only author is denied",
@@ -396,6 +424,7 @@ func TestRetroRouteParity(t *testing.T) {
 				Forge:       client,
 			})
 			require.NoError(t, err)
+			applyBotRoleLookup(context.Background(), ev, &fakeBotRoleResolver{}, nil)
 
 			d, err := routeBuiltinAgent(context.Background(), routeOpts{
 				agent:       "retro",

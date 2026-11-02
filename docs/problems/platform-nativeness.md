@@ -105,7 +105,9 @@ GitHub Actions has no built-in approval gate for `issue_comment` or `issues.open
 Fullsend closes this itself: dispatch paths — slash commands and automatic
 event triggers alike — check collaborator repository permission before starting
 an agent. Observation stages such as triage and review require `triage`+, while
-mutation stages such as code, fix, and retro require `write`+ ([ADR
+mutation stages such as code, fix, and retro require `write`+ except that
+GitHub's merge-queue bot may trigger retro for a completed merge queued by a
+write-authorized user ([ADR
 0054](../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)).
 Label-triggered handoffs rely on the permission needed to apply the label. The
 `issue_comment` needs-info re-triage path was removed in [#6740](https://github.com/fullsend-ai/fullsend/issues/6740)

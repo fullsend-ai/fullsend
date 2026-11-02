@@ -11,8 +11,9 @@ Performs retrospectives on agent workflows — analyzes what happened, identifie
 ## How the agent works
 
 The retro agent is triggered after a workflow completes when a user with write
-access closes or merges its PR, or on-demand via `/fs-retro` from a user with
-write access. It reconstructs the full workflow graph — [triage](triage.md),
+access closes or merges its PR, or when GitHub's merge queue completes a merge
+queued by a write-authorized user. Users with write access can also start it
+with `/fs-retro`. It reconstructs the full workflow graph — [triage](triage.md),
 [code](code.md), [review](review.md), [fix](fix.md), and human interactions —
 by fetching issue and PR timelines, agent run logs, and review threads.
 
@@ -46,8 +47,11 @@ to focus on:
 - `/fs-retro the code agent spent 30 minutes on a 2-line fix, what went wrong`
 
 The retro agent also runs automatically when a PR is closed (merged or not) by
-a user with write access. An automated sender without repository write access
-does not start retro; a write-authorized user can run `/fs-retro` afterward.
+a user with write access. A completed GitHub merge-queue merge also starts
+retro because GitHub only merges a queued PR after a write-authorized user adds
+it to the queue ([GitHub merge queue docs](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue)).
+Other automated senders without repository write access do not start retro; a
+write-authorized user can run `/fs-retro` afterward.
 
 ## Control labels
 

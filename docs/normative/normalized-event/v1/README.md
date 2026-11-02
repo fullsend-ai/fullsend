@@ -258,7 +258,9 @@ change proposal). Agents that push commits or open follow-up PRs **must** gate
 on `!state.change_proposal.is_fork` in harness `trigger` expressions or rely on
 dispatch-level authorization per ADR 0054. Triage and review are observation
 agents. Retro can create issues and comments, so its dispatch authorization
-must be considered separately; GitHub PR-close retro requires write access.
+must be considered separately; GitHub PR-close retro requires write access,
+with a narrow exception for a completed merge by GitHub's merge-queue bot
+after a write-authorized user queued it.
 
 ### Change facts (`state.change_proposal.diff`, `state.change_proposal.linked_work_items`)
 

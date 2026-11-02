@@ -67,7 +67,8 @@ func retroRouteAccepts(e *normevent.Event) bool {
 
 // isGitHubClosedPRRetro reports whether retro routing is deciding a GitHub
 // pull-request close or merge. These events require a fixed write floor even
-// when the selected harness has a lower role or the actor is a registered bot.
+// when the selected harness has a lower role or the actor is a registered bot;
+// the GitHub-owned merge queue has a separate, narrowly scoped grant below.
 func isGitHubClosedPRRetro(agent string, event *normevent.Event) bool {
 	if agent != "retro" || event == nil || event.Source.System != normevent.SystemGitHub ||
 		event.Entity.Kind != normevent.EntityChangeProposal {
@@ -75,6 +76,19 @@ func isGitHubClosedPRRetro(agent string, event *normevent.Event) bool {
 	}
 	return event.Transition.Kind == normevent.TransitionClosed ||
 		event.Transition.Kind == normevent.TransitionMerged
+}
+
+// isGitHubMergeQueueMergedPR recognizes the GitHub-owned merge queue as the
+// source of a completed merge. GitHub only merges a queued PR after a
+// write-authorized user adds it to the queue; the queue bot is not a repo
+// collaborator, so its event cannot pass the ordinary permission lookup.
+func isGitHubMergeQueueMergedPR(agent string, event *normevent.Event) bool {
+	return agent == "retro" && event != nil &&
+		event.Source.System == normevent.SystemGitHub &&
+		event.Entity.Kind == normevent.EntityChangeProposal &&
+		event.Transition.Kind == normevent.TransitionMerged &&
+		event.Actor.Kind == normevent.ActorBot &&
+		event.Actor.ID == "github-merge-queue[bot]"
 }
 
 // reviewRouteAccepts covers pull request events and comments on a pull
@@ -180,8 +194,9 @@ func routeBuiltinAgent(ctx context.Context, o routeOpts) (routeDecision, error) 
 	// keeps the route job's bash stage. The permanent label-added exception
 	// skips the denial the same way, as in harnessdispatch.authorizeEvent,
 	// which allows label-added before it reads the lookup fields.
+	mergeQueueMerge := isGitHubMergeQueueMergedPR(o.agent, o.event)
 	if reason := botRoleDenialReason(o.event.Actor); reason != "" &&
-		!isGitHubLabelAdded(o.event) {
+		!isGitHubLabelAdded(o.event) && !mergeQueueMerge {
 		return withDecision(d, routeSkip, reason), nil
 	}
 
@@ -275,12 +290,13 @@ func routeBuiltinAgent(ctx context.Context, o routeOpts) (routeDecision, error) 
 	// event and harness gates. This prevents registered-bot exceptions and a
 	// lower role: on the retro harness from bypassing the Bash close check.
 	authCheck := harnessdispatch.AuthCheckEvent(o.configDir, cfg, o.event)
-	if isGitHubClosedPRRetro(o.agent, o.event) && !normevent.IsWriteAuthorized(authCheck.Actor.Role) {
+	if isGitHubClosedPRRetro(o.agent, o.event) && !mergeQueueMerge &&
+		!normevent.IsWriteAuthorized(authCheck.Actor.Role) {
 		return withDecision(d, routeSkip, "closed pull request retro requires write"), nil
 	}
 	// The harness authorization gate still applies on the OWNERS-upgraded
 	// role. An unavailable harness leaves the role empty, which requires write.
-	if !harnessdispatch.IsHarnessAuthorized(&authCheck, harnessRole) {
+	if !mergeQueueMerge && !harnessdispatch.IsHarnessAuthorized(&authCheck, harnessRole) {
 		if reason := botRoleDenialReason(authCheck.Actor); reason != "" {
 			return withDecision(d, routeSkip, reason), nil
 		}

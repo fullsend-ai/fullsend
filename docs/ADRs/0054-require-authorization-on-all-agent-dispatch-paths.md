@@ -248,7 +248,9 @@ permission list, not by bypassing the check.
 
 > **Update (2026-11-02, [#8912](https://github.com/fullsend-ai/fullsend/issues/8912)):**
 > Closed-pull-request retro dispatch now requires the closing actor to have
-> write access. If CEL routing fails for a close event, the workflow skips
+> write access, with a narrow exception for GitHub's merge-queue bot on a
+> completed merge. GitHub only merges a queued PR after a write-authorized user
+> enqueues it. If CEL routing fails for a close event, the workflow skips
 > retro instead of falling back to the Bash route.
 
 ## Consequences

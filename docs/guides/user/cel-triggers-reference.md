@@ -397,8 +397,10 @@ A trigger decides which events start a retro, not who may start one:
 - **Closing a pull request:** the closing actor needs write access. If the
   permission lookup or CEL routing fails, the close event does not start retro.
   A custom retro harness role cannot lower this write requirement.
-  An automated sender without write access is denied as well; a write user can
-  run `/fs-retro` afterward. See the
+  A completed merge by GitHub's merge-queue bot is also accepted because GitHub
+  only merges after a write-authorized user queues the PR. Other automated
+  senders without write access are denied; a write user can run `/fs-retro`
+  afterward. See the
   [authorization contract](../../normative/authorization/v1/README.md#closed-pull-request-retro-pull_request_targetclosed).
 - **`/fs-retro`:** users with write access or above.
 

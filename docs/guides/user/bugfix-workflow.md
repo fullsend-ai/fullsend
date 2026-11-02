@@ -174,12 +174,15 @@ Once the PR is merged (by human, merge queue, or automation per org governance),
 The **retro agent** ([#131](https://github.com/fullsend-ai/fullsend/issues/131))
 runs automatically when a PR is closed (merged or rejected) by someone with
 write access, and can also be triggered on-demand via `/fs-retro` by a user with
-write access. It analyzes the full workflow graph — triage, code, review, and
-fix agent interactions plus any human interventions — to identify improvement
+write access. A completed GitHub merge-queue merge also starts retro because
+GitHub only merges a queued PR after a write-authorized user adds it to the
+queue ([GitHub merge queue docs](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue)).
+It analyzes the full workflow graph — triage, code, review, and fix agent
+interactions plus any human interventions — to identify improvement
 opportunities. Proposals are filed as GitHub issues in the appropriate repo,
 and a summary comment is posted on the originating PR or issue linking to all
-proposals. If an automated merge or close event has no write-authorized actor,
-automatic retro is skipped; a write-authorized user can run `/fs-retro`.
+proposals. Other automated merge or close events without a write-authorized
+actor skip automatic retro; a write-authorized user can run `/fs-retro`.
 
 ## Intervening in the pipeline
 

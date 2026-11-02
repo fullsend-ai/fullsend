@@ -171,6 +171,7 @@ jobs:
           PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           PR_BASE_REPO: ${{ github.event.pull_request.base.repo.full_name }}
           PR_USER_LOGIN: ${{ github.event.pull_request.user.login }}
+          PR_MERGED: ${{ github.event.pull_request.merged }}
           ORG_NAME: ${{ github.repository_owner }}
           FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
           GH_TOKEN: ${{ github.token }}
@@ -390,9 +391,10 @@ jobs:
                   ;;
                 closed)
                   # Retro can write repository comments, issues, and labels,
-                  # so require the closing actor to meet the standard write
-                  # threshold. A failed lookup leaves the stage empty.
-                  if is_event_actor_authorized "${EVENT_SENDER_LOGIN}"; then
+                  # so require the closer to meet the standard write threshold.
+                  # GitHub's merge queue is the narrow exception: it only closes
+                  # a PR after a write-authorized user queued the merge.
+                  if [[ "${PR_MERGED}" == "true" && "${EVENT_SENDER_LOGIN}" == "github-merge-queue[bot]" ]] || is_event_actor_authorized "${EVENT_SENDER_LOGIN}"; then
                     STAGE="retro"
                   fi
                   ;;

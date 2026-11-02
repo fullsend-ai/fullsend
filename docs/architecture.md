@@ -785,7 +785,9 @@ ADR 0002: [Building block 13](ADRs/0002-initial-fullsend-design.md#13-observabil
 Retrospective analyst — examines completed or in-progress agent workflows,
 identifies improvement opportunities, and files proposals as GitHub issues.
 Runs automatically on PR close (merged or rejected) when the closing actor has
-write access, and on-demand via `/fs-retro` from a user with write access.
+write access, and on completed merges by GitHub's merge-queue bot after a
+write-authorized user queues the PR. Users with write access can also start it
+with `/fs-retro`.
 Analyzes the full workflow graph (triage, code, review, fix agent interactions
 and human interventions) and posts a summary comment on the originating PR or
 issue linking to all filed proposals.

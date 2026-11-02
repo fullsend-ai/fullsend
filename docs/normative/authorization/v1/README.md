@@ -231,10 +231,12 @@ The bash dispatch implementation uses a parameterized
 > dispatch) applies the same thresholds per stage through
 > `has_repo_permission`.
 > On GitHub, the bash route and `fullsend dispatch --route retro` both require
-> write access from the actor who closed the pull request. The retro role's
-> ordinary threshold is write; a failed permission lookup denies dispatch.
-> If CEL routing fails for a close event, the workflow skips retro rather
-> than falling back to the bash stage.
+> write access from the actor who closed the pull request. A completed merge
+> by GitHub's merge-queue bot is the narrow exception because GitHub only
+> merges after a write-authorized user queues the PR. The retro role's ordinary
+> threshold is write; a failed permission lookup denies dispatch. If CEL
+> routing fails for a close event, the workflow skips retro rather than
+> falling back to the bash stage.
 
 ## Fail-closed behavior
 
@@ -337,10 +339,12 @@ A closed pull request may trigger retro only when the closing actor meets the
 standard write-level permission threshold. The bash dispatch path checks the
 event sender's repository permission; the GitHub CEL route applies a fixed
 write floor before the ordinary event and harness authorization gates. A
-custom retro harness role cannot lower this floor.
-This also applies to automated merge or close senders: a bot without
-write-level repository permission is denied, and a write-authorized user can
-start retro afterward with `/fs-retro`.
+custom retro harness role cannot lower this floor. GitHub's merge-queue bot is
+the narrow exception for a completed merge: GitHub only merges a queued PR
+after a write-authorized user adds it to the queue ([GitHub merge queue docs](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue)).
+Other automated merge or close senders without write-level repository
+permission are denied, and a write-authorized user can start retro afterward
+with `/fs-retro`.
 Permission lookup failures deny dispatch. If CEL opt-in, configuration, or
 route evaluation fails for a close event, the workflow clears the Bash stage
 and skips retro. With no CEL route candidate, the authorized Bash route runs
