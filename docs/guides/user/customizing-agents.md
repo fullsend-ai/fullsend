@@ -373,18 +373,7 @@ also need the Go toolchain. Pin the parent tag to a digest before CI use.
 
 The image can be a **private** package on `ghcr.io`. On GitHub Actions,
 `fullsend run` logs in to `ghcr.io` with the job's workflow token
-(`GH_WORKFLOW_TOKEN`) and pulls the image before it creates the sandbox. The
-token goes to Podman on stdin, and the auth file is temporary and is deleted
-after the pull. For the pull to succeed:
-
-- The job must grant `packages: read`. The shipped code and fix jobs already
-  do.
-- In the package's settings, grant Actions access to the repository whose
-  workflow runs fullsend.
-
-If the login or pull fails, `fullsend run` logs a warning and the sandbox
-gateway tries the pull itself without credentials. Public images keep working.
-Images on other registries are always pulled without credentials.
+(`GH_WORKFLOW_TOKEN`) and pulls the image before it creates the sandbox.
 
 ### Adding executables
 
