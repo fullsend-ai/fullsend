@@ -24,11 +24,13 @@ const ghcrDefaultUsername = "github-actions"
 // Podman driver's own pull timeout.
 const sandboxImagePullTimeout = 10 * time.Minute
 
-// imagePullLookPathFn and runPodmanFn are swapped in tests.
+// imagePullLookPathFn locates the podman binary. Override in tests to
+// simulate podman being present or missing without touching the host PATH.
 var imagePullLookPathFn = exec.LookPath
 
 // runPodmanFn runs podman with args, feeding stdin when it is non-empty, and
-// returns the combined output.
+// returns the combined output. Override in tests to avoid running a real
+// podman binary.
 var runPodmanFn = func(ctx context.Context, stdin string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "podman", args...)
 	if stdin != "" {

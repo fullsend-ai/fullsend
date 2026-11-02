@@ -458,6 +458,16 @@ pre/post/validation child environments never receive it. Outside Actions the var
 derived from a local PAT — a caller may set it explicitly. `GH_TOKEN`, `GITHUB_TOKEN` and
 `PUSH_TOKEN` still receive the minted App identity.
 
+The runner itself also reads `GH_WORKFLOW_TOKEN` for one purpose besides provider credential
+expansion: before it creates the sandbox, on GitHub Actions, when the harness `image:` is on
+`ghcr.io`, it logs in to `ghcr.io` with the token through Podman (token on stdin, temporary auth
+file deleted after the pull) and pulls the image, so the image can be a private package. The job
+must grant `packages: read`, and the package must allow Actions access from the repository. If the
+login or pull fails, the runner logs a warning and the sandbox gateway attempts its own
+unauthenticated pull, so public images keep working. Images on other registries are always pulled
+without credentials. See
+[Extending the sandbox image](../guides/user/customizing-agents.md#extending-the-sandbox-image).
+
 Every mint sets both `GH_TOKEN` and `GITHUB_TOKEN` to the minted token, even when the caller
 workflow did not export `GITHUB_TOKEN`. When the mint is cleaned up, each one goes back to the value
 it held before that mint, or is unset if it was unset. A caller workflow that exports
