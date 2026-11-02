@@ -230,10 +230,11 @@ The bash dispatch implementation uses a parameterized
 > signed events. The bash path (GitHub webhook
 > dispatch) applies the same thresholds per stage through
 > `has_repo_permission`.
-> Among the Go paths, only `fullsend dispatch --route retro` applies the
-> lifecycle-close exception; the bash path applies it for every closer and
-> CEL harness dispatch does not (see
-> [Lifecycle close](#lifecycle-close-pull_request_targetclosed)).
+> On GitHub, the bash route and `fullsend dispatch --route retro` both require
+> write access from the actor who closed the pull request. The retro role's
+> ordinary threshold is write; a failed permission lookup denies dispatch.
+> If CEL routing fails for a close event, the workflow skips retro rather
+> than falling back to the bash stage.
 
 ## Fail-closed behavior
 
@@ -330,22 +331,20 @@ bot and resolves its exact registered `actor.bot_role`; `actor.role` remains
 `none`. The downstream harness CEL trigger may further constrain which bot
 role and review state are accepted.
 
-### Lifecycle close (pull\_request\_target.closed)
+### Closed pull request retro (pull\_request\_target.closed)
 
-The `pull_request_target.closed` event that triggers the retro stage is
-intentionally ungated: any closer may trigger read-only lifecycle
-accounting. The retro agent performs only observation work and does not
-mutate repository state. This exception is implemented in the bash
-dispatch path and, on GitHub, by `fullsend dispatch --route retro`
-(`IsLifecycleCloseAuthorized()` in `harnessdispatch`), which admits a
-`pull_request_target` close, merged or not, whoever closed it, for the
-retro role only. Any pull request author can close their own pull request,
-so no other harness role gets the exception. The route applies it only when
-routing retro, keyed on the resolved harness `role: retro`; when the harness
-cannot be loaded, it is keyed on the routed agent's own role (the Retro job
-mints the retro role either way). CEL harness dispatch has no
-special handling for closed transitions: the retro harness role resolves to
-the `write` threshold there.
+A closed pull request may trigger retro only when the closing actor meets the
+standard write-level permission threshold. The bash dispatch path checks the
+event sender's repository permission; the GitHub CEL route applies the
+ordinary harness authorization gate, where the retro role requires write.
+Permission lookup failures deny dispatch. If CEL opt-in, configuration, or
+route evaluation fails for a close event, the workflow clears the Bash stage
+and skips retro. With no CEL route candidate, the authorized Bash route runs
+as usual.
+
+Retro can post comments, create issues, and apply labels through its
+repository token, so closing a pull request is treated as a mutation-capable
+dispatch rather than read-only lifecycle accounting.
 
 ### Schedule and manual dispatch
 

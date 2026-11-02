@@ -10,7 +10,7 @@ Performs retrospectives on agent workflows — analyzes what happened, identifie
 
 ## How the agent works
 
-The retro agent is triggered after a workflow completes (PR merged or closed), or on-demand via `/fs-retro`. It reconstructs the full workflow graph — [triage](triage.md), [code](code.md), [review](review.md), [fix](fix.md), and human interactions — by fetching issue and PR timelines, agent run logs, and review threads.
+The retro agent is triggered after a workflow completes when a user with write access closes or merges its PR, or on-demand via `/fs-retro` from a user with write access. It reconstructs the full workflow graph — [triage](triage.md), [code](code.md), [review](review.md), [fix](fix.md), and human interactions — by fetching issue and PR timelines, agent run logs, and review threads.
 
 1. **Pre-script** gathers metadata about the originating PR or issue.
 2. **Sandbox** — the agent reads the full workflow history, identifies patterns (wasted cycles, missed context, repeated failures), and writes structured proposals. It uses the retro-analysis and finding-agent-runs skills. The agent cannot write files or edit code in the target repo.
@@ -41,7 +41,7 @@ to focus on:
 - `/fs-retro figure out why the review agent approved this and make sure it never happens again`
 - `/fs-retro the code agent spent 30 minutes on a 2-line fix, what went wrong`
 
-The retro agent also runs automatically when a PR is closed (merged or not).
+The retro agent also runs automatically when a PR is closed (merged or not) by a user with write access.
 
 ## Control labels
 

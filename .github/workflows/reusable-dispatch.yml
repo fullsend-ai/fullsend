@@ -389,9 +389,12 @@ jobs:
                   fi
                   ;;
                 closed)
-                  # Intentional ungated: any closer may trigger read-only retro
-                  # (lifecycle accounting). See ADR 0054 #5223 note.
-                  STAGE="retro"
+                  # Retro can write repository comments, issues, and labels,
+                  # so require the closing actor to meet the standard write
+                  # threshold. A failed lookup leaves the stage empty.
+                  if is_event_actor_authorized "${EVENT_SENDER_LOGIN}"; then
+                    STAGE="retro"
+                  fi
                   ;;
               esac
               ;;
@@ -441,12 +444,12 @@ jobs:
       # The opt-in step picks the agent whose CEL route covers this event
       # (review, retro, triage or prioritize) and looks for that entry; only
       # then do the other cel-* steps install the CLI and let `fullsend
-      # dispatch --route <agent>` decide. Every cel-* step continues on error:
-      # when a step or the config fails, "Finalize stage" keeps the bash
-      # stage, so a CEL failure never stops another stage. A trigger that
-      # compiles but fails to evaluate on the event is a CEL decision (skip),
-      # not a failure. Without a candidate entry "Finalize stage" passes the
-      # bash stage through unchanged.
+      # dispatch --route <agent>` decide. Every cel-* step continues on error.
+      # For ordinary events, "Finalize stage" keeps the bash stage when a
+      # step or config fails; for closed-PR retro, it fails closed and clears
+      # the stage. A trigger that compiles but fails to evaluate on the event
+      # is a CEL decision (skip), not a step failure. Without a candidate
+      # entry "Finalize stage" passes the authorized bash stage through.
       - name: Detect CEL route opt-in
         id: cel-opt-in
         if: ${{ github.event_name == 'pull_request_target' || github.event_name == 'issue_comment' || github.event_name == 'issues' }}
@@ -749,6 +752,7 @@ jobs:
         env:
           BASH_STAGE: ${{ steps.bash-route.outputs.stage }}
           BASH_TRIGGER_SOURCE: ${{ steps.bash-route.outputs.trigger_source }}
+          CLOSED_PULL_REQUEST: ${{ github.event_name == 'pull_request_target' && inputs.event_action == 'closed' }}
           ROUTE_AGENT: ${{ steps.cel-opt-in.outputs.agent }}
           CEL_OPT_IN_OUTCOME: ${{ steps.cel-opt-in.outcome }}
           CEL_CONFIG_OUTCOME: ${{ steps.cel-config.outcome }}
@@ -772,13 +776,29 @@ jobs:
           STAGE="${BASH_STAGE}"
           TRIGGER_SOURCE="${BASH_TRIGGER_SOURCE}"
 
+          # A closed-PR retro cannot fall back to bash when CEL routing
+          # fails. The close route only runs after the same write check above.
+          fail_closed_pr_retro_on_cel_error() {
+            if [[ "${CLOSED_PULL_REQUEST}" == "true" ]]; then
+              STAGE=""
+              TRIGGER_SOURCE=""
+              echo "::error::CEL routing failed for a closed pull request; skipping retro"
+              return 0
+            fi
+            return 1
+          }
+
           # The cel-* steps did not run (no routable agent for this event,
           # or no candidate entry): pass the bash stage through.
           if [[ "${CEL_OPT_IN_OUTCOME}" == "failure" ]]; then
-            echo "::error::CEL route opt-in check failed; keeping the bash stage '$(gha_text "${STAGE}")'. See the CEL route steps."
+            if ! fail_closed_pr_retro_on_cel_error; then
+              echo "::error::CEL route opt-in check failed; keeping the bash stage '$(gha_text "${STAGE}")'. See the CEL route steps."
+            fi
           elif [[ -n "${CEL_CONFIG_OUTCOME}" && "${CEL_CONFIG_OUTCOME}" != "skipped" ]]; then
             if [[ ! "${ROUTE_AGENT}" =~ ^[a-z][a-z0-9_-]*$ || "${CEL_CONFIG_OUTCOME}" != "success" || "${CEL_ROUTE_OUTCOME}" != "success" ]]; then
-              echo "::error::CEL route failed; keeping the bash stage '$(gha_text "${STAGE}")'. See the CEL route steps."
+              if ! fail_closed_pr_retro_on_cel_error; then
+                echo "::error::CEL route failed; keeping the bash stage '$(gha_text "${STAGE}")'. See the CEL route steps."
+              fi
             else
               echo "::notice::CEL route (${ROUTE_AGENT}): bash=$(gha_text "${STAGE:-none}") cel=$(gha_text "${CEL_ROUTE_DECISION}") reason=$(gha_text "${CEL_ROUTE_REASON}") harness=$(gha_text "${CEL_ROUTE_HARNESS}")"
               ROUTE_SOURCE="cel"

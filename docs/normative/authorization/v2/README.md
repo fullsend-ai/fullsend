@@ -526,21 +526,16 @@ bot and resolves its exact registered `actor.bot_role`; `actor.role` remains
 `none`. The downstream harness CEL trigger may further constrain which bot
 role and review state are accepted.
 
-### Legacy lifecycle close (pull\_request\_target.closed)
+### Closed pull request retro (pull\_request\_target.closed)
 
-**Current bash compatibility behavior:** The GitHub bash dispatcher routes
-`pull_request_target.closed` to retro without a separate collaborator-role
-check, so any closer may trigger it. This is not a read-only capability:
-retro's token can write issues and pull requests, and its post-script can
-file issues, comment, and apply labels. The Go CEL path has no close-event
-exception and applies the selected harness's role-derived default; a `retro`
-role requires `write`.
-
-The ungated bash route is not a general v2 grant for CEL-based dispatch or
-entity facts. Under this contract, a human close-event actor must meet the
-selected harness's effective minimum before CEL. A `retro`-role harness
-defaults to `write`; an explicit `human_min_role` may choose another allowed
-value. The legacy `/fs-retro` slash command retains its bash `write` guard.
+The GitHub bash dispatcher checks that the event sender has write access
+before routing a closed pull request to retro. The CEL route applies the
+selected harness's role-derived threshold; a `retro` role requires `write`.
+If CEL opt-in, configuration, or route evaluation fails for a close event, the
+workflow skips retro rather than falling back to the Bash stage. Retro's
+repository token can write issues and pull requests, so this dispatch is not
+read-only lifecycle accounting. The `/fs-retro` slash command continues to
+require write access.
 
 ### Schedule and manual dispatch
 

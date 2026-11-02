@@ -583,6 +583,9 @@ request. To decide it yourself, give the `retro` entry in
 `.fullsend/config.yaml` a `trigger`. The retro still runs in the same `Retro`
 job; the trigger only decides whether that job starts.
 
+Closing or merging a pull request starts retro only when the closing actor has
+write access. A CEL routing failure also skips retro for that close event.
+
 To stop the retro on every closed pull request but keep `/fs-retro`, add this
 entry to `.fullsend/config.yaml` on your default branch:
 

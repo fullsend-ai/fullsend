@@ -351,7 +351,7 @@ the review entry is disabled.
 | `cel=skip reason=bot-role lookup failed` | The bot-role lookup could not complete, so the bot is denied | Check the route step's warning for the lookup error |
 | `cel=skip reason=harness unavailable; actor below write` | The review harness could not be fetched or loaded, so only write access passes | Check the route step's warning for the harness error |
 | `cel=skip reason=trigger evaluation failed: …` | The trigger compiles but failed on this event, for example it reads a field the event lacks without `has()`; this counts as no match | Guard optional fields with `has()` |
-| `CEL route failed; keeping the bash stage` | A CEL route step failed or the configuration is invalid, so the dispatch workflow decided | Open the failed "… CEL route" step for the error, for example an invalid `trigger` or another invalid `agents:` entry |
+| `CEL route failed; keeping the bash stage` | A CEL route step failed or the configuration is invalid; closed-PR retro is skipped instead of falling back to Bash | Open the failed "… CEL route" step for the error, for example an invalid `trigger` or another invalid `agents:` entry |
 | `invalid agent config: agents[N] (review): invalid trigger` in any agent job | The `trigger` in `config.yaml` does not compile; every agent run validates the whole `agents:` list, so all agents fail, not only review | Fix the expression in `.fullsend/config.yaml`; see [Checking a trigger before you merge](#checking-a-trigger-before-you-merge) |
 
 ### Choosing when retro runs
@@ -394,10 +394,9 @@ and a bot's `/fs-retro` comment never starts a retro.
 
 A trigger decides which events start a retro, not who may start one:
 
-- **Closing a pull request:** anyone who closes or merges it, including its
-  read-only author and bots without a registered fullsend role, as with the
-  dispatch workflow. Only the retro agent gets this exception (the
-  [lifecycle-close exception](../../normative/authorization/v1/README.md#lifecycle-close-pull_request_targetclosed)).
+- **Closing a pull request:** the closing actor needs write access. If the
+  permission lookup or CEL routing fails, the close event does not start retro.
+  See the [authorization contract](../../normative/authorization/v1/README.md#closed-pull-request-retro-pull_request_targetclosed).
 - **`/fs-retro`:** users with write access or above.
 
 ### Choosing when triage and prioritize run

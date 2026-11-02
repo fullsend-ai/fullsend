@@ -483,9 +483,9 @@ The existing design principle is that [the repo is the coordinator](problems/age
   separate capability setting. The effective human role comes from the source
   provider or a trusted configured permission source such as `OWNERS`; harness
   CEL may narrow actor, target, or action conditions. Current GitHub bash
-  guards still use `triage` for observation stages and `write` for mutation
-  stages, except for its ungated retro close route. Go CEL dispatch now
-  applies the v1 role-derived default per harness before CEL for ordinary
+  guards use `triage` for observation stages and `write` for mutation stages,
+  including retro on pull-request close. Go CEL dispatch applies the v1
+  role-derived default per harness before CEL for ordinary
   human events; explicit or overlay minima remain target behavior. Non-GitHub
   event paths map source-native roles to normalized roles without cross-system
   identity verification. Bot actors are migrating to provider-backed exact role
@@ -782,7 +782,7 @@ ADR 0002: [Building block 13](ADRs/0002-initial-fullsend-design.md#13-observabil
 
 ### 14. retro agent runtime
 
-Retrospective analyst — examines completed or in-progress agent workflows, identifies improvement opportunities, and files proposals as GitHub issues. Runs automatically on PR close (merged or rejected) and on-demand via `/fs-retro` command. Analyzes the full workflow graph (triage, code, review, fix agent interactions and human interventions) and posts a summary comment on the originating PR/issue linking to all filed proposals.
+Retrospective analyst — examines completed or in-progress agent workflows, identifies improvement opportunities, and files proposals as GitHub issues. Runs automatically on PR close (merged or rejected) when the closing actor has write access, and on-demand via `/fs-retro` from a user with write access. Analyzes the full workflow graph (triage, code, review, fix agent interactions and human interventions) and posts a summary comment on the originating PR/issue linking to all filed proposals.
 
 ## Configuration layering
 

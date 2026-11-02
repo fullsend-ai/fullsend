@@ -29,6 +29,9 @@ func runRouteStep(t *testing.T, stepName string, env, files map[string]string) r
 		path := filepath.Join(dir, rel)
 		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
 		require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+		if rel == "bin/gh" {
+			require.NoError(t, os.Chmod(path, 0o755))
+		}
 	}
 	outPath := filepath.Join(t.TempDir(), "output")
 	summaryPath := filepath.Join(t.TempDir(), "summary")
@@ -38,7 +41,7 @@ func runRouteStep(t *testing.T, stepName string, env, files map[string]string) r
 	cmd := exec.Command("bash", "-c", script)
 	cmd.Dir = dir
 	cmd.Env = []string{
-		"PATH=" + os.Getenv("PATH"),
+		"PATH=" + filepath.Join(dir, "bin") + string(os.PathListSeparator) + os.Getenv("PATH"),
 		"GITHUB_OUTPUT=" + outPath,
 		"GITHUB_STEP_SUMMARY=" + summaryPath,
 	}
@@ -91,7 +94,7 @@ var (
 	}
 	celRouteClosed = map[string]string{
 		"EVENT_NAME": "pull_request_target", "EVENT_ACTION": "closed",
-		"PR_USER_LOGIN": "someone",
+		"PR_USER_LOGIN": "someone", "EVENT_SENDER_LOGIN": "",
 	}
 	celRoutePRComment = map[string]string{
 		"EVENT_NAME": "issue_comment", "EVENT_ACTION": "created",
@@ -117,6 +120,7 @@ func finalizeEnv(bashStage, configOutcome, routeOutcome, decision string) map[st
 	return map[string]string{
 		"BASH_STAGE":          bashStage,
 		"BASH_TRIGGER_SOURCE": "",
+		"CLOSED_PULL_REQUEST": "false",
 		"ROUTE_AGENT":         "review",
 		"CEL_OPT_IN_OUTCOME":  "",
 		"CEL_CONFIG_OUTCOME":  configOutcome,
@@ -310,6 +314,46 @@ func TestFinalizeStage_KeepsTriggerSource(t *testing.T) {
 	assert.Equal(t, "alice", got.outputs["trigger_source"])
 }
 
+func TestBashRouteClosedPRRequiresWrite(t *testing.T) {
+	requireBash4(t)
+	const ghStub = `#!/usr/bin/env bash
+if [[ "${MOCK_PERMISSION_ERROR:-}" == "true" ]]; then
+  echo "permission lookup unavailable" >&2
+  exit 1
+fi
+printf '%s\n' "${MOCK_PERMISSION_ROLE:-none}"
+`
+	cases := []struct {
+		name      string
+		role      string
+		lookupErr bool
+		wantStage string
+	}{
+		{name: "write actor is authorized", role: "write", wantStage: "retro"},
+		{name: "admin actor is authorized", role: "admin", wantStage: "retro"},
+		{name: "triage actor is denied", role: "triage"},
+		{name: "read actor is denied", role: "read"},
+		{name: "actor with no permission is denied", role: "none"},
+		{name: "permission lookup failure is denied", lookupErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := map[string]string{
+				"EVENT_NAME":           "pull_request_target",
+				"EVENT_ACTION":         "closed",
+				"EVENT_SENDER_LOGIN":   "closer",
+				"GITHUB_REPOSITORY":    "org/repo",
+				"MOCK_PERMISSION_ROLE": tc.role,
+			}
+			if tc.lookupErr {
+				env["MOCK_PERMISSION_ERROR"] = "true"
+			}
+			got := runRouteStep(t, "Determine stage", env, map[string]string{"bin/gh": ghStub})
+			assert.Equal(t, tc.wantStage, got.outputs["stage"])
+		})
+	}
+}
+
 func TestFinalizeStage_CELRoute(t *testing.T) {
 	withOptIn := func(outcome string) map[string]string {
 		env := finalizeEnv("review", "", "", "")
@@ -318,6 +362,12 @@ func TestFinalizeStage_CELRoute(t *testing.T) {
 	}
 	retro := func(bashStage, decision string) map[string]string {
 		env := finalizeEnv(bashStage, "success", "success", decision)
+		env["ROUTE_AGENT"] = "retro"
+		env["CLOSED_PULL_REQUEST"] = "true"
+		return env
+	}
+	retroCommand := func(bashStage string) map[string]string {
+		env := finalizeEnv(bashStage, "success", "failure", "")
 		env["ROUTE_AGENT"] = "retro"
 		return env
 	}
@@ -364,15 +414,15 @@ func TestFinalizeStage_CELRoute(t *testing.T) {
 			env:  finalizeEnv("review", "skipped", "skipped", ""), wantStage: "review", wantNoLog: "::",
 		},
 		{
-			name: "a failed evaluation keeps the bash stage and reports an error",
+			name: "a failed review evaluation keeps the bash stage and reports an error",
 			env:  finalizeEnv("review", "success", "failure", ""), wantStage: "review", wantLog: "::error::CEL route failed",
 		},
 		{
-			name: "a failed config checkout keeps the bash stage and reports an error",
+			name: "a failed review config checkout keeps the bash stage and reports an error",
 			env:  finalizeEnv("review", "failure", "", ""), wantStage: "review", wantLog: "::error::CEL route failed",
 		},
 		{
-			name: "a failed opt-in check keeps the bash stage and reports an error",
+			name: "a failed review opt-in check keeps the bash stage and reports an error",
 			env:  withOptIn("failure"), wantStage: "review", wantLog: "::error::CEL route opt-in check failed",
 		},
 		{
@@ -397,6 +447,42 @@ func TestFinalizeStage_CELRoute(t *testing.T) {
 		{
 			name: "retro bash decision keeps the bash stage",
 			env:  retro("retro", "bash"), wantStage: "retro", wantSummary: "retro_route=bash",
+		},
+		{
+			name: "closed PR with no CEL route candidate keeps the authorized bash stage",
+			env: func() map[string]string {
+				env := finalizeEnv("retro", "skipped", "skipped", "")
+				env["CLOSED_PULL_REQUEST"] = "true"
+				return env
+			}(), wantStage: "retro",
+		},
+		{
+			name: "closed PR with CEL evaluation failure drops the bash fallback",
+			env: func() map[string]string {
+				env := retro("retro", "")
+				env["CEL_ROUTE_OUTCOME"] = "failure"
+				return env
+			}(), wantStage: "", wantLog: "CEL routing failed for a closed pull request; skipping retro",
+		},
+		{
+			name: "closed PR with CEL config failure drops the bash fallback",
+			env: func() map[string]string {
+				env := retro("retro", "")
+				env["CEL_CONFIG_OUTCOME"] = "failure"
+				return env
+			}(), wantStage: "", wantLog: "CEL routing failed for a closed pull request; skipping retro",
+		},
+		{
+			name: "closed PR with CEL opt-in failure drops the bash fallback",
+			env: func() map[string]string {
+				env := withOptIn("failure")
+				env["CLOSED_PULL_REQUEST"] = "true"
+				return env
+			}(), wantStage: "", wantLog: "CEL routing failed for a closed pull request; skipping retro",
+		},
+		{
+			name: "failed on-demand retro CEL route keeps its authorized bash stage",
+			env:  retroCommand("retro"), wantStage: "retro", wantLog: "CEL route failed; keeping the bash stage",
 		},
 		{
 			name: "run sets triage where bash chose nothing",

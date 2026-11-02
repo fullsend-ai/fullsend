@@ -209,6 +209,11 @@ permission list, not by bypassing the check.
 > any closer can trigger read-only lifecycle accounting. This follows
 > the extension path above rather than bypassing the check.
 
+> **Update (2026-11-02, [#8912](https://github.com/fullsend-ai/fullsend/issues/8912)):**
+> Closed-pull-request retro dispatch now requires the closing actor to have
+> write access. If CEL routing fails for a close event, the workflow skips
+> retro instead of falling back to the Bash route.
+
 > **Note (2026-08-10, [#6042](https://github.com/fullsend-ai/fullsend/issues/6042)):**
 > Prow-based repositories (e.g., OpenShift) use OWNERS files rather than
 > GitHub collaborator roles to define contributor authority.

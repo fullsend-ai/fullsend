@@ -165,14 +165,11 @@ func routeBuiltinAgent(ctx context.Context, o routeOpts) (routeDecision, error) 
 
 	// A bot the lookup denied is skipped before any config or trigger
 	// validation can return an error or the bash decision, either of which
-	// keeps the route job's bash stage, and bash admits bot authors. The
-	// retro lifecycle-close exception keeps its place in the gate below. The
-	// permanent label-added exception skips the denial the same way, as in
-	// harnessdispatch.authorizeEvent, which allows label-added before it reads
-	// the lookup fields.
+	// keeps the route job's bash stage. The permanent label-added exception
+	// skips the denial the same way, as in harnessdispatch.authorizeEvent,
+	// which allows label-added before it reads the lookup fields.
 	if reason := botRoleDenialReason(o.event.Actor); reason != "" &&
-		!isGitHubLabelAdded(o.event) &&
-		!(o.agent == "retro" && harnessdispatch.IsLifecycleCloseAuthorized(o.event, agent.role)) {
+		!isGitHubLabelAdded(o.event) {
 		return withDecision(d, routeSkip, reason), nil
 	}
 
@@ -264,19 +261,10 @@ func routeBuiltinAgent(ctx context.Context, o routeOpts) (routeDecision, error) 
 
 	// Same gate as harness dispatch: the event-level rules, then the
 	// harness role threshold (IsHarnessAuthorized applies both), on the
-	// OWNERS-upgraded role. A closed pull request starts a retro whoever
-	// closed it (the lifecycle-close exception), only on the retro route and
-	// keyed on the resolved harness role:, or on the agent's own role only
-	// when the harness could not be loaded (the Retro job mints the retro
-	// role either way).
-	exceptionRole := harnessRole
-	if harnessUnavailable {
-		exceptionRole = agent.role
-	}
+	// OWNERS-upgraded role. An unavailable harness leaves the role empty,
+	// which fails closed to the write threshold.
 	authCheck := harnessdispatch.AuthCheckEvent(o.configDir, cfg, o.event)
-	lifecycleClose := o.agent == "retro" && harnessdispatch.IsLifecycleCloseAuthorized(o.event, exceptionRole)
-	if !lifecycleClose &&
-		!harnessdispatch.IsHarnessAuthorized(&authCheck, harnessRole) {
+	if !harnessdispatch.IsHarnessAuthorized(&authCheck, harnessRole) {
 		if reason := botRoleDenialReason(authCheck.Actor); reason != "" {
 			return withDecision(d, routeSkip, reason), nil
 		}
