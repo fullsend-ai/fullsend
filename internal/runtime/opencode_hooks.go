@@ -18,6 +18,10 @@ var openCodeHookAdapter []byte
 const openCodeHookConfigEnv = "FULLSEND_OPENCODE_HOOK_CONFIG"
 const openCodeHookRuntimeVersion = "1.19.1"
 
+// openCodeSDKDir is image-owned so an earlier sandbox iteration cannot replace
+// the SDK that OpenCode loads before the hook plugin can enforce policy.
+const openCodeSDKDir = "/usr/local/share/opencode-sdk"
+
 // The configuration travels from Bootstrap to Run on the runner, and from Run
 // to the plugin through a reasserted environment variable, never a sandbox file.
 // The plugin snapshots it once; nested Task sessions use the same policy.
@@ -177,7 +181,10 @@ func openCodeHasHookPlan(cfg *openCodeHookConfig) bool {
 // custom config dir. Restore that cache from the image's installed SDK after
 // clearing user-level config overrides, without a registry download.
 func (r OpenCodeRuntime) openCodeSDKCacheRestore() string {
-	prefix := r.ConfigDir()
+	return openCodeSDKCacheRestoreFrom(openCodeSDKDir)
+}
+
+func openCodeSDKCacheRestoreFrom(prefix string) string {
 	return `{ { test -f ` + shellQuote(prefix+"/package.json") + ` && test -f ` + shellQuote(prefix+"/package-lock.json") + ` && test -d ` + shellQuote(prefix+"/node_modules") + `; } || { echo 'fullsend: OpenCode plugin SDK missing; rebuild the sandbox image' >&2; exit 127; }; ` +
 		`command -p mkdir -p "$HOME/.config/opencode" && command -p cp ` + shellQuote(prefix+"/package.json") + ` ` + shellQuote(prefix+"/package-lock.json") + ` "$HOME/.config/opencode/" && command -p ln -s ` + shellQuote(prefix+"/node_modules") + ` "$HOME/.config/opencode/node_modules"; }`
 }
