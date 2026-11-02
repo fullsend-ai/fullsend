@@ -13,10 +13,10 @@ import (
 	"strconv"
 	"strings"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/randutil"
-
-	"gopkg.in/yaml.v3"
 )
 
 // This file implements `fullsend repos set`: a schema-aware editor for any

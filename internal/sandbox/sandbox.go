@@ -21,8 +21,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/fullsend-ai/fullsend/internal/randutil"
 	"gopkg.in/yaml.v3"
+
+	"github.com/fullsend-ai/fullsend/internal/randutil"
 )
 
 const (

@@ -66,12 +66,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fullsend-ai/fullsend/internal/randutil"
-
 	"github.com/google/uuid"
 
 	"github.com/fullsend-ai/fullsend/internal/e2etest"
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/randutil"
 )
 
 const (

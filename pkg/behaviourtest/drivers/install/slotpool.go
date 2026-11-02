@@ -29,10 +29,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fullsend-ai/fullsend/internal/randutil"
-
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
+	"github.com/fullsend-ai/fullsend/internal/randutil"
 )
 
 const (

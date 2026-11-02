@@ -1,12 +1,34 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(CDPATH='' cd -- "${SCRIPT_DIR}/.." && pwd)"
 SEMGREP_VERSION=1.182.1
+RULESET_URL=https://semgrep.dev/c/p/security-audit
+RULESET_SHA256=83d7cde9157b3c79cc5cfaea26e7bd2ba9c740f2ba07635ad475b2585556c32d
 
-exec uvx --from "semgrep==${SEMGREP_VERSION}" semgrep scan \
-	--config "${REPO_ROOT}/.semgrep/security-audit.yml" \
+RULESET_DIR="$(mktemp -d "${TMPDIR:-/tmp}/fullsend-semgrep-rules.XXXXXX")"
+trap 'rm -rf "$RULESET_DIR"' EXIT
+RULESET_FILE="${RULESET_DIR}/security-audit.yml"
+
+curl --fail --location --silent --show-error "$RULESET_URL" \
+	--output "$RULESET_FILE"
+
+if command -v sha256sum >/dev/null 2>&1; then
+	RULESET_ACTUAL_SHA256="$(sha256sum "$RULESET_FILE" | cut -d ' ' -f 1)"
+elif command -v shasum >/dev/null 2>&1; then
+	RULESET_ACTUAL_SHA256="$(shasum -a 256 "$RULESET_FILE" | cut -d ' ' -f 1)"
+else
+	echo "semgrep-scan: sha256sum or shasum is required to verify the ruleset" >&2
+	exit 1
+fi
+
+if [[ "$RULESET_ACTUAL_SHA256" != "$RULESET_SHA256" ]]; then
+	echo "semgrep-scan: downloaded ruleset SHA-256 does not match the pin" >&2
+	echo "semgrep-scan: expected $RULESET_SHA256, got $RULESET_ACTUAL_SHA256" >&2
+	exit 1
+fi
+
+uvx --from "semgrep==${SEMGREP_VERSION}" semgrep scan \
+	--config "$RULESET_FILE" \
 	--metrics=off \
 	--disable-version-check \
 	-j 1 \

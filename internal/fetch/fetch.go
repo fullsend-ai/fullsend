@@ -20,9 +20,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/fullsend-ai/fullsend/internal/randutil"
-
 	"github.com/fullsend-ai/fullsend/internal/netutil"
+	"github.com/fullsend-ai/fullsend/internal/randutil"
 )
 
 // FetchPolicy controls the security constraints applied when fetching a URL.
