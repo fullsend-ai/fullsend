@@ -187,6 +187,21 @@ test("trusted file permissions use worktree-relative paths for every patch targe
   await assert.rejects(nested["tool.execute.before"]({ tool: "edit" }, { args: { filePath: "../other/app.go" } }), /trusted permission/);
 });
 
+test("trusted file permissions resolve a symlinked worktree root", async (t) => {
+  const scoped = { "*": "deny", "src/*": "allow" };
+  const h = await setup(t, { permission: { "*": "deny", edit: scoped } });
+  mkdirSync(path.join(h.workspace, "src"));
+  const linkedWorktree = path.join(h.root, "linked-worktree");
+  symlinkSync(h.workspace, linkedWorktree);
+  const hooks = await plugin({ directory: linkedWorktree, worktree: linkedWorktree });
+
+  await hooks["tool.execute.before"]({ tool: "edit" }, { args: { filePath: "src/app.go" } });
+  await assert.rejects(
+    hooks["tool.execute.before"]({ tool: "edit" }, { args: { filePath: "other/app.go" } }),
+    /trusted permission/,
+  );
+});
+
 test("native Bash exit metadata prevents false success suppression", async (t) => {
   const hooksDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "../../security/hooks");
   const scripts = Object.fromEntries(["hook_io.py", "context_suppress_posttool.py"].map((file) =>

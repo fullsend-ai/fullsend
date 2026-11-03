@@ -409,10 +409,8 @@ func openCodeInstructionsConfig(repoDir string) string {
 // loaded as mode "primary". It catches a silent fallback to the default agent
 // (*:allow) from a frontmatter parse failure or mode:subagent.
 func openCodeVerifyAgent(sandboxName, agentName string, r OpenCodeRuntime) error {
-	cmd := codexHookScriptsGuard(r.ConfigDir()+"/plugins", map[string]string{openCodeHooksExtensionFile: codexAssetSHA256(openCodeHookAdapter)}) + " && " + strings.Join(r.EnvExports(), " && ") + " && " + fmt.Sprintf("cd %s && OPENCODE_CONFIG_DIR=%s command "+openCodeBinaryPath+" debug agent %s 2>/dev/null",
-		shellQuote(r.WorkspaceDir()),
-		shellQuote(r.ConfigDir()),
-		shellQuote(openCodeValidatedArg(agentName)))
+	cmd := codexHookScriptsGuard(r.ConfigDir()+"/plugins", map[string]string{openCodeHooksExtensionFile: codexAssetSHA256(openCodeHookAdapter)}) + " && " + strings.Join(r.EnvExports(), " && ") + " && " + fmt.Sprintf("cd %s && ", shellQuote(r.WorkspaceDir())) +
+		openCodePinnedCommand("OPENCODE_CONFIG_DIR="+shellQuote(r.ConfigDir())+" ", " debug agent "+shellQuote(openCodeValidatedArg(agentName))+" 2>/dev/null")
 	stdout, stderr, exitCode, err := sandbox.Exec(sandboxName, cmd, 30*time.Second)
 	if err != nil {
 		return fmt.Errorf("verifying opencode agent %q: %w", agentName, err)
@@ -430,7 +428,7 @@ func openCodeVerifyAgent(sandboxName, agentName string, r OpenCodeRuntime) error
 // openCodePreflightVersion runs `opencode --version` so a missing or broken
 // binary is reported before any iteration, not as an empty transcript.
 func openCodePreflightVersion(sandboxName string) error {
-	stdout, stderr, exitCode, err := sandbox.Exec(sandboxName, openCodeBinaryPath+" --version", 30*time.Second)
+	stdout, stderr, exitCode, err := sandbox.Exec(sandboxName, openCodePinnedCommand("", " --version"), 30*time.Second)
 	if err != nil {
 		return fmt.Errorf("opencode preflight: %w", err)
 	}
