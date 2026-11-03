@@ -629,7 +629,7 @@ The `dummy` runtime executes a YAML script of operations inside the real sandbox
 
 | Op | Args | Purpose |
 |----|------|---------|
-| `assert_env` | `VAR_NAME` | Assert env var is set and non-empty in the sandbox |
+| `assert_env` | `VAR_NAME` | Assert env var is set and non-empty in the sandbox, with the harness environment from `.env` loaded as an agent launch loads it |
 | `assert_file` | `path` | Assert file exists and is readable under the workspace |
 | `assert_json` | `path,json_path` | Assert JSON file exists and dot-path field is present and non-null (uses `jq`) |
 | `assert_jq` | `path,jq_filter` | Assert the jq filter (everything after the first comma) yields neither `false` nor `null` for the JSON file, via `jq -e`; filters that read the environment or other inputs are refused. Escape `\|` inside a Gherkin table cell |

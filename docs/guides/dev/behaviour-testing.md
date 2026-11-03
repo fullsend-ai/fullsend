@@ -61,6 +61,13 @@ Given a dummy agent that would:
 | `args` | Op-specific; see below |
 | `expect` | Optional. `fail` marks a step the scenario expects to fail, such as a fetch the sandbox blocks. The failure is still recorded for `the agent will fail to ...`, but it does not make the agent exit non-zero, so the run still succeeds. |
 
+Every op that runs a command in the sandbox (all of the above except
+`write_fixture` and `wait`) first reads the harness environment from the
+sandbox `.env`, the same way an agent launch reads it. The command therefore
+sees the `env.sandbox` values, the `.env.d` files from `host_files` and the
+runner's `PATH`. If `.env` or a file it names cannot be read, the op fails with
+`loading the harness environment failed` and the loader's error.
+
 **`assert_not_jwt`:** `VAR` — succeeds when the sandbox variable `VAR` is set and does not hold a JWT (three base64url segments, the first starting `eyJ`). When its value is an absolute path to a readable file, as `INFERENCE_GATEWAY_TOKEN_FILE` is, the file must not hold one either. Use it to check that a credential reached the sandbox only as a placeholder.
 
 **`wait`:** `SECONDS` — sleeps for a whole number of seconds (1 to 1200) between the ops before and after it, for example to outlast a credential's lifetime before probing again.
