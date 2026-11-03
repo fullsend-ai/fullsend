@@ -22,6 +22,8 @@ import (
 type FakeJiraClient struct {
 	Issues   map[string]*jira.Issue
 	Comments map[string][]jira.Comment
+	// ProjectIDs supplies immutable project IDs for created issue reads.
+	ProjectIDs map[string]string
 
 	// CommentProperties maps "issueKey/commentID" to a map of
 	// propertyKey -> value, mirroring Jira's per-comment entity
@@ -129,9 +131,12 @@ func (f *FakeJiraClient) CreateIssue(_ context.Context, in jira.CreateIssueInput
 		issueType.Name = in.IssueType
 	}
 	f.Issues[key] = &jira.Issue{
-		ID:     fmt.Sprintf("%d", 10000+len(f.CreatedIssues)),
-		Key:    key,
-		Fields: jira.IssueFields{Summary: in.Summary, Description: description, IssueType: issueType},
+		ID:  fmt.Sprintf("%d", 10000+len(f.CreatedIssues)),
+		Key: key,
+		Fields: jira.IssueFields{
+			Summary: in.Summary, Description: description, IssueType: issueType,
+			Project: &jira.ProjectRef{ID: f.ProjectIDs[in.ProjectKey], Key: in.ProjectKey},
+		},
 	}
 	return &jira.CreatedIssue{ID: fmt.Sprintf("%d", 10000+len(f.CreatedIssues)), Key: key}, nil
 }

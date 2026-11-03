@@ -2,6 +2,8 @@ package tracecontext
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,6 +13,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // v01Identity is the shared V01 fixture: one resolved identity per forge
@@ -42,7 +47,7 @@ func TestDeriveFallback_ResolvedAndNonzero(t *testing.T) {
 }
 
 // TestDeriveFallback_ComponentSensitivity is V01: changing any binding
-// component changes the derived identity, so distinct installations,
+// component changes the derived identity, so distinct
 // instances, containers, kinds, or entities cannot alias.
 func TestDeriveFallback_ComponentSensitivity(t *testing.T) {
 	base, ok := DeriveFallback(v01Identity())
@@ -139,7 +144,6 @@ func TestDeriveFallback_MoveIsNewBinding(t *testing.T) {
 	// Jira project move: same issue id, new project container.
 	moved := v01Identity()
 	moved.Container = 999888777
-	moved.Instance = "https://acme.atlassian.net"
 	after, ok := DeriveFallback(moved)
 	require.True(t, ok)
 	assert.NotEqual(t, base, after, "a moved entity has a new binding")
@@ -225,6 +229,7 @@ func TestDeriveFallback_IdenticalAcrossProcesses(t *testing.T) {
 
 	assert.NotEqual(t, "unresolved", first)
 	assert.Equal(t, first, second, "two fresh processes must derive identical fallbacks")
+	assert.Equal(t, "c9bdb0e38247ebbe2e0f1039250c32d4 892a346c55356aca", first)
 
 	parts := strings.Fields(first)
 	require.Len(t, parts, 2, "child output: %q", first)
@@ -267,9 +272,67 @@ func TestNormalizeInstance_Rejects(t *testing.T) {
 		"https://user:passgithub.com",
 		"https://github.com?query=1",
 		"https://github.com#fragment",
+		"https://github.com?",
+		"https://github.com#",
+		"https://:443",
+		"ftp://github.com",
+		"https://" + strings.Repeat("a", 246),
+		"https://\xff.example",
 	} {
 		_, err := NormalizeInstance(raw)
 		assert.Error(t, err, "input %q must be rejected", raw)
+	}
+}
+
+// These preimages and IDs were computed independently with Python struct
+// (>H string lengths, >QBQ IDs/kind) and hashlib.sha256, not DeriveFallback.
+func TestDeriveFallback_FixedVectors(t *testing.T) {
+	for _, tc := range []struct {
+		id                        Identity
+		preimage, traceID, anchor string
+	}{
+		{v01Identity(), "002166756c6c73656e642e7472616365636f6e746578742e6964656e746974792e7631001268747470733a2f2f6769746875622e636f6d00000000105add9f01000000009328a1a2", "c9bdb0e38247ebbe2e0f1039250c32d4", "892a346c55356aca"},
+		{Identity{Instance: "https://gitlab.com", Container: 101, Kind: KindChangeProposal, Entity: 555}, "002166756c6c73656e642e7472616365636f6e746578742e6964656e746974792e7631001268747470733a2f2f6769746c61622e636f6d000000000000006502000000000000022b", "407b66d9453075850f3ee7ef31d6ff1e", "a39491edef0440ae"},
+		{Identity{Instance: "https://acme.atlassian.net", Container: 10000, Kind: KindWorkItem, Entity: 10100}, "002166756c6c73656e642e7472616365636f6e746578742e6964656e746974792e7631001a68747470733a2f2f61636d652e61746c61737369616e2e6e65740000000000002710010000000000002774", "535e9f2c6d8bd8a814edd68dceb60e9a", "7e00bd92068701ac"},
+	} {
+		t.Run(tc.id.Instance, func(t *testing.T) {
+			digest := sha256.Sum256(mustHex(t, tc.preimage))
+			assert.Equal(t, tc.traceID, fmt.Sprintf("%x", digest[:16]))
+			assert.Equal(t, tc.anchor, fmt.Sprintf("%x", digest[16:24]))
+			fb, ok := DeriveFallback(tc.id)
+			require.True(t, ok)
+			assert.Equal(t, tc.traceID, fb.TraceID.String())
+			assert.Equal(t, tc.anchor, fb.AnchorSpanID.String())
+		})
+	}
+}
+
+func TestFallback_SyntheticAnchorExportLifecycle(t *testing.T) {
+	seen := map[trace.SpanID]bool{}
+	for range 2 {
+		// Each provider models an independent launch with no retained state.
+		exporter := tracetest.NewInMemoryExporter()
+		provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter), sdktrace.WithSampler(sdktrace.AlwaysSample()))
+		t.Cleanup(func() { assert.NoError(t, provider.Shutdown(context.Background())) })
+		fb, ok := DeriveFallback(v01Identity())
+		require.True(t, ok)
+		parent := trace.NewSpanContext(trace.SpanContextConfig{TraceID: fb.TraceID, SpanID: fb.AnchorSpanID})
+		ctx := trace.ContextWithRemoteSpanContext(context.Background(), parent)
+		tracer := provider.Tracer("tracecontext-test")
+		for range 2 {
+			_, span := tracer.Start(ctx, "operation")
+			span.End()
+		}
+		spans := exporter.GetSpans()
+		require.Len(t, spans, 2, "only operation spans are exported")
+		for _, span := range spans {
+			assert.Equal(t, "c9bdb0e38247ebbe2e0f1039250c32d4", span.SpanContext.TraceID().String())
+			assert.Equal(t, "892a346c55356aca", span.Parent.SpanID().String())
+			assert.Equal(t, span.SpanContext.TraceID(), span.Parent.TraceID())
+			assert.NotEqual(t, fb.AnchorSpanID, span.SpanContext.SpanID(), "anchor is never exported")
+			assert.False(t, seen[span.SpanContext.SpanID()], "operations have distinct IDs across launches")
+			seen[span.SpanContext.SpanID()] = true
+		}
 	}
 }
 

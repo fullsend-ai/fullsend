@@ -67,11 +67,15 @@ type Issue struct {
 	// id string parsed to an integer. It is 0 when the backend did not
 	// report one; trace admission treats that as unresolved identity
 	// rather than guessing.
-	ID     int64
-	Title  string
-	Body   Body
-	URL    string
-	Labels []string
+	ID int64
+	// ContainerID is the immutable Jira project ID supplied by GetIssue.
+	// Zero means unresolved: create responses and forge-backed reads need
+	// a separate trusted project/repository lookup before trace admission.
+	ContainerID int64
+	Title       string
+	Body        Body
+	URL         string
+	Labels      []string
 	// IssueType is the tracker's issue type name (e.g. "Bug", "Story").
 	// Set by the Jira client; empty for trackers that don't report one.
 	IssueType string

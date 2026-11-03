@@ -26,11 +26,23 @@ components.
 | Forge instance | web base URL (`https://github.com`, or a GHES host) | web base URL (`https://gitlab.com`, or a self-hosted host) | site base URL |
 | Container | repository `id` | project `id` | project `id` |
 | Entity kind | `work_item` (issue), `change_proposal` (PR) | `work_item` (issue), `change_proposal` (MR) | `work_item` (issue; Jira has no change proposal) |
-| Entity | issue or PR REST `id` | issue or MR database `id` (not the IID) | issue `id` |
+| Entity | issue or PR REST `id`; PR GraphQL `fullDatabaseId` (`BigInt`) | issue or MR database `id` (not the IID) | issue `id` |
 
 The instance string is the normalized base URL: lowercase
-`scheme://host`, no path, no trailing slash. `NormalizeInstance` builds it
-and rejects URLs that carry a path, query, fragment, or user info.
+`scheme://host`, using `http` or `https`, at most 253 UTF-8 bytes, no path or
+trailing slash. `NormalizeInstance` builds it (accepting and removing a bare
+`/`) and rejects URLs with a longer path, query, fragment, user info, or
+missing host. Identity resolution, signing, and parsing require the already
+canonical value; they never silently rewrite an authenticated field.
+
+Jira issue reads expose the project ID as `tracker.Issue.ContainerID`; search
+requests include `project`. Missing or invalid project IDs stay zero
+(unresolved). Jira's create response contains no project ID, so a subsequent
+trusted read must resolve the container before trace admission. Forge-backed
+tracker reads resolve their repository separately through `forge.Client`.
+GitHub cross-repository PR creation decodes `fullDatabaseId` directly into
+an `int64`, accepting numeric or string JSON without floating-point rounding;
+the deprecated 32-bit GraphQL `databaseId` is not used.
 
 The installation ID is generated during key provisioning and identifies
 one install's key set. It is authenticated inside every envelope and must
@@ -57,19 +69,36 @@ deterministically:
 
 - Input: the forge instance, container, kind, and entity — never the
   installation.
-- SHA-256 over the length-prefixed canonical encoding of the domain
-  string `fullsend.tracecontext.identity.v1`, the instance string, the
-  container `int64`, the kind byte, and the entity `int64`.
+- SHA-256 over the exact concatenation below. Only strings are
+  length-prefixed; all integers are big-endian:
+  `uint16(33) || "fullsend.tracecontext.identity.v1" || uint16(N) ||
+  instance[N] || uint64(container) || byte(kind) || uint64(entity)`.
+  `N` counts UTF-8 bytes, container/entity are in `[1, 2^63−1]`, and kind
+  is `0x01` (work item) or `0x02` (change proposal).
 - TraceID = the first 16 digest bytes; the anchor SpanID = the next 8.
 - An all-zero result (probability 2⁻¹²⁸ for the trace, 2⁻⁶⁴ for the span)
-  substitutes a documented nonzero value, so derived IDs are always valid.
+  replaces only that ID's final byte with `0x01`, so derived IDs are valid.
 
 The derivation is pure, so independent launches and concurrent first
 events converge on identical nonzero IDs without shared state. The anchor
-SpanID is a synthetic parent reference: the OpenTelemetry SDK assigns
-random span IDs, so no exported span ever carries the anchor ID, the
-anchor is never repointed, and operation spans keep distinct
-SDK-generated IDs.
+SpanID is a synthetic parent reference by protocol choice: no exported span
+carries the anchor ID, the anchor is never repointed, and operation spans
+keep distinct SDK-generated IDs. OpenTelemetry supports custom ID generators
+(`WithIDGenerator`); this contract deliberately uses an unexported anchor
+rather than creating a real root span with that ID.
+
+For `https://github.com`, container `274390431`, kind `0x01`, and entity
+`2468913570`, the exact input is:
+
+```text
+002166756c6c73656e642e7472616365636f6e746578742e6964656e746974792e7631
+001268747470733a2f2f6769746875622e636f6d00000000105add9f01000000009328a1a2
+```
+
+Concatenate those hex lines before hashing. The TraceID is
+`c9bdb0e38247ebbe2e0f1039250c32d4`; the anchor is `892a346c55356aca`.
+Additional independent GitLab/Jira vectors and an SDK exporter lifecycle
+test are in `identity_test.go`; runtime integration remains a later slice.
 
 ## Signed envelope (wire format v1)
 
@@ -88,7 +117,7 @@ the magic through the nonce — there are no unsigned fields.
 | 32 | N | Forge instance | normalized form, UTF-8, no NUL |
 | 32+N | 8 | Container ID | `int64 ≥ 1` |
 | 40+N | 1 | Entity kind | `0x01` work item, `0x02` change proposal |
-| 41+N | 8 | Entity ID | `int64 ≥ 1`; bound envelopes only — pending markers omit these 9 bytes |
+| 41+N | 8 | Entity ID | `int64 ≥ 1`; bound envelopes only — pending markers omit these 8 bytes, retaining the kind byte |
 | · | 16 | Trace ID | nonzero |
 | · | 8 | Parent/anchor Span ID | nonzero |
 | · | 1 | Provenance kind | `0x00` none, `0x01` source link, `0x02` scenario |
@@ -127,6 +156,8 @@ eligible keys (active plus retained). Envelopes never carry public keys
 or key locations, and metadata can never select a signer or a remote key
 URL. After rotation, metadata signed by an older retained key remains
 verifiable while new metadata uses the active key.
+Missing or malformed-length verification keys yield `unknown-key` fallback
+without context or provenance; they never reach Ed25519 verification.
 
 ### Provenance consistency
 

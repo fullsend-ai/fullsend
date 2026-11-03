@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"unicode/utf8"
 
 	"go.opentelemetry.io/otel/trace"
 )
@@ -107,8 +106,8 @@ var (
 	errMalformed      = errors.New("tracecontext: malformed envelope")
 )
 
-// minEnvelopeLen is the smallest legal envelope: pending domain, no
-// provenance, 1-byte instance.
+// minEnvelopeLen is the structural lower bound: pending domain, no
+// provenance, one instance byte. Canonical URL validation is stricter.
 const minEnvelopeLen = 147
 
 // KeyID returns the v1 key selector for a verification key: the first 8
@@ -131,10 +130,7 @@ func (e *Envelope) validate() error {
 	if e.Installation == ([16]byte{}) {
 		return fmt.Errorf("%w: zero installation", errMalformed)
 	}
-	if n := len(e.Instance); n < 1 || n > 253 {
-		return fmt.Errorf("%w: instance length %d", errMalformed, n)
-	}
-	if !utf8.ValidString(e.Instance) || strings.ContainsRune(e.Instance, 0) {
+	if !validInstance(e.Instance) {
 		return fmt.Errorf("%w: invalid instance", errMalformed)
 	}
 	if e.Container < 1 {
@@ -498,7 +494,7 @@ func Admit(expected Identity, keys map[[8]byte]ed25519.PublicKey, candidates ...
 
 	env := parsed[0]
 	pub, ok := keys[env.KeyID]
-	if !ok {
+	if !ok || len(pub) != ed25519.PublicKeySize {
 		return fallback(ReasonUnknownKey)
 	}
 	payload := candidates[0][:len(candidates[0])-64]

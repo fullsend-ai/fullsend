@@ -43,8 +43,10 @@ func TestGetIssue_CapturesDatabaseID(t *testing.T) {
 func TestCreateIssue_CapturesDatabaseID(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()
+	handlerCalled := false
 
 	mux.HandleFunc("/api/v4/projects/owner%2Frepo/issues", func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
 		writeJSON(t, w, http.StatusCreated, map[string]any{
 			"id":          987654322,
 			"iid":         6,
@@ -55,6 +57,7 @@ func TestCreateIssue_CapturesDatabaseID(t *testing.T) {
 	})
 
 	issue, err := client.CreateIssue(ctx, "owner", "repo", "New work", "body")
+	assert.True(t, handlerCalled)
 	require.NoError(t, err)
 	assert.Equal(t, int64(987654322), issue.ID, "CreateIssue must capture the immutable database id")
 	assert.Equal(t, 6, issue.Number)
@@ -89,8 +92,10 @@ func TestGetIssue_NestedNamespace(t *testing.T) {
 func TestCreateChangeProposal_CapturesDatabaseID(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()
+	handlerCalled := false
 
 	mux.HandleFunc("/api/v4/projects/owner%2Frepo/merge_requests", func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
 		writeJSON(t, w, http.StatusCreated, map[string]any{
 			"id":            555444333,
 			"iid":           9,
@@ -102,6 +107,7 @@ func TestCreateChangeProposal_CapturesDatabaseID(t *testing.T) {
 	})
 
 	cp, err := client.CreateChangeProposal(ctx, "owner", "repo", "Add widget", "body", "feature", "main")
+	assert.True(t, handlerCalled)
 	require.NoError(t, err)
 	assert.Equal(t, int64(555444333), cp.ID, "CreateChangeProposal must capture the immutable database MR id, not the IID")
 	assert.Equal(t, 9, cp.Number)
@@ -110,8 +116,10 @@ func TestCreateChangeProposal_CapturesDatabaseID(t *testing.T) {
 func TestListRepoPullRequests_CapturesDatabaseID(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()
+	handlerCalled := false
 
 	mux.HandleFunc("/api/v4/projects/owner%2Frepo/merge_requests", func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
 		writeJSON(t, w, http.StatusOK, []map[string]any{{
 			"id":            555444334,
 			"iid":           10,
@@ -124,6 +132,7 @@ func TestListRepoPullRequests_CapturesDatabaseID(t *testing.T) {
 	})
 
 	cps, err := client.ListRepoPullRequests(ctx, "owner", "repo")
+	assert.True(t, handlerCalled)
 	require.NoError(t, err)
 	require.Len(t, cps, 1)
 	assert.Equal(t, int64(555444334), cps[0].ID, "ListRepoPullRequests must capture the immutable database MR id")
@@ -135,8 +144,10 @@ func TestListRepoPullRequests_CapturesDatabaseID(t *testing.T) {
 func TestListOpenIssues_CapturesDatabaseID(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()
+	handlerCalled := false
 
 	mux.HandleFunc("/api/v4/projects/owner%2Frepo/issues", func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
 		writeJSON(t, w, http.StatusOK, []map[string]any{{
 			"id":          987654324,
 			"iid":         11,
@@ -147,6 +158,7 @@ func TestListOpenIssues_CapturesDatabaseID(t *testing.T) {
 	})
 
 	issues, err := client.ListOpenIssues(ctx, "owner", "repo")
+	assert.True(t, handlerCalled)
 	require.NoError(t, err)
 	require.Len(t, issues, 1)
 	assert.Equal(t, int64(987654324), issues[0].ID)

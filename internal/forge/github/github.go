@@ -2537,7 +2537,7 @@ func (c *LiveClient) CreateCrossRepoChangeProposal(ctx context.Context, baseOwne
 	query := `mutation($input: CreatePullRequestInput!) {
 		createPullRequest(input: $input) {
 			pullRequest {
-				databaseId
+				fullDatabaseId
 				number
 				title
 				url
@@ -2568,10 +2568,10 @@ func (c *LiveClient) CreateCrossRepoChangeProposal(ctx context.Context, baseOwne
 		Data struct {
 			CreatePullRequest struct {
 				PullRequest struct {
-					DatabaseID int64  `json:"databaseId"`
-					Number     int    `json:"number"`
-					Title      string `json:"title"`
-					URL        string `json:"url"`
+					FullDatabaseID json.Number `json:"fullDatabaseId"`
+					Number         int         `json:"number"`
+					Title          string      `json:"title"`
+					URL            string      `json:"url"`
 				} `json:"pullRequest"`
 			} `json:"createPullRequest"`
 		} `json:"data"`
@@ -2598,10 +2598,16 @@ func (c *LiveClient) CreateCrossRepoChangeProposal(ctx context.Context, baseOwne
 	}
 
 	pr := gqlResult.Data.CreatePullRequest.PullRequest
+	var id int64
+	if pr.FullDatabaseID != "" {
+		id, err = pr.FullDatabaseID.Int64()
+		if err != nil || id < 1 {
+			return nil, fmt.Errorf("decode cross-repo pull request response: invalid fullDatabaseId %q", pr.FullDatabaseID)
+		}
+	}
 	return &forge.ChangeProposal{
-		// databaseId is the GraphQL name for the REST numeric id, so
-		// both creation paths expose the same immutable identity.
-		ID:     pr.DatabaseID,
+		// BigInt may be a JSON number or string; never round through float64.
+		ID:     id,
 		URL:    pr.URL,
 		Title:  pr.Title,
 		Number: pr.Number,

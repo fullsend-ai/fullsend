@@ -6,6 +6,8 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/forge/jira"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // The tests in this file are V03 for AISDLC-576: the immutable database IDs
@@ -83,10 +85,11 @@ func TestJiraClient_GetIssue_IDAndKeyDistinct(t *testing.T) {
 	if issue.Number != 42 {
 		t.Errorf("issue.Number = %d, want 42 (numeric key suffix)", issue.Number)
 	}
+	assert.Equal(t, int64(10000), issue.ContainerID)
 }
 
 func TestJiraClient_CreateIssue_MapsImmutableID(t *testing.T) {
-	fc := &FakeJiraClient{}
+	fc := &FakeJiraClient{ProjectIDs: map[string]string{"PROJ": "20000"}}
 	c := newTestJiraClient(t, fc, "https://acme.atlassian.net")
 
 	issue, err := c.CreateIssue(context.Background(), "PROJ", "New work", "body", CreateIssueOptions{IssueType: "Task"})
@@ -98,5 +101,22 @@ func TestJiraClient_CreateIssue_MapsImmutableID(t *testing.T) {
 	}
 	if issue.Key == "" {
 		t.Errorf("issue.Key is empty, want the display key of the created issue")
+	}
+	assert.Zero(t, issue.ContainerID, "Jira create response has no project ID")
+	read, err := c.GetIssue(context.Background(), "PROJ", issue.Number)
+	require.NoError(t, err)
+	assert.Equal(t, issue.ID, read.ID)
+	assert.Equal(t, int64(20000), read.ContainerID, "trusted read resolves the container")
+}
+
+func TestJiraClient_GetIssue_UnresolvedProject(t *testing.T) {
+	for _, project := range []*jira.ProjectRef{nil, {}, {ID: "bad"}, {ID: "0"}, {ID: "-1"}, {ID: "9223372036854775808"}} {
+		fc := &FakeJiraClient{Issues: map[string]*jira.Issue{
+			"PROJ-42": {ID: "10100", Key: "PROJ-42", Fields: jira.IssueFields{Project: project}},
+		}}
+		c := newTestJiraClient(t, fc, "https://acme.atlassian.net")
+		issue, err := c.GetIssue(context.Background(), "PROJ", 42)
+		require.NoError(t, err)
+		assert.Zero(t, issue.ContainerID, "project %#v must remain unresolved", project)
 	}
 }

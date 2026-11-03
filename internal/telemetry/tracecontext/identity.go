@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"unicode/utf8"
 
 	"go.opentelemetry.io/otel/trace"
 )
@@ -59,19 +60,18 @@ type Identity struct {
 }
 
 // Resolved reports whether the forge-side identity components are present
-// and valid: a non-empty instance, a container ID >= 1, a valid kind, and
+// and valid: a canonical instance, a container ID >= 1, a valid kind, and
 // an entity ID >= 1. Installation is local configuration rather than event
 // identity, so it is not part of resolution; admission checks it against
 // the envelope separately. An unresolved identity must postpone dispatch
 // (FR-002); it never derives a fallback.
 func (id Identity) Resolved() bool {
-	return id.Instance != "" && id.Container >= 1 && id.Kind.Valid() && id.Entity >= 1
+	return validInstance(id.Instance) && id.Container >= 1 && id.Kind.Valid() && id.Entity >= 1
 }
 
 // Fallback is the deterministic entity-derived context: a stable TraceID
-// and a synthetic anchor SpanID. The OpenTelemetry SDK assigns random span
-// IDs, so no exported span ever carries the anchor ID; the anchor exists
-// only as a parent reference and is never repointed.
+// and a synthetic anchor SpanID. By contract, the anchor exists only as a
+// parent reference, is never exported as a span, and is never repointed.
 type Fallback struct {
 	TraceID      trace.TraceID
 	AnchorSpanID trace.SpanID
@@ -127,14 +127,17 @@ func DeriveFallback(id Identity) (fb Fallback, ok bool) {
 // stripped. All identity and envelope construction must use the normalized
 // form so independent launches converge.
 func NormalizeInstance(raw string) (string, error) {
+	if !utf8.ValidString(raw) {
+		return "", errors.New("tracecontext: instance must be valid UTF-8")
+	}
 	u, err := url.Parse(raw)
 	if err != nil {
 		return "", fmt.Errorf("tracecontext: parse instance URL: %w", err)
 	}
-	if u.Scheme == "" || u.Host == "" {
+	if u.Scheme == "" || u.Hostname() == "" {
 		return "", errors.New("tracecontext: instance URL needs a scheme and host")
 	}
-	if u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+	if u.User != nil || strings.ContainsAny(raw, "?#") {
 		return "", errors.New("tracecontext: instance URL must be a bare scheme://host")
 	}
 	if u.Path != "" && u.Path != "/" {
@@ -144,5 +147,14 @@ func NormalizeInstance(raw string) (string, error) {
 	if scheme != "http" && scheme != "https" {
 		return "", fmt.Errorf("tracecontext: unsupported instance scheme %q", u.Scheme)
 	}
-	return scheme + "://" + strings.ToLower(u.Host), nil
+	normalized := scheme + "://" + strings.ToLower(u.Host)
+	if len(normalized) > 253 {
+		return "", errors.New("tracecontext: instance must be at most 253 bytes")
+	}
+	return normalized, nil
+}
+
+func validInstance(instance string) bool {
+	normalized, err := NormalizeInstance(instance)
+	return err == nil && instance == normalized
 }

@@ -788,8 +788,10 @@ func TestGetIssue_CapturesProjectRef(t *testing.T) {
 	t.Parallel()
 	client, mux := setupTest(t)
 	ctx := context.Background()
+	handlerCalled := false
 
 	mux.HandleFunc("/rest/api/3/issue/PROJ-42", func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
 		writeJSON(t, w, http.StatusOK, map[string]any{
 			"id":  "10042",
 			"key": "PROJ-42",
@@ -801,10 +803,36 @@ func TestGetIssue_CapturesProjectRef(t *testing.T) {
 	})
 
 	issue, err := client.GetIssue(ctx, "PROJ-42")
+	assert.True(t, handlerCalled)
 	require.NoError(t, err)
 	require.NotNil(t, issue.Fields.Project, "project ref must be captured")
 	assert.Equal(t, "10000", issue.Fields.Project.ID, "immutable project database id")
 	assert.Equal(t, "PROJ", issue.Fields.Project.Key, "display project key")
+}
+
+func TestSearchIssues_CapturesProjectRef(t *testing.T) {
+	client, mux := setupTest(t)
+	handlerCalled := false
+	mux.HandleFunc("/rest/api/3/search/jql", func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
+		var body searchRequest
+		if !assert.NoError(t, json.NewDecoder(r.Body).Decode(&body)) {
+			return
+		}
+		assert.Contains(t, body.Fields, "project", "polling must request immutable container identity")
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"isLast": true,
+			"issues": []any{map[string]any{"id": "10042", "key": "PROJ-42", "fields": map[string]any{
+				"project": map[string]any{"id": "10000", "key": "PROJ"},
+			}}},
+		})
+	})
+	issues, err := client.SearchIssues(context.Background(), "project = PROJ", 0)
+	assert.True(t, handlerCalled)
+	require.NoError(t, err)
+	require.Len(t, issues, 1)
+	require.NotNil(t, issues[0].Fields.Project)
+	assert.Equal(t, "10000", issues[0].Fields.Project.ID)
 }
 
 func TestGetIssue_IssueTypeAndCustomFields(t *testing.T) {
