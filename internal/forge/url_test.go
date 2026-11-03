@@ -418,3 +418,10 @@ func TestIsSupportedForge(t *testing.T) {
 		})
 	}
 }
+
+func TestConfiguredGitHubURL(t *testing.T) {
+	t.Setenv(GitHubServerURLEnv, "")
+	assert.Equal(t, "", ConfiguredGitHubURL())
+	t.Setenv(GitHubServerURLEnv, " https://ghe.example.com \n")
+	assert.Equal(t, "https://ghe.example.com", ConfiguredGitHubURL())
+}

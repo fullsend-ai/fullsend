@@ -10552,3 +10552,38 @@ plugins:
 	h.Policy = writeTestPolicy(t, fullsendDir)
 	require.NoError(t, h.ValidateFilesExist())
 }
+
+// TestFetchBaseSkillDir_ConfiguredGitHubHost verifies that a skill directory
+// URL served by the configured GitHub host (GitHub Enterprise Server) is
+// parsed and cloned from that host (#9037), and is refused when the host is
+// not configured.
+func TestFetchBaseSkillDir_ConfiguredGitHubHost(t *testing.T) {
+	skillDirURL := "https://ghe.example.com/org/repo/raw/abc123/skills/triage"
+	skillFileURL := skillDirURL + "/SKILL.md"
+	allowlist := []string{"https://ghe.example.com/org/repo/"}
+
+	var gotCloneURL, gotPath, gotRef string
+	fetcher := func(_ context.Context, cloneURL, path, ref, _ string) (map[string][]byte, error) {
+		gotCloneURL, gotPath, gotRef = cloneURL, path, ref
+		return map[string][]byte{"SKILL.md": []byte("---\nname: triage\n---\n")}, nil
+	}
+
+	_, _, err := fetchBaseSkillDir(context.Background(), "skills", skillDirURL, skillFileURL,
+		"skills/triage", "matched", allowlist, ComposeOpts{
+			WorkspaceRoot: t.TempDir(),
+			TreeFetcher:   fetcher,
+		})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not a raw.githubusercontent.com URL")
+
+	_, _, err = fetchBaseSkillDir(context.Background(), "skills", skillDirURL, skillFileURL,
+		"skills/triage", "matched", allowlist, ComposeOpts{
+			WorkspaceRoot: t.TempDir(),
+			TreeFetcher:   fetcher,
+			GitHubURL:     "https://ghe.example.com",
+		})
+	require.NoError(t, err)
+	assert.Equal(t, "https://ghe.example.com/org/repo.git", gotCloneURL)
+	assert.Equal(t, "skills/triage", gotPath)
+	assert.Equal(t, "abc123", gotRef)
+}
