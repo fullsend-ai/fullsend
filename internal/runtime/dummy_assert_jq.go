@@ -44,7 +44,7 @@ func executeAssertJQ(rt DummyRuntime, sandboxName, args string) error {
 		return err
 	}
 	cmd := fmt.Sprintf("jq -e %s %s >/dev/null", shellQuote(filter), shellQuote(remotePath))
-	_, stderr, exitCode, err := rt.execFn()(sandboxName, cmd, 30*time.Second)
+	_, stderr, exitCode, err := rt.scenarioExec(sandboxName, cmd, 30*time.Second)
 	if err != nil {
 		return fmt.Errorf("assert_jq exec: %w", err)
 	}
