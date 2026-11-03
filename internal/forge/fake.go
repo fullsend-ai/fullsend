@@ -1219,6 +1219,9 @@ func (f *FakeClient) CreateChangeProposal(_ context.Context, owner, repo, title,
 
 	f.proposalCounter++
 	cp := ChangeProposal{
+		// Synthetic immutable database ID in a distinct space from the
+		// display number, mirroring the real forges.
+		ID:     int64(9100000000 + f.proposalCounter),
 		URL:    fmt.Sprintf("https://forge.example.com/%s/%s/pull/%d", owner, repo, f.proposalCounter),
 		Title:  title,
 		Number: f.proposalCounter,
@@ -1240,6 +1243,7 @@ func (f *FakeClient) CreateCrossRepoChangeProposal(_ context.Context, baseOwner,
 	f.proposalCounter++
 	cp := ChangeProposal{
 		URL:      fmt.Sprintf("https://forge.example.com/%s/%s/pull/%d", baseOwner, baseRepo, f.proposalCounter),
+		ID:       int64(9100000000 + f.proposalCounter),
 		Title:    title,
 		Number:   f.proposalCounter,
 		Head:     headOwner + ":" + headBranch,
@@ -1602,7 +1606,11 @@ func (f *FakeClient) CreateIssue(_ context.Context, owner, repo, title, body str
 		return nil, e
 	}
 	f.issueCounter++
+	// The synthetic immutable database ID lives in a distinct space from
+	// the display number, mirroring the real forges, so identity tests
+	// can detect conflation. Deterministic: 9000000000 + counter.
 	issue := Issue{
+		ID:     int64(9000000000 + f.issueCounter),
 		Number: f.issueCounter,
 		Title:  title,
 		Body:   body,
