@@ -41,6 +41,8 @@ jobs:
     needs: compare
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
+    # The report only queries or updates one tracking issue.
+    timeout-minutes: 5
     permissions:
       issues: write
     steps:
