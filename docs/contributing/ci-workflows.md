@@ -37,11 +37,18 @@ Conventions for GitHub Actions workflows under `.github/workflows/`. Follow thes
   PR #7272, which addresses the cause of the #7242 outage: cold `mvb` builds
   exceeding the earlier 10-minute timeout.
 
-  Cancelling superseded `main` runs is safe here. A cancelled Build Site run
-  does not satisfy the `workflow_run.conclusion == 'success'` condition in
-  `site-deploy.yml`, so it never deploys, and the newest push always deploys
-  last. If a deploy is cancelled mid-flight, the previous Worker version stays
-  live until the newer deploy completes.
+  Cancelling superseded `main` runs is acceptable here. A cancelled Build Site
+  run does not satisfy the `workflow_run.conclusion == 'success'` condition in
+  `site-deploy.yml`, so it never deploys, and superseded builds are normally
+  cancelled. If a deploy is cancelled mid-flight, the previous Worker version
+  stays live until a newer deploy completes.
+
+  Known limitation: deployment freshness is not enforced. `site-deploy.yml`
+  checks only that the build succeeded, the repository, and the triggering
+  event type; it does not check that the build artifact is still the newest
+  one, and the concurrency groups only cancel runs that overlap in time. A
+  successful rerun of an older `main` Build Site run that finishes after the
+  latest deployment can therefore deploy older content.
 
   While this design is unchanged, do not flag the unconditional
   `cancel-in-progress` in these two files as a violation of the rule above.
