@@ -66,6 +66,7 @@ cases (tirith).
 from __future__ import annotations
 
 import contextlib
+import difflib
 import hashlib
 import json
 import os
@@ -148,6 +149,9 @@ SPAWN_DEFAULT_ROLE = "default"
 # so this line is the only one, and the runner reconciles it against the
 # spawns that completed.
 SPAWN_ADMIT_FINDING = "codex_spawn_guard_admit"
+# Logged for every denied multi-agent call; the runner prints these lines in
+# the run's own output, so a selected sub-agent that never ran is visible.
+SPAWN_DENY_FINDING = "codex_spawn_guard_block"
 # Codex kills a handler at the hooks.json timeout without treating that as
 # a block, so the guard denies on its own, shorter clock.
 SPAWN_GUARD_DEADLINE_S = HANDLER_TIMEOUT_S - BUDGET_MARGIN_S
@@ -687,7 +691,7 @@ def run_pre_tool_use(scripts: list[str], hook_input: dict[str, Any], tool_name: 
 def _spawn_guard_deadline_passed(signum: int, frame: object) -> None:
     """SIGALRM: deny on the guard's deadline. _exit ends the process here so
     nothing up the interrupted call stack can swallow the exit."""
-    log_finding("codex_spawn_guard_block", "critical", SPAWN_GUARD_DEADLINE_REASON, "block")
+    log_finding(SPAWN_DENY_FINDING, "critical", SPAWN_GUARD_DEADLINE_REASON, "block")
     with contextlib.suppress(SystemExit):
         block(SPAWN_GUARD_DEADLINE_REASON)
     os._exit(2)
@@ -770,8 +774,44 @@ def spawn_policy(hook_input: dict[str, Any], registered: dict[str, str]) -> str 
             )
     role = args.get("agent_type", SPAWN_DEFAULT_ROLE)
     if not isinstance(role, str) or f"agents/{role}.toml" not in registered:
-        return f"fullsend: spawn_agent role {role!r} is not one the runner registered"
+        return unregistered_role_reason(role, registered)
     return None
+
+
+def unregistered_role_reason(role: Any, registered: dict[str, str]) -> str:
+    """The deny reason for an agent_type that names no registered role. It
+    lists the registered roles and the closest one, so a parent that passed a
+    short or mistyped name can retry with the registered one: no registered
+    role was denied."""
+    roles = sorted(
+        key[len("agents/") : -len(".toml")]
+        for key in registered
+        if key.startswith("agents/") and key.endswith(".toml")
+    )
+    reason = f"fullsend: spawn_agent role {role!r} is not one the runner registered"
+    if not roles:
+        return reason + "; no role is registered"
+    match = closest_role(role, roles)
+    if match is not None:
+        reason += f"; did you mean {match!r}?"
+    return (
+        f"{reason}; registered roles: {', '.join(roles)}. No registered role was "
+        "denied: retry once with the registered role name"
+    )
+
+
+def closest_role(role: Any, roles: list[str]) -> str | None:
+    """The one registered role a mistyped agent_type most likely meant: the
+    only role that contains it (a short name such as 'intent' for
+    'intent-coherence'), else the closest spelling, else None."""
+    if not isinstance(role, str) or not role.strip():
+        return None
+    needle = role.strip().lower()
+    containing = [name for name in roles if needle in name.lower()]
+    if len(containing) == 1:
+        return containing[0]
+    close = difflib.get_close_matches(needle, roles, n=1)
+    return close[0] if close else None
 
 
 def run_spawn_guard(hook_input: dict[str, Any]) -> None:
@@ -781,12 +821,12 @@ def run_spawn_guard(hook_input: dict[str, Any]) -> None:
     if tool in SPAWN_GUARD_PASS:
         if "agent_id" in hook_input:
             denied = f"fullsend: {tool!r} is not allowed from a child (fail closed)"
-            log_finding("codex_spawn_guard_block", "critical", denied, "block")
+            log_finding(SPAWN_DENY_FINDING, "critical", denied, "block")
             block(denied)
         sys.exit(0)
     deadline = arm_spawn_guard_deadline()
     if deadline is not None:
-        log_finding("codex_spawn_guard_block", "critical", deadline, "block")
+        log_finding(SPAWN_DENY_FINDING, "critical", deadline, "block")
         block(deadline)
     registered = expected_digests(SPAWN_DIGESTS_ENV)
     if registered is None:
@@ -797,7 +837,7 @@ def run_spawn_guard(hook_input: dict[str, Any]) -> None:
     else:
         reason = verify_spawn_files(registered) or spawn_policy(hook_input, registered)
     if reason is not None:
-        log_finding("codex_spawn_guard_block", "critical", reason, "block")
+        log_finding(SPAWN_DENY_FINDING, "critical", reason, "block")
         block(reason)
     # spawn_policy validated tool_input and agent_type above.
     role = hook_input["tool_input"].get("agent_type", SPAWN_DEFAULT_ROLE)
