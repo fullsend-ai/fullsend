@@ -709,7 +709,9 @@ func TestGitLabAgentTemplateAuthorizationGate(t *testing.T) {
 	assert.Contains(t, s, "MR_AUTHOR_ID")
 	// Distinct warning when no actor identity is available
 	assert.Contains(t, s, "No actor identity available")
-	// GitLab compatibility keeps retro and prioritize exempt from this gate.
+	// Prioritize is the only stage exempt from this gate; retro requires
+	// Developer access like other mutation-capable stages.
+	assert.Contains(t, s, `elif [ "${STAGE}" != "prioritize" ]; then`)
 	assert.Contains(t, s, `"retro"`)
 	assert.Contains(t, s, `"prioritize"`)
 }

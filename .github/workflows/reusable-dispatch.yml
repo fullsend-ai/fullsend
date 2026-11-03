@@ -392,9 +392,7 @@ jobs:
                 closed)
                   # Retro can write repository comments, issues, and labels,
                   # so require the closer to meet the standard write threshold.
-                  # GitHub's merge queue is the narrow exception: it only closes
-                  # a PR after a write-authorized user queued the merge.
-                  if [[ "${PR_MERGED}" == "true" && "${EVENT_SENDER_LOGIN}" == "github-merge-queue[bot]" ]] || is_event_actor_authorized "${EVENT_SENDER_LOGIN}"; then
+                  if is_event_actor_authorized "${EVENT_SENDER_LOGIN}"; then
                     STAGE="retro"
                   fi
                   ;;

@@ -425,15 +425,17 @@ Agentic DOS requires defenses beyond standard infrastructure hardening (sandbox 
 - **Tiered response based on actor trust** — write (or, for observation
   stages, triage) permission is required before slash-command or issue/PR-open
   dispatch can trigger an agent ([ADR 0054](../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)).
-  GitHub PR-close retro dispatch also requires write access because retro can
-  create issues, post comments, and apply labels with its repository token.
-  GitHub's merge-queue bot is accepted only for a completed queued merge,
-  which GitHub performs after a write-authorized user enqueues the PR.
-  This closes the prior path where an untrusted PR author could trigger retro
-  by closing their own PR; CEL routing failures also skip the close-event
-  stage. A write-authorized closer can still cause retro inference and its
-  bounded repository writes. On top of the live permission check on gated
-  paths, a reputation-based tier — accounts that are new or have thin
+  GitHub PR-close and GitLab MR-close/merge retro dispatch require write-level
+  access because retro can create issues, post comments, and apply labels with
+  its repository token. GitLab also checks Developer membership in the agent
+  job before running retro. Merge-queue events follow the same actor check;
+  the queue does not grant separate authorization.
+  This closes the prior GitHub and GitLab paths where an untrusted PR or MR
+  author could trigger retro by closing their own change. GitHub CEL routing
+  failures also skip the close-event stage. An authorized closer can still
+  cause retro inference and its bounded repository writes. On top of the live
+  permission check on gated paths, a reputation-based tier — accounts that are
+  new or have thin
   contribution history — could still be subject to stricter rate limits or
   require human approval before triggering agents. This is a starting point,
   not a complete defense: [Threat 7](#threat-7-coordinated-inauthentic-contributions)
@@ -515,12 +517,12 @@ None of these is a complete answer. They are options with different failure mode
   ([ADR 0054](../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)):
   anyone can file; observation/mutation dispatch requires the stage's
   permission threshold, and slash commands and issue/PR-open dispatch are
-  gated the same way. GitHub PR-close retro now requires write access because
-  it can create issues, comment, and apply labels; a completed merge by
-  GitHub's merge-queue bot is accepted after a write-authorized user queues it.
-  CEL routing failures skip that event instead of falling back. Any
-  write-authorized closer can still
-  cause retro inference and its bounded repository writes. Maintainers still
+  gated the same way. GitHub PR-close and GitLab MR-close/merge retro now
+  require write-level access because retro can create issues, comment, and
+  apply labels. GitLab also checks Developer membership in the agent job.
+  Merge-queue events follow the same actor check. GitHub CEL routing failures
+  skip that event instead of falling back. Any authorized closer can still cause retro
+  inference and its bounded repository writes. Maintainers still
   spend attention. Drive-by bug reports still arrive.
 - **Contributor allowlists / attestation for PRs.** Close or ignore PRs from unattested accounts. Variants range from a maintained username file to cryptographic attestation. Trade-off: friction for legitimate first-time contributors; attested accounts are not thereby honest; a campaign that invests in getting attested has passed the gate.
 - **Behavioral and graph screening.** Tooling such as the [Microsoft Agent Governance Toolkit contributor-governance tutorial](https://microsoft.github.io/agent-governance-toolkit/tutorials/46-contributor-governance/) describes signals for repo velocity, cross-repo spray, self-promotion, thin credibility, and coordinated promotion, plus cluster detection across accounts. Trade-off: false positives against prolific good-faith contributors; privacy and bias risk; attackers adapt to published signals; this is identity-level trust, which the rest of the threat model treats as insufficient for *content*.

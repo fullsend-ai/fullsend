@@ -531,11 +531,13 @@ role and review state are accepted.
 The GitHub bash dispatcher checks that the event sender has write access
 before routing a closed pull request to retro. The CEL route applies the
 same fixed write floor before applying the selected harness's role-derived
-threshold; a `retro` role requires `write` by default. A completed merge by
-GitHub's merge-queue bot is the narrow exception because GitHub only merges a
-queued PR after a write-authorized user adds it to the queue.
+threshold; a `retro` role requires `write` by default. Merge-queue merges use
+the same rule: the event sender must have write-level repository permission.
 Other automated merge or close senders without write-level repository
 permission are denied; a write-authorized user can run `/fs-retro` afterward.
+GitLab merged and closed merge requests use the same write threshold: polling
+resolves the actor's project role, and the agent job independently checks
+Developer membership before running retro.
 If CEL opt-in, configuration, or route evaluation fails for a close event, the
 workflow skips retro rather than falling back to the Bash stage. Retro's
 repository token can write issues and pull requests, so this dispatch is not

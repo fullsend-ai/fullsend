@@ -251,7 +251,15 @@ permission list, not by bypassing the check.
 > write access, with a narrow exception for GitHub's merge-queue bot on a
 > completed merge. GitHub only merges a queued PR after a write-authorized user
 > enqueues it. If CEL routing fails for a close event, the workflow skips
-> retro instead of falling back to the Bash route.
+> retro instead of falling back to the Bash route. GitLab merge-request
+> retro dispatch uses the same write-level threshold, enforced by normalized
+> actor-role routing and a live Developer-membership check in the agent job.
+
+> **Clarification (2026-11-03, [#8912](https://github.com/fullsend-ai/fullsend/issues/8912)):**
+> The closing actor must meet the write threshold for every closed pull
+> request, including a completed merge-queue merge. The queue does not grant a
+> separate authorization; a bot or app sender without verified write access
+> does not start retro.
 
 ## Consequences
 

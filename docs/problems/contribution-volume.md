@@ -109,8 +109,9 @@ Consequences for the workflows this document discusses:
 
 Existing platform controls reduce some of the *agentic* amplification of this
 volume: untrusted actors cannot trigger observation or mutation stages on
-intake, and closing a PR starts retro only when the closer has write access, or
-when GitHub's merge queue completes a merge that a write-authorized user queued.
+intake, and closing or merging a change proposal starts retro only when the
+event actor meets the forge's write threshold: `write` on GitHub or Developer
+on GitLab. Merge-queue events follow the same rule.
 A flood of inauthentic PRs still creates retro inference when a
 write-authorized maintainer closes them; retro can create issues, comments,
 and labels that start triage. These controls do not reduce the human-attention

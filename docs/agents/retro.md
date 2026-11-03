@@ -10,12 +10,14 @@ Performs retrospectives on agent workflows — analyzes what happened, identifie
 
 ## How the agent works
 
-The retro agent is triggered after a workflow completes when a user with write
-access closes or merges its PR, or when GitHub's merge queue completes a merge
-queued by a write-authorized user. Users with write access can also start it
+The retro agent is triggered after a workflow completes when the event actor
+has write access and closes or merges its PR. Users with write access can also
+start it
 with `/fs-retro`. It reconstructs the full workflow graph — [triage](triage.md),
 [code](code.md), [review](review.md), [fix](fix.md), and human interactions —
 by fetching issue and PR timelines, agent run logs, and review threads.
+GitLab merge requests use the same write-level requirement: the actor who
+merges or closes the MR must have Developer access.
 
 1. **Pre-script** gathers metadata about the originating PR or issue.
 2. **Sandbox** — the agent reads the full workflow history, identifies patterns (wasted cycles, missed context, repeated failures), and writes structured proposals. It uses the retro-analysis and finding-agent-runs skills. The agent cannot write files or edit code in the target repo.
@@ -47,11 +49,11 @@ to focus on:
 - `/fs-retro the code agent spent 30 minutes on a 2-line fix, what went wrong`
 
 The retro agent also runs automatically when a PR is closed (merged or not) by
-a user with write access. A completed GitHub merge-queue merge also starts
-retro because GitHub only merges a queued PR after a write-authorized user adds
-it to the queue ([GitHub merge queue docs](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue)).
-Other automated senders without repository write access do not start retro; a
-write-authorized user can run `/fs-retro` afterward.
+an actor with write access. Merge-queue events follow the same rule: the event
+sender must have write access. Other automated senders without repository
+write access do not start retro; a write-authorized user can run `/fs-retro`
+afterward. On GitLab, merged or closed MRs also start retro only when the actor
+has Developer access.
 
 ## Control labels
 

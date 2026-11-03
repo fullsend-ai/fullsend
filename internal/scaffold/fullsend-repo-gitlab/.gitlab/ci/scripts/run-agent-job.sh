@@ -412,9 +412,8 @@ print('true' if str(active).lower() in ('true', 'yes', '1', 'on') else 'false')
 fi
 
 # Authorization gate (ADR 0054) — check actor has Developer access.
-# Prioritize is read-only. Retro is exempt from this Developer-access
-# check in the current GitLab path; GitHub PR-close retro requires a
-# write-authorized closer under its separate routing policy.
+# Prioritize is read-only. Retro requires Developer access, matching the
+# write-level gate used for GitHub PR-close retro.
 # Runs here (not in dispatch) because the Members API requires the
 # bot PAT (from FULLSEND_JOB_TOKEN, selected by role).
 # Fail-closed: API failure → access_level 0 → reject.
@@ -434,7 +433,7 @@ case "${EVENT_TYPE:-}" in
 esac
 if [ "${JIRA_DISPATCH}" = "true" ]; then
   echo "Jira work-item dispatch — actor authorized by the Jira poller's project-role check"
-elif [ "${STAGE}" != "retro" ] && [ "${STAGE}" != "prioritize" ]; then
+elif [ "${STAGE}" != "prioritize" ]; then
   AUTH_ACTOR_ID="${ACTOR_ID:-${MR_AUTHOR_ID:-}}"
   if [ -z "${AUTH_ACTOR_ID}" ]; then
     echo "WARNING: No actor identity available — skipping stage (fail-closed)"

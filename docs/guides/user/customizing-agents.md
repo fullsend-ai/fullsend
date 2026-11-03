@@ -583,10 +583,9 @@ request. To decide it yourself, give the `retro` entry in
 `.fullsend/config.yaml` a `trigger`. The retro still runs in the same `Retro`
 job; the trigger only decides whether that job starts.
 
-Closing or merging a pull request starts retro only when the closing actor has
-write access, except for completed merges by GitHub's merge-queue bot, which
-only merges after a write-authorized user queues the PR. A CEL routing failure
-also skips retro for that close event.
+Closing or merging a pull request starts retro only when the event actor has
+write access. Merge-queue events follow the same rule, and a CEL routing
+failure skips retro for that close event.
 
 To stop the retro on every closed pull request but keep `/fs-retro`, add this
 entry to `.fullsend/config.yaml` on your default branch:
@@ -675,10 +674,11 @@ without them the lookup fails and every bot actor is denied. See
 
 GitLab uses its own stage router, which applies the same triage and write
 split to slash commands. The GitLab agent job also requires the event actor
-to hold Developer access or higher for every stage except retro and
-prioritize, so automatic triage of a newly opened issue runs only when its
-author is a Developer, Maintainer, or Owner. Jira work items dispatched to a
-GitLab project skip that check, because their actor has no GitLab account; the
+to hold Developer access or higher for every stage except prioritize,
+including retro on merged or closed merge requests. Automatic triage of a
+newly opened issue runs only when its author has Developer, Maintainer, or
+Owner access. Jira work items dispatched to a GitLab project skip that check,
+because their actor has no GitLab account; the
 Jira poller authorizes them by Jira project role (see
 [Jira integration](jira-integration.md#gitlab-runtime)).
 See the

@@ -91,16 +91,6 @@ func TestRetroRouteAccepts(t *testing.T) {
 	}
 }
 
-func TestIsGitHubMergeQueueMergedPR(t *testing.T) {
-	event := routeEvent(t, routeRetroEvent(
-		routeRetroPR, routeRetroMerged,
-		`{"id":"github-merge-queue[bot]","kind":"bot","role":"none","is_entity_author":false}`,
-		"pull_request_target", "closed",
-	))
-	assert.True(t, isGitHubMergeQueueMergedPR("retro", event))
-	assert.False(t, isGitHubMergeQueueMergedPR("review", event))
-}
-
 func TestRouteBuiltinAgent_Retro(t *testing.T) {
 	cases := []struct {
 		name         string
@@ -309,15 +299,15 @@ func TestRetroRouteParity(t *testing.T) {
 			bash:    true, cel: true,
 		},
 		{
-			name:      "PR merged by GitHub merge queue",
+			name:      "PR merged by an unauthorized queue bot is denied",
 			eventName: "pull_request_target", action: "closed",
-			payload: merged(prPayload("closed", "writer", "github-merge-queue[bot]", "")),
-			bash:    true, cel: true,
+			payload: merged(prPayload("closed", "writer", "renovate-fullsend[bot]", "")),
+			bash:    false, cel: false,
 		},
 		{
-			name:      "GitHub merge queue bot closing without a merge is denied",
+			name:      "queue bot closing without a merge is denied",
 			eventName: "pull_request_target", action: "closed",
-			payload: prPayload("closed", "writer", "github-merge-queue[bot]", ""),
+			payload: prPayload("closed", "writer", "renovate-fullsend[bot]", ""),
 			bash:    false, cel: false,
 		},
 		{
