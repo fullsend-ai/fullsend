@@ -15,7 +15,7 @@ import (
 // wideningInstallPreset supplies a cross-repo tracking target the code
 // defaults do not allow, so declaring it for an installed repository without
 // a base file widens the effective configuration.
-const wideningInstallPreset = "version: \"1\"\ntracking:\n  github:\n    allowed_targets:\n      repos:\n        - acme/other\n"
+const wideningInstallPreset = "version: \"1\"\ntracker:\n  github:\n    allowed_targets:\n      repos:\n        - acme/other\n"
 
 // assertNoInstallWrites fails when the fake client recorded any forge write.
 func assertNoInstallWrites(t *testing.T, fc *forge.FakeClient) {
@@ -96,7 +96,7 @@ func TestRunReposInstall_SafetyRejectionLeavesManifestByteIdentical(t *testing.T
 			name:         "preset relaxation",
 			defaults:     "defaults:\n  config_base:\n    source: preset.yaml\n",
 			targetConfig: managedConfigMarker + "{}\n",
-			want:         "tracking.github.allowed_targets",
+			want:         "tracker.github.allowed_targets",
 		},
 	}
 

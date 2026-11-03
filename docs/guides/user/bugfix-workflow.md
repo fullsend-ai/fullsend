@@ -120,7 +120,7 @@ Every push to a PR in the review stage triggers a new review round. This means `
 The triage agent:
 
 1. **Checks for duplicates.** Searches existing issues by title, body, and metadata. If it finds a match with high confidence, it labels `duplicate`, posts a comment linking the canonical issue, and closes this one.
-2. **Checks for blocking dependencies.** Searches for open issues or PRs (in this repo or upstream) that must be resolved before work can start. If a prerequisite is found, it labels `blocked` and posts a comment linking to it. When no upstream tracking issue exists, the triage agent can also create one in the upstream repo (controlled by `tracking.<provider>.allowed_targets` in config). On re-triage, it checks whether existing prerequisites have been resolved.
+2. **Checks for blocking dependencies.** Searches for open issues or PRs (in this repo or upstream) that must be resolved before work can start. If a prerequisite is found, it labels `blocked` and posts a comment linking to it. When no upstream tracking issue exists, the triage agent can also create one in the upstream repo (controlled by `tracker.<provider>.allowed_targets` in config). On re-triage, it checks whether existing prerequisites have been resolved.
 3. **Checks information sufficiency.** If the issue body is missing steps to reproduce, expected behavior, or other critical details, it labels `needs-info` and posts a comment explaining what's missing.
 4. **Produces a test artifact.** When possible, writes a failing test case aligned with the repo's test framework.
 5. **Hands off.** Labels `ready-to-code` with a summary comment.

@@ -209,7 +209,7 @@ func CheckManagedSafetyGate(current PerRepoConfigReader, candidate PerRepoConfig
 	currentTracking := current.IssueTracking()
 	candidateTracking := candidate.IssueTracking()
 	if trackingWidened(currentTracking, candidateTracking) {
-		if local == nil || local.Tracking == nil {
+		if local == nil || local.Tracker == nil {
 			out = append(out, SafetyRelaxation{
 				Key:       trackingSafetyKey(currentTracking, candidateTracking),
 				Current:   formatTrackingTargets(currentTracking),

@@ -218,7 +218,7 @@ func TestCheckManagedSafetyGate_CustomAgentRemovalNotFlaggedAsRelaxation(t *test
 }
 
 func ghTracking(scopeKey string, values ...string) string {
-	out := "tracking:\n  github:\n    allowed_targets:\n      " + scopeKey + ":\n"
+	out := "tracker:\n  github:\n    allowed_targets:\n      " + scopeKey + ":\n"
 	for _, v := range values {
 		out += "        - " + v + "\n"
 	}
@@ -226,7 +226,7 @@ func ghTracking(scopeKey string, values ...string) string {
 }
 
 func glTracking(scopeKey string, values ...string) string {
-	out := "tracking:\n  gitlab:\n    allowed_targets:\n      " + scopeKey + ":\n"
+	out := "tracker:\n  gitlab:\n    allowed_targets:\n      " + scopeKey + ":\n"
 	for _, v := range values {
 		out += "        - " + v + "\n"
 	}
@@ -239,7 +239,7 @@ func TestCheckManagedSafetyGate_TrackingImplicitWidenViaParent(t *testing.T) {
 	candidate := mustLayer(t, "", base)
 	got := CheckManagedSafetyGate(current, candidate)
 	require.Len(t, got, 1)
-	assert.Equal(t, "tracking.github.allowed_targets", got[0].Key)
+	assert.Equal(t, "tracker.github.allowed_targets", got[0].Key)
 	assert.Equal(t, "github: orgs=[acme] repos=unset", got[0].Current)
 	assert.Equal(t, "github: orgs=[acme, other] repos=unset", got[0].Candidate)
 }
@@ -268,7 +268,7 @@ func TestCheckManagedSafetyGate_TrackingRepoOutsideCurrentOrgsWidens(t *testing.
 	candidate := mustLayer(t, "", ghTracking("repos", "other/repo"))
 	got := CheckManagedSafetyGate(current, candidate)
 	require.Len(t, got, 1)
-	assert.Equal(t, "tracking.github.allowed_targets", got[0].Key)
+	assert.Equal(t, "tracker.github.allowed_targets", got[0].Key)
 }
 
 func TestCheckManagedSafetyGate_TrackingDropToUnsetIsNarrowing(t *testing.T) {
@@ -291,22 +291,22 @@ func TestCheckManagedSafetyGate_TrackingGitLabSubgroupCovered(t *testing.T) {
 	candidate = mustLayer(t, "", glTracking("groups", "acme-other"))
 	got := CheckManagedSafetyGate(current, candidate)
 	require.Len(t, got, 1, "a sibling group sharing a name prefix is not covered")
-	assert.Equal(t, "tracking.gitlab.allowed_targets", got[0].Key)
+	assert.Equal(t, "tracker.gitlab.allowed_targets", got[0].Key)
 }
 
 func TestCheckManagedSafetyGate_TrackingProviderSwitchWidens(t *testing.T) {
 	current := mustLayer(t, "", ghTracking("orgs", "acme"))
-	candidate := mustLayer(t, "", "tracking:\n  jira:\n    allowed_targets:\n      projects: [PROJ]\n")
+	candidate := mustLayer(t, "", "tracker:\n  jira:\n    allowed_targets:\n      projects: [PROJ]\n")
 	got := CheckManagedSafetyGate(current, candidate)
 	require.Len(t, got, 1)
-	assert.Equal(t, "tracking.jira.allowed_targets", got[0].Key)
+	assert.Equal(t, "tracker.jira.allowed_targets", got[0].Key)
 	assert.Equal(t, "jira: projects=[PROJ]", got[0].Candidate)
 
-	empty := mustLayer(t, "", "tracking:\n  jira:\n    allowed_targets: {}\n")
+	empty := mustLayer(t, "", "tracker:\n  jira:\n    allowed_targets: {}\n")
 	assert.Empty(t, CheckManagedSafetyGate(current, empty),
 		"switching to a provider with no targets grants nothing")
 
-	jira := mustLayer(t, "", "tracking:\n  jira:\n    allowed_targets:\n      projects: [PROJ]\n")
+	jira := mustLayer(t, "", "tracker:\n  jira:\n    allowed_targets:\n      projects: [PROJ]\n")
 	assert.Empty(t, CheckManagedSafetyGate(jira, jira))
 }
 
@@ -356,9 +356,9 @@ func TestFormatTrackingTargets(t *testing.T) {
 
 func TestTrackingSafetyKey(t *testing.T) {
 	gh := &TrackingConfig{GitHub: &GitHubTrackingConfig{}}
-	assert.Equal(t, "tracking", trackingSafetyKey(nil, nil))
-	assert.Equal(t, "tracking.github.allowed_targets", trackingSafetyKey(gh, nil))
-	assert.Equal(t, "tracking.jira.allowed_targets", trackingSafetyKey(gh, &TrackingConfig{Jira: &JiraTrackingConfig{}}))
+	assert.Equal(t, "tracker", trackingSafetyKey(nil, nil))
+	assert.Equal(t, "tracker.github.allowed_targets", trackingSafetyKey(gh, nil))
+	assert.Equal(t, "tracker.jira.allowed_targets", trackingSafetyKey(gh, &TrackingConfig{Jira: &JiraTrackingConfig{}}))
 }
 
 func TestFormatSafetyRelaxationsAndKeys(t *testing.T) {

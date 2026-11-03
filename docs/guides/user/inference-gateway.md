@@ -177,7 +177,7 @@ request with the change. The pull request's `config.yaml` diff, on a repository 
 with `--runtime pi`:
 
 ```diff
-@@ -21,3 +21,12 @@ tracking:
+@@ -21,3 +21,12 @@ tracker:
              repos:
                  - example-org/example-repo
                  - fullsend-ai/fullsend
@@ -206,7 +206,7 @@ fullsend github setup example-org/example-repo \
 The output is the same as above. The pull request's diff:
 
 ```diff
-@@ -21,3 +21,12 @@ tracking:
+@@ -21,3 +21,12 @@ tracker:
              repos:
                  - example-org/example-repo
                  - fullsend-ai/fullsend

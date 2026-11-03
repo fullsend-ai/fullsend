@@ -235,10 +235,10 @@ func TestEnsureManagedConfigDefaults_NoForgeReadsWhenNoDefaultPossible(t *testin
 	presetPath := writePresetFile(t, testPresetYAML)
 	shapes := map[string]func(t *testing.T, m *Manifest){
 		"explicit tracking": func(t *testing.T, m *Manifest) {
-			m.GitHub.Repos[0].Config = mustManagedConfig(t, "tracking:\n  github:\n    allowed_targets:\n      repos: [acme/other]\n")
+			m.GitHub.Repos[0].Config = mustManagedConfig(t, "tracker:\n  github:\n    allowed_targets:\n      repos: [acme/other]\n")
 		},
 		"explicit defaults tracking": func(t *testing.T, m *Manifest) {
-			m.Defaults.Config = mustManagedConfig(t, "tracking:\n  github:\n    allowed_targets:\n      orgs: [acme]\n")
+			m.Defaults.Config = mustManagedConfig(t, "tracker:\n  github:\n    allowed_targets:\n      orgs: [acme]\n")
 		},
 		"declared preset": func(_ *testing.T, m *Manifest) {
 			m.Defaults.ConfigBase.Source = presetPath
@@ -319,7 +319,7 @@ func behaviourTestManifest(t *testing.T) *Manifest {
 	m := newConvergeManifest("acme/api")
 	m.GitHub.MintURL = ""
 	m.GitHub.Repos[0].Config = mustManagedConfig(t, "runtime: dummy\nmint_url: https://mint.example.com\n"+
-		"tracking:\n  github:\n    allowed_targets:\n      repos: [fullsend-ai/fullsend]\n")
+		"tracker:\n  github:\n    allowed_targets:\n      repos: [fullsend-ai/fullsend]\n")
 	return m
 }
 
@@ -393,7 +393,7 @@ func TestInstallPreflights_SharedCacheKeepsRejections(t *testing.T) {
 		}, "kill_switch"},
 		{"infrastructure conflict", func(t *testing.T, m *Manifest, _ *forge.FakeClient) {
 			m.GitHub.Repos[0].Config = mustManagedConfig(t, "mint_url: https://other.example.com\n"+
-				"tracking:\n  github:\n    allowed_targets:\n      repos: [acme/other]\n")
+				"tracker:\n  github:\n    allowed_targets:\n      repos: [acme/other]\n")
 			m.GitHub.Repos[0].MintURL = "https://mint.example.com"
 		}, "mint URL conflict"},
 	}

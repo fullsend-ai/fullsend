@@ -307,15 +307,16 @@ func (c *perRepoConfig) AllowedResources() []string {
 	return result
 }
 
-// IssueTracking returns the issue-tracking configuration. nil falls
-// through to parent; a set value replaces the parent's whole mapping, so
-// layers never combine two providers. A layer that still carries the
-// removed create_issues block and sets no tracking of its own denies all
-// extra issue destinations instead of inheriting the parent's grant, so a
-// legacy restrictive overlay is never widened by a permissive base.
+// IssueTracking returns the tracker configuration (the tracker key). nil
+// falls through to parent; a set value replaces the parent's whole
+// mapping, so layers never combine two providers. A layer that still
+// carries the removed create_issues block and sets no tracker of its own
+// denies all extra issue destinations instead of inheriting the parent's
+// grant, so a legacy restrictive overlay is never widened by a permissive
+// base.
 func (c *perRepoConfig) IssueTracking() *TrackingConfig {
-	if c.Tracking != nil {
-		return c.Tracking
+	if c.Tracker != nil {
+		return c.Tracker
 	}
 	if c.legacyCreateIssues {
 		return &TrackingConfig{}
@@ -427,15 +428,17 @@ func (c *perRepoConfig) ConfigKeepHistory() bool {
 	return true
 }
 
-// ConfigTracker returns the configured default issue tracker (e.g.
-// "github", "gitlab", "jira"), used as the default for `fullsend
-// issues` commands' --tracker flag when it is not set explicitly.
-// Distinct from ConfigForge: a repo's hosting forge (github/gitlab)
-// does not imply its issue tracker (e.g. a GitHub-hosted repo may
-// track issues in Jira).
+// ConfigTracker returns the provider selected by the tracker mapping
+// ("github", "gitlab", "jira"), or "" when none is selected. It is the
+// default for `fullsend issues` commands' --tracker flag when that flag
+// is not set explicitly. Like IssueTracking, a layer that sets tracker
+// replaces the parent's whole mapping, so the provider comes from the
+// same layer as the targets. Distinct from ConfigForge: a repo's hosting
+// forge (github/gitlab) does not imply its issue tracker (e.g. a
+// GitHub-hosted repo may track issues in Jira).
 func (c *perRepoConfig) ConfigTracker() string {
-	if c.Tracker != "" {
-		return c.Tracker
+	if c.Tracker != nil {
+		return c.Tracker.Provider()
 	}
 	if c.parent != nil {
 		return c.parent.ConfigTracker()
@@ -670,9 +673,9 @@ func (c *perRepoConfig) SetStatusNotifications(sn *StatusNotificationConfig) {
 	c.Notifications = sn
 }
 
-// SetIssueTracking sets the issue-tracking configuration on this layer.
+// SetIssueTracking sets the tracker configuration on this layer.
 func (c *perRepoConfig) SetIssueTracking(t *TrackingConfig) {
-	c.Tracking = t
+	c.Tracker = t
 }
 
 // SetInferenceWIFProvider sets the WIF provider resource name.

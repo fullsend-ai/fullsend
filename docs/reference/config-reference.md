@@ -20,7 +20,6 @@ version: "1"                         # Schema version (required)
 
 # ── Platform ─────────────────────────────────────────────────
 forge: github                        # Hosting platform: github, gitlab (auto-detected if omitted)
-tracker: jira                        # Default issue tracker for `fullsend issues` commands: github, gitlab, jira
 
 # ── Operations ───────────────────────────────────────────────
 kill_switch: false                   # Emergency stop — disables all agent dispatch when true
@@ -57,8 +56,8 @@ allowed_remote_resources:            # URL prefixes allowed for remote resources
   - https://raw.githubusercontent.com/fullsend-ai/fullsend/
   - https://raw.githubusercontent.com/fullsend-ai/agents/
 
-# ── Cross-project issue creation ─────────────────────────────
-tracking:                            # At most one provider mapping: github, gitlab, or jira
+# ── Issue tracker ────────────────────────────────────────────
+tracker:                             # Issue tracker. At most one provider block: github, gitlab, or jira
   github:
     allowed_targets:
       orgs:                          # GitHub orgs agents may create issues in
@@ -141,15 +140,6 @@ Schema version string. Must be `"1"`. Present in every config file.
 Hosting platform for the repository (`github` or `gitlab`). When omitted,
 fullsend auto-detects the forge from CI environment variables. Most
 installations do not need to set this explicitly.
-
-### `tracker`
-
-Default issue tracker for `fullsend issues` commands' `--tracker` flag
-(`github`, `gitlab`, or `jira`). Distinct from `forge` — a repository hosted
-on GitHub may track issues in Jira. When omitted, `--tracker` is required on
-every `fullsend issues` invocation. See
-[Jira Integration](../guides/user/jira-integration.md) for cross-platform
-setup.
 
 ### `kill_switch`
 
@@ -263,23 +253,35 @@ omitted inherits from parent; explicit empty (`[]`) denies all remote
 resources; a non-empty list is unioned with the parent's list. See
 [Layered Config Reference](../guides/infrastructure/layered-config-reference.md).
 
-### `tracking`
+### `tracker`
 
-Controls cross-project issue creation by agents. `tracking` holds at most one
-provider mapping — `github`, `gitlab`, or `jira` — and that provider's
-`allowed_targets` restricts where agents may create issues. Validation rejects
-a `tracking` block with more than one provider mapping.
+The issue tracker, as a single provider-discriminated mapping. `tracker` holds
+at most one provider block — `github`, `gitlab`, or `jira` — and the block that
+is present selects the provider. It is the default backend for the `--tracker`
+flag of `fullsend issues` commands (distinct from `forge`: a repository hosted
+on GitHub may track issues in Jira), and its `allowed_targets` restrict where
+agents may create issues. Declare a provider with no extra targets as an empty
+block (for example `tracker: {jira: {}}`). When omitted, no provider is
+selected, `--tracker` is required on every `fullsend issues` invocation, and
+agents cannot create issues outside the repository they run in. Validation
+rejects a `tracker` mapping with more than one provider block. See
+[Jira Integration](../guides/user/jira-integration.md) for cross-platform
+setup.
 
-- **`tracking.github.allowed_targets.orgs`** — GitHub organizations. All repos
+- **`tracker.github.allowed_targets.orgs`** — GitHub organizations. All repos
   in these orgs are allowed.
-- **`tracking.github.allowed_targets.repos`** — Specific repos in exactly
+- **`tracker.github.allowed_targets.repos`** — Specific repos in exactly
   `owner/name` format.
-- **`tracking.gitlab.allowed_targets.groups`** — GitLab groups (full group
+- **`tracker.gitlab.allowed_targets.groups`** — GitLab groups (full group
   path). Projects in the group and its subgroups are allowed.
-- **`tracking.gitlab.allowed_targets.repos`** — Specific projects by full
+- **`tracker.gitlab.allowed_targets.repos`** — Specific projects by full
   project path (for example `group/subgroup/project`).
-- **`tracking.jira.allowed_targets.projects`** — Jira project keys (an
+- **`tracker.jira.allowed_targets.projects`** — Jira project keys (an
   uppercase letter followed by uppercase letters, digits, or underscores).
+
+Jira connection and polling fields will also live under `tracker.jira`; they
+are tracked in [#9035](https://github.com/fullsend-ai/fullsend/issues/9035) and
+are not part of this schema yet.
 
 For GitHub and GitLab the scopes are additive: a destination is allowed if it
 matches a configured org or group, or a configured repo. Malformed entries
@@ -287,26 +289,22 @@ are rejected: an empty org or group, an org containing `/`, a GitHub repo not
 in `owner/name` form, a GitLab path with empty segments or a repo without a
 namespace, or an invalid Jira project key.
 
-`tracking` is distinct from the scalar [`tracker`](#tracker) field, which
-selects the default backend for `fullsend issues` commands.
-
-When omitted, agents cannot create issues outside the repository they are
-running in. That repository is always allowed, so it does not need an
+The repository agents run in is always allowed, so it does not need an
 entry. The default GitHub per-repo configuration generated without a preset lists
 both `fullsend-ai/fullsend` and `fullsend-ai/agents` in
-`tracking.github.allowed_targets.repos`,
+`tracker.github.allowed_targets.repos`,
 so retro proposals and triage prerequisites can reach the platform or agent
 repository that owns the change. These are installation defaults, not an
 automatic grant for every repository in `allowed_remote_resources`.
 Fresh GitLab installations instead record an explicit empty
-`tracking.gitlab.allowed_targets` policy: cross-project targets must be
+`tracker.gitlab.allowed_targets` policy: cross-project targets must be
 configured for the GitLab host.
 Explicit settings are preserved. Retro and triage post-scripts currently read
 only the overlay (`.fullsend/config.yaml`), not the preset
 (`.fullsend/config.base.yaml`). Until
 [agents#1728](https://github.com/fullsend-ai/agents/issues/1728) is fixed,
 preset users must declare the required
-`config.tracking.<provider>.allowed_targets` in the
+`config.tracker.<provider>.allowed_targets` in the
 managed repository’s `repos.yaml` entry and rerun `fullsend repos install`,
 or edit `.fullsend/config.yaml` for an unmanaged installation. Updating only
 the preset does not enable these cross-repository operations. Include all
@@ -316,20 +314,37 @@ Existing installations retain their permissions on upgrade; on GitHub, to opt in
 `repos.yaml` configuration, or in `.fullsend/config.yaml` for an installation
 not managed through `fullsend repos`. Preserve any other targets you need.
 
-In the layered config system, `tracking` replaces the parent's whole object
+In the layered config system, `tracker` replaces the parent's whole object
 when set, so layers never combine two providers. See
 [Layered Config Reference](../guides/infrastructure/layered-config-reference.md).
 
+**Breaking change — migration from the scalar `tracker`:** `tracker` used to be
+a scalar (`tracker: jira`). A scalar value is no longer accepted: validation
+(`fullsend lint` and CLI config writes) and config loading reject it with a
+migration message, and a `repos.yaml` managed `config:` block containing it is
+rejected the same way. Replace it with the provider block:
+
+```yaml
+# before
+tracker: jira
+# after
+tracker:
+  jira: {}
+```
+
 **Migration from `create_issues`:** the top-level `create_issues` key is
-removed. Validation (`fullsend lint` and CLI config writes) rejects a leftover
-`create_issues` in `.fullsend/config.yaml`, and a `repos.yaml` managed
-`config:` block containing it is rejected with a migration message. Runtime
-config loading ignores its contents and grants nothing: a layer that still
-carries `create_issues` and sets no `tracking` denies all extra issue
-destinations and does not inherit the parent layer's `tracking`. Move `create_issues.allow_targets.orgs` and `repos` to
-`tracking.github.allowed_targets.orgs` and `repos` on GitHub, or to
-`tracking.gitlab.allowed_targets.groups` and `repos` on GitLab. Migration of
-existing managed `repos.yaml` entries is tracked in
+removed. Validation rejects a leftover `create_issues` in
+`.fullsend/config.yaml`, and a `repos.yaml` managed `config:` block containing
+it is rejected with a migration message. Runtime config loading ignores its
+contents and grants nothing: a layer that still carries `create_issues` and
+sets no `tracker` denies all extra issue destinations and does not inherit the
+parent layer's `tracker`. Move `create_issues.allow_targets.orgs` and `repos`
+to `tracker.github.allowed_targets.orgs` and `repos` on GitHub, to
+`tracker.gitlab.allowed_targets.groups` and `repos` on GitLab, or to
+`tracker.jira.allowed_targets.projects` on Jira, and keep only one provider
+block. Automatic migration of existing managed `repos.yaml` entries (legacy
+scalar `tracker` values and `create_issues` targets) by `fullsend repos
+install` is tracked in
 [#9075](https://github.com/fullsend-ai/fullsend/issues/9075).
 
 ### `authorization`

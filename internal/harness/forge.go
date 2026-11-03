@@ -471,9 +471,6 @@ func BuildConfigMap(cfg config.ConfigReader) map[string]any {
 	if v := pr.ConfigForge(); v != "" {
 		m["forge"] = v
 	}
-	if v := pr.ConfigTracker(); v != "" {
-		m["tracker"] = v
-	}
 	if v := pr.ConfigRuntime(); v != "" {
 		m["runtime"] = v
 	}
@@ -531,8 +528,11 @@ func BuildConfigMap(cfg config.ConfigReader) map[string]any {
 		m["allowed_remote_resources"] = anyArr
 	}
 
-	// Issue tracking config: the selected provider's allowed_targets.
-	if t := pr.IssueTracking(); t != nil {
+	// Tracker config: the provider-discriminated tracker mapping. The
+	// selected provider's key is always present (so overlays can select on
+	// it, e.g. has(config.tracker) && has(config.tracker.jira)); its
+	// allowed_targets is present only when non-empty.
+	if t := pr.IssueTracking(); t != nil && t.Provider() != "" {
 		targets := map[string]any{}
 		addList := func(key string, values []string) {
 			if len(values) == 0 {
@@ -554,11 +554,11 @@ func BuildConfigMap(cfg config.ConfigReader) map[string]any {
 		case config.TrackingProviderJira:
 			addList("projects", t.Jira.AllowedTargets.Projects)
 		}
+		provider := map[string]any{}
 		if len(targets) > 0 {
-			m["tracking"] = map[string]any{
-				t.Provider(): map[string]any{"allowed_targets": targets},
-			}
+			provider["allowed_targets"] = targets
 		}
+		m["tracker"] = map[string]any{t.Provider(): provider}
 	}
 
 	// Status notifications config

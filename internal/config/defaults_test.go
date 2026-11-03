@@ -75,7 +75,7 @@ func TestPerRepoConfig_LocalOverridesParent(t *testing.T) {
 			{Source: "harness/code.yaml"},
 		},
 		AllowedRemoteResources: []string{"https://example.com/"},
-		Tracking: &TrackingConfig{GitHub: &GitHubTrackingConfig{
+		Tracker: &TrackingConfig{GitHub: &GitHubTrackingConfig{
 			AllowedTargets: GitHubAllowedTargets{Repos: []string{"org/repo"}},
 		}},
 		parent: &perRepoDefaults{},
@@ -393,7 +393,7 @@ func TestPerRepoConfig_AllowedResources_Fallback(t *testing.T) {
 func TestPerRepoConfig_Tracking_Fallback(t *testing.T) {
 	t.Run("nil falls through to parent", func(t *testing.T) {
 		parent := &perRepoConfig{
-			Tracking: &TrackingConfig{GitHub: &GitHubTrackingConfig{
+			Tracker: &TrackingConfig{GitHub: &GitHubTrackingConfig{
 				AllowedTargets: GitHubAllowedTargets{Orgs: []string{"my-org"}},
 			}},
 			parent: &perRepoDefaults{},
@@ -405,13 +405,13 @@ func TestPerRepoConfig_Tracking_Fallback(t *testing.T) {
 
 	t.Run("local replaces parent entirely", func(t *testing.T) {
 		parent := &perRepoConfig{
-			Tracking: &TrackingConfig{GitHub: &GitHubTrackingConfig{
+			Tracker: &TrackingConfig{GitHub: &GitHubTrackingConfig{
 				AllowedTargets: GitHubAllowedTargets{Orgs: []string{"parent-org"}},
 			}},
 			parent: &perRepoDefaults{},
 		}
 		overlay := &perRepoConfig{
-			Tracking: &TrackingConfig{GitHub: &GitHubTrackingConfig{
+			Tracker: &TrackingConfig{GitHub: &GitHubTrackingConfig{
 				AllowedTargets: GitHubAllowedTargets{Repos: []string{"org/repo"}},
 			}},
 			parent: parent,
@@ -423,13 +423,13 @@ func TestPerRepoConfig_Tracking_Fallback(t *testing.T) {
 
 	t.Run("local provider replaces parent provider", func(t *testing.T) {
 		parent := &perRepoConfig{
-			Tracking: &TrackingConfig{GitHub: &GitHubTrackingConfig{
+			Tracker: &TrackingConfig{GitHub: &GitHubTrackingConfig{
 				AllowedTargets: GitHubAllowedTargets{Orgs: []string{"parent-org"}},
 			}},
 			parent: &perRepoDefaults{},
 		}
 		overlay := &perRepoConfig{
-			Tracking: &TrackingConfig{Jira: &JiraTrackingConfig{
+			Tracker: &TrackingConfig{Jira: &JiraTrackingConfig{
 				AllowedTargets: JiraAllowedTargets{Projects: []string{"PROJ"}},
 			}},
 			parent: parent,
@@ -520,7 +520,7 @@ func TestPerRepoConfig_MarshalOmitsInheritedValues(t *testing.T) {
 	assert.NotContains(t, output, "roles:")
 	assert.NotContains(t, output, "agents:")
 	assert.NotContains(t, output, "allowed_remote_resources:")
-	assert.NotContains(t, output, "tracking:")
+	assert.NotContains(t, output, "tracker:")
 	// But the config still resolves defaults via parent.
 	assert.Equal(t, "1", cfg.ConfigVersion())
 	assert.Equal(t, "claude", cfg.ConfigRuntime())

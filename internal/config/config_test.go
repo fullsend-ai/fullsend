@@ -636,7 +636,7 @@ func TestPerRepoConfigValidate_Tracking(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			cfg := &perRepoConfig{Version: "1", Tracking: c.tracking}
+			cfg := &perRepoConfig{Version: "1", Tracker: c.tracking}
 			err := cfg.Validate()
 			if c.wantErr == "" {
 				assert.NoError(t, err)
@@ -657,7 +657,7 @@ func TestPerRepoConfig_Tracking_ParseYAML(t *testing.T) {
 	}{
 		{
 			name:     "github",
-			yaml:     "tracking:\n  github:\n    allowed_targets:\n      orgs: [my-org]\n      repos: [my-org/my-repo, fullsend-ai/fullsend]\n",
+			yaml:     "tracker:\n  github:\n    allowed_targets:\n      orgs: [my-org]\n      repos: [my-org/my-repo, fullsend-ai/fullsend]\n",
 			provider: TrackingProviderGitHub,
 			want: &TrackingConfig{GitHub: &GitHubTrackingConfig{AllowedTargets: GitHubAllowedTargets{
 				Orgs: []string{"my-org"}, Repos: []string{"my-org/my-repo", "fullsend-ai/fullsend"},
@@ -665,7 +665,7 @@ func TestPerRepoConfig_Tracking_ParseYAML(t *testing.T) {
 		},
 		{
 			name:     "gitlab",
-			yaml:     "tracking:\n  gitlab:\n    allowed_targets:\n      groups: [grp/sub]\n      repos: [grp/sub/proj]\n",
+			yaml:     "tracker:\n  gitlab:\n    allowed_targets:\n      groups: [grp/sub]\n      repos: [grp/sub/proj]\n",
 			provider: TrackingProviderGitLab,
 			want: &TrackingConfig{GitLab: &GitLabTrackingConfig{AllowedTargets: GitLabAllowedTargets{
 				Groups: []string{"grp/sub"}, Repos: []string{"grp/sub/proj"},
@@ -673,7 +673,7 @@ func TestPerRepoConfig_Tracking_ParseYAML(t *testing.T) {
 		},
 		{
 			name:     "jira",
-			yaml:     "tracking:\n  jira:\n    allowed_targets:\n      projects: [PROJ]\n",
+			yaml:     "tracker:\n  jira:\n    allowed_targets:\n      projects: [PROJ]\n",
 			provider: TrackingProviderJira,
 			want:     &TrackingConfig{Jira: &JiraTrackingConfig{AllowedTargets: JiraAllowedTargets{Projects: []string{"PROJ"}}}},
 		},
@@ -706,7 +706,7 @@ func TestPerRepoConfig_LegacyCreateIssuesRejected(t *testing.T) {
 	err = cfg.Validate()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "create_issues is no longer supported")
-	assert.Contains(t, err.Error(), "tracking.<provider>.allowed_targets")
+	assert.Contains(t, err.Error(), "tracker.<provider>.allowed_targets")
 	require.ErrorIs(t, cfg.ValidateGlobal(), errLegacyCreateIssues)
 
 	layered, err := ParsePerRepoConfigWriterLayered(data, []byte("version: \"1\"\n"))
@@ -724,7 +724,7 @@ func TestPerRepoConfig_LegacyCreateIssuesRejected(t *testing.T) {
 
 func TestPerRepoConfig_LegacyCreateIssuesOverlayDoesNotInheritBase(t *testing.T) {
 	overlay := []byte("create_issues:\n  allow_targets: {}\n")
-	base := []byte("tracking:\n  github:\n    allowed_targets:\n      orgs: [acme]\n")
+	base := []byte("tracker:\n  github:\n    allowed_targets:\n      orgs: [acme]\n")
 
 	layered, err := ParsePerRepoConfigWriterLayered(overlay, base)
 	require.NoError(t, err)

@@ -311,13 +311,13 @@ type pendingWriteback struct {
 // EnsureManagedConfigDefaults persists install-time choices that the
 // generated managed overlay must reproduce into the manifest entry of each
 // selected repository on a first install (#8218): a no-preset first
-// install with no explicit tracking declaration and no
+// install with no explicit tracker declaration and no
 // .fullsend/config.yaml records
-// config.tracking.github.allowed_targets.repos:
+// config.tracker.github.allowed_targets.repos:
 // [fullsend-ai/fullsend, fullsend-ai/agents] on GitHub, or an explicit
-// empty tracking.gitlab.allowed_targets policy on GitLab.
+// empty tracker.gitlab.allowed_targets policy on GitLab.
 //
-// A declared preset keeps inheriting its own tracking, and an
+// A declared preset keeps inheriting its own tracker, and an
 // explicit manifest value is never overridden. A repository covered only
 // by a glob gets its own explicit entry copied from the glob so sibling
 // repositories are unaffected. Existing overlays are not touched here
@@ -351,7 +351,7 @@ func EnsureManagedConfigDefaults(ctx context.Context, cfg ManagedConfigWriteback
 		if resolved.RequireInferenceAuth() != nil {
 			continue
 		}
-		// A declared preset or an explicit tracking setting rules
+		// A declared preset or an explicit tracker setting rules
 		// out every install default, so the repository's layers and
 		// installation state are not read for this decision (#8501).
 		if !installDefaultsPossible(resolved) {
@@ -366,7 +366,7 @@ func EnsureManagedConfigDefaults(ctx context.Context, cfg ManagedConfigWriteback
 			return nil, fmt.Errorf("%s/%s: reading %s: %w", rr.Owner, rr.Repo, preset.OverlayPath, err)
 		}
 		if found {
-			// An existing overlay needs no automatic tracking
+			// An existing overlay needs no automatic tracker
 			// injection.
 			continue
 		}
@@ -467,7 +467,7 @@ func installDefaultsFor(rr ResolvedRepo, resolved ResolvedConfig, pristine bool)
 				targets = tracking.GitHub.AllowedTargets.Repos
 			}
 			next = next.WithIssueTracking(tracking)
-			what = append(what, "tracking."+provider+".allowed_targets.repos: ["+strings.Join(targets, ", ")+"]")
+			what = append(what, "tracker."+provider+".allowed_targets.repos: ["+strings.Join(targets, ", ")+"]")
 		}
 	}
 	return next, what
@@ -475,7 +475,7 @@ func installDefaultsFor(rr ResolvedRepo, resolved ResolvedConfig, pristine bool)
 
 // installDefaultsPossible reports whether the resolved configuration alone
 // leaves room for an install default: no declared preset (which keeps
-// inheriting its own tracking) and no explicit tracking setting.
+// inheriting its own tracker) and no explicit tracker setting.
 // It needs no forge read, so EnsureManagedConfigDefaults checks it before
 // reading layers or probing components.
 func installDefaultsPossible(resolved ResolvedConfig) bool {

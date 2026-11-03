@@ -76,13 +76,13 @@ The `issue-labels` skill may also apply contextual labels (e.g., `area/api`,
 
 The triage agent can create prerequisite issues in other repositories when it
 identifies upstream dependencies that don't have tracking issues yet. This is
-controlled by the selected provider's `allowed_targets` under `tracking` in
+controlled by the selected provider's `allowed_targets` under `tracker` in
 `config.yaml` (see the
-[Config Reference](../reference/config-reference.md#tracking) for the GitLab
+[Config Reference](../reference/config-reference.md#tracker) for the GitLab
 and Jira shapes):
 
 ```yaml
-tracking:
+tracker:
   github:
     allowed_targets:
       orgs:
@@ -91,7 +91,7 @@ tracking:
         - upstream-org/specific-repo
 ```
 
-**Defaults:** A fresh GitHub installation without a preset or explicit `tracking`
+**Defaults:** A fresh GitHub installation without a preset or explicit `tracker`
 setting permits `fullsend-ai/fullsend` and `fullsend-ai/agents` as upstream
 targets. Fresh GitLab installations have an explicit empty cross-project
 allowlist; configure any additional projects on the GitLab host explicitly.

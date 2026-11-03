@@ -288,7 +288,7 @@ installed base) with the proposed one (proposed overlay over the declared
 preset). If the replacement would implicitly relax a restriction the
 overlay does not declare — `kill_switch`, `roles`,
 `allowed_remote_resources`, agent suppressions,
-`tracking.<provider>.allowed_targets`, `inference.gateway.url`, or
+`tracker.<provider>.allowed_targets`, `inference.gateway.url`, or
 `inference.gateway.audience` — that repository fails before any write and
 the output names the keys. Changing a preset source alone is not an
 explicit declaration of a less-restrictive setting.
@@ -349,10 +349,10 @@ with only the ownership marker. An existing overlay without the marker
 blocks that repository's install (adoption required) even when the
 repository has no `config` key; the other selected repositories still
 converge. On a first install with no `config_base` preset and no
-explicit `tracking` declaration, install records
-`config.tracking.github.allowed_targets.repos: [fullsend-ai/fullsend, fullsend-ai/agents]` in the
+explicit `tracker` declaration, install records
+`config.tracker.github.allowed_targets.repos: [fullsend-ai/fullsend, fullsend-ai/agents]` in the
 GitHub repository's manifest entry before rendering the overlay. For GitLab, it
-records `config.tracking.gitlab.allowed_targets: {}` instead: additional project
+records `config.tracker.gitlab.allowed_targets: {}` instead: additional project
 targets must be configured explicitly for the GitLab host. If the manifest is an
 HTTPS URL or read-only, install fails with the exact edit to make.
 Resolution is code defaults, then `config_base`, then `defaults.config`,
@@ -455,7 +455,7 @@ drift, and convergence rewrites the file deterministically — unless the
 candidate would become less restrictive than the current effective
 configuration without an explicit manifest declaration. That pre-write
 safety gate compares `kill_switch`, `roles`, `allowed_remote_resources`,
-agent `enabled: false` suppressions, `tracking.<provider>.allowed_targets`,
+agent `enabled: false` suppressions, `tracker.<provider>.allowed_targets`,
 `inference.gateway.url`, and `inference.gateway.audience` through the full
 overlay → base → code-defaults accessor chain. Omitted
 keys fall through rather than being treated as unset; an explicit empty
@@ -488,7 +488,7 @@ replaced. `.fullsend/config.base.yaml` is managed as described under
 When the manifest is read-only (an HTTPS URL, or a local file without write
 permission), install fails before attempting any manifest write and prints
 the exact entry to add to its source, including for a glob-covered
-repository whose first-install `tracking` default needs an explicit
+repository whose first-install `tracker` default needs an explicit
 entry. `--dry-run`, live install and `repos status` agree.
 
 ```bash

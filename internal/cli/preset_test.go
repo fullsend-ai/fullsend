@@ -674,7 +674,7 @@ func TestRunGitHubSetupPerRepo_BaseOnlyComposesInheritedValues(t *testing.T) {
 
 func TestRunGitHubSetupPerRepo_BaseOnlyOverlayStaysSparse(t *testing.T) {
 	t.Setenv("GH_TOKEN", "test-token")
-	baseYAML := []byte("version: \"1\"\nallowed_remote_resources: []\ntracking:\n  github:\n    allowed_targets:\n      repos:\n        - acme/dependencies\ninference:\n  project: base-project\n  wif_provider: " + validWIFProvider + "\n")
+	baseYAML := []byte("version: \"1\"\nallowed_remote_resources: []\ntracker:\n  github:\n    allowed_targets:\n      repos:\n        - acme/dependencies\ninference:\n  project: base-project\n  wif_provider: " + validWIFProvider + "\n")
 	client := newSetupClient(t)
 	client.FileContents = map[string][]byte{
 		"acme/widget/.fullsend/config.base.yaml": baseYAML,
@@ -687,7 +687,7 @@ func TestRunGitHubSetupPerRepo_BaseOnlyOverlayStaysSparse(t *testing.T) {
 	}))
 
 	overlay := committedSetupFiles(client)[".fullsend/config.yaml"]
-	assert.NotRegexp(t, `(?m)^tracking:`, string(overlay), "overlay must not materialize tracking targets")
+	assert.NotRegexp(t, `(?m)^tracker:`, string(overlay), "overlay must not materialize tracking targets")
 	assert.NotRegexp(t, `(?m)^allowed_remote_resources:`, string(overlay), "overlay must not materialize the remote-resource allowlist")
 
 	effective, err := config.ParsePerRepoConfigWriterLayered(overlay, baseYAML)

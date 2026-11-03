@@ -83,7 +83,7 @@ github:
       config:
         runtime: dummy
         mint_url: https://mint.example.com
-        tracking:
+        tracker:
           github:
             allowed_targets:
               repos: [fullsend-ai/fullsend]

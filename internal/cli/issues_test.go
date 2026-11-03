@@ -1305,7 +1305,7 @@ func TestRunIssuesPostComment_GitHubUnchangedByJiraPropertyFeature(t *testing.T)
 // default is supplied via config.
 
 func TestResolveTracker_FlagOverridesConfig(t *testing.T) {
-	reader, err := config.ParsePerRepoConfig([]byte("tracker: jira\n"))
+	reader, err := config.ParsePerRepoConfig([]byte("tracker:\n  jira: {}\n"))
 	require.NoError(t, err)
 
 	got, err := resolveTracker(trackerGitHub, "", reader)
@@ -1314,7 +1314,7 @@ func TestResolveTracker_FlagOverridesConfig(t *testing.T) {
 }
 
 func TestResolveTracker_FallsBackToConfigReader(t *testing.T) {
-	reader, err := config.ParsePerRepoConfig([]byte("tracker: jira\n"))
+	reader, err := config.ParsePerRepoConfig([]byte("tracker:\n  jira: {}\n"))
 	require.NoError(t, err)
 
 	got, err := resolveTracker("", "", reader)
@@ -1324,7 +1324,7 @@ func TestResolveTracker_FallsBackToConfigReader(t *testing.T) {
 
 func TestResolveTracker_FallsBackToFullsendDirConfig(t *testing.T) {
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("tracker: gitlab\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("tracker:\n  gitlab: {}\n"), 0o644))
 
 	got, err := resolveTracker("", dir, nil)
 	require.NoError(t, err)
@@ -1418,7 +1418,7 @@ func TestRunIssuesPostComment_TrackerFromConfig(t *testing.T) {
 	fc.AuthenticatedUser = "bot"
 	tc := tracker.NewForgeClient(fc)
 
-	reader, err := config.ParsePerRepoConfig([]byte("tracker: github\n"))
+	reader, err := config.ParsePerRepoConfig([]byte("tracker:\n  github: {}\n"))
 	require.NoError(t, err)
 
 	cfg := &issuesPostCommentConfig{
@@ -1447,7 +1447,7 @@ func TestRunIssuesPostComment_TrackerFlagOverridesConfig(t *testing.T) {
 	tc, _, err := tracker.NewFakeJiraClientWithFake("https://acme.atlassian.net")
 	require.NoError(t, err)
 
-	reader, err := config.ParsePerRepoConfig([]byte("tracker: github\n"))
+	reader, err := config.ParsePerRepoConfig([]byte("tracker:\n  github: {}\n"))
 	require.NoError(t, err)
 
 	cfg := &issuesPostCommentConfig{

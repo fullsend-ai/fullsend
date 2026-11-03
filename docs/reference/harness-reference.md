@@ -138,7 +138,7 @@ security:
 > collisions when multiple agents share a sandbox or env file.
 >
 > A setting meant to apply the same way across every agent (like
-> `roles` or `tracking.<provider>.allowed_targets`) belongs in `config.yaml`
+> `roles` or `tracker.<provider>.allowed_targets`) belongs in `config.yaml`
 > instead, not as an env var.
 
 ## Field details

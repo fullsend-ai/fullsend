@@ -734,7 +734,7 @@ ADR 0002: [Building block 3](ADRs/0002-initial-fullsend-design.md#3-label-state-
 
 ### 4. triage agent runtime
 
-Runs triage from issue `title`/`body` + GitHub-native attachments only; each run starts with **`duplicate`** and other reset labels cleared; duplicate detection, prerequisite detection (cross-repo), readiness, reproducibility, test handoff; can close as duplicate again if still a match, label **`blocked`** when progress depends on another open issue or PR, or create upstream prerequisite issues when no tracking issue exists (controlled by the `tracking.<provider>.allowed_targets` config).
+Runs triage from issue `title`/`body` + GitHub-native attachments only; each run starts with **`duplicate`** and other reset labels cleared; duplicate detection, prerequisite detection (cross-repo), readiness, reproducibility, test handoff; can close as duplicate again if still a match, label **`blocked`** when progress depends on another open issue or PR, or create upstream prerequisite issues when no tracking issue exists (controlled by the `tracker.<provider>.allowed_targets` config).
 ADR 0002: [Building block 4](ADRs/0002-initial-fullsend-design.md#4-triage-agent-runtime).
 
 ### 5. Duplicate / similarity search

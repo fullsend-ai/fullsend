@@ -22,7 +22,7 @@ func writebackManifestFile(t *testing.T, m *Manifest) string {
 
 func upstreamIssueTargets(t *testing.T) string {
 	t.Helper()
-	body, err := marshalManagedConfig(mustManagedConfig(t, "tracking:\n  github:\n    allowed_targets:\n      repos: [fullsend-ai/fullsend, fullsend-ai/agents]\n").Writer())
+	body, err := marshalManagedConfig(mustManagedConfig(t, "tracker:\n  github:\n    allowed_targets:\n      repos: [fullsend-ai/fullsend, fullsend-ai/agents]\n").Writer())
 	require.NoError(t, err)
 	return string(body)
 }
@@ -210,7 +210,7 @@ func TestEnsureManagedConfigDefaults_DoesNotOverrideDeclaredValues(t *testing.T)
 			})
 			t.Run("explicit repo tracking", func(t *testing.T) {
 				m := newManifest()
-				m.PlatformFor(forgeName).Repos[0].Config = mustManagedConfig(t, "tracking:\n  github:\n    allowed_targets:\n      orgs: [acme]\n")
+				m.PlatformFor(forgeName).Repos[0].Config = mustManagedConfig(t, "tracker:\n  github:\n    allowed_targets:\n      orgs: [acme]\n")
 				names, err := EnsureManagedConfigDefaults(context.Background(), ManagedConfigWritebackConfig{Manifest: m},
 					newTestClientFactory(newFakeClientForBatch("acme/api")), nil)
 				require.NoError(t, err)
@@ -218,15 +218,15 @@ func TestEnsureManagedConfigDefaults_DoesNotOverrideDeclaredValues(t *testing.T)
 			})
 			t.Run("explicit defaults tracking", func(t *testing.T) {
 				m := newManifest()
-				m.Defaults.Config = mustManagedConfig(t, "tracking:\n  github:\n    allowed_targets:\n      orgs: [acme]\n")
+				m.Defaults.Config = mustManagedConfig(t, "tracker:\n  github:\n    allowed_targets:\n      orgs: [acme]\n")
 				names, err := EnsureManagedConfigDefaults(context.Background(), ManagedConfigWritebackConfig{Manifest: m},
 					newTestClientFactory(newFakeClientForBatch("acme/api")), nil)
 				require.NoError(t, err)
 				assert.Empty(t, names)
 			})
 			for name, declaration := range map[string]string{
-				"explicit custom repository": "tracking:\n  github:\n    allowed_targets:\n      repos: [acme/custom-agents]\n",
-				"explicit empty targets":     "tracking:\n  github:\n    allowed_targets:\n      repos: []\n",
+				"explicit custom repository": "tracker:\n  github:\n    allowed_targets:\n      repos: [acme/custom-agents]\n",
+				"explicit empty targets":     "tracker:\n  github:\n    allowed_targets:\n      repos: []\n",
 			} {
 				t.Run(name, func(t *testing.T) {
 					m := newManifest()
@@ -274,7 +274,7 @@ func TestEnsureManagedConfigDefaults_ReadOnlyManifestSuggestsExactEdit(t *testin
 	msg := err.Error()
 	assert.Contains(t, msg, "read-only")
 	assert.Contains(t, msg, `github.repos entry "acme/api"`)
-	for _, want := range []string{"config:", "tracking:", "github:", "allowed_targets:", "- fullsend-ai/fullsend", "- fullsend-ai/agents"} {
+	for _, want := range []string{"config:", "tracker:", "github:", "allowed_targets:", "- fullsend-ai/fullsend", "- fullsend-ai/agents"} {
 		assert.Contains(t, msg, want)
 	}
 	assert.False(t, m.GitHub.Repos[0].Config.IsSet(), "a read-only manifest is not edited in memory either")

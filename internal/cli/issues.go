@@ -38,7 +38,7 @@ Use --tracker to select the tracker backend. For GitHub and GitLab,
 (e.g. "PROJ") and the issue is addressed as PROJ-<number>.
 
 --tracker is required unless a default is supplied via config: set
-"tracker: github|gitlab|jira" in config.yaml and pass --fullsend-dir
+"tracker: {jira: {}}" (or github/gitlab) in config.yaml and pass --fullsend-dir
 pointing at the directory containing it.`,
 	}
 	cmd.AddCommand(newIssuesGetCmd())
@@ -409,7 +409,7 @@ that identity cannot be resolved after a short retry, the command fails
 without posting or editing anything; rerun it.
 
 --tracker is required unless a default is supplied via config: set
-"tracker: github|gitlab|jira" in config.yaml and pass --fullsend-dir
+"tracker: {jira: {}}" (or github/gitlab) in config.yaml and pass --fullsend-dir
 pointing at the directory containing it.
 
 The --result flag accepts a file path or "-" for stdin.`,
@@ -746,7 +746,7 @@ validation. The link is created in the type's outward direction:
 blocks PROJ-456.
 
 --tracker is required unless a default is supplied via config: set
-"tracker: github|gitlab|jira" in config.yaml and pass --fullsend-dir
+"tracker: {jira: {}}" (or github/gitlab) in config.yaml and pass --fullsend-dir
 pointing at the directory containing it.`,
 		Example: `  fullsend issues link --tracker jira --from PROJ-123 --to PROJ-456 --type Blocks`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -847,7 +847,8 @@ func parseIssueKey(key string) (string, int, error) {
 
 // resolveTracker returns trackerFlag if it is non-empty (the --tracker
 // flag was set explicitly). Otherwise it looks for a default tracker
-// in the config.yaml under fullsendDir (the "tracker:" field), per
+// in the config.yaml under fullsendDir (the provider block under the
+// "tracker:" mapping), per
 // fullsend-ai/fullsend#5991: --tracker is required unless a default is
 // supplied via config. testConfigReader, when non-nil, is used instead
 // of loading config from disk (for tests).
@@ -871,7 +872,7 @@ func resolveTracker(trackerFlag, fullsendDir string, testConfigReader config.Per
 		}
 	}
 
-	return "", fmt.Errorf("--tracker is required (no default tracker configured; set \"tracker: github|gitlab|jira\" in config.yaml and pass --fullsend-dir, or pass --tracker explicitly)")
+	return "", fmt.Errorf("--tracker is required (no default tracker configured; set \"tracker: {jira: {}}\" (or github/gitlab) in config.yaml and pass --fullsend-dir, or pass --tracker explicitly)")
 }
 
 // validateTrackerName normalizes a tracker name to lowercase and

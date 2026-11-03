@@ -251,7 +251,7 @@ func TestRunReposInstall_NoConfigKeyWritesSparseManagedOverlay(t *testing.T) {
 	require.NoError(t, runReposInstall(context.Background(), githubManagedInstallOpts(manifestPath, fc)))
 
 	overlay := fc.FileContents[overlayPath("acme/api")]
-	assert.Equal(t, managedConfigMarker+"tracking:\n    github:\n        allowed_targets:\n            repos:\n                - fullsend-ai/fullsend\n                - fullsend-ai/agents\n", string(overlay))
+	assert.Equal(t, managedConfigMarker+"tracker:\n    github:\n        allowed_targets:\n            repos:\n                - fullsend-ai/fullsend\n                - fullsend-ai/agents\n", string(overlay))
 
 	reloaded, err := repos.LoadManifest(context.Background(), manifestPath)
 	require.NoError(t, err)
@@ -299,7 +299,7 @@ func TestRunReposInstall_DeclaredRolesRenderedFromManifest(t *testing.T) {
 
 func TestRunReposInstall_ExplicitTrackingIsNotOverridden(t *testing.T) {
 	manifest := strings.Replace(githubUnmanagedManifestYAML, "    - name: acme/api\n",
-		"    - name: acme/api\n      config:\n        tracking:\n          github:\n            allowed_targets:\n              repos:\n                - acme/other\n", 1)
+		"    - name: acme/api\n      config:\n        tracker:\n          github:\n            allowed_targets:\n              repos:\n                - acme/other\n", 1)
 	manifestPath := writeTestManifest(t, manifest)
 	fc := newInstallFakeClient("acme/api")
 
@@ -322,7 +322,7 @@ func TestRunReposInstall_ReadOnlyManifestFailsWithSuggestedEdit(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "read-only")
 	assert.Contains(t, err.Error(), `entry "acme/api"`)
-	assert.Contains(t, err.Error(), "tracking:")
+	assert.Contains(t, err.Error(), "tracker:")
 	assert.Contains(t, err.Error(), "allowed_targets:")
 	assert.Contains(t, err.Error(), "- fullsend-ai/fullsend")
 	assert.Contains(t, err.Error(), "- fullsend-ai/agents")

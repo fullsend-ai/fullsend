@@ -139,7 +139,6 @@ the overlay → base → code defaults chain.
 | `agents` | `[]AgentEntry` | Keyed merge by `DerivedName()` | `nil` (none) |
 | `allowed_remote_resources` | `[]string` | Union with deny-all | `DefaultAllowedRemoteResources()` |
 | `forge` | `string` | Scalar override | `""` (GitHub) |
-| `tracker` | `string` | Scalar override | `""` (none) |
 | `mint_url` | `string` | Scalar override | `DefaultPerRepoMintURL` (hosted public mint) |
 | `inference.provider` | `string` (nested) | Scalar override | `"vertex"` |
 | `inference.project` | `string` (nested) | Scalar override | `""` (empty) |
@@ -156,7 +155,7 @@ the overlay → base → code defaults chain.
 | `inference.gateway.messages_auth_header` | `string` (nested) | Scalar override | `""` (empty; means `authorization`) |
 | `inference.gateway.models` / `inference.gateway.models_file` | `map` / `string` (nested) | Model list replaced as one unit | `nil` (none) |
 | `models.aliases` | `map[string]string` (nested) | Per-key merge | `nil` (fleet defaults) |
-| `tracking` | `*TrackingConfig` | Replace whole object if set | `nil` |
+| `tracker` | `*TrackingConfig` | Replace whole object if set | `nil` |
 | `status_notifications` | `*StatusNotificationConfig` | Replace whole object if set | `nil` |
 | `authorization` | `[]AuthorizationProvider` | Overlay only (not layered) | `nil` |
 
@@ -355,20 +354,6 @@ models:
 # opus and haiku → fleet defaults (compiled-in).
 ```
 
-### `tracker` — scalar override
-
-**`tracker`** stores the default issue tracker for `fullsend issues`
-commands (`github`, `gitlab`, or `jira`). Unset (`""`) means no default
-— `--tracker` is required on every `fullsend issues` invocation. When
-set, it is used as the default for `--tracker` on `fullsend issues
-get`, `fullsend issues create`, `fullsend issues post-comment`, and
-`fullsend issues link` (`link` supports only Jira, so a `github` or
-`gitlab` default makes it fail with a not-supported error unless
-`--tracker jira` is passed); an
-explicit `--tracker` flag overrides it. Distinct from `forge`: a repo's hosting forge does not
-imply its issue tracker (e.g. a GitHub-hosted repo may track issues in
-Jira).
-
 ### `roles` — replace if set
 
 The `roles` field uses replace-if-set semantics with **no union**:
@@ -481,10 +466,20 @@ allowed_remote_resources: []
 # Effective: [] — no remote resources allowed
 ```
 
-### `tracking` — replace whole object if set
+### `tracker` — replace whole object if set
 
-The `tracking` field uses replace-if-set semantics for the entire
-object:
+The `tracker` field is the single, provider-discriminated issue-tracker
+mapping (`github`, `gitlab`, or `jira`; at most one). It replaces the former
+scalar `tracker` field, which is no longer accepted. The provider block that
+is present is the default for `--tracker` on `fullsend issues get`,
+`create`, `post-comment`, and `link` (`link` supports only Jira, so a `github`
+or `gitlab` provider makes it fail with a not-supported error unless
+`--tracker jira` is passed); an explicit `--tracker` flag overrides it. When
+no provider block is set, `--tracker` is required on every `fullsend issues`
+invocation. Distinct from `forge`: a repo's hosting forge does not imply its
+issue tracker (e.g. a GitHub-hosted repo may track issues in Jira).
+
+The field uses replace-if-set semantics for the entire object:
 
 - `nil` (key omitted) — falls through to parent, then to code default
   `nil`.
@@ -496,7 +491,7 @@ object:
 ### `status_notifications` — replace whole object if set
 
 The `status_notifications` field uses the same replace-if-set semantics as
-`tracking`:
+`tracker`:
 
 - `nil` (key omitted) — falls through to parent, then to code default
   `nil`.
@@ -563,7 +558,6 @@ compiled-in defaults apply:
 | `agents` | `nil` (none configured) |
 | `allowed_remote_resources` | `["https://raw.githubusercontent.com/fullsend-ai/fullsend/", "https://raw.githubusercontent.com/fullsend-ai/agents/"]` |
 | `forge` | `""` (GitHub) |
-| `tracker` | `""` (none — `--tracker` is required unless set) |
 | `mint_url` | `"https://mint.fullsend.sh"` (hosted public mint) |
 | `inference.provider` | `"vertex"` |
 | `inference.project` | `""` (empty — must be provided) |
@@ -572,7 +566,7 @@ compiled-in defaults apply:
 | `inference.wif_audience` | `""` (empty — `aud: "fullsend"`) |
 | `inference.service_account` | `""` (empty — no impersonation) |
 | `models.aliases` | `nil` (fleet alias table compiled into the runtimes) |
-| `tracking` | `nil` |
+| `tracker` | `nil` (no provider — `--tracker` is required unless set) |
 | `status_notifications` | `nil` |
 | `authorization` | `nil` |
 

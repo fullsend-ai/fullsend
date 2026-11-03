@@ -136,7 +136,7 @@ func (o ManagedConfig) Clone() ManagedConfig {
 // modified.
 func (o ManagedConfig) WithIssueTracking(t *TrackingConfig) ManagedConfig {
 	cp := o.clone()
-	cp.Tracking = cloneTracking(t)
+	cp.Tracker = cloneTracking(t)
 	return ManagedConfig{cfg: cp}
 }
 
@@ -215,6 +215,17 @@ func decodeManagedConfig(n *yaml.Node) (*perRepoConfig, error) {
 		} else if !known[key] {
 			fieldErrs = append(fieldErrs, managedFieldError(keyNode,
 				fmt.Sprintf("unknown field %q", key)))
+		}
+		// TrackingConfig has a custom UnmarshalYAML (it rejects the legacy
+		// scalar form), so the strict decode below does not see its nested
+		// keys. Decode the mapping strictly here so a misspelled
+		// allowed_targets key is not silently dropped.
+		if key == "tracker" {
+			if v := resolveAlias(node.Content[i+1]); v.Kind == yaml.MappingNode {
+				if err := decodeKnownFields(v, &trackingPlain{}); err != nil {
+					fieldErrs = append(fieldErrs, managedFieldError(keyNode, fmt.Sprintf("tracker: %v", err)))
+				}
+			}
 		}
 		// AgentEntry has a custom UnmarshalYAML (string-or-mapping), so
 		// decodeKnownFields' dec.KnownFields(true) below never sees these
@@ -371,7 +382,6 @@ func clonePerRepo(src *perRepoConfig) *perRepoConfig {
 	out := &perRepoConfig{
 		Version: src.Version,
 		Forge:   src.Forge,
-		Tracker: src.Tracker,
 		Runtime: src.Runtime,
 		MintURL: src.MintURL,
 		parent:  &perRepoDefaults{},
@@ -393,7 +403,7 @@ func clonePerRepo(src *perRepoConfig) *perRepoConfig {
 	if src.AllowedRemoteResources != nil {
 		out.AllowedRemoteResources = cloneStringSlice(src.AllowedRemoteResources)
 	}
-	out.Tracking = cloneTracking(src.Tracking)
+	out.Tracker = cloneTracking(src.Tracker)
 	out.legacyCreateIssues = src.legacyCreateIssues
 	if src.Authorization != nil {
 		out.Authorization = cloneAuthorizationSlice(src.Authorization)
@@ -431,9 +441,6 @@ func applyManagedLayer(out, child *perRepoConfig) {
 	if child.Forge != "" {
 		out.Forge = child.Forge
 	}
-	if child.Tracker != "" {
-		out.Tracker = child.Tracker
-	}
 	if child.KillSwitch != nil {
 		v := *child.KillSwitch
 		out.KillSwitch = &v
@@ -460,8 +467,8 @@ func applyManagedLayer(out, child *perRepoConfig) {
 		}
 		out.AllowedRemoteResources = cloneStringSlice(tmp.AllowedResources())
 	}
-	if child.Tracking != nil {
-		out.Tracking = cloneTracking(child.Tracking)
+	if child.Tracker != nil {
+		out.Tracker = cloneTracking(child.Tracker)
 	}
 	if child.legacyCreateIssues {
 		out.legacyCreateIssues = true

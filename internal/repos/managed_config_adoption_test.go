@@ -112,14 +112,14 @@ func TestAdoptionProposal_NotesSettingsTheManifestCannotHold(t *testing.T) {
 func TestOverlayDifference_MultilineAndAdded(t *testing.T) {
 	cur, err := overlayMapping([]byte("roles:\n  - triage\n  - fix\n"))
 	require.NoError(t, err)
-	next, err := overlayMapping([]byte("roles:\n  - triage\ntracking:\n  github:\n    allowed_targets:\n      repos:\n        - fullsend-ai/fullsend\n"))
+	next, err := overlayMapping([]byte("roles:\n  - triage\ntracker:\n  github:\n    allowed_targets:\n      repos:\n        - fullsend-ai/fullsend\n"))
 	require.NoError(t, err)
 	got := overlayDifference(cur, next)
 	assert.Contains(t, got, "- roles:")
 	assert.Contains(t, got, "- fix")
 	assert.Contains(t, got, "-     - fix", "removed list items keep their indentation")
 	assert.Contains(t, got, "+ roles:")
-	assert.Contains(t, got, "+ tracking:")
+	assert.Contains(t, got, "+ tracker:")
 	assert.Equal(t, "", overlayDifference(cur, cur))
 }
 

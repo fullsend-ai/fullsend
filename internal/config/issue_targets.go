@@ -6,9 +6,11 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
-// Issue-tracking provider names accepted as keys under tracking:.
+// Issue-tracker provider names accepted as keys under tracker:.
 const (
 	TrackingProviderGitHub = "github"
 	TrackingProviderGitLab = "gitlab"
@@ -16,18 +18,48 @@ const (
 )
 
 // errLegacyCreateIssues reports a leftover top-level create_issues block,
-// which was replaced by the provider-specific tracking mapping (#9074).
-var errLegacyCreateIssues = errors.New("create_issues is no longer supported: move create_issues.allow_targets to tracking.<provider>.allowed_targets " +
-	"(tracking.github.allowed_targets.orgs/repos, tracking.gitlab.allowed_targets.groups/repos, or tracking.jira.allowed_targets.projects)")
+// which was replaced by the provider-specific tracker mapping (#9074).
+var errLegacyCreateIssues = errors.New("create_issues is no longer supported: move create_issues.allow_targets to tracker.<provider>.allowed_targets " +
+	"(tracker.github.allowed_targets.orgs/repos, tracker.gitlab.allowed_targets.groups/repos, or tracker.jira.allowed_targets.projects)")
 
-// TrackingConfig selects the issue-tracking provider and holds its
-// settings. At most one provider mapping may be set; the one that is set
-// is the selected provider. A nil TrackingConfig, or one with no provider
-// mapping, allows no issue destinations beyond the source repository.
+// errLegacyScalarTracker reports a scalar tracker value (tracker: jira),
+// which the provider-discriminated tracker mapping replaced (#9074).
+func errLegacyScalarTracker(value string) error {
+	provider := value
+	if !slices.Contains([]string{TrackingProviderGitHub, TrackingProviderGitLab, TrackingProviderJira}, provider) {
+		provider = "<provider>"
+	}
+	return fmt.Errorf("tracker: the scalar form (tracker: %s) is no longer supported: tracker is now a provider mapping, "+
+		"so replace it with \"tracker:\" containing a \"%s: {}\" block (add allowed_targets under it as needed, "+
+		"for example tracker.github.allowed_targets.orgs/repos, tracker.gitlab.allowed_targets.groups/repos, or tracker.jira.allowed_targets.projects)",
+		value, provider)
+}
+
+// TrackingConfig is the value of the tracker key: a provider-discriminated
+// mapping that selects the issue-tracker provider and holds its settings.
+// At most one provider mapping may be set; the one that is set is the
+// selected provider. A nil TrackingConfig, or one with no provider
+// mapping, selects no provider and allows no issue destinations beyond the
+// source repository.
 type TrackingConfig struct {
 	GitHub *GitHubTrackingConfig `yaml:"github,omitempty"`
 	GitLab *GitLabTrackingConfig `yaml:"gitlab,omitempty"`
 	Jira   *JiraTrackingConfig   `yaml:"jira,omitempty"`
+}
+
+// trackingPlain has TrackingConfig's fields but not its UnmarshalYAML, so
+// it can be decoded strictly (rejecting unknown keys) where the custom
+// unmarshaler would drop the strict-fields option.
+type trackingPlain TrackingConfig
+
+// UnmarshalYAML implements yaml.Unmarshaler. The legacy scalar form
+// (tracker: jira) is rejected with a migration message instead of a
+// generic type error; a mapping decodes as usual.
+func (t *TrackingConfig) UnmarshalYAML(n *yaml.Node) error {
+	if r := resolveAlias(n); r.Kind == yaml.ScalarNode {
+		return errLegacyScalarTracker(r.Value)
+	}
+	return n.Decode((*trackingPlain)(t))
 }
 
 // GitHubTrackingConfig holds GitHub issue-tracking settings.
@@ -183,9 +215,9 @@ func trackingSafetyKey(current, candidate *TrackingConfig) string {
 		provider = current.Provider()
 	}
 	if provider == "" {
-		return "tracking"
+		return "tracker"
 	}
-	return "tracking." + provider + ".allowed_targets"
+	return "tracker." + provider + ".allowed_targets"
 }
 
 func cloneTracking(src *TrackingConfig) *TrackingConfig {
@@ -237,36 +269,36 @@ func validateTracking(cfg *TrackingConfig) error {
 		return nil
 	}
 	if providers := cfg.providers(); len(providers) > 1 {
-		return fmt.Errorf("tracking: at most one provider mapping may be set, found %s", strings.Join(providers, ", "))
+		return fmt.Errorf("tracker: at most one provider mapping may be set, found %s", strings.Join(providers, ", "))
 	}
 	if gh := cfg.GitHub; gh != nil {
 		for _, org := range gh.AllowedTargets.Orgs {
 			if !validPathSegments(org, 1) || strings.Contains(org, "/") {
-				return fmt.Errorf("tracking.github: org %q in allowed_targets.orgs must be a non-empty organization name", org)
+				return fmt.Errorf("tracker.github: org %q in allowed_targets.orgs must be a non-empty organization name", org)
 			}
 		}
 		for _, repo := range gh.AllowedTargets.Repos {
 			if !validPathSegments(repo, 2) || strings.Count(repo, "/") != 1 {
-				return fmt.Errorf("tracking.github: repo %q in allowed_targets.repos must be owner/repo", repo)
+				return fmt.Errorf("tracker.github: repo %q in allowed_targets.repos must be owner/repo", repo)
 			}
 		}
 	}
 	if gl := cfg.GitLab; gl != nil {
 		for _, group := range gl.AllowedTargets.Groups {
 			if !validPathSegments(group, 1) {
-				return fmt.Errorf("tracking.gitlab: group %q in allowed_targets.groups must be a group path", group)
+				return fmt.Errorf("tracker.gitlab: group %q in allowed_targets.groups must be a group path", group)
 			}
 		}
 		for _, repo := range gl.AllowedTargets.Repos {
 			if !validPathSegments(repo, 2) {
-				return fmt.Errorf("tracking.gitlab: repo %q in allowed_targets.repos must be a full project path (group/project)", repo)
+				return fmt.Errorf("tracker.gitlab: repo %q in allowed_targets.repos must be a full project path (group/project)", repo)
 			}
 		}
 	}
 	if jira := cfg.Jira; jira != nil {
 		for _, project := range jira.AllowedTargets.Projects {
 			if !jiraProjectKeyRe.MatchString(project) {
-				return fmt.Errorf("tracking.jira: project %q in allowed_targets.projects must be a Jira project key (for example PROJ)", project)
+				return fmt.Errorf("tracker.jira: project %q in allowed_targets.projects must be a Jira project key (for example PROJ)", project)
 			}
 		}
 	}
@@ -275,14 +307,14 @@ func validateTracking(cfg *TrackingConfig) error {
 
 // DefaultIssueCreationRepos returns the cross-repository issue destinations
 // granted by a fresh GitHub installation without a preset or explicit
-// tracking setting. The source repository is implicitly allowed by the
+// tracker setting. The source repository is implicitly allowed by the
 // post-scripts. Each call returns its own slice so callers can customize it
 // independently.
 func DefaultIssueCreationRepos() []string {
 	return []string{DefaultUpstreamRepo, DefaultAgentsRepo}
 }
 
-// DefaultIssueTracking returns the tracking configuration a fresh
+// DefaultIssueTracking returns the tracker configuration a fresh
 // installation without a preset records for the given forge: the
 // upstream repositories on GitHub, and an explicit empty allowed_targets
 // on GitLab, where GitHub upstream names are not destinations. Any other

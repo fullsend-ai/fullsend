@@ -2532,7 +2532,7 @@ func TestLoadWithOpts_OverlayWithConfig(t *testing.T) {
 agent: agents/test.md
 role: fix
 overlays:
-- when: 'config.tracker == "jira"'
+- when: 'has(config.tracker) && has(config.tracker.jira)'
   pre_script: scripts/jira.sh
 `
 	dir := t.TempDir()
@@ -2541,7 +2541,7 @@ overlays:
 
 	h, err := LoadWithOpts(path, LoadOpts{
 		Event:  map[string]any{"source": map[string]any{"system": "jira"}},
-		Config: map[string]any{"tracker": "jira"},
+		Config: map[string]any{"tracker": map[string]any{"jira": map[string]any{}}},
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "scripts/jira.sh", h.PreScript)

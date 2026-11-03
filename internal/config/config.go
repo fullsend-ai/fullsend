@@ -900,13 +900,18 @@ type perRepoConfig struct {
 	// fallback chain to inherit version from the parent layer.
 	Version string `yaml:"version,omitempty"`
 	Forge   string `yaml:"forge,omitempty"`
-	// Tracker is the default issue tracker backend (github, gitlab, or
-	// jira) for `fullsend issues` commands' --tracker flag. Distinct
-	// from Forge, which is the repo's hosting platform — a repo can be
-	// hosted on GitHub but track issues in Jira.
-	Tracker    string `yaml:"tracker,omitempty"`
-	KillSwitch *bool  `yaml:"kill_switch,omitempty"`
-	Runtime    string `yaml:"runtime,omitempty"`
+	// Tracker is the single canonical issue-tracker setting: a
+	// provider-discriminated mapping (github, gitlab, or jira, at most
+	// one) holding that provider's settings, including the cross-project
+	// issue destinations agents may use (allowed_targets). The provider
+	// present is the default backend for `fullsend issues` commands'
+	// --tracker flag. Distinct from Forge, which is the repo's hosting
+	// platform — a repo can be hosted on GitHub but track issues in Jira.
+	// nil falls through to parent; a set value replaces the parent's
+	// whole mapping. The legacy scalar form (tracker: jira) is rejected.
+	Tracker    *TrackingConfig `yaml:"tracker,omitempty"`
+	KillSwitch *bool           `yaml:"kill_switch,omitempty"`
+	Runtime    string          `yaml:"runtime,omitempty"`
 
 	// KeepHistory controls whether sticky comment updates append the
 	// previous body as a collapsed "Previous run" <details> block. When
@@ -921,15 +926,10 @@ type perRepoConfig struct {
 	// resource prefixes. MarshalYAML preserves the nil-vs-empty
 	// distinction: nil (unset) is omitted, empty (deny-all) is
 	// marshaled as `allowed_remote_resources: []`.
-	AllowedRemoteResources []string `yaml:"allowed_remote_resources,omitempty"`
-	// Tracking holds the selected issue-tracking provider's settings,
-	// including the cross-project issue destinations agents may use.
-	// nil falls through to parent; a set value replaces the parent's
-	// whole mapping.
-	Tracking      *TrackingConfig         `yaml:"tracking,omitempty"`
-	Authorization []AuthorizationProvider `yaml:"authorization,omitempty"`
+	AllowedRemoteResources []string                `yaml:"allowed_remote_resources,omitempty"`
+	Authorization          []AuthorizationProvider `yaml:"authorization,omitempty"`
 	// Notifications backs the StatusNotifications() accessor. Named
-	// distinctly from the method (unlike Tracking/IssueTracking)
+	// distinctly from the method (unlike Tracker/IssueTracking)
 	// because "StatusNotifications" is the established ConfigReader
 	// accessor name, and Go forbids a field and method sharing a name on
 	// the same type.
@@ -1000,7 +1000,7 @@ func NewPerRepoConfig(roles []string, targetRepo string) PerRepoConfigWriter {
 		// triage and retro post-scripts, so only the upstream
 		// cross-repo permissions (retro proposals, triage prerequisites)
 		// need explicit entries (#8218, #8504).
-		cfg.Tracking = DefaultIssueTracking(TrackingProviderGitHub)
+		cfg.Tracker = DefaultIssueTracking(TrackingProviderGitHub)
 	}
 	return cfg
 }
@@ -1058,14 +1058,13 @@ func (c *perRepoConfig) Marshal() ([]byte, error) {
 type perRepoConfigMarshal struct {
 	Version                string                    `yaml:"version,omitempty"`
 	Forge                  string                    `yaml:"forge,omitempty"`
-	Tracker                string                    `yaml:"tracker,omitempty"`
+	Tracker                *TrackingConfig           `yaml:"tracker,omitempty"`
 	KillSwitch             *bool                     `yaml:"kill_switch,omitempty"`
 	Runtime                string                    `yaml:"runtime,omitempty"`
 	KeepHistory            *bool                     `yaml:"keep_history,omitempty"`
 	Roles                  *[]string                 `yaml:"roles,omitempty"`
 	Agents                 []AgentEntry              `yaml:"agents,omitempty"`
 	AllowedRemoteResources *[]string                 `yaml:"allowed_remote_resources,omitempty"`
-	Tracking               *TrackingConfig           `yaml:"tracking,omitempty"`
 	Authorization          *[]AuthorizationProvider  `yaml:"authorization,omitempty"`
 	StatusNotifications    *StatusNotificationConfig `yaml:"status_notifications,omitempty"`
 	MintURL                string                    `yaml:"mint_url,omitempty"`
@@ -1088,7 +1087,6 @@ func (c *perRepoConfig) MarshalYAML() (interface{}, error) {
 		Runtime:             c.Runtime,
 		KeepHistory:         c.KeepHistory,
 		Agents:              c.Agents,
-		Tracking:            c.Tracking,
 		StatusNotifications: c.Notifications,
 		MintURL:             c.MintURL,
 	}
@@ -1174,7 +1172,7 @@ func ValidateRuntimeAuthorization(r ConfigReader) error {
 }
 
 // validateLocalFields checks the fields that do not need a resolved
-// parent chain: version, roles, tracking, runtime,
+// parent chain: version, roles, tracker, runtime,
 // status_notifications, inference provider, authorization providers,
 // and model aliases. It is split out of Validate so a repos.yaml config
 // managed-configuration layer (ADR 0122) can be checked without pulling in
@@ -1205,7 +1203,7 @@ func (c *perRepoConfig) validateLocalFields() error {
 	if c.legacyCreateIssues {
 		return errLegacyCreateIssues
 	}
-	if err := validateTracking(c.Tracking); err != nil {
+	if err := validateTracking(c.Tracker); err != nil {
 		return err
 	}
 	if rt := c.Runtime; rt != "" {

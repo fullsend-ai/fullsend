@@ -191,7 +191,7 @@ func TestRunIssuesCreate_JiraKeyFromTracker(t *testing.T) {
 }
 
 func TestRunIssuesCreate_TrackerFromConfig(t *testing.T) {
-	reader, err := config.ParsePerRepoConfig([]byte("tracker: jira\n"))
+	reader, err := config.ParsePerRepoConfig([]byte("tracker:\n  jira: {}\n"))
 	require.NoError(t, err)
 	tc, fake, err := tracker.NewFakeJiraClientWithFake("https://acme.atlassian.net")
 	require.NoError(t, err)

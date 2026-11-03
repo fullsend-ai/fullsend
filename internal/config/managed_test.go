@@ -438,7 +438,6 @@ func TestMergeManaged_AllFieldsAndAgentClone(t *testing.T) {
 	parent := &perRepoConfig{
 		Version:     "1",
 		Forge:       "github",
-		Tracker:     "jira",
 		Runtime:     "claude",
 		MintURL:     "https://parent.example.com",
 		KillSwitch:  boolPtr(true),
@@ -456,7 +455,7 @@ func TestMergeManaged_AllFieldsAndAgentClone(t *testing.T) {
 			},
 		}},
 		AllowedRemoteResources: []string{"https://parent.example.com/"},
-		Tracking: &TrackingConfig{GitHub: &GitHubTrackingConfig{
+		Tracker: &TrackingConfig{GitHub: &GitHubTrackingConfig{
 			AllowedTargets: GitHubAllowedTargets{Orgs: []string{"acme"}, Repos: []string{"acme/app"}},
 		}},
 		Authorization: []AuthorizationProvider{{Provider: "owners_file"}},
@@ -474,7 +473,6 @@ func TestMergeManaged_AllFieldsAndAgentClone(t *testing.T) {
 	child := &perRepoConfig{
 		Version:     "1",
 		Forge:       "gitlab",
-		Tracker:     "gitlab",
 		Runtime:     "pi",
 		MintURL:     "https://child.example.com",
 		KillSwitch:  boolPtr(false),
@@ -489,7 +487,7 @@ func TestMergeManaged_AllFieldsAndAgentClone(t *testing.T) {
 			},
 		}},
 		AllowedRemoteResources: []string{"https://child.example.com/"},
-		Tracking: &TrackingConfig{GitLab: &GitLabTrackingConfig{
+		Tracker: &TrackingConfig{GitLab: &GitLabTrackingConfig{
 			AllowedTargets: GitLabAllowedTargets{Repos: []string{"acme/other"}},
 		}},
 		Authorization: []AuthorizationProvider{{Provider: "owners_file"}},
@@ -520,7 +518,7 @@ func TestMergeManaged_AllFieldsAndAgentClone(t *testing.T) {
 	assert.Nil(t, merged.IssueTracking().GitHub, "the child's tracking replaces the parent's whole mapping")
 	assert.Equal(t, []string{"acme/other"}, merged.IssueTracking().GitLab.AllowedTargets.Repos)
 	merged.IssueTracking().GitLab.AllowedTargets.Repos[0] = "mutated/repo"
-	assert.Equal(t, []string{"acme/other"}, child.Tracking.GitLab.AllowedTargets.Repos, "the merge copies the child's tracking")
+	assert.Equal(t, []string{"acme/other"}, child.Tracker.GitLab.AllowedTargets.Repos, "the merge copies the child's tracking")
 	assert.True(t, merged.IsOwnersFileAuthEnabled())
 	require.NotNil(t, merged.StatusNotifications())
 	assert.Equal(t, "disabled", merged.StatusNotifications().Comment.Start)
@@ -595,7 +593,7 @@ func TestManagedConfig_WithIssueTracking(t *testing.T) {
 	assert.Equal(t, PerRepoDefaultRoles(), fromZero.Writer().ConfigRoles(), "roles are not declared")
 	encoded, err := yaml.Marshal(fromZero)
 	require.NoError(t, err)
-	assert.Equal(t, "tracking:\n    gitlab:\n        allowed_targets: {}\n", string(encoded))
+	assert.Equal(t, "tracker:\n    gitlab:\n        allowed_targets: {}\n", string(encoded))
 }
 
 func TestManagedConfig_LegacyCreateIssuesRejected(t *testing.T) {
@@ -603,15 +601,23 @@ func TestManagedConfig_LegacyCreateIssuesRejected(t *testing.T) {
 	err := yaml.Unmarshal([]byte("create_issues:\n  allow_targets:\n    orgs: [acme]\n"), &cfg)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `unknown field "create_issues"`)
-	assert.Contains(t, err.Error(), "tracking.<provider>.allowed_targets", "the error names the migration target")
+	assert.Contains(t, err.Error(), "tracker.<provider>.allowed_targets", "the error names the migration target")
 }
 
-func TestManagedConfig_TrackingStrictDecode(t *testing.T) {
+func TestManagedConfig_LegacyScalarTrackerRejected(t *testing.T) {
 	var cfg ManagedConfig
-	err := yaml.Unmarshal([]byte("tracking:\n  github:\n    allow_targets:\n      orgs: [acme]\n"), &cfg)
+	err := yaml.Unmarshal([]byte("tracker: jira\n"), &cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "scalar form")
+	assert.Contains(t, err.Error(), "jira: {}", "the error names the migration target")
+}
+
+func TestManagedConfig_TrackerStrictDecode(t *testing.T) {
+	var cfg ManagedConfig
+	err := yaml.Unmarshal([]byte("tracker:\n  github:\n    allow_targets:\n      orgs: [acme]\n"), &cfg)
 	require.Error(t, err, "a misspelled nested key is rejected")
 
-	require.NoError(t, yaml.Unmarshal([]byte("tracking:\n  github:\n    allowed_targets:\n      orgs: [acme]\n  jira:\n    allowed_targets:\n      projects: [PROJ]\n"), &cfg))
+	require.NoError(t, yaml.Unmarshal([]byte("tracker:\n  github:\n    allowed_targets:\n      orgs: [acme]\n  jira:\n    allowed_targets:\n      projects: [PROJ]\n"), &cfg))
 	err = ValidateManagedLayer(cfg.Writer())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "at most one provider mapping")

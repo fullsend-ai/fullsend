@@ -24,7 +24,6 @@ func EffectiveYAML(r PerRepoConfigReader) ([]byte, error) {
 	for key, val := range map[string]string{
 		"version":  r.ConfigVersion(),
 		"forge":    r.ConfigForge(),
-		"tracker":  r.ConfigTracker(),
 		"runtime":  r.ConfigRuntime(),
 		"mint_url": r.ConfigMintURL(),
 	} {
@@ -36,7 +35,7 @@ func EffectiveYAML(r PerRepoConfigReader) ([]byte, error) {
 		out["allowed_remote_resources"] = resources
 	}
 	if t := r.IssueTracking(); t != nil {
-		out["tracking"] = t
+		out["tracker"] = t
 	}
 	if agents := r.AgentEntries(); len(agents) > 0 {
 		out["agents"] = agents
