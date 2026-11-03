@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# setup-new-e2e-org_test.sh — tests for the mint-status team step of
-# setup-new-e2e-org.sh (ensure_status_team) against a stubbed gh.
+# setup-org_test.sh — tests for the mint-status team step of
+# the e2e org pool setup (ensure_status_team in lib.sh) against a stubbed
+# gh.
 #
 # Covers: a missing team is created, its creator removed and the write actor
 # added; a second run on a provisioned org makes no changes; a non-404 error
@@ -21,11 +22,12 @@
 # fails closed (#8448).
 #
 # Run from the repo root:
-#   bash hack/setup-new-e2e-org_test.sh
+#   bash e2e/org-pool/setup-org_test.sh
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SETUP="${SCRIPT_DIR}/setup-new-e2e-org.sh"
+LIB="${SCRIPT_DIR}/lib.sh"
+SETUP="${SCRIPT_DIR}/setup-org.sh"
 FAILURES=0
 ORG="halfsend-01"
 TEAM="mint-status"
@@ -182,7 +184,7 @@ run_step() {
     STUB_TEAM="${TEAM}" STUB_OPERATOR="${OPERATOR}" \
     TEST_ACTOR_WRITE_PAT="pat-value-must-not-leak" \
     bash -c 'source "$1"; ensure_status_team "$2" "$3"' _ \
-    "${SETUP}" "${ORG}" "${WRITE}" 2>&1) || RC=$?
+    "${LIB}" "${ORG}" "${WRITE}" 2>&1) || RC=$?
 }
 
 # mutations lists the non-GET gh calls made.
@@ -363,7 +365,7 @@ else
 fi
 
 # --- 13. no legacy hosted-GCP-mint check (#8416) ---------------------------
-if grep -nE 'MINT_PROJECT|MINT_FUNCTION|MINT_REGION|gcloud|ROLE_APP_IDS' "${SETUP}"; then
+if grep -nE 'MINT_PROJECT|MINT_FUNCTION|MINT_REGION|gcloud|ROLE_APP_IDS' "${LIB}" "${SETUP}"; then
   fail "legacy mint check: script still references hosted-GCP-mint settings"
 else
   pass "legacy mint check: no hosted-GCP-mint settings referenced"
@@ -380,7 +382,7 @@ run_fn() {
   RC=0
   OUT=$(PATH="${SHIM_DIR}:${PATH}" STUB_STATE="${STATE}" STUB_ORG="${ORG}" \
     STUB_TEAM="${TEAM}" STUB_OPERATOR="${OPERATOR}" \
-    bash -c 'source "$1"; shift; "$@"' _ "${SETUP}" "$@" 2>&1) || RC=$?
+    bash -c 'source "$1"; shift; "$@"' _ "${LIB}" "$@" 2>&1) || RC=$?
 }
 
 # legacy_role_get reports calls to the unsupported per-user role route.
@@ -465,8 +467,8 @@ else
   fail "outsider check listing error: rc=${RC}: ${OUT}"
 fi
 
-# 14h. the unsupported per-user role route is gone from the script.
-if grep -nE 'organization-roles/users/\$\{[A-Za-z_]+\}"' "${SETUP}"; then
+# 14h. the unsupported per-user role route is gone from the scripts.
+if grep -nE 'organization-roles/users/\$\{[A-Za-z_]+\}"' "${LIB}" "${SETUP}"; then
   fail "per-user role route: script still GETs /organization-roles/users/{username}"
 else
   pass "per-user role route: not used"
