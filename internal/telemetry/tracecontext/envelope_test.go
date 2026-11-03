@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -637,53 +638,42 @@ func TestSign_RejectsWrongKeySize(t *testing.T) {
 	assert.Error(t, err, "Sign must reject a mis-sized private key")
 }
 
-// TestParse_Truncations walks every truncation of a maximal envelope: no
-// prefix may parse, and none may panic.
+// Long instances let truncations reach every variable-field boundary
+// beyond the minimum-length check, including both provenance layouts.
 func TestParse_Truncations(t *testing.T) {
-	raw, _ := signedGolden(t, DomainBound, ProvenanceScenario)
-	for n := 0; n < len(raw); n++ {
-		_, err := Parse(raw[:n])
-		require.Error(t, err, "truncation to %d bytes must not parse", n)
-	}
-}
+	for _, domain := range []Domain{DomainBound, DomainPending} {
+		for _, provenance := range []ProvenanceKind{ProvenanceNone, ProvenanceSourceLink, ProvenanceScenario} {
+			for _, instance := range []string{goldenIdentity().Instance, "https://" + strings.Repeat("a.", 122) + "a"} {
+				t.Run(fmt.Sprintf("domain=%d/provenance=%d/instance=%d", domain, provenance, len(instance)), func(t *testing.T) {
+					raw, keys := signedGolden(t, domain, provenance)
+					// Change the precomputed fixture's instance and re-sign independently.
+					extended := append(bytes.Clone(raw[:32]), []byte(instance)...)
+					extended = append(extended, raw[32+len(goldenIdentity().Instance):]...)
+					binary.BigEndian.PutUint16(extended[30:32], uint16(len(instance)))
+					raw = resign(t, goldenKey(), extended)
 
-// TestParse_ShortTails exercises mid-structure bounds failures: buffers
-// that pass the minimum-length and header checks but end inside a later
-// fixed-size field. The instance length is chosen per buffer so each
-// truncation point lands in a different grab.
-func TestParse_ShortTails(t *testing.T) {
-	build := func(instLen, total int) []byte {
-		b := make([]byte, total)
-		copy(b, magic[:])
-		b[4] = versionV1
-		b[5] = byte(DomainBound)
-		binary.BigEndian.PutUint16(b[30:32], uint16(instLen))
-		for i := 32; i < 32+instLen && i < total; i++ {
-			b[i] = 'x'
+					parsed, err := Parse(raw)
+					require.NoError(t, err, "complete envelope must parse")
+					assert.Equal(t, raw, parsed.Marshal())
+					expected := goldenIdentity()
+					expected.Instance = instance
+					outcome := OutcomeAdmitted
+					if domain == DomainPending {
+						outcome = OutcomePending
+					}
+					require.Equal(t, outcome, Admit(expected, keys, raw).Outcome)
+
+					for n := 0; n < len(raw); n++ {
+						parsed, err := Parse(raw[:n])
+						require.ErrorIs(t, err, errMalformed, "truncation to %d bytes", n)
+						assert.Nil(t, parsed)
+						assert.Equal(t, Result{Outcome: OutcomeFallback, Reason: ReasonMalformed},
+							Admit(expected, keys, raw[:n]), "truncation to %d bytes grants nothing", n)
+					}
+				})
+			}
 		}
-		return b
 	}
-	// Instance field overruns the buffer.
-	_, err := Parse(build(253, 150))
-	assert.Error(t, err)
-	// Container field overruns.
-	_, err = Parse(build(100, 135))
-	assert.Error(t, err)
-	// Entity field overruns.
-	_, err = Parse(build(100, 143))
-	assert.Error(t, err)
-	// Trace field overruns.
-	_, err = Parse(build(100, 151))
-	assert.Error(t, err)
-	// Span field overruns.
-	_, err = Parse(build(100, 159))
-	assert.Error(t, err)
-	// Provenance kind byte overruns.
-	_, err = Parse(build(100, 167))
-	assert.Error(t, err)
-	// Signature region overruns (nonce fits, 64-byte signature does not).
-	_, err = Parse(build(100, 183))
-	assert.Error(t, err)
 }
 
 func FuzzParse(f *testing.F) {

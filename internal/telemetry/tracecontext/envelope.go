@@ -241,10 +241,7 @@ func (e *Envelope) Sign(key ed25519.PrivateKey) error {
 	if err := e.checkConsistency(); err != nil {
 		return err
 	}
-	pub, ok := key.Public().(ed25519.PublicKey)
-	if !ok {
-		return errors.New("tracecontext: signing key has no Ed25519 public half")
-	}
+	pub := key.Public().(ed25519.PublicKey)
 	e.KeyID = KeyID(pub)
 	copy(e.Signature[:], ed25519.Sign(key, e.payload()))
 	return nil
@@ -280,7 +277,7 @@ func Parse(b []byte) (*Envelope, error) {
 		return nil, fmt.Errorf("%w: domain %#02x", errMalformed, b[5])
 	}
 
-	off := 6
+	off := 32
 	grab := func(n int) ([]byte, error) {
 		if off+n > len(b) {
 			return nil, fmt.Errorf("%w: truncated at %d", errMalformed, off)
@@ -291,25 +288,14 @@ func Parse(b []byte) (*Envelope, error) {
 	}
 
 	e := &Envelope{Domain: domain}
-	p, err := grab(8)
-	if err != nil {
-		return nil, err
-	}
-	copy(e.KeyID[:], p)
-	p, err = grab(16)
-	if err != nil {
-		return nil, err
-	}
-	copy(e.Installation[:], p)
-	p, err = grab(2)
-	if err != nil {
-		return nil, err
-	}
-	instLen := int(binary.BigEndian.Uint16(p))
+	// The minimum-length check covers the fixed 32-byte header.
+	copy(e.KeyID[:], b[6:14])
+	copy(e.Installation[:], b[14:30])
+	instLen := int(binary.BigEndian.Uint16(b[30:32]))
 	if instLen < 1 || instLen > 253 {
 		return nil, fmt.Errorf("%w: instance length %d", errMalformed, instLen)
 	}
-	p, err = grab(instLen)
+	p, err := grab(instLen)
 	if err != nil {
 		return nil, err
 	}
