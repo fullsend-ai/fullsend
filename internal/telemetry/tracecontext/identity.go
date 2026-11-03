@@ -47,9 +47,9 @@ type Identity struct {
 	// with the signing key pair. It is authenticated in envelopes but
 	// deliberately excluded from fallback derivation, per ADR 0154.
 	Installation [16]byte
-	// Instance is the normalized forge web base URL: lowercase
-	// scheme://host with no path and no trailing slash. Use
-	// NormalizeInstance to build it.
+	// Instance is the normalized forge web base URL: lowercase scheme://host
+	// with its escaped, case-sensitive deployment prefix and no trailing slash.
+	// Use NormalizeInstance to build it from trusted configuration.
 	Instance string
 	// Container is the immutable repository or project database ID.
 	Container int64
@@ -124,10 +124,11 @@ func nonzeroFallback(fb Fallback) Fallback {
 }
 
 // NormalizeInstance canonicalizes a forge web base URL to the D01 instance
-// form: lowercase scheme://host with no path, query, fragment, or user
-// info. Only http and https are accepted; a bare "/" path is tolerated and
-// stripped. All identity and envelope construction must use the normalized
-// form so independent launches converge.
+// form: lowercase scheme://host with an escaped, case-sensitive deployment
+// prefix and no trailing slashes, query, fragment, or user info. Only http
+// and https are accepted. Path segments and escape spelling are preserved
+// so distinct deployments cannot alias. All identity and envelope construction
+// must use the normalized form so independent launches converge.
 func NormalizeInstance(raw string) (string, error) {
 	if !utf8.ValidString(raw) {
 		return "", errors.New("tracecontext: instance must be valid UTF-8")
@@ -140,16 +141,16 @@ func NormalizeInstance(raw string) (string, error) {
 		return "", errors.New("tracecontext: instance URL needs a scheme and host")
 	}
 	if u.User != nil || strings.ContainsAny(raw, "?#") {
-		return "", errors.New("tracecontext: instance URL must be a bare scheme://host")
+		return "", errors.New("tracecontext: instance URL must not carry user info, query, or fragment")
 	}
-	if u.Path != "" && u.Path != "/" {
-		return "", errors.New("tracecontext: instance URL must not carry a path")
+	if !utf8.ValidString(u.Path) || strings.ContainsRune(u.Path, '\x00') {
+		return "", errors.New("tracecontext: instance path must be valid UTF-8 without NUL")
 	}
 	scheme := strings.ToLower(u.Scheme)
 	if scheme != "http" && scheme != "https" {
 		return "", fmt.Errorf("tracecontext: unsupported instance scheme %q", u.Scheme)
 	}
-	normalized := scheme + "://" + strings.ToLower(u.Host)
+	normalized := scheme + "://" + strings.ToLower(u.Host) + strings.TrimRight(u.EscapedPath(), "/")
 	if len(normalized) > 253 {
 		return "", errors.New("tracecontext: instance must be at most 253 bytes")
 	}

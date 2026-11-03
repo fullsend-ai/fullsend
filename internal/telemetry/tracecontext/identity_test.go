@@ -240,7 +240,7 @@ func TestDeriveFallback_IdenticalAcrossProcesses(t *testing.T) {
 }
 
 // TestNormalizeInstance covers the D01 instance form: lowercase
-// scheme://host, no path, query, fragment, or user info.
+// scheme://host with a deployment prefix, no query, fragment, or user info.
 func TestNormalizeInstance(t *testing.T) {
 	cases := []struct {
 		name string
@@ -254,6 +254,11 @@ func TestNormalizeInstance(t *testing.T) {
 		{"uppercase host", "https://GitHub.com", "https://github.com"},
 		{"uppercase scheme", "HTTPS://github.com", "https://github.com"},
 		{"trailing slash", "https://github.com/", "https://github.com"},
+		{"gitlab prefix", "https://GitLab.example.com/gitlab/", "https://gitlab.example.com/gitlab"},
+		{"nested case-sensitive prefix", "https://gitlab.example.com/Services/GitLab///", "https://gitlab.example.com/Services/GitLab"},
+		{"escaped prefix", "https://gitlab.example.com/a%2Fb/", "https://gitlab.example.com/a%2Fb"},
+		{"unicode prefix", "https://gitlab.example.com/café/", "https://gitlab.example.com/caf%C3%A9"},
+		{"maximum prefix", "https://example.com/" + strings.Repeat("a", 233), "https://example.com/" + strings.Repeat("a", 233)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -268,7 +273,8 @@ func TestNormalizeInstance_Rejects(t *testing.T) {
 	for _, raw := range []string{
 		"",
 		"://missing-scheme",
-		"https://github.com/owner/repo",
+		"https://github.com/%00",
+		"https://github.com/%ff",
 		"https://user:passgithub.com",
 		"https://github.com?query=1",
 		"https://github.com#fragment",
@@ -277,6 +283,7 @@ func TestNormalizeInstance_Rejects(t *testing.T) {
 		"https://:443",
 		"ftp://github.com",
 		"https://" + strings.Repeat("a", 246),
+		"https://example.com/" + strings.Repeat("a", 234),
 		"https://\xff.example",
 	} {
 		_, err := NormalizeInstance(raw)
@@ -294,6 +301,7 @@ func TestDeriveFallback_FixedVectors(t *testing.T) {
 		{v01Identity(), "002166756c6c73656e642e7472616365636f6e746578742e6964656e746974792e7631001268747470733a2f2f6769746875622e636f6d00000000105add9f01000000009328a1a2", "c9bdb0e38247ebbe2e0f1039250c32d4", "892a346c55356aca"},
 		{Identity{Instance: "https://gitlab.com", Container: 101, Kind: KindChangeProposal, Entity: 555}, "002166756c6c73656e642e7472616365636f6e746578742e6964656e746974792e7631001268747470733a2f2f6769746c61622e636f6d000000000000006502000000000000022b", "407b66d9453075850f3ee7ef31d6ff1e", "a39491edef0440ae"},
 		{Identity{Instance: "https://acme.atlassian.net", Container: 10000, Kind: KindWorkItem, Entity: 10100}, "002166756c6c73656e642e7472616365636f6e746578742e6964656e746974792e7631001a68747470733a2f2f61636d652e61746c61737369616e2e6e65740000000000002710010000000000002774", "535e9f2c6d8bd8a814edd68dceb60e9a", "7e00bd92068701ac"},
+		{Identity{Instance: "https://gitlab.example.com/gitlab", Container: 101, Kind: KindChangeProposal, Entity: 555}, "002166756c6c73656e642e7472616365636f6e746578742e6964656e746974792e7631002168747470733a2f2f6769746c61622e6578616d706c652e636f6d2f6769746c6162000000000000006502000000000000022b", "71c6f9ad9a13f7244356f839e29687fa", "8f2d2a176bde1f88"},
 	} {
 		t.Run(tc.id.Instance, func(t *testing.T) {
 			digest := sha256.Sum256(mustHex(t, tc.preimage))
@@ -370,4 +378,17 @@ func TestDeriveFallback_InstancesDifferByHost(t *testing.T) {
 	fb, ok := DeriveFallback(b)
 	require.True(t, ok)
 	assert.False(t, bytes.Equal(fa.TraceID[:], fb.TraceID[:]))
+}
+
+func TestDeriveFallback_DeploymentPrefixesStayDistinct(t *testing.T) {
+	t.Parallel()
+	seen := map[Fallback]bool{}
+	for _, prefix := range []string{"", "/gitlab", "/GitLab", "/other/gitlab", "/a%2Fb", "/a/b"} {
+		id := v01Identity()
+		id.Instance = "https://gitlab.example.com" + prefix
+		fb, ok := DeriveFallback(id)
+		require.True(t, ok, id.Instance)
+		assert.False(t, seen[fb], "deployment prefixes must not alias: %s", prefix)
+		seen[fb] = true
+	}
 }

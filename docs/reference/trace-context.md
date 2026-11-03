@@ -28,12 +28,22 @@ components.
 | Entity kind | `work_item` (issue), `change_proposal` (PR) | `work_item` (issue), `change_proposal` (MR) | `work_item` (issue; Jira has no change proposal) |
 | Entity | issue or PR REST `id`; PR GraphQL `fullDatabaseId` (`BigInt`) | issue or MR database `id` (not the IID) | issue `id` |
 
-The instance string is the normalized base URL: lowercase
-`scheme://host`, using `http` or `https`, at most 253 UTF-8 bytes, no path or
-trailing slash. `NormalizeInstance` builds it (accepting and removing a bare
-`/`) and rejects URLs with a longer path, query, fragment, user info, or
-missing host. Identity resolution, signing, and parsing require the already
-canonical value; they never silently rewrite an authenticated field.
+The instance string is the normalized, trusted deployment base URL: lowercase
+`scheme://host`, using `http` or `https`, followed by the case-sensitive,
+URL-escaped deployment path prefix, with trailing slashes removed. For
+example, `https://GitLab.example.com/gitlab/` becomes
+`https://gitlab.example.com/gitlab`; it is distinct from both the root
+installation and `/GitLab`. Path segments and existing escape spelling are
+preserved, never cleaned or decoded into separators. Use the same configured
+deployment URL on every launch, rather than an entity or API URL.
+
+`NormalizeInstance` rejects queries, fragments, user info, missing hosts,
+invalid UTF-8 or NUL in the decoded path, and normalized URLs over 253 bytes
+(including the escaped prefix). Identity resolution, signing, and parsing
+require the already canonical value; they never silently rewrite an
+authenticated field. Root-instance vectors, wire layout, and size limits
+are unchanged; prefixed deployments use the same v1 length-delimited field
+and fallback derivation with the full normalized instance bytes.
 
 Jira issue reads expose the project ID as `tracker.Issue.ContainerID`; search
 requests include `project`. Missing or invalid project IDs stay zero
@@ -206,7 +216,7 @@ derive a fallback or guess.
 | `Identity` | The immutable binding tuple |
 | `Identity.Resolved` | Whether forge-side identity components are present |
 | `DeriveFallback` | The v1 deterministic fallback context |
-| `NormalizeInstance` | Canonical `scheme://host` instance form |
+| `NormalizeInstance` | Canonical deployment base URL, including its path prefix |
 | `Envelope` | A decoded v1 envelope or pending marker |
 | `Envelope.Sign` | Validate and sign with an Ed25519 private key (host-side only) |
 | `Envelope.Marshal` | Canonical wire bytes |

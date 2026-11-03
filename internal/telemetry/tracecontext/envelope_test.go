@@ -302,7 +302,8 @@ func TestAdmit_MalformedVerificationKeys(t *testing.T) {
 func TestCanonicalInstanceAtEveryBoundary(t *testing.T) {
 	for _, instance := range []string{
 		"not-a-url", "https://GitHub.com", "HTTPS://github.com", "https://github.com/",
-		"https://github.com/api", "https://github.com?", "https://github.com#",
+		"https://gitlab.example.com/gitlab/", "https://github.com?", "https://github.com#",
+		"https://gitlab.example.com/café", "https://gitlab.example.com/%00", "https://gitlab.example.com/%ff",
 		"https://user@github.com", "ftp://github.com", "https://:443",
 		"https://" + strings.Repeat("a", 246), "https://\xff.example",
 	} {
@@ -330,6 +331,36 @@ func TestCanonicalInstanceAtEveryBoundary(t *testing.T) {
 			_, keys := goldenKeys(t)
 			assert.Equal(t, Result{Outcome: OutcomeFallback, Reason: ReasonMalformed}, Admit(id, keys, mutated))
 		})
+	}
+}
+
+func TestEnvelope_DeploymentPrefixBinding(t *testing.T) {
+	t.Parallel()
+	key, keys := goldenKeys(t)
+	for _, domain := range []Domain{DomainBound, DomainPending} {
+		raw, _ := signedGolden(t, domain, ProvenanceNone)
+		instance := "https://gitlab.example.com/gitlab"
+		// Build the prefixed fixture independently of production validation.
+		raw = append(append(bytes.Clone(raw[:32]), []byte(instance)...), raw[50:]...)
+		binary.BigEndian.PutUint16(raw[30:32], uint16(len(instance)))
+		raw = resign(t, key, raw)
+		env, err := Parse(raw)
+		require.NoError(t, err)
+		assert.Equal(t, instance, env.Instance)
+		require.NoError(t, env.Sign(key))
+		assert.Equal(t, raw, env.Marshal())
+
+		id := goldenIdentity()
+		id.Instance = instance
+		want := OutcomeAdmitted
+		if domain == DomainPending {
+			want = OutcomePending
+		}
+		assert.Equal(t, want, Admit(id, keys, raw).Outcome)
+		for _, other := range []string{"https://gitlab.example.com", "https://gitlab.example.com/other", "https://gitlab.example.com/GitLab"} {
+			id.Instance = other
+			assert.Equal(t, Result{Outcome: OutcomeFallback, Reason: ReasonBindingMismatch}, Admit(id, keys, raw))
+		}
 	}
 }
 
