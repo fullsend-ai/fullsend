@@ -62,9 +62,7 @@ func TestOpenCodeNativeHooks(t *testing.T) {
 
 func openCodeHookProbeDeadline(scenario string) time.Duration {
 	if scenario == "repo-config-isolation" {
-		// This case launches through the runner's full .env handling prelude,
-		// which can take longer than the direct probe on arm64 CI runners.
-		return 20 * time.Second
+		return 10 * time.Second
 	}
 	return 6 * time.Second
 }
@@ -355,14 +353,14 @@ func runOpenCodeHookProbe(t *testing.T, binary, version, scenario string, deadli
 	args = append(args, "FULLSEND_NATIVE_HOOK_PARENT: execute the scripted probe.")
 	cmd := exec.CommandContext(ctx, binary, args...)
 	if configIsolation {
-		// Exercise the runner's .env drop/restore path before starting the real
-		// pinned runtime, including an inherited plugin-disable flag.
+		// Exercise the runner's .env drop/restore and SDK cache-restore path
+		// before starting the real pinned runtime.
 		trusted := openCodeTrustedEnv{ConfigContent: string(configJSON)}
 		launch := []string{shellQuote(binary)}
 		for _, arg := range args {
 			launch = append(launch, shellQuote(arg))
 		}
-		cmd = exec.CommandContext(ctx, "/bin/sh", "-c", openCodeTrustedEnvPin(trusted)+" && "+envDataTrustedPin()+" && "+envDataLoad(filepath.Join(work, ".env"), openCodeEnvDataDrop...)+" && "+openCodeTrustedEnvRestore()+" && exec "+strings.Join(launch, " "))
+		cmd = exec.CommandContext(ctx, "/bin/sh", "-c", openCodeTrustedEnvPin(trusted)+" && "+envDataTrustedPin()+" && "+envDataLoad(filepath.Join(work, ".env"), openCodeEnvDataDrop...)+" && "+openCodeTrustedEnvRestore()+" && "+(OpenCodeRuntime{}).openCodeSDKCacheRestore()+" && exec "+strings.Join(launch, " "))
 	}
 	cmd.Dir = work
 	// Do not inherit provider credentials, user plugins, or the harness config.
