@@ -26,6 +26,7 @@ for filter in "${filters[@]}"; do
     .github/scripts/install-openshell.sh \
     .github/scripts/openshell-version.sh \
     e2e/behaviour/features/playback.feature \
+    e2e/org-pool/setup-org.sh \
     internal/security/hooks/check.sh \
     internal/scaffold/fullsend-repo/template.yaml \
     internal/dispatch/gcf/mintsrc/go.mod \
