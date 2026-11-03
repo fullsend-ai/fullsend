@@ -331,8 +331,10 @@ flowchart TB
   default) and the run's effort. A mandatory dispatch hook admits only
   fresh-context spawns of registered roles after checking `hooks.json` and role
   files against runner-held digests, and denies V2 `send_message` and
-  `followup_task`. After each iteration, the runner checks spawns in the stream
-  or child rollouts, counting each child once, against hook admissions
+  `followup_task`. After each iteration, the runner compares aggregate spawn
+  and admission counts using the stream and child rollouts, counting each child
+  once. This is after-the-fact detection: unused admissions or missing/altered
+  rollouts can hide unauthorized spawns
   ([ADR 0126](ADRs/0126-fullsend-owned-codex-subagents.md),
   [ADR 0159](ADRs/0159-codex-subagents-on-collaboration-v2.md),
   [#6970](https://github.com/fullsend-ai/fullsend/issues/6970)); V2 delegation is

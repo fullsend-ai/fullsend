@@ -104,12 +104,13 @@ keeps its per-forge configuration path (a runner variable, or
 
 - V2 parents gain isolated review and retro contexts and incur child token
   usage, so the implementation is a breaking behavior change.
-- A V2 child on a V2 model retains collaboration tools despite the native
-  depth limit, making the hook the depth control with ADR 0126's documented
-  fail-open residuals.
-- V2 spawns emit no `exec --json` item, so admission checks rely on child
-  rollouts on disk, counting each child once and failing the run on an
-  unaccounted spawn.
+- For V2-model children, this decision accepts replacing V1's structural
+  removal of delegation tools with hook-only depth enforcement, including
+  ADR 0126's documented fail-open paths.
+- V2 spawns emit no `exec --json` item, so rollout reconciliation is
+  after-the-fact, best-effort detection: observed spawn counts exceeding
+  recorded admissions fail the run, but unused admissions or missing/altered
+  rollouts can conceal an unauthorized spawn.
 - Run totals continue to fold the last `token_usage_record` from each child's
   rollout on either collaboration version.
 - Every CLI bump must revalidate V2 hook names and namespace, fork and message
