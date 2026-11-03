@@ -46,7 +46,7 @@ func registerActorSteps(sc *godog.ScenarioContext) {
 		return ctx, whenActorOpensPullRequest(world.FromContext(ctx), actor, linked != "")
 	})
 	sc.Step(`^the write actor closes the pull request$`, func(ctx context.Context) (context.Context, error) {
-		return ctx, whenActorClosesPullRequest(world.FromContext(ctx))
+		return ctx, whenWriteActorClosesPullRequest(world.FromContext(ctx))
 	})
 	sc.Step(`^the (`+actorAlternation+`) posts "([^"]+)" on the pull request$`, func(ctx context.Context, actor, body string) (context.Context, error) {
 		return ctx, whenActorPostsPRComment(world.FromContext(ctx), actor, body)
@@ -188,9 +188,9 @@ func whenActorSubmitsReviewComment(w *world.World, actor string) error {
 		w.RepoOwner, w.RepoName, w.PRNumber, "COMMENT")
 }
 
-// whenActorClosesPullRequest closes the scenario PR using the write actor's
+// whenWriteActorClosesPullRequest closes the scenario PR using the write actor's
 // PAT, so the resulting webhook carries a collaborator with write access.
-func whenActorClosesPullRequest(w *world.World) error {
+func whenWriteActorClosesPullRequest(w *world.World) error {
 	if err := requireWriteActor(w); err != nil {
 		return err
 	}

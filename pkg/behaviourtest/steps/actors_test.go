@@ -232,16 +232,16 @@ func TestWhenActorClosesPullRequest(t *testing.T) {
 	t.Parallel()
 
 	w, drivers := actorWorld()
-	require.ErrorContains(t, whenActorClosesPullRequest(w), "no pull request opened")
+	require.ErrorContains(t, whenWriteActorClosesPullRequest(w), "no pull request opened")
 	assert.Empty(t, drivers[actorWrite].closedIssues)
 
 	w.PRNumber = 17
-	require.NoError(t, whenActorClosesPullRequest(w))
+	require.NoError(t, whenWriteActorClosesPullRequest(w))
 	assert.Equal(t, []int{17}, drivers[actorWrite].closedIssues)
 	assert.Empty(t, drivers["default"].closedIssues, "the write actor must close the PR")
 	assert.False(t, w.ScenarioStart.IsZero())
 
-	err := whenActorClosesPullRequest(&world.World{PRNumber: 17})
+	err := whenWriteActorClosesPullRequest(&world.World{PRNumber: 17})
 	require.ErrorContains(t, err, "TEST_ACTOR_WRITE_PAT not set")
 }
 
