@@ -52,6 +52,7 @@ repos:
         name: semgrep security scan (p/security-audit)
         entry: ./scripts/semgrep-scan
         language: system
+        verbose: true
         exclude: '(^|/)([^/]*_test\.go|tests?(/|$))|^\.semgrep/|^e2e/behaviour/(fixtures|results)/'
 
   - repo: https://github.com/zricethezav/gitleaks

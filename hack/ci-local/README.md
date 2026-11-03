@@ -215,8 +215,10 @@ worktrees never share one. Remove them all with
 
 The `lint` and `lint-all` targets skip `check-gateway-doc-configs` and
 `semgrep`, matching `lint.yml`: the gateway check and full Semgrep scan run in
-separate CI jobs. Pre-commit runs Semgrep on changed files of all types, except
-the test and fixture paths excluded in its hook configuration.
+separate CI jobs. The `semgrep` target runs the full fail-closed scan, and
+`ci-local ci` includes it. Pre-commit runs Semgrep on changed files of all
+types, except the test and fixture paths excluded in its hook configuration;
+warnings from skipped scans are visible even when the hook passes.
 
 Not covered: `behaviour-test` / `playback-test` (they need a real GitHub org,
 the OIDC mint and secrets) and `check-gateway-doc-configs` (it starts its own
