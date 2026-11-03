@@ -597,7 +597,7 @@ func BuildScaffoldFiles(cfg InstallConfig) ([]forge.TreeFile, error) {
 				// in `github setup --config`), rather than NewPerRepoConfig's
 				// full defaults. Layered accessors prefer the overlay over the
 				// base, so materializing default roles/allowed_remote_resources/
-				// create_issues here would silently shadow the preset's values.
+				// tracking here would silently shadow the preset's values.
 				// cfg.Roles is only non-empty when the caller explicitly
 				// requested roles; an unset Roles here lets the preset (or its own fallback defaults)
 				// take effect through the overlay -> base -> code-default chain.
@@ -613,7 +613,7 @@ func BuildScaffoldFiles(cfg InstallConfig) ([]forge.TreeFile, error) {
 				generated := config.NewPerRepoConfig(cfg.Roles, cfg.Owner+"/"+cfg.Repo)
 				if cfg.Forge == ForgeGitLab {
 					// GitHub upstream names are not destinations on the GitLab host.
-					generated.IssueCreationConfig().AllowTargets = config.AllowTargets{}
+					*generated.IssueTracking() = *config.DefaultIssueTracking(config.TrackingProviderGitLab)
 				}
 				if cfg.Runtime != "" {
 					generated.SetRuntime(cfg.Runtime)

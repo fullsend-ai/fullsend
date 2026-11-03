@@ -130,15 +130,13 @@ func (o ManagedConfig) Clone() ManagedConfig {
 	return ManagedConfig{cfg: clonePerRepo(o.cfg)}
 }
 
-// WithCreateIssuesRepos returns a copy of o whose create_issues allowlist
-// permits exactly the given repositories. It is how repos install records
-// the upstream cross-repo permissions on a manifest entry (#8218, #8504).
-// The receiver is not modified.
-func (o ManagedConfig) WithCreateIssuesRepos(repos []string) ManagedConfig {
+// WithIssueTracking returns a copy of o whose tracking mapping is a copy
+// of t. It is how repos install records the upstream cross-repo
+// permissions on a manifest entry (#8218, #8504). The receiver is not
+// modified.
+func (o ManagedConfig) WithIssueTracking(t *TrackingConfig) ManagedConfig {
 	cp := o.clone()
-	cp.CreateIssues = &CreateIssuesConfig{
-		AllowTargets: AllowTargets{Repos: cloneStringSlice(repos)},
-	}
+	cp.Tracking = cloneTracking(t)
 	return ManagedConfig{cfg: cp}
 }
 
@@ -390,14 +388,8 @@ func clonePerRepo(src *perRepoConfig) *perRepoConfig {
 	if src.AllowedRemoteResources != nil {
 		out.AllowedRemoteResources = cloneStringSlice(src.AllowedRemoteResources)
 	}
-	if src.CreateIssues != nil {
-		cp := *src.CreateIssues
-		cp.AllowTargets = AllowTargets{
-			Orgs:  append([]string(nil), src.CreateIssues.AllowTargets.Orgs...),
-			Repos: append([]string(nil), src.CreateIssues.AllowTargets.Repos...),
-		}
-		out.CreateIssues = &cp
-	}
+	out.Tracking = cloneTracking(src.Tracking)
+	out.legacyCreateIssues = src.legacyCreateIssues
 	if src.Authorization != nil {
 		out.Authorization = cloneAuthorizationSlice(src.Authorization)
 	}
@@ -463,13 +455,11 @@ func applyManagedLayer(out, child *perRepoConfig) {
 		}
 		out.AllowedRemoteResources = cloneStringSlice(tmp.AllowedResources())
 	}
-	if child.CreateIssues != nil {
-		cp := *child.CreateIssues
-		cp.AllowTargets = AllowTargets{
-			Orgs:  append([]string(nil), child.CreateIssues.AllowTargets.Orgs...),
-			Repos: append([]string(nil), child.CreateIssues.AllowTargets.Repos...),
-		}
-		out.CreateIssues = &cp
+	if child.Tracking != nil {
+		out.Tracking = cloneTracking(child.Tracking)
+	}
+	if child.legacyCreateIssues {
+		out.legacyCreateIssues = true
 	}
 	if child.Authorization != nil {
 		out.Authorization = cloneAuthorizationSlice(child.Authorization)

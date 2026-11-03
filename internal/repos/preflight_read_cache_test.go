@@ -225,8 +225,8 @@ func repoStates(t *testing.T) map[string]map[string][]byte {
 	}
 }
 
-// An explicit create_issues setting or a declared preset rules out the
-// initial create_issues writeback, so EnsureManagedConfigDefaults decides
+// An explicit tracking setting or a declared preset rules out the
+// initial tracking writeback, so EnsureManagedConfigDefaults decides
 // without any forge read (#8501). Before #8501 the same repositories each
 // cost an overlay read, a base read and a full component probe (workflow
 // files, thin callers, variables and secrets) just to discover that no
@@ -234,11 +234,11 @@ func repoStates(t *testing.T) map[string]map[string][]byte {
 func TestEnsureManagedConfigDefaults_NoForgeReadsWhenNoDefaultPossible(t *testing.T) {
 	presetPath := writePresetFile(t, testPresetYAML)
 	shapes := map[string]func(t *testing.T, m *Manifest){
-		"explicit create_issues": func(t *testing.T, m *Manifest) {
-			m.GitHub.Repos[0].Config = mustManagedConfig(t, "create_issues:\n  allow_targets:\n    repos: [acme/other]\n")
+		"explicit tracking": func(t *testing.T, m *Manifest) {
+			m.GitHub.Repos[0].Config = mustManagedConfig(t, "tracking:\n  github:\n    allowed_targets:\n      repos: [acme/other]\n")
 		},
-		"explicit defaults create_issues": func(t *testing.T, m *Manifest) {
-			m.Defaults.Config = mustManagedConfig(t, "create_issues:\n  allow_targets:\n    orgs: [acme]\n")
+		"explicit defaults tracking": func(t *testing.T, m *Manifest) {
+			m.Defaults.Config = mustManagedConfig(t, "tracking:\n  github:\n    allowed_targets:\n      orgs: [acme]\n")
 		},
 		"declared preset": func(_ *testing.T, m *Manifest) {
 			m.Defaults.ConfigBase.Source = presetPath
@@ -262,7 +262,7 @@ func TestEnsureManagedConfigDefaults_NoForgeReadsWhenNoDefaultPossible(t *testin
 	}
 }
 
-// Without a preset or an explicit create_issues setting the decision still
+// Without a preset or an explicit tracking setting the decision still
 // reads the layers and probes components, and only a pristine repository
 // gains the upstream issue target.
 func TestEnsureManagedConfigDefaults_ProbesOnlyWhenDefaultPossible(t *testing.T) {
@@ -313,13 +313,13 @@ func runInstallPreflights(ctx context.Context, m *Manifest, clients ForgeClientF
 }
 
 // behaviourTestManifest is the entry shape the behaviour-test install
-// driver generates for `repos install` (#8483) with create_issues declared.
+// driver generates for `repos install` (#8483) with tracking declared.
 func behaviourTestManifest(t *testing.T) *Manifest {
 	t.Helper()
 	m := newConvergeManifest("acme/api")
 	m.GitHub.MintURL = ""
 	m.GitHub.Repos[0].Config = mustManagedConfig(t, "runtime: dummy\nmint_url: https://mint.example.com\n"+
-		"create_issues:\n  allow_targets:\n    repos: [fullsend-ai/fullsend]\n")
+		"tracking:\n  github:\n    allowed_targets:\n      repos: [fullsend-ai/fullsend]\n")
 	return m
 }
 
@@ -327,7 +327,7 @@ func behaviourTestManifest(t *testing.T) *Manifest {
 // repository-state read is made once across them (#8501). Request counts
 // for one fresh GitHub repository are recorded below for the pristine
 // no-preset shape that needs the initial writeback and for the #8483
-// behaviour-test shape with create_issues declared. The 9 distinct reads
+// behaviour-test shape with tracking declared. The 9 distinct reads
 // are the overlay, the base, two shim workflow paths, one thin caller, two
 // variables and two secrets. Before #8501 both shapes made 21 reads: the
 // overlay 4 times, the base 3 times and every probed component twice.
@@ -347,7 +347,7 @@ func TestInstallPreflights_SharedCacheReadsEachStateOnce(t *testing.T) {
 	}{
 		{name: "pristine no-preset install", manifest: func(*testing.T) *Manifest { return newConvergeManifest("acme/api") },
 			before: 21, uncached: 21, cached: 9, writeback: true},
-		{name: "behaviour-test manifest with create_issues", manifest: behaviourTestManifest,
+		{name: "behaviour-test manifest with tracking", manifest: behaviourTestManifest,
 			before: 21, uncached: 12, cached: 9},
 	}
 	for _, tc := range cases {
@@ -393,7 +393,7 @@ func TestInstallPreflights_SharedCacheKeepsRejections(t *testing.T) {
 		}, "kill_switch"},
 		{"infrastructure conflict", func(t *testing.T, m *Manifest, _ *forge.FakeClient) {
 			m.GitHub.Repos[0].Config = mustManagedConfig(t, "mint_url: https://other.example.com\n"+
-				"create_issues:\n  allow_targets:\n    repos: [acme/other]\n")
+				"tracking:\n  github:\n    allowed_targets:\n      repos: [acme/other]\n")
 			m.GitHub.Repos[0].MintURL = "https://mint.example.com"
 		}, "mint URL conflict"},
 	}

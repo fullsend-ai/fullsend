@@ -114,10 +114,10 @@ sparse file, `repos status` reports whole-file differences as drift, and
 convergence rewrites it. On a first install with no overlay yet, install records
 its one install-time default in the repository's `repos.yaml` entry before
 rendering, so the manifest stays the source of truth: with no `config_base`
-preset and no explicit `create_issues` declaration on GitHub it writes
-`config.create_issues.allow_targets.repos: [fullsend-ai/fullsend,
+preset and no explicit `tracking` declaration on GitHub it writes
+`config.tracking.github.allowed_targets.repos: [fullsend-ai/fullsend,
 fullsend-ai/agents]`; on GitLab it writes an explicit empty policy,
-`config.create_issues.allow_targets: {}` (the target repository is always
+`config.tracking.gitlab.allowed_targets: {}` (the target repository is always
 allowed and is not listed). A glob-covered repository gets its own entry copied
 from the glob for this writeback; `--dry-run` shows the change without writing.
 If the manifest is an HTTPS URL or cannot be written, install fails before any
@@ -128,7 +128,8 @@ configuration](../guides/getting-started/repo-management.md#managed-configuratio
 Before any write of a managed file, install and converge also compare the
 candidate and current effective configurations through the full runtime accessor
 chain (`kill_switch`, `roles`, `allowed_remote_resources`, agent `enabled:
-false` suppressions, `create_issues.allow_targets`, `inference.gateway.url`, and
+false` suppressions, the selected provider's
+`tracking.<provider>.allowed_targets`, `inference.gateway.url`, and
 `inference.gateway.audience`). A less-restrictive candidate is rejected unless
 the manifest explicitly declares that relaxation; a change to either
 `inference.gateway` field, including a preset introducing a gateway where an
@@ -138,7 +139,7 @@ preset to a repository that has no base file is compared the same way (an absent
 base is an empty layer), even when its managed overlay is unchanged. A pristine
 first install (no Fullsend installation, no overlay and no base) has no current
 effective configuration to relax, so it inherits permissions such as
-`create_issues` targets from its declared preset without a safety rejection. A
+`tracking` targets from its declared preset without a safety rejection. A
 fresh install that adoption or the safety gate blocks stops before any forge
 file, variable, secret or PR/MR write, in a dry run and a live run alike, and
 fails with an error.
@@ -182,7 +183,7 @@ A concrete repository named on the command line that a glob entry covers is inst
 
 Credentials are required only for the forges of the selected repos: a GitLab-only selection does not need `GH_TOKEN`, and a GitHub-only selection does not need `GITLAB_TOKEN`. An unfiltered run still requires credentials for every forge present in the manifest.
 
-Install writes to `repos.yaml` itself in only two cases: the first-install `create_issues` writeback described above, and, after a first install, the CLI's release written to `github.fullsend_ref` or `gitlab.fullsend_ref` when that key is unset. `--dry-run` writes neither.
+Install writes to `repos.yaml` itself in only two cases: the first-install `tracking` writeback described above, and, after a first install, the CLI's release written to `github.fullsend_ref` or `gitlab.fullsend_ref` when that key is unset. `--dry-run` writes neither.
 
 On GitHub, a `fullsend_ref` pinned to an older release needs the CLI from that release: this CLI's shim passes `FULLSEND_GITHUB_RUNNER_SECRETS` ([ADR 0136](../ADRs/0136-runner-secrets-through-one-stored-secret.md)), and GitHub rejects the call when the older reusable workflow does not declare it.
 

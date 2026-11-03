@@ -35,8 +35,8 @@ func EffectiveYAML(r PerRepoConfigReader) ([]byte, error) {
 	if resources := r.AllowedResources(); resources != nil {
 		out["allowed_remote_resources"] = resources
 	}
-	if ci := r.IssueCreationConfig(); ci != nil {
-		out["create_issues"] = ci
+	if t := r.IssueTracking(); t != nil {
+		out["tracking"] = t
 	}
 	if agents := r.AgentEntries(); len(agents) > 0 {
 		out["agents"] = agents

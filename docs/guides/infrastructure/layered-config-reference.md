@@ -156,7 +156,7 @@ the overlay → base → code defaults chain.
 | `inference.gateway.messages_auth_header` | `string` (nested) | Scalar override | `""` (empty; means `authorization`) |
 | `inference.gateway.models` / `inference.gateway.models_file` | `map` / `string` (nested) | Model list replaced as one unit | `nil` (none) |
 | `models.aliases` | `map[string]string` (nested) | Per-key merge | `nil` (fleet defaults) |
-| `create_issues` | `*CreateIssuesConfig` | Replace whole object if set | `nil` |
+| `tracking` | `*TrackingConfig` | Replace whole object if set | `nil` |
 | `status_notifications` | `*StatusNotificationConfig` | Replace whole object if set | `nil` |
 | `authorization` | `[]AuthorizationProvider` | Overlay only (not layered) | `nil` |
 
@@ -481,20 +481,22 @@ allowed_remote_resources: []
 # Effective: [] — no remote resources allowed
 ```
 
-### `create_issues` — replace whole object if set
+### `tracking` — replace whole object if set
 
-The `create_issues` field uses replace-if-set semantics for the entire
+The `tracking` field uses replace-if-set semantics for the entire
 object:
 
 - `nil` (key omitted) — falls through to parent, then to code default
   `nil`.
 - Non-nil — replaces the parent value entirely. There is no merge of
-  `allow_targets` lists across layers.
+  `allowed_targets` lists across layers, and an overlay that selects a
+  different provider (for example `jira` over a base `github`) replaces the
+  base's provider, so layers never combine two providers.
 
 ### `status_notifications` — replace whole object if set
 
 The `status_notifications` field uses the same replace-if-set semantics as
-`create_issues`:
+`tracking`:
 
 - `nil` (key omitted) — falls through to parent, then to code default
   `nil`.
@@ -570,7 +572,7 @@ compiled-in defaults apply:
 | `inference.wif_audience` | `""` (empty — `aud: "fullsend"`) |
 | `inference.service_account` | `""` (empty — no impersonation) |
 | `models.aliases` | `nil` (fleet alias table compiled into the runtimes) |
-| `create_issues` | `nil` |
+| `tracking` | `nil` |
 | `status_notifications` | `nil` |
 | `authorization` | `nil` |
 

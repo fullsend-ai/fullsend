@@ -596,7 +596,7 @@ func TestBuildScaffoldFiles_GitLabIssueTargets(t *testing.T) {
 	for _, file := range files {
 		if file.Path == ".fullsend/config.yaml" {
 			body := string(file.Content)
-			if !strings.Contains(body, "allow_targets: {}") || strings.Contains(body, "- fullsend-ai/") {
+			if !strings.Contains(body, "tracking:\n    gitlab:\n        allowed_targets: {}") || strings.Contains(body, "- fullsend-ai/") {
 				t.Fatalf("GitLab config should explicitly allow no cross-project targets:\n%s", body)
 			}
 			return

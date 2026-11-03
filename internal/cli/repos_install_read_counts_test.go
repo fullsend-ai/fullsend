@@ -72,7 +72,7 @@ func mustReadFile(t *testing.T, path string) string {
 }
 
 // behaviourTestManifestYAML is the entry shape the behaviour-test install
-// driver generates for `repos install` (#8483), with create_issues declared.
+// driver generates for `repos install` (#8483), with tracking declared.
 const behaviourTestManifestYAML = `version: 1
 github:
   repos:
@@ -83,9 +83,10 @@ github:
       config:
         runtime: dummy
         mint_url: https://mint.example.com
-        create_issues:
-          allow_targets:
-            repos: [fullsend-ai/fullsend]
+        tracking:
+          github:
+            allowed_targets:
+              repos: [fullsend-ai/fullsend]
 `
 
 // The read-only preflights of `repos install` share one read cache, so a
@@ -113,7 +114,7 @@ func TestRunReposInstall_PreflightReadsOnceConvergenceRechecks(t *testing.T) {
 		manifest string
 		dryRun   bool
 		// writeback is whether the install persists the initial
-		// create_issues default (a manifest write before convergence).
+		// tracking default (a manifest write before convergence).
 		writeback bool
 		total     int
 	}{

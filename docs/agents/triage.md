@@ -76,18 +76,22 @@ The `issue-labels` skill may also apply contextual labels (e.g., `area/api`,
 
 The triage agent can create prerequisite issues in other repositories when it
 identifies upstream dependencies that don't have tracking issues yet. This is
-controlled by the `create_issues` section in `config.yaml`:
+controlled by the selected provider's `allowed_targets` under `tracking` in
+`config.yaml` (see the
+[Config Reference](../reference/config-reference.md#tracking) for the GitLab
+and Jira shapes):
 
 ```yaml
-create_issues:
-  allow_targets:
-    orgs:
-      - my-org
-    repos:
-      - upstream-org/specific-repo
+tracking:
+  github:
+    allowed_targets:
+      orgs:
+        - my-org
+      repos:
+        - upstream-org/specific-repo
 ```
 
-**Defaults:** A fresh GitHub installation without a preset or explicit `create_issues`
+**Defaults:** A fresh GitHub installation without a preset or explicit `tracking`
 setting permits `fullsend-ai/fullsend` and `fullsend-ai/agents` as upstream
 targets. Fresh GitLab installations have an explicit empty cross-project
 allowlist; configure any additional projects on the GitLab host explicitly.
@@ -98,10 +102,10 @@ to add the agents repository explicitly.
 
 **When to expand the allowlist:** If your project depends on libraries or services
 in other GitHub orgs and you want the triage agent to automatically file
-prerequisite issues there, add those orgs or repos to `allow_targets`.
+prerequisite issues there, add those orgs or repos to `allowed_targets`.
 
 **When to restrict the allowlist:** If you don't want agents creating issues
-outside your org, remove entries. If `allow_targets` is empty, automatic
+outside your org, remove entries. If `allowed_targets` is empty, automatic
 prerequisite creation is disabled entirely — the agent will still identify
 the dependency and include a draft issue body in its comment for a human to
 file manually.

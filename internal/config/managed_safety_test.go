@@ -217,51 +217,103 @@ func TestCheckManagedSafetyGate_CustomAgentRemovalNotFlaggedAsRelaxation(t *test
 		"a disabled custom agent absent from the candidate was removed, not re-enabled")
 }
 
-func TestCheckManagedSafetyGate_CreateIssuesImplicitWidenViaParent(t *testing.T) {
-	base := "create_issues:\n  allow_targets:\n    orgs:\n      - acme\n      - other\n"
-	current := mustLayer(t, "create_issues:\n  allow_targets:\n    orgs:\n      - acme\n", base)
+func ghTracking(scopeKey string, values ...string) string {
+	out := "tracking:\n  github:\n    allowed_targets:\n      " + scopeKey + ":\n"
+	for _, v := range values {
+		out += "        - " + v + "\n"
+	}
+	return out
+}
+
+func glTracking(scopeKey string, values ...string) string {
+	out := "tracking:\n  gitlab:\n    allowed_targets:\n      " + scopeKey + ":\n"
+	for _, v := range values {
+		out += "        - " + v + "\n"
+	}
+	return out
+}
+
+func TestCheckManagedSafetyGate_TrackingImplicitWidenViaParent(t *testing.T) {
+	base := ghTracking("orgs", "acme", "other")
+	current := mustLayer(t, ghTracking("orgs", "acme"), base)
 	candidate := mustLayer(t, "", base)
 	got := CheckManagedSafetyGate(current, candidate)
 	require.Len(t, got, 1)
-	assert.Equal(t, "create_issues.allow_targets", got[0].Key)
+	assert.Equal(t, "tracking.github.allowed_targets", got[0].Key)
+	assert.Equal(t, "github: orgs=[acme] repos=unset", got[0].Current)
+	assert.Equal(t, "github: orgs=[acme, other] repos=unset", got[0].Candidate)
 }
 
-func TestCheckManagedSafetyGate_CreateIssuesExplicitWiden(t *testing.T) {
-	current := mustLayer(t, "create_issues:\n  allow_targets:\n    orgs:\n      - acme\n", "")
-	candidate := mustLayer(t, "create_issues:\n  allow_targets:\n    orgs:\n      - acme\n      - other\n", "")
+func TestCheckManagedSafetyGate_TrackingExplicitWiden(t *testing.T) {
+	current := mustLayer(t, ghTracking("orgs", "acme"), "")
+	candidate := mustLayer(t, ghTracking("orgs", "acme", "other"), "")
 	assert.Empty(t, CheckManagedSafetyGate(current, candidate))
 }
 
-func TestCheckManagedSafetyGate_CreateIssuesNarrowing(t *testing.T) {
-	current := mustLayer(t, "create_issues:\n  allow_targets:\n    orgs:\n      - acme\n      - other\n", "")
-	candidate := mustLayer(t, "create_issues:\n  allow_targets:\n    orgs:\n      - acme\n", "")
+func TestCheckManagedSafetyGate_TrackingNarrowing(t *testing.T) {
+	current := mustLayer(t, ghTracking("orgs", "acme", "other"), "")
+	candidate := mustLayer(t, ghTracking("orgs", "acme"), "")
 	assert.Empty(t, CheckManagedSafetyGate(current, candidate))
 }
 
-func TestCheckManagedSafetyGate_CreateIssuesOrgToCoveredRepoIsNarrowing(t *testing.T) {
-	currentBase := "create_issues:\n  allow_targets:\n    orgs:\n      - acme\n"
-	candidateBase := "create_issues:\n  allow_targets:\n    repos:\n      - acme/other\n"
-	current := mustLayer(t, "", currentBase)
-	candidate := mustLayer(t, "", candidateBase)
+func TestCheckManagedSafetyGate_TrackingOrgToCoveredRepoIsNarrowing(t *testing.T) {
+	current := mustLayer(t, "", ghTracking("orgs", "acme"))
+	candidate := mustLayer(t, "", ghTracking("repos", "acme/other"))
 	assert.Empty(t, CheckManagedSafetyGate(current, candidate),
 		"a repository under an already-allowed org admits nothing new")
 }
 
-func TestCheckManagedSafetyGate_CreateIssuesRepoOutsideCurrentOrgsWidens(t *testing.T) {
-	currentBase := "create_issues:\n  allow_targets:\n    orgs:\n      - acme\n"
-	candidateBase := "create_issues:\n  allow_targets:\n    repos:\n      - other/repo\n"
-	current := mustLayer(t, "", currentBase)
-	candidate := mustLayer(t, "", candidateBase)
+func TestCheckManagedSafetyGate_TrackingRepoOutsideCurrentOrgsWidens(t *testing.T) {
+	current := mustLayer(t, "", ghTracking("orgs", "acme"))
+	candidate := mustLayer(t, "", ghTracking("repos", "other/repo"))
 	got := CheckManagedSafetyGate(current, candidate)
 	require.Len(t, got, 1)
-	assert.Equal(t, "create_issues.allow_targets", got[0].Key)
+	assert.Equal(t, "tracking.github.allowed_targets", got[0].Key)
 }
 
-func TestCheckManagedSafetyGate_CreateIssuesDropToUnsetIsNarrowing(t *testing.T) {
-	current := mustLayer(t, "create_issues:\n  allow_targets:\n    orgs:\n      - acme\n", "")
+func TestCheckManagedSafetyGate_TrackingDropToUnsetIsNarrowing(t *testing.T) {
+	current := mustLayer(t, ghTracking("orgs", "acme"), "")
 	candidate := mustLayer(t, "", "")
 	assert.Empty(t, CheckManagedSafetyGate(current, candidate),
-		"omitting create_issues removes extra targets and is more restrictive")
+		"omitting tracking removes extra targets and is more restrictive")
+}
+
+func TestCheckManagedSafetyGate_TrackingGitLabSubgroupCovered(t *testing.T) {
+	current := mustLayer(t, "", glTracking("groups", "acme"))
+	candidate := mustLayer(t, "", glTracking("groups", "acme/sub"))
+	assert.Empty(t, CheckManagedSafetyGate(current, candidate),
+		"a subgroup of an already-allowed group admits nothing new")
+
+	candidate = mustLayer(t, "", glTracking("repos", "acme/sub/project"))
+	assert.Empty(t, CheckManagedSafetyGate(current, candidate),
+		"a project under an already-allowed group admits nothing new")
+
+	candidate = mustLayer(t, "", glTracking("groups", "acme-other"))
+	got := CheckManagedSafetyGate(current, candidate)
+	require.Len(t, got, 1, "a sibling group sharing a name prefix is not covered")
+	assert.Equal(t, "tracking.gitlab.allowed_targets", got[0].Key)
+}
+
+func TestCheckManagedSafetyGate_TrackingProviderSwitchWidens(t *testing.T) {
+	current := mustLayer(t, "", ghTracking("orgs", "acme"))
+	candidate := mustLayer(t, "", "tracking:\n  jira:\n    allowed_targets:\n      projects: [PROJ]\n")
+	got := CheckManagedSafetyGate(current, candidate)
+	require.Len(t, got, 1)
+	assert.Equal(t, "tracking.jira.allowed_targets", got[0].Key)
+	assert.Equal(t, "jira: projects=[PROJ]", got[0].Candidate)
+
+	empty := mustLayer(t, "", "tracking:\n  jira:\n    allowed_targets: {}\n")
+	assert.Empty(t, CheckManagedSafetyGate(current, empty),
+		"switching to a provider with no targets grants nothing")
+
+	jira := mustLayer(t, "", "tracking:\n  jira:\n    allowed_targets:\n      projects: [PROJ]\n")
+	assert.Empty(t, CheckManagedSafetyGate(jira, jira))
+}
+
+func TestCheckManagedSafetyGate_TrackingLocalDeclarationAllowsWiden(t *testing.T) {
+	current := mustLayer(t, "", ghTracking("orgs", "acme"))
+	candidate := mustLayer(t, ghTracking("orgs", "acme", "other"), ghTracking("orgs", "acme"))
+	assert.Empty(t, CheckManagedSafetyGate(current, candidate))
 }
 
 func TestCheckManagedSafetyGate_NilInputs(t *testing.T) {
@@ -294,8 +346,19 @@ func TestCheckManagedSafetyGateFromLayers_CurrentYAMLAndInvalid(t *testing.T) {
 	assert.Contains(t, err.Error(), "layering config")
 }
 
-func TestFormatAllowTargetsNil(t *testing.T) {
-	assert.Equal(t, "unset", formatAllowTargets(nil))
+func TestFormatTrackingTargets(t *testing.T) {
+	assert.Equal(t, "unset", formatTrackingTargets(nil))
+	assert.Equal(t, "unset", formatTrackingTargets(&TrackingConfig{}))
+	assert.Equal(t, "gitlab: groups=[g] repos=[]", formatTrackingTargets(&TrackingConfig{GitLab: &GitLabTrackingConfig{
+		AllowedTargets: GitLabAllowedTargets{Groups: []string{"g"}, Repos: []string{}},
+	}}))
+}
+
+func TestTrackingSafetyKey(t *testing.T) {
+	gh := &TrackingConfig{GitHub: &GitHubTrackingConfig{}}
+	assert.Equal(t, "tracking", trackingSafetyKey(nil, nil))
+	assert.Equal(t, "tracking.github.allowed_targets", trackingSafetyKey(gh, nil))
+	assert.Equal(t, "tracking.jira.allowed_targets", trackingSafetyKey(gh, &TrackingConfig{Jira: &JiraTrackingConfig{}}))
 }
 
 func TestFormatSafetyRelaxationsAndKeys(t *testing.T) {

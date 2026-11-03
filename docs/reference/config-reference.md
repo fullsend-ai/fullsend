@@ -57,14 +57,22 @@ allowed_remote_resources:            # URL prefixes allowed for remote resources
   - https://raw.githubusercontent.com/fullsend-ai/fullsend/
   - https://raw.githubusercontent.com/fullsend-ai/agents/
 
-# ── Cross-repo issue creation ────────────────────────────────
-create_issues:
-  allow_targets:
-    orgs:                            # GitHub orgs agents may create issues in
-      - my-org
-    repos:                           # Specific repos (owner/name) agents may create issues in
-      - fullsend-ai/fullsend
-      - fullsend-ai/agents
+# ── Cross-project issue creation ─────────────────────────────
+tracking:                            # At most one provider mapping: github, gitlab, or jira
+  github:
+    allowed_targets:
+      orgs:                          # GitHub orgs agents may create issues in
+        - my-org
+      repos:                         # Specific repos (owner/name) agents may create issues in
+        - fullsend-ai/fullsend
+        - fullsend-ai/agents
+  # gitlab:
+  #   allowed_targets:
+  #     groups: [my-group]           # GitLab groups (projects in the group and its subgroups)
+  #     repos: [my-group/sub/project] # Full project paths
+  # jira:
+  #   allowed_targets:
+  #     projects: [PROJ]             # Jira project keys
 
 # ── Authorization ────────────────────────────────────────────
 authorization:                       # Extra sources of permission for triggering agents
@@ -255,29 +263,50 @@ omitted inherits from parent; explicit empty (`[]`) denies all remote
 resources; a non-empty list is unioned with the parent's list. See
 [Layered Config Reference](../guides/infrastructure/layered-config-reference.md).
 
-### `create_issues`
+### `tracking`
 
-Controls cross-repo issue creation by agents. The `allow_targets` field
-restricts which orgs and repos agents may create issues in.
+Controls cross-project issue creation by agents. `tracking` holds at most one
+provider mapping — `github`, `gitlab`, or `jira` — and that provider's
+`allowed_targets` restricts where agents may create issues. Validation rejects
+a `tracking` block with more than one provider mapping.
 
-- **`allow_targets.orgs`** — GitHub organizations. All repos in these orgs are
-  allowed.
-- **`allow_targets.repos`** — Specific repos in `owner/name` format.
+- **`tracking.github.allowed_targets.orgs`** — GitHub organizations. All repos
+  in these orgs are allowed.
+- **`tracking.github.allowed_targets.repos`** — Specific repos in exactly
+  `owner/name` format.
+- **`tracking.gitlab.allowed_targets.groups`** — GitLab groups (full group
+  path). Projects in the group and its subgroups are allowed.
+- **`tracking.gitlab.allowed_targets.repos`** — Specific projects by full
+  project path (for example `group/subgroup/project`).
+- **`tracking.jira.allowed_targets.projects`** — Jira project keys (an
+  uppercase letter followed by uppercase letters, digits, or underscores).
+
+For GitHub and GitLab the scopes are additive: a destination is allowed if it
+matches a configured org or group, or a configured repo. Malformed entries
+are rejected: an empty org or group, an org containing `/`, a GitHub repo not
+in `owner/name` form, a GitLab path with empty segments or a repo without a
+namespace, or an invalid Jira project key.
+
+`tracking` is distinct from the scalar [`tracker`](#tracker) field, which
+selects the default backend for `fullsend issues` commands.
 
 When omitted, agents cannot create issues outside the repository they are
 running in. That repository is always allowed, so it does not need an
 entry. The default GitHub per-repo configuration generated without a preset lists
-both `fullsend-ai/fullsend` and `fullsend-ai/agents` in `allow_targets.repos`,
+both `fullsend-ai/fullsend` and `fullsend-ai/agents` in
+`tracking.github.allowed_targets.repos`,
 so retro proposals and triage prerequisites can reach the platform or agent
 repository that owns the change. These are installation defaults, not an
 automatic grant for every repository in `allowed_remote_resources`.
-Fresh GitLab installations instead record an explicit empty `allow_targets`
-policy: cross-project targets must be configured for the GitLab host.
+Fresh GitLab installations instead record an explicit empty
+`tracking.gitlab.allowed_targets` policy: cross-project targets must be
+configured for the GitLab host.
 Explicit settings are preserved. Retro and triage post-scripts currently read
 only the overlay (`.fullsend/config.yaml`), not the preset
 (`.fullsend/config.base.yaml`). Until
 [agents#1728](https://github.com/fullsend-ai/agents/issues/1728) is fixed,
-preset users must declare the required `config.create_issues.allow_targets` in the
+preset users must declare the required
+`config.tracking.<provider>.allowed_targets` in the
 managed repository’s `repos.yaml` entry and rerun `fullsend repos install`,
 or edit `.fullsend/config.yaml` for an unmanaged installation. Updating only
 the preset does not enable these cross-repository operations. Include all
@@ -286,6 +315,20 @@ Existing installations retain their permissions on upgrade; on GitHub, to opt in
 `fullsend-ai/agents` to the existing target list in the managed repository’s
 `repos.yaml` configuration, or in `.fullsend/config.yaml` for an installation
 not managed through `fullsend repos`. Preserve any other targets you need.
+
+In the layered config system, `tracking` replaces the parent's whole object
+when set, so layers never combine two providers. See
+[Layered Config Reference](../guides/infrastructure/layered-config-reference.md).
+
+**Migration from `create_issues`:** the top-level `create_issues` key is
+removed. Validation (`fullsend lint` and CLI config writes) rejects a leftover
+`create_issues` in `.fullsend/config.yaml`, and a `repos.yaml` managed
+`config:` block containing it is rejected. Runtime config loading ignores it,
+so it grants nothing. Move `create_issues.allow_targets.orgs` and `repos` to
+`tracking.github.allowed_targets.orgs` and `repos` on GitHub, or to
+`tracking.gitlab.allowed_targets.groups` and `repos` on GitLab. Migration of
+existing managed `repos.yaml` entries is tracked in
+[#9075](https://github.com/fullsend-ai/fullsend/issues/9075).
 
 ### `authorization`
 

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/preset"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -21,7 +22,7 @@ func writebackManifestFile(t *testing.T, m *Manifest) string {
 
 func upstreamIssueTargets(t *testing.T) string {
 	t.Helper()
-	body, err := marshalManagedConfig(mustManagedConfig(t, "create_issues:\n  allow_targets:\n    repos: [fullsend-ai/fullsend, fullsend-ai/agents]\n").Writer())
+	body, err := marshalManagedConfig(mustManagedConfig(t, "tracking:\n  github:\n    allowed_targets:\n      repos: [fullsend-ai/fullsend, fullsend-ai/agents]\n").Writer())
 	require.NoError(t, err)
 	return string(body)
 }
@@ -105,17 +106,21 @@ func TestEnsureManagedConfigDefaults_ForgeSpecificTargets(t *testing.T) {
 			require.NoError(t, err)
 			rc, ok := reloaded.ResolveConfig("acme", "api")
 			require.True(t, ok)
-			policy := rc.Managed.IssueCreationConfig()
+			policy := rc.Managed.IssueTracking()
 			require.NotNil(t, policy, "an empty policy must remain explicit after reload")
 			body, _, err := desiredManagedConfig(rc)
 			require.NoError(t, err)
 			if forgeName == ForgeGitLab {
-				assert.Empty(t, policy.AllowTargets.Repos)
-				assert.Empty(t, policy.AllowTargets.Orgs)
-				assert.Contains(t, string(body), "allow_targets: {}")
+				assert.Equal(t, config.TrackingProviderGitLab, policy.Provider())
+				require.NotNil(t, policy.GitLab, "an empty GitLab policy must remain explicit after reload")
+				assert.Empty(t, policy.GitLab.AllowedTargets.Repos)
+				assert.Empty(t, policy.GitLab.AllowedTargets.Groups)
+				assert.Contains(t, string(body), "allowed_targets: {}")
 				assert.NotContains(t, string(body), "fullsend-ai/")
 			} else {
-				assert.Equal(t, []string{"fullsend-ai/fullsend", "fullsend-ai/agents"}, policy.AllowTargets.Repos)
+				assert.Equal(t, config.TrackingProviderGitHub, policy.Provider())
+				require.NotNil(t, policy.GitHub)
+				assert.Equal(t, []string{"fullsend-ai/fullsend", "fullsend-ai/agents"}, policy.GitHub.AllowedTargets.Repos)
 			}
 			// Repeating the install preserves the persisted declaration.
 			names, err = EnsureManagedConfigDefaults(context.Background(), ManagedConfigWritebackConfig{
@@ -203,25 +208,25 @@ func TestEnsureManagedConfigDefaults_DoesNotOverrideDeclaredValues(t *testing.T)
 				assert.Empty(t, names)
 				assert.False(t, m.PlatformFor(forgeName).Repos[0].Config.IsSet())
 			})
-			t.Run("explicit repo create_issues", func(t *testing.T) {
+			t.Run("explicit repo tracking", func(t *testing.T) {
 				m := newManifest()
-				m.PlatformFor(forgeName).Repos[0].Config = mustManagedConfig(t, "create_issues:\n  allow_targets:\n    orgs: [acme]\n")
+				m.PlatformFor(forgeName).Repos[0].Config = mustManagedConfig(t, "tracking:\n  github:\n    allowed_targets:\n      orgs: [acme]\n")
 				names, err := EnsureManagedConfigDefaults(context.Background(), ManagedConfigWritebackConfig{Manifest: m},
 					newTestClientFactory(newFakeClientForBatch("acme/api")), nil)
 				require.NoError(t, err)
 				assert.Empty(t, names)
 			})
-			t.Run("explicit defaults create_issues", func(t *testing.T) {
+			t.Run("explicit defaults tracking", func(t *testing.T) {
 				m := newManifest()
-				m.Defaults.Config = mustManagedConfig(t, "create_issues:\n  allow_targets:\n    orgs: [acme]\n")
+				m.Defaults.Config = mustManagedConfig(t, "tracking:\n  github:\n    allowed_targets:\n      orgs: [acme]\n")
 				names, err := EnsureManagedConfigDefaults(context.Background(), ManagedConfigWritebackConfig{Manifest: m},
 					newTestClientFactory(newFakeClientForBatch("acme/api")), nil)
 				require.NoError(t, err)
 				assert.Empty(t, names)
 			})
 			for name, declaration := range map[string]string{
-				"explicit custom repository": "create_issues:\n  allow_targets:\n    repos: [acme/custom-agents]\n",
-				"explicit empty targets":     "create_issues:\n  allow_targets:\n    repos: []\n",
+				"explicit custom repository": "tracking:\n  github:\n    allowed_targets:\n      repos: [acme/custom-agents]\n",
+				"explicit empty targets":     "tracking:\n  github:\n    allowed_targets:\n      repos: []\n",
 			} {
 				t.Run(name, func(t *testing.T) {
 					m := newManifest()
@@ -269,7 +274,7 @@ func TestEnsureManagedConfigDefaults_ReadOnlyManifestSuggestsExactEdit(t *testin
 	msg := err.Error()
 	assert.Contains(t, msg, "read-only")
 	assert.Contains(t, msg, `github.repos entry "acme/api"`)
-	for _, want := range []string{"config:", "create_issues:", "allow_targets:", "- fullsend-ai/fullsend", "- fullsend-ai/agents"} {
+	for _, want := range []string{"config:", "tracking:", "github:", "allowed_targets:", "- fullsend-ai/fullsend", "- fullsend-ai/agents"} {
 		assert.Contains(t, msg, want)
 	}
 	assert.False(t, m.GitHub.Repos[0].Config.IsSet(), "a read-only manifest is not edited in memory either")
@@ -441,7 +446,7 @@ func TestWritebackClientFactoryErrors(t *testing.T) {
 	require.Error(t, err)
 }
 
-// The create_issues default is a first-install grant: an existing overlay
+// The tracking default is a first-install grant: an existing overlay
 // or a repository that is not pristine never receives it, so nothing is
 // written to the manifest and a read-only manifest is not an error.
 func TestEnsureManagedConfigDefaults_NoWritebackUnlessPristineFirstInstall(t *testing.T) {

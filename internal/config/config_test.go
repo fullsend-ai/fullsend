@@ -592,77 +592,174 @@ func TestPerRepoConfigMarshal_WithoutStatusNotifications(t *testing.T) {
 	assert.NotContains(t, string(data), "status_notifications")
 }
 
-// --- CreateIssues tests ---
+// --- Tracking tests ---
 
-func TestPerRepoConfigValidate_CreateIssues(t *testing.T) {
-	cases := []struct {
-		name    string
-		ci      *CreateIssuesConfig
-		wantErr string
-	}{
-		{name: "nil", ci: nil},
-		{name: "valid", ci: &CreateIssuesConfig{AllowTargets: AllowTargets{Orgs: []string{"my-org"}, Repos: []string{"other/repo"}}}},
-		{name: "repo without slash", ci: &CreateIssuesConfig{AllowTargets: AllowTargets{Repos: []string{"no-slash-here"}}}, wantErr: "no-slash-here"},
-		{name: "empty org", ci: &CreateIssuesConfig{AllowTargets: AllowTargets{Orgs: []string{"valid-org", ""}}}, wantErr: "empty org"},
+func TestPerRepoConfigValidate_Tracking(t *testing.T) {
+	gh := func(orgs, repos []string) *TrackingConfig {
+		return &TrackingConfig{GitHub: &GitHubTrackingConfig{AllowedTargets: GitHubAllowedTargets{Orgs: orgs, Repos: repos}}}
+	}
+	gl := func(groups, repos []string) *TrackingConfig {
+		return &TrackingConfig{GitLab: &GitLabTrackingConfig{AllowedTargets: GitLabAllowedTargets{Groups: groups, Repos: repos}}}
+	}
+	jira := func(projects ...string) *TrackingConfig {
+		return &TrackingConfig{Jira: &JiraTrackingConfig{AllowedTargets: JiraAllowedTargets{Projects: projects}}}
+	}
+	type tc struct {
+		name     string
+		tracking *TrackingConfig
+		wantErr  string
+	}
+	cases := []tc{
+		{name: "nil", tracking: nil},
+		{name: "no provider", tracking: &TrackingConfig{}},
+		{name: "github valid", tracking: gh([]string{"my-org"}, []string{"other/repo"})},
+		{name: "github empty allowed_targets", tracking: &TrackingConfig{GitHub: &GitHubTrackingConfig{}}},
+		{name: "github repo without slash", tracking: gh(nil, []string{"no-slash-here"}), wantErr: "no-slash-here"},
+		{name: "github repo with nested path", tracking: gh(nil, []string{"a/b/c"}), wantErr: "owner/repo"},
+		{name: "github empty org", tracking: gh([]string{"valid-org", ""}, nil), wantErr: "allowed_targets.orgs"},
+		{name: "github org with slash", tracking: gh([]string{"org/repo"}, nil), wantErr: "allowed_targets.orgs"},
+		{name: "gitlab valid", tracking: gl([]string{"group", "group/sub"}, []string{"group/sub/project"})},
+		{name: "gitlab empty group", tracking: gl([]string{""}, nil), wantErr: "allowed_targets.groups"},
+		{name: "gitlab group with empty segment", tracking: gl([]string{"group//sub"}, nil), wantErr: "allowed_targets.groups"},
+		{name: "gitlab repo without namespace", tracking: gl(nil, []string{"project"}), wantErr: "full project path"},
+		{name: "gitlab repo with trailing slash", tracking: gl(nil, []string{"group/project/"}), wantErr: "full project path"},
+		{name: "jira valid", tracking: jira("PROJ", "AB_2")},
+		{name: "jira lowercase key", tracking: jira("proj"), wantErr: "Jira project key"},
+		{name: "jira key with digit first", tracking: jira("1PROJ"), wantErr: "Jira project key"},
+		{name: "jira owner/repo", tracking: jira("owner/repo"), wantErr: "Jira project key"},
+		{name: "github and gitlab", tracking: &TrackingConfig{GitHub: &GitHubTrackingConfig{}, GitLab: &GitLabTrackingConfig{}}, wantErr: "at most one provider mapping may be set, found github, gitlab"},
+		{name: "github and jira", tracking: &TrackingConfig{GitHub: &GitHubTrackingConfig{}, Jira: &JiraTrackingConfig{}}, wantErr: "found github, jira"},
+		{name: "all three", tracking: &TrackingConfig{GitHub: &GitHubTrackingConfig{}, GitLab: &GitLabTrackingConfig{}, Jira: &JiraTrackingConfig{}}, wantErr: "found github, gitlab, jira"},
 	}
 	for _, repo := range []string{"/", "/repo", "owner/", "//"} {
-		cases = append(cases, struct {
-			name    string
-			ci      *CreateIssuesConfig
-			wantErr string
-		}{name: "malformed " + repo, ci: &CreateIssuesConfig{AllowTargets: AllowTargets{Repos: []string{repo}}}, wantErr: "owner/name"})
+		cases = append(cases, tc{name: "github malformed " + repo, tracking: gh(nil, []string{repo}), wantErr: "owner/repo"})
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			cfg := &perRepoConfig{Version: "1", CreateIssues: tc.ci}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfg := &perRepoConfig{Version: "1", Tracking: c.tracking}
 			err := cfg.Validate()
-			if tc.wantErr == "" {
+			if c.wantErr == "" {
 				assert.NoError(t, err)
 				return
 			}
 			require.Error(t, err)
-			assert.Contains(t, err.Error(), tc.wantErr)
+			assert.Contains(t, err.Error(), c.wantErr)
 		})
 	}
 }
 
-func TestPerRepoConfig_CreateIssues_ParseYAML(t *testing.T) {
-	yamlData := `
-version: "1"
-roles:
-  - fullsend
-  - triage
-create_issues:
-  allow_targets:
-    repos:
-      - my-org/my-repo
-      - fullsend-ai/fullsend
-`
-	cfg, err := ParsePerRepoConfig([]byte(yamlData))
-	require.NoError(t, err)
-	require.NotNil(t, cfg.IssueCreationConfig())
-	assert.Equal(t, []string{"my-org/my-repo", "fullsend-ai/fullsend"}, cfg.IssueCreationConfig().AllowTargets.Repos)
+func TestPerRepoConfig_Tracking_ParseYAML(t *testing.T) {
+	cases := []struct {
+		name     string
+		yaml     string
+		provider string
+		want     *TrackingConfig
+	}{
+		{
+			name:     "github",
+			yaml:     "tracking:\n  github:\n    allowed_targets:\n      orgs: [my-org]\n      repos: [my-org/my-repo, fullsend-ai/fullsend]\n",
+			provider: TrackingProviderGitHub,
+			want: &TrackingConfig{GitHub: &GitHubTrackingConfig{AllowedTargets: GitHubAllowedTargets{
+				Orgs: []string{"my-org"}, Repos: []string{"my-org/my-repo", "fullsend-ai/fullsend"},
+			}}},
+		},
+		{
+			name:     "gitlab",
+			yaml:     "tracking:\n  gitlab:\n    allowed_targets:\n      groups: [grp/sub]\n      repos: [grp/sub/proj]\n",
+			provider: TrackingProviderGitLab,
+			want: &TrackingConfig{GitLab: &GitLabTrackingConfig{AllowedTargets: GitLabAllowedTargets{
+				Groups: []string{"grp/sub"}, Repos: []string{"grp/sub/proj"},
+			}}},
+		},
+		{
+			name:     "jira",
+			yaml:     "tracking:\n  jira:\n    allowed_targets:\n      projects: [PROJ]\n",
+			provider: TrackingProviderJira,
+			want:     &TrackingConfig{Jira: &JiraTrackingConfig{AllowedTargets: JiraAllowedTargets{Projects: []string{"PROJ"}}}},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfg, err := ParsePerRepoConfigWriter([]byte("version: \"1\"\n" + c.yaml))
+			require.NoError(t, err)
+			require.NoError(t, cfg.Validate())
+			assert.Equal(t, c.want, cfg.IssueTracking())
+			assert.Equal(t, c.provider, cfg.IssueTracking().Provider())
+
+			// Round trip through Marshal.
+			data, err := cfg.Marshal()
+			require.NoError(t, err)
+			parsed, err := ParsePerRepoConfig(data)
+			require.NoError(t, err)
+			assert.Equal(t, c.want, parsed.IssueTracking())
+		})
+	}
 }
 
-func TestNewPerRepoConfig_CreateIssuesDefaults(t *testing.T) {
+func TestPerRepoConfig_LegacyCreateIssuesRejected(t *testing.T) {
+	data := []byte("version: \"1\"\ncreate_issues:\n  allow_targets:\n    orgs: [acme]\n")
+
+	cfg, err := ParsePerRepoConfigWriter(data)
+	require.NoError(t, err, "parsing stays lenient so runtime loading does not fail")
+	assert.Nil(t, cfg.IssueTracking(), "the legacy block grants nothing")
+	err = cfg.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "create_issues is no longer supported")
+	assert.Contains(t, err.Error(), "tracking.<provider>.allowed_targets")
+	require.ErrorIs(t, cfg.ValidateGlobal(), errLegacyCreateIssues)
+
+	layered, err := ParsePerRepoConfigWriterLayered(data, []byte("version: \"1\"\n"))
+	require.NoError(t, err)
+	require.ErrorIs(t, layered.Validate(), errLegacyCreateIssues)
+
+	out, err := cfg.Marshal()
+	require.NoError(t, err)
+	assert.NotContains(t, string(out), "create_issues", "the legacy block is never written back")
+
+	reader, err := ParsePerRepoConfig(data)
+	require.NoError(t, err)
+	assert.True(t, asPerRepo(reader.(PerRepoConfigWriter)).legacyCreateIssues)
+}
+
+func TestNewPerRepoConfig_TrackingDefaults(t *testing.T) {
 	cfg := NewPerRepoConfig(nil, "my-org/my-repo")
-	require.NotNil(t, cfg.IssueCreationConfig())
+	require.NotNil(t, cfg.IssueTracking())
+	require.NotNil(t, cfg.IssueTracking().GitHub)
 	// The target repo is implicitly allowed; both upstream destinations
 	// are materialized.
 	want := []string{"fullsend-ai/fullsend", "fullsend-ai/agents"}
-	assert.Equal(t, want, cfg.IssueCreationConfig().AllowTargets.Repos)
+	assert.Equal(t, want, cfg.IssueTracking().GitHub.AllowedTargets.Repos)
 	data, err := yaml.Marshal(cfg)
 	require.NoError(t, err)
 	parsed, err := ParsePerRepoConfig(data)
 	require.NoError(t, err)
-	assert.Equal(t, want, parsed.IssueCreationConfig().AllowTargets.Repos)
+	assert.Equal(t, want, parsed.IssueTracking().GitHub.AllowedTargets.Repos)
+
+	assert.Nil(t, NewPerRepoConfig(nil, "").IssueTracking())
 }
 
-func TestNewPerRepoConfig_CreateIssuesDefaultsAreIndependent(t *testing.T) {
+func TestNewPerRepoConfig_TrackingDefaultsAreIndependent(t *testing.T) {
 	first := NewPerRepoConfig(nil, "acme/one")
 	second := NewPerRepoConfig(nil, "acme/two")
-	first.IssueCreationConfig().AllowTargets.Repos[0] = "acme/custom"
-	assert.Equal(t, []string{"fullsend-ai/fullsend", "fullsend-ai/agents"}, second.IssueCreationConfig().AllowTargets.Repos)
+	first.IssueTracking().GitHub.AllowedTargets.Repos[0] = "acme/custom"
+	assert.Equal(t, []string{"fullsend-ai/fullsend", "fullsend-ai/agents"}, second.IssueTracking().GitHub.AllowedTargets.Repos)
+}
+
+func TestDefaultIssueTracking(t *testing.T) {
+	gh := DefaultIssueTracking(TrackingProviderGitHub)
+	require.NotNil(t, gh)
+	assert.Equal(t, TrackingProviderGitHub, gh.Provider())
+	assert.Equal(t, DefaultIssueCreationRepos(), gh.GitHub.AllowedTargets.Repos)
+
+	gl := DefaultIssueTracking(TrackingProviderGitLab)
+	require.NotNil(t, gl)
+	assert.Equal(t, &TrackingConfig{GitLab: &GitLabTrackingConfig{}}, gl)
+	out, err := yaml.Marshal(gl)
+	require.NoError(t, err)
+	assert.Equal(t, "gitlab:\n    allowed_targets: {}\n", string(out))
+
+	assert.Nil(t, DefaultIssueTracking("forgejo"))
+	assert.Nil(t, DefaultIssueTracking(""))
 }
 
 // --- AgentEntry tests ---

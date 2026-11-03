@@ -93,15 +93,17 @@ func TestPerRepoConfig_AllowedResources(t *testing.T) {
 	assert.Equal(t, resources, cfg.AllowedResources())
 }
 
-func TestPerRepoConfig_IssueCreationConfig(t *testing.T) {
-	ci := &CreateIssuesConfig{AllowTargets: AllowTargets{Repos: []string{"org/repo"}}}
-	cfg := &perRepoConfig{CreateIssues: ci}
-	assert.Equal(t, ci, cfg.IssueCreationConfig())
+func TestPerRepoConfig_IssueTracking(t *testing.T) {
+	tracking := &TrackingConfig{GitHub: &GitHubTrackingConfig{AllowedTargets: GitHubAllowedTargets{Repos: []string{"org/repo"}}}}
+	cfg := &perRepoConfig{Tracking: tracking}
+	assert.Equal(t, tracking, cfg.IssueTracking())
 }
 
-func TestPerRepoConfig_IssueCreationConfig_Nil(t *testing.T) {
+func TestPerRepoConfig_IssueTracking_Nil(t *testing.T) {
 	cfg := &perRepoConfig{}
-	assert.Nil(t, cfg.IssueCreationConfig())
+	assert.Nil(t, cfg.IssueTracking())
+	var nilTracking *TrackingConfig
+	assert.Empty(t, nilTracking.Provider())
 }
 
 func TestPerRepoConfig_ConfigVersion(t *testing.T) {

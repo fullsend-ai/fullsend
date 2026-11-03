@@ -28,10 +28,10 @@ type AllowedResourcesReader interface {
 	AllowedResources() []string
 }
 
-// CreateIssuesReader provides read access to cross-repo issue creation
-// configuration.
-type CreateIssuesReader interface {
-	IssueCreationConfig() *CreateIssuesConfig
+// TrackingReader provides read access to the issue-tracking configuration,
+// including the selected provider's cross-project allowed_targets.
+type TrackingReader interface {
+	IssueTracking() *TrackingConfig
 }
 
 // StatusNotificationsReader provides read access to status notification
@@ -49,7 +49,7 @@ type ConfigReader interface {
 	AgentLister
 	KillSwitchReader
 	AllowedResourcesReader
-	CreateIssuesReader
+	TrackingReader
 	StatusNotificationsReader
 	ConfigVersion() string
 }
@@ -306,14 +306,15 @@ func (c *perRepoConfig) AllowedResources() []string {
 	return result
 }
 
-// IssueCreationConfig returns the cross-repo issue creation config.
-// nil falls through to parent.
-func (c *perRepoConfig) IssueCreationConfig() *CreateIssuesConfig {
-	if c.CreateIssues != nil {
-		return c.CreateIssues
+// IssueTracking returns the issue-tracking configuration. nil falls
+// through to parent; a set value replaces the parent's whole mapping, so
+// layers never combine two providers.
+func (c *perRepoConfig) IssueTracking() *TrackingConfig {
+	if c.Tracking != nil {
+		return c.Tracking
 	}
 	if c.parent != nil {
-		return c.parent.IssueCreationConfig()
+		return c.parent.IssueTracking()
 	}
 	return nil
 }
@@ -867,7 +868,7 @@ func loadPerRepoLayers(overlayData []byte, haveOverlay bool, baseData []byte, ha
 	var baseReader PerRepoConfigReader = &perRepoDefaults{}
 	if haveBase {
 		var base perRepoConfig
-		if err := yaml.Unmarshal(baseData, &base); err != nil {
+		if err := unmarshalPerRepo(baseData, &base); err != nil {
 			return nil, fmt.Errorf("parsing base config: %w", err)
 		}
 		base.parent = &perRepoDefaults{}
@@ -877,7 +878,7 @@ func loadPerRepoLayers(overlayData []byte, haveOverlay bool, baseData []byte, ha
 	// Parse or create overlay layer; parent = base (or defaults).
 	var overlay perRepoConfig
 	if haveOverlay {
-		if err := yaml.Unmarshal(overlayData, &overlay); err != nil {
+		if err := unmarshalPerRepo(overlayData, &overlay); err != nil {
 			return nil, fmt.Errorf("parsing per-repo config: %w", err)
 		}
 	}

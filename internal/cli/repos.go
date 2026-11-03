@@ -722,7 +722,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	}
 
 	// The only manifest edit install still plans is the initial
-	// create_issues writeback below. It is planned in memory (DryRun) with
+	// tracking writeback below. It is planned in memory (DryRun) with
 	// its progress output held in deferredOutput; the layered safety
 	// comparison then runs against the proposed manifest and presets, and
 	// only then is the manifest persisted, so a safety rejection leaves
@@ -732,7 +732,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	manifestChanged := false
 
 	// Persist the install-time choice the generated managed overlay must
-	// reproduce (the upstream create_issues default for a no-preset first
+	// reproduce (the upstream tracking default for a no-preset first
 	// install) in each repo's manifest entry before the overlay is rendered
 	// (#8218). A manifest that cannot be written fails here, before any
 	// forge write, with the exact edit.

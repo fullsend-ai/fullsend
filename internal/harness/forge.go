@@ -531,25 +531,33 @@ func BuildConfigMap(cfg config.ConfigReader) map[string]any {
 		m["allowed_remote_resources"] = anyArr
 	}
 
-	// Issue creation config
-	if ci := pr.IssueCreationConfig(); ci != nil {
-		ciMap := map[string]any{}
-		if len(ci.AllowTargets.Orgs) > 0 {
-			anyOrgs := make([]any, len(ci.AllowTargets.Orgs))
-			for i, o := range ci.AllowTargets.Orgs {
-				anyOrgs[i] = o
+	// Issue tracking config: the selected provider's allowed_targets.
+	if t := pr.IssueTracking(); t != nil {
+		targets := map[string]any{}
+		addList := func(key string, values []string) {
+			if len(values) == 0 {
+				return
 			}
-			ciMap["allow_orgs"] = anyOrgs
-		}
-		if len(ci.AllowTargets.Repos) > 0 {
-			anyRepos := make([]any, len(ci.AllowTargets.Repos))
-			for i, r := range ci.AllowTargets.Repos {
-				anyRepos[i] = r
+			anyValues := make([]any, len(values))
+			for i, v := range values {
+				anyValues[i] = v
 			}
-			ciMap["allow_repos"] = anyRepos
+			targets[key] = anyValues
 		}
-		if len(ciMap) > 0 {
-			m["create_issues"] = ciMap
+		switch t.Provider() {
+		case config.TrackingProviderGitHub:
+			addList("orgs", t.GitHub.AllowedTargets.Orgs)
+			addList("repos", t.GitHub.AllowedTargets.Repos)
+		case config.TrackingProviderGitLab:
+			addList("groups", t.GitLab.AllowedTargets.Groups)
+			addList("repos", t.GitLab.AllowedTargets.Repos)
+		case config.TrackingProviderJira:
+			addList("projects", t.Jira.AllowedTargets.Projects)
+		}
+		if len(targets) > 0 {
+			m["tracking"] = map[string]any{
+				t.Provider(): map[string]any{"allowed_targets": targets},
+			}
 		}
 	}
 

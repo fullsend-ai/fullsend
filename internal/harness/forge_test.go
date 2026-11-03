@@ -1715,15 +1715,68 @@ func TestBuildConfigMap_AllFields(t *testing.T) {
 	require.True(t, ok)
 	assert.Contains(t, arr, "https://example.com/*")
 
-	// Issue creation config (set by NewPerRepoConfig): the default
+	// Issue tracking config (set by NewPerRepoConfig): the default
 	// allowlist includes both upstreams; the target repo is always implicitly
 	// allowed and needs no entry.
-	ci, ok := m["create_issues"].(map[string]any)
+	tracking, ok := m["tracking"].(map[string]any)
 	require.True(t, ok)
-	repos, ok := ci["allow_repos"].([]any)
+	github, ok := tracking["github"].(map[string]any)
+	require.True(t, ok)
+	targets, ok := github["allowed_targets"].(map[string]any)
+	require.True(t, ok)
+	repos, ok := targets["repos"].([]any)
 	require.True(t, ok)
 	assert.Equal(t, []any{"fullsend-ai/fullsend", "fullsend-ai/agents"}, repos)
 	assert.NotContains(t, repos, "org/repo")
+	assert.NotContains(t, m, "create_issues")
+}
+
+func TestBuildConfigMap_TrackingProviders(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		yaml string
+		want map[string]any
+	}{
+		{
+			name: "github",
+			yaml: "tracking:\n  github:\n    allowed_targets:\n      orgs: [acme]\n      repos: [other/repo]\n",
+			want: map[string]any{"github": map[string]any{"allowed_targets": map[string]any{
+				"orgs": []any{"acme"}, "repos": []any{"other/repo"},
+			}}},
+		},
+		{
+			name: "gitlab",
+			yaml: "tracking:\n  gitlab:\n    allowed_targets:\n      groups: [grp]\n      repos: [grp/sub/proj]\n",
+			want: map[string]any{"gitlab": map[string]any{"allowed_targets": map[string]any{
+				"groups": []any{"grp"}, "repos": []any{"grp/sub/proj"},
+			}}},
+		},
+		{
+			name: "jira",
+			yaml: "tracking:\n  jira:\n    allowed_targets:\n      projects: [PROJ]\n",
+			want: map[string]any{"jira": map[string]any{"allowed_targets": map[string]any{
+				"projects": []any{"PROJ"},
+			}}},
+		},
+		{
+			name: "empty allowed_targets",
+			yaml: "tracking:\n  gitlab:\n    allowed_targets: {}\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg, err := config.ParsePerRepoConfig([]byte("version: \"1\"\n" + tc.yaml))
+			require.NoError(t, err)
+			m := BuildConfigMap(cfg)
+			if tc.want == nil {
+				assert.NotContains(t, m, "tracking")
+				return
+			}
+			assert.Equal(t, tc.want, m["tracking"])
+		})
+	}
 }
 
 func TestBuildConfigMap_ForgeAndTracker(t *testing.T) {
