@@ -610,3 +610,26 @@ func TestRunEvalMeasure_OTLPFailWarns(t *testing.T) {
 	_, statErr := os.Stat(filepath.Join(out, evalmeasure.MeasurementsFile))
 	require.NoError(t, statErr, "local JSONL must still be written")
 }
+
+// TestEvalMeasureFetchContext_HonoursGITHUBAPIURL verifies the manifest
+// lookup client targets GITHUB_API_URL on non-github.com hosts (#9041).
+func TestEvalMeasureFetchContext_HonoursGITHUBAPIURL(t *testing.T) {
+	printer := ui.New(io.Discard)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+
+	type baseURLer interface{ BaseURL() string }
+
+	t.Setenv("GITHUB_API_URL", "https://ghes.example.com/api/v3")
+	_, client := evalMeasureFetchContext(t.TempDir(), true, printer)
+	c, ok := client.(baseURLer)
+	require.True(t, ok, "client must expose BaseURL")
+	assert.Equal(t, "https://ghes.example.com/api/v3", c.BaseURL())
+
+	t.Setenv("GITHUB_API_URL", "")
+	_, client = evalMeasureFetchContext(t.TempDir(), true, printer)
+	c, ok = client.(baseURLer)
+	require.True(t, ok, "client must expose BaseURL")
+	assert.Equal(t, "https://api.github.com", c.BaseURL())
+}

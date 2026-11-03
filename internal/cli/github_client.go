@@ -147,6 +147,15 @@ func newGitHubLiveClient(token, manifestURL string) *gh.LiveClient {
 	return client
 }
 
+// githubAPIBaseURLFromEnv returns the GitHub REST API base URL that
+// newGitHubLiveClient targets when no manifest URL is available:
+// GITHUB_API_URL when set, otherwise https://api.github.com. Use it for
+// raw HTTP calls that take a base URL instead of a LiveClient, so they
+// reach the same host as the clients built here.
+func githubAPIBaseURLFromEnv() string {
+	return newGitHubLiveClient("", "").BaseURL()
+}
+
 // githubAPIURL derives the GitHub REST API base URL from a forge
 // instance URL. Returns "" for github.com (the client default) and
 // for empty input (let env var or built-in default take over).

@@ -1397,7 +1397,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// Non-fatal: if the check fails (e.g., non-installation token), log a
 	// warning and continue.
 	if ghToken := envGHToken(); ghToken != "" {
-		repos, err := fetchTokenScope(context.Background(), ghToken, "https://api.github.com")
+		repos, err := fetchTokenScope(context.Background(), ghToken, githubAPIBaseURLFromEnv())
 		if err != nil {
 			printer.StepWarn("Token scope check: " + err.Error())
 		} else if len(repos) > 0 {

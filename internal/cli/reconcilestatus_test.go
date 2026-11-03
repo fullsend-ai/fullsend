@@ -972,3 +972,18 @@ func TestNewReconcileStatusCmd_NoEvent_FallsBackToForge(t *testing.T) {
 	err := cmd.Execute()
 	require.NoError(t, err)
 }
+
+// TestReconcileNewForgeClient_HonoursGITHUBAPIURL verifies the default
+// reconcile-status GitHub client targets GITHUB_API_URL so orphaned
+// status comments are reconciled on non-github.com hosts (#9041).
+func TestReconcileNewForgeClient_HonoursGITHUBAPIURL(t *testing.T) {
+	t.Setenv("GITHUB_API_URL", "https://ghes.example.com/api/v3")
+	client, ok := reconcileNewForgeClient("t").(*gh.LiveClient)
+	require.True(t, ok, "expected *github.LiveClient")
+	assert.Equal(t, "https://ghes.example.com/api/v3", client.BaseURL())
+
+	t.Setenv("GITHUB_API_URL", "")
+	client, ok = reconcileNewForgeClient("t").(*gh.LiveClient)
+	require.True(t, ok, "expected *github.LiveClient")
+	assert.Equal(t, "https://api.github.com", client.BaseURL())
+}
