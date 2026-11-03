@@ -5114,6 +5114,73 @@ func TestListWorkflowRunJobs_APIError(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestListWorkflowRunJobs_NotFound(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		status    int
+		failures  int
+		wantCalls int
+		wantError bool
+	}{
+		{name: "jobs become visible", status: http.StatusNotFound, failures: 2, wantCalls: 3},
+		{name: "missing run stays an error", status: http.StatusNotFound, failures: 5, wantCalls: 5, wantError: true},
+		{name: "permission failure is not retried", status: http.StatusForbidden, failures: 5, wantCalls: 1, wantError: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			calls := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				assert.Equal(t, "/repos/org/repo/actions/runs/42/jobs", r.URL.Path)
+				assert.Equal(t, "1", r.URL.Query().Get("page"))
+				if calls <= tt.failures {
+					w.WriteHeader(tt.status)
+					return
+				}
+				_, _ = io.WriteString(w, `{"jobs":[{"id":1,"name":"dispatch / Fix","status":"completed","conclusion":"success"}]}`)
+			}))
+			defer srv.Close()
+
+			jobs, err := newTestClient(t, srv).ListWorkflowRunJobs(context.Background(), "org", "repo", 42)
+			assert.Equal(t, tt.wantCalls, calls)
+			if tt.wantError {
+				require.Error(t, err)
+				assert.Nil(t, jobs)
+				assert.Contains(t, err.Error(), "org/repo")
+				assert.Contains(t, err.Error(), "run 42")
+				assert.Contains(t, err.Error(), "page 1")
+				var apiErr *APIError
+				require.ErrorAs(t, err, &apiErr)
+				assert.Equal(t, tt.status, apiErr.StatusCode)
+				assert.Equal(t, tt.status == http.StatusNotFound, forge.IsNotFound(err))
+				return
+			}
+			require.NoError(t, err)
+			require.Len(t, jobs, 1)
+			assert.Equal(t, "dispatch / Fix", jobs[0].Name)
+		})
+	}
+}
+
+func TestListWorkflowRunJobs_NotFoundRetryCancelled(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client := newTestClient(t, srv).WithAfterFunc(func(time.Duration) <-chan time.Time {
+		cancel()
+		return make(chan time.Time)
+	})
+
+	jobs, err := client.ListWorkflowRunJobs(ctx, "org", "repo", 42)
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Nil(t, jobs)
+	assert.Equal(t, 1, calls)
+}
+
 // TestListWorkflowRunJobs_PaginatesBeyondFirstPage is a regression test
 // (#7996 review): ListWorkflowRunJobs previously issued a single
 // per_page=100 request with no pagination, so a run with more than 100
@@ -5161,6 +5228,38 @@ func TestListWorkflowRunJobs_PaginatesBeyondFirstPage(t *testing.T) {
 	require.Len(t, jobs, 101, "should include the 100 jobs on the first page plus the matching job beyond it")
 	assert.Equal(t, "dispatch / Harness run (review)", jobs[len(jobs)-1].Name, "the matching job beyond the first page must be included")
 	assert.Len(t, pageRequests, 2, "pagination must stop once a short page is seen")
+}
+
+func TestListWorkflowRunJobs_RetriesOnlyMissingPage(t *testing.T) {
+	var pages []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page := r.URL.Query().Get("page")
+		pages = append(pages, page)
+		assert.Equal(t, "/repos/org/repo/actions/runs/42/jobs", r.URL.Path)
+		if page == "1" {
+			jobs := make([]forge.WorkflowJob, 100)
+			for i := range jobs {
+				jobs[i].ID = i + 1
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"jobs": jobs})
+			return
+		}
+		assert.Equal(t, "2", page)
+		if len(pages) == 2 {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = io.WriteString(w, `{"jobs":[{"id":101,"name":"dispatch / Fix"}]}`)
+	}))
+	defer srv.Close()
+
+	jobs, err := newTestClient(t, srv).ListWorkflowRunJobs(context.Background(), "org", "repo", 42)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"1", "2", "2"}, pages)
+	require.Len(t, jobs, 101)
+	assert.Equal(t, 1, jobs[0].ID)
+	assert.Equal(t, 100, jobs[99].ID)
+	assert.Equal(t, 101, jobs[100].ID)
 }
 
 // TestListWorkflowRunJobs_PaginationExceeded guards the maxPages safety

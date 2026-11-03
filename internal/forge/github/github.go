@@ -4434,8 +4434,14 @@ func (c *LiveClient) ListWorkflowRunJobs(ctx context.Context, owner, repo string
 		}
 		path := fmt.Sprintf("/repos/%s/%s/actions/runs/%d/jobs?per_page=%d&page=%d",
 			url.PathEscape(owner), url.PathEscape(repo), runID, perPage, page)
-		if err := c.getCachedJSON(ctx, path, &result); err != nil {
-			return nil, fmt.Errorf("list workflow run jobs page %d: %w", page, err)
+		label := fmt.Sprintf("list workflow run jobs for %s/%s run %d page %d", owner, repo, runID, page)
+		// A listed run's jobs can briefly return 404; retry that page without losing earlier jobs.
+		if err := c.retryOnRepoRaceIf(ctx, label, func(apiErr *APIError) bool {
+			return apiErr.StatusCode == http.StatusNotFound
+		}, func() error {
+			return c.getCachedJSON(ctx, path, &result)
+		}); err != nil {
+			return nil, fmt.Errorf("%s: %w", label, err)
 		}
 		if len(result.Jobs) == 0 {
 			return jobs, nil
