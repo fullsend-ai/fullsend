@@ -67,3 +67,32 @@ func TestStatusProgressAttributionRedactedBeforeRetention(t *testing.T) {
 		t.Fatal("sparse completion lost redacted attribution: " + out.String())
 	}
 }
+
+func TestStatusProgressCapacityUpdateKeepsExistingEntries(t *testing.T) {
+	var out bytes.Buffer
+	r := newTestRenderer(&out)
+	// Fill the status cache to capacity with distinct keys carrying subjects.
+	for i := range maxTaskProgressEntries {
+		r.Handle(StatusProgressEvent{Kind: "row", ID: fmt.Sprint(i), Label: "row " + fmt.Sprint(i), Subject: "subject " + fmt.Sprint(i), SubjectSet: true})
+	}
+	if len(r.progress.statusProgressSeen) != maxTaskProgressEntries {
+		t.Fatalf("setup: want %d entries, got %d", maxTaskProgressEntries, len(r.progress.statusProgressSeen))
+	}
+	// Updating an existing key at capacity must not wipe the cache.
+	r.Handle(StatusProgressEvent{Kind: "row", ID: "0", Label: "row 0 updated"})
+	if len(r.progress.statusProgressSeen) != maxTaskProgressEntries {
+		t.Fatalf("existing-key update at capacity wiped the cache: %d entries remain", len(r.progress.statusProgressSeen))
+	}
+	// Retained state of other keys must survive: a sparse update to a
+	// different key still merges its retained subject, and dedup still
+	// suppresses an identical resend.
+	r.Handle(StatusProgressEvent{Kind: "row", ID: "1", Label: "row 1"})
+	if msg := out.String(); !strings.Contains(msg, "row 1 subject 1") {
+		t.Fatalf("retained subject lost after capacity update: %q", msg)
+	}
+	out.Reset()
+	r.Handle(StatusProgressEvent{Kind: "row", ID: "1", Label: "row 1"})
+	if out.String() != "" {
+		t.Fatalf("dedup broken after capacity update: %q", out.String())
+	}
+}

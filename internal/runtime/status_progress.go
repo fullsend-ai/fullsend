@@ -53,7 +53,9 @@ func (r *progressReconciler) status(e StatusProgressEvent, redact func(string) s
 		if r.statusProgressSeen == nil {
 			r.statusProgressSeen = make(map[[sha256.Size]byte]statusProgressDisplay)
 		}
-		if len(r.statusProgressSeen) >= maxTaskProgressEntries {
+		// Only a new key needs a free slot: updating an existing key at
+		// capacity must not discard the retained state of every other key.
+		if _, exists := r.statusProgressSeen[key]; !exists && len(r.statusProgressSeen) >= maxTaskProgressEntries {
 			clear(r.statusProgressSeen)
 		}
 		r.statusProgressSeen[key] = statusProgressDisplay{message: msg, subject: subject, context: context}
