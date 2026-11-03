@@ -1577,15 +1577,11 @@ func (d *Driver) CountHarnessDispatches(ctx context.Context, owner, repo, agent 
 // harnessRoundPollOnce's guard; cancelled static jobs added #7996 review;
 // success/failure built-in matches added #7996 review, second pass).
 func (d *Driver) settleHarnessDispatchCount(ctx context.Context, owner, repo, agent string, after time.Time) (count, pending int, err error) {
-	allRuns, err := d.Client.ListWorkflowRuns(ctx, owner, repo, harnessWorkflowFile)
+	allRuns, err := d.listHarnessRunsAfterPaginated(ctx, owner, repo, after)
 	if err != nil {
 		return 0, 0, err
 	}
 	for _, r := range allRuns {
-		runTime, parseErr := time.Parse(time.RFC3339, r.CreatedAt)
-		if parseErr != nil || runTime.Before(after) {
-			continue
-		}
 		jobs, err := d.Client.ListWorkflowRunJobs(ctx, owner, repo, r.ID)
 		if err != nil {
 			return 0, 0, err
@@ -1749,15 +1745,11 @@ func isConcurrencySuperseded(conclusion string) bool {
 // than artifacts so that sibling runs for other agents are not mistaken
 // for evidence.
 func (d *Driver) AssertNoHarnessAgentArtifact(ctx context.Context, owner, repo, agent string, after time.Time) error {
-	allRuns, err := d.Client.ListWorkflowRuns(ctx, owner, repo, harnessWorkflowFile)
+	allRuns, err := d.listHarnessRunsAfterPaginated(ctx, owner, repo, after)
 	if err != nil {
 		return err
 	}
 	for _, r := range allRuns {
-		runTime, parseErr := time.Parse(time.RFC3339, r.CreatedAt)
-		if parseErr != nil || runTime.Before(after) {
-			continue
-		}
 		jobs, err := d.Client.ListWorkflowRunJobs(ctx, owner, repo, r.ID)
 		if err != nil {
 			return err
