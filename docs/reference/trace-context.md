@@ -8,10 +8,10 @@ This page covers the Go API and adapter integration.
 ## Implementation scope
 
 At implementation revision
-[`18862ff3a0a657230c58b9aab487a9ff85f54f2d`](https://github.com/fullsend-ai/fullsend/tree/18862ff3a0a657230c58b9aab487a9ff85f54f2d/internal/telemetry/tracecontext),
-[`identity.go`](https://github.com/fullsend-ai/fullsend/blob/18862ff3a0a657230c58b9aab487a9ff85f54f2d/internal/telemetry/tracecontext/identity.go)
+[`fd6ebf496f241c7831fe2c8aa9c81730a1d144a4`](https://github.com/fullsend-ai/fullsend/tree/fd6ebf496f241c7831fe2c8aa9c81730a1d144a4/internal/telemetry/tracecontext),
+[`identity.go`](https://github.com/fullsend-ai/fullsend/blob/fd6ebf496f241c7831fe2c8aa9c81730a1d144a4/internal/telemetry/tracecontext/identity.go)
 implements identity resolution and fallback derivation;
-[`envelope.go`](https://github.com/fullsend-ai/fullsend/blob/18862ff3a0a657230c58b9aab487a9ff85f54f2d/internal/telemetry/tracecontext/envelope.go)
+[`envelope.go`](https://github.com/fullsend-ai/fullsend/blob/fd6ebf496f241c7831fe2c8aa9c81730a1d144a4/internal/telemetry/tracecontext/envelope.go)
 implements signing, strict parsing, and admission. The package performs no
 network I/O or configuration reads and never grants dispatch permission.
 Carrier publication, key provisioning, production creation activation,
@@ -24,19 +24,26 @@ mintcore module.
 
 ## Adapter integration
 
-[`JiraClient.GetIssue`](https://github.com/fullsend-ai/fullsend/blob/18862ff3a0a657230c58b9aab487a9ff85f54f2d/internal/tracker/jira_client.go)
+[`JiraClient.GetIssue`](https://github.com/fullsend-ai/fullsend/blob/fd6ebf496f241c7831fe2c8aa9c81730a1d144a4/internal/tracker/jira_client.go)
 exposes the project ID as `tracker.Issue.ContainerID`; Jira
-[search requests](https://github.com/fullsend-ai/fullsend/blob/18862ff3a0a657230c58b9aab487a9ff85f54f2d/internal/forge/jira/client.go)
+[search requests](https://github.com/fullsend-ai/fullsend/blob/fd6ebf496f241c7831fe2c8aa9c81730a1d144a4/internal/forge/jira/client.go)
 include `project`. Missing or invalid project IDs stay zero (unresolved).
 Jira's create response contains no project ID, so a subsequent trusted read
 must resolve the container before trace admission. Forge-backed tracker
 callers must resolve their repository separately through `forge.Client`.
 
-[`CreateCrossRepoChangeProposal`](https://github.com/fullsend-ai/fullsend/blob/18862ff3a0a657230c58b9aab487a9ff85f54f2d/internal/forge/github/github.go)
+[`CreateCrossRepoChangeProposal`](https://github.com/fullsend-ai/fullsend/blob/fd6ebf496f241c7831fe2c8aa9c81730a1d144a4/internal/forge/github/github.go)
 decodes GitHub's `fullDatabaseId` into an `int64`, accepting numeric or string
 JSON without floating-point rounding; it does not use the deprecated 32-bit
 GraphQL `databaseId`. Missing or invalid IDs leave identity unresolved without
 discarding a successful PR creation.
+
+GitHub `GetIssue` preserves the issue-space ID even for a PR number. Before
+constructing a `KindChangeProposal` identity for an `issue_comment` event on
+a PR, the runtime integration must resolve the pull-request ID through a
+trusted forge read, following the [identity contract](../normative/trace-context/v1/README.md#identity).
+`GetPullRequestInfo` currently returns branch/repository context without that
+database ID; its result alone cannot resolve trace identity.
 
 ## Go API
 
@@ -53,16 +60,17 @@ discarding a successful PR creation.
 | `DecodeCarrier` | Strict base64 carrier decode |
 | `KeyID` | The 8-byte key selector for a public key |
 | `Admit` | The pure admission decision |
-| `Result`, `Outcome` | Admission outcome and admitted IDs |
+| `Result`, `Outcome` | Admission outcome and admitted IDs; the zero value selects fallback |
 
 ## Conformance evidence
 
-- [`identity_test.go`](https://github.com/fullsend-ai/fullsend/blob/18862ff3a0a657230c58b9aab487a9ff85f54f2d/internal/telemetry/tracecontext/identity_test.go)
+- [`identity_test.go`](https://github.com/fullsend-ai/fullsend/blob/fd6ebf496f241c7831fe2c8aa9c81730a1d144a4/internal/telemetry/tracecontext/identity_test.go)
   contains independent fallback vectors, deployment-prefix separation checks,
   cross-process convergence, and SDK exporter lifecycle assertions.
-- [`envelope_test.go`](https://github.com/fullsend-ai/fullsend/blob/18862ff3a0a657230c58b9aab487a9ff85f54f2d/internal/telemetry/tracecontext/envelope_test.go)
+- [`envelope_test.go`](https://github.com/fullsend-ai/fullsend/blob/fd6ebf496f241c7831fe2c8aa9c81730a1d144a4/internal/telemetry/tracecontext/envelope_test.go)
   contains independent signed-wire vectors for both domains and all provenance
-  kinds, binding checks, malformed-input cases, and parser fuzzing.
+  kinds, binding checks, default-port convergence, zero-value fallback,
+  malformed-input cases, and parser fuzzing.
 
 These foundation tests do not establish production runtime integration or
 live-adapter trace continuity.

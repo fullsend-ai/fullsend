@@ -503,6 +503,7 @@ type ChangeProposal struct {
 	// ID is the immutable forge database ID of the change proposal:
 	// GitHub's REST pull-request id or GitLab's database merge-request
 	// id (not the IID). It is 0 when the adapter did not capture one.
+	// A GitHub PR's issue-space id is not its change-proposal identity.
 	ID   int64
 	Head string
 	// HeadRepo identifies the repository the head branch lives in, as
@@ -586,6 +587,9 @@ type Issue struct {
 	// id or GitLab's database id (not the IID). It is 0 when the adapter
 	// did not capture one; trace admission treats that as unresolved
 	// identity rather than guessing.
+	// For a GitHub PR number, GetIssue returns the issue-space id, not the
+	// pull-request id. Never use it as KindChangeProposal identity; resolve
+	// the pull-request id through a trusted pull-request read instead.
 	ID     int64
 	Title  string
 	Body   string

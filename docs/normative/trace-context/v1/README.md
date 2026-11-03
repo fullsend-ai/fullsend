@@ -19,7 +19,18 @@ components.
 | Forge instance | web base URL (`https://github.com`, or a GHES host) | web base URL (`https://gitlab.com`, or a self-hosted host) | site base URL |
 | Container | repository `id` | project `id` | project `id` |
 | Entity kind | `work_item` (issue), `change_proposal` (PR) | `work_item` (issue), `change_proposal` (MR) | `work_item` (issue; Jira has no change proposal) |
-| Entity | issue or PR REST `id`; PR GraphQL `fullDatabaseId` (`BigInt`) | issue or MR database `id` (not the IID) | issue `id` |
+| Entity | `work_item`: issue REST `id`; `change_proposal`: pull-request REST `id` = GraphQL `fullDatabaseId` (`BigInt`), never the issue-space ID | issue or MR database `id` (not the IID) | issue `id` |
+
+A GitHub PR has both a pull-request ID and a different issue-space ID.
+The `change_proposal` identity must use the pull-request ID from
+`/repos/{owner}/{repo}/pulls/{number}`, also exposed as GraphQL
+`fullDatabaseId`. A PR's `/issues/{number}` response and the `issue` object
+in an `issue_comment` event carry its issue-space ID, which must never be
+used for `change_proposal` identity. For a PR event carrying only that issue
+object, resolve the pull-request ID through a trusted forge-adapter
+`/pulls/{number}` read before declaring the identity resolved. Until that
+read succeeds, keep the identity unresolved rather than substituting the
+issue-space ID or display number.
 
 The instance string is the normalized, trusted deployment base URL: lowercase
 `scheme://host`, using `http` or `https`, followed by the case-sensitive,
