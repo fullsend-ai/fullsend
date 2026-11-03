@@ -160,9 +160,11 @@ single document. Exit codes and what is linted are unchanged.
 | `diagnostics` | One object per finding. Harness lint diagnostics include `field`. Config-level diagnostics use `agent` `"config"`. A harness that fails to resolve, load, or validate is an error-severity item with an empty `field` |
 
 The document matches [`lint.schema.json`](lint.schema.json). Consumers can
-validate stdout against that file. `schema_version` is `1`; an incompatible
-change to the shape bumps the version and updates the schema in the same
-change.
+validate stdout against that file. The schema sets `additionalProperties`
+to `false`, so unknown fields are errors. Adding, removing, or renaming a
+field, or changing a type or enum, is an incompatible change: bump
+`schema_version` and update the schema in the same change. Do not add
+fields under version `1`.
 
 A missing `config.yaml`, an unreadable config file, or an invalid
 `--format` value still fails before a document is written.
