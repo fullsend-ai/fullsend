@@ -187,9 +187,9 @@ These rules make a run fail before `pre_script` starts:
   `PUSH_TOKEN_SOURCE`, `REVIEW_TOKEN`, `GITLAB_TOKEN`), `PATH`, the
   runner-infrastructure names (`HOME`, `SHELL`, `BASH_ENV`, `ENV`,
   `TRACEPARENT`), and every name the reusable workflow sets on the `fullsend
-  run` step, such as the named `JIRA_TOKEN`, `JIRA_USER_EMAIL` and
-  `JIRA_BASE_URL` on `harness-run`. An `env.runner` key with one of those names
-  may not receive a value from the object either. Credential-class names beyond
+  run` step, such as the named `JIRA_TOKEN`, `JIRA_USER_EMAIL`,
+  `JIRA_BASE_URL` and `JIRA_API_URL` on `harness-run`. An `env.runner` key
+  with one of those names may not receive a value from the object either. Credential-class names beyond
   the runner-infrastructure names, `PATH`, and the `LD_*`/`DYLD_*` families —
   proxy, TLS trust, Git, interpreter and shell-behavior variables such as
   `HTTPS_PROXY`, `SSL_CERT_FILE`, `GIT_SSH_COMMAND`, `NODE_OPTIONS` and

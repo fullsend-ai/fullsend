@@ -6,7 +6,12 @@ Connect fullsend to a Jira project so that Jira issue activity — comments, lab
 
 ## Setup overview
 
-1. **Create a dedicated Jira account** for fullsend and an API token. Store the credentials as GitHub Actions secrets. See [Credential setup](#credential-setup) and [Use a dedicated account for the poller](#use-a-dedicated-account-for-the-poller).
+1. **Create a dedicated Jira account** for fullsend, a bot account or an
+   Atlassian-managed service account, and its API token. Store the
+   credentials as GitHub Actions secrets. See
+   [Credential setup](#credential-setup),
+   [Account types and the API URL](#account-types-and-the-api-url), and
+   [Use a dedicated account for the poller](#use-a-dedicated-account-for-the-poller).
 2. **Grant it the minimum Jira permissions** in the target project, usually
    through the **Developers** project role. The poller needs Browse
    Projects, Edit Issues, Add Comments, and Edit Own Comments to operate on
@@ -134,16 +139,14 @@ either of these holds:
 ### Use a dedicated account for the poller
 
 Give the poller a Jira account of its own, rather than a person's API token.
-Today that means a dedicated non-human account: a regular Atlassian user
-account (often called a bot account) created for fullsend, with its own email
-and API token. It is not an Atlassian-managed service account. Those
-authenticate through `api.atlassian.com` with scoped API tokens or OAuth 2.0,
-which fullsend does not support yet; see
-[#9007](https://github.com/fullsend-ai/fullsend/issues/9007).
+That can be a dedicated non-human account (a regular Atlassian user account,
+often called a bot account, created for fullsend with its own email and API
+token) or an Atlassian-managed service account; see
+[Account types and the API URL](#account-types-and-the-api-url).
 
-The poller and the built-in agents' Jira writes both authenticate as
-`JIRA_USER_EMAIL` / `JIRA_TOKEN`, and the poller treats that account as a
-bot. If the token belongs to a person:
+The poller and the built-in agents' Jira writes both authenticate as the same
+account, and the poller treats that account as a bot. If the credentials
+belong to a person:
 
 - That person's own comments and label changes never dispatch agents,
   including their `/fs-triage` and `/fs-code` commands.
@@ -222,12 +225,16 @@ explicit `FULLSEND_TRACKER` or `ISSUE_URL` points somewhere else. Code stops if
   reported as a success. For triage this covers label adds and removals,
   component updates, comments, and transitions. For code the step fails even
   though the PR or MR already exists.
-- **Bot loops:** the writes authenticate as `JIRA_USER_EMAIL` / `JIRA_TOKEN`,
-  the same account the poller classifies as `actor.kind: bot`, so they do not
+- **Bot loops:** the writes authenticate as the same Jira account the poller
+  uses, which the poller classifies as `actor.kind: bot`, so they do not
   dispatch agents again. See [How it works](#how-it-works).
 - **Credentials:** the triage and code harnesses pass `JIRA_USER_EMAIL` and
   `JIRA_TOKEN` to the runner-side post-scripts only. The sandbox gets the
-  `jira-ro` provider's placeholder, not the real token.
+  `jira-ro` provider's placeholder, not the real token. The post-scripts'
+  comments go through `fullsend issues`, which calls the API URL; their
+  transitions, labels, and searches still call the site URL directly, so
+  they work only with a bot account for now; see
+  [What supports a service account](#what-supports-a-service-account).
 
 When the code agent makes no PR or MR, or the run fails, nothing beyond the
 run-status update is written to Jira.
@@ -243,12 +250,16 @@ implementation
 
 - A GitHub repo with fullsend installed (`fullsend github setup` completed).
 - A Jira Cloud instance. **Jira Data Center is not currently supported** — the client is hard-wired to Cloud-only APIs (REST v3, cursor-based search pagination, `groupId`-based group lookup), so requests against a Data Center instance will fail. Tracked as future work.
-- A Jira API token ([Create API token](https://id.atlassian.com/manage-profile/security/api-tokens))
-  for a [dedicated non-human account](#use-a-dedicated-account-for-the-poller)
-  with the [minimum Jira permissions](#minimum-jira-permissions). That is
-  usually the **Developers** project role. The **Administrators** role is
-  needed only when project roles are used: with no `jira` entry, for slash
-  commands when the `jira` entry sets no lists, or for `labels: project_roles`.
+- Credentials for a [dedicated Jira account](#use-a-dedicated-account-for-the-poller):
+  either a regular account used as a bot, with a classic API token
+  ([Create API token](https://id.atlassian.com/manage-profile/security/api-tokens)),
+  or an Atlassian-managed service account with a scoped API token. See
+  [Account types and the API URL](#account-types-and-the-api-url).
+  The account needs the
+  [minimum Jira permissions](#minimum-jira-permissions). That is usually the
+  **Developers** project role. The **Administrators** role is needed only
+  when project roles are used: with no `jira` entry, for slash commands when
+  the `jira` entry sets no lists, or for `labels: project_roles`.
 
 ## Credential setup
 
@@ -257,9 +268,13 @@ implementation
 
 | Secret / variable | Value |
 |---|---|
-| `JIRA_TOKEN` | Your Jira API token |
-| `JIRA_USER_EMAIL` | Email associated with the token |
-| `JIRA_BASE_URL` | Jira instance URL, e.g. `https://myteam.atlassian.net` |
+| `JIRA_TOKEN` | The account's Jira API token |
+| `JIRA_USER_EMAIL` | Email associated with the token (for a service account, the address Atlassian assigned it) |
+| `JIRA_BASE_URL` | The site URL, e.g. `https://myteam.atlassian.net`, used for links to issues |
+| `JIRA_API_URL` (variable, optional) | Where API calls go; unset means the Atlassian API gateway for the site |
+
+The same settings serve a bot account and a service account; see
+[Account types and the API URL](#account-types-and-the-api-url).
 
 `fullsend run` reads `JIRA_TOKEN` and `JIRA_USER_EMAIL` for its own Jira calls
 but does not pass them on to host-side pre/post/validation scripts by default. A
@@ -269,12 +284,92 @@ already do this in their Jira overlays, so their post-scripts can write results
 to the Jira issue. See
 [Harness reference § `env.runner`](../../reference/harness-reference.md#field-details).
 
+### Account types and the API URL
+
+Fullsend authenticates to Jira as either kind of Atlassian identity with the
+same settings: the account's email in `JIRA_USER_EMAIL` and its API token in
+`JIRA_TOKEN`. What differs is where Atlassian accepts the token, so fullsend
+keeps the site URL apart from the URL its API calls go to:
+
+| Setting | Required | Value |
+|---|---|---|
+| `JIRA_BASE_URL` | Yes | The site URL, e.g. `https://myteam.atlassian.net`. Links to issues shown to people use it, and fullsend reads the site's cloud ID from its unauthenticated `/_edge/tenant_info` endpoint |
+| `JIRA_API_URL` | No | Where API calls go. Unset means the Atlassian Platform API Gateway for the site, `https://api.atlassian.com/ex/jira/<cloudId>`, built from the discovered cloud ID. Set it to that address to skip discovery, to another Atlassian cloud variant's gateway, or to the site URL to call the site directly |
+
+Choose a **bot account** (a regular Atlassian user account created for
+fullsend) when you cannot create service accounts (that needs an organization
+admin, and organizations have a service-account quota), or when it is the
+simplest option for your site. It works on any Jira Cloud site. Create its
+token at [Create API token](https://id.atlassian.com/manage-profile/security/api-tokens).
+If your site limits API token lifetime, the token has to be rotated, for
+example every 90 days.
+
+Choose a **service account** when your organization's Atlassian policy steers
+integrations toward service accounts (created in Atlassian Administration >
+Directory > Service accounts). A service account has no password login, and
+its token can carry only the scopes fullsend needs. Use the email address
+Atlassian assigned the account (it ends in `@serviceaccount.atlassian.com`)
+as `JIRA_USER_EMAIL` and its scoped API token as `JIRA_TOKEN`. Atlassian
+accepts a service account's token only through the gateway, which is why
+fullsend calls the gateway by default; setting `JIRA_API_URL` to the site URL
+rules service accounts out. OAuth 2.0 client credentials are not supported.
+
+A bot account's classic token is also accepted at the gateway, so the default
+serves both kinds of account. Atlassian documents the gateway for scoped and
+service-account tokens; classic tokens there work in practice but are not
+documented, so if a bot account's calls ever fail at the gateway, set
+`JIRA_API_URL` to the site URL.
+
+When you create a service account's token, grant the scopes that fullsend's
+Jira calls need. In classic scope terms that is `read:jira-work`,
+`read:jira-user`, and `write:jira-work`:
+
+- The poller reads the authenticated account (`GET /myself`), searches issues
+  (`POST /search/jql`), reads comments, changelogs, and statuses, reads and
+  writes issue properties for its locks and checkpoints, and, when project
+  roles or groups are used, reads project roles and user groups.
+- Status updates, built-in agent results, and `fullsend issues` also create
+  issues, comments, comment properties, and issue links.
+
+The matching granular scope list has not yet been confirmed against
+Atlassian's scope reference
+([#9007](https://github.com/fullsend-ai/fullsend/issues/9007)).
+
+#### What supports a service account
+
+`fullsend poll` (the `jira-poll` driver), the run-status updates `fullsend
+run` writes, and `fullsend issues --tracker jira` call the API URL, and so
+do the built-in agents' comments, which go through `fullsend issues
+post-comment`. The triage agent's transitions, labels, searches, and
+cross-project issue creation, and the sandboxed agent's reads through the
+`jira-forge` skill, still call the site URL directly, and the `jira-ro`
+profile allows egress only to `*.atlassian.net`. So with a service account
+the poller, the status updates, and the comments work, but those calls fail
+with 401 or an empty search. On a run whose work item came from Jira,
+`fullsend run` hands the resolved URL to host-side scripts as
+`JIRA_API_URL`; until the built-in agents use it
+([agents#1876](https://github.com/fullsend-ai/agents/issues/1876)), a
+deployment that runs the built-in triage or code agents against Jira needs
+a bot account.
+
 ### Sandbox credentials and network access
 
 The fullsend binary ships an OpenShell credential provider (`atlassian-cloud`) and network profile (`fullsend-atlassian-cloud`) that grant sandboxed agents access to Jira Cloud. List the bare name `atlassian-cloud` under a harness's `providers:` and `fullsend run` uses the built-in definition and imports its profile; nothing is written to the `.fullsend` directory:
 
 - **Provider** (`atlassian-cloud`) — declares the `atlassian-cloud` credential provider using the `fullsend-atlassian-cloud` profile type. Jira Cloud Basic auth requires a base64-encoded `email:api-token` string; because OpenShell does not yet support composite credential injection, provide a single pre-encoded token (generate with `printf 'you@example.com:your-api-token' | base64`).
-- **Profile** (`fullsend-atlassian-cloud`) — allows outbound HTTPS to `*.atlassian.net:443` with read-write access and endpoint enforcement. Permitted binaries are `curl` and `node`.
+- **Profile** (`fullsend-atlassian-cloud`) — allows outbound HTTPS to
+  `*.atlassian.net:443` and to the Atlassian API gateway
+  `api.atlassian.com:443` (see
+  [Account types and the API URL](#account-types-and-the-api-url)), with
+  read-write access and endpoint enforcement. Permitted binaries are `curl`
+  and `node`. A service account's email and scoped token are pre-encoded for
+  Basic auth the same way, and its calls must go to
+  `https://api.atlassian.com/ex/jira/{cloudId}/rest/api/3/...`. The sandbox
+  does not receive the resolved `JIRA_API_URL` automatically: a custom
+  harness that uses a service account passes it in under `env.sandbox`
+  (`JIRA_API_URL: "${JIRA_API_URL}"`) or reads the cloud ID from
+  `<site>/_edge/tenant_info` itself. The built-in agents do not yet; see
+  [What supports a service account](#what-supports-a-service-account).
 
 The wildcard host (`*.atlassian.net`) permits egress to any Atlassian Cloud tenant. Per-tenant scoping is not yet supported by OpenShell; this is an accepted risk for now.
 
@@ -393,7 +488,11 @@ jobs:
 ```
 
 2. Replace `PROJ` with your Jira project key.
-3. Commit and push the workflow file.
+3. To override where API calls go, add `JIRA_API_URL: ${{ vars.JIRA_API_URL }}`
+   to the `Poll Jira` step's `env`; the reusable workflow reads the variable
+   itself for the agent jobs. See
+   [Account types and the API URL](#account-types-and-the-api-url).
+4. Commit and push the workflow file.
 
 **How this works:** The `poll` job queries Jira and builds a dispatch matrix in
 the format expected by `reusable-dispatch.yml`. When the `matrix` input is
@@ -451,8 +550,10 @@ for issues and merge requests.
   `FULLSEND_DISPATCH_SECRET`, because the agent pipeline rejects unsigned
   dispatches.
 - `JIRA_TOKEN`, `JIRA_USER_EMAIL`, and `JIRA_BASE_URL` are set as protected,
-  masked CI/CD variables. The agent jobs need them as well, to post run status
-  and the triage and code results to the Jira issue.
+  masked CI/CD variables, and optionally `JIRA_API_URL` (see
+  [Account types and the API URL](#account-types-and-the-api-url)). The
+  agent jobs need them as well, to post
+  run status and the triage and code results to the Jira issue.
 
 `fullsend` does not yet create the schedule or the Jira variables for you.
 That setup is tracked in
@@ -554,6 +655,8 @@ Set the same credentials you would configure as GitHub Actions secrets:
 export JIRA_TOKEN="your-jira-api-token"
 export JIRA_USER_EMAIL="you@example.com"
 export JIRA_BASE_URL="https://myteam.atlassian.net"
+# Optional: JIRA_API_URL to override where API calls go; see
+# "Account types and the API URL".
 ```
 
 ### Running the poller
@@ -867,10 +970,12 @@ However, more pollers against the same Jira project means more API calls per cyc
 | Symptom | Cause | Fix |
 |---|---|---|
 | 401 on all Jira API calls | Invalid token | Regenerate the API token and update the `JIRA_TOKEN` secret |
+| 401 on `/myself` with a service account's token | `JIRA_API_URL` points at the site URL, which rejects service-account tokens | Unset `JIRA_API_URL` or set it to the site's gateway address. See [Account types and the API URL](#account-types-and-the-api-url) |
+| `JIRA_API_URL is unset and cloud ID discovery for ... failed` | The site's `/_edge/tenant_info` endpoint could not be read | Set `JIRA_API_URL` to `https://api.atlassian.com/ex/jira/<cloudId>`; the cloud ID is also shown in Atlassian Administration under the site's details, or in `https://<site>.atlassian.net/_edge/tenant_info` |
 | 200 on `/myself` but 403 on issue search | Org restricts personal API tokens for project data | Ask your Atlassian org admin to allow API token access for project data |
 | No dispatches produced | No changes since last poll | Check the `lastCheck` entity property on the issue — the poller only dispatches for changes newer than this timestamp |
-| Agent comments or label changes re-dispatch in a loop | A different Jira account posted the agent output than the one the poller authenticates as | The poller classifies its own `/myself` account as `actor.kind: bot` and filters those events. Confirm `JIRA_USER_EMAIL` / `JIRA_TOKEN` are the same account that posts comments and labels. Human follow-up, including `/fs-triage`, still dispatches |
-| Your own comments or label changes never dispatch | `JIRA_USER_EMAIL` / `JIRA_TOKEN` belong to your own Jira account | The poller classifies its own `/myself` account as `actor.kind: bot`, so that account's comments (including `/fs-triage`) and label changes are filtered with no error. Give the poller a dedicated account; see [Use a dedicated account for the poller](#use-a-dedicated-account-for-the-poller) |
+| Agent comments or label changes re-dispatch in a loop | A different Jira account posted the agent output than the one the poller authenticates as | The poller classifies its own `/myself` account as `actor.kind: bot` and filters those events. Confirm the Jira credentials fullsend runs with (`JIRA_USER_EMAIL` / `JIRA_TOKEN`) are the same account that posts comments and labels. Human follow-up, including `/fs-triage`, still dispatches |
+| Your own comments or label changes never dispatch | The Jira credentials fullsend runs with belong to your own Jira account | The poller classifies its own `/myself` account as `actor.kind: bot`, so that account's comments (including `/fs-triage`) and label changes are filtered with no error. Give the poller a dedicated account; see [Use a dedicated account for the poller](#use-a-dedicated-account-for-the-poller) |
 | `load project roles for PROJ: ... 401 You cannot edit the configuration of this project` | The poller read Jira project roles without Administer Projects. That happens with no `jira` entry in `.fullsend/config.yaml`, with `labels: project_roles`, or on a slash command when the entry sets no lists | Add a `jira` entry with `write`/`triage` lists so project roles are not read, or grant the poller account the **Administrators** project role. See [Minimum Jira permissions](#minimum-jira-permissions) |
 | `resolve jira list groups: ... get user groups` errors | The `jira` lists name groups, or project-role resolution found a role granted to a group, but the poller account lacks the Browse users and groups global permission | Grant Browse users and groups, or list account IDs instead of groups |
 | Slash command ignored (with `jira` lists) | Actor is not in the `write` list (or the `triage` list for triage-level agents) | Add the actor's account ID or one of their groups to the right list — see [Actor role resolution](#actor-role-resolution) |
@@ -883,7 +988,7 @@ However, more pollers against the same Jira project means more API calls per cyc
 | Activity during a long outage or disabled workflow is missing after resume | Poller gap exceeded the 24-hour backfill window | The same 24-hour window that bounds a first poll also bounds resumption — any `lastCheck` older than 24 hours is clamped forward. Check the run log for `predates the backfill window` — if present, events in the gap are permanently lost. Have affected users re-trigger by commenting again. See [Poll coordination](#poll-coordination) |
 | GitLab Jira dispatch fails with `does not accept Jira work items` | The project's scaffold predates Jira dispatch | Rerun `fullsend repos install` for the project and merge the scaffold update. See [GitLab runtime](#gitlab-runtime) |
 | Triage or code results do not appear on the Jira issue | The built-in agents are pinned to a release that predates Jira result writes | Use built-in agents from the agents release that follows v0.52.0, or later. Re-pin a harness registered with `source:` or composed with `base:` with `fullsend agent update <name>`. See [Where built-in agent results appear](#where-built-in-agent-results-appear) |
-| Code step fails after the PR or MR was created | The Jira write of the code-stage update failed | Check the step log for the Jira error, and confirm `JIRA_USER_EMAIL`, `JIRA_TOKEN`, and `JIRA_BASE_URL` reach the agent job and the account can comment on the issue. A re-run edits the existing update rather than posting a second one |
+| Code step fails after the PR or MR was created | The Jira write of the code-stage update failed | Check the step log for the Jira error, and confirm `JIRA_USER_EMAIL`, `JIRA_TOKEN`, and `JIRA_BASE_URL` reach the agent job and the account can comment on the issue (the update is posted through `fullsend issues`, which calls the API URL; see [What supports a service account](#what-supports-a-service-account)). A re-run edits the existing update rather than posting a second one |
 
 ## See also
 

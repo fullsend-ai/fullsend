@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/fullsend-ai/fullsend/internal/forge/jira"
 	"github.com/fullsend-ai/fullsend/internal/tracker"
 )
 
@@ -49,16 +48,16 @@ func newTrackerClient(trackerName, token, jiraBaseURL, jiraEmail string) (tracke
 		return tracker.NewForgeClient(fc), nil
 
 	case trackerJira:
-		jiraToken, err := resolveJiraTrackerToken(token)
-		if err != nil {
-			return nil, err
-		}
 		baseURL := jiraBaseURL
 		if baseURL == "" {
 			baseURL = os.Getenv("JIRA_BASE_URL")
 		}
 		if baseURL == "" {
 			return nil, fmt.Errorf("--jira-url or JIRA_BASE_URL required for Jira tracker")
+		}
+		jiraToken, err := resolveJiraTrackerToken(token)
+		if err != nil {
+			return nil, err
 		}
 		email := jiraEmail
 		if email == "" {
@@ -72,7 +71,7 @@ func newTrackerClient(trackerName, token, jiraBaseURL, jiraEmail string) (tracke
 			// than a clear configuration error.
 			return nil, fmt.Errorf("--jira-email or JIRA_USER_EMAIL required for Jira tracker (Jira Cloud auth is email+token, not a bare token)")
 		}
-		jc, err := jira.New(jiraToken, jira.WithBaseURL(baseURL), jira.WithEmail(email))
+		jc, err := newJiraClient(baseURL, email, jiraToken)
 		if err != nil {
 			return nil, fmt.Errorf("creating Jira client: %w", err)
 		}

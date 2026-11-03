@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -27,7 +28,15 @@ type LiveClient struct {
 	baseURL    string
 	email      string // for Basic auth (Cloud)
 	token      string
+	apiBaseURL string         // API calls go to apiBaseURL/rest/api/3; empty means baseURL
+	resolveAPI APIURLResolver // fills apiBaseURL on the first request
+	apiMu      sync.Mutex
 }
+
+// APIURLResolver returns the base URL for API calls (see WithAPIURL). The
+// client calls it on the first request, so a resolver that discovers the
+// URL over the network does so only when the client is actually used.
+type APIURLResolver func(ctx context.Context) (string, error)
 
 // Option configures the Jira client.
 type Option func(*LiveClient)
@@ -47,6 +56,28 @@ func WithBaseURL(rawURL string) Option {
 func WithEmail(email string) Option {
 	return func(c *LiveClient) {
 		c.email = email
+	}
+}
+
+// WithAPIURL sends API calls to <apiURL>/rest/api/3/... instead of
+// <baseURL>/rest/api/3/... . The base URL stays the site URL, which callers
+// keep using for browse links shown to humans. The usual value is the
+// Atlassian Platform API Gateway address for the site (see GatewayAPIURL),
+// which accepts both a regular account's classic API token and an
+// Atlassian-managed service account's scoped token with Basic auth, while
+// the site URL accepts only the former (#9007).
+func WithAPIURL(rawURL string) Option {
+	return func(c *LiveClient) {
+		c.apiBaseURL = strings.TrimRight(rawURL, "/")
+	}
+}
+
+// WithAPIURLResolver is WithAPIURL with the URL supplied lazily: r runs on
+// the first request and its result is cached. A resolver error fails that
+// request and is retried on the next one. Mutually exclusive with WithAPIURL.
+func WithAPIURLResolver(r APIURLResolver) Option {
+	return func(c *LiveClient) {
+		c.resolveAPI = r
 	}
 }
 
@@ -113,6 +144,11 @@ func New(token string, opts ...Option) (*LiveClient, error) {
 	if token == "" {
 		return nil, fmt.Errorf("jira: token must not be empty")
 	}
+	// The base and API URLs are operator configuration (repository
+	// variables or flags set by a repository admin), so this client applies
+	// ValidateBaseURL and same-origin redirects but not the internal-address
+	// dial checks docs/contributing/go-code.md asks of clients that take
+	// untrusted URLs. newDiscoveryHTTPClient makes the same choice.
 	c := &LiveClient{
 		httpClient: &http.Client{
 			Timeout:       30 * time.Second,
@@ -128,6 +164,14 @@ func New(token string, opts ...Option) (*LiveClient, error) {
 	}
 	if err := ValidateBaseURL(c.baseURL); err != nil {
 		return nil, err
+	}
+	if c.apiBaseURL != "" && c.resolveAPI != nil {
+		return nil, fmt.Errorf("jira: set either an API URL or an API URL resolver, not both")
+	}
+	if c.apiBaseURL != "" {
+		if err := ValidateBaseURL(c.apiBaseURL); err != nil {
+			return nil, fmt.Errorf("jira: API URL: %w", err)
+		}
 	}
 	return c, nil
 }
@@ -168,8 +212,28 @@ const maxRetries = 5
 // exist on Data Center (which speaks /rest/api/2 with startAt/total
 // pagination and takes a groupname, not a groupId). Data Center support
 // is tracked as future work, not implemented here.
-func (c *LiveClient) apiURL(path string) string {
-	return c.baseURL + "/rest/api/3" + path
+//
+// With an API URL (WithAPIURL or WithAPIURLResolver) the URL is built on
+// that instead of the base URL, which is how calls reach the Atlassian
+// Platform API Gateway.
+func (c *LiveClient) apiURL(ctx context.Context, path string) (string, error) {
+	c.apiMu.Lock()
+	defer c.apiMu.Unlock()
+	if c.apiBaseURL == "" && c.resolveAPI != nil {
+		u, err := c.resolveAPI(ctx)
+		if err != nil {
+			return "", fmt.Errorf("resolve Jira API URL: %w", err)
+		}
+		u = strings.TrimRight(u, "/")
+		if err := ValidateBaseURL(u); err != nil {
+			return "", fmt.Errorf("resolve Jira API URL: %w", err)
+		}
+		c.apiBaseURL = u
+	}
+	if c.apiBaseURL != "" {
+		return c.apiBaseURL + "/rest/api/3" + path, nil
+	}
+	return c.baseURL + "/rest/api/3" + path, nil
 }
 
 func (c *LiveClient) setAuth(req *http.Request) {
@@ -183,7 +247,10 @@ func (c *LiveClient) setAuth(req *http.Request) {
 
 // do executes an HTTP request with auth, error handling, and retry with backoff.
 func (c *LiveClient) do(ctx context.Context, method, path string, body io.Reader, result any) error {
-	reqURL := c.apiURL(path)
+	reqURL, err := c.apiURL(ctx, path)
+	if err != nil {
+		return err
+	}
 
 	var bodyBytes []byte
 	if body != nil {

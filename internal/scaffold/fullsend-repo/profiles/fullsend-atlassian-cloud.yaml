@@ -13,6 +13,18 @@ endpoints:
     protocol: rest
     access: read-write
     enforcement: enforce
+  # Atlassian Platform API Gateway, api.atlassian.com/ex/jira/{cloudId}/...,
+  # where fullsend's Jira API calls go by default. It accepts both a bot
+  # account's classic token and an Atlassian-managed service account's
+  # scoped token; the site URL accepts only the former (#9007). The gateway
+  # also fronts Atlassian's other product APIs (Confluence, admin), which a
+  # classic token reaches if its account can; a service account's scoped
+  # token is bounded by its scopes.
+  - host: "api.atlassian.com"
+    port: 443
+    protocol: rest
+    access: read-write
+    enforcement: enforce
 binaries:
   - "**/curl"
   - "**/node"

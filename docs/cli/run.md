@@ -475,6 +475,14 @@ it held before that mint, or is unset if it was unset. A caller workflow that ex
 `GITHUB_TOKEN` for its own pre- or post-script therefore gets the minted App token in that
 variable, not the job token.
 
+On a run whose work item came from Jira, `fullsend run` reads `JIRA_BASE_URL`
+and the optional `JIRA_API_URL` at startup. When `JIRA_API_URL` is unset it
+resolves the Atlassian API gateway URL for the site once (cloud ID from
+`<site>/_edge/tenant_info`, 15-second timeout) and exports it as
+`JIRA_API_URL`, which host-side scripts inherit; a discovery failure only
+warns, and the first Jira call retries it. See
+[Account types and the API URL](../guides/user/jira-integration.md#account-types-and-the-api-url).
+
 Host-side scripts (pre/post and validation) also no longer inherit `JIRA_TOKEN`,
 `JIRA_USER_EMAIL`, or the OTLP collector headers (`OTEL_EXPORTER_OTLP_HEADERS` and
 `OTEL_EXPORTER_OTLP_*_HEADERS`) from the `fullsend run` process environment. A script

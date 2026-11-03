@@ -968,7 +968,12 @@ inference gateway, keep their own named secrets. If your Jira poller workflow
 already passes `JIRA_TOKEN` and `JIRA_USER_EMAIL` to the reusable workflow
 ([Jira integration](jira-integration.md)), declare them in `env.runner`
 (`JIRA_TOKEN: "${JIRA_TOKEN}"`) and your `harness-run` scripts receive them;
-this channel is for every other secret and every other stage. On GitHub, store
+this channel is for every other secret and every other stage. On a run whose
+work item came from Jira, `fullsend run` also exports the resolved
+`JIRA_API_URL` to host-side scripts without any declaration; a script that
+should work with a service account as well as a bot account calls
+`${JIRA_API_URL}/rest/api/3/...` rather than `${JIRA_BASE_URL}/rest/api/3/...`
+(see [Account types and the API URL](jira-integration.md#account-types-and-the-api-url)). On GitHub, store
 all such tokens in one secret, `FULLSEND_GITHUB_RUNNER_SECRETS`, as a JSON
 object of name → value. The installed shim forwards it, and the reusable
 workflow hands it to each stage's composite action. The action writes it to a

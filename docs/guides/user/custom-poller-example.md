@@ -52,6 +52,7 @@ jobs:
           JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
           JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
           JIRA_BASE_URL: ${{ vars.JIRA_BASE_URL }}
+          JIRA_API_URL: ${{ vars.JIRA_API_URL }}
           TARGET_REPO: ${{ github.repository }}
         run: |
           fullsend poll \
@@ -122,6 +123,7 @@ Your external repository needs these variables and secrets configured:
 - `FULLSEND_GCP_REGION` - GCP region for Vertex AI
 - `OTEL_EXPORTER_OTLP_ENDPOINT` - [OpenTelemetry](../../glossary.md#otel-primary-facts) endpoint (optional)
 - `JIRA_BASE_URL` - Jira instance URL (if using Jira agents)
+- `JIRA_API_URL` - Where Jira API calls go (optional; unset means the Atlassian API gateway for the site, see [Account types and the API URL](jira-integration.md#account-types-and-the-api-url)). Pass it to the poll step's `env`, as the example does; the reusable workflow reads the repository variable itself, so the poller and the agent jobs agree
 
 **Secrets:**
 - `FULLSEND_GCP_WIF_PROVIDER` - GCP Workload Identity Federation (WIF) provider

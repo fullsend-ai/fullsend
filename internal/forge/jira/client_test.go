@@ -2,6 +2,7 @@ package jira
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"testing/iotest"
 	"time"
@@ -1254,4 +1256,123 @@ func TestGetUserGroups_Empty(t *testing.T) {
 	groups, err := client.GetUserGroups(ctx, "user-no-groups")
 	require.NoError(t, err)
 	assert.Empty(t, groups)
+}
+
+// TestClient_BasicAuthUsesSiteURL pins the path with no API URL: requests go
+// to <site>/rest/api/3/... with Basic base64(email:token).
+func TestClient_BasicAuthUsesSiteURL(t *testing.T) {
+	t.Parallel()
+	var gotPath, gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotAuth = r.URL.Path, r.Header.Get("Authorization")
+		writeJSON(t, w, http.StatusOK, User{AccountID: "bot"})
+	}))
+	t.Cleanup(srv.Close)
+
+	c, err := New("classic-token", WithBaseURL(srv.URL), WithEmail("bot@example.com"))
+	require.NoError(t, err)
+	_, err = c.GetMyself(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "/rest/api/3/myself", gotPath)
+	assert.Equal(t, "Basic "+base64.StdEncoding.EncodeToString([]byte("bot@example.com:classic-token")), gotAuth)
+}
+
+// TestClient_APIURLRoutesThroughGateway verifies that with an API URL,
+// requests go to <apiURL>/rest/api/3/... with the same Basic credential and
+// nothing is sent to the site URL.
+func TestClient_APIURLRoutesThroughGateway(t *testing.T) {
+	t.Parallel()
+	site := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("unexpected request to site URL: %s", r.URL.Path)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	t.Cleanup(site.Close)
+	var gotPath, gotAuth string
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotAuth = r.URL.Path, r.Header.Get("Authorization")
+		writeJSON(t, w, http.StatusOK, User{AccountID: "svc"})
+	}))
+	t.Cleanup(gateway.Close)
+
+	apiURL, err := GatewayAPIURL(gateway.URL+"/", testCloudID)
+	require.NoError(t, err)
+	c, err := New("scoped-token", WithBaseURL(site.URL), WithEmail("svc@serviceaccount.atlassian.com"), WithAPIURL(apiURL))
+	require.NoError(t, err)
+	u, err := c.GetMyself(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "svc", u.AccountID)
+	assert.Equal(t, "/ex/jira/"+testCloudID+"/rest/api/3/myself", gotPath)
+	assert.Equal(t, "Basic "+base64.StdEncoding.EncodeToString([]byte("svc@serviceaccount.atlassian.com:scoped-token")), gotAuth)
+}
+
+// TestClient_APIURLResolver verifies that a resolver runs on the first
+// request only, that its result is cached, and that a resolver error fails
+// the request and is retried next time.
+func TestClient_APIURLResolver(t *testing.T) {
+	t.Parallel()
+	var requests atomic.Int32
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		writeJSON(t, w, http.StatusOK, User{AccountID: "svc"})
+	}))
+	t.Cleanup(gateway.Close)
+
+	var calls atomic.Int32
+	resolver := func(context.Context) (string, error) {
+		if calls.Add(1) == 1 {
+			return "", errors.New("tenant_info unreachable")
+		}
+		return gateway.URL + "/", nil
+	}
+	c, err := New("tok", WithBaseURL("https://acme.atlassian.net"), WithEmail("a@b.c"), WithAPIURLResolver(resolver))
+	require.NoError(t, err)
+	assert.Zero(t, calls.Load(), "resolver must not run at construction")
+
+	_, err = c.GetMyself(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolve Jira API URL: tenant_info unreachable")
+	assert.Zero(t, requests.Load())
+
+	for range 2 {
+		_, err = c.GetMyself(context.Background())
+		require.NoError(t, err)
+	}
+	assert.Equal(t, int32(2), calls.Load(), "a successful resolution is cached")
+	assert.Equal(t, int32(2), requests.Load())
+}
+
+func TestClient_APIURLResolverRejectsInsecureURL(t *testing.T) {
+	t.Parallel()
+	c, err := New("tok", WithBaseURL("https://acme.atlassian.net"), WithAPIURLResolver(func(context.Context) (string, error) {
+		return "http://gateway.example.com", nil
+	}))
+	require.NoError(t, err)
+	_, err = c.GetMyself(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolve Jira API URL")
+	assert.Contains(t, err.Error(), "insecure scheme")
+}
+
+func TestNew_APIURLValidation(t *testing.T) {
+	t.Parallel()
+	noop := func(context.Context) (string, error) { return "", nil }
+	tests := []struct {
+		name    string
+		token   string
+		opts    []Option
+		wantErr string
+	}{
+		{"no credential", "", nil, "token must not be empty"},
+		{"insecure API URL", "tok", []Option{WithAPIURL("http://gateway.example.com")}, "API URL"},
+		{"API URL and resolver", "tok", []Option{WithAPIURL("https://api.atlassian.com/ex/jira/x"), WithAPIURLResolver(noop)}, "not both"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			opts := append([]Option{WithBaseURL("https://acme.atlassian.net")}, tt.opts...)
+			_, err := New(tt.token, opts...)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
 }
