@@ -323,7 +323,20 @@ flowchart TB
   without overlays, and `FULLSEND_FALLBACK_MODELS` applies as each runtime
   allows. Decided, not yet implemented.
 - Plugins are runtime-scoped harness resources: a harness declares `plugins:` as one list of directories in its own repository (same trust and fetch path as skills), and each entry's format decides which runtime loads it — a `plugin.json` bundle is Claude Code's, a directory pi's `-e` loader resolves is uploaded and loaded after a tree-hash preflight computed from the host copy. Each runtime names and skips the entries in the other format, so the list survives a runtime switch. Because `--no-extensions` plus explicit `-e` closes the set of code that can register tools, no per-tool declaration is needed ([ADR 0094](ADRs/0094-pi-extensions-are-harness-resources.md)).
-- Native Codex children run under a runner-owned policy: Bootstrap registers roles for an agent with the `Agent` tool, under harness security, whose parent model is in the pinned CLI's bundled catalog, on either collaboration version, on the direct route (an unlisted or `gateway/` parent keeps the multi-agent tools off), and binds each child's model (a persona's own entry in its role file, the run-level default otherwise) and the run's effort, and a mandatory dispatch hook admits only fresh-context spawns of registered roles, V1 or V2, after checking `hooks.json` and the role files against runner-held digests, and denies the V2 message tools, which reach a finished child again (`followup_task` resumes it); after each iteration the runner checks the spawns seen in the stream or in the children's rollouts on disk, each child once, against the hook's admissions ([ADR 0126](ADRs/0126-fullsend-owned-codex-subagents.md), [ADR 0159](ADRs/0159-codex-subagents-on-collaboration-v2.md), [#6970](https://github.com/fullsend-ai/fullsend/issues/6970)).
+- Native Codex children run under a runner-owned policy. Bootstrap registers
+  roles for an agent with the `Agent` tool and harness security when its
+  direct-route parent is in the pinned CLI's catalog, using the catalog-selected
+  collaboration version; unlisted and `gateway/` parents keep multi-agent tools
+  off. The runner binds each child's model (its persona entry, or the run-level
+  default) and the run's effort. A mandatory dispatch hook admits only
+  fresh-context spawns of registered roles after checking `hooks.json` and role
+  files against runner-held digests, and denies V2 `send_message` and
+  `followup_task`. After each iteration, the runner checks spawns in the stream
+  or child rollouts, counting each child once, against hook admissions
+  ([ADR 0126](ADRs/0126-fullsend-owned-codex-subagents.md),
+  [ADR 0159](ADRs/0159-codex-subagents-on-collaboration-v2.md),
+  [#6970](https://github.com/fullsend-ai/fullsend/issues/6970)); V2 delegation is
+  the target state pending implementation.
 
 ### Behaviour testing
 
