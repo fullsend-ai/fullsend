@@ -290,3 +290,27 @@ func GenAISystemFor(rt Runtime, model, agentModel string, aliases map[string]str
 	}
 	return rt.System()
 }
+
+// LaunchEnvExporter is an optional Runtime extension for runtimes whose
+// launch command (buildXRunCommand) exports environment variables beyond
+// the runtime's EnvExports: names the executed agent process sees but that
+// are set in the command string itself rather than by the runtime method.
+// LaunchEnvExports returns the bare variable names (no "export " prefix, no
+// value), including conditionally exported names — the flat union is the
+// contract: a consumer asks "can this runtime set it?", not "does it always
+// set it?". Runtimes whose launch commands export nothing beyond EnvExports
+// (claude, dummy, dummy-playback) must not implement this; hook-env keys the
+// bootstrap injects are covered separately by the conditional category.
+type LaunchEnvExporter interface {
+	Runtime
+	LaunchEnvExports() []string
+}
+
+// LaunchEnvExportsFor returns the launch-command environment names for rt,
+// or nil when the runtime does not implement LaunchEnvExporter.
+func LaunchEnvExportsFor(rt Runtime) []string {
+	if l, ok := rt.(LaunchEnvExporter); ok {
+		return l.LaunchEnvExports()
+	}
+	return nil
+}

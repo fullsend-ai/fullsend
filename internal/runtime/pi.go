@@ -153,6 +153,29 @@ func (r PiRuntime) EnvExports() []string {
 	}
 }
 
+// LaunchEnvExports implements LaunchEnvExporter: the environment names
+// buildPiRunCommand sets beyond EnvExports. The launch command pins the
+// manifest the sandbox runs, re-exports the hook and child helper paths
+// the bootstrap .env carried, and maps the Vertex project variables onto
+// their GOOGLE_CLOUD_* names. GOOGLE_CLOUD_PROJECT and
+// XAI_VERTEX_PROJECT_ID are conditional on the provider path and are
+// recorded flat anyway: runtime_specific asks whether the runtime can set
+// the name, not whether every provider path does.
+func (PiRuntime) LaunchEnvExports() []string {
+	return []string{
+		piRuntimeEnv,
+		piManifestEnv,
+		piManifestSumEnv,
+		piHookPythonEnv,
+		piHookPathEnv,
+		piChildBinEnv,
+		piChildNodeEnv,
+		"GOOGLE_CLOUD_LOCATION",
+		"GOOGLE_CLOUD_PROJECT",
+		"XAI_VERTEX_PROJECT_ID",
+	}
+}
+
 // Compile-time interface assertions.
 var (
 	_ Runtime           = PiRuntime{}
@@ -160,5 +183,6 @@ var (
 	_ DebugLogNamer     = PiRuntime{}
 	_ ProviderResolver  = PiRuntime{}
 
+	_ LaunchEnvExporter      = PiRuntime{}
 	_ OpenAICredentialSeeder = PiRuntime{}
 )
