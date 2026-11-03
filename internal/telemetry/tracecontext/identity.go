@@ -40,7 +40,7 @@ func (k EntityKind) Valid() bool {
 // Identity is the immutable binding of a forge entity (ADR 0154, D01):
 // installation, forge instance, container, entity kind, and entity
 // database ID. Display names, URLs, GitHub numbers, GitLab IIDs, and Jira
-// keys are not identity components; docs/reference/trace-context.md holds
+// keys are not identity components; docs/normative/trace-context/v1/README.md holds
 // the per-forge field mapping.
 type Identity struct {
 	// Installation is the 128-bit installation identifier provisioned

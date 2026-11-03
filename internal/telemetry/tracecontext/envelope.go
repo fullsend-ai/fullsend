@@ -67,7 +67,7 @@ type Provenance struct {
 
 // Envelope is a decoded v1 envelope or pending marker. The wire layout,
 // exact sizes, and strict limits are frozen in
-// docs/reference/trace-context.md; Marshal is its only legal encoder.
+// docs/normative/trace-context/v1/README.md; Marshal is its only legal encoder.
 type Envelope struct {
 	Domain       Domain
 	KeyID        [8]byte

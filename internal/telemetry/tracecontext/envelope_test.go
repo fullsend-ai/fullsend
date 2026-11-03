@@ -118,7 +118,7 @@ func signedGolden(t *testing.T, domain Domain, prov ProvenanceKind) ([]byte, map
 }
 
 // specLayout mirrors the frozen v1 wire layout from
-// docs/reference/trace-context.md so tests locate fields independently of
+// docs/normative/trace-context/v1/README.md so tests locate fields independently of
 // the implementation, pinning the format from the spec side.
 type specLayout struct {
 	instance, container, kind, entity int

@@ -21,6 +21,10 @@ Accepted
 
 This records the chosen topology; implementation is pending.
 
+The [trace-context v1 specification](../normative/trace-context/v1/README.md)
+defines the detailed identity, fallback, signed-envelope, and admission
+contract.
+
 ## Context
 
 An ADLC flow crosses separately launched agents and CLI commands, forge API

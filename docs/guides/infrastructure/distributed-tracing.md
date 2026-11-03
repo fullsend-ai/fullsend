@@ -664,13 +664,9 @@ GitHub webhooks do not support custom trace headers.
 Within a single work item, `fullsend.work_item_id` on the root `run` span
 is the correlation key for filtering related traces in a backend.
 
-Durable work-item continuity across independent launches — signed,
-entity-bound context published as metadata on the work item, with a
-deterministic fallback derived from immutable entity identity — is a
-separate mechanism specified in
+For durable work-item continuity, see
 [ADR 0154](../../ADRs/0154-correlate-work-item-and-behaviour-scenario-traces.md)
-and documented in the
-[Trace Context Reference](../../reference/trace-context.md).
+and the [Trace Context Reference](../../reference/trace-context.md).
 
 ## Operational behavior
 
