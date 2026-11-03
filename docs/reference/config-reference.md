@@ -333,12 +333,11 @@ tracker:
 ```
 
 **Migration from `create_issues`:** the top-level `create_issues` key is
-removed. Validation rejects a leftover `create_issues` in
-`.fullsend/config.yaml`, and a `repos.yaml` managed `config:` block containing
-it is rejected with a migration message. Runtime config loading ignores its
-contents and grants nothing: a layer that still carries `create_issues` and
-sets no `tracker` denies all extra issue destinations and does not inherit the
-parent layer's `tracker`. Move `create_issues.allow_targets.orgs` and `repos`
+removed. Runtime config loading fails with a migration error when either
+`.fullsend/config.yaml` or `.fullsend/config.base.yaml` still contains
+`create_issues`; the key is never silently ignored. Validation also rejects it,
+and a `repos.yaml` managed `config:` block containing it is rejected with a
+migration message. Move `create_issues.allow_targets.orgs` and `repos`
 to `tracker.github.allowed_targets.orgs` and `repos` on GitHub, to
 `tracker.gitlab.allowed_targets.groups` and `repos` on GitLab, or to
 `tracker.jira.allowed_targets.projects` on Jira, and keep only one provider

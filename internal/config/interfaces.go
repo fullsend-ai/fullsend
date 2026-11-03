@@ -788,6 +788,9 @@ func LoadConfig(dir string, opts LoadOpts) (ConfigReader, error) {
 	if err := checkOverlayYAML(overlayData, haveOverlay); err != nil {
 		return nil, err
 	}
+	if err := checkLegacyCreateIssues(overlayData, haveOverlay, baseData, haveBase); err != nil {
+		return nil, err
+	}
 
 	return loadPerRepoLayers(overlayData, haveOverlay, baseData, haveBase)
 }
@@ -818,8 +821,36 @@ func LoadConfigWriter(dir string, opts LoadOpts) (ConfigWriter, error) {
 	if err := checkOverlayYAML(overlayData, haveOverlay); err != nil {
 		return nil, err
 	}
+	if err := checkLegacyCreateIssues(overlayData, haveOverlay, baseData, haveBase); err != nil {
+		return nil, err
+	}
 
 	return loadPerRepoLayers(overlayData, haveOverlay, baseData, haveBase)
+}
+
+// checkLegacyCreateIssues rejects a config.yaml or config.base.yaml that
+// still carries the removed top-level create_issues key. Without this
+// check runtime loading would silently ignore the key, so an unmigrated
+// config would stop granting cross-repo issue creation with no signal.
+// The error names the offending file and the migration path. Malformed
+// YAML is left for loadPerRepoLayers to report.
+func checkLegacyCreateIssues(overlayData []byte, haveOverlay bool, baseData []byte, haveBase bool) error {
+	for _, layer := range []struct {
+		name string
+		data []byte
+		have bool
+	}{
+		{OverlayConfigFile, overlayData, haveOverlay},
+		{BaseConfigFile, baseData, haveBase},
+	} {
+		if !layer.have {
+			continue
+		}
+		if has, err := hasLegacyCreateIssues(layer.data); err == nil && has {
+			return fmt.Errorf("%s: %w", layer.name, errLegacyCreateIssues)
+		}
+	}
+	return nil
 }
 
 // checkOverlayYAML rejects a config.yaml that is malformed YAML or that

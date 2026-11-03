@@ -700,7 +700,7 @@ func TestPerRepoConfig_LegacyCreateIssuesRejected(t *testing.T) {
 	data := []byte("version: \"1\"\ncreate_issues:\n  allow_targets:\n    orgs: [acme]\n")
 
 	cfg, err := ParsePerRepoConfigWriter(data)
-	require.NoError(t, err, "parsing stays lenient so runtime loading does not fail")
+	require.NoError(t, err, "byte parsing stays lenient; LoadConfig rejects the key separately")
 	require.NotNil(t, cfg.IssueTracking())
 	assert.Empty(t, cfg.IssueTracking().Provider(), "the legacy block grants nothing")
 	err = cfg.Validate()

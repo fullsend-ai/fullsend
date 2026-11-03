@@ -964,14 +964,24 @@ func unmarshalPerRepo(data []byte, cfg *perRepoConfig) error {
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return err
 	}
+	has, err := hasLegacyCreateIssues(data)
+	if err != nil {
+		return err
+	}
+	cfg.legacyCreateIssues = has
+	return nil
+}
+
+// hasLegacyCreateIssues reports whether the YAML carries the removed
+// top-level create_issues key.
+func hasLegacyCreateIssues(data []byte) (bool, error) {
 	var probe struct {
 		CreateIssues *yaml.Node `yaml:"create_issues"`
 	}
 	if err := yaml.Unmarshal(data, &probe); err != nil {
-		return err
+		return false, err
 	}
-	cfg.legacyCreateIssues = probe.CreateIssues != nil
-	return nil
+	return probe.CreateIssues != nil, nil
 }
 
 const perRepoConfigHeader = `# fullsend per-repo configuration
