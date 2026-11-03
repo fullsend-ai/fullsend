@@ -2483,6 +2483,7 @@ func (c *LiveClient) CreateChangeProposal(ctx context.Context, owner, repo, titl
 	}
 
 	var pr struct {
+		ID      int64  `json:"id"`
 		HTMLURL string `json:"html_url"`
 		Title   string `json:"title"`
 		Number  int    `json:"number"`
@@ -2492,6 +2493,7 @@ func (c *LiveClient) CreateChangeProposal(ctx context.Context, owner, repo, titl
 	}
 
 	return &forge.ChangeProposal{
+		ID:     pr.ID,
 		URL:    pr.HTMLURL,
 		Title:  pr.Title,
 		Number: pr.Number,
@@ -2535,6 +2537,7 @@ func (c *LiveClient) CreateCrossRepoChangeProposal(ctx context.Context, baseOwne
 	query := `mutation($input: CreatePullRequestInput!) {
 		createPullRequest(input: $input) {
 			pullRequest {
+				fullDatabaseId
 				number
 				title
 				url
@@ -2565,9 +2568,10 @@ func (c *LiveClient) CreateCrossRepoChangeProposal(ctx context.Context, baseOwne
 		Data struct {
 			CreatePullRequest struct {
 				PullRequest struct {
-					Number int    `json:"number"`
-					Title  string `json:"title"`
-					URL    string `json:"url"`
+					FullDatabaseID json.Number `json:"fullDatabaseId"`
+					Number         int         `json:"number"`
+					Title          string      `json:"title"`
+					URL            string      `json:"url"`
 				} `json:"pullRequest"`
 			} `json:"createPullRequest"`
 		} `json:"data"`
@@ -2594,7 +2598,16 @@ func (c *LiveClient) CreateCrossRepoChangeProposal(ctx context.Context, baseOwne
 	}
 
 	pr := gqlResult.Data.CreatePullRequest.PullRequest
+	var id int64
+	if pr.FullDatabaseID != "" {
+		id, err = pr.FullDatabaseID.Int64()
+		if err != nil || id < 1 {
+			return nil, fmt.Errorf("decode cross-repo pull request response: invalid fullDatabaseId %q", pr.FullDatabaseID)
+		}
+	}
 	return &forge.ChangeProposal{
+		// BigInt may be a JSON number or string; never round through float64.
+		ID:     id,
 		URL:    pr.URL,
 		Title:  pr.Title,
 		Number: pr.Number,
@@ -2612,6 +2625,7 @@ func (c *LiveClient) ListRepoPullRequests(ctx context.Context, owner, repo strin
 		}
 
 		var prs []struct {
+			ID      int64  `json:"id"`
 			HTMLURL string `json:"html_url"`
 			Title   string `json:"title"`
 			Number  int    `json:"number"`
@@ -2634,6 +2648,7 @@ func (c *LiveClient) ListRepoPullRequests(ctx context.Context, owner, repo strin
 
 		for _, pr := range prs {
 			result = append(result, forge.ChangeProposal{
+				ID:       pr.ID,
 				URL:      pr.HTMLURL,
 				Title:    pr.Title,
 				Number:   pr.Number,
@@ -3299,6 +3314,7 @@ func (c *LiveClient) CreateIssue(ctx context.Context, owner, repo, title, body s
 		}
 	}
 	var result struct {
+		ID      int64  `json:"id"`
 		Number  int    `json:"number"`
 		Title   string `json:"title"`
 		Body    string `json:"body"`
@@ -3311,6 +3327,7 @@ func (c *LiveClient) CreateIssue(ctx context.Context, owner, repo, title, body s
 		return nil, fmt.Errorf("decode issue: %w", err)
 	}
 	return &forge.Issue{
+		ID:     result.ID,
 		Number: result.Number,
 		Title:  result.Title,
 		Body:   result.Body,
@@ -3353,6 +3370,7 @@ func (c *LiveClient) GetIssue(ctx context.Context, owner, repo string, number in
 		return nil, fmt.Errorf("get issue #%d: %w", number, err)
 	}
 	var result struct {
+		ID      int64  `json:"id"`
 		Number  int    `json:"number"`
 		Title   string `json:"title"`
 		Body    string `json:"body"`
@@ -3367,6 +3385,7 @@ func (c *LiveClient) GetIssue(ctx context.Context, owner, repo string, number in
 		return nil, fmt.Errorf("decode issue #%d: %w", number, err)
 	}
 	return &forge.Issue{
+		ID:          result.ID,
 		Number:      result.Number,
 		Title:       result.Title,
 		Body:        result.Body,
@@ -3417,6 +3436,7 @@ func (c *LiveClient) ListOpenIssues(ctx context.Context, owner, repo string, lab
 			return nil, fmt.Errorf("list open issues page %d: %w", page, err)
 		}
 		var raw []struct {
+			ID          int64  `json:"id"`
 			Number      int    `json:"number"`
 			Title       string `json:"title"`
 			Body        string `json:"body"`
@@ -3436,6 +3456,7 @@ func (c *LiveClient) ListOpenIssues(ctx context.Context, owner, repo string, lab
 				continue
 			}
 			result = append(result, forge.Issue{
+				ID:     item.ID,
 				Number: item.Number,
 				Title:  item.Title,
 				Body:   item.Body,

@@ -1056,6 +1056,53 @@ func TestCreateChangeProposal_Forbidden(t *testing.T) {
 	assert.True(t, forge.IsForbidden(err), "CreateChangeProposal 403 should wrap ErrForbidden")
 }
 
+func TestCreateCrossRepoChangeProposal_FullWidthID(t *testing.T) {
+	for _, tc := range []struct {
+		name, jsonID string
+		want         int64
+		wantErr      bool
+	}{
+		{"number", "9007199254740993", 9007199254740993, false},
+		{"string", `"9007199254740993"`, 9007199254740993, false},
+		{"max int64", `"9223372036854775807"`, 9223372036854775807, false},
+		{"null unresolved", "null", 0, false},
+		{"missing unresolved", "", 0, false},
+		{"overflow", `"9223372036854775808"`, 0, true},
+		{"negative", "-1", 0, true},
+		{"zero", "0", 0, true},
+		{"fractional", "1.5", 0, true},
+		{"nonnumeric", `"bad"`, 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/repos/"):
+					json.NewEncoder(w).Encode(map[string]string{"node_id": "NODE_repo"})
+				case r.Method == http.MethodPost && r.URL.Path == "/graphql":
+					calls++
+					id := ""
+					if tc.jsonID != "" {
+						id = `"fullDatabaseId":` + tc.jsonID + ","
+					}
+					fmt.Fprintf(w, `{"data":{"createPullRequest":{"pullRequest":{%s"number":99}}}}`, id)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer srv.Close()
+			cp, err := newTestClient(t, srv).CreateCrossRepoChangeProposal(context.Background(), "org", "repo", "org", "fork", "title", "body", "feature", "main")
+			assert.Equal(t, 1, calls)
+			if tc.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, cp.ID)
+		})
+	}
+}
+
 func TestCreateCrossRepoChangeProposal(t *testing.T) {
 	t.Run("same-org fork uses GraphQL", func(t *testing.T) {
 		var getRepoCalls []string
@@ -1075,6 +1122,8 @@ func TestCreateCrossRepoChangeProposal(t *testing.T) {
 				var body map[string]any
 				json.NewDecoder(r.Body).Decode(&body)
 
+				assert.Contains(t, body["query"], "fullDatabaseId")
+				assert.NotContains(t, body["query"], "\n\t\t\t\tdatabaseId")
 				vars, _ := body["variables"].(map[string]any)
 				input, _ := vars["input"].(map[string]any)
 				assert.Equal(t, "NODE_org_repo", input["repositoryId"])
@@ -1088,9 +1137,10 @@ func TestCreateCrossRepoChangeProposal(t *testing.T) {
 					"data": map[string]any{
 						"createPullRequest": map[string]any{
 							"pullRequest": map[string]any{
-								"number": 99,
-								"title":  "PR title",
-								"url":    "https://github.com/org/repo/pull/99",
+								"fullDatabaseId": "9007199254740993",
+								"number":         99,
+								"title":          "PR title",
+								"url":            "https://github.com/org/repo/pull/99",
 							},
 						},
 					},
@@ -1111,6 +1161,7 @@ func TestCreateCrossRepoChangeProposal(t *testing.T) {
 		assert.True(t, graphqlCalled, "should use GraphQL createPullRequest")
 		require.Len(t, getRepoCalls, 2, "should fetch node IDs for both repos")
 		assert.Equal(t, 99, cp.Number)
+		assert.Equal(t, int64(9007199254740993), cp.ID, "BigInt must survive without float64 rounding")
 		assert.Equal(t, "PR title", cp.Title)
 		assert.Equal(t, "https://github.com/org/repo/pull/99", cp.URL)
 	})
