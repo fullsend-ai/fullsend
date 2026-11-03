@@ -41,13 +41,15 @@ installation and `/GitLab`. Path segments and existing escape spelling are
 preserved, never cleaned or decoded into separators. Use the same configured
 deployment URL on every launch, rather than an entity or API URL.
 
-Remove the scheme's default port (`443` for HTTPS, `80` for HTTP), including
-zero-padded spellings; preserve nondefault ports. Hosts must be ASCII: use
-the punycode form for internationalized domain names, and reject Unicode
-host spellings instead of converting them. For example,
+Remove an empty port and the scheme's default port (`443` for HTTPS, `80` for
+HTTP). Strip leading zeros from other ports, preserving an explicit zero as
+`:0` rather than treating it as the default. For example, `https://host:`
+becomes `https://host`, and `https://host:08443` becomes `https://host:8443`.
+Hosts must be ASCII: use the punycode form for internationalized domain
+names, and reject Unicode host spellings instead of converting them. For example,
 `https://GitHub.com:443/` becomes `https://github.com`, and
 `https://XN--BCHER-KVA.example` becomes `https://xn--bcher-kva.example`.
-Bracketed IPv6 hosts follow the same case and default-port rules.
+Bracketed IPv6 hosts follow the same case and port rules.
 
 `NormalizeInstance` rejects queries, fragments, user info, missing hosts,
 invalid UTF-8 or NUL in the decoded path, and normalized URLs over 253 bytes

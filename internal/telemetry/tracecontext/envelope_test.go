@@ -311,6 +311,8 @@ func TestAdmit_MalformedVerificationKeys(t *testing.T) {
 func TestCanonicalInstanceAtEveryBoundary(t *testing.T) {
 	for _, instance := range []string{
 		"https://github.com:443", "https://github.com:0443", "http://github.com:80",
+		"https://github.com:", "https://[::1]:", "https://github.com:08443",
+		"https://[::1]:08443", "https://github.com:000",
 		"https://bücher.example",
 		"not-a-url", "https://GitHub.com", "HTTPS://github.com", "https://github.com/",
 		"https://gitlab.example.com/gitlab/", "https://github.com?", "https://github.com#",
@@ -345,19 +347,34 @@ func TestCanonicalInstanceAtEveryBoundary(t *testing.T) {
 	}
 }
 
-func TestAdmit_NormalizedDefaultPort(t *testing.T) {
+func TestAdmit_NormalizedPorts(t *testing.T) {
 	t.Parallel()
-	raw, keys := signedGolden(t, DomainBound, ProvenanceNone)
-	id := goldenIdentity()
-	wantFallback, ok := DeriveFallback(id)
-	require.True(t, ok)
-	var err error
-	id.Instance, err = NormalizeInstance("https://GitHub.com:443/")
-	require.NoError(t, err)
-	fb, ok := DeriveFallback(id)
-	require.True(t, ok)
-	assert.Equal(t, wantFallback, fb)
-	assert.Equal(t, OutcomeAdmitted, Admit(id, keys, raw).Outcome)
+	key, keys := goldenKeys(t)
+	for _, tc := range []struct{ raw, canonical string }{
+		{"https://GitHub.com:443/", "https://github.com"},
+		{"https://github.com:", "https://github.com"},
+		{"https://[::1]:", "https://[::1]"},
+		{"https://github.com:08443", "https://github.com:8443"},
+		{"https://[::1]:08443", "https://[::1]:8443"},
+		{"https://github.com:000", "https://github.com:0"},
+	} {
+		t.Run(tc.raw, func(t *testing.T) {
+			env := goldenEnvelope(DomainBound, ProvenanceNone)
+			env.Instance = tc.canonical
+			require.NoError(t, env.Sign(key))
+			id := goldenIdentity()
+			id.Instance = tc.canonical
+			wantFallback, ok := DeriveFallback(id)
+			require.True(t, ok)
+			var err error
+			id.Instance, err = NormalizeInstance(tc.raw)
+			require.NoError(t, err)
+			fb, ok := DeriveFallback(id)
+			require.True(t, ok)
+			assert.Equal(t, wantFallback, fb)
+			assert.Equal(t, OutcomeAdmitted, Admit(id, keys, env.Marshal()).Outcome)
+		})
+	}
 }
 
 func TestEnvelope_DeploymentPrefixBinding(t *testing.T) {
