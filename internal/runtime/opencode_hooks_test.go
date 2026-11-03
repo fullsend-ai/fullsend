@@ -145,7 +145,8 @@ func TestOpenCodeSDKCacheRestore(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(sdk, name), []byte(`{"test":"metadata"}`), 0o600))
 	}
 	home := t.TempDir()
-	command := openCodeSDKCacheRestoreFrom(sdk)
+	configDir := filepath.Join(t.TempDir(), "opencode config")
+	command := openCodeSDKCacheRestoreFrom(sdk, configDir)
 	run := func() ([]byte, error) {
 		cmd := exec.Command("sh", "-c", command)
 		cmd.Env = append(os.Environ(), "HOME="+home)
@@ -153,14 +154,16 @@ func TestOpenCodeSDKCacheRestore(t *testing.T) {
 	}
 	out, err := run()
 	require.NoError(t, err, "%s", out)
-	for _, name := range []string{"package.json", "package-lock.json"} {
-		data, err := os.ReadFile(filepath.Join(home, ".config", "opencode", name))
+	for _, dir := range []string{filepath.Join(home, ".config", "opencode"), configDir} {
+		for _, name := range []string{"package.json", "package-lock.json"} {
+			data, err := os.ReadFile(filepath.Join(dir, name))
+			require.NoError(t, err)
+			assert.JSONEq(t, `{"test":"metadata"}`, string(data))
+		}
+		target, err := os.Readlink(filepath.Join(dir, "node_modules"))
 		require.NoError(t, err)
-		assert.JSONEq(t, `{"test":"metadata"}`, string(data))
+		assert.Equal(t, filepath.Join(sdk, "node_modules"), target)
 	}
-	target, err := os.Readlink(filepath.Join(home, ".config", "opencode", "node_modules"))
-	require.NoError(t, err)
-	assert.Equal(t, filepath.Join(sdk, "node_modules"), target)
 	require.NoError(t, os.Remove(filepath.Join(sdk, "package.json")))
 	out, err = run()
 	var exit *exec.ExitError
@@ -171,7 +174,7 @@ func TestOpenCodeSDKCacheRestore(t *testing.T) {
 func TestOpenCodeSDKCacheRestore_UsesImageOwnedSDK(t *testing.T) {
 	command := OpenCodeRuntime{}.openCodeSDKCacheRestore()
 	assert.Contains(t, command, shellQuote(openCodeSDKDir+"/node_modules"))
-	assert.NotContains(t, command, OpenCodeRuntime{}.ConfigDir()+"/node_modules")
+	assert.Contains(t, command, shellQuote(OpenCodeRuntime{}.ConfigDir()))
 }
 
 func TestOpenCodeRejectsAdditionalNativePlugins(t *testing.T) {

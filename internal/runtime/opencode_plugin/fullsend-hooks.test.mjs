@@ -101,11 +101,13 @@ test("Bash accepts single-quoted GraphQL literals without hiding executable synt
   }
 });
 
-test("Bash accepts double-quoted literal punctuation without accepting expansions", async (t) => {
-  const h = await setup(t, { bashAllowlist: ["git", "gh"] });
+test("Bash accepts double-quoted literal punctuation and simple parameter expansion", async (t) => {
+  const h = await setup(t, { bashAllowlist: ["git", "gh", "fullsend-check-output"] });
   await h.before("bash", { command: 'git commit -m "fix(ci): x"' });
   await h.before("bash", { command: 'gh pr comment 1 --body "a; b"' });
-  for (const command of ['git commit -m "$(rm file)"', 'gh pr comment 1 --body "`rm file`"', 'gh pr comment 1 --body "a\\ b"']) {
+  await h.before("bash", { command: 'fullsend-check-output "$FULLSEND_OUTPUT_DIR/agent-result.json"' });
+  await h.before("bash", { command: 'fullsend-check-output "${FULLSEND_OUTPUT_DIR}/agent-result.json"' });
+  for (const command of ['git commit -m "$(rm file)"', 'gh pr comment 1 --body "`rm file`"', 'gh pr comment 1 --body "a\\ b"', 'gh pr comment 1 --body "${VALUE:-fallback}"']) {
     await assert.rejects(h.before("bash", { command }), /fullsend-hooks/, command);
   }
 });

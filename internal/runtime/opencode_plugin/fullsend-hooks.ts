@@ -45,14 +45,21 @@ function checkBash(command, allowlist) {
   // double quotes. Keep quote markers so quoted/concatenated program names fail.
   let syntax = "";
   let quote = null;
-  for (const char of command) {
+  for (let index = 0; index < command.length; index++) {
+    const char = command[index];
     if (quote === "'") {
       if (char === "'") { quote = null; syntax += char; }
       continue;
     }
     if (quote === '"') {
       if (char === '"') { quote = null; syntax += char; }
-      else if (char === "$" || char === "`" || char === "\\") syntax += char;
+      else if (char === "$") {
+        // Parameter expansion is needed for runner-provided output paths.
+        // Keep every other dollar form in syntax so the deny rule rejects it.
+        const expansion = command.slice(index).match(/^\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})/);
+        if (expansion) index += expansion[0].length - 1;
+        else syntax += char;
+      } else if (char === "`" || char === "\\") syntax += char;
       continue;
     }
     if (char === "'" && quote !== '"') { quote = "'"; syntax += char; continue; }
