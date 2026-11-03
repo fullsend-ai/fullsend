@@ -115,6 +115,8 @@ func TestForgePointerAttrs_LinkedChangeProposalUsesStateID(t *testing.T) {
 	assert.Equal(t, testHeadSHA, got["vcs.ref.head.revision"])
 }
 
+// A synchronized MR event: the one GitLab event whose change proposal carries
+// head_sha.
 func TestForgePointerAttrs_SelfHostedGitLabMergeRequest(t *testing.T) {
 	ev := normevent.Event{
 		Repo: "group/sub/project",
@@ -144,6 +146,53 @@ func TestForgePointerAttrs_SelfHostedGitLabMergeRequest(t *testing.T) {
 		"vcs.ref.head.revision":      testHeadSHA,
 		"cicd.pipeline.run.id":       "998877",
 		"cicd.pipeline.run.url.full": "https://gitlab.example.com/group/sub/project/-/pipelines/998877",
+	}, got)
+}
+
+// The event the GitLab poller builds for a comment on a merge request: the
+// change proposal has no head_sha, and the agent pipeline it creates is not a
+// merge request pipeline, so no CI_MERGE_REQUEST_* variable is set. The head
+// revision is omitted rather than taken from CI_COMMIT_SHA.
+func TestForgePointerAttrs_GitLabMergeRequestNoteOmitsHeadRevision(t *testing.T) {
+	ev, err := normevent.ParseJSON([]byte(`{
+		"repo": "group/project",
+		"entity": {
+			"kind": "change_proposal",
+			"id": 42,
+			"url": "https://gitlab.example.com/group/project/-/merge_requests/42"
+		},
+		"source": {"system": "gitlab", "raw_type": "merge_request", "raw_action": "commented"},
+		"transition": {"kind": "comment_added", "comment": {"body": "/fs-review"}},
+		"actor": {"id": "7", "kind": "human", "role": "maintain", "is_entity_author": false},
+		"state": {
+			"labels": [],
+			"change_proposal": {
+				"id": 42,
+				"head_repo": "group/project",
+				"base_repo": "group/project",
+				"head_ref": "feature",
+				"base_ref": "main",
+				"author_id": "7",
+				"is_fork": false
+			}
+		}
+	}`))
+	require.NoError(t, err)
+	env := envFrom(map[string]string{
+		"GITLAB_CI":       "true",
+		"CI_PIPELINE_ID":  "998877",
+		"CI_PIPELINE_URL": "https://gitlab.example.com/group/project/-/pipelines/998877",
+		"CI_COMMIT_SHA":   testMergeSHA,
+	})
+	got := attrValues(forgePointerAttrs(eventMapFor(t, *ev), "gitlab", "", env))
+	assert.Equal(t, map[string]string{
+		"vcs.provider.name":          "gitlab",
+		"vcs.repository.url.full":    "https://gitlab.example.com/group/project",
+		"vcs.change.id":              "42",
+		"vcs.ref.head.name":          "feature",
+		"vcs.ref.base.name":          "main",
+		"cicd.pipeline.run.id":       "998877",
+		"cicd.pipeline.run.url.full": "https://gitlab.example.com/group/project/-/pipelines/998877",
 	}, got)
 }
 

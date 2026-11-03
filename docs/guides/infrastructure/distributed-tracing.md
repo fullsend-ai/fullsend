@@ -387,10 +387,24 @@ they do not. Names follow the OpenTelemetry
 and
 [CICD](https://opentelemetry.io/docs/specs/semconv/registry/attributes/cicd/)
 semantic conventions. Repository, change and refs come from the normalized
-event, so GitHub and GitLab runs carry the same keys. A run without a
-normalized event (for example a local run with no `--event-file`) records only
-`vcs.provider.name`, the pipeline run, and a head revision from the
-environment.
+event, which GitHub and GitLab dispatch both deliver. Coverage still differs
+by source:
+
+- **GitHub:** pull request events and comments on pull requests carry
+  `head_sha`, so runs about a change record its head revision.
+- **GitLab:** `vcs.ref.head.revision` is recorded only when the normalized
+  event carries `head_sha`, which the poller sets only on synchronized merge
+  request events (a push to the source branch). The
+  `CI_MERGE_REQUEST_SOURCE_BRANCH_SHA` fallback applies only when fullsend
+  runs inside your own merged-results pipeline; the agent pipelines the poller
+  creates are not merge request pipelines, so it is unset there.
+- **Jira:** `vcs.repository.url.full` is not recorded, since the work item's
+  URL is on the Jira host. `vcs.provider.name` comes from the forge the run
+  targets.
+
+A run without a normalized event (for example a local run with no
+`--event-file`) records only `vcs.provider.name`, the pipeline run, and a head
+revision from the environment.
 
 Inputs, in order of precedence:
 

@@ -19,9 +19,13 @@ import (
 //
 // Repository, change and refs come from the normalized event, so no forge
 // needs its own code here: GitHub and GitLab dispatch both deliver that
-// event to run (GitLab since #9014). The head revision is the change's head
-// commit, never GITHUB_SHA or CI_COMMIT_SHA, which name a merge or base
-// commit on pull request and merged-results pipelines. The pipeline run
+// event to run (GitLab since #9014). A Jira event records no repository URL,
+// since its entity URL is on the Jira host. The head revision is the change's
+// head commit, never GITHUB_SHA or CI_COMMIT_SHA, which name a merge or base
+// commit on pull request and merged-results pipelines. On GitLab it is
+// usually absent: the poller sets head_sha only on synchronized MR events,
+// and the pipelines it creates are not merge request pipelines, so
+// CI_MERGE_REQUEST_SOURCE_BRANCH_SHA is unset there. The pipeline run
 // comes from the environment of the CI system running fullsend, which can
 // differ from the forge the run targets (a Jira-triggered run on GitHub
 // Actions, for one). An attribute that does not apply is omitted rather than
