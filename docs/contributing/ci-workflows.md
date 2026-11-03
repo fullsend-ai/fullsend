@@ -25,7 +25,32 @@ Conventions for GitHub Actions workflows under `.github/workflows/`. Follow thes
     group: fullsend-code-agent-${{ inputs.source_repo }}-${{ fromJSON(inputs.event_payload).issue.number || fromJSON(inputs.event_payload).pull_request.number }}
   ```
   Hybrid workflows that combine `workflow_call` with direct triggers like `pull_request_target` or `push` (e.g., `e2e.yml`) may still use `${{ github.workflow }}` in the branch of their concurrency expression that handles direct triggers — the `workflow_call` invocations in these cases come from a thin caller that shares the same concurrency intent.
-- Never cancel in-progress runs on the default branch (`refs/heads/main`). Gate `cancel-in-progress` when the workflow triggers on `push` to `main`.
+- Never cancel in-progress runs on the default branch (`refs/heads/main`). Gate `cancel-in-progress` when the workflow triggers on `push` to `main` (see [exception for the site build and deploy workflows](#site-workflows-cancel-in-progress) below).
+- <a id="site-workflows-cancel-in-progress"></a>**Exception — `site-build.yml` and `site-deploy.yml`:**
+  `.github/workflows/site-build.yml` (Build Site) and
+  `.github/workflows/site-deploy.yml` (Deploy Site) intentionally use
+  unconditional `cancel-in-progress: true`, including for runs on `main`.
+  Maintainers accepted this in PR #7437, which reverted the design from
+  PR #7272. That design gated `cancel-in-progress` off `main` and added a
+  `gate` job to `site-deploy.yml` to skip stale deploys, but it dropped
+  fork-PR site previews. PR #7437 kept the 30-minute Build Site timeout from
+  PR #7272, which addresses the cause of the #7242 outage: cold `mvb` builds
+  exceeding the earlier 10-minute timeout.
+
+  Cancelling superseded `main` runs is safe here. A cancelled Build Site run
+  does not satisfy the `workflow_run.conclusion == 'success'` condition in
+  `site-deploy.yml`, so it never deploys, and the newest push always deploys
+  last. If a deploy is cancelled mid-flight, the previous Worker version stays
+  live until the newer deploy completes.
+
+  While this design is unchanged, do not flag the unconditional
+  `cancel-in-progress` in these two files as a violation of the rule above.
+  Do not "fix" it by restoring the PR #7272 `gate` job or main-gated
+  cancellation unless the change also keeps fork-PR previews working.
+  **Revisit when:** `mvb` cache thrashing on `main` recurs (the #7242 failure
+  mode, where each push cancels the previous cold build so the cache never
+  warms). At that point, main-gated `cancel-in-progress` can come back as a
+  follow-up.
 
 **Why:** A hardcoded prefix like `my-workflow-${{ github.workflow }}` is redundant — `github.workflow` already resolves to the workflow `name:` field. The duplication creates a confusing group key and wastes characters. The reusable-workflow exception exists because GitHub resolves `github.workflow` from the caller's context, so a reusable workflow using it would share a concurrency group with its caller.
 
