@@ -26,16 +26,26 @@ const openCodeSDKDir = "/usr/local/share/opencode-sdk"
 // to the plugin through a reasserted environment variable, never a sandbox file.
 // The plugin snapshots it once; nested Task sessions use the same policy.
 type openCodeHookConfig struct {
-	Dir           string               `json:"dir"`
-	Workspace     string               `json:"workspace"`
-	Python        string               `json:"python"`
-	Env           map[string]string    `json:"env"`
-	Groups        []security.HookGroup `json:"groups"`
-	Digests       map[string]string    `json:"digests"`
-	ShellHome     string               `json:"shellHome"`
-	Tools         []string             `json:"tools"`
-	BashAllowlist []string             `json:"bashAllowlist"`
-	Permission    map[string]any       `json:"permission"`
+	Dir           string                  `json:"dir"`
+	Workspace     string                  `json:"workspace"`
+	Python        string                  `json:"python"`
+	Env           map[string]string       `json:"env"`
+	Groups        []security.HookGroup    `json:"groups"`
+	Digests       map[string]string       `json:"digests"`
+	ShellHome     string                  `json:"shellHome"`
+	Tools         []string                `json:"tools"`
+	BashAllowlist []string                `json:"bashAllowlist"`
+	Permission    map[string]any          `json:"permission"`
+	Activation    *openCodeHookActivation `json:"activation,omitempty"`
+}
+
+// openCodeHookActivation is a runner-held, per-iteration challenge. The
+// adapter writes its token only when OpenCode loads it; Run verifies it after
+// the process exits. The token is not exposed to tool subprocesses.
+// This confirms loading but does not close the tracked same-user TOCTOU gap.
+type openCodeHookActivation struct {
+	Path  string `json:"path"`
+	Token string `json:"token"`
 }
 
 func openCodeHookPolicy(dir, workspace string, def *piAgentDef, rules []openCodePermissionRule) *openCodeHookConfig {
@@ -150,6 +160,15 @@ func openCodeHookGuardCommand(cfg *openCodeHookConfig) string {
 // Used after .env, before any command-p based guard: shell functions must not
 // impersonate builtins/utilities, and loader variables must not reach them.
 const openCodeHookFunctionsUnset = "unset -f command test '[' echo printf cut sha256sum find wc stat"
+
+func openCodeHookActivationGuard(activation *openCodeHookActivation) string {
+	if activation == nil || activation.Path == "" || activation.Token == "" {
+		return "{ echo 'fullsend: OpenCode hook activation was not recorded; refusing to run unhooked' >&2; exit 99; }"
+	}
+	return fmt.Sprintf(`{ "$%s" -f %s && "$%s" "$("$%s" %s 2>/dev/null)" = %s || { "$%s" '%%s\n' 'fullsend: OpenCode hook plugin did not activate; refusing to run unhooked' >&2; exit %d; }; }`,
+		openCodeTestVar, shellQuote(activation.Path), openCodeTestVar, openCodeCatVar,
+		shellQuote(activation.Path), shellQuote(activation.Token), openCodePrintfVar, openCodeHookActivationMissingExit)
+}
 
 func openCodeBashPatterns(allowlist []string) json.RawMessage {
 	rules := []openCodePatternRule{{Pattern: "*", Action: "deny"}}

@@ -3,6 +3,7 @@ package runtime
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -142,6 +143,10 @@ func TestOpenCodeModelAliases_CoversDocumentedAliases(t *testing.T) {
 				"alias %q should not pass through as bare id", alias)
 		})
 	}
+	out, err := exec.Command("sh", "-c", openCodeUtilityPin()+" && "+openCodeHookActivationGuard(nil)).CombinedOutput()
+	var exit *exec.ExitError
+	require.ErrorAs(t, err, &exit, "%s", out)
+	assert.Equal(t, openCodeHookActivationMissingExit, exit.ExitCode())
 }
 
 func TestOpenCodeBareModelID(t *testing.T) {
@@ -514,6 +519,7 @@ func TestOpenCodeExitPipeline(t *testing.T) {
 		[]string{"/bin/sh", "-c", shellQuote("command -p printf real-output; exit 7")},
 		rcFile,
 		transcript,
+		nil,
 	)
 	cmd := exec.Command("sh", "-c", command)
 	out, err := cmd.CombinedOutput()
@@ -750,7 +756,10 @@ func TestBuildOpenCodeRunCommand_HooksGuard(t *testing.T) {
 	assert.Equal(t, 2, strings.Count(cmd, "refusing to run unhooked"))
 	assert.Less(t, firstGuardIdx, envIdx, "integrity guard must run before .env is sourced")
 	assert.Greater(t, lastGuardIdx, envIdx, "integrity guard must run again after .env is sourced")
-	assert.Less(t, strings.Index(cmd, openCodeHookFunctionsUnset), lastGuardIdx, "shell functions must be unset before the second integrity guard")
+	unsetIdx := strings.Index(cmd, openCodeHookFunctionsUnset)
+	require.NotEqual(t, -1, unsetIdx)
+	assert.Greater(t, unsetIdx, envIdx, "shell functions must be unset after .env")
+	assert.Less(t, unsetIdx, lastGuardIdx, "shell functions must be unset before the second integrity guard")
 	assert.Contains(t, cmd, `"$`+openCodeSHA256Var+`"`)
 	assert.Contains(t, cmd, openCodeUtilityPin())
 	assert.Contains(t, cmd, OpenCodeRuntime{}.openCodeHooksExtensionPath())
@@ -889,20 +898,50 @@ func TestOpenCodeHooksExtensionPath(t *testing.T) {
 	assert.Equal(t, sandbox.SandboxOpenCodeConfig+"/plugins/fullsend-hooks.ts", r.openCodeHooksExtensionPath())
 }
 
-func TestOpenCodeRunFailsClosedWhenHooksEnabledButAdapterMissing(t *testing.T) {
-	t.Parallel()
-	require.NotEmpty(t, openCodeHooksExtensionBytes())
-
-	r := OpenCodeRuntime{}
-	params := RunParams{
-		AgentBaseName:     "fix",
-		RepoDir:           "/repo",
-		HooksSettingsPath: "enabled",
+func TestOpenCodeHookActivationGuard(t *testing.T) {
+	requirePinnedSha256sum(t)
+	activation := &openCodeHookActivation{Path: filepath.Join(t.TempDir(), "activation"), Token: "runner-held-token"}
+	for _, tt := range []struct {
+		name  string
+		write bool
+		want  int
+	}{
+		{name: "active plugin signal", write: true},
+		{name: "missing plugin signal", want: openCodeHookActivationMissingExit},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.write {
+				require.NoError(t, os.WriteFile(activation.Path, []byte(activation.Token), 0o600))
+			}
+			out, err := exec.Command("sh", "-c", openCodeUtilityPin()+" && "+openCodeHookActivationGuard(activation)).CombinedOutput()
+			if tt.want == 0 {
+				require.NoError(t, err, "%s", out)
+			} else {
+				var exit *exec.ExitError
+				require.ErrorAs(t, err, &exit, "%s", out)
+				assert.Equal(t, tt.want, exit.ExitCode())
+			}
+			if tt.write {
+				require.NoError(t, os.Remove(activation.Path))
+			}
+		})
 	}
-	exitCode, err := r.Run(t.Context(), params, nil, time.Now(), &RunMetrics{})
-	require.Error(t, err)
-	assert.Equal(t, -1, exitCode)
-	assert.Contains(t, err.Error(), "trusted environment was not recorded")
+}
+
+func TestNewOpenCodeHookActivation(t *testing.T) {
+	first, err := newOpenCodeHookActivation()
+	require.NoError(t, err)
+	second, err := newOpenCodeHookActivation()
+	require.NoError(t, err)
+	assert.Equal(t, sandbox.SandboxWorkspace+"/"+openCodeHookActivationFile, first.Path)
+	assert.Len(t, first.Token, 64)
+	assert.NotEqual(t, first.Token, second.Token, "each iteration needs a distinct activation challenge")
+
+	original := openCodeRandomReadFn
+	openCodeRandomReadFn = func([]byte) (int, error) { return 0, errors.New("entropy unavailable") }
+	t.Cleanup(func() { openCodeRandomReadFn = original })
+	_, err = newOpenCodeHookActivation()
+	require.ErrorContains(t, err, "generating OpenCode hook activation token")
 }
 
 func TestParseOpenCodeTranscriptFile(t *testing.T) {

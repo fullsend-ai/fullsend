@@ -1,7 +1,7 @@
 // OpenCode 1.x adapter for security.HookPlan (ADR 0090). No SDK dependencies.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { lstatSync, readFileSync, readdirSync, realpathSync, readlinkSync, statSync } from "node:fs";
+import { lstatSync, readFileSync, readdirSync, realpathSync, readlinkSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 const names = {
@@ -168,6 +168,12 @@ function checkWrites(cfg, targets, cwd) {
 export default async ({ directory, worktree }) => {
   let cfg;
   try { cfg = JSON.parse(process.env.FULLSEND_OPENCODE_HOOK_CONFIG ?? "null"); } catch { /* all calls fail closed below */ }
+  // The runner supplies a fresh token per iteration and verifies this write
+  // after OpenCode exits. It proves this plugin factory loaded, but does not
+  // claim to close the same-user check-to-load race tracked separately.
+  if (typeof cfg?.activation?.path === "string" && typeof cfg.activation.token === "string") {
+    writeFileSync(cfg.activation.path, cfg.activation.token, { mode: 0o600 });
+  }
   const cwd = directory ?? process.cwd();
   const permissionRoot = resolved(worktree ?? cwd);
   // Never inherit loader, Python, pager, provider or agent-modified variables.
