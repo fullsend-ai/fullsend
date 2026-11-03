@@ -254,6 +254,29 @@ func TestForgePointerAttrs_RepositoryURLDropsEntityCredentials(t *testing.T) {
 	assert.Equal(t, "https://github.com/fullsend-ai/fullsend", got["vcs.repository.url.full"])
 }
 
+func TestForgePointerAttrs_RepositoryURLKeepsRelativeURLPrefix(t *testing.T) {
+	ev := normevent.Event{
+		Repo: "group/project",
+		Entity: normevent.Entity{
+			Kind: normevent.EntityChangeProposal,
+			ID:   42,
+			URL:  "https://example.com/gitlab/group/project/-/merge_requests/42",
+		},
+		Source: normevent.Source{System: normevent.SystemGitLab},
+	}
+	got := attrValues(forgePointerAttrs(eventMapFor(t, ev), "gitlab", "", envFrom(nil)))
+	assert.Equal(t, "https://example.com/gitlab/group/project", got["vcs.repository.url.full"])
+}
+
+func TestForgePointerAttrs_RepositoryURLFallsBackToOrigin(t *testing.T) {
+	// The entity URL does not contain the repository path, so only its
+	// origin is used.
+	ev := githubPREvent()
+	ev.Entity.URL = "https://github.com/redirected/name/pull/8594"
+	got := attrValues(forgePointerAttrs(eventMapFor(t, ev), "github", "", envFrom(nil)))
+	assert.Equal(t, "https://github.com/fullsend-ai/fullsend", got["vcs.repository.url.full"])
+}
+
 func TestForgePointerAttrs_RepositoryURLNeedsHTTPEntityURL(t *testing.T) {
 	for _, entityURL := range []string{"", "not a url", "ssh://git@github.com/fullsend-ai/fullsend"} {
 		ev := githubPREvent()

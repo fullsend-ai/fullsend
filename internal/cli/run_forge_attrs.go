@@ -18,15 +18,14 @@ import (
 // those conventions read them without a Fullsend-specific mapping.
 //
 // Repository, change and refs come from the normalized event, so no forge
-// needs its own code here. GitHub dispatch delivers that event to run; GitLab
-// dispatch does not yet, so GitLab runs carry only the provider, the
-// pipeline run and a head revision from CI variables. The head revision is
-// the change's head commit, never GITHUB_SHA or CI_COMMIT_SHA, which name a
-// merge or base commit on pull request and merged-results pipelines. The
-// pipeline run comes from the environment of the CI system running fullsend,
-// which can differ from the forge the run targets (a Jira-triggered run on
-// GitHub Actions, for one).
-// An attribute that does not apply is omitted rather than emitted empty.
+// needs its own code here: GitHub and GitLab dispatch both deliver that
+// event to run (GitLab since #9014). The head revision is the change's head
+// commit, never GITHUB_SHA or CI_COMMIT_SHA, which name a merge or base
+// commit on pull request and merged-results pipelines. The pipeline run
+// comes from the environment of the CI system running fullsend, which can
+// differ from the forge the run targets (a Jira-triggered run on GitHub
+// Actions, for one). An attribute that does not apply is omitted rather than
+// emitted empty.
 func forgePointerAttrs(eventMap map[string]any, forgePlatform, runURL string, getenv func(string) string) []attribute.KeyValue {
 	var ev normevent.Event
 	if eventMap != nil {
@@ -92,9 +91,12 @@ func forgePointerAttrs(eventMap map[string]any, forgePlatform, runURL string, ge
 	return attrs
 }
 
-// repositoryURL joins the origin of the entity URL with the event's
-// repository path, e.g. https://gitlab.example.com/group/sub/project. It
-// returns "" when either part is missing.
+// repositoryURL returns the repository's web URL: the entity URL cut right
+// after the event's repository path, which keeps the path prefix of a GitLab
+// install served under a relative URL (https://example.com/gitlab/group/project).
+// When the entity URL does not contain the repository path, it falls back to
+// the URL's origin plus the repository path. It returns "" when either part
+// is missing.
 func repositoryURL(entityURL, repo string) string {
 	repo = strings.Trim(strings.TrimSpace(repo), "/")
 	u, err := url.Parse(strings.TrimSpace(entityURL))
@@ -102,7 +104,11 @@ func repositoryURL(entityURL, repo string) string {
 		return ""
 	}
 	// u.Host carries no userinfo, so credentials in the entity URL are dropped.
-	return u.Scheme + "://" + u.Host + "/" + repo
+	origin := u.Scheme + "://" + u.Host
+	if i := strings.Index(u.Path+"/", "/"+repo+"/"); i >= 0 {
+		return origin + u.Path[:i] + "/" + repo
+	}
+	return origin + "/" + repo
 }
 
 // changeHeadSHAFromEnv is the head-commit fallback for runs without a

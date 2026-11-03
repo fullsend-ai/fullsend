@@ -387,10 +387,10 @@ they do not. Names follow the OpenTelemetry
 and
 [CICD](https://opentelemetry.io/docs/specs/semconv/registry/attributes/cicd/)
 semantic conventions. Repository, change and refs come from the normalized
-event, so GitHub and GitLab runs carry the same keys once the event reaches
-`fullsend run`. GitLab dispatch does not deliver it yet, so GitLab runs record
-only `vcs.provider.name`, the pipeline run, and a head revision when
-`CI_MERGE_REQUEST_SOURCE_BRANCH_SHA` is set.
+event, so GitHub and GitLab runs carry the same keys. A run without a
+normalized event (for example a local run with no `--event-file`) records only
+`vcs.provider.name`, the pipeline run, and a head revision from the
+environment.
 
 Inputs, in order of precedence:
 
@@ -408,7 +408,7 @@ Inputs, in order of precedence:
 | Attribute | Present on | Description |
 |-----------|------------|-------------|
 | `vcs.provider.name` | `run` | Code-hosting forge: `github` or `gitlab` |
-| `vcs.repository.url.full` | `run` | Target repository URL (e.g. `https://github.com/owner/repo`), without credentials |
+| `vcs.repository.url.full` | `run` | Target repository URL (e.g. `https://github.com/owner/repo`), without credentials. Taken from the work item's URL up to the repository path, so a GitLab install served under a relative URL keeps its prefix |
 | `vcs.change.id` | `run` | Pull request or merge request number, when the run is about one |
 | `vcs.ref.head.name` | `run` | Head branch of that change |
 | `vcs.ref.base.name` | `run` | Base branch of that change |
