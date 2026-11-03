@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -255,6 +256,57 @@ func TestAgentsRepoHostFallback_LoadsCompanionFiles(t *testing.T) {
 	for _, a := range auth {
 		assert.Contains(t, a, "host-token")
 	}
+}
+
+// TestAgentsRepoHostFallback_DirectoryResourcesUnsupported documents the
+// documented limit of the configured-host transport: it reads single files
+// only. A relative skill directory cannot be fetched from the host, and a
+// script with a directory part is fetched as its entry file alone, without
+// the adjacent helpers.
+func TestAgentsRepoHostFallback_DirectoryResourcesUnsupported(t *testing.T) {
+	sha := "abcdef1234567890abcdef1234567890abcdef12"
+	setup := func(t *testing.T, harnessContent string, files map[string][]byte) (string, harness.ComposeOpts, forge.Client) {
+		t.Helper()
+		files["harness/triage.yaml"] = []byte(harnessContent)
+		srv := newAgentsRepoHostServer(t, sha, files)
+		t.Setenv("GITHUB_API_URL", srv.URL+"/api/v3")
+		client := newGitHubLiveClient("host-token", "")
+		opts := harness.ComposeOpts{
+			WorkspaceRoot: t.TempDir(),
+			FetchPolicy:   fetch.FetchPolicy{MaxSizeBytes: 1 << 20},
+			OrgAllowlist:  []string{srv.URL + "/fullsend-ai/agents/raw/"},
+		}
+		path, deps, ok := tryAgentsRepoFallback(context.Background(), "triage", client, opts, ui.New(io.Discard))
+		require.True(t, ok)
+		opts.SourceURL = deps[0].URL
+		useAgentsRepoHostFetch(&opts, client)
+		return path, opts, client
+	}
+
+	t.Run("skill directory fails", func(t *testing.T) {
+		path, opts, _ := setup(t,
+			"role: triage\nslug: triage\nagent: agents/triage.md\nskills:\n  - skills/review\n",
+			map[string][]byte{
+				"agents/triage.md":       []byte("# triage agent"),
+				"skills/review/SKILL.md": []byte("# review"),
+			})
+		_, _, err := harness.LoadWithBase(context.Background(), path, opts)
+		require.Error(t, err)
+	})
+
+	t.Run("script helper is not fetched", func(t *testing.T) {
+		path, opts, _ := setup(t,
+			"role: triage\nslug: triage\nagent: agents/triage.md\npre_script: scripts/pre-triage.sh\n",
+			map[string][]byte{
+				"agents/triage.md":      []byte("# triage agent"),
+				"scripts/pre-triage.sh": []byte("#!/bin/bash\n. \"$(dirname \"$0\")/helper.sh\"\n"),
+				"scripts/helper.sh":     []byte("echo helper\n"),
+			})
+		h, _, err := harness.LoadWithBase(context.Background(), path, opts)
+		require.NoError(t, err)
+		assert.FileExists(t, h.PreScript)
+		assert.NoFileExists(t, filepath.Join(filepath.Dir(h.PreScript), "helper.sh"))
+	})
 }
 
 // TestAgentsRepoHostFileFetcher_Rejects checks the hook only reads files
