@@ -172,14 +172,18 @@ runs:
         WORKFLOW_SHA: ${{ inputs.workflow_sha }}
         GH_TOKEN: ${{ inputs.github_token }}
         INSTALL_RELEASE_OUTCOME: ${{ steps.install-release.outcome }}
+        # Clone from the host this job runs against (github.com on github.com),
+        # the only host github_token is valid for.
+        SERVER_URL: ${{ github.server_url }}
       run: |
         set -euo pipefail
+        SERVER_URL="${SERVER_URL%/}"
         if [[ "${INSTALL_RELEASE_OUTCOME}" == "failure" ]]; then
           echo "::warning::Release download failed; falling back to source build"
         fi
         echo "::add-mask::${GH_TOKEN}"
         SRC="${RUNNER_TEMP}/fullsend-src"
-        REMOTE="https://x-access-token:${GH_TOKEN}@github.com/${WORKFLOW_REPOSITORY}.git"
+        REMOTE="${SERVER_URL%%://*}://x-access-token:${GH_TOKEN}@${SERVER_URL#*://}/${WORKFLOW_REPOSITORY}.git"
         echo "Cloning ${WORKFLOW_REPOSITORY} at ref: ${WORKFLOW_SHA}"
         git init "${SRC}"
         git -C "${SRC}" remote add origin "${REMOTE}"
