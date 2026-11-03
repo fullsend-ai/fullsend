@@ -394,6 +394,7 @@ func TestRunAgent_PerRepoConfig(t *testing.T) {
 }
 
 func TestTryLoadFullsendConfig_PerRepoFallback(t *testing.T) {
+	t.Setenv("GITHUB_SERVER_URL", "")
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	require.NoError(t, os.WriteFile(path, []byte(
@@ -479,6 +480,7 @@ func TestRequireFullsendConfig_MalformedYAML(t *testing.T) {
 }
 
 func TestRequireFullsendConfig_PerRepoFallback(t *testing.T) {
+	t.Setenv("GITHUB_SERVER_URL", "")
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	require.NoError(t, os.WriteFile(path, []byte(
