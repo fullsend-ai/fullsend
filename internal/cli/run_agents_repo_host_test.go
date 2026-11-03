@@ -155,6 +155,25 @@ func TestTryAgentsRepoMeasurementManifest_OtherGitHubHost404(t *testing.T) {
 	assert.NotContains(t, buf.String(), "Failed to fetch")
 }
 
+// TestTryAgentsRepoFallback_OtherGitHubHostSizeLimit checks that the contents
+// read on another host honours FetchPolicy.MaxSizeBytes like fetch.FetchURL.
+func TestTryAgentsRepoFallback_OtherGitHubHostSizeLimit(t *testing.T) {
+	sha := "abcdef1234567890abcdef1234567890abcdef12"
+	srv := newAgentsRepoHostServer(t, sha, map[string][]byte{"harness/triage.yaml": []byte("agent: agents/triage.md\n")})
+	t.Setenv("GITHUB_API_URL", srv.URL+"/api/v3")
+
+	var buf bytes.Buffer
+	opts := harness.ComposeOpts{
+		WorkspaceRoot: t.TempDir(),
+		FetchPolicy:   fetch.FetchPolicy{MaxSizeBytes: 4},
+		OrgAllowlist:  []string{srv.URL + "/fullsend-ai/agents/raw/"},
+	}
+	_, _, ok := tryAgentsRepoFallback(context.Background(), "triage", newGitHubLiveClient("t", ""), opts, ui.New(&buf))
+	assert.False(t, ok)
+	assert.Contains(t, buf.String(), "Failed to fetch")
+	assert.Contains(t, buf.String(), "size limit")
+}
+
 // TestTryAgentsRepoFallback_OtherGitHubHostNotAllowlisted checks that the
 // host's raw-content URL is still subject to allowed_remote_resources: the
 // default list names only raw.githubusercontent.com, so nothing is fetched.

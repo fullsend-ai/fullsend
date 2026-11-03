@@ -7516,6 +7516,10 @@ func fetchPinnedAgentsRepoFile(ctx context.Context, relPath string, forgeClient 
 		// A host other than github.com has no raw.githubusercontent.com,
 		// so read the file through the same client that resolved the ref.
 		content, err = forgeClient.GetFileContentAtRef(ctx, defaultAgentsRepoOwner, defaultAgentsRepoName, relPath, resolvedSHA)
+		// This path bypasses fetch.FetchURL, so apply the same size bound.
+		if err == nil && int64(len(content)) > composeOpts.FetchPolicy.MaxSizeBytes {
+			err = fmt.Errorf("response exceeds the %d-byte fetch size limit", composeOpts.FetchPolicy.MaxSizeBytes)
+		}
 	} else {
 		content, err = fetch.FetchURL(ctx, rawURL, composeOpts.FetchPolicy)
 	}
