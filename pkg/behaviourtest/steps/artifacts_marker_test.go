@@ -52,3 +52,47 @@ func TestEnsureRunArtifacts_AgentDownloadWithoutMarkerFallsBack(t *testing.T) {
 	assert.FileExists(t, filepath.Join(w.ArtifactDir, "fullsend-review", "metrics.json"))
 	assert.NoFileExists(t, filepath.Join(w.ArtifactDir, "fullsend-review", "unrelated.json"))
 }
+
+// agentRecordingCI records the logical agent requested from the run-scoped
+// and time-scoped agent downloads, and fails if an exact-name download is used.
+type agentRecordingCI struct {
+	ci.Driver
+	runAgent   string
+	afterAgent string
+}
+
+func (f *agentRecordingCI) DownloadAgentArtifactsFromRun(_ context.Context, _, _ string, _ int, agent, destDir string) error {
+	f.runAgent = agent
+	dir := filepath.Join(destDir, "fullsend-"+agent)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "unrelated.json"), []byte("{}"), 0o644)
+}
+
+func (f *agentRecordingCI) DownloadAgentArtifactsAfter(_ context.Context, _, _, agent string, _ time.Time, destDir string) error {
+	f.afterAgent = agent
+	dir := filepath.Join(destDir, "fullsend-"+agent)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "metrics.json"), []byte("{}"), 0o644)
+}
+
+func (f *agentRecordingCI) FindCompletedWorkflowRun(context.Context, string, string, string, time.Time) (*forge.WorkflowRun, error) {
+	return nil, nil
+}
+
+func TestEnsureRunArtifacts_EmptyDispatchAgentDefaultsToTriage(t *testing.T) {
+	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", t.TempDir())
+	fake := &agentRecordingCI{}
+	w := &world.World{
+		WorkflowRun: &forge.WorkflowRun{ID: 1},
+		CI:          fake,
+	}
+
+	require.NoError(t, ensureRunArtifacts(w, "metrics.json"))
+	assert.Equal(t, "triage", fake.runAgent)
+	assert.Equal(t, "triage", fake.afterAgent)
+	assert.FileExists(t, filepath.Join(w.ArtifactDir, "fullsend-triage", "metrics.json"))
+}

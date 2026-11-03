@@ -14,6 +14,10 @@ import (
 const issueOpenEvent = "issues"
 const issueCommentEvent = "issue_comment"
 
+// defaultArtifactAgent is the logical agent whose artifacts are downloaded
+// when a scenario has not dispatched a specific agent.
+const defaultArtifactAgent = "triage"
+
 func triageWorkflowEvent(w *world.World) string {
 	if w.TriageTriggerEvent != "" {
 		return w.TriageTriggerEvent
@@ -66,17 +70,15 @@ func ensureRunArtifacts(w *world.World, marker string) error {
 	}
 	// The agent workflow uploads an artifact for its agent; follow the
 	// harness this scenario dispatched rather than assuming the triage stage.
-	artifactName := install.PerRepoAgentArtifact
-	if w.DispatchAgent != "" {
-		artifactName = "fullsend-" + w.DispatchAgent
+	// Resolve the logical agent (default triage) so both explicit and
+	// default agents go through the agent-aware download methods.
+	agent := w.DispatchAgent
+	if agent == "" {
+		agent = defaultArtifactAgent
 	}
 
 	tryDownloadRun := func(runID int) error {
-		if w.DispatchAgent != "" {
-			if err := w.CI.DownloadAgentArtifactsFromRun(ctx, w.Org, w.RepoName, runID, w.DispatchAgent, dest); err != nil {
-				return err
-			}
-		} else if err := w.CI.DownloadNamedArtifactFromRun(ctx, w.Org, w.RepoName, runID, artifactName, dest); err != nil {
+		if err := w.CI.DownloadAgentArtifactsFromRun(ctx, w.Org, w.RepoName, runID, agent, dest); err != nil {
 			return err
 		}
 		if _, findErr := artifacts.FindOutputFile(dest, marker); findErr != nil {
@@ -112,13 +114,7 @@ func ensureRunArtifacts(w *world.World, marker string) error {
 		}
 	}
 
-	var downloadErr error
-	if w.DispatchAgent != "" {
-		downloadErr = w.CI.DownloadAgentArtifactsAfter(ctx, w.Org, w.RepoName, w.DispatchAgent, w.ScenarioStart, dest)
-	} else {
-		downloadErr = w.CI.DownloadNamedArtifactAfter(ctx, w.Org, w.RepoName, artifactName, w.ScenarioStart, dest)
-	}
-	if downloadErr != nil {
+	if downloadErr := w.CI.DownloadAgentArtifactsAfter(ctx, w.Org, w.RepoName, agent, w.ScenarioStart, dest); downloadErr != nil {
 		_ = os.RemoveAll(dest)
 		return downloadErr
 	}
