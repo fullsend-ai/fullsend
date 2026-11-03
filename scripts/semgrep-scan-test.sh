@@ -89,12 +89,12 @@ GOOD_CACHE="${TEST_ROOT}/cache-good"
 GOOD_CALLS="${TEST_ROOT}/good-curl-calls"
 GOOD_UV="${TEST_ROOT}/good-uv"
 run_scan "$GOOD_CACHE" payload "${TEST_ROOT}/valid-rules.yml" \
-	"$GOOD_CALLS" false "$GOOD_UV" || fail "valid pinned ruleset did not scan"
+	"$GOOD_CALLS" 0 "$GOOD_UV" || fail "valid pinned ruleset did not scan"
 [[ -f "${GOOD_CACHE}/fullsend/semgrep/${EXPECTED_SHA}/security-audit.yml" ]] || \
 	fail "verified ruleset was not cached under its SHA"
 
 run_scan "$GOOD_CACHE" fail "${TEST_ROOT}/valid-rules.yml" \
-	"$GOOD_CALLS" false "$GOOD_UV" || fail "cached ruleset did not scan offline"
+	"$GOOD_CALLS" 0 "$GOOD_UV" || fail "cached ruleset did not scan offline"
 [[ "$(wc -l < "$GOOD_CALLS")" -eq 1 ]] || fail "cached ruleset triggered another download"
 [[ "$(cat "${GOOD_UV}.cwd")" == "${GOOD_CACHE}/fullsend/semgrep/${EXPECTED_SHA}" ]] || \
 	fail "Semgrep did not run from the stable SHA-keyed ruleset directory"
@@ -117,7 +117,7 @@ pass "verified cache reuse and relative output/target path resolution"
 LOCAL_OFFLINE_CACHE="${TEST_ROOT}/cache-local-offline"
 LOCAL_OFFLINE_CALLS="${TEST_ROOT}/local-offline-curl-calls"
 if output="$(run_scan "$LOCAL_OFFLINE_CACHE" fail "${TEST_ROOT}/valid-rules.yml" \
-	"$LOCAL_OFFLINE_CALLS" false "${TEST_ROOT}/local-offline-uv" 2>&1)"; then
+	"$LOCAL_OFFLINE_CALLS" 0 "${TEST_ROOT}/local-offline-uv" 2>&1)"; then
 	[[ "$output" == *"warning:"* && "$output" == *"skipping this scan"* ]] || \
 		fail "local network failure did not warn and skip"
 else
@@ -128,7 +128,7 @@ pass "local network failure warns and skips"
 
 CI_OFFLINE_CACHE="${TEST_ROOT}/cache-ci-offline"
 if output="$(run_scan "$CI_OFFLINE_CACHE" fail "${TEST_ROOT}/valid-rules.yml" \
-	"${TEST_ROOT}/ci-offline-curl-calls" true "${TEST_ROOT}/ci-offline-uv" 2>&1)"; then
+	"${TEST_ROOT}/ci-offline-curl-calls" 1 "${TEST_ROOT}/ci-offline-uv" 2>&1)"; then
 	fail "CI network failure returned success"
 fi
 [[ "$output" == *"failing the required scan"* ]] || fail "required network failure did not report fail-closed behavior"
@@ -137,8 +137,8 @@ pass "CI network failure fails closed"
 
 for mode in local ci; do
 	mismatch_cache="${TEST_ROOT}/cache-mismatch-${mode}"
-	ci_value=false
-	[[ "$mode" == ci ]] && ci_value=true
+	ci_value=0
+	[[ "$mode" == ci ]] && ci_value=1
 	if output="$(run_scan "$mismatch_cache" payload "${TEST_ROOT}/wrong-rules.yml" \
 		"${TEST_ROOT}/mismatch-${mode}-curl-calls" "$ci_value" \
 		"${TEST_ROOT}/mismatch-${mode}-uv" 2>&1)"; then
