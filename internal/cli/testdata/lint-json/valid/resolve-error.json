@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "success": false,
+  "summary": {
+    "errors": 1,
+    "warnings": 0
+  },
+  "diagnostics": [
+    {
+      "agent": "my-agent",
+      "severity": "error",
+      "field": "",
+      "message": "resolving harness for agent \"my-agent\": harness file does not exist"
+    }
+  ]
+}
