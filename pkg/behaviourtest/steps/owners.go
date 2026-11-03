@@ -208,8 +208,8 @@ func thenTriageAgentDidNotRun(w *world.World) error {
 		return err
 	}
 	defer os.RemoveAll(dest)
-	err = w.CI.DownloadNamedArtifactFromRun(context.Background(),
-		w.RepoOwner, w.RepoName, w.WorkflowRun.ID, install.PerRepoAgentArtifact, dest)
+	err = w.CI.DownloadAgentArtifactsFromRun(context.Background(),
+		w.RepoOwner, w.RepoName, w.WorkflowRun.ID, "triage", dest)
 	if err == nil {
 		return fmt.Errorf("triage run %d uploaded %q: the agent ran", w.WorkflowRun.ID, install.PerRepoAgentArtifact)
 	}

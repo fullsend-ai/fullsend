@@ -462,7 +462,7 @@ func ensureRoundArtifacts(w *world.World, agent string, run *forge.WorkflowRun) 
 	if err != nil {
 		return err
 	}
-	if err := w.CI.DownloadNamedArtifactFromRun(ctx, w.Org, w.RepoName, run.ID, "fullsend-"+agent, dest); err != nil {
+	if err := w.CI.DownloadAgentArtifactsFromRun(ctx, w.Org, w.RepoName, run.ID, agent, dest); err != nil {
 		_ = os.RemoveAll(dest)
 		return fmt.Errorf("downloading %q agent-result artifact for run %d: %w", agent, run.ID, err)
 	}
@@ -658,8 +658,9 @@ func reviewActionToState(action string) (string, bool) {
 // roundDisposition returns the forge review state implied by the given
 // run's own agent-result artifact — the canned result.json fixture the
 // dummy-playback runtime serves, written to output/agent-result.json and
-// uploaded as fullsend-<agent> (internal/runtime/dummy_playback.go) — an
-// immutable record of what this specific round intended to submit.
+// uploaded under the logical agent artifact name
+// (internal/runtime/dummy_playback.go) — an immutable record of what this
+// specific round intended to submit.
 //
 // It downloads the artifact fresh into a scratch directory scoped to
 // run.ID rather than reusing w.ArtifactDir: ensureHarnessArtifacts (used
@@ -672,22 +673,30 @@ func roundDisposition(ctx context.Context, w *world.World, agent string, run *fo
 		return "", fmt.Errorf("preparing scratch dir for %q agent-result artifact: %w", agent, err)
 	}
 	defer os.RemoveAll(dest)
-	if err := w.CI.DownloadNamedArtifactFromRun(ctx, w.Org, w.RepoName, run.ID, "fullsend-"+agent, dest); err != nil {
+	if err := w.CI.DownloadAgentArtifactsFromRun(ctx, w.Org, w.RepoName, run.ID, agent, dest); err != nil {
 		return "", fmt.Errorf("downloading %q agent-result artifact for run %d: %w", agent, run.ID, err)
 	}
-	data, err := artifacts.FindOutputFile(dest, "agent-result.json")
+	results, err := artifacts.FindOutputFiles(dest, "agent-result.json")
 	if err != nil {
 		return "", fmt.Errorf("reading agent-result.json for %q agent's run %d: %w", agent, run.ID, err)
 	}
-	var result struct {
-		Action string `json:"action"`
-	}
-	if err := json.Unmarshal(data, &result); err != nil {
-		return "", fmt.Errorf("parsing agent-result.json for %q agent's run %d: %w", agent, run.ID, err)
-	}
-	state, ok := reviewActionToState(result.Action)
-	if !ok {
-		return "", fmt.Errorf("agent-result.json for %q agent's run %d has unrecognized action %q", agent, run.ID, result.Action)
+	var state string
+	for i, data := range results {
+		var result struct {
+			Action string `json:"action"`
+		}
+		if err := json.Unmarshal(data, &result); err != nil {
+			return "", fmt.Errorf("parsing agent-result.json %d for %q agent's run %d: %w", i+1, agent, run.ID, err)
+		}
+		artifactState, ok := reviewActionToState(result.Action)
+		if !ok {
+			return "", fmt.Errorf("agent-result.json %d for %q agent's run %d has unrecognized action %q", i+1, agent, run.ID, result.Action)
+		}
+		if state != "" && state != artifactState {
+			return "", fmt.Errorf("agent-result.json artifacts for %q agent's run %d imply conflicting review states %q and %q",
+				agent, run.ID, state, artifactState)
+		}
+		state = artifactState
 	}
 	return state, nil
 }

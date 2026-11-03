@@ -30,9 +30,9 @@ func registerPreScriptSkipSteps(sc *godog.ScenarioContext) {
 	})
 }
 
-// thenHarnessRunSkippedByPreScript downloads the fullsend-<agent> artifact
-// of the workflow run the scenario is tracking and requires that the host
-// telemetry recorded a pre-script skip and that no agent output exists.
+// thenHarnessRunSkippedByPreScript downloads artifacts for the logical agent
+// from the workflow run the scenario is tracking and requires every matching
+// artifact to record a pre-script skip with no agent output.
 // A skipped run still uploads its artifact and its workflow still
 // succeeds, so neither the artifact's presence nor the run's conclusion
 // can tell a skip from a run where the agent ran.
@@ -48,38 +48,44 @@ func thenHarnessRunSkippedByPreScript(w *world.World, agent string) error {
 	}
 	defer os.RemoveAll(dest)
 	artifactName := "fullsend-" + agent
-	if err := w.CI.DownloadNamedArtifactFromRun(context.Background(), w.Org, w.RepoName, runID, artifactName, dest); err != nil {
+	if err := w.CI.DownloadAgentArtifactsFromRun(context.Background(), w.Org, w.RepoName, runID, agent, dest); err != nil {
 		return fmt.Errorf("harness %q run %d: downloading artifact %s: %w", agent, runID, artifactName, err)
 	}
-	root, err := extractedArtifactRoot(dest)
+	roots, err := extractedArtifactRoots(dest)
 	if err != nil {
 		return fmt.Errorf("harness %q run %d: artifact %s: %w", agent, runID, artifactName, err)
 	}
-	if err := checkPreScriptSkipped(root); err != nil {
-		return fmt.Errorf("harness %q run %d was not skipped by its pre-script: %w", agent, runID, err)
+	var problems []string
+	for _, root := range roots {
+		if err := checkPreScriptSkipped(root); err != nil {
+			problems = append(problems, filepath.Base(root)+": "+err.Error())
+		}
+	}
+	if len(problems) > 0 {
+		return fmt.Errorf("harness %q run %d was not skipped by its pre-script: %s",
+			agent, runID, strings.Join(problems, "; "))
 	}
 	return nil
 }
 
-// extractedArtifactRoot returns the directory a CI driver extracted one
-// named artifact into. dest is fresh, and the drivers extract into
-// dest/<driver artifact name>/: fullsend-<agent> on GitHub, the job name
-// ("fullsend <agent> agent") on GitLab.
-func extractedArtifactRoot(dest string) (string, error) {
+// extractedArtifactRoots returns the directories a CI driver extracted the
+// named artifacts into. A matrix can upload several artifacts for one agent;
+// each driver's extraction path is dest/<artifact name>/.
+func extractedArtifactRoots(dest string) ([]string, error) {
 	entries, err := os.ReadDir(dest)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	var dirs []string
 	for _, e := range entries {
 		if e.IsDir() {
-			dirs = append(dirs, e.Name())
+			dirs = append(dirs, filepath.Join(dest, e.Name()))
 		}
 	}
-	if len(dirs) != 1 {
-		return "", fmt.Errorf("expected one extracted artifact directory, found %d", len(dirs))
+	if len(dirs) == 0 {
+		return nil, fmt.Errorf("expected at least one extracted artifact directory, found none")
 	}
-	return filepath.Join(dest, dirs[0]), nil
+	return dirs, nil
 }
 
 // hostRunDirBases are where the run directories sit inside an extracted

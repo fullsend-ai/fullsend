@@ -411,9 +411,14 @@ The existing design principle is that [the repo is the coordinator](problems/age
   during reconciliation remains a separate decision
   ([ADR 0106](ADRs/0106-serialize-agent-runs-and-coalesce-subsequent-events.md),
   partially superseded by [ADR 0144](ADRs/0144-reuse-poll-and-entity-bound-run-processes.md)).
-- Dispatch runs no follow-up stage after an agent. Every run publishes the
-  `fullsend-<agent>` artifact, and users who want to act on a result chain
-  their own workflow on the shim's `workflow_run` event
+- Dispatch runs no follow-up stage after an agent. Every unique agent job
+  publishes the `fullsend-<agent>` artifact. When a dispatch matrix repeats an
+  agent, its first job keeps that name and later jobs use
+  `fullsend-<agent>.matrix-<job-index>`; other agents keep their usual names.
+  The composite action also accepts an optional `artifact-name` input for
+  caller-defined names. Users who want to act on a result chain their own
+  workflow on the shim's
+  `workflow_run` event
   ([guide](guides/user/chaining-follow-up-workflows.md),
   [ADR 0124](ADRs/0124-criteria-for-adding-a-built-in-agent-role.md)).
 - Per-repo **polling** complements webhook dispatch: `fullsend poll` uses poll

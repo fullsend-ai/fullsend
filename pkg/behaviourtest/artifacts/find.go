@@ -9,16 +9,27 @@ import (
 
 // FindBehaviourResults locates behaviour-results.json in downloaded artifacts.
 func FindBehaviourResults(artifactRoot string) ([]byte, error) {
-	return findFileByName(artifactRoot, "behaviour-results.json")
+	return FindOutputFile(artifactRoot, "behaviour-results.json")
 }
 
 // FindOutputFile searches artifact downloads for a sandbox output file by name.
 func FindOutputFile(artifactRoot, fileName string) ([]byte, error) {
+	found, err := FindOutputFiles(artifactRoot, fileName)
+	if err != nil {
+		return nil, err
+	}
+	return found[0], nil
+}
+
+// FindOutputFiles returns every sandbox output file with the given name from
+// downloaded artifacts. Multiple matrix jobs for one agent can publish the
+// same output filename in separate artifact directories.
+func FindOutputFiles(artifactRoot, fileName string) ([][]byte, error) {
 	return findFileByName(artifactRoot, fileName)
 }
 
-func findFileByName(artifactRoot, fileName string) ([]byte, error) {
-	var found []byte
+func findFileByName(artifactRoot, fileName string) ([][]byte, error) {
+	var found [][]byte
 	err := filepath.WalkDir(artifactRoot, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -33,13 +44,13 @@ func findFileByName(artifactRoot, fileName string) ([]byte, error) {
 		if readErr != nil {
 			return readErr
 		}
-		found = data
-		return filepath.SkipAll
+		found = append(found, data)
+		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	if found == nil {
+	if len(found) == 0 {
 		return nil, fmt.Errorf("%s not found under %s", fileName, artifactRoot)
 	}
 	return found, nil

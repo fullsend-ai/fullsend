@@ -4433,21 +4433,31 @@ func (c *LiveClient) ListWorkflowRunJobs(ctx context.Context, owner, repo string
 }
 
 // ListWorkflowRunArtifacts returns artifacts uploaded by a workflow run.
+// It paginates like ListWorkflowRunJobs so runs with more than one page of
+// artifacts (e.g. large dispatch matrices) are returned in full.
 func (c *LiveClient) ListWorkflowRunArtifacts(ctx context.Context, owner, repo string, runID int) ([]forge.WorkflowArtifact, error) {
-	var result struct {
-		Artifacts []struct {
-			ID   int    `json:"id"`
-			Name string `json:"name"`
-		} `json:"artifacts"`
+	const maxPages = 100
+	const perPage = 100
+	var artifacts []forge.WorkflowArtifact
+	for page := 1; page <= maxPages; page++ {
+		var result struct {
+			Artifacts []struct {
+				ID   int    `json:"id"`
+				Name string `json:"name"`
+			} `json:"artifacts"`
+		}
+		path := fmt.Sprintf("/repos/%s/%s/actions/runs/%d/artifacts?per_page=%d&page=%d", owner, repo, runID, perPage, page)
+		if err := c.getCachedJSON(ctx, path, &result); err != nil {
+			return nil, fmt.Errorf("list workflow run artifacts page %d: %w", page, err)
+		}
+		for _, art := range result.Artifacts {
+			artifacts = append(artifacts, forge.WorkflowArtifact{ID: art.ID, Name: art.Name})
+		}
+		if len(result.Artifacts) < perPage {
+			return artifacts, nil
+		}
 	}
-	if err := c.getCachedJSON(ctx, fmt.Sprintf("/repos/%s/%s/actions/runs/%d/artifacts", owner, repo, runID), &result); err != nil {
-		return nil, fmt.Errorf("list workflow run artifacts: %w", err)
-	}
-	artifacts := make([]forge.WorkflowArtifact, len(result.Artifacts))
-	for i, art := range result.Artifacts {
-		artifacts[i] = forge.WorkflowArtifact{ID: art.ID, Name: art.Name}
-	}
-	return artifacts, nil
+	return nil, fmt.Errorf("list workflow run artifacts: pagination exceeded %d pages", maxPages)
 }
 
 // DownloadWorkflowRunArtifact returns the zip archive for a workflow artifact.

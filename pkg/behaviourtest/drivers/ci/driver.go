@@ -27,8 +27,14 @@ type Driver interface {
 	AssertNoWorkflow(ctx context.Context, owner, repo, workflowFile string, after time.Time) error
 	GetRunLogs(ctx context.Context, owner, repo string, runID int) (string, error)
 	DownloadArtifacts(ctx context.Context, owner, repo string, runID int, destDir string) error
+	// DownloadNamedArtifactFromRun and DownloadNamedArtifactAfter match the
+	// supplied physical artifact name exactly. Use DownloadAgentArtifactsFromRun
+	// or DownloadAgentArtifactsAfter when selecting output by logical agent;
+	// those methods include any platform-specific artifact names for that agent.
 	DownloadNamedArtifactFromRun(ctx context.Context, owner, repo string, runID int, artifactName string, destDir string) error
 	DownloadNamedArtifactAfter(ctx context.Context, owner, repo, artifactName string, after time.Time, destDir string) error
+	DownloadAgentArtifactsFromRun(ctx context.Context, owner, repo string, runID int, agent string, destDir string) error
+	DownloadAgentArtifactsAfter(ctx context.Context, owner, repo, agent string, after time.Time, destDir string) error
 	// WaitForHarnessAgent waits for the named agent's harness run to
 	// succeed. When the run concludes with a failure, the error is
 	// returned together with that run, so callers can collect its logs

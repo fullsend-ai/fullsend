@@ -298,18 +298,15 @@ func (d *Driver) DownloadArtifacts(ctx context.Context, owner, repo string, runI
 	return nil
 }
 
-// DownloadNamedArtifactFromRun downloads a specific named artifact from
-// a pipeline. On GitLab, artifact names correspond to job names, so the
-// portable "fullsend-<agent>" name callers pass in is translated via
-// gitlabArtifactJobName before matching.
+// DownloadNamedArtifactFromRun downloads an artifact whose physical name
+// exactly matches artifactName.
 func (d *Driver) DownloadNamedArtifactFromRun(ctx context.Context, owner, repo string, runID int, artifactName string, destDir string) error {
 	artifacts, err := d.Client.ListWorkflowRunArtifacts(ctx, owner, repo, runID)
 	if err != nil {
 		return err
 	}
-	want := gitlabArtifactJobName(artifactName)
 	for _, art := range artifacts {
-		if art.Name != want {
+		if art.Name != artifactName {
 			continue
 		}
 		zipData, err := d.Client.DownloadWorkflowRunArtifact(ctx, owner, repo, art.ID)
@@ -321,13 +318,41 @@ func (d *Driver) DownloadNamedArtifactFromRun(ctx context.Context, owner, repo s
 	return fmt.Errorf("artifact %q not found on pipeline %d", artifactName, runID)
 }
 
-// DownloadNamedArtifactAfter polls for a repository-level artifact matching
-// the name created after the trigger time, then downloads it. The portable
-// "fullsend-<agent>" name callers pass in is translated via
-// gitlabArtifactJobName before matching, since GitLab artifact names
-// correspond to job names.
+// DownloadAgentArtifactsFromRun downloads the artifacts produced by agent
+// from the given pipeline. GitLab uses the harness job name as the artifact
+// name, so this translates the logical agent to that job name.
+func (d *Driver) DownloadAgentArtifactsFromRun(ctx context.Context, owner, repo string, runID int, agent string, destDir string) error {
+	artifacts, err := d.Client.ListWorkflowRunArtifacts(ctx, owner, repo, runID)
+	if err != nil {
+		return err
+	}
+	want := harnessJobSuffix(agent)
+	for _, art := range artifacts {
+		if art.Name != want {
+			continue
+		}
+		zipData, err := d.Client.DownloadWorkflowRunArtifact(ctx, owner, repo, art.ID)
+		if err != nil {
+			return err
+		}
+		return extractArtifactZip(art.Name, zipData, destDir)
+	}
+	return fmt.Errorf("agent artifact %q not found on pipeline %d", agent, runID)
+}
+
+// DownloadNamedArtifactAfter polls for a repository-level artifact whose
+// physical name exactly matches artifactName, then downloads it.
 func (d *Driver) DownloadNamedArtifactAfter(ctx context.Context, owner, repo, artifactName string, after time.Time, destDir string) error {
-	jobName := gitlabArtifactJobName(artifactName)
+	return d.downloadArtifactAfter(ctx, owner, repo, artifactName, after, destDir)
+}
+
+// DownloadAgentArtifactsAfter polls for a harness artifact from agent and
+// downloads it from the selected pipeline.
+func (d *Driver) DownloadAgentArtifactsAfter(ctx context.Context, owner, repo, agent string, after time.Time, destDir string) error {
+	return d.downloadArtifactAfter(ctx, owner, repo, harnessJobSuffix(agent), after, destDir)
+}
+
+func (d *Driver) downloadArtifactAfter(ctx context.Context, owner, repo, artifactName string, after time.Time, destDir string) error {
 	var listErrs pollErrors
 	deadline := d.now().Add(artifactRunWait)
 	var lastNewestCreatedAt string
@@ -351,7 +376,7 @@ func (d *Driver) DownloadNamedArtifactAfter(ctx context.Context, owner, repo, ar
 		}
 		lastNewestCreatedAt = newestCreatedAt
 
-		if art := selectRepositoryArtifactAfter(arts, jobName, after); art != nil {
+		if art := selectRepositoryArtifactAfter(arts, artifactName, after); art != nil {
 			zipData, err := d.Client.DownloadWorkflowRunArtifact(ctx, owner, repo, art.ID)
 			if err != nil {
 				return err
@@ -376,22 +401,6 @@ func (d *Driver) DownloadNamedArtifactAfter(ctx context.Context, owner, repo, ar
 // directly (fullsend-agent.yml, run-agent-job.sh; #7957 review).
 func harnessJobSuffix(agent string) string {
 	return "fullsend " + agent + " agent"
-}
-
-// gitlabArtifactJobName translates the portable "fullsend-<agent>"
-// artifact name used by driver-agnostic callers (pkg/behaviourtest/steps,
-// shared with the GitHub driver) into the actual job name that carries it
-// on GitLab. GitLab has no separate named-artifact concept —
-// ListRepositoryArtifacts and ListWorkflowRunArtifacts synthesize
-// RepositoryArtifact/WorkflowArtifact Name from the owning job's own name
-// (harnessJobSuffix), not the portable convention (#7957 review). Names
-// that do not match the portable convention pass through unchanged, so a
-// caller that already has a literal job name keeps working.
-func gitlabArtifactJobName(name string) string {
-	if agent, ok := strings.CutPrefix(name, "fullsend-"); ok {
-		return harnessJobSuffix(agent)
-	}
-	return name
 }
 
 // runHasAgentJob reports whether the given pipeline contains a job whose
