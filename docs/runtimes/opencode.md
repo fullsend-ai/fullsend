@@ -155,9 +155,10 @@ example above.
 
 The adapter is `plugins/fullsend-hooks.ts`, with selected scripts under `hooks/`,
 inside `/sandbox/opencode-config`. Hooks use the bootstrap-captured interpreter,
-isolated Python mode and a fixed system PATH. Default plugins are disabled and
-nonempty native `plugin` configuration is rejected; use the harness provider/environment
-credential route. Shell-startup injection variables are cleared for tool subprocesses.
+isolated Python mode and trusted PATH. Default plugins are disabled and nonempty
+`OPENCODE_CONFIG_CONTENT.plugin` or `OPENCODE_CONFIG_CONTENT.mcp` configuration is
+rejected; use the harness provider/environment credential route. Shell-startup injection
+variables are cleared for tool subprocesses.
 The launch also clears `OPENCODE_PURE`, which would disable the hook plugin.
 Disabling OpenCode default plugins is a compatibility constraint: harnesses
 must use the configured provider/environment credential route rather than
