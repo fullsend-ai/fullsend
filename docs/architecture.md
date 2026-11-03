@@ -654,6 +654,19 @@ Observability is a cross-cutting concern that touches every other component. Eac
   [ADR 0147](ADRs/0147-evaluate-entity-cel-over-selectively-acquired-data.md),
   [ADR 0148](ADRs/0148-reuse-verified-actor-roles-for-entity-cel.md)).
 - Distributed tracing: framework-native OpenTelemetry instrumentation with zero-configuration baseline. Every run produces `run-telemetry.jsonl` locally; optional live OTLP export to any compatible backend. W3C trace context propagation links multi-agent pipelines into unified traces. OTEL GenAI semantic conventions enable LLM-aware backends ([ADR 0050](ADRs/0050-distributed-tracing-instrumentation.md)).
+- Work-item trace continuity: the chosen topology gives each issue or change
+  proposal a stable context to parent Fullsend launches, with explicit span
+  links for Fullsend-created child entities. Behaviour-test scenarios will
+  parent their own operations and created entities in one TraceID
+  ([ADR 0154](ADRs/0154-correlate-work-item-and-behaviour-scenario-traces.md);
+  implementation pending). Fullsend accepts stored context only when its
+  signature verifies with the configured public key and its installation,
+  repository, and destination entity match. Missing or invalid context uses
+  the stable entity-derived context. Standard installs generate a signing key
+  stored in repository secrets; BT supplies a protected signing-key source and
+  verification key through install flags. GitHub, GitLab, and Forgejo use
+  hidden entity-body metadata; Jira uses issue properties for Fullsend- or
+  BT-created issues and comment properties for issues created elsewhere.
 - Eval measurements: the concept of scoring traces ([fail-open](glossary.md#fail-open)). [OTEL primary facts](glossary.md#otel-primary-facts) stay on the run trace (`run-telemetry.jsonl`); [OTEL derived products](glossary.md#otel-derived-products) are the scores (`eval-measurements.jsonl`) ([ADR 0087](ADRs/0087-eval-measurements-online-trace-scoring.md)). See [Eval Measurements](guides/infrastructure/eval-measurements.md). When `OTEL_EXPORTER_OTLP_*` is set, scores also export as `gen_ai.evaluation.result` span events on the same TraceID (same OTLP path as agent traces; fail-open).
 
 - Tool-call span topology: every id-bearing tool call the runtime reports — Claude Code today; pi and codex emit no call ids — becomes an `execute_tool` child span of its iteration's `agent` span, up to 1,024 per iteration. The spans carry semantic-convention metadata only, timed at runner receipt; tool content stays on the `agent` span's message record ([ADR 0108](ADRs/0108-tool-call-span-topology.md)).
