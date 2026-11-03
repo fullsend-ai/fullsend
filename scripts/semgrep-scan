@@ -3,16 +3,19 @@ set -euo pipefail
 
 SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(CDPATH='' cd -- "${SCRIPT_DIR}/.." && pwd)"
-RULESET_URL="$(tr -d '[:space:]' < "${SCRIPT_DIR}/semgrep-ruleset-url")"
+RULESET_COMMIT="$(tr -d '[:space:]' < "${SCRIPT_DIR}/semgrep-ruleset-commit")"
 RULESET_SHA256="$(tr -d '[:space:]' < "${SCRIPT_DIR}/semgrep-ruleset.sha256")"
 RULESET_CACHE_ROOT="${XDG_CACHE_HOME:-${HOME}/.cache}/fullsend/semgrep"
-RULESET_DIR="${RULESET_CACHE_ROOT}/${RULESET_SHA256}"
-RULESET_FILE="${RULESET_DIR}/security-audit.yml"
+RULESET_ARCHIVE="${RULESET_CACHE_ROOT}/${RULESET_COMMIT}-${RULESET_SHA256}.tar.gz"
 RULESET_TMP=
+RULESET_DIR=
 
 cleanup() {
 	if [[ -n "$RULESET_TMP" ]]; then
 		rm -f "$RULESET_TMP"
+	fi
+	if [[ -n "$RULESET_DIR" ]]; then
+		rm -rf "$RULESET_DIR"
 	fi
 }
 trap cleanup EXIT
@@ -55,6 +58,15 @@ ruleset_integrity_failure() {
 	exit 1
 }
 
+if [[ ! "$RULESET_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+	ruleset_integrity_failure "upstream ruleset commit is not a full lowercase Git SHA"
+fi
+if [[ ! "$RULESET_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+	ruleset_integrity_failure "upstream ruleset archive pin is not a SHA-256"
+fi
+
+RULESET_URL="https://codeload.github.com/semgrep/semgrep-rules/tar.gz/${RULESET_COMMIT}"
+
 if ! command -v uv >/dev/null 2>&1; then
 	scan_prerequisite_failure "uv is not installed"
 fi
@@ -62,18 +74,15 @@ fi
 if ! mkdir -p "$RULESET_CACHE_ROOT"; then
 	scan_prerequisite_failure "cannot create the local ruleset cache"
 fi
-if [[ -f "$RULESET_FILE" ]]; then
-	if ! RULESET_ACTUAL_SHA256="$(sha256_file "$RULESET_FILE")"; then
-		ruleset_integrity_failure "cannot verify cached ruleset"
+
+if [[ -f "$RULESET_ARCHIVE" ]]; then
+	if ! RULESET_ACTUAL_SHA256="$(sha256_file "$RULESET_ARCHIVE")"; then
+		ruleset_integrity_failure "cannot verify cached upstream rules archive"
 	fi
 	if [[ "$RULESET_ACTUAL_SHA256" != "$RULESET_SHA256" ]]; then
-		ruleset_integrity_failure "cached ruleset SHA-256 does not match the pin (expected ${RULESET_SHA256}, got ${RULESET_ACTUAL_SHA256})"
+		ruleset_integrity_failure "cached upstream rules archive SHA-256 does not match the pin (expected ${RULESET_SHA256}, got ${RULESET_ACTUAL_SHA256})"
 	fi
 else
-	RULESET_ACTUAL_SHA256=
-fi
-
-if [[ "$RULESET_ACTUAL_SHA256" != "$RULESET_SHA256" ]]; then
 	if ! RULESET_TMP="$(mktemp "${RULESET_CACHE_ROOT}/.security-audit.XXXXXX")"; then
 		scan_prerequisite_failure "cannot create a temporary ruleset file"
 	fi
@@ -86,15 +95,33 @@ if [[ "$RULESET_ACTUAL_SHA256" != "$RULESET_SHA256" ]]; then
 		ruleset_integrity_failure "cannot verify downloaded ruleset"
 	fi
 	if [[ "$RULESET_ACTUAL_SHA256" != "$RULESET_SHA256" ]]; then
-		ruleset_integrity_failure "downloaded ruleset SHA-256 does not match the pin (expected ${RULESET_SHA256}, got ${RULESET_ACTUAL_SHA256})"
+		ruleset_integrity_failure "downloaded upstream rules archive SHA-256 does not match the pin (expected ${RULESET_SHA256}, got ${RULESET_ACTUAL_SHA256})"
 	fi
-	if ! mkdir -p "$RULESET_DIR"; then
-		scan_prerequisite_failure "cannot create the verified ruleset cache directory"
-	fi
-	if ! mv "$RULESET_TMP" "$RULESET_FILE"; then
-		scan_prerequisite_failure "cannot cache the verified ruleset"
+	if ! mv "$RULESET_TMP" "$RULESET_ARCHIVE"; then
+		scan_prerequisite_failure "cannot cache the verified upstream rules archive"
 	fi
 	RULESET_TMP=
+fi
+
+if ! RULESET_DIR="$(mktemp -d "${RULESET_CACHE_ROOT}/.security-audit-rules.XXXXXX")"; then
+	scan_prerequisite_failure "cannot create a temporary ruleset directory"
+fi
+if ! tar -xzf "$RULESET_ARCHIVE" -C "$RULESET_DIR" --strip-components=1; then
+	ruleset_integrity_failure "cannot extract the pinned upstream rules archive"
+fi
+
+RULE_CONFIG_ARGS=()
+while IFS= read -r -d '' rule_file; do
+	case "$rule_file" in
+	*.test.yaml | *.test.yml)
+		continue
+		;;
+	esac
+	RULE_CONFIG_ARGS+=(--config "$rule_file")
+done < <(find "$RULESET_DIR" -type f -path '*/security/audit/*' \( -name '*.yaml' -o -name '*.yml' \) -print0)
+
+if ((${#RULE_CONFIG_ARGS[@]} == 0)); then
+	ruleset_integrity_failure "pinned upstream source has no security/audit rule files"
 fi
 
 SCAN_ARGS=()
@@ -133,7 +160,7 @@ if ! uv sync --project "${REPO_ROOT}/tools/semgrep" --locked; then
 fi
 
 uv run --project "${REPO_ROOT}/tools/semgrep" --no-sync semgrep scan \
-	--config security-audit.yml \
+	"${RULE_CONFIG_ARGS[@]}" \
 	--metrics=off \
 	--disable-version-check \
 	-j 1 \

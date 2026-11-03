@@ -19,16 +19,19 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Compare registry ruleset with its pin
+      - name: Check for a newer upstream rules commit
         id: compare
         env:
-          RULESET_URL_FILE: scripts/semgrep-ruleset-url
-          RULESET_SHA256_FILE: scripts/semgrep-ruleset.sha256
+          GH_TOKEN: ${{ github.token }}
+          RULESET_COMMIT_FILE: scripts/semgrep-ruleset-commit
         run: |
           set -euo pipefail
-          url="$(tr -d '[:space:]' < "$RULESET_URL_FILE")"
-          expected="$(tr -d '[:space:]' < "$RULESET_SHA256_FILE")"
-          actual="$(curl --connect-timeout 10 --max-time 60 --fail --location --silent --show-error "$url" | sha256sum | cut -d ' ' -f 1)"
+          expected="$(tr -d '[:space:]' < "$RULESET_COMMIT_FILE")"
+          actual="$(gh api repos/semgrep/semgrep-rules/commits/develop --jq .sha)"
+          if [[ ! "$expected" =~ ^[0-9a-f]{40}$ || ! "$actual" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Expected and upstream commits must be full lowercase Git SHAs" >&2
+            exit 1
+          fi
           echo "expected=$expected" >> "$GITHUB_OUTPUT"
           echo "actual=$actual" >> "$GITHUB_OUTPUT"
           if [[ "$actual" == "$expected" ]]; then
@@ -63,13 +66,17 @@ jobs:
             cat > "$body_file" <<EOF
           <!-- fullsend-semgrep-ruleset-drift -->
 
-          The Semgrep Registry response differs from the reviewed SHA-256 pin.
+          The upstream semgrep/semgrep-rules develop branch has advanced past
+          the rules commit used by Fullsend. Scans remain pinned until this
+          update is reviewed and merged.
 
-          - Pinned SHA-256: $RULESET_EXPECTED
-          - Current SHA-256: $RULESET_ACTUAL
-          - Source file: scripts/semgrep-ruleset-url
+          - Pinned commit: $RULESET_EXPECTED
+          - Current upstream commit: $RULESET_ACTUAL
+          - Pin file: scripts/semgrep-ruleset-commit
+          - Source: https://github.com/semgrep/semgrep-rules
 
-          Review the ruleset and scan results before updating scripts/semgrep-ruleset.sha256.
+          Review changes under security/audit/ and the scan results before
+          updating the commit and archive SHA-256 pins.
           EOF
             if [[ -n "$issue" ]]; then
               gh issue edit "$issue" --repo fullsend-ai/fullsend --body-file "$body_file"
@@ -77,5 +84,5 @@ jobs:
               gh issue create --repo fullsend-ai/fullsend --title "$title" --body-file "$body_file"
             fi
           elif [[ -n "$issue" ]]; then
-            gh issue close "$issue" --repo fullsend-ai/fullsend --comment "The registry response matches the current SHA-256 pin again."
+            gh issue close "$issue" --repo fullsend-ai/fullsend --comment "The upstream rules commit matches the current pin again."
           fi

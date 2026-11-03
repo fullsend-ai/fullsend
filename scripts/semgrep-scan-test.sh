@@ -13,15 +13,23 @@ mkdir -p "${FIXTURE_ROOT}/scripts" "${FIXTURE_ROOT}/tools/semgrep" \
 	"${FIXTURE_ROOT}/src" "${STUB_BIN}"
 cp "${REPO_ROOT}/scripts/semgrep-scan" "${FIXTURE_ROOT}/scripts/semgrep-scan"
 chmod +x "${FIXTURE_ROOT}/scripts/semgrep-scan"
-printf '%s\n' 'https://example.invalid/semgrep-rules.yml' \
-	> "${FIXTURE_ROOT}/scripts/semgrep-ruleset-url"
+TEST_COMMIT=0123456789abcdef0123456789abcdef01234567
+printf '%s\n' "$TEST_COMMIT" > "${FIXTURE_ROOT}/scripts/semgrep-ruleset-commit"
 printf '%s\n' 'package main' > "${FIXTURE_ROOT}/src/main.go"
-printf '%s\n' 'rules: []' > "${TEST_ROOT}/valid-rules.yml"
-printf '%s\n' 'rules: [not-the-pinned-rules]' > "${TEST_ROOT}/wrong-rules.yml"
+SOURCE_ROOT="${TEST_ROOT}/upstream"
+SOURCE_DIR="${SOURCE_ROOT}/semgrep-rules-${TEST_COMMIT}"
+mkdir -p "${SOURCE_DIR}/go/lang/security/audit" \
+	"${SOURCE_DIR}/go/lang/security/vuln"
+printf '%s\n' 'rules: []' > "${SOURCE_DIR}/go/lang/security/audit/example.yaml"
+printf '%s\n' 'rules: []' > "${SOURCE_DIR}/go/lang/security/audit/example.test.yml"
+printf '%s\n' 'rules: []' > "${SOURCE_DIR}/go/lang/security/vuln/outside-scope.yaml"
+tar -czf "${TEST_ROOT}/valid-rules.tar.gz" -C "$SOURCE_ROOT" "semgrep-rules-${TEST_COMMIT}"
+cp "${TEST_ROOT}/valid-rules.tar.gz" "${TEST_ROOT}/wrong-rules.tar.gz"
+printf '%s\n' 'tamper' >> "${TEST_ROOT}/wrong-rules.tar.gz"
 if command -v sha256sum >/dev/null 2>&1; then
-	EXPECTED_SHA="$(sha256sum "${TEST_ROOT}/valid-rules.yml" | cut -d ' ' -f 1)"
+	EXPECTED_SHA="$(sha256sum "${TEST_ROOT}/valid-rules.tar.gz" | cut -d ' ' -f 1)"
 else
-	EXPECTED_SHA="$(shasum -a 256 "${TEST_ROOT}/valid-rules.yml" | cut -d ' ' -f 1)"
+	EXPECTED_SHA="$(shasum -a 256 "${TEST_ROOT}/valid-rules.tar.gz" | cut -d ' ' -f 1)"
 fi
 printf '%s\n' "$EXPECTED_SHA" > "${FIXTURE_ROOT}/scripts/semgrep-ruleset.sha256"
 
@@ -29,7 +37,9 @@ cat > "${STUB_BIN}/curl" <<'CURL_STUB'
 #!/usr/bin/env bash
 set -euo pipefail
 : "${CURL_CALLS:?}"
+: "${CURL_ARGS_FILE:?}"
 printf '%s\n' called >> "$CURL_CALLS"
+printf '%s\n' "$@" > "$CURL_ARGS_FILE"
 output=
 while (($#)); do
 	if [[ "$1" == --output ]]; then
@@ -78,6 +88,7 @@ run_scan() {
 		CURL_MODE="$curl_mode" \
 		CURL_PAYLOAD="$curl_payload" \
 		CURL_CALLS="$curl_calls" \
+		CURL_ARGS_FILE="${uv_prefix}.curl-args" \
 		UV_CWD_FILE="${uv_prefix}.cwd" \
 		UV_ARGS_FILE="${uv_prefix}.args" \
 		PATH="${STUB_BIN}:${PATH}" \
@@ -88,20 +99,40 @@ run_scan() {
 GOOD_CACHE="${TEST_ROOT}/cache-good"
 GOOD_CALLS="${TEST_ROOT}/good-curl-calls"
 GOOD_UV="${TEST_ROOT}/good-uv"
-run_scan "$GOOD_CACHE" payload "${TEST_ROOT}/valid-rules.yml" \
+run_scan "$GOOD_CACHE" payload "${TEST_ROOT}/valid-rules.tar.gz" \
 	"$GOOD_CALLS" 0 "$GOOD_UV" || fail "valid pinned ruleset did not scan"
-[[ -f "${GOOD_CACHE}/fullsend/semgrep/${EXPECTED_SHA}/security-audit.yml" ]] || \
-	fail "verified ruleset was not cached under its SHA"
+[[ -f "${GOOD_CACHE}/fullsend/semgrep/${TEST_COMMIT}-${EXPECTED_SHA}.tar.gz" ]] || \
+	fail "verified upstream archive was not cached under its commit and SHA"
+grep -Fq "https://codeload.github.com/semgrep/semgrep-rules/tar.gz/${TEST_COMMIT}" \
+	"${GOOD_UV}.curl-args" || fail "download did not use the pinned commit URL"
 
-run_scan "$GOOD_CACHE" fail "${TEST_ROOT}/valid-rules.yml" \
+run_scan "$GOOD_CACHE" fail "${TEST_ROOT}/valid-rules.tar.gz" \
 	"$GOOD_CALLS" 0 "$GOOD_UV" || fail "cached ruleset did not scan offline"
 [[ "$(wc -l < "$GOOD_CALLS")" -eq 1 ]] || fail "cached ruleset triggered another download"
-[[ "$(cat "${GOOD_UV}.cwd")" == "${GOOD_CACHE}/fullsend/semgrep/${EXPECTED_SHA}" ]] || \
-	fail "Semgrep did not run from the stable SHA-keyed ruleset directory"
+RULES_CWD="$(cat "${GOOD_UV}.cwd")"
+case "$RULES_CWD" in
+"${GOOD_CACHE}/fullsend/semgrep/.security-audit-rules."*) ;;
+*) fail "Semgrep did not run from a temporary extracted rules directory" ;;
+esac
 UV_ARGS=()
 while IFS= read -r arg; do
 	UV_ARGS[${#UV_ARGS[@]}]="$arg"
 done < "${GOOD_UV}.args"
+found_audit_rule=false
+found_audit_test=false
+found_out_of_scope_rule=false
+for ((i = 0; i + 1 < ${#UV_ARGS[@]}; i++)); do
+	if [[ "${UV_ARGS[i]}" == --config ]]; then
+		case "${UV_ARGS[i + 1]}" in
+		*/go/lang/security/audit/example.yaml) found_audit_rule=true ;;
+		*.test.yml) found_audit_test=true ;;
+		*/go/lang/security/vuln/*) found_out_of_scope_rule=true ;;
+		esac
+	fi
+done
+[[ "$found_audit_rule" == true ]] || fail "security/audit rule was not passed to Semgrep"
+[[ "$found_audit_test" == false ]] || fail "upstream test fixture was passed to Semgrep"
+[[ "$found_out_of_scope_rule" == false ]] || fail "out-of-scope rule was passed to Semgrep"
 found_sarif_path=false
 for ((i = 0; i + 1 < ${#UV_ARGS[@]}; i++)); do
 	if [[ "${UV_ARGS[i]}" == --sarif-output && "${UV_ARGS[i + 1]}" == "${FIXTURE_ROOT}/report.sarif" ]]; then
@@ -116,7 +147,7 @@ pass "verified cache reuse and relative output/target path resolution"
 
 LOCAL_OFFLINE_CACHE="${TEST_ROOT}/cache-local-offline"
 LOCAL_OFFLINE_CALLS="${TEST_ROOT}/local-offline-curl-calls"
-if output="$(run_scan "$LOCAL_OFFLINE_CACHE" fail "${TEST_ROOT}/valid-rules.yml" \
+if output="$(run_scan "$LOCAL_OFFLINE_CACHE" fail "${TEST_ROOT}/valid-rules.tar.gz" \
 	"$LOCAL_OFFLINE_CALLS" 0 "${TEST_ROOT}/local-offline-uv" 2>&1)"; then
 	[[ "$output" == *"warning:"* && "$output" == *"skipping this scan"* ]] || \
 		fail "local network failure did not warn and skip"
@@ -127,7 +158,7 @@ fi
 pass "local network failure warns and skips"
 
 CI_OFFLINE_CACHE="${TEST_ROOT}/cache-ci-offline"
-if output="$(run_scan "$CI_OFFLINE_CACHE" fail "${TEST_ROOT}/valid-rules.yml" \
+if output="$(run_scan "$CI_OFFLINE_CACHE" fail "${TEST_ROOT}/valid-rules.tar.gz" \
 	"${TEST_ROOT}/ci-offline-curl-calls" 1 "${TEST_ROOT}/ci-offline-uv" 2>&1)"; then
 	fail "CI network failure returned success"
 fi
@@ -139,7 +170,7 @@ for mode in local ci; do
 	mismatch_cache="${TEST_ROOT}/cache-mismatch-${mode}"
 	ci_value=0
 	[[ "$mode" == ci ]] && ci_value=1
-	if output="$(run_scan "$mismatch_cache" payload "${TEST_ROOT}/wrong-rules.yml" \
+	if output="$(run_scan "$mismatch_cache" payload "${TEST_ROOT}/wrong-rules.tar.gz" \
 		"${TEST_ROOT}/mismatch-${mode}-curl-calls" "$ci_value" \
 		"${TEST_ROOT}/mismatch-${mode}-uv" 2>&1)"; then
 		fail "${mode} hash mismatch returned success"

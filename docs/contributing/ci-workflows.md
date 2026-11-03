@@ -268,19 +268,21 @@ This recursion is by design but interacts with the convergence non-idempotence t
 ### Semgrep security scan
 
 `scripts/semgrep-scan` is the shared entry point for the pinned Semgrep engine
-and the Semgrep Registry's `p/security-audit` ruleset. It verifies downloaded
-rules against the SHA-256 in `scripts/semgrep-ruleset.sha256` and caches a
-verified copy locally under that hash. Cached or downloaded hash mismatches
-fail both local and CI scans. The dedicated Semgrep job sets
-`SEMGREP_REQUIRED=1`, so it fails closed if the pinned ruleset or locked
-Semgrep environment cannot be prepared. Other contexts, including agent
-pre-commit gates, warn and skip if `uv` is missing or a ruleset, cache, or
-environment dependency cannot be prepared. A completed scan still fails on
-findings. The scheduled
-`Semgrep Ruleset Drift` workflow opens or updates an issue when the live
-registry response changes. Renovate PEP 621 updates keep the Semgrep version and
-`uv.lock` together; weekly lock maintenance refreshes transitive dependencies,
-and Semgrep updates stay out of automerge.
+and commit-pinned Community Edition rules from `semgrep/semgrep-rules`. It scans
+rule files under `*/security/audit/`, excluding upstream test fixtures. This
+scope is not identical to Semgrep Registry's curated `p/security-audit` pack.
+The source commit is recorded in `scripts/semgrep-ruleset-commit`; the downloaded
+archive is checked against the SHA-256 in `scripts/semgrep-ruleset.sha256` before
+extraction. The dedicated Semgrep job sets `SEMGREP_REQUIRED=1`, so it fails
+closed if the pinned source or locked Semgrep environment cannot be prepared.
+Other contexts, including agent pre-commit gates, warn and skip if `uv` is
+missing or the source, cache, or environment dependency cannot be prepared. A
+completed scan still fails on findings. The scheduled `Semgrep Ruleset Drift`
+workflow reports when upstream `develop` advances past the pinned commit;
+upstream changes do not alter scans until the pin is updated. Renovate PEP 621
+updates keep the Semgrep version and `uv.lock` together; weekly lock
+maintenance refreshes transitive dependencies, and Semgrep updates stay out of
+automerge.
 
 The pre-commit hook scans changed files of all types, except paths matched by
 its `exclude:` expression in `.pre-commit-config.yaml`. Semgrep's full-directory
