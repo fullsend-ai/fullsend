@@ -432,18 +432,14 @@ func (c *perRepoConfig) ConfigKeepHistory() bool {
 // ("github", "gitlab", "jira"), or "" when none is selected. It is the
 // default for `fullsend issues` commands' --tracker flag when that flag
 // is not set explicitly. Like IssueTracking, a layer that sets tracker
-// replaces the parent's whole mapping, so the provider comes from the
-// same layer as the targets. Distinct from ConfigForge: a repo's hosting
+// replaces the parent's whole mapping, and a layer that still carries the
+// removed create_issues block selects no provider, so the provider always
+// comes from the same layer as the targets (it is derived from
+// IssueTracking). Distinct from ConfigForge: a repo's hosting
 // forge (github/gitlab) does not imply its issue tracker (e.g. a
 // GitHub-hosted repo may track issues in Jira).
 func (c *perRepoConfig) ConfigTracker() string {
-	if c.Tracker != nil {
-		return c.Tracker.Provider()
-	}
-	if c.parent != nil {
-		return c.parent.ConfigTracker()
-	}
-	return ""
+	return c.IssueTracking().Provider()
 }
 
 // ConfigMintURL returns the configured token mint URL.

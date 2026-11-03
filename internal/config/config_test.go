@@ -739,6 +739,31 @@ func TestPerRepoConfig_LegacyCreateIssuesOverlayDoesNotInheritBase(t *testing.T)
 	assert.Equal(t, TrackingProviderGitHub, inherited.IssueTracking().Provider())
 }
 
+func TestPerRepoConfig_LegacyCreateIssuesOverlaySelectsNoTracker(t *testing.T) {
+	overlay := []byte("create_issues:\n  allow_targets: {}\n")
+	base := []byte("tracker:\n  jira:\n    allowed_targets:\n      projects: [PROJ]\n")
+
+	layered, err := ParsePerRepoConfigWriterLayered(overlay, base)
+	require.NoError(t, err)
+	assert.Empty(t, layered.IssueTracking().Provider(), "a legacy overlay selects no provider")
+	assert.Empty(t, layered.ConfigTracker(), "ConfigTracker must apply the same legacy barrier as IssueTracking")
+
+	inherited, err := ParsePerRepoConfigWriterLayered([]byte("version: \"1\"\n"), base)
+	require.NoError(t, err)
+	assert.Equal(t, TrackingProviderJira, inherited.ConfigTracker())
+}
+
+func TestTrackingConfig_MultipleProvidersFailClosed(t *testing.T) {
+	data := []byte("tracker:\n  github:\n    allowed_targets:\n      orgs: [acme]\n  jira:\n    allowed_targets:\n      projects: [PROJ]\n")
+
+	cfg, err := ParsePerRepoConfigWriter(data)
+	require.NoError(t, err, "runtime parsing stays lenient")
+	assert.Empty(t, cfg.IssueTracking().Provider(), "an ambiguous mapping selects no provider")
+	assert.Empty(t, cfg.ConfigTracker())
+	assert.True(t, cfg.IssueTracking().grants().empty(), "an ambiguous mapping grants nothing")
+	require.Error(t, cfg.Validate())
+}
+
 func TestPerRepoConfig_SetIssueTracking(t *testing.T) {
 	cfg := NewPerRepoConfig(nil, "my-org/my-repo")
 	cfg.SetIssueTracking(DefaultIssueTracking(TrackingProviderGitLab))

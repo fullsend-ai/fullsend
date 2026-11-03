@@ -103,10 +103,13 @@ type JiraAllowedTargets struct {
 
 // Provider returns the selected provider name (TrackingProviderGitHub,
 // TrackingProviderGitLab, or TrackingProviderJira), or "" when no
-// provider mapping is set.
+// provider mapping is set. It also returns "" when more than one mapping
+// is set: runtime loading does not run validateTracking, so an ambiguous
+// mapping fails closed (selects no provider and grants nothing) instead of
+// silently picking one.
 func (t *TrackingConfig) Provider() string {
 	providers := t.providers()
-	if len(providers) == 0 {
+	if len(providers) != 1 {
 		return ""
 	}
 	return providers[0]
