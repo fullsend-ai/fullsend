@@ -77,8 +77,37 @@ func scanProgressSecrets(s string) string {
 	if candidate == "" {
 		return s
 	}
+	text := s
 	if result := progressRedactor.Scan(candidate); !result.Safe {
-		return result.Sanitized
+		text = result.Sanitized
+	}
+	if masked := redactNormalizedRuntimeSecrets(text); masked != text {
+		return masked
+	}
+	return text
+}
+
+// minNormalizedSecretLen mirrors the security package registration floor:
+// a short normalized remnant of a registered secret must never blank out
+// ordinary output.
+const minNormalizedSecretLen = 8
+
+// redactNormalizedRuntimeSecrets masks registered runtime secrets in the
+// forms cleanup rewrites them into: an ANSI-split or tab-containing
+// credential normalizes to different text than the registered literal, so
+// exact-literal matching alone can let a reconstructed secret through. The
+// CLI callback redacts normalized literals itself (redactProgressSecret-
+// Literals); the renderer nil-callback fallback must match them too, or
+// the reconstructed credential is displayed and retained.
+func redactNormalizedRuntimeSecrets(s string) string {
+	for _, secret := range security.RuntimeSecrets() {
+		normalized := NormalizeProgressText(secret)
+		if len(normalized) < minNormalizedSecretLen || normalized == secret {
+			continue
+		}
+		if strings.Contains(s, normalized) {
+			s = strings.ReplaceAll(s, normalized, "***")
+		}
 	}
 	return s
 }
