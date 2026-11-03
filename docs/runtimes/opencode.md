@@ -135,7 +135,9 @@ example above.
 - **The agent is reset before every iteration.** The runner removes agent, tool and config overrides
   from writable config locations, re-uploads the agent definition, and checks that OpenCode loads it.
   Adapter/script digests are checked before agent verification and before and after `.env` is sourced.
-  Each intercepted tool call rechecks the script directory. Native write/edit/patch tools cannot
+  Each iteration also requires the loaded plugin to return a runner-held activation challenge; a
+  missing signal fails the run rather than accepting an unhooked result. Each intercepted tool call
+  rechecks the script directory. Native write/edit/patch tools cannot
   write outside the workspace or into `.env`, `.security` or `runner-state`, including via symlinks.
 - **Repo config is ignored.** OpenCode does not load the target repo's `.opencode/` config or skills.
 - **`.env` is read as data.** As on the other runtimes, the launch parses `.env` with a pinned
