@@ -240,13 +240,18 @@ These rules make a run fail before `pre_script` starts:
   covers `GH_WORKFLOW_TOKEN`, the OIDC request variables, provider-only keys
   such as `OPENAI_API_KEY`, the `FULLSEND_*`, `GITHUB_*`, `ACTIONS_*`,
   `RUNNER_*`, `CI_*`, `LD_*`, `DYLD_*`, `OTEL_*`, `GOOGLE_*` and `CLOUDSDK_*`
-  families, the minted role tokens (`GH_TOKEN`, `PUSH_TOKEN`,
-  `PUSH_TOKEN_SOURCE`, `REVIEW_TOKEN`, `GITLAB_TOKEN`), `PATH`, the
+  families, the minted role tokens (`GH_TOKEN`, `GH_ENTERPRISE_TOKEN`,
+  `GITHUB_ENTERPRISE_TOKEN`, `PUSH_TOKEN`, `PUSH_TOKEN_SOURCE`,
+  `REVIEW_TOKEN`, `GITLAB_TOKEN`), `PATH`, the
   runner-infrastructure names (`HOME`, `SHELL`, `BASH_ENV`, `ENV`,
   `TRACEPARENT`), and every name the reusable workflow sets on the `fullsend
   run` step, such as the named `JIRA_TOKEN`, `JIRA_USER_EMAIL` and
   `JIRA_BASE_URL` on `harness-run`. An `env.runner` key with one of those names
-  may not receive a value from the object either. Credential-class names beyond
+  may not receive a value from the object either. `GH_ENTERPRISE_TOKEN` is
+  refused because the mint now owns it; a repository that stores an enterprise
+  credential under that name must store it under a different name and
+  reference it from `env.runner` under a name the runner does not own.
+  Credential-class names beyond
   the runner-infrastructure names, `PATH`, and the `LD_*`/`DYLD_*` families —
   proxy, TLS trust, Git, interpreter and shell-behavior variables such as
   `HTTPS_PROXY`, `SSL_CERT_FILE`, `GIT_SSH_COMMAND`, `NODE_OPTIONS` and

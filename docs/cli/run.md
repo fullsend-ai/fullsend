@@ -466,9 +466,9 @@ On GitHub Actions, `fullsend run` copies the pre-mint `GH_TOKEN` (the job's work
 unset or empty it copies the pre-mint `GITHUB_TOKEN` instead. Provider
 credentials may expand `${GH_WORKFLOW_TOKEN}`; every other harness `${}` site refuses it, and
 pre/post/validation child environments never receive it. Outside Actions the variable is not
-derived from a local PAT — a caller may set it explicitly. `GH_TOKEN`, `GITHUB_TOKEN`,
-`GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN` and `PUSH_TOKEN` still receive the minted App
-identity.
+derived from a local PAT — a caller may set it explicitly. `GH_TOKEN`,
+`GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN` and
+`PUSH_TOKEN` still receive the minted App identity.
 
 The runner itself also reads `GH_WORKFLOW_TOKEN` for one purpose besides provider credential
 expansion: before it creates the sandbox, on GitHub Actions, when the harness `image:` is on
