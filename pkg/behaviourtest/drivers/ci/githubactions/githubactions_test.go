@@ -1262,6 +1262,9 @@ func TestDownloadAgentArtifactsAfterDownloadsEveryMatchingMatrixArtifact(t *test
 	first := "fullsend-ci-retry"
 	second := "fullsend-ci-retry.matrix-1"
 	client := forge.NewFakeClient()
+	client.WorkflowRuns = map[string]*forge.WorkflowRun{
+		"run-42": {ID: 42, Status: "completed", Conclusion: "success"},
+	}
 	client.RepositoryArtifacts = map[string][]forge.RepositoryArtifact{
 		"org/repo": {
 			{ID: 1, Name: first, CreatedAt: "2026-01-02T00:00:00Z", WorkflowRunID: 42},
@@ -1308,6 +1311,10 @@ func TestDownloadAgentArtifactsAfterUsesOnlyNewestWorkflowRun(t *testing.T) {
 	}
 	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	client := forge.NewFakeClient()
+	client.WorkflowRuns = map[string]*forge.WorkflowRun{
+		"run-101": {ID: 101, Status: "completed", Conclusion: "success"},
+		"run-102": {ID: 102, Status: "completed", Conclusion: "success"},
+	}
 	client.RepositoryArtifacts = map[string][]forge.RepositoryArtifact{
 		"org/repo": {
 			// The latest run appears first, as it does in the repository
@@ -1359,6 +1366,9 @@ func TestDownloadAgentArtifactsAfterDownloadsRunArtifactsBeyondRepositoryListing
 
 	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	client := forge.NewFakeClient()
+	client.WorkflowRuns = map[string]*forge.WorkflowRun{
+		"run-42": {ID: 42, Status: "completed", Conclusion: "success"},
+	}
 	// The repository listing only surfaces one artifact of the run; the
 	// run's own (paginated) listing holds more than one page of them.
 	client.RepositoryArtifacts = map[string][]forge.RepositoryArtifact{
@@ -1380,6 +1390,60 @@ func TestDownloadAgentArtifactsAfterDownloadsRunArtifactsBeyondRepositoryListing
 	entries, err := os.ReadDir(dest)
 	require.NoError(t, err)
 	assert.Len(t, entries, total)
+}
+
+func TestDownloadAgentArtifactsAfterWaitsForRunToComplete(t *testing.T) {
+	t.Parallel()
+
+	zipData := func(t *testing.T, content string) []byte {
+		t.Helper()
+		var buf bytes.Buffer
+		zw := zip.NewWriter(&buf)
+		w, err := zw.Create("result.txt")
+		require.NoError(t, err)
+		_, err = w.Write([]byte(content))
+		require.NoError(t, err)
+		require.NoError(t, zw.Close())
+		return buf.Bytes()
+	}
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	first := "fullsend-ci-retry"
+	second := "fullsend-ci-retry.matrix-1"
+	client := forge.NewFakeClient()
+	run := &forge.WorkflowRun{ID: 42, Status: "in_progress"}
+	client.WorkflowRuns = map[string]*forge.WorkflowRun{"run-42": run}
+	// Only the fastest matrix job has uploaded while the run is in progress.
+	client.RepositoryArtifacts = map[string][]forge.RepositoryArtifact{
+		"org/repo": {{ID: 1, Name: first, CreatedAt: "2026-01-02T00:00:00Z", WorkflowRunID: 42}},
+	}
+	client.WorkflowRunArtifacts = map[int][]forge.WorkflowArtifact{42: {{ID: 1, Name: first}}}
+	client.WorkflowArtifactContents = map[int][]byte{
+		1: zipData(t, "first"),
+		2: zipData(t, "second"),
+	}
+	polls := 0
+	d := &Driver{
+		Client: client,
+		afterFunc: func(_ time.Duration) <-chan time.Time {
+			polls++
+			if polls == 2 {
+				// The sibling uploads and the run finishes between polls.
+				client.WorkflowRunArtifacts[42] = append(client.WorkflowRunArtifacts[42], forge.WorkflowArtifact{ID: 2, Name: second})
+				run.Status = "completed"
+				run.Conclusion = "success"
+			}
+			return instantAfter(0)
+		},
+	}
+
+	dest := t.TempDir()
+	require.NoError(t, d.DownloadAgentArtifactsAfter(context.Background(), "org", "repo", "ci-retry", after, dest))
+	assert.GreaterOrEqual(t, polls, 2, "driver should poll until the run completes")
+	for name, want := range map[string]string{first: "first", second: "second"} {
+		got, err := os.ReadFile(filepath.Join(dest, name, "result.txt"))
+		require.NoError(t, err)
+		assert.Equal(t, want, string(got))
+	}
 }
 
 func TestDownloadNamedArtifactAfterReturnsListingError(t *testing.T) {

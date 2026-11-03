@@ -394,19 +394,19 @@ func (d *Driver) DownloadArtifacts(ctx context.Context, owner, repo string, runI
 }
 
 func (d *Driver) DownloadNamedArtifactAfter(ctx context.Context, owner, repo, artifactName string, after time.Time, destDir string) error {
-	return d.downloadArtifactAfter(ctx, owner, repo, artifactName, after, destDir, func(actual string) bool {
+	return d.downloadArtifactAfter(ctx, owner, repo, artifactName, after, destDir, false, func(actual string) bool {
 		return actual == artifactName
 	})
 }
 
 func (d *Driver) DownloadAgentArtifactsAfter(ctx context.Context, owner, repo, agent string, after time.Time, destDir string) error {
 	artifactName := "fullsend-" + agent
-	return d.downloadArtifactAfter(ctx, owner, repo, artifactName, after, destDir, func(actual string) bool {
+	return d.downloadArtifactAfter(ctx, owner, repo, artifactName, after, destDir, true, func(actual string) bool {
 		return agentArtifactNameMatches(actual, artifactName)
 	})
 }
 
-func (d *Driver) downloadArtifactAfter(ctx context.Context, owner, repo, artifactName string, after time.Time, destDir string, matches func(string) bool) error {
+func (d *Driver) downloadArtifactAfter(ctx context.Context, owner, repo, artifactName string, after time.Time, destDir string, waitForRun bool, matches func(string) bool) error {
 	deadline := time.Now().Add(artifactRunWait)
 	var lastNewestCreatedAt string
 	for time.Now().Before(deadline) {
@@ -439,6 +439,14 @@ func (d *Driver) downloadArtifactAfter(ctx context.Context, owner, repo, artifac
 					runID = art.WorkflowRunID
 				}
 			}
+			if waitForRun {
+				// Repeated-agent matrix jobs upload separate artifacts as
+				// they finish, so wait for the run to reach a terminal
+				// status before listing it, or a partial set is downloaded.
+				if err := d.waitForRunCompleted(ctx, owner, repo, runID, deadline); err != nil {
+					return err
+				}
+			}
 			return d.downloadArtifactsFromRun(ctx, owner, repo, runID, artifactName, destDir, matches)
 		}
 		select {
@@ -448,6 +456,24 @@ func (d *Driver) downloadArtifactAfter(ctx context.Context, owner, repo, artifac
 		}
 	}
 	return fmt.Errorf("artifact %q not found after %s", artifactName, after.Format(time.RFC3339))
+}
+
+// waitForRunCompleted polls the run until it is completed, the context ends,
+// or the deadline passes. On deadline (or persistent lookup errors) it returns
+// nil so the caller downloads whatever artifacts are available.
+func (d *Driver) waitForRunCompleted(ctx context.Context, owner, repo string, runID int, deadline time.Time) error {
+	for time.Now().Before(deadline) {
+		run, err := d.Client.GetWorkflowRun(ctx, owner, repo, runID)
+		if err == nil && run.Status == "completed" {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-d.timerAfter(artifactRunPoll):
+		}
+	}
+	return nil
 }
 
 func newestRepositoryArtifactCreatedAt(arts []forge.RepositoryArtifact) string {
