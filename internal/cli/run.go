@@ -169,9 +169,11 @@ var defaultAgentsRepoKnownAgents = func() map[string]bool {
 var statusMintToken = mintclient.MintToken
 
 // statusNewForgeClientFn constructs the GitHub client for status comments.
+// It addresses the configured GitHub host (GITHUB_API_URL), so a run on a
+// host other than github.com posts its status there.
 // Override in tests to capture status writes without calling GitHub.
 var statusNewForgeClientFn = func(token string) forge.Client {
-	return gh.New(token)
+	return newGitHubLiveClient(token, "")
 }
 
 // agentWorkingDirExcludes lists fullsend-reserved directory patterns that
@@ -667,8 +669,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// Resolve agent source: config agents take precedence, then agents repo
 	// fallback. Always create a GitHub client for the agents-repo fallback —
 	// fullsend-ai/agents is public, so unauthenticated requests work when no
-	// GitHub token is available (e.g., on GitLab pipelines).
-	fallbackForgeClient := gh.New(composeGitToken)
+	// GitHub token is available (e.g., on GitLab pipelines). The client
+	// addresses the configured GitHub host (GITHUB_API_URL), so on a host
+	// other than github.com the fallback resolves the agents repo there.
+	fallbackForgeClient := newGitHubLiveClient(composeGitToken, "")
 	harnessPath, fetchDeps, err := resolveAgentSource(ctx, absFullsendDir, agentName, fallbackForgeClient, orgCfg, composeOpts, printer)
 	if err != nil {
 		return err
@@ -7866,7 +7870,11 @@ func fetchPinnedAgentsRepoFile(ctx context.Context, relPath string, forgeClient 
 		return "", none, false
 	}
 
+	hostPrefix := agentsRepoHostURLPrefix(forgeClient)
 	rawURL := defaultAgentsRepoURLPrefix + resolvedSHA + "/" + relPath
+	if hostPrefix != "" {
+		rawURL = hostPrefix + resolvedSHA + "/" + relPath
+	}
 
 	if harness.MatchingAllowedPrefixInList(rawURL, allowlist) == "" {
 		printer.StepWarn(fmt.Sprintf("Agents repo fallback skipped for %s: URL not in allowed_remote_resources", noun))
@@ -7879,9 +7887,16 @@ func fetchPinnedAgentsRepoFile(ctx context.Context, relPath string, forgeClient 
 	}
 	printer.StepStart(fmt.Sprintf("Fetching %s from %s/%s@%s", noun, defaultAgentsRepoOwner, defaultAgentsRepoName, shortSHA))
 
-	content, err := fetch.FetchURL(ctx, rawURL, composeOpts.FetchPolicy)
+	var content []byte
+	if hostPrefix != "" {
+		// A host other than github.com has no raw.githubusercontent.com,
+		// so read the file through the same client that resolved the ref.
+		content, err = forgeClient.GetFileContentAtRef(ctx, defaultAgentsRepoOwner, defaultAgentsRepoName, relPath, resolvedSHA)
+	} else {
+		content, err = fetch.FetchURL(ctx, rawURL, composeOpts.FetchPolicy)
+	}
 	if err != nil {
-		if isFetchHTTPStatus(err, http.StatusNotFound) {
+		if isFetchHTTPStatus(err, http.StatusNotFound) || forge.IsNotFound(err) {
 			printer.StepInfo(fmt.Sprintf("No %s at %s/%s@%s (HTTP 404); skipping", noun, defaultAgentsRepoOwner, defaultAgentsRepoName, shortSHA))
 		} else {
 			printer.StepWarn(fmt.Sprintf("Failed to fetch %s from agents repo: %v", noun, err))
@@ -7932,6 +7947,27 @@ func fetchPinnedAgentsRepoFile(ctx context.Context, relPath string, forgeClient 
 
 	printer.StepDone(fmt.Sprintf("%s resolved from %s/%s@%s", noun, defaultAgentsRepoOwner, defaultAgentsRepoName, displayRef))
 	return localPath, dep, true
+}
+
+// agentsRepoHostURLPrefix returns the raw-content URL prefix of
+// fullsend-ai/agents on the GitHub host forgeClient addresses, in the
+// https://<host>/<owner>/<repo>/raw/ form that host serves raw files from.
+// It returns "" when the client addresses github.com (the default API URL)
+// or is not a GitHub API client, in which case the agents repo is fetched
+// from defaultAgentsRepoURLPrefix. A GitHub Enterprise Server API base
+// (<host>/api/v3) maps back to its instance URL.
+func agentsRepoHostURLPrefix(forgeClient forge.Client) string {
+	client, ok := forgeClient.(*gh.LiveClient)
+	if !ok || client == nil {
+		return ""
+	}
+	base := strings.TrimRight(strings.TrimSpace(client.BaseURL()), "/")
+	// gh.New's base URL is the github.com API default.
+	if base == "" || strings.EqualFold(base, gh.New("").BaseURL()) {
+		return ""
+	}
+	instance := strings.TrimSuffix(base, "/api/v3")
+	return instance + "/" + defaultAgentsRepoOwner + "/" + defaultAgentsRepoName + "/raw/"
 }
 
 // cachedPinnedAgentsRepoFile is the offline counterpart of
