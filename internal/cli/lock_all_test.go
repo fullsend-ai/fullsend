@@ -950,7 +950,7 @@ func TestResolveHarnessForLock_DisabledAgent(t *testing.T) {
 	_, _, err := resolveHarnessForLock(
 		context.Background(), dir, "code", orgCfg, resolveFlags{}, fetch.FetchPolicy{}, printer)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "explicitly disabled")
+	assert.Contains(t, err.Error(), "is disabled in config")
 }
 
 func TestLockOneAgent_ConfigFallback(t *testing.T) {

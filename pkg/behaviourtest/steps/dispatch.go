@@ -27,6 +27,9 @@ func registerDispatchSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^a disabled custom harness "([^"]+)" with:$`, func(ctx context.Context, name, doc string) (context.Context, error) {
 		return ctx, givenDisabledCustomHarness(world.FromContext(ctx), name, doc)
 	})
+	sc.Step(`^(?:a|the) disabled agent "([^"]+)"(?: in config)?$`, func(ctx context.Context, name string) (context.Context, error) {
+		return ctx, givenDisabledAgent(world.FromContext(ctx), name)
+	})
 	sc.Step(`^the harness "([^"]+)" workflow completes successfully$`, func(ctx context.Context, agent string) (context.Context, error) {
 		return ctx, thenHarnessWorkflowCompletes(world.FromContext(ctx), agent)
 	})
@@ -240,6 +243,58 @@ func givenDisabledCustomHarness(w *world.World, name, doc string) error {
 		return err
 	}
 	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, cfgPath, fmt.Sprintf("behaviour: register disabled harness %s", name), merged); err != nil {
+		return fmt.Errorf("updating config: %w", err)
+	}
+	return nil
+}
+
+// givenDisabledAgent disables an agent by writing an entry with enabled: false
+// to .fullsend/config.yaml. Snapshotting ensures CleanupScenario restores the
+// pre-scenario agents list.
+func givenDisabledAgent(w *world.World, name string) error {
+	if w.Org == "" && w.RepoOwner != "" {
+		w.Org = w.RepoOwner
+	}
+	if w.Org == "" || w.RepoName == "" {
+		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before disabling agents")
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("agent name is required")
+	}
+
+	if err := snapshotAgents(w); err != nil {
+		return fmt.Errorf("snapshotting agents: %w", err)
+	}
+
+	cfgPath := filepath.Join(".fullsend", "config.yaml")
+	cfgData, err := w.SCM.GetFileContent(context.Background(), w.Org, w.RepoName, cfgPath)
+	if err != nil {
+		return fmt.Errorf("reading config: %w", err)
+	}
+	cfg, err := config.ParsePerRepoConfigWriter(cfgData)
+	if err != nil {
+		return fmt.Errorf("parsing config: %w", err)
+	}
+	disabled := false
+	entry := config.AgentEntry{Name: name, Enabled: &disabled}
+	existing := cfg.AgentEntries()
+	var agents []config.AgentEntry
+	for _, a := range existing {
+		if !strings.EqualFold(a.DerivedName(), name) {
+			agents = append(agents, a)
+		}
+	}
+	agents = append(agents, entry)
+	cfg.SetAgents(agents)
+	if err := config.ValidateAgentEntries(cfg.AgentEntries(), cfg.AllowedResources()); err != nil {
+		return fmt.Errorf("validating agent entries: %w", err)
+	}
+	merged, err := cfg.Marshal()
+	if err != nil {
+		return err
+	}
+	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, cfgPath, fmt.Sprintf("behaviour: disable agent %s", name), merged); err != nil {
 		return fmt.Errorf("updating config: %w", err)
 	}
 	return nil

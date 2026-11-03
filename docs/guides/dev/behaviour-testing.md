@@ -648,6 +648,10 @@ The `fork-dispatch.feature` file defines the canonical fork-PR behaviour contrac
 
 **`a disabled custom harness "<name>" with:`** — Registers the harness YAML under `.fullsend/harness/<name>.yaml` and adds an agent entry with `enabled: false` to the repo's `config.yaml`. Use this step for negative dispatch assertions where a single agent should be excluded while other agents in the same scenario continue to run. This is *not* the kill switch; for the global emergency stop that blocks all harnesses, use `the kill switch is active`.
 
+**`the disabled agent "<name>"`** (or **`a disabled agent "<name>" in config`**) — Adds an entry with `enabled: false` for the named agent to `.fullsend/config.yaml`. Use this step to verify that an agent configured as disabled starts its workflow but skips execution via `fullsend run`. Snapshotting ensures scenario cleanup restores the pre-scenario configuration.
+
+**`the (issue|pull request) does not have a status comment`** (or **`marker`**) — Asserts that no comment on the scenario's issue or pull request contains the fullsend status comment HTML comment marker.
+
 **`the harness dispatch completes with an empty matrix`** — Waits for the harness workflow run(s) created since the last trigger step, then requires every run that was not cancelled or skipped (a skipped run, such as the shim run for a bot comment, ran no job) to have completed with its `Harness dispatch` job succeeded and no `Harness run (<agent>)` job scheduled. It fails if the dispatch job failed or an agent was scheduled, and keeps waiting while no run exists yet or a run is still in progress, so a denial is never inferred from a missing or failed run. Pair it with `agent did not run` and `dispatched exactly 0 times` for denial scenarios. It needs a CI driver that implements the optional `ci.EmptyMatrixWaiter`; the GitHub Actions driver does.
 
 **`the harness "<agent>" run was skipped by its pre-script`** — Downloads

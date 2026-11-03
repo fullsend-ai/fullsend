@@ -29,11 +29,11 @@ func registerOwnersSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^OWNERS authorization is enabled$`, func(ctx context.Context) (context.Context, error) {
 		return ctx, givenOwnersAuthEnabled(world.FromContext(ctx))
 	})
-	sc.Step(`^the triage workflow logs contain "([^"]+)"$`, func(ctx context.Context, needle string) (context.Context, error) {
-		return ctx, thenWorkflowLogsContain(world.FromContext(ctx), needle)
+	sc.Step(`^the triage workflow logs contain "((?:[^"\\]|\\.)*)"$`, func(ctx context.Context, needle string) (context.Context, error) {
+		return ctx, thenWorkflowLogsContain(world.FromContext(ctx), unescapeStepString(needle))
 	})
-	sc.Step(`^the triage workflow logs do not contain "([^"]+)"$`, func(ctx context.Context, needle string) (context.Context, error) {
-		return ctx, thenWorkflowLogsDoNotContain(world.FromContext(ctx), needle)
+	sc.Step(`^the triage workflow logs do not contain "((?:[^"\\]|\\.)*)"$`, func(ctx context.Context, needle string) (context.Context, error) {
+		return ctx, thenWorkflowLogsDoNotContain(world.FromContext(ctx), unescapeStepString(needle))
 	})
 	sc.Step(`^the (bot|`+actorAlternation+`) opens an issue for OWNERS auth testing$`, func(ctx context.Context, actor string) (context.Context, error) {
 		return ctx, whenIssueOpenedForOwnersAuth(world.FromContext(ctx), actor)
@@ -161,6 +161,21 @@ func whenIssueOpenedForOwnersAuth(w *world.World, actor string) error {
 	w.IssueNumber = issue.Number
 	w.IssueTitle = title
 	return nil
+}
+
+// unescapeStepString decodes the backslash escapes a step regex captures
+// from Gherkin step text (Gherkin does not unescape quotes itself), so a
+// step like logs contain "agent \"triage\" ..." matches the literal
+// quotes in the logs.
+func unescapeStepString(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) {
+			i++
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
 }
 
 func thenWorkflowLogsContain(w *world.World, needle string) error {

@@ -229,3 +229,12 @@ func TestPostCompletion_LiveStatusMarkerAfterStart_IsStatusComment(t *testing.T)
 	assert.Empty(t, fc.UpdatedComments)
 	assert.Len(t, fc.IssueComments["org/repo/7"], 3)
 }
+
+func TestIsStatusComment(t *testing.T) {
+	assert.True(t, IsStatusComment("<!-- fullsend:agent-status:123 -->\n🤖 Agent · Started 1:00 PM UTC"))
+	assert.True(t, IsStatusComment("preamble\n<!-- fullsend:agent-status:run-abc -->\npostamble"))
+	assert.False(t, IsStatusComment("&lt;!-- fullsend:agent-status:123 -->"))
+	assert.False(t, IsStatusComment("<!-- fullsend:review-agent -->"))
+	assert.False(t, IsStatusComment("plain text comment"))
+	assert.False(t, IsStatusComment(""))
+}

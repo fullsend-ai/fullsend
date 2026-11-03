@@ -503,8 +503,8 @@ for the fields, completion modes, and reaction behavior.
 
 ## Disabling agents
 
-To disable an agent (including built-in scaffold agents) without removing
-its role, add an entry with `enabled: false` in your config:
+To disable an agent (including built-in scaffold agents), add an entry with
+`enabled: false` in your config:
 
 ```yaml
 agents:
@@ -512,10 +512,24 @@ agents:
     enabled: false
 ```
 
-This prevents the agent from dispatching and from resolving via
-`fullsend run`. The role can stay in `roles` — only the agent
-is suppressed. Omitting `enabled` (or setting it to `true`) keeps the
-agent active (backward compatible).
+This prevents the agent from executing: `fullsend run` skips the run and
+exits successfully, and under GitHub Actions it reports `skipped=true` (with
+the reason) as step outputs. The dispatch workflow no longer checks whether
+an agent is enabled, so its earlier setup steps (such as minting a token)
+still run before the skip, and a failure in any of them still fails the
+workflow. The `fix` agent is the one exception: the Route job checks whether
+`fix` is enabled before its fork-PR and PR-head checks, so a disabled `fix`
+agent skips those without failing. `roles` no longer gates dispatch either —
+it only controls which role GitHub Apps are installed during setup — so
+removing a role from `roles` does not stop dispatch and can uninstall an App
+that other agents share (for example, `code` and `fix` share the `coder`
+role's App). While `fullsend` is listed in `roles`, the role route also
+implies `retro` and `prioritize` for backward compatibility, so removing
+those roles from the list does not stop them — you must also drop `fullsend`
+and list the roles you need explicitly. Removing the `coder` role stops
+`code` and `fix` together; there is no way to stop only one of them through
+`roles`. `enabled: false` is the way to suppress an agent. Omitting `enabled`
+(or setting it to `true`) keeps the agent active (backward compatible).
 
 When multiple entries share a name, the last writer wins. This allows a
 disable-then-enable pattern to replace a default agent with a custom one:

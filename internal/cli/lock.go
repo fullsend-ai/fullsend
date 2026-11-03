@@ -653,7 +653,7 @@ func resolveHarnessForLock(ctx context.Context, absFullsendDir, agentName string
 	}
 
 	if config.IsAgentExplicitlyDisabled(orgCfg.AgentEntries(), agentName) {
-		return "", nil, fmt.Errorf("agent %q is explicitly disabled in config", agentName)
+		return "", nil, &agentDisabledError{agentName: agentName}
 	}
 
 	entry := findConfigAgentEntry(orgCfg.AgentEntries(), agentName)
