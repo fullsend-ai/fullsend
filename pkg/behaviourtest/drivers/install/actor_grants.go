@@ -27,7 +27,7 @@ var actorGrantEnv = []struct{ patEnv, permission string }{
 
 const outsiderPATEnv = "TEST_ACTOR_OUTSIDER_PAT"
 
-const setupOrgHint = "run hack/setup-new-e2e-org.sh to grant organization membership and the all-repository role"
+const setupOrgHint = "run e2e/org-pool/setup-manual.sh to grant organization membership, then e2e/org-pool/setup-org.sh to assign the all-repository role"
 
 // actorGrantsFromEnv resolves the login behind each actor PAT that is set.
 // An actor whose login cannot be resolved is logged and skipped.
@@ -73,7 +73,7 @@ func outsiderLoginFromEnv(ctx context.Context) (string, error) {
 // invitations (#7777).
 //
 // The all-repository role itself (write/triage) is verified only by
-// hack/setup-new-e2e-org.sh, which runs with an org-admin-authenticated
+// e2e/org-pool/setup-org.sh, which runs with an org-admin-authenticated
 // gh session — not here. Checking it at ensure time would require the
 // e2e GitHub App installation on every pool org to hold the
 // "Organization custom roles" (organization_custom_roles) permission
@@ -135,7 +135,7 @@ func (e *repoEnsurer) verifyActorOrgAccess(ctx context.Context, gh forge.GitHubE
 		return fmt.Errorf("%s is not an active member of %s (state=%s); org-level %s access is required (%s)",
 			g.login, org, membership.State, g.permission, setupOrgHint)
 	}
-	e.logf("[ensure] %s is an active member of %s; all-repository %s role verified by hack/setup-new-e2e-org.sh",
+	e.logf("[ensure] %s is an active member of %s; all-repository %s role verified by e2e/org-pool/setup-org.sh",
 		g.login, org, g.permission)
 	return nil
 }
