@@ -76,7 +76,9 @@ jobs:
               relevant=false
             else
               status=$?
-              if [ "$status" -ne 1 ]; then exit "$status"; fi
+              if [ "$status" -ne 1 ]; then
+                echo "::warning::Could not compare merge-group changes (exit $status) — building images as a precaution"
+              fi
             fi
           fi
           echo "relevant=$relevant" >> "$GITHUB_OUTPUT"
