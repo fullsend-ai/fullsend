@@ -353,7 +353,11 @@ func runLint(cmd *cobra.Command, fullsendDir, forgeFlag, only string, strict, of
 				continue
 			}
 		}
-		for _, diag := range h.Lint() {
+		// reservedSandboxEnvDiagnostics rides along, as in run and lock: it
+		// names the env.sandbox keys a run will drop instead of exporting
+		// them (#3373). h has not had env.runner merged into RunnerEnv, so
+		// the warning reflects the declared YAML.
+		for _, diag := range append(h.Lint(), reservedSandboxEnvDiagnostics(h)...) {
 			emitter.diagnostic(agentName, diag)
 		}
 		// Same file validation as fullsend run, so lint catches at commit
