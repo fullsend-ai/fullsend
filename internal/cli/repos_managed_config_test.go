@@ -242,7 +242,7 @@ func TestRunReposInstall_ManagedConfigFreshInstallDryRun(t *testing.T) {
 }
 
 // A repository with no config key is still managed: the first install
-// persists the upstream create_issues default in its manifest entry and
+// persists the upstream tracking default in its manifest entry and
 // renders exactly that into the marked sparse overlay (#8218).
 func TestRunReposInstall_NoConfigKeyWritesSparseManagedOverlay(t *testing.T) {
 	manifestPath := writeTestManifest(t, githubUnmanagedManifestYAML)
@@ -251,7 +251,7 @@ func TestRunReposInstall_NoConfigKeyWritesSparseManagedOverlay(t *testing.T) {
 	require.NoError(t, runReposInstall(context.Background(), githubManagedInstallOpts(manifestPath, fc)))
 
 	overlay := fc.FileContents[overlayPath("acme/api")]
-	assert.Equal(t, managedConfigMarker+"create_issues:\n    allow_targets:\n        repos:\n            - fullsend-ai/fullsend\n            - fullsend-ai/agents\n", string(overlay))
+	assert.Equal(t, managedConfigMarker+"tracker:\n    github:\n        allowed_targets:\n            repos:\n                - fullsend-ai/fullsend\n                - fullsend-ai/agents\n", string(overlay))
 
 	reloaded, err := repos.LoadManifest(context.Background(), manifestPath)
 	require.NoError(t, err)
@@ -297,9 +297,9 @@ func TestRunReposInstall_DeclaredRolesRenderedFromManifest(t *testing.T) {
 	assert.Contains(t, overlay, "fullsend-ai/agents")
 }
 
-func TestRunReposInstall_ExplicitCreateIssuesIsNotOverridden(t *testing.T) {
+func TestRunReposInstall_ExplicitTrackingIsNotOverridden(t *testing.T) {
 	manifest := strings.Replace(githubUnmanagedManifestYAML, "    - name: acme/api\n",
-		"    - name: acme/api\n      config:\n        create_issues:\n          allow_targets:\n            repos:\n              - acme/other\n", 1)
+		"    - name: acme/api\n      config:\n        tracker:\n          github:\n            allowed_targets:\n              repos:\n                - acme/other\n", 1)
 	manifestPath := writeTestManifest(t, manifest)
 	fc := newInstallFakeClient("acme/api")
 
@@ -322,7 +322,8 @@ func TestRunReposInstall_ReadOnlyManifestFailsWithSuggestedEdit(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "read-only")
 	assert.Contains(t, err.Error(), `entry "acme/api"`)
-	assert.Contains(t, err.Error(), "create_issues:")
+	assert.Contains(t, err.Error(), "tracker:")
+	assert.Contains(t, err.Error(), "allowed_targets:")
 	assert.Contains(t, err.Error(), "- fullsend-ai/fullsend")
 	assert.Contains(t, err.Error(), "- fullsend-ai/agents")
 }
@@ -423,15 +424,15 @@ func TestRunReposInstall_AdoptionRequiredRepoDoesNotBlockOthers(t *testing.T) {
 			require.True(t, ok)
 			api, ok := reloaded.ResolveConfig("acme", "api")
 			require.True(t, ok)
-			assert.Nil(t, api.Managed.IssueCreationConfig(), "the skipped repo's manifest entry is not edited")
+			assert.Nil(t, api.Managed.IssueTracking(), "the skipped repo's manifest entry is not edited")
 			if dryRun {
 				assert.Empty(t, fc.FileContents[overlayPath("acme/web")], "a dry run writes nothing")
-				assert.Nil(t, web.Managed.IssueCreationConfig(), "a dry run does not write the manifest")
+				assert.Nil(t, web.Managed.IssueTracking(), "a dry run does not write the manifest")
 				return
 			}
 			overlay := fc.FileContents[overlayPath("acme/web")]
 			assert.True(t, bytes.HasPrefix(overlay, []byte(managedConfigMarker)), "acme/web gets its managed overlay")
-			assert.NotNil(t, web.Managed.IssueCreationConfig(), "acme/web gets its install default")
+			assert.NotNil(t, web.Managed.IssueTracking(), "acme/web gets its install default")
 		})
 	}
 }

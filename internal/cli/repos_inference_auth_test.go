@@ -98,7 +98,7 @@ func TestRunReposInstall_GlobOnlySelectionIsKept(t *testing.T) {
 	opts.repoFilter = []string{"acme/api"}
 	require.NoError(t, runReposInstall(context.Background(), opts))
 
-	// The first install records the upstream create_issues default on an
+	// The first install records the upstream tracking default on an
 	// explicit entry for that repo only (#8218). The entry is copied from
 	// the glob so the glob selection is kept, and the glob is unchanged.
 	reloaded, err := repos.LoadManifest(context.Background(), manifestPath)
@@ -123,7 +123,7 @@ func TestRunReposInstall_GlobSelectionWinsOverConflictingDefaults(t *testing.T) 
 
 	reloaded, err := repos.LoadManifest(context.Background(), manifestPath)
 	require.NoError(t, err)
-	require.Len(t, reloaded.GitHub.Repos, 2, "the glob is retained; the repo gets an explicit copy carrying the upstream create_issues default (#8218)")
+	require.Len(t, reloaded.GitHub.Repos, 2, "the glob is retained; the repo gets an explicit copy carrying the upstream tracking default (#8218)")
 	resolved, ok := reloaded.ResolveConfigWithGlobs("acme", "api")
 	require.True(t, ok)
 	assert.Equal(t, repos.InferenceAuthOpenAIAPIKey, resolved.InferenceAuth, "the glob selection must beat the conflicting default")
@@ -153,7 +153,7 @@ func TestRunReposInstall_GlobSelectorFiltersDeclaredRepos(t *testing.T) {
 
 // A concrete repository covered by a glob is installed with the glob's
 // settings even when the organization listing omits it (a fork). The only
-// manifest change is the pre-existing first-install create_issues writeback.
+// manifest change is the pre-existing first-install tracking writeback.
 func TestRunReposInstall_GlobCoveredRepoMissingFromExpansionIsInstalled(t *testing.T) {
 	manifestPath := writeTestManifest(t, globInferenceAuthManifestYAML)
 	fc := newInstallFakeClient("acme/web", "acme/my-fork")

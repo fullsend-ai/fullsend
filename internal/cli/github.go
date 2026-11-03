@@ -919,7 +919,7 @@ func validateSetupValueFormats(r config.PerRepoConfigReader, source string) erro
 // non-empty (an on-disk config.base.yaml with no overlay) the overlay is
 // parented on that base so validation and value resolution see it. With a
 // base present the overlay is sparse (like the --config preset path): no
-// roles, create_issues targets, or remote-resource allowlist are
+// roles, tracking targets, or remote-resource allowlist are
 // materialized, so they inherit from the base; the caller writes only
 // values passed through explicit flags.
 func newSetupOverlay(roles []string, target string, baseData []byte) (config.PerRepoConfigWriter, error) {
