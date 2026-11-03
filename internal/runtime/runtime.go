@@ -299,8 +299,10 @@ func GenAISystemFor(rt Runtime, model, agentModel string, aliases map[string]str
 // value), including conditionally exported names — the flat union is the
 // contract: a consumer asks "can this runtime set it?", not "does it always
 // set it?". Runtimes whose launch commands export nothing beyond EnvExports
-// (claude, dummy, dummy-playback) must not implement this; hook-env keys the
-// bootstrap injects are covered separately by the conditional category.
+// (dummy, dummy-playback) must not implement this.
+// TestLaunchEnvExportsMatchLaunchCommands derives each list from the
+// runtime's launch commands, so a declaration cannot omit a name the
+// commands export or keep one they no longer do.
 type LaunchEnvExporter interface {
 	Runtime
 	LaunchEnvExports() []string

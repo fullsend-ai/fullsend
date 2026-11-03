@@ -190,7 +190,7 @@ Drift becomes detectable when you have a declared baseline to measure against. A
 
 The runner's environment surface now has such a baseline: which env
 vars the sandbox receives, per runtime and under documented gates, is
-published as a generated, machine-checkable manifest rather than
+published as generated, machine-checkable JSON Schemas rather than
 hand-synced descriptions, so content repos can verify env-var
 reachability against a released runner
 ([ADR 0146](../ADRs/0146-sandbox-environment-contract-manifest.md)).

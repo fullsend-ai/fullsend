@@ -11,54 +11,67 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/fullsend-ai/fullsend/internal/envmanifest"
 )
 
-// update rewrites the committed sandbox env manifest from collector output,
+// update rewrites the committed sandbox env schemas from collector output,
 // following the repo's golden-test flag convention (internal/agentnew,
 // internal/runtime).
-var update = flag.Bool("update", false, "rewrite the committed sandbox env manifest at docs/normative/sandbox-env/v1/sandbox-env.json")
+var update = flag.Bool("update", false, "rewrite the committed sandbox env schemas under docs/normative/sandbox-env/v1/")
 
-// envManifestGoldenPath locates the committed sandbox env contract manifest,
+// envManifestSchemaDir locates the committed sandbox env contract schemas,
 // repo-relative from internal/cli's test working directory — the same ../..
 // relative-read pattern this package's other repo-root reads use.
-var envManifestGoldenPath = filepath.Join("..", "..", "docs", "normative", "sandbox-env", "v1", "sandbox-env.json")
+var envManifestSchemaDir = filepath.Join("..", "..", "docs", "normative", "sandbox-env", "v1")
 
-// TestEnvManifestGolden byte-compares the committed sandbox env contract at
-// docs/normative/sandbox-env/v1/sandbox-env.json against the manifest the
-// collector derives by executing the production emitters, so the published
-// contract cannot drift from the code that builds the sandbox environment.
+// TestEnvManifestGolden byte-compares each committed sandbox env contract
+// schema under docs/normative/sandbox-env/v1/ against the schema rendered
+// from the manifest the collector derives by executing the production
+// emitters, so the published contract cannot drift from the code that
+// builds the sandbox environment.
 //
 // Regenerate with: go test ./internal/cli -run TestEnvManifestGolden -update
 func TestEnvManifestGolden(t *testing.T) {
-	rendered, err := collectSandboxEnvManifest(t).Render()
-	require.NoError(t, err, "rendering the collected manifest")
+	schemas, err := collectSandboxEnvManifest(t).RenderSchemas()
+	require.NoError(t, err, "rendering the collected manifest's schemas")
+	require.ElementsMatch(t, []string{envmanifest.HarnessEnvSchemaFile, envmanifest.EnvReferencesSchemaFile}, keysOf(schemas))
 
-	if *update {
-		// MkdirAll covers first-time generation: a change that has never
-		// committed a manifest (or a fresh checkout mid-change) creates the
-		// normative directory here rather than failing on a missing parent.
-		require.NoError(t, os.MkdirAll(filepath.Dir(envManifestGoldenPath), 0o755))
-		require.NoError(t, os.WriteFile(envManifestGoldenPath, rendered, 0o644))
-		// The update run must land exactly what the collector produced: a
-		// partial or failed write would otherwise pass here and fail the
-		// next plain run, so verify the file now holds the rendered bytes.
-		written, err := os.ReadFile(envManifestGoldenPath)
-		require.NoError(t, err, "reading back the rewritten manifest")
-		assert.Equal(t, rendered, written, "the rewritten manifest must equal collector output byte for byte")
-		return
-	}
+	for file, rendered := range schemas {
+		path := filepath.Join(envManifestSchemaDir, file)
+		t.Run(file, func(t *testing.T) {
+			if *update {
+				require.NoError(t, os.MkdirAll(envManifestSchemaDir, 0o755))
+				require.NoError(t, os.WriteFile(path, rendered, 0o644))
+				// The update run must land exactly what the collector
+				// produced: a partial or failed write would otherwise pass
+				// here and fail the next plain run.
+				written, err := os.ReadFile(path)
+				require.NoError(t, err, "reading back the rewritten schema")
+				assert.Equal(t, rendered, written, "the rewritten schema must equal collector output byte for byte")
+				return
+			}
 
-	committed, err := os.ReadFile(envManifestGoldenPath)
-	if os.IsNotExist(err) {
-		t.Fatalf("committed sandbox env manifest %s does not exist (not generated yet); run with -update to create it: go test ./internal/cli -run TestEnvManifestGolden -update",
-			envManifestGoldenPath)
-	}
-	require.NoError(t, err, "reading the committed sandbox env manifest")
+			committed, err := os.ReadFile(path)
+			if os.IsNotExist(err) {
+				t.Fatalf("committed sandbox env schema %s does not exist (not generated yet); run with -update to create it: go test ./internal/cli -run TestEnvManifestGolden -update", path)
+			}
+			require.NoError(t, err, "reading the committed sandbox env schema")
 
-	if !bytes.Equal(committed, rendered) {
-		t.Fatalf("committed sandbox env manifest %s differs from collector output:\n%s\nif the change is intended, regenerate and review the diff: go test ./internal/cli -run TestEnvManifestGolden -update",
-			envManifestGoldenPath, envManifestDiffSummary(committed, rendered))
+			if !bytes.Equal(committed, rendered) {
+				t.Fatalf("committed sandbox env schema %s differs from collector output:\n%s\nif the change is intended, regenerate and review the diff: go test ./internal/cli -run TestEnvManifestGolden -update",
+					path, envManifestDiffSummary(committed, rendered))
+			}
+		})
 	}
+}
+
+func keysOf(m map[string][]byte) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
 }
 
 // envManifestDiffSummary locates a committed/rendered divergence: the first

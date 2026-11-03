@@ -160,7 +160,10 @@ func (r PiRuntime) EnvExports() []string {
 // their GOOGLE_CLOUD_* names. GOOGLE_CLOUD_PROJECT and
 // XAI_VERTEX_PROJECT_ID are conditional on the provider path and are
 // recorded flat anyway: runtime_specific asks whether the runtime can set
-// the name, not whether every provider path does.
+// the name, not whether every provider path does. The INFERENCE_GATEWAY_*
+// names are set only when an inference gateway is registered for the run
+// (piGatewayEnvParts). TestLaunchEnvExportsMatchLaunchCommands pins this
+// list to the launch commands.
 func (PiRuntime) LaunchEnvExports() []string {
 	return []string{
 		piRuntimeEnv,
@@ -173,6 +176,9 @@ func (PiRuntime) LaunchEnvExports() []string {
 		"GOOGLE_CLOUD_LOCATION",
 		"GOOGLE_CLOUD_PROJECT",
 		"XAI_VERTEX_PROJECT_ID",
+		piInferenceGatewayBaseURLEnv,
+		piInferenceGatewayTokenFileEnv,
+		piInferenceGatewayConfigFileEnv,
 	}
 }
 

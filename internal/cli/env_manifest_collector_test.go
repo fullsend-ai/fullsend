@@ -3,6 +3,7 @@ package cli
 import (
 	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -65,11 +66,6 @@ var sandboxEnvGates = map[string]string{
 	"TRACEPARENT":                 "writeIterationEnv succeeds; the run warns and continues when it fails",
 }
 
-// envManifestKeyRe matches a KEY= assignment token while excluding $KEY
-// references: an emitter's output assigns the names it exports and reads the
-// ones it prefixes with $.
-var envManifestKeyRe = regexp.MustCompile(`(?:^|[^A-Za-z0-9_$])([A-Za-z_][A-Za-z0-9_]*)=`)
-
 // envManifestRegistryCaseRe matches a case clause of the Resolve switch at
 // switch depth: gofmt keeps a clause's runtime labels on the line that starts
 // with "case".
@@ -90,6 +86,7 @@ func TestEnvManifestCollector(t *testing.T) {
 	t.Run("always", func(t *testing.T) {
 		assert.Equal(t, []string{
 			"FULLSEND_OUTPUT_DIR",
+			"FULLSEND_PERSONAS_FILE",
 			"FULLSEND_ROLE",
 			"FULLSEND_TARGET_REPO_DIR",
 			"PATH",
@@ -140,18 +137,29 @@ func TestEnvManifestCollector(t *testing.T) {
 			runtime string
 			want    []string
 		}{
-			{"claude", []string{"CLAUDE_CONFIG_DIR"}},
+			{"claude", []string{
+				"ANTHROPIC_API_KEY",
+				"ANTHROPIC_AUTH_TOKEN",
+				"ANTHROPIC_BASE_URL",
+				"CLAUDE_CODE_API_KEY_HELPER_TTL_MS",
+				"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+				"CLAUDE_CONFIG_DIR",
+			}},
 			{"codex", []string{
 				"CODEX_HOME",
 				"FULLSEND_CODEX_HOOK_DIGESTS",
 				"FULLSEND_CODEX_SPAWN_DIGESTS",
 				"FULLSEND_RUNTIME",
+				"FULLSEND_TRUSTED_PATH",
 				"RUST_LOG",
 			}},
 			{"opencode", []string{
 				"FULLSEND_RUNTIME",
+				"GOOGLE_APPLICATION_CREDENTIALS",
 				"GOOGLE_CLOUD_LOCATION",
 				"GOOGLE_CLOUD_PROJECT",
+				"HOME",
+				"OPENCODE_CONFIG_CONTENT",
 				"OPENCODE_CONFIG_DIR",
 				"OPENCODE_DISABLE_EXTERNAL_SKILLS",
 				"OPENCODE_DISABLE_PROJECT_CONFIG",
@@ -166,6 +174,9 @@ func TestEnvManifestCollector(t *testing.T) {
 				"FULLSEND_RUNTIME",
 				"GOOGLE_CLOUD_LOCATION",
 				"GOOGLE_CLOUD_PROJECT",
+				"INFERENCE_GATEWAY_BASE_URL",
+				"INFERENCE_GATEWAY_CONFIG_FILE",
+				"INFERENCE_GATEWAY_TOKEN_FILE",
 				"JITI_FS_CACHE",
 				"PI_CODING_AGENT_DIR",
 				"PI_CODING_AGENT_SESSION_DIR",
@@ -182,6 +193,22 @@ func TestEnvManifestCollector(t *testing.T) {
 		assert.Len(t, m.Exports.RuntimeSpecific, len(productionSandboxRuntimes))
 	})
 
+	// Every name a runtime's EnvExports or launch command exports must land
+	// in some export category, so a bare re-export or a launch-only name
+	// cannot fall out of the contract unnoticed.
+	t.Run("runtime exports accounted for", func(t *testing.T) {
+		for _, name := range productionSandboxRuntimes {
+			backend, err := agentruntime.Resolve(name)
+			require.NoError(t, err)
+			emitted := append(envmanifest.ExportedNames(backend.EnvExports()...), agentruntime.LaunchEnvExportsFor(backend.Runtime)...)
+			for _, key := range emitted {
+				_, conditional := m.Exports.Conditional[key]
+				covered := conditional || slices.Contains(m.Exports.Always, key) || slices.Contains(m.Exports.RuntimeSpecific[name], key)
+				assert.True(t, covered, "%s exports %q, which no manifest category lists", name, key)
+			}
+		}
+	})
+
 	t.Run("harness delivered", func(t *testing.T) {
 		want := []string{
 			"ANTHROPIC_VERTEX_PROJECT_ID",
@@ -193,7 +220,6 @@ func TestEnvManifestCollector(t *testing.T) {
 		slices.Sort(got)
 		assert.Equal(t, want, got)
 		for key, delivered := range m.HarnessDelivered {
-			assert.False(t, delivered.RunnerGuaranteed, "%q is harness-delivered, not runner-guaranteed", key)
 			assert.Equal(t, envManifestProvenance, delivered.Provenance, "provenance for %q", key)
 		}
 	})
@@ -226,6 +252,7 @@ func TestEnvManifestCollector(t *testing.T) {
 			"FULLSEND_OUTPUT_DIR",
 			"FULLSEND_OUTPUT_FILE",
 			"FULLSEND_OUTPUT_SCHEMA",
+			"FULLSEND_PERSONAS_FILE",
 			"FULLSEND_ROLE",
 			"FULLSEND_RUNNER_PATH",
 			"FULLSEND_SLUG",
@@ -266,10 +293,9 @@ func TestEnvManifestCollector(t *testing.T) {
 	})
 
 	t.Run("renders deterministically", func(t *testing.T) {
-		assert.Equal(t, envmanifest.SchemaVersion, m.SchemaVersion)
-		first, err := m.Render()
+		first, err := m.RenderSchemas()
 		require.NoError(t, err)
-		second, err := m.Render()
+		second, err := m.RenderSchemas()
 		require.NoError(t, err)
 		assert.Equal(t, first, second)
 	})
@@ -356,23 +382,9 @@ func collectSandboxEnvManifest(t *testing.T) *envmanifest.Manifest {
 	for key := range gatedOff {
 		require.True(t, gatedOn[key], "bootstrapEnv emits %q only with its gates off", key)
 	}
-	// These variables are assigned readonly WITHOUT export in the
-	// bootstrap/launch script (env_data.go, runnerPathCaptureLine): the
-	// sandbox never sees them as env vars, only as shell variables.
-	// Exclude them from every export category.
-	readonlyNotExported := map[string]bool{
-		"FULLSEND_RUNNER_PATH":  true, // runnerPathCaptureLine
-		"FULLSEND_ENV_PYTHON":   true, // envDataPythonVar
-		"FULLSEND_ENV_EXPORTS":  true, // envDataExportsVar
-		"FULLSEND_TRUSTED_PATH": true, // envDataTrustedPathVar
-		"FULLSEND_READLINK":     true, // envDataReadlinkVar
-	}
 	alwaysKeys := map[string]bool{}
 	conditional := map[string]bool{}
 	for key := range gatedOn {
-		if readonlyNotExported[key] {
-			continue
-		}
 		if gatedOff[key] {
 			b.AddAlways(key)
 			alwaysKeys[key] = true
@@ -382,19 +394,19 @@ func collectSandboxEnvManifest(t *testing.T) *envmanifest.Manifest {
 	}
 
 	iterationCmd := iterationEnvCommand(30, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), envManifestTraceparent)
-	for _, key := range parseExportedEnvKeys(iterationCmd) {
-		if !readonlyNotExported[key] && !alwaysKeys[key] {
+	for _, key := range sandboxEnvFileKeys(t, iterationCmd) {
+		if !alwaysKeys[key] {
 			conditional[key] = true
 		}
 	}
 
 	for _, key := range traceIDExportKeys(t) {
-		if !readonlyNotExported[key] && !alwaysKeys[key] {
+		if !alwaysKeys[key] {
 			conditional[key] = true
 		}
 	}
 	for _, key := range hookEnvExportKeys(t) {
-		if !readonlyNotExported[key] && !alwaysKeys[key] {
+		if !alwaysKeys[key] {
 			conditional[key] = true
 		}
 	}
@@ -411,9 +423,13 @@ func collectSandboxEnvManifest(t *testing.T) *envmanifest.Manifest {
 		backend, err := agentruntime.Resolve(name)
 		require.NoError(t, err, "resolving runtime %q", name)
 		// runtime_specific unions the runtime's EnvExports statements with
-		// the bare names its launch command sets (LaunchEnvExporter); the
-		// builder normalizes the combined list.
-		keys := append(parseExportedEnvKeys(backend.EnvExports()...), agentruntime.LaunchEnvExportsFor(backend.Runtime)...)
+		// the bare names its launch command sets (LaunchEnvExporter, which
+		// internal/runtime pins to the launch commands themselves). Names
+		// the shared categories already cover — PATH, or the hook env a
+		// launch command re-exports — stay in their shared category, so
+		// runtime_specific lists only what the runtime adds.
+		keys := append(envmanifest.ExportedNames(backend.EnvExports()...), agentruntime.LaunchEnvExportsFor(backend.Runtime)...)
+		keys = slices.DeleteFunc(keys, func(key string) bool { return alwaysKeys[key] || conditional[key] })
 		b.AddRuntimeSpecific(name, keys...)
 	}
 
@@ -440,7 +456,7 @@ func collectSandboxEnvManifest(t *testing.T) *envmanifest.Manifest {
 // its emission is unconditional in practice.
 func bootstrapEnvExportKeys(t *testing.T, gated bool) map[string]bool {
 	t.Helper()
-	_, captureDir := envManifestOpenshell(t)
+	captureDir := envManifestCaptureDir(envManifestOpenshell(t))
 	h := &harness.Harness{Role: envManifestAgentName}
 	var fetch []fetchServiceEnv
 	if gated {
@@ -453,20 +469,21 @@ func bootstrapEnvExportKeys(t *testing.T, gated bool) map[string]bool {
 	}
 	require.NoError(t, bootstrapEnv(envManifestSandboxName, "/workspace/repo", h, nil, fetch...))
 	keys := map[string]bool{}
-	for _, key := range parseExportedEnvKeys(envManifestCapturedEnv(t, captureDir)) {
+	for _, key := range envmanifest.ExportedNames(envManifestCapturedEnv(t, captureDir)) {
 		keys[key] = true
 	}
 	return keys
 }
 
-// traceIDExportKeys runs injectTraceID under the recording stub and returns
-// the key its .env append assigns. The emitter's call site only warns on
-// failure, so the derived key is conditional, not always.
+// traceIDExportKeys runs injectTraceID under the recording stub, replays
+// the command it sent to the sandbox, and returns the key its .env append
+// exports. The emitter's call site only warns on failure, so the derived key
+// is conditional, not always.
 func traceIDExportKeys(t *testing.T) []string {
 	t.Helper()
-	argsLog, _ := envManifestOpenshell(t)
+	execLog := envManifestOpenshell(t)
 	require.NoError(t, injectTraceID(envManifestSandboxName, envManifestTraceID))
-	return parseExportedEnvKeys(envManifestStubArgs(t, argsLog)...)
+	return sandboxEnvFileKeys(t, envManifestEnvWrites(t, execLog)...)
 }
 
 // hookEnvExportKeys derives the security-hook env keys (TIRITH_FAIL_ON,
@@ -478,7 +495,7 @@ func traceIDExportKeys(t *testing.T) []string {
 // guard on the harness security config.
 func hookEnvExportKeys(t *testing.T) []string {
 	t.Helper()
-	argsLog, _ := envManifestOpenshell(t)
+	execLog := envManifestOpenshell(t)
 	agentPath := filepath.Join(t.TempDir(), "agent.md")
 	require.NoError(t, os.WriteFile(agentPath, []byte("# env manifest probe\n"), 0o644))
 	h := &harness.Harness{Security: &harness.SecurityConfig{SandboxHooks: &harness.SandboxHooks{
@@ -492,18 +509,7 @@ func hookEnvExportKeys(t *testing.T) []string {
 		hooks:       security.SandboxHookConfigFromHarness(h),
 	}
 	require.NoError(t, agentruntime.ClaudeRuntime{}.Bootstrap(in))
-	// Filter to only args-log lines that write to .env — the
-	// appendHookEnv pattern "echo 'export KEY=...' >> .env".
-	// The full Bootstrap also runs env_data launch scripts whose
-	// shell-internal variables (p, d, s, r, IFS, NAME, etc.) would
-	// be noise if parsed.
-	var hookLines []string
-	for _, line := range envManifestStubArgs(t, argsLog) {
-		if strings.Contains(line, ".env") {
-			hookLines = append(hookLines, line)
-		}
-	}
-	return parseExportedEnvKeys(hookLines...)
+	return sandboxEnvFileKeys(t, envManifestEnvWrites(t, execLog)...)
 }
 
 // envManifestScaffoldOptions builds a valid agent-new Options whose
@@ -576,24 +582,23 @@ func harnessDeliveredKeys(t *testing.T) []string {
 	return keys
 }
 
-// envManifestOpenshell installs an openshell stub on PATH that records every
-// invocation's arguments to a log and, on a sandbox upload whose local file
-// is a fullsend-env-*.sh temp file, copies that file into a capture
-// directory. bootstrapEnv composes the sandbox .env in exactly such a temp
-// file and uploads it through openshell, so the capture holds the real .env
-// content, while the args log carries the export tokens the sandbox-exec
-// emitters append. Only openshell is stubbed; tar and the other host tools
-// the runtimes shell out to keep working.
-func envManifestOpenshell(t *testing.T) (argsLog, captureDir string) {
+// envManifestOpenshell installs an openshell stub on PATH. On a sandbox
+// upload whose local file is a fullsend-env-*.sh temp file it copies that
+// file into a capture directory — bootstrapEnv composes the sandbox .env in
+// exactly such a file — and on a sandbox exec it appends the command (the
+// last argument) to a NUL-separated log, so the emitters' sandbox commands
+// can be replayed. Only openshell is stubbed; tar and the other host tools
+// the runtimes shell out to keep working. The capture directory is
+// returned through envManifestCaptureDir.
+func envManifestOpenshell(t *testing.T) (execLog string) {
 	t.Helper()
 	base := t.TempDir()
-	argsLog = filepath.Join(base, "args.log")
-	captureDir = filepath.Join(base, "captured")
+	execLog = filepath.Join(base, "exec.log")
+	captureDir := filepath.Join(base, "captured")
 	binDir := filepath.Join(base, "bin")
 	require.NoError(t, os.MkdirAll(captureDir, 0o755))
 	require.NoError(t, os.MkdirAll(binDir, 0o755))
 	script := "#!/bin/sh\n" +
-		"printf '%s\\n' \"$*\" >> '" + argsLog + "'\n" +
 		"if [ \"$1\" = \"sandbox\" ] && [ \"$2\" = \"upload\" ]; then\n" +
 		"  case \"$5\" in\n" +
 		"    *fullsend-env-*) cp \"$5\" '" + captureDir + "/' ;;\n" +
@@ -602,6 +607,7 @@ func envManifestOpenshell(t *testing.T) (argsLog, captureDir string) {
 		"fi\n" +
 		"if [ \"$1\" = \"sandbox\" ] && [ \"$2\" = \"exec\" ]; then\n" +
 		"  for last; do :; done\n" +
+		"  printf '%s\\0' \"$last\" >> '" + execLog + "'\n" +
 		"  case \"$last\" in\n" +
 		"    \"mkdir -m 700 -- \"*|\"rm -f -- \"*) sh -c \"$last\"; exit $? ;;\n" +
 		"    \"test -f \"*) exit 0 ;;\n" +
@@ -615,16 +621,58 @@ func envManifestOpenshell(t *testing.T) (argsLog, captureDir string) {
 		"exit 0\n"
 	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	return argsLog, captureDir
+	return execLog
 }
 
-// envManifestStubArgs returns the arguments the openshell stub recorded, one
-// invocation per line.
-func envManifestStubArgs(t *testing.T, argsLog string) []string {
+// envManifestCaptureDir returns the directory envManifestOpenshell copies
+// uploaded .env files into, given the exec log path it returned.
+func envManifestCaptureDir(execLog string) string {
+	return filepath.Join(filepath.Dir(execLog), "captured")
+}
+
+// envManifestEnvWrites returns the recorded sandbox commands that write an
+// env file under the sandbox workspace: the .env appends and the
+// iteration-env rewrite. Bootstrap's other commands (launch-script pins,
+// probes) touch no env file and are not replayed.
+func envManifestEnvWrites(t *testing.T, execLog string) []string {
 	t.Helper()
-	data, err := os.ReadFile(argsLog)
-	require.NoError(t, err, "the openshell stub recorded no invocations")
-	return strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	data, err := os.ReadFile(execLog)
+	require.NoError(t, err, "the openshell stub recorded no sandbox exec")
+	var cmds []string
+	for _, cmd := range strings.Split(strings.TrimSuffix(string(data), "\x00"), "\x00") {
+		if strings.Contains(cmd, "> "+sandbox.SandboxWorkspace+"/") {
+			cmds = append(cmds, cmd)
+		}
+	}
+	return cmds
+}
+
+// sandboxEnvFileKeys replays sandbox commands with /bin/sh against a scratch
+// copy of the sandbox workspace and returns the names the env files they
+// wrote export. Running the commands — rather than reading their text —
+// means the derivation sees the file content the sandbox would source, so a
+// quoted value or a dropped export keyword changes the result.
+func sandboxEnvFileKeys(t *testing.T, cmds ...string) []string {
+	t.Helper()
+	require.NotEmpty(t, cmds, "no sandbox env-file writes to replay")
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	require.NoError(t, os.MkdirAll(workspace, 0o755))
+	for _, cmd := range cmds {
+		local := strings.ReplaceAll(cmd, sandbox.SandboxWorkspace, workspace)
+		out, err := exec.Command("/bin/sh", "-c", local).CombinedOutput()
+		require.NoError(t, err, "replaying sandbox command %q: %s", cmd, out)
+	}
+	var files []string
+	require.NoError(t, filepath.WalkDir(workspace, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		files = append(files, string(data))
+		return err
+	}))
+	require.NotEmpty(t, files, "the replayed commands wrote no env file")
+	return envmanifest.ExportedNames(files...)
 }
 
 // envManifestCapturedEnv returns the .env content bootstrapEnv uploaded, and
@@ -637,25 +685,6 @@ func envManifestCapturedEnv(t *testing.T, captureDir string) string {
 	data, err := os.ReadFile(filepath.Join(captureDir, entries[0].Name()))
 	require.NoError(t, err)
 	return string(data)
-}
-
-// parseExportedEnvKeys returns the distinct KEY names the lines assign,
-// sorted. It reads emitter output — .env file content, recorded exec command
-// lines, or an EnvExports slice — so the derivation tracks what the emitters
-// actually emit.
-func parseExportedEnvKeys(lines ...string) []string {
-	seen := map[string]bool{}
-	var keys []string
-	for _, line := range lines {
-		for _, match := range envManifestKeyRe.FindAllStringSubmatch(line, -1) {
-			if !seen[match[1]] {
-				seen[match[1]] = true
-				keys = append(keys, match[1])
-			}
-		}
-	}
-	slices.Sort(keys)
-	return keys
 }
 
 // envManifestBootstrapInput implements runtime.BootstrapInput and
@@ -683,6 +712,8 @@ func (i envManifestBootstrapInput) ModelAliases() map[string]string { return nil
 func (i envManifestBootstrapInput) AgentSubagents() map[string]*string { return nil }
 
 func (i envManifestBootstrapInput) ParentModel() string { return "" }
+
+func (i envManifestBootstrapInput) Effort() string { return "" }
 
 func (i envManifestBootstrapInput) OpenAIProviderAttached() bool { return false }
 

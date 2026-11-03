@@ -4,7 +4,6 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func TestBuilder_CanonicalForm(t *testing.T) {
@@ -18,7 +17,6 @@ func TestBuilder_CanonicalForm(t *testing.T) {
 		AddDeprecated("OLD_VAR_B", "OLD_VAR_A", "OLD_VAR_B").
 		Build()
 
-	assert.Equal(t, SchemaVersion, m.SchemaVersion)
 	assert.Equal(t, []string{"FULLSEND_OUTPUT_DIR", "FULLSEND_ROLE", "PATH"}, m.Exports.Always)
 	assert.Equal(t, map[string]string{"FULLSEND_SLUG": "harness sets a slug"}, m.Exports.Conditional)
 	assert.Equal(t, map[string][]string{
@@ -32,18 +30,6 @@ func TestBuilder_CanonicalForm(t *testing.T) {
 	assert.Equal(t, []string{"OLD_VAR_A", "OLD_VAR_B"}, m.Deprecated)
 }
 
-func TestBuilder_EmptyCategoriesRenderEmptyJSON(t *testing.T) {
-	data, err := NewBuilder().Build().Render()
-	require.NoError(t, err)
-
-	assert.Contains(t, string(data), `"always": []`)
-	assert.Contains(t, string(data), `"conditional": {}`)
-	assert.Contains(t, string(data), `"runtime_specific": {}`)
-	assert.Contains(t, string(data), `"harness_delivered": {}`)
-	assert.Contains(t, string(data), `"reserved": []`)
-	assert.Contains(t, string(data), `"deprecated": []`)
-}
-
 func TestBuilder_ZeroValueUsable(t *testing.T) {
 	var b Builder
 	m := b.
@@ -55,11 +41,7 @@ func TestBuilder_ZeroValueUsable(t *testing.T) {
 		AddDeprecated("LEGACY_VAR").
 		Build()
 
-	assert.Equal(t, SchemaVersion, m.SchemaVersion)
-
-	data, err := m.Render()
-	require.NoError(t, err)
-	parsed, err := Parse(data)
-	require.NoError(t, err)
-	assert.Equal(t, m, *parsed)
+	assert.Equal(t, []string{"PATH"}, m.Exports.Always)
+	assert.Equal(t, []string{"LEGACY_VAR"}, m.Deprecated)
+	assert.Equal(t, []string{"opencode"}, m.Runtimes())
 }

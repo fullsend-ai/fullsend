@@ -93,7 +93,7 @@ each target repository's **`.fullsend/`** directory
   within the sandbox? (The environment-variable dimension is now a
   published, generated contract —
   [ADR 0146](ADRs/0146-sandbox-environment-contract-manifest.md),
-  [manifest](normative/sandbox-env/v1/README.md); tools, runtimes,
+  [contract](normative/sandbox-env/v1/README.md); tools, runtimes,
   and workspace setup remain open.)
 - ~~Is the sandbox the same for all agent roles, or does each role get a differently-scoped sandbox?~~ Decided in [ADR 0020](ADRs/0020-composable-single-responsibility-agents-with-individual-sandboxes.md): each agent gets its own sandbox with policies designed for its responsibility.
 
@@ -142,7 +142,7 @@ repo baseline and overrides)
   [ADR 0024](ADRs/0024-harness-definitions.md)). What the runner itself
   injects — which env vars every sandbox receives, which arrive per runtime
   via `EnvExports()`, and which keys are reserved from harness override — is
-  published as a generated, tag-pinned manifest enforced by an always-on
+  published as generated, tag-pinned JSON Schemas enforced by an always-on
   golden test ([ADR 0146](ADRs/0146-sandbox-environment-contract-manifest.md);
   [contract](normative/sandbox-env/v1/README.md)).
 - Runner secrets on GitHub (interim until external secret manager support

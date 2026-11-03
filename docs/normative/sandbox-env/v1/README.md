@@ -1,219 +1,191 @@
-# Sandbox environment contract v1
+# Sandbox environment variable contract v1
 
 Which environment variables the fullsend runner injects into the agent
-sandbox, under what conditions, per which runtime, which arrive only through
-stock harness configuration, and which the runner reserves from harness
-override. The contract is published as a generated, versioned,
-machine-readable manifest so consumers can verify env-var reachability
-against a released runner instead of hand-maintained mirrors — the
-transitional lockstep between fullsend and the fleet harnesses it loads
-([ADR 0058](../../../ADRs/0058-agent-registration.md)) becomes verifiable
-rather than assumed
+sandbox, under what conditions, per which runtime, which arrive only
+through stock harness configuration, and which the runner reserves from
+harness override. The contract is published as generated JSON Schemas
+(Draft 2020-12), so a consumer — the agents repo, a custom-agent repo, any
+CI job — validates with stock tooling against a released runner instead of
+a hand-maintained mirror
 ([ADR 0146](../../../ADRs/0146-sandbox-environment-contract-manifest.md)).
 
-## Contract
+**Scope: the sandbox only.** Host-side pre-scripts, post-scripts, and
+validation scripts run on the runner, not in the sandbox; their
+environment is the runner's own plus `env.runner`, and this contract does
+not describe it.
 
-- **Manifest:** [`sandbox-env.json`](sandbox-env.json) — the committed,
-  generated contract document. It is authoritative; this README describes it.
-- **Generated, never hand-authored:** the collector in
-  `internal/cli/env_manifest_collector_test.go` derives the manifest by
-  running every code path that injects environment variables into the
-  sandbox — the bootstrap `.env` emission, the per-iteration env,
-  trace-ID injection, the security-hook env, every production
-  runtime's `EnvExports()` and launch-command exports, the
-  `fullsend agent new` Vertex scaffold, and the effective reserved-key
-  set after the init-time merges.
-- **Golden invariant:** `internal/cli/env_manifest_golden_test.go`
-  byte-compares the committed file against collector output on every test
-  run, so the published contract cannot drift from the code that builds the
-  sandbox environment. A hand edit, or a code change shipped without
-  regenerating, fails the test.
-- **Names only, never values:** the manifest records variable names,
-  category membership, gate descriptions, and provenance — no credentials or
-  configuration values. Every name is already public in fullsend's source.
+## Schemas
 
-## Schema
+| File | Validates | Use it to |
+|------|-----------|-----------|
+| [`harness-env.schema.json`](harness-env.schema.json) | A harness YAML (converted to JSON) | Reject `env.sandbox` keys the runner reserves — at the top level and under `forge.<name>.env` |
+| [`env-references.schema.json`](env-references.schema.json) | `{"runtime": ..., "variables": [...]}` | Check that code running under a runtime reads only variables reachable there; its `$defs` are the full inventory |
 
-| Field | Type | Semantics |
-|-------|------|-----------|
-| `schema_version` | integer | Shape version of this document; currently `1`. Check it before interpreting anything else — a version the consumer does not understand is a contract it cannot validate. |
-| `exports.always` | array of strings | Variables the runner injects into every sandbox it builds (four in v1). |
-| `exports.conditional` | object: variable name → gate description | Variables the runner injects only when the described gate holds (twelve in v1). Each description is the emitter's actual guard, transcribed from the production code. |
-| `exports.runtime_specific` | object: runtime name → array of strings | Variables emitted only by the named runtime — its `EnvExports()` plus the environment its launch command sets: `claude`, `codex`, `opencode`, `pi`. |
-| `harness_delivered` | object: variable name → `{ "provenance": string, "runner_guaranteed": boolean }` | Variables delivered by stock harness configuration, not by the runner (four in v1). `runner_guaranteed` is always `false` — a label, not a toggle: a variable the runner guarantees belongs in `exports` instead. `provenance` names the configuration that delivers it. |
-| `reserved` | array of strings | Keys the runner reserves from harness override (62 in v1): `env.sandbox` cannot set them. The set merges the base runner-infrastructure keys, the OIDC-denied and provider-only credential keys, and the security-critical credential keys (`IsReservedCredentialKey`) at startup. |
-| `deprecated` | array of strings | Variables that are deprecated and scheduled for removal in a future version. Consumers should migrate away from these variables. Empty when no deprecations are active. |
+Each schema is self-contained: every definition it uses is in its own
+`$defs`, so validating needs one fetched file and no cross-file `$ref`
+resolution.
 
-Abridged shape (see [`sandbox-env.json`](sandbox-env.json) for the full
-document):
+### Validating a harness
 
-```json
-{
-  "schema_version": 1,
-  "exports": {
-    "always": ["FULLSEND_OUTPUT_DIR", "FULLSEND_ROLE", "FULLSEND_TARGET_REPO_DIR", "PATH"],
-    "conditional": {
-      "FULLSEND_FETCH_URL": "the runtime fetch service is enabled (ADR 0038)"
-    },
-    "runtime_specific": {
-      "claude": ["CLAUDE_CONFIG_DIR"],
-      "opencode": ["OPENCODE_CONFIG_DIR", "..."]
-    }
-  },
-  "harness_delivered": {
-    "GOOGLE_APPLICATION_CREDENTIALS": {
-      "provenance": "fullsend agent new Vertex scaffold (internal/agentnew); the fleet delivers these plus GOOGLE_CLOUD_PROJECT and ANTHROPIC_DEFAULT_SONNET_MODEL through env/gcp-vertex.env in fullsend-ai/agents",
-      "runner_guaranteed": false
-    }
-  },
-  "reserved": ["BASH_ENV", "HOME", "LD_PRELOAD"],
-  "deprecated": []
-}
+```sh
+check-jsonschema --schemafile "$BASE/harness-env.schema.json" harness/*.yaml
 ```
 
-## Category semantics
-
-The categories form a guarantee ladder. Consumers should read them as
-answers to "what may I rely on?", not as a flat inventory.
-
-**`always` and `conditional` — runner-guaranteed, modulo gates.** Every
-fullsend runner injects the `always` variables into every sandbox it builds.
-A `conditional` variable is guaranteed exactly when its gate holds — for
-example, `FULLSEND_FETCH_URL` and `FULLSEND_FETCH_TOKEN` arrive when the
-runtime fetch service is enabled
-([ADR 0038](../../../ADRs/0038-universal-harness-access.md)), and
-`FULLSEND_TRACE_ID` when trace-ID injection succeeds (injection is
-best-effort; on failure the run warns and continues). Within their gates,
-these two categories are universally reachable: a harness may rely on them
-under any runtime. The security-hook variables are the exception: only the
-claude, codex, and pi bootstraps append hook env, so `TIRITH_FAIL_ON`,
-`TIRITH_REQUIRED`, and `FULLSEND_EGRESS_ALLOWLIST` never reach an opencode
-sandbox.
-
-**`runtime_specific` — guaranteed only when that runtime runs.** Both halves
-matter:
-
-- When dispatch executes under a runtime, that runtime's listed variables are
-  reachable: a run under `claude` always has `CLAUDE_CONFIG_DIR`; a run
-  under `pi` sees its listed variables, with provider-path names like
-  `GOOGLE_CLOUD_PROJECT` set only on the paths that select them.
-- Across runtimes, they are a portability gap, not a guarantee: nothing
-  promises `CLAUDE_CONFIG_DIR` under `codex` or `pi`. A harness that reads a
-  runtime-specific variable is coupled to that runtime and breaks when
-  configuration changes the runtime.
-
-The enumerated runtimes are the runner's resolution registry minus test
-stubs. A runtime that emits nothing appears with an empty set rather than
-being omitted. Registering a new runtime without a manifest decision
-fails `TestEnvManifestRuntimeEnumeration`, which pins the collector's
-runtime list to the resolution registry; the golden test covers the
-committed manifest content.
-
-**`harness_delivered` — configuration, not guarantee.** These variables reach
-the sandbox only because stock harness configuration injects them:
-`GOOGLE_APPLICATION_CREDENTIALS`, `CLAUDE_CODE_USE_VERTEX`,
-`ANTHROPIC_VERTEX_PROJECT_ID`, and `CLOUD_ML_REGION` are delivered by the
-`fullsend agent new` Vertex scaffold through `env.sandbox` plus a host file,
-and fleet harnesses deliver these plus `GOOGLE_CLOUD_PROJECT` and
-`ANTHROPIC_DEFAULT_SONNET_MODEL` through `env/gcp-vertex.env`
-in fullsend-ai/agents (see each entry's `provenance`). The runner never
-injects them — `runner_guaranteed: false` — so a hand-authored harness that
-omits that configuration will not see them.
-
-**`reserved` — stripped from harness override.** Harness `env.sandbox`
-entries naming these keys are skipped with a warning: the runner removes
-them so harness configuration cannot shadow runner infrastructure, inject
-OIDC and provider credentials, or override security-critical process
-variables (e.g. `HTTPS_PROXY`, `LD_PRELOAD`, `NODE_OPTIONS`). A key may
-appear both here and in an export category — `PATH` is exported by the
-runner *and* reserved against harness override. The categories answer
-different questions: `exports` asks "does the runner set it?",
-`reserved` asks "may the harness set it?".
-
-**`deprecated` — scheduled for removal.** Variables listed here still
-function but are slated for removal in a future version. Consumers
-should migrate to any documented replacement. The array is empty when no
-deprecations are active.
-
-## Fetching the manifest
-
-The manifest is fetchable over HTTPS from raw.githubusercontent.com — no
-authentication, no repository code execution. The manifest is committed
-alongside this README, so every tag that serves this page serves the
-manifest at the sibling path:
+A reserved key fails with the offending path:
 
 ```text
-https://raw.githubusercontent.com/fullsend-ai/fullsend/refs/tags/<version>/docs/normative/sandbox-env/v1/sandbox-env.json
+$.env.sandbox: 'TRACEPARENT' should not be valid under {'$ref': '#/$defs/reserved'}
 ```
 
-**The tag is the version.** The manifest deliberately carries no
-`fullsend_version` field: a committed file cannot know its future release
-version, and stamping one at release time would break the golden invariant
-(committed file must byte-match generator output). Consumers pin by URL.
+The schema constrains only the env blocks; other harness fields pass
+through. `fullsend lint` performs the same reserved-key check in-process
+for repos that run the fullsend binary.
 
-Consumer validation cadence:
+### Validating env references
 
-- **At PR time, validate against the latest released tag.** The released tag
-  is what production actually runs, so it is the contract a proposed change
-  must satisfy.
-- **Nightly, validate against `main`**
-  (`https://raw.githubusercontent.com/fullsend-ai/fullsend/refs/heads/main/docs/normative/sandbox-env/v1/sandbox-env.json`).
-  Released tags lag `main`; the nightly `main` check is the bridge that
-  catches contract drift within a day
+List the variables a piece of sandbox code reads — a skill script, a
+sandbox hook — minus the keys the harness's own `env.sandbox` declares
+(those are reachable by construction), and name the runtime it runs
+under:
+
+```json
+{"runtime": "pi", "variables": ["FULLSEND_OUTPUT_DIR", "FULLSEND_TARGET_REPO_DIR"]}
+```
+
+`runtime` is one of the production runtimes, or `portable` for code that
+must work under every runtime — a skill shared across agents should use
+`portable`. A skill that reads `CLAUDE_CONFIG_DIR` validates under
+`claude` and fails under `pi` or `portable`, which is the
+[fullsend-ai/agents#1672](https://github.com/fullsend-ai/agents/issues/1672)
+failure caught at PR time.
+
+## Inventory (`env-references.schema.json` `$defs`)
+
+| Definition | Contents |
+|------------|----------|
+| `always` | Exported by the runner into every sandbox it builds. |
+| `conditional` | Exported only when a gate holds. Each entry is `{"const": NAME, "description": GATE}`, the gate transcribed from the emitter's guard. |
+| `runtime_<name>` | Exported only under that runtime: its `EnvExports()` plus the environment its launch command sets, including names a launch sets only on some paths (an inference gateway, a provider). |
+| `harness_delivered` | Delivered by stock harness configuration, not the runner. Each entry's description names the configuration. |
+| `reserved` | Refused in harness `env.sandbox`; the runner drops them instead of exporting them. |
+| `deprecated` | Scheduled for removal; still reachable through their export category until then. |
+| `runtime` | The accepted `runtime` values: `portable` plus each production runtime. |
+
+The categories form a guarantee ladder; read them as answers to "what may
+I rely on?", not as a flat list.
+
+**`always` and `conditional` — runner-guaranteed, modulo gates.** Within
+their gates these are reachable under any runtime, which is why
+`portable` admits them. The security-hook variables are the exception:
+only the claude, codex, and pi bootstraps append hook env, so
+`TIRITH_FAIL_ON`, `TIRITH_REQUIRED`, and `FULLSEND_EGRESS_ALLOWLIST` never
+reach an opencode sandbox; their gate descriptions say so.
+
+**`runtime_<name>` — guaranteed only when that runtime runs.** Across
+runtimes they are a portability gap: nothing promises `CLAUDE_CONFIG_DIR`
+under codex or pi. A name a shared category already covers (`PATH`, or
+hook env a launch command re-exports) stays in the shared category.
+
+**`harness_delivered` — configuration, not guarantee.**
+`GOOGLE_APPLICATION_CREDENTIALS`, `CLAUDE_CODE_USE_VERTEX`,
+`ANTHROPIC_VERTEX_PROJECT_ID`, and `CLOUD_ML_REGION` reach the sandbox
+because the `fullsend agent new` Vertex scaffold delivers them through
+`env.sandbox` plus a host file; fleet harnesses deliver these plus
+`GOOGLE_CLOUD_PROJECT` and `ANTHROPIC_DEFAULT_SONNET_MODEL` through
+`env/gcp-vertex.env` in fullsend-ai/agents. A hand-authored harness that
+omits that configuration will not see them.
+
+**`reserved` — refused from harness override.** The runner keeps harness
+configuration from shadowing runner infrastructure, injecting OIDC and
+provider credentials, or overriding security-critical process variables
+(`HTTPS_PROXY`, `LD_PRELOAD`, `NODE_OPTIONS`, …). A name may be both
+exported and reserved — `PATH` is set by the runner *and* refused from
+the harness. Exports answer "does the runner set it?"; `reserved`
+answers "may the harness set it?".
+
+**`deprecated` — scheduled for removal.** A deprecated name stays in its
+export category for at least one minor release after it is first listed
+here, then moves out of both. Consumers should warn on a match against
+`#/$defs/deprecated` and migrate. The definition matches nothing while no
+deprecations are active.
+
+## Fetching
+
+The schemas are committed alongside this README, so every tag serves them
+at the sibling path over HTTPS — no authentication, no repository code
+execution:
+
+```text
+BASE=https://raw.githubusercontent.com/fullsend-ai/fullsend/refs/tags/<version>/docs/normative/sandbox-env/v1
+```
+
+**The tag is the version.** The schemas carry no fullsend version: a
+committed file cannot know its future release, and stamping one at release
+time would break the golden invariant below. The `$id`
+(`https://fullsend.ai/normative/sandbox-env/v1/…`) names the schema, as
+for the other normative schemas; it is not a fetch location.
+
+Validation cadence:
+
+- **At PR time, validate against the latest released tag** — what
+  production runs, so the contract a change must satisfy.
+- **Nightly, validate against `main`** (`refs/heads/main` in the URL).
+  Released tags lag `main`; the nightly check catches drift within a day
   ([ADR 0139](../../../ADRs/0139-agent-functional-test-suite-lives-in-agents-repo.md)).
 
-Tags released before the manifest landed (v0.48.1 and earlier) return `404`
-for this path. A `404` means the pinned tag predates the contract; treat it
-as a validation failure (below), not as an empty contract.
+Tags released before the contract landed return `404` for these paths.
 
-## Treating the manifest as data
+## Treating the schemas as data
 
-The manifest arrives over the network from a remote host. Treat it as
-untrusted input:
+The schemas arrive over the network. Treat them as untrusted input:
 
-- **Parse, never evaluate.** Feed the bytes to a JSON parser and read names
-  and gate descriptions as data. Never `eval`, never interpolate fetched
-  content into a shell command or template.
-- **Fail closed.** A fetch that fails, a non-2xx response, a body that does
-  not parse, or a `schema_version` the consumer does not understand MUST
-  fail the consumer gate — not pass it. A manifest that cannot be fetched or
-  parsed is an unverifiable contract, and an unverifiable contract is a
-  failed check, not a skipped one.
+- **Validate with a JSON Schema validator; never evaluate.** Do not `eval`
+  fetched content or interpolate it into a shell command or template.
+- **Fail closed.** A failed fetch, a non-2xx response, or a body that does
+  not parse or is not a valid Draft 2020-12 schema MUST fail the consumer
+  gate. An unverifiable contract is a failed check, not a skipped one.
 
-The manifest is itself a drift-control measure in fullsend's threat model;
-publishing names and gate descriptions only — never values — keeps it safe
-to fetch and inspect.
+The schemas carry names and gate descriptions only — never values — so
+they are safe to fetch and inspect.
 
 ## Regeneration
 
-Any change to the env-construction emitters changes the derived manifest.
-Regenerate the committed file from collector output:
+The schemas are generated, never hand-authored. The collector in
+`internal/cli/env_manifest_collector_test.go` runs every code path that
+injects environment variables into the sandbox — the bootstrap `.env`
+emission, the per-iteration env, trace-ID injection, the security-hook
+env, every production runtime's `EnvExports()` and launch-command
+exports, the `fullsend agent new` Vertex scaffold, and the effective
+reserved-key set after the init-time merges. It replays the commands that
+write sandbox env files in a scratch workspace and reads the resulting
+files with an export-aware parser (`envmanifest.ExportedNames`), so a
+quoted value or a dropped `export` keyword changes the result.
+`TestLaunchEnvExportsMatchLaunchCommands` in `internal/runtime` pins each
+runtime's declared launch exports to its built launch commands across
+hooks, gateway, and provider variants.
+
+Any change to those emitters changes the schemas. Regenerate:
 
 ```sh
 go test ./internal/cli -run TestEnvManifestGolden -update
 ```
 
-The golden invariant: the committed manifest must byte-match collector
-output. Serialization is deterministic — sorted names, stable field order,
-trailing newline — so regenerating without a source change produces a
-byte-identical file. The always-on check
-
-```sh
-go test ./internal/cli -run TestEnvManifestGolden
-```
-
-fails on any divergence between the committed file and the collector's
-derivation of the production emitters.
+The always-on `TestEnvManifestGolden` byte-compares each committed schema
+with collector output, and `TestEnvManifestRuntimeEnumeration` fails when
+a runtime is registered without a contract decision. Output is
+deterministic — fixed key order, sorted names, trailing newline.
 
 ## Versioning
 
-Breaking changes require `docs/normative/sandbox-env/v2/`.
+Breaking changes to the schemas' shape require
+`docs/normative/sandbox-env/v2/`.
 
-| Change | v1 impact |
-|--------|-----------|
-| **Breaking** (requires v2): remove or rename schema fields, change a field's type, remove or rename a category, redefine category semantics | Consumers must migrate |
-| **Non-breaking** (allowed in v1): add variables or runtimes to any category, refine gate descriptions, add `harness_delivered` provenance entries, add or remove `deprecated` entries | Existing consumers keep working |
+| Change | Version | Consumer impact |
+|--------|---------|-----------------|
+| Rename or remove a `$defs` entry, change the `env-references` instance shape, redefine a category | v2 | Consumers must migrate |
+| Add a variable or runtime to a category, refine a gate or provenance description, add a `deprecated` entry | v1 | None |
+| Add a name to `reserved` | v1 | A harness setting it starts failing — the runner already drops it, so the schema reports an existing no-op |
+| Remove a name from an export category | v1, after a `deprecated` window | Code reading it starts failing `env-references` validation |
 
-Variable sets change with the contract itself — that is the manifest doing
-its job. Consumers pin a tag and compare; the comparison is the drift signal.
-`schema_version` versions the document shape; a v2 directory bumps it.
+Variable sets change with the code — that is the contract doing its job.
+Consumers pin a tag and validate; a new failure is the drift signal.

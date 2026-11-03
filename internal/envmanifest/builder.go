@@ -49,8 +49,7 @@ func (b *Builder) AddRuntimeSpecific(runtime string, names ...string) *Builder {
 }
 
 // AddHarnessDelivered records a variable delivered by stock harness
-// configuration, with provenance describing where the delivery happens. The
-// entry is labeled not-runner-guaranteed.
+// configuration, with provenance describing where the delivery happens.
 func (b *Builder) AddHarnessDelivered(name, provenance string) *Builder {
 	if b.harnessDelivered == nil {
 		b.harnessDelivered = map[string]HarnessDelivered{}
@@ -72,11 +71,9 @@ func (b *Builder) AddDeprecated(names ...string) *Builder {
 	return b
 }
 
-// Build returns the manifest stamped with the current schema version and
-// every category in canonical form.
+// Build returns the manifest with every category in canonical form.
 func (b *Builder) Build() Manifest {
 	return Manifest{
-		SchemaVersion: SchemaVersion,
 		Exports: Exports{
 			Always:          b.always,
 			Conditional:     b.conditional,
