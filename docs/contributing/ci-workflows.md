@@ -268,13 +268,16 @@ This recursion is by design but interacts with the convergence non-idempotence t
 ### Semgrep security scan
 
 `scripts/semgrep-scan` is the shared entry point for the pinned Semgrep engine
-and commit-pinned Community Edition rules from `semgrep/semgrep-rules`. It scans
-rule files under `*/security/audit/`, excluding upstream test fixtures. This
-scope is not identical to Semgrep Registry's curated `p/security-audit` pack.
+and commit-pinned Community Edition rules from `semgrep/semgrep-rules`. The
+source-file allowlist in `scripts/semgrep-ruleset-files.txt` limits the scan to
+files represented in the curated `p/security-audit` config snapshot whose
+SHA-256 is recorded in that file. Some Registry rules are not available in the
+public rules repository, so the scan covers a documented subset of the pack.
 The source commit is recorded in `scripts/semgrep-ruleset-commit`; the downloaded
 archive is checked against the SHA-256 in `scripts/semgrep-ruleset.sha256` before
-extraction. The dedicated Semgrep job sets `SEMGREP_REQUIRED=1`, so it fails
-closed if the pinned source or locked Semgrep environment cannot be prepared.
+extraction. Upstream rule test fixtures are excluded. The dedicated Semgrep job
+sets `SEMGREP_REQUIRED=1`, so it fails closed if the pinned source or locked
+Semgrep environment cannot be prepared.
 Other contexts, including agent pre-commit gates, warn and skip if `uv` is
 missing or the source, cache, or environment dependency cannot be prepared. A
 completed scan still fails on findings. The scheduled `Semgrep Ruleset Drift`
@@ -286,8 +289,9 @@ automerge.
 
 The pre-commit hook scans changed files of all types, except paths matched by
 its `exclude:` expression in `.pre-commit-config.yaml`. Semgrep's full-directory
-scan in CI honors `.semgrepignore`; explicit file arguments bypass it, so keep
-the hook expression aligned with that file. CI scans in a separate job, leaving
+scan in CI honors `.semgrepignore`, which excludes language test files and
+synthetic fixtures; explicit file arguments bypass it, so keep the hook
+expression aligned with that file. CI scans in a separate job, leaving
 lint and test results visible if Semgrep fails, and retains a SARIF artifact
 for 30 days. Both scans use `--strict` so parse errors and rule timeouts fail
 the scan instead of passing with partial analysis. The job reports failures

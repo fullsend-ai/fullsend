@@ -1978,14 +1978,14 @@ func isNoChangesError(apiErr *APIError) bool {
 
 // blobSHA computes the Git blob object SHA-1 required by the forge Git API.
 func blobSHA(content []byte) string {
-	h := sha1.New() // nosemgrep: go.lang.security.audit.crypto.use_of_weak_crypto.use-of-sha1
+	h := sha1.New() // nosemgrep: go.lang.security.audit.crypto.use-of-sha1
 	fmt.Fprintf(h, "blob %d\x00", len(content))
 	h.Write(content)
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
 func blobSHAReader(r io.Reader, size int64) (string, error) {
-	h := sha1.New() // nosemgrep: go.lang.security.audit.crypto.use_of_weak_crypto.use-of-sha1
+	h := sha1.New() // nosemgrep: go.lang.security.audit.crypto.use-of-sha1
 	fmt.Fprintf(h, "blob %d\x00", size)
 	if _, err := io.Copy(h, r); err != nil {
 		return "", err

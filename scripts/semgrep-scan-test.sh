@@ -15,6 +15,8 @@ cp "${REPO_ROOT}/scripts/semgrep-scan" "${FIXTURE_ROOT}/scripts/semgrep-scan"
 chmod +x "${FIXTURE_ROOT}/scripts/semgrep-scan"
 TEST_COMMIT=0123456789abcdef0123456789abcdef01234567
 printf '%s\n' "$TEST_COMMIT" > "${FIXTURE_ROOT}/scripts/semgrep-ruleset-commit"
+printf '%s\n' '# Test fixture membership' 'go/lang/security/audit/example.yaml' \
+	> "${FIXTURE_ROOT}/scripts/semgrep-ruleset-files.txt"
 printf '%s\n' 'package main' > "${FIXTURE_ROOT}/src/main.go"
 SOURCE_ROOT="${TEST_ROOT}/upstream"
 SOURCE_DIR="${SOURCE_ROOT}/semgrep-rules-${TEST_COMMIT}"

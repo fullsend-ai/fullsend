@@ -75,8 +75,9 @@ jobs:
           - Pin file: scripts/semgrep-ruleset-commit
           - Source: https://github.com/semgrep/semgrep-rules
 
-          Review changes under security/audit/ and the scan results before
-          updating the commit and archive SHA-256 pins.
+          Review the source-file allowlist in scripts/semgrep-ruleset-files.txt,
+          upstream changes under security/audit/, and scan results before
+          updating the commit, archive SHA-256, and allowlist.
           EOF
             if [[ -n "$issue" ]]; then
               gh issue edit "$issue" --repo fullsend-ai/fullsend --body-file "$body_file"

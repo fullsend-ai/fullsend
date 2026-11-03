@@ -5,6 +5,7 @@ SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(CDPATH='' cd -- "${SCRIPT_DIR}/.." && pwd)"
 RULESET_COMMIT="$(tr -d '[:space:]' < "${SCRIPT_DIR}/semgrep-ruleset-commit")"
 RULESET_SHA256="$(tr -d '[:space:]' < "${SCRIPT_DIR}/semgrep-ruleset.sha256")"
+RULESET_FILES_FILE="${SCRIPT_DIR}/semgrep-ruleset-files.txt"
 RULESET_CACHE_ROOT="${XDG_CACHE_HOME:-${HOME}/.cache}/fullsend/semgrep"
 RULESET_ARCHIVE="${RULESET_CACHE_ROOT}/${RULESET_COMMIT}-${RULESET_SHA256}.tar.gz"
 RULESET_TMP=
@@ -110,19 +111,43 @@ if ! tar -xzf "$RULESET_ARCHIVE" -C "$RULESET_DIR" --strip-components=1; then
 	ruleset_integrity_failure "cannot extract the pinned upstream rules archive"
 fi
 
+if [[ ! -f "$RULESET_FILES_FILE" ]]; then
+	ruleset_integrity_failure "pinned security-audit source file list is missing"
+fi
+
 RULE_CONFIG_ARGS=()
-while IFS= read -r -d '' rule_file; do
-	case "$rule_file" in
-	*.test.yaml | *.test.yml)
+selected_rule_files=0
+while IFS= read -r relative_rule_file || [[ -n "$relative_rule_file" ]]; do
+	case "$relative_rule_file" in
+	"" | \#*)
 		continue
 		;;
+	/* | ../* | */../* | */..)
+		ruleset_integrity_failure "pinned security-audit source path is not relative: ${relative_rule_file}"
+		;;
+	*/security/audit/*.yaml | */security/audit/*.yml)
+		;;
+	*)
+		ruleset_integrity_failure "pinned security-audit source path is outside the approved scope: ${relative_rule_file}"
+		;;
 	esac
+	case "$relative_rule_file" in
+	*.test.yaml | *.test.yml)
+		ruleset_integrity_failure "upstream rule test fixture is in the approved source list: ${relative_rule_file}"
+		;;
+	esac
+	rule_file="${RULESET_DIR}/${relative_rule_file}"
+	if [[ ! -f "$rule_file" ]]; then
+		ruleset_integrity_failure "pinned security-audit source file is missing from the archive: ${relative_rule_file}"
+	fi
 	RULE_CONFIG_ARGS+=(--config "$rule_file")
-done < <(find "$RULESET_DIR" -type f -path '*/security/audit/*' \( -name '*.yaml' -o -name '*.yml' \) -print0)
+	selected_rule_files=$((selected_rule_files + 1))
+done < "$RULESET_FILES_FILE"
 
-if ((${#RULE_CONFIG_ARGS[@]} == 0)); then
-	ruleset_integrity_failure "pinned upstream source has no security/audit rule files"
+if ((selected_rule_files == 0)); then
+	ruleset_integrity_failure "pinned security-audit source file list is empty"
 fi
+echo "semgrep-scan: using ${selected_rule_files} pinned security-audit source files"
 
 SCAN_ARGS=()
 while (($#)); do

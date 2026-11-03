@@ -298,7 +298,7 @@ func IsConflict(err error) bool {
 // expectedSHA UpdateFileIfMatch compares against the stored file.
 func GitBlobSHA(content []byte) string {
 	// Git blob IDs use SHA-1 for compatibility with forge APIs.
-	// nosemgrep: go.lang.security.audit.crypto.use_of_weak_crypto.use-of-sha1
+	// nosemgrep: go.lang.security.audit.crypto.use-of-sha1
 	h := sha1.New() //nolint:gosec // Git's blob hash algorithm, not used for security
 	fmt.Fprintf(h, "blob %d\x00", len(content))
 	h.Write(content)

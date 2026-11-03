@@ -49,11 +49,11 @@ repos:
     hooks:
       # Explicit filenames bypass .semgrepignore; keep this exclude aligned with it.
       - id: semgrep
-        name: semgrep security audit (pinned Community rules)
+        name: semgrep security audit (pinned curated Community subset)
         entry: ./scripts/semgrep-scan
         language: system
         verbose: true
-        exclude: '(^|/)([^/]*_test\.go|tests?(/|$))|^\.semgrep/|^e2e/behaviour/(fixtures|results)/'
+        exclude: '(^|/)([^/]*_test\.[^/]+|test_[^/]+\.py|tests?(/|$))|^\.semgrep/|^e2e/behaviour/(fixtures|results)/'
 
   - repo: https://github.com/zricethezav/gitleaks
     rev: v8.30.0
