@@ -932,7 +932,7 @@ func TestIsGitHubURL(t *testing.T) {
 
 func TestParseAgentSourceURL_GitHubBlobToRawConversion(t *testing.T) {
 	blobURL := "https://github.com/my-org/agents/blob/" + testCommitSHA + "/harness/triage.yaml"
-	info, err := parseAgentSourceURL(blobURL)
+	info, err := parseAgentSourceURL(blobURL, "")
 	require.NoError(t, err)
 	assert.Equal(t, "my-org", info.Owner)
 	assert.Equal(t, "agents", info.Repo)
@@ -945,7 +945,7 @@ func TestParseAgentSourceURL_GitHubBlobToRawConversion(t *testing.T) {
 
 func TestParseAgentSourceURL_GitLabURLRejected(t *testing.T) {
 	gitlabURL := "https://gitlab.com/my-org/agents/-/blob/" + testCommitSHA + "/harness/triage.yaml"
-	_, err := parseAgentSourceURL(gitlabURL)
+	_, err := parseAgentSourceURL(gitlabURL, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "fetch support has not landed yet")
 }
@@ -2745,4 +2745,28 @@ func TestAgentAddWritesPrefix_AllowlistOverBaseEmptyList(t *testing.T) {
 	// even a default prefix must be written to admit the agent.
 	cfg = writeShape(t, "", "allowed_remote_resources: []\n")
 	assert.True(t, agentAddWritesPrefix(cfg, defaultPrefix))
+}
+
+func TestParseAgentSourceURL_ConfiguredGitHubHost(t *testing.T) {
+	rawURL := "https://ghe.example.com/my-org/agents/raw/" + testCommitSHA + "/harness/triage.yaml"
+
+	// Without the configured host the URL is not recognized as raw content:
+	// the generic fallback misreads the "raw" segment as the ref.
+	generic, err := parseAgentSourceURL(rawURL, "")
+	require.NoError(t, err)
+	assert.Equal(t, "raw", generic.Ref)
+
+	info, err := parseAgentSourceURL(rawURL, "https://ghe.example.com")
+	require.NoError(t, err)
+	assert.Equal(t, "my-org", info.Owner)
+	assert.Equal(t, "agents", info.Repo)
+	assert.Equal(t, testCommitSHA, info.Ref)
+	assert.Equal(t, "harness/triage.yaml", info.Path)
+	assert.Equal(t, "https://ghe.example.com/my-org/agents.git", info.CloneURL())
+}
+
+func TestParseAgentSourceURL_ConfiguredGitHubHostFromEnv(t *testing.T) {
+	t.Setenv(forge.GitHubServerURLEnv, "https://ghe.example.com")
+	prefix := allowlistPrefixForURL("https://ghe.example.com/my-org/agents/raw/" + testCommitSHA + "/harness/triage.yaml")
+	assert.Equal(t, "https://ghe.example.com/my-org/agents/", prefix)
 }

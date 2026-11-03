@@ -600,7 +600,7 @@ func runAgentUpdate(ctx context.Context, agentName, explicitSHA, fullsendDir str
 // repinSourceURL re-pins source to explicitSHA (or a resolved branch HEAD)
 // and returns the new URL with a recomputed integrity hash plus the SHA.
 func repinSourceURL(ctx context.Context, source, explicitSHA, storedRef string, forgeClient forge.Client, printer *ui.Printer) (string, string, error) {
-	info, err := parseAgentSourceURL(source)
+	info, err := parseAgentSourceURL(source, forge.ConfiguredGitHubURL())
 	if err != nil {
 		return "", "", fmt.Errorf("parsing agent URL: %w", err)
 	}
@@ -817,7 +817,7 @@ func isGitHubURL(rawURL string) bool {
 func pinAgentURL(ctx context.Context, source string, forgeClient forge.Client, printer *ui.Printer) (pinnedSource string, originalRef string, err error) {
 	cleanURL, existingHash, hasExistingHash := urlutil.ParseIntegrityHash(source)
 
-	info, err := parseAgentSourceURL(cleanURL)
+	info, err := parseAgentSourceURL(cleanURL, forge.ConfiguredGitHubURL())
 	if err != nil {
 		return "", "", fmt.Errorf("cannot parse URL %q: %w", source, err)
 	}
@@ -922,9 +922,12 @@ func resolveBranchAndPath(ctx context.Context, forgeClient forge.Client, owner, 
 	}
 }
 
-func parseAgentSourceURL(source string) (*forge.ForgeURLInfo, error) {
+// parseAgentSourceURL parses an agent source URL. githubURL is the configured
+// GitHub instance (forge.ConfiguredGitHubURL()); raw-content URLs served by
+// that host are accepted in addition to raw.githubusercontent.com.
+func parseAgentSourceURL(source, githubURL string) (*forge.ForgeURLInfo, error) {
 	cleanSource, _, _ := urlutil.ParseIntegrityHash(source)
-	info, err := forge.ParseRawContentURL(cleanSource)
+	info, err := forge.ParseRawContentURLOnHost(cleanSource, githubURL)
 	if err == nil {
 		return info, nil
 	}
@@ -990,7 +993,7 @@ func agentAddWritesPrefix(cfg config.ConfigReader, prefix string) bool {
 
 func allowlistPrefixForURL(rawURL string) string {
 	cleanURL, _, _ := urlutil.ParseIntegrityHash(rawURL)
-	info, err := parseAgentSourceURL(cleanURL)
+	info, err := parseAgentSourceURL(cleanURL, forge.ConfiguredGitHubURL())
 	if err != nil {
 		return ""
 	}

@@ -321,6 +321,7 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 			OrgAllowlist:  orgAllowlist,
 			TreeFetcher:   rFlags.treeFetcher,
 			GitToken:      composeGitToken,
+			GitHubURL:     forge.ConfiguredGitHubURL(),
 			Config:        harness.BuildConfigMap(orgCfg),
 			SourceURL:     sourceURL,
 		})
@@ -722,6 +723,7 @@ func resolveHarnessForLock(ctx context.Context, absFullsendDir, agentName string
 		FetchPolicy:   policy,
 		TreeFetcher:   rFlags.treeFetcher,
 		GitToken:      composeGitToken,
+		GitHubURL:     forge.ConfiguredGitHubURL(),
 	})
 	if resolveErr != nil {
 		if harness.IsURL(entry.Source) {
