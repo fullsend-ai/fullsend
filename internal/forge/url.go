@@ -3,6 +3,7 @@ package forge
 import (
 	"fmt"
 	"net/url"
+	"os"
 	"strings"
 )
 
@@ -170,6 +171,18 @@ func hostnameToForge(hostname string) string {
 	default:
 		return hostname
 	}
+}
+
+// GitHubServerURLEnv names the environment variable GitHub Actions sets to the
+// URL of the GitHub instance running the workflow (e.g.
+// "https://ghe.example.com" on GitHub Enterprise Server).
+const GitHubServerURLEnv = "GITHUB_SERVER_URL"
+
+// ConfiguredGitHubURL returns the URL of the GitHub instance this process
+// runs against, for ParseRawContentURLOnHost. It is empty when unset, in which
+// case only raw.githubusercontent.com URLs are accepted.
+func ConfiguredGitHubURL() string {
+	return strings.TrimSpace(os.Getenv(GitHubServerURLEnv))
 }
 
 // ParseRawContentURL extracts forge, owner, repo, path, and ref from a
