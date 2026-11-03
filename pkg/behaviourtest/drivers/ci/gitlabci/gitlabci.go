@@ -322,22 +322,7 @@ func (d *Driver) DownloadNamedArtifactFromRun(ctx context.Context, owner, repo s
 // from the given pipeline. GitLab uses the harness job name as the artifact
 // name, so this translates the logical agent to that job name.
 func (d *Driver) DownloadAgentArtifactsFromRun(ctx context.Context, owner, repo string, runID int, agent string, destDir string) error {
-	artifacts, err := d.Client.ListWorkflowRunArtifacts(ctx, owner, repo, runID)
-	if err != nil {
-		return err
-	}
-	want := harnessJobSuffix(agent)
-	for _, art := range artifacts {
-		if art.Name != want {
-			continue
-		}
-		zipData, err := d.Client.DownloadWorkflowRunArtifact(ctx, owner, repo, art.ID)
-		if err != nil {
-			return err
-		}
-		return extractArtifactZip(art.Name, zipData, destDir)
-	}
-	return fmt.Errorf("agent artifact %q not found on pipeline %d", agent, runID)
+	return d.DownloadNamedArtifactFromRun(ctx, owner, repo, runID, harnessJobSuffix(agent), destDir)
 }
 
 // DownloadNamedArtifactAfter polls for a repository-level artifact whose

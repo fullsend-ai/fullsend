@@ -4446,7 +4446,7 @@ func (c *LiveClient) ListWorkflowRunArtifacts(ctx context.Context, owner, repo s
 				Name string `json:"name"`
 			} `json:"artifacts"`
 		}
-		path := fmt.Sprintf("/repos/%s/%s/actions/runs/%d/artifacts?per_page=%d&page=%d", owner, repo, runID, perPage, page)
+		path := fmt.Sprintf("/repos/%s/%s/actions/runs/%d/artifacts?per_page=%d&page=%d", url.PathEscape(owner), url.PathEscape(repo), runID, perPage, page)
 		if err := c.getCachedJSON(ctx, path, &result); err != nil {
 			return nil, fmt.Errorf("list workflow run artifacts page %d: %w", page, err)
 		}

@@ -29,6 +29,30 @@ func TestFindOutputFilesReturnsMatchesAcrossArtifacts(t *testing.T) {
 	assert.Equal(t, []byte("first"), first)
 }
 
+func TestFindOutputFilesByArtifactGroupsAndOrdersNewestFirst(t *testing.T) {
+	root := t.TempDir()
+	for name, content := range map[string]string{
+		"fullsend-pre/run/iteration-1/output/agent-result.json":          "a1",
+		"fullsend-pre/run/iteration-10/output/agent-result.json":         "a10",
+		"fullsend-pre/run/iteration-2/output/agent-result.json":          "a2",
+		"fullsend-pre.matrix-1/run/iteration-1/output/agent-result.json": "b1",
+	} {
+		path := filepath.Join(root, name)
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+		require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+	}
+
+	got, err := FindOutputFilesByArtifact(root, "agent-result.json")
+	require.NoError(t, err)
+	assert.Equal(t, [][][]byte{
+		{[]byte("a10"), []byte("a2"), []byte("a1")},
+		{[]byte("b1")},
+	}, got)
+
+	_, err = FindOutputFilesByArtifact(t.TempDir(), "agent-result.json")
+	require.ErrorContains(t, err, "agent-result.json not found")
+}
+
 func TestFindOutputFilesReportsMissingFileAndRoot(t *testing.T) {
 	t.Run("missing file", func(t *testing.T) {
 		_, err := FindOutputFiles(t.TempDir(), "missing.json")

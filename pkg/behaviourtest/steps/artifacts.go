@@ -73,9 +73,10 @@ func ensureRunArtifacts(w *world.World, marker string) error {
 
 	tryDownloadRun := func(runID int) error {
 		if w.DispatchAgent != "" {
-			return w.CI.DownloadAgentArtifactsFromRun(ctx, w.Org, w.RepoName, runID, w.DispatchAgent, dest)
-		}
-		if err := w.CI.DownloadNamedArtifactFromRun(ctx, w.Org, w.RepoName, runID, artifactName, dest); err != nil {
+			if err := w.CI.DownloadAgentArtifactsFromRun(ctx, w.Org, w.RepoName, runID, w.DispatchAgent, dest); err != nil {
+				return err
+			}
+		} else if err := w.CI.DownloadNamedArtifactFromRun(ctx, w.Org, w.RepoName, runID, artifactName, dest); err != nil {
 			return err
 		}
 		if _, findErr := artifacts.FindOutputFile(dest, marker); findErr != nil {

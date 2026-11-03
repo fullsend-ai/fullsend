@@ -643,6 +643,41 @@ func TestThenAgentSubmittedReview_AggregatesRepeatedAgentArtifacts(t *testing.T)
 	require.NoError(t, thenAgentSubmittedReview(w, "review", "approved"))
 }
 
+func TestThenAgentSubmittedReview_UsesNewestValidIterationPerArtifact(t *testing.T) {
+	write := func(destDir, rel, content string) error {
+		path := filepath.Join(destDir, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(path, []byte(content), 0o644)
+	}
+	ci := &mockCIDriver{downloadNamedArtifactFn: func(_ context.Context, _, _ string, _ int, _, destDir string) error {
+		// First artifact: the newest iteration is malformed and an older
+		// one is superseded with a different action; the valid newest is
+		// iteration-2.
+		for rel, content := range map[string]string{
+			"fullsend-review/run/iteration-1/output/agent-result.json":          `{"action":"request-changes"}`,
+			"fullsend-review/run/iteration-2/output/agent-result.json":          `{"action":"approve"}`,
+			"fullsend-review/run/iteration-3/output/agent-result.json":          `{`,
+			"fullsend-review.matrix-1/run/iteration-1/output/agent-result.json": `{"action":"approve"}`,
+		} {
+			if err := write(destDir, rel, content); err != nil {
+				return err
+			}
+		}
+		return nil
+	}}
+	w := &world.World{
+		PRNumber:    2,
+		WorkflowRun: &forge.WorkflowRun{ID: 55, CreatedAt: "2026-01-01T00:00:00Z"},
+		CI:          ci,
+		SCM: &fakePlaybackSCM{listReviewsFn: func(context.Context, string, string, int) ([]forge.PullRequestReview, error) {
+			return []forge.PullRequestReview{{State: "APPROVED", SubmittedAt: "2026-01-01T00:05:00Z"}}, nil
+		}},
+	}
+	require.NoError(t, thenAgentSubmittedReview(w, "review", "approved"))
+}
+
 func TestThenAgentSubmittedReview_RejectsConflictingRepeatedAgentArtifacts(t *testing.T) {
 	w := &world.World{
 		PRNumber:    2,

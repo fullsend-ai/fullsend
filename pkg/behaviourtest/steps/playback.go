@@ -676,21 +676,40 @@ func roundDisposition(ctx context.Context, w *world.World, agent string, run *fo
 	if err := w.CI.DownloadAgentArtifactsFromRun(ctx, w.Org, w.RepoName, run.ID, agent, dest); err != nil {
 		return "", fmt.Errorf("downloading %q agent-result artifact for run %d: %w", agent, run.ID, err)
 	}
-	results, err := artifacts.FindOutputFiles(dest, "agent-result.json")
+	perArtifact, err := artifacts.FindOutputFilesByArtifact(dest, "agent-result.json")
 	if err != nil {
 		return "", fmt.Errorf("reading agent-result.json for %q agent's run %d: %w", agent, run.ID, err)
 	}
 	var state string
-	for i, data := range results {
-		var result struct {
-			Action string `json:"action"`
+	for i, candidates := range perArtifact {
+		// An artifact can hold one result per iteration, and a newer
+		// iteration may be invalid while an older one was accepted. Pick
+		// the newest valid result per physical artifact, and only then
+		// compare across the repeated-agent artifacts.
+		artifactState := ""
+		var firstErr error
+		for j, data := range candidates {
+			var result struct {
+				Action string `json:"action"`
+			}
+			if err := json.Unmarshal(data, &result); err != nil {
+				if firstErr == nil {
+					firstErr = fmt.Errorf("parsing agent-result.json %d.%d for %q agent's run %d: %w", i+1, j+1, agent, run.ID, err)
+				}
+				continue
+			}
+			s, ok := reviewActionToState(result.Action)
+			if !ok {
+				if firstErr == nil {
+					firstErr = fmt.Errorf("agent-result.json %d.%d for %q agent's run %d has unrecognized action %q", i+1, j+1, agent, run.ID, result.Action)
+				}
+				continue
+			}
+			artifactState = s
+			break
 		}
-		if err := json.Unmarshal(data, &result); err != nil {
-			return "", fmt.Errorf("parsing agent-result.json %d for %q agent's run %d: %w", i+1, agent, run.ID, err)
-		}
-		artifactState, ok := reviewActionToState(result.Action)
-		if !ok {
-			return "", fmt.Errorf("agent-result.json %d for %q agent's run %d has unrecognized action %q", i+1, agent, run.ID, result.Action)
+		if artifactState == "" {
+			return "", firstErr
 		}
 		if state != "" && state != artifactState {
 			return "", fmt.Errorf("agent-result.json artifacts for %q agent's run %d imply conflicting review states %q and %q",

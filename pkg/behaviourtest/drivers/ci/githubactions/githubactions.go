@@ -425,7 +425,7 @@ func (d *Driver) downloadArtifactAfter(ctx context.Context, owner, repo, artifac
 		}
 		lastNewestCreatedAt = newestCreatedAt
 
-		matching := repositoryArtifactsAfter(arts, artifactName, after, matches)
+		matching := repositoryArtifactsAfter(arts, after, matches)
 		if len(matching) > 0 {
 			// A repository can have several workflow runs after the same
 			// scenario start, and each run can publish the same matrix names.
@@ -478,7 +478,7 @@ func selectRepositoryArtifactAfter(arts []forge.RepositoryArtifact, name string,
 	return best
 }
 
-func repositoryArtifactsAfter(arts []forge.RepositoryArtifact, name string, after time.Time, matches func(string) bool) []forge.RepositoryArtifact {
+func repositoryArtifactsAfter(arts []forge.RepositoryArtifact, after time.Time, matches func(string) bool) []forge.RepositoryArtifact {
 	var matching []forge.RepositoryArtifact
 	for _, art := range arts {
 		if !matches(art.Name) {
