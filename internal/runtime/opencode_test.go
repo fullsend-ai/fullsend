@@ -143,10 +143,6 @@ func TestOpenCodeModelAliases_CoversDocumentedAliases(t *testing.T) {
 				"alias %q should not pass through as bare id", alias)
 		})
 	}
-	out, err := exec.Command("sh", "-c", openCodeUtilityPin()+" && "+openCodeHookActivationGuard(nil)).CombinedOutput()
-	var exit *exec.ExitError
-	require.ErrorAs(t, err, &exit, "%s", out)
-	assert.Equal(t, openCodeHookActivationMissingExit, exit.ExitCode())
 }
 
 func TestOpenCodeBareModelID(t *testing.T) {
@@ -900,6 +896,11 @@ func TestOpenCodeHooksExtensionPath(t *testing.T) {
 
 func TestOpenCodeHookActivationGuard(t *testing.T) {
 	requirePinnedSha256sum(t)
+	out, err := exec.Command("sh", "-c", openCodeUtilityPin()+" && "+openCodeHookActivationGuard(nil)).CombinedOutput()
+	var exit *exec.ExitError
+	require.ErrorAs(t, err, &exit, "%s", out)
+	assert.Equal(t, openCodeHookActivationMissingExit, exit.ExitCode())
+
 	activation := &openCodeHookActivation{Path: filepath.Join(t.TempDir(), "activation"), Token: "runner-held-token"}
 	for _, tt := range []struct {
 		name  string

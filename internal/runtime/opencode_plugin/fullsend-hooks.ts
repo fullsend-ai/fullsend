@@ -166,7 +166,7 @@ function checkWrites(cfg, targets, cwd) {
     const dest = resolved(path.resolve(cwd, target));
     const relative = path.relative(workspace, dest);
     if (!relative || relative === ".." || relative.startsWith("../") || path.isAbsolute(relative) ||
-        [".env", ".security", "runner-state"].some((p) => relative === p || relative.startsWith(p + "/"))) {
+        [".env", ".env.d", ".fullsend", ".security", "runner-state", "bin"].some((p) => relative === p || relative.startsWith(p + "/"))) {
       deny("write path is outside the writable workspace");
     }
   }
@@ -175,12 +175,6 @@ function checkWrites(cfg, targets, cwd) {
 export default async ({ directory, worktree }) => {
   let cfg;
   try { cfg = JSON.parse(process.env.FULLSEND_OPENCODE_HOOK_CONFIG ?? "null"); } catch { /* all calls fail closed below */ }
-  // The runner supplies a fresh token per iteration and verifies this write
-  // after OpenCode exits. It proves this plugin factory loaded, but does not
-  // claim to close the same-user check-to-load race tracked separately.
-  if (typeof cfg?.activation?.path === "string" && typeof cfg.activation.token === "string") {
-    writeFileSync(cfg.activation.path, cfg.activation.token, { mode: 0o600 });
-  }
   const cwd = directory ?? process.cwd();
   const permissionRoot = resolved(worktree ?? cwd);
   // Never inherit loader, Python, pager, provider or agent-modified variables.
@@ -274,6 +268,11 @@ export default async ({ directory, worktree }) => {
     part.id, part.callID, part.tool, part.state.input ?? {},
     part.state.error, part.state.metadata ?? {},
   ]));
+  // Write only after all plugin-factory setup succeeds. OpenCode logs and
+  // ignores a factory error, so an earlier signal would falsely pass the guard.
+  if (typeof cfg?.activation?.path === "string" && typeof cfg.activation.token === "string") {
+    writeFileSync(cfg.activation.path, cfg.activation.token, { mode: 0o600 });
+  }
   return {
     "shell.env": async (_input, output) => {
       // Use the bootstrap-captured command HOME and avoid shell-startup code.

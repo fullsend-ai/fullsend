@@ -100,7 +100,8 @@ func runOpenCodeHookProbe(t *testing.T, binary, version, scenario string, deadli
 	// The plugin imports only Node builtins. Satisfy v1's opportunistic SDK
 	// install bookkeeping so a registry request cannot stall this local probe.
 	// This is test-only; the sandbox image installs the actual pinned SDK.
-	for _, target := range []string{configDir, filepath.Join(dir, "xdg-config", "opencode")} {
+	sdkDir := filepath.Join(dir, "opencode-sdk")
+	for _, target := range []string{sdkDir, configDir, filepath.Join(dir, "xdg-config", "opencode")} {
 		require.NoError(t, os.MkdirAll(filepath.Join(target, "node_modules"), 0o700))
 		require.NoError(t, os.WriteFile(filepath.Join(target, "package.json"), []byte(`{"dependencies":{"@opencode-ai/plugin":"1.19.1"}}`), 0o600))
 		require.NoError(t, os.WriteFile(filepath.Join(target, "package-lock.json"), []byte(`{"name":"fullsend-hook-probe","lockfileVersion":3,"requires":true,"packages":{"":{"dependencies":{"@opencode-ai/plugin":"1.19.1"}}}}`), 0o600))
@@ -360,7 +361,7 @@ func runOpenCodeHookProbe(t *testing.T, binary, version, scenario string, deadli
 		for _, arg := range args {
 			launch = append(launch, shellQuote(arg))
 		}
-		cmd = exec.CommandContext(ctx, "/bin/sh", "-c", openCodeTrustedEnvPin(trusted)+" && "+envDataTrustedPin()+" && "+envDataLoad(filepath.Join(work, ".env"), openCodeEnvDataDrop...)+" && "+openCodeTrustedEnvRestore()+" && "+(OpenCodeRuntime{}).openCodeSDKCacheRestore()+" && exec "+strings.Join(launch, " "))
+		cmd = exec.CommandContext(ctx, "/bin/sh", "-c", openCodeTrustedEnvPin(trusted)+" && "+envDataTrustedPin()+" && "+envDataLoad(filepath.Join(work, ".env"), openCodeEnvDataDrop...)+" && "+openCodeTrustedEnvRestore()+" && "+openCodeSDKCacheRestoreFrom(sdkDir, configDir)+" && exec "+strings.Join(launch, " "))
 	}
 	cmd.Dir = work
 	// Do not inherit provider credentials, user plugins, or the harness config.

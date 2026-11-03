@@ -136,7 +136,7 @@ test("native write paths resolve symlinks and protect runner state", async (t) =
   await h.before("write", { filePath: "new/file" });
   symlinkSync(h.root, path.join(h.workspace, "outside"));
   symlinkSync(path.join(h.root, "missing"), path.join(h.workspace,"broken"));
-  for (const filePath of ["../escape", "outside/escape", "broken", ".env", ".security/findings.jsonl", "runner-state/file"]) {
+  for (const filePath of ["../escape", "outside/escape", "broken", ".env", ".env.d/agent.env", ".fullsend/iteration.env", ".security/findings.jsonl", "runner-state/file", "bin/gh"]) {
     await assert.rejects(h.before("write", { filePath }), /write path/);
   }
   for (const tool of ["edit", "multiedit"]) {
@@ -151,7 +151,7 @@ test("patch targets use native header recognition and trimming", async (t) => {
   for (const spacing of ["", " ", "\t"]) {
     for (const suffix of ["", " ", "\t", "\r"]) {
       for (const header of ["Add File", "Update File", "Delete File", "Move to"]) {
-        for (const target of [".env", ".security/findings.jsonl", "runner-state/file", "../escape"]) {
+        for (const target of [".env", ".env.d/agent.env", ".fullsend/iteration.env", ".security/findings.jsonl", "runner-state/file", "bin/gh", "../escape"]) {
           const patchText = `*** Begin Patch\n*** Add File: safe.txt\n+safe\n*** ${header}:${spacing}${target}${suffix}\n*** End Patch`;
           await assert.rejects(h.before("apply_patch", { patchText }), /write path/, patchText);
         }
@@ -161,6 +161,19 @@ test("patch targets use native header recognition and trimming", async (t) => {
   await h.before("apply_patch", { patchText: "*** Begin Patch\n*** Update File:\tsrc/old.txt \n*** Move to:src/new.txt\n@@\n-old\n+new\n*** End of File\n*** End Patch" });
   await assert.rejects(h.before("apply_patch", { patchText: "*** Add File: safe\n+x\n*** Unknown File: .env" }), /unrecognized/);
   await assert.rejects(h.before("apply_patch", { patchText: "*** Add File: \t" }), /missing write path/);
+});
+
+test("plugin setup failure does not signal activation", async (t) => {
+  const h = await setup(t);
+  const activation = path.join(h.root, "activation");
+  const notADirectory = path.join(h.root, "not-a-directory");
+  writeFileSync(notADirectory, "not a directory");
+  const invalidWorktree = path.join(notADirectory, "child");
+  h.cfg.activation = { path: activation, token: "runner-held-token" };
+  process.env.FULLSEND_OPENCODE_HOOK_CONFIG = JSON.stringify(h.cfg);
+
+  await assert.rejects(plugin({ directory: h.workspace, worktree: invalidWorktree }));
+  assert.throws(() => readFileSync(activation));
 });
 
 test("trusted file permissions use worktree-relative paths for every patch target", async (t) => {
