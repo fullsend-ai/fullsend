@@ -28,17 +28,25 @@ sha256_file() {
 	fi
 }
 
-is_ci=false
-if [[ "${CI:-}" == "true" || "${GITHUB_ACTIONS:-}" == "true" ]]; then
-	is_ci=true
-fi
+semgrep_required=false
+case "${SEMGREP_REQUIRED:-}" in
+1)
+	semgrep_required=true
+	;;
+"" | 0)
+	;;
+*)
+	echo "semgrep-scan: SEMGREP_REQUIRED must be 1, 0, or unset" >&2
+	exit 2
+	;;
+esac
 
-ruleset_failure() {
-	if [[ "$is_ci" == true ]]; then
-		echo "semgrep-scan: $1; failing the CI scan" >&2
+scan_prerequisite_failure() {
+	if [[ "$semgrep_required" == true ]]; then
+		echo "semgrep-scan: $1; failing the required scan" >&2
 		exit 1
 	fi
-	echo "semgrep-scan: warning: $1; skipping the local scan" >&2
+	echo "semgrep-scan: warning: $1; skipping this scan" >&2
 	exit 0
 }
 
@@ -47,8 +55,12 @@ ruleset_integrity_failure() {
 	exit 1
 }
 
+if ! command -v uv >/dev/null 2>&1; then
+	scan_prerequisite_failure "uv is not installed"
+fi
+
 if ! mkdir -p "$RULESET_CACHE_ROOT"; then
-	ruleset_failure "cannot create the local ruleset cache"
+	scan_prerequisite_failure "cannot create the local ruleset cache"
 fi
 if [[ -f "$RULESET_FILE" ]]; then
 	if ! RULESET_ACTUAL_SHA256="$(sha256_file "$RULESET_FILE")"; then
@@ -60,12 +72,12 @@ fi
 
 if [[ "$RULESET_ACTUAL_SHA256" != "$RULESET_SHA256" ]]; then
 	if ! RULESET_TMP="$(mktemp "${RULESET_CACHE_ROOT}/.security-audit.XXXXXX")"; then
-		ruleset_failure "cannot create a temporary ruleset file"
+		scan_prerequisite_failure "cannot create a temporary ruleset file"
 	fi
 	if ! curl --connect-timeout 10 --max-time 60 \
 		--fail --location --silent --show-error "$RULESET_URL" \
 		--output "$RULESET_TMP"; then
-		ruleset_failure "unable to download the pinned ruleset from ${RULESET_URL}"
+		scan_prerequisite_failure "unable to download the pinned ruleset from ${RULESET_URL}"
 	fi
 	if ! RULESET_ACTUAL_SHA256="$(sha256_file "$RULESET_TMP")"; then
 		ruleset_integrity_failure "cannot verify downloaded ruleset"
@@ -74,10 +86,10 @@ if [[ "$RULESET_ACTUAL_SHA256" != "$RULESET_SHA256" ]]; then
 		ruleset_integrity_failure "downloaded ruleset SHA-256 does not match the pin (expected ${RULESET_SHA256}, got ${RULESET_ACTUAL_SHA256})"
 	fi
 	if ! mkdir -p "$RULESET_DIR"; then
-		ruleset_failure "cannot create the verified ruleset cache directory"
+		scan_prerequisite_failure "cannot create the verified ruleset cache directory"
 	fi
 	if ! mv "$RULESET_TMP" "$RULESET_FILE"; then
-		ruleset_failure "cannot cache the verified ruleset"
+		scan_prerequisite_failure "cannot cache the verified ruleset"
 	fi
 	RULESET_TMP=
 fi
@@ -113,7 +125,11 @@ while (($#)); do
 done
 
 cd "$RULESET_DIR"
-uv run --project "${REPO_ROOT}/tools/semgrep" --locked semgrep scan \
+if ! uv sync --project "${REPO_ROOT}/tools/semgrep" --locked; then
+	scan_prerequisite_failure "unable to prepare the pinned Semgrep environment"
+fi
+
+uv run --project "${REPO_ROOT}/tools/semgrep" --no-sync semgrep scan \
 	--config security-audit.yml \
 	--metrics=off \
 	--disable-version-check \

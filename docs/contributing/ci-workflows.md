@@ -271,12 +271,15 @@ This recursion is by design but interacts with the convergence non-idempotence t
 and the Semgrep Registry's `p/security-audit` ruleset. It verifies downloaded
 rules against the SHA-256 in `scripts/semgrep-ruleset.sha256` and caches a
 verified copy locally under that hash. A downloaded hash mismatch fails both
-local and CI scans. CI also fails closed if it cannot fetch the pinned ruleset;
-a local cache miss warns and skips when the pinned bytes are unavailable. The
-scheduled `Semgrep Ruleset Drift` workflow opens or updates an issue when the
-live registry response changes. Renovate PEP 621 updates keep the Semgrep
-version and `uv.lock` together; weekly lock maintenance refreshes transitive
-dependencies, and Semgrep updates stay out of automerge.
+local and CI scans. The dedicated Semgrep job sets `SEMGREP_REQUIRED=1`, so it
+fails closed if the pinned ruleset or locked Semgrep environment cannot be
+prepared. Other contexts, including agent pre-commit gates, warn and skip if
+`uv` is missing or a ruleset, cache, or environment dependency cannot be
+prepared. A completed scan still fails on findings. The scheduled
+`Semgrep Ruleset Drift` workflow opens or updates an issue when the live
+registry response changes. Renovate PEP 621 updates keep the Semgrep version and
+`uv.lock` together; weekly lock maintenance refreshes transitive dependencies,
+and Semgrep updates stay out of automerge.
 
 The pre-commit hook scans changed files of all types, except paths matched by
 its `exclude:` expression in `.pre-commit-config.yaml`. Semgrep's full-directory

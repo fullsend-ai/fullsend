@@ -81,6 +81,8 @@ jobs:
             tools/semgrep/uv.lock
 
       - name: Run Semgrep SAST
+        env:
+          SEMGREP_REQUIRED: "1"
         run: ./scripts/semgrep-scan --sarif-output semgrep.sarif .
 
       - name: Upload Semgrep SARIF report

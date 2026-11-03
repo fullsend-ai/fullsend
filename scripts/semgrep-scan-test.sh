@@ -67,12 +67,13 @@ run_scan() {
 	local curl_mode="$2"
 	local curl_payload="$3"
 	local curl_calls="$4"
-	local ci_value="$5"
+	local required_value="$5"
 	local uv_prefix="$6"
 
 	env \
-		CI="$ci_value" \
-		GITHUB_ACTIONS=false \
+		CI=true \
+		GITHUB_ACTIONS=true \
+		SEMGREP_REQUIRED="$required_value" \
 		XDG_CACHE_HOME="$cache_dir" \
 		CURL_MODE="$curl_mode" \
 		CURL_PAYLOAD="$curl_payload" \
@@ -117,7 +118,7 @@ LOCAL_OFFLINE_CACHE="${TEST_ROOT}/cache-local-offline"
 LOCAL_OFFLINE_CALLS="${TEST_ROOT}/local-offline-curl-calls"
 if output="$(run_scan "$LOCAL_OFFLINE_CACHE" fail "${TEST_ROOT}/valid-rules.yml" \
 	"$LOCAL_OFFLINE_CALLS" false "${TEST_ROOT}/local-offline-uv" 2>&1)"; then
-	[[ "$output" == *"warning:"* && "$output" == *"skipping the local scan"* ]] || \
+	[[ "$output" == *"warning:"* && "$output" == *"skipping this scan"* ]] || \
 		fail "local network failure did not warn and skip"
 else
 	fail "local network failure returned nonzero"
@@ -130,7 +131,7 @@ if output="$(run_scan "$CI_OFFLINE_CACHE" fail "${TEST_ROOT}/valid-rules.yml" \
 	"${TEST_ROOT}/ci-offline-curl-calls" true "${TEST_ROOT}/ci-offline-uv" 2>&1)"; then
 	fail "CI network failure returned success"
 fi
-[[ "$output" == *"failing the CI scan"* ]] || fail "CI network failure did not report fail-closed behavior"
+[[ "$output" == *"failing the required scan"* ]] || fail "required network failure did not report fail-closed behavior"
 [[ ! -e "${TEST_ROOT}/ci-offline-uv.cwd" ]] || fail "CI offline scan invoked Semgrep"
 pass "CI network failure fails closed"
 

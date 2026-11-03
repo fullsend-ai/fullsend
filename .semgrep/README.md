@@ -3,11 +3,13 @@
 `scripts/semgrep-scan` downloads the Semgrep Registry's `p/security-audit`
 configuration from the URL in `scripts/semgrep-ruleset-url` and verifies it
 against the SHA-256 in `scripts/semgrep-ruleset.sha256`. A downloaded ruleset
-that does not match the pin fails in both CI and local runs. CI also fails closed
-if it cannot download the pinned ruleset. Local runs reuse a verified cache
-keyed by the SHA-256; if a cache miss cannot fetch the pinned bytes, the hook
-warns and skips the scan. Use `SKIP=semgrep` with pre-commit or `make test` to
-skip the hook explicitly while offline.
+that does not match the pin fails in every run. The dedicated Semgrep job sets
+`SEMGREP_REQUIRED=1`, so it fails closed if the ruleset or the locked Semgrep
+environment cannot be prepared. Other contexts, including agent pre-commit
+gates, warn and skip when `uv` is missing or a ruleset, cache, or environment
+dependency cannot be prepared. A completed scan still fails on findings.
+Local runs reuse a verified cache keyed by the SHA-256. Use `SKIP=semgrep` with
+pre-commit or `make test` to skip the hook explicitly while offline.
 
 The scheduled `Semgrep Ruleset Drift` workflow compares the live response with
 the pin and opens or updates an issue when it changes. To update the ruleset,
