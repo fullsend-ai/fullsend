@@ -71,6 +71,15 @@ Rejected. A scratch directory must not acquire Git, repository identity,
 target instructions, repository-scoped credentials, or target status
 semantics merely because a runtime needs a working directory.
 
+### Keep `--target-repo` mandatory and ignore its target meaning
+
+Rejected. An empty directory may let a simple agent start, but it still goes
+through the target-repository path. The runner can copy it as project code,
+set target-repository paths, inject repository instructions, and run
+repository-oriented setup and scanning. Treating the argument as only a
+working directory would preserve that ambiguity instead of giving the
+harness an explicit way to declare that it has no target repository.
+
 ### Use the CI host checkout as the default target
 
 Rejected. The workflow project is an execution host unless the caller
@@ -122,6 +131,13 @@ The runner distinguishes three runtime concepts:
   runtime rather than redefining `RepoDir`.
 - **Target repository** is optional target identity and content. It is absent
   in repository-less mode even though the execution directory is present.
+
+An optional target code repository does not imply that a run has no target
+entity. The source or invocation entity may be a Jira issue, tenant context,
+or backlog item, and a run may report to that same entity or another explicit
+destination. This ADR does not define source/target entity selection, reuse
+of the source entity, or a no-target-entity mode; those are separate follow-up
+decisions.
 
 Repository-less mode does not create or upload a target checkout, and it does
 not assign target-repository semantics to the scratch execution directory. In
