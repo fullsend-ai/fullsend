@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -1456,6 +1457,95 @@ func TestEnsureDefaultAllowedRemoteResources(t *testing.T) {
 		copy(inputCopy, input)
 		_ = EnsureDefaultAllowedRemoteResources(input)
 		assert.Equal(t, inputCopy, input)
+	})
+}
+
+func TestDefaultAllowedRemoteResources_GitHubServerURL(t *testing.T) {
+	public := []string{
+		"https://raw.githubusercontent.com/fullsend-ai/fullsend/",
+		"https://raw.githubusercontent.com/fullsend-ai/agents/",
+	}
+	hostDefaults := func(base string) []string {
+		return append(slices.Clone(public),
+			base+"/fullsend-ai/fullsend/raw/",
+			base+"/fullsend-ai/agents/raw/",
+		)
+	}
+	for _, tc := range []struct {
+		name      string
+		serverURL string
+		want      []string
+	}{
+		{"unset", "", public},
+		{"github.com", "https://github.com", public},
+		{"github.com trailing slash mixed case", "https://GitHub.com/", public},
+		{"other host", "https://ghe.example.com", hostDefaults("https://ghe.example.com")},
+		{"other host trailing slash", "https://ghe.example.com/", hostDefaults("https://ghe.example.com")},
+		{"other host mixed case", "https://GHE.Example.com", hostDefaults("https://ghe.example.com")},
+		{"other host with port", "https://ghe.example.com:8443", hostDefaults("https://ghe.example.com:8443")},
+		{"surrounding whitespace", " https://ghe.example.com\n", hostDefaults("https://ghe.example.com")},
+		{"http scheme ignored", "http://ghe.example.com", public},
+		{"path ignored", "https://ghe.example.com/sub", public},
+		{"userinfo ignored", "https://user@ghe.example.com", public},
+		{"query ignored", "https://ghe.example.com?x=1", public},
+		{"fragment ignored", "https://ghe.example.com#x", public},
+		{"not a URL ignored", "ghe.example.com", public},
+		{"unparseable ignored", "https://ghe.example.com:port", public},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("GITHUB_SERVER_URL", tc.serverURL)
+			assert.Equal(t, tc.want, DefaultAllowedRemoteResources())
+		})
+	}
+}
+
+func TestDefaultAllowedRemoteResources_NonGitHubHostAdmitsFullsendRepos(t *testing.T) {
+	t.Setenv("GITHUB_SERVER_URL", "https://ghe.example.com")
+	const (
+		sha  = "0123456789abcdef0123456789abcdef01234567"
+		hash = "#sha256=abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+	)
+
+	allowlists := map[string][]string{
+		"default":          DefaultAllowedRemoteResources(),
+		"ensure nil":       EnsureDefaultAllowedRemoteResources(nil),
+		"ensure custom":    EnsureDefaultAllowedRemoteResources([]string{"https://example.com/foo/"}),
+		"new per-repo cfg": NewPerRepoConfig(nil, "").AllowedResources(),
+		"per-repo default": (&perRepoDefaults{}).AllowedResources(),
+	}
+	admitted := []string{
+		"https://ghe.example.com/fullsend-ai/agents/raw/" + sha + "/harness/triage.yaml",
+		"https://ghe.example.com/fullsend-ai/fullsend/raw/" + sha + "/harness/triage.yaml",
+		"https://raw.githubusercontent.com/fullsend-ai/agents/" + sha + "/harness/triage.yaml",
+	}
+	rejected := []string{
+		"https://ghe.example.com/other-org/agents/raw/" + sha + "/harness/triage.yaml",
+		"https://ghe.example.com/fullsend-ai/agents-evil/raw/" + sha + "/harness/triage.yaml",
+		"https://ghe.example.com/fullsend-ai/agents/blob/" + sha + "/harness/triage.yaml",
+		"https://other.example.com/fullsend-ai/agents/raw/" + sha + "/harness/triage.yaml",
+	}
+	for name, allow := range allowlists {
+		t.Run(name, func(t *testing.T) {
+			for _, src := range admitted {
+				err := ValidateAgentEntries([]AgentEntry{{Name: "triage", Source: src + hash}}, allow)
+				assert.NoError(t, err, src)
+			}
+			for _, src := range rejected {
+				err := ValidateAgentEntries([]AgentEntry{{Name: "triage", Source: src + hash}}, allow)
+				assert.ErrorContains(t, err, "is not covered by allowed_remote_resources", src)
+			}
+		})
+	}
+
+	t.Run("custom list keeps order with host defaults appended", func(t *testing.T) {
+		got := EnsureDefaultAllowedRemoteResources([]string{"https://example.com/foo/"})
+		assert.Equal(t, append([]string{"https://example.com/foo/"}, DefaultAllowedRemoteResources()...), got)
+	})
+
+	t.Run("explicit empty list stays deny-all", func(t *testing.T) {
+		got := EnsureDefaultAllowedRemoteResources([]string{})
+		assert.NotNil(t, got)
+		assert.Empty(t, got)
 	})
 }
 
