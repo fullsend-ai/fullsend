@@ -701,7 +701,8 @@ func TestPerRepoConfig_LegacyCreateIssuesRejected(t *testing.T) {
 
 	cfg, err := ParsePerRepoConfigWriter(data)
 	require.NoError(t, err, "parsing stays lenient so runtime loading does not fail")
-	assert.Nil(t, cfg.IssueTracking(), "the legacy block grants nothing")
+	require.NotNil(t, cfg.IssueTracking())
+	assert.Empty(t, cfg.IssueTracking().Provider(), "the legacy block grants nothing")
 	err = cfg.Validate()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "create_issues is no longer supported")
@@ -719,6 +720,30 @@ func TestPerRepoConfig_LegacyCreateIssuesRejected(t *testing.T) {
 	reader, err := ParsePerRepoConfig(data)
 	require.NoError(t, err)
 	assert.True(t, asPerRepo(reader.(PerRepoConfigWriter)).legacyCreateIssues)
+}
+
+func TestPerRepoConfig_LegacyCreateIssuesOverlayDoesNotInheritBase(t *testing.T) {
+	overlay := []byte("create_issues:\n  allow_targets: {}\n")
+	base := []byte("tracking:\n  github:\n    allowed_targets:\n      orgs: [acme]\n")
+
+	layered, err := ParsePerRepoConfigWriterLayered(overlay, base)
+	require.NoError(t, err)
+	require.NotNil(t, layered.IssueTracking())
+	assert.Empty(t, layered.IssueTracking().Provider(), "a legacy deny-all overlay must not inherit the base grant")
+	require.ErrorIs(t, layered.Validate(), errLegacyCreateIssues)
+
+	// Without the legacy block the base grant is inherited as before.
+	inherited, err := ParsePerRepoConfigWriterLayered([]byte("version: \"1\"\n"), base)
+	require.NoError(t, err)
+	require.NotNil(t, inherited.IssueTracking())
+	assert.Equal(t, TrackingProviderGitHub, inherited.IssueTracking().Provider())
+}
+
+func TestPerRepoConfig_SetIssueTracking(t *testing.T) {
+	cfg := NewPerRepoConfig(nil, "my-org/my-repo")
+	cfg.SetIssueTracking(DefaultIssueTracking(TrackingProviderGitLab))
+	require.NotNil(t, cfg.IssueTracking())
+	assert.Equal(t, TrackingProviderGitLab, cfg.IssueTracking().Provider())
 }
 
 func TestNewPerRepoConfig_TrackingDefaults(t *testing.T) {

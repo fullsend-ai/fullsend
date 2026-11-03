@@ -603,6 +603,7 @@ func TestManagedConfig_LegacyCreateIssuesRejected(t *testing.T) {
 	err := yaml.Unmarshal([]byte("create_issues:\n  allow_targets:\n    orgs: [acme]\n"), &cfg)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `unknown field "create_issues"`)
+	assert.Contains(t, err.Error(), "tracking.<provider>.allowed_targets", "the error names the migration target")
 }
 
 func TestManagedConfig_TrackingStrictDecode(t *testing.T) {

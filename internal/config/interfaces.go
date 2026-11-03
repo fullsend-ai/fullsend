@@ -136,6 +136,7 @@ type PerRepoConfigWriter interface {
 	MergeInferenceGateway(InferenceGatewayConfig)
 	SetModelAliases(map[string]string)
 	SetOwnersFileAuthEnabled(bool)
+	SetIssueTracking(*TrackingConfig)
 }
 
 // --- Compile-time assertions ---
@@ -308,10 +309,16 @@ func (c *perRepoConfig) AllowedResources() []string {
 
 // IssueTracking returns the issue-tracking configuration. nil falls
 // through to parent; a set value replaces the parent's whole mapping, so
-// layers never combine two providers.
+// layers never combine two providers. A layer that still carries the
+// removed create_issues block and sets no tracking of its own denies all
+// extra issue destinations instead of inheriting the parent's grant, so a
+// legacy restrictive overlay is never widened by a permissive base.
 func (c *perRepoConfig) IssueTracking() *TrackingConfig {
 	if c.Tracking != nil {
 		return c.Tracking
+	}
+	if c.legacyCreateIssues {
+		return &TrackingConfig{}
 	}
 	if c.parent != nil {
 		return c.parent.IssueTracking()
@@ -661,6 +668,11 @@ func (c *perRepoConfig) SetInferenceRegion(region string) { c.ensureInference().
 // SetStatusNotifications sets the status notification configuration.
 func (c *perRepoConfig) SetStatusNotifications(sn *StatusNotificationConfig) {
 	c.Notifications = sn
+}
+
+// SetIssueTracking sets the issue-tracking configuration on this layer.
+func (c *perRepoConfig) SetIssueTracking(t *TrackingConfig) {
+	c.Tracking = t
 }
 
 // SetInferenceWIFProvider sets the WIF provider resource name.

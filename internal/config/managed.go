@@ -207,7 +207,12 @@ func decodeManagedConfig(n *yaml.Node) (*perRepoConfig, error) {
 	for i := 0; i+1 < len(node.Content); i += 2 {
 		keyNode := node.Content[i]
 		key := keyNode.Value
-		if !known[key] {
+		if key == "create_issues" {
+			// The removed key gets an actionable migration message
+			// instead of the generic unknown-field error.
+			fieldErrs = append(fieldErrs, managedFieldError(keyNode,
+				fmt.Sprintf("unknown field %q: %s", key, errLegacyCreateIssues)))
+		} else if !known[key] {
 			fieldErrs = append(fieldErrs, managedFieldError(keyNode,
 				fmt.Sprintf("unknown field %q", key)))
 		}

@@ -613,7 +613,7 @@ func BuildScaffoldFiles(cfg InstallConfig) ([]forge.TreeFile, error) {
 				generated := config.NewPerRepoConfig(cfg.Roles, cfg.Owner+"/"+cfg.Repo)
 				if cfg.Forge == ForgeGitLab {
 					// GitHub upstream names are not destinations on the GitLab host.
-					*generated.IssueTracking() = *config.DefaultIssueTracking(config.TrackingProviderGitLab)
+					generated.SetIssueTracking(config.DefaultIssueTracking(config.TrackingProviderGitLab))
 				}
 				if cfg.Runtime != "" {
 					generated.SetRuntime(cfg.Runtime)

@@ -323,8 +323,10 @@ when set, so layers never combine two providers. See
 **Migration from `create_issues`:** the top-level `create_issues` key is
 removed. Validation (`fullsend lint` and CLI config writes) rejects a leftover
 `create_issues` in `.fullsend/config.yaml`, and a `repos.yaml` managed
-`config:` block containing it is rejected. Runtime config loading ignores it,
-so it grants nothing. Move `create_issues.allow_targets.orgs` and `repos` to
+`config:` block containing it is rejected with a migration message. Runtime
+config loading ignores its contents and grants nothing: a layer that still
+carries `create_issues` and sets no `tracking` denies all extra issue
+destinations and does not inherit the parent layer's `tracking`. Move `create_issues.allow_targets.orgs` and `repos` to
 `tracking.github.allowed_targets.orgs` and `repos` on GitHub, or to
 `tracking.gitlab.allowed_targets.groups` and `repos` on GitLab. Migration of
 existing managed `repos.yaml` entries is tracked in
