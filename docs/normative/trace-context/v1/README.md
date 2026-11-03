@@ -185,6 +185,8 @@ exactly one outcome:
 - **Fallback**: nothing was admissible. The caller uses the
   entity-derived fallback.
 
+The zero-value result selects fallback and grants no context or provenance.
+
 Fallback reason codes are redacted diagnostics — `absent`, `malformed`,
 `oversized`, `unknown-version`, `unknown-key`, `bad-signature`,
 `binding-mismatch`, `conflicting-carrier`, `provenance` — never key

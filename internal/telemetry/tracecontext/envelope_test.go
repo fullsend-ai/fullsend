@@ -268,6 +268,15 @@ func TestCrossBindingReplay(t *testing.T) {
 	}
 }
 
+func TestResult_ZeroValueFallsBack(t *testing.T) {
+	t.Parallel()
+	var result Result
+	assert.Equal(t, OutcomeFallback, result.Outcome)
+	assert.False(t, result.TraceID.IsValid())
+	assert.False(t, result.ParentSpanID.IsValid())
+	assert.Equal(t, Provenance{}, result.Provenance)
+}
+
 func TestAdmit_Absent(t *testing.T) {
 	_, keys := goldenKeys(t)
 	res := Admit(goldenIdentity(), keys)

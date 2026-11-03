@@ -396,16 +396,16 @@ func DecodeCarrier(s string) ([]byte, error) {
 type Outcome int
 
 const (
+	// OutcomeFallback means no carrier was admissible; the caller uses
+	// the deterministic entity-derived fallback. It is the zero value.
+	OutcomeFallback Outcome = iota
 	// OutcomeAdmitted means a verified bound envelope matched the
 	// expected binding; the admitted IDs are available.
-	OutcomeAdmitted Outcome = iota
+	OutcomeAdmitted
 	// OutcomePending means a verified pending marker matched the expected
 	// scope. It grants neither context nor links; bounded rereads are
 	// caller policy.
 	OutcomePending
-	// OutcomeFallback means no carrier was admissible; the caller uses
-	// the deterministic entity-derived fallback.
-	OutcomeFallback
 )
 
 // Reason codes for non-admitted outcomes. They are redacted diagnostics:
@@ -426,6 +426,7 @@ const (
 // Result is the admission outcome. It carries admitted IDs and
 // authenticated provenance only — never sampling flags, tracestate,
 // baggage, or dispatch permission (FR-007, FR-008).
+// Its zero value selects fallback and carries no admitted context or links.
 type Result struct {
 	Outcome Outcome
 	// Reason is a redacted reason code when the outcome is not admitted.
