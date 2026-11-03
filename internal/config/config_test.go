@@ -1373,6 +1373,7 @@ func TestPerRepoConfig_Marshal_WithAgents(t *testing.T) {
 // --- DefaultAllowedRemoteResources tests ---
 
 func TestDefaultAllowedRemoteResources(t *testing.T) {
+	t.Setenv("GITHUB_SERVER_URL", "")
 	resources := DefaultAllowedRemoteResources()
 	assert.Len(t, resources, 2)
 	assert.Contains(t, resources, "https://raw.githubusercontent.com/fullsend-ai/fullsend/")
@@ -1409,6 +1410,7 @@ func TestPerRepoConfig_RoundTrip_WithAgents(t *testing.T) {
 }
 
 func TestEnsureDefaultAllowedRemoteResources(t *testing.T) {
+	t.Setenv("GITHUB_SERVER_URL", "")
 	defaults := DefaultAllowedRemoteResources()
 
 	t.Run("nil input returns defaults", func(t *testing.T) {
