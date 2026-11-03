@@ -301,6 +301,8 @@ func TestAdmit_MalformedVerificationKeys(t *testing.T) {
 
 func TestCanonicalInstanceAtEveryBoundary(t *testing.T) {
 	for _, instance := range []string{
+		"https://github.com:443", "https://github.com:0443", "http://github.com:80",
+		"https://bücher.example",
 		"not-a-url", "https://GitHub.com", "HTTPS://github.com", "https://github.com/",
 		"https://gitlab.example.com/gitlab/", "https://github.com?", "https://github.com#",
 		"https://gitlab.example.com/café", "https://gitlab.example.com/%00", "https://gitlab.example.com/%ff",
@@ -332,6 +334,21 @@ func TestCanonicalInstanceAtEveryBoundary(t *testing.T) {
 			assert.Equal(t, Result{Outcome: OutcomeFallback, Reason: ReasonMalformed}, Admit(id, keys, mutated))
 		})
 	}
+}
+
+func TestAdmit_NormalizedDefaultPort(t *testing.T) {
+	t.Parallel()
+	raw, keys := signedGolden(t, DomainBound, ProvenanceNone)
+	id := goldenIdentity()
+	wantFallback, ok := DeriveFallback(id)
+	require.True(t, ok)
+	var err error
+	id.Instance, err = NormalizeInstance("https://GitHub.com:443/")
+	require.NoError(t, err)
+	fb, ok := DeriveFallback(id)
+	require.True(t, ok)
+	assert.Equal(t, wantFallback, fb)
+	assert.Equal(t, OutcomeAdmitted, Admit(id, keys, raw).Outcome)
 }
 
 func TestEnvelope_DeploymentPrefixBinding(t *testing.T) {

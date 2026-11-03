@@ -253,6 +253,14 @@ func TestNormalizeInstance(t *testing.T) {
 		{"GHES host", "https://ghe.example.com", "https://ghe.example.com"},
 		{"uppercase host", "https://GitHub.com", "https://github.com"},
 		{"uppercase scheme", "HTTPS://github.com", "https://github.com"},
+		{"https default port", "https://GitHub.com:443/", "https://github.com"},
+		{"https padded default port", "https://github.com:0443", "https://github.com"},
+		{"http default port", "http://example.com:80/gitlab/", "http://example.com/gitlab"},
+		{"nondefault port", "https://example.com:8443/gitlab", "https://example.com:8443/gitlab"},
+		{"http nondefault port", "http://example.com:443", "http://example.com:443"},
+		{"ipv6 default port", "https://[2001:DB8::1]:443/", "https://[2001:db8::1]"},
+		{"ipv6 nondefault port", "https://[2001:DB8::1]:8443", "https://[2001:db8::1]:8443"},
+		{"IDN punycode", "https://XN--BCHER-KVA.example", "https://xn--bcher-kva.example"},
 		{"trailing slash", "https://github.com/", "https://github.com"},
 		{"gitlab prefix", "https://GitLab.example.com/gitlab/", "https://gitlab.example.com/gitlab"},
 		{"nested case-sensitive prefix", "https://gitlab.example.com/Services/GitLab///", "https://gitlab.example.com/Services/GitLab"},
@@ -285,6 +293,8 @@ func TestNormalizeInstance_Rejects(t *testing.T) {
 		"https://" + strings.Repeat("a", 246),
 		"https://example.com/" + strings.Repeat("a", 234),
 		"https://\xff.example",
+		"https://bücher.example",
+		"https://b%C3%BCcher.example",
 	} {
 		_, err := NormalizeInstance(raw)
 		assert.Error(t, err, "input %q must be rejected", raw)

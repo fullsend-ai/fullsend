@@ -126,7 +126,8 @@ func nonzeroFallback(fb Fallback) Fallback {
 // NormalizeInstance canonicalizes a forge web base URL to the D01 instance
 // form: lowercase scheme://host with an escaped, case-sensitive deployment
 // prefix and no trailing slashes, query, fragment, or user info. Only http
-// and https are accepted. Path segments and escape spelling are preserved
+// and https are accepted, default ports are removed, and hosts must be ASCII
+// (punycode for IDNs). Path segments and escape spelling are preserved
 // so distinct deployments cannot alias. All identity and envelope construction
 // must use the normalized form so independent launches converge.
 func NormalizeInstance(raw string) (string, error) {
@@ -150,7 +151,17 @@ func NormalizeInstance(raw string) (string, error) {
 	if scheme != "http" && scheme != "https" {
 		return "", fmt.Errorf("tracecontext: unsupported instance scheme %q", u.Scheme)
 	}
-	normalized := scheme + "://" + strings.ToLower(u.Host) + strings.TrimRight(u.EscapedPath(), "/")
+	for _, r := range u.Host {
+		if r >= utf8.RuneSelf {
+			return "", errors.New("tracecontext: instance host must be ASCII; use punycode for IDNs")
+		}
+	}
+	host := strings.ToLower(u.Host)
+	port := strings.TrimLeft(u.Port(), "0")
+	if scheme == "https" && port == "443" || scheme == "http" && port == "80" {
+		host = strings.TrimSuffix(host, ":"+u.Port())
+	}
+	normalized := scheme + "://" + host + strings.TrimRight(u.EscapedPath(), "/")
 	if len(normalized) > 253 {
 		return "", errors.New("tracecontext: instance must be at most 253 bytes")
 	}
