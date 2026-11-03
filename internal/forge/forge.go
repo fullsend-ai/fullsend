@@ -495,10 +495,16 @@ type Repository struct {
 
 // ChangeProposal represents a pull request or merge request.
 type ChangeProposal struct {
-	URL    string
-	Title  string
+	URL   string
+	Title string
+	// Number is the display number: GitHub's per-repo PR number or
+	// GitLab's per-project MR IID. It is not a stable identity.
 	Number int
-	Head   string
+	// ID is the immutable forge database ID of the change proposal:
+	// GitHub's REST pull-request id or GitLab's database merge-request
+	// id (not the IID). It is 0 when the adapter did not capture one.
+	ID   int64
+	Head string
 	// HeadRepo identifies the repository the head branch lives in, as
 	// "owner/repo" on both GitHub and GitLab (GitLab resolves a fork's
 	// numeric source project ID to its path_with_namespace). Empty when
@@ -573,7 +579,14 @@ type Annotation struct {
 
 // Issue represents a forge issue.
 type Issue struct {
+	// Number is the display number: GitHub's per-repo issue number or
+	// GitLab's per-project IID. It is not a stable identity.
 	Number int
+	// ID is the immutable forge database ID of the issue: GitHub's REST
+	// id or GitLab's database id (not the IID). It is 0 when the adapter
+	// did not capture one; trace admission treats that as unresolved
+	// identity rather than guessing.
+	ID     int64
 	Title  string
 	Body   string
 	URL    string

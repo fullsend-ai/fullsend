@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 	"time"
@@ -125,6 +126,7 @@ func (c *JiraClient) GetIssue(ctx context.Context, project string, number int) (
 		canonicalKey = key
 	}
 	return &Issue{
+		ID:           parseJiraIssueID(issue.ID),
 		Number:       number,
 		Title:        issue.Fields.Summary,
 		Body:         Body(jira.ADFToMarkdown(issue.Fields.Description)),
@@ -161,12 +163,26 @@ func (c *JiraClient) CreateIssue(ctx context.Context, project, title string, bod
 		return nil, err
 	}
 	return &Issue{
+		ID:     parseJiraIssueID(created.ID),
 		Number: number,
 		Title:  title,
 		Body:   body,
 		URL:    c.baseURL + "/browse/" + created.Key,
 		Key:    created.Key,
 	}, nil
+}
+
+// parseJiraIssueID converts a Jira issue ID string to the immutable int64
+// identity. Jira always returns numeric ID strings; an unparseable value
+// yields 0, which callers must treat as an unresolved identity rather than
+// guessing (FR-002), matching jirapoll's parseIssueID behavior.
+func parseJiraIssueID(id string) int64 {
+	n, err := strconv.ParseInt(id, 10, 64)
+	if err != nil {
+		log.Printf("WARNING: unparseable Jira issue id %q, using 0: %v", id, err)
+		return 0
+	}
+	return n
 }
 
 // issueNumberFromKey returns the numeric part of a Jira issue key, e.g.

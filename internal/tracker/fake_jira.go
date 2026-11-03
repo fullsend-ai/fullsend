@@ -129,6 +129,7 @@ func (f *FakeJiraClient) CreateIssue(_ context.Context, in jira.CreateIssueInput
 		issueType.Name = in.IssueType
 	}
 	f.Issues[key] = &jira.Issue{
+		ID:     fmt.Sprintf("%d", 10000+len(f.CreatedIssues)),
 		Key:    key,
 		Fields: jira.IssueFields{Summary: in.Summary, Description: description, IssueType: issueType},
 	}

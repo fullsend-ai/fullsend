@@ -781,6 +781,32 @@ func TestGetIssue(t *testing.T) {
 	assert.Equal(t, "new", issue.Fields.Status.StatusCategory.Key)
 }
 
+// TestGetIssue_CapturesProjectRef is V03 for AISDLC-576: the immutable
+// project database ID (the D01 Jira container identity) must survive issue
+// reads, distinct from the display project key.
+func TestGetIssue_CapturesProjectRef(t *testing.T) {
+	t.Parallel()
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/rest/api/3/issue/PROJ-42", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"id":  "10042",
+			"key": "PROJ-42",
+			"fields": map[string]any{
+				"summary": "Test issue",
+				"project": map[string]any{"id": "10000", "key": "PROJ"},
+			},
+		})
+	})
+
+	issue, err := client.GetIssue(ctx, "PROJ-42")
+	require.NoError(t, err)
+	require.NotNil(t, issue.Fields.Project, "project ref must be captured")
+	assert.Equal(t, "10000", issue.Fields.Project.ID, "immutable project database id")
+	assert.Equal(t, "PROJ", issue.Fields.Project.Key, "display project key")
+}
+
 func TestGetIssue_IssueTypeAndCustomFields(t *testing.T) {
 	t.Parallel()
 	client, mux := setupTest(t)

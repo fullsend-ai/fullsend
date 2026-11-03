@@ -58,7 +58,16 @@ type Body string
 
 // Issue represents an issue's content, independent of the tracker backend.
 type Issue struct {
+	// Number is the display number addressing the issue as (project,
+	// number): GitHub's per-repo issue number, GitLab's per-project IID,
+	// or the numeric suffix of a Jira key. It is not a stable identity.
 	Number int
+	// ID is the immutable issue database ID: GitHub's REST issue id,
+	// GitLab's database issue id (not the IID), or Jira's numeric issue
+	// id string parsed to an integer. It is 0 when the backend did not
+	// report one; trace admission treats that as unresolved identity
+	// rather than guessing.
+	ID     int64
 	Title  string
 	Body   Body
 	URL    string

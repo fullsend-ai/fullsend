@@ -349,6 +349,7 @@ export default defineConfig({
           items: [
             { text: "Config Reference", link: "/reference/config-reference" },
             { text: "Harness Field Reference", link: "/reference/harness-reference" },
+            { text: "Trace Context Reference", link: "/reference/trace-context" },
           ],
         },
         {
