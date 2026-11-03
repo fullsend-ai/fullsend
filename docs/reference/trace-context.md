@@ -42,7 +42,8 @@ trusted read must resolve the container before trace admission. Forge-backed
 tracker reads resolve their repository separately through `forge.Client`.
 GitHub cross-repository PR creation decodes `fullDatabaseId` directly into
 an `int64`, accepting numeric or string JSON without floating-point rounding;
-the deprecated 32-bit GraphQL `databaseId` is not used.
+the deprecated 32-bit GraphQL `databaseId` is not used. Missing or invalid
+IDs leave identity unresolved without discarding a successful PR creation.
 
 The installation ID is generated during key provisioning and identifies
 one install's key set. It is authenticated inside every envelope and must

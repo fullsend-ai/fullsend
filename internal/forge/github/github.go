@@ -2568,10 +2568,10 @@ func (c *LiveClient) CreateCrossRepoChangeProposal(ctx context.Context, baseOwne
 		Data struct {
 			CreatePullRequest struct {
 				PullRequest struct {
-					FullDatabaseID json.Number `json:"fullDatabaseId"`
-					Number         int         `json:"number"`
-					Title          string      `json:"title"`
-					URL            string      `json:"url"`
+					FullDatabaseID json.RawMessage `json:"fullDatabaseId"`
+					Number         int             `json:"number"`
+					Title          string          `json:"title"`
+					URL            string          `json:"url"`
 				} `json:"pullRequest"`
 			} `json:"createPullRequest"`
 		} `json:"data"`
@@ -2599,10 +2599,12 @@ func (c *LiveClient) CreateCrossRepoChangeProposal(ctx context.Context, baseOwne
 
 	pr := gqlResult.Data.CreatePullRequest.PullRequest
 	var id int64
-	if pr.FullDatabaseID != "" {
-		id, err = pr.FullDatabaseID.Int64()
+	var number json.Number
+	// An unusable optional ID must not discard an already-created PR.
+	if json.Unmarshal(pr.FullDatabaseID, &number) == nil {
+		id, err = number.Int64()
 		if err != nil || id < 1 {
-			return nil, fmt.Errorf("decode cross-repo pull request response: invalid fullDatabaseId %q", pr.FullDatabaseID)
+			id = 0
 		}
 	}
 	return &forge.ChangeProposal{

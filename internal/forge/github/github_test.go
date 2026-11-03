@@ -1057,27 +1057,31 @@ func TestCreateChangeProposal_Forbidden(t *testing.T) {
 }
 
 func TestCreateCrossRepoChangeProposal_FullWidthID(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, jsonID string
 		want         int64
-		wantErr      bool
 	}{
-		{"number", "9007199254740993", 9007199254740993, false},
-		{"string", `"9007199254740993"`, 9007199254740993, false},
-		{"max int64", `"9223372036854775807"`, 9223372036854775807, false},
-		{"null unresolved", "null", 0, false},
-		{"missing unresolved", "", 0, false},
-		{"overflow", `"9223372036854775808"`, 0, true},
-		{"negative", "-1", 0, true},
-		{"zero", "0", 0, true},
-		{"fractional", "1.5", 0, true},
-		{"nonnumeric", `"bad"`, 0, true},
+		{"number", "9007199254740993", 9007199254740993},
+		{"string", `"9007199254740993"`, 9007199254740993},
+		{"max int64", `"9223372036854775807"`, 9223372036854775807},
+		{"null unresolved", "null", 0},
+		{"missing unresolved", "", 0},
+		{"overflow", `"9223372036854775808"`, 0},
+		{"negative", "-1", 0},
+		{"zero", "0", 0},
+		{"fractional", "1.5", 0},
+		{"nonnumeric", `"bad"`, 0},
+		{"boolean", "true", 0},
+		{"object", `{}`, 0},
+		{"array", `[]`, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			calls := 0
+			getCalls, calls := 0, 0
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch {
 				case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/repos/"):
+					getCalls++
 					json.NewEncoder(w).Encode(map[string]string{"node_id": "NODE_repo"})
 				case r.Method == http.MethodPost && r.URL.Path == "/graphql":
 					calls++
@@ -1085,20 +1089,20 @@ func TestCreateCrossRepoChangeProposal_FullWidthID(t *testing.T) {
 					if tc.jsonID != "" {
 						id = `"fullDatabaseId":` + tc.jsonID + ","
 					}
-					fmt.Fprintf(w, `{"data":{"createPullRequest":{"pullRequest":{%s"number":99}}}}`, id)
+					fmt.Fprintf(w, `{"data":{"createPullRequest":{"pullRequest":{%s"number":99,"title":"title","url":"https://github.com/org/repo/pull/99"}}}}`, id)
 				default:
 					http.NotFound(w, r)
 				}
 			}))
 			defer srv.Close()
 			cp, err := newTestClient(t, srv).CreateCrossRepoChangeProposal(context.Background(), "org", "repo", "org", "fork", "title", "body", "feature", "main")
+			assert.Equal(t, 2, getCalls)
 			assert.Equal(t, 1, calls)
-			if tc.wantErr {
-				assert.Error(t, err)
-				return
-			}
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, cp.ID)
+			assert.Equal(t, 99, cp.Number)
+			assert.Equal(t, "title", cp.Title)
+			assert.Equal(t, "https://github.com/org/repo/pull/99", cp.URL)
 		})
 	}
 }
