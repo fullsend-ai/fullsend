@@ -158,7 +158,7 @@ references, never secret values.
 | `FULLSEND_GITLAB_CODER_TOKEN` | masked secret | Coder PAT. Provisioned by `repos install`. |
 | `FULLSEND_GITLAB_ROLE_<NAME>_TOKEN` | masked secret | Custom role PAT when `credential` is `own`. Provisioned when the role is registered. |
 | `FULLSEND_GITLAB_ROLE_REGISTRY` | unmasked variable | Administrator registry JSON. Absent or empty = built-ins only. |
-| `FULLSEND_GITLAB_ROLE_ROTATION` | unmasked variable | Per-role rotation state (lock, token IDs, expiry dates, phase). Never stores token values. |
+| `FULLSEND_GITLAB_ROLE_ROTATION` | unmasked variable | Per-role rotation state (lock, token IDs, expiry dates, phase, recorded account IDs including legacy project-access-token bot users). Never stores token values. See [Legacy project-access-token bot identities](#legacy-project-access-token-bot-identities). |
 | `FULLSEND_GITLAB_TRIGGER_ACCOUNT` | unmasked variable | Version 1 ledger for the trigger-only service account (phase, nonce, branch, and the account, bootstrap PAT, deploy key, branch-grant entry, and trigger token IDs, plus the SHA-256 digest of the trigger token and a `publication_pending` marker for an unfinished token replacement). Never stores token values or private keys. Written by `repos install` and removed by `repos uninstall` only after every resource it records is gone, so it is the durable cleanup obligation until then. See [Trigger-only service account](#trigger-only-service-account). |
 | `FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN` | masked, protected variable | The pipeline trigger token owned by the trigger-only service account. Written only after GitLab reports the variable masked, protected, and not file-typed; deleted before its token is revoked. Scheduled polling uses the account's job token, not this variable; while the dispatch activation is recorded, the managed webhook embeds this token ([#8509](https://github.com/fullsend-ai/fullsend/issues/8509)). See [Trigger-only service account](#trigger-only-service-account). |
 | `FULLSEND_GITLAB_DISPATCH_ACTIVATION` | protected, unmasked variable | Activation record for the trigger-account dispatch route: the ledger generation it was recorded for, no secrets. Written by `repos install` only after the dispatch activation gate passes; deleted first by every install, repair, rotation, containment pass and uninstall. A record that no longer matches the ledger is ignored. See the dispatch activation gate under [Trigger-only service account](#trigger-only-service-account). |
@@ -379,9 +379,17 @@ Rotation-state writes use schema version 2
 ([#8242](https://github.com/fullsend-ai/fullsend/issues/8242)). Version 2
 state adds managed service-account IDs and supplied-account
 ownership/exclusions to the `FULLSEND_GITLAB_ROLE_ROTATION` document and still
-never stores token values. Version 2 is the only version read: unversioned
-and version 1 state, unsupported future versions, and documents with unknown
-fields fail closed and are not rewritten
+never stores token values. Version 3
+([#9063](https://github.com/fullsend-ai/fullsend/issues/9063)) adds
+`legacy_bot_user_ids` (see
+[Legacy project-access-token bot identities](#legacy-project-access-token-bot-identities)).
+A document is written as version 3 only when it records that field; every
+other document is still written as version 2, so CLIs that read only
+version 2 keep working on projects without a recorded legacy bot and reject
+the rest by version. Versions 2 and 3 are the only versions read: unversioned
+and version 1 state, unsupported future versions, documents with unknown
+fields, and version 2 documents that carry `legacy_bot_user_ids` fail closed
+and are not rewritten
 ([#8246](https://github.com/fullsend-ai/fullsend/issues/8246)). Because older
 readers reject unknown fields, every schema change, additive ones included,
 must bump the state version. Version 1 is
@@ -437,7 +445,8 @@ enrollment. All token-client constructors used for installation and uninstall
 load these records through `ManagedLegacyTokenIDs`; live fallback creation
 records them through `LegacyTokenCreated` before publication. Failure to
 record creation revokes only the newly issued token using the creation call's
-authority.
+authority. Legacy tokens created this way also record their bot user; see
+[Legacy project-access-token bot identities](#legacy-project-access-token-bot-identities).
 
 `GitLabOutgoingTokenVerifier.ConfirmOutgoingTokenInactive` can retire an
 outgoing rotation obligation when an authoritative inventory positively
@@ -486,6 +495,53 @@ and retains supported legacy/supplied credentials on restricted instances.
 Quota exhaustion or insufficient permissions requires operator action; it
 must not delete unrelated accounts to make space. See the
 [GitLab API contract](https://docs.gitlab.com/api/service_accounts/).
+
+### Legacy project-access-token bot identities
+
+GitLab creates a bot user for every project access token, so a role
+provisioned or rotated through the legacy fallback acts as a bot account that
+`managed_user_id` and `supplied_user_id` do not record. ADR 0107 bot
+authorization ([#9063](https://github.com/fullsend-ai/fullsend/issues/9063))
+needs that account's exact numeric user ID. `RecordManagedGitLabLegacyToken`
+records it in the role's `legacy_bot_user_ids` (rotation state version 3)
+together with the creation record. The ID comes only from the `user_id` of
+the token-creation response. Repository files, harness files and event or
+merge-request content are never sources, and no ID is inferred from inventory
+or backfilled. A creation response without a user ID records nothing, and that
+bot stays unresolved. Each replacement adds its new bot user and keeps the
+earlier ones, so outgoing and incoming identities both resolve during the
+rotation overlap. Install, rotation, supplied enrollment and Poller
+generation transitions preserve the list like `created_token_ids`. The list
+stores account IDs only, never token values.
+
+The list is identity data, not ownership evidence. It never authorizes
+membership changes, token revocation or account deletion: those still use
+`created_token_ids`, `managed_user_id` and the supplied-account exclusions.
+Uninstall behaves as before. It revokes the same role tokens, leaves the
+shared `fullsend-bot` token alone, and drops the list from the
+exclusions-only document it retains, so that document is written as
+version 2. A legacy token minted before this field existed has no recorded bot
+until its role is rotated again, for example with `--rotate-gitlab-roles`.
+
+`repos.GitLabLegacyBotIdentities(registry, rotationState)` resolves the
+recorded bots against the trusted registry. Its inputs are the parsed
+`FULLSEND_GITLAB_ROLE_REGISTRY` and the raw `FULLSEND_GITLAB_ROLE_ROTATION`
+value. Unreadable state returns an error, so a lookup failure stays
+distinguishable from a successful lookup that records nothing. Each identity
+names the role whose state recorded it and is marked `Ambiguous` when no
+single canonical role can be derived from the account:
+
+- another registered role reuses the role's credential
+  (`Registry.CredentialSharers` is not empty), so the account acts for
+  several roles;
+- the role is no longer a registered own-credential role;
+- the same account is recorded for more than one role; or
+- the account is recorded as the owner of an administrator-supplied
+  credential.
+
+An ambiguous identity has no canonical role, and the resolver must deny it.
+The Analyst's several agents (review, triage, retro, …) belong to one
+registered role and do not make its credential ambiguous.
 
 ### Poller identity generations
 

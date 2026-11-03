@@ -274,6 +274,28 @@ func (r Registry) RoleFor(name string) (Registration, bool) {
 	return reg.Lookup(Role(key))
 }
 
+// CredentialSharers returns, in registry order, the other registered roles
+// whose credential is a reuse of role's own credential. Reuse is resolved
+// through chains, so a role that reuses a reusing role is included. The
+// result is empty when role is unregistered, does not own its credential,
+// or no other role reuses it. An account that authenticates with a shared
+// credential acts for every one of these roles, so account identity alone
+// cannot tell them apart.
+func (r Registry) CredentialSharers(role Role) []Role {
+	reg := r.effective()
+	owner, ok := reg.Lookup(role)
+	if !ok || owner.Credential.Kind != CredentialOwn {
+		return nil
+	}
+	var out []Role
+	for _, rec := range reg.roles {
+		if rec.Name != role && rec.Credential.Kind == CredentialReuse && rec.Credential.SecretName == owner.Credential.SecretName {
+			out = append(out, rec.Name)
+		}
+	}
+	return out
+}
+
 // ValidateAgent reports whether a custom agent (or harness role) may
 // use name. Unregistered names return ErrUnregistered. Empty names
 // return ErrUnknownJob.

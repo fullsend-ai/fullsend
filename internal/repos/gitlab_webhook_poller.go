@@ -727,14 +727,15 @@ func recordPollerReplacementDistribution(ctx context.Context, client forge.Clien
 		sort.Ints(excluded)
 	}
 	state.Roles[string(gitlabroles.RolePoller)] = rotationRoleState{
-		CreatedTokenIDs: uniqueInts(append(append([]int(nil), previous.CreatedTokenIDs...), tokenID)),
-		ManagedUserID:   previous.ManagedUserID,
-		Phase:           phase,
-		IncomingID:      tokenID,
-		OutgoingIDs:     outgoing,
-		DistributedAt:   now.UTC().Format(time.RFC3339),
-		ExpiresAt:       expiresAt,
-		ExcludedUserIDs: excluded,
+		CreatedTokenIDs:  uniqueInts(append(append([]int(nil), previous.CreatedTokenIDs...), tokenID)),
+		LegacyBotUserIDs: append([]int(nil), previous.LegacyBotUserIDs...),
+		ManagedUserID:    previous.ManagedUserID,
+		Phase:            phase,
+		IncomingID:       tokenID,
+		OutgoingIDs:      outgoing,
+		DistributedAt:    now.UTC().Format(time.RFC3339),
+		ExpiresAt:        expiresAt,
+		ExcludedUserIDs:  excluded,
 	}
 	return writeRotationState(ctx, client, owner, repo, state)
 }

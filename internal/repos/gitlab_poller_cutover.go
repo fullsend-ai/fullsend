@@ -460,13 +460,14 @@ func cutOverPollerGeneration(ctx context.Context, client forge.Client, to GitLab
 	// interrupted run or a failed marker write never leaves a durable record
 	// that claims a credential that was not installed.
 	next.Roles[string(gitlabroles.RolePoller)] = rotationRoleState{
-		CreatedTokenIDs: uniqueInts(append(append([]int(nil), old.CreatedTokenIDs...), tok.ID)),
-		ManagedUserID:   int(newUID),
-		Phase:           rotationPhaseDistributing,
-		IncomingID:      tok.ID,
-		OutgoingIDs:     outgoing,
-		ExpiresAt:       expiresAt,
-		ExcludedUserIDs: append([]int(nil), old.ExcludedUserIDs...),
+		CreatedTokenIDs:  uniqueInts(append(append([]int(nil), old.CreatedTokenIDs...), tok.ID)),
+		LegacyBotUserIDs: append([]int(nil), old.LegacyBotUserIDs...),
+		ManagedUserID:    int(newUID),
+		Phase:            rotationPhaseDistributing,
+		IncomingID:       tok.ID,
+		OutgoingIDs:      outgoing,
+		ExpiresAt:        expiresAt,
+		ExcludedUserIDs:  append([]int(nil), old.ExcludedUserIDs...),
 	}
 	if err := writeRotationState(ctx, client, owner, repo, next); err != nil {
 		return nil, contain(safeAPIError(fmt.Sprintf("recording the replacement GitLab Poller (user ID %d) in rotation state", newUID), err))

@@ -129,22 +129,24 @@ type RoleRotateResult struct {
 
 // rotationStateFile is the in-memory rotation-state document.
 // writeRotationState persists it inside a rotationStateEnvelope carrying
-// gitLabRoleRotationStateVersion; the version is wire metadata only.
+// rotationStateWireVersion; the version is wire metadata only.
 type rotationStateFile struct {
 	Roles map[string]rotationRoleState `json:"roles"`
 }
 
 // rotationStateEnvelope is the persisted rotation-state document.
-// writeRotationState always emits gitLabRoleRotationStateVersion, and
-// loadRotationState accepts no other version.
+// writeRotationState emits rotationStateWireVersion, and loadRotationState
+// accepts only versions gitLabRoleRotationStateBaseVersion through
+// gitLabRoleRotationStateVersion.
 type rotationStateEnvelope struct {
 	Version int                          `json:"version"`
 	Roles   map[string]rotationRoleState `json:"roles"`
 }
 
-// gitLabRoleRotationStateVersion is the rotation-state format version this
-// binary writes and the only version it reads. The legacy unversioned form
-// and version 1 are rejected (#8246).
+// gitLabRoleRotationStateVersion is the newest rotation-state format version
+// this binary reads and writes; gitLabRoleRotationStateBaseVersion is the
+// oldest it reads. The legacy unversioned form and version 1 are rejected
+// (#8246).
 //
 // Version 2 is the first version ever written with a version marker. It
 // carries the ownership fields (created_token_ids, managed_user_id,
@@ -164,7 +166,30 @@ type rotationStateEnvelope struct {
 // loadRotationState rejects unknown fields, so every schema change, additive
 // ones included, must bump this version: older readers reject a field they do
 // not know.
-const gitLabRoleRotationStateVersion = 2
+//
+// Version 3 adds legacy_bot_user_ids (#9063). It is written only when a
+// document records one; every other document is still written as version 2,
+// which is exactly the version 2 schema, so CLIs that read only version 2
+// keep working on projects without recorded legacy project-access-token bots
+// and reject the others by version before touching any credential. Both
+// versions are read.
+const gitLabRoleRotationStateVersion = 3
+
+// gitLabRoleRotationStateBaseVersion is the oldest rotation-state version this
+// binary reads, and the version it writes for documents that carry no field
+// introduced after it.
+const gitLabRoleRotationStateBaseVersion = 2
+
+// rotationStateWireVersion returns the version writeRotationState emits for
+// file: the base version unless a role records a field added by version 3.
+func rotationStateWireVersion(file rotationStateFile) int {
+	for _, rs := range file.Roles {
+		if len(rs.LegacyBotUserIDs) > 0 {
+			return gitLabRoleRotationStateVersion
+		}
+	}
+	return gitLabRoleRotationStateBaseVersion
+}
 
 // rotationRoleState is the persisted per-role rotation state. Every
 // field is omitempty so unused fields are not written.
@@ -182,6 +207,14 @@ type rotationRoleState struct {
 	// creation by Fullsend, so cleanup never revokes a token it did not
 	// mint.
 	CreatedTokenIDs []int `json:"created_token_ids,omitempty"`
+	// LegacyBotUserIDs records the numeric GitLab user IDs of the bot users
+	// of legacy project access tokens that Fullsend created for this role,
+	// taken only from the creation response (RecordManagedGitLabLegacyToken).
+	// They identify the role's legacy fallback identity for actor
+	// resolution (ADR 0107, #9063) and never authorize account management,
+	// token revocation or deletion; creation provenance for revocation
+	// stays in CreatedTokenIDs. Introduced by state version 3.
+	LegacyBotUserIDs []int `json:"legacy_bot_user_ids,omitempty"`
 	// ManagedUserID records a service account positively created by
 	// Fullsend for this role.
 	ManagedUserID int `json:"managed_user_id,omitempty"`
@@ -1446,8 +1479,22 @@ func loadRotationState(ctx context.Context, client forge.Client, owner, repo str
 	if err != nil {
 		return out, nil, err
 	}
-	if !exists || strings.TrimSpace(raw) == "" {
+	if !exists {
 		return out, nil, nil
+	}
+	file, err := parseRotationState(raw)
+	if err != nil {
+		return out, nil, err
+	}
+	return file, nil, nil
+}
+
+// parseRotationState decodes and validates a FULLSEND_GITLAB_ROLE_ROTATION
+// document. A blank document is empty state.
+func parseRotationState(raw string) (rotationStateFile, error) {
+	out := rotationStateFile{Roles: map[string]rotationRoleState{}}
+	if strings.TrimSpace(raw) == "" {
+		return out, nil
 	}
 	// Unknown fields are rejected: rewriting a document this binary cannot
 	// fully represent would silently drop them.
@@ -1455,21 +1502,21 @@ func loadRotationState(ctx context.Context, client forge.Client, owner, repo str
 	dec.DisallowUnknownFields()
 	var envelope rotationStateEnvelope
 	if err := dec.Decode(&envelope); err != nil {
-		return out, nil, fmt.Errorf("decode GitLab role rotation state: %w", err)
+		return out, fmt.Errorf("decode GitLab role rotation state: %w", err)
 	}
 	// A valid JSON prefix followed by anything else is a damaged document, not
 	// a smaller one: reading only the prefix could drop recorded exclusions.
 	var trailing json.RawMessage
 	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return out, nil, errors.New("decode GitLab role rotation state: unexpected data after the JSON document")
+		return out, errors.New("decode GitLab role rotation state: unexpected data after the JSON document")
 	}
 	// A missing "version" key decodes as 0, so the legacy unversioned form is
 	// rejected here along with version 1.
-	if envelope.Version >= 0 && envelope.Version < gitLabRoleRotationStateVersion {
-		return out, nil, fmt.Errorf("unsupported GitLab role rotation state version %d; this CLI reads only state version %d and no longer reads the legacy unversioned or version 1 format; converge the project once with a CLI that still reads it and writes version %d, then rerun; do not edit the state's version (see \"Upgrade compatibility\" in docs/cli/repos.md)", envelope.Version, gitLabRoleRotationStateVersion, gitLabRoleRotationStateVersion)
+	if envelope.Version >= 0 && envelope.Version < gitLabRoleRotationStateBaseVersion {
+		return out, fmt.Errorf("unsupported GitLab role rotation state version %d; this CLI reads only state versions %d and %d and no longer reads the legacy unversioned or version 1 format; converge the project once with a CLI that still reads it and writes version %d, then rerun; do not edit the state's version (see \"Upgrade compatibility\" in docs/cli/repos.md)", envelope.Version, gitLabRoleRotationStateBaseVersion, gitLabRoleRotationStateVersion, gitLabRoleRotationStateBaseVersion)
 	}
-	if envelope.Version != gitLabRoleRotationStateVersion {
-		return out, nil, fmt.Errorf("unsupported GitLab role rotation state version %d; upgrade to a CLI release or build that reads state version %d or later; do not downgrade the state or edit its version (see \"Upgrade compatibility\" in docs/cli/repos.md)", envelope.Version, gitLabRoleRotationStateVersion)
+	if envelope.Version < gitLabRoleRotationStateBaseVersion || envelope.Version > gitLabRoleRotationStateVersion {
+		return out, fmt.Errorf("unsupported GitLab role rotation state version %d; upgrade to a CLI release or build that reads state version %d or later; do not downgrade the state or edit its version (see \"Upgrade compatibility\" in docs/cli/repos.md)", envelope.Version, max(envelope.Version, gitLabRoleRotationStateVersion))
 	}
 	file := rotationStateFile{Roles: envelope.Roles}
 	if file.Roles == nil {
@@ -1486,20 +1533,30 @@ func loadRotationState(ctx context.Context, client forge.Client, owner, repo str
 						continue
 					}
 				}
-				return out, nil, fmt.Errorf("invalid GitLab role rotation state %s.%s: %w", role, field, err)
+				return out, fmt.Errorf("invalid GitLab role rotation state %s.%s: %w", role, field, err)
+			}
+		}
+		// A version 2 document cannot carry a version 3 field: no version 2
+		// writer emits it, and version 2 readers reject it.
+		if len(rs.LegacyBotUserIDs) > 0 && envelope.Version < gitLabRoleRotationStateVersion {
+			return out, fmt.Errorf("invalid GitLab role rotation state %s.legacy_bot_user_ids: field requires state version %d", role, gitLabRoleRotationStateVersion)
+		}
+		for _, id := range rs.LegacyBotUserIDs {
+			if id <= 0 {
+				return out, fmt.Errorf("invalid GitLab role rotation state %s.legacy_bot_user_ids: account IDs must be positive", role)
 			}
 		}
 	}
-	return file, nil, nil
+	return file, nil
 }
 
-// writeRotationState persists file as a gitLabRoleRotationStateVersion
-// document. Every write carries the version marker.
+// writeRotationState persists file with the version marker
+// rotationStateWireVersion selects. Every write carries the version marker.
 func writeRotationState(ctx context.Context, client forge.Client, owner, repo string, file rotationStateFile) error {
 	if file.Roles == nil {
 		file.Roles = map[string]rotationRoleState{}
 	}
-	raw, err := json.Marshal(rotationStateEnvelope{Version: gitLabRoleRotationStateVersion, Roles: file.Roles})
+	raw, err := json.Marshal(rotationStateEnvelope{Version: rotationStateWireVersion(file), Roles: file.Roles})
 	if err != nil {
 		return err
 	}
@@ -1581,6 +1638,11 @@ func mergeRoleState(ctx context.Context, client forge.Client, owner, repo string
 	// Only creation recording or state retirement changes account ownership.
 	if created := uniqueInts(append(append([]int(nil), rs.CreatedTokenIDs...), state.Roles[string(role)].CreatedTokenIDs...)); len(created) > 0 {
 		rs.CreatedTokenIDs = created
+	}
+	// Legacy bot identities are recorded with creation provenance, so the same
+	// rule applies: a stale snapshot never drops one.
+	if bots := uniqueInts(append(append([]int(nil), rs.LegacyBotUserIDs...), state.Roles[string(role)].LegacyBotUserIDs...)); len(bots) > 0 {
+		rs.LegacyBotUserIDs = bots
 	}
 	rs.ManagedUserID = state.Roles[string(role)].ManagedUserID
 	state.Roles[string(role)] = rs
@@ -1680,14 +1742,15 @@ func recordReplacementDistribution(ctx context.Context, client forge.Client, own
 	// The replacement is fullsend-minted, but the exclusion of any
 	// administrator-owned account the previous entry recorded must survive.
 	replacement := rotationRoleState{
-		CreatedTokenIDs: uniqueInts(append(append([]int(nil), previous.CreatedTokenIDs...), tokenID)),
-		ManagedUserID:   previous.ManagedUserID,
-		Phase:           phase,
-		IncomingID:      tokenID,
-		OutgoingIDs:     outgoing,
-		DistributedAt:   now.UTC().Format(time.RFC3339),
-		ExpiresAt:       expiresAt,
-		ExcludedUserIDs: append([]int(nil), previous.ExcludedUserIDs...),
+		CreatedTokenIDs:  uniqueInts(append(append([]int(nil), previous.CreatedTokenIDs...), tokenID)),
+		LegacyBotUserIDs: append([]int(nil), previous.LegacyBotUserIDs...),
+		ManagedUserID:    previous.ManagedUserID,
+		Phase:            phase,
+		IncomingID:       tokenID,
+		OutgoingIDs:      outgoing,
+		DistributedAt:    now.UTC().Format(time.RFC3339),
+		ExpiresAt:        expiresAt,
+		ExcludedUserIDs:  append([]int(nil), previous.ExcludedUserIDs...),
 		// Poller identity generations describe accounts, not this credential.
 		GenerationCurrentUserID:  previous.GenerationCurrentUserID,
 		GenerationPendingUserID:  previous.GenerationPendingUserID,
