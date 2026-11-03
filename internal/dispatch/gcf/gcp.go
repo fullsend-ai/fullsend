@@ -910,7 +910,7 @@ var iamRetryDelay = func(attempt int) time.Duration {
 	delay := min(baseDelay<<uint(attempt), maxDelay) // 500ms, 1s, 2s, 4s, 8s, 10s, …
 	// Jitter: randomise between 50-100% of the delay.
 	half := delay / 2
-	return half + time.Duration(randutil.RandomInt64N(int64(half)+1))
+	return half + time.Duration(randutil.Int64N(int64(half)+1))
 }
 
 // SetProjectIAMBinding sets an IAM binding on a GCP project.

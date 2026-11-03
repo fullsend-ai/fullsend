@@ -1151,7 +1151,7 @@ func runOpenAIRefresh(ctx context.Context, h openAIProviderHandle, printer *ui.P
 	for {
 		jitter := time.Duration(0)
 		if openAIRefreshJitter > 0 {
-			jitter = time.Duration(randutil.RandomInt64N(int64(openAIRefreshJitter)))
+			jitter = time.Duration(randutil.Int64N(int64(openAIRefreshJitter)))
 		}
 		now := wallNowFn()
 		delay := openAIRefreshDelay(expiresAt, now, jitter)

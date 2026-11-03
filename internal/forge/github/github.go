@@ -478,7 +478,7 @@ func (c *LiveClient) doRequest(ctx context.Context, method, path string, content
 				}
 				base := time.Duration(math.Pow(2, float64(attempt))) * time.Second
 				half := base / 2
-				delay := half + time.Duration(randutil.RandomInt64N(int64(half)+1))
+				delay := half + time.Duration(randutil.Int64N(int64(half)+1))
 				select {
 				case <-c.afterFunc(delay):
 				case <-ctx.Done():
@@ -716,7 +716,7 @@ func retryDelay(resp *http.Response, attempt int) time.Duration {
 	// Add jitter: randomize between 50-100% of base to desynchronize
 	// concurrent callers (e.g. parallel e2e test runners).
 	half := base / 2
-	return half + time.Duration(randutil.RandomInt64N(int64(half)+1))
+	return half + time.Duration(randutil.Int64N(int64(half)+1))
 }
 
 // checkStatus verifies the response has an acceptable status code and returns
@@ -1564,7 +1564,7 @@ func retryCommitOp[T any](ctx context.Context, c *LiveClient, label string, op f
 	var err error
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		if attempt > 0 {
-			jitter := time.Duration(100+randutil.RandomIntN(400)) * time.Millisecond
+			jitter := time.Duration(100+randutil.IntN(400)) * time.Millisecond
 			select {
 			case <-ctx.Done():
 				var zero T

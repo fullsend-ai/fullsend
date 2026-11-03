@@ -255,7 +255,7 @@ func newManifestMode(dir string) (os.FileMode, error) {
 // createManifestTemp exclusively creates a temp file in dir with the given
 // mode filtered by the process umask.
 func createManifestTemp(dir string, mode os.FileMode) (*os.File, error) {
-	return createManifestTempWithRandom(dir, mode, randutil.RandomUint64)
+	return createManifestTempWithRandom(dir, mode, randutil.Uint64)
 }
 
 func createManifestTempWithRandom(dir string, mode os.FileMode, nextRandom func() uint64) (*os.File, error) {

@@ -212,7 +212,7 @@ func defaultRetryDelay(attempt int) time.Duration {
 	)
 	delay := min(baseDelay<<uint(attempt), maxDelay) // 1s, 2s, 4s, 10s
 	half := delay / 2
-	return half + time.Duration(randutil.RandomInt64N(int64(half)+1))
+	return half + time.Duration(randutil.Int64N(int64(half)+1))
 }
 
 // isRetryableTransportError reports whether a client.Do error is

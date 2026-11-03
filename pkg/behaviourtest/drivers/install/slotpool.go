@@ -355,7 +355,7 @@ func (l lease) owns(repo *forge.Repository) bool {
 
 // newLeaseDescription returns SlotRepoDescription with a unique nonce.
 func newLeaseDescription() string {
-	return fmt.Sprintf("%s%s%016x%016x", SlotRepoDescription, leaseDescriptionSep, randutil.RandomUint64(), randutil.RandomUint64())
+	return fmt.Sprintf("%s%s%016x%016x", SlotRepoDescription, leaseDescriptionSep, randutil.Uint64(), randutil.Uint64())
 }
 
 // newSlotAllocator returns an allocator over layout that resolves
@@ -376,7 +376,7 @@ func newSlotAllocator(layout PoolLayout, clientFor OrgClientFunc, logf func(stri
 		logf:      logf,
 		now:       time.Now,
 		shuffle: func(s []Slot) {
-			randutil.RandomShuffle(len(s), func(i, j int) { s[i], s[j] = s[j], s[i] })
+			randutil.Shuffle(len(s), func(i, j int) { s[i], s[j] = s[j], s[i] })
 		},
 		held:         make(map[Slot]lease),
 		blockedUntil: make(map[string]time.Time),

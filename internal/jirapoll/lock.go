@@ -119,7 +119,7 @@ func (p *Poller) attemptLock(ctx context.Context, issueKey, lockID string) (bool
 	}
 
 	// Jitter sleep: 500-1500ms to allow concurrent pollers to write.
-	jitter := time.Duration(500+randutil.RandomIntN(1000)) * time.Millisecond
+	jitter := time.Duration(500+randutil.IntN(1000)) * time.Millisecond
 	p.sleepFn(ctx, jitter)
 
 	// Re-read and verify our UUID still holds.

@@ -405,7 +405,7 @@ func selectRandom(items []jira.Issue, n int) []jira.Issue {
 	if len(items) <= n {
 		return items
 	}
-	randutil.RandomShuffle(len(items), func(i, j int) {
+	randutil.Shuffle(len(items), func(i, j int) {
 		items[i], items[j] = items[j], items[i]
 	})
 	return items[:n]

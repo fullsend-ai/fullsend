@@ -109,7 +109,7 @@ func groupWorkflowHostRepos(orgs []string, slotsPerOrg int) string {
 // pickStatusOrg picks the org whose mint-status team every mint of the
 // job authorizes. Overridable in tests.
 var pickStatusOrg = func(orgs []string) string {
-	return orgs[randutil.RandomIntN(len(orgs))]
+	return orgs[randutil.IntN(len(orgs))]
 }
 
 // planCFMints builds the CF mint drivers' plan for layout: packed

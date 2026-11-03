@@ -620,7 +620,7 @@ func runGatewayRefresh(ctx context.Context, h gatewayProviderHandle, printer *ui
 	var warnedHeldExpiry time.Time
 	for {
 		now := wallNowFn()
-		delay, fits := gatewayRefreshDelay(st.issuedAt.Round(0), st.expiresAt.Round(0), now, randutil.RandomFloat64())
+		delay, fits := gatewayRefreshDelay(st.issuedAt.Round(0), st.expiresAt.Round(0), now, randutil.Float64())
 		refreshAt := now.Add(delay)
 		if st.handOffPending && delay > gatewayRefreshBackoff {
 			if !waitWallClock(ctx, gatewayRefreshBackoff, now.Add(gatewayRefreshBackoff)) {

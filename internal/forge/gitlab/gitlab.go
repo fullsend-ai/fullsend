@@ -288,7 +288,7 @@ func retryDelay(resp *http.Response, attempt int) time.Duration {
 	}
 	base := time.Duration(math.Pow(2, float64(attempt))) * time.Second
 	half := base / 2
-	return half + time.Duration(randutil.RandomInt64N(int64(half)+1))
+	return half + time.Duration(randutil.Int64N(int64(half)+1))
 }
 
 func checkStatus(resp *http.Response, acceptable ...int) error {

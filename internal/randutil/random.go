@@ -1,3 +1,4 @@
+// Package randutil provides cryptographically secure random number utilities.
 package randutil
 
 import (
@@ -7,11 +8,11 @@ import (
 	"math/big"
 )
 
-// RandomInt64N returns a cryptographically random integer in [0, n).
+// Int64N returns a cryptographically random integer in [0, n).
 // It panics when n is not positive or the system random source fails.
-func RandomInt64N(n int64) int64 {
+func Int64N(n int64) int64 {
 	if n <= 0 {
-		panic("randutil: RandomInt64N called with non-positive bound")
+		panic("randutil: Int64N called with non-positive bound")
 	}
 	v, err := rand.Int(rand.Reader, big.NewInt(n))
 	if err != nil {
@@ -20,11 +21,11 @@ func RandomInt64N(n int64) int64 {
 	return v.Int64()
 }
 
-// RandomIntN returns a cryptographically random integer in [0, n).
+// IntN returns a cryptographically random integer in [0, n).
 // It panics when n is not positive or the system random source fails.
-func RandomIntN(n int) int {
+func IntN(n int) int {
 	if n <= 0 {
-		panic("randutil: RandomIntN called with non-positive bound")
+		panic("randutil: IntN called with non-positive bound")
 	}
 	v, err := rand.Int(rand.Reader, big.NewInt(int64(n)))
 	if err != nil {
@@ -33,9 +34,9 @@ func RandomIntN(n int) int {
 	return int(v.Int64())
 }
 
-// RandomUint64 returns a cryptographically random uint64.
+// Uint64 returns a cryptographically random uint64.
 // It panics if the system random source fails.
-func RandomUint64() uint64 {
+func Uint64() uint64 {
 	return randomUint64(rand.Read)
 }
 
@@ -51,19 +52,19 @@ func randomUint64(read func([]byte) (int, error)) uint64 {
 	return binary.BigEndian.Uint64(b[:])
 }
 
-// RandomFloat64 returns a cryptographically random number in [0, 1).
-func RandomFloat64() float64 {
-	return math.Ldexp(float64(RandomUint64()>>11), -53)
+// Float64 returns a cryptographically random number in [0, 1).
+func Float64() float64 {
+	return math.Ldexp(float64(Uint64()>>11), -53)
 }
 
-// RandomShuffle pseudo-randomizes the order of n elements using Fisher-Yates.
+// Shuffle pseudo-randomizes the order of n elements using Fisher-Yates.
 // It panics if n is negative or the system random source fails.
-func RandomShuffle(n int, swap func(i, j int)) {
+func Shuffle(n int, swap func(i, j int)) {
 	if n < 0 {
-		panic("randutil: RandomShuffle called with negative length")
+		panic("randutil: Shuffle called with negative length")
 	}
 	for i := n - 1; i > 0; i-- {
-		j := RandomIntN(i + 1)
+		j := IntN(i + 1)
 		swap(i, j)
 	}
 }

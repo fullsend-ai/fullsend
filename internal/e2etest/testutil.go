@@ -130,7 +130,7 @@ func acquireOrg(ctx context.Context, cfg envConfig, runID string, pool []string,
 	// same first org (thundering herd).
 	shuffled := make([]string, len(pool))
 	copy(shuffled, pool)
-	randutil.RandomShuffle(len(shuffled), func(i, j int) { shuffled[i], shuffled[j] = shuffled[j], shuffled[i] })
+	randutil.Shuffle(len(shuffled), func(i, j int) { shuffled[i], shuffled[j] = shuffled[j], shuffled[i] })
 
 	// First pass: try each org without waiting. If a lock exists but is
 	// stale (older than staleLockTimeout), force-acquire it so we don't
@@ -294,7 +294,7 @@ func acquireOrgWithClient(ctx context.Context, client forge.Client, token, runID
 func acquireOrgFromClient(ctx context.Context, client forge.Client, token, runID string, pool []string, timeout time.Duration, logf func(string, ...any)) (string, string, error) {
 	shuffled := make([]string, len(pool))
 	copy(shuffled, pool)
-	randutil.RandomShuffle(len(shuffled), func(i, j int) { shuffled[i], shuffled[j] = shuffled[j], shuffled[i] })
+	randutil.Shuffle(len(shuffled), func(i, j int) { shuffled[i], shuffled[j] = shuffled[j], shuffled[i] })
 
 	sawRateLimit := false
 	for _, org := range shuffled {
