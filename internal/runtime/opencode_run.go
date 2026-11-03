@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -98,6 +99,14 @@ func openCodeBareModelID(spec string) string {
 // piHooksMissingExit).
 const openCodeHooksMissingExit = 97
 
+// openCodeHookActivationMissingExit is returned when the hash-checked adapter
+// was not actually loaded by the OpenCode process for this iteration.
+const openCodeHookActivationMissingExit = 99
+
+// openCodeRandomReadFn calls crypto/rand.Read. Override in tests to exercise
+// activation-token generation failures.
+var openCodeRandomReadFn = rand.Read
+
 const (
 	openCodeBinaryVar             = "FULLSEND_OPENCODE_BIN"
 	openCodeNodeVar               = "FULLSEND_OPENCODE_NODE"
@@ -138,9 +147,10 @@ var openCodeEnvDataDrop = []string{
 // them and ClearIterationArtifacts wipes them each iteration (a stale rc
 // could otherwise mask a prelude failure).
 const (
-	openCodeOutputSubdir = "output"
-	openCodeRunnerSubdir = "runner-state"
-	openCodeRunRCFile    = "runner-state/opencode-run-rc"
+	openCodeOutputSubdir       = "output"
+	openCodeRunnerSubdir       = "runner-state"
+	openCodeRunRCFile          = "runner-state/opencode-run-rc"
+	openCodeHookActivationFile = "runner-state/opencode-hook-activation"
 )
 
 // openCodeSandboxTranscriptPath is the sandbox file Run tees the --format json
@@ -235,7 +245,12 @@ func buildOpenCodeRunCommand(params RunParams, agentName string, trustedEnv open
 	if hooksEnabled {
 		// Re-verify the adapter and export its runner-held hook environment
 		// only after untrusted environment handling.
-		prelude = append(prelude, "&& "+openCodeHookGuard(trustedEnv.Hooks), "&& "+openCodeHookEnvExport(trustedEnv.Hooks))
+		prelude = append(prelude,
+			"&& "+openCodeHookFunctionsUnset,
+			"&& "+openCodeHookGuard(trustedEnv.Hooks),
+			"&& \"$"+openCodeRmVar+"\" -f -- "+shellQuote(sandbox.SandboxWorkspace+"/"+openCodeHookActivationFile),
+			"&& "+openCodeHookEnvExport(trustedEnv.Hooks),
+		)
 	}
 
 	invocation := []string{
@@ -282,15 +297,24 @@ func buildOpenCodeRunCommand(params RunParams, agentName string, trustedEnv open
 	// opencode's is saved to rcFile and re-raised (POSIX sh, no pipefail in
 	// dash). The pipeline only runs if the prelude succeeded, so a stale rc
 	// file cannot mask a prelude failure.
-	return strings.Join(prelude, " ") + " && " + openCodeExitPipeline(invocation, rcFile, sandboxTranscript)
+	var activation *openCodeHookActivation
+	if hooksEnabled && trustedEnv.Hooks != nil {
+		activation = trustedEnv.Hooks.Activation
+	}
+	return strings.Join(prelude, " ") + " && " + openCodeExitPipeline(invocation, rcFile, sandboxTranscript, activation)
 }
 
-func openCodeExitPipeline(invocation []string, rcFile, transcript string) string {
+func openCodeExitPipeline(invocation []string, rcFile, transcript string, activation *openCodeHookActivation) string {
 	pipeline := "{ " + strings.Join(invocation, " ") + ` ; "$` + openCodePrintfVar + `" '%s\n' "$?" > ` + shellQuote(rcFile) + " ; }" +
 		` | "$` + openCodeTeeVar + `" ` + shellQuote(transcript)
+	activationGuard := ""
+	if activation != nil {
+		activationGuard = ` && if [ "$FULLSEND_OPENCODE_RC" -eq 0 ]; then ` + openCodeHookActivationGuard(activation) + `; fi`
+	}
 	return pipeline +
 		` && FULLSEND_OPENCODE_RC="$("$` + openCodeCatVar + `" ` + shellQuote(rcFile) + ` 2>/dev/null)"` +
 		` && case "$FULLSEND_OPENCODE_RC" in ''|*[!0-9]*) FULLSEND_OPENCODE_RC=1;; esac` +
+		activationGuard +
 		` && exit "$FULLSEND_OPENCODE_RC"`
 }
 
@@ -450,6 +474,15 @@ func (r OpenCodeRuntime) Run(ctx context.Context, params RunParams, printer *ui.
 	if trustedEnv.Hooks == nil || (params.HooksSettingsPath != "" && !openCodeHasHookPlan(trustedEnv.Hooks)) {
 		return -1, fmt.Errorf("opencode run: hook policy was not installed during bootstrap")
 	}
+	if trustedEnv.Hooks != nil {
+		activation, err := newOpenCodeHookActivation()
+		if err != nil {
+			return -1, err
+		}
+		hooks := *trustedEnv.Hooks
+		hooks.Activation = activation
+		trustedEnv.Hooks = &hooks
+	}
 	if trustedEnv.AgentDefinition != "" {
 		if err := r.restoreOpenCodeAgent(params.SandboxName, agentName, trustedEnv); err != nil {
 			return -1, fmt.Errorf("opencode run: %w", err)
@@ -541,6 +574,9 @@ func (r OpenCodeRuntime) Run(ctx context.Context, params RunParams, printer *ui.
 	if exitCode == openCodeHooksMissingExit && params.HooksSettingsPath != "" {
 		return exitCode, fmt.Errorf("opencode hook adapter missing or modified in %s; refusing to run unhooked (was Bootstrap run, or did the agent change it?)", r.ConfigDir())
 	}
+	if exitCode == openCodeHookActivationMissingExit {
+		return exitCode, fmt.Errorf("opencode hook plugin did not activate for this iteration; refusing to run unhooked")
+	}
 
 	// A corrupt or truncated stream must not pass as a successful run.
 	if exitCode == 0 && streamParseErr != nil {
@@ -560,6 +596,17 @@ func (r OpenCodeRuntime) Run(ctx context.Context, params RunParams, printer *ui.
 		return 1, nil
 	}
 	return exitCode, nil
+}
+
+func newOpenCodeHookActivation() (*openCodeHookActivation, error) {
+	token := make([]byte, 32)
+	if _, err := openCodeRandomReadFn(token); err != nil {
+		return nil, fmt.Errorf("generating OpenCode hook activation token: %w", err)
+	}
+	return &openCodeHookActivation{
+		Path:  sandbox.SandboxWorkspace + "/" + openCodeHookActivationFile,
+		Token: hex.EncodeToString(token),
+	}, nil
 }
 
 // Clear mutable overrides without removing the vetted adapter or harness skills.

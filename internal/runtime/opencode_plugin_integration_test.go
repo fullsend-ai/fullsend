@@ -55,9 +55,16 @@ func TestOpenCodeNativeHooks(t *testing.T) {
 		"error-rewrite", "error-canary", "error-scanner-failure", "nested-error", "repo-config-isolation",
 		"bash-failed-verification", "trusted-file-patterns"} {
 		t.Run(scenario, func(t *testing.T) {
-			runOpenCodeHookProbe(t, binary, gotVersion, scenario)
+			runOpenCodeHookProbe(t, binary, gotVersion, scenario, openCodeHookProbeDeadline(scenario))
 		})
 	}
+}
+
+func openCodeHookProbeDeadline(scenario string) time.Duration {
+	if scenario == "repo-config-isolation" {
+		return 10 * time.Second
+	}
+	return 6 * time.Second
 }
 
 type openCodeProbeEvent struct {
@@ -73,7 +80,7 @@ type openCodeProbeCall struct {
 	args map[string]any
 }
 
-func runOpenCodeHookProbe(t *testing.T, binary, version, scenario string) {
+func runOpenCodeHookProbe(t *testing.T, binary, version, scenario string, deadline time.Duration) {
 	t.Helper()
 	dir := t.TempDir()
 	work := filepath.Join(dir, "workspace")
@@ -148,6 +155,9 @@ func runOpenCodeHookProbe(t *testing.T, binary, version, scenario string) {
 		policy.Env["PATH"] = filepath.Join(work, "bin") + string(os.PathListSeparator) + policy.Env["PATH"]
 	}
 	policy.Groups = security.HookPlan(hooks)
+	if !nativeOnly {
+		policy.Activation = &openCodeHookActivation{Path: filepath.Join(dir, "plugin-activation"), Token: "native-hook-probe-" + scenario}
+	}
 	require.NoError(t, os.MkdirAll(policy.Dir, 0o700))
 	for file, content := range security.HookFiles(hooks) {
 		require.NoError(t, os.WriteFile(filepath.Join(policy.Dir, file), content, 0o600))
@@ -333,7 +343,7 @@ func runOpenCodeHookProbe(t *testing.T, binary, version, scenario string) {
 	configJSON, err := json.Marshal(config)
 	require.NoError(t, err)
 	eventsPath := filepath.Join(dir, "events.jsonl")
-	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), deadline)
 	defer cancel()
 	args := []string{"--print-logs", "--log-level", "DEBUG", "run", "--format", "json", "--model", "probe/model", "--agent", "probe-parent"}
 	if strings.HasPrefix(version, "2.") {
@@ -371,10 +381,12 @@ func runOpenCodeHookProbe(t *testing.T, binary, version, scenario string) {
 		cmd.Env = append(cmd.Env, "OPENCODE_PURE=true")
 	}
 	output, err := cmd.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("native hook scenario %q exceeded %s; output:\n%s", scenario, deadline, output)
+	}
 	if !stopBeforeSend {
 		require.NoError(t, err, "native probe failed: %s", output)
 	}
-	require.NoError(t, ctx.Err(), "probe must terminate without a timeout")
 
 	mu.Lock()
 	captured := bytes.Join(requests, []byte("\n"))
@@ -408,6 +420,11 @@ func runOpenCodeHookProbe(t *testing.T, binary, version, scenario string) {
 		require.NotEmpty(t, event.SessionID)
 		require.NotEmpty(t, event.CallID)
 		events = append(events, event)
+	}
+	if !nativeOnly {
+		activation, err := os.ReadFile(policy.Activation.Path)
+		require.NoError(t, err, "production hook plugin was not activated; output: %s", output)
+		assert.Equal(t, policy.Activation.Token, string(activation))
 	}
 	if errorProbe {
 		var phases []string
