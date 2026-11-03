@@ -96,7 +96,7 @@ func TestOpenCodeBootstrapHookPlan(t *testing.T) {
 		assert.Equal(t, content, storedUpload(t, store, env.Hooks.Dir+"/"+name))
 	}
 	assert.Contains(t, openCodeHookEnvExport(env.Hooks), "FULLSEND_CANARY_TOKEN")
-	assert.Contains(t, openCodeHookEnvExport(env.Hooks), "FULLSEND_TRACE_ID=trace-id")
+	assert.Contains(t, openCodeHookEnvExport(env.Hooks), `"FULLSEND_TRACE_ID":"trace-id"`)
 }
 
 func TestReadOpenCodeTraceID(t *testing.T) {
@@ -124,7 +124,7 @@ func TestOpenCodeBootstrapHookFailure(t *testing.T) {
 		{"OpenCode plugin SDK missing", "preparing OpenCode plugin SDK cache"},
 		{"'/sandbox/opencode-config/plugins/fullsend-hooks.ts'", "installing OpenCode hook adapter"},
 		{"refusing to run unhooked", "verifying OpenCode hooks before agent verification"},
-		{"opencode debug agent", "opencode debug agent"},
+		{"debug agent", "opencode debug agent"},
 	} {
 		t.Run(tt.failure, func(t *testing.T) {
 			work := t.TempDir()

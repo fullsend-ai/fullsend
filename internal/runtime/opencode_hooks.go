@@ -68,11 +68,14 @@ func (r OpenCodeRuntime) installOpenCodeHooks(input BootstrapInput, def *piAgent
 		if err := installHookScripts(name, cfg.Dir, hooks); err != nil {
 			return nil, err
 		}
-		python, _, err := hookPreflightInterpreter(name)
+		python, trustedPath, err := hookPreflightInterpreter(name)
 		if err != nil {
 			return nil, err
 		}
-		cfg.Python, cfg.Env["PATH"] = python, "/usr/local/bin:/usr/bin:/bin"
+		if trustedPath == "" {
+			return nil, fmt.Errorf("resolving the PATH for the OpenCode hooks: empty trusted PATH")
+		}
+		cfg.Python, cfg.Env["PATH"] = python, trustedPath
 		env, err := readHarnessHookEnv(name)
 		if err != nil {
 			return nil, err

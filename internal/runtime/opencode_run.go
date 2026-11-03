@@ -19,7 +19,6 @@ import (
 // provider/model form; provider/model specs pass through. The default provider
 // is the Vertex-backed Anthropic one OPENCODE_CONFIG_CONTENT registers.
 const (
-	openCodeBinaryPath      = "/usr/local/bin/opencode"
 	openCodeDefaultProvider = "google-vertex-anthropic"
 	openCodeDefaultModel    = "opus"
 	// openCodeVertexVersionSuffix is appended to bare ids on
@@ -300,6 +299,13 @@ func openCodeExitPipeline(invocation []string, rcFile, transcript string) string
 // is an ELF binary, so openCodeNodeVar is pinned empty there.
 func openCodeBinaryPin() string {
 	return binaryPin(openCodeBinaryVar, openCodeNodeVar, "opencode")
+}
+
+// openCodePinnedCommand runs a Bootstrap-time OpenCode command through the
+// same trusted-PATH pin that Run uses. Bootstrap must not verify a binary that
+// a later iteration cannot safely launch.
+func openCodePinnedCommand(env, args string) string {
+	return openCodeBinaryPin() + " && " + env + cliLaunch(openCodeBinaryVar, openCodeNodeVar) + args
 }
 
 // openCodeCloudLocationExport exports GOOGLE_CLOUD_LOCATION only when

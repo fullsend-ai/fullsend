@@ -169,7 +169,7 @@ export default async ({ directory, worktree }) => {
   let cfg;
   try { cfg = JSON.parse(process.env.FULLSEND_OPENCODE_HOOK_CONFIG ?? "null"); } catch { /* all calls fail closed below */ }
   const cwd = directory ?? process.cwd();
-  const permissionRoot = worktree ?? cwd;
+  const permissionRoot = resolved(worktree ?? cwd);
   // Never inherit loader, Python, pager, provider or agent-modified variables.
   const env = { PATH: "/usr/local/bin:/usr/bin:/bin", ...cfg?.env };
   const blockReason = (script, reason) => {

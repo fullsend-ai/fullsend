@@ -44,9 +44,9 @@ if [ "$2" = "exec" ]; then
     "test -f '/tmp/fs-upload-"*)
       sh -c 'mkdir() { :; }; mv() { shift; shift; cp -- "$1" '\''` + storeDir + `/'\''"$(printf "%s" "$2" | tr / _)"; }; '"$last"
       exit $? ;;
-    *"opencode debug agent"*) printf '{"name":"triage","mode":"primary","permission":{"bash":"allow","read":"allow"}}'; exit 0 ;;
-    "/usr/local/bin/opencode --version") echo "1.19.1"; exit 0 ;;
-    "command -v python3") echo "/usr/bin/python3"; exit 0 ;;
+    *"debug agent"*) printf '{"name":"triage","mode":"primary","permission":{"bash":"allow","read":"allow"}}'; exit 0 ;;
+    *FULLSEND_OPENCODE_BIN*--version*) echo "1.19.1"; exit 0 ;;
+    *fullsend-hook-sep*) printf '%s\n' '/usr/bin/python3|fullsend-hook-sep|/usr/bin:/bin'; exit 0 ;;
     *sys.version_info*) echo "3.11"; exit 0 ;;
     "printf '%s' "*HOME*) printf '%s' '/sandbox'; exit 0 ;;
     *FULLSEND_TRACE_ID*) printf '%s' 'trace-id'; exit 0 ;;
@@ -109,7 +109,10 @@ func TestOpenCodeRuntimeBootstrap_WritesAgentDefinition(t *testing.T) {
 	logStr := string(log)
 	cfg := r.ConfigDir()
 	assert.Contains(t, logStr, "mkdir -p '"+cfg+"/agent' '"+cfg+"/skills' '"+cfg+"/plugins'")
-	assert.Contains(t, logStr, "opencode --version")
+	assert.Contains(t, logStr, openCodePinnedCommand("", " --version"))
+	assert.Contains(t, logStr, openCodePinnedCommand("OPENCODE_CONFIG_DIR="+shellQuote(cfg)+" ", " debug agent 'triage' 2>/dev/null"))
+	assert.Equal(t, 2, strings.Count(logStr, openCodeBinaryPin()), "Bootstrap preflight and agent verification must each pin OpenCode")
+	assert.NotContains(t, logStr, "/usr/local/bin/opencode --version")
 	// Skills go through the upload/tar path; the archive lands under skills/.
 	assert.Contains(t, logStr, cfg+"/skills/")
 	trustedEnv, ok := lookupOpenCodeTrustedEnv("sb")
@@ -231,7 +234,7 @@ fi
 if [ "$2" = "exec" ]; then
   for last; do :; done
   case "$last" in
-    "/usr/local/bin/opencode --version") echo "1.19.1"; exit 0 ;;
+    *FULLSEND_OPENCODE_BIN*--version*) echo "1.19.1"; exit 0 ;;
     *fullsend-opencode-env-sep*) printf '%s' '{}|fullsend-opencode-env-sep|/runner/adc.json'; exit 0 ;;
   esac
   exit 0
@@ -323,7 +326,7 @@ func TestOpenCodePreflightVersionFailure(t *testing.T) {
 if [ "$2" = "exec" ]; then
   for last; do :; done
   case "$last" in
-    "/usr/local/bin/opencode --version") echo "boom" >&2; exit 1 ;;
+    *FULLSEND_OPENCODE_BIN*--version*) echo "boom" >&2; exit 1 ;;
   esac
   exit 0
 fi
@@ -536,7 +539,7 @@ func TestOpenCodeRuntimeRun_RestoreFailurePreventsLaunch(t *testing.T) {
 		{"override cleanup", "rm -rf -- '/sandbox/opencode-config/agent'", "clearing OpenCode agent overrides"},
 		{"SDK cache", "OpenCode plugin SDK missing", "restoring OpenCode plugin SDK cache"},
 		{"agent upload", "test -f '/tmp/fs-upload-", "restoring agent definition"},
-		{"agent verification", "opencode debug agent", "opencode debug agent"},
+		{"agent verification", "debug agent", "opencode debug agent"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			work := t.TempDir()
@@ -719,8 +722,8 @@ func TestOpenCodeVerifyAgent_FallbackDetected(t *testing.T) {
 if [ "$2" = "exec" ]; then
   for last; do :; done
   case "$last" in
-    *"opencode debug agent"*) printf '{"name":"default","mode":"agent","permission":{"*":"allow"}}'; exit 0 ;;
-    "/usr/local/bin/opencode --version") echo "1.19.1"; exit 0 ;;
+    *"debug agent"*) printf '{"name":"default","mode":"agent","permission":{"*":"allow"}}'; exit 0 ;;
+    *FULLSEND_OPENCODE_BIN*--version*) echo "1.19.1"; exit 0 ;;
     *fullsend-opencode-env-sep*) printf '%s' '{"permission":{"*":"deny","bash":"allow"}}|fullsend-opencode-env-sep|/runner/adc.json'; exit 0 ;;
     "printf '%s' "*HOME*) printf '%s' '/sandbox'; exit 0 ;;
   esac
