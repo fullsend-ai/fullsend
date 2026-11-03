@@ -87,6 +87,28 @@ func newAgentsRepoHostServer(t *testing.T, sha string, files map[string][]byte) 
 				})
 				return
 			}
+			// A directory: list its immediate files and subdirectories.
+			listed := map[string]map[string]any{}
+			for p, content := range files {
+				rest, ok := strings.CutPrefix(p, relPath+"/")
+				if !ok {
+					continue
+				}
+				name, _, nested := strings.Cut(rest, "/")
+				entry := map[string]any{"name": name, "path": relPath + "/" + name, "type": "file", "size": len(content)}
+				if nested {
+					entry["type"], entry["size"] = "dir", 0
+				}
+				listed[name] = entry
+			}
+			if len(listed) > 0 {
+				var entries []map[string]any
+				for _, e := range listed {
+					entries = append(entries, e)
+				}
+				_ = json.NewEncoder(w).Encode(entries)
+				return
+			}
 		}
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = io.WriteString(w, `{"message":"Not Found"}`)
@@ -258,12 +280,12 @@ func TestAgentsRepoHostFallback_LoadsCompanionFiles(t *testing.T) {
 	}
 }
 
-// TestAgentsRepoHostFallback_DirectoryResourcesUnsupported documents the
-// documented limit of the configured-host transport: it reads single files
-// only. A relative skill directory cannot be fetched from the host, and a
-// script with a directory part is fetched as its entry file alone, without
-// the adjacent helpers.
-func TestAgentsRepoHostFallback_DirectoryResourcesUnsupported(t *testing.T) {
+// TestAgentsRepoHostFallback_LoadsDirectoryResources checks that directory
+// resources of a fallback harness on another GitHub host are read through that
+// host too: a relative skill directory loads with its companion files, and a
+// script is fetched together with the helpers next to it. Both stay pinned to
+// the harness's commit and use the host's token.
+func TestAgentsRepoHostFallback_LoadsDirectoryResources(t *testing.T) {
 	sha := "abcdef1234567890abcdef1234567890abcdef12"
 	setup := func(t *testing.T, harnessContent string, files map[string][]byte) (string, harness.ComposeOpts, forge.Client) {
 		t.Helper()
@@ -283,18 +305,31 @@ func TestAgentsRepoHostFallback_DirectoryResourcesUnsupported(t *testing.T) {
 		return path, opts, client
 	}
 
-	t.Run("skill directory fails", func(t *testing.T) {
+	t.Run("skill directory loads", func(t *testing.T) {
 		path, opts, _ := setup(t,
 			"role: triage\nslug: triage\nagent: agents/triage.md\nskills:\n  - skills/review\n",
 			map[string][]byte{
-				"agents/triage.md":       []byte("# triage agent"),
-				"skills/review/SKILL.md": []byte("# review"),
+				"agents/triage.md":                  []byte("# triage agent"),
+				"skills/review/SKILL.md":            []byte("# review"),
+				"skills/review/checks/lint.md":      []byte("# lint"),
+				"skills/unrelated/SKILL.md":         []byte("# unrelated"),
+				"skills/review-extra/SKILL.md":      []byte("# sibling with a shared name prefix"),
+				"skills/review-extra/checks/not.md": []byte("# not part of the skill"),
 			})
-		_, _, err := harness.LoadWithBase(context.Background(), path, opts)
-		require.Error(t, err)
+		h, _, err := harness.LoadWithBase(context.Background(), path, opts)
+		require.NoError(t, err)
+		require.Len(t, h.Skills, 1)
+		skillDir := h.Skills[0].Source
+		got, err := os.ReadFile(filepath.Join(skillDir, "SKILL.md"))
+		require.NoError(t, err)
+		assert.Equal(t, "# review", string(got))
+		got, err = os.ReadFile(filepath.Join(skillDir, "checks", "lint.md"))
+		require.NoError(t, err)
+		assert.Equal(t, "# lint", string(got))
+		assert.NoFileExists(t, filepath.Join(skillDir, "checks", "not.md"))
 	})
 
-	t.Run("script helper is not fetched", func(t *testing.T) {
+	t.Run("script helper is fetched", func(t *testing.T) {
 		path, opts, _ := setup(t,
 			"role: triage\nslug: triage\nagent: agents/triage.md\npre_script: scripts/pre-triage.sh\n",
 			map[string][]byte{
@@ -302,11 +337,105 @@ func TestAgentsRepoHostFallback_DirectoryResourcesUnsupported(t *testing.T) {
 				"scripts/pre-triage.sh": []byte("#!/bin/bash\n. \"$(dirname \"$0\")/helper.sh\"\n"),
 				"scripts/helper.sh":     []byte("echo helper\n"),
 			})
-		h, _, err := harness.LoadWithBase(context.Background(), path, opts)
+		h, loaded, err := harness.LoadWithBase(context.Background(), path, opts)
 		require.NoError(t, err)
 		assert.FileExists(t, h.PreScript)
-		assert.NoFileExists(t, filepath.Join(filepath.Dir(h.PreScript), "helper.sh"))
+		got, err := os.ReadFile(filepath.Join(filepath.Dir(h.PreScript), "helper.sh"))
+		require.NoError(t, err)
+		assert.Equal(t, "echo helper\n", string(got))
+		var urls []string
+		for _, d := range loaded {
+			urls = append(urls, d.URL)
+		}
+		assert.Contains(t, urls, strings.TrimSuffix(opts.SourceURL, "harness/triage.yaml")+"scripts/pre-triage.sh")
 	})
+
+}
+
+// TestAgentsRepoHostTreeFetcher checks the directory hook: it lists and reads
+// a directory of the agents repo at the pinned commit through the configured
+// host, rejects unpinned or traversing paths without a request, applies the
+// size bound, and hands any other repository to the next fetcher.
+func TestAgentsRepoHostTreeFetcher(t *testing.T) {
+	sha := "abcdef1234567890abcdef1234567890abcdef12"
+	srv := newAgentsRepoHostServer(t, sha, map[string][]byte{
+		"skills/review/SKILL.md":       []byte("# review"),
+		"skills/review/checks/lint.md": []byte("# lint"),
+	})
+	t.Setenv("GITHUB_API_URL", srv.URL+"/api/v3")
+	client := newGitHubLiveClient("host-token", "")
+	prefix := srv.URL + "/fullsend-ai/agents/raw/"
+	info, err := agentsRepoHostForgeInfo(prefix, sha, "skills/review")
+	require.NoError(t, err)
+
+	var delegated []string
+	next := func(_ context.Context, cloneURL, _, _, _ string) (map[string][]byte, error) {
+		delegated = append(delegated, cloneURL)
+		return map[string][]byte{"x": nil}, nil
+	}
+	fetcher := agentsRepoHostTreeFetcher(client, prefix, fetch.FetchPolicy{MaxSizeBytes: 1 << 20}, next)
+
+	files, err := fetcher(context.Background(), info.CloneURL(), info.Path, sha, "")
+	require.NoError(t, err)
+	assert.Equal(t, map[string][]byte{
+		"SKILL.md":       []byte("# review"),
+		"checks/lint.md": []byte("# lint"),
+	}, files)
+	assert.Empty(t, delegated)
+	_, auth := srv.requests()
+	for _, a := range auth {
+		assert.Contains(t, a, "host-token")
+	}
+
+	_, err = fetcher(context.Background(), "https://github.com/some/repo.git", "skills/x", "main", "tok")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"https://github.com/some/repo.git"}, delegated)
+
+	before, _ := srv.requests()
+	for _, tc := range []struct{ dir, ref string }{
+		{"skills/review", "main"},
+		{"skills/../review", sha},
+		{"", sha},
+	} {
+		_, err := fetcher(context.Background(), info.CloneURL(), tc.dir, tc.ref, "")
+		assert.ErrorContains(t, err, "unsupported agents repo directory", tc.dir)
+	}
+	after, _ := srv.requests()
+	assert.Equal(t, before, after, "rejected directories make no request")
+
+	small := agentsRepoHostTreeFetcher(client, prefix, fetch.FetchPolicy{MaxSizeBytes: 4}, next)
+	_, err = small(context.Background(), info.CloneURL(), info.Path, sha, "")
+	assert.ErrorContains(t, err, "size limit")
+}
+
+// TestAgentsRepoHostURLParser checks the directory URL hook: URLs under the
+// host prefix describe the agents repo on that host at the named commit, and
+// anything else is parsed as a raw.githubusercontent.com URL.
+func TestAgentsRepoHostURLParser(t *testing.T) {
+	sha := "abcdef1234567890abcdef1234567890abcdef12"
+	prefix := "https://ghe.example.com/fullsend-ai/agents/raw/"
+	parse := agentsRepoHostURLParser(prefix)
+
+	info, err := parse(prefix + sha + "/skills/review")
+	require.NoError(t, err)
+	assert.Equal(t, "skills/review", info.Path)
+	assert.Equal(t, sha, info.Ref)
+	assert.Equal(t, "https://ghe.example.com/fullsend-ai/agents.git", info.CloneURL())
+
+	info, err = parse("https://raw.githubusercontent.com/o/r/main/skills/x")
+	require.NoError(t, err)
+	assert.Equal(t, "https://github.com/o/r.git", info.CloneURL())
+
+	for _, u := range []string{
+		prefix + "main/skills/review",
+		prefix + sha + "/skills/../x",
+		prefix + sha + "/",
+	} {
+		_, err := parse(u)
+		assert.ErrorContains(t, err, "unsupported agents repo URL", u)
+	}
+	_, err = parse("https://other.example.com/o/r/main/x")
+	assert.Error(t, err)
 }
 
 // TestAgentsRepoHostFileFetcher_Rejects checks the hook only reads files
