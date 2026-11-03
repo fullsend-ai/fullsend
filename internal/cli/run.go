@@ -2059,7 +2059,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		return nil
 	}
 
-	// 4a. Create sandbox.
+	// 4a. Create sandbox. A private ghcr.io harness image is pulled first
+	// with the workflow token; the gateway's own pull is anonymous (#9019).
+	prePullGHCRImage(ctx, h.Image, printer)
+
 	createStart := time.Now()
 	printer.StepStart("Creating sandbox: " + sandboxName)
 	_, sandboxSpan := tracer.Start(ctx, "sandbox_create", trace.WithAttributes(
@@ -3368,7 +3371,8 @@ var oidcDenyKeys = map[string]bool{
 }
 
 // workflowTokenEnv is the Actions workflow token preserved across minting
-// so provider credentials can authenticate to GitHub Packages. See #6649.
+// so provider credentials can authenticate to GitHub Packages (#6649) and
+// so the runner can pull private ghcr.io sandbox images (#9019).
 const workflowTokenEnv = "GH_WORKFLOW_TOKEN"
 
 // providerOnlyKeys are runner credentials that harness-controlled ${}
@@ -7095,7 +7099,8 @@ func mintAgentToken(ctx context.Context, role, mintURL, forgePlatform string, pr
 // unsets it if it was unset (#8530).
 // On GitHub Actions the pre-mint GH_TOKEN (or, when that is unset or empty,
 // the pre-mint GITHUB_TOKEN) is copied to GH_WORKFLOW_TOKEN for provider
-// credential expansion (#6649); cleanup unsets it. Remint-safe:
+// credential expansion (#6649) and the runner's ghcr.io image pull (#9019);
+// cleanup unsets it. Remint-safe:
 // if GH_WORKFLOW_TOKEN is already set (remintAgentTokenForPostScript's
 // second call, after the first mint replaced GH_TOKEN with the App token),
 // the copy is skipped so the already-preserved workflow token is left alone.
@@ -7178,12 +7183,12 @@ func mintAgentTokenAtLevel(ctx context.Context, role, mintURL, forgePlatform, le
 				// A future caller could override the workflow's github_token
 				// input to empty; fail loud instead of silently skipping the
 				// preserve step (#6649).
-				printer.StepWarn("GITHUB_ACTIONS is set but no pre-mint GH_TOKEN or GITHUB_TOKEN was found; GH_WORKFLOW_TOKEN will not be preserved for provider credentials")
+				printer.StepWarn("GITHUB_ACTIONS is set but no pre-mint GH_TOKEN or GITHUB_TOKEN was found; GH_WORKFLOW_TOKEN will not be preserved (provider credentials and the ghcr.io image pull get no token)")
 			case !mintTokenPattern.MatchString(preMint):
 				// Gate the same as result.Token below before it reaches
 				// Setenv/add-mask/RegisterRuntimeSecret: fail closed rather
 				// than trust an unvalidated value (#6649).
-				printer.StepWarn("pre-mint " + preMintName + " has an unexpected format; GH_WORKFLOW_TOKEN will not be preserved for provider credentials")
+				printer.StepWarn("pre-mint " + preMintName + " has an unexpected format; GH_WORKFLOW_TOKEN will not be preserved (provider credentials and the ghcr.io image pull get no token)")
 			default:
 				os.Setenv(workflowTokenEnv, preMint)
 				envVars = append(envVars, workflowTokenEnv)

@@ -176,11 +176,14 @@ fix workflows grant `packages: read`. Nothing in this section ships by
 default.
 
 **What fullsend provides.** On GitHub Actions the runner keeps the job's own
-workflow token as `GH_WORKFLOW_TOKEN`, a *provider-only* credential:
+workflow token as `GH_WORKFLOW_TOKEN`, a credential harness `${}` sites
+refuse:
 
-- Only provider credential expansion can read it. `${GH_WORKFLOW_TOKEN}` is
-  refused in `runner_env`, `env.runner`, `env.sandbox`, `host_files` and
-  `validation_loop.schema`, and pre/post/validation scripts never see it.
+- `${GH_WORKFLOW_TOKEN}` is refused in `runner_env`, `env.runner`,
+  `env.sandbox`, `host_files` and `validation_loop.schema`, and
+  pre/post/validation scripts never see it. Provider credential expansion
+  reads it, and so does the runner's own `ghcr.io` image pull (see
+  [Extending the sandbox image](#extending-the-sandbox-image)).
 - `gh` and the post-script keep using the minted token (`GH_TOKEN`,
   `GITHUB_TOKEN`, `PUSH_TOKEN`).
 - Outside GitHub Actions the variable is left alone; a local PAT is never
@@ -370,6 +373,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends rustc \
 
 Use `ghcr.io/fullsend-ai/fullsend-code:latest` as the parent instead when you
 also need the Go toolchain. Pin the parent tag to a digest before CI use.
+
+The image can be a **private** package on `ghcr.io` for the code and fix
+agents, whose shipped workflows grant `packages: read`. On GitHub Actions,
+`fullsend run` pulls the image with the job's workflow token
+(`GH_WORKFLOW_TOKEN`) before it creates the sandbox. Prerequisites and
+failure behaviour: [GitHub Packages credentials](../../cli/run.md#github-packages-credentials).
 
 ### Adding executables
 
