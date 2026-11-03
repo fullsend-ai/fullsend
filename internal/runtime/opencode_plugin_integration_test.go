@@ -62,7 +62,9 @@ func TestOpenCodeNativeHooks(t *testing.T) {
 
 func openCodeHookProbeDeadline(scenario string) time.Duration {
 	if scenario == "repo-config-isolation" {
-		return 10 * time.Second
+		// This case launches through the runner's full .env handling prelude,
+		// which can take longer than the direct probe on arm64 CI runners.
+		return 20 * time.Second
 	}
 	return 6 * time.Second
 }
