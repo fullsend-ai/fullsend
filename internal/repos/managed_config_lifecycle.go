@@ -293,7 +293,7 @@ func evaluateManagedSafetyGate(ctx context.Context, resolved ResolvedConfig) ([]
 	}
 	// A pristine first install has no existing effective configuration to
 	// relax: comparing it with code defaults would report every value the
-	// declared preset supplies (for example create_issues targets) as an
+	// declared preset supplies (for example tracking targets) as an
 	// implicit relaxation.
 	if pristineFirstInstall(resolved, overlayFound, baseFound) {
 		return nil, nil

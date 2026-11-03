@@ -265,8 +265,13 @@ Set a default tracker in `.fullsend/config.yaml` to avoid passing
 `--tracker` on every invocation:
 
 ```yaml
-tracker: jira
+tracker:
+  jira: {}
 ```
+
+The provider block that is present under `tracker` selects the default.
+Existing configs that use the scalar form (`tracker: jira`) must be migrated
+to this form; the scalar is rejected.
 
 Then pass `--fullsend-dir .fullsend` (or let the agent pipeline supply
 it). An explicit `--tracker` flag overrides the config default. See
