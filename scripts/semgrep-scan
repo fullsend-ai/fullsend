@@ -66,6 +66,9 @@ if [[ -f "$RULESET_FILE" ]]; then
 	if ! RULESET_ACTUAL_SHA256="$(sha256_file "$RULESET_FILE")"; then
 		ruleset_integrity_failure "cannot verify cached ruleset"
 	fi
+	if [[ "$RULESET_ACTUAL_SHA256" != "$RULESET_SHA256" ]]; then
+		ruleset_integrity_failure "cached ruleset SHA-256 does not match the pin (expected ${RULESET_SHA256}, got ${RULESET_ACTUAL_SHA256})"
+	fi
 else
 	RULESET_ACTUAL_SHA256=
 fi
