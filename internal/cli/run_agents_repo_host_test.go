@@ -282,3 +282,56 @@ func TestAgentsRepoHostFileFetcher_Rejects(t *testing.T) {
 	paths, _ := srv.requests()
 	assert.Len(t, paths, 1, "rejected URLs make no request")
 }
+
+// TestWithAgentsRepoHostAllowed checks that the fetch policy runAgent hands to
+// composition admits the configured GitHub host (#9038): the default policy
+// names only github.com hosts, so a base harness or companion file served by
+// another host would otherwise fail with "domain not in allowlist".
+func TestWithAgentsRepoHostAllowed(t *testing.T) {
+	defaultDomains := append([]string(nil), fetch.DefaultPolicy.AllowedDomains...)
+
+	tests := []struct {
+		name        string
+		client      forge.Client
+		wantDomains []string
+		wantPorts   []string
+	}{
+		{name: "nil client", client: nil, wantDomains: defaultDomains},
+		{name: "non-GitHub client", client: forge.NewFakeClient(), wantDomains: defaultDomains},
+		{name: "github.com default", client: gh.New("t"), wantDomains: defaultDomains},
+		{
+			name:        "enterprise server",
+			client:      gh.New("t").WithBaseURL("https://ghe.example.com/api/v3"),
+			wantDomains: append(append([]string(nil), defaultDomains...), "ghe.example.com"),
+		},
+		{
+			name:        "host with port",
+			client:      gh.New("t").WithBaseURL("https://ghe.example.com:8443/api/v3"),
+			wantDomains: append(append([]string(nil), defaultDomains...), "ghe.example.com"),
+			wantPorts:   []string{"443", "8443"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := withAgentsRepoHostAllowed(fetch.DefaultPolicy, tt.client)
+			assert.Equal(t, tt.wantDomains, got.AllowedDomains)
+			assert.Equal(t, tt.wantPorts, got.AllowedPorts)
+			// The shared default policy is never modified.
+			assert.Equal(t, defaultDomains, fetch.DefaultPolicy.AllowedDomains)
+			assert.Empty(t, fetch.DefaultPolicy.AllowedPorts)
+		})
+	}
+
+	t.Run("host is no longer refused by the policy", func(t *testing.T) {
+		const rawURL = "https://ghe.example.invalid/fullsend-ai/agents/raw/abc/harness/triage.yaml"
+		client := gh.New("t").WithBaseURL("https://ghe.example.invalid/api/v3")
+
+		_, err := fetch.FetchURL(context.Background(), rawURL, fetch.DefaultPolicy)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "domain not in allowlist")
+
+		_, err = fetch.FetchURL(context.Background(), rawURL, withAgentsRepoHostAllowed(fetch.DefaultPolicy, client))
+		require.Error(t, err) // the .invalid host does not resolve
+		assert.NotContains(t, err.Error(), "domain not in allowlist")
+	})
+}

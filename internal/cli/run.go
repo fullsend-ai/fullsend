@@ -12,6 +12,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -673,6 +674,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// addresses the configured GitHub host (GITHUB_API_URL), so on a host
 	// other than github.com the fallback resolves the agents repo there.
 	fallbackForgeClient := newGitHubLiveClient(composeGitToken, "")
+	// The configured host serves raw content from itself, so allow it in the
+	// fetch policy too; the default policy names only github.com hosts.
+	composeOpts.FetchPolicy = withAgentsRepoHostAllowed(composeOpts.FetchPolicy, fallbackForgeClient)
 	harnessPath, fetchDeps, err := resolveAgentSource(ctx, absFullsendDir, agentName, fallbackForgeClient, orgCfg, composeOpts, printer)
 	if err != nil {
 		return err
@@ -7969,6 +7973,33 @@ func agentsRepoHostURLPrefix(forgeClient forge.Client) string {
 	}
 	instance := strings.TrimSuffix(base, "/api/v3")
 	return instance + "/" + defaultAgentsRepoOwner + "/" + defaultAgentsRepoName + "/raw/"
+}
+
+// withAgentsRepoHostAllowed returns policy extended to permit fetching from
+// the GitHub host forgeClient addresses, when that host is not github.com. The
+// host serves raw content from itself, so without this the default policy
+// (github.com and raw.githubusercontent.com only) refuses a base harness or
+// companion file whose URL is on it. A host with an explicit port also has
+// that port allowed. The returned policy does not share slices with policy,
+// and policy is returned unchanged for github.com or a non-GitHub client.
+func withAgentsRepoHostAllowed(policy fetch.FetchPolicy, forgeClient forge.Client) fetch.FetchPolicy {
+	hostPrefix := agentsRepoHostURLPrefix(forgeClient)
+	if hostPrefix == "" {
+		return policy
+	}
+	u, err := url.Parse(hostPrefix)
+	if err != nil || u.Hostname() == "" {
+		return policy
+	}
+	policy.AllowedDomains = append(slices.Clone(policy.AllowedDomains), u.Hostname())
+	if port := u.Port(); port != "" {
+		ports := policy.AllowedPorts
+		if len(ports) == 0 {
+			ports = []string{"443"}
+		}
+		policy.AllowedPorts = append(slices.Clone(ports), port)
+	}
+	return policy
 }
 
 // readAgentsRepoFileAtRef reads relPath of fullsend-ai/agents at sha through
