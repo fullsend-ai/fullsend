@@ -68,7 +68,7 @@ if [ "$2" = "exec" ]; then
       sh -c 'mkdir() { :; }; mv() { shift; shift; cp -- "$1" '\''` + storeDir + `/'\''"$(printf "%s" "$2" | tr / _)"; }; '"$last"
       exit $? ;;
     "codex --version") echo "` + versionOutput + `"; exit 0 ;;
-    "codex debug models --bundled") cat "${FULLSEND_TEST_CATALOG:-testdata/codex/models-bundled-0.159.3.json}"; exit 0 ;;
+    "codex debug models --bundled") cat "${FULLSEND_TEST_CATALOG:-testdata/codex/models-bundled-0.166.0.json}"; exit 0 ;;
     *"` + hookInterpreterSep + `"*) printf '%s` + hookInterpreterSep + `%s\n' /usr/bin/python3 /usr/local/bin:/usr/bin:/bin; exit 0 ;;
     # What a plain PATH lookup finds in the fleet image; Bootstrap must not use it.
     "command -v python3") echo "/sandbox/.venv/bin/python3"; exit 0 ;;

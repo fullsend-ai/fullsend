@@ -64,7 +64,7 @@ var codexChildFixtures = map[string]string{
 
 // codexRootRolloutHead is the first line of collab_spawn.ndjson's root
 // rollout: a session_meta record with no parent.
-const codexRootRolloutHead = `{"timestamp":"2026-09-29T15:46:30.000Z","type":"session_meta","payload":{"id":"` + codexRootThreadID + `","cwd":"/sandbox/workspace/repo","originator":"codex_exec","cli_version":"0.159.3"}}` + "\n"
+const codexRootRolloutHead = `{"timestamp":"2026-09-29T15:46:30.000Z","type":"session_meta","payload":{"id":"` + codexRootThreadID + `","cwd":"/sandbox/workspace/repo","originator":"codex_exec","cli_version":"0.166.0"}}` + "\n"
 
 // writeCodexChildRollouts lays the child fixtures out as codex would under a
 // sessions directory (YYYY/MM/DD/rollout-<start>-<thread id>.jsonl), beside
@@ -388,7 +388,7 @@ if [ "$2" = "exec" ]; then
   for last; do :; done
   case "$last" in
     cat\ *) f=$(printf '%s' "${last#cat }" | tr -d "'" | tr '/' '_'); cat '` + storeDir + `'/"$f"; exit $? ;;
-    *"exec --json"*) [ "${FULLSEND_TEST_CODEX_DROP:-}" = 1 ] && echo "2026-10-22T16:00:00Z  WARN codex_app_server::in_process: ` + codexDroppedNotification + `" >&2; [ "${FULLSEND_TEST_CODEX_BACKFILL_FAIL:-}" = 1 ] && echo "2026-10-22T16:00:01Z  WARN codex_exec: ` + codexBackfillFailed + ` for turn completion: boom" >&2; cat '` + streamFixture + `'; [ "${FULLSEND_TEST_CODEX_EXIT:-}" = killed ] && kill -9 $$; exit "${FULLSEND_TEST_CODEX_EXIT:-0}" ;;
+    *"exec --json"*) [ "${FULLSEND_TEST_CODEX_DROP:-}" = 1 ] && echo "2026-10-22T16:00:00Z  WARN codex_app_server::in_process: ` + codexDroppedNotification + `" >&2; [ "${FULLSEND_TEST_CODEX_BACKFILL_FAIL:-}" = 1 ] && echo "2026-10-22T16:00:01Z  WARN codex_exec: ` + codexBackfillFailedMarkers[0] + `: boom" >&2; cat '` + streamFixture + `'; [ "${FULLSEND_TEST_CODEX_EXIT:-}" = killed ] && kill -9 $$; exit "${FULLSEND_TEST_CODEX_EXIT:-0}" ;;
     *` + codexChildRolloutsMarker + `*)
       if [ "${FULLSEND_TEST_ROLLOUTS_READ_FAIL:-}" = 1 ]; then echo "fake openshell: refusing the rollouts read" >&2; exit 1; fi
       sh -c "$(printf '%s' "$last" | sed 's#` + CodexRuntime{}.codexSessionsDir() + `#` + sessionsDir + `#g')"; exit $? ;;
@@ -837,7 +837,7 @@ func TestCodexRun_DelegatingWithoutSpawnHasParentEntry(t *testing.T) {
 
 	assert.Equal(t, 0, exit)
 	assert.Equal(t, map[string]ModelUsage{
-		"gpt-5.6-luna": {Requests: 1, InputTokens: 12, OutputTokens: 284, CacheCreationInputTokens: 11087, CacheReadInputTokens: 32508},
+		"gpt-5.6-luna": {Requests: 1, InputTokens: 8999, OutputTokens: 377, CacheCreationInputTokens: 0, CacheReadInputTokens: 68480},
 	}, metrics.PerModelUsage, "the numbers TestApplyCodexMetrics pins for basic_run.ndjson")
 	assertCodexUsageSumsToTotals(t, metrics)
 	assert.NotContains(t, log, codexChildUsageMarker, "no id, no sandbox command")
@@ -1175,10 +1175,17 @@ func TestCodexStderrDrops_CountsAcrossChunks(t *testing.T) {
 	}
 	assert.Equal(t, 2, d.Dropped, "one per line, however the writes split it")
 	assert.Equal(t, whole, sink.String(), "every byte still reaches the runner's stderr")
-	_, err := d.Write([]byte("WARN codex_exec: " + codexBackfillFailed + " for turn completion: boom\n"))
-	require.NoError(t, err)
-	assert.Equal(t, 1, d.BackfillFailed)
+	// Every backfill marker counts: the paginated thread's two (a failed
+	// page, a looping cursor) and the legacy-mode thread's read.
+	for _, m := range codexBackfillFailedMarkers {
+		_, err := d.Write([]byte("WARN codex_exec: " + m + ": boom\n"))
+		require.NoError(t, err)
+	}
+	assert.Equal(t, len(codexBackfillFailedMarkers), d.BackfillFailed)
 	assert.Equal(t, 2, d.Dropped)
+	_, err := d.Write([]byte("WARN codex_exec: thread/items/list returned a page\n"))
+	require.NoError(t, err)
+	assert.Equal(t, len(codexBackfillFailedMarkers), d.BackfillFailed, "a thread/items/list line that is not a failure does not count")
 
 	last := &codexStderrDrops{w: &sink}
 	_, err = last.Write([]byte("WARN " + codexDroppedNotification))
@@ -1218,7 +1225,7 @@ func TestCodexRun_DroppedNotificationInTheDebugLog(t *testing.T) {
 	seedCodexManifest(t, storeDir, r, nil)
 	sessions := writeCodexChildRollouts(t)
 	require.NoError(t, os.WriteFile(filepath.Join(filepath.Dir(sessions), codexDebugLogFile),
-		[]byte("WARN codex_app_server::in_process: "+codexDroppedNotification+"\nWARN codex_exec: "+codexBackfillFailed+" for turn completion: boom\n"), 0o600))
+		[]byte("WARN codex_app_server::in_process: "+codexDroppedNotification+"\nWARN codex_exec: "+codexBackfillFailedMarkers[1]+"\n"), 0o600))
 	fakeOpenshellCodexChildren(t, logPath, storeDir, filepath.Join("testdata", "codex", "basic_run.ndjson"), sessions)
 
 	params := codexChildrenRunParams

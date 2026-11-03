@@ -357,7 +357,7 @@ func TestCodexCatalog(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.True(t, catalog.has(codexDefaultSubagentModel), "the floor must be listed; a child takes its parent's collaboration version, so the floor's own does not matter")
-	assert.True(t, catalog.resolvesV1("gpt-5.6-luna"), "a luna parent delegates on 0.159.3")
+	assert.True(t, catalog.resolvesV1("gpt-5.6-luna"), "a luna parent delegates on 0.166.0")
 	assert.Equal(t, "medium", catalog["gpt-5.6-luna"].DefaultEffort, "children on the floor run at medium when the run sets no effort")
 	assert.Equal(t, []string{"low", "medium", "high", "xhigh", "max"}, catalog["gpt-5.6-luna"].Efforts)
 	assert.Equal(t, "low", catalog["gpt-5.6-sol"].DefaultEffort)
@@ -636,7 +636,7 @@ func TestResolveCodexChildModels_NonOpenAIValueNamesTheKey(t *testing.T) {
 
 // codexTestCatalog lists every model the tables above use, with the versions,
 // default efforts and supported efforts of
-// testdata/codex/models-bundled-0.159.3.json; add any id a new row introduces.
+// testdata/codex/models-bundled-0.166.0.json; add any id a new row introduces.
 func codexTestCatalog() codexCatalog {
 	upToMax := []string{"low", "medium", "high", "xhigh", "max"}
 	upToUltra := []string{"low", "medium", "high", "xhigh", "max", "ultra"}

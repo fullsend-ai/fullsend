@@ -206,13 +206,45 @@ const codexStderrDefaultFilter = "error,opentelemetry_sdk=off,opentelemetry_otlp
 // among them.
 const codexDroppedNotification = "dropping in-process server notification (queue full)"
 
-// codexBackfillFailed starts the line exec logs, at warn, when the read of
-// the turn's items that brings a dropped completed item back fails: such an
-// item then stays lost.
-const codexBackfillFailed = "thread/read failed while backfilling turn items"
+// codexBackfillFailedMarkers start the lines exec logs, at warn, when the
+// read of the turn's items that brings a dropped completed item back fails:
+// such an item then stays lost. A run's thread is paginated (exec asks for
+// that history mode unless --ephemeral is passed), and since 0.166.0 exec
+// reads a paginated thread back with thread/items/list and names that call;
+// the thread/read line is what it logs for a non-ephemeral thread whose
+// history mode is not paginated (a resumed legacy thread, or a fresh one
+// after thread/start refused the paginated mode). An ephemeral thread is
+// not backfilled and logs neither.
+var codexBackfillFailedMarkers = []string{
+	"thread/items/list failed during turn completion",
+	"thread/items/list returned a repeated cursor during turn completion",
+	"thread/read failed while backfilling turn items",
+}
+
+// codexBackfillFailedLine reports whether line carries one of
+// codexBackfillFailedMarkers.
+func codexBackfillFailedLine(line []byte) bool {
+	for _, m := range codexBackfillFailedMarkers {
+		if bytes.Contains(line, []byte(m)) {
+			return true
+		}
+	}
+	return false
+}
+
+// codexBackfillGrepPatterns renders the markers as `-e <marker>` grep
+// operands, each shell-quoted; a line matches at most one, so one count
+// covers them all.
+func codexBackfillGrepPatterns() string {
+	parts := make([]string, 0, len(codexBackfillFailedMarkers))
+	for _, m := range codexBackfillFailedMarkers {
+		parts = append(parts, "-e "+shellQuote(m))
+	}
+	return strings.Join(parts, " ")
+}
 
 // codexStderrDrops forwards codex's stderr to the runner's and counts the
-// lines that carry codexDroppedNotification and codexBackfillFailed; flush
+// lines that carry codexDroppedNotification and a backfill marker; flush
 // scans a final line without a newline once the stream has ended.
 type codexStderrDrops struct {
 	w              io.Writer
@@ -244,14 +276,14 @@ func (c *codexStderrDrops) flush() {
 	switch {
 	case bytes.Contains(c.line, []byte(codexDroppedNotification)):
 		c.Dropped++
-	case bytes.Contains(c.line, []byte(codexBackfillFailed)):
+	case codexBackfillFailedLine(c.line):
 		c.BackfillFailed++
 	}
 	c.line = c.line[:0]
 }
 
-// codexCountDroppedInLog counts codexDroppedNotification and
-// codexBackfillFailed in the sandbox debug log, where codex's stderr goes
+// codexCountDroppedInLog counts codexDroppedNotification and the
+// codexBackfillFailedMarkers in the sandbox debug log, where codex's stderr goes
 // under --debug instead of the host. A missing log counts zero, as does a
 // log with no such line; a log grep cannot read (unreadable, a directory), a
 // command that did not finish, or output that is not two counts is an
@@ -259,9 +291,9 @@ func (c *codexStderrDrops) flush() {
 func codexCountDroppedInLog(sandboxName string) (dropped, backfillFailed int, err error) {
 	cmd := fmt.Sprintf(`log=%s; [ -e "$log" ] || { echo 0 0; exit 0; }; `+
 		`d=$(command -p grep -a -c -F -e %s -- "$log"); rd=$?; `+
-		`b=$(command -p grep -a -c -F -e %s -- "$log"); rb=$?; `+
+		`b=$(command -p grep -a -c -F %s -- "$log"); rb=$?; `+
 		`[ "$rd" -le 1 ] && [ "$rb" -le 1 ] || exit 3; echo "$d $b"`,
-		shellQuote(sandbox.SandboxWorkspace+"/"+codexDebugLogFile), shellQuote(codexDroppedNotification), shellQuote(codexBackfillFailed))
+		shellQuote(sandbox.SandboxWorkspace+"/"+codexDebugLogFile), shellQuote(codexDroppedNotification), codexBackfillGrepPatterns())
 	stdout, stderr, exitCode, err := sandbox.Exec(sandboxName, cmd, 10*time.Second)
 	if err != nil {
 		return 0, 0, err
@@ -468,7 +500,7 @@ const codexChildRolloutsMarker = "fullsend-rollout-heads"
 // Codex names a rollout rollout-<ts>-<thread id>.jsonl (with _<rollout id>
 // after a revert), creates it, and then writes its session_meta as the first
 // line, carrying parent_thread_id for a child; a root carries none (codex
-// rust-v0.159.3). So a child's file can be empty while that line waits, or
+// rust-v0.166.0). So a child's file can be empty while that line waits, or
 // start for good with a fragment a failed write left (codex closes it with a
 // newline and writes session_meta on the next line). Every field before
 // parent_thread_id is a scalar, so a line cut before its parent cannot end

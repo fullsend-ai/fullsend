@@ -6,7 +6,7 @@ Inputs for `parseCodexStream` (`internal/runtime/codex_progress.go`) and its tes
 
 | Fixture | Origin |
 |---|---|
-| `basic_run.ndjson` | **Live capture**, 2026-10-01, `@openai/codex@0.159.3` (`npx`), model `gpt-5.6-luna`, API-key login (`codex login --with-api-key`). Captured by `regen.sh`; the throwaway working directory was rewritten to `/sandbox/workspace/repo`, nothing else was edited. Reasoning items appear in roughly one capture in four; keep one that has it. |
+| `basic_run.ndjson` | **Live capture**, 2026-11-03, `@openai/codex@0.166.0` (`npx`), model `gpt-5.6-luna`, API-key login (`OPENAI_API_KEY`). Captured by `regen.sh`; the throwaway working directory was rewritten to `/sandbox/workspace/repo`, nothing else was edited. Reasoning items appear in roughly one capture in four; keep one that has it. |
 | everything else | Hand-authored to the structs below. |
 
 `regen.sh` re-captures `basic_run.ndjson` only. It reads `ARG CODEX_VERSION` from
@@ -40,7 +40,7 @@ Codex **rollouts** (`$CODEX_HOME/sessions/**/rollout-*.jsonl`) for `foldCodexChi
 | `child_usage_other_model.jsonl` | A child on `gpt-5.6-terra`, every normalized counter non-zero. |
 | `child_usage_failed.jsonl` | A child whose model the provider rejected (404): `turn_context` names the model, `task_complete` carries `error`, and there is no `token_usage_record`, so it contributes nothing. |
 | `child_usage_no_model.jsonl` | A child with a `token_usage_record` and no `turn_context`: its usage is bucketed under `unknown`. |
-| `child_usage_forked.jsonl` | A forked child (hand-authored from codex 0.159.3's fork rules): the parent's `turn_context` (`gpt-5.6-luna`) and `token_count` copied ahead of the child's own `turn_context` (`gpt-5.6-terra`) and `token_usage_record`; its usage lands under `gpt-5.6-terra`. |
+| `child_usage_forked.jsonl` | A forked child (hand-authored from codex's fork rules, the same at 0.159.3 and 0.166.0): the parent's `turn_context` (`gpt-5.6-luna`) and `token_count` copied ahead of the child's own `turn_context` (`gpt-5.6-terra`) and `token_usage_record`; its usage lands under `gpt-5.6-terra`. |
 
 The tests lay the rollouts out under a temporary sessions tree as
 `2026/09/29/rollout-2026-09-29T15-46-38-<thread id>.jsonl`, the name codex gives a rollout,
@@ -51,22 +51,26 @@ counts the three `codex_spawn_guard_admit` lines by name.
 
 ## Event structs
 
-Copied from `openai/codex` tag `rust-v0.152.1` and re-checked at `rust-v0.157.0` and `rust-v0.159.3`
-(both files are byte-identical between the `rust-v0.157.0` and `rust-v0.159.3` tags),
+Copied from `openai/codex` tag `rust-v0.152.1` and re-checked at `rust-v0.157.0`, `rust-v0.159.3`
+and `rust-v0.166.0` (`exec_events.rs` is byte-identical from `rust-v0.157.0` to `rust-v0.166.0`;
+the processor only renamed its item type to `ThreadItemPayload` at `rust-v0.166.0`),
 `codex-rs/exec/src/exec_events.rs` (shapes) and
 `codex-rs/exec/src/event_processor_with_jsonl_output.rs` (when each event is
 emitted). Re-check both when `CODEX_VERSION` moves, and with them three facts the admission
-cross-check (`codex_subagents.go`) rests on at `rust-v0.159.3`: a resume reaches the stream as a
+cross-check (`codex_subagents.go`) rests on at `rust-v0.166.0`: a resume reaches the stream as a
 `wait` item (`CollabAgentTool::ResumeAgent => CollabTool::Wait` in the same processor); in-process
-delivery guarantees only TurnCompleted, the thread-state notifications and async AgentMessage
-items, drops any other item notification (a collab item's `item.completed` included) when its
+delivery guarantees only TurnCompleted, the thread-state notifications, process output and exit
+notifications and async AgentMessage items, drops any other item notification (a collab item's `item.completed` included) when its
 channel is full, and logs `dropping in-process server notification (queue full)` at warn from
 `codex_app_server::in_process` (`codex-rs/app-server/src/in_process.rs`), which the runner scans
 for, while exec re-emits at `turn/completed` the completed items whose `item.started` it saw
 (`maybe_backfill_turn_completed_items`, `reconcile_unfinished_started_items`), only for a
-non-ephemeral thread and only when its `thread/read` succeeds (`should_backfill_turn_completed_items`;
-a failed read logs `thread/read failed while backfilling turn items for turn completion` at warn
-from `codex_exec`, which the runner counts too), so a spawn that lost both notifications or whose
+non-ephemeral thread, which is paginated, and only when its `thread/items/list` pages succeed
+(`should_backfill_turn_completed_items`; a failed or looping read logs `thread/items/list failed
+during turn completion` or `thread/items/list returned a repeated cursor during turn completion`
+at warn from `codex_exec`, which the runner counts too; a non-ephemeral thread whose history
+mode is not paginated reads `thread/read` and logs `thread/read failed while backfilling turn
+items for turn completion`; an ephemeral thread is not backfilled and logs neither), so a spawn that lost both notifications or whose
 backfill failed is missing; and exec's default stderr filter is `error,opentelemetry_sdk=off,opentelemetry_otlp=off`
 (`codex-rs/exec/src/lib.rs`, `EXEC_DEFAULT_LOG_FILTER`), which the launch command keeps as its
 base. The disk side of the cross-check rests on four more: a PreToolUse block returns before the
@@ -157,7 +161,7 @@ in `parseCodexStream`:
   — is the opposite: cache and reasoning are separate from input and output.
   `codexUsage.counters()` subtracts the subsets so the five normalized
   counters sum to the tokens actually used. In `basic_run.ndjson` that is
-  43,934; passed through unchanged it would render as ~87,500.
+  77,897; passed through unchanged it would render as ~146,400.
 - **An `error` item is not a failure.** The processor emits one for config
   warnings, generic warnings, deprecation notices and model reroutes, and keeps
   the status `Running`.
