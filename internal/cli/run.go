@@ -8015,14 +8015,39 @@ func readAgentsRepoFileAtRef(ctx context.Context, forgeClient forge.Client, relP
 	return content, nil
 }
 
-// useAgentsRepoHostFetch makes opts read the companion files of a harness
-// whose SourceURL is on the configured non-github.com host through that host
-// (see agentsRepoHostFileFetcher). It leaves opts unchanged otherwise.
+// useAgentsRepoHostFetch makes opts read the companion files and directory
+// resources of a harness whose SourceURL is on the configured non-github.com
+// host through that host (see agentsRepoHostFileFetcher and
+// agentsRepoHostTreeFetcher). It leaves opts unchanged otherwise.
 func useAgentsRepoHostFetch(opts *harness.ComposeOpts, forgeClient forge.Client) {
 	hostPrefix := agentsRepoHostURLPrefix(forgeClient)
 	if hostPrefix != "" && strings.HasPrefix(opts.SourceURL, hostPrefix) {
 		opts.FetchFile = agentsRepoHostFileFetcher(forgeClient, hostPrefix, opts.FetchPolicy)
+		opts.ParseRawURL = agentsRepoHostURLParser(hostPrefix)
+		opts.TreeFetcher = agentsRepoHostTreeFetcher(forgeClient, hostPrefix, opts.FetchPolicy, opts.TreeFetcher)
 	}
+}
+
+// parseAgentsRepoHostURL splits a URL under hostPrefix
+// (<prefix><sha>/<path>) into its commit SHA and repo-relative path. It
+// accepts only a full commit SHA and a clean path with no traversal, query, or
+// fragment, so what it returns is safe to hand to the forge API.
+func parseAgentsRepoHostURL(rawURL, hostPrefix string) (sha, relPath string, err error) {
+	rest, ok := strings.CutPrefix(rawURL, hostPrefix)
+	if !ok {
+		return "", "", fmt.Errorf("not an agents repo URL on this host: %q", rawURL)
+	}
+	sha, relPath, found := strings.Cut(rest, "/")
+	if !found || !commitSHAPattern.MatchString(sha) || relPath == "" ||
+		strings.ContainsAny(relPath, "?#") || strings.HasPrefix(relPath, "/") {
+		return "", "", fmt.Errorf("unsupported agents repo URL %q", rawURL)
+	}
+	for _, seg := range strings.Split(relPath, "/") {
+		if seg == ".." || seg == "." || seg == "" {
+			return "", "", fmt.Errorf("unsupported agents repo URL %q", rawURL)
+		}
+	}
+	return sha, relPath, nil
 }
 
 // agentsRepoHostFileFetcher returns the harness.ComposeOpts.FetchFile hook for
@@ -8034,21 +8059,112 @@ func useAgentsRepoHostFetch(opts *harness.ComposeOpts, forgeClient forge.Client)
 // run. Any other URL goes through fetch.FetchURL under policy.
 func agentsRepoHostFileFetcher(forgeClient forge.Client, hostPrefix string, policy fetch.FetchPolicy) func(context.Context, string) ([]byte, error) {
 	return func(ctx context.Context, rawURL string) ([]byte, error) {
-		rest, ok := strings.CutPrefix(rawURL, hostPrefix)
-		if !ok {
+		if !strings.HasPrefix(rawURL, hostPrefix) {
 			return fetch.FetchURL(ctx, rawURL, policy)
 		}
-		sha, relPath, found := strings.Cut(rest, "/")
-		if !found || !commitSHAPattern.MatchString(sha) || relPath == "" ||
-			strings.ContainsAny(relPath, "?#") || strings.HasPrefix(relPath, "/") {
-			return nil, fmt.Errorf("unsupported agents repo URL %q", rawURL)
-		}
-		for _, seg := range strings.Split(relPath, "/") {
-			if seg == ".." || seg == "." || seg == "" {
-				return nil, fmt.Errorf("unsupported agents repo URL %q", rawURL)
-			}
+		sha, relPath, err := parseAgentsRepoHostURL(rawURL, hostPrefix)
+		if err != nil {
+			return nil, err
 		}
 		return readAgentsRepoFileAtRef(ctx, forgeClient, relPath, sha, policy)
+	}
+}
+
+// agentsRepoHostForgeInfo describes a path of the agents repo on the
+// configured host. Its Forge is the host itself, so CloneURL names that host;
+// the clone URL is how agentsRepoHostTreeFetcher recognises the requests that
+// are for it.
+func agentsRepoHostForgeInfo(hostPrefix, ref, relPath string) (*forge.ForgeURLInfo, error) {
+	u, err := url.Parse(hostPrefix)
+	if err != nil || u.Host == "" {
+		return nil, fmt.Errorf("invalid agents repo host prefix %q", hostPrefix)
+	}
+	return &forge.ForgeURLInfo{
+		Forge:    u.Host,
+		Owner:    defaultAgentsRepoOwner,
+		Repo:     defaultAgentsRepoName,
+		Path:     relPath,
+		Ref:      ref,
+		PathType: "tree",
+	}, nil
+}
+
+// agentsRepoHostURLParser returns the harness.ComposeOpts.ParseRawURL hook for
+// a harness fetched from fullsend-ai/agents on a GitHub host other than
+// github.com: URLs under hostPrefix describe a path of the agents repo at the
+// commit they name, and any other URL is parsed as a raw.githubusercontent.com
+// URL.
+func agentsRepoHostURLParser(hostPrefix string) func(string) (*forge.ForgeURLInfo, error) {
+	return func(rawURL string) (*forge.ForgeURLInfo, error) {
+		if !strings.HasPrefix(rawURL, hostPrefix) {
+			return forge.ParseRawContentURL(rawURL)
+		}
+		sha, relPath, err := parseAgentsRepoHostURL(rawURL, hostPrefix)
+		if err != nil {
+			return nil, err
+		}
+		return agentsRepoHostForgeInfo(hostPrefix, sha, relPath)
+	}
+}
+
+// maxAgentsRepoHostTreeBytes bounds the total size of a directory read from
+// the configured host, matching the limit git sparse checkout applies.
+const maxAgentsRepoHostTreeBytes = 50 << 20
+
+// agentsRepoHostTreeFetcher returns the harness.ComposeOpts.TreeFetcher hook
+// for a harness fetched from fullsend-ai/agents on a GitHub host other than
+// github.com. A directory of the agents repo (a skill, plugin, or script
+// directory) is listed and read through forgeClient at the commit it is
+// pinned to, so it is fetched from the configured host with its token rather
+// than by git sparse checkout from github.com. Entries are bounded in count,
+// per-file size (policy.MaxSizeBytes), and total size. Any other repository
+// goes to next, or to git sparse checkout when next is nil.
+func agentsRepoHostTreeFetcher(forgeClient forge.Client, hostPrefix string, policy fetch.FetchPolicy, next gitfetch.TreeFetchFunc) gitfetch.TreeFetchFunc {
+	if next == nil {
+		next = gitfetch.FetchTree
+	}
+	hostInfo, infoErr := agentsRepoHostForgeInfo(hostPrefix, "", "")
+	return func(ctx context.Context, cloneURL, dirPath, ref, token string) (map[string][]byte, error) {
+		if infoErr != nil || cloneURL != hostInfo.CloneURL() {
+			return next(ctx, cloneURL, dirPath, ref, token)
+		}
+		if !commitSHAPattern.MatchString(ref) || dirPath == "" {
+			return nil, fmt.Errorf("unsupported agents repo directory %q at %q", dirPath, ref)
+		}
+		for _, seg := range strings.Split(dirPath, "/") {
+			if seg == ".." || seg == "." || seg == "" {
+				return nil, fmt.Errorf("unsupported agents repo directory %q", dirPath)
+			}
+		}
+		entries, err := forgeClient.ListDirectoryContents(ctx, defaultAgentsRepoOwner, defaultAgentsRepoName, dirPath, ref, true)
+		if err != nil {
+			return nil, err
+		}
+		if len(entries) > gitfetch.MaxFiles {
+			return nil, fmt.Errorf("directory %s exceeds the %d-file limit", dirPath, gitfetch.MaxFiles)
+		}
+		files := make(map[string][]byte, len(entries))
+		total := 0
+		for _, e := range entries {
+			if e.Type != "file" {
+				continue
+			}
+			for _, seg := range strings.Split(e.Path, "/") {
+				if seg == ".." || seg == "." || seg == "" {
+					return nil, fmt.Errorf("unsupported path %q in agents repo directory %s", e.Path, dirPath)
+				}
+			}
+			content, err := readAgentsRepoFileAtRef(ctx, forgeClient, dirPath+"/"+e.Path, ref, policy)
+			if err != nil {
+				return nil, fmt.Errorf("reading %s/%s: %w", dirPath, e.Path, err)
+			}
+			total += len(content)
+			if total > maxAgentsRepoHostTreeBytes {
+				return nil, fmt.Errorf("directory %s exceeds the %d MiB total size limit", dirPath, maxAgentsRepoHostTreeBytes>>20)
+			}
+			files[e.Path] = content
+		}
+		return files, nil
 	}
 }
 
