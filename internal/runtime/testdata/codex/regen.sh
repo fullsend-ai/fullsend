@@ -62,12 +62,13 @@ npx -y --ignore-scripts "${PKG}" exec --json \
 	-c model_reasoning_summary=detailed \
 	-C "${WORKDIR}" \
 	--model "${CODEX_MODEL:-gpt-5.6-luna}" \
-	'Run `ls .`, then create hello.txt containing hi, then say done' \
+	'Run `ls .`, then create hello.txt containing hi, verify it with `cat hello.txt`, then say done' \
 	</dev/null >"${RAW}"
 
-# Redact the throwaway working directory so the fixture reads like a sandbox
-# run and carries nothing machine-specific. Thread ids are kept: they are
-# random per run, and the test asserts their shape rather than their value.
+# Redact only the throwaway working directory so paths read like a sandbox
+# run. Review command output for other host metadata before committing.
+# Thread ids are kept: they are random per run, and the test asserts their
+# shape rather than their value.
 #
 # mktemp -d can hand back a path holding regex metacharacters (a "+" in a
 # macOS TMPDIR, for instance), so the replacement is done literally with

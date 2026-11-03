@@ -8,6 +8,6 @@
 {"type":"item.started","item":{"id":"item_4","type":"file_change","changes":[{"path":"/sandbox/workspace/repo/hello.txt","kind":"add"}],"status":"in_progress"}}
 {"type":"item.completed","item":{"id":"item_4","type":"file_change","changes":[{"path":"/sandbox/workspace/repo/hello.txt","kind":"add"}],"status":"completed"}}
 {"type":"item.started","item":{"id":"item_5","type":"command_execution","command":"/bin/zsh -lc 'ls -l hello.txt && rg --fixed-strings --line-number \"hi\" hello.txt'","aggregated_output":"","exit_code":null,"status":"in_progress"}}
-{"type":"item.completed","item":{"id":"item_5","type":"command_execution","command":"/bin/zsh -lc 'ls -l hello.txt && rg --fixed-strings --line-number \"hi\" hello.txt'","aggregated_output":"-rw-r--r--@ 1 dhshah  wheel  3 Nov  3 13:53 hello.txt\n1:hi\n","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_5","type":"command_execution","command":"/bin/zsh -lc 'ls -l hello.txt && rg --fixed-strings --line-number \"hi\" hello.txt'","aggregated_output":"-rw-r--r-- 1 sandbox sandbox 3 Jan  1 00:00 hello.txt\n1:hi\n","exit_code":0,"status":"completed"}}
 {"type":"item.completed","item":{"id":"item_6","type":"agent_message","text":"done"}}
 {"type":"turn.completed","usage":{"input_tokens":77479,"cached_input_tokens":68480,"cache_write_input_tokens":0,"output_tokens":418,"reasoning_output_tokens":41}}
