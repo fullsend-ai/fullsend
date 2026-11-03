@@ -19,6 +19,8 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
+// lintJSONSchemaVersion is the schema_version --format json writes. Keep it
+// in lockstep with docs/cli/lint.schema.json.
 const lintJSONSchemaVersion = 1
 
 type lintJSONReport struct {
