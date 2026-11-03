@@ -264,6 +264,114 @@ func TestParseRawContentURL(t *testing.T) {
 	}
 }
 
+func TestParseRawContentURLOnHost(t *testing.T) {
+	const ghe = "https://ghe.example.com"
+	tests := []struct {
+		name      string
+		input     string
+		githubURL string
+		want      *ForgeURLInfo
+		wantClone string
+		wantErr   string
+	}{
+		{
+			name:      "raw.githubusercontent.com unchanged with host configured",
+			input:     "https://raw.githubusercontent.com/o/r/main/a/b.md",
+			githubURL: ghe,
+			want:      &ForgeURLInfo{Forge: "github", Owner: "o", Repo: "r", Ref: "main", Path: "a/b.md", PathType: "blob"},
+			wantClone: "https://github.com/o/r.git",
+		},
+		{
+			name:      "configured host",
+			input:     "https://ghe.example.com/o/r/raw/main/a/b.md",
+			githubURL: ghe,
+			want:      &ForgeURLInfo{Forge: "ghe.example.com", Owner: "o", Repo: "r", Ref: "main", Path: "a/b.md", PathType: "blob"},
+			wantClone: "https://ghe.example.com/o/r.git",
+		},
+		{
+			name:      "configured host with trailing slash and mixed case",
+			input:     "https://GHE.example.com/o/r/raw/abc123/skills/x/SKILL.md#sha256=def456",
+			githubURL: "https://ghe.EXAMPLE.com/",
+			want:      &ForgeURLInfo{Forge: "ghe.example.com", Owner: "o", Repo: "r", Ref: "abc123", Path: "skills/x/SKILL.md", PathType: "blob"},
+			wantClone: "https://ghe.example.com/o/r.git",
+		},
+		{
+			name:      "configured host with port",
+			input:     "https://ghe.example.com:8443/o/r/raw/main/a.md",
+			githubURL: "https://ghe.example.com:8443",
+			want:      &ForgeURLInfo{Forge: "ghe.example.com:8443", Owner: "o", Repo: "r", Ref: "main", Path: "a.md", PathType: "blob"},
+			wantClone: "https://ghe.example.com:8443/o/r.git",
+		},
+		{
+			name:      "configured host directory root",
+			input:     "https://ghe.example.com/o/r/raw/main",
+			githubURL: ghe,
+			want:      &ForgeURLInfo{Forge: "ghe.example.com", Owner: "o", Repo: "r", Ref: "main", Path: "", PathType: "blob"},
+			wantClone: "https://ghe.example.com/o/r.git",
+		},
+		{
+			name:    "host not configured",
+			input:   "https://ghe.example.com/o/r/raw/main/a/b.md",
+			wantErr: "not a raw.githubusercontent.com URL: ghe.example.com",
+		},
+		{
+			name:      "different host configured",
+			input:     "https://ghe.example.com/o/r/raw/main/a/b.md",
+			githubURL: "https://other.example.com",
+			wantErr:   "not a raw.githubusercontent.com URL: ghe.example.com",
+		},
+		{
+			name:      "port mismatch",
+			input:     "https://ghe.example.com:8443/o/r/raw/main/a.md",
+			githubURL: ghe,
+			wantErr:   "not a raw.githubusercontent.com URL: ghe.example.com",
+		},
+		{
+			name:      "github.com configured keeps github.com rejected",
+			input:     "https://github.com/o/r/raw/main/a.md",
+			githubURL: "https://github.com",
+			wantErr:   "not a raw.githubusercontent.com URL: github.com",
+		},
+		{
+			name:      "unparseable configured URL",
+			input:     "https://ghe.example.com/o/r/raw/main/a.md",
+			githubURL: "https://ghe.example.com:bad port",
+			wantErr:   "not a raw.githubusercontent.com URL: ghe.example.com",
+		},
+		{
+			name:      "configured host without raw segment",
+			input:     "https://ghe.example.com/o/r/blob/main/a.md",
+			githubURL: ghe,
+			wantErr:   `unsupported path type "blob": expected "raw"`,
+		},
+		{
+			name:      "configured host path too short",
+			input:     "https://ghe.example.com/o/r/raw",
+			githubURL: ghe,
+			wantErr:   "URL path too short: need at least /{owner}/{repo}/raw/{ref}",
+		},
+		{
+			name:      "configured host over http",
+			input:     "http://ghe.example.com/o/r/raw/main/a.md",
+			githubURL: ghe,
+			wantErr:   "unsupported scheme",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseRawContentURLOnHost(tt.input, tt.githubURL)
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+			assert.Equal(t, tt.wantClone, got.CloneURL())
+		})
+	}
+}
+
 func TestForgeURLInfo_CloneURL(t *testing.T) {
 	tests := []struct {
 		name string
