@@ -42,6 +42,10 @@ type FakeJiraClient struct {
 	// to simulate permission failures.
 	PropertyError error
 
+	// PropertyWrites counts SetCommentProperty calls, including ones
+	// that fail with PropertyError.
+	PropertyWrites int
+
 	// UpdateError, when non-nil, is returned by UpdateComment to
 	// simulate update failures.
 	UpdateError error
@@ -214,6 +218,7 @@ func (f *FakeJiraClient) UpdateComment(_ context.Context, issueIDOrKey, commentI
 }
 
 func (f *FakeJiraClient) SetCommentProperty(_ context.Context, issueIDOrKey, commentID, propertyKey string, value any) error {
+	f.PropertyWrites++
 	if f.PropertyError != nil {
 		return f.PropertyError
 	}
