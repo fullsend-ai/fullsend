@@ -203,10 +203,14 @@ func openCodeHasHookPlan(cfg *openCodeHookConfig) bool {
 // custom config dir. Restore that cache from the image's installed SDK after
 // clearing user-level config overrides, without a registry download.
 func (r OpenCodeRuntime) openCodeSDKCacheRestore() string {
-	return openCodeSDKCacheRestoreFrom(openCodeSDKDir)
+	return openCodeSDKCacheRestoreFrom(openCodeSDKDir, r.ConfigDir())
 }
 
-func openCodeSDKCacheRestoreFrom(prefix string) string {
+func openCodeSDKCacheRestoreFrom(prefix string, configDirs ...string) string {
+	dirs := []string{`"$HOME/.config/opencode"`}
+	for _, dir := range configDirs {
+		dirs = append(dirs, shellQuote(dir))
+	}
 	return `{ { test -f ` + shellQuote(prefix+"/package.json") + ` && test -f ` + shellQuote(prefix+"/package-lock.json") + ` && test -d ` + shellQuote(prefix+"/node_modules") + `; } || { echo 'fullsend: OpenCode plugin SDK missing; rebuild the sandbox image' >&2; exit 127; }; ` +
-		`command -p mkdir -p "$HOME/.config/opencode" && command -p cp ` + shellQuote(prefix+"/package.json") + ` ` + shellQuote(prefix+"/package-lock.json") + ` "$HOME/.config/opencode/" && command -p ln -s ` + shellQuote(prefix+"/node_modules") + ` "$HOME/.config/opencode/node_modules"; }`
+		`for dir in ` + strings.Join(dirs, " ") + `; do command -p rm -rf "$dir/node_modules" && command -p mkdir -p "$dir" && command -p cp ` + shellQuote(prefix+"/package.json") + ` ` + shellQuote(prefix+"/package-lock.json") + ` "$dir/" && command -p ln -s ` + shellQuote(prefix+"/node_modules") + ` "$dir/node_modules" || exit $?; done; }`
 }
