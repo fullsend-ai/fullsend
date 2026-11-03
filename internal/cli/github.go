@@ -14,7 +14,6 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/appsetup"
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
-	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/layers"
 	"github.com/fullsend-ai/fullsend/internal/maputil"
 	"github.com/fullsend-ai/fullsend/internal/preset"
@@ -147,7 +146,7 @@ values (mint URL, WIF provider, project ID) are provided as flags.`,
 				return err
 			}
 
-			client := gh.New(token)
+			client := newGitHubLiveClient(token, "")
 			printer := ui.New(os.Stdout)
 			ctx := cmd.Context()
 
@@ -1162,7 +1161,7 @@ Valid keys:
 				return err
 			}
 
-			client := gh.New(token)
+			client := newGitHubLiveClient(token, "")
 			printer := ui.New(os.Stdout)
 
 			return runGitHubSet(cmd.Context(), client, printer, target, key, value)
