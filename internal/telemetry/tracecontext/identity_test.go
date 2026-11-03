@@ -307,6 +307,29 @@ func TestDeriveFallback_FixedVectors(t *testing.T) {
 	}
 }
 
+func TestNonzeroFallback(t *testing.T) {
+	t.Parallel()
+	traceID := trace.TraceID{0: 0xab, 15: 0xcd}
+	anchor := trace.SpanID{0: 0xef, 7: 0x42}
+	for _, tc := range []struct {
+		name string
+		in   Fallback
+		want Fallback
+	}{
+		{"both zero", Fallback{}, Fallback{trace.TraceID{15: 1}, trace.SpanID{7: 1}}},
+		{"zero trace", Fallback{AnchorSpanID: anchor}, Fallback{trace.TraceID{15: 1}, anchor}},
+		{"zero anchor", Fallback{TraceID: traceID}, Fallback{traceID, trace.SpanID{7: 1}}},
+		{"nonzero preserved", Fallback{traceID, anchor}, Fallback{traceID, anchor}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := nonzeroFallback(tc.in)
+			assert.Equal(t, tc.want, got)
+			assert.True(t, got.TraceID.IsValid())
+			assert.True(t, got.AnchorSpanID.IsValid())
+		})
+	}
+}
+
 func TestFallback_SyntheticAnchorExportLifecycle(t *testing.T) {
 	seen := map[trace.SpanID]bool{}
 	for range 2 {

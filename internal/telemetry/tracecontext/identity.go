@@ -109,16 +109,18 @@ func DeriveFallback(id Identity) (fb Fallback, ok bool) {
 	sum := h.Sum(nil)
 	copy(fb.TraceID[:], sum[0:16])
 	copy(fb.AnchorSpanID[:], sum[16:24])
-	// Deterministic nonzero guarantee: SHA-256 output is all-zero with
-	// probability 2^-128 (trace) / 2^-64 (span); substitute a documented
-	// nonzero value so callers never see an invalid ID.
+	return nonzeroFallback(fb), true
+}
+
+// All-zero digest slices use the documented v1 substitute so IDs stay valid.
+func nonzeroFallback(fb Fallback) Fallback {
 	if fb.TraceID == (trace.TraceID{}) {
 		fb.TraceID[15] = 0x01
 	}
 	if fb.AnchorSpanID == (trace.SpanID{}) {
 		fb.AnchorSpanID[7] = 0x01
 	}
-	return fb, true
+	return fb
 }
 
 // NormalizeInstance canonicalizes a forge web base URL to the D01 instance
