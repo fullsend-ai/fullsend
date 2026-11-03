@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -31,13 +30,6 @@ func v01Identity() Identity {
 		Kind:      KindWorkItem,
 		Entity:    2468913570,
 	}
-}
-
-func mustHex(t *testing.T, s string) []byte {
-	t.Helper()
-	b, err := hex.DecodeString(s)
-	require.NoError(t, err)
-	return b
 }
 
 // TestDeriveFallback_ResolvedAndNonzero is V01: the same resolved immutable
