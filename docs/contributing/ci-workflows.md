@@ -40,8 +40,10 @@ Conventions for GitHub Actions workflows under `.github/workflows/`. Follow thes
   Cancelling superseded `main` runs is acceptable here. A cancelled Build Site
   run does not satisfy the `workflow_run.conclusion == 'success'` condition in
   `site-deploy.yml`, so it never deploys, and superseded builds are normally
-  cancelled. If a deploy is cancelled mid-flight, the previous Worker version
-  stays live until a newer deploy completes.
+  cancelled. If a deploy is cancelled mid-flight before `wrangler deploy`
+  runs, the previous Worker version stays live until a newer deploy
+  completes. A cancel after `wrangler deploy` has run does not roll back the
+  new Worker version.
 
   Known limitation: deployment freshness is not enforced. `site-deploy.yml`
   checks only that the build succeeded, the repository, and the triggering
@@ -54,9 +56,9 @@ Conventions for GitHub Actions workflows under `.github/workflows/`. Follow thes
   `cancel-in-progress` in these two files as a violation of the rule above.
   Do not "fix" it by restoring the PR #7272 `gate` job or main-gated
   cancellation unless the change also keeps fork-PR previews working.
-  **Revisit when:** `mvb` cache thrashing on `main` recurs (the #7242 failure
-  mode, where each push cancels the previous cold build so the cache never
-  warms). At that point, main-gated `cancel-in-progress` can come back as a
+  **Revisit when:** cold-cache starvation on a busy `main` appears, where
+  frequent pushes keep cancelling `mvb` builds before the cache can warm.
+  At that point, main-gated `cancel-in-progress` can come back as a
   follow-up.
 
 **Why:** A hardcoded prefix like `my-workflow-${{ github.workflow }}` is redundant — `github.workflow` already resolves to the workflow `name:` field. The duplication creates a confusing group key and wastes characters. The reusable-workflow exception exists because GitHub resolves `github.workflow` from the caller's context, so a reusable workflow using it would share a concurrency group with its caller.
