@@ -6,18 +6,20 @@ Inputs for `parseCodexStream` (`internal/runtime/codex_progress.go`) and its tes
 
 | Fixture | Origin |
 |---|---|
-| `basic_run.ndjson` | **Live capture**, 2026-11-03, `@openai/codex@0.166.0` (`npx`), model `gpt-5.6-luna`, API-key login (`OPENAI_API_KEY`). Captured by `regen.sh`; the throwaway working directory was rewritten to `/sandbox/workspace/repo`. The `ls -l` output was manually normalized: owner and group to `sandbox`, timestamp to `Jan 1 00:00`, and the macOS `@` marker removed. Nothing else was edited. Reasoning items appear in roughly one capture in four; keep one that has it. |
+| `basic_run.ndjson` | **Live capture**, 2026-11-03, `@openai/codex@0.166.0` (`npx`), model `gpt-5.6-luna`, host ChatGPT login. Captured by the committed `regen.sh`; the script rewrote only the throwaway working directory to `/sandbox/workspace/repo`. No manual edits. The 12 events include one reasoning item, `ls .` listing `raw.ndjson`, and `cat hello.txt` returning `hi`. |
 | everything else | Hand-authored to the structs below. |
 
 `regen.sh` re-captures `basic_run.ndjson` only. It reads `ARG CODEX_VERSION` from
-`images/sandbox/Containerfile` (added by the image-pin PR of the codex runtime
-stack) and falls back to the `CODEX_VERSION` environment variable, so until that
-ARG exists run `CODEX_VERSION=0.152.1 ./regen.sh`.
+`images/sandbox/Containerfile`; `CODEX_VERSION` overrides that pin when set.
 
 The capture prompt requests `cat hello.txt` for verification to avoid `ls -l`
 host metadata. The script normalizes only the working directory; review other
 command output for host-specific values before committing and record any
 manual edits in the table above.
+
+`raw.ndjson` is created inside the throwaway working directory before Codex
+starts, so it appears in the `ls .` output. Keep a capture with a reasoning item
+to preserve the parser's live reasoning-event coverage.
 
 ## Hand-authored fixtures
 
@@ -166,7 +168,7 @@ in `parseCodexStream`:
   — is the opposite: cache and reasoning are separate from input and output.
   `codexUsage.counters()` subtracts the subsets so the five normalized
   counters sum to the tokens actually used. In `basic_run.ndjson` that is
-  77,897; passed through unchanged it would render as ~146,400.
+  57,617; passed through unchanged it would render as 106,662.
 - **An `error` item is not a failure.** The processor emits one for config
   warnings, generic warnings, deprecation notices and model reroutes, and keeps
   the status `Running`.
