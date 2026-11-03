@@ -48,6 +48,14 @@ type ComposeOpts struct {
 	// FetchPolicy controls SSRF protection, offline mode, and size limits.
 	FetchPolicy fetch.FetchPolicy
 
+	// FetchFile, when non-nil, replaces fetch.FetchURL for the single-file
+	// reads of relative companion resources (agent, policy, scripts, ...)
+	// resolved against SourceURL. The allowlist check, cache, lock pins, and
+	// audit log still apply; only the transport differs. It lets a run on a
+	// GitHub host other than github.com read those files through that host's
+	// authenticated API instead of the default github.com-only fetch policy.
+	FetchFile func(ctx context.Context, rawURL string) ([]byte, error)
+
 	// TraceID is a correlation ID for audit log entries.
 	TraceID string
 
@@ -1786,7 +1794,13 @@ func fetchBaseFile(ctx context.Context, field, baseURLDir, relPath string, allow
 		return Dependency{}, "", fmt.Errorf("base %s: URL %s not in cache and offline mode is enabled (run 'fullsend lock --update' first)", field, fileURL)
 	}
 
-	content, err := fetch.FetchURL(ctx, fileURL, opts.FetchPolicy)
+	fetchFile := opts.FetchFile
+	if fetchFile == nil {
+		fetchFile = func(ctx context.Context, rawURL string) ([]byte, error) {
+			return fetch.FetchURL(ctx, rawURL, opts.FetchPolicy)
+		}
+	}
+	content, err := fetchFile(ctx, fileURL)
 	if err != nil {
 		return Dependency{}, "", fmt.Errorf("base %s: fetching %s: %w", field, fileURL, err)
 	}

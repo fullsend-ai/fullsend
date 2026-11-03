@@ -679,6 +679,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// field (ADR-0045 resource resolution for config-registered agents).
 	if len(fetchDeps) > 0 && fetchDeps[0].URL != "" {
 		composeOpts.SourceURL = fetchDeps[0].URL
+		useAgentsRepoHostFetch(&composeOpts, fallbackForgeClient)
 	}
 
 	// If the harness has a URL base and org config failed to load,
@@ -7515,11 +7516,7 @@ func fetchPinnedAgentsRepoFile(ctx context.Context, relPath string, forgeClient 
 	if hostPrefix != "" {
 		// A host other than github.com has no raw.githubusercontent.com,
 		// so read the file through the same client that resolved the ref.
-		content, err = forgeClient.GetFileContentAtRef(ctx, defaultAgentsRepoOwner, defaultAgentsRepoName, relPath, resolvedSHA)
-		// This path bypasses fetch.FetchURL, so apply the same size bound.
-		if err == nil && int64(len(content)) > composeOpts.FetchPolicy.MaxSizeBytes {
-			err = fmt.Errorf("response exceeds the %d-byte fetch size limit", composeOpts.FetchPolicy.MaxSizeBytes)
-		}
+		content, err = readAgentsRepoFileAtRef(ctx, forgeClient, relPath, resolvedSHA, composeOpts.FetchPolicy)
 	} else {
 		content, err = fetch.FetchURL(ctx, rawURL, composeOpts.FetchPolicy)
 	}
@@ -7596,6 +7593,56 @@ func agentsRepoHostURLPrefix(forgeClient forge.Client) string {
 	}
 	instance := strings.TrimSuffix(base, "/api/v3")
 	return instance + "/" + defaultAgentsRepoOwner + "/" + defaultAgentsRepoName + "/raw/"
+}
+
+// readAgentsRepoFileAtRef reads relPath of fullsend-ai/agents at sha through
+// forgeClient. It bypasses fetch.FetchURL, so it applies the same size bound.
+func readAgentsRepoFileAtRef(ctx context.Context, forgeClient forge.Client, relPath, sha string, policy fetch.FetchPolicy) ([]byte, error) {
+	content, err := forgeClient.GetFileContentAtRef(ctx, defaultAgentsRepoOwner, defaultAgentsRepoName, relPath, sha)
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(content)) > policy.MaxSizeBytes {
+		return nil, fmt.Errorf("response exceeds the %d-byte fetch size limit", policy.MaxSizeBytes)
+	}
+	return content, nil
+}
+
+// useAgentsRepoHostFetch makes opts read the companion files of a harness
+// whose SourceURL is on the configured non-github.com host through that host
+// (see agentsRepoHostFileFetcher). It leaves opts unchanged otherwise.
+func useAgentsRepoHostFetch(opts *harness.ComposeOpts, forgeClient forge.Client) {
+	hostPrefix := agentsRepoHostURLPrefix(forgeClient)
+	if hostPrefix != "" && strings.HasPrefix(opts.SourceURL, hostPrefix) {
+		opts.FetchFile = agentsRepoHostFileFetcher(forgeClient, hostPrefix, opts.FetchPolicy)
+	}
+}
+
+// agentsRepoHostFileFetcher returns the harness.ComposeOpts.FetchFile hook for
+// a harness fetched from fullsend-ai/agents on a GitHub host other than
+// github.com. URLs under hostPrefix (<prefix><sha>/<path>, as recorded for the
+// harness itself) are read through forgeClient at the commit they name, so
+// companion files stay pinned to the harness's commit and are fetched from the
+// configured host with its token. The caller's allowlist check has already
+// run. Any other URL goes through fetch.FetchURL under policy.
+func agentsRepoHostFileFetcher(forgeClient forge.Client, hostPrefix string, policy fetch.FetchPolicy) func(context.Context, string) ([]byte, error) {
+	return func(ctx context.Context, rawURL string) ([]byte, error) {
+		rest, ok := strings.CutPrefix(rawURL, hostPrefix)
+		if !ok {
+			return fetch.FetchURL(ctx, rawURL, policy)
+		}
+		sha, relPath, found := strings.Cut(rest, "/")
+		if !found || !commitSHAPattern.MatchString(sha) || relPath == "" ||
+			strings.ContainsAny(relPath, "?#") || strings.HasPrefix(relPath, "/") {
+			return nil, fmt.Errorf("unsupported agents repo URL %q", rawURL)
+		}
+		for _, seg := range strings.Split(relPath, "/") {
+			if seg == ".." || seg == "." || seg == "" {
+				return nil, fmt.Errorf("unsupported agents repo URL %q", rawURL)
+			}
+		}
+		return readAgentsRepoFileAtRef(ctx, forgeClient, relPath, sha, policy)
+	}
 }
 
 // cachedPinnedAgentsRepoFile is the offline counterpart of

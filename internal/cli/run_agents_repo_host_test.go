@@ -205,3 +205,80 @@ func TestStatusNewForgeClientFn_HonoursGitHubAPIURL(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "https://api.github.com", client.BaseURL())
 }
+
+// TestAgentsRepoHostFallback_LoadsCompanionFiles checks that, after the
+// fallback fetches a harness from another GitHub host, LoadWithBase resolves
+// the harness's relative agent, policy, and script files through that host
+// with the options runAgent builds: commit-pinned, allowlisted, and fetched
+// with the host's token rather than the github.com-only default policy.
+func TestAgentsRepoHostFallback_LoadsCompanionFiles(t *testing.T) {
+	sha := "abcdef1234567890abcdef1234567890abcdef12"
+	harnessContent := []byte("role: triage\nslug: triage\nagent: agents/triage.md\npolicy: policies/triage.yaml\npre_script: scripts/pre-triage.sh\n")
+	srv := newAgentsRepoHostServer(t, sha, map[string][]byte{
+		"harness/triage.yaml":   harnessContent,
+		"agents/triage.md":      []byte("# triage agent"),
+		"policies/triage.yaml":  []byte("# triage policy"),
+		"scripts/pre-triage.sh": []byte("#!/bin/bash\necho pre\n"),
+	})
+	t.Setenv("GITHUB_API_URL", srv.URL+"/api/v3")
+
+	client := newGitHubLiveClient("host-token", "")
+	hostPrefix := srv.URL + "/fullsend-ai/agents/raw/"
+	opts := harness.ComposeOpts{
+		WorkspaceRoot: t.TempDir(),
+		FetchPolicy:   fetch.FetchPolicy{MaxSizeBytes: 1 << 20},
+		OrgAllowlist:  []string{hostPrefix},
+	}
+
+	path, deps, ok := tryAgentsRepoFallback(context.Background(), "triage", client, opts, ui.New(io.Discard))
+	require.True(t, ok)
+	opts.SourceURL = deps[0].URL
+	useAgentsRepoHostFetch(&opts, client)
+
+	h, loaded, err := harness.LoadWithBase(context.Background(), path, opts)
+	require.NoError(t, err)
+	got, err := os.ReadFile(h.Agent)
+	require.NoError(t, err)
+	assert.Equal(t, "# triage agent", string(got))
+	got, err = os.ReadFile(h.Policy)
+	require.NoError(t, err)
+	assert.Equal(t, "# triage policy", string(got))
+	assert.FileExists(t, h.PreScript)
+	var urls []string
+	for _, d := range loaded {
+		urls = append(urls, d.URL)
+	}
+	assert.Contains(t, urls, hostPrefix+sha+"/agents/triage.md")
+
+	paths, auth := srv.requests()
+	assert.Contains(t, paths, "/api/v3/repos/fullsend-ai/agents/contents/agents/triage.md?ref="+sha)
+	for _, a := range auth {
+		assert.Contains(t, a, "host-token")
+	}
+}
+
+// TestAgentsRepoHostFileFetcher_Rejects checks the hook only reads files
+// pinned to a full commit SHA under the host prefix and honours the size limit.
+func TestAgentsRepoHostFileFetcher_Rejects(t *testing.T) {
+	sha := "abcdef1234567890abcdef1234567890abcdef12"
+	srv := newAgentsRepoHostServer(t, sha, map[string][]byte{"agents/a.md": []byte("0123456789")})
+	t.Setenv("GITHUB_API_URL", srv.URL+"/api/v3")
+	client := newGitHubLiveClient("t", "")
+	prefix := srv.URL + "/fullsend-ai/agents/raw/"
+	fetcher := agentsRepoHostFileFetcher(client, prefix, fetch.FetchPolicy{MaxSizeBytes: 4})
+
+	for _, u := range []string{
+		prefix + "main/agents/a.md",
+		prefix + sha + "/../agents/a.md",
+		prefix + sha + "/agents/../a.md",
+		prefix + sha + "/",
+		prefix + sha + "/agents/a.md?ref=main",
+	} {
+		_, err := fetcher(context.Background(), u)
+		assert.ErrorContains(t, err, "unsupported agents repo URL", u)
+	}
+	_, err := fetcher(context.Background(), prefix+sha+"/agents/a.md")
+	assert.ErrorContains(t, err, "size limit")
+	paths, _ := srv.requests()
+	assert.Len(t, paths, 1, "rejected URLs make no request")
+}
