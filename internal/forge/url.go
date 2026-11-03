@@ -8,7 +8,7 @@ import (
 
 // ForgeURLInfo contains the parsed components of a forge URL.
 type ForgeURLInfo struct {
-	Forge    string // "github" (future: "gitlab")
+	Forge    string // "github", "gitlab", or the host of another GitHub instance
 	Owner    string
 	Repo     string
 	Path     string // path within the repo (e.g., "skills/pr-review")
@@ -181,7 +181,28 @@ func hostnameToForge(hostname string) string {
 //
 // The ref is a commit SHA, tag, or branch name. Everything after it is the
 // file/directory path within the repo (may be empty).
+//
+// Use ParseRawContentURLOnHost to also accept raw-content URLs served by a
+// configured GitHub host other than github.com.
 func ParseRawContentURL(rawURL string) (*ForgeURLInfo, error) {
+	return ParseRawContentURLOnHost(rawURL, "")
+}
+
+// ParseRawContentURLOnHost is ParseRawContentURL that also accepts
+// raw-content URLs served by a GitHub host other than github.com, such as a
+// GitHub Enterprise Server instance. githubURL is that instance's URL, as
+// configured in forge.github.url (e.g. "https://ghe.example.com"). Such a
+// host serves raw content from the host itself, with a literal "raw" segment
+// after the repository:
+//
+//	https://{host}/{owner}/{repo}/raw/{ref}/{path...}
+//
+// The URL's host, including any port, must match githubURL's host. The
+// result's Forge is that host, so CloneURL clones from it rather than from
+// github.com. When githubURL is empty or names github.com, only
+// raw.githubusercontent.com URLs are accepted, exactly as by
+// ParseRawContentURL.
+func ParseRawContentURLOnHost(rawURL, githubURL string) (*ForgeURLInfo, error) {
 	if idx := strings.LastIndex(rawURL, "#"); idx != -1 {
 		rawURL = rawURL[:idx]
 	}
@@ -194,7 +215,11 @@ func ParseRawContentURL(rawURL string) (*ForgeURLInfo, error) {
 		return nil, fmt.Errorf("unsupported scheme %q: only https is accepted", u.Scheme)
 	}
 	if u.Hostname() != "raw.githubusercontent.com" {
-		return nil, fmt.Errorf("not a raw.githubusercontent.com URL: %s", u.Hostname())
+		host := enterpriseGitHubHost(githubURL)
+		if host == "" || !strings.EqualFold(u.Host, host) {
+			return nil, fmt.Errorf("not a raw.githubusercontent.com URL: %s", u.Hostname())
+		}
+		return parseEnterpriseRawPath(host, u.Path)
 	}
 
 	var segments []string
@@ -234,6 +259,46 @@ func ParseRawContentURL(rawURL string) (*ForgeURLInfo, error) {
 		Repo:     repo,
 		Path:     repoPath,
 		Ref:      ref,
+		PathType: "blob",
+	}, nil
+}
+
+// enterpriseGitHubHost returns the lowercased host (including any port) of a
+// GitHub instance URL, or "" when the URL is empty, unparseable, or names
+// github.com, whose raw content is served from raw.githubusercontent.com.
+func enterpriseGitHubHost(githubURL string) string {
+	u, err := url.Parse(strings.TrimSpace(githubURL))
+	if err != nil || u.Host == "" || strings.EqualFold(u.Hostname(), "github.com") {
+		return ""
+	}
+	return strings.ToLower(u.Host)
+}
+
+// parseEnterpriseRawPath parses the path of a raw-content URL served by the
+// GitHub host itself: /{owner}/{repo}/raw/{ref}/{path...}. The returned
+// ForgeURLInfo carries host as its Forge.
+func parseEnterpriseRawPath(host, urlPath string) (*ForgeURLInfo, error) {
+	var segments []string
+	for _, s := range strings.Split(urlPath, "/") {
+		if s != "" {
+			segments = append(segments, s)
+		}
+	}
+
+	// Need at least 4 segments: owner, repo, "raw", ref.
+	if len(segments) < 4 {
+		return nil, fmt.Errorf("URL path too short: need at least /{owner}/{repo}/raw/{ref}")
+	}
+	if segments[2] != "raw" {
+		return nil, fmt.Errorf("unsupported path type %q: expected \"raw\"", segments[2])
+	}
+
+	return &ForgeURLInfo{
+		Forge:    host,
+		Owner:    segments[0],
+		Repo:     segments[1],
+		Path:     strings.Join(segments[4:], "/"),
+		Ref:      segments[3],
 		PathType: "blob",
 	}, nil
 }
