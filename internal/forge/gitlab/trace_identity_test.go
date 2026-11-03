@@ -11,8 +11,8 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
-// The tests in this file are V03 for AISDLC-576: the immutable database IDs
-// required by the D01 identity tuple must survive adapter mapping. GitLab's
+// The tests in this file cover ADR 0154: the immutable database IDs
+// required by the identity tuple must survive adapter mapping. GitLab's
 // per-project IIDs are display values; the database `id` is the identity,
 // and issue and merge-request id spaces are independent.
 

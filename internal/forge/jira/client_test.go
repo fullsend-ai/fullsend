@@ -781,8 +781,8 @@ func TestGetIssue(t *testing.T) {
 	assert.Equal(t, "new", issue.Fields.Status.StatusCategory.Key)
 }
 
-// TestGetIssue_CapturesProjectRef is V03 for AISDLC-576: the immutable
-// project database ID (the D01 Jira container identity) must survive issue
+// TestGetIssue_CapturesProjectRef covers ADR 0154: the immutable
+// project database ID (the Jira container identity) must survive issue
 // reads, distinct from the display project key.
 func TestGetIssue_CapturesProjectRef(t *testing.T) {
 	t.Parallel()
@@ -811,6 +811,7 @@ func TestGetIssue_CapturesProjectRef(t *testing.T) {
 }
 
 func TestSearchIssues_CapturesProjectRef(t *testing.T) {
+	t.Parallel()
 	client, mux := setupTest(t)
 	handlerCalled := false
 	mux.HandleFunc("/rest/api/3/search/jql", func(w http.ResponseWriter, r *http.Request) {

@@ -10,8 +10,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The tests in this file are V03 for AISDLC-576: the immutable database IDs
-// required by the D01 identity tuple must survive tracker mapping, and the
+// The tests in this file cover ADR 0154: the immutable database IDs
+// required by the identity tuple must survive tracker mapping, and the
 // Jira immutable issue ID must stay distinct from the display key.
 
 func TestForgeClient_GetIssue_MapsImmutableID(t *testing.T) {
@@ -24,15 +24,9 @@ func TestForgeClient_GetIssue_MapsImmutableID(t *testing.T) {
 
 	c := NewForgeClient(fc)
 	issue, err := c.GetIssue(context.Background(), "acme/widgets", 42)
-	if err != nil {
-		t.Fatalf("GetIssue returned error: %v", err)
-	}
-	if issue.ID != 2468913570 {
-		t.Errorf("issue.ID = %d, want 2468913570 (immutable forge issue id)", issue.ID)
-	}
-	if issue.Number != 42 {
-		t.Errorf("issue.Number = %d, want 42 (display number)", issue.Number)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, int64(2468913570), issue.ID, "immutable forge issue id")
+	assert.Equal(t, 42, issue.Number, "display number")
 }
 
 func TestForgeClient_CreateIssue_MapsImmutableID(t *testing.T) {
@@ -40,18 +34,10 @@ func TestForgeClient_CreateIssue_MapsImmutableID(t *testing.T) {
 
 	c := NewForgeClient(fc)
 	issue, err := c.CreateIssue(context.Background(), "acme/widgets", "New work", "body", CreateIssueOptions{})
-	if err != nil {
-		t.Fatalf("CreateIssue returned error: %v", err)
-	}
-	if issue.ID == 0 {
-		t.Errorf("issue.ID = 0, want the fake's synthesized immutable issue id")
-	}
-	if issue.Number == 0 {
-		t.Errorf("issue.Number = 0, want a display number")
-	}
-	if issue.ID == int64(issue.Number) {
-		t.Errorf("issue.ID (%d) must be a distinct id space from the display number (%d)", issue.ID, issue.Number)
-	}
+	require.NoError(t, err)
+	assert.NotZero(t, issue.ID, "the fake's synthesized immutable issue id")
+	assert.NotZero(t, issue.Number, "display number")
+	assert.NotEqual(t, int64(issue.Number), issue.ID, "identity and display number use distinct id spaces")
 }
 
 // TestJiraClient_GetIssue_IDAndKeyDistinct covers the Jira ID/key
@@ -73,18 +59,10 @@ func TestJiraClient_GetIssue_IDAndKeyDistinct(t *testing.T) {
 
 	c := newTestJiraClient(t, fc, "https://acme.atlassian.net")
 	issue, err := c.GetIssue(context.Background(), "PROJ", 42)
-	if err != nil {
-		t.Fatalf("GetIssue returned error: %v", err)
-	}
-	if issue.ID != 10100 {
-		t.Errorf("issue.ID = %d, want 10100 (immutable Jira issue id)", issue.ID)
-	}
-	if issue.Key != "PROJ-42" {
-		t.Errorf("issue.Key = %q, want %q (display key)", issue.Key, "PROJ-42")
-	}
-	if issue.Number != 42 {
-		t.Errorf("issue.Number = %d, want 42 (numeric key suffix)", issue.Number)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, int64(10100), issue.ID, "immutable Jira issue id")
+	assert.Equal(t, "PROJ-42", issue.Key, "display key")
+	assert.Equal(t, 42, issue.Number, "numeric key suffix")
 	assert.Equal(t, int64(10000), issue.ContainerID)
 }
 
@@ -93,15 +71,9 @@ func TestJiraClient_CreateIssue_MapsImmutableID(t *testing.T) {
 	c := newTestJiraClient(t, fc, "https://acme.atlassian.net")
 
 	issue, err := c.CreateIssue(context.Background(), "PROJ", "New work", "body", CreateIssueOptions{IssueType: "Task"})
-	if err != nil {
-		t.Fatalf("CreateIssue returned error: %v", err)
-	}
-	if issue.ID == 0 {
-		t.Errorf("issue.ID = 0, want the immutable id of the created issue")
-	}
-	if issue.Key == "" {
-		t.Errorf("issue.Key is empty, want the display key of the created issue")
-	}
+	require.NoError(t, err)
+	assert.NotZero(t, issue.ID, "immutable id of the created issue")
+	assert.NotEmpty(t, issue.Key, "display key of the created issue")
 	assert.Zero(t, issue.ContainerID, "Jira create response has no project ID")
 	read, err := c.GetIssue(context.Background(), "PROJ", issue.Number)
 	require.NoError(t, err)

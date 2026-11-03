@@ -15,7 +15,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// The tests in this file are V02/V04 for AISDLC-576: exact signed-byte
+// The tests in this file cover ADR 0154: exact signed-byte
 // fixtures, tamper-every-field, cross-binding replay, strict parser limits,
 // duplicate/oversized/zero-ID rejection, retained keys, and pending markers
 // granting nothing. Golden hex constants pin the frozen v1 wire format for

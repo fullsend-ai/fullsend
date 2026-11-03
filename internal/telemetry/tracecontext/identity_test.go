@@ -200,12 +200,12 @@ func TestDeriveFallback_ConcurrentFirstEvents(t *testing.T) {
 // deriveChildEnv re-executes this test binary as a fresh process that
 // derives the V01 fixture and prints the result, proving there is no shared
 // in-memory state behind convergence.
-const deriveChildEnv = "FULLSEND_TRACONTEXT_DERIVE_CHILD=1"
+const deriveChildEnv = "FULLSEND_TRACECONTEXT_DERIVE_CHILD=1"
 
 // TestDeriveFallback_IdenticalAcrossProcesses is V01: two fresh processes
 // derive identical nonzero fallbacks for the same immutable identity.
 func TestDeriveFallback_IdenticalAcrossProcesses(t *testing.T) {
-	if os.Getenv("FULLSEND_TRACONTEXT_DERIVE_CHILD") == "1" {
+	if os.Getenv("FULLSEND_TRACECONTEXT_DERIVE_CHILD") == "1" {
 		fb, ok := DeriveFallback(v01Identity())
 		if !ok {
 			fmt.Println("unresolved")

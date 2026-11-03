@@ -11,8 +11,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The tests in this file are V03 for AISDLC-576: the immutable database IDs
-// required by the D01 identity tuple must survive adapter mapping. GitHub's
+// The tests in this file cover ADR 0154: the immutable database IDs
+// required by the identity tuple must survive adapter mapping. GitHub's
 // per-repo numbers are display values; the REST `id` is the identity.
 
 func TestGetIssue_CapturesImmutableID(t *testing.T) {
