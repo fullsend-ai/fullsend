@@ -341,8 +341,11 @@ func TestCodexRole_TOMLParsesWithTheThreeKeys(t *testing.T) {
 // TestCodexCatalog reads the fixture reduced from the pinned CLI's dump and
 // pins the questions Bootstrap asks it: is a model listed, does codex
 // resolve it to collaboration V1, and which efforts a child on it may run
-// at. On a CODEX_VERSION bump regenerate it, never edit it (the file name
-// carries the pin):
+// at. The reduction keeps only the four fields Bootstrap reads, so a bump
+// that changes other catalog fields (0.166.0 rewrote model_messages for
+// every entry) leaves the fixture untouched; 0.166.0's only visible change
+// is the added gpt-6.1-terra entry. On a CODEX_VERSION bump regenerate it,
+// never edit it (the file name carries the pin):
 //
 //	codex debug models --bundled | python3 -c 'import json,sys; d=json.load(sys.stdin); json.dump({"models":[{"slug":m["slug"],"multi_agent_version":m.get("multi_agent_version"),"default_reasoning_level":m.get("default_reasoning_level"),"supported_reasoning_levels":[{"effort":l["effort"]} for l in m.get("supported_reasoning_levels") or []]} for m in d["models"]]}, sys.stdout, indent=2); print()' > testdata/codex/models-bundled-<pin>.json
 func TestCodexCatalog(t *testing.T) {

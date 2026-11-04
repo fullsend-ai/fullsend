@@ -8,10 +8,7 @@
 #
 # The codex version defaults to the sandbox image pin (ARG CODEX_VERSION in
 # images/sandbox/Containerfile) so a renovate bump is picked up here too;
-# override with CODEX_VERSION=x.y.z in the environment. Until the image pin
-# lands (PR A of the codex runtime stack), run:
-#
-#   CODEX_VERSION=0.152.1 internal/runtime/testdata/codex/regen.sh
+# override with CODEX_VERSION=x.y.z in the environment.
 #
 # Requires a logged-in host codex (~/.codex/auth.json) or OPENAI_API_KEY.
 #
@@ -52,8 +49,9 @@ RAW="${WORKDIR}/raw.ndjson"
 # confined to WORKDIR. `codex exec` has no --ask-for-approval flag; the policy
 # is a -c override. model_reasoning_summary=detailed is what makes the run emit
 # `reasoning` items, which the fixture needs to cover. stdin is closed because
-# codex exec reads additional prompt input from a non-terminal stdin and waits
-# on it forever (0.159.3) when the caller leaves stdin open.
+# codex exec reads additional prompt input from a non-terminal stdin and
+# waits on it forever when the caller leaves stdin open (0.159.3; at 0.166.0
+# it still blocks, before the first model request).
 npx -y --ignore-scripts "${PKG}" exec --json \
 	--skip-git-repo-check \
 	--sandbox workspace-write \

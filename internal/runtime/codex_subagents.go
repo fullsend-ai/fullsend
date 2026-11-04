@@ -233,8 +233,8 @@ func codexBackfillFailedLine(line []byte) bool {
 }
 
 // codexBackfillGrepPatterns renders the markers as `-e <marker>` grep
-// operands, each shell-quoted; a line matches at most one, so one count
-// covers them all.
+// operands, each shell-quoted; grep -c counts a matching line once however
+// many -e patterns hit it, so one count covers them all.
 func codexBackfillGrepPatterns() string {
 	parts := make([]string, 0, len(codexBackfillFailedMarkers))
 	for _, m := range codexBackfillFailedMarkers {

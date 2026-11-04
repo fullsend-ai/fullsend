@@ -68,8 +68,9 @@ emitted). Re-check both when `CODEX_VERSION` moves, and with them three facts th
 admission cross-check (`codex_subagents.go`) rests on at `rust-v0.166.0`: a resume
 reaches the stream as a `wait` item
 (`CollabAgentTool::ResumeAgent => CollabTool::Wait` in the same processor);
-in-process delivery guarantees only TurnCompleted, the thread-state notifications,
-process output and exit notifications and async AgentMessage items, drops any
+in-process delivery guarantees only TurnCompleted, the thread-state
+notifications, external agent-config import completion, process output and
+exit notifications and async AgentMessage items, drops any
 other item notification (a collab item's `item.completed` included) when its
 channel is full, and logs
 `dropping in-process server notification (queue full)` at warn from

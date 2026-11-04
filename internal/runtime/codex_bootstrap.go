@@ -385,7 +385,9 @@ const codexNoSubagentNote = "\n## Runtime note\n\n" +
 	codexChunkedReadNote
 
 // codexChunkedReadNote is the chunked-read rule for Codex's exec truncation
-// (10,000 tokens, head and tail, at 0.157.0). A single cat of a long SKILL.md
+// (10,000 tokens, head and tail; verified at 0.157.0 and 0.166.0, the latter
+// live: a 200-line dense file rides whole, a larger one is cut in the middle
+// behind an "N tokens truncated" marker). A single cat of a long SKILL.md
 // drops the middle with no retry (#7831). Lines are counted with awk's NR, not
 // `wc -l`: `wc -l` counts newline characters, so a file whose last line has no
 // trailing newline reports one line too few and the last range would stop
