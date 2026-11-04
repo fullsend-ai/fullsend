@@ -239,6 +239,11 @@ derive a fallback or guess.
 
 The [conformance vectors](../../../reference/trace-context.md#conformance-evidence)
 pin the exact signed bytes of one envelope per domain and provenance kind.
-Any change to the wire layout, derivation, or key-selector rules is a
-compatibility break that requires a new version byte and a reviewed migration
-path. Unknown versions must reject cleanly.
+
+**v1 is provisional** until the first pull request that publishes carriers
+merges. No production carrier exists yet, so the wire layout, derivation,
+and key-selector rules may still change without a new version byte while
+contract gaps surface in review. From the first carrier-publishing pull
+request onward, any such change is a compatibility break that requires a
+new version byte and a reviewed migration path. Unknown versions must
+reject cleanly.
