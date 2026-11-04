@@ -15,16 +15,19 @@ cp "${REPO_ROOT}/scripts/semgrep-scan" "${FIXTURE_ROOT}/scripts/semgrep-scan"
 chmod +x "${FIXTURE_ROOT}/scripts/semgrep-scan"
 TEST_COMMIT=0123456789abcdef0123456789abcdef01234567
 printf '%s\n' "$TEST_COMMIT" > "${FIXTURE_ROOT}/scripts/semgrep-ruleset-commit"
-printf '%s\n' '# Test fixture membership' 'go/lang/security/audit/example.yaml' \
+printf '%s\n' '# Test fixture membership' \
+	'go/lang/security/audit/example.yaml' \
+	'go/lang/security/decompression_bomb.yaml' \
 	> "${FIXTURE_ROOT}/scripts/semgrep-ruleset-files.txt"
 printf '%s\n' 'package main' > "${FIXTURE_ROOT}/src/main.go"
 SOURCE_ROOT="${TEST_ROOT}/upstream"
 SOURCE_DIR="${SOURCE_ROOT}/semgrep-rules-${TEST_COMMIT}"
 mkdir -p "${SOURCE_DIR}/go/lang/security/audit" \
-	"${SOURCE_DIR}/go/lang/security/vuln"
+	"${SOURCE_DIR}/go/lang/vuln"
 printf '%s\n' 'rules: []' > "${SOURCE_DIR}/go/lang/security/audit/example.yaml"
+printf '%s\n' 'rules: []' > "${SOURCE_DIR}/go/lang/security/decompression_bomb.yaml"
 printf '%s\n' 'rules: []' > "${SOURCE_DIR}/go/lang/security/audit/example.test.yml"
-printf '%s\n' 'rules: []' > "${SOURCE_DIR}/go/lang/security/vuln/outside-scope.yaml"
+printf '%s\n' 'rules: []' > "${SOURCE_DIR}/go/lang/vuln/outside-scope.yaml"
 tar -czf "${TEST_ROOT}/valid-rules.tar.gz" -C "$SOURCE_ROOT" "semgrep-rules-${TEST_COMMIT}"
 cp "${TEST_ROOT}/valid-rules.tar.gz" "${TEST_ROOT}/wrong-rules.tar.gz"
 printf '%s\n' 'tamper' >> "${TEST_ROOT}/wrong-rules.tar.gz"
@@ -121,6 +124,7 @@ while IFS= read -r arg; do
 	UV_ARGS[${#UV_ARGS[@]}]="$arg"
 done < "${GOOD_UV}.args"
 found_audit_rule=false
+found_non_audit_security_rule=false
 found_audit_test=false
 found_out_of_scope_rule=false
 found_absolute_config=false
@@ -128,13 +132,15 @@ for ((i = 0; i + 1 < ${#UV_ARGS[@]}; i++)); do
 	if [[ "${UV_ARGS[i]}" == --config ]]; then
 		case "${UV_ARGS[i + 1]}" in
 		go/lang/security/audit/example.yaml) found_audit_rule=true ;;
+		go/lang/security/decompression_bomb.yaml) found_non_audit_security_rule=true ;;
 		/*) found_absolute_config=true ;;
 		*.test.yml) found_audit_test=true ;;
-		go/lang/security/vuln/*) found_out_of_scope_rule=true ;;
+		go/lang/vuln/*) found_out_of_scope_rule=true ;;
 		esac
 	fi
 done
 [[ "$found_audit_rule" == true ]] || fail "security/audit rule was not passed to Semgrep"
+[[ "$found_non_audit_security_rule" == true ]] || fail "non-audit security rule was not passed to Semgrep"
 [[ "$found_absolute_config" == false ]] || fail "Semgrep config path was absolute"
 [[ "$found_audit_test" == false ]] || fail "upstream test fixture was passed to Semgrep"
 [[ "$found_out_of_scope_rule" == false ]] || fail "out-of-scope rule was passed to Semgrep"
@@ -175,11 +181,12 @@ expect_manifest_rejected() {
 }
 
 expect_manifest_rejected traversal '../go/lang/security/audit/example.yaml'
-expect_manifest_rejected out-of-scope 'go/lang/security/vuln/outside-scope.yaml'
+expect_manifest_rejected out-of-scope 'go/lang/vuln/outside-scope.yaml'
 expect_manifest_rejected upstream-test 'go/lang/security/audit/example.test.yml'
 expect_manifest_rejected missing-file 'go/lang/security/audit/missing.yaml'
 expect_manifest_rejected comment-only '# no source files selected'
 printf '%s\n' 'go/lang/security/audit/example.yaml' \
+	'go/lang/security/decompression_bomb.yaml' \
 	> "${FIXTURE_ROOT}/scripts/semgrep-ruleset-files.txt"
 pass "allowlist rejects traversal, out-of-scope, test, missing, and empty entries"
 

@@ -125,7 +125,7 @@ while IFS= read -r relative_rule_file || [[ -n "$relative_rule_file" ]]; do
 	/* | ../* | */../* | */..)
 		ruleset_integrity_failure "pinned security-audit source path is not relative: ${relative_rule_file}"
 		;;
-	*/security/audit/*.yaml | */security/audit/*.yml)
+	*/security/*.yaml | */security/*.yml)
 		;;
 	*)
 		ruleset_integrity_failure "pinned security-audit source path is outside the approved scope: ${relative_rule_file}"

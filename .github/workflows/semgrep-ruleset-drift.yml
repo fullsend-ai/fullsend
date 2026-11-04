@@ -76,7 +76,7 @@ jobs:
           - Source: https://github.com/semgrep/semgrep-rules
 
           Review the source-file allowlist in scripts/semgrep-ruleset-files.txt,
-          upstream changes under security/audit/, and scan results before
+          upstream changes under security/, and scan results before
           updating the commit, archive SHA-256, and allowlist.
           EOF
             if [[ -n "$issue" ]]; then

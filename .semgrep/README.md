@@ -4,15 +4,13 @@
 [`semgrep/semgrep-rules`](https://github.com/semgrep/semgrep-rules). The full
 commit is in `scripts/semgrep-ruleset-commit`; the downloaded archive is
 verified against `scripts/semgrep-ruleset.sha256` before it is extracted. The
-source-file allowlist in `scripts/semgrep-ruleset-files.txt` narrows the
-scan to Community Edition files represented in the curated `p/security-audit`
-config snapshot whose SHA-256 is recorded in that file. The manifest contains
-111 files with 117 rules. Rule contents still come from the commit-pinned
-upstream archive; the config snapshot is used only to define pack membership.
-Some Registry rules are not available in the public rules repository, so this
-remains a documented subset of the pack rather than a byte-for-byte copy. The
-scanner verifies that every allowlisted file exists under
-`*/security/audit/` and rejects upstream test fixtures.
+source-file allowlist in `scripts/semgrep-ruleset-files.txt` selects the
+Community Edition rules represented in the curated `p/security-audit` config
+snapshot whose SHA-256 is recorded in that file. The manifest contains 216
+files with all 225 rules from the snapshot. Rule contents come from the
+commit-pinned upstream archive; the config snapshot defines pack membership.
+The scanner verifies that every allowlisted file exists under a `security/`
+directory and rejects upstream test fixtures.
 
 The dedicated Semgrep job sets `SEMGREP_REQUIRED=1`, so it fails closed if the
 pinned source or locked Semgrep environment cannot be prepared. Other contexts,
@@ -27,8 +25,8 @@ explicitly while offline.
 The scheduled `Semgrep Ruleset Drift` workflow reports when the upstream
 `develop` branch has advanced beyond the pinned commit. That notification does
 not change the rules used by scans. To update them, review the upstream changes
-under `security/audit/`, update the commit and archive hash, and review the
-resulting findings. Add `nosemgrep: <rule-id>` comments only with a rationale.
+under `security/`, update the commit and archive hash, and review the resulting
+findings. Add `nosemgrep: <rule-id>` comments only with a rationale.
 There is no separate baseline file. The rules are fetched at runtime and are
 not stored in this repository.
 

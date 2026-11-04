@@ -271,8 +271,9 @@ This recursion is by design but interacts with the convergence non-idempotence t
 and commit-pinned Community Edition rules from `semgrep/semgrep-rules`. The
 source-file allowlist in `scripts/semgrep-ruleset-files.txt` limits the scan to
 files represented in the curated `p/security-audit` config snapshot whose
-SHA-256 is recorded in that file. Some Registry rules are not available in the
-public rules repository, so the scan covers a documented subset of the pack.
+SHA-256 is recorded in that file. It includes all 225 Community Edition rules
+from the snapshot in 216 source files available in the pinned public rules
+repository.
 The source commit is recorded in `scripts/semgrep-ruleset-commit`; the downloaded
 archive is checked against the SHA-256 in `scripts/semgrep-ruleset.sha256` before
 extraction. Upstream rule test fixtures are excluded. The dedicated Semgrep job
