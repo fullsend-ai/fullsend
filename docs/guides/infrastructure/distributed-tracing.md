@@ -392,12 +392,14 @@ by source:
 
 - **GitHub:** pull request events and comments on pull requests carry
   `head_sha`, so runs about a change record its head revision.
-- **GitLab:** `vcs.ref.head.revision` is recorded only when the normalized
-  event carries `head_sha`, which the poller sets only on synchronized merge
-  request events (a push to the source branch). The
-  `CI_MERGE_REQUEST_SOURCE_BRANCH_SHA` fallback applies only when fullsend
-  runs inside your own merged-results pipeline; the agent pipelines the poller
-  creates are not merge request pipelines, so it is unset there.
+- **GitLab:** the poller sets `head_sha` on every merge request event and on
+  comments on merge requests, so runs about a change record its head revision.
+  For a push to the source branch, it is the pushed head. For any other event,
+  it is the merge request's current head commit. If the poller cannot read the
+  merge request, `head_sha` is left unset and `vcs.ref.head.revision` is
+  omitted. The `CI_MERGE_REQUEST_SOURCE_BRANCH_SHA` fallback applies only when
+  fullsend runs inside your own merged-results pipeline; the agent pipelines
+  the poller creates are not merge request pipelines, so it is unset there.
 - **Jira:** `vcs.repository.url.full` is not recorded, since the work item's
   URL is on the Jira host. `vcs.provider.name` comes from the forge the run
   targets.

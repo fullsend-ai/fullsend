@@ -130,6 +130,7 @@ type MergeRequest struct {
 	TargetProjectID int       `json:"target_project_id"`
 	SourceBranch    string    `json:"source_branch"`
 	TargetBranch    string    `json:"target_branch"`
+	SHA             string    `json:"sha"` // head commit of the source branch
 	Author          UserRef   `json:"author"`
 	MergeUser       UserRef   `json:"merge_user"`
 	MergedBy        UserRef   `json:"merged_by"`

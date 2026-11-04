@@ -69,9 +69,12 @@ type RoutableEvent struct {
 	MRAuthorID      int
 	MRAuthorLogin   string
 	MergedByLogin   string
-	// HeadSHA is the MR head commit a push moved the source branch to
-	// (Type=="mr_event" with Action=="synchronized" only). It keys the
-	// event, so a head that was already dispatched is never re-run.
+	// HeadSHA is the MR head commit the event is about. For a
+	// synchronized event (Type=="mr_event" with Action=="synchronized")
+	// it is the head the push moved the source branch to, read from the
+	// diff version, and it keys the event, so a head that was already
+	// dispatched is never re-run. Other MR events carry the MR's current
+	// sha as read with the MR; it does not affect their keys.
 	HeadSHA string
 }
 
