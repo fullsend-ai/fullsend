@@ -72,15 +72,15 @@ func TestStatusProgressCapacityUpdateKeepsExistingEntries(t *testing.T) {
 	var out bytes.Buffer
 	r := newTestRenderer(&out)
 	// Fill the status cache to capacity with distinct keys carrying subjects.
-	for i := range maxTaskProgressEntries {
+	for i := range maxStatusProgressEntries {
 		r.Handle(StatusProgressEvent{Kind: "row", ID: fmt.Sprint(i), Label: "row " + fmt.Sprint(i), Subject: "subject " + fmt.Sprint(i), SubjectSet: true})
 	}
-	if len(r.progress.statusProgressSeen) != maxTaskProgressEntries {
+	if len(r.progress.statusProgressSeen) != maxStatusProgressEntries {
 		t.Fatalf("setup: want %d entries, got %d", maxTaskProgressEntries, len(r.progress.statusProgressSeen))
 	}
 	// Updating an existing key at capacity must not wipe the cache.
 	r.Handle(StatusProgressEvent{Kind: "row", ID: "0", Label: "row 0 updated"})
-	if len(r.progress.statusProgressSeen) != maxTaskProgressEntries {
+	if len(r.progress.statusProgressSeen) != maxStatusProgressEntries {
 		t.Fatalf("existing-key update at capacity wiped the cache: %d entries remain", len(r.progress.statusProgressSeen))
 	}
 	// Retained state of other keys must survive: a sparse update to a

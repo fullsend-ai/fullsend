@@ -8,6 +8,10 @@ type statusProgressDisplay struct {
 	context string
 }
 
+// maxStatusProgressEntries bounds the status-event display cache. It shares
+// the task-progress scale because both caches retain one row per active key.
+const maxStatusProgressEntries = maxTaskProgressEntries
+
 func (r *progressReconciler) status(e StatusProgressEvent, redact func(string) string) (string, bool) {
 	if e.Kind == "" {
 		return "", false
@@ -55,7 +59,7 @@ func (r *progressReconciler) status(e StatusProgressEvent, redact func(string) s
 		}
 		// Only a new key needs a free slot: updating an existing key at
 		// capacity must not discard the retained state of every other key.
-		if _, exists := r.statusProgressSeen[key]; !exists && len(r.statusProgressSeen) >= maxTaskProgressEntries {
+		if _, exists := r.statusProgressSeen[key]; !exists && len(r.statusProgressSeen) >= maxStatusProgressEntries {
 			clear(r.statusProgressSeen)
 		}
 		r.statusProgressSeen[key] = statusProgressDisplay{message: msg, subject: subject, context: context}

@@ -4315,7 +4315,8 @@ func redactSecretLiterals(feedback string, runnerEnv map[string]string) string {
 	return redactSecretLiteralsWithNormalizer(feedback, runnerEnv, nil)
 }
 
-// Progress cleanup can alter a secret itself, so mask both literal forms.
+// redactProgressSecretLiterals masks both literal forms because progress
+// cleanup can alter a secret itself.
 func redactProgressSecretLiterals(feedback string, runnerEnv map[string]string) string {
 	return redactSecretLiteralsWithNormalizer(feedback, runnerEnv, agentruntime.NormalizeProgressText)
 }

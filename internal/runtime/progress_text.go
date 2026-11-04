@@ -14,10 +14,11 @@ func taskProgressText(s string, limit int) string {
 	return redactProgressText(s, limit, nil)
 }
 
-// Redact complete raw literals before cleanup, then repeat after cleanup:
-// removing ANSI and normalizing whitespace can reconstruct an opaque secret.
-// Both passes precede truncation and cache retention. The caller's redactor
-// uses display-safe replacement markers, such as [REDACTED] or ***.
+// redactProgressText redacts complete raw literals before cleanup, then
+// repeats after cleanup: removing ANSI and normalizing whitespace can
+// reconstruct an opaque secret. Both passes precede truncation and cache
+// retention. The caller's redactor uses display-safe replacement markers,
+// such as [REDACTED] or ***.
 func redactProgressText(s string, limit int, redact func(string) string) string {
 	// Pattern and registered-secret matching must also see the raw text:
 	// Unicode composition can otherwise destroy a recognizable token prefix.
@@ -87,11 +88,6 @@ func scanProgressSecrets(s string) string {
 	return text
 }
 
-// minNormalizedSecretLen mirrors the security package registration floor:
-// a short normalized remnant of a registered secret must never blank out
-// ordinary output.
-const minNormalizedSecretLen = 8
-
 // redactNormalizedRuntimeSecrets masks registered runtime secrets in the
 // forms cleanup rewrites them into: an ANSI-split or tab-containing
 // credential normalizes to different text than the registered literal, so
@@ -101,8 +97,12 @@ const minNormalizedSecretLen = 8
 // the reconstructed credential is displayed and retained.
 func redactNormalizedRuntimeSecrets(s string) string {
 	for _, secret := range security.RuntimeSecrets() {
+		// The original literal passed the registration length floor, so
+		// every non-empty normalized form is a derivative of an
+		// authenticated credential and is masked, mirroring
+		// redactSecretLiteralsWithNormalizer in the CLI.
 		normalized := NormalizeProgressText(secret)
-		if len(normalized) < minNormalizedSecretLen || normalized == secret {
+		if normalized == "" || normalized == secret {
 			continue
 		}
 		if strings.Contains(s, normalized) {

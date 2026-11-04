@@ -103,3 +103,28 @@ func TestProgressFallbackRedactsNormalizedRuntimeSecret(t *testing.T) {
 		t.Fatalf("normalized registered literal escaped rendering: %q", out.String())
 	}
 }
+
+// A registered credential whose normalized form is shorter than the
+// registration floor must still be masked: the original literal passed the
+// floor at registration, so every non-empty normalized derivative stays an
+// authenticated secret. No RedactProgress callback is set, exercising the
+// renderer fallback.
+func TestProgressFallbackRedactsShortNormalizedRuntimeSecret(t *testing.T) {
+	const secret = "zz\x1b[32m\x1b[0mtok" // raw length 14; normalizes to "zztok" (5)
+	if !security.RegisterRuntimeSecret(secret) {
+		t.Fatal("register synthetic literal")
+	}
+	cleaned := NormalizeProgressText(secret)
+	if cleaned != "zztok" {
+		t.Fatalf("setup: unexpected normalized form %q", cleaned)
+	}
+	if got := scanProgressSecrets("status " + cleaned + " done"); strings.Contains(got, "zztok") || !strings.Contains(got, "***") {
+		t.Fatalf("short normalized registered literal escaped the fallback: %q", got)
+	}
+	var out bytes.Buffer
+	r := newTestRenderer(&out)
+	r.Handle(TaskProgressEvent{TaskID: "one", State: TaskRunning, Label: "status " + cleaned + " done"})
+	if strings.Contains(out.String(), "zztok") || !strings.Contains(out.String(), "***") {
+		t.Fatalf("short normalized registered literal escaped rendering: %q", out.String())
+	}
+}
