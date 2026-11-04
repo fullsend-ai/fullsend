@@ -70,7 +70,7 @@ function checkBash(command, allowlist) {
     if (char === '"') quote = '"';
   }
   if (quote !== null) deny("Bash allowlist rejects unterminated quotes");
-  if (/[`$(){}\\]|<<|<\(|>\(/.test(syntax)) deny("Bash allowlist rejects substitutions, groups, escapes and heredocs");
+  if (/[`$(){}\\<>]|&/.test(syntax)) deny("Bash allowlist rejects substitutions, groups, redirections, backgrounding and escapes");
   for (const segment of syntax.split(/\r?\n|&&|\|\||;|\|&|\||(?<![<>|])&(?!>)/)) {
     if (!segment.trim()) continue;
     const first = segment.trim().split(/\s+/)[0];
