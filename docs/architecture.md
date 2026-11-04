@@ -259,9 +259,9 @@ repo baseline and overrides)
   `validation_loop`, running exactly once per run — before `pre_script` and
   before sandbox creation — with the same literal-command semantics,
   path-like lint guard, and credential-safe environment as the nested check.
-  In `base:` composition the field merges as a scalar: a child's non-empty
-  value replaces the base's, an absent child inherits the base's, and values
-  never append or combine. The nested `validation_loop.preflight_check` is
+  In `base:` composition the field merges as a scalar: a child's non-blank
+  value replaces the base's, an absent, empty, or whitespace-only child
+  inherits the base's, and values never append or combine. The nested `validation_loop.preflight_check` is
   deprecated — `Harness.Lint()` warns and names the top-level replacement, and
   removal is separately gated — but existing nested checks continue to run
   after the top-level check during migration. A separately named
