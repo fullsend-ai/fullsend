@@ -409,7 +409,11 @@ pattern.
 
 ### Custom JQL
 
-By default the poller searches for all non-done issues in the project, ordered by most recently updated. To narrow the scope, use `--jql`:
+By default the poller searches for all non-done issues in the project, ordered by most recently updated.
+
+You can set the Jira site, project, and query in config instead of on the command line. Use [`tracker.jira`](../../reference/config-reference.md#tracker-jira-connection-and-polling-settings) in `.fullsend/config.yaml` or in the repository's `config:` block in `repos.yaml`. When the config sets them, the poller reads `base_url`, `project`, and `poll.query` from it. It always scopes the query as `project = <project> AND (<query>)`, keeping a trailing `ORDER BY` at the end. `--jira-url`, `--jira-project`, and `--jql` are then rejected, and `JIRA_BASE_URL` is ignored.
+
+Without that config, use `--jql` to narrow the scope:
 
 ```bash
 fullsend poll \

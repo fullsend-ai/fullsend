@@ -70,8 +70,14 @@ tracker:                             # Issue tracker. At most one provider block
   #     groups: [my-group]           # GitLab groups (projects in the group and its subgroups)
   #     repos: [my-group/sub/project] # Full project paths
   # jira:
+  #   base_url: https://example.atlassian.net # Jira site URL (required with any Jira setting below)
+  #   api_url: https://api.atlassian.com      # Jira API gateway URL (optional; this is the default)
+  #   project: PROJ                  # This repository's Jira project key (required with base_url)
   #   allowed_targets:
-  #     projects: [PROJ]             # Jira project keys
+  #     projects: [OTHER]            # Jira project keys for cross-project issue creation or moves
+  #   poll:
+  #     enabled: true                # Managed poll workflow switch (see the tracker.jira section)
+  #     query: 'labels = "fullsend" ORDER BY updated DESC' # JQL; always scoped to project
 
 # ── Authorization ────────────────────────────────────────────
 authorization:                       # Extra sources of permission for triggering agents
@@ -279,9 +285,61 @@ setup.
 - **`tracker.jira.allowed_targets.projects`** — Jira project keys (an
   uppercase letter followed by uppercase letters, digits, or underscores).
 
-Jira connection and polling fields will also live under `tracker.jira`; they
-are tracked in [#9035](https://github.com/fullsend-ai/fullsend/issues/9035) and
-are not part of this schema yet.
+#### `tracker.jira` connection and polling settings
+
+`tracker.jira` also holds the Jira site, project, and poller settings. The
+mapping can be set in `.fullsend/config.yaml` or in a repository's managed
+`config:` block in `repos.yaml`:
+
+```yaml
+tracker:
+  jira:
+    base_url: https://example.atlassian.net
+    api_url: https://api.atlassian.com
+    project: PROJ
+    allowed_targets:
+      projects: [OTHER]
+    poll:
+      enabled: true
+      query: 'labels = "fullsend" AND statusCategory != Done ORDER BY updated DESC'
+```
+
+- **`tracker.jira.base_url`** — The Jira site URL. It must be an `https` URL
+  with no credentials, query, or fragment. It has no default.
+- **`tracker.jira.api_url`** — The Jira API gateway URL. It is optional and
+  defaults to `https://api.atlassian.com`. It is validated like `base_url`.
+- **`tracker.jira.project`** — The key of the single Jira project for this
+  repository. It is not a fallback project, and it has no default.
+- **`tracker.jira.poll.enabled`** — Controls the managed poll workflow. `true`
+  installs or enables it, `false` removes or disables it. When `poll` or
+  `poll.enabled` is omitted, the workflow is not installed. This setting does
+  not affect `fullsend poll` or `fullsend issues`. Installing and removing
+  the managed workflow is not implemented yet. For now the value is
+  validated and stored only.
+- **`tracker.jira.poll.query`** — The JQL the poller runs. It defaults to
+  `statusCategory != Done ORDER BY updated DESC`. The query is always scoped
+  to `project`: the poller runs `project = <project> AND (<query>)` and keeps
+  a trailing `ORDER BY` after the closing parenthesis. For example, the
+  query above runs as
+  `project = PROJ AND (labels = "fullsend" AND statusCategory != Done) ORDER BY updated DESC`.
+
+`base_url` and `project` are required once `base_url`, `api_url`, `project`,
+or `poll` is set. A mapping that only selects Jira (`jira: {}`) or only sets
+`allowed_targets` stays valid. This includes a mapping migrated from the
+legacy scalar `tracker: jira`.
+
+Credentials are never part of this mapping. Keys such as `token`,
+`api_token`, `email`, or `password` are rejected. Supply the Jira token and
+the optional account email as the `FULLSEND_JIRA_TOKEN` and
+`FULLSEND_JIRA_EMAIL` repository secrets. Other unknown keys under
+`tracker.jira`, `tracker.jira.poll`, and `tracker.jira.allowed_targets` are
+rejected too.
+
+When the effective config sets these settings, `fullsend poll --input-driver
+jira-poll` reads the Jira site, project, and query only from the config.
+`--jira-url`, `--jira-project`, and `--jql` are rejected, and
+`JIRA_BASE_URL` is ignored. When the config does not set them, the poller
+still uses those flags and `JIRA_BASE_URL`.
 
 For GitHub and GitLab the scopes are additive: a destination is allowed if it
 matches a configured org or group, or a configured repo. Malformed entries
