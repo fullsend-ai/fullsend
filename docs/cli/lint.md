@@ -155,7 +155,7 @@ single document. Exit codes and what is linted are unchanged.
 
 | Field | Meaning |
 |-------|---------|
-| `schema_version` | Document version. `2` is the current schema. `1` had no `code` |
+| `schema_version` | Document version. `2` is the current schema |
 | `success` | `true` when the process would exit 0 |
 | `summary.errors` | Count of error-severity items in `diagnostics` |
 | `summary.warnings` | Count of warning-severity items in `diagnostics` |
@@ -169,6 +169,13 @@ field, or changing a type or enum, is an incompatible change: bump
 `schema_version` and update the schema in the same change. Do not add
 fields under version `2`. New diagnostic `code` values may appear without
 a bump; the schema does not enumerate them.
+
+### Schema versions
+
+| Version | Change |
+|---------|--------|
+| `1` | Initial JSON report ([#8995](https://github.com/fullsend-ai/fullsend/pull/8995), [#9066](https://github.com/fullsend-ai/fullsend/pull/9066)). No `code`. |
+| `2` | Required `diagnostics[].code`. |
 
 Older binaries still emit `schema_version` 1 with no `code`. Consumers
 should switch on `schema_version` and validate against the schema that
