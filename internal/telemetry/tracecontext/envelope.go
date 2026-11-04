@@ -65,9 +65,12 @@ type Provenance struct {
 	ScenarioInvocationID [16]byte
 }
 
-// Envelope is a decoded v1 envelope or pending marker. The wire layout,
-// exact sizes, and strict limits are frozen in
-// docs/normative/trace-context/v1/README.md; Marshal is its only legal encoder.
+// Envelope is a decoded v1 envelope or pending marker. Its fields are
+// unauthenticated: Parse checks structure only, so TraceID, ParentSpanID,
+// and Provenance must not be consumed unless Admit returns
+// OutcomeAdmitted. The wire layout, exact sizes, and strict limits are
+// frozen in docs/normative/trace-context/v1/README.md; Marshal is its only
+// legal encoder.
 type Envelope struct {
 	Domain       Domain
 	KeyID        [8]byte
@@ -254,11 +257,13 @@ func (e *Envelope) Marshal() []byte {
 	return append(e.payload(), e.Signature[:]...)
 }
 
-// Parse strictly decodes and validates wire bytes. It accepts only the
-// exact structural length for the parsed domain and provenance kind;
-// duplicate and unknown fields are structurally impossible in the fixed
-// layout. Provenance cross-field consistency is checked at admission, not
-// here.
+// Parse strictly decodes and structurally validates wire bytes. It accepts
+// only the exact structural length for the parsed domain and provenance
+// kind; duplicate and unknown fields are structurally impossible in the
+// fixed layout. Parse does not verify the signature or binding, so its
+// result is unauthenticated: Admit is the only authenticated path and the
+// only safe source of trace context. Provenance cross-field consistency is
+// checked at admission, not here.
 func Parse(b []byte) (*Envelope, error) {
 	if len(b) > MaxEnvelopeLen {
 		return nil, errOversized

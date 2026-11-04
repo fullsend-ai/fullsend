@@ -467,6 +467,16 @@ func TestAdmit_DuplicateCarriers(t *testing.T) {
 	assert.Equal(t, ReasonConflictingCarrier, res.Reason, "conflicting carriers must reject, never first-match")
 }
 
+// TestAdmit_AppendedJunkForcesFallback documents the accepted
+// denial-of-continuity trade-off: an editor can suppress continuity by
+// appending an unauthenticated carrier, but cannot inject or select one.
+func TestAdmit_AppendedJunkForcesFallback(t *testing.T) {
+	t.Parallel()
+	raw, keys := signedGolden(t, DomainBound, ProvenanceNone)
+	res := Admit(goldenIdentity(), keys, raw, []byte("not-an-envelope"))
+	assert.Equal(t, Result{Outcome: OutcomeFallback, Reason: ReasonMalformed}, res)
+}
+
 func TestAdmit_Oversized(t *testing.T) {
 	_, keys := goldenKeys(t)
 

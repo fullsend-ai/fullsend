@@ -218,9 +218,11 @@ never key material or raw bytes. A plain W3C `traceparent` is never an
 envelope.
 
 Any extra or differing candidate deliberately forces fallback, even when
-one candidate alone would admit: an actor who can append one carrier to an
-editable body must not be able to choose or suppress the admitted context.
-Publishing a bound envelope must remove the pending marker it replaces;
+one candidate alone would admit. An actor who can edit the body can deny
+continuity by appending junk or deleting the carrier, but can never choose,
+alter, or inject the admitted context; rejection is deliberately fail-closed
+so a forged carrier is reported rather than silently ignored. Publishing a
+bound envelope must remove the pending marker it replaces;
 leaving both present produces conflicting carriers and fallback, never a
 pick between them.
 
