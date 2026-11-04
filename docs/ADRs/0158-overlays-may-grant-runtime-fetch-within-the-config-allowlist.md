@@ -38,14 +38,9 @@ prefix after normalization. Fetched content is an injection surface ([security
 threat model](../problems/security-threat-model.md#persistent-injection-via-externally-editable-resources)),
 so an overlay that could add any prefix would widen what the sandbox may fetch.
 
-This ADR aims to let one harness turn on runtime fetch for one context without
-widening what the sandbox may fetch past the repository's configuration.
-
-## Options
-
-**Keep the fetch fields out of overlays** (an exception to ADR 0112's "any
-field"; fetch for some runs needs a second harness), or **let a matching
-overlay set them within the config-level allowlist** (chosen).
+This ADR aims to let one harness turn on runtime fetch for one context, rather
+than through a second harness split from it by trigger, without widening what
+the sandbox may fetch past the repository's configuration.
 
 ## Decision
 
@@ -60,16 +55,16 @@ Decision 2) and overlay-only: a `forge:` block cannot set them.
 
 Every prefix an overlay adds must pass the same prefix test against the
 config-level list, and no overlay may set `allow_runtime_fetch: false` or an
-empty `allowed_remote_resources` (it would turn nothing off); either fails the
-load, naming the overlay's index. Both checks run on every overlay entry,
-matching or not, with or without URL references, so that `lint`, and `lock`
-when it composes the harness, check without an event what any run could apply.
-When a matching overlay sets `allow_runtime_fetch`, every prefix of the
-composed harness's merged list, top level included, must also pass on the same
-terms, or the load fails. The config-level list is the one each command
-resolves; an explicit empty list admits no overlay prefix. A base's overlays
-resolve inside the base, so their fetch fields never reach the child, yet their
-entries get the per-entry checks when the base loads.
+empty `allowed_remote_resources` (neither can turn fetch off or remove a
+prefix); either fails the load, naming the overlay's index. Both checks run on
+every overlay entry, matching or not, with or without URL references, so that
+`lint`, and `lock` when it composes the harness, check without an event what
+any run could apply. When a matching overlay sets `allow_runtime_fetch`, every
+prefix of the composed harness's merged list, top level included, must also
+pass on the same terms, or the load fails. The config-level list is the one
+each command resolves; an explicit empty list admits no overlay prefix. A
+base's overlays resolve inside the base, so their fetch fields never reach the
+child, yet their entries get the per-entry checks when the base loads.
 
 ## Forge scope
 
@@ -80,11 +75,15 @@ runtime fetch service fetches only GitHub-hosted URLs today, on any forge.
 
 - A harness with no top-level list can turn on runtime fetch for one
   context, such as one forge, without turning it on everywhere.
-- A harness whose overlay grants a prefix outside the config-level list, inert
-  before, now fails to load in `run`, `lint`, `lock` and dispatch, even for
-  another forge's overlay or a base's.
+- A harness whose overlay grants a prefix outside the config-level list, or
+  sets a `false` or empty fetch value, inert before, now fails to load in
+  `run`, `lint`, `lock` and dispatch, even for another forge's overlay or a
+  base's.
 - An overlay's merged-list or cross-field failure shows only where it matches:
   everywhere if keyed on `config`; in a run, and in `lint` or `lock` given the
-  forge, if on `runtime.forge`; otherwise only in a run.
-- Unless a matching overlay sets `allow_runtime_fetch`, a top-level list keeps
-  today's checks (`run`, `lint`, `lock`, with URL references): separate work.
+  forge, if on `runtime.forge`; otherwise only in a run, but a top-level field
+  that needs an overlay's value fails wherever that overlay does not match,
+  dispatch included.
+- Unless a matching overlay sets `allow_runtime_fetch`, a top-level list is
+  still checked only by `run`, `lint` and `lock`, and only with URL references;
+  closing that gap is separate work.
