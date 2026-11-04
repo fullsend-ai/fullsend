@@ -149,8 +149,8 @@ ENV PI_CODING_AGENT_DIR="/sandbox/pi-config" \
 # PI_VERSION bump move that matrix to the new pin first. Compat flags
 # reach Vertex only through the extension's VERTEX_COMPAT_KEYS allowlist.
 #   sha256sum <(curl -fsSL https://github.com/fullsend-ai/pi-anthropic-vertex/archive/refs/tags/v<ver>.tar.gz)
-ARG PI_ANTHROPIC_VERTEX_VERSION=0.1.1
-ARG PI_ANTHROPIC_VERTEX_SHA256=b7c5572a94dc2b1ad80a189216067b4d3adee4028d85a1f60c3228651c826559
+ARG PI_ANTHROPIC_VERTEX_VERSION=0.2.0
+ARG PI_ANTHROPIC_VERTEX_SHA256=37929edb120f4eb9030fe168230dd1d2c7bae6a029d086bd1fc186039984a32d
 ARG PI_EXTENSIONS_DIR=/usr/local/share/pi-extensions
 RUN curl -fsSL --retry 3 --retry-delay 5 \
       "https://github.com/fullsend-ai/pi-anthropic-vertex/archive/refs/tags/v${PI_ANTHROPIC_VERTEX_VERSION}.tar.gz" \
