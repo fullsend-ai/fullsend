@@ -653,6 +653,23 @@ expect_line "analyzer failure: the operator sees the warning" \
   'warning: the behaviour-job log of run 4004 attempt 1 could not be analyzed: log analyzer failed \(exit 3\)' \
   "${ANALYZER_DIR}/stderr.txt"
 
+# --- Argument validation: --runs is bounded before any API call -----------------
+# The bound is checked on the decimal string, so an oversized integer cannot
+# wrap in Bash arithmetic and slip through as a zero-run scan.
+ARGS_DIR="${TMP}/args"
+mkdir -p "${ARGS_DIR}"
+for bad in 0 101 007 -1 abc '' 18446744073709551616 99999999999999999999; do
+  RC=0
+  bash "${SCANNER}" --runs "${bad}" --repo o/r > /dev/null 2> "${ARGS_DIR}/stderr.txt" || RC=$?
+  if [[ "${RC}" -ne 0 ]]; then
+    pass "args: --runs '${bad}' is rejected"
+  else
+    fail "args: --runs '${bad}' was accepted"
+  fi
+  expect_line "args: --runs '${bad}' names the valid range" \
+    'must be an integer between 1 and 100' "${ARGS_DIR}/stderr.txt"
+done
+
 echo
 if [[ "${FAILURES}" -gt 0 ]]; then
   echo "${FAILURES} test(s) failed" >&2

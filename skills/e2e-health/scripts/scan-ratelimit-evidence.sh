@@ -357,7 +357,9 @@ main() {
         die "unknown argument: ${1}" ;;
     esac
   done
-  if ! [[ "${runs}" =~ ^[1-9][0-9]*$ ]] || (( runs > 100 )); then
+  # Match the bounded decimal string itself: an arithmetic bound check would
+  # let an oversized value wrap in Bash's fixed-width integers and pass.
+  if ! [[ "${runs}" =~ ^([1-9]|[1-9][0-9]|100)$ ]]; then
     die "--runs must be an integer between 1 and 100 (got ${runs})."
   fi
   if [[ -n "${repo}" ]] && ! [[ "${repo}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
