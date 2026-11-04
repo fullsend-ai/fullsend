@@ -335,7 +335,15 @@ In CI, the test runner mints cross-org `e2e` installation tokens via OIDC for Gi
 
 The `dev` preview mints are deployed with `--public` (`PER_REPO_WIF_REPOS=*`), which broadens *caller* eligibility, not anonymous access. OIDC verification, the workflow-host allowlist (an explicit `--workflow-host-repos`, kept separate from callers per [ADR 0082](../../ADRs/0082-workflow-host-allow-list.md)), role permissions, and requested-repo and FOREIGN scope checks all still apply, and the status endpoint's GitHub-team authorization is independent of this mode. The accepted trade-off: the `fullsend-test-*` Apps are installed on every repo in the pool orgs, so an unrelated repo there that uses an approved workflow host could mint a token for *itself* through a live preview URL. The previews are temporary and the identities test-only. The [GitHub mint scope scenarios](#github-mint-scope-scenarios) keep the denials for another repository or org without the required FOREIGN grant and for unapproved workflow hosts. Grouped orgs share a preview hostname and its 60 requests/minute/IP native rate limiter, so validate 429s with live traffic rather than assuming the per-org traffic pattern still holds.
 
-Godog concurrency stays independent of slot capacity. The default is the slots per org (12), and `GODOG_CONCURRENCY` overrides it. Capacity is every slot of the pool (144 on `dev`), and a concurrency above capacity only makes workers wait. The allocator logs each claim and release with its org/repo and that org's quota (`[slots] claimed halfsend-03/test-repo-05 (quota …)`). An exhausted pass logs the per-org breakdown: occupied, rate-limited until, denied, failed, e2e-lock excluded, and GC results. `Finalize` logs every org's last observed rate limit (see [Rate-limit observability](#rate-limit-observability)).
+Godog concurrency stays independent of slot capacity. The default is the
+slots per org (12), and `GODOG_CONCURRENCY` overrides it. Capacity is every
+slot of the pool (144 on `dev`), and a concurrency above capacity only makes
+workers wait. The allocator logs each claim and release with its org/repo and
+that org's quota
+(`[slots] claimed halfsend-03/test-repo-05 (quota …)`). An exhausted pass logs
+the per-org breakdown: occupied, rate-limited until, denied, failed, e2e-lock
+excluded, and GC results. `Finalize` logs every org's last observed rate limit
+(see [Rate-limit observability](#rate-limit-observability)).
 
 The After hook runs `CleanupScenario` (issues, PRs, ephemeral forks, hosting
 repos) and then `LeaseDriver.DeallocateLease(org, repo)`. Cleanup changes the
