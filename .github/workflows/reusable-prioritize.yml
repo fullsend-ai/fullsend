@@ -128,6 +128,20 @@ jobs:
           mkdir -p .github/scripts
           cp "${SRC}/.github/scripts/setup-agent-env.sh" .github/scripts/setup-agent-env.sh
 
+      - name: Resolve effective mint URL
+        id: resolve-mint
+        env:
+          FALLBACK_MINT_URL: ${{ inputs.mint_url }}
+        run: |
+          set -euo pipefail
+          for candidate in .github/scripts/resolve-effective-mint-url.sh .defaults/.github/scripts/resolve-effective-mint-url.sh; do
+            if [[ -f "${candidate}" ]]; then
+              bash "${candidate}"
+              exit 0
+            fi
+          done
+          echo "::error::resolve-effective-mint-url.sh is missing; re-run fullsend github converge"
+          exit 1
 
       - name: Validate enrollment and extract repository metadata
         id: repo-parts
@@ -187,6 +201,6 @@ jobs:
           runner_secrets: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}
           version: ${{ inputs.fullsend_version || job.workflow_sha }}
           fullsend-dir: .fullsend
-          mint-url: ${{ inputs.mint_url }}
+          mint-url: ${{ steps.resolve-mint.outputs.mint_url }}
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
           gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}

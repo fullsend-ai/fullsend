@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# resolve-effective-mint-url-test.sh — Tests for resolve-effective-mint-url.sh
+#
+# Run from the repo root:
+#   bash .github/scripts/resolve-effective-mint-url-test.sh
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT="${SCRIPT_DIR}/resolve-effective-mint-url.sh"
+FAILURES=0
+
+TMPDIR="$(mktemp -d)"
+trap 'rm -rf "${TMPDIR}"' EXIT
+
+run_resolve() {
+  local fallback="${1:-}"
+  local output_file="${TMPDIR}/github-output.txt"
+  : >"${output_file}"
+  (
+    cd "${TMPDIR}/repo"
+    export GITHUB_OUTPUT="${output_file}"
+    export FALLBACK_MINT_URL="${fallback}"
+    bash "${SCRIPT}"
+  )
+  grep '^mint_url=' "${output_file}" | cut -d= -f2-
+}
+
+setup_repo() {
+  rm -rf "${TMPDIR}/repo"
+  mkdir -p "${TMPDIR}/repo/.fullsend"
+  cd "${TMPDIR}/repo"
+}
+
+assert_eq() {
+  local name="$1" want="$2" got="$3"
+  if [[ "${want}" != "${got}" ]]; then
+    echo "FAIL: ${name}: want ${want@Q}, got ${got@Q}"
+    FAILURES=$((FAILURES + 1))
+  fi
+}
+
+setup_repo
+assert_eq "fallback only" "https://fallback.example" "$(run_resolve "https://fallback.example")"
+
+setup_repo
+printf 'version: "1"\nmint_url: https://overlay.example\n' >.fullsend/config.yaml
+assert_eq "overlay wins" "https://overlay.example" "$(run_resolve "https://fallback.example")"
+
+setup_repo
+printf 'version: "1"\nmint_url: https://base.example\n' >.fullsend/config.base.yaml
+assert_eq "base only" "https://base.example" "$(run_resolve "https://fallback.example")"
+
+setup_repo
+printf 'version: "1"\n' >.fullsend/config.yaml
+printf 'version: "1"\nmint_url: https://base.example\n' >.fullsend/config.base.yaml
+assert_eq "silent overlay uses base" "https://base.example" "$(run_resolve "https://fallback.example")"
+
+setup_repo
+printf 'version: "1"\nmint_url: https://overlay.example\n' >.fullsend/config.yaml
+printf 'version: "1"\nmint_url: https://base.example\n' >.fullsend/config.base.yaml
+assert_eq "overlay beats base" "https://overlay.example" "$(run_resolve "https://fallback.example")"
+
+setup_repo
+assert_eq "empty fallback" "" "$(run_resolve "")"
+
+if [[ "${FAILURES}" -eq 0 ]]; then
+  echo "All tests passed."
+else
+  echo "${FAILURES} test(s) failed."
+  exit 1
+fi

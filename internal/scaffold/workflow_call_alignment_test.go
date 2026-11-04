@@ -869,6 +869,11 @@ func TestReusableDispatchJobsReceiveMintOIDC(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, yaml.Unmarshal(content, &workflow))
 
+	routeJob, ok := workflow.Jobs["route"]
+	require.True(t, ok, "route job must exist")
+	assert.Equal(t, "${{ steps.resolve-mint.outputs.mint_url }}", routeJob.Outputs["mint_url"],
+		"route job must export the resolved mint URL for stage jobs")
+
 	for _, tc := range []struct {
 		jobName  string
 		stepName string
@@ -892,8 +897,8 @@ func TestReusableDispatchJobsReceiveMintOIDC(t *testing.T) {
 			require.NotEmpty(t, dispatch.Name, "job %q must include step %q", tc.jobName, tc.stepName)
 			assert.Contains(t, dispatch.Run, "--input-driver gha-event",
 				"step %q must use the GitHub event driver", tc.stepName)
-			assert.Equal(t, "${{ inputs.mint_url }}", dispatch.Env["FULLSEND_MINT_URL"],
-				"step %q must receive the configured mint URL", tc.stepName)
+			assert.Equal(t, "${{ steps.resolve-mint.outputs.mint_url }}", dispatch.Env["FULLSEND_MINT_URL"],
+				"step %q must receive the resolved mint URL", tc.stepName)
 			for name, value := range job.Outputs {
 				assert.NotContains(t, name, "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
 					"job %q output names must not expose the OIDC request token", tc.jobName)
