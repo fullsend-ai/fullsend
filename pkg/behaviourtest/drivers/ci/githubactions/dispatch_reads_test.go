@@ -109,7 +109,7 @@ func TestHarnessDispatchAssertions_SkippedRunNeedsNoJobs(t *testing.T) {
 	require.NoError(t, d.AssertNoHarnessAgentArtifact(context.Background(), "org", "repo", "fix", after))
 }
 
-func TestHarnessDispatchAssertions_QueuedRunNeedsNoJobs(t *testing.T) {
+func TestHarnessDispatchAssertions_NotStartedRunJobs(t *testing.T) {
 	t.Parallel()
 	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	for _, status := range []string{"queued", "waiting", "requested", "pending"} {
@@ -119,7 +119,7 @@ func TestHarnessDispatchAssertions_QueuedRunNeedsNoJobs(t *testing.T) {
 			fake.WorkflowRunsList = map[string][]forge.WorkflowRun{"org/repo/fullsend.yaml": {
 				{ID: 1, Status: status, CreatedAt: after.Format(time.RFC3339)},
 			}}
-			// A queued run's jobs read can 404; it must not be attempted.
+			// The count path never reads jobs for a not-started run.
 			fake.Errors["ListWorkflowRunJobs"] = forge.ErrNotFound
 			d := &Driver{Client: fake}
 
@@ -127,7 +127,24 @@ func TestHarnessDispatchAssertions_QueuedRunNeedsNoJobs(t *testing.T) {
 			require.NoError(t, err)
 			assert.Zero(t, count)
 			assert.Equal(t, 1, pending)
+
+			// The negative assertion reads the listing and treats a 404 as
+			// absence: the listing can 404 before the run starts.
 			require.NoError(t, d.AssertNoHarnessAgentArtifact(context.Background(), "org", "repo", "fix", after))
+
+			// A waiting run can follow jobs that already ran (environment
+			// approval), so returned jobs are checked, never skipped.
+			delete(fake.Errors, "ListWorkflowRunJobs")
+			fake.WorkflowRunJobs = map[int][]forge.WorkflowJob{1: {
+				{ID: 1, RunAttempt: 1, Name: "dispatch / Harness run (fix)", Status: "completed", Conclusion: "success"},
+			}}
+			require.Error(t, d.AssertNoHarnessAgentArtifact(context.Background(), "org", "repo", "fix", after),
+				"a run awaiting approval can already hold a completed agent job")
+
+			// Any other listing error stays fatal on the negative path.
+			lookupErr := errors.New("jobs lookup failed")
+			fake.Errors["ListWorkflowRunJobs"] = lookupErr
+			require.ErrorIs(t, d.AssertNoHarnessAgentArtifact(context.Background(), "org", "repo", "fix", after), lookupErr)
 		})
 	}
 }
