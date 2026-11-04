@@ -1,9 +1,11 @@
 package jirapoll
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -93,6 +95,12 @@ func (m *mockClient) SearchIssues(_ context.Context, jql string, limit int) ([]j
 	m.lastLimit = limit
 	if m.searchErr != nil {
 		return nil, m.searchErr
+	}
+	// Jira serves an issue without labels with "labels": [], never null.
+	for i := range m.searchResult {
+		if m.searchResult[i].Fields.Labels == nil {
+			m.searchResult[i].Fields.Labels = []string{}
+		}
 	}
 	if limit > 0 && len(m.searchResult) > limit {
 		return m.searchResult[:limit], nil
@@ -474,6 +482,87 @@ func TestRunHappyPath_CommentWithSlashCommand(t *testing.T) {
 	}
 }
 
+// captureLog sends the standard logger's output to the returned buffer for
+// the rest of the test.
+func captureLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(prev) })
+	return &buf
+}
+
+// An event that fails normalized-event validation (here an issue id that
+// does not parse as an int, which becomes entity.id 0) is skipped instead of
+// dispatched: fullsend run would stop on it. strconv.Atoi returns the max int
+// with ErrRange for an out-of-range numeric id, so that row pins that
+// parseIssueID returns 0 on every parse error.
+func TestRun_InvalidEventNotDispatched(t *testing.T) {
+	for _, id := range []string{"not-a-number", "99999999999999999999"} {
+		t.Run(id, func(t *testing.T) {
+			now := time.Now().Truncate(time.Second)
+			mc := newMockClient()
+			mc.roleMembership = map[string]string{"557058:abc123def456": "Developers"}
+			mc.searchResult = []jira.Issue{{
+				ID:   id,
+				Key:  "PROJ-123",
+				Self: "https://acme.atlassian.net/rest/api/3/issue/" + id,
+				Fields: jira.IssueFields{
+					Summary:  "Test issue",
+					Labels:   []string{"bug"},
+					Status:   jira.Status{Name: "Open", StatusCategory: jira.StatusCategory{Key: "new"}},
+					Reporter: jira.User{AccountID: "reporter-id", AccountType: "atlassian"},
+					Created:  now.Add(-1 * time.Hour).Format("2006-01-02T15:04:05.000-0700"),
+					Updated:  now.Format("2006-01-02T15:04:05.000-0700"),
+				},
+			}}
+			mc.comments["PROJ-123"] = []jira.Comment{{
+				ID:      "50001",
+				Body:    "/fs-triage check acceptance criteria",
+				Created: now.Format("2006-01-02T15:04:05.000-0700"),
+				Author:  jira.User{AccountID: "557058:abc123def456", AccountType: "atlassian"},
+			}}
+
+			outputPath := filepath.Join(t.TempDir(), "dispatches.json")
+			p := newTestPoller(mc, &stubMatcher{agents: []string{"triage"}}, Options{
+				TargetRepo:  "acme/platform",
+				JiraBaseURL: "https://acme.atlassian.net",
+				JiraProject: "PROJ",
+				OutputPath:  outputPath,
+			})
+			logBuf := captureLog(t)
+			if err := p.Run(context.Background()); err != nil {
+				t.Fatalf("Run() error: %v", err)
+			}
+			// A comment event's key is comment-<id>, so the warning also
+			// names the issue the operator has to comment on again.
+			const want = "WARNING: skipping event comment-50001 for issue PROJ-123: normalized event: "
+			if !strings.Contains(logBuf.String(), want) {
+				t.Errorf("poll log lacks %q:\n%s", want, logBuf.String())
+			}
+			const summary = "WARNING: skipped 2 of 2 events this cycle because they failed normalized-event validation"
+			if !strings.Contains(logBuf.String(), summary) {
+				t.Errorf("poll log lacks %q:\n%s", summary, logBuf.String())
+			}
+			data, err := os.ReadFile(outputPath)
+			if err != nil {
+				t.Fatalf("read output: %v", err)
+			}
+			var dispatches []DispatchRecord
+			if err := json.Unmarshal(data, &dispatches); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if len(dispatches) != 0 {
+				t.Errorf("expected no dispatches for an invalid event, got %+v", dispatches)
+			}
+			if got, err := p.readLastCheck(context.Background(), "PROJ-123"); err != nil || got.IsZero() {
+				t.Errorf("PROJ-123 lastCheck = %v (err %v), want advanced past the skipped event", got, err)
+			}
+		})
+	}
+}
+
 // TestRunDispatchWriteFailure_NoCheckpointCommitted is a regression test:
 // checkpoints must not advance in Jira until the dispatch file has been
 // durably written. Previously each issue's lastCheck advanced inline
@@ -612,6 +701,7 @@ func TestProcessIssue_CheckpointNeverRegresses(t *testing.T) {
 		ID:  "10042",
 		Key: "PROJ-123",
 		Fields: jira.IssueFields{
+			Labels:   []string{},
 			Reporter: jira.User{AccountID: "reporter-id"},
 			Created:  now.Add(-1 * time.Hour).Format("2006-01-02T15:04:05.000-0700"),
 		},
@@ -628,6 +718,52 @@ func TestProcessIssue_CheckpointNeverRegresses(t *testing.T) {
 	}
 	if len(p.dispatches) == 0 {
 		t.Error("expected the comment after lastCheck to still dispatch")
+	}
+}
+
+// TestRun_NoActorEventSkippedWithoutRoster: an event with no actor fails
+// validation and is skipped, so it must not load the project-role roster;
+// a roster failure would otherwise fail the cycle and hold the checkpoint.
+func TestRun_NoActorEventSkippedWithoutRoster(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	mc := newMockClient()
+	mc.roleErr = fmt.Errorf("jira api: 503 service unavailable")
+	mc.searchResult = []jira.Issue{
+		{
+			ID:  "10042",
+			Key: "PROJ-123",
+			Fields: jira.IssueFields{
+				Reporter: jira.User{},
+				Created:  now.Add(-1 * time.Hour).Format("2006-01-02T15:04:05.000-0700"),
+			},
+		},
+	}
+	mc.comments["PROJ-123"] = []jira.Comment{
+		{
+			ID:      "1",
+			Body:    "/fs-code fix it",
+			Created: now.Add(-30 * time.Minute).Format("2006-01-02T15:04:05.000-0700"),
+			Author:  jira.User{},
+		},
+	}
+
+	p := newTestPoller(mc, &stubMatcher{agents: []string{"code"}}, Options{
+		TargetRepo:  "acme/platform",
+		JiraBaseURL: "https://acme.atlassian.net",
+		JiraProject: "PROJ",
+	})
+	logBuf := captureLog(t)
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if mc.roleActorsCalls != 0 {
+		t.Errorf("GetProjectRoleActors called %d times, want 0", mc.roleActorsCalls)
+	}
+	if !strings.Contains(logBuf.String(), "WARNING: skipping event comment-1 for issue PROJ-123") {
+		t.Errorf("poll log lacks the skip warning:\n%s", logBuf.String())
+	}
+	if got, err := p.readLastCheck(context.Background(), "PROJ-123"); err != nil || got.IsZero() {
+		t.Errorf("PROJ-123 lastCheck = %v (err %v), want advanced past the skipped event", got, err)
 	}
 }
 
@@ -928,6 +1064,7 @@ func TestProcessIssue_CapsEventsPerIssue(t *testing.T) {
 		ID:  "10042",
 		Key: "PROJ-123",
 		Fields: jira.IssueFields{
+			Labels:   []string{},
 			Reporter: jira.User{AccountID: "reporter-id"},
 			Created:  now.Add(-2 * time.Hour).Format("2006-01-02T15:04:05.000-0700"),
 		},
@@ -936,7 +1073,7 @@ func TestProcessIssue_CapsEventsPerIssue(t *testing.T) {
 		_ = lastCheck
 		t.Fatalf("processIssue() error: %v", err)
 	}
-	if len(p.dispatches) > maxEventsPerIssue {
+	if len(p.dispatches) != maxEventsPerIssue {
 		t.Errorf("dispatched %d records, want capped at %d", len(p.dispatches), maxEventsPerIssue)
 	}
 }
