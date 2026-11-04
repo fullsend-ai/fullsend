@@ -4,7 +4,7 @@ sidebar_position: 4
 
 # Configuring GitLab For Fullsend
 
-The goal of this document is that you configure Fullsend for your GitLab
+The goal of this document is that you configure fullsend for your GitLab
 repository. GitLab installations are per-repo only — there is no
 organization-wide GitLab install path.
 
@@ -57,13 +57,13 @@ GitHub repositories use a different command (`fullsend github setup`). See
 
 `ci_pipeline_variables_minimum_override_role` is a GitLab project setting,
 not a `.fullsend` configuration field. Before installing typed-input jobs,
-an administrator must set it to `no_one_allowed`; Fullsend reads it back
+an administrator must set it to `no_one_allowed`; fullsend reads it back
 and refuses delivery if it is weaker, unsupported, or unreadable. Setting
 `FULLSEND_GITLAB_PIPELINE_VAR_RESTRICTION=enforced` does not bypass this
 pre-delivery check. A failed setting change must leave the new jobs undelivered,
 not runnable under an unsafe policy.
 
-The former variable-based dispatch path is no longer supported, and Fullsend
+The former variable-based dispatch path is no longer supported, and fullsend
 no longer migrates installations off it automatically. Install and converge
 refuse to deliver a legacy variable-based wrapper (for example, from a
 `fullsend_ref` pinned before v0.46.0): pin v0.46.0 or later, or remove the
@@ -240,7 +240,7 @@ Install then converges the project:
   Reporter, Guest, or non-member author it exits successfully without
   running triage. Existing credential variables
   are reused only when masked, protected, and wildcard-scoped; otherwise they
-  are regenerated. Only webhooks Fullsend owns are updated or deleted. This
+  are regenerated. Only webhooks fullsend owns are updated or deleted. This
   step is deferred until the dispatcher and its scripts are on the default
   branch, the default branch is protected, and
   `no_one_allowed` is verified, so on a merge-request install re-run
@@ -380,7 +380,7 @@ reserved variable is defined there. These checks still apply:
   polling fallback all still apply.
 
 Environment-scoped variables do not mitigate this risk. A job can
-declare the matching environment, and Fullsend stores and reads these
+declare the matching environment, and fullsend stores and reads these
 credentials at the wildcard scope.
 
 ### Enabling a subset of agents
@@ -462,7 +462,7 @@ There are two practical Free-tier arrangements:
    Analyst, and Coder respectively when distinct audit and approval identities
    are required.
 
-Each supplied token must satisfy the same policy as a credential Fullsend
+Each supplied token must satisfy the same policy as a credential fullsend
 mints, or enrollment rejects it before anything is stored: it must be active,
 carry the role's token name (`fullsend-poller`, `fullsend-analyst` or
 `fullsend-coder`) and exactly the `api` scope, and expire no later than one
@@ -552,7 +552,7 @@ rotated by the administrator, not by `repos install`.
 revoked credentials as `gitlab-role:<name>` drift. Re-running
 `repos install` repairs missing role secrets. `repos uninstall` deletes
 the registry, role secrets, matching role project access tokens, and
-verified Fullsend-managed project service accounts (see
+verified fullsend-managed project service accounts (see
 [Project service accounts](#project-service-accounts)), and
 removes the rotation document last. If the rotation document records
 administrator-supplied account exclusions, an exclusions-only document is
@@ -566,7 +566,7 @@ cleanup of those. See [Operations § Uninstalling](operations.md#uninstalling).
 
 > **Status: active
 > ([#8242](https://github.com/fullsend-ai/fullsend/issues/8242)).** Install
-> converges Fullsend-managed role credentials to project service accounts and
+> converges fullsend-managed role credentials to project service accounts and
 > writes rotation state in a versioned format. Every CLI that runs
 > `repos install`, converge or uninstall against a project must be upgraded
 > first: older rotation and status runs reject the new state, but older
@@ -596,7 +596,7 @@ Where project service accounts are unavailable, installs fall back to separate
 Developer-level project access tokens if the instance supports them. Either
 way these are genuinely different GitLab identities.
 
-Re-running `repos install` also replaces positively identified Fullsend-managed
+Re-running `repos install` also replaces positively identified fullsend-managed
 legacy role credentials with service-account credentials. There is no separate
 migration command. Supplied credentials are retained; old managed tokens stay
 valid for the ordinary 24-hour in-flight-job grace period before cleanup on a
@@ -912,7 +912,7 @@ reason and resource IDs.
   decoders reject it; use this version or newer for later install,
   status, repair, rotation, or uninstall, even if schedules remain
   installer-owned. The gate also defers when a committed CI
-  job, other than Fullsend's own, would run in a trigger, agent child
+  job, other than fullsend's own, would run in a trigger, agent child
   (`source=pipeline`) or scheduled (`source=schedule`) pipeline, and while the
   committed dispatch scripts, including helpers that run before authorization,
   do not match the shipped compatible scripts, or the managed poll, agent,
@@ -1478,7 +1478,7 @@ gcloud projects add-iam-policy-binding "$GCP_PROJECT" \
 >
 > - A principal set bound by GitLab project ID trusts every pipeline in
 >   that project that can request a token with the provider's audience,
->   not only Fullsend's agent jobs.
+>   not only fullsend's agent jobs.
 > - The agent sandbox receives that token (at
 >   `/sandbox/workspace/.gcp-oidc-token`) and can exchange it itself. The
 >   agent can reach everything granted to the provider's principal for
@@ -1792,7 +1792,7 @@ content drift, and `repos install` repairs it. Templates fetched for a pin
 that predates this rendering hardcode `fullsend-runner:dev`. Install replaces
 that with the pinned release's image too.
 
-Tracking `main` (the `dev` image) is an opt-in for Fullsend maintainers and
+Tracking `main` (the `dev` image) is an opt-in for fullsend maintainers and
 early testers, selected by pinning `gitlab.fullsend_ref` to `main` or a
 commit SHA. It is **not supported for production**: every runner image change
 merged to `main`, including an OpenShell bump, reaches the project as soon as
@@ -1816,17 +1816,17 @@ chooses which tags the scaffold embeds.
 GitLab still has to **assign** a runner that carries that tag to the
 target project or a parent group, or the job never gets a runner.
 
-Use the Fullsend runner hub on the **same GitLab instance** you set as
+Use the fullsend runner hub on the **same GitLab instance** you set as
 `gitlab.url`. A hub on a different instance cannot pick up the job.
 
 * **GitLab.com** (`https://gitlab.com`) — use the
-  [GitLab.com Fullsend runner hub](https://gitlab.com/fullsend/runner-hub).
+  [GitLab.com fullsend runner hub](https://gitlab.com/fullsend/runner-hub).
   Follow that project's
   [README](https://gitlab.com/fullsend/runner-hub/-/blob/main/README.md)
   to have its runners assigned to your project or group. The hub README
   is the source of truth for onboarding; this guide does not repeat those
   steps.
-* **Self-managed instances** — use that instance's own Fullsend runner
+* **Self-managed instances** — use that instance's own fullsend runner
   hub, typically a `fullsend/runner-hub` project on the same host.
   Follow **that** project's `README.md`, not the GitLab.com one.
   Onboarding tokens, groups, and runner registration are instance-local.
@@ -1872,7 +1872,7 @@ Confirm:
 * **Dispatcher pipelines** — With the webhook fast path enabled, every
   issue, merge request, and comment event creates a `trigger` pipeline
   that runs the dispatcher job. GitLab creates that pipeline before
-  Fullsend can read `TRIGGER_PAYLOAD`, so the pipeline appears even for
+  fullsend can read `TRIGGER_PAYLOAD`, so the pipeline appears even for
   events that dispatch nothing. An issue edit that does not change labels
   (title, description, assignee) is ignored: the job logs
   `ignoring issue #N update without changes.labels` and succeeds without
@@ -1911,7 +1911,7 @@ Confirm:
   cannot be bounded on the Poller route (an unmanaged pipeline trigger owned at
   or above Maintainer, or one whose owner cannot be verified, could be that token),
   `repos install` deletes the `FULLSEND_TRIGGER_TOKEN` variable and the
-  Fullsend-managed webhook and trigger tokens instead of leaving the bearer
+  fullsend-managed webhook and trigger tokens instead of leaving the bearer
   in storage; unmanaged trigger tokens are never revoked. On the account route,
   install compares the published value with the digest recorded when the
   account trigger was created. An existing healthy account without a digest
@@ -2056,13 +2056,13 @@ the provider and refresh it after key rotations; see
 * Read [Operations](operations.md) for day-2 updates, uninstall, and
   GitLab CI status-notification variables.
 * Read the [Agents](../../agents/README.md) section to learn about the
-  default agents Fullsend ships with.
+  default agents fullsend ships with.
 
 ### Inherited variables and authentication changes
 
 Fullsend agent jobs have no deployment environment, so only wildcard (`*`) CI/CD variables
 participate in installation checks. Fullsend already creates its variables at this scope;
-Fullsend installations require no migration.
+fullsend installations require no migration.
 
 On self-managed instances, a project Maintainer token cannot normally read instance CI/CD
 variables. Installation can proceed with unverified inherited scopes, but switching to

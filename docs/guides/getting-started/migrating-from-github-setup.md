@@ -19,7 +19,7 @@ The procedure is the same in both cases: declare the values in `repos.yaml`,
 supply credentials when you run install, preview, install, and verify.
 
 **Target audience:** org maintainers and platform administrators who install
-Fullsend with `repos install`. For manifest structure and day-2 operations,
+fullsend with `repos install`. For manifest structure and day-2 operations,
 see [Repo Management](repo-management.md).
 
 ## Prerequisites
@@ -89,7 +89,7 @@ see [Repo Management](repo-management.md).
   `vendor`, install removes the stale binary, the vendor manifest, the
   `.defaults/` content, and the local reusable workflows. Fullsend's own
   callers are rewritten in the same scaffold commit. Install deletes only
-  files Fullsend is known to have shipped; a file you created, even one
+  files fullsend is known to have shipped; a file you created, even one
   the vendor manifest lists, is kept. If a workflow would still call a local reusable
   workflow, install keeps everything and reports the pending work. See
   [Turning vendoring off](../../cli/repos.md#turning-vendoring-off).
@@ -243,7 +243,7 @@ file needs action, install stops before any manifest or forge write.
 
 ### Fresh repository
 
-The repository has no Fullsend files.
+The repository has no fullsend files.
 
 1. Declare the repository and its settings:
 

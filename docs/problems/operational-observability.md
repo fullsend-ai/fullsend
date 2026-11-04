@@ -105,7 +105,7 @@ Traces need to be correlatable. A PR review workflow involving five agents needs
 
 [ADR 0154](../ADRs/0154-correlate-work-item-and-behaviour-scenario-traces.md)
 chooses a stable trace context for each work item, with explicit links for items
-Fullsend creates from other issues and one shared trace for each behaviour-test
+fullsend creates from other issues and one shared trace for each behaviour-test
 scenario and its created items. Backend retention for these long-lived traces
 remains an open question below.
 

@@ -393,7 +393,7 @@ Identity is not the same as trust. An agent's identity lets it authenticate to e
   specific to one agent goes to a custom role on its author's standalone mint
   ([ADR 0124](ADRs/0124-criteria-for-adding-a-built-in-agent-role.md)).
 
-One concrete implementation option is [`oidcx`](https://github.com/oxidecomputer/oidcx): a service that accepts OIDC identity tokens and exchanges them for short-lived access tokens. It can mint tokens scoped to selected GitHub repositories and permissions, or to selected Oxide silos and permissions, and it also ships with a GitHub Action wrapper. In a Fullsend deployment, this can be used by the sandbox entrypoint to narrow a broad GitHub App identity down to only the specific permissions an agent needs for the current run.
+One concrete implementation option is [`oidcx`](https://github.com/oxidecomputer/oidcx): a service that accepts OIDC identity tokens and exchanges them for short-lived access tokens. It can mint tokens scoped to selected GitHub repositories and permissions, or to selected Oxide silos and permissions, and it also ships with a GitHub Action wrapper. In a fullsend deployment, this can be used by the sandbox entrypoint to narrow a broad GitHub App identity down to only the specific permissions an agent needs for the current run.
 
 **Open questions:**
 
@@ -453,7 +453,7 @@ The existing design principle is that [the repo is the coordinator](problems/age
   `fullsend poll` and non-CI bound runs default to once; a CI bound run with
   entity sources, eventless eligibility, a usable job deadline, and recurring
   repository-scoped poll coverage defaults to timed. Its internal timer checks
-  only its bound entity, independently of optional private Fullsend-to-Fullsend
+  only its bound entity, independently of optional private fullsend-to-fullsend
   wake delivery; the broad `fullsend poll` scan normally runs less often. Bound
   `run` exits after an idle period in either resident lifecycle, while a
   repository-wide `fullsend poll` may stay resident until stopped. Eventless
@@ -523,7 +523,7 @@ The existing design principle is that [the repo is the coordinator](problems/age
   [ADR 0054](ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md);
   [ADR 0151](ADRs/0151-harness-human-role-minimums.md)).
 - Data security boundary (target state): each source-system record that
-  Fullsend controls is admitted to model input only after its exact current
+  fullsend controls is admitted to model input only after its exact current
   revision's actor and current authorization are verified. An ordinary human
   actor must meet the platform `triage` floor and the selected harness's
   effective `human_min_role`; registered bots use a separate provider-backed
@@ -541,7 +541,7 @@ The existing design principle is that [the repo is the coordinator](problems/age
 - Fullsend-originated entity evaluation (target state): `fullsend poll`
   enumerates candidates, while a bound `fullsend run` may recheck only its
   canonical entity with `event == null`. Both require verified,
-  non-user-assertable Fullsend invocation provenance and effective platform
+  non-user-assertable fullsend invocation provenance and effective platform
   eligibility; the actor of an earlier event does not authorize an eventless
   cycle. The platform classifies action-indicating categories, but acquires
   only entity data that can affect each harness's CEL predicate. The target
@@ -658,7 +658,7 @@ Observability is a cross-cutting concern that touches every other component. Eac
 
 - JSONL reasoning trace exposure: raw JSONL conversation transcripts are extracted from sandboxes and stored with owner-scoped access. Credential scanning acts as an invariant check on [ADR 0017](ADRs/0017-credential-isolation-for-sandboxed-agents.md)'s isolation model. Agents handling data from protected sources beyond the target repo can opt in to JSONL suppression via configuration ([ADR 0021](ADRs/0021-jsonl-reasoning-trace-exposure.md)).
 - Event-driven stage dispatch remains traceable end-to-end in the GitHub Actions UI by using synchronous `workflow_call` dispatch (see [ADR 0041](ADRs/0041-synchronous-workflow-call-event-dispatch.md)).
-- Scheduled entity-discovery runs are attributable to the verified Fullsend
+- Scheduled entity-discovery runs are attributable to the verified fullsend
   invocation identity, target repository, effective policy, harness revision,
   and resolved entity. Their CEL checks record decision and coverage evidence;
   identifiable positive witnesses retain actor provenance, while collection
@@ -671,8 +671,8 @@ Observability is a cross-cutting concern that touches every other component. Eac
   [ADR 0148](ADRs/0148-reuse-verified-actor-roles-for-entity-cel.md)).
 - Distributed tracing: framework-native OpenTelemetry instrumentation with zero-configuration baseline. Every run produces `run-telemetry.jsonl` locally; optional live OTLP export to any compatible backend. W3C trace context propagation links multi-agent pipelines into unified traces. OTEL GenAI semantic conventions enable LLM-aware backends ([ADR 0050](ADRs/0050-distributed-tracing-instrumentation.md)).
 - Work-item trace continuity: the chosen topology gives each issue or change
-  proposal a stable context to parent Fullsend launches, with explicit span
-  links for Fullsend-created child entities. Behaviour-test scenarios will
+  proposal a stable context to parent fullsend launches, with explicit span
+  links for fullsend-created child entities. Behaviour-test scenarios will
   parent their own operations and created entities in one TraceID
   ([ADR 0154](ADRs/0154-correlate-work-item-and-behaviour-scenario-traces.md);
   implementation pending). Fullsend accepts stored context only when its
@@ -681,7 +681,7 @@ Observability is a cross-cutting concern that touches every other component. Eac
   the stable entity-derived context. Standard installs generate a signing key
   stored in repository secrets; BT supplies a protected signing-key source and
   verification key through install flags. GitHub, GitLab, and Forgejo use
-  hidden entity-body metadata; Jira uses issue properties for Fullsend- or
+  hidden entity-body metadata; Jira uses issue properties for fullsend- or
   BT-created issues and comment properties for issues created elsewhere.
 - Eval measurements: the concept of scoring traces ([fail-open](glossary.md#fail-open)). [OTEL primary facts](glossary.md#otel-primary-facts) stay on the run trace (`run-telemetry.jsonl`); [OTEL derived products](glossary.md#otel-derived-products) are the scores (`eval-measurements.jsonl`) ([ADR 0087](ADRs/0087-eval-measurements-online-trace-scoring.md)). See [Eval Measurements](guides/infrastructure/eval-measurements.md). When `OTEL_EXPORTER_OTLP_*` is set, scores also export as `gen_ai.evaluation.result` span events on the same TraceID (same OTLP path as agent traces; fail-open).
 
@@ -885,7 +885,7 @@ See [ADR 0003](ADRs/0003-org-config-repo-convention.md) for the historical org c
 
 In the self-managed per-repository deployment model, each installation
 operates independently, with no shared control plane between installations.
-If Fullsend offers a centrally managed service, each tenant's repository
+If fullsend offers a centrally managed service, each tenant's repository
 configuration will use the existing `repos.yaml` v1 manifest. The source of
 truth and how service components consume it, along with the service's runtime
 and deployment model, remain open ([ADR 0123](ADRs/0123-tenant-configuration-from-repos-yaml.md)).
