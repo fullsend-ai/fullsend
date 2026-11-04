@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -544,4 +545,56 @@ func TestExpandAliasesBounded(t *testing.T) {
 	cyclic.Content = []*yaml.Node{{Kind: yaml.AliasNode, Alias: cyclic}}
 	_, err = expandAliasesBounded(cyclic)
 	require.Error(t, err)
+}
+
+func TestParseManifest_LegacyTrackingPushDownRejectsMalformedConfig(t *testing.T) {
+	for name, value := range map[string]string{
+		"sequence":        "[invalid]",
+		"non-null scalar": "invalid",
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := parseManifestBytes([]byte(`version: 1
+defaults:
+  config:
+    create_issues:
+      allow_targets:
+        repos: [acme/tools]
+github:
+  config: `+value+`
+  repos: []
+`), &Manifest{})
+			require.Error(t, err, "a malformed forge config is not replaced by the inherited selection")
+		})
+	}
+}
+
+func TestExpandAliasesBounded_ScalarByteBudget(t *testing.T) {
+	// Few nodes, but every alias occurrence repeats a large anchored scalar.
+	big := strings.Repeat("x", 512<<10)
+	var b strings.Builder
+	b.WriteString("a: &a " + big + "\nb: [")
+	for i := 0; i < 40; i++ {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString("*a")
+	}
+	b.WriteString("]\n")
+	var doc yaml.Node
+	require.NoError(t, yaml.Unmarshal([]byte(b.String()), &doc))
+	_, err := expandAliasesBounded(doc.Content[0])
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "bytes")
+
+	_, _, err = migrateLegacyManifestTracking([]byte(b.String() + "defaults:\n  config:\n    tracker: github\n"))
+	require.Error(t, err)
+}
+
+func TestExpandAliasesBounded_DepthBudget(t *testing.T) {
+	deep := strings.Repeat("[", maxExpandedYAMLDepth+10) + strings.Repeat("]", maxExpandedYAMLDepth+10)
+	var doc yaml.Node
+	require.NoError(t, yaml.Unmarshal([]byte("a: "+deep+"\n"), &doc))
+	_, err := expandAliasesBounded(doc.Content[0])
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "deeply")
 }

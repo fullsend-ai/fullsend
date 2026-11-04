@@ -101,6 +101,12 @@ func migrateLegacyManifestTracking(data []byte) ([]byte, []LegacyTrackingMigrati
 		if kind == config.TrackingLayerMapping {
 			pushedDown = true
 		}
+		if pushDown && kind == config.TrackingLayerUnset && platformConfig != nil && platformConfig.Kind != yaml.MappingNode && !isNullYAMLNode(platformConfig) {
+			// A config that is neither absent, null, nor a mapping is
+			// malformed. Reject it rather than replacing it with a mapping
+			// that holds the inherited tracking selection.
+			return nil, nil, fmt.Errorf("%s: configuration must be a YAML mapping", path)
+		}
 		if kind == config.TrackingLayerLegacy || (pushDown && kind == config.TrackingLayerUnset) {
 			tracking, err := platformState.Resolve(forgeName)
 			if err != nil {
@@ -159,26 +165,45 @@ func migrateLegacyManifestTracking(data []byte) ([]byte, []LegacyTrackingMigrati
 // a pathological alias chain cannot exhaust memory.
 const maxExpandedYAMLNodes = 1_000_000
 
+// maxExpandedYAMLBytes bounds the total scalar bytes of an alias-expanded
+// manifest. Node copies share their scalar strings, but encoding the migrated
+// manifest materializes every occurrence, so a large anchored scalar
+// referenced many times would otherwise amplify memory use.
+const maxExpandedYAMLBytes = 16 << 20
+
+// maxExpandedYAMLDepth bounds the nesting depth walked while expanding
+// aliases.
+const maxExpandedYAMLDepth = 256
+
 // expandAliasesBounded returns a deep copy of n in which every alias node is
 // replaced by an independent copy of the node it refers to and anchors are
-// dropped, so no two places in the tree share a node.
+// dropped, so no two places in the tree share a node. It fails when the
+// expansion exceeds the node, scalar-byte, or nesting-depth budget.
 func expandAliasesBounded(n *yaml.Node) (*yaml.Node, error) {
 	count := 0
-	var clone func(src *yaml.Node) (*yaml.Node, error)
-	clone = func(src *yaml.Node) (*yaml.Node, error) {
+	totalBytes := 0
+	var clone func(src *yaml.Node, depth int) (*yaml.Node, error)
+	clone = func(src *yaml.Node, depth int) (*yaml.Node, error) {
 		for src.Kind == yaml.AliasNode {
 			src = src.Alias
+		}
+		if depth > maxExpandedYAMLDepth {
+			return nil, errors.New("manifest nests too deeply once YAML aliases are expanded")
 		}
 		count++
 		if count > maxExpandedYAMLNodes {
 			return nil, errors.New("manifest expands to too many YAML nodes through aliases")
+		}
+		totalBytes += len(src.Value)
+		if totalBytes > maxExpandedYAMLBytes {
+			return nil, errors.New("manifest expands to too many bytes through YAML aliases")
 		}
 		dup := *src
 		dup.Anchor = ""
 		dup.Alias = nil
 		dup.Content = nil
 		for _, child := range src.Content {
-			c, err := clone(child)
+			c, err := clone(child, depth+1)
 			if err != nil {
 				return nil, err
 			}
@@ -186,7 +211,13 @@ func expandAliasesBounded(n *yaml.Node) (*yaml.Node, error) {
 		}
 		return &dup, nil
 	}
-	return clone(n)
+	return clone(n, 0)
+}
+
+// isNullYAMLNode reports whether n is an explicit YAML null (for example an
+// empty value, ~, or null).
+func isNullYAMLNode(n *yaml.Node) bool {
+	return n.Kind == yaml.ScalarNode && n.Tag == "!!null"
 }
 
 // mappingValue returns the value node for key in mapping node n, with any
