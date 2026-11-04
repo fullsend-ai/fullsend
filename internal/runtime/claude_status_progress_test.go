@@ -16,6 +16,7 @@ import (
 func TestClaudeStatusProgressShapes(t *testing.T) {
 	cases := []struct{ name, line, want string }{
 		{"hook start", `{"type":"system","subtype":"hook_started","hook_id":"h1","hook_name":"guard","hook_event":"SessionStart"}`, "Hook guard [SessionStart] — running"},
+		{"hook start other events", `{"type":"system","subtype":"hook_started","hook_id":"h2","hook_name":"guard","hook_event":"PreToolUse"}`, "Hook guard [PreToolUse] — running"},
 		{"hook progress", `{"type":"system","subtype":"hook_progress","hook_id":"h1","hook_name":"guard","stdout":"PRIVATE","stderr":"PRIVATE","output":"PRIVATE"}`, "Hook guard — running"},
 		{"hook success", `{"type":"system","subtype":"hook_response","hook_id":"h1","hook_name":"guard","outcome":"success","exit_code":0,"output":"PRIVATE"}`, "completed: exit 0"},
 		{"hook failed", `{"type":"system","subtype":"hook_response","hook_id":"h1","hook_name":"guard","outcome":"error","exit_code":2}`, "failed: exit 2"},

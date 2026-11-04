@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/fullsend-ai/fullsend/internal/security"
 )
 
 func TestStatusProgressRendererSafetyAndBounds(t *testing.T) {
@@ -76,23 +78,42 @@ func TestStatusProgressCapacityUpdateKeepsExistingEntries(t *testing.T) {
 		r.Handle(StatusProgressEvent{Kind: "row", ID: fmt.Sprint(i), Label: "row " + fmt.Sprint(i), Subject: "subject " + fmt.Sprint(i), SubjectSet: true})
 	}
 	if len(r.progress.statusProgressSeen) != maxStatusProgressEntries {
-		t.Fatalf("setup: want %d entries, got %d", maxTaskProgressEntries, len(r.progress.statusProgressSeen))
+		t.Fatalf("setup: want %d entries, got %d", maxStatusProgressEntries, len(r.progress.statusProgressSeen))
 	}
+	out.Reset()
 	// Updating an existing key at capacity must not wipe the cache.
 	r.Handle(StatusProgressEvent{Kind: "row", ID: "0", Label: "row 0 updated"})
 	if len(r.progress.statusProgressSeen) != maxStatusProgressEntries {
 		t.Fatalf("existing-key update at capacity wiped the cache: %d entries remain", len(r.progress.statusProgressSeen))
 	}
-	// Retained state of other keys must survive: a sparse update to a
-	// different key still merges its retained subject, and dedup still
-	// suppresses an identical resend.
-	r.Handle(StatusProgressEvent{Kind: "row", ID: "1", Label: "row 1"})
-	if msg := out.String(); !strings.Contains(msg, "row 1 subject 1") {
+	// Retained state of other keys must survive: a changed label on another
+	// key still merges its retained subject, printing the new row exactly
+	// once. (An unchanged resend is deduplicated and proves nothing: it
+	// prints nothing whether or not the cache was wiped.)
+	r.Handle(StatusProgressEvent{Kind: "row", ID: "1", Label: "row 1 changed"})
+	if msg := out.String(); !strings.Contains(msg, "row 1 changed subject 1") {
 		t.Fatalf("retained subject lost after capacity update: %q", msg)
 	}
-	out.Reset()
-	r.Handle(StatusProgressEvent{Kind: "row", ID: "1", Label: "row 1"})
-	if out.String() != "" {
-		t.Fatalf("dedup broken after capacity update: %q", out.String())
+	if strings.Count(out.String(), "row 1 changed subject 1") != 1 {
+		t.Fatalf("capacity update row printed more than once: %q", out.String())
+	}
+}
+
+func TestStatusProgressJoinCannotReconstructCredential(t *testing.T) {
+	// A tab-containing credential normalizes to the exact text a
+	// label/subject join can produce when the credential is split across
+	// fields. The joined row must be masked before display and retention.
+	const secret = "opaque-join-runtime-secret \tfor-test"
+	if !security.RegisterRuntimeSecret(secret) {
+		t.Fatal("register synthetic literal")
+	}
+	if NormalizeProgressText(secret) != "opaque-join-runtime-secret for-test" {
+		t.Fatalf("setup: unexpected normalized form %q", NormalizeProgressText(secret))
+	}
+	var out bytes.Buffer
+	r := newTestRenderer(&out)
+	r.Handle(StatusProgressEvent{Kind: "hook", ID: "one", Label: "opaque-join-runtime-secret", Subject: "for-test", SubjectSet: true})
+	if strings.Contains(out.String(), "for-test") || strings.Contains(out.String(), "opaque-join-runtime-secret") {
+		t.Fatalf("joined credential leaked: %q", out.String())
 	}
 }

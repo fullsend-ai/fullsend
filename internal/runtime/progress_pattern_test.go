@@ -128,3 +128,39 @@ func TestProgressFallbackRedactsShortNormalizedRuntimeSecret(t *testing.T) {
 		t.Fatalf("short normalized registered literal escaped rendering: %q", out.String())
 	}
 }
+
+func TestProgressFallbackMaskingOrderKeepsOverlappingCredentials(t *testing.T) {
+	// A secret with a longer raw value can normalize shorter than another
+	// secret's normalized form. Masking in registry (raw-length) order
+	// would replace the shorter literal first and leave the longer
+	// overlapping credential's suffix visible. No callback is set.
+	long := "abc\x1b[32m\x1b[0mdef" // raw 14, normalizes to "abcdef"
+	short := "abcdefghi\tj"         // raw 10, normalizes to "abcdefghi j"
+	if !security.RegisterRuntimeSecret(long) || !security.RegisterRuntimeSecret(short) {
+		t.Fatal("register synthetic literals")
+	}
+	var out bytes.Buffer
+	r := newTestRenderer(&out)
+	r.Handle(TaskProgressEvent{TaskID: "one", State: TaskRunning, Label: "status abcdefghi j done"})
+	if strings.Contains(out.String(), "ghi j") || !strings.Contains(out.String(), "***") {
+		t.Fatalf("overlapping normalized credential leaked: %q", out.String())
+	}
+}
+
+func TestTaskProgressToolOnlyFramesDoNotPrint(t *testing.T) {
+	// Subagent tool calls already arrive as ToolUseEvents; a task_progress
+	// frame that only changes last_tool_name must not print a second line.
+	lines := `{"type":"system","subtype":"task_progress","task_id":"sub1","description":"Subagent work","last_tool_name":"Read"}` + "\n" +
+		`{"type":"system","subtype":"task_progress","task_id":"sub1","description":"Subagent work","last_tool_name":"Bash"}` + "\n"
+	var out bytes.Buffer
+	r := newTestRenderer(&out)
+	if err := parseClaudeStream(strings.NewReader(lines), r.Handle); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(out.String(), "Task sub1") != 1 {
+		t.Fatalf("tool-only task_progress printed more than once: %q", out.String())
+	}
+	if strings.Contains(out.String(), "tool: Bash") {
+		t.Fatalf("tool-only change printed a second row: %q", out.String())
+	}
+}

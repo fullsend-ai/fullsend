@@ -1,6 +1,8 @@
 package runtime
 
 import (
+	"cmp"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -78,35 +80,40 @@ func scanProgressSecrets(s string) string {
 	if candidate == "" {
 		return s
 	}
-	text := s
-	if result := progressRedactor.Scan(candidate); !result.Safe {
+	masked := maskRuntimeSecretLiterals(candidate)
+	text := masked
+	if result := progressRedactor.Scan(masked); !result.Safe {
 		text = result.Sanitized
 	}
-	if masked := redactNormalizedRuntimeSecrets(text); masked != text {
-		return masked
+	if text != candidate {
+		return text
 	}
-	return text
+	return s
 }
 
-// redactNormalizedRuntimeSecrets masks registered runtime secrets in the
-// forms cleanup rewrites them into: an ANSI-split or tab-containing
-// credential normalizes to different text than the registered literal, so
-// exact-literal matching alone can let a reconstructed secret through. The
-// CLI callback redacts normalized literals itself (redactProgressSecret-
-// Literals); the renderer nil-callback fallback must match them too, or
-// the reconstructed credential is displayed and retained.
-func redactNormalizedRuntimeSecrets(s string) string {
+// maskRuntimeSecretLiterals masks registered runtime secrets and their
+// normalized forms in one longest-first pass. The registry is ordered by
+// raw length, but normalization can reverse that order: a secret with a
+// longer raw value can normalize shorter than another secret's normalized
+// form. Masking in registry order would then replace the shorter literal
+// first and destroy the longer overlapping credential's match, leaving its
+// suffix visible. Pattern redaction runs after the literal pass for the
+// same reason. The original literal passed the registration length floor,
+// so every non-empty normalized form is a derivative of an authenticated
+// credential and is masked, mirroring redactSecretLiteralsWithNormalizer
+// in the CLI.
+func maskRuntimeSecretLiterals(s string) string {
+	var literals []string
 	for _, secret := range security.RuntimeSecrets() {
-		// The original literal passed the registration length floor, so
-		// every non-empty normalized form is a derivative of an
-		// authenticated credential and is masked, mirroring
-		// redactSecretLiteralsWithNormalizer in the CLI.
-		normalized := NormalizeProgressText(secret)
-		if normalized == "" || normalized == secret {
-			continue
+		literals = append(literals, secret)
+		if normalized := NormalizeProgressText(secret); normalized != "" && normalized != secret {
+			literals = append(literals, normalized)
 		}
-		if strings.Contains(s, normalized) {
-			s = strings.ReplaceAll(s, normalized, "***")
+	}
+	slices.SortStableFunc(literals, func(a, b string) int { return cmp.Compare(len(b), len(a)) })
+	for _, literal := range literals {
+		if strings.Contains(s, literal) {
+			s = strings.ReplaceAll(s, literal, "***")
 		}
 	}
 	return s

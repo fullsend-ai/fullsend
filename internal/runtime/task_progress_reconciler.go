@@ -126,6 +126,18 @@ func (r *progressReconciler) task(e TaskProgressEvent, redact func(string) strin
 		indexed := e
 		indexed.AgentID = ""
 		comparison = taskProgressMessage(indexed)
+	} else if e.AgentID == "" {
+		// A parent-task tool swap is attribution, not a progress
+		// transition: subagent tool calls already print as ToolUseEvents,
+		// so the row must not churn once per tool. Compare on tool
+		// presence rather than name; the retained event keeps the latest
+		// tool name for the next row that prints for a real reason.
+		toolless := e
+		toolless.ToolSummary = ""
+		if toolless.ToolName != "" {
+			toolless.ToolName = "tool"
+		}
+		comparison = taskProgressMessage(toolless)
 	}
 	fingerprint := sha256.Sum256([]byte(comparison))
 	r.storeTaskProgress(key, taskProgressDisplay{event: e, fingerprint: fingerprint}, isAgent)

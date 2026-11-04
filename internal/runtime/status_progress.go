@@ -17,7 +17,7 @@ func (r *progressReconciler) status(e StatusProgressEvent, redact func(string) s
 		return "", false
 	}
 	key := sha256.Sum256([]byte(e.Kind + "\x00" + e.ID))
-	previous := r.statusProgressSeen[key]
+	previous, keyPresent := r.statusProgressSeen[key]
 	if e.Clear {
 		delete(r.statusProgressSeen, key)
 		return "", false
@@ -50,6 +50,11 @@ func (r *progressReconciler) status(e StatusProgressEvent, redact func(string) s
 		msg += ": " + detail
 	}
 	msg = sanitizeOutput(msg)
+	// Fields are redacted individually; the joins can reconstruct a
+	// credential (a tab-containing secret normalizes to the exact text a
+	// label/subject join produces). Mask the joined row before dedup
+	// comparison, retention and display.
+	msg = scanProgressSecrets(msg)
 	if !e.Occurrence && previous.message == msg {
 		return "", false
 	}
@@ -59,7 +64,7 @@ func (r *progressReconciler) status(e StatusProgressEvent, redact func(string) s
 		}
 		// Only a new key needs a free slot: updating an existing key at
 		// capacity must not discard the retained state of every other key.
-		if _, exists := r.statusProgressSeen[key]; !exists && len(r.statusProgressSeen) >= maxStatusProgressEntries {
+		if !keyPresent && len(r.statusProgressSeen) >= maxStatusProgressEntries {
 			clear(r.statusProgressSeen)
 		}
 		r.statusProgressSeen[key] = statusProgressDisplay{message: msg, subject: subject, context: context}

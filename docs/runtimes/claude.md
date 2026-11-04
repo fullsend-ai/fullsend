@@ -414,7 +414,7 @@ the identity fallback.
 | `task_notification` | Completion, failure or stop, including a worker-restart cause when supplied; full result summary excluded. |
 | `task_summary` | Undocumented internal mid-turn summary; best-effort display, with null/empty values clearing deduplication silently. |
 | `background_tasks_changed` | Count of reported non-ambient background tasks; membership is not execution or completion evidence. |
-| `hook_started`, `hook_progress`, `hook_response` | Hook name/event, running/outcome and exit code; stdout/stderr/output excluded. Fullsend launches Claude without `--include-hook-events`, and the SDK emits only SessionStart and Setup hook events in that mode, so those are the only hook rows real runs produce; the decoder still renders other hook events if a future launch enables them. |
+| `hook_started`, `hook_progress`, `hook_response` | Hook name/event, running/outcome and exit code; stdout/stderr/output excluded. Fullsend launches Claude without `--include-hook-events`, and the SDK (inspected Claude 2.1.312) emits only SessionStart and Setup hook events in that mode, so those are the only hook rows real runs produce; the decoder still renders other hook events if a future launch enables them. |
 | `permission_denied` | Tool/agent identity and bounded decision reason; tool-result body excluded. |
 | `status`, `session_state_changed` | Compaction, session state and action-required transitions; per-request status chatter excluded. |
 | `informational`, `notification` | Salient notices, suggestions, warnings and text notifications; unkeyed occurrences repeat, transcript-only info excluded. |
