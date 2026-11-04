@@ -52,7 +52,15 @@ func migrateLegacyManifestTracking(data []byte) ([]byte, []LegacyTrackingMigrati
 	if doc.Kind != yaml.DocumentNode || len(doc.Content) != 1 || doc.Content[0].Kind != yaml.MappingNode {
 		return data, nil, nil
 	}
-	root := doc.Content[0]
+	// Resolve every alias into an independent copy first, so converting one
+	// config layer cannot change another layer that shared its node through a
+	// YAML anchor, and each layer is converted against its own inheritance.
+	expanded, err := expandAliasesBounded(doc.Content[0])
+	if err != nil {
+		return nil, nil, err
+	}
+	doc.Content[0] = expanded
+	root := expanded
 	var migrations []LegacyTrackingMigration
 
 	defaultsConfig := mappingValue(mappingValue(root, "defaults"), "config")
@@ -145,6 +153,40 @@ func migrateLegacyManifestTracking(data []byte) ([]byte, []LegacyTrackingMigrati
 		return nil, nil, fmt.Errorf("encoding migrated manifest: %w", err)
 	}
 	return out, migrations, nil
+}
+
+// maxExpandedYAMLNodes bounds the node count of an alias-expanded manifest so
+// a pathological alias chain cannot exhaust memory.
+const maxExpandedYAMLNodes = 1_000_000
+
+// expandAliasesBounded returns a deep copy of n in which every alias node is
+// replaced by an independent copy of the node it refers to and anchors are
+// dropped, so no two places in the tree share a node.
+func expandAliasesBounded(n *yaml.Node) (*yaml.Node, error) {
+	count := 0
+	var clone func(src *yaml.Node) (*yaml.Node, error)
+	clone = func(src *yaml.Node) (*yaml.Node, error) {
+		for src.Kind == yaml.AliasNode {
+			src = src.Alias
+		}
+		count++
+		if count > maxExpandedYAMLNodes {
+			return nil, errors.New("manifest expands to too many YAML nodes through aliases")
+		}
+		dup := *src
+		dup.Anchor = ""
+		dup.Alias = nil
+		dup.Content = nil
+		for _, child := range src.Content {
+			c, err := clone(child)
+			if err != nil {
+				return nil, err
+			}
+			dup.Content = append(dup.Content, c)
+		}
+		return &dup, nil
+	}
+	return clone(n)
 }
 
 // mappingValue returns the value node for key in mapping node n, with any

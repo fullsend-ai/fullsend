@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -362,6 +363,12 @@ func TestValidateExistingOverlay_LegacyTracking(t *testing.T) {
 	assert.Contains(t, err.Error(), "tracker.gitlab.allowed_targets.groups")
 }
 
+func TestValidateExistingOverlay_SequenceTracker(t *testing.T) {
+	overlay := managedConfigMarker + "tracker: [jira]\ncreate_issues:\n  allow_targets:\n    repos: [acme/tools]\n"
+	require.Error(t, validateExistingOverlay([]byte(overlay), ForgeGitHub),
+		"a malformed tracker in a managed overlay is rejected, not converted into a grant")
+}
+
 // TestConvergeManagedConfigFiles_RewritesLegacyManagedOverlay: a managed
 // overlay rendered from the legacy schema is re-rendered from the converted
 // manifest (same effective policy, so the safety gate passes), and a second
@@ -432,5 +439,109 @@ func TestManagedSafetyGate_LegacyManagedOverlay(t *testing.T) {
 	assert.Equal(t, "error", rejected.Action)
 	assert.Contains(t, rejected.Detail, "tracker.gitlab.allowed_targets.groups")
 	_, err = presetReplacementRelaxations(context.Background(), resolved, nil, true, nil)
+	require.Error(t, err)
+}
+
+// TestParseManifest_LegacyTrackingSharedAliasesStayIndependent: layers that
+// share a config node through a YAML anchor are each converted against their
+// own forge and inherited targets, not against the first layer's result.
+func TestParseManifest_LegacyTrackingSharedAliasesStayIndependent(t *testing.T) {
+	var m Manifest
+	require.NoError(t, parseManifestBytes([]byte(`version: 1
+github:
+  config: &legacy
+    create_issues:
+      allow_targets:
+        repos: [shared/tools]
+  repos:
+    - name: acme/api
+gitlab:
+  config: *legacy
+  repos:
+    - name: group/proj
+`), &m))
+	assert.Equal(t, githubRepos("shared/tools"), m.GitHub.Config.Writer().IssueTracking())
+	assert.Equal(t, gitlabRepos("shared/tools"), m.GitLab.Config.Writer().IssueTracking(),
+		"the aliased layer resolves its provider from its own forge")
+	assert.Equal(t, gitlabRepos("shared/tools"), managedTracking(t, &m, ForgeGitLab, "group/proj"))
+}
+
+// TestParseManifest_LegacyTrackingSharedRepoConfigKeepsInheritedPolicy: a
+// repository config shared across forges inherits each forge's own targets
+// instead of the targets written into the shared node by the first entry.
+func TestParseManifest_LegacyTrackingSharedRepoConfigKeepsInheritedPolicy(t *testing.T) {
+	var m Manifest
+	require.NoError(t, parseManifestBytes([]byte(`version: 1
+github:
+  config:
+    create_issues:
+      allow_targets:
+        orgs: [acme]
+  repos:
+    - name: acme/api
+      config: &shared
+        tracker: github
+gitlab:
+  url: https://gitlab.example.com
+  config:
+    tracker: github
+    create_issues:
+      allow_targets:
+        repos: [trusted/tools]
+  repos:
+    - name: group/proj
+      config: *shared
+`), &m))
+	assert.Equal(t, &config.TrackingConfig{GitHub: &config.GitHubTrackingConfig{AllowedTargets: config.GitHubAllowedTargets{Orgs: []string{"acme"}}}},
+		managedTracking(t, &m, ForgeGitHub, "acme/api"))
+	assert.Equal(t, githubRepos("trusted/tools"), managedTracking(t, &m, ForgeGitLab, "group/proj"),
+		"the narrower inherited grant is not replaced by the organization-wide one")
+}
+
+func TestParseManifest_LegacyTrackingRejectsSequenceTracker(t *testing.T) {
+	err := parseManifestBytes([]byte(`version: 1
+github:
+  config:
+    tracker: [jira]
+    create_issues:
+      allow_targets:
+        repos: [acme/tools]
+  repos: []
+`), &Manifest{})
+	require.Error(t, err, "a malformed tracker is not rewritten into a grant")
+
+	err = parseManifestBytes([]byte(`version: 1
+defaults:
+  config:
+    create_issues:
+      allow_targets:
+        repos: [acme/tools]
+github:
+  config:
+    tracker: [jira]
+  repos: []
+`), &Manifest{})
+	require.Error(t, err, "push-down does not overwrite a malformed tracker")
+}
+
+func TestExpandAliasesBounded(t *testing.T) {
+	var doc yaml.Node
+	require.NoError(t, yaml.Unmarshal([]byte("a: &a [x]\nb: &b [*a, *a]\nc: *b\n"), &doc))
+	out, err := expandAliasesBounded(doc.Content[0])
+	require.NoError(t, err)
+	var seen func(n *yaml.Node)
+	seen = func(n *yaml.Node) {
+		assert.NotEqual(t, yaml.AliasNode, n.Kind)
+		assert.Empty(t, n.Anchor)
+		for _, c := range n.Content {
+			seen(c)
+		}
+	}
+	seen(out)
+
+	// A node that contains an alias to itself expands without end.
+	cyclic := &yaml.Node{Kind: yaml.SequenceNode}
+	cyclic.Content = []*yaml.Node{{Kind: yaml.AliasNode, Alias: cyclic}}
+	_, err = expandAliasesBounded(cyclic)
 	require.Error(t, err)
 }

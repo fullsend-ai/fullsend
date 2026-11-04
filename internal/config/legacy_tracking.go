@@ -103,7 +103,15 @@ func ReadLegacyTracking(node *yaml.Node, inherited LegacyTracking) (LegacyTracki
 		return LegacyTracking{mapping: &t}, TrackingLayerMapping, nil
 	}
 
-	scalar := trackerVal != nil && trackerVal.Kind == yaml.ScalarNode && !isNullNode(trackerVal)
+	if trackerVal != nil && trackerVal.Kind != yaml.ScalarNode {
+		// A sequence is neither a provider name nor a provider mapping.
+		// Leave it in place for strict decoding to reject, even when the
+		// removed create_issues block is also set, rather than rewriting
+		// it into a valid mapping.
+		return LegacyTracking{mapping: &TrackingConfig{}}, TrackingLayerMapping, nil
+	}
+
+	scalar := trackerVal != nil && !isNullNode(trackerVal)
 	if !scalar && !hasCreateIssues {
 		return inherited, TrackingLayerUnset, nil
 	}

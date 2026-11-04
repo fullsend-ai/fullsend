@@ -320,3 +320,15 @@ func TestFormatTracking(t *testing.T) {
 		FormatTracking(&TrackingConfig{GitHub: &GitHubTrackingConfig{AllowedTargets: GitHubAllowedTargets{Orgs: []string{"acme"}}}}))
 	assert.Equal(t, "tracker.jira.allowed_targets: projects=unset", FormatTracking(&TrackingConfig{Jira: &JiraTrackingConfig{}}))
 }
+
+func TestReadLegacyTracking_SequenceTrackerLeftToDecoder(t *testing.T) {
+	node := mustMappingNode(t, "tracker: [jira]\ncreate_issues:\n  allow_targets:\n    repos: [acme/tools]\n")
+	_, kind, err := ReadLegacyTracking(node, LegacyTracking{})
+	require.NoError(t, err)
+	assert.Equal(t, TrackingLayerMapping, kind, "a malformed tracker is not classified as legacy")
+
+	out, changed, err := MigrateLegacyTrackingYAML([]byte("tracker: [jira]\ncreate_issues:\n  allow_targets:\n    repos: [acme/tools]\n"), TrackingProviderGitHub)
+	require.NoError(t, err)
+	assert.False(t, changed)
+	assert.Contains(t, string(out), "tracker: [jira]")
+}
