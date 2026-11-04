@@ -753,6 +753,19 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		manifestChanged = true
 	}
 
+	// The manifest loader converted any legacy tracker/create_issues config
+	// to the tracker mapping in memory (#9075), so the rendered managed
+	// overlays use the new shape. Persist the converted manifest with the
+	// other planned edits, or name the edits for a manifest that cannot be
+	// written.
+	if migrations := manifest.LegacyTrackingMigrations(); len(migrations) > 0 {
+		writable := opts.manifest != "" && !repos.ManifestReadOnly(manifest, opts.manifest)
+		if writable {
+			manifestChanged = true
+		}
+		deferOutput(func() { reportLegacyTrackingMigrations(printer, opts.manifest, migrations, writable, opts.dryRun) })
+	}
+
 	// Compare the proposed layered configuration (manifest edits and declared
 	// presets) with each repository's installed layers before anything is
 	// persisted or written to the forge.
@@ -1325,6 +1338,26 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		return fmt.Errorf("%d repos failed", failedCount)
 	}
 	return nil
+}
+
+// reportLegacyTrackingMigrations reports the manifest config layers whose
+// legacy tracker/create_issues keys were converted to the tracker mapping
+// (#9075). writable reports whether install persists the converted manifest;
+// otherwise the operator is asked to apply the same edits to its source.
+func reportLegacyTrackingMigrations(printer *ui.Printer, manifestPath string, migrations []repos.LegacyTrackingMigration, writable, dryRun bool) {
+	var b strings.Builder
+	for _, mig := range migrations {
+		fmt.Fprintf(&b, "\n  %s: %s", mig.Path, mig.Result)
+	}
+	switch {
+	case !writable:
+		printer.StepWarn(fmt.Sprintf("Manifest %s uses the legacy tracker/create_issues configuration and cannot be written; "+
+			"this run uses the converted values. Replace them in the manifest source with:%s", manifestPath, b.String()))
+	case dryRun:
+		printer.StepInfo("Would convert the legacy tracker/create_issues configuration in " + manifestPath + " to the tracker mapping:" + b.String())
+	default:
+		printer.StepInfo("Converted the legacy tracker/create_issues configuration in " + manifestPath + " to the tracker mapping:" + b.String())
+	}
 }
 
 // reconcileFailedGitLabWebhookSafety runs the revocation-only webhook safety

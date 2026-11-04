@@ -321,8 +321,9 @@ when set, so layers never combine two providers. See
 **Breaking change — migration from the scalar `tracker`:** `tracker` used to be
 a scalar (`tracker: jira`). A scalar value is no longer accepted: validation
 (`fullsend lint` and CLI config writes) and config loading reject it with a
-migration message, and a `repos.yaml` managed `config:` block containing it is
-rejected the same way. Replace it with the provider block:
+migration message. A `repos.yaml` managed `config:` block containing it is
+converted by `fullsend repos install` (see below). Replace it with the provider
+block:
 
 ```yaml
 # before
@@ -335,16 +336,44 @@ tracker:
 **Migration from `create_issues`:** the top-level `create_issues` key is
 removed. Runtime config loading fails with a migration error when either
 `.fullsend/config.yaml` or `.fullsend/config.base.yaml` still contains
-`create_issues`; the key is never silently ignored. Validation also rejects it,
-and a `repos.yaml` managed `config:` block containing it is rejected with a
-migration message. Move `create_issues.allow_targets.orgs` and `repos`
+`create_issues`; the key is never silently ignored. Validation also rejects it.
+Move `create_issues.allow_targets.orgs` and `repos`
 to `tracker.github.allowed_targets.orgs` and `repos` on GitHub, to
 `tracker.gitlab.allowed_targets.groups` and `repos` on GitLab, or to
 `tracker.jira.allowed_targets.projects` on Jira, and keep only one provider
-block. Automatic migration of existing managed `repos.yaml` entries (legacy
-scalar `tracker` values and `create_issues` targets) by `fullsend repos
-install` is tracked in
-[#9075](https://github.com/fullsend-ai/fullsend/issues/9075).
+block.
+
+**Automatic migration of managed configuration:** `fullsend repos install`
+converts the legacy scalar `tracker` and `create_issues` keys in `repos.yaml`
+managed `config:` blocks (`defaults.config`, the forge section's `config`, and
+each repository entry's `config`) before the manifest is decoded, writes the
+converted manifest, and re-renders each Fullsend-managed `.fullsend/config.yaml`
+from it. Each layer that set a legacy key gets the full `tracker` mapping that
+was in effect there, because the legacy keys were inherited separately while a
+`tracker` mapping replaces the parent's. The effective provider and targets of
+every repository stay the same:
+
+- A layer with no provider uses the repository's forge (`github` or `gitlab`).
+  A `create_issues` block in `defaults.config` with no provider is moved to each
+  forge section's `config`, because `defaults.config` applies to both forges.
+- GitHub `orgs` and `repos` stay organization and repository grants under
+  `tracker.github.allowed_targets`. GitLab `repos` move to
+  `tracker.gitlab.allowed_targets.repos`.
+- Install stops before any write, naming the manifest path and the edit to
+  make, when a target has no unambiguous equivalent. That covers repository or
+  organization targets under a Jira provider (Jira targets are project keys
+  under `tracker.jira.allowed_targets.projects` and are never derived from
+  repository paths), organization targets on GitLab (list the groups under
+  `tracker.gitlab.allowed_targets.groups`), and a layer that combines a
+  `tracker` mapping with `create_issues`.
+- A scalar `tracker` with no `create_issues` in the manifest becomes a provider
+  block with no `allowed_targets`. As a `tracker` mapping it replaces any
+  `tracker` mapping in the preset (`.fullsend/config.base.yaml`).
+
+Running install again changes nothing. A read-only or HTTPS manifest is
+converted in memory for that run and install prints the edits to apply to its
+source. `--dry-run` reports the conversion without writing. Markerless
+`.fullsend/config.yaml` files and presets are not converted; edit them by hand.
 
 ### `authorization`
 

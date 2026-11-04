@@ -1,0 +1,183 @@
+package repos
+
+import (
+	"errors"
+	"fmt"
+
+	"gopkg.in/yaml.v3"
+
+	"github.com/fullsend-ai/fullsend/internal/config"
+)
+
+// LegacyTrackingMigration records one manifest config layer whose legacy
+// issue-tracking keys (the scalar tracker form and the removed
+// create_issues block) were converted to the tracker mapping on load
+// (#9075).
+type LegacyTrackingMigration struct {
+	// Path is the manifest location of the converted config layer, for
+	// example "github.repos[org/repo].config".
+	Path string
+	// Result describes the tracker mapping written in its place, or that
+	// the legacy keys were moved to the forge sections.
+	Result string
+}
+
+// LegacyTrackingMigrations returns the config layers whose legacy
+// issue-tracking keys were converted to the tracker mapping when the
+// manifest was parsed. The in-memory manifest already holds the converted
+// values; persisting the manifest writes them to repos.yaml.
+func (m *Manifest) LegacyTrackingMigrations() []LegacyTrackingMigration {
+	return m.legacyTrackingMigrations
+}
+
+// migrateLegacyManifestTracking converts the legacy issue-tracking keys of
+// every managed config layer in the manifest YAML to the tracker mapping,
+// before the manifest is decoded strictly (#9075). Each layer that sets a
+// legacy key is rewritten to the full mapping in effect at that layer under
+// the legacy rules (defaults.config, then the forge section's config, then
+// the repository entry's config), so the effective provider and targets of
+// every repository are unchanged. A layer that names no provider uses the
+// repository's forge, the runtime's default.
+//
+// defaults.config spans both forges, so legacy targets declared there
+// without a provider are moved to each forge section's config instead.
+//
+// It returns data unchanged when no layer needs converting, and leaves
+// malformed YAML to the strict decoder.
+func migrateLegacyManifestTracking(data []byte) ([]byte, []LegacyTrackingMigration, error) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return data, nil, nil
+	}
+	if doc.Kind != yaml.DocumentNode || len(doc.Content) != 1 || doc.Content[0].Kind != yaml.MappingNode {
+		return data, nil, nil
+	}
+	root := doc.Content[0]
+	var migrations []LegacyTrackingMigration
+
+	defaultsConfig := mappingValue(mappingValue(root, "defaults"), "config")
+	defaultsState, kind, err := config.ReadLegacyTracking(defaultsConfig, config.LegacyTracking{})
+	if err != nil {
+		return nil, nil, fmt.Errorf("defaults.config: %w", err)
+	}
+	pushDown := false
+	if kind == config.TrackingLayerLegacy {
+		var tracking *config.TrackingConfig
+		result := "moved to the forge sections' config (the provider depends on the forge)"
+		if defaultsState.HasProvider() {
+			if tracking, err = defaultsState.Resolve(""); err != nil {
+				return nil, nil, fmt.Errorf("defaults.config: %w", err)
+			}
+			result = config.FormatTracking(tracking)
+		} else {
+			pushDown = true
+		}
+		if err := config.ReplaceLegacyTracking(defaultsConfig, tracking); err != nil {
+			return nil, nil, fmt.Errorf("defaults.config: %w", err)
+		}
+		migrations = append(migrations, LegacyTrackingMigration{Path: "defaults.config", Result: result})
+	}
+
+	pushedDown := false
+	for _, forgeName := range []string{ForgeGitHub, ForgeGitLab} {
+		section := mappingValue(root, forgeName)
+		if section == nil || section.Kind != yaml.MappingNode {
+			continue
+		}
+		path := forgeName + ".config"
+		platformConfig := mappingValue(section, "config")
+		platformState, kind, err := config.ReadLegacyTracking(platformConfig, defaultsState)
+		if err != nil {
+			return nil, nil, fmt.Errorf("%s: %w", path, err)
+		}
+		if kind == config.TrackingLayerMapping {
+			pushedDown = true
+		}
+		if kind == config.TrackingLayerLegacy || (pushDown && kind == config.TrackingLayerUnset) {
+			tracking, err := platformState.Resolve(forgeName)
+			if err != nil {
+				return nil, nil, fmt.Errorf("%s: %w", path, err)
+			}
+			if platformConfig == nil || platformConfig.Kind != yaml.MappingNode {
+				platformConfig = setMappingValue(section, "config")
+			}
+			if err := config.ReplaceLegacyTracking(platformConfig, tracking); err != nil {
+				return nil, nil, fmt.Errorf("%s: %w", path, err)
+			}
+			pushedDown = true
+			migrations = append(migrations, LegacyTrackingMigration{Path: path, Result: config.FormatTracking(tracking)})
+		}
+
+		reposNode := mappingValue(section, "repos")
+		if reposNode == nil || reposNode.Kind != yaml.SequenceNode {
+			continue
+		}
+		for idx, entry := range reposNode.Content {
+			path := fmt.Sprintf("%s.repos[%s].config", forgeName, repoEntryLabel(entry, idx))
+			entryConfig := mappingValue(entry, "config")
+			entryState, kind, err := config.ReadLegacyTracking(entryConfig, platformState)
+			if err != nil {
+				return nil, nil, fmt.Errorf("%s: %w", path, err)
+			}
+			if kind != config.TrackingLayerLegacy {
+				continue
+			}
+			tracking, err := entryState.Resolve(forgeName)
+			if err != nil {
+				return nil, nil, fmt.Errorf("%s: %w", path, err)
+			}
+			if err := config.ReplaceLegacyTracking(entryConfig, tracking); err != nil {
+				return nil, nil, fmt.Errorf("%s: %w", path, err)
+			}
+			migrations = append(migrations, LegacyTrackingMigration{Path: path, Result: config.FormatTracking(tracking)})
+		}
+	}
+	if pushDown && !pushedDown {
+		return nil, nil, errors.New("defaults.config: create_issues names no tracker provider and the manifest has no forge section to infer it from: " +
+			"replace it with tracker.<provider>.allowed_targets for github, gitlab, or jira")
+	}
+
+	if len(migrations) == 0 {
+		return data, nil, nil
+	}
+	out, err := yaml.Marshal(&doc)
+	if err != nil {
+		return nil, nil, fmt.Errorf("encoding migrated manifest: %w", err)
+	}
+	return out, migrations, nil
+}
+
+// mappingValue returns the value node for key in mapping node n, with any
+// alias resolved, or nil when n is not a mapping or has no such key.
+func mappingValue(n *yaml.Node, key string) *yaml.Node {
+	for n != nil && n.Kind == yaml.AliasNode {
+		n = n.Alias
+	}
+	if n == nil || n.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		if n.Content[i].Value == key {
+			v := n.Content[i+1]
+			for v != nil && v.Kind == yaml.AliasNode {
+				v = v.Alias
+			}
+			return v
+		}
+	}
+	return nil
+}
+
+// setMappingValue sets key in mapping node n to a new empty mapping,
+// replacing an existing non-mapping value, and returns the new mapping.
+func setMappingValue(n *yaml.Node, key string) *yaml.Node {
+	value := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		if n.Content[i].Value == key {
+			n.Content[i+1] = value
+			return value
+		}
+	}
+	n.Content = append(n.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}, value)
+	return value
+}

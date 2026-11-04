@@ -183,7 +183,23 @@ A concrete repository named on the command line that a glob entry covers is inst
 
 Credentials are required only for the forges of the selected repos: a GitLab-only selection does not need `GH_TOKEN`, and a GitHub-only selection does not need `GITLAB_TOKEN`. An unfiltered run still requires credentials for every forge present in the manifest.
 
-Install writes to `repos.yaml` itself in only two cases: the first-install `tracker` writeback described above, and, after a first install, the CLI's release written to `github.fullsend_ref` or `gitlab.fullsend_ref` when that key is unset. `--dry-run` writes neither.
+Install writes to `repos.yaml` itself in only three cases: the first-install
+`tracker` writeback described above; the conversion of legacy issue-tracking
+configuration described below; and, after a first install, the CLI's release
+written to `github.fullsend_ref` or `gitlab.fullsend_ref` when that key is
+unset. `--dry-run` writes none of them.
+
+Legacy issue-tracking configuration in managed `config:` blocks (the scalar
+`tracker: github|gitlab|jira` form and the removed `create_issues` block) is
+converted to the provider-discriminated `tracker` mapping when the manifest is
+loaded, so install renders every managed `.fullsend/config.yaml` in the new
+shape with the same effective provider and targets. Install writes the converted
+manifest with its other edits and lists each converted layer. For a read-only or
+HTTPS manifest it uses the converted values for that run and prints them as
+edits to apply to the source. Entries that cannot be converted without guessing,
+such as repository targets under a Jira provider or organization targets on
+GitLab, stop the run before any write with the exact edit to make. See
+[Config Reference — `tracker`](../reference/config-reference.md#tracker).
 
 On GitHub, a `fullsend_ref` pinned to an older release needs the CLI from that release: this CLI's shim passes `FULLSEND_GITHUB_RUNNER_SECRETS` ([ADR 0136](../ADRs/0136-runner-secrets-through-one-stored-secret.md)), and GitHub rejects the call when the older reusable workflow does not declare it.
 

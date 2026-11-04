@@ -1,0 +1,436 @@
+package repos
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/fullsend-ai/fullsend/internal/config"
+	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/preset"
+)
+
+// legacyTrackingManifest uses the pre-#9074 tracker/create_issues keys on
+// every config layer.
+const legacyTrackingManifest = `version: 1
+defaults:
+  inference:
+    auth: vertex-wif
+  config:
+    kill_switch: true
+    create_issues:
+      allow_targets:
+        repos: [fullsend-ai/fullsend, fullsend-ai/agents]
+github:
+  repos:
+    - name: acme/api
+    - name: acme/own
+      config:
+        tracker: github
+    - name: acme/jira
+      config:
+        tracker: jira
+        create_issues:
+          allow_targets: {}
+    - name: acme/orgs
+      config:
+        create_issues:
+          allow_targets:
+            orgs: [acme]
+gitlab:
+  url: https://gitlab.example.com
+  config:
+    tracker: gitlab
+  repos:
+    - name: group/proj
+    - name: "group/*"
+      config:
+        create_issues:
+          allow_targets:
+            repos: [group/sub/tools]
+`
+
+func managedTracking(t *testing.T, m *Manifest, forgeName, name string) *config.TrackingConfig {
+	t.Helper()
+	platform := m.PlatformFor(forgeName)
+	require.NotNil(t, platform)
+	for _, e := range platform.Repos {
+		if e.Name == name {
+			return m.mergeManagedConfig(platform, e).IssueTracking()
+		}
+	}
+	t.Fatalf("no %s entry %s", forgeName, name)
+	return nil
+}
+
+func githubRepos(repos ...string) *config.TrackingConfig {
+	return &config.TrackingConfig{GitHub: &config.GitHubTrackingConfig{AllowedTargets: config.GitHubAllowedTargets{Repos: repos}}}
+}
+
+func gitlabRepos(repos ...string) *config.TrackingConfig {
+	return &config.TrackingConfig{GitLab: &config.GitLabTrackingConfig{AllowedTargets: config.GitLabAllowedTargets{Repos: repos}}}
+}
+
+func assertLegacyManifestMigrated(t *testing.T, m *Manifest) {
+	t.Helper()
+	upstream := []string{"fullsend-ai/fullsend", "fullsend-ai/agents"}
+	assert.Nil(t, m.Defaults.Config.Writer().IssueTracking(), "defaults.config spans forges, so its targets move to the forge sections")
+	assert.Equal(t, githubRepos(upstream...), m.GitHub.Config.Writer().IssueTracking())
+	assert.Equal(t, githubRepos(upstream...), managedTracking(t, m, ForgeGitHub, "acme/api"))
+	assert.Equal(t, githubRepos(upstream...), managedTracking(t, m, ForgeGitHub, "acme/own"), "a scalar-only layer keeps its inherited targets")
+	assert.Equal(t, &config.TrackingConfig{Jira: &config.JiraTrackingConfig{}}, managedTracking(t, m, ForgeGitHub, "acme/jira"))
+	assert.Equal(t, &config.TrackingConfig{GitHub: &config.GitHubTrackingConfig{AllowedTargets: config.GitHubAllowedTargets{Orgs: []string{"acme"}}}},
+		managedTracking(t, m, ForgeGitHub, "acme/orgs"), "organization grants stay organization grants")
+	assert.Equal(t, gitlabRepos(upstream...), managedTracking(t, m, ForgeGitLab, "group/proj"))
+	assert.Equal(t, gitlabRepos("group/sub/tools"), managedTracking(t, m, ForgeGitLab, "group/*"))
+	assert.True(t, m.Defaults.Config.Writer().IsKillSwitchActive(), "unrelated config is kept")
+	require.NoError(t, m.ValidateStructure())
+}
+
+func TestParseManifest_MigratesLegacyTracking(t *testing.T) {
+	var m Manifest
+	require.NoError(t, parseManifestBytes([]byte(legacyTrackingManifest), &m))
+	assertLegacyManifestMigrated(t, &m)
+
+	var paths []string
+	for _, mig := range m.LegacyTrackingMigrations() {
+		paths = append(paths, mig.Path)
+		assert.NotEmpty(t, mig.Result)
+	}
+	assert.Equal(t, []string{
+		"defaults.config",
+		"github.config",
+		"github.repos[acme/own].config",
+		"github.repos[acme/jira].config",
+		"github.repos[acme/orgs].config",
+		"gitlab.config",
+		"gitlab.repos[group/*].config",
+	}, paths)
+
+	body, ok, err := m.RenderManagedConfig(ForgeGitHub, m.GitHub.Repos[0])
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.NotContains(t, string(body), "create_issues")
+	assert.Contains(t, string(body), "tracker:\n    github:\n        allowed_targets:\n            repos:\n")
+}
+
+// TestLoadManifest_LegacyTrackingRoundTripIsIdempotent writes the converted
+// manifest as install does and loads it again: nothing is left to convert
+// and every repository keeps the same rendered configuration.
+func TestLoadManifest_LegacyTrackingRoundTripIsIdempotent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "repos.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(legacyTrackingManifest), 0o644))
+	first, err := LoadManifest(context.Background(), path)
+	require.NoError(t, err)
+	require.NotEmpty(t, first.LegacyTrackingMigrations())
+
+	require.NoError(t, WriteManifest(path, first))
+	written, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.NotContains(t, string(written), "create_issues")
+
+	second, err := LoadManifest(context.Background(), path)
+	require.NoError(t, err)
+	assert.Empty(t, second.LegacyTrackingMigrations())
+	assertLegacyManifestMigrated(t, second)
+	for i, e := range first.GitHub.Repos {
+		want, _, err := first.RenderManagedConfig(ForgeGitHub, e)
+		require.NoError(t, err)
+		got, _, err := second.RenderManagedConfig(ForgeGitHub, second.GitHub.Repos[i])
+		require.NoError(t, err)
+		assert.Equal(t, string(want), string(got), e.Name)
+	}
+
+	require.NoError(t, WriteManifest(path, second))
+	again, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, string(written[lineAfterHeader(written):]), string(again[lineAfterHeader(again):]), "a second write changes nothing")
+}
+
+// lineAfterHeader returns the offset just past the generated header lines,
+// whose date may differ between writes.
+func lineAfterHeader(data []byte) int {
+	offset := 0
+	for offset < len(data) && data[offset] == '#' {
+		for offset < len(data) && data[offset] != '\n' {
+			offset++
+		}
+		offset++
+	}
+	return offset
+}
+
+func TestParseManifest_LegacyTrackingDefaultsWithProvider(t *testing.T) {
+	var m Manifest
+	require.NoError(t, parseManifestBytes([]byte(`version: 1
+defaults:
+  config:
+    tracker: github
+    create_issues:
+      allow_targets:
+        orgs: [acme]
+github:
+  repos:
+    - name: acme/api
+    - name: acme/narrow
+      config:
+        create_issues:
+          allow_targets:
+            repos: [acme/tools]
+`), &m))
+	acme := &config.TrackingConfig{GitHub: &config.GitHubTrackingConfig{AllowedTargets: config.GitHubAllowedTargets{Orgs: []string{"acme"}}}}
+	assert.Equal(t, acme, m.Defaults.Config.Writer().IssueTracking())
+	assert.Nil(t, m.GitHub.Config.Writer(), "a provider on defaults.config needs no forge-section copy")
+	assert.Equal(t, acme, managedTracking(t, &m, ForgeGitHub, "acme/api"))
+	assert.Equal(t, githubRepos("acme/tools"), managedTracking(t, &m, ForgeGitHub, "acme/narrow"))
+}
+
+func TestParseManifest_LegacyTrackingErrors(t *testing.T) {
+	tests := []struct {
+		name     string
+		manifest string
+		want     []string
+	}{
+		{
+			name: "jira repo inherits repository targets",
+			manifest: `version: 1
+defaults:
+  config:
+    tracker: github
+    create_issues:
+      allow_targets:
+        repos: [acme/tools]
+github:
+  repos:
+    - name: acme/api
+      config:
+        tracker: jira
+`,
+			want: []string{"github.repos[acme/api].config", "tracker.jira.allowed_targets.projects"},
+		},
+		{
+			name: "gitlab org grant",
+			manifest: `version: 1
+gitlab:
+  config:
+    create_issues:
+      allow_targets:
+        orgs: [group]
+  repos:
+    - name: group/proj
+`,
+			want: []string{"gitlab.config", "tracker.gitlab.allowed_targets.groups"},
+		},
+		{
+			name: "defaults targets with no forge section",
+			manifest: `version: 1
+defaults:
+  config:
+    create_issues:
+      allow_targets:
+        repos: [a/b]
+`,
+			want: []string{"defaults.config", "no forge section"},
+		},
+		{
+			name: "defaults mapping mixed with create_issues",
+			manifest: `version: 1
+defaults:
+  config:
+    tracker:
+      github: {}
+    create_issues: {}
+github:
+  repos: []
+`,
+			want: []string{"defaults.config", "remove create_issues"},
+		},
+		{
+			name: "invalid forge-section scalar",
+			manifest: `version: 1
+github:
+  config:
+    tracker: other
+  repos: []
+`,
+			want: []string{"github.config", `unknown provider "other"`},
+		},
+		{
+			name: "defaults gitlab scalar with an org grant",
+			manifest: `version: 1
+defaults:
+  config:
+    tracker: gitlab
+    create_issues:
+      allow_targets:
+        orgs: [group]
+github:
+  repos: []
+`,
+			want: []string{"defaults.config", "tracker.gitlab.allowed_targets.groups"},
+		},
+		{
+			name: "forge-section push-down with an org grant on gitlab",
+			manifest: `version: 1
+defaults:
+  config:
+    create_issues:
+      allow_targets:
+        orgs: [acme]
+gitlab:
+  repos: []
+`,
+			want: []string{"gitlab.config", "tracker.gitlab.allowed_targets.groups"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var m Manifest
+			err := parseManifestBytes([]byte(tt.manifest), &m)
+			require.Error(t, err)
+			for _, want := range tt.want {
+				assert.Contains(t, err.Error(), want)
+			}
+		})
+	}
+}
+
+func TestParseManifest_NoLegacyTrackingIsUntouched(t *testing.T) {
+	var m Manifest
+	require.NoError(t, parseManifestBytes([]byte(`version: 1
+defaults:
+  config:
+    create_issues:
+      allow_targets:
+        repos: [a/b]
+github:
+  config:
+    tracker:
+      github:
+        allowed_targets:
+          orgs: [acme]
+  repos:
+    - name: acme/api
+`), &m))
+	assert.Equal(t, &config.TrackingConfig{GitHub: &config.GitHubTrackingConfig{AllowedTargets: config.GitHubAllowedTargets{Orgs: []string{"acme"}}}},
+		managedTracking(t, &m, ForgeGitHub, "acme/api"), "a forge section with a tracker mapping overrides the pushed-down defaults")
+
+	var clean Manifest
+	require.NoError(t, parseManifestBytes([]byte("version: 1\ngithub:\n  repos:\n    - name: acme/api\n"), &clean))
+	assert.Empty(t, clean.LegacyTrackingMigrations())
+	out, migrations, err := migrateLegacyManifestTracking([]byte("not: [valid"))
+	require.NoError(t, err)
+	assert.Nil(t, migrations)
+	assert.Equal(t, "not: [valid", string(out))
+}
+
+func TestParseManifest_LegacyTrackingPushDownReplacesNullConfig(t *testing.T) {
+	out, migrations, err := migrateLegacyManifestTracking([]byte(`version: 1
+defaults:
+  config:
+    create_issues:
+      allow_targets:
+        repos: [a/b]
+github:
+  config:
+  repos: []
+`))
+	require.NoError(t, err)
+	require.Len(t, migrations, 2)
+	var m Manifest
+	require.NoError(t, parseManifestBytes(out, &m))
+	assert.Equal(t, githubRepos("a/b"), m.GitHub.Config.Writer().IssueTracking())
+}
+
+// legacyRenderedOverlay is the managed .fullsend/config.yaml an earlier
+// install rendered from a legacy manifest.
+const legacyRenderedOverlay = managedConfigMarker + "tracker: github\ncreate_issues:\n  allow_targets:\n    orgs:\n      - acme\n"
+
+func TestValidateExistingOverlay_LegacyTracking(t *testing.T) {
+	assert.NoError(t, validateExistingOverlay([]byte(legacyRenderedOverlay), ForgeGitHub),
+		"a managed legacy overlay is converted in memory so install can re-render it")
+	err := validateExistingOverlay([]byte("tracker: github\n"), ForgeGitHub)
+	require.Error(t, err, "a markerless user file is not converted")
+	assert.Contains(t, err.Error(), "scalar form")
+
+	err = validateExistingOverlay([]byte(managedConfigMarker+"create_issues:\n  allow_targets:\n    orgs: [group]\n"), ForgeGitLab)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "tracker.gitlab.allowed_targets.groups")
+}
+
+// TestConvergeManagedConfigFiles_RewritesLegacyManagedOverlay: a managed
+// overlay rendered from the legacy schema is re-rendered from the converted
+// manifest (same effective policy, so the safety gate passes), and a second
+// run changes nothing.
+func TestConvergeManagedConfigFiles_RewritesLegacyManagedOverlay(t *testing.T) {
+	var m Manifest
+	require.NoError(t, parseManifestBytes([]byte(`version: 1
+defaults:
+  inference:
+    auth: vertex-wif
+github:
+  repos:
+    - name: acme/api
+      config:
+        tracker: github
+        create_issues:
+          allow_targets:
+            orgs: [acme]
+`), &m))
+	desired := mustDesiredManaged(t, &m, "acme", "api")
+	assert.NotContains(t, string(desired), "create_issues")
+
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/"+preset.OverlayPath] = []byte(legacyRenderedOverlay)
+	resolved := managedResolved(t, fc, &m, "acme", "api")
+
+	require.NoError(t, checkEstablishedOverlayGate(context.Background(), resolved, desired))
+	files, actions := convergeManagedConfigFiles(context.Background(), resolved, desired, false, noopProgress)
+	require.Len(t, files, 1)
+	assert.Equal(t, desired, files[0].Content)
+	require.Len(t, actions, 1)
+	assert.Equal(t, "update", actions[0].Action)
+
+	fc.FileContents["acme/api/"+preset.OverlayPath] = desired
+	files, actions = convergeManagedConfigFiles(context.Background(), resolved, desired, false, noopProgress)
+	assert.Empty(t, files)
+	assert.Empty(t, actions)
+}
+
+func TestManagedSafetyGate_LegacyManagedOverlay(t *testing.T) {
+	m := newConvergeManifest("acme/api")
+	m.Defaults.Config = mustManagedConfig(t, "{}")
+
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/"+preset.OverlayPath] = []byte(managedConfigMarker + "tracker: github\ncreate_issues:\n  allow_targets:\n    repos: [acme/tools]\n")
+	resolved := managedResolved(t, fc, m, "acme", "api")
+	relaxations, err := evaluateManagedSafetyGate(context.Background(), resolved)
+	require.NoError(t, err, "the legacy scalar in a managed overlay is converted before the comparison")
+	assert.Empty(t, relaxations, "dropping the converted targets narrows the policy")
+
+	m.Defaults.Config = mustManagedConfig(t, "kill_switch: false\n")
+	fc.FileContents["acme/api/"+preset.BasePath] = []byte("tracker:\n  github:\n    allowed_targets:\n      orgs: [acme]\n")
+	resolved = managedResolved(t, fc, m, "acme", "api")
+	rejected := managedSafetyRejectedAction(context.Background(), resolved)
+	require.NotNil(t, rejected, "the converted overlay's targets are protected: falling through to a wider base is a relaxation")
+	assert.Equal(t, ActionSafetyRejected, rejected.Action)
+	assert.Contains(t, rejected.Detail, "tracker.github.allowed_targets")
+
+	delete(fc.FileContents, "acme/api/"+preset.BasePath)
+	relaxations, err = presetReplacementRelaxations(context.Background(), resolved, nil, true, []byte("kill_switch: false\n"))
+	require.NoError(t, err)
+	assert.Empty(t, relaxations)
+
+	resolved.Forge = ForgeGitLab
+	fc.FileContents["acme/api/"+preset.OverlayPath] = []byte(managedConfigMarker + "create_issues:\n  allow_targets:\n    orgs: [group]\n")
+	rejected = managedSafetyRejectedAction(context.Background(), resolved)
+	require.NotNil(t, rejected)
+	assert.Equal(t, "error", rejected.Action)
+	assert.Contains(t, rejected.Detail, "tracker.gitlab.allowed_targets.groups")
+	_, err = presetReplacementRelaxations(context.Background(), resolved, nil, true, nil)
+	require.Error(t, err)
+}
