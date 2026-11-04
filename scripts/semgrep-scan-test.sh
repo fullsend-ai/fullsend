@@ -123,18 +123,29 @@ done < "${GOOD_UV}.args"
 found_audit_rule=false
 found_audit_test=false
 found_out_of_scope_rule=false
+found_absolute_config=false
 for ((i = 0; i + 1 < ${#UV_ARGS[@]}; i++)); do
 	if [[ "${UV_ARGS[i]}" == --config ]]; then
 		case "${UV_ARGS[i + 1]}" in
-		*/go/lang/security/audit/example.yaml) found_audit_rule=true ;;
+		go/lang/security/audit/example.yaml) found_audit_rule=true ;;
+		/*) found_absolute_config=true ;;
 		*.test.yml) found_audit_test=true ;;
-		*/go/lang/security/vuln/*) found_out_of_scope_rule=true ;;
+		go/lang/security/vuln/*) found_out_of_scope_rule=true ;;
 		esac
 	fi
 done
 [[ "$found_audit_rule" == true ]] || fail "security/audit rule was not passed to Semgrep"
+[[ "$found_absolute_config" == false ]] || fail "Semgrep config path was absolute"
 [[ "$found_audit_test" == false ]] || fail "upstream test fixture was passed to Semgrep"
 [[ "$found_out_of_scope_rule" == false ]] || fail "out-of-scope rule was passed to Semgrep"
+found_strict=false
+found_error=false
+for arg in "${UV_ARGS[@]}"; do
+	[[ "$arg" == --strict ]] && found_strict=true
+	[[ "$arg" == --error ]] && found_error=true
+done
+[[ "$found_strict" == true ]] || fail "--strict was not passed to Semgrep"
+[[ "$found_error" == true ]] || fail "--error was not passed to Semgrep"
 found_sarif_path=false
 for ((i = 0; i + 1 < ${#UV_ARGS[@]}; i++)); do
 	if [[ "${UV_ARGS[i]}" == --sarif-output && "${UV_ARGS[i + 1]}" == "${FIXTURE_ROOT}/report.sarif" ]]; then
@@ -146,6 +157,31 @@ last_arg_index=$((${#UV_ARGS[@]} - 1))
 [[ "${UV_ARGS[$last_arg_index]}" == "${FIXTURE_ROOT}/src/main.go" ]] || \
 	fail "relative target path was not rooted at the repository"
 pass "verified cache reuse and relative output/target path resolution"
+
+expect_manifest_rejected() {
+	local name="$1"
+	local manifest_entry="$2"
+	local cache_dir="${TEST_ROOT}/cache-manifest-${name}"
+	local uv_prefix="${TEST_ROOT}/manifest-${name}-uv"
+	local output
+	printf '%s\n' "$manifest_entry" > "${FIXTURE_ROOT}/scripts/semgrep-ruleset-files.txt"
+	if output="$(run_scan "$cache_dir" payload "${TEST_ROOT}/valid-rules.tar.gz" \
+		"${TEST_ROOT}/manifest-${name}-curl-calls" 1 "$uv_prefix" 2>&1)"; then
+		fail "${name} allowlist entry returned success"
+	fi
+	[[ "$output" == *"refusing to scan with an unverified ruleset"* ]] || \
+		fail "${name} allowlist entry was not rejected as invalid"
+	[[ ! -e "${uv_prefix}.cwd" ]] || fail "${name} allowlist entry invoked Semgrep"
+}
+
+expect_manifest_rejected traversal '../go/lang/security/audit/example.yaml'
+expect_manifest_rejected out-of-scope 'go/lang/security/vuln/outside-scope.yaml'
+expect_manifest_rejected upstream-test 'go/lang/security/audit/example.test.yml'
+expect_manifest_rejected missing-file 'go/lang/security/audit/missing.yaml'
+expect_manifest_rejected comment-only '# no source files selected'
+printf '%s\n' 'go/lang/security/audit/example.yaml' \
+	> "${FIXTURE_ROOT}/scripts/semgrep-ruleset-files.txt"
+pass "allowlist rejects traversal, out-of-scope, test, missing, and empty entries"
 
 LOCAL_OFFLINE_CACHE="${TEST_ROOT}/cache-local-offline"
 LOCAL_OFFLINE_CALLS="${TEST_ROOT}/local-offline-curl-calls"

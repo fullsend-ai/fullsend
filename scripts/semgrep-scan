@@ -140,7 +140,7 @@ while IFS= read -r relative_rule_file || [[ -n "$relative_rule_file" ]]; do
 	if [[ ! -f "$rule_file" ]]; then
 		ruleset_integrity_failure "pinned security-audit source file is missing from the archive: ${relative_rule_file}"
 	fi
-	RULE_CONFIG_ARGS+=(--config "$rule_file")
+	RULE_CONFIG_ARGS+=(--config "$relative_rule_file")
 	selected_rule_files=$((selected_rule_files + 1))
 done < "$RULESET_FILES_FILE"
 
