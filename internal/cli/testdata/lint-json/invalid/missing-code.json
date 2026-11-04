@@ -1,0 +1,16 @@
+{
+  "schema_version": 2,
+  "success": false,
+  "summary": {
+    "errors": 1,
+    "warnings": 0
+  },
+  "diagnostics": [
+    {
+      "agent": "my-agent",
+      "severity": "error",
+      "field": "role",
+      "message": "missing the required code field"
+    }
+  ]
+}
