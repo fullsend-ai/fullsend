@@ -590,6 +590,111 @@ func TestExpandAliasesBounded_ScalarByteBudget(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestExpandAliasesBounded_CommentAndTagByteBudget(t *testing.T) {
+	// Few nodes and tiny scalar values, but the anchored node carries a large
+	// comment that every alias occurrence would repeat when encoded.
+	big := strings.Repeat("c", 512<<10)
+	var b strings.Builder
+	b.WriteString("a: &a x # " + big + "\nb: [")
+	for i := 0; i < 40; i++ {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString("*a")
+	}
+	b.WriteString("]\n")
+	var doc yaml.Node
+	require.NoError(t, yaml.Unmarshal([]byte(b.String()), &doc))
+	_, err := expandAliasesBounded(doc.Content[0])
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "bytes")
+
+	_, _, err = migrateLegacyManifestTracking([]byte(b.String() + "defaults:\n  config:\n    tracker: github\n"))
+	require.Error(t, err)
+
+	// A large explicit tag is charged the same way.
+	b.Reset()
+	b.WriteString("a: &a !" + strings.Repeat("t", 512<<10) + " x\nb: [")
+	for i := 0; i < 40; i++ {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString("*a")
+	}
+	b.WriteString("]\n")
+	doc = yaml.Node{}
+	require.NoError(t, yaml.Unmarshal([]byte(b.String()), &doc))
+	_, err = expandAliasesBounded(doc.Content[0])
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "bytes")
+}
+
+// TestParseManifest_LegacyTrackingFollowsMergeKeys: a forge section or
+// repository entry that inherits its legacy config through a YAML merge key is
+// migrated like one that spells the config out.
+func TestParseManifest_LegacyTrackingFollowsMergeKeys(t *testing.T) {
+	var m Manifest
+	require.NoError(t, parseManifestBytes([]byte(`version: 1
+github: &platform
+  config:
+    create_issues:
+      allow_targets:
+        repos: [shared/tools]
+  repos:
+    - name: acme/api
+gitlab:
+  <<: *platform
+  repos:
+    - name: group/proj
+`), &m))
+	assert.Equal(t, githubRepos("shared/tools"), m.GitHub.Config.Writer().IssueTracking())
+	assert.Equal(t, gitlabRepos("shared/tools"), m.GitLab.Config.Writer().IssueTracking(),
+		"the config inherited through << resolves its provider from its own forge")
+	assert.Equal(t, gitlabRepos("shared/tools"), managedTracking(t, &m, ForgeGitLab, "group/proj"))
+
+	var entries Manifest
+	require.NoError(t, parseManifestBytes([]byte(`version: 1
+github:
+  config:
+    create_issues:
+      allow_targets:
+        orgs: [acme]
+  repos:
+    - name: acme/api
+      config: &shared
+        tracker: github
+    - <<: {config: *shared}
+      name: acme/web
+`), &entries))
+	assert.Equal(t, managedTracking(t, &entries, ForgeGitHub, "acme/api"), managedTracking(t, &entries, ForgeGitHub, "acme/web"))
+}
+
+func TestExpandAliasesBounded_MergeKeyPrecedence(t *testing.T) {
+	var doc yaml.Node
+	require.NoError(t, yaml.Unmarshal([]byte(`base1: &b1 {a: 1, b: 1}
+base2: &b2 {b: 2, c: 2}
+out:
+  <<: [*b1, *b2]
+  c: explicit
+bad:
+  <<: scalar
+`), &doc))
+	out, err := expandAliasesBounded(doc.Content[0])
+	require.NoError(t, err)
+	got := mappingValue(out, "out")
+	require.NotNil(t, got)
+	values := map[string]string{}
+	for i := 0; i+1 < len(got.Content); i += 2 {
+		_, dup := values[got.Content[i].Value]
+		assert.False(t, dup, "key %q appears once", got.Content[i].Value)
+		values[got.Content[i].Value] = got.Content[i+1].Value
+	}
+	assert.Equal(t, map[string]string{"a": "1", "b": "1", "c": "explicit"}, values,
+		"explicit keys win, then earlier merged mappings")
+	assert.NotNil(t, mappingValue(out, "bad"), "an invalid merge value is left for the strict decoder")
+	assert.NotNil(t, mappingValue(mappingValue(out, "bad"), "<<"))
+}
+
 func TestExpandAliasesBounded_DepthBudget(t *testing.T) {
 	deep := strings.Repeat("[", maxExpandedYAMLDepth+10) + strings.Repeat("]", maxExpandedYAMLDepth+10)
 	var doc yaml.Node

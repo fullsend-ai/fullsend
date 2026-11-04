@@ -194,7 +194,10 @@ func expandAliasesBounded(n *yaml.Node) (*yaml.Node, error) {
 		if count > maxExpandedYAMLNodes {
 			return nil, errors.New("manifest expands to too many YAML nodes through aliases")
 		}
-		totalBytes += len(src.Value)
+		// Every string the node carries is materialized again when the migrated
+		// manifest is encoded, so comments and the tag count toward the budget
+		// along with the scalar value.
+		totalBytes += len(src.Value) + len(src.Tag) + len(src.HeadComment) + len(src.LineComment) + len(src.FootComment)
 		if totalBytes > maxExpandedYAMLBytes {
 			return nil, errors.New("manifest expands to too many bytes through YAML aliases")
 		}
@@ -209,9 +212,74 @@ func expandAliasesBounded(n *yaml.Node) (*yaml.Node, error) {
 			}
 			dup.Content = append(dup.Content, c)
 		}
+		if dup.Kind == yaml.MappingNode {
+			flattenMergeKeys(&dup)
+		}
 		return &dup, nil
 	}
 	return clone(n, 0)
+}
+
+// flattenMergeKeys resolves YAML merge keys (<<) in the already alias-expanded
+// mapping node n, so the migration sees inherited keys as ordinary ones. The
+// pairs of each merged mapping take the place of the merge key, minus any key
+// the mapping sets explicitly, which always wins, and minus keys an earlier
+// merged mapping already supplied, as YAML's merge precedence requires. A merge
+// key whose value is not a mapping or a sequence of mappings is left in place
+// for the strict decoder to reject. The merged pairs are the nodes already
+// cloned for the merge value, so no node is copied again.
+func flattenMergeKeys(n *yaml.Node) {
+	hasMerge := false
+	explicit := map[string]bool{}
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		key := n.Content[i]
+		if key.Kind == yaml.ScalarNode && key.ShortTag() == "!!merge" {
+			hasMerge = true
+		} else if key.Kind == yaml.ScalarNode {
+			explicit[key.Value] = true
+		}
+	}
+	if !hasMerge {
+		return
+	}
+	var content []*yaml.Node
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		key, value := n.Content[i], n.Content[i+1]
+		if key.Kind != yaml.ScalarNode || key.ShortTag() != "!!merge" {
+			content = append(content, key, value)
+			continue
+		}
+		var sources []*yaml.Node
+		switch value.Kind {
+		case yaml.MappingNode:
+			sources = []*yaml.Node{value}
+		case yaml.SequenceNode:
+			sources = value.Content
+		}
+		valid := len(sources) > 0
+		for _, src := range sources {
+			if src.Kind != yaml.MappingNode {
+				valid = false
+			}
+		}
+		if !valid {
+			content = append(content, key, value)
+			continue
+		}
+		for _, src := range sources {
+			for j := 0; j+1 < len(src.Content); j += 2 {
+				mk := src.Content[j]
+				if mk.Kind == yaml.ScalarNode {
+					if explicit[mk.Value] {
+						continue
+					}
+					explicit[mk.Value] = true
+				}
+				content = append(content, mk, src.Content[j+1])
+			}
+		}
+	}
+	n.Content = content
 }
 
 // isNullYAMLNode reports whether n is an explicit YAML null (for example an
