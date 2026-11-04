@@ -39,7 +39,7 @@ test("Bash restrictions reject composed/hidden commands and environment override
   for (const command of ["gh", "gh issue list", "gh issue list | jq '.[]'"]) {
     await h.before("bash", { command });
   }
-  for (const command of ["", "rm file", "gh issue list; rm file", "gh && rm file", "gh | sh", "gh & rm file", "$(rm file)", "gh `rm file`", "GH_PAGER=sh gh", "env gh", "command gh", "/usr/bin/gh", "g\\h", "gh <<EOF\nrm file\nEOF", "gh $(rm file)"]) {
+  for (const command of ["", "rm file", "gh issue list; rm file", "gh && rm file", "gh | sh", "gh & rm file", "$(rm file)", "gh `rm file`", "GH_PAGER=sh gh", "env gh", "command gh", "/usr/bin/gh", "g\\h", "gh <<EOF\nrm file\nEOF", "gh $(rm file)", "gh # '\nrm file\n# '", "gh # \"; rm file #\""]) {
     await assert.rejects(h.before("bash", { command }), /fullsend-hooks/);
   }
 });
@@ -243,7 +243,7 @@ test("unsupported MCP-style tool results fail closed", async (t) => {
 test("scripts receive translated v2 payload, isolated environment and chained output", async (t) => {
   const scripts = {
     "pre.py": "import json,os,sys\np=json.load(sys.stdin)\nassert p['tool_name']=='Read' and p['tool_input']['file_path']=='file'\nassert 'PYTHONPATH' not in os.environ\nassert os.environ['FULLSEND_CANARY_TOKEN']=='trusted'\nassert os.environ['FULLSEND_TRACE_ID']=='trace-1'\n",
-    "post.py": "import json,sys\np=json.load(sys.stdin)\nassert p['tool_response']==p['tool_result']\nv=p['tool_response']; v['output']=v['output'].replace('original','sanitized')\nprint(json.dumps({'hookSpecificOutput':{'updatedToolOutput':v}}))\n",
+    "post.py": "import json,sys\nassert sys.argv[1].startswith('--sandbox-workspace=')\np=json.load(sys.stdin)\nassert p['tool_response']==p['tool_result']\nv=p['tool_response']; v['output']=v['output'].replace('original','sanitized')\nprint(json.dumps({'hookSpecificOutput':{'updatedToolOutput':v}}))\n",
   };
   const h = await setup(t, {
     env: { PATH: "/usr/bin:/bin", FULLSEND_CANARY_TOKEN: "trusted", FULLSEND_TRACE_ID: "trace-1" },

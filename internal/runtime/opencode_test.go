@@ -929,6 +929,14 @@ func TestOpenCodeHookActivationGuard(t *testing.T) {
 	}
 }
 
+func TestOpenCodeExitPipelineChecksActivationAfterFailedRun(t *testing.T) {
+	activation := &openCodeHookActivation{Path: "/sandbox/workspace/runner-state/activation", Token: "runner-held-token"}
+	pipeline := openCodeExitPipeline([]string{"false"}, "/tmp/rc", "/tmp/transcript", activation)
+
+	assert.Contains(t, pipeline, openCodeHookActivationGuard(activation))
+	assert.NotContains(t, pipeline, `if [ "$FULLSEND_OPENCODE_RC" -eq 0 ]`)
+}
+
 func TestNewOpenCodeHookActivation(t *testing.T) {
 	first, err := newOpenCodeHookActivation()
 	require.NoError(t, err)

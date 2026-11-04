@@ -169,6 +169,10 @@ How the shared PostToolUse chain reaches each runtime — the three sanitizer ro
   introducing image-owned enforcement storage. Files remain writable by the same sandbox user;
   the verification-to-load race is explicitly unresolved. Stronger OS-backed storage is left for
   separate cross-runtime review and is not claimed as part of #7824.
+  The runner passes the per-iteration activation challenge and hook settings to the plugin through
+  OpenCode's environment. The plugin clears that value from ordinary tool subprocesses, but it is
+  not confidential from same-UID processes that can inspect `/proc`; this is a disclosure residual,
+  not a security boundary.
 - **OpenCode migration:** harnesses that previously set `security.enabled: false` must remove that
   workaround or set it to `true`. Additional native `OPENCODE_CONFIG_CONTENT.plugin` entries are
   rejected; the runner supplies and verifies the required adapter itself.
