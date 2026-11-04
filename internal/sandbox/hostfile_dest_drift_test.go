@@ -23,6 +23,7 @@ func TestHostFileDestReservesSandboxPaths(t *testing.T) {
 		SandboxClaudeConfig,
 		SandboxClaudeConfig + "/hooks.json",
 		SandboxCodexConfig + "/config.toml",
+		SandboxOpenCodeConfig + "/plugins/fullsend-hooks.ts",
 		SandboxPiConfig + "/auth.json",
 	} {
 		assert.Error(t, harness.ValidateHostFileDest(dest), "host_files dest %s should be reserved", dest)
