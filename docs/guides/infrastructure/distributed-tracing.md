@@ -379,6 +379,57 @@ The `agent` span's provider identity reflects only the parent run's serving endp
 | `fullsend.tool.result_oversized` | `execute_tool` | Present (`true`) when the result's stream line exceeded the parser's 1 MiB bound: the call was answered but nothing of the result was decoded, so the span has no status and no `error.type` |
 | `fullsend.tool_spans.dropped` | `agent` | Present when the iteration hit the 1,024-span cap and at least one id-bearing call was refused a span: the number of `tool_use` events with a usable id that arrived past the cap, each counted once whatever its result later does; a result with no open span past the cap is not counted |
 
+### Forge and CI attributes
+
+Set on the root `run` span when they apply, and omitted (never empty) when
+they do not. Names follow the OpenTelemetry
+[VCS](https://opentelemetry.io/docs/specs/semconv/registry/attributes/vcs/)
+and
+[CICD](https://opentelemetry.io/docs/specs/semconv/registry/attributes/cicd/)
+semantic conventions. Repository, change and refs come from the normalized
+event, which GitHub and GitLab dispatch both deliver. Coverage still differs
+by source:
+
+- **GitHub:** pull request events and comments on pull requests carry
+  `head_sha`, so runs about a change record its head revision.
+- **GitLab:** `vcs.ref.head.revision` is recorded only when the normalized
+  event carries `head_sha`, which the poller sets only on synchronized merge
+  request events (a push to the source branch). The
+  `CI_MERGE_REQUEST_SOURCE_BRANCH_SHA` fallback applies only when fullsend
+  runs inside your own merged-results pipeline; the agent pipelines the poller
+  creates are not merge request pipelines, so it is unset there.
+- **Jira:** `vcs.repository.url.full` is not recorded, since the work item's
+  URL is on the Jira host. `vcs.provider.name` comes from the forge the run
+  targets.
+
+A run without a normalized event (for example a local run with no
+`--event-file`) records only `vcs.provider.name`, the pipeline run, and a head
+revision from the environment.
+
+Inputs, in order of precedence:
+
+- **Head revision:** the normalized event's
+  `state.change_proposal.head_sha`, then `PR_HEAD_SHA`, then
+  `pull_request.head.sha` in the event at `GITHUB_EVENT_PATH` (GitHub), or
+  `CI_MERGE_REQUEST_SOURCE_BRANCH_SHA` (GitLab). Values that are not a 40- or
+  64-character hex SHA are dropped.
+- **Pipeline run:** on GitHub Actions (`GITHUB_ACTIONS=true`),
+  `GITHUB_RUN_ID`, with the URL from `--run-url` or else
+  `GITHUB_SERVER_URL/GITHUB_REPOSITORY/actions/runs/GITHUB_RUN_ID`. On GitLab
+  CI (`GITLAB_CI=true`), `CI_PIPELINE_ID`, with the URL from `--run-url` or
+  else `CI_PIPELINE_URL`.
+
+| Attribute | Present on | Description |
+|-----------|------------|-------------|
+| `vcs.provider.name` | `run` | Code-hosting forge: `github` or `gitlab` |
+| `vcs.repository.url.full` | `run` | Target repository URL (e.g. `https://github.com/owner/repo`), without credentials. Taken from the work item's URL up to the repository path, so a GitLab install served under a relative URL keeps its prefix |
+| `vcs.change.id` | `run` | Pull request or merge request number, when the run is about one |
+| `vcs.ref.head.name` | `run` | Head branch of that change |
+| `vcs.ref.base.name` | `run` | Base branch of that change |
+| `vcs.ref.head.revision` | `run` | Head commit SHA of that change. Never `GITHUB_SHA` or `CI_COMMIT_SHA`, which name a merge or base commit on pull request and merged-results pipelines |
+| `cicd.pipeline.run.id` | `run` | CI run executing fullsend: `GITHUB_RUN_ID` on GitHub Actions, `CI_PIPELINE_ID` on GitLab CI. This can be a different repository or forge from the target |
+| `cicd.pipeline.run.url.full` | `run` | URL of that CI run: `--run-url` when given, otherwise built from the CI environment |
+
 ### Common attributes
 
 | Attribute | Present on | Description |

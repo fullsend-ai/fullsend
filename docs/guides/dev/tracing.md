@@ -128,7 +128,10 @@ is present, the W3C propagator extracts a remote span context and the root
 span is `SpanKindConsumer`. Otherwise it is `SpanKindInternal`.
 
 Start attributes include: `fullsend.agent`, `fullsend.work_item_id`,
-`gen_ai.operation.name`, `gen_ai.agent.name`.
+`gen_ai.operation.name`, `gen_ai.agent.name`. The harness identity
+(`fullsend.harness.*`, `harnessIdentityAttrs()`) and the forge and CI pointers
+(`vcs.*`, `cicd.*`, `forgePointerAttrs()`) are set right after the root span
+starts.
 
 End attributes (set in a deferred cleanup): `exit_code`,
 `fullsend.cost_usd`, `fullsend.num_turns`, `fullsend.tool_calls`,
