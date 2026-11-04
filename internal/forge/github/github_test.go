@@ -5025,6 +5025,36 @@ func TestGetWorkflowRunLogs_CompleteHasNoTruncationMarkers(t *testing.T) {
 	assert.NotContains(t, logs, "truncated")
 }
 
+// TestGetWorkflowRunLogs_SkippedJobHasNoFetchNote verifies that a skipped
+// job, which has no log, is listed without a log request, so its 404 does
+// not read as a fetch that failed.
+func TestGetWorkflowRunLogs_SkippedJobHasNoFetchNote(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/org/repo/actions/runs/42/jobs":
+			json.NewEncoder(w).Encode(map[string]any{
+				"total_count": 2,
+				"jobs": []map[string]any{
+					{"id": 1, "name": "build", "status": "completed", "conclusion": "failure"},
+					{"id": 2, "name": "deploy", "status": "completed", "conclusion": "skipped"},
+				},
+			})
+		case "/repos/org/repo/actions/jobs/1/logs":
+			_, _ = w.Write([]byte("build log"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	logs, err := client.GetWorkflowRunLogs(context.Background(), "org", "repo", 42)
+	require.NoError(t, err)
+	assert.Contains(t, logs, "=== deploy (job 2) [completed/skipped] ===")
+	assert.Contains(t, logs, "build log")
+	assert.NotContains(t, logs, "[logs unavailable:")
+}
+
 // TestListWorkflowRunJobs_EscapesPathComponents is a regression test
 // (#7996 review): owner and repo were interpolated into the request URL
 // without escaping, so a delimiter-containing value (e.g. "#") could alter
