@@ -342,7 +342,10 @@ func TestCanonicalInstanceAtEveryBoundary(t *testing.T) {
 			_, err := Parse(mutated)
 			assert.Error(t, err)
 			_, keys := goldenKeys(t)
-			assert.Equal(t, Result{Outcome: OutcomeFallback, Reason: ReasonMalformed}, Admit(id, keys, mutated))
+			// The unresolved identity dominates, but the same malformed
+			// carrier under a resolved identity still reports malformed.
+			assert.Equal(t, Result{Outcome: OutcomeFallback, Reason: ReasonUnresolved}, Admit(id, keys, mutated))
+			assert.Equal(t, Result{Outcome: OutcomeFallback, Reason: ReasonMalformed}, Admit(goldenIdentity(), keys, mutated))
 		})
 	}
 }
@@ -584,6 +587,45 @@ func TestAdmit_PendingRequiresResolvedIdentity(t *testing.T) {
 	unresolved.Entity = 0
 	res := Admit(unresolved, keys, raw)
 	assert.Equal(t, Result{Outcome: OutcomeFallback, Reason: ReasonUnresolved}, res)
+}
+
+// TestAdmit_UnresolvedIdentityAlwaysReportsUnresolved pins the README
+// contract: an unresolved identity must postpone (FR-002) whatever carrier
+// is present, so callers never mistake a carrier rejection for the cause.
+func TestAdmit_UnresolvedIdentityAlwaysReportsUnresolved(t *testing.T) {
+	t.Parallel()
+	bound, keys := signedGolden(t, DomainBound, ProvenanceNone)
+	pending, _ := signedGolden(t, DomainPending, ProvenanceNone)
+
+	components := []struct {
+		name   string
+		mutate func(*Identity)
+	}{
+		{"instance", func(id *Identity) { id.Instance = "" }},
+		{"container", func(id *Identity) { id.Container = 0 }},
+		{"kind", func(id *Identity) { id.Kind = 0 }},
+		{"entity", func(id *Identity) { id.Entity = 0 }},
+	}
+	carriers := []struct {
+		name string
+		raw  [][]byte
+	}{
+		{"absent", nil},
+		{"malformed", [][]byte{[]byte("not-an-envelope")}},
+		{"bound", [][]byte{bound}},
+		{"pending", [][]byte{pending}},
+	}
+	for _, c := range components {
+		for _, carrier := range carriers {
+			t.Run(c.name+"/"+carrier.name, func(t *testing.T) {
+				t.Parallel()
+				expected := goldenIdentity()
+				c.mutate(&expected)
+				res := Admit(expected, keys, carrier.raw...)
+				assert.Equal(t, Result{Outcome: OutcomeFallback, Reason: ReasonUnresolved}, res)
+			})
+		}
+	}
 }
 
 // TestAdmit_PendingMarkerIsContainerScoped documents that a pending marker

@@ -462,7 +462,14 @@ func reasonForParse(err error) string {
 // any differing candidates reject. Keys are resolved only from the
 // supplied trusted set. Admission is independent of dispatch
 // authorization: this function never returns permission.
+//
+// An unresolved expected identity reports ReasonUnresolved before any
+// carrier is inspected: the caller must postpone dispatch (FR-002) and
+// must not read the candidate's own diagnostics as the cause.
 func Admit(expected Identity, keys map[[8]byte]ed25519.PublicKey, candidates ...[]byte) Result {
+	if !expected.Resolved() {
+		return fallback(ReasonUnresolved)
+	}
 	if len(candidates) == 0 {
 		return fallback(ReasonAbsent)
 	}
@@ -509,11 +516,6 @@ func Admit(expected Identity, keys map[[8]byte]ed25519.PublicKey, candidates ...
 			Provenance:   env.Provenance,
 		}
 	}
-	// A pending marker binds no entity, but an unresolved expected identity
-	// must still postpone explicitly (FR-002) rather than wait out the
-	// pending window on a guessed binding.
-	if !expected.Resolved() {
-		return fallback(ReasonUnresolved)
-	}
+	// A pending marker binds no entity, so a resolved scope is enough.
 	return Result{Outcome: OutcomePending, Reason: ReasonPending}
 }

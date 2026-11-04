@@ -231,9 +231,9 @@ regardless of admission, and an admitted envelope never authorizes
 anything.
 
 An unresolved identity (missing instance, container, kind, or entity) is
-explicit: admission returns fallback with reason `unresolved` rather than
-pending, and callers must postpone dispatch with diagnostics rather than
-derive a fallback or guess.
+explicit: admission returns fallback with reason `unresolved` before
+inspecting any candidate, and callers must postpone dispatch with
+diagnostics rather than derive a fallback or guess.
 
 ## Compatibility
 

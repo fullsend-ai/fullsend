@@ -72,9 +72,9 @@ database ID; its result alone cannot resolve trace identity.
 - [`envelope_test.go`](https://github.com/fullsend-ai/fullsend/blob/cd97e9f072b5d99811779c4a7857b31cf4167da7/internal/telemetry/tracecontext/envelope_test.go)
   contains independent signed-wire vectors for both domains and all provenance
   kinds, binding checks, empty/default/padded-port convergence, zero-value fallback,
-  pending-scope admission (container-scoped markers, unresolved identities,
-  stale markers beside bound envelopes), malformed-input cases, and parser
-  fuzzing.
+  pending-scope admission (container-scoped markers, stale markers beside bound
+  envelopes), unresolved identities suppressing every carrier kind,
+  malformed-input cases, and parser fuzzing.
 
 These foundation tests do not establish production runtime integration or
 live-adapter trace continuity.
