@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/fullsend-ai/fullsend/internal/telemetry/tracecontext"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -72,6 +73,39 @@ func TestCreateChangeProposal_CapturesImmutableID(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int64(1357924680), cp.ID, "CreateChangeProposal must capture the immutable REST pull-request id")
 	assert.Equal(t, 12, cp.Number)
+}
+
+// TestGetIssue_RenameKeepsIdentity covers the D01 rename rule at the
+// adapter boundary: a title change on the same immutable ID must not
+// change trace identity.
+func TestGetIssue_RenameKeepsIdentity(t *testing.T) {
+	title := "Widget is broken"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":       2468913570,
+			"number":   7,
+			"title":    title,
+			"html_url": "https://github.com/org/repo/issues/7",
+			"state":    "open",
+			"labels":   []any{},
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	identity := func() tracecontext.Identity {
+		issue, err := client.GetIssue(context.Background(), "org", "repo", 7)
+		require.NoError(t, err)
+		return tracecontext.Identity{
+			Instance:  "https://github.com",
+			Container: 274390431,
+			Kind:      tracecontext.KindWorkItem,
+			Entity:    issue.ID,
+		}
+	}
+	before := identity()
+	title = "Widget is fixed (renamed)"
+	assert.Equal(t, before, identity(), "a rename must not change trace identity")
 }
 
 func TestListRepoPullRequests_CapturesImmutableID(t *testing.T) {

@@ -157,6 +157,64 @@ func TestHarnessDispatchAssertions_NotStartedRunJobs(t *testing.T) {
 	}
 }
 
+// TestCountHarnessDispatches_WaitingRunHoldsCompletedAgentJob pins the
+// count-side rule: a workflow waiting on an environment approval can
+// already hold a completed agent job, which is conclusive dispatch
+// evidence — the count must not wait out the whole run.
+func TestCountHarnessDispatches_WaitingRunHoldsCompletedAgentJob(t *testing.T) {
+	t.Parallel()
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name  string
+		job   forge.WorkflowJob
+		count int
+		pend  int
+	}{
+		{
+			name:  "completed agent job counts",
+			job:   forge.WorkflowJob{ID: 1, RunAttempt: 1, Name: "dispatch / Harness run (fix)", Status: "completed", Conclusion: "success"},
+			count: 1,
+		},
+		{
+			name: "running agent job stays pending",
+			job:  forge.WorkflowJob{ID: 1, RunAttempt: 1, Name: "dispatch / Harness run (fix)", Status: "in_progress"},
+			pend: 1,
+		},
+		{
+			name: "no agent job yet stays pending",
+			job:  forge.WorkflowJob{ID: 1, RunAttempt: 1, Name: "dispatch / Route", Status: "completed", Conclusion: "success"},
+			pend: 1,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			fake := forge.NewFakeClient()
+			fake.WorkflowRunsList = map[string][]forge.WorkflowRun{"org/repo/fullsend.yaml": {
+				{ID: 1, RunAttempt: 1, Status: "waiting", CreatedAt: after.Format(time.RFC3339)},
+			}}
+			fake.WorkflowRunJobs = map[int][]forge.WorkflowJob{1: {tc.job}}
+			d := &Driver{Client: fake}
+			count, pending, err := d.settleHarnessDispatchCount(context.Background(), "org", "repo", "fix", after, nil)
+			require.NoError(t, err)
+			assert.Equal(t, tc.count, count)
+			assert.Equal(t, tc.pend, pending)
+		})
+	}
+	t.Run("absent jobs listing stays pending", func(t *testing.T) {
+		t.Parallel()
+		fake := forge.NewFakeClient()
+		fake.WorkflowRunsList = map[string][]forge.WorkflowRun{"org/repo/fullsend.yaml": {
+			{ID: 1, RunAttempt: 1, Status: "waiting", CreatedAt: after.Format(time.RFC3339)},
+		}}
+		fake.Errors["ListWorkflowRunJobs"] = forge.ErrJobsListingAbsent
+		d := &Driver{Client: fake}
+		count, pending, err := d.settleHarnessDispatchCount(context.Background(), "org", "repo", "fix", after, nil)
+		require.NoError(t, err)
+		assert.Zero(t, count)
+		assert.Equal(t, 1, pending)
+	})
+}
+
 func TestCountHarnessDispatches_CompletedRunJobsBecomeVisible(t *testing.T) {
 	t.Parallel()
 	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)

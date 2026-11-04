@@ -120,20 +120,6 @@ func TestIdentity_Resolved(t *testing.T) {
 	assert.True(t, v01Identity().Resolved())
 }
 
-// TestDeriveFallback_RenameStable documents the D01 rename rule: display
-// names never enter the tuple, so a rename cannot change the binding. Two
-// identities built from different display names for the same database IDs
-// are the same identity.
-func TestDeriveFallback_RenameStable(t *testing.T) {
-	before, ok := DeriveFallback(v01Identity())
-	require.True(t, ok)
-
-	renamed := v01Identity() // same database IDs; only display names changed
-	after, ok := DeriveFallback(renamed)
-	require.True(t, ok)
-	assert.Equal(t, before, after, "a rename must not change trace identity")
-}
-
 // TestDeriveFallback_MoveIsNewBinding documents the D01 move rule: moving an
 // entity to another bound container changes the binding (container or
 // entity database ID), which is a new identity, never a rename.

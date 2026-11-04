@@ -1607,15 +1607,25 @@ func (d *Driver) CountHarnessDispatches(ctx context.Context, owner, repo, agent 
 	}
 }
 
-// runNotStarted reports whether a workflow run has not begun executing.
-// Its jobs listing cannot classify a dispatch and can still 404 while the
-// run is queued, awaiting approval, or waiting on another run.
-func runNotStarted(status string) bool {
+// runUnstarted reports whether a workflow run is queued before any job
+// can run. Its jobs listing cannot classify a dispatch and can still 404
+// while the run sits in the queue.
+func runUnstarted(status string) bool {
 	switch status {
-	case "queued", "waiting", "requested", "pending":
+	case "queued", "requested", "pending":
 		return true
 	}
 	return false
+}
+
+// runNotStarted reports whether a workflow run has not begun executing,
+// including a run waiting on an environment approval whose earlier jobs
+// may already have run. The negative assertion tolerates a first-page
+// absent jobs listing for these runs; the count path additionally reads
+// waiting runs, because a completed agent job in a waiting run is
+// conclusive dispatch evidence.
+func runNotStarted(status string) bool {
+	return runUnstarted(status) || status == "waiting"
 }
 
 // settleHarnessDispatchCount classifies harness runs created after the
@@ -1644,9 +1654,9 @@ func (d *Driver) settleHarnessDispatchCount(ctx context.Context, owner, repo, ag
 		if r.Status == "completed" && r.Conclusion == "skipped" {
 			continue
 		}
-		if runNotStarted(r.Status) {
-			// A run that has not started cannot show agent work, so it is
-			// pending whatever the jobs listing would say.
+		if runUnstarted(r.Status) {
+			// A run queued before any job can run cannot show agent work,
+			// so it is pending whatever the jobs listing would say.
 			pending++
 			continue
 		}
@@ -1654,7 +1664,14 @@ func (d *Driver) settleHarnessDispatchCount(ctx context.Context, owner, repo, ag
 		if !cached {
 			jobs, err = d.Client.ListWorkflowRunJobs(ctx, owner, repo, r.ID)
 			if err != nil {
-				return 0, 0, err
+				// A waiting run can follow jobs that already ran
+				// (environment approval); when its listing is not
+				// available the run is still settling, not an error.
+				if !(r.Status == "waiting" && errors.Is(err, forge.ErrJobsListingAbsent)) {
+					return 0, 0, err
+				}
+				pending++
+				continue
 			}
 		}
 		hasJob, job := matchAgentJob(jobs, agent)
