@@ -323,7 +323,7 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 	// effective schema versions (absent = 1). child.Base still names the
 	// base reference for the error label; it is cleared below. A failure
 	// here fails the load, so no merge runs.
-	if err := checkSchemaVersionsCompose(child, base, child.Base); err != nil {
+	if err := checkSchemaVersionsCompose(base, child, child.Base); err != nil {
 		return nil, nil, err
 	}
 
@@ -612,7 +612,7 @@ func loadBaseChain(
 		// base.Base still names the ancestor reference for the error
 		// label; it is cleared below. A failure here fails the whole
 		// chain's load, so no merge runs.
-		if err := checkSchemaVersionsCompose(base, ancestorBase, base.Base); err != nil {
+		if err := checkSchemaVersionsCompose(ancestorBase, base, base.Base); err != nil {
 			return nil, nil, err
 		}
 

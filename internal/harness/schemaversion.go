@@ -79,18 +79,20 @@ func validateSchemaVersion(v *schemaVersionValue) error {
 // schemaVersionsCompose reports whether a base layer declaring baseVer can
 // compose into a layer declaring childVer. Equal versions always compose;
 // no cross-version rule exists yet, so mixed-version layers are rejected.
-func schemaVersionsCompose(childVer, baseVer int) bool {
-	return childVer == baseVer
+// Parameters follow the package's (base, child) merge-helper order.
+func schemaVersionsCompose(baseVer, childVer int) bool {
+	return baseVer == childVer
 }
 
-// checkSchemaVersionsCompose rejects composing child with a base layer
-// whose effective schema version does not compose with the child's.
-// layerLabel names the base reference (path or URL) in the error so the
-// harness author can locate the offending layer.
-func checkSchemaVersionsCompose(child, base *Harness, layerLabel string) error {
+// checkSchemaVersionsCompose rejects composing a base layer into child
+// when the base's effective schema version does not compose with the
+// child's. Parameters follow the package's (base, child) merge-helper order,
+// matching mergeBaseIntoChild. layerLabel names the base reference (path or
+// URL) in the error so the harness author can locate the offending layer.
+func checkSchemaVersionsCompose(base, child *Harness, layerLabel string) error {
 	childVer := child.EffectiveSchemaVersion()
 	baseVer := base.EffectiveSchemaVersion()
-	if schemaVersionsCompose(childVer, baseVer) {
+	if schemaVersionsCompose(baseVer, childVer) {
 		return nil
 	}
 	return fmt.Errorf("base layer %q declares schema_version %d, which is incompatible with schema_version %d of the harness composing it; mixed-version base composition is not supported", layerLabel, baseVer, childVer)

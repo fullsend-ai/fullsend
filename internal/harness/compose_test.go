@@ -201,7 +201,7 @@ func TestCheckSchemaVersionsCompose_ConstructedMixedVersions(t *testing.T) {
 	child := &Harness{}                                  // absent — effective version 1
 	base := &Harness{SchemaVersion: schemaVersionPtr(2)} // parse would reject this; constructed directly
 
-	err := checkSchemaVersionsCompose(child, base, "bases/parent.yaml")
+	err := checkSchemaVersionsCompose(base, child, "bases/parent.yaml")
 
 	require.Error(t, err)
 	assert.ErrorContains(t, err, `base layer "bases/parent.yaml" declares schema_version 2`)
