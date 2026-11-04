@@ -5116,15 +5116,13 @@ func TestListWorkflowRunJobs_APIError(t *testing.T) {
 
 func TestListWorkflowRunJobs_NotFound(t *testing.T) {
 	for _, tt := range []struct {
-		name      string
-		status    int
-		failures  int
-		wantCalls int
-		wantError bool
+		name     string
+		status   int
+		failures int
 	}{
-		{name: "jobs become visible", status: http.StatusNotFound, failures: 2, wantCalls: 3},
-		{name: "missing run stays an error", status: http.StatusNotFound, failures: 5, wantCalls: 5, wantError: true},
-		{name: "permission failure is not retried", status: http.StatusForbidden, failures: 5, wantCalls: 1, wantError: true},
+		{name: "404 is not presumed transient", status: http.StatusNotFound, failures: 1},
+		{name: "persistent 404 fails immediately", status: http.StatusNotFound, failures: 5},
+		{name: "permission failure is not retried", status: http.StatusForbidden, failures: 5},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			calls := 0
@@ -5140,28 +5138,30 @@ func TestListWorkflowRunJobs_NotFound(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			jobs, err := newTestClient(t, srv).ListWorkflowRunJobs(context.Background(), "org", "repo", 42)
-			assert.Equal(t, tt.wantCalls, calls)
-			if tt.wantError {
-				require.Error(t, err)
-				assert.Nil(t, jobs)
-				assert.Contains(t, err.Error(), "org/repo")
-				assert.Contains(t, err.Error(), "run 42")
-				assert.Contains(t, err.Error(), "page 1")
-				var apiErr *APIError
-				require.ErrorAs(t, err, &apiErr)
-				assert.Equal(t, tt.status, apiErr.StatusCode)
-				assert.Equal(t, tt.status == http.StatusNotFound, forge.IsNotFound(err))
-				return
-			}
-			require.NoError(t, err)
-			require.Len(t, jobs, 1)
-			assert.Equal(t, "dispatch / Fix", jobs[0].Name)
+			waits := 0
+			client := newTestClient(t, srv).WithAfterFunc(func(time.Duration) <-chan time.Time {
+				waits++
+				ch := make(chan time.Time, 1)
+				ch <- time.Now()
+				return ch
+			})
+			jobs, err := client.ListWorkflowRunJobs(context.Background(), "org", "repo", 42)
+			assert.Equal(t, 1, calls)
+			assert.Zero(t, waits, "jobs errors must not add retry delays")
+			require.Error(t, err)
+			assert.Nil(t, jobs)
+			assert.Contains(t, err.Error(), "org/repo")
+			assert.Contains(t, err.Error(), "run 42")
+			assert.Contains(t, err.Error(), "page 1")
+			var apiErr *APIError
+			require.ErrorAs(t, err, &apiErr)
+			assert.Equal(t, tt.status, apiErr.StatusCode)
+			assert.Equal(t, tt.status == http.StatusNotFound, forge.IsNotFound(err))
 		})
 	}
 }
 
-func TestListWorkflowRunJobs_NotFoundRetryCancelled(t *testing.T) {
+func TestListWorkflowRunJobs_CancelledContext(t *testing.T) {
 	calls := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls++
@@ -5169,16 +5169,13 @@ func TestListWorkflowRunJobs_NotFoundRetryCancelled(t *testing.T) {
 	}))
 	defer srv.Close()
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	client := newTestClient(t, srv).WithAfterFunc(func(time.Duration) <-chan time.Time {
-		cancel()
-		return make(chan time.Time)
-	})
+	cancel()
+	client := newTestClient(t, srv)
 
 	jobs, err := client.ListWorkflowRunJobs(ctx, "org", "repo", 42)
 	require.ErrorIs(t, err, context.Canceled)
 	assert.Nil(t, jobs)
-	assert.Equal(t, 1, calls)
+	assert.Zero(t, calls)
 }
 
 // TestListWorkflowRunJobs_PaginatesBeyondFirstPage is a regression test
@@ -5230,7 +5227,7 @@ func TestListWorkflowRunJobs_PaginatesBeyondFirstPage(t *testing.T) {
 	assert.Len(t, pageRequests, 2, "pagination must stop once a short page is seen")
 }
 
-func TestListWorkflowRunJobs_RetriesOnlyMissingPage(t *testing.T) {
+func TestListWorkflowRunJobs_MissingPageFailsWithoutPartialResults(t *testing.T) {
 	var pages []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		page := r.URL.Query().Get("page")
@@ -5254,12 +5251,11 @@ func TestListWorkflowRunJobs_RetriesOnlyMissingPage(t *testing.T) {
 	defer srv.Close()
 
 	jobs, err := newTestClient(t, srv).ListWorkflowRunJobs(context.Background(), "org", "repo", 42)
-	require.NoError(t, err)
-	assert.Equal(t, []string{"1", "2", "2"}, pages)
-	require.Len(t, jobs, 101)
-	assert.Equal(t, 1, jobs[0].ID)
-	assert.Equal(t, 100, jobs[99].ID)
-	assert.Equal(t, 101, jobs[100].ID)
+	require.Error(t, err)
+	assert.True(t, forge.IsNotFound(err))
+	assert.Contains(t, err.Error(), "org/repo run 42 page 2")
+	assert.Equal(t, []string{"1", "2"}, pages)
+	assert.Nil(t, jobs, "an incomplete listing must not look like absence of an agent")
 }
 
 // TestListWorkflowRunJobs_PaginationExceeded guards the maxPages safety
