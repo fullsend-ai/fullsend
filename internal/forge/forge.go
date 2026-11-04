@@ -128,6 +128,12 @@ const (
 	// masked CI/CD variable (GitLab) the runner reads under this name.
 	// Setup does not write it; the repository admin sets it.
 	SecretInferenceGatewayAPIKey = "FULLSEND_INFERENCE_GATEWAY_API_KEY"
+	// SecretGitHubRunnerSecrets carries runner secrets to host-side scripts on
+	// GitHub (ADR 0136): a JSON object of name → value that the shim forwards
+	// and the composite action stages for the run step. It is optional; setup
+	// does not write it, and an admin sets it as a repository or organization
+	// secret.
+	SecretGitHubRunnerSecrets = "FULLSEND_GITHUB_RUNNER_SECRETS"
 
 	// Jira credentials (#9076). `fullsend repos install` writes them on
 	// GitHub and GitLab from --jira-token and --jira-email for
@@ -1290,7 +1296,8 @@ type Client interface {
 	ListRepositoryArtifacts(ctx context.Context, owner, repo string, perPage int) ([]RepositoryArtifact, error)
 
 	// GetWorkflowRunLogs downloads the logs for a workflow run as plain text.
-	// On GitHub, this fetches job logs for each job in the run.
+	// On GitHub, this fetches the log of each job in the run that was not
+	// skipped.
 	GetWorkflowRunLogs(ctx context.Context, owner, repo string, runID int) (string, error)
 
 	// GetWorkflowRunAnnotations returns annotations (::notice::, ::warning::,

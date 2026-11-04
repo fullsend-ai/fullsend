@@ -228,6 +228,11 @@ type World struct {
 	// CleanupScenario deletes it before the leased repo is deallocated.
 	GatewayAPIKeySecretSet bool
 
+	// RunnerSecretsSecretSet records that this scenario set the enrolled
+	// repo's FULLSEND_GITHUB_RUNNER_SECRETS secret (ADR 0136).
+	// CleanupScenario deletes it before the leased repo is deallocated.
+	RunnerSecretsSecretSet bool
+
 	// OwnersAuthActivated records whether this scenario committed an
 	// OWNERS file and/or added owners_file to the authorization providers in config.yaml.
 	// CleanupScenario removes both.
