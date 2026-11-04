@@ -3,6 +3,7 @@ package scaffold
 import (
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
@@ -1061,8 +1062,21 @@ func TestRunAgentJobScript_MapsOnlyPrefixedOpenAIKey(t *testing.T) {
 	}
 }
 
-// runAgentJobScriptForFullsendRun runs run-agent-job.sh for the triage
-// stage against a fake GitLab API, with a stub `fullsend` binary that
+func TestRunAgentJobScript_ClosedMRWithoutCloserDoesNotUseMRAuthor(t *testing.T) {
+	payload := base64.StdEncoding.EncodeToString([]byte(`{"type":"mr_event","action":"closed"}`))
+	got, _ := runAgentJobScriptForFullsendRun(t, []string{
+		"STAGE=retro",
+		"EVENT_TYPE=mr_event",
+		"EVENT_PAYLOAD_B64=" + payload,
+		"ACTOR_ID=",
+		"MR_AUTHOR_ID=42",
+	})
+	assert.Contains(t, got, "No actor identity available — skipping stage")
+	assert.NotContains(t, got, "FULLSEND_GITLAB_URL:", "closed-MR authorization must not run as the MR author")
+}
+
+// runAgentJobScriptForFullsendRun runs run-agent-job.sh against a fake
+// GitLab API, with a stub `fullsend` binary that
 // prints the FULLSEND_GITLAB_URL and OPENAI_API_KEY it receives. extraEnv
 // is appended to the job environment. It returns the combined output and
 // the fake API's URL.
@@ -1116,7 +1130,34 @@ fi
 `), 0o755))
 
 	const secret = "test-hmac-secret"
-	hmacHex := computeDispatchHMAC(secret, "5", "", "", "", "", "", "", "", "test-key", "triage", "")
+	dispatchEnv := map[string]string{
+		"ACTOR_ID":              "5",
+		"EVENT_PAYLOAD_B64":     "",
+		"EVENT_TYPE":            "",
+		"FULLSEND_POLL_JOB_URL": "",
+		"IS_FORK":               "",
+		"MR_AUTHOR_ID":          "",
+		"ORIGINATING_URL":       "",
+		"REPO_FULL_NAME":        "",
+		"RESOURCE_KEY":          "test-key",
+		"STAGE":                 "triage",
+		"STATUS_IID":            "",
+	}
+	for _, item := range extraEnv {
+		key, value, ok := strings.Cut(item, "=")
+		if ok {
+			if _, signed := dispatchEnv[key]; signed {
+				dispatchEnv[key] = value
+			}
+		}
+	}
+	hmacHex := computeDispatchHMAC(secret,
+		dispatchEnv["ACTOR_ID"], dispatchEnv["EVENT_PAYLOAD_B64"], dispatchEnv["EVENT_TYPE"],
+		dispatchEnv["FULLSEND_POLL_JOB_URL"], dispatchEnv["IS_FORK"], dispatchEnv["MR_AUTHOR_ID"],
+		dispatchEnv["ORIGINATING_URL"], dispatchEnv["REPO_FULL_NAME"], dispatchEnv["RESOURCE_KEY"],
+		dispatchEnv["STAGE"], dispatchEnv["STATUS_IID"],
+	)
+	dispatchEnv["FULLSEND_DISPATCH_HMAC"] = hmacHex
 
 	setupPinnedConfigOrigin(t, root)
 
@@ -1131,16 +1172,23 @@ fi
 		"CI_JOB_TOKEN=job-token",
 		"FULLSEND_GITLAB_POLLER_TOKEN=poller-pat",
 		"FULLSEND_GITLAB_ANALYST_TOKEN=analyst-pat",
-		"STAGE=triage",
-		"RESOURCE_KEY=test-key",
-		"ACTOR_ID=5",
 		"FULLSEND_DISPATCH_SECRET=" + secret,
-		"FULLSEND_DISPATCH_HMAC=" + hmacHex,
 		"CI_PIPELINE_URL=https://gitlab.example/pinned/project/-/pipelines/999",
 		"CI_PROJECT_ID=1",
 		"CI_PROJECT_PATH=pinned/project",
 	}
-	env = append(env, extraEnv...)
+	for key, value := range dispatchEnv {
+		env = append(env, key+"="+value)
+	}
+	for _, item := range extraEnv {
+		key, _, ok := strings.Cut(item, "=")
+		if !ok {
+			continue
+		}
+		if _, signed := dispatchEnv[key]; !signed {
+			env = append(env, item)
+		}
+	}
 	cmd.Env = append(env, pinTLSEnv(t, srv)...)
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, "stdout/stderr: %s", out)

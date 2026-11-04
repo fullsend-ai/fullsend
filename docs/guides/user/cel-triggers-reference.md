@@ -401,7 +401,9 @@ A trigger decides which events start a retro, not who may start one:
   Other automated senders without write access are denied; a write user can
   run `/fs-retro` afterward. See the
   [authorization contract](../../normative/authorization/v1/README.md#closed-pull-request-retro-pull_request_targetclosed).
-- **`/fs-retro`:** users with write access or above.
+- **`/fs-retro`:** users with write access or above. A custom retro harness
+  role cannot lower this fixed floor, and CEL cannot start retro when the Bash
+  route denied the actor.
 
 ### Choosing when triage and prioritize run
 

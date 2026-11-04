@@ -787,8 +787,8 @@ identifies improvement opportunities, and files proposals as GitHub issues.
 Runs automatically on PR close (merged or rejected) when the event actor has
 write access, including for merge-queue events. GitLab MR close and merge use
 the same threshold, expressed as Developer access. Users with write access can
-also start it
-with `/fs-retro`.
+also start it with `/fs-retro`; a custom retro harness role cannot lower this
+write threshold.
 Analyzes the full workflow graph (triage, code, review, fix agent interactions
 and human interventions) and posts a summary comment on the originating PR or
 issue linking to all filed proposals.

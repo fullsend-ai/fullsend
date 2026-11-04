@@ -53,3 +53,27 @@ Feature: Retro routing by a config trigger
     When the pull request is closed
     Then the harness "retro" agent did not run
     And the harness "retro" was dispatched exactly 0 times
+
+  Scenario: a triage actor cannot start retro with /fs-retro
+    Given the enrolled test repository
+    And a custom harness "retro" with:
+      """
+      agent: agents/retro.md
+      role: triage
+      slug: fullsend-ai-retro-probe
+      model: opus
+      image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
+      policy: policies/base.yaml
+      trigger: |
+          event.transition.kind == "comment_added"
+          && has(event.transition.comment.command)
+          && event.transition.comment.command == "/fs-retro"
+          && event.actor.kind == "human"
+      """
+    And a dummy agent that would:
+      | description     | op            | args                                                  |
+      | Emit retro JSON | write_fixture | output/agent-result.json, fixtures/retro/summary.json |
+    And a pull request is opened
+    When the triage actor posts "/fs-retro" on the pull request
+    Then the harness "retro" agent did not run
+    And the harness "retro" was dispatched exactly 0 times

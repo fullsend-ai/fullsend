@@ -803,10 +803,10 @@ jobs:
               ROUTE_SOURCE="cel"
               case "${CEL_ROUTE_DECISION}" in
                 run)
-                  if [[ "${CLOSED_PULL_REQUEST}" == "true" && "${ROUTE_AGENT}" == "retro" && "${BASH_STAGE}" != "retro" ]]; then
+                  if [[ "${ROUTE_AGENT}" == "retro" && "${BASH_STAGE}" != "retro" ]]; then
                     STAGE=""
                     TRIGGER_SOURCE=""
-                    echo "::warning::CEL retro run denied because the Bash route did not authorize closed-PR retro"
+                    echo "::warning::CEL retro run denied because the Bash route did not authorize retro"
                   else
                     STAGE="${ROUTE_AGENT}"
                   fi

@@ -228,7 +228,7 @@ func TestWhenActorOpensPullRequest_LinkedToIssue(t *testing.T) {
 	assert.Equal(t, []int{11}, w.CreatedPRNumbers)
 }
 
-func TestWhenActorClosesPullRequest(t *testing.T) {
+func TestWhenWriteActorClosesPullRequest(t *testing.T) {
 	t.Parallel()
 
 	w, drivers := actorWorld()

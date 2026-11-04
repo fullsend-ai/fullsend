@@ -371,6 +371,13 @@ func TestFinalizeStage_CELRoute(t *testing.T) {
 		env["ROUTE_AGENT"] = "retro"
 		return env
 	}
+	retroSlashCommand := func(bashStage string) map[string]string {
+		env := finalizeEnv(bashStage, "success", "success", "run")
+		env["ROUTE_AGENT"] = "retro"
+		env["EVENT_NAME"] = "issue_comment"
+		env["COMMENT_BODY"] = "/fs-retro"
+		return env
+	}
 	withAgent := func(env map[string]string, agent string) map[string]string {
 		env["ROUTE_AGENT"] = agent
 		return env
@@ -441,9 +448,14 @@ func TestFinalizeStage_CELRoute(t *testing.T) {
 			env:  retro("retro", "run"), wantStage: "retro", wantSummary: "retro_route=cel",
 		},
 		{
-			name: "closed PR retro run cannot promote an empty bash stage",
+			name: "retro run cannot promote an empty bash stage for a closed PR",
 			env:  retro("", "run"), wantStage: "", wantSummary: "retro_route=cel",
-			wantLog: "CEL retro run denied because the Bash route did not authorize closed-PR retro",
+			wantLog: "CEL retro run denied because the Bash route did not authorize retro",
+		},
+		{
+			name: "retro command run cannot promote a Bash-denied slash command",
+			env:  retroSlashCommand(""), wantStage: "", wantSummary: "retro_route=cel",
+			wantLog: "CEL retro run denied because the Bash route did not authorize retro",
 		},
 		{
 			name: "retro bash decision keeps the bash stage",

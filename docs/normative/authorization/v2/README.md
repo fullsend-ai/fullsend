@@ -537,12 +537,16 @@ Other automated merge or close senders without write-level repository
 permission are denied; a write-authorized user can run `/fs-retro` afterward.
 GitLab merged and closed merge requests use the same write threshold: polling
 resolves the actor's project role, and the agent job independently checks
-Developer membership before running retro.
+Developer membership before running retro. If GitLab does not provide the
+closer identity, polling fails closed instead of using the merge request
+author.
 If CEL opt-in, configuration, or route evaluation fails for a close event, the
 workflow skips retro rather than falling back to the Bash stage. Retro's
 repository token can write issues and pull requests, so this dispatch is not
-read-only lifecycle accounting. The `/fs-retro` slash command continues to
-require write access.
+read-only lifecycle accounting. The `/fs-retro` slash command has the same
+fixed write floor, regardless of a lower role declared by the retro harness.
+CEL cannot promote the command to a retro run when the Bash route denied the
+actor.
 
 ### Schedule and manual dispatch
 

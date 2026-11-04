@@ -337,9 +337,9 @@ func (p *Poller) discoverAllEvents(ctx context.Context, owner, repo string, sinc
 			// MR as a bot event, and filterBotEvents would drop it and
 			// skip retro — exactly the human-rejects-the-agent's-work case
 			// #7322 promotes to reliable. When closed_by is absent the
-			// actor fields stay empty, so filterBotEvents treats the close
-			// as human and toNormalizedEvent falls back to the MR author to
-			// resolve the actor. A bot self-close
+			// actor fields stay empty. Normalization then rejects the event
+			// because the closer cannot be identified; it must not substitute
+			// the MR author for the actor. A bot self-close
 			// (closeStaleScaffoldPRs) sets closed_by to the bot and is
 			// still filtered.
 			events = append(events, RoutableEvent{

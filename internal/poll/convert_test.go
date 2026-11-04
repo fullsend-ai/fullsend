@@ -458,15 +458,10 @@ func TestToNormalizedEvent_MREventClosed(t *testing.T) {
 	}
 }
 
-func TestToNormalizedEvent_MREventClosedActorFallback(t *testing.T) {
-	// A human closes a bot-authored MR and GitLab omits closed_by: the
-	// closed event carries empty NoteAuthor* (see discoverAllEvents), so
-	// toNormalizedEvent falls back to the MR author to resolve the actor.
-	// The MR author is the bot, so Actor.Kind is "bot", but routeMerge has
-	// no actor-kind gate — retro still runs. This pins the
-	// closed-specific fallback so a future refactor splitting the shared
-	// "opened"/"closed" branch cannot silently regress #7322's
-	// human-rejects-the-agent's-work path.
+func TestToNormalizedEvent_MREventClosedWithoutCloserFailsClosed(t *testing.T) {
+	// A human closes an MR but GitLab omits closed_by. The MR author must
+	// not be substituted for the closer, or their Developer membership
+	// could authorize a retro they did not trigger.
 	mc := newMockClient()
 	mc.memberLevel[100] = 40 // Maintainer -> "maintain"
 	mc.projectPaths[1] = "group/project"
@@ -486,21 +481,8 @@ func TestToNormalizedEvent_MREventClosedActorFallback(t *testing.T) {
 		TargetBranch:  "main",
 	}
 
-	ne, authorID, err := p.toNormalizedEvent(context.Background(), event)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if authorID != 100 {
-		t.Errorf("authorID = %d, want 100 (MR author fallback)", authorID)
-	}
-	if ne.Actor.ID != "fullsend-bot" {
-		t.Errorf("Actor.ID = %q, want %q (MR author fallback)", ne.Actor.ID, "fullsend-bot")
-	}
-	if ne.Actor.Kind != "bot" {
-		t.Errorf("Actor.Kind = %q, want %q (MR author is the bot)", ne.Actor.Kind, "bot")
-	}
-	if ne.Transition.Kind != "closed" {
-		t.Errorf("Transition.Kind = %q, want %q", ne.Transition.Kind, "closed")
+	if _, _, err := p.toNormalizedEvent(context.Background(), event); err == nil || !strings.Contains(err.Error(), "closed merge request has no closer identity") {
+		t.Fatalf("toNormalizedEvent error = %v, want missing closer identity", err)
 	}
 }
 

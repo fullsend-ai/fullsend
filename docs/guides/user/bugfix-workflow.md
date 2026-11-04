@@ -176,6 +176,8 @@ runs automatically when a PR is closed (merged or rejected) by someone with
 write access, and can also be triggered on-demand via `/fs-retro` by a user with
 write access. A merge-queue merge follows the same rule: its event sender must
 have write access.
+The `/fs-retro` command also requires write access, regardless of a lower role
+declared by a custom retro harness.
 It analyzes the full workflow graph — triage, code, review, and fix agent
 interactions plus any human interventions — to identify improvement
 opportunities. Proposals are filed as GitHub issues in the appropriate repo,

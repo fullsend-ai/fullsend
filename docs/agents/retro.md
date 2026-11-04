@@ -53,7 +53,8 @@ an actor with write access. Merge-queue events follow the same rule: the event
 sender must have write access. Other automated senders without repository
 write access do not start retro; a write-authorized user can run `/fs-retro`
 afterward. On GitLab, merged or closed MRs also start retro only when the actor
-has Developer access.
+has Developer access. A custom retro harness role cannot lower the write
+threshold for a GitHub `/fs-retro` command.
 
 ## Control labels
 

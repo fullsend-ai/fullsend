@@ -515,7 +515,8 @@ func TestDiscoverAllEvents_MRClosedAbsentClosedBy(t *testing.T) {
 	// (empty NoteAuthor*, IsBot false) rather than falling back to the MR
 	// author. This keeps a human's close of a bot-authored MR from being
 	// misread as a bot event downstream. The MR author is still carried in
-	// MRAuthor* so toNormalizedEvent can resolve the actor.
+	// MRAuthor* for event context, but normalization must reject the close
+	// without a closer identity.
 	now := time.Now().Truncate(time.Second)
 	since := now.Add(-time.Minute)
 	mc := newMockClient()

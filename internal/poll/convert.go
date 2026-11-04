@@ -95,13 +95,19 @@ func (p *Poller) toNormalizedEvent(ctx context.Context, event RoutableEvent) (di
 	case "mr_event":
 		authorID = event.NoteAuthorID
 		switch event.Action {
-		case "opened", "closed", "synchronized":
+		case "opened", "synchronized":
 			actorLogin = event.NoteAuthorLogin
 			if actorLogin == "" {
 				actorLogin = event.MRAuthorLogin
 			}
 			if authorID == 0 {
 				authorID = event.MRAuthorID
+			}
+			isBot = event.IsBot || (p.botUserID != 0 && authorID == p.botUserID) || isProjectAccessTokenBot(actorLogin)
+		case "closed":
+			actorLogin = event.NoteAuthorLogin
+			if authorID == 0 || actorLogin == "" {
+				return dispatch.NormalizedEvent{}, 0, fmt.Errorf("closed merge request has no closer identity")
 			}
 			isBot = event.IsBot || (p.botUserID != 0 && authorID == p.botUserID) || isProjectAccessTokenBot(actorLogin)
 		default:

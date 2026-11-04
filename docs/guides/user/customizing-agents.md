@@ -586,6 +586,9 @@ job; the trigger only decides whether that job starts.
 Closing or merging a pull request starts retro only when the event actor has
 write access. Merge-queue events follow the same rule, and a CEL routing
 failure skips retro for that close event.
+The `/fs-retro` command also requires write access, regardless of a lower
+`role:` on the retro harness; CEL cannot promote a command the Bash route
+denied.
 
 To stop the retro on every closed pull request but keep `/fs-retro`, add this
 entry to `.fullsend/config.yaml` on your default branch:

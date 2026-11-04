@@ -150,7 +150,7 @@ func TestRouteBuiltinAgent_Retro(t *testing.T) {
 			name:         "/fs-retro from a triage user is not authorized",
 			agents:       []config.AgentEntry{{Name: "retro", Trigger: routeTrigger(t, "retro")}},
 			event:        routeRetroEvent(routeRetroPR, routeRetroCommand, routeRetroTriager, "issue_comment", "created"),
-			wantDecision: routeSkip, wantReason: "actor not authorized",
+			wantDecision: routeSkip, wantReason: "retro command requires write",
 		},
 		{
 			name:         "/fs-retro from a bot is skipped even when the trigger has no actor guard",
@@ -260,6 +260,24 @@ func TestRouteBuiltinAgent_ClosedPRRetroRequiresWriteFloor(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+func TestRouteBuiltinAgent_RetroSlashCommandRequiresWriteFloor(t *testing.T) {
+	neutralizeAgentsRepoFallback(t)
+	for _, harnessRole := range []string{"retro", "review", "triage"} {
+		t.Run(harnessRole, func(t *testing.T) {
+			harnessBody := strings.Replace(routeTestRetroHarness, "role: retro", "role: "+harnessRole, 1)
+			dir := writeRouteFixture(t, sourcedRouteFixture([]config.AgentEntry{{Name: "retro", Trigger: "true"}}, "retro", harnessBody))
+			got, err := routeBuiltinAgent(context.Background(), routeOpts{
+				agent: "retro", configDir: dir,
+				event:       routeEvent(t, routeRetroEvent(routeRetroPR, routeRetroCommand, routeRetroTriager, "issue_comment", "created")),
+				forgeClient: forge.NewFakeClient(), printer: ui.New(io.Discard),
+			})
+			require.NoError(t, err)
+			assert.Equal(t, routeSkip, got.Decision)
+			assert.Equal(t, "retro command requires write", got.Reason)
+		})
 	}
 }
 
