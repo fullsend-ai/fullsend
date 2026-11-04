@@ -5025,23 +5025,18 @@ func TestRunAgent_PreflightCheck_TopLevelAbsentOrWhitespaceKeepsStatusQuo(t *tes
 	}
 }
 
-// A harness setting both the top-level preflight_check and the nested
-// validation_loop.preflight_check runs them in the order ADR 0129
-// Decision 3 pins for migration: the nested check keeps
-// running, after the top-level check. When both pass, the top-level
-// sentinel precedes the nested one — both ahead of the pre-script and
-// sandbox creation, composing the eager top-level gate with the
-// gate first) with the pre-feature status-quo sequence that keeps the
-// nested check in its original position ahead of the pre-script. When
-// the top-level check fails, the eager gate stops the run before the
-// nested check fires, so the nested sentinel is absent and the error
-// carries the top-level source label only. The pre-existing nested-only
-// failure tests pin the complementary direction — top-level passes,
-// nested fails, stop at the nested check, status quo — so this pair
-// completes the both-fields matrix. Characterization test: the top-level
-// gate sits immediately above the nested block, so this must already be
-// green; a failure means the ordering drifted, not that the expectation
-// is wrong.
+// TestRunAgent_PreflightCheck_BothFieldsOrderingAndGating pins the order
+// ADR 0129 Decision 3 sets for a harness that declares both the top-level
+// preflight_check and the nested validation_loop.preflight_check during
+// migration: the top-level check runs first and the nested check keeps
+// running after it. When both pass, the top-level sentinel precedes the
+// nested one, and both run ahead of the pre-script and sandbox creation,
+// with the nested check in its original pre-feature position. When the
+// top-level check fails, the run stops before the nested check fires, so
+// the nested sentinel is absent and the error carries only the top-level
+// source label. The nested-only failure tests cover the complementary
+// case (top-level passes, nested fails), so together they complete the
+// both-fields matrix. A failure here means the gate ordering drifted.
 func TestRunAgent_PreflightCheck_BothFieldsOrderingAndGating(t *testing.T) {
 	t.Run("both pass, top-level sentinel precedes nested sentinel", func(t *testing.T) {
 		usePreScriptStub(t)

@@ -89,9 +89,10 @@ func TestGeneratedHarnessLoads(t *testing.T) {
 
 // TestGeneratedHarnessLoadsWithValidationLoop extends TestGeneratedHarnessLoads
 // to the --validation-loop scaffold: the generated tree must load through the
-// same loader dispatch uses and produce no lint diagnostics — in particular no
-// deprecation warning, since the scaffold sets the top-level preflight_check
-// rather than the deprecated nested validation_loop.preflight_check.
+// same loader dispatch uses. During the migration window the scaffold emits
+// both the top-level preflight_check and the deprecated nested
+// validation_loop.preflight_check, so lint must report exactly one
+// diagnostic: the nested-field deprecation warning.
 func TestGeneratedHarnessLoadsWithValidationLoop(t *testing.T) {
 	dir := t.TempDir()
 	opts := testOptions("lint-docs", "triage")
