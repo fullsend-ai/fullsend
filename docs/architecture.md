@@ -323,7 +323,23 @@ flowchart TB
   without overlays, and `FULLSEND_FALLBACK_MODELS` applies as each runtime
   allows. Decided, not yet implemented.
 - Plugins are runtime-scoped harness resources: a harness declares `plugins:` as one list of directories in its own repository (same trust and fetch path as skills), and each entry's format decides which runtime loads it — a `plugin.json` bundle is Claude Code's, a directory pi's `-e` loader resolves is uploaded and loaded after a tree-hash preflight computed from the host copy. Each runtime names and skips the entries in the other format, so the list survives a runtime switch. Because `--no-extensions` plus explicit `-e` closes the set of code that can register tools, no per-tool declaration is needed ([ADR 0094](ADRs/0094-pi-extensions-are-harness-resources.md)).
-- Native Codex children run under a runner-owned policy: Bootstrap registers roles for an agent with the `Agent` tool, under harness security, whose parent model Codex resolves to collaboration V1 on the direct route (a V2, unlisted or `gateway/` parent keeps the multi-agent tools off), and binds each child's model (a persona's own entry in its role file, the run-level default otherwise) and the run's effort, and a mandatory dispatch hook admits only fresh-context V1 spawns of registered roles after checking `hooks.json` and the role files against runner-held digests; after each iteration the runner checks the spawns seen in the stream or in the children's rollouts on disk, each child once, against the hook's admissions ([ADR 0126](ADRs/0126-fullsend-owned-codex-subagents.md), [#6970](https://github.com/fullsend-ai/fullsend/issues/6970)).
+- Decided, not yet implemented: extend the runner-owned native Codex child
+  policy to V2 alongside the 0.166.0 bump. Bootstrap requires the `Agent` tool,
+  harness security and a direct-route parent selecting V1 or V2 in the bundled
+  model catalog (absent means V1); other parents keep delegation off. The
+  runner binds child models and effort, registers roles and admits only
+  fresh-context spawns after checking runner-held digests. V2 configuration
+  removes direct messaging and model overrides, with hook denial as a
+  backstop; spawn and permitted control calls map to `Agent`. Every child of
+  a V2 parent inherits V2 tools, so depth one relies on hook enforcement and
+  its documented fail-open limits. V2 child results must pass the ADR 0100
+  PostToolUse chain before entering the parent's context; V2 delegation stays
+  experimental until this path is implemented and verified live. Aggregate
+  spawn/admission reconciliation remains after-the-fact detection: unused
+  admissions or missing/altered child session logs can hide unauthorized spawns
+  ([ADR 0126](ADRs/0126-fullsend-owned-codex-subagents.md),
+  [ADR 0159](ADRs/0159-codex-subagents-on-collaboration-v2.md),
+  [#6970](https://github.com/fullsend-ai/fullsend/issues/6970)).
 
 ### Behaviour testing
 
