@@ -1,7 +1,6 @@
 package runtime
 
 import (
-	"cmp"
 	"slices"
 	"strings"
 	"unicode/utf8"
@@ -92,14 +91,16 @@ func scanProgressSecrets(s string) string {
 }
 
 // maskRuntimeSecretLiterals masks registered runtime secrets and their
-// normalized forms in one longest-first pass. The registry is ordered by
-// raw length, but normalization can reverse that order: a secret with a
-// longer raw value can normalize shorter than another secret's normalized
-// form. Masking in registry order would then replace the shorter literal
-// first and destroy the longer overlapping credential's match, leaving its
-// suffix visible. Pattern redaction runs after the literal pass for the
-// same reason. The original literal passed the registration length floor,
-// so every non-empty normalized form is a derivative of an authenticated
+// normalized forms in one rewrite. Match ranges for every literal are
+// collected against the original text and their union is masked, because
+// no sequential replacement order survives crossing overlaps: one
+// secret's end overlapping another's start leaves a fragment of one
+// visible whichever is replaced first, and a self-overlapping literal
+// must not re-match its own replacement. The registry orders by raw
+// length, but normalization can reverse that order, so ordering alone
+// was never sufficient. Pattern redaction runs after the literal pass.
+// The original literal passed the registration length floor, so every
+// non-empty normalized form is a derivative of an authenticated
 // credential and is masked, mirroring redactSecretLiteralsWithNormalizer
 // in the CLI.
 func maskRuntimeSecretLiterals(s string) string {
@@ -110,13 +111,44 @@ func maskRuntimeSecretLiterals(s string) string {
 			literals = append(literals, normalized)
 		}
 	}
-	slices.SortStableFunc(literals, func(a, b string) int { return cmp.Compare(len(b), len(a)) })
+	if len(literals) == 0 {
+		return s
+	}
+	covered := make([]bool, len(s))
 	for _, literal := range literals {
-		if strings.Contains(s, literal) {
-			s = strings.ReplaceAll(s, literal, "***")
+		if literal == "" {
+			continue
+		}
+		// Advance one byte past each match so overlapping occurrences of
+		// the same literal are all collected.
+		for offset := 0; offset+len(literal) <= len(s); {
+			i := strings.Index(s[offset:], literal)
+			if i < 0 {
+				break
+			}
+			start := offset + i
+			for j := start; j < start+len(literal); j++ {
+				covered[j] = true
+			}
+			offset = start + 1
 		}
 	}
-	return s
+	if !slices.Contains(covered, true) {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		if covered[i] {
+			b.WriteString("***")
+			for i < len(s) && covered[i] {
+				i++
+			}
+			continue
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return b.String()
 }
 
 // NormalizeProgressText applies the same cleanup to display text and caller

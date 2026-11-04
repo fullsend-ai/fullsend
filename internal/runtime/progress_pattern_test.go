@@ -110,7 +110,7 @@ func TestProgressFallbackRedactsNormalizedRuntimeSecret(t *testing.T) {
 // authenticated secret. No RedactProgress callback is set, exercising the
 // renderer fallback.
 func TestProgressFallbackRedactsShortNormalizedRuntimeSecret(t *testing.T) {
-	const secret = "zz\x1b[32m\x1b[0mtok" // raw length 14; normalizes to "zztok" (5)
+	const secret = "zz\x1b[32m\x1b[0mtok" // raw length 14 bytes; normalizes to "zztok" (5)
 	if !security.RegisterRuntimeSecret(secret) {
 		t.Fatal("register synthetic literal")
 	}
@@ -134,16 +134,35 @@ func TestProgressFallbackMaskingOrderKeepsOverlappingCredentials(t *testing.T) {
 	// secret's normalized form. Masking in registry (raw-length) order
 	// would replace the shorter literal first and leave the longer
 	// overlapping credential's suffix visible. No callback is set.
-	long := "abc\x1b[32m\x1b[0mdef" // raw 14, normalizes to "abcdef"
-	short := "abcdefghi\tj"         // raw 10, normalizes to "abcdefghi j"
+	long := "containment-long\x1b[32m\x1b[0m" // raw 25 bytes, normalizes to "containment-long"
+	short := "containment-long-suffix"        // raw 23 bytes, normalizes to itself
 	if !security.RegisterRuntimeSecret(long) || !security.RegisterRuntimeSecret(short) {
 		t.Fatal("register synthetic literals")
 	}
 	var out bytes.Buffer
 	r := newTestRenderer(&out)
-	r.Handle(TaskProgressEvent{TaskID: "one", State: TaskRunning, Label: "status abcdefghi j done"})
-	if strings.Contains(out.String(), "ghi j") || !strings.Contains(out.String(), "***") {
+	r.Handle(TaskProgressEvent{TaskID: "one", State: TaskRunning, Label: "status containment-long-suffix done"})
+	if strings.Contains(out.String(), "containment-long") || !strings.Contains(out.String(), "***") {
 		t.Fatalf("overlapping normalized credential leaked: %q", out.String())
+	}
+}
+
+func TestProgressFallbackMergesCrossingOverlaps(t *testing.T) {
+	// One secret's end overlapping another's start defeats every
+	// sequential replacement order; the merged span must be masked whole.
+	a := "crossing-alpha-start"
+	b := "start-crossing-beta"
+	if !security.RegisterRuntimeSecret(a) || !security.RegisterRuntimeSecret(b) {
+		t.Fatal("register synthetic literals")
+	}
+	var out bytes.Buffer
+	r := newTestRenderer(&out)
+	r.Handle(TaskProgressEvent{TaskID: "one", State: TaskRunning, Label: "prefix crossing-alpha-start-crossing-beta suffix"})
+	if strings.Contains(out.String(), "crossing-alpha") || strings.Contains(out.String(), "crossing-beta") {
+		t.Fatalf("crossing overlap leaked a fragment: %q", out.String())
+	}
+	if !strings.Contains(out.String(), "***") {
+		t.Fatalf("crossing overlap was not masked: %q", out.String())
 	}
 }
 
@@ -162,5 +181,37 @@ func TestTaskProgressToolOnlyFramesDoNotPrint(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "tool: Bash") {
 		t.Fatalf("tool-only change printed a second row: %q", out.String())
+	}
+}
+
+func TestTaskProgressToolLifecyclePrintsRealTransitions(t *testing.T) {
+	// Tool swaps are attribution churn and do not print, but a tool
+	// appearing or disappearing changes the row, and a later real
+	// transition prints the latest retained tool name. Frames carry
+	// usage counters like real SDK snapshots to prove they do not churn.
+	parse := func(raw string, r *EventRenderer) {
+		t.Helper()
+		if err := parseClaudeStream(strings.NewReader(raw+"\n"), r.Handle); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var out bytes.Buffer
+	r := newTestRenderer(&out)
+	parse(`{"type":"system","subtype":"task_progress","task_id":"sub1","description":"Work","usage":{"total_tokens":10,"tool_uses":1}}`, r)
+	parse(`{"type":"system","subtype":"task_progress","task_id":"sub1","description":"Work","last_tool_name":"Read","usage":{"total_tokens":20,"tool_uses":2}}`, r)
+	if !strings.Contains(out.String(), "tool: Read") {
+		t.Fatalf("tool appearance did not print: %q", out.String())
+	}
+	parse(`{"type":"system","subtype":"task_progress","task_id":"sub1","description":"Work","last_tool_name":"Bash","usage":{"total_tokens":30,"tool_uses":3}}`, r)
+	if strings.Contains(out.String(), "tool: Bash") {
+		t.Fatalf("tool swap printed a row: %q", out.String())
+	}
+	parse(`{"type":"system","subtype":"task_progress","task_id":"sub1","description":"Work","summary":"Halfway","last_tool_name":"Bash","usage":{"total_tokens":40,"tool_uses":4}}`, r)
+	if !strings.Contains(out.String(), "tool: Bash") || !strings.Contains(out.String(), "Halfway") {
+		t.Fatalf("real transition lost the retained tool name: %q", out.String())
+	}
+	parse(`{"type":"system","subtype":"task_progress","task_id":"sub1","description":"Work","last_tool_name":"","summary":""}`, r)
+	if !strings.HasSuffix(strings.TrimRight(out.String(), "\n"), "— running") {
+		t.Fatalf("explicit tool and summary clear did not print: %q", out.String())
 	}
 }

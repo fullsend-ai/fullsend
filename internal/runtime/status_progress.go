@@ -52,8 +52,15 @@ func (r *progressReconciler) status(e StatusProgressEvent, redact func(string) s
 	msg = sanitizeOutput(msg)
 	// Fields are redacted individually; the joins can reconstruct a
 	// credential (a tab-containing secret normalizes to the exact text a
-	// label/subject join produces). Mask the joined row before dedup
-	// comparison, retention and display.
+	// label/subject join produces). The caller's callback runs first: it
+	// owns literals the fallback scanner cannot know, such as
+	// environment-derived credentials. Mask the joined row before dedup
+	// comparison, retention and display. Retained subject/context stay
+	// per-field masked; fragments appearing across separate rows are the
+	// same exposure as printing the pieces separately and are accepted.
+	if redact != nil {
+		msg = redact(msg)
+	}
 	msg = scanProgressSecrets(msg)
 	if !e.Occurrence && previous.message == msg {
 		return "", false
