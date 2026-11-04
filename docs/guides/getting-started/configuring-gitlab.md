@@ -4,7 +4,7 @@ sidebar_position: 4
 
 # Configuring GitLab For Fullsend
 
-The goal of this document is that you configure Fullsend for your GitLab
+The goal of this document is that you configure fullsend for your GitLab
 repository. GitLab installations are per-repo only — there is no
 organization-wide GitLab install path.
 
@@ -40,9 +40,9 @@ GitHub repositories use a different command (`fullsend github setup`). See
   be `no_one_allowed` before typed pipeline-input dispatch can activate —
   install/converge refuse runnable template delivery on a weaker, unset,
   or unverifiable setting, even with automatic enforcement requested.
-  Follow [Typed-input dispatch migration](#typed-input-dispatch-migration)
-  before upgrading a legacy installation; legacy variable-based pins keep
-  their compatible setting. See [GitLab Role-Credential
+  Legacy variable-based installations are no longer supported; see
+  [Typed-input dispatch migration](#typed-input-dispatch-migration). See
+  [GitLab Role-Credential
   Contract](../../contributing/gitlab-role-credentials.md#how-a-job-selects-its-credential)
   for the remaining live-validation rollout gates for this transport.
 * If the project has a push rule with a branch name regex (**Settings >
@@ -57,46 +57,45 @@ GitHub repositories use a different command (`fullsend github setup`). See
 
 `ci_pipeline_variables_minimum_override_role` is a GitLab project setting,
 not a `.fullsend` configuration field. Before installing typed-input jobs,
-an administrator must set it to `no_one_allowed`; Fullsend reads it back
+an administrator must set it to `no_one_allowed`; fullsend reads it back
 and refuses delivery if it is weaker, unsupported, or unreadable. Setting
 `FULLSEND_GITLAB_PIPELINE_VAR_RESTRICTION=enforced` does not bypass this
 pre-delivery check. A failed setting change must leave the new jobs undelivered,
 not runnable under an unsafe policy.
 
-For an existing variable-based installation, plan a maintenance window:
-stop its poller and prevent its legacy credential-bearing jobs from running,
-remove the managed schedules' obsolete `FULLSEND_POLL_MODE` variables, and
-apply and verify the GitLab restriction before installing the new templates.
-Do not apply the restriction to a running legacy installation: its dispatch
-and schedule variables would stop working. If preparation fails, keep jobs
-stopped and do not deliver or merge the typed setup. Inspect an asynchronous
-installation/repair MR before merging, keep the restriction in place, and
-rerun `repos install` after it merges to complete activation. Other user-owned
-schedule variables must be migrated separately; Fullsend does not delete them.
+The former variable-based dispatch path is no longer supported, and fullsend
+no longer migrates installations off it automatically. Install and converge
+refuse to deliver a legacy variable-based wrapper (for example, from a
+`fullsend_ref` pinned before v0.46.0): pin v0.46.0 or later, or remove the
+pin. Typed activation refuses while any managed schedule still sets a
+pipeline variable. That includes an obsolete `FULLSEND_POLL_MODE` left from a
+legacy installation. Delete the variable, or delete the schedule so
+`repos install` recreates it, then rerun `repos install`. Fullsend never
+deletes schedule variables itself.
 
 Root, wrapper, agent, and poll templates are delivered together using the
-effective target version. Fullsend does not migrate managed schedule variables
-until the compatible wrapper **and** agent/poll templates are on the default
-branch, including when a repair MR is still open. Dry runs never mutate them.
-Typed jobs derive slash/event mode from the schedule description; legacy
-variable wrappers retain their existing restriction and schedule variables.
+effective target version. Activation waits until the compatible wrapper
+**and** agent/poll templates are on the default branch, including when a
+repair MR is still open. Inspect an asynchronous installation/repair MR
+before merging, keep the restriction in place, and rerun `repos install`
+after it merges to complete activation. Typed jobs derive slash/event mode
+from the schedule description, so managed schedules are variable-free.
 
-Version skew between the poller and the installed wrapper behaves as follows:
-
-| Poller | Installed wrapper | Result |
-| --- | --- | --- |
-| New | Typed | Dispatches with pipeline inputs. |
-| New | Legacy | Detects the legacy wrapper and falls back to pipeline variables. |
-| Old (sends variables) | Legacy | Dispatches with pipeline variables, as before. |
-| Old (sends variables) | Typed, after activation set `no_one_allowed` | Cannot dispatch: GitLab rejects the variables. Upgrade the poller. |
+The poller dispatches only with pipeline inputs. It refuses to dispatch to a
+repository whose wrapper, at the dispatch ref, does not declare the complete
+typed contract, and never falls back to pipeline variables. An older poller
+that still sends variables cannot dispatch once `no_one_allowed` is set:
+GitLab rejects the variables. Upgrade the poller.
 
 The transport declares eleven metadata inputs and nine base64 chunks, at
 most 1000 characters each. All three template layers validate the chunk
 alphabet and length; fixed code reconstructs the payload as data. Variable
 bridges disable expansion, and creator/HMAC authentication precedes caller
-link logging and credential selection. Note bodies are bounded to 800 Unicode
-characters with a truncation marker and note ID; oversized payloads fail
-before a pipeline is created. GitLab's 20-input limit leaves no spare root
+link logging and credential selection. Non-command note bodies, such as bot
+review notes, are bounded to 800 Unicode characters with a truncation marker.
+A `/fs-*` command body is carried untruncated, and the dispatcher fails closed
+before a pipeline is created when a command payload exceeds the nine-chunk
+budget. Other oversized payloads also fail before a pipeline is created. GitLab's 20-input limit leaves no spare root
 inputs: conflicting declarations or excess inputs fail explicitly.
 
 Compatible user input declarations, jobs, includes, and header settings
@@ -121,10 +120,9 @@ and typed pins predating the secured contract are unsupported.
 > enroll each role with a token that has `api` scope, and run
 > `fullsend poll` on an external scheduler (a VM cron job or Kubernetes
 > CronJob) instead of relying on in-CI pipeline schedules — see
-> [Off-system polling](#off-system-polling) below and
-> [ADR 0067](../../ADRs/0067-gitlab-cron-polling-event-dispatch.md) for
-> the design. A runner with sufficient CI capacity is still required for
-> the scheduled jobs themselves.
+> [Off-system polling](#off-system-polling) below. A runner with
+> sufficient CI capacity is still required for the scheduled jobs
+> themselves.
 >
 > This gap does not stay quiet: only the *first* `repos install` merely
 > warns when schedule creation fails and still exits successfully. Any
@@ -231,7 +229,7 @@ Install then converges the project:
   re-enable it. Leave that flag unset on repos using [Off-system
   polling](#off-system-polling), where the schedules are disabled on
   purpose.
-* Provisions the webhook fast path ([ADR 0125](../../ADRs/0125-gitlab-hybrid-webhook-poller-dispatch.md)):
+* Provisions the webhook fast path:
   a pipeline trigger token stored as the protected, masked
   `FULLSEND_TRIGGER_TOKEN` variable, a generated `FULLSEND_WEBHOOK_SECRET`,
   and a project webhook (issues, merge requests, comments) that triggers a
@@ -242,7 +240,7 @@ Install then converges the project:
   Reporter, Guest, or non-member author it exits successfully without
   running triage. Existing credential variables
   are reused only when masked, protected, and wildcard-scoped; otherwise they
-  are regenerated. Only webhooks Fullsend owns are updated or deleted. This
+  are regenerated. Only webhooks fullsend owns are updated or deleted. This
   step is deferred until the dispatcher and its scripts are on the default
   branch, the default branch is protected, and
   `no_one_allowed` is verified, so on a merge-request install re-run
@@ -298,6 +296,38 @@ to the default branch instead. Preview with `--dry-run`.
 For the full list of install flags, see the
 [CLI reference](../../cli/repos.md#repos-install).
 
+### Least-privilege dispatch contract
+
+The webhook fast path and the polling backstop start agents without raising
+any runtime credential above Developer and without accepting caller-supplied
+pipeline variables:
+
+* **Developer-level API pipeline creation with typed inputs.** The poller and
+  the webhook dispatcher start agent pipelines with a Developer-level
+  credential: through the API with the Poller credential, or with the
+  trigger-only account's `CI_JOB_TOKEN` once its dispatch activation is
+  recorded. Dispatch fields travel as declared typed pipeline inputs,
+  never as pipeline variables.
+* **User-defined pipeline variables are rejected.**
+  `ci_pipeline_variables_minimum_override_role=no_one_allowed` makes GitLab
+  reject pipeline variables from every caller, including a trigger token, so
+  no caller can override values such as `CI_JOB_TOKEN`, `CI_API_V4_URL`, or
+  `FULLSEND_DISPATCH_SECRET`. Install verifies the setting before it delivers
+  runnable typed jobs or provisions the webhook.
+* **Native `TRIGGER_PAYLOAD` inside the job.** The fast path needs no
+  pipeline variables. GitLab's native webhook trigger exposes the webhook
+  body to the dispatcher job as the file-type `TRIGGER_PAYLOAD` variable,
+  which keeps working under `no_one_allowed`. The dispatcher treats its
+  contents as untrusted hints and re-fetches every referenced resource from
+  the GitLab API before it dispatches.
+* **Authenticated opaque dispatch data for larger payloads.** The event
+  payload is too large for one input, so it travels as base64 chunks
+  (`event_payload_chunk_00` through `event_payload_chunk_08`; see
+  [Typed-input dispatch migration](#typed-input-dispatch-migration)). The
+  agent job reassembles them as data, never as shell, and verifies its
+  creator and the dispatch HMAC, computed over the whole payload, before it
+  selects credentials or acts on the payload.
+
 ### Inherited CI/CD variable trust
 
 > **Security assumption:** the webhook fast path and the trigger-account
@@ -350,7 +380,7 @@ reserved variable is defined there. These checks still apply:
   polling fallback all still apply.
 
 Environment-scoped variables do not mitigate this risk. A job can
-declare the matching environment, and Fullsend stores and reads these
+declare the matching environment, and fullsend stores and reads these
 credentials at the wildcard scope.
 
 ### Enabling a subset of agents
@@ -432,7 +462,7 @@ There are two practical Free-tier arrangements:
    Analyst, and Coder respectively when distinct audit and approval identities
    are required.
 
-Each supplied token must satisfy the same policy as a credential Fullsend
+Each supplied token must satisfy the same policy as a credential fullsend
 mints, or enrollment rejects it before anything is stored: it must be active,
 carry the role's token name (`fullsend-poller`, `fullsend-analyst` or
 `fullsend-coder`) and exactly the `api` scope, and expire no later than one
@@ -522,7 +552,7 @@ rotated by the administrator, not by `repos install`.
 revoked credentials as `gitlab-role:<name>` drift. Re-running
 `repos install` repairs missing role secrets. `repos uninstall` deletes
 the registry, role secrets, matching role project access tokens, and
-verified Fullsend-managed project service accounts (see
+verified fullsend-managed project service accounts (see
 [Project service accounts](#project-service-accounts)), and
 removes the rotation document last. If the rotation document records
 administrator-supplied account exclusions, an exclusions-only document is
@@ -536,7 +566,7 @@ cleanup of those. See [Operations § Uninstalling](operations.md#uninstalling).
 
 > **Status: active
 > ([#8242](https://github.com/fullsend-ai/fullsend/issues/8242)).** Install
-> converges Fullsend-managed role credentials to project service accounts and
+> converges fullsend-managed role credentials to project service accounts and
 > writes rotation state in a versioned format. Every CLI that runs
 > `repos install`, converge or uninstall against a project must be upgraded
 > first: older rotation and status runs reject the new state, but older
@@ -566,7 +596,7 @@ Where project service accounts are unavailable, installs fall back to separate
 Developer-level project access tokens if the instance supports them. Either
 way these are genuinely different GitLab identities.
 
-Re-running `repos install` also replaces positively identified Fullsend-managed
+Re-running `repos install` also replaces positively identified fullsend-managed
 legacy role credentials with service-account credentials. There is no separate
 migration command. Supplied credentials are retained; old managed tokens stay
 valid for the ordinary 24-hour in-flight-job grace period before cleanup on a
@@ -724,12 +754,12 @@ cannot be verified leaves `retiring_user_id` in place for the next install to
 retry. An account that owns an administrator-supplied credential is never
 deleted. Polling continues with the current Poller throughout.
 
-Retirement also enforces the GitLab Free-tier account quota. ADR 0125 sets no
-numeric Free-tier limit, so the bound is that at most one old/new pair of
-Poller accounts exists at a time: the current Poller plus either one pending
-replacement or one retiring Poller. At most three abandoned replacements may
-also await deletion. Repeated installs and rotations therefore return to a
-single Poller instead of accumulating service accounts.
+Retirement also enforces the GitLab Free-tier account quota. Fullsend does not
+rely on a numeric Free-tier limit, so the bound is that at most one old/new
+pair of Poller accounts exists at a time: the current Poller plus either one
+pending replacement or one retiring Poller. At most three abandoned
+replacements may also await deletion. Repeated installs and rotations
+therefore return to a single Poller instead of accumulating service accounts.
 
 The current Poller is not raised, so its own credentials do not block the
 handoff. The checks that guard the temporary Maintainer elevation apply to the
@@ -882,7 +912,7 @@ reason and resource IDs.
   decoders reject it; use this version or newer for later install,
   status, repair, rotation, or uninstall, even if schedules remain
   installer-owned. The gate also defers when a committed CI
-  job, other than Fullsend's own, would run in a trigger, agent child
+  job, other than fullsend's own, would run in a trigger, agent child
   (`source=pipeline`) or scheduled (`source=schedule`) pipeline, and while the
   committed dispatch scripts, including helpers that run before authorization,
   do not match the shipped compatible scripts, or the managed poll, agent,
@@ -1055,6 +1085,18 @@ the pipeline-ref falls back to `CI_COMMIT_REF_NAME` then
 
 ## Inference Setup
 
+Pick the route that matches what you can change in GCP:
+
+| You can | Route |
+|---------|-------|
+| Create a Workload Identity provider and grant roles in your GCP project | Your own `gitlab-oidc` provider: the steps directly below. If Google cannot reach your GitLab instance, add [Private OIDC issuers (uploaded JWKS)](#private-oidc-issuers-uploaded-jwks) |
+| Only manage a service account, while a platform team runs a provider that trusts your GitLab instance | [Using an existing WIF provider](#using-an-existing-wif-provider); skip the own-provider steps below |
+| Skip GCP entirely | OpenAI with an API key; see [Installing Fullsend](#installing-fullsend) |
+
+**Own-provider route.** From here up to
+[Using an existing WIF provider](#using-an-existing-wif-provider), this
+section applies only when you run the `gitlab-oidc` provider yourself.
+
 Pass `--vertex-project`, or declare `inference.project` in the managed
 configuration (for example
 `fullsend repos set gitlab.config.inference.project <gcp-project>`), so
@@ -1189,7 +1231,9 @@ ID, not the OIDC `sub` claim.
 Create the `fullsend-inference` pool first if it doesn't already exist
 (see the Advanced setup steps linked above). Agent jobs obtain a GitLab
 `id_tokens` OIDC token (`FULLSEND_ID_TOKEN`, audience `fullsend`) and
-exchange it through this provider.
+exchange it through this provider. To use a provider someone else runs
+instead, see
+[Using an existing WIF provider](#using-an-existing-wif-provider).
 
 When you later remove a repo, this IAM binding and (if unshared)
 `--attribute-condition` value need explicit teardown — see [Operations §
@@ -1343,6 +1387,224 @@ region is managed, so install repairs a variable that differs. Without a
 declared region, install keeps an existing variable as it is. See
 [Effective infrastructure values](../../cli/repos.md#effective-infrastructure-values).
 
+### Using an existing WIF provider
+
+Use this route when a platform team already runs a Workload Identity
+provider that trusts your GitLab instance, and you cannot create the
+`gitlab-oidc` provider or grant roles in your GCP project yourself. The
+agent job requests a token for that provider, exchanges it, and then
+impersonates a service account you control.
+
+What you need:
+
+- a GitLab project that uses `inference.auth` `vertex-wif`
+  (`fullsend repos set gitlab.inference.auth vertex-wif`; see
+  [Installing Fullsend](#installing-fullsend));
+- a GCP project with Vertex AI enabled (see
+  [Getting Inference](getting-inference.md));
+- permission to manage one service account in that project.
+
+This route is an alternative to running your own `gitlab-oidc` provider.
+If you run your own, skip this section.
+
+#### 1. Collect the values
+
+Ask the provider's administrator for the provider resource name, the
+audience it accepts, and the principal it maps your GitLab project to.
+Then set the values once in your shell; the later steps use these
+variables:
+
+```bash
+export GCP_PROJECT="<gcp-project>"            # your project that serves Vertex AI
+export PROJECT_PATH="<group/project>"         # the GitLab project to install
+export WIF_PROVIDER="projects/<pool-project-number>/locations/global/workloadIdentityPools/<pool>/providers/<provider>"
+export WIF_AUDIENCE="//iam.googleapis.com/${WIF_PROVIDER}"
+export PRINCIPAL="principalSet://iam.googleapis.com/projects/<pool-project-number>/locations/global/workloadIdentityPools/<pool>/attribute.project_id/<gitlab-project-id>"
+export SERVICE_ACCOUNT="<name>@${GCP_PROJECT}.iam.gserviceaccount.com"
+```
+
+- Use the principal exactly as the administrator gives it. The template
+  above is the common shape for a provider that maps
+  `attribute.project_id`: put your GitLab project ID (**Settings →
+  General → Project ID**) in place of `<gitlab-project-id>`.
+- `WIF_AUDIENCE` above is right when the provider has no allowed audiences
+  configured: Google then accepts only the provider's full resource name.
+  If the administrator gives you an audience, use theirs.
+- The pool's project number usually belongs to the platform team, not to
+  your GCP project. Copy the administrator's values exactly.
+- `SERVICE_ACCOUNT` must be a user-managed service account. The Compute
+  Engine and App Engine default accounts are not accepted.
+
+#### 2. Let the provider's principal use your service account
+
+Grant the principal `roles/iam.workloadIdentityUser` on the service
+account. The binding is on the service account, not the project, so you
+need permission to manage the service account only:
+
+```bash
+gcloud iam service-accounts add-iam-policy-binding "$SERVICE_ACCOUNT" \
+  --role="roles/iam.workloadIdentityUser" \
+  --member="$PRINCIPAL"
+```
+
+Check the binding:
+
+```bash
+gcloud iam service-accounts get-iam-policy "$SERVICE_ACCOUNT" \
+  --flatten="bindings[].members" \
+  --format="table(bindings.role, bindings.members)"
+```
+
+The output lists the binding:
+
+```text
+ROLE                            MEMBERS
+roles/iam.workloadIdentityUser  principalSet://iam.googleapis.com/projects/<pool-project-number>/locations/global/workloadIdentityPools/<pool>/attribute.project_id/<gitlab-project-id>
+```
+
+The service account also needs `roles/aiplatform.user` in `$GCP_PROJECT`.
+If it does not have it yet, send this command, with your values filled in,
+to that project's administrator:
+
+```bash
+gcloud projects add-iam-policy-binding "$GCP_PROJECT" \
+  --role="roles/aiplatform.user" \
+  --member="serviceAccount:$SERVICE_ACCOUNT" \
+  --condition=None
+```
+
+> **Trust trade-off.** The principal you bind decides who can act as the
+> service account.
+>
+> - A principal set bound by GitLab project ID trusts every pipeline in
+>   that project that can request a token with the provider's audience,
+>   not only fullsend's agent jobs.
+> - The agent sandbox receives that token (at
+>   `/sandbox/workspace/.gcp-oidc-token`) and can exchange it itself. The
+>   agent can reach everything granted to the provider's principal for
+>   your project, not only this service account. Ask the administrator
+>   which bindings exist for that principal.
+>
+> Bind the narrowest principal the provider offers: one per project rather
+> than per group or instance.
+
+#### 3. Declare the provider and install
+
+```bash
+fullsend repos set gitlab.config.inference.project "$GCP_PROJECT"
+fullsend repos set gitlab.config.inference.wif_provider "$WIF_PROVIDER"
+fullsend repos set gitlab.config.inference.wif_audience "$WIF_AUDIENCE"
+fullsend repos set gitlab.config.inference.service_account "$SERVICE_ACCOUNT"
+fullsend repos install "$PROJECT_PATH"
+```
+
+To use the provider for some projects only, set the keys on each
+project's entry instead, for example
+`fullsend repos set 'gitlab.repos["<group/project>"].config.inference.wif_provider' "$WIF_PROVIDER"`,
+and the same for `project`, `wif_audience` and `service_account`.
+
+A first install prints, among its other steps:
+
+```text
+    [group/project] Set 2 repository variables
+    [group/project] Set 2 repository secrets
+  ✓ Created PR #1: https://gitlab.example.com/group/project/-/merge_requests/1
+    Merge the PR to apply these changes
+  ✓ Install complete: 1 installed, 0 converged, 0 already current, 0 failed
+```
+
+Merge that merge request. Agent jobs use the files on the default branch,
+so the new audience takes effect only after the merge. Install has then:
+
+- written `FULLSEND_GCP_PROJECT_ID` and `FULLSEND_GCP_WIF_PROVIDER` (CI/CD
+  secrets) and `FULLSEND_GCP_SERVICE_ACCOUNT` (a plain CI/CD variable);
+- set the token audience in `.gitlab/ci/fullsend-agent.yml`:
+
+  ```yaml
+  id_tokens:
+    FULLSEND_ID_TOKEN:
+      aud: "//iam.googleapis.com/projects/<pool-project-number>/locations/global/workloadIdentityPools/<pool>/providers/<provider>"
+  ```
+
+Install checks the values without calling GCP, and fails before any write
+when:
+
+- `inference.wif_provider` is not set: these keys cannot be combined with
+  the derived per-project `gitlab-oidc` provider;
+- the service account is not a full `.iam.gserviceaccount.com` email;
+- the audience is not a single line of printable ASCII, or contains `$`
+  (GitLab would expand it as a CI/CD variable);
+- the `run-agent-job.sh` the project will run does not read
+  `FULLSEND_GCP_SERVICE_ACCOUNT`, for example because `gitlab.fullsend_ref`
+  pins an older release. Move the pin to a release with impersonation
+  support.
+
+**Already installed?** Install opens a new merge request that changes
+the audience in `.gitlab/ci/fullsend-agent.yml`. It can do this only when
+`gitlab.fullsend_ref` is set or you run a released `fullsend` binary. A
+locally built binary without `gitlab.fullsend_ref` prints
+`scaffold content drift not checked: gitlab.fullsend_ref is not set and this build has no release ref`,
+and the job keeps `aud: "fullsend"`. Set `gitlab.fullsend_ref` and run
+`repos install` again.
+`repos status` reports drift while the variable or the audience does not
+match the configuration.
+
+#### 4. Check an agent job
+
+Run an agent job as described in [Testing Fullsend](#testing-fullsend). A
+working setup produces no Google credential errors in the agent job log,
+and the agent finishes. For example, a triage job on Claude through Vertex
+AI logged:
+
+```text
+  ✓ Provider ready: vertex-ai (0.1s)
+→ Agent: claude-opus-5-5 (v2.1.306)
+→ Result: success
+  ✓ Agent exited with code 0 (56.0s)
+```
+
+The job log does not show the token exchange. If the provider's
+principal has no role in your project, a successful model call proves the
+job used your service account. If impersonation is not set up, the call
+fails with `aiplatform.endpoints.predict` denied.
+
+#### Troubleshooting
+
+| Error in the agent job log | Cause | Fix |
+|----------------------------|-------|-----|
+| `invalid_target` ("The target service indicated by the "audience" parameters is invalid. This might either be because the pool or provider is disabled or deleted or because it doesn't exist.") | `inference.wif_provider` does not name an active provider: a wrong project number, pool ID or provider ID, or a disabled or deleted provider | Compare `inference.wif_provider` with the administrator's value, then run `repos install` again |
+| `invalid_grant` ("The audience in ID Token [fullsend] does not match the expected audience.") | The token audience is not one the provider accepts. `[fullsend]` means the new audience is not on the default branch yet | Merge the install merge request, or set `inference.wif_audience` to an audience the provider accepts and run `repos install` again |
+| `unauthorized_client` ("The given credential is rejected by the attribute condition.") | The provider's condition does not admit this GitLab project or ref | Ask the provider's administrator to admit the project |
+| `invalid_grant` ("Error connecting to the given credential's issuer") | Google cannot reach the GitLab instance's keys | The provider's administrator applies [Private OIDC issuers](#private-oidc-issuers-uploaded-jwks) |
+| `Permission 'iam.serviceAccounts.getAccessToken' denied on resource (or it may not exist)` | The principal cannot impersonate the service account: the binding from step 2 is missing or names another principal, or `inference.service_account` names another account | Repeat step 2 with the administrator's exact principal and the exact email in `inference.service_account` |
+| `Permission 'aiplatform.endpoints.predict' denied` | The service account lacks `roles/aiplatform.user` in `inference.project`, or `inference.service_account` is not set, so the job used the provider's principal, which has no role in your project | Grant the role (step 2), correct `inference.project`, or set `inference.service_account` |
+
+#### Leaving the existing provider
+
+To move back to your own `gitlab-oidc` provider, create it as described
+at the top of this section, then remove the three keys that point at the
+platform team's provider and install again:
+
+```bash
+fullsend repos set --unset gitlab.config.inference.service_account
+fullsend repos set --unset gitlab.config.inference.wif_audience
+fullsend repos set --unset gitlab.config.inference.wif_provider
+fullsend repos install "$PROJECT_PATH"
+```
+
+Keep `inference.wif_provider`, and remove only the other two keys, only if
+you want to keep the platform team's provider without impersonation. That
+works only when the provider accepts the audience `fullsend` and its
+principal has `roles/aiplatform.user` in `$GCP_PROJECT`.
+
+Install opens a merge request that restores `aud: "fullsend"` and prints
+`Keeping obsolete variable FULLSEND_GCP_SERVICE_ACCOUNT until the scaffold change is merged`.
+Until you merge it, `repos status` shows `FULLSEND_GCP_SERVICE_ACCOUNT differs`
+(`--json` gives the reason: `obsolete variable (inference.service_account is not declared)`).
+After the merge, the next `repos install` prints
+`Deleted obsolete variable FULLSEND_GCP_SERVICE_ACCOUNT`. `repos uninstall`
+also removes the variable with the other `FULLSEND_GCP_*` values.
+
 ### Private OIDC issuers (uploaded JWKS)
 
 By default, GCP's Security Token Service (STS) checks each GitLab
@@ -1421,7 +1683,8 @@ uploaded JWKS does not.
 
 ## Runner Configuration
 
-Agent jobs run on GitLab CI using the `fullsend-runner` image and the
+Agent jobs run on GitLab CI using the `fullsend-runner` image (see
+[Runner image version](#runner-image-version)) and the
 tags embedded in the scaffold. Empty tags (`[]`) match untagged runners;
 tagged jobs only match runners that carry those tags.
 
@@ -1479,9 +1742,13 @@ fullsend repos set gitlab.control_runner_tags '[fullsend-api]'
 > gitlab.runner_tags`. That key rewrite is unrelated to the poll job's
 > tag default described above.
 
-If the repo is already installed, setting the tag with `repos
-set` and re-running `fullsend repos install -f repos.yaml`
-takes the converge path instead of a fresh install: it retries any
+If the repo is already installed, set the tags with `repos set` and
+re-run `fullsend repos install -f repos.yaml`. The re-run takes the
+converge path instead of a fresh install and rewrites the `tags:` lines
+in `.gitlab/ci/fullsend-agent.yml` (agent tags) and in
+`.gitlab/ci/fullsend-poll.yml` and `.gitlab/ci/fullsend-dispatcher.yml`
+(control tags). Until then, `fullsend repos status` reports those files
+as content drift. The converge path also retries any
 not-yet-created pipeline schedules, and on any instance where schedule
 creation previously failed that retry fails
 hard with a `convergence errors` error — even though the runner-tag
@@ -1501,6 +1768,47 @@ a hub, see the
 [GitLab Runner VM](https://github.com/fullsend-ai/fullsend/blob/main/hack/gitlab-runner-vm/README.md)
 README.
 
+### Runner image version
+
+The poll, webhook dispatcher, and agent jobs
+(`.gitlab/ci/fullsend-poll.yml`, `.gitlab/ci/fullsend-dispatcher.yml`,
+`.gitlab/ci/fullsend-agent.yml`) run
+`ghcr.io/fullsend-ai/fullsend-runner` at a tag rendered from
+`gitlab.fullsend_ref`, the same ref that selects the CLI the jobs install:
+
+| `gitlab.fullsend_ref` | Runner image tag |
+|---|---|
+| A release, `vX.Y.Z` (the default: install writes the CLI's release here) | `X.Y.Z`, the image published for that release |
+| Unset, with a locally built CLI | `latest`, which moves only when a release is published (the jobs also install the latest release CLI) |
+| A branch such as `main`, or an untagged commit SHA | `dev`, which is rebuilt from `main` |
+
+A release-pinned project therefore keeps its OpenShell, `gh`, gitleaks,
+pre-commit, Go, and gcloud versions until you change `gitlab.fullsend_ref`;
+runner image changes merged to `main` do not reach it. When you upgrade
+`gitlab.fullsend_ref` and re-run `fullsend repos install`, the same converge
+run re-renders the image tag in all three templates. `fullsend repos status`
+reports a template whose image tag does not match `gitlab.fullsend_ref` as
+content drift, and `repos install` repairs it. Templates fetched for a pin
+that predates this rendering hardcode `fullsend-runner:dev`. Install replaces
+that with the pinned release's image too.
+
+Tracking `main` (the `dev` image) is an opt-in for fullsend maintainers and
+early testers, selected by pinning `gitlab.fullsend_ref` to `main` or a
+commit SHA. It is **not supported for production**: every runner image change
+merged to `main`, including an OpenShell bump, reaches the project as soon as
+it is published, before any release has been tested with it. A commit SHA
+cannot select an image of its own, because the runner image is built only for
+`main` commits that change it. A SHA pin therefore always resolves to `dev`,
+whichever CLI renders the templates, even when the SHA is a release's commit.
+To run a release's image, pin the release tag (`vX.Y.Z`) rather than its commit
+SHA.
+
+Use a CLI newer than v0.51.0 to install or upgrade. Earlier CLIs do not render
+the image tag, so they would commit the unrendered placeholder, which is not a
+valid image tag. The `:dev` rewrite for templates fetched from an older pin
+applies to releases from v0.32.0, the first release that published a runner
+image.
+
 ### Assigning runners
 
 Setting `gitlab.agent_runner_tags` / `gitlab.control_runner_tags` only
@@ -1508,17 +1816,17 @@ chooses which tags the scaffold embeds.
 GitLab still has to **assign** a runner that carries that tag to the
 target project or a parent group, or the job never gets a runner.
 
-Use the Fullsend runner hub on the **same GitLab instance** you set as
+Use the fullsend runner hub on the **same GitLab instance** you set as
 `gitlab.url`. A hub on a different instance cannot pick up the job.
 
 * **GitLab.com** (`https://gitlab.com`) — use the
-  [GitLab.com Fullsend runner hub](https://gitlab.com/fullsend/runner-hub).
+  [GitLab.com fullsend runner hub](https://gitlab.com/fullsend/runner-hub).
   Follow that project's
   [README](https://gitlab.com/fullsend/runner-hub/-/blob/main/README.md)
   to have its runners assigned to your project or group. The hub README
   is the source of truth for onboarding; this guide does not repeat those
   steps.
-* **Self-managed instances** — use that instance's own Fullsend runner
+* **Self-managed instances** — use that instance's own fullsend runner
   hub, typically a `fullsend/runner-hub` project on the same host.
   Follow **that** project's `README.md`, not the GitLab.com one.
   Onboarding tokens, groups, and runner registration are instance-local.
@@ -1561,6 +1869,22 @@ Confirm:
   registered under Settings → CI/CD → Runners — when that tag differs
   from `gitlab.agent_runner_tags`, both need their own registered runner
   (see [Assigning runners](#assigning-runners)).
+* **Dispatcher pipelines** — With the webhook fast path enabled, every
+  issue, merge request, and comment event creates a `trigger` pipeline
+  that runs the dispatcher job. GitLab creates that pipeline before
+  fullsend can read `TRIGGER_PAYLOAD`, so the pipeline appears even for
+  events that dispatch nothing. An issue edit that does not change labels
+  (title, description, assignee) is ignored: the job logs
+  `ignoring issue #N update without changes.labels` and succeeds without
+  starting an agent pipeline. An edited comment on an issue or merge
+  request is ignored the same way: the job logs
+  `webhook: ignoring note edit on ...` and succeeds without dispatching.
+  A failed dispatcher job means the payload
+  was rejected, not ignored. Typical causes are a label change the API
+  re-fetch contradicts or cannot tie to the acting user, a stale or
+  replayed event, or an unsupported action such as a merge request edit
+  or an issue reopen. Nothing is dispatched for a rejected payload, and
+  the job log names the check that failed.
 * **Role identities** — On instances with project service accounts, a fresh
   install shows `fullsend-poller`, `fullsend-analyst`, and `fullsend-coder`
   (plus any `fullsend-role-*` accounts) under Project information → Members
@@ -1587,7 +1911,7 @@ Confirm:
   cannot be bounded on the Poller route (an unmanaged pipeline trigger owned at
   or above Maintainer, or one whose owner cannot be verified, could be that token),
   `repos install` deletes the `FULLSEND_TRIGGER_TOKEN` variable and the
-  Fullsend-managed webhook and trigger tokens instead of leaving the bearer
+  fullsend-managed webhook and trigger tokens instead of leaving the bearer
   in storage; unmanaged trigger tokens are never revoked. On the account route,
   install compares the published value with the digest recorded when the
   account trigger was created. An existing healthy account without a digest
@@ -1732,13 +2056,13 @@ the provider and refresh it after key rotations; see
 * Read [Operations](operations.md) for day-2 updates, uninstall, and
   GitLab CI status-notification variables.
 * Read the [Agents](../../agents/README.md) section to learn about the
-  default agents Fullsend ships with.
+  default agents fullsend ships with.
 
 ### Inherited variables and authentication changes
 
 Fullsend agent jobs have no deployment environment, so only wildcard (`*`) CI/CD variables
 participate in installation checks. Fullsend already creates its variables at this scope;
-Fullsend installations require no migration.
+fullsend installations require no migration.
 
 On self-managed instances, a project Maintainer token cannot normally read instance CI/CD
 variables. Installation can proceed with unverified inherited scopes, but switching to

@@ -1671,7 +1671,9 @@ func (d *Driver) emptyMatrixPollOnce(ctx context.Context, remaining time.Duratio
 	pending := 0
 	for i := range runs {
 		r := runs[i]
-		if r.Status == "completed" && r.Conclusion == "cancelled" {
+		// A skipped run ran no job, e.g. the shim's run for a bot comment,
+		// so it holds no dispatch decision.
+		if r.Status == "completed" && (r.Conclusion == "cancelled" || r.Conclusion == "skipped") {
 			continue
 		}
 		if r.Status != "completed" {

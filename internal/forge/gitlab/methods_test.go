@@ -250,6 +250,129 @@ func TestListPullRequestReviewThreads(t *testing.T) {
 	assert.Equal(t, normevent.RoleNone, got.Threads[7].ResolvedByRole)
 }
 
+func TestListPullRequestReviewThreads_PositionContract(t *testing.T) {
+	client, mux := setupTest(t)
+	note := func(position map[string]any) map[string]any {
+		n := map[string]any{"id": 1, "body": "comment", "resolvable": true, "resolved": false}
+		if position != nil {
+			n["position"] = position
+		}
+		return n
+	}
+	handleTracked(t, mux, "/api/v4/projects/myorg%2Fmyrepo/merge_requests/42/discussions", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusOK, []map[string]any{
+			{"id": "context-line", "notes": []map[string]any{note(map[string]any{
+				"new_path": "main.go", "old_path": "main.go", "new_line": 17, "old_line": 16,
+			})}},
+			{"id": "removed-line", "notes": []map[string]any{note(map[string]any{
+				"new_path": "new.go", "old_path": "old.go", "new_line": nil, "old_line": 7,
+			})}},
+			{"id": "multi-line-new", "notes": []map[string]any{note(map[string]any{
+				"new_path": "main.go", "old_path": "main.go", "new_line": 12,
+				"line_range": map[string]any{
+					"start": map[string]any{"type": "new", "new_line": 10},
+					"end":   map[string]any{"type": "new", "new_line": 12},
+				},
+			})}},
+			{"id": "multi-line-mixed", "notes": []map[string]any{note(map[string]any{
+				"new_path": "main.go", "old_path": "main.go", "new_line": 6,
+				"line_range": map[string]any{
+					"start": map[string]any{"type": "old", "old_line": 5},
+					"end":   map[string]any{"type": "new", "new_line": 6},
+				},
+			})}},
+			{"id": "single-line-range", "notes": []map[string]any{note(map[string]any{
+				"new_path": "main.go", "old_path": "main.go", "new_line": 4, "old_line": 4,
+				"line_range": map[string]any{
+					"start": map[string]any{"type": nil, "old_line": 4, "new_line": 4},
+					"end":   map[string]any{"type": nil, "old_line": 4, "new_line": 4},
+				},
+			})}},
+			{"id": "general", "notes": []map[string]any{note(nil)}},
+		})
+	})
+
+	got, err := client.ListPullRequestReviewThreads(context.Background(), "myorg", "myrepo", 42)
+	require.NoError(t, err)
+	require.Len(t, got.Threads, 6)
+	for _, thread := range got.Threads {
+		assert.Nil(t, thread.IsOutdated, "%s: GitLab does not expose outdated state", thread.ID)
+		assert.Nil(t, thread.OriginalLine, "%s: GitLab does not expose the original position", thread.ID)
+		assert.Nil(t, thread.OriginalStartLine, "%s", thread.ID)
+	}
+
+	contextLine := got.Threads[0]
+	require.NotNil(t, contextLine.Side)
+	assert.Equal(t, forge.DiffSideRight, *contextLine.Side)
+	assert.Equal(t, 17, *contextLine.Line)
+	assert.Equal(t, 16, *contextLine.OldLine, "old_line keeps GitLab's old-file meaning")
+	assert.Equal(t, 17, *contextLine.NewLine, "new_line keeps GitLab's new-file meaning")
+	assert.Nil(t, contextLine.StartSide)
+	assert.Nil(t, contextLine.StartLine)
+
+	removed := got.Threads[1]
+	assert.Equal(t, "old.go", removed.Path)
+	require.NotNil(t, removed.Side)
+	assert.Equal(t, forge.DiffSideLeft, *removed.Side, "a removed-line discussion is on the old side")
+	assert.Equal(t, 7, *removed.Line)
+	assert.Equal(t, 7, *removed.OldLine)
+	assert.Nil(t, removed.NewLine)
+
+	multiNew := got.Threads[2]
+	assert.Equal(t, forge.DiffSideRight, *multiNew.Side)
+	assert.Equal(t, 12, *multiNew.Line)
+	require.NotNil(t, multiNew.StartSide)
+	assert.Equal(t, forge.DiffSideRight, *multiNew.StartSide)
+	assert.Equal(t, 10, *multiNew.StartLine)
+
+	multiMixed := got.Threads[3]
+	assert.Equal(t, forge.DiffSideRight, *multiMixed.Side)
+	assert.Equal(t, 6, *multiMixed.Line)
+	require.NotNil(t, multiMixed.StartSide)
+	assert.Equal(t, forge.DiffSideLeft, *multiMixed.StartSide)
+	assert.Equal(t, 5, *multiMixed.StartLine)
+
+	singleRange := got.Threads[4]
+	assert.Equal(t, 4, *singleRange.Line)
+	assert.Nil(t, singleRange.StartSide, "a range covering one line is not multi-line")
+	assert.Nil(t, singleRange.StartLine)
+
+	general := got.Threads[5]
+	assert.Nil(t, general.Side)
+	assert.Nil(t, general.Line)
+	assert.Nil(t, general.OldLine)
+	assert.Nil(t, general.NewLine)
+	assert.Nil(t, general.StartLine)
+}
+
+func TestGitLabSideLine(t *testing.T) {
+	one, two := 1, 2
+	tests := []struct {
+		name     string
+		lineType string
+		oldLine  *int
+		newLine  *int
+		wantSide *forge.DiffSide
+		wantLine *int
+	}{
+		{name: "context prefers new", oldLine: &one, newLine: &two, wantSide: ptrSide(forge.DiffSideRight), wantLine: &two},
+		{name: "old type", lineType: "old", oldLine: &one, newLine: &two, wantSide: ptrSide(forge.DiffSideLeft), wantLine: &one},
+		{name: "new type", lineType: "new", newLine: &two, wantSide: ptrSide(forge.DiffSideRight), wantLine: &two},
+		{name: "old type without old line falls back", lineType: "old", newLine: &two, wantSide: ptrSide(forge.DiffSideRight), wantLine: &two},
+		{name: "removed line", oldLine: &one, wantSide: ptrSide(forge.DiffSideLeft), wantLine: &one},
+		{name: "no lines"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			side, line := gitlabSideLine(tt.lineType, tt.oldLine, tt.newLine)
+			assert.Equal(t, tt.wantSide, side)
+			assert.Equal(t, tt.wantLine, line)
+		})
+	}
+}
+
+func ptrSide(side forge.DiffSide) *forge.DiffSide { return &side }
+
 func TestListPullRequestReviewThreads_DecodeError(t *testing.T) {
 	client, mux := setupTest(t)
 	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/42/discussions", func(w http.ResponseWriter, _ *http.Request) {
@@ -318,6 +441,7 @@ func TestGetIssue_StringLabels(t *testing.T) {
 			"description": "Issue body",
 			"web_url":     "https://gitlab.com/myorg/myrepo/-/issues/5",
 			"labels":      []string{"feature", "docs"},
+			"state":       "opened",
 		})
 	})
 
@@ -327,6 +451,8 @@ func TestGetIssue_StringLabels(t *testing.T) {
 	assert.Equal(t, "Test issue", issue.Title)
 	assert.Equal(t, "Issue body", issue.Body)
 	assert.Equal(t, []string{"feature", "docs"}, issue.Labels)
+	assert.Equal(t, "open", issue.State, "GitLab's \"opened\" is normalized to \"open\"")
+	assert.Empty(t, issue.StateReason)
 }
 
 func TestGetIssue_ObjectLabels(t *testing.T) {
@@ -343,12 +469,14 @@ func TestGetIssue_ObjectLabels(t *testing.T) {
 				{"title": "alpha"},
 				{"title": "beta"},
 			},
+			"state": "closed",
 		})
 	})
 
 	issue, err := client.GetIssue(ctx, "myorg", "myrepo", 7)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"alpha", "beta"}, issue.Labels)
+	assert.Equal(t, "closed", issue.State)
 }
 
 func TestGetIssue_NotFound(t *testing.T) {
@@ -5390,14 +5518,98 @@ func TestDeleteBranch_NotFound(t *testing.T) {
 // CreateCrossRepoChangeProposal tests
 // ---------------------------------------------------------------------------
 
-func TestCreateCrossRepoChangeProposal_NotSupported(t *testing.T) {
-	client, _ := setupTest(t)
+func TestCreateCrossRepoChangeProposal(t *testing.T) {
+	client, mux := setupTest(t)
 	ctx := context.Background()
 
-	cp, err := client.CreateCrossRepoChangeProposal(ctx, "base-owner", "base-repo", "head-owner", "head-repo", "title", "body", "feature", "main")
+	// Upstream lives in a nested group; the fork has a different name to
+	// confirm the fork's own repo name (not upstream's) is used.
+	mux.HandleFunc("/api/v4/projects/kernel-qe%2Fsustaining-engineering%2Fseqe", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodGet, r.Method)
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"id": 4242, "name": "seqe", "path_with_namespace": "kernel-qe/sustaining-engineering/seqe",
+		})
+	})
+	mux.HandleFunc("/api/v4/projects/iwienand%2Fseqe-fork/merge_requests", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		var body map[string]any
+		readJSONBody(t, r, &body)
+		// Bare branch name — never GitHub's "owner:branch" syntax.
+		assert.Equal(t, "fullsend/scaffold-install", body["source_branch"])
+		assert.Equal(t, "master", body["target_branch"])
+		assert.InDelta(t, 4242, body["target_project_id"], 0)
+		assert.Equal(t, "Scaffold", body["title"])
+		assert.Equal(t, "Scaffold body", body["description"])
+		assert.NotContains(t, body, "source_project_id")
+
+		writeJSON(t, w, http.StatusCreated, map[string]any{
+			"iid":           7,
+			"title":         "Scaffold",
+			"web_url":       "https://gitlab.example.com/kernel-qe/sustaining-engineering/seqe/-/merge_requests/7",
+			"source_branch": "fullsend/scaffold-install",
+			"target_branch": "master",
+		})
+	})
+
+	cp, err := client.CreateCrossRepoChangeProposal(ctx,
+		"kernel-qe/sustaining-engineering", "seqe", "iwienand", "seqe-fork",
+		"Scaffold", "Scaffold body", "fullsend/scaffold-install", "master")
+	require.NoError(t, err)
+	assert.Equal(t, 7, cp.Number)
+	assert.Equal(t, "Scaffold", cp.Title)
+	assert.Equal(t, "https://gitlab.example.com/kernel-qe/sustaining-engineering/seqe/-/merge_requests/7", cp.URL)
+	assert.Equal(t, "fullsend/scaffold-install", cp.Head)
+	assert.Equal(t, "iwienand/seqe-fork", cp.HeadRepo)
+	assert.Equal(t, "master", cp.Base)
+}
+
+func TestCreateCrossRepoChangeProposal_TargetNotFound(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/upstream%2Frepo", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusNotFound, map[string]string{"message": "404 Project Not Found"})
+	})
+	mux.HandleFunc("/api/v4/projects/fork%2Frepo/merge_requests", func(_ http.ResponseWriter, _ *http.Request) {
+		t.Error("merge request must not be created when the target project lookup fails")
+	})
+
+	cp, err := client.CreateCrossRepoChangeProposal(ctx, "upstream", "repo", "fork", "repo", "t", "b", "feature", "main")
 	require.Error(t, err)
 	assert.Nil(t, cp)
-	assert.ErrorIs(t, err, forge.ErrNotSupported)
+	assert.True(t, forge.IsNotFound(err), "expected ErrNotFound, got: %v", err)
+	assert.Contains(t, err.Error(), "resolve target project")
+}
+
+func TestCreateCrossRepoChangeProposal_MissingTargetID(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/upstream%2Frepo", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusOK, map[string]any{"name": "repo"})
+	})
+
+	_, err := client.CreateCrossRepoChangeProposal(ctx, "upstream", "repo", "fork", "repo", "t", "b", "feature", "main")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "has no ID")
+}
+
+func TestCreateCrossRepoChangeProposal_AlreadyExists(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/upstream%2Frepo", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusOK, map[string]any{"id": 1, "name": "repo"})
+	})
+	mux.HandleFunc("/api/v4/projects/fork%2Frepo/merge_requests", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusConflict, map[string]any{
+			"message": []string{"Another open merge request already exists for this source branch: !3"},
+		})
+	})
+
+	_, err := client.CreateCrossRepoChangeProposal(ctx, "upstream", "repo", "fork", "repo", "t", "b", "feature", "main")
+	require.Error(t, err)
+	assert.True(t, forge.IsAlreadyExists(err), "expected ErrAlreadyExists, got: %v", err)
 }
 
 func TestGetRepoSecretProtection(t *testing.T) {

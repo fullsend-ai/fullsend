@@ -1316,7 +1316,7 @@ func (c *LiveClient) GetPipelineSchedule(ctx context.Context, owner, repo string
 		return nil, fmt.Errorf("decode pipeline schedule: %w", err)
 	}
 	if result.Variables == nil {
-		return nil, fmt.Errorf("pipeline schedule response omitted variable details; cannot verify migration")
+		return nil, fmt.Errorf("pipeline schedule response omitted variable details; cannot verify schedule variables")
 	}
 	schedule := &forge.PipelineSchedule{ID: result.ID, Description: result.Description, Ref: result.Ref, Cron: result.Cron, CronTimezone: result.CronTimezone, Active: result.Active, Variables: make(map[string]string)}
 	if result.Owner != nil {
@@ -1329,12 +1329,6 @@ func (c *LiveClient) GetPipelineSchedule(ctx context.Context, owner, repo string
 		schedule.Variables[variable.Key] = variable.Value
 	}
 	return schedule, nil
-}
-
-// DeletePipelineScheduleVariable removes one schedule-level variable override.
-func (c *LiveClient) DeletePipelineScheduleVariable(ctx context.Context, owner, repo string, scheduleID int64, key string) error {
-	path := fmt.Sprintf("/projects/%s/pipeline_schedules/%d/variables/%s", projectPath(owner, repo), scheduleID, url.PathEscape(key))
-	return c.delete_(ctx, path)
 }
 
 // DeletePipelineSchedule deletes a pipeline schedule.

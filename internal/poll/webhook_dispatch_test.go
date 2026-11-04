@@ -1,9 +1,12 @@
 package poll
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -667,6 +670,101 @@ func TestRunWebhook_FailClosed(t *testing.T) {
 	})
 }
 
+// TestRunWebhook_BareIssueUpdateIsNoOp: an issue update without
+// changes.labels (a title or description edit) is ignored as
+// non-routable. The dispatcher job succeeds with an explicit no-op
+// message, launches no pipeline, and neither reads nor writes poll state.
+func TestRunWebhook_BareIssueUpdateIsNoOp(t *testing.T) {
+	mc := newMockClient()
+	webhookLabelAddFixture(mc)
+
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	if err := newWebhookPoller(mc).RunWebhook(context.Background(), issuePayload(t, "update", alice.ID, 5, nil)); err != nil {
+		t.Fatalf("RunWebhook: %v, want a successful no-op", err)
+	}
+	if len(mc.pipelineCalls) != 0 {
+		t.Errorf("pipeline calls = %+v, want none", mc.pipelineCalls)
+	}
+	if mc.forceCommits != 0 || len(mc.fileContentRefs) != 0 {
+		t.Errorf("commits = %d, state reads = %v, want no state access", mc.forceCommits, mc.fileContentRefs)
+	}
+	if !strings.Contains(logs.String(), "ignoring issue #5 update without changes.labels") {
+		t.Errorf("log = %q, want an explicit no-op message", logs.String())
+	}
+}
+
+// TestRunWebhook_MalformedIssueLabelUpdateFailsClosed: an update that
+// claims label changes still fails the job when the claim cannot be
+// validated, and dispatches nothing.
+func TestRunWebhook_MalformedIssueLabelUpdateFailsClosed(t *testing.T) {
+	tests := []struct {
+		name    string
+		change  map[string]any
+		wantErr string
+	}{
+		{"empty diff", labelChange([]string{"ready-to-code"}, []string{"ready-to-code"}), "does not resolve"},
+		{"label without title", map[string]any{"previous": []any{}, "current": []any{map[string]any{"name": "ready-to-code"}}}, "no title"},
+		{"contradicts re-fetch", labelChange([]string{"ready-to-code"}, nil), "contradicts current labels"},
+		{"actor not bound", labelChange(nil, []string{"ready-to-code"}), "does not match the payload user"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mc := newMockClient()
+			webhookLabelAddFixture(mc)
+			mc.memberLevel[bob.ID] = 30
+			userID := alice.ID
+			if tt.name == "actor not bound" {
+				userID = bob.ID
+			}
+			err := newWebhookPoller(mc).RunWebhook(context.Background(), issuePayload(t, "update", userID, 5, tt.change))
+			if err == nil || !strings.Contains(err.Error(), "build webhook events") || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("err = %v, want build error containing %q", err, tt.wantErr)
+			}
+			if len(mc.pipelineCalls) != 0 || mc.forceCommits != 0 {
+				t.Errorf("pipelines = %d, commits = %d, want none", len(mc.pipelineCalls), mc.forceCommits)
+			}
+		})
+	}
+}
+
+// TestRunWebhook_PresentButUnusableIssueLabelsFailClosed: the presence of
+// the changes.labels key decides between ignored and rejected, not its
+// value. An explicit null, an empty object, or a non-object value is a
+// label-change claim that cannot be validated, so the job fails.
+func TestRunWebhook_PresentButUnusableIssueLabelsFailClosed(t *testing.T) {
+	tests := []struct {
+		name    string
+		labels  any
+		wantErr string
+	}{
+		{"explicit null", nil, "unusable changes.labels"},
+		{"empty object", map[string]any{}, "does not resolve"},
+		{"non-object", "ready-to-code", "unusable changes.labels"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mc := newMockClient()
+			webhookLabelAddFixture(mc)
+			raw := mustJSON(t, map[string]any{
+				"object_kind":       "issue",
+				"user":              map[string]any{"id": alice.ID},
+				"object_attributes": map[string]any{"iid": 5, "action": "update"},
+				"changes":           map[string]any{"labels": tt.labels},
+			})
+			err := newWebhookPoller(mc).RunWebhook(context.Background(), raw)
+			if err == nil || !strings.Contains(err.Error(), "build webhook events") || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("err = %v, want build error containing %q", err, tt.wantErr)
+			}
+			if len(mc.pipelineCalls) != 0 || mc.forceCommits != 0 {
+				t.Errorf("pipelines = %d, commits = %d, want none", len(mc.pipelineCalls), mc.forceCommits)
+			}
+		})
+	}
+}
+
 // TestRunWebhook_CASMergesConcurrentPollWrite checks that a poll cycle
 // committing between the webhook's read and write keeps its keys and
 // labels: the webhook reloads and unions rather than overwriting.
@@ -764,5 +862,36 @@ func TestReadWebhookPayloadFile(t *testing.T) {
 				t.Fatalf("err = %v, want containing %q", err, f.wantErr)
 			}
 		})
+	}
+}
+
+// TestRunWebhook_FixCommandCarriesRefetchedBodyAtCanonicalPath checks that
+// a webhook-delivered /fs-fix dispatch carries the multiline note body the
+// handler re-fetched from the GitLab API at the canonical normalized
+// comment path — never the raw webhook object_attributes.note text, and
+// never the legacy note_body field.
+func TestRunWebhook_FixCommandCarriesRefetchedBodyAtCanonicalPath(t *testing.T) {
+	mc := newMockClient()
+	mc.memberLevel[alice.ID] = 30
+	mc.mr[3] = sameProjectMR(3, "opened")
+	mc.projectPaths[7] = "group/project"
+	mc.mrNotes[3] = []Note{{ID: 21, Body: multilineFixBody, Author: alice, CreatedAt: recent}}
+	mc.setSlashState(persistedPollState{LastPollAtFast: beforeRecent})
+
+	if err := newWebhookPoller(mc).RunWebhook(context.Background(), notePayload(t, "MergeRequest", alice.ID, 21, 3)); err != nil {
+		t.Fatalf("RunWebhook: %v", err)
+	}
+	if len(mc.pipelineCalls) != 1 || mc.pipelineCalls[0].Variables["STAGE"] != "fix" {
+		t.Fatalf("pipeline calls = %+v, want one fix dispatch", mc.pipelineCalls)
+	}
+	payload, err := base64.StdEncoding.DecodeString(mc.pipelineCalls[0].Variables["EVENT_PAYLOAD_B64"])
+	if err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if got, ok := payloadCommentBody(t, payload); !ok || got != multilineFixBody {
+		t.Errorf("canonical comment body = %q (present %v), want the re-fetched %q", got, ok, multilineFixBody)
+	}
+	if bytes.Contains(payload, []byte("payload body must not be used")) || bytes.Contains(payload, []byte(`"note_body"`)) {
+		t.Errorf("payload carries the raw webhook note or legacy note_body: %s", payload)
 	}
 }

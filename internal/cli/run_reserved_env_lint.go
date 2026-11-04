@@ -59,7 +59,7 @@ func reservedSandboxEnvDiagnostics(h *harness.Harness) []harness.Diagnostic {
 		Message: fmt.Sprintf("%d env.sandbox key(s) are reserved and will be dropped instead of exported "+
 			"into the sandbox: %s. Matching is case-insensitive. Review the migration guidance before "+
 			"changing proxy or certificate settings; preserve OpenShell's network mediation and certificate trust. "+
-			"See docs/guides/user/customizing-agents.md.",
+			"See docs/reference/harness-reference.md.",
 			len(dropped), strings.Join(dropped, ", ")),
 	}}
 }

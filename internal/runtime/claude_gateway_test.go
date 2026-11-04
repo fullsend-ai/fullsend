@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -224,8 +225,9 @@ func TestInstallClaudeHooks_GatewaySettings(t *testing.T) {
 }
 
 // TestClaudeRunnerSettings: every run's settings document pins the hook
-// settings ("" for a name the runner has no value for) and disableAllHooks;
-// a gateway run's env block keeps the route and gains the hook settings.
+// settings ("" for a name the runner has no value for), disableAllHooks and
+// CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC; a gateway run's env block keeps
+// the route and gains the hook settings.
 func TestClaudeRunnerSettings(t *testing.T) {
 	recorded := []hookEnvPair{
 		{"TIRITH_REQUIRED", "1"},
@@ -247,6 +249,7 @@ func TestClaudeRunnerSettings(t *testing.T) {
 		for _, key := range pinned {
 			env[key] = ""
 		}
+		env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
 		return env
 	}
 
@@ -257,13 +260,23 @@ func TestClaudeRunnerSettings(t *testing.T) {
 		assert.Contains(t, pinned, "BASH_ENV")
 	})
 
+	t.Run("nonessential traffic is off on every route", func(t *testing.T) {
+		gateway := map[string]any{"env": map[string]any{"ANTHROPIC_BASE_URL": "https://gw.example.com"}}
+		for name, extra := range map[string]map[string]any{"vertex": nil, "gateway": gateway} {
+			env, ok := claudeRunnerSettings(recorded, extra)["env"].(map[string]any)
+			require.True(t, ok, name)
+			assert.Equal(t, "1", env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"], name)
+		}
+	})
+
 	t.Run("nothing recorded pins every name empty", func(t *testing.T) {
 		env, ok := claudeRunnerSettings(nil, nil)["env"].(map[string]any)
 		require.True(t, ok)
-		require.Len(t, env, len(hookEnvManagedKeys)+len(pinned))
+		require.Len(t, env, len(hookEnvManagedKeys)+len(pinned)+1)
 		for _, key := range append(append([]string{}, hookEnvManagedKeys...), pinned...) {
 			assert.Equal(t, "", env[key], key)
 		}
+		assert.Equal(t, "1", env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"])
 	})
 
 	t.Run("gateway env is merged, not replaced", func(t *testing.T) {
@@ -309,6 +322,7 @@ func TestInstallClaudeHooks_PinsRunnerSettings(t *testing.T) {
 	for _, key := range claudeShellStartupEnv {
 		wantHookEnv[key] = ""
 	}
+	wantHookEnv["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
 
 	install := func(t *testing.T, sb string, extra map[string]any) (map[string]any, []byte) {
 		t.Helper()
@@ -348,7 +362,9 @@ func TestInstallClaudeHooks_PinsRunnerSettings(t *testing.T) {
 			}
 			assert.Equal(t, "https://gw.example.com", env["ANTHROPIC_BASE_URL"], "the route env is kept")
 			assert.Equal(t, "", env["CLAUDE_CODE_USE_VERTEX"])
-			assert.Len(t, env, len(extra["env"].(map[string]any))+len(wantHookEnv))
+			keys := maps.Clone(extra["env"].(map[string]any))
+			maps.Copy(keys, wantHookEnv)
+			assert.Len(t, env, len(keys))
 			assert.Equal(t, extra["apiKeyHelper"], doc["apiKeyHelper"])
 
 			cmd := buildRunCommand(RunParams{SandboxName: sb, AgentBaseName: "agent", RepoDir: "/r", Model: "gateway/m", HooksSettingsPath: security.SandboxHooksSettings})
@@ -448,7 +464,7 @@ func TestBuildRunCommand_NoGatewayUnchanged(t *testing.T) {
 	cmd := buildRunCommand(RunParams{SandboxName: "fs-claude-gw-not-registered", AgentBaseName: "agent", RepoDir: "/r", Model: "opus", FallbackModels: []string{"gateway/x"}})
 	assert.NotContains(t, cmd, "ANTHROPIC_BASE_URL")
 	assert.NotContains(t, cmd, "INFERENCE_GATEWAY_API_KEY")
-	assert.NotContains(t, cmd, "--settings")
+	assert.Contains(t, cmd, "--settings "+shellQuote(claudeNonessentialSettings))
 	assert.Contains(t, cmd, "--fallback-model 'gateway/x'", "without the route nothing is stripped")
 }
 

@@ -37,8 +37,8 @@ internal/dispatch/gcf/
 
 **internal/mintcore/** contains all token-minting logic: request
 parsing, OIDC verification, claims validation, authorization (org,
-workflow-ref, repos scope), GitHub App token creation, and status
-endpoints. It compiles to both native (`!js`) and WASM (`js`) targets.
+workflow-ref, repos scope), GitHub App token creation, bot-role lookup
+(`POST /v1/bot-role`), and status endpoints. It compiles to both native (`!js`) and WASM (`js`) targets.
 It is a nested module with a local-only `replace`; packages reachable
 from `pkg/behaviourtest` must not import it (including `mintconsts`).
 See [Go Code](go-code.md).
@@ -226,6 +226,8 @@ HTTP calls happen at request time, not construction time. Files that
 call `mintHTTP` include:
 
 - `github.go` — GitHub App installation token creation
+- `bot_role.go` — GitHub App lookup and installation verification for
+  `POST /v1/bot-role`
 - `jwks_verifier.go` — JWKS key fetching
 - `sts_verifier.go` — GCP STS token exchange
 - `gcp_pem.go` — GCP Secret Manager access (`AccessGCPSecret` is the

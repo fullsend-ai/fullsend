@@ -1,0 +1,16 @@
+{
+  "path": "/v1/bot-role",
+  "request": {
+    "actor_login": "example-review[bot]",
+    "repo": "example-org/example-repo"
+  },
+  "outcome_recognized": "recognized",
+  "outcome_no_match": "no_match",
+  "response_recognized": {
+    "outcome": "recognized",
+    "role": "review"
+  },
+  "response_no_match": {
+    "outcome": "no_match"
+  }
+}

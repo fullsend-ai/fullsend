@@ -398,6 +398,14 @@ type Harness struct {
 
 	// Runtime-only fields (not serialized to YAML)
 	hadForgeBeforeResolve bool `yaml:"-"` // true if Forge was non-nil before ResolveForge; used by Lint()
+
+	// issueURLDiags holds the GITHUB_ISSUE_URL diagnostics captured from the
+	// raw harness before ResolveForge/ResolveOverlays (or base flattening)
+	// consumed its forge and overlay blocks, so Lint() can report every
+	// section at its declared position (#8742). Only meaningful when
+	// issueURLDiagsCaptured is true.
+	issueURLDiags         []Diagnostic `yaml:"-"`
+	issueURLDiagsCaptured bool         `yaml:"-"`
 }
 
 // Load reads a harness YAML file from path, unmarshals it, and validates it.
@@ -826,6 +834,8 @@ func (h *Harness) ResolveRelativeTo(baseDir string) error {
 // Env.Runner, Env.Sandbox, and HostFiles.Src are defined in the host
 // environment using the provided lookup function. Variables set to an empty
 // string are allowed; only truly unset variables produce an error.
+// validation_loop.preflight_check references are not checked here; the
+// preflight allowlist scan in internal/cli is their single reference gate.
 func (h *Harness) ValidateRunnerEnvWith(lookup func(string) (string, bool)) error {
 	references := make(map[string][]string)
 	checkVarRefs := func(source, value string) {
@@ -849,9 +859,10 @@ func (h *Harness) ValidateRunnerEnvWith(lookup func(string) (string, bool)) erro
 	if h.ValidationLoop != nil && h.ValidationLoop.Schema != "" {
 		checkVarRefs("validation_loop.schema", h.ValidationLoop.Schema)
 	}
-	if h.ValidationLoop != nil && h.ValidationLoop.PreflightCheck != "" {
-		checkVarRefs("validation_loop.preflight_check", h.ValidationLoop.PreflightCheck)
-	}
+	// validation_loop.preflight_check is deliberately not checked here: its
+	// references are validated by the preflight allowlist scan in
+	// internal/cli (runPreflightCheck), the single reference gate for that
+	// field (D9, preflight-check-credential-safety change).
 	if h.Env != nil {
 		for k, v := range h.Env.Runner {
 			checkVarRefs(fmt.Sprintf("env.runner[%s]", k), v)

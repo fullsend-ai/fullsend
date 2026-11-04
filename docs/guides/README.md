@@ -60,7 +60,6 @@ Start with the [overview](user/customizing-overview.md) to pick the right approa
 - [Harness Field Reference](../reference/harness-reference.md) — Complete harness YAML field reference, merge rules, and resource referencing
 - [CEL Triggers Reference](user/cel-triggers-reference.md) — Dispatch flow, NormalizedEvent fields, transition kinds, and trigger patterns
 - [Custom Poller Example](user/custom-poller-example.md) — Create a custom poller workflow that invokes fullsend harness agents with a pre-computed matrix
-- [Building custom agents from scratch](user/building-custom-agents.md) — _(deprecated — see [Bring Your Own Agent](user/bring-your-own-agent.md))_
 - [Default, derived, and custom agents](user/default-vs-custom.md) — When configuration crosses into derived or custom agent territory
 
 ### Integrations & observability

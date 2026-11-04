@@ -1,6 +1,7 @@
 package world
 
 import (
+	"context"
 	"net/http/httptest"
 	"path/filepath"
 	"time"
@@ -82,8 +83,9 @@ type World struct {
 	// Branch-handling scenario state — set by branch step definitions.
 	// RecordedBranchSHAs maps branch name → tip SHA captured before a
 	// run so "branch X is unchanged" can re-check it afterwards.
-	// CreatedBranches and CreatedPRNumbers track resources the branch
-	// steps created (or discovered) so CleanupScenario can remove them.
+	// CreatedBranches, CreatedPRNumbers and CreatedIssueNumbers track
+	// resources the steps created (or discovered) so CleanupScenario can
+	// remove them.
 	// Isolation across Clone()d Worlds relies on the suite invariant
 	// that resetScenarioWorld nils these after every clone and the
 	// template World never populates them — do not set them on a
@@ -91,11 +93,53 @@ type World struct {
 	RecordedBranchSHAs map[string]string
 	CreatedBranches    []string
 	CreatedPRNumbers   []int
+	// CreatedIssueNumbers holds issues an agent filed that a step
+	// matched, closed at cleanup.
+	CreatedIssueNumbers []int
 
 	// LeasedRepoName is the logical test-repo name acquired via
-	// Driver.AllocateRepo for this scenario's duration. Empty when no
-	// driver is configured.
+	// Driver.AllocateRepo (or install.LeaseDriver.AllocateLease) for this
+	// scenario's duration. Empty when no driver is configured.
 	LeasedRepoName string
+
+	// LeasedRepoOrg is the org of the slot leased through
+	// install.LeaseDriver.AllocateLease; the After hook releases the
+	// slot with it. Empty when the driver leases by repo name only.
+	LeasedRepoOrg string
+
+	// LeaseOwned reports whether the repository under the leased slot's
+	// name is still this scenario's lease (install.LeaseVerifier). The
+	// After hook sets it before scenario cleanup, which consults it before
+	// every name-based mutation (and before every retry of one) and skips
+	// the mutation when the lease is lost or ownership cannot be verified,
+	// because the name may by then belong to another holder. Nil means
+	// ownership is not tracked (no lease, or tests with bare worlds).
+	LeaseOwned func(ctx context.Context) (bool, error)
+
+	// MintURL is the URL of the mint serving the leased repository's org
+	// (install.RepoLease.MintURL). Empty when the driver does not report
+	// one per lease.
+	MintURL string
+
+	// MintStatusGroup is the ORG/TEAM the leased repository's mint was
+	// deployed with as --status-github-group
+	// (install.RepoLease.MintStatusGroup). It is chosen once per job and
+	// need not be the leased org's team. Empty when the driver does not
+	// report it.
+	MintStatusGroup string
+
+	// MintWorkflowHostRepos is the leased repository's mint's
+	// WORKFLOW_HOST_REPOS: the workflow hosts of every org of its mint
+	// group (install.RepoLease.MintWorkflowHostRepos). Nil when the
+	// driver does not report them.
+	MintWorkflowHostRepos []string
+
+	// OrgDrivers builds the SCM and CI drivers for one org from that
+	// org's forge client and token. When a scenario leases a slot, the
+	// lease step rebinds SCM and CI through it so every operation uses
+	// the leased org's credentials. Set by the suite runners on the
+	// template World; nil keeps the template drivers.
+	OrgDrivers func(client forge.Client, token string) (scm.Driver, ci.Driver, error)
 
 	// Driver is the unified install driver that owns repo allocation,
 	// deallocation, and suite-scoped teardown. Shared across scenarios
@@ -251,6 +295,12 @@ type World struct {
 	// mint status steps (steps/mint_status.go). Nil when the scenario
 	// does not run `fullsend mint status`.
 	MintStatus *MintStatus
+	// BotRoleProbe holds the GitHub bot-role lookup scenario state, set by
+	// the bot-role probe steps (steps/bot_role_probe.go). Nil when the
+	// scenario does not look up bot roles. CleanupScenario deletes the
+	// repositories it lists; the probe's shim branch is tracked in
+	// CreatedBranches.
+	BotRoleProbe *BotRoleProbe
 }
 
 // MintStatus is the state of one CLI mint status scenario: the mint
@@ -276,6 +326,86 @@ type MintStatus struct {
 	// CredentialInOutput records that the raw output contained the
 	// credential, before redaction.
 	CredentialInOutput bool
+}
+
+// BotRoleProbe is the state of one bot-role lookup scenario (ADR 0107): a
+// reusable probe workflow in a temporary host repository, called from a
+// shim workflow on a temporary branch of the leased repository. Each probe
+// job asks the mint's POST /v1/bot-role for the registered role of one bot
+// login, authenticated by the job's GitHub Actions OIDC token, whose
+// repository claim is the leased repository.
+type BotRoleProbe struct {
+	// Forge is the forge the Examples row targets ("github").
+	Forge string
+	// HostRepo hosts the reusable probe workflow (the approved
+	// mint-probe host of the leased slot).
+	HostRepo string
+	// CreatedRepos lists the host repositories this scenario created in
+	// the pool org, for CleanupScenario.
+	CreatedRepos []string
+
+	// Identity is the identity token under test, for example
+	// "registered:review" or "unregistered-e2e".
+	Identity string
+	// Mode is the subject probe's mode: "lookup" or "forced_failure"
+	// (the probe sends a deliberately invalid credential).
+	Mode string
+	// ActorLogin is the bot login the subject asks about.
+	ActorLogin string
+	// ClaimedRole is a role the subject request claims in its body, which
+	// the mint must ignore; empty when none is claimed.
+	ClaimedRole string
+	// RegisteredRole is the role a registered identity must resolve to;
+	// empty for identities that are not registered.
+	RegisteredRole string
+	// ControlLogin is the registered bot login the control asks about.
+	ControlLogin string
+
+	// Branch and WorkflowName identify the shim run.
+	Branch       string
+	WorkflowName string
+	Run          *forge.WorkflowRun
+
+	// Control is a lookup of the registered review bot, made in the same
+	// workflow run; it must be recognized for any subject outcome to
+	// count. Subject is the lookup under test.
+	Control *BotRoleProbeResult
+	Subject *BotRoleProbeResult
+}
+
+// BotRoleProbeResult is the compact, token-free result a bot-role probe
+// job uploads as an artifact.
+type BotRoleProbeResult struct {
+	// Mode, ActorLogin, Repo and ClaimedRole echo the probe's request.
+	Mode        string `json:"mode"`
+	ActorLogin  string `json:"actor_login"`
+	Repo        string `json:"repo"`
+	ClaimedRole string `json:"claimed_role,omitempty"`
+
+	// OIDCVerified is true when the probe verified the OIDC token's
+	// signature, issuer, audience and time claims before calling the mint.
+	OIDCVerified bool `json:"oidc_verified"`
+
+	// Repository and JobWorkflowRef are the OIDC claims of the job.
+	Repository     string `json:"repository,omitempty"`
+	JobWorkflowRef string `json:"job_workflow_ref,omitempty"`
+
+	// HTTPStatus is the mint's status code; zero when the mint was not
+	// called or did not answer.
+	HTTPStatus int `json:"http_status,omitempty"`
+	// Response keeps only the outcome, role and error strings of the
+	// mint's body (each truncated to 300 characters).
+	Response *BotRoleProbeResponse `json:"response,omitempty"`
+
+	// Error is a probe-side failure: "config", "oidc" or "transport".
+	Error string `json:"error,omitempty"`
+}
+
+// BotRoleProbeResponse is the sanitized body of the mint's answer.
+type BotRoleProbeResponse struct {
+	Outcome string `json:"outcome,omitempty"`
+	Role    string `json:"role,omitempty"`
+	Error   string `json:"error,omitempty"`
 }
 
 // MintProbe is the state of one mint-probe scenario: a reusable probe
@@ -349,6 +479,12 @@ type MintProbeResult struct {
 	RepositorySelection string            `json:"repository_selection,omitempty"`
 	GrantedRepos        []string          `json:"granted_repos,omitempty"`
 	GrantedPermissions  map[string]string `json:"granted_permissions,omitempty"`
+
+	// TokenHSTS and HealthHSTS are the Strict-Transport-Security values
+	// of the mint's /v1/token and /health responses, empty when the
+	// header or the response is missing.
+	TokenHSTS  string `json:"hsts_token,omitempty"`
+	HealthHSTS string `json:"hsts_health,omitempty"`
 }
 
 // Clone creates a shallow copy of w. Drivers and shared state (SCM,

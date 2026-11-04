@@ -14,11 +14,13 @@ spec:
       default: ''
     resource_key:
       default: ''
-      # Matches resourceKey()'s "issue-<iid>"/"mr-<iid>" format (or the
-      # empty default), excluding variable-reference syntax — see
-      # internal/poll/dispatch.go (resourceKey). This value is
-      # interpolated into workflow.name below.
-      regex: '^((issue|mr)-[0-9]+)?$'
+      # Matches resourceKey()'s "issue-<iid>"/"mr-<iid>" format, a Jira
+      # work item's "jira-<KEY>" (DispatchJiraEvent), or the empty
+      # default, excluding variable-reference syntax — see
+      # internal/poll/dispatch.go (resourceKey) and
+      # internal/poll/jira_dispatch.go. This value is interpolated into
+      # workflow.name below.
+      regex: '^((issue|mr)-[0-9]+|jira-[A-Z][A-Z0-9_]+-[1-9][0-9]*)?$'
     is_fork:
       default: ''
     originating_url:

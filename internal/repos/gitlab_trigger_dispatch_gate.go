@@ -566,10 +566,93 @@ func gitlabJobChainProblem(ctx context.Context, client forge.Client, owner, repo
 		"__AGENT_RUNNER_TAGS__", scaffold.FormatRunnerTags(gitlabAgentRunnerTags(manifest)),
 		"__CONTROL_RUNNER_TAGS__", scaffold.FormatRunnerTags(gitlabControlRunnerTags(manifest)),
 	).Replace(string(shipped)))
+	// The installer also renders the runner image tag from fullsend_ref
+	// (#8865). The tag only selects which Fullsend-published runner image
+	// runs the job, and the gate does not know the effective ref, so it
+	// accepts any tag form the installer renders (a release version,
+	// "latest", or "dev") by rendering the committed tag into the shipped
+	// job. That is intentional: the repository is published only by
+	// Fullsend, and a tag that no longer matches fullsend_ref is reported
+	// as content drift by `repos status` and repaired by `repos install`.
+	// A committed image whose tag is not one of those forms, including the
+	// unrendered placeholder, cannot run and so defers activation.
+	tag, ok := gitlabCommittedRunnerImageTag(committed, job.jobName)
+	if !ok {
+		return "the committed " + job.label + " in " + job.templatePath + " does not run " + job.scriptPath + " under the shipped job configuration, so " + job.consequence + "; merge the scaffold repair first"
+	}
+	shipped = []byte(scaffold.RenderRunnerImageTag(string(shipped), tag))
+	if job.templatePath == fullsendAgentTemplatePath {
+		// The installer also renders config.inference.wif_audience into the
+		// agent job's id_tokens audience. The audience only selects which
+		// relying party accepts the token; it runs nothing. Accept a committed
+		// audience that passes the same validation as the configured value by
+		// rendering it into the shipped job; anything else still mismatches.
+		if aud, ok := gitlabCommittedAgentAudience(committed, job.jobName); ok {
+			if rendered, renderErr := scaffold.RenderGitLabAgentAudience(shipped, aud); renderErr == nil {
+				shipped = rendered
+			}
+		}
+	}
 	if !gitlabJobRunsShippedScript(committed, shipped, job.jobName) {
 		return "the committed " + job.label + " in " + job.templatePath + " does not run " + job.scriptPath + " under the shipped job configuration, so " + job.consequence + "; merge the scaffold repair first"
 	}
 	return ""
+}
+
+// gitlabCommittedAgentAudience returns the literal FULLSEND_ID_TOKEN audience
+// of the committed agent job. ok is false when the job or the audience cannot
+// be read as a literal scalar, or the audience would fail
+// inference.wif_audience validation.
+func gitlabCommittedAgentAudience(committed []byte, jobName string) (string, bool) {
+	job, ok := gitlabJobNode(committed, jobName)
+	if !ok {
+		return "", false
+	}
+	node := job
+	for _, key := range []string{"id_tokens", "FULLSEND_ID_TOKEN", "aud"} {
+		value, found := effectiveMappingValue(node, key)
+		if !found || value == nil {
+			return "", false
+		}
+		node = resolveAlias(value)
+		if node == nil {
+			return "", false
+		}
+	}
+	aud, ok := isLiteralScalarValue(node)
+	if !ok || validateWIFAudience(aud) != nil {
+		return "", false
+	}
+	return aud, true
+}
+
+// gitlabCommittedRunnerImageTag returns the tag of the committed job's
+// image when it is a literal scaffold.RunnerImageRepository reference with
+// a tag the installer renders (scaffold.IsRunnerImageTag). ok is false for
+// any other image or one that cannot be read as a literal scalar.
+func gitlabCommittedRunnerImageTag(committed []byte, jobName string) (string, bool) {
+	job, ok := gitlabJobNode(committed, jobName)
+	if !ok {
+		return "", false
+	}
+	node, found := effectiveMappingValue(job, "image")
+	if !found || node == nil {
+		return "", false
+	}
+	if image := resolveAlias(node); image != nil && image.Kind == yaml.MappingNode {
+		if node, found = effectiveMappingValue(image, "name"); !found || node == nil {
+			return "", false
+		}
+	}
+	name, ok := isLiteralScalarValue(node)
+	if !ok {
+		return "", false
+	}
+	tag, found := strings.CutPrefix(name, scaffold.RunnerImageRepository+":")
+	if !found || !scaffold.IsRunnerImageTag(tag) {
+		return "", false
+	}
+	return tag, true
 }
 
 // gitlabJobRunsShippedScript reports whether the named job in the committed
@@ -724,9 +807,9 @@ func gitlabDispatchVariableOverrideProblem(ctx context.Context, client forge.Cli
 }
 
 // gitlabScheduleMigrationProblems reports managed pipeline schedules that
-// still select behavior through pipeline variables. It only reads; the
-// migration itself is ensureGitLabVariableFreeSchedules. A failed read is a
-// problem, because migration cannot then be established.
+// still select behavior through pipeline variables. It only reads, like
+// requireGitLabVariableFreeSchedules. A failed read is a problem, because
+// variable-free schedules cannot then be established.
 func gitlabScheduleMigrationProblems(ctx context.Context, client forge.Client, owner, repo string) []string {
 	if gitlabScheduledPollModeUsesPipelineVariables() {
 		return []string{fmt.Sprintf("managed scheduled polling still selects its poll mode with the %s pipeline variable; migrate scheduled polling off pipeline variables first", forge.VarPollMode)}

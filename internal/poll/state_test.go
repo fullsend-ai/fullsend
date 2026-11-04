@@ -2001,10 +2001,14 @@ func TestModeDocument_StripsOtherModeFields(t *testing.T) {
 	}
 }
 
-// --- buildLegacyPollStateFromVars / SeedGitLabPollStateBranches ---
+// --- SeedGitLabPollStateBranches ---
 
-func TestBuildLegacyPollStateFromVars_AllFields(t *testing.T) {
-	vars := map[string]string{
+// Retired FULLSEND_* poll-state variables are no longer migrated: seeding
+// neither reads nor deletes them, and each branch starts from an empty
+// signed baseline even when they are present.
+func TestSeedGitLabPollStateBranches_IgnoresRetiredVars(t *testing.T) {
+	fc := forge.NewFakeClient()
+	retired := map[string]string{
 		forge.VarLastPollAtFast:     "2025-03-01T09:00:00Z",
 		forge.VarLastPollAtFull:     "2025-03-01T08:00:00Z",
 		forge.VarLabelState:         `{"42":["ready-to-code"]}`,
@@ -2013,75 +2017,11 @@ func TestBuildLegacyPollStateFromVars_AllFields(t *testing.T) {
 		forge.VarFailedKeysFast:     `{"c":1}`,
 		forge.VarFailedKeysFull:     `{"d":2}`,
 	}
-
-	state, found := buildLegacyPollStateFromVars(vars, "group", "project")
-	if !found {
-		t.Fatal("expected found=true when legacy variables are present")
+	for name, v := range retired {
+		fc.VariableValues["testgroup/testrepo/"+name] = v
 	}
-	if state.LastPollAtFast != "2025-03-01T09:00:00Z" {
-		t.Errorf("LastPollAtFast = %q", state.LastPollAtFast)
-	}
-	if state.LastPollAtFull != "2025-03-01T08:00:00Z" {
-		t.Errorf("LastPollAtFull = %q", state.LastPollAtFull)
-	}
-	if got := state.LabelState[42]; len(got) != 1 || got[0] != "ready-to-code" {
-		t.Errorf("LabelState[42] = %v", got)
-	}
-	if state.DispatchedKeysFast["a"] != 10 {
-		t.Errorf("DispatchedKeysFast = %v", state.DispatchedKeysFast)
-	}
-	if state.DispatchedKeysFull["b"] != 20 {
-		t.Errorf("DispatchedKeysFull = %v", state.DispatchedKeysFull)
-	}
-	if state.FailedKeysFast["c"] != 1 {
-		t.Errorf("FailedKeysFast = %v", state.FailedKeysFast)
-	}
-	if state.FailedKeysFull["d"] != 2 {
-		t.Errorf("FailedKeysFull = %v", state.FailedKeysFull)
-	}
-}
-
-func TestBuildLegacyPollStateFromVars_None(t *testing.T) {
-	_, found := buildLegacyPollStateFromVars(map[string]string{"UNRELATED": "x"}, "group", "project")
-	if found {
-		t.Error("expected found=false when no legacy variables are present")
-	}
-}
-
-func TestBuildLegacyPollStateFromVars_MalformedJSONSkipped(t *testing.T) {
-	vars := map[string]string{
-		forge.VarLastPollAtFull:     "2025-03-01T08:00:00Z",
-		forge.VarLabelState:         "{not-json",
-		forge.VarDispatchedKeysFast: "{not-json",
-		forge.VarDispatchedKeysFull: "{not-json",
-		forge.VarFailedKeysFast:     "{not-json",
-		forge.VarFailedKeysFull:     "{not-json",
-	}
-
-	state, found := buildLegacyPollStateFromVars(vars, "group", "project")
-	if !found {
-		t.Fatal("expected found=true from the valid watermark variable")
-	}
-	if state.LabelState != nil {
-		t.Errorf("expected malformed label state to be skipped, got %v", state.LabelState)
-	}
-	if state.DispatchedKeysFast != nil || state.DispatchedKeysFull != nil {
-		t.Error("expected malformed dispatched-keys maps to be skipped")
-	}
-	if state.FailedKeysFast != nil || state.FailedKeysFull != nil {
-		t.Error("expected malformed failed-keys maps to be skipped")
-	}
-}
-
-func TestSeedGitLabPollStateBranches_MigratesLegacyVarsPerBranch(t *testing.T) {
-	fc := forge.NewFakeClient()
-	fast := time.Date(2025, 3, 1, 9, 0, 0, 0, time.UTC).Format(time.RFC3339)
-	full := time.Date(2025, 3, 1, 8, 0, 0, 0, time.UTC).Format(time.RFC3339)
-	fc.VariableValues["testgroup/testrepo/"+forge.VarLastPollAtFast] = fast
-	fc.VariableValues["testgroup/testrepo/"+forge.VarLastPollAtFull] = full
-	fc.VariableValues["testgroup/testrepo/"+forge.VarLabelState] = `{"42":["ready-to-code"]}`
-	fc.VariableValues["testgroup/testrepo/"+forge.VarDispatchedKeysFast] = `{"a":10}`
-	fc.VariableValues["testgroup/testrepo/"+forge.VarFailedKeysFull] = `{"d":2}`
+	// Seeding must not depend on listing variables at all.
+	fc.Errors["ListRepoVariables"] = fmt.Errorf("forbidden")
 
 	seeded, err := SeedGitLabPollStateBranches(context.Background(), fc, "testgroup", "testrepo", "test-secret")
 	if err != nil {
@@ -2091,61 +2031,34 @@ func TestSeedGitLabPollStateBranches_MigratesLegacyVarsPerBranch(t *testing.T) {
 		t.Fatal("expected branches to be seeded")
 	}
 
-	slashRaw, err := fc.GetFileContentAtRef(context.Background(), "testgroup", "testrepo", PollStateFileName, PollStateBranchSlash)
-	if err != nil {
-		t.Fatalf("slash branch: %v", err)
+	for _, branch := range []string{PollStateBranchSlash, PollStateBranchEvents} {
+		raw, err := fc.GetFileContentAtRef(context.Background(), "testgroup", "testrepo", PollStateFileName, branch)
+		if err != nil {
+			t.Fatalf("%s: %v", branch, err)
+		}
+		var state persistedPollState
+		if err := json.Unmarshal(raw, &state); err != nil {
+			t.Fatalf("unmarshal %s: %v", branch, err)
+		}
+		// The events branch carries its issue-open cutoff in
+		// FailedKeysFull, so check for the retired keys specifically.
+		_, hasA := state.DispatchedKeysFast["a"]
+		_, hasB := state.DispatchedKeysFull["b"]
+		_, hasC := state.FailedKeysFast["c"]
+		_, hasD := state.FailedKeysFull["d"]
+		if state.LastPollAtFast != "" || state.LastPollAtFull != "" || len(state.LabelState) != 0 ||
+			hasA || hasB || hasC || hasD {
+			t.Errorf("%s: retired variable values leaked into the seeded document: %+v", branch, state)
+		}
 	}
-	var slash persistedPollState
-	if err := json.Unmarshal(slashRaw, &slash); err != nil {
-		t.Fatalf("unmarshal slash: %v", err)
-	}
-	if slash.LastPollAtFast != fast {
-		t.Errorf("slash LastPollAtFast = %q, want %q", slash.LastPollAtFast, fast)
-	}
-	if slash.DispatchedKeysFast["a"] != 10 {
-		t.Errorf("slash DispatchedKeysFast = %v", slash.DispatchedKeysFast)
-	}
-	if slash.LastPollAtFull != "" || slash.LabelState != nil || slash.FailedKeysFull != nil {
-		t.Errorf("slash leaked events fields: %+v", slash)
-	}
-	wantSlash, err := computeStateHMAC("test-secret", hmacDomainFor(PollStateBranchSlash, "testgroup/testrepo"), slash)
-	if err != nil {
-		t.Fatalf("compute slash HMAC: %v", err)
-	}
-	if slash.HMAC != wantSlash {
-		t.Error("slash HMAC does not match the signature the runtime poller would verify")
-	}
-
-	eventsRaw, err := fc.GetFileContentAtRef(context.Background(), "testgroup", "testrepo", PollStateFileName, PollStateBranchEvents)
-	if err != nil {
-		t.Fatalf("events branch: %v", err)
-	}
-	var events persistedPollState
-	if err := json.Unmarshal(eventsRaw, &events); err != nil {
-		t.Fatalf("unmarshal events: %v", err)
-	}
-	if events.LastPollAtFull != full {
-		t.Errorf("events LastPollAtFull = %q, want %q", events.LastPollAtFull, full)
-	}
-	if got := events.LabelState[42]; len(got) != 1 || got[0] != "ready-to-code" {
-		t.Errorf("events LabelState[42] = %v", got)
-	}
-	if events.FailedKeysFull["d"] != 2 {
-		t.Errorf("events FailedKeysFull = %v", events.FailedKeysFull)
-	}
-	if events.LastPollAtFast != "" || events.DispatchedKeysFast != nil {
-		t.Errorf("events leaked slash fields: %+v", events)
-	}
-	wantEvents, err := computeStateHMAC("test-secret", hmacDomainFor(PollStateBranchEvents, "testgroup/testrepo"), events)
-	if err != nil {
-		t.Fatalf("compute events HMAC: %v", err)
-	}
-	if events.HMAC != wantEvents {
-		t.Error("events HMAC does not match the signature the runtime poller would verify")
+	for name, v := range retired {
+		if got := fc.VariableValues["testgroup/testrepo/"+name]; got != v {
+			t.Errorf("retired variable %s = %q, want it left untouched (%q)", name, got, v)
+		}
 	}
 }
 
-func TestSeedGitLabPollStateBranches_EmptyBaselineWhenNoLegacyVars(t *testing.T) {
+func TestSeedGitLabPollStateBranches_EmptyBaseline(t *testing.T) {
 	fc := forge.NewFakeClient()
 
 	seeded, err := SeedGitLabPollStateBranches(context.Background(), fc, "testgroup", "testrepo", "test-secret")
@@ -2153,7 +2066,7 @@ func TestSeedGitLabPollStateBranches_EmptyBaselineWhenNoLegacyVars(t *testing.T)
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !seeded {
-		t.Fatal("expected empty baseline to be written when no legacy vars exist")
+		t.Fatal("expected an empty baseline to be written")
 	}
 
 	for _, branch := range []string{PollStateBranchSlash, PollStateBranchEvents} {
@@ -2218,8 +2131,6 @@ func TestSeedGitLabPollStateBranches_SkipsExistingBranch(t *testing.T) {
 	if err := fc.ForceCommitFileToBranch(context.Background(), "testgroup", "testrepo", PollStateBranchSlash, PollStateFileName, "prior", existing); err != nil {
 		t.Fatalf("seed existing slash branch: %v", err)
 	}
-	fc.VariableValues["testgroup/testrepo/"+forge.VarLastPollAtFast] = "2025-03-01T09:00:00Z"
-	fc.VariableValues["testgroup/testrepo/"+forge.VarLastPollAtFull] = "2025-03-01T08:00:00Z"
 
 	seeded, err := SeedGitLabPollStateBranches(context.Background(), fc, "testgroup", "testrepo", "test-secret")
 	if err != nil {
@@ -2248,7 +2159,6 @@ func TestSeedGitLabPollStateBranches_NoopWhenBothBranchesExist(t *testing.T) {
 			t.Fatalf("seed %s: %v", branch, err)
 		}
 	}
-	fc.VariableValues["testgroup/testrepo/"+forge.VarLastPollAtFull] = "2025-03-01T08:00:00Z"
 
 	seeded, err := SeedGitLabPollStateBranches(context.Background(), fc, "testgroup", "testrepo", "test-secret")
 	if err != nil {
@@ -2259,12 +2169,8 @@ func TestSeedGitLabPollStateBranches_NoopWhenBothBranchesExist(t *testing.T) {
 	}
 }
 
-func TestSeedGitLabPollStateBranches_RuntimePollerAcceptsMigratedState(t *testing.T) {
+func TestSeedGitLabPollStateBranches_RuntimePollerAcceptsSeededState(t *testing.T) {
 	fc := forge.NewFakeClient()
-	fast := time.Date(2025, 3, 1, 9, 0, 0, 0, time.UTC).Format(time.RFC3339)
-	full := time.Date(2025, 3, 1, 8, 0, 0, 0, time.UTC).Format(time.RFC3339)
-	fc.VariableValues["testgroup/testrepo/"+forge.VarLastPollAtFast] = fast
-	fc.VariableValues["testgroup/testrepo/"+forge.VarLastPollAtFull] = full
 
 	if _, err := SeedGitLabPollStateBranches(context.Background(), fc, "testgroup", "testrepo", testDispatchSecret); err != nil {
 		t.Fatalf("seed: %v", err)
@@ -2279,25 +2185,19 @@ func TestSeedGitLabPollStateBranches_RuntimePollerAcceptsMigratedState(t *testin
 		mc.putBranchFile(branch, PollStateFileName, raw)
 	}
 
-	slash := newTestPoller(mc, Options{DispatchSecret: testDispatchSecret})
-	slash.slashCommandsOnly = true
-	got, err := slash.readWatermark(context.Background(), "testgroup", "testrepo")
-	if err != nil {
-		t.Fatalf("slash load: %v", err)
-	}
-	wantFast, _ := time.Parse(time.RFC3339, fast)
-	if !got.Equal(wantFast) {
-		t.Errorf("slash watermark = %v, want %v", got, wantFast)
-	}
-
-	events := newTestPoller(mc, Options{DispatchSecret: testDispatchSecret})
-	got, err = events.readWatermark(context.Background(), "testgroup", "testrepo")
-	if err != nil {
-		t.Fatalf("events load: %v", err)
-	}
-	wantFull, _ := time.Parse(time.RFC3339, full)
-	if !got.Equal(wantFull) {
-		t.Errorf("events watermark = %v, want %v", got, wantFull)
+	// An empty signed baseline verifies and falls back to the default
+	// one-hour lookback in both poll modes.
+	wantStart := time.Now().Add(-time.Hour)
+	for _, slashOnly := range []bool{true, false} {
+		p := newTestPoller(mc, Options{DispatchSecret: testDispatchSecret})
+		p.slashCommandsOnly = slashOnly
+		got, err := p.readWatermark(context.Background(), "testgroup", "testrepo")
+		if err != nil {
+			t.Fatalf("slashCommandsOnly=%v load: %v", slashOnly, err)
+		}
+		if d := got.Sub(wantStart); d < -time.Minute || d > time.Minute {
+			t.Errorf("slashCommandsOnly=%v watermark = %v, want about %v", slashOnly, got, wantStart)
+		}
 	}
 }
 
@@ -2306,15 +2206,6 @@ func TestSeedGitLabPollStateBranches_EmptySecretRefused(t *testing.T) {
 	_, err := SeedGitLabPollStateBranches(context.Background(), fc, "testgroup", "testrepo", "")
 	if !errors.Is(err, errDispatchSecretUnset) {
 		t.Errorf("error = %v, want errDispatchSecretUnset", err)
-	}
-}
-
-func TestSeedGitLabPollStateBranches_ListVarsErrorPropagates(t *testing.T) {
-	fc := forge.NewFakeClient()
-	fc.Errors["ListRepoVariables"] = fmt.Errorf("forbidden")
-	_, err := SeedGitLabPollStateBranches(context.Background(), fc, "testgroup", "testrepo", "test-secret")
-	if err == nil {
-		t.Fatal("expected a variable-listing error to propagate")
 	}
 }
 

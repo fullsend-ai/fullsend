@@ -1577,6 +1577,117 @@ func TestUninstall_GitLabWebhookCredentialDeleteErrorsWithholdServerText(t *test
 	}
 }
 
+// A fully provisioned fast path is torn down on both scaffold delivery
+// paths: the webhook and trigger token are removed, the credential
+// secrets and dispatcher scaffold are deleted, and the root
+// .gitlab-ci.yml loses fullsend's trigger rule while the user's own rule
+// and stage survive (#7775).
+func TestUninstall_GitLabFastPathFullTeardown(t *testing.T) {
+	for _, direct := range []bool{false, true} {
+		t.Run(fmt.Sprintf("direct=%t", direct), func(t *testing.T) {
+			client := newInstalledFakeGitLabClient("acme/api")
+			client.ProjectHooks = map[string][]forge.ProjectHook{"acme/api": {{ID: 7, Name: GitLabWebhookName}, {ID: 8, Name: "mine"}}}
+			client.PipelineTriggerTokens = map[string][]forge.PipelineTriggerToken{"acme/api": {{ID: 31, Description: GitLabWebhookTriggerDescription}}}
+			client.FileContents["acme/api/.gitlab-ci.yml"] = []byte("---\n" +
+				"include:\n" +
+				"  - local: '" + fullsendPipelineInclude + "'\n" +
+				"\n" +
+				"stages:\n" +
+				"  - build\n" +
+				"  - dispatch\n" +
+				"  - poll\n" +
+				"  - agent\n" +
+				"\n" +
+				"workflow:\n" +
+				"  rules:\n" +
+				"    - if: " + debugTraceDenyRuleIf + "\n" +
+				"      when: never\n" +
+				"    - if: $CI_PIPELINE_SOURCE == \"push\"\n" +
+				"    - if: $CI_PIPELINE_SOURCE == \"schedule\" && $CI_COMMIT_REF_PROTECTED == \"true\"\n" +
+				"    - if: $CI_PIPELINE_SOURCE == \"api\" && $CI_COMMIT_REF_PROTECTED == \"true\" && $STAGE\n" +
+				"    - if: " + childPipelineAgentRuleIf + "\n" +
+				"    - if: " + triggerDispatcherRuleIf + "\n")
+
+			var gotDirect []bool
+			commit := func(ctx context.Context, owner, repo string, files []forge.TreeFile, d bool, _ bool) error {
+				gotDirect = append(gotDirect, d)
+				_, err := client.CommitFiles(ctx, owner, repo, "chore: remove fullsend workflow", files)
+				return err
+			}
+
+			results, err := Uninstall(context.Background(), UninstallConfig{
+				Manifest:       testGitLabManifest("acme/api"),
+				Repos:          []string{"acme/api"},
+				Direct:         direct,
+				MaxConcurrency: 4,
+			}, newTestClientFactory(client), commit, nil)
+
+			require.NoError(t, err)
+			r := results[0]
+			require.NoError(t, r.Error)
+			assert.True(t, r.Success)
+			assert.True(t, r.WorkflowDeleted)
+			assert.Equal(t, []bool{direct}, gotDirect)
+
+			assert.Equal(t, []int64{7}, client.DeletedProjectHookIDs)
+			assert.Equal(t, []int64{31}, client.RevokedTriggerTokenIDs)
+			require.Len(t, client.ProjectHooks["acme/api"], 1)
+			assert.Equal(t, int64(8), client.ProjectHooks["acme/api"][0].ID, "a hook Fullsend does not own is kept")
+
+			for _, name := range []string{forge.SecretTriggerToken, forge.SecretWebhookSecret} {
+				assert.False(t, client.Secrets["acme/api/"+name], "%s still present", name)
+			}
+
+			deleted := map[string]bool{}
+			for _, p := range collectDeletedPaths(client) {
+				deleted[p] = true
+			}
+			for _, p := range []string{fullsendPipelineInclude, fullsendDispatcherTemplatePath, gitlabDispatcherJobScriptPath} {
+				assert.True(t, deleted[p], "%s was not deleted", p)
+			}
+
+			root, ok := client.FileContents["acme/api/.gitlab-ci.yml"]
+			require.True(t, ok, ".gitlab-ci.yml is user-owned and must be rewritten, not deleted")
+			s := string(root)
+			assert.NotContains(t, s, `"trigger"`)
+			assert.NotContains(t, s, `"pipeline"`)
+			assert.NotContains(t, s, fullsendPipelineInclude)
+			assert.NotContains(t, s, "- dispatch")
+			assert.Contains(t, s, `$CI_PIPELINE_SOURCE == "push"`)
+			assert.Contains(t, s, "- build")
+		})
+	}
+}
+
+// A repository installed before the fast path shipped, or one whose fast
+// path never converged, has no webhook, trigger token, webhook
+// credentials, dispatcher scaffold, or trigger rule. Uninstall still
+// succeeds and touches nothing it does not own (#7775).
+func TestUninstall_GitLabWithoutFastPathResourcesSucceeds(t *testing.T) {
+	client := newInstalledFakeGitLabClient("acme/api")
+	delete(client.Secrets, "acme/api/"+forge.SecretTriggerToken)
+	delete(client.Secrets, "acme/api/"+forge.SecretWebhookSecret)
+	delete(client.FileContents, "acme/api/"+fullsendDispatcherTemplatePath)
+	delete(client.FileContents, "acme/api/"+gitlabDispatcherJobScriptPath)
+	client.ProjectHooks = map[string][]forge.ProjectHook{"acme/api": {{ID: 8, Name: "mine"}}}
+
+	results, err := Uninstall(context.Background(), UninstallConfig{
+		Manifest:       testGitLabManifest("acme/api"),
+		Repos:          []string{"acme/api"},
+		Direct:         true,
+		MaxConcurrency: 4,
+	}, newTestClientFactory(client), uninstallCommitFn(client), nil)
+
+	require.NoError(t, err)
+	r := results[0]
+	require.NoError(t, r.Error)
+	assert.True(t, r.Success)
+	assert.True(t, r.WorkflowDeleted)
+	assert.Empty(t, client.DeletedProjectHookIDs)
+	assert.Empty(t, client.RevokedTriggerTokenIDs)
+	assert.Len(t, client.ProjectHooks["acme/api"], 1, "a hook Fullsend does not own is kept")
+}
+
 // Readiness accepts equivalent YAML structure: aliased stage lists that name
 // dispatch, workflow rules inherited through a merge key (with explicit keys
 // overriding), and a wrapper whose dispatcher include admits triggers.

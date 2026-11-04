@@ -23,7 +23,10 @@ const ActionSafetyRejected = "safety-rejected"
 // write when a repository is config-managed and the installed
 // .fullsend/config.yaml differs from the canonical managed configuration.
 // Whole-file comparison: any content difference, including a single-key
-// change, is drift. Unmanaged repositories are a no-op so an existing
+// change, is drift, except the informational source-manifest line, which
+// managedConfigEquivalent ignores so a file installed from a local manifest
+// is not rewritten when the same manifest is loaded from a URL (#8785).
+// Unmanaged repositories are a no-op so an existing
 // file is left untouched.
 //
 // ADR-0122 adoption gate: an existing file that does not begin with
@@ -73,7 +76,7 @@ func convergeManagedConfigFiles(ctx context.Context, resolved ResolvedConfig, de
 		return nil, actions
 	}
 
-	if bytes.Equal(existing, desired) {
+	if managedConfigEquivalent(existing, desired) {
 		return nil, nil
 	}
 
@@ -143,7 +146,7 @@ func checkEstablishedOverlayGate(ctx context.Context, resolved ResolvedConfig, d
 	// Validate every found overlay, marked or not, as preflight and status do:
 	// the safety comparison does not check decoded values such as runtime.
 	if found {
-		if err := validateExistingOverlay(existing); err != nil {
+		if err := validateExistingOverlay(existing, resolved.Forge); err != nil {
 			return fmt.Errorf("convergence errors: %w", err)
 		}
 	}
@@ -153,7 +156,7 @@ func checkEstablishedOverlayGate(ctx context.Context, resolved ResolvedConfig, d
 			"or accept its removal, then remove or replace the file; nothing was written\n%s",
 			resolved.Owner, resolved.Repo, preset.OverlayPath, adoptionGuidance(ctx, resolved, existing, desired))
 	}
-	if bytes.Equal(existing, desired) {
+	if managedConfigEquivalent(existing, desired) {
 		return nil
 	}
 	if rejected := managedSafetyRejectedAction(ctx, resolved); rejected != nil {
@@ -163,7 +166,8 @@ func checkEstablishedOverlayGate(ctx context.Context, resolved ResolvedConfig, d
 }
 
 // checkManagedConfigDrift reports whole-file managed-configuration drift
-// when the repository is config-managed. Unmanaged repositories skip
+// when the repository is config-managed, ignoring only the informational
+// source-manifest line (managedConfigEquivalent). Unmanaged repositories skip
 // comparison so an existing file is left uncompared.
 //
 // ADR-0122 adoption gate: an existing file missing managedConfigMarker is
@@ -196,7 +200,7 @@ func checkManagedConfigDrift(ctx context.Context, cfg ResolvedConfig, status *Re
 	// overlay outright, marked or not; status reports the same file as an
 	// error rather than as drift or adoption guidance it could never act on.
 	if found {
-		if err := validateExistingOverlay(existing); err != nil {
+		if err := validateExistingOverlay(existing, cfg.Forge); err != nil {
 			status.Error = fmt.Sprintf("%s/%s: %v: fix or remove it, then re-run", cfg.Owner, cfg.Repo, err)
 			return
 		}
@@ -224,7 +228,7 @@ func checkManagedConfigDrift(ctx context.Context, cfg ResolvedConfig, status *Re
 		status.Drifts = append(status.Drifts, drift)
 		return
 	}
-	if bytes.Equal(existing, desired) {
+	if managedConfigEquivalent(existing, desired) {
 		return
 	}
 	if rejected := managedSafetyRejectedAction(ctx, cfg); rejected != nil {
@@ -289,7 +293,7 @@ func evaluateManagedSafetyGate(ctx context.Context, resolved ResolvedConfig) ([]
 	}
 	// A pristine first install has no existing effective configuration to
 	// relax: comparing it with code defaults would report every value the
-	// declared preset supplies (for example create_issues targets) as an
+	// declared preset supplies (for example tracking targets) as an
 	// implicit relaxation.
 	if pristineFirstInstall(resolved, overlayFound, baseFound) {
 		return nil, nil
@@ -301,6 +305,10 @@ func evaluateManagedSafetyGate(ctx context.Context, resolved ResolvedConfig) ([]
 	proposedBase := baseYAML
 	if resolved.Config != "" && len(resolved.ProposedBase) > 0 {
 		proposedBase = resolved.ProposedBase
+	}
+	existingYAML, err = overlayForEvaluation(existingYAML, resolved.Forge)
+	if err != nil {
+		return nil, err
 	}
 	relaxations, err := config.CheckManagedSafetyGateFromLayerPairs(existingYAML, baseYAML, resolved.Managed, proposedBase)
 	if err != nil {
@@ -366,15 +374,39 @@ func readManagedConfigBaseFile(ctx context.Context, resolved ResolvedConfig) ([]
 	return readExistingFile(ctx, client, resolved.Owner, resolved.Repo, preset.BasePath)
 }
 
+// overlayForEvaluation returns the installed .fullsend/config.yaml content
+// to parse, validate and compare with the proposed configuration. In a
+// Fullsend-managed overlay (one carrying the ownership marker) the legacy
+// tracker scalar and create_issues keys are converted in memory to the
+// tracker mapping, with the repository's forge as the default provider,
+// because convergence re-renders that file from the manifest (#9075). Any
+// other content, including a markerless user file, is returned unchanged.
+// Convergence still compares the original bytes with the desired rendering,
+// so a legacy managed overlay is rewritten.
+func overlayForEvaluation(data []byte, forgeName string) ([]byte, error) {
+	if !hasManagedConfigMarker(data) {
+		return data, nil
+	}
+	migrated, _, err := config.MigrateLegacyTrackingYAML(data, forgeName)
+	if err != nil {
+		return nil, fmt.Errorf("migrating legacy tracker configuration in existing %s: %w", preset.OverlayPath, err)
+	}
+	return migrated, nil
+}
+
 // validateExistingOverlay rejects an existing .fullsend/config.yaml that is
 // not a parseable per-repo configuration. A blank file declares nothing and
-// is valid.
-func validateExistingOverlay(data []byte) error {
+// is valid. forgeName is the repository's forge (see overlayForEvaluation).
+func validateExistingOverlay(data []byte, forgeName string) error {
 	if len(bytes.TrimSpace(data)) == 0 {
 		return nil
 	}
 	if !config.IsPerRepoYAML(data) {
 		return fmt.Errorf("existing %s is not a per-repo configuration", preset.OverlayPath)
+	}
+	data, err := overlayForEvaluation(data, forgeName)
+	if err != nil {
+		return err
 	}
 	w, err := config.ParsePerRepoConfigWriter(data)
 	if err != nil {
@@ -429,6 +461,10 @@ func presetReplacementRelaxations(ctx context.Context, resolved ResolvedConfig, 
 		} else if candidate, err = config.ParsePerRepoConfigWriter(existingOverlay); err != nil {
 			return nil, fmt.Errorf("parsing existing %s: %w", preset.OverlayPath, err)
 		}
+	}
+	existingOverlay, err = overlayForEvaluation(existingOverlay, resolved.Forge)
+	if err != nil {
+		return nil, err
 	}
 	relaxations, err := config.CheckManagedSafetyGateFromLayerPairs(existingOverlay, existingBase, candidate, proposedBase)
 	if err != nil {

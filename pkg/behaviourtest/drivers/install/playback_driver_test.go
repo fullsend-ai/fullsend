@@ -62,6 +62,33 @@ func TestPlaybackDriver_DelegatesToBase(t *testing.T) {
 	assert.Equal(t, 7, pd.Capacity())
 }
 
+func TestPlaybackDriver_LeaseFallsBackToNameOnlyBase(t *testing.T) {
+	base := &fakeBaseDriver{allocateName: "test-repo-04"}
+	pd := NewPlaybackDriver(base)
+
+	l, err := pd.AllocateLease(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, RepoLease{Repo: "test-repo-04"}, l, "no org: the caller keeps its own")
+	require.NoError(t, pd.DeallocateLease(context.Background(), "", "test-repo-04"))
+	assert.Equal(t, "test-repo-04", base.deallocateName)
+
+	base.allocateErr = errors.New("pool exhausted")
+	_, err = pd.AllocateLease(context.Background())
+	assert.ErrorContains(t, err, "pool exhausted")
+}
+
+func TestPlaybackDriver_LeaseDelegatesToLeaseDriver(t *testing.T) {
+	td := newTestPoolDriver(t, StagePoolLayout(1))
+	pd := NewPlaybackDriver(td.composedDriver)
+
+	l, err := pd.AllocateLease(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, StageOrg, l.Org)
+	assert.Equal(t, "https://mint."+StageOrg, l.MintURL)
+	require.NoError(t, pd.DeallocateLease(context.Background(), l.Org, l.Repo))
+	assert.Empty(t, td.alloc.Held())
+}
+
 func TestPlaybackDriver_AllocateRepo_PropagatesBaseError(t *testing.T) {
 	base := &fakeBaseDriver{allocateErr: errors.New("pool exhausted")}
 	pd := NewPlaybackDriver(base)
@@ -172,3 +199,46 @@ func TestPlaybackSetupOpts_ConfigPresetAndRuntime(t *testing.T) {
 	assert.Contains(t, capturedArgs, "--runtime")
 	assert.Contains(t, capturedArgs, "dummy-playback")
 }
+
+func TestPlaybackDriver_StillOwnsLease(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("delegates to a verifying lease driver", func(t *testing.T) {
+		td := newTestPoolDriver(t, StagePoolLayout(1))
+		pd := NewPlaybackDriver(td.composedDriver)
+		l, err := pd.AllocateLease(ctx)
+		require.NoError(t, err)
+
+		owns, err := pd.StillOwnsLease(ctx, l.Org, l.Repo)
+		require.NoError(t, err)
+		assert.True(t, owns)
+
+		require.NoError(t, pd.DeallocateLease(ctx, l.Org, l.Repo))
+		owns, err = pd.StillOwnsLease(ctx, l.Org, l.Repo)
+		require.NoError(t, err)
+		assert.False(t, owns, "a released lease is not owned")
+	})
+
+	t.Run("name-only base leases cannot be taken over", func(t *testing.T) {
+		pd := NewPlaybackDriver(&fakeBaseDriver{})
+		owns, err := pd.StillOwnsLease(ctx, "", "test-repo-01")
+		require.NoError(t, err)
+		assert.True(t, owns)
+	})
+
+	t.Run("fails closed for a lease driver that cannot verify", func(t *testing.T) {
+		pd := NewPlaybackDriver(&unverifiableLeaseDriver{fakeBaseDriver: &fakeBaseDriver{}})
+		owns, err := pd.StillOwnsLease(ctx, "org", "test-repo-01")
+		require.ErrorContains(t, err, "cannot verify lease ownership of org/test-repo-01")
+		assert.False(t, owns)
+	})
+}
+
+// unverifiableLeaseDriver is a LeaseDriver that is not a LeaseVerifier.
+type unverifiableLeaseDriver struct{ *fakeBaseDriver }
+
+func (*unverifiableLeaseDriver) AllocateLease(context.Context) (RepoLease, error) {
+	return RepoLease{}, nil
+}
+
+func (*unverifiableLeaseDriver) DeallocateLease(context.Context, string, string) error { return nil }

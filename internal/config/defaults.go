@@ -53,8 +53,8 @@ func (d *perRepoDefaults) AgentEntries() []AgentEntry { return nil }
 // AllowedResources returns the default allowed remote resource prefixes.
 func (d *perRepoDefaults) AllowedResources() []string { return DefaultAllowedRemoteResources() }
 
-// IssueCreationConfig returns nil — no issue creation config by default.
-func (d *perRepoDefaults) IssueCreationConfig() *CreateIssuesConfig { return nil }
+// IssueTracking returns nil — no issue-tracking config by default.
+func (d *perRepoDefaults) IssueTracking() *TrackingConfig { return nil }
 
 // StatusNotifications returns nil — no status notifications by default.
 func (d *perRepoDefaults) StatusNotifications() *StatusNotificationConfig { return nil }
@@ -62,8 +62,16 @@ func (d *perRepoDefaults) StatusNotifications() *StatusNotificationConfig { retu
 // IsOwnersFileAuthEnabled returns false — OWNERS auth is off by default.
 func (d *perRepoDefaults) IsOwnersFileAuthEnabled() bool { return false }
 
+// JiraAuthorization returns nil — no jira authorization provider by default.
+func (d *perRepoDefaults) JiraAuthorization() *AuthorizationProvider { return nil }
+
 // ConfigMintURL returns the default mint URL (hosted public mint).
 func (d *perRepoDefaults) ConfigMintURL() string { return DefaultPerRepoMintURL }
+
+// ConfigMintURLFromFile returns "" — the compiled-defaults layer has no
+// file to read from, so it is always the terminal "nothing in the file"
+// case for ConfigMintURLFromFile's overlay/base-only chain.
+func (d *perRepoDefaults) ConfigMintURLFromFile() string { return "" }
 
 // ConfigInferenceProvider returns the default inference provider.
 func (d *perRepoDefaults) ConfigInferenceProvider() string { return DefaultPerRepoInferenceProvider }
@@ -78,6 +86,14 @@ func (d *perRepoDefaults) ConfigInferenceRegion() string { return DefaultPerRepo
 // ConfigInferenceWIFProvider returns the default WIF provider (empty —
 // must be provided by the installer or existing secret).
 func (d *perRepoDefaults) ConfigInferenceWIFProvider() string { return "" }
+
+// ConfigInferenceWIFAudience returns the default ID token audience override
+// (empty — the GitLab agent job keeps aud "fullsend").
+func (d *perRepoDefaults) ConfigInferenceWIFAudience() string { return "" }
+
+// ConfigInferenceServiceAccount returns the default service account to
+// impersonate (empty — direct federated identity, no impersonation).
+func (d *perRepoDefaults) ConfigInferenceServiceAccount() string { return "" }
 
 // ConfigKeepHistory returns the default keep-history state (true —
 // sticky comment updates append previous content as "Previous run"

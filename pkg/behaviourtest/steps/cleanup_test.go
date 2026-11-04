@@ -54,6 +54,24 @@ func TestCleanupScenario_ClosesForkPR(t *testing.T) {
 	assert.Equal(t, 42, scmDriver.closedIssues[0].number)
 }
 
+func TestCleanupScenario_ClosesAgentFiledIssues(t *testing.T) {
+	t.Parallel()
+
+	scmDriver := &fakeCleanupSCM{}
+	w := &world.World{
+		RepoOwner:           "org",
+		RepoName:            "repo",
+		CreatedIssueNumbers: []int{13, 14},
+		SCM:                 scmDriver,
+	}
+	CleanupScenario(w)
+	var closed []int
+	for _, rec := range scmDriver.closedIssues {
+		closed = append(closed, rec.number)
+	}
+	assert.Equal(t, []int{13, 14}, closed)
+}
+
 func TestCleanupScenario_RestoresGatewayConfig(t *testing.T) {
 	t.Parallel()
 
@@ -597,6 +615,10 @@ func (f *fakeCleanupSCM) AddComment(context.Context, string, string, int, string
 }
 
 func (f *fakeCleanupSCM) GetIssue(context.Context, string, string, int) (*forge.Issue, error) {
+	return nil, nil
+}
+
+func (f *fakeCleanupSCM) ListOpenIssues(context.Context, string, string, ...string) ([]forge.Issue, error) {
 	return nil, nil
 }
 
@@ -1291,6 +1313,10 @@ func (f *fakeRetryCleanupSCM) AddComment(context.Context, string, string, int, s
 }
 
 func (f *fakeRetryCleanupSCM) GetIssue(context.Context, string, string, int) (*forge.Issue, error) {
+	return nil, nil
+}
+
+func (f *fakeRetryCleanupSCM) ListOpenIssues(context.Context, string, string, ...string) ([]forge.Issue, error) {
 	return nil, nil
 }
 

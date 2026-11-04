@@ -36,6 +36,32 @@ has no prompting event actor; event-backed dispatch authorization is unchanged.
 On GitLab, the low-latency webhook candidate path and poller backstop are
 [ADR 0125](0125-gitlab-hybrid-webhook-poller-dispatch.md).
 
+[ADR 0144](0144-reuse-poll-and-entity-bound-run-processes.md) clarifies that
+trusted, entity-bound `fullsend run` may recheck only its canonical entity with
+`event == null`. `fullsend poll` remains the broad candidate enumerator. Both
+eventless paths require eligible entity sources, trusted Fullsend invocation
+provenance, actor filtering under the current authorization contract, and the
+same harness CEL predicate.
+
+[ADR 0147](0147-evaluate-entity-cel-over-selectively-acquired-data.md)
+partially supersedes the pre-CEL full-history enumeration, permission
+resolution for every history actor, and audit-roster requirements below.
+[ADR 0148](0148-reuse-verified-actor-roles-for-entity-cel.md) separately permits
+bounded role reuse across entity-CEL checks and partially supersedes the
+permission-at-evaluation-time rule. Trusted-origin, event-actor, and
+model-bound authorization remain required.
+
+[ADR 0151](0151-harness-human-role-minimums.md) replaces the observation/mutation-derived
+human threshold for decision-relevant entity facts with the selected harness's
+effective `human_min_role`, enforced by the platform above an immutable
+`triage` floor. Actor provenance and fail-closed filtering remain required.
+
+[ADR 0149](0149-coalesce-entity-source-discovery-queries.md) partially
+supersedes the optional query sharing below: entity-source discovery requires
+one combined logical search per source scope and local per-harness routing.
+For source-backed harnesses, even an event-supplied candidate must pass a
+current local source-query membership check before sandbox admission.
+
 ## Context
 
 [ADR 0061](0061-harness-cel-dispatch.md) made a `NormalizedEvent` the sole CEL

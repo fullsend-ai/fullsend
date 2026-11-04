@@ -2,6 +2,7 @@ package steps
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -48,17 +49,64 @@ func givenEnrolledTestRepository(ctx context.Context, w *world.World) error {
 		return fmt.Errorf("no install driver configured; use a Factory to construct a Driver for the suite")
 	}
 
-	repoName, err := w.Driver.AllocateRepo(ctx)
-	if err != nil {
-		return fmt.Errorf("allocating repo: %w", err)
+	if ld, ok := w.Driver.(install.LeaseDriver); ok {
+		lease, err := ld.AllocateLease(ctx)
+		if err != nil {
+			return fmt.Errorf("allocating repo: %w", err)
+		}
+		if err := bindLease(w, lease); err != nil {
+			if deallocErr := ld.DeallocateLease(ctx, lease.Org, lease.Repo); deallocErr != nil {
+				err = errors.Join(err, fmt.Errorf("releasing the lease: %w", deallocErr))
+			}
+			return err
+		}
+		w.LeasedRepoName = lease.Repo
+		w.LeasedRepoOrg = lease.Org
+	} else {
+		repoName, err := w.Driver.AllocateRepo(ctx)
+		if err != nil {
+			return fmt.Errorf("allocating repo: %w", err)
+		}
+		w.LeasedRepoName = repoName
 	}
 
-	w.LeasedRepoName = repoName
 	w.RepoOwner = w.Org
-	w.RepoName = repoName
-	w.RepoFull = w.Org + "/" + repoName
+	w.RepoName = w.LeasedRepoName
+	w.RepoFull = w.Org + "/" + w.LeasedRepoName
 
 	return ValidateSlotClean(w)
+}
+
+// bindLease points the scenario World at a leased slot's org: Org,
+// Token, MintURL and the mint's status group and workflow hosts come
+// from the lease, and SCM and CI are rebuilt from
+// the lease's org client through World.OrgDrivers, so every scenario
+// operation and its cleanup use the credentials of the org that owns
+// the repo. A lease without an org (a driver that leases by name only)
+// leaves the World's org and drivers unchanged.
+func bindLease(w *world.World, lease install.RepoLease) error {
+	if lease.Org == "" {
+		return nil
+	}
+	if w.OrgDrivers != nil {
+		if lease.Client == nil {
+			return fmt.Errorf("binding lease %s/%s: lease carries no forge client", lease.Org, lease.Repo)
+		}
+		scmDriver, ciDriver, err := w.OrgDrivers(lease.Client, lease.Token)
+		if err != nil {
+			return fmt.Errorf("binding lease %s/%s: building org drivers: %w", lease.Org, lease.Repo, err)
+		}
+		w.SCM = scmDriver
+		w.CI = ciDriver
+	}
+	w.Org = lease.Org
+	if lease.Token != "" {
+		w.Token = lease.Token
+	}
+	w.MintURL = lease.MintURL
+	w.MintStatusGroup = lease.MintStatusGroup
+	w.MintWorkflowHostRepos = lease.MintWorkflowHostRepos
+	return nil
 }
 
 func givenEnrolledRepository(w *world.World, fullName string) error {
@@ -158,14 +206,5 @@ func thenTriageWorkflowCompletes(w *world.World) error {
 }
 
 func thenIssueHasLabel(w *world.World, label string) error {
-	issue, err := w.SCM.GetIssue(context.Background(), w.RepoOwner, w.RepoName, w.IssueNumber)
-	if err != nil {
-		return err
-	}
-	for _, name := range issue.Labels {
-		if name == label {
-			return nil
-		}
-	}
-	return fmt.Errorf("issue #%d labels %v do not include %q", w.IssueNumber, issue.Labels, label)
+	return thenTargetLabel(w, targetIssue, label, true)
 }

@@ -54,6 +54,13 @@ FULLSEND_PINNED_API_V4_URL="${FULLSEND_PINNED_GITLAB_URL}/api/v4"
 FULLSEND_JOB_KIND=poller
 . "${CI_PROJECT_DIR:-.}/.gitlab/ci/scripts/select-gitlab-role-token.sh"
 
+# Export the registered Analyst's numeric user ID while its credential is
+# still present, so `fullsend poll` can retain the Analyst's
+# changes-requested markers for the fix stage (#8807). Only the ID
+# outlives this step. See fullsend_resolve_gitlab_analyst_user_id in
+# pin-ci-job-identity.sh.
+fullsend_resolve_gitlab_analyst_user_id
+
 # Blank sibling role secrets for the rest of the poller job's
 # lifetime. GitLab injects every registered role secret
 # (FULLSEND_GITLAB_ANALYST_TOKEN, FULLSEND_GITLAB_CODER_TOKEN, any

@@ -77,6 +77,13 @@ release:
     name: fullsend
   name_template: "{{ .Tag }}{{ if and .TagSubject (ne .TagSubject .Tag) }}: {{ .TagSubject }}{{ end }}"
   prerelease: auto
+  # The changelog above lists fullsend commits only. The agents release
+  # for the same tag (created by release.yml's tag-agents job) carries the
+  # agents changelog, so link it from every release.
+  footer: |
+    ## Agents changes
+
+    The fleet agents ship in [fullsend-ai/agents {{ .Tag }}](https://github.com/fullsend-ai/agents/releases/tag/{{ .Tag }}); its release notes list the agents changes in this release.
 
 announce:
   slack:

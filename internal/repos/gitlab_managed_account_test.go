@@ -19,12 +19,12 @@ func TestManagedGitLabRoleAccountID(t *testing.T) {
 		wantError   bool
 	}{
 		{name: "missing state"},
-		{name: "empty state", state: `{"roles":{}}`},
-		{name: "token is not account ownership", state: `{"roles":{"poller":{"incoming_id":7}}}`},
-		{name: "created account", state: `{"roles":{"poller":{"managed_user_id":77}}}`, want: 77},
-		{name: "another role", state: `{"roles":{"coder":{"managed_user_id":77}}}`},
+		{name: "empty state", state: `{"version":2,"roles":{}}`},
+		{name: "token is not account ownership", state: `{"version":2,"roles":{"poller":{"incoming_id":7}}}`},
+		{name: "created account", state: `{"version":2,"roles":{"poller":{"managed_user_id":77}}}`, want: 77},
+		{name: "another role", state: `{"version":2,"roles":{"coder":{"managed_user_id":77}}}`},
 		{name: "invalid JSON", state: `{`, wantError: true},
-		{name: "invalid account ID", state: `{"roles":{"poller":{"managed_user_id":-77}}}`, wantError: true},
+		{name: "invalid account ID", state: `{"version":2,"roles":{"poller":{"managed_user_id":-77}}}`, wantError: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fc := forge.NewFakeClient()

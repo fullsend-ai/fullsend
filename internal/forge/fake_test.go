@@ -335,6 +335,7 @@ func TestFakeClient_CreateCrossRepoChangeProposal(t *testing.T) {
 	assert.Equal(t, 1, cp.Number)
 	assert.Equal(t, "PR title", cp.Title)
 	assert.Equal(t, "head-owner:feature-branch", cp.Head)
+	assert.Equal(t, "head-owner/head-repo", cp.HeadRepo)
 	assert.Equal(t, "main", cp.Base)
 	assert.Contains(t, cp.URL, "base-owner/base-repo/pull/1")
 
@@ -1029,9 +1030,6 @@ func fakeClientCalls(ctx context.Context) map[string]func(fc *FakeClient) []any 
 		},
 		"DeletePipelineSchedule": func(fc *FakeClient) []any { return pack(fc.DeletePipelineSchedule(ctx, "o", "r", 2)) },
 		"GetPipelineSchedule":    func(fc *FakeClient) []any { return pack(fc.GetPipelineSchedule(ctx, "o", "r", 1)) },
-		"DeletePipelineScheduleVariable": func(fc *FakeClient) []any {
-			return pack(fc.DeletePipelineScheduleVariable(ctx, "o", "r", 1, "K"))
-		},
 		"ListPipelineSchedules":  func(fc *FakeClient) []any { return pack(fc.ListPipelineSchedules(ctx, "o", "r")) },
 		"UpdatePipelineSchedule": func(fc *FakeClient) []any { return pack(fc.UpdatePipelineSchedule(ctx, "o", "r", 1, true)) },
 		"UpdateCIVariable":       func(fc *FakeClient) []any { return pack(fc.UpdateCIVariable(ctx, "o", "r", "n", "v", true)) },
@@ -2482,8 +2480,14 @@ func TestFakeClient_ReadsReturnCopies(t *testing.T) {
 	fc.PRFiles = map[string][]string{"o/r/1": {"a.go"}}
 	fc.PRCommits = map[string][]string{"o/r/1": {"sha"}}
 	fc.PRFileDiffs = map[string][]PullRequestFileDiff{"o/r/1": {{Path: "a.go"}}}
-	line, originalLine := 3, 4
-	fc.PRReviewThreads = map[string]ReviewThreadPage{"o/r/1": {Threads: []ReviewThread{{ID: "t", Line: &line, OriginalLine: &originalLine, Comments: []ReviewThreadComment{{Author: "u"}}}}}}
+	line, originalLine, startLine, originalStartLine, oldLine, newLine := 3, 4, 1, 2, 5, 6
+	side, startSide, outdated := DiffSideRight, DiffSideLeft, true
+	fc.PRReviewThreads = map[string]ReviewThreadPage{"o/r/1": {Threads: []ReviewThread{{
+		ID: "t", Side: &side, Line: &line, StartSide: &startSide, StartLine: &startLine,
+		OriginalLine: &originalLine, OriginalStartLine: &originalStartLine,
+		OldLine: &oldLine, NewLine: &newLine, IsOutdated: &outdated,
+		Comments: []ReviewThreadComment{{Author: "u"}},
+	}}}}
 	fc.Installations[0].Permissions = map[string]string{"contents": "read"}
 	fc.FileContents["o/r/f"] = []byte("x")
 	fc.FileContentsRef["o/r/f@main"] = []byte("x")
@@ -2548,10 +2552,24 @@ func TestFakeClient_ReadsReturnCopies(t *testing.T) {
 	threads.Threads[0].Comments[0].Author = "changed"
 	assert.Equal(t, "t", fc.PRReviewThreads["o/r/1"].Threads[0].ID)
 	assert.Equal(t, "u", fc.PRReviewThreads["o/r/1"].Threads[0].Comments[0].Author)
+	*threads.Threads[0].Side = DiffSideLeft
 	*threads.Threads[0].Line = 0
+	*threads.Threads[0].StartSide = DiffSideRight
+	*threads.Threads[0].StartLine = 0
 	*threads.Threads[0].OriginalLine = 0
+	*threads.Threads[0].OriginalStartLine = 0
+	*threads.Threads[0].OldLine = 0
+	*threads.Threads[0].NewLine = 0
+	*threads.Threads[0].IsOutdated = false
+	assert.Equal(t, DiffSideRight, side)
 	assert.Equal(t, 3, line)
+	assert.Equal(t, DiffSideLeft, startSide)
+	assert.Equal(t, 1, startLine)
 	assert.Equal(t, 4, originalLine)
+	assert.Equal(t, 2, originalStartLine)
+	assert.Equal(t, 5, oldLine)
+	assert.Equal(t, 6, newLine)
+	assert.True(t, outdated)
 
 	annotations, err := fc.GetWorkflowRunAnnotations(ctx, "o", "r", 1)
 	require.NoError(t, err)

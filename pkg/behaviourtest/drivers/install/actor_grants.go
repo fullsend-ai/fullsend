@@ -67,9 +67,10 @@ func outsiderLoginFromEnv(ctx context.Context) (string, error) {
 }
 
 // verifyActors checks that test actors are active organization members.
-// Direct collaborator grants are not applied: resetRepo deletes the
-// repo, which would drop those grants and re-adding them creates
-// pending invitations (#7777).
+// Direct collaborator grants are not applied: each slot repo is deleted
+// when its lease is released and created again by a later claim, which
+// would drop those grants, and re-adding them creates pending
+// invitations (#7777).
 //
 // The all-repository role itself (write/triage) is verified only by
 // hack/setup-new-e2e-org.sh, which runs with an org-admin-authenticated

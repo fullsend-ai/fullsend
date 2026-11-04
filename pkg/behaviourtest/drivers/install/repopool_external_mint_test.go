@@ -6,12 +6,14 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
 func TestExternalMintInstall_ReturnsMintURL(t *testing.T) {
 	d := &externalMintDriver{mintURL: "https://mint.test"}
 
-	mintURL, err := d.Install(context.Background(), "my-org")
+	mintURL, err := d.Install(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, "https://mint.test", mintURL)
 }
@@ -29,33 +31,25 @@ func TestExternalMintTeardown_IsNoOp(t *testing.T) {
 func TestNewRepoPoolExternalMint_MissingMintURL(t *testing.T) {
 	t.Setenv("FULLSEND_MINT_URL", "")
 
-	_, err := NewRepoPoolExternalMint("my-org", nil, "tok", "/bin/fullsend", "proj", t.Logf)
+	_, err := NewRepoPoolExternalMint(testPoolConfig(t, StagePoolLayout(1)))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "FULLSEND_MINT_URL is required")
+
+	_, err = NewRepoPoolExternalMint(testPoolConfig(t, PoolLayout{}))
+	require.ErrorContains(t, err, "external mint factory")
 }
 
 func TestNewRepoPoolExternalMint_HappyPath(t *testing.T) {
 	t.Setenv("FULLSEND_MINT_URL", "https://mint.test")
-	// Clear pool size override so DefaultPoolSize is used.
-	t.Setenv("BEHAVIOUR_POOL_SIZE", "")
+	t.Setenv("TEST_ACTOR_OUTSIDER_PAT", "")
 
-	// forge.Client can be nil — newComposedDriver doesn't use it; the
-	// ensurer stores it but the factory does not call EnsureRepo.
-	d, err := NewRepoPoolExternalMint("my-org", nil, "tok", "/bin/fullsend", "proj", t.Logf)
+	d, err := NewRepoPoolExternalMint(testPoolConfig(t, DevPoolLayout(5)))
 	require.NoError(t, err)
 	require.NotNil(t, d)
-	assert.Equal(t, DefaultPoolSize, d.Capacity())
-	reporter, ok := d.(MintURLReporter)
-	require.True(t, ok, "driver reports its mint URL")
-	assert.Equal(t, "https://mint.test", reporter.MintURL())
-}
+	assert.Equal(t, DevPoolOrgCount*5, d.Capacity(), "capacity spans every org's slots")
 
-func TestNewRepoPoolExternalMint_CustomPoolSize(t *testing.T) {
-	t.Setenv("FULLSEND_MINT_URL", "https://mint.test")
-	t.Setenv("BEHAVIOUR_POOL_SIZE", "5")
-
-	d, err := NewRepoPoolExternalMint("my-org", nil, "tok", "/bin/fullsend", "proj", t.Logf)
+	// Every org uses the configured mint; nothing is deployed.
+	env, err := d.(*composedDriver).setup(context.Background(), "halfsend-02", orgCredential{token: "t", client: forge.NewFakeClient()})
 	require.NoError(t, err)
-	require.NotNil(t, d)
-	assert.Equal(t, 5, d.Capacity(), "pool size should match BEHAVIOUR_POOL_SIZE")
+	assert.Equal(t, "https://mint.test", env.mintURL)
 }

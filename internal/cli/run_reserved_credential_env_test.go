@@ -87,9 +87,9 @@ var documentedPassthroughNames = map[string]bool{
 func TestGuideNamesMatchTheGate(t *testing.T) {
 	t.Parallel()
 
-	const marker = "**Note**: `env.sandbox` cannot modify runner infrastructure"
+	const marker = "`env.sandbox` cannot modify runner infrastructure"
 
-	data, err := os.ReadFile(filepath.Join("..", "..", "docs", "guides", "user", "customizing-agents.md"))
+	data, err := os.ReadFile(filepath.Join("..", "..", "docs", "reference", "harness-reference.md"))
 	require.NoError(t, err)
 
 	start := strings.Index(string(data), marker)

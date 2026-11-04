@@ -8,13 +8,17 @@
 #   - OpenShell CLI (pinned) and a per-job gateway (no long-lived daemon)
 #   - pre-pulled runner + supervisor images
 #   - a user systemd timer that prunes unused Podman images (#7663)
+#   - a system timer that applies Fedora package updates daily, at a per-VM
+#     time, without interrupting jobs (os-update.sh, #8963)
 #
 # Idempotent: safe to re-run, and must stay that way. Each step is guarded
 # (version checks, grep-for-existing-config, early returns) so a second run
 # converges with no accumulated artifacts. In-place re-run is a developer/
 # debug convenience — fast script iteration on a test VM without a ~20-min
 # re-provision. Recreation (drain → delete → create) is the compliance
-# path; see issue #7257.
+# path; see issue #7257. The daily package update only keeps installed
+# packages current within the VM's Fedora release between recreations; it
+# does not apply provisioning changes or Fedora major-version upgrades.
 #
 # Prerequisites:
 #   - VM created from vm.yaml (provides Fedora + podman + gitlab-runner)
@@ -86,6 +90,10 @@ CA_HOOK_SCRIPT="/usr/local/bin/inject-ca-certs.sh"
 OCI_HOOKS_DIR="/etc/containers/oci/hooks.d"
 # Overridable so setup_test.sh can repair Fedora repo files in a temp dir.
 YUM_REPOS_DIR="/etc/yum.repos.d"
+# Overridable so os-update_test.sh can install the update units into temp dirs.
+SYSTEMD_SYSTEM_DIR="/etc/systemd/system"
+OS_UPDATE_SCRIPT="/usr/local/libexec/fullsend/os-update.sh"
+OS_UPDATE_STATE_DIR="/var/lib/fullsend-gitlab-runner"
 
 # Source the central gitlab-runner version pin.
 _runner_version_sh="${SCRIPT_DIR}/gitlab-runner-version.sh"
@@ -1172,6 +1180,121 @@ EOF
 }
 
 # --------------------------------------------------------------------------
+# 8c. Daily Fedora package updates (system systemd timer)
+# --------------------------------------------------------------------------
+# Long-lived VMs otherwise only get packages at provisioning time (#8963).
+# os-update.sh checks for updates, drains the runner only when there are
+# some and no job is running, updates within the installed Fedora release,
+# reboots if needed, and verifies the runner before it takes jobs again.
+#
+# Each VM gets a random time of day (UTC) across the full 24 hours, picked
+# once and persisted in OS_UPDATE_STATE_DIR/os-update-time, so the schedule
+# survives setup.sh re-runs and reboots and the fleet does not drain at the
+# same time. There is no globally quiet hour to aim for.
+
+# Print a random HH:MM (UTC) across the whole day.
+os_update_random_time() {
+  local minute=$(( (RANDOM * 32768 + RANDOM) % 1440 ))
+  printf '%02d:%02d\n' $((minute / 60)) $((minute % 60))
+}
+
+# Print this VM's persisted update time, generating and saving it on first use.
+os_update_time() {
+  local time_file="${OS_UPDATE_STATE_DIR}/os-update-time" saved=""
+  if sudo test -f "${time_file}"; then
+    saved=$(sudo cat "${time_file}" 2>/dev/null | head -n1) || saved=""
+  fi
+  if [[ "${saved}" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]]; then
+    printf '%s\n' "${saved}"
+    return 0
+  fi
+  saved=$(os_update_random_time)
+  sudo mkdir -p "${OS_UPDATE_STATE_DIR}"
+  printf '%s\n' "${saved}" | sudo tee "${time_file}" > /dev/null
+  printf '%s\n' "${saved}"
+}
+
+install_os_update() {
+  info "Installing daily Fedora package update timer"
+
+  local src="${SCRIPT_DIR}/os-update.sh"
+  if [ ! -f "${src}" ]; then
+    fail "os-update.sh not found: ${src}"
+  fi
+
+  local update_time hold_file="${OS_UPDATE_STATE_DIR}/os-update.hold"
+  update_time=$(os_update_time)
+
+  sudo mkdir -p "$(dirname "${OS_UPDATE_SCRIPT}")" "${SYSTEMD_SYSTEM_DIR}" "${GITLAB_RUNNER_OVERRIDE_DIR}"
+  sudo install -m 0755 "${src}" "${OS_UPDATE_SCRIPT}"
+
+  # While the hold file exists, gitlab-runner cannot start: not through
+  # Restart=always after os-update.sh's graceful SIGQUIT, and not at boot
+  # after an update reboot, until the runner passes its health check.
+  sudo tee "${GITLAB_RUNNER_OVERRIDE_DIR}/os-update-hold.conf" > /dev/null <<EOF
+[Unit]
+ConditionPathExists=!${hold_file}
+EOF
+
+  sudo tee "${SYSTEMD_SYSTEM_DIR}/fullsend-os-update.service" > /dev/null <<EOF
+[Unit]
+Description=Apply Fedora package updates on the GitLab runner without interrupting jobs
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=FULLSEND_RUNNER_USER=${RUNNER_USER}
+Environment=FULLSEND_OS_UPDATE_STATE_DIR=${OS_UPDATE_STATE_DIR}
+# Waiting for a running job to finish can take hours.
+TimeoutStartSec=infinity
+ExecStart=${OS_UPDATE_SCRIPT}
+EOF
+
+  # No Persistent= or RandomizedDelaySec=: the update runs at this VM's own
+  # time every day, not at boot after a missed run.
+  sudo tee "${SYSTEMD_SYSTEM_DIR}/fullsend-os-update.timer" > /dev/null <<EOF
+[Unit]
+Description=Daily Fedora package updates on the GitLab runner (per-VM time)
+
+[Timer]
+OnCalendar=*-*-* ${update_time}:00 UTC
+AccuracySec=1min
+Unit=fullsend-os-update.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
+  sudo tee "${SYSTEMD_SYSTEM_DIR}/fullsend-os-update-resume.service" > /dev/null <<EOF
+[Unit]
+Description=Verify and release the GitLab runner after a Fedora package update reboot
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=${hold_file}
+
+[Service]
+Type=oneshot
+Environment=FULLSEND_RUNNER_USER=${RUNNER_USER}
+Environment=FULLSEND_OS_UPDATE_STATE_DIR=${OS_UPDATE_STATE_DIR}
+TimeoutStartSec=30min
+ExecStart=${OS_UPDATE_SCRIPT} --resume
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  sudo systemctl daemon-reload
+  sudo systemctl enable fullsend-os-update-resume.service
+  sudo systemctl enable --now fullsend-os-update.timer
+  if sudo test -f "${hold_file}"; then
+    echo "  WARN: ${hold_file} exists — an os-update run left gitlab-runner drained."
+    echo "        Verify and release it with: sudo FULLSEND_RUNNER_USER=${RUNNER_USER} ${OS_UPDATE_SCRIPT} --resume"
+  fi
+  ok "os update timer enabled (daily at ${update_time} UTC)"
+}
+
+# --------------------------------------------------------------------------
 # 9. Verify
 # --------------------------------------------------------------------------
 # check_registration confirms config.toml holds exactly one runner, that it
@@ -1271,6 +1394,12 @@ verify() {
     ok "podman prune timer enabled"
   else
     echo "  WARN: podman prune timer not enabled"; errors=$((errors + 1))
+  fi
+
+  if systemctl is-enabled --quiet fullsend-os-update.timer; then
+    ok "os update timer enabled"
+  else
+    echo "  WARN: os update timer not enabled"; errors=$((errors + 1))
   fi
 
   if systemctl is-active --quiet gitlab-runner; then
@@ -1375,5 +1504,6 @@ install_executor
 patch_config
 prepull_images
 install_podman_prune
+install_os_update
 sudo systemctl restart gitlab-runner
 verify

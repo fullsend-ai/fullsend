@@ -314,7 +314,7 @@ sections in older user guides — they describe removed overlay mechanics):
 - `docs/guides/user/default-vs-custom.md` — augment vs derived
 - `docs/ADRs/0045-forge-portable-harness-schema.md` — `base:` merge rules
 - `docs/ADRs/0058-agent-registration.md` — registering harness URLs
-- `docs/guides/user/building-custom-agents.md` — new or derived agents
+- `docs/guides/user/bring-your-own-agent.md` — new or derived agents
 
 Use `docs/guides/user/customizing-with-skills.md` for repo skill layout,
 built-in skill names, **and** whatever override mechanisms that guide

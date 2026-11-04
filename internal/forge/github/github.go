@@ -31,6 +31,17 @@ import (
 )
 
 // LiveClient implements forge.Client for the GitHub REST API.
+//
+// Rate-limit blocking: when GitHub answers 429 or 403 for an exhausted
+// primary quota (X-RateLimit-Remaining 0, no Retry-After), a request waits for
+// X-RateLimit-Reset, for at most maxPrimaryResetWait (65 minutes), instead of
+// failing after the short backoff retries. A caller whose context has no
+// deadline can therefore block for up to about an hour; set a context deadline
+// to bound the wait. When the deadline cannot cover the wait, the request
+// fails at once with a rate-limit error. When the context ends during a
+// rate-limit wait, the error is a rate-limit *APIError whose Unwrap returns
+// the context error, so errors.Is matches context.Canceled or
+// context.DeadlineExceeded.
 type LiveClient struct {
 	http      *http.Client
 	token     string
@@ -303,47 +314,33 @@ func IsPATForbiddenError(err error) bool {
 
 const maxRetries = 5
 
-type noAmbiguousRetryKey struct{}
-
-// WithoutAmbiguousRetry returns a context that stops the client from
-// retrying a request after an ambiguous failure: a transport timeout or a
-// 5xx response, where the server may already have applied the request.
-// Rate-limit rejections (429, rate-limit 403) are still retried because
-// the server did not process those. Use it for requests that must not be
-// replayed blindly, such as deleting a repository by name that another
-// party may have recreated; the caller re-checks state after the error.
-func WithoutAmbiguousRetry(ctx context.Context) context.Context {
-	return context.WithValue(ctx, noAmbiguousRetryKey{}, true)
-}
-
 func ambiguousRetryDisabled(ctx context.Context) bool {
-	v, _ := ctx.Value(noAmbiguousRetryKey{}).(bool)
-	return v
+	return forge.AmbiguousRetryDisabled(ctx)
 }
 
-type retryGuardKey struct{}
-
-// WithRetryGuard returns a context under which the client calls guard
-// after every retry wait (including rate-limit waits, repository-race
-// waits and commit-retry delays) and before resending the request or
-// rerunning the operation. A non-nil error from guard stops the retry:
-// nothing is resent and that error is returned, wrapped. Use it for requests
-// whose target may change while the client waits, such as deleting a
-// repository by name that another party may have deleted and recreated.
-// guard receives the request context; requests it makes on that context
-// are subject to the same guard, so it should use its own context.
-func WithRetryGuard(ctx context.Context, guard func(context.Context) error) context.Context {
-	return context.WithValue(ctx, retryGuardKey{}, guard)
-}
-
-// checkRetryGuard runs the WithRetryGuard guard on ctx, if any.
+// checkRetryGuard runs the forge.WithRetryGuard guard on ctx, if any.
 func checkRetryGuard(ctx context.Context, method, path string) error {
-	guard, _ := ctx.Value(retryGuardKey{}).(func(context.Context) error)
+	guard := forge.RetryGuard(ctx)
 	if guard == nil {
 		return nil
 	}
 	if err := guard(ctx); err != nil {
 		return fmt.Errorf("%s %s: not retried: %w", method, path, err)
+	}
+	return nil
+}
+
+// checkMutationGuard runs the WithRetryGuard guard on ctx, if any,
+// immediately before the first mutating request of an operation whose
+// earlier requests were reads, so a target replaced during those reads
+// is not written to.
+func checkMutationGuard(ctx context.Context, op string) error {
+	guard := forge.RetryGuard(ctx)
+	if guard == nil {
+		return nil
+	}
+	if err := guard(ctx); err != nil {
+		return fmt.Errorf("%s: not sent: %w", op, err)
 	}
 	return nil
 }
@@ -481,6 +478,20 @@ func (c *LiveClient) doRequest(ctx context.Context, method, path string, content
 		delay := retryDelay(resp, attempt)
 		retryAfter := resp.Header.Get("Retry-After")
 
+		// An exhausted primary quota only recovers at X-RateLimit-Reset,
+		// so wait for that instead of spending the retries on short
+		// backoffs inside the same window. When the caller's deadline
+		// cannot cover the wait, fail now with the rate-limit cause
+		// rather than sleeping into a deadline error.
+		resetWait, primaryExhausted := primaryResetWait(resp, time.Now())
+		if primaryExhausted {
+			delay = resetWait
+			if deadline, ok := ctx.Deadline(); ok && resetWait > time.Until(deadline) {
+				return nil, c.rateLimitError(resp, method, path,
+					fmt.Sprintf("primary quota exhausted, reset in %s is beyond the context deadline on %s %s", resetWait.Round(time.Second), method, path))
+			}
+		}
+
 		if attempt == maxRetries-1 {
 			msg := fmt.Sprintf("retryable error after %d attempts on %s %s (last delay: %s", maxRetries, method, path, delay)
 			if retryAfter != "" {
@@ -493,19 +504,7 @@ func (c *LiveClient) doRequest(ctx context.Context, method, path string, content
 			// that only has the error can still tell "rate limited"
 			// from a generic 403.
 			if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusForbidden {
-				msg = "rate limit: " + msg
-				// Report the budget from the response that failed —
-				// the client-wide observation may belong to another
-				// goroutine's request. A response without the headers
-				// (secondary limits may omit them) says so, and names
-				// the last observation with its age.
-				if rl, ok := parseRateLimit(resp.Header); ok {
-					msg += " [" + rl.String() + "]"
-				} else if last, seen := c.RateLimit(); seen {
-					msg += fmt.Sprintf(" [rate-limit headers absent; last seen %s, %s ago]", last, time.Since(last.Observed).Round(time.Second))
-				} else {
-					msg += " [rate-limit headers absent; no prior observation]"
-				}
+				msg = "rate limit: " + msg + c.rateBudgetSuffix(resp)
 			}
 			apiErr := &APIError{StatusCode: resp.StatusCode, Message: msg}
 			if secs, convErr := strconv.Atoi(retryAfter); convErr == nil && secs > 0 {
@@ -542,6 +541,56 @@ func (c *LiveClient) doRequest(ctx context.Context, method, path string, content
 
 	// Unreachable, but the compiler needs it.
 	return nil, fmt.Errorf("exhausted retries for %s %s", method, path)
+}
+
+// rateBudgetSuffix renders the budget a rate-limited response reported, so
+// a caller that only has the error can tell "rate limited" from a generic
+// 403. It reports the budget from the response that failed — the
+// client-wide observation may belong to another goroutine's request. A
+// response without the headers (secondary limits may omit them) says so,
+// and names the last observation with its age.
+func (c *LiveClient) rateBudgetSuffix(resp *http.Response) string {
+	if rl, ok := parseRateLimit(resp.Header); ok {
+		return " [" + rl.String() + "]"
+	}
+	if last, seen := c.RateLimit(); seen {
+		return fmt.Sprintf(" [rate-limit headers absent; last seen %s, %s ago]", last, time.Since(last.Observed).Round(time.Second))
+	}
+	return " [rate-limit headers absent; no prior observation]"
+}
+
+// rateLimitError is the APIError for a rate-limited response that is not
+// retried further; IsRateLimitError matches it.
+func (c *LiveClient) rateLimitError(resp *http.Response, method, path, detail string) error {
+	return &APIError{StatusCode: resp.StatusCode, Message: "rate limit: " + detail + c.rateBudgetSuffix(resp)}
+}
+
+// maxPrimaryResetWait bounds a wait for X-RateLimit-Reset. The primary
+// window is an hour, so a longer wait means a bad header.
+const maxPrimaryResetWait = 65 * time.Minute
+
+// primaryResetWait reports how long to wait for an exhausted primary rate
+// limit to reset: 429 or 403 with X-RateLimit-Remaining 0, a usable
+// X-RateLimit-Reset and no Retry-After (which, when present, is the
+// explicit instruction and wins). The extra second covers clock skew.
+func primaryResetWait(resp *http.Response, now time.Time) (time.Duration, bool) {
+	if resp.StatusCode != http.StatusTooManyRequests && resp.StatusCode != http.StatusForbidden {
+		return 0, false
+	}
+	if resp.Header.Get("Retry-After") != "" || strings.TrimSpace(resp.Header.Get("X-RateLimit-Remaining")) != "0" {
+		return 0, false
+	}
+	secs, err := strconv.ParseInt(strings.TrimSpace(resp.Header.Get("X-RateLimit-Reset")), 10, 64)
+	if err != nil || secs <= 0 {
+		return 0, false
+	}
+	// Compare the delta before adding the skew second: Sub saturates for a
+	// far-future reset, and adding to the saturated value would wrap negative.
+	delta := max(time.Unix(secs, 0).Sub(now), 0)
+	if delta > maxPrimaryResetWait-time.Second {
+		return 0, false
+	}
+	return delta + time.Second, true
 }
 
 // isRetryable returns true for responses that should trigger a retry.
@@ -1598,6 +1647,15 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 		changes = append(changes, pendingChange{file: f, expectedSHA: expectedSHA, modeOnly: exists && info.sha == expectedSHA})
 	}
 
+	// Everything above was a read. Let a caller's guard confirm the target
+	// is still the one it meant before the first write, which a retry
+	// guard alone would not do until a later attempt.
+	if len(changes) > 0 {
+		if err := checkMutationGuard(ctx, fmt.Sprintf("commit to %s/%s@%s", owner, repo, branch)); err != nil {
+			return false, err
+		}
+	}
+
 	// 5. Signed GraphQL path unless a changed file needs the Git Data API
 	// (see usesGitDataPath).
 	changedFiles := make([]forge.TreeFile, 0, len(changes))
@@ -1650,7 +1708,7 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 			if !p.modeOnly {
 				createdSHA, err := c.createBlobForFile(ctx, owner, repo, f)
 				if err != nil {
-					return false, fmt.Errorf("create blob for %s: %w", f.Path, err)
+					return false, fmt.Errorf("create blob for %s: %w", f.Path, wrapForbidden(err))
 				}
 				blobSHAValue = createdSHA
 			}
@@ -1674,7 +1732,7 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity && isStaleTreeSHAError(apiErr) {
 			return false, fmt.Errorf("create tree: %w: %w", forge.ErrNonFastForward, err)
 		}
-		return false, fmt.Errorf("create tree: %w", err)
+		return false, fmt.Errorf("create tree: %w", wrapForbidden(err))
 	}
 	var newTree struct {
 		SHA string `json:"sha"`
@@ -1696,7 +1754,7 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity && isStaleTreeSHAError(apiErr) {
 			return false, fmt.Errorf("create commit: %w: %w", forge.ErrNonFastForward, err)
 		}
-		return false, fmt.Errorf("create commit: %w", err)
+		return false, fmt.Errorf("create commit: %w", wrapForbidden(err))
 	}
 	var newCommit struct {
 		SHA string `json:"sha"`
@@ -1726,7 +1784,7 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 				return false, fmt.Errorf("update ref: %w: %w", forge.ErrNonFastForward, err)
 			}
 		}
-		return false, fmt.Errorf("update ref: %w", err)
+		return false, fmt.Errorf("update ref: %w", wrapForbidden(err))
 	}
 	refUpdateResp.Body.Close()
 
@@ -2000,7 +2058,7 @@ func (c *LiveClient) GetFileContent(ctx context.Context, owner, repo, path strin
 // rejects a stale SHA with 409 and a create over an existing file with a
 // 422 naming the missing "sha"; both are returned wrapping
 // forge.ErrConflict. The PUT is sent once: it bypasses retryOnRepoRace
-// (which would replay a 409) and runs with WithoutAmbiguousRetry so a
+// (which would replay a 409) and runs with forge.WithoutAmbiguousRetry so a
 // timeout or 5xx is not replayed either.
 func (c *LiveClient) UpdateFileIfMatch(ctx context.Context, owner, repo, path, message string, content []byte, expectedSHA string) error {
 	payload := map[string]any{
@@ -2011,7 +2069,7 @@ func (c *LiveClient) UpdateFileIfMatch(ctx context.Context, owner, repo, path, m
 		payload["sha"] = expectedSHA
 	}
 	apiPath := fmt.Sprintf("/repos/%s/%s/contents/%s", owner, repo, escapePathSegments(path))
-	resp, err := c.do(WithoutAmbiguousRetry(ctx), http.MethodPut, apiPath, payload)
+	resp, err := c.do(forge.WithoutAmbiguousRetry(ctx), http.MethodPut, apiPath, payload)
 	if err != nil {
 		return fmt.Errorf("conditional update of %s: %w", path, err)
 	}
@@ -2314,12 +2372,26 @@ func (c *LiveClient) CompareCommits(ctx context.Context, owner, repo, base, head
 	return cmp.Status, nil
 }
 
+// wrapForbidden marks a 403 APIError that is not a rate-limit response as
+// forge.ErrForbidden while keeping the underlying APIError in the chain. Other
+// errors are returned unchanged. CreateBranch, CreateBranchFromSHA,
+// CreateChangeProposal and the Git Data steps of commitFilesTo (blob, tree,
+// commit and ref update) use it so a throttled 403 is not reported as a
+// missing permission.
+func wrapForbidden(err error) error {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusForbidden && !IsRateLimitError(err) {
+		return fmt.Errorf("%w: %w", forge.ErrForbidden, err)
+	}
+	return err
+}
+
 // CreateBranch creates a new branch from the repository's default branch.
 func (c *LiveClient) CreateBranch(ctx context.Context, owner, repo, branchName string) error {
 	// Step 1: Get the default branch name.
 	repoResp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s", owner, repo))
 	if err != nil {
-		return fmt.Errorf("get repo for default branch: %w", err)
+		return fmt.Errorf("get repo for default branch: %w", wrapForbidden(err))
 	}
 	var repoInfo struct {
 		DefaultBranch string `json:"default_branch"`
@@ -2331,7 +2403,7 @@ func (c *LiveClient) CreateBranch(ctx context.Context, owner, repo, branchName s
 	// Step 2: Get the SHA of the default branch.
 	refResp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/git/ref/heads/%s", owner, repo, repoInfo.DefaultBranch))
 	if err != nil {
-		return fmt.Errorf("get ref for default branch: %w", err)
+		return fmt.Errorf("get ref for default branch: %w", wrapForbidden(err))
 	}
 	var ref struct {
 		Object struct {
@@ -2349,11 +2421,7 @@ func (c *LiveClient) CreateBranch(ctx context.Context, owner, repo, branchName s
 	}
 	resp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/git/refs", owner, repo), payload)
 	if err != nil {
-		var apiErr *APIError
-		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusForbidden {
-			return fmt.Errorf("%w: %w", forge.ErrForbidden, err)
-		}
-		return fmt.Errorf("create branch %s: %w", branchName, err)
+		return fmt.Errorf("create branch %s: %w", branchName, wrapForbidden(err))
 	}
 	resp.Body.Close()
 	return nil
@@ -2370,11 +2438,7 @@ func (c *LiveClient) CreateBranchFromSHA(ctx context.Context, owner, repo, branc
 	}
 	resp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/git/refs", owner, repo), payload)
 	if err != nil {
-		var apiErr *APIError
-		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusForbidden {
-			return fmt.Errorf("%w: %w", forge.ErrForbidden, err)
-		}
-		return fmt.Errorf("create branch %s from SHA: %w", branchName, err)
+		return fmt.Errorf("create branch %s from SHA: %w", branchName, wrapForbidden(err))
 	}
 	resp.Body.Close()
 	return nil
@@ -2387,15 +2451,24 @@ func (c *LiveClient) DeleteBranch(ctx context.Context, owner, repo, branchName s
 }
 
 // DeleteRef deletes a git ref (e.g., "heads/my-branch", "tags/v1.0").
-// Returns forge.ErrNotFound (wrapped) if the ref does not exist.
+// Returns forge.ErrNotFound (wrapped) if the ref does not exist. GitHub
+// reports a missing ref on delete as 422 "Reference does not exist" rather
+// than 404, so that response is mapped to forge.ErrNotFound here; the
+// generic APIError.Unwrap 422 handling is deliberately left unchanged.
 func (c *LiveClient) DeleteRef(ctx context.Context, owner, repo, refPath string) error {
 	if err := c.delete_(ctx, fmt.Sprintf("/repos/%s/%s/git/refs/%s", owner, repo, refPath)); err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity &&
+			strings.Contains(lowerAPIErrorText(apiErr), "reference does not exist") {
+			return fmt.Errorf("delete ref %s in %s/%s: %w: %w", refPath, owner, repo, forge.ErrNotFound, err)
+		}
 		return fmt.Errorf("delete ref %s in %s/%s: %w", refPath, owner, repo, err)
 	}
 	return nil
 }
 
 // CreateChangeProposal creates a pull request.
+// Returns forge.ErrForbidden (wrapped) on insufficient permissions.
 func (c *LiveClient) CreateChangeProposal(ctx context.Context, owner, repo, title, body, head, base string) (*forge.ChangeProposal, error) {
 	payload := map[string]string{
 		"title": title,
@@ -2406,7 +2479,7 @@ func (c *LiveClient) CreateChangeProposal(ctx context.Context, owner, repo, titl
 
 	resp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/pulls", owner, repo), payload)
 	if err != nil {
-		return nil, fmt.Errorf("create pull request: %w", err)
+		return nil, fmt.Errorf("create pull request: %w", wrapForbidden(err))
 	}
 
 	var pr struct {
@@ -2506,7 +2579,18 @@ func (c *LiveClient) CreateCrossRepoChangeProposal(ctx context.Context, baseOwne
 		return nil, fmt.Errorf("decode cross-repo pull request response: %w", err)
 	}
 	if len(gqlResult.Errors) > 0 {
-		return nil, fmt.Errorf("create cross-repo pull request: graphql: %s", gqlResult.Errors[0].Message)
+		msg := gqlResult.Errors[0].Message
+		// Map the same conditions the REST path surfaces as sentinel
+		// errors so callers can treat an existing PR or an empty diff
+		// identically regardless of which creation path was used.
+		lower := strings.ToLower(msg)
+		switch {
+		case strings.Contains(lower, "already exists"):
+			return nil, fmt.Errorf("create cross-repo pull request: graphql: %s: %w", msg, forge.ErrAlreadyExists)
+		case strings.Contains(lower, "no commits between"):
+			return nil, fmt.Errorf("create cross-repo pull request: graphql: %s: %w", msg, forge.ErrNoChanges)
+		}
+		return nil, fmt.Errorf("create cross-repo pull request: graphql: %s", msg)
 	}
 
 	pr := gqlResult.Data.CreatePullRequest.PullRequest
@@ -2869,10 +2953,14 @@ func (c *LiveClient) CreateRepoSecret(ctx context.Context, owner, repo, name, va
 		return fmt.Errorf("encrypt secret: %w", err)
 	}
 
-	// Step 3: Upload the encrypted secret.
+	// Step 3: Upload the encrypted secret. The key lookup above was a
+	// read, so let a caller's guard confirm the target before the write.
 	payload := map[string]string{
 		"encrypted_value": base64.StdEncoding.EncodeToString(encrypted),
 		"key_id":          pubKey.KeyID,
+	}
+	if err := checkMutationGuard(ctx, fmt.Sprintf("create secret %s on %s/%s", name, owner, repo)); err != nil {
+		return err
 	}
 
 	resp, err := c.put(ctx, fmt.Sprintf("/repos/%s/%s/actions/secrets/%s", owner, repo, name), payload)
@@ -2917,6 +3005,12 @@ func (c *LiveClient) CreateOrUpdateRepoVariable(ctx context.Context, owner, repo
 		"value": value,
 	}
 
+	// Each distinct write is preceded by the caller's guard, so a target
+	// replaced during the PATCH is not written to by the POST fallback.
+	if err := checkMutationGuard(ctx, fmt.Sprintf("update variable %s on %s/%s", name, owner, repo)); err != nil {
+		return err
+	}
+
 	// Try PATCH first (update existing).
 	resp, err := c.patch(ctx, fmt.Sprintf("/repos/%s/%s/actions/variables/%s", owner, repo, name), payload)
 	if err == nil {
@@ -2932,6 +3026,9 @@ func (c *LiveClient) CreateOrUpdateRepoVariable(ctx context.Context, owner, repo
 	createPayload := map[string]string{
 		"name":  name,
 		"value": value,
+	}
+	if err := checkMutationGuard(ctx, fmt.Sprintf("create variable %s on %s/%s", name, owner, repo)); err != nil {
+		return err
 	}
 	resp2, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/actions/variables", owner, repo), createPayload)
 	if err != nil {
@@ -3184,11 +3281,17 @@ func (c *LiveClient) CreateIssue(ctx context.Context, owner, repo, title, body s
 	if len(labels) > 0 {
 		payload["labels"] = labels
 	}
+	if err := checkMutationGuard(ctx, fmt.Sprintf("create issue on %s/%s", owner, repo)); err != nil {
+		return nil, err
+	}
 	resp, err := c.post(ctx, path, payload)
 	if err != nil {
 		var apiErr *APIError
 		if len(labels) == 0 || !errors.As(err, &apiErr) || !isValidationErrorForField(apiErr, "labels") {
 			return nil, fmt.Errorf("create issue: %w", err)
+		}
+		if err := checkMutationGuard(ctx, fmt.Sprintf("create issue without labels on %s/%s", owner, repo)); err != nil {
+			return nil, err
 		}
 		resp, err = c.post(ctx, path, map[string]any{"title": title, "body": body})
 		if err != nil {
@@ -3257,16 +3360,20 @@ func (c *LiveClient) GetIssue(ctx context.Context, owner, repo string, number in
 		Labels  []struct {
 			Name string `json:"name"`
 		} `json:"labels"`
+		State       string `json:"state"`
+		StateReason string `json:"state_reason"`
 	}
 	if err := decodeJSON(resp, &result); err != nil {
 		return nil, fmt.Errorf("decode issue #%d: %w", number, err)
 	}
 	return &forge.Issue{
-		Number: result.Number,
-		Title:  result.Title,
-		Body:   result.Body,
-		URL:    result.HTMLURL,
-		Labels: labelNames(result.Labels),
+		Number:      result.Number,
+		Title:       result.Title,
+		Body:        result.Body,
+		URL:         result.HTMLURL,
+		Labels:      labelNames(result.Labels),
+		State:       result.State,
+		StateReason: result.StateReason,
 	}, nil
 }
 
@@ -3422,6 +3529,9 @@ func (c *LiveClient) GetIssueComment(ctx context.Context, owner, repo string, co
 // CreateIssueComment creates a new comment on an issue or pull request.
 func (c *LiveClient) CreateIssueComment(ctx context.Context, owner, repo string, number int, body string) (*forge.IssueComment, error) {
 	payload := map[string]string{"body": body}
+	if err := checkMutationGuard(ctx, fmt.Sprintf("create comment on %s/%s#%d", owner, repo, number)); err != nil {
+		return nil, err
+	}
 	resp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/issues/%d/comments", owner, repo, number), payload)
 	if err != nil {
 		return nil, fmt.Errorf("create issue comment on #%d: %w", number, err)
@@ -3848,8 +3958,13 @@ func (c *LiveClient) ListPullRequestReviewThreads(ctx context.Context, owner, re
 						id
 						isResolved
 						path
+						diffSide
 						line
+						startDiffSide
+						startLine
 						originalLine
+						originalStartLine
+						isOutdated
 						resolvedBy { login __typename }
 						comments(first: 100) {
 							pageInfo { hasNextPage }
@@ -3866,12 +3981,17 @@ func (c *LiveClient) ListPullRequestReviewThreads(ctx context.Context, owner, re
 	}`
 
 	type gqlThread struct {
-		ID           string `json:"id"`
-		IsResolved   bool   `json:"isResolved"`
-		Path         string `json:"path"`
-		Line         *int   `json:"line"`
-		OriginalLine *int   `json:"originalLine"`
-		ResolvedBy   *struct {
+		ID                string  `json:"id"`
+		IsResolved        bool    `json:"isResolved"`
+		Path              string  `json:"path"`
+		DiffSide          string  `json:"diffSide"`
+		Line              *int    `json:"line"`
+		StartDiffSide     *string `json:"startDiffSide"`
+		StartLine         *int    `json:"startLine"`
+		OriginalLine      *int    `json:"originalLine"`
+		OriginalStartLine *int    `json:"originalStartLine"`
+		IsOutdated        bool    `json:"isOutdated"`
+		ResolvedBy        *struct {
 			Login string `json:"login"`
 			Type  string `json:"__typename"`
 		} `json:"resolvedBy"`
@@ -3922,7 +4042,7 @@ func (c *LiveClient) ListPullRequestReviewThreads(ctx context.Context, owner, re
 		if cached, ok := roleCache[login]; ok {
 			return cached.role, cached.verified
 		}
-		permission, err := c.GetCollaboratorPermission(ctx, owner, repo, login)
+		perm, err := c.fetchCollaboratorPermission(ctx, owner, repo, login)
 		if err != nil {
 			verified := forge.IsNotFound(err)
 			roleCache[login] = struct {
@@ -3931,12 +4051,18 @@ func (c *LiveClient) ListPullRequestReviewThreads(ctx context.Context, owner, re
 			}{normevent.RoleNone, verified}
 			return normevent.RoleNone, verified
 		}
-		role := normevent.MapGitHubPermission(permission)
+		// A successful response is verified only when it authoritatively
+		// establishes the role; unnormalizable data stays RoleNone unverified.
+		permission, verified := perm.normalizedRole()
+		role := normevent.RoleNone
+		if verified {
+			role = normevent.MapGitHubPermission(permission)
+		}
 		roleCache[login] = struct {
 			role     normevent.ActorRole
 			verified bool
-		}{role, true}
-		return role, true
+		}{role, verified}
+		return role, verified
 	}
 	for page := 1; page <= 20; page++ {
 		variables := map[string]any{
@@ -3964,9 +4090,28 @@ func (c *LiveClient) ListPullRequestReviewThreads(ctx context.Context, owner, re
 				ResolvedByRole:    normevent.RoleNone,
 				IsResolved:        thread.IsResolved,
 				Path:              thread.Path,
+				Side:              githubDiffSide(thread.DiffSide),
 				Line:              thread.Line,
+				StartLine:         thread.StartLine,
 				OriginalLine:      thread.OriginalLine,
+				OriginalStartLine: thread.OriginalStartLine,
+				IsOutdated:        &thread.IsOutdated,
 				CommentsTruncated: thread.Comments.PageInfo.HasNextPage,
+			}
+			// Outdated multi-line threads have a null startLine but may still
+			// report startDiffSide and originalStartLine, so do not gate on
+			// startLine.
+			if thread.StartDiffSide != nil {
+				converted.StartSide = githubDiffSide(*thread.StartDiffSide)
+			}
+			// GitHub reports the current line on one side only.
+			if converted.Side != nil && thread.Line != nil {
+				line := *thread.Line
+				if *converted.Side == forge.DiffSideLeft {
+					converted.OldLine = &line
+				} else {
+					converted.NewLine = &line
+				}
 			}
 			if thread.ResolvedBy != nil {
 				converted.ResolvedBy = thread.ResolvedBy.Login
@@ -4000,6 +4145,21 @@ func (c *LiveClient) ListPullRequestReviewThreads(ctx context.Context, owner, re
 		}
 	}
 	return result, nil
+}
+
+// githubDiffSide maps GitHub's DiffSide enum (LEFT, RIGHT) to the normalized
+// forge.DiffSide. Unknown or empty values map to nil.
+func githubDiffSide(side string) *forge.DiffSide {
+	var normalized forge.DiffSide
+	switch side {
+	case "LEFT":
+		normalized = forge.DiffSideLeft
+	case "RIGHT":
+		normalized = forge.DiffSideRight
+	default:
+		return nil
+	}
+	return &normalized
 }
 
 // DismissPullRequestReview dismisses a review, changing its state to DISMISSED.
@@ -4532,20 +4692,30 @@ func (c *LiveClient) GetAppClientID(ctx context.Context, slug string) (string, e
 }
 
 func (c *LiveClient) GetCollaboratorPermission(ctx context.Context, owner, repo, username string) (string, error) {
-	path := fmt.Sprintf("/repos/%s/%s/collaborators/%s/permission",
-		url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(username))
-	resp, err := c.get(ctx, path)
+	perm, err := c.fetchCollaboratorPermission(ctx, owner, repo, username)
 	if err != nil {
-		return "", fmt.Errorf("get collaborator permission for %s: %w", username, err)
-	}
-	var perm collaboratorPermission
-	if err := decodeJSON(resp, &perm); err != nil {
-		return "", fmt.Errorf("decode collaborator permission for %s: %w", username, err)
+		return "", err
 	}
 	if perm.RoleName == "" {
 		return "", fmt.Errorf("%w: no permission for %s", forge.ErrNotFound, username)
 	}
 	return perm.baseRole(), nil
+}
+
+// fetchCollaboratorPermission returns the decoded collaborator permission
+// response without interpreting it.
+func (c *LiveClient) fetchCollaboratorPermission(ctx context.Context, owner, repo, username string) (collaboratorPermission, error) {
+	path := fmt.Sprintf("/repos/%s/%s/collaborators/%s/permission",
+		url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(username))
+	resp, err := c.get(ctx, path)
+	if err != nil {
+		return collaboratorPermission{}, fmt.Errorf("get collaborator permission for %s: %w", username, err)
+	}
+	var perm collaboratorPermission
+	if err := decodeJSON(resp, &perm); err != nil {
+		return collaboratorPermission{}, fmt.Errorf("decode collaborator permission for %s: %w", username, err)
+	}
+	return perm, nil
 }
 
 // collaboratorPermission is the subset of GitHub's collaborator permission
@@ -4569,10 +4739,31 @@ type collaboratorPermission struct {
 // legacy permission field, else "none". Keep in sync with has_repo_permission
 // in reusable-dispatch.yml.
 func (p collaboratorPermission) baseRole() string {
+	role, _ := p.normalizedRole()
+	return role
+}
+
+// normalizedRole returns baseRole plus whether the response authoritatively
+// establishes that role. Built-in role names and custom role names that
+// normalize to a real role through effective flags or the legacy permission
+// are authoritative. "none" is authoritative only when GitHub explicitly
+// reports role_name "none" with no conflicting legacy permission; a custom
+// role whose data cannot be normalized, or a missing role_name, is not.
+func (p collaboratorPermission) normalizedRole() (string, bool) {
 	switch p.RoleName {
 	case "admin", "maintain", "write", "triage", "read":
-		return p.RoleName
+		return p.RoleName, true
 	}
+	role := p.effectiveRole()
+	if role != "none" {
+		return role, p.RoleName != "" && p.RoleName != "none"
+	}
+	return role, p.RoleName == "none" && (p.Permission == "" || p.Permission == "none")
+}
+
+// effectiveRole resolves a non-built-in role name from GitHub's effective
+// permission flags when present, otherwise from the legacy permission field.
+func (p collaboratorPermission) effectiveRole() string {
 	if f := p.User.Permissions; f != nil {
 		switch {
 		case f.Admin:
@@ -4863,11 +5054,6 @@ func (c *LiveClient) CreatePipelineWithInputs(_ context.Context, _, _, _ string,
 // GetPipelineSchedule is not supported on GitHub.
 func (c *LiveClient) GetPipelineSchedule(_ context.Context, _, _ string, _ int64) (*forge.PipelineSchedule, error) {
 	return nil, forge.ErrNotSupported
-}
-
-// DeletePipelineScheduleVariable is not supported on GitHub.
-func (c *LiveClient) DeletePipelineScheduleVariable(_ context.Context, _, _ string, _ int64, _ string) error {
-	return forge.ErrNotSupported
 }
 
 // CreatePipelineSchedule is not supported on GitHub.

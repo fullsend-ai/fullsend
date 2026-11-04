@@ -2,6 +2,7 @@ package scaffold
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -100,6 +101,7 @@ func CollectGitLabPerRepoInstallFiles(agentRunnerTags, controlRunnerTags []strin
 	controlTagYAML := FormatRunnerTags(controlRunnerTags)
 	versionMarker := FormatVersionMarker(upstreamRef, upstreamTag)
 	fullsendVersion := ResolveFullsendVersion(upstreamRef, upstreamTag)
+	runnerImageTag := ResolveRunnerImageTag(upstreamRef, upstreamTag)
 	var files InstallFiles
 	err := WalkGitLabPerRepo(func(path string, content []byte) error {
 		if path == ".fullsend/config.yaml" || path == ".gitignore" || path == ".gitlab-ci.yml" {
@@ -108,6 +110,7 @@ func CollectGitLabPerRepoInstallFiles(agentRunnerTags, controlRunnerTags []strin
 		rendered := strings.ReplaceAll(string(content), "__AGENT_RUNNER_TAGS__", agentTagYAML)
 		rendered = strings.ReplaceAll(rendered, "__CONTROL_RUNNER_TAGS__", controlTagYAML)
 		rendered = strings.ReplaceAll(rendered, "__FULLSEND_VERSION__", fullsendVersion)
+		rendered = RenderRunnerImageTag(rendered, runnerImageTag)
 		// Embed a version marker in the pipeline wrapper so that
 		// extractWorkflowRef (via glWorkflowRefPattern) can detect
 		// the installed version for status and upgrade operations.
@@ -188,4 +191,77 @@ func ResolveFullsendVersion(upstreamRef, upstreamTag string) string {
 		return upstreamRef
 	}
 	return "latest"
+}
+
+// RunnerImageRepository is the image the GitLab CI templates run their
+// poll, dispatcher, and agent jobs in. Only Fullsend's runner-image
+// workflow publishes to it.
+const RunnerImageRepository = "ghcr.io/fullsend-ai/fullsend-runner"
+
+// Runner image tags that are not release versions. RunnerImageLatestTag
+// is published only for non-prerelease release tags, so it tracks
+// releases. RunnerImageDevTag moves on every main push that changes the
+// runner image and is not supported for production.
+const (
+	RunnerImageLatestTag = "latest"
+	RunnerImageDevTag    = "dev"
+)
+
+// runnerImageTagPlaceholder is replaced with the resolved runner image
+// tag in the GitLab CI templates (see RenderRunnerImageTag).
+const runnerImageTagPlaceholder = "__FULLSEND_RUNNER_IMAGE_TAG__"
+
+// legacyRunnerImageRef is the image reference GitLab templates hardcoded
+// before the tag was rendered from fullsend_ref (#8865). Templates fetched
+// from a ref that predates the placeholder still carry it.
+const legacyRunnerImageRef = RunnerImageRepository + ":" + RunnerImageDevTag
+
+// runnerReleaseRefPattern matches a Fullsend release ref (vX.Y.Z with an
+// optional prerelease suffix) and captures the runner image tag, which is
+// the version without the leading v. It mirrors job_image_release_version
+// in hack/gitlab-runner-vm/executor/gateway.sh.
+var runnerReleaseRefPattern = regexp.MustCompile(`^v([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?)$`)
+
+// ResolveRunnerImageTag returns the fullsend-runner image tag the GitLab CI
+// templates run, derived from the same inputs as ResolveFullsendVersion so
+// the image follows the pinned CLI:
+//
+//   - a release ref or tag (vX.Y.Z) selects the release image X.Y.Z;
+//   - no ref at all (a dev build with no fullsend_ref, which installs the
+//     latest release CLI) selects "latest", which tracks releases;
+//   - any other ref (a branch such as main, or an untagged commit SHA)
+//     selects "dev". The runner image is built only for main commits that
+//     touch its inputs, so such a ref cannot map to an image of its own;
+//     pinning one is the explicit opt-in to main's image.
+func ResolveRunnerImageTag(upstreamRef, upstreamTag string) string {
+	for _, ref := range []string{upstreamTag, upstreamRef} {
+		if m := runnerReleaseRefPattern.FindStringSubmatch(ref); m != nil {
+			return m[1]
+		}
+	}
+	if upstreamRef == "" && upstreamTag == "" {
+		return RunnerImageLatestTag
+	}
+	return RunnerImageDevTag
+}
+
+// IsRunnerImageTag reports whether tag is one ResolveRunnerImageTag can
+// return: a release version (X.Y.Z, optionally a prerelease), "latest",
+// or "dev".
+func IsRunnerImageTag(tag string) bool {
+	if tag == RunnerImageLatestTag || tag == RunnerImageDevTag {
+		return true
+	}
+	return runnerReleaseRefPattern.MatchString("v" + tag)
+}
+
+// RenderRunnerImageTag renders tag into the runner image references of a
+// GitLab CI template. Besides the placeholder, it rewrites the legacy
+// hardcoded ":dev" reference so templates fetched from an older pinned
+// ref also run the image matching that ref instead of tracking main.
+func RenderRunnerImageTag(content, tag string) string {
+	return strings.NewReplacer(
+		RunnerImageRepository+":"+runnerImageTagPlaceholder, RunnerImageRepository+":"+tag,
+		legacyRunnerImageRef, RunnerImageRepository+":"+tag,
+	).Replace(content)
 }

@@ -333,7 +333,7 @@ func printNextSteps(opts agentnew.Options, f agentNewFlags, printer *ui.Printer)
 	printer.Raw(fmt.Sprintf("  2. Test locally, printing the result instead of commenting:\n"+
 		"       %s=1 fullsend run %s%s \\\n         --target-repo . --env-file .env.local\n",
 		agentnew.DryRunEnvVar(opts.Name), opts.Name, fullsendDirArg(f.fullsendDir)))
-	printer.Raw("     .env.local needs GITHUB_ISSUE_URL, ISSUE_NUMBER, REPO_FULL_NAME,\n")
+	printer.Raw("     .env.local needs FULLSEND_WORK_ITEM_URL, ISSUE_NUMBER, REPO_FULL_NAME,\n")
 	switch {
 	case opts.UsesGateway():
 		printer.Raw("     and GH_TOKEN. The model goes through the inference.gateway block in\n")

@@ -138,6 +138,28 @@ func TestGeneratedHarnessKeepsGHTokenOutOfSandbox(t *testing.T) {
 	}
 }
 
+// TestGeneratedHarnessUsesWorkItemURL pins the forge-agnostic work item URL
+// variable in both env maps. The generated prompt deliberately does not fetch
+// by URL, but the post-script still needs it.
+func TestGeneratedHarnessUsesWorkItemURL(t *testing.T) {
+	files, err := Render(testOptions("lint-docs", "triage"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	writeTree(t, dir, files)
+	h, err := harness.Load(filepath.Join(dir, "harness", "lint-docs.yaml"))
+	if err != nil {
+		t.Fatalf("generated harness does not load: %v", err)
+	}
+	if got := h.Env.Runner["ISSUE_URL"]; got != "${FULLSEND_WORK_ITEM_URL}" {
+		t.Errorf("env.runner ISSUE_URL = %q, want ${FULLSEND_WORK_ITEM_URL}", got)
+	}
+	if got := h.Env.Sandbox["ISSUE_URL"]; got != "${FULLSEND_WORK_ITEM_URL}" {
+		t.Errorf("env.sandbox ISSUE_URL = %q, want ${FULLSEND_WORK_ITEM_URL}", got)
+	}
+}
+
 // TestGeneratedHarnessHasNoDeprecatedShapes pins decision 6: no forge: block
 // (deprecated by ADR 0088) and no runner_env (deprecated by ADR 0055). Lint
 // would warn, and a generator must never emit a shape the repo has deprecated.

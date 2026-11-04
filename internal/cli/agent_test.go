@@ -2135,6 +2135,17 @@ func TestRunAgentSetCmd_SubagentFlags(t *testing.T) {
 	assert.Nil(t, review.Subagents["correctness"])
 }
 
+func TestRunAgentList_TriggerOnlyEntry(t *testing.T) {
+	dir := t.TempDir()
+	writePerRepoConfig(t, dir, `agents:
+  - name: review
+    trigger: event.transition.kind == "comment_added"
+`)
+	var buf strings.Builder
+	require.NoError(t, runAgentList(dir, ui.New(&buf)))
+	assert.Contains(t, buf.String(), "(built-in)  [trigger]")
+}
+
 func TestRunAgentList_BuiltInAndSettings(t *testing.T) {
 	dir := t.TempDir()
 	writePerRepoConfig(t, dir, `agents:

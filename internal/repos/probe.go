@@ -87,12 +87,7 @@ func ProbeComponents(ctx context.Context, client forge.Client, owner, repo, forg
 func ProbeComponentsForAuth(ctx context.Context, client forge.Client, owner, repo, forgeName, auth string, fc ForgeConfig, expectedVarValues map[string]string) ([]ComponentStatus, error) {
 	var results []ComponentStatus
 
-	// Workflow presence is the current carrier (WorkflowPaths). GitLab
-	// still reads a leftover dispatch stub for the version ref so repos
-	// enrolled before #7707 keep reporting the installed version until
-	// converge writes the marker onto the pipeline wrapper and deletes
-	// the stub. Presence stays false when only the stub exists, so the
-	// missing wrapper is repaired.
+	// Workflow presence is the current carrier (WorkflowPaths).
 	content, _, carrierPresent, err := readWorkflowMarker(ctx, client, owner, repo, fc)
 	if err != nil {
 		return nil, fmt.Errorf("checking workflow file: %w", err)
@@ -205,11 +200,12 @@ func ProbeComponentsForAuth(ctx context.Context, client forge.Client, owner, rep
 		// Only report drift when the variable is present — these
 		// are optional, so absence is not a problem (the repo may
 		// have been installed without the corresponding flag).
-		// FULLSEND_GCP_REGION is the exception: a non-empty expected
-		// value means the effective configuration declares
-		// inference.region, so a missing variable is drift that
+		// FULLSEND_GCP_REGION and FULLSEND_GCP_SERVICE_ACCOUNT are the
+		// exceptions: a non-empty expected value means the effective
+		// configuration declares inference.region or
+		// inference.service_account, so a missing variable is drift that
 		// convergence repairs and status reports.
-		if !exists && varName == forge.VarGCPRegion {
+		if !exists && (varName == forge.VarGCPRegion || varName == forge.VarGCPServiceAccount) {
 			results = append(results, ComponentStatus{
 				Name:     "var:" + varName,
 				Present:  false,

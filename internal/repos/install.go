@@ -45,6 +45,16 @@ type InstallConfig struct {
 	InferenceProject string
 	InferenceRegion  string
 
+	// InferenceWIFAudience is the GitLab agent job's FULLSEND_ID_TOKEN
+	// audience (config.inference.wif_audience). Empty keeps the shipped
+	// aud "fullsend". GitLab only; validated by applyEffectiveInfrastructure.
+	InferenceWIFAudience string
+
+	// InferenceServiceAccount is the service account email the GitLab
+	// agent job impersonates (config.inference.service_account), written
+	// as FULLSEND_GCP_SERVICE_ACCOUNT. Empty writes no variable. GitLab only.
+	InferenceServiceAccount string
+
 	// InferenceAuth is the repository's effective inference.auth
 	// (InferenceAuthVertexWIF, InferenceAuthOpenAIAPIKey or
 	// InferenceAuthOpenAIWIF). It selects
@@ -183,17 +193,6 @@ type InstallResult struct {
 	// (from InstallConfig) or newly provisioned.
 	WIFProvider string
 
-	// GitLabTypedDispatch reports whether the GitLab wrapper queued for
-	// commit (the pending scaffold files, not a live re-read) uses the
-	// pipeline-input dispatch contract rather than the legacy
-	// pipeline-variable one. Only meaningful for ForgeGitLab installs.
-	// Callers that need to act on the install's dispatch transport (e.g.
-	// post-install schedule creation) must use this instead of re-reading
-	// the default branch: that commit may still be an unmerged upgrade MR,
-	// in which case a live read would see the prior (or absent) wrapper
-	// and misclassify a pending typed installation as legacy.
-	GitLabTypedDispatch bool
-
 	// ScaffoldFiles are the files delivered to the repository. Delivery can
 	// open an unmerged pull/merge request instead of landing on the default
 	// branch, so callers must not treat them as live (see
@@ -303,6 +302,9 @@ func Install(ctx context.Context, cfg InstallConfig,
 	if cfg.InferenceRegion != "" && !IsValidGCPRegion(cfg.InferenceRegion) {
 		return result, fmt.Errorf("invalid GCP region %q", cfg.InferenceRegion)
 	}
+	if err := validateExistingWIFOptionFormats(cfg.InferenceWIFAudience, cfg.InferenceServiceAccount); err != nil {
+		return result, err
+	}
 
 	// Validate WIF provider when Vertex inference secrets will be written.
 	if !cfg.ReuseSecrets && cfg.InferenceAuth != InferenceAuthOpenAIAPIKey && cfg.InferenceProject != "" {
@@ -326,8 +328,8 @@ func Install(ctx context.Context, cfg InstallConfig,
 	// static scaffold skips .gitlab-ci.yml; we generate it dynamically
 	// by reading the existing file and merging fullsend entries.
 	//
-	// When the existing file already contains all fullsend entries,
-	// skip the write to avoid unnecessary YAML formatting churn.
+	// When the merge leaves the existing file unchanged, skip the write
+	// to avoid unnecessary YAML formatting churn.
 	if cfg.Forge == ForgeGitLab {
 		existing, err := client.GetFileContent(ctx, cfg.Owner, cfg.Repo, ".gitlab-ci.yml")
 		if err != nil && !forge.IsNotFound(err) {
@@ -337,49 +339,31 @@ func Install(ctx context.Context, cfg InstallConfig,
 		if wrapperErr != nil {
 			return result, fmt.Errorf("reading effective GitLab wrapper: %w", wrapperErr)
 		}
-		result.GitLabTypedDispatch = gitlabWrapperHasDispatchInputs(wrapper)
-		if result.GitLabTypedDispatch {
-			if err := validateGitLabTypedContract(wrapper); err != nil {
-				return result, err
-			}
-			// Require the live restriction before delivering runnable jobs.
-			// Neither a planned update nor an error after delivery closes
-			// the unsafe interval. Do not strand a legacy poller by changing
-			// its setting or schedules before compatible templates land.
-			if err := requireGitLabRestrictionBeforeDelivery(ctx, client, cfg.Owner, cfg.Repo); err != nil {
-				return result, err
-			}
-			if err := requireGitLabPipelineVariableRestriction(ctx, client, cfg.Owner, cfg.Repo, true); err != nil {
-				return result, err
-			}
-		} else if err := requireCompleteGitLabDispatchContract(wrapper); err != nil {
+		// Only the typed pipeline-input contract can be delivered; a
+		// legacy variable-based wrapper (e.g. from an old fullsend_ref
+		// pin) is refused before any write.
+		if err := requireTypedGitLabWrapper(wrapper); err != nil {
 			return result, err
-		} else if gitlabWrapperHasDispatchInputs(existing) {
-			// Forced typed-to-legacy transition: the committed root
-			// already carries the typed spec:inputs header and
-			// include:inputs forwarding map from a previous typed
-			// install, but the wrapper this install would deliver is
-			// legacy and declares none of those inputs. The merge below
-			// is only invoked when HasFullsendEntries(existing) is false
-			// or the wrapper is typed, so it would never touch (or
-			// revert) that stale root contract here — delivering the
-			// legacy wrapper alongside it would leave an invalid include
-			// and restriction/schedule state incompatible with legacy
-			// dispatch. Refuse rather than commit that broken mix.
-			return result, fmt.Errorf("refusing GitLab typed-to-legacy transition: the installed root still forwards the typed pipeline-input contract, which the legacy wrapper does not declare; manually roll back the root contract before reverting to pipeline-variable dispatch")
 		}
-		if !HasFullsendEntries(existing) || gitlabWrapperHasDispatchInputs(wrapper) {
-			mergedRoot, mergeErr := mergeGitLabCIWithWrapper(existing, wrapper)
-			if mergeErr != nil {
-				return result, fmt.Errorf("merging .gitlab-ci.yml: %w", mergeErr)
-			}
-			if !bytes.Equal(existing, mergedRoot) {
-				files = append(files, forge.TreeFile{
-					Path:    ".gitlab-ci.yml",
-					Content: mergedRoot,
-					Mode:    "100644",
-				})
-			}
+		// Require the live restriction before delivering runnable jobs.
+		// Neither a planned update nor an error after delivery closes
+		// the unsafe interval.
+		if err := requireGitLabRestrictionBeforeDelivery(ctx, client, cfg.Owner, cfg.Repo); err != nil {
+			return result, err
+		}
+		if err := requireGitLabPipelineVariableRestriction(ctx, client, cfg.Owner, cfg.Repo, true); err != nil {
+			return result, err
+		}
+		mergedRoot, mergeErr := mergeGitLabCIWithWrapper(existing, wrapper)
+		if mergeErr != nil {
+			return result, fmt.Errorf("merging .gitlab-ci.yml: %w", mergeErr)
+		}
+		if !bytes.Equal(existing, mergedRoot) {
+			files = append(files, forge.TreeFile{
+				Path:    ".gitlab-ci.yml",
+				Content: mergedRoot,
+				Mode:    "100644",
+			})
 		}
 		// Step 5b creates the poll-state branches; refuse before any
 		// write if the project's push rule would reject their names.
@@ -405,20 +389,13 @@ func Install(ctx context.Context, cfg InstallConfig,
 	progress(repoFullName, "vars", fmt.Sprintf("Set %d repository variables", len(repoVars)))
 
 	// Step 5b: GitLab poll-state branches. Create both HMAC-signed
-	// state documents now, seeded from any leftover legacy CI/CD
-	// vars, then delete those vars so they are not re-seeded.
+	// state documents now with an empty baseline.
 	if cfg.Forge == ForgeGitLab {
 		progress(repoFullName, "poll-state", "Seeding poll-state branches")
 		if err := seedGitLabPollState(ctx, client, cfg.Owner, cfg.Repo); err != nil {
 			return result, err
 		}
 		progress(repoFullName, "poll-state", "Poll-state branches seeded")
-		progress(repoFullName, "poll-state", "Retiring legacy poll-state variables")
-		for _, a := range retireGitLabLegacyVars(ctx, client, cfg.Owner, cfg.Repo, false, progress) {
-			if a.Action == "error" {
-				return result, errors.New(a.Detail)
-			}
-		}
 	}
 
 	// Step 6: Write repository secrets. Skipped entirely when reusing the
@@ -453,9 +430,8 @@ func Install(ctx context.Context, cfg InstallConfig,
 	result.ScaffoldFiles = files
 
 	// Step 7b: Now that scaffold delivery has succeeded, perform the
-	// typed-dispatch activation validated (but not applied) in step 4b:
-	// migrate managed schedule variables under the already-required
-	// restriction. commitScaffold can fall back to a merge
+	// typed-dispatch activation validated (but not applied) in step 4b
+	// against the committed templates. commitScaffold can fall back to a merge
 	// request instead of landing a direct commit (see ScaffoldCommitFunc),
 	// so activateGitLabTypedDispatch independently re-reads the wrapper
 	// and only activates once it actually observes the typed contract —
@@ -520,6 +496,10 @@ func driftInstallConfig(resolved ResolvedConfig, dcfg DriftConfig) InstallConfig
 		ReviewAppClientID: dcfg.ReviewAppClientID,
 		AgentRunnerTags:   dcfg.AgentRunnerTags,
 		ControlRunnerTags: dcfg.ControlRunnerTags,
+		// The configured token audience is rendered into the GitLab agent
+		// template, so content drift compares against the rendered file.
+		InferenceWIFAudience:    resolved.DeclaredWIFAudience,
+		InferenceServiceAccount: resolved.DeclaredServiceAccount,
 	}
 }
 
@@ -557,8 +537,8 @@ func ExpectedScaffoldContent(ctx context.Context, resolved ResolvedConfig, dcfg 
 		// like FULLSEND_VERSION match what installation/convergence
 		// actually render regardless of whether the manifest happened
 		// to record the SHA or the tag.
-		installCfg.UpstreamRef = dcfg.UpstreamRef
-		installCfg.UpstreamTag = dcfg.UpstreamTag
+		installCfg.UpstreamRef, installCfg.UpstreamTag = matchingReleaseRefTag(
+			resolved.FullsendRef, dcfg.UpstreamRef, dcfg.UpstreamTag)
 	}
 
 	// When the manifest pins a fullsend_ref, fetch remote scaffold
@@ -617,7 +597,7 @@ func BuildScaffoldFiles(cfg InstallConfig) ([]forge.TreeFile, error) {
 				// in `github setup --config`), rather than NewPerRepoConfig's
 				// full defaults. Layered accessors prefer the overlay over the
 				// base, so materializing default roles/allowed_remote_resources/
-				// create_issues here would silently shadow the preset's values.
+				// tracking here would silently shadow the preset's values.
 				// cfg.Roles is only non-empty when the caller explicitly
 				// requested roles; an unset Roles here lets the preset (or its own fallback defaults)
 				// take effect through the overlay -> base -> code-default chain.
@@ -633,7 +613,7 @@ func BuildScaffoldFiles(cfg InstallConfig) ([]forge.TreeFile, error) {
 				generated := config.NewPerRepoConfig(cfg.Roles, cfg.Owner+"/"+cfg.Repo)
 				if cfg.Forge == ForgeGitLab {
 					// GitHub upstream names are not destinations on the GitLab host.
-					generated.IssueCreationConfig().AllowTargets = config.AllowTargets{}
+					generated.SetIssueTracking(config.DefaultIssueTracking(config.TrackingProviderGitLab))
 				}
 				if cfg.Runtime != "" {
 					generated.SetRuntime(cfg.Runtime)
@@ -674,6 +654,15 @@ func BuildScaffoldFiles(cfg InstallConfig) ([]forge.TreeFile, error) {
 			Content: f.Content,
 			Mode:    f.Mode,
 		})
+	}
+	if cfg.Forge == ForgeGitLab {
+		// Applied after collection so embedded and pinned (prebuilt)
+		// templates both carry the configured audience and are checked
+		// for service-account support.
+		files, err = applyGitLabExistingWIFTemplates(files, cfg.InferenceWIFAudience, cfg.InferenceServiceAccount)
+		if err != nil {
+			return nil, fmt.Errorf("applying GitLab existing WIF provider options: %w", err)
+		}
 	}
 	if !cfg.ManagedConfigAdoptionRequired {
 		files = append(files, forge.TreeFile{
@@ -729,6 +718,9 @@ func managedVarsForForge(cfg InstallConfig, mintURL string) ([]ManagedVar, error
 		var vars []ManagedVar
 		if cfg.InferenceRegion != "" {
 			vars = append(vars, ManagedVar{Name: forge.VarGCPRegion, Value: cfg.InferenceRegion})
+		}
+		if cfg.InferenceServiceAccount != "" {
+			vars = append(vars, ManagedVar{Name: forge.VarGCPServiceAccount, Value: cfg.InferenceServiceAccount})
 		}
 		return vars, nil
 	default:
@@ -806,9 +798,9 @@ var requiredSecrets = []string{forge.SecretGCPProjectID, forge.SecretGCPWIFProvi
 // gitlabRetiredLegacyVars is the set of GitLab poller CI/CD variables
 // superseded by HMAC-signed state.json on fullsend-poll-state-slash
 // and fullsend-poll-state-events. Distinct from the active managed
-// set: install does not seed them, CheckOrphanVars treats them as
-// known-retired (no spurious warnings), and converge migrate-then-
-// deletes any that are still present.
+// set: install and converge neither seed, read, nor delete them, and
+// CheckOrphanVars treats them as known-retired (no spurious warnings).
+// Uninstall still deletes any leftovers (gitlabUninstallVars).
 var gitlabRetiredLegacyVars = []string{
 	forge.VarLastPollAtFast, forge.VarLastPollAtFull, forge.VarLabelState,
 	forge.VarDispatchedKeysFast, forge.VarDispatchedKeysFull,
@@ -826,9 +818,8 @@ var gitlabPollStateBranches = []string{
 }
 
 // seedGitLabPollState provisions FULLSEND_DISPATCH_SECRET if missing
-// and creates both poll-state branches with HMAC-signed state.json,
-// migrating any present legacy CI/CD variables. Idempotent: existing
-// signed documents are left untouched.
+// and creates both poll-state branches with an empty HMAC-signed
+// state.json. Idempotent: existing signed documents are left untouched.
 func seedGitLabPollState(ctx context.Context, client forge.Client, owner, repo string) error {
 	secret, _, err := poll.EnsureDispatchSecret(ctx, client, owner, repo)
 	if err != nil {
@@ -838,73 +829,6 @@ func seedGitLabPollState(ctx context.Context, client forge.Client, owner, repo s
 		return fmt.Errorf("seeding poll-state branches: %w", err)
 	}
 	return nil
-}
-
-// retireGitLabLegacyVars migrates still-present retired poll-state
-// CI/CD variables into the branch-backed store (if the branches are
-// missing) and then deletes the variables. Idempotent: a repo whose
-// retired vars are already gone is a no-op. Dry-run reports the
-// deletions without writing.
-func retireGitLabLegacyVars(ctx context.Context, client forge.Client, owner, repo string, dryRun bool, progress ProgressFunc) []ComponentAction {
-	repoFullName := owner + "/" + repo
-	vars, err := client.ListRepoVariables(ctx, owner, repo)
-	if err != nil {
-		return []ComponentAction{{
-			Component: "variables",
-			Action:    "error",
-			Detail:    fmt.Sprintf("listing variables to retire legacy poll state: %v", err),
-		}}
-	}
-
-	var present []string
-	for _, name := range gitlabRetiredLegacyVars {
-		if _, ok := vars[name]; ok {
-			present = append(present, name)
-		}
-	}
-	if len(present) == 0 {
-		return nil
-	}
-
-	if dryRun {
-		var actions []ComponentAction
-		for _, name := range present {
-			actions = append(actions, ComponentAction{
-				Component: "var:" + name,
-				Action:    "delete",
-				Detail:    fmt.Sprintf("would migrate then delete retired variable %s", name),
-			})
-			progress(repoFullName, "dry-run", fmt.Sprintf("Would migrate then delete retired variable %s", name))
-		}
-		return actions
-	}
-
-	if err := seedGitLabPollState(ctx, client, owner, repo); err != nil {
-		return []ComponentAction{{
-			Component: "poll-state",
-			Action:    "error",
-			Detail:    fmt.Sprintf("migrating retired poll-state variables into branches: %v", err),
-		}}
-	}
-
-	var actions []ComponentAction
-	for _, name := range present {
-		if err := client.DeleteRepoVariable(ctx, owner, repo, name); err != nil {
-			actions = append(actions, ComponentAction{
-				Component: "var:" + name,
-				Action:    "error",
-				Detail:    fmt.Sprintf("failed to delete retired variable %s: %v", name, err),
-			})
-			continue
-		}
-		actions = append(actions, ComponentAction{
-			Component: "var:" + name,
-			Action:    "delete",
-			Detail:    fmt.Sprintf("migrated then deleted retired variable %s", name),
-		})
-		progress(repoFullName, "sync", fmt.Sprintf("Deleted retired variable %s", name))
-	}
-	return actions
 }
 
 func requiredVarsForForge(forgeName string) []string {
@@ -985,16 +909,35 @@ func obsoleteInferenceSecrets(auth string) []string {
 	}
 }
 
+// obsoleteVariable is a Fullsend-managed inference variable the
+// repository's configuration does not use, with the reason reported for it.
+type obsoleteVariable struct {
+	name   string
+	reason string
+}
+
 // obsoleteInferenceVariables returns the Fullsend-managed inference
-// variables that belong to a method auth did not select. Only Vertex uses
-// FULLSEND_GCP_REGION, so it is obsolete on openai-api-key repositories.
-// Like the obsolete secrets, convergence removes it only after the
-// selected method is established.
-func obsoleteInferenceVariables(auth string) []string {
-	if auth == InferenceAuthOpenAIAPIKey {
-		return []string{forge.VarGCPRegion}
+// variables the repository's effective configuration does not use. Only
+// Vertex uses FULLSEND_GCP_REGION, so it is obsolete on openai-api-key
+// repositories. FULLSEND_GCP_SERVICE_ACCOUNT is obsolete on GitLab whenever
+// inference.service_account does not apply (see applyExistingWIFOptions):
+// a leftover variable would keep the agent job impersonating. Like the
+// obsolete secrets, convergence removes them only after the selected method
+// is established.
+func obsoleteInferenceVariables(cfg ResolvedConfig) []obsoleteVariable {
+	authReason := "inference.auth is " + cfg.InferenceAuth
+	var vars []obsoleteVariable
+	if cfg.InferenceAuth == InferenceAuthOpenAIAPIKey {
+		vars = append(vars, obsoleteVariable{name: forge.VarGCPRegion, reason: authReason})
 	}
-	return nil
+	if cfg.Forge == ForgeGitLab && cfg.DeclaredServiceAccount == "" {
+		reason := "inference.service_account is not declared"
+		if cfg.InferenceAuth != InferenceAuthVertexWIF {
+			reason = authReason
+		}
+		vars = append(vars, obsoleteVariable{name: forge.VarGCPServiceAccount, reason: reason})
+	}
+	return vars
 }
 
 // inferenceRegionForAuth returns region when auth uses Vertex and ""

@@ -21,6 +21,7 @@ type Poller struct {
 	owner             string
 	repo              string
 	botUserID         int
+	analystUserID     int
 	gitlabURL         string
 	opts              Options
 	dispatches        []Dispatch
@@ -41,14 +42,15 @@ func New(client GitLabClient, router dispatch.EventRouter, projectPath string, o
 		gitlabURL = "https://gitlab.com"
 	}
 	return &Poller{
-		client:      client,
-		router:      router,
-		projectPath: projectPath,
-		owner:       owner,
-		repo:        repo,
-		botUserID:   opts.BotUserID,
-		gitlabURL:   strings.TrimRight(gitlabURL, "/"),
-		opts:        opts,
+		client:        client,
+		router:        router,
+		projectPath:   projectPath,
+		owner:         owner,
+		repo:          repo,
+		botUserID:     opts.BotUserID,
+		analystUserID: opts.AnalystUserID,
+		gitlabURL:     strings.TrimRight(gitlabURL, "/"),
+		opts:          opts,
 	}
 }
 
@@ -67,7 +69,7 @@ const maxEventRetries = 3
 //
 // Poll mode is determined by Options.Mode:
 //   - "slash": fast poll — only /fs-* slash commands via the Events API
-//   - "events": full discovery — labels, issue opens, merges, MR opens, closed-unmerged MRs, non-slash notes (filters out /fs-* notes)
+//   - "events": full discovery — labels, issue opens, merges, MR opens, pushes to open MRs, closed-unmerged MRs, non-slash notes (filters out /fs-* notes)
 //   - "": backward compatibility — uses events discovery path but does not filter /fs-* notes
 func (p *Poller) Run(ctx context.Context) error {
 	if p.client == nil {
@@ -393,7 +395,7 @@ func (p *Poller) Run(ctx context.Context) error {
 				continue
 			}
 			allSkipped = false
-			if err := p.dispatch(ctx, p.owner, p.repo, stage, event); err != nil {
+			if err := p.dispatch(ctx, p.owner, p.repo, stage, event, &normalizedEvent); err != nil {
 				log.Printf("dispatch %s for %s failed: %v", stage, eventKey, err)
 				recordEventFailure(&cycleErrs, failedKeys, mirrors, event, &minFailedAt, failedLabelEvents,
 					fmt.Errorf("dispatch %s for %s failed: %w", stage, eventKey, err))

@@ -295,7 +295,7 @@ func TestEnsureGitLabWebhookFastPath_DefersUntilTypedContractCommitted(t *testin
 	}{
 		"legacy wrapper": {func(c webhookFake) {
 			c.FileContents[prefix+fullsendPipelineInclude] = []byte("include:\n  - local: '" + fullsendDispatcherTemplatePath + "'\n")
-		}, "typed pipeline-input contract"},
+		}, "legacy pipeline-variable dispatch contract"},
 		"root without the input contract": {func(c webhookFake) {
 			c.FileContents[prefix+".gitlab-ci.yml"] = []byte(webhookTestRootCI)
 		}, "declares and forwards the pipeline-input contract"},

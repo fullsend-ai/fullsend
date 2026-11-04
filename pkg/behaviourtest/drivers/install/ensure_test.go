@@ -3,6 +3,8 @@ package install
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/e2etest"
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/layers"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install/common"
@@ -34,7 +37,7 @@ func newFakeEnsurer() *fakeEnsurer {
 	return &fakeEnsurer{cache: make(map[string]struct{})}
 }
 
-func (f *fakeEnsurer) EnsureRepo(_ context.Context, org, repoName string) error {
+func (f *fakeEnsurer) EnsureRepo(_ context.Context, org, repoName string, _ ...OwnerCheck) error {
 	key := org + "/" + repoName
 	f.mu.Lock()
 	if _, ok := f.cache[key]; ok {
@@ -52,7 +55,12 @@ func (f *fakeEnsurer) EnsureRepo(_ context.Context, org, repoName string) error 
 	return nil
 }
 
-func (f *fakeEnsurer) DeleteRepo(_ context.Context, org, repoName string) error {
+// stillOwnsSlot and lostSlot are OwnerChecks for a slot repo that is still
+// the lease's and one that was replaced by another holder.
+func stillOwnsSlot(context.Context) (bool, error) { return true, nil }
+func lostSlot(context.Context) (bool, error)      { return false, nil }
+
+func (f *fakeEnsurer) ReleaseRepo(_ context.Context, org, repoName string, _ OwnerCheck) error {
 	key := org + "/" + repoName
 	f.mu.Lock()
 	delete(f.cache, key)
@@ -93,16 +101,16 @@ func TestFakeEnsurer_IndependentRepos(t *testing.T) {
 	assert.Equal(t, int32(2), e.calls.Load())
 }
 
-func TestFakeEnsurer_DeleteRepoClearsCache(t *testing.T) {
+func TestFakeEnsurer_ReleaseRepoClearsCache(t *testing.T) {
 	e := newFakeEnsurer()
 	ctx := context.Background()
 
 	require.NoError(t, e.EnsureRepo(ctx, "org", "test-repo-01"))
-	require.NoError(t, e.DeleteRepo(ctx, "org", "test-repo-01"))
+	require.NoError(t, e.ReleaseRepo(ctx, "org", "test-repo-01", stillOwnsSlot))
 	require.NoError(t, e.EnsureRepo(ctx, "org", "test-repo-01"))
 
 	assert.Equal(t, int32(1), e.deleteCalls.Load())
-	assert.Equal(t, int32(2), e.calls.Load(), "ensure after delete should not hit cache")
+	assert.Equal(t, int32(2), e.calls.Load(), "ensure after release should not hit cache")
 }
 
 // --- repoEnsurer unit tests (caching layer + create logic) ---
@@ -161,7 +169,11 @@ type stubClient struct {
 	// repos (names ending in "-fork"). When false (default), fork
 	// repos return ErrNotFound, preventing fork cleanup from
 	// interfering with source-repo-focused tests.
-	forkExists       bool
+	forkExists bool
+	// forkNotAFork makes an existing "-fork" repo report Fork=false.
+	forkNotAFork bool
+	// forkDescription is the description an existing "-fork" repo reports.
+	forkDescription  string
 	forkDeleteErr    error
 	forkDeleteCalled atomic.Int32
 
@@ -187,7 +199,7 @@ func (s *stubClient) GetRepo(_ context.Context, _, repo string) (*forge.Reposito
 		if !s.forkExists {
 			return nil, forge.ErrNotFound
 		}
-		return &forge.Repository{}, nil
+		return &forge.Repository{Fork: !s.forkNotAFork, Description: s.forkDescription}, nil
 	}
 	return &forge.Repository{}, s.getRepoErr
 }
@@ -329,7 +341,8 @@ func TestEnsurer_CacheKeyIncludesOrg(t *testing.T) {
 	assert.True(t, bExists, "org-b should be cached")
 }
 
-func TestEnsurer_CreatesRepoWhenMissing(t *testing.T) {
+func TestEnsurer_MissingSlotRepoIsNeverCreated(t *testing.T) {
+	speedUpResetRetries(t)
 	sc := &stubClient{
 		getRepoErr: forge.ErrNotFound,
 		installed:  true,
@@ -344,11 +357,13 @@ func TestEnsurer_CreatesRepoWhenMissing(t *testing.T) {
 	}
 
 	err := e.EnsureRepo(context.Background(), "org", "test-repo-05")
-	require.NoError(t, err)
-	assert.Equal(t, int32(1), sc.createRepoCalled.Load())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not visible")
+	assert.Zero(t, sc.createRepoCalled.Load(), "the claim creates slot repos; the ensurer never does")
+	assert.Zero(t, sc.deleteRepoCalled.Load())
 }
 
-func TestEnsurer_DeletesAndRecreatesExistingRepo(t *testing.T) {
+func TestEnsurer_ExistingSlotRepoIsNeverDeletedOrReset(t *testing.T) {
 	speedUpValidateRetries(t)
 	sc := &stubClient{installed: true}
 	e := &repoEnsurer{
@@ -365,7 +380,53 @@ func TestEnsurer_DeletesAndRecreatesExistingRepo(t *testing.T) {
 
 	err := e.EnsureRepo(context.Background(), "org", "test-repo-03")
 	require.NoError(t, err)
-	assert.Equal(t, int32(1), sc.deleteRepoCalled.Load(), "should delete existing repo to reset history")
+	assert.Zero(t, sc.deleteRepoCalled.Load(), "the existing slot repo stays occupied: never deleted")
+	assert.Zero(t, sc.createRepoCalled.Load(), "the existing slot repo stays occupied: never recreated")
+
+	// Releasing the lease does not delete the slot repo either: the
+	// allocator's ownership-checked Release does.
+	require.NoError(t, e.ReleaseRepo(context.Background(), "org", "test-repo-03", stillOwnsSlot))
+	assert.Zero(t, sc.deleteRepoCalled.Load())
+}
+
+func TestEnsurer_ExistingSlotRepoBlockedForCreate_NeverDeleted(t *testing.T) {
+	speedUpValidateRetries(t)
+	// A create on this name would report it already exists: the ensurer
+	// must neither create nor delete-to-recreate it.
+	sc := &stubClient{installed: true, blockedByExistingRepo: true}
+	e := &repoEnsurer{
+		e2eCfg:    e2etest.EnvConfig{MintURL: "https://mint.test"},
+		client:    sc,
+		runCLI:    noopCLI,
+		setupOpts: common.DefaultGitHubSetupOpts(),
+		settle:    noopSettle,
+		logf:      t.Logf,
+		ensured:   make(map[string]struct{}),
+	}
+
+	require.NoError(t, e.EnsureRepo(context.Background(), "org", "test-repo-04"))
+	assert.Zero(t, sc.createRepoCalled.Load())
+	assert.Zero(t, sc.deleteRepoCalled.Load())
+	assert.True(t, sc.blockedByExistingRepo, "the occupied repo is untouched")
+}
+
+func TestEnsurer_DeletesLeftoverForkBeforeInstall(t *testing.T) {
+	speedUpValidateRetries(t)
+	speedUpResetRetries(t)
+	sc := &stubClient{installed: true, forkExists: true}
+	e := &repoEnsurer{
+		e2eCfg:    e2etest.EnvConfig{MintURL: "https://mint.test"},
+		client:    sc,
+		runCLI:    noopCLI,
+		setupOpts: common.DefaultGitHubSetupOpts(),
+		settle:    noopSettle,
+		logf:      t.Logf,
+		ensured:   make(map[string]struct{}),
+	}
+
+	require.NoError(t, e.EnsureRepo(context.Background(), "org", "test-repo-02"))
+	assert.Equal(t, int32(1), sc.forkDeleteCalled.Load(), "a fork left by an earlier holder is removed")
+	assert.Zero(t, sc.deleteRepoCalled.Load(), "the slot repo itself is never deleted")
 }
 
 func TestEnsurer_InstallsWhenValidationFails(t *testing.T) {
@@ -400,12 +461,9 @@ func TestEnsurer_InstallsWhenValidationFails(t *testing.T) {
 	assert.Contains(t, cliCalls[0], "--mint-url")
 }
 
-func TestEnsurer_DoEnsure_RepoMissing_ThenInstalled(t *testing.T) {
+func TestEnsurer_DoEnsure_InstallsThenCaches(t *testing.T) {
 	speedUpValidateRetries(t)
-	sc := &stubClient{
-		getRepoErr: forge.ErrNotFound,
-		installed:  false,
-	}
+	sc := &stubClient{installed: false}
 	var cliCalls [][]string
 	e := &repoEnsurer{
 		e2eCfg: e2etest.EnvConfig{MintURL: "https://mint.test"},
@@ -428,7 +486,7 @@ func TestEnsurer_DoEnsure_RepoMissing_ThenInstalled(t *testing.T) {
 	ctx := context.Background()
 	err := e.EnsureRepo(ctx, "org", "test-repo-new")
 	require.NoError(t, err)
-	assert.Equal(t, int32(1), sc.createRepoCalled.Load(), "repo should be created")
+	assert.Zero(t, sc.createRepoCalled.Load(), "the claim created the repo")
 	require.Len(t, cliCalls, 1)
 	assert.Equal(t, "github", cliCalls[0][0])
 
@@ -536,10 +594,10 @@ func TestEnsurer_WIFProvider_NotHealthy_ProvisionsOnce(t *testing.T) {
 	assert.Contains(t, cliCalls[3], testWIFProvider)
 }
 
-// TestEnsurer_WIFProvider_SurvivesDeleteRepo covers the pool lifecycle
-// after #7398: every lease ends in DeleteRepo, and the next lease of the
+// TestEnsurer_WIFProvider_SurvivesReleaseRepo covers the pool lifecycle
+// after #7398: every lease ends in ReleaseRepo, and the next lease of the
 // same name must reuse the provider without any inference CLI call.
-func TestEnsurer_WIFProvider_SurvivesDeleteRepo(t *testing.T) {
+func TestEnsurer_WIFProvider_SurvivesReleaseRepo(t *testing.T) {
 	speedUpValidateRetries(t)
 	speedUpResetRetries(t)
 	sc := &stubClient{installed: true}
@@ -566,12 +624,10 @@ func TestEnsurer_WIFProvider_SurvivesDeleteRepo(t *testing.T) {
 	require.NoError(t, e.EnsureRepo(ctx, "org", "test-repo-01"))
 	require.Len(t, cliCalls, 2, "first ensure: status, setup")
 
-	require.NoError(t, e.DeleteRepo(ctx, "org", "test-repo-01"))
+	require.NoError(t, e.ReleaseRepo(ctx, "org", "test-repo-01", stillOwnsSlot))
 	cliCalls = nil
-	createsBefore := sc.createRepoCalled.Load()
 
 	require.NoError(t, e.EnsureRepo(ctx, "org", "test-repo-01"))
-	assert.Greater(t, sc.createRepoCalled.Load(), createsBefore, "the repo is still recreated")
 	require.Len(t, cliCalls, 1, "second ensure: setup only, provider reused from cache")
 	assert.Equal(t, []string{"github", "setup"}, cliCalls[0][:2])
 	assert.Contains(t, cliCalls[0], testWIFProvider)
@@ -683,8 +739,9 @@ func TestEnsurer_WIFProvider_CacheRecheckedUnderGate(t *testing.T) {
 }
 
 // TestEnsurer_WIFProvider_SameNameWaiterReusesProvision resolves one name
-// from two goroutines without singleflight: the second caller waits on the
-// gate behind the first provision and must reuse its cached result.
+// from two goroutines without EnsureRepo's singleflight: the second caller
+// waits for the first caller's in-flight provision and poll and must reuse
+// its cached result.
 func TestEnsurer_WIFProvider_SameNameWaiterReusesProvision(t *testing.T) {
 	var provisions atomic.Int32
 	statusStarted := make(chan struct{}, 2)
@@ -854,6 +911,10 @@ func TestEnsurer_WIFProvider_ConcurrentColdProvisionsSerialised(t *testing.T) {
 	}
 
 	const slots = 6
+	for i := range slots {
+		// The claims created the slot repos.
+		sc.repos[fmt.Sprintf("org/test-repo-%02d", i+1)] = true
+	}
 	ctx := context.Background()
 	errs := make([]error, slots)
 	var wg sync.WaitGroup
@@ -1168,14 +1229,19 @@ func TestEnsurer_ProvisionInferenceError_Propagated(t *testing.T) {
 
 func TestEnsurer_ConcurrentEnsureSameRepo(t *testing.T) {
 	sc := &stubClient{
-		getRepoErr:  forge.ErrNotFound,
 		installed:   true,
 		ensureDelay: 50 * time.Millisecond,
 	}
+	var setups atomic.Int32
 	e := &repoEnsurer{
-		e2eCfg:    e2etest.EnvConfig{},
-		client:    sc,
-		runCLI:    noopCLI,
+		e2eCfg: e2etest.EnvConfig{},
+		client: sc,
+		runCLI: func(_, _ string, args ...string) (string, error) {
+			if isGitHubSetupCall(args) {
+				setups.Add(1)
+			}
+			return "", nil
+		},
 		setupOpts: common.DefaultGitHubSetupOpts(),
 		logf:      t.Logf,
 		ensured:   make(map[string]struct{}),
@@ -1199,151 +1265,9 @@ func TestEnsurer_ConcurrentEnsureSameRepo(t *testing.T) {
 		require.NoError(t, err, "goroutine %d failed", i)
 	}
 
-	// singleflight ensures CreateRepo is called exactly once.
-	assert.Equal(t, int32(1), sc.createRepoCalled.Load(),
-		"concurrent callers should only create the repo once")
-}
-
-func TestEnsureRepoExists_CreatesWithAutoInit(t *testing.T) {
-	sc := &stubClient{getRepoErr: forge.ErrNotFound}
-	e := &repoEnsurer{client: sc, logf: t.Logf}
-
-	err := e.ensureRepoExists(context.Background(), "org", "test-repo-01", "org/test-repo-01")
-	require.NoError(t, err)
-	assert.Equal(t, int32(1), sc.createRepoCalled.Load())
-}
-
-func TestEnsureRepoExists_StaleGetRepoStillCreates(t *testing.T) {
-	// GetRepo succeeding after delete is not proof the name is ready
-	// (#7839). Create anyway so a stale cached object cannot skip
-	// recreation and leave a later setup call to 404.
-	sc := &stubClient{}
-	e := &repoEnsurer{client: sc, logf: t.Logf}
-
-	err := e.ensureRepoExists(context.Background(), "org", "repo", "org/repo")
-	require.NoError(t, err)
-	assert.Equal(t, int32(1), sc.createRepoCalled.Load(), "must CreateRepo even when GetRepo succeeds")
-}
-
-func TestEnsureRepoExists_RetriesAlreadyExistsThenSucceeds(t *testing.T) {
-	speedUpResetRetries(t)
-	sc := &stubClient{
-		createRepoErrSeq: []error{forge.ErrAlreadyExists, forge.ErrAlreadyExists, nil},
-	}
-	e := &repoEnsurer{client: sc, logf: t.Logf}
-
-	err := e.ensureRepoExists(context.Background(), "org", "repo", "org/repo")
-	require.NoError(t, err)
-	assert.Equal(t, int32(3), sc.createRepoCalled.Load())
-}
-
-func TestEnsureRepoExists_AlreadyExistsExhausted_Errors(t *testing.T) {
-	speedUpResetRetries(t)
-	sc := &stubClient{createRepoErr: forge.ErrAlreadyExists}
-	e := &repoEnsurer{client: sc, logf: t.Logf}
-
-	err := e.ensureRepoExists(context.Background(), "org", "repo", "org/repo")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "name still taken")
-	assert.Equal(t, int32(resetMaxAttempts), sc.createRepoCalled.Load(),
-		"retry loop must terminate after resetMaxAttempts")
-	assert.Equal(t, int32(resetMaxAttempts-1), sc.deleteRepoCalled.Load(),
-		"a delete must be attempted before every retry (not after the final, exhausted attempt)")
-}
-
-// TestEnsureRepoExists_AlreadyExistsDeletesBlockingRepoThenSucceeds
-// pins the actual fix for #7839: an already-exists error must delete
-// the repo that is blocking creation, not just back off and retry the
-// same failing call. blockedByExistingRepo ties CreateRepo's outcome
-// to whether DeleteRepo was actually invoked, so removing the delete
-// call (a mutation of the fix) makes this test fail rather than pass
-// vacuously.
-func TestEnsureRepoExists_AlreadyExistsDeletesBlockingRepoThenSucceeds(t *testing.T) {
-	speedUpResetRetries(t)
-	sc := &stubClient{blockedByExistingRepo: true}
-	e := &repoEnsurer{client: sc, logf: t.Logf}
-
-	err := e.ensureRepoExists(context.Background(), "org", "repo", "org/repo")
-	require.NoError(t, err)
-	assert.Equal(t, int32(1), sc.deleteRepoCalled.Load(),
-		"must delete the blocking repo, not just back off and retry")
-	assert.Equal(t, int32(2), sc.createRepoCalled.Load(),
-		"create should succeed on the retry after the delete")
-}
-
-// TestEnsureRepoExists_AlreadyExistsDeletesForkToo verifies the
-// already-exists recovery path cleans up a leftover <repo>-fork the
-// same way resetRepo does, so the fork isn't left orphaned pointing at
-// a source repo that is about to be recreated.
-func TestEnsureRepoExists_AlreadyExistsDeletesForkToo(t *testing.T) {
-	speedUpResetRetries(t)
-	sc := &stubClient{
-		blockedByExistingRepo: true,
-		forkExists:            true,
-	}
-	e := &repoEnsurer{client: sc, logf: t.Logf}
-
-	err := e.ensureRepoExists(context.Background(), "org", "repo", "org/repo")
-	require.NoError(t, err)
-	assert.Equal(t, int32(1), sc.forkDeleteCalled.Load(),
-		"leftover fork must be deleted before recreating the source")
-	assert.Equal(t, int32(1), sc.deleteRepoCalled.Load())
-	assert.Equal(t, int32(2), sc.createRepoCalled.Load())
-}
-
-// TestEnsureRepoExists_AlreadyExistsBacksOffEvenWhenGetRepoAlready404s pins
-// the fix for the mirror-image race of #7839: deleteBlockingRepo's
-// awaitDeletion can return immediately when GetRepo already 404s right
-// after DeleteRepo (stubClient's default, non-stale behaviour), yet
-// CreateRepo can keep rejecting the name as taken for a few seconds
-// afterward. Without an explicit backoff in ensureRepoExists itself, the
-// retry loop would fire back-to-back with no delay at all and could
-// exhaust resetMaxAttempts well under the window the retry is meant to
-// cover. blockedByExistingRepo exercises exactly this instant-404 path
-// (staleGetAfterDelete is false), so the only source of elapsed time here
-// is the explicit backoff — a regression to no backoff makes this test
-// fail rather than pass vacuously.
-func TestEnsureRepoExists_AlreadyExistsBacksOffEvenWhenGetRepoAlready404s(t *testing.T) {
-	orig := resetRetryDelay
-	resetRetryDelay = 40 * time.Millisecond
-	t.Cleanup(func() { resetRetryDelay = orig })
-
-	sc := &stubClient{blockedByExistingRepo: true}
-	e := &repoEnsurer{client: sc, logf: t.Logf}
-
-	start := time.Now()
-	err := e.ensureRepoExists(context.Background(), "org", "repo", "org/repo")
-	elapsed := time.Since(start)
-
-	require.NoError(t, err)
-	assert.Equal(t, int32(2), sc.createRepoCalled.Load())
-	assert.GreaterOrEqual(t, elapsed, resetRetryDelay,
-		"already-exists retry must back off even when GetRepo already 404s")
-}
-
-func TestEnsureRepoExists_CreateRepoError(t *testing.T) {
-	sc := &stubClient{createRepoErr: fmt.Errorf("permission denied")}
-	e := &repoEnsurer{client: sc, logf: t.Logf}
-
-	err := e.ensureRepoExists(context.Background(), "org", "repo", "org/repo")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "creating repo")
-	assert.Contains(t, err.Error(), "permission denied")
-	assert.Equal(t, int32(1), sc.createRepoCalled.Load())
-}
-
-func TestEnsureRepoExists_ContextCancellation(t *testing.T) {
-	speedUpResetRetries(t)
-	sc := &stubClient{createRepoErr: forge.ErrAlreadyExists}
-	e := &repoEnsurer{client: sc, logf: t.Logf}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	err := e.ensureRepoExists(ctx, "org", "repo", "org/repo")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "context cancelled")
-	assert.Equal(t, int32(0), sc.createRepoCalled.Load())
+	// singleflight runs the install once; nothing creates the repo.
+	assert.Zero(t, sc.createRepoCalled.Load(), "the claim created the repo")
+	assert.Equal(t, int32(1), setups.Load(), "concurrent callers should only install once")
 }
 
 func TestDoEnsure_PostInstallStillFailsAfterInstall(t *testing.T) {
@@ -1367,8 +1291,18 @@ func TestDoEnsure_PostInstallStillFailsAfterInstall(t *testing.T) {
 	assert.Contains(t, err.Error(), "post-install validation")
 }
 
+// skipPostProvisionBackoff makes common.ProvisionInference's
+// post-provision status polling return immediately.
+func skipPostProvisionBackoff(t *testing.T) {
+	t.Helper()
+	orig := common.PostProvisionSleep
+	common.PostProvisionSleep = func(context.Context, time.Duration) error { return nil }
+	t.Cleanup(func() { common.PostProvisionSleep = orig })
+}
+
 func TestProvisionInference_StatusCLIError(t *testing.T) {
 	speedUpValidateRetries(t)
+	skipPostProvisionBackoff(t)
 	sc := &stubClient{installed: false}
 	e := &repoEnsurer{
 		e2eCfg: e2etest.EnvConfig{
@@ -1397,6 +1331,7 @@ func TestProvisionInference_StatusCLIError(t *testing.T) {
 
 func TestProvisionInference_ParseWIFProviderError(t *testing.T) {
 	speedUpValidateRetries(t)
+	skipPostProvisionBackoff(t)
 	sc := &stubClient{installed: false}
 	e := &repoEnsurer{
 		e2eCfg: e2etest.EnvConfig{
@@ -1422,7 +1357,7 @@ func TestProvisionInference_ParseWIFProviderError(t *testing.T) {
 	assert.Contains(t, err.Error(), "inference status")
 }
 
-func TestDoEnsure_EnsureRepoExistsError_Propagated(t *testing.T) {
+func TestDoEnsure_GetRepoError_Propagated(t *testing.T) {
 	sc := &stubClient{getRepoErr: fmt.Errorf("network timeout")}
 	e := &repoEnsurer{
 		e2eCfg:  e2etest.EnvConfig{},
@@ -1433,11 +1368,13 @@ func TestDoEnsure_EnsureRepoExistsError_Propagated(t *testing.T) {
 
 	err := e.EnsureRepo(context.Background(), "org", "test-repo-net-err")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "checking repo")
+	assert.Contains(t, err.Error(), "checking creation of org/test-repo-net-err")
 	assert.Contains(t, err.Error(), "network timeout")
+	assert.Zero(t, sc.createRepoCalled.Load())
+	assert.Zero(t, sc.deleteRepoCalled.Load())
 }
 
-func TestDoEnsure_AlwaysInstallsAfterReset(t *testing.T) {
+func TestDoEnsure_AlwaysInstallsIntoFreshSlotRepo(t *testing.T) {
 	speedUpValidateRetries(t)
 	sc := &stubClient{installed: true}
 	cliCalled := false
@@ -1458,8 +1395,8 @@ func TestDoEnsure_AlwaysInstallsAfterReset(t *testing.T) {
 
 	err := e.EnsureRepo(context.Background(), "org", "test-repo-revendor")
 	require.NoError(t, err)
-	assert.True(t, cliCalled, "CLI should be called to install after repo reset")
-	assert.Equal(t, int32(1), sc.deleteRepoCalled.Load(), "existing repo should be deleted for reset")
+	assert.True(t, cliCalled, "CLI should be called to install into the fresh slot repo")
+	assert.Zero(t, sc.deleteRepoCalled.Load(), "the slot repo is never deleted")
 }
 
 // --- awaitWorkflowReady unit tests ---
@@ -1710,6 +1647,104 @@ func TestDoEnsure_AfterInstallHookError_Propagated(t *testing.T) {
 	assert.Contains(t, err.Error(), "tracking issue setup failed")
 }
 
+func TestDoEnsure_AfterInstallHook_SkippedWhenOwnershipLostDuringInstall(t *testing.T) {
+	speedUpValidateRetries(t)
+
+	var lost atomic.Bool
+	hookCalled := false
+	e := &repoEnsurer{
+		e2eCfg:    e2etest.EnvConfig{MintURL: "https://mint.test"},
+		client:    &stubClient{installed: true},
+		binary:    "/usr/bin/fullsend",
+		token:     "tok",
+		setupOpts: common.DefaultGitHubSetupOpts(),
+		runCLI: func(_, _ string, _ ...string) (string, error) {
+			lost.Store(true) // the slot changes hands while github setup runs
+			return "", nil
+		},
+		hooks: InstallHooks{
+			AfterInstall: func(context.Context, forge.Client, string, string, any) error {
+				hookCalled = true
+				return nil
+			},
+		},
+		settle:  noopSettle,
+		logf:    t.Logf,
+		ensured: make(map[string]struct{}),
+	}
+
+	err := e.EnsureRepo(context.Background(), "org", "test-repo-hooks",
+		func(context.Context) (bool, error) { return !lost.Load(), nil })
+	require.ErrorIs(t, err, errLeaseLost)
+	assert.False(t, hookCalled, "AfterInstall writes by repo name, so it must not run after ownership is lost")
+}
+
+func TestDoEnsure_AfterInstallHook_ContextCarriesRetryGuard(t *testing.T) {
+	speedUpValidateRetries(t)
+
+	var guard func(context.Context) error
+	var ambiguousDisabled bool
+	e := &repoEnsurer{
+		e2eCfg:    e2etest.EnvConfig{MintURL: "https://mint.test"},
+		client:    &stubClient{installed: true},
+		binary:    "/usr/bin/fullsend",
+		token:     "tok",
+		setupOpts: common.DefaultGitHubSetupOpts(),
+		runCLI:    noopCLI,
+		hooks: InstallHooks{
+			AfterInstall: func(ctx context.Context, _ forge.Client, _, _ string, _ any) error {
+				guard = forge.RetryGuard(ctx)
+				ambiguousDisabled = forge.AmbiguousRetryDisabled(ctx)
+				return nil
+			},
+		},
+		settle:  noopSettle,
+		logf:    t.Logf,
+		ensured: make(map[string]struct{}),
+	}
+
+	var lost atomic.Bool
+	require.NoError(t, e.EnsureRepo(context.Background(), "org", "test-repo-hooks",
+		func(context.Context) (bool, error) { return !lost.Load(), nil }))
+	require.NotNil(t, guard, "the hook's context is ownership-guarded")
+	assert.True(t, ambiguousDisabled, "the hook's writes are not replayed after an ambiguous failure")
+	require.NoError(t, guard(context.Background()))
+	lost.Store(true)
+	require.ErrorIs(t, guard(context.Background()), errLeaseLost)
+}
+
+func TestInstallFullsend_OwnershipLostDuringWIFResolution_SkipsSetup(t *testing.T) {
+	speedUpValidateRetries(t)
+
+	var lost atomic.Bool
+	var cliCalls [][]string
+	e := &repoEnsurer{
+		e2eCfg: e2etest.EnvConfig{MintURL: "https://mint.test", GCPProjectID: "test-project"},
+		client: &stubClient{installed: true},
+		binary: "/usr/bin/fullsend",
+		token:  "tok",
+		runCLI: func(_, _ string, args ...string) (string, error) {
+			cliCalls = append(cliCalls, args)
+			if isInferenceCall(args, "status") {
+				lost.Store(true) // the slot changes hands during inference resolution
+				return healthyStatusJSON, nil
+			}
+			return "", nil
+		},
+		setupOpts: common.DefaultGitHubSetupOpts(),
+		settle:    noopSettle,
+		logf:      t.Logf,
+		ensured:   make(map[string]struct{}),
+	}
+
+	err := e.EnsureRepo(context.Background(), "org", "test-repo-wif",
+		func(context.Context) (bool, error) { return !lost.Load(), nil })
+	require.ErrorIs(t, err, errLeaseLost)
+	for _, args := range cliCalls {
+		assert.NotEqual(t, []string{"github", "setup"}, args[:2], "github setup must not start after ownership is lost")
+	}
+}
+
 func TestDoEnsure_PlaybackRuntime_ValidatesAgainstInstalledRuntime(t *testing.T) {
 	speedUpValidateRetries(t)
 
@@ -1804,62 +1839,262 @@ func TestDoEnsure_SettleError_Propagated(t *testing.T) {
 	assert.Contains(t, err.Error(), "Actions not ready")
 }
 
-// --- DeleteRepo unit tests ---
+// --- ReleaseRepo unit tests ---
 
-func TestEnsurer_DeleteRepo_MissingRepo_OK(t *testing.T) {
-	sc := &stubClient{getRepoErr: forge.ErrNotFound}
-	e := &repoEnsurer{client: sc, logf: t.Logf, ensured: make(map[string]struct{})}
-
-	err := e.DeleteRepo(context.Background(), "org", "repo")
-	require.NoError(t, err)
-	assert.Equal(t, int32(0), sc.deleteRepoCalled.Load(), "should not delete missing repo")
-}
-
-func TestEnsurer_DeleteRepo_DeletesExistingAndClearsCache(t *testing.T) {
+func TestEnsurer_ReleaseRepo_NeverDeletesSlotRepoAndClearsCache(t *testing.T) {
 	sc := &stubClient{}
 	e := &repoEnsurer{client: sc, logf: t.Logf, ensured: map[string]struct{}{"org/repo": {}}}
 
-	err := e.DeleteRepo(context.Background(), "org", "repo")
+	err := e.ReleaseRepo(context.Background(), "org", "repo", stillOwnsSlot)
 	require.NoError(t, err)
-	assert.Equal(t, int32(1), sc.deleteRepoCalled.Load())
+	assert.Zero(t, sc.deleteRepoCalled.Load(), "the allocator's ownership-checked Release deletes the slot repo")
 
 	e.mu.Lock()
 	_, cached := e.ensured["org/repo"]
 	e.mu.Unlock()
-	assert.False(t, cached, "ensure cache must be invalidated on delete")
+	assert.False(t, cached, "ensure cache must be invalidated on release")
 }
 
-func TestEnsurer_DeleteRepo_InvalidatesCacheOnGetRepoError(t *testing.T) {
-	sc := &stubClient{getRepoErr: assert.AnError}
-	e := &repoEnsurer{client: sc, logf: t.Logf, ensured: map[string]struct{}{"org/repo": {}}}
-
-	err := e.DeleteRepo(context.Background(), "org", "repo")
-	require.Error(t, err)
-
-	e.mu.Lock()
-	_, cached := e.ensured["org/repo"]
-	e.mu.Unlock()
-	assert.False(t, cached, "cache must be invalidated even when delete fails")
-}
-
-func TestEnsurer_DeleteRepo_DeletesFork(t *testing.T) {
+func TestEnsurer_ReleaseRepo_DeletesLeftoverFork(t *testing.T) {
+	speedUpResetRetries(t)
 	sc := &stubClient{forkExists: true}
 	e := &repoEnsurer{client: sc, logf: t.Logf, ensured: make(map[string]struct{})}
 
-	err := e.DeleteRepo(context.Background(), "org", "repo")
+	err := e.ReleaseRepo(context.Background(), "org", "repo", stillOwnsSlot)
 	require.NoError(t, err)
 	assert.Equal(t, int32(1), sc.forkDeleteCalled.Load())
-	assert.Equal(t, int32(1), sc.deleteRepoCalled.Load())
+	assert.Zero(t, sc.deleteRepoCalled.Load())
 }
 
-func TestEnsurer_DeleteThenEnsure_Recreates(t *testing.T) {
+func TestEnsurer_ReleaseRepo_LeavesForkWhenSlotNotOwned(t *testing.T) {
+	sc := &stubClient{forkExists: true}
+	e := &repoEnsurer{client: sc, logf: t.Logf, ensured: map[string]struct{}{"org/repo": {}}}
+
+	require.NoError(t, e.ReleaseRepo(context.Background(), "org", "repo", lostSlot))
+	assert.Zero(t, sc.forkDeleteCalled.Load(), "a replaced slot's fork may belong to its new holder")
+
+	e.mu.Lock()
+	_, cached := e.ensured["org/repo"]
+	e.mu.Unlock()
+	assert.False(t, cached, "ensure cache must be invalidated even when the fork is left alone")
+}
+
+// blockedForkLookupClient blocks the first GetRepo of a fork name until
+// released, then reports a fork with forkID, so a test can replace the slot
+// while the lookup is in flight.
+type blockedForkLookupClient struct {
+	*stubClient
+	entered chan struct{}
+	release chan struct{}
+	forkID  int64
+	once    sync.Once
+}
+
+func (c *blockedForkLookupClient) GetRepo(ctx context.Context, owner, repo string) (*forge.Repository, error) {
+	if strings.HasSuffix(repo, "-fork") {
+		first := false
+		c.once.Do(func() { first = true })
+		if first {
+			close(c.entered)
+			<-c.release
+			return &forge.Repository{ID: c.forkID, Fork: true}, nil
+		}
+	}
+	return c.stubClient.GetRepo(ctx, owner, repo)
+}
+
+func TestEnsurer_ReleaseRepo_LeavesForkReplacedWhileFirstLookupBlocked(t *testing.T) {
+	sc := &stubClient{forkExists: true}
+	client := &blockedForkLookupClient{
+		stubClient: sc,
+		entered:    make(chan struct{}),
+		release:    make(chan struct{}),
+		forkID:     42, // the replacement holder's fork
+	}
+	e := &repoEnsurer{client: client, logf: t.Logf, ensured: make(map[string]struct{})}
+
+	var replaced atomic.Bool
+	stillOwns := func(context.Context) (bool, error) { return !replaced.Load(), nil }
+
+	done := make(chan error, 1)
+	go func() { done <- e.ReleaseRepo(context.Background(), "org", "repo", stillOwns) }()
+
+	// The ownership check at the start of the release has passed; now the
+	// base and its fork are replaced while the fork lookup is waiting.
+	<-client.entered
+	replaced.Store(true)
+	close(client.release)
+
+	require.NoError(t, <-done)
+	assert.Zero(t, sc.forkDeleteCalled.Load(),
+		"a fork captured after the base was replaced belongs to the new holder")
+}
+
+// rateLimitedDeleteClient sends the fork DELETE through a real GitHub
+// client against a test server, so the DELETE goes through the client's
+// retry loop and honors the retry guard deleteLeftoverFork installs. The
+// client's waits are replaced by onWait, which returns at once. Lookups
+// come from the embedded stubClient.
+type rateLimitedDeleteClient struct {
+	*stubClient
+	live *gh.LiveClient
+}
+
+func (c *rateLimitedDeleteClient) DeleteRepo(ctx context.Context, owner, repo string) error {
+	return c.live.DeleteRepo(ctx, owner, repo)
+}
+
+// newRateLimitedDeleteClient returns a client whose DELETEs are answered
+// by a server that always rejects them with a retryable rate limit, and a
+// counter of the DELETE requests the server received. onWait runs each
+// time the client would sleep before a resend.
+func newRateLimitedDeleteClient(t *testing.T, sc *stubClient, onWait func()) (*rateLimitedDeleteClient, *atomic.Int32) {
+	t.Helper()
+	var deletes atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			deletes.Add(1)
+		}
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	t.Cleanup(srv.Close)
+	live := gh.New("test-token").WithBaseURL(srv.URL).WithAfterFunc(func(time.Duration) <-chan time.Time {
+		onWait()
+		ch := make(chan time.Time, 1)
+		ch <- time.Time{}
+		return ch
+	})
+	return &rateLimitedDeleteClient{stubClient: sc, live: live}, &deletes
+}
+
+func TestDeleteLeftoverFork_RetryGuardStopsResendWhenBaseReplacedDuringRateLimitWait(t *testing.T) {
+	var replaced atomic.Bool
+	client, deletes := newRateLimitedDeleteClient(t, &stubClient{forkExists: true}, func() {
+		// The base is replaced while the client waits to resend.
+		replaced.Store(true)
+	})
+	e := &repoEnsurer{client: client, logf: t.Logf}
+
+	var checks int
+	stillOwns := func(context.Context) (bool, error) {
+		checks++
+		return !replaced.Load(), nil
+	}
+
+	require.NoError(t, e.deleteLeftoverFork(context.Background(), "org", "repo", stillOwns),
+		"a replaced base is a lost race, not a failure")
+	assert.Equal(t, int32(1), deletes.Load(),
+		"the first DELETE was sent while the lease was owned; the resend after the wait must not be")
+	assert.Equal(t, 2, checks,
+		"ownership is checked before the first DELETE and again in the retry guard")
+}
+
+func TestDeleteLeftoverFork_RetryGuardStopsResendWhenOwnershipCheckFailsDuringRetry(t *testing.T) {
+	client, deletes := newRateLimitedDeleteClient(t, &stubClient{forkExists: true}, func() {})
+	e := &repoEnsurer{client: client, logf: t.Logf}
+
+	var checks int
+	stillOwns := func(context.Context) (bool, error) {
+		checks++
+		if checks == 1 {
+			return true, nil
+		}
+		return false, assert.AnError
+	}
+
+	err := e.deleteLeftoverFork(context.Background(), "org", "repo", stillOwns)
+	require.Error(t, err, "an unverifiable base during the retry is reported, and the fork is left")
+	require.ErrorIs(t, err, assert.AnError)
+	assert.Contains(t, err.Error(), "re-verifying org/repo after retry wait")
+	assert.Equal(t, int32(1), deletes.Load(), "no second DELETE is sent when ownership cannot be verified")
+	assert.Equal(t, 2, checks)
+}
+
+func TestDeleteLeftoverFork_RetryGuardResendsWhileOwned(t *testing.T) {
+	// Control for the two tests above: with ownership intact the client
+	// resends after each wait, so the single DELETE there is the guard's
+	// doing and not a client that never retries.
+	client, deletes := newRateLimitedDeleteClient(t, &stubClient{forkExists: true}, func() {})
+	e := &repoEnsurer{client: client, logf: t.Logf}
+
+	err := e.deleteLeftoverFork(context.Background(), "org", "repo", stillOwnsSlot)
+	require.Error(t, err, "the server keeps rate-limiting, so the delete finally fails")
+	assert.Greater(t, deletes.Load(), int32(1), "the client resends while the guard approves")
+}
+
+func TestDeleteLeftoverFork_LeavesForkWhenOwnershipUnverifiable(t *testing.T) {
+	sc := &stubClient{forkExists: true}
+	e := &repoEnsurer{client: sc, logf: t.Logf}
+
+	err := e.deleteLeftoverFork(context.Background(), "org", "repo",
+		func(context.Context) (bool, error) { return false, assert.AnError })
+	require.NoError(t, err)
+	assert.Zero(t, sc.forkDeleteCalled.Load())
+}
+
+func TestDeleteLeftoverFork_RefusesNonFork(t *testing.T) {
+	sc := &stubClient{forkExists: true, forkNotAFork: true}
+	e := &repoEnsurer{client: sc, logf: t.Logf}
+
+	err := e.deleteLeftoverFork(context.Background(), "org", "repo", nil)
+	require.ErrorContains(t, err, "not a fork")
+	assert.Zero(t, sc.forkDeleteCalled.Load())
+}
+
+func TestDeleteLeftoverFork_ReclaimsPromotedForkWithClaimDescription(t *testing.T) {
+	// Deleting a public parent promotes a surviving fork to the network
+	// root, which clears its Fork flag. The fork still carries the
+	// slot-claim description inherited from its parent, so it is
+	// reclaimed instead of failing every later allocation of the slot.
+	sc := &stubClient{
+		forkExists:      true,
+		forkNotAFork:    true,
+		forkDescription: newLeaseDescription(),
+	}
+	e := &repoEnsurer{client: sc, logf: t.Logf}
+
+	err := e.deleteLeftoverFork(context.Background(), "org", "repo", nil)
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), sc.forkDeleteCalled.Load())
+}
+
+func TestDeleteLeftoverFork_RefusesNonForkWithForeignDescription(t *testing.T) {
+	sc := &stubClient{forkExists: true, forkNotAFork: true, forkDescription: "someone else's repo"}
+	e := &repoEnsurer{client: sc, logf: t.Logf}
+
+	err := e.deleteLeftoverFork(context.Background(), "org", "repo", nil)
+	require.ErrorContains(t, err, "not a fork")
+	assert.Zero(t, sc.forkDeleteCalled.Load())
+}
+
+func TestEnsurer_ReleaseRepo_InvalidatesCacheOnForkDeleteError(t *testing.T) {
+	sc := &stubClient{forkExists: true, forkDeleteErr: fmt.Errorf("permission denied")}
+	e := &repoEnsurer{client: sc, logf: t.Logf, ensured: map[string]struct{}{"org/repo": {}}}
+
+	err := e.ReleaseRepo(context.Background(), "org", "repo", stillOwnsSlot)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "deleting leftover fork repo org/repo-fork")
+	assert.Contains(t, err.Error(), "permission denied")
+
+	e.mu.Lock()
+	_, cached := e.ensured["org/repo"]
+	e.mu.Unlock()
+	assert.False(t, cached, "cache must be invalidated even when the fork delete fails")
+}
+
+func TestEnsurer_ReleaseThenEnsure_ReinstallsWithoutCreating(t *testing.T) {
 	speedUpValidateRetries(t)
-	speedUpResetRetries(t)
 	sc := &stubClient{installed: true}
+	var setups int
 	e := &repoEnsurer{
-		e2eCfg:    e2etest.EnvConfig{},
-		client:    sc,
-		runCLI:    noopCLI,
+		e2eCfg: e2etest.EnvConfig{},
+		client: sc,
+		runCLI: func(_, _ string, args ...string) (string, error) {
+			if isGitHubSetupCall(args) {
+				setups++
+			}
+			return "", nil
+		},
 		setupOpts: common.DefaultGitHubSetupOpts(),
 		settle:    noopSettle,
 		logf:      t.Logf,
@@ -1868,197 +2103,52 @@ func TestEnsurer_DeleteThenEnsure_Recreates(t *testing.T) {
 
 	ctx := context.Background()
 	require.NoError(t, e.EnsureRepo(ctx, "org", "test-repo-01"))
-	createsAfterFirst := sc.createRepoCalled.Load()
-
-	require.NoError(t, e.DeleteRepo(ctx, "org", "test-repo-01"))
-
+	require.NoError(t, e.ReleaseRepo(ctx, "org", "test-repo-01", stillOwnsSlot))
 	require.NoError(t, e.EnsureRepo(ctx, "org", "test-repo-01"))
-	assert.Greater(t, sc.createRepoCalled.Load(), createsAfterFirst,
-		"re-ensure after delete must recreate rather than hit the lease cache")
+	assert.Equal(t, 2, setups, "re-ensure after release installs again rather than hitting the lease cache")
+	assert.Zero(t, sc.createRepoCalled.Load(), "the next claim creates the repo, not the ensurer")
+	assert.Zero(t, sc.deleteRepoCalled.Load())
 }
 
-func TestEnsurer_StaleDeleteStillRecreates(t *testing.T) {
-	// DeleteRepo succeeds but GetRepo keeps returning the old object.
-	// Allocation must still CreateRepo rather than declare the stale
-	// object ready and let a later github setup 404 (#7839).
-	speedUpValidateRetries(t)
-	speedUpResetRetries(t)
-	sc := &stubClient{
-		installed:           true,
-		staleGetAfterDelete: true,
-	}
-	e := &repoEnsurer{
-		e2eCfg:    e2etest.EnvConfig{},
-		client:    sc,
-		runCLI:    noopCLI,
-		setupOpts: common.DefaultGitHubSetupOpts(),
-		settle:    noopSettle,
-		logf:      t.Logf,
-		ensured:   make(map[string]struct{}),
-	}
+// --- deleteLeftoverFork unit tests ---
 
-	err := e.EnsureRepo(context.Background(), "org", "test-repo-07")
-	require.NoError(t, err)
-	assert.Equal(t, int32(1), sc.deleteRepoCalled.Load())
-	assert.Equal(t, int32(1), sc.createRepoCalled.Load(),
-		"stale GetRepo after delete must not skip CreateRepo")
-}
-
-func TestEnsurer_AlreadyExistsAfterStaleResetGetRepo_DeletesAndRecreates(t *testing.T) {
-	// resetRepo's GetRepo sees a stale 404 for a repo that actually still
-	// exists (a delete/create race, or a retried create POST that
-	// succeeded server-side despite a client-side timeout), so it logs
-	// "nothing to delete" and skips the delete entirely. CreateRepo then
-	// reports already-exists; the fix must delete the blocking repo (and
-	// any leftover fork) rather than backing off forever (#7839).
-	speedUpValidateRetries(t)
-	speedUpResetRetries(t)
-	sc := &stubClient{
-		installed:             true,
-		getRepoErr:            forge.ErrNotFound, // resetRepo believes the repo is gone
-		blockedByExistingRepo: true,              // but it is actually still there
-	}
-	e := &repoEnsurer{
-		e2eCfg:    e2etest.EnvConfig{},
-		client:    sc,
-		runCLI:    noopCLI,
-		setupOpts: common.DefaultGitHubSetupOpts(),
-		settle:    noopSettle,
-		logf:      t.Logf,
-		ensured:   make(map[string]struct{}),
-	}
-
-	err := e.EnsureRepo(context.Background(), "org", "test-repo-20")
-	require.NoError(t, err)
-	assert.Equal(t, int32(1), sc.deleteRepoCalled.Load(),
-		"the already-exists retry must delete the repo that resetRepo's stale GetRepo missed")
-	assert.Equal(t, int32(2), sc.createRepoCalled.Load(),
-		"create should retry once after the delete and succeed")
-}
-
-func TestEnsurer_DeleteNeverPropagates_Errors(t *testing.T) {
-	// Deletion is accepted but the name never becomes free. The retry
-	// loop must terminate with an error instead of hanging or treating
-	// the leftover repo as allocation-ready.
-	speedUpResetRetries(t)
-	sc := &stubClient{
-		staleGetAfterDelete: true,
-		createRepoErr:       forge.ErrAlreadyExists,
-	}
-	e := &repoEnsurer{
-		e2eCfg:    e2etest.EnvConfig{},
-		client:    sc,
-		runCLI:    noopCLI,
-		setupOpts: common.DefaultGitHubSetupOpts(),
-		settle:    noopSettle,
-		logf:      t.Logf,
-		ensured:   make(map[string]struct{}),
-	}
-
-	err := e.EnsureRepo(context.Background(), "org", "test-repo-12")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "name still taken")
-	assert.Equal(t, int32(resetMaxAttempts), sc.createRepoCalled.Load())
-	assert.Equal(t, int32(resetMaxAttempts), sc.deleteRepoCalled.Load(),
-		"the already-exists retry loop must keep attempting deletes and still terminate when the name never frees up")
-}
-
-// --- resetRepo unit tests ---
-
-func TestResetRepo_DeletesExistingRepo(t *testing.T) {
-	sc := &stubClient{} // GetRepo returns success (repo exists)
+func TestDeleteLeftoverFork_NoForkIsNoOp(t *testing.T) {
+	sc := &stubClient{}
 	e := &repoEnsurer{client: sc, logf: t.Logf}
 
-	err := e.resetRepo(context.Background(), "org", "repo", "org/repo")
-	require.NoError(t, err)
-	assert.Equal(t, int32(1), sc.deleteRepoCalled.Load(), "should delete existing repo")
+	require.NoError(t, e.deleteLeftoverFork(context.Background(), "org", "repo", nil))
+	assert.Zero(t, sc.forkDeleteCalled.Load())
+	assert.Zero(t, sc.deleteRepoCalled.Load())
 }
 
-func TestResetRepo_SkipsDeleteWhenRepoMissing(t *testing.T) {
-	sc := &stubClient{getRepoErr: forge.ErrNotFound}
+func TestDeleteLeftoverFork_DeleteNotFound_IsIdempotent(t *testing.T) {
+	sc := &stubClient{forkExists: true, forkDeleteErr: forge.ErrNotFound}
 	e := &repoEnsurer{client: sc, logf: t.Logf}
 
-	err := e.resetRepo(context.Background(), "org", "repo", "org/repo")
-	require.NoError(t, err)
-	assert.Equal(t, int32(0), sc.deleteRepoCalled.Load(), "should not delete missing repo")
-}
-
-func TestResetRepo_PropagatesGetRepoError(t *testing.T) {
-	sc := &stubClient{getRepoErr: assert.AnError}
-	e := &repoEnsurer{client: sc, logf: t.Logf}
-
-	err := e.resetRepo(context.Background(), "org", "repo", "org/repo")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "checking repo")
-}
-
-func TestResetRepo_PropagatesDeleteError(t *testing.T) {
-	sc := &stubClient{deleteRepoErr: fmt.Errorf("permission denied")}
-	e := &repoEnsurer{client: sc, logf: t.Logf}
-
-	err := e.resetRepo(context.Background(), "org", "repo", "org/repo")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "deleting repo")
-	assert.Contains(t, err.Error(), "permission denied")
-	assert.Equal(t, int32(1), sc.deleteRepoCalled.Load())
-}
-
-func TestResetRepo_DeleteNotFound_IsIdempotent(t *testing.T) {
-	sc := &stubClient{deleteRepoErr: forge.ErrNotFound}
-	e := &repoEnsurer{client: sc, logf: t.Logf}
-
-	err := e.resetRepo(context.Background(), "org", "repo", "org/repo")
-	require.NoError(t, err, "ErrNotFound from delete should be treated as success (race-safe)")
-}
-
-// --- resetRepo fork cleanup tests ---
-
-func TestResetRepo_DeletesForkBeforeSource(t *testing.T) {
-	speedUpResetRetries(t)
-	sc := &stubClient{forkExists: true}
-	e := &repoEnsurer{client: sc, logf: t.Logf}
-
-	err := e.resetRepo(context.Background(), "org", "repo", "org/repo")
-	require.NoError(t, err)
-	assert.Equal(t, int32(1), sc.forkDeleteCalled.Load(), "fork should be deleted before source reset")
-	assert.Equal(t, int32(1), sc.deleteRepoCalled.Load(), "source should be deleted")
-}
-
-func TestResetRepo_SkipsForkDeleteWhenForkMissing(t *testing.T) {
-	sc := &stubClient{} // forkExists defaults to false
-	e := &repoEnsurer{client: sc, logf: t.Logf}
-
-	err := e.resetRepo(context.Background(), "org", "repo", "org/repo")
-	require.NoError(t, err)
-	assert.Equal(t, int32(0), sc.forkDeleteCalled.Load(), "fork should not be deleted when absent")
-	assert.Equal(t, int32(1), sc.deleteRepoCalled.Load(), "source should still be deleted")
-}
-
-func TestResetRepo_PropagatesForkDeleteError(t *testing.T) {
-	sc := &stubClient{
-		forkExists:    true,
-		forkDeleteErr: fmt.Errorf("permission denied"),
-	}
-	e := &repoEnsurer{client: sc, logf: t.Logf}
-
-	err := e.resetRepo(context.Background(), "org", "repo", "org/repo")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "deleting fork repo")
-	assert.Contains(t, err.Error(), "permission denied")
+	require.NoError(t, e.deleteLeftoverFork(context.Background(), "org", "repo", nil),
+		"ErrNotFound from the fork delete is a lost race, not a failure")
 	assert.Equal(t, int32(1), sc.forkDeleteCalled.Load())
+	assert.Zero(t, sc.deleteRepoCalled.Load())
 }
 
-func TestResetRepo_ForkDeleteNotFound_ContinuesToSource(t *testing.T) {
-	speedUpResetRetries(t)
-	sc := &stubClient{
-		forkExists:    true,
-		forkDeleteErr: forge.ErrNotFound,
-	}
-	e := &repoEnsurer{client: sc, logf: t.Logf}
+func TestDeleteLeftoverFork_PropagatesLookupError(t *testing.T) {
+	e := &repoEnsurer{client: &forkLookupErrClient{stubClient: &stubClient{}}, logf: t.Logf}
 
-	err := e.resetRepo(context.Background(), "org", "repo", "org/repo")
-	require.NoError(t, err, "ErrNotFound from fork delete should not block source reset")
-	assert.Equal(t, int32(1), sc.deleteRepoCalled.Load(), "source should still be deleted")
+	err := e.deleteLeftoverFork(context.Background(), "org", "repo", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "checking for leftover fork repo org/repo-fork")
+}
+
+// forkLookupErrClient fails GetRepo for fork names.
+type forkLookupErrClient struct {
+	*stubClient
+}
+
+func (c *forkLookupErrClient) GetRepo(ctx context.Context, owner, repo string) (*forge.Repository, error) {
+	if strings.HasSuffix(repo, "-fork") {
+		return nil, assert.AnError
+	}
+	return c.stubClient.GetRepo(ctx, owner, repo)
 }
 
 // speedUpResetRetries sets resetRetryDelay to zero for fast tests
@@ -2238,4 +2328,57 @@ func TestAwaitCreation_ContextCancellation(t *testing.T) {
 	err := e.awaitCreation(ctx, "org", "repo", "org/repo")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "context cancelled")
+}
+
+func TestProvisionWIFProvider_ReleasesGateBeforePolling(t *testing.T) {
+	skipPostProvisionBackoff(t)
+	var provisioned bool
+	var gateHeldDuringPoll []bool
+	e := &repoEnsurer{
+		binary: "/usr/bin/fullsend",
+		token:  "tok",
+		runCLI: func(_, _ string, args ...string) (string, error) {
+			switch {
+			case len(args) >= 2 && args[0] == "inference" && args[1] == "provision":
+				require.Len(t, provisionGate, 1, "provision runs under the gate")
+				provisioned = true
+				return "", nil
+			case len(args) >= 2 && args[0] == "inference" && args[1] == "status":
+				gateHeldDuringPoll = append(gateHeldDuringPoll, len(provisionGate) == 1)
+				if len(gateHeldDuringPoll) < 3 {
+					return `{"status":"not_provisioned"}`, nil
+				}
+				return healthyStatusJSON, nil
+			}
+			return "", nil
+		},
+		logf: t.Logf,
+	}
+
+	got, err := e.provisionWIFProvider(context.Background(), "org/test-repo-gate", "proj")
+	require.NoError(t, err)
+	assert.Equal(t, testWIFProvider, got)
+	assert.True(t, provisioned)
+	assert.Equal(t, []bool{false, false, false}, gateHeldDuringPoll, "status polling runs after the gate is released")
+	assert.Empty(t, provisionGate, "gate released")
+	assert.Equal(t, testWIFProvider, e.wifProviders["org/test-repo-gate"], "result cached")
+}
+
+func TestProvisionWIFProvider_ProvisionErrorReleasesGate(t *testing.T) {
+	e := &repoEnsurer{
+		binary: "/usr/bin/fullsend",
+		token:  "tok",
+		runCLI: func(_, _ string, args ...string) (string, error) {
+			if len(args) >= 2 && args[0] == "inference" && args[1] == "status" {
+				t.Fatal("no status read after a failed provision")
+			}
+			return "", fmt.Errorf("provision boom")
+		},
+		logf: t.Logf,
+	}
+
+	_, err := e.provisionWIFProvider(context.Background(), "org/test-repo-gate-err", "proj")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "provision boom")
+	assert.Empty(t, provisionGate, "gate released")
 }

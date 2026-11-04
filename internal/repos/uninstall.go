@@ -39,6 +39,7 @@ var gitlabUninstallVars = []string{
 	forge.VarLegacyForge,
 	forge.SecretDispatch,
 	forge.VarGCPRegion,
+	forge.VarGCPServiceAccount,
 	forge.VarLabelState,
 	forge.VarLastPollAtFast,
 	forge.VarLastPollAtFull,
@@ -86,13 +87,6 @@ var gitlabScaffoldPaths = []string{
 	".gitlab/ci/scripts/run-agent-job.sh",
 	".gitlab/ci/scripts/checkout-mr-source.sh",
 	".fullsend/config.yaml",
-}
-
-// gitlabRetiredScaffoldPaths are files previous GitLab installs wrote
-// that the current template no longer produces. Converge deletes them
-// (unlike generic orphans, which are reported but left in place).
-var gitlabRetiredScaffoldPaths = []string{
-	fullsendDispatchInclude,
 }
 
 const gitlabTrustScriptPath = ".gitlab/ci/scripts/trust-ci-server-ca.sh"

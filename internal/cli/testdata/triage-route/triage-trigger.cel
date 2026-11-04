@@ -1,0 +1,16 @@
+// Copy of the default triage trigger in fullsend-ai/agents harness/triage.yaml
+// (fullsend-ai/agents#1758; harness/triage.yaml at 983f1513c473). Keep the two
+// in step: TestTriagePrioritizeRouteParity compares it with the bash router in
+// reusable-dispatch.yml.
+(event.entity.kind == "work_item"
+  && event.transition.kind in ["opened", "edited"]
+  && event.actor.kind == "human")
+|| (event.entity.kind == "work_item"
+  && event.transition.kind == "label_changed"
+  && event.transition.label.name == "ready-for-triage"
+  && event.transition.label.action == "added")
+|| (event.entity.kind in ["work_item", "change_proposal"]
+  && event.transition.kind == "comment_added"
+  && has(event.transition.comment.command)
+  && event.transition.comment.command == "/fs-triage"
+  && event.actor.kind == "human")

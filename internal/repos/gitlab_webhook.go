@@ -1435,22 +1435,68 @@ func namesDispatcherInclude(item *yaml.Node) bool {
 // parser would: an explicit key wins, otherwise the sources of "<<" merge
 // keys (an alias, or a sequence of aliases where earlier entries win) are
 // searched recursively. ok is false when the mapping or a merge source
-// cannot be evaluated (a cyclic alias, or a non-mapping merge value), so
-// callers can defer instead of guessing. A nil value with ok true means the
-// key is absent.
+// cannot be evaluated (a cyclic alias, a non-mapping merge value, or a merge
+// graph too large to scan within mergeLookupBudget), so callers can defer
+// instead of guessing. A nil value with ok true means the key is absent.
 func effectiveMappingValue(mapping *yaml.Node, key string) (value *yaml.Node, ok bool) {
-	return effectiveMappingValueDepth(mapping, key, 0)
+	l := mergeLookup{key: key, budget: mergeLookupBudget}
+	return l.find(mapping, 0)
 }
 
-func effectiveMappingValueDepth(mapping *yaml.Node, key string, depth int) (*yaml.Node, bool) {
-	const maxMergeDepth = 16
+const (
+	// maxMergeDepth bounds how deeply "<<" merge sources may nest.
+	maxMergeDepth = 16
+	// mergeLookupBudget bounds the total number of merge sources a single
+	// effectiveMappingValue call may examine, so an oversized merge graph
+	// defers instead of making a readiness scan arbitrarily slow.
+	mergeLookupBudget = 10000
+)
+
+// mergeLookup is the per-call state of effectiveMappingValue. Results are
+// memoized per mapping node and depth, so a merge source shared by many
+// aliases is walked once rather than once per path; this keeps the work
+// linear in the size of the merge graph instead of exponential in its depth.
+// Keying on depth as well preserves the exact maxMergeDepth semantics.
+type mergeLookup struct {
+	key    string
+	budget int
+	memo   map[mergeLookupState]mergeLookupResult
+}
+
+type mergeLookupState struct {
+	node  *yaml.Node
+	depth int
+}
+
+type mergeLookupResult struct {
+	value *yaml.Node
+	ok    bool
+}
+
+func (l *mergeLookup) find(mapping *yaml.Node, depth int) (*yaml.Node, bool) {
 	mapping = resolveAlias(mapping)
 	if mapping == nil || mapping.Kind != yaml.MappingNode || depth > maxMergeDepth {
 		return nil, false
 	}
-	if idx := findMappingKeyIndex(mapping, key); idx >= 0 {
+	// Consult the memo before scanning explicit keys: it only holds results
+	// computed after an explicit-key miss, so a hit means the scan would miss
+	// again, and a wide mapping repeated through many aliases is scanned once.
+	state := mergeLookupState{node: mapping, depth: depth}
+	if r, seen := l.memo[state]; seen {
+		return r.value, r.ok
+	}
+	if idx := findMappingKeyIndex(mapping, l.key); idx >= 0 {
 		return mapping.Content[idx+1], true
 	}
+	value, ok := l.findInMergeSources(mapping, depth)
+	if l.memo == nil {
+		l.memo = make(map[mergeLookupState]mergeLookupResult)
+	}
+	l.memo[state] = mergeLookupResult{value: value, ok: ok}
+	return value, ok
+}
+
+func (l *mergeLookup) findInMergeSources(mapping *yaml.Node, depth int) (*yaml.Node, bool) {
 	for i := 0; i+1 < len(mapping.Content); i += 2 {
 		if mapping.Content[i].Value != "<<" {
 			continue
@@ -1464,7 +1510,11 @@ func effectiveMappingValueDepth(mapping *yaml.Node, key string, depth int) (*yam
 			sources = src.Content
 		}
 		for _, s := range sources {
-			v, ok := effectiveMappingValueDepth(s, key, depth+1)
+			if l.budget <= 0 {
+				return nil, false
+			}
+			l.budget--
+			v, ok := l.find(s, depth+1)
 			if !ok {
 				return nil, false
 			}
@@ -2159,6 +2209,14 @@ func ensureGitLabWebhookFastPath(ctx context.Context, client forge.Client, trigg
 						return res, teardownErr
 					}
 					deferErr := deferGitLabTriggerReplacement(ctx, client, &res, st, baseURL, owner, repo, activeID, nil)
+					if deferErr == nil && !st.activeCompliant(baseURL) && (len(st.hooks) > 0 || len(st.triggers) > 0) {
+						// The drifted fast path was torn down. It is not left in
+						// place: retiring a superseded Poller generation waits
+						// until no managed webhook carries an unidentifiable
+						// trigger, so keeping the drifted hook would block the
+						// retirement this replacement waits for (#8802).
+						res.Details = append(res.Details, "Reconciliation is pending: the drifted webhook fast path was removed because its pipeline trigger token cannot be replaced while the blocker above holds; repos install recreates it once the blocker clears")
+					}
 					return res, deferErr
 				}
 				minted = pm.minted

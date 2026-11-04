@@ -333,6 +333,11 @@ func TestRefreshGatewayProvider_BeforeSandbox(t *testing.T) {
 	assert.NotContains(t, string(data), "sandbox exec", "no re-seed before the sandbox is up")
 
 	// A token that is not a compact JWT is refused before it is stored.
+	// Each refused attempt is retried after gatewayRefreshBackoff; shrink
+	// it so the retries do not sleep for seconds.
+	oldBackoff := gatewayRefreshBackoff
+	gatewayRefreshBackoff = time.Millisecond
+	t.Cleanup(func() { gatewayRefreshBackoff = oldBackoff })
 	stubGatewayAssertion(t, func(context.Context, actionsoidc.AssertionConfig) (*actionsoidc.Assertion, error) {
 		return &actionsoidc.Assertion{Value: "not a jwt\n::error::x", IssuedAt: iat, ExpiresAt: iat.Add(5 * time.Minute)}, nil
 	})

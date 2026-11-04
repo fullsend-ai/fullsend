@@ -146,7 +146,7 @@ func TestStageMintInstall_Success(t *testing.T) {
 		return "Worker deployed at https://stage-mint.fullsend-ai.workers.dev", nil
 	})
 
-	mintURL, err := d.Install(context.Background(), StageOrg)
+	mintURL, err := d.Install(context.Background())
 	require.NoError(t, err)
 	// The URL should be the custom domain, not the workers.dev URL.
 	assert.Equal(t, StageMintURL, mintURL)
@@ -157,7 +157,7 @@ func TestStageMintInstall_DeployFailure(t *testing.T) {
 		return "", fmt.Errorf("deploy exploded")
 	})
 
-	mintURL, err := d.Install(context.Background(), StageOrg)
+	mintURL, err := d.Install(context.Background())
 	require.Error(t, err)
 	assert.Empty(t, mintURL)
 	assert.Contains(t, err.Error(), "stage mint deploy")
@@ -189,50 +189,16 @@ func TestStageMintDriver_ImplementsMintDriver(t *testing.T) {
 	var _ mintDriver = d
 }
 
-// --- buildStageMintDriver tests ---
-
-func TestBuildStageMintDriver_HappyPath(t *testing.T) {
-	mint := &testCFMintMintDriver{
-		installMintURL: StageMintURL,
-	}
-
-	d, err := buildStageMintDriver(mint, nil, "tok", "/bin/fullsend", "proj", 3, t.Logf)
-	require.NoError(t, err)
-	require.NotNil(t, d)
-	assert.Equal(t, 3, d.Capacity())
-	reporter, ok := d.(MintURLReporter)
-	require.True(t, ok, "driver reports its mint URL")
-	assert.Equal(t, StageMintURL, reporter.MintURL())
-}
-
-func TestBuildStageMintDriver_InstallFails(t *testing.T) {
-	mint := &testCFMintMintDriver{
-		installErr: fmt.Errorf("deploy boom"),
-	}
-
-	_, err := buildStageMintDriver(mint, nil, "tok", "/bin/fullsend", "proj", 3, t.Logf)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "stage cfmint factory: deploying mint")
-	assert.Contains(t, err.Error(), "deploy boom")
-}
-
-func TestBuildStageMintDriver_InvalidPoolSize(t *testing.T) {
-	mint := &testCFMintMintDriver{
-		installMintURL: StageMintURL,
-	}
-
-	_, err := buildStageMintDriver(mint, nil, "tok", "/bin/fullsend", "proj", 0, t.Logf)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "capacity must be positive")
-}
-
 // --- NewRepoPoolCFMintStage factory tests ---
 
-func TestNewRepoPoolCFMintStage_WrongOrg_RejectsEarly(t *testing.T) {
-	_, err := NewRepoPoolCFMintStage("wrong-org", nil, "tok", "/bin/fullsend", "proj", t.Logf)
+func TestNewRepoPoolCFMintStage_WrongLayout_RejectsEarly(t *testing.T) {
+	_, err := NewRepoPoolCFMintStage(testPoolConfig(t, DevPoolLayout(2)))
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "org must be")
-	assert.Contains(t, err.Error(), "wrong-org")
+	assert.Contains(t, err.Error(), "single org")
+	assert.Contains(t, err.Error(), "halfsend-01")
+
+	_, err = NewRepoPoolCFMintStage(testPoolConfig(t, PoolLayout{}))
+	require.ErrorContains(t, err, "stage cfmint factory")
 }
 
 func TestNewRepoPoolCFMintStage_NoPEMs_FailsEarly(t *testing.T) {
@@ -240,9 +206,33 @@ func TestNewRepoPoolCFMintStage_NoPEMs_FailsEarly(t *testing.T) {
 		t.Setenv(envVar, "")
 	}
 
-	_, err := NewRepoPoolCFMintStage(StageOrg, nil, "tok", "/bin/fullsend", "proj", t.Logf)
+	_, err := NewRepoPoolCFMintStage(testPoolConfig(t, StagePoolLayout(2)))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "PEMDir is required")
+}
+
+func TestNewRepoPoolCFMintStage_UnsuffixedOrgPool(t *testing.T) {
+	for _, envVar := range cfmintPEMRoleEnvVars {
+		t.Setenv(envVar, "")
+	}
+	t.Setenv("TEST_FULLSEND_PEM", "fake-pem")
+	t.Setenv(envTraceCollector, "false")
+	stubWranglerPrep(t, nil)
+
+	d, err := NewRepoPoolCFMintStage(testPoolConfig(t, StagePoolLayout(3)))
+	require.NoError(t, err)
+	assert.Equal(t, 3, d.Capacity())
+	assert.Equal(t, []string{StageOrg}, d.(*composedDriver).alloc.layout.Orgs())
+}
+
+func TestStageSetupOpts(t *testing.T) {
+	t.Setenv("PLAYBACK_RUNTIME", "dummy-playback")
+	t.Setenv("BEHAVIOUR_CONFIG_PRESET", "preset.yaml")
+	opts := stageSetupOpts()
+	assert.False(t, opts.Vendor)
+	assert.Equal(t, stageFullsendRef, opts.FullsendRef)
+	assert.Equal(t, "dummy-playback", opts.Runtime)
+	assert.Equal(t, "preset.yaml", opts.ConfigPreset)
 }
 
 func TestStageConstants(t *testing.T) {

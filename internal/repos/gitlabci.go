@@ -20,27 +20,24 @@ import (
 // fullsend-owned pipeline wrapper file.
 const fullsendPipelineInclude = ".gitlab/ci/fullsend-pipeline.yml"
 
-// fullsendDispatchInclude is the local include entry fullsend versions
-// before #7322 used to pull in the native merge_request_event dispatch
-// job. Current fullsend-pipeline.yml does not reference it, and #7707
-// stopped installing the file; an already-enrolled repo whose on-repo
-// wrapper predates #7322 may still include it — see
-// gitlabPipelineWrapperStillIncludesDispatch. Converge deletes the
-// leftover file via gitlabRetiredScaffoldPaths.
+// fullsendDispatchInclude is the retired native merge_request_event
+// dispatch file fullsend versions before #7707 installed. Nothing
+// installs or reads it any more; uninstall still deletes a leftover copy
+// (see gitlabScaffoldPaths), and converge reports one as an orphan.
 const fullsendDispatchInclude = ".gitlab/ci/fullsend-dispatch.yml"
 
 // fullsendAgentTemplatePath and fullsendPollTemplatePath are the sibling
 // scaffold files that must land compatible content alongside the wrapper
-// (fullsendPipelineInclude) before typed dispatch activation migrates
-// schedules or enforces the pipeline-variable restriction — see
+// (fullsendPipelineInclude) before typed dispatch activation enforces
+// the pipeline-variable restriction — see
 // gitlabPollAndAgentTemplatesLanded.
-const fullsendAgentTemplatePath = ".gitlab/ci/fullsend-agent.yml"
+const fullsendAgentTemplatePath = scaffold.GitLabAgentTemplatePath
 const fullsendPollTemplatePath = ".gitlab/ci/fullsend-poll.yml"
 
 // fullsendDispatcherTemplatePath is the webhook dispatcher job template
 // (ADR 0125, #7771) that fullsend-pipeline.yml includes only for
 // source=trigger pipelines. It deliberately uses a distinct filename from
-// the retired fullsendDispatchInclude, which stays delete-only.
+// the retired fullsendDispatchInclude, which uninstall still deletes.
 const fullsendDispatcherTemplatePath = ".gitlab/ci/fullsend-dispatcher.yml"
 
 // fullsendWorkflowNamePrefix is the prefix of the workflow.name value
@@ -76,26 +73,15 @@ var gitlabDispatchInputNames = []string{
 	"event_payload_chunk_08",
 }
 
-// obsoleteGitLabStages are stages that previous fullsend versions
-// installed into stages: but that are no longer part of the current
-// contract. StripObsoleteGitLabStages uses this list to migrate
-// already-enrolled repos in place; removeStages uses it so uninstall
-// still cleans leftovers up. It is empty since #7771 reinstated
-// "dispatch" (obsolete from #7337 until then) as a current stage in
-// fullsendStages; the two lists must stay disjoint.
-var obsoleteGitLabStages []string
-
 // nonJobTopLevelKeys are .gitlab-ci.yml top-level keys reserved for
-// pipeline configuration rather than job definitions. stageReferencedByJob
-// uses this list (together with the `.`-prefixed hidden-key convention)
-// to tell job definitions — which may carry a stage: value — apart from
-// configuration blocks that happen to be top-level mappings too.
+// pipeline configuration rather than job definitions. The trigger-admission
+// scan uses this list (together with the `.`-prefixed hidden-key
+// convention) to tell job definitions apart from configuration blocks that
+// happen to be top-level mappings too.
 //
 // "pages" is deliberately absent: unlike the other keys here, it isn't a
 // global pipeline keyword — it's GitLab's reserved name for the Pages
-// deploy job, which can carry its own stage: value like any other job.
-// Treating it as configuration would let a `pages: {stage: dispatch}`
-// job's stage get stripped out from under it.
+// deploy job, which is scanned like any other job.
 var nonJobTopLevelKeys = map[string]bool{
 	"stages":        true,
 	"workflow":      true,
@@ -177,126 +163,13 @@ type workflowRule struct {
 	When string
 }
 
-// obsoleteGitLabWorkflowRules are workflow:rules entries that previous
-// fullsend versions installed into the root .gitlab-ci.yml but that are
-// no longer part of the current contract. Native merge_request_event
-// dispatch was removed in #7322; on an already-enrolled repo, this rule
-// otherwise survives `repos upgrade`/`repos install` convergence forever
-// because the install merge path only runs on fresh installs and the
-// uninstall unmerge path only runs on teardown. StripObsoleteGitLabWorkflowRules
-// uses this list to migrate already-enrolled repos in place.
+// obsoleteGitLabWorkflowRules are workflow:rules entries that fullsend
+// versions before #7322 installed into the root .gitlab-ci.yml but that
+// are no longer part of the current contract. Uninstall still removes
+// them from a workflow block fullsend owns (see removeWorkflowRules);
+// converge no longer migrates them.
 var obsoleteGitLabWorkflowRules = []workflowRule{
 	{If: `$CI_PIPELINE_SOURCE == "merge_request_event"`},
-}
-
-// StripObsoleteGitLabWorkflowRules removes obsolete fullsend workflow:rules
-// entries (see obsoleteGitLabWorkflowRules) from an existing .gitlab-ci.yml,
-// leaving everything else — including fullsend's current rules, the
-// workflow name, auto_cancel settings, and any user configuration —
-// untouched. Unlike UnmergeGitLabCI (full teardown) this never removes
-// fullsend's current entries; it only migrates away rules that are
-// strictly obsolete.
-//
-// An obsolete rule is only stripped when gitlabCIWorkflowIsFullsendOwned
-// finds positive evidence that fullsend, not the repo owner, installed
-// the workflow block — the obsolete condition
-// ($CI_PIPELINE_SOURCE == "merge_request_event") is GitLab's standard
-// MR-pipeline gate and repos commonly set it themselves.
-//
-// Returns the original content and changed=false when there is nothing
-// to strip (no workflow: block, no rules:, no obsolete rule present, or
-// fullsend ownership of the block can't be established).
-func StripObsoleteGitLabWorkflowRules(existing []byte) (result []byte, changed bool, err error) {
-	if len(bytes.TrimSpace(existing)) == 0 {
-		return existing, false, nil
-	}
-
-	docs, err := decodeGitLabDocuments(existing)
-	if err != nil {
-		return nil, false, fmt.Errorf("parsing .gitlab-ci.yml: %w", err)
-	}
-	if len(docs) == 0 {
-		return existing, false, nil
-	}
-	doc := docs[len(docs)-1]
-	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
-		return existing, false, nil
-	}
-
-	root := doc.Content[0]
-	if root.Kind != yaml.MappingNode {
-		return existing, false, nil
-	}
-
-	workflowVal := findMappingValue(root, "workflow")
-	if workflowVal == nil || workflowVal.Kind != yaml.MappingNode {
-		return existing, false, nil
-	}
-
-	rulesIdx := findMappingKeyIndex(workflowVal, "rules")
-	if rulesIdx < 0 {
-		return existing, false, nil
-	}
-	rulesVal := workflowVal.Content[rulesIdx+1]
-	if rulesVal.Kind != yaml.SequenceNode {
-		return existing, false, nil
-	}
-
-	obsolete := make(map[string]bool, len(obsoleteGitLabWorkflowRules))
-	for _, r := range obsoleteGitLabWorkflowRules {
-		obsolete[r.If] = true
-	}
-
-	hasObsolete := false
-	for _, item := range rulesVal.Content {
-		if item.Kind == yaml.MappingNode {
-			if v := findMappingValue(item, "if"); v != nil && obsolete[v.Value] {
-				hasObsolete = true
-				break
-			}
-		}
-	}
-	if !hasObsolete {
-		return existing, false, nil
-	}
-
-	// $CI_PIPELINE_SOURCE == "merge_request_event" is GitLab's standard
-	// MR-pipeline gate, not something unique to fullsend, and repos can
-	// (and do) set it themselves. Only strip it when there is positive
-	// evidence fullsend — not the repo owner — installed this workflow
-	// block; otherwise leave it untouched.
-	if !gitlabCIWorkflowIsFullsendOwned(workflowVal) {
-		return existing, false, nil
-	}
-
-	var kept []*yaml.Node
-	for _, item := range rulesVal.Content {
-		if item.Kind == yaml.MappingNode {
-			if v := findMappingValue(item, "if"); v != nil && obsolete[v.Value] {
-				continue
-			}
-		}
-		kept = append(kept, item)
-	}
-	if len(kept) == 0 {
-		// Remove the rules: key entirely rather than leaving behind
-		// workflow.rules: []. GitLab treats a present-but-empty rules:
-		// as "never run" (see https://docs.gitlab.com/ee/ci/yaml/#workflow),
-		// which would also block fullsend's own schedule- and
-		// API-triggered pipelines, not just MR pipelines. Mirrors
-		// removeWorkflowRules's teardown-path handling of the same case.
-		workflowVal.Content = append(
-			workflowVal.Content[:rulesIdx],
-			workflowVal.Content[rulesIdx+2:]...)
-	} else {
-		rulesVal.Content = kept
-	}
-
-	out, marshalErr := marshalGitLabDocuments(docs)
-	if marshalErr != nil {
-		return nil, false, marshalErr
-	}
-	return out, true, nil
 }
 
 // gitlabCIWorkflowIsFullsendOwned reports whether a workflow: block shows
@@ -337,8 +210,8 @@ func gitlabCIWorkflowIsFullsendOwned(workflow *yaml.Node) bool {
 //
 // The rule is only merged when gitlabCIWorkflowIsFullsendOwned finds
 // positive evidence that fullsend, not the repo owner, installed the
-// workflow block — the same ownership gate StripObsoleteGitLabWorkflowRules
-// uses — so a user's own hand-written workflow: block is never modified.
+// workflow block, so a user's own hand-written workflow: block is never
+// modified.
 //
 // Returns the original content and changed=false when there is nothing to
 // merge (no workflow: block, the rule is already present, or fullsend
@@ -370,8 +243,7 @@ func MergeMissingGitLabDebugTraceRule(existing []byte) (result []byte, changed b
 		return existing, false, nil
 	}
 
-	// Only touch a workflow: block fullsend can prove it owns — same
-	// ownership gate as StripObsoleteGitLabWorkflowRules.
+	// Only touch a workflow: block fullsend can prove it owns.
 	if !gitlabCIWorkflowIsFullsendOwned(workflowVal) {
 		return existing, false, nil
 	}
@@ -383,293 +255,11 @@ func MergeMissingGitLabDebugTraceRule(existing []byte) (result []byte, changed b
 
 	mergeWorkflowRules(workflowVal)
 
-	out, marshalErr := marshalGitLabDocuments(docs)
+	out, marshalErr := renderGitLabDocuments(existing, docs)
 	if marshalErr != nil {
 		return nil, false, marshalErr
 	}
 	return out, true, nil
-}
-
-// StripObsoleteGitLabStages removes obsolete fullsend stages (see
-// obsoleteGitLabStages) from an existing .gitlab-ci.yml, leaving
-// everything else — including fullsend's current stages, user stages,
-// includes, and workflow configuration — untouched. Unlike UnmergeGitLabCI
-// (full teardown) this never removes fullsend's current stages; it only
-// migrates away stages that are strictly obsolete.
-//
-// An obsolete stage is only a stripping candidate when the file shows
-// positive evidence that fullsend, not the repo owner, installed it: the
-// fullsend pipeline include is present (this is an enrolled root CI
-// file) AND at least one current fullsend stage is in the stages list
-// (mergeStages ran and appended poll/agent alongside dispatch).
-// A lone "dispatch" stage without poll or agent is treated as the
-// repo's own and left in place. This gate differs from
-// gitlabCIWorkflowIsFullsendOwned (workflow.name) because mergeStages
-// never sets workflow.name — the merge-path repos that actually have
-// stages: in the root file are exactly those that lack the name
-// marker. Gating on the name would make this migration a no-op for
-// the files that need it. "dispatch" is also not GitLab's standard
-// MR-pipeline gate; the include-plus-current-stage fingerprint is
-// the analogue of fullsend ownership for stages.
-//
-// That fingerprint proves fullsend touched the stages: array, but not
-// that a stage literally named "dispatch" is safe to delete — a repo
-// enrolled via the merge path could independently have its own job on
-// a "dispatch" stage, coexisting with fullsend's poll/agent. Deleting a
-// stage that a job still references breaks the pipeline (GitLab rejects
-// a job whose stage: isn't in stages:). So before removing an obsolete
-// stage name, stageReferencedByJob scans top-level job definitions —
-// including stages inherited via extends: or the YAML merge key (<<:) —
-// for an effective stage: value matching it and, if found, leaves that
-// stage in place — mirroring the conservative refusal
-// gitlabCIWorkflowIsFullsendOwned already applies to the workflow: block.
-// This scan only sees the root file's own top-level keys, so a second,
-// non-fullsend include is also treated as absence of evidence: the root
-// file might not be the whole picture, and a job living in that other
-// include would be invisible to the scan.
-//
-// Returns the original content and changed=false when there is nothing
-// to strip (no stages: block, no obsolete stage present, fullsend
-// ownership of the stages list can't be established, a non-fullsend
-// include is also present, or every obsolete stage present is still
-// referenced by a job).
-func StripObsoleteGitLabStages(existing []byte) (result []byte, changed bool, err error) {
-	if len(bytes.TrimSpace(existing)) == 0 {
-		return existing, false, nil
-	}
-
-	docs, err := decodeGitLabDocuments(existing)
-	if err != nil {
-		return nil, false, fmt.Errorf("parsing .gitlab-ci.yml: %w", err)
-	}
-	if len(docs) == 0 {
-		return existing, false, nil
-	}
-	doc := docs[len(docs)-1]
-	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
-		return existing, false, nil
-	}
-
-	root := doc.Content[0]
-	if root.Kind != yaml.MappingNode {
-		return existing, false, nil
-	}
-
-	// Top-level keys are resolved once via classifyTopLevelKey — the same
-	// alias-resolving, tag-checking classifier stageReferencedByJob uses
-	// for job keys — rather than the literal, first-match .Value=="include"
-	// (or "stages") checks findMappingValue/findMappingKeyIndex perform. A
-	// second top-level "include:" key hidden behind an AliasNode, or a
-	// duplicate "include:"/"stages:" key that a first-match lookup would
-	// silently collapse to its first occurrence, must be visible here: the
-	// include-ownership gate below can only fail closed on what it can see.
-	topKeys, topOk := classifyTopLevelKeys(root)
-	if !topOk {
-		return existing, false, nil
-	}
-
-	includeVals := topKeys["include"]
-	if len(includeVals) == 0 {
-		return existing, false, nil
-	}
-	if len(includeVals) > 1 {
-		// Duplicate top-level "include:" keys — GitLab/Psych is last-wins,
-		// but which occurrence actually wins can't be assumed with
-		// confidence here, and a first-match lookup would make the other
-		// occurrence (and any job it pulls in) invisible. Fail closed.
-		return existing, false, nil
-	}
-	includeVal := includeVals[0]
-
-	hasInclude := false
-	hasOtherInclude := false
-	if includeVal.Kind == yaml.SequenceNode {
-		for _, item := range includeVal.Content {
-			if isFullsendPipelineInclude(item) {
-				hasInclude = true
-			} else {
-				hasOtherInclude = true
-			}
-		}
-	} else {
-		hasInclude = isFullsendPipelineInclude(includeVal)
-	}
-	if !hasInclude {
-		return existing, false, nil
-	}
-	// A second include can pull in a local file that defines its own jobs.
-	// stageReferencedByJob only sees the root file's top-level keys, so a
-	// job living in that other include is invisible to it — stripping a
-	// stage that job references would break the pipeline. Fail closed
-	// rather than fetch and scan an arbitrary include graph.
-	if hasOtherInclude {
-		return existing, false, nil
-	}
-
-	stagesVals := topKeys["stages"]
-	if len(stagesVals) == 0 {
-		return existing, false, nil
-	}
-	if len(stagesVals) > 1 {
-		// Duplicate top-level "stages:" keys — same last-wins ambiguity as
-		// duplicate "include:" keys above. Fail closed.
-		return existing, false, nil
-	}
-	stagesVal := stagesVals[0]
-	if stagesVal.Kind != yaml.SequenceNode {
-		return existing, false, nil
-	}
-
-	obsolete := make(map[string]bool, len(obsoleteGitLabStages))
-	for _, s := range obsoleteGitLabStages {
-		obsolete[s] = true
-	}
-
-	existingStages := make(map[string]bool)
-	for _, item := range stagesVal.Content {
-		if item.Kind == yaml.ScalarNode {
-			existingStages[item.Value] = true
-		}
-	}
-
-	hasObsolete := false
-	for name := range obsolete {
-		if existingStages[name] {
-			hasObsolete = true
-			break
-		}
-	}
-	if !hasObsolete {
-		return existing, false, nil
-	}
-
-	// A stages list that contains dispatch but none of fullsend's
-	// current stages is indistinguishable from a repo that independently
-	// named a stage "dispatch" and later added the fullsend include
-	// without mergeStages having appended poll/agent. Leave it.
-	hasCurrent := false
-	for _, s := range fullsendStages {
-		if existingStages[s] {
-			hasCurrent = true
-			break
-		}
-	}
-	if !hasCurrent {
-		return existing, false, nil
-	}
-
-	// Only remove an obsolete stage that's actually present and that no
-	// job still references. A referenced stage is left in place even
-	// though it's nominally obsolete — removing it would make the job's
-	// stage: value invalid and break the pipeline.
-	removable := make(map[string]bool, len(obsolete))
-	for name := range obsolete {
-		if existingStages[name] && !stageReferencedByJob(root, name) {
-			removable[name] = true
-		}
-	}
-	if len(removable) == 0 {
-		return existing, false, nil
-	}
-
-	var kept []*yaml.Node
-	for _, item := range stagesVal.Content {
-		if item.Kind == yaml.ScalarNode && removable[item.Value] {
-			continue
-		}
-		kept = append(kept, item)
-	}
-	// kept cannot be empty: hasCurrent already proved at least one
-	// current fullsend stage is present, and those names are disjoint
-	// from obsoleteGitLabStages.
-	stagesVal.Content = kept
-
-	out, marshalErr := marshalGitLabDocuments(docs)
-	if marshalErr != nil {
-		return nil, false, marshalErr
-	}
-	return out, true, nil
-}
-
-// stageReferencedByJob reports whether any top-level job definition in
-// root has an effective stage: of stageName — set directly, inherited via
-// extends:, or inherited via the YAML merge key (<<:). Top-level keys
-// reserved for pipeline configuration (see nonJobTopLevelKeys) are not
-// job definitions and are skipped as scan roots, but hidden `.`-prefixed
-// keys (templates meant to be extended, not run directly) are still
-// resolved as extends/merge targets: a visible job with no stage: of its
-// own can still compile to stageName by extending or merging in a hidden
-// template that sets it. A job that still references an otherwise-obsolete
-// stage name must keep that stage in stages: or GitLab rejects the
-// pipeline, so callers use this to avoid stripping a stage a job depends
-// on.
-//
-// A top-level key must be a resolvable, untagged scalar to be classified
-// as reserved configuration, a hidden template, or an ordinary job name.
-// A key that is instead an AliasNode (`*n: {stage: dispatch}`), carries a
-// non-core YAML tag, or resolves to anything other than a plain scalar
-// can't be classified — it might be a live job the classifier would
-// otherwise skip. The root-level YAML merge key (<<:) is handled the same
-// way: gopkg.in/yaml.v3's Node API preserves "<<" as a literal mapping
-// key rather than expanding it, so a merged-in job (e.g. `<<: *jobs` where
-// *jobs anchors `{notify: {stage: dispatch, ...}}`) is invisible to the
-// per-key scan — the merge target would be checked as if it were a single
-// job body, which has no top-level stage: of its own, rather than scanned
-// per injected job. Both cases fail closed by returning true rather than
-// being skipped via continue.
-//
-// classifyTopLevelKey (shared with collectJobKeys) is used for both the
-// extends-target lookup table and the scan loop below, so the two can't
-// drift apart on what counts as a classifiable key — a hidden template
-// keyed by an AliasNode (`*n: &tpl .dispatch_template`) must be resolvable
-// as an extends/merge target by the same rule that lets the scan loop
-// recognize and skip it as a template, or a visible job extending it would
-// miss the lookup entry and silently fail open.
-func stageReferencedByJob(root *yaml.Node, stageName string) bool {
-	lookup := make(map[string]*yaml.Node, len(root.Content)/2)
-	for i := 0; i+1 < len(root.Content); i += 2 {
-		if name, ok := classifyTopLevelKey(root.Content[i]); ok {
-			lookup[name] = root.Content[i+1]
-		}
-	}
-
-	for i := 0; i+1 < len(root.Content); i += 2 {
-		keyNode := root.Content[i]
-		valNode := root.Content[i+1]
-
-		name, ok := classifyTopLevelKey(keyNode)
-		if !ok {
-			return true
-		}
-		if hasInterpolationSyntax(name) {
-			// A top-level key whose literal text carries interpolation
-			// syntax can't be trusted to classify as "<<", a hidden
-			// template, or an ordinary job name: the interpolated portion
-			// may evaluate to something else entirely at pipeline time. In
-			// particular, an ordinary-looking name (not "<<", not
-			// "."-prefixed) whose value is an alias to a mapping of further
-			// job definitions — e.g. `$[[ inputs.merge ]]: *jobs` injecting
-			// {notify: {stage: dispatch}} — would otherwise be scanned by
-			// nodeResolvesToStage as a single job body, which has no
-			// top-level stage: of its own, silently missing the injected
-			// jobs. Fail closed before classifying this key at all, rather
-			// than only guarding the "."-prefixed hidden-template case.
-			return true
-		}
-		if name == "<<" {
-			return true
-		}
-		if nonJobTopLevelKeys[name] {
-			continue
-		}
-		if strings.HasPrefix(name, ".") {
-			continue
-		}
-		if nodeResolvesToStage(valNode, stageName, lookup, make(map[*yaml.Node]bool)) {
-			return true
-		}
-	}
-	return false
 }
 
 // hasInterpolationSyntax reports whether a key or value's literal text
@@ -695,12 +285,9 @@ func hasInterpolationSyntax(name string) bool {
 // configuration, a hidden template, or an ordinary job name, so callers
 // must treat it conservatively (fail closed) rather than guess.
 //
-// This is the single source of truth for key classification shared by
-// stageReferencedByJob's lookup-building and scanning loops and by
-// collectJobKeys; each previously reimplemented this check slightly
-// differently, which is how a hidden template keyed by an AliasNode could
-// be recognized by one loop (and skipped as a template) while being
-// invisible to the other (never added to the extends-target lookup).
+// This is the single source of truth for key classification shared by the
+// trigger-admission and dispatcher-template scans, so they can't drift
+// apart on what counts as a classifiable key.
 func classifyTopLevelKey(keyNode *yaml.Node) (name string, ok bool) {
 	resolved := keyNode
 	if keyNode.Kind == yaml.AliasNode {
@@ -720,22 +307,17 @@ func classifyTopLevelKey(keyNode *yaml.Node) (name string, ok bool) {
 // might resolve to a name a caller needs to see (e.g. "include" or
 // "stages") and would otherwise be silently invisible to it.
 //
-// This replaces separate, drifting top-level lookups — a literal
-// .Value=="include" check for the include-ownership gate, a literal
-// .Value=="stages" check for the stages list — with the same
-// alias-resolving, tag-checking, duplicate-aware classification already
-// required for job keys, so a second top-level "include:" key hidden
-// behind an AliasNode, or a duplicate "include:"/"stages:" key that
-// GitLab/Psych's last-wins semantics would apply, can't be silently
-// collapsed to a single first-match occurrence the way findMappingValue
-// and findMappingKeyIndex would collapse it.
+// Unlike the literal, first-match lookups findMappingValue and
+// findMappingKeyIndex perform, a top-level key hidden behind an AliasNode,
+// or a duplicate key that GitLab/Psych's last-wins semantics would apply,
+// can't be silently collapsed to a single first-match occurrence.
 //
 // A key whose literal text carries interpolation syntax (`$[[ ... ]]` or
 // `${...}`, see hasInterpolationSyntax) is also treated as unclassifiable
 // here, even though classifyTopLevelKey itself resolved it to a plain
 // scalar: e.g. a second top-level `$[[ inputs.extra ]]:` key could
-// evaluate to "include" or "stages" at pipeline time, hiding a duplicate
-// occurrence from the two lookups above. This check is scoped to
+// evaluate to a name a caller looks up at pipeline time, hiding a
+// duplicate occurrence from it. This check is scoped to
 // classifyTopLevelKeys rather than classifyTopLevelKey itself so an
 // ordinary, non-interpolated `$`-bearing job name (e.g. "weird$job")
 // remains scannable via the shared helper's other callers.
@@ -751,221 +333,6 @@ func classifyTopLevelKeys(root *yaml.Node) (keys map[string][]*yaml.Node, ok boo
 		keys[name] = append(keys[name], root.Content[i+1])
 	}
 	return keys, ok
-}
-
-// nodeResolvesToStage reports whether node's effective stage: — resolving
-// alias nodes (e.g. `job: *template`), the YAML merge key (<<: *template
-// or <<: [*a, *b]), and extends: chains (scalar or sequence, possibly
-// pointing at another job that itself extends further) — equals
-// stageName. A node's own explicit stage: always takes precedence over
-// anything inherited, matching GitLab's merge semantics where a job's own
-// keys override what it extends or merges in. seen guards against cyclic
-// references.
-//
-// A stage: value that isn't a known literal — an AliasNode (`stage:
-// *anchor`), an unresolvable/unexpected form such as GitLab's `!reference
-// [...]` tag, or a plain scalar carrying GitLab CI/CD variable or
-// pipeline-input interpolation syntax (`stage: $NOTIFY_STAGE`, `${...}`,
-// `$[[ ... ]]`) whose `.Value` is unevaluated expression text rather than
-// the stage GitLab will actually assign — cannot be compared as a string.
-// isLiteralScalarValue applies this fail-closed check uniformly; anything
-// it can't resolve to a literal is treated as a live reference since the
-// effective stage can't be ruled out.
-//
-// The same fail-closed treatment applies to the whole-job value itself:
-// after alias resolution, a node that carries a non-core YAML tag (such as
-// a whole-job `!reference [...]`) or isn't a mapping can't be interpreted
-// as job content, so it's treated as a live reference rather than silently
-// skipped.
-//
-// stage:, <<:, and extends: are looked up via collectJobKeys rather than
-// findMappingValue, which only returns the first match: gopkg.in/yaml.v3
-// preserves duplicate mapping keys as separate Content pairs (the
-// duplicate-key error only applies when decoding into a Go map/struct),
-// and GitLab/Psych's YAML parser is last-wins, so a first-match lookup can
-// silently classify a job by the wrong occurrence. collectJobKeys collects
-// every occurrence of each key and reports ok=false — fail closed — when a
-// key is duplicated or when any key in the mapping can't be classified as
-// a unique, plain, untagged scalar (an alias key, a non-core-tagged key,
-// or a non-scalar key), since such a key might itself resolve to "stage",
-// "<<", or "extends" and be missed.
-func nodeResolvesToStage(node *yaml.Node, stageName string, lookup map[string]*yaml.Node, seen map[*yaml.Node]bool) bool {
-	if node == nil || seen[node] {
-		return false
-	}
-	seen[node] = true
-
-	if node.Kind == yaml.AliasNode {
-		return nodeResolvesToStage(node.Alias, stageName, lookup, seen)
-	}
-	if hasNonCoreTag(node) || node.Kind != yaml.MappingNode {
-		// A whole-job value that isn't a plain mapping after alias
-		// resolution — e.g. GitLab's `notify: !reference
-		// [.dispatch_template]` (a SequenceNode tagged !reference, not a
-		// job mapping) — can't be interpreted as a job body, so its
-		// effective stage can't be ruled out. Fail closed rather than
-		// silently treat it as not referencing anything, matching the
-		// same hasNonCoreTag guard already applied to stage:/<<:/extends:
-		// values below.
-		return true
-	}
-
-	keys, ok := collectJobKeys(node)
-	if !ok {
-		return true
-	}
-
-	if len(keys.stage) == 1 {
-		value, ok := isLiteralScalarValue(keys.stage[0])
-		if !ok {
-			// Not a resolvable, untagged, fully-literal scalar — either an
-			// unresolvable alias, a non-core tag such as `!reference`, a
-			// non-scalar, or GitLab CI/CD variable/pipeline-input
-			// interpolation (e.g. `stage: $NOTIFY_STAGE`). The effective
-			// stage value isn't known here, so it can't be ruled out.
-			return true
-		}
-		return value == stageName
-	}
-
-	if len(keys.merge) == 1 && mergeTargetResolvesToStage(keys.merge[0], stageName, lookup, seen) {
-		return true
-	}
-
-	if len(keys.extends) == 1 {
-		names, resolvable := extendsNames(keys.extends[0])
-		if !resolvable {
-			// extends: isn't a scalar, a sequence of scalars, or a
-			// resolvable alias to one of those — e.g. an alias to a
-			// mapping, or some other unexpected shape. The effective
-			// extends target(s) can't be determined, so fail closed
-			// rather than silently treat this job as not extending
-			// anything.
-			return true
-		}
-		for _, name := range names {
-			target, found := lookup[name]
-			if !found {
-				// The extends: target isn't a top-level key of this root
-				// file. GitLab resolves extends: against the fully merged
-				// pipeline configuration, including jobs defined in
-				// included files — an unresolvable name here doesn't mean
-				// the job doesn't inherit stageName, only that this
-				// scanner (which only sees the root file's own top-level
-				// keys) can't rule it out. Fail closed rather than
-				// silently treat the extends: target as absent.
-				return true
-			}
-			if nodeResolvesToStage(target, stageName, lookup, seen) {
-				return true
-			}
-		}
-	}
-
-	return false
-}
-
-// jobKeys holds every occurrence of the stage:, <<:, and extends: keys
-// found on a job mapping by collectJobKeys.
-type jobKeys struct {
-	stage   []*yaml.Node
-	merge   []*yaml.Node
-	extends []*yaml.Node
-}
-
-// collectJobKeys walks every key/value pair in a job mapping and collects
-// every occurrence of the stage:, <<:, and extends: keys — not just the
-// first. ok is false (fail closed) when the mapping can't be
-// unambiguously classified by key name: any key that isn't a unique,
-// plain, untagged scalar (an AliasNode key, a key carrying a non-core YAML
-// tag, or a non-scalar key), or more than one occurrence of stage:, <<:,
-// or extends:. Both cases mean the mapping's effective stage:/<<:/extends:
-// can't be determined from a simple by-name lookup, so callers must treat
-// the job as a live reference rather than guess which occurrence wins.
-//
-// Key classification is delegated to classifyTopLevelKey, the same helper
-// stageReferencedByJob uses, so job-level and top-level key resolution
-// can't drift apart on what counts as a classifiable key.
-func collectJobKeys(mapping *yaml.Node) (keys jobKeys, ok bool) {
-	ok = true
-	for i := 0; i+1 < len(mapping.Content); i += 2 {
-		valNode := mapping.Content[i+1]
-
-		name, keyOk := classifyTopLevelKey(mapping.Content[i])
-		if !keyOk {
-			ok = false
-			continue
-		}
-		if strings.Contains(name, "$") {
-			// A job-level key whose literal text carries GitLab
-			// pipeline-input interpolation syntax (e.g.
-			// `$[[ inputs.keyword ]]: dispatch`) might evaluate to "stage",
-			// "<<", or "extends" at pipeline time even though its raw
-			// .Value never string-matches any of those names here. Treat
-			// the whole mapping as unclassifiable rather than silently
-			// ignore a key that could be one of the ones this scan depends
-			// on.
-			ok = false
-			continue
-		}
-
-		switch name {
-		case "stage":
-			keys.stage = append(keys.stage, valNode)
-		case "<<":
-			keys.merge = append(keys.merge, valNode)
-		case "extends":
-			keys.extends = append(keys.extends, valNode)
-		}
-	}
-	if len(keys.stage) > 1 || len(keys.merge) > 1 || len(keys.extends) > 1 {
-		ok = false
-	}
-	return keys, ok
-}
-
-// mergeTargetResolvesToStage reports whether a YAML merge key's value (the
-// `<<:` value, e.g. `<<: *template`, `<<: [*a, *b]`, or `<<: !reference
-// [...]`) has an effective stage: of stageName once merged into the job
-// that references it.
-//
-// The value must be alias-resolved before its Kind is inspected: an alias
-// to a sequence of mappings (`<<: *seq`) is itself an AliasNode, not a
-// SequenceNode, so classifying by Kind before dereferencing misses it and
-// falls through to comparing the sequence as if it had no stage: of its
-// own. A resolved sequence's items must each be alias-resolved and
-// confirmed to be mappings in turn — GitLab's `<<: !reference [...]` form
-// produces a sequence of path-component scalars, not job mappings, and
-// must not be scanned as one. Any node that carries a non-core YAML tag
-// (such as `!reference`) or that isn't a mapping/sequence after resolution
-// can't be interpreted as merged job content, so its effective stage can't
-// be ruled out — fail closed by returning true.
-func mergeTargetResolvesToStage(mergeVal *yaml.Node, stageName string, lookup map[string]*yaml.Node, seen map[*yaml.Node]bool) bool {
-	resolved := resolveAlias(mergeVal)
-	if resolved == nil {
-		// Cyclic alias chain — can't resolve.
-		return true
-	}
-	if hasNonCoreTag(resolved) {
-		return true
-	}
-	switch resolved.Kind {
-	case yaml.MappingNode:
-		return nodeResolvesToStage(resolved, stageName, lookup, seen)
-	case yaml.SequenceNode:
-		for _, item := range resolved.Content {
-			itemResolved := resolveAlias(item)
-			if itemResolved == nil || hasNonCoreTag(itemResolved) || itemResolved.Kind != yaml.MappingNode {
-				return true
-			}
-			if nodeResolvesToStage(itemResolved, stageName, lookup, seen) {
-				return true
-			}
-		}
-		return false
-	default:
-		return true
-	}
 }
 
 // hasNonCoreTag reports whether node carries a YAML tag other than one of
@@ -1154,8 +521,9 @@ func HasFullsendEntries(existing []byte) bool {
 }
 
 // MergeGitLabCI merges fullsend's CI configuration into an existing
-// .gitlab-ci.yml. It uses yaml.v3's Node API to preserve comments and
-// formatting in the existing file.
+// .gitlab-ci.yml. It uses yaml.v3's Node API to preserve comments in the
+// existing file, and renderGitLabDocuments to keep its blank lines and to
+// return it byte-for-byte when nothing needs merging.
 //
 // The merge performs up to three operations:
 //  1. Appends an include entry for .gitlab/ci/fullsend-pipeline.yml
@@ -1180,11 +548,17 @@ func MergeGitLabCI(existing []byte) ([]byte, error) {
 }
 
 // mergeGitLabCIWithWrapper uses the effective wrapper's schema, including
-// remote pinned templates. An old wrapper must keep its variables contract.
+// remote pinned templates. The wrapper must declare the typed pipeline-input
+// contract; a legacy variable-based wrapper is rejected (see
+// legacyGitLabWrapperError).
 func mergeGitLabCIWithWrapper(existing, wrapper []byte) ([]byte, error) {
 	if len(bytes.TrimSpace(existing)) == 0 {
 		existing = []byte("include: []\nworkflow:\n  name: 'fullsend $CI_PIPELINE_SOURCE'\n")
 	}
+	// source is the content whose formatting the merged output keeps
+	// (see renderGitLabDocuments); it tracks the placeholder below when
+	// the existing file has no documents to merge into.
+	source := existing
 
 	docs, err := decodeGitLabDocuments(existing)
 	if err != nil {
@@ -1195,12 +569,10 @@ func mergeGitLabCIWithWrapper(existing, wrapper []byte) ([]byte, error) {
 		// decodes to zero non-empty documents. Normalize it to the same
 		// minimal placeholder body used for a genuinely empty file above
 		// and continue merging with the supplied wrapper, rather than
-		// discarding that wrapper for newGitLabCI's embedded typed-input
-		// default — delivering the default here could introduce a typed
-		// root forwarding inputs a pending legacy wrapper never declares,
-		// even though install already classified that wrapper as legacy.
-		// See the review finding on this fallback.
-		docs, err = decodeGitLabDocuments([]byte("include: []\nworkflow:\n  name: 'fullsend $CI_PIPELINE_SOURCE'\n"))
+		// discarding that wrapper for newGitLabCI's embedded default, so
+		// the merged root always matches the wrapper being delivered.
+		source = []byte("include: []\nworkflow:\n  name: 'fullsend $CI_PIPELINE_SOURCE'\n")
+		docs, err = decodeGitLabDocuments(source)
 		if err != nil {
 			return nil, fmt.Errorf("parsing placeholder .gitlab-ci.yml: %w", err)
 		}
@@ -1217,27 +589,18 @@ func mergeGitLabCIWithWrapper(existing, wrapper []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parsing GitLab wrapper: %w", err)
 	}
-	var contract *yaml.Node
-	if gitlabWrapperHasDispatchInputs(wrapper) {
-		contract = contractDocs[0].Content[0]
-	} else if err := requireCompleteGitLabDispatchContract(wrapper); err != nil {
-		return nil, err
-	} else if gitlabWrapperHasDispatchInputs(existing) {
-		// A forced typed-to-legacy transition: the root already carries
-		// the typed spec:inputs header and include:inputs forwarding map
-		// from a previous typed install, but the wrapper being merged
-		// now is legacy and declares none of those inputs. Delivering it
-		// as-is would leave an invalid include (the root forwards inputs
-		// the legacy wrapper's include never declares) and stale
-		// no_one_allowed/variable-free schedules incompatible with
-		// legacy dispatch. There is no automatic rollback of the root
-		// contract, so refuse rather than commit a broken mix.
-		return nil, fmt.Errorf("refusing to merge a legacy GitLab wrapper: the installed root already carries the typed pipeline-input contract (spec:inputs and include:inputs forwarding), which the legacy wrapper does not declare; manually roll back the root contract before reverting to pipeline-variable dispatch")
-	}
-	if contract != nil {
-		if docs, err = mergeGitLabInputContract(docs, contract); err != nil {
+	if !gitlabWrapperHasDispatchInputs(wrapper) {
+		// Only the typed pipeline-input contract is supported; an
+		// incomplete contract or a legacy variable-based wrapper is
+		// rejected rather than merged.
+		if err := requireCompleteGitLabDispatchContract(wrapper); err != nil {
 			return nil, err
 		}
+		return nil, legacyGitLabWrapperError()
+	}
+	contract := contractDocs[0].Content[0]
+	if docs, err = mergeGitLabInputContract(docs, contract); err != nil {
+		return nil, err
 	}
 	if len(docs) > 2 {
 		return nil, fmt.Errorf(".gitlab-ci.yml must contain a spec header and one pipeline body")
@@ -1245,37 +608,35 @@ func mergeGitLabCIWithWrapper(existing, wrapper []byte) ([]byte, error) {
 	if err := mergeInclude(root); err != nil {
 		return nil, err
 	}
-	if contract != nil {
-		addRootInputForwarding(root)
-		variables := findMappingValue(root, "variables")
-		if variables == nil {
-			variables = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
-			root.Content = append(root.Content, scalarNode("variables"), variables)
-		}
-		if variables.Kind != yaml.MappingNode {
-			return nil, fmt.Errorf("variables: is not a mapping")
-		}
-		stage := findMappingValue(variables, "STAGE")
-		if stage == nil {
-			variables.Content = append(variables.Content, scalarNode("STAGE"), scalarNode("$[[ inputs.stage ]]"))
-		} else if !gitlabVariableBridgesInput(variables, "STAGE", "stage") {
-			// gitlabVariableBridgesInput accepts both GitLab's plain-scalar
-			// variable syntax and its extended ({value:, expand:}) form, so
-			// a compatible extended declaration such as
-			// STAGE: {value: '$[[ inputs.stage ]]', expand: false} is
-			// preserved here rather than rejected — comparing stage.Value
-			// directly would see an empty scalar on a mapping node and
-			// report a spurious conflict. See the review finding on this
-			// comparison.
-			return nil, fmt.Errorf("existing STAGE variable conflicts with the dispatch input bridge")
-		}
+	addRootInputForwarding(root)
+	variables := findMappingValue(root, "variables")
+	if variables == nil {
+		variables = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+		root.Content = append(root.Content, scalarNode("variables"), variables)
+	}
+	if variables.Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("variables: is not a mapping")
+	}
+	stage := findMappingValue(variables, "STAGE")
+	if stage == nil {
+		variables.Content = append(variables.Content, scalarNode("STAGE"), scalarNode("$[[ inputs.stage ]]"))
+	} else if !gitlabVariableBridgesInput(variables, "STAGE", "stage") {
+		// gitlabVariableBridgesInput accepts both GitLab's plain-scalar
+		// variable syntax and its extended ({value:, expand:}) form, so
+		// a compatible extended declaration such as
+		// STAGE: {value: '$[[ inputs.stage ]]', expand: false} is
+		// preserved here rather than rejected — comparing stage.Value
+		// directly would see an empty scalar on a mapping node and
+		// report a spurious conflict. See the review finding on this
+		// comparison.
+		return nil, fmt.Errorf("existing STAGE variable conflicts with the dispatch input bridge")
 	}
 	mergeStages(root)
 	if err := mergeWorkflow(root); err != nil {
 		return nil, err
 	}
 
-	return marshalGitLabDocuments(docs)
+	return renderGitLabDocuments(source, docs)
 }
 
 func decodeGitLabDocuments(content []byte) ([]*yaml.Node, error) {
@@ -1336,34 +697,60 @@ func gitlabWrapperDeclaresSpecInputs(content []byte) bool {
 // spec:inputs mapping that attempts the pipeline-input dispatch contract
 // but is missing one or more of the required names. gitlabWrapperHasDispatchInputs
 // classifies such a wrapper as "not typed", the same verdict it gives a
-// genuinely legacy, variable-based wrapper — but an alternate or incomplete
-// typed contract is neither: silently treating it as legacy would skip the
-// compatibility validation and no_one_allowed restriction typed activation
-// depends on. Callers that gate security-relevant behavior on
-// gitlabWrapperHasDispatchInputs must also reject this case explicitly
-// (see requireCompleteGitLabDispatchContract) rather than falling through
-// to legacy handling.
+// legacy, variable-based wrapper; requireCompleteGitLabDispatchContract
+// uses this to report the incomplete contract specifically rather than
+// describing it as a legacy wrapper.
 func gitlabWrapperHasPartialDispatchInputs(content []byte) bool {
 	return gitlabWrapperDeclaresSpecInputs(content) && !gitlabWrapperHasDispatchInputs(content)
 }
 
 // errGitLabIncompatibleWrapper marks a wrapper whose transport contract is
-// incompatible (an incomplete typed contract, or a typed contract lacking
-// the literal-scheduled marker). Callers that inspect the *installed*
+// incompatible (an incomplete typed contract, a typed contract lacking
+// the literal-scheduled marker, or a legacy variable-based wrapper). Callers that inspect the *installed*
 // wrapper can use errors.Is to tell this content problem — which a scaffold
 // repair resolves — apart from an API/read failure.
 var errGitLabIncompatibleWrapper = errors.New("incompatible GitLab wrapper contract")
 
 // requireCompleteGitLabDispatchContract rejects a wrapper that declares an
-// incomplete spec:inputs pipeline-input contract — neither a supported
-// legacy (variable-based) wrapper nor a valid typed one. See
-// gitlabWrapperHasPartialDispatchInputs and the fail-open review finding on
-// typed-transport detection.
+// incomplete spec:inputs pipeline-input contract, which is not a valid
+// typed one. See gitlabWrapperHasPartialDispatchInputs and the fail-open
+// review finding on typed-transport detection.
 func requireCompleteGitLabDispatchContract(content []byte) error {
 	if gitlabWrapperHasPartialDispatchInputs(content) {
-		return fmt.Errorf("%w: GitLab wrapper declares an incomplete spec:inputs pipeline-input dispatch contract (missing one or more of the %d required inputs); this is neither a supported legacy wrapper nor a valid typed one and must not be delivered or activated", errGitLabIncompatibleWrapper, len(gitlabDispatchInputNames))
+		return fmt.Errorf("%w: GitLab wrapper declares an incomplete spec:inputs pipeline-input dispatch contract (missing one or more of the %d required inputs); this is not a valid typed contract and must not be delivered or activated", errGitLabIncompatibleWrapper, len(gitlabDispatchInputNames))
 	}
 	return nil
+}
+
+// gitlabFirstTypedDispatchRelease is the first fullsend release whose GitLab
+// scaffold carries the typed pipeline-input dispatch contract. Older pinned
+// scaffolds deliver the legacy variable-based wrapper, which is no longer
+// supported.
+const gitlabFirstTypedDispatchRelease = "v0.46.0"
+
+// errGitLabLegacyWrapper marks a wrapper on the former variable-based
+// dispatch contract. It wraps errGitLabIncompatibleWrapper, so callers that
+// defer on any incompatible wrapper also defer on a legacy one.
+var errGitLabLegacyWrapper = fmt.Errorf("%w: %s uses the legacy pipeline-variable dispatch contract, which is no longer supported", errGitLabIncompatibleWrapper, fullsendPipelineInclude)
+
+// legacyGitLabWrapperError reports a wrapper on the former variable-based
+// dispatch contract. The automatic migration away from that contract has
+// been removed, so such a wrapper is incompatible rather than handled.
+func legacyGitLabWrapperError() error {
+	return fmt.Errorf("%w; pin fullsend_ref to %s or later (or remove the pin) so the typed pipeline-input wrapper is delivered", errGitLabLegacyWrapper, gitlabFirstTypedDispatchRelease)
+}
+
+// requireTypedGitLabWrapper accepts only a wrapper on the complete typed
+// pipeline-input contract. An incomplete contract or a legacy
+// variable-based wrapper is rejected with errGitLabIncompatibleWrapper.
+func requireTypedGitLabWrapper(content []byte) error {
+	if gitlabWrapperHasDispatchInputs(content) {
+		return validateGitLabTypedContract(content)
+	}
+	if err := requireCompleteGitLabDispatchContract(content); err != nil {
+		return err
+	}
+	return legacyGitLabWrapperError()
 }
 
 func effectiveGitLabWrapper(ctx context.Context, client forge.Client, owner, repo string, pending []forge.TreeFile) ([]byte, error) {
@@ -1379,24 +766,24 @@ func effectiveGitLabWrapper(ctx context.Context, client forge.Client, owner, rep
 	return content, err
 }
 
-// GitLabUsesTypedDispatch reports the installed wrapper's transport contract.
+// GitLabUsesTypedDispatch reports whether a wrapper is installed on the
+// default branch: it returns false with no error when none is committed yet.
 // A pending fresh install is gated separately against its queued scaffold.
-// An installed wrapper that declares an incomplete spec:inputs contract is
-// rejected rather than silently treated as legacy — see
-// requireCompleteGitLabDispatchContract.
+// An installed wrapper must carry the complete typed pipeline-input
+// contract; an incomplete contract or a legacy variable-based wrapper is
+// rejected with errGitLabIncompatibleWrapper — see requireTypedGitLabWrapper.
 func GitLabUsesTypedDispatch(ctx context.Context, client forge.Client, owner, repo string) (bool, error) {
 	content, err := effectiveGitLabWrapper(ctx, client, owner, repo, nil)
 	if err != nil {
 		return false, err
 	}
-	typed := gitlabWrapperHasDispatchInputs(content)
-	if typed {
-		return true, validateGitLabTypedContract(content)
+	if content == nil {
+		return false, nil
 	}
-	if err := requireCompleteGitLabDispatchContract(content); err != nil {
+	if err := requireTypedGitLabWrapper(content); err != nil {
 		return false, err
 	}
-	return false, nil
+	return true, nil
 }
 
 // gitlabRootDeclaresDispatchInputs reports whether the committed root
@@ -1407,8 +794,8 @@ func GitLabUsesTypedDispatch(ctx context.Context, client forge.Client, owner, re
 // typed does not guarantee the sibling root migration committed too — an
 // unmerged root-repair MR can leave the root's include:inputs forwarding
 // map (or its spec:inputs header) stale or absent while the wrapper is
-// typed. ActivateGitLabTypedDispatch must not migrate schedules or enforce
-// the restriction against that incompatible root — see the review finding
+// typed. ActivateGitLabTypedDispatch must not enforce the restriction
+// against that incompatible root — see the review finding
 // on activation's incomplete guard.
 func gitlabRootDeclaresDispatchInputs(ctx context.Context, client forge.Client, owner, repo string) (bool, error) {
 	content, err := client.GetFileContent(ctx, owner, repo, ".gitlab-ci.yml")
@@ -1586,8 +973,8 @@ func gitlabAgentBridgesDispatchInputs(content []byte) bool {
 // already landed as typed in an earlier run does not guarantee these
 // sibling templates did too: an unmerged repair MR touching only the
 // agent or poll template can leave them stale while the wrapper remains
-// typed. activateGitLabTypedDispatch must not migrate schedules or
-// enforce the pipeline-variable restriction against that stale state —
+// typed. activateGitLabTypedDispatch must not enforce the
+// pipeline-variable restriction against that stale state —
 // see the review finding at gitlab_pipeline_var_restriction.go.
 func gitlabPollAndAgentTemplatesLanded(ctx context.Context, client forge.Client, owner, repo string) (bool, error) {
 	agent, err := client.GetFileContent(ctx, owner, repo, fullsendAgentTemplatePath)
@@ -1900,7 +1287,7 @@ func UnmergeGitLabCI(existing []byte) ([]byte, error) {
 		return nil, nil
 	}
 
-	return marshalGitLabDocuments(docs)
+	return renderGitLabDocuments(existing, docs)
 }
 
 // yamlSubtreeHasSurvivingAlias reports whether any alias node in doc, outside
@@ -2385,13 +1772,8 @@ func removeStages(root *yaml.Node) {
 		return
 	}
 
-	fsStages := make(map[string]bool, len(fullsendStages)+len(obsoleteGitLabStages))
+	fsStages := make(map[string]bool, len(fullsendStages))
 	for _, stage := range fullsendStages {
-		fsStages[stage] = true
-	}
-	// Uninstall still strips stages previous versions installed, so a
-	// repo enrolled before #7337 does not keep a leftover dispatch stage.
-	for _, stage := range obsoleteGitLabStages {
 		fsStages[stage] = true
 	}
 
@@ -2433,8 +1815,7 @@ func removeWorkflowRules(root *yaml.Node) {
 	// leaves the orphaned merge_request_event rule behind, producing the
 	// empty MR pipelines #7322 set out to eliminate. Without the marker the
 	// obsolete rule is indistinguishable from a repo's own MR gate and is
-	// left in place (see unmergeWorkflowRules and StripObsoleteGitLabWorkflowRules,
-	// which gate on the same ownership check).
+	// left in place (see unmergeWorkflowRules).
 	if gitlabCIWorkflowIsFullsendOwned(workflowVal) {
 		for _, r := range obsoleteGitLabWorkflowRules {
 			fsRules[r.If] = true
@@ -2547,116 +1928,4 @@ func unmergeGitLabRootCI(ctx context.Context, client forge.Client, owner, repo s
 		return nil, fmt.Errorf("reading .gitlab-ci.yml for cleanup: %w", err)
 	}
 	return UnmergeGitLabCI(existing)
-}
-
-// gitlabPipelineWrapperStillIncludesDispatch fetches the on-repo fullsend
-// pipeline wrapper (fullsendPipelineInclude) and reports whether it still
-// carries a local include entry for fullsendDispatchInclude.
-//
-// StripObsoleteGitLabStages only ever sees the root .gitlab-ci.yml: its
-// include-ownership gate confirms the root file's own "include:" entry
-// names the fullsend pipeline wrapper, but it has no way to confirm what
-// that wrapper itself pulls in. fullsend versions before #7322 shipped a
-// wrapper that included fullsendDispatchInclude, which defined the native
-// merge_request_event dispatch job on the "dispatch" stage; #7322 dropped
-// that include from the wrapper template, and #7337 dropped the stage
-// from the required set. A repo enrolled (or last upgraded) before #7322
-// can still have the old, on-repo wrapper — with the dispatch include
-// still present — even on a converge run using a post-#7337 CLI. Without
-// this check, convergeGitLabRootCIFiles could strip the "dispatch" stage
-// from the root file's stages: while the still-included dispatch job
-// keeps running on it, which GitLab then rejects at pipeline time.
-//
-// The wrapper is a fullsend-owned file ("do not edit it directly" — see
-// internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/fullsend-pipeline.yml)
-// with an intentionally narrow, known shape, so a direct include: scan is
-// proportionate here rather than the full alias/tag-resolving machinery
-// StripObsoleteGitLabStages applies to the arbitrary, user-owned root
-// file.
-//
-// Any outcome other than "confirmed absent" fails closed (returns true):
-// a read error other than not-found, a parse error, an unexpected
-// document shape, or the include entry actually being present. A 404
-// reading the wrapper is treated as confirmed absent — there is no
-// on-repo wrapper file to pull in the obsolete include.
-func gitlabPipelineWrapperStillIncludesDispatch(ctx context.Context, client forge.Client, owner, repo string) (bool, error) {
-	content, err := client.GetFileContent(ctx, owner, repo, fullsendPipelineInclude)
-	if err != nil {
-		if forge.IsNotFound(err) {
-			return false, nil
-		}
-		return true, fmt.Errorf("reading %s: %w", fullsendPipelineInclude, err)
-	}
-	return gitlabWrapperContentIncludesDispatch(content)
-}
-
-// gitlabWrapperContentIncludesDispatch reports whether the given
-// fullsend-pipeline.yml content still carries a local include entry for
-// fullsendDispatchInclude. It is the content-parsing half of
-// gitlabPipelineWrapperStillIncludesDispatch, factored out so callers that
-// already hold wrapper content — e.g. the freshly rendered expected
-// scaffold, which reflects what will actually be committed this run —
-// can check it without an extra forge read.
-//
-// Any outcome other than "confirmed absent" fails closed (returns true):
-// a parse error, an unexpected document shape, or the include entry
-// actually being present.
-func gitlabWrapperContentIncludesDispatch(content []byte) (bool, error) {
-	if len(bytes.TrimSpace(content)) == 0 {
-		return false, nil
-	}
-
-	docs, err := decodeGitLabDocuments(content)
-	if err != nil {
-		return true, fmt.Errorf("parsing %s: %w", fullsendPipelineInclude, err)
-	}
-	if len(docs) == 0 {
-		return true, nil
-	}
-	doc := docs[len(docs)-1]
-	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
-		return true, nil
-	}
-	root := doc.Content[0]
-	if root.Kind != yaml.MappingNode {
-		return true, nil
-	}
-
-	includeVal := findMappingValue(root, "include")
-	if includeVal == nil {
-		return false, nil
-	}
-	items := []*yaml.Node{includeVal}
-	if includeVal.Kind == yaml.SequenceNode {
-		items = includeVal.Content
-	}
-	for _, item := range items {
-		if item.Kind == yaml.ScalarNode && item.Value == fullsendDispatchInclude {
-			return true, nil
-		}
-		if item.Kind == yaml.MappingNode {
-			if local := findMappingValue(item, "local"); local != nil &&
-				local.Kind == yaml.ScalarNode && local.Value == fullsendDispatchInclude {
-				return true, nil
-			}
-		}
-	}
-	return false, nil
-}
-
-// gitlabPipelineWrapperWillIncludeDispatch reports whether the
-// fullsend-pipeline.yml content that will remain committed after this
-// converge run still references fullsendDispatchInclude. It prefers the
-// freshly rendered expectedFiles entry — the same content that content-drift
-// repair would write, so it reflects a repo pinned to an old fullsend_ref
-// whose wrapper predates #7322 just as accurately as one already current —
-// over re-reading the file straight from the forge, and falls back to a
-// live forge read only when expectedFiles has no wrapper entry at all.
-func gitlabPipelineWrapperWillIncludeDispatch(ctx context.Context, client forge.Client, owner, repo string, expectedFiles []forge.TreeFile) (bool, error) {
-	for _, f := range expectedFiles {
-		if f.Path == fullsendPipelineInclude {
-			return gitlabWrapperContentIncludesDispatch(f.Content)
-		}
-	}
-	return gitlabPipelineWrapperStillIncludesDispatch(ctx, client, owner, repo)
 }

@@ -869,6 +869,7 @@ func TestBuildChangeProposalState(t *testing.T) {
 		TargetBranch:  "main",
 		MRAuthorID:    77,
 		MRAuthorLogin: "dev-user",
+		HeadSHA:       "0123456789abcdef0123456789abcdef01234567",
 	}
 
 	cps, err := p.buildChangeProposalState(context.Background(), event)
@@ -877,6 +878,9 @@ func TestBuildChangeProposalState(t *testing.T) {
 	}
 	if cps.ID != 5 {
 		t.Errorf("ID = %d, want 5", cps.ID)
+	}
+	if cps.HeadSHA != event.HeadSHA {
+		t.Errorf("HeadSHA = %q, want the discovered head %q", cps.HeadSHA, event.HeadSHA)
 	}
 	if cps.HeadRepo != "fork/repo" {
 		t.Errorf("HeadRepo = %q, want %q", cps.HeadRepo, "fork/repo")

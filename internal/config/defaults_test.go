@@ -26,11 +26,12 @@ func TestPerRepoDefaults_CodeDefaults(t *testing.T) {
 	assert.Equal(t, PerRepoDefaultRoles(), d.ConfigRoles())
 	assert.Nil(t, d.AgentEntries())
 	assert.Equal(t, DefaultAllowedRemoteResources(), d.AllowedResources())
-	assert.Nil(t, d.IssueCreationConfig())
+	assert.Nil(t, d.IssueTracking())
 	assert.Equal(t, "", d.ConfigForge())
 
 	// Mint/inference operational defaults.
 	assert.Equal(t, DefaultPerRepoMintURL, d.ConfigMintURL())
+	assert.Empty(t, d.ConfigMintURLFromFile(), "the defaults layer has no file to read from")
 	assert.Equal(t, DefaultPerRepoInferenceProvider, d.ConfigInferenceProvider())
 	assert.Equal(t, "", d.ConfigInferenceProject(), "project has no code default")
 	assert.Equal(t, DefaultPerRepoInferenceRegion, d.ConfigInferenceRegion())
@@ -50,10 +51,11 @@ func TestPerRepoConfig_EmptyConfigResolvesDefaults(t *testing.T) {
 	assert.Equal(t, PerRepoDefaultRoles(), cfg.ConfigRoles())
 	assert.Nil(t, cfg.AgentEntries())
 	assert.Equal(t, DefaultAllowedRemoteResources(), cfg.AllowedResources())
-	assert.Nil(t, cfg.IssueCreationConfig())
+	assert.Nil(t, cfg.IssueTracking())
 
 	// Mint/inference fields fall through to code defaults.
 	assert.Equal(t, DefaultPerRepoMintURL, cfg.ConfigMintURL())
+	assert.Empty(t, cfg.ConfigMintURLFromFile(), "neither file sets mint_url, and the defaults layer is not a file")
 	assert.Equal(t, DefaultPerRepoInferenceProvider, cfg.ConfigInferenceProvider())
 	assert.Equal(t, "", cfg.ConfigInferenceProject(), "project has no code default")
 	assert.Equal(t, DefaultPerRepoInferenceRegion, cfg.ConfigInferenceRegion())
@@ -73,9 +75,9 @@ func TestPerRepoConfig_LocalOverridesParent(t *testing.T) {
 			{Source: "harness/code.yaml"},
 		},
 		AllowedRemoteResources: []string{"https://example.com/"},
-		CreateIssues: &CreateIssuesConfig{
-			AllowTargets: AllowTargets{Repos: []string{"org/repo"}},
-		},
+		Tracker: &TrackingConfig{GitHub: &GitHubTrackingConfig{
+			AllowedTargets: GitHubAllowedTargets{Repos: []string{"org/repo"}},
+		}},
 		parent: &perRepoDefaults{},
 	}
 
@@ -85,8 +87,8 @@ func TestPerRepoConfig_LocalOverridesParent(t *testing.T) {
 	assert.Equal(t, []string{"triage", "review"}, cfg.ConfigRoles())
 	require.Len(t, cfg.AgentEntries(), 1)
 	assert.Equal(t, "harness/code.yaml", cfg.AgentEntries()[0].Source)
-	require.NotNil(t, cfg.IssueCreationConfig())
-	assert.Equal(t, []string{"org/repo"}, cfg.IssueCreationConfig().AllowTargets.Repos)
+	require.NotNil(t, cfg.IssueTracking())
+	assert.Equal(t, []string{"org/repo"}, cfg.IssueTracking().GitHub.AllowedTargets.Repos)
 }
 
 // --- Chained fallback: overlay -> base -> defaults ---
@@ -386,37 +388,55 @@ func TestPerRepoConfig_AllowedResources_Fallback(t *testing.T) {
 	})
 }
 
-// --- CreateIssues fallback ---
+// --- Tracking fallback ---
 
-func TestPerRepoConfig_CreateIssues_Fallback(t *testing.T) {
+func TestPerRepoConfig_Tracking_Fallback(t *testing.T) {
 	t.Run("nil falls through to parent", func(t *testing.T) {
 		parent := &perRepoConfig{
-			CreateIssues: &CreateIssuesConfig{
-				AllowTargets: AllowTargets{Orgs: []string{"my-org"}},
-			},
+			Tracker: &TrackingConfig{GitHub: &GitHubTrackingConfig{
+				AllowedTargets: GitHubAllowedTargets{Orgs: []string{"my-org"}},
+			}},
 			parent: &perRepoDefaults{},
 		}
 		overlay := &perRepoConfig{parent: parent}
-		require.NotNil(t, overlay.IssueCreationConfig())
-		assert.Equal(t, []string{"my-org"}, overlay.IssueCreationConfig().AllowTargets.Orgs)
+		require.NotNil(t, overlay.IssueTracking())
+		assert.Equal(t, []string{"my-org"}, overlay.IssueTracking().GitHub.AllowedTargets.Orgs)
 	})
 
 	t.Run("local replaces parent entirely", func(t *testing.T) {
 		parent := &perRepoConfig{
-			CreateIssues: &CreateIssuesConfig{
-				AllowTargets: AllowTargets{Orgs: []string{"parent-org"}},
-			},
+			Tracker: &TrackingConfig{GitHub: &GitHubTrackingConfig{
+				AllowedTargets: GitHubAllowedTargets{Orgs: []string{"parent-org"}},
+			}},
 			parent: &perRepoDefaults{},
 		}
 		overlay := &perRepoConfig{
-			CreateIssues: &CreateIssuesConfig{
-				AllowTargets: AllowTargets{Repos: []string{"org/repo"}},
-			},
+			Tracker: &TrackingConfig{GitHub: &GitHubTrackingConfig{
+				AllowedTargets: GitHubAllowedTargets{Repos: []string{"org/repo"}},
+			}},
 			parent: parent,
 		}
-		require.NotNil(t, overlay.IssueCreationConfig())
-		assert.Empty(t, overlay.IssueCreationConfig().AllowTargets.Orgs)
-		assert.Equal(t, []string{"org/repo"}, overlay.IssueCreationConfig().AllowTargets.Repos)
+		require.NotNil(t, overlay.IssueTracking())
+		assert.Empty(t, overlay.IssueTracking().GitHub.AllowedTargets.Orgs)
+		assert.Equal(t, []string{"org/repo"}, overlay.IssueTracking().GitHub.AllowedTargets.Repos)
+	})
+
+	t.Run("local provider replaces parent provider", func(t *testing.T) {
+		parent := &perRepoConfig{
+			Tracker: &TrackingConfig{GitHub: &GitHubTrackingConfig{
+				AllowedTargets: GitHubAllowedTargets{Orgs: []string{"parent-org"}},
+			}},
+			parent: &perRepoDefaults{},
+		}
+		overlay := &perRepoConfig{
+			Tracker: &TrackingConfig{Jira: &JiraTrackingConfig{
+				AllowedTargets: JiraAllowedTargets{Projects: []string{"PROJ"}},
+			}},
+			parent: parent,
+		}
+		require.NotNil(t, overlay.IssueTracking())
+		assert.Nil(t, overlay.IssueTracking().GitHub)
+		assert.Equal(t, TrackingProviderJira, overlay.IssueTracking().Provider())
 	})
 }
 
@@ -500,7 +520,7 @@ func TestPerRepoConfig_MarshalOmitsInheritedValues(t *testing.T) {
 	assert.NotContains(t, output, "roles:")
 	assert.NotContains(t, output, "agents:")
 	assert.NotContains(t, output, "allowed_remote_resources:")
-	assert.NotContains(t, output, "create_issues:")
+	assert.NotContains(t, output, "tracker:")
 	// But the config still resolves defaults via parent.
 	assert.Equal(t, "1", cfg.ConfigVersion())
 	assert.Equal(t, "claude", cfg.ConfigRuntime())
@@ -750,7 +770,7 @@ func TestPerRepoConfig_ExistingSingleFileBehavior(t *testing.T) {
 	assert.Equal(t, []string{"triage", "coder", "review"}, cfg.ConfigRoles())
 	assert.Empty(t, cfg.AgentEntries())
 	assert.Equal(t, DefaultAllowedRemoteResources(), cfg.AllowedResources())
-	require.NotNil(t, cfg.IssueCreationConfig())
+	require.NotNil(t, cfg.IssueTracking())
 
 	// Marshal round-trip.
 	data, err := cfg.Marshal()

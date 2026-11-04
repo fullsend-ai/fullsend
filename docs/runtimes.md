@@ -55,10 +55,10 @@ sequenceDiagram
 | | Claude Code | pi | codex |
 |---|---|---|---|
 | Models | Anthropic on Vertex; any Messages-capable model through an [inference gateway](runtimes/claude.md#inference-gateway-route) (`gateway/<model>`) | Claude, **Grok** and **Gemini** on Vertex; **GPT** via OpenAI WIF (opt-in, [not yet exercised live](runtimes/pi.md#models-and-providers)) | **GPT**, via OpenAI WIF ([not yet exercised live](runtimes/codex.md#not-yet-exercised)); any Responses-capable model through an [inference gateway](runtimes/codex.md#models-through-an-inference-gateway-experimental) (`gateway/<model>`, experimental) |
-| Sub-agents | Native (`Agent` tool) | `Agent`/`Task` via a fullsend extension | Not available |
+| Sub-agents | Native (`Agent` tool) | `Agent`/`Task` via a fullsend extension | Native Codex children under a runner-owned policy, for an agent whose tools include `Agent` (or that declares no `tools:`), with harness security on, on a parent model Codex resolves to collaboration V1 on the direct route ([Sub-agents](runtimes/codex.md#sub-agents)) |
 | Default alias models | `opus`/`sonnet`/`haiku` → `claude-*-5-5`, passed as the id; `fable` by Claude Code's own table; sub-agent frontmatter resolved by Claude Code | `opus`/`sonnet`/`haiku` → `claude-*-5-5`, `fable` → `claude-fable-5-1`, children included | Not applicable — OpenAI models only |
 | Fallback model chain | Alias requests retried by the runner when Vertex does not serve the model (Claude Code's own "model not available" result naming the model, or Vertex's [two 404/403 messages](runtimes/claude.md#models)): `FULLSEND_FALLBACK_MODELS`, else the alias's built-in chain (`opus` → `claude-opus-4-6`, `sonnet` → `claude-sonnet-4-6`, `haiku` → `claude-haiku-4-5`); only an explicit `FULLSEND_FALLBACK_MODELS` is also passed as `--fallback-model`, never the built-in chain; pinned ids, retargets and sub-agents fail loudly | The same chain, same provider only; sub-agent children asking for an alias use its built-in chain; pinned ids and retargets fail loudly | Ignored with a warning |
-| Roles | All | All; `review`/`retro` at `--thinking medium` by default | Same recommendation as before — no sub-agent roster on codex |
+| Roles | All | All; `review`/`retro` at `--thinking medium` by default | Same recommendation as before until a fleet-shaped run completes ([Sub-agents](runtimes/codex.md#sub-agents)) |
 | Effort | `--effort low..max` | `--thinking`, same levels (`high` when unset) | `model_reasoning_effort`, same levels |
 | Tools | Native Claude permission syntax | `--tools` (strict) + a first-token Bash allowlist | Shell + `apply_patch` only; `tools:` is recorded, not enforced (the allowlist hook is opt-in) |
 | Security controls | Full matrix | Full matrix; stricter on failed-call sanitizing | Full matrix; post-tool hooks detect and block but cannot rewrite output |
@@ -107,10 +107,17 @@ the agent's `agents:` entry in `.fullsend/config.yaml` instead. Harness `env.run
 
 ### Per-agent runtime, model and effort
 
-The `agents:` list is the per-agent place in `config.yaml`: an entry names an agent and can set
-its `runtime`, `model`, `effort` and `subagents`. A built-in agent (`triage`, `code`, `review`,
-`fix`, `retro`, `prioritize`) is tuned with a name-only entry; a custom agent carries the settings
-on its `source:` entry.
+The `agents:` list is the per-agent place in `config.yaml`: an entry names an
+agent and can set its `runtime`, `model`, `effort`, `subagents` and `trigger`
+(on `review`, `retro`, `triage` and `prioritize`, decides routing for that
+agent; see
+[Choosing when review runs](guides/user/customizing-agents.md#choosing-when-review-runs),
+[Choosing when retro runs](guides/user/customizing-agents.md#choosing-when-retro-runs)
+and
+[Choosing when triage and prioritize run](guides/user/customizing-agents.md#choosing-when-triage-and-prioritize-run)).
+A built-in agent (`triage`, `code`, `review`, `fix`, `retro`, `prioritize`) is
+tuned with a name-only entry; a custom agent carries the settings on its
+`source:` entry.
 
 ```yaml
 runtime: pi                    # repo default for agents that set none

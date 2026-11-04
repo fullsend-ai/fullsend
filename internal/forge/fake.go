@@ -1239,11 +1239,12 @@ func (f *FakeClient) CreateCrossRepoChangeProposal(_ context.Context, baseOwner,
 
 	f.proposalCounter++
 	cp := ChangeProposal{
-		URL:    fmt.Sprintf("https://forge.example.com/%s/%s/pull/%d", baseOwner, baseRepo, f.proposalCounter),
-		Title:  title,
-		Number: f.proposalCounter,
-		Head:   headOwner + ":" + headBranch,
-		Base:   baseBranch,
+		URL:      fmt.Sprintf("https://forge.example.com/%s/%s/pull/%d", baseOwner, baseRepo, f.proposalCounter),
+		Title:    title,
+		Number:   f.proposalCounter,
+		Head:     headOwner + ":" + headBranch,
+		HeadRepo: headOwner + "/" + headRepo,
+		Base:     baseBranch,
 	}
 	f.CreatedProposals = append(f.CreatedProposals, cp)
 	return &cp, nil
@@ -2076,19 +2077,29 @@ func (f *FakeClient) ListPullRequestReviewThreads(_ context.Context, owner, repo
 			for i := range threads.Threads {
 				t := &threads.Threads[i]
 				t.Comments = slices.Clone(t.Comments)
-				if t.Line != nil {
-					l := *t.Line
-					t.Line = &l
-				}
-				if t.OriginalLine != nil {
-					l := *t.OriginalLine
-					t.OriginalLine = &l
-				}
+				t.Side = clonePtr(t.Side)
+				t.Line = clonePtr(t.Line)
+				t.StartSide = clonePtr(t.StartSide)
+				t.StartLine = clonePtr(t.StartLine)
+				t.OriginalLine = clonePtr(t.OriginalLine)
+				t.OriginalStartLine = clonePtr(t.OriginalStartLine)
+				t.OldLine = clonePtr(t.OldLine)
+				t.NewLine = clonePtr(t.NewLine)
+				t.IsOutdated = clonePtr(t.IsOutdated)
 			}
 			return threads, nil
 		}
 	}
 	return ReviewThreadPage{}, nil
+}
+
+// clonePtr returns a pointer to a copy of *p, or nil when p is nil.
+func clonePtr[T any](p *T) *T {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
 }
 
 func (f *FakeClient) DismissPullRequestReview(_ context.Context, owner, repo string, number, reviewID int, message string) error {
@@ -2760,7 +2771,7 @@ func (f *FakeClient) CreatePipelineScheduleWithActive(_ context.Context, owner, 
 		Cron:         cron,
 		CronTimezone: "UTC",
 		Active:       active,
-		Variables:    maps.Clone(variables), // DeletePipelineScheduleVariable edits the stored map in place
+		Variables:    maps.Clone(variables), // stored copy, independent of the caller's map
 	}
 	rec := s
 	rec.Variables = maps.Clone(variables) // separate copy so the log keeps what the caller sent
@@ -2813,21 +2824,6 @@ func (f *FakeClient) GetPipelineSchedule(_ context.Context, owner, repo string, 
 		}
 	}
 	return nil, ErrNotFound
-}
-
-func (f *FakeClient) DeletePipelineScheduleVariable(_ context.Context, owner, repo string, scheduleID int64, key string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if err := f.err("DeletePipelineScheduleVariable"); err != nil {
-		return err
-	}
-	for _, schedule := range f.PipelineSchedules[owner+"/"+repo] {
-		if schedule.ID == scheduleID {
-			delete(schedule.Variables, key)
-			return nil
-		}
-	}
-	return ErrNotFound
 }
 
 func (f *FakeClient) UpdatePipelineSchedule(_ context.Context, owner, repo string, scheduleID int64, active bool) error {

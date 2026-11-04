@@ -137,7 +137,7 @@ func (c *LiveClient) createCommitOnBranch(ctx context.Context, owner, repo, bran
 	for attempt := 0; ; attempt++ {
 		resp, err := c.post(ctx, c.graphqlEndpoint(), payload)
 		if err != nil {
-			return "", fmt.Errorf("create commit on branch: %w", err)
+			return "", fmt.Errorf("create commit on branch: %w", wrapForbidden(err))
 		}
 
 		var result struct {
@@ -188,6 +188,11 @@ func (c *LiveClient) createCommitOnBranch(ctx context.Context, owner, repo, bran
 		case <-ctx.Done():
 			return "", ctx.Err()
 		case <-c.afterFunc(delay):
+		}
+		// The target may have changed during the wait; a refused guard
+		// means the mutation is not resent.
+		if err := checkRetryGuard(ctx, http.MethodPost, c.graphqlEndpoint()); err != nil {
+			return "", fmt.Errorf("create commit on branch: %w", err)
 		}
 	}
 }

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
+	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
@@ -12,7 +14,8 @@ import (
 // GitLabPipelineVarRestrictionEnv controls automatic project-setting changes.
 // Typed dispatch activation always requires no_one_allowed, even when this
 // flag is unset or disabled. Enforcement is blocked while managed schedules
-// use pipeline variables; existing schedules are migrated before activation.
+// use pipeline variables, and activation refuses managed schedules that still
+// set any.
 // ADR 0125 live validation remains a rollout prerequisite. An invalid flag
 // value is an error.
 const GitLabPipelineVarRestrictionEnv = "FULLSEND_GITLAB_PIPELINE_VAR_RESTRICTION"
@@ -42,7 +45,7 @@ func requireGitLabRestrictionBeforeDelivery(ctx context.Context, client forge.Cl
 		return fmt.Errorf("verifying GitLab restriction before scaffold delivery: %w", err)
 	}
 	if role != forge.PipelineVarOverrideNoOneAllowed {
-		return fmt.Errorf("refusing to deliver runnable typed GitLab jobs: ci_pipeline_variables_minimum_override_role is %s, not no_one_allowed; stop legacy polling, migrate schedule variables, and apply the restriction before retrying installation", displayPipelineVarRole(role))
+		return fmt.Errorf("refusing to deliver runnable typed GitLab jobs: ci_pipeline_variables_minimum_override_role is %s, not no_one_allowed; apply the restriction before retrying installation", displayPipelineVarRole(role))
 	}
 	return nil
 }
@@ -53,6 +56,13 @@ func requireGitLabRestrictionBeforeDelivery(ctx context.Context, client forge.Cl
 // Dry runs perform the same checks without changing project state.
 func ActivateGitLabTypedDispatch(ctx context.Context, client forge.Client, owner, repo string, dryRun bool) (GitLabPipelineVarRestrictionResult, error) {
 	typed, err := GitLabUsesTypedDispatch(ctx, client, owner, repo)
+	if errors.Is(err, errGitLabLegacyWrapper) {
+		// The committed wrapper predates typed dispatch. Installation and
+		// convergence refuse to deliver such a wrapper, so this is a repo
+		// whose typed scaffold has not landed yet (e.g. an unmerged
+		// upgrade MR); nothing is safe to activate until it does.
+		return GitLabPipelineVarRestrictionResult{Action: "deferred", Detail: fmt.Sprintf("typed GitLab activation deferred until the typed pipeline-input wrapper lands: %v", err)}, nil
+	}
 	if err != nil {
 		return GitLabPipelineVarRestrictionResult{}, fmt.Errorf("checking committed GitLab dispatch transport: %w", err)
 	}
@@ -79,22 +89,21 @@ func ActivateGitLabTypedDispatch(ctx context.Context, client forge.Client, owner
 	return EnsureGitLabPipelineVariableOverrideRole(ctx, client, owner, repo, dryRun)
 }
 
-// activateGitLabTypedDispatch performs the live project-state mutations
-// typed GitLab dispatch activation requires: migrating managed schedule
-// variables off FULLSEND_POLL_MODE under the already-verified project
-// override restriction. Callers must invoke this only after any scaffold
+// activateGitLabTypedDispatch performs typed GitLab dispatch activation
+// against the committed templates: it verifies managed schedules are
+// variable-free and establishes the project override restriction (see
+// ActivateGitLabTypedDispatch). Callers must invoke this only after any scaffold
 // commit needed to deliver compatible templates (the root CI contract,
 // agent/poller templates) has already succeeded, or after confirming none
 // was needed, and only for GitLab repos. It re-checks the now-committed
 // wrapper via GitLabUsesTypedDispatch rather than trusting one still
-// queued for commit, so a scaffold commit failure cannot leave a legacy
-// poller stranded behind an already-enforced restriction it cannot
-// satisfy — see the validate-only calls in convergeGitLabRootCIFiles and
+// queued for commit, so a scaffold commit failure cannot activate dispatch
+// ahead of compatible templates — see the validate-only calls in convergeGitLabRootCIFiles and
 // Install. The wrapper alone is not sufficient evidence that the sibling
 // agent/poll templates are compatible too (an unmerged repair MR can
 // leave them stale behind an already-typed wrapper), so it also confirms
 // gitlabPollAndAgentTemplatesLanded before activating. Returns nil when
-// the repo isn't on the typed contract, those sibling templates haven't
+// no wrapper is committed yet, those sibling templates haven't
 // landed yet (nothing safe to activate), or activation already
 // succeeded; a single error action otherwise.
 func activateGitLabTypedDispatch(ctx context.Context, client forge.Client, owner, repo string) []ComponentAction {
@@ -154,7 +163,7 @@ type GitLabPipelineVarRestrictionResult struct {
 
 // EnsureGitLabPipelineVariableOverrideRole requires no_one_allowed. Drift is
 // an error when automation is disabled, and setting changes are gated on
-// schedule migration. Generic callers may receive unsupported without an
+// variable-free managed schedules. Generic callers may receive unsupported without an
 // error; GitLab activation must use requireGitLabPipelineVariableRestriction.
 func EnsureGitLabPipelineVariableOverrideRole(ctx context.Context, client forge.Client, owner, repo string, dryRun bool) (GitLabPipelineVarRestrictionResult, error) {
 	if err := ValidateGitLabPipelineVarRestrictionEnv(); err != nil {
@@ -174,9 +183,9 @@ func EnsureGitLabPipelineVariableOverrideRole(ctx context.Context, client forge.
 			Role:   current,
 			Action: "blocked",
 			Detail: fmt.Sprintf(
-				"ci_pipeline_variables_minimum_override_role is %s, not no_one_allowed; activation is blocked; migrate schedule variables and complete ADR 0125 validation before enabling %s=enforced",
+				"ci_pipeline_variables_minimum_override_role is %s, not no_one_allowed; activation is blocked; ensure managed schedules are variable-free and complete ADR 0125 validation before enabling %s=enforced",
 				displayPipelineVarRole(current), GitLabPipelineVarRestrictionEnv),
-		}, fmt.Errorf("refusing GitLab agent activation: ci_pipeline_variables_minimum_override_role is %s, not no_one_allowed; configure the required restriction after migrating schedule variables and completing ADR 0125 validation", displayPipelineVarRole(current))
+		}, fmt.Errorf("refusing GitLab agent activation: ci_pipeline_variables_minimum_override_role is %s, not no_one_allowed; configure the required restriction after ensuring managed schedules are variable-free and completing ADR 0125 validation", displayPipelineVarRole(current))
 	}
 
 	if gitlabScheduledPollModeUsesPipelineVariables() {
@@ -190,7 +199,7 @@ func EnsureGitLabPipelineVariableOverrideRole(ctx context.Context, client forge.
 			"refusing to enforce ci_pipeline_variables_minimum_override_role=no_one_allowed: managed GitLab pipeline schedules still select poll mode via the %s pipeline variable (see PipelineScheduleSpecs); migrate scheduled poll-mode selection off pipeline variables before setting %s=enforced",
 			forge.VarPollMode, GitLabPipelineVarRestrictionEnv)
 	}
-	if err := ensureGitLabVariableFreeSchedules(ctx, client, owner, repo, dryRun); err != nil {
+	if err := requireGitLabVariableFreeSchedules(ctx, client, owner, repo); err != nil {
 		return GitLabPipelineVarRestrictionResult{}, err
 	}
 	if current == forge.PipelineVarOverrideNoOneAllowed {
@@ -251,12 +260,15 @@ func displayPipelineVarRole(role string) string {
 	return fmt.Sprintf("%q", role)
 }
 
-// ensureGitLabVariableFreeSchedules removes only the obsolete managed mode
-// variable. Other schedule variables are user-owned and block activation.
-func ensureGitLabVariableFreeSchedules(ctx context.Context, client forge.Client, owner, repo string, dryRun bool) error {
+// requireGitLabVariableFreeSchedules refuses activation while any managed
+// schedule still sets a pipeline variable, which the no_one_allowed
+// restriction would block. It only reads: the automatic removal of the
+// legacy FULLSEND_POLL_MODE schedule variable has been retired, so a
+// leftover one must be removed by the operator.
+func requireGitLabVariableFreeSchedules(ctx context.Context, client forge.Client, owner, repo string) error {
 	schedules, err := client.ListPipelineSchedules(ctx, owner, repo)
 	if err != nil {
-		return fmt.Errorf("checking schedule migration: %w", err)
+		return fmt.Errorf("checking managed schedule variables: %w", err)
 	}
 	for _, schedule := range schedules {
 		managed := false
@@ -271,18 +283,20 @@ func ensureGitLabVariableFreeSchedules(ctx context.Context, client forge.Client,
 			return fmt.Errorf("reading managed schedule %d variables: %w", schedule.ID, err)
 		}
 		if detail == nil || detail.ID != schedule.ID || detail.Description != schedule.Description {
-			return fmt.Errorf("managed schedule %d identity changed during migration", schedule.ID)
+			return fmt.Errorf("managed schedule %d identity changed during verification", schedule.ID)
 		}
+		if len(detail.Variables) == 0 {
+			continue
+		}
+		keys := make([]string, 0, len(detail.Variables))
 		for key := range detail.Variables {
-			if key != forge.VarPollMode {
-				return fmt.Errorf("managed schedule %d still has user-owned pipeline variable %q; migrate it before typed dispatch activation", schedule.ID, key)
-			}
+			keys = append(keys, key)
 		}
-		if _, present := detail.Variables[forge.VarPollMode]; present && !dryRun {
-			if err := client.DeletePipelineScheduleVariable(ctx, owner, repo, schedule.ID, forge.VarPollMode); err != nil {
-				return fmt.Errorf("migrating managed schedule %d poll mode: %w", schedule.ID, err)
-			}
+		sort.Strings(keys)
+		if _, legacy := detail.Variables[forge.VarPollMode]; legacy {
+			return fmt.Errorf("managed schedule %d (%q) still sets the legacy %s pipeline variable from variable-based dispatch, which is no longer migrated automatically; delete that schedule variable (or the schedule, so fullsend recreates it) before typed dispatch activation", schedule.ID, schedule.Description, forge.VarPollMode)
 		}
+		return fmt.Errorf("managed schedule %d (%q) still has user-owned pipeline variables %s; remove them before typed dispatch activation", schedule.ID, schedule.Description, strings.Join(keys, ", "))
 	}
 	return nil
 }

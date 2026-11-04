@@ -871,6 +871,10 @@ func (f *fakeForkSCM) GetIssue(context.Context, string, string, int) (*forge.Iss
 	return nil, nil
 }
 
+func (f *fakeForkSCM) ListOpenIssues(context.Context, string, string, ...string) ([]forge.Issue, error) {
+	return nil, nil
+}
+
 func (f *fakeForkSCM) GetFileContent(context.Context, string, string, string) ([]byte, error) {
 	return nil, nil
 }

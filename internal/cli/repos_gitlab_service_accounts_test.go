@@ -64,7 +64,8 @@ func (s *saTestServer) assertHit(pattern string) {
 
 func (s *saTestServer) client(token string) *gitlab.LiveClient {
 	s.t.Helper()
-	c, err := gitlab.New(token, gitlab.WithBaseURL(s.srv.URL))
+	// Skip the real retry backoff so 5xx cases do not sleep for seconds.
+	c, err := gitlab.New(token, gitlab.WithBaseURL(s.srv.URL), gitlab.WithAfterFunc(noWaitAfter))
 	require.NoError(s.t, err)
 	return c
 }

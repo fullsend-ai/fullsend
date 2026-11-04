@@ -221,7 +221,10 @@ func TestConvergeGitLabRootUsesEffectiveContract(t *testing.T) {
 				require.NotEmpty(t, actions)
 				assert.Equal(t, "error", actions[len(actions)-1].Action)
 			} else if !tc.pending {
-				assert.Empty(t, files, "legacy pinned wrapper must not acquire typed root inputs or lose its dispatch stage")
+				assert.Empty(t, files, "a legacy pinned wrapper is refused, not merged")
+				require.NotEmpty(t, actions)
+				assert.Equal(t, "error", actions[len(actions)-1].Action)
+				assert.Contains(t, actions[len(actions)-1].Detail, "legacy pipeline-variable dispatch contract")
 			} else if tc.dryRun {
 				assert.Empty(t, files)
 				assert.NotEmpty(t, actions)
@@ -235,40 +238,35 @@ func TestConvergeGitLabRootUsesEffectiveContract(t *testing.T) {
 	}
 }
 
-// TestConvergeGitLabRootRejectsTypedToLegacyTransition guards a forced
-// typed-to-legacy transition: the committed root already carries the
-// typed spec:inputs header and include:inputs forwarding map from a
-// prior typed install, but the effective wrapper for this convergence
-// (e.g. after re-pinning to an older release) is legacy and declares
-// none of those inputs. convergeGitLabRootCIFiles must refuse rather
-// than silently deliver the legacy wrapper alongside an untouched typed
-// root, which would leave an invalid include (the root forwards inputs
-// the legacy wrapper's include never declares). The project already
-// being restricted (no_one_allowed) and running variable-free schedules
-// — the state a prior typed activation would have left — must not mask
-// the rejection.
-func TestConvergeGitLabRootRejectsTypedToLegacyTransition(t *testing.T) {
+// TestConvergeGitLabRootRejectsLegacyWrapper guards the removal of the
+// legacy pipeline-variable dispatch path: when the effective wrapper for
+// this convergence (e.g. from a fullsend_ref pinned before typed
+// dispatch) is legacy, convergeGitLabRootCIFiles refuses with an
+// actionable error, whether the committed root is already typed or not.
+func TestConvergeGitLabRootRejectsLegacyWrapper(t *testing.T) {
 	typedRoot, err := MergeGitLabCI([]byte("job: {stage: build, script: echo keep}\n"))
 	require.NoError(t, err)
 	legacyWrapper := []byte("include:\n  - local: .gitlab/ci/fullsend-dispatch.yml\n  - local: .gitlab/ci/fullsend-agent.yml\nstages: [dispatch, agent]\n")
 
-	fc := newFakeClientForBatch("acme/api")
-	fc.FileContents["acme/api/.gitlab-ci.yml"] = typedRoot
-	fc.FileContents["acme/api/"+fullsendPipelineInclude] = legacyWrapper
-	fc.PipelineVarOverrideRoles["acme/api"] = forge.PipelineVarOverrideNoOneAllowed
-	for i, spec := range PipelineScheduleSpecs() {
-		fc.PipelineSchedules["acme/api"] = append(fc.PipelineSchedules["acme/api"], forge.PipelineSchedule{
-			ID: int64(i + 1), Description: spec.Description,
+	for name, root := range map[string][]byte{
+		"typed root":  typedRoot,
+		"legacy root": []byte("include: .gitlab/ci/fullsend-pipeline.yml\njob: {stage: build, script: echo keep}\n"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			fc := newFakeClientForBatch("acme/api")
+			fc.FileContents["acme/api/.gitlab-ci.yml"] = root
+			fc.FileContents["acme/api/"+fullsendPipelineInclude] = legacyWrapper
+
+			resolved := ResolvedConfig{Owner: "acme", Repo: "api", Forge: ForgeGitLab, ForgeConfig: ForgeConfig{Client: fc}}
+			files, actions := convergeGitLabRootCIFiles(context.Background(), resolved, ConvergeConfig{}, noopProgress, nil)
+			assert.Empty(t, files)
+			require.NotEmpty(t, actions)
+			last := actions[len(actions)-1]
+			assert.Equal(t, "error", last.Action)
+			assert.Contains(t, last.Detail, "legacy pipeline-variable dispatch contract")
+			assert.Contains(t, last.Detail, "fullsend_ref to "+gitlabFirstTypedDispatchRelease)
 		})
 	}
-
-	resolved := ResolvedConfig{Owner: "acme", Repo: "api", Forge: ForgeGitLab, ForgeConfig: ForgeConfig{Client: fc}}
-	files, actions := convergeGitLabRootCIFiles(context.Background(), resolved, ConvergeConfig{}, noopProgress, nil)
-	assert.Empty(t, files)
-	require.NotEmpty(t, actions)
-	last := actions[len(actions)-1]
-	assert.Equal(t, "error", last.Action)
-	assert.Contains(t, last.Detail, "typed-to-legacy")
 }
 
 func TestEffectiveGitLabWrapperReadFailures(t *testing.T) {
@@ -354,8 +352,7 @@ func TestGitLabPipelineRestrictionSettingFailure(t *testing.T) {
 
 // incompleteTypedWrapper returns the embedded typed wrapper with one
 // required dispatch input removed, simulating an alternate or damaged
-// typed contract that is neither the supported legacy (variable-based)
-// wrapper nor a valid typed one.
+// typed contract that is not a valid typed one.
 func incompleteTypedWrapper(t *testing.T) []byte {
 	t.Helper()
 	wrapper, err := scaffold.GitLabPerRepoFile(fullsendPipelineInclude)
@@ -395,16 +392,21 @@ func TestGitLabIncompleteTypedContractIsRejectedNotTreatedAsLegacy(t *testing.T)
 
 // TestMergeGitLabCICommentsOnlyRootUsesSuppliedWrapper guards the bug where
 // a comments-only (or otherwise entirely empty after decode) existing root
-// fell back to newGitLabCI's embedded typed-input default, discarding the
-// actually-supplied wrapper. Installing a supported legacy wrapper onto
-// such a root must not introduce a typed spec:inputs header the legacy
-// wrapper never declares.
+// fell back to newGitLabCI's embedded default, discarding the
+// actually-supplied wrapper. The supplied wrapper's contract still governs
+// the merge: a typed wrapper is merged, and a legacy one is refused rather
+// than replaced by the embedded default.
 func TestMergeGitLabCICommentsOnlyRootUsesSuppliedWrapper(t *testing.T) {
-	legacyWrapper := []byte("include: []\n")
-	merged, err := mergeGitLabCIWithWrapper([]byte("# just a comment, no actual pipeline content\n"), legacyWrapper)
+	commentsOnly := []byte("# just a comment, no actual pipeline content\n")
+	_, err := mergeGitLabCIWithWrapper(commentsOnly, []byte("include: []\n"))
+	require.ErrorContains(t, err, "legacy pipeline-variable dispatch contract")
+
+	wrapper, err := scaffold.GitLabPerRepoFile(fullsendPipelineInclude)
+	require.NoError(t, err)
+	merged, err := mergeGitLabCIWithWrapper(commentsOnly, wrapper)
 	require.NoError(t, err)
 	assert.Contains(t, string(merged), fullsendPipelineInclude)
-	assert.NotContains(t, string(merged), "spec:")
+	assert.Contains(t, string(merged), "inputs.stage")
 }
 
 // TestActivationDefersUntilRootForwardsDispatchInputs guards the activation

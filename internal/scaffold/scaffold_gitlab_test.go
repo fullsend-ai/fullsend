@@ -257,8 +257,10 @@ func TestGitLabAgentTemplateContent(t *testing.T) {
 	assert.Contains(t, s, "no ready trigger-only account is recorded")
 	assert.Contains(t, s, "the recorded trigger-only account is the Poller identity")
 	assert.Contains(t, s, `if [ "${PIPELINE_SOURCE}" = "api" ] || [ "${PIPELINE_SOURCE}" = "pipeline" ]; then`)
-	// Generic runner image, not agent-specific
-	assert.Contains(t, s, "fullsend-runner:dev")
+	// Generic runner image, not agent-specific; its tag is rendered from
+	// fullsend_ref instead of tracking main (#8865).
+	assert.Contains(t, s, "fullsend-runner:__FULLSEND_RUNNER_IMAGE_TAG__")
+	assert.NotContains(t, s, "fullsend-runner:dev")
 	assert.NotContains(t, s, "fullsend-code:latest")
 	// Resource group parameterized by STAGE
 	assert.Contains(t, s, `fullsend-${STAGE}-${RESOURCE_KEY}`)
@@ -445,9 +447,11 @@ func TestGitLabAgentTemplateFixReviewBodyPreFetch(t *testing.T) {
 	assert.Contains(t, s, "note_author_id")
 	// Numeric validation on note_author_id before curl URL interpolation
 	assert.Contains(t, s, `*[!0-9]*`)
-	// Human instruction extracted from /fs-fix note body
+	// Human instruction extracted from the canonical normalized comment
+	// body only — never the legacy note_body field (#8954).
 	assert.Contains(t, s, "/fs-fix")
-	assert.Contains(t, s, "note_body")
+	assert.Contains(t, s, "._normalized_event.transition.comment.body")
+	assert.NotContains(t, s, "'.note_body")
 	// Fix iteration counts prior fix-agent commits
 	assert.Contains(t, s, "fullsend-fix")
 	assert.Contains(t, s, "author_name")
@@ -672,16 +676,6 @@ func TestGitLabAgentTemplateKillSwitch(t *testing.T) {
 	// Kill switch uses python3 for YAML parsing
 	assert.Contains(t, s, "python3")
 	assert.Contains(t, s, "yaml.safe_load")
-}
-
-func TestGitLabAgentTemplateRoleEnablement(t *testing.T) {
-	s := gitlabAgentScaffold(t)
-	assert.Contains(t, s, "STAGE_ROLE")
-	assert.Contains(t, s, `code|fix) STAGE_ROLE="coder"`)
-	assert.Contains(t, s, "not in configured roles")
-	// Backward compat: "fullsend" role implies retro + prioritize
-	assert.Contains(t, s, `"fullsend"`)
-	assert.Contains(t, s, "retro|prioritize")
 }
 
 func TestGitLabAgentTemplateForkProtection(t *testing.T) {
@@ -1028,6 +1022,81 @@ func TestResolveFullsendVersion(t *testing.T) {
 	assert.Equal(t, "v0.42.0", ResolveFullsendVersion("abc123", "v0.42.0"))
 	assert.Equal(t, "v0.42.0", ResolveFullsendVersion("", "v0.42.0"))
 	assert.Equal(t, "abc123", ResolveFullsendVersion("abc123", ""))
+}
+
+func TestResolveRunnerImageTag(t *testing.T) {
+	tests := []struct {
+		name, ref, tag, want string
+	}{
+		{"release SHA with tag", "abc123def", "v0.42.0", "0.42.0"},
+		{"release tag only", "", "v0.42.0", "0.42.0"},
+		{"release tag as ref", "v0.42.0", "", "0.42.0"},
+		{"prerelease", "abc123def", "v0.42.0-rc.1", "0.42.0-rc.1"},
+		{"no ref tracks releases", "", "", RunnerImageLatestTag},
+		{"untagged SHA", "abc123def", "", RunnerImageDevTag},
+		{"main branch", "main", "", RunnerImageDevTag},
+		{"incomplete version", "v0.42", "", RunnerImageDevTag},
+		{"build metadata", "v0.42.0+meta", "", RunnerImageDevTag},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, ResolveRunnerImageTag(tt.ref, tt.tag))
+		})
+	}
+}
+
+func TestIsRunnerImageTag(t *testing.T) {
+	for _, tag := range []string{"0.42.0", "1.2.3-rc.1", "latest", "dev"} {
+		assert.True(t, IsRunnerImageTag(tag), tag)
+	}
+	for _, tag := range []string{"", "v0.42.0", "0.42", "abc1234", "dev-abc1234", "0.42.0+meta", "latest\n"} {
+		assert.False(t, IsRunnerImageTag(tag), tag)
+	}
+}
+
+func TestRenderRunnerImageTag_RewritesPlaceholderAndLegacyDev(t *testing.T) {
+	in := "a: " + RunnerImageRepository + ":__FULLSEND_RUNNER_IMAGE_TAG__\nb: " + RunnerImageRepository + ":dev\nc: other/image:dev\n"
+	got := RenderRunnerImageTag(in, "0.42.0")
+	assert.Equal(t, "a: "+RunnerImageRepository+":0.42.0\nb: "+RunnerImageRepository+":0.42.0\nc: other/image:dev\n", got)
+}
+
+// gitlabRunnerImageTemplates are the GitLab CI templates whose jobs run in
+// the fullsend-runner image.
+var gitlabRunnerImageTemplates = []string{
+	".gitlab/ci/fullsend-agent.yml",
+	".gitlab/ci/fullsend-dispatcher.yml",
+	".gitlab/ci/fullsend-poll.yml",
+}
+
+func TestCollectGitLabPerRepoInstallFiles_RunnerImageFollowsRef(t *testing.T) {
+	tests := []struct {
+		name, ref, tag, wantTag string
+	}{
+		{"release", "abc123def", "v0.42.0", "0.42.0"},
+		{"no ref", "", "", "latest"},
+		{"main opt-in", "main", "", "dev"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			files, err := CollectGitLabPerRepoInstallFiles(nil, nil, tt.ref, tt.tag)
+			require.NoError(t, err)
+			byPath := map[string]string{}
+			for _, f := range files {
+				s := string(f.Content)
+				assert.NotContains(t, s, "__FULLSEND_RUNNER_IMAGE_TAG__",
+					"%s should have the runner image tag rendered", f.Path)
+				byPath[f.Path] = s
+			}
+			for _, path := range gitlabRunnerImageTemplates {
+				s, ok := byPath[path]
+				require.True(t, ok, "%s not collected", path)
+				assert.Contains(t, s, "name: "+RunnerImageRepository+":"+tt.wantTag+"\n", path)
+				if tt.wantTag != "dev" {
+					assert.NotContains(t, s, RunnerImageRepository+":dev", path)
+				}
+			}
+		})
+	}
 }
 
 func TestCollectGitLabPerRepoInstallFiles_VersionPlaceholderReplaced(t *testing.T) {

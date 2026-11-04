@@ -118,10 +118,19 @@ const (
 )
 
 // Actor is the user or service account that caused the transition.
+//
+// BotRole and RoleVerified are the additive ADR 0107 fields. BotRole is the
+// provider-resolved canonical Fullsend role of a recognized bot; it is empty
+// for humans and unrecognized bots. RoleVerified is nil when the adapter has
+// not performed a lookup (legacy input, or the label exception where bot-role
+// lookup is not applicable); for bots, true means the bot-role lookup
+// completed (including a successful no-match) and false means it failed.
 type Actor struct {
 	ID             string    `json:"id"`
 	Kind           ActorKind `json:"kind"`
 	Role           ActorRole `json:"role"`
+	BotRole        string    `json:"bot_role,omitempty"`
+	RoleVerified   *bool     `json:"role_verified,omitempty"`
 	IsEntityAuthor bool      `json:"is_entity_author"`
 }
 
@@ -219,6 +228,14 @@ func (e *Event) Validate() error {
 	if e.Actor.Role == "" {
 		return fmt.Errorf("normalized event: actor.role is required")
 	}
+	if e.Actor.BotRole != "" {
+		if e.Actor.Kind != ActorBot {
+			return fmt.Errorf("normalized event: actor.bot_role is only valid when actor.kind is bot")
+		}
+		if e.Actor.RoleVerified == nil || !*e.Actor.RoleVerified {
+			return fmt.Errorf("normalized event: actor.bot_role requires actor.role_verified to be true")
+		}
+	}
 	if e.State.Labels == nil {
 		return fmt.Errorf("normalized event: state.labels is required")
 	}
@@ -299,6 +316,12 @@ func IsWriteAuthorized(role ActorRole) bool {
 	default:
 		return false
 	}
+}
+
+// IsTriageAuthorized reports whether actor.role is at or above triage, the
+// default threshold for observation agents (triage, review).
+func IsTriageAuthorized(role ActorRole) bool {
+	return role == RoleTriage || IsWriteAuthorized(role)
 }
 
 // MapGitHubPermission maps a GitHub base role to ActorRole. The GitHub client

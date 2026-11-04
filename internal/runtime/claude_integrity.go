@@ -43,8 +43,9 @@ import (
 // <repo>/.claude/settings.json and .claude/settings.local.json. All are
 // settings sources Claude Code reads beneath --settings, which wins only for
 // the keys it sets. So the keys the runner owns are set in the hooks.json
-// document this guard pins (claudeRunnerSettings): the hook settings and the
-// variables the launch clears after .env in env, and disableAllHooks. Any
+// document this guard pins (claudeRunnerSettings): the hook settings, the
+// variables the launch clears after .env and the nonessential-traffic switch
+// in env, and disableAllHooks. Any
 // other key in those files still applies.
 
 // claudeHooksMissingExit is the exit code the run command uses when hooks.json

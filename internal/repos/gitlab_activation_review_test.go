@@ -55,9 +55,11 @@ func TestConvergeRefusesTypedDeliveryBeforeRestriction(t *testing.T) {
 	wrapper, err := scaffold.GitLabPerRepoFile(fullsendPipelineInclude)
 	require.NoError(t, err)
 	fc.FileContents["acme/widgets/"+fullsendPipelineInclude] = wrapper
+	forgeCfg := GitLabForgeConfig()
+	forgeCfg.Client = fc
 	d := convergeDiscovery{
 		repo:       ResolvedRepo{Owner: "acme", Repo: "widgets"},
-		resolved:   ResolvedConfig{Owner: "acme", Repo: "widgets", Forge: ForgeGitLab, ForgeConfig: ForgeConfig{Client: fc}},
+		resolved:   ResolvedConfig{Owner: "acme", Repo: "widgets", Forge: ForgeGitLab, ForgeConfig: forgeCfg},
 		components: []ComponentStatus{{Name: "workflow", Present: true}},
 	}
 	sc := &fakeScaffoldCommit{}
@@ -139,7 +141,13 @@ func TestExpectedGitLabScaffoldForRecordedReleaseDefault(t *testing.T) {
 			// the manifest recorded the release SHA, the status baseline
 			// rendered FULLSEND_VERSION from that SHA while installation/
 			// convergence render it from the release tag (#7850 review).
-			installed, err := scaffold.CollectGitLabPerRepoInstallFiles(nil, nil, "release-sha", "v1.0.0")
+			//
+			// A manifest that records the SHA is an untagged pin for
+			// every CLI, so install and convergence render it without
+			// the release tag (matchingReleaseRefTag); only the release
+			// tag keeps the (SHA, tag) pair.
+			installRef, installTag := matchingReleaseRefTag(ref, dcfg.UpstreamRef, dcfg.UpstreamTag)
+			installed, err := scaffold.CollectGitLabPerRepoInstallFiles(nil, nil, installRef, installTag)
 			require.NoError(t, err)
 			require.NotEmpty(t, installed)
 
@@ -148,7 +156,7 @@ func TestExpectedGitLabScaffoldForRecordedReleaseDefault(t *testing.T) {
 			for _, f := range installed {
 				fc.FileContents["acme/widgets/"+f.Path] = f.Content
 			}
-			checkScaffoldContentDrift(context.Background(), fc, resolved, dcfg, nil, status)
+			checkScaffoldContentDrift(context.Background(), fc, resolved, dcfg, nil, false, status)
 			assert.Empty(t, status.Error)
 			assert.Empty(t, status.Drifts, "installation-rendered content with a SHA ref and a distinct release tag must not report drift: %+v", status.Drifts)
 		})
@@ -156,6 +164,43 @@ func TestExpectedGitLabScaffoldForRecordedReleaseDefault(t *testing.T) {
 	resolved := ResolvedConfig{Forge: ForgeGitLab, FullsendRef: "v0.1.0"}
 	_, err := ExpectedScaffoldContent(context.Background(), resolved, DriftConfig{UpstreamRef: "release-sha", UpstreamTag: "v1.0.0"}, nil)
 	require.ErrorContains(t, err, "matching pinned GitLab templates")
+}
+
+// A manifest pin matching the running release must render the same runner
+// image in every path that renders it: resolveTargetRef (install and
+// convergence), the ref-upgrade path (matchingReleaseRefTag), and the status
+// baseline (ExpectedScaffoldContent). A SHA pin renders dev; the release tag
+// renders the release image.
+func TestMatchingReleasePinRendersSameRunnerImageInAllPaths(t *testing.T) {
+	const sha, tag = "release-sha", "v1.0.0"
+	for _, tc := range []struct {
+		ref, wantImage string
+	}{
+		{ref: sha, wantImage: scaffold.RunnerImageDevTag},
+		{ref: tag, wantImage: "1.0.0"},
+	} {
+		t.Run(tc.ref, func(t *testing.T) {
+			rref := resolveTargetRef(context.Background(), tc.ref, sha, tag, nil)
+			assert.Equal(t, tc.wantImage, scaffold.ResolveRunnerImageTag(rref.ref, rref.tag), "resolveTargetRef")
+
+			upRef, upTag := matchingReleaseRefTag(tc.ref, sha, tag)
+			assert.Equal(t, rref.ref, upRef)
+			assert.Equal(t, rref.tag, upTag, "ref-upgrade path must agree with resolveTargetRef")
+
+			resolved := ResolvedConfig{Owner: "acme", Repo: "widgets", Forge: ForgeGitLab, FullsendRef: tc.ref, ForgeConfig: ForgeConfigFor(ForgeGitLab)}
+			files, err := ExpectedScaffoldContent(context.Background(), resolved, DriftConfig{UpstreamRef: sha, UpstreamTag: tag}, nil)
+			require.NoError(t, err)
+			want := scaffold.RunnerImageRepository + ":" + tc.wantImage
+			found := false
+			for _, f := range files {
+				if strings.Contains(string(f.Content), scaffold.RunnerImageRepository+":") {
+					found = true
+					assert.Contains(t, string(f.Content), want, "%s: status baseline runner image", f.Path)
+				}
+			}
+			assert.True(t, found, "expected scaffold files to reference the runner image")
+		})
+	}
 }
 
 func TestStatusWithoutGitHubUsesRecordedReleaseDefault(t *testing.T) {

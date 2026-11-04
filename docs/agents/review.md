@@ -55,15 +55,33 @@ continue through normal routing. An empty summary can still accompany
 substantive inline review comments, so custom triggers receive the complete
 review event.
 
-On GitLab, automatic review fires when the cron poller sees an MR whose `created_at` is newer than the watermark
-(up to one poll interval of delay). Native `merge_request_event` dispatch was removed. `fullsend repos install`
-provisions a project webhook with merge-request events enabled ([ADR 0125](../ADRs/0125-gitlab-hybrid-webhook-poller-dispatch.md))
-as a fast path that cuts this latency. Provisioning is deferred until the dispatcher and its scripts are on the
-default branch, the default branch is protected, and `no_one_allowed` is verified, so a repository whose scaffold
-merge request is still open dispatches via the ADR 0067 poller until then. The poller stays in place as the
-reconciliation backstop for missed events.
-Push-to-open-MR (GitHub `synchronize`) is not auto-detected;
-comment `/fs-review` to re-review after new commits.
+On GitLab, opening an MR triggers automatic review through the
+[ADR 0125](../ADRs/0125-gitlab-hybrid-webhook-poller-dispatch.md) webhook fast
+path. `fullsend repos install` provisions a project webhook with merge-request
+events enabled. Each event starts a dispatcher pipeline on the protected default
+branch, which dispatches review without waiting for a poll. Provisioning is
+deferred until the dispatcher and its scripts are on the default branch, the
+default branch is protected, and `no_one_allowed` is verified. A repository
+whose scaffold merge request is still open therefore relies on the poller alone
+once the scaffold is merged to a protected default branch. Until then neither
+path dispatches, because the poll jobs also require a protected ref. The
+[ADR 0067](../ADRs/0067-gitlab-cron-polling-event-dispatch.md) cron poller stays
+in place as the reconciliation backstop. When a webhook delivery is missed or
+the fast path is not provisioned, review fires once the poller sees an MR whose
+`created_at` is newer than the watermark (up to one poll interval of delay).
+Native `merge_request_event` pipeline dispatch was removed.
+A push to an open MR (GitHub `synchronize`) also triggers automatic review,
+through the poller only, so expect up to one poll interval of delay. The
+webhook dispatcher rejects merge request updates. GitLab records a new diff
+version on each push. When the newest version moves the MR head and was created
+after the watermark, the poller dispatches review for that head. This includes
+fix-agent pushes to bot-authored MRs, and the fix stage's iteration cap bounds
+the loop. Dispatch is keyed on the head SHA, so later polls that see the same
+head do not review it again. Diff versions do not record who pushed, so the
+poller cannot authorize the pusher. It therefore reviews pushes only to
+same-project MRs, where any pusher already has project push access. A push to
+a fork MR is not reviewed automatically, and re-review of fork MR pushes is
+currently unsupported (the router also denies slash commands on fork MRs).
 
 ## Control labels
 
@@ -80,8 +98,11 @@ When the review agent requests changes (without rejecting), no outcome label is
 applied. On GitHub, the native `pull_request_review` event triggers the
 [fix agent](fix.md) directly. On GitLab, which has no equivalent native review
 event, the review bot posts an MR note with the hidden
-`<!-- fullsend:changes-requested -->` marker; the scheduled poller retains that
-bot-authored note and the dispatch router routes it to fix. Fork merge requests
+`<!-- fullsend:changes-requested -->` marker; the webhook fast path, with the
+scheduled poller as reconciliation backstop, retains that bot-authored note and
+the dispatch router routes it to fix. Both paths retain the note only when its
+author is the Poller bot user, so with distinct Analyst and Poller identities
+it does not dispatch automatically and `/fs-fix` is needed. Fork merge requests
 are blocked from automatic fix runs, matching GitHub. Comment-only reviews do
 not carry the marker and do not dispatch fix.
 

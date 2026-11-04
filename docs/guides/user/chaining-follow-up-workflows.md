@@ -10,8 +10,7 @@ deployment, notify a channel, or feed the result into another workflow.
 
 This is one option, not a requirement: how you automate your own repository
 is up to you. It is the option that works today for actions no built-in role
-grants, because fullsend keeps control-plane write access out of agent roles
-([ADR 0124](../../ADRs/0124-criteria-for-adding-a-built-in-agent-role.md)).
+grants, because fullsend keeps control-plane write access out of agent roles.
 
 ## Prerequisites
 

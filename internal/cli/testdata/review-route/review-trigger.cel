@@ -1,0 +1,17 @@
+// Provisional copy of the default review trigger in fullsend-ai/agents#1757
+// (issue fullsend-ai/agents#1756; harness/review.yaml at 3c3081741e3c). Replace
+// it with the merged harness/review.yaml trigger and keep the two in step:
+// TestReviewRouteParity compares it with the bash router in
+// reusable-dispatch.yml.
+(event.entity.kind == "change_proposal"
+  && event.transition.kind in ["opened", "synchronized", "marked_ready"])
+|| (event.entity.kind == "change_proposal"
+  && event.transition.kind == "label_changed"
+  && event.transition.label.name == "ready-for-review"
+  && event.transition.label.action == "added")
+|| (event.transition.kind == "comment_added"
+  && has(event.transition.comment.command)
+  && event.transition.comment.command == "/fs-review"
+  && event.actor.kind == "human"
+  && (event.entity.kind == "change_proposal"
+      || has(event.entity.linked_change_proposal)))

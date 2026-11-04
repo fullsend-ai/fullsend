@@ -2,6 +2,7 @@ package suite
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -37,6 +38,9 @@ func (p *panickingSCM) AddComment(context.Context, string, string, int, string) 
 	return nil, nil
 }
 func (p *panickingSCM) GetIssue(context.Context, string, string, int) (*forge.Issue, error) {
+	return nil, nil
+}
+func (p *panickingSCM) ListOpenIssues(context.Context, string, string, ...string) ([]forge.Issue, error) {
 	return nil, nil
 }
 func (p *panickingSCM) GetFileContent(context.Context, string, string, string) ([]byte, error) {
@@ -184,8 +188,12 @@ func TestResetScenarioWorld_ClearsSharedState(t *testing.T) {
 		PlaybackEntries:            []runtime.PlaybackEntry{{Result: "triage/bug"}},
 		PlaybackCommitted:          true,
 		ConsumedHarnessRunIDs:      map[string]map[int]bool{"review": {10: true}},
+		MintProbe:                  &world.MintProbe{Forge: "github"},
+		BotRoleProbe:               &world.BotRoleProbe{Forge: "github"},
 	}
 	resetScenarioWorld(w)
+	assert.Nil(t, w.MintProbe)
+	assert.Nil(t, w.BotRoleProbe)
 	assert.Equal(t, 0, w.PRNumber)
 	assert.Equal(t, "", w.DispatchAgent)
 	assert.Equal(t, 0, w.IssueNumber)
@@ -560,4 +568,195 @@ func TestBeforeScenario_SkipDoesNotAttachWorld(t *testing.T) {
 	ctx, err := beforeScenario(context.Background(), []string{"@skip:per-repo"}, template, "skipped")
 	require.ErrorIs(t, err, godog.ErrSkip)
 	assert.Nil(t, world.FromContext(ctx))
+}
+
+// fakeLeaseDriver is a fakeDriver that also leases by (org, repo).
+type fakeLeaseDriver struct {
+	*fakeDriver
+	released []string
+	err      error
+}
+
+func (f *fakeLeaseDriver) AllocateLease(ctx context.Context) (install.RepoLease, error) {
+	name, err := f.AllocateRepo(ctx)
+	return install.RepoLease{Org: "halfsend-05", Repo: name}, err
+}
+
+func (f *fakeLeaseDriver) DeallocateLease(_ context.Context, org, repo string) error {
+	f.released = append(f.released, org+"/"+repo)
+	return f.err
+}
+
+func TestAfterScenario_DeallocatesLeaseWithItsOrg(t *testing.T) {
+	driver := &fakeLeaseDriver{fakeDriver: newFakeDriver(1)}
+	w := &world.World{LeasedRepoName: "test-repo-01", LeasedRepoOrg: "halfsend-05", Org: "halfsend-05"}
+	ctx := world.WithWorld(context.Background(), w)
+
+	_, err := afterScenario(ctx, driver, nil)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"halfsend-05/test-repo-01"}, driver.released)
+	assert.Zero(t, driver.deallocated, "a lease is released by org and repo, not by name")
+
+	driver.err = errors.New("release failed")
+	_, err = afterScenario(ctx, driver, nil)
+	require.ErrorContains(t, err, "deallocating repo: release failed")
+}
+
+func TestResetScenarioWorld_ClearsLease(t *testing.T) {
+	w := &world.World{LeasedRepoName: "test-repo-01", LeasedRepoOrg: "halfsend-02", MintURL: "https://mint"}
+	w.LeaseOwned = func(context.Context) (bool, error) { return true, nil }
+	resetScenarioWorld(w)
+	assert.Nil(t, w.LeaseOwned)
+	assert.Empty(t, w.LeasedRepoName)
+	assert.Empty(t, w.LeasedRepoOrg)
+	assert.Empty(t, w.MintURL)
+}
+
+// recordingSCM records every mutation scenario cleanup makes. The other
+// scm.Driver methods come from panickingSCM and are no-ops.
+type recordingSCM struct {
+	panickingSCM
+	mutations []string
+}
+
+func (r *recordingSCM) CloseIssue(_ context.Context, owner, repo string, n int) error {
+	r.mutations = append(r.mutations, fmt.Sprintf("close %s/%s#%d", owner, repo, n))
+	return nil
+}
+
+func (r *recordingSCM) DeleteBranch(_ context.Context, owner, repo, branch string) error {
+	r.mutations = append(r.mutations, fmt.Sprintf("delete-branch %s/%s:%s", owner, repo, branch))
+	return nil
+}
+
+func (r *recordingSCM) DeleteRepo(_ context.Context, owner, repo string) error {
+	r.mutations = append(r.mutations, fmt.Sprintf("delete-repo %s/%s", owner, repo))
+	return nil
+}
+
+func (r *recordingSCM) CommitFile(_ context.Context, owner, repo, path, _ string, _ []byte) error {
+	r.mutations = append(r.mutations, fmt.Sprintf("commit %s/%s:%s", owner, repo, path))
+	return nil
+}
+
+// verifyingLeaseDriver is a fakeLeaseDriver that also verifies lease
+// ownership: the slot belongs to whichever holder is currently set.
+type verifyingLeaseDriver struct {
+	*fakeLeaseDriver
+	holder string
+	err    error
+}
+
+func (v *verifyingLeaseDriver) StillOwnsLease(_ context.Context, org, repo string) (bool, error) {
+	if v.err != nil {
+		return false, v.err
+	}
+	return v.holder == org+"/"+repo+"#scenario", nil
+}
+
+func leasedWorldWithResources(scm *recordingSCM) *world.World {
+	return &world.World{
+		LeasedRepoName: "test-repo-01", LeasedRepoOrg: "halfsend-05",
+		Org: "halfsend-05", RepoOwner: "halfsend-05", RepoName: "test-repo-01",
+		SCM:         scm,
+		IssueNumber: 7, CreatedBranches: []string{"agent/7-fix"},
+		ForkOwner: "halfsend-05", ForkRepo: "test-repo-01-fork",
+	}
+}
+
+func TestAfterScenario_ReplacementHolder_CleanupSkippedAndOldLeaseReleased(t *testing.T) {
+	scm := &recordingSCM{}
+	driver := &verifyingLeaseDriver{fakeLeaseDriver: &fakeLeaseDriver{fakeDriver: newFakeDriver(1)}}
+	w := leasedWorldWithResources(scm)
+	ctx := world.WithWorld(context.Background(), w)
+
+	// Another holder replaced the slot before the After hook.
+	driver.holder = "halfsend-05/test-repo-01#replacement"
+
+	_, err := afterScenario(ctx, driver, nil)
+	require.NoError(t, err)
+	assert.Empty(t, scm.mutations, "cleanup must not touch the replacement holder's resources")
+	assert.Equal(t, []string{"halfsend-05/test-repo-01"}, driver.released,
+		"this scenario's old lease is still released, by the driver's own ownership-checked release")
+}
+
+func TestAfterScenario_OwnedLease_CleansUpBeforeRelease(t *testing.T) {
+	scm := &recordingSCM{}
+	driver := &verifyingLeaseDriver{
+		fakeLeaseDriver: &fakeLeaseDriver{fakeDriver: newFakeDriver(1)},
+		holder:          "halfsend-05/test-repo-01#scenario",
+	}
+	w := leasedWorldWithResources(scm)
+	ctx := world.WithWorld(context.Background(), w)
+
+	_, err := afterScenario(ctx, driver, nil)
+	require.NoError(t, err)
+	assert.Contains(t, scm.mutations, "close halfsend-05/test-repo-01#7")
+	assert.Contains(t, scm.mutations, "delete-branch halfsend-05/test-repo-01:agent/7-fix")
+	assert.Contains(t, scm.mutations, "delete-repo halfsend-05/test-repo-01-fork")
+	assert.Equal(t, []string{"halfsend-05/test-repo-01"}, driver.released)
+}
+
+func TestAfterScenario_UnverifiableLease_FailsClosedButStillReleases(t *testing.T) {
+	scm := &recordingSCM{}
+	driver := &verifyingLeaseDriver{
+		fakeLeaseDriver: &fakeLeaseDriver{fakeDriver: newFakeDriver(1)},
+		err:             errors.New("lookup unavailable"),
+	}
+	w := leasedWorldWithResources(scm)
+	ctx := world.WithWorld(context.Background(), w)
+
+	_, err := afterScenario(ctx, driver, nil)
+	require.NoError(t, err)
+	assert.Empty(t, scm.mutations)
+	assert.Equal(t, []string{"halfsend-05/test-repo-01"}, driver.released)
+}
+
+func TestAfterScenario_LeaseDriverWithoutVerifier_FailsClosed(t *testing.T) {
+	scm := &recordingSCM{}
+	driver := &fakeLeaseDriver{fakeDriver: newFakeDriver(1)}
+	w := leasedWorldWithResources(scm)
+	ctx := world.WithWorld(context.Background(), w)
+
+	_, err := afterScenario(ctx, driver, nil)
+	require.NoError(t, err)
+	assert.Empty(t, scm.mutations, "a cross-org lease that cannot be verified is not cleaned up by name")
+	assert.Equal(t, []string{"halfsend-05/test-repo-01"}, driver.released)
+}
+
+func TestAfterScenario_NameOnlyLease_CleansUpUnguarded(t *testing.T) {
+	scm := &recordingSCM{}
+	driver := newFakeDriver(1)
+	name, err := driver.AllocateRepo(context.Background())
+	require.NoError(t, err)
+	w := leasedWorldWithResources(scm)
+	w.LeasedRepoOrg = ""
+	w.LeasedRepoName, w.RepoName = name, name
+	ctx := world.WithWorld(context.Background(), w)
+
+	_, err = afterScenario(ctx, driver, nil)
+	require.NoError(t, err)
+	assert.Contains(t, scm.mutations, "close halfsend-05/test-repo-01#7")
+	assert.Nil(t, w.LeaseOwned, "a name-only lease has no shared slot to lose")
+}
+
+func TestLeaseOwnership(t *testing.T) {
+	ctx := context.Background()
+	assert.Nil(t, leaseOwnership(&verifyingLeaseDriver{fakeLeaseDriver: &fakeLeaseDriver{fakeDriver: newFakeDriver(1)}}, "", "test-repo-01"))
+
+	v := &verifyingLeaseDriver{
+		fakeLeaseDriver: &fakeLeaseDriver{fakeDriver: newFakeDriver(1)},
+		holder:          "o/r#scenario",
+	}
+	owns, err := leaseOwnership(v, "o", "r")(ctx)
+	require.NoError(t, err)
+	assert.True(t, owns)
+	v.holder = "o/r#other"
+	owns, err = leaseOwnership(v, "o", "r")(ctx)
+	require.NoError(t, err)
+	assert.False(t, owns)
+
+	owns, err = leaseOwnership(&fakeLeaseDriver{fakeDriver: newFakeDriver(1)}, "o", "r")(ctx)
+	require.ErrorContains(t, err, "cannot verify lease ownership of o/r")
+	assert.False(t, owns)
 }

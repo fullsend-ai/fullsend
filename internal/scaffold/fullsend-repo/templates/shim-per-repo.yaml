@@ -34,8 +34,7 @@ jobs:
       (github.event_name != 'pull_request_target' && github.event_name != 'pull_request_review'
        || github.event.pull_request.head.ref != 'fullsend/scaffold-install')
       && (github.event_name != 'issue_comment'
-       || (startsWith(github.event.comment.body, '/fs-')
-           && github.event.comment.user.type != 'Bot'))
+       || startsWith(github.event.comment.body, '/fs-'))
     permissions:
       actions: write
       id-token: write
@@ -96,6 +95,8 @@ jobs:
             authorized=true
           else
             if api_err=$(mktemp); then
+              # $p is a jq variable; the single quotes are intentional.
+              # shellcheck disable=SC2016
               if role=$(gh api "repos/$REPO/collaborators/$COMMENT_USER_LOGIN/permission" \
                 --jq '.user.permissions as $p
                   | if (.role_name | type) != "string" or .role_name == "" then "none"

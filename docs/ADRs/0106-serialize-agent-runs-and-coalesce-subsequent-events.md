@@ -30,6 +30,11 @@ not on `main`). This ADR's decision is unchanged.
 On GitLab, the webhook candidate and poller-backstop composition is
 [ADR 0125](0125-gitlab-hybrid-webhook-poller-dispatch.md).
 
+[ADR 0144](0144-reuse-poll-and-entity-bound-run-processes.md) partially
+supersedes the requirement below that `fullsend run` does not poll and that a
+follow-up always needs a separate platform execution. The serialization key,
+active-run preservation, and pending-work invariant remain current.
+
 ## Context
 
 Agent execution currently uses platform-specific concurrency controls that may

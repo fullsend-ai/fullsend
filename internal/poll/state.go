@@ -1948,69 +1948,6 @@ func toSet(labels []string) map[string]bool {
 	return s
 }
 
-// buildLegacyPollStateFromVars assembles a persistedPollState from a
-// name-to-value map of pre-branch-store poller CI/CD variables.
-// Returns found=false if none of the seven legacy state vars are present.
-func buildLegacyPollStateFromVars(vars map[string]string, owner, repo string) (persistedPollState, bool) {
-	var state persistedPollState
-	found := false
-
-	if v, ok := vars[forge.VarLastPollAtFast]; ok {
-		state.LastPollAtFast = v
-		found = true
-	}
-	if v, ok := vars[forge.VarLastPollAtFull]; ok {
-		state.LastPollAtFull = v
-		found = true
-	}
-	if v, ok := vars[forge.VarLabelState]; ok {
-		found = true
-		var ls LabelState
-		if err := json.Unmarshal([]byte(v), &ls); err != nil {
-			log.Printf("WARNING: failed to unmarshal legacy label state for %s/%s, skipping: %v", owner, repo, err)
-		} else {
-			state.LabelState = ls
-		}
-	}
-	if v, ok := vars[forge.VarDispatchedKeysFast]; ok {
-		found = true
-		var m map[string]int64
-		if err := json.Unmarshal([]byte(v), &m); err != nil {
-			log.Printf("WARNING: failed to unmarshal legacy dispatched keys (fast) for %s/%s, skipping: %v", owner, repo, err)
-		} else {
-			state.DispatchedKeysFast = m
-		}
-	}
-	if v, ok := vars[forge.VarDispatchedKeysFull]; ok {
-		found = true
-		var m map[string]int64
-		if err := json.Unmarshal([]byte(v), &m); err != nil {
-			log.Printf("WARNING: failed to unmarshal legacy dispatched keys (full) for %s/%s, skipping: %v", owner, repo, err)
-		} else {
-			state.DispatchedKeysFull = m
-		}
-	}
-	if v, ok := vars[forge.VarFailedKeysFast]; ok {
-		found = true
-		var m map[string]int
-		if err := json.Unmarshal([]byte(v), &m); err != nil {
-			log.Printf("WARNING: failed to unmarshal legacy failed keys (fast) for %s/%s, skipping: %v", owner, repo, err)
-		} else {
-			state.FailedKeysFast = m
-		}
-	}
-	if v, ok := vars[forge.VarFailedKeysFull]; ok {
-		found = true
-		var m map[string]int
-		if err := json.Unmarshal([]byte(v), &m); err != nil {
-			log.Printf("WARNING: failed to unmarshal legacy failed keys (full) for %s/%s, skipping: %v", owner, repo, err)
-		} else {
-			state.FailedKeysFull = m
-		}
-	}
-	return state, found
-}
-
 // EnsureDispatchSecret returns the project's existing
 // FULLSEND_DISPATCH_SECRET CI/CD variable value, or generates and
 // stores a new one (masked, protected, like the bot PAT) if none is
@@ -2039,13 +1976,11 @@ func EnsureDispatchSecret(ctx context.Context, client forge.Client, owner, repo 
 
 // SeedGitLabPollStateBranches creates both poll-state branches with an
 // HMAC-signed state.json, using the operator's Maintainer-capable
-// client so legacy CI/CD variables can still be read. *Fast fields are
-// written to the slash branch; *Full fields plus LabelState go to the
-// events branch.
+// client.
 //
-// A missing branch is seeded from any present legacy variables, or with
-// an empty signed baseline when none are present. An already-present
-// state.json is left untouched so live poller writes are not clobbered.
+// A missing branch is seeded with an empty signed baseline. An
+// already-present state.json is left untouched so live poller writes are
+// not clobbered.
 // dispatchSecret must be non-empty: unsigned documents would be
 // discarded as tampered by the runtime poller.
 //
@@ -2055,11 +1990,6 @@ func SeedGitLabPollStateBranches(ctx context.Context, client forge.Client, owner
 		return false, errDispatchSecretUnset
 	}
 
-	vars, err := client.ListRepoVariables(ctx, owner, repo)
-	if err != nil {
-		return false, fmt.Errorf("listing repo variables: %w", err)
-	}
-	legacy, _ := buildLegacyPollStateFromVars(vars, owner, repo)
 	projectPath := owner + "/" + repo
 
 	branches := []struct {
@@ -2080,7 +2010,7 @@ func SeedGitLabPollStateBranches(ctx context.Context, client forge.Client, owner
 			return seeded, fmt.Errorf("checking poll state on %s: %w", b.name, err)
 		}
 
-		doc := pollStateForMode(b.slash, legacy)
+		doc := pollStateForMode(b.slash, persistedPollState{})
 		if !b.slash && doc.IssueOpenCutoff.IsZero() {
 			// A freshly seeded events branch starts the issue-open recovery
 			// boundary at installation, so an issue opened before the first

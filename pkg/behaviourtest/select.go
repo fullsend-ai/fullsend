@@ -1,6 +1,7 @@
 package behaviourtest
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 
@@ -26,13 +27,38 @@ func installFactoryFor(environment string) install.Factory {
 	return install.NewRepoPoolCFMintPreviews
 }
 
-// orgPoolForEnvironment returns the STAGE org (halfsend) directly, or the
-// numbered DEV pool. STAGE does not use the numbered pool orgs.
-func orgPoolForEnvironment(environment string) []string {
-	if environment == "stage" {
-		return []string{install.StageOrg}
+// poolConfigFor returns the slot pool and runtime dependencies the
+// install factory needs: the environment's layout (derived DEV orgs
+// halfsend-01 … halfsend-12, or the unsuffixed STAGE org halfsend; see
+// install.PoolLayoutForEnvironment), one installation token per org via
+// e2etest.TokenForOrg, and live forge clients.
+func poolConfigFor(environment string, e2eCfg e2etest.EnvConfig, binary string, logf func(string, ...any)) install.PoolConfig {
+	return install.PoolConfig{
+		Layout: install.PoolLayoutForEnvironment(environment, logf),
+		TokenFor: func(ctx context.Context, org string) (string, error) {
+			return e2etest.TokenForOrg(ctx, e2eCfg, org)
+		},
+		NewClient:    func(token string) forge.Client { return e2etest.NewLiveClient(token) },
+		Binary:       binary,
+		GCPProjectID: e2eCfg.GCPProjectID,
+		Logf:         logf,
 	}
-	return e2etest.OrgPool()
+}
+
+// orgDriversFor returns the World.OrgDrivers hook: it builds the SCM and
+// CI drivers for one leased org from that org's client and token.
+func orgDriversFor(scmName, ciName string) func(forge.Client, string) (scm.Driver, ci.Driver, error) {
+	return func(client forge.Client, token string) (scm.Driver, ci.Driver, error) {
+		scmDriver, err := newSCMDriver(scmName, client)
+		if err != nil {
+			return nil, nil, err
+		}
+		ciDriver, err := newCIDriver(ciName, client, token)
+		if err != nil {
+			return nil, nil, err
+		}
+		return scmDriver, ciDriver, nil
+	}
 }
 
 func newSCMDriver(name string, client forge.Client) (scm.Driver, error) {
@@ -66,11 +92,13 @@ func newCIDriver(name string, client forge.Client, token string) (ci.Driver, err
 }
 
 // resolveConcurrency returns godog worker count. raw is the
-// GODOG_CONCURRENCY env value; empty means default to capacity.
-// overCapacity is true when the resolved value exceeds capacity
-// (caller warns; excess workers block in AllocateRepo).
-func resolveConcurrency(raw string, capacity int) (n int, overCapacity bool, err error) {
-	n = capacity
+// GODOG_CONCURRENCY env value; empty means defaultN (capped at
+// capacity). Aggregate concurrency is controlled independently of the
+// pool's slot capacity, which spans every pool org. overCapacity is true
+// when the resolved value exceeds capacity (caller warns; excess workers
+// block while allocating).
+func resolveConcurrency(raw string, defaultN, capacity int) (n int, overCapacity bool, err error) {
+	n = min(defaultN, capacity)
 	if raw != "" {
 		parsed, convErr := strconv.Atoi(raw)
 		if convErr != nil || parsed < 1 {

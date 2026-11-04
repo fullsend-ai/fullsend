@@ -245,6 +245,7 @@ func (s stubBootstrapInput) Plugins() []PluginInput             { return nil }
 func (s stubBootstrapInput) ModelAliases() map[string]string    { return nil }
 func (s stubBootstrapInput) AgentSubagents() map[string]*string { return nil }
 func (s stubBootstrapInput) ParentModel() string                { return "" }
+func (s stubBootstrapInput) Effort() string                     { return "" }
 func (s stubBootstrapInput) OpenAIProviderAttached() bool       { return false }
 
 func TestDummyRuntime_Bootstrap(t *testing.T) {
@@ -264,6 +265,66 @@ func TestDummyRuntime_Bootstrap_NonZeroExit(t *testing.T) {
 	err := rt.Bootstrap(stubBootstrapInput{sandboxName: "nonexistent"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "sandbox not found")
+}
+
+type skillsBootstrapInput struct {
+	stubBootstrapInput
+	skillDirs []string
+}
+
+func (s skillsBootstrapInput) SkillDirs() []string { return s.skillDirs }
+
+func TestDummyRuntime_Bootstrap_UploadsSkills(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	review := filepath.Join(root, "pr-review")
+	lint := filepath.Join(root, "lint")
+	require.NoError(t, os.MkdirAll(review, 0o755))
+	require.NoError(t, os.MkdirAll(lint, 0o755))
+
+	var mkdir string
+	type upload struct{ local, remote string }
+	var uploads []upload
+	rt := DummyRuntime{
+		ExecFn: func(_ string, cmd string, _ time.Duration) (string, string, int, error) {
+			mkdir = cmd
+			return "", "", 0, nil
+		},
+		UploadFn: func(_ string, local, remote string) error {
+			uploads = append(uploads, upload{local, remote})
+			return nil
+		},
+	}
+	err := rt.Bootstrap(skillsBootstrapInput{
+		stubBootstrapInput: stubBootstrapInput{sandboxName: "sb"},
+		skillDirs:          []string{review, lint},
+	})
+	require.NoError(t, err)
+	assert.Contains(t, mkdir, rt.ConfigDir()+"/skills")
+	assert.Equal(t, []upload{
+		{review, rt.ConfigDir() + "/skills/pr-review"},
+		{lint, rt.ConfigDir() + "/skills/lint"},
+	}, uploads)
+}
+
+func TestDummyRuntime_Bootstrap_SkillUploadError(t *testing.T) {
+	t.Parallel()
+
+	rt := DummyRuntime{
+		ExecFn: func(_ string, _ string, _ time.Duration) (string, string, int, error) {
+			return "", "", 0, nil
+		},
+		UploadFn: func(_ string, _, _ string) error {
+			return errors.New("upload refused")
+		},
+	}
+	err := rt.Bootstrap(skillsBootstrapInput{
+		stubBootstrapInput: stubBootstrapInput{sandboxName: "sb"},
+		skillDirs:          []string{filepath.Join(t.TempDir(), "pr-review")},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "upload refused")
 }
 
 func TestDummyRuntime_RunMissingScript(t *testing.T) {
@@ -604,48 +665,318 @@ func TestExecuteBehaviourScript_CancelledContext(t *testing.T) {
 	assert.Contains(t, err.Error(), "cancelled")
 }
 
-func TestExecuteBehaviourOp_CheckoutBranchSuccess(t *testing.T) {
+// fakeHostGit records runner-side git calls and answers each by its git
+// subcommand (args[0]); a subcommand without an entry succeeds.
+type fakeHostGit struct {
+	calls   [][]string
+	results map[string]fakeGitResult
+}
+
+type fakeGitResult struct {
+	stderr   string
+	exitCode int
+	err      error
+}
+
+func (f *fakeHostGit) run(_ context.Context, _ string, args ...string) (string, string, int, error) {
+	f.calls = append(f.calls, args)
+	r := f.results[args[0]]
+	return "", r.stderr, r.exitCode, r.err
+}
+
+func (f *fakeHostGit) subcommands() []string {
+	var out []string
+	for _, c := range f.calls {
+		out = append(out, c[0])
+	}
+	return out
+}
+
+func TestExecuteBehaviourOp_CheckoutBranchMissingRemoteCommand(t *testing.T) {
 	t.Parallel()
 
 	repoDir := t.TempDir()
 	var gotCmd string
-	rt := DummyRuntime{ExecFn: func(_ string, cmd string, _ time.Duration) (string, string, int, error) {
-		gotCmd = cmd
-		return "", "", 0, nil
-	}}
+	git := &fakeHostGit{results: map[string]fakeGitResult{"ls-remote": {exitCode: 2}}}
+	rt := DummyRuntime{
+		ExecFn: func(_ string, cmd string, _ time.Duration) (string, string, int, error) {
+			gotCmd = cmd
+			return "", "", 0, nil
+		},
+		UploadFn: func(_, _, _ string) error {
+			t.Fatal("no bundle is uploaded when the remote ref is absent")
+			return nil
+		},
+		HostGitFn:   git.run,
+		hostRepoDir: "/host/repo",
+	}
 	err := executeBehaviourOp(rt, "sandbox", repoDir, BehaviourOperation{
 		Op:   "checkout_branch",
 		Args: "agent/42-fix-widget",
 	})
 	require.NoError(t, err)
+	require.Len(t, git.calls, 1)
+	assert.Equal(t, []string{"ls-remote", "--exit-code", "--heads", "origin", "refs/heads/agent/42-fix-widget"}, git.calls[0])
 	assert.Contains(t, gotCmd, "cd '"+repoDir+"'")
-	assert.Contains(t, gotCmd, "git ls-remote --exit-code --heads origin 'agent/42-fix-widget'")
-	assert.Contains(t, gotCmd, "git checkout -B 'agent/42-fix-widget' FETCH_HEAD")
-	assert.Contains(t, gotCmd, "git checkout -B 'agent/42-fix-widget'; fi")
+	assert.Contains(t, gotCmd, "git checkout -B 'agent/42-fix-widget' &&")
+	assert.NotContains(t, gotCmd, "ls-remote", "the sandbox must not contact the remote")
+	assert.NotContains(t, gotCmd, "fetch")
+	assert.NotContains(t, gotCmd, "/dev/null", "git stderr must not be discarded")
 	assert.Contains(t, gotCmd, "behaviour/marker.txt")
 	assert.Contains(t, gotCmd, "commit -m")
+	assert.Contains(t, gotCmd, "git -c gc.auto=0 -c maintenance.auto=false -c user.name=", "the commit must not start background maintenance")
 }
 
-// runCheckoutBranchForReal executes the checkout_branch shell command with
-// a real shell and git, returning the op error. The ExecFn override runs
-// the command via sh -c instead of a sandbox.
-func runCheckoutBranchForReal(t *testing.T, repoDir, branch string) error {
-	t.Helper()
-	rt := DummyRuntime{ExecFn: func(_ string, cmd string, _ time.Duration) (string, string, int, error) {
-		out, err := exec.Command("sh", "-c", cmd).CombinedOutput()
-		if err != nil {
-			var exitErr *exec.ExitError
-			if errors.As(err, &exitErr) {
-				return "", string(out), exitErr.ExitCode(), nil
+func TestExecuteBehaviourOp_CheckoutBranchExistingRemoteCommand(t *testing.T) {
+	t.Parallel()
+
+	repoDir := t.TempDir()
+	var gotCmd, uploadedTo string
+	git := &fakeHostGit{}
+	rt := DummyRuntime{
+		ExecFn: func(_ string, cmd string, _ time.Duration) (string, string, int, error) {
+			gotCmd = cmd
+			return "", "", 0, nil
+		},
+		UploadFn: func(_, _, remotePath string) error {
+			uploadedTo = remotePath
+			return nil
+		},
+		HostGitFn:   git.run,
+		hostRepoDir: "/host/repo",
+	}
+	err := executeBehaviourOp(rt, "sandbox", repoDir, BehaviourOperation{
+		Op:   "checkout_branch",
+		Args: "agent/42-fix-widget",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"ls-remote", "fetch", "bundle", "update-ref"}, git.subcommands())
+	assert.Equal(t, []string{"fetch", "--no-tags", "--no-write-fetch-head", "origin",
+		"+refs/heads/agent/42-fix-widget:refs/fullsend-behaviour/heads/agent/42-fix-widget"}, git.calls[1])
+	assert.Equal(t, "refs/fullsend-behaviour/heads/agent/42-fix-widget", git.calls[2][len(git.calls[2])-1])
+	assert.Equal(t, []string{"update-ref", "-d", "refs/fullsend-behaviour/heads/agent/42-fix-widget"}, git.calls[3])
+	assert.Equal(t, checkoutBranchBundlePath, uploadedTo)
+	assert.Contains(t, gotCmd, "git -c gc.auto=0 -c maintenance.auto=false fetch --no-tags '"+checkoutBranchBundlePath+"' 'refs/fullsend-behaviour/heads/agent/42-fix-widget'")
+	assert.Contains(t, gotCmd, "git -c gc.auto=0 -c maintenance.auto=false -c user.name=")
+	assert.Contains(t, gotCmd, "git checkout -B 'agent/42-fix-widget' FETCH_HEAD")
+	assert.Contains(t, gotCmd, "rm -f '"+checkoutBranchBundlePath+"'")
+	assert.NotContains(t, gotCmd, "origin", "the sandbox must not contact the remote")
+	assert.NotContains(t, gotCmd, "/dev/null", "git stderr must not be discarded")
+	assert.Contains(t, gotCmd, "behaviour/marker.txt")
+}
+
+func TestExecuteBehaviourOp_CheckoutBranchRunnerFailures(t *testing.T) {
+	t.Parallel()
+
+	for name, tc := range map[string]struct {
+		results   map[string]fakeGitResult
+		uploadErr error
+		want      []string
+	}{
+		"probe exec error": {
+			results: map[string]fakeGitResult{"ls-remote": {err: io.ErrUnexpectedEOF}},
+			want:    []string{"runner ls-remote", io.ErrUnexpectedEOF.Error()},
+		},
+		"probe failure": {
+			results: map[string]fakeGitResult{"ls-remote": {exitCode: 128, stderr: "remote: Repository not found.\nfatal: repository not found\n"}},
+			want:    []string{"runner ls-remote failed with 128", "fatal: repository not found"},
+		},
+		"fetch exec error": {
+			results: map[string]fakeGitResult{"fetch": {err: io.ErrUnexpectedEOF}},
+			want:    []string{"runner fetch", io.ErrUnexpectedEOF.Error()},
+		},
+		"fetch failure": {
+			results: map[string]fakeGitResult{"fetch": {exitCode: 128, stderr: "fatal: couldn't find remote ref\n"}},
+			want:    []string{"runner fetch failed with 128", "fatal: couldn't find remote ref"},
+		},
+		"bundle exec error": {
+			results: map[string]fakeGitResult{"bundle": {err: io.ErrUnexpectedEOF}},
+			want:    []string{"runner bundle", io.ErrUnexpectedEOF.Error()},
+		},
+		"bundle failure": {
+			results: map[string]fakeGitResult{"bundle": {exitCode: 128, stderr: "fatal: Refusing to create empty bundle.\n"}},
+			want:    []string{"runner bundle failed with 128", "fatal: Refusing to create empty bundle."},
+		},
+		"upload failure": {
+			uploadErr: errors.New("upload refused"),
+			want:      []string{"bundle upload", "upload refused"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			git := &fakeHostGit{results: tc.results}
+			rt := DummyRuntime{
+				ExecFn: func(_ string, _ string, _ time.Duration) (string, string, int, error) {
+					t.Fatal("the sandbox command must not run after a runner-side failure")
+					return "", "", 0, nil
+				},
+				UploadFn:    func(_, _, _ string) error { return tc.uploadErr },
+				HostGitFn:   git.run,
+				hostRepoDir: "/host/repo",
 			}
-			return "", string(out), -1, err
-		}
-		return string(out), "", 0, nil
+			err := executeBehaviourOp(rt, "sandbox", t.TempDir(), BehaviourOperation{
+				Op:   "checkout_branch",
+				Args: "agent/42-fix-widget",
+			})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "checkout_branch agent/42-fix-widget")
+			for _, w := range tc.want {
+				assert.Contains(t, err.Error(), w)
+			}
+		})
+	}
+}
+
+func TestExecuteBehaviourOp_CheckoutBranchNoHostRepoDir(t *testing.T) {
+	t.Parallel()
+
+	rt := DummyRuntime{HostGitFn: func(context.Context, string, ...string) (string, string, int, error) {
+		t.Fatal("runner git must not run without a host repository")
+		return "", "", 0, nil
 	}}
-	return executeBehaviourOp(rt, "sandbox", repoDir, BehaviourOperation{
+	err := executeBehaviourOp(rt, "sandbox", t.TempDir(), BehaviourOperation{
+		Op:   "checkout_branch",
+		Args: "agent/42-fix-widget",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "runner-side repository directory is not set")
+}
+
+func TestDummyRuntime_RunPassesHostRepoDir(t *testing.T) {
+	t.Parallel()
+
+	fullsendDir := t.TempDir()
+	scriptPath := filepath.Join(fullsendDir, behaviourScriptRelPath)
+	require.NoError(t, os.MkdirAll(filepath.Dir(scriptPath), 0o755))
+	require.NoError(t, os.WriteFile(scriptPath, []byte("ops:\n  - description: checkout\n    op: checkout_branch\n    args: agent/42-impl\n"), 0o644))
+
+	var gotDir string
+	rt := DummyRuntime{
+		ExecFn: func(_ string, _ string, _ time.Duration) (string, string, int, error) { return "", "", 0, nil },
+		HostGitFn: func(_ context.Context, dir string, _ ...string) (string, string, int, error) {
+			gotDir = dir
+			return "", "", 2, nil
+		},
+		WriteResultsFn: func(string, BehaviourResults) error { return nil },
+	}
+	code, err := rt.Run(context.Background(), RunParams{
+		SandboxName: "sandbox",
+		RepoDir:     "/sandbox/workspace/repo",
+		HostRepoDir: "/host/repo",
+		FullsendDir: fullsendDir,
+	}, ui.New(io.Discard), time.Now(), nil)
+	require.NoError(t, err)
+	assert.Equal(t, 0, code)
+	assert.Equal(t, "/host/repo", gotDir)
+}
+
+func TestRunHostGit(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	dir := t.TempDir()
+	stdout, _, code, err := runHostGit(context.Background(), dir, "--version")
+	require.NoError(t, err)
+	assert.Equal(t, 0, code)
+	assert.Contains(t, stdout, "git version")
+
+	// A non-zero exit is reported as an exit code with git's stderr.
+	_, stderr, code, err := runHostGit(context.Background(), dir, "rev-parse", "HEAD")
+	require.NoError(t, err)
+	assert.NotEqual(t, 0, code)
+	assert.Contains(t, stderr, "fatal:")
+
+	// Automatic gc and maintenance are disabled, so no detached git
+	// process outlives the command.
+	stdout, _, code, err = runHostGit(context.Background(), dir, "config", "--get", "gc.auto")
+	require.NoError(t, err)
+	assert.Equal(t, 0, code)
+	assert.Equal(t, "0", strings.TrimSpace(stdout))
+	stdout, _, code, err = runHostGit(context.Background(), dir, "config", "--get", "maintenance.auto")
+	require.NoError(t, err)
+	assert.Equal(t, 0, code)
+	assert.Equal(t, "false", strings.TrimSpace(stdout))
+
+	// A cancelled context is an error, not an exit code.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, _, code, err = runHostGit(ctx, dir, "--version")
+	require.Error(t, err)
+	assert.Equal(t, -1, code)
+}
+
+// runCheckoutBranchForReal runs the checkout_branch op with real git on
+// both sides: runner-side git in hostRepo and the sandbox command via
+// sh -c against sandboxRepo. The upload copies the bundle to a local path
+// that stands in for checkoutBranchBundlePath, which the sandbox command
+// is rewritten to use; bundlePath returns that path so tests can check the
+// sandbox removed it.
+func runCheckoutBranchForReal(t *testing.T, hostRepo, sandboxRepo, branch string) (bundlePath string, err error) {
+	t.Helper()
+	bundlePath = filepath.Join(t.TempDir(), "checkout-branch.bundle")
+	rt := DummyRuntime{
+		ExecFn: func(_ string, cmd string, _ time.Duration) (string, string, int, error) {
+			cmd = strings.ReplaceAll(cmd, checkoutBranchBundlePath, bundlePath)
+			var stdout, stderr bytes.Buffer
+			c := exec.Command("sh", "-c", cmd)
+			c.Env = gitTestEnv()
+			c.Stdout = &stdout
+			c.Stderr = &stderr
+			if err := c.Run(); err != nil {
+				var exitErr *exec.ExitError
+				if errors.As(err, &exitErr) {
+					return stdout.String(), stderr.String(), exitErr.ExitCode(), nil
+				}
+				return stdout.String(), stderr.String(), -1, err
+			}
+			return stdout.String(), stderr.String(), 0, nil
+		},
+		UploadFn: func(_, localPath, remotePath string) error {
+			if remotePath != checkoutBranchBundlePath {
+				return errors.New("unexpected upload destination " + remotePath)
+			}
+			data, err := os.ReadFile(localPath)
+			if err != nil {
+				return err
+			}
+			return os.WriteFile(bundlePath, data, 0o644)
+		},
+		hostRepoDir: hostRepo,
+	}
+	err = executeBehaviourOp(rt, "sandbox", sandboxRepo, BehaviourOperation{
 		Op:   "checkout_branch",
 		Args: branch,
 	})
+	return bundlePath, err
+}
+
+// gitTestEnv isolates git from the caller's global and system config and
+// disables automatic gc and maintenance, which can detach into a
+// background process that keeps writing into .git/objects after the
+// command returns and races t.TempDir cleanup.
+func gitTestEnv() []string {
+	return append(os.Environ(),
+		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t.invalid",
+		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t.invalid",
+		"GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_CONFIG_SYSTEM=/dev/null",
+		"GIT_CONFIG_COUNT=2",
+		"GIT_CONFIG_KEY_0=gc.auto", "GIT_CONFIG_VALUE_0=0",
+		"GIT_CONFIG_KEY_1=maintenance.auto", "GIT_CONFIG_VALUE_1=false",
+		"GIT_EDITOR=true")
+}
+
+func TestGitTestEnvDisablesAutoMaintenance(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	dir := t.TempDir()
+	assert.Equal(t, "0", gitOut(t, dir, "config", "--get", "gc.auto"))
+	assert.Equal(t, "false", gitOut(t, dir, "config", "--get", "maintenance.auto"))
 }
 
 // runGit runs git in dir without inheriting host signing or editor config.
@@ -654,12 +985,7 @@ func runGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(),
-		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t.invalid",
-		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t.invalid",
-		"GIT_CONFIG_GLOBAL=/dev/null",
-		"GIT_CONFIG_SYSTEM=/dev/null",
-		"GIT_EDITOR=true")
+	cmd.Env = gitTestEnv()
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, "git %v: %s", args, out)
 	return strings.TrimSpace(string(out))
@@ -675,6 +1001,9 @@ func initCheckoutBranchRepos(t *testing.T) (clone, origin string) {
 	seed := filepath.Join(base, "seed")
 
 	runGit(t, base, "init", "--bare", "-b", "main", origin)
+	// Pushes run receive-pack in origin without the GIT_CONFIG_* variables
+	// from gitTestEnv, so stop it starting gc through origin's own config.
+	runGit(t, origin, "config", "receive.autogc", "false")
 	runGit(t, base, "init", "-b", "main", seed)
 	require.NoError(t, os.WriteFile(filepath.Join(seed, "README.md"), []byte("seed\n"), 0o644))
 	runGit(t, seed, "add", "README.md")
@@ -690,10 +1019,23 @@ func initCheckoutBranchRepos(t *testing.T) (clone, origin string) {
 	return clone, origin
 }
 
+// sandboxCopy copies the runner's repository the way the runner uploads it
+// into the sandbox, then points the copy's origin at a path that does not
+// exist: a sandbox-side fetch or ls-remote would fail, so a passing test
+// proves the remote was reached only from the runner side.
+func sandboxCopy(t *testing.T, hostRepo string) string {
+	t.Helper()
+	dst := filepath.Join(t.TempDir(), "sandbox-repo")
+	require.NoError(t, os.CopyFS(dst, os.DirFS(hostRepo)))
+	runGit(t, dst, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "unreachable.git"))
+	return dst
+}
+
 func gitOut(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
+	cmd.Env = gitTestEnv()
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, "git %v: %s", args, out)
 	return strings.TrimSpace(string(out))
@@ -706,15 +1048,57 @@ func TestExecuteBehaviourOp_CheckoutBranchRealShellExistingRemote(t *testing.T) 
 	}
 
 	clone, origin := initCheckoutBranchRepos(t)
-	require.NoError(t, runCheckoutBranchForReal(t, clone, "agent/7-existing"))
+	sandboxRepo := sandboxCopy(t, clone)
+	bundlePath, err := runCheckoutBranchForReal(t, clone, sandboxRepo, "agent/7-existing")
+	require.NoError(t, err)
 
-	assert.Equal(t, "agent/7-existing", gitOut(t, clone, "branch", "--show-current"))
-	// The branch is based on the remote tip plus exactly one marker commit.
+	assert.Equal(t, "agent/7-existing", gitOut(t, sandboxRepo, "branch", "--show-current"))
+	// The branch is based on the remote tip, delivered through the bundle,
+	// plus exactly one marker commit.
 	remoteTip := gitOut(t, origin, "rev-parse", "refs/heads/agent/7-existing")
-	assert.Equal(t, remoteTip, gitOut(t, clone, "rev-parse", "HEAD~1"))
-	assert.Equal(t, "test: add scripted marker commit", gitOut(t, clone, "log", "-1", "--format=%s"))
-	assert.FileExists(t, filepath.Join(clone, "extra.txt"), "remote branch content is present")
-	assert.FileExists(t, filepath.Join(clone, "behaviour", "marker.txt"))
+	assert.Equal(t, remoteTip, gitOut(t, sandboxRepo, "rev-parse", "HEAD~1"))
+	assert.Equal(t, "test: add scripted marker commit", gitOut(t, sandboxRepo, "log", "-1", "--format=%s"))
+	assert.FileExists(t, filepath.Join(sandboxRepo, "extra.txt"), "remote branch content is present")
+	assert.FileExists(t, filepath.Join(sandboxRepo, "behaviour", "marker.txt"))
+	assert.NoFileExists(t, bundlePath, "the sandbox removes the bundle")
+
+	// The runner's checkout keeps no trace beyond the fetched objects: no
+	// private ref and no local branch.
+	assert.Empty(t, gitOut(t, clone, "for-each-ref", "refs/fullsend-behaviour/"))
+	assert.Empty(t, gitOut(t, clone, "branch", "--list", "agent/7-existing"))
+	assert.Equal(t, "main", gitOut(t, clone, "branch", "--show-current"))
+}
+
+// Runners check the target repository out shallow (fetch-depth: 1); the
+// runner-side fetch and bundle must work there, and the sandbox copy
+// (equally shallow) must accept the bundle.
+func TestExecuteBehaviourOp_CheckoutBranchRealShellShallowRunner(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	_, origin := initCheckoutBranchRepos(t)
+	// Move main past the branch point so the shallow boundary is not an
+	// ancestor of the remote branch.
+	seed := filepath.Join(filepath.Dir(origin), "seed")
+	runGit(t, seed, "checkout", "main")
+	require.NoError(t, os.WriteFile(filepath.Join(seed, "later.txt"), []byte("later\n"), 0o644))
+	runGit(t, seed, "add", "later.txt")
+	runGit(t, seed, "commit", "-m", "later")
+	runGit(t, seed, "push", origin, "main")
+
+	shallow := filepath.Join(t.TempDir(), "shallow")
+	runGit(t, filepath.Dir(shallow), "clone", "--no-local", "--depth", "1", "-b", "main", origin, shallow)
+	require.FileExists(t, filepath.Join(shallow, ".git", "shallow"))
+	sandboxRepo := sandboxCopy(t, shallow)
+
+	_, err := runCheckoutBranchForReal(t, shallow, sandboxRepo, "agent/7-existing")
+	require.NoError(t, err)
+	remoteTip := gitOut(t, origin, "rev-parse", "refs/heads/agent/7-existing")
+	assert.Equal(t, remoteTip, gitOut(t, sandboxRepo, "rev-parse", "HEAD~1"))
+	assert.FileExists(t, filepath.Join(sandboxRepo, "extra.txt"))
+	assert.NoFileExists(t, filepath.Join(sandboxRepo, "later.txt"))
 }
 
 func TestExecuteBehaviourOp_CheckoutBranchRealShellMissingRemote(t *testing.T) {
@@ -724,13 +1108,16 @@ func TestExecuteBehaviourOp_CheckoutBranchRealShellMissingRemote(t *testing.T) {
 	}
 
 	clone, _ := initCheckoutBranchRepos(t)
-	mainTip := gitOut(t, clone, "rev-parse", "HEAD")
-	require.NoError(t, runCheckoutBranchForReal(t, clone, "agent/7-brand-new"))
+	sandboxRepo := sandboxCopy(t, clone)
+	mainTip := gitOut(t, sandboxRepo, "rev-parse", "HEAD")
+	bundlePath, err := runCheckoutBranchForReal(t, clone, sandboxRepo, "agent/7-brand-new")
+	require.NoError(t, err)
 
-	assert.Equal(t, "agent/7-brand-new", gitOut(t, clone, "branch", "--show-current"))
+	assert.Equal(t, "agent/7-brand-new", gitOut(t, sandboxRepo, "branch", "--show-current"))
 	// Missing remote ref falls back to the current HEAD plus the marker.
-	assert.Equal(t, mainTip, gitOut(t, clone, "rev-parse", "HEAD~1"))
-	assert.FileExists(t, filepath.Join(clone, "behaviour", "marker.txt"))
+	assert.Equal(t, mainTip, gitOut(t, sandboxRepo, "rev-parse", "HEAD~1"))
+	assert.FileExists(t, filepath.Join(sandboxRepo, "behaviour", "marker.txt"))
+	assert.NoFileExists(t, bundlePath, "no bundle is shipped for an absent ref")
 }
 
 func TestExecuteBehaviourOp_CheckoutBranchRealShellPrefersBranchOverSameNamedTag(t *testing.T) {
@@ -751,8 +1138,10 @@ func TestExecuteBehaviourOp_CheckoutBranchRealShellPrefersBranchOverSameNamedTag
 	runGit(t, seed, "tag", "agent/7-existing", "main")
 	runGit(t, seed, "push", origin, "refs/tags/agent/7-existing")
 
-	require.NoError(t, runCheckoutBranchForReal(t, clone, "agent/7-existing"))
-	assert.Equal(t, branchTip, gitOut(t, clone, "rev-parse", "HEAD~1"), "checkout must resolve the branch, not the same-named tag")
+	sandboxRepo := sandboxCopy(t, clone)
+	_, err := runCheckoutBranchForReal(t, clone, sandboxRepo, "agent/7-existing")
+	require.NoError(t, err)
+	assert.Equal(t, branchTip, gitOut(t, sandboxRepo, "rev-parse", "HEAD~1"), "checkout must resolve the branch, not the same-named tag")
 }
 
 func TestExecuteBehaviourOp_CheckoutBranchRealShellRemoteError(t *testing.T) {
@@ -762,12 +1151,37 @@ func TestExecuteBehaviourOp_CheckoutBranchRealShellRemoteError(t *testing.T) {
 	}
 
 	clone, origin := initCheckoutBranchRepos(t)
-	// Break the remote so ls-remote fails with a non-2 exit code: the op
-	// must fail rather than silently branching off HEAD.
+	sandboxRepo := sandboxCopy(t, clone)
+	mainTip := gitOut(t, sandboxRepo, "rev-parse", "HEAD")
+	// Break the remote so the runner-side ls-remote fails with a non-2
+	// exit code: the op must fail rather than silently branching off HEAD,
+	// and the error must carry git's own stderr.
 	require.NoError(t, os.RemoveAll(origin))
-	err := runCheckoutBranchForReal(t, clone, "agent/7-existing")
+	_, err := runCheckoutBranchForReal(t, clone, sandboxRepo, "agent/7-existing")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "checkout_branch")
+	assert.Contains(t, err.Error(), "checkout_branch agent/7-existing: runner ls-remote failed with 128")
+	assert.Contains(t, err.Error(), "does not appear to be a git repository")
+	assert.Equal(t, mainTip, gitOut(t, sandboxRepo, "rev-parse", "HEAD"), "the sandbox repository is untouched")
+}
+
+// A sandbox-side failure (here: a corrupt bundle) reports git's stderr.
+func TestExecuteBehaviourOp_CheckoutBranchRealShellSandboxFetchError(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	repo, _ := initCheckoutBranchRepos(t)
+	bundlePath := filepath.Join(t.TempDir(), "corrupt.bundle")
+	require.NoError(t, os.WriteFile(bundlePath, []byte("not a bundle\n"), 0o644))
+	cmd := strings.ReplaceAll(checkoutBranchCommand(repo, "agent/7-existing", "refs/fullsend-behaviour/heads/agent/7-existing"), checkoutBranchBundlePath, bundlePath)
+	c := exec.Command("sh", "-c", cmd)
+	c.Env = gitTestEnv()
+	out, err := c.CombinedOutput()
+	require.Error(t, err)
+	assert.Contains(t, string(out), "fatal:", "git's stderr is kept")
+	assert.NoFileExists(t, bundlePath, "the bundle is removed even when the fetch fails")
+	assert.Equal(t, "main", gitOut(t, repo, "branch", "--show-current"))
 }
 
 func TestExecuteBehaviourOp_CheckoutBranchEmpty(t *testing.T) {
@@ -806,9 +1220,14 @@ func TestExecuteBehaviourOp_CheckoutBranchInvalidName(t *testing.T) {
 func TestExecuteBehaviourOp_CheckoutBranchNonZeroExit(t *testing.T) {
 	t.Parallel()
 
-	rt := DummyRuntime{ExecFn: func(_ string, _ string, _ time.Duration) (string, string, int, error) {
-		return "", "fatal: not a git repository", 1, nil
-	}}
+	git := &fakeHostGit{results: map[string]fakeGitResult{"ls-remote": {exitCode: 2}}}
+	rt := DummyRuntime{
+		ExecFn: func(_ string, _ string, _ time.Duration) (string, string, int, error) {
+			return "", "fatal: not a git repository", 1, nil
+		},
+		HostGitFn:   git.run,
+		hostRepoDir: "/host/repo",
+	}
 	err := executeBehaviourOp(rt, "sandbox", t.TempDir(), BehaviourOperation{
 		Op:   "checkout_branch",
 		Args: "agent/42-fix-widget",
@@ -820,9 +1239,14 @@ func TestExecuteBehaviourOp_CheckoutBranchNonZeroExit(t *testing.T) {
 func TestExecuteBehaviourOp_CheckoutBranchExecError(t *testing.T) {
 	t.Parallel()
 
-	rt := DummyRuntime{ExecFn: func(_ string, _ string, _ time.Duration) (string, string, int, error) {
-		return "", "", 0, io.ErrUnexpectedEOF
-	}}
+	git := &fakeHostGit{results: map[string]fakeGitResult{"ls-remote": {exitCode: 2}}}
+	rt := DummyRuntime{
+		ExecFn: func(_ string, _ string, _ time.Duration) (string, string, int, error) {
+			return "", "", 0, io.ErrUnexpectedEOF
+		},
+		HostGitFn:   git.run,
+		hostRepoDir: "/host/repo",
+	}
 	err := executeBehaviourOp(rt, "sandbox", t.TempDir(), BehaviourOperation{
 		Op:   "checkout_branch",
 		Args: "agent/42-fix-widget",

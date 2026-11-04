@@ -132,7 +132,9 @@ func isSlashCommandEvent(event RoutableEvent) bool {
 // RunWebhook builds events from a native GitLab webhook body and
 // dispatches their routed stages, deduplicated against the poller's
 // per-mode state. It fails closed — dispatching nothing — when the
-// payload cannot be validated.
+// payload cannot be validated. A payload that yields no events (an
+// ignored bare issue update, for example) returns nil without loading
+// or writing poll state.
 func (p *Poller) RunWebhook(ctx context.Context, raw []byte) error {
 	events, err := p.BuildWebhookEvents(ctx, raw)
 	if err != nil {
@@ -222,7 +224,7 @@ func (p *Poller) dispatchWebhookEvents(ctx context.Context, slash bool, events [
 				anyDispatched = true
 				continue
 			}
-			if err := p.dispatch(ctx, p.owner, p.repo, stage, event); err != nil {
+			if err := p.dispatch(ctx, p.owner, p.repo, stage, event, &we.Normalized); err != nil {
 				errs = append(errs, fmt.Errorf("dispatch %s for %s failed: %w", stage, eventKey, err))
 				eventFailed = true
 				continue

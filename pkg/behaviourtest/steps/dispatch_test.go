@@ -29,6 +29,17 @@ func TestDispatchSteps_RequirePullRequest(t *testing.T) {
 	w := &world.World{ScenarioStart: time.Now()}
 	require.Error(t, whenPullRequestLabeled(w, "label"))
 	require.Error(t, whenPullRequestReviewComment(w))
+	require.Error(t, whenPullRequestChangesRequested(w))
+}
+
+func TestWhenPullRequestChangesRequested_SubmitsRequestChanges(t *testing.T) {
+	scm := &fakeDispatchSCM{}
+	w := &world.World{SCM: scm, RepoOwner: "org", RepoName: "repo", PRNumber: 7}
+	before := time.Now()
+	require.NoError(t, whenPullRequestChangesRequested(w))
+	assert.Equal(t, []string{"REQUEST_CHANGES"}, scm.reviewEvents)
+	assert.False(t, w.ScenarioStart.Before(before.Truncate(time.Second)), "ScenarioStart must be reset to the review time")
+	assert.Zero(t, w.ScenarioStart.Nanosecond(), "ScenarioStart must be truncated to the second")
 }
 
 func TestEnsureHarnessArtifacts_NoWorkflowRun(t *testing.T) {
@@ -335,6 +346,7 @@ type fakeDispatchSCM struct {
 	commitCalled     bool
 	committedContent []byte
 	commitErr        error
+	reviewEvents     []string
 }
 
 func (f *fakeDispatchSCM) GetFileContent(_ context.Context, _, _, _ string) ([]byte, error) {
@@ -360,6 +372,9 @@ func (f *fakeDispatchSCM) AddComment(context.Context, string, string, int, strin
 func (f *fakeDispatchSCM) GetIssue(context.Context, string, string, int) (*forge.Issue, error) {
 	return nil, nil
 }
+func (f *fakeDispatchSCM) ListOpenIssues(context.Context, string, string, ...string) ([]forge.Issue, error) {
+	return nil, nil
+}
 func (f *fakeDispatchSCM) CreateBranch(context.Context, string, string, string) error { return nil }
 func (f *fakeDispatchSCM) DeleteBranch(context.Context, string, string, string) error { return nil }
 func (f *fakeDispatchSCM) CommitFileToBranch(context.Context, string, string, string, string, string, []byte) error {
@@ -368,7 +383,8 @@ func (f *fakeDispatchSCM) CommitFileToBranch(context.Context, string, string, st
 func (f *fakeDispatchSCM) CreateChangeProposal(context.Context, string, string, string, string, string, string) (*forge.ChangeProposal, error) {
 	return nil, nil
 }
-func (f *fakeDispatchSCM) SubmitPullRequestReview(context.Context, string, string, int, string) error {
+func (f *fakeDispatchSCM) SubmitPullRequestReview(_ context.Context, _, _ string, _ int, event string) error {
+	f.reviewEvents = append(f.reviewEvents, event)
 	return nil
 }
 func (f *fakeDispatchSCM) CloseIssue(context.Context, string, string, int) error { return nil }
@@ -650,4 +666,55 @@ func TestCommitLocalHarnessResources_CommitsScaffoldProfilesAndProviders(t *test
 	require.NoError(t, commitLocalHarnessResources(context.Background(), w2, "url",
 		"agent: https://example.com/a.md\nrole: triage\nopenshell:\n  profiles:\n    - https://example.com/p.yaml#sha256=abc\n"))
 	assert.Empty(t, scm2.files)
+}
+
+func TestThenHarnessWorkflowLogsContain(t *testing.T) {
+	const logs = "2026-10-31T00:00:00Z subagents: correctness → google-vertex/claude-opus (from frontmatter)\n"
+	completed := &forge.WorkflowRun{ID: 9, Status: "completed", Conclusion: "success"}
+	newWorld := func(run *forge.WorkflowRun, logs string, logsErr error) *world.World {
+		return &world.World{
+			Org:         "org",
+			RepoName:    "repo",
+			WorkflowRun: run,
+			CI:          &fakeDebugCI{logs: logs, logsErr: logsErr},
+		}
+	}
+
+	require.NoError(t, thenHarnessWorkflowLogsContain(newWorld(completed, logs, nil), "pi", "subagents: correctness →", true))
+	require.NoError(t, thenHarnessWorkflowLogsContain(newWorld(completed, logs, nil), "pi", "subagents: user-experience →", false))
+
+	err := thenHarnessWorkflowLogsContain(newWorld(completed, logs, nil), "pi", "subagents: user-experience →", true)
+	require.ErrorContains(t, err, `do not contain "subagents: user-experience →"`)
+	assert.NotContains(t, err.Error(), "incomplete")
+
+	err = thenHarnessWorkflowLogsContain(newWorld(completed, logs, nil), "pi", "subagents: correctness →", false)
+	require.ErrorContains(t, err, "unexpectedly contain")
+
+	// A truncated snapshot cannot prove absence, and a miss on one says so.
+	partial := logs + "[log truncated: 1 MiB]\n"
+	err = thenHarnessWorkflowLogsContain(newWorld(completed, partial, nil), "pi", "subagents: user-experience →", false)
+	require.ErrorContains(t, err, "cannot show")
+	err = thenHarnessWorkflowLogsContain(newWorld(completed, partial, nil), "pi", "subagents: security →", true)
+	require.ErrorContains(t, err, "snapshot is incomplete")
+	require.NoError(t, thenHarnessWorkflowLogsContain(newWorld(completed, partial, nil), "pi", "subagents: correctness →", true))
+
+	err = thenHarnessWorkflowLogsContain(newWorld(completed, "", fmt.Errorf("HTTP 502")), "pi", "x", true)
+	require.ErrorContains(t, err, "HTTP 502")
+
+	// No recorded run: the step waits for the harness run first, which
+	// needs a trigger time.
+	err = thenHarnessWorkflowLogsContain(newWorld(nil, logs, nil), "pi", "x", true)
+	require.ErrorContains(t, err, "no workflow trigger time recorded")
+}
+
+func TestGivenFullsendFile(t *testing.T) {
+	scm := &fakeURLSCM{files: map[string][]byte{}}
+	w := &world.World{Org: "org", RepoName: "repo", SCM: scm}
+	require.NoError(t, givenFullsendFile(w, "personas/./rbac-review.md", "---\nname: rbac-review\n---"))
+	assert.Equal(t, "---\nname: rbac-review\n---\n", string(scm.files["org/repo/.fullsend/personas/rbac-review.md"]))
+
+	for _, bad := range []string{"", "/etc/x", "..", "../x", "a/../../x"} {
+		assert.Error(t, givenFullsendFile(w, bad, "x"), bad)
+	}
+	assert.Error(t, givenFullsendFile(&world.World{SCM: scm}, "a.md", "x"))
 }

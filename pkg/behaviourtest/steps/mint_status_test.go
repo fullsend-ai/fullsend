@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
@@ -55,6 +56,11 @@ type mintURLDriver struct {
 }
 
 func (d mintURLDriver) MintURL() string { return d.url }
+
+// noReporterDriver is a name-only Driver that reports no mint URL.
+type noReporterDriver struct {
+	install.Driver
+}
 
 func mintStatusClass(t *testing.T, err error) string {
 	t.Helper()
@@ -149,33 +155,58 @@ func TestMintStatusFeature_StepsMatchPatterns(t *testing.T) {
 func TestGivenMintStatusAddress(t *testing.T) {
 	w := &world.World{Driver: mintURLDriver{url: mintStatusTestURL + "/"}}
 
-	require.NoError(t, givenMintStatusAddress(w, mintStatusAddressSuite))
+	require.NoError(t, givenMintStatusAddress(context.Background(), w, mintStatusAddressSuite))
 	assert.Equal(t, mintStatusTestURL+"/", w.MintStatus.MintURL)
 
-	require.NoError(t, givenMintStatusAddress(w, mintStatusAddressNonMint))
+	require.NoError(t, givenMintStatusAddress(context.Background(), w, mintStatusAddressNonMint))
 	assert.Equal(t, mintStatusTestURL+mintStatusNonMintPath, w.MintStatus.MintURL)
 
-	require.NoError(t, givenMintStatusAddress(w, mintStatusAddressUnreachable))
+	require.NoError(t, givenMintStatusAddress(context.Background(), w, mintStatusAddressUnreachable))
 	assert.Equal(t, mintStatusUnreachableURL, w.MintStatus.MintURL)
 
-	assert.Error(t, givenMintStatusAddress(w, "some other address"))
+	assert.Error(t, givenMintStatusAddress(context.Background(), w, "some other address"))
+}
+
+func TestGivenMintStatusAddress_LeasesForOrgMint(t *testing.T) {
+	ld := &fakeLeaseDriver{lease: install.RepoLease{
+		Org: "halfsend-04", Repo: "test-repo-02", Token: "tok-04",
+		Client: forge.NewFakeClient(), MintURL: "https://mint.halfsend-04",
+	}}
+	w := &world.World{Driver: ld, Org: "halfsend-01", Logf: t.Logf}
+
+	require.NoError(t, givenMintStatusAddress(context.Background(), w, mintStatusAddressSuite))
+	assert.Equal(t, "https://mint.halfsend-04", w.MintStatus.MintURL, "the leased org's mint")
+	assert.Equal(t, "halfsend-04", w.Org)
+	assert.Equal(t, "halfsend-04", w.LeasedRepoOrg)
+	assert.Equal(t, 1, ld.allocs)
+
+	// A scenario that already leased reuses its lease's mint.
+	require.NoError(t, givenMintStatusAddress(context.Background(), w, mintStatusAddressSuite))
+	assert.Equal(t, 1, ld.allocs)
+}
+
+func TestGivenMintStatusAddress_LeaseFailureIsDeployment(t *testing.T) {
+	w := &world.World{Driver: &fakeLeaseDriver{allocErr: errors.New("pool exhausted")}}
+	err := givenMintStatusAddress(context.Background(), w, mintStatusAddressSuite)
+	assert.Equal(t, mintStatusClassDeployment, mintStatusClass(t, err))
+	assert.ErrorContains(t, err, "pool exhausted")
 }
 
 func TestGivenMintStatusAddress_UnknownSuiteMint(t *testing.T) {
 	for name, w := range map[string]*world.World{
 		"no driver":          {},
 		"no mint URL":        {Driver: mintURLDriver{url: "  "}},
-		"driver no reporter": {Driver: &install.PlaybackDriver{}},
+		"driver no reporter": {Driver: noReporterDriver{}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			err := givenMintStatusAddress(w, mintStatusAddressSuite)
+			err := givenMintStatusAddress(context.Background(), w, mintStatusAddressSuite)
 			assert.Equal(t, mintStatusClassDeployment, mintStatusClass(t, err))
 			assert.Nil(t, w.MintStatus)
 		})
 	}
 	// The unreachable address does not need the suite's mint.
 	w := &world.World{}
-	require.NoError(t, givenMintStatusAddress(w, mintStatusAddressUnreachable))
+	require.NoError(t, givenMintStatusAddress(context.Background(), w, mintStatusAddressUnreachable))
 }
 
 func TestMintStatusCredential(t *testing.T) {
@@ -257,7 +288,7 @@ func TestClassifyMintStatus(t *testing.T) {
 
 func TestThenMintStatusOutcome(t *testing.T) {
 	ran := func(exit int, output string) *world.World {
-		return &world.World{Org: "halfsend-03", MintStatus: &world.MintStatus{
+		return &world.World{Org: "halfsend-03", MintStatusGroup: "halfsend-07/mint-status", MintStatus: &world.MintStatus{
 			MintURL: mintStatusTestURL, Credential: mintStatusCredentialWrite,
 			Ran: true, ExitCode: exit, Output: output,
 		}}
@@ -271,7 +302,13 @@ func TestThenMintStatusOutcome(t *testing.T) {
 	// A failure where success was expected keeps its own class.
 	err := thenMintStatusOutcome(ran(1, mintStatusTestAuthFailed), "ok")
 	assert.Equal(t, mintStatusClassAuthentication, mintStatusClass(t, err))
-	assert.ErrorContains(t, err, "halfsend-03/mint-status", "a rejected write actor names the status group")
+	assert.ErrorContains(t, err, "halfsend-07/mint-status", "a rejected write actor names the stored status group")
+	assert.NotContains(t, err.Error(), "halfsend-03/mint-status", "the status group is not derived from the scenario's org")
+	noGroup := ran(1, mintStatusTestAuthFailed)
+	noGroup.MintStatusGroup = ""
+	err = thenMintStatusOutcome(noGroup, "ok")
+	assert.ErrorContains(t, err, "the mint's status group")
+	assert.NotContains(t, err.Error(), "halfsend-03/mint-status")
 	err = thenMintStatusOutcome(ran(1, mintStatusTestRefused), "ok")
 	assert.Equal(t, mintStatusClassTransport, mintStatusClass(t, err))
 	err = thenMintStatusOutcome(ran(1, mintStatusTestNotFound), "ok")
@@ -314,11 +351,11 @@ func TestParseMintStatusOutput(t *testing.T) {
 }
 
 func TestMintStatusFacts(t *testing.T) {
-	assert.Empty(t, mintStatusFacts(parseMintStatusOutput(mintStatusTestOK), mintStatusTestURL, "halfsend-03"))
-	assert.Empty(t, mintStatusFacts(parseMintStatusOutput(mintStatusTestOK), mintStatusTestURL, "Halfsend-03"),
+	assert.Empty(t, mintStatusFacts(parseMintStatusOutput(mintStatusTestOK), mintStatusTestURL, "halfsend-03/test-repo-01", nil))
+	assert.Empty(t, mintStatusFacts(parseMintStatusOutput(mintStatusTestOK), mintStatusTestURL, "Halfsend-03/test-repo-01", nil),
 		"org comparison is case-insensitive")
 
-	problems := mintStatusFacts(parseMintStatusOutput(mintStatusTestOIDC), mintStatusTestURL, "halfsend-03")
+	problems := mintStatusFacts(parseMintStatusOutput(mintStatusTestOIDC), mintStatusTestURL, "halfsend-03/test-repo-01", nil)
 	joined := strings.Join(problems, "\n")
 	assert.Contains(t, joined, `authenticated via "OIDC"`)
 	assert.Contains(t, joined, `summary auth "OIDC"`)
@@ -326,7 +363,7 @@ func TestMintStatusFacts(t *testing.T) {
 	assert.Contains(t, joined, `role "triage" not reported`)
 	assert.Contains(t, joined, "do not include halfsend-03/test-repo-01")
 
-	problems = mintStatusFacts(parseMintStatusOutput(mintStatusTestOK), "https://other.example.test", "halfsend-01")
+	problems = mintStatusFacts(parseMintStatusOutput(mintStatusTestOK), "https://other.example.test", "halfsend-01/test-repo-01", nil)
 	joined = strings.Join(problems, "\n")
 	assert.Contains(t, joined, `URL "https://mint.example.test"`)
 	assert.Contains(t, joined, "outside org halfsend-01")
@@ -334,9 +371,46 @@ func TestMintStatusFacts(t *testing.T) {
 	noRoles := strings.Replace(mintStatusTestOK,
 		"→ Roles\n      coder\n      fullsend\n      prioritize\n      retro\n      review\n      triage\n",
 		"→ Roles\n      (none)\n", 1)
-	joined = strings.Join(mintStatusFacts(parseMintStatusOutput(noRoles), mintStatusTestURL, "halfsend-03"), "\n")
+	joined = strings.Join(mintStatusFacts(parseMintStatusOutput(noRoles), mintStatusTestURL, "halfsend-03/test-repo-01", nil), "\n")
 	assert.Contains(t, joined, "no roles reported")
 	assert.Contains(t, joined, "summary role count")
+}
+
+// mintStatusGroupOutput is mintStatusTestOK for a mint whose group
+// serves halfsend-02 and halfsend-03, listing hosts.
+func mintStatusGroupOutput(hosts ...string) string {
+	return strings.Replace(mintStatusTestOK,
+		"→ Workflow Host Repos\n      halfsend-03/test-repo-01\n      halfsend-03/test-repo-01-mint-host\n",
+		"→ Workflow Host Repos\n      "+strings.Join(hosts, "\n      ")+"\n", 1)
+}
+
+func TestMintStatusFacts_MintGroup(t *testing.T) {
+	group := []string{
+		"halfsend-02/test-repo-01", "halfsend-02/test-repo-01-mint-host",
+		"halfsend-03/test-repo-01", "halfsend-03/test-repo-01-mint-host",
+	}
+
+	// Hosts of other orgs in the scenario's mint group are expected.
+	r := parseMintStatusOutput(mintStatusGroupOutput(group...))
+	assert.Empty(t, mintStatusFacts(r, mintStatusTestURL, "halfsend-03/test-repo-01", group))
+	assert.Empty(t, mintStatusFacts(r, mintStatusTestURL, "HALFSEND-02/test-repo-01", group),
+		"host comparison is case-insensitive")
+
+	// A host outside the group is rejected.
+	r = parseMintStatusOutput(mintStatusGroupOutput(append(group[:4:4], "halfsend-09/test-repo-01")...))
+	joined := strings.Join(mintStatusFacts(r, mintStatusTestURL, "halfsend-03/test-repo-01", group), "\n")
+	assert.Contains(t, joined, `"halfsend-09/test-repo-01" is not a workflow host of the mint's group`)
+
+	// A group host the mint does not report is a mismatch.
+	r = parseMintStatusOutput(mintStatusGroupOutput(group[2:]...))
+	joined = strings.Join(mintStatusFacts(r, mintStatusTestURL, "halfsend-03/test-repo-01", group), "\n")
+	assert.Contains(t, joined, `"halfsend-02/test-repo-01" of the mint's group not reported`)
+
+	// The scenario's own host is required even when the group list
+	// lacks it.
+	joined = strings.Join(mintStatusFacts(parseMintStatusOutput(mintStatusGroupOutput(group[:2]...)),
+		mintStatusTestURL, "halfsend-03/test-repo-01", group[:2]), "\n")
+	assert.Contains(t, joined, "do not include halfsend-03/test-repo-01")
 }
 
 func TestThenMintStatusReportsFacts(t *testing.T) {
@@ -345,8 +419,19 @@ func TestThenMintStatusReportsFacts(t *testing.T) {
 	}}
 	assert.NoError(t, thenMintStatusReportsFacts(w))
 
+	// The leased repo is the scenario's own host, and the stored mint
+	// group hosts are what the mint must report.
+	group := []string{"halfsend-02/test-repo-05", "halfsend-03/test-repo-05"}
+	grouped := &world.World{Org: "halfsend-03", LeasedRepoName: "test-repo-05", MintWorkflowHostRepos: group,
+		MintStatus: &world.MintStatus{MintURL: mintStatusTestURL, Ran: true, Output: mintStatusGroupOutput(group...)}}
+	assert.NoError(t, thenMintStatusReportsFacts(grouped))
+	grouped.LeasedRepoName = "test-repo-06"
+	err := thenMintStatusReportsFacts(grouped)
+	assert.Equal(t, mintStatusClassAssertion, mintStatusClass(t, err))
+	assert.ErrorContains(t, err, "do not include halfsend-03/test-repo-06")
+
 	w.MintStatus.Output = strings.Replace(mintStatusTestOK, "Authenticated via GitHub", "Authenticated via OIDC", 1)
-	err := thenMintStatusReportsFacts(w)
+	err = thenMintStatusReportsFacts(w)
 	assert.Equal(t, mintStatusClassAssertion, mintStatusClass(t, err))
 
 	w.MintStatus.ExitCode = 1

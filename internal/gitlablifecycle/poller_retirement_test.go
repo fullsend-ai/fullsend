@@ -45,7 +45,7 @@ func newRetirementServer() *retirementServer {
 			{"id": 1, "name": gitlabroles.PollerTokenName, "active": true},
 			{"id": 2, "name": gitlabroles.PollerTokenName, "active": false, "revoked": true},
 		}},
-		state:    `{"roles":{"poller":{"phase":"idle","incoming_id":5,"managed_user_id":99,"distributed_at":"2026-01-01T00:00:00Z"}}}`,
+		state:    `{"version":2,"roles":{"poller":{"phase":"idle","incoming_id":5,"managed_user_id":99,"distributed_at":"2026-01-01T00:00:00Z"}}}`,
 		accounts: []map[string]any{{"id": 77, "name": gitlabroles.PollerTokenName}, {"id": 99, "name": gitlabroles.PollerTokenName}},
 	}
 }
@@ -143,13 +143,13 @@ func TestPollerRetirementBlocked(t *testing.T) {
 	assert.Equal(t, "1 unfinished job(s) still run as it", reason)
 
 	s = newRetirementServer()
-	s.state = `{"roles":{"poller":{"phase":"idle","incoming_id":5,"managed_user_id":99,"distributed_at":"2026-01-01T00:00:00Z","excluded_user_ids":[77]}}}`
+	s.state = `{"version":2,"roles":{"poller":{"phase":"idle","incoming_id":5,"managed_user_id":99,"distributed_at":"2026-01-01T00:00:00Z","excluded_user_ids":[77]}}}`
 	reason, err = s.start(t).PollerRetirementBlocked(ctx, "g", "p", 77)
 	require.NoError(t, err)
 	assert.Contains(t, reason, "owns an administrator-supplied credential")
 
 	s = newRetirementServer()
-	s.state = `{"roles":{"poller":{"supplied":true,"supplied_user_id":-1}}}`
+	s.state = `{"version":2,"roles":{"poller":{"supplied":true,"supplied_user_id":-1}}}`
 	_, err = s.start(t).PollerRetirementBlocked(ctx, "g", "p", 77)
 	require.ErrorIs(t, err, repos.ErrPollerSuppliedUnresolved)
 

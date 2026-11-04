@@ -189,6 +189,7 @@ func TestConverge_AuthSwitchKeepsObsoleteRegionUntilScaffoldLands(t *testing.T) 
 func TestConverge_GitLabAuthSwitchRemovesObsoleteRegionVariable(t *testing.T) {
 	fc := newFakeClientForBatch("acme/api")
 	populateGitLabInstalled(fc, "acme", "api")
+	populateGitLabTypedWrapper(t, fc, "acme", "api")
 	fc.Secrets["acme/api/"+forge.SecretGCPProjectID] = true
 	fc.Secrets["acme/api/"+forge.SecretGCPWIFProvider] = true
 	fc.VariableValues["acme/api/"+forge.VarGCPRegion] = "us-central1"

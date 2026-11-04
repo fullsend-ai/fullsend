@@ -18,7 +18,7 @@ func seedEnforcedIdentity(t *testing.T, fc *forge.FakeClient) {
 	t.Helper()
 	fc.VariableValues["group/project/"+forge.VarGitLabRoleRegistry] = `{"roles":[]}`
 	fc.VariablesExist["group/project/"+forge.VarGitLabRoleRegistry] = true
-	fc.VariableValues["group/project/"+forge.VarGitLabRoleRotation] = `{"roles":{}}`
+	fc.VariableValues["group/project/"+forge.VarGitLabRoleRotation] = `{"version":2,"roles":{}}`
 	fc.VariablesExist["group/project/"+forge.VarGitLabRoleRotation] = true
 	for _, name := range []string{
 		forge.SecretGitLabPollerToken,
@@ -426,7 +426,7 @@ func TestCleanupGitLabRoleIdentity_RetainsRotationStateUntilRevocationSucceeds(t
 	fc := forge.NewFakeClient()
 	seedEnforcedIdentity(t, fc)
 	rotationKey := "group/project/" + forge.VarGitLabRoleRotation
-	fc.VariableValues[rotationKey] = `{"roles":{"poller":{"phase":"idle","distributed_at":"2026-01-01T00:00:00Z","supplied_user_id":90}}}`
+	fc.VariableValues[rotationKey] = `{"version":2,"roles":{"poller":{"phase":"idle","distributed_at":"2026-01-01T00:00:00Z","supplied_user_id":90}}}`
 	tokens := &fakeTokens{failRevoke: errors.New("revoke refused")}
 	// The token reports a non-excluded owner: with exclusions recorded, a token
 	// that reports no owner is never revoked at all.

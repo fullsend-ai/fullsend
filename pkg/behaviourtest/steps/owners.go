@@ -269,17 +269,14 @@ func disableOwnersAuth(w *world.World) error {
 	if err != nil {
 		return err
 	}
-	if err := w.SCM.CommitFile(context.Background(),
-		w.Org, w.RepoName,
-		cfgPath, "behaviour: disable OWNERS authorization",
-		merged); err != nil {
+	if err := commitVerified(w, cfgPath, "behaviour: disable OWNERS authorization", merged); err != nil {
 		return fmt.Errorf("updating config: %w", err)
 	}
 	return nil
 }
 
 func cleanupOwnersAuth(w *world.World) {
-	ctx := context.Background()
+	ctx := mutationCtx(w)
 	owner := w.Org
 	repo := w.RepoName
 
@@ -298,7 +295,7 @@ func cleanupOwnersAuth(w *world.World) {
 		}},
 	}
 	for _, st := range steps {
-		if err := cleanupRetry(w.Logf, st.desc, st.fn); err != nil {
+		if err := guardedCleanupRetry(w, st.desc, st.fn); err != nil {
 			worldLogf(w, "behaviour cleanup: %s: %v", st.desc, err)
 		}
 	}

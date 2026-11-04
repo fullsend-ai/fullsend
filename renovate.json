@@ -142,8 +142,8 @@
     },
     {
       "customType": "regex",
-      "description": "Track the OpenShell tag in the gateway configuration link of the customizing agents guide (migrating proxy and certificate settings), so the link follows the pin in the same openshell group PR instead of pointing at a tag the pinned gateway does not match (#3373).",
-      "managerFilePatterns": ["/^docs/guides/user/customizing-agents\\.md$/"],
+      "description": "Track the OpenShell tag in the gateway configuration link of the harness reference (migrating proxy and certificate settings), so the link follows the pin in the same openshell group PR instead of pointing at a tag the pinned gateway does not match (#3373).",
+      "managerFilePatterns": ["/^docs/reference/harness-reference\\.md$/"],
       "matchStrings": [
         "github\\.com/NVIDIA/OpenShell/blob/v(?<currentValue>\\d+\\.\\d+\\.\\d+)/"
       ],

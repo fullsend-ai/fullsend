@@ -80,7 +80,7 @@ The CLI defaults to this URL. You can also set the `FULLSEND_MINT_URL` repositor
 
   `roles/owner` covers all of the above for users with broad access.
 
-  **Behaviour / e2e pool orgs:** Enroll `halfsend-NN/test-repo` and `halfsend-NN/test-repo-01` … `test-repo-12` (lazily created and installed on demand by the unified `install.Driver` — see [behaviour-testing.md](../dev/behaviour-testing.md#repo-allocation-via-unified-driver)) on the hosted mint (`PER_REPO_WIF_REPOS`). For the STAGE environment, also enroll `halfsend/test-repo-01` … `test-repo-12` (see the STAGE enrollment block in [e2e-testing.md](../dev/e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment)). Run `fullsend mint enroll owner/repo` once per name — not from CI; do not enroll `*-fork` names. Repos need not exist at enrollment time — enroll is a mint allowlist / WIF-provider update only; the unified driver creates the repos when a behaviour scenario first leases them. See [e2e-testing.md](../dev/e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
+  **Behaviour / e2e pool orgs:** Enroll `halfsend-NN/test-repo` and `halfsend-NN/test-repo-01` … `test-repo-12` (created by each slot claim and installed on demand by the shared slot driver — see [behaviour-testing.md](../dev/behaviour-testing.md#repo-allocation-via-the-shared-slot-driver)) on the hosted mint (`PER_REPO_WIF_REPOS`). For the STAGE environment, also enroll `halfsend/test-repo-01` … `test-repo-12` (see the STAGE enrollment block in [e2e-testing.md](../dev/e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment)). Run `fullsend mint enroll owner/repo` once per name — not from CI; do not enroll `*-fork` names. Repos need not exist at enrollment time — enroll is a mint allowlist / WIF-provider update only; the unified driver creates the repos when a behaviour scenario first leases them. See [e2e-testing.md](../dev/e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
 
   An administrator can grant all required roles with a single script:
 
@@ -173,6 +173,37 @@ fullsend mint deploy --project="$GCP_PROJECT" --pem-dir=/path/to/pems \
 The mint URL is stable across redeploys within the same project and region — updating the Cloud Function does not change its URL. Enrolling a new repository in an existing mint only updates `PER_REPO_WIF_REPOS` (and WIF configuration) without redeploying the function. Shared `ROLE_APP_IDS` are managed at deploy/bootstrap time (`mint deploy --pem-dir`) or per-role via `mint add-role` / `remove-role` — not during enrollment. Existing enrolled repos continue working with no changes when new repos are enrolled.
 
 Deploying to a **different region** (e.g., changing `--region` from `us-central1` to `us-east5`) creates a new Cloud Run service with a different URL. All enrolled repos store the mint URL in a repo or org variable (`FULLSEND_MINT_URL`), so changing the region requires updating every enrolled repo's variable. Avoid changing `--region` after initial deployment unless you plan to update all consumers.
+
+### HTTP Strict Transport Security
+
+Mint responses from the Cloud Function and the Cloudflare Worker carry
+this header, success and error responses alike:
+
+```
+Strict-Transport-Security: max-age=31536000
+```
+
+The shared mint handler sets it (`hstsHeaderValue` in
+`internal/mintcore/handler.go`) on every response it writes. The
+Cloudflare Worker also sets it on the error responses it writes before
+the handler runs, such as `429 rate_limited`.
+
+- **`max-age=31536000` (one year):** after one HTTPS response, a browser
+  or HSTS-aware client upgrades `http://` requests for the mint hostname to
+  HTTPS for a year. Clients that ignore HSTS still get the HTTP-to-HTTPS
+  redirect at the edge.
+- **No `includeSubDomains`:** the policy applies only to the mint's own
+  hostname (for example `mint.fullsend.sh`). It never extends to sibling
+  or child hostnames.
+- **No `preload`:** the mint does not ask to be added to browser preload
+  lists. Preloading covers the whole registrable domain, including the
+  public website, and is hard to undo.
+
+Clients ignore the header on plain-HTTP responses, so a self-hosted mint
+served without TLS is unaffected. The
+[GitHub mint scope behaviour scenarios](../dev/behaviour-testing.md#github-mint-scope-scenarios)
+check the header on `/v1/token` and `/health` against each deployed
+behaviour-test mint.
 
 ## Managing roles
 
@@ -268,7 +299,10 @@ This command does not uninstall GitHub Apps from organizations or update any rep
 
 ## Enrolling repositories
 
-`fullsend mint enroll` registers a repository in the mint and configures WIF to accept OIDC tokens from it. Only `owner/repo` targets are accepted; a bare org argument is rejected because org enrollment was removed with per-org installation ([ADR 0044](../../ADRs/0044-deprecate-per-org-installation-mode.md)).
+`fullsend mint enroll` registers a repository in the mint and configures WIF
+to accept OIDC tokens from it. Only `owner/repo` targets are accepted; a bare
+org argument is rejected because org enrollment was removed with per-org
+installation.
 
 ```bash
 fullsend mint enroll acme-corp/my-repo --project="$GCP_PROJECT"
@@ -317,7 +351,11 @@ Enroll repositories serially — do not run concurrent enrollment commands again
 
 ## Unenrolling repositories
 
-`fullsend mint unenroll` removes a repository from the mint. Only `owner/repo` targets are accepted. A bare org argument is rejected because per-org unenrollment was removed with per-org installation ([ADR 0044](../../ADRs/0044-deprecate-per-org-installation-mode.md)). To clean up org entries that an older CLI left behind, see [Cleaning up legacy per-org mint state](#cleaning-up-legacy-per-org-mint-state).
+`fullsend mint unenroll` removes a repository from the mint. Only `owner/repo`
+targets are accepted. A bare org argument is rejected because per-org
+unenrollment was removed with per-org installation. To clean up org entries
+that an older CLI left behind, see
+[Cleaning up legacy per-org mint state](#cleaning-up-legacy-per-org-mint-state).
 
 ```bash
 fullsend mint unenroll acme-corp/my-repo --project="$GCP_PROJECT"
@@ -337,7 +375,8 @@ Unenroll removes the repository from `PER_REPO_WIF_REPOS` and disables its repo-
 
 ## Cleaning up legacy per-org mint state
 
-Per-org mint enrollment was removed along with per-org installation ([ADR 0044](../../ADRs/0044-deprecate-per-org-installation-mode.md)). This is a breaking change for scripts and automation:
+Per-org mint enrollment was removed along with per-org installation. This is a
+breaking change for scripts and automation:
 
 - `fullsend mint enroll <org>` and `fullsend mint unenroll <org>` with a bare org argument now fail. Enroll and unenroll each repository with an `owner/repo` target.
 - `fullsend mint deploy --allowed-orgs` was removed. Passing it fails with `unknown flag: --allowed-orgs`.
@@ -791,17 +830,25 @@ fullsend mint delete \
 
 ## Cloudflare Worker rate limiting
 
-The Cloudflare Worker deployment includes a native `[[ratelimits]]` binding (`MINT_TOKEN_RATE_LIMITER`) that rate-limits `POST /v1/token` requests. The binding is configured in `wrangler.toml` and enforced in the Worker before WASM initialization — no operator action is required.
+The Cloudflare Worker deployment includes a native `[[ratelimits]]` binding (`MINT_TOKEN_RATE_LIMITER`) that rate-limits `POST /v1/token` and `POST /v1/bot-role` requests. The binding is configured in `wrangler.toml` and enforced in the Worker before WASM initialization — no operator action is required.
 
 | Setting | Value |
 |---------|-------|
 | Binding name | `MINT_TOKEN_RATE_LIMITER` |
 | Limit | 60 requests per minute per key |
-| Key format | `{hostname}:/v1/token:{client-IP}` |
+| Key format | `{hostname}:{path}:{client-IP}` |
 
 The rate limit key incorporates the request hostname, so preview deployments (which produce distinct hostnames like `<alias>-<worker>.<subdomain>.workers.dev`) get isolated counters. Durable deploys use a stable hostname. When the rate limit is exceeded, the Worker returns HTTP 429 with `{"error":"rate_limited"}`.
 
 If the `[[ratelimits]]` section is removed from `wrangler.toml`, the Worker logs a warning and continues without rate limiting (fail-open).
+
+## Bot-role lookup endpoint
+
+`POST /v1/bot-role` resolves a bot login to a registered role for dispatch
+authorization. Callers authenticate with the same OIDC token as `/v1/token`.
+
+- **Canonical role.** The `role` field of a recognized response (`{"outcome": "recognized", "role": "review"}`) is the canonical role of the matching GitHub App; the dispatch adapter surfaces it as `actor.bot_role` in the normalized event. When several allowed roles share one App ID (for example `fix` reuses the `coder` App), the lexicographically first role name is returned, so `fix` resolves to `coder`. Treat this tie-break as a stable contract: renaming a role or registering a new role that sorts earlier for a shared App changes the `role` the endpoint returns.
+- **Rate limiting.** The Worker rate limiter described above also covers `POST /v1/bot-role`, with a separate counter per path, because each authenticated call makes outbound GitHub API requests.
 
 ## See Also
 

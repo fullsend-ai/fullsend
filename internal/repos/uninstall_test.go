@@ -466,7 +466,7 @@ func newInstalledFakeGitLabClient(repos ...string) *forge.FakeClient {
 			client.VariablesExist[r+"/"+v] = true
 		}
 		// Role cleanup reads managed-account ownership from rotation state.
-		client.VariableValues[r+"/"+forge.VarGitLabRoleRotation] = `{"roles":{}}`
+		client.VariableValues[r+"/"+forge.VarGitLabRoleRotation] = `{"version":2,"roles":{}}`
 		for _, s := range gitlabUninstallSecrets {
 			client.Secrets[r+"/"+s] = true
 		}

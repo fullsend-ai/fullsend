@@ -1257,8 +1257,9 @@ func TestCodexAdapterSpawnGuardConstantsMatchGo(t *testing.T) {
 		"the guard admits the V1 spawn under policy; every other matched name is passed through or denied by the handler")
 	assert.Contains(t, src, `SPAWN_GUARD_DEADLINE_S = HANDLER_TIMEOUT_S - BUDGET_MARGIN_S`,
 		"the guard's own deadline is derived from the adapter's handler budget, so it stays below codex's timeout")
-	assert.Contains(t, src, `SPAWN_ADMIT_FINDING = "codex_spawn_guard_admit"`,
+	assert.Contains(t, src, `SPAWN_ADMIT_FINDING = "`+codexSpawnAdmitFinding+`"`,
 		"the findings-log line an admitted spawn writes; the runner's cross-check reads it back by this name")
+	assert.Contains(t, src, `FINDINGS_PATH = "`+codexFindingsLogPath+`"`, "the runner reads the file the adapter writes")
 	pattern := regexp.MustCompile(codexSpawnGuardMatcher)
 	for _, name := range []string{"spawn_agent", "multi_agent_v1wait_agent", "multi_agent_v1close_agent", "multi_agent_v1send_input"} {
 		assert.True(t, pattern.MatchString(name), "%s is admitted or passed through by the handler, so the matcher must reach it", name)

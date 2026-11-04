@@ -54,99 +54,82 @@ type stageMintConfig struct {
 	statusGitHubGroup string
 }
 
-// NewRepoPoolCFMintStage is a Factory that deploys a durable CF Worker
-// mint at stage-mint.fullsend.sh and returns a unified Driver owning
-// allocation, deallocation, ensure, and teardown for the halfsend org.
+// NewRepoPoolCFMintStage is a Factory for the STAGE pool: the single
+// unsuffixed halfsend org (StagePoolLayout). It returns the shared
+// slot-leasing Driver, which deploys the durable CF Worker mint at
+// stage-mint.fullsend.sh when the first slot is leased.
 //
 // The STAGE driver differs from the preview driver in three ways:
 //   - Deploys a durable (non-preview) Worker with a custom domain
 //   - Uses non-vendored per-repo install with --fullsend-ref=main
 //   - Teardown is a no-op (the durable Worker persists across runs)
 //
-// The org parameter must equal StageOrg ("halfsend"); the driver
-// returns an error if a different org is passed.
-func NewRepoPoolCFMintStage(
-	org string,
-	client forge.Client,
-	token, binary, gcpProjectID string,
-	logf func(string, ...any),
-) (Driver, error) {
-	if org != StageOrg {
-		return nil, fmt.Errorf("stage cfmint factory: org must be %q, got %q", StageOrg, org)
+// The pool layout must contain exactly StageOrg ("halfsend"); the
+// factory returns an error for any other layout.
+func NewRepoPoolCFMintStage(pool PoolConfig) (Driver, error) {
+	if err := pool.validate(); err != nil {
+		return nil, fmt.Errorf("stage cfmint factory: %w", err)
 	}
-	poolSize := envPoolSize(logf)
-
-	pemDir, err := setupCFMintPEMDir()
+	if orgs := pool.Layout.Orgs(); len(orgs) != 1 || orgs[0] != StageOrg {
+		return nil, fmt.Errorf("stage cfmint factory: pool must be the single org %q, got %v", StageOrg, orgs)
+	}
+	if !cfmintPEMsConfigured() {
+		return nil, fmt.Errorf("stage cfmint factory: PEMDir is required (no PEMs materialized: set the TEST_*_PEM env vars)")
+	}
+	plan, err := planCFMints(pool.Layout)
 	if err != nil {
-		return nil, fmt.Errorf("stage cfmint factory: materializing PEMs: %w", err)
+		return nil, fmt.Errorf("stage cfmint factory: %w", err)
 	}
-	// PEMs are only needed for mint deploy. Clean up as soon as the
-	// factory returns (deploy has completed or failed by that point).
-	if pemDir != "" {
-		defer os.RemoveAll(pemDir)
-	}
-
-	cfg := stageMintConfig{
-		pemDir:            pemDir,
-		perRepoWIFRepos:   buildRepoList(StageOrg, poolSize),
-		workflowHostRepos: buildWorkflowHostRepoList(StageOrg, poolSize),
-		appSet:            envAppSet(),
-		statusGitHubGroup: mintStatusGitHubGroup(StageOrg),
+	logf := poolLogf(pool)
+	if err := prepareWranglerForMints(context.Background(), logf); err != nil {
+		return nil, fmt.Errorf("stage cfmint factory: %w", err)
 	}
 
-	md, err := newStageMintDriver(client, token, binary, gcpProjectID, logf, cfg)
-	if err != nil {
-		return nil, fmt.Errorf("stage cfmint factory: creating mint driver: %w", err)
+	newMint := func(group mintGroup, cred orgCredential) (mintDriver, func(), error) {
+		pemDir, err := setupCFMintPEMDir()
+		if err != nil {
+			return nil, nil, fmt.Errorf("materializing PEMs: %w", err)
+		}
+		// PEMs are only needed for the deploy; the caller runs cleanup as
+		// soon as it has finished.
+		cleanup := func() {
+			if pemDir != "" {
+				_ = os.RemoveAll(pemDir)
+			}
+		}
+		cfg := stageMintConfig{
+			pemDir:            pemDir,
+			perRepoWIFRepos:   buildRepoList(StageOrg, pool.Layout.SlotsPerOrg),
+			workflowHostRepos: group.workflowHostRepos,
+			appSet:            envAppSet(),
+			statusGitHubGroup: plan.statusGroup,
+		}
+		md, err := newStageMintDriver(cred.client, cred.token, pool.Binary, pool.GCPProjectID, logf, cfg)
+		if err != nil {
+			cleanup()
+			return nil, nil, fmt.Errorf("creating mint driver: %w", err)
+		}
+		return md, cleanup, nil
 	}
 
-	return buildStageMintDriver(md, client, token, binary, gcpProjectID, poolSize, logf)
+	return buildPoolDriver(pool, plan, newMint, stageSetupOpts(), startTraceCollector(logf))
 }
 
 // Compile-time check: NewRepoPoolCFMintStage satisfies Factory.
 var _ Factory = NewRepoPoolCFMintStage
 
-// buildStageMintDriver deploys the durable mint and constructs the
-// composed driver. Extracted so the deploy → compose path can be
-// tested with a fake mintDriver.
-func buildStageMintDriver(
-	md mintDriver,
-	client forge.Client,
-	token, binary, gcpProjectID string,
-	poolSize int,
-	logf func(string, ...any),
-) (Driver, error) {
-	ctx := context.Background()
-	mintURL, err := md.Install(ctx, StageOrg)
-	if err != nil {
-		return nil, fmt.Errorf("stage cfmint factory: deploying mint: %w", err)
-	}
-
-	// Non-vendored setup opts — use --fullsend-ref=main. Runtime picks up
-	// PLAYBACK_RUNTIME when set, so this factory can also back a playback
-	// suite (see NewPlaybackDriver) in the stage environment.
-	setupOpts := common.GitHubSetupOpts{
+// stageSetupOpts returns the STAGE install options: non-vendored with
+// --fullsend-ref=main. Runtime picks up PLAYBACK_RUNTIME when set, so
+// this factory can also back a playback suite (see NewPlaybackDriver)
+// in the stage environment.
+func stageSetupOpts() common.GitHubSetupOpts {
+	return common.GitHubSetupOpts{
 		AppSet:       envAppSet(),
 		Vendor:       false,
 		FullsendRef:  stageFullsendRef,
 		ConfigPreset: envConfigPreset(),
 		Runtime:      os.Getenv("PLAYBACK_RUNTIME"),
 	}
-
-	e2eCfg := e2etest.EnvConfig{
-		MintURL:      mintURL,
-		GCPProjectID: gcpProjectID,
-	}
-	ens, err := newRepoEnsurerWithOpts(e2eCfg, client, token, binary, setupOpts, logf,
-		playbackInstallHooks(setupOpts, logf))
-	if err != nil {
-		return nil, fmt.Errorf("stage cfmint factory: %w", err)
-	}
-
-	d, err := newComposedDriver(StageOrg, md, ens, poolSize, logf)
-	if err != nil {
-		return nil, err
-	}
-	return withTraceCollector(withRateLimitReporter(withMintURL(d, mintURL), client), client, logf), nil
 }
 
 // stageMintMintDriver deploys a durable CF Worker mint with a custom
@@ -224,7 +207,7 @@ func StageMintDeployArgs(cfg stageMintConfig) []string {
 	return args
 }
 
-func (d *stageMintMintDriver) Install(_ context.Context, _ string) (string, error) {
+func (d *stageMintMintDriver) Install(_ context.Context) (string, error) {
 	d.logf("[stage-cfmint] deploying durable mint at %s", StageMintURL)
 	args := StageMintDeployArgs(d.cfg)
 

@@ -969,6 +969,7 @@ func TestFilterBotEvents_RemovesBotEvents(t *testing.T) {
 func TestFilterBotEvents_RetainsBotChangesRequested(t *testing.T) {
 	mc := newMockClient()
 	p := newEventsPoller(mc) // botUserID = 100
+	p.analystUserID = 100    // single-identity installation: Analyst is the Poller
 
 	events := []RoutableEvent{
 		{
@@ -976,7 +977,7 @@ func TestFilterBotEvents_RetainsBotChangesRequested(t *testing.T) {
 			IID:          5,
 			NoteBody:     "Changes needed " + forge.ChangesRequestedMarker + " here",
 			IsBot:        true,
-			NoteAuthorID: 100, // matches botUserID
+			NoteAuthorID: 100, // matches analystUserID
 		},
 	}
 	filtered := p.filterBotEvents(events)

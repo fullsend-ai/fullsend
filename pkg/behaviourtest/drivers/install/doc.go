@@ -1,12 +1,12 @@
 // Package install provides pool-repo lifecycle management for behaviour
-// tests: lazy repo creation, fullsend installation, pool leasing, and
-// teardown.
+// tests: cross-org repo slot leasing (slotpool.go), per-org mint
+// deployment, fullsend installation, and teardown.
 //
 // # Credential context separation
 //
 // Two distinct credential contexts operate on pool repos. Understanding
 // this separation is essential when working on repo-readiness checks
-// after pool repo recreation.
+// on freshly created slot repos.
 //
 // The test suite holds an e2e GitHub App installation token, minted via
 // OIDC at CI job start. This token drives all suite-side API calls:
@@ -21,8 +21,9 @@
 // the triggering actor.
 //
 // These are independent credential contexts with independent permission
-// propagation graphs. When a pool repo is deleted and recreated
-// (resetRepo), the suite's e2e token can observe the new repo via
+// propagation graphs. When a slot repo is deleted at release and created
+// again by a later claim (slotpool.go), the suite's e2e token can
+// observe the new repo via
 // GetRepo (awaitCreation) as soon as the repo object propagates through
 // GitHub's eventual-consistency layer. However, the dispatch-side
 // GITHUB_TOKEN's view of collaborator permissions on the new repo ID

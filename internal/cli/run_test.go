@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"debug/elf"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -224,6 +225,29 @@ func useFakeOpenshellProviders(t *testing.T) {
 	require.NoError(t, err)
 	origPath := os.Getenv("PATH")
 	t.Setenv("PATH", stubDir+string(filepath.ListSeparator)+origPath)
+}
+
+// fakeSandboxBinary writes a minimal ELF header for the sandbox arch and
+// returns its path, to pass as runAgent's fullsendBinary in tests whose
+// run reaches bootstrapCommon. With no binary given, bootstrapCommon
+// copies, tars and gzips the running executable — the whole test binary,
+// tens of megabytes — which costs seconds per run.
+func fakeSandboxBinary(t *testing.T) string {
+	t.Helper()
+	machine := map[string]elf.Machine{"amd64": elf.EM_X86_64, "arm64": elf.EM_AARCH64}[sandboxArch()]
+	hdr := make([]byte, 64) // an ELF64 header with no program or section headers
+	copy(hdr, elf.ELFMAG)
+	hdr[elf.EI_CLASS] = byte(elf.ELFCLASS64)
+	hdr[elf.EI_DATA] = byte(elf.ELFDATA2LSB)
+	hdr[elf.EI_VERSION] = byte(elf.EV_CURRENT)
+	hdr[16] = byte(elf.ET_EXEC) // e_type
+	hdr[18], hdr[19] = byte(machine), byte(machine>>8)
+	hdr[20] = byte(elf.EV_CURRENT) // e_version
+	hdr[52] = 64                   // e_ehsize
+	path := filepath.Join(t.TempDir(), "fullsend")
+	require.NoError(t, os.WriteFile(path, hdr, 0o755))
+	require.NoError(t, binary.ValidateLinuxBinary(path, sandboxArch()), "the fake binary must pass bootstrapCommon's check")
+	return path
 }
 
 func TestRunAgent_HarnessLoadPipeline(t *testing.T) {
@@ -552,6 +576,51 @@ func TestTryLoadFullsendConfig_OmittedAllowlist(t *testing.T) {
 		"omitted field must get defaults")
 }
 
+func TestTryLoadLayeredFullsendConfig_BaseOnly(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.base.yaml"), []byte(
+		"version: \"1\"\nmint_url: https://mint-from-base.example.com\n",
+	), 0o644))
+
+	printer := ui.New(io.Discard)
+	cfg := tryLoadLayeredFullsendConfig(dir, printer)
+	require.NotNil(t, cfg, "config.base.yaml alone (no config.yaml) must be honored")
+	prc, ok := cfg.(config.PerRepoConfigReader)
+	require.True(t, ok)
+	assert.Equal(t, "https://mint-from-base.example.com", prc.ConfigMintURLFromFile())
+}
+
+func TestTryLoadLayeredFullsendConfig_NeitherFileExists(t *testing.T) {
+	dir := t.TempDir()
+	printer := ui.New(io.Discard)
+	assert.Nil(t, tryLoadLayeredFullsendConfig(dir, printer))
+}
+
+func TestTryLoadLayeredFullsendConfig_OverlayWinsOverBase(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.base.yaml"), []byte(
+		"version: \"1\"\nmint_url: https://mint-from-base.example.com\n",
+	), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(
+		"version: \"1\"\nmint_url: https://mint-from-overlay.example.com\n",
+	), 0o644))
+
+	printer := ui.New(io.Discard)
+	cfg := tryLoadLayeredFullsendConfig(dir, printer)
+	require.NotNil(t, cfg)
+	prc, ok := cfg.(config.PerRepoConfigReader)
+	require.True(t, ok)
+	assert.Equal(t, "https://mint-from-overlay.example.com", prc.ConfigMintURLFromFile())
+}
+
+func TestTryLoadLayeredFullsendConfig_MalformedBase(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.base.yaml"), []byte("[[[not yaml"), 0o644))
+
+	printer := ui.New(io.Discard)
+	assert.Nil(t, tryLoadLayeredFullsendConfig(dir, printer))
+}
+
 func TestRequireFullsendConfig_OrgGetsDefaultAllowlist(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
@@ -824,7 +893,7 @@ func TestRunAgent_BareBuiltinProviderResolvesEmbeddedDefinitionAndProfile(t *tes
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	err := runAgent(context.Background(), "code", dir, "", repoDir, fakeSandboxBinary(t), nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	// The stub cannot bootstrap an agent past sandbox creation, but the run
 	// must get past the provider/profile orchestration steps without error.
 	require.Error(t, err)
@@ -860,7 +929,7 @@ func runAgentWithProviderFiles(t *testing.T, harnessYAML string, files map[strin
 	}
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	var buf bytes.Buffer
-	err := runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags, statusOpts{}, ui.New(&buf), false, runOverrideFlags{})
+	err := runAgent(context.Background(), "code", dir, "", t.TempDir(), fakeSandboxBinary(t), nil, false, "", "", "", rFlags, statusOpts{}, ui.New(&buf), false, runOverrideFlags{})
 	// The stub fails the first in-sandbox exec, after provider setup.
 	require.Error(t, err)
 	assert.NotContains(t, err.Error(), "importing")
@@ -969,7 +1038,7 @@ func TestRunAgent_UnlistedProfileDirectoryFileIsNotImported(t *testing.T) {
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	err := runAgent(context.Background(), "code", dir, "", repoDir, fakeSandboxBinary(t), nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	// The stub cannot bootstrap an agent past sandbox creation, but the run
 	// must get past the profile-import step without error.
 	require.Error(t, err)
@@ -1769,6 +1838,8 @@ func TestTryAgentsRepoMeasurementManifest_NetworkFailure(t *testing.T) {
 	tlsCfg := srv.TLS.Clone()
 	tlsCfg.InsecureSkipVerify = true
 	policy := fetch.NewTestPolicy(tlsCfg, []string{hostname}, []string{port})
+	// The 502 is retried; keep the backoff between attempts negligible.
+	policy.RetryBackoff = time.Millisecond
 
 	orig := defaultAgentsRepoURLPrefix
 	defaultAgentsRepoURLPrefix = srv.URL + "/"
@@ -4547,7 +4618,9 @@ func TestRunAgent_PreflightCheck_Timeout(t *testing.T) {
 	// A preflight_check that exceeds the context deadline should abort
 	// with a "timed out" error, not hang indefinitely.
 	useFakeOpenshell(t)
-	dir := preflightTestSetup(t, "agent: agents/code.md\nrole: test\nvalidation_loop:\n  script: scripts/validate.sh\n  preflight_check: \"sleep 5\"\n  max_iterations: 2\n")
+	// exec replaces the shell, so the context kill reaches sleep itself;
+	// a forked sleep would keep the output pipe open for the full 5s.
+	dir := preflightTestSetup(t, "agent: agents/code.md\nrole: test\nvalidation_loop:\n  script: scripts/validate.sh\n  preflight_check: \"exec sleep 5\"\n  max_iterations: 2\n")
 
 	// Shrink the real timeout so the "sleep 5" command genuinely outlives
 	// it, exercising the actual DeadlineExceeded branch rather than
@@ -4562,6 +4635,129 @@ func TestRunAgent_PreflightCheck_Timeout(t *testing.T) {
 	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "timed out")
+}
+
+func TestRunAgent_PreflightCheck_HostSetTokenReferenceRejected(t *testing.T) {
+	// A preflight_check referencing a host-set credential must be rejected
+	// before the command runs: the error names the variable, never its
+	// value, and the run never reaches the openshell availability check.
+	useFakeOpenshell(t)
+	t.Setenv("GH_TOKEN", "gh-host-secret-value-1")
+	dir := preflightTestSetup(t, "agent: agents/code.md\nrole: test\nvalidation_loop:\n  script: scripts/validate.sh\n  preflight_check: \"echo ${GH_TOKEN}\"\n  max_iterations: 2\n")
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "${GH_TOKEN}")
+	assert.Contains(t, err.Error(), "env.runner")
+	assert.NotContains(t, err.Error(), "gh-host-secret-value-1")
+	// Rejection fires before the openshell check.
+	assert.NotContains(t, err.Error(), "openshell")
+}
+
+func TestRunAgent_PreflightCheck_DeclaredTokenReferenceRejected(t *testing.T) {
+	// A credential declared via env.runner (host-unset) is excluded from
+	// the preflight environment, so referencing it is likewise rejected
+	// before expansion — the value never reaches the child or the error.
+	useFakeOpenshell(t)
+	dir := preflightTestSetup(t, "agent: agents/code.md\nrole: test\nenv:\n  runner:\n    GH_TOKEN: \"declared-secret-value-1\"\nvalidation_loop:\n  script: scripts/validate.sh\n  preflight_check: \"echo ${GH_TOKEN}\"\n  max_iterations: 2\n")
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "${GH_TOKEN}")
+	assert.NotContains(t, err.Error(), "declared-secret-value-1")
+	assert.NotContains(t, err.Error(), "openshell")
+}
+
+func TestRunAgent_PreflightCheck_DeclaredReferenceReachesChild(t *testing.T) {
+	// An env.runner-declared, host-unset non-credential variable is part
+	// of the preflight environment: a passing probe that references it
+	// proceeds past the guard to the openshell check.
+	useFakeOpenshell(t)
+	dir := preflightTestSetup(t, "agent: agents/code.md\nrole: test\nenv:\n  runner:\n    SENTINEL: \"reaches-child\"\nvalidation_loop:\n  script: scripts/validate.sh\n  preflight_check: 'test \"${SENTINEL}\" = reaches-child'\n  max_iterations: 2\n")
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openshell")
+}
+
+func TestRunAgent_PreflightCheck_OutOfAllowlistUnsetRejected(t *testing.T) {
+	// A reference to a host-unset name outside the allowlist surfaces the
+	// new rejection error naming the allowlist and the env.runner channel,
+	// not the legacy ValidateRunnerEnvWith "is not set" error.
+	useFakeOpenshell(t)
+	dir := preflightTestSetup(t, "agent: agents/code.md\nrole: test\nvalidation_loop:\n  script: scripts/validate.sh\n  preflight_check: \"echo ${MYSTERY_VAR}\"\n  max_iterations: 2\n")
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "${MYSTERY_VAR}")
+	assert.Contains(t, err.Error(), "env.runner")
+	assert.Contains(t, err.Error(), "allowlisted host variables")
+	assert.NotContains(t, err.Error(), "is not set")
+	assert.NotContains(t, err.Error(), "unresolved host variable")
+	assert.NotContains(t, err.Error(), "openshell")
+}
+
+func TestRunAgent_PreflightCheck_BareRefsLeftToShell(t *testing.T) {
+	// Bare $VAR references are deliberately not scanned: the child shell
+	// expands them, and credentials are absent there, so probes like
+	// test -z "$GH_TOKEN" keep working on allowlisted host variables.
+	useFakeOpenshell(t)
+	t.Setenv("GH_TOKEN", "gh-host-secret-value-1")
+	dir := preflightTestSetup(t, "agent: agents/code.md\nrole: test\nvalidation_loop:\n  script: scripts/validate.sh\n  preflight_check: 'test -z \"$GH_TOKEN\" && test -n \"$PATH\"'\n  max_iterations: 2\n")
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openshell")
+}
+
+func TestRunAgent_PreflightCheck_FailureRedactsDeclaredSecret(t *testing.T) {
+	// When a failing probe embeds a declared sensitive value in the
+	// command or its output, both are redacted in the error.
+	useFakeOpenshell(t)
+	dir := preflightTestSetup(t, "agent: agents/code.md\nrole: test\nenv:\n  runner:\n    SENTINEL_SECRET: \"sentinel-secret-value-77\"\nvalidation_loop:\n  script: scripts/validate.sh\n  preflight_check: \"echo ${SENTINEL_SECRET}; exit 1\"\n  max_iterations: 2\n")
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "preflight_check failed")
+	assert.Contains(t, err.Error(), "[REDACTED:SENTINEL_SECRET]")
+	assert.NotContains(t, err.Error(), "sentinel-secret-value-77")
+}
+
+func TestRunAgent_PreflightCheck_TimeoutRedactsDeclaredSecret(t *testing.T) {
+	// The timeout error carries the redacted command text only.
+	useFakeOpenshell(t)
+	dir := preflightTestSetup(t, "agent: agents/code.md\nrole: test\nenv:\n  runner:\n    SENTINEL_SECRET: \"sentinel-secret-value-77\"\nvalidation_loop:\n  script: scripts/validate.sh\n  preflight_check: \"echo ${SENTINEL_SECRET}; exec sleep 5\"\n  max_iterations: 2\n")
+
+	original := preflightCheckTimeout
+	preflightCheckTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { preflightCheckTimeout = original })
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "timed out")
+	assert.Contains(t, err.Error(), "[REDACTED:SENTINEL_SECRET]")
+	assert.NotContains(t, err.Error(), "sentinel-secret-value-77")
 }
 
 func TestBuildSandboxEnvLines_FromEnvSandbox(t *testing.T) {
@@ -4999,9 +5195,7 @@ func TestShouldStartFetchService_AllowRuntimeFetch(t *testing.T) {
 		AllowRuntimeFetch:      true,
 		AllowedRemoteResources: []string{"https://github.com/org/"},
 	}
-	start, warning := shouldStartFetchService(h)
-	assert.True(t, start)
-	assert.Empty(t, warning)
+	assert.True(t, shouldStartFetchService(h))
 }
 
 func TestShouldStartFetchService_URLSkills(t *testing.T) {
@@ -5009,9 +5203,7 @@ func TestShouldStartFetchService_URLSkills(t *testing.T) {
 		Agent:  "agents/test.md",
 		Skills: []harness.SkillEntry{{Source: "https://github.com/org/skills/tree/abc/rust#sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}},
 	}
-	start, warning := shouldStartFetchService(h)
-	assert.True(t, start)
-	assert.Empty(t, warning)
+	assert.True(t, shouldStartFetchService(h))
 }
 
 func TestShouldStartFetchService_AllowedRemoteResourcesOnly(t *testing.T) {
@@ -5019,16 +5211,14 @@ func TestShouldStartFetchService_AllowedRemoteResourcesOnly(t *testing.T) {
 		Agent:                  "agents/test.md",
 		AllowedRemoteResources: []string{"https://github.com/org/"},
 	}
-	start, warning := shouldStartFetchService(h)
-	assert.True(t, start)
-	assert.Contains(t, warning, "deprecated")
+	// Starts for backward compatibility; the deprecation warning is
+	// Harness.Lint()'s job now (TestLint_AllowedRemoteResourcesWithoutAllowRuntimeFetch).
+	assert.True(t, shouldStartFetchService(h))
 }
 
 func TestShouldStartFetchService_NoRemoteResources(t *testing.T) {
 	h := &harness.Harness{Agent: "agents/test.md"}
-	start, warning := shouldStartFetchService(h)
-	assert.False(t, start)
-	assert.Empty(t, warning)
+	assert.False(t, shouldStartFetchService(h))
 }
 
 func TestSetupFetchService_WithTreeFetcher(t *testing.T) {
@@ -5212,6 +5402,112 @@ func TestSetupStatusNotifier_MintURLFromEnv(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotNil(t, n)
 	assert.True(t, n.HasClientFactory(), "client factory should be set from FULLSEND_MINT_URL env var")
+}
+
+func TestSetupStatusNotifier_MintURLFileWinsOverEnv(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(tmpDir, "config.yaml"),
+		[]byte("version: \"1\"\nmint_url: https://mint-from-file.example.com\n"),
+		0o644,
+	))
+
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
+		assert.Equal(t, "https://mint-from-file.example.com", req.MintURL, "config.yaml's mint_url must win over FULLSEND_MINT_URL")
+		return &mintclient.MintResult{Token: "ghs_test_minted"}, nil
+	}
+
+	sOpts := statusOpts{
+		statusRepo: "org/repo",
+		statusNum:  7,
+	}
+
+	t.Setenv("FULLSEND_MINT_URL", "https://mint-from-env.example.com")
+	t.Setenv("GITHUB_RUN_ID", "run-42")
+	t.Setenv("GITHUB_ACTIONS", "true")
+
+	n, err := setupStatusNotifier(tmpDir, "code", "", sOpts, printer)
+	require.NoError(t, err)
+	require.NotNil(t, n)
+
+	client, err := n.InvokeClientFactory(context.Background())
+	require.NoError(t, err)
+	assert.NotNil(t, client)
+}
+
+// TestSetupStatusNotifier_MintURLFromBaseFileWinsOverEnv covers the
+// base-only layout (config.base.yaml present, config.yaml absent from
+// disk) that tryLoadFullsendConfig used to silently drop entirely,
+// since it gated on config.yaml's mere existence before ever
+// consulting config.base.yaml. setupStatusNotifier must resolve
+// mint_url from the base file and prefer it over FULLSEND_MINT_URL,
+// matching runAgent's resolveMintURL precedence
+// (TestRunAgent_MintURLFromBaseFileWinsOverEnv).
+func TestSetupStatusNotifier_MintURLFromBaseFileWinsOverEnv(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(tmpDir, "config.base.yaml"),
+		[]byte("version: \"1\"\nmint_url: https://mint-from-base.example.com\n"),
+		0o644,
+	))
+
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
+		assert.Equal(t, "https://mint-from-base.example.com", req.MintURL,
+			"config.base.yaml's mint_url must win over FULLSEND_MINT_URL when config.yaml is absent")
+		return &mintclient.MintResult{Token: "ghs_base_test_minted"}, nil
+	}
+
+	sOpts := statusOpts{
+		statusRepo: "org/repo",
+		statusNum:  7,
+	}
+
+	t.Setenv("FULLSEND_MINT_URL", "https://mint-from-env.example.com")
+	t.Setenv("GITHUB_RUN_ID", "run-42")
+	t.Setenv("GITHUB_ACTIONS", "true")
+
+	n, err := setupStatusNotifier(tmpDir, "code", "", sOpts, printer)
+	require.NoError(t, err)
+	require.NotNil(t, n)
+
+	client, err := n.InvokeClientFactory(context.Background())
+	require.NoError(t, err)
+	assert.NotNil(t, client)
+}
+
+// TestSetupStatusNotifier_MintURLFromBaseFileWithoutEnv confirms the
+// base-only mint_url is honored even when FULLSEND_MINT_URL is unset,
+// so the file layer is genuinely consulted rather than the test only
+// passing by coincidence of the env-var fallback.
+func TestSetupStatusNotifier_MintURLFromBaseFileWithoutEnv(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(tmpDir, "config.base.yaml"),
+		[]byte("version: \"1\"\nmint_url: https://mint-from-base.example.com\n"),
+		0o644,
+	))
+
+	sOpts := statusOpts{
+		statusRepo: "org/repo",
+		statusNum:  7,
+	}
+
+	t.Setenv("GITHUB_RUN_ID", "run-42")
+
+	n, err := setupStatusNotifier(tmpDir, "review", "", sOpts, printer)
+	require.NoError(t, err)
+	assert.NotNil(t, n)
+	assert.True(t, n.HasClientFactory(), "client factory should be set from config.base.yaml's mint_url with no env var set")
 }
 
 func TestSetupStatusNotifier_NoMintURL(t *testing.T) {
@@ -7817,6 +8113,484 @@ func TestRunAgent_FallsBackToFULLSEND_MINT_URL(t *testing.T) {
 	assert.True(t, mintCalled, "should have used FULLSEND_MINT_URL env var fallback")
 }
 
+// TestResolveMintURL_Source verifies resolveMintURL reports where its
+// returned value came from, which runAgent (#8400 follow-up) relies on to
+// decide whether a missing GitHub Actions OIDC environment should warn-and-
+// skip (file source) or stay fail-closed (flag/env source).
+func TestResolveMintURL_Source(t *testing.T) {
+	fileCfgDir := t.TempDir()
+	require.NoError(t, os.WriteFile(
+		filepath.Join(fileCfgDir, "config.yaml"),
+		[]byte("version: \"1\"\nmint_url: https://mint-from-file.example.com\n"),
+		0o644,
+	))
+	fileCfg, err := config.LoadConfigWriter(fileCfgDir, config.LoadOpts{MissingOK: true})
+	require.NoError(t, err)
+
+	emptyCfgDir := t.TempDir()
+	emptyCfg, err := config.LoadConfigWriter(emptyCfgDir, config.LoadOpts{MissingOK: true})
+	require.NoError(t, err)
+
+	getenvWith := func(v string) func(string) string {
+		return func(key string) string {
+			if key == "FULLSEND_MINT_URL" {
+				return v
+			}
+			return ""
+		}
+	}
+
+	tests := []struct {
+		name       string
+		flagValue  string
+		orgCfg     config.ConfigReader
+		getenv     func(string) string
+		wantURL    string
+		wantSource mintURLSource
+	}{
+		{
+			name:       "flag wins over file and env",
+			flagValue:  "https://mint-from-flag.example.com",
+			orgCfg:     fileCfg,
+			getenv:     getenvWith("https://mint-from-env.example.com"),
+			wantURL:    "https://mint-from-flag.example.com",
+			wantSource: mintURLSourceFlag,
+		},
+		{
+			name:       "file wins over env when no flag",
+			flagValue:  "",
+			orgCfg:     fileCfg,
+			getenv:     getenvWith("https://mint-from-env.example.com"),
+			wantURL:    "https://mint-from-file.example.com",
+			wantSource: mintURLSourceFile,
+		},
+		{
+			name:       "env used when file is silent",
+			flagValue:  "",
+			orgCfg:     emptyCfg,
+			getenv:     getenvWith("https://mint-from-env.example.com"),
+			wantURL:    "https://mint-from-env.example.com",
+			wantSource: mintURLSourceEnv,
+		},
+		{
+			name:       "env used when orgCfg is nil",
+			flagValue:  "",
+			orgCfg:     nil,
+			getenv:     getenvWith("https://mint-from-env.example.com"),
+			wantURL:    "https://mint-from-env.example.com",
+			wantSource: mintURLSourceEnv,
+		},
+		{
+			name:       "none when nothing is set",
+			flagValue:  "",
+			orgCfg:     emptyCfg,
+			getenv:     getenvWith(""),
+			wantURL:    "",
+			wantSource: mintURLSourceNone,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotURL, gotSource := resolveMintURL(tt.flagValue, tt.orgCfg, tt.getenv)
+			assert.Equal(t, tt.wantURL, gotURL)
+			assert.Equal(t, tt.wantSource, gotSource)
+		})
+	}
+}
+
+// TestHasActionsOIDCEnv verifies the gate runAgent uses to decide whether a
+// file-sourced mint_url can be attempted: both OIDC request env vars must
+// be present, matching mintclient.fetchOIDCJWT's own requirement.
+func TestHasActionsOIDCEnv(t *testing.T) {
+	tests := []struct {
+		name         string
+		requestURL   string
+		requestToken string
+		want         bool
+	}{
+		{"both set", "https://actions.example.com", "tok", true},
+		{"url missing", "", "tok", false},
+		{"token missing", "https://actions.example.com", "", false},
+		{"neither set", "", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := map[string]string{
+				"ACTIONS_ID_TOKEN_REQUEST_URL":   tt.requestURL,
+				"ACTIONS_ID_TOKEN_REQUEST_TOKEN": tt.requestToken,
+			}
+			got := hasActionsOIDCEnv(func(k string) string { return env[k] })
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestRunAgent_MintURLFileWinsOverEnv(t *testing.T) {
+	useFakeOpenshell(t)
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+	writePolicyFixture(t, dir)
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: coder\npolicy: policies/base.yaml\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/code.yaml\nmint_url: https://mint-from-file.example.com\n"),
+		0o644,
+	))
+
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	var mintCalled bool
+	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
+		mintCalled = true
+		assert.Equal(t, "https://mint-from-file.example.com", req.MintURL, "config.yaml's mint_url must win over FULLSEND_MINT_URL")
+		return &mintclient.MintResult{Token: "ghs_file_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	// A stale/different value in the environment — simulating a
+	// repository variable set at install time that the file has since
+	// overridden without anyone updating the variable.
+	t.Setenv("FULLSEND_MINT_URL", "https://mint-from-env.example.com")
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+	// A file-sourced mint_url only proceeds to mint when GitHub Actions
+	// OIDC is available; otherwise it is a warn-and-skip (#8400). Set
+	// both so this test exercises the "mint attempted" branch.
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://actions.example.com/oidc")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "fake-oidc-request-token")
+
+	var buf bytes.Buffer
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(&buf)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openshell")
+	assert.True(t, mintCalled, "should have minted using config.yaml's mint_url")
+}
+
+func TestRunAgent_MintURLFromBaseFileWinsOverEnv(t *testing.T) {
+	useFakeOpenshell(t)
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+	writePolicyFixture(t, dir)
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: coder\npolicy: policies/base.yaml\n"),
+		0o644,
+	))
+	// config.base.yaml carries mint_url; config.yaml is present (so the
+	// repo is in layered mode) but does not override it.
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.base.yaml"),
+		[]byte("version: \"1\"\nmint_url: https://mint-from-base.example.com\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/code.yaml\n"),
+		0o644,
+	))
+
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	var mintCalled bool
+	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
+		mintCalled = true
+		assert.Equal(t, "https://mint-from-base.example.com", req.MintURL, "config.base.yaml's mint_url must win over FULLSEND_MINT_URL when config.yaml is silent")
+		return &mintclient.MintResult{Token: "ghs_base_file_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("FULLSEND_MINT_URL", "https://mint-from-env.example.com")
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+	// A file-sourced mint_url only proceeds to mint when GitHub Actions
+	// OIDC is available; otherwise it is a warn-and-skip (#8400). Set
+	// both so this test exercises the "mint attempted" branch.
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://actions.example.com/oidc")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "fake-oidc-request-token")
+
+	var buf bytes.Buffer
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(&buf)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openshell")
+	assert.True(t, mintCalled, "should have minted using config.base.yaml's mint_url")
+}
+
+func TestRunAgent_MintURLFlagWinsOverFile(t *testing.T) {
+	useFakeOpenshell(t)
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+	writePolicyFixture(t, dir)
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: coder\npolicy: policies/base.yaml\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/code.yaml\nmint_url: https://mint-from-file.example.com\n"),
+		0o644,
+	))
+
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	var mintCalled bool
+	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
+		mintCalled = true
+		assert.Equal(t, "https://mint-from-flag.example.com", req.MintURL, "--mint-url flag must win over config.yaml's mint_url")
+		return &mintclient.MintResult{Token: "ghs_flag_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("FULLSEND_MINT_URL", "https://mint-from-env.example.com")
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+
+	var buf bytes.Buffer
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(&buf)
+	repoDir := t.TempDir()
+	sOpts := statusOpts{mintURL: "https://mint-from-flag.example.com"}
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, sOpts, printer, false, runOverrideFlags{})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openshell")
+	assert.True(t, mintCalled, "should have minted using the --mint-url flag")
+}
+
+func TestRunAgent_MintURLFromFileSkipsWithoutOIDC(t *testing.T) {
+	useFakeOpenshell(t)
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+	writePolicyFixture(t, dir)
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: coder\npolicy: policies/base.yaml\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/code.yaml\nmint_url: https://mint-from-file.example.com\n"),
+		0o644,
+	))
+
+	// No --mint-url flag, no FULLSEND_MINT_URL, and critically no
+	// ACTIONS_ID_TOKEN_REQUEST_URL/_TOKEN — this is the local-run case from
+	// docs/guides/user/running-agents-locally.md: the ambient GH_TOKEN is
+	// used directly and minting is skipped, exactly as it was before
+	// config.yaml's mint_url was consulted at all.
+	t.Setenv("FULLSEND_MINT_URL", "")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")
+	t.Setenv("GITHUB_ACTIONS", "")
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "fake-gh-token")
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+
+	var buf bytes.Buffer
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(&buf)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "agent token minting failed", "a file-sourced mint_url without OIDC must not hard-fail the run")
+	assert.Contains(t, err.Error(), "openshell", "run should proceed past the skipped mint to the shell stage")
+	assert.Contains(t, buf.String(), "GitHub Actions OIDC is unavailable", "should warn that the file-sourced mint_url was skipped")
+	// mintAgentTokenAtLevel only calls os.Setenv("GH_TOKEN", ...) after a
+	// successful mint; skipping the mint attempt means that call never
+	// happens, so GH_TOKEN must still hold the ambient value set above,
+	// not a minted one. The fake openshell stub exits before reading any
+	// env vars, so this is the only way this test can observe that the
+	// ambient credential was left for the (unexercised) shell to use.
+	assert.Equal(t, "fake-gh-token", os.Getenv("GH_TOKEN"), "GH_TOKEN must remain the ambient token; minting must not have touched it")
+}
+
+// TestRunAgent_MintURLFlagFailsClosedWithoutOIDC confirms the other half of
+// the #8400 follow-up fix: unlike a file-sourced mint_url, an explicit
+// --mint-url flag (or FULLSEND_MINT_URL) is a deliberate signal from the
+// operator and stays fail-closed — it must still hard-fail when GitHub
+// Actions OIDC is unavailable, rather than silently degrading.
+// TestRunAgent_MintURLFromFileFailsClosedWhenEnvAlsoSet is a regression test
+// for review feedback on #8400: the file wins the mint_url endpoint
+// precedence, so resolveMintURL reports mintURLSourceFile even when
+// FULLSEND_MINT_URL is also set — but an operator who set the env var still
+// signalled real intent to mint, even though that value is shadowed. The
+// downgrade must not fire in that case; a missing OIDC environment must
+// still hard-fail the run.
+func TestRunAgent_MintURLFromFileFailsClosedWhenEnvAlsoSet(t *testing.T) {
+	useFakeOpenshell(t)
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+	writePolicyFixture(t, dir)
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: coder\npolicy: policies/base.yaml\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/code.yaml\nmint_url: https://mint-from-file.example.com\n"),
+		0o644,
+	))
+
+	t.Setenv("FULLSEND_MINT_URL", "https://mint-from-env.example.com")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")
+	t.Setenv("GITHUB_ACTIONS", "")
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "fake-gh-token")
+
+	var buf bytes.Buffer
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(&buf)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "agent token minting failed", "a competing FULLSEND_MINT_URL must stay fail-closed even though the file wins the endpoint")
+}
+
+// TestRunAgent_MintURLFromFileFailsClosedInGitHubActions is a regression
+// test for review feedback on #8400: downgrading solely on missing OIDC env
+// would also silently fall back to the ambient GH_TOKEN inside GitHub
+// Actions when a workflow is missing id-token: write — a misconfiguration
+// that must fail loudly, not swap in unscoped credentials. The downgrade
+// must only apply to a genuine local (non-Actions) run.
+func TestRunAgent_MintURLFromFileFailsClosedInGitHubActions(t *testing.T) {
+	useFakeOpenshell(t)
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+	writePolicyFixture(t, dir)
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: coder\npolicy: policies/base.yaml\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/code.yaml\nmint_url: https://mint-from-file.example.com\n"),
+		0o644,
+	))
+
+	// Simulates a workflow missing id-token: write permission: genuinely
+	// inside GitHub Actions, but the OIDC request env vars never showed up.
+	t.Setenv("FULLSEND_MINT_URL", "")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")
+	t.Setenv("GITHUB_ACTIONS", "true")
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "fake-gh-token")
+
+	var buf bytes.Buffer
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(&buf)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "agent token minting failed", "a missing id-token: write permission inside Actions must fail loudly, not fall back to the ambient GH_TOKEN")
+}
+
+func TestRunAgent_MintURLFlagFailsClosedWithoutOIDC(t *testing.T) {
+	useFakeOpenshell(t)
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+	writePolicyFixture(t, dir)
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: coder\npolicy: policies/base.yaml\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/code.yaml\n"),
+		0o644,
+	))
+
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "fake-gh-token")
+
+	var buf bytes.Buffer
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(&buf)
+	repoDir := t.TempDir()
+	sOpts := statusOpts{mintURL: "https://mint-from-flag.example.com"}
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, sOpts, printer, false, runOverrideFlags{})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "agent token minting failed", "an explicit --mint-url must stay fail-closed even without OIDC")
+}
+
 func TestRunAgent_MintsRuntimePrivilegeLevel(t *testing.T) {
 	useFakeOpenshell(t)
 	dir := t.TempDir()
@@ -8214,6 +8988,161 @@ func TestRunAgent_CancelledReviewUsesCurrentHeadGuidance(t *testing.T) {
 	body := comments[len(comments)-1].Body
 	assert.Contains(t, body, "superseded by a newer commit")
 	assert.NotContains(t, body, "/fs-review")
+}
+
+// TestRunAgent_CancelledReviewMintsFromFileOnlyMintURL guards against a
+// regression where the cancellation finalizer's own mint call (distinct
+// from the start-comment mint set up by setupStatusNotifierGitHub) passed
+// the raw --mint-url flag value straight to newStatusGitHubForgeClient
+// instead of resolving it through the same flag > layered config file >
+// FULLSEND_MINT_URL precedence as everywhere else. With no flag and no env
+// var, that bug minted against "" for the finalizer even though the start
+// comment (and the agent-token mint) correctly used config.yaml's mint_url
+// (#8400).
+func TestRunAgent_CancelledReviewMintsFromFileOnlyMintURL(t *testing.T) {
+	useFakeOpenshell(t)
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+	writePolicyFixture(t, dir)
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "review.md"),
+		[]byte("You are a review agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "review.yaml"),
+		[]byte("agent: agents/review.md\nrole: review\npolicy: policies/base.yaml\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/review.yaml\nmint_url: https://mint-from-file.example.com\n"),
+		0o644,
+	))
+
+	origMint := statusMintToken
+	origNewClient := statusNewForgeClientFn
+	t.Cleanup(func() {
+		statusMintToken = origMint
+		statusNewForgeClientFn = origNewClient
+	})
+	var mintCalls int
+	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
+		mintCalls++
+		assert.Equal(t, "https://mint-from-file.example.com", req.MintURL,
+			"call #%d (role=%s, level=%s) must use config.yaml's mint_url, not \"\"", mintCalls, req.Role, req.Level)
+		return &mintclient.MintResult{Token: "ghs_test_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cancel()
+	fc := forge.NewFakeClient()
+	fc.PullRequestHeadSHA = "new-head"
+	statusNewForgeClientFn = func(token string) forge.Client {
+		assert.Equal(t, "ghs_test_token", token)
+		return fc
+	}
+
+	t.Setenv("GITHUB_RUN_ID", "run-42")
+	t.Setenv("PR_HEAD_SHA", "cancelled-head")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+	t.Setenv("FULLSEND_MINT_URL", "")
+
+	var buf bytes.Buffer
+	// No --mint-url flag: statusOpts.mintURL is left empty so the only
+	// source of a mint URL is config.yaml's layered mint_url.
+	err := runAgent(ctx, "review", dir, "", t.TempDir(), "", nil, false, "", "github", "", resolveFlags{maxDepth: 10, maxResources: 50}, statusOpts{
+		statusRepo:    "org/my-repo",
+		statusNum:     42,
+		trackerSource: "github",
+	}, ui.New(&buf), false, runOverrideFlags{})
+	require.Error(t, err)
+	comments := fc.IssueComments["org/my-repo/42"]
+	require.NotEmpty(t, comments, "output: %s; all comments: %#v", buf.String(), fc.IssueComments)
+	body := comments[len(comments)-1].Body
+	assert.Contains(t, body, "superseded by a newer commit")
+	// At least the start-comment mint and the finalizer mint must both
+	// have happened for this regression to be meaningfully covered.
+	assert.GreaterOrEqual(t, mintCalls, 2, "expected both the start-comment mint and the cancellation-finalizer mint to occur")
+}
+
+// TestRunAgent_CancelledReviewFileMintURLWinsOverEnv guards against the
+// same cancellation-finalizer bug as above, but for the case where a
+// competing FULLSEND_MINT_URL is also set: the finalizer must mint against
+// config.yaml's mint_url (matching the start comment), not silently fall
+// back to the env var (#8400).
+func TestRunAgent_CancelledReviewFileMintURLWinsOverEnv(t *testing.T) {
+	useFakeOpenshell(t)
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+	writePolicyFixture(t, dir)
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "review.md"),
+		[]byte("You are a review agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "review.yaml"),
+		[]byte("agent: agents/review.md\nrole: review\npolicy: policies/base.yaml\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/review.yaml\nmint_url: https://mint-from-file.example.com\n"),
+		0o644,
+	))
+
+	origMint := statusMintToken
+	origNewClient := statusNewForgeClientFn
+	t.Cleanup(func() {
+		statusMintToken = origMint
+		statusNewForgeClientFn = origNewClient
+	})
+	var mintCalls int
+	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
+		mintCalls++
+		assert.Equal(t, "https://mint-from-file.example.com", req.MintURL,
+			"call #%d (role=%s, level=%s) must use config.yaml's mint_url, not the competing FULLSEND_MINT_URL", mintCalls, req.Role, req.Level)
+		return &mintclient.MintResult{Token: "ghs_test_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cancel()
+	fc := forge.NewFakeClient()
+	fc.PullRequestHeadSHA = "new-head"
+	statusNewForgeClientFn = func(token string) forge.Client {
+		assert.Equal(t, "ghs_test_token", token)
+		return fc
+	}
+
+	t.Setenv("GITHUB_RUN_ID", "run-42")
+	t.Setenv("PR_HEAD_SHA", "cancelled-head")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+	// A stale/different value in the environment — simulating a
+	// repository variable set at install time that the file has since
+	// overridden without anyone updating the variable.
+	t.Setenv("FULLSEND_MINT_URL", "https://mint-from-env.example.com")
+
+	var buf bytes.Buffer
+	err := runAgent(ctx, "review", dir, "", t.TempDir(), "", nil, false, "", "github", "", resolveFlags{maxDepth: 10, maxResources: 50}, statusOpts{
+		statusRepo:    "org/my-repo",
+		statusNum:     42,
+		trackerSource: "github",
+	}, ui.New(&buf), false, runOverrideFlags{})
+	require.Error(t, err)
+	comments := fc.IssueComments["org/my-repo/42"]
+	require.NotEmpty(t, comments, "output: %s; all comments: %#v", buf.String(), fc.IssueComments)
+	body := comments[len(comments)-1].Body
+	assert.Contains(t, body, "superseded by a newer commit")
+	assert.GreaterOrEqual(t, mintCalls, 2, "expected both the start-comment mint and the cancellation-finalizer mint to occur")
 }
 
 type runStatusEventWriter func(string)

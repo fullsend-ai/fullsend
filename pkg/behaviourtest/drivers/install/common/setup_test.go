@@ -1,9 +1,11 @@
 package common
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -291,7 +293,22 @@ func TestRunGitHubSetupWithOpts_ProvisionError_IsHardFailure(t *testing.T) {
 	require.Len(t, calls, 2, "no status re-check or setup after a failed provision")
 }
 
+// stubPostProvisionSleep replaces PostProvisionSleep with a recorder so
+// tests skip the real backoff, and returns the recorded delays.
+func stubPostProvisionSleep(t *testing.T) *[]time.Duration {
+	t.Helper()
+	var slept []time.Duration
+	orig := PostProvisionSleep
+	PostProvisionSleep = func(_ context.Context, d time.Duration) error {
+		slept = append(slept, d)
+		return nil
+	}
+	t.Cleanup(func() { PostProvisionSleep = orig })
+	return &slept
+}
+
 func TestRunGitHubSetupWithOpts_StillNotHealthyAfterProvision(t *testing.T) {
+	slept := stubPostProvisionSleep(t)
 	var calls [][]string
 	runner := func(_, _ string, args ...string) (string, error) {
 		calls = append(calls, args)
@@ -304,7 +321,94 @@ func TestRunGitHubSetupWithOpts_StillNotHealthyAfterProvision(t *testing.T) {
 	err := RunGitHubSetupWithOpts("/bin/fullsend", "tok", "org/repo", "https://mint.test", "proj", DefaultGitHubSetupOpts(), runner, t.Logf)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `expected healthy status, got "unhealthy"`)
-	require.Len(t, calls, 3, "status, provision, status; no setup")
+	require.Len(t, calls, 2+len(postProvisionStatusDelays)+1, "status, provision, every post-provision status read; no setup")
+	assert.Equal(t, postProvisionStatusDelays, *slept)
+}
+
+func TestProvisionInference_HealthyOnNthRead(t *testing.T) {
+	slept := stubPostProvisionSleep(t)
+	const healthyOn = 3
+	var calls [][]string
+	statusCalls := 0
+	runner := func(_, _ string, args ...string) (string, error) {
+		calls = append(calls, args)
+		if isInference(args, "status") {
+			statusCalls++
+			if statusCalls < healthyOn {
+				return `{"status":"not_provisioned"}`, nil
+			}
+			return healthyStatusJSON, nil
+		}
+		return "", nil
+	}
+
+	got, err := ProvisionInference("/bin/fullsend", "tok", "org/repo", "proj", runner, t.Logf)
+	require.NoError(t, err)
+	assert.Equal(t, "projects/1/locations/global/providers/wif", got)
+	require.Len(t, calls, 1+healthyOn, "provision, then status until healthy")
+	assert.True(t, isInference(calls[0], "provision"))
+	assert.Equal(t, healthyOn, statusCalls)
+	assert.Equal(t, postProvisionStatusDelays[:healthyOn-1], *slept)
+}
+
+func TestProvisionInference_NeverHealthy_FailsAfterBudget(t *testing.T) {
+	slept := stubPostProvisionSleep(t)
+	statusCalls := 0
+	runner := func(_, _ string, args ...string) (string, error) {
+		if isInference(args, "status") {
+			statusCalls++
+			return `{"status":"not_provisioned"}`, nil
+		}
+		return "", nil
+	}
+
+	_, err := ProvisionInference("/bin/fullsend", "tok", "org/repo", "proj", runner, t.Logf)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not healthy after provision")
+	assert.Contains(t, err.Error(), `status="not_provisioned"`, "error names the last status")
+	assert.Equal(t, len(postProvisionStatusDelays)+1, statusCalls)
+
+	var total time.Duration
+	for _, d := range *slept {
+		total += d
+	}
+	assert.Equal(t, 60*time.Second, total, "the backoff budget is ~60s")
+}
+
+func TestProvisionInference_ProvisionFails_NoPolling(t *testing.T) {
+	slept := stubPostProvisionSleep(t)
+	statusCalls := 0
+	runner := func(_, _ string, args ...string) (string, error) {
+		switch {
+		case isInference(args, "provision"):
+			return "", errors.New("provision boom")
+		case isInference(args, "status"):
+			statusCalls++
+		}
+		return healthyStatusJSON, nil
+	}
+
+	_, err := ProvisionInference("/bin/fullsend", "tok", "org/repo", "proj", runner, t.Logf)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "provision boom")
+	assert.Zero(t, statusCalls, "no status reads after a failed provision")
+	assert.Empty(t, *slept)
+}
+
+func TestResolveInferenceWIFProvider_AlreadyProvisioned_SingleRead(t *testing.T) {
+	slept := stubPostProvisionSleep(t)
+	var calls [][]string
+	runner := func(_, _ string, args ...string) (string, error) {
+		calls = append(calls, args)
+		return healthyStatusJSON, nil
+	}
+
+	got, err := ResolveInferenceWIFProvider("/bin/fullsend", "tok", "org/repo", "proj", runner, t.Logf)
+	require.NoError(t, err)
+	assert.Equal(t, "projects/1/locations/global/providers/wif", got)
+	require.Len(t, calls, 1, "exactly one status read, no provision")
+	assert.True(t, isInference(calls[0], "status"))
+	assert.Empty(t, *slept)
 }
 
 func TestRunGitHubSetupWithOpts_UsesResolver(t *testing.T) {
@@ -373,4 +477,22 @@ func TestInferenceStatusWIFProvider(t *testing.T) {
 			assert.Equal(t, tc.want, got)
 		})
 	}
+}
+
+func TestWaitInferenceHealthy_ContextCancelledDuringBackoff(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	statusCalls := 0
+	runner := func(_, _ string, args ...string) (string, error) {
+		statusCalls++
+		cancel()
+		return `{"status":"not_provisioned"}`, nil
+	}
+
+	start := time.Now()
+	_, err := WaitInferenceHealthy(ctx, "/bin/fullsend", "tok", "org/repo", "proj", runner, t.Logf)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Contains(t, err.Error(), `status="not_provisioned"`, "error keeps the last status")
+	assert.Equal(t, 1, statusCalls, "no status read after cancellation")
+	assert.Less(t, time.Since(start), postProvisionStatusDelays[0], "the real backoff is cut short")
 }

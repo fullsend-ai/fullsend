@@ -1,0 +1,12 @@
+// Copy of the default retro trigger in fullsend-ai/agents harness/retro.yaml
+// (fullsend-ai/agents#1758; harness/retro.yaml at 983f1513c473). Keep the two
+// in step: TestRetroRouteParity compares it with the bash router in
+// reusable-dispatch.yml.
+(event.entity.kind == "change_proposal"
+  && event.transition.kind in ["closed", "merged"])
+|| (event.transition.kind == "comment_added"
+  && has(event.transition.comment.command)
+  && event.transition.comment.command == "/fs-retro"
+  && event.actor.kind == "human"
+  && event.source.system in ["github", "gitlab"]
+  && event.entity.kind in ["work_item", "change_proposal"])

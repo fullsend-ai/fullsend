@@ -29,6 +29,7 @@ func fullsendDirCommands() map[string]struct {
 		"agent set":    {newAgentSetCmd, []string{"triage", "--model", "sonnet"}},
 		"lock":         {newLockCmd, []string{"triage"}},
 		"run":          {newRunCmd, []string{"triage", "--target-repo", "."}},
+		"lint":         {newLintCmd, nil},
 	}
 }
 

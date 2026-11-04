@@ -18,6 +18,15 @@ const maxRepos = 500
 
 const defaultForeignCacheTTL = 60 * time.Second
 
+// hstsHeaderValue is the Strict-Transport-Security value set on every
+// mint response: one year, scoped to the mint's own hostname. It omits
+// includeSubDomains and preload on purpose, so it never affects sibling
+// hostnames such as the public website. Browsers ignore the header on
+// plain-HTTP responses (RFC 6797 §8.1), so setting it unconditionally is
+// safe for load sites served without TLS. Keep it in sync with
+// HSTS_HEADER_VALUE in internal/dispatch/cf/workersrc/src/index.ts.
+const hstsHeaderValue = "max-age=31536000"
+
 type foreignCacheEntry struct {
 	allowlist []string
 	fetchedAt time.Time
@@ -204,6 +213,9 @@ func (h *Handler) SetTracer(t *Tracer) {
 
 // ServeHTTP handles incoming token mint requests.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Set before routing so success, error and health responses all
+	// carry it.
+	w.Header().Set("Strict-Transport-Security", hstsHeaderValue)
 	if r.Method == http.MethodGet && r.URL.Path == "/health" {
 		h.handleHealth(w)
 		return
@@ -223,6 +235,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	root := spanFromContext(r.Context())
+
+	if r.URL.Path == botRolePath {
+		h.handleBotRole(w, r)
+		return
+	}
 
 	if r.URL.Path != "/v1/token" && r.URL.Path != "/" && r.URL.Path != "/v1/status" {
 		writeError(w, http.StatusNotFound, "not found")

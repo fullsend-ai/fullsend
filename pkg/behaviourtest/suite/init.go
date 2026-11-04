@@ -66,8 +66,9 @@ func beforeScenario(ctx context.Context, tags []string, template *world.World, n
 // of the repository's workflow runs that in-scenario collection did not
 // already save (a wait that timed out, a failure before any run was
 // resolved) plus a failure summary; then CleanupScenario
-// (issues/PRs/forks/hosting repos) runs, and the deferred DeallocateRepo
-// deletes the leased base and returns the name to the pool. All debug
+// (issues/PRs/forks/hosting repos) runs, and the deferred
+// DeallocateLease (DeallocateRepo for a driver that leases by name)
+// deletes the leased slot repo and frees the slot. All debug
 // collection (workflow logs via saveWorkflowRunLogs and
 // CollectFailureLogs, agent artifacts via ensureArtifacts) has finished
 // before the repo is deleted, so CI still has those files under
@@ -76,6 +77,13 @@ func beforeScenario(ctx context.Context, tags []string, template *world.World, n
 // A deallocation failure on an otherwise passing scenario also writes the
 // failure summary (the repo's workflow runs are collected best-effort, as
 // teardown has already been attempted).
+//
+// CleanupScenario mutates by name, so before it runs the After hook
+// hands it a lease-ownership check (World.LeaseOwned, from the driver's
+// install.LeaseVerifier). When another holder has replaced the slot, or
+// ownership cannot be verified, cleanup skips its mutations; the lease
+// is still released below, and the driver's release checks ownership
+// itself before deleting the slot repo.
 //
 // driver.DeallocateRepo is deferred so the lease is returned even if
 // steps.CleanupScenario panics. Named return values allow the deferred
@@ -87,9 +95,16 @@ func afterScenario(ctx context.Context, driver install.Driver, scenarioErr error
 		return ctx, retErr
 	}
 	if driver != nil && w.LeasedRepoName != "" {
-		name := w.LeasedRepoName
+		name, org := w.LeasedRepoName, w.LeasedRepoOrg
+		w.LeaseOwned = leaseOwnership(driver, org, name)
 		defer func() {
-			if deallocErr := driver.DeallocateRepo(ctx, name); deallocErr != nil {
+			var deallocErr error
+			if ld, ok := driver.(install.LeaseDriver); ok && org != "" {
+				deallocErr = ld.DeallocateLease(ctx, org, name)
+			} else {
+				deallocErr = driver.DeallocateRepo(ctx, name)
+			}
+			if deallocErr != nil {
 				if w.Logf != nil {
 					w.Logf("deallocating repo: %v", deallocErr)
 				}
@@ -108,6 +123,28 @@ func afterScenario(ctx context.Context, driver install.Driver, scenarioErr error
 	}
 	steps.CleanupScenario(w)
 	return ctx, retErr
+}
+
+// leaseOwnership returns the check scenario cleanup uses to confirm the
+// slot (org, name) is still this scenario's lease, or nil when the
+// driver leases by repo name alone (no shared slot to lose). A driver
+// that leases across orgs but cannot verify yields a check that always
+// fails, so cleanup fails closed rather than mutating by name.
+func leaseOwnership(driver install.Driver, org, name string) func(context.Context) (bool, error) {
+	if org == "" {
+		return nil
+	}
+	if lv, ok := driver.(install.LeaseVerifier); ok {
+		return func(ctx context.Context) (bool, error) {
+			return lv.StillOwnsLease(ctx, org, name)
+		}
+	}
+	if _, ok := driver.(install.LeaseDriver); ok {
+		return func(context.Context) (bool, error) {
+			return false, fmt.Errorf("%T cannot verify lease ownership of %s/%s", driver, org, name)
+		}
+	}
+	return nil
 }
 
 func resetScenarioWorld(w *world.World) {
@@ -135,7 +172,13 @@ func resetScenarioWorld(w *world.World) {
 	w.RecordedBranchSHAs = nil
 	w.CreatedBranches = nil
 	w.CreatedPRNumbers = nil
+	w.CreatedIssueNumbers = nil
 	w.LeasedRepoName = ""
+	w.LeasedRepoOrg = ""
+	w.LeaseOwned = nil
+	w.MintURL = ""
+	w.MintStatusGroup = ""
+	w.MintWorkflowHostRepos = nil
 	w.KillSwitchActivated = false
 	w.RuntimeOverridden = false
 	w.RuntimeOriginal = ""
@@ -157,6 +200,7 @@ func resetScenarioWorld(w *world.World) {
 	w.StagePublishedSHA = nil
 	w.MintProbe = nil
 	w.MintStatus = nil
+	w.BotRoleProbe = nil
 }
 
 func tagNames(tags []*messages.PickleTag) []string {

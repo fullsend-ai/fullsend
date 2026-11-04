@@ -119,7 +119,7 @@ func TestRotateGitLabRoleCredentials_ProvidedReplacementRecordsOwnerAndKeepsPrev
 	ctx := context.Background()
 	fc := seededRoleClient(t, gitlabroles.RoleCoder)
 	require.NoError(t, fc.UpdateCIVariable(ctx, "group", "project", forge.VarGitLabRoleRotation,
-		`{"roles":{"coder":{"phase":"idle","distributed_at":"2026-09-01T00:00:00Z","supplied":true,"supplied_user_id":600,"supplied_token_id":12,"excluded_user_ids":[600]}}}`, true))
+		`{"version":2,"roles":{"coder":{"phase":"idle","distributed_at":"2026-09-01T00:00:00Z","supplied":true,"supplied_user_id":600,"supplied_token_id":12,"excluded_user_ids":[600]}}}`, true))
 	sa := newFakeSAAPI()
 	tokens := ServiceAccountTokenClient{
 		SA:                sa,
@@ -155,7 +155,7 @@ func TestRotateGitLabRoleCredentials_EnrollingOutgoingTokenIsNotRevokedByCleanup
 	ctx := context.Background()
 	fc := seededRoleClient(t, gitlabroles.RoleCoder)
 	require.NoError(t, fc.UpdateCIVariable(ctx, "group", "project", forge.VarGitLabRoleRotation,
-		`{"roles":{"coder":{"phase":"overlapping","created_token_ids":[13,14],"incoming_id":14,"outgoing_ids":[13],"distributed_at":"2026-09-01T00:00:00Z"}}}`, true))
+		`{"version":2,"roles":{"coder":{"phase":"overlapping","created_token_ids":[13,14],"incoming_id":14,"outgoing_ids":[13],"distributed_at":"2026-09-01T00:00:00Z"}}}`, true))
 	legacy := &fakeTokens{}
 	legacy.seed(ProjectAccessToken{ID: 13, Name: gitlabroles.CoderTokenName, Active: true, ExpiresAt: "2027-01-01", UserID: 40})
 	legacy.seed(ProjectAccessToken{ID: 14, Name: gitlabroles.CoderTokenName, Active: true, ExpiresAt: "2027-01-01", UserID: 40})
@@ -196,7 +196,7 @@ func TestRotateGitLabRoleCredentials_PersistsUnrecordedSuppliedOwnerBeforeReplac
 	ctx := context.Background()
 	fc := seededRoleClient(t, gitlabroles.RoleCoder)
 	require.NoError(t, fc.UpdateCIVariable(ctx, "group", "project", forge.VarGitLabRoleRotation,
-		`{"roles":{"coder":{"phase":"idle","distributed_at":"2026-09-01T00:00:00Z"}}}`, true))
+		`{"version":2,"roles":{"coder":{"phase":"idle","distributed_at":"2026-09-01T00:00:00Z"}}}`, true))
 	sa := newFakeSAAPI()
 	attributions := 0
 	tokens := ServiceAccountTokenClient{
@@ -267,7 +267,7 @@ func TestProvisionGitLabRoleCredentials_EnrollmentReplacesLeftoverEntry(t *testi
 	}
 
 	t.Run("supplied A to supplied B", func(t *testing.T) {
-		_, rs := enroll(t, `{"roles":{"coder":{"phase":"idle","distributed_at":"2026-09-01T00:00:00Z","supplied":true,"supplied_user_id":600,"supplied_token_id":12,"excluded_user_ids":[600]}}}`)
+		_, rs := enroll(t, `{"version":2,"roles":{"coder":{"phase":"idle","distributed_at":"2026-09-01T00:00:00Z","supplied":true,"supplied_user_id":600,"supplied_token_id":12,"excluded_user_ids":[600]}}}`)
 		assert.True(t, rs.Supplied)
 		assert.Equal(t, 777, rs.SuppliedUserID)
 		assert.Equal(t, 13, rs.SuppliedTokenID)
@@ -276,7 +276,7 @@ func TestProvisionGitLabRoleCredentials_EnrollmentReplacesLeftoverEntry(t *testi
 	})
 
 	t.Run("managed to supplied", func(t *testing.T) {
-		_, rs := enroll(t, `{"roles":{"coder":{"phase":"idle","incoming_id":9,"distributed_at":"2026-09-01T00:00:00Z","created_token_ids":[9]}}}`)
+		_, rs := enroll(t, `{"version":2,"roles":{"coder":{"phase":"idle","incoming_id":9,"distributed_at":"2026-09-01T00:00:00Z","created_token_ids":[9]}}}`)
 		assert.True(t, provenanceOf(rs).Supplied)
 		assert.Equal(t, 777, rs.SuppliedUserID)
 		assert.Equal(t, []int{777}, rs.ExcludedUserIDs)
@@ -292,7 +292,7 @@ func TestRotateGitLabRoleCredentials_RetainsSuppliedCredentialOutsideInventory(t
 	ctx := context.Background()
 	fc := seededRoleClient(t, gitlabroles.RoleCoder)
 	require.NoError(t, fc.UpdateCIVariable(ctx, "group", "project", forge.VarGitLabRoleRotation,
-		`{"roles":{"coder":{"phase":"idle","distributed_at":"2026-10-01T00:00:00Z","supplied":true,"supplied_user_id":777,"supplied_token_id":13,"excluded_user_ids":[777]}}}`, true))
+		`{"version":2,"roles":{"coder":{"phase":"idle","distributed_at":"2026-10-01T00:00:00Z","supplied":true,"supplied_user_id":777,"supplied_token_id":13,"excluded_user_ids":[777]}}}`, true))
 	sa := newFakeSAAPI()
 	tokens := healthyInstalledTokens(&fakeTokens{})
 	tokens.SA = sa
@@ -329,7 +329,7 @@ func TestRotateGitLabRoleCredentials_RetainsSuppliedCredentialWithHistoricalMana
 			ctx := context.Background()
 			fc := seededRoleClient(t, gitlabroles.RoleCoder)
 			require.NoError(t, fc.UpdateCIVariable(ctx, "group", "project", forge.VarGitLabRoleRotation,
-				`{"roles":{"coder":{"phase":"idle","distributed_at":"2026-10-01T00:00:00Z","supplied":true,"supplied_user_id":777,"supplied_token_id":13,"excluded_user_ids":[777],"created_token_ids":[9],"managed_user_id":600}}}`, true))
+				`{"version":2,"roles":{"coder":{"phase":"idle","distributed_at":"2026-10-01T00:00:00Z","supplied":true,"supplied_user_id":777,"supplied_token_id":13,"excluded_user_ids":[777],"created_token_ids":[9],"managed_user_id":600}}}`, true))
 			historical.Name = gitlabroles.BuiltinRegistry().Registrations()[2].Credential.TokenName
 			legacy := &fakeTokens{}
 			legacy.seed(historical)
@@ -360,7 +360,7 @@ func TestRotateGitLabRoleCredentials_RevokedSuppliedCredentialNotMaskedByHealthy
 	ctx := context.Background()
 	fc := seededRoleClient(t, gitlabroles.RoleCoder)
 	require.NoError(t, fc.UpdateCIVariable(ctx, "group", "project", forge.VarGitLabRoleRotation,
-		`{"roles":{"coder":{"phase":"idle","distributed_at":"2026-10-01T00:00:00Z","supplied":true,"supplied_user_id":777,"supplied_token_id":13,"excluded_user_ids":[777],"created_token_ids":[9],"managed_user_id":600}}}`, true))
+		`{"version":2,"roles":{"coder":{"phase":"idle","distributed_at":"2026-10-01T00:00:00Z","supplied":true,"supplied_user_id":777,"supplied_token_id":13,"excluded_user_ids":[777],"created_token_ids":[9],"managed_user_id":600}}}`, true))
 	tokenName := gitlabroles.BuiltinRegistry().Registrations()[2].Credential.TokenName
 	legacy := &fakeTokens{}
 	legacy.seed(ProjectAccessToken{ID: 9, Name: tokenName, Active: true, ExpiresAt: "2027-09-30", UserID: 600})
@@ -386,7 +386,7 @@ func TestRotateGitLabRoleCredentials_RevokedSuppliedNotMaskedByFreshExpiryHistor
 	now := time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC)
 	fc := seededRoleClient(t, gitlabroles.RoleCoder)
 	require.NoError(t, fc.UpdateCIVariable(ctx, "group", "project", forge.VarGitLabRoleRotation,
-		`{"roles":{"coder":{"phase":"idle","distributed_at":"2026-10-01T00:00:00Z","supplied":true,"supplied_user_id":777,"supplied_token_id":13,"excluded_user_ids":[777],"created_token_ids":[9],"managed_user_id":600}}}`, true))
+		`{"version":2,"roles":{"coder":{"phase":"idle","distributed_at":"2026-10-01T00:00:00Z","supplied":true,"supplied_user_id":777,"supplied_token_id":13,"excluded_user_ids":[777],"created_token_ids":[9],"managed_user_id":600}}}`, true))
 	tokenName := gitlabroles.BuiltinRegistry().Registrations()[2].Credential.TokenName
 	legacy := &fakeTokens{}
 	legacy.seed(ProjectAccessToken{ID: 9, Name: tokenName, Active: true, ExpiresAt: GitLabPATExpiresAt(now), UserID: 600})
@@ -408,7 +408,7 @@ func TestRotateGitLabRoleCredentials_UnrecordableSuppliedOwnerFailsClosed(t *tes
 	ctx := context.Background()
 	fc := seededRoleClient(t, gitlabroles.RoleCoder)
 	require.NoError(t, fc.UpdateCIVariable(ctx, "group", "project", forge.VarGitLabRoleRotation,
-		`{"roles":{"coder":{"phase":"idle","distributed_at":"2026-09-01T00:00:00Z"}}}`, true))
+		`{"version":2,"roles":{"coder":{"phase":"idle","distributed_at":"2026-09-01T00:00:00Z"}}}`, true))
 	sa := newFakeSAAPI()
 	tokens := ServiceAccountTokenClient{
 		SA:                sa,
@@ -1014,7 +1014,7 @@ func TestRotateGitLabRoleCredentials_UnidentifiedSuppliedTokenDefersOutgoingClea
 	ctx := context.Background()
 	fc := seededRoleClient(t, gitlabroles.RoleCoder)
 	require.NoError(t, fc.UpdateCIVariable(ctx, "group", "project", forge.VarGitLabRoleRotation,
-		`{"roles":{"coder":{"phase":"overlapping","created_token_ids":[13,14],"incoming_id":14,"outgoing_ids":[13],"distributed_at":"2026-09-01T00:00:00Z"}}}`, true))
+		`{"version":2,"roles":{"coder":{"phase":"overlapping","created_token_ids":[13,14],"incoming_id":14,"outgoing_ids":[13],"distributed_at":"2026-09-01T00:00:00Z"}}}`, true))
 	legacy := &fakeTokens{}
 	legacy.seed(ProjectAccessToken{ID: 13, Name: gitlabroles.CoderTokenName, Active: true, ExpiresAt: "2027-01-01", UserID: 40})
 	legacy.seed(ProjectAccessToken{ID: 14, Name: gitlabroles.CoderTokenName, Active: true, ExpiresAt: "2027-01-01", UserID: 40})

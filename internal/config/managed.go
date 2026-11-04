@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 
@@ -129,15 +130,13 @@ func (o ManagedConfig) Clone() ManagedConfig {
 	return ManagedConfig{cfg: clonePerRepo(o.cfg)}
 }
 
-// WithCreateIssuesRepos returns a copy of o whose create_issues allowlist
-// permits exactly the given repositories. It is how repos install records
-// the upstream cross-repo permissions on a manifest entry (#8218, #8504).
-// The receiver is not modified.
-func (o ManagedConfig) WithCreateIssuesRepos(repos []string) ManagedConfig {
+// WithIssueTracking returns a copy of o whose tracking mapping is a copy
+// of t. It is how repos install records the upstream cross-repo
+// permissions on a manifest entry (#8218, #8504). The receiver is not
+// modified.
+func (o ManagedConfig) WithIssueTracking(t *TrackingConfig) ManagedConfig {
 	cp := o.clone()
-	cp.CreateIssues = &CreateIssuesConfig{
-		AllowTargets: AllowTargets{Repos: cloneStringSlice(repos)},
-	}
+	cp.Tracker = cloneTracking(t)
 	return ManagedConfig{cfg: cp}
 }
 
@@ -208,9 +207,25 @@ func decodeManagedConfig(n *yaml.Node) (*perRepoConfig, error) {
 	for i := 0; i+1 < len(node.Content); i += 2 {
 		keyNode := node.Content[i]
 		key := keyNode.Value
-		if !known[key] {
+		if key == "create_issues" {
+			// The removed key gets an actionable migration message
+			// instead of the generic unknown-field error.
+			fieldErrs = append(fieldErrs, managedFieldError(keyNode,
+				fmt.Sprintf("unknown field %q: %s", key, errLegacyCreateIssues)))
+		} else if !known[key] {
 			fieldErrs = append(fieldErrs, managedFieldError(keyNode,
 				fmt.Sprintf("unknown field %q", key)))
+		}
+		// TrackingConfig has a custom UnmarshalYAML (it rejects the legacy
+		// scalar form), so the strict decode below does not see its nested
+		// keys. Decode the mapping strictly here so a misspelled
+		// allowed_targets key is not silently dropped.
+		if key == "tracker" {
+			if v := resolveAlias(node.Content[i+1]); v.Kind == yaml.MappingNode {
+				if err := decodeKnownFields(v, &trackingPlain{}); err != nil {
+					fieldErrs = append(fieldErrs, managedFieldError(keyNode, fmt.Sprintf("tracker: %v", err)))
+				}
+			}
 		}
 		// AgentEntry has a custom UnmarshalYAML (string-or-mapping), so
 		// decodeKnownFields' dec.KnownFields(true) below never sees these
@@ -314,6 +329,11 @@ type DeclaredInfrastructure struct {
 	InferenceProject     string
 	InferenceRegion      string
 	InferenceWIFProvider string
+	// InferenceWIFAudience and InferenceServiceAccount are the GitLab
+	// vertex-wif options for an existing WIF provider: the agent job's ID
+	// token audience and the service account it impersonates.
+	InferenceWIFAudience    string
+	InferenceServiceAccount string
 }
 
 // DeclaredInfrastructureValues returns the mint URL and Vertex inference
@@ -335,10 +355,12 @@ func DeclaredInfrastructureValues(overlay PerRepoConfigWriter, baseYAML []byte) 
 		layered.parent = &base
 	}
 	return DeclaredInfrastructure{
-		MintURL:              layered.ConfigMintURL(),
-		InferenceProject:     layered.ConfigInferenceProject(),
-		InferenceRegion:      layered.ConfigInferenceRegion(),
-		InferenceWIFProvider: layered.ConfigInferenceWIFProvider(),
+		MintURL:                 layered.ConfigMintURL(),
+		InferenceProject:        layered.ConfigInferenceProject(),
+		InferenceRegion:         layered.ConfigInferenceRegion(),
+		InferenceWIFProvider:    layered.ConfigInferenceWIFProvider(),
+		InferenceWIFAudience:    layered.ConfigInferenceWIFAudience(),
+		InferenceServiceAccount: layered.ConfigInferenceServiceAccount(),
 	}, nil
 }
 
@@ -360,7 +382,6 @@ func clonePerRepo(src *perRepoConfig) *perRepoConfig {
 	out := &perRepoConfig{
 		Version: src.Version,
 		Forge:   src.Forge,
-		Tracker: src.Tracker,
 		Runtime: src.Runtime,
 		MintURL: src.MintURL,
 		parent:  &perRepoDefaults{},
@@ -382,14 +403,8 @@ func clonePerRepo(src *perRepoConfig) *perRepoConfig {
 	if src.AllowedRemoteResources != nil {
 		out.AllowedRemoteResources = cloneStringSlice(src.AllowedRemoteResources)
 	}
-	if src.CreateIssues != nil {
-		cp := *src.CreateIssues
-		cp.AllowTargets = AllowTargets{
-			Orgs:  append([]string(nil), src.CreateIssues.AllowTargets.Orgs...),
-			Repos: append([]string(nil), src.CreateIssues.AllowTargets.Repos...),
-		}
-		out.CreateIssues = &cp
-	}
+	out.Tracker = cloneTracking(src.Tracker)
+	out.legacyCreateIssues = src.legacyCreateIssues
 	if src.Authorization != nil {
 		out.Authorization = cloneAuthorizationSlice(src.Authorization)
 	}
@@ -426,9 +441,6 @@ func applyManagedLayer(out, child *perRepoConfig) {
 	if child.Forge != "" {
 		out.Forge = child.Forge
 	}
-	if child.Tracker != "" {
-		out.Tracker = child.Tracker
-	}
 	if child.KillSwitch != nil {
 		v := *child.KillSwitch
 		out.KillSwitch = &v
@@ -455,13 +467,11 @@ func applyManagedLayer(out, child *perRepoConfig) {
 		}
 		out.AllowedRemoteResources = cloneStringSlice(tmp.AllowedResources())
 	}
-	if child.CreateIssues != nil {
-		cp := *child.CreateIssues
-		cp.AllowTargets = AllowTargets{
-			Orgs:  append([]string(nil), child.CreateIssues.AllowTargets.Orgs...),
-			Repos: append([]string(nil), child.CreateIssues.AllowTargets.Repos...),
-		}
-		out.CreateIssues = &cp
+	if child.Tracker != nil {
+		out.Tracker = cloneTracking(child.Tracker)
+	}
+	if child.legacyCreateIssues {
+		out.legacyCreateIssues = true
 	}
 	if child.Authorization != nil {
 		out.Authorization = cloneAuthorizationSlice(child.Authorization)
@@ -488,6 +498,12 @@ func applyManagedLayer(out, child *perRepoConfig) {
 		}
 		if child.Inference.WIFProvider != "" {
 			out.Inference.WIFProvider = child.Inference.WIFProvider
+		}
+		if child.Inference.WIFAudience != "" {
+			out.Inference.WIFAudience = child.Inference.WIFAudience
+		}
+		if child.Inference.ServiceAccount != "" {
+			out.Inference.ServiceAccount = child.Inference.ServiceAccount
 		}
 		if child.Inference.OpenAI != nil {
 			if out.Inference.OpenAI == nil {
@@ -543,8 +559,27 @@ func cloneAuthorizationSlice(in []AuthorizationProvider) []AuthorizationProvider
 		return nil
 	}
 	out := make([]AuthorizationProvider, len(in))
-	copy(out, in)
+	for i, p := range in {
+		out[i] = cloneAuthorizationProvider(p)
+	}
 	return out
+}
+
+// cloneAuthorizationProvider deep-copies p so the jira provider's lists
+// are not shared between layers.
+func cloneAuthorizationProvider(p AuthorizationProvider) AuthorizationProvider {
+	cloneList := func(l *JiraActorList) *JiraActorList {
+		if l == nil {
+			return nil
+		}
+		return &JiraActorList{
+			Groups:   slices.Clone(l.Groups),
+			Accounts: slices.Clone(l.Accounts),
+		}
+	}
+	p.Write = cloneList(p.Write)
+	p.Triage = cloneList(p.Triage)
+	return p
 }
 
 func cloneAgentEntries(in []AgentEntry) []AgentEntry {

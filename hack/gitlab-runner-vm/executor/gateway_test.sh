@@ -1008,6 +1008,60 @@ else
   fail "no-op installer not detected: rc=${JOB_RC} err=${JOB_ERR}"
 fi
 
+echo "== openshell_version_at_least compares x.y.z numerically =="
+for _case in "0.1.0 0.1.0 0" "0.1.4 0.1.0 0" "1.0.0 0.1.0 0" "0.10.0 0.9.9 0" \
+  "0.0.116 0.1.0 1" "0.0.999 0.1.0 1" "0.1.0 0.1.1 1" "0.9.0 0.10.0 1"; do
+  read -r _have _want _rc <<< "${_case}"
+  _got=0
+  openshell_version_at_least "${_have}" "${_want}" || _got=1
+  if [ "${_got}" = "${_rc}" ]; then
+    pass "openshell_version_at_least ${_have} ${_want} -> ${_rc}"
+  else
+    fail "openshell_version_at_least ${_have} ${_want}: got ${_got}, want ${_rc}"
+  fi
+done
+
+echo "== a job image pinning pre-0.1 OpenShell is refused before the host is touched =="
+# #8730: the executor writes only a schema-v2 gateway.toml, which a 0.0.x
+# gateway rejects. A verified 0.0.x pin must fail before teardown or install.
+REV_PRE01="$(printf '8%.0s' $(seq 1 40))"
+add_fullsend_commit "${REV_PRE01}" 0.0.116 "${SHA_OLD}"
+add_release_tag 0.43.0 "${REV_PRE01}"
+mkdir -p "${HOME}/.local/state/openshell/gateway"
+echo db > "${HOME}/.local/state/openshell/gateway/state.db"
+_toml_before="$(cat "${HOME}/.config/openshell/gateway.toml")"
+run_job "ghcr.io/fullsend-ai/fullsend-runner:0.43.0" "${REV_PRE01}" 0.0.116 0.1.4
+refused "image pinning OpenShell 0.0.116 on a 0.1.4 host"
+if [[ "${JOB_ERR}" == *"pins OpenShell 0.0.116"*"supports OpenShell 0.1.0 or newer"* ]]; then
+  pass "pre-0.1 refusal names the pinned version and the minimum supported version"
+else
+  fail "pre-0.1 refusal error unhelpful: ${JOB_ERR}"
+fi
+if [ ! -s "${SYSTEMCTL_LOG}" ] \
+  && ! grep -q 'gateway remove' "${OPENSHELL_LOG}" \
+  && [ -e "${HOME}/.local/state/openshell/gateway/state.db" ] \
+  && [ "$(cat "${HOST_VERSION_FILE}")" = "0.1.4" ] \
+  && [ "$(cat "${HOME}/.config/openshell/gateway.toml")" = "${_toml_before}" ]; then
+  pass "pre-0.1 refusal leaves the host gateway, store, version, and gateway.toml untouched"
+else
+  fail "pre-0.1 refusal touched the host: systemctl=$(tr '\n' '|' < "${SYSTEMCTL_LOG}") openshell=$(tr '\n' '|' < "${OPENSHELL_LOG}") host=$(cat "${HOST_VERSION_FILE}")"
+fi
+run_job "ghcr.io/fullsend-ai/fullsend-runner:0.43.0" "${REV_PRE01}" 0.0.116 0.0.116
+refused "image pinning OpenShell 0.0.116 on a host already at 0.0.116"
+rm -rf "${HOME}/.local/state/openshell/gateway"
+
+echo "== 0.1.x to 0.1.x switches still succeed and keep a v2 config =="
+REV_V012="$(printf '9%.0s' $(seq 1 40))"
+REV_V014="$(printf 'd%.0s' $(seq 1 40))"
+add_fullsend_commit "${REV_V012}" 0.1.2 "${SHA_OLD}"
+add_fullsend_commit "${REV_V014}" 0.1.4 "${SHA_NEW}"
+assert_switch "registry.example.com/runner:dev" "${REV_V012}" 0.1.2 0.1.4 "${SHA_OLD}" "0.1.4 -> 0.1.2 (downgrade)"
+assert_v2_gateway_toml "${HOME}/.config/openshell/gateway.toml" \
+  "ghcr.io/nvidia/openshell/supervisor:0.1.2" "0.1.4 -> 0.1.2"
+assert_switch "registry.example.com/runner:dev" "${REV_V014}" 0.1.4 0.1.2 "${SHA_NEW}" "0.1.2 -> 0.1.4 (upgrade)"
+assert_v2_gateway_toml "${HOME}/.config/openshell/gateway.toml" \
+  "ghcr.io/nvidia/openshell/supervisor:0.1.4" "0.1.2 -> 0.1.4"
+
 echo "== commits verified on main are cached =="
 rm -rf "${HOME}/.local/state/fullsend"
 run_job "registry.example.com/runner:dev" "${REV_NEW}" 7.0.2 7.0.2

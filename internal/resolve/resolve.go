@@ -320,6 +320,10 @@ func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (
 		state.appendDependency(dep)
 	}
 
+	// dupPaths records direct entries whose URL was already resolved
+	// (transitively or by an earlier entry), keyed by index, with the
+	// local path of the kept entry for the same skill.
+	dupPaths := make(map[int]string)
 	for i, s := range h.Skills {
 		if harness.IsURL(s.Source) {
 			dep, localPath, err := resolveSkillDirURL(ctx, fmt.Sprintf("skills[%d]", i), s.Source, h, opts, state, recurse, 0)
@@ -330,6 +334,7 @@ func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (
 				h.Skills[i].Source = localPath
 			} else {
 				h.Skills[i].Source = ""
+				dupPaths[i] = localPath
 			}
 			state.appendDependency(dep)
 		}
@@ -348,7 +353,12 @@ func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (
 		}
 	}
 
-	// Remove entries that were already appended transitively.
+	// Remove entries that were already appended transitively. Their file
+	// overrides move onto the kept entry for the same skill first, so a
+	// direct entry's overrides survive whatever the list order.
+	if err := harness.MergeDuplicateSkillOverrides(h.Skills, dupPaths); err != nil {
+		return ResolveResult{}, err
+	}
 	filtered := h.Skills[:0]
 	for _, s := range h.Skills {
 		if s.Source != "" {

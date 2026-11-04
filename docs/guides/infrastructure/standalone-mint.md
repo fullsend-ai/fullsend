@@ -127,7 +127,9 @@ The standalone mint is configured entirely through environment variables:
 Set `PER_REPO_WIF_REPOS=*` to enable public mint mode:
 
 - Any repository may request tokens (installation lookup still scopes tokens to the requesting org)
-- `job_workflow_ref` validation is the same as in enrolled mode: only the upstream `fullsend-ai/fullsend` and repos in `WORKFLOW_HOST_REPOS` are accepted, and the `ALLOWED_WORKFLOW_FILES` basename gate applies ([ADR 0082](../../ADRs/0082-workflow-host-allow-list.md) §2)
+- `job_workflow_ref` validation is the same as in enrolled mode: only the
+  upstream `fullsend-ai/fullsend` and repos in `WORKFLOW_HOST_REPOS` are
+  accepted, and the `ALLOWED_WORKFLOW_FILES` basename gate applies
 - No WIF or GCP STS setup is required — standalone mint validates OIDC via GitHub JWKS directly
 
 ### Example: local roles with fallback proxy
@@ -310,6 +312,7 @@ When `FALLBACK_MINT_URL` is set, the standalone mint acts as a transparent proxy
 | `POST /v1/token` with an unknown role | Forwarded to `FALLBACK_MINT_URL` |
 | `GET /health` | Always handled locally |
 | `GET /v1/status` | Always handled locally |
+| `POST /v1/bot-role` | Always handled locally |
 
 The proxy forwards the original OIDC bearer token and request body to the upstream mint, and returns the upstream response verbatim. The upstream mint performs its own OIDC validation — the shared public GitHub Apps must be installed in your organization for proxied requests to succeed.
 
@@ -428,7 +431,7 @@ gh api -X POST /orgs/myorg/actions/variables \
 
 The standalone mint can export OpenTelemetry spans for each request to an
 OTLP/HTTP collector, following the [distributed tracing](distributed-tracing.md#mint-tracing)
-model used by the rest of Fullsend. Tracing is off by default: with no
+model used by the rest of fullsend. Tracing is off by default: with no
 traces endpoint configured the mint uses a no-op tracer and makes no
 export attempts.
 

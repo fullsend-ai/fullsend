@@ -2,61 +2,155 @@ package install
 
 import (
 	"context"
+	"errors"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
-// mintDriver provisions and tears down fullsend in an acquired pool org.
-// Used only during suite setup (single-threaded) and not shared across
-// concurrent scenarios.
+// mintDriver deploys and tears down a mint serving pool orgs. The
+// shared driver deploys one per mint group (see mintPlan), the first
+// time a slot in any of the group's orgs is leased, and tears them all
+// down at Finalize.
 //
 // This is an unexported interface used internally by concrete driver
 // implementations. The suite does not construct or reference it directly.
 type mintDriver interface {
-	// Install deploys the mint for the given org and returns the mint URL.
-	Install(ctx context.Context, org string) (mintURL string, err error)
+	// Install deploys the mint and returns the mint URL.
+	Install(ctx context.Context) (mintURL string, err error)
 
 	// Teardown tears down suite-scoped mint resources. The driver owns
 	// its own state (e.g. preview alias) — no external state is needed.
 	Teardown(ctx context.Context) error
 }
 
-// Factory constructs a unified Driver for a given org. The factory
-// performs suite setup (e.g. preview mint deploy) before returning so
-// setup failures fail the suite before scenarios run.
-//
-// All driver-specific inputs (PEMs, allowlists, mint URL, pool size)
-// are read from env or computed from the org inside the factory.
-// Runtime dependencies (forge client, token, CLI binary, GCP project,
-// logger) are passed as parameters.
-type Factory func(
-	org string,
-	client forge.Client,
-	token, binary, gcpProjectID string,
-	logf func(string, ...any),
-) (Driver, error)
+// OrgTokenFunc returns an installation token for org: the e2e GitHub App
+// installation token minted for that org in CI, or the developer's own
+// token locally. It is called at most once per org per suite (see
+// PoolConfig.TokenFor).
+type OrgTokenFunc func(ctx context.Context, org string) (string, error)
+
+// PoolConfig is the input of a Factory: the pool to lease from and the
+// suite's runtime dependencies.
+type PoolConfig struct {
+	// Layout is the pool's orgs and slots (see PoolLayoutForEnvironment).
+	Layout PoolLayout
+	// TokenFor returns an org's installation token. The driver calls it
+	// once per org and keeps the token for the rest of the suite: an
+	// installation token lives an hour, longer than the suite's job time
+	// limit (slotJobTimeLimit), so a token minted at any point of the run
+	// is still valid at its end.
+	TokenFor OrgTokenFunc
+	// NewClient builds a forge client from a token (e.g.
+	// e2etest.NewLiveClient). One client is built per org, so the
+	// allocator's per-org rate-limit gate also sees the requests the
+	// org's scenarios make with it.
+	NewClient func(token string) forge.Client
+	// Binary is the fullsend CLI built for the suite.
+	Binary string
+	// GCPProjectID is the inference GCP project ("" skips inference).
+	GCPProjectID string
+	// Logf is the suite logger.
+	Logf func(string, ...any)
+}
+
+func (p PoolConfig) validate() error {
+	if err := p.Layout.validate(); err != nil {
+		return err
+	}
+	if p.TokenFor == nil {
+		return errors.New("pool config: TokenFor must not be nil")
+	}
+	if p.NewClient == nil {
+		return errors.New("pool config: NewClient must not be nil")
+	}
+	return nil
+}
+
+// Factory constructs the suite's shared Driver over a pool of
+// (org, repo-name) slots. Driver-specific inputs (PEMs, allowlists,
+// mint URL) are read from env or computed per org; each org's mint is
+// deployed the first time a slot in it is leased. Configuration a
+// factory can check without deploying (e.g. PEMs present) fails the
+// factory, before scenarios run.
+type Factory func(pool PoolConfig) (Driver, error)
+
+// RepoLease is one leased pool slot and everything a scenario needs to
+// operate on it: the slot's org and repo, that org's installation token
+// and the forge client built from it, and the URL of the mint serving
+// the org. A scenario's World, SCM and CI drivers, mint configuration,
+// and cleanup all use this org.
+type RepoLease struct {
+	Org     string
+	Repo    string
+	Token   string
+	Client  forge.Client
+	MintURL string
+
+	// MintStatusGroup is the ORG/TEAM the mint was deployed with as
+	// --status-github-group: one pool org's mint-status team, picked
+	// once per job and shared by every mint. It need not be the lease's
+	// org. Empty when the driver does not configure status auth.
+	MintStatusGroup string
+	// MintWorkflowHostRepos is the mint's WORKFLOW_HOST_REPOS: every
+	// workflow host of the mint group serving the lease's org. Nil when
+	// the driver does not configure the mint's workflow hosts.
+	MintWorkflowHostRepos []string
+}
+
+// LeaseDriver is a Driver that leases slots across pool orgs. Callers
+// that know about it use AllocateLease and DeallocateLease, which carry
+// the slot's org; the shared pool driver returns an error from
+// AllocateRepo, since a repo name alone does not identify a slot.
+type LeaseDriver interface {
+	Driver
+
+	// AllocateLease claims a free (org, repo) slot through the slot
+	// allocator, deploys the org's mint if this is the org's first
+	// lease, and installs fullsend into the slot repo the claim created.
+	// Blocks until a slot is free or ctx is cancelled. A slot whose
+	// install fails is released before the error is returned.
+	AllocateLease(ctx context.Context) (RepoLease, error)
+
+	// DeallocateLease releases a slot returned by AllocateLease: it
+	// removes leftover per-slot state, then deletes the slot repo if it
+	// is still this lease's (another holder's repository under the same
+	// name is never deleted) and frees the slot. Errors on an unknown
+	// slot or a double release. Called after scenario cleanup and debug
+	// collection.
+	DeallocateLease(ctx context.Context, org, repo string) error
+}
+
+// LeaseVerifier is implemented by a LeaseDriver that can tell whether a
+// slot it leased is still its caller's. Scenario cleanup mutates the
+// repository and auxiliary repositories by name, and the name may
+// have been taken over by another holder (for example after GC deleted
+// a slow lessee's repo), so cleanup asks before each mutation and skips
+// it when the answer is no or cannot be determined.
+type LeaseVerifier interface {
+	// StillOwnsLease reports whether the repository currently under
+	// (org, repo) is still the one this driver's lease claimed. It
+	// changes no state. false means the repo is gone, was replaced, or
+	// the lease is not outstanding; an error means ownership could not
+	// be verified, which callers treat as not owned.
+	StillOwnsLease(ctx context.Context, org, repo string) (bool, error)
+}
 
 // Driver owns mint/environment lifecycle and test-repo allocation for
 // behaviour tests. The suite constructs exactly one Driver via a Factory
-// and threads it through World; scenarios call AllocateRepo to lease a
-// ready repo and DeallocateRepo to delete it and return the name.
-// Finalize tears down suite-scoped resources and reclaims any
-// outstanding leases.
+// and threads it through World; scenarios lease a ready repo and
+// release it after cleanup. Finalize tears down suite-scoped resources
+// and reclaims any outstanding leases.
 //
 // Implementations must be safe for concurrent use by multiple godog
 // scenarios (GODOG_CONCURRENCY > 1).
 type Driver interface {
-	// AllocateRepo leases a slot and makes that repo ready (delete and
-	// recreate if it already exists, then install). Blocks until a slot
-	// is free or ctx is cancelled. Returns the repo name only (org is
-	// fixed for the driver / World).
+	// AllocateRepo leases a repo in the driver's single org and makes it
+	// ready. Drivers that lease across orgs implement LeaseDriver and
+	// fail this call; use AllocateLease on them.
 	AllocateRepo(ctx context.Context) (repoName string, err error)
 
-	// DeallocateRepo deletes the leased repository (best-effort) and
-	// returns the name to the pool. Errors on unknown name or
-	// double-release. Called after scenario cleanup and debug
-	// collection so leftover base-repo state cannot leak to the next
-	// lessee.
+	// DeallocateRepo releases a repo returned by AllocateRepo. Errors on
+	// unknown name or double-release.
 	DeallocateRepo(ctx context.Context, repoName string) error
 
 	// Finalize always tears down suite-scoped resources (e.g. preview
@@ -66,18 +160,19 @@ type Driver interface {
 	Finalize(ctx context.Context) error
 
 	// Capacity is the max concurrent outstanding allocations (the
-	// driver's real parallelism ceiling). Suite may default concurrency
-	// to Capacity() or honor GODOG_CONCURRENCY. If concurrency exceeds
-	// Capacity(), excess workers block in AllocateRepo — the suite
-	// emits an advisory warning but does not fail.
+	// driver's real parallelism ceiling: every slot of the pool). Godog
+	// concurrency is controlled separately by GODOG_CONCURRENCY. If
+	// concurrency exceeds Capacity(), excess workers block while
+	// allocating — the suite emits an advisory warning but does not fail.
 	Capacity() int
 }
 
 // MintURLReporter is an optional Driver interface reporting the URL of
-// the mint the driver deployed or was configured with. It is separate
-// from Driver so external Driver implementations keep compiling; steps
-// that need the mint address (the CLI mint status scenarios) fail with
-// an explanatory error on a driver without it.
+// the mint the driver was configured with. It is separate from Driver
+// so external Driver implementations keep compiling. A LeaseDriver
+// reports each lease's mint in RepoLease.MintURL instead, since every
+// org has its own mint; steps that need the mint address (the CLI mint
+// status scenarios) use the lease's and fall back to this interface.
 type MintURLReporter interface {
 	// MintURL returns the suite's mint URL, or "" when none is known.
 	MintURL() string

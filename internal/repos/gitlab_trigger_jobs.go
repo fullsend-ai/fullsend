@@ -47,10 +47,14 @@ const triggerExtraWorkRemedy = "; add rules to it that reject $CI_PIPELINE_SOURC
 // allowJob must be excluded from trigger pipelines: its rules: must reject
 // them or never match them under GitLab's ordered first-match semantics. A
 // job or include that is admitted, has no rules, or cannot be evaluated
-// (extends, only/except, merge keys, aliases that do not resolve, rules
-// outside the evaluator's subset) is a problem: admission cannot be ruled
-// out. A file that does not parse yields "" because GitLab cannot create a
-// pipeline from it; the readiness checks report that separately.
+// (only/except, merge keys, aliases that do not resolve, rules outside the
+// evaluator's subset) is a problem: admission cannot be ruled out. A job's
+// extends: and the !reference tags in its rules are resolved against
+// templates in the same file (#8691); a template the file does not define,
+// or that sharedKey reports another file of the pipeline also defines, fails
+// closed (see effectiveJobAdmission). A file that does not parse yields ""
+// because GitLab cannot create a pipeline from it; the readiness checks
+// report that separately.
 //
 // The same check runs for source=pipeline (#8438): the trigger-account
 // child-pipeline route starts the agent pipeline with its CI_JOB_TOKEN, and
@@ -73,8 +77,8 @@ const triggerExtraWorkRemedy = "; add rules to it that reject $CI_PIPELINE_SOURC
 // makes agent child pipelines reachable and moves schedule ownership; the
 // webhook fast path alone does neither, so a job that only a source=pipeline
 // or source=schedule pipeline would run does not defer it.
-func triggerExtraWorkProblem(content []byte, file, defaultBranch string, agentChild bool, allowInclude func(*yaml.Node) bool, allowJob func(string) bool) string {
-	if problem := triggerExtraWorkProblemForSource(content, file, defaultBranch, "trigger", allowInclude, allowJob, nil); problem != "" {
+func triggerExtraWorkProblem(content []byte, file, defaultBranch string, agentChild bool, allowInclude func(*yaml.Node) bool, allowJob func(string) bool, sharedKey func(string) bool) string {
+	if problem := triggerExtraWorkProblemForSource(content, file, defaultBranch, "trigger", allowInclude, allowJob, nil, sharedKey); problem != "" {
 		return problem
 	}
 	if !agentChild {
@@ -83,13 +87,13 @@ func triggerExtraWorkProblem(content []byte, file, defaultBranch string, agentCh
 	pipelineInclude := func(n *yaml.Node) bool {
 		return (allowInclude != nil && allowInclude(n)) || namesAgentInclude(n)
 	}
-	if problem := triggerExtraWorkProblemForSource(content, file, defaultBranch, "pipeline", pipelineInclude, allowJob, nil); problem != "" {
+	if problem := triggerExtraWorkProblemForSource(content, file, defaultBranch, "pipeline", pipelineInclude, allowJob, nil, sharedKey); problem != "" {
 		return problem
 	}
 	scheduleInclude := func(n *yaml.Node) bool {
 		return (allowInclude != nil && allowInclude(n)) || namesPollInclude(n)
 	}
-	return triggerExtraWorkProblemForSource(content, file, defaultBranch, "schedule", scheduleInclude, allowJob, nil)
+	return triggerExtraWorkProblemForSource(content, file, defaultBranch, "schedule", scheduleInclude, allowJob, nil, sharedKey)
 }
 
 // namesAgentInclude reports whether an include item is a local include of the
@@ -152,8 +156,10 @@ var gitlabPreauthProtectedVariables = []string{
 // name before the interpolation guard rejects it. It is how the agent
 // child-pipeline scan admits the one agent job whose name interpolates the
 // stage input (fullsendAgentJobName); any other interpolated key still fails
-// closed as unevaluable.
-func triggerExtraWorkProblemForSource(content []byte, file, defaultBranch, source string, allowInclude func(*yaml.Node) bool, allowJob func(string) bool, allowJobRaw func(string) bool) string {
+// closed as unevaluable. sharedKey, when set, reports top-level names that
+// another file loaded into the same pipeline also defines; extends: and
+// !reference do not resolve through them.
+func triggerExtraWorkProblemForSource(content []byte, file, defaultBranch, source string, allowInclude func(*yaml.Node) bool, allowJob func(string) bool, allowJobRaw func(string) bool, sharedKey func(string) bool) string {
 	docs, err := decodeGitLabDocuments(content)
 	if err != nil || len(docs) == 0 || docs[len(docs)-1].Kind != yaml.DocumentNode || len(docs[len(docs)-1].Content) == 0 {
 		return ""
@@ -205,13 +211,9 @@ func triggerExtraWorkProblemForSource(content []byte, file, defaultBranch, sourc
 	admitted := func(what string) string {
 		return fmt.Sprintf("%s has %s that %s%s", file, what, alongside, remedy)
 	}
-	// excluded reports whether rules reject or never match a trigger
-	// pipeline. ok is false when that cannot be established.
-	excluded := func(holder *yaml.Node) (isExcluded, evaluable bool) {
-		rules, ok := effectiveMappingValue(holder, "rules")
-		if !ok {
-			return false, false
-		}
+	// rulesExclude reports whether rules reject or never match a trigger
+	// pipeline. evaluable is false when that cannot be established.
+	rulesExclude := func(rules *yaml.Node) (isExcluded, evaluable bool) {
 		if rules == nil {
 			return false, true
 		}
@@ -224,6 +226,14 @@ func triggerExtraWorkProblemForSource(content []byte, file, defaultBranch, sourc
 		}
 		return false, false
 	}
+	excluded := func(holder *yaml.Node) (isExcluded, evaluable bool) {
+		rules, ok := effectiveMappingValue(holder, "rules")
+		if !ok {
+			return false, false
+		}
+		return rulesExclude(rules)
+	}
+	scope := newCITemplateScope(root, sharedKey)
 	for i := 0; i+1 < len(root.Content); i += 2 {
 		name, ok := classifyTopLevelKey(root.Content[i])
 		if !ok {
@@ -279,19 +289,18 @@ func triggerExtraWorkProblemForSource(content []byte, file, defaultBranch, sourc
 			if job == nil || job.Kind != yaml.MappingNode {
 				return unevaluable(fmt.Sprintf("job %q", name))
 			}
-			if jobHasUnevaluableAdmission(job) {
-				return unevaluable(fmt.Sprintf("job %q", name))
+			adm, why := effectiveJobAdmission(job, scope)
+			if why != "" {
+				return fmt.Sprintf("%s has job %q whose %s, so its exclusion from %s cannot be established%s", file, name, why, kind, remedy)
 			}
-			isExcluded, evaluable := excluded(job)
+			isExcluded, evaluable := rulesExclude(adm.rules)
 			if !evaluable {
 				return unevaluable(fmt.Sprintf("job %q", name))
 			}
 			if !isExcluded {
-				if rules, _ := effectiveMappingValue(job, "rules"); rules == nil {
-					if when := findMappingValue(job, "when"); when != nil {
-						if w, lit := isLiteralScalarValue(when); lit && w == "never" {
-							continue
-						}
+				if adm.rules == nil && adm.when != nil {
+					if w, lit := isLiteralScalarValue(adm.when); lit && w == "never" {
+						continue
 					}
 				}
 				return admitted(fmt.Sprintf("job %q", name))
@@ -605,23 +614,40 @@ func gitlabExtraWorkProblem(ctx context.Context, client forge.Client, owner, rep
 			return "", safeAPIError("reading "+fullsendPollTemplatePath, err)
 		}
 	}
-	for _, f := range []struct {
+	files := []struct {
 		path         string
 		allowInclude func(*yaml.Node) bool
 		allowJob     func(string) bool
+		content      []byte
 	}{
-		{".gitlab-ci.yml", isFullsendPipelineInclude, nil},
-		{fullsendPipelineInclude, namesDispatcherInclude, nil},
-		{fullsendDispatcherTemplatePath, nil, func(n string) bool { return n == gitlabDispatcherJobName }},
-	} {
-		content, err := client.GetFileContent(ctx, owner, repo, f.path)
+		{".gitlab-ci.yml", isFullsendPipelineInclude, nil, nil},
+		{fullsendPipelineInclude, namesDispatcherInclude, nil, nil},
+		{fullsendDispatcherTemplatePath, nil, func(n string) bool { return n == gitlabDispatcherJobName }, nil},
+	}
+	// Every file is read before any is scanned so that extends: and
+	// !reference are not resolved through a template that another of these
+	// files also defines: GitLab deep-merges same-named keys across the files
+	// of one pipeline (#8691).
+	for i := range files {
+		content, err := client.GetFileContent(ctx, owner, repo, files[i].path)
 		if err != nil {
 			if forge.IsNotFound(err) {
 				continue
 			}
-			return "", safeAPIError("reading "+f.path, err)
+			return "", safeAPIError("reading "+files[i].path, err)
 		}
-		if problem := triggerExtraWorkProblem(content, "the committed "+f.path, defaultBranch, agentChild, f.allowInclude, f.allowJob); problem != "" {
+		if content == nil {
+			content = []byte{}
+		}
+		files[i].content = content
+	}
+	sharedKey := sharedTopLevelKeys(files[0].content, files[1].content, files[2].content, agentContent, pollContent)
+	for _, f := range files {
+		content := f.content
+		if content == nil {
+			continue
+		}
+		if problem := triggerExtraWorkProblem(content, "the committed "+f.path, defaultBranch, agentChild, f.allowInclude, f.allowJob, sharedKey); problem != "" {
 			return problem, nil
 		}
 		if f.path == fullsendDispatcherTemplatePath {
@@ -649,7 +675,7 @@ func gitlabExtraWorkProblem(ctx context.Context, client forge.Client, owner, rep
 	if agentContent != nil {
 		agentFile := "the committed " + fullsendAgentTemplatePath
 		allowAgentJob := func(n string) bool { return n == fullsendAgentJobName }
-		if problem := triggerExtraWorkProblemForSource(agentContent, agentFile, defaultBranch, "pipeline", nil, nil, allowAgentJob); problem != "" {
+		if problem := triggerExtraWorkProblemForSource(agentContent, agentFile, defaultBranch, "pipeline", nil, nil, allowAgentJob, sharedKey); problem != "" {
 			return problem, nil
 		}
 		if problem := triggerAgentExecProblem(agentContent, agentFile); problem != "" {
@@ -670,7 +696,7 @@ func gitlabExtraWorkProblem(ctx context.Context, client forge.Client, owner, rep
 	if pollContent != nil {
 		pollFile := "the committed " + fullsendPollTemplatePath
 		allowPollJob := func(n string) bool { return n == fullsendPollJobName }
-		if problem := triggerExtraWorkProblemForSource(pollContent, pollFile, defaultBranch, "schedule", nil, nil, allowPollJob); problem != "" {
+		if problem := triggerExtraWorkProblemForSource(pollContent, pollFile, defaultBranch, "schedule", nil, nil, allowPollJob, sharedKey); problem != "" {
 			return problem, nil
 		}
 		if problem := triggerPollExecProblem(pollContent, pollFile); problem != "" {

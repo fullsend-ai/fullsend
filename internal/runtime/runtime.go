@@ -85,7 +85,12 @@ type RunParams struct {
 	// (ImplicitFallbackModels) when the alias is not served.
 	FallbackModels []string
 	RepoDir        string
-	FullsendDir    string
+	// HostRepoDir is the runner-side path of the target repository, the
+	// directory uploaded into the sandbox at RepoDir. The dummy runtime's
+	// checkout_branch op runs its git remote access there, because
+	// sandboxes cannot fetch from the forge; other runtimes ignore it.
+	HostRepoDir string
+	FullsendDir string
 	// PluginDirs are the sandbox-side directories Claude Code is pointed at
 	// with --plugin-dir, one per Claude-format plugin the runner uploaded.
 	PluginDirs []string

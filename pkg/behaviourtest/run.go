@@ -8,20 +8,17 @@ import (
 	"testing"
 
 	"github.com/cucumber/godog"
-	"github.com/google/uuid"
 
 	"github.com/fullsend-ai/fullsend/internal/e2etest"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/env"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/suite"
-	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
-
-const fullsendModulePath = "github.com/fullsend-ai/fullsend"
 
 // RunSuite bootstraps and executes the behaviour test suite.
 //
-// It loads runner and e2e config from the environment, acquires a pool
-// org, selects SCM/CI/install drivers, builds the fullsend CLI from
+// It loads runner and e2e config from the environment, builds the
+// shared install driver that leases (org, repo) slots across the pool
+// orgs, selects SCM/CI drivers per leased org, builds the fullsend CLI from
 // module github.com/fullsend-ai/fullsend, and runs godog with shared
 // step registration. Callers supply only FeaturePaths and FixturesRoot;
 // tags, concurrency, and driver selection continue to come from env
@@ -45,25 +42,15 @@ func RunSuite(t *testing.T, opts SuiteOptions) {
 	e2eCfg := e2etest.LoadEnvConfig(t)
 	ctx := context.Background()
 
-	runID := uuid.New().String()
-	orgPool := orgPoolForEnvironment(cfg.Environment)
-	org, token, err := e2etest.AcquireOrg(ctx, e2eCfg, runID, orgPool, e2eCfg.LockTimeout, t.Logf)
-	if err != nil {
-		t.Fatalf("acquiring org (env=%s): %v", cfg.Environment, err)
-	}
-	client := e2etest.NewLiveClient(token)
-	t.Cleanup(func() {
-		e2etest.ReleaseLock(context.Background(), client, org, runID, t)
-	})
-
 	// Build from the fullsend module, not the caller's module root, so
 	// external consumers (fullsend-ai/agents) get this repo's cmd/fullsend.
 	binary := e2etest.BuildModuleBinary(t, fullsendModulePath)
 
-	e2etest.CleanupStaleResources(ctx, client, token, org, t)
-
-	driverFactory := installFactoryFor(cfg.Environment)
-	driver, err := driverFactory(org, client, token, binary, e2eCfg.GCPProjectID, t.Logf)
+	// The shared install driver leases (org, repo) slots across the pool
+	// orgs; there is no exclusive org lock and no broad startup cleanup.
+	// Abandoned slot repos are reclaimed by the allocator's GC.
+	pool := poolConfigFor(cfg.Environment, e2eCfg, binary, t.Logf)
+	driver, err := installFactoryFor(cfg.Environment)(pool)
 	if err != nil {
 		t.Fatalf("creating install driver (env=%s): %v", cfg.Environment, err)
 	}
@@ -77,35 +64,16 @@ func RunSuite(t *testing.T, opts SuiteOptions) {
 		}
 	})
 
-	concurrency, overCapacity, err := resolveConcurrency(os.Getenv("GODOG_CONCURRENCY"), driver.Capacity())
+	concurrency, overCapacity, err := resolveConcurrency(os.Getenv("GODOG_CONCURRENCY"), pool.Layout.SlotsPerOrg, driver.Capacity())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if overCapacity {
-		t.Logf("WARNING: GODOG_CONCURRENCY=%d exceeds driver capacity %d; excess workers will block in AllocateRepo", concurrency, driver.Capacity())
+		t.Logf("WARNING: GODOG_CONCURRENCY=%d exceeds driver capacity %d; excess workers will block while allocating", concurrency, driver.Capacity())
 	}
+	t.Logf("leasing repo slots across %d org(s) %v (%d slot(s)), godog concurrency %d", pool.Layout.OrgCount, pool.Layout.Orgs(), driver.Capacity(), concurrency)
 
-	scmDriver, err := newSCMDriver(cfg.SCM, client)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ciDriver, err := newCIDriver(cfg.CI, client, token)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	template := &world.World{
-		Config:       cfg,
-		SCM:          scmDriver,
-		CI:           ciDriver,
-		Driver:       driver,
-		Org:          org,
-		Token:        token,
-		Logf:         t.Logf,
-		FixturesRoot: opts.FixturesRoot,
-		RepoOwner:    org,
-		CLIBinary:    binary,
-	}
+	template := newTemplateWorld(t, ctx, cfg, pool, driver, opts)
 
 	if outsiderPAT := os.Getenv("TEST_ACTOR_OUTSIDER_PAT"); outsiderPAT != "" {
 		outsiderClient := e2etest.NewLiveClient(outsiderPAT)

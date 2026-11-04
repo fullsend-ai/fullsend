@@ -299,9 +299,41 @@ func TestGivenRepositoryAgentSettings_WritesEntriesAndSnapshotsAgents(t *testing
 	assert.Equal(t, config.AgentEntry{Name: "triage", Runtime: "claude"}, triage, "built-ins get a name-only entry")
 }
 
+func TestGivenRepositoryAgentSettings_Trigger(t *testing.T) {
+	t.Parallel()
+	scmDriver := &recordingSCM{fakeCleanupSCM: fakeCleanupSCM{fileContent: []byte(perRepoDummyConfig)}}
+	w := &world.World{Org: "org", RepoOwner: "org", RepoName: "repo", SCM: scmDriver}
+
+	require.NoError(t, givenRepositoryAgentSettings(w, "review:\n  trigger: event.transition.kind == \"comment_added\"\n"))
+	written, err := config.ParsePerRepoConfig(scmDriver.lastContent)
+	require.NoError(t, err)
+	review, ok := config.AgentSettingsFor(written.AgentEntries(), "review")
+	require.True(t, ok)
+	assert.Equal(t, config.AgentEntry{Name: "review", Trigger: `event.transition.kind == "comment_added"`}, review)
+}
+
+func TestGivenRepositoryAgentSettings_Subagents(t *testing.T) {
+	t.Parallel()
+	existing := perRepoDummyConfig + "agents:\n  - name: review\n    subagents:\n      style: sonnet\n"
+	scmDriver := &recordingSCM{fakeCleanupSCM: fakeCleanupSCM{fileContent: []byte(existing)}}
+	w := &world.World{Org: "org", RepoOwner: "org", RepoName: "repo", SCM: scmDriver}
+
+	require.NoError(t, givenRepositoryAgentSettings(w, "triage:\n  runtime: pi\n  subagents:\n    correctness: haiku\nreview:\n  model: haiku\n"))
+	written, err := config.ParsePerRepoConfig(scmDriver.lastContent)
+	require.NoError(t, err)
+	pi, ok := config.AgentSettingsFor(written.AgentEntries(), "triage")
+	require.True(t, ok)
+	require.Contains(t, pi.Subagents, "correctness")
+	assert.Equal(t, "haiku", *pi.Subagents["correctness"])
+	review, ok := config.AgentSettingsFor(written.AgentEntries(), "review")
+	require.True(t, ok)
+	require.Contains(t, review.Subagents, "style", "subagents not given are kept")
+	assert.Equal(t, "sonnet", *review.Subagents["style"])
+}
+
 func TestGivenRepositoryAgentSettings_RejectsWhatTheRunnerWouldReject(t *testing.T) {
 	t.Parallel()
-	for _, doc := range []string{"coder:\n  runtime: dummy\n", "triage:\n  runtime: nonexistent\n", "triage:\n  effort: turbo\n", ""} {
+	for _, doc := range []string{"coder:\n  runtime: dummy\n", "triage:\n  runtime: nonexistent\n", "triage:\n  effort: turbo\n", "review:\n  trigger: event.x ==\n", ""} {
 		scmDriver := &recordingSCM{fakeCleanupSCM: fakeCleanupSCM{fileContent: []byte(perRepoDummyConfig)}}
 		w := &world.World{Org: "org", RepoOwner: "org", RepoName: "repo", SCM: scmDriver}
 		err := givenRepositoryAgentSettings(w, doc)

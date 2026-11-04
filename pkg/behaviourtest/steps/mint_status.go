@@ -120,7 +120,7 @@ const (
 
 func registerMintStatusSteps(sc *godog.ScenarioContext) {
 	sc.Step(mintStatusAddressStep, func(ctx context.Context, address string) (context.Context, error) {
-		return ctx, givenMintStatusAddress(world.FromContext(ctx), address)
+		return ctx, givenMintStatusAddress(ctx, world.FromContext(ctx), address)
 	})
 	sc.Step(mintStatusRunStep, func(ctx context.Context, credential string) (context.Context, error) {
 		return ctx, whenOperatorRunsMintStatus(ctx, world.FromContext(ctx), credential)
@@ -149,9 +149,26 @@ func mintStatusFailure(class, format string, args ...any) error {
 	return &mintStatusError{Class: class, Msg: fmt.Sprintf(format, args...)}
 }
 
-// suiteMintURL returns the URL of the mint the suite's install driver
-// deployed or was configured with.
-func suiteMintURL(w *world.World) (string, error) {
+// suiteMintURL returns the URL of the mint serving the leased repo's org
+// (World.MintURL, from the lease), or else the mint the suite's install
+// driver was configured with.
+func suiteMintURL(ctx context.Context, w *world.World) (string, error) {
+	if u := strings.TrimSpace(w.MintURL); u != "" {
+		return u, nil
+	}
+	// Every pool org is served by its mint group's mint, deployed with
+	// the slot lease. A scenario that has not leased yet leases a slot
+	// here, so the mint it queries is the leased org's, and the lease
+	// records the mint's status group and workflow hosts in the World.
+	if _, ok := w.Driver.(install.LeaseDriver); ok && w.LeasedRepoName == "" {
+		if err := givenEnrolledTestRepository(ctx, w); err != nil {
+			return "", mintStatusFailure(mintStatusClassDeployment,
+				"suite mint address unknown: leasing a pool slot for its org's mint: %v", err)
+		}
+		if u := strings.TrimSpace(w.MintURL); u != "" {
+			return u, nil
+		}
+	}
 	reporter, ok := w.Driver.(install.MintURLReporter)
 	if !ok {
 		return "", mintStatusFailure(mintStatusClassDeployment,
@@ -167,11 +184,11 @@ func suiteMintURL(w *world.World) (string, error) {
 
 // givenMintStatusAddress records the mint address the operator will
 // pass as --mint-url.
-func givenMintStatusAddress(w *world.World, address string) error {
+func givenMintStatusAddress(ctx context.Context, w *world.World, address string) error {
 	var mintURL string
 	switch address {
 	case mintStatusAddressSuite, mintStatusAddressNonMint:
-		u, err := suiteMintURL(w)
+		u, err := suiteMintURL(ctx, w)
 		if err != nil {
 			return err
 		}
@@ -350,7 +367,10 @@ func mintStatusFailureDetail(w *world.World, ms *world.MintStatus, outcome strin
 		fmt.Fprintf(&b, "fullsend mint status --mint-url %s exited %d", ms.MintURL, ms.ExitCode)
 	}
 	if outcome == mintStatusClassAuthentication && ms.Credential == mintStatusCredentialWrite {
-		group := w.Org + "/" + install.MintStatusTeamSlug
+		group := w.MintStatusGroup
+		if group == "" {
+			group = "the mint's status group (ORG/" + install.MintStatusTeamSlug + ")"
+		}
 		login := w.WriteLogin
 		if login == "" {
 			login = "the write actor"
@@ -463,8 +483,12 @@ func parseMintStatusOutput(output string) mintStatusReport {
 }
 
 // mintStatusFacts checks a status report against what the suite's
-// mint must report to the write actor. It returns every mismatch.
-func mintStatusFacts(r mintStatusReport, mintURL, org string) []string {
+// mint must report to the write actor. ownHost is the scenario's own
+// workflow host (ORG/REPO), which must be reported. wantHosts is the
+// mint's configured WORKFLOW_HOST_REPOS (every org of its mint group);
+// the report must list exactly those. With no wantHosts, every
+// reported host must be in ownHost's org. It returns every mismatch.
+func mintStatusFacts(r mintStatusReport, mintURL, ownHost string, wantHosts []string) []string {
 	var problems []string
 	if r.AuthMethod != mintStatusAuthMethod {
 		problems = append(problems, fmt.Sprintf("authenticated via %q, want %q (GitHub user token)", r.AuthMethod, mintStatusAuthMethod))
@@ -491,22 +515,48 @@ func mintStatusFacts(r mintStatusReport, mintURL, org string) []string {
 			problems = append(problems, fmt.Sprintf("role %q not reported", role))
 		}
 	}
-	orgPrefix := strings.ToLower(org) + "/"
-	poolRepo := orgPrefix + "test-repo-01"
-	foundPoolRepo := false
+	own := strings.ToLower(ownHost)
+	reported := make(map[string]bool, len(r.WorkflowHostRepos))
 	for _, repo := range r.WorkflowHostRepos {
-		lower := strings.ToLower(repo)
-		if !strings.HasPrefix(lower, orgPrefix) {
-			problems = append(problems, fmt.Sprintf("workflow host repo %q is outside org %s", repo, org))
+		reported[strings.ToLower(repo)] = true
+	}
+	if len(wantHosts) > 0 {
+		want := make(map[string]bool, len(wantHosts))
+		for _, repo := range wantHosts {
+			want[strings.ToLower(repo)] = true
 		}
-		if lower == poolRepo {
-			foundPoolRepo = true
+		for _, repo := range r.WorkflowHostRepos {
+			if !want[strings.ToLower(repo)] {
+				problems = append(problems, fmt.Sprintf("workflow host repo %q is not a workflow host of the mint's group", repo))
+			}
+		}
+		for _, repo := range wantHosts {
+			if !reported[strings.ToLower(repo)] {
+				problems = append(problems, fmt.Sprintf("workflow host repo %q of the mint's group not reported", repo))
+			}
+		}
+	} else {
+		org, _, _ := strings.Cut(own, "/")
+		for _, repo := range r.WorkflowHostRepos {
+			if !strings.HasPrefix(strings.ToLower(repo), org+"/") {
+				problems = append(problems, fmt.Sprintf("workflow host repo %q is outside org %s", repo, org))
+			}
 		}
 	}
-	if !foundPoolRepo {
-		problems = append(problems, fmt.Sprintf("workflow host repos %v do not include %s", r.WorkflowHostRepos, poolRepo))
+	if !reported[own] {
+		problems = append(problems, fmt.Sprintf("workflow host repos %v do not include %s", r.WorkflowHostRepos, ownHost))
 	}
 	return problems
+}
+
+// mintStatusOwnHost is the scenario's own workflow host: its leased
+// repository, or its org's first pool repository when it leased none.
+func mintStatusOwnHost(w *world.World) string {
+	repo := w.LeasedRepoName
+	if repo == "" {
+		repo = install.PoolSlotName(1)
+	}
+	return w.Org + "/" + repo
 }
 
 // thenMintStatusReportsFacts checks the successful run's output for
@@ -520,7 +570,7 @@ func thenMintStatusReportsFacts(w *world.World) error {
 	if got := classifyMintStatus(ms); got != mintStatusOutcomeOK {
 		return mintStatusFailure(got, "%s", mintStatusFailureDetail(w, ms, got))
 	}
-	problems := mintStatusFacts(parseMintStatusOutput(ms.Output), ms.MintURL, w.Org)
+	problems := mintStatusFacts(parseMintStatusOutput(ms.Output), ms.MintURL, mintStatusOwnHost(w), w.MintWorkflowHostRepos)
 	if len(problems) > 0 {
 		return mintStatusFailure(mintStatusClassAssertion, "mint status facts:\n  %s\n%s",
 			strings.Join(problems, "\n  "), ms.Output)

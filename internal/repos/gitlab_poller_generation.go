@@ -659,6 +659,19 @@ func (g *pollerGenerationRun) revokeTrigger(id int64) error {
 	return nil
 }
 
+// pollerTriggerRequestUnknown reports whether an interrupted generation's
+// single trigger-create request may have been sent, so recovery quarantines it
+// instead of resuming.
+func pollerTriggerRequestUnknown(p PendingPollerGeneration) bool {
+	return p.TriggerAttempted || p.Phase == PollerPhaseTriggerRequested
+}
+
+// pollerTriggerUnknownReason is the quarantine reason for a generation whose
+// trigger creation request has an unknown result.
+func pollerTriggerUnknownReason(userID int64) string {
+	return fmt.Sprintf("its single pipeline trigger creation request has an unknown result and is never retried; delete any %q pipeline trigger owned by user ID %d, remove the account, then %s", GitLabWebhookTriggerDescription, userID, pollerClearPendingAction)
+}
+
 // recoverInterrupted returns a generation left elevated by an interrupted run
 // to Developer. A generation that never sent its trigger request resumes;
 // one whose request may be in flight is quarantined.
@@ -669,8 +682,8 @@ func (g *pollerGenerationRun) recoverInterrupted() (res PollerHandoffResult, sto
 		return res, true, errors.Join(fmt.Errorf("recovering the replacement GitLab Poller generation (user ID %d): %w", p.UserID, demoteErr), writeErr)
 	}
 	g.details = append(g.details, fmt.Sprintf("Returned the interrupted replacement GitLab Poller generation (user ID %d) to verified Developer access", p.UserID))
-	if p.TriggerAttempted || p.Phase == PollerPhaseTriggerRequested {
-		res, err := g.quarantine(fmt.Sprintf("its single pipeline trigger creation request has an unknown result and is never retried; delete any %q pipeline trigger owned by user ID %d, remove the account, then %s", GitLabWebhookTriggerDescription, p.UserID, pollerClearPendingAction))
+	if pollerTriggerRequestUnknown(p) {
+		res, err := g.quarantine(pollerTriggerUnknownReason(p.UserID))
 		return res, true, err
 	}
 	p.Phase = PollerPhaseAccountRecorded

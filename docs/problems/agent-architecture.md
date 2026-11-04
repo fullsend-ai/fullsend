@@ -149,6 +149,17 @@ The repository's existing infrastructure provides all the coordination needed:
   harness predicates should be evaluated. Each predicate can inspect the
   resolved entity and an optional prompting event
   ([ADR 0098](../ADRs/0098-entity-first-harness-evaluation.md)).
+  [ADR 0147](../ADRs/0147-evaluate-entity-cel-over-selectively-acquired-data.md)
+  lets those checks acquire entity data progressively when the result is not
+  yet known. [ADR 0148](../ADRs/0148-reuse-verified-actor-roles-for-entity-cel.md)
+  permits bounded sharing of verified actor roles between those checks.
+  [ADR 0151](../ADRs/0151-harness-human-role-minimums.md) sets a platform
+  `triage` floor and a configurable `human_min_role` for each harness. The
+  platform applies that minimum before evaluating the harness's CEL predicate.
+  [ADR 0149](../ADRs/0149-coalesce-entity-source-discovery-queries.md)
+  combines source queries into one logical candidate search and routes each
+  possible result locally. A bound run rechecks source-query membership,
+  including when an event supplies the candidate.
 
 No agent orchestrates other agents. Each agent independently observes the state of the PR and acts according to its role:
 
@@ -218,7 +229,7 @@ The multi-agent framework space is expanding rapidly, with new entries appearing
 ## Open questions
 
 - Should agents be stateless (fresh context per task) or stateful (accumulated knowledge of the codebase)? Stateless is safer (no poisoned state persists) but less efficient.
-- Should there be one instance of each agent type per repo, per org, or shared? Per-repo is simpler but more expensive. Shared agents need careful isolation. If a centrally managed service is offered, its per-tenant repository configuration will use the existing `repos.yaml` v1 format; source of truth, execution topology, and isolation remain open ([ADR 0123](../ADRs/0123-tenant-configuration-from-repos-yaml.md); infrastructure constrains this — see [agent-infrastructure.md](agent-infrastructure.md).)
+- Should there be one instance of each agent type per repo, per org, or shared? Per-repo is simpler but more expensive. Shared agents need careful isolation. [ADR 0106](../ADRs/0106-serialize-agent-runs-and-coalesce-subsequent-events.md) fixes the per-harness, repository, and entity serialization scope; [ADR 0144](../ADRs/0144-reuse-poll-and-entity-bound-run-processes.md) permits a bound process to remain resident. If a centrally managed service is offered, its per-tenant repository configuration will use the existing `repos.yaml` v1 format; source of truth, execution topology, and isolation remain open ([ADR 0123](../ADRs/0123-tenant-configuration-from-repos-yaml.md); infrastructure constrains this — see [agent-infrastructure.md](agent-infrastructure.md).)
 - ~~What's the right model for agent identity? Agents need GitHub accounts to post comments and status checks. Separate bot accounts per agent role? A single bot account with role indicated in the comment? GitHub App installations?~~ Decided in [ADR 0007](../ADRs/0007-per-role-github-apps.md): per-role GitHub Apps with manifest-based creation.
 - How do we test the interaction model? Can we simulate adversarial scenarios (injection attempts, unauthorized changes, agent disagreements) in a sandbox repo?
 - How does the two-phase review model work in practice? Does the code agent run all six sub-agents locally, or a subset? Is the pre-PR review a lighter version? (Depends on [agent-infrastructure.md](agent-infrastructure.md) — what compute is available where.)

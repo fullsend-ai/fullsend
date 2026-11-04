@@ -88,9 +88,9 @@ func TestBuildRunCommand_HooksGuardPlacement(t *testing.T) {
 	envSource := envDataLoad(sandbox.SandboxWorkspace+"/.env", claudeBinaryVar, claudeNodeVar, claudeGatewayPlaceholderVar)
 	launch := cliLaunch(claudeBinaryVar, claudeNodeVar)
 
-	t.Run("hooks disabled leaves the launch unchanged", func(t *testing.T) {
+	t.Run("hooks disabled adds no guard", func(t *testing.T) {
 		cmd := buildRunCommand(RunParams{AgentBaseName: "agent", RepoDir: "/repo"})
-		assert.True(t, strings.HasPrefix(cmd, "cd '/repo' && "+claudeBinaryPin()+" && "+envSource+" && unset -f claude && "+claudeLoaderEnvUnset+" && "+claudeSettingsEnvUnset+" && "+launch+" --print"), cmd)
+		assert.True(t, strings.HasPrefix(cmd, "cd '/repo' && "+claudeBinaryPin()+" && "+envSource+" && unset -f claude && "+claudeLoaderEnvUnset+" && "+claudeSettingsEnvUnset+" && export "+claudeNonessentialTrafficEnv+"=1 && "+launch+" --print"), cmd)
 		assert.NotContains(t, cmd, "sha256sum")
 	})
 
@@ -104,7 +104,7 @@ func TestBuildRunCommand_HooksGuardPlacement(t *testing.T) {
 		guard := claudeHooksGuard(d, true)
 		want := "cd '/repo' && " + claudeBinaryPin() + " && " + guard + " && " + envSource +
 			" && unset -f claude test [ command cut wc sha256sum find echo && " + claudeLoaderEnvUnset +
-			" && " + claudeSettingsEnvUnset + " && " + guard + " && " + hookEnvExports(nil) + " && " + launch + " --print"
+			" && " + claudeSettingsEnvUnset + " && " + guard + " && " + hookEnvExports(nil) + " && export " + claudeNonessentialTrafficEnv + "=1 && " + launch + " --print"
 		assert.True(t, strings.HasPrefix(cmd, want), cmd)
 		assert.Greater(t, strings.Index(cmd, "unset LD_PRELOAD"), strings.Index(cmd, envSource),
 			"the LD_* unset must come after .env is sourced")

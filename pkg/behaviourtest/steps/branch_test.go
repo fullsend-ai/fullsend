@@ -176,6 +176,33 @@ func TestBranchTipRecordedAndUnchanged(t *testing.T) {
 	assert.Contains(t, err.Error(), "moved")
 }
 
+func TestBranchTipRecordedAndAdvanced(t *testing.T) {
+	scmDriver := &fakeBranchSCM{branchSHAs: map[string]string{"agent/42-impl": "abc123"}}
+	w := branchTestWorld(scmDriver)
+	w.IssueNumber = 42
+
+	require.NoError(t, givenBranchTipRecorded(w, "agent/<issue>-impl"))
+	err := thenBranchAdvanced(w, "agent/<issue>-impl")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "has not advanced")
+
+	scmDriver.branchSHAs["agent/42-impl"] = "def456"
+	require.NoError(t, thenBranchAdvanced(w, "agent/<issue>-impl"))
+}
+
+func TestThenBranchAdvanced_Errors(t *testing.T) {
+	err := thenBranchAdvanced(&world.World{SCM: &fakeBranchSCM{}}, "branch-a")
+	require.ErrorContains(t, err, "no repo configured")
+
+	err = thenBranchAdvanced(branchTestWorld(&fakeBranchSCM{}), "never-recorded")
+	require.ErrorContains(t, err, "never recorded")
+
+	w := branchTestWorld(&fakeBranchSCM{})
+	w.RecordedBranchSHAs = map[string]string{"deleted": "abc123"}
+	err = thenBranchAdvanced(w, "deleted")
+	require.ErrorContains(t, err, "re-checking tip of deleted")
+}
+
 func TestThenBranchUnchanged_NotRecorded(t *testing.T) {
 	w := branchTestWorld(&fakeBranchSCM{})
 	err := thenBranchUnchanged(w, "never-recorded")
@@ -191,7 +218,9 @@ func TestThenPullRequestHeadBranchMatches(t *testing.T) {
 	w := branchTestWorld(scmDriver)
 	w.IssueNumber = 42
 
+	w.PRNumber = 1 // a decoy PR opened earlier in the scenario
 	require.NoError(t, thenPullRequestHeadBranchMatches(w, `agent/<issue>-.*`))
+	assert.Equal(t, 2, w.PRNumber, "the matched PR becomes the scenario's pull request")
 	assert.Equal(t, []int{2}, w.CreatedPRNumbers, "matched PR is tracked for cleanup")
 	assert.Equal(t, []string{"agent/42-99999-decoy"}, w.CreatedBranches)
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -16,10 +17,11 @@ import (
 // Ownership compatibility gate (#8242, O3). The writer emits rotation state
 // carrying ownership fields that CLIs built with the tolerant reader (#8233)
 // accept at version 1 but do not apply when selecting outgoing tokens or
-// running grace cleanup. These tests run the older reader against a document
-// this binary wrote and prove it never selects, schedules or revokes the
-// administrator-supplied credential, and never rewrites the document. Decoding
-// success is not counted as compatibility; the rotation itself is exercised.
+// running grace cleanup, so the writer marks it version 2. Since #8246 this
+// binary reads only version 2: these tests prove that a legacy (unversioned
+// or version 1) document is refused before rotation selects, schedules or
+// revokes the administrator-supplied credential, and is never rewritten.
+// Decoding failure alone is not counted; the rotation itself is exercised.
 
 const (
 	versionGateSuppliedOwner = 501
@@ -71,18 +73,24 @@ func suppliedOutgoing(now time.Time) rotationRoleState {
 	return rs
 }
 
-// withOlderReader runs fn with the reader of a CLI that predates the version 2
-// writer: one that accepts rotation-state versions up to 1. It must not run in
-// parallel with tests that read rotation state.
-func withOlderReader(t *testing.T, fn func()) {
+// legacyStateFixture is versionGateFixture with the role entry stored raw in a
+// legacy format: unversioned when version is 0, otherwise behind that version
+// marker.
+func legacyStateFixture(t *testing.T, now time.Time, rs rotationRoleState, version int) (*forge.FakeClient, *fakeTokens, string) {
 	t.Helper()
-	saved := maxReadableRotationStateVersion
-	maxReadableRotationStateVersion = 1
-	defer func() { maxReadableRotationStateVersion = saved }()
-	fn()
+	fc, tokens, _ := versionGateFixture(t, now, rs)
+	roles := map[string]rotationRoleState{string(gitlabroles.RoleCoder): rs}
+	var doc any = rotationStateFile{Roles: roles}
+	if version != 0 {
+		doc = rotationStateEnvelope{Version: version, Roles: roles}
+	}
+	raw, err := json.Marshal(doc)
+	require.NoError(t, err)
+	fc.VariableValues["group/project/"+forge.VarGitLabRoleRotation] = string(raw)
+	return fc, tokens, string(raw)
 }
 
-func assertOlderReaderRefused(t *testing.T, result RoleRotateResult, err error, fc *forge.FakeClient, tokens *fakeTokens, raw string) {
+func assertLegacyStateRefused(t *testing.T, result RoleRotateResult, err error, fc *forge.FakeClient, tokens *fakeTokens, raw string) {
 	t.Helper()
 	require.NoError(t, err)
 	require.Len(t, result.Failed, 1)
@@ -90,35 +98,33 @@ func assertOlderReaderRefused(t *testing.T, result RoleRotateResult, err error, 
 	assert.Equal(t, "reading rotation state failed", result.Failed[0].Reason)
 	assert.Empty(t, result.Rotated)
 	assert.Empty(t, result.Cleaned)
-	assert.Empty(t, tokens.created, "an older CLI must not mint a replacement for the supplied credential")
-	assert.NotContains(t, tokens.revoked, versionGateSuppliedToken, "an older CLI must never revoke the supplied PAT")
+	assert.Empty(t, tokens.created, "a refused document must not lead to a replacement for the supplied credential")
+	assert.NotContains(t, tokens.revoked, versionGateSuppliedToken, "a refused document must never lead to revoking the supplied PAT")
 	assert.Empty(t, tokens.revoked)
 	assert.Equal(t, raw, fc.VariableValues["group/project/"+forge.VarGitLabRoleRotation],
-		"an older CLI must not rewrite the document, and so cannot drop its version marker")
+		"a refused document must not be rewritten")
 }
 
-func TestRotationStateVersionGate_OlderReaderForcedSelectionLeavesSuppliedPAT(t *testing.T) {
+func TestRotationStateVersionGate_LegacyStateRefusedWithoutMutation(t *testing.T) {
 	now := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
-	fc, tokens, raw := versionGateFixture(t, now, suppliedEnrollment(now))
-	withOlderReader(t, func() {
-		result, err := RotateGitLabRoleCredentials(context.Background(), RoleRotateConfig{
-			Owner: "group", Repo: "project", Client: fc, Tokens: tokens,
-			Roles: []gitlabroles.Role{gitlabroles.RoleCoder}, Force: true, Now: now,
+	for _, version := range []int{0, 1} {
+		t.Run(fmt.Sprintf("version %d forced selection", version), func(t *testing.T) {
+			fc, tokens, raw := legacyStateFixture(t, now, suppliedEnrollment(now), version)
+			result, err := RotateGitLabRoleCredentials(context.Background(), RoleRotateConfig{
+				Owner: "group", Repo: "project", Client: fc, Tokens: tokens,
+				Roles: []gitlabroles.Role{gitlabroles.RoleCoder}, Force: true, Now: now,
+			})
+			assertLegacyStateRefused(t, result, err, fc, tokens, raw)
 		})
-		assertOlderReaderRefused(t, result, err, fc, tokens, raw)
-	})
-}
-
-func TestRotationStateVersionGate_OlderReaderGraceCleanupLeavesSuppliedPAT(t *testing.T) {
-	now := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
-	fc, tokens, raw := versionGateFixture(t, now, suppliedOutgoing(now))
-	withOlderReader(t, func() {
-		result, err := RotateGitLabRoleCredentials(context.Background(), RoleRotateConfig{
-			Owner: "group", Repo: "project", Client: fc, Tokens: tokens,
-			Roles: []gitlabroles.Role{gitlabroles.RoleCoder}, Now: now,
+		t.Run(fmt.Sprintf("version %d grace cleanup", version), func(t *testing.T) {
+			fc, tokens, raw := legacyStateFixture(t, now, suppliedOutgoing(now), version)
+			result, err := RotateGitLabRoleCredentials(context.Background(), RoleRotateConfig{
+				Owner: "group", Repo: "project", Client: fc, Tokens: tokens,
+				Roles: []gitlabroles.Role{gitlabroles.RoleCoder}, Now: now,
+			})
+			assertLegacyStateRefused(t, result, err, fc, tokens, raw)
 		})
-		assertOlderReaderRefused(t, result, err, fc, tokens, raw)
-	})
+	}
 }
 
 // CLIs that predate the tolerant reader decode rotation state strictly into
