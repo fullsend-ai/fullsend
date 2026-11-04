@@ -43,10 +43,9 @@ widening what the sandbox may fetch past the repository's configuration.
 
 ## Options
 
-**Keep the fetch fields out of overlays:** an exception to ADR 0112's "any
-field", and a harness needing fetch for some runs composes a second one. **Let
-a matching overlay set them, bounded by the config-level allowlist** (chosen):
-the grant is per context, and the configuration still bounds it.
+**Keep the fetch fields out of overlays** (an exception to ADR 0112's "any
+field"; fetch for some runs needs a second harness), or **let a matching
+overlay set them within the config-level allowlist** (chosen).
 
 ## Decision
 
@@ -55,21 +54,22 @@ allowlist, so that fetch can be turned on per context.
 
 A matching overlay applies `allowed_remote_resources` (appended to the
 top-level list), `allow_runtime_fetch` (turned on) and `max_runtime_fetches`
-(replaced, within ADR 0024's range), and validation's cross-field rules apply
-to the merged harness. They are guarded fields under ADR 0112 Decision 2, and
-overlay fields only: a `forge:` block cannot set them.
+(replaced, so raised or lowered within ADR 0024's range). Matching overlays
+apply in file order, so the last cap set wins. They are guarded (ADR 0112
+Decision 2) and overlay-only: a `forge:` block cannot set them.
 
 Every prefix an overlay adds must pass the same prefix test against the
-config-level list, or the harness fails to load, naming the overlay's index
-and the entry. The check runs on every overlay entry, matching or not, and
-whether or not the harness has URL references, so that `lint`, and `lock` when
-it composes the harness, check without an event what any run could apply. The
-config-level list is the one each command resolves; an explicit empty list
-admits no overlay prefix.
-
-A base's overlays resolve inside the base before the merge, so the fetch
-fields they set do not reach the child. Their entries are still checked when
-the base loads, since a base's overlays are validated like any harness's.
+config-level list, and no overlay may set `allow_runtime_fetch: false` or an
+empty `allowed_remote_resources` (it would turn nothing off); either fails the
+load, naming the overlay's index. Both checks run on every overlay entry,
+matching or not, with or without URL references, so that `lint`, and `lock`
+when it composes the harness, check without an event what any run could apply.
+When a matching overlay sets `allow_runtime_fetch`, every prefix of the
+composed harness's merged list, top level included, must also pass on the same
+terms, or the load fails. The config-level list is the one each command
+resolves; an explicit empty list admits no overlay prefix. A base's overlays
+resolve inside the base, so their fetch fields never reach the child, yet their
+entries get the per-entry checks when the base loads.
 
 ## Forge scope
 
@@ -80,10 +80,11 @@ runtime fetch service fetches only GitHub-hosted URLs today, on any forge.
 
 - A harness with no top-level list can turn on runtime fetch for one
   context, such as one forge, without turning it on everywhere.
-- An overlay cannot turn fetch off or remove a prefix.
 - A harness whose overlay grants a prefix outside the config-level list, inert
-  before, now fails to load in `run`, `lint`, `lock` and dispatch, even when
-  that overlay is for another forge's runs.
-- This ADR bounds what an overlay adds, not a harness's top-level list, which
-  is still checked only by `run`, `lint` and `lock` when the harness has URL
-  references; closing that gap is separate work.
+  before, now fails to load in `run`, `lint`, `lock` and dispatch, even for
+  another forge's overlay or a base's.
+- An overlay's merged-list or cross-field failure shows only where it matches:
+  everywhere if keyed on `config`; in a run, and in `lint` or `lock` given the
+  forge, if on `runtime.forge`; otherwise only in a run.
+- Unless a matching overlay sets `allow_runtime_fetch`, a top-level list keeps
+  today's checks (`run`, `lint`, `lock`, with URL references): separate work.
