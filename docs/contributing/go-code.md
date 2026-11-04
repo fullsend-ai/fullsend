@@ -692,7 +692,7 @@ cleaned up — `gitlabRetiredLegacyVars` and the `forge.VarLegacy*` names.
 Two omissions are also deliberate and documented where they are defined:
 `gitlabUninstallVars` excludes the legacy shared forge token, and
 `gitlabUninstallSecrets` excludes the unprefixed `OPENAI_API_KEY`, which
-jobs unrelated to Fullsend in the same project may depend on.
+jobs unrelated to fullsend in the same project may depend on.
 
 `TestInstallUninstallVariableParity` and
 `TestInstallUninstallSecretParity`

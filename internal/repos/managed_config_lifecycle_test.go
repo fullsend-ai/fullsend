@@ -1309,7 +1309,7 @@ func TestExistingOverlayInvalidValues(t *testing.T) {
 			err = checkEstablishedOverlayGate(context.Background(), cfg, desired)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "invalid runtime")
-			assert.Error(t, validateExistingOverlay([]byte(body)))
+			assert.Error(t, validateExistingOverlay([]byte(body), ForgeGitHub))
 		})
 	}
 }

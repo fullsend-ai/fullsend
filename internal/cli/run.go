@@ -1931,6 +1931,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if attrs := harnessIdentityAttrs(harnessPath, composeOpts.SourceURL); len(attrs) > 0 {
 		rootSpan.SetAttributes(attrs...)
 	}
+	if attrs := forgePointerAttrs(eventMap, forgePlatform, sOpts.runURL, os.Getenv); len(attrs) > 0 {
+		rootSpan.SetAttributes(attrs...)
+	}
 
 	// validationPassed is declared before both defer closures that guard on
 	// it: the telemetry defer keys the root span's status on it (validation,
