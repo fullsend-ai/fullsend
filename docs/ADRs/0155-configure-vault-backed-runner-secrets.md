@@ -23,9 +23,13 @@ Accepted
 Fullsend reads selected long-lived credentials in the runner process, including
 Jira credentials, OTLP collector headers, and the optional GitHub bundle for
 host-side scripts. Today these values come from forge-native secrets or
-variables, or from the local process environment. [ADR 0136](0136-runner-secrets-through-one-stored-secret.md)
-records the GitHub bundle and anticipates an external secret manager accessed
-with the job's OIDC identity.
+variables, or from the local process environment.
+Jira runner-secret examples appear in
+[ADR 0024](0024-harness-definitions.md). The OpenTelemetry configuration is
+recorded in [ADR 0050](0050-distributed-tracing-instrumentation.md).
+[ADR 0136](0136-runner-secrets-through-one-stored-secret.md) records the GitHub
+bundle and anticipates an external secret manager accessed with the job's OIDC
+identity.
 
 Copying a long-lived value into each repository's forge secret store is
 unnecessary when the organization already operates a central secret manager.
@@ -73,8 +77,8 @@ secrets:
   JIRA_TOKEN:
     connection: vault
     vault_secrets:
-      - kv/data/fullsend/{{repo.owner}}/{{repo.name}}/jira
-      - kv/data/fullsend/{{repo.owner}}/shared/jira
+      - kv/data/fullsend/repositories/{{repo.host}}/{{repo.full_name}}/jira
+      - kv/data/fullsend/organizations/{{repo.host}}/{{org}}/shared/jira
 ```
 
 - A connection name, such as `vault`, is an arbitrary alias. Each declared
@@ -98,9 +102,11 @@ secrets:
   explicitly; it does not need a declaration under `connections`.
   References to undeclared connection names are configuration errors.
 - `vault_secrets` is valid only when the selected connection has `kind: vault`
-  and must be a non-empty ordered list of Vault logical paths. A Vault KV
-  record supplies the value from the field named for the configured Fullsend
-  secret, such as `JIRA_TOKEN`.
+  and must be a non-empty ordered list of Vault KV v2 API read paths, relative
+  to `/v1/` and including the mount's `/data/` segment (see the
+  [KV v2 read API](https://developer.hashicorp.com/vault/api-docs/secret/kv/kv-v2#read-secret-version)).
+  Fullsend reads the latest version and takes the field named for the configured
+  Fullsend secret from the response's `data.data` map, such as `JIRA_TOKEN`.
 - Fullsend requests the job's OIDC token for `vault_audience` and submits it to
   the configured JWT auth mount and role (including the default role when
   omitted). The audience must match a `bound_audiences` value on that Vault
@@ -135,12 +141,16 @@ Vault paths may use `{{forge}}`, `{{repo.host}}`, `{{repo.owner}}`,
 `{{repo.name}}`, `{{repo.full_name}}`, and `{{org}}`. `repo.owner` is the
 canonical owner or top-level namespace; `repo.full_name` is the canonical
 namespace/project path, including nested GitLab groups; `org` is available
-only when the target belongs to an organization or group. Values come from the
-trusted target-repository context, not PR-head or event-supplied repository
-names. Path components are validated before substitution. An unknown or
-unavailable variable fails closed before Vault access. The variable syntax is
-reserved for path interpolation and is distinct from shell environment
-expansion.
+only when the target belongs to an organization or group. Repository-isolated
+paths must include both `repo.host` and `repo.full_name`, preserving every
+nested namespace segment. Organization-shared paths use a separate
+`organizations/` prefix so they cannot collide with repository paths or a
+repository named `shared`. Values come from the trusted target-repository
+context, not PR-head or event-supplied repository names. The host is validated
+as one path component, and `repo.full_name` is expanded into individually
+validated path components. An unknown or unavailable variable fails closed
+before Vault access. The variable syntax is reserved for path interpolation
+and is distinct from shell environment expansion.
 
 The initial Vault-eligible set is user-managed runner secrets whose lifecycle
 Fullsend does not create or rotate: `JIRA_TOKEN`,
@@ -166,10 +176,12 @@ platform's job-issued OIDC token and a Vault JWT role configured for that
 issuer. The job token's audience must match the configured value; the
 Fullsend audience is the default. GitLab workflows must declare an ID token
 with the selected audience, because Fullsend cannot change the audience of an
-already-issued token. Forgejo remains on `native` until Fullsend has a trusted
-Forgejo job OIDC token integration. Local runs use `native` unless a
-supported WIF identity is available; they do not accept a static Vault token
-as a fallback.
+already-issued token. Forgejo uses `native` when a secret omits its
+connection or selects `native`; an explicit Vault selection fails closed until
+Fullsend has a trusted Forgejo job OIDC token integration. Local runs likewise
+use `native` only when no Vault connection is selected. An explicit Vault
+selection without a supported WIF identity fails before any native credential
+is read. Local runs do not accept a static Vault token as a fallback.
 
 ## Consequences
 
