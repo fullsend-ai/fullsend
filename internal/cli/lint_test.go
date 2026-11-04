@@ -1145,7 +1145,7 @@ allowed_remote_resources:
 }
 
 func TestLintDiagnosticCodesMatchPattern(t *testing.T) {
-	re := regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
+	re := regexp.MustCompile(`^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$`)
 	codes := []string{
 		lintCodeConfigInvalid,
 		lintCodeAgentsSiblingsInvalid,

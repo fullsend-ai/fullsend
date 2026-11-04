@@ -170,6 +170,11 @@ field, or changing a type or enum, is an incompatible change: bump
 fields under version `2`. New diagnostic `code` values may appear without
 a bump; the schema does not enumerate them.
 
+Older binaries still emit `schema_version` 1 with no `code`. Consumers
+should switch on `schema_version` and validate against the schema that
+ships with that CLI version. This repository's `lint.schema.json`
+describes the current version only.
+
 Text output is unchanged: `<agent>: <severity>: <field>: <message>`.
 Codes appear only in `--format json`.
 

@@ -50,7 +50,7 @@
         "code": {
           "type": "string",
           "minLength": 1,
-          "pattern": "^[a-z][a-z0-9-]*$",
+          "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
           "description": "Stable identifier for the lint rule or failure class. Independent of message wording. Not an enum; new codes may appear without a schema_version bump."
         },
         "agent": {

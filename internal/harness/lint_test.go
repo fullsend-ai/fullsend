@@ -589,7 +589,7 @@ func TestLint_MessageChangeDoesNotChangeCode(t *testing.T) {
 }
 
 func TestDiagnosticCodeConstantsMatchPattern(t *testing.T) {
-	re := regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
+	re := regexp.MustCompile(`^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$`)
 	codes := []string{
 		CodeRunnerEnvDeprecated,
 		CodeSandboxHostFilesCollision,
@@ -627,7 +627,7 @@ func TestLint_AllRuleDiagnosticsHaveNonEmptyCodes(t *testing.T) {
 	}
 	diags := h.Lint()
 	require.NotEmpty(t, diags)
-	re := regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
+	re := regexp.MustCompile(`^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$`)
 	for _, d := range diags {
 		assert.NotEmpty(t, d.Code, "field %q", d.Field)
 		assert.True(t, re.MatchString(d.Code), "field %q code %q", d.Field, d.Code)
