@@ -1538,23 +1538,24 @@ func (d *Driver) failedHarnessPollOnce(ctx context.Context, remaining time.Durat
 // classified by its final conclusion instead of being counted while its
 // cancellation is still in progress.
 func (d *Driver) CountHarnessDispatches(ctx context.Context, owner, repo, agent string, after time.Time) (int, error) {
-	deadline := time.Now().Add(dispatchWait)
+	deadline := d.now().Add(dispatchWait)
+	completedJobs := make(map[forge.WorkflowRun][]forge.WorkflowJob)
 	for {
-		count, pending, err := d.settleHarnessDispatchCount(ctx, owner, repo, agent, after)
+		count, pending, err := d.settleHarnessDispatchCount(ctx, owner, repo, agent, after, completedJobs)
 		if err != nil {
 			return 0, err
 		}
 		if pending == 0 {
 			return count, nil
 		}
-		if time.Now().After(deadline) {
+		if d.now().After(deadline) {
 			return 0, fmt.Errorf("harness %q dispatch count did not settle: %d run(s) still pending after %s",
 				agent, pending, dispatchWait)
 		}
 		select {
 		case <-ctx.Done():
 			return 0, ctx.Err()
-		case <-time.After(countSettlePoll):
+		case <-d.timerAfter(countSettlePoll):
 		}
 	}
 }
@@ -1576,15 +1577,32 @@ func (d *Driver) CountHarnessDispatches(ctx context.Context, owner, repo, agent 
 // computing the matrix (#7957 review, third pass — mirrors
 // harnessRoundPollOnce's guard; cancelled static jobs added #7996 review;
 // success/failure built-in matches added #7996 review, second pass).
-func (d *Driver) settleHarnessDispatchCount(ctx context.Context, owner, repo, agent string, after time.Time) (count, pending int, err error) {
+func (d *Driver) settleHarnessDispatchCount(ctx context.Context, owner, repo, agent string, after time.Time, completedJobs map[forge.WorkflowRun][]forge.WorkflowJob) (count, pending int, err error) {
 	allRuns, err := d.listHarnessRunsAfterPaginated(ctx, owner, repo, after)
 	if err != nil {
 		return 0, 0, err
 	}
 	for _, r := range allRuns {
-		jobs, err := d.Client.ListWorkflowRunJobs(ctx, owner, repo, r.ID)
-		if err != nil {
-			return 0, 0, err
+		if r.Status == "completed" && r.Conclusion == "skipped" {
+			continue
+		}
+		jobs, cached := completedJobs[r]
+		if !cached {
+			jobs, err = d.Client.ListWorkflowRunJobs(ctx, owner, repo, r.ID)
+			if err != nil {
+				return 0, 0, err
+			}
+			// Reruns reuse IDs; only reuse completed jobs from the same known attempt.
+			cacheable := r.Status == "completed" && r.RunAttempt > 0 && len(jobs) > 0
+			for _, job := range jobs {
+				if job.Status != "completed" || job.RunAttempt != r.RunAttempt {
+					cacheable = false
+					break
+				}
+			}
+			if cacheable && completedJobs != nil {
+				completedJobs[r] = jobs
+			}
 		}
 		hasJob, job := matchAgentJob(jobs, agent)
 		switch {
@@ -1750,6 +1768,9 @@ func (d *Driver) AssertNoHarnessAgentArtifact(ctx context.Context, owner, repo, 
 		return err
 	}
 	for _, r := range allRuns {
+		if r.Status == "completed" && r.Conclusion == "skipped" {
+			continue
+		}
 		jobs, err := d.Client.ListWorkflowRunJobs(ctx, owner, repo, r.ID)
 		if err != nil {
 			return err

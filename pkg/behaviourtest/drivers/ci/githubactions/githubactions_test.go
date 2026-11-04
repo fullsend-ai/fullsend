@@ -2520,7 +2520,7 @@ func TestSettleHarnessDispatchCount_SuccessfulBuiltinMatrixUnresolvedPending(t *
 	}
 
 	d := &Driver{Client: fake}
-	count, pending, err := d.settleHarnessDispatchCount(context.Background(), "org", "repo", "triage", after)
+	count, pending, err := d.settleHarnessDispatchCount(context.Background(), "org", "repo", "triage", after, nil)
 	require.NoError(t, err)
 	assert.Equal(t, 0, count, "a successful built-in match must not be counted while the custom matrix remains unresolved")
 	assert.Equal(t, 1, pending, "the run must be classified as pending until the real matrix job appears")

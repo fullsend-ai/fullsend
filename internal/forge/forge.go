@@ -533,6 +533,7 @@ type PullRequestInfo struct {
 // WorkflowRun represents a CI/CD workflow execution.
 type WorkflowRun struct {
 	ID         int
+	RunAttempt int // Attempt number for a rerunnable execution; zero when unavailable.
 	Name       string
 	Event      string // GitHub trigger event, e.g. "issues", "issue_comment"
 	Status     string // "queued", "in_progress", "completed"
@@ -544,6 +545,7 @@ type WorkflowRun struct {
 // WorkflowJob represents a job within a workflow run.
 type WorkflowJob struct {
 	ID         int
+	RunAttempt int // Execution attempt containing this job; zero when unavailable.
 	Name       string
 	Status     string // "queued", "in_progress", "completed"
 	Conclusion string // "success", "failure", "cancelled", etc.
