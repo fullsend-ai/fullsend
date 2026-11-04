@@ -108,7 +108,7 @@ the instance URL and user email with `--jira-url` and `--jira-email`, or set
 use the issue type's name or ID with `--type`.
 
 When the config.yaml under `--fullsend-dir` sets
-[`tracker.jira.base_url`](../../reference/config-reference.md#tracker-jira-connection-and-polling-settings),
+[`tracker.jira.base_url`](../../reference/config-reference.md#trackerjira-connection-and-polling-settings),
 the Jira commands use it as the instance URL. In that case `--jira-url` is
 rejected and `JIRA_BASE_URL` is ignored.
 
