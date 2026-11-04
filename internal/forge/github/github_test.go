@@ -5157,8 +5157,42 @@ func TestListWorkflowRunJobs_NotFound(t *testing.T) {
 			require.ErrorAs(t, err, &apiErr)
 			assert.Equal(t, tt.status, apiErr.StatusCode)
 			assert.Equal(t, tt.status == http.StatusNotFound, forge.IsNotFound(err))
+			if tt.status == http.StatusNotFound {
+				assert.ErrorIs(t, err, forge.ErrJobsListingAbsent, "a first-page absence is marked as the listing being absent")
+			} else {
+				assert.NotErrorIs(t, err, forge.ErrJobsListingAbsent)
+			}
 		})
 	}
+}
+
+// TestListWorkflowRunJobs_LaterPageNotFoundIsNotAbsence is a regression
+// test: a 404 on a later pagination page means the listing was partially
+// readable — page 1 may already hold jobs — so it must not carry
+// ErrJobsListingAbsent, which callers tolerate as a not-yet-started run's
+// absent listing.
+func TestListWorkflowRunJobs_LaterPageNotFoundIsNotAbsence(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Query().Get("page") {
+		case "1":
+			jobs := make([]map[string]any, 100) // full page forces page 2
+			for i := range jobs {
+				jobs[i] = map[string]any{"id": i + 1, "name": "dispatch / Harness run (fix)", "status": "completed", "conclusion": "success"}
+			}
+			json.NewEncoder(w).Encode(map[string]any{"jobs": jobs})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	jobs, err := client.ListWorkflowRunJobs(context.Background(), "org", "repo", 42)
+	require.Error(t, err)
+	assert.Nil(t, jobs)
+	assert.True(t, forge.IsNotFound(err), "the 404 stays classified as not found")
+	assert.NotErrorIs(t, err, forge.ErrJobsListingAbsent, "a partially readable listing is never absence")
+	assert.Contains(t, err.Error(), "page 2")
 }
 
 func TestListWorkflowRunJobs_CancelledContext(t *testing.T) {

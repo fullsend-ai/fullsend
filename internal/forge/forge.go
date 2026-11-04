@@ -249,6 +249,13 @@ func ValidatePipelineVarOverrideRole(role string) error {
 // ErrNotFound indicates a requested resource was not found on the forge.
 var ErrNotFound = errors.New("not found")
 
+// ErrJobsListingAbsent indicates that a workflow run's jobs listing was
+// reported not found on its first page — for example, a run that has not
+// started yet. Adapters attach it only to first-page not-founds: a
+// not-found on a later page means the listing was already partially
+// readable and must never be read as absence.
+var ErrJobsListingAbsent = errors.New("workflow run jobs listing absent")
+
 // IsNotFound reports whether err indicates a resource was not found.
 func IsNotFound(err error) bool {
 	return errors.Is(err, ErrNotFound)

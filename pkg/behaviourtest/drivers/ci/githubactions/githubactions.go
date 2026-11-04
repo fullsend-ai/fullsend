@@ -1845,11 +1845,12 @@ func (d *Driver) AssertNoHarnessAgentArtifact(ctx context.Context, owner, repo, 
 		jobs, err := d.Client.ListWorkflowRunJobs(ctx, owner, repo, r.ID)
 		if err != nil {
 			// A run that has not started cannot hold agent work, and its
-			// jobs listing can 404 before the run starts — only that
-			// absence is tolerated. A waiting run can follow jobs that
-			// already ran (environment approval), so its listing is
-			// checked like any other run's.
-			if !(runNotStarted(r.Status) && forge.IsNotFound(err)) {
+			// jobs listing can be absent before the run starts — only a
+			// first-page absence is tolerated. A waiting run can follow
+			// jobs that already ran (environment approval), so its listing
+			// is checked like any other run's, and a listing that was
+			// partially read before a later-page 404 is never absence.
+			if !(runNotStarted(r.Status) && errors.Is(err, forge.ErrJobsListingAbsent)) {
 				return err
 			}
 			continue

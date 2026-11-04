@@ -3,6 +3,7 @@ package githubactions
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -120,7 +121,7 @@ func TestHarnessDispatchAssertions_NotStartedRunJobs(t *testing.T) {
 				{ID: 1, Status: status, CreatedAt: after.Format(time.RFC3339)},
 			}}
 			// The count path never reads jobs for a not-started run.
-			fake.Errors["ListWorkflowRunJobs"] = forge.ErrNotFound
+			fake.Errors["ListWorkflowRunJobs"] = forge.ErrJobsListingAbsent
 			d := &Driver{Client: fake}
 
 			count, pending, err := d.settleHarnessDispatchCount(context.Background(), "org", "repo", "fix", after, nil)
@@ -128,9 +129,16 @@ func TestHarnessDispatchAssertions_NotStartedRunJobs(t *testing.T) {
 			assert.Zero(t, count)
 			assert.Equal(t, 1, pending)
 
-			// The negative assertion reads the listing and treats a 404 as
-			// absence: the listing can 404 before the run starts.
+			// The negative assertion reads the listing and tolerates only a
+			// first-page absence: the listing can 404 before the run starts.
 			require.NoError(t, d.AssertNoHarnessAgentArtifact(context.Background(), "org", "repo", "fix", after))
+
+			// A 404 on a later page means the listing was partially read —
+			// page 1 may hold a completed agent job — so it is never
+			// absence, even for a not-started run.
+			fake.Errors["ListWorkflowRunJobs"] = fmt.Errorf("list workflow run jobs page 2: %w", forge.ErrNotFound)
+			require.ErrorIs(t, d.AssertNoHarnessAgentArtifact(context.Background(), "org", "repo", "fix", after), forge.ErrNotFound,
+				"a partially readable listing must fail the assertion")
 
 			// A waiting run can follow jobs that already ran (environment
 			// approval), so returned jobs are checked, never skipped.

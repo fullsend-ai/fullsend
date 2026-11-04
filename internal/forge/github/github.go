@@ -4447,6 +4447,12 @@ func (c *LiveClient) ListWorkflowRunJobs(ctx context.Context, owner, repo string
 			url.PathEscape(owner), url.PathEscape(repo), runID, perPage, page)
 		label := fmt.Sprintf("list workflow run jobs for %s/%s run %d page %d", owner, repo, runID, page)
 		if err := c.getCachedJSON(ctx, path, &result); err != nil {
+			if page == 1 && forge.IsNotFound(err) {
+				// First-page absence means the run's listing does not exist
+				// yet; a later-page 404 is a partially readable listing and
+				// must not be readable as absence.
+				return nil, fmt.Errorf("%s: %w: %w", label, forge.ErrJobsListingAbsent, err)
+			}
 			return nil, fmt.Errorf("%s: %w", label, err)
 		}
 		if len(result.Jobs) == 0 {
