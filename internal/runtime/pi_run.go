@@ -26,8 +26,7 @@ import (
 // The ids come from pi's first-party Anthropic catalog
 // (packages/ai/src/providers/data/anthropic.json), which the vendored
 // anthropic-vertex extension re-points at Vertex: ids and pricing are
-// preserved, while the routing fields and the compat allowlist differ (the
-// provider swap also flips pi's supportsToolReferences default off). The
+// preserved, while the routing fields and the compat allowlist differ. The
 // extension registers the catalog of the *running* pi, so this table tracks
 // PI_VERSION — re-check it against the pinned pi's anthropic.json on a
 // bump, as "fable" needed when 0.85.0 added claude-fable-5-1 (#6882).
