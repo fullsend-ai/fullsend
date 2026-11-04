@@ -318,10 +318,10 @@ tracker:
   validated and stored only.
 - **`tracker.jira.poll.query`** — The JQL the poller runs. It defaults to
   `statusCategory != Done ORDER BY updated DESC`. The query is always scoped
-  to `project`: the poller runs `project = <project> AND (<query>)` and keeps
-  a trailing `ORDER BY` after the closing parenthesis. For example, the
-  query above runs as
-  `project = PROJ AND (labels = "fullsend" AND statusCategory != Done) ORDER BY updated DESC`.
+  to `project`: the poller runs `project = "<project>" AND (<query>)` and
+  keeps a trailing `ORDER BY` after the closing parenthesis. The parentheses
+  in the query must be balanced. For example, the query above runs as
+  `project = "PROJ" AND (labels = "fullsend" AND statusCategory != Done) ORDER BY updated DESC`.
 
 `base_url` and `project` are required once `base_url`, `api_url`, `project`,
 or `poll` is set. A mapping that only selects Jira (`jira: {}`) or only sets

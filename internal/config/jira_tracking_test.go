@@ -34,7 +34,7 @@ func TestJiraTracking_ParseFullMapping(t *testing.T) {
 	assert.Equal(t, "PROJ", jira.Project)
 	assert.Equal(t, []string{"OTHER"}, jira.AllowedTargets.Projects)
 	assert.True(t, jira.PollEnabled())
-	assert.Equal(t, `project = PROJ AND (labels = "fullsend" AND statusCategory != Done) ORDER BY updated DESC`, jira.PollJQL())
+	assert.Equal(t, `project = "PROJ" AND (labels = "fullsend" AND statusCategory != Done) ORDER BY updated DESC`, jira.PollJQL())
 
 	// Round trip through Marshal.
 	data, err := cfg.Marshal()
@@ -52,7 +52,7 @@ func TestJiraTracking_Defaults(t *testing.T) {
 	assert.Equal(t, DefaultJiraAPIURL, jira.EffectiveAPIURL())
 	assert.False(t, jira.PollEnabled(), "omitted poll does not install the poll workflow")
 	assert.Equal(t, DefaultJiraPollQuery, jira.PollQuery())
-	assert.Equal(t, "project = PROJ AND (statusCategory != Done) ORDER BY updated DESC", jira.PollJQL())
+	assert.Equal(t, `project = "PROJ" AND (statusCategory != Done) ORDER BY updated DESC`, jira.PollJQL())
 
 	var nilJira *JiraTrackingConfig
 	assert.Equal(t, DefaultJiraAPIURL, nilJira.EffectiveAPIURL())
@@ -84,7 +84,7 @@ func TestJiraTracking_Validate(t *testing.T) {
 		{name: "missing project", jira: "\n    base_url: https://example.atlassian.net", wantErr: "project is required"},
 		{name: "poll without connection", jira: "\n    poll:\n      enabled: true", wantErr: "base_url is required"},
 		{name: "api_url without connection", jira: "\n    api_url: https://api.atlassian.com", wantErr: "base_url is required"},
-		{name: "non-https base_url", jira: "\n    base_url: ftp://example.atlassian.net\n    project: PROJ", wantErr: "base_url \"ftp://example.atlassian.net\" must be an https URL"},
+		{name: "non-https base_url", jira: "\n    base_url: ftp://example.atlassian.net\n    project: PROJ", wantErr: "base_url must be an https URL"},
 		{name: "base_url with credentials", jira: "\n    base_url: https://u:p@example.atlassian.net\n    project: PROJ", wantErr: "must be an https URL"},
 		{name: "base_url with query", jira: "\n    base_url: https://example.atlassian.net?x=1\n    project: PROJ", wantErr: "must be an https URL"},
 		{name: "bad api_url", jira: "\n    base_url: https://example.atlassian.net\n    api_url: ftp://gw\n    project: PROJ", wantErr: "api_url"},
@@ -164,7 +164,7 @@ func TestJiraTracking_ManagedConfigSurvivesMergeAndClone(t *testing.T) {
 	merged := MergeManaged(&perRepoConfig{}, m.Writer())
 	got := merged.IssueTracking()
 	assert.Equal(t, want, got)
-	assert.Equal(t, `project = PROJ AND (labels = "fullsend")`, got.Jira.PollJQL())
+	assert.Equal(t, `project = "PROJ" AND (labels = "fullsend")`, got.Jira.PollJQL())
 
 	// The clone is deep: mutating it leaves the source untouched.
 	copied := cloneTracking(want)
@@ -187,20 +187,68 @@ func TestScopeJQLToProject(t *testing.T) {
 		query string
 		want  string
 	}{
-		{name: "with order by", query: `labels = "fullsend" AND statusCategory != Done ORDER BY updated DESC`, want: `project = PROJ AND (labels = "fullsend" AND statusCategory != Done) ORDER BY updated DESC`},
-		{name: "without order by", query: `labels = "fullsend"`, want: `project = PROJ AND (labels = "fullsend")`},
-		{name: "or stays grouped", query: `labels = a OR labels = b`, want: `project = PROJ AND (labels = a OR labels = b)`},
-		{name: "lowercase order by", query: `status = Open order by created`, want: `project = PROJ AND (status = Open) order by created`},
-		{name: "order by inside quotes is not split", query: `summary ~ "order by" AND status = Open`, want: `project = PROJ AND (summary ~ "order by" AND status = Open)`},
-		{name: "order by inside single quotes", query: `summary ~ 'x order by y' ORDER BY key`, want: `project = PROJ AND (summary ~ 'x order by y') ORDER BY key`},
-		{name: "escaped quote", query: `summary ~ "a \" order by" ORDER BY key`, want: `project = PROJ AND (summary ~ "a \" order by") ORDER BY key`},
-		{name: "only order by", query: `ORDER BY updated DESC`, want: `project = PROJ ORDER BY updated DESC`},
-		{name: "unterminated quote", query: `summary ~ "order by`, want: `project = PROJ AND (summary ~ "order by)`},
-		{name: "word containing order is not split", query: `labels = reorder`, want: `project = PROJ AND (labels = reorder)`},
+		{name: "with order by", query: `labels = "fullsend" AND statusCategory != Done ORDER BY updated DESC`, want: `project = "PROJ" AND (labels = "fullsend" AND statusCategory != Done) ORDER BY updated DESC`},
+		{name: "without order by", query: `labels = "fullsend"`, want: `project = "PROJ" AND (labels = "fullsend")`},
+		{name: "or stays grouped", query: `labels = a OR labels = b`, want: `project = "PROJ" AND (labels = a OR labels = b)`},
+		{name: "lowercase order by", query: `status = Open order by created`, want: `project = "PROJ" AND (status = Open) order by created`},
+		{name: "order by inside quotes is not split", query: `summary ~ "order by" AND status = Open`, want: `project = "PROJ" AND (summary ~ "order by" AND status = Open)`},
+		{name: "order by inside single quotes", query: `summary ~ 'x order by y' ORDER BY key`, want: `project = "PROJ" AND (summary ~ 'x order by y') ORDER BY key`},
+		{name: "escaped quote", query: `summary ~ "a \" order by" ORDER BY key`, want: `project = "PROJ" AND (summary ~ "a \" order by") ORDER BY key`},
+		{name: "only order by", query: `ORDER BY updated DESC`, want: `project = "PROJ" ORDER BY updated DESC`},
+		{name: "unterminated quote", query: `summary ~ "order by`, want: `project = "PROJ" AND (summary ~ "order by)`},
+		{name: "word containing order is not split", query: `labels = reorder`, want: `project = "PROJ" AND (labels = reorder)`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			assert.Equal(t, c.want, ScopeJQLToProject("PROJ", c.query))
 		})
+	}
+}
+
+func TestScopeJQLToProject_QuotesReservedWordKey(t *testing.T) {
+	for _, key := range []string{"AND", "OR", "IN"} {
+		assert.Equal(t, `project = "`+key+`" AND (labels = a)`, ScopeJQLToProject(key, "labels = a"))
+	}
+}
+
+func TestJiraTracking_ValidatePollQueryParens(t *testing.T) {
+	cases := []struct {
+		name    string
+		query   string
+		wantErr bool
+	}{
+		{name: "balanced", query: `(labels = a OR labels = b) AND status = Open`},
+		{name: "parens inside quotes ignored", query: `summary ~ "a)" AND summary ~ '(b'`},
+		{name: "closing paren escapes scope", query: `labels = a) OR project = OTHER OR (labels = a`, wantErr: true},
+		{name: "unclosed paren", query: `(labels = a`, wantErr: true},
+		{name: "extra closing paren", query: `labels = a)`, wantErr: true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			j := &JiraTrackingConfig{BaseURL: "https://example.atlassian.net", Project: "PROJ", Poll: &JiraPollConfig{Query: c.query}}
+			err := j.ValidateConnection()
+			if c.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "unbalanced parentheses")
+				return
+			}
+			assert.NoError(t, err)
+		})
+	}
+}
+
+func TestJiraTracking_URLErrorOmitsCredentials(t *testing.T) {
+	for _, field := range []string{"base_url", "api_url"} {
+		j := &JiraTrackingConfig{BaseURL: "https://example.atlassian.net", Project: "PROJ"}
+		if field == "base_url" {
+			j.BaseURL = "https://user:s3cret@example.atlassian.net"
+		} else {
+			j.APIURL = "https://user:s3cret@gateway.example.com"
+		}
+		err := j.ValidateConnection()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), field)
+		assert.NotContains(t, err.Error(), "s3cret")
+		assert.NotContains(t, err.Error(), "user:")
 	}
 }

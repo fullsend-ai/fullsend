@@ -31,14 +31,14 @@ func TestApplyJiraTrackerConfig_ReadsConfig(t *testing.T) {
 	require.NoError(t, applyJiraTrackerConfig(dir, &jiraURL, &jiraProject, &jql))
 	assert.Equal(t, "https://example.atlassian.net", jiraURL)
 	assert.Equal(t, "PROJ", jiraProject)
-	assert.Equal(t, `project = PROJ AND (labels = "fullsend") ORDER BY updated DESC`, jql)
+	assert.Equal(t, `project = "PROJ" AND (labels = "fullsend") ORDER BY updated DESC`, jql)
 }
 
 func TestApplyJiraTrackerConfig_DefaultQuery(t *testing.T) {
 	dir := writeJiraPollConfig(t, "tracker:\n  jira:\n    base_url: https://example.atlassian.net\n    project: PROJ\n")
 	var jiraURL, jiraProject, jql string
 	require.NoError(t, applyJiraTrackerConfig(dir, &jiraURL, &jiraProject, &jql))
-	assert.Equal(t, "project = PROJ AND (statusCategory != Done) ORDER BY updated DESC", jql)
+	assert.Equal(t, `project = "PROJ" AND (statusCategory != Done) ORDER BY updated DESC`, jql)
 }
 
 func TestApplyJiraTrackerConfig_RejectsFlagOverrides(t *testing.T) {

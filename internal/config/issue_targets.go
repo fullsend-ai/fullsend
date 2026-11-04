@@ -170,26 +170,14 @@ func (j *JiraTrackingConfig) UnmarshalYAML(n *yaml.Node) error {
 			key     string
 			allowed map[string]bool
 		}{{"poll", jiraPollKeys}, {"allowed_targets", jiraAllowedTargetsKeys}} {
-			if v := mappingValueNode(r, sub.key); v != nil {
-				if v = resolveAlias(v); v.Kind == yaml.MappingNode {
-					if err := checkMappingKeys(v, sub.allowed, "tracker.jira."+sub.key); err != nil {
-						return err
-					}
+			if v := mappingNode(r, sub.key); v != nil && v.Kind == yaml.MappingNode {
+				if err := checkMappingKeys(v, sub.allowed, "tracker.jira."+sub.key); err != nil {
+					return err
 				}
 			}
 		}
 	}
 	return n.Decode((*jiraTrackingPlain)(j))
-}
-
-// mappingValueNode returns the value node for key in mapping n, or nil.
-func mappingValueNode(n *yaml.Node, key string) *yaml.Node {
-	for i := 0; i+1 < len(n.Content); i += 2 {
-		if n.Content[i].Value == key {
-			return n.Content[i+1]
-		}
-	}
-	return nil
 }
 
 // EffectiveAPIURL returns api_url, or DefaultJiraAPIURL when it is unset.
@@ -230,15 +218,16 @@ func (j *JiraTrackingConfig) HasConnectionSettings() bool {
 var jqlOrderByRe = regexp.MustCompile(`(?i)\border\s+by\b`)
 
 // ScopeJQLToProject scopes query to project as
-// "project = <project> AND (<predicate>)", keeping a trailing ORDER BY
+// `project = "<project>" AND (<predicate>)`, keeping a trailing ORDER BY
 // clause after the closing parenthesis. The ORDER BY is located outside
 // quoted strings, so a predicate that mentions "order by" inside a quoted
 // value is not split. An empty predicate (a query that is only an
-// ORDER BY clause) yields "project = <project>" plus the ORDER BY.
+// ORDER BY clause) yields `project = "<project>"` plus the ORDER BY.
 func ScopeJQLToProject(project, query string) string {
 	predicate, orderBy := splitJQLOrderBy(query)
 	predicate = strings.TrimSpace(predicate)
-	scoped := "project = " + project
+	// Quote the key so a reserved-word key (AND, OR, IN) stays a value.
+	scoped := fmt.Sprintf("project = %q", project)
 	if predicate != "" {
 		scoped += " AND (" + predicate + ")"
 	}
@@ -554,7 +543,32 @@ func (j *JiraTrackingConfig) ValidateConnection() error {
 	if !jiraProjectKeyRe.MatchString(j.Project) {
 		return fmt.Errorf("tracker.jira: project %q must be a Jira project key (for example PROJ)", j.Project)
 	}
+	if j.Poll != nil && !jqlParensBalanced(j.Poll.Query) {
+		return fmt.Errorf("tracker.jira: poll.query has unbalanced parentheses: the query is wrapped in parentheses to scope it to the project")
+	}
 	return nil
+}
+
+// jqlParensBalanced reports whether the parentheses of query, ignoring
+// those inside quoted strings, are balanced and never close before they
+// open.
+func jqlParensBalanced(query string) bool {
+	quoted := quotedRanges(query)
+	depth := 0
+	for i := 0; i < len(query); i++ {
+		if inRanges(i, quoted) {
+			continue
+		}
+		switch query[i] {
+		case '(':
+			depth++
+		case ')':
+			if depth--; depth < 0 {
+				return false
+			}
+		}
+	}
+	return depth == 0
 }
 
 // validateJiraURL requires an https URL with a host and no credentials,
@@ -562,7 +576,8 @@ func (j *JiraTrackingConfig) ValidateConnection() error {
 func validateJiraURL(field, raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Opaque != "" {
-		return fmt.Errorf("tracker.jira: %s %q must be an https URL without credentials, query, or fragment", field, raw)
+		// The raw value is left out of the error: it may embed credentials.
+		return fmt.Errorf("tracker.jira: %s must be an https URL without credentials, query, or fragment", field)
 	}
 	return nil
 }
