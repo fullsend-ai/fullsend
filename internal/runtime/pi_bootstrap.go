@@ -758,10 +758,9 @@ func piAgentModels(defModel string, configAliases map[string]string) map[string]
 // provider registers, verbatim from the catalog the pinned pi bundles
 // (@earendil-works/pi-ai 1.5.0, dist/providers/data/google-vertex.json).
 // Re-check it on a pi bump, the way the Anthropic ids in pi_run.go are:
-// diff that data file, not the generated wrapper -- 0.85.0 added
-// gemini-3.8-flash and nothing else, 1.5.0 dropped
-// gemini-3.1-flash-lite-image, and a missed entry means this table
-// rejects an id the running pi actually serves.
+// diff that data file, not the generated wrapper (0.85.0 changed only the
+// data file); a missed entry means this table rejects an id the running pi
+// actually serves.
 // internal/runtime/testdata/pi/check-vertex-catalog.sh does the diff
 // against whatever PI_VERSION the Containerfile pins.
 //
