@@ -3,7 +3,7 @@ name: e2e-health
 description: >
   Use when checking e2e test health or reviewing recent e2e failures on
   main, and when scanning behaviour runs for GitHub API rate-limit
-  exhaustion evidence (the #6702 validation).
+  exhaustion evidence.
 allowed-tools: Bash(bash skills/e2e-health/scripts/list-runs.sh:*), Bash(gh run view:*), Bash(bash skills/e2e-health/scripts/scan-ratelimit-evidence.sh:*), Bash(bash skills/e2e-health/scripts/scan-ratelimit-evidence_test.sh:*)
 ---
 
