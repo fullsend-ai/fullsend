@@ -420,6 +420,7 @@ const (
 	ReasonBindingMismatch    = "binding-mismatch"
 	ReasonConflictingCarrier = "conflicting-carrier"
 	ReasonProvenance         = "provenance"
+	ReasonUnresolved         = "unresolved"
 	ReasonPending            = "pending"
 )
 
@@ -507,6 +508,12 @@ func Admit(expected Identity, keys map[[8]byte]ed25519.PublicKey, candidates ...
 			ParentSpanID: env.ParentSpanID,
 			Provenance:   env.Provenance,
 		}
+	}
+	// A pending marker binds no entity, but an unresolved expected identity
+	// must still postpone explicitly (FR-002) rather than wait out the
+	// pending window on a guessed binding.
+	if !expected.Resolved() {
+		return fallback(ReasonUnresolved)
 	}
 	return Result{Outcome: OutcomePending, Reason: ReasonPending}
 }

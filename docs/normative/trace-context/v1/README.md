@@ -198,8 +198,14 @@ exactly one outcome:
 - **Admitted**: a verified bound envelope matched every binding
   component. The result carries the admitted TraceID, parent SpanID, and
   authenticated provenance.
-- **Pending**: a verified pending marker matched the expected scope. It
-  grants nothing; bounded rereads are caller policy.
+- **Pending**: a verified pending marker matched the expected scope —
+  installation, instance, container, and kind, never the entity, because a
+  pending marker carries no entity binding by design. A marker replayed
+  onto another entity in the same container still grants nothing beyond a
+  bounded wait. It grants no context; callers must bound that wait by a
+  window from the entity's trusted creation metadata (for example
+  `created_at`) before rereading and falling back, per
+  [ADR 0154](../../../ADRs/0154-correlate-work-item-and-behaviour-scenario-traces.md).
 - **Fallback**: nothing was admissible. The caller uses the
   entity-derived fallback.
 
@@ -207,8 +213,16 @@ The zero-value result selects fallback and grants no context or provenance.
 
 Fallback reason codes are redacted diagnostics — `absent`, `malformed`,
 `oversized`, `unknown-version`, `unknown-key`, `bad-signature`,
-`binding-mismatch`, `conflicting-carrier`, `provenance` — never key
-material or raw bytes. A plain W3C `traceparent` is never an envelope.
+`binding-mismatch`, `conflicting-carrier`, `provenance`, `unresolved` —
+never key material or raw bytes. A plain W3C `traceparent` is never an
+envelope.
+
+Any extra or differing candidate deliberately forces fallback, even when
+one candidate alone would admit: an actor who can append one carrier to an
+editable body must not be able to choose or suppress the admitted context.
+Publishing a bound envelope must remove the pending marker it replaces;
+leaving both present produces conflicting carriers and fallback, never a
+pick between them.
 
 The result structurally cannot carry sampling flags, `tracestate`,
 baggage, or dispatch permission. Trace admission and dispatch
@@ -217,7 +231,8 @@ regardless of admission, and an admitted envelope never authorizes
 anything.
 
 An unresolved identity (missing instance, container, kind, or entity) is
-explicit: callers must postpone dispatch with diagnostics rather than
+explicit: admission returns fallback with reason `unresolved` rather than
+pending, and callers must postpone dispatch with diagnostics rather than
 derive a fallback or guess.
 
 ## Compatibility

@@ -573,6 +573,44 @@ func TestAdmit_PendingGrantsNothing(t *testing.T) {
 	assert.Equal(t, ReasonBindingMismatch, res.Reason)
 }
 
+// TestAdmit_PendingRequiresResolvedIdentity pins the README rule: an
+// unresolved expected identity never earns the pending outcome; the launch
+// must postpone with an explicit fallback reason instead of waiting out
+// the pending window on a guessed binding.
+func TestAdmit_PendingRequiresResolvedIdentity(t *testing.T) {
+	t.Parallel()
+	raw, keys := signedGolden(t, DomainPending, ProvenanceNone)
+	unresolved := goldenIdentity()
+	unresolved.Entity = 0
+	res := Admit(unresolved, keys, raw)
+	assert.Equal(t, Result{Outcome: OutcomeFallback, Reason: ReasonUnresolved}, res)
+}
+
+// TestAdmit_PendingMarkerIsContainerScoped documents that a pending marker
+// deliberately carries no entity binding: one replayed onto another entity
+// in the same container still grants nothing beyond a bounded pending
+// wait, which callers must cap by a window from trusted creation metadata.
+func TestAdmit_PendingMarkerIsContainerScoped(t *testing.T) {
+	t.Parallel()
+	raw, keys := signedGolden(t, DomainPending, ProvenanceNone)
+	replayed := goldenIdentity()
+	replayed.Entity++
+	res := Admit(replayed, keys, raw)
+	assert.Equal(t, Result{Outcome: OutcomePending, Reason: ReasonPending}, res)
+}
+
+// TestAdmit_BoundEnvelopeWithStalePendingMarker pins the fail-closed rule:
+// a publisher that leaves the pending marker beside the bound envelope
+// produces conflicting carriers, and admission rejects the conflict rather
+// than picking either carrier.
+func TestAdmit_BoundEnvelopeWithStalePendingMarker(t *testing.T) {
+	t.Parallel()
+	bound, keys := signedGolden(t, DomainBound, ProvenanceNone)
+	pending, _ := signedGolden(t, DomainPending, ProvenanceNone)
+	res := Admit(goldenIdentity(), keys, bound, pending)
+	assert.Equal(t, Result{Outcome: OutcomeFallback, Reason: ReasonConflictingCarrier}, res)
+}
+
 // TestAdmit_ProvenanceConsistency enforces the D02 rules: an ordinary
 // source link keeps the destination's own trace; scenario provenance
 // inherits the scenario trace.
