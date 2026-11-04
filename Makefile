@@ -89,7 +89,7 @@ lint-all: ensure-hooks
 
 check:
 	uvx ruff check .
-	uvx ty check hack/
+	uvx --with pytest --with pyyaml ty check hack/
 
 fmt:
 	uvx ruff format .
