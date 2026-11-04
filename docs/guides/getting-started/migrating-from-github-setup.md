@@ -485,11 +485,14 @@ rejected by validation. Move `create_issues.allow_targets.orgs` and `repos` to
 so the old scalar form (`tracker: jira`) is rejected. Replace it with
 `tracker: {jira: {}}` (or `github` / `gitlab`), merged into any
 `allowed_targets` you set for the same provider; only one provider block is
-allowed. `fullsend repos install` does not yet migrate existing managed
-`repos.yaml` entries (legacy scalar `tracker` values and `create_issues`
-targets); that is tracked in
-[#9075](https://github.com/fullsend-ai/fullsend/issues/9075), so edit those
-entries by hand for now.
+allowed. `fullsend repos install` converts legacy scalar `tracker` values and
+`create_issues` targets in managed `repos.yaml` `config:` blocks, writes the
+converted manifest, and re-renders the managed `.fullsend/config.yaml` files,
+keeping each repository's effective provider and targets. It stops with the
+exact edit to make when a target has no unambiguous equivalent, such as
+repositories under a Jira provider or organizations on GitLab; see
+[Automatic migration of managed configuration](../../reference/config-reference.md#tracker).
+Edit unmanaged `.fullsend/config.yaml` files and presets by hand.
 
 Fresh GitHub no-preset installations without an explicit `tracker` setting
 include both `fullsend-ai/fullsend` and `fullsend-ai/agents` as cross-repository

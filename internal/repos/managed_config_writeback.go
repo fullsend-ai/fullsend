@@ -279,7 +279,7 @@ func preflightOverlay(ctx context.Context, store *presetCache, client forge.Clie
 	if !found {
 		return "", nil
 	}
-	if err := validateExistingOverlay(existing); err != nil {
+	if err := validateExistingOverlay(existing, resolved.Forge); err != nil {
 		return "", fmt.Errorf("%s: %w: fix or remove it, then re-run; nothing was written", name, err)
 	}
 	if !overlayNeedsAdoption(found, existing) {
