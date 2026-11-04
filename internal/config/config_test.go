@@ -103,6 +103,19 @@ func TestPerRepoConfigValidate_InvalidVersion(t *testing.T) {
 	assert.Contains(t, err.Error(), "unsupported version")
 }
 
+func TestPerRepoConfigValidateGlobal_SkipsAgentEntries(t *testing.T) {
+	invalidAgent := []AgentEntry{{Name: "review", Trigger: `"yes"`}}
+
+	cfg := &perRepoConfig{Version: "1", Agents: invalidAgent}
+	require.Error(t, cfg.Validate())
+	assert.NoError(t, cfg.ValidateGlobal())
+
+	cfg = &perRepoConfig{Version: "2", Agents: invalidAgent}
+	err := cfg.ValidateGlobal()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported version")
+}
+
 func TestPerRepoConfigValidate_InvalidRole(t *testing.T) {
 	cfg := &perRepoConfig{
 		Version: "1",
@@ -182,6 +195,218 @@ func TestPerRepoConfigValidate_AuthorizationDuplicateProvider(t *testing.T) {
 	err := cfg.Validate()
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "duplicate provider")
+}
+
+func TestParsePerRepoConfig_JiraAuthorization(t *testing.T) {
+	cfg, err := ParsePerRepoConfig([]byte(`
+authorization:
+  - provider: owners_file
+  - provider: jira
+    write:
+      groups: [example-team-developers]
+      accounts: ["5f7c012e0b2a4c001f3d9876"]
+    triage:
+      groups: [example-team]
+      accounts: []
+    labels: allowlist
+`))
+	require.NoError(t, err)
+	assert.True(t, cfg.IsOwnersFileAuthEnabled())
+	ja := cfg.JiraAuthorization()
+	require.NotNil(t, ja)
+	assert.Equal(t, []string{"example-team-developers"}, ja.Write.Groups)
+	assert.Equal(t, []string{"5f7c012e0b2a4c001f3d9876"}, ja.Write.Accounts)
+	assert.Equal(t, []string{"example-team"}, ja.Triage.Groups)
+	assert.True(t, ja.HasJiraLists())
+	assert.Equal(t, JiraLabelsAllowlist, ja.EffectiveJiraLabels())
+	require.NoError(t, cfg.(PerRepoConfigWriter).Validate())
+
+	// The accessor returns a copy: mutating it does not change the config.
+	ja.Write.Groups[0] = "mutated"
+	assert.Equal(t, []string{"example-team-developers"}, cfg.JiraAuthorization().Write.Groups)
+}
+
+func TestParsePerRepoConfig_JiraAuthorizationDefaults(t *testing.T) {
+	cfg, err := ParsePerRepoConfig([]byte("authorization:\n  - provider: jira\n"))
+	require.NoError(t, err)
+	ja := cfg.JiraAuthorization()
+	require.NotNil(t, ja)
+	assert.False(t, ja.HasJiraLists())
+	assert.Equal(t, JiraLabelsEditors, ja.EffectiveJiraLabels())
+
+	none, err := ParsePerRepoConfig([]byte("authorization:\n  - provider: owners_file\n"))
+	require.NoError(t, err)
+	assert.Nil(t, none.JiraAuthorization())
+	var nilProvider *AuthorizationProvider
+	assert.False(t, nilProvider.HasJiraLists())
+	assert.Equal(t, JiraLabelsEditors, nilProvider.EffectiveJiraLabels())
+}
+
+func TestParsePerRepoConfig_JiraAuthorizationRejectsInvalid(t *testing.T) {
+	tests := []struct {
+		name    string
+		yaml    string
+		wantErr string
+	}{
+		{
+			name:    "unknown labels value",
+			yaml:    "authorization:\n  - provider: jira\n    labels: everyone\n",
+			wantErr: `invalid labels "everyone"`,
+		},
+		{
+			name:    "unknown provider key",
+			yaml:    "authorization:\n  - provider: jira\n    admins:\n      groups: [x]\n",
+			wantErr: `unknown field "admins"`,
+		},
+		{
+			name:    "unknown list key",
+			yaml:    "authorization:\n  - provider: jira\n    write:\n      group: [x]\n",
+			wantErr: `unknown field "group"`,
+		},
+		{
+			name:    "empty group name",
+			yaml:    "authorization:\n  - provider: jira\n    write:\n      groups: [\"\"]\n",
+			wantErr: "empty group name",
+		},
+		{
+			name:    "empty account ID",
+			yaml:    "authorization:\n  - provider: jira\n    triage:\n      accounts: [\" \"]\n",
+			wantErr: "empty account ID",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParsePerRepoConfig([]byte(tt.yaml))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+func TestValidateRuntimeAuthorization(t *testing.T) {
+	// LoadConfig does not call Validate, so ParsePerRepoConfig accepts a
+	// mistyped provider; the runtime check must reject it.
+	bad, err := ParsePerRepoConfig([]byte("authorization:\n  - provider: jria\n    labels: allowlist\n"))
+	require.NoError(t, err)
+	err = ValidateRuntimeAuthorization(bad)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid provider")
+
+	dup, err := ParsePerRepoConfig([]byte("authorization:\n  - provider: jira\n  - provider: jira\n    labels: allowlist\n"))
+	require.NoError(t, err)
+	require.Error(t, ValidateRuntimeAuthorization(dup))
+
+	ok, err := ParsePerRepoConfig([]byte("authorization:\n  - provider: jira\n    labels: allowlist\n"))
+	require.NoError(t, err)
+	assert.NoError(t, ValidateRuntimeAuthorization(ok))
+}
+
+func TestParsePerRepoConfig_JiraAuthorizationAliasesAreChecked(t *testing.T) {
+	tests := map[string]struct {
+		yaml    string
+		wantErr string
+	}{
+		"aliased provider with misspelled key": {
+			yaml:    "jira_provider: &jp jira\nauthorization:\n  - provider: *jp\n    lables: allowlist\n",
+			wantErr: `unknown field "lables"`,
+		},
+		"aliased whole entry with misspelled key": {
+			yaml:    "template: &t\n  provider: jira\n  lables: allowlist\nauthorization:\n  - *t\n",
+			wantErr: `unknown field "lables"`,
+		},
+		"aliased list with misspelled key": {
+			yaml:    "devs: &d\n  group: [x]\nauthorization:\n  - provider: jira\n    write: *d\n",
+			wantErr: `unknown field "group"`,
+		},
+		"aliased key hiding a misspelled field": {
+			yaml:    "key: &labels lables\nauthorization:\n  - provider: jira\n    ? *labels\n    : allowlist\n",
+			wantErr: "mapping keys must be plain scalars",
+		},
+		"aliased provider key": {
+			yaml:    "key: &p provider\nauthorization:\n  - ? *p\n    : jira\n    lables: allowlist\n",
+			wantErr: "mapping keys must be plain scalars",
+		},
+		"aliased null write key": {
+			yaml:    "key: &w write\nauthorization:\n  - provider: jira\n    ? *w\n    :\n",
+			wantErr: "mapping keys must be plain scalars",
+		},
+		"aliased null triage key": {
+			yaml:    "key: &t triage\nauthorization:\n  - provider: jira\n    ? *t\n    : null\n",
+			wantErr: "mapping keys must be plain scalars",
+		},
+		"aliased key inside write list": {
+			yaml:    "key: &g groups\nauthorization:\n  - provider: jira\n    write:\n      ? *g\n      : [x]\n",
+			wantErr: "mapping keys must be plain scalars",
+		},
+		"merge key in entry": {
+			yaml:    "base: &b\n  lables: allowlist\nauthorization:\n  - provider: jira\n    <<: *b\n",
+			wantErr: "merge keys",
+		},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, err := ParsePerRepoConfig([]byte(tt.yaml))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+
+	cfg, err := ParsePerRepoConfig([]byte("jira_provider: &jp jira\nauthorization:\n  - provider: *jp\n    labels: allowlist\n"))
+	require.NoError(t, err)
+	require.NotNil(t, cfg.JiraAuthorization())
+	assert.Equal(t, JiraLabelsAllowlist, cfg.JiraAuthorization().EffectiveJiraLabels())
+}
+
+func TestHasJiraLists_NullListKeyIsAuthoritative(t *testing.T) {
+	for name, y := range map[string]string{
+		"bare write":   "authorization:\n  - provider: jira\n    write:\n",
+		"null write":   "authorization:\n  - provider: jira\n    write: null\n",
+		"tilde triage": "authorization:\n  - provider: jira\n    triage: ~\n",
+		"null triage":  "authorization:\n  - provider: jira\n    triage: null\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg, err := ParsePerRepoConfig([]byte(y))
+			require.NoError(t, err)
+			ja := cfg.JiraAuthorization()
+			require.NotNil(t, ja)
+			assert.True(t, ja.HasJiraLists())
+			assert.True(t, ja.Write.IsEmpty() && ja.Triage.IsEmpty())
+		})
+	}
+}
+
+func TestHasJiraLists_EmptyConfiguredListIsAuthoritative(t *testing.T) {
+	cfg, err := ParsePerRepoConfig([]byte("authorization:\n  - provider: jira\n    write:\n      accounts: []\n"))
+	require.NoError(t, err)
+	assert.True(t, cfg.JiraAuthorization().HasJiraLists())
+}
+
+func TestPerRepoConfigValidate_JiraAuthorization(t *testing.T) {
+	valid := &perRepoConfig{
+		Version: "1",
+		Authorization: []AuthorizationProvider{{
+			Provider: AuthProviderJira,
+			Write:    &JiraActorList{Accounts: []string{"acct"}},
+			Labels:   JiraLabelsProjectRoles,
+		}},
+	}
+	assert.NoError(t, valid.Validate())
+
+	badLabels := &perRepoConfig{
+		Version:       "1",
+		Authorization: []AuthorizationProvider{{Provider: AuthProviderJira, Labels: "anyone"}},
+	}
+	err := badLabels.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "authorization[0]: jira provider: invalid labels")
+
+	jiraFieldsOnOwners := &perRepoConfig{
+		Version:       "1",
+		Authorization: []AuthorizationProvider{{Provider: AuthProviderOwnersFile, Labels: JiraLabelsAllowlist}},
+	}
+	err = jiraFieldsOnOwners.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "only valid for provider")
 }
 
 func TestParsePerRepoConfig(t *testing.T) {
@@ -367,77 +592,224 @@ func TestPerRepoConfigMarshal_WithoutStatusNotifications(t *testing.T) {
 	assert.NotContains(t, string(data), "status_notifications")
 }
 
-// --- CreateIssues tests ---
+// --- Tracking tests ---
 
-func TestPerRepoConfigValidate_CreateIssues(t *testing.T) {
-	cases := []struct {
-		name    string
-		ci      *CreateIssuesConfig
-		wantErr string
-	}{
-		{name: "nil", ci: nil},
-		{name: "valid", ci: &CreateIssuesConfig{AllowTargets: AllowTargets{Orgs: []string{"my-org"}, Repos: []string{"other/repo"}}}},
-		{name: "repo without slash", ci: &CreateIssuesConfig{AllowTargets: AllowTargets{Repos: []string{"no-slash-here"}}}, wantErr: "no-slash-here"},
-		{name: "empty org", ci: &CreateIssuesConfig{AllowTargets: AllowTargets{Orgs: []string{"valid-org", ""}}}, wantErr: "empty org"},
+func TestPerRepoConfigValidate_Tracking(t *testing.T) {
+	gh := func(orgs, repos []string) *TrackingConfig {
+		return &TrackingConfig{GitHub: &GitHubTrackingConfig{AllowedTargets: GitHubAllowedTargets{Orgs: orgs, Repos: repos}}}
+	}
+	gl := func(groups, repos []string) *TrackingConfig {
+		return &TrackingConfig{GitLab: &GitLabTrackingConfig{AllowedTargets: GitLabAllowedTargets{Groups: groups, Repos: repos}}}
+	}
+	jira := func(projects ...string) *TrackingConfig {
+		return &TrackingConfig{Jira: &JiraTrackingConfig{AllowedTargets: JiraAllowedTargets{Projects: projects}}}
+	}
+	type tc struct {
+		name     string
+		tracking *TrackingConfig
+		wantErr  string
+	}
+	cases := []tc{
+		{name: "nil", tracking: nil},
+		{name: "no provider", tracking: &TrackingConfig{}},
+		{name: "github valid", tracking: gh([]string{"my-org"}, []string{"other/repo"})},
+		{name: "github empty allowed_targets", tracking: &TrackingConfig{GitHub: &GitHubTrackingConfig{}}},
+		{name: "github repo without slash", tracking: gh(nil, []string{"no-slash-here"}), wantErr: "no-slash-here"},
+		{name: "github repo with nested path", tracking: gh(nil, []string{"a/b/c"}), wantErr: "owner/repo"},
+		{name: "github empty org", tracking: gh([]string{"valid-org", ""}, nil), wantErr: "allowed_targets.orgs"},
+		{name: "github org with slash", tracking: gh([]string{"org/repo"}, nil), wantErr: "allowed_targets.orgs"},
+		{name: "gitlab valid", tracking: gl([]string{"group", "group/sub"}, []string{"group/sub/project"})},
+		{name: "gitlab empty group", tracking: gl([]string{""}, nil), wantErr: "allowed_targets.groups"},
+		{name: "gitlab group with empty segment", tracking: gl([]string{"group//sub"}, nil), wantErr: "allowed_targets.groups"},
+		{name: "gitlab repo without namespace", tracking: gl(nil, []string{"project"}), wantErr: "full project path"},
+		{name: "gitlab repo with trailing slash", tracking: gl(nil, []string{"group/project/"}), wantErr: "full project path"},
+		{name: "jira valid", tracking: jira("PROJ", "AB_2")},
+		{name: "jira lowercase key", tracking: jira("proj"), wantErr: "Jira project key"},
+		{name: "jira key with digit first", tracking: jira("1PROJ"), wantErr: "Jira project key"},
+		{name: "jira owner/repo", tracking: jira("owner/repo"), wantErr: "Jira project key"},
+		{name: "github and gitlab", tracking: &TrackingConfig{GitHub: &GitHubTrackingConfig{}, GitLab: &GitLabTrackingConfig{}}, wantErr: "at most one provider mapping may be set, found github, gitlab"},
+		{name: "github and jira", tracking: &TrackingConfig{GitHub: &GitHubTrackingConfig{}, Jira: &JiraTrackingConfig{}}, wantErr: "found github, jira"},
+		{name: "all three", tracking: &TrackingConfig{GitHub: &GitHubTrackingConfig{}, GitLab: &GitLabTrackingConfig{}, Jira: &JiraTrackingConfig{}}, wantErr: "found github, gitlab, jira"},
 	}
 	for _, repo := range []string{"/", "/repo", "owner/", "//"} {
-		cases = append(cases, struct {
-			name    string
-			ci      *CreateIssuesConfig
-			wantErr string
-		}{name: "malformed " + repo, ci: &CreateIssuesConfig{AllowTargets: AllowTargets{Repos: []string{repo}}}, wantErr: "owner/name"})
+		cases = append(cases, tc{name: "github malformed " + repo, tracking: gh(nil, []string{repo}), wantErr: "owner/repo"})
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			cfg := &perRepoConfig{Version: "1", CreateIssues: tc.ci}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfg := &perRepoConfig{Version: "1", Tracker: c.tracking}
 			err := cfg.Validate()
-			if tc.wantErr == "" {
+			if c.wantErr == "" {
 				assert.NoError(t, err)
 				return
 			}
 			require.Error(t, err)
-			assert.Contains(t, err.Error(), tc.wantErr)
+			assert.Contains(t, err.Error(), c.wantErr)
 		})
 	}
 }
 
-func TestPerRepoConfig_CreateIssues_ParseYAML(t *testing.T) {
-	yamlData := `
-version: "1"
-roles:
-  - fullsend
-  - triage
-create_issues:
-  allow_targets:
-    repos:
-      - my-org/my-repo
-      - fullsend-ai/fullsend
-`
-	cfg, err := ParsePerRepoConfig([]byte(yamlData))
-	require.NoError(t, err)
-	require.NotNil(t, cfg.IssueCreationConfig())
-	assert.Equal(t, []string{"my-org/my-repo", "fullsend-ai/fullsend"}, cfg.IssueCreationConfig().AllowTargets.Repos)
+func TestPerRepoConfig_Tracking_ParseYAML(t *testing.T) {
+	cases := []struct {
+		name     string
+		yaml     string
+		provider string
+		want     *TrackingConfig
+	}{
+		{
+			name:     "github",
+			yaml:     "tracker:\n  github:\n    allowed_targets:\n      orgs: [my-org]\n      repos: [my-org/my-repo, fullsend-ai/fullsend]\n",
+			provider: TrackingProviderGitHub,
+			want: &TrackingConfig{GitHub: &GitHubTrackingConfig{AllowedTargets: GitHubAllowedTargets{
+				Orgs: []string{"my-org"}, Repos: []string{"my-org/my-repo", "fullsend-ai/fullsend"},
+			}}},
+		},
+		{
+			name:     "gitlab",
+			yaml:     "tracker:\n  gitlab:\n    allowed_targets:\n      groups: [grp/sub]\n      repos: [grp/sub/proj]\n",
+			provider: TrackingProviderGitLab,
+			want: &TrackingConfig{GitLab: &GitLabTrackingConfig{AllowedTargets: GitLabAllowedTargets{
+				Groups: []string{"grp/sub"}, Repos: []string{"grp/sub/proj"},
+			}}},
+		},
+		{
+			name:     "jira",
+			yaml:     "tracker:\n  jira:\n    allowed_targets:\n      projects: [PROJ]\n",
+			provider: TrackingProviderJira,
+			want:     &TrackingConfig{Jira: &JiraTrackingConfig{AllowedTargets: JiraAllowedTargets{Projects: []string{"PROJ"}}}},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfg, err := ParsePerRepoConfigWriter([]byte("version: \"1\"\n" + c.yaml))
+			require.NoError(t, err)
+			require.NoError(t, cfg.Validate())
+			assert.Equal(t, c.want, cfg.IssueTracking())
+			assert.Equal(t, c.provider, cfg.IssueTracking().Provider())
+
+			// Round trip through Marshal.
+			data, err := cfg.Marshal()
+			require.NoError(t, err)
+			parsed, err := ParsePerRepoConfig(data)
+			require.NoError(t, err)
+			assert.Equal(t, c.want, parsed.IssueTracking())
+		})
+	}
 }
 
-func TestNewPerRepoConfig_CreateIssuesDefaults(t *testing.T) {
+func TestPerRepoConfig_LegacyCreateIssuesRejected(t *testing.T) {
+	data := []byte("version: \"1\"\ncreate_issues:\n  allow_targets:\n    orgs: [acme]\n")
+
+	cfg, err := ParsePerRepoConfigWriter(data)
+	require.NoError(t, err, "byte parsing stays lenient; LoadConfig rejects the key separately")
+	require.NotNil(t, cfg.IssueTracking())
+	assert.Empty(t, cfg.IssueTracking().Provider(), "the legacy block grants nothing")
+	err = cfg.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "create_issues is no longer supported")
+	assert.Contains(t, err.Error(), "tracker.<provider>.allowed_targets")
+	require.ErrorIs(t, cfg.ValidateGlobal(), errLegacyCreateIssues)
+
+	layered, err := ParsePerRepoConfigWriterLayered(data, []byte("version: \"1\"\n"))
+	require.NoError(t, err)
+	require.ErrorIs(t, layered.Validate(), errLegacyCreateIssues)
+
+	out, err := cfg.Marshal()
+	require.NoError(t, err)
+	assert.NotContains(t, string(out), "create_issues", "the legacy block is never written back")
+
+	reader, err := ParsePerRepoConfig(data)
+	require.NoError(t, err)
+	assert.True(t, asPerRepo(reader.(PerRepoConfigWriter)).legacyCreateIssues)
+}
+
+func TestPerRepoConfig_LegacyCreateIssuesOverlayDoesNotInheritBase(t *testing.T) {
+	overlay := []byte("create_issues:\n  allow_targets: {}\n")
+	base := []byte("tracker:\n  github:\n    allowed_targets:\n      orgs: [acme]\n")
+
+	layered, err := ParsePerRepoConfigWriterLayered(overlay, base)
+	require.NoError(t, err)
+	require.NotNil(t, layered.IssueTracking())
+	assert.Empty(t, layered.IssueTracking().Provider(), "a legacy deny-all overlay must not inherit the base grant")
+	require.ErrorIs(t, layered.Validate(), errLegacyCreateIssues)
+
+	// Without the legacy block the base grant is inherited as before.
+	inherited, err := ParsePerRepoConfigWriterLayered([]byte("version: \"1\"\n"), base)
+	require.NoError(t, err)
+	require.NotNil(t, inherited.IssueTracking())
+	assert.Equal(t, TrackingProviderGitHub, inherited.IssueTracking().Provider())
+}
+
+func TestPerRepoConfig_LegacyCreateIssuesOverlaySelectsNoTracker(t *testing.T) {
+	overlay := []byte("create_issues:\n  allow_targets: {}\n")
+	base := []byte("tracker:\n  jira:\n    allowed_targets:\n      projects: [PROJ]\n")
+
+	layered, err := ParsePerRepoConfigWriterLayered(overlay, base)
+	require.NoError(t, err)
+	assert.Empty(t, layered.IssueTracking().Provider(), "a legacy overlay selects no provider")
+	assert.Empty(t, layered.ConfigTracker(), "ConfigTracker must apply the same legacy barrier as IssueTracking")
+
+	inherited, err := ParsePerRepoConfigWriterLayered([]byte("version: \"1\"\n"), base)
+	require.NoError(t, err)
+	assert.Equal(t, TrackingProviderJira, inherited.ConfigTracker())
+}
+
+func TestTrackingConfig_MultipleProvidersFailClosed(t *testing.T) {
+	data := []byte("tracker:\n  github:\n    allowed_targets:\n      orgs: [acme]\n  jira:\n    allowed_targets:\n      projects: [PROJ]\n")
+
+	cfg, err := ParsePerRepoConfigWriter(data)
+	require.NoError(t, err, "runtime parsing stays lenient")
+	assert.Empty(t, cfg.IssueTracking().Provider(), "an ambiguous mapping selects no provider")
+	assert.Empty(t, cfg.ConfigTracker())
+	assert.True(t, cfg.IssueTracking().grants().empty(), "an ambiguous mapping grants nothing")
+	require.Error(t, cfg.Validate())
+}
+
+func TestPerRepoConfig_SetIssueTracking(t *testing.T) {
 	cfg := NewPerRepoConfig(nil, "my-org/my-repo")
-	require.NotNil(t, cfg.IssueCreationConfig())
+	cfg.SetIssueTracking(DefaultIssueTracking(TrackingProviderGitLab))
+	require.NotNil(t, cfg.IssueTracking())
+	assert.Equal(t, TrackingProviderGitLab, cfg.IssueTracking().Provider())
+}
+
+func TestNewPerRepoConfig_TrackingDefaults(t *testing.T) {
+	cfg := NewPerRepoConfig(nil, "my-org/my-repo")
+	require.NotNil(t, cfg.IssueTracking())
+	require.NotNil(t, cfg.IssueTracking().GitHub)
 	// The target repo is implicitly allowed; both upstream destinations
 	// are materialized.
 	want := []string{"fullsend-ai/fullsend", "fullsend-ai/agents"}
-	assert.Equal(t, want, cfg.IssueCreationConfig().AllowTargets.Repos)
+	assert.Equal(t, want, cfg.IssueTracking().GitHub.AllowedTargets.Repos)
 	data, err := yaml.Marshal(cfg)
 	require.NoError(t, err)
 	parsed, err := ParsePerRepoConfig(data)
 	require.NoError(t, err)
-	assert.Equal(t, want, parsed.IssueCreationConfig().AllowTargets.Repos)
+	assert.Equal(t, want, parsed.IssueTracking().GitHub.AllowedTargets.Repos)
+
+	assert.Nil(t, NewPerRepoConfig(nil, "").IssueTracking())
 }
 
-func TestNewPerRepoConfig_CreateIssuesDefaultsAreIndependent(t *testing.T) {
+func TestNewPerRepoConfig_TrackingDefaultsAreIndependent(t *testing.T) {
 	first := NewPerRepoConfig(nil, "acme/one")
 	second := NewPerRepoConfig(nil, "acme/two")
-	first.IssueCreationConfig().AllowTargets.Repos[0] = "acme/custom"
-	assert.Equal(t, []string{"fullsend-ai/fullsend", "fullsend-ai/agents"}, second.IssueCreationConfig().AllowTargets.Repos)
+	first.IssueTracking().GitHub.AllowedTargets.Repos[0] = "acme/custom"
+	assert.Equal(t, []string{"fullsend-ai/fullsend", "fullsend-ai/agents"}, second.IssueTracking().GitHub.AllowedTargets.Repos)
+}
+
+func TestDefaultIssueTracking(t *testing.T) {
+	gh := DefaultIssueTracking(TrackingProviderGitHub)
+	require.NotNil(t, gh)
+	assert.Equal(t, TrackingProviderGitHub, gh.Provider())
+	assert.Equal(t, DefaultIssueCreationRepos(), gh.GitHub.AllowedTargets.Repos)
+
+	gl := DefaultIssueTracking(TrackingProviderGitLab)
+	require.NotNil(t, gl)
+	assert.Equal(t, &TrackingConfig{GitLab: &GitLabTrackingConfig{}}, gl)
+	out, err := yaml.Marshal(gl)
+	require.NoError(t, err)
+	assert.Equal(t, "gitlab:\n    allowed_targets: {}\n", string(out))
+
+	assert.Nil(t, DefaultIssueTracking("forgejo"))
+	assert.Nil(t, DefaultIssueTracking(""))
 }
 
 // --- AgentEntry tests ---
@@ -551,6 +923,38 @@ type agentEntriesValidator struct {
 
 func (v agentEntriesValidator) Validate() error {
 	return ValidateAgentEntries(v.agents, v.allowlist)
+}
+
+func TestValidateAgentEntries_Trigger(t *testing.T) {
+	// A trigger alone makes a valid override-only entry for a built-in agent.
+	require.NoError(t, ValidateAgentEntries([]AgentEntry{{Name: "review", Trigger: `event.transition.kind == "opened"`}}, nil))
+	assert.True(t, AgentEntry{Name: "review", Trigger: "true"}.IsOverrideOnly())
+
+	err := ValidateAgentEntries([]AgentEntry{{Name: "review", Trigger: `event.transition.kind ==`}}, nil)
+	require.ErrorContains(t, err, "agents[0] (review): invalid trigger")
+
+	err = ValidateAgentEntries([]AgentEntry{{Name: "review", Trigger: `"opened"`}}, nil)
+	require.ErrorContains(t, err, "must evaluate to bool")
+
+	err = ValidateAgentEntries([]AgentEntry{{Source: "harness/lint.yaml", Trigger: `event.x ==`}}, nil)
+	require.ErrorContains(t, err, "agents[0] (harness/lint.yaml): invalid trigger")
+}
+
+func TestPerRepoConfigValidate_RejectsInvalidAgentTrigger(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("version: \"1\"\nagents:\n  - name: review\n    trigger: event.transition.kind ==\n"), 0o644))
+	cfg, err := LoadConfigWriter(dir, LoadOpts{})
+	require.NoError(t, err, "agent entries are validated by Validate and their consumers, not at load")
+	require.ErrorContains(t, cfg.Validate(), "invalid trigger")
+}
+
+func TestAgentEntry_TriggerYAMLRoundTrip(t *testing.T) {
+	var e AgentEntry
+	require.NoError(t, yaml.Unmarshal([]byte("name: review\ntrigger: |\n  event.transition.kind == \"opened\"\n"), &e))
+	assert.Equal(t, "event.transition.kind == \"opened\"\n", e.Trigger)
+	out, err := yaml.Marshal(e)
+	require.NoError(t, err)
+	assert.Contains(t, string(out), "trigger:")
 }
 
 func TestValidateAgentEntries_Valid(t *testing.T) {

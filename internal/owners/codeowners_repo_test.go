@@ -188,26 +188,27 @@ func codeownersOwners(content, relPath string) []string {
 // Renovate submodule digest bumps auto-merge, but .gitmodules does not
 // merely move commit pointers inside trusted repos — it maps submodule
 // names to fetch URLs. GitHub CODEOWNERS is last-match-wins, so a
-// blank-owner rule matching ".gitmodules" after the "* @fullsend-ai/core"
-// wildcard removes the human-review gate for submodule URL swaps.
+// blank-owner rule matching ".gitmodules" after the
+// "* @fullsend-ai/maintainers" wildcard removes the human-review gate for
+// submodule URL swaps.
 //
-// The effective owner list must equal exactly @fullsend-ai/core, not
-// merely contain it: when code-owner review is required, an approval from
-// ANY listed owner suffices, so an extra co-owner ("@some-user" listed
-// after core) can approve a submodule URL swap alone. A nonexistent or
-// under-privileged owner likewise assigns no code owner at all, which a
-// syntactic guard cannot detect locally (GitHub surfaces it via the
-// code-owners-errors API); exact-list matching at least flags it on
-// every edit. The sibling experiments entry is intentional and is not
+// The effective owner list must equal exactly @fullsend-ai/maintainers,
+// not merely contain it: when code-owner review is required, an approval
+// from ANY listed owner suffices, so an extra co-owner ("@some-user"
+// listed after maintainers) can approve a submodule URL swap alone. A
+// nonexistent or under-privileged owner likewise assigns no code owner at
+// all, which a syntactic guard cannot detect locally (GitHub surfaces it
+// via the code-owners-errors API); exact-list matching at least flags it
+// on every edit. The sibling experiments entry is intentional and is not
 // asserted on here.
 func TestRepoCodeownersRetainsOwnerForGitmodules(t *testing.T) {
 	content, loc := repoCodeowners(t)
 
 	owners := codeownersOwners(content, ".gitmodules")
 
-	require.Equal(t, []string{"@fullsend-ai/core"}, owners,
+	require.Equal(t, []string{"@fullsend-ai/maintainers"}, owners,
 		"effective CODEOWNERS (%s) must resolve .gitmodules to exactly "+
-			"[@fullsend-ai/core] (got %v): an extra co-owner can approve "+
+			"[@fullsend-ai/maintainers] (got %v): an extra co-owner can approve "+
 			"submodule fetch URL swaps alone, and a blank or invalid list "+
 			"removes the review gate entirely (issue #6082)", loc, owners)
 }

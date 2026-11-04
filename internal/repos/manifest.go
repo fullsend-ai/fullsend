@@ -124,6 +124,9 @@ type Manifest struct {
 	// .fullsend/config.yaml so readers can trace its content back to the
 	// manifest. Empty for a local-path manifest or one built in memory.
 	sourceURL string
+	// legacyTrackingMigrations lists the config layers whose legacy
+	// tracker/create_issues keys were converted on parse (#9075).
+	legacyTrackingMigrations []LegacyTrackingMigration
 }
 
 // PlatformConfig holds per-platform infrastructure settings and the
@@ -357,6 +360,14 @@ type ResolvedConfig struct {
 	// the Vertex credential secrets when no command-line input does.
 	DeclaredInferenceProject string
 	DeclaredWIFProvider      string
+	// DeclaredWIFAudience and DeclaredServiceAccount are the GitLab
+	// vertex-wif options for an existing WIF provider the installer does
+	// not own (inference.wif_audience, inference.service_account): the
+	// agent job's ID token audience and the service account it
+	// impersonates. Empty when not declared, which keeps aud "fullsend"
+	// and direct federation.
+	DeclaredWIFAudience    string
+	DeclaredServiceAccount string
 	// ConfigManaged reports whether this repository's
 	// .fullsend/config.yaml is managed (ADR 0122). It is true for every
 	// repository; no config key is required to opt in (#8218).
@@ -378,11 +389,18 @@ func parseManifestBytes(data []byte, m *Manifest) error {
 	if err := rejectRemovedConfigSiblings(data); err != nil {
 		return err
 	}
-	dec := yaml.NewDecoder(bytes.NewReader(data))
+	// The legacy tracker/create_issues shape is converted before strict
+	// decoding, which rejects it (#9075).
+	migrated, trackingMigrations, err := migrateLegacyManifestTracking(data)
+	if err != nil {
+		return fmt.Errorf("migrating legacy tracker configuration: %w", err)
+	}
+	dec := yaml.NewDecoder(bytes.NewReader(migrated))
 	dec.KnownFields(true)
 	if err := dec.Decode(m); err != nil && !errors.Is(err, io.EOF) {
 		return err
 	}
+	m.legacyTrackingMigrations = trackingMigrations
 	migrateDeprecatedRunnerTags(m)
 	return nil
 }

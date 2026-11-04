@@ -66,11 +66,8 @@ func ProbeRepoState(ctx context.Context, client forge.Client, owner, repo, forge
 		}
 	}
 	for _, c := range components {
-		// Capture the version marker even when the current carrier is
-		// missing: GitLab repos enrolled before #7707 still host it in
-		// the leftover dispatch stub. Presence of that stub is not
-		// install evidence; the ref is still useful once another
-		// required component proves the repo is installed.
+		// Record the installed version marker. It is only non-empty
+		// when the workflow carrier exists.
 		if c.Name == "workflow" {
 			state.FullsendRef = c.Actual
 		}
@@ -145,6 +142,10 @@ type RepoStatus struct {
 	// GitLabTriggerAccount is the trigger-only service account's readiness,
 	// drift, and the exact reasons for a deferral or unfinished cleanup.
 	GitLabTriggerAccount *GitLabTriggerAccountStatus `json:"gitlab_trigger_account,omitempty"`
+
+	// GitLabWebhook is the webhook fast path's readiness (ADR 0125): names,
+	// IDs and booleans only, never the trigger token, webhook secret or URL.
+	GitLabWebhook *GitLabWebhookStatus `json:"gitlab_webhook,omitempty"`
 }
 
 // StatusSummary provides aggregate counts across all repos.
@@ -321,6 +322,10 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 			status.Error = err.Error()
 			return status
 		}
+		if err := checkPinnedServiceAccountSupport(ctx, cfg, dcfg.UpstreamRef, dcfg.UpstreamTag, resolver); err != nil {
+			status.Error = err.Error()
+			return status
+		}
 	}
 	status.ExpectedMintURL = cfg.MintURL
 
@@ -336,11 +341,12 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 		appSet = cfg.AppSet
 	}
 	expectedVars, varValErr := staticExpectedVarValues(InstallConfig{
-		Forge:             cfg.Forge,
-		MintURL:           cfg.MintURL,
-		InferenceRegion:   cfg.expectedInferenceRegion(),
-		ReviewAppClientID: dcfg.ReviewAppClientID,
-		AppSet:            appSet,
+		Forge:                   cfg.Forge,
+		MintURL:                 cfg.MintURL,
+		InferenceRegion:         cfg.expectedInferenceRegion(),
+		InferenceServiceAccount: cfg.DeclaredServiceAccount,
+		ReviewAppClientID:       dcfg.ReviewAppClientID,
+		AppSet:                  appSet,
 	}, cfg.MintURL)
 	if varValErr != nil {
 		status.Error = fmt.Sprintf("building expected variable values for %s/%s: %v", owner, repo, varValErr)
@@ -412,6 +418,15 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 		})
 	}
 
+	// Report the configuration error install would fail on: nothing will
+	// refresh a live agent job script that ignores the service account.
+	if workflowPresent && presetLoaded {
+		if err := checkEstablishedServiceAccountSupport(ctx, cfg, dcfg.UpstreamRef, components); err != nil {
+			status.Error = err.Error()
+			return status
+		}
+	}
+
 	checkObsoleteInferenceConfig(ctx, client, cfg, &status)
 	if status.Error != "" {
 		return status
@@ -455,7 +470,7 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 	// presence checks above. Refs are normalized before comparison so that
 	// ref-format differences do not produce false content-drift reports —
 	// ref drift is already detected separately.
-	checkScaffoldContentDrift(ctx, client, cfg, dcfg, resolver, &status)
+	checkScaffoldContentDrift(ctx, client, cfg, dcfg, resolver, workflowPresent && isUnstampedInstallRef(cfg.Forge, status.CurrentRef), &status)
 	if status.Error != "" {
 		return status
 	}
@@ -491,6 +506,12 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 		// Ledger and sink only; the CLI adds the live GitLab drift checks.
 		diag := DiagnoseGitLabTriggerAccount(ctx, client, nil, owner, repo, "")
 		ApplyGitLabTriggerAccountStatus(&status, diag)
+		// Identifying the managed webhook needs the instance base URL, which
+		// every live GitLab client exposes; a client without one has no
+		// webhook fast path to diagnose.
+		if GitLabBaseURL(client) != "" {
+			ApplyGitLabWebhookStatus(&status, DiagnoseGitLabWebhook(ctx, client, owner, repo))
+		}
 	}
 
 	return status
@@ -514,8 +535,9 @@ func ApplyGitLabTriggerAccountStatus(status *RepoStatus, diag GitLabTriggerAccou
 }
 
 // checkObsoleteInferenceConfig reports Fullsend-managed inference secrets
-// and variables that belong to a method the repository's inference.auth
-// does not select. A valid selection does not make leftover configuration
+// and variables the repository's effective configuration does not use (a
+// method inference.auth does not select, or an undeclared
+// inference.service_account on GitLab). A valid selection does not make leftover configuration
 // healthy desired state: convergence deletes these once the selected
 // method is established, so status reports them as drift. Secrets are
 // checked for presence only — secret values are never read. GitLab's
@@ -525,19 +547,19 @@ func checkObsoleteInferenceConfig(ctx context.Context, client forge.Client, cfg 
 	if status.Error != "" {
 		return
 	}
-	for _, name := range obsoleteInferenceVariables(cfg.InferenceAuth) {
-		_, exists, err := client.GetRepoVariable(ctx, cfg.Owner, cfg.Repo, name)
+	for _, v := range obsoleteInferenceVariables(cfg) {
+		_, exists, err := client.GetRepoVariable(ctx, cfg.Owner, cfg.Repo, v.name)
 		if err != nil {
-			status.Error = fmt.Sprintf("checking obsolete variable %s for %s/%s: %v", name, cfg.Owner, cfg.Repo, err)
+			status.Error = fmt.Sprintf("checking obsolete variable %s for %s/%s: %v", v.name, cfg.Owner, cfg.Repo, err)
 			return
 		}
 		if !exists {
 			continue
 		}
 		status.Drifts = append(status.Drifts, Drift{
-			Field:    name,
+			Field:    v.name,
 			Expected: "absent",
-			Actual:   fmt.Sprintf("obsolete variable (inference.auth is %s)", cfg.InferenceAuth),
+			Actual:   fmt.Sprintf("obsolete variable (%s)", v.reason),
 		})
 	}
 }
@@ -587,6 +609,23 @@ func appendGitLabRoleStatus(ctx context.Context, client forge.Client, owner, rep
 			Actual:   "missing",
 		})
 	}
+}
+
+// unpinnedScaffoldContent renders the expected scaffold for a repository
+// whose manifest sets no fullsend_ref, using the same target ref as
+// convergeContentDriftFiles: the running release's ref when the build has
+// one, otherwise config.DefaultUpstreamRef (the renderer's fallback) when
+// unstampedInstall reports that a build without a release ref wrote the
+// scaffold. Returns (nil, nil) when neither applies, because no baseline
+// can be rendered without repointing the installed ref.
+func unpinnedScaffoldContent(resolved ResolvedConfig, dcfg DriftConfig, unstampedInstall bool) ([]forge.TreeFile, error) {
+	if dcfg.UpstreamRef == "" && !unstampedInstall {
+		return nil, nil
+	}
+	installCfg := driftInstallConfig(resolved, dcfg)
+	installCfg.UpstreamRef = dcfg.UpstreamRef
+	installCfg.UpstreamTag = dcfg.UpstreamTag
+	return BuildScaffoldFiles(installCfg)
 }
 
 func readWorkflowRef(ctx context.Context, client forge.Client, owner, repo string, fc ForgeConfig) (string, error) {
@@ -700,8 +739,18 @@ func filterRepos(repos []ResolvedRepo, filter []string) ([]ResolvedRepo, []strin
 // The refResolver is used to fetch remote scaffold templates when
 // fullsend_ref pins a version that differs from the running binary,
 // ensuring the baseline matches the pinned version's templates.
-func checkScaffoldContentDrift(ctx context.Context, client forge.Client, cfg ResolvedConfig, dcfg DriftConfig, refResolver *RefResolver, status *RepoStatus) {
-	expectedFiles, err := ExpectedScaffoldContent(ctx, cfg, dcfg, refResolver)
+//
+// Without fullsend_ref the baseline matches convergeContentDriftFiles:
+// the running release's ref, or — for a build without one — the default
+// ref when unstampedInstall reports that such a build wrote the scaffold.
+func checkScaffoldContentDrift(ctx context.Context, client forge.Client, cfg ResolvedConfig, dcfg DriftConfig, refResolver *RefResolver, unstampedInstall bool, status *RepoStatus) {
+	var expectedFiles []forge.TreeFile
+	var err error
+	if cfg.FullsendRef == "" {
+		expectedFiles, err = unpinnedScaffoldContent(cfg, dcfg, unstampedInstall)
+	} else {
+		expectedFiles, err = ExpectedScaffoldContent(ctx, cfg, dcfg, refResolver)
+	}
 	if err != nil {
 		status.Error = fmt.Sprintf("rendering expected scaffold for %s/%s: %v", cfg.Owner, cfg.Repo, err)
 		return

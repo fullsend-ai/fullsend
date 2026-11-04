@@ -328,6 +328,7 @@ test -f '/sandbox/codex-config/hooks/unicode_posttool.py' &&
 { [ "$(command -p sha256sum '/sandbox/codex-config/config.toml' | command -p cut -d' ' -f1)" = '<sha256>' ] &&
 [ "$(command -p sha256sum '/sandbox/codex-config/hooks.json' | command -p cut -d' ' -f1)" = '<sha256>' ] || { echo 'fullsend: codex config.toml or hooks.json is not the file fullsend wrote; refusing to run (a rewritten config can trust the target repo, which loads its .codex/ layer and its hooks)' >&2; exit 98; }; } &&
 command -p rm -f '/sandbox/codex-config/models_cache.json' &&
+export RUST_LOG='error,opentelemetry_sdk=off,opentelemetry_otlp=off,codex_exec=warn,codex_app_server::in_process=warn' &&
 export FULLSEND_CODEX_HOOK_DIGESTS='canary_posttool.py:<sha256> canary_pretool.py:<sha256> context_suppress_posttool.py:<sha256> hook_io.py:<sha256> posttool_chain.py:<sha256> secret_redact_posttool.py:<sha256> ssrf_pretool.py:<sha256> tirith_check.py:<sha256> unicode_posttool.py:<sha256>' &&
 export FULLSEND_CODEX_SPAWN_DIGESTS='hooks.json:<sha256>' &&
 unset TIRITH_FAIL_ON FULLSEND_CANARY_TOKEN FULLSEND_TOOL_ALLOWLIST &&

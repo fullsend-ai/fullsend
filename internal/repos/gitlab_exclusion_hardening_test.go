@@ -339,9 +339,9 @@ func TestCleanupPreservesUnresolvedSuppliedOwnerForNilClients(t *testing.T) {
 func TestCleanupPreflightRejectsMalformedRotationState(t *testing.T) {
 	ctx := context.Background()
 	for name, raw := range map[string]string{
-		"trailing data":      `{"roles":{"coder":{"excluded_user_ids":[501]}}} {"roles":{}}`,
-		"negative exclusion": `{"roles":{"coder":{"excluded_user_ids":[-5]}}}`,
-		"zero exclusion":     `{"roles":{"coder":{"excluded_user_ids":[0]}}}`,
+		"trailing data":      `{"version":2,"roles":{"coder":{"excluded_user_ids":[501]}}} {"version":2,"roles":{}}`,
+		"negative exclusion": `{"version":2,"roles":{"coder":{"excluded_user_ids":[-5]}}}`,
+		"zero exclusion":     `{"version":2,"roles":{"coder":{"excluded_user_ids":[0]}}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			fc := forge.NewFakeClient()

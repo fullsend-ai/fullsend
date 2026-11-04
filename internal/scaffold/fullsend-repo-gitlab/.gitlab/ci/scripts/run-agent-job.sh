@@ -60,8 +60,13 @@ FULLSEND_PINNED_API_V4_URL="${FULLSEND_PINNED_GITLAB_URL}/api/v4"
 
 # Inference credential setup — write a file-based credential config
 # for Vertex AI so GOOGLE_APPLICATION_CREDENTIALS is available in the
-# sandbox. Uses direct federated identity (no SA impersonation) — the
-# inference WIF principal has roles/aiplatform.user granted directly.
+# sandbox. By default this uses direct federated identity (no SA
+# impersonation): the inference WIF principal has roles/aiplatform.user
+# granted directly. When FULLSEND_GCP_SERVICE_ACCOUNT is set
+# (config.inference.service_account, for an existing WIF provider the
+# installer does not own), the config also impersonates that service
+# account, which must grant the federated principal
+# roles/iam.workloadIdentityUser. Unset, the file is unchanged.
 # The credential_source.file points to the sandbox path because this
 # config is read inside the sandbox container. GitLab id_tokens last
 # the full job duration (~1 hour), so no OIDC refresh loop is needed
@@ -71,7 +76,32 @@ if [ -n "${FULLSEND_GCP_WIF_PROVIDER:-}" ]; then
   GCP_CRED_CONFIG_FILE=$(mktemp)
   trap 'rm -f "${OIDC_TOKEN_FILE}" "${GCP_CRED_CONFIG_FILE}"' EXIT
   echo "${FULLSEND_ID_TOKEN}" > "${OIDC_TOKEN_FILE}"
-  cat > "${GCP_CRED_CONFIG_FILE}" <<INFERENCECRED
+  if [ -n "${FULLSEND_GCP_SERVICE_ACCOUNT:-}" ]; then
+    # The installer validates the email; recheck the shape here so the
+    # value cannot break out of the JSON string below.
+    case "${FULLSEND_GCP_SERVICE_ACCOUNT}" in
+      *[!a-z0-9@.-]* | *@*@*)
+        echo "ERROR: FULLSEND_GCP_SERVICE_ACCOUNT is not a service account email" >&2
+        exit 1
+        ;;
+      [a-z]*@*.iam.gserviceaccount.com) ;;
+      *)
+        echo "ERROR: FULLSEND_GCP_SERVICE_ACCOUNT must end in .iam.gserviceaccount.com" >&2
+        exit 1
+        ;;
+    esac
+    cat > "${GCP_CRED_CONFIG_FILE}" <<INFERENCECRED
+{
+  "type": "external_account",
+  "audience": "//iam.googleapis.com/${FULLSEND_GCP_WIF_PROVIDER}",
+  "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
+  "token_url": "https://sts.googleapis.com/v1/token",
+  "service_account_impersonation_url": "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${FULLSEND_GCP_SERVICE_ACCOUNT}:generateAccessToken",
+  "credential_source": { "file": "/sandbox/workspace/.gcp-oidc-token" }
+}
+INFERENCECRED
+  else
+    cat > "${GCP_CRED_CONFIG_FILE}" <<INFERENCECRED
 {
   "type": "external_account",
   "audience": "//iam.googleapis.com/${FULLSEND_GCP_WIF_PROVIDER}",
@@ -80,6 +110,7 @@ if [ -n "${FULLSEND_GCP_WIF_PROVIDER:-}" ]; then
   "credential_source": { "file": "/sandbox/workspace/.gcp-oidc-token" }
 }
 INFERENCECRED
+  fi
   export GOOGLE_APPLICATION_CREDENTIALS="${GCP_CRED_CONFIG_FILE}"
   export ANTHROPIC_VERTEX_PROJECT_ID="${FULLSEND_GCP_PROJECT_ID}"
   export GOOGLE_CLOUD_PROJECT="${FULLSEND_GCP_PROJECT_ID}"
@@ -380,27 +411,6 @@ print('true' if str(active).lower() in ('true', 'yes', '1', 'on') else 'false')
   fi
 fi
 
-# Role enablement — skip stage if its role is not in configured roles
-if [ -n "${CONFIG_YAML}" ]; then
-  STAGE_ROLE="${STAGE}"
-  case "${STAGE}" in
-    code|fix) STAGE_ROLE="coder" ;;
-  esac
-  if ! ROLES=$(echo "${CONFIG_YAML}" | python3 -c "import sys,yaml; v=(yaml.safe_load(sys.stdin) or {}); roles=v.get('roles') or []; roles=roles if isinstance(roles,list) else [roles]; print('\n'.join(str(r) for r in roles)) if roles else None"); then
-    echo "WARNING: invalid .fullsend/config.yaml — treating as unconfigured (no role restriction)"
-    ROLES=""
-  fi
-  if [ -n "${ROLES}" ] && ! echo "${ROLES}" | grep -Fqx "${STAGE_ROLE}"; then
-    # Backward compat: "fullsend" in roles implies retro + prioritize
-    if echo "${STAGE}" | grep -Eq '^(retro|prioritize)$' && echo "${ROLES}" | grep -Fqx "fullsend"; then
-      echo "Stage '${STAGE}' allowed via 'fullsend' role — if customizing roles, add '${STAGE}' explicitly"
-    else
-      echo "Stage '${STAGE}' skipped — role '${STAGE_ROLE}' not in configured roles"
-      exit 0
-    fi
-  fi
-fi
-
 # Authorization gate (ADR 0054) — check actor has Developer access.
 # Read-only stages (retro, prioritize) are exempt to match GitHub
 # behavior where any closer may trigger retro.
@@ -410,7 +420,20 @@ fi
 # ACTOR_ID is the generic actor identity, populated from MR_AUTHOR_ID
 # for MR events or NoteAuthorID for issue/note events. Falls back to
 # MR_AUTHOR_ID for backward compatibility with older dispatch pipelines.
-if [ "${STAGE}" != "retro" ] && [ "${STAGE}" != "prioritize" ]; then
+#
+# Jira work-item dispatches (EVENT_TYPE jira_*, #8919) carry no ACTOR_ID:
+# a Jira actor has no GitLab user ID. The Jira poller already authorized
+# the actor against its Jira project role before dispatching, and
+# EVENT_TYPE is part of the HMAC-verified dispatch message above, so only
+# the poller holding FULLSEND_DISPATCH_SECRET can select this branch. As on
+# GitHub, the Jira project is the authorization boundary for these events.
+JIRA_DISPATCH=false
+case "${EVENT_TYPE:-}" in
+  jira_*) JIRA_DISPATCH=true ;;
+esac
+if [ "${JIRA_DISPATCH}" = "true" ]; then
+  echo "Jira work-item dispatch — actor authorized by the Jira poller's project-role check"
+elif [ "${STAGE}" != "retro" ] && [ "${STAGE}" != "prioritize" ]; then
   AUTH_ACTOR_ID="${ACTOR_ID:-${MR_AUTHOR_ID:-}}"
   if [ -z "${AUTH_ACTOR_ID}" ]; then
     echo "WARNING: No actor identity available — skipping stage (fail-closed)"
@@ -476,6 +499,22 @@ export RUNNER_TEMP="${RUNNER_TEMP:-/tmp}"
 # not "0" — inventing …/issues/0 passes EM-001's work_item check.
 GITLAB_ISSUE_URL=""
 case "${EVENT_TYPE:-}" in
+  jira_*)
+    # A Jira work item has no GitLab issue or merge request. Run status
+    # goes to the Jira issue (fullsend run reads the normalized event
+    # passed with --event-file below), so leave GITLAB_ISSUE_URL empty and
+    # keep the overridable merge-request variables from steering any
+    # GitLab note to a merge request. Merge-request stages have nothing to
+    # act on.
+    case "${STAGE}" in
+      review|fix)
+        echo "ERROR: the ${STAGE} stage needs a merge request — refusing to run it for a Jira work item" >&2
+        exit 1
+        ;;
+    esac
+    unset CI_MERGE_REQUEST_IID
+    export FULLSEND_NOTE_TARGET="issues"
+    ;;
   issue_*)
     if [[ -n "${STATUS_IID:-}" && "${STATUS_IID}" != "0" ]]; then
       GITLAB_ISSUE_URL="${FULLSEND_PINNED_GITLAB_URL}/${FULLSEND_PINNED_PROJECT_PATH}/-/issues/${STATUS_IID}"
@@ -526,11 +565,40 @@ case "${EVENT_TYPE:-}" in
 esac
 export GITLAB_ISSUE_URL
 
+# fullsend_payload_comment_body prints the raw comment body from the
+# base64 event payload in $1, or nothing when it has none. The only
+# accepted source is the canonical normalized comment path,
+# ._normalized_event.transition.comment.body, which the poller and
+# webhook dispatcher fill from the note they read from the GitLab API.
+# Legacy or custom fields (.note_body, .object_attributes.note,
+# top-level .comment.body, .instruction) are deliberately not read.
+fullsend_payload_comment_body() {
+  printf '%s' "${1}" | base64 -d 2>/dev/null \
+    | jq -j '._normalized_event.transition.comment.body? | strings' 2>/dev/null || true
+}
+
+# fullsend_fix_instruction prints the human instruction that follows an
+# exact /fs-fix command token at the start of the raw comment body in
+# $1, preserving its line breaks. It returns non-zero, printing nothing,
+# when the body does not start with that exact token — /fs-fix-extra
+# and similar commands do not match.
+fullsend_fix_instruction() {
+  local _fs_body="${1#"${1%%[![:space:]]*}"}"
+  local _fs_rest
+  case "${_fs_body}" in
+    /fs-fix) return 0 ;;
+    /fs-fix[[:space:]]*) _fs_rest="${_fs_body#/fs-fix}" ;;
+    *) return 1 ;;
+  esac
+  printf '%s' "${_fs_rest#"${_fs_rest%%[![:space:]]*}"}"
+}
+
 # Extract the comment body for the retro agent. On GitHub,
 # RETRO_COMMENT is set from the event payload's comment.body field;
-# on GitLab the equivalent data is note_body inside EVENT_PAYLOAD_B64.
+# on GitLab it is the canonical normalized comment body inside
+# EVENT_PAYLOAD_B64.
 if [ "${STAGE}" = "retro" ] && [ -n "${EVENT_PAYLOAD_B64:-}" ]; then
-  RETRO_COMMENT=$(printf '%s' "${EVENT_PAYLOAD_B64}" | base64 -d | jq -r '.note_body // ""')
+  RETRO_COMMENT=$(fullsend_payload_comment_body "${EVENT_PAYLOAD_B64}")
   export RETRO_COMMENT
 fi
 
@@ -918,23 +986,23 @@ if [ "${STAGE}" = "fix" ]; then
   fi
   export TRIGGER_SOURCE
 
-  # Human instruction — extracted from the /fs-fix note body in
-  # the event payload. Default to "none" so the env var is always
-  # non-empty (the fullsend binary rejects empty runner_env values).
-  # Bot-triggered runs always get "none" (matching the fix job in reusable-dispatch.yml).
+  # Human instruction — the text after the exact /fs-fix command
+  # token in the canonical normalized comment body of the event
+  # payload (see fullsend_payload_comment_body). Default to "none" so
+  # the env var is always non-empty (the fullsend binary rejects empty
+  # runner_env values). Bot-triggered runs always get "none" and work
+  # from the review body (matching the fix job in reusable-dispatch.yml).
+  # A body without the exact /fs-fix token injects no instruction.
   HUMAN_INSTRUCTION="none"
   if [ "${_IS_BOT_TRIGGER}" != "true" ] && [ -n "${EVENT_PAYLOAD_B64:-}" ]; then
-    _NOTE_BODY=$(printf '%s' "${EVENT_PAYLOAD_B64}" | base64 -d \
-      | jq -r '.note_body // empty' 2>/dev/null || echo "")
-    case "${_NOTE_BODY}" in
-      /fs-fix*)
-        _INSTRUCTION="${_NOTE_BODY#/fs-fix}"
-        _INSTRUCTION="${_INSTRUCTION#"${_INSTRUCTION%%[![:space:]]*}"}"
-        if [ -n "${_INSTRUCTION}" ]; then
-          HUMAN_INSTRUCTION="${_INSTRUCTION}"
-        fi
-        ;;
-    esac
+    _NOTE_BODY=$(fullsend_payload_comment_body "${EVENT_PAYLOAD_B64}")
+    if _INSTRUCTION=$(fullsend_fix_instruction "${_NOTE_BODY}"); then
+      if [ -n "${_INSTRUCTION}" ]; then
+        HUMAN_INSTRUCTION="${_INSTRUCTION}"
+      fi
+    elif [ -n "${_NOTE_BODY}" ]; then
+      echo "WARNING: comment body does not start with an exact /fs-fix command — no human instruction injected"
+    fi
   fi
   export HUMAN_INSTRUCTION
 
@@ -1013,6 +1081,39 @@ if [ "${STAGE}" = "fix" ]; then
   _FS_TARGET_REPO="${FIX_TARGET_REPO}"
 fi
 mkdir -p "${CI_PROJECT_DIR}/output"
+
+# Jira work-item dispatch (#8919): hand fullsend run the normalized Jira
+# event from the HMAC-verified payload. fullsend run validates it, exports
+# the tracker-independent work-item identity (source, key, URL), clears
+# ISSUE_NUMBER, and routes run status to the Jira issue. A payload without
+# a Jira normalized event fails closed rather than running as a GitLab
+# issue.
+_FS_RUN_EVENT_ARGS=()
+if [ "${JIRA_DISPATCH}" = "true" ]; then
+  JIRA_EVENT_FILE=$(mktemp "${RUNNER_TEMP}/fullsend-jira-event.XXXXXX")
+  if ! printf '%s' "${EVENT_PAYLOAD_B64:-}" | base64 -d 2>/dev/null \
+    | jq -e '._normalized_event | select(type == "object" and .source.system == "jira")' > "${JIRA_EVENT_FILE}" 2>/dev/null; then
+    echo "ERROR: Jira dispatch payload has no Jira normalized event — refusing to run (fail-closed)" >&2
+    exit 1
+  fi
+  _FS_RUN_EVENT_ARGS=(--event-file "${JIRA_EVENT_FILE}")
+else
+  # GitLab dispatch (#9014): the poller embeds the event's full normalized
+  # form when it validates and fits the transport budget. Hand it to
+  # fullsend run the same way, so overlays and root-span telemetry see the
+  # repository, change and refs. A payload with only the comment-only
+  # _normalized_event (an older poller, or an event that did not fit) has
+  # no source.system, gets no --event-file, and runs as before.
+  GITLAB_EVENT_FILE=$(mktemp "${RUNNER_TEMP}/fullsend-gitlab-event.XXXXXX")
+  if printf '%s' "${EVENT_PAYLOAD_B64:-}" | base64 -d 2>/dev/null \
+    | jq -e '._normalized_event | select(type == "object" and .source.system == "gitlab")' > "${GITLAB_EVENT_FILE}" 2>/dev/null; then
+    _FS_RUN_EVENT_ARGS=(--event-file "${GITLAB_EVENT_FILE}")
+  else
+    rm -f "${GITLAB_EVENT_FILE}"
+    GITLAB_EVENT_FILE=""
+  fi
+fi
+
 set +e
 # --status-repo uses the pinned project path (from the CI_JOB_TOKEN
 # job record), not the overridable CI_PROJECT_PATH pipeline variable
@@ -1031,9 +1132,14 @@ fullsend run "${STAGE}" \
   --forge gitlab \
   --run-url "${CI_PIPELINE_URL}" \
   --status-repo "${FULLSEND_PINNED_PROJECT_PATH}" \
-  --status-number "${MR_NUMBER:-${STATUS_IID:-0}}"
+  --status-number "${MR_NUMBER:-${STATUS_IID:-0}}" \
+  ${_FS_RUN_EVENT_ARGS[@]+"${_FS_RUN_EVENT_ARGS[@]}"}
 RUN_STATUS=$?
 set -e
+# Persistent runners keep RUNNER_TEMP between jobs.
+if [ -n "${GITLAB_EVENT_FILE:-}" ]; then
+  rm -f "${GITLAB_EVENT_FILE}"
+fi
 
 MEASURE_ARGS=(--agent "${STAGE}" --output-dir "${CI_PROJECT_DIR}/output")
 if [ -n "${DEFAULT_BRANCH_SHA}" ]; then

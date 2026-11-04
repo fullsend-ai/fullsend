@@ -40,6 +40,9 @@ func (p *panickingSCM) AddComment(context.Context, string, string, int, string) 
 func (p *panickingSCM) GetIssue(context.Context, string, string, int) (*forge.Issue, error) {
 	return nil, nil
 }
+func (p *panickingSCM) ListOpenIssues(context.Context, string, string, ...string) ([]forge.Issue, error) {
+	return nil, nil
+}
 func (p *panickingSCM) GetFileContent(context.Context, string, string, string) ([]byte, error) {
 	return nil, nil
 }
@@ -185,8 +188,12 @@ func TestResetScenarioWorld_ClearsSharedState(t *testing.T) {
 		PlaybackEntries:            []runtime.PlaybackEntry{{Result: "triage/bug"}},
 		PlaybackCommitted:          true,
 		ConsumedHarnessRunIDs:      map[string]map[int]bool{"review": {10: true}},
+		MintProbe:                  &world.MintProbe{Forge: "github"},
+		BotRoleProbe:               &world.BotRoleProbe{Forge: "github"},
 	}
 	resetScenarioWorld(w)
+	assert.Nil(t, w.MintProbe)
+	assert.Nil(t, w.BotRoleProbe)
 	assert.Equal(t, 0, w.PRNumber)
 	assert.Equal(t, "", w.DispatchAgent)
 	assert.Equal(t, 0, w.IssueNumber)

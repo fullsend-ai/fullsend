@@ -22,15 +22,19 @@ import (
 
 // cfmintConfig holds parameters for the CF mint driver. This is an
 // internal type — the constructor reads values from env or computes
-// them from the org name. Callers do not construct or see this type.
+// them from the mint group. Callers do not construct or see this type.
+//
+// The preview mint is deployed with --public (PER_REPO_WIF_REPOS=*):
+// any repository may be a caller, so no caller list has to fit in a
+// Worker variable or be kept enrolled. Workflow-host checks, OIDC
+// verification, role permissions and repo-scope checks still apply.
 type cfmintConfig struct {
 	pemDir            string
 	suiteName         string
-	perRepoWIFRepos   string
 	workflowHostRepos string
 	appSet            string
 	// statusGitHubGroup is the ORG/TEAM passed as --status-github-group
-	// (with --status-auth=oidc,github), so members of the pool org's
+	// (with --status-auth=oidc,github), so members of that pool org's
 	// mint-status team can query /v1/status with a GitHub user token.
 	// Empty leaves status auth at the CLI default (OIDC only).
 	statusGitHubGroup string
@@ -42,21 +46,26 @@ type cfmintConfig struct {
 }
 
 // NewRepoPoolCFMintPreviews is a Factory for the DEV pool. It returns
-// the shared slot-leasing Driver, which deploys one CF preview mint per
-// pool org, the first time a slot in that org is leased, and tears them
-// all down at Finalize.
+// the shared slot-leasing Driver, which packs the pool orgs into the
+// fewest mint groups whose WORKFLOW_HOST_REPOS fits a Worker variable
+// (planMintGroups), deploys one public CF preview mint per group the
+// first time a slot in any of its orgs is leased, and tears each down
+// once at Finalize.
 //
 // Driver-specific config is read from env: PEMs from TEST_*_PEM env
 // vars (materialized for each deploy and removed after it), suite name
 // from BEHAVIOUR_SUITE_NAME (default "bt"), and app set from
-// BEHAVIOUR_APP_SET (default "fullsend-test"). Each org's mint lists
-// only that org's slots: WIF and workflow-host repo lists are computed
-// from the org and the layout's slots per org, and the workflow-host
-// list also carries each slot's mint-probe host (see
-// buildWorkflowHostRepoList). Its status group is the org's mint-status
-// team.
+// BEHAVIOUR_APP_SET (default "fullsend-test"). A group's workflow-host
+// list is computed from its orgs and the layout's slots per org, and
+// carries each slot's mint-probe host (see buildWorkflowHostRepoList).
+// Every mint's status group is the mint-status team of one pool org,
+// picked at random once per job.
 func NewRepoPoolCFMintPreviews(pool PoolConfig) (Driver, error) {
 	if err := pool.validate(); err != nil {
+		return nil, fmt.Errorf("cfmint factory: %w", err)
+	}
+	plan, err := planCFMints(pool.Layout)
+	if err != nil {
 		return nil, fmt.Errorf("cfmint factory: %w", err)
 	}
 	if !cfmintPEMsConfigured() {
@@ -73,7 +82,8 @@ func NewRepoPoolCFMintPreviews(pool PoolConfig) (Driver, error) {
 	// deployed without tracing and the collector still serves workflows.
 	traces := startTraceCollector(logf)
 
-	newMint := func(org string, cred orgCredential) (mintDriver, func(), error) {
+	logf("[cfmint] %d preview mint group(s); status group %s", len(plan.groups), plan.statusGroup)
+	newMint := func(group mintGroup, cred orgCredential) (mintDriver, func(), error) {
 		pemDir, err := setupCFMintPEMDir()
 		if err != nil {
 			return nil, nil, fmt.Errorf("materializing PEMs: %w", err)
@@ -87,7 +97,7 @@ func NewRepoPoolCFMintPreviews(pool PoolConfig) (Driver, error) {
 		}
 		traceEndpoint, traceHeadersFile, cleanupHeaders, err := traces.mintTracing()
 		if err != nil {
-			logf("[trace-collector] WARNING: preview mint for %s will not export traces: %v", org, err)
+			logf("[trace-collector] WARNING: preview mint of %s will not export traces: %v", group, err)
 		}
 		cleanup := func() {
 			cleanupHeaders()
@@ -96,10 +106,9 @@ func NewRepoPoolCFMintPreviews(pool PoolConfig) (Driver, error) {
 		cfg := cfmintConfig{
 			pemDir:            pemDir,
 			suiteName:         envSuiteName(),
-			perRepoWIFRepos:   buildRepoList(org, pool.Layout.SlotsPerOrg),
-			workflowHostRepos: buildWorkflowHostRepoList(org, pool.Layout.SlotsPerOrg),
+			workflowHostRepos: group.workflowHostRepos,
 			appSet:            envAppSet(),
-			statusGitHubGroup: mintStatusGitHubGroup(org),
+			statusGitHubGroup: plan.statusGroup,
 			traceEndpoint:     traceEndpoint,
 			traceHeadersFile:  traceHeadersFile,
 		}
@@ -117,7 +126,7 @@ func NewRepoPoolCFMintPreviews(pool PoolConfig) (Driver, error) {
 	// the standard behaviour suite.
 	setupOpts := playbackSetupOpts()
 	setupOpts.AppSet = envAppSet()
-	return buildPoolDriver(pool, newMint, setupOpts, traces)
+	return buildPoolDriver(pool, plan, newMint, setupOpts, traces)
 }
 
 // Compile-time check: NewRepoPoolCFMintPreviews satisfies Factory.
@@ -225,10 +234,11 @@ func GenerateCFMintPreviewAlias() (string, error) {
 // CFMintDeployArgs builds the CLI arguments for `fullsend mint deploy --platform=cloudflare`.
 // Exported so unit tests can verify arg construction without shelling out.
 //
-// --per-repo-wif-repos and --workflow-host-repos are always passed (even
-// when empty) so the CLI sees them as explicitly changed. The CLI uses
-// "flag changed" semantics: omitted flags preserve existing Worker
-// bindings, while explicitly-empty values clear them.
+// The preview is public (--public, PER_REPO_WIF_REPOS=*), so
+// --per-repo-wif-repos is never passed; the CLI rejects it next to
+// --public. --workflow-host-repos is always passed (even when empty) so
+// the CLI sees it as explicitly changed: omitted flags preserve existing
+// Worker bindings, while explicitly-empty values clear them.
 func CFMintDeployArgs(alias, workerName string, cfg cfmintConfig) []string {
 	args := []string{
 		"mint", "deploy",
@@ -236,7 +246,7 @@ func CFMintDeployArgs(alias, workerName string, cfg cfmintConfig) []string {
 		"--preview", alias,
 		"--worker-name", workerName,
 		"--pem-dir", cfg.pemDir,
-		"--per-repo-wif-repos", cfg.perRepoWIFRepos,
+		"--public",
 		"--workflow-host-repos", cfg.workflowHostRepos,
 	}
 	if cfg.appSet != "" {
@@ -274,14 +284,14 @@ func CFMintTeardownArgs(previewAlias, workerName string) []string {
 	}
 }
 
-func (d *cfmintMintDriver) Install(_ context.Context, org string) (string, error) {
+func (d *cfmintMintDriver) Install(_ context.Context) (string, error) {
 	alias, err := GenerateCFMintPreviewAlias()
 	if err != nil {
 		return "", err
 	}
 	d.previewAlias = alias
 
-	mintURL, err := d.deployCFMint(alias, org)
+	mintURL, err := d.deployCFMint(alias)
 	if err != nil {
 		return "", fmt.Errorf("deploying CF preview mint for BT: %w", err)
 	}
@@ -296,7 +306,7 @@ func (d *cfmintMintDriver) Teardown(_ context.Context) error {
 // deployCFMint deploys a Cloudflare Worker preview mint and returns the
 // deploy-reported preview URL (which includes the account's workers.dev
 // subdomain).
-func (d *cfmintMintDriver) deployCFMint(alias, org string) (string, error) {
+func (d *cfmintMintDriver) deployCFMint(alias string) (string, error) {
 	args := CFMintDeployArgs(alias, d.workerName, d.cfg)
 
 	d.logf("[cfmint] deploying preview mint: fullsend %s", strings.Join(args, " "))
@@ -347,6 +357,14 @@ func envConfigPreset() string {
 	return os.Getenv("BEHAVIOUR_CONFIG_PRESET")
 }
 
+// AppSet returns the GitHub App set the behaviour mints are deployed
+// with: BEHAVIOUR_APP_SET, or "fullsend-test" when unset. Its role Apps
+// have the slugs "<app set>-<role>", so a registered bot's login is
+// "<app set>-<role>[bot]".
+func AppSet() string {
+	return envAppSet()
+}
+
 // envAppSet returns the app set for PEM bootstrap from env or a default.
 func envAppSet() string {
 	if v := os.Getenv("BEHAVIOUR_APP_SET"); v != "" {
@@ -378,12 +396,12 @@ func buildRepoList(org string, poolSize int) string {
 	return strings.Join(repos, ",")
 }
 
-// buildWorkflowHostRepoList constructs the mint's WORKFLOW_HOST_REPOS
-// for a pool: every org/test-repo-NN plus its per-slot mint-probe host
-// org/test-repo-NN-mint-host (MintProbeHostRepoSuffix). Only the pool
-// repos are enrolled callers (PER_REPO_WIF_REPOS); the probe hosts are
-// workflow hosts only, so a reusable workflow there can mint for the
-// leased repo that calls it but never on its own behalf.
+// buildWorkflowHostRepoList constructs one org's part of a mint's
+// WORKFLOW_HOST_REPOS: every org/test-repo-NN plus its per-slot
+// mint-probe host org/test-repo-NN-mint-host (MintProbeHostRepoSuffix).
+// A reusable workflow in a probe host can mint for the leased repo that
+// calls it; repo-scope checks keep it from minting for any other
+// repository without the required grant.
 func buildWorkflowHostRepoList(org string, poolSize int) string {
 	repos := make([]string, 0, 2*poolSize)
 	for i := range poolSize {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -431,12 +432,18 @@ func buildCodexRunCommand(params RunParams, model codexModel, effort string, hoo
 		// Again after .env, which runs in this shell and could recreate it.
 		"&& "+codexModelsCacheRemoval(r),
 	)
+	// codex exec has no --debug flag. Its tracing goes to stderr, at error
+	// level by default — a codex run is not silent there the way pi is — and
+	// RUST_LOG sets the level. It is set here outright, after .env, so neither
+	// .env nor the environment can lower it below what codexStderrDrops
+	// needs: exec and the in-process module at warn, where codex reports a
+	// dropped stream notification and a failed backfill; a value codex
+	// cannot parse would silently drop it to the default filter.
+	filter := codexStderrDefaultFilter + ",codex_exec=warn,codex_app_server::in_process=warn"
 	if params.Debug != "" {
-		// codex exec has no --debug flag. Its tracing goes to stderr, at
-		// error level by default — a codex run is not silent there the way pi
-		// is — and RUST_LOG raises it.
-		parts = append(parts, `&& export RUST_LOG="${RUST_LOG:-info}"`)
+		filter = "info"
 	}
+	parts = append(parts, `&& export RUST_LOG=`+shellQuote(filter))
 
 	prompt := DefaultAgentPrompt
 	if params.Prompt != "" {
@@ -507,8 +514,8 @@ func buildCodexRunCommand(params RunParams, model codexModel, effort string, hoo
 }
 
 // Run executes one agent iteration and normalizes codex's `exec --json` stream
-// into AgentEvents. codex exits 0 on a failed turn and on an interrupted one,
-// so the stream's verdict overrides the exit code, as it does for pi.
+// into AgentEvents. The stream's verdict overrides a zero exit code, as it
+// does for pi, so a failed turn fails the run whatever codex exits.
 func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printer, start time.Time, metrics *RunMetrics) (int, error) {
 	m, err := readCodexManifest(params.SandboxName, r.codexManifestPath())
 	if err != nil {
@@ -584,7 +591,8 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 
 	cmd := buildCodexRunCommand(params, model, effort, hooksEnabled, digests)
 
-	stdout, execCmd, cancel, err := sandbox.ExecStreamReader(ctx, params.SandboxName, cmd, params.Timeout, os.Stderr)
+	stderr := &codexStderrDrops{w: os.Stderr}
+	stdout, execCmd, cancel, err := sandbox.ExecStreamReader(ctx, params.SandboxName, cmd, params.Timeout, stderr)
 	if err != nil {
 		return -1, err
 	}
@@ -636,7 +644,8 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 		innerHandler(evt)
 	}
 
-	if _, parseErr := parseCodexStream(reader, handler); parseErr != nil {
+	primaryThreadID, parseErr := parseCodexStream(reader, handler)
+	if parseErr != nil {
 		fmt.Fprintf(os.Stderr, "  progress parser: %v\n", sanitizeOutput(parseErr.Error()))
 		cancel()
 		io.Copy(io.Discard, reader)
@@ -646,6 +655,17 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 	exitCode := -1
 	if execCmd.ProcessState != nil {
 		exitCode = execCmd.ProcessState.ExitCode()
+	}
+	childIDs.flush()
+	stderr.flush()
+	if params.Debug != "" {
+		// Under --debug codex's stderr went to the sandbox log instead.
+		dropped, backfillFailed, derr := codexCountDroppedInLog(params.SandboxName)
+		if derr != nil {
+			printer.StepWarn("Could not read codex's log for dropped stream notifications: " + redactSummary(sanitizeOutput(derr.Error())))
+		}
+		stderr.Dropped += dropped
+		stderr.BackfillFailed += backfillFailed
 	}
 	if waitErr != nil && execCmd.ProcessState == nil {
 		return exitCode, fmt.Errorf("openshell exec failed: %w", waitErr)
@@ -661,11 +681,23 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 			r.ConfigDir())
 	}
 
+	// The children on disk are read whatever the exit code, for a delegating
+	// agent and whenever the stream shows a spawn: a child that started a turn
+	// leaves a rollout even when the stream lost its spawn item, which is how
+	// the admission check below and the usage fold see it.
+	checkSpawns := digests.delegating() || len(childIDs.Senders) > 0
+	diskChildren, diskIDs := 0, []string(nil)
+	var rolloutsErr error
+	if checkSpawns {
+		diskChildren, diskIDs, rolloutsErr = r.readCodexChildRollouts(params.SandboxName, primaryThreadID, childIDs.Receivers)
+	}
+	foldIDs := slices.Compact(slices.Sorted(slices.Values(slices.Concat(childIDs.IDs, diskIDs))))
+
 	// The fold runs whatever the exit code: codex writes a child's usage as
 	// each response completes, and the parent's entry keeps per_model_usage
 	// summing to the totals across a retry. A read failure is a warning.
-	if digests.delegating() || len(childIDs.IDs) > 0 {
-		n, ferr := r.foldCodexChildUsage(params.SandboxName, childIDs.IDs, metrics)
+	if digests.delegating() || len(foldIDs) > 0 {
+		n, ferr := r.foldCodexChildUsage(params.SandboxName, foldIDs, metrics)
 		if ferr != nil {
 			printer.StepWarn("Sub-agent usage not fully counted: " + redactSummary(sanitizeOutput(ferr.Error())))
 		}
@@ -674,8 +706,39 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 		}
 		// At the budget or on a cancel OpenShell kills nothing, so codex's
 		// children can record more after the read.
-		if len(childIDs.IDs) > 0 && (ctx.Err() != nil || exitCode == 124 || exitCode == -1) {
+		if len(foldIDs) > 0 && (ctx.Err() != nil || exitCode == 124 || exitCode == -1) {
 			printer.StepWarn("Sub-agent usage may be undercounted: codex was stopped, and its children can record more after the read")
+		}
+	}
+
+	// Checked whatever the exit code: with a validation loop an iteration's
+	// non-zero exit does not fail the run; an error from Run does, and a
+	// failed read or an unread spawn item is one too, unlike the usage read
+	// above. Each iteration adds its spawns seen on either side, each counted
+	// once per thread: the stream's spawn items (completed or failed: each
+	// passed the guard) and the children on disk. A dropped stream
+	// notification is a warning, as settled on #8712: most drops hide no
+	// spawn.
+	if stderr.Dropped > 0 {
+		msg := fmt.Sprintf("codex dropped %d stream notification(s) under backpressure", stderr.Dropped)
+		if stderr.BackfillFailed > 0 {
+			msg += ", and its backfill of the turn's items failed, so a dropped completed item stayed lost"
+		}
+		printer.StepWarn(msg + "; the progress log is incomplete")
+	}
+	if childIDs.UnreadSpawn {
+		return exitCode, fmt.Errorf("%s: a spawn_agent item longer than %d bytes could not be read", codexSpawnWithoutAdmission, streamBufSize)
+	}
+	if rolloutsErr != nil {
+		return exitCode, fmt.Errorf("%s: counting the child rollouts: %w", codexSpawnWithoutAdmission, rolloutsErr)
+	}
+	spawned := slices.Compact(slices.Sorted(slices.Values(slices.Concat(childIDs.Receivers, diskIDs))))
+	union := len(spawned) + childIDs.NoReceiver + (diskChildren - len(diskIDs))
+	if children := max(len(childIDs.Senders), diskChildren, union); checkSpawns && children > 0 {
+		digests.CompletedSpawns += children
+		recordRunnerHeldDigests(params.SandboxName, digests)
+		if err := checkCodexSpawnAdmissions(params.SandboxName, primaryThreadID, childIDs.Senders, digests.CompletedSpawns); err != nil {
+			return exitCode, err
 		}
 	}
 

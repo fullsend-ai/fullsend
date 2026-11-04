@@ -32,6 +32,7 @@ type bootstrapInput struct {
 	repoDir                string
 	agentSubagents         map[string]*string
 	parentModel            string
+	effort                 string
 	openAIProviderAttached bool
 }
 
@@ -43,6 +44,7 @@ func (b bootstrapInput) Plugins() []PluginInput             { return b.plugins }
 func (b bootstrapInput) ModelAliases() map[string]string    { return b.modelAliases }
 func (b bootstrapInput) AgentSubagents() map[string]*string { return b.agentSubagents }
 func (b bootstrapInput) ParentModel() string                { return b.parentModel }
+func (b bootstrapInput) Effort() string                     { return b.effort }
 func (b bootstrapInput) OpenAIProviderAttached() bool       { return b.openAIProviderAttached }
 func (b bootstrapInput) RepoDir() string {
 	if b.repoDir == "" {
@@ -317,7 +319,9 @@ func TestBuildRunCommand_WithHooksSettings(t *testing.T) {
 
 func TestBuildRunCommand_WithoutHooksSettings(t *testing.T) {
 	cmd := testRunCommand("agent", "", "/sandbox/workspace/repo", nil, "")
-	assert.NotContains(t, cmd, "--settings")
+	assert.Contains(t, cmd, "--settings "+shellQuote(claudeNonessentialSettings),
+		"without the hooks document, --settings still pins nonessential traffic off")
+	assert.Contains(t, cmd, "export "+claudeNonessentialTrafficEnv+"=1")
 }
 
 func TestBuildRunCommand_HooksSettingsEscapesQuotes(t *testing.T) {

@@ -139,15 +139,17 @@ func TestConvergeManagedConfigFiles_SourceLineIdempotent(t *testing.T) {
 	assert.Empty(t, status.Drifts)
 }
 
-// TestConvergeManagedConfigFiles_MarkerOnlyFileGainsSourceLine: a file
-// written before the source line existed still carries the ownership
-// marker, so it converges as ordinary drift instead of hitting the
-// adoption gate.
-func TestConvergeManagedConfigFiles_MarkerOnlyFileGainsSourceLine(t *testing.T) {
+// TestConvergeManagedConfigFiles_MarkerOnlyFileWithURLManifestIsCurrent: a
+// file installed from a local manifest carries the ownership marker but no
+// source line. Loading the same manifest from a URL renders a source line,
+// but that informational difference alone is neither drift nor a rewrite,
+// so a local-path and a URL invocation cannot keep reversing each other
+// (#8785).
+func TestConvergeManagedConfigFiles_MarkerOnlyFileWithURLManifestIsCurrent(t *testing.T) {
 	m := sourcedManifest(t, "https://raw.githubusercontent.com/acme/infra/main/repos.yaml")
 	desired := mustDesiredManaged(t, m, "acme", "api")
 	old := []byte(managedConfigMarker + "kill_switch: true\n")
-	require.True(t, strings.HasPrefix(string(desired), managedConfigMarker))
+	require.Contains(t, string(desired), managedConfigSourcePrefix)
 
 	fc := forge.NewFakeClient()
 	fc.FileContents["acme/api/"+preset.OverlayPath] = old
@@ -155,15 +157,185 @@ func TestConvergeManagedConfigFiles_MarkerOnlyFileGainsSourceLine(t *testing.T) 
 
 	status := RepoStatus{Installed: true}
 	checkManagedConfigDrift(context.Background(), resolved, &status)
-	require.Len(t, status.Drifts, 1)
-	assert.Equal(t, "managed configuration", status.Drifts[0].Expected)
-	assert.Equal(t, "installed content differs", status.Drifts[0].Actual)
+	assert.Empty(t, status.Error)
+	assert.Empty(t, status.Drifts)
 
 	files, actions := convergeManagedConfigFiles(context.Background(), resolved, desired, false, noopProgress)
-	require.Len(t, files, 1)
-	assert.Equal(t, desired, files[0].Content)
-	require.Len(t, actions, 1)
-	assert.Equal(t, "update", actions[0].Action)
+	assert.Empty(t, files)
+	assert.Empty(t, actions)
+
+	require.NoError(t, checkEstablishedOverlayGate(context.Background(), resolved, desired))
+}
+
+// TestManagedConfigSourceLine_DriftMatrix: for every combination of
+// installed header (marker only, marker and source line, marker and a
+// different source line) and desired header (with or without a URL source),
+// an identical body is current and a differing body is drift that converge
+// rewrites. A file without the ownership marker still requires adoption
+// whatever the source line says (#8785).
+func TestManagedConfigSourceLine_DriftMatrix(t *testing.T) {
+	const (
+		desiredURL = "https://raw.githubusercontent.com/acme/infra/main/repos.yaml"
+		otherURL   = "https://gitlab.com/acme/infra/-/raw/main/repos.yaml"
+	)
+	installedHeaders := map[string]string{
+		"marker only":                 managedConfigMarker,
+		"marker and source":           managedConfigMarker + managedConfigSourcePrefix + desiredURL + "\n",
+		"marker and different source": managedConfigMarker + managedConfigSourcePrefix + otherURL + "\n",
+	}
+	desiredManifests := map[string]func(t *testing.T) *Manifest{
+		"URL manifest": func(t *testing.T) *Manifest { return sourcedManifest(t, desiredURL) },
+		"local manifest": func(t *testing.T) *Manifest {
+			m := newConvergeManifest("acme/api")
+			m.Defaults.Config = mustManagedConfig(t, "kill_switch: true\n")
+			return m
+		},
+	}
+	for installedName, header := range installedHeaders {
+		for desiredName, newManifest := range desiredManifests {
+			t.Run(installedName+"/"+desiredName, func(t *testing.T) {
+				m := newManifest(t)
+				desired := mustDesiredManaged(t, m, "acme", "api")
+
+				t.Run("identical body", func(t *testing.T) {
+					fc := forge.NewFakeClient()
+					fc.FileContents["acme/api/"+preset.OverlayPath] = []byte(header + "kill_switch: true\n")
+					resolved := managedResolved(t, fc, m, "acme", "api")
+
+					status := RepoStatus{Installed: true}
+					checkManagedConfigDrift(context.Background(), resolved, &status)
+					assert.Empty(t, status.Error)
+					assert.Empty(t, status.Drifts)
+
+					files, actions := convergeManagedConfigFiles(context.Background(), resolved, desired, false, noopProgress)
+					assert.Empty(t, files)
+					assert.Empty(t, actions)
+				})
+
+				t.Run("differing body", func(t *testing.T) {
+					fc := forge.NewFakeClient()
+					fc.FileContents["acme/api/"+preset.OverlayPath] = []byte(header + "kill_switch: false\n")
+					resolved := managedResolved(t, fc, m, "acme", "api")
+
+					status := RepoStatus{Installed: true}
+					checkManagedConfigDrift(context.Background(), resolved, &status)
+					assert.Empty(t, status.Error)
+					require.Len(t, status.Drifts, 1)
+					assert.Equal(t, "managed configuration", status.Drifts[0].Expected)
+					assert.Equal(t, "installed content differs", status.Drifts[0].Actual)
+
+					files, actions := convergeManagedConfigFiles(context.Background(), resolved, desired, false, noopProgress)
+					require.Len(t, files, 1)
+					assert.Equal(t, desired, files[0].Content)
+					require.Len(t, actions, 1)
+					assert.Equal(t, "update", actions[0].Action)
+				})
+			})
+		}
+	}
+
+	t.Run("markerless file with source line requires adoption", func(t *testing.T) {
+		m := sourcedManifest(t, desiredURL)
+		desired := mustDesiredManaged(t, m, "acme", "api")
+		fc := forge.NewFakeClient()
+		fc.FileContents["acme/api/"+preset.OverlayPath] = []byte(managedConfigSourcePrefix + desiredURL + "\nkill_switch: true\n")
+		resolved := managedResolved(t, fc, m, "acme", "api")
+
+		status := RepoStatus{Installed: true}
+		checkManagedConfigDrift(context.Background(), resolved, &status)
+		require.Len(t, status.Drifts, 1)
+		assert.Contains(t, status.Drifts[0].Expected, "adoption required")
+
+		files, actions := convergeManagedConfigFiles(context.Background(), resolved, desired, false, noopProgress)
+		assert.Empty(t, files)
+		require.Len(t, actions, 1)
+		assert.Equal(t, ActionAdoptionRequired, actions[0].Action)
+	})
+}
+
+func TestStripManagedConfigSource(t *testing.T) {
+	const (
+		srcURL = managedConfigSourcePrefix + "https://raw.githubusercontent.com/acme/infra/main/repos.yaml"
+		src    = srcURL + "\n"
+	)
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"marker only", managedConfigMarker + "kill_switch: true\n", managedConfigMarker + "kill_switch: true\n"},
+		{"marker and source", managedConfigMarker + src + "kill_switch: true\n", managedConfigMarker + "kill_switch: true\n"},
+		{"marker and source without body", managedConfigMarker + src, managedConfigMarker},
+		{"unterminated source line", managedConfigMarker + "# Source manifest: https://x", managedConfigMarker + "# Source manifest: https://x"},
+		{"source line that is not a sanitized URL", managedConfigMarker + "# Source manifest: https://x\nkill_switch: true\n", managedConfigMarker + "# Source manifest: https://x\nkill_switch: true\n"},
+		{"empty source line", managedConfigMarker + managedConfigSourcePrefix + "\nkill_switch: true\n", managedConfigMarker + managedConfigSourcePrefix + "\nkill_switch: true\n"},
+		{"bare CR in source line", managedConfigMarker + srcURL + "\rkill_switch: false\n" + "kill_switch: true\n", managedConfigMarker + srcURL + "\rkill_switch: false\n" + "kill_switch: true\n"},
+		{"NEL in source line", managedConfigMarker + srcURL + "\u0085kill_switch: false\nkill_switch: true\n", managedConfigMarker + srcURL + "\u0085kill_switch: false\nkill_switch: true\n"},
+		{"LS in source line", managedConfigMarker + srcURL + "\u2028kill_switch: false\nkill_switch: true\n", managedConfigMarker + srcURL + "\u2028kill_switch: false\nkill_switch: true\n"},
+		{"PS in source line", managedConfigMarker + srcURL + "\u2029kill_switch: false\nkill_switch: true\n", managedConfigMarker + srcURL + "\u2029kill_switch: false\nkill_switch: true\n"},
+		{"source line not after marker", managedConfigMarker + "kill_switch: true\n" + src, managedConfigMarker + "kill_switch: true\n" + src},
+		{"no marker", src + "kill_switch: true\n", src + "kill_switch: true\n"},
+		{"empty", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			in := []byte(tt.in)
+			orig := string(in)
+			assert.Equal(t, tt.want, string(stripManagedConfigSource(in)))
+			assert.Equal(t, orig, string(in), "input must not be modified")
+		})
+	}
+}
+
+func TestManagedConfigEquivalent(t *testing.T) {
+	local := []byte(managedConfigMarker + "kill_switch: true\n")
+	url := []byte(managedConfigMarker + managedConfigSourcePrefix + "https://raw.githubusercontent.com/acme/infra/main/repos.yaml\nkill_switch: true\n")
+	assert.True(t, managedConfigEquivalent(local, url))
+	assert.True(t, managedConfigEquivalent(url, local))
+	assert.False(t, managedConfigEquivalent(local, []byte(managedConfigMarker+"kill_switch: false\n")))
+	assert.False(t, managedConfigEquivalent(nil, local))
+	assert.False(t, managedConfigEquivalent([]byte("kill_switch: true\n"), local))
+}
+
+// TestManagedConfigSourceLine_LineBreakSmuggling: a YAML line break other
+// than LF inside the installed source line (bare CR, NEL, LS, PS) must not
+// let the stripper discard configuration that the YAML loader still reads.
+// Such a file is drift, and converge rewrites it to the desired bytes.
+func TestManagedConfigSourceLine_LineBreakSmuggling(t *testing.T) {
+	const srcURL = "https://raw.githubusercontent.com/acme/infra/main/repos.yaml"
+	const body = "mint_url: https://other-mint.example.com\n"
+	m := newConvergeManifest("acme/api")
+	m.Defaults.Config = mustManagedConfig(t, body)
+	desired := mustDesiredManaged(t, m, "acme", "api")
+	require.Equal(t, managedConfigMarker+body, string(desired))
+
+	for name, sep := range map[string]string{
+		"bare CR": "\r",
+		"NEL":     "\u0085",
+		"LS":      "\u2028",
+		"PS":      "\u2029",
+	} {
+		t.Run(name, func(t *testing.T) {
+			installed := []byte(managedConfigMarker + managedConfigSourcePrefix + srcURL +
+				sep + "kill_switch: false\n" + body)
+			assert.False(t, managedConfigEquivalent(installed, desired))
+
+			fc := forge.NewFakeClient()
+			fc.FileContents["acme/api/"+preset.OverlayPath] = installed
+			resolved := managedResolved(t, fc, m, "acme", "api")
+
+			status := RepoStatus{Installed: true}
+			checkManagedConfigDrift(context.Background(), resolved, &status)
+			assert.Empty(t, status.Error)
+			require.Len(t, status.Drifts, 1)
+
+			files, actions := convergeManagedConfigFiles(context.Background(), resolved, desired, false, noopProgress)
+			require.Len(t, files, 1)
+			assert.Equal(t, desired, files[0].Content)
+			require.Len(t, actions, 1)
+			assert.Equal(t, "update", actions[0].Action)
+		})
+	}
 }
 
 // TestLoadManifest_LocalPathRecordsNoSource: a manifest loaded from disk

@@ -24,9 +24,7 @@ import (
 
 // provisionGitLabPollState ensures FULLSEND_DISPATCH_SECRET exists so
 // poll-state HMAC signing is on by default, then creates both poll-state
-// branches with an initial signed document. Legacy CI/CD variables are
-// folded in when present (*Fast → slash, *Full + LabelState → events);
-// otherwise each branch is seeded with an empty signed baseline.
+// branches with an empty signed baseline document.
 //
 // Only called for already-enrolled (converged / already-current) repos —
 // fresh installs are handled by repos.Install() itself. Safe to run on
@@ -51,7 +49,7 @@ func provisionGitLabPollState(ctx context.Context, client forge.Client, printer 
 		return seedErr
 	}
 	if seeded {
-		printer.StepDone(fmt.Sprintf("[%s] Seeded poll-state branches from legacy vars (or empty baseline)", repoFullName))
+		printer.StepDone(fmt.Sprintf("[%s] Seeded poll-state branches", repoFullName))
 	}
 	return nil
 }
@@ -59,24 +57,10 @@ func provisionGitLabPollState(ctx context.Context, client forge.Client, printer 
 // setupGitLabPipelineSchedules creates two independent pipeline schedules
 // for polling: a fast slash-command poll (every 5 min) and an offset
 // event-discovery poll (at minutes 2,17,32,47). Each schedule has its own
-// resource group so they never cancel each other.
-//
-// Variables are selected via the same transport-aware logic convergence
-// uses (repos.ScheduleVariablesFor): a repo whose effective GitLab wrapper
-// is still on the legacy (variable-based) dispatch contract needs the
-// legacy FULLSEND_POLL_MODE override, since that wrapper selects poll mode
-// from the schedule variable rather than the schedule description. Using
-// the canonical (variable-free) spec unconditionally here would silently
-// collapse a legacy-pinned install's slash schedule into event polling.
-//
-// typed must reflect the dispatch transport of the wrapper this install
-// actually queued (repos.ConvergeResult.GitLabTypedDispatch /
-// repos.InstallResult.GitLabTypedDispatch), not a live re-read of the
-// default branch: this is called immediately after a fresh install, whose
-// commit may still be an unmerged upgrade MR, so a live read could observe
-// the prior (or absent) wrapper and wrongly treat a pending typed
-// installation as a legacy one.
-func setupGitLabPipelineSchedules(ctx context.Context, client forge.Client, printer *ui.Printer, owner, repo, defaultBranch string, typed bool) error {
+// resource group so they never cancel each other. Schedules are
+// variable-free: the typed templates select poll mode from the schedule
+// description.
+func setupGitLabPipelineSchedules(ctx context.Context, client forge.Client, printer *ui.Printer, owner, repo, defaultBranch string) error {
 	// Delete existing fullsend schedules to avoid duplicates on re-install.
 	existing, listErr := client.ListPipelineSchedules(ctx, owner, repo)
 	if listErr != nil {
@@ -97,7 +81,7 @@ func setupGitLabPipelineSchedules(ctx context.Context, client forge.Client, prin
 	var createdIDs []int64
 	for _, spec := range repos.PipelineScheduleSpecs() {
 		id, err := client.CreatePipelineSchedule(ctx, owner, repo, defaultBranch,
-			spec.Description, spec.Cron, repos.ScheduleVariablesFor(spec, typed))
+			spec.Description, spec.Cron, spec.Variables)
 		if err != nil {
 			// Roll back any schedules created in this call.
 			for _, prevID := range createdIDs {
@@ -317,7 +301,8 @@ func ensureGitLabPollerPipelineAccess(ctx context.Context, client forge.Client, 
 // already-installed repos, and is idempotent: an already-no_one_allowed
 // project reports Action "none" every time. Automatic setting changes
 // default to off, but drift is an activation error, not report-only success.
-// Schedule migration and ADR 0125 live validation remain rollout gates.
+// Variable-free managed schedules and ADR 0125 live validation remain
+// rollout gates.
 func ensureGitLabPipelineVariableOverrideRole(ctx context.Context, client forge.Client, printer *ui.Printer, owner, repo string, dryRun bool) error {
 	repoFullName := owner + "/" + repo
 	res, err := repos.ActivateGitLabTypedDispatch(ctx, client, owner, repo, dryRun)

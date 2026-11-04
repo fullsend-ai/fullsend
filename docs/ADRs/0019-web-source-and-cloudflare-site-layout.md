@@ -29,6 +29,13 @@ Date: 2026-04-15
 
 Accepted
 
+> **Note (2026-10-29):** The interactive document graph (`web/public/graph.html`, served at
+> `/graph.html`) was removed from the public site. Its login asked for a GitHub PAT with
+> `repo` scope and stored it in browser `localStorage`, which put a browser credential flow
+> on the public site. `web/` now holds only the landing page and the custom 404 page under
+> `web/public/`. Old `/graph.html` links now get the custom 404 page via
+> `not_found_handling = "404-page"`. See issue #8915.
+
 ## Context
 
 This repository mixes design documents, Go CLI code (`cmd/`), and a small **browser-delivered** surface (today the interactive document graph). That surface was previously rooted at `docs/mindmap.html` while Cloudflare Wrangler lived under `site/`, which read as a generic “website” folder rather than “Cloudflare deploy boundary,” and blurred documentation versus deployable HTML. Separating **`web/`** (browser source) from **`cloudflare_site/`** (Wrangler + deploy-time static) makes layout and CI obvious for contributors.

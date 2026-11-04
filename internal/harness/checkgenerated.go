@@ -22,7 +22,7 @@ import (
 // Not checked here, on purpose: ValidateRunnerEnvWith. It requires every
 // ${VAR} in env.runner/env.sandbox to be set in the calling process, which is
 // true in CI and false on a developer's machine. Failing generation because
-// GITHUB_ISSUE_URL is unset would make the command unusable for its main
+// FULLSEND_WORK_ITEM_URL is unset would make the command unusable for its main
 // audience. The consequence is that an unset variable surfaces at
 // `fullsend run` time instead; the generated docs say so.
 func CheckGenerated(h *Harness, absDir string) ([]Diagnostic, error) {

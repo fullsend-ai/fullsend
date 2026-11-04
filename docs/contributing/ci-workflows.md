@@ -25,7 +25,12 @@ Conventions for GitHub Actions workflows under `.github/workflows/`. Follow thes
     group: fullsend-code-agent-${{ inputs.source_repo }}-${{ fromJSON(inputs.event_payload).issue.number || fromJSON(inputs.event_payload).pull_request.number }}
   ```
   Hybrid workflows that combine `workflow_call` with direct triggers like `pull_request_target` or `push` (e.g., `e2e.yml`) may still use `${{ github.workflow }}` in the branch of their concurrency expression that handles direct triggers — the `workflow_call` invocations in these cases come from a thin caller that shares the same concurrency intent.
-- Never cancel in-progress runs on the default branch (`refs/heads/main`). Gate `cancel-in-progress` when the workflow triggers on `push` to `main`.
+- Never cancel in-progress runs on the default branch (`refs/heads/main`). Gate `cancel-in-progress` when the workflow triggers on `push` to `main` (see [exception for the site build and deploy workflows](#site-workflows-cancel-in-progress) below).
+- <a id="site-workflows-cancel-in-progress"></a>**Exception — `site-build.yml` and `site-deploy.yml`:**
+  these two files intentionally use unconditional `cancel-in-progress: true`,
+  including on `main` (accepted in PR #7437 to keep fork-PR site previews).
+  Do not flag it as a violation of the rule above. Revisit if cold-cache
+  starvation shows up on a busy `main`.
 
 **Why:** A hardcoded prefix like `my-workflow-${{ github.workflow }}` is redundant — `github.workflow` already resolves to the workflow `name:` field. The duplication creates a confusing group key and wastes characters. The reusable-workflow exception exists because GitHub resolves `github.workflow` from the caller's context, so a reusable workflow using it would share a concurrency group with its caller.
 
@@ -200,14 +205,21 @@ Prefer short-lived narrowly-scoped credentials whenever possible. When long-live
 The `check-e2e-authorization` gate job (`gate` in `e2e.yml`) mitigates the risk by requiring authorization before the behaviour and playback jobs check out PR-head code:
 
 - **Trusted authors** — org members and repo collaborators are auto-authorized.
-- **External contributors** — require a maintainer with write access to apply the `ok-to-test` label after reviewing the PR diff; the gate checks the labeler's permission. The gate removes stale labels when new commits land.
+- **External contributors** — require a user with write access (Write role or above) to apply the `ok-to-test` label after reviewing the PR diff; the gate checks the labeler's permission. The gate removes stale labels when new commits land.
 - **Separation of concerns** — the gate job runs on the base-branch checkout with `pull-requests: write`; the behaviour/playback jobs run on the PR-head checkout without write permissions.
 
 **Limitations of the gate:**
 
 - The gate authorizes *authors*, not *code*. A trusted author whose account is compromised bypasses the gate.
-- The gate does not inspect the PR diff — it trusts that maintainers reviewed the code before labeling `ok-to-test`.
+- The gate does not inspect the PR diff — it trusts that the labeler reviewed the code before labeling `ok-to-test`.
 - The `ok-to-test` label check has a TOCTOU window: code can change between label application and job execution (mitigated by the stale-label removal on `synchronize` events, but not eliminated).
+
+**Validating gate changes (`pull_request_target`):** Because `pull_request_target`
+workflows execute the gate from the base branch (`main`), PR runs on a
+gate-modifying PR still execute `main`'s gate. PRs modifying
+`pull_request_target` gates must validate logic via unit tests pre-merge (e.g.,
+`scripts/check-e2e-authorization-test.sh`) and include a post-merge validation
+checklist in the PR description.
 
 ### Review checklist for secrets in behaviour/playback jobs
 

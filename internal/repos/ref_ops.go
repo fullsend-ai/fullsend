@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"regexp"
-	"slices"
 	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -86,11 +85,8 @@ func formatRefAnnotation(ref, tag, forgeName string) string {
 // annotation to pair with a SHA-pinned targetRef (empty when there is
 // no separate tag to preserve, e.g. targetRef is already a plain tag or
 // branch). The root .gitlab-ci.yml is user-owned and is not synced here;
-// structural changes to it (like #7322's rule removal or #7337's stage
-// removal) need an explicit converge-time migration — see
-// convergeGitLabRootCIFiles / StripObsoleteGitLabWorkflowRules /
-// StripObsoleteGitLabStages. Leftover fullsend-dispatch.yml from
-// installs predating #7707 is deleted by convergeContentDriftFiles.
+// entries it newly requires need an explicit converge-time backfill — see
+// convergeGitLabRootCIFiles.
 func collectGitLabUpgradeTemplates(agentRunnerTags, controlRunnerTags []string, targetRef, targetTag string) ([]forge.TreeFile, error) {
 	installFiles, err := scaffold.CollectGitLabPerRepoInstallFiles(agentRunnerTags, controlRunnerTags, targetRef, targetTag)
 	if err != nil {
@@ -112,36 +108,21 @@ func collectGitLabUpgradeTemplates(agentRunnerTags, controlRunnerTags []string, 
 // ref. If none contain a ref, it returns the first existing file so
 // callers can still treat the workflow as present. Returns (nil, "", nil)
 // if none of the paths exist.
-//
-// Preferring a file that actually carries a ref lets GitLab status and
-// upgrade keep working on repos enrolled before #7707, where the marker
-// still lives in fullsend-dispatch.yml while fullsend-pipeline.yml (the
-// current carrier, listed first) has no marker yet.
 func readWorkflowContent(ctx context.Context, client forge.Client, owner, repo string, fc ForgeConfig) ([]byte, string, error) {
 	content, path, _, err := readWorkflowMarker(ctx, client, owner, repo, fc)
 	return content, path, err
 }
 
-// readWorkflowMarker returns the best version-marker file and whether a
-// current WorkflowPaths carrier exists. Marker content prefers a file
-// that actually contains a ref so GitLab repos enrolled before #7707
-// still report the leftover dispatch stub's version until converge
-// migrates it. carrierPresent is true only when one of WorkflowPaths
-// exists, so a dispatch-only leftover is treated as a missing wrapper.
+// readWorkflowMarker returns the best version-marker file among
+// WorkflowPaths and whether any of them exists. Marker content prefers a
+// file that actually contains a ref.
 func readWorkflowMarker(ctx context.Context, client forge.Client, owner, repo string, fc ForgeConfig) ([]byte, string, bool, error) {
-	paths := fc.WorkflowPaths
-	if len(paths) > 0 && paths[0] == fullsendPipelineInclude {
-		withLegacy := make([]string, len(paths)+1)
-		copy(withLegacy, paths)
-		withLegacy[len(paths)] = fullsendDispatchInclude
-		paths = withLegacy
-	}
 	var first []byte
 	var firstPath string
 	var marker []byte
 	var markerPath string
 	carrierPresent := false
-	for _, path := range paths {
+	for _, path := range fc.WorkflowPaths {
 		content, err := client.GetFileContent(ctx, owner, repo, path)
 		if err != nil {
 			if forge.IsNotFound(err) {
@@ -149,9 +130,7 @@ func readWorkflowMarker(ctx context.Context, client forge.Client, owner, repo st
 			}
 			return nil, "", false, err
 		}
-		if slices.Contains(fc.WorkflowPaths, path) {
-			carrierPresent = true
-		}
+		carrierPresent = true
 		if first == nil {
 			first = content
 			firstPath = path

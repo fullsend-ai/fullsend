@@ -63,17 +63,25 @@ func (c *LiveClient) GetIssue(ctx context.Context, owner, repo string, number in
 		Desc   string       `json:"description"`
 		WebURL string       `json:"web_url"`
 		Labels gitlabLabels `json:"labels"`
+		State  string       `json:"state"`
 	}
 	if err := decodeJSON(resp, &result); err != nil {
 		return nil, fmt.Errorf("decode issue #%d: %w", number, err)
 	}
 
+	// GitLab reports an open issue as "opened"; normalize to the
+	// forge-neutral "open" used by forge.Issue.State.
+	state := result.State
+	if state == "opened" {
+		state = "open"
+	}
 	return &forge.Issue{
 		Number: result.IID,
 		Title:  result.Title,
 		Body:   result.Desc,
 		URL:    result.WebURL,
 		Labels: result.Labels.strings(),
+		State:  state,
 	}, nil
 }
 

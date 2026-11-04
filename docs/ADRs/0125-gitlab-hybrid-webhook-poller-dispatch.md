@@ -46,6 +46,54 @@ Accepted
 > full activation gate passes) is present, and with the same dispatch HMAC as
 > `api`. Statements below that the agent job admits only `api` describe the
 > design before that change.
+>
+> **Update (#8799):** the webhook fast path has shipped, with the poller as
+> its backstop. Under ADR 0131, `STAGE` and the signed dispatch fields travel
+> as typed pipeline inputs, not pipeline variables. The Caveats finding that
+> `no_one_allowed` is not usable therefore no longer applies. GitLab's native
+> `TRIGGER_PAYLOAD` stays available to the dispatcher job under
+> `no_one_allowed`, which resolves the residual Caveats leaves open. How the
+> shipped adapter meets the other ship gates in Consequences, and the residual
+> risks that remain, are recorded in the
+> [normative event specification](../normative/normalized-event/v1/README.md#gitlab-adapter-notes).
+>
+> **Update (#8835):** the current status of each security gate this ADR
+> names is recorded, with evidence, in the normative specification's
+> [ADR 0125 security-gate status](../normative/normalized-event/v1/README.md#adr-0125-security-gate-status).
+> In summary, ADR 0131 superseded the Owner-role direction. Native
+> `TRIGGER_PAYLOAD` is verified under `no_one_allowed`, and actor-to-transition
+> binding is met for every webhook row the builder accepts. The
+> `CI_JOB_TOKEN` identity pin stays gated on the restriction, because its
+> override cases have not been tested. API base-URL trust and
+> snapshot-consistent replay remain open, pending a maintainer decision to
+> accept them or require more work. The #7850 note's statement that the
+> Caveats ship gates are unaffected no longer holds. The Caveats and
+> Consequences text below is the original record, not the current status.
+>
+> **Update (#8874):** maintainers have decided the two gates the #8835 note
+> left pending. The
+> [API base-URL decision](https://github.com/fullsend-ai/fullsend/issues/8871#issuecomment-6453141351)
+> accepts the restriction-based API-root model without an independent host
+> pin. Its trust boundary is explicit: project Maintainers, group Owners, and
+> GitLab instance administrators are trusted to control project, group, and
+> instance CI/CD variables. The
+> [replay decision](https://github.com/fullsend-ai/fullsend/issues/8835#issuecomment-6452638835)
+> accepts bounded at-least-once replay. A duplicate dispatch can still occur
+> when concurrent webhook and poller runs both read state before either
+> saves it, on retry after state persistence fails, or when a partial stage
+> fan-out redispatches a stage that succeeded after another stage failed.
+> The `CI_JOB_TOKEN` identity pin stays gated on the enforced
+> `no_one_allowed` restriction. The
+> [maintainer decision](https://github.com/fullsend-ai/fullsend/issues/8871#issuecomment-6453959180)
+> makes the untested invalid and valid-foreign override cases non-blocking.
+> The identity claim stays conditional on that restriction and on the accepted
+> trust that project Maintainers, group Owners, and GitLab instance
+> administrators do not add or change a `CI_JOB_TOKEN` settings-variable
+> override in unreadable or later-mutated scopes.
+> The "base-URL pin remains the open residual risk" sentence and the ship
+> gates below are the original record; the
+> [security-gate status](../normative/normalized-event/v1/README.md#adr-0125-security-gate-status)
+> table has the current status.
 
 Supersedes the GitLab **dispatch topology** in
 [ADR 0067](0067-gitlab-cron-polling-event-dispatch.md) (native-CI two-path,
@@ -482,6 +530,12 @@ caller-supplied variables. Therefore:
 
 ### Caveats
 
+> **Note (#8835):** the Owner-role PAT direction and the finding that
+> `no_one_allowed` is unusable below were superseded by
+> [ADR 0131](0131-gitlab-dispatch-pipeline-inputs-no-owner-role.md). For the
+> current status of the `CI_JOB_TOKEN` and `TRIGGER_PAYLOAD` gates, see
+> [ADR 0125 security-gate status](../normative/normalized-event/v1/README.md#adr-0125-security-gate-status).
+
 The `CI_JOB_TOKEN` identity pin above is the intended control, but it carries
 assumptions this ADR does not treat as settled:
 
@@ -527,6 +581,10 @@ assumptions this ADR does not treat as settled:
   the test matrix are tracked in the follow-on hardening issue.
 
 ## Consequences
+
+> **Note (#8835):** for the current status of the four ship gates listed
+> below, see
+> [ADR 0125 security-gate status](../normative/normalized-event/v1/README.md#adr-0125-security-gate-status).
 
 - GitLab moves toward GitHub-like event latency while keeping
   polling as the complement ([ADR 0063](0063-polling-based-work-discovery.md)).

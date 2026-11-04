@@ -358,6 +358,7 @@ func TestValidateExistingGCPCredentialFile(t *testing.T) {
 		{name: "file source", content: `{"type":"external_account","credential_source":{"file":"/tmp/token"}}`},
 		{name: "null headers", content: `{"type":"external_account","credential_source":{"file":"/tmp/token","headers":null}}`},
 		{name: "empty file name", content: `{"type":"external_account","credential_source":{"file":""}}`, wantErr: "credential_source.file"},
+		{name: "file source with service account impersonation", content: `{"type":"external_account","service_account_impersonation_url":"https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/agent-sa@example-project.iam.gserviceaccount.com:generateAccessToken","credential_source":{"file":"/tmp/token"}}`},
 		{name: "impersonation over file source", content: `{"type":"impersonated_service_account","source_credentials":{"type":"external_account","credential_source":{"file":"/tmp/token"}}}`},
 		{name: "impersonation over url source", content: `{"type":"impersonated_service_account","source_credentials":{"type":"external_account","credential_source":{"url":"https://example.invalid","headers":{"Authorization":"Bearer x"}}}}`, wantErr: "credential_source.url or headers"},
 		{name: "url source beside source_credentials", content: `{"type":"external_account","credential_source":{"url":"https://example.invalid"},"source_credentials":{"type":"service_account"}}`, wantErr: "credential_source.url or headers"},
@@ -673,6 +674,25 @@ func TestDiscardSandbox(t *testing.T) {
 	discardSandbox("sb-2", "/run", false, ui.New(&out))
 	assert.Equal(t, []string{"sb-1", "sb-2"}, deleted)
 	assert.Contains(t, out.String(), "Sandbox cleanup failed: boom")
+}
+
+func TestKeepFailedSandbox(t *testing.T) {
+	var logged []string
+	origDelete, origLogs := deleteSandboxFn, collectOpenshellLogsFn
+	deleteSandboxFn = func(name string) error {
+		t.Errorf("a kept sandbox must not be deleted: %s", name)
+		return nil
+	}
+	collectOpenshellLogsFn = func(name, runDir string, _ *ui.Printer) {
+		logged = append(logged, name+"@"+runDir)
+	}
+	t.Cleanup(func() { deleteSandboxFn, collectOpenshellLogsFn = origDelete, origLogs })
+
+	var out bytes.Buffer
+	keepFailedSandbox("sb-failed", "/run", ui.New(&out))
+	assert.Equal(t, []string{"sb-failed@/run"}, logged)
+	assert.Contains(t, out.String(), "Sandbox kept (--keep-sandbox): sb-failed")
+	assert.Contains(t, out.String(), "openshell sandbox exec --tty --name sb-failed -- bash")
 }
 
 func TestValidateVertexGCPCredentials(t *testing.T) {

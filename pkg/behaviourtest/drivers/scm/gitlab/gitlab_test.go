@@ -335,6 +335,20 @@ func TestListPullRequestReviews(t *testing.T) {
 	}
 }
 
+func TestGetPullRequestHeadSHA(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.PullRequestHeadSHA = "abc123"
+	d := New(fc)
+
+	sha, err := d.(*Driver).GetPullRequestHeadSHA(context.Background(), "owner", "repo", 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sha != "abc123" {
+		t.Fatalf("expected abc123, got %q", sha)
+	}
+}
+
 func TestListPullRequestCommits(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.PRCommits = map[string][]string{"owner/repo/1": {"first", "second"}}
@@ -374,5 +388,22 @@ func TestParseRepo_Invalid(t *testing.T) {
 	_, _, err := ParseRepo("invalid")
 	if err == nil {
 		t.Fatal("expected error for invalid repo name")
+	}
+}
+
+func TestListOpenIssues(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.OpenIssues = map[string][]forge.Issue{"owner/repo": {
+		{Number: 1, Title: "a", Labels: []string{"bug"}},
+		{Number: 2, Title: "b", Labels: []string{"docs"}},
+	}}
+	d := New(fc)
+
+	issues, err := d.ListOpenIssues(context.Background(), "owner", "repo", "bug")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(issues) != 1 || issues[0].Number != 1 {
+		t.Fatalf("expected only issue #1, got %+v", issues)
 	}
 }

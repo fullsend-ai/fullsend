@@ -69,6 +69,44 @@ func TestFetchRemoteScaffold_GitLab(t *testing.T) {
 	}
 }
 
+// A pinned release renders its own runner image, both into the current
+// placeholder and over the ":dev" image that refs predating it hardcode
+// (#8865); a main pin keeps the opt-in ":dev" image.
+func TestFetchRemoteScaffold_GitLab_RunnerImageFollowsPin(t *testing.T) {
+	sha := "deadbeef1234567890abcdef1234567890abcdef"
+	for _, tt := range []struct {
+		name, ref, template, want string
+	}{
+		{"placeholder release", "v0.50.0", "image: ghcr.io/fullsend-ai/fullsend-runner:__FULLSEND_RUNNER_IMAGE_TAG__\n", "image: ghcr.io/fullsend-ai/fullsend-runner:0.50.0\n"},
+		{"legacy release", "v0.48.1", "image: ghcr.io/fullsend-ai/fullsend-runner:dev\n", "image: ghcr.io/fullsend-ai/fullsend-runner:0.48.1\n"},
+		{"main opt-in", "main", "image: ghcr.io/fullsend-ai/fullsend-runner:__FULLSEND_RUNNER_IMAGE_TAG__\n", "image: ghcr.io/fullsend-ai/fullsend-runner:dev\n"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			fc := forge.NewFakeClient()
+			for _, sp := range scaffoldGitLabPaths {
+				content := "---\n" + tt.template
+				if sp.outPath == fullsendPipelineInclude {
+					content += "# include: " + fullsendDispatcherTemplatePath + "\n"
+				}
+				fc.FileContentsRef[shimOwner+"/"+shimRepo+"/"+sp.repoPath+"@"+tt.ref] = []byte(content)
+			}
+			resolved := sha
+			if !isSemver(tt.ref) {
+				resolved = tt.ref
+			}
+			files, err := FetchRemoteScaffold(context.Background(), fc, tt.ref, resolved, ForgeGitLab, nil, nil, false)
+			if err != nil {
+				t.Fatalf("FetchRemoteScaffold() error: %v", err)
+			}
+			for _, f := range files {
+				if !strings.Contains(string(f.Content), tt.want) {
+					t.Errorf("%s: want %q, got:\n%s", f.Path, tt.want, f.Content)
+				}
+			}
+		})
+	}
+}
+
 // A pin that predates the webhook dispatcher ships neither dispatcher file
 // and its wrapper does not include the template; the fetch must succeed and
 // must not synthesize them.
@@ -206,10 +244,7 @@ func TestGitLabScaffoldListsIncludeTrustScript(t *testing.T) {
 		t.Error("remote GitLab scaffold paths must not fetch obsolete fullsend-dispatch.yml")
 	}
 	if !slices.Contains(gitlabScaffoldPaths, fullsendDispatchInclude) {
-		t.Error("gitlabScaffoldPaths must still list fullsend-dispatch.yml so uninstall/converge can remove it from legacy repos")
-	}
-	if !slices.Contains(gitlabRetiredScaffoldPaths, fullsendDispatchInclude) {
-		t.Error("gitlabRetiredScaffoldPaths must list fullsend-dispatch.yml so converge deletes it")
+		t.Error("gitlabScaffoldPaths must still list fullsend-dispatch.yml so uninstall can remove it from legacy repos")
 	}
 }
 

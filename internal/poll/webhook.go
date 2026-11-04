@@ -36,9 +36,10 @@ import (
 // Poller's project-pinned GitLabClient. Every API call uses p.owner and
 // p.repo plus positive integer IDs; no URL, host, or path_with_namespace
 // in the payload is ever read. Any action the re-fetch contradicts, or
-// that it cannot check, fails closed. The one exception is a bare issue
-// update (no changes.labels), which claims no transition and is ignored
-// as non-routable (see webhookIssueEvents).
+// that it cannot check, fails closed. The exceptions are a bare issue
+// update (no changes.labels) and a note edit (note action "update"),
+// which claim no transition and are ignored as non-routable (see
+// webhookIssueEvents and webhookNoteEvents).
 //
 // The payload's contents are untrusted and are never logged.
 
@@ -207,11 +208,7 @@ func parseWebhookPayload(raw []byte) (webhookPayload, error) {
 func (p *Poller) webhookRoutableEvents(ctx context.Context, payload webhookPayload) ([]RoutableEvent, error) {
 	switch payload.ObjectKind {
 	case "note":
-		ev, err := p.webhookNoteEvent(ctx, payload)
-		if err != nil {
-			return nil, err
-		}
-		return []RoutableEvent{ev}, nil
+		return p.webhookNoteEvents(ctx, payload)
 	case "merge_request":
 		ev, err := p.webhookMergeRequestEvent(ctx, payload)
 		if err != nil {
@@ -225,44 +222,63 @@ func (p *Poller) webhookRoutableEvents(ctx context.Context, payload webhookPaylo
 	}
 }
 
-// webhookNoteEvent handles object_kind "note" / action "create": the
+// webhookNoteEvents handles object_kind "note" / action "create": the
 // referenced note must exist in the re-fetch and be authored by the
 // payload-named user. Body and author come from the re-fetch.
-func (p *Poller) webhookNoteEvent(ctx context.Context, payload webhookPayload) (RoutableEvent, error) {
+//
+// GitLab also fires note webhooks for edited comments (action "update").
+// An edit is not a routable transition. Once the payload identifiers
+// pass validation, the edit is ignored rather than rejected: no events,
+// no error, no re-fetch, so the dispatcher job succeeds without
+// dispatching. Any other action fails closed.
+func (p *Poller) webhookNoteEvents(ctx context.Context, payload webhookPayload) ([]RoutableEvent, error) {
 	attrs := payload.ObjectAttributes
-	if attrs.Action != "create" {
-		return RoutableEvent{}, fmt.Errorf("note action %q is not a checkable transition", attrs.Action)
+	switch attrs.Action {
+	case "create", "update":
+	default:
+		return nil, fmt.Errorf("note action %q is not a checkable transition", attrs.Action)
 	}
 	if attrs.ID <= 0 {
-		return RoutableEvent{}, errors.New("note payload has no valid note id")
+		return nil, errors.New("note payload has no valid note id")
 	}
 
 	var (
 		eventType string
 		iid       int
-		notes     []Note
-		err       error
 	)
 	switch attrs.NoteableType {
 	case "Issue":
 		eventType = "issue_note"
 		if payload.Issue == nil || payload.Issue.IID <= 0 {
-			return RoutableEvent{}, errors.New("issue note payload has no valid issue iid")
+			return nil, errors.New("issue note payload has no valid issue iid")
 		}
 		iid = payload.Issue.IID
-		notes, err = p.client.ListIssueNotes(ctx, p.owner, p.repo, iid)
 	case "MergeRequest":
 		eventType = "mr_note"
 		if payload.MergeRequest == nil || payload.MergeRequest.IID <= 0 {
-			return RoutableEvent{}, errors.New("merge request note payload has no valid merge request iid")
+			return nil, errors.New("merge request note payload has no valid merge request iid")
 		}
 		iid = payload.MergeRequest.IID
-		notes, err = p.client.ListMergeRequestNotes(ctx, p.owner, p.repo, iid)
 	default:
-		return RoutableEvent{}, fmt.Errorf("unsupported noteable_type %q", attrs.NoteableType)
+		return nil, fmt.Errorf("unsupported noteable_type %q", attrs.NoteableType)
+	}
+
+	if attrs.Action == "update" {
+		log.Printf("webhook: ignoring note edit on %s IID %d: not a routable transition, nothing dispatched", attrs.NoteableType, iid)
+		return nil, nil
+	}
+
+	var (
+		notes []Note
+		err   error
+	)
+	if eventType == "issue_note" {
+		notes, err = p.client.ListIssueNotes(ctx, p.owner, p.repo, iid)
+	} else {
+		notes, err = p.client.ListMergeRequestNotes(ctx, p.owner, p.repo, iid)
 	}
 	if err != nil {
-		return RoutableEvent{}, fmt.Errorf("re-fetch notes for IID %d: %w", iid, err)
+		return nil, fmt.Errorf("re-fetch notes for IID %d: %w", iid, err)
 	}
 
 	var note *Note
@@ -273,13 +289,13 @@ func (p *Poller) webhookNoteEvent(ctx context.Context, payload webhookPayload) (
 		}
 	}
 	if note == nil {
-		return RoutableEvent{}, fmt.Errorf("note %d not found on IID %d", attrs.ID, iid)
+		return nil, fmt.Errorf("note %d not found on IID %d", attrs.ID, iid)
 	}
 	if err := bindActor(payload.User.ID, note.Author, "note author"); err != nil {
-		return RoutableEvent{}, err
+		return nil, err
 	}
 	if err := p.checkFresh(note.CreatedAt, "note created_at"); err != nil {
-		return RoutableEvent{}, err
+		return nil, err
 	}
 
 	ev := RoutableEvent{
@@ -295,17 +311,17 @@ func (p *Poller) webhookNoteEvent(ctx context.Context, payload webhookPayload) (
 	if eventType == "issue_note" {
 		issue, err := p.client.GetIssue(ctx, p.owner, p.repo, iid)
 		if err != nil {
-			return RoutableEvent{}, fmt.Errorf("re-fetch issue #%d: %w", iid, err)
+			return nil, fmt.Errorf("re-fetch issue #%d: %w", iid, err)
 		}
 		ev.Labels = issue.Labels
-		return ev, nil
+		return []RoutableEvent{ev}, nil
 	}
 	mr, err := p.client.GetMergeRequest(ctx, p.owner, p.repo, iid)
 	if err != nil {
-		return RoutableEvent{}, fmt.Errorf("re-fetch merge request !%d: %w", iid, err)
+		return nil, fmt.Errorf("re-fetch merge request !%d: %w", iid, err)
 	}
 	applyMRFields(&ev, mr)
-	return ev, nil
+	return []RoutableEvent{ev}, nil
 }
 
 // webhookMergeRequestEvent handles object_kind "merge_request" per the

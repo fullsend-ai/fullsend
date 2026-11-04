@@ -32,7 +32,7 @@ func (a uninstallLegacyInventory) RevokeProjectAccessToken(context.Context, stri
 // Developer keeps its membership and has its bootstrap credentials revoked.
 func TestUninstallReconcilesOnlyTheManagedPoller(t *testing.T) {
 	ctx := context.Background()
-	const state = `{"roles":{"poller":{"phase":"idle","incoming_id":5,"managed_user_id":77,"distributed_at":"2026-01-01T00:00:00Z"}}}`
+	const state = `{"version":2,"roles":{"poller":{"phase":"idle","incoming_id":5,"managed_user_id":77,"distributed_at":"2026-01-01T00:00:00Z"}}}`
 	pats := &patFixture{tokens: []map[string]any{
 		{"id": 1, "name": "fullsend-poller", "active": true},
 		{"id": 2, "name": "fullsend-poller-bootstrap", "active": true},
@@ -70,7 +70,7 @@ func TestUninstallReconcilesRetiringPollerAfterHandoff(t *testing.T) {
 	ctx := context.Background()
 	// The cutover recorded account 99 as the managed Poller; 77 (the account
 	// the PAT fixture models) is retiring.
-	const state = `{"roles":{"poller":{"phase":"idle","incoming_id":5,"managed_user_id":99,"distributed_at":"2026-01-01T00:00:00Z"}}}`
+	const state = `{"version":2,"roles":{"poller":{"phase":"idle","incoming_id":5,"managed_user_id":99,"distributed_at":"2026-01-01T00:00:00Z"}}}`
 	const generations = `{"version":1,"current_user_id":99,"retiring_user_id":77}`
 	pats := &patFixture{tokens: []map[string]any{
 		{"id": 2, "name": "fullsend-poller-bootstrap", "active": true},
@@ -105,7 +105,7 @@ func TestUninstallReconcilesRetiringPollerAfterHandoff(t *testing.T) {
 // recorded so role cleanup on a retry still excludes that account.
 func TestUninstallListingFailureRecordsOwnershipFirst(t *testing.T) {
 	ctx := context.Background()
-	const state = `{"roles":{"poller":{"supplied":true,"supplied_user_id":501,"phase":"idle"}}}`
+	const state = `{"version":2,"roles":{"poller":{"supplied":true,"supplied_user_id":501,"phase":"idle"}}}`
 	mux := http.NewServeMux()
 	handleRotationState(t, mux, "g%2Fp", state)
 	mux.HandleFunc("/api/v4/projects/g%2Fp/service_accounts", func(w http.ResponseWriter, r *http.Request) {
@@ -152,7 +152,7 @@ func TestUninstallCachesResolvedExclusionsBeforeCredentialRemoval(t *testing.T) 
 					w.WriteHeader(http.StatusForbidden)
 					return
 				}
-				json.NewEncoder(w).Encode(map[string]any{"value": `{"roles":{"poller":{"supplied":true,"supplied_user_id":501,"supplied_token_id":1,"phase":"idle"}}}`})
+				json.NewEncoder(w).Encode(map[string]any{"value": `{"version":2,"roles":{"poller":{"supplied":true,"supplied_user_id":501,"supplied_token_id":1,"phase":"idle"}}}`})
 			})
 			srv := httptest.NewServer(mux)
 			defer srv.Close()

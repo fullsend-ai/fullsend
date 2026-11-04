@@ -285,7 +285,9 @@ a closed team.
 The STAGE and numbered test mints take these values as
 `--status-github-group=ORG/mint-status`. The behaviour suite's CF mint
 drivers pass it, with `--status-auth=oidc,github`, on every mint
-deploy. The
+deploy. The DEV driver picks one pool org's team at random once per
+job and uses it for every preview mint, so every numbered org needs
+the team. The
 [CLI mint status scenarios](behaviour-testing.md#cli-mint-status-scenarios)
 run `fullsend mint status --mint-url` with the writer PAT against that
 mint.
@@ -332,7 +334,7 @@ gh api /orgs/halfsend-01/teams/mint-status/memberships/fstest-write --jq .state
 The inference gateway behaviour tests
 ([#8280](https://github.com/fullsend-ai/fullsend/issues/8280),
 [ADR 0137](../../ADRs/0137-inference-gateway-credential-route.md)) call a
-durable [agentgateway](https://github.com/agentgateway/agentgateway) v1.6.0
+durable [agentgateway](https://github.com/agentgateway/agentgateway) v1.7.0
 instance on Cloud Run in the E2E GCP project. The gateway accepts GitHub
 Actions OIDC tokens from the pool repositories only.
 `hack/setup-e2e-inference-gateway.sh` creates it, or adopts an existing one
@@ -360,7 +362,10 @@ changes:
 - **Pool change:** a new pool org, or a different `DefaultPoolSize`
   (`pkg/behaviourtest/drivers/install/driver.go`). Edit `POOL_ORGS` or
   `POOL_REPOS` at the top of the script.
-- **agentgateway bump:** change `AGW_VERSION`.
+- **agentgateway bump:** change `AGW_VERSION`, and `AGW_DIGEST` to the
+  release's multi-arch index digest. The version in the config header is
+  masked, so a bump passes the frozen-path diff and needs no
+  `--allow-frozen-change`.
 - **Model change:** edit `VERTEX_MODELS`, plus `vertex_params` for a
   model-as-a-service model.
 
@@ -405,9 +410,9 @@ defaults to `us-east5`. The durable gateway serves the Vertex models, so pass
    ==> Artifact Registry repository fullsend-e2e-gateway...
        OK: repository fullsend-e2e-gateway exists
 
-   ==> agentgateway v1.6.0 image...
-       upstream ghcr.io/agentgateway/agentgateway:v1.6.0 is sha256:9d3e6044ddcdc0878b1787f77bd401252b95e22684203fb5e874c4c42d2ed90c
-       OK: us-east5-docker.pkg.dev/example-project/fullsend-e2e-gateway/agentgateway:v1.6.0 matches upstream
+   ==> agentgateway v1.7.0 image...
+       upstream ghcr.io/agentgateway/agentgateway:v1.7.0 is sha256:60216aafb03d37f94e952ff3d51d2f630a65b10ecaebdc0a864882f92610c45b
+       OK: us-east5-docker.pkg.dev/example-project/fullsend-e2e-gateway/agentgateway:v1.7.0 matches upstream
 
    ==> Service account fullsend-e2e-gateway@example-project.iam.gserviceaccount.com...
        OK: service account exists
@@ -427,11 +432,11 @@ defaults to `us-east5`. The durable gateway serves the Vertex models, so pass
    ==> Verifying...
        service Ready condition: True, revision fullsend-e2e-gateway-00009-abc
        no token: GET /v1/models -> HTTP 401 text/plain
-         body: authentication failure: no bearer token found
+         body: authentication failed
        x-api-key only: GET /v1/models -> HTTP 401 text/plain
-         body: authentication failure: no bearer token found
+         body: authentication failed
        non-JWT bearer: GET /v1/models -> HTTP 401 text/plain
-         body: authentication failure: the token header is malformed: Error(InvalidToken)
+         body: authentication failed
 
    ==> No changes: everything was already in place.
 
@@ -466,7 +471,9 @@ defaults to `us-east5`. The durable gateway serves the Vertex models, so pass
    > gateway was deployed by hand with the same names and settings, and the
    > dry run above shows the script adopts it unchanged.
 
-The 401s must be `text/plain` from agentgateway. An HTML 401 comes from
+The 401s must be `text/plain` from agentgateway, with the body
+`authentication failed`. agentgateway v1.7.0 gives every jwtAuth and apiKey
+authentication refusal that same body and writes the reason to its access log. An HTML 401 comes from
 Cloud Run's invoker check, which means `--no-invoker-iam-check` is missing,
 and the script fails. The probes need no token, so a positive check is left
 to the behaviour test, which mints a GitHub Actions OIDC token for a pool
@@ -484,7 +491,7 @@ with no credential passes authentication and each model then refuses it
 with a 403. That is a test-gateway arrangement, not a recommendation. An
 OIDC-only gateway keeps strict `jwtAuth`, and a gateway that does mix the
 modes must have authorization rules that deny anonymous requests. The probe
-therefore expects a 401 (`api key authentication failure: ...`) for a
+therefore expects a 401 (`authentication failed`) for a
 bearer that is neither a valid token nor a configured key, instead of the
 three probes above.
 
@@ -582,7 +589,7 @@ whatever they had.
 
 | Resource | Name | Settings |
 |----------|------|----------|
-| Artifact Registry repository | `fullsend-e2e-gateway` | Holds `ghcr.io/agentgateway/agentgateway:v1.6.0`, copied unchanged with `skopeo copy --all --preserve-digests`. Every run checks that the copy's digest matches upstream, and refuses to continue if it does not. |
+| Artifact Registry repository | `fullsend-e2e-gateway` | Holds `ghcr.io/agentgateway/agentgateway:v1.7.0`, copied unchanged with `skopeo copy --all --preserve-digests`. Every run checks that the upstream tag is the digest pinned in `AGW_DIGEST` and that the copy's digest matches upstream, and refuses to continue if either does not. |
 | Service account | `fullsend-e2e-gateway@<project>.iam.gserviceaccount.com` | Runtime identity. With `--with-vertex`, it holds `roles/aiplatform.user`. |
 | Secret | `fullsend-e2e-gateway-config` | The generated agentgateway config. |
 | Secret | `fullsend-e2e-gateway-stub-upstream-key` | The stub upstream key, a fixed non-secret value: `e2e-stub-upstream-key`. |
@@ -752,19 +759,20 @@ triage roles cannot trigger credentialed CI runs automatically.
 
 ### Who needs `ok-to-test`
 
-Contributors without write access must have a maintainer with write access
-apply the **`ok-to-test`** label **after** the latest push. A label from
-anyone else (for example a triage-role user) is removed and does not authorize
-the run. The label must be created once in GitHub repo settings (Settings →
-Labels).
+Contributors without write access must have a user with write access (Write
+role or above) apply the **`ok-to-test`** label **after** the latest push. A
+label from anyone else (for example a triage-role user) is removed and does not
+authorize the run. The label must be created once in GitHub repo settings
+(Settings → Labels).
 
 ### Stale labels
 
 If new commits are pushed after `ok-to-test` was applied, the label is removed
-automatically and e2e is skipped until a maintainer re-applies it after
-reviewing the latest changes. Freshness compares the label timestamp against
-the frozen PR `updated_at` from the workflow event (`PR_UPDATED_AT`); the live
-API fallback may over-reject when non-push activity bumped `updated_at`.
+automatically and e2e is skipped until a user with write access re-applies it
+after reviewing the latest changes. Freshness compares the label timestamp
+against the frozen PR `updated_at` from the workflow event (`PR_UPDATED_AT`);
+the live API fallback may over-reject when non-push activity bumped
+`updated_at`.
 Applying the label triggers the **E2E ok-to-test** caller workflow, which
 `workflow_call`s into the main suite.
 
@@ -788,6 +796,19 @@ When the gate **runs** and denies authorization, a sticky PR comment (marker
 non-`ok-to-test` label event, where the thin caller skips without invoking the
 gate. Re-run the workflow or add/re-apply `ok-to-test` as appropriate.
 
+The comment names a reason. What to do next:
+
+| Reason | Label removed? | What to do next |
+|---|---|---|
+| `untrusted_labeler` | Yes, unless someone re-applied it since | The person who applied `ok-to-test` does not have write access (for example a Triage user). Do not re-apply it yourself. Ask a reviewer on this PR, or a maintainer listed in [MAINTAINERS.md](../../../MAINTAINERS.md), to apply it after reviewing the latest push. |
+| `stale_ok_to_test` | Yes | The PR changed after the label was applied, usually by a new push. A user with write access reviews the changes and re-applies `ok-to-test`. |
+| `error` | No | The GitHub API failed during the check. Re-run the workflow. |
+| `unauthorized` | No | The author does not have write access and there is no `ok-to-test` label. Ask a user with write access to review the PR and apply it. If you do have write access, the permission lookup may have failed: re-run the workflow first. |
+
+Unresolved review threads and reviews that request changes are **not** gate
+inputs: they only block merging, never e2e. To see which role you have, use
+the "How to check" links in [LADDER.md](../../../LADDER.md).
+
 ## CI architecture
 
 1. **PR open/sync** — **E2E Tests** runs the gate then suite jobs (trusted
@@ -809,7 +830,10 @@ The `fullsend-test-*` apps are **test-only** GitHub Apps owned by `fullsend-ai`,
 separate from the production `fullsend-ai-*` app set. They exist for temporary
 and test mints, including the Cloudflare Worker mint BT chain. There is **no
 `e2e` test app**. The `fix` role shares the coder test app and PEM (same as
-production).
+production). Because no test role uses it, the bot-role lookup feature uses
+the suite's own e2e App identity, discovered at runtime, as its unregistered
+third-party bot (see
+[GitHub bot-role lookup scenarios](behaviour-testing.md#github-bot-role-lookup-scenarios)).
 
 Pool organizations intentionally do not keep the production agent apps
 installed as baseline test infrastructure. The test mint uses the isolated

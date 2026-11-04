@@ -20,7 +20,6 @@ version: "1"                         # Schema version (required)
 
 # ── Platform ─────────────────────────────────────────────────
 forge: github                        # Hosting platform: github, gitlab (auto-detected if omitted)
-tracker: jira                        # Default issue tracker for `fullsend issues` commands: github, gitlab, jira
 
 # ── Operations ───────────────────────────────────────────────
 kill_switch: false                   # Emergency stop — disables all agent dispatch when true
@@ -47,27 +46,44 @@ agents:                              # Registered agent sources and per-agent tu
     runtime: claude                  # Per-agent runtime override
     model: opus                      # Per-agent model override (model id or provider/id)
     effort: high                     # Per-agent reasoning effort: low, medium, high, xhigh, max
-    subagents:                       # Per-agent sub-agent model map
+    subagents:                       # Per-agent sub-agent model map (pi and codex)
       default: sonnet                # Fallback model for personas without an explicit entry
       code-reviewer: opus            # Model for a specific persona
+    # trigger: <CEL expression>      # When the built-in review agent runs (review entry only)
 
 # ── Remote resources ─────────────────────────────────────────
 allowed_remote_resources:            # URL prefixes allowed for remote resources (agents, policies, skills, plugins, profiles, providers, and base composition)
   - https://raw.githubusercontent.com/fullsend-ai/fullsend/
   - https://raw.githubusercontent.com/fullsend-ai/agents/
 
-# ── Cross-repo issue creation ────────────────────────────────
-create_issues:
-  allow_targets:
-    orgs:                            # GitHub orgs agents may create issues in
-      - my-org
-    repos:                           # Specific repos (owner/name) agents may create issues in
-      - fullsend-ai/fullsend
-      - fullsend-ai/agents
+# ── Issue tracker ────────────────────────────────────────────
+tracker:                             # Issue tracker. At most one provider block: github, gitlab, or jira
+  github:
+    allowed_targets:
+      orgs:                          # GitHub orgs agents may create issues in
+        - my-org
+      repos:                         # Specific repos (owner/name) agents may create issues in
+        - fullsend-ai/fullsend
+        - fullsend-ai/agents
+  # gitlab:
+  #   allowed_targets:
+  #     groups: [my-group]           # GitLab groups (projects in the group and its subgroups)
+  #     repos: [my-group/sub/project] # Full project paths
+  # jira:
+  #   allowed_targets:
+  #     projects: [PROJ]             # Jira project keys
 
 # ── Authorization ────────────────────────────────────────────
-authorization:                       # Extra sources of slash-command permission, checked before the collaborator API
-  - provider: owners_file            # Grant access from the repo-root Prow OWNERS file (only provider)
+authorization:                       # Extra sources of permission for triggering agents
+  - provider: owners_file            # GitHub: grant access from the repo-root Prow OWNERS file, checked before the collaborator API
+  - provider: jira                   # Jira (jira-poll): who may trigger agents from Jira events
+    write:                           # Fullsend role write
+      groups: [example-team-developers]  # Jira group names (or group IDs)
+      accounts: ["5f7c012e0b2a4c001f3d9876"]  # Jira account IDs
+    triage:                          # Fullsend role triage
+      groups: [example-team]
+      accounts: []
+    labels: jira_editors             # Label-added events: jira_editors (default), allowlist, project_roles
 
 # ── Status notifications ─────────────────────────────────────
 status_notifications:
@@ -87,6 +103,8 @@ inference:
   project: my-gcp-project           # GCP project ID (must be provided by installer)
   region: global                     # GCP region for inference requests
   wif_provider: projects/123/locations/global/workloadIdentityPools/pool/providers/prov  # WIF provider resource name
+  wif_audience: ""                   # GitLab: agent job ID token audience for an existing provider (default "fullsend")
+  service_account: ""                # GitLab: service account email the agent job impersonates (default none)
   openai:                            # OpenAI Workload Identity Federation (ADR 0092)
     audience: ""                     # OpenAI WIF audience
     identity_provider_id: ""         # OpenAI WIF identity provider ID
@@ -123,15 +141,6 @@ Hosting platform for the repository (`github` or `gitlab`). When omitted,
 fullsend auto-detects the forge from CI environment variables. Most
 installations do not need to set this explicitly.
 
-### `tracker`
-
-Default issue tracker for `fullsend issues` commands' `--tracker` flag
-(`github`, `gitlab`, or `jira`). Distinct from `forge` — a repository hosted
-on GitHub may track issues in Jira. When omitted, `--tracker` is required on
-every `fullsend issues` invocation. See
-[Jira Integration](../guides/user/jira-integration.md) for cross-platform
-setup.
-
 ### `kill_switch`
 
 Emergency stop. When set to `true`, all agent dispatch is disabled for the
@@ -163,7 +172,16 @@ runtime comparison.
 
 Agent roles determine which GitHub Apps (and their associated credentials and
 permissions) are provisioned for the repository. Valid roles: `fullsend`,
-`triage`, `coder`, `review`, `fix`, `retro`, `prioritize`, `e2e`.
+`triage`, `coder`, `review`, `fix`, `retro`, `prioritize`, `e2e`. The `fix`
+role reuses the `coder` GitHub App and PEM, so no separate App or secret is
+created for it. For each role's GitHub App and purpose, see
+[Custom Agent Identity — Built-in roles](../guides/user/custom-agent-identity.md#built-in-roles).
+
+Mint-only dogfood roles such as `scribe` can be registered with
+`fullsend mint add-role` (and used via remote harness registration) but are
+**not** valid values for `roles` until scaffold and workflow wiring lands.
+Adding them under `roles` fails config validation rather than silently
+no-oping.
 
 In the layered config system, `roles` uses replace-if-set semantics — an
 overlay that sets `roles` replaces the parent list entirely (no union).
@@ -174,7 +192,7 @@ Omitting the key inherits the parent's roles. See
 
 Registered agent sources and per-agent tuning. Each entry identifies an agent
 by source URL or local path, with optional overrides for runtime, model,
-effort, and sub-agent models.
+effort, sub-agent models and the trigger.
 
 - **`source`** — URL (must include `#sha256=<64-hex-char>` integrity hash) or
   local path. URL sources must be covered by `allowed_remote_resources`.
@@ -193,7 +211,27 @@ effort, and sub-agent models.
 - **`subagents`** — Map of persona names to model references. The `default`
   key sets the fallback for personas without an explicit entry. A `~` (null)
   value tombstones an inherited entry. Keys must be lowercase alphanumeric
-  segments joined by hyphens (max 64 chars).
+  segments joined by hyphens (max 64 chars). On codex, for an agent that
+  delegates, the values must be OpenAI ids and a key must name a registered
+  persona or `default`; see
+  [Codex › Child models](../runtimes/codex.md#child-models).
+- **`trigger`** — A [CEL trigger](../guides/user/cel-triggers-reference.md)
+  (a boolean over the normalized `event`). It decides routing for the
+  built-in review, retro, triage and prioritize agents only: on one of those
+  entries it opts the repository into CEL routing for that agent, so the
+  trigger, not the dispatch workflow's built-in rules, decides when the
+  agent's job starts (see
+  [Choosing when review runs](../guides/user/customizing-agents.md#choosing-when-review-runs),
+  [Choosing when retro runs](../guides/user/customizing-agents.md#choosing-when-retro-runs)
+  and
+  [Choosing when triage and prioritize run](../guides/user/customizing-agents.md#choosing-when-triage-and-prioritize-run)).
+  It does not change CEL dispatch: the harness `trigger:` keeps deciding when
+  custom agents run and what the Jira poller dispatches. A trigger alone
+  makes a valid override-only entry for a built-in agent. Validated when the
+  agent list is validated: it must compile and return a boolean. Like an
+  invalid `model` or `effort`, an invalid `trigger` makes every agent run in
+  the repository fail with `invalid agent config`, not only built-in routing, so
+  check the expression before you merge the change.
 
 In the layered config system, agents use keyed merge by `DerivedName()` — see
 [Layered Config Reference](../guides/infrastructure/layered-config-reference.md).
@@ -215,29 +253,58 @@ omitted inherits from parent; explicit empty (`[]`) denies all remote
 resources; a non-empty list is unioned with the parent's list. See
 [Layered Config Reference](../guides/infrastructure/layered-config-reference.md).
 
-### `create_issues`
+### `tracker`
 
-Controls cross-repo issue creation by agents. The `allow_targets` field
-restricts which orgs and repos agents may create issues in.
+The issue tracker, as a single provider-discriminated mapping. `tracker` holds
+at most one provider block — `github`, `gitlab`, or `jira` — and the block that
+is present selects the provider. It is the default backend for the `--tracker`
+flag of `fullsend issues` commands (distinct from `forge`: a repository hosted
+on GitHub may track issues in Jira), and its `allowed_targets` restrict where
+agents may create issues. Declare a provider with no extra targets as an empty
+block (for example `tracker: {jira: {}}`). When omitted, no provider is
+selected, `--tracker` is required on every `fullsend issues` invocation, and
+agents cannot create issues outside the repository they run in. Validation
+rejects a `tracker` mapping with more than one provider block. See
+[Jira Integration](../guides/user/jira-integration.md) for cross-platform
+setup.
 
-- **`allow_targets.orgs`** — GitHub organizations. All repos in these orgs are
-  allowed.
-- **`allow_targets.repos`** — Specific repos in `owner/name` format.
+- **`tracker.github.allowed_targets.orgs`** — GitHub organizations. All repos
+  in these orgs are allowed.
+- **`tracker.github.allowed_targets.repos`** — Specific repos in exactly
+  `owner/name` format.
+- **`tracker.gitlab.allowed_targets.groups`** — GitLab groups (full group
+  path). Projects in the group and its subgroups are allowed.
+- **`tracker.gitlab.allowed_targets.repos`** — Specific projects by full
+  project path (for example `group/subgroup/project`).
+- **`tracker.jira.allowed_targets.projects`** — Jira project keys (an
+  uppercase letter followed by uppercase letters, digits, or underscores).
 
-When omitted, agents cannot create issues outside the repository they are
-running in. That repository is always allowed, so it does not need an
+Jira connection and polling fields will also live under `tracker.jira`; they
+are tracked in [#9035](https://github.com/fullsend-ai/fullsend/issues/9035) and
+are not part of this schema yet.
+
+For GitHub and GitLab the scopes are additive: a destination is allowed if it
+matches a configured org or group, or a configured repo. Malformed entries
+are rejected: an empty org or group, an org containing `/`, a GitHub repo not
+in `owner/name` form, a GitLab path with empty segments or a repo without a
+namespace, or an invalid Jira project key.
+
+The repository agents run in is always allowed, so it does not need an
 entry. The default GitHub per-repo configuration generated without a preset lists
-both `fullsend-ai/fullsend` and `fullsend-ai/agents` in `allow_targets.repos`,
+both `fullsend-ai/fullsend` and `fullsend-ai/agents` in
+`tracker.github.allowed_targets.repos`,
 so retro proposals and triage prerequisites can reach the platform or agent
 repository that owns the change. These are installation defaults, not an
 automatic grant for every repository in `allowed_remote_resources`.
-Fresh GitLab installations instead record an explicit empty `allow_targets`
-policy: cross-project targets must be configured for the GitLab host.
+Fresh GitLab installations instead record an explicit empty
+`tracker.gitlab.allowed_targets` policy: cross-project targets must be
+configured for the GitLab host.
 Explicit settings are preserved. Retro and triage post-scripts currently read
 only the overlay (`.fullsend/config.yaml`), not the preset
 (`.fullsend/config.base.yaml`). Until
 [agents#1728](https://github.com/fullsend-ai/agents/issues/1728) is fixed,
-preset users must declare the required `config.create_issues.allow_targets` in the
+preset users must declare the required
+`config.tracker.<provider>.allowed_targets` in the
 managed repository’s `repos.yaml` entry and rerun `fullsend repos install`,
 or edit `.fullsend/config.yaml` for an unmanaged installation. Updating only
 the preset does not enable these cross-repository operations. Include all
@@ -247,16 +314,81 @@ Existing installations retain their permissions on upgrade; on GitHub, to opt in
 `repos.yaml` configuration, or in `.fullsend/config.yaml` for an installation
 not managed through `fullsend repos`. Preserve any other targets you need.
 
+In the layered config system, `tracker` replaces the parent's whole object
+when set, so layers never combine two providers. See
+[Layered Config Reference](../guides/infrastructure/layered-config-reference.md).
+
+**Breaking change — migration from the scalar `tracker`:** `tracker` used to be
+a scalar (`tracker: jira`). A scalar value is no longer accepted: validation
+(`fullsend lint` and CLI config writes) and config loading reject it with a
+migration message. A `repos.yaml` managed `config:` block containing it is
+converted by `fullsend repos install` (see below). Replace it with the provider
+block:
+
+```yaml
+# before
+tracker: jira
+# after
+tracker:
+  jira: {}
+```
+
+**Migration from `create_issues`:** the top-level `create_issues` key is
+removed. Runtime config loading fails with a migration error when either
+`.fullsend/config.yaml` or `.fullsend/config.base.yaml` still contains
+`create_issues`; the key is never silently ignored. Validation also rejects it.
+Move `create_issues.allow_targets.orgs` and `repos`
+to `tracker.github.allowed_targets.orgs` and `repos` on GitHub, to
+`tracker.gitlab.allowed_targets.groups` and `repos` on GitLab, or to
+`tracker.jira.allowed_targets.projects` on Jira, and keep only one provider
+block.
+
+**Automatic migration of managed configuration:** `fullsend repos install`
+converts the legacy scalar `tracker` and `create_issues` keys in `repos.yaml`
+managed `config:` blocks (`defaults.config`, the forge section's `config`, and
+each repository entry's `config`) before the manifest is decoded, writes the
+converted manifest, and re-renders each fullsend-managed `.fullsend/config.yaml`
+from it. Each layer that set a legacy key gets the full `tracker` mapping that
+was in effect there, because the legacy keys were inherited separately while a
+`tracker` mapping replaces the parent's. The effective provider and targets of
+every repository stay the same:
+
+- A layer with no provider uses the repository's forge (`github` or `gitlab`).
+  A `create_issues` block in `defaults.config` with no provider is moved to each
+  forge section's `config`, because `defaults.config` applies to both forges.
+- GitHub `orgs` and `repos` stay organization and repository grants under
+  `tracker.github.allowed_targets`. GitLab `repos` move to
+  `tracker.gitlab.allowed_targets.repos`.
+- Install stops before any write, naming the manifest path and the edit to
+  make, when a target has no unambiguous equivalent. That covers repository or
+  organization targets under a Jira provider (Jira targets are project keys
+  under `tracker.jira.allowed_targets.projects` and are never derived from
+  repository paths), organization targets on GitLab (list the groups under
+  `tracker.gitlab.allowed_targets.groups`), and a layer that combines a
+  `tracker` mapping with `create_issues`.
+- A scalar `tracker` with no `create_issues` in the manifest becomes a provider
+  block with no `allowed_targets`. As a `tracker` mapping it replaces any
+  `tracker` mapping in the preset (`.fullsend/config.base.yaml`).
+
+Running install again changes nothing. A read-only or HTTPS manifest is
+converted in memory for that run and install prints the edits to apply to its
+source. `--dry-run` reports the conversion without writing. Markerless
+`.fullsend/config.yaml` files and presets are not converted; edit them by hand.
+
 ### `authorization`
 
-Lists extra sources of permission for triggering agents. The GitHub
-collaborator API always applies; a provider listed here is checked first.
-The only provider is `owners_file`:
+Lists extra sources of permission for triggering agents. There are two
+providers: `owners_file` for GitHub events and `jira` for Jira events.
+
+#### `owners_file`
+
+The GitHub collaborator API always applies; this provider is checked first:
 
 - An `approvers` entry in the repo-root `OWNERS` file gets write-level access
   (every slash command and custom agent). A `reviewers` entry gets
-  triage-level access, which covers `/fs-triage` and `/fs-review` only:
-  custom agents under `agents:` still require write.
+  triage-level access, which covers `/fs-triage`, `/fs-review`, and custom
+  agents whose harness sets `role: triage` or `role: review`. Custom agents
+  with any other `role:` still require write.
 - An entry that names a key in `OWNERS_ALIASES` stands for that alias's
   members. A GitHub login equal to any alias key never matches, and nested
   aliases are not expanded.
@@ -267,11 +399,62 @@ The only provider is `owners_file`:
 - Only the flat root `approvers`/`reviewers` lists are read. Prow `filters:`
   blocks and per-directory `OWNERS` files are ignored.
 
-Default: absent (collaborator API only). The field is not inherited from
-`config.base.yaml`: each repo opts in in its own `config.yaml`. Unknown or
-duplicate providers fail config validation. See
+#### `jira`
+
+Decides which Jira users may trigger agents through the `jira-poll` input
+driver. It applies only to events from Jira and does not change GitHub or
+GitLab authorization
+([ADR 0153](../ADRs/0153-authorize-jira-poll-actors-without-project-administration.md)).
+
+| Key | Meaning |
+|---|---|
+| `write.groups`, `write.accounts` | Jira groups (by name or group ID) and Jira account IDs granted the fullsend `write` role |
+| `triage.groups`, `triage.accounts` | Jira groups and account IDs granted the fullsend `triage` role |
+| `labels` | How a label-added event is authorized: `jira_editors` (default once the entry is present), `allowlist`, or `project_roles` |
+
+- **Slash commands and other non-label events:** when the entry sets a
+  `write` or `triage` list (an empty list counts as set, so it denies
+  everyone), the lists decide. An actor listed
+  under `write` gets `write`. An actor listed only under `triage` gets
+  `triage`, which covers `/fs-triage` and custom agents whose
+  harness sets `role: triage` or `role: review`. Anyone else is denied. The
+  Jira project roles are not consulted. When neither list is set, slash
+  commands use the Jira project role lookup instead. That lookup needs
+  Administer Projects. Other non-label events, such as an issue being opened
+  or edited, are then not authorized for any agent, unless the entry sets
+  `labels: project_roles`: with that value and no lists, every event
+  (labels, slash commands, opened, edited, closed, reopened, plain comments,
+  label removals) resolves through the project role lookup, exactly as with
+  no `jira` entry.
+- **Label-added events**: `jira_editors` authorizes anyone who could add the
+  label, which needs Jira's Edit Issues permission. `allowlist` checks the
+  label author against the same lists as slash commands. `project_roles`
+  uses the Jira project role lookup.
+- Group entries are resolved with Jira's user-groups API, once per actor per
+  poll cycle. That needs the poller account to hold the Browse users and
+  groups global permission. Account entries need no Jira call. Project-role
+  resolution calls the same API for an actor when a project role is granted
+  to a group.
+
+To keep today's behavior explicitly, use the two-line entry
+`- provider: jira` with `labels: project_roles` and no lists.
+
+The provider is opt-in. Without a `jira` entry, every Jira event, including
+label-added events, resolves through the project role lookup and takes the
+per-harness role threshold, which needs Administer Projects. Unknown keys in a `jira` entry, an
+unknown `labels` value, and empty group or account entries fail config
+loading. See
+[Jira integration](../guides/user/jira-integration.md#actor-role-resolution)
+for the permissions each setting needs.
+
+Default: absent (`owners_file` off; Jira resolves every event through the
+project role lookup). The field is
+not inherited from `config.base.yaml`: each repo opts in in its own
+`config.yaml`. Unknown or duplicate providers fail config validation, and also fail
+`jira-poll` and harness dispatch at load time, and
+`write`, `triage`, and `labels` are valid only on the `jira` provider. See
 [OWNERS file authorization](../guides/user/owners-file-authorization.md)
-for a setup walkthrough.
+for an `owners_file` setup walkthrough.
 
 ### `status_notifications`
 
@@ -285,6 +468,61 @@ agents start and complete.
   an opt-in alternative that does not generate a GitHub notification.
 - **`reaction.completion`** — `enabled`, `on_failure`, or `disabled`
   (default).
+
+When `status_notifications` is omitted entirely, both start and completion
+comments default to enabled.
+
+**Completion comments.** `comment.completion` decides whether a comment is
+posted when the run ends:
+
+| Value | Behavior |
+|-------|----------|
+| `enabled` | Always post a completion comment (default) |
+| `on_failure` | Post when the agent fails, is cancelled, or is skipped by a pre-script; the start comment is automatically suppressed to avoid notification noise |
+| `disabled` | Never post a completion comment; silently remove the start comment |
+
+`on_failure` reduces notification noise: successful runs leave no trace, but
+failures still surface. With `on_failure`, the start comment is suppressed
+regardless of `comment.start`, because posting and then deleting a start
+comment would still trigger a GitHub notification pointing to a deleted
+comment.
+
+In `enabled` mode, a hard crash or cancellation that happens before the agent
+could post anything at all is also surfaced after the fact: a post-job cleanup
+step synthesizes an "Interrupted" comment so the run doesn't silently vanish.
+
+**Reactions.** Emoji reactions don't generate a GitHub notification, so they
+are a lower-noise way to show that an agent is working and how the run turned
+out. Unlike comments, they default to `disabled`. When `reaction.start` is
+enabled, a 👀 reaction is added when the agent begins. At completion, the start
+reaction (if any) is removed and, depending on `reaction.completion`, replaced
+with an outcome reaction:
+
+| Value | Behavior |
+|-------|----------|
+| `enabled` | Always add a completion reaction: 👍 on success, 😕 on failure/cancelled/skipped |
+| `on_failure` | Add a 😕 reaction only on failure/cancelled/skipped; leave no reaction on success |
+| `disabled` | Never add a completion reaction (default) |
+
+👎 is deliberately avoided for failures: it overloads GitHub's native
+up/down-vote convention, so a routine agent failure could be misread as the bot
+disliking the issue. Because reactions carry no notification cost,
+`on_failure` here only means "leave no reaction on success", with no
+start-suppression workaround.
+
+For runs triggered by an issue or PR event, the reaction is added to the
+issue or PR itself. For runs triggered by a slash command comment (for example
+`/fs-fix`), it is added to the triggering comment instead, so it's clear which
+command the reaction is responding to.
+
+Known limitations:
+
+- Reactions are currently GitHub-only. Enabling `reaction.*` on a
+  GitLab-backed repo is silently a no-op today
+  ([#5998](https://github.com/fullsend-ai/fullsend/issues/5998)).
+- If a run is hard-killed before it can post its completion reaction, the
+  start reaction (👀) can be left behind indefinitely. Unlike status comments,
+  there's no out-of-process reconciler for orphaned reactions yet.
 
 ### `mint_url`
 
@@ -326,6 +564,25 @@ flag is an error). See
 - **`region`** — GCP region for inference. Default: `global`.
 - **`wif_provider`** — Full Workload Identity Federation provider resource
   name. No default — must be provided by the installer.
+- **`wif_audience`** — GitLab `vertex-wif` only. The audience the GitLab
+  agent job requests for its ID token (`FULLSEND_ID_TOKEN`), for an existing
+  WIF provider that does not accept `fullsend`. `fullsend repos install`
+  renders it into `.gitlab/ci/fullsend-agent.yml`. Default: unset, which
+  keeps `aud: "fullsend"`. Must be a single line of printable ASCII with no
+  surrounding spaces and no `$`.
+- **`service_account`** — GitLab `vertex-wif` only. The email of a service
+  account the agent job impersonates after the federated token exchange
+  (`<name>@<project>.iam.gserviceaccount.com`). `fullsend repos install`
+  writes it as the `FULLSEND_GCP_SERVICE_ACCOUNT` CI/CD variable. Default:
+  unset, which keeps direct federated identity.
+
+  Both keys require an explicitly supplied `wif_provider` (or
+  `--vertex-wif-provider`) and are read only at install time. In `repos.yaml`,
+  set them under `gitlab.config` or on `gitlab.repos` entries: `github.config`
+  and `github.repos` entries reject them, and values inherited from
+  `defaults.config` are ignored on GitHub repositories and on GitLab
+  repositories that do not use `vertex-wif`. See
+  [Using an existing WIF provider](../guides/getting-started/configuring-gitlab.md#using-an-existing-wif-provider).
 - **`openai`** — OpenAI Workload Identity Federation identifiers
   ([ADR 0092](../ADRs/0092-openai-wif-credential-delivery.md)). The
   `FULLSEND_OPENAI_*` runner variables, when set, replace the resolved block

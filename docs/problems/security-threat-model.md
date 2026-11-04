@@ -133,6 +133,19 @@ Agents amplify authority. If a compromised account can trigger agent actions, th
   verified platform invocation and human-reviewed policy and harness revisions
   that authorized it (see
   [ADR 0098](../ADRs/0098-entity-first-harness-evaluation.md))
+- **Human input admission and harness scope** — the target platform requires
+  verified `triage` authority for ordinary human event actors,
+  decision-relevant entity facts, and model-bound records, then enforces each
+  harness's `human_min_role`. An exact verified human-label transition has a
+  narrow `triage`-equivalent grant that does not create a verified actor role;
+  a stronger harness minimum still requires the labeler's verified role. The
+  minimum defaults to `triage` for the `triage` and `review` mint
+  roles and `write` for other roles; a trusted harness author may override it
+  within the platform floor. CEL may narrow admission further. Explicitly
+  lowering a write-capable harness's minimum to `triage` lets triage-authored
+  content guide that harness, so agent configuration review and fixed
+  capabilities remain security controls
+  ([ADR 0151](../ADRs/0151-harness-human-role-minimums.md)).
 - **No self-approval** — an agent that implements a change cannot also approve it. On GitHub this separation is real: the code and review stages run as distinct bot identities. On GitLab, the [GitLab role-credential contract](../contributing/gitlab-role-credentials.md)'s `approve_merge_request` capability check applies unconditionally: Analyst and Coder authenticate with distinct per-role credentials, and Coder is structurally denied the approve call because the capability check resolves from the role identity. Installs that have not yet provisioned role secrets fail closed rather than authenticating as the shared bot from [ADR 0067](../ADRs/0067-gitlab-cron-polling-event-dispatch.md).
 - **GitLab role-credential contract** — built-in Poller/Analyst/Coder and administrator-registered custom roles share one registry and credential-selection path ([gitlab-role-credentials.md](../contributing/gitlab-role-credentials.md)). Role registration is install-state only; repository and merge-request content cannot create or elevate roles. Runtime authentication failures do not fall back to the shared token. Provisioning of role credentials is additive (#7498). Job routing (#7499) selects the registered role credential unconditionally. There is no shared-token fallback for an unconfigured role (#7559, #7782). Rotation (#7500) replaces a due role PAT by creating a new token and distributing it to the existing CI variable while the previous PAT stays valid for in-flight jobs; a failed rotation does not drop the last known-good secret or silently broaden to the shared token. Neither `repos install` nor `repos uninstall` automatically removes a leftover shared `FULLSEND_FORGE_TOKEN` credential from a repository installed before the role-only rollout (#7931); an administrator must clean that up manually
 - **Rate limiting / anomaly detection** — unusual patterns of agent activity (sudden burst of cross-repo changes, changes to security-sensitive paths) trigger alerts
@@ -144,6 +157,9 @@ Agents amplify authority. If a compromised account can trigger agent actions, th
 
 - How do we distinguish a compromised account from a legitimate team member making unusual but valid changes?
 - Should agent authority be tied to individual human identity, or to roles?
+  (The actor-admission gate uses verified roles and each harness's minimum under
+  [ADR 0151](../ADRs/0151-harness-human-role-minimums.md); that decision does
+  not grant agent capabilities or settle identity-specific policy.)
 - How do we handle the bootstrap problem — who sets up the initial agent configuration, and how is that secured?
 
 ## Threat 3: Agent drift

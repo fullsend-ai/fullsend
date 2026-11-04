@@ -1,13 +1,16 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -40,6 +43,10 @@ type sandboxExecFunc func(sandboxName, cmd string, timeout time.Duration) (stdou
 type sandboxUploadFunc func(sandboxName, localPath, remotePath string) error
 
 type writeBehaviourResultsFunc func(sandboxName string, results BehaviourResults) error
+
+// hostGitFunc runs git with args in dir on the runner (the host running the
+// dummy runtime process), not in the sandbox.
+type hostGitFunc func(ctx context.Context, dir string, args ...string) (stdout, stderr string, exitCode int, err error)
 
 // BehaviourOperation is a single scripted step for the dummy runtime.
 type BehaviourOperation struct {
@@ -85,12 +92,20 @@ type BehaviourResults struct {
 }
 
 // DummyRuntime executes scripted operations in the real OpenShell sandbox.
-// ExecFn, UploadFn, and WriteResultsFn are optional test overrides; production
-// uses sandbox.Exec, sandbox.Upload, and writeBehaviourResults.
+// ExecFn, UploadFn, WriteResultsFn, and HostGitFn are optional test
+// overrides; production uses sandbox.Exec, sandbox.Upload,
+// writeBehaviourResults, and runHostGit.
 type DummyRuntime struct {
 	ExecFn         sandboxExecFunc
 	UploadFn       sandboxUploadFunc
 	WriteResultsFn writeBehaviourResultsFunc
+	HostGitFn      hostGitFunc
+
+	// hostRepoDir is the runner-side path of the target repository, the
+	// directory the runner uploaded into the sandbox. Run copies it from
+	// RunParams.HostRepoDir; checkout_branch runs its git remote access
+	// there because sandboxes cannot fetch from the forge.
+	hostRepoDir string
 }
 
 func (r DummyRuntime) execFn() sandboxExecFunc {
@@ -98,6 +113,43 @@ func (r DummyRuntime) execFn() sandboxExecFunc {
 		return r.ExecFn
 	}
 	return sandbox.Exec
+}
+
+func (r DummyRuntime) hostGitFn() hostGitFunc {
+	if r.HostGitFn != nil {
+		return r.HostGitFn
+	}
+	return runHostGit
+}
+
+// gitNoAutoMaintenance are git config overrides that stop a fetch or commit
+// from starting automatic gc or maintenance. Either can detach into a
+// background process that outlives the git command and keeps writing into
+// .git/objects after it returns.
+var gitNoAutoMaintenance = []string{"-c", "gc.auto=0", "-c", "maintenance.auto=false"}
+
+// runHostGit runs git on the runner. GIT_TERMINAL_PROMPT=0 makes a missing
+// credential fail instead of waiting for input; gitNoAutoMaintenance keeps
+// git from leaving background work behind in the runner's checkout.
+func runHostGit(ctx context.Context, dir string, args ...string) (string, string, int, error) {
+	gitArgs := append(append(append([]string{}, gitNoAutoMaintenance...), "-C", dir), args...)
+	cmd := exec.CommandContext(ctx, "git", gitArgs...)
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && ctx.Err() == nil {
+		return stdout.String(), stderr.String(), exitErr.ExitCode(), nil
+	}
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			err = fmt.Errorf("%w: %s", ctxErr, strings.TrimSpace(stderr.String()))
+		}
+		return stdout.String(), stderr.String(), -1, err
+	}
+	return stdout.String(), stderr.String(), 0, nil
 }
 
 func (r DummyRuntime) uploadFn() sandboxUploadFunc {
@@ -137,7 +189,7 @@ func (r DummyRuntime) Bootstrap(input BootstrapInput) error {
 		}
 	}
 
-	mkdirCmd := fmt.Sprintf("mkdir -p %s/output %s/.dummy", sandbox.SandboxWorkspace, sandbox.SandboxWorkspace)
+	mkdirCmd := fmt.Sprintf("mkdir -p %s/output %s/.dummy %s/skills", sandbox.SandboxWorkspace, sandbox.SandboxWorkspace, r.ConfigDir())
 	_, stderr, exitCode, err := r.execFn()(sandboxName, mkdirCmd, 10*time.Second)
 	if err != nil {
 		return fmt.Errorf("bootstrap exec: %w", err)
@@ -145,7 +197,9 @@ func (r DummyRuntime) Bootstrap(input BootstrapInput) error {
 	if exitCode != 0 {
 		return fmt.Errorf("bootstrap failed: %s", strings.TrimSpace(stderr))
 	}
-	return nil
+	// Stage the harness skills like the agent runtimes do, so behaviour
+	// scenarios can inspect the staged (override-merged) tree (#6158).
+	return uploadHarnessSkillsWith(r.uploadFn(), sandboxName, r.ConfigDir()+"/skills", input.SkillDirs())
 }
 
 func (r DummyRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printer, _ time.Time, _ *RunMetrics) (int, error) {
@@ -155,6 +209,7 @@ func (r DummyRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 		return 1, err
 	}
 
+	r.hostRepoDir = params.HostRepoDir
 	results, scriptErr := executeBehaviourScript(ctx, r, params.SandboxName, params.RepoDir, script)
 	if writeErr := r.writeResultsFn()(params.SandboxName, results); writeErr != nil {
 		return 1, writeErr
@@ -329,15 +384,7 @@ func executeBehaviourOp(rt DummyRuntime, sandboxName, repoDir string, op Behavio
 		if !branchNamePattern.MatchString(name) || strings.Contains(name, "..") {
 			return fmt.Errorf("checkout_branch invalid branch name %q", name)
 		}
-		cmd := checkoutBranchCommand(repoDir, name)
-		_, stderr, exitCode, err := rt.execFn()(sandboxName, cmd, 120*time.Second)
-		if err != nil {
-			return fmt.Errorf("checkout_branch exec: %w", err)
-		}
-		if exitCode != 0 {
-			return fmt.Errorf("checkout_branch %s failed: %s", name, strings.TrimSpace(stderr))
-		}
-		return nil
+		return executeCheckoutBranch(rt, sandboxName, repoDir, name)
 	case "assert_env":
 		varName := strings.TrimSpace(op.Args)
 		if varName == "" {
@@ -419,6 +466,8 @@ func executeBehaviourOp(rt DummyRuntime, sandboxName, repoDir string, op Behavio
 			return fmt.Errorf("assert_json %s at %s: %s", jsonPath, path, strings.TrimSpace(stderr))
 		}
 		return nil
+	case "assert_jq":
+		return executeAssertJQ(rt, sandboxName, op.Args)
 	// http_probe is not handled here: executeBehaviourScript runs it
 	// through executeHTTPProbe, which also returns what it records.
 	default:
@@ -426,42 +475,154 @@ func executeBehaviourOp(rt DummyRuntime, sandboxName, repoDir string, op Behavio
 	}
 }
 
-// checkoutBranchCommand builds the shell command for the checkout_branch
-// op. The branch name must already be validated against branchNamePattern.
+// checkoutBranchRunnerTimeout bounds the runner-side git work of one
+// checkout_branch op (probe, fetch, and bundle together).
+const checkoutBranchRunnerTimeout = 120 * time.Second
+
+// checkoutBranchRunnerRefPrefix is the runner-private namespace the runner
+// fetches a remote branch into before bundling it. Fetching into
+// refs/heads/ would overwrite (or, if checked out, be refused for) a local
+// branch of the same name in the runner's checkout.
+const checkoutBranchRunnerRefPrefix = "refs/fullsend-behaviour/heads/"
+
+// checkoutBranchBundlePath is where the runner uploads the bundle in the
+// sandbox. The sandbox command removes it after fetching from it.
+var checkoutBranchBundlePath = sandbox.SandboxWorkspace + "/.dummy/checkout-branch.bundle"
+
+// executeCheckoutBranch runs the checkout_branch op for an already
+// validated branch name. Deliberately a single narrow capability, not a
+// general shell op, and agent-agnostic: it only needs a target repository
+// with an origin.
 //
-// Semantics (deliberately a single narrow capability, not a general
-// shell op):
-//   - Probe the remote for the ref with `git ls-remote --exit-code`.
-//     Exit 2 means the ref does not exist — base the branch off the
-//     current HEAD. Any other non-zero exit (network, auth) fails the
-//     op instead of being silently collapsed into the HEAD fallback,
-//     which would make scenarios pass or fail for the wrong reason.
-//   - When the ref exists, fetch it and base the branch on FETCH_HEAD
-//     so the branch carries the remote ref's commits.
-//   - Record one marker commit on the branch. This gives the applier
-//     post-script real content to push and — because the local tip now
-//     differs from every remote tip — makes a wrongful push move the
-//     target branch, so "branch ... is unchanged" assertions can
-//     actually detect it. The commit subject uses a conventional-commit
-//     prefix because post-code derives the applier's PR title from it.
-func checkoutBranchCommand(repoDir, name string) string {
+// Code and fix sandboxes cannot fetch git objects from the forge (git
+// smart HTTP needs POST .../git-upload-pack even to read, and the sandbox
+// policy allows only GET), so all remote access happens on the runner,
+// against the host copy of the target repository and its origin:
+//   - Probe the remote for refs/heads/<name> with `git ls-remote
+//     --exit-code`. Exit 2 means the ref does not exist: base the branch
+//     on the sandbox's current HEAD. Any other non-zero exit (network,
+//     auth) fails the op, with git's stderr, instead of being silently
+//     collapsed into the HEAD fallback, which would make scenarios pass or
+//     fail for the wrong reason.
+//   - When the ref exists, fetch it on the runner into a runner-private
+//     ref, write a git bundle of that ref, and upload it. The sandbox
+//     fetches the bundle and bases the branch on FETCH_HEAD, so the branch
+//     carries the remote ref's commits.
+//
+// The sandbox command then records one marker commit (see
+// checkoutBranchCommand).
+func executeCheckoutBranch(rt DummyRuntime, sandboxName, repoDir, name string) error {
+	if rt.hostRepoDir == "" {
+		return fmt.Errorf("checkout_branch %s: runner-side repository directory is not set", name)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), checkoutBranchRunnerTimeout)
+	defer cancel()
+	git := rt.hostGitFn()
+
+	// Scoped to refs/heads/ throughout, so the fetch resolves the same ref
+	// the probe found rather than git's default disambiguation order
+	// (which would prefer a same-named tag over the branch).
+	remoteRef := "refs/heads/" + name
+	_, stderr, exitCode, err := git(ctx, rt.hostRepoDir, "ls-remote", "--exit-code", "--heads", "origin", remoteRef)
+	if err != nil {
+		return fmt.Errorf("checkout_branch %s: runner ls-remote: %w", name, err)
+	}
+	var bundleRef string
+	switch exitCode {
+	case 0:
+		bundleRef = checkoutBranchRunnerRefPrefix + name
+		if err := uploadCheckoutBranchBundle(ctx, rt, sandboxName, name, remoteRef, bundleRef); err != nil {
+			return err
+		}
+	case 2:
+		// The ref is absent: branch off the sandbox's current HEAD.
+	default:
+		return fmt.Errorf("checkout_branch %s: runner ls-remote failed with %d: %s", name, exitCode, strings.TrimSpace(stderr))
+	}
+
+	cmd := checkoutBranchCommand(repoDir, name, bundleRef)
+	_, stderr, exitCode, err = rt.execFn()(sandboxName, cmd, 120*time.Second)
+	if err != nil {
+		return fmt.Errorf("checkout_branch exec: %w", err)
+	}
+	if exitCode != 0 {
+		return fmt.Errorf("checkout_branch %s failed: %s", name, strings.TrimSpace(stderr))
+	}
+	return nil
+}
+
+// uploadCheckoutBranchBundle fetches remoteRef from origin into bundleRef
+// in the runner's checkout, writes a bundle of bundleRef, and uploads it to
+// checkoutBranchBundlePath. The runner-private ref is deleted afterwards.
+func uploadCheckoutBranchBundle(ctx context.Context, rt DummyRuntime, sandboxName, name, remoteRef, bundleRef string) error {
+	git := rt.hostGitFn()
+	_, stderr, exitCode, err := git(ctx, rt.hostRepoDir, "fetch", "--no-tags", "--no-write-fetch-head", "origin", "+"+remoteRef+":"+bundleRef)
+	if err != nil {
+		return fmt.Errorf("checkout_branch %s: runner fetch: %w", name, err)
+	}
+	if exitCode != 0 {
+		return fmt.Errorf("checkout_branch %s: runner fetch failed with %d: %s", name, exitCode, strings.TrimSpace(stderr))
+	}
+	defer func() {
+		// Best effort: a leftover private ref only costs disk space, and
+		// the next checkout of the same branch force-updates it.
+		_, _, _, _ = git(context.Background(), rt.hostRepoDir, "update-ref", "-d", bundleRef)
+	}()
+
+	tmpDir, err := os.MkdirTemp("", "behaviour-checkout-*")
+	if err != nil {
+		return fmt.Errorf("checkout_branch %s: bundle temp dir: %w", name, err)
+	}
+	defer os.RemoveAll(tmpDir)
+	bundleFile := filepath.Join(tmpDir, "branch.bundle")
+	_, stderr, exitCode, err = git(ctx, rt.hostRepoDir, "bundle", "create", bundleFile, bundleRef)
+	if err != nil {
+		return fmt.Errorf("checkout_branch %s: runner bundle: %w", name, err)
+	}
+	if exitCode != 0 {
+		return fmt.Errorf("checkout_branch %s: runner bundle failed with %d: %s", name, exitCode, strings.TrimSpace(stderr))
+	}
+	if err := rt.uploadFn()(sandboxName, bundleFile, checkoutBranchBundlePath); err != nil {
+		return fmt.Errorf("checkout_branch %s: bundle upload: %w", name, err)
+	}
+	return nil
+}
+
+// checkoutBranchCommand builds the sandbox shell command for the
+// checkout_branch op. The branch name must already be validated against
+// branchNamePattern. When bundleRef is empty the branch is based on the
+// current HEAD; otherwise it is based on bundleRef from the bundle the
+// runner uploaded to checkoutBranchBundlePath, which is removed whether or
+// not the fetch succeeds. git's stderr is never discarded, so a failure
+// reports git's own error text.
+//
+// The command records one marker commit on the branch. This gives the
+// applier post-script real content to push and — because the local tip
+// now differs from every remote tip — makes a wrongful push move the
+// target branch, so "branch ... is unchanged" assertions can actually
+// detect it. The commit subject uses a conventional-commit prefix because
+// post-code derives the applier's PR title from it.
+//
+// The fetch and the commit carry gitNoAutoMaintenance so neither leaves a
+// background gc or maintenance process running in the sandbox repository.
+func checkoutBranchCommand(repoDir, name, bundleRef string) string {
 	quoted := shellQuote(name)
-	// Scoped to refs/heads/ throughout — the ls-remote probe already
-	// restricts to --heads, so the fetch must resolve the same ref
-	// rather than git's default disambiguation order (which would
-	// prefer a same-named tag over the branch).
-	refspec := shellQuote("refs/heads/" + name)
+	noAuto := strings.Join(gitNoAutoMaintenance, " ")
+	checkout := fmt.Sprintf("git checkout -B %s", quoted)
+	if bundleRef != "" {
+		bundle := shellQuote(checkoutBranchBundlePath)
+		checkout = fmt.Sprintf(
+			"{ git %s fetch --no-tags %s %s && git checkout -B %s FETCH_HEAD; rc=$?; rm -f %s; test \"$rc\" -eq 0; }",
+			noAuto, bundle, shellQuote(bundleRef), quoted, bundle)
+	}
 	return fmt.Sprintf(
 		"cd %s"+
-			" && if git ls-remote --exit-code --heads origin %s >/dev/null 2>&1; then"+
-			" git fetch origin %s && git checkout -B %s FETCH_HEAD;"+
-			" else rc=$?; if [ \"$rc\" -ne 2 ]; then echo \"checkout_branch: ls-remote failed with $rc\" >&2; exit 1; fi;"+
-			" git checkout -B %s; fi"+
+			" && %s"+
 			" && mkdir -p behaviour && echo %s > behaviour/marker.txt"+
 			" && git add behaviour/marker.txt"+
-			" && git -c user.name=fullsend-behaviour -c user.email=behaviour@fullsend.invalid commit -m %s",
-		shellQuote(repoDir), quoted, refspec, quoted, quoted,
-		shellQuote("scripted marker for "+name),
+			" && git %s -c user.name=fullsend-behaviour -c user.email=behaviour@fullsend.invalid commit -m %s",
+		shellQuote(repoDir), checkout,
+		shellQuote("scripted marker for "+name), noAuto,
 		shellQuote("test: add scripted marker commit"))
 }
 

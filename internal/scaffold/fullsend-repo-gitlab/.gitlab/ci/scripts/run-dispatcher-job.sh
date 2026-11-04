@@ -88,6 +88,11 @@ export TRIGGER_PAYLOAD
 FULLSEND_JOB_KIND=poller
 . "${CI_PROJECT_DIR:-.}/.gitlab/ci/scripts/select-gitlab-role-token.sh"
 
+# Export the registered Analyst's numeric user ID while its credential is
+# still present — same as run-poll-job.sh (#8807). Only the ID outlives
+# this step.
+fullsend_resolve_gitlab_analyst_user_id
+
 # Blank sibling role secrets for the rest of the dispatcher job's
 # lifetime — same reasoning as run-poll-job.sh: GitLab injects every
 # registered role secret plus FULLSEND_FORGE_TOKEN into every

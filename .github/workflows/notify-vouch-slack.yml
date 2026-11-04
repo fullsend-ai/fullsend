@@ -24,9 +24,7 @@ jobs:
     if: >-
       github.repository_owner == 'fullsend-ai' &&
       (github.event_name == 'workflow_dispatch' ||
-      github.event.discussion.category.slug == 'vouch-request' ||
-      github.event.discussion.category.slug == 'triage-request' ||
-      github.event.discussion.category.slug == 'write-request')
+      github.event.discussion.category.slug == 'vouch-request')
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -57,16 +55,6 @@ jobs:
               request_label="vouch request"
               request_emoji="🤝"
               request_context="Review the request and comment \`/vouch\` to approve."
-              ;;
-            triage-request)
-              request_label="triage request"
-              request_emoji="🔎"
-              request_context="Review the request for triage access."
-              ;;
-            write-request)
-              request_label="write request"
-              request_emoji="✍️"
-              request_context="Review the request for write access."
               ;;
             *)
               echo "::error::Invalid discussion category received"

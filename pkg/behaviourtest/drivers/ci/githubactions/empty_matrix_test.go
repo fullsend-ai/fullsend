@@ -68,6 +68,29 @@ func TestWaitForHarnessEmptyMatrix_IgnoresCancelledAndOlderRuns(t *testing.T) {
 	assert.Equal(t, 20, run.ID)
 }
 
+func TestWaitForHarnessEmptyMatrix_IgnoresSkippedRuns(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	client := emptyMatrixClient(
+		[]forge.WorkflowRun{
+			{ID: 10, Status: "completed", Conclusion: "skipped", CreatedAt: "2026-01-02T00:00:00Z"},
+			{ID: 20, Status: "completed", Conclusion: "success", CreatedAt: "2026-01-02T00:01:00Z"},
+		},
+		map[int][]forge.WorkflowJob{
+			10: {{ID: 1, Name: "dispatch", Status: "completed", Conclusion: "skipped"}},
+			20: {
+				{ID: 2, Name: "dispatch / Harness dispatch", Status: "completed", Conclusion: "success"},
+				{ID: 4, Name: emptyMatrixPlaceholderJob, Status: "completed", Conclusion: "skipped"},
+			},
+		},
+	)
+
+	run, err := newTestDriver(client).WaitForHarnessEmptyMatrix(context.Background(), "org", "repo", after)
+	require.NoError(t, err)
+	assert.Equal(t, 20, run.ID)
+}
+
 func TestWaitForHarnessEmptyMatrix_DispatchJobFailed(t *testing.T) {
 	t.Parallel()
 

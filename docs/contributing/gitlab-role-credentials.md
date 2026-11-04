@@ -379,9 +379,13 @@ Rotation-state writes use schema version 2
 ([#8242](https://github.com/fullsend-ai/fullsend/issues/8242)). Version 2
 state adds managed service-account IDs and supplied-account
 ownership/exclusions to the `FULLSEND_GITLAB_ROLE_ROTATION` document and still
-never stores token values. Unversioned and version 1 state remain readable;
-unsupported versions fail closed and are not rewritten. Version 1 is never
-written: CLIs built with the tolerant reader
+never stores token values. Version 2 is the only version read: unversioned
+and version 1 state, unsupported future versions, and documents with unknown
+fields fail closed and are not rewritten
+([#8246](https://github.com/fullsend-ai/fullsend/issues/8246)). Because older
+readers reject unknown fields, every schema change, additive ones included,
+must bump the state version. Version 1 is
+never written: CLIs built with the tolerant reader
 ([#8233](https://github.com/fullsend-ai/fullsend/issues/8233)) accept it but
 ignore the ownership fields during outgoing-token selection and grace cleanup.
 They reject version 2 before touching any credential, and CLIs older still
@@ -391,9 +395,9 @@ publishes missing supplied or minted secrets before recording distribution
 state, and older uninstall cleanup never reads rotation state: it deletes
 identity variables and revokes active role-named project tokens, supplied ones
 included, so those paths are not protected by the version gate.
-`gitlab_roles_rotate_version_gate_test.go` runs the older reader against a
-written document with a supplied PAT. It proves the older reader's rotation
-never selects, schedules or revokes that PAT, and never rewrites the
+`gitlab_roles_rotate_version_gate_test.go` runs rotation against unversioned
+and version 1 documents with a supplied PAT. It proves rotation refuses them
+before it selects, schedules or revokes that PAT, and never rewrites the
 document. Operators must still upgrade every CLI that runs install, converge
 or uninstall.
 
@@ -979,9 +983,9 @@ or inherited global execution configuration (`after_script`, `services`,
 managed polling schedules move to the trigger-only account, so a user job
 restricted to schedules would otherwise run as that account with its
 `CI_JOB_TOKEN`. `repos install` rechecks it whenever
-the trigger account converges to ready. That includes the legacy (non-typed)
-path, where the schedules still set `FULLSEND_POLL_MODE` and the gate defers,
-and the path that prepares the trigger account after the Poller protected-ref
+the trigger account converges to ready. That includes a repository whose
+managed schedules still set a leftover `FULLSEND_POLL_MODE`, where the gate
+defers, and the path that prepares the trigger account after the Poller protected-ref
 grant is refused. A deferral is informational and leaves polling in place. No
 dispatch path uses the token yet.
 
@@ -1026,7 +1030,8 @@ The route is implemented and selected per job:
   never selects or admits the route on its own. The gate is a point-in-time
   check: a later weakening is detected, and the activation withdrawn, on the
   next install run.
-- `fullsend poll` (both the cron and `gitlab-webhook` drivers) then starts
+- `fullsend poll` (the cron and `gitlab-webhook` drivers, and
+  `--input-driver jira-poll --target-forge gitlab`) then starts
   agent pipelines with `CI_JOB_TOKEN` and the same signed typed inputs as the
   Poller route. The request is sent once, without the Poller PAT, and the job
   token travels only in the request body. The route requires the typed
@@ -1126,8 +1131,9 @@ lives in `internal/repos/gitlab_trigger_schedules.go`:
   #8508 in this PR, with no follow-up work deferred.
 - **Drift.** An account-owned managed schedule on another ref, with another
   cron or timezone, or with pipeline variables is replaced the same way, and
-  duplicates are deleted. One that carries pipeline variables would fail the variable
-  migration preflight that convergence runs, so install hands it back to the
+  duplicates are deleted. One that carries pipeline variables would fail typed
+  activation during convergence, which requires variable-free managed
+  schedules, so install hands it back to the
   installer after the repository selection and configuration preflights succeed,
   before convergence. That repair
   inspects every ownership-verified generation, current and retired, even when
@@ -1312,6 +1318,7 @@ ledger fails closed.
 | --- | --- |
 | GitLab poller/controller (`fullsend poll`, `fullsend-poll.yml`) | Poller |
 | GitLab webhook dispatcher (`fullsend poll --input-driver gitlab-webhook`, `fullsend-dispatcher.yml`) | Poller |
+| GitLab Jira poller (`fullsend poll --input-driver jira-poll --target-forge gitlab`) | Poller |
 | Agents / harness roles `review`, `triage`, `prioritize`, `retro`, `scribe` | Analyst |
 | Agents / harness roles `code`, `fix`, `coder` | Coder |
 | Custom agent whose name or harness `role:` is listed on a registered custom role | That custom role |
@@ -1454,27 +1461,54 @@ to no automatic setting changes. However, typed dispatch activation fails
 closed before delivering runnable templates unless the project already has
 verified `no_one_allowed`, even when enforcement is requested. Unset, weaker,
 or unsupported settings cannot succeed as a planned update or report-only
-installation. Prepare legacy upgrades in a maintenance window before delivery;
+installation. Legacy variable-based installations are no longer supported;
 see [Typed-input dispatch migration](../guides/getting-started/configuring-gitlab.md#typed-input-dispatch-migration).
 Managed schedules use no pipeline variables; job rules derive poll mode
-from `CI_PIPELINE_SCHEDULE_DESCRIPTION`. Activation removes the obsolete
-`FULLSEND_POLL_MODE` schedule override only after the wrapper and compatible
-agent/poll templates are confirmed on the default branch, even on already-restricted projects,
-and fails if other user-owned schedule variables remain. The typed restriction
-does not apply to pinned legacy variable wrappers. GitLab vendor mode and
+from `CI_PIPELINE_SCHEDULE_DESCRIPTION`. Activation waits until the wrapper and compatible
+agent/poll templates are confirmed on the default branch, and only reads
+managed schedules: it fails while any of them still sets a pipeline variable,
+including an obsolete `FULLSEND_POLL_MODE` override, which must be removed
+manually. Install and converge refuse a legacy variable-based wrapper, such
+as one from a `fullsend_ref` pinned before v0.46.0, and the poller never
+falls back to pipeline-variable dispatch. GitLab vendor mode and
 version pins without matching upstream templates are rejected before writes.
 Agent input bridges explicitly disable expansion, and poll-job links are
 logged only after creator/HMAC authentication.
-The webhook fast-path's `TRIGGER_PAYLOAD` classification
-and the `CI_JOB_TOKEN` running-job identity pin are implemented. Live GitLab
-validation covers GitLab.com Free, self-managed EE, and self-managed CE; only
-stock agents on custom-port CE remain unverified: see
+Native `TRIGGER_PAYLOAD` delivery under `no_one_allowed` is verified: the
+#8245 webhook runs dispatched agents on projects where install had verified
+the restriction. The `CI_JOB_TOKEN` running-job identity pin is implemented,
+but its invalid and valid-foreign token override cases have not been tested
+on a target GitLab version, so the identity claim stays gated on the
+restriction. Live GitLab validation of issue-to-agent dispatch passed on
+GitLab.com Free and self-managed EE; that run covered issue-open and polling
+dispatch, not issue-update dispatch. Self-managed CE is non-gating: earlier
+CE runs used a patched agents helper, and the stock-agents CE reruns did not
+reach issue data inside the sandbox, so stock agents on custom-port CE remain
+unverified. See
 [GitLab webhook validation status](../normative/normalized-event/v1/README.md#gitlab-webhook-validation-status)
-and ADR 0125 (Caveats). Flip the env var to `enforced` fleet-wide only after
-the remaining live-validation gates close. Poll jobs
+and
+[ADR 0125 security-gate status](../normative/normalized-event/v1/README.md#adr-0125-security-gate-status),
+which also lists the gates still open. The
+[#8245](https://github.com/fullsend-ai/fullsend/issues/8245)
+live-validation gate that a fleet-wide flip of the env var to `enforced`
+waits on closed on 2026-10-24. Poll jobs
 resolve `FULLSEND_GITLAB_POLLER_TOKEN` once, after the schedule-only pin.
 The Go CLI then overrides `GITLAB_TOKEN` / `PUSH_TOKEN` from the
 registered role credential; nothing restores `FULLSEND_FORGE_TOKEN`.
+
+The poll and dispatcher jobs also need the Analyst's numeric user ID
+(#8807). The review stage posts its `<!-- fullsend:changes-requested -->`
+marker as the Analyst. The poller retains a bot-authored marker note for
+the fix stage only when that note's author is the Analyst. Markers from
+the Poller or any other bot stay filtered. Before blanking sibling role
+secrets, `run-poll-job.sh` and `run-dispatcher-job.sh` call
+`fullsend_resolve_gitlab_analyst_user_id` (in `pin-ci-job-identity.sh`).
+That function selects the Analyst credential in a subshell for a single
+`GET /user` and exports only the job-local
+`FULLSEND_GITLAB_ANALYST_USER_ID`. The Analyst credential never replaces
+`FULLSEND_JOB_TOKEN` and is still blanked before `fullsend poll` runs. An
+inherited value is discarded first. A failed lookup only warns and leaves
+the variable unset, and the poller then retains no marker.
 
 The `STAGE=fix` review-body pre-fetch is a separate case: it looks up
 the prior review note, which is always authored by the Analyst identity

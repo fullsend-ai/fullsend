@@ -373,6 +373,53 @@ func TestCollaboratorPermissionJQ(t *testing.T) {
 	}
 }
 
+// TestShimStopFixShellCheck verifies the stop-fix script in the shim template
+// passes ShellCheck as downstream repos run it (#8780). This repo's actionlint
+// hook ignores SC2016 globally, but repos that receive the generated shim do
+// not, so the single-quoted --jq program (which uses the jq variable $p) needs
+// a directive placed directly before the command it covers.
+func TestShimStopFixShellCheck(t *testing.T) {
+	content, err := FullsendRepoFile("templates/shim-per-repo.yaml")
+	require.NoError(t, err)
+	var doc struct {
+		Jobs struct {
+			StopFix struct {
+				Steps []struct {
+					Run string `yaml:"run"`
+				} `yaml:"steps"`
+			} `yaml:"stop-fix"`
+		} `yaml:"jobs"`
+	}
+	require.NoError(t, yaml.Unmarshal(content, &doc))
+	require.NotEmpty(t, doc.Jobs.StopFix.Steps, "stop-fix must have a step")
+	run := doc.Jobs.StopFix.Steps[0].Run
+	require.NotEmpty(t, run, "stop-fix step must have a run script")
+
+	// ShellCheck applies a directive to the next command only, so the
+	// directive must sit on the line directly above the gh api call.
+	lines := strings.Split(run, "\n")
+	cmdIdx := -1
+	for i, line := range lines {
+		if strings.Contains(line, `role=$(gh api "repos/$REPO/collaborators/$COMMENT_USER_LOGIN/permission"`) {
+			cmdIdx = i
+			break
+		}
+	}
+	require.Greater(t, cmdIdx, 0, "stop-fix permission gh api command not found")
+	assert.Equal(t, "# shellcheck disable=SC2016", strings.TrimSpace(lines[cmdIdx-1]),
+		"SC2016 directive must directly precede the permission gh api command")
+	assert.Contains(t, run, ".user.permissions as $p",
+		"the custom-role --jq resolution must be preserved")
+
+	if _, err := exec.LookPath("shellcheck"); err != nil {
+		t.Skip("shellcheck not available")
+	}
+	script := filepath.Join(t.TempDir(), "stop-fix.sh")
+	require.NoError(t, os.WriteFile(script, []byte(run), 0o600))
+	out, err := exec.Command("shellcheck", "--shell=bash", script).CombinedOutput()
+	assert.NoError(t, err, "shellcheck reported issues in the stop-fix script:\n%s", out)
+}
+
 // TestManagedShimStopFixNotStale guards against drift between the shim
 // template and this repo's own rendered managed workflow
 // (.github/workflows/fullsend.yaml). That file is generated from

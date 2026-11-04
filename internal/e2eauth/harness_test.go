@@ -89,6 +89,9 @@ func (h *harness) runCase(t *testing.T, name string, in Input, wantAuth bool, wa
 		assert.Equal(t, wantAuth, got.Authorized, "authorized")
 		assert.Equal(t, wantReason, got.Reason, "reason")
 		assert.Equal(t, wantRemoved, got.LabelRemoved, "label_removed")
+		if wantReason == "error" {
+			assert.Error(t, got.Err)
+		}
 	})
 }
 

@@ -36,6 +36,7 @@ type Result struct {
 	Reason       string
 	LabelRemoved bool
 	APIError     bool
+	Err          error
 }
 
 // Check decides whether a pull request may run credentialed e2e tests in CI.
@@ -51,13 +52,13 @@ func Check(ctx context.Context, gh GitHubGate, in Input) Result {
 	if authorLogin == "" {
 		fetched, err := gh.GetPullRequestAuthorizationContext(ctx, owner, repo, prNumber)
 		if err != nil {
-			return errorResult()
+			return errorResult(err)
 		}
 		prCtx = fetched
 		authorLogin = strings.TrimSpace(prCtx.AuthorLogin)
 	}
 	if authorLogin == "" {
-		return errorResult()
+		return Result{Reason: "error", Err: fmt.Errorf("missing PR author login")}
 	}
 
 	if TrustedAuthorLogins[authorLogin] {
@@ -68,7 +69,7 @@ func Check(ctx context.Context, gh GitHubGate, in Input) Result {
 
 	authorRole, err := collaboratorRole(ctx, gh, owner, repo, authorLogin)
 	if err != nil {
-		return errorResult()
+		return errorResult(err)
 	}
 	if isWriteRole(authorRole) {
 		res.Authorized = true
@@ -79,7 +80,7 @@ func Check(ctx context.Context, gh GitHubGate, in Input) Result {
 	if prCtx == nil {
 		fetched, err := gh.GetPullRequestAuthorizationContext(ctx, owner, repo, prNumber)
 		if err != nil {
-			return errorResult()
+			return errorResult(err)
 		}
 		prCtx = fetched
 	}
@@ -89,13 +90,10 @@ func Check(ctx context.Context, gh GitHubGate, in Input) Result {
 	}
 
 	eventAction := in.EventAction
-	if eventAction == "labeled" {
-		res.Authorized = true
-		res.Reason = "ok_to_test"
-	} else {
+	if eventAction != "labeled" {
 		events, err := gh.ListIssueLabelEvents(ctx, owner, repo, prNumber)
 		if err != nil {
-			return errorResult()
+			return errorResult(err)
 		}
 
 		okToTestAt := latestOkToTestLabelTime(events)
@@ -109,7 +107,7 @@ func Check(ctx context.Context, gh GitHubGate, in Input) Result {
 		} else {
 			removed, err := tryRemoveOkToTestLabel(ctx, gh, in, owner, repo, prNumber)
 			if err != nil {
-				return errorResult()
+				return errorResult(err)
 			}
 			res.LabelRemoved = removed
 			res.Reason = "stale_ok_to_test"
@@ -117,17 +115,10 @@ func Check(ctx context.Context, gh GitHubGate, in Input) Result {
 		return res
 	}
 
-	labelerLogin := ""
-	if eventAction == "labeled" {
-		labelerLogin = strings.TrimSpace(in.LabelActorLogin)
-	} else {
-		events, err := gh.ListIssueLabelEvents(ctx, owner, repo, prNumber)
-		if err != nil {
-			return errorResult()
-		}
-		labelerLogin = latestOkToTestLabeler(events)
-	}
+	res.Authorized = true
+	res.Reason = "ok_to_test"
 
+	labelerLogin := strings.TrimSpace(in.LabelActorLogin)
 	if labelerLogin == "" {
 		res.Authorized = false
 		res.Reason = "untrusted_labeler"
@@ -136,39 +127,33 @@ func Check(ctx context.Context, gh GitHubGate, in Input) Result {
 
 	labelerRole, err := collaboratorRole(ctx, gh, owner, repo, labelerLogin)
 	if err != nil {
-		return errorResult()
+		return errorResult(err)
 	}
 
 	if !isWriteRole(labelerRole) {
 		res.Authorized = false
 		res.Reason = "untrusted_labeler"
 		frozen := strings.TrimSpace(in.LabelActorLogin)
-		if eventAction == "labeled" && frozen != "" {
+		if frozen != "" {
 			events, err := gh.ListIssueLabelEvents(ctx, owner, repo, prNumber)
 			if err != nil {
-				return errorResult()
+				return errorResult(err)
 			}
 			if latestOkToTestLabeler(events) == frozen {
 				removed, err := tryRemoveOkToTestLabel(ctx, gh, in, owner, repo, prNumber)
 				if err != nil {
-					return errorResult()
+					return errorResult(err)
 				}
 				res.LabelRemoved = removed
 			}
-		} else {
-			removed, err := tryRemoveOkToTestLabel(ctx, gh, in, owner, repo, prNumber)
-			if err != nil {
-				return errorResult()
-			}
-			res.LabelRemoved = removed
 		}
 	}
 
 	return res
 }
 
-func errorResult() Result {
-	return Result{Authorized: false, Reason: "error", APIError: true}
+func errorResult(err error) Result {
+	return Result{Authorized: false, Reason: "error", APIError: true, Err: err}
 }
 
 func hasLabel(labels []string, name string) bool {

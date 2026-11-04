@@ -92,9 +92,12 @@ type pinAPIState struct {
 	// PRIVATE-TOKEN request (the creator re-read in
 	// fullsend_pinned_pipeline_creator_id) instead of pipelineJSON.
 	pipelinePATJSON string
-	jobHits         atomic.Int32
-	sawPAT          atomic.Bool
-	jobAuth         atomic.Bool
+	// userIDByPAT maps a PRIVATE-TOKEN value to the user ID GET /user
+	// returns for it; an unmapped token gets 404.
+	userIDByPAT map[string]int
+	jobHits     atomic.Int32
+	sawPAT      atomic.Bool
+	jobAuth     atomic.Bool
 }
 
 func buildPinAPIMux(st *pinAPIState) *http.ServeMux {
@@ -113,6 +116,15 @@ func buildPinAPIMux(st *pinAPIState) *http.ServeMux {
 		}
 		w.WriteHeader(status)
 		_, _ = w.Write([]byte(st.jobJSON))
+	})
+	mux.HandleFunc("/api/v4/user", func(w http.ResponseWriter, r *http.Request) {
+		id, ok := st.userIDByPAT[r.Header.Get("PRIVATE-TOKEN")]
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprintf(w, `{"id":%d}`, id)
 	})
 	mux.HandleFunc("/api/v4/projects/", func(w http.ResponseWriter, r *http.Request) {
 		isPAT := r.Header.Get("PRIVATE-TOKEN") != ""

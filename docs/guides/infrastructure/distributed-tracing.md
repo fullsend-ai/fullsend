@@ -337,7 +337,7 @@ and are recognized by LLM-aware backends for GenAI dashboards.
 | `gen_ai.request.model` | `claude-opus-4-6` | `agent` (resolved model) |
 | `gen_ai.usage.input_tokens` / `output_tokens` / `cache_*_input_tokens` | `109938` | `agent` |
 
-Provider identity is the **serving endpoint**, not the model publisher and not the agent runtime. Claude Code reports `anthropic`. Pi reports the prefix of the resolved `provider/id` spec (`anthropic-vertex`, `xai-vertex`, `google-vertex`, `openai`, `anthropic`): a Claude model on Vertex is `anthropic-vertex` even though the publisher is Anthropic, because that is the catalog and credential path the run used. `fullsend.runtime` (`claude`, `pi`, …) stays a separate Fullsend attribute. Fullsend does not emit `mlflow.*` attributes; backends that derive native cost fields do so from these portable GenAI keys.
+Provider identity is the **serving endpoint**, not the model publisher and not the agent runtime. Claude Code reports `anthropic`. Pi reports the prefix of the resolved `provider/id` spec (`anthropic-vertex`, `xai-vertex`, `google-vertex`, `openai`, `anthropic`): a Claude model on Vertex is `anthropic-vertex` even though the publisher is Anthropic, because that is the catalog and credential path the run used. `fullsend.runtime` (`claude`, `pi`, …) stays a separate fullsend attribute. Fullsend does not emit `mlflow.*` attributes; backends that derive native cost fields do so from these portable GenAI keys.
 
 The `agent` span's provider identity reflects only the parent run's serving endpoint. When a Pi run dispatches subagents on different vendors, their usage is folded into the same span's token/cost totals without its own provider attribution — a mixed-vendor Pi run can attach multi-provider usage to a span identified by a single provider.
 
@@ -379,6 +379,57 @@ The `agent` span's provider identity reflects only the parent run's serving endp
 | `fullsend.tool.result_oversized` | `execute_tool` | Present (`true`) when the result's stream line exceeded the parser's 1 MiB bound: the call was answered but nothing of the result was decoded, so the span has no status and no `error.type` |
 | `fullsend.tool_spans.dropped` | `agent` | Present when the iteration hit the 1,024-span cap and at least one id-bearing call was refused a span: the number of `tool_use` events with a usable id that arrived past the cap, each counted once whatever its result later does; a result with no open span past the cap is not counted |
 
+### Forge and CI attributes
+
+Set on the root `run` span when they apply, and omitted (never empty) when
+they do not. Names follow the OpenTelemetry
+[VCS](https://opentelemetry.io/docs/specs/semconv/registry/attributes/vcs/)
+and
+[CICD](https://opentelemetry.io/docs/specs/semconv/registry/attributes/cicd/)
+semantic conventions. Repository, change and refs come from the normalized
+event, which GitHub and GitLab dispatch both deliver. Coverage still differs
+by source:
+
+- **GitHub:** pull request events and comments on pull requests carry
+  `head_sha`, so runs about a change record its head revision.
+- **GitLab:** `vcs.ref.head.revision` is recorded only when the normalized
+  event carries `head_sha`, which the poller sets only on synchronized merge
+  request events (a push to the source branch). The
+  `CI_MERGE_REQUEST_SOURCE_BRANCH_SHA` fallback applies only when fullsend
+  runs inside your own merged-results pipeline; the agent pipelines the poller
+  creates are not merge request pipelines, so it is unset there.
+- **Jira:** `vcs.repository.url.full` is not recorded, since the work item's
+  URL is on the Jira host. `vcs.provider.name` comes from the forge the run
+  targets.
+
+A run without a normalized event (for example a local run with no
+`--event-file`) records only `vcs.provider.name`, the pipeline run, and a head
+revision from the environment.
+
+Inputs, in order of precedence:
+
+- **Head revision:** the normalized event's
+  `state.change_proposal.head_sha`, then `PR_HEAD_SHA`, then
+  `pull_request.head.sha` in the event at `GITHUB_EVENT_PATH` (GitHub), or
+  `CI_MERGE_REQUEST_SOURCE_BRANCH_SHA` (GitLab). Values that are not a 40- or
+  64-character hex SHA are dropped.
+- **Pipeline run:** on GitHub Actions (`GITHUB_ACTIONS=true`),
+  `GITHUB_RUN_ID`, with the URL from `--run-url` or else
+  `GITHUB_SERVER_URL/GITHUB_REPOSITORY/actions/runs/GITHUB_RUN_ID`. On GitLab
+  CI (`GITLAB_CI=true`), `CI_PIPELINE_ID`, with the URL from `--run-url` or
+  else `CI_PIPELINE_URL`.
+
+| Attribute | Present on | Description |
+|-----------|------------|-------------|
+| `vcs.provider.name` | `run` | Code-hosting forge: `github` or `gitlab` |
+| `vcs.repository.url.full` | `run` | Target repository URL (e.g. `https://github.com/owner/repo`), without credentials. Taken from the work item's URL up to the repository path, so a GitLab install served under a relative URL keeps its prefix |
+| `vcs.change.id` | `run` | Pull request or merge request number, when the run is about one |
+| `vcs.ref.head.name` | `run` | Head branch of that change |
+| `vcs.ref.base.name` | `run` | Base branch of that change |
+| `vcs.ref.head.revision` | `run` | Head commit SHA of that change. Never `GITHUB_SHA` or `CI_COMMIT_SHA`, which name a merge or base commit on pull request and merged-results pipelines |
+| `cicd.pipeline.run.id` | `run` | CI run executing fullsend: `GITHUB_RUN_ID` on GitHub Actions, `CI_PIPELINE_ID` on GitLab CI. This can be a different repository or forge from the target |
+| `cicd.pipeline.run.url.full` | `run` | URL of that CI run: `--run-url` when given, otherwise built from the CI environment |
+
 ### Common attributes
 
 | Attribute | Present on | Description |
@@ -403,7 +454,8 @@ Additional resource attributes from `OTEL_RESOURCE_ATTRIBUTES` are merged in.
 Fullsend does not calculate inference cost from token counts or maintain a
 model-price table. Each runtime reports a USD cost value and fullsend
 records it as-is. This section defines the source, aggregation, rounding,
-and display behavior of that value across every output surface.
+and display behavior of that value across every output surface. To compute
+a list-price dollar estimate from persisted token counts, see [Computing dollar cost from token telemetry](#computing-dollar-cost-from-token-telemetry).
 
 ### Runtime cost extraction
 
@@ -413,6 +465,7 @@ Each runtime extracts cost differently from its agent process:
 |---------|--------|------------|
 | `claude` | Claude Code stream JSON | Reads `result.total_cost_usd` from the final result event — a single value covering the entire iteration |
 | `pi` | Pi assistant message stream | Sums `usage.cost.total` across all assistant messages in the iteration |
+| `codex` | Codex event stream | No cost field; records `0` |
 | `opencode` | OpenCode step stream | Sums `step_finish.part.cost` across all step-finish events in the iteration |
 
 The runtime-reported value includes whatever the provider prices — input
@@ -461,7 +514,9 @@ differently than the sum of parts.
 
 If a runtime does not report cost (returns zero or the field is absent),
 fullsend records zero. There is no fallback cost calculation from token
-counts. A missing runtime cost propagates as `$0.00` on all surfaces.
+counts. A missing runtime cost propagates as `$0.00` on all surfaces. See
+[Computing dollar cost from token telemetry](#computing-dollar-cost-from-token-telemetry)
+for how to apply list-price rates to the persisted token fields.
 
 ### Distinction from backend-derived cost estimates
 
@@ -477,6 +532,145 @@ Tracing backends may display their own cost estimates alongside
 The authoritative cost for a fullsend run is always `fullsend.cost_usd`
 (on spans) or `total_cost_usd` (in `metrics.json`). Backend-derived
 estimates are informational and may diverge.
+
+## Computing dollar cost from token telemetry
+
+Fullsend never converts token counts into dollars. A runtime-reported cost
+is not necessarily your contracted charge. Codex reports no cost, so its
+cost stays `0`. A Claude iteration interrupted before its terminal result
+has no reported cost; pi and OpenCode can retain cost accumulated before
+interruption. A cancelled run can still have a non-zero aggregate from
+previous iterations. Zero reported cost does not mean zero usage.
+
+These are distinct gaps: Codex has no reported dollar cost even after a
+successful run; Claude can lose the cost of an interrupted iteration. The
+original [cancelled-run follow-up](https://github.com/fullsend-ai/fullsend/pull/7208#issuecomment-5633919519)
+was closed in favor of pricing the persisted token counts at users' own
+rates. This procedure covers both cases.
+
+Use `run-telemetry.jsonl` as the primary source for a list-price estimate.
+This is an estimate at the provider's published list price, not your
+contracted rate: fullsend does not yet support configuring or calculating
+a contracted rate. Its `agent` spans carry per-iteration token counts,
+runtime, and model identity. `metrics.json` provides the run-level aggregate when span
+telemetry is unavailable. Token counts survive interruption where the
+runtime has reported them; tokens consumed after its last usage update
+cannot be reconstructed from these artifacts. If telemetry is disabled or
+the process dies before an `agent` span ends, the file may lack that span.
+
+### Persisted token fields
+
+| Kind | `agent` span attribute | `metrics.json` `token_usage` |
+|------|------------------------|------------------------------|
+| Uncached input | `gen_ai.usage.input_tokens` | `input` |
+| Output | `gen_ai.usage.output_tokens` | `output` |
+| Cache creation | `gen_ai.usage.cache_creation.input_tokens` | `cache_creation` |
+| Cache read | `gen_ai.usage.cache_read.input_tokens` | `cache_read` |
+| Reasoning | `gen_ai.usage.reasoning_tokens` | `reasoning` |
+
+The first four span attributes are emitted even when zero. The reasoning
+attribute is omitted when zero; `metrics.json` always serializes
+`token_usage.reasoning`, including `0`. Treat a missing reasoning attribute
+on a fullsend `agent` span as zero recorded reasoning, not proof that the
+provider consumed none.
+
+For Claude, pi, and Codex, input is uncached input: cache creation and cache
+read are separate counters. The reasoning rule depends on the runtime:
+
+- **Codex:** Fullsend subtracts reasoning from the wire output count.
+  Persisted output and reasoning are disjoint, so add a reasoning term
+  whenever recorded reasoning is non-zero, including interrupted runs.
+- **Claude:** Reasoning is a breakdown of output. Do not add it again.
+  An interrupted iteration may lack the final reasoning count even when
+  streamed output counts were captured.
+- **pi:** The pinned pi `1.3.0`
+  [usage schema](https://github.com/earendil-works/pi/blob/v1.3.0/packages/ai/src/types.ts#L451-L463)
+  defines reasoning as a subset of output. Fullsend passes those fields
+  through, so do not add reasoning again. Recheck the schema when pricing
+  artifacts from a different pi version; sibling JSON fields and synthetic
+  fixture totals alone do not establish whether counters overlap.
+- **OpenCode:** Fullsend passes its wire counters through. Verify the
+  provider/version's output, reasoning, and cache semantics before using
+  either formula; this guide does not establish their overlap.
+
+Codex and pi synthesize final usage from counters observed before an
+interruption. A completed turn or assistant message can report zero
+reasoning; completion alone does not imply non-zero reasoning.
+
+### Worked example
+
+Extract the relevant attributes from each `agent` span in the local OTLP
+JSONL file (see [Output file format](#output-file-format)):
+
+```bash
+jq -c '
+  .resourceSpans[]?.scopeSpans[]?.spans[]?
+  | select(.name == "agent")
+  | .attributes
+  | map({key: .key, value: (.value.intValue // .value.doubleValue // .value.stringValue)})
+  | from_entries
+  | {
+      runtime: .["fullsend.runtime"],
+      model: .["gen_ai.request.model"],
+      input: (.["gen_ai.usage.input_tokens"] | tonumber),
+      output: (.["gen_ai.usage.output_tokens"] | tonumber),
+      cache_creation: (.["gen_ai.usage.cache_creation.input_tokens"] | tonumber),
+      cache_read: (.["gen_ai.usage.cache_read.input_tokens"] | tonumber),
+      reasoning: ((.["gen_ai.usage.reasoning_tokens"] // 0) | tonumber)
+    }
+' run-telemetry.jsonl
+```
+
+One extracted iteration could look like this (a projection of a span,
+not the raw OTLP envelope):
+
+```json
+{
+  "runtime": "codex",
+  "model": "example-model",
+  "input": 1000,
+  "output": 500,
+  "cache_creation": 150000,
+  "cache_read": 600000,
+  "reasoning": 200
+}
+```
+
+Using hypothetical list-price rates of $2.00 / $10.00 / $2.50 / $0.20 /
+$10.00 per million tokens (uncached input / output / cache creation / cache
+read / reasoning):
+
+```text
+cost = 1000/1e6 * 2.00
+     + 500/1e6 * 10.00
+     + 150000/1e6 * 2.50
+     + 600000/1e6 * 0.20
+     + 200/1e6 * 10.00
+     = 0.002 + 0.005 + 0.375 + 0.120 + 0.002
+     = $0.504
+```
+
+The fifth term applies because this is Codex with non-zero reasoning.
+For Claude or the pinned pi version, output already includes reasoning:
+use the first four terms when reasoning has the same rate as other output.
+If the provider prices that subset differently, split output into
+`output - reasoning` and `reasoning` and price each once.
+
+Pricing only uncached input and output would give $0.007 and miss the
+cache tokens that dominate this example. Substitute the rates and cache
+retention tiers from your provider's published list prices; these numbers
+are illustrative. The result is a list-price estimate and will differ from
+your actual charge if you have a contracted rate.
+
+Price each iteration at its model's rates, then sum the estimates. Do not
+also charge the root `run` span or add `metrics.json` totals: that counts
+the same usage twice. An iteration can include multiple models or providers
+through fallback and sub-agents, so a single span's model label may not be
+enough. Use the [per-model usage breakdown](../../cli/run.md#per-model-usage)
+where available. It has no per-model reasoning counter, so mixed-model
+Codex reasoning cannot be priced exactly at different model rates from
+that breakdown alone. Missing attribution or usage makes the result an
+estimate, not a complete billing record.
 
 ## Output file format
 
@@ -607,8 +801,7 @@ completion bodies. That foundation is intentional: fitness scores must trust
 the trace before quality scores can. **Planned:** content-aware scorers that
 consume Level 3 prompt/completion capture once Level 3 is implemented —
 that is where the real quality signal lives. See
-[Eval Measurements](./eval-measurements.md) and
-[ADR 0087](../../ADRs/0087-eval-measurements-online-trace-scoring.md).
+[Eval Measurements](./eval-measurements.md).
 
 ## Mint tracing
 
@@ -659,6 +852,23 @@ records `fullsend.mint.attempts`.
 | `mint.github_app_auth` | Internal | `github_app_auth` |
 | `mint.installation_lookup` | Internal | `installation_lookup` |
 | `mint.create_installation_token` | Internal | `token_issuance` |
+| `mint.bot_role_config` | Internal | `bot_role_config` (`POST /v1/bot-role`: invalid role App ID registration) |
+| `mint.bot_role_credentials` | Internal | `bot_role_config`, `pem_access` or `github_app_auth`, only when the credential is required; an unavailable credential for the `/apps` lookup records `fullsend.bot_role.skip_reason` instead |
+| `mint.bot_role_apps_token` | Internal | `token_issuance`, never recorded as a failure: when no installation token can be obtained for the `/apps` lookup (the App is not installed on the repo, or the token request fails) the span records `fullsend.bot_role.failure_step` and `skip_reason` and the lookup is anonymous |
+| `mint.github_apps_lookup` | Internal | `github_apps_lookup` |
+
+`POST /v1/bot-role` also reuses `mint.installation_lookup`. The
+`mint.github_apps_lookup` and `mint.installation_lookup` spans of a bot-role
+request record `fullsend.bot_role.attempts`, `upstream_class` (`ok`,
+`not_found`, `transport`, `4xx`, `5xx`, `malformed_response`, `local`),
+`upstream_status`, `rate_limit` (`none`, `primary`, `secondary`, `other`),
+`retry_decision` (`succeeded`, `not_retryable`, `attempts_exhausted`,
+`wait_exceeds_bound`, `wait_exceeds_deadline`, `context_done`,
+`sleep_interrupted`), `wait_ms`, `wait_bound_ms` (the 5-second retry wait
+bound) and `result` (`ok`, `no_match`, `credential_rejected`, `error`), and
+carry one `attempt` event per try with the same per-attempt values. The
+`/apps` span adds `apps_auth` (`installation_token` or `anonymous`). None of these
+carry the actor login, App slug, repository, credentials or response bodies.
 
 `GET /health` is not traced. Unknown routes are recorded as `other`, so
 paths supplied by callers never reach the collector.

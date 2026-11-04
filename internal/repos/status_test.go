@@ -196,24 +196,6 @@ func TestProbeRepoState_GitLab_PostUninstall_NotInstalled(t *testing.T) {
 	}
 }
 
-func TestProbeRepoState_GitLab_LegacyDispatchMarker(t *testing.T) {
-	fc := forge.NewFakeClient()
-	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("---\n# Fullsend CI pipeline\n")
-	fc.FileContents["acme/api/"+fullsendDispatchInclude] = []byte("  ref: v2.4.0\n")
-	fc.Secrets["acme/api/"+forge.SecretForgeToken] = true
-
-	state, err := ProbeRepoState(context.Background(), fc, "acme", "api", ForgeGitLab, GitLabForgeConfig())
-	if err != nil {
-		t.Fatalf("ProbeRepoState() error = %v", err)
-	}
-	if !state.Installed {
-		t.Fatal("Installed = false, want true")
-	}
-	if state.FullsendRef != "v2.4.0" {
-		t.Errorf("FullsendRef = %q, want v2.4.0 from leftover dispatch stub", state.FullsendRef)
-	}
-}
-
 // failForgeTokenSecretExistsClient fails RepoSecretExists only for the
 // GitLab shared/role secrets that ProbeRepoState itself checks, leaving the
 // generic required-secret checks inside ProbeComponents (GCP project ID and

@@ -134,16 +134,17 @@ type rotationStateFile struct {
 	Roles map[string]rotationRoleState `json:"roles"`
 }
 
-// rotationStateEnvelope is the persisted rotation-state document. Version
-// zero is the legacy unversioned form ({"roles":...}, no "version" key);
-// writeRotationState always emits gitLabRoleRotationStateVersion.
+// rotationStateEnvelope is the persisted rotation-state document.
+// writeRotationState always emits gitLabRoleRotationStateVersion, and
+// loadRotationState accepts no other version.
 type rotationStateEnvelope struct {
 	Version int                          `json:"version"`
 	Roles   map[string]rotationRoleState `json:"roles"`
 }
 
 // gitLabRoleRotationStateVersion is the rotation-state format version this
-// binary writes and the highest version it reads.
+// binary writes and the only version it reads. The legacy unversioned form
+// and version 1 are rejected (#8246).
 //
 // Version 2 is the first version ever written with a version marker. It
 // carries the ownership fields (created_token_ids, managed_user_id,
@@ -159,12 +160,11 @@ type rotationStateEnvelope struct {
 // mutate, fail closed (#8242). Older provisioning and uninstall paths do not
 // consult it first and can still publish or revoke credentials, so operators
 // must upgrade every CLI.
+//
+// loadRotationState rejects unknown fields, so every schema change, additive
+// ones included, must bump this version: older readers reject a field they do
+// not know.
 const gitLabRoleRotationStateVersion = 2
-
-// maxReadableRotationStateVersion is the highest rotation-state version
-// loadRotationState accepts. It equals gitLabRoleRotationStateVersion;
-// tests lower it to exercise the reader of an older CLI.
-var maxReadableRotationStateVersion = gitLabRoleRotationStateVersion
 
 // rotationRoleState is the persisted per-role rotation state. Every
 // field is omitempty so unused fields are not written.
@@ -1449,11 +1449,10 @@ func loadRotationState(ctx context.Context, client forge.Client, owner, repo str
 	if !exists || strings.TrimSpace(raw) == "" {
 		return out, nil, nil
 	}
-	// Unknown fields are tolerated (no DisallowUnknownFields) during the
-	// rotation-state format transition so this binary can read state
-	// written by a newer one. Unknown fields are dropped if this binary
-	// rewrites the state.
+	// Unknown fields are rejected: rewriting a document this binary cannot
+	// fully represent would silently drop them.
 	dec := json.NewDecoder(bytes.NewReader([]byte(raw)))
+	dec.DisallowUnknownFields()
 	var envelope rotationStateEnvelope
 	if err := dec.Decode(&envelope); err != nil {
 		return out, nil, fmt.Errorf("decode GitLab role rotation state: %w", err)
@@ -1464,8 +1463,13 @@ func loadRotationState(ctx context.Context, client forge.Client, owner, repo str
 	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return out, nil, errors.New("decode GitLab role rotation state: unexpected data after the JSON document")
 	}
-	if envelope.Version < 0 || envelope.Version > maxReadableRotationStateVersion {
-		return out, nil, fmt.Errorf("unsupported GitLab role rotation state version %d; upgrade to a CLI release or build that reads state version %d or later; do not downgrade the state or edit its version (see \"Upgrade compatibility\" in docs/cli/repos.md)", envelope.Version, maxReadableRotationStateVersion)
+	// A missing "version" key decodes as 0, so the legacy unversioned form is
+	// rejected here along with version 1.
+	if envelope.Version >= 0 && envelope.Version < gitLabRoleRotationStateVersion {
+		return out, nil, fmt.Errorf("unsupported GitLab role rotation state version %d; this CLI reads only state version %d and no longer reads the legacy unversioned or version 1 format; converge the project once with a CLI that still reads it and writes version %d, then rerun; do not edit the state's version (see \"Upgrade compatibility\" in docs/cli/repos.md)", envelope.Version, gitLabRoleRotationStateVersion, gitLabRoleRotationStateVersion)
+	}
+	if envelope.Version != gitLabRoleRotationStateVersion {
+		return out, nil, fmt.Errorf("unsupported GitLab role rotation state version %d; upgrade to a CLI release or build that reads state version %d or later; do not downgrade the state or edit its version (see \"Upgrade compatibility\" in docs/cli/repos.md)", envelope.Version, gitLabRoleRotationStateVersion)
 	}
 	file := rotationStateFile{Roles: envelope.Roles}
 	if file.Roles == nil {
@@ -1490,8 +1494,7 @@ func loadRotationState(ctx context.Context, client forge.Client, owner, repo str
 }
 
 // writeRotationState persists file as a gitLabRoleRotationStateVersion
-// document. Every write carries the version marker, including rewrites of
-// state that was read in the legacy unversioned form.
+// document. Every write carries the version marker.
 func writeRotationState(ctx context.Context, client forge.Client, owner, repo string, file rotationStateFile) error {
 	if file.Roles == nil {
 		file.Roles = map[string]rotationRoleState{}

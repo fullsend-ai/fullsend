@@ -139,6 +139,14 @@ func CleanupScenario(w *world.World) {
 			worldLogf(w, "behaviour cleanup: %s: %v", desc, err)
 		}
 	}
+	for _, number := range w.CreatedIssueNumbers {
+		desc := fmt.Sprintf("close agent-filed issue #%d", number)
+		if err := guardedCleanupRetry(w, desc, func() error {
+			return w.SCM.CloseIssue(ctx, w.RepoOwner, w.RepoName, number)
+		}); err != nil {
+			worldLogf(w, "behaviour cleanup: %s: %v", desc, err)
+		}
+	}
 	if w.ForkPRNumber > 0 {
 		// Fork PRs are opened against the base repo, so close on base repo.
 		desc := fmt.Sprintf("close fork PR #%d", w.ForkPRNumber)
@@ -269,13 +277,14 @@ func CleanupScenario(w *world.World) {
 	// --- Mint probe host repo cleanup ---
 	// Probe host repos are ephemeral, like the hosting repos above. The
 	// probe's shim branch on the leased repo is in CreatedBranches and
-	// was deleted with the other branches.
-	if w.MintProbe != nil {
-		for _, repo := range w.MintProbe.CreatedRepos {
+	// was deleted with the other branches. The bot-role probe uses the
+	// same host lifecycle.
+	deleteProbeHosts := func(label string, repos []string) {
+		for _, repo := range repos {
 			if repo == "" || repo == w.RepoName {
 				continue
 			}
-			desc := fmt.Sprintf("delete mint probe host repo %s/%s", w.Org, repo)
+			desc := fmt.Sprintf("delete %s host repo %s/%s", label, w.Org, repo)
 			if err := guardedCleanupRetry(w, desc, func() error {
 				return w.SCM.DeleteRepo(ctx, w.Org, repo)
 			}); err != nil {
@@ -284,6 +293,12 @@ func CleanupScenario(w *world.World) {
 				}
 			}
 		}
+	}
+	if w.MintProbe != nil {
+		deleteProbeHosts("mint probe", w.MintProbe.CreatedRepos)
+	}
+	if w.BotRoleProbe != nil {
+		deleteProbeHosts("bot-role probe", w.BotRoleProbe.CreatedRepos)
 	}
 
 	// --- Jira mock cleanup ---

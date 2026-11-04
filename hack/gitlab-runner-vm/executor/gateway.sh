@@ -160,6 +160,32 @@ openshell_versions_differ() {
   [ -n "${job_ver}" ] && [ "${job_ver}" != "${host_ver}" ]
 }
 
+# Oldest OpenShell version a job image may pin. pin_supervisor_image writes
+# only the schema-v2 gateway.toml introduced in 0.1. A 0.0.x gateway rejects
+# that file (unknown field `compute_driver`) and exits on every restart, so
+# ensure_job_openshell_gateway refuses pre-0.1 pins before touching the host
+# (#8730). The executor migrates forward only.
+OPENSHELL_MIN_JOB_VERSION="0.1.0"
+
+# True when x.y.z version $1 is at least x.y.z version $2.
+openshell_version_at_least() {
+  local -a have want
+  local i h w
+  IFS=. read -r -a have <<< "$1"
+  IFS=. read -r -a want <<< "$2"
+  for i in 0 1 2; do
+    h=$((10#${have[i]:-0}))
+    w=$((10#${want[i]:-0}))
+    if [ "${h}" -gt "${w}" ]; then
+      return 0
+    fi
+    if [ "${h}" -lt "${w}" ]; then
+      return 1
+    fi
+  done
+  return 0
+}
+
 # Print the first x.y.z in $1, or empty. Never fails (prepare.sh uses -e).
 parse_openshell_version() {
   local ver
@@ -683,6 +709,13 @@ ensure_job_openshell_gateway() {
   read -r want_ver want_sha <<< "${pin}"
   if [ "${job_ver}" != "${want_ver}" ]; then
     echo "ERROR: job image ${image} reports OpenShell ${job_ver}, but the Fullsend commit it was built from pins ${want_ver}" >&2
+    return 1
+  fi
+
+  # Refuse before any teardown or install, so the host keeps its current
+  # OpenShell and gateway config.
+  if ! openshell_version_at_least "${want_ver}" "${OPENSHELL_MIN_JOB_VERSION}"; then
+    echo "ERROR: job image ${image} pins OpenShell ${want_ver}, but this runner supports OpenShell ${OPENSHELL_MIN_JOB_VERSION} or newer; OpenShell 0.0.x images are no longer supported. Use a Fullsend runner image that pins OpenShell ${OPENSHELL_MIN_JOB_VERSION} or newer (see hack/gitlab-runner-vm/README.md#openshell-version-per-job)" >&2
     return 1
   fi
 

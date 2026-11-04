@@ -50,7 +50,7 @@ Next:
   2. Test locally, printing the result instead of commenting:
        POST_LINT_DOCS_DRY_RUN=1 fullsend run lint-docs \
          --target-repo . --env-file .env.local
-     .env.local needs GITHUB_ISSUE_URL, ISSUE_NUMBER, REPO_FULL_NAME,
+     .env.local needs FULLSEND_WORK_ITEM_URL, ISSUE_NUMBER, REPO_FULL_NAME,
      GH_TOKEN, ANTHROPIC_VERTEX_PROJECT_ID, CLOUD_ML_REGION, and
      GOOGLE_APPLICATION_CREDENTIALS pointing at a GCP credentials file;
      the run stops before it starts without them.
@@ -377,7 +377,12 @@ fullsend agent list
 |------|---------|-------------|
 | `--fullsend-dir` | `.fullsend` | Path to the `.fullsend` configuration directory |
 
-Read-only. Displays a table with `NAME` and `SOURCE` columns. For URL agents, the `#sha256=...` integrity hash suffix is stripped from the displayed source for readability. Disabled agents (`enabled: false`) are included in the listing.
+Read-only. Displays a table with `NAME` and `SOURCE` columns. For URL agents,
+the `#sha256=...` integrity hash suffix is stripped from the displayed source
+for readability. Disabled agents (`enabled: false`) are included in the listing.
+A built-in agent tuned by an entry without `source:` shows `(built-in)`. An
+entry's settings follow in brackets, for example `[model=sonnet effort=high]`;
+an entry with an `agents[].trigger` shows `trigger` there.
 
 Example output:
 ```
@@ -427,11 +432,12 @@ fullsend agent set review --subagent correctness=opus --subagent default=haiku
 | `--runtime` | Agent runtime for this agent (`claude`, `pi`, `codex` or `opencode`) |
 | `--model` | Model for this agent — an alias, a model id, or `provider/id` on pi, codex, and opencode (codex takes OpenAI ids and `gateway/<model>` only) |
 | `--effort` | Effort level for this agent (`low`, `medium`, `high`, `xhigh`, `max`) |
-| `--subagent` | Per-persona model override as `key=value` (repeatable). Key is a persona name or `default`; value is a model reference. Pass an empty value (`--subagent key=`) to clear an inherited entry — that writes `key: ~` in the config, after which the persona resolves the way an unmentioned one does (its frontmatter model, then `subagents.default`). On pi, a value that resolves to `openai/` prints a warning when the agent's local harness declares no `openai` provider; see [pi § Route a persona to OpenAI](../runtimes/pi.md#route-a-persona-to-openai) |
+| `--subagent` | Per-persona model override as `key=value` (repeatable). Key is a persona name or `default`; value is a model reference (on codex, an OpenAI id the pinned CLI's catalog lists). Pass an empty value (`--subagent key=`) to clear an inherited entry — that writes `key: ~` in the config, after which the persona resolves the way an unmentioned one does (on pi, its frontmatter model, then `subagents.default`; on codex, the run-level child model, see [Codex § Child models](../runtimes/codex.md#child-models)). On pi, a value that resolves to `openai/` prints a warning when the agent's local harness declares no `openai` provider; see [pi § Route a persona to OpenAI](../runtimes/pi.md#route-a-persona-to-openai) |
 
 See [Runtimes — per-agent settings](../runtimes.md#per-agent-runtime-model-and-effort) for precedence.
-See [pi § Per-persona model configuration](../runtimes/pi.md#per-persona-model-configuration) for
-how `subagents` map to persona dispatch.
+See [pi § Per-persona model configuration](../runtimes/pi.md#per-persona-model-configuration) and
+[Codex § Child models](../runtimes/codex.md#child-models) for how `subagents` map to persona
+dispatch on each runtime.
 
 ## `agent remove`
 

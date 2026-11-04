@@ -2,6 +2,8 @@ package harness
 
 import (
 	"fmt"
+	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -24,6 +26,31 @@ func (s DiagnosticSeverity) String() string {
 		return fmt.Sprintf("DiagnosticSeverity(%d)", int(s))
 	}
 }
+
+// preflightPathLike matches a bare script path — an optional leading
+// "."/"/" then path characters, ending in a script extension — with no
+// spaces, quotes, or shell operators. preflight_check is passed verbatim
+// to `sh -c` on the host and, unlike pre_script/post_script, is never
+// resolved through the fetch/cache pipeline (#7600). Referenced files are
+// not delivered (Harness Resource Distribution Contract), so a bare
+// path-shaped value cannot resolve in a fresh consumer checkout: the
+// mistake is relying on undeclared host state, not a style preference.
+// The interpreter form (`sh path.sh`) does not match and
+// remains the intentional escape hatch.
+var preflightPathLike = regexp.MustCompile(`^[./]?[\w./-]+\.(sh|py|rb|js)$`)
+
+// issueURLRef matches an actual GITHUB_ISSUE_URL reference in a value:
+// either expansion form os.Expand recognizes. A bare $name extends to
+// the longest identifier, so $GITHUB_ISSUE_URLS is a different variable,
+// and a literal substring ("see GITHUB_ISSUE_URL") is not a reference.
+var issueURLRef = regexp.MustCompile(`\$\{GITHUB_ISSUE_URL\}|\$GITHUB_ISSUE_URL([^A-Za-z0-9_]|$)`)
+
+// DeprecatedIssueURLWarning is emitted for env entries and host_files
+// sources that reference GITHUB_ISSUE_URL (#6610). The caveat covers the
+// reusable prioritize workflow, which does not yet export
+// FULLSEND_WORK_ITEM_URL.
+const DeprecatedIssueURLWarning = "GITHUB_ISSUE_URL is deprecated; use FULLSEND_WORK_ITEM_URL instead (see #6610); " +
+	"keep GITHUB_ISSUE_URL for harnesses run by the reusable prioritize workflow, which does not export FULLSEND_WORK_ITEM_URL yet"
 
 // Diagnostic represents a non-fatal issue found by Lint.
 type Diagnostic struct {
@@ -71,6 +98,19 @@ func (h *Harness) Lint() []Diagnostic {
 		}
 	}
 
+	// allowed_remote_resources used to start the runtime fetch service
+	// implicitly; that implicit opt-in is deprecated (#7155). Mirror
+	// shouldStartFetchService: URL-dir resources (skills/plugins) or an
+	// explicit allow_runtime_fetch start the service for non-deprecated
+	// reasons, so only a bare declaration warns.
+	if len(h.AllowedRemoteResources) > 0 && !h.AllowRuntimeFetch && !h.HasURLDirResources() {
+		diags = append(diags, Diagnostic{
+			Severity: SeverityWarning,
+			Field:    "allowed_remote_resources",
+			Message:  "allowed_remote_resources is declared without allow_runtime_fetch: true; the runtime fetch service will start for backward compatibility, but this behavior is deprecated — add allow_runtime_fetch: true to the harness to silence this warning",
+		})
+	}
+
 	if h.hadForgeBeforeResolve {
 		diags = append(diags, Diagnostic{
 			Severity: SeverityWarning,
@@ -89,5 +129,147 @@ func (h *Harness) Lint() []Diagnostic {
 		}
 	}
 
+	if h.ValidationLoop != nil {
+		if d := lintPreflightCheckCommand("validation_loop.preflight_check", h.ValidationLoop.PreflightCheck); d != nil {
+			diags = append(diags, *d)
+		}
+	}
+
+	diags = append(diags, h.lintDeprecatedIssueURL()...)
+
 	return diags
+}
+
+// lintPreflightCheckCommand returns an error-level diagnostic when value, a
+// preflight_check command, looks like a bare script path — usually meaning
+// the author expected pre_script-style fetch/resolution (#7600). Referenced
+// files are not delivered (Harness Resource Distribution Contract), so the
+// value cannot resolve in a fresh consumer checkout: the mistake is relying
+// on undeclared host state, not a style preference (ADR 0128 Decision 2).
+// The interpreter form (`sh path.sh`) does not match and
+// remains the intentional escape hatch. The field label is interpolated
+// into the message so sibling preflight_check fields can reuse the guard
+// (#8722). Returns nil for clean values.
+func lintPreflightCheckCommand(field, value string) *Diagnostic {
+	pc := strings.TrimSpace(value)
+	if pc == "" || !preflightPathLike.MatchString(pc) {
+		return nil
+	}
+	return &Diagnostic{
+		Severity: SeverityError,
+		Field:    field,
+		Message:  fmt.Sprintf("value %q looks like a script path; %s runs verbatim as `sh -c` on the host and is never fetched or resolved like pre_script/post_script — if a fetched harness script was intended, use pre_script; otherwise inline the command (e.g. python3 -c 'import jsonschema')", pc, field),
+	}
+}
+
+// lintDeprecatedIssueURL returns the GITHUB_ISSUE_URL deprecation
+// diagnostics for the harness (#6610). Every loader consumes the forge and
+// overlay blocks before Lint() runs: matched sections are merged into the
+// top-level fields and the rest are dropped. So when the diagnostics were
+// captured before that consumption (captureDeprecatedIssueURL), the
+// snapshot is returned; it reports every forge variant and overlay —
+// matched or not — once, at its declared position (#8742). Otherwise
+// (plain Load, or a harness built in memory) the current state is scanned.
+func (h *Harness) lintDeprecatedIssueURL() []Diagnostic {
+	if h.issueURLDiagsCaptured {
+		return append([]Diagnostic(nil), h.issueURLDiags...)
+	}
+	return h.scanDeprecatedIssueURL()
+}
+
+// captureDeprecatedIssueURL records the harness's GITHUB_ISSUE_URL
+// diagnostics for Lint() before its forge and overlay blocks are consumed
+// (#8742). Call it on the raw harness, before ResolveForge, ResolveOverlays,
+// base flattening, or merging a base into it. Only the first call records
+// anything: a later call would see already-merged top-level fields and
+// report forge or overlay content a second time, at the wrong position.
+func (h *Harness) captureDeprecatedIssueURL() {
+	if h.issueURLDiagsCaptured {
+		return
+	}
+	h.issueURLDiags = h.scanDeprecatedIssueURL()
+	h.issueURLDiagsCaptured = true
+}
+
+// scanDeprecatedIssueURL reports env entries and host_files sources that
+// reference the deprecated GITHUB_ISSUE_URL variable, either as the entry
+// key itself or as a $GITHUB_ISSUE_URL / ${GITHUB_ISSUE_URL} expansion
+// in the value (#6610). Checked across the top-level harness and whatever
+// forge sections and overlays are still present.
+// The offending entry key is quoted in the message so harness-controlled key text cannot inject
+// control characters into diagnostic output.
+func (h *Harness) scanDeprecatedIssueURL() []Diagnostic {
+	var diags []Diagnostic
+
+	checkEnv := func(m map[string]string, field string) {
+		for _, k := range deprecatedIssueURLKeys(m) {
+			diags = append(diags, Diagnostic{
+				Severity: SeverityWarning,
+				Field:    field,
+				Message:  fmt.Sprintf("%s (entry %q)", DeprecatedIssueURLWarning, k),
+			})
+		}
+	}
+	checkHostFiles := func(hfs []HostFile, prefix string) {
+		for i, hf := range hfs {
+			if !issueURLRef.MatchString(hf.Src) {
+				continue
+			}
+			field := fmt.Sprintf("host_files[%d].src", i)
+			if prefix != "" {
+				field = fmt.Sprintf("%s.host_files[%d].src", prefix, i)
+			}
+			diags = append(diags, Diagnostic{
+				Severity: SeverityWarning,
+				Field:    field,
+				Message:  DeprecatedIssueURLWarning,
+			})
+		}
+	}
+	checkForgeConfig := func(fc *ForgeConfig, prefix string) {
+		if fc == nil {
+			return
+		}
+		checkEnv(fc.RunnerEnv, prefix+".runner_env")
+		if fc.Env != nil {
+			checkEnv(fc.Env.Runner, prefix+".env.runner")
+			checkEnv(fc.Env.Sandbox, prefix+".env.sandbox")
+		}
+		checkHostFiles(fc.HostFiles, prefix)
+	}
+
+	checkEnv(h.RunnerEnv, "runner_env")
+	if h.Env != nil {
+		checkEnv(h.Env.Runner, "env.runner")
+		checkEnv(h.Env.Sandbox, "env.sandbox")
+	}
+	checkHostFiles(h.HostFiles, "")
+	if len(h.Forge) > 0 {
+		var forgeKeys []string
+		for k := range h.Forge {
+			forgeKeys = append(forgeKeys, k)
+		}
+		sort.Strings(forgeKeys)
+		for _, k := range forgeKeys {
+			checkForgeConfig(h.Forge[k], fmt.Sprintf("forge[%s]", k))
+		}
+	}
+	for i := range h.Overlays {
+		checkForgeConfig(&h.Overlays[i].ForgeConfig, fmt.Sprintf("overlays[%d]", i))
+	}
+	return diags
+}
+
+// deprecatedIssueURLKeys returns the sorted keys of m that reference the
+// deprecated GITHUB_ISSUE_URL variable: either the entry is named after
+// it, or its value references it via a $ / ${} expansion.
+func deprecatedIssueURLKeys(m map[string]string) []string {
+	var keys []string
+	for k, v := range m {
+		if k == "GITHUB_ISSUE_URL" || issueURLRef.MatchString(v) {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	return keys
 }

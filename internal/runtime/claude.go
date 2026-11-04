@@ -727,6 +727,13 @@ func skillDestNames(skillDirs []string) []nameEntry {
 // Every destination name must be a single sandbox-safe path segment
 // (skill.ValidName) and collisions fail, both before any upload.
 func uploadHarnessSkills(sandboxName, skillsRoot string, skillDirs []string) error {
+	return uploadHarnessSkillsWith(sandbox.Upload, sandboxName, skillsRoot, skillDirs)
+}
+
+// uploadHarnessSkillsWith is uploadHarnessSkills with the upload function
+// injected, so runtimes that stub sandbox uploads in tests (dummy) share
+// the same naming and collision rules.
+func uploadHarnessSkillsWith(upload sandboxUploadFunc, sandboxName, skillsRoot string, skillDirs []string) error {
 	entries := skillDestNames(skillDirs)
 	for _, e := range entries {
 		if !skill.ValidName(e.name) {
@@ -742,7 +749,7 @@ func uploadHarnessSkills(sandboxName, skillsRoot string, skillDirs []string) err
 		}
 		name := skill.SandboxName(skillPath)
 		dest := skillsRoot + "/" + name
-		if err := sandbox.Upload(sandboxName, skillPath, dest); err != nil {
+		if err := upload(sandboxName, skillPath, dest); err != nil {
 			return fmt.Errorf("copying skill %q: %w", skillPath, err)
 		}
 		if base := filepath.Base(skillPath); base != name {
@@ -779,6 +786,13 @@ func claudeModelID(name string, aliases map[string]string) string {
 	return name
 }
 
+// claudeNonessentialTrafficEnv turns off Claude Code's nonessential traffic
+// to Anthropic; every run sets it (claudeRunnerSettings, buildRunCommand).
+const (
+	claudeNonessentialTrafficEnv = "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"
+	claudeNonessentialSettings   = `{"env":{"` + claudeNonessentialTrafficEnv + `":"1"}}`
+)
+
 // buildRunCommand renders the in-sandbox command line. When sandbox hooks are
 // enabled (params.HooksSettingsPath set), the launch refuses to start claude
 // unless hooks.json and the hook scripts still match the runner-held digests
@@ -810,6 +824,10 @@ func buildRunCommandWithDigests(params RunParams, hookDigests claudeHookDigests)
 		preEnv = " && " + ClaudeRuntime{}.claudeGatewayPreEnv(gw)
 		postEnv = " && " + claudeGatewayPostEnv(gw)
 	}
+	if gw == nil {
+		// The gateway route already exports it in claudeGatewayPostEnv.
+		postEnv += " && export " + claudeNonessentialTrafficEnv + "=1"
+	}
 	if params.HooksSettingsPath != "" {
 		// The hook settings, re-asserted after the agent-writable .env from
 		// what Bootstrap recorded; a name the runner has no value for is
@@ -840,6 +858,11 @@ func buildRunCommandWithDigests(params RunParams, hookDigests claudeHookDigests)
 		parts = append(parts, "--settings "+shellQuote((ClaudeRuntime{}).claudeGatewaySettingsArg(params.SandboxName)))
 	} else if params.HooksSettingsPath != "" {
 		parts = append(parts, fmt.Sprintf("--settings '%s'", strings.ReplaceAll(params.HooksSettingsPath, "'", "'\\''")))
+	} else {
+		// No hooks document: --settings still pins the variable above the
+		// repository's settings files, which would otherwise win over the
+		// exported value.
+		parts = append(parts, "--settings "+shellQuote(claudeNonessentialSettings))
 	}
 
 	if params.Debug != "" {
@@ -1012,6 +1035,9 @@ func installClaudeHooks(sandboxName string, hooks security.SandboxHookConfig, ex
 //     them after .env, and a settings file's
 //     env block would otherwise set them again inside Claude Code, for the
 //     hook commands it starts.
+//   - env sets claudeNonessentialTrafficEnv to "1": Claude Code treats a
+//     harness's own ANTHROPIC_BASE_URL as the Claude API, where metrics,
+//     /feedback and surveys default on.
 //   - disableAllHooks is false, so no other file can switch off the hooks
 //     this document wires.
 //
@@ -1040,6 +1066,7 @@ func claudeRunnerSettings(securityEnv []hookEnvPair, extra map[string]any) map[s
 	for _, key := range claudeShellStartupEnv {
 		env[key] = ""
 	}
+	env[claudeNonessentialTrafficEnv] = "1"
 	out["env"] = env
 	out["disableAllHooks"] = false
 	return out

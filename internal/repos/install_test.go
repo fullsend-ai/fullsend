@@ -596,7 +596,7 @@ func TestBuildScaffoldFiles_GitLabIssueTargets(t *testing.T) {
 	for _, file := range files {
 		if file.Path == ".fullsend/config.yaml" {
 			body := string(file.Content)
-			if !strings.Contains(body, "allow_targets: {}") || strings.Contains(body, "- fullsend-ai/") {
+			if !strings.Contains(body, "tracker:\n    gitlab:\n        allowed_targets: {}") || strings.Contains(body, "- fullsend-ai/") {
 				t.Fatalf("GitLab config should explicitly allow no cross-project targets:\n%s", body)
 			}
 			return
@@ -1500,10 +1500,10 @@ func TestInstallSecretsForForge_GitHub_NoInferenceProject_NoSecrets(t *testing.T
 	}
 }
 
-func TestInstall_GitLab_MigratesPreExistingLegacyVars(t *testing.T) {
+func TestInstall_GitLab_LeavesRetiredVarsUntouched(t *testing.T) {
 	fc := newFakeClientWithRepo()
-	// Pre-existing leftover values are folded into signed branch
-	// documents, then the retired CI/CD vars are deleted.
+	// Leftover retired poll-state variables are no longer migrated:
+	// install seeds an empty baseline and neither reads nor deletes them.
 	fc.VariableValues["acme/widgets/"+forge.VarLastPollAtFast] = "2020-01-01T00:00:00Z"
 	cfg := InstallConfig{
 		Owner:  "acme",
@@ -1532,11 +1532,16 @@ func TestInstall_GitLab_MigratesPreExistingLegacyVars(t *testing.T) {
 	if err := json.Unmarshal(raw, &slash); err != nil {
 		t.Fatalf("unmarshal slash: %v", err)
 	}
-	if slash.LastPollAtFast != "2020-01-01T00:00:00Z" {
-		t.Errorf("slash watermark = %q, want pre-existing value", slash.LastPollAtFast)
+	if slash.LastPollAtFast != "" {
+		t.Errorf("slash watermark = %q, want empty baseline (retired variable not migrated)", slash.LastPollAtFast)
 	}
-	if _, ok := fc.VariableValues["acme/widgets/"+forge.VarLastPollAtFast]; ok {
-		t.Error("retired FULLSEND_LAST_POLL_AT_FAST should have been deleted after migration")
+	if got := fc.VariableValues["acme/widgets/"+forge.VarLastPollAtFast]; got != "2020-01-01T00:00:00Z" {
+		t.Errorf("retired FULLSEND_LAST_POLL_AT_FAST = %q, want it left untouched", got)
+	}
+	for _, v := range fc.DeletedVariables {
+		if slices.Contains(gitlabRetiredLegacyVars, v.Name) {
+			t.Errorf("install deleted retired variable %s, want it left untouched", v.Name)
+		}
 	}
 }
 
@@ -1600,121 +1605,5 @@ func TestInstall_GitLab_DispatchSecretErrorFailsInstall(t *testing.T) {
 	_, err := Install(context.Background(), cfg, fc, sc.fn(), noopProgress)
 	if err == nil {
 		t.Fatal("expected install to fail when dispatch-secret provisioning fails")
-	}
-}
-
-func TestRetireGitLabLegacyVars_NoopWhenGone(t *testing.T) {
-	fc := newFakeClientWithRepo()
-	actions := retireGitLabLegacyVars(context.Background(), fc, "acme", "widgets", false, noopProgress)
-	if len(actions) != 0 {
-		t.Errorf("expected no actions when retired vars are absent, got %v", actions)
-	}
-}
-
-func TestRetireGitLabLegacyVars_DryRunDoesNotDelete(t *testing.T) {
-	fc := newFakeClientWithRepo()
-	fc.VariableValues["acme/widgets/"+forge.VarLastPollAtFast] = "2020-01-01T00:00:00Z"
-	fc.VariableValues["acme/widgets/"+forge.VarLabelState] = "{}"
-
-	actions := retireGitLabLegacyVars(context.Background(), fc, "acme", "widgets", true, noopProgress)
-	if len(actions) != 2 {
-		t.Fatalf("expected 2 would-delete actions, got %d: %v", len(actions), actions)
-	}
-	for _, a := range actions {
-		if a.Action != "delete" {
-			t.Errorf("action = %q, want delete", a.Action)
-		}
-		if !strings.Contains(a.Detail, "would migrate then delete") {
-			t.Errorf("detail = %q, want would-migrate wording", a.Detail)
-		}
-	}
-	if fc.VariableValues["acme/widgets/"+forge.VarLastPollAtFast] == "" {
-		t.Error("dry-run must not delete FULLSEND_LAST_POLL_AT_FAST")
-	}
-	if len(fc.DeletedVariables) != 0 {
-		t.Errorf("dry-run deleted %d variables, want 0", len(fc.DeletedVariables))
-	}
-}
-
-func TestRetireGitLabLegacyVars_MigrateThenDelete(t *testing.T) {
-	fc := newFakeClientWithRepo()
-	fc.VariableValues["acme/widgets/"+forge.VarLastPollAtFast] = "2020-01-01T00:00:00Z"
-	fc.VariableValues["acme/widgets/"+forge.VarLastPollAtFull] = "2020-02-01T00:00:00Z"
-	fc.VariableValues["acme/widgets/"+forge.VarLabelState] = "{}"
-
-	actions := retireGitLabLegacyVars(context.Background(), fc, "acme", "widgets", false, noopProgress)
-	deleted := 0
-	for _, a := range actions {
-		if a.Action == "error" {
-			t.Errorf("unexpected error action: %s", a.Detail)
-		}
-		if a.Action == "delete" {
-			deleted++
-		}
-	}
-	if deleted != 3 {
-		t.Errorf("deleted actions = %d, want 3", deleted)
-	}
-	for _, name := range []string{forge.VarLastPollAtFast, forge.VarLastPollAtFull, forge.VarLabelState} {
-		if _, ok := fc.VariableValues["acme/widgets/"+name]; ok {
-			t.Errorf("retired variable %s still present after migrate-then-delete", name)
-		}
-	}
-	assertPollStateBranchesSeeded(t, fc, "acme", "widgets")
-}
-
-func TestRetireGitLabLegacyVars_ListError(t *testing.T) {
-	fc := newFakeClientWithRepo()
-	fc.Errors["ListRepoVariables"] = fmt.Errorf("forbidden")
-	actions := retireGitLabLegacyVars(context.Background(), fc, "acme", "widgets", false, noopProgress)
-	if len(actions) != 1 || actions[0].Action != "error" {
-		t.Fatalf("expected 1 error action, got %v", actions)
-	}
-}
-
-func TestRetireGitLabLegacyVars_SeedErrorDoesNotDelete(t *testing.T) {
-	fc := newFakeClientWithRepo()
-	fc.VariableValues["acme/widgets/"+forge.VarLastPollAtFast] = "2020-01-01T00:00:00Z"
-	fc.Errors["ForceCommitFileToBranch"] = fmt.Errorf("denied")
-	actions := retireGitLabLegacyVars(context.Background(), fc, "acme", "widgets", false, noopProgress)
-	if len(actions) != 1 || actions[0].Action != "error" {
-		t.Fatalf("expected 1 error action, got %v", actions)
-	}
-	if _, ok := fc.VariableValues["acme/widgets/"+forge.VarLastPollAtFast]; !ok {
-		t.Error("retired var must remain when migration into branches fails")
-	}
-	if len(fc.DeletedVariables) != 0 {
-		t.Errorf("deleted %d variables after seed failure, want 0", len(fc.DeletedVariables))
-	}
-}
-
-func TestRetireGitLabLegacyVars_DeleteError(t *testing.T) {
-	fc := newFakeClientWithRepo()
-	fc.VariableValues["acme/widgets/"+forge.VarLastPollAtFast] = "2020-01-01T00:00:00Z"
-	fc.Errors["DeleteRepoVariable"] = fmt.Errorf("permission denied")
-	actions := retireGitLabLegacyVars(context.Background(), fc, "acme", "widgets", false, noopProgress)
-	if len(actions) != 1 || actions[0].Action != "error" {
-		t.Fatalf("expected 1 error action, got %v", actions)
-	}
-	if !strings.Contains(actions[0].Detail, forge.VarLastPollAtFast) {
-		t.Errorf("error detail = %q, want variable name", actions[0].Detail)
-	}
-}
-
-func TestInstall_GitLab_RetireErrorFailsInstall(t *testing.T) {
-	fc := newFakeClientWithRepo()
-	fc.VariableValues["acme/widgets/"+forge.VarLastPollAtFast] = "2020-01-01T00:00:00Z"
-	fc.Errors["DeleteRepoVariable"] = fmt.Errorf("permission denied")
-	cfg := InstallConfig{
-		Owner:  "acme",
-		Repo:   "widgets",
-		Forge:  ForgeGitLab,
-		Roles:  []string{"triage"},
-		Direct: true,
-	}
-	sc := &fakeScaffoldCommit{}
-	_, err := Install(context.Background(), cfg, fc, sc.fn(), noopProgress)
-	if err == nil {
-		t.Fatal("expected install to fail when retiring leftover legacy vars fails")
 	}
 }

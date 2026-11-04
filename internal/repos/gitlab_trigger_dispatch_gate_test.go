@@ -58,6 +58,8 @@ func commitDispatchRouteScripts(t *testing.T, e *trigEnv) {
 			"__AGENT_RUNNER_TAGS__", scaffold.FormatRunnerTags(nil),
 			"__CONTROL_RUNNER_TAGS__", scaffold.FormatRunnerTags(nil),
 		).Replace(string(content)))
+		// Installs render the runner image tag from fullsend_ref (#8865).
+		content = []byte(scaffold.RenderRunnerImageTag(string(content), "0.50.0"))
 		e.state.FileContents[prefix+path] = content
 	}
 }
@@ -177,7 +179,7 @@ func TestCheckGitLabTriggerDispatchGate_RejectsWidenedDispatchInputConstraints(t
 	for _, path := range []string{".gitlab-ci.yml", fullsendPipelineInclude, fullsendAgentTemplatePath} {
 		for _, tc := range []struct{ name, old, replacement string }{
 			{"stage", "^[A-Za-z0-9_-]*$", "^.*$"},
-			{"resource key", "^((issue|mr)-[0-9]+)?$", "^.*$"},
+			{"resource key", "^((issue|mr)-[0-9]+|jira-[A-Z][A-Z0-9_]+-[1-9][0-9]*)?$", "^.*$"},
 		} {
 			t.Run(path+"/"+tc.name, func(t *testing.T) {
 				e := readyTriggerDispatchEnv(t)
@@ -360,6 +362,69 @@ func TestCheckGitLabTriggerDispatchGate_JobTokenPushMustBeDisabled(t *testing.T)
 			assert.Contains(t, gate.Deferred[0], tc.want)
 			assert.Equal(t, tc.allowed, e.state.JobTokenRepositoryPushAllowed[trigOwner+"/"+trigRepo], "the gate must not change the setting")
 			assert.True(t, e.sinkPresent(), "the gate only reads; polling and the published token are untouched")
+		})
+	}
+}
+
+// The installer renders the runner image tag from fullsend_ref (#8865), so
+// the gate accepts any tag form it renders (and the legacy ":dev") in the
+// committed poll, agent, and dispatcher jobs, but defers on another image.
+func TestCheckGitLabTriggerDispatchGate_RunnerImage(t *testing.T) {
+	prefix := trigOwner + "/" + trigRepo + "/"
+	for _, tc := range []struct {
+		image string
+		ready bool
+	}{
+		{scaffold.RunnerImageRepository + ":1.2.3-rc.1", true},
+		{scaffold.RunnerImageRepository + ":latest", true},
+		{scaffold.RunnerImageRepository + ":dev", true},
+		{scaffold.RunnerImageRepository + ":abc1234", false},
+		{scaffold.RunnerImageRepository + ":$TAG", false},
+		{scaffold.RunnerImageRepository + ":__FULLSEND_RUNNER_IMAGE_TAG__", false},
+		{"ghcr.io/example/fullsend-runner:0.50.0", false},
+	} {
+		for _, path := range []string{fullsendPollTemplatePath, fullsendAgentTemplatePath, fullsendDispatcherTemplatePath} {
+			t.Run(tc.image+" "+path, func(t *testing.T) {
+				e := readyTriggerDispatchEnv(t)
+				key := prefix + path
+				committed := string(e.state.FileContents[key])
+				rendered := scaffold.RunnerImageRepository + ":0.50.0"
+				require.Contains(t, committed, rendered)
+				e.state.FileContents[key] = []byte(strings.ReplaceAll(committed, rendered, tc.image))
+
+				gate := e.dispatchGate()
+				assert.Equal(t, tc.ready, gate.Ready, gate.Deferred)
+				if !tc.ready {
+					require.Len(t, gate.Deferred, 1)
+					assert.Contains(t, gate.Deferred[0], "under the shipped job configuration")
+				}
+			})
+		}
+	}
+}
+
+func TestGitLabCommittedRunnerImageTag(t *testing.T) {
+	repo := scaffold.RunnerImageRepository
+	for name, tc := range map[string]struct {
+		template string
+		tag      string
+		ok       bool
+	}{
+		"mapping name":      {"job:\n  image:\n    name: " + repo + ":0.50.0\n", "0.50.0", true},
+		"scalar image":      {"job:\n  image: " + repo + ":latest\n", "latest", true},
+		"aliased image":     {"x: &img\n  name: " + repo + ":dev\njob:\n  image: *img\n", "dev", true},
+		"missing job":       {"other:\n  image: " + repo + ":0.50.0\n", "", false},
+		"missing image":     {"job:\n  script: [true]\n", "", false},
+		"mapping no name":   {"job:\n  image:\n    entrypoint: [\"\"]\n", "", false},
+		"untagged":          {"job:\n  image: " + repo + "\n", "", false},
+		"digest":            {"job:\n  image: " + repo + "@sha256:abc\n", "", false},
+		"variable":          {"job:\n  image: " + repo + ":$TAG\n", "", false},
+		"unrendered marker": {"job:\n  image: " + repo + ":__FULLSEND_RUNNER_IMAGE_TAG__\n", "", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tag, ok := gitlabCommittedRunnerImageTag([]byte(tc.template), "job")
+			assert.Equal(t, tc.ok, ok)
+			assert.Equal(t, tc.tag, tag)
 		})
 	}
 }

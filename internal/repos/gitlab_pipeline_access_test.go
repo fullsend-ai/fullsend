@@ -456,7 +456,7 @@ func TestVerifySuppliedPollerPipelineAccessIsReadOnly(t *testing.T) {
 	})
 }
 
-const suppliedPollerState = `{"roles":{"poller":{"phase":"idle","distributed_at":"2026-10-01T00:00:00Z","supplied":true,"supplied_user_id":888,"supplied_token_id":14,"excluded_user_ids":[888]}}}`
+const suppliedPollerState = `{"version":2,"roles":{"poller":{"phase":"idle","distributed_at":"2026-10-01T00:00:00Z","supplied":true,"supplied_user_id":888,"supplied_token_id":14,"excluded_user_ids":[888]}}}`
 
 // Install and status include the supplied Poller's owner, which no token
 // inventory lists, in their protected-branch pipeline-access checks.

@@ -25,6 +25,8 @@ import (
 // The in parameter enables interactive prompts (e.g., fork-vs-upstream choice).
 // Pass os.Stdin for interactive CLI callers; pass nil for non-interactive
 // callers (sync-scaffold), which default to forking without prompting.
+// GitHub App installation tokens never fork: they deliver the PR from a
+// branch in the target repository.
 //
 // The returned bool is true when files were committed directly to the default
 // branch (false for PR-based delivery, idempotent no-ops, or unchanged content).
@@ -77,7 +79,8 @@ var knownScaffoldBranches = []string{
 
 // commitScaffoldViaPR creates a feature branch, commits files, and opens a PR.
 // For non-owner users, it defaults to creating a fork and opening a cross-fork
-// PR rather than pushing directly to the upstream repository.
+// PR rather than pushing directly to the upstream repository. GitHub App
+// installation tokens always deliver from a branch in the upstream repository.
 func commitScaffoldViaPR(ctx context.Context, client forge.Client, printer *ui.Printer,
 	owner, repo, defaultBranch, scaffoldBranch, commitMsg, prTitle, prBody string,
 	files []forge.TreeFile, in io.Reader) (bool, error) {
@@ -101,6 +104,21 @@ func commitScaffoldViaPR(ctx context.Context, client forge.Client, printer *ui.P
 		return commitBranchAndPR(ctx, client, printer,
 			owner, repo, owner, repo, scaffoldBranch, defaultBranch,
 			commitMsg, prTitle, prBody, files)
+	}
+
+	// GitHub App installation tokens: the collaborator endpoint does not
+	// report an installation's repository permissions, and GitHub only lets
+	// installation tokens create forks with additional permissions and access
+	// to the destination account. Deliver from a branch in the installed
+	// repository instead, so the App needs only contents and pull requests
+	// write access.
+	isInstallation, instErr := client.IsInstallationToken(ctx)
+	if instErr != nil {
+		printer.StepWarn(fmt.Sprintf("Could not detect installation token: %v", instErr))
+	} else if isInstallation {
+		printer.StepInfo(fmt.Sprintf("GitHub App installation token detected — pushing to %s/%s", owner, repo))
+		return commitInstallationUpstream(ctx, client, printer,
+			owner, repo, scaffoldBranch, defaultBranch, commitMsg, prTitle, prBody, files)
 	}
 
 	// Non-owner: check for existing fork first.
@@ -158,6 +176,37 @@ func commitScaffoldViaPR(ctx context.Context, client forge.Client, printer *ui.P
 	return commitBranchAndPR(ctx, client, printer,
 		owner, repo, owner, repo, scaffoldBranch, defaultBranch,
 		commitMsg, prTitle, prBody, files)
+}
+
+// commitInstallationUpstream delivers scaffold files from a branch in the
+// installed repository for a GitHub App installation token. A 403 most often
+// means the installation lacks a required repository permission, but it can
+// also be a policy denial, so the error names the permissions to grant as one
+// possible cause, mentions policy restrictions, and does not suggest the fork
+// option. Scaffold files under .github/workflows/ additionally require the
+// Workflows permission.
+func commitInstallationUpstream(ctx context.Context, client forge.Client, printer *ui.Printer,
+	owner, repo, scaffoldBranch, defaultBranch, commitMsg, prTitle, prBody string,
+	files []forge.TreeFile) (bool, error) {
+
+	committed, err := deliverBranchAndPR(ctx, client, printer,
+		owner, repo, owner, repo, scaffoldBranch, defaultBranch,
+		commitMsg, prTitle, prBody, files, false)
+	if err != nil && forge.IsForbidden(err) {
+		perms := `"Contents: Read and write" and "Pull requests: Read and write"`
+		for _, f := range files {
+			if strings.HasPrefix(f.Path, ".github/workflows/") {
+				perms = `"Contents: Read and write", "Pull requests: Read and write" and "Workflows: Read and write"`
+				break
+			}
+		}
+		return false, fmt.Errorf("GitHub App installation cannot deliver the scaffold PR to %s/%s (access denied). "+
+			"A missing permission is one possible cause: grant the App %s repository permissions and install it on this repository. "+
+			"A policy restriction, such as SAML enforcement or the repository setting that blocks Actions from creating pull requests, "+
+			"can also deny access: %w",
+			owner, repo, perms, err)
+	}
+	return committed, err
 }
 
 // forkAndCommit creates a fork, waits for it to be ready, then commits.
@@ -264,12 +313,26 @@ func isKnownScaffoldBranch(branch string) bool {
 
 // commitBranchAndPR creates a branch on targetOwner/targetRepo, commits files,
 // and opens a PR against upstreamOwner/upstreamRepo. When target == upstream
-// (same-repo PR), head is the branch name. When target != upstream (cross-fork
-// PR), head is "forkOwner:branchName".
+// (same-repo PR), it uses CreateChangeProposal. When target != upstream
+// (cross-fork PR), it uses CreateCrossRepoChangeProposal with the fork's
+// owner and repo name.
 func commitBranchAndPR(ctx context.Context, client forge.Client, printer *ui.Printer,
 	upstreamOwner, upstreamRepo, targetOwner, targetRepo,
 	scaffoldBranch, defaultBranch, commitMsg, prTitle, prBody string,
 	files []forge.TreeFile) (bool, error) {
+
+	return deliverBranchAndPR(ctx, client, printer,
+		upstreamOwner, upstreamRepo, targetOwner, targetRepo,
+		scaffoldBranch, defaultBranch, commitMsg, prTitle, prBody, files, true)
+}
+
+// deliverBranchAndPR implements commitBranchAndPR. When forkHint is false, a
+// 403 on branch creation is wrapped without suggesting the fork option, for
+// callers (GitHub App installation tokens) that can never fork.
+func deliverBranchAndPR(ctx context.Context, client forge.Client, printer *ui.Printer,
+	upstreamOwner, upstreamRepo, targetOwner, targetRepo,
+	scaffoldBranch, defaultBranch, commitMsg, prTitle, prBody string,
+	files []forge.TreeFile, forkHint bool) (bool, error) {
 
 	isCrossRepo := !strings.EqualFold(targetOwner, upstreamOwner) || !strings.EqualFold(targetRepo, upstreamRepo)
 
@@ -313,6 +376,10 @@ func commitBranchAndPR(ctx context.Context, client forge.Client, printer *ui.Pri
 	if branchErr := createBranch(); branchErr != nil {
 		if forge.IsForbidden(branchErr) {
 			printer.StepFail("Insufficient permissions to push to repository")
+			if !forkHint {
+				return false, fmt.Errorf("creating scaffold branch on %s/%s (403 forbidden): %w",
+					targetOwner, targetRepo, branchErr)
+			}
 			return false, fmt.Errorf("cannot push to %s/%s (403 forbidden); re-run with the fork option or check your token scopes: %w",
 				targetOwner, targetRepo, branchErr)
 		}
@@ -357,14 +424,18 @@ func commitBranchAndPR(ctx context.Context, client forge.Client, printer *ui.Pri
 		return false, fmt.Errorf("committing scaffold files to branch: %w", commitErr)
 	}
 
-	// For cross-fork PRs, head must be "forkOwner:branchName".
-	head := scaffoldBranch
-	if !strings.EqualFold(targetOwner, upstreamOwner) || !strings.EqualFold(targetRepo, upstreamRepo) {
-		head = targetOwner + ":" + scaffoldBranch
+	// Cross-fork PRs identify the head repository explicitly instead of
+	// relying on GitHub's "owner:branch" head syntax, which GitLab rejects
+	// and which is ambiguous for same-owner forks.
+	var proposal *forge.ChangeProposal
+	var prErr error
+	if isCrossRepo {
+		proposal, prErr = client.CreateCrossRepoChangeProposal(ctx, upstreamOwner, upstreamRepo,
+			targetOwner, targetRepo, prTitle, prBody, scaffoldBranch, defaultBranch)
+	} else {
+		proposal, prErr = client.CreateChangeProposal(ctx, upstreamOwner, upstreamRepo,
+			prTitle, prBody, scaffoldBranch, defaultBranch)
 	}
-
-	proposal, prErr := client.CreateChangeProposal(ctx, upstreamOwner, upstreamRepo,
-		prTitle, prBody, head, defaultBranch)
 	if prErr != nil {
 		if forge.IsNoChanges(prErr) {
 			printer.StepDone("Scaffold branch and PR up to date")

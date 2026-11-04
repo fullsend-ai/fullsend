@@ -142,6 +142,14 @@ trigger-token threat model for the new inbound-surface controls.
 > Consequences. Push-to-open-MR (GitHub `synchronize`) is not detected
 > by the poller; use `/fs-review`.
 >
+> **Update (2026-10, #7681):** The poller now detects pushes to open MRs
+> from merge request diff versions and dispatches review as
+> `transition.kind: synchronized`, keyed on the head SHA. Automatic
+> dispatch applies only to same-project MRs; re-review of fork MR
+> pushes is currently unsupported, because the router also denies
+> slash commands on fork MRs. See
+> [review agent](../agents/review.md).
+>
 > **Update (2026-09, #7323):** The single shared bot PAT (see "Credential
 > model" below) means GitLab's own `merge_requests_author_approval=false`
 > default always rejects `POST .../approve` with 401 whenever the
@@ -219,6 +227,13 @@ trigger-token threat model for the new inbound-surface controls.
 > dropped the leftover empty `dispatch` stage from the required stage
 > list and strips it from already-enrolled root files on converge
 > (`StripObsoleteGitLabStages`).
+>
+> **Update (2026-10, #8031):** After the webhook-dispatch rollout, these
+> converge-time migrations were removed, as were the converge deletion
+> of a leftover `fullsend-dispatch.yml` and the status/upgrade read of
+> its version marker. Converge now reports a leftover stub as an orphan.
+> Uninstall still deletes it, and still removes the obsolete
+> `merge_request_event` rule from a fullsend-owned `workflow:` block.
 
 ## Context
 
@@ -435,6 +450,12 @@ protected, masked CI/CD variable (`FULLSEND_FORGE_TOKEN`).
 > branches with an initial signed document (seeded from legacy
 > CI/CD-variable state when present). The poller self-heals a deleted
 > branch within one cycle. `repos uninstall` deletes both branches.
+>
+> **Update (2026-10, #8032):** The legacy CI/CD-variable migration was
+> removed. Install and converge seed missing branches with an empty
+> signed baseline and neither read nor delete the retired variables.
+> The orphan detector still ignores them, and uninstall still deletes
+> them.
 >
 > Phase 3c (#7381) dropped the created bot PAT from Maintainer (40)
 > to Developer (30); Developer can force-write and delete an

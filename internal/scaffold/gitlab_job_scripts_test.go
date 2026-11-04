@@ -170,6 +170,7 @@ func TestRunPollJobScript_BlanksSiblingSecretsBeforePoll(t *testing.T) {
 		projectJSON:  `{"id":42,"default_branch":"main","path_with_namespace":"group/project"}`,
 		branchJSON:   `{"name":"main","protected":true}`,
 		pipelineJSON: `{"id":100,"source":"schedule"}`,
+		userIDByPAT:  map[string]int{"poll-pat": 10, "analyst-pat": 55},
 	}
 	srv := startPinAPI(t, st)
 	t.Cleanup(srv.Close)
@@ -179,7 +180,7 @@ func TestRunPollJobScript_BlanksSiblingSecretsBeforePoll(t *testing.T) {
 		path := filepath.Join(bin, name)
 		require.NoError(t, os.WriteFile(path, []byte("#!/bin/sh\n"+body), 0o755))
 	}
-	writeStub("fullsend", "echo POLL_RAN\nexit 0\n")
+	writeStub("fullsend", "echo POLL_RAN\necho POLL_ANALYST_USER_ID=\"${FULLSEND_GITLAB_ANALYST_USER_ID-unset}\"\nexit 0\n")
 
 	cmd := exec.Command("bash", "-c", `set -euo pipefail; . "$SCRIPT"; echo ANALYST="${FULLSEND_GITLAB_ANALYST_TOKEN-unset}"; echo CODER="${FULLSEND_GITLAB_CODER_TOKEN-unset}"; echo SHARED="${FULLSEND_FORGE_TOKEN-unset}"; echo JOB="${FULLSEND_JOB_TOKEN-unset}"; echo TRIGGER="${FULLSEND_TRIGGER_TOKEN-unset}"; echo ACCOUNT_TRIGGER="${FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN-unset}"; echo WEBHOOK_SECRET="${FULLSEND_WEBHOOK_SECRET-unset}"`)
 	cmd.Env = append([]string{
@@ -205,6 +206,11 @@ func TestRunPollJobScript_BlanksSiblingSecretsBeforePoll(t *testing.T) {
 	require.NoError(t, err, "stdout/stderr: %s", out)
 	got := string(out)
 	assert.Contains(t, got, "POLL_RAN")
+	// The Analyst's numeric ID (never its token) reaches `fullsend poll`
+	// so the poller can retain the Analyst's changes-requested markers
+	// in distinct-role installations (#8807).
+	assert.Contains(t, got, "POLL_ANALYST_USER_ID=55")
+	assert.NotContains(t, got, "analyst-pat")
 	assert.Contains(t, got, "ANALYST=unset")
 	assert.Contains(t, got, "CODER=unset")
 	assert.Contains(t, got, "SHARED=unset")
@@ -212,6 +218,71 @@ func TestRunPollJobScript_BlanksSiblingSecretsBeforePoll(t *testing.T) {
 	assert.Contains(t, got, "TRIGGER=unset", "the webhook trigger bearer must not outlive the job preamble")
 	assert.Contains(t, got, "ACCOUNT_TRIGGER=unset", "the account trigger bearer must not outlive the job preamble")
 	assert.Contains(t, got, "WEBHOOK_SECRET=unset", "the webhook secret must not outlive the job preamble")
+}
+
+// TestRunPollJobScript_AnalystUserIDLookupFailureIsNonFatal covers the
+// Analyst ID export when the Analyst identity cannot be resolved (#8807):
+// an inherited FULLSEND_GITLAB_ANALYST_USER_ID is never passed through, and
+// the poll still runs so unrelated events keep dispatching.
+func TestRunPollJobScript_AnalystUserIDLookupFailureIsNonFatal(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		analystPAT string
+		wantWarn   string
+	}{
+		{name: "analyst token missing", wantWarn: "could not resolve the Analyst identity"},
+		{name: "analyst lookup fails", analystPAT: "unknown-pat", wantWarn: "could not resolve the Analyst identity"},
+		{name: "analyst ID invalid", analystPAT: "zero-pat", wantWarn: "no valid user ID"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeGitLabScript(t, root, ".gitlab/ci/scripts/trust-ci-server-ca.sh")
+			writeGitLabScript(t, root, gitlabPinCIJobIdentityScriptPath)
+			writeGitLabScript(t, root, ".gitlab/ci/scripts/select-gitlab-role-token.sh")
+			script := writeGitLabScript(t, root, gitlabRunPollJobScriptPath)
+
+			st := &pinAPIState{
+				jobJSON:      pinJobJSON("42", "100", "main"),
+				projectJSON:  `{"id":42,"default_branch":"main","path_with_namespace":"group/project"}`,
+				branchJSON:   `{"name":"main","protected":true}`,
+				pipelineJSON: `{"id":100,"source":"schedule"}`,
+				userIDByPAT:  map[string]int{"poll-pat": 10, "zero-pat": 0},
+			}
+			srv := startPinAPI(t, st)
+			t.Cleanup(srv.Close)
+
+			bin := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(bin, "fullsend"), []byte(
+				"#!/bin/sh\necho POLL_ANALYST_USER_ID=\"${FULLSEND_GITLAB_ANALYST_USER_ID-unset}\"\n",
+			), 0o755))
+
+			env := []string{
+				"SCRIPT=" + script,
+				"PATH=" + bin + ":" + os.Getenv("PATH"),
+				"HOME=" + t.TempDir(),
+				"CI_PROJECT_DIR=" + root,
+				"RUNNER_TEMP=" + t.TempDir(),
+				"CI_JOB_TOKEN=job-token",
+				"FULLSEND_GITLAB_POLLER_TOKEN=poll-pat",
+				"FULLSEND_POLL_MODE=events",
+				"CI_PROJECT_ID=1",
+				"CI_PROJECT_PATH=group/project",
+				// Inherited from the job environment; must not reach the CLI.
+				"FULLSEND_GITLAB_ANALYST_USER_ID=999",
+			}
+			if tc.analystPAT != "" {
+				env = append(env, "FULLSEND_GITLAB_ANALYST_TOKEN="+tc.analystPAT)
+			}
+			cmd := exec.Command("bash", "-c", "set -euo pipefail; . \"$SCRIPT\"")
+			cmd.Env = append(env, pinTLSEnv(t, srv)...)
+			out, err := cmd.CombinedOutput()
+			require.NoError(t, err, "stdout/stderr: %s", out)
+			got := string(out)
+			assert.Contains(t, got, "POLL_ANALYST_USER_ID=unset")
+			assert.NotContains(t, got, "999")
+			assert.Contains(t, got, tc.wantWarn)
+		})
+	}
 }
 
 // TestGitLabJobScripts_UnsetWebhookCredentialsBeforePin guards the poller,

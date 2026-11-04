@@ -6,7 +6,7 @@ sidebar_position: 3
 
 > Background: [How fullsend authenticates](../user/how-fullsend-authenticates.md).
 
-The goal of this document is that you configure Fullsend for your GitHub repository.
+The goal of this document is that you configure fullsend for your GitHub repository.
 GitLab repositories use a different command (`fullsend repos install`, driven by a
 `repos.yaml` manifest). See [Configuring GitLab](configuring-gitlab.md) for that flow.
 To manage GitHub repositories from `repos.yaml` instead of `github setup`, see
@@ -40,7 +40,7 @@ To manage GitHub repositories from `repos.yaml` instead of `github setup`, see
 ## Installing GitHub Applications
 
 Install the following agent applications to your organization
-and provide them permissions to the repository you want to install Fullsend to.
+and provide them permissions to the repository you want to install fullsend to.
 
 | Role | Installation URL |
 |------|-----------------|
@@ -138,13 +138,13 @@ To apply the same preset across many repositories, declare `defaults.config_base
 ## Testing Fullsend
 
 After installing open a new issue or comment `/fs-triage` in an open issue. Then visit the
-Actions tab to see the Fullsend workflow in action. In some minutes the
+Actions tab to see the fullsend workflow in action. In some minutes the
 `fullsend-ai-triage` bot should post a comment in the issue.
 
 ## Next steps
 
-* Read [Repo Management](repo-management.md) to learn how to install and manage Fullsend across
+* Read [Repo Management](repo-management.md) to learn how to install and manage fullsend across
 many repositories, including sharing configuration presets between them.
-* Read the [Agents](../../agents/README.md) section to learn about the default agents Fullsend
+* Read the [Agents](../../agents/README.md) section to learn about the default agents fullsend
 ships with.
 * Explore other sections of this documentation for more information.

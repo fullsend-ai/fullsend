@@ -497,6 +497,38 @@ func TestCommitFiles_GraphQL_ForbiddenWithoutRuleIsForbidden(t *testing.T) {
 	assert.False(t, forge.IsBranchProtected(err))
 }
 
+// httpForbiddenServer answers the mutation with an HTTP-level 403 (not a
+// GraphQL FORBIDDEN error delivered with HTTP 200).
+func httpForbiddenServer(t *testing.T, header http.Header, message string) *httptest.Server {
+	t.Helper()
+	srv, _ := graphqlCommitServer(t, "main", nil, func(w http.ResponseWriter, _ commitMutationInput) {
+		for k, v := range header {
+			w.Header()[k] = v
+		}
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(map[string]string{"message": message})
+	})
+	return srv
+}
+
+func TestCommitFiles_GraphQL_HTTP403IsForbidden(t *testing.T) {
+	srv := httpForbiddenServer(t, nil, "Resource not accessible by integration")
+
+	_, err := newTestClient(t, srv).CommitFiles(context.Background(), "org", "repo", "msg", regularFile)
+	require.Error(t, err)
+	assert.True(t, forge.IsForbidden(err), "HTTP-level 403s must name App permissions like GraphQL FORBIDDEN does")
+	assert.False(t, forge.IsBranchProtected(err))
+}
+
+func TestCommitFiles_GraphQL_HTTP403RateLimitIsNotForbidden(t *testing.T) {
+	srv := httpForbiddenServer(t, http.Header{"Retry-After": {"600"}}, "You have exceeded a secondary rate limit")
+
+	_, err := newTestClient(t, srv).CommitFiles(context.Background(), "org", "repo", "msg", regularFile)
+	require.Error(t, err)
+	assert.True(t, IsRateLimitError(err))
+	assert.False(t, forge.IsForbidden(err))
+}
+
 func TestCommitFiles_GraphQL_RateLimitedRetries(t *testing.T) {
 	var mutations int
 	srv, _ := graphqlCommitServer(t, "main", nil, func(w http.ResponseWriter, _ commitMutationInput) {

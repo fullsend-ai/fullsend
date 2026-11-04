@@ -458,7 +458,7 @@ func failureReasons(failed []RoleProvisionFailure) []string {
 func TestRotateGitLabRoleCredentials_UnverifiableSuppliedCredentialFailsClosed(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC)
-	const state = `{"roles":{"coder":{"phase":"idle","distributed_at":"2026-10-01T00:00:00Z","supplied":true,"supplied_user_id":777,"supplied_token_id":13,"excluded_user_ids":[777]}}}`
+	const state = `{"version":2,"roles":{"coder":{"phase":"idle","distributed_at":"2026-10-01T00:00:00Z","supplied":true,"supplied_user_id":777,"supplied_token_id":13,"excluded_user_ids":[777]}}}`
 	listed := ProjectAccessToken{ID: 13, Active: true, ExpiresAt: "2027-06-01", UserID: 777}
 	listed.Name = gitlabroles.BuiltinRegistry().Registrations()[2].Credential.TokenName
 

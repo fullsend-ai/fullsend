@@ -61,6 +61,8 @@ const (
 	stageInstallationLookup = "installation_lookup"
 	stageTokenIssuance      = "token_issuance"
 	stageForeignGrant       = "foreign_grant"
+	stageBotRoleConfig      = "bot_role_config"
+	stageAppsLookup         = "github_apps_lookup"
 )
 
 // OTLP span kinds and status codes (opentelemetry-proto trace.proto).
@@ -396,7 +398,7 @@ func newTraceID() [16]byte {
 
 // knownRoutes bounds the url.path values recorded on spans so arbitrary
 // caller-supplied paths never reach the collector.
-var knownRoutes = map[string]bool{"/": true, "/v1/token": true, "/v1/status": true, "/health": true}
+var knownRoutes = map[string]bool{"/": true, "/v1/token": true, "/v1/status": true, "/v1/bot-role": true, "/health": true}
 
 // admitSample reports whether the local sampling budget allows recording
 // one more request. It is a token bucket refilled at sampleRate per second.
@@ -550,6 +552,19 @@ func (s *span) setInt(key string, value int64) {
 		return
 	}
 	s.attrs = appendIntAttr(s.attrs, key, value)
+}
+
+// addEvent records a named event with attrs on the span. It is a no-op on
+// a nil span.
+func (s *span) addEvent(name string, attrs []otlpKeyValue) {
+	if s == nil {
+		return
+	}
+	s.events = append(s.events, otlpEvent{
+		TimeUnixNano: strconv.FormatInt(time.Now().UnixNano(), 10),
+		Name:         name,
+		Attributes:   attrs,
+	})
 }
 
 func (s *span) setBool(key string, value bool) {

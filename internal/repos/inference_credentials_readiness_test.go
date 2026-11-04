@@ -393,6 +393,7 @@ func TestConverge_GitLabAuthSwitchKeepsObsoleteSecretsWhenScriptLacksContract(t 
 		t.Run(tc.name, func(t *testing.T) {
 			fc := newFakeClientForBatch("acme/api")
 			populateGitLabInstalled(fc, "acme", "api")
+			populateGitLabTypedWrapper(t, fc, "acme", "api")
 			scriptKey := "acme/api/" + gitlabAgentJobScriptPath
 			switch tc.name {
 			case "legacy script":

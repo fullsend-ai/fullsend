@@ -63,6 +63,8 @@ func TestGivenEnrolledTestRepository_BindsWorldToLeasedOrg(t *testing.T) {
 	ld := &fakeLeaseDriver{lease: install.RepoLease{
 		Org: "halfsend-07", Repo: "test-repo-03", Token: "tok-07",
 		Client: client, MintURL: "https://mint.halfsend-07",
+		MintStatusGroup:       "halfsend-11/mint-status",
+		MintWorkflowHostRepos: []string{"halfsend-07/test-repo-03", "halfsend-08/test-repo-03"},
 	}}
 	od := &recordingOrgDrivers{}
 	templateSCM := &fakeDispatchSCM{}
@@ -78,6 +80,8 @@ func TestGivenEnrolledTestRepository_BindsWorldToLeasedOrg(t *testing.T) {
 	assert.Equal(t, "halfsend-07/test-repo-03", w.RepoFull)
 	assert.Equal(t, "tok-07", w.Token)
 	assert.Equal(t, "https://mint.halfsend-07", w.MintURL)
+	assert.Equal(t, "halfsend-11/mint-status", w.MintStatusGroup, "the lease's status group, not the org's")
+	assert.Equal(t, []string{"halfsend-07/test-repo-03", "halfsend-08/test-repo-03"}, w.MintWorkflowHostRepos)
 	assert.Equal(t, "test-repo-03", w.LeasedRepoName)
 	assert.Equal(t, "halfsend-07", w.LeasedRepoOrg)
 	assert.Same(t, client, od.client, "drivers built from the leased org's client")

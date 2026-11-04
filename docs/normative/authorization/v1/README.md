@@ -2,7 +2,7 @@
 
 Normative rules governing which actors may trigger agent dispatch.
 
-This document is the single living contract for authorization policy.
+This document records the v1 contract for authorization policy.
 The historical decision and rationale are recorded in
 [ADR 0054](../../../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md).
 The [NormalizedEvent v1](../../normalized-event/v1/) specification defines the
@@ -10,10 +10,34 @@ The [NormalizedEvent v1](../../normalized-event/v1/) specification defines the
 consumed by this contract. Bot identity and role resolution are specified by
 [ADR 0107](../../../ADRs/0107-bot-identity-resolution-for-dispatch-authorization.md).
 
-> **ADR 0107 target contract — not yet implemented:** The bot identity fields,
-> resolver outcomes, and bot-specific fail-closed rows below describe the
-> behavior to be implemented by the adapters and dispatch path. Until that
-> migration lands, existing compatibility behavior remains authoritative.
+> **Version note:** [Authorization Contract v2](../v2/README.md), adopted by
+> [ADR 0147](../../../ADRs/0147-evaluate-entity-cel-over-selectively-acquired-data.md),
+> supersedes v1's future full-history entity-evaluation and audit requirements.
+> [ADR 0148](../../../ADRs/0148-reuse-verified-actor-roles-for-entity-cel.md)
+> permits bounded actor-role reuse for entity-source CEL in v2.
+> [ADR 0151](../../../ADRs/0151-harness-human-role-minimums.md) keeps an
+> immutable `triage` human floor and applies the selected harness's effective
+> `human_min_role` to target event, entity-fact, and model-record admission.
+> Human labelers must meet that minimum; bot label grants remain separate.
+> Existing event-backed dispatch continues to use v1 until migrated; the v1
+> requirements below remain the record of this version's contract.
+
+> **ADR 0107 target contract — partially implemented:** The bot identity
+> fields, resolver outcomes, and bot-specific fail-closed rows below describe
+> the target behavior. The building blocks exist: the `actor.bot_role` and
+> `actor.role_verified` fields in `internal/normevent`, the forge-neutral
+> `BotRoleResolver` contract in `internal/botidentity`, the mint's GitHub
+> `POST /v1/bot-role` lookup, and a non-label bot branch in `IsEventAuthorized()`.
+> That branch applies only to events that carry a lookup result
+> (`actor.role_verified` set). On GitHub, `fullsend dispatch` performs the
+> lookup for bot actors of `gha-event` input through the mint (a layered
+> `mint_url`, else `FULLSEND_MINT_URL`), before both `--route` decisions and harness dispatch,
+> except on label-added events. A no-match or a failed lookup denies the bot
+> (a `--route` skip with reason `bot has no registered role` or
+> `bot-role lookup failed`), never a command error. Other adapters (the
+> `json` input driver, pollers) do not perform the lookup yet, so their
+> compatibility behavior remains authoritative. Non-GitHub lookup is not
+> implemented.
 
 ## Role ordering
 
@@ -50,17 +74,21 @@ admin > maintain > write > triage > read > none > external
 | | Developer | `write` |
 | | Reporter | `triage` |
 | | Guest | `read` |
-| **Jira** | Administrators | `admin` |
+| **Jira** (project roles) | Administrators | `admin` |
 | | Developers | `write` |
 | | _(other named role)_ | `read` |
 | | _(no project membership)_ | `external` |
+| **Jira** (`jira` provider lists) | listed under `write` | `write` |
+| | listed only under `triage` | `triage` |
+| | _(not listed)_ | `none` |
+| **Jira** _(role not resolved)_ | — | `none` |
 
 On GitHub the mapping source is the collaborator permission API
 (`GET /repos/{owner}/{repo}/collaborators/{username}/permission`), which
 returns the user's **effective** role including inherited org grants
 regardless of membership visibility. A built-in `role_name` is used as is.
 Custom repository roles are an organization-level GitHub Enterprise Cloud
-feature, so most repositories only ever return built-in names; Fullsend
+feature, so most repositories only ever return built-in names; fullsend
 does not interpret a custom role's name or its fine-grained permissions.
 A custom repository role resolves to the strongest base role set to `true`
 in `user.permissions` (`admin`, `maintain`, `push` → `write`, `triage`,
@@ -91,13 +119,44 @@ key never matches, and nested aliases are not expanded. The files are read from 
 from the default branch otherwise, so a PR cannot add its author. See the
 [`authorization` field](../../../reference/config-reference.md#authorization).
 
-On Jira the mapping source is the project's role membership roster,
-resolved once per poll cycle for the configured `--jira-project`. An
-actor is matched by Jira account ID. Role names are matched
-case-insensitively against the names above; unrecognized role names fall
-through to `read`. Actors with no membership in the configured project —
-or whose issue belongs to a different project — are mapped to `external`
-(fail-closed). See the
+On Jira the `jira` provider under `authorization` in `.fullsend/config.yaml`
+([ADR 0153](../../../ADRs/0153-authorize-jira-poll-actors-without-project-administration.md))
+is opt-in. It applies only to events with `source.system: jira`. With no
+`jira` entry, every Jira event, label-added included, takes its role from the
+project role roster (see **Without lists** below), and a label-added event
+takes the ordinary per-harness threshold. With a `jira` entry, the mapping
+source for each event is chosen by the provider:
+
+- **Label-added events** follow the provider's `labels` rule. Under
+  `jira_editors`, the default once the entry is present, the
+  role is not resolved. The event is authorized by the
+  [label exception](#label-application) instead. Under `allowlist` the role
+  comes from the provider's lists, and under `project_roles` from the
+  project role roster.
+- **Every other event**, slash commands included, takes its role from the
+  provider's `write` and `triage` lists when the provider sets either list
+  (an empty list counts as set). The lists are then authoritative: the project role roster is not
+  consulted. An actor named under `write` (by account ID, or by membership in
+  a listed Jira group) is `write`. An actor named only under `triage` is
+  `triage`. Anyone else is `none`. Group membership comes from
+  `GET /rest/api/3/user/groups` and is read once per actor per poll cycle.
+- **Without lists**, and every event when no `jira` entry exists, the role
+  comes from the project's role roster, resolved once per poll cycle for the
+  configured `--jira-project` and only when such an event is present. An
+  actor is matched by Jira account ID. Role names are matched
+  case-insensitively against the names above, and unrecognized role names
+  fall through to `read`. Actors with no membership in the configured
+  project, or whose issue belongs to a different project, are mapped to
+  `external` (fail-closed). When a `jira` entry exists but sets no lists, only
+  a slash-command comment uses the roster and any other event's role is not
+  resolved, except that an entry with `labels: project_roles` and no lists
+  resolves every event through the roster, exactly as with no `jira` entry.
+  That entry is the explicit way to keep the no-entry behavior.
+
+An event whose role is not resolved carries `actor.role: none`, which no
+threshold admits. Reading the roster (`GET /rest/api/3/project/<KEY>/role`)
+requires Jira's Administer Projects permission; a failed read fails the
+poll cycle without advancing checkpoints. See the
 [Jira integration guide](../../../guides/user/jira-integration.md) for
 details on the name-based matching limitation.
 
@@ -152,13 +211,29 @@ The bash dispatch implementation uses a parameterized
 `has_repo_permission(username, min)` helper that encodes this comparison
 (see [Enforcement point](#enforcement-point)).
 
-> **Implementation note:** the Go dispatch path (`IsAuthorized()` in
-> `harnessdispatch`) currently uses a coarse `write+` filter for all
-> non-exception transitions — it does not yet distinguish observation
-> from mutation thresholds. Poll-based dispatch (GitLab/Jira) uses the
-> Go path, so a `triage`-role user triggering observation through that
-> path is denied today. The bash path (GitHub webhook dispatch)
-> implements the full parameterized threshold.
+> **Implementation note:** the Go CEL dispatch path (`harnessdispatch`) applies
+> these thresholds per harness, keyed on the harness `role:` field. It serves
+> GitHub CEL dispatch (`fullsend dispatch`) and Jira polling (`fullsend poll
+> --input-driver jira-poll`). The event-level gate (`IsEventAuthorized()`)
+> runs once before harness enumeration and applies the label-added, bot, and
+> `role_verified` rules. For the remaining actors, the candidate harnesses are
+> then filtered by `IsHarnessAuthorized()` before CEL evaluation: `role: triage`
+> and `role: review` require `triage`; every other role, including an empty,
+> unknown, or custom role, requires `write` (fail closed). GitLab polling and
+> webhook routing do not use `harnessdispatch`: `dispatch.HarnessRouter`
+> gates slash commands per stage (triage and review at `triage`, other stages
+> at `write`) and label routes at `write`, and the agent job then requires
+> Developer access for every stage except retro and prioritize. The one
+> exception to that agent-job check is Jira work items dispatched to GitLab
+> (`jira_*` events): the Jira poller authorizes the actor by Jira project role
+> during polling, and the agent job skips the Developer-access check for these
+> signed events. The bash path (GitHub webhook
+> dispatch) applies the same thresholds per stage through
+> `has_repo_permission`.
+> Among the Go paths, only `fullsend dispatch --route retro` applies the
+> lifecycle-close exception; the bash path applies it for every closer and
+> CEL harness dispatch does not (see
+> [Lifecycle close](#lifecycle-close-pull_request_targetclosed)).
 
 ## Fail-closed behavior
 
@@ -208,7 +283,7 @@ rationale.
 **Current compatibility behavior:** GitHub authorizes an added-label event
 without applying the ordinary `actor.role` threshold. This existing behavior
 preserves bot-to-bot handoffs such as adding `ready-to-code` after triage
-completes, including handoffs from provider bots that are not Fullsend-
+completes, including handoffs from provider bots that are not fullsend-
 registered.
 
 **ADR 0107 target behavior:** When
@@ -225,12 +300,29 @@ lookup is not required. The platform gate MUST NOT inspect the label name or
 maintain an agent-role label allowlist; harness/CEL routing owns that mapping
 and may further narrow the dispatch.
 
+**Jira:** A Jira `label_changed` event with `label.action: added` is
+authorized the same way, regardless of `actor.role`, because Jira requires
+the Edit Issues permission to change an issue's labels. This applies only
+when the repository has a `jira` provider entry whose `labels` rule is
+`jira_editors`, the default once the entry is present
+([ADR 0153](../../../ADRs/0153-authorize-jira-poll-actors-without-project-administration.md)).
+It is often broader than Jira's Developers role. A repository with no `jira`
+entry, or one that sets `labels: allowlist` or `labels: project_roles`, does
+not get the exception: those label events take the ordinary per-harness
+threshold against the role resolved from the project role roster or the
+lists. The poller's own
+account's events are classified as bot events and dropped before
+authorization.
+
 ### Bot-submitted reviews (GitHub)
 
-**Current compatibility behavior:** Until the resolver is implemented,
-`fullsend dispatch` continues to authorize a GitHub `review_submitted` event
-from a bot without requiring a collaborator permission or `actor.bot_role`.
-This existing exception is not evidence that the bot identity was resolved.
+**Current compatibility behavior:** With `gha-event` input, `fullsend
+dispatch` resolves the bot first, so the target behavior below applies. For
+events that carry no lookup result (`actor.role_verified` unset, such as
+`json` input), `fullsend dispatch` still authorizes a GitHub
+`review_submitted` event from a bot without requiring a collaborator
+permission or `actor.bot_role`. This compatibility exception is not evidence
+that the bot identity was resolved.
 
 **ADR 0107 target behavior:** After the resolver is implemented, a GitHub
 review event is authorized only when the provider classifies the actor as a
@@ -243,9 +335,17 @@ role and review state are accepted.
 The `pull_request_target.closed` event that triggers the retro stage is
 intentionally ungated: any closer may trigger read-only lifecycle
 accounting. The retro agent performs only observation work and does not
-mutate repository state. This exception is currently implemented in
-the bash dispatch path; the Go `IsAuthorized()` path has no special
-handling for closed transitions and applies the standard `write+` gate.
+mutate repository state. This exception is implemented in the bash
+dispatch path and, on GitHub, by `fullsend dispatch --route retro`
+(`IsLifecycleCloseAuthorized()` in `harnessdispatch`), which admits a
+`pull_request_target` close, merged or not, whoever closed it, for the
+retro role only. Any pull request author can close their own pull request,
+so no other harness role gets the exception. The route applies it only when
+routing retro, keyed on the resolved harness `role: retro`; when the harness
+cannot be loaded, it is keyed on the routed agent's own role (the Retro job
+mints the retro role either way). CEL harness dispatch has no
+special handling for closed transitions: the retro harness role resolves to
+the `write` threshold there.
 
 ### Schedule and manual dispatch
 
@@ -282,7 +382,7 @@ fields but cannot expand it.
 only its canonical entity with `event == null`, including after consuming an
 initial event. Both paths require eligible entity sources and effective
 platform policy permitting eventless evaluation. They are authorized only when
-the caller has trusted Fullsend-controlled invocation provenance: a verified,
+the caller has trusted fullsend-controlled invocation provenance: a verified,
 non-user-assertable platform execution identity bound to the invocation and its
 target, such as an attested workflow/job identity or installation credential.
 Neither the actor of an earlier event nor an authenticated wake peer supplies
@@ -292,16 +392,16 @@ Wildcard eligibility (`*` or `all`) requires the same explicit platform-level
 justification as any other wildcard allowlist in this contract.
 
 Each eventless entity evaluation's audit record MUST identify the verified
-Fullsend invocation identity, target repository, effective policy, harness
+fullsend invocation identity, target repository, effective policy, harness
 revision, canonical entity, and every retained action-indicating element and
 its actor. Those element actors describe evaluated entity history, not the
 evaluation's initiator. An event-bearing child cycle identifies its verified
 event actor; the actor of an earlier event is not attributed as the initiator
 of a later eventless cycle in the same containing run.
 
-Authorization of the Fullsend invocation origin does not authorize entity
+Authorization of the fullsend invocation origin does not authorize entity
 content. For each evaluated harness, before evaluating its CEL predicate,
-Fullsend MUST enumerate a platform-defined closed superset of
+fullsend MUST enumerate a platform-defined closed superset of
 action-indicating elements for the entity kind. These are actor-originated
 entity-history elements whose content or state could be treated as a request
 for a stage to run; the superset includes issue or change-proposal bodies,
@@ -331,10 +431,10 @@ harness's configured identity and permissions.
 
 ## Model-bound actor-attributed data admission
 
-The model-bound gate applies to every source-system record that Fullsend may
+The model-bound gate applies to every source-system record that fullsend may
 expose to a model, regardless of whether the record arrived in an event, was
 found by polling or snapshotting, or was read through a proactive or
-Fullsend-controlled API. Fullsend MUST establish the record's current actor
+fullsend-controlled API. Fullsend MUST establish the record's current actor
 attribution through the source system and resolve that actor's current
 authorization against the applicable observation or mutation threshold. If
 attribution or authorization cannot be established, or the actor does not meet
@@ -356,7 +456,7 @@ again immediately before sandbox initialization, and again immediately before
 first model exposure. If sandbox initialization and first exposure are
 contiguous, one fresh check MAY serve both. Non-event retrieval paths MUST
 perform the equivalent checks after retrieval admission. A
-Fullsend-controlled capability invoked after sandbox initialization MUST
+fullsend-controlled capability invoked after sandbox initialization MUST
 resolve authorization immediately before releasing each result to the model.
 That release check is the mid-run equivalent of the sandbox checkpoints.
 
@@ -383,7 +483,7 @@ used for dispatch gating:
 evidence of current authority. Event-backed authorization must be derived from
 the forge's permission model at event time, not from cached or inferred
 relationships. Fullsend-originated eventless evaluation must instead be
-authorized from trusted Fullsend-controlled invocation provenance for poll
+authorized from trusted fullsend-controlled invocation provenance for poll
 enumeration or bound rechecks. Action-indicating elements are separately gated
 by current actor permission; historical actors and relationship fields must not
 serve as authorization evidence.
@@ -392,7 +492,7 @@ serve as authorization evidence.
 
 Authorization is enforced as a **platform-level gate** before CEL trigger
 evaluation. Event-backed dispatch uses the normalized event actor;
-Fullsend-originated eventless evaluation uses trusted invocation provenance to
+fullsend-originated eventless evaluation uses trusted invocation provenance to
 authorize evaluation, then independently filters action-indicating elements by
 current actor permission before CEL.
 
@@ -424,8 +524,10 @@ may **never weaken** the platform authorization gate. On the event-backed path,
 an event that fails authorization never reaches CEL evaluation.
 
 This separation is enforced architecturally: on the event-backed path,
-`IsAuthorized()` runs before `MatchHarnesses()` in the dispatch core. On the
-Fullsend-originated eventless path, the trusted-origin gate runs before poll
+`IsEventAuthorized()` runs before harness enumeration in the dispatch core, and
+`FilterAuthorizedHarnesses()` removes each harness whose role threshold the
+actor does not meet before `MatchHarnesses()` evaluates CEL. On the
+fullsend-originated eventless path, the trusted-origin gate runs before poll
 enumeration or bound-entity resolution and CEL evaluation. For each eligible
 harness, the platform removes unauthorized action-indicating elements using
 that harness's stage threshold before its CEL predicate runs, and `event`
@@ -441,8 +543,11 @@ authorization boundary. A repository can disable a stage entirely but
 cannot make it available to unauthorized users.
 
 A repository can add permission sources through the `authorization`
-field (today only `owners_file`). These sources extend the
-`has_repo_permission` helper and the Go `IsAuthorized` check; they do not
+field (`owners_file`, and `jira` for Jira events; see
+[ADR 0153](../../../ADRs/0153-authorize-jira-poll-actors-without-project-administration.md)).
+These sources extend the
+`has_repo_permission` helper and the Go `IsEventAuthorized` gate and
+per-harness filter; they do not
 bypass the gate or change the thresholds.
 
 ## Versioning

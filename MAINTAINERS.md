@@ -1,7 +1,7 @@
 # Becoming a Maintainer
 
 Maintainers have merge and approval rights on this repository. They are
-members of the [@fullsend-ai/core](https://github.com/orgs/fullsend-ai/teams/core)
+members of the [@fullsend-ai/maintainers](https://github.com/orgs/fullsend-ai/teams/maintainers)
 team referenced in [CODEOWNERS](CODEOWNERS).
 
 Maintainer is the final role on the [contributor ladder](LADDER.md).
@@ -26,15 +26,21 @@ Maintainers carry additional responsibilities:
 
 ## Eligibility
 
-You should have a demonstrated track record of contributions to this
-project — authored PRs that were reviewed and merged, substantive PR
-reviews, or both. Drive-by fixes are appreciated but do not on their
-own establish the familiarity needed for a maintainer role.
+You should have a demonstrated track record of contributions — merged
+PRs, substantive PR reviews, or both — in
+[this repository](https://github.com/fullsend-ai/fullsend) or other
+public repositories of the
+[fullsend-ai](https://github.com/fullsend-ai) organization. At least
+one merged change or substantive review must be in this repository.
+Drive-by fixes are appreciated but do not on their own establish the
+familiarity needed for a maintainer role.
 
 ## Process
 
-1. **File an issue** titled "Maintainer nomination: \<your GitHub
-   handle\>". In the issue, link to merged PRs you have authored or
+1. **File a nomination issue** using the
+   [Maintainer Nomination](https://github.com/fullsend-ai/org/issues/new?template=maintainer-request.yml)
+   template in [fullsend-ai/org](https://github.com/fullsend-ai/org).
+   In the issue, link to merged PRs you have authored or
    substantive reviews you have provided that demonstrate your
    familiarity with the project.
 2. **Current maintainers discuss.** The maintainers will review your
@@ -43,7 +49,7 @@ own establish the familiarity needed for a maintainer role.
    maintainer team.
 3. **Decision within one week.** A maintainer will follow up on the
    issue with the outcome. If approved, you will be added to the
-   `@fullsend-ai/core` team and gain merge permissions.
+   `@fullsend-ai/maintainers` team and gain merge permissions.
 
 ## Time commitment
 
@@ -64,6 +70,6 @@ maintainer coordination — but that infrastructure is not yet in place.
 ## Stepping down
 
 If you no longer wish to serve as a maintainer, open an issue or let an
-existing maintainer know. You will be removed from the `@fullsend-ai/core`
+existing maintainer know. You will be removed from the `@fullsend-ai/maintainers`
 team. Stepping down is normal and carries no stigma — contributions are
 always welcome regardless of maintainer status.

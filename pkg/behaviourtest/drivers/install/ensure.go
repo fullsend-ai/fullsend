@@ -192,6 +192,10 @@ type repoEnsurer struct {
 	// Unlike ensured, ReleaseRepo does not clear it (see ensurer).
 	// Lazily initialised under mu.
 	wifProviders map[string]string
+	// provisioning holds one channel per org/repo whose inference
+	// provision and post-provision poll is in flight; it is closed when
+	// that attempt ends. Lazily initialised under mu.
+	provisioning map[string]chan struct{}
 	verifiedOrgs map[string]struct{} // keyed by org; org-level actor access already checked
 	inflight     singleflight.Group
 }
@@ -697,8 +701,9 @@ func isGitHubSetupRepoInfo404(err error) bool {
 // resolveWIFProvider returns the inference WIF provider for target. A
 // cached value is returned without any CLI call. On a miss it reads
 // "inference status"; only when that is not healthy does it run
-// "inference provision" (then status again), holding provisionGate so at
-// most one provision runs in the process at a time.
+// "inference provision", holding provisionGate only for the provision so
+// at most one provision runs in the process at a time, then re-polls
+// status after releasing the gate.
 func (e *repoEnsurer) resolveWIFProvider(ctx context.Context, target, project string) (string, error) {
 	e.mu.Lock()
 	cached, ok := e.wifProviders[target]
@@ -722,17 +727,76 @@ func (e *repoEnsurer) resolveWIFProvider(ctx context.Context, target, project st
 }
 
 // provisionWIFProvider runs "inference provision" for target while
-// holding provisionGate. The cache is re-checked once the gate is held,
-// and a successful result is cached before the gate is released, so a
-// caller that waited behind a provision for the same name reuses it.
+// holding provisionGate, then releases the gate and polls "inference
+// status" until the provider is healthy. A concurrent caller for the same
+// name waits for the in-flight provision and poll and reuses its cached
+// result (or runs its own if that one failed), and the cache is re-checked
+// once the gate is held, so a caller that waited behind a finished
+// provision for the same name reuses it.
 func (e *repoEnsurer) provisionWIFProvider(ctx context.Context, target, project string) (string, error) {
-	if err := ctx.Err(); err != nil {
-		return "", fmt.Errorf("waiting to provision inference for %s: %w", target, err)
+	for {
+		if err := ctx.Err(); err != nil {
+			return "", fmt.Errorf("waiting to provision inference for %s: %w", target, err)
+		}
+		e.mu.Lock()
+		if cached, ok := e.wifProviders[target]; ok {
+			e.mu.Unlock()
+			return cached, nil
+		}
+		running, busy := e.provisioning[target]
+		if !busy {
+			if e.provisioning == nil {
+				e.provisioning = make(map[string]chan struct{})
+			}
+			done := make(chan struct{})
+			e.provisioning[target] = done
+			e.mu.Unlock()
+			defer func() {
+				e.mu.Lock()
+				delete(e.provisioning, target)
+				e.mu.Unlock()
+				close(done)
+			}()
+			return e.provisionAndWait(ctx, target, project)
+		}
+		e.mu.Unlock()
+		select {
+		case <-running:
+		case <-ctx.Done():
+			return "", fmt.Errorf("waiting to provision inference for %s: %w", target, ctx.Err())
+		}
 	}
+}
+
+// provisionAndWait is provisionWIFProvider's body for one in-flight
+// provision of target.
+func (e *repoEnsurer) provisionAndWait(ctx context.Context, target, project string) (string, error) {
+	cached, ok, err := e.provisionUnderGate(ctx, target, project)
+	if err != nil {
+		return "", err
+	}
+	if ok {
+		return cached, nil
+	}
+	wifProvider, err := common.WaitInferenceHealthy(ctx, e.binary, e.token, target, project, e.runCLI, e.logf)
+	if err != nil {
+		return "", err
+	}
+	e.cacheWIFProvider(target, wifProvider)
+	return wifProvider, nil
+}
+
+// provisionUnderGate holds provisionGate while it re-checks the cache and,
+// on a miss, runs "inference provision". It returns the cached provider
+// with ok=true on a hit. The gate is released on every path, including a
+// panic, before the caller polls status: the gate guards IAM writes, and a
+// slow-to-propagate provider must not hold up other slots' provisions for
+// the whole backoff.
+func (e *repoEnsurer) provisionUnderGate(ctx context.Context, target, project string) (string, bool, error) {
 	select {
 	case provisionGate <- struct{}{}:
 	case <-ctx.Done():
-		return "", fmt.Errorf("waiting to provision inference for %s: %w", target, ctx.Err())
+		return "", false, fmt.Errorf("waiting to provision inference for %s: %w", target, ctx.Err())
 	}
 	defer func() { <-provisionGate }()
 
@@ -740,14 +804,12 @@ func (e *repoEnsurer) provisionWIFProvider(ctx context.Context, target, project 
 	cached, ok := e.wifProviders[target]
 	e.mu.Unlock()
 	if ok {
-		return cached, nil
+		return cached, true, nil
 	}
-	wifProvider, err := common.ProvisionInference(e.binary, e.token, target, project, e.runCLI, e.logf)
-	if err != nil {
-		return "", err
+	if err := common.RunInferenceProvision(e.binary, e.token, target, project, e.runCLI, e.logf); err != nil {
+		return "", false, err
 	}
-	e.cacheWIFProvider(target, wifProvider)
-	return wifProvider, nil
+	return "", false, nil
 }
 
 func (e *repoEnsurer) cacheWIFProvider(target, wifProvider string) {

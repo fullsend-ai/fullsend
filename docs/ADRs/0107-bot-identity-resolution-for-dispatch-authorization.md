@@ -19,6 +19,11 @@ Date: 2026-09-27
 
 Accepted
 
+[ADR 0151](0151-harness-human-role-minimums.md) requires a human labeler to
+meet the selected harness's effective `human_min_role` for target CEL dispatch;
+the accepted label mutation alone no longer bypasses a stronger human minimum.
+This ADR's provider-classified bot label grant and registered-bot gate remain.
+
 Extends [ADR 0054](0054-require-authorization-on-all-agent-dispatch-paths.md)
 and defines the bot behavior to be added to the existing v1 contracts. This ADR
 explicitly permits the deferred migration from legacy bot exceptions to

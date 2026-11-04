@@ -438,7 +438,6 @@ func TestMergeManaged_AllFieldsAndAgentClone(t *testing.T) {
 	parent := &perRepoConfig{
 		Version:     "1",
 		Forge:       "github",
-		Tracker:     "jira",
 		Runtime:     "claude",
 		MintURL:     "https://parent.example.com",
 		KillSwitch:  boolPtr(true),
@@ -456,9 +455,9 @@ func TestMergeManaged_AllFieldsAndAgentClone(t *testing.T) {
 			},
 		}},
 		AllowedRemoteResources: []string{"https://parent.example.com/"},
-		CreateIssues: &CreateIssuesConfig{
-			AllowTargets: AllowTargets{Orgs: []string{"acme"}, Repos: []string{"acme/app"}},
-		},
+		Tracker: &TrackingConfig{GitHub: &GitHubTrackingConfig{
+			AllowedTargets: GitHubAllowedTargets{Orgs: []string{"acme"}, Repos: []string{"acme/app"}},
+		}},
 		Authorization: []AuthorizationProvider{{Provider: "owners_file"}},
 		Notifications: &StatusNotificationConfig{Comment: CommentNotificationConfig{Start: "enabled"}},
 		Inference: &PerRepoInferenceConfig{
@@ -474,7 +473,6 @@ func TestMergeManaged_AllFieldsAndAgentClone(t *testing.T) {
 	child := &perRepoConfig{
 		Version:     "1",
 		Forge:       "gitlab",
-		Tracker:     "gitlab",
 		Runtime:     "pi",
 		MintURL:     "https://child.example.com",
 		KillSwitch:  boolPtr(false),
@@ -489,9 +487,9 @@ func TestMergeManaged_AllFieldsAndAgentClone(t *testing.T) {
 			},
 		}},
 		AllowedRemoteResources: []string{"https://child.example.com/"},
-		CreateIssues: &CreateIssuesConfig{
-			AllowTargets: AllowTargets{Repos: []string{"acme/other"}},
-		},
+		Tracker: &TrackingConfig{GitLab: &GitLabTrackingConfig{
+			AllowedTargets: GitLabAllowedTargets{Repos: []string{"acme/other"}},
+		}},
 		Authorization: []AuthorizationProvider{{Provider: "owners_file"}},
 		Notifications: &StatusNotificationConfig{Comment: CommentNotificationConfig{Start: "disabled"}},
 		Inference: &PerRepoInferenceConfig{
@@ -516,8 +514,11 @@ func TestMergeManaged_AllFieldsAndAgentClone(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(body), "https://child.example.com/")
 	assert.Contains(t, string(body), "https://parent.example.com/")
-	require.NotNil(t, merged.IssueCreationConfig())
-	assert.Equal(t, []string{"acme/other"}, merged.IssueCreationConfig().AllowTargets.Repos)
+	require.NotNil(t, merged.IssueTracking())
+	assert.Nil(t, merged.IssueTracking().GitHub, "the child's tracking replaces the parent's whole mapping")
+	assert.Equal(t, []string{"acme/other"}, merged.IssueTracking().GitLab.AllowedTargets.Repos)
+	merged.IssueTracking().GitLab.AllowedTargets.Repos[0] = "mutated/repo"
+	assert.Equal(t, []string{"acme/other"}, child.Tracker.GitLab.AllowedTargets.Repos, "the merge copies the child's tracking")
 	assert.True(t, merged.IsOwnersFileAuthEnabled())
 	require.NotNil(t, merged.StatusNotifications())
 	assert.Equal(t, "disabled", merged.StatusNotifications().Comment.Start)
@@ -569,23 +570,57 @@ func TestManagedConfig_MarshalOmitsUnset(t *testing.T) {
 	assert.False(t, strings.Contains(string(encoded), "config:"), "unset overlay must be omitted")
 }
 
-func TestManagedConfig_WithCreateIssuesRepos(t *testing.T) {
+func TestManagedConfig_WithIssueTracking(t *testing.T) {
 	var base ManagedConfig
 	require.NoError(t, yaml.Unmarshal([]byte("keep_history: false\n"), &base))
 
-	withIssues := base.WithCreateIssuesRepos([]string{"fullsend-ai/fullsend"})
+	tracking := &TrackingConfig{GitHub: &GitHubTrackingConfig{AllowedTargets: GitHubAllowedTargets{Repos: []string{"fullsend-ai/fullsend"}}}}
+	withIssues := base.WithIssueTracking(tracking)
 	require.True(t, withIssues.IsSet())
-	ci := withIssues.Writer().IssueCreationConfig()
-	require.NotNil(t, ci)
-	assert.Equal(t, []string{"fullsend-ai/fullsend"}, ci.AllowTargets.Repos)
+	got := withIssues.Writer().IssueTracking()
+	require.NotNil(t, got)
+	assert.Equal(t, []string{"fullsend-ai/fullsend"}, got.GitHub.AllowedTargets.Repos)
 	assert.False(t, withIssues.Writer().ConfigKeepHistory(), "existing values are kept")
-	assert.Nil(t, base.Writer().IssueCreationConfig(), "the receiver is not modified")
+	assert.Nil(t, base.Writer().IssueTracking(), "the receiver is not modified")
+	tracking.GitHub.AllowedTargets.Repos[0] = "mutated/repo"
+	assert.Equal(t, []string{"fullsend-ai/fullsend"}, got.GitHub.AllowedTargets.Repos, "the argument is copied")
 
 	// An unset receiver yields a set, otherwise-empty configuration.
-	fromZero := ManagedConfig{}.WithCreateIssuesRepos([]string{"fullsend-ai/fullsend"})
+	fromZero := ManagedConfig{}.WithIssueTracking(DefaultIssueTracking(TrackingProviderGitLab))
 	require.True(t, fromZero.IsSet())
-	assert.NotNil(t, fromZero.Writer().IssueCreationConfig())
+	require.NotNil(t, fromZero.Writer().IssueTracking())
+	assert.Equal(t, TrackingProviderGitLab, fromZero.Writer().IssueTracking().Provider())
 	assert.Equal(t, PerRepoDefaultRoles(), fromZero.Writer().ConfigRoles(), "roles are not declared")
+	encoded, err := yaml.Marshal(fromZero)
+	require.NoError(t, err)
+	assert.Equal(t, "tracker:\n    gitlab:\n        allowed_targets: {}\n", string(encoded))
+}
+
+func TestManagedConfig_LegacyCreateIssuesRejected(t *testing.T) {
+	var cfg ManagedConfig
+	err := yaml.Unmarshal([]byte("create_issues:\n  allow_targets:\n    orgs: [acme]\n"), &cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `unknown field "create_issues"`)
+	assert.Contains(t, err.Error(), "tracker.<provider>.allowed_targets", "the error names the migration target")
+}
+
+func TestManagedConfig_LegacyScalarTrackerRejected(t *testing.T) {
+	var cfg ManagedConfig
+	err := yaml.Unmarshal([]byte("tracker: jira\n"), &cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "scalar form")
+	assert.Contains(t, err.Error(), "jira: {}", "the error names the migration target")
+}
+
+func TestManagedConfig_TrackerStrictDecode(t *testing.T) {
+	var cfg ManagedConfig
+	err := yaml.Unmarshal([]byte("tracker:\n  github:\n    allow_targets:\n      orgs: [acme]\n"), &cfg)
+	require.Error(t, err, "a misspelled nested key is rejected")
+
+	require.NoError(t, yaml.Unmarshal([]byte("tracker:\n  github:\n    allowed_targets:\n      orgs: [acme]\n  jira:\n    allowed_targets:\n      projects: [PROJ]\n"), &cfg))
+	err = ValidateManagedLayer(cfg.Writer())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "at most one provider mapping")
 }
 
 func TestManagedConfig_ExplicitAllowedRemoteResources(t *testing.T) {

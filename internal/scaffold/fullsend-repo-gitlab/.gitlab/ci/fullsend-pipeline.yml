@@ -13,9 +13,11 @@ spec:
       default: ''
     resource_key:
       default: ''
-      # Matches resourceKey()'s "issue-<iid>"/"mr-<iid>" format or the
-      # empty default — see internal/poll/dispatch.go (resourceKey).
-      regex: '^((issue|mr)-[0-9]+)?$'
+      # Matches resourceKey()'s "issue-<iid>"/"mr-<iid>" format, a Jira
+      # work item's "jira-<KEY>" (DispatchJiraEvent), or the empty
+      # default — see internal/poll/dispatch.go (resourceKey) and
+      # internal/poll/jira_dispatch.go.
+      regex: '^((issue|mr)-[0-9]+|jira-[A-Z][A-Z0-9_]+-[1-9][0-9]*)?$'
     is_fork:
       default: ''
     originating_url:
@@ -72,9 +74,7 @@ spec:
 #
 # A version-marker comment is injected at install/upgrade time so
 # `repos status` and drift detection can identify the installed
-# scaffold version. Repos enrolled before #7707 may still carry that
-# marker in the obsolete fullsend-dispatch.yml stub; converge
-# migrates it here.
+# scaffold version.
 #
 # The workflow: block lives in the root .gitlab-ci.yml because GitLab
 # does not merge multiple workflow: definitions across includes.

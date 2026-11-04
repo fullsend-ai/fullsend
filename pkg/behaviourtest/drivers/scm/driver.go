@@ -23,6 +23,9 @@ type Driver interface {
 	AddIssueLabels(ctx context.Context, owner, repo string, number int, labels ...string) error
 	AddComment(ctx context.Context, owner, repo string, number int, body string) (*forge.IssueComment, error)
 	GetIssue(ctx context.Context, owner, repo string, number int) (*forge.Issue, error)
+	// ListOpenIssues returns the repository's open issues (pull requests
+	// excluded), filtered to those carrying every given label.
+	ListOpenIssues(ctx context.Context, owner, repo string, labels ...string) ([]forge.Issue, error)
 	GetFileContent(ctx context.Context, owner, repo, path string) ([]byte, error)
 	// GetFileContentAtRef retrieves the content of a file at a specific
 	// ref (commit SHA, branch, or tag), rather than GetFileContent's
@@ -98,4 +101,11 @@ type Driver interface {
 	// list, so a force-push or rebase of the head branch can replace it;
 	// it makes no promise about the commits the proposal was opened with.
 	ListPullRequestCommits(ctx context.Context, owner, repo string, number int) ([]string, error)
+}
+
+// PullRequestHeadSHAReader is an optional extension of Driver that reads a
+// change proposal's current head commit SHA. It is separate so external
+// Driver implementations keep compiling.
+type PullRequestHeadSHAReader interface {
+	GetPullRequestHeadSHA(ctx context.Context, owner, repo string, number int) (string, error)
 }

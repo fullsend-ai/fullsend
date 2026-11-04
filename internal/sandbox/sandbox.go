@@ -353,6 +353,28 @@ var gatewayDefaultFalseKeys = map[string]bool{
 	"allow_uninspected_credentials":   true,
 }
 
+// normalizeLocalBinaries rewrites, in place, the entries of the top-level
+// `binaries` list in the local profile from the object form
+// `{path: <string>}` to the scalar the gateway exports (OpenShell 0.1.2; see
+// #8754). An entry is rewritten only when it is an object holding exactly the
+// key `path` with a string value, so any other object shape still fails the
+// comparison. The gateway export is canonical and is never normalized.
+func normalizeLocalBinaries(doc map[string]any) {
+	list, ok := doc["binaries"].([]any)
+	if !ok {
+		return
+	}
+	for i, entry := range list {
+		obj, ok := entry.(map[string]any)
+		if !ok || len(obj) != 1 {
+			continue
+		}
+		if path, ok := obj["path"].(string); ok {
+			list[i] = path
+		}
+	}
+}
+
 // profileContentEqual reports whether the gateway's export of a profile
 // (exported) still carries the content of the local profile YAML document
 // (local). It is driven by the local file, not by knowledge of what OpenShell
@@ -374,6 +396,9 @@ var gatewayDefaultFalseKeys = map[string]bool{
 // a non-zero default; a new non-zero default OpenShell adds fails closed
 // rather than hiding a stale value.
 //
+// Before comparing, local `binaries` entries written as `{path: X}` are
+// rewritten to the scalar form the export uses (normalizeLocalBinaries).
+//
 // Unparseable input is an error, not a mismatch.
 func profileContentEqual(local, exported []byte) (bool, error) {
 	var localDoc map[string]any
@@ -389,6 +414,9 @@ func profileContentEqual(local, exported []byte) (bool, error) {
 	// file happens to carry a stale copy.
 	delete(localDoc, "resource_version")
 	delete(exportedDoc, "resource_version")
+
+	// The local binaries input form compares as the scalar the export writes.
+	normalizeLocalBinaries(localDoc)
 
 	// Top-level fields the export fills in with a non-zero default when the
 	// local file omits them. Only the exact default value is tolerated.
@@ -1157,14 +1185,18 @@ func effectiveReadyTimeout(override time.Duration) time.Duration {
 // It retries up to DefaultMaxCreateAttempts times with exponential backoff,
 // deleting the failed sandbox between attempts.
 func Create(name string, providers []string, image, policy string) error {
-	return CreateWithRetry(name, providers, image, policy, DefaultMaxCreateAttempts, 0)
+	return CreateWithRetry(name, providers, image, policy, DefaultMaxCreateAttempts, 0, false)
 }
 
 // CreateWithRetry creates a sandbox, retrying up to maxAttempts times with
 // exponential backoff on failure. Between attempts the failed sandbox is
 // deleted to avoid name conflicts. If readyTimeoutOverride is positive, it
 // overrides the default ready timeout.
-func CreateWithRetry(name string, providers []string, image, policy string, maxAttempts int, readyTimeoutOverride time.Duration) error {
+//
+// If keep is true (--keep-sandbox), a failed attempt is neither deleted nor
+// retried: retrying would require deleting the sandbox under the same name,
+// which destroys the state the caller asked to keep for inspection.
+func CreateWithRetry(name string, providers []string, image, policy string, maxAttempts int, readyTimeoutOverride time.Duration, keep bool) error {
 	if maxAttempts < 1 {
 		return fmt.Errorf("maxAttempts must be >= 1, got %d", maxAttempts)
 	}
@@ -1176,6 +1208,11 @@ func CreateWithRetry(name string, providers []string, image, policy string, maxA
 		lastErr = createOnce(name, providers, image, policy, timeout)
 		if lastErr == nil {
 			return nil
+		}
+
+		// Keep the failed sandbox in place for inspection and stop.
+		if keep {
+			return fmt.Errorf("sandbox creation failed (sandbox kept, not retried): %w", lastErr)
 		}
 
 		// A global policy source is a stable mismatch — retrying with a
@@ -1358,18 +1395,18 @@ func createOnce(name string, providers []string, image, policy string, timeout t
 			// Detect terminal phases and fail immediately instead of
 			// polling through the full timeout.
 			if phase := terminalSandboxPhase(lastOutput); phase != "" {
-				return fmt.Errorf("sandbox %q entered terminal phase %q (will not become Ready)\ncreate output: %s\nstdout: %s\nstderr: %s",
-					name, phase, createOutput, lastOutput, lastStderr)
+				// The sandbox still exists here, so its logs are still
+				// available; collect them before CreateWithRetry deletes it.
+				supervisorLogs, gatewayLogs, containerLogs := collectCreateFailureLogs(name)
+				return fmt.Errorf("sandbox %q entered terminal phase %q (will not become Ready)\ncreate output: %s\nstdout: %s\nstderr: %s\nsupervisor logs: %s\ngateway logs: %s\ncontainer logs: %s",
+					name, phase, createOutput, lastOutput, lastStderr, supervisorLogs, gatewayLogs, containerLogs)
 			}
 		}
 		time.Sleep(readyPoll)
 	}
 
 	// Collect sandbox logs to help diagnose the failure.
-	supervisorLogs, _ := CollectLogs(name, "supervisor")
-	gatewayLogs, _ := CollectLogs(name, "gateway")
-
-	containerLogs := collectPodmanLogs(name)
+	supervisorLogs, gatewayLogs, containerLogs := collectCreateFailureLogs(name)
 
 	if lastPolicyErr != nil {
 		return fmt.Errorf("sandbox %q policy verification failed after %s: %w\ncreate output: %s\nstdout: %s\nstderr: %s\nsupervisor logs: %s\ngateway logs: %s\ncontainer logs: %s",
@@ -1378,6 +1415,17 @@ func createOnce(name string, providers []string, image, policy string, timeout t
 
 	return fmt.Errorf("sandbox %q not ready after %s\ncreate output: %s\nstdout: %s\nstderr: %s\nsupervisor logs: %s\ngateway logs: %s\ncontainer logs: %s",
 		name, timeout, createOutput, lastOutput, lastStderr, supervisorLogs, gatewayLogs, containerLogs)
+}
+
+// collectCreateFailureLogs gathers the supervisor, gateway and container logs
+// of a sandbox whose creation failed, for inclusion in the creation error.
+// Collection errors are ignored: a log source with nothing to report must not
+// mask the creation failure itself.
+func collectCreateFailureLogs(name string) (supervisorLogs, gatewayLogs, containerLogs string) {
+	supervisorLogs, _ = CollectLogs(name, "supervisor")
+	gatewayLogs, _ = CollectLogs(name, "gateway")
+	containerLogs = collectPodmanLogs(name)
+	return supervisorLogs, gatewayLogs, containerLogs
 }
 
 // errPolicyGlobal is returned by verifyPolicy when the sandbox's policy

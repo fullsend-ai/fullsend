@@ -22,8 +22,8 @@ BASE_URL="https://github.com/sheeki03/tirith/releases/download/v${VERSION}"
 # --- Bootstrap cosign if not already available ---
 # Pinned version + SHA256 so this script is self-contained inside the
 # Renovate container, which does not ship cosign.
-COSIGN_VERSION=3.1.3
-COSIGN_SHA256=4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71
+COSIGN_VERSION=3.1.4
+COSIGN_SHA256=424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa
 
 WORKDIR="$(mktemp -d)"
 trap 'rm -rf "${WORKDIR}"' EXIT

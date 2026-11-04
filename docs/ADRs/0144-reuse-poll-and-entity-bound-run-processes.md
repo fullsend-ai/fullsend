@@ -29,6 +29,23 @@ Partially supersedes [ADR 0063](0063-polling-based-work-discovery.md):
 `fullsend poll` may remain resident instead of always exiting after one cycle.
 Its per-repository scope and driver architecture remain current.
 
+[ADR 0147](0147-evaluate-entity-cel-over-selectively-acquired-data.md)
+partially supersedes the complete-entity due-check and full-history audit
+requirements below. [ADR 0148](0148-reuse-verified-actor-roles-for-entity-cel.md)
+separately permits bounded role reuse for entity CEL in place of mandatory
+per-check actor-role refresh. The lifecycle, due-check scheduling, current
+entity resolution, and fresh model-bound authorization rules remain current.
+
+[ADR 0151](0151-harness-human-role-minimums.md) makes the selected harness's
+effective `human_min_role` the platform-enforced threshold for each cycle's
+event actor (when present), decision-relevant entity facts, and
+Fullsend-controlled model records. Eventless checks still require trusted
+Fullsend invocation provenance; model-bound actor checks remain fresh.
+
+[ADR 0149](0149-coalesce-entity-source-discovery-queries.md) decides the
+entity-source discovery-query strategy and requires a current local query
+match, as well as true CEL, before an entity-driven sandbox cycle.
+
 ## Context
 
 [ADR 0098](0098-entity-first-harness-evaluation.md) makes the current entity,

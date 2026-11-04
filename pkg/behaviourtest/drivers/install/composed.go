@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 
 	"golang.org/x/sync/singleflight"
@@ -103,6 +104,13 @@ type orgEnv struct {
 	mint    mintDriver
 	mintURL string
 	ensurer ensurer
+	// statusGroup and workflowHostRepos are what the org's mint was
+	// deployed with (--status-github-group, --workflow-host-repos);
+	// empty when the driver does not configure them. Leases carry them
+	// so the mint status steps check the mint actually serving the
+	// scenario.
+	statusGroup       string
+	workflowHostRepos []string
 }
 
 // orgSetupFunc deploys org's mint and returns its orgEnv. The shared
@@ -193,36 +201,68 @@ func newComposedDriver(pool PoolConfig, setup orgSetupFunc) (*composedDriver, er
 	}, nil
 }
 
-// orgMintFunc builds the mint driver for one org from that org's
-// credential. cleanup releases deploy-only material (PEM files, trace
-// headers) and is called once Install has returned.
-type orgMintFunc func(org string, cred orgCredential) (md mintDriver, cleanup func(), err error)
+// groupMintFunc builds the mint driver for one mint group from the
+// credential of the org whose lease triggered the deploy. cleanup
+// releases deploy-only material (PEM files, trace headers) and is
+// called once Install has returned.
+type groupMintFunc func(group mintGroup, cred orgCredential) (md mintDriver, cleanup func(), err error)
 
-// buildPoolDriver constructs the shared slot-leasing driver whose orgs
-// are set up by deploying newMint's mint and creating an ensurer bound
-// to the org's credential and mint URL, installing with setupOpts (and
-// the playback tracking-issue hook when setupOpts selects the playback
-// runtime). traces is the already started trace collector (if any): it
-// is attached to the returned driver, or stopped when construction
-// fails.
-func buildPoolDriver(pool PoolConfig, newMint orgMintFunc, setupOpts common.GitHubSetupOpts, traces traceStart) (Driver, error) {
+// buildPoolDriver constructs the shared slot-leasing driver. plan maps
+// each org to its mint group (nil serves every org from one mint); a
+// group's mint is newMint's, deployed on the first lease in any of the
+// group's orgs and shared by them (sharedMint), and torn down once at
+// Finalize. Each org gets its own ensurer bound to the org's credential
+// and its group's mint URL, installing with setupOpts (and the playback
+// tracking-issue hook when setupOpts selects the playback runtime).
+// traces is the already started trace collector (if any): it is
+// attached to the returned driver, or stopped when construction fails.
+func buildPoolDriver(pool PoolConfig, plan *mintPlan, newMint groupMintFunc, setupOpts common.GitHubSetupOpts, traces traceStart) (Driver, error) {
 	logf := poolLogf(pool)
+	if plan == nil {
+		plan = singleMintPlan(pool.Layout)
+	}
+	shared := make([]*sharedMint, len(plan.groups))
+	for i, group := range plan.groups {
+		shared[i] = &sharedMint{
+			deploy: func(ctx context.Context, cred orgCredential) (mintDriver, string, error) {
+				md, cleanup, err := newMint(group, cred)
+				if err != nil {
+					return nil, "", err
+				}
+				logf("[driver] deploying the mint of %s", group)
+				mintURL, err := md.Install(ctx)
+				if cleanup != nil {
+					cleanup()
+				}
+				if err != nil {
+					// A deploy that failed partway may still have created the
+					// mint; tear it down so a failed setup leaves nothing behind.
+					if tdErr := md.Teardown(context.WithoutCancel(ctx)); tdErr != nil {
+						logf("[driver] tearing down the failed mint deploy of %s: %v", group, tdErr)
+					}
+					return nil, "", fmt.Errorf("deploying mint: %w", err)
+				}
+				return md, mintURL, nil
+			},
+		}
+	}
+	var hostsOf [][]string
+	for _, group := range plan.groups {
+		var hosts []string
+		if group.workflowHostRepos != "" {
+			hosts = strings.Split(group.workflowHostRepos, ",")
+		}
+		hostsOf = append(hostsOf, hosts)
+	}
 	setup := func(ctx context.Context, org string, cred orgCredential) (*orgEnv, error) {
-		md, cleanup, err := newMint(org, cred)
+		gi, ok := plan.groupOf[org]
+		if !ok {
+			return nil, fmt.Errorf("org %s is not in any mint group", org)
+		}
+		md := &sharedMintRef{shared: shared[gi], cred: cred}
+		mintURL, err := md.Install(ctx)
 		if err != nil {
 			return nil, err
-		}
-		mintURL, err := md.Install(ctx, org)
-		if cleanup != nil {
-			cleanup()
-		}
-		if err != nil {
-			// A deploy that failed partway may still have created the
-			// mint; tear it down so a failed setup leaves nothing behind.
-			if tdErr := md.Teardown(context.WithoutCancel(ctx)); tdErr != nil {
-				logf("[driver] tearing down the failed mint deploy for %s: %v", org, tdErr)
-			}
-			return nil, fmt.Errorf("deploying mint: %w", err)
 		}
 
 		e2eCfg := e2etest.EnvConfig{
@@ -237,8 +277,14 @@ func buildPoolDriver(pool PoolConfig, newMint orgMintFunc, setupOpts common.GitH
 			}
 			return nil, err
 		}
-		logf("[driver] %s mint ready at %s", org, mintURL)
-		return &orgEnv{mint: md, mintURL: mintURL, ensurer: ens}, nil
+		logf("[driver] %s uses the mint of %s at %s", org, plan.groups[gi], mintURL)
+		return &orgEnv{
+			mint:              md,
+			mintURL:           mintURL,
+			ensurer:           ens,
+			statusGroup:       plan.statusGroup,
+			workflowHostRepos: hostsOf[gi],
+		}, nil
 	}
 
 	d, err := newComposedDriver(pool, setup)
@@ -393,6 +439,9 @@ func (d *composedDriver) provision(ctx context.Context, slot Slot) (_ RepoLease,
 		Token:   cred.token,
 		Client:  cred.client,
 		MintURL: env.mintURL,
+
+		MintStatusGroup:       env.statusGroup,
+		MintWorkflowHostRepos: env.workflowHostRepos,
 	}, env, nil
 }
 
@@ -497,7 +546,8 @@ func (d *composedDriver) release(ctx context.Context, slot Slot, env *orgEnv) {
 }
 
 // Finalize releases any outstanding leases (logging them and returning
-// an error), tears down every org's mint, logs the per-org quota
+// an error), releases every org's mint (each shared mint is torn down
+// once, by its last org), logs the per-org quota
 // diagnostics, and stops the trace collector last.
 func (d *composedDriver) Finalize(ctx context.Context) error {
 	// Refuse new allocations, then wait for those still provisioning so

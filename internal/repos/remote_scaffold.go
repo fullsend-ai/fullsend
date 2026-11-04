@@ -115,6 +115,7 @@ func fetchRemoteGitLabScaffold(ctx context.Context, client forge.Client,
 	controlTagYAML := scaffold.FormatRunnerTags(controlRunnerTags)
 	versionMarker := scaffold.FormatVersionMarker(resolvedSHA, manifestRef)
 	fullsendVersion := scaffold.ResolveFullsendVersion(resolvedSHA, manifestRef)
+	runnerImageTag := scaffold.ResolveRunnerImageTag(resolvedSHA, manifestRef)
 
 	var files scaffold.InstallFiles
 	// dispatcherRequired is set from the fetched pipeline wrapper: a ref
@@ -144,6 +145,10 @@ func fetchRemoteGitLabScaffold(ctx context.Context, client forge.Client,
 		// a literal __RUNNER_TAGS__ in generated CI.
 		rendered = strings.ReplaceAll(rendered, "__RUNNER_TAGS__", agentTagYAML)
 		rendered = strings.ReplaceAll(rendered, "__FULLSEND_VERSION__", fullsendVersion)
+		// Refs that predate the runner image placeholder hardcode the
+		// moving ":dev" image; RenderRunnerImageTag rewrites that too so
+		// the pinned release runs its own image, not main's.
+		rendered = scaffold.RenderRunnerImageTag(rendered, runnerImageTag)
 		if sp.outPath == fullsendPipelineInclude && versionMarker != "" {
 			rendered = scaffold.InsertAfterDocStart(rendered, versionMarker)
 		}

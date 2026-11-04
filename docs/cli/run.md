@@ -91,6 +91,9 @@ subagents: correctness → anthropic-vertex/claude-opus-4-6 (from frontmatter)
 subagents: docs-currency → google-vertex/gemini-3.8-flash (from subagents.docs-currency)
 ```
 
+On codex a delegating agent prints the run-level default and one line per persona with its own
+`subagents` entry; see [Codex › Child models](../runtimes/codex.md#child-models).
+
 A malformed `subagents` key or model reference is rejected by config validation, before the
 sandbox is created, like the other invalid overrides above. A key that names no discovered
 persona, or a model this run cannot serve, is caught slightly later — at Bootstrap, once the
@@ -119,6 +122,8 @@ depend on the process cwd.
 |------|-------------|
 | `metrics.json` | Behavioral metrics: tokens, cost, model, runtime, iterations |
 | `transcripts/` | Agent conversation transcripts |
+| `personas.json` | Persona manifest of the personas found in the staged skills (by the rules the `pi` and `codex` runtimes use to discover them), written every run; its path is exported as `FULLSEND_PERSONAS_FILE` to the pre-script, post-script and validation script (see [Configuring with Skills § The persona list file](../guides/user/customizing-with-skills.md#the-persona-list-file)) |
+| `skills/<index>/<name>/` | Per-run copies of skills that have per-file overrides, with the overrides applied (see [Overriding single files in a skill](../guides/user/customizing-with-skills.md#overriding-single-files-in-a-skill)) |
 | `claude-debug.log`, `pi-debug.log` or `codex-debug.log` | Debug log (when `--debug` is set) |
 
 ### metrics.json fields
@@ -132,6 +137,7 @@ depend on the process cwd.
 | `override_source` | Where `requested_model` came from (`--model flag`, `FULLSEND_MODEL`, `FULLSEND_PI_MODEL`, `FULLSEND_CODEX_MODEL`, `<config path> agents.<name>`, `harness`, `default`), suffixed `, remapped by <config path> models.aliases` when a per-repo alias override applied to it |
 | `runtime_source` | Where `requested_runtime` came from (`--runtime flag`, `FULLSEND_RUNTIME`, the config file path — suffixed ` agents.<name>` when the agent's entry decided — or `default (config not found)`) |
 | `total_cost_usd` | Total inference cost in USD, as reported by the runtime (raw floating-point aggregate across all iterations; no fullsend-side pricing-table fallback). See [Cost data contract](../guides/infrastructure/distributed-tracing.md#cost-data-contract) |
+| `token_usage` | Run-level token counts: `input`, `output`, `cache_creation`, `cache_read`, and `reasoning` (always serialized, `0` when none). Reasoning is separate from output for Codex and included in output for Claude and the pinned pi version. Counts can survive interruption even when reported cost is zero. Prefer per-iteration `run-telemetry.jsonl` for pricing; see [Computing dollar cost from token telemetry](../guides/infrastructure/distributed-tracing.md#computing-dollar-cost-from-token-telemetry). |
 | `num_turns` | Number of conversation turns |
 | `iterations` | Number of agent iterations run; an iteration killed at the budget is not retried (see [Budget and deadline](#budget-and-deadline)) |
 | `per_model_usage` | Per-model breakdown, present only when a runtime reports one (today: `pi` with the `Agent` tool enabled, `claude` when Claude Code's result carries `modelUsage`, and `codex` for an agent with registered sub-agent roles or a spawn in its stream). See below |
@@ -172,7 +178,8 @@ differences in the last bullet.
   sub-agent, which is what keeps the invariant true across a retry.
 - **What stays parent-only.** `num_turns` and `tool_calls` are read from the parent's stream and are
   not broken down or added to per model — a child's turns and tool calls are recorded in its own
-  session transcript (`transcripts/<agent>-sub<seq>-*.jsonl`) instead.
+  session transcript (`transcripts/<agent>-sub<seq>-*.jsonl`; on codex
+  `transcripts/<agent>-sub<seq>-<role>.jsonl`, see [Codex › At a glance](../runtimes/codex.md#at-a-glance)) instead.
 - A model spec of `unknown` is a pi usage record, or a codex child rollout, that carries no model
   at all; its usage is bucketed there rather than dropped. A dispatch rejected *before* a model was
   resolved writes no record, so it never reaches the breakdown.
@@ -196,7 +203,7 @@ on every runtime (claude, pi, codex, opencode):
 |---|---|
 | `FULLSEND_TIMEOUT_MINUTES` | The budget: the harness's `timeout_minutes`, or `30` when it sets none |
 | `FULLSEND_ITERATION_DEADLINE` | Unix time (seconds) at which the running iteration is killed |
-| `TRACEPARENT` | W3C trace context of this iteration's **agent** span (not the run-root span that pre/post scripts receive). Runtimes use it to join Fullsend traces. An inbound unsampled parent (`-00`) is preserved so runtime export stays suppressed. Empty when telemetry produced no valid span context. Reserved: an `env.sandbox` entry with this name is dropped. |
+| `TRACEPARENT` | W3C trace context of this iteration's **agent** span (not the run-root span that pre/post scripts receive). Runtimes use it to join fullsend traces. An inbound unsampled parent (`-00`) is preserved so runtime export stays suppressed. Empty when telemetry produced no valid span context. Reserved: an `env.sandbox` entry with this name is dropped. |
 
 **Example.** A probe that shows both, and what a kill looks like. The agent prints the variables
 with its own clock, then sleeps past the budget:
@@ -451,6 +458,17 @@ pre/post/validation child environments never receive it. Outside Actions the var
 derived from a local PAT — a caller may set it explicitly. `GH_TOKEN`, `GITHUB_TOKEN` and
 `PUSH_TOKEN` still receive the minted App identity.
 
+The runner itself also reads `GH_WORKFLOW_TOKEN` for one purpose besides provider credential
+expansion: before it creates the sandbox, on GitHub Actions, when the harness `image:` is on
+`ghcr.io`, it pulls the image with the token through Podman (a run-scoped auth file in a private
+temporary directory, removed after the pull), so the image can be a private package. Only the
+shipped code and fix workflows grant `packages: read`, so a private image works on code and fix
+harnesses; on other agents a private image is denied and sandbox creation fails. The package must also
+allow Actions access from the repository. If the pull fails, the runner logs a warning and the
+OpenShell gateway attempts its own unauthenticated pull, so public images keep working. For images
+on other registries the runner adds no credentials. See
+[Extending the sandbox image](../guides/user/customizing-agents.md#extending-the-sandbox-image).
+
 Every mint sets both `GH_TOKEN` and `GITHUB_TOKEN` to the minted token, even when the caller
 workflow did not export `GITHUB_TOKEN`. When the mint is cleaned up, each one goes back to the value
 it held before that mint, or is unset if it was unset. A caller workflow that exports
@@ -476,15 +494,17 @@ them into the sandbox. Matching is case-insensitive. It warns twice:
 - As it writes the sandbox environment, one stderr line per key:
   `WARNING: env.sandbox key "NAME" is reserved (runner infrastructure or security deny-list); skipping`
 
-`fullsend lock` prints the load-time warning when it composes a harness. A
-current lock entry is not composed; run `fullsend lock --update` to check its
-keys. `lock` composes without event context, so a key added by an overlay
+`fullsend lint` also reports the load-time warning, and
+`fullsend lint --strict` exits non-zero on it. `fullsend lock` prints the
+load-time warning when it composes a harness. A current lock entry is not
+composed; run `fullsend lock --update` to check its keys. `lock` composes
+without event context, so a key added by an overlay
 guarded on `event` is reported only by `fullsend run`. The reserved names are
-listed in the `env.sandbox` note in [Customizing
-agents](../guides/user/customizing-agents.md#reserved-envsandbox-names);
-where blocked proxy and certificate settings go instead is in [Migrating proxy
-and certificate
-settings](../guides/user/customizing-agents.md#migrating-proxy-and-certificate-settings).
+listed in [Harness Field Reference § Reserved `env.sandbox`
+names](../reference/harness-reference.md#reserved-envsandbox-names); where
+blocked proxy and certificate settings go instead is in [Migrating proxy and
+certificate
+settings](../reference/harness-reference.md#migrating-proxy-and-certificate-settings).
 
 ## Runner secrets
 

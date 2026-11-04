@@ -19,11 +19,10 @@ type emojiCall struct {
 	Emoji       string
 }
 
-// pipelineCall records a CreatePipeline or CreatePipelineWithInputs
-// invocation. ViaInputs distinguishes which transport dispatch() actually
-// used, since both methods decode into the same flat Variables shape here
-// (see CreatePipelineWithInputs below) so most assertions can stay
-// transport-agnostic.
+// pipelineCall records a CreatePipelineWithInputs (or child-pipeline)
+// invocation, decoded into a flat Variables shape (see
+// CreatePipelineWithInputs below) so most assertions can read dispatch
+// fields by name. ViaInputs confirms the typed-input transport was used.
 type pipelineCall struct {
 	Owner     string
 	Repo      string
@@ -74,6 +73,9 @@ type mockClient struct {
 
 	mrNotes   map[int][]Note // keyed by MR IID
 	mrNoteErr map[int]error
+
+	mrVersions    map[int][]MergeRequestDiffVersion // keyed by MR IID
+	mrVersionsErr map[int]error
 
 	events    []ProjectEvent
 	eventsErr error
@@ -185,6 +187,8 @@ func newMockClient() *mockClient {
 		issueErr:       make(map[int]error),
 		mr:             make(map[int]*MergeRequest),
 		mrErr:          make(map[int]error),
+		mrVersions:     make(map[int][]MergeRequestDiffVersion),
+		mrVersionsErr:  make(map[int]error),
 		wrapperContent: typedWrapperFixture(),
 		memberLevel:    make(map[int]int),
 		memberErr:      make(map[int]error),
@@ -252,6 +256,13 @@ func (m *mockClient) ListMergeRequestNotes(_ context.Context, _, _ string, mrIID
 		return nil, err
 	}
 	return m.mrNotes[mrIID], nil
+}
+
+func (m *mockClient) ListMergeRequestDiffVersions(_ context.Context, _, _ string, mrIID int) ([]MergeRequestDiffVersion, error) {
+	if err := m.mrVersionsErr[mrIID]; err != nil {
+		return nil, err
+	}
+	return m.mrVersions[mrIID], nil
 }
 
 func (m *mockClient) ListResourceLabelEvents(_ context.Context, _, _ string, issueIID int) ([]ResourceLabelEvent, error) {
@@ -612,32 +623,8 @@ func (m *mockClient) GetProjectPath(_ context.Context, projectID int) (string, e
 	return path, nil
 }
 
-func (m *mockClient) CreatePipeline(_ context.Context, owner, repo, ref string, variables map[string]string) (int64, string, error) {
-	if m.onPipeline != nil {
-		m.onPipeline()
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	vars := make(map[string]string, len(variables))
-	for k, v := range variables {
-		vars[k] = v
-	}
-	m.pipelineCalls = append(m.pipelineCalls, pipelineCall{
-		Owner:     owner,
-		Repo:      repo,
-		Ref:       ref,
-		Variables: vars,
-		ViaInputs: false,
-	})
-	if m.pipelineErr != nil && (m.pipelineErrAfter == 0 || len(m.pipelineCalls) > m.pipelineErrAfter) {
-		return 0, "", m.pipelineErr
-	}
-	m.pipelineCounter++
-	return int64(m.pipelineCounter), fmt.Sprintf("https://gitlab.example.com/-/pipelines/%d", m.pipelineCounter), nil
-}
-
 // CreatePipelineWithInputs decodes the typed pipeline inputs dispatch()
-// sends back into the same flat Variables shape CreatePipeline recorded,
+// sends back into a flat Variables shape keyed by dispatch field name,
 // reconstructing EVENT_PAYLOAD_B64 by concatenating its fixed
 // event_payload_chunk_NN scalar inputs in order (#7850 injection-vuln
 // fix: chunks are plain data now, not shell statements needing parsing).

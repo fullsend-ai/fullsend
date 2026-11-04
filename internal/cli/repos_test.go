@@ -274,6 +274,38 @@ func TestPrintStatusTable_WithDrift(t *testing.T) {
 	assert.Contains(t, output, "1 installed, 1 drifted, 0 not installed")
 }
 
+func TestPrintStatusTable_GitLabWebhook(t *testing.T) {
+	result := &repos.StatusResult{
+		Repos: []repos.RepoStatus{
+			{
+				Owner: "group", Repo: "ready", Forge: repos.ForgeGitLab, Installed: true,
+				GitLabWebhook: &repos.GitLabWebhookStatus{State: repos.GitLabWebhookStateReady, WebhookPresent: true, WebhookConfigured: true},
+			},
+			{
+				Owner: "group", Repo: "deferred", Forge: repos.ForgeGitLab, Installed: true,
+				GitLabWebhook: &repos.GitLabWebhookStatus{State: repos.GitLabWebhookStateDeferred, Reasons: []string{"the pipeline wrapper does not include the dispatcher yet"}},
+			},
+			{
+				Owner: "group", Repo: "drifted", Forge: repos.ForgeGitLab, Installed: true,
+				Drifts:        []repos.Drift{{Field: "gitlab-webhook", Expected: "ready", Actual: "drifted: hook differs"}},
+				GitLabWebhook: &repos.GitLabWebhookStatus{State: repos.GitLabWebhookStateDrifted, WebhookPresent: true, Reasons: []string{"hook differs"}},
+			},
+		},
+		Summary: repos.StatusSummary{Total: 3, Installed: 3, Drifted: 1},
+	}
+
+	var buf bytes.Buffer
+	cmd := newReposStatusCmd()
+	cmd.SetOut(&buf)
+	printStatusTable(cmd, result)
+
+	output := buf.String()
+	assert.Contains(t, output, "gitlab-webhook differs")
+	assert.Contains(t, output, "group/deferred GitLab webhook fast path: deferred\n  the pipeline wrapper does not include the dispatcher yet\n")
+	assert.Contains(t, output, "group/drifted GitLab webhook fast path: drifted\n  hook differs\n")
+	assert.NotContains(t, output, "group/ready GitLab webhook fast path")
+}
+
 func TestPrintStatusTable_NotInstalled(t *testing.T) {
 	result := &repos.StatusResult{
 		Repos: []repos.RepoStatus{

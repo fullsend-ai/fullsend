@@ -119,7 +119,7 @@ func TestRotateGitLabRoleCredentials_CustomOwnAndReuse(t *testing.T) {
 	// prior rotation or initial provisioning would have recorded): give
 	// them rotation-state proof so they are correctly treated as not due,
 	// rather than as unproven live tokens that must be replaced.
-	require.NoError(t, fc.UpdateCIVariable(context.Background(), "group", "project", forge.VarGitLabRoleRotation, `{"roles":{
+	require.NoError(t, fc.UpdateCIVariable(context.Background(), "group", "project", forge.VarGitLabRoleRotation, `{"version":2,"roles":{
 		"poller":{"phase":"idle","incoming_id":1,"distributed_at":"2026-06-01T00:00:00Z"},
 		"analyst":{"phase":"idle","incoming_id":2,"distributed_at":"2026-06-01T00:00:00Z"},
 		"coder":{"phase":"idle","incoming_id":3,"distributed_at":"2026-06-01T00:00:00Z"}
@@ -390,7 +390,7 @@ func TestRotateGitLabRoleCredentials_ReplacementKeepsUndischargedOutgoingObligat
 	now := time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC)
 	fc := seededRoleClient(t, gitlabroles.RolePoller)
 	require.NoError(t, fc.UpdateCIVariable(ctx, "group", "project", forge.VarGitLabRoleRotation,
-		`{"roles":{"poller":{"phase":"overlapping","incoming_id":5,"outgoing_ids":[4],"distributed_at":"2026-09-01T00:00:00Z","created_token_ids":[4,5]}}}`, true))
+		`{"version":2,"roles":{"poller":{"phase":"overlapping","incoming_id":5,"outgoing_ids":[4],"distributed_at":"2026-09-01T00:00:00Z","created_token_ids":[4,5]}}}`, true))
 	tokens := &fakeTokens{failRevoke: errors.New("revoke unavailable")}
 	tokens.seed(ProjectAccessToken{ID: 5, Name: gitlabroles.PollerTokenName, Active: true, ExpiresAt: "2027-09-01"})
 
@@ -562,7 +562,7 @@ func TestRotateGitLabRoleCredentials_ProvidedReplacementNotDueIsSkippedWithoutFo
 	// A prior administrator-provided enrollment (rotateProvided, or the
 	// mirrored path in provisionOwnRoles) recorded this not-due proof:
 	// phase=idle, DistributedAt set, no GitLab token ID to track.
-	require.NoError(t, fc.UpdateCIVariable(context.Background(), "group", "project", forge.VarGitLabRoleRotation, `{"roles":{
+	require.NoError(t, fc.UpdateCIVariable(context.Background(), "group", "project", forge.VarGitLabRoleRotation, `{"version":2,"roles":{
 		"poller":{"phase":"idle","distributed_at":"2026-09-01T00:00:00Z","supplied":true,"supplied_user_id":777,"excluded_user_ids":[777]}
 	}}`, true))
 
@@ -826,7 +826,7 @@ func TestRotateGitLabRoleCredentials_InProgressLock(t *testing.T) {
 	tokens := &fakeTokens{}
 	tokens.seed(ProjectAccessToken{Name: gitlabroles.PollerTokenName, Active: true, ExpiresAt: "2026-10-01"})
 	require.NoError(t, fc.UpdateCIVariable(context.Background(), "group", "project", forge.VarGitLabRoleRotation,
-		`{"roles":{"poller":{"phase":"overlapping","holder":"other","lock_until":"2026-09-21T13:00:00Z","incoming_id":9}}}`, true))
+		`{"version":2,"roles":{"poller":{"phase":"overlapping","holder":"other","lock_until":"2026-09-21T13:00:00Z","incoming_id":9}}}`, true))
 
 	result, err := RotateGitLabRoleCredentials(context.Background(), RoleRotateConfig{
 		Owner: "group", Repo: "project", Client: fc, Tokens: tokens,
@@ -843,7 +843,7 @@ func TestRotateGitLabRoleCredentials_InvalidStateAndEmptyCreate(t *testing.T) {
 	now := time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC)
 	fc := seededRoleClient(t, gitlabroles.RolePoller)
 	require.NoError(t, fc.UpdateCIVariable(context.Background(), "group", "project", forge.VarGitLabRoleRotation,
-		`{"roles":{"poller":{"lock_until":"not-a-time"}}}`, true))
+		`{"version":2,"roles":{"poller":{"lock_until":"not-a-time"}}}`, true))
 	tokens := &fakeTokens{emptyValue: map[string]bool{gitlabroles.PollerTokenName: true}}
 	tokens.seed(ProjectAccessToken{Name: gitlabroles.PollerTokenName, Active: true, ExpiresAt: "2026-10-01"})
 
@@ -974,7 +974,7 @@ func TestEnrichGitLabRoleStatusAcceptsAdministratorEnrollment(t *testing.T) {
 	for _, name := range []string{forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken} {
 		require.NoError(t, fc.CreateRepoSecret(context.Background(), "group", "project", name, "enrolledXXXX"))
 	}
-	fc.VariableValues["group/project/"+forge.VarGitLabRoleRotation] = `{"roles":{
+	fc.VariableValues["group/project/"+forge.VarGitLabRoleRotation] = `{"version":2,"roles":{
 "poller":{"phase":"idle","distributed_at":"2026-09-20T00:00:00Z"},
 "analyst":{"phase":"idle","distributed_at":"2026-09-20T00:00:00Z"},
 "coder":{"phase":"idle","distributed_at":"2026-09-20T00:00:00Z"}
@@ -1017,7 +1017,7 @@ func TestRotateGitLabRoleCredentials_RecoveryAfterPartialDistribution(t *testing
 	tokens.seed(ProjectAccessToken{ID: 7, Name: gitlabroles.PollerTokenName, Active: true, ExpiresAt: "2026-10-01"})
 	tokens.seed(ProjectAccessToken{ID: 8, Name: gitlabroles.PollerTokenName, Active: true, ExpiresAt: "2027-09-21"})
 	require.NoError(t, fc.UpdateCIVariable(context.Background(), "group", "project", forge.VarGitLabRoleRotation,
-		`{"roles":{"poller":{"phase":"distributing","incoming_id":8,"outgoing_ids":[7]}}}`, true))
+		`{"version":2,"roles":{"poller":{"phase":"distributing","incoming_id":8,"outgoing_ids":[7]}}}`, true))
 
 	result, err := RotateGitLabRoleCredentials(context.Background(), RoleRotateConfig{
 		Owner:    "group",
@@ -1045,7 +1045,7 @@ func TestRotateGitLabRoleCredentials_RecoveryAfterPartialDistributionWithoutForc
 	// which is exactly what makes an unproven "already fresh" skip look plausible.
 	tokens.seed(ProjectAccessToken{ID: 8, Name: gitlabroles.PollerTokenName, Active: true, ExpiresAt: "2027-09-21"})
 	require.NoError(t, fc.UpdateCIVariable(context.Background(), "group", "project", forge.VarGitLabRoleRotation,
-		`{"roles":{"poller":{"phase":"distributing","incoming_id":8,"outgoing_ids":[7]}}}`, true))
+		`{"version":2,"roles":{"poller":{"phase":"distributing","incoming_id":8,"outgoing_ids":[7]}}}`, true))
 
 	result, err := RotateGitLabRoleCredentials(context.Background(), RoleRotateConfig{
 		Owner:    "group",
@@ -1078,7 +1078,7 @@ func TestRotateGitLabRoleCredentials_OrphanBeforeFirstStateWriteIsNotTrustedAsDu
 	tokens.seed(ProjectAccessToken{ID: 7, Name: gitlabroles.PollerTokenName, Active: true, ExpiresAt: "2026-10-01"})
 	tokens.seed(ProjectAccessToken{ID: 8, Name: gitlabroles.PollerTokenName, Active: true, ExpiresAt: "2027-09-21"})
 	require.NoError(t, fc.UpdateCIVariable(context.Background(), "group", "project", forge.VarGitLabRoleRotation,
-		`{"roles":{"poller":{"phase":"idle","incoming_id":7,"outgoing_ids":[],"distributed_at":"2026-06-01T00:00:00Z"}}}`, true))
+		`{"version":2,"roles":{"poller":{"phase":"idle","incoming_id":7,"outgoing_ids":[],"distributed_at":"2026-06-01T00:00:00Z"}}}`, true))
 
 	result, err := RotateGitLabRoleCredentials(context.Background(), RoleRotateConfig{
 		Owner:    "group",
@@ -1202,7 +1202,7 @@ func TestRotateGitLabRoleCredentials_SameDayReplacementIsRecognizedAsCurrent(t *
 	tokens.seed(ProjectAccessToken{ID: 5, Name: gitlabroles.PollerTokenName, Active: true, ExpiresAt: "2027-09-21"})
 	tokens.seed(ProjectAccessToken{ID: 8, Name: gitlabroles.PollerTokenName, Active: true, ExpiresAt: "2027-09-21"})
 	require.NoError(t, fc.UpdateCIVariable(context.Background(), "group", "project", forge.VarGitLabRoleRotation,
-		`{"roles":{"poller":{"phase":"idle","incoming_id":8,"outgoing_ids":[],"distributed_at":"2026-06-01T00:00:00Z"}}}`, true))
+		`{"version":2,"roles":{"poller":{"phase":"idle","incoming_id":8,"outgoing_ids":[],"distributed_at":"2026-06-01T00:00:00Z"}}}`, true))
 
 	result, err := RotateGitLabRoleCredentials(context.Background(), RoleRotateConfig{
 		Owner:    "group",
@@ -1232,7 +1232,7 @@ func TestMergeRoleState_FailsClosedOnReadError(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	fc := provisionClient(t)
-	require.NoError(t, fc.UpdateCIVariable(ctx, "group", "project", forge.VarGitLabRoleRotation, `{"roles":{
+	require.NoError(t, fc.UpdateCIVariable(ctx, "group", "project", forge.VarGitLabRoleRotation, `{"version":2,"roles":{
 		"analyst":{"phase":"idle","incoming_id":2,"distributed_at":"2026-06-01T00:00:00Z"}
 	}}`, true))
 	fc.Errors["GetRepoVariable"] = fmt.Errorf("transient API failure")
@@ -1264,7 +1264,7 @@ func TestRecordInitialDistribution_CreateIfAbsent(t *testing.T) {
 	t.Run("preserves existing state", func(t *testing.T) {
 		fc := provisionClient(t)
 		require.NoError(t, fc.UpdateCIVariable(ctx, "group", "project", forge.VarGitLabRoleRotation,
-			`{"roles":{"poller":{"phase":"overlapping","incoming_id":9,"outgoing_ids":[5]}}}`, true))
+			`{"version":2,"roles":{"poller":{"phase":"overlapping","incoming_id":9,"outgoing_ids":[5]}}}`, true))
 		require.NoError(t, recordInitialDistribution(ctx, fc, "group", "project", gitlabroles.RolePoller, 12, "2027-09-21", now))
 		state, _, err := loadRotationState(ctx, fc, "group", "project")
 		require.NoError(t, err)

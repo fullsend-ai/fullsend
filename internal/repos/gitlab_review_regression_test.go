@@ -28,101 +28,108 @@ func landingScaffoldCommit(fc *forge.FakeClient, owner, repo string) ScaffoldCom
 	}
 }
 
-func TestTypedActivationMigratesRealManagedSchedules(t *testing.T) {
-	for _, operation := range []string{"install", "converge", "dry-run"} {
-		t.Run(operation, func(t *testing.T) {
-			fc := newFakeClientWithRepo()
-			for i, spec := range PipelineScheduleSpecs() {
-				require.Empty(t, spec.Variables, "canonical schedules must work under no_one_allowed")
-				fc.PipelineSchedules["acme/widgets"] = append(fc.PipelineSchedules["acme/widgets"], forge.PipelineSchedule{
-					ID: int64(i + 1), Description: spec.Description, Active: i == 0,
-					Variables: map[string]string{forge.VarPollMode: "legacy"},
-				})
+// Typed activation leaves variable-free managed schedules (and their
+// active state) untouched. A managed schedule still carrying the legacy
+// FULLSEND_POLL_MODE variable is no longer migrated: every operation
+// refuses with an actionable error and leaves the variable in place.
+func TestTypedActivationRequiresVariableFreeManagedSchedules(t *testing.T) {
+	for _, legacy := range []bool{false, true} {
+		for _, operation := range []string{"install", "converge", "dry-run"} {
+			t.Run(map[bool]string{false: "variable-free/", true: "legacy-variable/"}[legacy]+operation, func(t *testing.T) {
+				testTypedActivationScheduleVariables(t, operation, legacy)
+			})
+		}
+	}
+}
+
+func testTypedActivationScheduleVariables(t *testing.T, operation string, legacy bool) {
+	t.Helper()
+	fc := newFakeClientWithRepo()
+	for i, spec := range PipelineScheduleSpecs() {
+		require.Empty(t, spec.Variables, "canonical schedules must work under no_one_allowed")
+		schedule := forge.PipelineSchedule{ID: int64(i + 1), Description: spec.Description, Active: i == 0}
+		if legacy {
+			schedule.Variables = map[string]string{forge.VarPollMode: "legacy"}
+		}
+		fc.PipelineSchedules["acme/widgets"] = append(fc.PipelineSchedules["acme/widgets"], schedule)
+	}
+	var errs []string
+	if operation == "install" {
+		cfg := baseCfg()
+		cfg.Forge = ForgeGitLab
+		if _, err := Install(context.Background(), cfg, fc, landingScaffoldCommit(fc, cfg.Owner, cfg.Repo), noopProgress); err != nil {
+			errs = append(errs, err.Error())
+		}
+	} else {
+		// The wrapper, agent, and poll templates are seeded directly into
+		// FileContents (not passed as "pending" below), representing a
+		// root CI contract and its sibling scaffold files already
+		// committed on the default branch in an earlier run — i.e.
+		// nothing is left to commit before activation is safe.
+		// Activation confirms all three
+		// (gitlabPollAndAgentTemplatesLanded), not just the wrapper.
+		wrapper, err := scaffold.GitLabPerRepoFile(fullsendPipelineInclude)
+		require.NoError(t, err)
+		fc.FileContents["acme/widgets/"+fullsendPipelineInclude] = wrapper
+		agentTemplate, err := scaffold.GitLabPerRepoFile(fullsendAgentTemplatePath)
+		require.NoError(t, err)
+		fc.FileContents["acme/widgets/"+fullsendAgentTemplatePath] = agentTemplate
+		pollTemplate, err := scaffold.GitLabPerRepoFile(fullsendPollTemplatePath)
+		require.NoError(t, err)
+		fc.FileContents["acme/widgets/"+fullsendPollTemplatePath] = pollTemplate
+		// The root .gitlab-ci.yml must also already be committed with the
+		// typed contract declared and forwarded — activation defers
+		// otherwise (gitlabRootDeclaresDispatchInputs).
+		mergedRoot, err := MergeGitLabCI(nil)
+		require.NoError(t, err)
+		fc.FileContents["acme/widgets/.gitlab-ci.yml"] = mergedRoot
+		resolved := ResolvedConfig{Owner: "acme", Repo: "widgets", Forge: ForgeGitLab, ForgeConfig: ForgeConfig{Client: fc}}
+		dryRun := operation == "dry-run"
+		_, actions := convergeGitLabRootCIFiles(context.Background(), resolved, ConvergeConfig{DryRun: dryRun}, noopProgress, nil)
+		if !dryRun {
+			// Mirrors convergeRepo's "nothing needed to be committed"
+			// branch: convergeGitLabRootCIFiles only validates, so the
+			// real activation is a separate, explicit step.
+			actions = append(actions, activateGitLabTypedDispatch(context.Background(), fc, resolved.Owner, resolved.Repo)...)
+		}
+		for _, action := range actions {
+			if action.Action == "error" {
+				errs = append(errs, action.Detail)
 			}
-			if operation == "install" {
-				cfg := baseCfg()
-				cfg.Forge = ForgeGitLab
-				_, err := Install(context.Background(), cfg, fc, landingScaffoldCommit(fc, cfg.Owner, cfg.Repo), noopProgress)
-				require.NoError(t, err)
-			} else {
-				// The wrapper, agent, and poll templates are seeded
-				// directly into FileContents (not passed as "pending"
-				// below), representing a root CI contract and its
-				// sibling scaffold files already committed on the
-				// default branch in an earlier run — i.e. nothing is
-				// left to commit before activation is safe. Activation
-				// confirms all three (gitlabPollAndAgentTemplatesLanded),
-				// not just the wrapper.
-				wrapper, err := scaffold.GitLabPerRepoFile(fullsendPipelineInclude)
-				require.NoError(t, err)
-				fc.FileContents["acme/widgets/"+fullsendPipelineInclude] = wrapper
-				agentTemplate, err := scaffold.GitLabPerRepoFile(fullsendAgentTemplatePath)
-				require.NoError(t, err)
-				fc.FileContents["acme/widgets/"+fullsendAgentTemplatePath] = agentTemplate
-				pollTemplate, err := scaffold.GitLabPerRepoFile(fullsendPollTemplatePath)
-				require.NoError(t, err)
-				fc.FileContents["acme/widgets/"+fullsendPollTemplatePath] = pollTemplate
-				// The root .gitlab-ci.yml must also already be committed
-				// with the typed contract declared and forwarded — activation
-				// defers otherwise (gitlabRootDeclaresDispatchInputs).
-				mergedRoot, err := MergeGitLabCI(nil)
-				require.NoError(t, err)
-				fc.FileContents["acme/widgets/.gitlab-ci.yml"] = mergedRoot
-				resolved := ResolvedConfig{Owner: "acme", Repo: "widgets", Forge: ForgeGitLab, ForgeConfig: ForgeConfig{Client: fc}}
-				dryRun := operation == "dry-run"
-				_, actions := convergeGitLabRootCIFiles(context.Background(), resolved, ConvergeConfig{DryRun: dryRun}, noopProgress, nil)
-				for _, action := range actions {
-					require.NotEqual(t, "error", action.Action, action.Detail)
-				}
-				if !dryRun {
-					// Mirrors convergeRepo's "nothing needed to be
-					// committed" branch: convergeGitLabRootCIFiles only
-					// validates, so the real activation is a separate,
-					// explicit step.
-					for _, a := range activateGitLabTypedDispatch(context.Background(), fc, resolved.Owner, resolved.Repo) {
-						require.NotEqual(t, "error", a.Action, a.Detail)
-					}
-				}
-			}
-			for i, schedule := range fc.PipelineSchedules["acme/widgets"] {
-				assert.Equal(t, i == 0, schedule.Active, "migration must preserve disabled schedules")
-				if operation == "dry-run" {
-					assert.NotEmpty(t, schedule.Variables)
-				} else {
-					assert.Empty(t, schedule.Variables)
-				}
-			}
-		})
+		}
+	}
+	if legacy {
+		require.NotEmpty(t, errs, "a leftover legacy schedule variable must refuse activation")
+		for _, e := range errs {
+			assert.Contains(t, e, "legacy FULLSEND_POLL_MODE pipeline variable")
+		}
+	} else {
+		assert.Empty(t, errs)
+	}
+	for i, schedule := range fc.PipelineSchedules["acme/widgets"] {
+		assert.Equal(t, i == 0, schedule.Active, "activation must preserve disabled schedules")
+		if legacy {
+			assert.Equal(t, map[string]string{forge.VarPollMode: "legacy"}, schedule.Variables, "legacy variables are not removed automatically")
+		} else {
+			assert.Empty(t, schedule.Variables)
+		}
 	}
 }
 
 // TestTypedActivationNotAppliedBeforeTemplatesLand guards the ordering
-// bug where typed-dispatch activation (migrating managed schedule
-// variables, enforcing the pipeline-variable override restriction)
-// mutated live project state based on a wrapper that was only queued for
-// commit, not yet confirmed on the protected default branch.
-// ScaffoldCommitFunc can report success after only opening an upgrade MR
-// (branch-protection fallback) rather than landing a direct commit, and
-// can fail outright; either way, activation must not run until a later
-// check confirms compatible templates actually landed, or a legacy
-// poller is left stranded behind a restriction it can't satisfy.
-//
-// It also guards the companion post-install schedule-creation bug: unlike
-// activation's live re-check, fresh-install schedule creation
-// (setupGitLabPipelineSchedules, in internal/cli) must select transport
-// from the pending wrapper this install queued (InstallResult.
-// GitLabTypedDispatch), not a live re-read of the default branch — that
-// read would see the prior (or, for a brand-new repo, absent) wrapper
-// while the init MR is unmerged and wrongly create legacy
-// FULLSEND_POLL_MODE schedule variables for what is actually a typed
-// target.
+// bug where typed-dispatch activation mutated live project state based
+// on a wrapper that was only queued for commit, not yet confirmed on the
+// protected default branch. ScaffoldCommitFunc can report success after
+// only opening an upgrade MR (branch-protection fallback) rather than
+// landing a direct commit, and can fail outright; either way, activation
+// must not run until a later check confirms compatible templates
+// actually landed.
 func TestTypedActivationNotAppliedBeforeTemplatesLand(t *testing.T) {
 	for _, scenario := range []string{"delivery failure", "unmerged upgrade MR"} {
 		t.Run(scenario, func(t *testing.T) {
 			fc := newFakeClientWithRepo()
 			fc.PipelineSchedules["acme/widgets"] = []forge.PipelineSchedule{{
 				ID: 1, Description: PipelineScheduleSpecs()[0].Description, Active: true,
-				Variables: map[string]string{forge.VarPollMode: "legacy"},
 			}}
 
 			cfg := baseCfg()
@@ -150,12 +157,10 @@ func TestTypedActivationNotAppliedBeforeTemplatesLand(t *testing.T) {
 			}
 
 			require.NotNil(t, result)
-			assert.True(t, result.GitLabTypedDispatch,
-				"the queued scaffold is the typed contract regardless of whether delivery landed, so post-install schedule setup must create variable-free schedules, not legacy ones derived from a live re-read")
-
 			require.Len(t, fc.PipelineSchedules["acme/widgets"], 1)
-			assert.Equal(t, map[string]string{forge.VarPollMode: "legacy"}, fc.PipelineSchedules["acme/widgets"][0].Variables,
-				"schedule must not be migrated until compatible templates are confirmed on the default branch")
+			assert.True(t, fc.PipelineSchedules["acme/widgets"][0].Active,
+				"schedule must be left untouched until compatible templates are confirmed on the default branch")
+			assert.Equal(t, forge.PipelineVarOverrideNoOneAllowed, fc.PipelineVarOverrideRoles["acme/widgets"])
 		})
 	}
 }
@@ -229,19 +234,32 @@ func TestActivationDefersOnStaleAgentOrPollTemplate(t *testing.T) {
 	}
 }
 
-func TestScheduleMigrationFailsClosed(t *testing.T) {
-	for _, method := range []string{"ListPipelineSchedules", "GetPipelineSchedule", "DeletePipelineScheduleVariable", "user-owned variable"} {
-		t.Run(method, func(t *testing.T) {
-			fc := newFakeClientWithRepo()
-			fc.PipelineSchedules["acme/widgets"] = []forge.PipelineSchedule{{ID: 1, Description: PipelineScheduleSpecs()[0].Description, Variables: map[string]string{forge.VarPollMode: "slash"}}}
-			if method == "user-owned variable" {
-				fc.PipelineSchedules["acme/widgets"][0].Variables["KEEP"] = "value"
-			} else {
-				fc.Errors[method] = errors.New("API denied")
+// The managed-schedule variable check only reads: a leftover legacy
+// FULLSEND_POLL_MODE or user-owned variable, or a failed read, refuses
+// activation without modifying the schedule.
+func TestScheduleVariableCheckFailsClosed(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		vars    map[string]string
+		failing string
+		want    string
+	}{
+		{name: "list error", vars: map[string]string{}, failing: "ListPipelineSchedules", want: "API denied"},
+		{name: "get error", vars: map[string]string{}, failing: "GetPipelineSchedule", want: "API denied"},
+		{name: "legacy poll-mode variable", vars: map[string]string{forge.VarPollMode: "slash"}, want: "legacy FULLSEND_POLL_MODE pipeline variable"},
+		{name: "user-owned variable", vars: map[string]string{"KEEP": "value"}, want: "user-owned pipeline variables KEEP"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, dryRun := range []bool{false, true} {
+				fc := newFakeClientWithRepo()
+				fc.PipelineSchedules["acme/widgets"] = []forge.PipelineSchedule{{ID: 1, Description: PipelineScheduleSpecs()[0].Description, Variables: tc.vars}}
+				if tc.failing != "" {
+					fc.Errors[tc.failing] = errors.New("API denied")
+				}
+				err := requireGitLabPipelineVariableRestriction(context.Background(), fc, "acme", "widgets", dryRun)
+				require.ErrorContains(t, err, tc.want)
+				assert.Equal(t, tc.vars, fc.PipelineSchedules["acme/widgets"][0].Variables)
 			}
-			err := requireGitLabPipelineVariableRestriction(context.Background(), fc, "acme", "widgets", false)
-			require.Error(t, err)
-			assert.NotEmpty(t, fc.PipelineSchedules["acme/widgets"][0].Variables)
 		})
 	}
 }
@@ -357,6 +375,56 @@ func TestGitLabInstallRejectsUnmatchedPinsAndVendor(t *testing.T) {
 		assert.False(t, sc.called)
 		assert.Empty(t, fc.Secrets)
 	}
+}
+
+// A scaffold pinned before typed dispatch (here simulated with a legacy
+// variable-based wrapper in PrebuiltScaffoldFiles) is refused by the
+// install dry-run preflight and by Install before anything is written.
+func TestGitLabInstallRefusesLegacyPinnedWrapper(t *testing.T) {
+	files, err := scaffold.CollectGitLabPerRepoInstallFiles(nil, nil, "v0.45.0", "v0.45.0")
+	require.NoError(t, err)
+	replaced := false
+	for i := range files {
+		if files[i].Path == fullsendPipelineInclude {
+			files[i].Content = []byte("include:\n  - local: .gitlab/ci/fullsend-agent.yml\n")
+			replaced = true
+		}
+	}
+	require.True(t, replaced, "fixture must contain the wrapper")
+
+	cfg := gitlabInstallConfig()
+	cfg.UpstreamRef = "v0.45.0"
+	cfg.Pinned = true
+	cfg.PrebuiltScaffoldFiles = files
+
+	fc := newFakeClientWithRepo()
+	err = gitlabFreshInstallDryRunPreflight(context.Background(), ResolvedConfig{ForgeConfig: ForgeConfig{Client: fc}}, cfg)
+	require.ErrorContains(t, err, "legacy pipeline-variable dispatch contract")
+	require.ErrorContains(t, err, "fullsend_ref to "+gitlabFirstTypedDispatchRelease)
+
+	sc := &fakeScaffoldCommit{}
+	_, err = Install(context.Background(), cfg, fc, sc.fn(), noopProgress)
+	require.ErrorContains(t, err, "legacy pipeline-variable dispatch contract")
+	assert.False(t, sc.called)
+	assert.Empty(t, fc.Secrets)
+}
+
+// The dry-run preflight reports the same pre-delivery refusals Install
+// does: a leftover legacy schedule variable and a conflicting root.
+func TestGitLabFreshInstallDryRunPreflightRefusals(t *testing.T) {
+	t.Run("legacy schedule variable", func(t *testing.T) {
+		fc := newFakeClientWithRepo()
+		fc.PipelineSchedules["acme/widgets"] = []forge.PipelineSchedule{{ID: 1, Description: PipelineScheduleSpecs()[0].Description, Variables: map[string]string{forge.VarPollMode: "slash"}}}
+		err := gitlabFreshInstallDryRunPreflight(context.Background(), ResolvedConfig{ForgeConfig: ForgeConfig{Client: fc}}, gitlabInstallConfig())
+		require.ErrorContains(t, err, "legacy FULLSEND_POLL_MODE pipeline variable")
+		assert.Equal(t, "slash", fc.PipelineSchedules["acme/widgets"][0].Variables[forge.VarPollMode])
+	})
+	t.Run("conflicting root STAGE", func(t *testing.T) {
+		fc := newFakeClientWithRepo()
+		fc.FileContents["acme/widgets/.gitlab-ci.yml"] = []byte("variables: {STAGE: custom}\n")
+		err := gitlabFreshInstallDryRunPreflight(context.Background(), ResolvedConfig{ForgeConfig: ForgeConfig{Client: fc}}, gitlabInstallConfig())
+		require.ErrorContains(t, err, "merging .gitlab-ci.yml")
+	})
 }
 
 func TestInstalledTypedContractMustSupportLiteralScheduledDispatch(t *testing.T) {

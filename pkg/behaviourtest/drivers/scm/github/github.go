@@ -55,6 +55,10 @@ func (d *Driver) GetIssue(ctx context.Context, owner, repo string, number int) (
 	return d.Client.GetIssue(ctx, owner, repo, number)
 }
 
+func (d *Driver) ListOpenIssues(ctx context.Context, owner, repo string, labels ...string) ([]forge.Issue, error) {
+	return d.Client.ListOpenIssues(ctx, owner, repo, labels...)
+}
+
 func (d *Driver) GetFileContent(ctx context.Context, owner, repo, path string) ([]byte, error) {
 	return d.Client.GetFileContent(ctx, owner, repo, path)
 }
@@ -180,6 +184,13 @@ func (d *Driver) ListPullRequestReviews(ctx context.Context, owner, repo string,
 
 func (d *Driver) ListPullRequestCommits(ctx context.Context, owner, repo string, number int) ([]string, error) {
 	return d.Client.ListPullRequestCommits(ctx, owner, repo, number)
+}
+
+var _ scm.PullRequestHeadSHAReader = (*Driver)(nil)
+
+// GetPullRequestHeadSHA returns the change proposal's current head commit SHA.
+func (d *Driver) GetPullRequestHeadSHA(ctx context.Context, owner, repo string, number int) (string, error) {
+	return d.Client.GetPullRequestHeadSHA(ctx, owner, repo, number)
 }
 
 // ParseRepo splits "owner/repo" into owner and repo name.

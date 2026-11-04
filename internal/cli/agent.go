@@ -467,6 +467,9 @@ func runAgentList(fullsendDir string, printer *ui.Printer) error {
 			if s := formatSubagents(a.Subagents); s != "" {
 				settings = append(settings, "subagents: "+s)
 			}
+			if strings.TrimSpace(a.Trigger) != "" {
+				settings = append(settings, "trigger")
+			}
 			displaySource += "  [" + strings.Join(settings, " ") + "]"
 		}
 		printer.Raw(fmt.Sprintf("%-*s  %s\n", maxName, a.DerivedName(), displaySource))

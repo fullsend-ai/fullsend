@@ -287,7 +287,7 @@ document the runner passes pins these keys:
 
 - `env`: the five hook variables, empty for any the harness did not set, and
   every variable in the "Every run" rows of the table above, and `BASH_ENV`
-  and `ENV`, set empty.
+  and `ENV`, set empty; and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`.
 - `"disableAllHooks": false`.
 
 On gateway runs the `env` entries are added to the route's `env` block in the
@@ -295,6 +295,11 @@ inline document. `--settings` ranks above `$CLAUDE_CONFIG_DIR/settings.json`
 and the repository's `.claude/settings.json` and `.claude/settings.local.json`
 for the keys it sets, so a value for one of these keys in those files has no
 effect. Other keys in those files still apply.
+
+`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` is set on every run, so a harness
+that sets its own `ANTHROPIC_BASE_URL` sends no telemetry to Anthropic. The
+launch also exports it after `.env`, and a run without sandbox hooks gets an
+inline `--settings` document with only that key.
 
 ## Behaviour differences worth knowing
 

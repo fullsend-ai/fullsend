@@ -31,16 +31,18 @@ The former `repos migrate <org>` command (per-org to per-repo migration) has bee
 fullsend repos install [repos...] [flags]
 ```
 
-Converge repos to the desired state defined in a manifest. This is the primary command for managing per-repo installations — it provisions repositories declared in the manifest, repairs component drift (workflow, thin callers, variables, secrets, pipeline schedules, GitLab poller protected-ref pipeline access — a disabled GitLab schedule is reported as drift and reactivated only when `--reactivate-schedules` is passed; typed GitLab jobs require verified `no_one_allowed` before template delivery, even with `FULLSEND_GITLAB_PIPELINE_VAR_RESTRICTION=enforced` — see [GitLab Role-Credential Contract](../contributing/gitlab-role-credentials.md#how-a-job-selects-its-credential)), repairs scaffold content drift (including structural rewrites of `.gitlab/ci/fullsend-pipeline.yml` at an unchanged template ref, and removal of a leftover `.gitlab/ci/fullsend-dispatch.yml` from installs predating #7707), and upgrades scaffold refs.
+Converge repos to the desired state defined in a manifest. This is the primary command for managing per-repo installations — it provisions repositories declared in the manifest, repairs component drift (workflow, thin callers, variables, secrets, pipeline schedules, GitLab poller protected-ref pipeline access — a disabled GitLab schedule is reported as drift and reactivated only when `--reactivate-schedules` is passed; typed GitLab jobs require verified `no_one_allowed` before template delivery, even with `FULLSEND_GITLAB_PIPELINE_VAR_RESTRICTION=enforced` — see [GitLab Role-Credential Contract](../contributing/gitlab-role-credentials.md#how-a-job-selects-its-credential)), repairs scaffold content drift (including structural rewrites of `.gitlab/ci/fullsend-pipeline.yml` at an unchanged template ref), and upgrades scaffold refs.
 
 `repos.yaml` is the single source of persistent, non-secret install settings and of repository membership. Install reads every setting from the manifest; its flags supply only credentials, local vendoring artifacts, and controls for one run (see [Flags](#flags)). To change a setting or add a repository, edit `repos.yaml` or use [`repos set`](#repos-set), then run install. Moving from `github setup` or from the removed configuration flags is covered in [Migrating to manifest-driven `repos install`](../guides/getting-started/migrating-from-github-setup.md).
 
 GitLab version pins require an upstream GitHub client to fetch matching
 templates; unavailable templates are an error, not an embedded fallback.
 GitLab vendor mode is rejected because its installer does not run a matching
-vendored binary. Legacy variable-based wrappers retain their compatible
-project setting. Typed activation migrates managed schedules off pipeline
-variables while preserving disabled schedules and unrelated user settings.
+vendored binary. Legacy variable-based wrappers (for example, from a
+`fullsend_ref` pinned before v0.46.0) are refused. Typed activation refuses
+while a managed schedule still sets a pipeline variable, including a
+leftover `FULLSEND_POLL_MODE`; remove it, because fullsend no longer
+migrates it automatically.
 
 A missing manifest file is an error: install does not create one. Create it, and declare repositories, with [`repos set`](#repos-set) (the first edit writes `version: 1`):
 
@@ -53,9 +55,94 @@ fullsend repos install acme/api --vertex-project "<gcp-project>"
 Runs in two phases:
 
 1. **Select** — the repositories to converge are chosen from the entries declared in the manifest (see [Selecting repositories](#selecting-repositories)). Positional arguments only filter declared entries; they never create, copy, or carve out entries. Every selected repository must resolve an [inference authentication selection](#inference-authentication-selection), and its [effective infrastructure values](#effective-infrastructure-values) must be consistent, or that repository fails before any write.
-2. **Converge** — all selected repos are converged through a unified probe → diff → apply pipeline. Repos whose shim workflow is not yet on the default branch are freshly installed (scaffold files, variables, secrets, a declared configuration preset as `.fullsend/config.base.yaml`, and a canonical managed `.fullsend/config.yaml`) onto the initialization branch (`fullsend/scaffold-install`). That includes a re-run while the initialization PR/MR is still open: variables and secrets may already exist from the first run, but the installer still updates the same initialization PR rather than opening a competing upgrade PR. Repos whose workflow is already on the default branch are checked for drift (workflow, thin callers, variables, secrets, pipeline schedules, GitLab poller protected-ref pipeline access — repaired automatically, except a disabled GitLab schedule, which is reported as drift and reactivated only with `--reactivate-schedules`; typed GitLab dispatch's required pipeline-variable restriction and managed schedule-variable migration), scaffold content drift (repaired automatically, including structural rewrites of `.gitlab/ci/fullsend-pipeline.yml` at an unchanged template ref, and removal of a leftover `.gitlab/ci/fullsend-dispatch.yml` from installs predating #7707), declared configuration-preset drift against `.fullsend/config.base.yaml` (replaced wholesale; `.fullsend/config.yaml` is preserved), managed `.fullsend/config.yaml` drift (replaced wholesale; an existing file without the ownership marker stops that repository before any writes until it is adopted, while the other selected repositories still converge), and scaffold ref drift (upgraded automatically). When no configuration preset resolves for a repo, the desired state is no `.fullsend/config.base.yaml`. An existing base file then stops that repo's fresh or repeat install, including `--dry-run`, before any writes, with an error telling you to declare a `config_base` source or remove the file. A declared preset that cannot be loaded (fetch failure, `sha256` mismatch, invalid content) fails only that repository: install reports the error in that repository's result, converges the other selected repositories, and exits non-zero. An HTTPS preset fetch that fails at the transport level (for example, a dropped connection reported as `EOF`) is retried once, and the error names the phase that failed (DNS, connect, TLS handshake, awaiting the response), the remote address, and the elapsed time.
+2. **Converge** — all selected repos are converged through a unified probe → diff → apply pipeline. Repos whose shim workflow is not yet on the default branch are freshly installed (scaffold files, variables, secrets, a declared configuration preset as `.fullsend/config.base.yaml`, and a canonical managed `.fullsend/config.yaml`) onto the initialization branch (`fullsend/scaffold-install`). That includes a re-run while the initialization PR/MR is still open: variables and secrets may already exist from the first run, but the installer still updates the same initialization PR rather than opening a competing upgrade PR. Repos whose workflow is already on the default branch are checked for drift (workflow, thin callers, variables, secrets, pipeline schedules, GitLab poller protected-ref pipeline access — repaired automatically, except a disabled GitLab schedule, which is reported as drift and reactivated only with `--reactivate-schedules`; typed GitLab dispatch's required pipeline-variable restriction; legacy variable-based wrappers are refused, and a leftover pipeline variable on a managed schedule is not repaired and must be removed manually), scaffold content drift (repaired automatically, including structural rewrites of `.gitlab/ci/fullsend-pipeline.yml` at an unchanged template ref), declared configuration-preset drift against `.fullsend/config.base.yaml` (replaced wholesale; `.fullsend/config.yaml` is preserved), managed `.fullsend/config.yaml` drift (replaced wholesale; an existing file without the ownership marker stops that repository before any writes until it is adopted, while the other selected repositories still converge), and scaffold ref drift (upgraded automatically). When no configuration preset resolves for a repo, the desired state is no `.fullsend/config.base.yaml`. An existing base file then stops that repo's fresh or repeat install, including `--dry-run`, before any writes, with an error telling you to declare a `config_base` source or remove the file. A declared preset that cannot be loaded (fetch failure, `sha256` mismatch, invalid content) fails only that repository: install reports the error in that repository's result, converges the other selected repositories, and exits non-zero. An HTTPS preset fetch that fails at the transport level (for example, a dropped connection reported as `EOF`) is retried once, and the error names the phase that failed (DNS, connect, TLS handshake, awaiting the response), the remote address, and the elapsed time.
 
-`defaults.config`, `github.config`, `gitlab.config`, and per-repository `config` declare a sparse typed managed configuration for `.fullsend/config.yaml` ([ADR 0122](../ADRs/0122-declarative-repo-configuration.md)). Each accepts every per-repo config field, including `runtime` and `allowed_remote_resources`. Each field resolves through code defaults, the selected `config_base` preset, `defaults.config`, the repository's forge section `config` (`github.config` for GitHub repositories, `gitlab.config` for GitLab ones), and then the repository entry's `config` (glob entries included), using that field's normal layered merge rule: a more specific scalar wins, nested maps merge key by key, `allowed_remote_resources` unions a non-empty list with the inherited prefixes, and an explicit empty list (for example `allowed_remote_resources: []`) replaces the inherited value. Because the managed file is sparse and cannot record that reset, manifest validation rejects a non-empty `allowed_remote_resources` list declared in a more specific layer than an explicit empty one (for example `defaults.config` `[]` with a non-empty `github.config` or repository list) unless the most specific declared list is itself empty, which denies every remote resource whatever the earlier layers say; declare the full list in a single layer instead. Omitted values inherit and are not written into the managed file. Every repository selected from the manifest has a managed `.fullsend/config.yaml`; no `config` key is required. With no `config` declared, install renders the canonical sparse file carrying only the ownership marker (omitted values still inherit from a declared preset and the code defaults). When the manifest is loaded from an HTTPS URL, a `# Source manifest: <url>` comment follows the ownership marker, naming the manifest the file was rendered from; the line is recorded only for recognized raw-file URLs of public source hosts (`raw.githubusercontent.com`, `github.com/<owner>/<repo>/raw/...` and `gitlab.com/.../-/raw/...`, with no port and only plain `[A-Za-z0-9._~-]` path segments) and only the URL's scheme, host and path are written (userinfo, query string and fragment are removed). For any other manifest URL the line is omitted, since a credential in the path cannot be told apart from a directory name; do not put a credential in the path of a manifest URL on a recognized host. A manifest loaded from a local path records no source line. The line is part of the managed content, so a change of manifest URL is reported as drift and rewrites the file. Unknown fields and invalid values fail validation with an error naming the section (for example `github.config` or `github.repos[acme/api].config`). This is not `config_base`, which copies a preset to `.fullsend/config.base.yaml`. Every managed file carries an ownership marker; a pre-existing `.fullsend/config.yaml` that lacks the marker is reported by `repos status` as "managed configuration (adoption required)" rather than ordinary drift, and install skips that repository, with no manifest or forge write for it and the file left untouched, until it is adopted (manually edited to carry the marker, or replaced with the rendered managed body). This applies even when the repository has no `config` key. Install prints the adoption guidance (the proposed `repos.yaml` entry and the setting-level difference) for each skipped repository, lists it as `FAILED` in the summary, converges the other selected repositories, and exits non-zero; `--dry-run` does the same. Other configuration preflight problems (an unreadable, malformed or non-per-repo `.fullsend/config.yaml`, an existing `.fullsend/config.base.yaml` with no declared preset or with invalid content, and a selector that matches no declared repository) still stop the whole run before any write. Once a file carries the marker, install writes the canonical sparse file, `repos status` reports whole-file differences as drift, and convergence rewrites it. On a first install with no overlay yet, install records its one install-time default in the repository's `repos.yaml` entry before rendering, so the manifest stays the source of truth: with no `config_base` preset and no explicit `create_issues` declaration on GitHub it writes `config.create_issues.allow_targets.repos: [fullsend-ai/fullsend, fullsend-ai/agents]`; on GitLab it writes an explicit empty policy, `config.create_issues.allow_targets: {}` (the target repository is always allowed and is not listed). A glob-covered repository gets its own entry copied from the glob for this writeback; `--dry-run` shows the change without writing. If the manifest is an HTTPS URL or cannot be written, install fails before any manifest write or forge write and prints the exact entry or `config` edit to make in the manifest source, for repositories with an explicit entry or covered by a glob. See [Repo Management — Managed configuration](../guides/getting-started/repo-management.md#managed-configuration). Before any write of a managed file, install and converge also compare the candidate and current effective configurations through the full runtime accessor chain (`kill_switch`, `roles`, `allowed_remote_resources`, agent `enabled: false` suppressions, `create_issues.allow_targets`, `inference.gateway.url`, and `inference.gateway.audience`). A less-restrictive candidate is rejected unless the manifest explicitly declares that relaxation; a change to either `inference.gateway` field, including a preset introducing a gateway where an established installation has none configured, must be declared in the manifest; status and install output identify the affected keys. Adding a `config_base` preset to a repository that has no base file is compared the same way (an absent base is an empty layer), even when its managed overlay is unchanged. A pristine first install (no Fullsend installation, no overlay and no base) has no current effective configuration to relax, so it inherits permissions such as `create_issues` targets from its declared preset without a safety rejection. A fresh install that adoption or the safety gate blocks stops before any forge file, variable, secret or PR/MR write, in a dry run and a live run alike, and fails with an error.
+`defaults.config`, `github.config`, `gitlab.config`, and per-repository `config`
+declare a sparse typed managed configuration for `.fullsend/config.yaml` ([ADR
+0122](../ADRs/0122-declarative-repo-configuration.md)). Each accepts every
+per-repo config field, including `runtime` and `allowed_remote_resources`. Each
+field resolves through code defaults, the selected `config_base` preset,
+`defaults.config`, the repository's forge section `config` (`github.config` for
+GitHub repositories, `gitlab.config` for GitLab ones), and then the repository
+entry's `config` (glob entries included), using that field's normal layered
+merge rule: a more specific scalar wins, nested maps merge key by key,
+`allowed_remote_resources` unions a non-empty list with the inherited prefixes,
+and an explicit empty list (for example `allowed_remote_resources: []`) replaces
+the inherited value. Because the managed file is sparse and cannot record that
+reset, manifest validation rejects a non-empty `allowed_remote_resources` list
+declared in a more specific layer than an explicit empty one (for example
+`defaults.config` `[]` with a non-empty `github.config` or repository list)
+unless the most specific declared list is itself empty, which denies every
+remote resource whatever the earlier layers say; declare the full list in a
+single layer instead. Omitted values inherit and are not written into the
+managed file. Every repository selected from the manifest has a managed
+`.fullsend/config.yaml`; no `config` key is required. With no `config` declared,
+install renders the canonical sparse file carrying only the ownership marker
+(omitted values still inherit from a declared preset and the code defaults).
+When the manifest is loaded from an HTTPS URL, a `# Source manifest: <url>`
+comment follows the ownership marker, naming the manifest the file was rendered
+from; the line is recorded only for recognized raw-file URLs of public source
+hosts (`raw.githubusercontent.com`, `github.com/<owner>/<repo>/raw/...` and
+`gitlab.com/.../-/raw/...`, with no port and only plain `[A-Za-z0-9._~-]` path
+segments) and only the URL's scheme, host and path are written (userinfo, query
+string and fragment are removed). For any other manifest URL the line is
+omitted, since a credential in the path cannot be told apart from a directory
+name; do not put a credential in the path of a manifest URL on a recognized
+host. A manifest loaded from a local path records no source line. The line is
+informational: drift detection and convergence ignore it, so switching between a
+local path and a URL for the same manifest content (or changing the manifest
+URL) is not reported as drift and does not rewrite the file; the line is updated
+the next time a configuration change rewrites the file. Unknown fields and
+invalid values fail validation with an error naming the section (for example
+`github.config` or `github.repos[acme/api].config`). This is not `config_base`,
+which copies a preset to `.fullsend/config.base.yaml`. Every managed file
+carries an ownership marker; a pre-existing `.fullsend/config.yaml` that lacks
+the marker is reported by `repos status` as "managed configuration (adoption
+required)" rather than ordinary drift, and install skips that repository, with
+no manifest or forge write for it and the file left untouched, until it is
+adopted (manually edited to carry the marker, or replaced with the rendered
+managed body). This applies even when the repository has no `config` key.
+Install prints the adoption guidance (the proposed `repos.yaml` entry and the
+setting-level difference) for each skipped repository, lists it as `FAILED` in
+the summary, converges the other selected repositories, and exits non-zero;
+`--dry-run` does the same. Other configuration preflight problems (an
+unreadable, malformed or non-per-repo `.fullsend/config.yaml`, an existing
+`.fullsend/config.base.yaml` with no declared preset or with invalid content,
+and a selector that matches no declared repository) still stop the whole run
+before any write. Once a file carries the marker, install writes the canonical
+sparse file, `repos status` reports whole-file differences as drift, and
+convergence rewrites it. On a first install with no overlay yet, install records
+its one install-time default in the repository's `repos.yaml` entry before
+rendering, so the manifest stays the source of truth: with no `config_base`
+preset and no explicit `tracker` declaration on GitHub it writes
+`config.tracker.github.allowed_targets.repos: [fullsend-ai/fullsend,
+fullsend-ai/agents]`; on GitLab it writes an explicit empty policy,
+`config.tracker.gitlab.allowed_targets: {}` (the target repository is always
+allowed and is not listed). A glob-covered repository gets its own entry copied
+from the glob for this writeback; `--dry-run` shows the change without writing.
+If the manifest is an HTTPS URL or cannot be written, install fails before any
+manifest write or forge write and prints the exact entry or `config` edit to
+make in the manifest source, for repositories with an explicit entry or covered
+by a glob. See [Repo Management — Managed
+configuration](../guides/getting-started/repo-management.md#managed-configuration).
+Before any write of a managed file, install and converge also compare the
+candidate and current effective configurations through the full runtime accessor
+chain (`kill_switch`, `roles`, `allowed_remote_resources`, agent `enabled:
+false` suppressions, the selected provider's
+`tracker.<provider>.allowed_targets`, `inference.gateway.url`, and
+`inference.gateway.audience`). A less-restrictive candidate is rejected unless
+the manifest explicitly declares that relaxation; a change to either
+`inference.gateway` field, including a preset introducing a gateway where an
+established installation has none configured, must be declared in the manifest;
+status and install output identify the affected keys. Adding a `config_base`
+preset to a repository that has no base file is compared the same way (an absent
+base is an empty layer), even when its managed overlay is unchanged. A pristine
+first install (no fullsend installation, no overlay and no base) has no current
+effective configuration to relax, so it inherits permissions such as
+`tracker` targets from its declared preset without a safety rejection. A
+fresh install that adoption or the safety gate blocks stops before any forge
+file, variable, secret or PR/MR write, in a dry run and a live run alike, and
+fails with an error.
 
 ```yaml
 version: 1
@@ -96,7 +183,23 @@ A concrete repository named on the command line that a glob entry covers is inst
 
 Credentials are required only for the forges of the selected repos: a GitLab-only selection does not need `GH_TOKEN`, and a GitHub-only selection does not need `GITLAB_TOKEN`. An unfiltered run still requires credentials for every forge present in the manifest.
 
-Install writes to `repos.yaml` itself in only two cases: the first-install `create_issues` writeback described above, and, after a first install, the CLI's release written to `github.fullsend_ref` or `gitlab.fullsend_ref` when that key is unset. `--dry-run` writes neither.
+Install writes to `repos.yaml` itself in only three cases: the first-install
+`tracker` writeback described above; the conversion of legacy issue-tracking
+configuration described below; and, after a first install, the CLI's release
+written to `github.fullsend_ref` or `gitlab.fullsend_ref` when that key is
+unset. `--dry-run` writes none of them.
+
+Legacy issue-tracking configuration in managed `config:` blocks (the scalar
+`tracker: github|gitlab|jira` form and the removed `create_issues` block) is
+converted to the provider-discriminated `tracker` mapping when the manifest is
+loaded, so install renders every managed `.fullsend/config.yaml` in the new
+shape with the same effective provider and targets. Install writes the converted
+manifest with its other edits and lists each converted layer. For a read-only or
+HTTPS manifest it uses the converted values for that run and prints them as
+edits to apply to the source. Entries that cannot be converted without guessing,
+such as repository targets under a Jira provider or organization targets on
+GitLab, stop the run before any write with the exact edit to make. See
+[Config Reference — `tracker`](../reference/config-reference.md#tracker).
 
 On GitHub, a `fullsend_ref` pinned to an older release needs the CLI from that release: this CLI's shim passes `FULLSEND_GITHUB_RUNNER_SECRETS` ([ADR 0136](../ADRs/0136-runner-secrets-through-one-stored-secret.md)), and GitHub rejects the call when the older reusable workflow does not declare it.
 
@@ -118,6 +221,25 @@ On GitHub, a `fullsend_ref` pinned to an older release needs the CLI from that r
 | `--forge`, and adding repositories with positional arguments | A repository entry | `fullsend repos set 'github.repos["acme/api"]' '{}'` |
 
 No equivalent configuration flags were added to `github setup` or elsewhere. Declare `config.inference.region` in `repos.yaml` to make the region managed. Until you do, install keeps the existing `FULLSEND_GCP_REGION` (for example one set with the removed `--vertex-region`) and writes `global` only where the variable is missing; see [Effective infrastructure values](#effective-infrastructure-values). See [Migrating to manifest-driven `repos install`](../guides/getting-started/migrating-from-github-setup.md) for step-by-step migration.
+
+### Scaffold PR delivery
+
+Without `--direct`, install delivers scaffold changes as a pull request. On
+GitHub, a token that owns the repository or has write access pushes a
+`fullsend/scaffold-install` branch to the repository and opens the PR there.
+Any other user token delivers from a fork: install reuses an existing fork, or
+creates one (interactive runs offer a choice; non-interactive runs fork by
+default; fine-grained PATs push to the repository instead).
+
+GitHub App installation tokens never fork. They push the branch and open the
+PR in the target repository, so the App needs the **Contents**, **Pull
+requests** and **Workflows** repository permissions set to read and write (the
+scaffold includes files under `.github/workflows/`), and must be installed on
+that repository. When GitHub refuses to create the branch, commit the files or
+create the PR with a 403, install fails with an error that names the
+permissions to grant as one possible cause. A policy restriction, such as SAML
+enforcement or the repository setting that blocks Actions from creating pull
+requests, can produce the same denial.
 
 ### DCO sign-off
 
@@ -163,7 +285,7 @@ Every repo that `repos install` converges or `repos status` checks must resolve 
 | `openai-api-key` | OpenAI through an API key |
 | `openai-wif` | OpenAI through Workload Identity Federation (GitHub only; see [OpenAI Workload Identity](../guides/infrastructure/openai-workload-identity.md)) |
 
-`inference.auth` can be set under `defaults`, in a forge section (`github` / `gitlab`), and on repo or glob entries. Resolution goes entry → forge section → `defaults`, using the normal entry matching rules: an explicit entry wins over a glob, and among globs the first match wins. A value on one entry never affects sibling repos. Only the selection is stored in this manifest-level `inference` key. Credentials and secret references do not belong there, and unknown keys there fail validation. Non-secret GCP values (`inference.project`, `inference.region`, `inference.wif_provider`) are declared in the managed configuration instead, for example `defaults.config.inference.region`; see [Effective infrastructure values](#effective-infrastructure-values).
+`inference.auth` can be set under `defaults`, in a forge section (`github` / `gitlab`), and on repo or glob entries. Resolution goes entry → forge section → `defaults`, using the normal entry matching rules: an explicit entry wins over a glob, and among globs the first match wins. A value on one entry never affects sibling repos. Only the selection is stored in this manifest-level `inference` key. Credentials and secret references do not belong there, and unknown keys there fail validation. Non-secret GCP values (`inference.project`, `inference.region`, `inference.wif_provider`, and on GitLab `inference.wif_audience` and `inference.service_account`) are declared in the managed configuration instead, for example `defaults.config.inference.region`; see [Effective infrastructure values](#effective-infrastructure-values).
 
 ```yaml
 version: 1
@@ -188,7 +310,7 @@ There is no implicit default. When no level selects a method, `repos install` (c
 
 There is no command-line selection: the former `--inference-auth` flag was removed. Set the method with [`repos set`](#repos-set) at the level you want, for example `defaults.inference.auth`, `github.inference.auth`, `gitlab.inference.auth`, or `'github.repos["acme/api"].inference.auth'`.
 
-This readiness rule is deliberately stricter than `github setup`, which can scaffold a repository without any inference credentials. Install converges many repositories unattended, so it requires an explicit method for each one: it then provisions exactly that method's credentials, removes the other method's leftover Fullsend-managed secrets, and fails early instead of leaving agents that cannot reach a model. Every selected repository must resolve `inference.auth`, and that method's credentials must already exist on the repository or be supplied (by flags or by declared configuration; see [Inference credentials](#inference-credentials)).
+This readiness rule is deliberately stricter than `github setup`, which can scaffold a repository without any inference credentials. Install converges many repositories unattended, so it requires an explicit method for each one: it then provisions exactly that method's credentials, removes the other method's leftover fullsend-managed secrets, and fails early instead of leaving agents that cannot reach a model. Every selected repository must resolve `inference.auth`, and that method's credentials must already exist on the repository or be supplied (by flags or by declared configuration; see [Inference credentials](#inference-credentials)).
 
 #### Upgrading existing manifests
 
@@ -217,12 +339,36 @@ Install, `--dry-run`, and `repos status` derive each repository's infrastructure
 | `FULLSEND_GCP_REGION` (variable) | `vertex-wif` and `openai-wif` repositories | The effective configuration's `inference.region` when declared (managed configuration or preset); a missing variable is then drift that install repairs, even on a repeat install without credential inputs. With none declared, an existing variable is kept as is, and `global` is written only where the variable is missing and Vertex credentials are being written |
 | `FULLSEND_GCP_PROJECT_ID` (secret) | `vertex-wif`, and `openai-wif` when supplied | `--vertex-project`, else the effective configuration's `inference.project` |
 | `FULLSEND_GCP_WIF_PROVIDER` (secret) | `vertex-wif`, and `openai-wif` when supplied | `--vertex-wif-provider`, else the effective configuration's `inference.wif_provider`, else derived from the project |
+| `FULLSEND_GCP_SERVICE_ACCOUNT` (variable) | GitLab `vertex-wif` repositories | The effective configuration's `inference.service_account`. Written only when declared; the agent job then impersonates that service account. A missing or different variable is drift that install repairs. When not declared, an existing variable is obsolete and install deletes it |
+| Agent job token audience (`.gitlab/ci/fullsend-agent.yml`) | GitLab `vertex-wif` repositories | The effective configuration's `inference.wif_audience`, rendered into the agent job's `id_tokens` `aud`. Unset keeps `aud: "fullsend"` |
 | OpenAI WIF identifiers | `openai-wif` repositories | `FULLSEND_OPENAI_AUDIENCE` / `_IDENTITY_PROVIDER_ID` / `_SERVICE_ACCOUNT_ID` repository variables when set, else `inference.openai` from the managed configuration, the preset, or the existing configuration (see [Inference credentials](#inference-credentials)) |
 
 - **Private mode.** `mint_mode: private` has no built-in mint URL. Declare it as `mint_url` (in the `github` section or on the entry), as `config.mint_url`, or in a `config_base` preset. A `config.mint_url` alone is enough; you do not have to repeat it as `github.mint_url`. Manifest validation does not load presets, so a repository whose URL comes only from a preset is checked when install, dry run, and status resolve its effective configuration, and a repository that still has no URL fails there.
 - **Mint URL conflicts.** When the manifest's explicit `mint_url` (in the `github` section or on the entry) and a `mint_url` declared in the managed configuration or preset differ, install, dry run, and status report a conflict for that repository before any write. Make the values match or unset one, for example `fullsend repos set --unset github.mint_url`. A `mint_url` that only a remote `config_base` preset supplies (none in the managed configuration) and that differs from the manifest-resolved value is accepted only when the preset is pinned with `config_base.sha256`; otherwise the preset's owner could redirect the mint endpoint without a `repos.yaml` change. Pin the preset or declare `mint_url` in `repos.yaml`.
 - **Region.** When the effective configuration declares `inference.region` (in `defaults.config`, a forge section's `config`, the entry's `config`, or the preset), the region is managed: `FULLSEND_GCP_REGION` is checked against the declared value whether or not it exists, so a changed value and a missing variable are both drift. Install repairs the drift, `--dry-run` previews the change, and `repos status` reports it. This holds on a repeat install that supplies no credential inputs, as well as on fresh installs and whenever Vertex credentials are written. When no region is declared, an existing `FULLSEND_GCP_REGION` is preserved as is, with no drift reported, the same way an undeclared `app_set` keeps an existing `FULLSEND_APP_SET`; `global` is written only where the variable is missing and Vertex credentials are being written (a fresh install or a credential write). `openai-api-key` repositories never get it, and an existing one is removed once the OpenAI key is established. Make the region managed with, for example, `fullsend repos set defaults.config.inference.region us-east5`.
 - **Project and WIF provider.** A flag that disagrees with a declared `inference.project` or `inference.wif_provider` fails that repository before any write. Declared values count as supplied credentials: secret values cannot be read back to compare, so every install rewrites `FULLSEND_GCP_PROJECT_ID` and `FULLSEND_GCP_WIF_PROVIDER` from them. That lets a `github setup` installation whose project and provider lived only in layered configuration migrate without flags. A WIF provider (flag or declared) without a project is an error, and a declared `inference.wif_provider` requires a declared `inference.project` (`--vertex-project` alone does not satisfy it), so `repos status` and install agree. A project without a WIF provider derives the project number through the GCP Resource Manager API, which needs Application Default Credentials; declare `inference.wif_provider` or pass `--vertex-wif-provider` to skip the lookup. Existing secrets are reused only when neither a flag nor the effective configuration supplies a project.
+- **Existing WIF provider (GitLab).** `inference.wif_audience` and
+  `inference.service_account` let a GitLab `vertex-wif` repository use a
+  WIF provider the installer does not own, such as one a platform team runs
+  for a whole GitLab instance. Both require an explicitly supplied WIF
+  provider (`--vertex-wif-provider` or `inference.wif_provider`); combining
+  them with the derived per-project `gitlab-oidc` provider fails before any
+  write. Declare `inference.wif_provider` so `repos status` can check them
+  without the flag. `inference.service_account` must be a full email ending
+  in `.iam.gserviceaccount.com`, and `inference.wif_audience` a single line
+  without `$`, which GitLab would expand as a variable. Set them under
+  `gitlab.config` or on `gitlab.repos` entries; either key in `github.config`
+  or on a `github.repos` entry fails validation. Values a GitHub repository
+  inherits from `defaults.config`, or that reach a GitLab repository whose
+  `inference.auth` is not `vertex-wif`, are ignored there (format is still
+  checked). Install makes no GCP calls to check them. When
+  `inference.service_account` is not declared (or does not apply), an
+  existing `FULLSEND_GCP_SERVICE_ACCOUNT` variable is obsolete: `repos status`
+  reports it as drift (`--json` shows `expected absent`) and install deletes
+  it, so removing the key returns the agent
+  job to direct federation. See
+  [Using an existing WIF provider](../guides/getting-started/configuring-gitlab.md#using-an-existing-wif-provider)
+  for a walkthrough.
 - **OpenAI WIF identifiers are not secrets.** They are never written as secrets or treated as credentials. The optional GCP pair for Vertex sub-agents on an `openai-wif` repository follows the project and WIF provider rules above.
 
 Declared `inference.project` and `inference.wif_provider` values are committed to `repos.yaml` and to the repository's `.fullsend/config.yaml`. Pass `--vertex-project` / `--vertex-wif-provider` instead if you prefer to keep them out of committed files.
@@ -240,7 +386,7 @@ Each repo's effective `inference.auth` decides which credentials `repos install`
 - **Per repo, before any write.** Every selected repo is validated against its own method before anything is written. A repo whose method's secrets are missing, with no inputs supplied for that method (by flags or declared configuration), fails with an error that names the repo and the parameters to supply. Inputs for one method are accepted when any selected repo uses it; repos with another method ignore them, so a mixed fleet can be installed in one run.
 - **Reuse and replacement.** When no inputs are supplied for a method, existing secrets are reused unchanged, and re-running is a no-op (including while an initialization PR/MR is open). Supplied inputs, including a declared `inference.project`, replace the existing values on every run. On GitLab, an existing `FULLSEND_OPENAI_API_KEY` is reused only when it is a masked, protected environment variable (not a file-type variable) with the wildcard `*` environment scope; otherwise the repo fails without echoing the value, so repair the variable or supply `--openai-api-key` to replace it.
 - **No GCP lookups for OpenAI-only repos.** `openai-api-key` repos get no GCP secrets or region variable. The GCP project number is looked up only when a repo's project has no WIF provider from `--vertex-wif-provider` or a declared `inference.wif_provider`. The per-repo WIF provider derivation is unchanged.
-- **Changing `inference.auth`.** Install writes the new credentials first and only after every convergence step for the repo succeeded deletes the Fullsend-managed secrets of the other method (`FULLSEND_GCP_PROJECT_ID`/`FULLSEND_GCP_WIF_PROVIDER` or `FULLSEND_OPENAI_API_KEY`). If any write fails, the old credentials are kept. The cleanup is attempted on every run once the selected method is established, so a deletion that failed earlier is retried by the next run. GitLab's unprefixed `OPENAI_API_KEY` variable is never deleted.
+- **Changing `inference.auth`.** Install writes the new credentials first and only after every convergence step for the repo succeeded deletes the fullsend-managed secrets of the other method (`FULLSEND_GCP_PROJECT_ID`/`FULLSEND_GCP_WIF_PROVIDER` or `FULLSEND_OPENAI_API_KEY`). If any write fails, the old credentials are kept. The cleanup is attempted on every run once the selected method is established, so a deletion that failed earlier is retried by the next run. GitLab's unprefixed `OPENAI_API_KEY` variable is never deleted.
 - **`--openai-api-key` value.** Surrounding whitespace is trimmed. On GitLab the key must be storable as a masked CI/CD variable (at least 8 characters from `A-Z a-z 0-9 _ + = / @ : . ~ -`, no whitespace); otherwise the repo fails instead of the key being stored unmasked.
 - **Dry run.** `--dry-run` lists the secrets that would be written or deleted, by name only. It reports credentials that would be kept when the replacement is not yet live or inherited-variable scopes cannot be verified. Values are never printed.
 - **`openai-wif` identifiers.** An `openai-wif` repo needs a complete set of OpenAI WIF identifiers, resolved like the runtime: when any of the `FULLSEND_OPENAI_AUDIENCE`, `FULLSEND_OPENAI_IDENTITY_PROVIDER_ID` or `FULLSEND_OPENAI_SERVICE_ACCOUNT_ID` Actions variables is set (a repository variable wins over an organization variable of the same name, as in the workflow `vars` context), those three variables are the only source and must all be set. Otherwise `inference.openai` (`audience`, `identity_provider_id`, `service_account_id`) in `.fullsend/config.yaml` is used, each identifier falling back to `.fullsend/config.base.yaml`. The two sources are never mixed. Install accounts for the managed configuration and configuration preset it is about to deliver. A repo with no identifiers or a partial set fails before anything is written, with an error that names the missing identifiers (never their values). The reusable workflows must also forward these variables and must not require GCP secrets the repo will not have (`FULLSEND_GCP_PROJECT_ID` and `FULLSEND_GCP_WIF_PROVIDER`, unless the repo already has them or the install supplies them with `--vertex-project` or a declared `inference.project`). Non-vendored reusable workflows are read from the pinned `fullsend_ref`, or from the release-default ref when none is pinned; rendered shim and thin callers must grant `id-token: write` before installation can change variables, secrets, or scaffold files. Vendored reusable workflows are checked from the actual vendor source. An established installation with no ref or planned scaffold delivery must have compatible installed workflows. An unpinned OpenAI WIF installation converges its callers to the running release’s upstream ref, including migration from an existing `github setup` installation. Otherwise the install is rejected and an existing `FULLSEND_OPENAI_API_KEY` is kept.
@@ -251,13 +397,26 @@ Each repo's effective `inference.auth` decides which credentials `repos install`
 
 #### GitLab: `FULLSEND_OPENAI_API_KEY` replaces `OPENAI_API_KEY` (breaking)
 
-GitLab CI now reads the OpenAI key only from the `FULLSEND_OPENAI_API_KEY` CI/CD variable. The Fullsend job maps it to `OPENAI_API_KEY` for `fullsend run`. There is no fallback: an unprefixed `OPENAI_API_KEY` CI/CD variable on its own no longer works and does not satisfy the install check or `repos status`, which reports `FULLSEND_OPENAI_API_KEY` as missing. Fullsend never deletes the unprefixed variable, not even on `repos uninstall`, because other jobs may use it. Running `fullsend run` locally still reads `OPENAI_API_KEY`.
+GitLab CI now reads the OpenAI key only from the `FULLSEND_OPENAI_API_KEY` CI/CD variable. The fullsend job maps it to `OPENAI_API_KEY` for `fullsend run`. There is no fallback: an unprefixed `OPENAI_API_KEY` CI/CD variable on its own no longer works and does not satisfy the install check or `repos status`, which reports `FULLSEND_OPENAI_API_KEY` as missing. Fullsend never deletes the unprefixed variable, not even on `repos uninstall`, because other jobs may use it. Running `fullsend run` locally still reads `OPENAI_API_KEY`.
 
 To upgrade an `openai-api-key` GitLab project that used `OPENAI_API_KEY`:
 
 1. Provision the prefixed variable. Either run `fullsend repos install group/project --openai-api-key "$KEY"`, or add a masked, protected `FULLSEND_OPENAI_API_KEY` CI/CD variable of type Variable (not File) in Settings → CI/CD → Variables.
 2. Re-run `fullsend repos install` so the project gets the updated `.gitlab/ci/scripts/run-agent-job.sh`.
 3. If no other job uses it, delete the old `OPENAI_API_KEY` variable yourself.
+
+#### GitLab: comment body moved to `_normalized_event.transition.comment.body` (breaking)
+
+The GitLab dispatch payload built by the poller and the webhook dispatcher no longer carries a top-level `note_body` field. The comment body now travels only at `_normalized_event.transition.comment.body`, and the scaffolded `.gitlab/ci/scripts/run-agent-job.sh` reads only that path for `/fs-fix` instructions and the retro comment. The old script and the new payload do not interoperate: `/fs-fix` runs dispatch successfully but start with no human instruction, and the retro agent receives an empty comment. Nothing reports an error, because the payload carries no version marker.
+
+Upgrade the scaffold and the poller or webhook dispatcher CLI together:
+
+1. Upgrade the `fullsend` CLI that runs the poller or webhook dispatcher. A pipeline that installs a floating version such as `FULLSEND_VERSION="latest"` picks up the new payload on its next run.
+2. Re-run `fullsend repos install` for every GitLab project so each gets the updated `.gitlab/ci/scripts/run-agent-job.sh`.
+
+The reverse skew behaves the same way: a new scaffold paired with an old poller finds no body at the canonical path and drops the instruction.
+
+A `/fs-*` command body is also no longer truncated to 800 characters in transport. The dispatcher refuses to dispatch a command whose payload exceeds the chunk budget instead of running the agent on a shortened instruction. Other bodies, such as bot review notes, keep the 800-character bound and the truncation marker.
 
 #### `runtime` and `allowed_remote_resources` moved into `config` (breaking)
 
@@ -335,16 +494,16 @@ The `--gitlab-token` persistent flag (or `GITLAB_TOKEN`) supplies the GitLab cre
 
 To stop vendoring, set `vendor: false` in `repos.yaml`, under `defaults` or on a repository entry. The usual precedence applies: an explicit entry overrides a glob that covers the same repository. For example, run `fullsend repos set 'github.repos["acme/api"].vendor' false`, then run `repos install`. Install has no flag that overrides this setting.
 
-When a GitHub repository resolves `vendor: false`, install removes the assets an earlier vendored install left behind. Those deletions go into the same scaffold commit as the other changes, whether that commit lands directly or through a pull request. Install deletes only files that Fullsend is known to have shipped. The vendor manifest is repository content that anyone can edit, so listing a path in it never makes the path deletable on its own:
+When a GitHub repository resolves `vendor: false`, install removes the assets an earlier vendored install left behind. Those deletions go into the same scaffold commit as the other changes, whether that commit lands directly or through a pull request. Install deletes only files that fullsend is known to have shipped. The vendor manifest is repository content that anyone can edit, so listing a path in it never makes the path deletable on its own:
 
-- **Vendor manifest present.** If `.fullsend/vendor-manifest.yaml` exists, install removes only the entries it lists that are also on Fullsend's list of shipped files: files of the `.defaults/` mirror (also under `.fullsend/.defaults/`) from the current embedded layout or from an explicit list of paths earlier Fullsend versions shipped, Fullsend's reusable workflow files (`.github/workflows/reusable-dispatch.yml` and similar), the binary at `.fullsend/bin/fullsend`, and the manifest itself. Any other entry the manifest lists is kept and counted in the output, without its name. This covers a file you created under `.defaults/` or `.fullsend/.defaults/`, even in a directory Fullsend uses, as well as `.fullsend/config.yaml`, `.fullsend/config.base.yaml`, custom actions or workflows, and a root `action.yml`.
-- **Binary only.** If there is no manifest but `.fullsend/bin/fullsend` exists, install removes only the binary, the files of the current embedded `.defaults/` layout, and Fullsend's reusable workflow files. It never removes a root `action.yml` or files under `.github/actions/` or `.github/scripts/`.
+- **Vendor manifest present.** If `.fullsend/vendor-manifest.yaml` exists, install removes only the entries it lists that are also on fullsend's list of shipped files: files of the `.defaults/` mirror (also under `.fullsend/.defaults/`) from the current embedded layout or from an explicit list of paths earlier fullsend versions shipped, fullsend's reusable workflow files (`.github/workflows/reusable-dispatch.yml` and similar), the binary at `.fullsend/bin/fullsend`, and the manifest itself. Any other entry the manifest lists is kept and counted in the output, without its name. This covers a file you created under `.defaults/` or `.fullsend/.defaults/`, even in a directory fullsend uses, as well as `.fullsend/config.yaml`, `.fullsend/config.base.yaml`, custom actions or workflows, and a root `action.yml`.
+- **Binary only.** If there is no manifest but `.fullsend/bin/fullsend` exists, install removes only the binary, the files of the current embedded `.defaults/` layout, and fullsend's reusable workflow files. It never removes a root `action.yml` or files under `.github/actions/` or `.github/scripts/`.
 - **Neither present.** If there is no manifest and no binary, install removes nothing.
 - **Errors.** A malformed or untrusted vendor manifest, a failed read, or a repository tree too large to list fails the repository before anything is written.
 
-Vendored callers run Fullsend's reusable workflows from local `./.github/workflows/reusable-*.yml` targets. Before deleting those files, install rewrites Fullsend's own callers (the shim and the thin callers) in the same commit so they reference `fullsend-ai/fullsend/.github/workflows/<name>@<ref>`. Install then checks every resulting workflow in `.github/workflows/`, including workflows you wrote. If any of them still calls a local reusable workflow that would be removed, install keeps all the stale assets and reports a `pending` action that names the workflow. This happens with a custom caller. It also happens when neither the manifest's `fullsend_ref` nor a release build supplies a ref to render Fullsend's callers. To clear it, set `fullsend_ref`, use a release build, or point the custom caller at the upstream reusable workflow, then re-run install.
+Vendored callers run fullsend's reusable workflows from local `./.github/workflows/reusable-*.yml` targets. Before deleting those files, install rewrites fullsend's own callers (the shim and the thin callers) in the same commit so they reference `fullsend-ai/fullsend/.github/workflows/<name>@<ref>`. Install then checks every resulting workflow in `.github/workflows/`, including workflows you wrote. If any of them still calls a local reusable workflow that would be removed, install keeps all the stale assets and reports a `pending` action that names the workflow. This happens with a custom caller. It also happens when neither the manifest's `fullsend_ref` nor a release build supplies a ref to render fullsend's callers. To clear it, set `fullsend_ref`, use a release build, or point the custom caller at the upstream reusable workflow, then re-run install.
 
-On an established installation, install reads the stale assets, reads the workflows that might call the local targets, renders Fullsend's callers and plans the cleanup before it writes any variable or secret. If any of those steps fails, the repository fails with no variable, secret, or scaffold writes. The same plan is then used for the scaffold commit, so a live install, `--dry-run` and `repos status` reach the same decision. This ordering applies to repositories with stale vendored assets. Install still stops a repository before any write to it when it needs adoption of a managed configuration or rejects a configuration for safety.
+On an established installation, install reads the stale assets, reads the workflows that might call the local targets, renders fullsend's callers and plans the cleanup before it writes any variable or secret. If any of those steps fails, the repository fails with no variable, secret, or scaffold writes. The same plan is then used for the scaffold commit, so a live install, `--dry-run` and `repos status` reach the same decision. This ordering applies to repositories with stale vendored assets. Install still stops a repository before any write to it when it needs adoption of a managed configuration or rejects a configuration for safety.
 
 `--dry-run` previews the exact files to remove and rewrite without writing anything. [`repos status`](#repos-status) reports the same pending cleanup as drift on `vendored-assets`, including for partial installations. After the cleanup lands, a repeat install and `repos status` report nothing for vendored assets. GitLab repositories are not affected.
 
@@ -352,7 +511,44 @@ On an established installation, install reads the stale assets, reads the workfl
 
 For GitLab repos, `repos install` provisions the built-in Poller, Analyst, and Coder role credentials (`FULLSEND_GITLAB_*_TOKEN`) and any registered custom roles. Runtime and CI routing always select the registered role credential and fail closed if it is missing; the legacy `FULLSEND_FORGE_TOKEN` is never used, and there is no migration gate. Install does not remove a leftover legacy shared secret or revoke the `fullsend-bot` project token — a repository installed before the role-only rollout requires manual cleanup of those. Custom roles are registered with `--gitlab-role-registry`; a custom role may reuse another registered credential or enroll its own token via `--gitlab-role-token`. The same `repos install` run rotates any own-credential role whose project access token is expiring, expired, revoked, or unverified. `--rotate-gitlab-roles` force-rotates every own-credential role; `--rotate-gitlab-role=poller` limits the run to one role. A failed rotation leaves the previous secret in place. `repos install` exits non-zero when any role credential rotation fails (reporting `GitLab role rotation incomplete: N role credential(s) pending`), when the project-token inventory is unavailable for a forced or role-filtered rotation or when `--gitlab-role-token` replacements are supplied, and when reconciling the Poller's elevated access fails; rerun the install after resolving the reported cause. There is no public rollback to the shared token. See [gitlab-role-credentials.md](../contributing/gitlab-role-credentials.md) and [Configuring GitLab § Role identity model and credential lifecycle](../guides/getting-started/configuring-gitlab.md#role-identity-model-and-credential-lifecycle). Developer is sufficient because poller state lives on dedicated unprotected branches rather than Maintainer-only CI/CD variables. Creating project access tokens requires GitLab Premium or Ultimate on gitlab.com; self-managed instances, including Community Edition, can create them without a paid tier. The token expiry is computed in UTC so a local-timezone date cannot produce a token that GitLab already considers expired (`active: false`).
 
-For GitLab repos, `repos install` also provisions the [ADR 0125](../ADRs/0125-gitlab-hybrid-webhook-poller-dispatch.md) webhook fast path: a pipeline trigger token (`FULLSEND_TRIGGER_TOKEN`) and webhook secret (`FULLSEND_WEBHOOK_SECRET`), both stored as protected, masked CI/CD variables, plus a project webhook for issue, merge request, and comment events that triggers a pipeline on the protected default branch. The step is deferred (and reported) until the dispatcher is on the default branch, that branch is protected, and `ci_pipeline_variables_minimum_override_role=no_one_allowed` is verified. It is also deferred when a project, group, or instance-level CI/CD variable redefines a predefined variable the trigger-pipeline checks rely on (such as `CI_PIPELINE_SOURCE` or `CI_COMMIT_REF_PROTECTED`). Listing instance-level variables needs administrator access and listing group variables needs group Owner access. Every scope the installing credential can read is checked. A scope that answers forbidden is unverified, not unsafe: it neither defers a new fast path nor revokes an existing one, so a project Maintainer can enable the fast path without administrator or group Owner access. Other listing errors still fail the step. Fullsend does not verify unreadable scopes, so it trusts instance administrators and group Owners not to override those variables, either at install time or later. See [Inherited CI/CD variable trust](../guides/getting-started/configuring-gitlab.md#inherited-cicd-variable-trust) for this assumption and its failure mode. Re-runs are no-ops when everything is in place and repair a missing or drifted webhook or token. `--rotate-gitlab-trigger-token` mints a new token, updates the webhook, and then revokes the old token. While the trigger account's dispatch activation is recorded (the account route), the webhook instead embeds `FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN`, `FULLSEND_TRIGGER_TOKEN` and the Poller-owned webhook trigger are retired, `--rotate-gitlab-trigger-token` rotates nothing, and `--rotate-gitlab-trigger-account` rotates the credential the webhook uses. Token, secret, and webhook URL values are never printed. The fast-path provisioning and safety-reconciliation steps run under the `FULLSEND_GITLAB_INSTALL_LEASE` project lease; when it cannot be taken they change nothing and report the step as deferred together with an error (see [Upgrade compatibility](#upgrade-compatibility)).
+For GitLab repos, `repos install` also provisions the
+[ADR 0125](../ADRs/0125-gitlab-hybrid-webhook-poller-dispatch.md) webhook fast
+path: a pipeline trigger token (`FULLSEND_TRIGGER_TOKEN`) and webhook secret
+(`FULLSEND_WEBHOOK_SECRET`), both stored as protected, masked CI/CD variables,
+plus a project webhook for issue, merge request, and comment events that
+triggers a pipeline on the protected default branch. The step is deferred (and
+reported) until the dispatcher is on the default branch, that branch is
+protected, and `ci_pipeline_variables_minimum_override_role=no_one_allowed` is
+verified. The polling schedules stay in place as the backstop: they keep
+dispatching while the fast path is deferred or disabled, and they recover events
+whose webhook delivery is missed. See
+[Least-privilege dispatch contract](../guides/getting-started/configuring-gitlab.md#least-privilege-dispatch-contract)
+for how both paths dispatch at Developer level with typed inputs. The step is
+also deferred when a project, group, or instance-level CI/CD variable redefines
+a predefined variable the trigger-pipeline checks rely on (such as
+`CI_PIPELINE_SOURCE` or `CI_COMMIT_REF_PROTECTED`). Listing instance-level
+variables needs administrator access and listing group variables needs group
+Owner access. Every scope the installing credential can read is checked. A scope
+that answers forbidden is unverified, not unsafe: it neither defers a new fast
+path nor revokes an existing one, so a project Maintainer can enable the fast
+path without administrator or group Owner access. Other listing errors still
+fail the step. Fullsend does not verify unreadable scopes, so it trusts instance
+administrators and group Owners not to override those variables, either at
+install time or later. See
+[Inherited CI/CD variable trust](../guides/getting-started/configuring-gitlab.md#inherited-cicd-variable-trust)
+for this assumption and its failure mode. Re-runs are no-ops when everything is
+in place and repair a missing or drifted webhook or token.
+`--rotate-gitlab-trigger-token` mints a new token, updates the webhook, and then
+revokes the old token. While the trigger account's dispatch activation is
+recorded (the account route), the webhook instead embeds
+`FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN`, `FULLSEND_TRIGGER_TOKEN` and the
+Poller-owned webhook trigger are retired, `--rotate-gitlab-trigger-token`
+rotates nothing, and `--rotate-gitlab-trigger-account` rotates the credential
+the webhook uses. Token, secret, and webhook URL values are never printed. The
+fast-path provisioning and safety-reconciliation steps run under the
+`FULLSEND_GITLAB_INSTALL_LEASE` project lease; when it cannot be taken they
+change nothing and report the step as deferred together with an error (see
+[Upgrade compatibility](#upgrade-compatibility)).
 
 Project-wide trigger safety failures remove the published account token and
 revoke its owned triggers through the ledger. This applies to any existing
@@ -379,7 +575,7 @@ Install-time administration and runtime access are separate. Creating webhooks a
 
 Developer (30) access also depends on the default branch's protection settings: the poller creates pipelines via the API (`CreatePipeline`), which requires merge or push access to the protected default branch (see [ADR 0067](../ADRs/0067-gitlab-cron-polling-event-dispatch.md)). GitLab's default "Protected" preset grants Developers merge access, so this works out of the box. When a repo restricts both merge and push to Maintainers (or otherwise excludes Developer), `repos install` grants the Poller's identity — its project service account or project-access-token user (`fullsend-poller`), or the owner of a supplied Poller credential — merge access, not push, on the protected default branch so the poller can create pipelines without widening Developer-class merge policy. If that grant is not possible (no poller token user id, or the GitLab API rejects the protection update), install fails closed with a remediation error instead of leaving dispatch silently broken. `repos status` reports `protected-ref-pipeline` drift when that access is later removed or tightened. If the permission gap reappears anyway, a `CreatePipeline` 403 now fails the poll cycle after persisting retry state (the event is retried, then dropped after three failures) rather than reporting a healthy cycle with nothing dispatched.
 
-Install and converge also provision `FULLSEND_DISPATCH_SECRET` (a masked, protected CI/CD variable used to HMAC-sign dispatch variables and poller state) and create two unprotected poll-state branches (`fullsend-poll-state-slash` and `fullsend-poll-state-events`) holding an initial signed `state.json`. Existing `FULLSEND_LAST_POLL_AT_*` / `FULLSEND_LABEL_STATE` / `FULLSEND_DISPATCHED_KEYS_*` / `FULLSEND_FAILED_KEYS_*` values are migrated into those documents when present; otherwise each branch is seeded with an empty signed baseline (the events branch also records an initial issue-open recovery cutoff timestamp). Already-written branch state is left untouched. After migrating, converge deletes any still-present retired poll-state CI/CD variables; they are treated as known-retired by the orphan detector (no warnings) and are not re-seeded on install. Before any write, `repos install` (including `--dry-run`) reads the project's push rule branch name regex (**Settings > Repository > Push rules > Branch name**) and refuses the installation when it rejects `fullsend-poll-state-slash` or `fullsend-poll-state-events` and that branch does not already hold `state.json`; the error names the regex and the branches to allow. The check is skipped when the push rule cannot be read (for example on editions without push rules, or without permission to read it) or when the regex does not compile.
+Install and converge also provision `FULLSEND_DISPATCH_SECRET` (a masked, protected CI/CD variable used to HMAC-sign dispatch variables and poller state) and create two unprotected poll-state branches (`fullsend-poll-state-slash` and `fullsend-poll-state-events`) holding an initial signed `state.json`. Each missing branch is seeded with an empty signed baseline (the events branch also records an initial issue-open recovery cutoff timestamp). Already-written branch state is left untouched. The retired `FULLSEND_LAST_POLL_AT_*` / `FULLSEND_LABEL_STATE` / `FULLSEND_DISPATCHED_KEYS_*` / `FULLSEND_FAILED_KEYS_*` CI/CD variables are no longer migrated: install and converge neither read nor delete them, the orphan detector treats them as known-retired (no warnings), and uninstall deletes any leftovers. Before any write, `repos install` (including `--dry-run`) reads the project's push rule branch name regex (**Settings > Repository > Push rules > Branch name**) and refuses the installation when it rejects `fullsend-poll-state-slash` or `fullsend-poll-state-events` and that branch does not already hold `state.json`; the error names the regex and the branches to allow. The check is skipped when the push rule cannot be read (for example on editions without push rules, or without permission to read it) or when the regex does not compile.
 
 On free-tier or Community Edition instances where project access tokens are not available, enroll each required role with a personal access token using `--gitlab-role-token`. Declare the project in `repos.yaml` first (`fullsend repos set gitlab.url <url>`, then `fullsend repos set 'gitlab.repos["group/project"]' '{}'`):
 
@@ -409,12 +605,12 @@ fullsend repos install group/subgroup/project --gitlab-role-token poller=glpat-x
 #### Install and reconciliation
 
 On supported GitLab instances, normal install replaces positively identified
-Fullsend-managed legacy role tokens with project service-account credentials.
+fullsend-managed legacy role tokens with project service-account credentials.
 It verifies each replacement before publishing it and retains outgoing tokens
 for the normal rotation grace period. Administrator-supplied credentials are
 preserved; no separate migration command is required.
 
-A supplied token must satisfy the same policy as a credential Fullsend mints
+A supplied token must satisfy the same policy as a credential fullsend mints
 for the role, checked by authenticating with it before anything is recorded or
 published: it must be active and unrevoked, carry the role's token name (for
 example `fullsend-coder`) and exactly the `api` scope, and have an expiry that
@@ -527,9 +723,9 @@ To re-adopt it, for **every** role reported in the same run:
    - to keep the same credential, pass it once with
      `--gitlab-role-token <role>=<token>`. Install records it as
      administrator-supplied, and rotation manages its lifecycle from then on.
-   - or, to let Fullsend take over, omit it. Install provisions a managed
+   - or, to let fullsend take over, omit it. Install provisions a managed
      service-account credential. The previous token is not recorded as
-     Fullsend-created, so it is never revoked automatically: revoke it
+     fullsend-created, so it is never revoked automatically: revoke it
      manually once in-flight jobs have finished.
 
 Passing `--gitlab-role-token` while the old variable is still installed does
@@ -598,7 +794,12 @@ who created a per-user grant. A step that fails leaves the record for the next i
 retry, and never stops install from repairing the webhook. A trigger whose owner
 GitLab omits is revoked only when it is a managed webhook trigger no webhook
 uses; otherwise install names it so an operator can revoke it. Until retirement completes, a forced trigger rotation defers and keeps
-the existing fast path, so at most one old/new Poller pair exists. The current Poller
+the existing fast path, so at most one old/new Poller pair exists. A drifted
+fast path that needs a replacement trigger (for example, a webhook whose URL no
+longer carries the stored token) cannot be repaired until then. Install removes
+it, because retirement cannot run while a managed webhook's trigger is
+unidentifiable. It reports reconciliation as pending and names the blocker.
+Once retirement completes, install recreates it. The current Poller
 keeps polling throughout, so polling and in-flight jobs that authenticate as it
 are not interrupted. If the trigger request, its verification, or the final
 checks fail, install publishes nothing and quarantines the generation, which
@@ -649,9 +850,9 @@ unverified and add drift.
 
 #### Service-account uninstall
 
-For GitLab, uninstall removes Fullsend-owned webhook/trigger resources, their
+For GitLab, uninstall removes fullsend-owned webhook/trigger resources, their
 wildcard-scoped secrets, poll-state branches and retired variables, role
-credentials, and durably identified Fullsend-managed project service accounts.
+credentials, and durably identified fullsend-managed project service accounts.
 It preserves contributions, administrator-supplied accounts and their tokens,
 and accounts without ownership proof. Remaining credentials, SSH authentication
 keys, unfinished jobs or owned schedules/triggers prevent account deletion.
@@ -732,7 +933,7 @@ and unreported all defer), and the trigger account is ready on the default branc
 verified against live GitLab state. A legacy install, whose schedules still set
 `FULLSEND_POLL_MODE`, defers, and so does a committed CI job that a trigger,
 agent child (`source=pipeline`) or scheduled (`source=schedule`) pipeline would
-run besides Fullsend's own. Activation also defers until the committed
+run besides fullsend's own. Activation also defers until the committed
 dispatch scripts and their pre-authorization helpers match the shipped
 compatible scripts. The managed poll, agent, and dispatcher jobs must keep
 their shipped job configuration, including image, cache, automatic admission,
@@ -780,8 +981,8 @@ moved on the next install
 ([#8508](https://github.com/fullsend-ai/fullsend/issues/8508)).
 An account-owned managed schedule that carries pipeline variables is handed
 back to the installer after the containment-only recovery, the repository
-selection check and the configuration preflights, before convergence reaches the pipeline-variable schedule migration, which cannot edit
-a schedule the account owns. The repair inspects the current and every retired
+selection check and the configuration preflights, before convergence reaches typed activation, which only reads managed schedules, refuses
+while one still sets a pipeline variable, and cannot edit a schedule the account owns. The repair inspects the current and every retired
 generation whether or not the current one is ready or published, and the
 ownership stage after the install adopts the schedules again once the
 activation is recorded. A failure of that early repair is reported and the
@@ -861,6 +1062,43 @@ it, and an administrator must remove or reassign it first. States
 other than `not-installed`, `deferred`, and `ready` add `gitlab-trigger-account`
 drift.
 
+`repos status` also adds a `gitlab_webhook` object for the webhook fast path
+([ADR 0125](../ADRs/0125-gitlab-hybrid-webhook-poller-dispatch.md)). It has a
+`state`, the booleans `webhook_present`, `webhook_configured`,
+`trigger_token_ready` and `webhook_secret_ready`, and exact `reasons`. Like the
+rest of status output, it names variables and IDs only and never shows the
+trigger token, the webhook secret or the webhook URL. The states are:
+
+- `ready`: one managed webhook carries the active trigger credential with the
+  desired configuration.
+- `missing`: every gate holds but no managed webhook exists yet.
+- `drifted`: something is misconfigured or an unmet contract blocks the fast
+  path. Misconfiguration includes the webhook's trigger ref, events or SSL
+  verification, a disabled or duplicate webhook, a missing or unsafe
+  `FULLSEND_TRIGGER_TOKEN` or `FULLSEND_WEBHOOK_SECRET`, superseded trigger
+  tokens, or leftover Poller-owned trigger credentials on the trigger-account
+  route. Unmet contracts include the trigger-token safety invariants (such as
+  `ci_pipeline_variables_minimum_override_role` not being `no_one_allowed`)
+  and readiness gates (such as a wrapper or root `.gitlab-ci.yml` without the
+  typed pipeline-input contract). Unlike the trigger account, the webhook
+  status does evaluate these project-wide safety invariants.
+- `deferred`: nothing is provisioned (no managed webhook, trigger token or
+  published trigger-account credential) and the pipeline wrapper on the default
+  branch does not include the dispatcher yet. A published trigger-account
+  credential, including one from an interrupted rotation or an unreadable
+  ledger, counts as provisioned, so the safety invariants are still evaluated.
+  This covers a fresh install
+  whose initialization MR has not merged and a scaffold version that predates
+  the fast path.
+- `unreadable`: the fast path could not be verified.
+
+States other than `ready` and `deferred` add `gitlab-webhook` drift. The table
+output lists the reasons for every state except `ready`. `repos install`
+creates a missing webhook and repairs a misconfigured one. When the repair
+needs a replacement trigger token and the Poller generation state blocks it
+(for example, a superseded Poller generation has not finished retiring), the
+reasons include `reconciliation pending:` followed by the blocker.
+
 `repos uninstall` removes the published token, trigger token, push entry,
 deploy key, the managed polling schedules the account owns (deleted without an
 installer-owned copy), and the account under the project lease, after the webhook fast path
@@ -884,9 +1122,8 @@ install. Never delete a live installer's lease.
 > converge against a project before running this version against it.
 > Dispatch is unaffected: the polling path never reads rotation state.
 
-The current CLI reads the prior unversioned format and versions 1 and 2, and
-always writes version 2. Version 1 is never written. CLIs built with the
-tolerant reader ([#8233](https://github.com/fullsend-ai/fullsend/issues/8233))
+The current CLI reads and writes only version 2. Version 1 is never written.
+CLIs built with the tolerant reader ([#8233](https://github.com/fullsend-ai/fullsend/issues/8233))
 accept version 1 but ignore the ownership fields (`created_token_ids`,
 `supplied_token_id`, `supplied`, `excluded_user_ids`) when they select outgoing
 tokens or run grace cleanup, so a version 1 document could let them revoke an
@@ -901,6 +1138,16 @@ and revokes active role-named project tokens, supplied ones included. Never run
 an older CLI for install or uninstall against a project this version manages.
 No CLI refuses state silently and then rewrites it: an unsupported version is
 never rewritten.
+
+> **BREAKING CHANGE ([#8246](https://github.com/fullsend-ai/fullsend/issues/8246)):**
+> the current CLI no longer reads the legacy unversioned format or version 1,
+> and rejects documents with unknown fields. It refuses such state before
+> touching any credential and does not rewrite it. A project whose state was
+> never converged by a CLI that writes version 2 must first be converged once
+> by a CLI that includes
+> [#8313](https://github.com/fullsend-ai/fullsend/pull/8313) but predates the
+> #8246 change, which rewrites the state as version 2. Do not edit the
+> `version` field by hand.
 
 The upgrade is one-way. After the first install, converge or uninstall with a
 CLI that includes this change ([#8313](https://github.com/fullsend-ai/fullsend/pull/8313)),
@@ -1030,7 +1277,7 @@ secrets are unconditionally reported as drift.
 
 ## `repos status`
 
-Read-only comparison of the `repos.yaml` manifest against actual forge state. Reports installation status and configuration drift for each repo, including declared configuration-preset drift against `.fullsend/config.base.yaml` and managed configuration drift against `.fullsend/config.yaml`. An existing `.fullsend/config.base.yaml` with no resolved preset is reported as drift. Both configuration files are checked even for a repo with no Fullsend components yet: an undeclared base, a differing preset base, or a managed `.fullsend/config.yaml` that lacks the ownership marker is reported before first install. Files that install would simply add are not reported as missing until the repo is installed. An existing zero-byte `.fullsend/config.yaml` counts as an existing markerless file, so it also requires adoption. For every markerless overlay, the table and the JSON `detail` field show the proposed `repos.yaml` entry that carries each existing setting (all under the entry's `config`, including `runtime`, `allowed_remote_resources`, and values equal to the code defaults) the setting-level difference between the existing file and the managed file adoption would produce, and the effective layered-configuration change (the existing overlay over the installed base compared with the managed overlay over the base layer the run would leave in place), so the operator can see which settings would be lost, or would change only through the base layer, before adopting. A markerless overlay that is malformed or not a per-repo configuration is reported as a status error rather than adoption guidance.
+Read-only comparison of the `repos.yaml` manifest against actual forge state. Reports installation status and configuration drift for each repo, including declared configuration-preset drift against `.fullsend/config.base.yaml` and managed configuration drift against `.fullsend/config.yaml`. An existing `.fullsend/config.base.yaml` with no resolved preset is reported as drift. Both configuration files are checked even for a repo with no fullsend components yet: an undeclared base, a differing preset base, or a managed `.fullsend/config.yaml` that lacks the ownership marker is reported before first install. Files that install would simply add are not reported as missing until the repo is installed. An existing zero-byte `.fullsend/config.yaml` counts as an existing markerless file, so it also requires adoption. For every markerless overlay, the table and the JSON `detail` field show the proposed `repos.yaml` entry that carries each existing setting (all under the entry's `config`, including `runtime`, `allowed_remote_resources`, and values equal to the code defaults) the setting-level difference between the existing file and the managed file adoption would produce, and the effective layered-configuration change (the existing overlay over the installed base compared with the managed overlay over the base layer the run would leave in place), so the operator can see which settings would be lost, or would change only through the base layer, before adopting. A markerless overlay that is malformed or not a per-repo configuration is reported as a status error rather than adoption guidance.
 
 ```bash
 fullsend repos status
@@ -1062,13 +1309,13 @@ Inference credentials are checked against each repo's own effective `inference.a
 - A missing secret or CI/CD variable of the selected method is reported as drift on that name (for example `FULLSEND_OPENAI_API_KEY` reported as `missing`). The other method's credentials are not required.
 - An `openai-wif` repo reports drift on `identifiers` when no complete OpenAI WIF identifier set is live on the default branch (missing, or partially configured). Only identifier names are reported. The GCP secrets are optional and `FULLSEND_OPENAI_API_KEY` is reported as obsolete. Drift on `workflows` means an installed caller or its actual reusable-workflow target cannot forward WIF identifiers, obtain an OIDC token, or run with the available secrets. Status checks live targets, including vendored workflows, rather than assuming the manifest pin has landed.
 - An `openai-api-key` repo on GitHub reports drift on `residual-identifiers` when OpenAI WIF identifiers (complete or partial) stay active in an organization variable it inherits or in `inference.openai` configuration on the default branch, since the runtime prefers them over the API key. Repository-scoped identifier variables are reported as orphans. Only names are reported. `repos install` rejects such a repo until the residual variables or `inference.openai` blocks are removed.
-- A Fullsend-managed secret of the method that is **not** selected (`FULLSEND_GCP_PROJECT_ID` / `FULLSEND_GCP_WIF_PROVIDER` on an `openai-api-key` repo, or `FULLSEND_OPENAI_API_KEY` on a `vertex-wif` or `openai-wif` repo) is reported as obsolete drift (`expected absent`). So is a leftover `FULLSEND_GCP_REGION` variable on an `openai-api-key` repo. This drift is reported even when the repo is otherwise not installed. `repos install` removes these once the replacement configuration is on the default branch. Only presence is checked, so values are never read or printed.
-- `FULLSEND_MINT_URL` and `FULLSEND_GCP_REGION` are compared with the same [effective infrastructure values](#effective-infrastructure-values) install would write, so status, `--dry-run`, and install agree. `FULLSEND_GCP_REGION` is compared only when a region is declared, and then a missing variable is reported as drift just like a changed value; an undeclared region is never reported as drift. A mint URL conflict between the manifest and the effective configuration is reported as a configuration error for that repo, as is a declared Vertex configuration install would reject (an invalid `inference.project` or `inference.wif_provider`, or a `wif_provider` without a declared `project`; install rejects the latter even when `--vertex-project` is passed).
-- On GitLab, only `FULLSEND_OPENAI_API_KEY` satisfies the `openai-api-key` requirement. An unprefixed `OPENAI_API_KEY` CI/CD variable does not, and is neither reported nor touched. `FULLSEND_OPENAI_API_KEY` is always classified as Fullsend-managed, never as an orphan.
+- A fullsend-managed secret of the method that is **not** selected (`FULLSEND_GCP_PROJECT_ID` / `FULLSEND_GCP_WIF_PROVIDER` on an `openai-api-key` repo, or `FULLSEND_OPENAI_API_KEY` on a `vertex-wif` or `openai-wif` repo) is reported as obsolete drift (`expected absent`). So is a leftover `FULLSEND_GCP_REGION` variable on an `openai-api-key` repo, and a `FULLSEND_GCP_SERVICE_ACCOUNT` variable on a GitLab repo that does not declare `inference.service_account` or does not use `vertex-wif`. This drift is reported even when the repo is otherwise not installed. `repos install` removes these once the replacement configuration is on the default branch. Only presence is checked, so values are never read or printed.
+- `FULLSEND_MINT_URL`, `FULLSEND_GCP_REGION`, and `FULLSEND_GCP_SERVICE_ACCOUNT` are compared with the same [effective infrastructure values](#effective-infrastructure-values) install would write, so status, `--dry-run`, and install agree. `FULLSEND_GCP_SERVICE_ACCOUNT` is compared only when `inference.service_account` is declared; a missing or different variable is then drift. A declared `inference.wif_audience` is rendered into the expected `.gitlab/ci/fullsend-agent.yml`, so an agent job still requesting `aud: "fullsend"` is reported as scaffold drift. `FULLSEND_GCP_REGION` is compared only when a region is declared, and then a missing variable is reported as drift just like a changed value; an undeclared region is never reported as drift. A mint URL conflict between the manifest and the effective configuration is reported as a configuration error for that repo, as is a declared Vertex configuration install would reject (an invalid `inference.project` or `inference.wif_provider`, or a `wif_provider` without a declared `project`; install rejects the latter even when `--vertex-project` is passed).
+- On GitLab, only `FULLSEND_OPENAI_API_KEY` satisfies the `openai-api-key` requirement. An unprefixed `OPENAI_API_KEY` CI/CD variable does not, and is neither reported nor touched. `FULLSEND_OPENAI_API_KEY` is always classified as fullsend-managed, never as an orphan.
 
 On self-managed GitLab, a non-admin token generally cannot inspect instance CI/CD variables. Inaccessible group or instance scopes are reported as unverified rather than blocking an otherwise valid static-key install. After switching to `openai-api-key`, obsolete inference credentials remain until all inherited scopes can be verified. Confirm no inherited `FULLSEND_OPENAI_*` identifiers override the key, then remove credentials that are no longer needed manually. Confirmed residual identifiers still block convergence. Status reports inherited identifier conflicts and unread scopes as readiness drift. File-type OpenAI identifier variables also block the static-key route, even with blank stored contents: GitLab exports a nonblank temporary file path.
 
-GitLab variable lookups use the wildcard environment scope (`*`), which is visible to Fullsend jobs without a deployment environment. Fullsend-managed variables, including `FULLSEND_MINT_URL`, are already created at wildcard scope, so Fullsend installations require no migration. A variable visible in GitLab settings but absent to the CLI may have only a named environment scope: check `environment_scope` before treating it as deleted. Optional GitLab variables can be absent without status drift; Fullsend currently has no required GitLab repository variables. Reads, updates, and deletion all target `*`, preserving definitions of the same name in named environments. Readable inherited OpenAI identifiers with blank values do not block a static-key installation; the nearest group overrides ancestor and instance values, while unreadable scopes remain unverified.
+GitLab variable lookups use the wildcard environment scope (`*`), which is visible to fullsend jobs without a deployment environment. Fullsend-managed variables, including `FULLSEND_MINT_URL`, are already created at wildcard scope, so fullsend installations require no migration. A variable visible in GitLab settings but absent to the CLI may have only a named environment scope: check `environment_scope` before treating it as deleted. Optional GitLab variables can be absent without status drift; fullsend currently has no required GitLab repository variables. Reads, updates, and deletion all target `*`, preserving definitions of the same name in named environments. Readable inherited OpenAI identifiers with blank values do not block a static-key installation; the nearest group overrides ancestor and instance values, while unreadable scopes remain unverified.
 
 Status is read-only and reports secret and variable names only, never their values.
 
@@ -1119,14 +1366,26 @@ Requires a GitHub token via `GH_TOKEN`, `GITHUB_TOKEN`, or `gh auth token`. For 
 
 Tear down fullsend from the specified repos and remove them from the manifest. By default, the command tears down first (opening a PR to remove workflow files, then deleting variables and secrets via the API), then removes successfully-torn-down repos from the manifest. Partial failures leave the manifest entry intact so the user can retry.
 
-File deletions (workflow YAML, `.fullsend/config.yaml`, and GitLab `.gitlab-ci.yml` unmerge) are delivered as a pull request unless `--direct` is set, matching `repos install`. Variable and secret deletions are API-only operations and always happen immediately. For GitLab repos, uninstall also deletes the `fullsend-poll-state-slash` and `fullsend-poll-state-events` branches (a missing branch is ignored so older installs still uninstall cleanly) after deleting the Fullsend-owned webhook fast-path project webhook (hooks Fullsend does not own are left untouched) and revoking its managed Poller-owned pipeline trigger token before any scaffold file is removed, and deleting the wildcard-scoped `FULLSEND_TRIGGER_TOKEN` and `FULLSEND_WEBHOOK_SECRET` variables (a failure there fails uninstall and leaves the manifest entry in place for retry). On the trigger-account route, `FULLSEND_TRIGGER_TOKEN` was already deleted during install and the webhook's trigger is revoked during the trigger-account removal described below. Uninstall also deletes the retired poll-state CI/CD variables, registry/rotation-state variables (`FULLSEND_GITLAB_POLLER_GENERATIONS` is deleted last, only after every Poller account it records was verified and deleted; uninstall retains it when cleanup is incomplete or ambiguous, so the quarantine and retirement obligations it records survive until an administrator has reconciled them), built-in and custom `FULLSEND_GITLAB_*_TOKEN` secrets, and the corresponding `fullsend-poller` / `fullsend-analyst` / `fullsend-coder` / `fullsend-role-*` project access tokens. Uninstall does **not** delete a leftover `FULLSEND_FORGE_TOKEN` secret or revoke a matching `fullsend-bot` project access token — a repository installed before the role-only rollout requires manual cleanup of those. Token revocation is part of uninstall success: if listing or revoking the role project access tokens fails, uninstall fails and the manifest entry is left in place for retry. Reinstall and converge do not revoke credentials that are already distributed. Before deleting anything, uninstall reads the rotation-state variable and fails closed, leaving every variable, secret, and token in place, if it is unreadable or malformed. The rotation-state variable is deleted last, after every other cleanup step succeeds; when it records administrator-supplied service-account exclusions, an exclusions-only document is retained so a later install or uninstall does not treat those accounts as Fullsend-managed. When the rotation state records an administrator-supplied credential whose owner was never recorded and the CLI's token client cannot attribute it, uninstall does not guess: it leaves the supplied role's project access token and the whole rotation-state variable in place (reporting this in the cleanup diagnostics) and still removes everything else.
+File deletions (workflow YAML, `.fullsend/config.yaml`, and GitLab `.gitlab-ci.yml` unmerge) are delivered as a pull request unless `--direct` is set, matching `repos install`. Variable and secret deletions are API-only operations and always happen immediately. For GitLab repos, uninstall also deletes the `fullsend-poll-state-slash` and `fullsend-poll-state-events` branches (a missing branch is ignored so older installs still uninstall cleanly) after deleting the fullsend-owned webhook fast-path project webhook (hooks fullsend does not own are left untouched) and revoking its managed Poller-owned pipeline trigger token before any scaffold file is removed, and deleting the wildcard-scoped `FULLSEND_TRIGGER_TOKEN` and `FULLSEND_WEBHOOK_SECRET` variables (a failure there fails uninstall and leaves the manifest entry in place for retry). On the trigger-account route, `FULLSEND_TRIGGER_TOKEN` was already deleted during install and the webhook's trigger is revoked during the trigger-account removal described below. Uninstall also deletes the retired poll-state CI/CD variables, registry/rotation-state variables (`FULLSEND_GITLAB_POLLER_GENERATIONS` is deleted last, only after every Poller account it records was verified and deleted; uninstall retains it when cleanup is incomplete or ambiguous, so the quarantine and retirement obligations it records survive until an administrator has reconciled them), built-in and custom `FULLSEND_GITLAB_*_TOKEN` secrets, and the corresponding `fullsend-poller` / `fullsend-analyst` / `fullsend-coder` / `fullsend-role-*` project access tokens. Uninstall does **not** delete a leftover `FULLSEND_FORGE_TOKEN` secret or revoke a matching `fullsend-bot` project access token — a repository installed before the role-only rollout requires manual cleanup of those. Token revocation is part of uninstall success: if listing or revoking the role project access tokens fails, uninstall fails and the manifest entry is left in place for retry. Reinstall and converge do not revoke credentials that are already distributed. Before deleting anything, uninstall reads the rotation-state variable and fails closed, leaving every variable, secret, and token in place, if it is unreadable or malformed. The rotation-state variable is deleted last, after every other cleanup step succeeds; when it records administrator-supplied service-account exclusions, an exclusions-only document is retained so a later install or uninstall does not treat those accounts as fullsend-managed. When the rotation state records an administrator-supplied credential whose owner was never recorded and the CLI's token client cannot attribute it, uninstall does not guess: it leaves the supplied role's project access token and the whole rotation-state variable in place (reporting this in the cleanup diagnostics) and still removes everything else.
 
 GitLab uninstall holds the `FULLSEND_GITLAB_INSTALL_LEASE` project lease for the whole teardown, from webhook removal through the final variable, secret, branch, and token deletions, so no concurrent installer can publish a replacement hook, trigger token, or role credential mid-teardown. It fails closed: if another installer holds the lease or the client cannot take it, uninstall stops before removing anything and the manifest entry is left in place for retry. See [Upgrade compatibility](#upgrade-compatibility) for stranded-lease recovery.
+
+The GitLab file removal, whether by pull request or `--direct`, also deletes
+the webhook dispatcher scaffold (`.gitlab/ci/fullsend-dispatcher.yml` and
+`.gitlab/ci/scripts/run-dispatcher-job.sh`). The `.gitlab-ci.yml` unmerge
+removes fullsend's `trigger` and child-pipeline workflow rules along with its
+include, stages and other rules, and keeps the user's own entries. A repository
+whose fast path was never provisioned (installed before it shipped, or never
+converged) uninstalls cleanly: an absent webhook, trigger token, credential
+variable or dispatcher file is skipped. Uninstall leaves the project's
+`ci_pipeline_variables_minimum_override_role` setting unchanged. The restrictive
+`no_one_allowed` value is safe to keep; relax it yourself in the GitLab project
+settings if other pipelines need pipeline-variable overrides.
 
 For the service-account cleanup, see
 [GitLab project service-account lifecycle § Service-account uninstall](#service-account-uninstall).
 
-For GitLab, uninstall first contains an interrupted trigger-account bootstrap under the project lease, before the Poller is reconciled and without reading the Poller inventory: it revokes recorded bootstrap tokens and restores Developer access, and a containment failure stops the uninstall. Uninstall then also removes the trigger-only service account after the webhook fast path and before role-identity cleanup: the published `FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN` variable, the trigger token, the protected-branch push entry, the deploy key, the managed polling schedules the account owns (deleted without an installer-owned copy), the account, and finally the `FULLSEND_GITLAB_TRIGGER_ACCOUNT` ledger. Before deleting the account, uninstall and rotation retirement check that it owns no active personal access token, SSH key, pipeline schedule or trigger token that Fullsend did not create, and that each of those inventories can be read; otherwise the account is kept. The ledger is kept until cleanup succeeds, so a retried uninstall resumes. See [Trigger-only service account](#trigger-only-service-account).
+For GitLab, uninstall first contains an interrupted trigger-account bootstrap under the project lease, before the Poller is reconciled and without reading the Poller inventory: it revokes recorded bootstrap tokens and restores Developer access, and a containment failure stops the uninstall. Uninstall then also removes the trigger-only service account after the webhook fast path and before role-identity cleanup: the published `FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN` variable, the trigger token, the protected-branch push entry, the deploy key, the managed polling schedules the account owns (deleted without an installer-owned copy), the account, and finally the `FULLSEND_GITLAB_TRIGGER_ACCOUNT` ledger. Before deleting the account, uninstall and rotation retirement check that it owns no active personal access token, SSH key, pipeline schedule or trigger token that fullsend did not create, and that each of those inventories can be read; otherwise the account is kept. The ledger is kept until cleanup succeeds, so a retried uninstall resumes. See [Trigger-only service account](#trigger-only-service-account).
 
 Uninstall PR delivery intentionally reuses the same branch as `repos install`/`converge` (`fullsend/scaffold-install`), since already-deployed per-repo shims only exclude that branch name from dispatch. **Known limitation:** if an install PR is still open on that branch when uninstall runs (or an uninstall PR is open when install/converge runs), the existing PR is updated with the new commit but its title and body are left unchanged — the PR may show an install-oriented title while its diff now removes files, or vice versa. Check the PR's diff, not just its title, before merging when install and uninstall run close together against the same repo.
 
@@ -1134,7 +1393,7 @@ GCP WIF pool/provider cleanup for GitHub repos is handled separately via `infere
 
 When multiple repos are targeted (via globs or explicit bulk lists), the command prompts for confirmation unless `--yes` is set. Credentials are required only for the forges of the targeted repos. Uninstall does not require an `inference.auth` selection, so manifests without one can still be torn down.
 
-Uninstall removes every Fullsend-managed inference credential, whatever the repo's `inference.auth` is (or whether it is set or valid at all): `FULLSEND_GCP_PROJECT_ID`, `FULLSEND_GCP_WIF_PROVIDER`, and `FULLSEND_OPENAI_API_KEY`, plus the `FULLSEND_GCP_REGION` variable. Leftovers from an earlier method and partially installed repos are cleaned up the same way. A credential that is already absent is skipped, so re-running uninstall is safe. Uninstall never deletes an unprefixed `OPENAI_API_KEY` secret or CI/CD variable, or any other credential Fullsend does not manage. It also leaves the user-managed `FULLSEND_OPENAI_AUDIENCE`, `FULLSEND_OPENAI_IDENTITY_PROVIDER_ID` and `FULLSEND_OPENAI_SERVICE_ACCOUNT_ID` identifier variables in place. Remove `OPENAI_API_KEY` yourself if nothing else uses it.
+Uninstall removes every fullsend-managed inference credential, whatever the repo's `inference.auth` is (or whether it is set or valid at all): `FULLSEND_GCP_PROJECT_ID`, `FULLSEND_GCP_WIF_PROVIDER`, and `FULLSEND_OPENAI_API_KEY`, plus the `FULLSEND_GCP_REGION` variable (and, on GitLab, `FULLSEND_GCP_SERVICE_ACCOUNT`). Leftovers from an earlier method and partially installed repos are cleaned up the same way. A credential that is already absent is skipped, so re-running uninstall is safe. Uninstall never deletes an unprefixed `OPENAI_API_KEY` secret or CI/CD variable, or any other credential fullsend does not manage. It also leaves the user-managed `FULLSEND_OPENAI_AUDIENCE`, `FULLSEND_OPENAI_IDENTITY_PROVIDER_ID` and `FULLSEND_OPENAI_SERVICE_ACCOUNT_ID` identifier variables in place. Remove `OPENAI_API_KEY` yourself if nothing else uses it.
 
 ```bash
 fullsend repos uninstall acme/old-api

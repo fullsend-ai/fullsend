@@ -246,6 +246,7 @@ func dispatcherPinState(source, ref string) *pinAPIState {
 		projectJSON:  `{"id":42,"default_branch":"main","path_with_namespace":"pinned/project"}`,
 		branchJSON:   `{"name":"` + ref + `","protected":true}`,
 		pipelineJSON: `{"id":100,"source":"` + source + `"}`,
+		userIDByPAT:  map[string]int{"poller-pat": 10, "analyst-pat": 55},
 	}
 }
 
@@ -361,6 +362,7 @@ echo "CI_COMMIT_REF_NAME=${CI_COMMIT_REF_NAME}"
 echo "JOB_TOKEN=${FULLSEND_JOB_TOKEN:-}"
 echo "CODER=${FULLSEND_GITLAB_CODER_TOKEN:-<unset>}"
 echo "ANALYST=${FULLSEND_GITLAB_ANALYST_TOKEN:-<unset>}"
+echo "ANALYST_USER_ID=${FULLSEND_GITLAB_ANALYST_USER_ID:-<unset>}"
 echo "FORGE=${FULLSEND_FORGE_TOKEN:-<unset>}"
 echo "TRIGGER=${FULLSEND_TRIGGER_TOKEN:-<unset>}"
 echo "WEBHOOK_SECRET=${FULLSEND_WEBHOOK_SECRET:-<unset>}"
@@ -401,6 +403,9 @@ echo "WEBHOOK_SECRET=${FULLSEND_WEBHOOK_SECRET:-<unset>}"
 	assert.Contains(t, got, "JOB_TOKEN=poller-pat")
 	assert.Contains(t, got, "CODER=<unset>")
 	assert.Contains(t, got, "ANALYST=<unset>")
+	// Only the Analyst's numeric ID reaches the driver (#8807).
+	assert.Contains(t, got, "ANALYST_USER_ID=55")
+	assert.NotContains(t, got, "analyst-pat")
 	assert.Contains(t, got, "FORGE=<unset>")
 	assert.Contains(t, got, "TRIGGER=<unset>", "the webhook trigger bearer must not reach the driver")
 	assert.Contains(t, got, "WEBHOOK_SECRET=<unset>", "the webhook secret must not reach the driver")

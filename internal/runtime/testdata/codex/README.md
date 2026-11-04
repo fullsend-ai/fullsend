@@ -43,7 +43,11 @@ Codex **rollouts** (`$CODEX_HOME/sessions/**/rollout-*.jsonl`) for `foldCodexChi
 | `child_usage_forked.jsonl` | A forked child (hand-authored from codex 0.159.3's fork rules): the parent's `turn_context` (`gpt-5.6-luna`) and `token_count` copied ahead of the child's own `turn_context` (`gpt-5.6-terra`) and `token_usage_record`; its usage lands under `gpt-5.6-terra`. |
 
 The tests lay the rollouts out under a temporary sessions tree as
-`2026/09/29/rollout-2026-09-29T15-46-38-<thread id>.jsonl`, the name codex gives a rollout.
+`2026/09/29/rollout-2026-09-29T15-46-38-<thread id>.jsonl`, the name codex gives a rollout,
+and the findings log beside the tree as `.security/findings.jsonl`. `spawn_admissions.jsonl` is
+that log for a run whose spawn guard admitted three spawns and denied one, in the adapter's
+`log_finding` shape, plus one `secret_redact_posttool` finding; `countCodexSpawnAdmissions`
+counts the three `codex_spawn_guard_admit` lines by name.
 
 ## Event structs
 
@@ -51,7 +55,37 @@ Copied from `openai/codex` tag `rust-v0.152.1` and re-checked at `rust-v0.157.0`
 (both files are byte-identical between the `rust-v0.157.0` and `rust-v0.159.3` tags),
 `codex-rs/exec/src/exec_events.rs` (shapes) and
 `codex-rs/exec/src/event_processor_with_jsonl_output.rs` (when each event is
-emitted). Re-check both when `CODEX_VERSION` moves.
+emitted). Re-check both when `CODEX_VERSION` moves, and with them three facts the admission
+cross-check (`codex_subagents.go`) rests on at `rust-v0.159.3`: a resume reaches the stream as a
+`wait` item (`CollabAgentTool::ResumeAgent => CollabTool::Wait` in the same processor); in-process
+delivery guarantees only TurnCompleted, the thread-state notifications and async AgentMessage
+items, drops any other item notification (a collab item's `item.completed` included) when its
+channel is full, and logs `dropping in-process server notification (queue full)` at warn from
+`codex_app_server::in_process` (`codex-rs/app-server/src/in_process.rs`), which the runner scans
+for, while exec re-emits at `turn/completed` the completed items whose `item.started` it saw
+(`maybe_backfill_turn_completed_items`, `reconcile_unfinished_started_items`), only for a
+non-ephemeral thread and only when its `thread/read` succeeds (`should_backfill_turn_completed_items`;
+a failed read logs `thread/read failed while backfilling turn items for turn completion` at warn
+from `codex_exec`, which the runner counts too), so a spawn that lost both notifications or whose
+backfill failed is missing; and exec's default stderr filter is `error,opentelemetry_sdk=off,opentelemetry_otlp=off`
+(`codex-rs/exec/src/lib.rs`, `EXEC_DEFAULT_LOG_FILTER`), which the launch command keeps as its
+base. The disk side of the cross-check rests on four more: a PreToolUse block returns before the
+tool handler runs, so a blocked spawn creates no thread and emits no item
+(`codex-rs/core/src/tools/registry.rs`); a spawn refused at the thread limit fails at
+`reserve_spawn_slot` before any thread exists (`codex-rs/core/src/agent/control/spawn.rs`); a
+child's rollout is `sessions/YYYY/MM/DD/rollout-<ts>-<thread id>.jsonl` (`_<rollout id>` appended
+after a `thread/revert`; `codex-rs/rollout/src/rollout_file_name.rs`), created at its first
+recorded item before its first line is written; that line, a `session_meta` carrying
+`parent_thread_id`, waits on git info, and a failed write leaves the file empty until a retry or
+with a cut first line for good (codex ends the fragment and writes `session_meta` on the next
+line), so the name is the identity of a file without a usable first line; each line is written
+whole with its newline in one `write_all`, and every `SessionMeta` field before `parent_thread_id`
+is a scalar, so a first line that does not end in `}` and its newline is cut, whether read while it
+is written or closed by codex after a failed write (`codex-rs/rollout/src/recorder.rs`:
+`write_pending_once`, `write_session_meta`, `ensure_rollout_is_newline_terminated`,
+`JsonlWriter::write_line`; `codex-rs/protocol/src/protocol.rs`, `SessionMeta`); and in an exec run
+with approvals off and memories off by default only the root and its spawned children write
+rollouts there.
 
 Top-level `ThreadEvent` — serde `tag = "type"`, the variant payload flattened
 next to it:

@@ -8,7 +8,8 @@ custom agent scripts using `fullsend issues get`,
 ## When to use
 
 The built-in agent pipeline handles comment posting automatically for
-GitHub-sourced events. Use these commands when:
+GitHub-sourced events and for Jira-sourced triage and code runs. Use these
+commands when:
 
 - A custom agent needs to post results back to **Jira** or **GitLab**.
 - An agent script needs to **read** issue content (title, body, labels,
@@ -264,8 +265,13 @@ Set a default tracker in `.fullsend/config.yaml` to avoid passing
 `--tracker` on every invocation:
 
 ```yaml
-tracker: jira
+tracker:
+  jira: {}
 ```
+
+The provider block that is present under `tracker` selects the default.
+Existing configs that use the scalar form (`tracker: jira`) must be migrated
+to this form; the scalar is rejected.
 
 Then pass `--fullsend-dir .fullsend` (or let the agent pipeline supply
 it). An explicit `--tracker` flag overrides the config default. See

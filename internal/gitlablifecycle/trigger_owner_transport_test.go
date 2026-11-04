@@ -318,7 +318,7 @@ func TestTriggerOwnerSuppliedTokenIDs(t *testing.T) {
 	// The analyst and coder credentials share owner 55, but the coder's token
 	// ID was never recorded, so every token of that account stands in for the
 	// credential and the owner is omitted.
-	handleRotationState(t, mux, "g%2Fp", `{"roles":{`+
+	handleRotationState(t, mux, "g%2Fp", `{"version":2,"roles":{`+
 		`"poller":{"supplied":true,"supplied_user_id":90,"supplied_token_id":11},`+
 		`"analyst":{"supplied":true,"supplied_user_id":55,"supplied_token_id":12},`+
 		`"coder":{"supplied":true,"supplied_user_id":55},`+
@@ -348,7 +348,7 @@ func TestTriggerOwnerSuppliedTokenIDs(t *testing.T) {
 // prevents attribution fails closed.
 func TestTriggerOwnerAttributeSuppliedRole(t *testing.T) {
 	ctx := context.Background()
-	const analystSupplied = `{"roles":{"poller":{"phase":"idle","incoming_id":7},"analyst":{"supplied":true,"phase":"idle","distributed_at":"2026-01-01T00:00:00Z"}}}`
+	const analystSupplied = `{"version":2,"roles":{"poller":{"phase":"idle","incoming_id":7},"analyst":{"supplied":true,"phase":"idle","distributed_at":"2026-01-01T00:00:00Z"}}}`
 	for name, tc := range map[string]struct {
 		state          string
 		registryStatus int
@@ -365,7 +365,7 @@ func TestTriggerOwnerAttributeSuppliedRole(t *testing.T) {
 		"secret not installed":   {state: analystSupplied, secretStatus: http.StatusNotFound, want: "no longer installed"},
 		"credential rejected":    {state: analystSupplied, userStatus: http.StatusUnauthorized, want: "cannot be attributed"},
 		"client build fails":     {state: analystSupplied, newClientErr: true, want: "building a GitLab client"},
-		"role is not registered": {state: `{"roles":{"poller":{"phase":"idle","incoming_id":7},"ghost":{"supplied":true}}}`, want: "not registered"},
+		"role is not registered": {state: `{"version":2,"roles":{"poller":{"phase":"idle","incoming_id":7},"ghost":{"supplied":true}}}`, want: "not registered"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			mux := http.NewServeMux()

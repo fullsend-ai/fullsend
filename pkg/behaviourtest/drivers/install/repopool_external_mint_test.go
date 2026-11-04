@@ -13,7 +13,7 @@ import (
 func TestExternalMintInstall_ReturnsMintURL(t *testing.T) {
 	d := &externalMintDriver{mintURL: "https://mint.test"}
 
-	mintURL, err := d.Install(context.Background(), "my-org")
+	mintURL, err := d.Install(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, "https://mint.test", mintURL)
 }

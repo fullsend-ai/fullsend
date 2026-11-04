@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 .PHONY: help bootstrap ensure-hooks lint lint-all check fmt \
-       mindmap go-build go-test go-fmt go-vet go-tidy \
+       go-build go-test go-fmt go-vet go-tidy \
        lint-md-links script-test test ci-local \
        behaviour-test playback-test \
        wasm-build wasm-stage wasm-stage-traced mint-cf-worker-test
@@ -18,7 +18,6 @@ help:
 	@echo "  lint-all             - Run linting on all files"
 	@echo "  check                - Run ruff and ty checks on Python"
 	@echo "  fmt                  - Format Python code with ruff"
-	@echo "  mindmap              - Open the interactive document graph in a browser"
 	@echo "  go-build             - Build the fullsend binary"
 	@echo "  go-test              - Run Go tests with race detection and coverage"
 	@echo "  go-fmt               - Format Go code"
@@ -94,9 +93,6 @@ check:
 
 fmt:
 	uvx ruff format .
-
-mindmap:
-	@xdg-open web/public/index.html 2>/dev/null || open web/public/index.html 2>/dev/null || echo "Open web/public/index.html in your browser"
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 
@@ -210,6 +206,7 @@ script-test:
 	$(call run-timed,bash hack/gitlab-runner-vm/create-openshift-vm_test.sh)
 	$(call run-timed,bash hack/gitlab-runner-vm/create-gcp-vm_test.sh)
 	$(call run-timed,bash hack/gitlab-runner-vm/podman-prune_test.sh)
+	$(call run-timed,bash hack/gitlab-runner-vm/os-update_test.sh)
 	$(call run-timed,bash hack/gitlab-runner-vm/grow-root-fs_test.sh)
 	$(call run-timed,bash hack/setup-e2e-inference-gateway_test.sh)
 	$(call run-timed,bash hack/setup-new-e2e-org_test.sh)

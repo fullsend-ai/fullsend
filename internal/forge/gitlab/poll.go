@@ -221,6 +221,37 @@ func (pc *PollClient) ListMergeRequestNotes(ctx context.Context, owner, repo str
 	return result, nil
 }
 
+// ListMergeRequestDiffVersions returns every diff version of the given
+// merge request. GitLab records a new version on each push to the source
+// branch.
+func (pc *PollClient) ListMergeRequestDiffVersions(ctx context.Context, owner, repo string, mrIID int) ([]poll.MergeRequestDiffVersion, error) {
+	proj := projectPath(owner, repo)
+	var result []poll.MergeRequestDiffVersion
+
+	for page := 1; page <= 100; page++ {
+		path := fmt.Sprintf("/projects/%s/merge_requests/%d/versions?per_page=%d&page=%d",
+			proj, mrIID, pollPerPage, page)
+
+		resp, err := pc.get(ctx, path)
+		if err != nil {
+			return nil, fmt.Errorf("list merge request diff versions page %d: %w", page, err)
+		}
+
+		var raw []poll.MergeRequestDiffVersion
+		if err := decodeJSON(resp, &raw); err != nil {
+			return nil, fmt.Errorf("decode merge request diff versions page %d: %w", page, err)
+		}
+
+		result = append(result, raw...)
+
+		if len(raw) < pollPerPage {
+			break
+		}
+	}
+
+	return result, nil
+}
+
 // ListResourceLabelEvents returns all resource label events for the
 // given issue in ascending ID order.
 func (pc *PollClient) ListResourceLabelEvents(ctx context.Context, owner, repo string, issueIID int) ([]poll.ResourceLabelEvent, error) {
@@ -376,16 +407,6 @@ func (pc *PollClient) GetMergeRequest(ctx context.Context, owner, repo string, m
 		return nil, fmt.Errorf("decode merge request !%d: %w", mrIID, err)
 	}
 	return &mr, nil
-}
-
-// CreatePipeline creates a new pipeline on the given ref with the given
-// variables. Returns the pipeline ID and web URL.
-func (pc *PollClient) CreatePipeline(ctx context.Context, owner, repo, ref string, variables map[string]string) (int64, string, error) {
-	p, err := pc.LiveClient.CreatePipeline(ctx, owner, repo, ref, variables)
-	if err != nil {
-		return 0, "", err
-	}
-	return p.ID, p.WebURL, nil
 }
 
 // CreatePipelineWithInputs creates a new pipeline on the given ref using

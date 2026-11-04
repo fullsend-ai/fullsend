@@ -149,6 +149,17 @@ The repository's existing infrastructure provides all the coordination needed:
   harness predicates should be evaluated. Each predicate can inspect the
   resolved entity and an optional prompting event
   ([ADR 0098](../ADRs/0098-entity-first-harness-evaluation.md)).
+  [ADR 0147](../ADRs/0147-evaluate-entity-cel-over-selectively-acquired-data.md)
+  lets those checks acquire entity data progressively when the result is not
+  yet known. [ADR 0148](../ADRs/0148-reuse-verified-actor-roles-for-entity-cel.md)
+  permits bounded sharing of verified actor roles between those checks.
+  [ADR 0151](../ADRs/0151-harness-human-role-minimums.md) sets a platform
+  `triage` floor and a configurable `human_min_role` for each harness. The
+  platform applies that minimum before evaluating the harness's CEL predicate.
+  [ADR 0149](../ADRs/0149-coalesce-entity-source-discovery-queries.md)
+  combines source queries into one logical candidate search and routes each
+  possible result locally. A bound run rechecks source-query membership,
+  including when an event supplies the candidate.
 
 No agent orchestrates other agents. Each agent independently observes the state of the PR and acts according to its role:
 

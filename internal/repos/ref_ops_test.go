@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
 
 func TestReplaceShimRef(t *testing.T) {
@@ -405,6 +406,29 @@ func TestCollectGitLabUpgradeTemplates_IncludesPipelineWrapper(t *testing.T) {
 	}
 }
 
+// Upgrading fullsend_ref re-renders the runner image tag in the same set of
+// upgrade templates, so a ref upgrade moves the image with the CLI (#8865).
+func TestCollectGitLabUpgradeTemplates_RendersRunnerImageForTarget(t *testing.T) {
+	files, err := collectGitLabUpgradeTemplates(nil, nil, "deadbeef1234567890abcdef1234567890abcdef", "v0.51.0")
+	if err != nil {
+		t.Fatalf("collectGitLabUpgradeTemplates: %v", err)
+	}
+	want := "name: " + scaffold.RunnerImageRepository + ":0.51.0\n"
+	seen := 0
+	for _, f := range files {
+		switch f.Path {
+		case fullsendAgentTemplatePath, fullsendPollTemplatePath, fullsendDispatcherTemplatePath:
+			seen++
+			if !strings.Contains(string(f.Content), want) {
+				t.Errorf("%s: want runner image %q", f.Path, want)
+			}
+		}
+	}
+	if seen != 3 {
+		t.Errorf("expected agent, poll, and dispatcher templates, saw %d", seen)
+	}
+}
+
 func TestReadWorkflowContent_GitLabPrefersPipelineMarker(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("---\n# fullsend-ref: v2.6.0\n")
@@ -422,7 +446,7 @@ func TestReadWorkflowContent_GitLabPrefersPipelineMarker(t *testing.T) {
 	}
 }
 
-func TestReadWorkflowContent_GitLabFallsBackToDispatch(t *testing.T) {
+func TestReadWorkflowMarker_GitLabIgnoresLeftoverDispatch(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("---\n# Fullsend CI pipeline\n")
 	fc.FileContents["acme/api/"+fullsendDispatchInclude] = []byte("---\n# fullsend-ref: v2.4.0\n")
@@ -434,30 +458,11 @@ func TestReadWorkflowContent_GitLabFallsBackToDispatch(t *testing.T) {
 	if !carrier {
 		t.Fatal("carrierPresent = false, want true because the pipeline wrapper exists")
 	}
-	if path != fullsendDispatchInclude {
-		t.Errorf("path = %q, want leftover %q", path, fullsendDispatchInclude)
+	if path != fullsendPipelineInclude {
+		t.Errorf("path = %q, want %q", path, fullsendPipelineInclude)
 	}
-	if extractWorkflowRef(content, GitLabForgeConfig()) != "v2.4.0" {
-		t.Errorf("ref = %q, want v2.4.0", extractWorkflowRef(content, GitLabForgeConfig()))
-	}
-}
-
-func TestReadWorkflowMarker_GitLabDispatchOnlyIsNotCarrier(t *testing.T) {
-	fc := forge.NewFakeClient()
-	fc.FileContents["acme/api/"+fullsendDispatchInclude] = []byte("---\n# fullsend-ref: v2.4.0\n")
-
-	content, path, carrier, err := readWorkflowMarker(context.Background(), fc, "acme", "api", GitLabForgeConfig())
-	if err != nil {
-		t.Fatalf("readWorkflowMarker() error = %v", err)
-	}
-	if carrier {
-		t.Fatal("carrierPresent = true, want false so converge repairs the missing pipeline wrapper")
-	}
-	if path != fullsendDispatchInclude {
-		t.Errorf("path = %q, want leftover %q", path, fullsendDispatchInclude)
-	}
-	if extractWorkflowRef(content, GitLabForgeConfig()) != "v2.4.0" {
-		t.Errorf("ref = %q, want v2.4.0", extractWorkflowRef(content, GitLabForgeConfig()))
+	if ref := extractWorkflowRef(content, GitLabForgeConfig()); ref != "" {
+		t.Errorf("ref = %q, want empty: the retired dispatch file is not read", ref)
 	}
 }
 

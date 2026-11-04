@@ -735,12 +735,63 @@ func TestBuildWebhookEvents_Notes(t *testing.T) {
 			wantErr: "no valid note id",
 		},
 		{
-			name: "note edit",
+			name: "unknown note action",
+			payload: func(t *testing.T) []byte {
+				return mustJSON(t, map[string]any{"object_kind": "note", "user": map[string]any{"id": 42},
+					"object_attributes": map[string]any{"id": 12, "action": "frobnicate", "noteable_type": "Issue"},
+					"issue":             map[string]any{"iid": 4}})
+			},
+			wantErr: "not a checkable transition",
+		},
+		{
+			name: "empty note action",
+			payload: func(t *testing.T) []byte {
+				return mustJSON(t, map[string]any{"object_kind": "note", "user": map[string]any{"id": 42},
+					"object_attributes": map[string]any{"id": 12, "noteable_type": "Issue"},
+					"issue":             map[string]any{"iid": 4}})
+			},
+			wantErr: "not a checkable transition",
+		},
+		{
+			name: "note edit missing note id",
+			payload: func(t *testing.T) []byte {
+				return mustJSON(t, map[string]any{"object_kind": "note", "user": map[string]any{"id": 42},
+					"object_attributes": map[string]any{"action": "update", "noteable_type": "Issue"},
+					"issue":             map[string]any{"iid": 4}})
+			},
+			wantErr: "no valid note id",
+		},
+		{
+			name: "note edit missing issue iid",
 			payload: func(t *testing.T) []byte {
 				return mustJSON(t, map[string]any{"object_kind": "note", "user": map[string]any{"id": 42},
 					"object_attributes": map[string]any{"id": 12, "action": "update", "noteable_type": "Issue"}})
 			},
-			wantErr: "not a checkable transition",
+			wantErr: "no valid issue iid",
+		},
+		{
+			name: "note edit missing MR iid",
+			payload: func(t *testing.T) []byte {
+				return mustJSON(t, map[string]any{"object_kind": "note", "user": map[string]any{"id": 42},
+					"object_attributes": map[string]any{"id": 21, "action": "update", "noteable_type": "MergeRequest"}})
+			},
+			wantErr: "no valid merge request iid",
+		},
+		{
+			name: "note edit unsupported noteable",
+			payload: func(t *testing.T) []byte {
+				return noteEditPayload(t, "Snippet", alice.ID, 12, 4)
+			},
+			wantErr: "unsupported noteable_type",
+		},
+		{
+			name: "note edit without user",
+			payload: func(t *testing.T) []byte {
+				return mustJSON(t, map[string]any{"object_kind": "note",
+					"object_attributes": map[string]any{"id": 12, "action": "update", "noteable_type": "Issue"},
+					"issue":             map[string]any{"iid": 4}})
+			},
+			wantErr: "no valid user id",
 		},
 	}
 	for _, tt := range failures {
@@ -761,6 +812,36 @@ func TestBuildWebhookEvents_Notes(t *testing.T) {
 			}
 		})
 	}
+
+	for _, noteableType := range []string{"Issue", "MergeRequest"} {
+		t.Run("note edit ignored on "+noteableType, func(t *testing.T) {
+			mc := newMockClient()
+			// Any re-fetch would fail: a note edit must not reach the API.
+			refetchErr := fmt.Errorf("re-fetch must not be attempted")
+			mc.noteErr[4] = refetchErr
+			mc.mrNoteErr[4] = refetchErr
+			mc.issueErr[4] = refetchErr
+			p := newWebhookPoller(mc)
+			got, err := p.BuildWebhookEvents(context.Background(), noteEditPayload(t, noteableType, alice.ID, 12, 4))
+			if err != nil {
+				t.Fatalf("note edit must be ignored, got error: %v", err)
+			}
+			if len(got) != 0 {
+				t.Errorf("events = %+v, want none for a note edit", got)
+			}
+		})
+	}
+}
+
+// noteEditPayload is notePayload with action "update" (an edited comment).
+func noteEditPayload(t *testing.T, noteableType string, userID, noteID, iid int) []byte {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal(notePayload(t, noteableType, userID, noteID, iid), &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	m["object_attributes"].(map[string]any)["action"] = "update"
+	return mustJSON(t, m)
 }
 
 func TestBuildWebhookEvents_InvalidPayloads(t *testing.T) {
@@ -964,7 +1045,7 @@ func TestBuildWebhookEvents_DispatchHandoff(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	we := got[0]
-	if err := p.dispatch(context.Background(), p.owner, p.repo, we.Stages[0], we.Event); err != nil {
+	if err := p.dispatch(context.Background(), p.owner, p.repo, we.Stages[0], we.Event, &we.Normalized); err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
 	if len(mc.pipelineCalls) != 1 {

@@ -5,6 +5,17 @@ maintainer. Each role grants additional capabilities and carries
 additional expectations. Advancement is not automatic — it requires a
 request, a track record, and maintainer approval.
 
+The ladder is organization-wide. Merged PRs and substantive reviews in
+any public repository under the
+[fullsend-ai](https://github.com/fullsend-ai) organization count toward
+the track record for each role — not only contributions to this
+repository. Vouched is org-wide as well: one vouch, requested through
+this repository's
+[Vouch Request](https://github.com/fullsend-ai/fullsend/discussions/new?category=vouch-request)
+discussion, admits you to every fullsend-ai repository that runs the
+vouch gate. See [CONTRIBUTING.md](CONTRIBUTING.md) for the request
+process.
+
 For the Maintainer role specifically — including eligibility, the
 nomination process, and what maintainers do — see
 [MAINTAINERS.md](MAINTAINERS.md).
@@ -56,8 +67,11 @@ repository.
 - Ability to label, close, and reopen issues. A triage user can apply
   labels such as `ready-to-code`, but that label only dispatches the code
   agent when applied by a user with `write` access or by an agent bot.
-- Triage contributors do not receive automatic e2e CI runs; non-write
-  contributors require an `ok-to-test` label from maintainers with `write` access.
+  The same applies to `ok-to-test`: CI removes it when a triage user
+  applies it, and it does not authorize e2e runs in this repository.
+  Ask someone with the Write role to apply it.
+- Triage contributors do not receive automatic e2e CI runs. Your PRs
+  need an `ok-to-test` label from someone with the Write role.
 
 **Criteria:**
 
@@ -70,14 +84,15 @@ repository.
 - Responsive to feedback on your contributions — on changes you drove
   and in review discussions you took part in
 
-**How to check:** You are a member of
-[@fullsend-ai/triagers](https://github.com/orgs/fullsend-ai/teams/triagers).
+**How to check:** Your GitHub username is listed under `triagers`
+in the `teams:` section of
+[peribolos.yaml](https://github.com/fullsend-ai/org/blob/main/peribolos.yaml)
+in the [fullsend-ai/org](https://github.com/fullsend-ai/org) repository.
 
 **How to request:** Open a
-[Triage Request](https://github.com/fullsend-ai/fullsend/discussions/new?category=triage-request)
-discussion. Link to your substantive reviews or merged PRs, and briefly
-describe the work and judgment each one shows (see
-[Making your case](#making-your-case)).
+[Triage Request](https://github.com/fullsend-ai/org/issues/new?template=triage-request.yml)
+issue in [fullsend-ai/org](https://github.com/fullsend-ai/org). A maintainer
+approves by adding your username to the `triagers` team in `peribolos.yaml`.
 
 You do not need to be an expert in the codebase or community conventions
 to request Triage. If you think your contributions demonstrate
@@ -97,6 +112,8 @@ repository.
 - `/fs-retro` and `/fs-prioritize` slash commands (analysis agents
   that require write-level trust)
 - Push access to non-protected branches
+- Authorizing e2e CI on PRs from authors without write access by
+  applying the `ok-to-test` label after reviewing the latest push
 
 **Criteria:**
 
@@ -108,33 +125,49 @@ repository.
   PR workflow, review etiquette)
 - Trusted not to push directly to protected branches or bypass review
 
-**How to check:** You are a member of
-[@fullsend-ai/writers](https://github.com/orgs/fullsend-ai/teams/writers).
+**How to check:** Your GitHub username is listed under `writers`
+in the `teams:` section of
+[peribolos.yaml](https://github.com/fullsend-ai/org/blob/main/peribolos.yaml)
+in the [fullsend-ai/org](https://github.com/fullsend-ai/org) repository.
 
 **How to request:** Open a
-[Write Request](https://github.com/fullsend-ai/fullsend/discussions/new?category=write-request)
-discussion. Link to your contribution history and describe the work
-and judgment it demonstrates (see [Making your case](#making-your-case)).
+[Write Request](https://github.com/fullsend-ai/org/issues/new?template=write-request.yml)
+issue in [fullsend-ai/org](https://github.com/fullsend-ai/org). Two maintainers
+must approve by commenting on that issue; only after both approvals should
+a `peribolos.yaml` PR be opened. The maintainer opening the PR links the
+approved issue in the PR description, and adds your username to the `writers`
+team in `peribolos.yaml`.
 
-**Who approves:** Two maintainers must approve. A single maintainer
+**Who approves:** Two maintainers must approve on the request issue before
+the `peribolos.yaml` PR is opened. A single maintainer
 can request more discussion but cannot unilaterally grant write access.
 
 ### Maintainer
 
 **What it means:** You have merge and approval rights and are a member
-of the [@fullsend-ai/core](https://github.com/orgs/fullsend-ai/teams/core)
+of the [@fullsend-ai/maintainers](https://github.com/orgs/fullsend-ai/teams/maintainers)
 team. You are expected to be an active regular participant in the
 project and to help review contributions you are not driving.
 
 **What it unlocks:**
 
 - CODEOWNERS approval required to merge PRs
-- Authorizing CI runs on PRs from non-maintainers
 - Issue triage and backlog management
 - All capabilities from previous roles
 
 **Criteria and process:** See [MAINTAINERS.md](MAINTAINERS.md) for the
 full eligibility criteria, nomination process, and time commitment.
+
+**How to check:** Your GitHub username is listed in the `maintainers`
+team in
+[peribolos.yaml](https://github.com/fullsend-ai/org/blob/main/peribolos.yaml)
+in the [fullsend-ai/org](https://github.com/fullsend-ai/org) repository.
+
+**How to request:** Open a
+[Maintainer Nomination](https://github.com/fullsend-ai/org/issues/new?template=maintainer-request.yml)
+issue in [fullsend-ai/org](https://github.com/fullsend-ai/org). Existing
+maintainers discuss and reach consensus; if approved, your username is
+added to the `maintainers` team in `peribolos.yaml`.
 
 ## Demonstrating readiness
 
@@ -233,9 +266,9 @@ Role changes use the following request mechanisms:
 | Role | Request mechanism | Approval |
 |------|-------------------|----------|
 | Vouched | [Vouch Request](https://github.com/fullsend-ai/fullsend/discussions/new?category=vouch-request) | 1 Maintainer |
-| Triage | [Triage Request](https://github.com/fullsend-ai/fullsend/discussions/new?category=triage-request) | 1 Maintainer |
-| Write | [Write Request](https://github.com/fullsend-ai/fullsend/discussions/new?category=write-request) | 2 Maintainers |
-| Maintainer | Issue (see [MAINTAINERS.md](MAINTAINERS.md)) | Maintainer consensus |
+| Triage | [Triage Request](https://github.com/fullsend-ai/org/issues/new?template=triage-request.yml) issue in [fullsend-ai/org](https://github.com/fullsend-ai/org) | 1 Maintainer |
+| Write | [Write Request](https://github.com/fullsend-ai/org/issues/new?template=write-request.yml) issue in [fullsend-ai/org](https://github.com/fullsend-ai/org) | 2 Maintainers |
+| Maintainer | [Maintainer Nomination](https://github.com/fullsend-ai/org/issues/new?template=maintainer-request.yml) issue in [fullsend-ai/org](https://github.com/fullsend-ai/org) (see [MAINTAINERS.md](MAINTAINERS.md)) | Maintainer consensus |
 
 ## Revoking access
 

@@ -75,6 +75,9 @@ func PreflightEffectiveInfrastructure(ctx context.Context, m *Manifest, clients 
 //     enforced on an existing variable (see expectedInferenceRegion).
 //   - DeclaredInferenceProject / DeclaredWIFProvider: the declared Vertex
 //     credential values, consumed by vertexCredentialInputs.
+//   - DeclaredWIFAudience / DeclaredServiceAccount: the GitLab vertex-wif
+//     options for an existing WIF provider, cleared where they do not apply
+//     (see applyExistingWIFOptions).
 func (c *ResolvedConfig) applyEffectiveInfrastructure() error {
 	declared, err := config.DeclaredInfrastructureValues(c.Managed, c.ProposedBase)
 	if err != nil {
@@ -129,7 +132,9 @@ func (c *ResolvedConfig) applyEffectiveInfrastructure() error {
 	}
 	c.DeclaredInferenceProject = declared.InferenceProject
 	c.DeclaredWIFProvider = declared.InferenceWIFProvider
-	return nil
+	c.DeclaredWIFAudience = declared.InferenceWIFAudience
+	c.DeclaredServiceAccount = declared.InferenceServiceAccount
+	return c.applyExistingWIFOptions()
 }
 
 // expectedInferenceRegion is the FULLSEND_GCP_REGION value install, dry run
@@ -184,6 +189,13 @@ func vertexCredentialInputs(cfg ConvergeConfig, resolved ResolvedConfig) (projec
 	// install does.
 	if resolved.DeclaredWIFProvider != "" && resolved.DeclaredInferenceProject == "" {
 		return "", "", fmt.Errorf("%s: inference.wif_provider requires a GCP project declared as config.inference.project in repos.yaml or the config_base preset; --vertex-project alone does not satisfy it", repo)
+	}
+	// The audience and impersonation options describe an existing provider
+	// the installer does not own. The derived per-project gitlab-oidc
+	// provider accepts only aud "fullsend" and is used by direct federation,
+	// so the provider must be named explicitly.
+	if (resolved.DeclaredWIFAudience != "" || resolved.DeclaredServiceAccount != "") && wifProvider == "" {
+		return "", "", fmt.Errorf("%s: inference.wif_audience and inference.service_account require an explicitly supplied WIF provider (declare config.inference.wif_provider in repos.yaml or pass --vertex-wif-provider); they cannot be combined with the derived per-project gitlab-oidc provider", repo)
 	}
 	return project, wifProvider, nil
 }
