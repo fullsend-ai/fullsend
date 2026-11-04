@@ -139,6 +139,16 @@ func (r *progressReconciler) task(e TaskProgressEvent, redact func(string) strin
 		}
 		comparison = taskProgressMessage(toolless)
 	}
+	// The assembled row can reconstruct a credential split across fields
+	// (fields are redacted individually; the joins are not), so the caller
+	// callback and the fallback scanner run on the joined text before the
+	// fingerprint and display, mirroring the status rows.
+	if redact != nil {
+		msg = redact(msg)
+		comparison = redact(comparison)
+	}
+	msg = scanProgressSecrets(msg)
+	comparison = scanProgressSecrets(comparison)
 	fingerprint := sha256.Sum256([]byte(comparison))
 	r.storeTaskProgress(key, taskProgressDisplay{event: e, fingerprint: fingerprint}, isAgent)
 	if previous.fingerprint == fingerprint {

@@ -215,3 +215,21 @@ func TestTaskProgressToolLifecyclePrintsRealTransitions(t *testing.T) {
 		t.Fatalf("explicit tool and summary clear did not print: %q", out.String())
 	}
 }
+
+func TestTaskProgressJoinCannotReconstructCredential(t *testing.T) {
+	// A credential split across TaskID and Label reconstructs in the
+	// assembled row; the joined message must be masked before display.
+	const secret = "taskrow-split: cred"
+	if !security.RegisterRuntimeSecret(secret) {
+		t.Fatal("register synthetic literal")
+	}
+	var out bytes.Buffer
+	r := newTestRenderer(&out)
+	r.Handle(TaskProgressEvent{TaskID: "taskrow-split", Label: "cred", State: TaskRunning})
+	if strings.Contains(out.String(), "cred") || strings.Contains(out.String(), "taskrow-split: cred") {
+		t.Fatalf("joined task-row credential leaked: %q", out.String())
+	}
+	if !strings.Contains(out.String(), "***") {
+		t.Fatalf("joined task-row credential was not masked: %q", out.String())
+	}
+}
