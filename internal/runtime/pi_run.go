@@ -785,7 +785,8 @@ func piChildLaunchExport() string {
 // different file while the extension source, its tree hash
 // (piExtensionsGuard) and the hook adapter's SHA-256 (piHooksGuard) all
 // stay clean, because none of them can see the substitution. Verified on
-// pi 0.84.4 and re-checked on 0.85.0, jiti 2.7.0 in both; the shell half is
+// pi 0.84.4 and re-checked on 0.85.0, jiti 2.7.0 in both (re-checked at
+// 1.5.0, still jiti 2.7.0); the shell half is
 // internal/runtime/testdata/pi/jiti-cache-check.sh.
 //
 // The list is every JITI_* name jiti reads (jiti/dist/jiti.cjs) except
