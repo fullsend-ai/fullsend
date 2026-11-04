@@ -62,6 +62,9 @@ function checkBash(command, allowlist) {
       } else if (char === "`" || char === "\\") syntax += char;
       continue;
     }
+    // This restricted grammar does not support shell comments. Treating their
+    // contents as syntax would let comment quotes hide later commands.
+    if (char === "#") deny("Bash allowlist rejects comments");
     if (char === "'" && quote !== '"') { quote = "'"; syntax += char; continue; }
     syntax += char;
     if (char === '"') quote = '"';
@@ -239,7 +242,7 @@ export default async ({ directory, worktree }) => {
         const payload = { hook_event_name: phase, tool_name: tool, tool_input: toolInput, cwd };
         if (phase === "PostToolUse") Object.assign(payload, { tool_response: value, tool_result: value });
         const result = spawnSync(cfg.python, ["-I", "-S", "-B", "-c",
-          "import runpy,sys; d,p,workspace=sys.argv[1:]; sys.path.append(d); sys.argv=[p,'--sandbox-workspace',workspace]; runpy.run_path(p,run_name='__main__')",
+          "import runpy,sys; d,p,workspace=sys.argv[1:]; sys.path.append(d); sys.argv=[p,'--sandbox-workspace='+workspace]; runpy.run_path(p,run_name='__main__')",
           cfg.dir, path.join(cfg.dir, script), cfg.workspace], {
           input: JSON.stringify(payload), encoding: "utf8", env, cwd,
           timeout: 30_000, maxBuffer: 16 * 1024 * 1024,

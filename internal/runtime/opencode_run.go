@@ -309,7 +309,7 @@ func openCodeExitPipeline(invocation []string, rcFile, transcript string, activa
 		` | "$` + openCodeTeeVar + `" ` + shellQuote(transcript)
 	activationGuard := ""
 	if activation != nil {
-		activationGuard = ` && if [ "$FULLSEND_OPENCODE_RC" -eq 0 ]; then ` + openCodeHookActivationGuard(activation) + `; fi`
+		activationGuard = " && " + openCodeHookActivationGuard(activation)
 	}
 	return pipeline +
 		` && FULLSEND_OPENCODE_RC="$("$` + openCodeCatVar + `" ` + shellQuote(rcFile) + ` 2>/dev/null)"` +

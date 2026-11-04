@@ -139,6 +139,11 @@ example above.
   missing signal fails the run rather than accepting an unhooked result. Each intercepted tool call
   rechecks the script directory. Native write/edit/patch tools cannot
   write outside the workspace or into `.env`, `.security` or `runner-state`, including via symlinks.
+- **Hook configuration is not a same-user secret boundary.** The activation challenge and hook
+  settings are cleared from ordinary tool-process environments, but same-UID processes can inspect
+  the OpenCode process through `/proc`. This residual is documented with the adapter's writable
+  config-directory verification-to-load risk; it does not make the configuration a confidential
+  channel.
 - **Repo config is ignored.** OpenCode does not load the target repo's `.opencode/` config or skills.
 - **`.env` is read as data.** As on the other runtimes, the launch parses `.env` with a pinned
   `python3` and runs none of it as shell, so the image needs `python3` and a regular-file `readlink`

@@ -41,8 +41,10 @@ type openCodeHookConfig struct {
 
 // openCodeHookActivation is a runner-held, per-iteration challenge. The
 // adapter writes its token only when OpenCode loads it; Run verifies it after
-// the process exits. The token is not exposed to tool subprocesses.
-// This confirms loading but does not close the tracked same-user TOCTOU gap.
+// the process exits. The adapter clears the configuration from ordinary tool
+// subprocess environments, but same-UID processes can still inspect it via
+// /proc. This confirms loading but does not close that disclosure or the
+// tracked same-user TOCTOU gap.
 type openCodeHookActivation struct {
 	Path  string `json:"path"`
 	Token string `json:"token"`
