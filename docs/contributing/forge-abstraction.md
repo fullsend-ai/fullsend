@@ -18,8 +18,11 @@ All git forge operations (GitHub API calls, PR comments, issue creation, workflo
 identify executions when a forge reuses a run ID for reruns. Zero means the
 attempt is unavailable. The GitHub Actions dispatch-count assertion reuses
 completed job listings only within that assertion, for unchanged run metadata
-and completed jobs whose known attempt matches the run. Unknown attempts,
-empty listings, and unfinished jobs are read again on subsequent polls.
+and completed jobs whose known attempt matches the run. Reuse also requires
+a matching agent job with a nonempty, non-skipped, non-cancelled conclusion:
+that job already establishes a counted dispatch. Listings without that
+evidence, unknown attempts, and unfinished jobs are read again on subsequent
+polls because an absent job may become visible later.
 
 **When reviewing PRs:** Flag any direct `exec.Command("gh", ...)`, raw GitHub API calls, or other forge-specific operations outside `internal/forge/github/` as a medium-severity or higher finding. This is an architectural violation, not a style preference.
 

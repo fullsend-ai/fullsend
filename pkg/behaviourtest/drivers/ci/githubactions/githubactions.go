@@ -1592,8 +1592,13 @@ func (d *Driver) settleHarnessDispatchCount(ctx context.Context, owner, repo, ag
 			if err != nil {
 				return 0, 0, err
 			}
+		}
+		hasJob, job := matchAgentJob(jobs, agent)
+		if !cached {
+			// Only a counted terminal match is decisive; missing jobs can still become visible.
+			cacheable := r.Status == "completed" && r.RunAttempt > 0 && hasJob &&
+				job.Conclusion != "" && !isConcurrencySuperseded(job.Conclusion)
 			// Reruns reuse IDs; only reuse completed jobs from the same known attempt.
-			cacheable := r.Status == "completed" && r.RunAttempt > 0 && len(jobs) > 0
 			for _, job := range jobs {
 				if job.Status != "completed" || job.RunAttempt != r.RunAttempt {
 					cacheable = false
@@ -1604,7 +1609,6 @@ func (d *Driver) settleHarnessDispatchCount(ctx context.Context, owner, repo, ag
 				completedJobs[r] = jobs
 			}
 		}
-		hasJob, job := matchAgentJob(jobs, agent)
 		switch {
 		case hasJob && job.Status != "completed":
 			pending++

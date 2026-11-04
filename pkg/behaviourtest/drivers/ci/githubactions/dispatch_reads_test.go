@@ -79,7 +79,7 @@ func TestHarnessDispatchAssertions_RequestCounts(t *testing.T) {
 		t.Logf("list calls=%d jobs calls=%d unique jobs URLs=%d count=%d", client.polls, total, len(client.jobReads), count)
 		assert.Equal(t, 1, count, "the older dispatch must still be counted")
 		assert.Equal(t, 6, client.polls)
-		assert.Equal(t, 22, total, "ten completed runs once, two active runs on six polls")
+		assert.Equal(t, 67, total, "one decisive match once, nine inconclusive and two active runs on six polls")
 		assert.Equal(t, 12, len(client.jobReads), "skipped workflows need no jobs lookup")
 	})
 	t.Run("negative assertion", func(t *testing.T) {
@@ -109,6 +109,35 @@ func TestHarnessDispatchAssertions_SkippedRunNeedsNoJobs(t *testing.T) {
 	require.NoError(t, d.AssertNoHarnessAgentArtifact(context.Background(), "org", "repo", "fix", after))
 }
 
+func TestCountHarnessDispatches_CompletedRunJobsBecomeVisible(t *testing.T) {
+	t.Parallel()
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for _, firstJob := range []string{"dispatch / Route", "dispatch / Harness run (${{ matrix.agent }})", "dispatch / Fix", "dispatch / Harness run (fix)"} {
+		t.Run(firstJob, func(t *testing.T) {
+			client := newDispatchReadsClient(after)
+			run := client.WorkflowRunsList["org/repo/fullsend.yaml"][31]
+			client.WorkflowRunJobs[1] = []forge.WorkflowJob{{ID: 1, RunAttempt: 1, Name: firstJob, Status: "completed", Conclusion: "skipped"}}
+			if firstJob == "dispatch / Route" {
+				client.WorkflowRunJobs[1][0].Conclusion = "success"
+			}
+			d := &Driver{Client: client, afterFunc: func(time.Duration) <-chan time.Time {
+				if client.polls == 1 {
+					client.WorkflowRunJobs[1] = append(client.WorkflowRunJobs[1], forge.WorkflowJob{
+						ID: 100, RunAttempt: 1, Name: "dispatch / Harness run (fix)", Status: "completed", Conclusion: "success",
+					})
+				}
+				return instantAfter(0)
+			}}
+			count, err := d.CountHarnessDispatches(context.Background(), "org", "repo", "fix", after)
+			require.NoError(t, err)
+			assert.Equal(t, 1, count, "a lagging listing must not permanently hide the completed agent job")
+			assert.Equal(t, 2, client.jobReads[1], "reread the inconclusive listing, then cache the decisive match")
+			assert.Equal(t, 6, client.polls, "a pending sibling keeps the assertion polling")
+			assert.Equal(t, run, client.WorkflowRunsList["org/repo/fullsend.yaml"][31], "completed run metadata stays unchanged")
+		})
+	}
+}
+
 func TestHarnessDispatchAssertions_RelevantJobsErrorsRemainFatal(t *testing.T) {
 	t.Parallel()
 	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -136,7 +165,7 @@ func TestHarnessDispatchAssertions_RelevantJobsErrorsRemainFatal(t *testing.T) {
 func TestCountHarnessDispatches_CompletedJobCache(t *testing.T) {
 	t.Parallel()
 	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	for _, name := range []string{"rerun", "unknown run attempt", "unknown job attempt", "mismatched job attempt", "unfinished job", "empty jobs", "assertion local", "changed conclusion"} {
+	for _, name := range []string{"rerun", "unknown run attempt", "unknown job attempt", "mismatched job attempt", "unfinished job", "unfinished conclusion", "empty jobs", "assertion local", "changed conclusion"} {
 		t.Run(name, func(t *testing.T) {
 			client := newDispatchReadsClient(after)
 			run := &client.WorkflowRunsList["org/repo/fullsend.yaml"][31]
@@ -150,6 +179,8 @@ func TestCountHarnessDispatches_CompletedJobCache(t *testing.T) {
 				job.RunAttempt = 2
 			case "unfinished job":
 				job.Status = "queued"
+			case "unfinished conclusion":
+				job.Conclusion = ""
 			case "empty jobs":
 				client.WorkflowRunJobs[1] = nil
 			}
