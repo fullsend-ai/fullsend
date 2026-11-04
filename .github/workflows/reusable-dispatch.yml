@@ -2198,6 +2198,9 @@ jobs:
           JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
           JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
           JIRA_BASE_URL: ${{ inputs.jira_base_url || vars.JIRA_BASE_URL }}
+          # Where Jira API calls go (#9007). Unset means the Atlassian API
+          # gateway for the site, which accepts bot and service accounts.
+          JIRA_API_URL: ${{ vars.JIRA_API_URL }}
         with:
           agent: ${{ matrix.agent }}
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}

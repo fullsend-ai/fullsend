@@ -38,6 +38,7 @@ func clearPollEnv(t *testing.T) {
 		forge.SecretGitLabCoderToken,
 		"JIRA_BASE_URL", "GITHUB_REPOSITORY",
 		"JIRA_TOKEN", "JIRA_USER_EMAIL",
+		"JIRA_API_URL",
 		"TRIGGER_PAYLOAD", "FULLSEND_DISPATCH_SECRET",
 	} {
 		t.Setenv(v, "")

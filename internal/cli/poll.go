@@ -376,12 +376,12 @@ func validateJiraPollArgs(jiraURL, jiraProject, jqlOverride, targetRepo, outputP
 	}, nil
 }
 
-// buildJiraClient creates a Jira client using Basic (email+token) auth.
-// JIRA_USER_EMAIL is required: this driver only targets Jira Cloud, and
-// Cloud does not accept a bare API token via Bearer auth the way Data
-// Center/Server PATs do — omitting the email would silently send a scheme
-// Cloud rejects, surfacing as a generic 401 rather than a clear
-// configuration error.
+// buildJiraClient creates a Jira client using Basic (email+token) auth,
+// with API calls routed as newJiraClient describes. JIRA_USER_EMAIL is
+// required: this driver only targets Jira Cloud, and Cloud does not accept
+// a bare API token via Bearer auth the way Data Center/Server PATs do —
+// omitting the email would silently send a scheme Cloud rejects, surfacing
+// as a generic 401 rather than a clear configuration error.
 func buildJiraClient(jiraURL string) (*jira.LiveClient, error) {
 	jiraToken := os.Getenv("JIRA_TOKEN")
 	if jiraToken == "" {
@@ -391,7 +391,7 @@ func buildJiraClient(jiraURL string) (*jira.LiveClient, error) {
 	if email == "" {
 		return nil, fmt.Errorf("JIRA_USER_EMAIL environment variable is required (Jira Cloud auth is email+token, not a bare token)")
 	}
-	return jira.New(jiraToken, jira.WithBaseURL(jiraURL), jira.WithEmail(email))
+	return newJiraClient(jiraURL, email, jiraToken)
 }
 
 // buildRouter constructs a HarnessRouter from config-registered agents

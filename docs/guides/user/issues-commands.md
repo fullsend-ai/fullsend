@@ -104,8 +104,11 @@ You need permission to create issues in the target project, its identifier
 API token. Supply the token with `--token` or the relevant
 [environment variable](#environment-variables). For Jira Cloud, also supply
 the instance URL and user email with `--jira-url` and `--jira-email`, or set
-`JIRA_BASE_URL` and `JIRA_USER_EMAIL`. Jira also requires an issue type;
-use the issue type's name or ID with `--type`.
+`JIRA_BASE_URL` and `JIRA_USER_EMAIL`; a bot account and an Atlassian service
+account use the same settings (see
+[Account types and the API URL](jira-integration.md#account-types-and-the-api-url)).
+Jira also requires an issue type; use the issue type's name or ID with
+`--type`.
 
 Creates a new issue and prints its number, URL, and (for Jira) key as
 JSON:
@@ -307,9 +310,10 @@ earlier one behind with content no later run updates. To recover:
 |----------|---------|-------------|
 | `GH_TOKEN` or `GITHUB_TOKEN` | GitHub | GitHub API token |
 | `GITLAB_TOKEN` | GitLab | GitLab API token |
-| `JIRA_TOKEN` | Jira | Jira API token |
-| `JIRA_BASE_URL` | Jira | Jira instance URL |
+| `JIRA_TOKEN` | Jira | Jira API token (a bot account's classic token or a service account's scoped token) |
+| `JIRA_BASE_URL` | Jira | Jira site URL |
 | `JIRA_USER_EMAIL` | Jira | Email for Jira Cloud Basic auth |
+| `JIRA_API_URL` | Jira | Where API calls go; unset means the Atlassian API gateway for the site. See [Account types and the API URL](jira-integration.md#account-types-and-the-api-url) |
 
 ## See also
 

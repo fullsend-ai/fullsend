@@ -644,6 +644,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		return err
 	}
 
+	// For a Jira work item, resolve the Jira API URL once so host-side
+	// scripts and fullsend's own status writes share it (#9007). Other runs
+	// skip the discovery call even though the workflow sets JIRA_BASE_URL.
+	if sOpts.trackerSource == string(normevent.SystemJira) {
+		exportJiraAPIURL(ctx, printer.StepWarn)
+	}
+
 	composeOpts := harness.ComposeOpts{
 		WorkspaceRoot: absFullsendDir,
 		FetchPolicy:   policy,
