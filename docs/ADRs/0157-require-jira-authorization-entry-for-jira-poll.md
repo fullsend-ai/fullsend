@@ -36,20 +36,20 @@ slash commands.
 
 [#8892](https://github.com/fullsend-ai/fullsend/pull/8892)
 ([ADR 0153](0153-authorize-jira-poll-actors-without-project-administration.md))
-added better alternatives. A repository can list, in its own config, the
-Jira groups and accounts allowed to run agents, and it can let Jira's own
-Edit Issues permission vouch for anyone who adds a label. To keep that change
-non-breaking, the old way stayed the default: a repository that configures
-nothing still gets project roles, and still needs an administrator bot. So
-Fullsend now has a bad default, and a silent one. A repository cannot tell
-"I chose project roles" from "I configured nothing", because they are the
-same config file, and a team that skips the authorization step learns which
-mode it is in from a `401` in the poll log, by granting the bot a role it
-should not hold, or by never seeing a dispatch. The review of #8892 raised
-this
+added better alternatives. A repository can list, in its
+`.fullsend/config.yaml`, the Jira groups and accounts allowed to run agents,
+and it can let Jira's own Edit Issues permission vouch for anyone who adds a
+label. To keep that change non-breaking, the old way stayed the default: a
+repository that configures nothing still gets project roles, and still needs an
+administrator bot. So Fullsend now has a bad default, and a silent one. A
+repository cannot tell "I chose project roles" from "I configured nothing",
+because they are the same config file, and a team that skips the authorization
+step learns which mode it is in from a `401` in the poll log, by granting the
+bot a role it should not hold, or by never seeing a dispatch. The review of
+#8892 raised this
 ([comment](https://github.com/fullsend-ai/fullsend/pull/8892#issuecomment-6496078895)),
-and [#9004](https://github.com/fullsend-ai/fullsend/issues/9004) proposed
-the decision recorded here.
+and [#9004](https://github.com/fullsend-ai/fullsend/issues/9004) proposed the
+decision recorded here.
 
 This ADR deprecates and removes that default. It does not put a different
 default in its place: a repository that runs the poller must say which way
