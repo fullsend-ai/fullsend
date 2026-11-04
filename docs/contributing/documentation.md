@@ -64,6 +64,12 @@ When a CLI change makes an ADR's decision obsolete, write a **new ADR** that sup
 
 Heading anchors on the docs site follow GitHub's slug rules (for example `## 4. Next step` is `#4-next-step`), so a link that lychee (`make lint-md-links`) accepts also works on the site.
 
+## Product name casing
+
+Write the product name as lowercase "fullsend" in running prose. Capitalize it
+as "Fullsend" only at the start of a sentence and in titles and headings. Leave
+code, inline code, URLs, file paths, identifiers, and quoted text as they are.
+
 ## Line wrapping
 
 Wrap prose in Markdown files at about 80 columns. Git and GitHub compare

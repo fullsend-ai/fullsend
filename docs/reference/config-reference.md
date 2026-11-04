@@ -347,7 +347,7 @@ block.
 converts the legacy scalar `tracker` and `create_issues` keys in `repos.yaml`
 managed `config:` blocks (`defaults.config`, the forge section's `config`, and
 each repository entry's `config`) before the manifest is decoded, writes the
-converted manifest, and re-renders each Fullsend-managed `.fullsend/config.yaml`
+converted manifest, and re-renders each fullsend-managed `.fullsend/config.yaml`
 from it. Each layer that set a legacy key gets the full `tracker` mapping that
 was in effect there, because the legacy keys were inherited separately while a
 `tracker` mapping replaces the parent's. The effective provider and targets of
@@ -408,8 +408,8 @@ GitLab authorization
 
 | Key | Meaning |
 |---|---|
-| `write.groups`, `write.accounts` | Jira groups (by name or group ID) and Jira account IDs granted the Fullsend `write` role |
-| `triage.groups`, `triage.accounts` | Jira groups and account IDs granted the Fullsend `triage` role |
+| `write.groups`, `write.accounts` | Jira groups (by name or group ID) and Jira account IDs granted the fullsend `write` role |
+| `triage.groups`, `triage.accounts` | Jira groups and account IDs granted the fullsend `triage` role |
 | `labels` | How a label-added event is authorized: `jira_editors` (default once the entry is present), `allowlist`, or `project_roles` |
 
 - **Slash commands and other non-label events:** when the entry sets a
