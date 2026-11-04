@@ -695,6 +695,26 @@ bad:
 	assert.NotNil(t, mappingValue(mappingValue(out, "bad"), "<<"))
 }
 
+func TestExpandAliasesBounded_RejectsDuplicateKeyInMergeSource(t *testing.T) {
+	for name, src := range map[string]string{
+		"inline merge source":   "config:\n  <<: {kill_switch: false, kill_switch: true}\n",
+		"aliased merge source":  "base: &b {kill_switch: false, kill_switch: true}\nconfig:\n  <<: *b\n",
+		"sequence merge source": "config:\n  <<: [{a: 1}, {kill_switch: false, kill_switch: true}]\n",
+	} {
+		var doc yaml.Node
+		require.NoError(t, yaml.Unmarshal([]byte(src), &doc), name)
+		_, err := expandAliasesBounded(doc.Content[0])
+		require.Error(t, err, name)
+		assert.Contains(t, err.Error(), "kill_switch", name)
+	}
+
+	// The same key in different merge sources is ordinary merge precedence.
+	var doc yaml.Node
+	require.NoError(t, yaml.Unmarshal([]byte("config:\n  <<: [{a: 1}, {a: 2}]\n"), &doc))
+	_, err := expandAliasesBounded(doc.Content[0])
+	require.NoError(t, err)
+}
+
 func TestExpandAliasesBounded_DepthBudget(t *testing.T) {
 	deep := strings.Repeat("[", maxExpandedYAMLDepth+10) + strings.Repeat("]", maxExpandedYAMLDepth+10)
 	var doc yaml.Node

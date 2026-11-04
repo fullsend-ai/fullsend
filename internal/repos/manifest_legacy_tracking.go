@@ -213,7 +213,9 @@ func expandAliasesBounded(n *yaml.Node) (*yaml.Node, error) {
 			dup.Content = append(dup.Content, c)
 		}
 		if dup.Kind == yaml.MappingNode {
-			flattenMergeKeys(&dup)
+			if err := flattenMergeKeys(&dup); err != nil {
+				return nil, err
+			}
 		}
 		return &dup, nil
 	}
@@ -226,9 +228,11 @@ func expandAliasesBounded(n *yaml.Node) (*yaml.Node, error) {
 // the mapping sets explicitly, which always wins, and minus keys an earlier
 // merged mapping already supplied, as YAML's merge precedence requires. A merge
 // key whose value is not a mapping or a sequence of mappings is left in place
-// for the strict decoder to reject. The merged pairs are the nodes already
-// cloned for the merge value, so no node is copied again.
-func flattenMergeKeys(n *yaml.Node) {
+// for the strict decoder to reject. A duplicate key inside a single merged
+// mapping is an error, as it is outside a merge, so flattening cannot hide it
+// from strict decoding. The merged pairs are the nodes already cloned for the
+// merge value, so no node is copied again.
+func flattenMergeKeys(n *yaml.Node) error {
 	hasMerge := false
 	explicit := map[string]bool{}
 	for i := 0; i+1 < len(n.Content); i += 2 {
@@ -240,7 +244,7 @@ func flattenMergeKeys(n *yaml.Node) {
 		}
 	}
 	if !hasMerge {
-		return
+		return nil
 	}
 	var content []*yaml.Node
 	for i := 0; i+1 < len(n.Content); i += 2 {
@@ -267,9 +271,14 @@ func flattenMergeKeys(n *yaml.Node) {
 			continue
 		}
 		for _, src := range sources {
+			inSource := map[string]bool{}
 			for j := 0; j+1 < len(src.Content); j += 2 {
 				mk := src.Content[j]
 				if mk.Kind == yaml.ScalarNode {
+					if inSource[mk.Value] {
+						return fmt.Errorf("merged mapping repeats key %q", mk.Value)
+					}
+					inSource[mk.Value] = true
 					if explicit[mk.Value] {
 						continue
 					}
@@ -280,6 +289,7 @@ func flattenMergeKeys(n *yaml.Node) {
 		}
 	}
 	n.Content = content
+	return nil
 }
 
 // isNullYAMLNode reports whether n is an explicit YAML null (for example an
