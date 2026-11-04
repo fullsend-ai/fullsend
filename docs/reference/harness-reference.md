@@ -130,6 +130,7 @@ overlays:
 
 # ── Security ──────────────────────────────────────────────────
 security:
+  enabled: true                     # false disables sandbox security hooks
   fail_mode: closed                  # "closed" (default) or "open"
 ```
 
@@ -229,7 +230,22 @@ keys](../cli/run.md#reserved-envsandbox-keys).
 
 **`agent_input`** — A local directory, not a file. When a URL `base:` harness declares it, the inherited value is cleared rather than fetched; supply the directory in the child harness if needed. See [Harness field semantic types](../contributing/harness-fields.md#semantic-types-adr-0127).
 
-**`host_files[].dest`** — An absolute path under `/sandbox/` or `/tmp/`. Paths the runner writes or puts on `PATH` ahead of the image are refused when the harness loads: `/sandbox/workspace/.env`, the runner and runtime binaries in `/sandbox/workspace/bin` (`claude`, `codex`, `pi`, `opencode`, `fullsend`, `fullsend-check-output`), and anything under `/sandbox/claude-config`, `/sandbox/codex-config`, `/sandbox/pi-config`, `/sandbox/workspace/.fullsend`, `/sandbox/workspace/.security`, `/sandbox/.venv` or `/sandbox/go/bin`. A `dest` containing a `..` path component is refused as well. The same rule applies to `host_files` under `overlays:`, `forge:` and inherited from `base:`. On Claude and pi runs `/sandbox/workspace/bin` is last on the agent's `PATH`, so a file there adds a command but does not replace one the image provides. Codex and OpenCode runs restore the `PATH` from before `.env`, so `/sandbox/workspace/bin` and `.env.d` additions are not on the codex or OpenCode agent's `PATH`. See [Adding executables](../guides/user/customizing-agents.md#adding-executables).
+**`host_files[].dest`** — An absolute path under `/sandbox/` or `/tmp/`. Paths
+the runner writes or puts on `PATH` ahead of the image are refused when the
+harness loads: `/sandbox/workspace/.env`, the runner and runtime binaries in
+`/sandbox/workspace/bin` (`claude`, `codex`, `pi`, `opencode`, `fullsend`,
+`fullsend-check-output`), and anything under `/sandbox/claude-config`,
+`/sandbox/codex-config`, `/sandbox/pi-config`,
+`/sandbox/workspace/.fullsend`, `/sandbox/workspace/.security`,
+`/sandbox/.venv` or `/sandbox/go/bin`. A `dest` containing a `..` path
+component is refused as well. The same rule applies to `host_files` under
+`overlays:`, `forge:` and inherited from `base:`. On Claude and pi runs
+`/sandbox/workspace/bin` is last on the agent's `PATH`, so a file there adds a
+command but does not replace one the image provides. Codex restores the `PATH`
+from before `.env`, so workspace-bin and `.env.d` additions are not on the
+Codex agent PATH. OpenCode Bash tool calls append `/sandbox/workspace/bin` to a
+fixed trusted system PATH but do not inherit `.env.d` PATH additions. See
+[Adding executables](../guides/user/customizing-agents.md#adding-executables).
 
 **`.env.d` host files** — A `host_files` entry with a `dest` in
 `/sandbox/workspace/.env.d/` ending in `.env` is read before the runtime starts.
@@ -263,6 +279,8 @@ runtimes.
 **`policy`** — Path or pinned URL of the sandbox policy. Required at `fullsend run`; fullsend ships no default. A child that omits `policy:` still passes if it inherits one from `base:`. A local file that unmarshals to no fields (comments only) is rejected with the path named. Commit a copy of the fleet policy from [fullsend-ai/agents](https://github.com/fullsend-ai/agents), or set `policy:` to its URL with a `#sha256=` hash under `allowed_remote_resources`; `fullsend agent new` writes both the file and the field for a new agent.
 
 **`timeout_minutes`** — Wall-clock budget for one agent iteration, default 30. The runner ends the iteration and sweeps the processes the agent left running in the sandbox (best effort) when it is spent, and a killed iteration ends the run with `agent timed out after <elapsed> without completing (timeout: <budget>)` unless its output validates anyway. Before every iteration the runner writes the budget as `FULLSEND_TIMEOUT_MINUTES`, the kill time as `FULLSEND_ITERATION_DEADLINE` (Unix seconds), and the current agent span as `TRACEPARENT` into the agent's environment — see [`fullsend run` § Budget and deadline](../cli/run.md#budget-and-deadline). Those names are reserved: an `env.sandbox` entry with any of them is dropped.
+
+**`security.enabled`** — Enables sandbox security hooks. It defaults to `true`; `false` disables the hooks for runtimes that permit it. OpenCode requires `true` for every role because its native hook adapter enforces the shared security controls. See [OpenCode](../runtimes/opencode.md#troubleshooting) for migration guidance.
 
 **`security.fail_mode`** — Determines what happens when a pre-run security scan finds issues or fails to complete. `closed` (default): the run aborts on scan failure or critical findings. `open`: the run continues with a warning. Omitting the `security` block is equivalent to `fail_mode: closed`.
 

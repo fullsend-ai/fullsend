@@ -78,6 +78,7 @@ regardless of trigger event.
   push to main ───────────► :dev  :sha  :latest
   tag push (v*) ──────────► :dev  :sha  :X.Y.Z  :X.Y
   pull_request ───────────► (build only, no push)
+  merge_group ────────────► base candidate :merge-queue-<run>-<attempt> only
 ```
 
 ## How images are built
@@ -87,20 +88,25 @@ Each image is built per platform on a native runner (`ubuntu-24.04` for
 publishes the multi-arch index. The jobs run in this order:
 
 1. **`build-base`** builds `fullsend-sandbox` from `images/sandbox/Containerfile`,
-   one leg per platform. On push/dispatch each leg pushes its image by digest.
+   one leg per platform. On push/dispatch and merge-queue runs, each leg pushes
+   its image by digest.
 
 2. **`merge-base`** waits for both legs, publishes the multi-arch index under
    the release tags with `docker buildx imagetools create`, and outputs the
    index's immutable digest (`@sha256:...`) for the next job. It refuses to
    publish unless both platform digests are present.
+   Merge-queue runs use a run-scoped `merge-queue-<run>-<attempt>` candidate tag
+   instead of the normal release tags.
 
 3. **`build-code`** builds `fullsend-code` from `images/code/Containerfile`,
    one leg per platform, passing the base image reference as
-   `--build-arg BASE_IMAGE=<ref>`. On push/dispatch it uses the digest from
-   `merge-base`. On PRs (where nothing was pushed), it falls back to the
+   `--build-arg BASE_IMAGE=<ref>`. On push/dispatch and merge-queue runs it uses
+   the digest from `merge-base`. On PRs (where nothing was pushed), it falls back to the
    `:dev` tag on the registry. Each leg smoke-tests its own image.
 
-4. **`merge-code`** publishes the `fullsend-code` index once both legs pass.
+4. **`merge-code`** publishes the `fullsend-code` index once both legs pass,
+   except on PR and merge-queue runs. Merge-queue code builds and smoke tests
+   consume the candidate base digest without publishing normal image tags.
 
 `runner-image.yml` follows the same pattern with `build-runner` and
 `merge-runner`.
@@ -158,6 +164,7 @@ Every binary downloaded during the build is **version-pinned** and
 | Claude Code | `CLAUDE_CODE_VERSION` ARG + npm version pin | npm registry integrity check |
 | pi (opt-in runtime, #6464) | `PI_VERSION` ARG + npm version pin (`--ignore-scripts`; package ships `npm-shrinkwrap.json`) | npm registry integrity check |
 | Codex (opt-in runtime, #6920) | `CODEX_VERSION` ARG + npm version pin; replaces the `@openai/codex` the OpenShell base image installs under the same npm prefix | npm registry integrity check + `codex --version` assertion against the pin |
+| OpenCode and plugin SDK | `OPENCODE_VERSION` + `OPENCODE_SHA256_{AMD64,ARM64}`; SDK manifest and lockfile in `sandbox/opencode-sdk/` | Binary SHA256 + version assertion; SDK pin assertion and `npm ci --ignore-scripts` with locked dependency integrity hashes |
 | pi-anthropic-vertex extension (#6464; fullsend-owned since #7019) | `PI_ANTHROPIC_VERTEX_VERSION` (git tag) + `PI_ANTHROPIC_VERTEX_SHA256` of the tag tarball; deps via `npm ci --omit=dev --omit=peer --ignore-scripts` from the vendored lockfile (26 packages: `google-auth-library` and its tree). The lockfile is not Renovate-managed here — run `npm audit --omit=dev --omit=peer` in the extension dir when reviewing a bump | `sha256sum -c` + npm registry integrity check |
 | acli | `ACLI_VERSION` + `ACLI_SHA256_{AMD64,ARM64}` | `sha256sum -c` |
 | pre-commit, gitlint, pyyaml | pip version pins | pip integrity check |
@@ -177,6 +184,17 @@ source URL for checksums.  When bumping a version:
 2. Update both `*_SHA256_AMD64` and `*_SHA256_ARM64` ARGs.
 3. The base image digest can be updated by running
    `podman manifest inspect <image>:<tag>` and extracting the index digest.
+
+For OpenCode, update the SDK manifest and lockfile alongside the binary pin.
+From the repository root, replace `<version>` with the new `OPENCODE_VERSION`:
+
+```bash
+npm install --prefix images/sandbox/opencode-sdk --package-lock-only \
+  --save-exact --ignore-scripts --no-audit --no-fund "@opencode-ai/plugin@<version>"
+```
+
+Review the lockfile changes before rebuilding. The image build rejects an SDK
+manifest pin that differs from `OPENCODE_VERSION`.
 
 OpenShell is partially automated: `OPENSHELL_VERSION` is tracked by a
 Renovate customManager, and `OPENSHELL_SHA` (the commit SHA used by

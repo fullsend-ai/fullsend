@@ -278,7 +278,7 @@ flowchart TB
     CC["Claude Code\nclaude -p --agent\nhooks via --settings"]
     PI["pi\npi --print --mode json\nhooks via fullsend-hooks.js"]
     CX["codex\ncodex exec --json\nhooks via hooks.json + adapter"]
-    OC["opencode\nopencode run --format json\nno hooks yet (#7824)"]
+    OC["opencode\nopencode run --format json\nnative security-hook plugin"]
     DM["dummy\nscripted ops\n(behaviour tests)"]
     DP["dummy-playback\nplaylist replay\n(behaviour tests)"]
   end
@@ -306,7 +306,35 @@ flowchart TB
 
 **Decided (implementation):**
 
-- The `fullsend run` runner delegates in-sandbox agent execution to a `runtime.Runtime` interface; production orgs default to Claude Code, with [pi](https://github.com/earendil-works/pi) available as an opt-in second runtime (`runtime: pi`, Claude-on-Vertex through the same WIF credential path), [codex](https://github.com/openai/codex) as a third (`runtime: codex`, OpenAI models through a custom model provider whose bearer token comes from a runner-seeded file, or `gateway/` models through a runner-owned gateway provider ([ADR 0137](ADRs/0137-inference-gateway-credential-route.md)), with the sandbox tool hooks behind a translating adapter — [ADR 0099](ADRs/0099-codex-agent-runtime.md) and [ADR 0100](ADRs/0100-codex-sandbox-hooks.md)), and [OpenCode](https://github.com/anomalyco/opencode) as a fourth (`runtime: opencode`, Claude-on-Vertex through the same WIF credential path; read-only agents only until the security-hook plugin adapter in [unbound-force#515](https://github.com/unbound-force/unbound-force/issues/515) lands). Runtime selection is configured per repo with `runtime:` in `.fullsend/config.yaml` (per-agent `runtime`/`model`/`effort`/`subagents` on the agent's `agents:` entry sit above it and below the `--runtime`/`--model`/`--effort` flags and `FULLSEND_*` variables, [ADR 0091](ADRs/0091-per-agent-runtime-model-effort.md)) and resolved via `runtime.ResolveForAgent()`. Test-only runtimes — **dummy** (scripted operations) and **dummy-playback** (playlist-based replay of canned results) — execute in the real OpenShell sandbox for behaviour tests without inference. Bootstrap uses a portable `BootstrapInput` interface with optional extensions such as `SandboxHooksBootstrap` for the runtime-neutral sandbox tool hooks ([ADR 0090](ADRs/0090-runtime-neutral-sandbox-hooks-contract.md)); runtimes declare further capabilities through small optional interfaces (`DebugLogNamer`, `ContextBridger`) rather than `Name()` checks in the runner. Transcript and debug artifact handling use a separate `TranscriptHandler` interface. See [runtimes.md](runtimes.md) for the per-runtime security feature matrix required when adding a new backend.
+- The `fullsend run` runner delegates in-sandbox agent execution to a
+  `runtime.Runtime` interface; production orgs default to Claude Code, with
+  [pi](https://github.com/earendil-works/pi) available as an opt-in second
+  runtime (`runtime: pi`, Claude-on-Vertex through the same WIF credential
+  path), [codex](https://github.com/openai/codex) as a third (`runtime: codex`,
+  OpenAI models through a custom model provider whose bearer token comes from a
+  runner-seeded file, or `gateway/` models through a runner-owned gateway
+  provider ([ADR 0137](ADRs/0137-inference-gateway-credential-route.md)), with
+  the sandbox tool hooks behind a translating adapter — [ADR 0099](ADRs/0099-codex-agent-runtime.md)
+  and [ADR 0100](ADRs/0100-codex-sandbox-hooks.md)), and
+  [OpenCode](https://github.com/anomalyco/opencode) as a fourth
+  (`runtime: opencode`, Claude-on-Vertex through the same WIF credential path;
+  native security-hook plugin on version 1.19.1, with security enabled for
+  every role). Runtime selection is configured per repo with `runtime:` in
+  `.fullsend/config.yaml` (per-agent `runtime`/`model`/`effort`/`subagents` on
+  the agent's `agents:` entry sit above it and below the
+  `--runtime`/`--model`/`--effort` flags and `FULLSEND_*` variables,
+  [ADR 0091](ADRs/0091-per-agent-runtime-model-effort.md)) and resolved via
+  `runtime.ResolveForAgent()`. Test-only runtimes — **dummy** (scripted
+  operations) and **dummy-playback** (playlist-based replay of canned
+  results) — execute in the real OpenShell sandbox for behaviour tests without
+  inference. Bootstrap uses a portable `BootstrapInput` interface with optional
+  extensions such as `SandboxHooksBootstrap` for the runtime-neutral sandbox
+  tool hooks ([ADR 0090](ADRs/0090-runtime-neutral-sandbox-hooks-contract.md));
+  runtimes declare further capabilities through small optional interfaces
+  (`DebugLogNamer`, `ContextBridger`) rather than `Name()` checks in the runner.
+  Transcript and debug artifact handling use a separate `TranscriptHandler`
+  interface. See [runtimes.md](runtimes.md) for the per-runtime security feature
+  matrix required when adding a new backend.
 - Harness `overlays:` ([ADR 0088](ADRs/0088-cel-guarded-overlays.md)) will be
   able to set any harness field except `base`, `trigger`, `overlays`, `slug`,
   `role`, and `forge`. An overlay that sets a guarded field (any field except
