@@ -9,9 +9,13 @@ import (
 
 // Shapes below are reduced from the embedded SDK schemas/emitter in Claude
 // 2.1.312. Raw output/prompt/result fields are included to prove exclusion.
+// Fullsend launches Claude without --include-hook-events, and the SDK emits
+// only SessionStart and Setup hook events in that mode, so the hook fixtures
+// use SessionStart to match the producer configuration real runs use; the
+// decoder itself accepts any hook_event value.
 func TestClaudeStatusProgressShapes(t *testing.T) {
 	cases := []struct{ name, line, want string }{
-		{"hook start", `{"type":"system","subtype":"hook_started","hook_id":"h1","hook_name":"guard","hook_event":"PreToolUse"}`, "Hook guard [PreToolUse] — running"},
+		{"hook start", `{"type":"system","subtype":"hook_started","hook_id":"h1","hook_name":"guard","hook_event":"SessionStart"}`, "Hook guard [SessionStart] — running"},
 		{"hook progress", `{"type":"system","subtype":"hook_progress","hook_id":"h1","hook_name":"guard","stdout":"PRIVATE","stderr":"PRIVATE","output":"PRIVATE"}`, "Hook guard — running"},
 		{"hook success", `{"type":"system","subtype":"hook_response","hook_id":"h1","hook_name":"guard","outcome":"success","exit_code":0,"output":"PRIVATE"}`, "completed: exit 0"},
 		{"hook failed", `{"type":"system","subtype":"hook_response","hook_id":"h1","hook_name":"guard","outcome":"error","exit_code":2}`, "failed: exit 2"},
