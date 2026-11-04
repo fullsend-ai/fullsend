@@ -141,6 +141,30 @@ Pick a stable fragment of the failure-comment contract (the category
 label headline or a fixed detail phrase). No shipped scenario uses this
 step yet; it is unit-tested.
 
+### Runner secret steps
+
+`pkg/behaviourtest/steps/runner_secrets.go` covers runner secrets
+([ADR 0136](../../ADRs/0136-runner-secrets-through-one-stored-secret.md)).
+`the repository has the runner secret "<NAME>"` sets the leased repository's
+`FULLSEND_GITHUB_RUNNER_SECRETS` secret to an object holding `<NAME>` with a
+random value, registered for redaction; scenario cleanup deletes it. The
+object holds that one name, so the step can run once per scenario; a second
+call is an error. The channel exists on GitHub only, so tag such scenarios
+`@skip:gitlab`. `the harness "<agent>" workflow fails with "<text>" in its
+logs` waits for the agent's harness run to fail and checks its workflow logs
+for the text, for a run that fails before a post-script could comment, such
+as a harness refused when it loads. It fetches the logs again for up to a
+minute while they could not be fetched, were empty or hold a fetch-failure
+note, since logs fetched just after a run completes have come back unusable
+(the cause is not confirmed). When the text is missing, its error says
+whether the logs could not be fetched, were empty or were incomplete, so a
+log-fetch problem does not read as a wrong result. Use it when the run is
+expected to fail; `the harness "<agent>" workflow logs contain "<text>"`
+checks the logs of a run that succeeds.
+`features/dispatch/runner-secret-overlay-guard.feature` uses both: an
+overlay that references the runner secret and reads a shadowed `.event` is
+refused, and the same overlay guarded on `runtime.forge` runs.
+
 ### Forge-state assertion steps
 
 `pkg/behaviourtest/steps/forge_state.go` asserts what agent post-scripts
