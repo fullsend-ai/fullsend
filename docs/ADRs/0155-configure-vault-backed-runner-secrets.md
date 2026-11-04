@@ -23,13 +23,12 @@ Accepted
 Fullsend reads selected long-lived credentials in the runner process, including
 Jira credentials, OTLP collector headers, and the optional GitHub bundle for
 host-side scripts. Today these values come from forge-native secrets or
-variables, or from the local process environment.
-Jira runner-secret examples appear in
-[ADR 0024](0024-harness-definitions.md). The OpenTelemetry configuration is
-recorded in [ADR 0050](0050-distributed-tracing-instrumentation.md).
-[ADR 0136](0136-runner-secrets-through-one-stored-secret.md) records the GitHub
-bundle and anticipates an external secret manager accessed with the job's OIDC
-identity.
+variables, or from the local process environment. Jira runner-secret examples
+are described in [ADR 0024](0024-harness-definitions.md); OpenTelemetry
+settings are in [ADR 0050](0050-distributed-tracing-instrumentation.md).
+[ADR 0136](0136-runner-secrets-through-one-stored-secret.md) records the
+GitHub bundle and anticipates an external secret manager accessed with the
+job's OIDC identity.
 
 Copying a long-lived value into each repository's forge secret store is
 unnecessary when the organization already operates a central secret manager.
