@@ -1446,6 +1446,71 @@ func TestDownloadAgentArtifactsAfterWaitsForRunToComplete(t *testing.T) {
 	}
 }
 
+// sleepyAfter returns a timer function that sleeps briefly in real time, so a
+// short wall-clock deadline expires after a handful of polls.
+func sleepyAfter(_ time.Duration) <-chan time.Time {
+	time.Sleep(2 * time.Millisecond)
+	return instantAfter(0)
+}
+
+func TestWaitForRunCompletedTimesOutWhileRunInProgress(t *testing.T) {
+	t.Parallel()
+
+	client := forge.NewFakeClient()
+	client.WorkflowRuns = map[string]*forge.WorkflowRun{"run-42": {ID: 42, Status: "in_progress"}}
+	d := &Driver{Client: client, afterFunc: sleepyAfter}
+
+	err := d.waitForRunCompleted(context.Background(), "org", "repo", 42, time.Now().Add(20*time.Millisecond))
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "workflow run 42 did not complete")
+	assert.ErrorContains(t, err, "in_progress")
+}
+
+func TestWaitForRunCompletedReturnsLastLookupError(t *testing.T) {
+	t.Parallel()
+
+	client := forge.NewFakeClient()
+	client.Errors = map[string]error{"GetWorkflowRun": errRateLimited}
+	d := &Driver{Client: client, afterFunc: sleepyAfter}
+
+	err := d.waitForRunCompleted(context.Background(), "org", "repo", 42, time.Now().Add(20*time.Millisecond))
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errRateLimited)
+}
+
+func TestDownloadAgentArtifactsAfterFailsWhenRunNeverCompletes(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	client := forge.NewFakeClient()
+	client.WorkflowRuns = map[string]*forge.WorkflowRun{"run-42": {ID: 42, Status: "in_progress"}}
+	client.RepositoryArtifacts = map[string][]forge.RepositoryArtifact{
+		"org/repo": {{ID: 1, Name: "fullsend-ci-retry", CreatedAt: "2026-01-02T00:00:00Z", WorkflowRunID: 42}},
+	}
+	client.WorkflowRunArtifacts = map[int][]forge.WorkflowArtifact{42: {{ID: 1, Name: "fullsend-ci-retry"}}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	polls := 0
+	d := &Driver{
+		Client: client,
+		afterFunc: func(_ time.Duration) <-chan time.Time {
+			polls++
+			if polls >= 3 {
+				cancel()                    // stands in for the wait deadline; the run never completes
+				return make(chan time.Time) // block so ctx.Done() wins
+			}
+			return instantAfter(0)
+		},
+	}
+
+	dest := t.TempDir()
+	err := d.DownloadAgentArtifactsAfter(ctx, "org", "repo", "ci-retry", after, dest)
+	require.Error(t, err)
+	entries, readErr := os.ReadDir(dest)
+	require.NoError(t, readErr)
+	assert.Empty(t, entries, "no partial artifact set should be downloaded")
+}
+
 func TestDownloadNamedArtifactAfterReturnsListingError(t *testing.T) {
 	t.Parallel()
 

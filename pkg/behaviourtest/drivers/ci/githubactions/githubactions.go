@@ -459,13 +459,22 @@ func (d *Driver) downloadArtifactAfter(ctx context.Context, owner, repo, artifac
 }
 
 // waitForRunCompleted polls the run until it is completed, the context ends,
-// or the deadline passes. On deadline (or persistent lookup errors) it returns
-// nil so the caller downloads whatever artifacts are available.
+// or the deadline passes. If completion is not confirmed by the deadline it
+// returns a timeout error (wrapping the last run lookup error, if any), so the
+// caller never reports a possibly partial artifact set as complete.
 func (d *Driver) waitForRunCompleted(ctx context.Context, owner, repo string, runID int, deadline time.Time) error {
+	var lastErr error
+	lastStatus := ""
 	for time.Now().Before(deadline) {
 		run, err := d.Client.GetWorkflowRun(ctx, owner, repo, runID)
-		if err == nil && run.Status == "completed" {
-			return nil
+		if err == nil {
+			if run.Status == "completed" {
+				return nil
+			}
+			lastErr = nil
+			lastStatus = run.Status
+		} else {
+			lastErr = err
 		}
 		select {
 		case <-ctx.Done():
@@ -473,7 +482,10 @@ func (d *Driver) waitForRunCompleted(ctx context.Context, owner, repo string, ru
 		case <-d.timerAfter(artifactRunPoll):
 		}
 	}
-	return nil
+	if lastErr != nil {
+		return fmt.Errorf("workflow run %d did not complete before the artifact wait deadline: %w", runID, lastErr)
+	}
+	return fmt.Errorf("workflow run %d did not complete before the artifact wait deadline (last status %q)", runID, lastStatus)
 }
 
 func newestRepositoryArtifactCreatedAt(arts []forge.RepositoryArtifact) string {
