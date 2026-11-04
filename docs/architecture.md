@@ -134,10 +134,7 @@ repo baseline and overrides)
   the sandbox `.env` file from `env.sandbox` at bootstrap. `runner_env` is
   deprecated ([ADR 0055](ADRs/0055-unified-env-var-delivery.md), amending
   [ADR 0024](ADRs/0024-harness-definitions.md)).
-- Runner secrets on GitHub (interim until external secret manager support
-  or #6359 settles the long-term route, then kept as the fallback for
-  workflows without GitHub OIDC or WIF; integrations fullsend owns keep their
-  own named secrets): user secrets
+- Runner secrets on GitHub: user secrets
   reach host-side scripts through one
   optional stored secret, `FULLSEND_GITHUB_RUNNER_SECRETS` (a JSON object of name →
   value), staged by the composite action in a mode 0600 file that
@@ -152,6 +149,16 @@ repo baseline and overrides)
   The refusal does not consult the credential deny-list that the
   `env.sandbox` gate also checks
   ([ADR 0145](ADRs/0145-keep-credential-deny-list-out-of-runner-secret-refusal.md)).
+- External source selection for user-managed runner secrets is decided but not
+  yet implemented: named connections under `connections` define service kinds
+  and settings, while `secrets` entries select a connection (native when
+  omitted). A Vault connection has an address and JWT role/audience, defaulting
+  to `fullsend-runner` and `https://fullsend.sh/vault`; secret paths are ordered
+  and templated from trusted repository context. Vault access uses job
+  OIDC/WIF, and connection settings must come from trusted configuration.
+  Native remains the default;
+  installer-managed GitLab credentials remain native until Vault write and
+  rotation behavior is decided ([ADR 0155](ADRs/0155-configure-vault-backed-runner-secrets.md)).
 - Agent configuration env vars: behavioral knobs use `{AGENT}_{SETTING_NAME}`
   naming (e.g., `REVIEW_SEVERITY_THRESHOLD`), delivered via `env.runner` and
   `env.sandbox` in the harness YAML. Each agent documents its config vars in
