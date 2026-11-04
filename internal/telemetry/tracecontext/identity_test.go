@@ -284,6 +284,72 @@ func TestNormalizeInstance(t *testing.T) {
 	}
 }
 
+// TestNormalizeInstance_RootDotDoesNotForkIdentity pins the DNS root-dot
+// rule: `host` and `host.` name the same deployment, so they must converge
+// to one instance and one fallback, never two trace IDs.
+func TestNormalizeInstance_RootDotDoesNotForkIdentity(t *testing.T) {
+	t.Parallel()
+	dotted, err := NormalizeInstance("https://GitHub.com.")
+	require.NoError(t, err)
+	plain, err := NormalizeInstance("https://github.com")
+	require.NoError(t, err)
+	assert.Equal(t, plain, dotted)
+
+	a := v01Identity()
+	b := v01Identity()
+	a.Instance, b.Instance = plain, dotted
+	fa, ok := DeriveFallback(a)
+	require.True(t, ok)
+	fb, ok := DeriveFallback(b)
+	require.True(t, ok)
+	assert.Equal(t, fa, fb, "one deployment must not fork into two fallback traces")
+}
+
+// TestNormalizeInstance_PortRangeAndZones pins the port and IPv6-zone
+// rules: ports must fit 16 bits, and zone identifiers must reject so
+// validInstance(NormalizeInstance(x)) always holds.
+func TestNormalizeInstance_PortRangeAndZones(t *testing.T) {
+	t.Parallel()
+	for _, raw := range []string{"https://example.com:65535", "https://example.com:065535"} {
+		_, err := NormalizeInstance(raw)
+		require.NoError(t, err, raw)
+	}
+	for _, raw := range []string{
+		"https://example.com:65536",
+		"https://example.com:99999999999999999999",
+		"https://[FE80::1%25EN0]",
+		"https://[fe80::1%en0]",
+		"https://.",
+	} {
+		_, err := NormalizeInstance(raw)
+		assert.Error(t, err, "input %q must be rejected", raw)
+	}
+}
+
+// FuzzNormalizeInstance asserts the canonicalization invariant: anything
+// NormalizeInstance accepts must re-normalize to itself, so the normalized
+// form is always a valid instance.
+func FuzzNormalizeInstance(f *testing.F) {
+	f.Add("https://github.com")
+	f.Add("https://GitLab.example.com:08443/gitlab/")
+	f.Add("https://[2001:DB8::1]:443/")
+	f.Add("https://example.com.")
+	f.Add("https://example.com:65536")
+	f.Fuzz(func(t *testing.T, raw string) {
+		normalized, err := NormalizeInstance(raw)
+		if err != nil {
+			return
+		}
+		again, err := NormalizeInstance(normalized)
+		if err != nil {
+			t.Fatalf("normalized instance must re-normalize: %q: %v", normalized, err)
+		}
+		if normalized != again {
+			t.Fatalf("normalization must be idempotent: %q vs %q", normalized, again)
+		}
+	})
+}
+
 func TestNormalizeInstance_Rejects(t *testing.T) {
 	for _, raw := range []string{
 		"",

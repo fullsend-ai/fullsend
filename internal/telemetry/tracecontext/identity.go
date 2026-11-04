@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -126,10 +127,12 @@ func nonzeroFallback(fb Fallback) Fallback {
 // NormalizeInstance canonicalizes a forge web base URL to the D01 instance
 // form: lowercase scheme://host with an escaped, case-sensitive deployment
 // prefix and no trailing slashes, query, fragment, or user info. Only http
-// and https are accepted, empty/default ports are removed, other ports lose
-// leading zeros, and hosts must be ASCII (punycode for IDNs). Path segments and
-// escape spelling are preserved so distinct deployments cannot alias. All
-// identity and envelope construction must use the normalized form so independent
+// and https are accepted, empty/default ports are removed, other ports
+// lose leading zeros and must fit 16 bits, a single DNS root dot is
+// stripped from the host, and hosts must be ASCII (punycode for IDNs)
+// without an IPv6 zone identifier. Path segments and escape spelling are
+// preserved so distinct deployments cannot alias. All identity and
+// envelope construction must use the normalized form so independent
 // launches converge.
 func NormalizeInstance(raw string) (string, error) {
 	if !utf8.ValidString(raw) {
@@ -157,14 +160,31 @@ func NormalizeInstance(raw string) (string, error) {
 			return "", errors.New("tracecontext: instance host must be ASCII; use punycode for IDNs")
 		}
 	}
+	// Zone identifiers survive parsing in a form the round trip cannot
+	// re-parse, and lowercasing would corrupt the case-sensitive zone.
+	if strings.ContainsRune(u.Host, '%') {
+		return "", errors.New("tracecontext: instance host must not carry an IPv6 zone identifier; use a routable address")
+	}
 	rawPort := u.Port()
 	host := strings.TrimSuffix(strings.ToLower(u.Host), ":"+rawPort)
+	// The DNS root dot is not a distinct deployment: strip trailing root
+	// dots so https://host and https://host. share one identity, and the
+	// strip stays idempotent for multi-dot spellings.
+	host = strings.TrimRight(host, ".")
+	if host == "" {
+		return "", errors.New("tracecontext: instance URL needs a host")
+	}
 	port := strings.TrimLeft(rawPort, "0")
 	if port == "" && rawPort != "" {
 		port = "0"
 	}
-	if port != "" && !(scheme == "https" && port == "443" || scheme == "http" && port == "80") {
-		host += ":" + port
+	if port != "" {
+		if _, err := strconv.ParseUint(port, 10, 16); err != nil {
+			return "", fmt.Errorf("tracecontext: instance port %q must be at most 65535", rawPort)
+		}
+		if !(scheme == "https" && port == "443" || scheme == "http" && port == "80") {
+			host += ":" + port
+		}
 	}
 	normalized := scheme + "://" + host + strings.TrimRight(u.EscapedPath(), "/")
 	if len(normalized) > 253 {

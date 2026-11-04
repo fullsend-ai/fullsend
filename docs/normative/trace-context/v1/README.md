@@ -43,13 +43,18 @@ deployment URL on every launch, rather than an entity or API URL.
 
 Remove an empty port and the scheme's default port (`443` for HTTPS, `80` for
 HTTP). Strip leading zeros from other ports, preserving an explicit zero as
-`:0` rather than treating it as the default. For example, `https://host:`
-becomes `https://host`, and `https://host:08443` becomes `https://host:8443`.
-Hosts must be ASCII: use the punycode form for internationalized domain
-names, and reject Unicode host spellings instead of converting them. For example,
+`:0` rather than treating it as the default, and reject ports above `65535`.
+For example, `https://host:` becomes `https://host`, and
+`https://host:08443` becomes `https://host:8443`. Hosts must be ASCII: use
+the punycode form for internationalized domain names, and reject Unicode
+host spellings instead of converting them. For example,
 `https://GitHub.com:443/` becomes `https://github.com`, and
 `https://XN--BCHER-KVA.example` becomes `https://xn--bcher-kva.example`.
-Bracketed IPv6 hosts follow the same case and port rules.
+Bracketed IPv6 hosts follow the same case and port rules, without zone
+identifiers: `https://[FE80::1%25EN0]` rejects — use a routable address —
+so a normalized instance always re-normalizes to itself. Trailing DNS root
+dots are stripped: `https://github.com.` and `https://github.com` are one
+deployment with one fallback identity, never two.
 
 `NormalizeInstance` rejects queries, fragments, user info, missing hosts,
 invalid UTF-8 or NUL in the decoded path, and normalized URLs over 253 bytes
