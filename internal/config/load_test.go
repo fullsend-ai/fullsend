@@ -620,3 +620,67 @@ allowed_remote_resources:
 		seen[r] = true
 	}
 }
+
+func TestLoadConfig_LegacyCreateIssuesRejected(t *testing.T) {
+	const legacy = "create_issues:\n  allow_targets:\n    orgs: [acme]\n"
+	const permissiveBase = "version: \"1\"\ntracker:\n  github:\n    allowed_targets:\n      orgs: [acme]\n"
+
+	cases := []struct {
+		name    string
+		overlay string
+		base    string
+		file    string
+	}{
+		{"overlay only", legacy, "", OverlayConfigFile},
+		{"base only", "version: \"1\"\n", legacy, BaseConfigFile},
+		{"legacy overlay over permissive base", "create_issues:\n  allow_targets: {}\n", permissiveBase, OverlayConfigFile},
+		{"legacy base under clean overlay", "version: \"1\"\n", "version: \"1\"\n" + legacy, BaseConfigFile},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(dir, OverlayConfigFile), []byte(c.overlay), 0o644))
+			if c.base != "" {
+				require.NoError(t, os.WriteFile(filepath.Join(dir, BaseConfigFile), []byte(c.base), 0o644))
+			}
+
+			for name, load := range map[string]func() error{
+				"LoadConfig": func() error {
+					_, err := LoadConfig(dir, LoadOpts{})
+					return err
+				},
+				"LoadConfigWriter": func() error {
+					_, err := LoadConfigWriter(dir, LoadOpts{})
+					return err
+				},
+			} {
+				err := load()
+				require.ErrorIs(t, err, errLegacyCreateIssues, name)
+				assert.Contains(t, err.Error(), c.file, name)
+				assert.Contains(t, err.Error(), "tracker.<provider>.allowed_targets", name)
+				assert.Contains(t, err.Error(), "tracker.github.allowed_targets.orgs/repos", name)
+				assert.Contains(t, err.Error(), "tracker.gitlab.allowed_targets.groups/repos", name)
+				assert.Contains(t, err.Error(), "tracker.jira.allowed_targets.projects", name)
+			}
+		})
+	}
+}
+
+func TestLoadConfig_LegacyCreateIssuesBaseOnlyDir(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, BaseConfigFile), []byte("create_issues:\n  allow_targets: {}\n"), 0o644))
+
+	_, err := LoadConfig(dir, LoadOpts{})
+	require.ErrorIs(t, err, errLegacyCreateIssues)
+}
+
+func TestLoadConfig_MigratedTrackerStillLoads(t *testing.T) {
+	dir := t.TempDir()
+	base := "version: \"1\"\ntracker:\n  github:\n    allowed_targets:\n      orgs: [acme]\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, BaseConfigFile), []byte(base), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, OverlayConfigFile), []byte("version: \"1\"\n"), 0o644))
+
+	cfg, err := LoadConfig(dir, LoadOpts{})
+	require.NoError(t, err)
+	assert.Equal(t, TrackingProviderGitHub, cfg.IssueTracking().Provider())
+}

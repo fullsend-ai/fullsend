@@ -273,17 +273,6 @@ type ReactionNotificationConfig struct {
 	Completion string `yaml:"completion,omitempty"`
 }
 
-// AllowTargets defines which orgs and repos agents may create issues in.
-type AllowTargets struct {
-	Orgs  []string `yaml:"orgs,omitempty"`
-	Repos []string `yaml:"repos,omitempty"`
-}
-
-// CreateIssuesConfig controls cross-repo issue creation by agents.
-type CreateIssuesConfig struct {
-	AllowTargets AllowTargets `yaml:"allow_targets"`
-}
-
 // Authorization provider names accepted under authorization:.
 const (
 	// AuthProviderOwnersFile consults the repo-root Prow OWNERS file for
@@ -911,13 +900,18 @@ type perRepoConfig struct {
 	// fallback chain to inherit version from the parent layer.
 	Version string `yaml:"version,omitempty"`
 	Forge   string `yaml:"forge,omitempty"`
-	// Tracker is the default issue tracker backend (github, gitlab, or
-	// jira) for `fullsend issues` commands' --tracker flag. Distinct
-	// from Forge, which is the repo's hosting platform — a repo can be
-	// hosted on GitHub but track issues in Jira.
-	Tracker    string `yaml:"tracker,omitempty"`
-	KillSwitch *bool  `yaml:"kill_switch,omitempty"`
-	Runtime    string `yaml:"runtime,omitempty"`
+	// Tracker is the single canonical issue-tracker setting: a
+	// provider-discriminated mapping (github, gitlab, or jira, at most
+	// one) holding that provider's settings, including the cross-project
+	// issue destinations agents may use (allowed_targets). The provider
+	// present is the default backend for `fullsend issues` commands'
+	// --tracker flag. Distinct from Forge, which is the repo's hosting
+	// platform — a repo can be hosted on GitHub but track issues in Jira.
+	// nil falls through to parent; a set value replaces the parent's
+	// whole mapping. The legacy scalar form (tracker: jira) is rejected.
+	Tracker    *TrackingConfig `yaml:"tracker,omitempty"`
+	KillSwitch *bool           `yaml:"kill_switch,omitempty"`
+	Runtime    string          `yaml:"runtime,omitempty"`
 
 	// KeepHistory controls whether sticky comment updates append the
 	// previous body as a collapsed "Previous run" <details> block. When
@@ -933,10 +927,9 @@ type perRepoConfig struct {
 	// distinction: nil (unset) is omitted, empty (deny-all) is
 	// marshaled as `allowed_remote_resources: []`.
 	AllowedRemoteResources []string                `yaml:"allowed_remote_resources,omitempty"`
-	CreateIssues           *CreateIssuesConfig     `yaml:"create_issues,omitempty"`
 	Authorization          []AuthorizationProvider `yaml:"authorization,omitempty"`
 	// Notifications backs the StatusNotifications() accessor. Named
-	// distinctly from the method (unlike CreateIssues/IssueCreationConfig)
+	// distinctly from the method (unlike Tracker/IssueTracking)
 	// because "StatusNotifications" is the established ConfigReader
 	// accessor name, and Go forbids a field and method sharing a name on
 	// the same type.
@@ -958,6 +951,37 @@ type perRepoConfig struct {
 	// parent when the local field is unset. Excluded from YAML
 	// serialization so Marshal emits only locally-set values.
 	parent PerRepoConfigReader `yaml:"-"`
+
+	// legacyCreateIssues records that the parsed YAML carried the removed
+	// top-level create_issues block, so validation can reject it instead
+	// of silently ignoring it. It is never serialized.
+	legacyCreateIssues bool `yaml:"-"`
+}
+
+// unmarshalPerRepo decodes per-repo config YAML into cfg and records a
+// leftover create_issues block (see legacyCreateIssues).
+func unmarshalPerRepo(data []byte, cfg *perRepoConfig) error {
+	if err := yaml.Unmarshal(data, cfg); err != nil {
+		return err
+	}
+	has, err := hasLegacyCreateIssues(data)
+	if err != nil {
+		return err
+	}
+	cfg.legacyCreateIssues = has
+	return nil
+}
+
+// hasLegacyCreateIssues reports whether the YAML carries the removed
+// top-level create_issues key.
+func hasLegacyCreateIssues(data []byte) (bool, error) {
+	var probe struct {
+		CreateIssues *yaml.Node `yaml:"create_issues"`
+	}
+	if err := yaml.Unmarshal(data, &probe); err != nil {
+		return false, err
+	}
+	return probe.CreateIssues != nil, nil
 }
 
 const perRepoConfigHeader = `# fullsend per-repo configuration
@@ -986,11 +1010,7 @@ func NewPerRepoConfig(roles []string, targetRepo string) PerRepoConfigWriter {
 		// triage and retro post-scripts, so only the upstream
 		// cross-repo permissions (retro proposals, triage prerequisites)
 		// need explicit entries (#8218, #8504).
-		cfg.CreateIssues = &CreateIssuesConfig{
-			AllowTargets: AllowTargets{
-				Repos: DefaultIssueCreationRepos(),
-			},
-		}
+		cfg.Tracker = DefaultIssueTracking(TrackingProviderGitHub)
 	}
 	return cfg
 }
@@ -1008,7 +1028,7 @@ func NewEmptyPerRepoOverlay() PerRepoConfigWriter {
 // ParsePerRepoConfig parses YAML bytes into a PerRepoConfigReader.
 func ParsePerRepoConfig(data []byte) (PerRepoConfigReader, error) {
 	var cfg perRepoConfig
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	if err := unmarshalPerRepo(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parsing per-repo config: %w", err)
 	}
 	cfg.parent = &perRepoDefaults{}
@@ -1019,7 +1039,7 @@ func ParsePerRepoConfig(data []byte) (PerRepoConfigReader, error) {
 // for callers that need to modify the config after parsing.
 func ParsePerRepoConfigWriter(data []byte) (PerRepoConfigWriter, error) {
 	var cfg perRepoConfig
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	if err := unmarshalPerRepo(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parsing per-repo config: %w", err)
 	}
 	cfg.parent = &perRepoDefaults{}
@@ -1048,14 +1068,13 @@ func (c *perRepoConfig) Marshal() ([]byte, error) {
 type perRepoConfigMarshal struct {
 	Version                string                    `yaml:"version,omitempty"`
 	Forge                  string                    `yaml:"forge,omitempty"`
-	Tracker                string                    `yaml:"tracker,omitempty"`
+	Tracker                *TrackingConfig           `yaml:"tracker,omitempty"`
 	KillSwitch             *bool                     `yaml:"kill_switch,omitempty"`
 	Runtime                string                    `yaml:"runtime,omitempty"`
 	KeepHistory            *bool                     `yaml:"keep_history,omitempty"`
 	Roles                  *[]string                 `yaml:"roles,omitempty"`
 	Agents                 []AgentEntry              `yaml:"agents,omitempty"`
 	AllowedRemoteResources *[]string                 `yaml:"allowed_remote_resources,omitempty"`
-	CreateIssues           *CreateIssuesConfig       `yaml:"create_issues,omitempty"`
 	Authorization          *[]AuthorizationProvider  `yaml:"authorization,omitempty"`
 	StatusNotifications    *StatusNotificationConfig `yaml:"status_notifications,omitempty"`
 	MintURL                string                    `yaml:"mint_url,omitempty"`
@@ -1078,7 +1097,6 @@ func (c *perRepoConfig) MarshalYAML() (interface{}, error) {
 		Runtime:             c.Runtime,
 		KeepHistory:         c.KeepHistory,
 		Agents:              c.Agents,
-		CreateIssues:        c.CreateIssues,
 		StatusNotifications: c.Notifications,
 		MintURL:             c.MintURL,
 	}
@@ -1164,7 +1182,7 @@ func ValidateRuntimeAuthorization(r ConfigReader) error {
 }
 
 // validateLocalFields checks the fields that do not need a resolved
-// parent chain: version, roles, create_issues, runtime,
+// parent chain: version, roles, tracker, runtime,
 // status_notifications, inference provider, authorization providers,
 // and model aliases. It is split out of Validate so a repos.yaml config
 // managed-configuration layer (ADR 0122) can be checked without pulling in
@@ -1192,7 +1210,10 @@ func (c *perRepoConfig) validateLocalFields() error {
 			seen[role] = true
 		}
 	}
-	if err := validateCreateIssues(c.CreateIssues); err != nil {
+	if c.legacyCreateIssues {
+		return errLegacyCreateIssues
+	}
+	if err := validateTracking(c.Tracker); err != nil {
 		return err
 	}
 	if rt := c.Runtime; rt != "" {
@@ -1306,22 +1327,4 @@ func ValidateModelAliases(aliases map[string]string) error {
 // used in validation error messages.
 var roleAliasHints = map[string]string{
 	"coder": "code",
-}
-
-func validateCreateIssues(cfg *CreateIssuesConfig) error {
-	if cfg == nil {
-		return nil
-	}
-	for _, org := range cfg.AllowTargets.Orgs {
-		if org == "" {
-			return fmt.Errorf("create_issues: empty org in allow_targets.orgs")
-		}
-	}
-	for _, repo := range cfg.AllowTargets.Repos {
-		parts := strings.SplitN(repo, "/", 2)
-		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-			return fmt.Errorf("create_issues: repo %q in allow_targets.repos must contain owner/name", repo)
-		}
-	}
-	return nil
 }

@@ -177,10 +177,10 @@ request with the change. The pull request's `config.yaml` diff, on a repository 
 with `--runtime pi`:
 
 ```diff
-@@ -20,3 +20,12 @@ create_issues:
-         repos:
-             - example-org/example-repo
-             - fullsend-ai/fullsend
+@@ -21,3 +21,12 @@ tracker:
+             repos:
+                 - example-org/example-repo
+                 - fullsend-ai/fullsend
 +inference:
 +    gateway:
 +        url: https://gateway.example.com
@@ -206,10 +206,10 @@ fullsend github setup example-org/example-repo \
 The output is the same as above. The pull request's diff:
 
 ```diff
-@@ -20,3 +20,12 @@ create_issues:
-         repos:
-             - example-org/example-repo
-             - fullsend-ai/fullsend
+@@ -21,3 +21,12 @@ tracker:
+             repos:
+                 - example-org/example-repo
+                 - fullsend-ai/fullsend
 +inference:
 +    gateway:
 +        url: https://gateway.example.com
