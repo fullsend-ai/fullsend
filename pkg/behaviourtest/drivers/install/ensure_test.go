@@ -1413,6 +1413,19 @@ func TestAwaitWorkflowReady_ImmediateSuccess(t *testing.T) {
 	assert.Equal(t, int32(1), sc.getWorkflowCalled.Load(), "should succeed on first poll")
 }
 
+func TestAwaitWorkflowReady_ReportsLastPollError(t *testing.T) {
+	orig := settlePoll
+	settlePoll = 0
+	t.Cleanup(func() { settlePoll = orig })
+
+	sc := &stubClient{getWorkflowErr: fmt.Errorf("github api: 403 forbidden")}
+	err := awaitWorkflowReady(context.Background(), sc, "org", "repo", "fullsend.yaml", t.Logf)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "after 30 attempts")
+	assert.Contains(t, err.Error(), "403 forbidden", "a poll error must not be reported as a plain indexing timeout")
+	assert.Equal(t, int32(settleMaxAttempts), sc.getWorkflowCalled.Load())
+}
+
 func TestAwaitWorkflowReady_ContextCancelled(t *testing.T) {
 	sc := &stubClient{installed: false, getWorkflowErr: forge.ErrNotFound}
 	ctx, cancel := context.WithCancel(context.Background())
