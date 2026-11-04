@@ -53,8 +53,8 @@ func (d *perRepoDefaults) AgentEntries() []AgentEntry { return nil }
 // AllowedResources returns the default allowed remote resource prefixes.
 func (d *perRepoDefaults) AllowedResources() []string { return DefaultAllowedRemoteResources() }
 
-// IssueCreationConfig returns nil — no issue creation config by default.
-func (d *perRepoDefaults) IssueCreationConfig() *CreateIssuesConfig { return nil }
+// IssueTracking returns nil — no issue-tracking config by default.
+func (d *perRepoDefaults) IssueTracking() *TrackingConfig { return nil }
 
 // StatusNotifications returns nil — no status notifications by default.
 func (d *perRepoDefaults) StatusNotifications() *StatusNotificationConfig { return nil }

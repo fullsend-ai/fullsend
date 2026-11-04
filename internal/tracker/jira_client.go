@@ -366,13 +366,8 @@ func (c *JiraClient) CreateCommentWithMarker(ctx context.Context, project string
 func (c *JiraClient) FindCommentByMarkerProperty(comments []jira.Comment, marker string) *jira.Comment {
 	// Primary: match by entity property.
 	for i := range comments {
-		for _, prop := range comments[i].Properties {
-			if prop.Key == stickyPropertyKey {
-				var stored stickyMarkerProperty
-				if json.Unmarshal(prop.Value, &stored) == nil && stored.Marker == marker {
-					return &comments[i]
-				}
-			}
+		if hasStickyMarkerProperty(comments[i], marker) {
+			return &comments[i]
 		}
 	}
 	// Legacy fallback: match by body text for pre-property comments.
@@ -382,6 +377,23 @@ func (c *JiraClient) FindCommentByMarkerProperty(comments []jira.Comment, marker
 		}
 	}
 	return nil
+}
+
+// hasStickyMarkerProperty reports whether c carries a sticky marker
+// property whose value decodes and exactly matches marker. Mere presence
+// of the property key, a malformed value, or a different marker is not a
+// match.
+func hasStickyMarkerProperty(c jira.Comment, marker string) bool {
+	for _, prop := range c.Properties {
+		if prop.Key != stickyPropertyKey {
+			continue
+		}
+		var stored stickyMarkerProperty
+		if json.Unmarshal(prop.Value, &stored) == nil && stored.Marker == marker {
+			return true
+		}
+	}
+	return false
 }
 
 // fullsendPropertyPrefix is the key prefix shared by every comment entity
@@ -410,30 +422,33 @@ func hasLegacyMarker(md, marker string) bool {
 	return marker != "" && strings.HasPrefix(md, marker)
 }
 
-// MigrateAndUpdateComment updates a comment's body and ensures the
-// sticky marker is stored as a comment entity property. If the comment
-// was found via the legacy body-text path (no property set), this also
-// sets the property — transparently migrating the comment to the
-// property-based scheme.
+// MigrateAndUpdateComment updates the body of comment, the sticky
+// comment FindCommentByMarkerProperty matched, and ensures the sticky
+// marker is stored as a comment entity property.
+//
+// A comment that already carries a property exactly matching marker is
+// updated without rewriting the property: the write would be redundant,
+// and a Jira rejection of it would otherwise block the body update. A
+// comment found via the legacy body-text path has the property set
+// first, transparently migrating it to the property-based scheme.
 //
 // The body written to Jira has the marker stripped (unlike
 // GitHub/GitLab where the marker is an invisible HTML comment). The
 // caller should pass the body without the marker prefix.
-func (c *JiraClient) MigrateAndUpdateComment(ctx context.Context, project string, number int, commentID string, body Body, marker string) error {
+func (c *JiraClient) MigrateAndUpdateComment(ctx context.Context, project string, number int, comment jira.Comment, body Body, marker string) error {
 	key := issueKey(project, number)
-	// Set the property first — idempotent PUT. If it was already set
-	// (new-style comment), this is a no-op from Jira's perspective.
-	// If it was absent (legacy comment), this completes migration.
-	//
-	// Property-before-body ordering is intentional: if the property
-	// write succeeds but the body update fails, the next run will
-	// still find the comment via its property and can retry. The
-	// reverse order risks losing the marker from both the body (which
-	// was just stripped) and the property (which was never set).
-	if err := c.jira.SetCommentProperty(ctx, key, commentID, stickyPropertyKey, stickyMarkerProperty{Marker: marker}); err != nil {
-		return fmt.Errorf("setting sticky marker property on comment %s of %s: %w", commentID, key, err)
+	if !hasStickyMarkerProperty(comment, marker) {
+		// Property-before-body ordering is intentional: if the property
+		// write succeeds but the body update fails, the next run will
+		// still find the comment via its property and can retry. The
+		// reverse order risks losing the marker from both the body
+		// (which was just stripped) and the property (which was never
+		// set).
+		if err := c.jira.SetCommentProperty(ctx, key, comment.ID, stickyPropertyKey, stickyMarkerProperty{Marker: marker}); err != nil {
+			return fmt.Errorf("setting sticky marker property on comment %s of %s: %w", comment.ID, key, err)
+		}
 	}
-	if err := c.jira.UpdateComment(ctx, key, commentID, string(body)); err != nil {
+	if err := c.jira.UpdateComment(ctx, key, comment.ID, string(body)); err != nil {
 		return wrapNotFound(err)
 	}
 	return nil

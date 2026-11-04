@@ -722,7 +722,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	}
 
 	// The only manifest edit install still plans is the initial
-	// create_issues writeback below. It is planned in memory (DryRun) with
+	// tracking writeback below. It is planned in memory (DryRun) with
 	// its progress output held in deferredOutput; the layered safety
 	// comparison then runs against the proposed manifest and presets, and
 	// only then is the manifest persisted, so a safety rejection leaves
@@ -732,7 +732,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	manifestChanged := false
 
 	// Persist the install-time choice the generated managed overlay must
-	// reproduce (the upstream create_issues default for a no-preset first
+	// reproduce (the upstream tracking default for a no-preset first
 	// install) in each repo's manifest entry before the overlay is rendered
 	// (#8218). A manifest that cannot be written fails here, before any
 	// forge write, with the exact edit.
@@ -751,6 +751,19 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	}
 	if len(writtenBack) > 0 {
 		manifestChanged = true
+	}
+
+	// The manifest loader converted any legacy tracker/create_issues config
+	// to the tracker mapping in memory (#9075), so the rendered managed
+	// overlays use the new shape. Persist the converted manifest with the
+	// other planned edits, or name the edits for a manifest that cannot be
+	// written.
+	if migrations := manifest.LegacyTrackingMigrations(); len(migrations) > 0 {
+		writable := opts.manifest != "" && !repos.ManifestReadOnly(manifest, opts.manifest)
+		if writable {
+			manifestChanged = true
+		}
+		deferOutput(func() { reportLegacyTrackingMigrations(printer, opts.manifest, migrations, writable, opts.dryRun) })
 	}
 
 	// Compare the proposed layered configuration (manifest edits and declared
@@ -1325,6 +1338,26 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		return fmt.Errorf("%d repos failed", failedCount)
 	}
 	return nil
+}
+
+// reportLegacyTrackingMigrations reports the manifest config layers whose
+// legacy tracker/create_issues keys were converted to the tracker mapping
+// (#9075). writable reports whether install persists the converted manifest;
+// otherwise the operator is asked to apply the same edits to its source.
+func reportLegacyTrackingMigrations(printer *ui.Printer, manifestPath string, migrations []repos.LegacyTrackingMigration, writable, dryRun bool) {
+	var b strings.Builder
+	for _, mig := range migrations {
+		fmt.Fprintf(&b, "\n  %s: %s", mig.Path, mig.Result)
+	}
+	switch {
+	case !writable:
+		printer.StepWarn(fmt.Sprintf("Manifest %s uses the legacy tracker/create_issues configuration and cannot be written; "+
+			"this run uses the converted values. Replace them in the manifest source with:%s", manifestPath, b.String()))
+	case dryRun:
+		printer.StepInfo("Would convert the legacy tracker/create_issues configuration in " + manifestPath + " to the tracker mapping:" + b.String())
+	default:
+		printer.StepInfo("Converted the legacy tracker/create_issues configuration in " + manifestPath + " to the tracker mapping:" + b.String())
+	}
 }
 
 // reconcileFailedGitLabWebhookSafety runs the revocation-only webhook safety

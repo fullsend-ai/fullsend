@@ -1526,7 +1526,7 @@ func convergeRepo(ctx context.Context,
 			// established-path gate, status and preflight do: the safety
 			// comparison does not check decoded values such as runtime.
 			if found {
-				if valErr := validateExistingOverlay(existing); valErr != nil {
+				if valErr := validateExistingOverlay(existing, resolved.Forge); valErr != nil {
 					cr.Error = fmt.Errorf("convergence errors: %w", valErr)
 					return cr
 				}

@@ -658,11 +658,11 @@ threshold follows the harness `role:`:
 
 These thresholds apply to human actors. On GitHub, `fullsend dispatch` does
 not read a permission level for a bot. For a non-label event, it asks the mint
-for the Fullsend role registered for the bot, using the mint URL (a layered
+for the fullsend role registered for the bot, using the mint URL (a layered
 `mint_url` in `config.yaml` or `config.base.yaml`, else the
 `FULLSEND_MINT_URL` variable) and the job's Actions OIDC token, and exposes it
 to triggers as `event.actor.bot_role`. A bot that is not registered with a
-Fullsend role, or whose lookup fails, gets `actor.role: "none"` and is denied.
+fullsend role, or whose lookup fails, gets `actor.role: "none"` and is denied.
 Label-added events skip the lookup.
 
 This is a breaking change for bots that are not registered with the mint:

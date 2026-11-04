@@ -249,7 +249,7 @@ A single mint instance can serve multiple orgs:
 
 `POST /v1/bot-role` resolves a GitHub App bot login to the mint role
 registered for that App. Dispatch authorization uses it to recognize
-Fullsend's own bots.
+fullsend's own bots.
 
 - **Authentication:** GitHub Actions OIDC bearer token, with the same per-repo enrollment and workflow-host checks as `POST /v1/token`.
 - **Request:** `{"actor_login": "<app-slug>[bot]", "repo": "owner/repo"}`. `repo` must be the token's `repository` claim (otherwise `403`). Other fields, such as `role`, are ignored.
@@ -351,7 +351,7 @@ Secrets and variables are deployed on the target repository.
   `env.runner`
   ([setup](../user/bring-your-own-agent.md#pass-secrets-to-host-side-scripts-github))
 
-Repos whose `inference.auth` is `openai-wif` need no Fullsend-managed inference secret: they authenticate with the user-managed `FULLSEND_OPENAI_*` identifier variables or `inference.openai` configuration, and the GCP secrets above are written only when Vertex sub-agents are configured.
+Repos whose `inference.auth` is `openai-wif` need no fullsend-managed inference secret: they authenticate with the user-managed `FULLSEND_OPENAI_*` identifier variables or `inference.openai` configuration, and the GCP secrets above are written only when Vertex sub-agents are configured.
 
 **Target repo variables:**
 - `FULLSEND_MINT_URL`

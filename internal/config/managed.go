@@ -130,15 +130,13 @@ func (o ManagedConfig) Clone() ManagedConfig {
 	return ManagedConfig{cfg: clonePerRepo(o.cfg)}
 }
 
-// WithCreateIssuesRepos returns a copy of o whose create_issues allowlist
-// permits exactly the given repositories. It is how repos install records
-// the upstream cross-repo permissions on a manifest entry (#8218, #8504).
-// The receiver is not modified.
-func (o ManagedConfig) WithCreateIssuesRepos(repos []string) ManagedConfig {
+// WithIssueTracking returns a copy of o whose tracking mapping is a copy
+// of t. It is how repos install records the upstream cross-repo
+// permissions on a manifest entry (#8218, #8504). The receiver is not
+// modified.
+func (o ManagedConfig) WithIssueTracking(t *TrackingConfig) ManagedConfig {
 	cp := o.clone()
-	cp.CreateIssues = &CreateIssuesConfig{
-		AllowTargets: AllowTargets{Repos: cloneStringSlice(repos)},
-	}
+	cp.Tracker = cloneTracking(t)
 	return ManagedConfig{cfg: cp}
 }
 
@@ -209,9 +207,25 @@ func decodeManagedConfig(n *yaml.Node) (*perRepoConfig, error) {
 	for i := 0; i+1 < len(node.Content); i += 2 {
 		keyNode := node.Content[i]
 		key := keyNode.Value
-		if !known[key] {
+		if key == "create_issues" {
+			// The removed key gets an actionable migration message
+			// instead of the generic unknown-field error.
+			fieldErrs = append(fieldErrs, managedFieldError(keyNode,
+				fmt.Sprintf("unknown field %q: %s", key, errLegacyCreateIssues)))
+		} else if !known[key] {
 			fieldErrs = append(fieldErrs, managedFieldError(keyNode,
 				fmt.Sprintf("unknown field %q", key)))
+		}
+		// TrackingConfig has a custom UnmarshalYAML (it rejects the legacy
+		// scalar form), so the strict decode below does not see its nested
+		// keys. Decode the mapping strictly here so a misspelled
+		// allowed_targets key is not silently dropped.
+		if key == "tracker" {
+			if v := resolveAlias(node.Content[i+1]); v.Kind == yaml.MappingNode {
+				if err := decodeKnownFields(v, &trackingPlain{}); err != nil {
+					fieldErrs = append(fieldErrs, managedFieldError(keyNode, fmt.Sprintf("tracker: %v", err)))
+				}
+			}
 		}
 		// AgentEntry has a custom UnmarshalYAML (string-or-mapping), so
 		// decodeKnownFields' dec.KnownFields(true) below never sees these
@@ -368,7 +382,6 @@ func clonePerRepo(src *perRepoConfig) *perRepoConfig {
 	out := &perRepoConfig{
 		Version: src.Version,
 		Forge:   src.Forge,
-		Tracker: src.Tracker,
 		Runtime: src.Runtime,
 		MintURL: src.MintURL,
 		parent:  &perRepoDefaults{},
@@ -390,14 +403,8 @@ func clonePerRepo(src *perRepoConfig) *perRepoConfig {
 	if src.AllowedRemoteResources != nil {
 		out.AllowedRemoteResources = cloneStringSlice(src.AllowedRemoteResources)
 	}
-	if src.CreateIssues != nil {
-		cp := *src.CreateIssues
-		cp.AllowTargets = AllowTargets{
-			Orgs:  append([]string(nil), src.CreateIssues.AllowTargets.Orgs...),
-			Repos: append([]string(nil), src.CreateIssues.AllowTargets.Repos...),
-		}
-		out.CreateIssues = &cp
-	}
+	out.Tracker = cloneTracking(src.Tracker)
+	out.legacyCreateIssues = src.legacyCreateIssues
 	if src.Authorization != nil {
 		out.Authorization = cloneAuthorizationSlice(src.Authorization)
 	}
@@ -434,9 +441,6 @@ func applyManagedLayer(out, child *perRepoConfig) {
 	if child.Forge != "" {
 		out.Forge = child.Forge
 	}
-	if child.Tracker != "" {
-		out.Tracker = child.Tracker
-	}
 	if child.KillSwitch != nil {
 		v := *child.KillSwitch
 		out.KillSwitch = &v
@@ -463,13 +467,11 @@ func applyManagedLayer(out, child *perRepoConfig) {
 		}
 		out.AllowedRemoteResources = cloneStringSlice(tmp.AllowedResources())
 	}
-	if child.CreateIssues != nil {
-		cp := *child.CreateIssues
-		cp.AllowTargets = AllowTargets{
-			Orgs:  append([]string(nil), child.CreateIssues.AllowTargets.Orgs...),
-			Repos: append([]string(nil), child.CreateIssues.AllowTargets.Repos...),
-		}
-		out.CreateIssues = &cp
+	if child.Tracker != nil {
+		out.Tracker = cloneTracking(child.Tracker)
+	}
+	if child.legacyCreateIssues {
+		out.legacyCreateIssues = true
 	}
 	if child.Authorization != nil {
 		out.Authorization = cloneAuthorizationSlice(child.Authorization)
