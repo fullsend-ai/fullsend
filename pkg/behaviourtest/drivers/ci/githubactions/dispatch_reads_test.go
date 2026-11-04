@@ -109,6 +109,29 @@ func TestHarnessDispatchAssertions_SkippedRunNeedsNoJobs(t *testing.T) {
 	require.NoError(t, d.AssertNoHarnessAgentArtifact(context.Background(), "org", "repo", "fix", after))
 }
 
+func TestHarnessDispatchAssertions_QueuedRunNeedsNoJobs(t *testing.T) {
+	t.Parallel()
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for _, status := range []string{"queued", "waiting", "requested", "pending"} {
+		t.Run(status, func(t *testing.T) {
+			t.Parallel()
+			fake := forge.NewFakeClient()
+			fake.WorkflowRunsList = map[string][]forge.WorkflowRun{"org/repo/fullsend.yaml": {
+				{ID: 1, Status: status, CreatedAt: after.Format(time.RFC3339)},
+			}}
+			// A queued run's jobs read can 404; it must not be attempted.
+			fake.Errors["ListWorkflowRunJobs"] = forge.ErrNotFound
+			d := &Driver{Client: fake}
+
+			count, pending, err := d.settleHarnessDispatchCount(context.Background(), "org", "repo", "fix", after, nil)
+			require.NoError(t, err)
+			assert.Zero(t, count)
+			assert.Equal(t, 1, pending)
+			require.NoError(t, d.AssertNoHarnessAgentArtifact(context.Background(), "org", "repo", "fix", after))
+		})
+	}
+}
+
 func TestCountHarnessDispatches_CompletedRunJobsBecomeVisible(t *testing.T) {
 	t.Parallel()
 	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)

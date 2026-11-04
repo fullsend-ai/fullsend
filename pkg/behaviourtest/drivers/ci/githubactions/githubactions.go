@@ -1607,6 +1607,17 @@ func (d *Driver) CountHarnessDispatches(ctx context.Context, owner, repo, agent 
 	}
 }
 
+// runNotStarted reports whether a workflow run has not begun executing.
+// Its jobs listing cannot classify a dispatch and can still 404 while the
+// run is queued, awaiting approval, or waiting on another run.
+func runNotStarted(status string) bool {
+	switch status {
+	case "queued", "waiting", "requested", "pending":
+		return true
+	}
+	return false
+}
+
 // settleHarnessDispatchCount classifies harness runs created after the
 // trigger time into counted dispatches and pending runs. A run is pending
 // when its agent job exists but has not completed, or when the run itself
@@ -1631,6 +1642,12 @@ func (d *Driver) settleHarnessDispatchCount(ctx context.Context, owner, repo, ag
 	}
 	for _, r := range allRuns {
 		if r.Status == "completed" && r.Conclusion == "skipped" {
+			continue
+		}
+		if runNotStarted(r.Status) {
+			// A run that has not started cannot show agent work, so it is
+			// pending whatever the jobs listing would say.
+			pending++
 			continue
 		}
 		jobs, cached := completedJobs[r]
@@ -1823,6 +1840,10 @@ func (d *Driver) AssertNoHarnessAgentArtifact(ctx context.Context, owner, repo, 
 	}
 	for _, r := range allRuns {
 		if r.Status == "completed" && r.Conclusion == "skipped" {
+			continue
+		}
+		if runNotStarted(r.Status) {
+			// No agent job can exist before the run starts.
 			continue
 		}
 		jobs, err := d.Client.ListWorkflowRunJobs(ctx, owner, repo, r.ID)
