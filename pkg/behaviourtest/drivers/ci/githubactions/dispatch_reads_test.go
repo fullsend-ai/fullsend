@@ -120,8 +120,9 @@ func TestHarnessDispatchAssertions_NotStartedRunJobs(t *testing.T) {
 			fake.WorkflowRunsList = map[string][]forge.WorkflowRun{"org/repo/fullsend.yaml": {
 				{ID: 1, Status: status, CreatedAt: after.Format(time.RFC3339)},
 			}}
-			// The count path never reads jobs for a not-started run.
-			fake.Errors["ListWorkflowRunJobs"] = forge.ErrJobsListingAbsent
+			// A queued run is pending without a jobs read; a waiting run
+			// reads the listing and stays pending when it 404s on page 1.
+			fake.Errors["ListWorkflowRunJobs"] = forge.ErrJobsListingNotFoundFirstPage
 			d := &Driver{Client: fake}
 
 			count, pending, err := d.settleHarnessDispatchCount(context.Background(), "org", "repo", "fix", after, nil)
@@ -129,8 +130,8 @@ func TestHarnessDispatchAssertions_NotStartedRunJobs(t *testing.T) {
 			assert.Zero(t, count)
 			assert.Equal(t, 1, pending)
 
-			// The negative assertion reads the listing and tolerates only a
-			// first-page absence: the listing can 404 before the run starts.
+			// The negative assertion reads the listing and tolerates the
+			// first-page 404 only when the run has not started.
 			require.NoError(t, d.AssertNoHarnessAgentArtifact(context.Background(), "org", "repo", "fix", after))
 
 			// A 404 on a later page means the listing was partially read —
@@ -206,7 +207,7 @@ func TestCountHarnessDispatches_WaitingRunHoldsCompletedAgentJob(t *testing.T) {
 		fake.WorkflowRunsList = map[string][]forge.WorkflowRun{"org/repo/fullsend.yaml": {
 			{ID: 1, RunAttempt: 1, Status: "waiting", CreatedAt: after.Format(time.RFC3339)},
 		}}
-		fake.Errors["ListWorkflowRunJobs"] = forge.ErrJobsListingAbsent
+		fake.Errors["ListWorkflowRunJobs"] = forge.ErrJobsListingNotFoundFirstPage
 		d := &Driver{Client: fake}
 		count, pending, err := d.settleHarnessDispatchCount(context.Background(), "org", "repo", "fix", after, nil)
 		require.NoError(t, err)

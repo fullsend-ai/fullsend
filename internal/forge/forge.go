@@ -249,12 +249,18 @@ func ValidatePipelineVarOverrideRole(role string) error {
 // ErrNotFound indicates a requested resource was not found on the forge.
 var ErrNotFound = errors.New("not found")
 
-// ErrJobsListingAbsent indicates that a workflow run's jobs listing was
-// reported not found on its first page — for example, a run that has not
-// started yet. Adapters attach it only to first-page not-founds: a
-// not-found on a later page means the listing was already partially
-// readable and must never be read as absence.
-var ErrJobsListingAbsent = errors.New("workflow run jobs listing absent")
+// ErrJobsListingNotFoundFirstPage reports that a workflow run's jobs
+// listing returned not found on its first page. Forges have been observed
+// to do this for runs that have not started; the cause is unverified (see
+// https://github.com/fullsend-ai/fullsend/issues/9124). The sentinel
+// describes the response shape only and does not establish that the
+// listing — or the run — is absent: callers may treat it as absence only
+// when the run status independently shows the run has not started.
+//
+// Adapters attach it only to first-page not-founds. A not-found on a later
+// page means the listing was already partially readable and may hold a
+// completed job, so it never carries this sentinel.
+var ErrJobsListingNotFoundFirstPage = errors.New("workflow run jobs listing not found on first page")
 
 // IsNotFound reports whether err indicates a resource was not found.
 func IsNotFound(err error) bool {

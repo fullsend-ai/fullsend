@@ -4448,10 +4448,12 @@ func (c *LiveClient) ListWorkflowRunJobs(ctx context.Context, owner, repo string
 		label := fmt.Sprintf("list workflow run jobs for %s/%s run %d page %d", owner, repo, runID, page)
 		if err := c.getCachedJSON(ctx, path, &result); err != nil {
 			if page == 1 && forge.IsNotFound(err) {
-				// First-page absence means the run's listing does not exist
-				// yet; a later-page 404 is a partially readable listing and
-				// must not be readable as absence.
-				return nil, fmt.Errorf("%s: %w: %w", label, forge.ErrJobsListingAbsent, err)
+				// GitHub has been observed to 404 the first page for runs
+				// that have not started; the cause is unverified (#9124).
+				// Report the shape only — absence still depends on the run
+				// status. A later-page 404 is a partially readable listing
+				// and never carries the sentinel.
+				return nil, fmt.Errorf("%s: %w: %w", label, forge.ErrJobsListingNotFoundFirstPage, err)
 			}
 			return nil, fmt.Errorf("%s: %w", label, err)
 		}

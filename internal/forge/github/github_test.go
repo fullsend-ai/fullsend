@@ -5158,20 +5158,20 @@ func TestListWorkflowRunJobs_NotFound(t *testing.T) {
 			assert.Equal(t, tt.status, apiErr.StatusCode)
 			assert.Equal(t, tt.status == http.StatusNotFound, forge.IsNotFound(err))
 			if tt.status == http.StatusNotFound {
-				assert.ErrorIs(t, err, forge.ErrJobsListingAbsent, "a first-page absence is marked as the listing being absent")
+				assert.ErrorIs(t, err, forge.ErrJobsListingNotFoundFirstPage)
 			} else {
-				assert.NotErrorIs(t, err, forge.ErrJobsListingAbsent)
+				assert.NotErrorIs(t, err, forge.ErrJobsListingNotFoundFirstPage)
 			}
 		})
 	}
 }
 
-// TestListWorkflowRunJobs_LaterPageNotFoundIsNotAbsence is a regression
-// test: a 404 on a later pagination page means the listing was partially
-// readable — page 1 may already hold jobs — so it must not carry
-// ErrJobsListingAbsent, which callers tolerate as a not-yet-started run's
-// absent listing.
-func TestListWorkflowRunJobs_LaterPageNotFoundIsNotAbsence(t *testing.T) {
+// TestListWorkflowRunJobs_LaterPageNotFoundDoesNotCarrySentinel is a
+// regression test: a 404 on a later pagination page means the listing was
+// partially readable — page 1 may already hold jobs — so it must not carry
+// ErrJobsListingNotFoundFirstPage, which callers tolerate only when the run
+// status independently shows the run has not started.
+func TestListWorkflowRunJobs_LaterPageNotFoundDoesNotCarrySentinel(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Query().Get("page") {
 		case "1":
@@ -5191,7 +5191,7 @@ func TestListWorkflowRunJobs_LaterPageNotFoundIsNotAbsence(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, jobs)
 	assert.True(t, forge.IsNotFound(err), "the 404 stays classified as not found")
-	assert.NotErrorIs(t, err, forge.ErrJobsListingAbsent, "a partially readable listing is never absence")
+	assert.NotErrorIs(t, err, forge.ErrJobsListingNotFoundFirstPage, "a partially readable listing never carries the sentinel")
 	assert.Contains(t, err.Error(), "page 2")
 }
 

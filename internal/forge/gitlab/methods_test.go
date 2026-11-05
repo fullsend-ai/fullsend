@@ -4006,15 +4006,15 @@ func TestListWorkflowRunJobs_Error(t *testing.T) {
 	})
 	_, err := client.ListWorkflowRunJobs(context.Background(), "o", "r", 10)
 	require.Error(t, err)
-	assert.NotErrorIs(t, err, forge.ErrJobsListingAbsent)
+	assert.NotErrorIs(t, err, forge.ErrJobsListingNotFoundFirstPage)
 }
 
-// TestListWorkflowRunJobs_FirstPageNotFoundMarksAbsence covers the
-// not-found classification adapters attach to a first-page absence, and
-// the later-page 404 that must not carry it: a partially readable
-// listing is never absence.
-func TestListWorkflowRunJobs_FirstPageNotFoundMarksAbsence(t *testing.T) {
-	t.Run("first page 404 is absence", func(t *testing.T) {
+// TestListWorkflowRunJobs_FirstPageNotFoundCarriesSentinel covers the
+// not-found classification adapters attach to a first-page 404, and the
+// later-page 404 that must not carry it: page 1 was already readable and
+// may hold a completed job.
+func TestListWorkflowRunJobs_FirstPageNotFoundCarriesSentinel(t *testing.T) {
+	t.Run("first page 404 carries the sentinel", func(t *testing.T) {
 		client, mux := setupTest(t)
 		mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines/10/jobs", func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusNotFound)
@@ -4022,9 +4022,9 @@ func TestListWorkflowRunJobs_FirstPageNotFoundMarksAbsence(t *testing.T) {
 		_, err := client.ListWorkflowRunJobs(context.Background(), "o", "r", 10)
 		require.Error(t, err)
 		assert.ErrorIs(t, err, forge.ErrNotFound)
-		assert.ErrorIs(t, err, forge.ErrJobsListingAbsent, "a first-page absence is marked as the listing being absent")
+		assert.ErrorIs(t, err, forge.ErrJobsListingNotFoundFirstPage)
 	})
-	t.Run("later page 404 is not absence", func(t *testing.T) {
+	t.Run("later page 404 does not carry it", func(t *testing.T) {
 		client, mux := setupTest(t)
 		mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines/10/jobs", func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
@@ -4044,7 +4044,7 @@ func TestListWorkflowRunJobs_FirstPageNotFoundMarksAbsence(t *testing.T) {
 		require.Error(t, err)
 		assert.Nil(t, jobs)
 		assert.ErrorIs(t, err, forge.ErrNotFound, "the 404 stays classified as not found")
-		assert.NotErrorIs(t, err, forge.ErrJobsListingAbsent, "a partially readable listing is never absence")
+		assert.NotErrorIs(t, err, forge.ErrJobsListingNotFoundFirstPage, "a partially readable listing never carries the sentinel")
 		assert.Contains(t, err.Error(), "page 2")
 	})
 }

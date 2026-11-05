@@ -1665,9 +1665,10 @@ func (d *Driver) settleHarnessDispatchCount(ctx context.Context, owner, repo, ag
 			jobs, err = d.Client.ListWorkflowRunJobs(ctx, owner, repo, r.ID)
 			if err != nil {
 				// A waiting run can follow jobs that already ran
-				// (environment approval); when its listing is not
-				// available the run is still settling, not an error.
-				if !(r.Status == "waiting" && errors.Is(err, forge.ErrJobsListingAbsent)) {
+				// (environment approval). A first-page 404 is not evidence
+				// of absence on its own, but for a waiting run it leaves
+				// nothing to count yet, so the run stays pending.
+				if !(r.Status == "waiting" && errors.Is(err, forge.ErrJobsListingNotFoundFirstPage)) {
 					return 0, 0, err
 				}
 				pending++
@@ -1862,12 +1863,14 @@ func (d *Driver) AssertNoHarnessAgentArtifact(ctx context.Context, owner, repo, 
 		jobs, err := d.Client.ListWorkflowRunJobs(ctx, owner, repo, r.ID)
 		if err != nil {
 			// A run that has not started cannot hold agent work, and its
-			// jobs listing can be absent before the run starts — only a
-			// first-page absence is tolerated. A waiting run can follow
-			// jobs that already ran (environment approval), so its listing
-			// is checked like any other run's, and a listing that was
-			// partially read before a later-page 404 is never absence.
-			if !(runNotStarted(r.Status) && errors.Is(err, forge.ErrJobsListingAbsent)) {
+			// jobs listing has been observed to 404 on the first page
+			// before the run starts — only that shape is tolerated, and
+			// only when the status independently says not started. A
+			// waiting run can follow jobs that already ran (environment
+			// approval), so its listing is checked like any other run's. A
+			// later-page 404 means the listing was partially read and may
+			// hold a completed agent job, so it is never tolerated.
+			if !(runNotStarted(r.Status) && errors.Is(err, forge.ErrJobsListingNotFoundFirstPage)) {
 				return err
 			}
 			continue
