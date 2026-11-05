@@ -1,6 +1,6 @@
 # Site deployment (Cloudflare Worker)
 
-How the public site — the landing page, the document graph, and the VitePress
+How the public site — the landing page and the VitePress
 documentation — is built and deployed. For authoring the documentation itself, see
 [`doc-site.md`](doc-site.md).
 
@@ -17,7 +17,6 @@ passthrough to the `ASSETS` binding — it requires **no vars and no secrets**.
 | Bundle path | Source |
 |---|---|
 | `_bundle/public/index.html` | `web/public/index.html` (landing page, served at `/`) |
-| `_bundle/public/graph.html` | `web/public/graph.html` (document graph, served at `/graph.html`) |
 | `_bundle/public/404.html` | `web/public/404.html` |
 | `_bundle/public/docs/` | `docs/.vitepress/dist/` (documentation at `/docs/`) |
 | `_bundle/public/` | `cloudflare_site/public/` (`robots.txt`, `llms.txt`) |
@@ -26,10 +25,7 @@ passthrough to the `ASSETS` binding — it requires **no vars and no secrets**.
 **Deploy Site** (`.github/workflows/site-deploy.yml`) checks out **only the default branch** so
 [`cloudflare_site/wrangler.toml`](../cloudflare_site/wrangler.toml) is always trusted and never
 taken from a PR-built zip, downloads the artifact, **copies only** `_bundle/public/` and
-`_bundle/worker/` into `cloudflare_site/`, then runs Wrangler. Production deploys from `push`
-events skip when a newer successful **Build Site** run already exists, so a slow overlapping
-`main` build cannot overwrite the current site. Those `push` deploys do not cancel in-progress
-runs in the same concurrency group for the same reason.
+`_bundle/worker/` into `cloudflare_site/`, then runs Wrangler.
 
 Repository layout for `web/` vs `cloudflare_site/` is decided in
 [ADR 0019](ADRs/0019-web-source-and-cloudflare-site-layout.md).
@@ -96,7 +92,6 @@ npm ci
 npm run docs:build
 mkdir -p cloudflare_site/public/docs
 cp web/public/index.html cloudflare_site/public/index.html
-cp web/public/graph.html cloudflare_site/public/graph.html
 cp web/public/404.html cloudflare_site/public/404.html
 cp -a docs/.vitepress/dist/. cloudflare_site/public/docs/
 npm run dev:worker
@@ -106,7 +101,7 @@ Requires a Cloudflare login or API token in the environment per [Wrangler docs](
 
 ## Troubleshooting
 
-**Deploy job skipped.** The triggering workflow display name must be **Build Site** exactly, and `workflow_run.repository` must match the current repo. A `push` production deploy is also skipped when a newer successful **Build Site** run already exists (overlapping `main` builds can finish out of order).
+**Deploy job skipped.** The triggering workflow display name must be **Build Site** exactly, and `workflow_run.repository` must match the current repo.
 
 **`Could not determine Workers deployment URL`.** The workflow reads `deployment-url` from `cloudflare/wrangler-action`, then falls back to parsing Wrangler stdout/stderr for a `workers.dev` URL. Upgrade **`wranglerVersion`** in the workflow if Wrangler output format changed.
 

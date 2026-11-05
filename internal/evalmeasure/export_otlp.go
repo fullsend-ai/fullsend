@@ -124,6 +124,9 @@ func ExportOTLPScores(ctx context.Context, results []EvaluationResult, serviceVe
 	if err := telemetry.ValidateOTLPEndpoints(); err != nil {
 		return fmt.Errorf("otlp endpoint validation: %w", err)
 	}
+	if err := telemetry.ValidateOTLPHeaders(); err != nil {
+		return fmt.Errorf("otlp header validation: %w", err)
+	}
 
 	ctx, cancel := context.WithTimeout(ctx, otlpExportBudget)
 	defer cancel()

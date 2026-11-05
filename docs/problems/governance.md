@@ -33,6 +33,26 @@ Agent configuration is itself a security-critical attack surface. If someone can
 - How do we audit changes to agent configuration? Git history helps if policy is in git, but we also need to detect unauthorized runtime changes.
 - How do we handle the bootstrap problem — who sets up the initial agent configuration for a new repo, and how is that initial setup secured? (Preset-based install and `config.base.yaml` / `config.yaml` layering decided in [ADR 0069](../ADRs/0069-ready-made-configuration-presets.md); workflow pinning and backend policy remain open.)
 
+**Lab observation: shared policy with repository ownership.** A
+[public Gemara lab](../spikes/2026-10-24-gemara-auto-merge.md) kept common
+catalogs, assessment definitions, and evaluation code in a separately pinned
+public module. Consumer repositories supplied forge identity, trusted evidence
+sources, current revisions, owner delegation, and enforcement. This explores
+shared policy distribution while keeping repository ownership. It does not
+establish an organization-wide policy service. A candidate branch must not be
+able to replace the policy or evidence that authorizes its own merge.
+
+Under that split, someone must own updates to:
+
+- policy and evidence-source pins
+- adapter semantics (what an evidence adapter treats as a pass)
+- aggregate thresholds, windows, and cohorts
+- the credential boundary and revocation
+
+A content digest pins the identity and integrity of a policy only relative to
+a trusted source. A digest alone does not establish that the source is
+authentic.
+
 ### 3. Decision process
 
 How are governance decisions made, and how does the community participate?
@@ -53,9 +73,16 @@ How are governance decisions made, and how does the community participate?
 ## Accountability
 
 - When an agent makes a bad decision, who is responsible? The person who configured the agent? The person who authored the policy? The person who approved the repo for autonomy?
-- How do we trace an agent action back to the policy that authorized it? Every merge should be traceable: this PR was merged because the review sub-agents approved, operating under policy version X, with the change classified as intent authorization tier N, authorized by intent record Y.
+- How do we trace an agent action back to the policy that authorized it? Every
+  merge should be traceable: this PR was merged because the review sub-agents
+  approved, operating under policy version X, with the change classified as
+  intent authorization tier N, authorized by intent record Y. (For one lab's
+  attempt at recording pinned policy and evidence revisions alongside each
+  merge decision, see the
+  [configuration security observation](#2-configuration-security).)
 - What's the escalation path when something goes wrong? Who gets paged? Who has authority to revoke agent autonomy in an emergency?
 - Can autonomy be automatically revoked? If a bad merge is detected (e.g., production incident traced to an agent-merged PR), should the system automatically downgrade the repo to human-required review?
+- Who is expected to *notice* an agent-authored work item before anything goes wrong? When an agent-authored PR has no assignee, or an assignee who cannot act on it, accountability exists on paper but not in practice. See [invisible ownership](agentic-sdlc-adoption-org-communication.md#invisible-ownership).
 
 ## Cost governance
 
@@ -66,7 +93,7 @@ Every agent operation has a cost: triage costs tokens, implementation costs toke
 Cost governance intersects with several existing concerns:
 
 - **The [security threat model](security-threat-model.md)** identifies DoS via token exhaustion as a threat, with cost budgets as the defense. But who sets those budgets, who reviews them, and what happens when a legitimate surge looks like an attack?
-- **The salvage model** described in [code review](code-review.md) and [contribution volume](contribution-volume.md) trades tokens for community throughput. Without cost governance, a well-intentioned project could spend more on salvaging contributions than the contributions are worth.
+- **The salvage model** described in [code review](code-review.md) and [contribution volume](contribution-volume.md) trades tokens for community throughput. Without cost governance, a well-intentioned project could spend more on salvaging contributions than the contributions are worth. Salvage-for-throughput can also be gamed by [coordinated inauthentic contributions](security-threat-model.md#threat-7-coordinated-inauthentic-contributions).
 - **Agent testing** (see [testing-agents.md](testing-agents.md)) requires running LLM evaluations, which themselves cost tokens. Testing the agents that test the code that agents wrote — the cost multiplies at each layer.
 - **Production feedback loops** (see [production-feedback.md](production-feedback.md)) can generate runaway token spending if remediation loops don't have explicit cost budgets.
 

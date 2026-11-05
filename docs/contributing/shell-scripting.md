@@ -63,6 +63,23 @@ fi
 
 **When reviewing PRs:** Flag `2>/dev/null || echo ""` (or `|| true`) in workflow steps that gate dispatch or skip execution as a medium-severity or higher finding — unless the fallback value is verified to be restrictive (narrows what's allowed) rather than permissive (widens what's allowed) downstream. Silent failure in a permissive-fallback gate means the gate is non-functional; the same pattern feeding a restrictive fallback is comparatively safe (it fails toward "allow nothing" rather than "allow everything"). Judge severity by what the fallback value actually does downstream, not by the presence of `2>/dev/null || echo ""`/`|| true` alone.
 
+## `| grep -q` under `pipefail`
+
+`grep -q` exits as soon as it finds a match and closes the pipe. If the writer still has output to send, its next write hits the closed pipe and it is killed by SIGPIPE (exit 141). Under `set -o pipefail` the pipeline then reports 141 instead of `grep`'s 0, so a check that matched still fails. Whether it fails depends on scheduling: writers flush to a pipe in blocks (often 4 KB), so the race only appears once the output needs more than one write, and it can pass on CI while failing everywhere else.
+
+```bash
+# RACY — fails intermittently once the help text exceeds one pipe write
+if bash ./script.sh --help | grep -q '^Usage:'; then ...
+
+# SAFE — capture the output first, then match it
+help_out=$(bash ./script.sh --help)
+if grep -q '^Usage:' <<< "${help_out}"; then ...
+```
+
+Capturing first also keeps the check strict: under `set -e`, a non-zero exit from the writer aborts the script at the assignment. `grep -m1` has the same race as `grep -q`.
+
+**When reviewing PRs:** Flag `<writer> | grep -q` under `pipefail` when the writer can produce more than about 4 KB of output (help text, logs, API responses) as a low-to-medium-severity finding.
+
 ## Stdout contamination in command substitution
 
 When a shell function is called inside `$(...)` command substitution, **everything the function writes to stdout becomes part of the captured variable**. If the function also writes diagnostic output (log messages, retry warnings, `::error::`/`::warning::` annotations) to stdout, that output is concatenated with the intended return value, silently corrupting it.
@@ -117,3 +134,51 @@ tag=$(echo "${resp}" | jq -r '.tag_name')
 The same rule applies to any function output that is not the intended return value: progress messages, debug logging, `echo "Retrying..."`, and GitHub Actions annotations (`::warning::`, `::error::`, `::notice::`). If the function might be called inside `$(...)`, all of these must use `>&2`.
 
 **When reviewing PRs:** If a shell function is used inside `$(...)` or backtick command substitution, verify that all non-value output (log messages, warnings, `::error::`/`::warning::` annotations, retry diagnostics) is directed to stderr. Flag stdout contamination as medium-severity when the captured value is used in conditional logic or parsed by `jq`/`yq`, and as high-severity when it feeds into security-sensitive operations (token handling, authorization checks, cryptographic verification).
+
+## Bot and app collaborator permissions (`none` permission)
+
+The collaborator permission endpoint
+(`/repos/{owner}/{repo}/collaborators/{username}/permission`) returns HTTP 200
+with `{"permission": "none", "role_name": ""}` for GitHub Apps and bots (e.g.,
+`renovate[bot]`, `dependabot[bot]`). Scripts parsing `role_name` or `permission`
+must accept `none` as an explicit non-write role rather than treating an empty
+`role_name` or `permission: "none"` as an unexpected API error.
+
+```bash
+# Handle bot/app permission response with empty role_name
+case "${perm}" in
+  admin|write|read|none) echo "${perm}" ;;
+  *) return 1 ;; # unexpected response format
+esac
+```
+
+**When reviewing PRs:** Flag collaborator permission parsing that treats
+`permission: "none"` or an empty `role_name` as a hard API error as a
+low-to-medium-severity finding.
+
+## Concurrent label deletion (HTTP 404 race)
+
+When multiple workflows trigger concurrently on the same PR event (e.g.,
+separate behaviour and functional test runs) and both attempt
+`gh api -X DELETE repos/{owner}/{repo}/issues/{pr}/labels/{label}`, the second
+caller receives `HTTP 404 (Label does not exist)`. Gate cleanup functions must
+treat HTTP 404 on DELETE as already removed (`return 0`) rather than failing
+closed with an API error.
+
+```bash
+# SAFE — treat HTTP 404 on label DELETE as already removed
+del_err="$(mktemp)"
+if ! gh api -X DELETE "repos/${REPO}/issues/${PR}/labels/${LABEL}" >/dev/null 2>"${del_err}"; then
+  if grep -qiE "HTTP 404|Label does not exist" "${del_err}"; then
+    rm -f "${del_err}"
+    return 0
+  fi
+  cat "${del_err}" >&2
+  rm -f "${del_err}"
+  return 1
+fi
+rm -f "${del_err}"
+```
+
+**When reviewing PRs:** Flag label deletion steps in gate or cleanup scripts
+that do not tolerate HTTP 404 as a medium-severity finding.

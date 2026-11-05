@@ -13,6 +13,7 @@ import (
 	"github.com/cucumber/godog"
 	"gopkg.in/yaml.v3"
 
+	"github.com/fullsend-ai/fullsend/internal/agentnew"
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
@@ -30,6 +31,49 @@ func registerURLDispatchSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^a URL-sourced custom harness "([^"]+)" not in allowlist with:$`, func(ctx context.Context, name, doc string) (context.Context, error) {
 		return ctx, givenURLSourcedCustomHarness(world.FromContext(ctx), name, doc, urlHarnessOpts{skipAllowlist: true})
 	})
+	sc.Step(`^the repository allows remote resources from "([^"]+)"$`, func(ctx context.Context, prefix string) (context.Context, error) {
+		return ctx, givenRepositoryAllowsRemoteResources(world.FromContext(ctx), prefix)
+	})
+}
+
+// givenRepositoryAllowsRemoteResources adds prefix to the enrolled
+// repository's config-level allowed_remote_resources, for scenarios whose
+// harness fetches from a host the install defaults do not cover (skill
+// directories, for example, are github.com tree URLs, while the defaults
+// list raw.githubusercontent.com). A harness-level allowed_remote_resources
+// entry must be covered by this list. The list written back is the
+// effective one (the declared entries plus the defaults) with the prefix
+// added, as the URL-harness steps write it. The pre-scenario value is
+// snapshotted so CleanupScenario restores it.
+func givenRepositoryAllowsRemoteResources(w *world.World, prefix string) error {
+	if w.Org == "" || w.RepoName == "" {
+		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before allowlist operations")
+	}
+	prefix = strings.TrimSpace(prefix)
+	if !strings.HasPrefix(prefix, "https://") || !strings.HasSuffix(prefix, "/") {
+		return fmt.Errorf("allowed remote resource %q must be an https:// URL ending in /", prefix)
+	}
+	if err := snapshotAllowedResources(w); err != nil {
+		return fmt.Errorf("snapshotting allowed_remote_resources: %w", err)
+	}
+	cfgPath := path.Join(".fullsend", "config.yaml")
+	cfg, err := readPerRepoConfig(w, cfgPath)
+	if err != nil {
+		return err
+	}
+	allowed := cfg.AllowedResources()
+	if slices.Contains(allowed, prefix) {
+		return nil
+	}
+	cfg.SetAllowedRemoteResources(append(allowed, prefix))
+	merged, err := cfg.Marshal()
+	if err != nil {
+		return err
+	}
+	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, cfgPath, fmt.Sprintf("behaviour: allow remote resources from %s", prefix), merged); err != nil {
+		return fmt.Errorf("updating config: %w", err)
+	}
+	return nil
 }
 
 type urlHarnessOpts struct {
@@ -118,7 +162,7 @@ func RestoreAllowedResources(w *world.World) error {
 	if err != nil {
 		return err
 	}
-	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, cfgPath, "behaviour: restore allowed_remote_resources", merged); err != nil {
+	if err := commitVerified(w, cfgPath, "behaviour: restore allowed_remote_resources", merged); err != nil {
 		return fmt.Errorf("updating config: %w", err)
 	}
 	return nil
@@ -145,7 +189,7 @@ func RestoreAgents(w *world.World) error {
 	if err != nil {
 		return err
 	}
-	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, cfgPath, "behaviour: restore agents", merged); err != nil {
+	if err := commitVerified(w, cfgPath, "behaviour: restore agents", merged); err != nil {
 		return fmt.Errorf("updating config: %w", err)
 	}
 	return nil
@@ -398,10 +442,10 @@ func commitRelativeResources(ctx context.Context, w *world.World, owner, repo, h
 
 	// Commit relative policy file if specified.
 	if h.Policy != "" && !strings.HasPrefix(h.Policy, "/") && !strings.HasPrefix(h.Policy, "https://") {
-		minimalPolicy := fmt.Sprintf("# Minimal policy for %s\n", harnessName)
+		policy := agentnew.BasePolicy()
 		if err := w.SCM.CommitFile(ctx, owner, repo, h.Policy,
 			fmt.Sprintf("behaviour: add policy resource for %s", harnessName),
-			[]byte(minimalPolicy)); err != nil {
+			policy); err != nil {
 			return nil, fmt.Errorf("committing policy resource %s: %w", h.Policy, err)
 		}
 		committed = append(committed, h.Policy)

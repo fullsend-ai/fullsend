@@ -42,6 +42,10 @@ Consolidate the seven subcommands into four, plus a utility command:
 | `repos uninstall` | Tear down fullsend from repos and/or remove from manifest | `repos remove` |
 | `repos set-default` | Set or remove a platform-level default in repos.yaml | _(new)_ |
 
+> **Note:** `repos set-default` was later replaced by `repos set <path> <value>`
+> (and `repos set --unset <path>`), which edits any schema field in
+> repos.yaml. See [the `repos` CLI reference](../cli/repos.md#repos-set).
+
 **`repos install`** becomes an idempotent convergence operator with three
 phases: manifest add (for new repos passed as positional args), parallel
 provision, and convergence (variable sync + ref upgrade). `--dry-run`

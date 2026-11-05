@@ -120,6 +120,8 @@ _redact_literal_secrets() {
     E2E_GCP_PROJECT_ID
     E2E_GCP_WIF_PROVIDER
     E2E_GCP_SERVICE_ACCOUNT
+    E2E_INFERENCE_GATEWAY_URL
+    E2E_INFERENCE_GATEWAY_TEST_KEY
   )
 
   for name in "${secret_names[@]}"; do

@@ -76,7 +76,19 @@ case "$1" in
     ;;
   sandbox)
     case "$2" in
-      create|delete|ready|exec)
+      get)
+        printf 'Phase: Ready\nPolicy source: sandbox\nPolicy:\n  version: 1\n'
+        exit 0
+        ;;
+      exec)
+        if [ -n "${FULLSEND_TEST_AGENT_EXEC_MARKER:-}" ]; then
+          case "$*" in
+            *agent-run-marker*) : > "$FULLSEND_TEST_AGENT_EXEC_MARKER" ;;
+          esac
+        fi
+        exit 0
+        ;;
+      create|delete|ready|upload)
         exit 0
         ;;
     esac

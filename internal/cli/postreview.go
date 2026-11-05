@@ -35,6 +35,19 @@ var hexSHARe = regexp.MustCompile(`^[0-9a-fA-F]{40}$|^[0-9a-fA-F]{64}$`)
 var reasonRe = regexp.MustCompile(`^[a-zA-Z0-9_-]*$`)
 var hunkHeaderRe = regexp.MustCompile(`^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@`)
 
+// findingIDRe matches the opaque id the review agent emits (f_ plus
+// alphanumeric). Anything else is left off the comment so a crafted id
+// cannot inject markup. The resolved-thread fetch matches this form (#7907).
+var findingIDRe = regexp.MustCompile(`^f_[a-zA-Z0-9]+$`)
+
+// reviewProjectionMarkerRe matches the review-findings-v2 projection marker
+// line (base64 payload) that the agents post-review script puts at the start
+// of the review body. The script strips agent-written copies of this marker
+// before prepending its own, so a match on the first line is trusted
+// metadata. It is left unescaped there, so it stays hidden and the next
+// review run can read it (#8544).
+var reviewProjectionMarkerRe = regexp.MustCompile(`^<!-- fullsend:review-findings-v2:[A-Za-z0-9+/]+={0,2} -->$`)
+
 func newPostReviewCmd() *cobra.Command {
 	var (
 		repo        string
@@ -54,6 +67,11 @@ func newPostReviewCmd() *cobra.Command {
 		Short: "Post or update a sticky review comment on a PR/MR",
 		Long: `Posts review findings as a sticky issue comment on a pull request
 or merge request, then submits a formal review with the disposition.
+
+The sticky comment is the success criterion. If it is posted, the
+command exits 0 even when the subsequent formal review submission
+fails; that failure is logged as a warning so a posted verdict is
+not reported as a workflow Failure.
 
 On first run, creates a new comment with a hidden HTML marker.
 On re-runs, finds the existing comment, collapses old content into
@@ -157,16 +175,7 @@ GITLAB_TOKEN for GitLab and GH_TOKEN / GITHUB_TOKEN for GitHub.`,
 				return postFailureNotice(cmd.Context(), client, owner, repoName, pr, parsed, cfg, printer)
 			}
 
-			commentURL, err := sticky.Post(cmd.Context(), client, owner, repoName, pr, parsed.Body, cfg, printer)
-			if err != nil {
-				return err
-			}
-
-			if err := submitFormalReview(cmd.Context(), client, owner, repoName, pr, parsed.Action, parsed.HeadSHA, commentURL, parsed.Findings, dryRun, printer); err != nil {
-				return err
-			}
-
-			return postApprovedFollowUpIssues(cmd.Context(), owner, repoName, pr, parsed, printer)
+			return postReviewContent(cmd.Context(), client, owner, repoName, pr, parsed, cfg, dryRun, printer)
 		},
 	}
 
@@ -204,6 +213,23 @@ type ReviewFinding struct {
 	Description string `json:"description"`
 	Remediation string `json:"remediation,omitempty"`
 	Actionable  bool   `json:"actionable,omitempty"`
+	// ID is an opaque stable identifier (f_ plus alphanumeric) assigned
+	// upstream. This command copies it onto the inline comment; it does
+	// not mint ids. Empty until the agents repo starts emitting it.
+	ID findingID `json:"id,omitempty"`
+}
+
+// findingID is an optional review finding id. Non-string JSON values are
+// ignored so a bad id does not fail the whole review parse.
+type findingID string
+
+func (id *findingID) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return nil
+	}
+	*id = findingID(s)
+	return nil
 }
 
 // reviewActionToEvent maps a ReviewResult action to a GitHub PR review event.
@@ -306,6 +332,24 @@ This PR was NOT reviewed. Do not count this as an approval.`, reason)
 	}
 	printer.StepDone("Failure notice posted")
 	return nil
+}
+
+// postReviewContent posts the sticky review comment, then attempts a
+// formal PR/MR review. Once the sticky comment is on the PR, formal
+// review submission is best-effort: a forge API failure must not turn
+// a posted verdict into a workflow Failure (#3548).
+func postReviewContent(ctx context.Context, client forge.Client, owner, repo string, pr int, parsed ReviewResult, cfg sticky.Config, dryRun bool, printer *ui.Printer) error {
+	cfg.TrustedLeadingLine = reviewProjectionMarkerRe
+	commentURL, err := sticky.Post(ctx, client, owner, repo, pr, parsed.Body, cfg, printer)
+	if err != nil {
+		return err
+	}
+
+	if err := submitFormalReview(ctx, client, owner, repo, pr, parsed.Action, parsed.HeadSHA, commentURL, parsed.Findings, dryRun, printer); err != nil {
+		printer.StepWarn(fmt.Sprintf("Formal review submission failed (%v); sticky review comment was posted", err))
+	}
+
+	return postApprovedFollowUpIssues(ctx, owner, repo, pr, parsed, printer)
 }
 
 // submitFormalReview minimizes stale reviews by the same user, then
@@ -519,9 +563,14 @@ func findingsToReviewComments(findings []ReviewFinding, diffHunks map[string][][
 }
 
 // formatFindingComment renders a single review finding as a Markdown
-// inline comment body.
+// inline comment body. A valid id is stamped first so a later fetch of
+// resolved review threads can match the comment without parsing prose.
+// File-level comments use this same helper, so they carry the stamp too.
 func formatFindingComment(f ReviewFinding) string {
 	var b strings.Builder
+	if findingIDRe.MatchString(string(f.ID)) {
+		fmt.Fprintf(&b, "<!-- finding:%s -->\n", f.ID)
+	}
 	fmt.Fprintf(&b, "**[%s]** %s", f.Severity, f.Category)
 	b.WriteString("\n\n")
 	b.WriteString(strings.TrimSpace(f.Description))
@@ -808,6 +857,12 @@ func sanitizeReviewResult(r ReviewResult, printer *ui.Printer) ReviewResult {
 			result := pipeline.Scan(r.Findings[i].Remediation)
 			if result.Sanitized != "" {
 				r.Findings[i].Remediation = result.Sanitized
+			}
+		}
+		if r.Findings[i].ID != "" {
+			result := pipeline.Scan(string(r.Findings[i].ID))
+			if len(result.Findings) > 0 || result.Sanitized != "" {
+				r.Findings[i].ID = ""
 			}
 		}
 	}

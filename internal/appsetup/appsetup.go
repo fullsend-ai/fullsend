@@ -616,14 +616,13 @@ func (s *Setup) handleExistingApp(ctx context.Context, inst *forge.Installation,
 				return nil, fmt.Errorf(
 					"app %s was recreated (ID changed) and needs a new private key; "+
 						"generate one at https://github.com/apps/%s "+
-						"or run 'fullsend admin uninstall' and re-run install",
+						"or delete the app and re-run install",
 					inst.AppSlug, inst.AppSlug,
 				)
 			}
 			return nil, fmt.Errorf(
 				"app %s exists but its private key secret is missing; "+
-					"run 'fullsend admin uninstall' first, then delete the app at "+
-					"https://github.com/apps/%s and re-run install",
+					"delete the app at https://github.com/apps/%s and re-run install",
 				inst.AppSlug, inst.AppSlug,
 			)
 		}
@@ -1046,4 +1045,41 @@ var LegacyAppSets = []string{"fullsend"}
 // AppSlug returns the conventional app slug for a given app set and role.
 func AppSlug(appSet, role string) string {
 	return appSet + "-" + role
+}
+
+// ResolvePersistedAppSet determines the effective app set to persist on a
+// repository. An explicitly configured value (from a CLI flag, per-repo
+// override, or manifest default) always wins. Otherwise the value already
+// present on the repository is preserved, so convergence repairs rather
+// than overwrites a custom app set. Only when neither is available does it
+// fall back to the built-in DefaultAppSet, which repairs older installs
+// that predate the FULLSEND_APP_SET variable.
+func ResolvePersistedAppSet(explicit, existing string) string {
+	if explicit != "" {
+		return explicit
+	}
+	if existing != "" {
+		return existing
+	}
+	return DefaultAppSet
+}
+
+// ResolveReviewAppClientID attempts to look up the review agent's OAuth
+// client ID via the forge API for the "{appSet}-review" GitHub App. Returns
+// the client ID on success, or an empty string if the lookup fails
+// (best-effort — a missing client ID degrades incremental reviews but does
+// not block installation or convergence). Callers should resolve the
+// effective app set to persist (see ResolvePersistedAppSet) before calling
+// this, so the review client ID matches the app set actually written for
+// the repo.
+func ResolveReviewAppClientID(ctx context.Context, client forge.Client, appSet string) string {
+	ghExt, ok := client.(forge.GitHubExtensions)
+	if !ok {
+		return ""
+	}
+	clientID, err := ghExt.GetAppClientID(ctx, AppSlug(appSet, "review"))
+	if err != nil {
+		return ""
+	}
+	return clientID
 }

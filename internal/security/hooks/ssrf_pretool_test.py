@@ -1441,6 +1441,169 @@ class TestEgressAllowlistValidateUrl:
             assert "fail-closed" in result
 
 
+_real_getaddrinfo = socket.getaddrinfo
+
+_IN_SANDBOX = {"OPENSHELL_SANDBOX": "1"}
+
+
+def _addrinfo(*ips: str) -> list:
+    return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 0)) for ip in ips]
+
+
+def _resolver(ips: list[str], policy_local: list[str] | None = None):
+    """Fake getaddrinfo: numeric lookups stay real, ``policy.local`` answers as
+    OpenShell policy DNS does (or not at all when *policy_local* is None), and
+    every other name answers *ips*."""
+
+    def fake(host, port, *args, **kwargs):
+        if kwargs.get("flags", 0) & socket.AI_NUMERICHOST:
+            return _real_getaddrinfo(host, port, *args, **kwargs)
+        if host == "policy.local":
+            if policy_local is None:
+                raise socket.gaierror("no policy DNS")
+            return _addrinfo(*policy_local)
+        return _addrinfo(*ips)
+
+    return fake
+
+
+class TestOpenShellPolicyDns:
+    """Synthetic policy-DNS answers defer to the OpenShell supervisor (#8016)."""
+
+    def _validate(self, hook, url, ips, env=_IN_SANDBOX, policy_local=("198.18.0.1",)):
+        pl = list(policy_local) if policy_local is not None else None
+        with (
+            mock.patch("socket.getaddrinfo", side_effect=_resolver(ips, pl)),
+            mock.patch.dict(os.environ, env, clear=True),
+            mock.patch.object(hook, "log_finding") as log,
+        ):
+            return hook.validate_url(url), log
+
+    def test_name_with_synthetic_answer_deferred_in_sandbox(self, hook):
+        result, log = self._validate(
+            hook, "https://github.com/o/r/issues/1", ["198.18.0.6", "198.18.0.7"]
+        )
+        assert result is None
+        assert log.call_args.kwargs["name"] == "openshell_policy_dns_defer"
+
+    def test_blocked_outside_sandbox(self, hook):
+        result, _ = self._validate(hook, "https://github.com/", ["198.18.0.6"], env={})
+        assert result is not None and "private" in result
+
+    def test_empty_sandbox_marker_blocks(self, hook):
+        result, _ = self._validate(
+            hook, "https://github.com/", ["198.18.0.6"], env={"OPENSHELL_SANDBOX": ""}
+        )
+        assert result is not None and "private" in result
+
+    @pytest.mark.parametrize("policy_local", [None, ("198.18.0.9",), ("198.18.0.1", "10.0.0.1")])
+    def test_blocked_when_policy_dns_not_answering(self, hook, policy_local):
+        result, _ = self._validate(
+            hook, "https://github.com/", ["198.18.0.6"], policy_local=policy_local
+        )
+        assert result is not None and "private" in result
+
+    @pytest.mark.parametrize(
+        "host",
+        [
+            "198.18.0.6",
+            "[::ffff:198.18.0.6]",
+            "3323068422",  # 198.18.0.6
+            "3323068417",  # 198.18.0.1, policy.local's address
+            "198.18.1",
+            "0xc6120006",
+            "0306.022.0.6",
+            "198.022.0.6",  # octal 022 is decimal 18
+        ],
+    )
+    def test_ip_literal_spellings_blocked_in_sandbox(self, hook, host):
+        result, log = self._validate(hook, f"http://{host}/", ["198.18.0.6"])
+        assert result is not None
+        log.assert_not_called()
+
+    def test_invalid_octal_spelling_is_hostname_deferred_in_sandbox(self, hook):
+        # "018" is not valid octal, so neither the numeric resolver nor libcurl
+        # treats 198.018.0.6 as an IP literal; it takes the hostname path.
+        result, log = self._validate(hook, "http://198.018.0.6/", ["198.18.0.6"])
+        assert result is None
+        assert log.call_args.kwargs["name"] == "openshell_policy_dns_defer"
+
+    @pytest.mark.parametrize(
+        "ips",
+        [["198.18.0.6", "10.0.0.5"], ["10.0.0.5"], ["192.168.1.1"], ["127.0.0.1"], ["100.64.0.1"]],
+    )
+    def test_answer_outside_synthetic_pool_blocked_in_sandbox(self, hook, ips):
+        result, _ = self._validate(hook, "https://internal.example/", ips)
+        assert result is not None and "DNS rebinding" in result
+
+    @pytest.mark.parametrize(
+        "host",
+        [
+            "policy.local",
+            "POLICY.LOCAL.",
+            "host.openshell.internal",
+            "host.docker.internal",
+            "Host.Containers.Internal",
+            "ｐｏｌｉｃｙ.local",  # fullwidth
+            "policy。local",  # ideographic full stop
+            "hoſt.docker.internal",  # long s folds to s
+        ],
+    )
+    def test_openshell_internal_names_blocked_in_sandbox(self, hook, host):
+        result, _ = self._validate(hook, f"http://{host}/", ["198.18.0.6"])
+        assert result is not None
+
+    @pytest.mark.parametrize(
+        "host",
+        [
+            "metadata。google.internal",  # ideographic full stop
+            "ｍｅｔａｄａｔａ.google.internal",  # fullwidth
+            "ｍｅｔａｄａｔａ.goog",
+        ],
+    )
+    def test_blocked_hostname_idna_variants_never_deferred(self, hook, host):
+        result, log = self._validate(hook, f"http://{host}/", ["198.18.0.6"])
+        assert result is not None
+        log.assert_not_called()
+
+    def test_policy_local_address_never_deferred(self, hook):
+        result, _ = self._validate(hook, "http://any-name.example/", ["198.18.0.1"])
+        assert result is not None
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://metadata.google.internal/",
+            "http://169.254.169.254/latest/meta-data/",
+            "http://10.0.0.1/",
+        ],
+    )
+    def test_metadata_and_private_literals_blocked_in_sandbox(self, hook, url):
+        result, _ = self._validate(hook, url, ["198.18.0.6"])
+        assert result is not None
+
+    def _process(self, hook, command):
+        with (
+            mock.patch("socket.getaddrinfo", side_effect=_resolver(["198.18.0.6"], ["198.18.0.1"])),
+            mock.patch.dict(os.environ, _IN_SANDBOX, clear=True),
+            mock.patch.object(hook, "log_finding"),
+        ):
+            return hook.process_tool_call({"tool_name": "Bash", "tool_input": {"command": command}})
+
+    def test_issue_8016_result_write_allowed_in_sandbox(self, hook):
+        command = (
+            'mkdir -p "$FULLSEND_OUTPUT_DIR" && '
+            "cat > \"$FULLSEND_OUTPUT_DIR/agent-result.json\" <<'EOF'\n"
+            '{"comment": "Blocked on https://github.com/fullsend-ai/fullsend/issues/8010"}\n'
+            "EOF"
+        )
+        assert self._process(hook, command) is None
+
+    def test_heredoc_with_metadata_url_still_blocked_in_sandbox(self, hook):
+        command = "cat > out <<'EOF'\nhttp://169.254.169.254/latest/meta-data/\nEOF"
+        assert self._process(hook, command) is not None
+
+
 # ===========================================================================
 # Inert-pipeline exemption tests (issue #6541)
 #

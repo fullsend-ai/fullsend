@@ -13,8 +13,6 @@ import (
 )
 
 const (
-	// VendoredBinaryPath is the upload path inside the per-org .fullsend config repo.
-	VendoredBinaryPath = "bin/fullsend"
 	// VendoredBinaryPathPerRepo is the upload path inside a per-repo target repo.
 	VendoredBinaryPathPerRepo = ".fullsend/bin/fullsend"
 )

@@ -14,7 +14,9 @@ These problems exist because fullsend is not part of GitHub. A native system doe
 
 ### Cross-repo dispatch
 
-Fullsend uses a centralized `.fullsend` config repo as the hub for agent pipelines. When something happens in an enrolled repo (a PR is opened, an issue is filed), a shim workflow in that repo must dispatch an event to `.fullsend` so the agent pipeline can run. This requires:
+*(Historical — this section describes the per-org `.fullsend` config-repo model, which was removed with per-org installation ([ADR 0044](../ADRs/0044-deprecate-per-org-installation-mode.md)). Per-repo installs run agents in the enrolled repository itself: its `fullsend.yaml` shim calls the upstream `reusable-dispatch.yml` through `workflow_call` ([ADR 0033](../ADRs/0033-per-repo-installation-mode.md)), so there is no `.fullsend` hub repo and no dispatch PAT. The analysis is kept because it motivated that change.)*
+
+Fullsend used a centralized `.fullsend` config repo as the hub for agent pipelines. When something happens in an enrolled repo (a PR is opened, an issue is filed), a shim workflow in that repo must dispatch an event to `.fullsend` so the agent pipeline can run. This requires:
 
 - `workflow_dispatch` as the cross-repo trigger mechanism, because `workflow_call` would require the caller to have the App PEM ([ADR 0008](../ADRs/0008-workflow-dispatch-for-cross-repo-dispatch.md))
 - A fine-grained PAT (`FULLSEND_DISPATCH_TOKEN`) stored as an org secret with selected-repo visibility, so enrolled repos can trigger `.fullsend` workflows
@@ -71,6 +73,11 @@ These problems exist regardless of whether the system is native or external. The
 
 gh-aw shipped an experimental [`merge-pull-request`](https://github.github.com/gh-aw/reference/safe-outputs-pull-requests/) safe-output (introduced via [PR #27193](https://github.com/github/gh-aw/pull/27193), merged 2026-04-20, and refined further in the June 2026 v0.80.4/v0.81.0 releases) that merges a PR once configured policy gates pass — required status checks, review decision, unresolved review-thread state, label/title/branch constraints, and GitHub mergeability — with merges to the repository default branch always refused, and `gh aw compile` emitting an experimental-feature warning on use. Docs state explicit graduation criteria (end-to-end cross-repo test coverage, a full release cycle without schema/behavior changes) before it leaves experimental status. A [GitHub blog post](https://github.blog/ai-and-ml/generative-ai/code-review-in-the-age-of-ai-why-developers-will-always-own-the-merge-button/) argues developers will always own the merge button; gh-aw's own product has since partially moved past that editorial position by shipping the mechanism, gated on a prior human review decision rather than autonomous judgment. Fullsend's thesis — that for routine changes with sufficient verification, the merge decision itself (not just the mechanical merge click after a human has already approved) can be automated — remains differentiated, but the gap with gh-aw is narrower than it was.
 
+A [Gemara lab](../spikes/2026-10-24-gemara-auto-merge.md) separated these
+roles explicitly. A policy assessment decided eligibility, a GitHub App writer
+requested the merge, and GitHub's protected merge queue kept check enforcement
+and performed the merge.
+
 ### Intent verification
 
 Checking whether a change is authorized against a structured intent system — not just "is this change correct?" but "is this change one we actually want?" This is absent from every tool in the [landscape](../landscape.md), including gh-aw. A native system could implement it, but gh-aw's architecture does not. See [intent-representation.md](intent-representation.md).
@@ -108,7 +115,7 @@ Both systems need visibility into inference spend. Fullsend already emits cost a
 Both systems must defend against prompt injection via untrusted input (issue text, PR descriptions, code comments). gh-aw's defense is layered and substantially deeper than a single output scan:
 
 - **Content sanitization** at the input boundary: @mention neutralization, bot trigger protection, XML/HTML tag conversion, URI filtering (only HTTPS from trusted domains), unicode normalization, content size limits (0.5MB/65k lines), and control character removal. This runs before the agent sees any untrusted content.
-- **[Integrity filtering (DIFC)](https://github.github.com/gh-aw/reference/integrity/)**: a trust-based system that filters GitHub content by author association level (`merged > approved > unapproved > none > blocked`). On public repos, `min-integrity: approved` is applied by default — content from untrusted external contributors is removed before the agent sees it. Supports `trusted-users`, `blocked-users`, and `approval-labels` overrides, with centralized management via GitHub organization variables. Filtered events are logged as `DIFC_FILTERED` for audit.
+- **[Integrity filtering (DIFC)](https://github.github.com/gh-aw/reference/integrity/)**: a trust-based system that filters GitHub content by author association level (`merged > approved > unapproved > none > blocked`). On public repos, `min-integrity: approved` is applied by default — content from untrusted external contributors is removed before the agent sees it. Supports `trusted-users`, `blocked-users`, and `approval-labels` overrides, with centralized management via GitHub organization variables. Filtered events are logged as `DIFC_FILTERED` for audit. Author-association filtering treats association as a trust signal; [coordinated inauthentic contributions](security-threat-model.md#threat-7-coordinated-inauthentic-contributions) specifically farm merged PRs and approvals in order to graduate past that filter.
 - **Substrate containment**: read-only token, AWF network firewall with domain allowlisting, MCP server isolation per container.
 - **Threat detection**: AI-powered output scan plus optional custom scanners (Semgrep, TruffleHog, LlamaGuard) before any write is externalized.
 - **[Supply chain protection](https://github.github.com/gh-aw/reference/threat-detection/#supply-chain-protection-protected-files)**: static rule-based flagging of agent modifications to dependency manifests, CI/CD config, agent instruction files, and CODEOWNERS, with `request_review` (default — creates the PR but attaches a blocking review requiring human approval), `blocked` (hard-fails the write), `allowed`, and `fallback-to-issue` policies.
@@ -125,7 +132,9 @@ Fullsend's SDLC pipeline is itself orchestrated natively via GitHub — labels a
 
 ### Org-wide configuration
 
-Fullsend creates a `.fullsend` config repo with `config.yaml`, normative specs, and centralized secrets. GitHub already provides org-level Actions policies, required workflows, organization rulesets, and org secrets with selected-repo visibility. A native system could leverage these directly rather than creating a parallel configuration layer.
+*(Historical — the central `.fullsend` config repo was removed with per-org installation ([ADR 0044](../ADRs/0044-deprecate-per-org-installation-mode.md)); configuration now lives in each repository's `.fullsend/` directory.)*
+
+Fullsend created a `.fullsend` config repo with `config.yaml`, normative specs, and centralized secrets. GitHub already provides org-level Actions policies, required workflows, organization rulesets, and org secrets with selected-repo visibility. A native system could leverage these directly rather than creating a parallel configuration layer.
 
 ## The trade-offs of nativeness
 

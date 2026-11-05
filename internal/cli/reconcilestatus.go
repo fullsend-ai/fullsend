@@ -47,6 +47,7 @@ func newReconcileStatusCmd() *cobra.Command {
 		fullsendDir string
 		jobStatus   string
 		wasSkipped  bool
+		reviewRun   bool
 	)
 
 	cmd := &cobra.Command{
@@ -63,7 +64,9 @@ to an "Interrupted" state and adds the terminal tag. If already
 finalized, this is a no-op.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var tc tracker.Client
+			var statusForgeClient forge.Client
 			var project string
+			var forgePlatform string
 
 			// Event-source routing (ADR 0093): read the normalized
 			// event from the same sources as fullsend run—the on-disk
@@ -95,6 +98,31 @@ finalized, this is a no-op.`,
 				return fmt.Errorf("--number must be a positive integer, got %d", number)
 			}
 
+			// Loaded once, before mint-URL resolution and completion-mode
+			// lookup below, so both consult the same layered config.yaml/
+			// config.base.yaml snapshot. orgCfg stays nil when
+			// --fullsend-dir was not provided or the config failed to
+			// load; downstream readers treat that as "no file layer".
+			var orgCfg config.ConfigReader
+			completionMode := ""
+			if fullsendDir != "" {
+				writer, err := config.LoadConfigWriter(fullsendDir, config.LoadOpts{MissingOK: true})
+				switch {
+				case err != nil:
+					fmt.Fprintf(os.Stderr, "WARNING: could not load config from %s: %v; using default completion mode\n", fullsendDir, err)
+				default:
+					orgCfg = writer
+					// ConfigWriter embeds StatusNotificationsReader (via
+					// ConfigReader) directly, so no type assertion is
+					// needed.
+					if sn := writer.StatusNotifications(); sn != nil {
+						completionMode = sn.Comment.Completion
+					} else {
+						fmt.Fprintf(os.Stderr, "WARNING: no status_notifications configured at %s; using default completion mode\n", fullsendDir)
+					}
+				}
+			}
+
 			if trackerSource == "jira" {
 				var jErr error
 				tc, jErr = reconcileNewJiraTrackerClient()
@@ -108,27 +136,27 @@ finalized, this is a no-op.`,
 				}
 				owner, repoName := parts[0], parts[1]
 
-				forgePlatform, err := detectForgePlatform(forgeFlag, nil)
+				var err error
+				forgePlatform, err = detectForgePlatform(forgeFlag, nil)
 				if err != nil {
 					return err
 				}
 
-				var forgeClient forge.Client
 				if forgePlatform == "gitlab" {
 					var gitlabErr error
-					forgeClient, gitlabErr = newGitLabClientFromEnv("status reconciliation")
+					statusForgeClient, gitlabErr = newGitLabClientFromEnv("status reconciliation")
 					if gitlabErr != nil {
 						return gitlabErr
 					}
 				} else {
 					var githubErr error
-					forgeClient, githubErr = reconcileGitHubClient(cmd, mintURL, role, repoName)
+					statusForgeClient, githubErr = reconcileGitHubClient(cmd, mintURL, role, repoName, orgCfg)
 					if githubErr != nil {
 						return githubErr
 					}
 				}
 
-				tc = reconcileNewTrackerClient(forgeClient)
+				tc = reconcileNewTrackerClient(statusForgeClient)
 				project = owner + "/" + repoName
 			}
 
@@ -140,29 +168,20 @@ finalized, this is a no-op.`,
 				termReason = statuscomment.ReasonTerminated
 			}
 
-			completionMode := ""
-			if fullsendDir != "" {
-				writer, err := config.LoadConfigWriter(fullsendDir, config.LoadOpts{MissingOK: true})
-				switch {
-				case err != nil:
-					fmt.Fprintf(os.Stderr, "WARNING: could not load config from %s: %v; using default completion mode\n", fullsendDir, err)
-				default:
-					// ConfigWriter embeds StatusNotificationsReader (via
-					// ConfigReader) directly, so this works for both org
-					// and per-repo configs — no need to type-assert to
-					// OrgConfigReader, which per-repo configs don't
-					// implement.
-					if sn := writer.StatusNotifications(); sn != nil {
-						completionMode = sn.Comment.Completion
-					} else {
-						fmt.Fprintf(os.Stderr, "WARNING: no status_notifications configured at %s; using default completion mode\n", fullsendDir)
-					}
+			agentDescription := titleCase(strings.ReplaceAll(role, "-", " "))
+			guidance := ""
+			if reviewRun && termReason == statuscomment.ReasonCancelled {
+				var guidanceErr error
+				guidance, guidanceErr = resolveBuiltInGitHubReviewCancellationGuidance(
+					cmd.Context(), statusForgeClient, "review", forgePlatform, trackerSource, project, number, sha,
+				)
+				if guidanceErr != nil {
+					fmt.Fprintf(os.Stderr, "WARNING: could not determine whether cancelled review was superseded; omitting retry guidance: %v\n", guidanceErr)
 				}
 			}
-
-			agentDescription := titleCase(strings.ReplaceAll(role, "-", " "))
-
-			return reconcileOrphaned(cmd.Context(), tc, project, number, runID, runURL, sha, termReason, completionMode, jobStatus, wasSkipped, agentDescription)
+			return reconcileOrphaned(cmd.Context(), tc, project, number, runID, runURL, sha, termReason, completionMode, jobStatus, wasSkipped, agentDescription, statuscomment.ReconcileOptions{
+				CancellationGuidance: guidance,
+			})
 		},
 	}
 
@@ -172,28 +191,33 @@ finalized, this is a no-op.`,
 	cmd.Flags().StringVar(&runURL, "run-url", "", "URL to the workflow run (optional)")
 	cmd.Flags().StringVar(&sha, "sha", "", "commit SHA (optional, shown as short hash)")
 	cmd.Flags().StringVar(&reason, "reason", "terminated", "termination reason: terminated or cancelled")
-	cmd.Flags().StringVar(&mintURL, "mint-url", "", "mint service URL for on-demand token (default: $FULLSEND_MINT_URL)")
-	cmd.Flags().StringVar(&role, "role", "", "agent role for minting (required with --mint-url)")
+	cmd.Flags().StringVar(&mintURL, "mint-url", "", "mint service URL for on-demand token (default: layered mint_url from --fullsend-dir, then $FULLSEND_MINT_URL)")
+	cmd.Flags().StringVar(&role, "role", "", "agent role for minting (required to mint a token)")
 	cmd.Flags().StringVar(&forgeFlag, "forge", "", `forge platform (e.g. "github", "gitlab"); auto-detected from CI env vars when omitted`)
-	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "path to fullsend config directory (used to detect completion mode and read normalized event for tracker routing)")
+	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "path to fullsend config directory (used to detect completion mode, resolve a layered mint_url, and read normalized event for tracker routing)")
 	cmd.Flags().StringVar(&jobStatus, "job-status", "", "job outcome from the CI runner (e.g. success, failure, cancelled)")
 	cmd.Flags().BoolVar(&wasSkipped, "was-skipped", false, "whether the pre-script decided to skip the run (forces synthesis under on_failure even when --job-status is success)")
+	cmd.Flags().BoolVar(&reviewRun, "review-run", false, "whether this is the built-in GitHub review agent (enables GitHub-specific cancellation guidance)")
 	_ = cmd.MarkFlagRequired("run-id")
 
 	return cmd
 }
 
 // reconcileGitHubClient mints a GitHub token and returns a forge client.
-func reconcileGitHubClient(cmd *cobra.Command, mintURL, role, repoName string) (forge.Client, error) {
-	if mintURL == "" {
-		mintURL = os.Getenv("FULLSEND_MINT_URL")
-	}
+// mintURL resolution mirrors fullsend run's precedence (flag > layered
+// config.yaml/config.base.yaml mint_url > FULLSEND_MINT_URL) so that
+// reconcile-status agrees with run on which mint endpoint to use when both
+// are invoked with the same --fullsend-dir in the same CI job (#8400).
+// orgCfg may be nil when --fullsend-dir was not provided or its config
+// failed to load; resolveMintURL treats that the same as "no file layer".
+func reconcileGitHubClient(cmd *cobra.Command, mintURL, role, repoName string, orgCfg config.ConfigReader) (forge.Client, error) {
+	mintURL, _ = resolveMintURL(mintURL, orgCfg, os.Getenv)
 
 	if mintURL == "" {
-		return nil, fmt.Errorf("--mint-url or FULLSEND_MINT_URL required")
+		return nil, fmt.Errorf("--mint-url, a layered mint_url in config.yaml/config.base.yaml, or FULLSEND_MINT_URL required")
 	}
 	if role == "" {
-		return nil, fmt.Errorf("--role is required when using --mint-url")
+		return nil, fmt.Errorf("--role is required to mint a token")
 	}
 	result, err := reconcileMintToken(cmd.Context(), mintclient.MintRequest{
 		MintURL: mintURL,

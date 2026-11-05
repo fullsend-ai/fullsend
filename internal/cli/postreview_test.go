@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -69,12 +70,39 @@ func TestParseReviewResult_HeadSHA(t *testing.T) {
 }
 
 func TestParseReviewResult_Findings(t *testing.T) {
-	input := `{"body":"Review","action":"approve","findings":[{"severity":"low","category":"docs","file":"README.md","line":12,"description":"Missing usage note","remediation":"Add a short note","actionable":true}]}`
+	input := `{"body":"Review","action":"approve","findings":[{"severity":"low","category":"docs","file":"README.md","line":12,"description":"Missing usage note","remediation":"Add a short note","actionable":true,"id":"f_abc123"}]}`
 	result, err := parseReviewResult(input)
 	require.NoError(t, err)
 	require.Len(t, result.Findings, 1)
 	assert.Equal(t, "low", result.Findings[0].Severity)
 	assert.True(t, result.Findings[0].Actionable)
+	assert.EqualValues(t, "f_abc123", result.Findings[0].ID)
+}
+
+func TestParseReviewResult_NonStringIDIgnored(t *testing.T) {
+	tests := []struct {
+		name string
+		id   string
+	}{
+		{"number", "123"},
+		{"boolean", "true"},
+		{"object", `{"x":1}`},
+		{"array", `["f_abc"]`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input := fmt.Sprintf(`{"body":"Review","action":"approve","head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","findings":[{"severity":"low","category":"docs","file":"README.md","line":12,"description":"note","id":%s}]}`, tt.id)
+			result, err := parseReviewResult(input)
+			require.NoError(t, err)
+			assert.Equal(t, "Review", result.Body)
+			assert.Equal(t, "approve", result.Action)
+			assert.Equal(t, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", result.HeadSHA)
+			require.Len(t, result.Findings, 1)
+			assert.Equal(t, "note", result.Findings[0].Description)
+			assert.Empty(t, result.Findings[0].ID)
+			assert.NotContains(t, formatFindingComment(result.Findings[0]), "<!-- finding:")
+		})
+	}
 }
 
 func TestReviewActionToEvent(t *testing.T) {
@@ -207,6 +235,112 @@ func TestPostFailureNotice_EmptyReason(t *testing.T) {
 	require.Len(t, comments, 1)
 	assert.Contains(t, comments[0].Body, "unknown")
 	assert.Contains(t, comments[0].Body, "NOT reviewed")
+}
+
+func TestPostReviewContent_FormalReviewFailureDoesNotFailCommand(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	fc.Errors["CreatePullRequestReview"] = fmt.Errorf("API error")
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	cfg := sticky.Config{Marker: reviewMarker, KeepHistory: true}
+	parsed := ReviewResult{Body: "Looks good", Action: "approve"}
+
+	err := postReviewContent(context.Background(), fc, "o", "r", 1, parsed, cfg, false, printer)
+	require.NoError(t, err, "sticky comment success must not fail the command when formal review fails")
+
+	comments := fc.IssueComments["o/r/1"]
+	require.Len(t, comments, 1)
+	assert.Contains(t, comments[0].Body, "Looks good")
+	assert.Empty(t, fc.CreatedReviews)
+	assert.Contains(t, buf.String(), "Formal review submission failed")
+	assert.Contains(t, buf.String(), "sticky review comment was posted")
+}
+
+func TestPostReviewContent_RequestChangesFormalReviewFailureDoesNotFailCommand(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	fc.Errors["CreatePullRequestReview"] = fmt.Errorf("API error")
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	cfg := sticky.Config{Marker: reviewMarker, KeepHistory: true}
+	parsed := ReviewResult{Body: "Please fix these issues", Action: "request-changes"}
+
+	err := postReviewContent(context.Background(), fc, "o", "r", 1, parsed, cfg, false, printer)
+	require.NoError(t, err)
+
+	comments := fc.IssueComments["o/r/1"]
+	require.Len(t, comments, 1)
+	assert.Contains(t, comments[0].Body, "Please fix these issues")
+	assert.Empty(t, fc.CreatedReviews)
+	assert.Contains(t, buf.String(), "Formal review submission failed")
+}
+
+func TestPostReviewContent_StickyFailureStillFails(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	fc.Errors["CreateIssueComment"] = fmt.Errorf("comment API error")
+
+	printer := ui.New(io.Discard)
+	cfg := sticky.Config{Marker: reviewMarker, KeepHistory: true}
+	parsed := ReviewResult{Body: "Looks good", Action: "approve"}
+
+	err := postReviewContent(context.Background(), fc, "o", "r", 1, parsed, cfg, false, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "creating comment")
+	assert.Empty(t, fc.CreatedReviews)
+	assert.Empty(t, fc.IssueComments["o/r/1"])
+}
+
+func TestPostReviewContent_SuccessSubmitsFormalReview(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	printer := ui.New(io.Discard)
+	cfg := sticky.Config{Marker: reviewMarker, KeepHistory: true}
+	parsed := ReviewResult{Body: "Looks good", Action: "approve", HeadSHA: "abc123def456"}
+
+	err := postReviewContent(context.Background(), fc, "o", "r", 1, parsed, cfg, false, printer)
+	require.NoError(t, err)
+
+	comments := fc.IssueComments["o/r/1"]
+	require.Len(t, comments, 1)
+	assert.Contains(t, comments[0].Body, "Looks good")
+	require.Len(t, fc.CreatedReviews, 1)
+	assert.Equal(t, "APPROVE", fc.CreatedReviews[0].Event)
+	assert.Equal(t, "abc123def456", fc.CreatedReviews[0].CommitSHA)
+}
+
+func TestPostReviewContent_FallbackFailureDoesNotFailCommand(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	fc.Errors["CreatePullRequestReview"] = &gh.APIError{StatusCode: http.StatusUnprocessableEntity, Message: "validation failed"}
+	fc.PRFileDiffs = map[string][]forge.PullRequestFileDiff{
+		"o/r/1": {
+			{Path: "internal/service.go", Patch: "@@ -1,1 +1,1 @@"},
+		},
+	}
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	cfg := sticky.Config{Marker: reviewMarker, KeepHistory: true}
+	parsed := ReviewResult{
+		Body:   "Needs changes",
+		Action: "request-changes",
+		Findings: []ReviewFinding{{
+			File: "internal/service.go", Line: 1, Description: "invalid change",
+		}},
+	}
+
+	err := postReviewContent(context.Background(), fc, "o", "r", 1, parsed, cfg, false, printer)
+	require.NoError(t, err)
+
+	comments := fc.IssueComments["o/r/1"]
+	require.Len(t, comments, 1)
+	assert.Contains(t, comments[0].Body, "Needs changes")
+	assert.Empty(t, fc.CreatedReviews)
+	assert.Contains(t, buf.String(), "Formal review submission failed")
 }
 
 func TestCheckStaleHead_CaseInsensitive(t *testing.T) {
@@ -1128,7 +1262,53 @@ func TestFormatFindingComment(t *testing.T) {
 		assert.Contains(t, body, "**[low]** style")
 		assert.Contains(t, body, "Consider renaming.")
 		assert.NotContains(t, body, "Suggested fix:")
+		assert.NotContains(t, body, "<!-- finding:")
 	})
+
+	t.Run("valid id", func(t *testing.T) {
+		f := ReviewFinding{
+			ID:          "f_abc123",
+			Severity:    "high",
+			Category:    "logic-error",
+			Description: "Missing nil check.",
+		}
+		body := formatFindingComment(f)
+		assert.True(t, strings.HasPrefix(body, "<!-- finding:f_abc123 -->\n"))
+		assert.Contains(t, body, "**[high]** logic-error")
+	})
+
+	t.Run("invalid id is not stamped", func(t *testing.T) {
+		f := ReviewFinding{
+			ID:          "<!-- finding:../x -->",
+			Severity:    "high",
+			Category:    "logic-error",
+			Description: "Missing nil check.",
+		}
+		body := formatFindingComment(f)
+		assert.NotContains(t, body, "<!-- finding:")
+		assert.Contains(t, body, "**[high]** logic-error")
+		assert.Contains(t, body, "Missing nil check.")
+	})
+}
+
+func TestFindingsToReviewComments_StampsFindingID(t *testing.T) {
+	findings := []ReviewFinding{
+		{ID: "f_inline", File: "a.go", Line: 10, Severity: "high", Category: "bug", Description: "In hunk"},
+		{ID: "f_file", File: "a.go", Line: 50, Severity: "low", Category: "style", Description: "Outside hunk"},
+		{ID: "../x", File: "a.go", Line: 12, Severity: "medium", Category: "bug", Description: "Bad id"},
+	}
+	diffHunks := map[string][][2]int{
+		"a.go": {{5, 15}},
+	}
+
+	inline, fileLevel, fileFiltered := findingsToReviewComments(findings, diffHunks)
+	assert.Equal(t, 0, fileFiltered)
+	require.Len(t, inline, 2)
+	require.Len(t, fileLevel, 1)
+	assert.Contains(t, inline[0].Body, "<!-- finding:f_inline -->")
+	assert.NotContains(t, inline[1].Body, "<!-- finding:")
+	assert.Contains(t, fileLevel[0].Body, "<!-- finding:f_file -->")
+	assert.Contains(t, fileLevel[0].Body, "Line 50")
 }
 
 func TestResolvePostReviewClient_GitHubDefault(t *testing.T) {
@@ -1382,6 +1562,53 @@ func TestSanitizeReviewResult_NoSecretsPassesThrough(t *testing.T) {
 	assert.Equal(t, "Consider renaming variable.", sanitized.Findings[0].Description, "clean finding should pass through unchanged")
 	assert.Equal(t, "low", sanitized.Findings[0].Severity, "clean severity should pass through unchanged")
 	assert.Equal(t, "style", sanitized.Findings[0].Category, "clean category should pass through unchanged")
+}
+
+func TestSanitizeReviewResult_DropsSecretFindingID(t *testing.T) {
+	printer := ui.New(io.Discard)
+	// f_ plus a Google API key (AIza + 35 alnum) still matches findingIDRe.
+	secretID := "f_AIzaabcdefghijklmnopqrstuvwxyz012345678"
+	r := ReviewResult{
+		Body:   "Review body without secrets.",
+		Action: "comment",
+		Findings: []ReviewFinding{
+			{
+				ID:          findingID(secretID),
+				Severity:    "high",
+				Category:    "bug",
+				File:        "a.go",
+				Line:        10,
+				Description: "Missing nil check.",
+			},
+		},
+	}
+
+	sanitized := sanitizeReviewResult(r, printer)
+	assert.Empty(t, sanitized.Findings[0].ID)
+	assert.NotContains(t, formatFindingComment(sanitized.Findings[0]), "<!-- finding:")
+	assert.NotContains(t, formatFindingComment(sanitized.Findings[0]), secretID)
+}
+
+func TestSanitizeReviewResult_PreservesOrdinaryFindingID(t *testing.T) {
+	printer := ui.New(io.Discard)
+	r := ReviewResult{
+		Body:   "Review body without secrets.",
+		Action: "comment",
+		Findings: []ReviewFinding{
+			{
+				ID:          "f_abc123",
+				Severity:    "high",
+				Category:    "bug",
+				File:        "a.go",
+				Line:        10,
+				Description: "Missing nil check.",
+			},
+		},
+	}
+
+	sanitized := sanitizeReviewResult(r, printer)
+	assert.EqualValues(t, "f_abc123", sanitized.Findings[0].ID)
+	assert.Contains(t, formatFindingComment(sanitized.Findings[0]), "<!-- finding:f_abc123 -->")
 }
 
 func TestSanitizeReviewResult_EmptyBody(t *testing.T) {
@@ -1925,7 +2152,6 @@ func TestNewPostReviewCmd_FullsendDirDefaultsEmptyWithoutEnvVar(t *testing.T) {
 }
 
 func TestPostReviewCmd_GitLabCoderCannotApprove(t *testing.T) {
-	t.Setenv(forge.VarGitLabRoleMigration, "enforced")
 	t.Setenv(forge.VarGitLabRoleRegistry, "")
 	t.Setenv(forge.SecretForgeToken, "shared")
 	t.Setenv(forge.SecretGitLabPollerToken, "p")
@@ -1948,4 +2174,75 @@ func TestPostReviewCmd_GitLabCoderCannotApprove(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, gitlabroles.ErrCapabilityDenied)
 	assert.NotContains(t, err.Error(), "glpat-")
+}
+
+// The review-findings-v2 projection marker that the agents post-review
+// script places at the start of the body must stay a live, hidden marker,
+// while every other marker in the review is escaped (#8544).
+func TestPostReviewContent_KeepsLeadingProjectionMarkerLive(t *testing.T) {
+	const projection = "<!-- fullsend:review-findings-v2:eyJmaW5kaW5ncyI6W119 -->"
+	const escapedProjection = "&lt;!-- fullsend:review-findings-v2:eyJmaW5kaW5ncyI6W119 -->"
+
+	tests := []struct {
+		name     string
+		body     string
+		wantBody string
+	}{
+		{
+			name:     "leading marker kept, other markers escaped",
+			body:     projection + "\n\n## Review\n<!-- fullsend:agent-status:1 -->",
+			wantBody: reviewMarker + "\n" + projection + "\n\n## Review\n&lt;!-- fullsend:agent-status:1 -->",
+		},
+		{
+			name:     "marker mid-body escaped",
+			body:     "## Review\n" + projection,
+			wantBody: reviewMarker + "\n## Review\n" + escapedProjection,
+		},
+		{
+			name:     "duplicate marker escaped",
+			body:     projection + "\n" + projection,
+			wantBody: reviewMarker + "\n" + projection + "\n" + escapedProjection,
+		},
+		{
+			name:     "invalid payload escaped",
+			body:     "<!-- fullsend:review-findings-v2:a-b -->\n## Review",
+			wantBody: reviewMarker + "\n&lt;!-- fullsend:review-findings-v2:a-b -->\n## Review",
+		},
+		{
+			name:     "v1 marker escaped",
+			body:     "<!-- fullsend:review-findings-v1:eyJ9 -->\n## Review",
+			wantBody: reviewMarker + "\n&lt;!-- fullsend:review-findings-v1:eyJ9 -->\n## Review",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fc := forge.NewFakeClient()
+			fc.AuthenticatedUser = "bot"
+			cfg := sticky.Config{Marker: reviewMarker, KeepHistory: true}
+			parsed := ReviewResult{Body: tt.body, Action: "comment"}
+
+			err := postReviewContent(context.Background(), fc, "o", "r", 1, parsed, cfg, false, ui.New(io.Discard))
+			require.NoError(t, err)
+
+			comments := fc.IssueComments["o/r/1"]
+			require.Len(t, comments, 1)
+			assert.Equal(t, tt.wantBody, comments[0].Body)
+		})
+	}
+}
+
+// Only the review-content path trusts a leading projection marker; a
+// failure notice escapes it like any other agent-written marker.
+func TestPostFailureNotice_EscapesProjectionMarker(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	cfg := sticky.Config{Marker: reviewMarker, KeepHistory: true}
+	parsed := ReviewResult{Action: "failure", Body: "<!-- fullsend:review-findings-v2:eyJ9 -->\nFailed"}
+
+	err := postFailureNotice(context.Background(), fc, "o", "r", 1, parsed, cfg, ui.New(io.Discard))
+	require.NoError(t, err)
+
+	comments := fc.IssueComments["o/r/1"]
+	require.Len(t, comments, 1)
+	assert.Equal(t, reviewMarker+"\n&lt;!-- fullsend:review-findings-v2:eyJ9 -->\nFailed", comments[0].Body)
 }

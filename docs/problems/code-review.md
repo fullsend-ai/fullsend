@@ -164,6 +164,11 @@ Sub-agents don't approve or reject — they produce findings. A separate merge-d
 **Pros:** Separates analysis from decision. Findings are reusable. The decision logic can be a simple, auditable rule set rather than an LLM judgment.
 **Cons:** Adds another agent to the chain. The merge-decision agent/rules become the real authority and thus the real attack target.
 
+A [public lab](../spikes/2026-10-24-gemara-auto-merge.md) tested Gemara as a
+structured, deterministic assessment layer around externally produced findings
+and checks. It is one rule-engine option for this model. It is not a
+replacement for semantic review or a new reviewer.
+
 ## The confidence problem
 
 A human reviewer can say "I'm not sure about this, let me think" or "I need someone else to look at this." Agents need equivalent mechanisms:
@@ -185,7 +190,7 @@ Critically, the escalation must always include an explicit "none of the above" o
 
 The human sees coherent framings and can pick the one that matches their understanding, offer their own, or reject the change — rather than starting from scratch. This is faster and more structured than an open-ended "please review."
 
-This pattern is most valuable at escalation boundaries — where the system has already decided it can't resolve something autonomously. It doesn't replace confidence scores or explicit uncertainty signals; it complements them by making the *nature* of the uncertainty actionable. It applies wherever agents interact with humans: intent authorization tier classification (see [intent-representation.md](intent-representation.md#the-intent-authorization-tier-escalation-problem)), the exploration phase for proposed features (see [intent-representation.md](intent-representation.md#the-try-it-phase)), and deadlock resolution between review sub-agents (see [agent-architecture.md](agent-architecture.md#how-deadlocks-are-resolved)).
+This pattern is most valuable at escalation boundaries — where the system has already decided it can't resolve something autonomously. It doesn't replace confidence scores or explicit uncertainty signals; it complements them by making the *nature* of the uncertainty actionable. A well-formed escalation still fails if it reaches someone without the context or authority to act on it; routing is covered in [escalation without context](agentic-sdlc-adoption-org-communication.md#escalation-without-context). It applies wherever agents interact with humans: intent authorization tier classification (see [intent-representation.md](intent-representation.md#the-intent-authorization-tier-escalation-problem)), the exploration phase for proposed features (see [intent-representation.md](intent-representation.md#the-try-it-phase)), and deadlock resolution between review sub-agents (see [agent-architecture.md](agent-architecture.md#how-deadlocks-are-resolved)).
 
 [Forge-sdlc/forge](../landscape.md#forge-sdlcforge) has a concrete version of this idea in its `implement_review` flow: review comments are treated as their own task type, classified as actionable or contested before the agent acts, and contested comments trigger a structured response rather than silent compliance. That is a useful precedent for fullsend's review loops, especially when an agent should push back on incorrect feedback while still respecting the reviewer's blocking authority. When review loops fail to converge (review ping-pong), see [flapping-convergence.md](flapping-convergence.md).
 
@@ -196,6 +201,8 @@ The sub-agent model above assumes a binary outcome: approve or reject. But when 
 This adds a new composition model: **review + rewrite**. The review sub-agents identify what's wrong, and if the underlying idea has merit, a separate implementation pass fixes the issues rather than sending the PR back to the contributor for iteration. The review findings become input to a salvage decision rather than a merge/reject decision.
 
 Whether this belongs in the review system or is a separate workflow operating on review output is an open question. For a fuller treatment of the salvage concept, including trade-offs and cost implications, see [contribution-volume.md](contribution-volume.md#the-salvage-question).
+
+A contributor (or agent) that always accepts review feedback in order to trigger salvage is indistinguishable from the [speed-to-merge gaming](security-threat-model.md#threat-7-coordinated-inauthentic-contributions) pattern coordinated inauthentic actors use — apparent cooperation, optimized for getting merged quickly rather than for the change being sound.
 
 ## Open questions
 

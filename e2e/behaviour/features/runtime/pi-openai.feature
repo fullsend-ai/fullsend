@@ -26,8 +26,8 @@ Feature: pi runtime runs an agent on OpenAI without a credential in the sandbox
       slug: fullsend-ai-pi-openai-smoke
       model: openai/gpt-5.6-luna
       image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
-      # The fleet's base policy (layered into .fullsend/policies/ by the
-      # workflow): it carries no network rules of its own, so the only
+      # A policy with no network rules of its own (the step commits a
+      # minimal one under .fullsend/policies/), so the only
       # api.openai.com route is the provider's inspected one. Without it
       # the image's default policy also allows api.openai.com as a raw
       # tunnel and OpenShell 0.0.110+ refuses to inject the credential.

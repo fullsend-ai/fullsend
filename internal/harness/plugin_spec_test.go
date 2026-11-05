@@ -279,8 +279,10 @@ func TestResolveRelativeTo_PluginOptions(t *testing.T) {
 // the entry turned out to be in.
 func TestValidateFilesExist_PluginDirRules(t *testing.T) {
 	t.Parallel()
-	agent := filepath.Join(t.TempDir(), "code.md")
+	tmp := t.TempDir()
+	agent := filepath.Join(tmp, "code.md")
 	require.NoError(t, os.WriteFile(agent, []byte("# agent"), 0o644))
+	policy := writeTestPolicy(t, tmp)
 	dirNamed := func(t *testing.T, name string, files map[string]string) string {
 		t.Helper()
 		dir := filepath.Join(t.TempDir(), name)
@@ -295,7 +297,7 @@ func TestValidateFilesExist_PluginDirRules(t *testing.T) {
 	}
 	validate := func(t *testing.T, specs ...PluginSpec) error {
 		t.Helper()
-		return (&Harness{Agent: agent, Plugins: specs}).ValidateFilesExist()
+		return (&Harness{Agent: agent, Policy: policy, Plugins: specs}).ValidateFilesExist()
 	}
 
 	t.Run("pi extension", func(t *testing.T) {

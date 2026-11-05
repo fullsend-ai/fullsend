@@ -41,14 +41,18 @@ type Dependency struct {
 type ResolvedProfile struct {
 	ID        string
 	LocalPath string
-	FromURL   bool // true when resolved from a URL (including lock-file reconstruction)
+	// FromURL is true when the content came from a URL: resolved from one
+	// directly, reconstructed from the lock file, or read from the content
+	// cache (a URL base harness's relative entry, rewritten by composition).
+	FromURL bool
 }
 
 // ResolvedProvider is a provider definition resolved from a URL or local path.
 type ResolvedProvider struct {
 	Def       harness.ProviderDef
 	LocalPath string
-	FromURL   bool // true when resolved from a URL (including lock-file reconstruction)
+	// FromURL has the same meaning as ResolvedProfile.FromURL.
+	FromURL bool
 }
 
 // ResolveResult contains all outputs from harness resolution.
@@ -213,10 +217,11 @@ type ResolveOpts struct {
 	// When nil, defaults to gitfetch.FetchTree (git sparse checkout).
 	TreeFetcher gitfetch.TreeFetchFunc
 
-	// OrgAllowlist is the allowed_remote_resources from config.yaml (org-level
-	// allowlist). When set, URLs that are not in the harness-level
+	// OrgAllowlist is the config-level allowed_remote_resources from the
+	// repository's layered .fullsend config (config.yaml over
+	// config.base.yaml). When set, URLs that are not in the harness-level
 	// AllowedRemoteResources are checked against this list as a fallback.
-	// This makes org-level trust apply uniformly to all URL resolution
+	// This makes config-level trust apply uniformly to all URL resolution
 	// (policy, agent, skills, plugins, profiles, providers), not just
 	// base: composition.
 	OrgAllowlist []string
@@ -315,6 +320,10 @@ func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (
 		state.appendDependency(dep)
 	}
 
+	// dupPaths records direct entries whose URL was already resolved
+	// (transitively or by an earlier entry), keyed by index, with the
+	// local path of the kept entry for the same skill.
+	dupPaths := make(map[int]string)
 	for i, s := range h.Skills {
 		if harness.IsURL(s.Source) {
 			dep, localPath, err := resolveSkillDirURL(ctx, fmt.Sprintf("skills[%d]", i), s.Source, h, opts, state, recurse, 0)
@@ -325,6 +334,7 @@ func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (
 				h.Skills[i].Source = localPath
 			} else {
 				h.Skills[i].Source = ""
+				dupPaths[i] = localPath
 			}
 			state.appendDependency(dep)
 		}
@@ -343,7 +353,12 @@ func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (
 		}
 	}
 
-	// Remove entries that were already appended transitively.
+	// Remove entries that were already appended transitively. Their file
+	// overrides move onto the kept entry for the same skill first, so a
+	// direct entry's overrides survive whatever the list order.
+	if err := harness.MergeDuplicateSkillOverrides(h.Skills, dupPaths); err != nil {
+		return ResolveResult{}, err
+	}
 	filtered := h.Skills[:0]
 	for _, s := range h.Skills {
 		if s.Source != "" {
@@ -464,14 +479,18 @@ func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (
 				return ResolveResult{}, fmt.Errorf("openshell.profiles[%d]: %w (from %s)", i, err, localPath)
 			}
 
+			// A cache path holds content fetched from a URL (a URL base
+			// harness's relative entry, rewritten by composition), not a
+			// repository file.
+			fromCache := isCachePath(localPath, opts.WorkspaceRoot)
 			ext := strings.ToLower(filepath.Ext(localPath))
-			if ext != ".yaml" && ext != ".yml" && isCachePath(localPath, opts.WorkspaceRoot) {
+			if ext != ".yaml" && ext != ".yml" && fromCache {
 				localPath, err = fetch.CacheNamedSymlink(localPath, id+".yaml")
 				if err != nil {
 					return ResolveResult{}, fmt.Errorf("naming cached profile for openshell.profiles[%d]: %w", i, err)
 				}
 			}
-			profiles = append(profiles, ResolvedProfile{ID: id, LocalPath: localPath})
+			profiles = append(profiles, ResolvedProfile{ID: id, LocalPath: localPath, FromURL: fromCache})
 		}
 	}
 
@@ -497,7 +516,7 @@ func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (
 				if w != "" {
 					state.warnings = append(state.warnings, w)
 				}
-				resolvedProviders = append(resolvedProviders, ResolvedProvider{Def: def, LocalPath: p})
+				resolvedProviders = append(resolvedProviders, ResolvedProvider{Def: def, LocalPath: p, FromURL: isCachePath(p, opts.WorkspaceRoot)})
 				continue
 			}
 			remaining = append(remaining, p)

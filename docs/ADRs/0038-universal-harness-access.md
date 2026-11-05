@@ -398,3 +398,7 @@ Plugins bundle executable content (hooks, MCP servers, init scripts). Plugin con
 ### 2026-09-07: Org-level allowlist extended to all URL resolution (#6452)
 
 The org-level `allowed_remote_resources` from `config.yaml` now acts as a fallback for all URL resolution types (agents, policies, skills, plugins, profiles, providers), not just `base:` composition. A URL passes if it is in the org-level **or** harness-level list. The intersection constraint in the "Trust boundary for URL-fetched harnesses" section above still applies to the harness-level `allowed_remote_resources` entries themselves (they must be a subset of the org-level list), but the org-level entries are available for resolution even when the harness omits them.
+
+### 2026-09-28: Clarify URL-base input and preflight semantics
+
+When inherited from a URL-referenced `base:`, relative script paths are fetched and rewritten as described in [ADR 0045](0045-forge-portable-harness-schema.md), but `agent_input` is a directory and is **cleared**, not fetched; a child needing it must supply a local directory. The `preflight_check` value is a literal host `sh -c` command, not an executable resource path, and is never resource-resolved ([ADR 0128](0128-preflight-check-literal-command.md)). The current URL-base delivery rules, including other field types, are maintained in the [harness field reference](../contributing/harness-fields.md#semantic-types-adr-0127).

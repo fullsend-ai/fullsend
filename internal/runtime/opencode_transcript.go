@@ -1,0 +1,139 @@
+package runtime
+
+import (
+	"bytes"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/fullsend-ai/fullsend/internal/sandbox"
+)
+
+// openCodeOutputFile is the basename of the sandbox copy of the --format json
+// stream (openCodeSandboxTranscriptPath), distinct from the host-side
+// RunParams.OutputPath. It is the interim transcript; the full-fidelity
+// redesign is unbound-force#513.
+const openCodeOutputFile = "output.jsonl"
+
+// ExtractTranscripts downloads the tee'd output.jsonl into outputDir as
+// <agentLabel>-output.jsonl, with the same path containment as the Claude and
+// pi handlers.
+func (r OpenCodeRuntime) ExtractTranscripts(sandboxName, agentLabel, outputDir string) error {
+	if err := os.MkdirAll(outputDir, 0o755); err != nil {
+		return fmt.Errorf("creating output dir: %w", err)
+	}
+	root, err := os.OpenRoot(outputDir)
+	if err != nil {
+		return fmt.Errorf("opening output root: %w", err)
+	}
+	defer root.Close()
+
+	remotePath := openCodeSandboxTranscriptPath()
+	stdout, _, _, err := sandbox.Exec(sandboxName,
+		fmt.Sprintf("test -f %s && echo found || true", shellQuote(remotePath)),
+		10*time.Second,
+	)
+	if err != nil {
+		return fmt.Errorf("checking transcript: %w", err)
+	}
+	if strings.TrimSpace(stdout) != "found" {
+		fmt.Fprintf(os.Stderr, "  [%s] No transcript found\n", agentLabel)
+		return nil
+	}
+
+	localName := fmt.Sprintf("%s-%s", agentLabel, openCodeOutputFile)
+	f, createErr := root.Create(localName)
+	if createErr != nil {
+		fmt.Fprintf(os.Stderr, "  [%s] Skipping (path rejected): %s: %v\n", agentLabel, localName, createErr)
+		return nil
+	}
+	f.Close()
+	localPath := filepath.Join(outputDir, localName)
+	os.Remove(localPath)
+	if dlErr := sandbox.DownloadFile(sandboxName, remotePath, localPath); dlErr != nil {
+		fmt.Fprintf(os.Stderr, "  [%s] Failed to copy transcript: %v\n", agentLabel, dlErr)
+		return nil
+	}
+	fmt.Fprintf(os.Stderr, "  [%s] Saved transcript: %s\n", agentLabel, localName)
+	return nil
+}
+
+// ExtractDebugLog downloads OpenCode's stderr capture written when --debug is
+// set.
+func (r OpenCodeRuntime) ExtractDebugLog(sandboxName, localPath, debug string) error {
+	if debug == "" {
+		return nil
+	}
+	return sandbox.DownloadFile(sandboxName, r.WorkspaceDir()+"/"+openCodeDebugLogFile, localPath)
+}
+
+// ParseTranscriptErrors scans every JSONL file in transcriptDir (the extracted
+// output.jsonl tee) and reports those whose stream ended in error.
+func (OpenCodeRuntime) ParseTranscriptErrors(transcriptDir string) []TranscriptError {
+	entries, err := os.ReadDir(transcriptDir)
+	if err != nil {
+		return nil
+	}
+	var summaries []TranscriptError
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
+			continue
+		}
+		if te, ok := parseOpenCodeTranscriptFile(filepath.Join(transcriptDir, entry.Name())); ok && te.IsError {
+			summaries = append(summaries, te)
+		}
+	}
+	return summaries
+}
+
+// ParseTranscriptFile is the runner's exit-0 override input: the tee'd
+// --format json stream. It replays the ndjson through parseOpenCodeStream and
+// reports the synthesized ResultEvent's verdict.
+func (OpenCodeRuntime) ParseTranscriptFile(path string) (TranscriptError, bool) {
+	return parseOpenCodeTranscriptFile(path)
+}
+
+func (OpenCodeRuntime) EmitTranscriptErrors(w io.Writer, summaries []TranscriptError) {
+	emitTranscriptErrors(w, summaries)
+}
+
+// parseOpenCodeTranscriptFile replays an output.jsonl capture through
+// parseOpenCodeStream and returns the last ResultEvent as a TranscriptError,
+// or ok=false when there is none. A zero-turn capture counts as an error.
+func parseOpenCodeTranscriptFile(path string) (TranscriptError, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return TranscriptError{}, false
+	}
+	if len(bytes.TrimSpace(data)) == 0 {
+		return TranscriptError{}, false
+	}
+	source := filepath.Base(path)
+	var result *ResultEvent
+	_, malformed, parseErr := parseOpenCodeStream(bytes.NewReader(data), func(evt AgentEvent) {
+		if e, ok := evt.(ResultEvent); ok {
+			result = &e
+		}
+	})
+	if result == nil {
+		return TranscriptError{}, false
+	}
+	// Run fails a stream with malformed lines or a read error even when a
+	// turn completed, so the artifact verdict must not read as clean either.
+	if parseErr != nil || malformed > 0 {
+		msg := fmt.Sprintf("corrupt opencode stream: %d malformed line(s)", malformed)
+		if parseErr != nil {
+			msg += ", read error: " + parseErr.Error()
+		}
+		return TranscriptError{Source: source, IsError: true, ErrorMessage: truncateError(msg), Subtype: "error"}, true
+	}
+	return TranscriptError{
+		Source:       source,
+		IsError:      result.IsError,
+		ErrorMessage: truncateError(result.ErrorMessage),
+		Subtype:      result.Subtype,
+	}, true
+}

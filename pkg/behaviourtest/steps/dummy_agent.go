@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/artifacts"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
@@ -66,6 +68,17 @@ func parseDummyAgentTable(w *world.World, table *godog.Table) error {
 			Op:          strings.TrimSpace(row.Cells[col["op"]].Value),
 			Args:        strings.TrimSpace(row.Cells[col["args"]].Value),
 		}
+		// Optional "expect" column: "fail" marks a step the scenario
+		// expects to fail, so its failure does not fail the run.
+		if i, ok := col["expect"]; ok {
+			switch v := strings.TrimSpace(row.Cells[i].Value); v {
+			case "":
+			case "fail":
+				op.ExpectFail = true
+			default:
+				return fmt.Errorf("dummy agent row %q: expect must be empty or \"fail\", got %q", op.Description, v)
+			}
+		}
 		// <issue> expansion is scoped to checkout_branch: it is the only
 		// op whose args embed the scenario issue number, and keeping the
 		// substitution off the generic ops avoids surprising rewrites of
@@ -73,6 +86,19 @@ func parseDummyAgentTable(w *world.World, table *godog.Table) error {
 		if op.Op == "checkout_branch" {
 			args, err := expandIssuePlaceholder(w, op.Args)
 			if err != nil {
+				return err
+			}
+			op.Args = args
+		}
+		// <gateway> expansion is scoped to http_probe for the same reason.
+		// The op is validated here so a malformed row fails at Given time
+		// instead of inside the workflow run.
+		if op.Op == "http_probe" {
+			args, err := expandGatewayPlaceholder(op.Args)
+			if err != nil {
+				return err
+			}
+			if _, err := runtime.ParseHTTPProbeArgs(args); err != nil {
 				return err
 			}
 			op.Args = args
@@ -88,7 +114,11 @@ func parseDummyAgentTable(w *world.World, table *godog.Table) error {
 			if err != nil {
 				return fmt.Errorf("reading fixture %s: %w", fixturePath, err)
 			}
-			op.Content = string(content)
+			expanded, err := expandFixturePlaceholders(w, string(content))
+			if err != nil {
+				return fmt.Errorf("write_fixture %s: %w", fixtureRel, err)
+			}
+			op.Content = expanded
 		}
 		ops = append(ops, op)
 	}
@@ -106,6 +136,57 @@ func parseDummyAgentTable(w *world.World, table *godog.Table) error {
 
 	w.DummyOps = ops
 	return nil
+}
+
+// repoPlaceholder is replaced with the leased repository as owner/name in
+// write_fixture content. Pool repos are leased per run, so an agent result
+// that must name the scenario's own repository cannot be a static fixture.
+const repoPlaceholder = "<repo>"
+
+// expandFixturePlaceholders substitutes the scenario issue number for
+// <issue>, the leased repository for <repo> and the pull request head SHA
+// for <pr_head_sha> in write_fixture content.
+// The expansion applies only to fixture content: fixture files are
+// authored for the suite, so it cannot rewrite paths or URLs in other ops.
+func expandFixturePlaceholders(w *world.World, content string) (string, error) {
+	if strings.Contains(content, issuePlaceholder) {
+		if w.IssueNumber == 0 {
+			return "", fmt.Errorf("uses %s but no issue exists yet — put the \"an issue\" step before the dummy agent step", issuePlaceholder)
+		}
+		content = strings.ReplaceAll(content, issuePlaceholder, strconv.Itoa(w.IssueNumber))
+	}
+	if strings.Contains(content, repoPlaceholder) {
+		if w.RepoOwner == "" || w.RepoName == "" {
+			return "", fmt.Errorf("uses %s but no repository is enrolled — put \"the enrolled test repository\" before the dummy agent step", repoPlaceholder)
+		}
+		content = strings.ReplaceAll(content, repoPlaceholder, w.RepoOwner+"/"+w.RepoName)
+	}
+	return expandPRHeadSHAPlaceholder(w, content)
+}
+
+// prHeadSHAPlaceholder is replaced in write_fixture content with the
+// scenario pull request's head SHA, read when the dummy-agent step runs.
+const prHeadSHAPlaceholder = "<pr_head_sha>"
+
+func expandPRHeadSHAPlaceholder(w *world.World, content string) (string, error) {
+	if !strings.Contains(content, prHeadSHAPlaceholder) {
+		return content, nil
+	}
+	if w.PRNumber == 0 {
+		return "", fmt.Errorf("uses %s but no pull request exists yet — order a pull request step first", prHeadSHAPlaceholder)
+	}
+	reader, ok := w.SCM.(scm.PullRequestHeadSHAReader)
+	if !ok {
+		return "", fmt.Errorf("uses %s but the SCM driver cannot read a pull request head SHA", prHeadSHAPlaceholder)
+	}
+	sha, err := reader.GetPullRequestHeadSHA(context.Background(), w.RepoOwner, w.RepoName, w.PRNumber)
+	if err != nil {
+		return "", fmt.Errorf("reading head SHA of pull request #%d: %w", w.PRNumber, err)
+	}
+	if sha == "" {
+		return "", fmt.Errorf("pull request #%d has an empty head SHA", w.PRNumber)
+	}
+	return strings.ReplaceAll(content, prHeadSHAPlaceholder, sha), nil
 }
 
 func assertAgentSucceeds(w *world.World, description string) error {
@@ -159,17 +240,33 @@ func assertAgentOutput(w *world.World, fileName, doc string) error {
 }
 
 func findModuleSubdir(rel string) (string, error) {
+	dir, err := moduleRootDir()
+	if err != nil {
+		return "", err
+	}
+	candidate := filepath.Join(dir, rel)
+	if st, err := os.Stat(candidate); err == nil && st.IsDir() {
+		return candidate, nil
+	}
+	return "", fmt.Errorf("could not find %s under module root %s", rel, dir)
+}
+
+// moduleRootDir returns the directory containing go.mod, walking up from
+// the current working directory. It is the trust boundary fixtureSubpath
+// (playback.go) anchors its symlink-containment check to: everything
+// beneath it that this package reads fixture/scenario data from (the
+// fixtures root, its category subdirectories, and requested fixture
+// names) must be checked for symlink escapes, but the module root itself
+// is the checked-out repository and not attacker-influenced fixture
+// content (#7957 review).
+func moduleRootDir() (string, error) {
 	dir, err := os.Getwd()
 	if err != nil {
 		return "", err
 	}
 	for {
 		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			candidate := filepath.Join(dir, rel)
-			if st, err := os.Stat(candidate); err == nil && st.IsDir() {
-				return candidate, nil
-			}
-			return "", fmt.Errorf("could not find %s under module root %s", rel, dir)
+			return dir, nil
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
@@ -177,5 +274,5 @@ func findModuleSubdir(rel string) (string, error) {
 		}
 		dir = parent
 	}
-	return "", fmt.Errorf("could not find go.mod while searching for %s", rel)
+	return "", fmt.Errorf("could not find go.mod while searching from %s", dir)
 }

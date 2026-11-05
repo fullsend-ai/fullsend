@@ -13,6 +13,7 @@ Feature: Base-composed harness dispatch
       slug: fullsend-ai-local-base
       model: opus
       image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
+      policy: policies/base.yaml
       """
     # Variant 1: local child with local base
     And a custom harness "local-child" with base "local-base" and:
@@ -31,6 +32,7 @@ Feature: Base-composed harness dispatch
       slug: fullsend-ai-remote-base
       model: opus
       image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
+      policy: policies/base.yaml
       """
     # Variant 2: local child with remote (URL) base
     And a custom harness "remote-base-child" with URL base "remote-base" and:
@@ -68,6 +70,7 @@ Feature: Base-composed harness dispatch
       slug: fullsend-ai-trigger-base
       model: opus
       image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
+      policy: policies/base.yaml
       trigger: >
         event.entity.kind == "work_item"
         && event.transition.kind == "label_changed"

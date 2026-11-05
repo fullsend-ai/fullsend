@@ -9,7 +9,6 @@ images/
 web/
 cloudflare_site/
 e2e/
-eval/
 experiments/
 docs/
 # Keep local credential artifacts out of the build context. They never

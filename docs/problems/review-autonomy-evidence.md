@@ -177,4 +177,10 @@ These are not proposed as immediate implementations -- the evidence corpus is st
 - Should change-type gates be repo-specific (configured per-repo like protected paths) or global (applied across all fullsend-managed repos)?
 - How should the evidence corpus interact with the [trustworthiness evidence](trustworthiness-evidence.md) portfolio model? Is review delta tracking a sixth evidence type, or a specialization of historical track record?
 - What is the false negative rate for positive evidence? When an agent "matches" human review, how do we know the human did not also miss something?
+- How should automated quality signals relate to this corpus? A
+  [Gemara lab](../spikes/2026-10-24-gemara-auto-merge.md) gated merges on an
+  LLM judge's pass rate over scored approvals. That is a methodological
+  reference, not a positive-evidence entry: judge agreement is not independent
+  human validation, and a successful protected merge does not establish that
+  the merged code was safe.
 - Does the agent's stale-finding repetition (known issue tracked by [#1013](https://github.com/fullsend-ai/fullsend/issues/1013), [#2959](https://github.com/fullsend-ai/fullsend/issues/2959), [#5007](https://github.com/fullsend-ai/fullsend/issues/5007), [#5265](https://github.com/fullsend-ai/fullsend/issues/5265)) contribute to the depth gap by consuming context window with repeated low-value findings?

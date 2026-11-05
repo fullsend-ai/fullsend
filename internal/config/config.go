@@ -5,9 +5,9 @@ import (
 	"path"
 	"regexp"
 	"slices"
-	"sort"
 	"strings"
 
+	"github.com/fullsend-ai/fullsend/internal/celtrigger"
 	"github.com/fullsend-ai/fullsend/internal/urlutil"
 	"gopkg.in/yaml.v3"
 )
@@ -42,6 +42,12 @@ var validConfigAgentName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
 // (ValidAgentNames) or matches a sourced entry in a parent layer; the
 // built-in keeps resolving through the agents-repo fallback.
 //
+// Trigger is a CEL boolean over the normalized event (ADR 0061). It decides
+// routing for the built-in review, retro, triage and prioritize agents only
+// (fullsend dispatch --route <agent>); CEL dispatch and the Jira poller keep
+// using the harness trigger:. An omitted or empty value inherits the parent
+// layer's.
+//
 // Subagents maps persona names to model references, controlling which
 // model each sub-agent persona runs on. The "default" key sets the
 // fallback for personas without an explicit entry. A nil *string value
@@ -57,12 +63,13 @@ type AgentEntry struct {
 	Model     string             `yaml:"model,omitempty"`
 	Effort    string             `yaml:"effort,omitempty"`
 	Subagents map[string]*string `yaml:"subagents,omitempty"`
+	Trigger   string             `yaml:"trigger,omitempty"`
 }
 
-// HasSettings reports whether the entry tunes runtime, model, effort
-// or subagents.
+// HasSettings reports whether the entry tunes runtime, model, effort,
+// subagents or trigger.
 func (a AgentEntry) HasSettings() bool {
-	return a.Runtime != "" || a.Model != "" || a.Effort != "" || len(a.Subagents) > 0
+	return a.Runtime != "" || a.Model != "" || a.Effort != "" || len(a.Subagents) > 0 || strings.TrimSpace(a.Trigger) != ""
 }
 
 // IsOverrideOnly reports whether the entry only tunes an agent defined
@@ -155,6 +162,8 @@ func (a AgentEntry) DerivedName() string {
 const (
 	// DefaultUpstreamRepo is the canonical fullsend repository for layered workflow calls.
 	DefaultUpstreamRepo = "fullsend-ai/fullsend"
+	// DefaultAgentsRepo is the canonical repository for upstream agent resources.
+	DefaultAgentsRepo = "fullsend-ai/agents"
 	// DefaultUpstreamRef is the default ref for layered upstream workflow calls.
 	DefaultUpstreamRef = "main"
 	// DefaultGHRunner is the default GitHub Actions runner image for scaffold workflows.
@@ -162,24 +171,12 @@ const (
 	// DefaultSandboxImage and DefaultCodeImage are the sandbox images
 	// `fullsend agent new` writes into a generated harness. They track the
 	// fleet's pins in fullsend-ai/agents (harness/triage.yaml and
-	// harness/code.yaml) and are repinned by hand on the same cadence as the
-	// fleet repin PRs. `agent new --image` overrides them.
-	DefaultSandboxImage = "ghcr.io/fullsend-ai/fullsend-sandbox@sha256:f8255971fec8a72a60adb20f501e55098f237e699dc829f0894647c0de2a19c2"
-	DefaultCodeImage    = "ghcr.io/fullsend-ai/fullsend-code@sha256:ea2a31f38ee80e2a9a898a898a289fe432aa882fa5a4046c3236ab8e2627d7e7"
+	// harness/code.yaml). Nothing updates them automatically: repin them by
+	// hand when a release repins the fleet. `agent new --image` overrides
+	// them.
+	DefaultSandboxImage = "ghcr.io/fullsend-ai/fullsend-sandbox@sha256:bcf8cd84a37623d761d38f2a6f51d20283f8798b7d3eeb9c509a2503c074bd55"
+	DefaultCodeImage    = "ghcr.io/fullsend-ai/fullsend-code@sha256:3055d4f52136a7c89fb8aa1976b468a5f9dd929c6be55fd6cd958e222c6e18ca"
 )
-
-// DispatchConfig configures how agent work is dispatched.
-type DispatchConfig struct {
-	Platform string `yaml:"platform"`
-	Mode     string `yaml:"mode,omitempty"`     // "oidc-mint"
-	MintURL  string `yaml:"mint_url,omitempty"` // informational, set when mode=oidc-mint
-}
-
-// InferenceConfig configures the inference provider used by agents
-// (org-mode config).
-type InferenceConfig struct {
-	Provider string `yaml:"provider"`
-}
 
 // PerRepoInferenceConfig groups inference backend settings for
 // per-repo configs. The Provider field identifies the inference
@@ -190,12 +187,25 @@ type PerRepoInferenceConfig struct {
 	Project     string `yaml:"project,omitempty"`
 	Region      string `yaml:"region,omitempty"`
 	WIFProvider string `yaml:"wif_provider,omitempty"`
+	// WIFAudience is the audience GitLab puts in the agent job's ID token
+	// when the WIF provider is an existing one that accepts a different
+	// audience than "fullsend". GitLab vertex-wif only; install time only.
+	WIFAudience string `yaml:"wif_audience,omitempty"`
+	// ServiceAccount is the email of a Google service account the GitLab
+	// agent job impersonates after the federated token exchange, for
+	// installs that cannot grant the federated principal project IAM roles.
+	// GitLab vertex-wif only; install time only.
+	ServiceAccount string `yaml:"service_account,omitempty"`
 	// OpenAI holds the OpenAI Workload Identity Federation identifiers
 	// (ADR 0092). They are not secrets: the mapping they name only
 	// trusts a GitHub OIDC token whose claims match, and the run prints
 	// them. The FULLSEND_OPENAI_* runner variables, when set, take
 	// precedence over this block.
 	OpenAI *OpenAIWIFConfig `yaml:"openai,omitempty"`
+	// Gateway is the inference gateway credential route (ADR 0137): a
+	// self-hosted gateway that validates the job's forge OIDC token. It
+	// layers field by field and has no runner-variable override.
+	Gateway *InferenceGatewayConfig `yaml:"gateway,omitempty"`
 }
 
 // OpenAIWIFConfig identifies the OpenAI Workload Identity provider and
@@ -263,55 +273,230 @@ type ReactionNotificationConfig struct {
 	Completion string `yaml:"completion,omitempty"`
 }
 
-// RepoDefaults holds default settings applied to all repos.
-type RepoDefaults struct {
-	Roles                    []string                  `yaml:"roles"`
-	Runtime                  string                    `yaml:"runtime,omitempty"`
-	MaxImplementationRetries int                       `yaml:"max_implementation_retries"`
-	AutoMerge                bool                      `yaml:"auto_merge"`
-	StatusNotifications      *StatusNotificationConfig `yaml:"status_notifications,omitempty"`
+// Authorization provider names accepted under authorization:.
+const (
+	// AuthProviderOwnersFile consults the repo-root Prow OWNERS file for
+	// GitHub events.
+	AuthProviderOwnersFile = "owners_file"
+	// AuthProviderJira configures actor authorization for Jira-sourced
+	// events (jira-poll input driver).
+	AuthProviderJira = "jira"
+)
+
+// Values of the jira authorization provider's labels: field, which picks
+// how a Jira label-added event is authorized.
+const (
+	// JiraLabelsEditors authorizes a Jira label-added event by Jira's own
+	// Edit Issues permission: whoever could add the label may trigger.
+	// This is the default when labels: is omitted.
+	JiraLabelsEditors = "jira_editors"
+	// JiraLabelsAllowlist checks the label author against the jira
+	// provider's write and triage lists, like a slash command.
+	JiraLabelsAllowlist = "allowlist"
+	// JiraLabelsProjectRoles resolves the label author's role from the
+	// Jira project role roster (needs the Administer Projects permission).
+	JiraLabelsProjectRoles = "project_roles"
+)
+
+// ValidJiraLabelModes returns the accepted values of the jira
+// authorization provider's labels: field, in documentation order.
+func ValidJiraLabelModes() []string {
+	return []string{JiraLabelsEditors, JiraLabelsAllowlist, JiraLabelsProjectRoles}
 }
 
-// RepoConfig holds per-repo configuration.
-// StatusNotifications is intentionally absent here — notification style is an
-// org-wide UX decision (consistent appearance across all repos), unlike roles
-// and auto_merge which are operationally per-repo.
-type RepoConfig struct {
-	Roles   []string `yaml:"roles,omitempty"`
-	Enabled bool     `yaml:"enabled"`
+// AuthorizationProvider identifies an opt-in authorization backend
+// that supplements the default collaborator-API permission check.
+//
+// Write, Triage, and Labels apply only to the jira provider: they map Jira
+// groups and account IDs to the Fullsend write and triage roles, and pick
+// the rule for Jira label-added events.
+type AuthorizationProvider struct {
+	Provider string         `yaml:"provider"`
+	Write    *JiraActorList `yaml:"write,omitempty"`
+	Triage   *JiraActorList `yaml:"triage,omitempty"`
+	Labels   string         `yaml:"labels,omitempty"`
 }
 
-// AllowTargets defines which orgs and repos agents may create issues in.
-type AllowTargets struct {
-	Orgs  []string `yaml:"orgs,omitempty"`
-	Repos []string `yaml:"repos,omitempty"`
+// JiraActorList names the Jira actors granted one Fullsend role by the
+// jira authorization provider. Groups are Jira group names (or group IDs);
+// accounts are Jira account IDs.
+type JiraActorList struct {
+	Groups   []string `yaml:"groups,omitempty"`
+	Accounts []string `yaml:"accounts,omitempty"`
 }
 
-// CreateIssuesConfig controls cross-repo issue creation by agents.
-type CreateIssuesConfig struct {
-	AllowTargets AllowTargets `yaml:"allow_targets"`
+// IsEmpty reports whether l lists no group and no account.
+func (l *JiraActorList) IsEmpty() bool {
+	return l == nil || (len(l.Groups) == 0 && len(l.Accounts) == 0)
 }
 
-// orgConfig is the top-level configuration for a fullsend organization.
-// Consumer packages should use the OrgConfigReader or OrgConfigWriter
-// interfaces rather than referencing this type directly.
-type orgConfig struct {
-	Version                string                `yaml:"version"`
-	KillSwitch             bool                  `yaml:"kill_switch,omitempty"`
-	Dispatch               DispatchConfig        `yaml:"dispatch"`
-	Inference              InferenceConfig       `yaml:"inference,omitempty"`
-	Defaults               RepoDefaults          `yaml:"defaults"`
-	Repos                  map[string]RepoConfig `yaml:"repos"`
-	Agents                 []AgentEntry          `yaml:"agents,omitempty"`
-	AllowedRemoteResources []string              `yaml:"allowed_remote_resources,omitempty"`
-	CreateIssues           *CreateIssuesConfig   `yaml:"create_issues,omitempty"`
+// HasJiraLists reports whether the jira provider sets a write: or triage:
+// list, even an empty one. When it does, the lists are authoritative for
+// Jira actors (an actor they do not name is denied) and the Jira project
+// role roster is not consulted for them.
+func (p *AuthorizationProvider) HasJiraLists() bool {
+	return p != nil && (p.Write != nil || p.Triage != nil)
 }
 
-// ValidRoles returns the set of agent roles accepted in `.fullsend`
-// `roles:` / `defaults.roles` config. This is intentionally narrower than
-// mintcore's canonical roles: mint-only dogfood roles (e.g. scribe) can be
-// registered with `fullsend mint add-role` before scaffold/workflow wiring
-// lands, and must not silently pass config validation.
+// EffectiveJiraLabels returns the jira provider's labels: rule, defaulting
+// to JiraLabelsEditors when it is unset or p is nil.
+func (p *AuthorizationProvider) EffectiveJiraLabels() string {
+	if p == nil || p.Labels == "" {
+		return JiraLabelsEditors
+	}
+	return p.Labels
+}
+
+// jiraProviderKeys are the keys allowed in a provider: jira entry.
+var jiraProviderKeys = map[string]bool{"provider": true, "write": true, "triage": true, "labels": true}
+
+// jiraActorListKeys are the keys allowed in a jira provider write:/triage:
+// mapping.
+var jiraActorListKeys = map[string]bool{"groups": true, "accounts": true}
+
+// UnmarshalYAML implements yaml.Unmarshaler. Per-repo config is decoded
+// without strict field checking, so a jira provider entry's keys (and its
+// write:/triage: keys) are checked here: a misspelled key would otherwise
+// be dropped silently and change who is authorized. The labels: value and
+// list entries are checked here too, because the jira-poll driver loads
+// config without running Validate.
+func (p *AuthorizationProvider) UnmarshalYAML(value *yaml.Node) error {
+	type plain AuthorizationProvider
+	value = resolveAlias(value)
+	if value.Kind == yaml.MappingNode {
+		// An aliased mapping key (? *anchor : value) is invisible to the
+		// key-name lookups below, which would let a misspelled field, a hidden
+		// provider or a null write:/triage: key slip past the checks.
+		if err := checkScalarKeys(value, "authorization"); err != nil {
+			return err
+		}
+	}
+	if value.Kind == yaml.MappingNode && mappingNode(value, "<<") != nil {
+		// A merge key can supply provider, labels or list keys from another
+		// mapping, bypassing the key checks below.
+		return managedFieldError(value, "authorization: merge keys (<<) are not supported in a provider entry")
+	}
+	if value.Kind == yaml.MappingNode && mappingValue(value, "provider") == AuthProviderJira {
+		if err := checkMappingKeys(value, jiraProviderKeys, "authorization: jira provider"); err != nil {
+			return err
+		}
+		for _, key := range []string{"write", "triage"} {
+			if v := mappingNode(value, key); v != nil && v.Kind == yaml.MappingNode {
+				if mappingNode(v, "<<") != nil {
+					return managedFieldError(v, "authorization: merge keys (<<) are not supported in jira provider "+key)
+				}
+				if err := checkMappingKeys(v, jiraActorListKeys, "authorization: jira provider "+key); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	if err := value.Decode((*plain)(p)); err != nil {
+		return err
+	}
+	if p.Provider == AuthProviderJira {
+		// A write:/triage: key that is present but null (bare "write:" or
+		// "write: null") decodes to a nil pointer. Keep it as an empty list
+		// so the key still counts as configured and denies everyone.
+		if p.Write == nil && yamlKeyIsNull(value, "write") {
+			p.Write = &JiraActorList{}
+		}
+		if p.Triage == nil && yamlKeyIsNull(value, "triage") {
+			p.Triage = &JiraActorList{}
+		}
+		if err := validateJiraProvider(*p); err != nil {
+			return fmt.Errorf("authorization: %w", err)
+		}
+	}
+	return nil
+}
+
+// yamlKeyIsNull reports whether mapping node n has key with an explicit
+// null value (empty or null scalar).
+func yamlKeyIsNull(n *yaml.Node, key string) bool {
+	v := mappingNode(n, key)
+	return v != nil && v.Kind == yaml.ScalarNode && v.Tag == "!!null"
+}
+
+// resolveAlias follows YAML aliases (*anchor) to the node they refer to.
+func resolveAlias(n *yaml.Node) *yaml.Node {
+	for n != nil && n.Kind == yaml.AliasNode {
+		n = n.Alias
+	}
+	return n
+}
+
+// mappingNode returns the value node for key in mapping node n, with any
+// alias resolved, or nil.
+func mappingNode(n *yaml.Node, key string) *yaml.Node {
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		if n.Content[i].Value == key {
+			return resolveAlias(n.Content[i+1])
+		}
+	}
+	return nil
+}
+
+// mappingValue returns the scalar value for key in mapping node n, or "".
+func mappingValue(n *yaml.Node, key string) string {
+	if v := mappingNode(n, key); v != nil && v.Kind == yaml.ScalarNode {
+		return v.Value
+	}
+	return ""
+}
+
+// checkScalarKeys rejects any key of mapping node n that is not a plain
+// scalar (an alias or a collection used as a key).
+func checkScalarKeys(n *yaml.Node, context string) error {
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		if k := n.Content[i]; k.Kind != yaml.ScalarNode {
+			return managedFieldError(k, context+": mapping keys must be plain scalars (aliases are not supported)")
+		}
+	}
+	return nil
+}
+
+// checkMappingKeys rejects any key of mapping node n not in allowed.
+func checkMappingKeys(n *yaml.Node, allowed map[string]bool, context string) error {
+	if err := checkScalarKeys(n, context); err != nil {
+		return err
+	}
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		k := n.Content[i]
+		if !allowed[k.Value] {
+			return managedFieldError(k, fmt.Sprintf("%s: unknown field %q", context, k.Value))
+		}
+	}
+	return nil
+}
+
+// validateJiraProvider checks a provider: jira entry's labels: value and
+// list entries.
+func validateJiraProvider(p AuthorizationProvider) error {
+	if p.Labels != "" && !slices.Contains(ValidJiraLabelModes(), p.Labels) {
+		return fmt.Errorf("jira provider: invalid labels %q: must be one of %s", p.Labels, strings.Join(ValidJiraLabelModes(), ", "))
+	}
+	for _, l := range []struct {
+		name string
+		list *JiraActorList
+	}{{"write", p.Write}, {"triage", p.Triage}} {
+		if l.list == nil {
+			continue
+		}
+		for _, g := range l.list.Groups {
+			if strings.TrimSpace(g) == "" {
+				return fmt.Errorf("jira provider %s.groups: empty group name", l.name)
+			}
+		}
+		for _, a := range l.list.Accounts {
+			if strings.TrimSpace(a) == "" {
+				return fmt.Errorf("jira provider %s.accounts: empty account ID", l.name)
+			}
+		}
+	}
+	return nil
+}
+
 // ValidConfigAgentName reports whether name is acceptable as an agents:
 // entry name. Exported so a caller that generates an agent can apply the
 // same rule before writing anything, rather than discovering the mismatch
@@ -320,6 +505,11 @@ func ValidConfigAgentName(name string) bool {
 	return validConfigAgentName.MatchString(name)
 }
 
+// ValidRoles returns the set of agent roles accepted in `.fullsend`
+// `roles:` config. This is intentionally narrower than
+// mintcore's canonical roles: mint-only dogfood roles (e.g. scribe) can be
+// registered with `fullsend mint add-role` before scaffold/workflow wiring
+// lands, and must not silently pass config validation.
 func ValidRoles() []string {
 	return []string{"fullsend", "triage", "coder", "review", "fix", "retro", "prioritize", "e2e"}
 }
@@ -329,12 +519,18 @@ func ValidProviders() []string {
 	return []string{"vertex"}
 }
 
-// ValidRuntimes returns the set of recognized agent runtimes. "pi" (#6464)
-// and "codex" (#6920) are both opt-in per repo, per agent, or as a
-// repos.yaml default;
-// "dummy" and "dummy-playback" are for behaviour test orgs only.
+// ValidRuntimes returns the set of recognized agent runtimes. "pi" (#6464),
+// "codex" (#6920), and "opencode" (#6035, unbound-force#510) are opt-in per
+// repo, per agent, or as a repos.yaml default; "dummy" and "dummy-playback"
+// are for behaviour tests only.
+//
+// NOTE: opencode does not yet provide sandbox hooks for write-capable agents
+// (code, fix). The exit-97 guard is keyed on security.enabled, not agent role:
+// with security enabled it requires the adapter, while disabling security does
+// not block write-capable roles. Role-aware enforcement is deferred to
+// unbound-force#515 with the hook adapter.
 func ValidRuntimes() []string {
-	return []string{"claude", "pi", "codex", "dummy", "dummy-playback"}
+	return []string{"claude", "pi", "codex", "opencode", "dummy", "dummy-playback"}
 }
 
 // validSubagentKey matches a sub-agent persona key: one or more segments
@@ -425,6 +621,11 @@ func ValidEffortLevels() []string { return slices.Clone(validEffortLevels) }
 // ValidEffort reports whether level is an accepted effort value.
 func ValidEffort(level string) bool { return slices.Contains(validEffortLevels, level) }
 
+// ValidAuthorizationProviders returns the set of recognized authorization provider names.
+func ValidAuthorizationProviders() []string {
+	return []string{AuthProviderOwnersFile, AuthProviderJira}
+}
+
 // DefaultAgentRoles returns the standard set of agent roles installed
 // when no custom roles are specified. The fix stage reuses the coder
 // app (role: coder) so it does not need a separate app or PEM.
@@ -476,132 +677,6 @@ func EnsureDefaultAllowedRemoteResources(existing []string) []string {
 	return result
 }
 
-// NewOrgConfig creates a new orgConfig with sensible defaults.
-// The returned OrgConfigWriter provides full read-write access.
-func NewOrgConfig(allRepos, enabledRepos, roles []string, inferenceProvider, org string) OrgConfigWriter {
-	repos := make(map[string]RepoConfig, len(allRepos))
-	for _, r := range allRepos {
-		repos[r] = RepoConfig{
-			Enabled: slices.Contains(enabledRepos, r),
-		}
-	}
-
-	cfg := &orgConfig{
-		Version: "1",
-		Dispatch: DispatchConfig{
-			Platform: "github-actions",
-		},
-		Defaults: RepoDefaults{
-			Roles:                    roles,
-			Runtime:                  "claude",
-			MaxImplementationRetries: 2,
-			AutoMerge:                false,
-		},
-		Repos:                  repos,
-		AllowedRemoteResources: DefaultAllowedRemoteResources(),
-	}
-	if inferenceProvider != "" {
-		cfg.Inference = InferenceConfig{Provider: inferenceProvider}
-	}
-	if org != "" {
-		cfg.CreateIssues = &CreateIssuesConfig{
-			AllowTargets: AllowTargets{
-				Orgs:  []string{org},
-				Repos: []string{"fullsend-ai/fullsend"},
-			},
-		}
-	}
-	return cfg
-}
-
-// ParseOrgConfig parses YAML bytes into an OrgConfigReader.
-func ParseOrgConfig(data []byte) (OrgConfigReader, error) {
-	var cfg orgConfig
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("parsing org config: %w", err)
-	}
-	return &cfg, nil
-}
-
-// ParseOrgConfigWriter parses YAML bytes into an OrgConfigWriter
-// for callers that need to modify the config after parsing.
-func ParseOrgConfigWriter(data []byte) (OrgConfigWriter, error) {
-	var cfg orgConfig
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("parsing org config: %w", err)
-	}
-	return &cfg, nil
-}
-
-const configHeader = `# fullsend organization configuration
-# https://github.com/fullsend-ai/fullsend
-#
-# This file is managed by fullsend. Manual edits may be overwritten.
-`
-
-// Marshal serializes the orgConfig to YAML with a descriptive header comment.
-func (c *orgConfig) Marshal() ([]byte, error) {
-	body, err := yaml.Marshal(c)
-	if err != nil {
-		return nil, fmt.Errorf("marshaling org config: %w", err)
-	}
-	return []byte(configHeader + string(body)), nil
-}
-
-// Validate checks the orgConfig for structural correctness.
-func (c *orgConfig) Validate() error {
-	if c.Version != "1" {
-		return fmt.Errorf("unsupported version %q: must be \"1\"", c.Version)
-	}
-	if c.Dispatch.Platform != "github-actions" {
-		return fmt.Errorf("unsupported platform %q: must be \"github-actions\"", c.Dispatch.Platform)
-	}
-	if c.Dispatch.Mode != "" && c.Dispatch.Mode != "oidc-mint" {
-		return fmt.Errorf("unsupported dispatch mode %q: must be \"oidc-mint\"", c.Dispatch.Mode)
-	}
-	if c.Defaults.MaxImplementationRetries < 0 {
-		return fmt.Errorf("max_implementation_retries must be >= 0, got %d", c.Defaults.MaxImplementationRetries)
-	}
-	valid := ValidRoles()
-	seen := make(map[string]bool, len(c.Defaults.Roles))
-	for _, role := range c.Defaults.Roles {
-		if !slices.Contains(valid, role) {
-			return fmt.Errorf("invalid role %q: must be one of %s", role, strings.Join(valid, ", "))
-		}
-		if seen[role] {
-			return fmt.Errorf("duplicate role %q in defaults.roles", role)
-		}
-		seen[role] = true
-	}
-	if c.Inference.Provider != "" {
-		validProviders := ValidProviders()
-		if !slices.Contains(validProviders, c.Inference.Provider) {
-			return fmt.Errorf("invalid inference provider %q: must be one of %s", c.Inference.Provider, strings.Join(validProviders, ", "))
-		}
-	}
-	if rt := c.Defaults.Runtime; rt != "" {
-		validRuntimes := ValidRuntimes()
-		if !slices.Contains(validRuntimes, rt) {
-			return fmt.Errorf("invalid runtime %q: must be one of %s", rt, strings.Join(validRuntimes, ", "))
-		}
-	}
-	if err := validateStatusNotifications(c.Defaults.StatusNotifications); err != nil {
-		return err
-	}
-	if err := ValidateAgentEntries(c.Agents, c.AllowedRemoteResources); err != nil {
-		return err
-	}
-	if err := validateCreateIssues(c.CreateIssues); err != nil {
-		return err
-	}
-	return nil
-}
-
-// ValidateAgentEntries checks agent entries for structural correctness.
-// Uses urlutil.IsURL, urlutil.ParseIntegrityHash, and
-// urlutil.MatchingAllowedPrefixInList for consistency with runtime
-// resolution (case-insensitive scheme, percent-decoding, dot-segment
-// cleaning).
 // validateAgentSettings checks an entry's runtime, model, effort and
 // subagents values.
 func validateAgentSettings(i int, entry AgentEntry) error {
@@ -618,6 +693,9 @@ func validateAgentSettings(i int, entry AgentEntry) error {
 	if entry.Effort != "" && !ValidEffort(entry.Effort) {
 		return fmt.Errorf("agents[%d] (%s): invalid effort %q: must be one of %s", i, label, entry.Effort, strings.Join(ValidEffortLevels(), ", "))
 	}
+	if err := celtrigger.Validate(entry.Trigger); err != nil {
+		return fmt.Errorf("agents[%d] (%s): invalid trigger: %w", i, label, err)
+	}
 	for key, val := range entry.Subagents {
 		if !ValidSubagentKey(key) {
 			return fmt.Errorf("agents[%d] (%s): invalid subagent key %q: must be lowercase alphanumeric segments joined by hyphens (max 64 chars), or \"default\"", i, label, key)
@@ -629,7 +707,33 @@ func validateAgentSettings(i int, entry AgentEntry) error {
 	return nil
 }
 
+// ValidateAgentEntries validates a complete, self-contained agent list —
+// a per-repo config with its full parent chain resolved — enforcing both
+// the allowlist check and the compiled-in-name requirement.
+// See validateAgentEntries for the relaxed checks used during repos.yaml
+// config overlay validation (ADR 0122).
 func ValidateAgentEntries(agents []AgentEntry, allowlist []string) error {
+	return validateAgentEntries(agents, allowlist, true, true)
+}
+
+// validateAgentEntries is ValidateAgentEntries with two checks made
+// conditional for repos.yaml config overlay validation (ADR 0122), where
+// the resolved allowlist or the parent's registered agents may not be
+// known yet:
+//
+//   - enforceAllowlist: when false, a URL-sourced entry's prefix is not
+//     checked against allowlist (used for a single repos.yaml config
+//     layer, before the layers that may supply allowed_remote_resources
+//     are merged).
+//   - requireBuiltinName: when false, an override-only entry (no source)
+//     is not required to name a compiled-in agent (it may tune a custom
+//     agent registered in config.base.yaml, unresolved until that layer
+//     is applied).
+//
+// Both are true for ValidateAgentEntries, which validates a complete,
+// self-contained agent list (a per-repo config with its full parent
+// chain resolved).
+func validateAgentEntries(agents []AgentEntry, allowlist []string, enforceAllowlist, requireBuiltinName bool) error {
 	// seen tracks agent names for duplicate detection. Each state
 	// (enabled/disabled) is tracked independently so that exactly one
 	// disable-then-enable or enable-then-disable pair is accepted while
@@ -674,7 +778,7 @@ func ValidateAgentEntries(agents []AgentEntry, allowlist []string) error {
 			// merge (the merged entry carries the parent's source), so by the
 			// time an entry reaches validation without one it must be built in.
 			if !entry.HasSettings() {
-				return fmt.Errorf("agents[%d]: enabled agent entry must have a source (or, to tune a built-in agent, a name plus runtime, model, effort or subagents)", i)
+				return fmt.Errorf("agents[%d]: enabled agent entry must have a source (or, to tune a built-in agent, a name plus runtime, model, effort, subagents or trigger)", i)
 			}
 			if entry.Name == "" {
 				return fmt.Errorf("agents[%d]: agent entry without a source must name the agent it tunes", i)
@@ -683,7 +787,7 @@ func ValidateAgentEntries(agents []AgentEntry, allowlist []string) error {
 				return fmt.Errorf("agents[%d] (%s): name is invalid, must start with alphanumeric and contain only [a-zA-Z0-9_-]", i, entry.Name)
 			}
 			lowerName := strings.ToLower(entry.Name)
-			if !slices.Contains(ValidAgentNames(), lowerName) {
+			if requireBuiltinName && !slices.Contains(ValidAgentNames(), lowerName) {
 				hint := ""
 				if suggestion, ok := roleAliasHints[lowerName]; ok {
 					hint = fmt.Sprintf(" (did you mean %q?)", suggestion)
@@ -726,7 +830,7 @@ func ValidateAgentEntries(agents []AgentEntry, allowlist []string) error {
 			if !hasHash {
 				return fmt.Errorf("agents[%d] (%s): URL source must include a valid #sha256=<64-hex-char> integrity fragment", i, name)
 			}
-			if urlutil.MatchingAllowedPrefixInList(cleanURL, allowlist) == "" {
+			if enforceAllowlist && urlutil.MatchingAllowedPrefixInList(cleanURL, allowlist) == "" {
 				return fmt.Errorf("agents[%d] (%s): URL %q is not covered by allowed_remote_resources", i, name, cleanURL)
 			}
 		} else if strings.HasPrefix(strings.ToLower(entry.Source), "http://") {
@@ -782,35 +886,6 @@ func validateNotificationValue(field, val string, allowed []string, description 
 	return nil
 }
 
-// EnabledRepos returns a sorted list of repo names where Enabled is true.
-func (c *orgConfig) EnabledRepos() []string {
-	var enabled []string
-	for name, rc := range c.Repos {
-		if rc.Enabled {
-			enabled = append(enabled, name)
-		}
-	}
-	sort.Strings(enabled)
-	return enabled
-}
-
-// DisabledRepos returns a sorted list of repo names where Enabled is false.
-func (c *orgConfig) DisabledRepos() []string {
-	var disabled []string
-	for name, rc := range c.Repos {
-		if !rc.Enabled {
-			disabled = append(disabled, name)
-		}
-	}
-	sort.Strings(disabled)
-	return disabled
-}
-
-// DefaultRoles returns the default roles configured for the organization.
-func (c *orgConfig) DefaultRoles() []string {
-	return c.Defaults.Roles
-}
-
 // perRepoConfig holds configuration for per-repo installation mode.
 // Stored in .fullsend/config.yaml within the target repository.
 // Consumer packages should use the PerRepoConfigReader or ConfigWriter
@@ -821,18 +896,22 @@ func (c *orgConfig) DefaultRoles() []string {
 // when the local value is unset. The terminal parent is perRepoDefaults,
 // which returns compiled-in code defaults.
 type perRepoConfig struct {
-	// omitempty so unset version is not marshaled (unlike orgConfig,
-	// where version is always required). This allows the fallback
-	// chain to inherit version from the parent layer.
+	// omitempty so unset version is not marshaled. This allows the
+	// fallback chain to inherit version from the parent layer.
 	Version string `yaml:"version,omitempty"`
 	Forge   string `yaml:"forge,omitempty"`
-	// Tracker is the default issue tracker backend (github, gitlab, or
-	// jira) for `fullsend issues` commands' --tracker flag. Distinct
-	// from Forge, which is the repo's hosting platform — a repo can be
-	// hosted on GitHub but track issues in Jira.
-	Tracker    string `yaml:"tracker,omitempty"`
-	KillSwitch *bool  `yaml:"kill_switch,omitempty"`
-	Runtime    string `yaml:"runtime,omitempty"`
+	// Tracker is the single canonical issue-tracker setting: a
+	// provider-discriminated mapping (github, gitlab, or jira, at most
+	// one) holding that provider's settings, including the cross-project
+	// issue destinations agents may use (allowed_targets). The provider
+	// present is the default backend for `fullsend issues` commands'
+	// --tracker flag. Distinct from Forge, which is the repo's hosting
+	// platform — a repo can be hosted on GitHub but track issues in Jira.
+	// nil falls through to parent; a set value replaces the parent's
+	// whole mapping. The legacy scalar form (tracker: jira) is rejected.
+	Tracker    *TrackingConfig `yaml:"tracker,omitempty"`
+	KillSwitch *bool           `yaml:"kill_switch,omitempty"`
+	Runtime    string          `yaml:"runtime,omitempty"`
 
 	// KeepHistory controls whether sticky comment updates append the
 	// previous body as a collapsed "Previous run" <details> block. When
@@ -847,13 +926,13 @@ type perRepoConfig struct {
 	// resource prefixes. MarshalYAML preserves the nil-vs-empty
 	// distinction: nil (unset) is omitted, empty (deny-all) is
 	// marshaled as `allowed_remote_resources: []`.
-	AllowedRemoteResources []string            `yaml:"allowed_remote_resources,omitempty"`
-	CreateIssues           *CreateIssuesConfig `yaml:"create_issues,omitempty"`
+	AllowedRemoteResources []string                `yaml:"allowed_remote_resources,omitempty"`
+	Authorization          []AuthorizationProvider `yaml:"authorization,omitempty"`
 	// Notifications backs the StatusNotifications() accessor. Named
-	// distinctly from the method (unlike CreateIssues/IssueCreationConfig)
-	// because "StatusNotifications" is the established accessor name
-	// shared with orgConfig via ConfigReader, and Go forbids a field and
-	// method sharing a name on the same type.
+	// distinctly from the method (unlike Tracker/IssueTracking)
+	// because "StatusNotifications" is the established ConfigReader
+	// accessor name, and Go forbids a field and method sharing a name on
+	// the same type.
 	Notifications *StatusNotificationConfig `yaml:"status_notifications,omitempty"`
 
 	// Mint URL for token minting (ADR 0069 Decision 1).
@@ -866,13 +945,43 @@ type perRepoConfig struct {
 
 	// Models groups model configuration. Currently only aliases — per-key
 	// overrides of fullsend's pinned alias table (#6882, #6527 item 2).
-	// Per-repo only (ADR 0044); not added to org-mode config.
 	Models *ModelsConfig `yaml:"models,omitempty"`
 
 	// parent is the next layer in the fallback chain. Getters consult
 	// parent when the local field is unset. Excluded from YAML
 	// serialization so Marshal emits only locally-set values.
 	parent PerRepoConfigReader `yaml:"-"`
+
+	// legacyCreateIssues records that the parsed YAML carried the removed
+	// top-level create_issues block, so validation can reject it instead
+	// of silently ignoring it. It is never serialized.
+	legacyCreateIssues bool `yaml:"-"`
+}
+
+// unmarshalPerRepo decodes per-repo config YAML into cfg and records a
+// leftover create_issues block (see legacyCreateIssues).
+func unmarshalPerRepo(data []byte, cfg *perRepoConfig) error {
+	if err := yaml.Unmarshal(data, cfg); err != nil {
+		return err
+	}
+	has, err := hasLegacyCreateIssues(data)
+	if err != nil {
+		return err
+	}
+	cfg.legacyCreateIssues = has
+	return nil
+}
+
+// hasLegacyCreateIssues reports whether the YAML carries the removed
+// top-level create_issues key.
+func hasLegacyCreateIssues(data []byte) (bool, error) {
+	var probe struct {
+		CreateIssues *yaml.Node `yaml:"create_issues"`
+	}
+	if err := yaml.Unmarshal(data, &probe); err != nil {
+		return false, err
+	}
+	return probe.CreateIssues != nil, nil
 }
 
 const perRepoConfigHeader = `# fullsend per-repo configuration
@@ -897,11 +1006,11 @@ func NewPerRepoConfig(roles []string, targetRepo string) PerRepoConfigWriter {
 		parent:                 &perRepoDefaults{},
 	}
 	if targetRepo != "" {
-		cfg.CreateIssues = &CreateIssuesConfig{
-			AllowTargets: AllowTargets{
-				Repos: []string{targetRepo, "fullsend-ai/fullsend"},
-			},
-		}
+		// The target repository itself is implicitly allowed by the
+		// triage and retro post-scripts, so only the upstream
+		// cross-repo permissions (retro proposals, triage prerequisites)
+		// need explicit entries (#8218, #8504).
+		cfg.Tracker = DefaultIssueTracking(TrackingProviderGitHub)
 	}
 	return cfg
 }
@@ -916,104 +1025,21 @@ func NewEmptyPerRepoOverlay() PerRepoConfigWriter {
 	}
 }
 
-// NewPerRepoConfigFromOrg creates a per-repo config by mapping portable
-// fields from an org config. Per-repo role overrides (repos.<name>.roles)
-// take precedence over defaults.roles. Non-portable fields
-// (max_implementation_retries, auto_merge) are not carried over —
-// callers should warn separately.
-func NewPerRepoConfigFromOrg(orgCfg OrgConfigReader, repoName, targetRepo string) PerRepoConfigWriter {
-	// Determine roles: per-repo overrides take precedence over defaults.
-	roles := orgCfg.OrgRepoDefaults().Roles
-	if repoMap := orgCfg.RepoMap(); repoMap != nil {
-		if rc, ok := repoMap[repoName]; ok && len(rc.Roles) > 0 {
-			roles = rc.Roles
-		}
-	}
-	if roles == nil {
-		roles = PerRepoDefaultRoles()
-	} else {
-		rolesCopy := make([]string, len(roles))
-		copy(rolesCopy, roles)
-		roles = rolesCopy
-	}
-
-	cfg := &perRepoConfig{
-		Version: "1",
-		Roles:   roles,
-		parent:  &perRepoDefaults{},
-	}
-
-	// Agents: deep-copy org agent entries (AgentEntry.Enabled is *bool).
-	if agents := orgCfg.AgentEntries(); len(agents) > 0 {
-		copied := make([]AgentEntry, len(agents))
-		copy(copied, agents)
-		for i, a := range copied {
-			if a.Enabled != nil {
-				e := *a.Enabled
-				copied[i].Enabled = &e
-			}
-		}
-		cfg.Agents = copied
-	}
-
-	// AllowedRemoteResources: copy from org config with defaults ensured.
-	if arr := orgCfg.AllowedResources(); len(arr) > 0 {
-		cfg.AllowedRemoteResources = EnsureDefaultAllowedRemoteResources(arr)
-	} else {
-		cfg.AllowedRemoteResources = DefaultAllowedRemoteResources()
-	}
-
-	// CreateIssues: deep-copy from org config to avoid pointer aliasing.
-	if ci := orgCfg.IssueCreationConfig(); ci != nil {
-		ciCopy := *ci
-		ciCopy.AllowTargets = AllowTargets{
-			Orgs:  append([]string(nil), ci.AllowTargets.Orgs...),
-			Repos: append([]string(nil), ci.AllowTargets.Repos...),
-		}
-		cfg.CreateIssues = &ciCopy
-	} else if targetRepo != "" {
-		cfg.CreateIssues = &CreateIssuesConfig{
-			AllowTargets: AllowTargets{
-				Repos: []string{targetRepo, "fullsend-ai/fullsend"},
-			},
-		}
-	}
-
-	// KillSwitch: only set when active (false is the default).
-	if orgCfg.IsKillSwitchActive() {
-		ks := true
-		cfg.KillSwitch = &ks
-	}
-
-	// Runtime: copy when explicitly set.
-	if rt := orgCfg.OrgRepoDefaults().Runtime; rt != "" {
-		cfg.Runtime = rt
-	}
-
-	// StatusNotifications: deep-copy from org config to avoid pointer aliasing.
-	if sn := orgCfg.StatusNotifications(); sn != nil {
-		snCopy := *sn
-		cfg.Notifications = &snCopy
-	}
-
-	return cfg
-}
-
 // ParsePerRepoConfig parses YAML bytes into a PerRepoConfigReader.
 func ParsePerRepoConfig(data []byte) (PerRepoConfigReader, error) {
 	var cfg perRepoConfig
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	if err := unmarshalPerRepo(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parsing per-repo config: %w", err)
 	}
 	cfg.parent = &perRepoDefaults{}
 	return &cfg, nil
 }
 
-// ParsePerRepoConfigWriter parses YAML bytes into a ConfigWriter for
-// callers that need to modify the config after parsing.
-func ParsePerRepoConfigWriter(data []byte) (ConfigWriter, error) {
+// ParsePerRepoConfigWriter parses YAML bytes into a PerRepoConfigWriter
+// for callers that need to modify the config after parsing.
+func ParsePerRepoConfigWriter(data []byte) (PerRepoConfigWriter, error) {
 	var cfg perRepoConfig
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	if err := unmarshalPerRepo(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parsing per-repo config: %w", err)
 	}
 	cfg.parent = &perRepoDefaults{}
@@ -1042,14 +1068,14 @@ func (c *perRepoConfig) Marshal() ([]byte, error) {
 type perRepoConfigMarshal struct {
 	Version                string                    `yaml:"version,omitempty"`
 	Forge                  string                    `yaml:"forge,omitempty"`
-	Tracker                string                    `yaml:"tracker,omitempty"`
+	Tracker                *TrackingConfig           `yaml:"tracker,omitempty"`
 	KillSwitch             *bool                     `yaml:"kill_switch,omitempty"`
 	Runtime                string                    `yaml:"runtime,omitempty"`
 	KeepHistory            *bool                     `yaml:"keep_history,omitempty"`
 	Roles                  *[]string                 `yaml:"roles,omitempty"`
 	Agents                 []AgentEntry              `yaml:"agents,omitempty"`
 	AllowedRemoteResources *[]string                 `yaml:"allowed_remote_resources,omitempty"`
-	CreateIssues           *CreateIssuesConfig       `yaml:"create_issues,omitempty"`
+	Authorization          *[]AuthorizationProvider  `yaml:"authorization,omitempty"`
 	StatusNotifications    *StatusNotificationConfig `yaml:"status_notifications,omitempty"`
 	MintURL                string                    `yaml:"mint_url,omitempty"`
 	Inference              *PerRepoInferenceConfig   `yaml:"inference,omitempty"`
@@ -1057,10 +1083,11 @@ type perRepoConfigMarshal struct {
 }
 
 // MarshalYAML implements yaml.Marshaler to preserve the nil-vs-empty
-// distinction for Roles and AllowedRemoteResources through YAML
-// roundtrips. nil (unset) is omitted so the field inherits from
-// parent; an explicit empty slice is marshaled as an empty YAML
-// sequence (e.g. `roles: []`, `allowed_remote_resources: []`).
+// distinction for Roles, AllowedRemoteResources, and Authorization
+// through YAML roundtrips. nil (unset) is omitted so the field
+// inherits from parent; an explicit empty slice is marshaled as an
+// empty YAML sequence (e.g. `roles: []`, `allowed_remote_resources: []`,
+// `authorization: []`).
 func (c *perRepoConfig) MarshalYAML() (interface{}, error) {
 	h := perRepoConfigMarshal{
 		Version:             c.Version,
@@ -1070,7 +1097,6 @@ func (c *perRepoConfig) MarshalYAML() (interface{}, error) {
 		Runtime:             c.Runtime,
 		KeepHistory:         c.KeepHistory,
 		Agents:              c.Agents,
-		CreateIssues:        c.CreateIssues,
 		StatusNotifications: c.Notifications,
 		MintURL:             c.MintURL,
 	}
@@ -1087,6 +1113,9 @@ func (c *perRepoConfig) MarshalYAML() (interface{}, error) {
 	if c.AllowedRemoteResources != nil {
 		h.AllowedRemoteResources = &c.AllowedRemoteResources
 	}
+	if c.Authorization != nil {
+		h.Authorization = &c.Authorization
+	}
 	return &h, nil
 }
 
@@ -1095,6 +1124,73 @@ func (c *perRepoConfig) MarshalYAML() (interface{}, error) {
 // AllowedResources) are used where validation requires the full
 // effective config.
 func (c *perRepoConfig) Validate() error {
+	if err := c.validateLocalFields(); err != nil {
+		return err
+	}
+	// Agents are validated against the resolved allowlist (including
+	// parent resources) so that URL agents covered by a parent or
+	// default prefix pass validation.
+	// The merged set is validated so an overlay entry that only tunes an
+	// agent registered in the base layer sees that agent's source.
+	return validateAgentEntries(c.AgentEntries(), c.AllowedResources(), true, true)
+}
+
+// ValidateGlobal runs Validate's checks except the agents[] entry
+// validation, so a caller that validates agent entries itself (for
+// example per agent, with ValidateAgentEntries) can still reject an
+// invalid configuration file.
+func (c *perRepoConfig) ValidateGlobal() error {
+	return c.validateLocalFields()
+}
+
+// ValidateAuthorization checks the authorization: providers: known provider
+// names, no duplicates, and the jira-only fields only on the jira provider.
+// Validate runs it, and runtime config loaders (the jira-poll driver and
+// harness dispatch) run it through ValidateRuntimeAuthorization, because
+// they load config without calling Validate and a mistyped provider would
+// otherwise be ignored while the permissive Jira defaults apply.
+func (c *perRepoConfig) ValidateAuthorization() error {
+	validAuthProviders := ValidAuthorizationProviders()
+	seenProviders := make(map[string]bool, len(c.Authorization))
+	for i, p := range c.Authorization {
+		if !slices.Contains(validAuthProviders, p.Provider) {
+			return fmt.Errorf("authorization[%d]: invalid provider %q: must be one of %s", i, p.Provider, strings.Join(validAuthProviders, ", "))
+		}
+		if seenProviders[p.Provider] {
+			return fmt.Errorf("authorization[%d]: duplicate provider %q", i, p.Provider)
+		}
+		seenProviders[p.Provider] = true
+		if p.Provider == AuthProviderJira {
+			if err := validateJiraProvider(p); err != nil {
+				return fmt.Errorf("authorization[%d]: %w", i, err)
+			}
+		} else if p.Write != nil || p.Triage != nil || p.Labels != "" {
+			return fmt.Errorf("authorization[%d]: write, triage and labels are only valid for provider %q", i, AuthProviderJira)
+		}
+	}
+	return nil
+}
+
+// ValidateRuntimeAuthorization runs the authorization provider checks on a
+// config loaded with LoadConfig. Readers that do not carry authorization
+// providers pass trivially.
+func ValidateRuntimeAuthorization(r ConfigReader) error {
+	if v, ok := r.(interface{ ValidateAuthorization() error }); ok {
+		return v.ValidateAuthorization()
+	}
+	return nil
+}
+
+// validateLocalFields checks the fields that do not need a resolved
+// parent chain: version, roles, tracker, runtime,
+// status_notifications, inference provider, authorization providers,
+// and model aliases. It is split out of Validate so a repos.yaml config
+// managed-configuration layer (ADR 0122) can be checked without pulling in
+// the agent-allowlist / override-only-custom-agent checks below, which need
+// information (the other repos.yaml config layers, config.base.yaml) that isn't
+// resolved yet at every point a managed block is validated — see
+// ValidateManagedLayer and ValidateMergedManaged.
+func (c *perRepoConfig) validateLocalFields() error {
 	// Version: empty means "inherit from parent"; non-empty must be "1".
 	if c.Version != "" && c.Version != "1" {
 		return fmt.Errorf("unsupported version %q: must be \"1\"", c.Version)
@@ -1114,15 +1210,10 @@ func (c *perRepoConfig) Validate() error {
 			seen[role] = true
 		}
 	}
-	// Agents are validated against the resolved allowlist (including
-	// parent resources) so that URL agents covered by a parent or
-	// default prefix pass validation.
-	// The merged set is validated so an overlay entry that only tunes an
-	// agent registered in the base layer sees that agent's source.
-	if err := ValidateAgentEntries(c.AgentEntries(), c.AllowedResources()); err != nil {
-		return err
+	if c.legacyCreateIssues {
+		return errLegacyCreateIssues
 	}
-	if err := validateCreateIssues(c.CreateIssues); err != nil {
+	if err := validateTracking(c.Tracker); err != nil {
 		return err
 	}
 	if rt := c.Runtime; rt != "" {
@@ -1140,13 +1231,66 @@ func (c *perRepoConfig) Validate() error {
 			return fmt.Errorf("invalid inference provider %q: must be one of %s", c.Inference.Provider, strings.Join(validProviders, ", "))
 		}
 	}
-	// Validate the merged view, as ValidateAgentEntries does above: a bad
-	// key in config.base.yaml must not slip through because the overlay
-	// omits models:.
-	if err := ValidateModelAliases(c.ConfigModelAliases()); err != nil {
+	if c.Inference != nil && c.Inference.Gateway != nil {
+		if err := c.Inference.Gateway.Validate(); err != nil {
+			return err
+		}
+	}
+	if err := c.ValidateAuthorization(); err != nil {
 		return err
 	}
-	return nil
+	// Validate the merged view, as ValidateAgentEntries does above: a bad
+	// key in config.base.yaml must not slip through because the overlay
+	// omits models:. Currently the parent chain never actually carries a
+	// resolved config.base.yaml at any Validate call site (the overlay
+	// file is validated via ValidateMergedManaged before it is written),
+	// so this only ever sees this layer's own aliases — but it is safe to run
+	// unconditionally: with no parent contribution there is nothing it
+	// could wrongly reject.
+	return ValidateModelAliases(c.ConfigModelAliases())
+}
+
+// ValidateManagedLayer validates a single repos.yaml managed-configuration
+// layer (defaults.config, github.config, gitlab.config, or one
+// repository's config block, ADR 0122) in isolation, before the layers are
+// merged. It runs the same locally-set field checks as Validate, plus
+// structural checks on this layer's own agent entries (name format,
+// duplicate names, URL scheme and integrity hash) — but it does not
+// check a URL agent against an allowlist (another layer may supply the
+// allowed_remote_resources prefix) and does not require an override-only
+// entry (no source) to name a compiled-in agent (it may tune a custom
+// agent registered in config.base.yaml, which this layer cannot see).
+// Those two checks run in ValidateMergedManaged once the layers are
+// merged.
+func ValidateManagedLayer(w PerRepoConfigWriter) error {
+	c := asPerRepo(w)
+	if c == nil {
+		return nil
+	}
+	if err := c.validateLocalFields(); err != nil {
+		return err
+	}
+	return validateAgentEntries(c.AgentEntries(), c.AllowedResources(), false, false)
+}
+
+// ValidateMergedManaged validates a repos.yaml managed configuration
+// (ADR 0122) after defaults.config, the platform config, and the
+// repository config have been merged (mergeManagedConfig). The resolved
+// allowlist is now correct, so
+// a URL-sourced agent entry is checked against it; an override-only entry
+// is still not required to name a compiled-in agent, since
+// config.base.yaml — which may register the agent it tunes — is not
+// layered on until the managed file is written and later read through
+// LayeredConfig.
+func ValidateMergedManaged(w PerRepoConfigWriter) error {
+	c := asPerRepo(w)
+	if c == nil {
+		return nil
+	}
+	if err := c.validateLocalFields(); err != nil {
+		return err
+	}
+	return validateAgentEntries(c.AgentEntries(), c.AllowedResources(), true, false)
 }
 
 // ValidateModelAliases checks a models.aliases map: every key is one of
@@ -1183,22 +1327,4 @@ func ValidateModelAliases(aliases map[string]string) error {
 // used in validation error messages.
 var roleAliasHints = map[string]string{
 	"coder": "code",
-}
-
-func validateCreateIssues(cfg *CreateIssuesConfig) error {
-	if cfg == nil {
-		return nil
-	}
-	for _, org := range cfg.AllowTargets.Orgs {
-		if org == "" {
-			return fmt.Errorf("create_issues: empty org in allow_targets.orgs")
-		}
-	}
-	for _, repo := range cfg.AllowTargets.Repos {
-		parts := strings.SplitN(repo, "/", 2)
-		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-			return fmt.Errorf("create_issues: repo %q in allow_targets.repos must contain owner/name", repo)
-		}
-	}
-	return nil
 }

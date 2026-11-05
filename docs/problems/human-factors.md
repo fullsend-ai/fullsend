@@ -37,6 +37,8 @@ This is still fatiguing, in different ways:
 - **Abstraction gap.** Reviewing intent alignment is harder than reviewing code. With code, you can trace logic. With intent, you're asking "did the agent understand what I meant?" — a fuzzier question that requires holding both the intent document and the implementation in mind.
 - **Vigilance problem.** If agents correctly interpret intent 95% of the time, the remaining 5% becomes harder to catch. This is well-studied in automation research (see [evidence section below](#supporting-research-and-frameworks)) — humans are poor monitors of mostly-correct automated systems, and this complacency cannot be trained away. The shift from code review to intent review doesn't fix this; it may make it worse, since intent misalignment is subtler than a logic bug.
 
+At the organizational level, review fatigue becomes an approval-capacity problem: agent output grows faster than the small pool of guarded-path approvers. See [agentic SDLC adoption and organizational communication](agentic-sdlc-adoption-org-communication.md#approval-capacity).
+
 ## Contributor motivation in open source
 
 Many target organizations are open-source projects. Contributors participate for reasons beyond a paycheck — learning, building reputation, solving interesting problems, and being part of a community.
@@ -140,7 +142,7 @@ The practical response is to use agents to help with triage and disposition — 
 
 This evaluator role maps directly to the concept of "taste" in software: the judgment that can't be codified as rules. Architectural invariants capture the hard constraints, intent verification captures authorized work, and review sub-agents catch correctness and security issues. What remains is a residual judgment about whether something *fits* — whether it belongs in this project, at this time, in this form. This judgment is currently exclusively human, and it's unclear whether it can be effectively approximated by agents or whether it's a fundamental limit on autonomy.
 
-For a deeper treatment of the contribution volume problem, including PR categorization, the salvage question, and fork dynamics, see [contribution-volume.md](contribution-volume.md).
+For a deeper treatment of the contribution volume problem, including PR categorization, the salvage question, and fork dynamics, see [contribution-volume.md](contribution-volume.md). When that volume is manufactured by coordinated inauthentic actors rather than good-faith contributors, the pressure is a security problem as well as a capacity problem — see [coordinated inauthentic contributions](security-threat-model.md#threat-7-coordinated-inauthentic-contributions).
 
 ## What might help
 

@@ -140,7 +140,7 @@ func TestEmitPerModelUsageSpans_MixedVertexXAIGoogle(t *testing.T) {
 	_, parent := tp.Tracer("test").Start(context.Background(), "agent")
 
 	m := mixedVertexXAIGoogleMetrics()
-	emitPerModelUsageSpans(parent, "pi", m)
+	emitPerModelUsageSpans(parent, "anthropic-vertex", "pi", m)
 	parent.End()
 
 	ended := rec.Ended()
@@ -254,7 +254,7 @@ func TestEmitPerModelUsageSpans_UnknownSpec(t *testing.T) {
 			"unknown":                          {Requests: 1, InputTokens: 5, OutputTokens: 1, CostUSD: 0.01},
 		},
 	}
-	emitPerModelUsageSpans(parent, "pi", m)
+	emitPerModelUsageSpans(parent, "anthropic-vertex", "pi", m)
 	parent.End()
 
 	var unknownAttrs map[attribute.Key]attribute.Value
@@ -278,13 +278,13 @@ func TestEmitPerModelUsageSpans_SkippedWhenNotMixed(t *testing.T) {
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 	_, parent := tp.Tracer("test").Start(context.Background(), "agent")
 
-	emitPerModelUsageSpans(parent, "pi", &agentruntime.RunMetrics{
+	emitPerModelUsageSpans(parent, "anthropic-vertex", "pi", &agentruntime.RunMetrics{
 		PerModelUsage: map[string]agentruntime.ModelUsage{
 			"anthropic-vertex/claude-sonnet-5": {Requests: 1, InputTokens: 10},
 		},
 	})
-	emitPerModelUsageSpans(parent, "claude", &agentruntime.RunMetrics{})
-	emitPerModelUsageSpans(parent, "claude", nil)
+	emitPerModelUsageSpans(parent, "anthropic", "claude", &agentruntime.RunMetrics{})
+	emitPerModelUsageSpans(parent, "anthropic", "claude", nil)
 	parent.End()
 
 	require.Len(t, rec.Ended(), 1, "single-model and nil breakdowns emit no usage children")
@@ -373,7 +373,7 @@ func TestUsageComponentSpanAttrs_RepairsInvalidUTF8(t *testing.T) {
 }
 
 func TestEmitPerModelUsageSpans_NilParentIsNoop(t *testing.T) {
-	emitPerModelUsageSpans(nil, "pi", mixedVertexXAIGoogleMetrics())
+	emitPerModelUsageSpans(nil, "anthropic-vertex", "pi", mixedVertexXAIGoogleMetrics())
 }
 
 func TestEmitPerModelUsageSpans_NonRecordingParentIsNoop(t *testing.T) {
@@ -384,7 +384,7 @@ func TestEmitPerModelUsageSpans_NonRecordingParentIsNoop(t *testing.T) {
 	_, parent := tp.Tracer("test").Start(context.Background(), "agent")
 	parent.End()
 
-	emitPerModelUsageSpans(parent, "pi", mixedVertexXAIGoogleMetrics())
+	emitPerModelUsageSpans(parent, "anthropic-vertex", "pi", mixedVertexXAIGoogleMetrics())
 	require.Len(t, rec.Ended(), 1, "an already-ended parent must not grow extra usage children")
 }
 
@@ -404,7 +404,7 @@ func TestEmitPerModelUsageSpans_EmptySpecKey(t *testing.T) {
 			"":                                 {Requests: 1, InputTokens: 5, OutputTokens: 1},
 		},
 	}
-	emitPerModelUsageSpans(parent, "pi", m)
+	emitPerModelUsageSpans(parent, "anthropic-vertex", "pi", m)
 	parent.End()
 
 	var found bool
@@ -461,7 +461,7 @@ func TestEmitPerModelUsageSpans_SanitizesSecretInSpec(t *testing.T) {
 			"xai-vertex/xai/grok-4.6-mini-fast": {Requests: 1, InputTokens: 5, OutputTokens: 1},
 		},
 	}
-	emitPerModelUsageSpans(parent, "pi", m)
+	emitPerModelUsageSpans(parent, "anthropic-vertex", "pi", m)
 	parent.End()
 
 	for _, sp := range rec.Ended() {
@@ -503,7 +503,7 @@ func TestEmitPerModelUsageSpans_CapsCardinality(t *testing.T) {
 	}
 	m := &agentruntime.RunMetrics{Model: "claude-sonnet-5", PerModelUsage: usage}
 
-	emitPerModelUsageSpans(parent, "pi", m)
+	emitPerModelUsageSpans(parent, "anthropic-vertex", "pi", m)
 	parent.End()
 
 	ended := rec.Ended()
@@ -531,7 +531,7 @@ func TestEmitPerModelUsageSpans_NoOverflowUnderCap(t *testing.T) {
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 	_, parent := tp.Tracer("test").Start(context.Background(), "agent")
 
-	emitPerModelUsageSpans(parent, "pi", mixedVertexXAIGoogleMetrics())
+	emitPerModelUsageSpans(parent, "anthropic-vertex", "pi", mixedVertexXAIGoogleMetrics())
 	parent.End()
 
 	agent := agent0(rec.Ended())
@@ -608,4 +608,56 @@ func spanAttrMap(sp sdktrace.ReadOnlySpan) map[attribute.Key]attribute.Value {
 		out[kv.Key] = kv.Value
 	}
 	return out
+}
+
+func TestFinalizeAgentSpan_MixedModelIDs(t *testing.T) {
+	for _, tc := range []struct {
+		runtime, provider, parent, child string
+	}{
+		{"claude", "anthropic", "claude-sonnet-5", "claude-haiku-4-5"},
+		{"claude", "gateway", "claude-sonnet-5", "claude-haiku-4-5"},
+		{"codex", "openai", "gpt-5.6-luna", "gpt-5.6-terra"},
+		{"codex", "gateway", "gpt-5.6-luna", "gpt-5.6-terra"},
+	} {
+		t.Run(tc.runtime+"/"+tc.provider, func(t *testing.T) {
+			pinSpanLimitEnv(t)
+			rec := tracetest.NewSpanRecorder()
+			tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+			t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+			_, parent := tp.Tracer("test").Start(context.Background(), "agent")
+			m := &agentruntime.RunMetrics{
+				Model: tc.parent, InputTokens: 30, OutputTokens: 3,
+				PerModelUsage: map[string]agentruntime.ModelUsage{
+					tc.parent: {InputTokens: 10, OutputTokens: 1},
+					tc.child:  {InputTokens: 15, OutputTokens: 1},
+					"unknown": {InputTokens: 5, OutputTokens: 1},
+				},
+			}
+			finalizeAgentSpan(parent, nil, 1, 0, tc.provider, tc.runtime, m, "", nil)
+			require.Len(t, rec.Ended(), 4)
+			var tokens int64
+			models := map[string]bool{}
+			for _, sp := range rec.Ended() {
+				attrs := spanAttrMap(sp)
+				if sp.Name() == "agent" {
+					assert.True(t, attrs[attrUsageRollup].AsBool())
+					assert.NotContains(t, attrs, "gen_ai.usage.input_tokens")
+					continue
+				}
+				model := attrs["gen_ai.request.model"].AsString()
+				models[model] = true
+				provider := tc.provider
+				if model == "unknown" {
+					provider = "unknown"
+				}
+				assert.Equal(t, provider, attrs["gen_ai.provider.name"].AsString())
+				assert.Equal(t, provider, attrs["gen_ai.system"].AsString())
+				assert.Equal(t, parent.SpanContext().SpanID(), sp.Parent().SpanID())
+				assert.Equal(t, tc.runtime, attrs["fullsend.runtime"].AsString())
+				tokens += attrs["gen_ai.usage.input_tokens"].AsInt64()
+			}
+			assert.Equal(t, int64(m.InputTokens), tokens)
+			assert.Equal(t, map[string]bool{tc.parent: true, tc.child: true, "unknown": true}, models)
+		})
+	}
 }

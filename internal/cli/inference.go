@@ -27,12 +27,16 @@ project access — no GitHub token or mint project is needed. Hand the WIF
 provider resource name to the GitHub admin who runs 'fullsend github setup'.
 
 'openai' enrols repositories with OpenAI Workload Identity Federation for
-GPT models on the pi runtime; it needs neither GCP nor an OpenAI key.`,
+GPT models on the pi runtime; it needs neither GCP nor an OpenAI key.
+
+'gateway status' checks the self-hosted inference gateway block
+(inference.gateway) and, inside a GitHub Actions job, authenticates to it.`,
 	}
 	cmd.AddCommand(newInferenceProvisionCmd())
 	cmd.AddCommand(newInferenceStatusCmd())
 	cmd.AddCommand(newInferenceDeprovisionCmd())
 	cmd.AddCommand(newInferenceOpenAICmd())
+	cmd.AddCommand(newInferenceGatewayCmd())
 	return cmd
 }
 
@@ -334,14 +338,25 @@ func runInferenceStatus(cmd *cobra.Command, org, repo, project, pool, provider, 
 	result.Details = append(result.Details, "WIF provider: "+wifProvider)
 	result.Details = append(result.Details, "Attribute condition: "+condition)
 
-	conditionOK := true
+	// A soft-deleted provider is still returned by providers.get (state
+	// DELETED, not 404) with its condition intact, and a disabled one keeps
+	// its config too; neither can exchange tokens.
+	healthy := true
+	if providerInfo.Disabled {
+		result.Details = append(result.Details, "WIF provider is disabled and cannot exchange tokens")
+		healthy = false
+	}
+	if providerInfo.State != "" && providerInfo.State != gcf.WIFProviderStateActive {
+		result.Details = append(result.Details, fmt.Sprintf("WIF provider state is %s and cannot exchange tokens", providerInfo.State))
+		healthy = false
+	}
 	if repo != "" {
 		if conditionMatchesRepo(condition, repo) {
 			result.Details = append(result.Details, "Condition matches repo: OK")
 		} else {
 			expected := fmt.Sprintf("assertion.repository == '%s'", repo)
 			result.Details = append(result.Details, fmt.Sprintf("Condition mismatch: expected %q", expected))
-			conditionOK = false
+			healthy = false
 		}
 	} else {
 		if conditionMatchesOrg(condition, org) {
@@ -355,11 +370,11 @@ func runInferenceStatus(cmd *cobra.Command, org, repo, project, pool, provider, 
 			}
 		} else {
 			result.Details = append(result.Details, fmt.Sprintf("Condition does not include org %q", org))
-			conditionOK = false
+			healthy = false
 		}
 	}
 
-	if conditionOK {
+	if healthy {
 		result.Status = "healthy"
 	} else {
 		result.Status = "unhealthy"
@@ -388,7 +403,7 @@ func outputStatus(cmd *cobra.Command, result *inferenceStatusResult, format stri
 		case "healthy":
 			printer.StepDone("Status: healthy")
 		case "unhealthy":
-			printer.StepWarn("Status: unhealthy (condition mismatch)")
+			printer.StepWarn("Status: unhealthy")
 		case "not_provisioned":
 			printer.StepFail("Status: not provisioned")
 		default:

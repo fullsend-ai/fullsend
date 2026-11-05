@@ -13,6 +13,25 @@ source "${SCRIPT_DIR}/openshell-version.sh"
 
 echo "Installing OpenShell ${OPENSHELL_VERSION} (${OPENSHELL_SHA})"
 
+# A persistent runner may still carry OpenShell 0.0.x, whose gateway state
+# 0.1 cannot read. Stop that gateway and move its state aside first; the
+# installer then needs the explicit ack to replace a pre-0.1 install.
+installed="$(openshell --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)"
+case "${installed}" in
+  0.0.*)
+    echo "Replacing OpenShell ${installed}: stopping its gateway and moving its state aside"
+    systemctl --user stop openshell-gateway 2>/dev/null || true
+    state_root="${XDG_STATE_HOME:-${HOME}/.local/state}/openshell"
+    stamp="$(date +%s)"
+    for d in gateway tls; do
+      if [[ -d "${state_root}/${d}" ]]; then
+        mv "${state_root}/${d}" "${state_root}/${d}.pre-0.1.${stamp}"
+      fi
+    done
+    ;;
+esac
+export OPENSHELL_ACK_BREAKING_UPGRADE=1
+
 # Retry the entire install pipeline (curl | sh) with exponential backoff.
 # The upstream install.sh internally downloads the .deb from GitHub Releases,
 # which can fail on transient CDN errors. Retrying only the outer curl would
@@ -26,6 +45,8 @@ while true; do
      | OPENSHELL_VERSION="v${OPENSHELL_VERSION}" sh; then
     break
   fi
+  # The installer starts the gateway service; show why it did not come up.
+  journalctl --user -u openshell-gateway --no-pager -n 40 2>/dev/null || true
   if (( attempt >= max_attempts )); then
     echo "::error::OpenShell install failed after ${max_attempts} attempts" >&2
     exit 1

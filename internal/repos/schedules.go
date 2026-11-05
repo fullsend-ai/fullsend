@@ -1,7 +1,5 @@
 package repos
 
-import "github.com/fullsend-ai/fullsend/internal/forge"
-
 // ScheduleSpec defines a fullsend pipeline schedule for GitLab repos.
 // All sites that create, detect, or match pipeline schedules must use
 // PipelineScheduleSpecs() to stay in sync.
@@ -27,13 +25,11 @@ var pipelineScheduleSpecs = []ScheduleSpec{
 		ComponentName: "schedule:slash-poll",
 		Description:   "fullsend slash poll",
 		Cron:          "*/5 * * * *",
-		Variables:     map[string]string{forge.VarPollMode: "slash"},
 	},
 	{
 		ComponentName: "schedule:event-poll",
 		Description:   "fullsend event poll",
 		Cron:          "2,17,32,47 * * * *",
-		Variables:     map[string]string{forge.VarPollMode: "events"},
 	},
 }
 

@@ -82,25 +82,38 @@ regardless of trigger event.
 
 ## How images are built
 
-The workflow has two jobs that run sequentially:
+Each image is built per platform on a native runner (`ubuntu-24.04` for
+`linux/amd64`, `ubuntu-24.04-arm` for `linux/arm64`), then a merge job
+publishes the multi-arch index. The jobs run in this order:
 
-1. **`build-base`** builds `fullsend-sandbox` from `images/sandbox/Containerfile`.
-   On push/dispatch, it pushes the multi-arch manifest list and outputs the
-   immutable digest (`@sha256:...`) for the next job.
+1. **`build-base`** builds `fullsend-sandbox` from `images/sandbox/Containerfile`,
+   one leg per platform. On push/dispatch each leg pushes its image by digest.
 
-2. **`build-code`** builds `fullsend-code` from `images/code/Containerfile`,
-   passing the base image reference as `--build-arg BASE_IMAGE=<ref>`.
-   On push/dispatch it uses the digest from step 1.  On PRs (where no
-   digest is available because nothing was pushed), it falls back to the
-   `:dev` tag on the registry.
+2. **`merge-base`** waits for both legs, publishes the multi-arch index under
+   the release tags with `docker buildx imagetools create`, and outputs the
+   index's immutable digest (`@sha256:...`) for the next job. It refuses to
+   publish unless both platform digests are present.
 
-Cross-platform builds use [QEMU](https://github.com/docker/setup-qemu-action)
-for user-mode emulation and [Docker Buildx](https://github.com/docker/setup-buildx-action)
-with GitHub Actions cache (`type=gha`).
+3. **`build-code`** builds `fullsend-code` from `images/code/Containerfile`,
+   one leg per platform, passing the base image reference as
+   `--build-arg BASE_IMAGE=<ref>`. On push/dispatch it uses the digest from
+   `merge-base`. On PRs (where nothing was pushed), it falls back to the
+   `:dev` tag on the registry. Each leg smoke-tests its own image.
+
+4. **`merge-code`** publishes the `fullsend-code` index once both legs pass.
+
+`runner-image.yml` follows the same pattern with `build-runner` and
+`merge-runner`.
+
+No QEMU is involved, and nothing is pulled from Docker Hub:
+[Docker Buildx](https://github.com/docker/setup-buildx-action) uses the
+`docker-container` driver with a pinned BuildKit image from `mirror.gcr.io`
+(the `docker` driver cannot push by digest), and the GitHub Actions cache
+(`type=gha`, one scope per platform).
 
 ### PR build and the `:dev` fallback
 
-PR builds set `push: false`, so `build-base` produces no registry digest.
+PR builds do not push, so `merge-base` has no registry digest to output.
 The `build-code` job needs a base image reference to build against.  It
 falls back to `fullsend-sandbox:dev` — a multi-arch image that is always
 kept current by non-PR builds.
@@ -145,7 +158,7 @@ Every binary downloaded during the build is **version-pinned** and
 | Claude Code | `CLAUDE_CODE_VERSION` ARG + npm version pin | npm registry integrity check |
 | pi (opt-in runtime, #6464) | `PI_VERSION` ARG + npm version pin (`--ignore-scripts`; package ships `npm-shrinkwrap.json`) | npm registry integrity check |
 | Codex (opt-in runtime, #6920) | `CODEX_VERSION` ARG + npm version pin; replaces the `@openai/codex` the OpenShell base image installs under the same npm prefix | npm registry integrity check + `codex --version` assertion against the pin |
-| pi-anthropic-vertex extension (#6464; fullsend-owned since #7019) | `PI_ANTHROPIC_VERTEX_VERSION` (git tag) + `PI_ANTHROPIC_VERTEX_SHA256` of the tag tarball; deps via `npm ci --omit=dev --omit=peer --ignore-scripts` from the vendored lockfile (26 packages: `google-auth-library` and its tree). The lockfile is not Renovate-managed here — run `npm audit --omit=dev --omit=peer` in the extension dir when reviewing a bump | `sha256sum -c` + npm registry integrity check |
+| pi-anthropic-vertex extension (#6464; fullsend-owned since #7019) | `PI_ANTHROPIC_VERTEX_VERSION` (git tag) + `PI_ANTHROPIC_VERTEX_SHA256` of the tag tarball; deps via `npm ci --omit=dev --omit=peer --ignore-scripts` from the vendored lockfile (27 packages: `google-auth-library` and its tree, plus `typebox`). The lockfile is not Renovate-managed here — run `npm audit --omit=dev --omit=peer` in the extension dir when reviewing a bump | `sha256sum -c` + npm registry integrity check |
 | acli | `ACLI_VERSION` + `ACLI_SHA256_{AMD64,ARM64}` | `sha256sum -c` |
 | pre-commit, gitlint, pyyaml | pip version pins | pip integrity check |
 | UBI 10 base + go-toolset builder (runner) | Manifest list digest (`@sha256:...`) | Immutable OCI content hash (anonymous pull, no subscription) |
@@ -175,6 +188,12 @@ it downloads the release tarball by version and verifies it with
 `sha256sum -c` against the release checksums file (see the table above).
 See `.github/scripts/openshell-version.sh` for the version/SHA source of
 truth.
+
+The Go toolchain is automated the same way: Renovate bumps `GO_VERSION` in
+`images/code/Containerfile` and `images/runner/Containerfile`, and
+`scripts/renovate/update-go-checksums.sh` (run via `postUpgradeTasks`)
+refreshes `GO_SHA256_{AMD64,ARM64}` in both files from
+<https://go.dev/dl/?mode=json&include=all>.
 
 ## Local builds
 

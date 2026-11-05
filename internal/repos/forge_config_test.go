@@ -18,8 +18,11 @@ func TestForgeConfigFor(t *testing.T) {
 		if len(fc.WorkflowPaths) == 0 {
 			t.Fatal("expected workflow paths for gitlab")
 		}
-		if fc.WorkflowPaths[0] != ".gitlab/ci/fullsend-dispatch.yml" {
+		if fc.WorkflowPaths[0] != fullsendPipelineInclude {
 			t.Errorf("unexpected gitlab workflow path: %s", fc.WorkflowPaths[0])
+		}
+		if len(fc.WorkflowPaths) != 1 {
+			t.Errorf("gitlab WorkflowPaths = %v, want only the pipeline wrapper", fc.WorkflowPaths)
 		}
 	})
 
@@ -82,7 +85,12 @@ stages:
 			want:    "",
 		},
 		{
-			name:    "version marker comment",
+			name:    "version marker comment on pipeline wrapper",
+			content: "---\n# fullsend-ref: v0.34.0\n# Fullsend CI pipeline",
+			want:    "v0.34.0",
+		},
+		{
+			name:    "legacy version marker comment on dispatch stub",
 			content: "---\n# fullsend-ref: v0.34.0\n# fullsend-stage: dispatch",
 			want:    "v0.34.0",
 		},

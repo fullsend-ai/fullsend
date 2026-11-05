@@ -146,6 +146,16 @@ Required permissions:
 - `packages: read` - needed by code/fix agents
 - `actions: write`, `id-token: write`, `issues: write`, `pull-requests: write` - needed by all agents
 
+`id-token: write` lets GitHub Actions issue the job a short-lived [OpenID
+Connect (OIDC) token](how-fullsend-authenticates.md). Fullsend uses this token
+to identify the calling workflow during dispatch and to mint short-lived
+[GitHub App installation tokens](../../glossary.md#installation-token) for
+agents.
+Grant it in the caller workflow or on the job that calls
+`reusable-dispatch.yml`; the reusable workflow cannot add permissions that the
+caller did not grant. Keep the OIDC token inside the job. Do not copy it into
+workflow outputs, the dispatch matrix, or logs.
+
 ## Authorization
 
 When using a pre-computed matrix, the `.fullsend/config.yaml` agent-enablement checks are bypassed. The token mint service acts as the authorization boundary (see [mint-administration.md](../infrastructure/mint-administration.md)) - ensure your mint service is properly configured to control which agents external callers can invoke.

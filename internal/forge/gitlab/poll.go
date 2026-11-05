@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/poll"
 )
 
@@ -17,8 +18,8 @@ import (
 // not allow two methods with the same name and different return types on
 // a single struct, so PollClient shadows GetIssue with the poll-specific
 // version and inherits the remaining methods (ForceCommitFileToBranch,
-// GetFileContentAtRef, DeleteRef, GetAuthenticatedUser) from the
-// embedded LiveClient.
+// CommitFileToBranch, GetBranchRef, GetFileContentAtRef, DeleteRef,
+// GetAuthenticatedUser) from the embedded LiveClient.
 type PollClient struct {
 	*LiveClient
 }
@@ -29,6 +30,29 @@ var _ poll.GitLabClient = (*PollClient)(nil)
 // NewPollClient wraps a LiveClient for use with the cron poller.
 func NewPollClient(c *LiveClient) *PollClient {
 	return &PollClient{LiveClient: c}
+}
+
+// GetUserBot reads the full user record because nested issue author objects
+// omit bot on some GitLab versions. A missing field is not proof of a human.
+func (pc *PollClient) GetUserBot(ctx context.Context, userID int) (bool, error) {
+	if userID <= 0 {
+		return false, fmt.Errorf("invalid user ID %d", userID)
+	}
+	resp, err := pc.get(ctx, fmt.Sprintf("/users/%d", userID))
+	if err != nil {
+		return false, fmt.Errorf("get user %d: %w", userID, err)
+	}
+	var user struct {
+		ID  int   `json:"id"`
+		Bot *bool `json:"bot"`
+	}
+	if err := decodeJSON(resp, &user); err != nil {
+		return false, fmt.Errorf("decode user %d: %w", userID, err)
+	}
+	if user.ID != userID || user.Bot == nil {
+		return false, fmt.Errorf("user %d response lacks matching ID or bot flag", userID)
+	}
+	return *user.Bot, nil
 }
 
 const pollPerPage = 100
@@ -185,6 +209,37 @@ func (pc *PollClient) ListMergeRequestNotes(ctx context.Context, owner, repo str
 		var raw []poll.Note
 		if err := decodeJSON(resp, &raw); err != nil {
 			return nil, fmt.Errorf("decode merge request notes page %d: %w", page, err)
+		}
+
+		result = append(result, raw...)
+
+		if len(raw) < pollPerPage {
+			break
+		}
+	}
+
+	return result, nil
+}
+
+// ListMergeRequestDiffVersions returns every diff version of the given
+// merge request. GitLab records a new version on each push to the source
+// branch.
+func (pc *PollClient) ListMergeRequestDiffVersions(ctx context.Context, owner, repo string, mrIID int) ([]poll.MergeRequestDiffVersion, error) {
+	proj := projectPath(owner, repo)
+	var result []poll.MergeRequestDiffVersion
+
+	for page := 1; page <= 100; page++ {
+		path := fmt.Sprintf("/projects/%s/merge_requests/%d/versions?per_page=%d&page=%d",
+			proj, mrIID, pollPerPage, page)
+
+		resp, err := pc.get(ctx, path)
+		if err != nil {
+			return nil, fmt.Errorf("list merge request diff versions page %d: %w", page, err)
+		}
+
+		var raw []poll.MergeRequestDiffVersion
+		if err := decodeJSON(resp, &raw); err != nil {
+			return nil, fmt.Errorf("decode merge request diff versions page %d: %w", page, err)
 		}
 
 		result = append(result, raw...)
@@ -354,10 +409,23 @@ func (pc *PollClient) GetMergeRequest(ctx context.Context, owner, repo string, m
 	return &mr, nil
 }
 
-// CreatePipeline creates a new pipeline on the given ref with the given
+// CreatePipelineWithInputs creates a new pipeline on the given ref using
+// typed GitLab CI/CD pipeline inputs instead of user-defined pipeline
 // variables. Returns the pipeline ID and web URL.
-func (pc *PollClient) CreatePipeline(ctx context.Context, owner, repo, ref string, variables map[string]string) (int64, string, error) {
-	p, err := pc.LiveClient.CreatePipeline(ctx, owner, repo, ref, variables)
+func (pc *PollClient) CreatePipelineWithInputs(ctx context.Context, owner, repo, ref string, inputs map[string]forge.PipelineInputValue) (int64, string, error) {
+	p, err := pc.LiveClient.CreatePipelineWithInputs(ctx, owner, repo, ref, inputs)
+	if err != nil {
+		return 0, "", err
+	}
+	return p.ID, p.WebURL, nil
+}
+
+// CreateChildPipelineWithInputs starts a source=pipeline downstream
+// pipeline on ref, authenticated by jobToken (the running job's
+// CI_JOB_TOKEN) and parameterized by typed pipeline inputs. Returns the
+// pipeline ID and web URL.
+func (pc *PollClient) CreateChildPipelineWithInputs(ctx context.Context, owner, repo, ref, jobToken string, inputs map[string]forge.PipelineInputValue) (int64, string, error) {
+	p, err := pc.LiveClient.TriggerPipelineWithJobToken(ctx, owner, repo, ref, jobToken, inputs)
 	if err != nil {
 		return 0, "", err
 	}

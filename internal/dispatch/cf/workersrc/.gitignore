@@ -1,5 +1,7 @@
 # Build artifacts staged by `make wasm-stage` (not committed).
 mintcore.wasm
+# Test-only build with a stamped OTLP endpoint (`make wasm-stage-traced`).
+mintcore-traced.wasm
 wasm_exec.js
 
 # npm install output.

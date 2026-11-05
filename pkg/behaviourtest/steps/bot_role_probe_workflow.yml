@@ -1,0 +1,259 @@
+# Behaviour-test bot-role probe (pkg/behaviourtest/steps/bot_role_probe.go).
+#
+# The bot-role lookup steps commit this reusable workflow to a temporary
+# host repository in the pool org and delete that repository during
+# scenario cleanup. A shim workflow on a temporary branch of the leased
+# test repository calls it, so the OIDC token carries the leased
+# repository in its repository claim.
+#
+# The job asks the mint's POST /v1/bot-role for the registered Fullsend
+# role of one bot login (ADR 0107) and uploads a compact result. It never
+# writes the OIDC token anywhere. In mode "forced_failure" it sends a
+# credential with the verified token's header and payload but a fixed,
+# invalid signature, so the mint must answer 401. The job exits 0 whatever
+# the mint answers; the suite classifies the uploaded result, so a missing
+# result (for example a failed upload) fails the run instead of passing
+# silently.
+name: bot-role-probe
+
+on:
+  workflow_call:
+    inputs:
+      mint_url:
+        description: Mint base URL (the caller's FULLSEND_MINT_URL variable)
+        required: true
+        type: string
+      actor_login:
+        description: Bot login to look up ("<slug>[bot]")
+        required: true
+        type: string
+      repo:
+        description: Repository of the lookup ("owner/repo"); must be the OIDC repository claim
+        required: true
+        type: string
+      mode:
+        description: lookup, or forced_failure to send an invalid credential
+        required: true
+        type: string
+      claimed_role:
+        description: Role claimed in the request body, which the mint must ignore; empty for none
+        required: false
+        type: string
+        default: ''
+      artifact_name:
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    timeout-minutes: 10
+    steps:
+      - name: Look up the bot role
+        env:
+          MINT_URL: ${{ inputs.mint_url }}
+          ACTOR_LOGIN: ${{ inputs.actor_login }}
+          REPO: ${{ inputs.repo }}
+          MODE: ${{ inputs.mode }}
+          CLAIMED_ROLE: ${{ inputs.claimed_role }}
+        run: |
+          set -uo pipefail
+          out=bot-role-probe-result.json
+          claims='{}'
+          response='{}'
+          # oidc_verified becomes true only once the OIDC token's signature,
+          # issuer, audience and time claims were verified here. The mint
+          # answers every authentication failure with the same 401, so the
+          # suite accepts a forced failure only from a token this script
+          # verified (the failure is then the invalid signature it sent).
+          oidc_verified=false
+
+          # emit ERROR HTTP_STATUS writes the result file. The result is never
+          # echoed to the step log: its response fields come from the mint, and
+          # the artifact already keeps them. The log gets only the probe's own
+          # fixed-vocabulary fields.
+          emit() {
+            jq -n \
+              --arg mode "${MODE}" --arg login "${ACTOR_LOGIN}" --arg repo "${REPO}" \
+              --arg claimed "${CLAIMED_ROLE}" --arg error "$1" --arg status "$2" \
+              --argjson verified "${oidc_verified}" \
+              --argjson claims "${claims}" --argjson response "${response}" \
+              '{mode: $mode, actor_login: $login, repo: $repo, oidc_verified: $verified}
+               + (if $claimed == "" then {} else {claimed_role: $claimed} end)
+               + (if $error == "" then {} else {error: $error} end)
+               + (if $status == "" then {} else {http_status: ($status | tonumber)} end)
+               + (if $response == {} then {} else {response: $response} end)
+               + $claims' >"${out}"
+            echo "bot-role probe result: error=${1:--} http_status=${2:--} oidc_verified=${oidc_verified}"
+          }
+
+          # b64url_decode VALUE decodes unpadded base64url to stdout.
+          b64url_decode() {
+            local v
+            v="$(tr '_-' '/+' <<<"$1")"
+            case $(( ${#v} % 4 )) in
+              2) v="${v}==" ;;
+              3) v="${v}=" ;;
+            esac
+            base64 -d <<<"${v}"
+          }
+
+          # verify_oidc_token JWT checks the GitHub Actions OIDC token the way
+          # the mint does: RS256 signature against GitHub's published signing
+          # key, issuer, audience and time claims. It prints the failing
+          # check on stderr and succeeds only for a fully verified token.
+          oidc_issuer='https://token.actions.githubusercontent.com'
+          oidc_audience='fullsend-mint'
+          verify_oidc_token() {
+            local h p s header kid cert dir now jwks
+            IFS=. read -r h p s <<<"$1"
+            if [[ -z "${h}" || -z "${p}" || -z "${s}" ]]; then
+              echo "not a three-part JWT" >&2
+              return 1
+            fi
+            header="$(b64url_decode "${h}" 2>/dev/null)" || { echo "unreadable JWT header" >&2; return 1; }
+            kid="$(jq -er 'select(.alg == "RS256") | .kid | select(type == "string" and test("^[A-Za-z0-9._-]+$"))' <<<"${header}" 2>/dev/null)" \
+              || { echo "JWT header is not RS256 with a usable kid" >&2; return 1; }
+            now="$(date +%s)"
+            if ! b64url_decode "${p}" 2>/dev/null | jq -e \
+              --arg iss "${oidc_issuer}" --arg aud "${oidc_audience}" --argjson now "${now}" \
+              '.iss == $iss
+               and (.aud == $aud or (.aud | type == "array" and index($aud) != null))
+               and (.exp | type == "number" and . > $now)
+               and ((.nbf // 0) | type == "number" and . <= $now + 60)' >/dev/null 2>&1; then
+              echo "issuer, audience or time claims are not valid" >&2
+              return 1
+            fi
+            if ! jwks="$(curl -sS --fail --max-time 20 --retry 2 --retry-delay 2 "${oidc_issuer}/.well-known/jwks")"; then
+              echo "fetching GitHub's signing keys failed" >&2
+              return 1
+            fi
+            cert="$(jq -er --arg kid "${kid}" '[.keys[] | select(.kid == $kid)][0].x5c[0] | select(type == "string" and test("^[A-Za-z0-9+/=]+$"))' <<<"${jwks}" 2>/dev/null)" \
+              || { echo "no signing key for the token's kid" >&2; return 1; }
+            dir="$(mktemp -d)" || return 1
+            {
+              echo '-----BEGIN CERTIFICATE-----'
+              fold -w 64 <<<"${cert}"
+              echo '-----END CERTIFICATE-----'
+            } >"${dir}/cert.pem"
+            if ! openssl x509 -in "${dir}/cert.pem" -pubkey -noout >"${dir}/pub.pem" 2>/dev/null \
+              || ! b64url_decode "${s}" >"${dir}/sig.bin" 2>/dev/null \
+              || ! printf '%s' "${h}.${p}" | openssl dgst -sha256 -verify "${dir}/pub.pem" -signature "${dir}/sig.bin" >/dev/null 2>&1; then
+              rm -rf "${dir}"
+              echo "signature does not verify" >&2
+              return 1
+            fi
+            rm -rf "${dir}"
+          }
+
+          # usable_token VALUE succeeds for a non-empty token made only of
+          # characters that appear in OIDC JWTs. Anything else (whitespace,
+          # control characters, "%" escapes, ":") could smuggle a workflow
+          # command into add-mask.
+          token_re='^[A-Za-z0-9._~+/=-]+$'
+          usable_token() {
+            [[ -n "$1" && "$1" =~ ${token_re} ]]
+          }
+
+          # The inputs come from the suite's shim, which validates them too;
+          # anything unexpected is a configuration failure, not a lookup.
+          login_re='^[A-Za-z0-9-]+\[bot\]$'
+          repo_re='^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$'
+          role_re='^[a-z][a-z0-9_-]*$'
+          if [[ "${MODE}" != lookup && "${MODE}" != forced_failure ]]; then
+            emit config ""
+            exit 0
+          fi
+          if ! [[ "${MINT_URL}" =~ ^https://[^/] ]] \
+            || ! [[ "${ACTOR_LOGIN}" =~ ${login_re} ]] \
+            || ! [[ "${REPO}" =~ ${repo_re} ]] \
+            || { [[ -n "${CLAIMED_ROLE}" ]] && ! [[ "${CLAIMED_ROLE}" =~ ${role_re} ]]; }; then
+            emit config ""
+            exit 0
+          fi
+
+          if ! oidc_response="$(curl -sS --fail --retry 3 --retry-delay 2 --retry-all-errors \
+            -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=fullsend-mint")"; then
+            echo "requesting the GitHub Actions OIDC token failed"
+            emit oidc ""
+            exit 0
+          fi
+          oidc_token="$(jq -r '.value // empty' <<<"${oidc_response}" 2>/dev/null || true)"
+          if ! usable_token "${oidc_token}"; then
+            echo "the OIDC token response held no usable token"
+            emit oidc ""
+            exit 0
+          fi
+          echo "::add-mask::${oidc_token}"
+
+          # The claims are not secret; keep the two the mint authorizes on.
+          claims="$(b64url_decode "$(cut -d. -f2 <<<"${oidc_token}")" 2>/dev/null \
+            | jq -c '{repository: (.repository // ""), job_workflow_ref: (.job_workflow_ref // "")}' 2>/dev/null)" || claims='{}'
+          [[ -n "${claims}" ]] || claims='{}'
+
+          # A lookup with a token the mint would reject for authentication
+          # says nothing about bot roles, and a forced failure only counts
+          # when the token it is derived from was valid.
+          if ! oidc_reason="$(verify_oidc_token "${oidc_token}" 2>&1)"; then
+            # The reason is one of verify_oidc_token's fixed messages.
+            echo "the OIDC token failed verification: ${oidc_reason}"
+            emit oidc ""
+            exit 0
+          fi
+          oidc_verified=true
+
+          credential="${oidc_token}"
+          if [[ "${MODE}" == forced_failure ]]; then
+            # Keep the verified header and payload but replace the signature
+            # with a fixed invalid value (base64url of "invalid-signature").
+            IFS=. read -r cred_h cred_p _ <<<"${oidc_token}"
+            credential="${cred_h}.${cred_p}.aW52YWxpZC1zaWduYXR1cmU"
+            echo "::add-mask::${credential}"
+          fi
+
+          body="$(jq -nc --arg login "${ACTOR_LOGIN}" --arg repo "${REPO}" --arg role "${CLAIMED_ROLE}" \
+            '{actor_login: $login, repo: $repo} + (if $role == "" then {} else {role: $role} end)')"
+          if ! status="$(curl -sS --proto '=https' --retry 2 --retry-delay 2 -o bot-role-response.json -w '%{http_code}' \
+            -H "Authorization: Bearer ${credential}" \
+            -H "Content-Type: application/json" \
+            -d "${body}" \
+            "${MINT_URL%/}/v1/bot-role")"; then
+            rm -f bot-role-response.json
+            emit transport ""
+            exit 0
+          fi
+          if ! [[ "${status}" =~ ^[0-9]{3}$ ]]; then
+            rm -f bot-role-response.json
+            emit transport ""
+            exit 0
+          fi
+
+          # Keep only the outcome, role and error of the mint's body. A kept
+          # key whose value is not a string invalidates the whole response
+          # (it becomes empty, which the shared parser rejects as it would
+          # the original body), instead of the key being dropped or replaced
+          # and the body passing as a valid lookup.
+          response="$(jq -cs '
+              if length == 1 and (.[0] | type == "object") then
+                .[0] | with_entries(select(.key == "outcome" or .key == "role" or .key == "error"))
+                | if any(.[]; type != "string") then {} else map_values(.[0:300]) end
+              else {} end' bot-role-response.json 2>/dev/null)" || response='{}'
+          [[ -n "${response}" ]] || response='{}'
+          rm -f bot-role-response.json
+          emit "" "${status}"
+          exit 0
+
+      - name: Upload the probe result
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: bot-role-probe-result.json
+          if-no-files-found: error
+          retention-days: 1

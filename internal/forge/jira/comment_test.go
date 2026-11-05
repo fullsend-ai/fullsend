@@ -41,6 +41,25 @@ func TestCreateComment(t *testing.T) {
 	assert.Equal(t, "fullsend-bot", comment.Author.DisplayName)
 }
 
+func TestCreateComment_RetriedOnRateLimit(t *testing.T) {
+	t.Parallel()
+	client, mux := setupTest(t)
+	calls := 0
+	mux.HandleFunc("/rest/api/3/issue/PROJ-1/comment", func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 1 {
+			writeJSON(t, w, http.StatusTooManyRequests, map[string]any{"errorMessages": []string{"rate limit exceeded"}})
+			return
+		}
+		writeJSON(t, w, http.StatusCreated, Comment{ID: "10001"})
+	})
+
+	comment, err := client.CreateComment(context.Background(), "PROJ-1", "hello there")
+	require.NoError(t, err)
+	assert.Equal(t, "10001", comment.ID)
+	assert.Equal(t, 2, calls)
+}
+
 func TestCreateComment_NotFound(t *testing.T) {
 	t.Parallel()
 	client, mux := setupTest(t)

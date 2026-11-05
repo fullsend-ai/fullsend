@@ -179,7 +179,20 @@ codex emit no call ids — becomes an `execute_tool` child of its iteration's
 on the `agent` span stays the content carrier. Sub-agent nesting (deferred item 1 above)
 remains deferred.
 
-**2026-09-22 — Per-model usage components (#7550):** mixed-model Pi iterations
+**2026-09-18 — Level 3 input message and tool arguments ([ADR 0108](0108-tool-call-span-topology.md)):**
+under the content gate, a retry iteration that carries validation feedback
+records the prompt the runner composed as `gen_ai.input.messages`, and
+`tool_call` parts on the message record carry the members of the call's
+arguments that name what was called (a path, a pattern, a `Bash` command
+whole, which can embed what it writes), not a `Write`, `Edit` or
+`NotebookEdit` body, an `Agent` or `WebFetch` prompt or the input of an
+MCP tool — Claude Code today
+([#7414](https://github.com/fullsend-ai/fullsend/issues/7414)).
+The rest of the model's input is not recorded
+([reference](../guides/infrastructure/distributed-tracing.md#content-capture-level-3)).
+The gate and the carrier are unchanged.
+
+**2026-09-22 — Per-model usage components (#7550):** mixed-model iterations
 export one `usage <model>` child of the `agent` span per `per_model_usage`
 entry so child-provider tokens and cost are not attributed to the parent.
 This is usage attribution (near-zero-duration, keyed by model spec), not the

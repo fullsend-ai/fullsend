@@ -16,6 +16,7 @@ Feature: Emoji reaction status notifications
       slug: fullsend-ai-reaction-ping
       model: opus
       image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
+      policy: policies/base.yaml
       trigger: |
         event.entity.kind == "work_item"
         && event.transition.kind == "label_changed"

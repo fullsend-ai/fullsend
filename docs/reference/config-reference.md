@@ -3,6 +3,13 @@
 Complete reference for all fields available in `.fullsend/config.yaml`. For
 how these fields resolve through layered configuration, see
 [Layered Config Reference](../guides/infrastructure/layered-config-reference.md).
+Fleet manifests can declare the same managed-configuration schema (every
+field below, including `runtime` and `allowed_remote_resources`) as
+`defaults.config`, `github.config`, `gitlab.config`, or per-repository
+`config` in `repos.yaml` (this is not
+`config_base`, which is the configuration-preset path written to
+`.fullsend/config.base.yaml`); see
+[Repo Management — Managed configuration](../guides/getting-started/repo-management.md#managed-configuration).
 For initial setup, see
 [Configuring GitHub](../guides/getting-started/configuring-github.md) or
 [Configuring GitLab](../guides/getting-started/configuring-gitlab.md).
@@ -13,14 +20,13 @@ version: "1"                         # Schema version (required)
 
 # ── Platform ─────────────────────────────────────────────────
 forge: github                        # Hosting platform: github, gitlab (auto-detected if omitted)
-tracker: jira                        # Default issue tracker for `fullsend issues` commands: github, gitlab, jira
 
 # ── Operations ───────────────────────────────────────────────
 kill_switch: false                   # Emergency stop — disables all agent dispatch when true
 keep_history: true                   # Append previous sticky-comment content as collapsed "Previous run" blocks
 
 # ── Runtime ──────────────────────────────────────────────────
-runtime: claude                      # Default agent runtime: claude, pi, codex
+runtime: claude                      # Default agent runtime: claude, pi, codex, opencode
 
 # ── Roles ────────────────────────────────────────────────────
 roles:                               # Agent roles to install (determines which Apps and credentials are provisioned)
@@ -40,22 +46,50 @@ agents:                              # Registered agent sources and per-agent tu
     runtime: claude                  # Per-agent runtime override
     model: opus                      # Per-agent model override (model id or provider/id)
     effort: high                     # Per-agent reasoning effort: low, medium, high, xhigh, max
-    subagents:                       # Per-agent sub-agent model map
+    subagents:                       # Per-agent sub-agent model map (pi and codex)
       default: sonnet                # Fallback model for personas without an explicit entry
       code-reviewer: opus            # Model for a specific persona
+    # trigger: <CEL expression>      # When the built-in review agent runs (review entry only)
 
 # ── Remote resources ─────────────────────────────────────────
 allowed_remote_resources:            # URL prefixes allowed for remote resources (agents, policies, skills, plugins, profiles, providers, and base composition)
   - https://raw.githubusercontent.com/fullsend-ai/fullsend/
   - https://raw.githubusercontent.com/fullsend-ai/agents/
 
-# ── Cross-repo issue creation ────────────────────────────────
-create_issues:
-  allow_targets:
-    orgs:                            # GitHub orgs agents may create issues in
-      - my-org
-    repos:                           # Specific repos (owner/name) agents may create issues in
-      - fullsend-ai/fullsend
+# ── Issue tracker ────────────────────────────────────────────
+tracker:                             # Issue tracker. At most one provider block: github, gitlab, or jira
+  github:
+    allowed_targets:
+      orgs:                          # GitHub orgs agents may create issues in
+        - my-org
+      repos:                         # Specific repos (owner/name) agents may create issues in
+        - fullsend-ai/fullsend
+        - fullsend-ai/agents
+  # gitlab:
+  #   allowed_targets:
+  #     groups: [my-group]           # GitLab groups (projects in the group and its subgroups)
+  #     repos: [my-group/sub/project] # Full project paths
+  # jira:
+  #   base_url: https://example.atlassian.net # Jira site URL (required with any Jira setting below)
+  #   api_url: https://api.atlassian.com      # Jira API gateway URL (optional; this is the default)
+  #   project: PROJ                  # This repository's Jira project key (required with base_url)
+  #   allowed_targets:
+  #     projects: [OTHER]            # Jira project keys for cross-project issue creation or moves
+  #   poll:
+  #     enabled: true                # Managed poll workflow switch (see the tracker.jira section)
+  #     query: 'labels = "fullsend" ORDER BY updated DESC' # JQL; always scoped to project
+
+# ── Authorization ────────────────────────────────────────────
+authorization:                       # Extra sources of permission for triggering agents
+  - provider: owners_file            # GitHub: grant access from the repo-root Prow OWNERS file, checked before the collaborator API
+  - provider: jira                   # Jira (jira-poll): who may trigger agents from Jira events
+    write:                           # Fullsend role write
+      groups: [example-team-developers]  # Jira group names (or group IDs)
+      accounts: ["5f7c012e0b2a4c001f3d9876"]  # Jira account IDs
+    triage:                          # Fullsend role triage
+      groups: [example-team]
+      accounts: []
+    labels: jira_editors             # Label-added events: jira_editors (default), allowlist, project_roles
 
 # ── Status notifications ─────────────────────────────────────
 status_notifications:
@@ -75,10 +109,19 @@ inference:
   project: my-gcp-project           # GCP project ID (must be provided by installer)
   region: global                     # GCP region for inference requests
   wif_provider: projects/123/locations/global/workloadIdentityPools/pool/providers/prov  # WIF provider resource name
+  wif_audience: ""                   # GitLab: agent job ID token audience for an existing provider (default "fullsend")
+  service_account: ""                # GitLab: service account email the agent job impersonates (default none)
   openai:                            # OpenAI Workload Identity Federation (ADR 0092)
     audience: ""                     # OpenAI WIF audience
     identity_provider_id: ""         # OpenAI WIF identity provider ID
     service_account_id: ""           # OpenAI WIF service account ID
+  gateway:                           # Inference gateway credential route (ADR 0137)
+    url: ""                          # Gateway URL, e.g. https://gateway.example.com or https://gateway.example.com/team-a (optional path prefix, no trailing /v1, port 443 only; plain http only for a loopback test host)
+    audience: ""                     # OIDC audience the runner requests for the gateway (oidc mode)
+    auth: ""                         # Credential mode: oidc (default) or api-key (ADR 0138)
+    messages_auth_header: ""         # Messages-dialect credential header: authorization (default) or x-api-key (api-key mode only, ADR 0142)
+    models: {}                       # Inline model list: id -> {api, compat, contextWindow, maxTokens}
+    models_file: ""                  # Or: repository path to a pi-inference-gateway config file
 
 # ── Model aliases ────────────────────────────────────────────
 models:
@@ -104,15 +147,6 @@ Hosting platform for the repository (`github` or `gitlab`). When omitted,
 fullsend auto-detects the forge from CI environment variables. Most
 installations do not need to set this explicitly.
 
-### `tracker`
-
-Default issue tracker for `fullsend issues` commands' `--tracker` flag
-(`github`, `gitlab`, or `jira`). Distinct from `forge` — a repository hosted
-on GitHub may track issues in Jira. When omitted, `--tracker` is required on
-every `fullsend issues` invocation. See
-[Jira Integration](../guides/user/jira-integration.md) for cross-platform
-setup.
-
 ### `kill_switch`
 
 Emergency stop. When set to `true`, all agent dispatch is disabled for the
@@ -131,7 +165,10 @@ comments are synced to Jira where `<details>` does not render as collapsible.
 ### `runtime`
 
 Default agent runtime for all agents in this repository. Valid values:
-`claude`, `pi`, `codex`. Per-agent overrides in the `agents:` list take
+`claude`, `pi`, `codex`, `opencode`. `opencode` is opt-in and limited to
+read-only agents (`triage`, `prioritize`) until the security-hook adapter
+lands ([#7824](https://github.com/fullsend-ai/fullsend/issues/7824)).
+Per-agent overrides in the `agents:` list take
 precedence. Per-run overrides via `--runtime` flag or `FULLSEND_RUNTIME` env
 var take precedence over both. See
 [Choose a Runtime](../guides/getting-started/choosing-a-runtime.md) for
@@ -141,7 +178,16 @@ runtime comparison.
 
 Agent roles determine which GitHub Apps (and their associated credentials and
 permissions) are provisioned for the repository. Valid roles: `fullsend`,
-`triage`, `coder`, `review`, `fix`, `retro`, `prioritize`, `e2e`.
+`triage`, `coder`, `review`, `fix`, `retro`, `prioritize`, `e2e`. The `fix`
+role reuses the `coder` GitHub App and PEM, so no separate App or secret is
+created for it. For each role's GitHub App and purpose, see
+[Custom Agent Identity — Built-in roles](../guides/user/custom-agent-identity.md#built-in-roles).
+
+Mint-only dogfood roles such as `scribe` can be registered with
+`fullsend mint add-role` (and used via remote harness registration) but are
+**not** valid values for `roles` until scaffold and workflow wiring lands.
+Adding them under `roles` fails config validation rather than silently
+no-oping.
 
 In the layered config system, `roles` uses replace-if-set semantics — an
 overlay that sets `roles` replaces the parent list entirely (no union).
@@ -152,7 +198,7 @@ Omitting the key inherits the parent's roles. See
 
 Registered agent sources and per-agent tuning. Each entry identifies an agent
 by source URL or local path, with optional overrides for runtime, model,
-effort, and sub-agent models.
+effort, sub-agent models and the trigger.
 
 - **`source`** — URL (must include `#sha256=<64-hex-char>` integrity hash) or
   local path. URL sources must be covered by `allowed_remote_resources`.
@@ -171,7 +217,27 @@ effort, and sub-agent models.
 - **`subagents`** — Map of persona names to model references. The `default`
   key sets the fallback for personas without an explicit entry. A `~` (null)
   value tombstones an inherited entry. Keys must be lowercase alphanumeric
-  segments joined by hyphens (max 64 chars).
+  segments joined by hyphens (max 64 chars). On codex, for an agent that
+  delegates, the values must be OpenAI ids and a key must name a registered
+  persona or `default`; see
+  [Codex › Child models](../runtimes/codex.md#child-models).
+- **`trigger`** — A [CEL trigger](../guides/user/cel-triggers-reference.md)
+  (a boolean over the normalized `event`). It decides routing for the
+  built-in review, retro, triage and prioritize agents only: on one of those
+  entries it opts the repository into CEL routing for that agent, so the
+  trigger, not the dispatch workflow's built-in rules, decides when the
+  agent's job starts (see
+  [Choosing when review runs](../guides/user/customizing-agents.md#choosing-when-review-runs),
+  [Choosing when retro runs](../guides/user/customizing-agents.md#choosing-when-retro-runs)
+  and
+  [Choosing when triage and prioritize run](../guides/user/customizing-agents.md#choosing-when-triage-and-prioritize-run)).
+  It does not change CEL dispatch: the harness `trigger:` keeps deciding when
+  custom agents run and what the Jira poller dispatches. A trigger alone
+  makes a valid override-only entry for a built-in agent. Validated when the
+  agent list is validated: it must compile and return a boolean. Like an
+  invalid `model` or `effort`, an invalid `trigger` makes every agent run in
+  the repository fail with `invalid agent config`, not only built-in routing, so
+  check the expression before you merge the change.
 
 In the layered config system, agents use keyed merge by `DerivedName()` — see
 [Layered Config Reference](../guides/infrastructure/layered-config-reference.md).
@@ -184,26 +250,285 @@ For agent registration and management, see
 
 URL prefixes allowed for remote resources in harness files — agent sources
 (`agents:` entries with URLs), policies, skills, plugins, profiles, providers,
-and `base:` composition. The org-level list acts as a fallback for all URL
+and `base:` composition. The config-level list acts as a fallback for all URL
 resolution: a URL is accepted if it matches either the harness-level or the
-org-level list. Default prefixes cover the fullsend and agents repositories.
+config-level list. Default prefixes cover the fullsend and agents repositories.
 
 In the layered config system, this field uses union-with-deny-all semantics:
 omitted inherits from parent; explicit empty (`[]`) denies all remote
 resources; a non-empty list is unioned with the parent's list. See
 [Layered Config Reference](../guides/infrastructure/layered-config-reference.md).
 
-### `create_issues`
+### `tracker`
 
-Controls cross-repo issue creation by agents. The `allow_targets` field
-restricts which orgs and repos agents may create issues in.
+The issue tracker, as a single provider-discriminated mapping. `tracker` holds
+at most one provider block — `github`, `gitlab`, or `jira` — and the block that
+is present selects the provider. It is the default backend for the `--tracker`
+flag of `fullsend issues` commands (distinct from `forge`: a repository hosted
+on GitHub may track issues in Jira), and its `allowed_targets` restrict where
+agents may create issues. Declare a provider with no extra targets as an empty
+block (for example `tracker: {jira: {}}`). When omitted, no provider is
+selected, `--tracker` is required on every `fullsend issues` invocation, and
+agents cannot create issues outside the repository they run in. Validation
+rejects a `tracker` mapping with more than one provider block. See
+[Jira Integration](../guides/user/jira-integration.md) for cross-platform
+setup.
 
-- **`allow_targets.orgs`** — GitHub organizations. All repos in these orgs are
-  allowed.
-- **`allow_targets.repos`** — Specific repos in `owner/name` format.
+- **`tracker.github.allowed_targets.orgs`** — GitHub organizations. All repos
+  in these orgs are allowed.
+- **`tracker.github.allowed_targets.repos`** — Specific repos in exactly
+  `owner/name` format.
+- **`tracker.gitlab.allowed_targets.groups`** — GitLab groups (full group
+  path). Projects in the group and its subgroups are allowed.
+- **`tracker.gitlab.allowed_targets.repos`** — Specific projects by full
+  project path (for example `group/subgroup/project`).
+- **`tracker.jira.allowed_targets.projects`** — Jira project keys (an
+  uppercase letter followed by uppercase letters, digits, or underscores).
 
-When omitted, agents cannot create issues outside the repository they are
-running in.
+#### `tracker.jira` connection and polling settings
+
+`tracker.jira` also holds the Jira site, project, and poller settings. The
+mapping can be set in `.fullsend/config.yaml` or in a repository's managed
+`config:` block in `repos.yaml`:
+
+```yaml
+tracker:
+  jira:
+    base_url: https://example.atlassian.net
+    api_url: https://api.atlassian.com
+    project: PROJ
+    allowed_targets:
+      projects: [OTHER]
+    poll:
+      enabled: true
+      query: 'labels = "fullsend" AND statusCategory != Done ORDER BY updated DESC'
+```
+
+- **`tracker.jira.base_url`** — The Jira site URL. It must be an `https` URL
+  with no credentials, query, or fragment. It has no default.
+- **`tracker.jira.api_url`** — The Jira API gateway URL. It is optional and
+  defaults to `https://api.atlassian.com`. It is validated like `base_url`.
+  Fullsend's shared Jira client sends REST requests to
+  `{api_url}/ex/jira/{cloudId}/rest/api/3/...`. It discovers the cloud ID
+  from `{base_url}/_edge/tenant_info` and keeps `base_url` for issue browse
+  links. An override must serve the same gateway path layout. The poller,
+  `fullsend issues`, run-status updates, and reconciliation do not use this
+  setting yet. They switch to the shared client in
+  [#9077](https://github.com/fullsend-ai/fullsend/issues/9077) and
+  [#9078](https://github.com/fullsend-ai/fullsend/issues/9078).
+- **`tracker.jira.project`** — The key of the single Jira project for this
+  repository. It is not a fallback project, and it has no default.
+- **`tracker.jira.poll.enabled`** — Controls the managed poll workflow. `true`
+  installs or enables it, `false` removes or disables it. When `poll` or
+  `poll.enabled` is omitted, the workflow is not installed. This setting does
+  not affect `fullsend poll` or `fullsend issues`. `fullsend repos install`
+  converges it. When it is `true`, install writes the Jira credentials from
+  `--jira-token` and `--jira-email` and ensures the managed poll resources.
+  When it is `false` or omitted, install removes those resources and keeps
+  the credentials. The forge-specific poll resources are not managed yet
+  (see [Jira polling](../cli/repos.md#jira-polling)).
+- **`tracker.jira.poll.query`** — The JQL the poller runs. It defaults to
+  `statusCategory != Done ORDER BY updated DESC`. The query is always scoped
+  to `project`: the poller runs `project = "<project>" AND (<query>)` and
+  keeps a trailing `ORDER BY` after the closing parenthesis. The parentheses
+  in the query must be balanced. For example, the query above runs as
+  `project = "PROJ" AND (labels = "fullsend" AND statusCategory != Done) ORDER BY updated DESC`.
+
+`base_url` and `project` are required once `base_url`, `api_url`, `project`,
+or `poll` is set. A mapping that only selects Jira (`jira: {}`) or only sets
+`allowed_targets` stays valid. This includes a mapping migrated from the
+legacy scalar `tracker: jira`.
+
+Credentials are never part of this mapping. Keys such as `token`,
+`api_token`, `email`, or `password` are rejected. Supply the Jira token and
+the optional account email as the `FULLSEND_JIRA_TOKEN` and
+`FULLSEND_JIRA_EMAIL` repository secrets. The shared Jira client treats the
+token as a scoped API token. When `FULLSEND_JIRA_EMAIL` is set, the client
+uses Basic auth with that email and a scoped user token (a bot user). When it
+is absent, the client sends the token as a Bearer token from a scoped
+service account. The token string does not show its type, so the email alone
+selects the mode. Other unknown keys under
+`tracker.jira`, `tracker.jira.poll`, and `tracker.jira.allowed_targets` are
+rejected too.
+
+When the effective config sets these settings, `fullsend poll --input-driver
+jira-poll` reads the Jira site, project, and query only from the config.
+`--jira-url`, `--jira-project`, and `--jql` are rejected, and
+`JIRA_BASE_URL` is ignored. When the config does not set them, the poller
+still uses those flags and `JIRA_BASE_URL`.
+
+For GitHub and GitLab the scopes are additive: a destination is allowed if it
+matches a configured org or group, or a configured repo. Malformed entries
+are rejected: an empty org or group, an org containing `/`, a GitHub repo not
+in `owner/name` form, a GitLab path with empty segments or a repo without a
+namespace, or an invalid Jira project key.
+
+The repository agents run in is always allowed, so it does not need an
+entry. The default GitHub per-repo configuration generated without a preset lists
+both `fullsend-ai/fullsend` and `fullsend-ai/agents` in
+`tracker.github.allowed_targets.repos`,
+so retro proposals and triage prerequisites can reach the platform or agent
+repository that owns the change. These are installation defaults, not an
+automatic grant for every repository in `allowed_remote_resources`.
+Fresh GitLab installations instead record an explicit empty
+`tracker.gitlab.allowed_targets` policy: cross-project targets must be
+configured for the GitLab host.
+Explicit settings are preserved. Retro and triage post-scripts currently read
+only the overlay (`.fullsend/config.yaml`), not the preset
+(`.fullsend/config.base.yaml`). Until
+[agents#1728](https://github.com/fullsend-ai/agents/issues/1728) is fixed,
+preset users must declare the required
+`config.tracker.<provider>.allowed_targets` in the
+managed repository’s `repos.yaml` entry and rerun `fullsend repos install`,
+or edit `.fullsend/config.yaml` for an unmanaged installation. Updating only
+the preset does not enable these cross-repository operations. Include all
+targets the post-scripts need in the overlay policy.
+Existing installations retain their permissions on upgrade; on GitHub, to opt in, add
+`fullsend-ai/agents` to the existing target list in the managed repository’s
+`repos.yaml` configuration, or in `.fullsend/config.yaml` for an installation
+not managed through `fullsend repos`. Preserve any other targets you need.
+
+In the layered config system, `tracker` replaces the parent's whole object
+when set, so layers never combine two providers. See
+[Layered Config Reference](../guides/infrastructure/layered-config-reference.md).
+
+**Breaking change — migration from the scalar `tracker`:** `tracker` used to be
+a scalar (`tracker: jira`). A scalar value is no longer accepted: validation
+(`fullsend lint` and CLI config writes) and config loading reject it with a
+migration message. A `repos.yaml` managed `config:` block containing it is
+converted by `fullsend repos install` (see below). Replace it with the provider
+block:
+
+```yaml
+# before
+tracker: jira
+# after
+tracker:
+  jira: {}
+```
+
+**Migration from `create_issues`:** the top-level `create_issues` key is
+removed. Runtime config loading fails with a migration error when either
+`.fullsend/config.yaml` or `.fullsend/config.base.yaml` still contains
+`create_issues`; the key is never silently ignored. Validation also rejects it.
+Move `create_issues.allow_targets.orgs` and `repos`
+to `tracker.github.allowed_targets.orgs` and `repos` on GitHub, to
+`tracker.gitlab.allowed_targets.groups` and `repos` on GitLab, or to
+`tracker.jira.allowed_targets.projects` on Jira, and keep only one provider
+block.
+
+**Automatic migration of managed configuration:** `fullsend repos install`
+converts the legacy scalar `tracker` and `create_issues` keys in `repos.yaml`
+managed `config:` blocks (`defaults.config`, the forge section's `config`, and
+each repository entry's `config`) before the manifest is decoded, writes the
+converted manifest, and re-renders each fullsend-managed `.fullsend/config.yaml`
+from it. Each layer that set a legacy key gets the full `tracker` mapping that
+was in effect there, because the legacy keys were inherited separately while a
+`tracker` mapping replaces the parent's. The effective provider and targets of
+every repository stay the same:
+
+- A layer with no provider uses the repository's forge (`github` or `gitlab`).
+  A `create_issues` block in `defaults.config` with no provider is moved to each
+  forge section's `config`, because `defaults.config` applies to both forges.
+- GitHub `orgs` and `repos` stay organization and repository grants under
+  `tracker.github.allowed_targets`. GitLab `repos` move to
+  `tracker.gitlab.allowed_targets.repos`.
+- Install stops before any write, naming the manifest path and the edit to
+  make, when a target has no unambiguous equivalent. That covers repository or
+  organization targets under a Jira provider (Jira targets are project keys
+  under `tracker.jira.allowed_targets.projects` and are never derived from
+  repository paths), organization targets on GitLab (list the groups under
+  `tracker.gitlab.allowed_targets.groups`), and a layer that combines a
+  `tracker` mapping with `create_issues`.
+- A scalar `tracker` with no `create_issues` in the manifest becomes a provider
+  block with no `allowed_targets`. As a `tracker` mapping it replaces any
+  `tracker` mapping in the preset (`.fullsend/config.base.yaml`).
+
+Running install again changes nothing. A read-only or HTTPS manifest is
+converted in memory for that run and install prints the edits to apply to its
+source. `--dry-run` reports the conversion without writing. Markerless
+`.fullsend/config.yaml` files and presets are not converted; edit them by hand.
+
+### `authorization`
+
+Lists extra sources of permission for triggering agents. There are two
+providers: `owners_file` for GitHub events and `jira` for Jira events.
+
+#### `owners_file`
+
+The GitHub collaborator API always applies; this provider is checked first:
+
+- An `approvers` entry in the repo-root `OWNERS` file gets write-level access
+  (every slash command and custom agent). A `reviewers` entry gets
+  triage-level access, which covers `/fs-triage`, `/fs-review`, and custom
+  agents whose harness sets `role: triage` or `role: review`. Custom agents
+  with any other `role:` still require write.
+- An entry that names a key in `OWNERS_ALIASES` stands for that alias's
+  members. A GitHub login equal to any alias key never matches, and nested
+  aliases are not expanded.
+- A user not found in `OWNERS` falls through to the collaborator API.
+- If `OWNERS` or `OWNERS_ALIASES` cannot be parsed, or two alias keys differ
+  only by case, the OWNERS check is skipped and only the collaborator API
+  decides.
+- Only the flat root `approvers`/`reviewers` lists are read. Prow `filters:`
+  blocks and per-directory `OWNERS` files are ignored.
+
+#### `jira`
+
+Decides which Jira users may trigger agents through the `jira-poll` input
+driver. It applies only to events from Jira and does not change GitHub or
+GitLab authorization
+([ADR 0153](../ADRs/0153-authorize-jira-poll-actors-without-project-administration.md)).
+
+| Key | Meaning |
+|---|---|
+| `write.groups`, `write.accounts` | Jira groups (by name or group ID) and Jira account IDs granted the fullsend `write` role |
+| `triage.groups`, `triage.accounts` | Jira groups and account IDs granted the fullsend `triage` role |
+| `labels` | How a label-added event is authorized: `jira_editors` (default once the entry is present), `allowlist`, or `project_roles` |
+
+- **Slash commands and other non-label events:** when the entry sets a
+  `write` or `triage` list (an empty list counts as set, so it denies
+  everyone), the lists decide. An actor listed
+  under `write` gets `write`. An actor listed only under `triage` gets
+  `triage`, which covers `/fs-triage` and custom agents whose
+  harness sets `role: triage` or `role: review`. Anyone else is denied. The
+  Jira project roles are not consulted. When neither list is set, slash
+  commands use the Jira project role lookup instead. That lookup needs
+  Administer Projects. Other non-label events, such as an issue being opened
+  or edited, are then not authorized for any agent, unless the entry sets
+  `labels: project_roles`: with that value and no lists, every event
+  (labels, slash commands, opened, edited, closed, reopened, plain comments,
+  label removals) resolves through the project role lookup, exactly as with
+  no `jira` entry.
+- **Label-added events**: `jira_editors` authorizes anyone who could add the
+  label, which needs Jira's Edit Issues permission. `allowlist` checks the
+  label author against the same lists as slash commands. `project_roles`
+  uses the Jira project role lookup.
+- Group entries are resolved with Jira's user-groups API, once per actor per
+  poll cycle. That needs the poller account to hold the Browse users and
+  groups global permission. Account entries need no Jira call. Project-role
+  resolution calls the same API for an actor when a project role is granted
+  to a group.
+
+To keep today's behavior explicitly, use the two-line entry
+`- provider: jira` with `labels: project_roles` and no lists.
+
+The provider is opt-in. Without a `jira` entry, every Jira event, including
+label-added events, resolves through the project role lookup and takes the
+per-harness role threshold, which needs Administer Projects. Unknown keys in a `jira` entry, an
+unknown `labels` value, and empty group or account entries fail config
+loading. See
+[Jira integration](../guides/user/jira-integration.md#actor-role-resolution)
+for the permissions each setting needs.
+
+Default: absent (`owners_file` off; Jira resolves every event through the
+project role lookup). The field is
+not inherited from `config.base.yaml`: each repo opts in in its own
+`config.yaml`. Unknown or duplicate providers fail config validation, and also fail
+`jira-poll` and harness dispatch at load time, and
+`write`, `triage`, and `labels` are valid only on the `jira` provider. See
+[OWNERS file authorization](../guides/user/owners-file-authorization.md)
+for an `owners_file` setup walkthrough.
 
 ### `status_notifications`
 
@@ -218,6 +543,61 @@ agents start and complete.
 - **`reaction.completion`** — `enabled`, `on_failure`, or `disabled`
   (default).
 
+When `status_notifications` is omitted entirely, both start and completion
+comments default to enabled.
+
+**Completion comments.** `comment.completion` decides whether a comment is
+posted when the run ends:
+
+| Value | Behavior |
+|-------|----------|
+| `enabled` | Always post a completion comment (default) |
+| `on_failure` | Post when the agent fails, is cancelled, or is skipped by a pre-script; the start comment is automatically suppressed to avoid notification noise |
+| `disabled` | Never post a completion comment; silently remove the start comment |
+
+`on_failure` reduces notification noise: successful runs leave no trace, but
+failures still surface. With `on_failure`, the start comment is suppressed
+regardless of `comment.start`, because posting and then deleting a start
+comment would still trigger a GitHub notification pointing to a deleted
+comment.
+
+In `enabled` mode, a hard crash or cancellation that happens before the agent
+could post anything at all is also surfaced after the fact: a post-job cleanup
+step synthesizes an "Interrupted" comment so the run doesn't silently vanish.
+
+**Reactions.** Emoji reactions don't generate a GitHub notification, so they
+are a lower-noise way to show that an agent is working and how the run turned
+out. Unlike comments, they default to `disabled`. When `reaction.start` is
+enabled, a 👀 reaction is added when the agent begins. At completion, the start
+reaction (if any) is removed and, depending on `reaction.completion`, replaced
+with an outcome reaction:
+
+| Value | Behavior |
+|-------|----------|
+| `enabled` | Always add a completion reaction: 👍 on success, 😕 on failure/cancelled/skipped |
+| `on_failure` | Add a 😕 reaction only on failure/cancelled/skipped; leave no reaction on success |
+| `disabled` | Never add a completion reaction (default) |
+
+👎 is deliberately avoided for failures: it overloads GitHub's native
+up/down-vote convention, so a routine agent failure could be misread as the bot
+disliking the issue. Because reactions carry no notification cost,
+`on_failure` here only means "leave no reaction on success", with no
+start-suppression workaround.
+
+For runs triggered by an issue or PR event, the reaction is added to the
+issue or PR itself. For runs triggered by a slash command comment (for example
+`/fs-fix`), it is added to the triggering comment instead, so it's clear which
+command the reaction is responding to.
+
+Known limitations:
+
+- Reactions are currently GitHub-only. Enabling `reaction.*` on a
+  GitLab-backed repo is silently a no-op today
+  ([#5998](https://github.com/fullsend-ai/fullsend/issues/5998)).
+- If a run is hard-killed before it can post its completion reaction, the
+  start reaction (👀) can be left behind indefinitely. Unlike status comments,
+  there's no out-of-process reconciler for orphaned reactions yet.
+
 ### `mint_url`
 
 Token mint URL for credential issuance. The mint service issues short-lived
@@ -227,11 +607,29 @@ set this to their own URL. See
 [Standalone Mint](../guides/infrastructure/standalone-mint.md) and
 [Mint Administration](../guides/infrastructure/mint-administration.md).
 
+For GitHub repositories managed with `fullsend repos install`, a `mint_url`
+declared in the managed configuration (`config.mint_url` in `repos.yaml`) or
+the `config_base` preset also sets the `FULLSEND_MINT_URL` repository
+variable. Install, dry run and `repos status` report a conflict when it
+differs from the manifest's own `mint_url`. See
+[Effective infrastructure values](../cli/repos.md#effective-infrastructure-values).
+
 ### `inference`
 
 Groups inference backend settings under a single key. Each subfield resolves
 independently through the layered config system (an overlay can override
 `project` without restating `provider`).
+
+For repositories managed with `fullsend repos install`, `project`, `region`
+and `wif_provider` in the managed configuration or `config_base` preset
+feed the installed credentials: a declared `region` manages the
+`FULLSEND_GCP_REGION` variable for `vertex-wif` and `openai-wif`
+repositories (with none declared, an existing variable is kept and
+`global` is written only where it is missing), and `project` / `wif_provider` are written to the
+`FULLSEND_GCP_PROJECT_ID` / `FULLSEND_GCP_WIF_PROVIDER` secrets unless
+`--vertex-project` / `--vertex-wif-provider` supply them (a disagreeing
+flag is an error). See
+[Effective infrastructure values](../cli/repos.md#effective-infrastructure-values).
 
 - **`provider`** — Inference backend identifier. Currently only `vertex`.
   Default: `vertex`.
@@ -240,11 +638,174 @@ independently through the layered config system (an overlay can override
 - **`region`** — GCP region for inference. Default: `global`.
 - **`wif_provider`** — Full Workload Identity Federation provider resource
   name. No default — must be provided by the installer.
+- **`wif_audience`** — GitLab `vertex-wif` only. The audience the GitLab
+  agent job requests for its ID token (`FULLSEND_ID_TOKEN`), for an existing
+  WIF provider that does not accept `fullsend`. `fullsend repos install`
+  renders it into `.gitlab/ci/fullsend-agent.yml`. Default: unset, which
+  keeps `aud: "fullsend"`. Must be a single line of printable ASCII with no
+  surrounding spaces and no `$`.
+- **`service_account`** — GitLab `vertex-wif` only. The email of a service
+  account the agent job impersonates after the federated token exchange
+  (`<name>@<project>.iam.gserviceaccount.com`). `fullsend repos install`
+  writes it as the `FULLSEND_GCP_SERVICE_ACCOUNT` CI/CD variable. Default:
+  unset, which keeps direct federated identity.
+
+  Both keys require an explicitly supplied `wif_provider` (or
+  `--vertex-wif-provider`) and are read only at install time. In `repos.yaml`,
+  set them under `gitlab.config` or on `gitlab.repos` entries: `github.config`
+  and `github.repos` entries reject them, and values inherited from
+  `defaults.config` are ignored on GitHub repositories and on GitLab
+  repositories that do not use `vertex-wif`. See
+  [Using an existing WIF provider](../guides/getting-started/configuring-gitlab.md#using-an-existing-wif-provider).
 - **`openai`** — OpenAI Workload Identity Federation identifiers
   ([ADR 0092](../ADRs/0092-openai-wif-credential-delivery.md)). The
   `FULLSEND_OPENAI_*` runner variables, when set, replace the resolved block
-  entirely. All three fields must come from one source for a run. See
+  entirely. All three fields must come from one source for a run.
+  `fullsend repos install` checks the same sources for repositories whose
+  `inference.auth` is `openai-wif`. See
   [OpenAI Workload Identity](../guides/infrastructure/openai-workload-identity.md).
+- **`gateway`** — a self-hosted, OpenAI/Anthropic-compatible inference
+  gateway that validates the job's forge OIDC token directly
+  ([ADR 0137](../ADRs/0137-inference-gateway-credential-route.md)). Models
+  with the `gateway/` prefix use this route. The block applies when it is
+  complete and, in the default `oidc` mode, the run has a forge OIDC endpoint
+  (a GitHub Actions job with `id-token: write`); the `api-key` mode (see
+  `auth` below) has no such condition. In the `oidc` mode the runner then
+  fetches the job's OIDC assertion for
+  `audience` and puts it behind a run-scoped OpenShell provider with a
+  per-host egress profile. It seeds the provider's placeholder into a
+  runner-owned token file, and re-seeds it before each token's own `exp`.
+  OpenShell's placeholders do not say which rotation they belong to. So if
+  the runner does not see a refreshed token's placeholder in the sandbox
+  (the 90-second settle wait runs out, or reading it fails), it does not
+  rotate again. It moves the
+  provider's expiry back to the token the agent holds and stops
+  refreshing, and the run fails closed when that token expires. The
+  re-seed runs only after the sandbox hands out the new placeholder, and
+  it checks the file afterwards.
+  This happens in addition to every other provider: `openai/` and Vertex
+  models in the same run keep their own routes. If the gateway cannot be
+  reached, or refuses the token, the run fails and does not fall back to
+  another credential. With no block, or in the `oidc` mode on a local run
+  without an OIDC endpoint, the runner adds nothing on pi, so a harness that
+  loads the inference-gateway extension as a plugin keeps working. codex and
+  Claude Code have no such setup, so there a `gateway/` model without a block
+  that applies is an error. codex sends `gateway/` models to the gateway's
+  `POST /v1/responses` through a runner-owned `fullsend-gateway` provider
+  ([Codex › Models through an inference gateway](../runtimes/codex.md#models-through-an-inference-gateway-experimental)).
+  On Claude Code the runner exports `url` as `ANTHROPIC_BASE_URL` and passes
+  the id after `gateway/` to `--model`; the model list is not used
+  ([details](../runtimes/claude.md#inference-gateway-route)). Fields:
+  - `url` — the gateway origin, for example `https://gateway.example.com`,
+    optionally followed by the path prefix the gateway serves its API
+    under, for example `https://gateway.example.com/team-a` for a gateway
+    behind a shared ingress. Must be `https` (plain `http` only for a
+    loopback test host), with no credentials, query or fragment, and no
+    port other than 443: the runner adds the `/v1/...` model API paths
+    itself, and the egress profile allows the gateway host on port 443
+    only. A path prefix must be a clean absolute path: no empty (`//`),
+    `.` or `..` segment, no percent-encoding, only letters, digits, `-`,
+    `.`, `_` and `~` in each segment, and no trailing `/v1` (write
+    `https://gateway.example.com/team-a`, not `.../team-a/v1`). A trailing
+    `/` is ignored. The prefix applies everywhere the runner builds a model
+    API path: each runtime calls `<url>/v1/...`, the egress profile binds
+    the credential to `<prefix>/v1/**` only (never the whole host) and
+    allows only the model API paths under it, and
+    [`fullsend inference gateway status`](../cli/inference.md#inference-gateway-status)
+    probes `<url>/v1/models`. A bare origin works as before.
+    The run route accepts a gateway on a private address, but
+    [`fullsend inference gateway status`](../cli/inference.md#inference-gateway-status)
+    refuses loopback, private and other internal addresses, so it cannot
+    check one. For such a gateway, a run is the check: its first gateway
+    model call fails if the gateway is unreachable or refuses the token.
+  - `audience` — the OIDC audience the runner requests. The token is valid
+    only at the gateway. Required in the `oidc` mode; not used in the
+    `api-key` mode.
+  - `auth` — the credential mode, `oidc` (the default) or `api-key`
+    ([ADR 0138](../ADRs/0138-inference-gateway-api-key-credential-mode.md)).
+    New in fullsend v0.47.0: an older CLI or reusable workflow rejects a
+    config that sets it. There is no precedence and no fallback between them. `oidc` is the
+    route described above. `api-key` is for gateways that cannot trust
+    forge OIDC. It is supported, but it is not the primary or safest
+    option, because it relies on a long-lived secret: use it with caution,
+    and prefer `oidc` when the gateway supports it. In the `api-key` mode
+    the runner reads the gateway key from the
+    `FULLSEND_INFERENCE_GATEWAY_API_KEY` forge secret or local environment
+    variable, and fails the run when it is not set. It puts the key behind
+    the same run-scoped provider placeholder, egress profile and guards as
+    the OIDC token. The key is not rotated, so nothing is re-seeded. The
+    block applies on local runs too, so the runner owns the route there
+    as well.
+  - `messages_auth_header` — the header the gateway credential travels in
+    on Messages-dialect requests: `authorization` (the default, used when
+    the field is absent) or `x-api-key`
+    ([ADR 0142](../ADRs/0142-inference-gateway-x-api-key-header-for-messages-models.md)).
+    A CLI or reusable workflow from v0.48.0 or earlier ignores the field
+    and sends `Authorization: Bearer`, so an `x-api-key` gateway answers
+    401. Set `x-api-key` for a gateway that
+    reads the caller's key from `x-api-key` on `/v1/messages`, the header
+    Anthropic documents for API keys on that API. It is valid only with
+    `auth: api-key`: a resolved block in the `oidc` mode that sets
+    `x-api-key` is a config error, because an OIDC token is a bearer
+    token. Only the Messages dialect moves: pi `anthropic-messages` models
+    send the key as `x-api-key`, and Claude Code gets it as
+    `ANTHROPIC_API_KEY` instead of `ANTHROPIC_AUTH_TOKEN`. pi
+    `openai-responses` and `openai-completions` models, and codex, keep
+    `Authorization: Bearer`. Each request carries the credential in one
+    header only. The header is configured, never guessed: the runner does
+    not retry in the other header after a 401. A gateway that reads
+    `x-api-key` must remove the caller's key before it sets its own
+    upstream key; see
+    [Header custody for an x-api-key gateway](../guides/infrastructure/inference-gateway-operator.md#header-custody-for-an-x-api-key-gateway).
+  - `models` — optional inline model list, a map of model id to settings:
+    `api` (one of `openai-responses`, `anthropic-messages`,
+    `openai-completions`), and optional `compat`, `contextWindow` and
+    `maxTokens`. `compat` holds pi request-feature flags: each value is a
+    boolean, string or number, a flag that pi-inference-gateway v0.1.1
+    knows must have that flag's type for the model's `api`, list-valued
+    flags such as `allowedFallbackModels` are refused, and an unknown flag
+    whose name looks like a credential or header is refused.
+  - `models_file` — optional repository path, for example
+    `.fullsend/inference-gateway.json`, to a file in the
+    [pi-inference-gateway config format](https://github.com/fullsend-ai/pi-inference-gateway/blob/v0.1.1/docs/configuration.md#config-file).
+    It must hold exactly one entry, `providers.gateway`, carrying only
+    `models`, `include`, `exclude` and `defaultApi`, and every model must
+    set its own `api`: pi runs offline, and the extension offers a
+    configured model only when its entry names an `api`. Per-model values
+    follow the extension's types: `compat` as for inline models,
+    `contextWindow` and `maxTokens` positive whole numbers, `cost` only
+    `input`, `output`, `cacheRead` and `cacheWrite` as non-negative
+    numbers, and `thinkingLevelMap` thinking levels mapped to a string or
+    `null`. Duplicate JSON keys are refused. These checks validate the
+    file's shape; they are not secret detection. `fullsend github setup`
+    commits the file as written, so keep credentials out of free-text
+    values such as model names. `include`,
+    `exclude` and `defaultApi` only apply to models discovered from the
+    gateway, so they have no effect on a pi run. A file that sets
+    `baseUrl`, `baseUrlEnv`, a credential key (`apiKey*`, `tokenFile`,
+    `username*`, `password*`), `headers`, `authHeader`, `modelsPath`,
+    `discovery` or `fallbackModels` is refused: the runner owns those.
+    The runner reads the file from the repository checkout that
+    `config.yaml` came from, so it is read at the same ref (the base
+    branch on pull-request events), even when an org or managed layer set
+    the path.
+
+  `url` is always required, and in the `oidc` mode `url` and `audience`
+  are all or none: `fullsend github setup` refuses to leave a block
+  without them, and the runner fails a run whose resolved block is
+  partial. `models` and `models_file` are mutually exclusive. A pi run on
+  a `gateway/` model needs one of them, because pi runs offline and cannot
+  discover the gateway's models. On codex the list is not used: fullsend
+  renders no catalog for codex, so the id after `gateway/` is the model it
+  sends (a configured `models_file` must still be readable).
+  `url`, `audience`, `auth` and `messages_auth_header` layer
+  independently; the model list (either form) is one unit,
+  and a layer that sets it replaces the inherited list. There is no
+  runner-variable override for this block. `fullsend github setup
+  --inference-gateway-*` writes it and changes only the keys you pass, so
+  a repository can add its models under a `url` and `audience` inherited
+  from `config.base.yaml`. For a walkthrough, see
+  [Using an inference gateway](../guides/user/inference-gateway.md).
 
 For setup instructions, see
 [Getting Inference](../guides/getting-started/getting-inference.md).
@@ -253,7 +814,13 @@ For setup instructions, see
 
 Model configuration, currently containing only `aliases`.
 
-- **`aliases`** — Per-key overrides of fullsend's pinned model alias table.
+- **`aliases`** — Per-key overrides of fullsend's pinned model alias table
+  (defaults: `opus` → `claude-opus-5-5`, `sonnet` → `claude-sonnet-5-5`,
+  `haiku` → `claude-haiku-5-5`, each with a built-in fallback chain to the
+  previous default when the Vertex project does not serve it; `fable` →
+  `claude-fable-5-1` on pi). An overridden alias has no built-in fallback
+  chain. See [Claude Code](../runtimes/claude.md#models) and
+  [pi](../runtimes/pi.md#per-repo-alias-overrides).
   Keys are alias names (`opus`, `sonnet`, `haiku`, `fable`); values are model
   ids or `provider/id` specs (e.g., `claude-opus-4-6`,
   `google-vertex/gemini-3.8-flash`). An unknown key is a validation error. A
@@ -262,13 +829,14 @@ Model configuration, currently containing only `aliases`.
   config system, aliases merge per key across layers. See
   [Layered Config Reference](../guides/infrastructure/layered-config-reference.md).
 
-## Per-repo vs. org-mode
+## Installation model
 
 This reference documents the **per-repo** config format (stored in
-`.fullsend/config.yaml` within the target repository). Per-repo is the sole
-supported installation model going forward — per-org installation mode is
-deprecated ([ADR 0044](../ADRs/0044-deprecate-per-org-installation-mode.md))
-and installations still on org mode should migrate.
+`.fullsend/config.yaml` within the target repository). Per-repo is the only
+supported installation model. Per-org installation was removed
+([ADR 0044](../ADRs/0044-deprecate-per-org-installation-mode.md)). Fullsend
+rejects a `config.yaml` that uses the old per-org format, which is any file
+with top-level `dispatch`, `repos`, or `defaults` keys.
 
 ## Layered configuration
 

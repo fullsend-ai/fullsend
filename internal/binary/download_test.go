@@ -239,6 +239,12 @@ func TestDownloadReleaseBinary_ChecksumMatch(t *testing.T) {
 }
 
 func TestDownloadRelease_Live(t *testing.T) {
+	// Hits the live GitHub release CDN. Opt-in only: CI's `go test ./...`
+	// does not pass -short, and a CDN 504 previously ejected unrelated
+	// PRs from the merge queue (#2002).
+	if os.Getenv("FULLSEND_LIVE_DOWNLOAD_TEST") == "" {
+		t.Skip("set FULLSEND_LIVE_DOWNLOAD_TEST=1 to hit the live GitHub CDN")
+	}
 	if testing.Short() {
 		t.Skip("skipping download test in short mode")
 	}

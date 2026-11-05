@@ -11,14 +11,21 @@ import (
 	"github.com/cucumber/godog"
 	"gopkg.in/yaml.v3"
 
+	"github.com/fullsend-ai/fullsend/internal/agentnew"
 	"github.com/fullsend-ai/fullsend/internal/config"
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
 func registerDispatchSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^a custom harness "([^"]+)" with:$`, func(ctx context.Context, name, doc string) (context.Context, error) {
 		return ctx, givenCustomHarness(world.FromContext(ctx), name, doc)
+	})
+	sc.Step(`^a fullsend file "([^"]+)" with:$`, func(ctx context.Context, rel, doc string) (context.Context, error) {
+		return ctx, givenFullsendFile(world.FromContext(ctx), rel, doc)
 	})
 	sc.Step(`^a disabled custom harness "([^"]+)" with:$`, func(ctx context.Context, name, doc string) (context.Context, error) {
 		return ctx, givenDisabledCustomHarness(world.FromContext(ctx), name, doc)
@@ -29,8 +36,20 @@ func registerDispatchSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the harness "([^"]+)" agent did not run$`, func(ctx context.Context, agent string) (context.Context, error) {
 		return ctx, thenHarnessAgentDidNotRun(world.FromContext(ctx), agent)
 	})
+	sc.Step(`^the harness "([^"]+)" workflow logs (do not )?contain "([^"]+)"$`, func(ctx context.Context, agent, negate, needle string) (context.Context, error) {
+		return ctx, thenHarnessWorkflowLogsContain(world.FromContext(ctx), agent, needle, negate == "")
+	})
+	sc.Step(`^the harness "([^"]+)" workflow logs register persona "([^"]+)" and not "([^"]+)"$`, func(ctx context.Context, agent, want, notWant string) (context.Context, error) {
+		return ctx, thenHarnessLogsRegisterPersona(world.FromContext(ctx), agent, want, notWant)
+	})
+	sc.Step(`^the harness dispatch completes with an empty matrix$`, func(ctx context.Context) (context.Context, error) {
+		return ctx, thenHarnessDispatchEmptyMatrix(world.FromContext(ctx))
+	})
 	sc.Step(`^a pull request is opened$`, func(ctx context.Context) (context.Context, error) {
 		return ctx, whenPullRequestOpened(world.FromContext(ctx))
+	})
+	sc.Step(`^a pull request that changes "([^"]+)"$`, func(ctx context.Context, path string) (context.Context, error) {
+		return ctx, givenPullRequestChangingPath(world.FromContext(ctx), path)
 	})
 	sc.Step(`^the pull request is labeled "([^"]+)"$`, func(ctx context.Context, label string) (context.Context, error) {
 		return ctx, whenPullRequestLabeled(world.FromContext(ctx), label)
@@ -38,8 +57,17 @@ func registerDispatchSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^a review comment is submitted on the pull request$`, func(ctx context.Context) (context.Context, error) {
 		return ctx, whenPullRequestReviewComment(world.FromContext(ctx))
 	})
+	sc.Step(`^a changes-requested review is submitted on the pull request$`, func(ctx context.Context) (context.Context, error) {
+		return ctx, whenPullRequestChangesRequested(world.FromContext(ctx))
+	})
+	sc.Step(`^the pull request is closed$`, func(ctx context.Context) (context.Context, error) {
+		return ctx, whenPullRequestClosed(world.FromContext(ctx))
+	})
 	sc.Step(`^the kill switch is active$`, func(ctx context.Context) (context.Context, error) {
 		return ctx, givenKillSwitchActive(world.FromContext(ctx))
+	})
+	sc.Step(`^the kill switch is active in config\.base\.yaml$`, func(ctx context.Context) (context.Context, error) {
+		return ctx, givenKillSwitchActiveViaConfigBase(world.FromContext(ctx))
 	})
 }
 
@@ -93,8 +121,77 @@ func DeactivateKillSwitch(w *world.World) error {
 	if err != nil {
 		return err
 	}
-	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, cfgPath, "behaviour: deactivate kill switch", merged); err != nil {
+	if err := commitVerified(w, cfgPath, "behaviour: deactivate kill switch", merged); err != nil {
 		return fmt.Errorf("updating config: %w", err)
+	}
+	return nil
+}
+
+// givenKillSwitchActiveViaConfigBase sets kill_switch: true in the
+// enrolled repo's config.base.yaml (the central/base config layer),
+// deliberately leaving config.yaml untouched/silent on the key.
+// config.base.yaml is not part of the standard per-repo scaffold, so it
+// may not exist yet; a missing file is treated as an empty starting
+// point rather than an error. It also marks w.KillSwitchBaseActivated
+// so CleanupScenario deactivates it before the slot is reused by
+// another scenario.
+func givenKillSwitchActiveViaConfigBase(w *world.World) error {
+	if w.Org == "" || w.RepoName == "" {
+		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before kill-switch operations")
+	}
+	cfgPath := filepath.Join(".fullsend", "config.base.yaml")
+	cfgData, err := w.SCM.GetFileContent(context.Background(), w.Org, w.RepoName, cfgPath)
+	if err != nil {
+		if !forge.IsNotFound(err) {
+			return fmt.Errorf("reading base config: %w", err)
+		}
+		cfgData = nil
+	}
+	cfg, err := config.ParsePerRepoConfigWriter(cfgData)
+	if err != nil {
+		return fmt.Errorf("parsing base config: %w", err)
+	}
+	cfg.SetKillSwitch(true)
+	merged, err := cfg.Marshal()
+	if err != nil {
+		return err
+	}
+	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, cfgPath, "behaviour: activate kill switch via config.base.yaml", merged); err != nil {
+		return fmt.Errorf("updating base config: %w", err)
+	}
+	w.KillSwitchBaseActivated = true
+	return nil
+}
+
+// DeactivateKillSwitchBase sets kill_switch: false in the enrolled
+// repo's config.base.yaml. Exported so CleanupScenario (in package
+// steps) can call it during scenario teardown. The SCM driver has no
+// delete-file operation, so this resets the key to false rather than
+// removing the file — matching DeactivateKillSwitch's approach for
+// config.yaml.
+func DeactivateKillSwitchBase(w *world.World) error {
+	if w.Org == "" || w.RepoName == "" {
+		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before kill-switch operations")
+	}
+	cfgPath := filepath.Join(".fullsend", "config.base.yaml")
+	cfgData, err := w.SCM.GetFileContent(context.Background(), w.Org, w.RepoName, cfgPath)
+	if err != nil {
+		if !forge.IsNotFound(err) {
+			return fmt.Errorf("reading base config: %w", err)
+		}
+		cfgData = nil
+	}
+	cfg, err := config.ParsePerRepoConfigWriter(cfgData)
+	if err != nil {
+		return fmt.Errorf("parsing base config: %w", err)
+	}
+	cfg.SetKillSwitch(false)
+	merged, err := cfg.Marshal()
+	if err != nil {
+		return err
+	}
+	if err := commitVerified(w, cfgPath, "behaviour: deactivate kill switch in config.base.yaml", merged); err != nil {
+		return fmt.Errorf("updating base config: %w", err)
 	}
 	return nil
 }
@@ -155,6 +252,22 @@ func givenDisabledCustomHarness(w *world.World, name, doc string) error {
 		return fmt.Errorf("updating config: %w", err)
 	}
 	return nil
+}
+
+// givenFullsendFile commits doc to .fullsend/<rel> in the test repository,
+// for files a harness references by a path relative to the fullsend dir
+// (an override source, for example).
+func givenFullsendFile(w *world.World, rel, doc string) error {
+	if w.Org == "" || w.RepoName == "" {
+		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before file operations")
+	}
+	rel = strings.TrimSpace(rel)
+	clean := filepath.ToSlash(filepath.Clean(rel))
+	if rel == "" || filepath.IsAbs(rel) || clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
+		return fmt.Errorf("fullsend file path %q must be relative and inside .fullsend", rel)
+	}
+	return w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, ".fullsend/"+clean,
+		fmt.Sprintf("behaviour: add fullsend file %s", clean), []byte(doc+"\n"))
 }
 
 func givenCustomHarness(w *world.World, name, doc string) error {
@@ -253,10 +366,10 @@ func commitLocalHarnessResources(ctx context.Context, w *world.World, harnessNam
 
 	if h.Policy != "" && !strings.HasPrefix(h.Policy, "/") && !strings.HasPrefix(h.Policy, "https://") {
 		policyPath := filepath.Join(".fullsend", h.Policy)
-		minimalPolicy := fmt.Sprintf("# Minimal policy for %s\n", harnessName)
+		policy := agentnew.BasePolicy()
 		if err := w.SCM.CommitFile(ctx, owner, repo, policyPath,
 			fmt.Sprintf("behaviour: add policy resource for %s", harnessName),
-			[]byte(minimalPolicy)); err != nil {
+			policy); err != nil {
 			return fmt.Errorf("committing policy resource %s: %w", policyPath, err)
 		}
 	}
@@ -299,11 +412,47 @@ func thenHarnessWorkflowCompletes(w *world.World, agent string) error {
 	ctx := context.Background()
 	run, err := w.CI.WaitForHarnessAgent(ctx, w.Org, w.RepoName, agent, w.ScenarioStart)
 	if err != nil {
+		// A failed harness run is the one whose logs matter most, and the
+		// pool repository (with its run logs) is deleted when the lease
+		// ends, so save them before returning.
+		saveWorkflowRunLogs(ctx, w, agent, run)
 		return err
 	}
 	w.WorkflowRun = run
 	saveWorkflowRunLogs(ctx, w, agent, run)
 	return ensureHarnessArtifacts(w, agent)
+}
+
+// thenHarnessWorkflowLogsContain checks the harness run's logs for needle
+// (want) or its absence (!want). It reads the run recorded by "the harness
+// ... workflow completes successfully", waiting for it first when no run is
+// recorded yet. A log snapshot with a job missing or truncated cannot prove
+// absence, so a negative check on one fails instead of passing.
+func thenHarnessWorkflowLogsContain(w *world.World, agent, needle string, want bool) error {
+	agent = strings.TrimSpace(agent)
+	if w.WorkflowRun == nil {
+		if err := thenHarnessWorkflowCompletes(w, agent); err != nil {
+			return err
+		}
+	}
+	run := w.WorkflowRun
+	logs, err := w.CI.GetRunLogs(context.Background(), w.Org, w.RepoName, run.ID)
+	if err != nil {
+		return fmt.Errorf("reading harness %q workflow logs (run %d): %w", agent, run.ID, err)
+	}
+	found := strings.Contains(logs, needle)
+	complete := runLogsComplete(*run, logs)
+	switch {
+	case want && !found && !complete:
+		return fmt.Errorf("harness %q workflow logs (run %d) do not contain %q, but the log snapshot is incomplete", agent, run.ID, needle)
+	case want && !found:
+		return fmt.Errorf("harness %q workflow logs (run %d) do not contain %q", agent, run.ID, needle)
+	case !want && found:
+		return fmt.Errorf("harness %q workflow logs (run %d) unexpectedly contain %q", agent, run.ID, needle)
+	case !want && !complete:
+		return fmt.Errorf("harness %q workflow logs (run %d) are incomplete, so they cannot show %q is absent", agent, run.ID, needle)
+	}
+	return nil
 }
 
 // defaultSettleDuration is the maximum time to wait for the dispatch
@@ -352,6 +501,25 @@ func thenHarnessAgentDidNotRun(w *world.World, agent string) error {
 	return w.CI.AssertNoHarnessAgentArtifact(ctx, w.Org, w.RepoName, agent, w.ScenarioStart)
 }
 
+// thenHarnessDispatchEmptyMatrix asserts that the harness run triggered
+// since ScenarioStart settled with a successful Harness dispatch job and
+// no scheduled agent. Unlike the did-not-run and dispatch-count steps,
+// it waits for the run and fails when the dispatch job errored, so a
+// denial is not inferred from a missing or failed run.
+func thenHarnessDispatchEmptyMatrix(w *world.World) error {
+	if w.ScenarioStart.IsZero() {
+		return fmt.Errorf("no workflow trigger time recorded")
+	}
+	waiter, ok := w.CI.(ci.EmptyMatrixWaiter)
+	if !ok {
+		return fmt.Errorf("the CI driver does not implement ci.EmptyMatrixWaiter; it cannot assert an empty harness matrix")
+	}
+	if _, err := waiter.WaitForHarnessEmptyMatrix(context.Background(), w.Org, w.RepoName, w.ScenarioStart); err != nil {
+		return err
+	}
+	return nil
+}
+
 func ensureHarnessArtifacts(w *world.World, agent string) error {
 	if w.ArtifactDir != "" {
 		return nil
@@ -372,34 +540,81 @@ func ensureHarnessArtifacts(w *world.World, agent string) error {
 	return nil
 }
 
+// defaultPRPath and defaultPRBody are the file a scenario pull request
+// changes and its body, unless a step asks for others.
+const (
+	defaultPRPath = "behaviour/pr.txt"
+	defaultPRBody = "behaviour"
+)
+
 func whenPullRequestOpened(w *world.World) error {
-	if w.RepoOwner == "" || w.RepoName == "" {
-		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before PR operations")
+	_, err := openPullRequest(w, w.SCM, defaultPRPath, defaultPRBody)
+	return err
+}
+
+// givenPullRequestChangingPath opens a pull request, as the e2e
+// installation identity, whose one commit changes path (e.g. a script
+// a path-filtered harness or post-script reacts to). The PR and its
+// branch are registered for scenario cleanup.
+func givenPullRequestChangingPath(w *world.World, path string) error {
+	if strings.TrimSpace(path) == "" {
+		return fmt.Errorf("pull request path must not be empty")
 	}
-	w.ScenarioStart = time.Now()
-	branch := fmt.Sprintf("behaviour-pr-%d", time.Now().UnixNano())
-	ctx := context.Background()
-	if err := w.SCM.CreateBranch(ctx, w.RepoOwner, w.RepoName, branch); err != nil {
-		return err
+	branch, err := openPullRequest(w, w.SCM, path, defaultPRBody)
+	if branch != "" {
+		w.CreatedBranches = append(w.CreatedBranches, branch)
 	}
-	msg := fmt.Sprintf("behaviour pr %s", branch)
-	if err := w.SCM.CommitFileToBranch(ctx, w.RepoOwner, w.RepoName, branch, "behaviour/pr.txt", msg, []byte("behaviour test\n")); err != nil {
-		return err
-	}
-	pr, err := w.SCM.CreateChangeProposal(ctx, w.RepoOwner, w.RepoName, "Behaviour test PR", "behaviour", branch, "main")
 	if err != nil {
 		return err
 	}
-	w.PRNumber = pr.Number
+	w.CreatedPRNumbers = append(w.CreatedPRNumbers, w.PRNumber)
 	return nil
+}
+
+// openPullRequest pushes a new branch with one commit changing path and
+// opens a pull request with body from it through driver, so the PR
+// author (and the sender of its opened event) is driver's identity. It
+// returns the head branch.
+func openPullRequest(w *world.World, driver scm.Driver, path, body string) (string, error) {
+	if w.RepoOwner == "" || w.RepoName == "" {
+		return "", fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before PR operations")
+	}
+	// Run created_at has second precision (#7957).
+	w.ScenarioStart = time.Now().Truncate(time.Second)
+	branch := fmt.Sprintf("behaviour-pr-%d", time.Now().UnixNano())
+	ctx := context.Background()
+	if err := driver.CreateBranch(ctx, w.RepoOwner, w.RepoName, branch); err != nil {
+		return "", err
+	}
+	msg := fmt.Sprintf("behaviour pr %s", branch)
+	if err := driver.CommitFileToBranch(ctx, w.RepoOwner, w.RepoName, branch, path, msg, []byte("behaviour test\n")); err != nil {
+		return branch, err
+	}
+	pr, err := driver.CreateChangeProposal(ctx, w.RepoOwner, w.RepoName, "Behaviour test PR", body, branch, "main")
+	if err != nil {
+		return branch, err
+	}
+	w.PRNumber = pr.Number
+	return branch, nil
 }
 
 func whenPullRequestLabeled(w *world.World, label string) error {
 	if w.PRNumber == 0 {
 		return fmt.Errorf("no pull request opened")
 	}
-	w.ScenarioStart = time.Now()
+	w.ScenarioStart = time.Now().Truncate(time.Second)
 	return w.SCM.AddIssueLabels(context.Background(), w.RepoOwner, w.RepoName, w.PRNumber, label)
+}
+
+// whenPullRequestClosed closes the pull request without merging it. The e2e
+// installation identity closes it, so the closer is a bot with no
+// collaborator role.
+func whenPullRequestClosed(w *world.World) error {
+	if w.PRNumber == 0 {
+		return fmt.Errorf("no pull request opened")
+	}
+	w.ScenarioStart = time.Now()
+	return w.SCM.CloseIssue(context.Background(), w.RepoOwner, w.RepoName, w.PRNumber)
 }
 
 func whenPullRequestReviewComment(w *world.World) error {
@@ -409,4 +624,17 @@ func whenPullRequestReviewComment(w *world.World) error {
 	w.ScenarioStart = time.Now()
 	// COMMENT works when the e2e bot authored the PR; APPROVE returns 422 self-review.
 	return w.SCM.SubmitPullRequestReview(context.Background(), w.RepoOwner, w.RepoName, w.PRNumber, "COMMENT")
+}
+
+// whenPullRequestChangesRequested submits a changes-requested review on the
+// scenario's pull request as the e2e installation identity: a bot, but not
+// the registered review bot. GitHub refuses REQUEST_CHANGES on a reviewer's
+// own pull request, so a test actor must have opened it. ScenarioStart is
+// truncated to the second because run created_at has second precision.
+func whenPullRequestChangesRequested(w *world.World) error {
+	if w.PRNumber == 0 {
+		return fmt.Errorf("no pull request opened")
+	}
+	w.ScenarioStart = time.Now().Truncate(time.Second)
+	return w.SCM.SubmitPullRequestReview(context.Background(), w.RepoOwner, w.RepoName, w.PRNumber, "REQUEST_CHANGES")
 }

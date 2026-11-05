@@ -697,7 +697,7 @@ func runImportConfig(printer *ui.Printer, ids config.OpenAIWIFConfig, fullsendDi
 
 	perRepo, ok := writer.(config.PerRepoConfigWriter)
 	if !ok {
-		return fmt.Errorf("inference openai import writes per-repo config; %s contains an org-mode config", fullsendDir)
+		return fmt.Errorf("inference openai import writes per-repo config; %s did not load as a per-repo config", fullsendDir)
 	}
 
 	perRepo.SetInferenceOpenAI(ids)
@@ -887,8 +887,8 @@ func resolveOpenAIStatusSources(fullsendDir string) (openAIStatusSource, error) 
 	perRepo, ok := writer.(config.PerRepoConfigReader)
 	if !ok {
 		// Same condition import refuses by name, rather than a generic
-		// "nothing configured" (org mode is deprecated, ADR 0044).
-		return s, fmt.Errorf("%s contains an org-mode config; OpenAI WIF enrolment is per-repo", fullsendDir)
+		// "nothing configured".
+		return s, fmt.Errorf("%s did not load as a per-repo config; OpenAI WIF enrolment is per-repo", fullsendDir)
 	}
 	cfgIDs := perRepo.ConfigInferenceOpenAI().Trimmed()
 
@@ -933,9 +933,9 @@ func runInferenceOpenAIStatus(cmd *cobra.Command, printer *ui.Printer, repo, ful
 	}
 
 	// Print resolved identifiers.
-	printOpenAIStatusField(printer, "audience", sources.Audience, sources.AudienceSource)
-	printOpenAIStatusField(printer, "identity_provider_id", sources.IdentityProviderID, sources.IDPSource)
-	printOpenAIStatusField(printer, "service_account_id", sources.ServiceAccountID, sources.SASource)
+	printStatusField(printer, "audience", sources.Audience, sources.AudienceSource)
+	printStatusField(printer, "identity_provider_id", sources.IdentityProviderID, sources.IDPSource)
+	printStatusField(printer, "service_account_id", sources.ServiceAccountID, sources.SASource)
 	printer.Blank()
 
 	// Check completeness.
@@ -1044,7 +1044,9 @@ func runInferenceOpenAIStatus(cmd *cobra.Command, printer *ui.Printer, repo, ful
 	return nil
 }
 
-func printOpenAIStatusField(printer *ui.Printer, name, value, source string) {
+// printStatusField prints one config value of an `inference ... status`
+// command with where it came from, or "(not set)".
+func printStatusField(printer *ui.Printer, name, value, source string) {
 	if value == "" {
 		printer.StepInfo(fmt.Sprintf("%s: (not set)", name))
 	} else {

@@ -100,18 +100,15 @@ type ocErrorEvent struct {
 	Error ocErrorInfo `json:"error"`
 }
 
-// parseOpenCodeStream reads NDJSON from OpenCode's --format json output and
-// emits normalized AgentEvent values via the onEvent callback. It returns
-// the sessionID captured from the ndjson envelope (needed for opencode export).
+// parseOpenCodeStream reads OpenCode's --format json NDJSON and emits
+// normalized AgentEvents via onEvent. It returns the session ID and the count
+// of malformed lines skipped (bad JSON or payloads; empty, oversized and
+// unknown-type lines do not count), which callers treat as stream corruption.
 //
-// Unlike parseClaudeStream, OpenCode emits complete text/reasoning blocks
-// (not incremental deltas), so the parser is largely stateless. The only
-// state tracked is step_finish accumulation for ResultEvent synthesis at EOF.
-//
-// The parser does NOT emit an InitEvent because OpenCode's wire format does
-// not carry model/version metadata. The caller (OpenCodeRuntime.Run) must
-// emit InitEvent and set RunMetrics.Model from RunParams.Model.
-func parseOpenCodeStream(r io.Reader, onEvent func(AgentEvent)) (sessionID string, err error) {
+// Text and reasoning arrive as complete blocks, so the only state is
+// step_finish accumulation for the ResultEvent synthesized at EOF. It emits
+// no InitEvent: the stream has no model metadata, so Run emits it.
+func parseOpenCodeStream(r io.Reader, onEvent func(AgentEvent)) (sessionID string, malformedLines int, err error) {
 	br := bufio.NewReaderSize(r, streamBufSize)
 
 	var (
@@ -134,7 +131,7 @@ func parseOpenCodeStream(r io.Reader, onEvent func(AgentEvent)) (sessionID strin
 			break
 		}
 		if err != nil {
-			return sessionID, err
+			return sessionID, malformedLines, err
 		}
 		// Skip lines exceeding the buffer (same pattern as parseClaudeStream).
 		if isPrefix {
@@ -149,6 +146,7 @@ func parseOpenCodeStream(r io.Reader, onEvent func(AgentEvent)) (sessionID strin
 
 		var env ocEnvelope
 		if jsonErr := json.Unmarshal(line, &env); jsonErr != nil {
+			malformedLines++
 			continue
 		}
 
@@ -161,6 +159,7 @@ func parseOpenCodeStream(r io.Reader, onEvent func(AgentEvent)) (sessionID strin
 		case "tool_use":
 			var evt ocToolEvent
 			if err := json.Unmarshal(line, &evt); err != nil {
+				malformedLines++
 				continue
 			}
 			// Only emit for terminal states; pending/running are intermediate.
@@ -174,17 +173,16 @@ func parseOpenCodeStream(r io.Reader, onEvent func(AgentEvent)) (sessionID strin
 		case "text":
 			var evt ocTextEvent
 			if err := json.Unmarshal(line, &evt); err != nil {
+				malformedLines++
 				continue
 			}
 			onEvent(TextEvent{Text: evt.Part.Text})
 
 		case "reasoning":
-			// NOTE: OpenCode only emits reasoning events when invoked with
-			// --thinking (non-interactive runs default to thinking=false).
-			// The wiring in OpenCodeRuntime.Run must pass --thinking for
-			// this path to fire.
+			// Only emitted when Run passes --thinking.
 			var evt ocReasoningEvent
 			if err := json.Unmarshal(line, &evt); err != nil {
+				malformedLines++
 				continue
 			}
 			onEvent(ThinkingEvent{Text: evt.Part.Text})
@@ -192,6 +190,7 @@ func parseOpenCodeStream(r io.Reader, onEvent func(AgentEvent)) (sessionID strin
 		case "step_finish":
 			var evt ocStepFinishEvent
 			if err := json.Unmarshal(line, &evt); err != nil {
+				malformedLines++
 				continue
 			}
 			numTurns++
@@ -212,11 +211,15 @@ func parseOpenCodeStream(r io.Reader, onEvent func(AgentEvent)) (sessionID strin
 			})
 
 		case "error":
+			// Set sawError before attempting unmarshal: if the envelope
+			// says type=="error" we know an error was signalled even if
+			// the payload is truncated or malformed.
+			sawError = true
 			var evt ocErrorEvent
 			if err := json.Unmarshal(line, &evt); err != nil {
+				malformedLines++
 				continue
 			}
-			sawError = true
 			msg := redactSummary(evt.Error.Data.Message)
 			lastErrorMsg = msg
 			onEvent(ErrorEvent{
@@ -228,17 +231,13 @@ func parseOpenCodeStream(r io.Reader, onEvent func(AgentEvent)) (sessionID strin
 			// Silently absorbed — no useful data for AgentEvent.
 
 		default:
-			// Unknown event types are silently skipped. If OpenCode's
-			// wire format adds new event types, this is where they will
-			// be lost. Monitor for schema drift after OpenCode releases.
+			// Unknown event types are skipped; watch for schema drift.
 		}
 	}
 
-	// Synthesize ResultEvent at EOF from accumulated step_finish data.
-	// Note: unlike Claude Code (which emits an explicit result event), OpenCode
-	// has no terminal sentinel. A truncated stream that closes cleanly (io.EOF
-	// without a preceding I/O error) may produce a false-success ResultEvent.
-	// The caller should also check the process exit code for authoritative status.
+	// OpenCode has no terminal result event, so synthesize one at EOF. A
+	// cleanly truncated stream can look successful; callers also check the
+	// exit code.
 	isError := sawError || numTurns == 0
 	onEvent(ResultEvent{
 		NumTurns:                 numTurns,
@@ -253,5 +252,5 @@ func parseOpenCodeStream(r io.Reader, onEvent func(AgentEvent)) (sessionID strin
 		CacheReadInputTokens:     totalCacheRead,
 	})
 
-	return sessionID, nil
+	return sessionID, malformedLines, nil
 }

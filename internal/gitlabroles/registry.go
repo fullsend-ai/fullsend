@@ -306,8 +306,8 @@ func (r Registry) roleForSecret(name string) (Role, bool) {
 
 func (r Registry) secretNames() []string {
 	reg := r.effective()
-	seen := make(map[string]struct{}, len(reg.roles)+1)
-	out := make([]string, 0, len(reg.roles)+1)
+	seen := make(map[string]struct{}, len(reg.roles))
+	out := make([]string, 0, len(reg.roles))
 	add := func(name string) {
 		if name == "" {
 			return
@@ -318,7 +318,6 @@ func (r Registry) secretNames() []string {
 		seen[name] = struct{}{}
 		out = append(out, name)
 	}
-	add(forge.SecretForgeToken)
 	for _, rec := range reg.roles {
 		add(rec.Credential.SecretName)
 	}

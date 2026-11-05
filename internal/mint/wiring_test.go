@@ -15,7 +15,6 @@ import (
 // unit tests with fakes cannot.
 func TestInitWiring(t *testing.T) {
 	t.Setenv("ROLE_APP_IDS", `{"coder":"100"}`)
-	t.Setenv("ALLOWED_ORGS", "test-org")
 	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
 
 	verifier, err := mintcore.NewSTSVerifier(mintcore.STSVerifierConfig{

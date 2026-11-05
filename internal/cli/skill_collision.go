@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/fullsend-ai/fullsend/internal/skill"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -18,7 +19,7 @@ func warnRepoSkillCollisions(repoDir string, harnessSkillDirs []string, printer 
 			continue
 		}
 		if isReadableSkillMarker(skillDir) {
-			harnessSkills[filepath.Base(skillDir)] = struct{}{}
+			harnessSkills[skill.SandboxName(skillDir)] = struct{}{}
 		}
 	}
 
@@ -29,11 +30,14 @@ func warnRepoSkillCollisions(repoDir string, harnessSkillDirs []string, printer 
 	}
 
 	for _, entry := range entries {
-		name := entry.Name()
-		if _, collision := harnessSkills[name]; !collision {
+		repoSkillDir := filepath.Join(projectSkillsDir, entry.Name())
+		if !isReadableSkillMarker(repoSkillDir) {
 			continue
 		}
-		if !isReadableSkillMarker(filepath.Join(projectSkillsDir, name)) {
+		// The same identity as the harness side: the declared SKILL.md name,
+		// since repoDir is absolute.
+		name := skill.SandboxName(repoSkillDir)
+		if _, collision := harnessSkills[name]; !collision {
 			continue
 		}
 		printer.StepWarn(fmt.Sprintf(
@@ -48,7 +52,7 @@ func isReadableSkillMarker(skillDir string) bool {
 }
 
 func isReadableSkillMarkerFS(skillFS fs.FS) bool {
-	for _, marker := range skillMarkerNames {
+	for _, marker := range skill.MarkerNames {
 		info, err := fs.Stat(skillFS, marker)
 		if err != nil || !info.Mode().IsRegular() {
 			continue

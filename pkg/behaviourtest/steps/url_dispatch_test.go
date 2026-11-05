@@ -650,7 +650,7 @@ func TestCommitRelativeResources_CommitsPolicyFile(t *testing.T) {
 		"agent: agents/triage.md\npolicy: policies/base.yaml\nrole: triage")
 	require.NoError(t, err)
 	assert.Equal(t, minimalAgentContent, string(scm.files["org/repo/agents/triage.md"]))
-	assert.Contains(t, string(scm.files["org/repo/policies/base.yaml"]), "Minimal policy")
+	assertBasePolicy(t, scm.files["org/repo/policies/base.yaml"])
 	assert.Equal(t, []string{"agents/triage.md", "policies/base.yaml"}, paths)
 }
 
@@ -1053,6 +1053,10 @@ func (f *fakeURLSCM) GetFileContent(_ context.Context, owner, repo, path string)
 	return data, nil
 }
 
+func (f *fakeURLSCM) GetFileContentAtRef(ctx context.Context, owner, repo, path, _ string) ([]byte, error) {
+	return f.GetFileContent(ctx, owner, repo, path)
+}
+
 func (f *fakeURLSCM) CreateRepo(_ context.Context, _, name, _ string) error {
 	if f.createRepoErr != nil {
 		return f.createRepoErr
@@ -1124,6 +1128,9 @@ func (f *fakeURLSCM) AddComment(context.Context, string, string, int, string) (*
 func (f *fakeURLSCM) GetIssue(context.Context, string, string, int) (*forge.Issue, error) {
 	return nil, nil
 }
+func (f *fakeURLSCM) ListOpenIssues(context.Context, string, string, ...string) ([]forge.Issue, error) {
+	return nil, nil
+}
 func (f *fakeURLSCM) CreateBranch(context.Context, string, string, string) error { return nil }
 func (f *fakeURLSCM) DeleteBranch(context.Context, string, string, string) error { return nil }
 func (f *fakeURLSCM) CommitFileToBranch(context.Context, string, string, string, string, string, []byte) error {
@@ -1139,12 +1146,61 @@ func (f *fakeURLSCM) CloseIssue(context.Context, string, string, int) error { re
 func (f *fakeURLSCM) CreateFork(context.Context, string, string, string) (string, error) {
 	return "", nil
 }
+func (f *fakeURLSCM) CreateUserFork(context.Context, string, string) (string, string, error) {
+	return "", "", nil
+}
 func (f *fakeURLSCM) CommitFileToFork(context.Context, string, string, string, string, string, []byte) error {
 	return nil
 }
 func (f *fakeURLSCM) CreateForkChangeProposal(context.Context, string, string, string, string, string, string, string, string) (*forge.ChangeProposal, error) {
 	return nil, nil
 }
+func (f *fakeURLSCM) ListPullRequestCommits(context.Context, string, string, int) ([]string, error) {
+	return nil, nil
+}
+
+func (f *fakeURLSCM) ListPullRequestReviews(context.Context, string, string, int) ([]forge.PullRequestReview, error) {
+	return nil, nil
+}
 func (f *fakeURLSCM) ListIssueReactions(context.Context, string, string, int) ([]forge.Reaction, error) {
 	return nil, nil
+}
+
+func TestGivenRepositoryAllowsRemoteResources(t *testing.T) {
+	const prefix = "https://github.com/fullsend-ai/agents/"
+	const cfgKey = "org/repo/.fullsend/config.yaml"
+
+	t.Run("omitted list adds to the defaults", func(t *testing.T) {
+		scm := &fakeURLSCM{files: map[string][]byte{cfgKey: []byte("version: \"1\"\nagents: []\n")}}
+		w := &world.World{Org: "org", RepoName: "repo", SCM: scm}
+		require.NoError(t, givenRepositoryAllowsRemoteResources(w, prefix))
+
+		cfg, err := config.ParsePerRepoConfig(scm.files[cfgKey])
+		require.NoError(t, err)
+		assert.Equal(t, append(config.DefaultAllowedRemoteResources(), prefix), cfg.AllowedResources())
+		assert.True(t, w.AllowedResourcesOverridden)
+		assert.Equal(t, config.DefaultAllowedRemoteResources(), w.AllowedResourcesOriginal)
+	})
+
+	t.Run("declared list is appended to once", func(t *testing.T) {
+		own := "https://raw.githubusercontent.com/my-org/agents/"
+		scm := &fakeURLSCM{files: map[string][]byte{cfgKey: []byte(fmt.Sprintf("version: \"1\"\nagents: []\nallowed_remote_resources:\n  - %q\n", own))}}
+		w := &world.World{Org: "org", RepoName: "repo", SCM: scm}
+		require.NoError(t, givenRepositoryAllowsRemoteResources(w, prefix))
+		require.NoError(t, givenRepositoryAllowsRemoteResources(w, prefix))
+
+		cfg, err := config.ParsePerRepoConfig(scm.files[cfgKey])
+		require.NoError(t, err)
+		want := append(append([]string{own}, config.DefaultAllowedRemoteResources()...), prefix)
+		assert.Equal(t, want, cfg.AllowedResources())
+		assert.Equal(t, want[:len(want)-1], w.AllowedResourcesOriginal)
+	})
+
+	t.Run("validation", func(t *testing.T) {
+		require.ErrorContains(t, givenRepositoryAllowsRemoteResources(&world.World{}, prefix), "no repo configured")
+		w := &world.World{Org: "org", RepoName: "repo", SCM: &fakeURLSCM{files: map[string][]byte{}}}
+		require.ErrorContains(t, givenRepositoryAllowsRemoteResources(w, "http://github.com/x/"), "https://")
+		require.ErrorContains(t, givenRepositoryAllowsRemoteResources(w, "https://github.com/x"), "ending in /")
+		require.ErrorContains(t, givenRepositoryAllowsRemoteResources(w, prefix), "snapshotting")
+	})
 }

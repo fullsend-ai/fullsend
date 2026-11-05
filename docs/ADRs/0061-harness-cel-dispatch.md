@@ -26,6 +26,12 @@ Only the event-only CEL context is superseded by
 predicate but evaluates it against a resolved entity and optional event. The
 remaining decisions in this ADR remain accepted.
 
+[ADR 0151](0151-harness-human-role-minimums.md) partially supersedes the
+authorization-before-harness-enumeration ordering: the ordinary human `triage`
+floor may run before loading harnesses, with a narrow verified label grant for
+its exact transition. Each trusted harness's effective `human_min_role` is
+then enforced before its CEL predicate. Authorization remains a platform gate.
+
 ## Context
 
 Custom agents should be easy to author and portable across forges. Today, adding
@@ -77,9 +83,11 @@ Adopt **Option C**.
   [ADR 0015](0015-normative-specifications-directory.md)). **v1 normative scope
   is GitHub Actions** (`gha-event` driver); other forges are documented as
   future illustrations only. (Scope extended to GitLab cron-poll input by
-  [ADR 0067](0067-gitlab-cron-polling-event-dispatch.md) and to Jira poll input
-  by [ADR 0063](0063-polling-based-work-discovery.md).) Examples and projection
-  rules live in the normative tree — not duplicated here.
+  [ADR 0067](0067-gitlab-cron-polling-event-dispatch.md), to a GitLab native
+  webhook input by
+  [ADR 0125](0125-gitlab-hybrid-webhook-poller-dispatch.md), and to Jira poll
+  input by [ADR 0063](0063-polling-based-work-discovery.md).) Examples and
+  projection rules live in the normative tree — not duplicated here.
 - **Authorization:** `fullsend dispatch` enforces
   [ADR 0054](0054-require-authorization-on-all-agent-dispatch-paths.md) as a
   **platform-level gate** after the input driver normalizes the event and

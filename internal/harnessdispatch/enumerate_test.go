@@ -588,3 +588,26 @@ trigger: |
 	require.Len(t, refs, 1)
 	assert.Equal(t, "pr-ping", refs[0].Agent)
 }
+
+// The shipped workflow runs `fullsend dispatch --config-dir .fullsend` from
+// the repo root, so the workspace root is the relative ".": a harness with
+// a relative skills entry must still load.
+func TestListTriggeredHarnesses_RelativeConfigDir(t *testing.T) {
+	repo := t.TempDir()
+	configDir := writeHarnessConfigSubdir(t, repo, `agent: agents/triage.md
+role: triage
+slug: skills
+model: opus
+image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
+trigger: event.entity.kind == "work_item"
+skills:
+  - skills/my-custom-linting
+`)
+	dirCfg, err := config.LoadConfig(configDir, config.LoadOpts{MissingOK: false})
+	require.NoError(t, err)
+	t.Chdir(repo)
+
+	out, err := ListTriggeredHarnesses(context.Background(), ".fullsend", dirCfg, nil)
+	require.NoError(t, err)
+	require.Len(t, out, 1)
+}

@@ -18,14 +18,40 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"syscall/js"
+	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
+)
+
+// requestTimeout is the per-request context deadline applied by the
+// WASM handler. It must be shorter than the JS-side
+// HANDLE_FETCH_TIMEOUT_MS (25 s) so that slow GitHub API calls surface
+// as clean Go-side errors (HTTP 502/504) before the JS timeout fires
+// and triggers the isolate recovery path. The 5 s margin accounts for
+// goroutine scheduling and Promise settlement overhead.
+const requestTimeout = 20 * time.Second
+
+// Tracing settings stamped by `fullsend mint deploy` via -ldflags -X.
+// Header values are never stamped; they stay in the Worker secret.
+//
+// otlpHeadersSecret names the Worker secret holding collector
+// authentication headers (OTEL_EXPORTER_OTLP_HEADERS syntax). It is read
+// through the getEnv callback, which resolves Worker secrets by name.
+// Durable deploys stamp a unique name per build, so a build only ever
+// reads the headers its own deploy stored, never those of a concurrent
+// deploy that stamped a different endpoint. Previews bind the secret in
+// the version itself and keep the default name.
+var (
+	otlpTracesEndpoint string
+	traceDeployment    string
+	otlpHeadersSecret  = "MINT_OTLP_HEADERS"
 )
 
 var handler *mintcore.Handler
@@ -79,9 +105,30 @@ func initMint(_ js.Value, args []js.Value) interface{} {
 	if err != nil {
 		return fmt.Sprintf("failed to initialize handler: %v", err)
 	}
+	h.SetTracer(buildTracer(getEnvFn))
 
 	handler = h
 	return ""
+}
+
+// buildTracer configures tracing from the stamped endpoint and the
+// collector headers Worker secret. Tracing is fail-open: a bad
+// configuration is logged (without header values) and leaves tracing
+// disabled rather than failing mint initialization.
+func buildTracer(getEnvFn js.Value) *mintcore.Tracer {
+	if otlpTracesEndpoint == "" {
+		return nil
+	}
+	rawHeaders := ""
+	if v := getEnvFn.Invoke(otlpHeadersSecret); v.Type() == js.TypeString {
+		rawHeaders = v.String()
+	}
+	tracer, err := mintcore.NewStampedTracer(mintcore.TraceBackendCloudflare, traceDeployment, otlpTracesEndpoint, rawHeaders)
+	if err != nil {
+		fmt.Printf("warning: mint tracing disabled: %v\n", err)
+		return nil
+	}
+	return tracer
 }
 
 // handleFetch processes a Worker Fetch request through ServeHTTP.
@@ -138,6 +185,15 @@ func handleFetch(_ js.Value, args []js.Value) interface{} {
 			}
 		}()
 
+		// Apply a per-request context deadline so that slow outbound
+		// GitHub API calls (FindInstallation, CreateInstallationToken)
+		// return a clean Go-side error before the JS-side
+		// HANDLE_FETCH_TIMEOUT_MS (25 s) fires. Without this, a single
+		// slow API call blocks the GoWasm singleton until the JS-side
+		// timeout triggers recovery.
+		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+		defer cancel()
+
 		// Build an http.Request from the Fetch arguments.
 		var bodyReader *bytes.Reader
 		if body != "" {
@@ -146,7 +202,7 @@ func handleFetch(_ js.Value, args []js.Value) interface{} {
 			bodyReader = bytes.NewReader(nil)
 		}
 
-		req, err := http.NewRequest(method, reqURL, bodyReader)
+		req, err := http.NewRequestWithContext(ctx, method, reqURL, bodyReader)
 		if err != nil {
 			reject.Invoke(js.Global().Get("Error").New(
 				fmt.Sprintf("failed to create request: %v", err)))

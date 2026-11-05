@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/normevent"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
 
@@ -34,7 +36,7 @@ func TestDispatch_CreatesAPIpipelineAndAppendsRecord(t *testing.T) {
 		NoteAuthorID: 88,
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "triage", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "triage", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -113,6 +115,110 @@ func TestDispatch_CreatesAPIpipelineAndAppendsRecord(t *testing.T) {
 	}
 }
 
+// TestDispatch_SelectsTransportFromTargetRepositoryContract guards the
+// breaking-config bug where dispatch() called CreatePipelineWithInputs
+// unconditionally regardless of the target repository's own installed
+// contract. A poller binary is not upgraded in lockstep with every
+// repository's scaffold (the CLI installer this job's wrapper script
+// builds fetches and rebuilds a non-pinned ref on every poll run), so
+// dispatch() must read the committed wrapper and refuse a repository that
+// does not declare the typed contract.
+func TestDispatch_SelectsTransportFromTargetRepositoryContract(t *testing.T) {
+	event := RoutableEvent{
+		Type:      "issue_note",
+		IID:       42,
+		UpdatedAt: time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC),
+		NoteBody:  "/fs-triage",
+	}
+
+	t.Run("typed wrapper uses pipeline inputs", func(t *testing.T) {
+		mc := newMockClient() // default wrapper fixture declares the full typed contract
+		p := newTestPoller(mc, Options{})
+		if err := p.dispatch(context.Background(), "owner", "repo", "triage", event, nil); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(mc.pipelineCalls) != 1 || !mc.pipelineCalls[0].ViaInputs {
+			t.Fatalf("expected one CreatePipelineWithInputs call, got %+v", mc.pipelineCalls)
+		}
+	})
+
+	// The former variable-based dispatch path has been removed: a
+	// repository without the full typed contract is refused, and no
+	// pipeline is ever created with user-defined variables.
+	for name, setup := range map[string]func(*mockClient){
+		"missing wrapper is refused": func(mc *mockClient) { mc.wrapperNotFound = true },
+		"legacy wrapper is refused": func(mc *mockClient) {
+			mc.wrapperContent = []byte("include:\n  - local: .gitlab/ci/fullsend-agent.yml\n")
+		},
+		"incomplete wrapper is refused": func(mc *mockClient) { mc.wrapperContent = []byte("spec:\n  inputs:\n    stage: {}\n---\n{}\n") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			mc := newMockClient()
+			setup(mc)
+			p := newTestPoller(mc, Options{})
+			err := p.dispatch(context.Background(), "owner", "repo", "triage", event, nil)
+			if err == nil || !strings.Contains(err.Error(), "legacy pipeline-variable dispatch path is no longer supported") {
+				t.Fatalf("expected a typed-contract refusal, got %v", err)
+			}
+			if !strings.Contains(err.Error(), "fullsend_ref to "+firstTypedDispatchRelease) {
+				t.Fatalf("expected the refusal to name fullsend_ref and the minimum release, got %v", err)
+			}
+			if len(mc.pipelineCalls) != 0 {
+				t.Fatalf("expected no pipeline call, got %+v", mc.pipelineCalls)
+			}
+			if len(p.dispatches) != 0 {
+				t.Fatalf("expected no recorded dispatch, got %+v", p.dispatches)
+			}
+		})
+	}
+
+	t.Run("wrapper read error propagates without dispatching", func(t *testing.T) {
+		mc := newMockClient()
+		mc.wrapperErr = fmt.Errorf("permission denied")
+		p := newTestPoller(mc, Options{})
+		err := p.dispatch(context.Background(), "owner", "repo", "triage", event, nil)
+		if err == nil || !strings.Contains(err.Error(), "permission denied") {
+			t.Fatalf("expected a wrapped permission-denied error, got %v", err)
+		}
+		if len(mc.pipelineCalls) != 0 {
+			t.Fatalf("expected no pipeline call when the transport check fails, got %+v", mc.pipelineCalls)
+		}
+	})
+
+	// TestDispatch_SelectsTransportFromTargetRepositoryContract guards a
+	// second bug: usesTypedDispatch previously read the wrapper from the
+	// default branch (GetFileContent) while CreatePipeline/
+	// CreatePipelineWithInputs targeted p.opts.PipelineRef. When the
+	// dispatch ref's wrapper contract differs from the default branch's
+	// (e.g. a legacy release branch still pinned to variable-based
+	// dispatch while main has moved to typed inputs, or vice versa), the
+	// poller must check the contract the *dispatch ref* actually
+	// declares, not the default branch's.
+	t.Run("reads the wrapper at the dispatch ref, not the default branch", func(t *testing.T) {
+		mc := newMockClient()
+		p := newTestPoller(mc, Options{PipelineRef: "legacy-release"})
+		if err := p.dispatch(context.Background(), "owner", "repo", "triage", event, nil); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(mc.wrapperContentRefs) != 1 || mc.wrapperContentRefs[0] != "legacy-release" {
+			t.Fatalf("expected wrapper lookup at ref %q, got %+v", "legacy-release", mc.wrapperContentRefs)
+		}
+	})
+
+	t.Run("legacy wrapper at the dispatch ref is refused even when default branch is typed", func(t *testing.T) {
+		mc := newMockClient() // default-branch wrapper fixture declares the full typed contract
+		mc.wrapperNotFound = true
+		p := newTestPoller(mc, Options{PipelineRef: "legacy-release"})
+		err := p.dispatch(context.Background(), "owner", "repo", "triage", event, nil)
+		if err == nil || !strings.Contains(err.Error(), `at ref "legacy-release"`) {
+			t.Fatalf("expected a typed-contract refusal naming the dispatch ref, got %v", err)
+		}
+		if len(mc.pipelineCalls) != 0 {
+			t.Fatalf("expected no pipeline call, got %+v", mc.pipelineCalls)
+		}
+	})
+}
+
 func TestDispatch_PropagatesMRAuthorAndFork(t *testing.T) {
 	mc := newMockClient()
 	p := newTestPoller(mc, Options{})
@@ -126,7 +232,7 @@ func TestDispatch_PropagatesMRAuthorAndFork(t *testing.T) {
 		MRTarget:   200,
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "review", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "review", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -166,7 +272,7 @@ func TestDispatch_ActorID_MREvent(t *testing.T) {
 		MRTarget:     100,
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "review", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "review", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -192,7 +298,7 @@ func TestDispatch_OpenedMRIncludesActionInPayload(t *testing.T) {
 		MRTarget:     100,
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "review", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "review", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -223,7 +329,7 @@ func TestDispatch_ActorID_IssueNoteEvent(t *testing.T) {
 		NoteAuthorID: 99,
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "triage", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "triage", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -253,7 +359,7 @@ func TestDispatch_ActorID_MRNoteUsesCommenter(t *testing.T) {
 		MRTarget:     100,
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "triage", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "triage", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -277,7 +383,7 @@ func TestDispatch_ActorID_ZeroWhenNeitherSet(t *testing.T) {
 		UpdatedAt: time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC),
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "code", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "code", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -299,7 +405,7 @@ func TestDispatch_ActorID_IssueLabelEvent(t *testing.T) {
 		NoteAuthorID: 77,
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "code", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "code", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -322,7 +428,7 @@ func TestDispatch_SameProjectIsNotFork(t *testing.T) {
 		MRTarget:  100,
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "review", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "review", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -342,7 +448,7 @@ func TestDispatch_PropagatesPollJobURL(t *testing.T) {
 		UpdatedAt: time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC),
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "triage", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "triage", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -363,7 +469,7 @@ func TestDispatch_UsesPipelineRefOption(t *testing.T) {
 		UpdatedAt: time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC),
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "triage", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "triage", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -386,7 +492,7 @@ func TestDispatch_CreatePipelineErrorPropagates(t *testing.T) {
 		NoteID:    100,
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "triage", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "triage", event, nil)
 	if err == nil {
 		t.Fatal("expected error from dispatch when CreatePipeline fails")
 	}
@@ -413,8 +519,12 @@ func TestRunCreatePipelineFailureDoesNotAdvanceWatermark(t *testing.T) {
 	router := &stubRouter{stages: []string{"triage"}}
 	p := New(mc, router, "group/project", withTestSecret(Options{PipelineRef: "main"}))
 
-	if err := p.Run(context.Background()); err != nil {
-		t.Fatalf("Run() error: %v", err)
+	err := p.Run(context.Background())
+	if err == nil {
+		t.Fatal("Run() should return error when pipeline creation fails")
+	}
+	if !strings.Contains(err.Error(), "dispatch") {
+		t.Errorf("error = %q, want dispatch failure", err)
 	}
 
 	if mc.pipelineCounter != 0 {
@@ -424,6 +534,9 @@ func TestRunCreatePipelineFailureDoesNotAdvanceWatermark(t *testing.T) {
 	got, ok := mc.getPollState()
 	if ok && got.LastPollAtFull != "" && got.LastPollAtFull != since.Format(time.RFC3339) {
 		t.Error("watermark should not be advanced when pipeline creation fails")
+	}
+	if !ok || got.FailedKeysFull["note-10"] != 1 {
+		t.Errorf("failed keys = %v, want note-10:1", got.FailedKeysFull)
 	}
 }
 
@@ -452,8 +565,9 @@ func TestRunPartialDispatchFailure(t *testing.T) {
 	router := &stubRouter{stages: []string{"triage"}}
 	p := New(mc, router, "group/project", withTestSecret(Options{PipelineRef: "main"}))
 
-	if err := p.Run(context.Background()); err != nil {
-		t.Fatalf("Run() error: %v", err)
+	err := p.Run(context.Background())
+	if err == nil {
+		t.Fatal("Run() should return error when one dispatch fails")
 	}
 
 	// First event should have succeeded, second should have failed.
@@ -463,6 +577,13 @@ func TestRunPartialDispatchFailure(t *testing.T) {
 	// Dispatch record only for the successful event.
 	if len(p.dispatches) != 1 {
 		t.Errorf("expected 1 dispatch record, got %d", len(p.dispatches))
+	}
+	got, ok := mc.getPollState()
+	if !ok {
+		t.Fatal("expected poll state to be persisted after partial failure")
+	}
+	if got.FailedKeysFull["note-20"] != 1 {
+		t.Errorf("failed keys = %v, want note-20:1", got.FailedKeysFull)
 	}
 }
 
@@ -482,7 +603,7 @@ func TestBuildEventPayload_IncludesAllFields(t *testing.T) {
 		MRTarget:     200,
 	}
 
-	data, err := buildEventPayload(event)
+	data, err := buildEventPayload(event, nil)
 	if err != nil {
 		t.Fatalf("buildEventPayload: %v", err)
 	}
@@ -494,7 +615,6 @@ func TestBuildEventPayload_IncludesAllFields(t *testing.T) {
 	checks := map[string]interface{}{
 		"type":                 "issue_note",
 		"iid":                  float64(7),
-		"note_body":            "/fs-triage",
 		"note_id":              float64(200),
 		"note_author_id":       float64(55),
 		"mr_source_project_id": float64(100),
@@ -509,6 +629,13 @@ func TestBuildEventPayload_IncludesAllFields(t *testing.T) {
 		if got != want {
 			t.Errorf("%s: got %v, want %v", key, got, want)
 		}
+	}
+
+	if got, ok := payloadCommentBody(t, data); !ok || got != "/fs-triage" {
+		t.Errorf("canonical comment body = %q (present %v), want %q", got, ok, "/fs-triage")
+	}
+	if _, ok := m["note_body"]; ok {
+		t.Errorf("payload still emits the legacy note_body field: %v", m["note_body"])
 	}
 
 	// Check updated_at.
@@ -535,7 +662,7 @@ func TestBuildEventPayload_OmitsZeroOptionalFields(t *testing.T) {
 		// All optional fields are zero values.
 	}
 
-	data, err := buildEventPayload(event)
+	data, err := buildEventPayload(event, nil)
 	if err != nil {
 		t.Fatalf("buildEventPayload: %v", err)
 	}
@@ -552,11 +679,165 @@ func TestBuildEventPayload_OmitsZeroOptionalFields(t *testing.T) {
 	}
 
 	// Must NOT have optional fields when zero.
-	optionals := []string{"note_body", "note_id", "note_author_id", "labels", "mr_source_project_id", "mr_target_project_id"}
+	optionals := []string{"note_body", "_normalized_event", "note_id", "note_author_id", "labels", "mr_source_project_id", "mr_target_project_id"}
 	for _, key := range optionals {
 		if _, ok := m[key]; ok {
 			t.Errorf("expected optional key %q to be omitted, but it was present", key)
 		}
+	}
+}
+
+// payloadCommentBody returns the canonical normalized comment body,
+// _normalized_event.transition.comment.body, from a buildEventPayload
+// result — the only field run-agent-job.sh reads it from.
+func payloadCommentBody(t *testing.T, data []byte) (string, bool) {
+	t.Helper()
+	var p struct {
+		Norm *struct {
+			Transition struct {
+				Kind    string `json:"kind"`
+				Comment *struct {
+					Body *string `json:"body"`
+				} `json:"comment"`
+			} `json:"transition"`
+		} `json:"_normalized_event"`
+	}
+	if err := json.Unmarshal(data, &p); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if p.Norm == nil || p.Norm.Transition.Comment == nil || p.Norm.Transition.Comment.Body == nil {
+		return "", false
+	}
+	if p.Norm.Transition.Kind != string(normevent.TransitionCommentAdded) {
+		t.Errorf("transition.kind = %q, want %q", p.Norm.Transition.Kind, normevent.TransitionCommentAdded)
+	}
+	return *p.Norm.Transition.Comment.Body, true
+}
+
+// multilineFixBody is a /fs-fix command whose instruction spans lines;
+// the instruction run-agent-job.sh derives from it must keep them.
+const multilineFixBody = "/fs-fix only address the nil check\n\n- keep the public API\n- add a regression test"
+
+func TestBuildEventPayload_CommandBodyAtCanonicalPath(t *testing.T) {
+	ts := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
+	for _, eventType := range []string{"issue_note", "mr_note"} {
+		t.Run(eventType, func(t *testing.T) {
+			event := RoutableEvent{Type: eventType, IID: 1, UpdatedAt: ts, NoteBody: multilineFixBody, NoteID: 9, NoteAuthorID: 3}
+
+			data, err := buildEventPayload(event, nil)
+			if err != nil {
+				t.Fatalf("buildEventPayload: %v", err)
+			}
+			got, ok := payloadCommentBody(t, data)
+			if !ok || got != multilineFixBody {
+				t.Errorf("canonical comment body = %q (present %v), want %q", got, ok, multilineFixBody)
+			}
+			var m map[string]any
+			if err := json.Unmarshal(data, &m); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			for _, legacy := range []string{"note_body", "comment", "instruction", "object_attributes"} {
+				if _, ok := m[legacy]; ok {
+					t.Errorf("payload emits non-canonical field %q: %v", legacy, m[legacy])
+				}
+			}
+		})
+	}
+}
+
+func TestBuildEventPayload_CommandBodyOverNoteLimitNotTruncated(t *testing.T) {
+	// run-agent-job.sh derives the /fs-fix instruction from this body, so
+	// a command must never be shortened in transport.
+	ts := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
+	body := "/fs-fix " + strings.Repeat("x", 2*noteBodyTransportLimit)
+	event := RoutableEvent{Type: "mr_note", IID: 1, UpdatedAt: ts, NoteBody: body}
+
+	data, err := buildEventPayload(event, nil)
+	if err != nil {
+		t.Fatalf("buildEventPayload: %v", err)
+	}
+	if got, ok := payloadCommentBody(t, data); !ok || got != body {
+		t.Errorf("canonical comment body has %d runes (present %v), want the intact %d-rune command", len([]rune(got)), ok, len([]rune(body)))
+	}
+}
+
+func TestBuildEventPayload_NonCommandBodyOverLimitTruncatedWithNotice(t *testing.T) {
+	// A non-command body (such as a bot review note) is bounded for
+	// transport and carries an in-band signal that it was cut.
+	ts := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
+	body := "Changes requested\n" + strings.Repeat("x", 900)
+	event := RoutableEvent{Type: "mr_note", IID: 1, UpdatedAt: ts, NoteBody: body, IsBot: true}
+
+	data, err := buildEventPayload(event, nil)
+	if err != nil {
+		t.Fatalf("buildEventPayload: %v", err)
+	}
+	got, ok := payloadCommentBody(t, data)
+	if !ok {
+		t.Fatal("canonical comment body missing")
+	}
+	if n := len([]rune(got)); n > noteBodyTransportLimit {
+		t.Errorf("comment body has %d runes, want at most %d", n, noteBodyTransportLimit)
+	}
+	if !strings.HasSuffix(got, noteBodyTruncationNotice) {
+		t.Errorf("comment body = %q, want it to end with the truncation notice %q", got, noteBodyTruncationNotice)
+	}
+	if !strings.HasPrefix(got, "Changes requested\n") {
+		t.Errorf("comment body = %q, want truncation to cut from the end", got)
+	}
+}
+
+func TestDispatch_RejectsCommandTooLargeToTransportIntact(t *testing.T) {
+	mc := newMockClient()
+	p := newTestPoller(mc, Options{})
+
+	event := RoutableEvent{
+		Type:         "mr_note",
+		IID:          10,
+		UpdatedAt:    time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC),
+		NoteBody:     "/fs-fix " + strings.Repeat("y", maxEventPayloadChunks*dispatchPayloadChunkSize),
+		NoteID:       5,
+		NoteAuthorID: 3,
+	}
+
+	err := p.dispatch(context.Background(), "owner", "repo", "fix", event, nil)
+	if err == nil || !strings.Contains(err.Error(), "refusing to dispatch a truncated note body") {
+		t.Fatalf("dispatch error = %v, want a refusal to dispatch a truncated note body", err)
+	}
+	if len(mc.pipelineCalls) != 0 || len(p.dispatches) != 0 {
+		t.Errorf("pipeline calls = %d, dispatches = %d, want none", len(mc.pipelineCalls), len(p.dispatches))
+	}
+}
+
+func TestDispatch_MultilineCommandCarriedIntact(t *testing.T) {
+	mc := newMockClient()
+	p := newTestPoller(mc, Options{})
+
+	event := RoutableEvent{
+		Type:         "mr_note",
+		IID:          10,
+		UpdatedAt:    time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC),
+		NoteBody:     multilineFixBody,
+		NoteID:       5,
+		NoteAuthorID: 3,
+	}
+
+	if err := p.dispatch(context.Background(), "owner", "repo", "fix", event, nil); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	payload, err := base64.StdEncoding.DecodeString(p.dispatches[0].EventPayloadB64)
+	if err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if got, ok := payloadCommentBody(t, payload); !ok || got != multilineFixBody {
+		t.Errorf("dispatched canonical comment body = %q (present %v), want %q", got, ok, multilineFixBody)
+	}
+}
+
+func TestTruncateNoteBody_ExactLimitUntouched(t *testing.T) {
+	s := strings.Repeat("a", 800)
+	if got := truncateNoteBody(s, 800); got != s {
+		t.Errorf("truncateNoteBody at exact limit changed the string: got %d runes, want 800 unchanged", len([]rune(got)))
 	}
 }
 
@@ -571,7 +852,7 @@ func TestDispatch_UnknownProjectIDsAreForkFailClosed(t *testing.T) {
 		// MRSource and MRTarget both zero (unknown)
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "review", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "review", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -591,7 +872,7 @@ func TestDispatch_IssueEventIsNotFork(t *testing.T) {
 		UpdatedAt: time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC),
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "code", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "code", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -613,7 +894,7 @@ func TestDispatch_MREventOneZeroProjectIDIsFork(t *testing.T) {
 		MRTarget:  0,
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "review", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "review", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -715,7 +996,7 @@ func TestDispatch_IncludesHMACWhenSecretSet(t *testing.T) {
 		NoteAuthorID: 88,
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "triage", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "triage", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -755,7 +1036,7 @@ func TestDispatch_HMACCoversAllSignedKeysForMREvent(t *testing.T) {
 		MRTarget:     100,
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "review", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "review", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -792,7 +1073,7 @@ func TestDispatch_NoHMACWhenSecretEmpty(t *testing.T) {
 		NoteAuthorID: 88,
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "triage", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "triage", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -804,9 +1085,9 @@ func TestDispatch_NoHMACWhenSecretEmpty(t *testing.T) {
 }
 
 func TestSignedDispatchKeys_MatchShellTemplate(t *testing.T) {
-	content, err := scaffold.GitLabPerRepoFile(".gitlab/ci/fullsend-agent.yml")
+	content, err := scaffold.GitLabPerRepoFile(".gitlab/ci/scripts/run-agent-job.sh")
 	if err != nil {
-		t.Fatalf("read agent template: %v", err)
+		t.Fatalf("read agent job script: %v", err)
 	}
 	s := string(content)
 
@@ -901,7 +1182,7 @@ func TestDispatch_IncludesOriginatingURLForIssueEvent(t *testing.T) {
 		NoteAuthorID: 88,
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "retro", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "retro", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -928,7 +1209,7 @@ func TestDispatch_IncludesOriginatingURLForMREvent(t *testing.T) {
 		MRTarget:  100,
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "retro", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "retro", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -961,7 +1242,7 @@ func TestDispatch_OriginatingURLWithSubgroup(t *testing.T) {
 		MRTarget:     100,
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "retro", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "retro", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -973,6 +1254,242 @@ func TestDispatch_OriginatingURLWithSubgroup(t *testing.T) {
 	}
 	if vars["REPO_FULL_NAME"] != "group/sub/project" {
 		t.Errorf("REPO_FULL_NAME: got %q, want %q", vars["REPO_FULL_NAME"], "group/sub/project")
+	}
+}
+
+// --- pipeline-inputs transport tests (#7850) ---
+
+// TestEventPayloadChunks_ChunksUnderGitLabInputLimit verifies a payload
+// long enough to need multiple chunks (a 4096-byte note body
+// base64-encodes to ~5.6 KB) is split into several pieces, each
+// comfortably under GitLab's ~1 KB per-pipeline-input-string-value limit
+// (https://docs.gitlab.com/ci/inputs/), and that the chunks round-trip
+// back to the original string by plain concatenation (#7850 injection-vuln
+// fix: chunks are raw data, not shell statements, so no parsing step is
+// needed to recover them).
+func TestEventPayloadChunks_ChunksUnderGitLabInputLimit(t *testing.T) {
+	payload := strings.Repeat("A", 5600)
+	chunks, err := eventPayloadChunks(payload)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(chunks) < 2 {
+		t.Fatalf("expected multiple chunks for a %d-byte payload, got %d", len(payload), len(chunks))
+	}
+
+	var rebuilt strings.Builder
+	for _, chunk := range chunks {
+		if len(chunk) >= 1024 {
+			t.Errorf("chunk is %d bytes, want < 1024 (GitLab's per-input-string limit): %q", len(chunk), chunk)
+		}
+		rebuilt.WriteString(chunk)
+	}
+	if rebuilt.String() != payload {
+		t.Errorf("reconstructed payload does not match original:\ngot:  %q\nwant: %q", rebuilt.String(), payload)
+	}
+}
+
+// TestEventPayloadChunks_ShortPayloadSingleChunk verifies a short payload
+// (the common case) produces exactly one chunk, unchanged.
+func TestEventPayloadChunks_ShortPayloadSingleChunk(t *testing.T) {
+	chunks, err := eventPayloadChunks("eyJ0eXBlIjoiaXNzdWVfbGFiZWwifQ==")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(chunks) != 1 {
+		t.Fatalf("expected 1 chunk for a short payload, got %d", len(chunks))
+	}
+	if chunks[0] != "eyJ0eXBlIjoiaXNzdWVfbGFiZWwifQ==" {
+		t.Errorf("chunk = %q, want original payload unchanged", chunks[0])
+	}
+}
+
+// TestEventPayloadChunks_EmptyPayloadProducesNoChunks documents the
+// defensive empty-input case: buildEventPayload always emits at least
+// {"type":...}, so this should not occur with a real dispatch.
+func TestEventPayloadChunks_EmptyPayloadProducesNoChunks(t *testing.T) {
+	chunks, err := eventPayloadChunks("")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(chunks) != 0 {
+		t.Errorf("expected 0 chunks for an empty payload, got %d", len(chunks))
+	}
+}
+
+// TestEventPayloadChunks_TooLargeReturnsError verifies dispatch() fails
+// closed instead of silently truncating when a payload would need more
+// than maxEventPayloadChunks pieces.
+func TestEventPayloadChunks_TooLargeReturnsError(t *testing.T) {
+	payload := strings.Repeat("A", (maxEventPayloadChunks+1)*dispatchPayloadChunkSize)
+	_, err := eventPayloadChunks(payload)
+	if err == nil {
+		t.Fatal("expected error for an oversized payload")
+	}
+}
+
+// gitlabChunkInputNames returns every "event_payload_chunk_NN:" input
+// name declared in a GitLab per-repo scaffold YAML file's spec:inputs
+// block, in file order.
+func gitlabChunkInputNames(t *testing.T, path string) []string {
+	t.Helper()
+	content, err := scaffold.GitLabPerRepoFile(path)
+	if err != nil {
+		t.Fatalf("reading %s: %v", path, err)
+	}
+	var names []string
+	for _, line := range strings.Split(string(content), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if name, ok := strings.CutSuffix(trimmed, ":"); ok && strings.HasPrefix(name, "event_payload_chunk_") {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// TestGitLabScaffoldChunkInputsMatchGoContract is a contract test (#7945
+// missing-test finding): the event_payload_chunk_NN pipeline inputs
+// declared in the three GitLab scaffold YAML files that carry dispatch
+// data (the root .gitlab-ci.yml fixture, fullsend-pipeline.yml, and
+// fullsend-agent.yml) must declare exactly maxEventPayloadChunks chunks,
+// named event_payload_chunk_00..NN-1 contiguously — the Go constant that
+// bounds eventPayloadChunks/dispatchInputs is the authority these three
+// independently-maintained YAML files have to agree with, and with each
+// other, for dispatch() to actually be able to transport a maximal
+// payload through every include hop. Nothing short of parsing the YAML
+// previously compared the two; a change to maxEventPayloadChunks (or a
+// hand-edit to one YAML file but not the others) could silently drift
+// without this test.
+func TestGitLabScaffoldChunkInputsMatchGoContract(t *testing.T) {
+	wantNames := make([]string, maxEventPayloadChunks)
+	for i := range wantNames {
+		wantNames[i] = dispatchEventPayloadChunkInputName(i)
+	}
+
+	for _, path := range []string{
+		".gitlab-ci.yml",
+		".gitlab/ci/fullsend-pipeline.yml",
+		".gitlab/ci/fullsend-agent.yml",
+	} {
+		got := gitlabChunkInputNames(t, path)
+		if len(got) != len(wantNames) {
+			t.Errorf("%s: declares %d event_payload_chunk_NN inputs, want %d (maxEventPayloadChunks)", path, len(got), len(wantNames))
+			continue
+		}
+		for i, name := range got {
+			if name != wantNames[i] {
+				t.Errorf("%s: chunk input %d = %q, want %q", path, i, name, wantNames[i])
+			}
+		}
+	}
+}
+
+// inputString decodes a json.RawMessage holding a marshaled
+// forge.PipelineInputValue (e.g. one produced by marshalInputs from a
+// forge.StringInput) back to a Go string via json.Unmarshal.
+func inputString(t *testing.T, raw json.RawMessage) string {
+	t.Helper()
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		t.Fatalf("decode input as string: %v", err)
+	}
+	return s
+}
+
+func marshalInputs(t *testing.T, inputs map[string]forge.PipelineInputValue) map[string]json.RawMessage {
+	t.Helper()
+	raw, err := json.Marshal(inputs)
+	if err != nil {
+		t.Fatalf("marshal inputs: %v", err)
+	}
+	var out map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("decode marshaled inputs: %v", err)
+	}
+	return out
+}
+
+// TestDispatchInputs_OmitsUnsetOptionalFields verifies optional dispatch
+// fields absent from the variables map (the conditional-set pattern in
+// dispatch() for MR_AUTHOR_ID/ACTOR_ID/STATUS_IID/poll-job-URL/HMAC) stay
+// absent from the resulting pipeline inputs too, rather than appearing as
+// an empty-string input — fullsend-agent.yml's declared defaults fill the
+// gap the same way an unset CI variable used to.
+func TestDispatchInputs_OmitsUnsetOptionalFields(t *testing.T) {
+	variables := map[string]string{
+		"STAGE":             "triage",
+		"EVENT_TYPE":        "issue_label",
+		"EVENT_PAYLOAD_B64": "eyJ0eXBlIjoiaXNzdWVfbGFiZWwifQ==",
+		"RESOURCE_KEY":      "issue-1",
+		"IS_FORK":           "false",
+		"ORIGINATING_URL":   "https://gitlab.example.com/org/repo/-/issues/1",
+		"REPO_FULL_NAME":    "org/repo",
+	}
+	inputs, err := dispatchInputs(variables)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	raw := marshalInputs(t, inputs)
+
+	for _, name := range []string{"mr_author_id", "actor_id", "status_iid", "poll_job_url", "dispatch_hmac"} {
+		if _, ok := raw[name]; ok {
+			t.Errorf("input %q should be absent when its dispatch field is unset, got %s", name, raw[name])
+		}
+	}
+	if got, want := inputString(t, raw["stage"]), "triage"; got != want {
+		t.Errorf("stage input = %q, want %q", got, want)
+	}
+	if _, ok := raw["event_payload_chunk_00"]; !ok {
+		t.Error("event_payload_chunk_00 input should be present for a non-empty payload")
+	}
+}
+
+// TestDispatchInputs_IncludesAllPresentFields verifies every optional
+// field is translated to its declared pipeline-input name when present.
+func TestDispatchInputs_IncludesAllPresentFields(t *testing.T) {
+	variables := map[string]string{
+		"STAGE":               "code",
+		"EVENT_TYPE":          "mr_event",
+		"EVENT_PAYLOAD_B64":   "eyJ0eXBlIjoibXJfZXZlbnQifQ==",
+		"RESOURCE_KEY":        "mr-5",
+		"IS_FORK":             "true",
+		"ORIGINATING_URL":     "https://gitlab.example.com/org/repo/-/merge_requests/5",
+		"REPO_FULL_NAME":      "org/repo",
+		"MR_AUTHOR_ID":        "7",
+		"ACTOR_ID":            "9",
+		"STATUS_IID":          "5",
+		forge.VarPollJobURL:   "https://gitlab.example.com/org/repo/-/jobs/1",
+		forge.VarDispatchHMAC: "deadbeef",
+	}
+	inputs, err := dispatchInputs(variables)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	raw := marshalInputs(t, inputs)
+
+	wantByInput := map[string]string{
+		"stage":           "code",
+		"event_type":      "mr_event",
+		"resource_key":    "mr-5",
+		"is_fork":         "true",
+		"originating_url": "https://gitlab.example.com/org/repo/-/merge_requests/5",
+		"repo_full_name":  "org/repo",
+		"mr_author_id":    "7",
+		"actor_id":        "9",
+		"status_iid":      "5",
+		"poll_job_url":    "https://gitlab.example.com/org/repo/-/jobs/1",
+		"dispatch_hmac":   "deadbeef",
+	}
+	for name, want := range wantByInput {
+		got, ok := raw[name]
+		if !ok {
+			t.Errorf("expected input %q to be present", name)
+			continue
+		}
+		if s := inputString(t, got); s != want {
+			t.Errorf("input %q = %q, want %q", name, s, want)
+		}
 	}
 }
 
@@ -992,4 +1509,92 @@ func TestResourceKey_EntityBased(t *testing.T) {
 			t.Errorf("resourceKey(%s, IID=%d) = %q, want %q", tt.event.Type, tt.event.IID, got, tt.want)
 		}
 	}
+}
+
+// TestDispatch_ChildPipelineRoute covers the CI_JOB_TOKEN child-pipeline
+// route (#8438): with ChildDispatchJobToken set, a typed repository's agent
+// pipeline is started through the trigger API with that job token and the
+// same signed typed inputs as the Poller API route; without it, the Poller
+// API route is unchanged; and a legacy (variable-based) repository is
+// refused rather than dispatched through variables.
+func TestDispatch_ChildPipelineRoute(t *testing.T) {
+	event := RoutableEvent{
+		Type:      "issue_note",
+		IID:       42,
+		UpdatedAt: time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC),
+		NoteBody:  "/fs-triage",
+	}
+
+	t.Run("typed wrapper dispatches a child pipeline with the job token", func(t *testing.T) {
+		mc := newMockClient()
+		p := newTestPoller(mc, Options{DispatchSecret: "s3cret", ChildDispatchJobToken: "job-token-value"})
+		if err := p.dispatch(context.Background(), "owner", "repo", "triage", event, nil); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(mc.pipelineCalls) != 1 {
+			t.Fatalf("expected one pipeline call, got %+v", mc.pipelineCalls)
+		}
+		call := mc.pipelineCalls[0]
+		if !call.ViaInputs || call.JobToken != "job-token-value" {
+			t.Fatalf("expected a typed child-pipeline call with the job token, got %+v", call)
+		}
+		if call.Variables["STAGE"] != "triage" {
+			t.Errorf("STAGE input: got %q, want triage", call.Variables["STAGE"])
+		}
+		want := computeDispatchHMAC("s3cret", withoutKey(call.Variables, forge.VarDispatchHMAC))
+		if call.Variables[forge.VarDispatchHMAC] != want {
+			t.Errorf("dispatch HMAC: got %q, want %q", call.Variables[forge.VarDispatchHMAC], want)
+		}
+	})
+
+	t.Run("no job token keeps the Poller API route", func(t *testing.T) {
+		mc := newMockClient()
+		p := newTestPoller(mc, Options{})
+		if err := p.dispatch(context.Background(), "owner", "repo", "triage", event, nil); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(mc.pipelineCalls) != 1 || !mc.pipelineCalls[0].ViaInputs || mc.pipelineCalls[0].JobToken != "" {
+			t.Fatalf("expected one Poller API typed-input call, got %+v", mc.pipelineCalls)
+		}
+	})
+
+	t.Run("legacy wrapper is refused on the child route", func(t *testing.T) {
+		mc := newMockClient()
+		mc.wrapperNotFound = true
+		p := newTestPoller(mc, Options{ChildDispatchJobToken: "job-token-value"})
+		err := p.dispatch(context.Background(), "owner", "repo", "triage", event, nil)
+		if err == nil || !strings.Contains(err.Error(), "requires the typed pipeline-input contract") {
+			t.Fatalf("expected a typed-contract error, got %v", err)
+		}
+		if len(p.dispatches) != 0 {
+			t.Fatalf("expected no recorded dispatch, got %+v", p.dispatches)
+		}
+		if len(mc.pipelineCalls) != 0 {
+			t.Fatalf("expected no pipeline call, got %+v", mc.pipelineCalls)
+		}
+	})
+
+	t.Run("child pipeline failure is reported", func(t *testing.T) {
+		mc := newMockClient()
+		mc.pipelineErr = fmt.Errorf("403 forbidden")
+		p := newTestPoller(mc, Options{ChildDispatchJobToken: "job-token-value"})
+		err := p.dispatch(context.Background(), "owner", "repo", "triage", event, nil)
+		if err == nil || !strings.Contains(err.Error(), "403 forbidden") {
+			t.Fatalf("expected the child-pipeline error, got %v", err)
+		}
+		if len(p.dispatches) != 0 {
+			t.Fatalf("expected no recorded dispatch after a failed child pipeline, got %+v", p.dispatches)
+		}
+	})
+}
+
+// withoutKey returns a copy of vars without key.
+func withoutKey(vars map[string]string, key string) map[string]string {
+	out := make(map[string]string, len(vars))
+	for k, v := range vars {
+		if k != key {
+			out[k] = v
+		}
+	}
+	return out
 }

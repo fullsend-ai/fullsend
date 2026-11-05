@@ -55,6 +55,19 @@ const piVertexExtensionPath = sandbox.SandboxPiExtensionsDir + "/anthropic-verte
 // built-in xai provider cannot shadow this one (#6571).
 const piXaiVertexExtensionPath = sandbox.SandboxPiExtensionsDir + "/xai-vertex"
 
+// piInferenceGatewayExtensionPath is the inference-gateway provider for pi
+// (fullsend-ai/pi-inference-gateway, pinned in the sandbox image by
+// PI_INFERENCE_GATEWAY_VERSION). It fronts OpenAI- or Anthropic-compatible
+// gateways (LiteLLM, agentgateway, APISIX and similar) and registers one
+// provider (default id "gateway") whose models come from the gateway's
+// /v1/models. Run loads it with `-e` only when an inference.gateway block
+// applies (SetPiGatewayRun) and a resolved model is on the gateway
+// provider; it then also guards the rendered inference-gateway.json and
+// owns the INFERENCE_GATEWAY_* environment (pi_gateway_run.go, #8280).
+// Without a block the runner leaves it alone, so a harness may still load
+// it as a plugin.
+const piInferenceGatewayExtensionPath = sandbox.SandboxPiExtensionsDir + "/inference-gateway"
+
 // OpenAI on pi: unlike the Vertex providers, OpenAI uses a runner-exchanged
 // short-lived access token (WIF or a static OPENAI_API_KEY) delivered as a
 // credential placeholder through the run-scoped OpenShell provider, not
@@ -119,7 +132,7 @@ func (PiRuntime) WorkspaceDir() string { return sandbox.SandboxWorkspace }
 // (piExtensionsGuard) and the hook adapter's SHA-256 check (piHooksGuard),
 // neither of which can see it. Setting the variable to false makes jiti
 // ignore any planted entry and create no cache directory at all (verified
-// on pi 0.84.4, and jiti is still 2.7.0 at the pinned 0.85.0 —
+// on pi 0.84.4, re-checked on 0.85.0 and 1.5.0, jiti 2.7.0 throughout —
 // internal/runtime/testdata/pi/jiti-cache-check.sh reproduces both
 // halves). Run re-exports these after the agent-writable
 // .env is sourced, so the agent cannot switch the cache back on, and

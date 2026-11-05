@@ -27,7 +27,7 @@ func collectOpenCodeEvents(t *testing.T, name string) ([]AgentEvent, string) {
 	t.Helper()
 	f := loadOpenCodeFixture(t, name)
 	var events []AgentEvent
-	sessionID, err := parseOpenCodeStream(f, func(evt AgentEvent) {
+	sessionID, _, err := parseOpenCodeStream(f, func(evt AgentEvent) {
 		events = append(events, evt)
 	})
 	require.NoError(t, err)
@@ -205,9 +205,15 @@ func TestParseOpenCodeStream_MultiStep(t *testing.T) {
 func TestParseOpenCodeStream_Malformed(t *testing.T) {
 	t.Parallel()
 
-	events, sessionID := collectOpenCodeEvents(t, "malformed.ndjson")
+	f := loadOpenCodeFixture(t, "malformed.ndjson")
+	var events []AgentEvent
+	sessionID, ml, err := parseOpenCodeStream(f, func(evt AgentEvent) {
+		events = append(events, evt)
+	})
+	require.NoError(t, err)
 
 	assert.Equal(t, "ses_mal", sessionID)
+	assert.Equal(t, 2, ml, "two malformed envelope lines should be counted")
 
 	// Should get TextEvent from the valid line + TokensEvent + ResultEvent.
 	var texts []TextEvent
@@ -226,6 +232,9 @@ func TestParseOpenCodeStream_Malformed(t *testing.T) {
 
 	require.Len(t, results, 1)
 	assert.Equal(t, 1, results[0].NumTurns)
+	// The stream has valid step_finish events so numTurns > 0. IsError is
+	// false because the malformed lines were envelope failures (not error
+	// events). The caller should use malformedLines > 0 to detect this.
 	assert.False(t, results[0].IsError)
 }
 
@@ -252,10 +261,11 @@ func TestParseOpenCodeStream_SessionID(t *testing.T) {
 {"type":"step_finish","timestamp":1723456782000,"sessionID":"ses_first","part":{"id":"prt_2","sessionID":"ses_first","messageID":"msg_1","type":"step-finish","reason":"stop","cost":0.01,"tokens":{"input":10,"output":5,"reasoning":0,"cache":{"read":0,"write":0}}}}
 `
 	var events []AgentEvent
-	sessionID, err := parseOpenCodeStream(strings.NewReader(input), func(evt AgentEvent) {
+	sessionID, ml, err := parseOpenCodeStream(strings.NewReader(input), func(evt AgentEvent) {
 		events = append(events, evt)
 	})
 	require.NoError(t, err)
+	assert.Equal(t, 0, ml, "no malformed lines in valid input")
 	assert.Equal(t, "ses_first", sessionID)
 	assert.Len(t, events, 3) // TextEvent + TokensEvent + ResultEvent
 }
@@ -269,7 +279,7 @@ func TestParseOpenCodeStream_ReadError(t *testing.T) {
 		iotest.ErrReader(errors.New("pipe broken")),
 	)
 	var events []AgentEvent
-	sid, err := parseOpenCodeStream(r, func(e AgentEvent) { events = append(events, e) })
+	sid, _, err := parseOpenCodeStream(r, func(e AgentEvent) { events = append(events, e) })
 	require.Error(t, err)
 	assert.Equal(t, "ses_x", sid)
 	assert.Contains(t, err.Error(), "pipe broken")
@@ -296,7 +306,7 @@ func TestParseOpenCodeStream_SecretRedaction(t *testing.T) {
 	input := completedLine + "\n" + errorLine + "\n" + stepFinish + "\n"
 
 	var events []AgentEvent
-	_, err := parseOpenCodeStream(strings.NewReader(input), func(evt AgentEvent) {
+	_, _, err := parseOpenCodeStream(strings.NewReader(input), func(evt AgentEvent) {
 		events = append(events, evt)
 	})
 	require.NoError(t, err)
@@ -327,7 +337,7 @@ func TestParseOpenCodeStream_SecretRedactionCleanPassthrough(t *testing.T) {
 {"type":"step_finish","timestamp":2,"sessionID":"ses_clean","part":{"reason":"stop","cost":0.01,"tokens":{"input":10,"output":5,"reasoning":0,"cache":{"read":0,"write":0}}}}
 `
 	var events []AgentEvent
-	_, err := parseOpenCodeStream(strings.NewReader(input), func(evt AgentEvent) {
+	_, _, err := parseOpenCodeStream(strings.NewReader(input), func(evt AgentEvent) {
 		events = append(events, evt)
 	})
 	require.NoError(t, err)
@@ -353,7 +363,7 @@ func TestParseOpenCodeStream_PendingRunningFiltered(t *testing.T) {
 {"type":"step_finish","timestamp":4,"sessionID":"ses_filt","part":{"reason":"stop","cost":0.01,"tokens":{"input":10,"output":5,"reasoning":0,"cache":{"read":0,"write":0}}}}
 `
 	var events []AgentEvent
-	_, err := parseOpenCodeStream(strings.NewReader(input), func(evt AgentEvent) {
+	_, _, err := parseOpenCodeStream(strings.NewReader(input), func(evt AgentEvent) {
 		events = append(events, evt)
 	})
 	require.NoError(t, err)
@@ -378,7 +388,7 @@ func TestParseOpenCodeStream_OversizedLineSkipped(t *testing.T) {
 	r := strings.NewReader(huge + valid + stepFinish)
 
 	var events []AgentEvent
-	_, err := parseOpenCodeStream(r, func(e AgentEvent) { events = append(events, e) })
+	_, _, err := parseOpenCodeStream(r, func(e AgentEvent) { events = append(events, e) })
 	require.NoError(t, err)
 
 	var texts []TextEvent
@@ -389,4 +399,39 @@ func TestParseOpenCodeStream_OversizedLineSkipped(t *testing.T) {
 	}
 	require.Len(t, texts, 1)
 	assert.Equal(t, "after", texts[0].Text)
+}
+
+func TestParseOpenCodeStream_TruncatedErrorEvent(t *testing.T) {
+	t.Parallel()
+
+	// A valid step_finish followed by a malformed error event: the envelope
+	// unmarshal (ocEnvelope) succeeds because type and sessionID are present,
+	// but the ocErrorEvent unmarshal fails because "error" has the wrong type
+	// (string instead of object). Before the fix, sawError stayed false and
+	// the run would report success.
+	stepFinish := `{"type":"step_finish","timestamp":1,"sessionID":"ses_trunc","part":{"reason":"stop","cost":0.01,"tokens":{"input":10,"output":5,"reasoning":0,"cache":{"read":0,"write":0}}}}`
+	// "error" is a string, not the expected {"name":...,"data":...} object.
+	truncatedError := `{"type":"error","timestamp":2,"sessionID":"ses_trunc","error":"unexpected schema change"}`
+
+	input := stepFinish + "\n" + truncatedError + "\n"
+
+	var events []AgentEvent
+	_, ml, err := parseOpenCodeStream(strings.NewReader(input), func(evt AgentEvent) {
+		events = append(events, evt)
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 1, ml, "truncated error payload should be counted as malformed")
+
+	var results []ResultEvent
+	for _, evt := range events {
+		if e, ok := evt.(ResultEvent); ok {
+			results = append(results, e)
+		}
+	}
+
+	require.Len(t, results, 1)
+	// sawError is set before unmarshal, so IsError must be true even though
+	// the error payload couldn't be parsed.
+	assert.True(t, results[0].IsError, "truncated error event must set IsError=true")
+	assert.Equal(t, 1, results[0].NumTurns)
 }

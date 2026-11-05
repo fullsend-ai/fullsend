@@ -2,6 +2,7 @@ package tracker
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -378,6 +379,9 @@ func TestForgeClient_DeleteCommentReaction_InvalidProject(t *testing.T) {
 type staticClient struct{}
 
 func (staticClient) GetIssue(_ context.Context, _ string, _ int) (*Issue, error) { return nil, nil }
+func (staticClient) CreateIssue(_ context.Context, _, _ string, _ Body, _ CreateIssueOptions) (*Issue, error) {
+	return nil, nil
+}
 func (staticClient) ListComments(_ context.Context, _ string, _ int) ([]Comment, error) {
 	return nil, nil
 }
@@ -394,3 +398,111 @@ func (staticClient) DeleteComment(_ context.Context, _ string, _ int, _ string) 
 var _ Client = staticClient{}
 var _ Client = (*ForgeClient)(nil)
 var _ Reactor = (*ForgeClient)(nil)
+var _ Mover = (*ForgeClient)(nil)
+
+// TestMoveIssue_NotSupported pins the one thing the move stubs promise:
+// consumers type-assert to Mover and then branch on IsNotSupported, so a
+// stub returning an error that doesn't wrap the sentinel would break them
+// silently. Delete the relevant case as each tracker gains a real move.
+func TestMoveIssue_NotSupported(t *testing.T) {
+	jc, err := NewFakeJiraClient("https://acme.atlassian.net")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name           string
+		mover          Mover
+		source, target string
+	}{
+		{"ForgeClient", NewForgeClient(forge.NewFakeClient()), "acme/widgets", "acme/gadgets"},
+		{"JiraClient", jc, "PROJ", "OTHER"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res, err := tt.mover.MoveIssue(context.Background(), tt.source, 42, tt.target)
+			if res != nil || !IsNotSupported(err) {
+				t.Fatalf("MoveIssue = %+v, %v; want a nil result and an IsNotSupported error", res, err)
+			}
+		})
+	}
+}
+
+func TestForgeClient_AuthenticatedUser(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "fullsend-ai-review[bot]"
+	got, err := NewForgeClient(fc).AuthenticatedUser(context.Background())
+	if err != nil || got != "fullsend-ai-review[bot]" {
+		t.Fatalf("AuthenticatedUser() = %q, %v; want the forge login", got, err)
+	}
+
+	fc.Errors = map[string]error{"GetAuthenticatedUser": errors.New("401")}
+	if _, err := NewForgeClient(fc).AuthenticatedUser(context.Background()); err == nil {
+		t.Fatal("AuthenticatedUser() must return the forge error")
+	}
+}
+
+func TestIsNotSupported(t *testing.T) {
+	if !IsNotSupported(ErrNotSupported) {
+		t.Error("IsNotSupported(ErrNotSupported) = false, want true")
+	}
+	if !IsNotSupported(errors.Join(errors.New("wrapped"), ErrNotSupported)) {
+		t.Error("IsNotSupported must see through wrapped errors")
+	}
+	if IsNotSupported(errors.New("other")) {
+		t.Error("IsNotSupported(other) = true, want false")
+	}
+}
+
+func TestForgeClient_CreateIssue(t *testing.T) {
+	fc := forge.NewFakeClient()
+	c := NewForgeClient(fc)
+
+	issue, err := c.CreateIssue(context.Background(), "group/subgroup/project", "New widget", "details", CreateIssueOptions{})
+	if err != nil {
+		t.Fatalf("CreateIssue returned error: %v", err)
+	}
+	if len(fc.CreatedIssues) != 1 {
+		t.Fatalf("CreatedIssues = %d, want 1", len(fc.CreatedIssues))
+	}
+	got := fc.CreatedIssues[0]
+	if got.Owner != "group/subgroup" || got.Repo != "project" || got.Title != "New widget" || got.Body != "details" {
+		t.Errorf("forge CreateIssue called with %+v", got)
+	}
+	if issue.Number != got.Number || issue.Title != "New widget" || issue.Body != "details" || issue.URL == "" {
+		t.Errorf("CreateIssue returned unexpected issue: %+v", issue)
+	}
+}
+
+func TestForgeClient_CreateIssue_RejectsJiraOnlyOptions(t *testing.T) {
+	for name, opts := range map[string]CreateIssueOptions{
+		"issue type": {IssueType: "10003"},
+		"parent":     {Parent: "PROJ-1"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fc := forge.NewFakeClient()
+			_, err := NewForgeClient(fc).CreateIssue(context.Background(), "acme/widgets", "t", "", opts)
+			if !IsNotSupported(err) {
+				t.Fatalf("CreateIssue error = %v, want ErrNotSupported", err)
+			}
+			if len(fc.CreatedIssues) != 0 {
+				t.Errorf("CreateIssue created %d issues, want none", len(fc.CreatedIssues))
+			}
+		})
+	}
+}
+
+func TestForgeClient_CreateIssue_InvalidProject(t *testing.T) {
+	fc := forge.NewFakeClient()
+	if _, err := NewForgeClient(fc).CreateIssue(context.Background(), "invalid", "t", "", CreateIssueOptions{}); err == nil {
+		t.Fatal("CreateIssue with invalid project should return an error")
+	}
+}
+
+func TestForgeClient_CreateIssue_NotFound(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.Errors = map[string]error{"CreateIssue": forge.ErrNotFound}
+	_, err := NewForgeClient(fc).CreateIssue(context.Background(), "acme/widgets", "t", "", CreateIssueOptions{})
+	if !IsNotFound(err) {
+		t.Fatalf("CreateIssue error = %v, want IsNotFound", err)
+	}
+}

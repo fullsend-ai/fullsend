@@ -118,10 +118,19 @@ const (
 )
 
 // Actor is the user or service account that caused the transition.
+//
+// BotRole and RoleVerified are the additive ADR 0107 fields. BotRole is the
+// provider-resolved canonical Fullsend role of a recognized bot; it is empty
+// for humans and unrecognized bots. RoleVerified is nil when the adapter has
+// not performed a lookup (legacy input, or the label exception where bot-role
+// lookup is not applicable); for bots, true means the bot-role lookup
+// completed (including a successful no-match) and false means it failed.
 type Actor struct {
 	ID             string    `json:"id"`
 	Kind           ActorKind `json:"kind"`
 	Role           ActorRole `json:"role"`
+	BotRole        string    `json:"bot_role,omitempty"`
+	RoleVerified   *bool     `json:"role_verified,omitempty"`
 	IsEntityAuthor bool      `json:"is_entity_author"`
 }
 
@@ -219,6 +228,14 @@ func (e *Event) Validate() error {
 	if e.Actor.Role == "" {
 		return fmt.Errorf("normalized event: actor.role is required")
 	}
+	if e.Actor.BotRole != "" {
+		if e.Actor.Kind != ActorBot {
+			return fmt.Errorf("normalized event: actor.bot_role is only valid when actor.kind is bot")
+		}
+		if e.Actor.RoleVerified == nil || !*e.Actor.RoleVerified {
+			return fmt.Errorf("normalized event: actor.bot_role requires actor.role_verified to be true")
+		}
+	}
 	if e.State.Labels == nil {
 		return fmt.Errorf("normalized event: state.labels is required")
 	}
@@ -301,10 +318,15 @@ func IsWriteAuthorized(role ActorRole) bool {
 	}
 }
 
-// MapGitHubPermission maps GitHub collaborator API role_name to ActorRole.
-// Custom repository roles are not resolved here; they map to RoleNone, matching
-// the bash routing gate and keeping dispatch semantics restrictive until custom
-// roles are handled platform-wide.
+// IsTriageAuthorized reports whether actor.role is at or above triage, the
+// default threshold for observation agents (triage, review).
+func IsTriageAuthorized(role ActorRole) bool {
+	return role == RoleTriage || IsWriteAuthorized(role)
+}
+
+// MapGitHubPermission maps a GitHub base role to ActorRole. The GitHub client
+// resolves custom repository roles to a base role before this mapping;
+// unrecognized values map to RoleNone.
 func MapGitHubPermission(roleName string) ActorRole {
 	switch strings.ToLower(strings.TrimSpace(roleName)) {
 	case "admin":
@@ -317,6 +339,25 @@ func MapGitHubPermission(roleName string) ActorRole {
 		return RoleTriage
 	case "read":
 		return RoleRead
+	default:
+		return RoleNone
+	}
+}
+
+// MapGitLabAccessLevel maps a GitLab project membership access level to the
+// normalized repository permission role used by the authorization contract.
+func MapGitLabAccessLevel(accessLevel int) ActorRole {
+	switch accessLevel {
+	case 10: // Guest
+		return RoleRead
+	case 20: // Reporter
+		return RoleTriage
+	case 30: // Developer
+		return RoleWrite
+	case 40: // Maintainer
+		return RoleMaintain
+	case 50: // Owner
+		return RoleAdmin
 	default:
 		return RoleNone
 	}

@@ -24,7 +24,15 @@ This project uses the [Probot DCO app](https://github.com/apps/dco) to enforce s
 
 **Human-driven agent sessions** (e.g., using Claude Code locally) should sign off — the human directing the session is the one certifying the DCO, just as they would for any other commit.
 
-**Autonomous agent commits are exempt.** The fullsend code and fix agents run without a human in the loop at commit time. The DCO is a human attestation — it certifies personhood and legal authority to contribute. No one is present to make that certification in an autonomous session. These agents commit using the GitHub App's bot identity (`<id>+<slug>[bot]@users.noreply.github.com`), which GitHub recognizes as `author.type: "Bot"`. The Probot DCO app auto-skips bot-authored commits. The human who merges an agent PR accepts responsibility for the contribution.
+**Autonomous agent commits are exempt** and must never supply the DCO with
+`-s` or with `Signed-off-by`. The fullsend code and fix agents run without a
+human in the loop at commit time. The DCO is a human attestation — it certifies
+personhood and legal authority to contribute. No one is present to make that
+certification in an autonomous session. These agents commit using the GitHub
+App's bot identity (`<id>+<slug>[bot]@users.noreply.github.com`), which GitHub
+recognizes as `author.type: "Bot"`. The Probot DCO app auto-skips bot-authored
+commits. The human who merges an agent PR accepts responsibility for the
+contribution.
 
 ## Pull request workflow
 
@@ -32,7 +40,19 @@ This project uses the [Probot DCO app](https://github.com/apps/dco) to enforce s
 
 - Stage your changes, then run `make lint` before pushing and fix any failures.
 - For Go changes, run `make go-test` and add tests for new or modified logic. CI uploads coverage to Codecov and enforces the thresholds in [`.codecov.yml`](.codecov.yml): **80% patch coverage target** on changed lines (**75% enforced floor**, 5% threshold) and **no more than 1% drop** in overall project coverage relative to the base branch.
-- **If your PR introduces a breaking change**, the PR title must carry the `!` suffix (e.g., `feat(harness)!: require role field`). GoReleaser builds release notes from PR titles — a missing `!` means users get no warning before upgrading. See [COMMITS.md](COMMITS.md#breaking-changes) for how to identify breaking changes and what to include in the commit body.
+- On macOS or a Linux distribution other than Ubuntu, `make ci-local` runs the
+  same checks in a container that matches the CI runner, so local results
+  predict CI (see [`hack/ci-local`](hack/ci-local/README.md)).
+- **If your PR introduces a breaking change**, the PR title and every breaking
+  commit's subject must carry the `!` suffix (e.g., `feat(harness)!: require
+  role field`). GoReleaser builds release notes from commit subjects, not the
+  PR title — a missing `!` on a breaking commit means users get no warning
+  before upgrading. See [COMMITS.md](COMMITS.md#breaking-changes) for how to
+  identify breaking changes and what to include in the commit body.
+- Wrap prose in Markdown files at about 80 columns, so diffs show only the
+  lines you changed. Tables, code blocks, headings, and long URLs are
+  exceptions. See
+  [Documentation § Line wrapping](docs/contributing/documentation.md#line-wrapping).
 - Keep PRs focused. One problem area or decision per PR is easier to review than a grab-bag.
 - If your change touches a problem doc, make sure the "Open questions" section still makes sense after your edit.
 

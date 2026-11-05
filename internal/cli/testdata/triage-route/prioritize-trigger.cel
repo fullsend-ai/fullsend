@@ -1,0 +1,9 @@
+// Copy of the default prioritize trigger in fullsend-ai/agents harness/prioritize.yaml
+// (fullsend-ai/agents#1758; harness/prioritize.yaml at 983f1513c473). Keep the two
+// in step: TestTriagePrioritizeRouteParity compares it with the bash router in
+// reusable-dispatch.yml.
+event.entity.kind in ["work_item", "change_proposal"]
+  && event.transition.kind == "comment_added"
+  && has(event.transition.comment.command)
+  && event.transition.comment.command == "/fs-prioritize"
+  && event.actor.kind == "human"

@@ -1,35 +1,22 @@
 package repos
 
 import (
-	"context"
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 )
 
-var (
-	// repoNamePattern matches the GitHub two-segment owner/repo format.
-	repoNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$`)
+// gitlabRepoNamePattern matches GitLab project paths which may include
+// arbitrarily nested group/subgroup segments (e.g. "group/subgroup/project").
+var gitlabRepoNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_.-]+(/[a-zA-Z0-9_.-]+)+$`)
 
-	// gitlabRepoNamePattern matches GitLab project paths which may include
-	// arbitrarily nested group/subgroup segments (e.g. "group/subgroup/project").
-	gitlabRepoNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_.-]+(/[a-zA-Z0-9_.-]+)+$`)
-)
-
-// ManifestEditConfig holds inputs for manifest add/remove operations.
+// ManifestEditConfig holds inputs for manifest remove operations.
 type ManifestEditConfig struct {
 	Manifest     *Manifest
 	ManifestPath string
 	DryRun       bool
-}
-
-// ManifestAddResult holds the outcome of adding repos to a manifest.
-type ManifestAddResult struct {
-	Added   []string
-	Skipped []string
 }
 
 // ManifestRemoveResult holds the outcome of removing repos from a manifest.
@@ -38,132 +25,67 @@ type ManifestRemoveResult struct {
 	Skipped []string
 }
 
-// AddToManifest appends repo entries to the appropriate platform section,
-// skipping duplicates. The forgeName parameter determines which platform
-// section receives the entries. When client is non-nil, each non-glob
-// repo is probed for existing installation state and per-repo overrides
-// are populated where the discovered values differ from platform defaults.
-// Returns the result and the modified manifest. The manifest is written to
-// disk only when ManifestPath is set and DryRun is false.
-func AddToManifest(ctx context.Context, cfg ManifestEditConfig, forgeName string, entries []RepoEntry, clients ForgeClientFactory, progress ProgressFunc) (*ManifestAddResult, *Manifest, error) {
-	if cfg.Manifest == nil {
-		return nil, nil, fmt.Errorf("manifest is required")
+// carveOutForForge carves an explicit entry for name from the covering glob
+// in the discovered forge section, or from the first covering glob across
+// forges (GitHub before GitLab) when discovered is empty. It returns the new
+// entry and the forge section it was added to.
+func carveOutForForge(m *Manifest, name, discovered string) (*RepoEntry, string, error) {
+	order := []string{ForgeGitHub, ForgeGitLab}
+	if discovered != "" {
+		order = []string{discovered}
 	}
-	if len(entries) == 0 {
-		return nil, nil, fmt.Errorf("at least one repo is required")
-	}
-	if forgeName == "" {
-		return nil, nil, fmt.Errorf("forge name is required")
-	}
-	if !IsValidForge(forgeName) {
-		return nil, nil, fmt.Errorf("unsupported forge %q", forgeName)
-	}
-	if progress == nil {
-		progress = func(_, _, _ string) {}
-	}
-
-	// Build set of existing repos across all platforms.
-	existing := make(map[string]bool)
-	for _, e := range cfg.Manifest.AllRepos() {
-		existing[strings.ToLower(e.Name)] = true
-	}
-
-	for _, entry := range entries {
-		if !isGlob(entry.Name) {
-			if err := validateRepoName(forgeName, entry.Name); err != nil {
-				return nil, nil, err
-			}
-		}
-	}
-
-	if clients != nil {
-		platform := cfg.Manifest.PlatformFor(forgeName)
-		for i := range entries {
-			if isGlob(entries[i].Name) || existing[strings.ToLower(entries[i].Name)] {
-				continue
-			}
-			parts := strings.SplitN(entries[i].Name, "/", 2)
-			if len(parts) != 2 {
-				continue
-			}
-			fc, fcErr := clients.ConfigFor(forgeName)
-			if fcErr != nil {
-				progress(entries[i].Name, "discover", fmt.Sprintf("forge client error: %v", fcErr))
-				continue
-			}
-			state, err := ProbeRepoState(ctx, fc.Client, parts[0], parts[1], forgeName, fc)
-			if err != nil && !state.Installed {
-				progress(entries[i].Name, "discover", fmt.Sprintf("probe failed: %v", err))
-				continue
-			}
-			if state.Installed {
-				progress(entries[i].Name, "discover", "existing installation detected")
-
-				// Populate per-repo overrides from discovered state
-				// when values differ from platform defaults. Use an
-				// empty PlatformConfig when the section doesn't exist
-				// yet (bootstrap) so all discovered values are captured.
-				p := platform
-				if p == nil {
-					p = &PlatformConfig{}
-				}
-				if forgeName == ForgeGitHub {
-					if state.MintURL != "" && state.MintURL != p.MintURL && entries[i].MintURL == "" {
-						entries[i].MintURL = state.MintURL
-					}
-					if state.FullsendRef != "" && state.FullsendRef != p.FullsendRef && entries[i].FullsendRef == "" {
-						entries[i].FullsendRef = state.FullsendRef
-					}
-				}
-				if forgeName == ForgeGitLab {
-					if state.FullsendRef != "" && state.FullsendRef != p.FullsendRef && entries[i].FullsendRef == "" {
-						entries[i].FullsendRef = state.FullsendRef
-					}
-				}
-			}
-		}
-	}
-
-	result := &ManifestAddResult{}
-	var toAdd []RepoEntry
-
-	for _, entry := range entries {
-		if existing[strings.ToLower(entry.Name)] {
-			result.Skipped = append(result.Skipped, entry.Name)
-			progress(entry.Name, "manifest", "Already in manifest, skipping")
+	for _, forgeName := range order {
+		platform := m.PlatformFor(forgeName)
+		if platform == nil {
 			continue
 		}
-		result.Added = append(result.Added, entry.Name)
-		toAdd = append(toAdd, entry)
-		existing[strings.ToLower(entry.Name)] = true
-	}
-
-	if len(toAdd) == 0 {
-		return result, cfg.Manifest, nil
-	}
-
-	if cfg.DryRun {
-		for _, entry := range toAdd {
-			progress(entry.Name, "dry-run", "Would add to manifest")
+		carved, err := carveOutGlobEntry([]*PlatformConfig{platform}, name)
+		if err != nil {
+			return nil, "", err
 		}
-		return result, cfg.Manifest, nil
-	}
-
-	// Add entries to the appropriate platform section.
-	platform := cfg.Manifest.EnsurePlatform(forgeName)
-	platform.Repos = append(platform.Repos, toAdd...)
-
-	if cfg.ManifestPath != "" {
-		if err := writeManifest(cfg.ManifestPath, cfg.Manifest); err != nil {
-			return nil, nil, err
+		if carved != nil {
+			return carved, forgeName, nil
 		}
 	}
+	return nil, "", nil
+}
 
-	for _, entry := range toAdd {
-		progress(entry.Name, "manifest", "Added to manifest")
+// carveOutGlobEntry appends an explicit entry for name copied from the first
+// glob entry (GitHub before GitLab, matching resolution order) that covers
+// it, and returns a pointer to the new entry. It returns nil when no glob
+// covers name.
+func carveOutGlobEntry(platforms []*PlatformConfig, name string) (*RepoEntry, error) {
+	for _, platform := range platforms {
+		if platform == nil {
+			continue
+		}
+		for _, entry := range platform.Repos {
+			if !isGlob(entry.Name) {
+				continue
+			}
+			ok, err := matchesPattern(entry.Name, name)
+			if err != nil {
+				return nil, fmt.Errorf("invalid manifest repo pattern %q: %w", entry.Name, err)
+			}
+			if !ok {
+				continue
+			}
+			explicit := entry
+			explicit.Name = name
+			explicit.Config = entry.Config.Clone()
+			if entry.Vendor != nil {
+				v := *entry.Vendor
+				explicit.Vendor = &v
+			}
+			if entry.Signoff != nil {
+				s := *entry.Signoff
+				explicit.Signoff = &s
+			}
+			platform.Repos = append(platform.Repos, explicit)
+			return &platform.Repos[len(platform.Repos)-1], nil
+		}
 	}
-
-	return result, cfg.Manifest, nil
+	return nil, nil
 }
 
 // RemoveFromManifest removes matching repo entries from all platform
@@ -297,224 +219,23 @@ func isGlob(s string) bool {
 	return strings.ContainsAny(s, "*?[")
 }
 
-// validateRepoName checks that a repo name matches the appropriate pattern
-// for the given forge, returning a forge-specific error if it does not.
-// GitHub requires exactly two segments (owner/repo), while GitLab allows
-// nested group paths (group/subgroup/project).
-func validateRepoName(forgeName, name string) error {
-	if forgeName == ForgeGitLab {
-		if !gitlabRepoNamePattern.MatchString(name) {
-			return fmt.Errorf("invalid repo name %q: expected group[/subgroup]/project format", name)
-		}
-		return nil
-	}
-	if !repoNamePattern.MatchString(name) {
-		return fmt.Errorf("invalid repo name %q: expected owner/repo format", name)
-	}
-	return nil
+// WriteManifest persists m to path in one write. `repos install` plans every
+// manifest edit in memory and calls it once the layered safety comparison has
+// passed, so a rejected install leaves the file untouched.
+func WriteManifest(path string, m *Manifest) error {
+	return writeManifest(path, m)
 }
 
 func writeManifest(path string, m *Manifest) error {
+	if ManifestReadOnly(m, path) {
+		return readOnlyManifestError(path)
+	}
 	data, err := MarshalWithHeader(m)
 	if err != nil {
 		return fmt.Errorf("marshalling manifest: %w", err)
 	}
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		return fmt.Errorf("writing manifest: %w", err)
-	}
-	return nil
-}
-
-// ValidDefaultKeys lists the manifest keys that can be set via
-// `repos set-default`. Order matches the help text.
-var ValidDefaultKeys = []string{
-	"defaults.allowed_remote_resources",
-	"defaults.runtime",
-	"defaults.vendor",
-	"defaults.config_base.source",
-	"defaults.config_base.sha256",
-	"github.url",
-	"github.mint_url",
-	"github.mint_mode",
-	"github.fullsend_ref",
-	"gitlab.url",
-	"gitlab.fullsend_ref",
-	"gitlab.runner_tags",
-}
-
-// validDefaultKeySet is the lookup set for ValidDefaultKeys.
-var validDefaultKeySet = func() map[string]bool {
-	m := make(map[string]bool, len(ValidDefaultKeys))
-	for _, k := range ValidDefaultKeys {
-		m[k] = true
-	}
-	return m
-}()
-
-// SetDefault sets or removes a platform-level default in the manifest.
-// An empty value removes the key. The file is created with version: 1
-// if it does not exist.
-func SetDefault(manifestPath, key, value string) error {
-	if !validDefaultKeySet[key] {
-		return fmt.Errorf("invalid key %q; valid keys: %s\nSee --help for details",
-			key, strings.Join(ValidDefaultKeys, ", "))
-	}
-
-	// Load or create manifest.
-	var m *Manifest
-	data, readErr := os.ReadFile(manifestPath)
-	if readErr != nil {
-		if !os.IsNotExist(readErr) {
-			return fmt.Errorf("reading manifest: %w", readErr)
-		}
-		m = &Manifest{Version: 1}
-	} else {
-		var parsed Manifest
-		if err := parseManifestBytes(data, &parsed); err != nil {
-			return fmt.Errorf("parsing manifest: %w", err)
-		}
-		m = &parsed
-	}
-
-	// Validate value (unless removing).
-	if value != "" {
-		if err := validateDefaultValue(key, value); err != nil {
-			return err
-		}
-	}
-
-	// Apply.
-	switch key {
-	case "defaults.runtime":
-		m.Defaults.Runtime = value
-	case "defaults.config_base.source":
-		m.Defaults.ConfigBase.Source = value
-	case "defaults.config_base.sha256":
-		m.Defaults.ConfigBase.SHA256 = value
-	case "defaults.vendor":
-		if value == "" {
-			m.Defaults.Vendor = nil
-		} else {
-			v := value == "true"
-			m.Defaults.Vendor = &v
-		}
-	case "defaults.allowed_remote_resources":
-		if value == "" {
-			m.Defaults.AllowedRemoteResources = nil
-		} else {
-			parts := strings.Split(value, ",")
-			for i := range parts {
-				parts[i] = strings.TrimSpace(parts[i])
-			}
-			m.Defaults.AllowedRemoteResources = parts
-		}
-	case "github.url":
-		if value != "" {
-			m.EnsurePlatform(ForgeGitHub).URL = value
-		} else if m.GitHub != nil {
-			m.GitHub.URL = ""
-		}
-	case "github.mint_url":
-		if value != "" {
-			m.EnsurePlatform(ForgeGitHub).MintURL = value
-		} else if m.GitHub != nil {
-			m.GitHub.MintURL = ""
-		}
-	case "github.mint_mode":
-		if value != "" {
-			m.EnsurePlatform(ForgeGitHub).MintMode = value
-		} else if m.GitHub != nil {
-			m.GitHub.MintMode = ""
-		}
-	case "github.fullsend_ref":
-		if value != "" {
-			m.EnsurePlatform(ForgeGitHub).FullsendRef = value
-		} else if m.GitHub != nil {
-			m.GitHub.FullsendRef = ""
-		}
-	case "gitlab.url":
-		if value != "" {
-			m.EnsurePlatform(ForgeGitLab).URL = value
-		} else if m.GitLab != nil {
-			m.GitLab.URL = ""
-		}
-	case "gitlab.fullsend_ref":
-		if value != "" {
-			m.EnsurePlatform(ForgeGitLab).FullsendRef = value
-		} else if m.GitLab != nil {
-			m.GitLab.FullsendRef = ""
-		}
-	case "gitlab.runner_tags":
-		if value == "" {
-			if m.GitLab != nil {
-				m.GitLab.RunnerTags = nil
-			}
-		} else {
-			parts := strings.Split(value, ",")
-			for i := range parts {
-				parts[i] = strings.TrimSpace(parts[i])
-			}
-			m.EnsurePlatform(ForgeGitLab).RunnerTags = parts
-		}
-	}
-
-	return writeManifest(manifestPath, m)
-}
-
-// validateDefaultValue checks that value is appropriate for the given key.
-func validateDefaultValue(key, value string) error {
-	switch key {
-	case "github.url", "github.mint_url", "gitlab.url":
-		u, err := url.Parse(value)
-		if err != nil || u.Scheme != "https" || u.Host == "" {
-			return fmt.Errorf("%s must be a valid HTTPS URL, got %q", key, value)
-		}
-		if key == "github.url" || key == "gitlab.url" {
-			if err := RejectExtraneousURLParts(u, key); err != nil {
-				return err
-			}
-		}
-	case "github.mint_mode":
-		if value != MintModePublic && value != MintModePrivate {
-			return fmt.Errorf("github.mint_mode must be %q or %q, got %q", MintModePublic, MintModePrivate, value)
-		}
-	case "github.fullsend_ref", "gitlab.fullsend_ref":
-		if !IsValidRef(value) {
-			return fmt.Errorf("%s %q contains invalid characters; only alphanumeric, dot, underscore, and hyphen are allowed", key, value)
-		}
-	case "defaults.runtime":
-		if err := validateRuntimeValue(key, value); err != nil {
-			return err
-		}
-	case "defaults.config_base.source":
-		if err := validateConfigSource(key, value); err != nil {
-			return err
-		}
-	case "defaults.config_base.sha256":
-		if err := validateConfigHash(key, value); err != nil {
-			return err
-		}
-	case "defaults.vendor":
-		if value != "true" && value != "false" {
-			return fmt.Errorf("defaults.vendor must be \"true\" or \"false\", got %q", value)
-		}
-	case "defaults.allowed_remote_resources":
-		for _, raw := range strings.Split(value, ",") {
-			v := strings.TrimSpace(raw)
-			if v == "" {
-				continue
-			}
-			u, err := url.Parse(v)
-			if err != nil || u.Scheme != "https" || u.Host == "" {
-				return fmt.Errorf("defaults.allowed_remote_resources: %q must be a valid HTTPS URL", v)
-			}
-		}
-	case "gitlab.runner_tags":
-		for _, raw := range strings.Split(value, ",") {
-			if strings.TrimSpace(raw) == "" {
-				return fmt.Errorf("gitlab.runner_tags: tags must not be empty")
-			}
-		}
 	}
 	return nil
 }

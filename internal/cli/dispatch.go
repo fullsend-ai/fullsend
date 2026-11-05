@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/harnessdispatch/input"
 	"github.com/fullsend-ai/fullsend/internal/harnessdispatch/output"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
+	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
 func newDispatchCmd() *cobra.Command {
@@ -25,6 +27,7 @@ func newDispatchCmd() *cobra.Command {
 		eventName    string
 		eventAction  string
 		forgeToken   string
+		route        string
 	)
 
 	cmd := &cobra.Command{
@@ -40,6 +43,7 @@ func newDispatchCmd() *cobra.Command {
 				eventName:    eventName,
 				eventAction:  eventAction,
 				forgeToken:   forgeToken,
+				route:        route,
 			})
 		},
 	}
@@ -52,6 +56,7 @@ func newDispatchCmd() *cobra.Command {
 	cmd.Flags().StringVar(&eventName, "event-name", "", "GitHub event name (default: GITHUB_EVENT_NAME)")
 	cmd.Flags().StringVar(&eventAction, "event-action", "", "GitHub event action")
 	cmd.Flags().StringVar(&forgeToken, "forge-token", "", "Forge API token (default: GH_TOKEN, GITHUB_TOKEN, or gh auth token)")
+	cmd.Flags().StringVar(&route, "route", "", "Decide routing for one built-in agent with a CEL route (prioritize, retro, review or triage) and print one JSON line with decision run, skip or bash; --output-driver is ignored")
 
 	return cmd
 }
@@ -65,9 +70,17 @@ type dispatchOpts struct {
 	eventName    string
 	eventAction  string
 	forgeToken   string
+	// route, when set, names a built-in agent (routableAgents) to decide
+	// routing for instead of producing a dispatch matrix.
+	route string
 }
 
 func runDispatch(ctx context.Context, opts dispatchOpts) error {
+	route := strings.ToLower(strings.TrimSpace(opts.route))
+	if _, ok := routableAgents[route]; opts.route != "" && !ok {
+		return fmt.Errorf("unsupported --route agent %q (supported: %s)", opts.route, routableAgentNames())
+	}
+
 	inDriver := opts.inputDriver
 	if inDriver == "" {
 		if os.Getenv("GITHUB_EVENT_PATH") != "" {
@@ -100,6 +113,33 @@ func runDispatch(ctx context.Context, opts dispatchOpts) error {
 		return fmt.Errorf("unknown input driver %q", inDriver)
 	}
 	if err != nil {
+		return err
+	}
+
+	printer := ui.New(os.Stderr)
+	// Resolve a GitHub bot actor's registered role before CEL routing and
+	// harness dispatch authorization (ADR 0107). A failed lookup denies
+	// the bot instead of failing the command.
+	if inDriver == "gha-event" {
+		applyBotRoleLookup(ctx, event, newDispatchBotRoleResolverFn(opts.configDir), printer)
+	}
+
+	if route != "" {
+		decision, err := routeBuiltinAgent(ctx, routeOpts{
+			agent:       route,
+			configDir:   opts.configDir,
+			event:       event,
+			forgeClient: client,
+			printer:     printer,
+		})
+		if err != nil {
+			return err
+		}
+		data, err := json.Marshal(decision)
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintln(os.Stdout, string(data))
 		return err
 	}
 

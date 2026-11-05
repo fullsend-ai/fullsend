@@ -1,12 +1,20 @@
 package cli
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,10 +25,12 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
+	"github.com/fullsend-ai/fullsend/internal/fetch"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/inference/openaiwif"
 	"github.com/fullsend-ai/fullsend/internal/resolve"
 	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
+	"github.com/fullsend-ai/fullsend/internal/sandbox"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/ui"
@@ -231,15 +241,15 @@ func TestEnsureOpenAIProvider_WIF(t *testing.T) {
 	args, err := os.ReadFile(argsLog)
 	require.NoError(t, err)
 	lines := strings.Split(strings.TrimSpace(string(args)), "\n")
-	require.Len(t, lines, 2, "empty create, then value and expiry together: %q", lines)
-	assert.Equal(t, "provider create --name openai-0123456789ab --type fullsend-openai --credential OPENAI_API_KEY=", lines[0], "the instance is created without a credential")
+	require.Len(t, lines, 2, "create with the value, then the expiry: %q", lines)
+	assert.Equal(t, "provider create --name openai-0123456789ab --type fullsend-openai --credential OPENAI_API_KEY", lines[0], "bare-key form: the value is in the child environment only")
 	assert.Equal(t, "provider update openai-0123456789ab --credential OPENAI_API_KEY --credential-expires-at OPENAI_API_KEY=2026-08-27T20:00:00Z", lines[1], "bare-key form with the expiry in the same call")
 
 	env, err := os.ReadFile(envLog)
 	require.NoError(t, err)
 	envLines := strings.Split(strings.TrimSpace(string(env)), "\n")
-	assert.NotEqual(t, "tok-$literal$-value-9f8e7d", envLines[0], "the token is not handed to the create call")
-	assert.Equal(t, "tok-$literal$-value-9f8e7d", envLines[1], "the value reaches the update child verbatim, `$` intact")
+	assert.Equal(t, "tok-$literal$-value-9f8e7d", envLines[0], "the value reaches the create child verbatim, `$` intact")
+	assert.Equal(t, "tok-$literal$-value-9f8e7d", envLines[1], "and the update child")
 
 	res := security.NewSecretRedactor().Scan("log line with tok-$literal$-value-9f8e7d inside")
 	assert.False(t, res.Safe)
@@ -266,8 +276,8 @@ func TestEnsureOpenAIProvider_StaticGetsBoundedExpiry(t *testing.T) {
 	args, err := os.ReadFile(argsLog)
 	require.NoError(t, err)
 	lines := strings.Split(strings.TrimSpace(string(args)), "\n")
-	require.Len(t, lines, 2, "empty create, then the key with a bounded expiry: %q", lines)
-	assert.Equal(t, "provider create --name openai-feedface --type fullsend-openai --credential OPENAI_API_KEY=", lines[0])
+	require.Len(t, lines, 2, "create with the key, then its bounded expiry: %q", lines)
+	assert.Equal(t, "provider create --name openai-feedface --type fullsend-openai --credential OPENAI_API_KEY", lines[0])
 	require.Regexp(t, `^provider update openai-feedface --credential OPENAI_API_KEY --credential-expires-at OPENAI_API_KEY=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$`, lines[1])
 	stamp := strings.TrimPrefix(strings.Fields(lines[1])[6], "OPENAI_API_KEY=")
 	at, err := time.Parse(time.RFC3339, stamp)
@@ -291,12 +301,30 @@ func TestEnsureOpenAIProvider_StoreFailureDeletesProvider(t *testing.T) {
 	args, readErr := os.ReadFile(argsLog)
 	require.NoError(t, readErr)
 	lines := strings.Split(strings.TrimSpace(string(args)), "\n")
-	require.Len(t, lines, 3, "empty create, failed store, delete: %q", lines)
+	require.Len(t, lines, 3, "create, failed expiry store, delete: %q", lines)
 	assert.True(t, strings.HasPrefix(lines[1], "provider update openai-feedface --credential OPENAI_API_KEY --credential-expires-at"))
 	assert.Equal(t, "provider delete openai-feedface", lines[2], "a provider whose credential could not be stored with its expiry is not left behind")
 }
 
-func TestEnsureOpenAIProvider_StoreAndDeleteFailureBlanksCredential(t *testing.T) {
+func TestEnsureOpenAIProvider_StoreAndDeleteFailureExpiresCredential(t *testing.T) {
+	// Only the store (value + expiry) and the delete fail; the expiry-only
+	// update succeeds.
+	argsLog, _ := fakeOpenshellRecorder(t, "--credential OPENAI_API_KEY --credential-expires-at", "provider delete")
+	for _, k := range []string{"FULLSEND_OPENAI_AUDIENCE", "FULLSEND_OPENAI_IDENTITY_PROVIDER_ID", "FULLSEND_OPENAI_SERVICE_ACCOUNT_ID"} {
+		t.Setenv(k, "")
+	}
+	t.Setenv("OPENAI_API_KEY", "sk-local-static-key")
+	t.Setenv("GITHUB_ACTIONS", "")
+	var buf strings.Builder
+	_, err := ensureOpenAIProvider(context.Background(), harness.ProviderDef{Name: "openai", Type: openAIProviderType}, "fs-cod-feedface", config.OpenAIWIFConfig{}, piBackend(), ui.New(&buf))
+	require.Error(t, err)
+	lines := readArgLines(t, argsLog)
+	require.Len(t, lines, 4, "create, failed store, failed delete, expire: %q", lines)
+	assert.True(t, strings.HasPrefix(lines[3], "provider update openai-feedface --credential-expires-at OPENAI_API_KEY="), "the credential is expired when the delete fails too: %q", lines[3])
+	assert.Contains(t, buf.String(), "its credential was expired")
+}
+
+func TestEnsureOpenAIProvider_StoreDeleteAndExpireFailureWarns(t *testing.T) {
 	argsLog, _ := fakeOpenshellRecorder(t, "--credential-expires-at", "provider delete")
 	for _, k := range []string{"FULLSEND_OPENAI_AUDIENCE", "FULLSEND_OPENAI_IDENTITY_PROVIDER_ID", "FULLSEND_OPENAI_SERVICE_ACCOUNT_ID"} {
 		t.Setenv(k, "")
@@ -307,9 +335,10 @@ func TestEnsureOpenAIProvider_StoreAndDeleteFailureBlanksCredential(t *testing.T
 	_, err := ensureOpenAIProvider(context.Background(), harness.ProviderDef{Name: "openai", Type: openAIProviderType}, "fs-cod-feedface", config.OpenAIWIFConfig{}, piBackend(), ui.New(&buf))
 	require.Error(t, err)
 	lines := readArgLines(t, argsLog)
-	require.Len(t, lines, 4, "empty create, failed store, failed delete, blank: %q", lines)
-	assert.Equal(t, "provider update openai-feedface --credential OPENAI_API_KEY=", lines[3], "the credential is blanked when the delete fails too")
-	assert.Contains(t, buf.String(), "blanked")
+	for _, l := range lines {
+		assert.NotRegexp(t, `--credential OPENAI_API_KEY=$`, l, "an empty value is never sent: OpenShell refuses it")
+	}
+	assert.Contains(t, buf.String(), "remove it with `openshell provider delete openai-feedface`")
 }
 
 func TestEnsureOpenAIProvider_NoCredentialFailsBeforeOpenshell(t *testing.T) {
@@ -332,6 +361,7 @@ func TestEnsureOpenAIProvider_NoCredentialFailsBeforeOpenshell(t *testing.T) {
 // invocation's arguments to the returned log file.
 func recordingProvidersStub(t *testing.T) string {
 	t.Helper()
+	t.Setenv("GITHUB_ACTIONS", "false")
 	neutralizeAgentsRepoFallback(t)
 	// ImportProfile keeps a per-id content cache under os.TempDir(); give
 	// each test its own so an earlier import cannot short-circuit this one.
@@ -387,7 +417,7 @@ func recordingProvidersStub(t *testing.T) string {
 		"  'sandbox create') : > " + shellQuoteForTest(logPath+".sandbox") + "; exit 0 ;;\n" +
 		"  'sandbox delete') rm -f " + shellQuoteForTest(logPath+".sandbox") + "; exit 0 ;;\n" +
 		"  'sandbox ready') exit 0 ;;\n" +
-		"  'sandbox get') echo 'Status: Ready'; exit 0 ;;\n" +
+		"  'sandbox get') printf 'Status: Ready\nPolicy source: sandbox\nPolicy:\n  version: 1\n'; exit 0 ;;\n" +
 		"  'policy get') printf 'Version: 1\\nStatus: Effective\\n---\\nversion: 1\\nnetwork_policies:\\n  _provider_openai:\\n    endpoints:\\n    - host: api.openai.com\\n      port: 443\\n      protocol: rest\\n'; exit 0 ;;\n" +
 		// The first in-sandbox command fails so the run stops right after
 		// sandbox creation and the deferred cleanup runs.
@@ -397,6 +427,19 @@ func recordingProvidersStub(t *testing.T) string {
 	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	return logPath
+}
+
+// recordingProvidersStubWithProviderFailure wraps the temporary recorder to
+// fail provider creation while forwarding all other commands.
+func recordingProvidersStubWithProviderFailure(t *testing.T, failureMessage string) {
+	t.Helper()
+	logPath := recordingProvidersStub(t)
+	binDir := filepath.Dir(logPath)
+	basePath := filepath.Join(binDir, "openshell-base")
+	require.NoError(t, os.Rename(filepath.Join(binDir, "openshell"), basePath))
+	createCase := "  'provider create') printf '%s\\n' " + shellQuoteForTest(failureMessage) + "; exit 41 ;;\n"
+	script := "#!/bin/sh\ncase \"$1 $2\" in\n" + createCase + "esac\nexec " + shellQuoteForTest(basePath) + " \"$@\"\n"
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
 }
 
 // writeOpenAIFullsendDir lays out a fullsend dir whose code harness declares
@@ -428,6 +471,7 @@ func writeOpenAIFullsendDirWithAgentModel(t *testing.T, pathForm bool, runtimeNa
 	for _, d := range []string{"harness", "agents", "providers", "profiles"} {
 		require.NoError(t, os.MkdirAll(filepath.Join(dir, d), 0o755))
 	}
+	writePolicyFixture(t, dir)
 	agentDef := "You are a coding agent."
 	if agentModel != "" {
 		agentDef = "---\nname: code\nmodel: " + agentModel + "\n---\n" + agentDef
@@ -437,9 +481,9 @@ func writeOpenAIFullsendDirWithAgentModel(t *testing.T, pathForm bool, runtimeNa
 	if model != "" {
 		modelLine = "model: " + model + "\n"
 	}
-	harnessYAML := "agent: agents/code.md\nrole: test\n" + modelLine + "providers:\n  - openai\n"
+	harnessYAML := "agent: agents/code.md\nrole: test\npolicy: policies/base.yaml\n" + modelLine + "providers:\n  - openai\n"
 	if pathForm {
-		harnessYAML = "agent: agents/code.md\nrole: test\n" + modelLine + "profiles:\n  - profiles/fullsend-openai.yaml\nproviders:\n  - providers/openai.yaml\n"
+		harnessYAML = "agent: agents/code.md\nrole: test\npolicy: policies/base.yaml\n" + modelLine + "profiles:\n  - profiles/fullsend-openai.yaml\nproviders:\n  - providers/openai.yaml\n"
 	}
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "code.yaml"), []byte(harnessYAML), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "providers", "openai.yaml"),
@@ -486,7 +530,7 @@ func TestRunAgent_OpenAIProviderSkippedWhenRuntimeDoesNotNeedIt(t *testing.T) {
 
 			var out strings.Builder
 			rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
-			err := runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags, statusOpts{}, ui.New(&out), false, runOverrideFlags{})
+			err := runAgent(context.Background(), "code", dir, "", t.TempDir(), fakeSandboxBinary(t), nil, false, "", "", "", rFlags, statusOpts{}, ui.New(&out), false, runOverrideFlags{})
 			// The stub cannot bootstrap an agent, so the run still fails
 			// later; what matters is that it got past the provider block.
 			require.Error(t, err)
@@ -503,6 +547,129 @@ func TestRunAgent_OpenAIProviderSkippedWhenRuntimeDoesNotNeedIt(t *testing.T) {
 					assert.NotContains(t, l, "--provider openai", "the skipped provider is not attached to the sandbox")
 				}
 			}
+		})
+	}
+}
+
+// TestRunAgent_OpenAIProviderNeededBySubagent covers #7981: a pi parent on
+// a Vertex model still needs the run-scoped OpenAI provider when the
+// repo's agents: entry configures a child (subagents.default here) that
+// resolves to the openai provider. Before the fix, NeedsOpenAIProvider
+// looked at the parent's model alone, so this harness/config combination
+// skipped the provider exactly like the "runtime does not need it" cases
+// above — leaving the sandbox with no OPENAI_API_KEY for a child the repo
+// explicitly asked to run on openai.
+func TestRunAgent_OpenAIProviderNeededBySubagent(t *testing.T) {
+	logPath := recordingProvidersStub(t)
+	for _, k := range []string{"FULLSEND_OPENAI_AUDIENCE", "FULLSEND_OPENAI_IDENTITY_PROVIDER_ID", "FULLSEND_OPENAI_SERVICE_ACCOUNT_ID", "GITHUB_ACTIONS"} {
+		t.Setenv(k, "")
+	}
+	t.Setenv("OPENAI_API_KEY", "sk-local-static-key")
+	dir := writeOpenAIFullsendDirFor(t, false, "pi", "anthropic-vertex/claude-opus-4-6")
+	// Overwrite config.yaml with an agents: entry naming the code agent and
+	// giving it a subagents.default that resolves to openai, in addition to
+	// the bare-string form writeOpenAIFullsendDirFor already proved works.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(""+
+		"version: \"1\"\nruntime: pi\nagents:\n"+
+		"  - name: code\n    source: harness/code.yaml\n    subagents:\n      default: openai/gpt-5.6-luna\n"), 0o644))
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	err := runAgent(context.Background(), "code", dir, "", t.TempDir(), fakeSandboxBinary(t), nil, false, "", "", "", rFlags, statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
+	// The stub cannot bootstrap an agent past sandbox creation, but the
+	// provider block (what this test checks) must have completed first.
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "no OpenAI credential")
+
+	data, readErr := os.ReadFile(logPath)
+	require.NoError(t, readErr)
+	log := string(data)
+	assert.Contains(t, log, "provider create --name openai-",
+		"the Vertex parent's configured openai child still needs the run-scoped credential")
+	var sandboxLine string
+	for _, l := range strings.Split(strings.TrimSpace(log), "\n") {
+		if strings.HasPrefix(l, "sandbox create ") {
+			sandboxLine = l
+		}
+	}
+	require.NotEmpty(t, sandboxLine)
+	assert.Regexp(t, `--provider openai-[0-9a-f]{12}`, sandboxLine, "the run-scoped instance is attached to the sandbox")
+}
+
+// TestRunAgent_OpenAISubagentWithoutOpenAIProviderFailsBeforeSandbox
+// covers the other half of #7981: when a configured child needs the openai
+// provider and the harness declares none, the run fails before the sandbox
+// is created, naming the child and the fix, instead of at Bootstrap.
+func TestRunAgent_OpenAISubagentWithoutOpenAIProviderFailsBeforeSandbox(t *testing.T) {
+	logPath := recordingProvidersStub(t)
+	for _, k := range []string{"FULLSEND_OPENAI_AUDIENCE", "FULLSEND_OPENAI_IDENTITY_PROVIDER_ID", "FULLSEND_OPENAI_SERVICE_ACCOUNT_ID", "GITHUB_ACTIONS"} {
+		t.Setenv(k, "")
+	}
+	t.Setenv("OPENAI_API_KEY", "sk-local-static-key")
+	dir := writeOpenAIFullsendDirFor(t, false, "pi", "anthropic-vertex/claude-opus-4-6")
+	// The same harness with the openai provider removed.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: test\npolicy: policies/base.yaml\nmodel: anthropic-vertex/claude-opus-4-6\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(""+
+		"version: \"1\"\nruntime: pi\nagents:\n"+
+		"  - name: code\n    source: harness/code.yaml\n    subagents:\n      default: openai/gpt-5.6-luna\n"), 0o644))
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	err := runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags, statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "subagents.default → openai/gpt-5.6-luna")
+	assert.Contains(t, err.Error(), `declare "openai" in the harness providers list`)
+
+	data, readErr := os.ReadFile(logPath)
+	require.NoError(t, readErr)
+	assert.NotContains(t, string(data), "sandbox create ", "the run stops before a sandbox exists")
+	assert.NotContains(t, string(data), "provider create --name openai-")
+}
+
+// TestRunAgent_OpenAIFrontmatterChildWithoutCredential covers the #7981
+// compatibility rule: a persona whose own frontmatter names openai widens
+// the provider gate, but a runner with no OpenAI credential does not fail
+// the run over it. Before #7981 Bootstrap skipped such a persona with a
+// warning, and it still does. A subagents entry on openai is something the
+// repo asked for, so there the missing credential stays fatal.
+func TestRunAgent_OpenAIFrontmatterChildWithoutCredential(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		subagents string
+		wantFatal bool
+	}{
+		{name: "frontmatter only: skipped, run continues"},
+		{name: "subagents entry: fatal", subagents: "    subagents:\n      checker: openai/gpt-5.6-luna\n", wantFatal: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logPath := recordingProvidersStub(t)
+			for _, k := range []string{"FULLSEND_OPENAI_AUDIENCE", "FULLSEND_OPENAI_IDENTITY_PROVIDER_ID", "FULLSEND_OPENAI_SERVICE_ACCOUNT_ID", "GITHUB_ACTIONS", "OPENAI_API_KEY"} {
+				t.Setenv(k, "")
+			}
+			dir := writeOpenAIFullsendDirFor(t, false, "pi", "anthropic-vertex/claude-opus-4-6")
+			skill := filepath.Join(dir, "skills", "probe")
+			require.NoError(t, os.MkdirAll(filepath.Join(skill, "sub-agents"), 0o755))
+			require.NoError(t, os.WriteFile(filepath.Join(skill, "SKILL.md"), []byte("---\nname: probe\ndescription: probe\n---\nProbe.\n"), 0o644))
+			require.NoError(t, os.WriteFile(filepath.Join(skill, "sub-agents", "checker.md"),
+				[]byte("---\nname: checker\nmodel: openai/gpt-5.6-luna\n---\nCheck.\n"), 0o644))
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "code.yaml"), []byte(
+				"agent: agents/code.md\nrole: test\npolicy: policies/base.yaml\nmodel: anthropic-vertex/claude-opus-4-6\nskills:\n  - skills/probe\nproviders:\n  - openai\n"), 0o644))
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(
+				"version: \"1\"\nruntime: pi\nagents:\n  - name: code\n    source: harness/code.yaml\n"+tc.subagents), 0o644))
+
+			rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+			err := runAgent(context.Background(), "code", dir, "", t.TempDir(), fakeSandboxBinary(t), nil, false, "", "", "", rFlags, statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
+			require.Error(t, err, "the stub cannot bootstrap either way")
+			data, readErr := os.ReadFile(logPath)
+			require.NoError(t, readErr)
+			if tc.wantFatal {
+				assert.Contains(t, err.Error(), "no OpenAI credential")
+				assert.NotContains(t, string(data), "sandbox create ")
+				return
+			}
+			assert.NotContains(t, err.Error(), "no OpenAI credential")
+			assert.Contains(t, string(data), "sandbox create ", "the run reaches the sandbox")
+			assert.NotContains(t, string(data), "provider create --name openai-")
+			assert.NotRegexp(t, `--provider openai`, string(data), "nothing openai is attached")
 		})
 	}
 }
@@ -539,7 +706,7 @@ func TestRunAgent_OpenAIProviderIsRunScopedAndDeleted(t *testing.T) {
 			}
 
 			rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
-			err := runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags, statusOpts{}, ui.New(io.Discard), keep, runOverrideFlags{})
+			err := runAgent(context.Background(), "code", dir, "", t.TempDir(), fakeSandboxBinary(t), nil, false, "", "", "", rFlags, statusOpts{}, ui.New(io.Discard), keep, runOverrideFlags{})
 			// The run fails after sandbox creation (the stub cannot bootstrap
 			// an agent), but the provider block must have completed.
 			require.Error(t, err)
@@ -575,8 +742,8 @@ func TestRunAgent_OpenAIProviderIsRunScopedAndDeleted(t *testing.T) {
 			}
 			require.NotEmpty(t, profileLine, "the runner imports the fullsend-openai profile from its embedded scaffold: %q", lines)
 			require.NotEmpty(t, createLine, "provider created: %q", lines)
-			assert.Regexp(t, `^provider create --name openai-[0-9a-f]{12} --type fullsend-openai --credential OPENAI_API_KEY=$`, createLine,
-				"run-scoped name, created without a credential")
+			assert.Regexp(t, `^provider create --name openai-[0-9a-f]{12} --type fullsend-openai --credential OPENAI_API_KEY$`, createLine,
+				"run-scoped name, value by bare key")
 			assert.NotContains(t, strings.Join(lines, "\n"), "sk-local-static-key-for-test", "the value never reaches a command line")
 			scoped := strings.Fields(createLine)[3]
 
@@ -617,7 +784,7 @@ func profileListingStub(t *testing.T, listing string) string {
 func TestEnsureOpenAIProfile(t *testing.T) {
 	t.Setenv("TMPDIR", t.TempDir())
 	argsLog := profileListingStub(t, "Available Provider Profiles:\n    fullsend-openai  Fullsend OpenAI  endpoints: 1\n    nvidia  NVIDIA  endpoints: 1  inference")
-	require.NoError(t, ensureOpenAIProfile(context.Background(), "fullsend-openai", ui.New(io.Discard)))
+	require.NoError(t, ensureEmbeddedProfile(context.Background(), "fullsend-openai", ui.New(io.Discard)))
 	lines := readArgLines(t, argsLog)
 	require.Len(t, lines, 3, "delete, import, then confirm the listing: %q", lines)
 	assert.Equal(t, "provider profile delete fullsend-openai", lines[0])
@@ -626,13 +793,13 @@ func TestEnsureOpenAIProfile(t *testing.T) {
 
 	// Second call: the content cache is deliberately not trusted, so the
 	// embedded profile is sent again and the gateway asked again.
-	require.NoError(t, ensureOpenAIProfile(context.Background(), "fullsend-openai", ui.New(io.Discard)))
+	require.NoError(t, ensureEmbeddedProfile(context.Background(), "fullsend-openai", ui.New(io.Discard)))
 	lines = readArgLines(t, argsLog)
 	require.Len(t, lines, 6, "%q", lines)
 	assert.Equal(t, "provider profile delete fullsend-openai", lines[3])
 	assert.Equal(t, "provider list-profiles -o json", lines[5])
 
-	err := ensureOpenAIProfile(context.Background(), "no-such-profile", ui.New(io.Discard))
+	err := ensureEmbeddedProfile(context.Background(), "no-such-profile", ui.New(io.Discard))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not shipped by this fullsend build")
 }
@@ -641,7 +808,7 @@ func TestEnsureOpenAIProfile_StaleCacheReimports(t *testing.T) {
 	t.Setenv("TMPDIR", t.TempDir())
 	// A cache that says "imported" against a gateway that does not list it.
 	argsLog := profileListingStub(t, "Available Provider Profiles:\n    nvidia  NVIDIA  endpoints: 1  inference")
-	err := ensureOpenAIProfile(context.Background(), "fullsend-openai", ui.New(io.Discard))
+	err := ensureEmbeddedProfile(context.Background(), "fullsend-openai", ui.New(io.Discard))
 	require.Error(t, err, "the stub never lists it, so the re-import cannot be confirmed either")
 	assert.Contains(t, err.Error(), "not on the gateway after import")
 	lines := readArgLines(t, argsLog)
@@ -789,12 +956,343 @@ func TestRunOpenAIRefresh_RefreshesThenStopsOnCancel(t *testing.T) {
 	assert.Contains(t, strings.Join(readArgLines(t, argsLog), "\n"), "--credential-expires-at")
 }
 
-func TestRunOpenAIRefresh_GivesUpAfterRetries(t *testing.T) {
+func TestRunOpenAIRefresh_KeepsRetryingAfterRetriesExhausted(t *testing.T) {
 	shrinkOpenAIRefreshSchedule(t)
 	argsLog, _ := fakeOpenshellRecorder(t, "--credential-expires-at")
-	var buf strings.Builder
+	var buf syncBuffer
 	h := openAIProviderHandle{name: "openai-abc", keys: []string{"OPENAI_API_KEY"}, source: "static", expiresAt: time.Now()}
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runOpenAIRefresh(ctx, h, ui.New(&buf))
+	}()
+	// A brief wake can use up a round of attempts before the gateway is
+	// reachable; the refresher must start another round, not return.
+	require.Eventually(t, func() bool {
+		// Not readArgLines: its require would Goexit this polling goroutine
+		// if the log does not exist yet.
+		data, err := os.ReadFile(argsLog)
+		return err == nil && strings.Count(string(data), "\n") >= 2*openAIRefreshRetries
+	}, 10*time.Second, 20*time.Millisecond, "a second round of attempts follows the first")
+	select {
+	case <-done:
+		t.Fatal("refresher returned after exhausting a round of retries")
+	default:
+	}
+	assert.Contains(t, buf.String(), "retrying in")
+	assert.NotContains(t, buf.String(), "gave up")
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("refresher did not stop on cancel")
+	}
+}
+
+func TestOpenAIRefreshRoundDelay(t *testing.T) {
+	assert.Equal(t, 30*time.Second, openAIRefreshRoundDelay(1), "the first failed round waits the minimum delay")
+	assert.Equal(t, time.Minute, openAIRefreshRoundDelay(2))
+	assert.Equal(t, 2*time.Minute, openAIRefreshRoundDelay(3))
+	assert.Equal(t, 4*time.Minute, openAIRefreshRoundDelay(4))
+	assert.Equal(t, 5*time.Minute, openAIRefreshRoundDelay(5), "capped")
+	assert.Equal(t, 5*time.Minute, openAIRefreshRoundDelay(1000), "stays capped without overflowing")
+}
+
+// setOpenAIWIFTestEnv configures a complete WIF trio and a GitHub OIDC
+// endpoint so resolveOpenAICredential takes the exchange path.
+func setOpenAIWIFTestEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("FULLSEND_OPENAI_AUDIENCE", "aud")
+	t.Setenv("FULLSEND_OPENAI_IDENTITY_PROVIDER_ID", "idp")
+	t.Setenv("FULLSEND_OPENAI_SERVICE_ACCOUNT_ID", "sa")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://oidc.example/token")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "runner-token")
+	t.Setenv("GITHUB_ACTIONS", "")
+}
+
+// A refresh failure that no retry can fix stops the refresher on the first
+// attempt, with one log line, instead of looping until the run ends.
+func TestRunOpenAIRefresh_PermanentErrorStops(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T)
+		want  string
+	}{
+		{
+			name: "credential source changed",
+			setup: func(t *testing.T) {
+				for _, k := range []string{"FULLSEND_OPENAI_AUDIENCE", "FULLSEND_OPENAI_IDENTITY_PROVIDER_ID", "FULLSEND_OPENAI_SERVICE_ACCOUNT_ID"} {
+					t.Setenv(k, "")
+				}
+				t.Setenv("OPENAI_API_KEY", "static-key-for-the-source-change-test")
+				t.Setenv("GITHUB_ACTIONS", "")
+				stubOpenAIExchange(t, func(context.Context, openaiwif.Config) (*openaiwif.Token, error) {
+					t.Error("no exchange without a WIF trio")
+					return nil, errors.New("unexpected exchange")
+				})
+			},
+			want: "credential source changed to static during the run",
+		},
+		{
+			name: "refreshed credential too short to redact",
+			setup: func(t *testing.T) {
+				setOpenAIWIFTestEnv(t)
+				var calls atomic.Int32
+				stubOpenAIExchange(t, func(context.Context, openaiwif.Config) (*openaiwif.Token, error) {
+					calls.Add(1)
+					return &openaiwif.Token{Value: "short", ExpiresAt: time.Now().Add(time.Hour), Scope: "api.model.request"}, nil
+				})
+				t.Cleanup(func() { assert.Equal(t, int32(1), calls.Load(), "one exchange, no retry") })
+			},
+			want: "too short to redact reliably",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			shrinkOpenAIRefreshSchedule(t)
+			argsLog, _ := fakeOpenshellRecorder(t)
+			tc.setup(t)
+			var expiries []time.Time
+			origExpiry := setProviderCredentialExpiryFn
+			setProviderCredentialExpiryFn = func(_ context.Context, _, _ string, at time.Time) error {
+				expiries = append(expiries, at)
+				return nil
+			}
+			t.Cleanup(func() { setProviderCredentialExpiryFn = origExpiry })
+			var buf syncBuffer
+			held := time.Now().Truncate(time.Second)
+			h := openAIProviderHandle{name: "openai-abc", keys: []string{"OPENAI_API_KEY"}, source: "wif", expiresAt: held}
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				runOpenAIRefresh(context.Background(), h, ui.New(&buf))
+			}()
+			select {
+			case <-done:
+			case <-time.After(10 * time.Second):
+				t.Fatal("refresher did not stop on an error that cannot recover")
+			}
+			out := buf.String()
+			assert.Equal(t, 1, strings.Count(out, tc.want), "logged once: %s", out)
+			assert.Contains(t, out, "stopped")
+			assert.NotContains(t, out, "attempt 1/", "not reported as a retryable attempt")
+			assert.NotContains(t, out, "retrying in")
+			_, statErr := os.Stat(argsLog)
+			assert.True(t, os.IsNotExist(statErr), "the provider is never rotated")
+			assert.Equal(t, []time.Time{held}, expiries, "the route fails closed at the held expiry")
+		})
+	}
+}
+
+// Consecutive exhausted rounds wait longer each time, up to the cap; a
+// success resets the backoff and schedules the next refresh against the
+// renewed expiry.
+func TestRunOpenAIRefresh_BacksOffBetweenRoundsAndResetsAfterSuccess(t *testing.T) {
+	shrinkOpenAIRefreshSchedule(t)
+	fakeOpenshellRecorder(t)
+	setOpenAIWIFTestEnv(t)
+	const lifetime = 500 * time.Millisecond
+	type call struct {
+		at time.Time
+		ok bool
+	}
+	var (
+		fail  atomic.Bool
+		mu    sync.Mutex
+		calls []call
+	)
+	fail.Store(true)
+	stubOpenAIExchange(t, func(context.Context, openaiwif.Config) (*openaiwif.Token, error) {
+		now := time.Now()
+		ok := !fail.Load()
+		mu.Lock()
+		calls = append(calls, call{at: now, ok: ok})
+		mu.Unlock()
+		if !ok {
+			return nil, errors.New("exchange unavailable")
+		}
+		return &openaiwif.Token{Value: "tok-refreshed-backoff-abcdef", ExpiresAt: now.Add(lifetime), Scope: "api.model.request"}, nil
+	})
+	var buf syncBuffer
+	h := openAIProviderHandle{name: "openai-abc", keys: []string{"OPENAI_API_KEY"}, source: "wif", expiresAt: time.Now()}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runOpenAIRefresh(ctx, h, ui.New(&buf))
+	}()
+	defer func() {
+		cancel()
+		<-done
+	}()
+
+	waitRe := regexp.MustCompile(`retrying in (\S+) \(`)
+	waits := func() []string {
+		var out []string
+		for _, m := range waitRe.FindAllStringSubmatch(buf.String(), -1) {
+			out = append(out, m[1])
+		}
+		return out
+	}
+	require.Eventually(t, func() bool { return len(waits()) >= 4 }, 10*time.Second, 5*time.Millisecond)
+	assert.Equal(t, []string{"20ms", "40ms", "80ms", "80ms"}, waits()[:4], "doubling per failed round, capped")
+
+	fail.Store(false)
+	const refreshed = "OpenAI credential refreshed for openai-abc"
+	require.Eventually(t, func() bool {
+		return strings.Contains(buf.String(), refreshed)
+	}, 10*time.Second, 5*time.Millisecond)
+	fail.Store(true)
+
+	// The first "retrying in" line after the "refreshed" line, wherever
+	// earlier rounds left the count.
+	waitAfterRefresh := func() (string, bool) {
+		out := buf.String()
+		i := strings.Index(out, refreshed)
+		if i < 0 {
+			return "", false
+		}
+		m := waitRe.FindStringSubmatch(out[i:])
+		if m == nil {
+			return "", false
+		}
+		return m[1], true
+	}
+	require.Eventually(t, func() bool { _, ok := waitAfterRefresh(); return ok }, 10*time.Second, 5*time.Millisecond)
+	first, _ := waitAfterRefresh()
+	assert.Equal(t, "20ms", first, "the backoff starts over after a success")
+
+	mu.Lock()
+	defer mu.Unlock()
+	okAt := -1
+	for i, c := range calls {
+		if c.ok {
+			okAt = i
+			break
+		}
+	}
+	require.GreaterOrEqual(t, okAt, 0, "one exchange succeeded")
+	require.Greater(t, len(calls), okAt+1, "a refresh followed the success")
+	assert.GreaterOrEqual(t, calls[okAt+1].at.Sub(calls[okAt].at), lifetime-50*time.Millisecond,
+		"the next refresh is scheduled against the renewed expiry, not the retry backoff")
+}
+
+// While the held expiry is still ahead the round wait never passes it; once
+// the expiry has passed the wait doubles up to the cap as usual.
+func TestOpenAIRefreshRoundWait_ClampsToHeldExpiry(t *testing.T) {
+	shrinkOpenAIRefreshSchedule(t) // min 20ms, cap 80ms
+	now := time.Now().Round(0)
+	tests := []struct {
+		name     string
+		failed   int
+		expiry   time.Time
+		expected time.Duration
+	}{
+		{"expiry well ahead keeps the doubled delay", 3, now.Add(time.Hour), 80 * time.Millisecond},
+		{"expiry before the doubled delay clamps to it", 3, now.Add(30 * time.Millisecond), 30 * time.Millisecond},
+		{"expiry before the minimum delay clamps to it", 1, now.Add(5 * time.Millisecond), 5 * time.Millisecond},
+		{"expiry exactly at the delay is unchanged", 2, now.Add(40 * time.Millisecond), 40 * time.Millisecond},
+		{"expired expiry still doubles", 2, now.Add(-time.Second), 40 * time.Millisecond},
+		{"expired expiry still caps", 9, now.Add(-time.Second), 80 * time.Millisecond},
+		{"expiry exactly now doubles", 3, now, 80 * time.Millisecond},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.expected, openAIRefreshRoundWait(tc.failed, tc.expiry, now))
+		})
+	}
+}
+
+// A round that is exhausted while the held credential is still valid waits
+// at most until its expiry, not the full backoff delay, so the credential is
+// renewed as it lapses.
+func TestRunOpenAIRefresh_RoundWaitClampedToHeldExpiry(t *testing.T) {
+	shrinkOpenAIRefreshSchedule(t)
+	openAIRefreshMargin = 400 * time.Millisecond
+	fakeOpenshellRecorder(t)
+	setOpenAIWIFTestEnv(t)
+	var calls atomic.Int32
+	stubOpenAIExchange(t, func(context.Context, openaiwif.Config) (*openaiwif.Token, error) {
+		switch calls.Add(1) {
+		case 1:
+			// An immediate first refresh succeeds with a short-lived credential
+			// whose next refresh starts about 300ms before it expires.
+			return &openaiwif.Token{Value: "tok-refreshed-clamp-abcdef", ExpiresAt: time.Now().Add(600 * time.Millisecond), Scope: "api.model.request"}, nil
+		case 2:
+			// The next round fails; make its unclamped delay far longer than
+			// the credential has left. Set here, on the refresher's own
+			// goroutine, after the wait before this round was computed.
+			openAIRefreshMinDelay, openAIRefreshMaxRoundDelay = 5*time.Second, 10*time.Second
+		}
+		return nil, errors.New("exchange unavailable")
+	})
+	var buf syncBuffer
+	h := openAIProviderHandle{name: "openai-abc", keys: []string{"OPENAI_API_KEY"}, source: "wif", expiresAt: time.Now()}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runOpenAIRefresh(ctx, h, ui.New(&buf))
+	}()
+	defer func() {
+		cancel()
+		<-done
+	}()
+
+	// One success plus a round of failures, then the next round begins by the
+	// held expiry, well before the 5s delay.
+	require.Eventually(t, func() bool { return calls.Load() > int32(1+openAIRefreshRetries) }, 3*time.Second, 5*time.Millisecond,
+		"a failed round near expiry retries by the held expiry, not after the full backoff")
+	m := regexp.MustCompile(`retrying in (\S+) \(`).FindStringSubmatch(buf.String())
+	require.NotNil(t, m, buf.String())
+	wait, err := time.ParseDuration(m[1])
+	require.NoError(t, err)
+	assert.Less(t, wait, time.Second, "the wait is clamped to the remaining lifetime")
+}
+
+// With every re-seed failing, each attempt adds the generation it saw to
+// the unrecorded set, which every later re-seed retires. The set stops at
+// its cap: the refresher fails closed instead of rotating again, so the
+// re-seed command stays bounded.
+func TestRunOpenAIRefresh_UnrecordedStaysWithinItsCap(t *testing.T) {
+	shrinkOpenAIRefreshSchedule(t)
+	oldMax := openAIUnrecordedMax
+	openAIUnrecordedMax = 4
+	t.Cleanup(func() { openAIUnrecordedMax = oldMax })
+	oldPoll := openAIPlaceholderPoll
+	openAIPlaceholderPoll = time.Millisecond
+	t.Cleanup(func() { openAIPlaceholderPoll = oldPoll })
+
+	binDir := t.TempDir()
+	argsLog := filepath.Join(binDir, "args")
+	seedLog := filepath.Join(binDir, "seeds")
+	counter := filepath.Join(binDir, "count")
+	// Each provider update is a new generation v<n>; the sandbox hands out
+	// the latest at once. Every seed fails.
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + shellQuoteForTest(argsLog) + "\n" +
+		"n=$(cat " + shellQuoteForTest(counter) + " 2>/dev/null || echo 0)\n" +
+		"case \"$1 $2\" in 'provider update') echo $((n+1)) > " + shellQuoteForTest(counter) + "; exit 0 ;; esac\n" +
+		"case \"$*\" in *'printf %s'*) printf '%s%s_OPENAI_API_KEY' " + shellQuoteForTest(ph("v")) + " \"$n\"; exit 0 ;;" +
+		" *'seed auth.json'*) printf '%s\\n' \"$*\" >> " + shellQuoteForTest(seedLog) + "; echo boom >&2; exit 1 ;; esac; exit 0\n"
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	var expiries []time.Time
+	origExpiry := setProviderCredentialExpiryFn
+	setProviderCredentialExpiryFn = func(_ context.Context, _, _ string, at time.Time) error {
+		expiries = append(expiries, at)
+		return nil
+	}
+	t.Cleanup(func() { setProviderCredentialExpiryFn = origExpiry })
+
+	held := time.Now().Truncate(time.Second)
+	up := &atomic.Bool{}
+	up.Store(true)
+	h := openAIProviderHandle{name: "openai-abc", keys: []string{"OPENAI_API_KEY"}, source: "static", expiresAt: held,
+		sandbox: "fs-x", authSeed: "seed auth.json", authFile: "/sandbox/pi-config/auth.json", sandboxUp: up,
+		unrecorded: &seedGenerations{}}
+	var buf syncBuffer
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -803,12 +1301,106 @@ func TestRunOpenAIRefresh_GivesUpAfterRetries(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(10 * time.Second):
-		t.Fatal("refresher did not give up")
+		t.Fatal("refresher did not stop at the unrecorded cap")
 	}
-	lines := readArgLines(t, argsLog)
-	assert.Len(t, lines, openAIRefreshRetries, "one attempt per retry: %q", lines)
-	assert.Contains(t, buf.String(), "gave up")
-	assert.Contains(t, buf.String(), "gave up")
+
+	assert.Equal(t, 4, h.unrecorded.len(), "the set stops at its cap")
+	var rotations int
+	for _, l := range readArgLines(t, argsLog) {
+		if strings.HasPrefix(l, "provider update openai-abc") {
+			rotations++
+		}
+	}
+	assert.Equal(t, 4, rotations, "no rotation once the set is full")
+	seeds := readArgLines(t, seedLog)
+	require.Len(t, seeds, 4)
+	retiredRe := regexp.MustCompile(`FULLSEND_SEED_PREVIOUS='([^']*)'`)
+	for _, s := range seeds {
+		m := retiredRe.FindStringSubmatch(s)
+		require.NotNil(t, m, s)
+		assert.LessOrEqual(t, len(strings.Fields(m[1])), openAIUnrecordedMax, "the held generation plus fewer than the cap: %s", s)
+	}
+	assert.Contains(t, seeds[3], "FULLSEND_SEED_PREVIOUS='"+strings.Join([]string{ph("v0_OPENAI_API_KEY"), ph("v1_OPENAI_API_KEY"), ph("v2_OPENAI_API_KEY"), ph("v3_OPENAI_API_KEY")}, " ")+"'",
+		"the last re-seed retires the held generation and the three unrecorded ones")
+	assert.Equal(t, []time.Time{held}, expiries, "the route fails closed at the held generation's expiry")
+	assert.Contains(t, buf.String(), "never handed off")
+}
+
+func TestRunOpenAIRefresh_RefreshesAfterHostSleep(t *testing.T) {
+	shrinkOpenAIRefreshSchedule(t)
+	slept := simulateHostSleep(t, 5*time.Millisecond)
+	argsLog, _ := fakeOpenshellRecorder(t)
+	var buf syncBuffer
+	// time.Now carries a monotonic reading, as the expiry ensureOpenAIProvider
+	// records does.
+	h := openAIProviderHandle{name: "openai-abc", keys: []string{"OPENAI_API_KEY"}, source: "static", expiresAt: time.Now().Add(time.Hour)}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runOpenAIRefresh(ctx, h, ui.New(&buf))
+	}()
+	defer func() {
+		cancel()
+		<-done
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	assert.NotContains(t, buf.String(), "OpenAI credential refreshed", "an awake host waits for the scheduled refresh")
+
+	slept.Store(int64(2 * time.Hour))
+	require.Eventually(t, func() bool {
+		return strings.Contains(buf.String(), "OpenAI credential refreshed for openai-abc")
+	}, 5*time.Second, 10*time.Millisecond, "the first wall-clock check after wake refreshes a credential the host slept past")
+	assert.Contains(t, strings.Join(readArgLines(t, argsLog), "\n"), "--credential-expires-at")
+}
+
+func TestRunOpenAIRefresh_HostSleepRefreshesOncePerDeadline(t *testing.T) {
+	shrinkOpenAIRefreshSchedule(t)
+	slept := simulateHostSleep(t, 5*time.Millisecond)
+	fakeOpenshellRecorder(t)
+	t.Setenv("FULLSEND_OPENAI_AUDIENCE", "aud")
+	t.Setenv("FULLSEND_OPENAI_IDENTITY_PROVIDER_ID", "idp")
+	t.Setenv("FULLSEND_OPENAI_SERVICE_ACCOUNT_ID", "sa")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://oidc.example/token")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "runner-token")
+	t.Setenv("GITHUB_ACTIONS", "")
+	var calls int32
+	// The renewed expiry is an hour past the simulated wall clock, as the
+	// issuer's would be, so a refresher that kept its old schedule would
+	// see it as already expired and refresh again on every watchdog tick.
+	stubOpenAIExchange(t, func(context.Context, openaiwif.Config) (*openaiwif.Token, error) {
+		n := atomic.AddInt32(&calls, 1)
+		return &openaiwif.Token{Value: fmt.Sprintf("tok-refreshed-%d-abcdef", n), ExpiresAt: wallNowFn().Add(time.Hour), Scope: "api.model.request"}, nil
+	})
+	var buf syncBuffer
+	h := openAIProviderHandle{name: "openai-abc", keys: []string{"OPENAI_API_KEY"}, source: "wif", expiresAt: time.Now().Add(time.Hour)}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runOpenAIRefresh(ctx, h, ui.New(&buf))
+	}()
+	defer func() {
+		cancel()
+		<-done
+	}()
+
+	slept.Store(int64(2 * time.Hour))
+	require.Eventually(t, func() bool { return atomic.LoadInt32(&calls) >= 1 }, 5*time.Second, 5*time.Millisecond, "the first wall-clock check after wake refreshes")
+
+	// Many watchdog ticks later the renewed deadline is still an hour out on
+	// the wall clock, so no second refresh happens.
+	time.Sleep(200 * time.Millisecond)
+	assert.Equal(t, int32(1), atomic.LoadInt32(&calls), "one refresh per deadline, not one per watchdog tick")
+
+	// A second sleep past the renewed deadline refreshes again.
+	slept.Store(int64(4 * time.Hour))
+	require.Eventually(t, func() bool { return atomic.LoadInt32(&calls) >= 2 }, 5*time.Second, 5*time.Millisecond, "sleeping past the renewed deadline refreshes again")
+	time.Sleep(100 * time.Millisecond)
+	assert.Equal(t, int32(2), atomic.LoadInt32(&calls), "the second deadline also refreshes once")
 }
 
 func TestStartOpenAIRefreshers_NoHandles(t *testing.T) {
@@ -864,10 +1456,10 @@ func TestStartOpenAIRefreshers_LaunchesOnePerHandleAndStopsIndependently(t *test
 // milliseconds for tests and restores the production values afterwards.
 func shrinkOpenAIRefreshSchedule(t *testing.T) {
 	t.Helper()
-	margin, jitter, minDelay, backoff := openAIRefreshMargin, openAIRefreshJitter, openAIRefreshMinDelay, openAIRefreshBackoff
-	openAIRefreshMargin, openAIRefreshJitter, openAIRefreshMinDelay, openAIRefreshBackoff = 0, 0, 20*time.Millisecond, 10*time.Millisecond
+	margin, jitter, minDelay, backoff, maxRound := openAIRefreshMargin, openAIRefreshJitter, openAIRefreshMinDelay, openAIRefreshBackoff, openAIRefreshMaxRoundDelay
+	openAIRefreshMargin, openAIRefreshJitter, openAIRefreshMinDelay, openAIRefreshBackoff, openAIRefreshMaxRoundDelay = 0, 0, 20*time.Millisecond, 10*time.Millisecond, 80*time.Millisecond
 	t.Cleanup(func() {
-		openAIRefreshMargin, openAIRefreshJitter, openAIRefreshMinDelay, openAIRefreshBackoff = margin, jitter, minDelay, backoff
+		openAIRefreshMargin, openAIRefreshJitter, openAIRefreshMinDelay, openAIRefreshBackoff, openAIRefreshMaxRoundDelay = margin, jitter, minDelay, backoff, maxRound
 	})
 }
 
@@ -919,28 +1511,6 @@ func TestOpenAIKeyIsNotExpandable(t *testing.T) {
 	assert.NotContains(t, shellSafeExpandEnv("prefix-${OPENAI_API_KEY}-suffix"), "sk-local-static-key")
 }
 
-func TestEnsureOpenAIProvider_FallsBackWhenEmptyCreateIsRefused(t *testing.T) {
-	argsLog, envLog := fakeOpenshellRecorder(t, "--type fullsend-openai --credential OPENAI_API_KEY=")
-	for _, k := range []string{"FULLSEND_OPENAI_AUDIENCE", "FULLSEND_OPENAI_IDENTITY_PROVIDER_ID", "FULLSEND_OPENAI_SERVICE_ACCOUNT_ID"} {
-		t.Setenv(k, "")
-	}
-	t.Setenv("OPENAI_API_KEY", "sk-local-static-key")
-	t.Setenv("GITHUB_ACTIONS", "")
-	var buf strings.Builder
-	h, err := ensureOpenAIProvider(context.Background(), harness.ProviderDef{Name: "openai", Type: openAIProviderType}, "fs-cod-feedface", config.OpenAIWIFConfig{}, piBackend(), ui.New(&buf))
-	require.NoError(t, err)
-	assert.Equal(t, "openai-feedface", h.name)
-	lines := readArgLines(t, argsLog)
-	// The refused empty create is not retried (non-transient); the fallback
-	// creates with the value and the expiry follows immediately.
-	require.GreaterOrEqual(t, len(lines), 3, "%q", lines)
-	assert.Equal(t, "provider create --name openai-feedface --type fullsend-openai --credential OPENAI_API_KEY", lines[len(lines)-2], "fallback create carries the value by bare key")
-	assert.True(t, strings.HasPrefix(lines[len(lines)-1], "provider update openai-feedface --credential OPENAI_API_KEY --credential-expires-at OPENAI_API_KEY="))
-	env := readArgLines(t, envLog)
-	assert.Equal(t, "sk-local-static-key", env[len(env)-2], "the value reaches the fallback create child")
-	assert.Contains(t, buf.String(), "refused an empty credential on create")
-}
-
 func TestEnsureOpenAIProvider_IgnoresExtraCredentialKeys(t *testing.T) {
 	argsLog, _ := fakeOpenshellRecorder(t)
 	for _, k := range []string{"FULLSEND_OPENAI_AUDIENCE", "FULLSEND_OPENAI_IDENTITY_PROVIDER_ID", "FULLSEND_OPENAI_SERVICE_ACCOUNT_ID"} {
@@ -963,17 +1533,24 @@ func TestCheckProviderProfileIntegrity_KnowsEmbeddedOpenAIProfile(t *testing.T) 
 	providers := []resolve.ResolvedProvider{{Def: harness.ProviderDef{Name: "openai", Type: openAIProviderType}}}
 	err := checkProviderProfileIntegrity(providers, nil)
 	require.NoError(t, err, "the runner imports fullsend-openai itself, so a path-form provider needs no profiles: entry")
+	err = checkProviderProfileIntegrity([]resolve.ResolvedProvider{{Def: harness.ProviderDef{Name: "openai", Type: "Fullsend-OpenAI"}}}, nil)
+	require.NoError(t, err, "the OpenAI path normalizes the spelling, so a mixed-case type is known too")
+	err = checkProviderProfileIntegrity([]resolve.ResolvedProvider{{Def: harness.ProviderDef{Name: "gh", Type: "fullsend-github-ro"}}}, nil)
+	require.NoError(t, err, "every reserved id is imported from the embed when nothing lists it")
+	err = checkProviderProfileIntegrity([]resolve.ResolvedProvider{{Def: harness.ProviderDef{Name: "gh", Type: "Fullsend-GitHub-RO"}}}, nil)
+	require.Error(t, err, "only the OpenAI spelling is normalized; nothing imports a mixed-case reserved id")
 	err = checkProviderProfileIntegrity([]resolve.ResolvedProvider{{Def: harness.ProviderDef{Name: "x", Type: "no-such-profile"}}}, nil)
 	require.Error(t, err)
 }
 
 func TestAppendEmbeddedProviderDefs(t *testing.T) {
-	defs := appendEmbeddedProviderDefs(nil, nil, []string{"openai", "vertex-ai", "no-such-provider", "https://x/p.yaml"}, ui.New(io.Discard))
+	defs := appendEmbeddedProviderDefs(nil, nil, []string{"openai", "vertex-ai", "github-ro", "no-such-provider", "https://x/p.yaml"}, ui.New(io.Discard))
 	names := make([]string, 0, len(defs))
 	for _, d := range defs {
 		names = append(names, d.Name+":"+d.Type)
 	}
-	assert.Equal(t, []string{"openai:fullsend-openai"}, names, "only the scaffold-shipped OpenAI definition is filled in; other bare names keep their warning")
+	assert.Equal(t, []string{"openai:fullsend-openai", "vertex-ai:fullsend-vertex-ai", "github-ro:fullsend-github-ro"}, names,
+		"every scaffold-shipped builtin definition is filled in (#7268); a name with no scaffold file (no-such-provider) or that is a URL keeps its warning")
 	local := []harness.ProviderDef{{Name: "openai", Type: "custom-type"}}
 	defs = appendEmbeddedProviderDefs(local, nil, []string{"openai"}, ui.New(io.Discard))
 	require.Len(t, defs, 1)
@@ -986,6 +1563,283 @@ func TestRejectReservedProfileID(t *testing.T) {
 	err := rejectReservedProfileID(openAIProviderType, []resolve.ResolvedProfile{{ID: "fullsend-openai"}})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "reserved")
+}
+
+// TestWarnReservedProfileCopies: every listed copy of a reserved profile is
+// warned about once and reported, whether or not a provider uses it;
+// fullsend-openai (already an error) and non-reserved ids are not (#7268).
+func TestWarnReservedProfileCopies(t *testing.T) {
+	var buf bytes.Buffer
+	resolved := dedupResolvedProfiles([]resolve.ResolvedProfile{
+		{ID: "fullsend-github-ro"},
+		{ID: "fullsend-gitleaks", FromURL: true},
+		{ID: "fullsend-github-ro"},
+		{ID: "fullsend-openai"},
+		{ID: "myorg-github-ro"},
+	})
+	warnReservedProfileCopies(resolved, ui.New(&buf))
+	listed := profileOverridePaths(resolved)
+	assert.Equal(t, map[string]string{"fullsend-github-ro": "", "fullsend-gitleaks": ""}, listed)
+	out := buf.String()
+	assert.Equal(t, 1, strings.Count(out, `"fullsend-github-ro" will be rejected`), "one warning per id")
+	assert.Contains(t, out, `declare the bare provider name "gitleaks"`)
+	assert.Contains(t, out, "still used for now")
+	assert.NotContains(t, out, "fullsend-openai")
+	assert.NotContains(t, out, "myorg-")
+}
+
+// TestBuiltinProviderNamesMatchEmbed keeps builtinProviderNames from
+// drifting from the scaffold it describes: every embedded provider
+// definition is listed, each declares the "fullsend-"+name profile type that
+// isReservedProfileID reserves, and that profile is embedded too (#7268).
+func TestBuiltinProviderNamesMatchEmbed(t *testing.T) {
+	var embedded []string
+	require.NoError(t, scaffold.WalkFullsendRepoAll(func(path string, data []byte) error {
+		name, ok := strings.CutPrefix(path, "providers/")
+		if !ok || !strings.HasSuffix(name, ".yaml") {
+			return nil
+		}
+		name = strings.TrimSuffix(name, ".yaml")
+		embedded = append(embedded, name)
+		def, err := harness.ParseProviderDef(data)
+		require.NoError(t, err, path)
+		assert.Equal(t, name, def.Name, path)
+		assert.Equal(t, "fullsend-"+name, def.Type, path)
+		_, err = scaffold.FullsendRepoFile("profiles/" + def.Type + ".yaml")
+		assert.NoError(t, err, "%s declares profile %s, which the scaffold does not embed", path, def.Type)
+		return nil
+	}))
+	assert.ElementsMatch(t, embedded, builtinProviderNames)
+}
+
+func TestIsReservedProfileID(t *testing.T) {
+	for _, id := range []string{"fullsend-openai", "fullsend-vertex-ai", "fullsend-github", "fullsend-github-ro", "fullsend-github-artifacts", "fullsend-gitleaks", "fullsend-package-registries", "fullsend-atlassian-cloud"} {
+		assert.True(t, isReservedProfileID(id), "%s should be reserved", id)
+	}
+	assert.False(t, isReservedProfileID("fullsend-gitlab-forge"))
+	assert.False(t, isReservedProfileID("myorg-github-ro"))
+}
+
+func TestWarnReservedProviderNameOverrides(t *testing.T) {
+	var buf bytes.Buffer
+	warnReservedProviderNameOverrides(
+		[]harness.ProviderDef{
+			{Name: "github-ro", Type: "custom-type"},
+			{Name: "myorg-github-ro", Type: "custom-type"},
+		},
+		[]resolve.ResolvedProvider{
+			{Def: harness.ProviderDef{Name: "vertex-ai"}, LocalPath: "/ws/providers/vertex-ai.yaml"},
+			{Def: harness.ProviderDef{Name: "github"}, FromURL: true},
+			{Def: harness.ProviderDef{Name: "myorg-vertex"}, LocalPath: "/ws/providers/myorg-vertex.yaml"},
+			{Def: harness.ProviderDef{Name: "gitleaks"}, LocalPath: "/ws/providers/x\n::error::forged.yaml"},
+			{Def: harness.ProviderDef{Name: "github-artifacts"}, LocalPath: "/ws/providers/##[error]a.yaml"},
+			{Def: harness.ProviderDef{Name: "package-registries"}, LocalPath: "/ws/providers/##[warning]b.yaml"},
+			{Def: harness.ProviderDef{Name: "atlassian-cloud"}, LocalPath: "/ws/providers/##[add-mask]c.yaml"},
+		},
+		ui.New(&buf))
+	out := buf.String()
+	assert.Contains(t, out, `provider "github-ro"`)
+	assert.Contains(t, out, "the copy in the workspace providers/ directory")
+	assert.Contains(t, out, `provider "vertex-ai"`, "a path-form entry is a reserved-name copy too")
+	assert.Contains(t, out, `"/ws/providers/vertex-ai.yaml"`)
+	assert.Contains(t, out, `provider "github"`, "a URL-resolved definition is a reserved-name copy too")
+	assert.Contains(t, out, "the URL-resolved copy")
+	assert.Contains(t, out, "future release")
+	assert.Contains(t, out, "still used for now")
+	assert.NotContains(t, out, "myorg-")
+	assert.NotContains(t, out, "\n::error::", "a path cannot start a new log line")
+	assert.Contains(t, out, `x\n::error::forged.yaml`, "the newline is escaped")
+	assert.NotContains(t, out, "##[", "a path cannot carry a legacy workflow command")
+	for _, cmd := range []string{"error]a", "warning]b", "add-mask]c"} {
+		assert.Contains(t, out, `#\#[`+cmd, "the path stays readable with the command neutralized")
+	}
+}
+
+func runProviderCreateFailure(t *testing.T, provider harness.ProviderDef, extraFiles map[string]string) (runErr, originalErr error, dir string) {
+	t.Helper()
+	const openShellFailure = "provider credentials are not declared by profile 'fullsend-github': _NOOP_GITHUB"
+	recordingProvidersStubWithProviderFailure(t, openShellFailure)
+
+	originalErr = sandbox.EnsureProvider(context.Background(), provider.Name, provider.Type, provider.Credentials, nil, false)
+	require.Error(t, originalErr)
+	var originalExit *exec.ExitError
+	require.ErrorAs(t, originalErr, &originalExit)
+	assert.Equal(t, 41, originalExit.ExitCode())
+
+	dir = t.TempDir()
+	writePolicyFixture(t, dir)
+	files := map[string]string{
+		"agents/code.md":    "You are a coding agent.",
+		"config.yaml":       "agents:\n  - harness/code.yaml\n",
+		"harness/code.yaml": fmt.Sprintf("agent: agents/code.md\nrole: test\npolicy: policies/base.yaml\nproviders:\n  - %s\n", provider.Name),
+	}
+	for path, content := range extraFiles {
+		files[path] = content
+	}
+	for path, content := range files {
+		fullPath := filepath.Join(dir, path)
+		require.NoError(t, os.MkdirAll(filepath.Dir(fullPath), 0o755))
+		require.NoError(t, os.WriteFile(fullPath, []byte(content), 0o644))
+	}
+
+	runErr = runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", resolveFlags{maxDepth: 10, maxResources: 50}, statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
+	require.Error(t, runErr)
+	var exitErr *exec.ExitError
+	require.ErrorAs(t, runErr, &exitErr)
+	assert.Equal(t, 41, exitErr.ExitCode())
+	return runErr, originalErr, dir
+}
+
+func TestRunAgent_ReservedProviderAndProfileCopies_CreateFailureAddsMigrationHint(t *testing.T) {
+	provider := harness.ProviderDef{
+		Name: "github", Type: "fullsend-github", Credentials: map[string]string{"_NOOP_GITHUB": ""},
+	}
+	runErr, originalErr, dir := runProviderCreateFailure(t, provider, map[string]string{
+		"harness/code.yaml": `agent: agents/code.md
+role: test
+policy: policies/base.yaml
+providers:
+  - providers/github.yaml
+openshell:
+  profiles:
+    - profiles/fullsend-github.yaml
+`,
+		"providers/github.yaml": `name: github
+type: fullsend-github
+credentials:
+  _NOOP_GITHUB: ""
+`,
+		"profiles/fullsend-github.yaml": `id: fullsend-github
+display_name: repository copy
+`,
+	})
+	providerPath := filepath.Join(dir, "providers", "github.yaml")
+	profilePath := filepath.Join(dir, "profiles", "fullsend-github.yaml")
+	hint := providerMigrationHint(provider,
+		map[string]string{provider.Name: providerPath},
+		map[string]string{provider.Type: profilePath},
+	)
+	require.NotEmpty(t, hint)
+	assert.Contains(t, hint, fmt.Sprintf("provider %q", providerPath))
+	assert.Contains(t, hint, fmt.Sprintf("profile %q", profilePath))
+	assert.Contains(t, runErr.Error(), hint)
+	assert.Contains(t, runErr.Error(), originalErr.Error())
+	assert.Contains(t, runErr.Error(), fmt.Sprintf("ensuring provider %q: %s", provider.Name, originalErr.Error()))
+
+	// The local provider takes precedence, so the hint should not point to
+	// the shadowed definition's file, which is not being used.
+	shadowedProviderPath := filepath.Join(dir, "providers", "shadowed.yaml")
+	localDefs := []harness.ProviderDef{{Name: "github"}}
+	resolvedProviders := []resolve.ResolvedProvider{{Def: harness.ProviderDef{Name: provider.Name}, LocalPath: shadowedProviderPath}}
+	_, selectedResolved, _ := mergeProviderDefs(localDefs, resolvedProviders)
+	providerOverrides := providerOverridePaths(localDefs, selectedResolved)
+	assert.Equal(t, map[string]string{provider.Name: ""}, providerOverrides)
+	localOnlyHint := providerMigrationHint(provider, providerOverrides, nil)
+	assert.Contains(t, localOnlyHint, fmt.Sprintf("provider %q", provider.Name))
+
+	// URL overrides should identify the provider or profile, not point
+	// users at downloaded cache files that are not the sources to change.
+	urlProviderPath := filepath.Join(dir, "cache", "github.yaml")
+	urlProviders := []resolve.ResolvedProvider{
+		{Def: harness.ProviderDef{Name: provider.Name}, LocalPath: urlProviderPath, FromURL: true},
+	}
+	urlProviderOverrides := providerOverridePaths(nil, urlProviders)
+	assert.Equal(t, map[string]string{provider.Name: ""}, urlProviderOverrides)
+	urlProfilePath := filepath.Join(dir, "cache", "fullsend-github.yaml")
+	urlProfileOverrides := profileOverridePaths([]resolve.ResolvedProfile{
+		{ID: provider.Type, LocalPath: urlProfilePath, FromURL: true},
+	})
+	assert.Equal(t, map[string]string{provider.Type: ""}, urlProfileOverrides)
+	urlHint := providerMigrationHint(provider, urlProviderOverrides, urlProfileOverrides)
+	assert.Contains(t, urlHint, fmt.Sprintf("provider %q", provider.Name))
+	assert.Contains(t, urlHint, fmt.Sprintf("profile %q", provider.Type))
+
+	// A profile-only override should identify the built-in profile without replacing a custom provider.
+	customProvider := harness.ProviderDef{Name: "custom-github", Type: provider.Type}
+	profileOnlyHint := providerMigrationHint(customProvider, nil, map[string]string{customProvider.Type: profilePath})
+	assert.Contains(t, profileOnlyHint, fmt.Sprintf("profile %q", profilePath))
+	assert.Contains(t, profileOnlyHint, "use fullsend's corresponding built-in definitions instead")
+	assert.NotContains(t, profileOnlyHint, "declare the bare name")
+
+	// Paths must not add log lines or trigger workflow commands.
+	escapedHint := providerMigrationHint(provider,
+		map[string]string{provider.Name: filepath.Join("providers", "##[error]\n.yaml")},
+		map[string]string{provider.Type: ""},
+	)
+	assert.NotContains(t, escapedHint, "##[")
+	assert.Contains(t, escapedHint, `#\#[error]\n.yaml`)
+	assert.NotContains(t, escapedHint, "\n", "untrusted path newlines are escaped")
+}
+
+// Composition leaves duplicate resolution to runAgent, so migration guidance
+// should name the winning child copies rather than their shadowed base copies.
+func TestRunAgent_ComposedProviderAndProfileCopies_CreateFailureNamesChildCopies(t *testing.T) {
+	provider := harness.ProviderDef{
+		Name: "github", Type: "fullsend-github", Credentials: map[string]string{"_NOOP_GITHUB": ""},
+	}
+	runErr, _, dir := runProviderCreateFailure(t, provider, map[string]string{
+		"harness/base.yaml": `role: test
+providers:
+  - providers/base-github.yaml
+openshell:
+  profiles:
+    - profiles/base-fullsend-github.yaml
+`,
+		"harness/code.yaml": `base: base.yaml
+agent: agents/code.md
+role: test
+policy: policies/base.yaml
+providers:
+  - providers/child-github.yaml
+openshell:
+  profiles:
+    - profiles/child-fullsend-github.yaml
+`,
+		"providers/base-github.yaml": `name: github
+type: fullsend-github
+credentials:
+  _NOOP_BASE_GITHUB: ""
+`,
+		"providers/child-github.yaml": `name: github
+type: fullsend-github
+credentials:
+  _NOOP_GITHUB: ""
+`,
+		"profiles/base-fullsend-github.yaml": `id: fullsend-github
+display_name: base copy
+`,
+		"profiles/child-fullsend-github.yaml": `id: fullsend-github
+display_name: child copy
+`,
+	})
+
+	errText := runErr.Error()
+	assert.Contains(t, errText, fmt.Sprintf("provider %q", filepath.Join(dir, "providers", "child-github.yaml")))
+	assert.Contains(t, errText, fmt.Sprintf("profile %q", filepath.Join(dir, "profiles", "child-fullsend-github.yaml")))
+	assert.NotContains(t, errText, filepath.Join(dir, "providers", "base-github.yaml"))
+	assert.NotContains(t, errText, filepath.Join(dir, "profiles", "base-fullsend-github.yaml"))
+}
+
+func TestRunAgent_CustomProvider_CreateFailureHasNoMigrationHint(t *testing.T) {
+	provider := harness.ProviderDef{
+		Name: "custom-github", Type: "custom-profile", Credentials: map[string]string{"CUSTOM_TOKEN": ""},
+	}
+	runErr, originalErr, _ := runProviderCreateFailure(t, provider, map[string]string{
+		"providers/custom-github.yaml": `name: custom-github
+type: custom-profile
+credentials:
+  CUSTOM_TOKEN: ""
+`,
+	})
+	contextError := fmt.Errorf("ensuring provider %q: %w", provider.Name, originalErr)
+	assert.Equal(t, contextError.Error(), runErr.Error())
+}
+
+func TestRunAgent_BuiltinProviderWithoutCopies_CreateFailureHasNoMigrationHint(t *testing.T) {
+	provider := harness.ProviderDef{Name: "vertex-ai", Type: "fullsend-vertex-ai"}
+	runErr, originalErr, _ := runProviderCreateFailure(t, provider, nil)
+	contextError := fmt.Errorf("ensuring provider %q: %w", provider.Name, originalErr)
+	assert.Equal(t, contextError.Error(), runErr.Error())
 }
 
 func TestEnsureOpenAIProvider_RefusesUnredactableCredential(t *testing.T) {
@@ -1240,6 +2094,51 @@ func TestReseedOpenAIAuth_UnverifiedSeedIsAnError(t *testing.T) {
 	assert.Empty(t, got, "no placeholder is reported when the seed could not be confirmed")
 	data, _ := os.ReadFile(log)
 	assert.Equal(t, "seeded\nseeded\n", string(data), "both attempts ran before giving up")
+}
+
+// A generation the refresher saw but could not seed must not drop out of
+// the record (fullsend#8311). A is held, B shows up and its seed fails, and
+// the retry rotates on to C: the seed that hands C over retires both A and
+// B, and the settle wait does not mistake the lingering B for C.
+func TestReseedOpenAIAuth_FailedHandOffGenerationIsRetiredByTheNextOne(t *testing.T) {
+	binDir := t.TempDir()
+	log := filepath.Join(binDir, "log")
+	counter := filepath.Join(binDir, "count")
+	failFlag := filepath.Join(binDir, "fail")
+	phase2 := filepath.Join(binDir, "phase2")
+	require.NoError(t, os.WriteFile(failFlag, nil, 0o644))
+	// Phase 1 only ever hands out B. In phase 2 the sandbox answers B once
+	// more before C appears.
+	script := "#!/bin/sh\ncase \"$*\" in\n" +
+		"  *'printf %s'*) if [ -e " + shellQuoteForTest(phase2) + " ]; then n=$(cat " + shellQuoteForTest(counter) + " 2>/dev/null || echo 0); n=$((n+1)); echo $n > " + shellQuoteForTest(counter) + "; if [ $n -le 1 ]; then printf '" + ph("v222_OPENAI_API_KEY") + "'; else printf '" + ph("v333_OPENAI_API_KEY") + "'; fi; else printf '" + ph("v222_OPENAI_API_KEY") + "'; fi; exit 0 ;;\n" +
+		"  *'seed auth.json'*) echo \"$*\" >> " + shellQuoteForTest(log) + "; if [ -e " + shellQuoteForTest(failFlag) + " ]; then echo boom >&2; exit 1; fi; exit 0 ;;\n" +
+		"esac\nexit 1\n"
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	old := openAIPlaceholderPoll
+	openAIPlaceholderPoll = 5 * time.Millisecond
+	t.Cleanup(func() { openAIPlaceholderPoll = old })
+
+	h := openAIProviderHandle{sandbox: "fs-x", authSeed: "seed auth.json", unrecorded: &seedGenerations{}}
+	a, b, c := ph("v111_OPENAI_API_KEY"), ph("v222_OPENAI_API_KEY"), ph("v333_OPENAI_API_KEY")
+
+	got, err := reseedOpenAIAuth(context.Background(), h, a, ui.New(io.Discard))
+	require.Error(t, err)
+	assert.Empty(t, got)
+	assert.Equal(t, []string{b}, h.unrecorded.snapshot(), "the generation that was seen but not seeded is kept")
+
+	require.NoError(t, os.Remove(failFlag))
+	require.NoError(t, os.WriteFile(phase2, nil, 0o644))
+	got, err = reseedOpenAIAuth(context.Background(), h, a, ui.New(io.Discard))
+	require.NoError(t, err)
+	assert.Equal(t, c, got, "the lingering B is not taken for the new generation")
+	assert.Empty(t, h.unrecorded.snapshot(), "a landed re-seed empties the set")
+
+	data, err := os.ReadFile(log)
+	require.NoError(t, err)
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	require.Len(t, lines, 2)
+	assert.Contains(t, lines[1], "FULLSEND_SEED_PREVIOUS='"+a+" "+b+"'", "the re-seed retires A and B")
 }
 
 // The same failure seen through refreshOpenAIProvider: the provider is
@@ -1510,7 +2409,7 @@ func TestRunAgent_OpenAIProviderFollowsTheAgentDefinitionModel(t *testing.T) {
 
 			var out strings.Builder
 			rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
-			err := runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "", rFlags, statusOpts{}, ui.New(&out), false, runOverrideFlags{})
+			err := runAgent(context.Background(), "code", dir, "", t.TempDir(), fakeSandboxBinary(t), nil, false, "", "", "", rFlags, statusOpts{}, ui.New(&out), false, runOverrideFlags{})
 			require.Error(t, err, "the stub cannot bootstrap an agent; the provider block is what matters")
 
 			data, readErr := os.ReadFile(logPath)
@@ -1536,4 +2435,226 @@ func TestDropSkippedProviders(t *testing.T) {
 		"vertex-ai": {}, "openai": {}, "github-ro": {},
 	}))
 	assert.Equal(t, names, dropSkippedProviders(names, map[string]struct{}{"not-declared": {}}))
+}
+
+func TestEnsureOpenAIProvider_CreateFailureStopsBeforeTheExpiry(t *testing.T) {
+	argsLog, _ := fakeOpenshellRecorder(t, "provider create")
+	for _, k := range []string{"FULLSEND_OPENAI_AUDIENCE", "FULLSEND_OPENAI_IDENTITY_PROVIDER_ID", "FULLSEND_OPENAI_SERVICE_ACCOUNT_ID"} {
+		t.Setenv(k, "")
+	}
+	t.Setenv("OPENAI_API_KEY", "sk-local-static-key")
+	t.Setenv("GITHUB_ACTIONS", "")
+	var buf strings.Builder
+	_, err := ensureOpenAIProvider(context.Background(), harness.ProviderDef{Name: "openai", Type: openAIProviderType}, "fs-cod-feedface", config.OpenAIWIFConfig{}, piBackend(), ui.New(&buf))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `ensuring provider "openai-feedface"`)
+	for _, l := range readArgLines(t, argsLog) {
+		assert.NotContains(t, l, "provider update", "nothing is updated after a failed create")
+	}
+	assert.Contains(t, buf.String(), "Failed to create run-scoped provider openai-feedface")
+}
+
+// A new generation that never reaches the sandbox within the settle wait
+// fails the OpenAI route closed, as on the gateway route: no second
+// rotation, and each credential's expiry moves back to the generation the
+// agent holds.
+func TestRunOpenAIRefresh_SettleTimeoutFailsClosed(t *testing.T) {
+	shrinkOpenAIRefreshSchedule(t)
+	binDir := t.TempDir()
+	argsLog := filepath.Join(binDir, "args")
+	// The sandbox keeps handing out v111, whatever the provider holds.
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + shellQuoteForTest(argsLog) + "\n" +
+		"case \"$*\" in *'printf %s'*) printf '" + ph("v111_OPENAI_API_KEY") + "'; exit 0 ;; esac; exit 0\n"
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	oldPoll, oldSettle := openAIPlaceholderPoll, openAIPlaceholderSettle
+	openAIPlaceholderPoll, openAIPlaceholderSettle = time.Millisecond, 20*time.Millisecond
+	t.Cleanup(func() { openAIPlaceholderPoll, openAIPlaceholderSettle = oldPoll, oldSettle })
+	var expiries []time.Time
+	origExpiry := setProviderCredentialExpiryFn
+	setProviderCredentialExpiryFn = func(_ context.Context, name, key string, at time.Time) error {
+		assert.Equal(t, "openai-abc", name)
+		assert.Equal(t, "OPENAI_API_KEY", key)
+		expiries = append(expiries, at)
+		return nil
+	}
+	t.Cleanup(func() { setProviderCredentialExpiryFn = origExpiry })
+
+	held := time.Now().Truncate(time.Second)
+	up := &atomic.Bool{}
+	up.Store(true)
+	h := openAIProviderHandle{name: "openai-abc", keys: []string{"OPENAI_API_KEY"}, source: "static", expiresAt: held,
+		sandbox: "fs-x", authSeed: "seed auth.json", authFile: "/sandbox/pi-config/auth.json", sandboxUp: up}
+	var buf syncBuffer
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runOpenAIRefresh(context.Background(), h, ui.New(&buf))
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("refresher did not stop after the settle wait ran out")
+	}
+	var rotations int
+	for _, l := range readArgLines(t, argsLog) {
+		if strings.HasPrefix(l, "provider update openai-abc") {
+			rotations++
+		}
+	}
+	assert.Equal(t, 1, rotations, "no second rotation after the settle timeout")
+	assert.Equal(t, []time.Time{held}, expiries, "the credential fails closed at the held generation's expiry")
+	assert.Contains(t, buf.String(), "stopped")
+	assert.NotContains(t, buf.String(), "attempt 2/")
+}
+
+// On the OpenAI route too, a placeholder read that fails after the
+// rotation fails the route closed instead of rotating again.
+func TestRunOpenAIRefresh_ReadFailureAfterRotationFailsClosed(t *testing.T) {
+	shrinkOpenAIRefreshSchedule(t)
+	binDir := t.TempDir()
+	argsLog := filepath.Join(binDir, "args")
+	stage := filepath.Join(binDir, "stage")
+	// The baseline read answers v111; after the provider update every read fails.
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + shellQuoteForTest(argsLog) + "\n" +
+		"case \"$1 $2\" in 'provider update') touch " + shellQuoteForTest(stage) + "; exit 0 ;; esac\n" +
+		"case \"$*\" in *'printf %s'*) if [ -e " + shellQuoteForTest(stage) + " ]; then exit 1; fi; printf '" + ph("v111_OPENAI_API_KEY") + "'; exit 0 ;; esac; exit 0\n"
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	oldPoll := openAIPlaceholderPoll
+	openAIPlaceholderPoll = time.Millisecond
+	t.Cleanup(func() { openAIPlaceholderPoll = oldPoll })
+	var expiries []time.Time
+	origExpiry := setProviderCredentialExpiryFn
+	setProviderCredentialExpiryFn = func(_ context.Context, _, _ string, at time.Time) error {
+		expiries = append(expiries, at)
+		return nil
+	}
+	t.Cleanup(func() { setProviderCredentialExpiryFn = origExpiry })
+
+	held := time.Now().Truncate(time.Second)
+	up := &atomic.Bool{}
+	up.Store(true)
+	h := openAIProviderHandle{name: "openai-abc", keys: []string{"OPENAI_API_KEY"}, source: "static", expiresAt: held,
+		sandbox: "fs-x", authSeed: "seed auth.json", authFile: "/sandbox/pi-config/auth.json", sandboxUp: up}
+	var buf syncBuffer
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runOpenAIRefresh(context.Background(), h, ui.New(&buf))
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("refresher did not stop after the failed read")
+	}
+	var rotations int
+	for _, l := range readArgLines(t, argsLog) {
+		if strings.HasPrefix(l, "provider update openai-abc") {
+			rotations++
+		}
+	}
+	assert.Equal(t, 1, rotations, "no second rotation after the failed read")
+	assert.Equal(t, []time.Time{held}, expiries)
+	assert.Contains(t, buf.String(), "not observed in the sandbox")
+}
+
+// TestReservedOverrides_URLBaseRelativeEntries goes through real composition:
+// a URL base harness lists a reserved provider and profile by relative path,
+// which composition rewrites to .fullsend-cache paths. Those are not files in
+// the repository, so the failure hint and the reserved-provider warning fall
+// back to the provider name and profile id instead of naming the cache file,
+// while a repository-local copy is still quoted by path (#8461).
+func TestReservedOverrides_URLBaseRelativeEntries(t *testing.T) {
+	baseContent := []byte(`role: test
+providers:
+  - providers/github.yaml
+openshell:
+  profiles:
+    - profiles/fullsend-github.yaml
+`)
+	files := map[string][]byte{
+		"/harness/code.yaml":             baseContent,
+		"/providers/github.yaml":         []byte("name: github\ntype: fullsend-github\n"),
+		"/profiles/fullsend-github.yaml": []byte("id: fullsend-github\n"),
+	}
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		content, ok := files[r.URL.Path]
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write(content)
+	}))
+	t.Cleanup(srv.Close)
+	hostname, port, err := net.SplitHostPort(strings.TrimPrefix(srv.URL, "https://"))
+	require.NoError(t, err)
+	tlsCfg := srv.TLS.Clone()
+	tlsCfg.InsecureSkipVerify = true
+	policy := fetch.NewTestPolicy(tlsCfg, []string{hostname}, []string{port})
+	allowlist := []string{srv.URL + "/"}
+
+	dir := t.TempDir()
+	writePolicyFixture(t, dir)
+	sum := sha256.Sum256(baseContent)
+	child := fmt.Sprintf(`base: %s/harness/code.yaml#sha256=%s
+agent: agents/code.md
+role: test
+policy: policies/base.yaml
+openshell:
+  profiles:
+    - profiles/fullsend-gitleaks.yaml
+`, srv.URL, hex.EncodeToString(sum[:]))
+	for path, content := range map[string]string{
+		"agents/code.md":                  "You are a coding agent.",
+		"harness/code.yaml":               child,
+		"profiles/fullsend-gitleaks.yaml": "id: fullsend-gitleaks\n",
+	} {
+		full := filepath.Join(dir, path)
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
+		require.NoError(t, os.WriteFile(full, []byte(content), 0o644))
+	}
+
+	ctx := context.Background()
+	h, _, err := harness.LoadWithBase(ctx, filepath.Join(dir, "harness", "code.yaml"), harness.ComposeOpts{
+		WorkspaceRoot: dir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  allowlist,
+	})
+	require.NoError(t, err)
+	require.NoError(t, h.ResolveRelativeTo(dir))
+	result, err := resolve.ResolveHarness(ctx, h, resolve.ResolveOpts{
+		WorkspaceRoot: dir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  allowlist,
+	})
+	require.NoError(t, err)
+
+	cacheDir := filepath.Join(dir, ".fullsend-cache")
+	require.Len(t, result.Providers, 1)
+	require.True(t, strings.HasPrefix(result.Providers[0].LocalPath, cacheDir),
+		"the base's relative provider entry is read from the content cache")
+	localProfile := filepath.Join(dir, "profiles", "fullsend-gitleaks.yaml")
+
+	providerOverrides := providerOverridePaths(nil, result.Providers)
+	assert.Equal(t, map[string]string{"github": ""}, providerOverrides)
+	profileOverrides := profileOverridePaths(dedupResolvedProfiles(result.Profiles))
+	assert.Equal(t, map[string]string{"fullsend-github": "", "fullsend-gitleaks": localProfile}, profileOverrides,
+		"the cache copy keeps map membership (so the embedded profile does not replace it) with no path")
+
+	github := harness.ProviderDef{Name: "github", Type: "fullsend-github"}
+	hint := providerMigrationHint(github, providerOverrides, profileOverrides)
+	assert.Contains(t, hint, `provider "github"`)
+	assert.Contains(t, hint, `profile "fullsend-github"`)
+	assert.NotContains(t, hint, ".fullsend-cache")
+
+	gitleaks := harness.ProviderDef{Name: "custom-gitleaks", Type: "fullsend-gitleaks"}
+	assert.Contains(t, providerMigrationHint(gitleaks, providerOverrides, profileOverrides),
+		fmt.Sprintf("profile %q", localProfile), "a repository-local copy is still quoted by path")
+
+	var buf bytes.Buffer
+	warnReservedProviderNameOverrides(nil, result.Providers, ui.New(&buf))
+	assert.Contains(t, buf.String(), `provider "github"`)
+	assert.Contains(t, buf.String(), "the URL-resolved copy")
+	assert.NotContains(t, buf.String(), ".fullsend-cache")
 }

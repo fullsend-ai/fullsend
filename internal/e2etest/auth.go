@@ -47,14 +47,11 @@ const defaultMintURL = "https://mint.fullsend.sh"
 // hostedMintHost is the hostname of the hosted community mint.
 const hostedMintHost = "mint.fullsend.sh"
 
-// DefaultPoolOrgInstallMintURL is written into pool orgs as FULLSEND_MINT_URL by
-// admin e2e install tests. Distinct from resolveMintURL() / defaultMintURL,
-// which CI uses for cross-org e2e org locking.
-//
-// Admin e2e tests exercise per-org installation; workflows on the installed org
-// mint against FULLSEND_MINT_URL. The community hosted mint (mint.fullsend.sh)
-// runs in public mode and does not support per-org installs, so org-mode admin
-// e2e must keep using the legacy per-org hosted dev mint until that changes.
+// DefaultPoolOrgInstallMintURL is the hosted dev mint that the retired admin
+// e2e install tests wrote into pool orgs as FULLSEND_MINT_URL. Distinct from
+// resolveMintURL() / defaultMintURL, which CI uses for cross-org e2e org
+// locking. MintEnrollProjectID still maps this URL to
+// DefaultHostedMintGCPProject, because the mint is hosted there.
 const DefaultPoolOrgInstallMintURL = "https://fullsend-mint-gljhbkcloq-uc.a.run.app"
 
 // poolOrgMintHost is the hostname of DefaultPoolOrgInstallMintURL, parsed

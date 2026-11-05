@@ -21,11 +21,10 @@ var ErrCapabilityDenied = errors.New("GitLab role lacks required capability")
 // so callers must verify the two agree before trusting Require's result.
 var ErrIdentityMismatch = errors.New("authenticating GitLab token does not match selected role credential")
 
-// Selection is the dispatch-time result of loading the migration gate,
-// trusted registry, and secret-presence map, then resolving a job to a
-// credential. Diagnostics and Error values carry secret *names* only.
+// Selection is the dispatch-time result of loading the trusted registry
+// and secret-presence map, then resolving a job to a credential.
+// Diagnostics and Error values carry secret *names* only.
 type Selection struct {
-	Mode         Mode
 	Job          Job
 	Source       Source
 	Registration Registration
@@ -33,25 +32,20 @@ type Selection struct {
 	Present      map[string]bool
 }
 
-// Select loads ModeFrom, LoadRegistry, and PresenceFrom via getenv
-// (nil means os.Getenv), then resolves job. In migrating and enforced
-// modes an unmapped agent name is rejected with ValidateAgent before
-// Resolve so unregistered custom agents fail closed rather than
-// guessing an identity. Disabled and rollback skip that pre-check so
-// existing unmapped jobs keep using the shared token.
+// Select loads LoadRegistry and PresenceFrom via getenv (nil means
+// os.Getenv), then resolves job. It does not read
+// Migration state is not read. An unmapped agent name is always rejected
+// with ValidateAgent before Resolve so unregistered custom
+// agents fail closed rather than guessing an identity.
 func Select(job Job, getenv func(string) string) (Selection, error) {
 	if getenv == nil {
 		getenv = os.Getenv
-	}
-	mode, err := ModeFrom(getenv)
-	if err != nil {
-		return Selection{}, err
 	}
 	reg, err := LoadRegistry(getenv)
 	if err != nil {
 		return Selection{}, err
 	}
-	return selectResolved(mode, job, reg, getenv)
+	return selectResolved(job, reg, getenv)
 }
 
 // SelectAgent maps a running agent onto a registered identity and
@@ -63,15 +57,11 @@ func SelectAgent(agentName, harnessRole string, getenv func(string) string) (Sel
 	if getenv == nil {
 		getenv = os.Getenv
 	}
-	mode, err := ModeFrom(getenv)
-	if err != nil {
-		return Selection{}, err
-	}
 	reg, err := LoadRegistry(getenv)
 	if err != nil {
 		return Selection{}, err
 	}
-	return selectResolved(mode, JobForAgent(reg, agentName, harnessRole), reg, getenv)
+	return selectResolved(JobForAgent(reg, agentName, harnessRole), reg, getenv)
 }
 
 // JobForAgent maps a running agent onto a Job. Prefer the agent name
@@ -90,22 +80,19 @@ func JobForAgent(reg Registry, agentName, harnessRole string) Job {
 	return AgentJob(agentName)
 }
 
-func selectResolved(mode Mode, job Job, reg Registry, getenv func(string) string) (Selection, error) {
-	if !mode.UsesSharedOnly() {
-		switch job.Kind {
-		case KindPoller:
-			// Always registered as RolePoller.
-		case KindAgent:
-			if err := reg.ValidateAgent(job.Name); err != nil {
-				return Selection{}, &Error{Mode: mode, Err: err}
-			}
-		default:
-			return Selection{}, &Error{Mode: mode, Err: ErrUnknownJob}
+func selectResolved(job Job, reg Registry, getenv func(string) string) (Selection, error) {
+	switch job.Kind {
+	case KindPoller:
+		// Always registered as RolePoller.
+	case KindAgent:
+		if err := reg.ValidateAgent(job.Name); err != nil {
+			return Selection{}, &Error{Err: err}
 		}
+	default:
+		return Selection{}, &Error{Err: ErrUnknownJob}
 	}
 	present := PresenceFrom(getenv, reg)
 	src, err := Resolve(Request{
-		Mode:     mode,
 		Job:      job,
 		Registry: reg,
 		Present:  present,
@@ -114,7 +101,6 @@ func selectResolved(mode Mode, job Job, reg Registry, getenv func(string) string
 		return Selection{}, err
 	}
 	return Selection{
-		Mode:         mode,
 		Job:          job,
 		Source:       src,
 		Registration: registrationForSource(reg, src),
@@ -141,35 +127,23 @@ func (s Selection) Token(getenv func(string) string) (string, error) {
 		getenv = os.Getenv
 	}
 	if s.Source.SecretName == "" {
-		return "", &Error{Mode: s.Mode, Err: ErrUnconfigured}
+		return "", &Error{Err: ErrUnconfigured}
 	}
 	token := strings.TrimSpace(getenv(s.Source.SecretName))
 	if token == "" {
-		err := ErrUnconfigured
-		if s.Source.Shared {
-			err = ErrSharedUnconfigured
-		}
 		return "", &Error{
 			Role:   s.Source.Role,
-			Mode:   s.Mode,
 			Secret: s.Source.SecretName,
-			Err:    err,
+			Err:    ErrUnconfigured,
 		}
 	}
 	return token, nil
 }
 
 // IdentitySource is a non-secret label for how the credential was
-// chosen: "role", "shared", or "migration-fallback".
-func (s Selection) IdentitySource() string {
-	switch {
-	case s.Source.Fallback:
-		return "migration-fallback"
-	case s.Source.Shared:
-		return "shared"
-	default:
-		return "role"
-	}
+// chosen. Runtime selection is role-only, so this is always "role".
+func (Selection) IdentitySource() string {
+	return "role"
 }
 
 // Diagnostics returns human-readable identity lines with names only.
@@ -183,8 +157,8 @@ func (s Selection) Diagnostics() []string {
 		kind = "none"
 	}
 	lines := []string{
-		fmt.Sprintf("GitLab identity role=%s kind=%s source=%s secret=%s mode=%s",
-			role, kind, s.IdentitySource(), s.Source.SecretName, s.Mode),
+		fmt.Sprintf("GitLab identity role=%s kind=%s source=%s secret=%s",
+			role, kind, s.IdentitySource(), s.Source.SecretName),
 	}
 	if s.Source.Reason != "" {
 		lines = append(lines, "GitLab identity: "+s.Source.Reason)
@@ -209,6 +183,6 @@ func Require(rec Registration, cap Capability) error {
 // AuthFailed is the fail-closed annotation for a runtime 401/403 (or
 // equivalent) of a selected credential. Callers must not Resolve again
 // with a different job or a cleared FailedSecret.
-func AuthFailed(role Role, mode Mode, secret string) error {
-	return &Error{Role: role, Mode: mode, Secret: secret, Err: ErrAuthFailed}
+func AuthFailed(role Role, secret string) error {
+	return &Error{Role: role, Secret: secret, Err: ErrAuthFailed}
 }

@@ -52,6 +52,14 @@ These labels track where an issue is in the pipeline:
 
 Labels are mutually exclusive where it matters — the pipeline enforces this. You generally don't need to manage labels manually.
 
+On PRs, a separate set of control labels governs the [fix agent](../../agents/fix.md#control-labels). These are not pipeline state — you apply `fullsend-fix` or `fullsend-no-fix` to steer fix runs, and the fix agent applies `needs-human` when it needs you:
+
+| Label | Meaning | What happens next |
+|-------|---------|-------------------|
+| `fullsend-fix` | Opts a PR in to automatic fix runs (manual `/fs-fix` works without it) | Bot-triggered fixes run on review feedback; code-agent PRs are always eligible without it |
+| `fullsend-no-fix` | Stops bot-triggered fix runs; applied by `/fs-fix-stop` | Takes priority over `fullsend-fix`; human `/fs-fix` still works. Remove the label to re-enable |
+| `needs-human` | The fix loop is approaching its iteration cap | A human should give direction, e.g. `/fs-fix <instruction>` or push commits |
+
 ### Slash commands
 
 You can control the pipeline from issue or PR comments:
@@ -69,7 +77,10 @@ Authorization is verified via the collaborator permission API and is
 stage-dependent: `/fs-triage` and `/fs-review` accept triage-level
 permission or higher; `/fs-code`, `/fs-fix`, `/fs-retro`, and
 `/fs-fix-stop` require write-level permission or higher (admin,
-maintain, or write). Bot-to-bot agent handoffs are not affected because
+maintain, or write). In a repo that enables `owners_file`
+[authorization](../../reference/config-reference.md#authorization),
+`OWNERS` approvers can run every command and reviewers can run
+`/fs-triage` and `/fs-review`. Bot-to-bot agent handoffs are not affected because
 they use label-based triggers, not slash commands.
 
 ### What to expect from agent PRs
@@ -109,7 +120,7 @@ Every push to a PR in the review stage triggers a new review round. This means `
 The triage agent:
 
 1. **Checks for duplicates.** Searches existing issues by title, body, and metadata. If it finds a match with high confidence, it labels `duplicate`, posts a comment linking the canonical issue, and closes this one.
-2. **Checks for blocking dependencies.** Searches for open issues or PRs (in this repo or upstream) that must be resolved before work can start. If a prerequisite is found, it labels `blocked` and posts a comment linking to it. When no upstream tracking issue exists, the triage agent can also create one in the upstream repo (controlled by `create_issues.allow_targets` in config). On re-triage, it checks whether existing prerequisites have been resolved.
+2. **Checks for blocking dependencies.** Searches for open issues or PRs (in this repo or upstream) that must be resolved before work can start. If a prerequisite is found, it labels `blocked` and posts a comment linking to it. When no upstream tracking issue exists, the triage agent can also create one in the upstream repo (controlled by `tracker.<provider>.allowed_targets` in config). On re-triage, it checks whether existing prerequisites have been resolved.
 3. **Checks information sufficiency.** If the issue body is missing steps to reproduce, expected behavior, or other critical details, it labels `needs-info` and posts a comment explaining what's missing.
 4. **Produces a test artifact.** When possible, writes a failing test case aligned with the repo's test framework.
 5. **Hands off.** Labels `ready-to-code` with a summary comment.
@@ -126,7 +137,7 @@ The code agent:
 2. **Branches and implements.** Creates a branch, writes the fix following repo conventions.
 3. **Tests iteratively.** Runs the test suite, incorporates triage-provided tests if present, writes new tests if needed. Iterates until tests pass.
 4. **Opens a PR.** Links the issue, describes the changes.
-5. **Handles CI failures.** Fetches failing check logs, fixes issues, pushes again. Repeats until all required checks pass (up to a configurable cap, default defined in `config.yaml` as `defaults.max_implementation_retries`).
+5. **Handles CI failures.** Fetches failing check logs, fixes issues, pushes again. Repeats until all required checks pass (up to a fixed retry cap).
 6. **Hands off to review.** The PR creation or push triggers review dispatch automatically via `pull_request_target`.
 
 ### Stage 3: Review

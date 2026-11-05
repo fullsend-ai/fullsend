@@ -7,6 +7,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/inference/openaiwif"
 	"github.com/fullsend-ai/fullsend/internal/runtime"
@@ -43,9 +45,9 @@ const openAIDefaultCredentialKey = "OPENAI_API_KEY"
 // identifiers; they are also in oidcDenyKeys so they never reach the
 // sandbox or user scripts.
 const (
-	openAIAudienceEnv           = "FULLSEND_OPENAI_AUDIENCE"
-	openAIIdentityProviderIDEnv = "FULLSEND_OPENAI_IDENTITY_PROVIDER_ID"
-	openAIServiceAccountIDEnv   = "FULLSEND_OPENAI_SERVICE_ACCOUNT_ID"
+	openAIAudienceEnv           = forge.VarOpenAIAudience
+	openAIIdentityProviderIDEnv = forge.VarOpenAIIdentityProviderID
+	openAIServiceAccountIDEnv   = forge.VarOpenAIServiceAccountID
 	openAIStaticKeyEnv          = "OPENAI_API_KEY"
 	// openAIRepoSecretName is the GitHub Actions secret workflows export as
 	// OPENAI_API_KEY. Named FULLSEND_* so an unrelated repository secret is
@@ -88,6 +90,22 @@ var (
 	openAIDeleteRetries  = 20
 	openAIRefreshRetries = 3
 	openAIRefreshBackoff = 15 * time.Second
+	// openAIRefreshMaxRoundDelay caps the wait between rounds of retries:
+	// after an exhausted round the refresher waits openAIRefreshMinDelay,
+	// doubling per consecutive failed round up to this cap.
+	openAIRefreshMaxRoundDelay = 5 * time.Minute
+	// openAIUnrecordedMax bounds the generations whose hand-off failed
+	// that the refresher carries into the next re-seed (see
+	// openAIProviderHandle.unrecorded). Reaching it fails the route closed;
+	// see runOpenAIRefresh for why the older ones are not dropped instead.
+	// Each failed attempt adds at most one generation, so 16 is just over
+	// five rounds of openAIRefreshRetries (3) attempts: with every hand-off
+	// failing, the route fails closed in the sixth round. Under the default
+	// backoff that is roughly 15 minutes of waiting (in-round 15 s gaps plus
+	// round delays of 30 s, 1 m, 2 m, 4 m, 5 m), not counting the attempts
+	// themselves, so a transient outage has a few minutes to clear while the
+	// re-seed command stays bounded.
+	openAIUnrecordedMax = 16
 )
 
 // openAIProviderHandle describes a run-scoped provider instance created by
@@ -116,6 +134,62 @@ type openAIProviderHandle struct {
 	// (runtime.OpenAICredentialSeeder.OpenAIAuthFile), checked after a
 	// re-seed.
 	authFile string
+	// unrecorded remembers generations the refresher saw in the sandbox
+	// whose hand-off failed before the seed recorded them; the next re-seed
+	// retires them too. Shared by every copy of the handle; nil in a handle
+	// that carries none. runOpenAIRefresh keeps it within
+	// openAIUnrecordedMax.
+	unrecorded *seedGenerations
+}
+
+// seedGenerations is a set of placeholders a refresher saw in the sandbox
+// but could not hand off. A later rotation retires them, so a seed holding
+// one must still be recognized as stale (see runtime.SeedReplacing). Only one
+// refresher per handle runs at a time, but the lock keeps a restart's
+// stop-and-wait ordering from mattering. The methods accept a nil receiver.
+type seedGenerations struct {
+	mu   sync.Mutex
+	list []string
+}
+
+func (g *seedGenerations) snapshot() []string {
+	if g == nil {
+		return nil
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return append([]string(nil), g.list...)
+}
+
+func (g *seedGenerations) len() int {
+	if g == nil {
+		return 0
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return len(g.list)
+}
+
+func (g *seedGenerations) has(p string) bool {
+	return slices.Contains(g.snapshot(), p)
+}
+
+func (g *seedGenerations) add(p string) {
+	if g == nil || p == "" || g.has(p) {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.list = append(g.list, p)
+}
+
+func (g *seedGenerations) clear() {
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.list = nil
 }
 
 // sandboxReady reports whether a refresh has a running sandbox to re-seed.
@@ -145,16 +219,25 @@ const openAIBaselineAttempts = 3
 // gateway still lists the deleted sandbox as attached (see openAIDeleteRetries).
 var openAIDeleteBackoff = 3 * time.Second
 
-// sandboxOpenAIPlaceholder returns the OPENAI_API_KEY placeholder a new
-// process in the sandbox receives right now.
-func sandboxOpenAIPlaceholder(ctx context.Context, sandboxName string) (string, error) {
+// placeholderEnvKeyPattern is a shell identifier: a route's placeholder
+// env key must match it before it is interpolated into a command.
+var placeholderEnvKeyPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// sandboxPlaceholder returns the placeholder a new process in the sandbox
+// receives right now under envKey, a route's placeholder env key
+// (runtime.CredentialSeed.PlaceholderEnv). envKey is a runner constant, but
+// it is checked anyway because it is interpolated into a shell command.
+func sandboxPlaceholder(ctx context.Context, sandboxName, envKey string) (string, error) {
+	if !placeholderEnvKeyPattern.MatchString(envKey) {
+		return "", fmt.Errorf("reading the sandbox placeholder: %q is not an env var name", envKey)
+	}
 	// ExecContext already wraps the command in `sh -c`. Held under the
 	// sandbox lock so the between-iteration sweep never kills this exec.
 	var out, stderr string
 	var code int
 	err := withSandboxLock(ctx, nil, func() error {
 		var execErr error
-		out, stderr, code, execErr = sandbox.ExecContext(ctx, sandboxName, `printf %s "${OPENAI_API_KEY:-}"`, openAIPlaceholderExecTimeout)
+		out, stderr, code, execErr = sandbox.ExecContext(ctx, sandboxName, `printf %s "${`+envKey+`:-}"`, openAIPlaceholderExecTimeout)
 		return execErr
 	})
 	if err != nil {
@@ -169,6 +252,12 @@ func sandboxOpenAIPlaceholder(ctx context.Context, sandboxName string) (string, 
 // baselineOpenAIPlaceholder reads the placeholder the agent currently
 // holds, with bounded retries; it runs before the provider is rotated.
 func baselineOpenAIPlaceholder(ctx context.Context, sandboxName string) (string, error) {
+	return baselinePlaceholder(ctx, sandboxName, openAIDefaultCredentialKey)
+}
+
+// baselinePlaceholder is baselineOpenAIPlaceholder for any route's
+// placeholder env key.
+func baselinePlaceholder(ctx context.Context, sandboxName, envKey string) (string, error) {
 	var lastErr error
 	for attempt := 0; attempt < openAIBaselineAttempts; attempt++ {
 		if attempt > 0 {
@@ -178,12 +267,12 @@ func baselineOpenAIPlaceholder(ctx context.Context, sandboxName string) (string,
 			case <-time.After(openAIPlaceholderPoll):
 			}
 		}
-		p, err := sandboxOpenAIPlaceholder(ctx, sandboxName)
+		p, err := sandboxPlaceholder(ctx, sandboxName, envKey)
 		if err == nil && p != "" {
 			return p, nil
 		}
 		if err == nil {
-			err = errors.New("the sandbox environment has no OPENAI_API_KEY placeholder")
+			err = fmt.Errorf("the sandbox environment has no %s placeholder", envKey)
 		}
 		lastErr = err
 	}
@@ -202,33 +291,108 @@ func baselineOpenAIPlaceholder(ctx context.Context, sandboxName string) (string,
 // placeholder and retries, rather than recording a generation the agent
 // may not hold.
 func reseedOpenAIAuth(ctx context.Context, h openAIProviderHandle, previous string, printer *ui.Printer) (string, error) {
+	return reseedCredential(ctx, h.sandbox, "OpenAI", runtime.CredentialSeed{
+		PlaceholderEnv: openAIDefaultCredentialKey,
+		Seed:           h.authSeed,
+		File:           h.authFile,
+	}, previous, h.unrecorded, nil, printer)
+}
+
+// reseedSeedAttempts is how many times reseedCredential seeds and verifies
+// the credential file once the sandbox hands out the new generation: one
+// seed-and-grep pair per attempt.
+const reseedSeedAttempts = 2
+
+// handOffTimeout bounds one hand-off by what reseedCredential can do: the
+// settle wait, one placeholder read that may start just before it ends,
+// then reseedSeedAttempts seed-and-verify pairs, plus one poll.
+func handOffTimeout() time.Duration {
+	return openAIPlaceholderSettle + openAIPlaceholderExecTimeout + time.Duration(2*reseedSeedAttempts)*openAIPlaceholderExecTimeout + openAIPlaceholderPoll
+}
+
+// failOpenAIClosed stops the OpenAI route after a hand-off whose new
+// generation never reached the sandbox, as failGatewayClosed does for the
+// gateway route: each credential's expiry moves back to heldExpiresAt, the
+// expiry of the generation the agent holds, so placeholder resolution
+// fails closed then.
+func failOpenAIClosed(h openAIProviderHandle, heldExpiresAt time.Time, cause error, printer *ui.Printer) {
+	printer.StepWarn(fmt.Sprintf("OpenAI credential refresh for %s stopped: %v. The route fails closed at the expiry of the credential the running agent holds, %s", h.name, cause, heldExpiresAt.UTC().Format(time.RFC3339)))
+	for _, k := range h.keys {
+		if err := setProviderCredentialExpiryFn(context.Background(), h.name, k, heldExpiresAt); err != nil {
+			printer.StepWarn(fmt.Sprintf("OpenAI provider %s: moving the expiry of %s back to %s failed: %v", h.name, k, heldExpiresAt.UTC().Format(time.RFC3339), err))
+		}
+	}
+}
+
+// generationNotObservedError is reseedCredential's error when the new
+// generation was never seen in the sandbox: the settle wait ran out
+// (cause nil), or reading the placeholder failed or was cut short before
+// it changed (cause set). Nothing was seeded, and there is no evidence of
+// which rotation a generation that shows up later belongs to, so the
+// refreshers fail closed on it rather than rotating again.
+type generationNotObservedError struct {
+	label  string
+	settle time.Duration
+	cause  error
+}
+
+func (e *generationNotObservedError) Error() string {
+	if e.cause != nil {
+		return fmt.Sprintf("the new %s placeholder was not observed in the sandbox: %v; the agent keeps the generation it holds", e.label, e.cause)
+	}
+	return fmt.Sprintf("the sandbox still hands out the previous %s placeholder after %s; the agent keeps the generation it holds", e.label, e.settle)
+}
+
+func (e *generationNotObservedError) Unwrap() error { return e.cause }
+
+// reseedCredential is reseedOpenAIAuth for any credential route: it waits
+// for the sandbox to hand out a placeholder other than previous under
+// seed.PlaceholderEnv, re-runs seed.Seed and verifies seed.File names the
+// new placeholder. label names the route in errors and the log line.
+//
+// unrecorded (nil for a route that retries its hand-off without rotating
+// again) holds generations an earlier failed hand-off saw in the sandbox but
+// never recorded. The re-seed retires them along with previous, and the
+// settle wait does not take one for the new generation. A generation seen
+// here whose seed then fails is added to it; a successful re-seed empties it.
+//
+// superseded lists further older generations the re-seed retires, for a
+// route whose pending hand-off was passed over by a later rotation (the
+// gateway route). Unlike unrecorded it is not touched here: the route that
+// owns it decides when it is spent, and the settle wait does not exclude it.
+func reseedCredential(ctx context.Context, sandboxName, label string, seed runtime.CredentialSeed, previous string, unrecorded *seedGenerations, superseded []string, printer *ui.Printer) (string, error) {
 	if previous == "" {
-		return "", errors.New("re-seeding the OpenAI credential file: the placeholder the agent currently holds is unknown")
+		return "", fmt.Errorf("re-seeding the %s credential file: the placeholder the agent currently holds is unknown", label)
 	}
 	deadline := time.Now().Add(openAIPlaceholderSettle)
 	var current string
 	for {
-		p, err := sandboxOpenAIPlaceholder(ctx, h.sandbox)
+		p, err := sandboxPlaceholder(ctx, sandboxName, seed.PlaceholderEnv)
 		if err != nil {
-			return "", err
+			return "", &generationNotObservedError{label: label, cause: err}
 		}
-		if p != "" && p != previous {
+		if p != "" && p != previous && !unrecorded.has(p) {
 			current = p
 			break
 		}
 		if time.Now().After(deadline) {
-			return "", fmt.Errorf("the sandbox still hands out the previous OpenAI placeholder after %s; the agent keeps the generation it holds", openAIPlaceholderSettle)
+			return "", &generationNotObservedError{label: label, settle: openAIPlaceholderSettle}
 		}
 		select {
 		case <-ctx.Done():
-			return "", ctx.Err()
+			return "", &generationNotObservedError{label: label, cause: ctx.Err()}
 		case <-time.After(openAIPlaceholderPoll):
 		}
 	}
-	// Seed, then confirm the file names the new generation: an iteration
-	// starting at this very moment seeds too (from its own exec
-	// environment, which may still carry the previous placeholder), and
-	// whichever write lands last wins. One re-seed closes that window.
+	// Seed, then confirm the file names the new generation. An iteration
+	// starting at this very moment seeds too, from its own exec
+	// environment, which may still carry the previous placeholder. The
+	// seed fragment keeps that older writer from replacing a newer
+	// generation (an in-sandbox lock and generation history, see the
+	// runtime's orderedSeedWrite). The re-seed also names previous as the
+	// generation it replaces, so a writer holding it that has not yet
+	// recorded itself is still refused. The verification and the one retry
+	// remain as a check that the write landed.
 	// Only the write is taken under the sandbox lock, and one exec at a
 	// time: the seed writes atomically (mv -f) but the between-iteration
 	// sweep must not kill it mid-run, whereas the grep below only reads and
@@ -240,41 +404,51 @@ func reseedOpenAIAuth(ctx context.Context, h openAIProviderHandle, previous stri
 	// refresher records the new placeholder while the file may still name
 	// the old one — and the next settle wait would then compare against a
 	// generation the agent never held.
-	seed := func() error {
+	retired := append([]string{previous}, unrecorded.snapshot()...)
+	for _, p := range superseded {
+		if !slices.Contains(retired, p) {
+			retired = append(retired, p)
+		}
+	}
+	doSeed := func() error {
 		var lastErr error
-		for attempt := 0; attempt < 2; attempt++ {
+		for attempt := 0; attempt < reseedSeedAttempts; attempt++ {
 			var stderr string
 			var code int
 			err := withSandboxLock(ctx, nil, func() error {
 				var execErr error
-				_, stderr, code, execErr = sandbox.ExecContext(ctx, h.sandbox, h.authSeed, openAIPlaceholderExecTimeout)
+				_, stderr, code, execErr = sandbox.ExecContext(ctx, sandboxName, runtime.SeedReplacing(seed.Seed, retired...), openAIPlaceholderExecTimeout)
 				return execErr
 			})
 			if err != nil {
-				return fmt.Errorf("re-seeding the OpenAI credential file: %w", err)
+				return fmt.Errorf("re-seeding the %s credential file: %w", label, err)
 			}
 			if code != 0 {
-				return fmt.Errorf("re-seeding the OpenAI credential file: exit %d: %s", code, strings.TrimSpace(stderr))
+				return fmt.Errorf("re-seeding the %s credential file: exit %d: %s", label, code, strings.TrimSpace(stderr))
 			}
-			if h.authFile == "" {
+			if seed.File == "" {
 				return nil
 			}
-			_, _, code, err = sandbox.ExecContext(ctx, h.sandbox, "command -p grep -qF "+shellQuote(current)+" "+shellQuote(h.authFile), openAIPlaceholderExecTimeout)
+			_, _, code, err = sandbox.ExecContext(ctx, sandboxName, "command -p grep -qF "+shellQuote(current)+" "+shellQuote(seed.File), openAIPlaceholderExecTimeout)
 			if err == nil && code == 0 {
 				return nil
 			}
 			if err != nil {
-				lastErr = fmt.Errorf("verifying the re-seeded OpenAI credential file: %w", err)
+				lastErr = fmt.Errorf("verifying the re-seeded %s credential file: %w", label, err)
 				continue
 			}
-			lastErr = fmt.Errorf("verifying the re-seeded OpenAI credential file: %s does not name the refreshed placeholder (grep exit %d)", h.authFile, code)
+			lastErr = fmt.Errorf("verifying the re-seeded %s credential file: %s does not name the refreshed placeholder (grep exit %d)", label, seed.File, code)
 		}
 		return lastErr
 	}
-	if err := seed(); err != nil {
+	if err := doSeed(); err != nil {
+		// The caller keeps previous and rotates again; the generation just
+		// seen would then be missing from the next re-seed's record.
+		unrecorded.add(current)
 		return "", err
 	}
-	printer.StepInfo("the runtime's OpenAI credential file was re-seeded with the refreshed placeholder")
+	unrecorded.clear()
+	printer.StepInfo("the runtime's " + label + " credential file was re-seeded with the refreshed placeholder")
 	return current, nil
 }
 
@@ -484,19 +658,31 @@ func dropSkippedProviders(names []string, skipped map[string]struct{}) []string 
 	return out
 }
 
-// ensureOpenAIProfile imports the provider profile for a fullsend-openai
-// provider from the scaffold embedded in this binary. The profile is not
-// layered into .fullsend/profiles at run time — importing that directory
-// wholesale would replace the canonical profiles the fleet resolves from
-// fullsend-ai/agents — and a repository install ships only a .gitkeep, so
-// the runner brings its own, version-matched copy. ImportProfileVerified
-// drops the content cache, re-sends, and confirms the gateway lists it, so
-// a hash match against a recreated (empty) gateway cannot skip the import.
-func ensureOpenAIProfile(ctx context.Context, profileID string, printer *ui.Printer) error {
+// ensureEmbeddedProfile imports a provider profile from the scaffold
+// embedded in this binary — fullsend-openai's for the run-scoped OpenAI
+// provider, and (since #7268) every other builtin provider's reserved
+// profile id (isReservedProfileID) — so a bare provider name resolves
+// end to end with no openshell.profiles entry in the harness. The profile
+// is not layered into .fullsend/profiles at run time — importing that
+// directory wholesale would replace the canonical profiles the fleet
+// resolves from fullsend-ai/agents — and a repository install ships only a
+// .gitkeep, so the runner brings its own, version-matched copy.
+// ImportProfileVerified drops the content cache, re-sends, and confirms the
+// gateway lists it, so a hash match against a recreated (empty) gateway
+// cannot skip the import.
+func ensureEmbeddedProfile(ctx context.Context, profileID string, printer *ui.Printer) error {
 	data, err := scaffold.FullsendRepoFile("profiles/" + profileID + ".yaml")
 	if err != nil {
 		return fmt.Errorf("provider profile %q is not shipped by this fullsend build: %w", profileID, err)
 	}
+	return importProfileBytes(ctx, profileID, data, printer)
+}
+
+// importProfileBytes imports a provider profile whose bytes the runner holds
+// in memory — an embedded scaffold file (ensureEmbeddedProfile) or one
+// rendered per run (ensureGatewayProfile, whose host is configured, not
+// fixed) — under profileID, and confirms the gateway lists it.
+func importProfileBytes(ctx context.Context, profileID string, data []byte, printer *ui.Printer) error {
 	tmp, err := os.CreateTemp("", profileID+"-*.yaml")
 	if err != nil {
 		return fmt.Errorf("writing provider profile %q: %w", profileID, err)
@@ -522,17 +708,6 @@ func ensureOpenAIProfile(ctx context.Context, profileID string, printer *ui.Prin
 	}
 	printer.StepDone(fmt.Sprintf("Provider profile ready: %s (%.1fs)", profileID, time.Since(start).Seconds()))
 	return nil
-}
-
-// emptyCredentialRefusedRe matches the gateway's rejection of an empty
-// credential value on create — today "provider.credentials must not be
-// empty" (only for an empty map); a future value-level check is expected
-// to keep the words. Anything else is a real failure, not a cue to send the
-// value without its expiry.
-var emptyCredentialRefusedRe = regexp.MustCompile(`(?i)credential[^\n]*(empty|required|missing|invalid)`)
-
-func emptyCredentialRefused(err error) bool {
-	return err != nil && emptyCredentialRefusedRe.MatchString(err.Error())
 }
 
 // openAICredentialKeys returns the credential keys the run-scoped provider
@@ -666,20 +841,42 @@ func policyHostMatches(pattern, host string) bool {
 // parsed: the run would only fail later, at pi's first request, with far
 // less to go on.
 func checkOpenAIEgressInspected(ctx context.Context, sandboxName string) error {
+	return checkEgressInspected(ctx, sandboxName, openAIAPIHost, "OpenAI",
+		"The sandbox image's default policy carries such a rule (`codex`): give the harness a `policy:` (the fleet uses policies/base.yaml) or make that endpoint `protocol: rest`")
+}
+
+// checkEgressInspected is the host-generic form of checkOpenAIEgressInspected:
+// it fails when the sandbox's effective policy admits host:443 over a route
+// the OpenShell proxy cannot inspect (uninspectedEndpointRules), or when the
+// policy cannot be read or parsed. label names the credential in errors;
+// hint, when set, ends the error with the remedy.
+func checkEgressInspected(ctx context.Context, sandboxName, host, label, hint string) error {
 	policy, err := sandbox.EffectivePolicy(ctx, sandboxName)
 	if err != nil {
-		return fmt.Errorf("checking the sandbox policy for uninspected OpenAI routes: %w", err)
+		return fmt.Errorf("checking the sandbox policy for uninspected %s routes: %w", label, err)
 	}
-	rules, err := uninspectedEndpointRules(policy, openAIAPIHost, 443)
+	rules, err := uninspectedEndpointRules(policy, host, 443)
 	if err != nil {
-		return fmt.Errorf("checking the sandbox policy for uninspected OpenAI routes: %w", err)
+		return fmt.Errorf("checking the sandbox policy for uninspected %s routes: %w", label, err)
 	}
 	if len(rules) == 0 {
 		return nil
 	}
-	return fmt.Errorf("sandbox policy rule %s allows %s:443 without L7 inspection (no `protocol`, `protocol: tcp`, or `tls: skip`); OpenShell 0.0.110+ will not inject the OpenAI credential over an uninspected route, so the agent would only see connection errors. The sandbox image's default policy carries such a rule (`codex`): give the harness a `policy:` (the fleet uses policies/base.yaml) or make that endpoint `protocol: rest`",
-		strings.Join(rules, ", "), openAIAPIHost)
+	msg := fmt.Sprintf("sandbox policy rule %s allows %s:443 without L7 inspection (no `protocol`, `protocol: tcp`, or `tls: skip`); OpenShell 0.0.110+ will not inject the %s credential over an uninspected route, so the agent would only see connection errors",
+		strings.Join(rules, ", "), host, label)
+	if hint != "" {
+		msg += ". " + hint
+	}
+	return errors.New(msg)
 }
+
+// openAICredentialError marks an ensureOpenAIProvider failure to resolve
+// the credential itself, before anything was created on the gateway. The
+// runner tolerates it when only a persona's own frontmatter wanted the
+// provider (#7981).
+type openAICredentialError struct{ error }
+
+func (e openAICredentialError) Unwrap() error { return e.error }
 
 // ensureOpenAIProvider creates the run-scoped provider for one
 // fullsend-openai definition. backend is the runtime the run selected: when
@@ -695,7 +892,7 @@ func ensureOpenAIProvider(ctx context.Context, pd harness.ProviderDef, sandboxNa
 	cred, err := resolveOpenAICredential(ctx, os.Getenv, ids)
 	if err != nil {
 		printer.StepFail("OpenAI credential unavailable for provider " + pd.Name)
-		return openAIProviderHandle{}, fmt.Errorf("provider %q: %w", pd.Name, err)
+		return openAIProviderHandle{}, openAICredentialError{fmt.Errorf("provider %q: %w", pd.Name, err)}
 	}
 	// Two redaction layers: the exact value in the process-wide redactor
 	// (the token is opaque — no prefix pattern can be trusted; this is the
@@ -738,39 +935,30 @@ func ensureOpenAIProvider(ctx context.Context, pd harness.ProviderDef, sandboxNa
 
 	start := time.Now()
 	printer.StepStart("Ensuring run-scoped provider: " + name)
-	// Two steps, so the value is never on the gateway without its expiry:
-	// create the instance with empty credentials (nothing secret involved),
-	// then store value and expiry together in one update.
-	empty := make(map[string]string, len(keys))
-	for _, k := range keys {
-		empty[k] = ""
-	}
-	if err := sandbox.EnsureProviderLiteral(ctx, name, pd.Type, empty); err != nil {
-		// OpenShell 0.0.115 accepts an empty credential value on create
-		// (only an empty credential *map* is rejected — the same gap the
-		// _NOOP_* providers use). Should a later release validate values,
-		// fall back to creating with the value and attaching the expiry in
-		// the very next call: a one-call window instead of a hard failure.
-		if !emptyCredentialRefused(err) {
-			printer.StepFail("Failed to create run-scoped provider " + name)
-			return openAIProviderHandle{}, fmt.Errorf("ensuring provider %q: %w", name, err)
-		}
-		printer.StepWarn("Gateway refused an empty credential on create; creating with the value and attaching the expiry immediately")
-		if err := sandbox.EnsureProviderLiteral(ctx, name, pd.Type, creds); err != nil {
-			printer.StepFail("Failed to create run-scoped provider " + name)
-			return openAIProviderHandle{}, fmt.Errorf("ensuring provider %q: %w", name, err)
-		}
+	// OpenShell requires a declared credential's value on create and takes
+	// an expiry only on update, so the value is stored first and its expiry
+	// in the very next call.
+	if err := sandbox.EnsureProviderLiteral(ctx, name, pd.Type, creds); err != nil {
+		printer.StepFail("Failed to create run-scoped provider " + name)
+		return openAIProviderHandle{}, fmt.Errorf("ensuring provider %q: %w", name, err)
 	}
 	if err := sandbox.UpdateProviderLiteralWithExpiry(ctx, name, creds, cred.expiresAt); err != nil {
 		// The caller only registers the deferred delete once this function
-		// succeeds, so remove the instance here; if that fails too, blank
-		// the credential so nothing usable can be left behind.
+		// succeeds, so remove the instance here; if that fails too, expire
+		// the credential now (OpenShell refuses an empty value for a declared
+		// credential, so it cannot be blanked).
 		printer.StepFail("Failed to store the credential on " + name)
 		if delErr := sandbox.DeleteProvider(name); delErr != nil && !errors.Is(delErr, sandbox.ErrProviderNotFound) {
-			if blankErr := sandbox.UpdateProviderLiteral(ctx, name, empty); blankErr != nil {
-				printer.StepWarn(fmt.Sprintf("Run-scoped provider %s could be neither deleted (%v) nor blanked (%v); remove it with `openshell provider delete %s`", name, delErr, blankErr, name))
+			var expireErr error
+			for _, k := range keys {
+				if expireErr = sandbox.SetProviderCredentialExpiry(context.Background(), name, k, time.Now()); expireErr != nil {
+					break
+				}
+			}
+			if expireErr != nil {
+				printer.StepWarn(fmt.Sprintf("Run-scoped provider %s could be neither deleted (%v) nor expired (%v); remove it with `openshell provider delete %s`", name, delErr, expireErr, name))
 			} else {
-				printer.StepWarn(fmt.Sprintf("Run-scoped provider %s could not be deleted (%v); its credential was blanked", name, delErr))
+				printer.StepWarn(fmt.Sprintf("Run-scoped provider %s could not be deleted (%v); its credential was expired", name, delErr))
 			}
 		}
 		return openAIProviderHandle{}, fmt.Errorf("storing credential on provider %q: %w", name, err)
@@ -778,12 +966,13 @@ func ensureOpenAIProvider(ctx context.Context, pd harness.ProviderDef, sandboxNa
 	printer.StepDone(fmt.Sprintf("Provider ready: %s (%s, expires in %s, %.1fs)", name, cred.source, time.Until(cred.expiresAt).Round(time.Minute), time.Since(start).Seconds()))
 	authSeed, authFile := openAICredentialFiles(backend)
 	return openAIProviderHandle{
-		sandbox:   sandboxName,
-		authSeed:  authSeed,
-		ids:       ids,
-		sandboxUp: &atomic.Bool{},
-		authFile:  authFile,
-		name:      name, keys: keys, source: cred.source, expiresAt: cred.expiresAt}, nil
+		sandbox:    sandboxName,
+		authSeed:   authSeed,
+		ids:        ids,
+		sandboxUp:  &atomic.Bool{},
+		authFile:   authFile,
+		unrecorded: &seedGenerations{},
+		name:       name, keys: keys, source: cred.source, expiresAt: cred.expiresAt}, nil
 }
 
 // openAICredentialFiles returns the seed fragment and credential file for
@@ -792,15 +981,11 @@ func ensureOpenAIProvider(ctx context.Context, pd harness.ProviderDef, sandboxNa
 // fragment to write it would only make a refresh verify a file nothing
 // seeds.
 func openAICredentialFiles(backend runtime.Backend) (seed, file string) {
-	s, ok := backend.Runtime.(runtime.OpenAICredentialSeeder)
-	if !ok {
+	rs := runtime.OpenAIRouteSeed(backend.Runtime)
+	if rs.IsZero() {
 		return "", ""
 	}
-	seed = s.OpenAIAuthSeed()
-	if seed == "" {
-		return "", ""
-	}
-	return seed, s.OpenAIAuthFile()
+	return rs.Seed, rs.File
 }
 
 // openAIRefreshDelay is how long to wait before the next refresh of a
@@ -817,6 +1002,48 @@ func openAIRefreshDelay(expiresAt, now time.Time, jitter time.Duration) time.Dur
 		return openAIRefreshMinDelay
 	}
 	return d
+}
+
+// errOpenAISourceChanged and errOpenAIUnredactable are refresh failures a
+// retry cannot fix: the credential source is fixed for the run, and a token
+// too short to redact stays refused however often it is re-exchanged. Both
+// happen before the provider is updated. runOpenAIRefresh stops on them
+// (isPermanentOpenAIRefreshError).
+var (
+	errOpenAISourceChanged = errors.New("credential source changed")
+	errOpenAIUnredactable  = errors.New("refreshed credential is too short to redact reliably; refusing to use it")
+)
+
+// isPermanentOpenAIRefreshError reports whether err is a refresh failure
+// that cannot succeed on retry.
+func isPermanentOpenAIRefreshError(err error) bool {
+	return errors.Is(err, errOpenAISourceChanged) || errors.Is(err, errOpenAIUnredactable)
+}
+
+// openAIRefreshRoundWait is the wait before the next round after
+// failedRounds exhausted rounds, with the held expiry at expiresAt and the
+// wall clock at now. While the expiry is still ahead the wait is clamped so
+// it never passes the expiry: the credential is renewed at the latest as it
+// lapses, rather than a doubled delay sleeping well beyond it. Once the
+// expiry has passed the gateway already fails closed, so the delay doubles
+// as usual (openAIRefreshRoundDelay).
+func openAIRefreshRoundWait(failedRounds int, expiresAt, now time.Time) time.Duration {
+	wait := openAIRefreshRoundDelay(failedRounds)
+	if remaining := expiresAt.Sub(now); remaining > 0 && wait > remaining {
+		wait = remaining
+	}
+	return wait
+}
+
+// openAIRefreshRoundDelay is the wait after failedRounds (1 or more)
+// consecutive exhausted rounds of retries: openAIRefreshMinDelay, doubled
+// per further failed round, never more than openAIRefreshMaxRoundDelay.
+func openAIRefreshRoundDelay(failedRounds int) time.Duration {
+	d := openAIRefreshMinDelay
+	for i := 1; i < failedRounds && d < openAIRefreshMaxRoundDelay; i++ {
+		d *= 2
+	}
+	return min(d, openAIRefreshMaxRoundDelay)
 }
 
 // refreshOpenAIProvider renews one run-scoped provider — a WIF credential is
@@ -854,10 +1081,10 @@ func refreshOpenAIProvider(ctx context.Context, h openAIProviderHandle, placehol
 			return time.Time{}, placeholder, err
 		}
 		if cred.source != "wif" {
-			return time.Time{}, placeholder, fmt.Errorf("credential source changed to %s during the run", cred.source)
+			return time.Time{}, placeholder, fmt.Errorf("%w to %s during the run", errOpenAISourceChanged, cred.source)
 		}
 		if !security.RegisterRuntimeSecret(cred.value) {
-			return time.Time{}, placeholder, fmt.Errorf("refreshed credential is too short to redact reliably; refusing to use it")
+			return time.Time{}, placeholder, errOpenAIUnredactable
 		}
 		if os.Getenv("GITHUB_ACTIONS") == "true" {
 			fmt.Fprintf(os.Stderr, "::add-mask::%s\n", cred.value)
@@ -889,7 +1116,7 @@ func refreshOpenAIProvider(ctx context.Context, h openAIProviderHandle, placehol
 	// The running agent keeps the placeholder it launched with, and on
 	// OpenShell 0.0.115 that placeholder stays pinned to the old generation,
 	// so hand the new one over through the file it re-reads per request.
-	settleCtx, cancelSettle := context.WithTimeout(ctx, openAIPlaceholderSettle+3*openAIPlaceholderExecTimeout+openAIPlaceholderPoll)
+	settleCtx, cancelSettle := context.WithTimeout(ctx, handOffTimeout())
 	defer cancelSettle()
 	seeded, err := reseedOpenAIAuth(settleCtx, h, placeholder, printer)
 	if err != nil {
@@ -900,12 +1127,23 @@ func refreshOpenAIProvider(ctx context.Context, h openAIProviderHandle, placehol
 
 // runOpenAIRefresh keeps a run-scoped provider's credential valid for the
 // life of the run. Each cycle waits until shortly before the current
-// expiry, then refreshes with bounded retries. When the retries are
-// exhausted it stops and says so: the provider's recorded expiry makes the
-// gateway fail closed at that instant, so the run fails visibly instead of
-// silently outliving its credential. Runs until ctx is cancelled.
+// expiry, then refreshes with bounded retries. When a round of retries is
+// exhausted it says so and tries again after openAIRefreshRoundWait — the
+// minimum delay, doubling per consecutive failed round up to a cap (and,
+// while the held expiry is still ahead, never past it), and back to the
+// minimum after a success — until a refresh succeeds: the
+// provider's recorded expiry makes the gateway fail closed at that instant,
+// so a persistent failure fails the run visibly instead of silently
+// outliving its credential. A failure no retry can fix
+// (isPermanentOpenAIRefreshError), a generation that never reached the
+// sandbox, or too many unrecorded ones stop the refresher at once through
+// failOpenAIClosed. Otherwise it runs until ctx is cancelled.
+//
+// The gateway enforces the expiry on the wall clock, so the expiry is held
+// without its monotonic reading and every comparison against it counts time
+// the host spent asleep (#7748).
 func runOpenAIRefresh(ctx context.Context, h openAIProviderHandle, printer *ui.Printer) {
-	expiresAt := h.expiresAt
+	expiresAt := h.expiresAt.Round(0)
 	// placeholder is the generation the runtime's credential file currently
 	// names; learned from the sandbox before the first refresh, then
 	// tracked per re-seed.
@@ -915,47 +1153,94 @@ func runOpenAIRefresh(ctx context.Context, h openAIProviderHandle, printer *ui.P
 		if openAIRefreshJitter > 0 {
 			jitter = time.Duration(rand.Int64N(int64(openAIRefreshJitter)))
 		}
-		delay := openAIRefreshDelay(expiresAt, time.Now(), jitter)
-		timer := time.NewTimer(delay)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
+		now := wallNowFn()
+		delay := openAIRefreshDelay(expiresAt, now, jitter)
+		if !waitWallClock(ctx, delay, now.Add(delay)) {
 			return
-		case <-timer.C:
 		}
 
 		var next time.Time
-		var err error
-		for attempt := 0; attempt < openAIRefreshRetries; attempt++ {
-			if attempt > 0 {
-				select {
-				case <-ctx.Done():
-					return
-				case <-time.After(openAIRefreshBackoff):
+		// failedRounds counts consecutive exhausted rounds; it starts at zero
+		// each cycle, so a success resets the backoff.
+		failedRounds := 0
+		for {
+			var err error
+			for attempt := 0; attempt < openAIRefreshRetries; attempt++ {
+				if attempt > 0 {
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(openAIRefreshBackoff):
+					}
 				}
+				// Every failed hand-off adds the generation it saw to
+				// unrecorded, and every later re-seed retires the whole set,
+				// so with seeding failing on a long run the set and the
+				// re-seed command would grow without limit. Dropping the
+				// oldest entries is not safe: a dropped generation would no
+				// longer be excluded by the settle wait (a copy the sandbox
+				// still hands out could be taken for the new generation) nor
+				// be named in the re-seed's retired list (a stalled seed
+				// holding it may not have recorded it in the sandbox's
+				// generation history, so it could write it back over a newer
+				// one, fullsend#8311). So stop before a rotation that could
+				// add one more and fail closed, as for an unobserved
+				// generation.
+				if n := h.unrecorded.len(); n >= openAIUnrecordedMax {
+					failOpenAIClosed(h, expiresAt, fmt.Errorf("%d new generations were seen in the sandbox but never handed off (limit %d)", n, openAIUnrecordedMax), printer)
+					return
+				}
+				// An attempt is bounded by what is left of the credential it is
+				// renewing — but an already-expired credential is exactly when a
+				// refresh is needed most (a suspended laptop), so keep a floor.
+				budget := expiresAt.Sub(wallNowFn())
+				if budget < time.Minute {
+					budget = time.Minute
+				}
+				next, placeholder, err = refreshOpenAIProvider(ctx, h, placeholder, budget, printer)
+				if err == nil {
+					break
+				}
+				if ctx.Err() != nil {
+					return
+				}
+				// A new generation that was never observed in the sandbox: a
+				// later rotation could take it for its own (OpenShell's
+				// placeholder says nothing about the rotation it belongs to),
+				// so fail closed rather than rotating again (failOpenAIClosed).
+				var notObserved *generationNotObservedError
+				if errors.As(err, &notObserved) {
+					failOpenAIClosed(h, expiresAt, err, printer)
+					return
+				}
+				// Retrying cannot fix these: stop. This attempt rotated
+				// nothing, but an earlier one in the round may have left a
+				// newer generation the agent does not hold, so fail closed
+				// at the held expiry the same way.
+				if isPermanentOpenAIRefreshError(err) {
+					failOpenAIClosed(h, expiresAt, err, printer)
+					return
+				}
+				printer.StepWarn(fmt.Sprintf("OpenAI credential refresh attempt %d/%d failed: %v", attempt+1, openAIRefreshRetries, err))
 			}
-			// An attempt is bounded by what is left of the credential it is
-			// renewing — but an already-expired credential is exactly when a
-			// refresh is needed most (a suspended laptop), so keep a floor.
-			budget := time.Until(expiresAt)
-			if budget < time.Minute {
-				budget = time.Minute
-			}
-			next, placeholder, err = refreshOpenAIProvider(ctx, h, placeholder, budget, printer)
 			if err == nil {
 				break
 			}
-			if ctx.Err() != nil {
+			// A refresh that starts in a brief wake can burn its attempts
+			// before the gateway is reachable, so do not give up: try
+			// again after a backoff until one succeeds or the run ends.
+			// The recorded expiry still makes the gateway fail closed, so a
+			// persistent failure fails the run visibly.
+			failedRounds++
+			now := wallNowFn()
+			wait := openAIRefreshRoundWait(failedRounds, expiresAt, now)
+			printer.StepWarn(fmt.Sprintf("OpenAI credential refresh for %s failed %d attempts; retrying in %s (recorded expiry %s)", h.name, openAIRefreshRetries, wait, expiresAt.UTC().Format(time.RFC3339)))
+			if !waitWallClock(ctx, wait, now.Add(wait)) {
 				return
 			}
-			printer.StepWarn(fmt.Sprintf("OpenAI credential refresh attempt %d/%d failed: %v", attempt+1, openAIRefreshRetries, err))
 		}
-		if err != nil {
-			printer.StepWarn(fmt.Sprintf("OpenAI credential refresh for %s gave up; the running agent keeps the credential generation it holds, which stops resolving when that token expires (recorded expiry %s)", h.name, expiresAt.UTC().Format(time.RFC3339)))
-			return
-		}
-		expiresAt = next
-		printer.StepDone(fmt.Sprintf("OpenAI credential refreshed for %s (%s, next expiry in %s)", h.name, h.source, time.Until(expiresAt).Round(time.Minute)))
+		expiresAt = next.Round(0)
+		printer.StepDone(fmt.Sprintf("OpenAI credential refreshed for %s (%s, next expiry in %s)", h.name, h.source, expiresAt.Sub(wallNowFn()).Round(time.Minute)))
 	}
 }
 
@@ -1032,4 +1317,15 @@ func cleanupRunScopedProvider(name string, keys []string, sandboxKept bool, prin
 		return
 	}
 	printer.StepWarn(fmt.Sprintf("Run-scoped provider %s expired in place instead of deleted (still reported attached after the sandbox was deleted: %v); remove it with `openshell provider delete %s`", name, delErr, name))
+}
+
+// anyConfiguredOpenAIChild reports whether a subagents entry (not just a
+// persona's frontmatter) resolves to the openai provider.
+func anyConfiguredOpenAIChild(children []runtime.PiChild) bool {
+	for _, c := range children {
+		if c.Configured {
+			return true
+		}
+	}
+	return false
 }

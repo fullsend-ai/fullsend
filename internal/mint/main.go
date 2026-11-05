@@ -7,13 +7,23 @@
 package function
 
 import (
+	"context"
 	"log"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/GoogleCloudPlatform/functions-framework-go/functions"
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
 )
+
+// traceHeadersTimeout bounds the cold-start read of the collector
+// headers secret, so a slow Secret Manager cannot hold up the mint.
+const traceHeadersTimeout = 5 * time.Second
+
+// secretReader reads the latest version of a Secret Manager secret.
+// Production uses mintcore.AccessGCPSecret.
+type secretReader func(ctx context.Context, gcpProjectNum, secretID string) ([]byte, error)
 
 var requiredEnvVars = []string{
 	"GCP_PROJECT_NUMBER",
@@ -66,5 +76,35 @@ func init() {
 	if err != nil {
 		log.Fatalf("initializing handler: %v", err)
 	}
+	handler.SetTracer(buildTracer(context.Background(), gcpProjectNum, otlpTracesEndpoint, traceDeployment, otlpHeadersSecret, mintcore.AccessGCPSecret))
 	functions.HTTP("ServeHTTP", handler.ServeHTTP)
+}
+
+// buildTracer configures tracing from the stamped endpoint and deployment
+// identity, reading collector headers from the stamped Secret Manager
+// secret. Tracing is fail-open: a bad configuration or an unreadable
+// secret is logged (without header values) and leaves tracing disabled
+// rather than failing mint initialization. It returns nil when no
+// endpoint is stamped, without touching Secret Manager.
+func buildTracer(ctx context.Context, gcpProjectNum, endpoint, deployment, headersSecret string, readSecret secretReader) *mintcore.Tracer {
+	if endpoint == "" {
+		return nil
+	}
+	rawHeaders := ""
+	if headersSecret != "" {
+		readCtx, cancel := context.WithTimeout(ctx, traceHeadersTimeout)
+		defer cancel()
+		data, err := readSecret(readCtx, gcpProjectNum, headersSecret)
+		if err != nil {
+			log.Printf("warning: mint tracing disabled: reading collector headers secret %s: %v", headersSecret, err)
+			return nil
+		}
+		rawHeaders = string(data)
+	}
+	tracer, err := mintcore.NewStampedTracer(mintcore.TraceBackendGCF, deployment, endpoint, rawHeaders)
+	if err != nil {
+		log.Printf("warning: mint tracing disabled: %v", err)
+		return nil
+	}
+	return tracer
 }

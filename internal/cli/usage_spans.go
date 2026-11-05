@@ -13,7 +13,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/security"
 )
 
-// Synthetic per-model usage spans. A mixed-model Pi iteration already has
+// Synthetic per-model usage spans. A mixed-model iteration already has
 // the correct breakdown in RunMetrics.PerModelUsage (one entry per child
 // model plus the parent), but the agent span used to export only the
 // parent's identity with totals that included every child. Backends that
@@ -26,7 +26,7 @@ import (
 // agent span keeps the parent identity and fullsend.cost_usd as the
 // iteration rollup, but drops gen_ai.usage.* so a backend that auto-sums
 // those attributes (MLflow; ADR 0050 2026-08-18) cannot add the rollup
-// to the components. Single-model Pi runs and runtimes that leave
+// to the components. Single-model runs and runtimes that leave
 // PerModelUsage nil keep today's agent-span attributes and emit no
 // children.
 //
@@ -81,7 +81,7 @@ const (
 )
 
 // isMixedModelUsage reports whether m has a per-model breakdown with more
-// than one spec. One entry is the parent-only case (an Agent-enabled Pi
+// than one spec. One entry is the parent-only case (an Agent-enabled
 // iteration that dispatched nothing, or a retry that did); nil is a
 // runtime without sub-agents. Both keep current agent-span attributes.
 func isMixedModelUsage(m *agentruntime.RunMetrics) bool {
@@ -125,7 +125,7 @@ func usageSpanName(model string) string {
 // file sink on a cancelled iteration the same way unanswered tool spans
 // do. A nil parent, a non-recording parent, or a non-mixed breakdown is
 // a no-op.
-func emitPerModelUsageSpans(parent trace.Span, runtimeName string, m *agentruntime.RunMetrics) {
+func emitPerModelUsageSpans(parent trace.Span, system, runtimeName string, m *agentruntime.RunMetrics) {
 	if parent == nil || !parent.IsRecording() || !isMixedModelUsage(m) {
 		return
 	}
@@ -153,6 +153,12 @@ func emitPerModelUsageSpans(parent trace.Span, runtimeName string, m *agentrunti
 		u := m.PerModelUsage[spec]
 		safeSpec := sanitizeModelSpec(pipeline, spec)
 		provider, model := splitModelSpec(safeSpec)
+		if runtimeName != "pi" && strings.TrimSpace(safeSpec) != "" && strings.TrimSpace(safeSpec) != unknownModelSpec {
+			// Claude and Codex report model ids, not Pi provider/id specs.
+			// Their children use the iteration's serving endpoint, including
+			// gateway routes whose prefix was removed by the runtime.
+			provider, model = system, strings.TrimSpace(safeSpec)
+		}
 		_, span := tracer.Start(ctx, usageSpanName(model),
 			trace.WithSpanKind(trace.SpanKindInternal),
 			trace.WithAttributes(usageComponentSpanAttrs(safeSpec, provider, model, runtimeName, u)...),

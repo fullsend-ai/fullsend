@@ -14,7 +14,6 @@ func TestLoadConfig_MissingOK_ReturnsDefaultPerRepo(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, cfg.IsKillSwitchActive())
 	assert.Empty(t, cfg.AgentEntries())
-	assert.False(t, cfg.IsOrgMode())
 }
 
 func TestLoadConfig_MissingNotOK_ReturnsError(t *testing.T) {
@@ -39,7 +38,6 @@ allowed_remote_resources:
 
 	cfg, err := LoadConfig(dir, LoadOpts{MissingOK: false})
 	require.NoError(t, err)
-	assert.False(t, cfg.IsOrgMode())
 	assert.True(t, cfg.IsKillSwitchActive())
 	require.Len(t, cfg.AgentEntries(), 1)
 	assert.Equal(t, "ping", cfg.AgentEntries()[0].Name)
@@ -51,7 +49,7 @@ allowed_remote_resources:
 	}
 }
 
-func TestLoadConfig_Org(t *testing.T) {
+func TestLoadConfig_PerOrgFormatRejected(t *testing.T) {
 	dir := t.TempDir()
 	content := `version: "1"
 dispatch:
@@ -67,11 +65,34 @@ allowed_remote_resources:
 `
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(content), 0o644))
 
-	cfg, err := LoadConfig(dir, LoadOpts{MissingOK: false})
-	require.NoError(t, err)
-	assert.True(t, cfg.IsOrgMode())
-	require.Len(t, cfg.AgentEntries(), 1)
-	assert.Equal(t, "triage", cfg.AgentEntries()[0].DerivedName())
+	_, err := LoadConfig(dir, LoadOpts{MissingOK: false})
+	require.ErrorIs(t, err, errPerOrgConfig)
+
+	_, err = LoadConfigWriter(dir, LoadOpts{MissingOK: false})
+	require.ErrorIs(t, err, errPerOrgConfig)
+}
+
+func TestLoadConfig_PerOrgFormatRejected_EachKey(t *testing.T) {
+	for _, content := range []string{
+		"version: \"1\"\ndispatch:\n  platform: github-actions\n",
+		"version: \"1\"\nrepos: {}\n",
+		"version: \"1\"\ndefaults:\n  roles: [triage]\n",
+	} {
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(content), 0o644))
+		_, err := LoadConfig(dir, LoadOpts{})
+		assert.ErrorIs(t, err, errPerOrgConfig, "content: %q", content)
+	}
+}
+
+func TestLoadConfig_NonMappingYAML(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("just a string\n"), 0o644))
+
+	_, err := LoadConfig(dir, LoadOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parsing config.yaml")
+	assert.NotErrorIs(t, err, errPerOrgConfig)
 }
 
 func TestLoadConfig_MalformedYAML(t *testing.T) {
@@ -80,8 +101,8 @@ func TestLoadConfig_MalformedYAML(t *testing.T) {
 
 	_, err := LoadConfig(dir, LoadOpts{MissingOK: false})
 	require.Error(t, err)
-	// Malformed YAML is detected before type probing so the error
-	// names config.yaml rather than the misleading "parsing org config".
+	// Malformed YAML is detected before the per-org format check so the
+	// error names the YAML problem rather than the format.
 	assert.Contains(t, err.Error(), "parsing config.yaml")
 }
 
@@ -95,22 +116,7 @@ agents:
 
 	cfg, err := LoadConfig(dir, LoadOpts{MissingOK: false})
 	require.NoError(t, err)
-	assert.False(t, cfg.IsOrgMode())
 	require.Len(t, cfg.AgentEntries(), 1)
-}
-
-func TestLoadConfig_InvalidOrgConfig(t *testing.T) {
-	dir := t.TempDir()
-	content := `version: "1"
-dispatch:
-  platform: ""
-repos: not-a-map
-`
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(content), 0o644))
-
-	_, err := LoadConfig(dir, LoadOpts{MissingOK: false})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "parsing org config")
 }
 
 func TestIsPerRepoYAML(t *testing.T) {
@@ -118,7 +124,9 @@ func TestIsPerRepoYAML(t *testing.T) {
 	assert.False(t, IsPerRepoYAML([]byte("version: \"1\"\ndispatch:\n  platform: github-actions\n")))
 	assert.False(t, IsPerRepoYAML([]byte("version: \"1\"\ndispatch:\n  platform: \"\"\n")))
 	assert.False(t, IsPerRepoYAML([]byte("not yaml")))
-	// inference key is shared between org and per-repo; should not trigger org detection.
+	assert.False(t, IsPerRepoYAML([]byte("version: \"1\"\nrepos: {}\n")))
+	assert.False(t, IsPerRepoYAML([]byte("version: \"1\"\ndefaults: {}\n")))
+	// inference is a valid per-repo key; it must not trigger per-org detection.
 	assert.True(t, IsPerRepoYAML([]byte("version: \"1\"\ninference:\n  provider: vertex\n")))
 }
 
@@ -140,7 +148,6 @@ kill_switch: true
 
 	cfg, err := LoadConfig(dir, LoadOpts{})
 	require.NoError(t, err)
-	assert.False(t, cfg.IsOrgMode())
 
 	pcr, ok := cfg.(PerRepoConfigReader)
 	require.True(t, ok)
@@ -166,7 +173,6 @@ runtime: claude
 
 	cfg, err := LoadConfig(dir, LoadOpts{})
 	require.NoError(t, err)
-	assert.False(t, cfg.IsOrgMode())
 
 	pcr, ok := cfg.(PerRepoConfigReader)
 	require.True(t, ok)
@@ -189,7 +195,6 @@ roles:
 	// config; overlay is created empty.
 	cfg, err := LoadConfig(dir, LoadOpts{})
 	require.NoError(t, err)
-	assert.False(t, cfg.IsOrgMode())
 
 	pcr, ok := cfg.(PerRepoConfigReader)
 	require.True(t, ok)
@@ -203,7 +208,6 @@ func TestLoadConfig_NeitherExists_MissingOK(t *testing.T) {
 	dir := t.TempDir()
 	cfg, err := LoadConfig(dir, LoadOpts{MissingOK: true})
 	require.NoError(t, err)
-	assert.False(t, cfg.IsOrgMode())
 	// Returns NewPerRepoConfig default with populated fields.
 	assert.Equal(t, "1", cfg.ConfigVersion())
 }
@@ -337,7 +341,6 @@ roles:
 
 	writer, err := LoadConfigWriter(dir, LoadOpts{})
 	require.NoError(t, err)
-	assert.False(t, writer.IsOrgMode())
 
 	pcr, ok := writer.(PerRepoConfigReader)
 	require.True(t, ok)
@@ -346,7 +349,7 @@ roles:
 	assert.Equal(t, "claude", pcr.ConfigRuntime())
 }
 
-func TestLoadConfig_OrgOverlayIgnoresBase(t *testing.T) {
+func TestLoadConfig_PerOrgOverlayRejectedWithBase(t *testing.T) {
 	dir := t.TempDir()
 	base := `version: "1"
 runtime: custom-runtime
@@ -362,10 +365,9 @@ repos: {}
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.base.yaml"), []byte(base), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(orgOverlay), 0o644))
 
-	cfg, err := LoadConfig(dir, LoadOpts{})
-	require.NoError(t, err)
-	// Should be org mode — base is ignored for org configs.
-	assert.True(t, cfg.IsOrgMode())
+	// A valid base layer does not rescue a per-org overlay.
+	_, err := LoadConfig(dir, LoadOpts{})
+	require.ErrorIs(t, err, errPerOrgConfig)
 }
 
 func TestLoadConfig_MalformedBase(t *testing.T) {
@@ -484,11 +486,53 @@ inference:
 
 	// Overlay overrides mint_url.
 	assert.Equal(t, "https://overlay-mint.example.com", pcr.ConfigMintURL())
+	assert.Equal(t, "https://overlay-mint.example.com", pcr.ConfigMintURLFromFile())
 	// Inference fields fall through to base.
 	assert.Equal(t, "vertex", pcr.ConfigInferenceProvider())
 	assert.Equal(t, "base-project", pcr.ConfigInferenceProject())
 	assert.Equal(t, "us-central1", pcr.ConfigInferenceRegion())
 	assert.Equal(t, "projects/123/locations/global/workloadIdentityPools/pool/providers/prov", pcr.ConfigInferenceWIFProvider())
+}
+
+// TestConfigMintURLFromFile_BaseOnly checks that when the overlay
+// is silent on mint_url, ConfigMintURLFromFile falls through to the base
+// file, same as ConfigMintURL.
+func TestConfigMintURLFromFile_BaseOnly(t *testing.T) {
+	dir := t.TempDir()
+	base := "version: \"1\"\nmint_url: https://base-mint.example.com\n"
+	overlay := "version: \"1\"\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.base.yaml"), []byte(base), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(overlay), 0o644))
+
+	cfg, err := LoadConfig(dir, LoadOpts{})
+	require.NoError(t, err)
+
+	pcr, ok := cfg.(PerRepoConfigReader)
+	require.True(t, ok)
+
+	assert.Equal(t, "https://base-mint.example.com", pcr.ConfigMintURL())
+	assert.Equal(t, "https://base-mint.example.com", pcr.ConfigMintURLFromFile())
+}
+
+// TestConfigMintURLFromFile_NeitherSet is the critical divergence from
+// ConfigMintURL: when neither config.yaml nor config.base.yaml sets
+// mint_url, ConfigMintURL falls through to the compiled default
+// (DefaultPerRepoMintURL), but ConfigMintURLFromFile stops at "" — it
+// never consults the compiled-defaults layer. This is what lets
+// fullsend run distinguish "the file is silent" from "the file resolves
+// to the default".
+func TestConfigMintURLFromFile_NeitherSet(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("version: \"1\"\n"), 0o644))
+
+	cfg, err := LoadConfig(dir, LoadOpts{})
+	require.NoError(t, err)
+
+	pcr, ok := cfg.(PerRepoConfigReader)
+	require.True(t, ok)
+
+	assert.Equal(t, DefaultPerRepoMintURL, pcr.ConfigMintURL())
+	assert.Empty(t, pcr.ConfigMintURLFromFile())
 }
 
 func TestLoadConfig_OnlyBase_MintInference(t *testing.T) {
@@ -575,4 +619,68 @@ allowed_remote_resources:
 		assert.False(t, seen[r], "duplicate resource: %s", r)
 		seen[r] = true
 	}
+}
+
+func TestLoadConfig_LegacyCreateIssuesRejected(t *testing.T) {
+	const legacy = "create_issues:\n  allow_targets:\n    orgs: [acme]\n"
+	const permissiveBase = "version: \"1\"\ntracker:\n  github:\n    allowed_targets:\n      orgs: [acme]\n"
+
+	cases := []struct {
+		name    string
+		overlay string
+		base    string
+		file    string
+	}{
+		{"overlay only", legacy, "", OverlayConfigFile},
+		{"base only", "version: \"1\"\n", legacy, BaseConfigFile},
+		{"legacy overlay over permissive base", "create_issues:\n  allow_targets: {}\n", permissiveBase, OverlayConfigFile},
+		{"legacy base under clean overlay", "version: \"1\"\n", "version: \"1\"\n" + legacy, BaseConfigFile},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(dir, OverlayConfigFile), []byte(c.overlay), 0o644))
+			if c.base != "" {
+				require.NoError(t, os.WriteFile(filepath.Join(dir, BaseConfigFile), []byte(c.base), 0o644))
+			}
+
+			for name, load := range map[string]func() error{
+				"LoadConfig": func() error {
+					_, err := LoadConfig(dir, LoadOpts{})
+					return err
+				},
+				"LoadConfigWriter": func() error {
+					_, err := LoadConfigWriter(dir, LoadOpts{})
+					return err
+				},
+			} {
+				err := load()
+				require.ErrorIs(t, err, errLegacyCreateIssues, name)
+				assert.Contains(t, err.Error(), c.file, name)
+				assert.Contains(t, err.Error(), "tracker.<provider>.allowed_targets", name)
+				assert.Contains(t, err.Error(), "tracker.github.allowed_targets.orgs/repos", name)
+				assert.Contains(t, err.Error(), "tracker.gitlab.allowed_targets.groups/repos", name)
+				assert.Contains(t, err.Error(), "tracker.jira.allowed_targets.projects", name)
+			}
+		})
+	}
+}
+
+func TestLoadConfig_LegacyCreateIssuesBaseOnlyDir(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, BaseConfigFile), []byte("create_issues:\n  allow_targets: {}\n"), 0o644))
+
+	_, err := LoadConfig(dir, LoadOpts{})
+	require.ErrorIs(t, err, errLegacyCreateIssues)
+}
+
+func TestLoadConfig_MigratedTrackerStillLoads(t *testing.T) {
+	dir := t.TempDir()
+	base := "version: \"1\"\ntracker:\n  github:\n    allowed_targets:\n      orgs: [acme]\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, BaseConfigFile), []byte(base), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, OverlayConfigFile), []byte("version: \"1\"\n"), 0o644))
+
+	cfg, err := LoadConfig(dir, LoadOpts{})
+	require.NoError(t, err)
+	assert.Equal(t, TrackingProviderGitHub, cfg.IssueTracking().Provider())
 }

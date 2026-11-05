@@ -65,9 +65,9 @@ type TokenSnapshot struct {
 //
 // Diagnostics still carry names, dates, and token IDs only — never
 // secret values. Runtime authentication failures stay ErrAuthFailed
-// and never fall back to the shared token.
-func DiagnoseLifecycle(mode Mode, present map[string]bool, reg Registry, tokens []TokenSnapshot, now time.Time, lead time.Duration) Report {
-	rep := Diagnose(mode, present, reg)
+// and never fall back to a different credential.
+func DiagnoseLifecycle(present map[string]bool, reg Registry, tokens []TokenSnapshot, now time.Time, lead time.Duration) Report {
+	rep := Diagnose(present, reg)
 	if tokens == nil {
 		return rep
 	}
@@ -86,16 +86,20 @@ func DiagnoseLifecycle(mode Mode, present map[string]bool, reg Registry, tokens 
 		byName[tok.Name] = append(byName[tok.Name], tok)
 	}
 	tokenNameByRole := make(map[Role]string, len(rep.Roles))
+	reuseOfByRole := make(map[Role]Role, len(rep.Roles))
 	for _, rr := range rep.Roles {
 		if rr.TokenName != "" {
 			tokenNameByRole[rr.Name] = rr.TokenName
+		}
+		if rr.ReuseOf != "" {
+			reuseOfByRole[rr.Name] = rr.ReuseOf
 		}
 	}
 	for i := range rep.Roles {
 		rr := &rep.Roles[i]
 		name := rr.TokenName
 		if name == "" && rr.ReuseOf != "" {
-			name = tokenNameByRole[rr.ReuseOf]
+			name = tokenNameForRole(rr.ReuseOf, tokenNameByRole, reuseOfByRole)
 		}
 		if rr.State == RoleStateUnconfigured {
 			rr.Lifecycle = LifecycleUnconfigured
@@ -105,6 +109,18 @@ func DiagnoseLifecycle(mode Mode, present map[string]bool, reg Registry, tokens 
 	}
 	rep.Diagnostics = append(rep.Diagnostics, lifecycleMessages(rep)...)
 	return rep
+}
+
+func tokenNameForRole(role Role, tokenNameByRole map[Role]string, reuseOfByRole map[Role]Role) string {
+	seen := map[Role]bool{}
+	for role != "" && !seen[role] {
+		seen[role] = true
+		if name := tokenNameByRole[role]; name != "" {
+			return name
+		}
+		role = reuseOfByRole[role]
+	}
+	return ""
 }
 
 // RoleDueForRotation reports whether a role should be rotated: expired,
@@ -117,6 +133,24 @@ func RoleDueForRotation(rr RoleReport) bool {
 	default:
 		return false
 	}
+}
+
+// AnnotateTokenLifecycle sets rr's lifecycle, expiry, and token IDs from the one
+// token tok, with the same expiry, revocation, and lead-time rules as
+// DiagnoseLifecycle. A lead of 0 uses DefaultRotationLead and a zero now uses
+// time.Now. Any lifecycle state already on rr (overlap, expiry, token IDs) is
+// discarded first, so re-annotating a report reflects only tok.
+func AnnotateTokenLifecycle(rr *RoleReport, tok TokenSnapshot, now time.Time, lead time.Duration) {
+	if lead <= 0 {
+		lead = DefaultRotationLead
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	rr.Overlapping = false
+	rr.ExpiresAt = ""
+	rr.TokenIDs = nil
+	annotateRoleLifecycle(rr, []TokenSnapshot{tok}, now.UTC(), lead)
 }
 
 func annotateRoleLifecycle(rr *RoleReport, matches []TokenSnapshot, now time.Time, lead time.Duration) {
@@ -250,4 +284,19 @@ func lifecycleMessages(rep Report) []string {
 		}
 	}
 	return msgs
+}
+
+// RefreshLifecycleDiagnostics rebuilds the lifecycle portion of a report's
+// diagnostics after callers change a role lifecycle based on trusted proof.
+// oldCount is the lifecycle-message count before those changes. DiagnoseLifecycle
+// appends lifecycle messages after the base diagnosis, so trimming that count
+// preserves the base diagnostics.
+func RefreshLifecycleDiagnostics(rep *Report, oldCount int) {
+	if rep == nil {
+		return
+	}
+	if oldCount >= 0 && oldCount <= len(rep.Diagnostics) {
+		rep.Diagnostics = rep.Diagnostics[:len(rep.Diagnostics)-oldCount]
+	}
+	rep.Diagnostics = append(rep.Diagnostics, lifecycleMessages(*rep)...)
 }

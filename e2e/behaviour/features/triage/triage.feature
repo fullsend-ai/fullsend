@@ -6,9 +6,9 @@ Feature: Manual triage via ready-for-triage label
   Scenario: Triage applies ready-to-code and sandbox blocks disallowed URL
     Given the enrolled test repository
     And a dummy agent that would:
-      | description      | op            | args                                                      |
-      | Search for foo   | url_get       | https://www.google.com/search?q=foo                       |
-      | Emit triage JSON | write_fixture | output/agent-result.json, fixtures/triage/sufficient.json |
+      | description      | op            | args                                                      | expect |
+      | Search for foo   | url_get       | https://www.google.com/search?q=foo                       | fail   |
+      | Emit triage JSON | write_fixture | output/agent-result.json, fixtures/triage/sufficient.json |        |
     And an issue
     When the issue is labeled "ready-for-triage"
     Then the triage workflow completes successfully

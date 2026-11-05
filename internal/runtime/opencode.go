@@ -1,90 +1,69 @@
 package runtime
 
 import (
-	"context"
 	"fmt"
-	"io"
-	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
-	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
-// OpenCodeRuntime is a stub implementation of the Runtime and TranscriptHandler
-// interfaces for the OpenCode agent runtime. All methods are no-ops or return
-// not-implemented errors. Subsequent PRs will fill in stream parsing, bootstrap,
-// run execution, and transcript extraction.
+// OpenCodeRuntime drives the OpenCode agent runtime (anomalyco/opencode),
+// selected with `runtime: opencode` (#6035, unbound-force#510). Bootstrap
+// translates the Claude-style agent into an OpenCode agent; Run executes
+// `opencode run --format json` and normalizes its ndjson stream.
 //
-// Egress note for whoever lands it: opencode is exec'd directly, like Claude
-// Code, not wrapped by node. The opencode-ai npm package ships bin/opencode.exe
-// as a shell stub that postinstall.mjs replaces (link or copy) with the
-// platform binary opencode-linux-x64/bin/opencode; with --ignore-scripts the
-// stub stays. Whichever file the Containerfile ends up exec'ing is the name
-// the inference profiles' binaries: globs must carry (**/opencode.exe or
-// **/opencode), and runtimeEgressBinaries in internal/cli must list it, or
-// every run dies on its first model call with policy_denied (fullsend#6971).
+// OpenCode reads AGENTS.md natively, so it needs no ContextBridger. Project
+// config discovery is disabled (see EnvExports), which also drops project
+// AGENTS.md discovery; the run prelude re-attaches it via
+// openCodeInstructionsConfig.
 type OpenCodeRuntime struct{}
 
 func (OpenCodeRuntime) Name() string { return "opencode" }
 
 // System returns the fallback OTEL GenAI provider identity. OpenCode is
-// multi-provider (Anthropic, OpenAI, Google, etc.) and does not yet implement
-// ProviderResolver, so the system is the runtime itself rather than a model
-// vendor. The actual serving endpoint may be capturable from opencode's
-// stream/export events in a future PR once the event schema is confirmed
-// (see #1935).
+// multi-provider and does not implement ProviderResolver yet (#1935), so the
+// system is the runtime itself rather than a model vendor.
 func (OpenCodeRuntime) System() string { return "opencode" }
 
-// ConfigDir returns the opencode config directory inside the sandbox.
-// Provisional — verify opencode's config discovery before implementing
-// Bootstrap (#1260). Consider placing config outside the agent-writable
-// workspace (like Claude's /sandbox/claude-config) to prevent the agent
-// from rewriting its own runtime config.
-func (OpenCodeRuntime) ConfigDir() string { return sandbox.SandboxWorkspace + "/.opencode" }
+// ConfigDir returns the runner-owned OpenCode config directory
+// (OPENCODE_CONFIG_DIR). It lives outside the cloned repo so the target repo
+// cannot pre-seed it and a workspace reset does not clear it (#515). No
+// ".opencode" suffix is needed: OPENCODE_CONFIG_DIR itself counts as a config
+// dir (config/config.ts:425).
+//
+// The dir is root-owned 0775 (group sandbox) because the run prelude writes
+// opencode.json here each iteration. Lockdown to 0750 with all writes via
+// openshell is deferred to #7824.
+func (OpenCodeRuntime) ConfigDir() string { return sandbox.SandboxOpenCodeConfig }
 
 func (OpenCodeRuntime) WorkspaceDir() string { return sandbox.SandboxWorkspace }
 
-func (OpenCodeRuntime) EnvExports() []string { return nil }
-
-func (OpenCodeRuntime) Bootstrap(_ BootstrapInput) error {
-	return fmt.Errorf("opencode runtime is not yet implemented")
-}
-
-func (OpenCodeRuntime) Run(_ context.Context, _ RunParams, _ *ui.Printer, _ time.Time, _ *RunMetrics) (int, error) {
-	return -1, fmt.Errorf("opencode runtime is not yet implemented")
-}
-
-// ClearIterationArtifacts is a no-op while Run is a stub: nothing has run in
-// the sandbox, so there is nothing to clear. When Run is implemented this
-// must sweep stray sandbox processes (clearStrayProcesses, see
-// killStrayProcesses) before removing the iteration's files, like the other
-// runtimes — the Runtime interface documents that as part of the contract.
-func (OpenCodeRuntime) ClearIterationArtifacts(_ string) error { return nil }
-
-// TranscriptHandler stub methods — return not-implemented errors for extract
-// methods (to avoid silent success claims in CI logs) and no-ops for parse
-// methods (which correctly indicate "nothing found"). See #1935.
-
-func (OpenCodeRuntime) ExtractTranscripts(_, _, _ string) error {
-	return fmt.Errorf("opencode transcript extraction not implemented (see #1935)")
-}
-
-func (OpenCodeRuntime) ExtractDebugLog(_, _, _ string) error {
-	return fmt.Errorf("opencode debug log extraction not implemented (see #1935)")
-}
-
-func (OpenCodeRuntime) ParseTranscriptErrors(_ string) []TranscriptError { return nil }
-
-func (OpenCodeRuntime) ParseTranscriptFile(_ string) (TranscriptError, bool) {
-	return TranscriptError{}, false
-}
-
-func (OpenCodeRuntime) EmitTranscriptErrors(w io.Writer, summaries []TranscriptError) {
-	emitTranscriptErrors(w, summaries)
+// EnvExports pins OpenCode's config discovery to the runner-owned dir and
+// exports the variables Bootstrap and Run rely on.
+//
+// OPENCODE_CONFIG_CONTENT (Vertex provider + permission policy) and
+// GOOGLE_APPLICATION_CREDENTIALS (WIF credential file) come from the harness;
+// Run restores their pristine values after reading the agent-writable .env.
+// The policy must ALLOW the tools a read-only agent needs: headless
+// `opencode run` has no TTY and auto-rejects any permission request config
+// does not pre-resolve (run.ts:795-808), so a bare "deny" fails every tool
+// call. Write-path denial is unbound-force#515.
+func (r OpenCodeRuntime) EnvExports() []string {
+	return []string{
+		fmt.Sprintf("export OPENCODE_CONFIG_DIR=%s", r.ConfigDir()),
+		// Skip the workspace config walk so a hostile repo's
+		// .opencode/opencode.json cannot widen tool permissions.
+		"export OPENCODE_DISABLE_PROJECT_CONFIG=true",
+		// Skip skill discovery from the workspace and $HOME so a hostile repo
+		// cannot inject skills; runner-owned skills under ConfigDir still load.
+		"export OPENCODE_DISABLE_EXTERNAL_SKILLS=true",
+		"export OPENCODE_CONFIG_CONTENT",        // re-export: Vertex provider + permission policy
+		"export GOOGLE_APPLICATION_CREDENTIALS", // re-export: WIF credential file
+	}
 }
 
 // Compile-time interface assertions.
 var (
 	_ Runtime           = OpenCodeRuntime{}
 	_ TranscriptHandler = OpenCodeRuntime{}
+	_ DebugLogNamer     = OpenCodeRuntime{}
 )

@@ -1,6 +1,6 @@
 name: Check E2E Authorization
 description: >-
-  Authorize PR-triggered e2e runs for trusted authors or a fresh ok-to-test label.
+  Authorize PR-triggered e2e runs for trusted authors or an ok-to-test labeled event.
   Removes stale ok-to-test labels and posts a sticky PR comment when unauthorized.
 
 inputs:
@@ -19,17 +19,21 @@ inputs:
     required: false
     default: ""
   pr_author_association:
-    description: github.event.pull_request.author_association (frozen event payload)
+    description: Deprecated (unused) — authorization uses collaborator permissions
     required: false
     default: ""
   pr_author_login:
-    description: github.event.pull_request.user.login (for collaborator permission API fallback)
+    description: github.event.pull_request.user.login (for collaborator permission API check)
+    required: false
+    default: ""
+  label_actor_login:
+    description: github.event.sender.login (who applied the label on labeled events)
     required: false
     default: ""
   docs_url:
     description: Link to e2e testing documentation
     required: false
-    default: https://github.com/fullsend-ai/fullsend/blob/main/docs/guides/dev/e2e-testing.md#ci-authorization
+    default: https://github.com/fullsend-ai/fullsend/blob/main/docs/guides/dev/e2e-testing.md#blocked-runs
 
 outputs:
   authorized:
@@ -56,10 +60,13 @@ runs:
         EVENT_ACTION: ${{ inputs.event_action }}
         PR_AUTHOR_ASSOCIATION: ${{ inputs.pr_author_association }}
         PR_AUTHOR_LOGIN: ${{ inputs.pr_author_login }}
+        LABEL_ACTOR_LOGIN: ${{ inputs.label_actor_login }}
       run: bash "${GITHUB_WORKSPACE}/scripts/check-e2e-authorization.sh" "${PR_NUMBER}" "${REPOSITORY}"
 
+    # fresh_ok_to_test: a newer label belongs to the labeled workflow.
+    # Stay quiet so this run does not overwrite that run's comment.
     - name: Post gate comment
-      if: steps.check.outputs.authorized != 'true'
+      if: steps.check.outputs.authorized != 'true' && steps.check.outputs.reason != 'fresh_ok_to_test'
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
@@ -83,7 +90,11 @@ runs:
 
         case "${REASON}" in
           stale_ok_to_test)
-            body+="The \`ok-to-test\` label was removed because new commits landed after it was applied. A maintainer must re-apply \`ok-to-test\` after reviewing the latest changes.
+            body+="The \`ok-to-test\` label was removed because the PR changed after it was applied (usually a new push). Someone with write access must re-apply \`ok-to-test\` after reviewing the latest changes.
+        "
+            ;;
+          untrusted_labeler)
+            body+="The \`ok-to-test\` label did not authorize this run because it was applied by a user without write access. Do not re-apply it yourself: ask a reviewer on this PR, or a maintainer listed in [MAINTAINERS.md](https://github.com/fullsend-ai/fullsend/blob/main/MAINTAINERS.md), to apply \`ok-to-test\` after reviewing the latest changes.
         "
             ;;
           error)
@@ -91,20 +102,22 @@ runs:
         "
             ;;
           *)
-            body+="E2E tests run automatically for org/repo **members and collaborators** on pull requests.
+            body+="E2E tests run automatically for pull requests authored by users with **write access or higher**.
 
-        For other contributors, a maintainer must add the \`ok-to-test\` label **after** the latest push.
+        For other contributors, someone with write access must add the \`ok-to-test\` label **after** the latest push.
         "
             ;;
         esac
 
-        if [[ "${LABEL_REMOVED}" == "true" ]]; then
+        if [[ "${LABEL_REMOVED}" == "true" && "${REASON}" == "stale_ok_to_test" ]]; then
           body+="
         > **Note:** \`ok-to-test\` was cleared due to new commits.
         "
         fi
 
         body+="
+        Reason: \`${REASON}\`
+
         See [E2E testing guide](${DOCS_URL}) for details."
 
         existing_id="$(gh api "repos/${owner}/${repo}/issues/${PR_NUMBER}/comments" --paginate \

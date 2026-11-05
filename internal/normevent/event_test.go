@@ -51,10 +51,35 @@ func TestIsWriteAuthorized(t *testing.T) {
 	assert.False(t, IsWriteAuthorized(RoleNone))
 }
 
+func TestIsTriageAuthorized(t *testing.T) {
+	assert.True(t, IsTriageAuthorized(RoleAdmin))
+	assert.True(t, IsTriageAuthorized(RoleMaintain))
+	assert.True(t, IsTriageAuthorized(RoleWrite))
+	assert.True(t, IsTriageAuthorized(RoleTriage))
+	assert.False(t, IsTriageAuthorized(RoleRead))
+	assert.False(t, IsTriageAuthorized(RoleNone))
+	assert.False(t, IsTriageAuthorized(RoleExternal))
+	assert.False(t, IsTriageAuthorized(""))
+}
+
 func TestMapGitHubPermission(t *testing.T) {
 	assert.Equal(t, RoleWrite, MapGitHubPermission("write"))
 	assert.Equal(t, RoleNone, MapGitHubPermission("unknown"))
 	assert.Equal(t, RoleNone, MapGitHubPermission("custom-docs-role"))
+}
+
+func TestMapGitLabAccessLevel(t *testing.T) {
+	tests := map[int]ActorRole{
+		10: RoleRead,
+		20: RoleTriage,
+		30: RoleWrite,
+		40: RoleMaintain,
+		50: RoleAdmin,
+		0:  RoleNone,
+	}
+	for accessLevel, expected := range tests {
+		assert.Equal(t, expected, MapGitLabAccessLevel(accessLevel), accessLevel)
+	}
 }
 
 func TestComputeChangeProposalIsFork(t *testing.T) {
@@ -197,4 +222,31 @@ func TestValidate_ConversationRules(t *testing.T) {
 		}
 		require.NoError(t, ev.Validate())
 	})
+}
+
+func TestParseJSON_ADR0107Examples(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(examplesDir(t), "adr-0107", "review-changes-requested.json"))
+	require.NoError(t, err)
+	ev, err := ParseJSON(data)
+	require.NoError(t, err)
+	assert.Equal(t, ActorBot, ev.Actor.Kind)
+	assert.Equal(t, RoleNone, ev.Actor.Role)
+	assert.Equal(t, "review", ev.Actor.BotRole)
+	require.NotNil(t, ev.Actor.RoleVerified)
+	assert.True(t, *ev.Actor.RoleVerified)
+
+	m, err := ev.ToMap()
+	require.NoError(t, err)
+	actor := m["actor"].(map[string]any)
+	assert.Equal(t, "review", actor["bot_role"])
+	assert.Equal(t, true, actor["role_verified"])
+}
+
+func TestToMap_OmitsUnsetBotRoleFields(t *testing.T) {
+	ev := &Event{Actor: Actor{ID: "alice", Kind: ActorHuman, Role: RoleWrite}}
+	m, err := ev.ToMap()
+	require.NoError(t, err)
+	actor := m["actor"].(map[string]any)
+	assert.NotContains(t, actor, "bot_role")
+	assert.NotContains(t, actor, "role_verified")
 }

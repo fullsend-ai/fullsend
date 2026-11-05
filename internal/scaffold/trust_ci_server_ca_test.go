@@ -150,6 +150,22 @@ func firstReadableSystemCABundle() string {
 	return ""
 }
 
+func TestTrustCIServerCAScript_ExportedFlagDoesNotSkip(t *testing.T) {
+	script := trustCIServerCAScript(t)
+	caPEM := testCACertPEM(t)
+	caPath := filepath.Join(t.TempDir(), "extra-ca.pem")
+	require.NoError(t, os.WriteFile(caPath, caPEM, 0o644))
+
+	out, stderr, err := sourceTrustScript(t, script, []string{
+		"CI_SERVER_TLS_CA_FILE=" + caPath,
+		"FULLSEND_CI_SERVER_CA_TRUSTED=1",
+	})
+	require.NoError(t, err, "stderr: %s", stderr)
+	assert.Contains(t, stderr, "Trusted extra CA",
+		"a trigger-supplied FULLSEND_CI_SERVER_CA_TRUSTED=1 must not skip CA pinning")
+	assert.Contains(t, out, "SSL_CERT_FILE=")
+}
+
 func TestTrustCIServerCAScript_Idempotent(t *testing.T) {
 	script := trustCIServerCAScript(t)
 	caPEM := testCACertPEM(t)
@@ -194,9 +210,13 @@ func TestGitLabTemplatesSourceTrustCIServerCABeforeNetwork(t *testing.T) {
 		".gitlab/ci/fullsend-agent.yml",
 	} {
 		t.Run(path, func(t *testing.T) {
-			content, err := GitLabPerRepoFile(path)
-			require.NoError(t, err)
-			s := string(content)
+			var s string
+			switch path {
+			case ".gitlab/ci/fullsend-poll.yml":
+				s = gitlabPollScaffold(t)
+			case ".gitlab/ci/fullsend-agent.yml":
+				s = gitlabAgentScaffold(t)
+			}
 			idxSource := strings.Index(s, scriptMarker)
 			require.Greater(t, idxSource, 0, "%s must source %s", path, scriptMarker)
 
@@ -235,7 +255,7 @@ func TestGitLabPerRepoFile_TrustCIServerCAScript(t *testing.T) {
 }
 
 func TestCollectGitLabPerRepoInstallFiles_IncludesTrustScript(t *testing.T) {
-	files, err := CollectGitLabPerRepoInstallFiles(nil, "", "")
+	files, err := CollectGitLabPerRepoInstallFiles(nil, nil, "", "")
 	require.NoError(t, err)
 	var found bool
 	for _, f := range files {

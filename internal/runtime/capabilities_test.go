@@ -6,8 +6,12 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+// noDebugLog is a runtime-agnostic placeholder that does NOT implement
+// DebugLogNamer, used to exercise DebugLogNameFor's fallback and precedence.
+type noDebugLog struct{ DummyRuntime }
+
 type namedDebugLog struct {
-	OpenCodeRuntime
+	noDebugLog
 	name string
 }
 
@@ -16,7 +20,7 @@ func (n namedDebugLog) DebugLogName() string { return n.name }
 func TestDebugLogNameFor(t *testing.T) {
 	t.Parallel()
 	assert.Equal(t, "claude-debug.log", DebugLogNameFor(ClaudeRuntime{}))
-	assert.Equal(t, DefaultDebugLogName, DebugLogNameFor(OpenCodeRuntime{}))
+	assert.Equal(t, openCodeDebugLogFile, DebugLogNameFor(OpenCodeRuntime{}))
 	assert.Equal(t, piDebugLogFile, DebugLogNameFor(PiRuntime{}))
 	assert.Equal(t, codexDebugLogFile, DebugLogNameFor(CodexRuntime{}))
 	assert.Equal(t, DefaultDebugLogName, DebugLogNameFor(DummyRuntime{}))
@@ -30,8 +34,8 @@ func TestDebugLogNameFor(t *testing.T) {
 	}
 	// A backend whose Runtime alone implements DebugLogNamer is honoured when
 	// the runner passes both components (Runtime first, then Transcripts).
-	assert.Equal(t, "rt.log", DebugLogNameFor(namedDebugLog{name: "rt.log"}, OpenCodeRuntime{}))
-	assert.Equal(t, "tx.log", DebugLogNameFor(OpenCodeRuntime{}, namedDebugLog{name: "tx.log"}))
+	assert.Equal(t, "rt.log", DebugLogNameFor(namedDebugLog{name: "rt.log"}, noDebugLog{}))
+	assert.Equal(t, "tx.log", DebugLogNameFor(noDebugLog{}, namedDebugLog{name: "tx.log"}))
 	assert.Equal(t, DefaultDebugLogName, DebugLogNameFor())
 }
 
@@ -47,9 +51,13 @@ func TestWantsClaudeMDBridge(t *testing.T) {
 
 func TestGenAISystemFor_FallsBackToSystem(t *testing.T) {
 	t.Parallel()
-	// Single-vendor runtimes omit ProviderResolver; the vendor is System().
+	// Single-vendor runtimes omit ProviderResolver, and codex resolves only
+	// gateway/ models, so the vendor is System().
 	assert.Equal(t, "anthropic", GenAISystemFor(ClaudeRuntime{}, "claude-sonnet-5", "", nil))
 	assert.Equal(t, "openai", GenAISystemFor(CodexRuntime{}, "openai/gpt-5.6-luna", "", nil))
+	// A gateway/ model is served by the inference gateway, not OpenAI.
+	assert.Equal(t, "gateway", GenAISystemFor(CodexRuntime{}, "gateway/vendor/org/model", "", nil))
+	assert.Equal(t, "gateway", GenAISystemFor(CodexRuntime{}, "", "Gateway/gpt-oss-120b", nil))
 	assert.Equal(t, "opencode", GenAISystemFor(OpenCodeRuntime{}, "anthropic/claude-sonnet-5", "", nil))
 	assert.Equal(t, "fullsend.dummy", GenAISystemFor(DummyRuntime{}, "anything", "", nil))
 }

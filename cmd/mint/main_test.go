@@ -235,7 +235,6 @@ func TestRun_StartsWithoutAllowedOrgs(t *testing.T) {
 }
 
 func TestRun_InvalidPEMDir(t *testing.T) {
-	t.Setenv("ALLOWED_ORGS", "test-org")
 	t.Setenv("ROLE_APP_IDS", `{"triage":"200"}`)
 	t.Setenv("PEM_DIR", "/nonexistent/path")
 	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
@@ -252,7 +251,6 @@ func TestRun_InvalidPEMDir(t *testing.T) {
 func TestRun_SuccessfulStartAndShutdown(t *testing.T) {
 	pemDir := setupTestPEMDir(t)
 
-	t.Setenv("ALLOWED_ORGS", "test-org")
 	t.Setenv("ROLE_APP_IDS", `{"triage":"200"}`)
 	t.Setenv("PEM_DIR", pemDir)
 	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
@@ -283,7 +281,6 @@ func TestRun_SuccessfulStartAndShutdown(t *testing.T) {
 func TestRun_CustomPort(t *testing.T) {
 	pemDir := setupTestPEMDir(t)
 
-	t.Setenv("ALLOWED_ORGS", "test-org")
 	t.Setenv("ROLE_APP_IDS", `{"triage":"200"}`)
 	t.Setenv("PEM_DIR", pemDir)
 	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
@@ -313,7 +310,6 @@ func TestRun_CustomPort(t *testing.T) {
 func TestRun_WithFallback(t *testing.T) {
 	pemDir := setupTestPEMDir(t)
 
-	t.Setenv("ALLOWED_ORGS", "test-org")
 	t.Setenv("ROLE_APP_IDS", `{"triage":"200"}`)
 	t.Setenv("PEM_DIR", pemDir)
 	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
@@ -344,7 +340,6 @@ func TestBuildHandler(t *testing.T) {
 	pemDir := setupTestPEMDir(t)
 
 	t.Run("without fallback", func(t *testing.T) {
-		t.Setenv("ALLOWED_ORGS", "test-org")
 		t.Setenv("ROLE_APP_IDS", `{"triage":"200"}`)
 		t.Setenv("PEM_DIR", pemDir)
 		t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
@@ -360,7 +355,6 @@ func TestBuildHandler(t *testing.T) {
 	})
 
 	t.Run("with fallback", func(t *testing.T) {
-		t.Setenv("ALLOWED_ORGS", "test-org")
 		t.Setenv("ROLE_APP_IDS", `{"triage":"200"}`)
 		t.Setenv("PEM_DIR", pemDir)
 		t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
@@ -376,7 +370,6 @@ func TestBuildHandler(t *testing.T) {
 	})
 
 	t.Run("with per-repo WIF repos", func(t *testing.T) {
-		t.Setenv("ALLOWED_ORGS", "test-org")
 		t.Setenv("ROLE_APP_IDS", `{"triage":"200"}`)
 		t.Setenv("PEM_DIR", pemDir)
 		t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
@@ -393,7 +386,6 @@ func TestBuildHandler(t *testing.T) {
 	})
 
 	t.Run("invalid PEM dir", func(t *testing.T) {
-		t.Setenv("ALLOWED_ORGS", "test-org")
 		t.Setenv("ROLE_APP_IDS", `{"triage":"200"}`)
 		t.Setenv("PEM_DIR", "/nonexistent/path")
 		t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
@@ -406,7 +398,6 @@ func TestBuildHandler(t *testing.T) {
 
 	t.Run("with custom role permissions", func(t *testing.T) {
 		t.Cleanup(func() { _ = mintcore.RegisterCustomRolePermissions(nil) })
-		t.Setenv("ALLOWED_ORGS", "test-org")
 		t.Setenv("ROLE_APP_IDS", `{"triage":"200","scanner":"300"}`)
 		t.Setenv("PEM_DIR", pemDir)
 		t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
@@ -424,7 +415,6 @@ func TestBuildHandler(t *testing.T) {
 
 	t.Run("custom role collides with built-in", func(t *testing.T) {
 		t.Cleanup(func() { _ = mintcore.RegisterCustomRolePermissions(nil) })
-		t.Setenv("ALLOWED_ORGS", "test-org")
 		t.Setenv("ROLE_APP_IDS", `{"triage":"200"}`)
 		t.Setenv("PEM_DIR", pemDir)
 		t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
@@ -440,7 +430,6 @@ func TestBuildHandler(t *testing.T) {
 	})
 
 	t.Run("http fallback URL rejected", func(t *testing.T) {
-		t.Setenv("ALLOWED_ORGS", "test-org")
 		t.Setenv("ROLE_APP_IDS", `{"triage":"200"}`)
 		t.Setenv("PEM_DIR", pemDir)
 		t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
@@ -456,7 +445,6 @@ func TestBuildHandler(t *testing.T) {
 	})
 
 	t.Run("empty host fallback URL rejected", func(t *testing.T) {
-		t.Setenv("ALLOWED_ORGS", "test-org")
 		t.Setenv("ROLE_APP_IDS", `{"triage":"200"}`)
 		t.Setenv("PEM_DIR", pemDir)
 		t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
@@ -470,7 +458,6 @@ func TestBuildHandler(t *testing.T) {
 
 	t.Run("custom role with admin permission level accepted", func(t *testing.T) {
 		t.Cleanup(func() { _ = mintcore.RegisterCustomRolePermissions(nil) })
-		t.Setenv("ALLOWED_ORGS", "test-org")
 		t.Setenv("ROLE_APP_IDS", `{"triage":"200"}`)
 		t.Setenv("PEM_DIR", pemDir)
 		t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
@@ -483,7 +470,6 @@ func TestBuildHandler(t *testing.T) {
 
 	t.Run("custom role with invalid name", func(t *testing.T) {
 		t.Cleanup(func() { _ = mintcore.RegisterCustomRolePermissions(nil) })
-		t.Setenv("ALLOWED_ORGS", "test-org")
 		t.Setenv("ROLE_APP_IDS", `{"triage":"200"}`)
 		t.Setenv("PEM_DIR", pemDir)
 		t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
@@ -499,7 +485,6 @@ func TestBuildHandler(t *testing.T) {
 	})
 
 	t.Run("invalid ROLE_APP_IDS with fallback", func(t *testing.T) {
-		t.Setenv("ALLOWED_ORGS", "test-org")
 		t.Setenv("ROLE_APP_IDS", `not-json`)
 		t.Setenv("PEM_DIR", pemDir)
 		t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
@@ -516,7 +501,6 @@ func TestBuildHandler(t *testing.T) {
 
 	t.Run("invalid custom role permissions JSON", func(t *testing.T) {
 		t.Cleanup(func() { _ = mintcore.RegisterCustomRolePermissions(nil) })
-		t.Setenv("ALLOWED_ORGS", "test-org")
 		t.Setenv("ROLE_APP_IDS", `{"triage":"200"}`)
 		t.Setenv("PEM_DIR", pemDir)
 		t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
@@ -536,7 +520,6 @@ func TestStandaloneWiring(t *testing.T) {
 	pemDir := setupTestPEMDir(t)
 
 	t.Setenv("ROLE_APP_IDS", `{"coder":"100","triage":"200","review":"300","fullsend":"500"}`)
-	t.Setenv("ALLOWED_ORGS", "test-org")
 	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
 
 	verifier, err := mintcore.NewJWKSVerifier(mintcore.JWKSVerifierConfig{

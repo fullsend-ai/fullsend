@@ -1,0 +1,57 @@
+{
+  "description": "fullsend sandbox tool hooks (generated; see docs/contributing/runtime-implementation.md)",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 -I /sandbox/codex-config/fullsend-codex-hook.py PostToolUse posttool_chain.py",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "^(multi_agent_v1|collaboration)|(spawn|resume)_agent$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 -I /sandbox/codex-config/fullsend-codex-hook.py SpawnGuard",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 -I /sandbox/codex-config/fullsend-codex-hook.py PreToolUse tirith_check.py",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 -I /sandbox/codex-config/fullsend-codex-hook.py PreToolUse ssrf_pretool.py",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 -I /sandbox/codex-config/fullsend-codex-hook.py PreToolUse canary_pretool.py",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

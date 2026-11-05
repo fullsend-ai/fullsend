@@ -80,6 +80,7 @@ repos:
             \.github/workflows/
             |internal/scaffold/fullsend-repo/\.github/workflows/
             |internal/scaffold/fullsend-repo/templates/
+            |docs/guides/infrastructure/examples/inference-gateway/gateway-check\.yml$
           )
         args:
           - -ignore
@@ -144,6 +145,17 @@ repos:
         language: python
         additional_dependencies: ["pyyaml>=6.0"]
         files: ^docs/ADRs/.*\.md$
+        pass_filenames: false
+
+      # Validates the agentgateway config blocks in the inference gateway
+      # operator guide with agentgateway itself. Needs docker or podman, or
+      # AGENTGATEWAY_BIN set to an agentgateway binary of the page's version.
+      - id: check-gateway-doc-configs
+        name: check gateway doc configs
+        entry: ./hack/check-gateway-doc-configs
+        language: python
+        additional_dependencies: ["pyyaml>=6.0"]
+        files: ^(docs/guides/infrastructure/inference-gateway-operator\.md|docs/guides/infrastructure/examples/inference-gateway/|hack/check-gateway-doc-configs$)
         pass_filenames: false
 
       - id: lint-broken-symlinks

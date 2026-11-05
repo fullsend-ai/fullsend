@@ -580,6 +580,83 @@ func TestRunInferenceStatus_RepoConditionMatch(t *testing.T) {
 	assert.Equal(t, "healthy", parsed["status"])
 }
 
+func TestRunInferenceStatus_ProviderNotUsable(t *testing.T) {
+	tests := []struct {
+		name       string
+		info       gcf.WIFProviderInfo
+		wantDetail string
+	}{
+		{
+			// providers.get returns a soft-deleted provider with 200 and
+			// its condition intact, so the condition check alone passes.
+			name:       "soft-deleted",
+			info:       gcf.WIFProviderInfo{AttributeCondition: "assertion.repository == 'acme/widget'", State: "DELETED"},
+			wantDetail: "WIF provider state is DELETED",
+		},
+		{
+			name:       "disabled",
+			info:       gcf.WIFProviderInfo{AttributeCondition: "assertion.repository == 'acme/widget'", State: "ACTIVE", Disabled: true},
+			wantDetail: "WIF provider is disabled",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			info := tt.info
+			client := gcf.NewFakeGCFClient(gcf.WithFakeWIFProvider(&info))
+			cmd, buf := newStatusCmd(client)
+			err := runInferenceStatus(cmd, "acme", "acme/widget", "my-project", "fullsend-inference", "github-oidc", "json", client)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "unhealthy")
+
+			var parsed map[string]interface{}
+			require.NoError(t, json.Unmarshal(buf.Bytes(), &parsed))
+			assert.Equal(t, "unhealthy", parsed["status"])
+			assert.Contains(t, buf.String(), tt.wantDetail)
+		})
+	}
+}
+
+func TestRunInferenceStatus_OrgProviderDisabled(t *testing.T) {
+	client := gcf.NewFakeGCFClient(gcf.WithFakeWIFProvider(&gcf.WIFProviderInfo{
+		AttributeCondition: "assertion.repository_owner == 'acme'",
+		State:              gcf.WIFProviderStateActive,
+		Disabled:           true,
+	}))
+	cmd, buf := newStatusCmd(client)
+	err := runInferenceStatus(cmd, "acme", "", "my-project", "fullsend-inference", "github-oidc", "json", client)
+	require.Error(t, err)
+	assert.Contains(t, buf.String(), "WIF provider is disabled")
+}
+
+func TestRunInferenceStatus_TextFormatUnhealthyHasNoConditionClaim(t *testing.T) {
+	// The condition matches; only the state is wrong, so the headline must
+	// not blame the condition.
+	client := gcf.NewFakeGCFClient(gcf.WithFakeWIFProvider(&gcf.WIFProviderInfo{
+		AttributeCondition: "assertion.repository == 'acme/widget'",
+		State:              "DELETED",
+	}))
+	cmd, buf := newStatusCmd(client)
+	err := runInferenceStatus(cmd, "acme", "acme/widget", "my-project", "fullsend-inference", "github-oidc", "text", client)
+	require.Error(t, err)
+	assert.Contains(t, buf.String(), "Status: unhealthy")
+	assert.NotContains(t, buf.String(), "condition mismatch")
+	assert.Contains(t, buf.String(), "WIF provider state is DELETED")
+}
+
+func TestRunInferenceStatus_ActiveProviderHealthy(t *testing.T) {
+	client := gcf.NewFakeGCFClient(gcf.WithFakeWIFProvider(&gcf.WIFProviderInfo{
+		AttributeCondition: "assertion.repository == 'acme/widget'",
+		State:              gcf.WIFProviderStateActive,
+	}))
+	cmd, buf := newStatusCmd(client)
+	err := runInferenceStatus(cmd, "acme", "acme/widget", "my-project", "fullsend-inference", "github-oidc", "json", client)
+	require.NoError(t, err)
+
+	var parsed map[string]interface{}
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &parsed))
+	assert.Equal(t, "healthy", parsed["status"])
+}
+
 func TestRunInferenceStatus_RepoConditionCaseInsensitiveMatch(t *testing.T) {
 	client := gcf.NewFakeGCFClient(
 		gcf.WithFakeWIFProvider(&gcf.WIFProviderInfo{

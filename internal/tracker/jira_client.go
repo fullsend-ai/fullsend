@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/fullsend-ai/fullsend/internal/forge/jira"
 )
@@ -56,12 +58,15 @@ type statusCommentProperty struct {
 // jira.LiveClient; faked in tests.
 type jiraClient interface {
 	GetIssue(ctx context.Context, issueIDOrKey string) (*jira.Issue, error)
+	CreateIssue(ctx context.Context, in jira.CreateIssueInput) (*jira.CreatedIssue, error)
 	ListComments(ctx context.Context, issueIDOrKey string) ([]jira.Comment, error)
 	CreateComment(ctx context.Context, issueIDOrKey, body string) (*jira.Comment, error)
 	CreateCommentWithProperties(ctx context.Context, issueIDOrKey, body string, properties []jira.CommentProperty) (*jira.Comment, error)
 	UpdateComment(ctx context.Context, issueIDOrKey, commentID, body string) error
 	SetCommentProperty(ctx context.Context, issueIDOrKey, commentID, propertyKey string, value any) error
 	DeleteComment(ctx context.Context, issueIDOrKey, commentID string) error
+	GetMyself(ctx context.Context) (*jira.User, error)
+	LinkIssues(ctx context.Context, inwardIssueKey, outwardIssueKey, linkTypeName string) error
 }
 
 var _ jiraClient = (*jira.LiveClient)(nil)
@@ -87,6 +92,17 @@ func NewJiraClient(jc jiraClient, baseURL string) (*JiraClient, error) {
 	return &JiraClient{jira: jc, baseURL: trimmed}, nil
 }
 
+// AuthenticatedUser returns the account ID this client is authenticated
+// as (GET /myself), so a caller can tell its own comments from anyone
+// else's by Comment.Author.AccountID. Display names are not identities.
+func (c *JiraClient) AuthenticatedUser(ctx context.Context) (string, error) {
+	me, err := c.jira.GetMyself(ctx)
+	if err != nil {
+		return "", err
+	}
+	return me.AccountID, nil
+}
+
 // issueKey builds a Jira issue key from a project key and issue number,
 // e.g. issueKey("PROJ", 123) = "PROJ-123".
 func issueKey(project string, number int) string {
@@ -100,13 +116,71 @@ func (c *JiraClient) GetIssue(ctx context.Context, project string, number int) (
 	if err != nil {
 		return nil, wrapNotFound(err)
 	}
+	var issueType string
+	if issue.Fields.IssueType != nil {
+		issueType = issue.Fields.IssueType.Name
+	}
+	canonicalKey := issue.Key
+	if canonicalKey == "" {
+		canonicalKey = key
+	}
+	return &Issue{
+		Number:       number,
+		Title:        issue.Fields.Summary,
+		Body:         Body(jira.ADFToMarkdown(issue.Fields.Description)),
+		URL:          c.baseURL + "/browse/" + canonicalKey,
+		Labels:       issue.Fields.Labels,
+		IssueType:    issueType,
+		CustomFields: issue.Fields.CustomFields,
+		Key:          canonicalKey,
+	}, nil
+}
+
+// CreateIssue implements Client. opts.IssueType is required (Jira rejects
+// a create without an issue type); opts.Parent, when set, makes the new
+// issue a child (e.g. a sub-task) of that issue key. body is converted to
+// ADF by the underlying client. The returned Issue.Number is parsed from
+// the new issue key, so it addresses the issue as (project, number) like
+// every other JiraClient method.
+func (c *JiraClient) CreateIssue(ctx context.Context, project, title string, body Body, opts CreateIssueOptions) (*Issue, error) {
+	if opts.IssueType == "" {
+		return nil, fmt.Errorf("tracker: Jira requires an issue type to create an issue")
+	}
+	created, err := c.jira.CreateIssue(ctx, jira.CreateIssueInput{
+		ProjectKey:  project,
+		IssueType:   opts.IssueType,
+		ParentKey:   opts.Parent,
+		Summary:     title,
+		Description: string(body),
+	})
+	if err != nil {
+		return nil, wrapNotFound(err)
+	}
+	number, err := issueNumberFromKey(created.Key)
+	if err != nil {
+		return nil, err
+	}
 	return &Issue{
 		Number: number,
-		Title:  issue.Fields.Summary,
-		Body:   Body(jira.ADFToMarkdown(issue.Fields.Description)),
-		URL:    c.baseURL + "/browse/" + key,
-		Labels: issue.Fields.Labels,
+		Title:  title,
+		Body:   body,
+		URL:    c.baseURL + "/browse/" + created.Key,
+		Key:    created.Key,
 	}, nil
+}
+
+// issueNumberFromKey returns the numeric part of a Jira issue key, e.g.
+// issueNumberFromKey("PROJ-123") = 123.
+func issueNumberFromKey(key string) (int, error) {
+	idx := strings.LastIndex(key, "-")
+	if idx <= 0 {
+		return 0, fmt.Errorf("tracker: unexpected Jira issue key %q", key)
+	}
+	number, err := strconv.Atoi(key[idx+1:])
+	if err != nil || number <= 0 {
+		return 0, fmt.Errorf("tracker: unexpected Jira issue key %q", key)
+	}
+	return number, nil
 }
 
 // ListComments implements Client.
@@ -180,6 +254,8 @@ func (c *JiraClient) UpdateStatusComment(ctx context.Context, project string, nu
 
 // FindStatusComment implements StatusCommentClient. Property lookup is the
 // primary path; visible-body scanning keeps pre-property comments compatible.
+// The body scan only considers comments with no fullsend property whose
+// body opens with marker (see legacyMarkdown and hasLegacyMarker).
 func (c *JiraClient) FindStatusComment(ctx context.Context, project string, number int, marker string) (*Comment, bool, error) {
 	key := issueKey(project, number)
 	comments, err := c.jira.ListComments(ctx, key)
@@ -199,8 +275,7 @@ func (c *JiraClient) FindStatusComment(ctx context.Context, project string, numb
 		}
 	}
 	for i := range comments {
-		body := jira.ADFToMarkdown(comments[i].Body)
-		if strings.Contains(body, marker) {
+		if body, ok := legacyMarkdown(comments[i]); ok && hasLegacyMarker(body, marker) {
 			result := fromJiraComment(comments[i])
 			return &result, strings.Contains(body, "fullsend:status:terminal"), nil
 		}
@@ -210,6 +285,8 @@ func (c *JiraClient) FindStatusComment(ctx context.Context, project string, numb
 
 // IsStatusComment implements StatusCommentClient. The legacy body check keeps
 // timeline analysis correct while older marker-bearing comments are present.
+// It only matches a comment with no fullsend property whose body opens with
+// a status marker, so agent text that quotes one is not counted.
 func (c *JiraClient) IsStatusComment(ctx context.Context, project string, number int, commentID string) (bool, error) {
 	key := issueKey(project, number)
 	comments, err := c.jira.ListComments(ctx, key)
@@ -225,7 +302,8 @@ func (c *JiraClient) IsStatusComment(ctx context.Context, project string, number
 				return true, nil
 			}
 		}
-		return strings.Contains(jira.ADFToMarkdown(comments[i].Body), "fullsend:agent-status:"), nil
+		body, ok := legacyMarkdown(comments[i])
+		return ok && hasLegacyMarker(body, StatusMarkerOpener), nil
 	}
 	return false, nil
 }
@@ -259,54 +337,97 @@ func (c *JiraClient) CreateCommentWithMarker(ctx context.Context, project string
 //
 // If no property match is found, a legacy fallback scans comment bodies
 // for the marker string (the old behavior before property-based storage).
+// It only matches a comment that carries no fullsend property and whose
+// body opens with the marker, the layout legacy comments were written in,
+// so another comment that quotes the marker is never picked.
 // This allows transparent migration: the first update to a legacy
 // comment will set the property and strip the marker from the body.
 func (c *JiraClient) FindCommentByMarkerProperty(comments []jira.Comment, marker string) *jira.Comment {
 	// Primary: match by entity property.
 	for i := range comments {
-		for _, prop := range comments[i].Properties {
-			if prop.Key == stickyPropertyKey {
-				var stored stickyMarkerProperty
-				if json.Unmarshal(prop.Value, &stored) == nil && stored.Marker == marker {
-					return &comments[i]
-				}
-			}
+		if hasStickyMarkerProperty(comments[i], marker) {
+			return &comments[i]
 		}
 	}
 	// Legacy fallback: match by body text for pre-property comments.
 	for i := range comments {
-		md := jira.ADFToMarkdown(comments[i].Body)
-		if strings.Contains(md, marker) {
+		if md, ok := legacyMarkdown(comments[i]); ok && hasLegacyMarker(md, marker) {
 			return &comments[i]
 		}
 	}
 	return nil
 }
 
-// MigrateAndUpdateComment updates a comment's body and ensures the
-// sticky marker is stored as a comment entity property. If the comment
-// was found via the legacy body-text path (no property set), this also
-// sets the property — transparently migrating the comment to the
-// property-based scheme.
+// hasStickyMarkerProperty reports whether c carries a sticky marker
+// property whose value decodes and exactly matches marker. Mere presence
+// of the property key, a malformed value, or a different marker is not a
+// match.
+func hasStickyMarkerProperty(c jira.Comment, marker string) bool {
+	for _, prop := range c.Properties {
+		if prop.Key != stickyPropertyKey {
+			continue
+		}
+		var stored stickyMarkerProperty
+		if json.Unmarshal(prop.Value, &stored) == nil && stored.Marker == marker {
+			return true
+		}
+	}
+	return false
+}
+
+// fullsendPropertyPrefix is the key prefix shared by every comment entity
+// property fullsend writes (stickyPropertyKey, statusPropertyKey).
+const fullsendPropertyPrefix = "fullsend."
+
+// legacyMarkdown returns c's visible body as Markdown, with leading
+// whitespace trimmed, for the legacy body-embedded marker checks. ok is
+// false when c carries any fullsend comment property: such a comment was
+// written under the property-based scheme, so a marker in its body is
+// agent- or runner-written text, never the comment's own marker.
+func legacyMarkdown(c jira.Comment) (md string, ok bool) {
+	for _, prop := range c.Properties {
+		if strings.HasPrefix(prop.Key, fullsendPropertyPrefix) {
+			return "", false
+		}
+	}
+	return strings.TrimLeftFunc(jira.ADFToMarkdown(c.Body), unicode.IsSpace), true
+}
+
+// hasLegacyMarker reports whether md (from legacyMarkdown) opens with
+// marker, the layout the body-embedded scheme wrote: the marker first,
+// the content after it. Matching only that position keeps a marker
+// quoted inside agent-written text from identifying the comment.
+func hasLegacyMarker(md, marker string) bool {
+	return marker != "" && strings.HasPrefix(md, marker)
+}
+
+// MigrateAndUpdateComment updates the body of comment, the sticky
+// comment FindCommentByMarkerProperty matched, and ensures the sticky
+// marker is stored as a comment entity property.
+//
+// A comment that already carries a property exactly matching marker is
+// updated without rewriting the property: the write would be redundant,
+// and a Jira rejection of it would otherwise block the body update. A
+// comment found via the legacy body-text path has the property set
+// first, transparently migrating it to the property-based scheme.
 //
 // The body written to Jira has the marker stripped (unlike
 // GitHub/GitLab where the marker is an invisible HTML comment). The
 // caller should pass the body without the marker prefix.
-func (c *JiraClient) MigrateAndUpdateComment(ctx context.Context, project string, number int, commentID string, body Body, marker string) error {
+func (c *JiraClient) MigrateAndUpdateComment(ctx context.Context, project string, number int, comment jira.Comment, body Body, marker string) error {
 	key := issueKey(project, number)
-	// Set the property first — idempotent PUT. If it was already set
-	// (new-style comment), this is a no-op from Jira's perspective.
-	// If it was absent (legacy comment), this completes migration.
-	//
-	// Property-before-body ordering is intentional: if the property
-	// write succeeds but the body update fails, the next run will
-	// still find the comment via its property and can retry. The
-	// reverse order risks losing the marker from both the body (which
-	// was just stripped) and the property (which was never set).
-	if err := c.jira.SetCommentProperty(ctx, key, commentID, stickyPropertyKey, stickyMarkerProperty{Marker: marker}); err != nil {
-		return fmt.Errorf("setting sticky marker property on comment %s of %s: %w", commentID, key, err)
+	if !hasStickyMarkerProperty(comment, marker) {
+		// Property-before-body ordering is intentional: if the property
+		// write succeeds but the body update fails, the next run will
+		// still find the comment via its property and can retry. The
+		// reverse order risks losing the marker from both the body
+		// (which was just stripped) and the property (which was never
+		// set).
+		if err := c.jira.SetCommentProperty(ctx, key, comment.ID, stickyPropertyKey, stickyMarkerProperty{Marker: marker}); err != nil {
+			return fmt.Errorf("setting sticky marker property on comment %s of %s: %w", comment.ID, key, err)
+		}
 	}
-	if err := c.jira.UpdateComment(ctx, key, commentID, string(body)); err != nil {
+	if err := c.jira.UpdateComment(ctx, key, comment.ID, string(body)); err != nil {
 		return wrapNotFound(err)
 	}
 	return nil
@@ -324,6 +445,24 @@ func (c *JiraClient) UpdateComment(ctx context.Context, project string, number i
 func (c *JiraClient) DeleteComment(ctx context.Context, project string, number int, commentID string) error {
 	key := issueKey(project, number)
 	return wrapNotFound(c.jira.DeleteComment(ctx, key, commentID))
+}
+
+// LinkIssues implements Linker. The from issue is sent as Jira's
+// inwardIssue and the to issue as its outwardIssue, so Jira records the
+// link in the link type's outward direction: for "Blocks", the from issue
+// blocks the to issue.
+func (c *JiraClient) LinkIssues(ctx context.Context, fromProject string, fromNumber int, toProject string, toNumber int, linkType string) error {
+	return wrapNotFound(c.jira.LinkIssues(ctx, issueKey(fromProject, fromNumber), issueKey(toProject, toNumber), linkType))
+}
+
+// MoveIssue implements Mover. Jira Cloud has no synchronous per-issue
+// move: relocating an issue means submitting an asynchronous bulk-move
+// task, polling it to a terminal state, and resolving the new issue key,
+// with field mappings to negotiate whenever the destination project's
+// issue types, workflow, or mandatory fields differ from the source's.
+// None of that is implemented yet, so this reports ErrNotSupported.
+func (c *JiraClient) MoveIssue(_ context.Context, sourceProject string, number int, targetProject string) (*MoveResult, error) {
+	return nil, fmt.Errorf("move %s to project %s: %w", issueKey(sourceProject, number), targetProject, ErrNotSupported)
 }
 
 // fromJiraComment converts a jira.Comment to a tracker.Comment. HTMLURL is

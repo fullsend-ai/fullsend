@@ -82,7 +82,7 @@ on hard IO/parse errors. Missing telemetry or manifest is a skip (exit 0).`,
 	cmd.Flags().StringVar(&outputDir, "output-dir", "", "CI output base or runDir; scores only top-of-runDir telemetry")
 	cmd.Flags().StringVar(&agent, "agent", "", "agent name for manifest resolution")
 	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "path to the .fullsend directory (local manifest override + fetch cache)")
-	cmd.Flags().BoolVar(&offline, "offline", false, "reject network fetches; only use a local FULLSEND_DIR measurement manifest")
+	cmd.Flags().BoolVar(&offline, "offline", false, "reject network fetches; only use a local or cached measurement manifest")
 	return cmd
 }
 
@@ -226,7 +226,17 @@ func evalMeasureFetchContext(fullsendDir string, offline bool, printer *ui.Print
 	}
 	orgAllowlist := config.DefaultAllowedRemoteResources()
 	if fullsendDir != "" && printer != nil {
-		if orgCfg := tryLoadOrgConfig(filepath.Join(abs, "config.yaml"), printer); orgCfg != nil {
+		cfgPath := filepath.Join(abs, "config.yaml")
+		orgCfg, loadErr := loadLockConfig(cfgPath)
+		if loadErr != nil {
+			// A config layer (config.yaml or config.base.yaml) exists but
+			// could not be loaded (malformed, unreadable, or a rejected
+			// per-org format). Fail closed rather than silently reverting
+			// to the default allowlist, which could override an explicit
+			// deny-all.
+			printer.StepWarn("Fullsend config could not be loaded; remote fetching denied: " + loadErr.Error())
+			orgAllowlist = []string{}
+		} else if orgCfg != nil {
 			orgAllowlist = orgCfg.AllowedResources()
 		}
 	}

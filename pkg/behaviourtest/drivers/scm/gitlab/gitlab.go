@@ -46,8 +46,16 @@ func (d *Driver) GetIssue(ctx context.Context, owner, repo string, number int) (
 	return d.Client.GetIssue(ctx, owner, repo, number)
 }
 
+func (d *Driver) ListOpenIssues(ctx context.Context, owner, repo string, labels ...string) ([]forge.Issue, error) {
+	return d.Client.ListOpenIssues(ctx, owner, repo, labels...)
+}
+
 func (d *Driver) GetFileContent(ctx context.Context, owner, repo, path string) ([]byte, error) {
 	return d.Client.GetFileContent(ctx, owner, repo, path)
+}
+
+func (d *Driver) GetFileContentAtRef(ctx context.Context, owner, repo, path, ref string) ([]byte, error) {
+	return d.Client.GetFileContentAtRef(ctx, owner, repo, path, ref)
 }
 
 func (d *Driver) CreateBranch(ctx context.Context, owner, repo, branch string) error {
@@ -141,6 +149,10 @@ func (d *Driver) CreateFork(ctx context.Context, owner, repo, forkName string) (
 	return d.Client.CreateForkInOrg(ctx, owner, repo, owner, forkName)
 }
 
+func (d *Driver) CreateUserFork(ctx context.Context, owner, repo string) (string, string, error) {
+	return d.Client.CreateFork(ctx, owner, repo)
+}
+
 func (d *Driver) CommitFileToFork(ctx context.Context, forkOwner, forkRepo, branch, path, message string, content []byte) error {
 	return d.Client.CreateOrUpdateFileOnBranch(ctx, forkOwner, forkRepo, branch, path, message, content)
 }
@@ -152,6 +164,21 @@ func (d *Driver) CreateForkChangeProposal(ctx context.Context, _, _, title, body
 	// fork, so no target_project_id or "owner:branch" head format is
 	// needed.
 	return d.Client.CreateChangeProposal(ctx, forkOwner, forkRepo, title, body, head, base)
+}
+
+func (d *Driver) ListPullRequestReviews(ctx context.Context, owner, repo string, number int) ([]forge.PullRequestReview, error) {
+	return d.Client.ListPullRequestReviews(ctx, owner, repo, number)
+}
+
+func (d *Driver) ListPullRequestCommits(ctx context.Context, owner, repo string, number int) ([]string, error) {
+	return d.Client.ListPullRequestCommits(ctx, owner, repo, number)
+}
+
+var _ scm.PullRequestHeadSHAReader = (*Driver)(nil)
+
+// GetPullRequestHeadSHA returns the change proposal's current head commit SHA.
+func (d *Driver) GetPullRequestHeadSHA(ctx context.Context, owner, repo string, number int) (string, error) {
+	return d.Client.GetPullRequestHeadSHA(ctx, owner, repo, number)
 }
 
 // ParseRepo splits "owner/repo" into owner and repo name.

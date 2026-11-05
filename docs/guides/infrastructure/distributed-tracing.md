@@ -12,15 +12,15 @@ For implementation details, see the
 |-------|-----------------|----------------------|
 | 1 | `run-telemetry.jsonl` file in the run output directory | None |
 | 2 | OTLP/HTTP export to a remote backend (metadata only) | `OTEL_EXPORTER_OTLP_*ENDPOINT` |
-| 3 | Conversation content (assistant text, reasoning, tool calls, and — on Claude runs — tool results) on `agent` spans | `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true` |
+| 3 | Conversation content (assistant text, reasoning, tool calls and — on Claude runs — their arguments and results; on a retry that carries validation feedback, the prompt the runner composed) on `agent` spans | `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true` |
 
 All levels produce metadata (timing, token counts, tool names, errors),
 including up to one `execute_tool` span per id-bearing tool call under each
-`agent` span (Claude Code today; pi and codex emit no call ids, [#7414](https://github.com/fullsend-ai/fullsend/issues/7414)),
-capped at 1,024 per iteration, and — on mixed-model Pi iterations — one
-`usage <model>` child per `per_model_usage` entry.
-Level 3 adds the agent's conversation content to spans — enabled by one
-environment variable, exactly like Level 2's endpoint.
+`agent` span (Claude Code today; pi and codex emit no call ids,
+[#7414](https://github.com/fullsend-ai/fullsend/issues/7414)), capped at 1,024
+per iteration, and — on mixed-model iterations — one `usage <model>` child per
+`per_model_usage` entry. Level 3 adds the agent's conversation content to spans
+— enabled by one environment variable, exactly like Level 2's endpoint.
 
 ## Environment variables
 
@@ -35,8 +35,12 @@ environment variable, exactly like Level 2's endpoint.
 
 | Variable | Purpose | Notes |
 |----------|---------|-------|
-| `OTEL_EXPORTER_OTLP_TRACES_HEADERS` | Signal-specific headers | Takes precedence; `key=value` pairs separated by commas; values are URL-decoded |
+| `OTEL_EXPORTER_OTLP_TRACES_HEADERS` | Signal-specific headers | Takes precedence; `key=value` pairs separated by commas; values are URL-decoded. Must use `=` as the delimiter, not `:` |
 | `OTEL_EXPORTER_OTLP_HEADERS` | Base headers | Same format as above |
+
+::: warning Header syntax: `key=value`, not `key: value`
+OpenTelemetry headers use comma-separated `key=value` pairs (e.g. `Authorization=Bearer%20<token>`), **not** HTTP header-line syntax (`Authorization: Bearer <token>`). Fullsend validates configured headers before creating the exporter. If an entry uses `:` instead of `=`, validation warns on stderr and skips remote OTLP export to prevent header corruption and credential leakage.
+:::
 
 ### Private CA
 
@@ -75,7 +79,32 @@ unset OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
 
 Fullsend assembles Level 3 content from the normalized event stream the
 console renders, redacts it through the security output pipeline, and
-attaches it to the per-iteration `agent` span. The agent runtime's own
+attaches it to the per-iteration `agent` span. The one input it records,
+a retry's validation-feedback prompt, is composed by the runner — fixed
+framing around the previous iteration's validation output — rather than
+read from the stream, and goes through the same redaction. On both sides
+of the pipeline — on the text as written, and again on what the pipeline
+returns, since its normalization can join a value the stream split or
+spelled in compatibility characters — the value of each sensitive runner
+environment key (`env.runner`, or the deprecated `runner_env`), and of each
+provider-only key the runner keeps out of it (`GH_WORKFLOW_TOKEN`), 8 bytes or
+longer, is replaced with `[REDACTED:<key>]`, the marker validation
+feedback uses. Each value replaced in a string counts one redaction per
+pass, however often it occurs there; in an
+assignment, an authorization header or a secret-named field the patterns
+then mask the marker as well and count again. Not covered: a value split
+or spelled that way which a pattern also recognises — in one of those
+contexts, in a connection string, or by its own prefix — is masked by
+that pattern, and shows what the pattern's mask shows. A tool call loses
+its `summary` when redaction found a secret in its arguments, the dropped
+members included, masked a URL's userinfo, query or fragment in them,
+stripped an escape sequence or tag characters from them, or could not
+judge them at all (invalid UTF-8 or the replacement character): the parser cut the summary out of them before anything scanned it,
+so the secret could be there as a beginning. Where a runtime reports a summary and no
+arguments (pi, codex, OpenCode), its parser has already run the patterns
+over the summary and, for pi and codex, cut it: a value that straddles a
+cut stays in part, and one a pattern recognised stays as that pattern's
+mask. The agent runtime's own
 content-logging variables (`OTEL_LOG_USER_PROMPTS`,
 `OTEL_LOG_ASSISTANT_RESPONSES`, etc.) are never set.
 
@@ -88,31 +117,117 @@ The variable name and accepted values follow the
 Fullsend records content on span attributes only, so `event_only` stays
 off. An unrecognized value disables capture; telemetry never fails a run.
 
-**Captured:** assistant text, reasoning, tool calls (name plus short
-summary), and tool results — including any sub-agent activity,
+**Captured:** assistant text, reasoning, tool calls (name, short summary
+and `arguments`), and tool results — including any sub-agent activity,
 unattributed — as the `gen_ai.output.messages` span attribute: a JSON
 string following the
 [GenAI output-messages schema](https://github.com/open-telemetry/semantic-conventions/blob/v1.37.0/docs/gen-ai/gen-ai-output-messages.json)
-with a `finish_reason` of `stop` or `error`. Tool results, and the `id` that correlates each with its call, are captured
+with a `finish_reason` of `stop` or `error`. Tool arguments, tool results, and the `id` that correlates a result with its call, are captured
 only when the runtime's stream provides them: Claude runs do; the pi and
-codex parsers emit neither yet
+codex parsers emit none of the three yet
 ([#7414](https://github.com/fullsend-ai/fullsend/issues/7414)).
+`arguments` holds the members of the call's input that name what was
+called, listed by tool, each redacted as text: `Bash` — `command`,
+`description`, `timeout`; `Read` — `file_path`, `limit`, `offset`;
+`Write` — `file_path`; `Edit` — `file_path`, `replace_all`;
+`NotebookEdit` — `notebook_path`, `cell_id`, `cell_type`, `edit_mode`;
+`Grep` — `pattern`, `path`, `glob`, `type`, `output_mode`, `context`,
+`head_limit`, `multiline`, `-A`, `-B`, `-C`, `-i`, `-n`; `Glob` —
+`pattern`, `path`; `WebFetch` — `url`; `Agent` — `description`, `model`,
+`subagent_type`; `Skill` — `skill`. Nothing else of the input is
+recorded: a file body, an edit, a prompt, a notebook source, a todo list,
+any member whose value is an object or an array, and the whole input of
+a tool not listed here (every `mcp__` tool among them) are dropped —
+scanned first, so a secret in them still counts, but neither charged nor
+marked, since the list is the policy and the markers mean loss. A Claude
+call's `summary` is cut from its input separately — a `Bash` command or an
+`Agent` prompt collapsed to one line and cut at 120 characters, a `Read`,
+`Write` or `Edit` path at 200, a `Grep` or `Glob` pattern at 50 — so the
+start of a prompt `arguments` drops can still appear there. A `Bash`
+`command` is recorded whole, up to 8 KiB, so a heredoc or an inline
+script records what it writes. A URL anywhere in the record — a
+member, text, a result, a summary, the input message, a name — has
+everything from its `://` (or the same with its colon or slashes escaped for a shell or JSON) to its last `@`
+(userinfo — a password holding a `/` or a URL nested in another's path
+included; an `@` in a path is masked with it, the host too) and
+everything after its first `?` or `#` masked `***`, after the patterns
+ran, and counted in `fullsend.content.sanitizations`; when the first `?`
+or `#` comes before the last `@` — a password holding one, an `@` in the
+query — everything after the separator is masked, and so it is after a
+separator with any part percent-encoded, anywhere in the URL
+(`https%3A%2F%2F…`, `https%3A//…`, `https:%2F%2F…`, encoded once or more),
+since nothing decodes it, and when the last `@` follows one — a URL with
+userinfo nested in another's path; behind a plain `://`, a percent-encoded
+`@`, `?` or `#` (`%40`, `%3F`, `%23`, encoded once or more) reads as the
+character it encodes. The URL runs to white space or to a
+double quote that could close a JSON string — one followed by white
+space, `,`, `:`, `}`, `]` or the end — so one inside JSON ends with its
+string and the fields after it are kept; inside JSON escaped in another
+string (`\"`) it runs on. Kept as well, under the named limit for a
+secret no pattern matches: a token carried in the path itself, as a
+webhook URL's is; in a URL holding a quote that ends it, what follows the
+quote and userinfo whose `@` follows it. The kept
+members are decoded, redacted one by one and encoded again, so key
+order, spacing and escapes are not the stream's; a string a terminal
+escape sequence or tag characters were
+stripped from, or that holds invalid UTF-8 or the replacement character
+a lossy decode leaves (U+FFFD), is masked whole, since the
+stripping can leave most of a token, a later write would join the
+halves of a value an invalid byte splits, and no pattern spans the
+replacement character.
 
-**Not captured:** model input (`gen_ai.input.messages`) and
-pre/post-script content. First-iteration runs have no meaningful
-runner-side input; retry iterations carry the injected validation
-feedback, a natural input-capture follow-up.
+On a retry iteration under `validation_loop.feedback_mode: append`, the
+prompt the runner composed — its fixed framing around the previous
+iteration's validation output — is recorded as `gen_ai.input.messages`: one
+`user` message with one text part, following the
+[GenAI input-messages schema](https://github.com/open-telemetry/semantic-conventions/blob/v1.37.0/docs/gen-ai/gen-ai-input-messages.json).
+The attribute is absent on the first iteration and on a retry without
+feedback, which send the runtime's fixed default prompt.
+
+**Not captured:** the rest of the model's input, and pre/post-script
+content. The fixed default prompt is a constant that carries no task and
+is left out by choice; the system prompt and per-request context the
+runtime builds from the agent definition are not visible to fullsend,
+which sees the runtime's stream, not its API requests.
 
 **Redaction and size:** every part passes through security redaction
-(Unicode normalization, then secret masking) before reaching the span.
-Content is bounded at 256 KiB per iteration — each tool result at 8 KiB —
+(runner environment values, Unicode normalization, secret masking, then
+runner environment values again; a string the normalizer stripped an
+escape sequence or tag characters from, or that holds invalid UTF-8 or
+the replacement character, is masked whole) before reaching the span. What
+that guarantees, and its four named limits, is stated in the
+[developer guide](../dev/tracing.md) beside the test that checks it.
+Content is bounded at 256 KiB per iteration — each tool result at 8 KiB,
+each call's arguments at 8 KiB —
 kept as an ordered suffix; overflow drops the oldest content first. Those
-bounds count raw bytes; the exported JSON string is bounded as well, at
-255,000 bytes, because encoding adds 9–11% at these bounds on real runs
+bounds count raw bytes, except that arguments count as the
+re-encoded JSON described above, against their own bound and against the
+total (as redacted text when the arguments were not one JSON object). That encoding writes `<`, `>` and `&` as six bytes each, so
+arguments dense in those characters reach their bound at about a sixth of
+that size on the stream. The exported JSON string is bounded as well, at
+255,000 bytes, because encoding adds 8–10% at these bounds on real runs
 and up to six times on escape-dense content — a record over that is trimmed again,
 oldest first.
 Truncation is marked via `fullsend.content.truncated` on the span and
-`fullsend.truncated` on each cut part. A tool result whose stream line
+`fullsend.truncated` on each cut part. A tool result over its bound keeps
+its tail; arguments over theirs, or not a complete JSON object, are
+dropped whole — a cut object is not JSON — and the marked `tool_call`
+part keeps its `id`, name and summary — not the summary when redaction
+found a secret in the arguments, masked a URL's userinfo, query or
+fragment in them, stripped an escape sequence or tag characters from
+them, or could not judge them at all. A member outside the recorded list (above) is
+dropped without a mark, its listed members kept. A name that redacts to
+nothing never had arguments: they are kept only under a tool's exact
+name, plain words no scan touches. So
+`fullsend.truncated` means different things by part type: on a tool
+result, part of the response is kept; on a tool call, the arguments were
+dropped whole. Read it together with the part's `type`. The input message is not cut at this stage:
+the validation output inside it is cut at 10 KiB when the prompt is
+composed (the prompt then says `[truncated]`), and the two markers above
+do not describe it. The recorded copy is the redacted one, so it can
+differ from the prompt the agent received: compatibility characters are
+folded, which can make it about eleven times longer, and its encoded size
+counts toward the 255,000 bytes. A tool result whose stream line
 exceeds the parser's 1 MiB bound is kept as an empty, marked
 `tool_call_response` part — the call was answered, its content is lost and
 its `is_error` unknown — provided the line shows the call id within its
@@ -136,10 +251,14 @@ its own, and the file sink has none. The bounds stay because guessing
 wrong is costly — a backend that refuses an oversized request refuses the
 whole batch, up to 512 spans with their Level 1 metadata, and the exporter
 does not retry a refusal. On three captured review runs (117–255 tool
-results per iteration, sub-agents included) these bounds evict 28–56% of
-tool results. A 1 MiB total with the same per-result bound evicts none
-(records of 412–938 KB); raising only the per-result bound to 32 KiB
-evicts 47–91%; keeping every result whole takes 1.1–2.2 MB. So the total
+calls per iteration and as many results, sub-agents included; 41–100 KB
+of arguments, with the arguments of 0–3 calls over their bound) these
+bounds evict 31–63% of tool results — 28–56% before arguments shared the
+total. A 1 MiB total with the same per-part bounds evicts none
+(records of 456–1,011 KB); raising only the per-result bound to 32 KiB
+evicts 47–91%; keeping every result whole takes 1.1–2.3 MB. No run of an
+agent that writes files was measured; a `Write` call carries the file
+body as an argument. So the total
 is the bound to raise first, once the size is proven on the target
 backend: send attributes of increasing size and read each back whole
 ([#7415](https://github.com/fullsend-ai/fullsend/issues/7415)).
@@ -161,7 +280,7 @@ run (root; Consumer when dispatched with TRACEPARENT, else Internal)
 ├── sandbox_create (gen_ai.operation.name=create_agent)
 └── agent           (one per iteration; gen_ai.operation.name=invoke_agent)
     ├── execute_tool (one per id-bearing tool call; gen_ai.operation.name=execute_tool)
-    └── usage <model> (mixed-model Pi only; one per PerModelUsage entry)
+    └── usage <model> (mixed-model iterations only; one per PerModelUsage entry)
 ```
 
 `execute_tool` spans are named `execute_tool <tool name>`. One starts when
@@ -184,8 +303,9 @@ result whose call was never reported (its stream line was skipped) is a
 near-zero-duration span marked `fullsend.tool.unmatched`. Runtimes whose parsers
 emit no call ids (pi, codex) produce no `execute_tool` spans, and neither
 do server-side tools, whose result never arrives as a `tool_result`. Tool
-names and call ids pass through the same sanitizer as span content (Unicode
-normalization, then secret redaction): a name is redacted in place and
+names and call ids get the redaction span content gets (runner environment
+and provider-only values, Unicode normalization, secret redaction, then
+those values again): a name is redacted in place and
 bounded to 256 bytes for the attribute and 128 for the span name; an id with
 any finding is dropped from the span. At most 1,024 `execute_tool`
 spans are recorded per iteration; calls past that are counted in
@@ -201,7 +321,7 @@ these spans — see Content capture.
 | `sandbox_create` | Internal | Always |
 | `agent` | Internal | Always |
 | `execute_tool` | Internal | Always |
-| `usage <model>` | Internal | Mixed-model Pi iterations only |
+| `usage <model>` | Internal | Mixed-model iterations only |
 
 ## Span attributes
 
@@ -218,11 +338,16 @@ and are recognized by LLM-aware backends for GenAI dashboards.
 | `gen_ai.tool.call.id` | `toolu_01…` | `execute_tool` (absent when the id carried a security finding — a tainted id is dropped, never substituted, so it cannot collide with another call's) |
 | `gen_ai.system` / `gen_ai.provider.name` | `anthropic` / `anthropic-vertex` | `agent`, and each mixed-model `usage <model>` child (serving endpoint of the model used on this span — varies by runtime; `system` is the pre-v1.37 name — both keys are emitted with the same value so EM-001 and modern backends agree. Not the runtime name: `fullsend.runtime` is the harness.) |
 | `gen_ai.request.model` | `claude-opus-4-6` | `agent` (parent resolved model); each mixed-model `usage <model>` child (that component's model id) |
-| `gen_ai.usage.input_tokens` / `output_tokens` / `cache_*_input_tokens` | `109938` | `agent` on single-model runs; mixed-model Pi iterations emit these on `usage <model>` children instead of the `agent` span (see [Per-model usage components](#per-model-usage-components)) |
+| `gen_ai.usage.input_tokens` / `output_tokens` / `cache_*_input_tokens` | `109938` | `agent` on single-model runs; mixed-model iterations emit these on `usage <model>` children instead of the `agent` span (see [Per-model usage components](#per-model-usage-components)) |
 
-Provider identity is the **serving endpoint**, not the model publisher and not the agent runtime. Claude Code reports `anthropic`. Pi reports the prefix of the resolved `provider/id` spec (`anthropic-vertex`, `xai-vertex`, `google-vertex`, `openai`, `anthropic`): a Claude model on Vertex is `anthropic-vertex` even though the publisher is Anthropic, because that is the catalog and credential path the run used. `fullsend.runtime` (`claude`, `pi`, …) stays a separate Fullsend attribute. Fullsend does not emit `mlflow.*` attributes; backends that derive native cost fields do so from these portable GenAI keys.
+Provider identity is the **serving endpoint**, not the model publisher and not the agent runtime. Claude Code reports `anthropic`. Pi reports the prefix of the resolved `provider/id` spec (`anthropic-vertex`, `xai-vertex`, `google-vertex`, `openai`, `anthropic`): a Claude model on Vertex is `anthropic-vertex` even though the publisher is Anthropic, because that is the catalog and credential path the run used. `fullsend.runtime` (`claude`, `pi`, …) stays a separate fullsend attribute. Fullsend does not emit `mlflow.*` attributes; backends that derive native cost fields do so from these portable GenAI keys.
 
-When a Pi run dispatches sub-agents on different vendors, the parent `agent` span keeps the parent serving-endpoint identity and the iteration's `fullsend.cost_usd` rollup, and one `usage <model>` child is emitted per `per_model_usage` entry. Each child carries that component's provider, model, tokens, request count, and cost. See [Per-model usage components](#per-model-usage-components).
+When an iteration reports usage for more than one model, the parent `agent` span
+keeps the parent serving-endpoint identity and the iteration's
+`fullsend.cost_usd` rollup, and one `usage <model>` child is emitted per
+`per_model_usage` entry. Each child carries that component's provider, model,
+tokens, request count, and cost. See [Per-model usage
+components](#per-model-usage-components).
 
 > **Breaking change — Pi runtime:** `agent` spans from the Pi runtime used to
 > report the literal string `pi` under `gen_ai.system`. They now report the
@@ -234,8 +359,8 @@ When a Pi run dispatches sub-agents on different vendors, the parent `agent` spa
 > must switch to `fullsend.runtime == "pi"` to identify Pi-originated spans,
 > or update their provider allowlist to include the resolved values above.
 
-> **Breaking change — mixed-model Pi iterations:** `agent` spans for
-> mixed-model Pi iterations (more than one `per_model_usage` entry) no
+> **Breaking change — mixed-model iterations:** `agent` spans for
+> mixed-model iterations (more than one `per_model_usage` entry) no
 > longer carry `gen_ai.usage.input_tokens` / `output_tokens` /
 > `cache_creation.input_tokens` / `cache_read.input_tokens`. Those values
 > move to the new `usage <model>` children, one per `per_model_usage` entry.
@@ -252,8 +377,8 @@ When a Pi run dispatches sub-agents on different vendors, the parent `agent` spa
 | `fullsend.runtime` | `agent`, mixed-model `usage <model>` | Harness identity (`claude`, `pi`, …), distinct from `gen_ai.system` (the serving endpoint) |
 | `fullsend.work_item_id` | `run` | Work item identity (e.g. `owner/repo#123`); primary cross-run correlation key |
 | `fullsend.agent` | `run` | Agent name |
-| `fullsend.cost_usd` | `run` (aggregated), `agent`, mixed-model `usage <model>` | Cost in USD, rounded to cents (see [Cost data contract](#cost-data-contract)). On mixed-model Pi iterations the `agent` value is the iteration rollup and each `usage <model>` value is that component's share; do not sum both. |
-| `fullsend.usage.rollup` | `agent` | Present (`true`) on mixed-model Pi iterations: this span is the parent/root rollup, not a billable component. Absent on single-model runs. |
+| `fullsend.cost_usd` | `run` (aggregated), `agent`, mixed-model `usage <model>` | Cost in USD, rounded to cents (see [Cost data contract](#cost-data-contract)). On mixed-model iterations the `agent` value is the iteration rollup and each `usage <model>` value is that component's share; do not sum both. |
+| `fullsend.usage.rollup` | `agent` | Present (`true`) on mixed-model iterations: this span is the parent/root rollup, not a billable component. Absent on single-model runs. |
 | `fullsend.usage.component` | `usage <model>` | Present (`true`) on each per-model usage child. Query this flag (not span name) to sum billable tokens/cost without the parent rollup. |
 | `fullsend.usage.model_spec` | `usage <model>` | The `per_model_usage` key that produced this child (`anthropic-vertex/claude-sonnet-5`, `xai-vertex/xai/grok-4.6`, `unknown`). |
 | `fullsend.usage.requests` | `usage <model>` | Inference episodes attributed to this model spec (one for the parent iteration, one per sub-agent call). |
@@ -268,13 +393,66 @@ When a Pi run dispatches sub-agents on different vendors, the parent `agent` spa
 | `fullsend.prescript.skipped` | `run` | Whether the pre-script signaled a skip |
 | `fullsend.prescript.skip_reason` | `run` | Human-readable skip reason from the pre-script |
 | `fullsend.transcript_error` | `agent` | Present (`true`) when the agent exited 0 but its transcript reported an error — the span's status is Error while `exit_code` keeps the raw process exit |
+| `gen_ai.input.messages` | `agent` | Level 3 only, on a retry iteration that carries validation feedback: the prompt the runner composed, as a JSON string (see Content capture) |
 | `gen_ai.output.messages` | `agent` | Level 3 only: the iteration's conversation content as a JSON string (see Content capture) |
-| `fullsend.content.truncated` | `agent` | Level 3 only: present (`true`) when the size budget cut or dropped content, or a kept tool result is a parser-side fragment or an oversized line's empty stand-in (`fullsend.truncated` on the part; no byte count) |
-| `fullsend.content.dropped_bytes` | `agent` | Level 3 only: exact part bytes removed by the size budget — content, ids, and the fixed footprint of an errored-empty or oversized stand-in part — in raw bytes whichever bound made the cut; the bytes of a skipped oversized line were never decoded and are not counted |
-| `fullsend.content.redactions` | `agent` | Level 3 only: number of security findings raised while redacting content at assembly (including findings from parts the size budget later dropped) |
+| `fullsend.content.truncated` | `agent` | Level 3 only: present (`true`) when the size budget cut or dropped content, a tool call's arguments were dropped whole, or a kept tool result is a parser-side fragment or an oversized line's empty stand-in (`fullsend.truncated` on the part; no byte count for the last two) |
+| `fullsend.content.dropped_bytes` | `agent` | Level 3 only: exact part bytes removed by the size budget — content, ids, arguments dropped whole (counted as re-encoded JSON when the bound drops them, or as redacted text when the arguments were not one JSON object; a member the recorded list leaves out is not counted), and the fixed footprint of an errored-empty or oversized stand-in part — otherwise in raw bytes, whichever bound made the cut; the bytes of a skipped oversized line were never decoded and are not counted |
+| `fullsend.content.redactions` | `agent` | Level 3 only: number of known secrets matched while redacting content at assembly — the secret redactor's patterns and the runner-env literal pass — the input message included (and findings from parts the size budget later dropped) |
+| `fullsend.content.sanitizations` | `agent` | Level 3 only: number of strings masked or rewritten for their shape rather than for a secret they matched — compatibility characters folded, invisible characters removed, an escape sequence or tag characters stripped or invalid UTF-8 or U+FFFD present (each such string is `***` whole, since it can hide a secret), a retry prompt altered upstream (`***` whole), a URL's userinfo, query or fragment masked |
 | `fullsend.tool.unmatched` | `execute_tool` | Present (`true`) when a result arrived for a call the stream never reported; the span has near-zero duration |
 | `fullsend.tool.result_oversized` | `execute_tool` | Present (`true`) when the result's stream line exceeded the parser's 1 MiB bound: the call was answered but nothing of the result was decoded, so the span has no status and no `error.type` |
 | `fullsend.tool_spans.dropped` | `agent` | Present when the iteration hit the 1,024-span cap and at least one id-bearing call was refused a span: the number of `tool_use` events with a usable id that arrived past the cap, each counted once whatever its result later does; a result with no open span past the cap is not counted |
+
+### Forge and CI attributes
+
+Set on the root `run` span when they apply, and omitted (never empty) when
+they do not. Names follow the OpenTelemetry
+[VCS](https://opentelemetry.io/docs/specs/semconv/registry/attributes/vcs/)
+and
+[CICD](https://opentelemetry.io/docs/specs/semconv/registry/attributes/cicd/)
+semantic conventions. Repository, change and refs come from the normalized
+event, which GitHub and GitLab dispatch both deliver. Coverage still differs
+by source:
+
+- **GitHub:** pull request events and comments on pull requests carry
+  `head_sha`, so runs about a change record its head revision.
+- **GitLab:** `vcs.ref.head.revision` is recorded only when the normalized
+  event carries `head_sha`, which the poller sets only on synchronized merge
+  request events (a push to the source branch). The
+  `CI_MERGE_REQUEST_SOURCE_BRANCH_SHA` fallback applies only when fullsend
+  runs inside your own merged-results pipeline; the agent pipelines the poller
+  creates are not merge request pipelines, so it is unset there.
+- **Jira:** `vcs.repository.url.full` is not recorded, since the work item's
+  URL is on the Jira host. `vcs.provider.name` comes from the forge the run
+  targets.
+
+A run without a normalized event (for example a local run with no
+`--event-file`) records only `vcs.provider.name`, the pipeline run, and a head
+revision from the environment.
+
+Inputs, in order of precedence:
+
+- **Head revision:** the normalized event's
+  `state.change_proposal.head_sha`, then `PR_HEAD_SHA`, then
+  `pull_request.head.sha` in the event at `GITHUB_EVENT_PATH` (GitHub), or
+  `CI_MERGE_REQUEST_SOURCE_BRANCH_SHA` (GitLab). Values that are not a 40- or
+  64-character hex SHA are dropped.
+- **Pipeline run:** on GitHub Actions (`GITHUB_ACTIONS=true`),
+  `GITHUB_RUN_ID`, with the URL from `--run-url` or else
+  `GITHUB_SERVER_URL/GITHUB_REPOSITORY/actions/runs/GITHUB_RUN_ID`. On GitLab
+  CI (`GITLAB_CI=true`), `CI_PIPELINE_ID`, with the URL from `--run-url` or
+  else `CI_PIPELINE_URL`.
+
+| Attribute | Present on | Description |
+|-----------|------------|-------------|
+| `vcs.provider.name` | `run` | Code-hosting forge: `github` or `gitlab` |
+| `vcs.repository.url.full` | `run` | Target repository URL (e.g. `https://github.com/owner/repo`), without credentials. Taken from the work item's URL up to the repository path, so a GitLab install served under a relative URL keeps its prefix |
+| `vcs.change.id` | `run` | Pull request or merge request number, when the run is about one |
+| `vcs.ref.head.name` | `run` | Head branch of that change |
+| `vcs.ref.base.name` | `run` | Base branch of that change |
+| `vcs.ref.head.revision` | `run` | Head commit SHA of that change. Never `GITHUB_SHA` or `CI_COMMIT_SHA`, which name a merge or base commit on pull request and merged-results pipelines |
+| `cicd.pipeline.run.id` | `run` | CI run executing fullsend: `GITHUB_RUN_ID` on GitHub Actions, `CI_PIPELINE_ID` on GitLab CI. This can be a different repository or forge from the target |
+| `cicd.pipeline.run.url.full` | `run` | URL of that CI run: `--run-url` when given, otherwise built from the CI environment |
 
 ### Common attributes
 
@@ -297,26 +475,50 @@ Additional resource attributes from `OTEL_RESOURCE_ATTRIBUTES` are merged in.
 
 ## Per-model usage components
 
-A Pi iteration that dispatched sub-agents on more than one model spec already records the breakdown in `metrics.json` (`per_model_usage`). The trace now exports the same components so model/provider dashboards do not attribute every child to the parent.
+An iteration with more than one model in its per-model usage already records the
+breakdown in `metrics.json` (`per_model_usage`). The trace now exports the same
+components so model/provider dashboards do not attribute every child to the
+parent.
 
-**When they appear.** One Internal child of that iteration's `agent` span per `per_model_usage` entry, named `usage <model>`, only when the iteration has **more than one** spec. A single-model Pi run (including an Agent-enabled iteration that dispatched nothing) and any runtime that leaves `per_model_usage` unset keep today's `agent` span and emit no children. Historical traces are not rewritten; `metrics.json` is unchanged. At most 1,024 children are emitted per iteration; a breakdown with more distinct specs than that reports the overflow as `fullsend.usage.dropped` on the `agent` span instead of emitting further children.
+**When they appear.** One Internal child of that iteration's `agent` span per `per_model_usage` entry, named `usage <model>`, only when the iteration has **more than one** spec. A single-model run (including an Agent-enabled iteration that dispatched nothing) and any runtime that leaves `per_model_usage` unset keep today's `agent` span and emit no children. Historical traces are not rewritten; `metrics.json` is unchanged. At most 1,024 children are emitted per iteration; a breakdown with more distinct specs than that reports the overflow as `fullsend.usage.dropped` on the `agent` span instead of emitting further children.
 
-**What each child carries.** The serving-endpoint provider (`gen_ai.system` / `gen_ai.provider.name`), the effective model id (`gen_ai.request.model`), input/output/cache-creation/cache-read tokens (`gen_ai.usage.*`), `fullsend.usage.requests`, `fullsend.usage.model_spec`, `fullsend.cost_usd` (that component, rounded to cents), and `fullsend.runtime`. Status is Ok: the span reports consumed usage, not the agent's outcome. There is no prompt/output content, no credentials, and no `mlflow.*` attributes. A record with no model spec is keyed `unknown` (provider and model `unknown`) rather than dropped.
+**What each child carries.** The serving-endpoint provider (`gen_ai.system` / `gen_ai.provider.name`), the effective model id (`gen_ai.request.model`), input/output/cache-creation/cache-read tokens (`gen_ai.usage.*`), `fullsend.usage.requests`, `fullsend.usage.model_spec`, `fullsend.cost_usd` (that component, rounded to cents), and `fullsend.runtime`. Status is Ok: the span reports consumed usage, not the agent's outcome. There is no prompt/output content, no credentials, and no `mlflow.*` attributes. A record with no model spec is keyed `unknown` (provider and model `unknown`) rather than dropped. Pi keys carry their serving endpoint as a `provider/id` prefix. Claude and Codex keys are model ids and inherit the iteration's serving endpoint, including `gateway` when that route is selected. Claude reports no per-model request count (`fullsend.usage.requests` is `0`); Codex reports no dollar cost (`fullsend.cost_usd` is `0`).
 
 **How to query without double-counting.** The parent `agent` span is a rollup: it keeps the parent identity and the iteration's `fullsend.cost_usd`, and is marked `fullsend.usage.rollup=true`. It does **not** carry `gen_ai.usage.input_tokens` / `output_tokens` / `cache_*_input_tokens` on mixed-model iterations, because backends that auto-sum those keys (MLflow; ADR 0050, 2026-08-18) would otherwise add the rollup to the components. `reasoning_tokens` has no per-model counterpart and stays on the `agent` span.
 
-Billable tokens and cost live on the children (`fullsend.usage.component=true`). Filter on that flag — not on span name — when summing. Do not add the `agent` span's `fullsend.cost_usd` to the children's — sum the children directly instead of using the `agent` span's rollup as a stand-in for that sum (see the rounding caveat below). The root `run` span's `fullsend.cost_usd` is the run total and is custom-namespaced, so it is not auto-summed with GenAI usage. Across retry iterations, each `agent` span (and its children, if mixed) covers that iteration only; the root remains the run rollup.
+Billable tokens and cost live on the children (`fullsend.usage.component=true`).
+Filter on that flag — not on span name — when summing. Do not add the `agent`
+span's `fullsend.cost_usd` to the children's — sum the children directly instead
+of using the `agent` span's rollup as a stand-in for that sum (see the rounding
+caveat below). The root `run` span's `fullsend.cost_usd` is the run total and is
+custom-namespaced, so it is not auto-summed with GenAI usage. Across retry
+iterations, each `agent` span (and its children, if mixed) covers that iteration
+only; the root remains the run rollup.
 
-The sum of component input, output, cache-creation, and cache-read tokens equals that iteration's run totals — those are exact integers, never rounded. Component `fullsend.cost_usd` values are each rounded to cents independently, the same rounding the `agent` and root spans apply (see [Rounding and precision by surface](#rounding-and-precision-by-surface)) — not by rounding once after summing. Because of that, the sum of the children's rounded costs can differ from the `agent` span's rounded rollup by up to a cent per component: three components each costing $0.006 round individually to $0.01 (summing to $0.03), while the raw iteration total of $0.018 rounds to $0.02. This is the same class of discrepancy as the agent-vs-root rounding caveat below, one level down.
+When no components were dropped by the 1,024-span cap, the sum of component
+input, output, cache-creation, and cache-read tokens equals that iteration's run
+totals — those are exact integers, never rounded. Component `fullsend.cost_usd`
+values are each rounded to cents independently, the same rounding the `agent`
+and root spans apply (see [Rounding and precision by
+surface](#rounding-and-precision-by-surface)) — not by rounding once after
+summing. Because of that, the sum of the children's rounded costs can differ
+from the `agent` span's rounded rollup by up to a cent per component: three
+components each costing $0.006 round individually to $0.01 (summing to $0.03),
+while the raw iteration total of $0.018 rounds to $0.02. This is the same class
+of discrepancy as the agent-vs-root rounding caveat below, one level down.
 
-This is usage attribution, not the recursive sub-agent span expansion [ADR 0050](../../ADRs/0050-distributed-tracing-instrumentation.md) deferred: the children are near-zero-duration, carry no turns or content, and are keyed by model spec rather than by `Agent`-tool call.
+This is usage attribution, not the recursive sub-agent span expansion [ADR
+0050](../../ADRs/0050-distributed-tracing-instrumentation.md) deferred: the
+children are near-zero-duration, carry no turns or content, and are keyed by
+model spec rather than by `Agent`-tool call.
 
 ## Cost data contract
 
 Fullsend does not calculate inference cost from token counts or maintain a
 model-price table. Each runtime reports a USD cost value and fullsend
 records it as-is. This section defines the source, aggregation, rounding,
-and display behavior of that value across every output surface.
+and display behavior of that value across every output surface. To compute
+a list-price dollar estimate from persisted token counts, see [Computing dollar cost from token telemetry](#computing-dollar-cost-from-token-telemetry).
 
 ### Runtime cost extraction
 
@@ -326,6 +528,7 @@ Each runtime extracts cost differently from its agent process:
 |---------|--------|------------|
 | `claude` | Claude Code stream JSON | Reads `result.total_cost_usd` from the final result event — a single value covering the entire iteration |
 | `pi` | Pi assistant message stream | Sums `usage.cost.total` across all assistant messages in the iteration |
+| `codex` | Codex event stream | No cost field; records `0` |
 | `opencode` | OpenCode step stream | Sums `step_finish.part.cost` across all step-finish events in the iteration |
 
 The runtime-reported value includes whatever the provider prices — input
@@ -375,7 +578,9 @@ differently than the sum of parts.
 
 If a runtime does not report cost (returns zero or the field is absent),
 fullsend records zero. There is no fallback cost calculation from token
-counts. A missing runtime cost propagates as `$0.00` on all surfaces.
+counts. A missing runtime cost propagates as `$0.00` on all surfaces. See
+[Computing dollar cost from token telemetry](#computing-dollar-cost-from-token-telemetry)
+for how to apply list-price rates to the persisted token fields.
 
 ### Distinction from backend-derived cost estimates
 
@@ -391,6 +596,145 @@ Tracing backends may display their own cost estimates alongside
 The authoritative cost for a fullsend run is always `fullsend.cost_usd`
 (on spans) or `total_cost_usd` (in `metrics.json`). Backend-derived
 estimates are informational and may diverge.
+
+## Computing dollar cost from token telemetry
+
+Fullsend never converts token counts into dollars. A runtime-reported cost
+is not necessarily your contracted charge. Codex reports no cost, so its
+cost stays `0`. A Claude iteration interrupted before its terminal result
+has no reported cost; pi and OpenCode can retain cost accumulated before
+interruption. A cancelled run can still have a non-zero aggregate from
+previous iterations. Zero reported cost does not mean zero usage.
+
+These are distinct gaps: Codex has no reported dollar cost even after a
+successful run; Claude can lose the cost of an interrupted iteration. The
+original [cancelled-run follow-up](https://github.com/fullsend-ai/fullsend/pull/7208#issuecomment-5633919519)
+was closed in favor of pricing the persisted token counts at users' own
+rates. This procedure covers both cases.
+
+Use `run-telemetry.jsonl` as the primary source for a list-price estimate.
+This is an estimate at the provider's published list price, not your
+contracted rate: fullsend does not yet support configuring or calculating
+a contracted rate. Its `agent` spans carry per-iteration token counts,
+runtime, and model identity. `metrics.json` provides the run-level aggregate when span
+telemetry is unavailable. Token counts survive interruption where the
+runtime has reported them; tokens consumed after its last usage update
+cannot be reconstructed from these artifacts. If telemetry is disabled or
+the process dies before an `agent` span ends, the file may lack that span.
+
+### Persisted token fields
+
+| Kind | `agent` span attribute | `metrics.json` `token_usage` |
+|------|------------------------|------------------------------|
+| Uncached input | `gen_ai.usage.input_tokens` | `input` |
+| Output | `gen_ai.usage.output_tokens` | `output` |
+| Cache creation | `gen_ai.usage.cache_creation.input_tokens` | `cache_creation` |
+| Cache read | `gen_ai.usage.cache_read.input_tokens` | `cache_read` |
+| Reasoning | `gen_ai.usage.reasoning_tokens` | `reasoning` |
+
+The first four span attributes are emitted even when zero. The reasoning
+attribute is omitted when zero; `metrics.json` always serializes
+`token_usage.reasoning`, including `0`. Treat a missing reasoning attribute
+on a fullsend `agent` span as zero recorded reasoning, not proof that the
+provider consumed none.
+
+For Claude, pi, and Codex, input is uncached input: cache creation and cache
+read are separate counters. The reasoning rule depends on the runtime:
+
+- **Codex:** Fullsend subtracts reasoning from the wire output count.
+  Persisted output and reasoning are disjoint, so add a reasoning term
+  whenever recorded reasoning is non-zero, including interrupted runs.
+- **Claude:** Reasoning is a breakdown of output. Do not add it again.
+  An interrupted iteration may lack the final reasoning count even when
+  streamed output counts were captured.
+- **pi:** The pinned pi `1.5.0`
+  [usage schema](https://github.com/earendil-works/pi/blob/v1.5.0/packages/ai/src/types.ts#L459-L471)
+  defines reasoning as a subset of output. Fullsend passes those fields
+  through, so do not add reasoning again. Recheck the schema when pricing
+  artifacts from a different pi version; sibling JSON fields and synthetic
+  fixture totals alone do not establish whether counters overlap.
+- **OpenCode:** Fullsend passes its wire counters through. Verify the
+  provider/version's output, reasoning, and cache semantics before using
+  either formula; this guide does not establish their overlap.
+
+Codex and pi synthesize final usage from counters observed before an
+interruption. A completed turn or assistant message can report zero
+reasoning; completion alone does not imply non-zero reasoning.
+
+### Worked example
+
+Extract the relevant attributes from each `agent` span in the local OTLP
+JSONL file (see [Output file format](#output-file-format)):
+
+```bash
+jq -c '
+  .resourceSpans[]?.scopeSpans[]?.spans[]?
+  | select(.name == "agent")
+  | .attributes
+  | map({key: .key, value: (.value.intValue // .value.doubleValue // .value.stringValue)})
+  | from_entries
+  | {
+      runtime: .["fullsend.runtime"],
+      model: .["gen_ai.request.model"],
+      input: (.["gen_ai.usage.input_tokens"] | tonumber),
+      output: (.["gen_ai.usage.output_tokens"] | tonumber),
+      cache_creation: (.["gen_ai.usage.cache_creation.input_tokens"] | tonumber),
+      cache_read: (.["gen_ai.usage.cache_read.input_tokens"] | tonumber),
+      reasoning: ((.["gen_ai.usage.reasoning_tokens"] // 0) | tonumber)
+    }
+' run-telemetry.jsonl
+```
+
+One extracted iteration could look like this (a projection of a span,
+not the raw OTLP envelope):
+
+```json
+{
+  "runtime": "codex",
+  "model": "example-model",
+  "input": 1000,
+  "output": 500,
+  "cache_creation": 150000,
+  "cache_read": 600000,
+  "reasoning": 200
+}
+```
+
+Using hypothetical list-price rates of $2.00 / $10.00 / $2.50 / $0.20 /
+$10.00 per million tokens (uncached input / output / cache creation / cache
+read / reasoning):
+
+```text
+cost = 1000/1e6 * 2.00
+     + 500/1e6 * 10.00
+     + 150000/1e6 * 2.50
+     + 600000/1e6 * 0.20
+     + 200/1e6 * 10.00
+     = 0.002 + 0.005 + 0.375 + 0.120 + 0.002
+     = $0.504
+```
+
+The fifth term applies because this is Codex with non-zero reasoning.
+For Claude or the pinned pi version, output already includes reasoning:
+use the first four terms when reasoning has the same rate as other output.
+If the provider prices that subset differently, split output into
+`output - reasoning` and `reasoning` and price each once.
+
+Pricing only uncached input and output would give $0.007 and miss the
+cache tokens that dominate this example. Substitute the rates and cache
+retention tiers from your provider's published list prices; these numbers
+are illustrative. The result is a list-price estimate and will differ from
+your actual charge if you have a contracted rate.
+
+Price each iteration at its model's rates, then sum the estimates. Do not
+also charge the root `run` span or add `metrics.json` totals: that counts
+the same usage twice. An iteration can include multiple models or providers
+through fallback and sub-agents, so a single span's model label may not be
+enough. Use the [per-model usage breakdown](../../cli/run.md#per-model-usage)
+where available. It has no per-model reasoning counter, so mixed-model
+Codex reasoning cannot be priced exactly at different model rates from
+that breakdown alone. Missing attribution or usage makes the result an
+estimate, not a complete billing record.
 
 ## Output file format
 
@@ -420,6 +764,13 @@ env:
 ```
 
 The child run's root span becomes part of the parent trace.
+
+Inside a run, the runner also writes the per-iteration **agent** span as
+`TRACEPARENT` into `.fullsend/iteration.env` so local runtimes (claude, pi,
+codex) can attach their telemetry to that span. Host-side pre/post scripts
+still receive the run-root value; the two parents share a trace ID but have
+different span IDs. An inbound unsampled flag (`-00`) is preserved on both
+paths.
 
 For separate workflow runs on the same work item (e.g. triage, code, review
 as independent GHA workflows), `TRACEPARENT` must be propagated manually.
@@ -473,8 +824,11 @@ that hosts the fullsend caller workflows:
 Installations scaffolded before OTEL support was added must also forward the
 secrets (add `OTEL_EXPORTER_OTLP_TRACES_HEADERS` and
 `OTEL_EXPORTER_OTLP_HEADERS` under `secrets:`) until the scaffold is
-re-synced: in the `.fullsend` repo's stage workflows (per-org), or in the
-fullsend shim workflow's dispatch job (per-repo).
+re-synced, in the fullsend shim workflow's dispatch job.
+
+`fullsend run` reads the OTLP header secrets for its own exporter but does not
+pass them to host-side scripts unless the harness declares them under
+[`env.runner`](../../reference/harness-reference.md#field-details).
 
 ### Bring your own workflow
 
@@ -511,8 +865,125 @@ completion bodies. That foundation is intentional: fitness scores must trust
 the trace before quality scores can. **Planned:** content-aware scorers that
 consume Level 3 prompt/completion capture once Level 3 is implemented —
 that is where the real quality signal lives. See
-[Eval Measurements](./eval-measurements.md) and
-[ADR 0087](../../ADRs/0087-eval-measurements-online-trace-scoring.md).
+[Eval Measurements](./eval-measurements.md).
+
+## Mint tracing
+
+The token mint takes part in the same trace model. It records one server
+span per request and child spans for each stage, then exports them over
+OTLP/HTTP (JSON encoding) when a traces endpoint is configured.
+
+**Availability:** tracing is configurable for the
+[standalone mint](standalone-mint.md#tracing), for GCP Cloud Function
+mints, and for Cloudflare Worker mints, durable and preview, through
+`fullsend mint deploy --otlp-traces-endpoint` and `--otlp-headers-file`
+(see [`mint deploy` tracing for GCP](../../cli/mint.md#tracing-gcp) and
+[for Cloudflare](../../cli/mint.md#tracing)). On GCP the endpoint is
+stamped into the generated function source and collector headers are
+stored in a per-deploy Secret Manager secret
+(`fullsend-mint-otlp-headers-<random>`) whose ID is stamped next to the
+endpoint; the function reads it at cold start, and rotating the headers
+stores a new secret and redeploys the function. On Cloudflare the endpoint is
+compiled into the Worker WASM binary; collector headers are stored as
+a Worker secret (`MINT_OTLP_HEADERS`, scoped to the version, for previews; a
+per-deploy `MINT_OTLP_HEADERS_<random>` name for durable deploys). The
+instrumentation is shared by all backends (it lives in
+`internal/mintcore`). Behaviour-test preview mints export to the suite's
+[job-scoped collector](../dev/behaviour-testing.md#job-scoped-trace-collection).
+
+**Propagation:** the mint client (`internal/mintclient`) starts a
+`fullsend.mint.token` client span when the caller's context has an active
+span. It sends W3C `traceparent` and `tracestate` headers to the mint. No
+headers are sent when no trace context is active. The mint extracts the
+incoming context, so its server span becomes a child of the client span.
+It also keeps the upstream sampling decision: an unsampled parent (`-00`)
+produces no export. The mint returns a W3C `traceresponse` header that
+identifies its server span. Client retries reuse the client span, so
+each attempt shows up as a sibling server span, and the client span
+records `fullsend.mint.attempts`.
+
+**Spans:**
+
+| Span | Kind | Stage recorded on failure |
+|------|------|---------------------------|
+| `POST /v1/token`, `GET /v1/status`, … | Server | (aggregated, see below) |
+| `mint.oidc_verify` | Internal | `oidc_verification`, or `authorization` when the token verifies but enrollment or workflow-ref policy rejects it |
+| `mint.status_auth` | Internal | `authentication` |
+| `mint.authorize` | Internal | `authorization` |
+| `mint.foreign_grant_fallback` | Internal | — (records `fullsend.mint.fallback_result`) |
+| `mint.foreign_grant_check` | Internal | `foreign_grant` (records `fullsend.mint.foreign_grant_scope`, `repo` or `org`) |
+| `mint.pem_access` | Internal | `pem_access` |
+| `mint.github_app_auth` | Internal | `github_app_auth` |
+| `mint.installation_lookup` | Internal | `installation_lookup` |
+| `mint.create_installation_token` | Internal | `token_issuance` |
+| `mint.bot_role_config` | Internal | `bot_role_config` (`POST /v1/bot-role`: invalid role App ID registration) |
+| `mint.bot_role_credentials` | Internal | `bot_role_config`, `pem_access` or `github_app_auth`, only when the credential is required; an unavailable credential for the `/apps` lookup records `fullsend.bot_role.skip_reason` instead |
+| `mint.bot_role_apps_token` | Internal | `token_issuance`, never recorded as a failure: when no installation token can be obtained for the `/apps` lookup (the App is not installed on the repo, or the token request fails) the span records `fullsend.bot_role.failure_step` and `skip_reason` and the lookup is anonymous |
+| `mint.github_apps_lookup` | Internal | `github_apps_lookup` |
+
+`POST /v1/bot-role` also reuses `mint.installation_lookup`. The
+`mint.github_apps_lookup` and `mint.installation_lookup` spans of a bot-role
+request record `fullsend.bot_role.attempts`, `upstream_class` (`ok`,
+`not_found`, `transport`, `4xx`, `5xx`, `malformed_response`, `local`),
+`upstream_status`, `rate_limit` (`none`, `primary`, `secondary`, `other`),
+`retry_decision` (`succeeded`, `not_retryable`, `attempts_exhausted`,
+`wait_exceeds_bound`, `wait_exceeds_deadline`, `context_done`,
+`sleep_interrupted`), `wait_ms`, `wait_bound_ms` (the 5-second retry wait
+bound) and `result` (`ok`, `no_match`, `credential_rejected`, `error`), and
+carry one `attempt` event per try with the same per-attempt values. The
+`/apps` span adds `apps_auth` (`installation_token` or `anonymous`). None of these
+carry the actor login, App slug, repository, credentials or response bodies.
+
+`GET /health` is not traced. Unknown routes are recorded as `other`, so
+paths supplied by callers never reach the collector.
+
+**Server span attributes:** `http.request.method`, `url.path`,
+`http.response.status_code`, `fullsend.mint.outcome` (`success`,
+`denied`, `rejected`, `error`), `fullsend.mint.failure_stage`,
+`fullsend.mint.backend`, `fullsend.mint.deployment`, `fullsend.mint.role`,
+`fullsend.mint.level`, `fullsend.mint.repo_count`,
+`fullsend.mint.caller_org`, `fullsend.mint.source_repo`,
+`fullsend.mint.workflow_ref`, `fullsend.mint.target_org`,
+`fullsend.mint.cross_org`, and on success `fullsend.mint.app_id`,
+`fullsend.mint.installation_id`, and `fullsend.mint.repository_selection`.
+The `mint.foreign_grant_check` span also records
+`fullsend.mint.foreign_grant_scope` (`repo` or `org`). Server spans get error status only for 5xx responses. Stage spans get
+error status plus an `exception` event when their stage fails.
+
+**Resource attributes:** `service.name` (`fullsend-mint`),
+`service.version`, `fullsend.mint.commit`, `fullsend.mint.backend`,
+`fullsend.mint.deployment`.
+
+**Security boundaries:** spans never carry OIDC JWTs, installation tokens,
+PEM material, or collector authentication headers. Error text on spans is
+capped at 256 bytes, and anything shaped like a JWT, GitHub token, bearer
+credential, `Authorization` header value, URL userinfo, sensitive URL query
+value, or PEM block is redacted. Failed GitHub installation-token
+calls record only the HTTP status, never the response body. The mint
+client records only the failure stage and a fixed error class (`timeout`,
+`canceled`, `request_failed`, or `error`) on its span.
+
+**Fail-open:** each request's spans are exported in one request bounded by
+a 2-second timeout. Collector errors, non-2xx responses, and timeouts are
+logged (without header values) and never change the mint response. The
+standalone mint exports in the background after the response is returned;
+serverless backends export before returning because they cannot run work
+afterwards. OTLP export does not follow redirects, so collector
+credentials and span payloads are never forwarded to another origin. On
+the Cloudflare Worker the host fetch bridge uses `redirect: "manual"` for
+export requests. A Worker export adds at most the 2-second export timeout
+to the response. If the collector headers secret cannot be parsed, the
+Worker logs a warning without header values and runs with tracing
+disabled.
+
+**Export budget:** an inbound `traceparent` sampled flag is honored only
+within a local budget of 20 sampled requests per second; requests beyond it
+are treated as unsampled. At most 4 exports run concurrently; additional
+exports are dropped rather than queued.
+
+The mint does not use the OpenTelemetry Go SDK. It uses a small built-in
+exporter so the Cloudflare Worker WASM binary stays within its size
+limit. See [Mintcore Architecture](../../contributing/mintcore.md#tracing).
 
 ## See also
 

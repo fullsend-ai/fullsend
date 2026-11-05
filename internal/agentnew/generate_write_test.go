@@ -64,6 +64,36 @@ func TestGenerateWritesAndIsIdempotentlyRefused(t *testing.T) {
 	}
 }
 
+// TestGenerateDoesNotBackfillMissingSharedAssetOnCollision: re-running
+// Generate for an existing agent whose policy is missing is refused on the
+// owned files before any write, so it cannot restore the policy (#6834).
+func TestGenerateDoesNotBackfillMissingSharedAssetOnCollision(t *testing.T) {
+	dir := newTargetDir(t)
+	opts := testOptions("lint-docs", "triage")
+
+	if _, err := Generate(opts, dir, false, false); err != nil {
+		t.Fatalf("first Generate: %v", err)
+	}
+	policy := filepath.Join(dir, "policies", "base.yaml")
+	if _, err := os.Stat(policy); err != nil {
+		t.Fatalf("policy should exist after the first generate: %v", err)
+	}
+	if err := os.Remove(policy); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Generate(opts, dir, false, false)
+	if err == nil {
+		t.Fatal("re-running Generate for an existing agent should still be refused")
+	}
+	if !strings.Contains(err.Error(), "already exist") {
+		t.Errorf("expected the owned-file collision error, got: %v", err)
+	}
+	if _, statErr := os.Stat(policy); statErr == nil {
+		t.Fatal("Generate must not backfill the missing policy")
+	}
+}
+
 func TestGenerateForceRewritesOwnedFilesOnly(t *testing.T) {
 	dir := newTargetDir(t)
 	opts := testOptions("lint-docs", "triage")
@@ -71,7 +101,9 @@ func TestGenerateForceRewritesOwnedFilesOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sentinel := []byte("# hand-edited\n")
+	// Keep a field so CheckGenerated accepts the existing shared policy;
+	// OpenShell 0.1 rejects a comment-only document (#7849).
+	sentinel := []byte("# hand-edited\nversion: 1\n")
 	policy := filepath.Join(dir, "policies", "base.yaml")
 	if err := os.WriteFile(policy, sentinel, 0o644); err != nil {
 		t.Fatal(err)

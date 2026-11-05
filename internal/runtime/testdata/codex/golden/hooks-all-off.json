@@ -1,0 +1,17 @@
+{
+  "description": "fullsend sandbox tool hooks (generated; see docs/contributing/runtime-implementation.md)",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^(multi_agent_v1|collaboration)|(spawn|resume)_agent$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 -I /sandbox/codex-config/fullsend-codex-hook.py SpawnGuard",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"regexp"
 	"strings"
 )
@@ -106,7 +105,7 @@ var WranglerAuthTokenFn = runWranglerAuthToken
 // runWranglerAuthToken executes `npx wrangler auth token` and returns
 // the token string.
 func runWranglerAuthToken(ctx context.Context) (string, error) {
-	cmd := exec.CommandContext(ctx, "npx", "wrangler", "auth", "token")
+	cmd := wranglerCommand(ctx, "auth", "token")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("wrangler auth token failed: %w\n%s", err, string(out))

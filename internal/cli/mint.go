@@ -30,6 +30,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/dispatch/cf"
 	"github.com/fullsend-ai/fullsend/internal/dispatch/gcf"
+	"github.com/fullsend-ai/fullsend/internal/mintclient"
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
@@ -108,16 +109,16 @@ func rolesFromAppIDs(roleAppIDs map[string]string) []string {
 	return roles
 }
 
-// parseAllowedOrgs splits ALLOWED_ORGS, excluding the deploy placeholder.
-func parseAllowedOrgs(allowedOrgs string) []string {
-	var orgs []string
-	for _, o := range mintcore.ParseAllowedOrgs(allowedOrgs) {
-		if o != gcf.PlaceholderOrg {
-			orgs = append(orgs, o)
+// hasEnrolledRepoInOrg reports whether repos contains an owner/repo entry
+// whose owner matches org (case-insensitive).
+func hasEnrolledRepoInOrg(repos []string, org string) bool {
+	prefix := strings.ToLower(org) + "/"
+	for _, r := range repos {
+		if strings.HasPrefix(strings.ToLower(r), prefix) {
+			return true
 		}
 	}
-	sort.Strings(orgs)
-	return orgs
+	return false
 }
 
 // isPublicMintRepos reports whether a PER_REPO_WIF_REPOS value indicates
@@ -433,11 +434,16 @@ func newMintDeployCmd() *cobra.Command {
 	// Cloudflare-specific flags.
 	var workerName string
 	var preview string
-	var allowedOrgs string
 	var perRepoWIFRepos string
 	var workflowHostRepos string
 	var allowedWorkflowFiles string
 	var customDomain string
+
+	// Tracing flags.
+	var otlpTracesEndpoint string
+	var otlpEndpoint string
+	var otlpHeadersFile string
+	var otlpNoHeaders bool
 
 	cmd := &cobra.Command{
 		Use:   "deploy",
@@ -448,8 +454,8 @@ Use --platform to select the target (default: gcp).
 
 GCP mode (--platform=gcp):
   Deploys the fullsend-mint Cloud Function and supporting GCP infrastructure
-  (service account, WIF pool/provider). Does NOT enroll any org — use
-  'fullsend mint enroll' after deployment (tight mode only).
+  (service account, WIF pool/provider). Does NOT enroll any repository —
+  use 'fullsend mint enroll <owner/repo>' after deployment (tight mode only).
 
   Required flags: --project
   Optional: --region, --source-dir, --skip-deploy, --pem-dir, --app-set,
@@ -480,7 +486,7 @@ Cloudflare mode (--platform=cloudflare):
 
   Required flags: none (Worker name defaults to "fullsend-mint")
   Optional: --worker-name, --preview=<alias>, --source-dir, --pem-dir,
-            --app-set, --roles, --allowed-orgs, --per-repo-wif-repos,
+            --app-set, --roles, --per-repo-wif-repos,
             --workflow-host-repos, --public, --custom-domain
 
   Authentication (one of):
@@ -491,7 +497,6 @@ Cloudflare mode (--platform=cloudflare):
   the account from 'wrangler whoami'.
 
   Mint configuration flags (set Worker env vars during deploy):
-    --allowed-orgs=acme,bigcorp     Set ALLOWED_ORGS
     --per-repo-wif-repos=a/b,c/d   Set PER_REPO_WIF_REPOS
     --workflow-host-repos=o/r       Set WORKFLOW_HOST_REPOS
     --allowed-workflow-files=f,g    Set ALLOWED_WORKFLOW_FILES
@@ -544,7 +549,44 @@ Cloudflare mode (--platform=cloudflare):
   Callers (e.g. BT) can compute this URL and pass it to
   'fullsend github setup --mint-url' or 'fullsend mint enroll'.
   Preview teardown abandons the alias without deleting the Worker script.
-  Use --worker-name to target a specific Worker script name.`,
+  Use --worker-name to target a specific Worker script name.
+
+Tracing (GCP and Cloudflare):
+  --otlp-traces-endpoint=URL   OTLP/HTTP traces URL, used verbatim
+  --otlp-endpoint=URL          OTLP/HTTP base URL; /v1/traces is appended
+                               (ignored when --otlp-traces-endpoint is set)
+  --otlp-headers-file=PATH     collector auth headers, one key=value per
+                               line (OTEL_EXPORTER_OTLP_HEADERS syntax);
+                               the file must be chmod 600
+  --otlp-no-headers            the collector needs no auth headers
+
+  GCP: the endpoint is stamped into the generated Cloud Function source,
+  so changing it redeploys the function. It cannot be combined with
+  --skip-deploy. An endpoint requires --otlp-headers-file or
+  --otlp-no-headers. Header values are never stamped: they are stored
+  in a new per-deploy Secret Manager secret
+  (fullsend-mint-otlp-headers-<random>), which the mint service account
+  can read. The function reads the headers at cold start; every deploy
+  with headers redeploys the function so new instances pick them up.
+
+  Cloudflare: the endpoint is compiled into the Worker WASM binary, so
+  changing it rebuilds and redeploys the Worker. Header values are never compiled
+  in: they are stored as a Worker secret (MINT_OTLP_HEADERS, scoped to
+  the version, for --preview).
+
+  A durable deploy that sets an endpoint must also set
+  --otlp-headers-file or --otlp-no-headers. Each durable deploy stamps
+  a unique secret name (MINT_OTLP_HEADERS_<random>) into the build next
+  to the endpoint, deploys it, then stores the headers under that name.
+  A build only reads its own secret, so the endpoint and its headers
+  stay paired even if two deploys overlap, and a previous collector's
+  credentials are never sent to the new endpoint. Until the headers are
+  stored, exports go out without authentication (they fail open).
+  Secrets of earlier deploys are not removed; delete stale
+  MINT_OTLP_HEADERS_* secrets with 'wrangler secret delete'.
+
+  Without an endpoint the mint makes no export attempts. Export failures
+  never affect token minting.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Warn about flags set for the wrong platform so users
@@ -597,9 +639,14 @@ Cloudflare mode (--platform=cloudflare):
 				Group: statusGitHubGroup,
 			}
 
+			tracing, err := resolveMintTracing(otlpTracesEndpoint, otlpEndpoint, otlpHeadersFile, otlpNoHeaders)
+			if err != nil {
+				return err
+			}
+
 			switch platform {
 			case "gcp":
-				return runMintDeployGCP(cmd.Context(), project, region, sourceDir, skipDeploy, dryRun, pemDir, appSet, roles, public, statusGitHub)
+				return runMintDeployGCP(cmd.Context(), project, region, sourceDir, skipDeploy, dryRun, pemDir, appSet, roles, public, statusGitHub, tracing)
 			case "cloudflare":
 				// Reject conflicting flags: --public widens auth to all repos,
 				// so combining it with an explicit --per-repo-wif-repos list
@@ -610,7 +657,7 @@ Cloudflare mode (--platform=cloudflare):
 				cfStatusGitHub := cf.StatusGitHubAuth{
 					Group: statusGitHubGroup,
 				}
-				return runMintDeployCloudflare(cmd.Context(), workerName, sourceDir, preview, dryRun, pemDir, appSet, roles, allowedOrgs, perRepoWIFRepos, workflowHostRepos, allowedWorkflowFiles, public, customDomain, cfStatusGitHub, cmd.Flags().Changed("allowed-orgs"), cmd.Flags().Changed("per-repo-wif-repos"), cmd.Flags().Changed("workflow-host-repos"), cmd.Flags().Changed("allowed-workflow-files"))
+				return runMintDeployCloudflare(cmd.Context(), workerName, sourceDir, preview, dryRun, pemDir, appSet, roles, perRepoWIFRepos, workflowHostRepos, allowedWorkflowFiles, public, customDomain, cfStatusGitHub, cmd.Flags().Changed("per-repo-wif-repos"), cmd.Flags().Changed("workflow-host-repos"), cmd.Flags().Changed("allowed-workflow-files"), tracing)
 			default:
 				return fmt.Errorf("unsupported platform %q: must be \"gcp\" or \"cloudflare\"", platform)
 			}
@@ -647,8 +694,6 @@ Example: --status-github-group=acme/platform-team`)
 Value is the preview alias passed to --preview-alias. The preview
 mint URL is deterministic: https://<alias>-<worker-name>.workers.dev
 Example: --preview=bt-run-42`)
-	cmd.Flags().StringVar(&allowedOrgs, "allowed-orgs", "", `comma-separated allowed GitHub orgs (Cloudflare only, sets ALLOWED_ORGS)
-Omit to preserve existing value on redeploy; set to "" to clear`)
 	cmd.Flags().StringVar(&perRepoWIFRepos, "per-repo-wif-repos", "", `comma-separated per-repo WIF repos (Cloudflare only, sets PER_REPO_WIF_REPOS)
 Mutually exclusive with --public on Cloudflare.
 Omit to preserve existing value on redeploy; set to "" to clear`)
@@ -663,6 +708,18 @@ When set for durable deploys, the CLI attaches the domain.
 The zone ID is resolved automatically. Not supported for preview deploys.
 Example: --custom-domain=mint.fullsend.sh`)
 
+	// Tracing flags.
+	cmd.Flags().StringVar(&otlpTracesEndpoint, "otlp-traces-endpoint", "", `OTLP/HTTP traces URL stamped into the mint, used verbatim
+Example: --otlp-traces-endpoint=https://collector.example/v1/traces`)
+	cmd.Flags().StringVar(&otlpEndpoint, "otlp-endpoint", "", `OTLP/HTTP base URL; /v1/traces is appended
+Ignored when --otlp-traces-endpoint is set`)
+	cmd.Flags().StringVar(&otlpHeadersFile, "otlp-headers-file", "", `file with collector auth headers in OTEL_EXPORTER_OTLP_HEADERS syntax
+Must be chmod 600. GCP: stored in Secret Manager (fullsend-mint-otlp-headers-<random>).
+Cloudflare: stored as a Worker secret (MINT_OTLP_HEADERS for previews, MINT_OTLP_HEADERS_<random> for durable deploys)
+Required with an endpoint on GCP and Cloudflare durable deploys unless --otlp-no-headers is set`)
+	cmd.Flags().BoolVar(&otlpNoHeaders, "otlp-no-headers", false, `the collector needs no auth headers; no collector headers are bound to the new endpoint
+Mutually exclusive with --otlp-headers-file`)
+
 	return cmd
 }
 
@@ -676,7 +733,6 @@ func warnIrrelevantFlags(cmd *cobra.Command, platform string) {
 		"gcp": {
 			{"worker-name", "Cloudflare"},
 			{"preview", "Cloudflare"},
-			{"allowed-orgs", "Cloudflare"},
 			{"per-repo-wif-repos", "Cloudflare"},
 			{"workflow-host-repos", "Cloudflare"},
 			{"allowed-workflow-files", "Cloudflare"},
@@ -696,12 +752,23 @@ func warnIrrelevantFlags(cmd *cobra.Command, platform string) {
 	}
 }
 
-func runMintDeployGCP(ctx context.Context, project, region, sourceDir string, skipDeploy, dryRun bool, pemDir, appSet string, roles []string, public bool, statusGitHub gcf.StatusGitHubAuth) error {
+func runMintDeployGCP(ctx context.Context, project, region, sourceDir string, skipDeploy, dryRun bool, pemDir, appSet string, roles []string, public bool, statusGitHub gcf.StatusGitHubAuth, tracing mintTracingConfig) error {
 	if appSet == "" {
 		appSet = appsetup.DefaultAppSet
 	}
 	if err := appsetup.ValidateAppSet(appSet); err != nil {
 		return fmt.Errorf("invalid --app-set: %w", err)
+	}
+	if tracing.enabled() {
+		if skipDeploy {
+			return fmt.Errorf("--skip-deploy cannot be combined with an OTLP endpoint: the endpoint is stamped into the function source, which --skip-deploy does not redeploy")
+		}
+		// As for Cloudflare durable deploys, the collector authentication
+		// choice must be explicit, so a new endpoint never silently runs
+		// with or without the headers of an earlier deploy.
+		if tracing.headers == nil && !tracing.noHeaders {
+			return fmt.Errorf("an OTLP endpoint requires --otlp-headers-file or --otlp-no-headers, so the collector authentication is stated explicitly")
+		}
 	}
 	if project == "" {
 		return fmt.Errorf("--project is required")
@@ -742,6 +809,12 @@ func runMintDeployGCP(ctx context.Context, project, region, sourceDir string, sk
 		if public {
 			printer.StepInfo("Would deploy public mint (PER_REPO_WIF_REPOS=*, permissive WIF)")
 		}
+		if tracing.enabled() {
+			printer.StepInfo(fmt.Sprintf("Would stamp OTLP traces endpoint %s into the function source (deployment %s)", tracing.endpointOrigin(), gcf.TraceDeploymentName(region)))
+			if tracing.headers != nil {
+				printer.StepInfo(fmt.Sprintf("Would store %d collector header(s) in a new Secret Manager secret %s<random>", tracing.headerCount, gcf.TraceHeadersSecretPrefix))
+			}
+		}
 		if pemDir != "" {
 			if _, err := validatePEMDir(pemDir, roles); err != nil {
 				return err
@@ -769,6 +842,7 @@ func runMintDeployGCP(ctx context.Context, project, region, sourceDir string, sk
 		Commit:            deployCommit,
 		PublicMint:        public,
 		StatusGitHub:      statusGitHub,
+		Tracing:           gcf.TracingConfig{Endpoint: tracing.endpoint, Headers: tracing.headers},
 	}
 
 	if pemDir != "" {
@@ -785,7 +859,7 @@ func runMintDeployGCP(ctx context.Context, project, region, sourceDir string, sk
 	}
 
 	if !public {
-		// Role app IDs are shared across orgs; enrolling orgs only updates ALLOWED_ORGS.
+		// Role app IDs are shared across repos; enrollment only updates PER_REPO_WIF_REPOS.
 		cfg.GitHubOrgs = []string{gcf.PlaceholderOrg}
 	}
 
@@ -809,6 +883,16 @@ func runMintDeployGCP(ctx context.Context, project, region, sourceDir string, sk
 		fmt.Sprintf("Version: %s", version),
 		fmt.Sprintf("Commit: %s", deployCommit),
 	}
+	switch {
+	case skipDeploy:
+		// --skip-deploy reuses the existing function, so its stamped
+		// endpoint and headers secret are untouched; tracing may be on.
+		summaryLines = append(summaryLines, "Tracing: unchanged (--skip-deploy reuses the existing function)")
+	case tracing.enabled():
+		summaryLines = append(summaryLines, fmt.Sprintf("Tracing: exporting to %s", tracing.endpointOrigin()))
+	default:
+		summaryLines = append(summaryLines, "Tracing: disabled")
+	}
 	if pemDir != "" {
 		summaryLines = append(summaryLines, fmt.Sprintf("App set: %s (PEMs bootstrapped)", appSet))
 	}
@@ -816,19 +900,27 @@ func runMintDeployGCP(ctx context.Context, project, region, sourceDir string, sk
 		summaryLines = append(summaryLines, "Mode: public (PER_REPO_WIF_REPOS=*)")
 		summaryLines = append(summaryLines, "Orgs may call this mint via upstream reusable workflows after installing shared Apps")
 	} else {
-		summaryLines = append(summaryLines, "Next: fullsend mint enroll <org> --project="+project)
+		summaryLines = append(summaryLines, "Next: fullsend mint enroll <owner/repo> --project="+project)
 	}
 	printer.Summary("Deployment complete", summaryLines)
 
 	return nil
 }
 
-func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, previewAlias string, dryRun bool, pemDir, appSet string, roles []string, allowedOrgs, perRepoWIFRepos, workflowHostRepos, allowedWorkflowFiles string, public bool, customDomain string, statusGitHub cf.StatusGitHubAuth, allowedOrgsExplicit, perRepoWIFReposExplicit, workflowHostReposExplicit, allowedWorkflowFilesExplicit bool) error {
+func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, previewAlias string, dryRun bool, pemDir, appSet string, roles []string, perRepoWIFRepos, workflowHostRepos, allowedWorkflowFiles string, public bool, customDomain string, statusGitHub cf.StatusGitHubAuth, perRepoWIFReposExplicit, workflowHostReposExplicit, allowedWorkflowFilesExplicit bool, tracing mintTracingConfig) error {
 	if appSet == "" {
 		appSet = appsetup.DefaultAppSet
 	}
 	if err := appsetup.ValidateAppSet(appSet); err != nil {
 		return fmt.Errorf("invalid --app-set: %w", err)
+	}
+
+	// A durable deploy must state its collector authentication choice
+	// explicitly: headers are stored under a per-deploy secret name, so a
+	// deploy that omits both flags would silently export without
+	// authentication rather than keep the previous collector's headers.
+	if tracing.enabled() && previewAlias == "" && tracing.headers == nil && !tracing.noHeaders {
+		return fmt.Errorf("durable deploys with an OTLP endpoint require --otlp-headers-file or --otlp-no-headers, so the collector authentication is stated explicitly")
 	}
 
 	accountID, err := cf.ResolveCloudflareAuth(ctx)
@@ -905,9 +997,6 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 	// self-contained. "Flag omitted" means the var is not set at all
 	// (not preserved from a prior version).
 	cfEnvVars := make(map[string]string)
-	if allowedOrgs != "" || allowedOrgsExplicit {
-		cfEnvVars["ALLOWED_ORGS"] = allowedOrgs
-	}
 	if perRepoWIFRepos != "" || perRepoWIFReposExplicit {
 		cfEnvVars["PER_REPO_WIF_REPOS"] = perRepoWIFRepos
 	}
@@ -977,6 +1066,16 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 		if customDomain != "" && previewAlias == "" {
 			printer.StepInfo(fmt.Sprintf("Would attach custom domain %s (zone ID resolved at deploy time)", customDomain))
 		}
+		if tracing.enabled() {
+			printer.StepInfo(fmt.Sprintf("Would stamp OTLP traces endpoint %s into the WASM binary (deployment %s)", tracing.endpointOrigin(), cf.TraceDeploymentName(workerName, previewAlias)))
+			if tracing.headers != nil && previewAlias == "" {
+				printer.StepInfo(fmt.Sprintf("Would store %d collector header(s) as a Worker secret named %s_<random>, unique to this deploy", tracing.headerCount, cf.TraceHeadersSecretName))
+			} else if tracing.headers != nil {
+				printer.StepInfo(fmt.Sprintf("Would store %d collector header(s) as Worker secret %s", tracing.headerCount, cf.TraceHeadersSecretName))
+			} else if previewAlias != "" {
+				printer.StepInfo(fmt.Sprintf("Would bind Worker secret %s to an empty value for the preview", cf.TraceHeadersSecretName))
+			}
+		}
 		if pemDir != "" {
 			if _, err := validatePEMDir(pemDir, roles); err != nil {
 				return err
@@ -1007,7 +1106,7 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 		}
 
 		// Set ROLE_APP_IDS as an env var so the Worker receives it
-		// via --var during deploy (same path as ALLOWED_ORGS etc.).
+		// via --var during deploy (same path as PER_REPO_WIF_REPOS etc.).
 		cfEnvVars["ROLE_APP_IDS"] = string(roleAppIDsJSON)
 	}
 
@@ -1019,6 +1118,41 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 	var cfSecrets map[string][]byte
 	if previewAlias != "" && len(agentPEMs) > 0 {
 		cfSecrets = cf.PEMSecretsFromRoles(agentPEMs)
+	}
+	// Collector headers follow the same split: version-scoped secret for
+	// previews, wrangler secret put after deploy for durable Workers.
+	// A traced preview always binds the secret explicitly, to the
+	// supplied headers or to an empty value, so it never depends on how
+	// wrangler treats an omitted binding (the durable Worker's collector
+	// credentials must not reach a preview's newly stamped endpoint).
+	if previewAlias != "" && tracing.enabled() {
+		if cfSecrets == nil {
+			cfSecrets = make(map[string][]byte, 1)
+		}
+		headers := tracing.headers
+		if headers == nil {
+			headers = []byte{}
+		}
+		cfSecrets[cf.TraceHeadersSecretName] = headers
+	}
+	var tracingStamp cf.TracingStamp
+	if tracing.enabled() {
+		tracingStamp = cf.TracingStamp{
+			Endpoint:   tracing.endpoint,
+			Deployment: cf.TraceDeploymentName(workerName, previewAlias),
+		}
+		// A durable build reads its collector headers from a secret
+		// name unique to this deploy. The endpoint and the secret name
+		// are stamped into the same immutable build, so whichever build
+		// ends up live can only read headers its own deploy stored, even
+		// when two deploys overlap.
+		if previewAlias == "" {
+			secretName, err := cf.NewTraceHeadersSecretName()
+			if err != nil {
+				return err
+			}
+			tracingStamp.HeadersSecret = secretName
+		}
 	}
 
 	// Resolve zone ID early when custom domain is set. This validates
@@ -1049,6 +1183,7 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 		ZoneID:       resolvedZoneID,
 		CustomDomain: customDomain,
 		StatusGitHub: statusGitHub,
+		Tracing:      tracingStamp,
 	}
 
 	wrangler := mintCFWranglerFactory(accountID)
@@ -1089,6 +1224,21 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 		printer.StepDone(fmt.Sprintf("PEM secrets for %d roles included in deploy via --secrets-file", len(agentPEMs)))
 	}
 
+	// Store collector headers on the durable Worker under the secret name
+	// stamped into this build. No previous collector's secret is ever
+	// read by this build, so until this put the new endpoint receives no
+	// headers (never another collector's). The secret put rolls out a new
+	// version, so isolates started before it (which read no headers) are
+	// replaced.
+	if tracing.headers != nil && previewAlias == "" {
+		printer.StepStart("Storing collector headers secret on Worker")
+		if err := provisioner.StoreTraceHeaders(ctx, tracing.headers); err != nil {
+			printer.StepFail("Failed to store collector headers secret")
+			return fmt.Errorf("storing collector headers (re-run is safe): %w", err)
+		}
+		printer.StepDone(fmt.Sprintf("Stored %d collector header(s) as %s", tracing.headerCount, tracingStamp.HeadersSecret))
+	}
+
 	printer.Blank()
 
 	summaryLines := []string{
@@ -1112,7 +1262,6 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 		value    string
 		explicit bool
 	}{
-		{"ALLOWED_ORGS", allowedOrgs, allowedOrgsExplicit},
 		{"PER_REPO_WIF_REPOS", perRepoWIFRepos, perRepoWIFReposExplicit},
 		{"WORKFLOW_HOST_REPOS", workflowHostRepos, workflowHostReposExplicit},
 		{"ALLOWED_WORKFLOW_FILES", allowedWorkflowFiles, allowedWorkflowFilesExplicit},
@@ -1122,6 +1271,11 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 		} else if ev.explicit {
 			summaryLines = append(summaryLines, fmt.Sprintf("%s: (cleared)", ev.key))
 		}
+	}
+	if tracing.enabled() {
+		summaryLines = append(summaryLines, fmt.Sprintf("Tracing: exporting to %s", tracing.endpointOrigin()))
+	} else {
+		summaryLines = append(summaryLines, "Tracing: disabled")
 	}
 	summaryLines = append(summaryLines,
 		fmt.Sprintf("Version: %s", version),
@@ -1138,21 +1292,14 @@ func newMintEnrollCmd() *cobra.Command {
 	var dryRun bool
 
 	cmd := &cobra.Command{
-		Use:   "enroll <org|owner/repo>",
-		Short: "Enroll an org or repo in the token mint",
-		Long: `Performs full enrollment of an organization or per-repo into an existing mint.
+		Use:   "enroll <owner/repo>",
+		Short: "Enroll a repo in the token mint",
+		Long: `Performs full enrollment of a repository into an existing mint.
 
-Per-org enrollment (fullsend mint enroll acme):
-  - Registers the org in ALLOWED_ORGS
-  - Updates the WIF provider condition
-  - Requires role PEM secrets to already exist (fullsend-{role}-app-pem)
-  - Requires shared role app IDs to already be configured on the mint
-
-Per-repo enrollment (fullsend mint enroll acme/widget):
+Repository enrollment (fullsend mint enroll acme/widget):
   - Adds repo to PER_REPO_WIF_REPOS
   - Creates a dedicated WIF provider for the repo
-  - Does NOT add the owner to ALLOWED_ORGS (per-repo callers are
-    authorized independently of ALLOWED_ORGS)
+  - The mint authorizes callers via PER_REPO_WIF_REPOS only
   - Does NOT grant any IAM roles; Vertex AI access is provisioned
     separately via 'fullsend inference provision'
 
@@ -1175,16 +1322,17 @@ Required IAM roles on the mint project:
 			}
 
 			arg := args[0]
+			if !strings.Contains(arg, "/") {
+				return errMintEnrollOrgRemoved(arg)
+			}
+
 			printer := ui.New(os.Stdout)
 			ctx := cmd.Context()
 
 			printer.Banner(Version())
 			printer.Blank()
 
-			if strings.Contains(arg, "/") {
-				return runMintEnrollRepo(ctx, printer, arg, project, region, dryRun)
-			}
-			return runMintEnrollOrg(ctx, printer, arg, project, region, dryRun)
+			return runMintEnrollRepo(ctx, printer, arg, project, region, dryRun)
 		},
 	}
 
@@ -1195,168 +1343,12 @@ Required IAM roles on the mint project:
 	return cmd
 }
 
-// enrollmentVerifier reads mint enrollment state for post-write verification.
-type enrollmentVerifier interface {
-	GetServiceRevisionInfo(ctx context.Context) (*gcf.ServiceRevisionInfo, error)
-	GetServiceTrafficEnvVars(ctx context.Context) (map[string]string, error)
-}
-
-// verifyEnrollment checks the Cloud Run revision state after enrollment and
-// performs post-write verification by reading back the traffic-serving
-// revision's env vars to confirm the enrollment took effect.
-func verifyEnrollment(ctx context.Context, printer *ui.Printer, provisioner enrollmentVerifier, org string, project string) {
-	// Step 4a: Verify revision state.
-	printer.StepStart("Verifying Cloud Run revision state")
-	revInfo, revErr := provisioner.GetServiceRevisionInfo(ctx)
-	if revErr != nil {
-		printer.StepWarn(fmt.Sprintf("Could not verify revision state: %v", revErr))
-	} else if revInfo == nil || revInfo.TrafficRevisionShort == "" {
-		printer.StepWarn("Could not determine traffic-serving revision")
-	} else if revInfo.TemplateMatchesTraffic {
-		if revInfo.TrafficPercent > 0 {
-			printer.StepDone(fmt.Sprintf("Traffic: %s (%d%%)", revInfo.TrafficRevisionShort, revInfo.TrafficPercent))
-		} else {
-			printer.StepDone(fmt.Sprintf("Traffic: %s", revInfo.TrafficRevisionShort))
-		}
-	} else {
-		printer.StepWarn(fmt.Sprintf("Traffic still on %s — new revision may not be serving", revInfo.TrafficRevisionShort))
-	}
-
-	// Step 4b: Post-write verification — read back the traffic-serving
-	// revision's env vars and confirm the enrollment took effect.
-	// Reuse env vars from GetServiceRevisionInfo when available to avoid
-	// a redundant API round-trip; fall back to GetServiceTrafficEnvVars
-	// if revision info was unavailable.
-	printer.StepStart("Post-write verification")
-	var verifyEnvVars map[string]string
-	if revErr == nil && revInfo != nil && revInfo.TrafficEnvVars != nil {
-		verifyEnvVars = revInfo.TrafficEnvVars
-	} else {
-		var verifyErr error
-		verifyEnvVars, verifyErr = provisioner.GetServiceTrafficEnvVars(ctx)
-		if verifyErr != nil {
-			printer.StepWarn(fmt.Sprintf("Could not read traffic revision env vars: %v", verifyErr))
-			return
-		}
-	}
-
-	orgPresent := false
-	allowedOrgs := verifyEnvVars["ALLOWED_ORGS"]
-	if isPublicMintRepos(verifyEnvVars["PER_REPO_WIF_REPOS"]) {
-		orgPresent = true
-	} else {
-		for _, o := range strings.Split(allowedOrgs, ",") {
-			if strings.EqualFold(strings.TrimSpace(o), org) {
-				orgPresent = true
-				break
-			}
-		}
-	}
-
-	if orgPresent {
-		if isPublicMintRepos(verifyEnvVars["PER_REPO_WIF_REPOS"]) {
-			printer.StepDone("Public mint mode (PER_REPO_WIF_REPOS=*) — all orgs allowed")
-		} else {
-			orgCount := 0
-			for _, o := range strings.Split(allowedOrgs, ",") {
-				if strings.TrimSpace(o) != "" && strings.TrimSpace(o) != gcf.PlaceholderOrg {
-					orgCount++
-				}
-			}
-			printer.StepDone(fmt.Sprintf("ALLOWED_ORGS: %d orgs (%s present)", orgCount, org))
-		}
-	} else {
-		printer.StepFail("Post-write verification FAILED")
-		printer.StepInfo(fmt.Sprintf("ALLOWED_ORGS: %s MISSING from traffic-serving revision", org))
-		printer.StepInfo("The enrollment may not have taken effect on the serving revision.")
-		printer.StepInfo(fmt.Sprintf("Run 'fullsend mint status --project=%s' to investigate.", project))
-	}
-}
-
-func runMintEnrollOrg(ctx context.Context, printer *ui.Printer, org, project, region string, dryRun bool) error {
-	originalCaseOrg := org
-	org = strings.ToLower(org)
-	if err := validateOrgName(org); err != nil {
-		return err
-	}
-	if org == gcf.PlaceholderOrg {
-		return fmt.Errorf("cannot enroll reserved placeholder org %q", org)
-	}
-
-	printer.Header("Enrolling org " + org + " in mint")
-	printer.Blank()
-
-	gcpClient := mintGCFClientFactory(project)
-	provisioner := gcf.NewProvisioner(gcf.Config{
-		ProjectID:  project,
-		Region:     region,
-		GitHubOrgs: []string{org},
-	}, gcpClient)
-
-	printer.StepStart("Discovering mint infrastructure")
-	discovery, err := provisioner.DiscoverMint(ctx)
-	if err != nil {
-		printer.StepFail("Mint discovery failed")
-		return fmt.Errorf("mint not found in project %s region %s: %w", project, region, err)
-	}
-	printer.StepDone(fmt.Sprintf("Found mint at %s", discovery.URL))
-
-	if len(mintcore.RoleOnlyAppIDs(discovery.RoleAppIDs)) == 0 {
-		return fmt.Errorf("mint has no role app IDs configured — bootstrap with 'mint deploy --pem-dir' or 'admin install' first")
-	}
-
-	trafficEnv, err := provisioner.GetServiceTrafficEnvVars(ctx)
-	if err != nil {
-		return fmt.Errorf("reading mint env vars: %w", err)
-	}
-	if isPublicMintRepos(trafficEnv["PER_REPO_WIF_REPOS"]) {
-		printer.Blank()
-		printer.StepInfo("Mint is in public mode (PER_REPO_WIF_REPOS=*) — org registration is not required")
-		printer.Blank()
-		printer.Summary("Enrollment complete", []string{
-			fmt.Sprintf("Organization: %s", org),
-			fmt.Sprintf("Mint URL: %s", discovery.URL),
-			"Mode: public (all orgs allowed)",
-		})
-		return nil
-	}
-
-	if dryRun {
-		printer.Blank()
-		printer.StepInfo("Dry run — no changes will be made")
-		printer.Blank()
-		printer.StepInfo(fmt.Sprintf("  Would add %s to ALLOWED_ORGS", org))
-		printer.StepInfo(fmt.Sprintf("  Would add %s to WIF provider condition", originalCaseOrg))
-		printer.Blank()
-		printer.StepInfo("To grant Agent Platform access, run 'fullsend inference provision' separately")
-		return nil
-	}
-
-	printer.StepStart("Registering org in mint")
-	if err := provisioner.EnsureOrgInMint(ctx, discovery.URL, org); err != nil {
-		printer.StepFail("Failed to register org")
-		return fmt.Errorf("registering org: %w", err)
-	}
-	printer.StepDone("Org registered in mint")
-
-	verifyEnrollment(ctx, printer, provisioner, org, project)
-
-	printer.StepStart("Updating WIF provider condition")
-	if err := provisioner.EnsureOrgInWIFCondition(ctx, originalCaseOrg); err != nil {
-		printer.StepFail("Failed to update WIF condition")
-		return fmt.Errorf("updating WIF condition: %w", err)
-	}
-	printer.StepDone("WIF condition updated")
-
-	printer.Blank()
-	printer.Summary("Enrollment complete", []string{
-		fmt.Sprintf("Organization: %s", org),
-		fmt.Sprintf("Mint URL: %s", discovery.URL),
-		fmt.Sprintf("Next: fullsend inference provision %s --project=<inference-gcp-project>", org),
-		fmt.Sprintf("Then: fullsend github setup %s --mint-url=%s --inference-project=<project> --inference-wif-provider=<wif-provider>", org, discovery.URL),
-	})
-
-	return nil
+// errMintEnrollOrgRemoved is returned when 'mint enroll' receives a bare
+// organization name. Organization enrollment registered the org in
+// ALLOWED_ORGS, which the mint no longer uses to authorize callers; per-repo
+// enrollment (PER_REPO_WIF_REPOS) is the only supported model (ADR 0044).
+func errMintEnrollOrgRemoved(target string) error {
+	return fmt.Errorf("fullsend mint enroll requires an owner/repo target, got %q: per-org enrollment has been removed; enroll each repository with 'fullsend mint enroll <owner/repo>'", target)
 }
 
 func runMintEnrollRepo(ctx context.Context, printer *ui.Printer, repoFullName, project, region string, dryRun bool) error {
@@ -1463,18 +1455,15 @@ func newMintUnenrollCmd() *cobra.Command {
 	var yolo bool
 
 	cmd := &cobra.Command{
-		Use:   "unenroll <org|owner/repo>",
-		Short: "Remove an org or repo from the token mint",
-		Long: `Reverses enrollment by removing the org/repo from mint env vars.
-
-Org unenroll removes the org from ALLOWED_ORGS and the WIF provider condition.
-Role PEM secrets and shared role app IDs are not modified during unenroll.
+		Use:   "unenroll <owner/repo>",
+		Short: "Remove a repo from the token mint",
+		Long: `Reverses repository enrollment by removing the repo from mint env vars.
 
 Repo unenroll removes the repo from PER_REPO_WIF_REPOS. By default, the
 repo's WIF provider is disabled (not deleted). Use --delete-provider for
-permanent removal.
+permanent removal. Role PEM secrets and shared role app IDs are not modified.
 
-Requires typing the org/repo name to confirm (unless --dry-run or --yolo).
+Requires typing the owner/repo name to confirm (unless --dry-run or --yolo).
 
 Required IAM roles on the mint project:
   - roles/cloudfunctions.viewer                (read Cloud Function metadata)
@@ -1493,10 +1482,8 @@ Required IAM roles on the mint project:
 			}
 
 			arg := args[0]
-			isRepo := strings.Contains(arg, "/")
-
-			if !isRepo && deleteProvider {
-				return fmt.Errorf("--delete-provider applies to repo unenroll, not org unenroll")
+			if !strings.Contains(arg, "/") {
+				return errMintUnenrollOrgRemoved(arg)
 			}
 
 			printer := ui.New(os.Stdout)
@@ -1505,10 +1492,7 @@ Required IAM roles on the mint project:
 			printer.Banner(Version())
 			printer.Blank()
 
-			if isRepo {
-				return runMintUnenrollRepo(ctx, printer, arg, project, region, deleteProvider, dryRun, yolo, os.Stdin)
-			}
-			return runMintUnenrollOrg(ctx, printer, arg, project, region, dryRun, yolo, os.Stdin)
+			return runMintUnenrollRepo(ctx, printer, arg, project, region, deleteProvider, dryRun, yolo, os.Stdin)
 		},
 	}
 
@@ -1547,91 +1531,12 @@ func confirmUnenroll(printer *ui.Printer, target string, reader *bufio.Reader, i
 	return nil
 }
 
-func runMintUnenrollOrg(ctx context.Context, printer *ui.Printer, org, project, region string, dryRun, yolo bool, stdin *os.File) error {
-	originalCaseOrg := org
-	org = strings.ToLower(org)
-	if err := validateOrgName(org); err != nil {
-		return err
-	}
-	if org == gcf.PlaceholderOrg {
-		return fmt.Errorf("cannot unenroll reserved placeholder org %q", org)
-	}
-
-	printer.Header("Unenrolling org " + org + " from mint")
-	printer.Blank()
-
-	gcpClient := mintGCFClientFactory(project)
-	provisioner := gcf.NewProvisioner(gcf.Config{
-		ProjectID:  project,
-		Region:     region,
-		GitHubOrgs: []string{org},
-	}, gcpClient)
-
-	// Step 1: Verify mint exists.
-	printer.StepStart("Verifying mint infrastructure")
-	if _, err := provisioner.DiscoverMint(ctx); err != nil {
-		if errors.Is(err, gcf.ErrFunctionNotFound) {
-			printer.StepFail("Mint not installed")
-			return fmt.Errorf("mint not found in project %s region %s — nothing to unenroll", project, region)
-		}
-		printer.StepFail("Mint discovery failed")
-		return fmt.Errorf("discovering mint: %w", err)
-	}
-	printer.StepDone("Mint verified")
-
-	trafficEnv, err := provisioner.GetServiceTrafficEnvVars(ctx)
-	if err != nil {
-		return fmt.Errorf("reading mint env vars: %w", err)
-	}
-	if isPublicMintRepos(trafficEnv["PER_REPO_WIF_REPOS"]) {
-		printer.Blank()
-		printer.StepInfo("Mint is in public mode (PER_REPO_WIF_REPOS=*) — individual org unenroll is not supported")
-		printer.StepInfo("To restrict access, clear PER_REPO_WIF_REPOS=* and set an explicit org list")
-		return nil
-	}
-
-	if dryRun {
-		printer.Blank()
-		printer.StepInfo("Dry run — no changes will be made")
-		printer.Blank()
-		printer.StepInfo(fmt.Sprintf("  Would remove %s from ALLOWED_ORGS", org))
-		printer.StepInfo(fmt.Sprintf("  Would remove %s from WIF provider condition", org))
-		return nil
-	}
-
-	// Confirmation.
-	if !yolo {
-		reader := bufio.NewReader(stdin)
-		isTerminal := term.IsTerminal(int(stdin.Fd()))
-		if err := confirmUnenroll(printer, org, reader, isTerminal); err != nil {
-			return err
-		}
-		printer.Blank()
-	}
-
-	// Step 2: Remove org from ALLOWED_ORGS.
-	printer.StepStart("Removing org from mint env vars")
-	if err := provisioner.RemoveOrgFromMint(ctx, org); err != nil {
-		printer.StepFail("Failed to remove org from mint")
-		return fmt.Errorf("removing org from mint: %w", err)
-	}
-	printer.StepDone("Org removed from mint env vars")
-
-	// Step 3: Remove org from WIF provider condition.
-	printer.StepStart("Updating WIF provider condition")
-	if err := provisioner.RemoveOrgFromWIFCondition(ctx, originalCaseOrg); err != nil {
-		printer.StepFail("Failed to update WIF condition")
-		return fmt.Errorf("updating WIF condition: %w", err)
-	}
-	printer.StepDone("WIF condition updated")
-
-	printer.Blank()
-	printer.Summary("Unenrollment complete", []string{
-		fmt.Sprintf("Organization: %s", org),
-		"Org removed from ALLOWED_ORGS",
-	})
-
-	return nil
+// errMintUnenrollOrgRemoved is returned when 'mint unenroll' receives a bare
+// organization name. Organization unenrollment removed the org from
+// ALLOWED_ORGS, which the mint no longer reads; per-repo enrollment
+// (PER_REPO_WIF_REPOS) is the only supported model (ADR 0044).
+func errMintUnenrollOrgRemoved(target string) error {
+	return fmt.Errorf("fullsend mint unenroll requires an owner/repo target, got %q: per-org unenrollment has been removed; unenroll each repository with 'fullsend mint unenroll <owner/repo>' (see the mint administration guide for cleaning up legacy org entries)", target)
 }
 
 func runMintUnenrollRepo(ctx context.Context, printer *ui.Printer, repoFullName, project, region string, deleteProvider, dryRun, yolo bool, stdin *os.File) error {
@@ -1743,26 +1648,79 @@ func runMintUnenrollRepo(ctx context.Context, printer *ui.Printer, repoFullName,
 	return nil
 }
 
+// mintStatusResolveToken resolves a GitHub token for API-based status
+// queries. Overridden in tests.
+var mintStatusResolveToken = resolveToken
+
 func newMintStatusCmd() *cobra.Command {
 	var project string
 	var region string
+	var mintURL string
 
 	cmd := &cobra.Command{
 		Use:   "status [org]",
-		Short: "Show mint state, enrolled orgs, and PEM health",
+		Short: "Show mint state, enrolled repos, and PEM health (honors FULLSEND_MINT_URL)",
 		Long: `Read-only health check of the token mint infrastructure.
 
-Shows function info, enrolled orgs, role-app-id mappings, per-repo WIF
-repos, and overall health status. If an org argument is provided, drills
-into that org's PEM secret status.
+Two modes of operation:
 
-Required IAM roles on the mint project:
+  --mint-url (or FULLSEND_MINT_URL):
+    Queries GET /v1/status on the mint service using auto-discovered
+    GitHub-based authentication. Tries GitHub Actions OIDC first, then
+    falls back to GH_TOKEN / GITHUB_TOKEN / gh auth token. No cloud
+    IAM required. The resolved credential (OIDC token or GitHub user
+    token) is sent as a bearer token to the --mint-url endpoint, so
+    only point this at a mint service you trust with that credential.
+    The GH_TOKEN/GITHUB_TOKEN/gh-auth-token fallback only succeeds
+    against a mint deployed with --status-auth=github
+    --status-github-group=ORG/TEAM; a default (OIDC-only) mint rejects
+    it with HTTP 401.
+
+  --project:
+    Reads mint state directly from GCP infrastructure (Cloud Function
+    metadata, Secret Manager). Requires GCP viewer IAM roles.
+
+When --mint-url is provided, --project is ignored and the API-based
+path is used. When --mint-url is not provided and FULLSEND_MINT_URL
+is set, the API-based path is used unless --project is also provided,
+in which case the command returns an error to prevent silent mode
+ambiguity.
+
+Shows function info, enrolled repos, role-app-id mappings, per-repo WIF
+repos, and overall health status. If an org argument is provided in
+--project mode, drills into that org's PEM secret status and warns when
+no repository under that org is in PER_REPO_WIF_REPOS.
+
+Required IAM roles on the mint project (--project mode only):
   - roles/cloudfunctions.viewer                   (read Cloud Function metadata)
   - roles/secretmanager.viewer                    (list and read secret metadata)`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			printer := ui.New(os.Stdout)
+
+			// Resolve mint URL from flag or env.
+			// When --mint-url is explicitly provided (even as ""),
+			// skip the env-var fallback so the user can force GCP mode.
+			mintURLFromEnv := false
+			if !cmd.Flags().Changed("mint-url") {
+				mintURL = os.Getenv("FULLSEND_MINT_URL")
+				mintURLFromEnv = mintURL != ""
+			}
+
+			// Route to API-based or GCP-based path.
+			if mintURL != "" {
+				if mintURLFromEnv && cmd.Flags().Changed("project") {
+					return fmt.Errorf("ambiguous mode: FULLSEND_MINT_URL is set and --project was provided; unset the env var to use GCP-based mode, or omit --project to use the API-based mode")
+				}
+				if len(args) > 0 {
+					return fmt.Errorf("org argument is not supported with --mint-url")
+				}
+				return runMintStatusAPI(cmd.Context(), printer, mintURL)
+			}
+
+			// GCP-based path: --project required.
 			if project == "" {
-				return fmt.Errorf("--project is required")
+				return fmt.Errorf("--mint-url, FULLSEND_MINT_URL, or --project is required")
 			}
 			if !gcf.ValidateProjectID(project) {
 				return fmt.Errorf("invalid GCP project ID: %q", project)
@@ -1779,14 +1737,14 @@ Required IAM roles on the mint project:
 				}
 			}
 
-			printer := ui.New(os.Stdout)
 			ctx := cmd.Context()
 
 			return runMintStatus(ctx, printer, project, region, org)
 		},
 	}
 
-	cmd.Flags().StringVar(&project, "project", "", "GCP project ID (required)")
+	cmd.Flags().StringVar(&mintURL, "mint-url", "", "mint service URL for API-based status (default: $FULLSEND_MINT_URL)")
+	cmd.Flags().StringVar(&project, "project", "", "GCP project ID (for direct infrastructure queries)")
 	cmd.Flags().StringVar(&region, "region", "us-central1", "GCP region")
 
 	return cmd
@@ -1909,21 +1867,26 @@ func runMintStatus(ctx context.Context, printer *ui.Printer, project, region, or
 		}
 	}
 
-	// Parse enrolled orgs from traffic-serving env vars when available.
+	// Parse enrolled orgs from traffic-serving env vars when available. Env
+	// vars that GetServiceRevisionInfo substituted from the service template
+	// are not authoritative, so read the traffic revision directly instead.
+	// When no serving revision was resolved at all, the direct read would
+	// also fall back to the template, so leave enrollment unverified.
 	var trafficEnv map[string]string
-	if revErr == nil && revInfo != nil && revInfo.TrafficEnvVars != nil {
+	// GetServiceRevisionInfo can return partial info (no resolved traffic
+	// revision, no fallback flag), so do not depend on the fallback flag.
+	noServingRevision := revErr == nil && revInfo != nil && revInfo.TrafficRevisionShort == ""
+	// When the revision query itself failed, the direct read cannot tell
+	// whether it resolved a serving revision or fell back to the service
+	// template (with a nil error), so leave enrollment unverified.
+	if revErr == nil && revInfo != nil && revInfo.TrafficEnvVars != nil && !revInfo.TrafficEnvVarsFromTemplate {
 		trafficEnv = revInfo.TrafficEnvVars
-	} else {
+	} else if revErr == nil && !noServingRevision {
 		var envErr error
 		trafficEnv, envErr = provisioner.GetServiceTrafficEnvVars(ctx)
 		if envErr != nil {
 			trafficEnv = nil
 		}
-	}
-
-	enrolledOrgs := parseAllowedOrgs("")
-	if trafficEnv != nil {
-		enrolledOrgs = parseAllowedOrgs(trafficEnv["ALLOWED_ORGS"])
 	}
 
 	roleAppIDs := discovery.RoleAppIDs
@@ -1942,32 +1905,6 @@ func runMintStatus(ctx context.Context, printer *ui.Printer, project, region, or
 		printer.StepInfo("  Public (PER_REPO_WIF_REPOS=*)")
 	}
 
-	if org != "" && !publicMint {
-		found := false
-		for _, o := range enrolledOrgs {
-			if o == org {
-				found = true
-				break
-			}
-		}
-		if !found {
-			printer.Blank()
-			printer.StepWarn(fmt.Sprintf("%s is not in ALLOWED_ORGS", org))
-		}
-	}
-
-	printer.Blank()
-	printer.Header("Enrolled Organizations")
-	if publicMint {
-		printer.StepInfo("  * (public mode — all orgs)")
-	} else if len(enrolledOrgs) == 0 {
-		printer.StepInfo("  (none)")
-	} else {
-		for _, o := range enrolledOrgs {
-			printer.StepInfo("  " + o)
-		}
-	}
-
 	printer.Blank()
 	printer.Header("Role App IDs")
 	roleKeys := make([]string, 0, len(roleOnlyIDs))
@@ -1983,14 +1920,32 @@ func runMintStatus(ctx context.Context, printer *ui.Printer, project, region, or
 		}
 	}
 
+	// Prefer the traffic-serving revision's PER_REPO_WIF_REPOS: enrollment
+	// updates Cloud Run directly, so Cloud Functions metadata can be stale.
+	perRepoWIFRepos := discovery.PerRepoWIFRepos
+	if trafficEnv != nil {
+		perRepoWIFRepos = mintcore.SplitCSV(trafficEnv["PER_REPO_WIF_REPOS"])
+		sort.Strings(perRepoWIFRepos)
+	}
+
 	printer.Blank()
 	printer.Header("Per-Repo WIF Repos")
-	if len(discovery.PerRepoWIFRepos) == 0 {
+	if trafficEnv == nil {
+		printer.StepWarn("Could not read the traffic-serving revision; enrollment is unverified (Cloud Functions metadata shown)")
+	}
+	if len(perRepoWIFRepos) == 0 {
 		printer.StepInfo("  (none)")
 	} else {
-		for _, r := range discovery.PerRepoWIFRepos {
+		for _, r := range perRepoWIFRepos {
 			printer.StepInfo("  " + r)
 		}
+	}
+
+	// Callers are authorized per repository, so an org drill-down checks
+	// whether any repo under that org is enrolled.
+	if org != "" && !publicMint && trafficEnv != nil && !hasEnrolledRepoInOrg(perRepoWIFRepos, org) {
+		printer.Blank()
+		printer.StepWarn(fmt.Sprintf("No %s/* repository is in PER_REPO_WIF_REPOS", org))
 	}
 
 	// Workflow host repos.
@@ -2032,23 +1987,105 @@ func runMintStatus(ctx context.Context, printer *ui.Printer, project, region, or
 	// Step 4: Determine health.
 	health := "healthy"
 	var healthReasons []string
-	if len(enrolledOrgs) == 0 {
+	// Callers are authorized by PER_REPO_WIF_REPOS (or public mode), not
+	// ALLOWED_ORGS, so enrollment health keys off the repository list.
+	if trafficEnv == nil {
 		health = "degraded"
-		healthReasons = append(healthReasons, "no enrolled orgs")
+		healthReasons = append(healthReasons, "enrollment unverified: traffic-serving revision unreadable")
+	} else if len(perRepoWIFRepos) == 0 {
+		health = "degraded"
+		healthReasons = append(healthReasons, "no enrolled repos")
 	}
 	if revErr == nil && !revInfo.TemplateMatchesTraffic {
 		health = "degraded"
 		healthReasons = append(healthReasons, "template diverges from traffic-serving revision")
 	}
 
+	// The "*" wildcard means unrestricted public mode, not one enrolled repo.
+	enrolledSummary := fmt.Sprintf("Enrolled repos: %d", len(perRepoWIFRepos))
+	if trafficEnv == nil {
+		enrolledSummary = "Enrolled repos: unverified"
+	} else if isPublicMintRepos(strings.Join(perRepoWIFRepos, ",")) {
+		enrolledSummary = "Enrolled repos: unrestricted (public mode)"
+	}
+
 	printer.Blank()
 	summaryItems := []string{
 		fmt.Sprintf("Health: %s", health),
-		fmt.Sprintf("Enrolled orgs: %d", len(enrolledOrgs)),
+		enrolledSummary,
 	}
 	if len(healthReasons) > 0 {
 		summaryItems = append(summaryItems, fmt.Sprintf("Issues: %s", strings.Join(healthReasons, "; ")))
 	}
+	printer.Summary("Status", summaryItems)
+
+	return nil
+}
+
+func runMintStatusAPI(ctx context.Context, printer *ui.Printer, mintURL string) error {
+	printer.Banner(Version())
+	printer.Blank()
+	printer.Header("Mint Status (API)")
+	printer.Blank()
+
+	printer.StepStart("Authenticating to /v1/status")
+	result, authMethod, err := mintclient.QueryStatus(ctx, mintclient.StatusRequest{
+		MintURL: mintURL,
+	}, mintStatusResolveToken)
+	if err != nil {
+		if errors.Is(err, mintclient.ErrAuthenticationFailed) {
+			printer.StepFail("Authentication failed")
+		} else {
+			printer.StepFail("Status query failed")
+		}
+		return fmt.Errorf("querying mint status: %w", err)
+	}
+	printer.StepDone(fmt.Sprintf("Authenticated via %s", authMethod))
+
+	// Display status facts.
+	printer.Blank()
+	printer.KeyValue("URL", mintURL)
+
+	if result.Version != "" {
+		printer.KeyValue("Version", result.Version)
+	}
+	if result.Commit != "" {
+		printer.KeyValue("Commit", result.Commit)
+	}
+
+	// OIDC-authenticated status requests report the caller's org.
+	printer.Blank()
+	if result.Org != "" {
+		printer.Header("Caller Organization")
+		printer.StepInfo("  " + result.Org)
+	}
+
+	printer.Blank()
+	printer.Header("Roles")
+	if len(result.Roles) == 0 {
+		printer.StepInfo("  (none)")
+	} else {
+		for _, r := range result.Roles {
+			printer.StepInfo("  " + r)
+		}
+	}
+
+	if len(result.WorkflowHostRepos) > 0 {
+		printer.Blank()
+		printer.Header("Workflow Host Repos")
+		for _, r := range result.WorkflowHostRepos {
+			printer.StepInfo("  " + r)
+		}
+	}
+
+	printer.Blank()
+	summaryItems := []string{
+		fmt.Sprintf("Auth: %s", authMethod),
+	}
+	if result.Org != "" {
+		summaryItems = append(summaryItems, fmt.Sprintf("Org: %s", result.Org))
+	}
+	summaryItems = append(summaryItems, fmt.Sprintf("Roles: %d", len(result.Roles)))
 	printer.Summary("Status", summaryItems)
 
 	return nil
@@ -2060,9 +2097,6 @@ func newMintWorkflowHostCmd() *cobra.Command {
 		Short: "Manage the workflow-host allow-list",
 		Long: `Manage the WORKFLOW_HOST_REPOS allow-list that controls which repositories
 may host workflows calling the mint in per-repo mode.
-
-Per-org callers are not affected — they hard-wire to {org}/.fullsend and
-the upstream fullsend-ai/fullsend repo.
 
 The default workflow-host allow-list contains only fullsend-ai/fullsend.`,
 	}

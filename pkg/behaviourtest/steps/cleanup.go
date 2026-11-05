@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
@@ -47,14 +48,101 @@ func cleanupRetry(logf func(string, ...any), desc string, fn func() error) error
 	return lastErr
 }
 
+// ValidateSlotClean reads the leased repo's config and fails if a previous
+// scenario left mutable state behind (e.g. kill switch on, OWNERS auth
+// enabled). Called when a scenario leases its repo, so stale state is
+// caught before it causes a silent false positive.
+func ValidateSlotClean(w *world.World) error {
+	// Unit tests construct bare worlds with no SCM driver;
+	// there is no remote repo to validate in that case.
+	if w.SCM == nil || w.Org == "" || w.RepoName == "" {
+		return nil
+	}
+	cfgPath := filepath.Join(".fullsend", "config.yaml")
+	cfgData, err := w.SCM.GetFileContent(context.Background(),
+		w.Org, w.RepoName, cfgPath)
+	if err != nil {
+		return nil
+	}
+	// config.base.yaml is not part of the standard scaffold and is
+	// absent on most slots; a missing-file error just means there is
+	// no base layer to check, not a validation failure.
+	baseData, err := w.SCM.GetFileContent(context.Background(),
+		w.Org, w.RepoName, filepath.Join(".fullsend", "config.base.yaml"))
+	if err != nil {
+		baseData = nil
+	}
+	cfg, err := config.ParsePerRepoConfigWriterLayered(cfgData, baseData)
+	if err != nil {
+		// Fall back to an overlay-only parse so the
+		// overlay is still checked, and flag the malformed base
+		// itself as stale state worth reporting.
+		overlayCfg, overlayErr := config.ParsePerRepoConfigWriter(cfgData)
+		if overlayErr != nil {
+			return nil
+		}
+		stale := []string{fmt.Sprintf("config.base.yaml is malformed: %v", err)}
+		if overlayCfg.IsKillSwitchActive() {
+			stale = append(stale, "kill_switch is active")
+		}
+		if overlayCfg.IsOwnersFileAuthEnabled() {
+			stale = append(stale, "owners_file authorization is enabled")
+		}
+		return fmt.Errorf("repo slot has stale state from a previous scenario (cleanup likely failed): %s", strings.Join(stale, ", "))
+	}
+	var stale []string
+	if cfg.IsKillSwitchActive() {
+		stale = append(stale, "kill_switch is active")
+	}
+	if cfg.IsOwnersFileAuthEnabled() {
+		stale = append(stale, "owners_file authorization is enabled")
+	}
+	if len(stale) > 0 {
+		return fmt.Errorf("repo slot has stale state from a previous scenario (cleanup likely failed): %s", strings.Join(stale, ", "))
+	}
+	return nil
+}
+
+// CleanupScenario undoes the scenario's changes to the leased repository
+// and the repositories named after it. Every mutation is made by name,
+// and the slot may have been taken over by another holder since the
+// scenario began (a lessee that outlives the pool's GC deadline, for
+// example). When World.LeaseOwned is set, each mutation, each retry of
+// one, and each request resend inside the forge client first verifies
+// the scenario still owns its lease; a lost or unverifiable lease skips
+// the mutation (logged) rather than touching the new holder's
+// resources. Local cleanup (mock servers, artifact directories) is
+// unaffected.
 func CleanupScenario(w *world.World) {
-	ctx := context.Background()
+	ctx := mutationCtx(w)
+
+	// --- Inference gateway config cleanup ---
+	// Restore the pre-scenario config.yaml first, while the leased repo
+	// still exists (suite.afterScenario deallocates it after this returns).
+	if err := guardedCleanupRetry(w, "restore config after inference gateway scenario", func() error {
+		return restoreGatewayConfig(w)
+	}); err != nil {
+		worldLogf(w, "behaviour cleanup: restore config after inference gateway scenario: %v", err)
+	}
+	if err := guardedCleanupRetry(w, "delete inference gateway api-key secret", func() error {
+		return deleteGatewayAPIKeySecret(w)
+	}); err != nil {
+		worldLogf(w, "behaviour cleanup: delete inference gateway api-key secret: %v", err)
+	}
 
 	// --- Issue / PR cleanup ---
 	if w.IssueNumber > 0 {
 		desc := fmt.Sprintf("close issue #%d", w.IssueNumber)
-		if err := cleanupRetry(w.Logf, desc, func() error {
+		if err := guardedCleanupRetry(w, desc, func() error {
 			return w.SCM.CloseIssue(ctx, w.RepoOwner, w.RepoName, w.IssueNumber)
+		}); err != nil {
+			worldLogf(w, "behaviour cleanup: %s: %v", desc, err)
+		}
+	}
+	for _, number := range w.CreatedIssueNumbers {
+		desc := fmt.Sprintf("close agent-filed issue #%d", number)
+		if err := guardedCleanupRetry(w, desc, func() error {
+			return w.SCM.CloseIssue(ctx, w.RepoOwner, w.RepoName, number)
 		}); err != nil {
 			worldLogf(w, "behaviour cleanup: %s: %v", desc, err)
 		}
@@ -62,7 +150,7 @@ func CleanupScenario(w *world.World) {
 	if w.ForkPRNumber > 0 {
 		// Fork PRs are opened against the base repo, so close on base repo.
 		desc := fmt.Sprintf("close fork PR #%d", w.ForkPRNumber)
-		if err := cleanupRetry(w.Logf, desc, func() error {
+		if err := guardedCleanupRetry(w, desc, func() error {
 			return w.SCM.CloseIssue(ctx, w.RepoOwner, w.RepoName, w.ForkPRNumber)
 		}); err != nil {
 			worldLogf(w, "behaviour cleanup: %s: %v", desc, err)
@@ -85,7 +173,7 @@ func CleanupScenario(w *world.World) {
 		}
 		var prs []forge.ChangeProposal
 		desc := "list open PRs for namespace sweep"
-		if err := cleanupRetry(w.Logf, desc, func() error {
+		if err := guardedCleanupRetry(w, desc, func() error {
 			var listErr error
 			prs, listErr = w.SCM.ListOpenChangeProposals(ctx, w.RepoOwner, w.RepoName)
 			return listErr
@@ -112,7 +200,7 @@ func CleanupScenario(w *world.World) {
 		}
 		closedPR[number] = true
 		desc := fmt.Sprintf("close PR #%d", number)
-		if err := cleanupRetry(w.Logf, desc, func() error {
+		if err := guardedCleanupRetry(w, desc, func() error {
 			return w.SCM.CloseIssue(ctx, w.RepoOwner, w.RepoName, number)
 		}); err != nil {
 			worldLogf(w, "behaviour cleanup: %s: %v", desc, err)
@@ -125,7 +213,7 @@ func CleanupScenario(w *world.World) {
 		}
 		deletedBranch[branch] = true
 		desc := fmt.Sprintf("delete branch %s", branch)
-		if err := cleanupRetry(w.Logf, desc, func() error {
+		if err := guardedCleanupRetry(w, desc, func() error {
 			return w.SCM.DeleteBranch(ctx, w.RepoOwner, w.RepoName, branch)
 		}); err != nil {
 			if !forge.IsNotFound(err) {
@@ -140,20 +228,30 @@ func CleanupScenario(w *world.World) {
 	// deleting the fork repo removes the branch implicitly, but we
 	// still attempt branch deletion first so partial failures leave
 	// less debris.
+	//
+	// DeleteRepo success (and a subsequent GetRepo 404) does not mean
+	// GitHub has released the name. Uniqueness can lag; givenFork
+	// retries CreateFork on 403 "Name already exists on this account"
+	// rather than polling here, because 404 is not a sufficient signal.
+	//
+	// A fork owned by a test actor (givenActorFork) lives in that
+	// actor's account, so fork-side deletes go through forkSCM, and it
+	// usually shares the base repo's name — the guard compares owner
+	// and name together so it still protects only the base repo.
 	if w.ForkPRBranch != "" && w.ForkOwner != "" && w.ForkRepo != "" {
 		desc := fmt.Sprintf("delete fork branch %s", w.ForkPRBranch)
-		if err := cleanupRetry(w.Logf, desc, func() error {
-			return w.SCM.DeleteBranch(ctx, w.ForkOwner, w.ForkRepo, w.ForkPRBranch)
+		if err := guardedCleanupRetry(w, desc, func() error {
+			return forkSCM(w).DeleteBranch(ctx, w.ForkOwner, w.ForkRepo, w.ForkPRBranch)
 		}); err != nil {
 			if !forge.IsNotFound(err) {
 				worldLogf(w, "behaviour cleanup: %s: %v", desc, err)
 			}
 		}
 	}
-	if w.ForkOwner != "" && w.ForkRepo != "" && w.ForkRepo != w.RepoName {
+	if w.ForkOwner != "" && w.ForkRepo != "" && (w.ForkOwner != w.RepoOwner || w.ForkRepo != w.RepoName) {
 		desc := fmt.Sprintf("delete fork repo %s/%s", w.ForkOwner, w.ForkRepo)
-		if err := cleanupRetry(w.Logf, desc, func() error {
-			return w.SCM.DeleteRepo(ctx, w.ForkOwner, w.ForkRepo)
+		if err := guardedCleanupRetry(w, desc, func() error {
+			return forkSCM(w).DeleteRepo(ctx, w.ForkOwner, w.ForkRepo)
 		}); err != nil {
 			if !forge.IsNotFound(err) {
 				worldLogf(w, "behaviour cleanup: %s: %v", desc, err)
@@ -167,13 +265,40 @@ func CleanupScenario(w *world.World) {
 	// test repo itself.
 	if w.URLHarnessRepoOwner != "" && w.URLHarnessRepoName != "" && w.URLHarnessRepoName != w.RepoName {
 		desc := fmt.Sprintf("delete harness-hosting repo %s/%s", w.URLHarnessRepoOwner, w.URLHarnessRepoName)
-		if err := cleanupRetry(w.Logf, desc, func() error {
+		if err := guardedCleanupRetry(w, desc, func() error {
 			return w.SCM.DeleteRepo(ctx, w.URLHarnessRepoOwner, w.URLHarnessRepoName)
 		}); err != nil {
 			if !forge.IsNotFound(err) {
 				worldLogf(w, "behaviour cleanup: %s: %v", desc, err)
 			}
 		}
+	}
+
+	// --- Mint probe host repo cleanup ---
+	// Probe host repos are ephemeral, like the hosting repos above. The
+	// probe's shim branch on the leased repo is in CreatedBranches and
+	// was deleted with the other branches. The bot-role probe uses the
+	// same host lifecycle.
+	deleteProbeHosts := func(label string, repos []string) {
+		for _, repo := range repos {
+			if repo == "" || repo == w.RepoName {
+				continue
+			}
+			desc := fmt.Sprintf("delete %s host repo %s/%s", label, w.Org, repo)
+			if err := guardedCleanupRetry(w, desc, func() error {
+				return w.SCM.DeleteRepo(ctx, w.Org, repo)
+			}); err != nil {
+				if !forge.IsNotFound(err) {
+					worldLogf(w, "behaviour cleanup: %s: %v", desc, err)
+				}
+			}
+		}
+	}
+	if w.MintProbe != nil {
+		deleteProbeHosts("mint probe", w.MintProbe.CreatedRepos)
+	}
+	if w.BotRoleProbe != nil {
+		deleteProbeHosts("bot-role probe", w.BotRoleProbe.CreatedRepos)
 	}
 
 	// --- Jira mock cleanup ---
@@ -192,6 +317,18 @@ func CleanupScenario(w *world.World) {
 			worldLogf(w, "behaviour cleanup: remove artifact dir: %v", err)
 		}
 	}
+	// A playback scenario's per-round artifact directories
+	// (HarnessRunArtifactDirs, playback.go) are cached separately from
+	// ArtifactDir above and include it, so clean up any not already
+	// removed. os.RemoveAll is idempotent on an already-removed path.
+	for _, dir := range w.HarnessRunArtifactDirs {
+		if dir == "" || !shouldRemoveArtifactDir(dir, os.Getenv("BEHAVIOUR_ARTIFACT_DIR")) {
+			continue
+		}
+		if err := os.RemoveAll(dir); err != nil {
+			worldLogf(w, "behaviour cleanup: remove round artifact dir: %v", err)
+		}
+	}
 
 	// --- Kill switch cleanup ---
 	// Deactivate the kill switch so the next scenario on this slot is
@@ -199,10 +336,17 @@ func CleanupScenario(w *world.World) {
 	// because the kill switch is a repo-level config that affects all
 	// harnesses.
 	if w.KillSwitchActivated {
-		if err := cleanupRetry(w.Logf, "deactivate kill switch", func() error {
+		if err := guardedCleanupRetry(w, "deactivate kill switch", func() error {
 			return DeactivateKillSwitch(w)
 		}); err != nil {
 			worldLogf(w, "behaviour cleanup: deactivate kill switch: %v", err)
+		}
+	}
+	if w.KillSwitchBaseActivated {
+		if err := guardedCleanupRetry(w, "deactivate kill switch in config.base.yaml", func() error {
+			return DeactivateKillSwitchBase(w)
+		}); err != nil {
+			worldLogf(w, "behaviour cleanup: deactivate kill switch in config.base.yaml: %v", err)
 		}
 	}
 
@@ -210,7 +354,7 @@ func CleanupScenario(w *world.World) {
 	// Restore the install-time runtime so a later scenario on this slot
 	// does not silently run under pi (or whatever this one selected).
 	if w.RuntimeOverridden {
-		if err := cleanupRetry(w.Logf, "restore runtime", func() error {
+		if err := guardedCleanupRetry(w, "restore runtime", func() error {
 			return RestoreRuntime(w)
 		}); err != nil {
 			worldLogf(w, "behaviour cleanup: restore runtime: %v", err)
@@ -224,7 +368,7 @@ func CleanupScenario(w *world.World) {
 	// after a positive URL scenario sees the stale prefix and the
 	// config validates when it should fail.
 	if w.AllowedResourcesOverridden {
-		if err := cleanupRetry(w.Logf, "restore allowed_remote_resources", func() error {
+		if err := guardedCleanupRetry(w, "restore allowed_remote_resources", func() error {
 			return RestoreAllowedResources(w)
 		}); err != nil {
 			worldLogf(w, "behaviour cleanup: restore allowed_remote_resources: %v", err)
@@ -237,18 +381,25 @@ func CleanupScenario(w *world.World) {
 	// from the previous lessee. Without this, harness registrations
 	// accumulate on the config overlay for the rest of the run.
 	if w.AgentsOverridden {
-		if err := cleanupRetry(w.Logf, "restore agents", func() error {
+		if err := guardedCleanupRetry(w, "restore agents", func() error {
 			return RestoreAgents(w)
 		}); err != nil {
 			worldLogf(w, "behaviour cleanup: restore agents: %v", err)
 		}
 	}
 
+	// --- OWNERS auth cleanup ---
+	if w.OwnersAuthActivated {
+		cleanupOwnersAuth(w)
+	}
+
 	// --- Reaction notification cleanup ---
 	// Disable reaction notifications so the next scenario on this slot
 	// is not affected by sticky config state.
 	if reactionsEnabledInConfig(w) {
-		if err := DisableReactionNotifications(w); err != nil {
+		if err := verifyLease(w); err != nil {
+			worldLogf(w, "behaviour cleanup: disable reaction notifications: %v", err)
+		} else if err := DisableReactionNotifications(w); err != nil {
 			worldLogf(w, "behaviour cleanup: disable reaction notifications: %v", err)
 		}
 	}
@@ -258,7 +409,7 @@ func CleanupScenario(w *world.World) {
 		if w.Org == "" || w.RepoName == "" {
 			worldLogf(w, "behaviour cleanup: clear dummy script: no repo configured; call 'Given the enrolled test repository' first")
 		} else {
-			if err := cleanupRetry(w.Logf, "clear dummy script", func() error {
+			if err := guardedCleanupRetry(w, "clear dummy script", func() error {
 				empty := []byte("ops: []\n")
 				return w.SCM.CommitFile(ctx, w.Org, w.RepoName, w.BehaviourScriptPath(), "behaviour: clear dummy agent script", empty)
 			}); err != nil {

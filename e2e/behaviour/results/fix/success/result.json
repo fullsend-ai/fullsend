@@ -1,0 +1,16 @@
+{
+  "pr_number": 2,
+  "trigger_source": "bot",
+  "iteration": 1,
+  "actions": [
+    {
+      "type": "fix",
+      "finding": "TOCTOU race in getHandler: entry read under RLock, expiry check and delete happen unlocked",
+      "path": "main.go",
+      "description": "Added a re-check under the write lock before deleting an expired entry. The delete now verifies the entry's ExpiresAt still matches the originally-read value, preventing silent data loss when setHandler writes a fresh entry between RUnlock and Lock."
+    }
+  ],
+  "summary": "Addressed the review finding: fixed the TOCTOU race in getHandler by re-checking the entry under the write lock before delete.",
+  "tests_passed": true,
+  "files_changed": ["main.go"]
+}

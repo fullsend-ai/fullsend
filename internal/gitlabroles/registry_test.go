@@ -171,7 +171,6 @@ func TestResolveCustomReuseUsesTargetSecret(t *testing.T) {
 		forge.SecretGitLabCoderToken: true,
 	}
 	src, err := Resolve(Request{
-		Mode:     ModeEnforced,
 		Job:      AgentJob("deploy"),
 		Registry: reg,
 		Present:  present,
@@ -181,7 +180,6 @@ func TestResolveCustomReuseUsesTargetSecret(t *testing.T) {
 	assert.Equal(t, RoleKindCustom, src.Kind)
 	assert.Equal(t, forge.SecretGitLabCoderToken, src.SecretName)
 	assert.True(t, src.Reused)
-	assert.False(t, src.Shared)
 }
 
 func TestParseRegistryRejectsBuiltinCollision(t *testing.T) {
@@ -345,14 +343,14 @@ func TestPresenceFromIncludesCustomSecrets(t *testing.T) {
 	}
 	present := PresenceFrom(getenv, reg)
 	assert.True(t, present[secret])
-	assert.True(t, present[forge.SecretForgeToken])
+	assert.False(t, present[forge.SecretForgeToken])
 	assert.False(t, present[forge.SecretGitLabCoderToken])
 }
 
 func TestDiagnoseIncludesCustomRoles(t *testing.T) {
 	t.Parallel()
 	reg := mustParseRegistry(t, `{"roles":[{"name":"scanner"}]}`)
-	rep := Diagnose(ModeEnforced, map[string]bool{
+	rep := Diagnose(map[string]bool{
 		forge.SecretForgeToken:            true,
 		forge.SecretGitLabPollerToken:     true,
 		forge.SecretGitLabAnalystToken:    true,
@@ -377,7 +375,7 @@ func TestDiagnoseCustomConfigured(t *testing.T) {
 		forge.SecretGitLabAnalystToken: true,
 		forge.SecretGitLabCoderToken:   true,
 	}
-	rep := Diagnose(ModeEnforced, present, reg)
+	rep := Diagnose(present, reg)
 	assert.True(t, rep.Ready)
 	assert.Empty(t, rep.Missing)
 	joined := strings.Join(rep.Diagnostics, "\n")
@@ -597,7 +595,6 @@ func TestChainedReuseResolvesToBuiltinSecret(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, forge.SecretGitLabCoderToken, leaf.Credential.SecretName)
 	src, err := Resolve(Request{
-		Mode:     ModeEnforced,
 		Job:      AgentJob("leaf"),
 		Registry: reg,
 		Present:  map[string]bool{forge.SecretGitLabCoderToken: true},
@@ -607,20 +604,17 @@ func TestChainedReuseResolvesToBuiltinSecret(t *testing.T) {
 	assert.True(t, src.Reused)
 }
 
-func TestResolveCustomUnconfiguredMigratingFallback(t *testing.T) {
+func TestResolveCustomUnconfiguredMigratingFailsClosed(t *testing.T) {
 	t.Parallel()
 	reg := mustParseRegistry(t, `{"roles":[{"name":"scanner","agents":["scanner"]}]}`)
-	src, err := Resolve(Request{
-		Mode:     ModeMigrating,
+	_, err := Resolve(Request{
 		Job:      AgentJob("scanner"),
 		Registry: reg,
 		Present:  map[string]bool{forge.SecretForgeToken: true},
 	})
-	require.NoError(t, err)
-	assert.Equal(t, Role("scanner"), src.Role)
-	assert.Equal(t, RoleKindCustom, src.Kind)
-	assert.True(t, src.Shared)
-	assert.True(t, src.Fallback)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrUnconfigured)
+	assert.Contains(t, err.Error(), CustomSecretName(Role("scanner")))
 }
 
 func TestResolveMalformedRegistryMissingPoller(t *testing.T) {
@@ -631,7 +625,6 @@ func TestResolveMalformedRegistryMissingPoller(t *testing.T) {
 		byAgent: map[string]Role{},
 	}
 	_, err := Resolve(Request{
-		Mode:     ModeEnforced,
 		Job:      PollerJob(),
 		Registry: reg,
 		Present:  map[string]bool{forge.SecretForgeToken: true},

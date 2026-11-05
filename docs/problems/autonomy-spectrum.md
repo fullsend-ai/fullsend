@@ -64,6 +64,27 @@ Before flipping a repo to full autonomy, run agents in "shadow mode":
 
 This builds trust incrementally and provides data on agent reliability.
 
+**Eligibility is not authority.** A bounded
+[lab trial](../spikes/2026-10-24-gemara-auto-merge.md) showed that a PR's
+candidate checks can pass while a separate quality condition still holds it.
+A later, explicitly authorized trial passed the selected conditions and merged
+through GitHub's protected merge queue. The broader production-readiness
+assessment still held, and the lab then returned to shadow mode. The trial is
+evidence about enforcement behavior, not evidence that an agent or repository
+has graduated to general autonomy. It suggests keeping several states
+distinct:
+
+- **Shadow:** agents evaluate and recommend; nothing is enforced.
+- **Experimental enforcement:** a time-boxed, revocable trial of a gate.
+- **Eligibility:** a specific change satisfies the configured conditions.
+- **Scoped owner authority:** a repository owner delegates merge authority for
+  a bounded scope and period.
+- **Production qualification:** the graduation decision described above.
+
+None of these replaces CODEOWNERS or the human-owned path questions in this
+document. A policy evaluation that returns "pass" does not grant authority by
+itself.
+
 ## Alternative: per-decision escalation dimensions
 
 The binary per-repo model is simple but coarse. An alternative (or supplement) is to evaluate each decision against a set of escalation dimensions at runtime. Instead of asking "is this repo autonomous?" the agent asks "is this particular action safe to proceed with?"
@@ -92,6 +113,7 @@ This addresses the gap where the binary model can miss risky changes that don't 
 - Requires agents to accurately self-assess dimensions in real time — a judgment call the binary model avoids entirely.
 - The dimensions listed above are examples, not necessarily exhaustive. Different organizations might weight or define them differently.
 - Could produce false escalations (agent is uncertain, so it escalates conservatively) or false confidence (agent misjudges blast radius). Shadow mode data would help calibrate.
+- Deciding *to* escalate is only half of the handoff. Who receives the escalation, and whether they have the context and authority to act, is covered in [escalation without context](agentic-sdlc-adoption-org-communication.md#escalation-without-context).
 
 ## Open questions
 

@@ -25,6 +25,8 @@ import (
 // The in parameter enables interactive prompts (e.g., fork-vs-upstream choice).
 // Pass os.Stdin for interactive CLI callers; pass nil for non-interactive
 // callers (sync-scaffold), which default to forking without prompting.
+// GitHub App installation tokens never fork: they deliver the PR from a
+// branch in the target repository.
 //
 // The returned bool is true when files were committed directly to the default
 // branch (false for PR-based delivery, idempotent no-ops, or unchanged content).
@@ -57,9 +59,17 @@ func CommitFilesViaPR(ctx context.Context, client forge.Client, printer *ui.Prin
 		owner, repo, defaultBranch, branch, commitMsg, prTitle, prBody, files)
 }
 
+// signedCommitsRequiredHint explains a required_signatures rejection; only
+// the unsigned Git Data path (vendored installs, non-regular modes) or a
+// GHES without web commit signing reaches it.
+const signedCommitsRequiredHint = "the repository requires signed commits and this commit is not signed " +
+	"(vendored installs and files with non-regular modes use the unsigned Git Data API, so install without vendoring; " +
+	"GitHub Enterprise Server must have web commit signing enabled)"
+
 // knownScaffoldBranches lists all branch names that have been used to deliver
-// scaffold files across different install modes. Per-org mode uses
-// "fullsend/onboard" (via reconcile-repos.sh); per-repo mode uses
+// scaffold files across different install modes. The removed per-org mode
+// used "fullsend/onboard" (via reconcile-repos.sh), kept here so stale
+// onboarding PRs are still cleaned up; per-repo mode uses
 // "fullsend/scaffold-install" (via the Go CLI) for both install and uninstall
 // delivery.
 var knownScaffoldBranches = []string{
@@ -69,7 +79,8 @@ var knownScaffoldBranches = []string{
 
 // commitScaffoldViaPR creates a feature branch, commits files, and opens a PR.
 // For non-owner users, it defaults to creating a fork and opening a cross-fork
-// PR rather than pushing directly to the upstream repository.
+// PR rather than pushing directly to the upstream repository. GitHub App
+// installation tokens always deliver from a branch in the upstream repository.
 func commitScaffoldViaPR(ctx context.Context, client forge.Client, printer *ui.Printer,
 	owner, repo, defaultBranch, scaffoldBranch, commitMsg, prTitle, prBody string,
 	files []forge.TreeFile, in io.Reader) (bool, error) {
@@ -93,6 +104,21 @@ func commitScaffoldViaPR(ctx context.Context, client forge.Client, printer *ui.P
 		return commitBranchAndPR(ctx, client, printer,
 			owner, repo, owner, repo, scaffoldBranch, defaultBranch,
 			commitMsg, prTitle, prBody, files)
+	}
+
+	// GitHub App installation tokens: the collaborator endpoint does not
+	// report an installation's repository permissions, and GitHub only lets
+	// installation tokens create forks with additional permissions and access
+	// to the destination account. Deliver from a branch in the installed
+	// repository instead, so the App needs only contents and pull requests
+	// write access.
+	isInstallation, instErr := client.IsInstallationToken(ctx)
+	if instErr != nil {
+		printer.StepWarn(fmt.Sprintf("Could not detect installation token: %v", instErr))
+	} else if isInstallation {
+		printer.StepInfo(fmt.Sprintf("GitHub App installation token detected — pushing to %s/%s", owner, repo))
+		return commitInstallationUpstream(ctx, client, printer,
+			owner, repo, scaffoldBranch, defaultBranch, commitMsg, prTitle, prBody, files)
 	}
 
 	// Non-owner: check for existing fork first.
@@ -152,6 +178,37 @@ func commitScaffoldViaPR(ctx context.Context, client forge.Client, printer *ui.P
 		commitMsg, prTitle, prBody, files)
 }
 
+// commitInstallationUpstream delivers scaffold files from a branch in the
+// installed repository for a GitHub App installation token. A 403 most often
+// means the installation lacks a required repository permission, but it can
+// also be a policy denial, so the error names the permissions to grant as one
+// possible cause, mentions policy restrictions, and does not suggest the fork
+// option. Scaffold files under .github/workflows/ additionally require the
+// Workflows permission.
+func commitInstallationUpstream(ctx context.Context, client forge.Client, printer *ui.Printer,
+	owner, repo, scaffoldBranch, defaultBranch, commitMsg, prTitle, prBody string,
+	files []forge.TreeFile) (bool, error) {
+
+	committed, err := deliverBranchAndPR(ctx, client, printer,
+		owner, repo, owner, repo, scaffoldBranch, defaultBranch,
+		commitMsg, prTitle, prBody, files, false)
+	if err != nil && forge.IsForbidden(err) {
+		perms := `"Contents: Read and write" and "Pull requests: Read and write"`
+		for _, f := range files {
+			if strings.HasPrefix(f.Path, ".github/workflows/") {
+				perms = `"Contents: Read and write", "Pull requests: Read and write" and "Workflows: Read and write"`
+				break
+			}
+		}
+		return false, fmt.Errorf("GitHub App installation cannot deliver the scaffold PR to %s/%s (access denied). "+
+			"A missing permission is one possible cause: grant the App %s repository permissions and install it on this repository. "+
+			"A policy restriction, such as SAML enforcement or the repository setting that blocks Actions from creating pull requests, "+
+			"can also deny access: %w",
+			owner, repo, perms, err)
+	}
+	return committed, err
+}
+
 // forkAndCommit creates a fork, waits for it to be ready, then commits.
 // The clk and timeout parameters are threaded through to waitForFork so
 // callers (and tests) above this level can inject a fake clock and shorter
@@ -187,11 +244,12 @@ func commitViaFork(ctx context.Context, client forge.Client, printer *ui.Printer
 		scaffoldBranch, defaultBranch, commitMsg, prTitle, prBody, files)
 }
 
-// closeStaleScaffoldPRs finds and closes open scaffold PRs from install modes
-// other than the current one. When switching from per-org to per-repo (or vice
-// versa), the old mode's scaffold PR may remain open with stale content (e.g.,
-// referencing a deleted .fullsend repo). This function closes those PRs and
-// deletes their head branches so they cannot be accidentally merged.
+// closeStaleScaffoldPRs finds and closes open scaffold PRs delivered on a
+// branch other than the current one. A repository previously onboarded by
+// the removed per-org mode may still have that mode's scaffold PR open with
+// stale content (e.g., referencing a deleted .fullsend repo). This function
+// closes those PRs and deletes their head branches so they cannot be
+// accidentally merged.
 //
 // Only PRs authored by authenticatedUser are closed (fail-closed: PRs with an
 // empty author field are skipped), preventing accidental closure of PRs opened
@@ -237,7 +295,8 @@ func closeStaleScaffoldPRs(ctx context.Context, client forge.Client, printer *ui
 }
 
 // isKnownScaffoldBranch reports whether branch is one of the well-known branch
-// names used by scaffold installs (per-org or per-repo mode), including
+// names used by scaffold installs (including the removed per-org mode's
+// onboarding branch), including
 // version-specific upgrade branches like "fullsend/bump-v0.28.0".
 func isKnownScaffoldBranch(branch string) bool {
 	for _, b := range knownScaffoldBranches {
@@ -254,12 +313,26 @@ func isKnownScaffoldBranch(branch string) bool {
 
 // commitBranchAndPR creates a branch on targetOwner/targetRepo, commits files,
 // and opens a PR against upstreamOwner/upstreamRepo. When target == upstream
-// (same-repo PR), head is the branch name. When target != upstream (cross-fork
-// PR), head is "forkOwner:branchName".
+// (same-repo PR), it uses CreateChangeProposal. When target != upstream
+// (cross-fork PR), it uses CreateCrossRepoChangeProposal with the fork's
+// owner and repo name.
 func commitBranchAndPR(ctx context.Context, client forge.Client, printer *ui.Printer,
 	upstreamOwner, upstreamRepo, targetOwner, targetRepo,
 	scaffoldBranch, defaultBranch, commitMsg, prTitle, prBody string,
 	files []forge.TreeFile) (bool, error) {
+
+	return deliverBranchAndPR(ctx, client, printer,
+		upstreamOwner, upstreamRepo, targetOwner, targetRepo,
+		scaffoldBranch, defaultBranch, commitMsg, prTitle, prBody, files, true)
+}
+
+// deliverBranchAndPR implements commitBranchAndPR. When forkHint is false, a
+// 403 on branch creation is wrapped without suggesting the fork option, for
+// callers (GitHub App installation tokens) that can never fork.
+func deliverBranchAndPR(ctx context.Context, client forge.Client, printer *ui.Printer,
+	upstreamOwner, upstreamRepo, targetOwner, targetRepo,
+	scaffoldBranch, defaultBranch, commitMsg, prTitle, prBody string,
+	files []forge.TreeFile, forkHint bool) (bool, error) {
 
 	isCrossRepo := !strings.EqualFold(targetOwner, upstreamOwner) || !strings.EqualFold(targetRepo, upstreamRepo)
 
@@ -303,6 +376,10 @@ func commitBranchAndPR(ctx context.Context, client forge.Client, printer *ui.Pri
 	if branchErr := createBranch(); branchErr != nil {
 		if forge.IsForbidden(branchErr) {
 			printer.StepFail("Insufficient permissions to push to repository")
+			if !forkHint {
+				return false, fmt.Errorf("creating scaffold branch on %s/%s (403 forbidden): %w",
+					targetOwner, targetRepo, branchErr)
+			}
 			return false, fmt.Errorf("cannot push to %s/%s (403 forbidden); re-run with the fork option or check your token scopes: %w",
 				targetOwner, targetRepo, branchErr)
 		}
@@ -335,6 +412,10 @@ func commitBranchAndPR(ctx context.Context, client forge.Client, printer *ui.Pri
 
 	branchCommitted, commitErr := client.CommitFilesToBranch(ctx, targetOwner, targetRepo, scaffoldBranch, commitMsg, files)
 	if commitErr != nil {
+		if forge.IsSignedCommitsRequired(commitErr) {
+			printer.StepFail("Repository rules require signed commits — scaffold commit rejected")
+			return false, fmt.Errorf("scaffold branch %q: %s: %w", scaffoldBranch, signedCommitsRequiredHint, commitErr)
+		}
 		if forge.IsBranchProtected(commitErr) {
 			printer.StepFail("Scaffold branch is also protected — cannot commit")
 			return false, fmt.Errorf("scaffold branch %q is protected; configure branch protection to allow pushes to scaffold branches: %w", scaffoldBranch, commitErr)
@@ -343,14 +424,18 @@ func commitBranchAndPR(ctx context.Context, client forge.Client, printer *ui.Pri
 		return false, fmt.Errorf("committing scaffold files to branch: %w", commitErr)
 	}
 
-	// For cross-fork PRs, head must be "forkOwner:branchName".
-	head := scaffoldBranch
-	if !strings.EqualFold(targetOwner, upstreamOwner) || !strings.EqualFold(targetRepo, upstreamRepo) {
-		head = targetOwner + ":" + scaffoldBranch
+	// Cross-fork PRs identify the head repository explicitly instead of
+	// relying on GitHub's "owner:branch" head syntax, which GitLab rejects
+	// and which is ambiguous for same-owner forks.
+	var proposal *forge.ChangeProposal
+	var prErr error
+	if isCrossRepo {
+		proposal, prErr = client.CreateCrossRepoChangeProposal(ctx, upstreamOwner, upstreamRepo,
+			targetOwner, targetRepo, prTitle, prBody, scaffoldBranch, defaultBranch)
+	} else {
+		proposal, prErr = client.CreateChangeProposal(ctx, upstreamOwner, upstreamRepo,
+			prTitle, prBody, scaffoldBranch, defaultBranch)
 	}
-
-	proposal, prErr := client.CreateChangeProposal(ctx, upstreamOwner, upstreamRepo,
-		prTitle, prBody, head, defaultBranch)
 	if prErr != nil {
 		if forge.IsNoChanges(prErr) {
 			printer.StepDone("Scaffold branch and PR up to date")
@@ -459,6 +544,10 @@ func commitViaPR(ctx context.Context, client forge.Client, printer *ui.Printer,
 
 	branchCommitted, commitErr := client.CommitFilesToBranch(ctx, owner, repo, branch, commitMsg, files)
 	if commitErr != nil {
+		if forge.IsSignedCommitsRequired(commitErr) {
+			printer.StepFail("Repository rules require signed commits — commit rejected")
+			return false, fmt.Errorf("branch %q: %s: %w", branch, signedCommitsRequiredHint, commitErr)
+		}
 		if forge.IsBranchProtected(commitErr) {
 			printer.StepFail("Feature branch is protected — cannot commit")
 			return false, fmt.Errorf("branch %q is protected; configure branch protection to allow pushes: %w", branch, commitErr)
@@ -635,6 +724,11 @@ func commitScaffoldDirect(ctx context.Context, client forge.Client, printer *ui.
 	if err != nil && forge.IsNonFastForward(err) {
 		printer.StepWarn("Concurrent modification race — retrying")
 		committed, err = client.CommitFiles(ctx, owner, repo, commitMsg, files)
+	}
+	if err != nil && forge.IsSignedCommitsRequired(err) {
+		// No PR fallback: its head would be unsigned too, which blocks the merge.
+		printer.StepFail("Repository rules require signed commits — commit rejected")
+		return false, fmt.Errorf("branch %q: %s: %w", defaultBranch, signedCommitsRequiredHint, err)
 	}
 	if err != nil && forge.IsBranchProtected(err) {
 		printer.StepWarn("Default branch is protected — creating scaffold PR instead")

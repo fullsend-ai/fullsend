@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "success": false,
+  "summary": {
+    "errors": 1,
+    "warnings": 0
+  },
+  "diagnostics": [
+    {
+      "agent": "config",
+      "severity": "error",
+      "field": "config.yaml",
+      "message": "unsupported version \"999\""
+    }
+  ]
+}

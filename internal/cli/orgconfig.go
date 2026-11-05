@@ -10,10 +10,9 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
-// tryLoadFullsendConfig attempts to load an org or per-repo config.yaml
-// from the given path. Returns nil without error when the file is absent
-// (best-effort). The returned ConfigWriter provides a unified view of
-// both org and per-repo configs with ensured defaults.
+// tryLoadFullsendConfig attempts to load a .fullsend config.yaml from the
+// given path. Returns nil without error when the file is absent
+// (best-effort). The returned ConfigWriter has ensured defaults.
 func tryLoadFullsendConfig(path string, printer *ui.Printer) config.ConfigWriter {
 	if _, err := os.Stat(path); err != nil {
 		if !os.IsNotExist(err) {
@@ -30,10 +29,31 @@ func tryLoadFullsendConfig(path string, printer *ui.Printer) config.ConfigWriter
 	return writer
 }
 
-// tryLoadOrgConfig loads an org or per-repo config.yaml (best-effort).
+// tryLoadOrgConfig is an alias of tryLoadFullsendConfig (best-effort).
 var tryLoadOrgConfig = tryLoadFullsendConfig
 
-// requireFullsendConfig loads an org or per-repo config.yaml from the
+// tryLoadLayeredFullsendConfig attempts to load the layered fullsend
+// config (config.yaml over config.base.yaml) from fullsendDir.
+// Unlike tryLoadFullsendConfig, it does not require config.yaml to
+// exist on disk: a base-only layout (config.base.yaml present,
+// config.yaml absent) is honored, matching loadLockConfig's semantics.
+// Returns nil without error when neither layer exists, or when the
+// config is malformed (best-effort, with a warning printed via
+// printer in the malformed case). The returned ConfigWriter has
+// ensured defaults.
+func tryLoadLayeredFullsendConfig(fullsendDir string, printer *ui.Printer) config.ConfigWriter {
+	writer, err := config.LoadConfigWriter(fullsendDir, config.LoadOpts{MissingOK: false})
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			printer.StepWarn("Config malformed (remote resource allowlist unavailable): " + err.Error())
+		}
+		return nil
+	}
+	writer.SetAllowedRemoteResources(config.EnsureDefaultAllowedRemoteResources(writer.AllowedResources()))
+	return writer
+}
+
+// requireFullsendConfig loads a .fullsend config.yaml from the
 // given path with strict error handling. Returns differentiated errors
 // for missing files, unreadable files, and parse failures.
 func requireFullsendConfig(path string, printer *ui.Printer) (config.ConfigWriter, error) {
@@ -49,5 +69,5 @@ func requireFullsendConfig(path string, printer *ui.Printer) (config.ConfigWrite
 	return writer, nil
 }
 
-// requireOrgConfig loads an org or per-repo config.yaml (strict).
+// requireOrgConfig is an alias of requireFullsendConfig (strict).
 var requireOrgConfig = requireFullsendConfig
