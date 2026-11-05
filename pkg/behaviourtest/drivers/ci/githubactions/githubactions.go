@@ -1618,6 +1618,49 @@ func runUnstarted(status string) bool {
 	return false
 }
 
+// jobsReadOutcome classifies a workflow run whose jobs listing could not
+// be read.
+type jobsReadOutcome int
+
+const (
+	// jobsSkipRun: the run cannot hold agent work yet, so the caller
+	// ignores it — no dispatch, no violation.
+	jobsSkipRun jobsReadOutcome = iota
+	// jobsRetryLater: the run may hold agent work but its listing is not
+	// readable yet. A settling caller keeps the run pending; a one-shot
+	// caller fails closed, because an unreadable listing is not evidence
+	// that no agent job ran.
+	jobsRetryLater
+	// jobsFatal: the listing error is unexpected and must fail the caller.
+	jobsFatal
+)
+
+// classifyJobsError is the only place that maps a run's status and a
+// jobs-listing error to a tolerance rule. The dispatch-count and
+// negative-assertion paths both route their listing errors through it
+// and must not grow status predicates of their own.
+//
+// A run that has not started cannot hold agent work, and its listing has
+// been observed to 404 on the first page before the run starts, so that
+// shape skips the run. A waiting run — one held on an environment
+// approval — can already hold a completed agent job, so its unreadable
+// listing is retry material, never evidence of absence. Any other error
+// is fatal; in particular a later-page 404 means page 1 was already
+// readable and may hold a completed agent job, so it is never tolerated.
+func classifyJobsError(status string, err error) jobsReadOutcome {
+	if !errors.Is(err, forge.ErrJobsListingNotFoundFirstPage) {
+		return jobsFatal
+	}
+	switch {
+	case runUnstarted(status):
+		return jobsSkipRun
+	case status == "waiting":
+		return jobsRetryLater
+	default:
+		return jobsFatal
+	}
+}
+
 // settleHarnessDispatchCount classifies harness runs created after the
 // trigger time into counted dispatches and pending runs. A run is pending
 // when its agent job exists but has not completed, or when the run itself
@@ -1645,8 +1688,9 @@ func (d *Driver) settleHarnessDispatchCount(ctx context.Context, owner, repo, ag
 			continue
 		}
 		if runUnstarted(r.Status) {
-			// A run queued before any job can run cannot show agent work,
-			// so it is pending whatever the jobs listing would say.
+			// classifyJobsError would skip these runs anyway; skipping
+			// before the read also avoids a listing call that 404s while
+			// the run sits in the queue.
 			pending++
 			continue
 		}
@@ -1654,15 +1698,13 @@ func (d *Driver) settleHarnessDispatchCount(ctx context.Context, owner, repo, ag
 		if !cached {
 			jobs, err = d.Client.ListWorkflowRunJobs(ctx, owner, repo, r.ID)
 			if err != nil {
-				// A waiting run can follow jobs that already ran
-				// (environment approval). A first-page 404 is not evidence
-				// of absence on its own, but for a waiting run it leaves
-				// nothing to count yet, so the run stays pending.
-				if !(r.Status == "waiting" && errors.Is(err, forge.ErrJobsListingNotFoundFirstPage)) {
-					return 0, 0, err
+				// Settling, so both skippable and retryable runs stay
+				// pending rather than fail the count.
+				if outcome := classifyJobsError(r.Status, err); outcome == jobsSkipRun || outcome == jobsRetryLater {
+					pending++
+					continue
 				}
-				pending++
-				continue
+				return 0, 0, err
 			}
 		}
 		hasJob, job := matchAgentJob(jobs, agent)
@@ -1852,15 +1894,10 @@ func (d *Driver) AssertNoHarnessAgentArtifact(ctx context.Context, owner, repo, 
 		}
 		jobs, err := d.Client.ListWorkflowRunJobs(ctx, owner, repo, r.ID)
 		if err != nil {
-			// A run that has not started cannot hold agent work, and its
-			// jobs listing has been observed to 404 on the first page
-			// before the run starts — only that shape is tolerated, and
-			// only for those statuses. A waiting run can follow jobs that
-			// already ran (environment approval), so an unreadable listing
-			// fails the assertion rather than skipping the run. A later-page
-			// 404 means the listing was partially read and may hold a
-			// completed agent job, so it is never tolerated.
-			if !(runUnstarted(r.Status) && errors.Is(err, forge.ErrJobsListingNotFoundFirstPage)) {
+			// One-shot, so only a run that cannot hold agent work yet is
+			// skipped: an unreadable listing is not evidence that no
+			// agent job ran, so retryable and fatal both fail closed.
+			if classifyJobsError(r.Status, err) != jobsSkipRun {
 				return err
 			}
 			continue

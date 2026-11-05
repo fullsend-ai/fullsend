@@ -168,6 +168,40 @@ func TestHarnessDispatchAssertions_NotStartedRunJobs(t *testing.T) {
 // count-side rule: a workflow waiting on an environment approval can
 // already hold a completed agent job, which is conclusive dispatch
 // evidence — the count must not wait out the whole run.
+// TestClassifyJobsError pins the full status × listing-error table that
+// both dispatch paths route through. Changing an entry here is a
+// semantic decision about run statuses, not a mechanical drift fix.
+func TestClassifyJobsError(t *testing.T) {
+	t.Parallel()
+	firstPage404 := fmt.Errorf("list workflow run jobs page 1: %w: %w", forge.ErrJobsListingNotFoundFirstPage, forge.ErrNotFound)
+	laterPage404 := fmt.Errorf("list workflow run jobs page 2: %w", forge.ErrNotFound)
+	otherErr := errors.New("jobs lookup failed")
+	for _, tc := range []struct {
+		name   string
+		status string
+		err    error
+		want   jobsReadOutcome
+	}{
+		{"queued first-page 404 skips", "queued", firstPage404, jobsSkipRun},
+		{"requested first-page 404 skips", "requested", firstPage404, jobsSkipRun},
+		{"pending first-page 404 skips", "pending", firstPage404, jobsSkipRun},
+		{"waiting first-page 404 retries later", "waiting", firstPage404, jobsRetryLater},
+		{"in_progress first-page 404 is fatal", "in_progress", firstPage404, jobsFatal},
+		{"completed first-page 404 is fatal", "completed", firstPage404, jobsFatal},
+		{"queued later-page 404 is fatal", "queued", laterPage404, jobsFatal},
+		{"waiting later-page 404 is fatal", "waiting", laterPage404, jobsFatal},
+		{"completed later-page 404 is fatal", "completed", laterPage404, jobsFatal},
+		{"queued other error is fatal", "queued", otherErr, jobsFatal},
+		{"waiting other error is fatal", "waiting", otherErr, jobsFatal},
+		{"completed other error is fatal", "completed", otherErr, jobsFatal},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, classifyJobsError(tc.status, tc.err))
+		})
+	}
+}
+
 func TestCountHarnessDispatches_WaitingRunHoldsCompletedAgentJob(t *testing.T) {
 	t.Parallel()
 	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
