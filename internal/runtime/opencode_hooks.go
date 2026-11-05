@@ -165,9 +165,9 @@ const openCodeHookFunctionsUnset = "unset -f command test '[' echo printf cut sh
 
 func openCodeHookActivationGuard(activation *openCodeHookActivation) string {
 	if activation == nil || activation.Path == "" || activation.Token == "" {
-		return "{ echo 'fullsend: OpenCode hook activation was not recorded; refusing to run unhooked' >&2; exit 99; }"
+		return "{ echo 'fullsend: OpenCode hook activation was not recorded; detected an unhooked iteration' >&2; exit 99; }"
 	}
-	return fmt.Sprintf(`{ "$%s" -f %s && "$%s" "$("$%s" %s 2>/dev/null)" = %s || { "$%s" '%%s\n' 'fullsend: OpenCode hook plugin did not activate; refusing to run unhooked' >&2; exit %d; }; }`,
+	return fmt.Sprintf(`{ "$%s" -f %s && "$%s" "$("$%s" %s 2>/dev/null)" = %s || { "$%s" '%%s\n' 'fullsend: OpenCode hook plugin did not activate; detected an unhooked iteration' >&2; exit %d; }; }`,
 		openCodeTestVar, shellQuote(activation.Path), openCodeTestVar, openCodeCatVar,
 		shellQuote(activation.Path), shellQuote(activation.Token), openCodePrintfVar, openCodeHookActivationMissingExit)
 }

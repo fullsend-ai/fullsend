@@ -575,7 +575,7 @@ func (r OpenCodeRuntime) Run(ctx context.Context, params RunParams, printer *ui.
 		return exitCode, fmt.Errorf("opencode hook adapter missing or modified in %s; refusing to run unhooked (was Bootstrap run, or did the agent change it?)", r.ConfigDir())
 	}
 	if exitCode == openCodeHookActivationMissingExit {
-		return exitCode, fmt.Errorf("opencode hook plugin did not activate for this iteration; refusing to run unhooked")
+		return exitCode, fmt.Errorf("opencode hook plugin did not activate for this iteration; detected an unhooked iteration")
 	}
 
 	// A corrupt or truncated stream must not pass as a successful run.
