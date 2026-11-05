@@ -21,6 +21,8 @@ import (
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
 )
 
+var _ ci.AgentArtifactDownloader = (*Driver)(nil)
+
 // instantAfter returns a timer function that fires immediately, allowing
 // poll-loop tests to run without real wall-clock sleeps.
 func instantAfter(_ time.Duration) <-chan time.Time {
@@ -1188,7 +1190,7 @@ func TestDownloadAgentArtifactsFromRunDownloadsEveryMatchingMatrixArtifact(t *te
 	}
 
 	dest := t.TempDir()
-	err := New(client, "").DownloadAgentArtifactsFromRun(context.Background(), "org", "repo", 42, "ci-retry", dest)
+	err := ci.DownloadAgentArtifactsFromRun(context.Background(), New(client, ""), "org", "repo", 42, "ci-retry", dest)
 	require.NoError(t, err)
 	for name, want := range map[string]string{first: "first", second: "second"} {
 		got, err := os.ReadFile(filepath.Join(dest, name, "result.txt"))

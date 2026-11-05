@@ -33,10 +33,6 @@ func (m *mockCIDriver) DownloadNamedArtifactFromRun(ctx context.Context, owner, 
 	return m.downloadNamedArtifactFn(ctx, owner, repo, runID, artifactName, destDir)
 }
 
-func (m *mockCIDriver) DownloadAgentArtifactsFromRun(ctx context.Context, owner, repo string, runID int, agent, destDir string) error {
-	return m.downloadNamedArtifactFn(ctx, owner, repo, runID, "fullsend-"+agent, destDir)
-}
-
 func (m *mockCIDriver) WaitForHarnessAgentRound(ctx context.Context, owner, repo, agent string, after time.Time, consumed map[int]bool) (*forge.WorkflowRun, error) {
 	return m.waitForHarnessAgentRoundFn(ctx, owner, repo, agent, after, consumed)
 }

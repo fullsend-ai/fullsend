@@ -18,6 +18,8 @@ import (
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
 )
 
+var _ ci.AgentArtifactDownloader = (*Driver)(nil)
+
 // instantAfter returns a timer function that fires immediately, allowing
 // poll-loop tests to run without real wall-clock sleeps.
 func instantAfter(_ time.Duration) <-chan time.Time {

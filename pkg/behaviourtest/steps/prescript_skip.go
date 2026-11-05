@@ -11,6 +11,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/evalmeasure"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/artifacts"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
@@ -48,7 +49,7 @@ func thenHarnessRunSkippedByPreScript(w *world.World, agent string) error {
 	}
 	defer os.RemoveAll(dest)
 	artifactName := "fullsend-" + agent
-	if err := w.CI.DownloadAgentArtifactsFromRun(context.Background(), w.Org, w.RepoName, runID, agent, dest); err != nil {
+	if err := ci.DownloadAgentArtifactsFromRun(context.Background(), w.CI, w.Org, w.RepoName, runID, agent, dest); err != nil {
 		return fmt.Errorf("harness %q run %d: downloading artifact %s: %w", agent, runID, artifactName, err)
 	}
 	roots, err := extractedArtifactRoots(dest)

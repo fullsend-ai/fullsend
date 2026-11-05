@@ -20,7 +20,7 @@ import (
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
-// fakeSkipArtifactCI answers DownloadAgentArtifactsFromRun by writing files
+// fakeSkipArtifactCI answers DownloadNamedArtifactFromRun by writing files
 // (relative path → content) into dest/<artifact name>/, where the real CI
 // drivers extract an agent's artifacts, or returning err.
 type fakeSkipArtifactCI struct {
@@ -57,10 +57,6 @@ func (f *fakeSkipArtifactCI) DownloadNamedArtifactFromRun(_ context.Context, _, 
 		}
 	}
 	return nil
-}
-
-func (f *fakeSkipArtifactCI) DownloadAgentArtifactsFromRun(ctx context.Context, owner, repo string, runID int, agent, dest string) error {
-	return f.DownloadNamedArtifactFromRun(ctx, owner, repo, runID, "fullsend-"+agent, dest)
 }
 
 const skipTestRunDir = "fs-pre-0a1b2c"

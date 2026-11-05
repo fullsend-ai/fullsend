@@ -83,11 +83,12 @@ Use `forge.Client` for operations it already exposes; add REST helpers inside th
 
 ## Adding a CI driver
 
-1. Implement `ci.Driver` — `WaitForWorkflow`, `FindCompletedWorkflowRun`, `AssertNoWorkflow`, `GetRunLogs`, `DownloadArtifacts`, `DownloadNamedArtifactFromRun`, `DownloadNamedArtifactAfter`, `DownloadAgentArtifactsFromRun`, `DownloadAgentArtifactsAfter`, `WaitForHarnessAgent`, `WaitForHarnessAgentRound`, `WaitForFailedHarnessAgent`, `AssertNoHarnessAgentArtifact`, `CountHarnessDispatches`.
+1. Implement `ci.Driver` — `WaitForWorkflow`, `FindCompletedWorkflowRun`, `AssertNoWorkflow`, `GetRunLogs`, `DownloadArtifacts`, `DownloadNamedArtifactFromRun`, `DownloadNamedArtifactAfter`, `WaitForHarnessAgent`, `WaitForHarnessAgentRound`, `WaitForFailedHarnessAgent`, `AssertNoHarnessAgentArtifact`, `CountHarnessDispatches`.
 2. Also implement the optional `ci.RunLister` interface (`ListRecentRuns`). A failed scenario's After hook uses it to save the logs of runs that no step resolved before the leased repository is deleted. Without it, only the run a step resolved has its logs collected.
 3. Also implement the optional `ci.EmptyMatrixWaiter` interface (`WaitForHarnessEmptyMatrix`). The `the harness dispatch completes with an empty matrix` step needs it to assert that a harness run succeeded without dispatching any agent.
-4. Map forge `WorkflowRun` types to portable polling logic; reuse patterns from the GitHub Actions driver in `pkg/behaviourtest/drivers/ci/githubactions/`.
-5. Register in `behaviourtest.RunSuite` for the matching `BEHAVIOUR_CI` value.
+4. Also implement the optional `ci.AgentArtifactDownloader` interface (`DownloadAgentArtifactsFromRun`, `DownloadAgentArtifactsAfter`). It selects artifacts by logical agent and downloads every artifact a repeated agent uploads (for example one per matrix entry). Without it, steps fall back to `DownloadNamedArtifactFromRun` and `DownloadNamedArtifactAfter` with the exact name `fullsend-<agent>`, so a repeated agent's additional artifacts are not collected.
+5. Map forge `WorkflowRun` types to portable polling logic; reuse patterns from the GitHub Actions driver in `pkg/behaviourtest/drivers/ci/githubactions/`.
+6. Register in `behaviourtest.RunSuite` for the matching `BEHAVIOUR_CI` value.
 
 ## Adding an install driver
 

@@ -105,10 +105,6 @@ func (f *fakeArtifactCI) DownloadNamedArtifactFromRun(context.Context, string, s
 	return f.err
 }
 
-func (f *fakeArtifactCI) DownloadAgentArtifactsFromRun(context.Context, string, string, int, string, string) error {
-	return f.err
-}
-
 func TestThenTriageAgentDidNotRun(t *testing.T) {
 	t.Parallel()
 

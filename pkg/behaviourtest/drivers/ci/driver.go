@@ -28,13 +28,11 @@ type Driver interface {
 	GetRunLogs(ctx context.Context, owner, repo string, runID int) (string, error)
 	DownloadArtifacts(ctx context.Context, owner, repo string, runID int, destDir string) error
 	// DownloadNamedArtifactFromRun and DownloadNamedArtifactAfter match the
-	// supplied physical artifact name exactly. Use DownloadAgentArtifactsFromRun
-	// or DownloadAgentArtifactsAfter when selecting output by logical agent;
-	// those methods include any platform-specific artifact names for that agent.
+	// supplied physical artifact name exactly. Drivers that also implement
+	// AgentArtifactDownloader can select output by logical agent instead;
+	// see DownloadAgentArtifactsFromRun and DownloadAgentArtifactsAfter.
 	DownloadNamedArtifactFromRun(ctx context.Context, owner, repo string, runID int, artifactName string, destDir string) error
 	DownloadNamedArtifactAfter(ctx context.Context, owner, repo, artifactName string, after time.Time, destDir string) error
-	DownloadAgentArtifactsFromRun(ctx context.Context, owner, repo string, runID int, agent string, destDir string) error
-	DownloadAgentArtifactsAfter(ctx context.Context, owner, repo, agent string, after time.Time, destDir string) error
 	// WaitForHarnessAgent waits for the named agent's harness run to
 	// succeed. When the run concludes with a failure, the error is
 	// returned together with that run, so callers can collect its logs
@@ -91,4 +89,40 @@ type EmptyMatrixWaiter interface {
 	// such run, or an error when a run's dispatch job failed, a harness
 	// agent job ran, or no run settled before the wait budget elapsed.
 	WaitForHarnessEmptyMatrix(ctx context.Context, owner, repo string, after time.Time) (*forge.WorkflowRun, error)
+}
+
+// AgentArtifactDownloader is an optional extension of Driver for selecting
+// artifacts by logical agent rather than by exact physical artifact name.
+// A repeated agent can upload several platform-specific artifacts (for
+// example one per matrix entry), and an implementation downloads every
+// artifact that belongs to the agent. It is a separate interface so that
+// external Driver implementations keep compiling; callers use the package
+// helpers DownloadAgentArtifactsFromRun and DownloadAgentArtifactsAfter,
+// which fall back to the exact-name Driver methods ("fullsend-<agent>")
+// when a Driver does not implement it.
+type AgentArtifactDownloader interface {
+	DownloadAgentArtifactsFromRun(ctx context.Context, owner, repo string, runID int, agent string, destDir string) error
+	DownloadAgentArtifactsAfter(ctx context.Context, owner, repo, agent string, after time.Time, destDir string) error
+}
+
+// DownloadAgentArtifactsFromRun downloads the artifacts of the logical agent
+// from the given run using d's AgentArtifactDownloader capability when
+// present, and otherwise falls back to d's exact-name download of
+// "fullsend-<agent>".
+func DownloadAgentArtifactsFromRun(ctx context.Context, d Driver, owner, repo string, runID int, agent, destDir string) error {
+	if dl, ok := d.(AgentArtifactDownloader); ok {
+		return dl.DownloadAgentArtifactsFromRun(ctx, owner, repo, runID, agent, destDir)
+	}
+	return d.DownloadNamedArtifactFromRun(ctx, owner, repo, runID, "fullsend-"+agent, destDir)
+}
+
+// DownloadAgentArtifactsAfter polls for the logical agent's artifacts created
+// at or after the given time using d's AgentArtifactDownloader capability
+// when present, and otherwise falls back to d's exact-name download of
+// "fullsend-<agent>".
+func DownloadAgentArtifactsAfter(ctx context.Context, d Driver, owner, repo, agent string, after time.Time, destDir string) error {
+	if dl, ok := d.(AgentArtifactDownloader); ok {
+		return dl.DownloadAgentArtifactsAfter(ctx, owner, repo, agent, after, destDir)
+	}
+	return d.DownloadNamedArtifactAfter(ctx, owner, repo, "fullsend-"+agent, after, destDir)
 }

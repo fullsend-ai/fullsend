@@ -532,7 +532,7 @@ func ensureHarnessArtifacts(w *world.World, agent string) error {
 	if w.WorkflowRun == nil {
 		return fmt.Errorf("no workflow run recorded")
 	}
-	if err := w.CI.DownloadAgentArtifactsFromRun(ctx, w.Org, w.RepoName, w.WorkflowRun.ID, agent, dest); err != nil {
+	if err := ci.DownloadAgentArtifactsFromRun(ctx, w.CI, w.Org, w.RepoName, w.WorkflowRun.ID, agent, dest); err != nil {
 		_ = os.RemoveAll(dest)
 		return err
 	}

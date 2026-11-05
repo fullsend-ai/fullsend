@@ -2,6 +2,7 @@ package steps
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -33,6 +34,10 @@ func (f *markerFallbackCI) DownloadAgentArtifactsFromRun(_ context.Context, _, _
 		name = "metrics.json"
 	}
 	return os.WriteFile(filepath.Join(dir, name), []byte("{}"), 0o644)
+}
+
+func (f *markerFallbackCI) DownloadAgentArtifactsAfter(context.Context, string, string, string, time.Time, string) error {
+	return errors.New("unexpected time-scoped download")
 }
 
 func (f *markerFallbackCI) FindCompletedWorkflowRun(context.Context, string, string, string, time.Time) (*forge.WorkflowRun, error) {
@@ -95,4 +100,56 @@ func TestEnsureRunArtifacts_EmptyDispatchAgentDefaultsToTriage(t *testing.T) {
 	assert.Equal(t, "triage", fake.runAgent)
 	assert.Equal(t, "triage", fake.afterAgent)
 	assert.FileExists(t, filepath.Join(w.ArtifactDir, "fullsend-triage", "metrics.json"))
+}
+
+// legacyNamedCI is an external-style ci.Driver that implements only the
+// exact-name download methods and not ci.AgentArtifactDownloader.
+type legacyNamedCI struct {
+	ci.Driver
+	runName   string
+	afterName string
+}
+
+func (f *legacyNamedCI) DownloadNamedArtifactFromRun(_ context.Context, _, _ string, _ int, name, destDir string) error {
+	f.runName = name
+	dir := filepath.Join(destDir, name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "unrelated.json"), []byte("{}"), 0o644)
+}
+
+func (f *legacyNamedCI) DownloadNamedArtifactAfter(_ context.Context, _, _, name string, _ time.Time, destDir string) error {
+	f.afterName = name
+	dir := filepath.Join(destDir, name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "metrics.json"), []byte("{}"), 0o644)
+}
+
+func (f *legacyNamedCI) FindCompletedWorkflowRun(context.Context, string, string, string, time.Time) (*forge.WorkflowRun, error) {
+	return nil, nil
+}
+
+func TestEnsureRunArtifacts_DriverWithoutAgentCapabilityUsesExactNames(t *testing.T) {
+	for _, tc := range []struct{ dispatchAgent, wantName string }{
+		{"", "fullsend-triage"},
+		{"review", "fullsend-review"},
+	} {
+		t.Run(tc.wantName, func(t *testing.T) {
+			t.Setenv("BEHAVIOUR_ARTIFACT_DIR", t.TempDir())
+			fake := &legacyNamedCI{}
+			w := &world.World{
+				DispatchAgent: tc.dispatchAgent,
+				WorkflowRun:   &forge.WorkflowRun{ID: 1},
+				CI:            fake,
+			}
+
+			require.NoError(t, ensureRunArtifacts(w, "metrics.json"))
+			assert.Equal(t, tc.wantName, fake.runName)
+			assert.Equal(t, tc.wantName, fake.afterName)
+			assert.FileExists(t, filepath.Join(w.ArtifactDir, tc.wantName, "metrics.json"))
+		})
+	}
 }

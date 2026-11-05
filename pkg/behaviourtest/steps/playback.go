@@ -17,6 +17,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/artifacts"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
@@ -462,7 +463,7 @@ func ensureRoundArtifacts(w *world.World, agent string, run *forge.WorkflowRun) 
 	if err != nil {
 		return err
 	}
-	if err := w.CI.DownloadAgentArtifactsFromRun(ctx, w.Org, w.RepoName, run.ID, agent, dest); err != nil {
+	if err := ci.DownloadAgentArtifactsFromRun(ctx, w.CI, w.Org, w.RepoName, run.ID, agent, dest); err != nil {
 		_ = os.RemoveAll(dest)
 		return fmt.Errorf("downloading %q agent-result artifact for run %d: %w", agent, run.ID, err)
 	}
@@ -673,7 +674,7 @@ func roundDisposition(ctx context.Context, w *world.World, agent string, run *fo
 		return "", fmt.Errorf("preparing scratch dir for %q agent-result artifact: %w", agent, err)
 	}
 	defer os.RemoveAll(dest)
-	if err := w.CI.DownloadAgentArtifactsFromRun(ctx, w.Org, w.RepoName, run.ID, agent, dest); err != nil {
+	if err := ci.DownloadAgentArtifactsFromRun(ctx, w.CI, w.Org, w.RepoName, run.ID, agent, dest); err != nil {
 		return "", fmt.Errorf("downloading %q agent-result artifact for run %d: %w", agent, run.ID, err)
 	}
 	perArtifact, err := artifacts.FindOutputFilesByArtifact(dest, "agent-result.json")

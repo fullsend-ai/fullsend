@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/artifacts"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
@@ -78,7 +79,7 @@ func ensureRunArtifacts(w *world.World, marker string) error {
 	}
 
 	tryDownloadRun := func(runID int) error {
-		if err := w.CI.DownloadAgentArtifactsFromRun(ctx, w.Org, w.RepoName, runID, agent, dest); err != nil {
+		if err := ci.DownloadAgentArtifactsFromRun(ctx, w.CI, w.Org, w.RepoName, runID, agent, dest); err != nil {
 			return err
 		}
 		if _, findErr := artifacts.FindOutputFile(dest, marker); findErr != nil {
@@ -114,7 +115,7 @@ func ensureRunArtifacts(w *world.World, marker string) error {
 		}
 	}
 
-	if downloadErr := w.CI.DownloadAgentArtifactsAfter(ctx, w.Org, w.RepoName, agent, w.ScenarioStart, dest); downloadErr != nil {
+	if downloadErr := ci.DownloadAgentArtifactsAfter(ctx, w.CI, w.Org, w.RepoName, agent, w.ScenarioStart, dest); downloadErr != nil {
 		_ = os.RemoveAll(dest)
 		return downloadErr
 	}

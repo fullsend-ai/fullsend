@@ -11,6 +11,7 @@ import (
 	"github.com/cucumber/godog"
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
 	scmgh "github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm/github"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
@@ -208,7 +209,7 @@ func thenTriageAgentDidNotRun(w *world.World) error {
 		return err
 	}
 	defer os.RemoveAll(dest)
-	err = w.CI.DownloadAgentArtifactsFromRun(context.Background(),
+	err = ci.DownloadAgentArtifactsFromRun(context.Background(), w.CI,
 		w.RepoOwner, w.RepoName, w.WorkflowRun.ID, "triage", dest)
 	if err == nil {
 		return fmt.Errorf("triage run %d uploaded %q: the agent ran", w.WorkflowRun.ID, install.PerRepoAgentArtifact)
