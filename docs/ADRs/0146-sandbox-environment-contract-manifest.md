@@ -23,9 +23,8 @@ Accepted
 
 The sandbox environment surface — what the runner injects into the sandbox and
 reserves from harness override — was hand-synced in three descriptions, none
-machine-checked: the
-[`reservedSandboxKeys` sync note](https://github.com/fullsend-ai/fullsend/blob/487169a9da/internal/cli/run.go#L3375-L3427)
-in `internal/cli/run.go`,
+machine-checked: the sync note on the `reservedSandboxKeys` map in
+`internal/cli/run.go`,
 the agents repo's `SANDBOX_RUNTIME_VARS` allowlist in
 `scripts/skill-env-reachability-test.sh`, and per-runtime `EnvExports()` in
 prose only. The drift was realized in
@@ -74,8 +73,8 @@ Schemas (Draft 2020-12) under
 
 A build-time collector generates the schemas by running every code path
 that injects environment variables into the sandbox: the
-[`bootstrapEnv` `.env` emission](https://github.com/fullsend-ai/fullsend/blob/487169a9da/internal/cli/run.go#L3836-L3871),
-the per-iteration env, trace-ID injection, the security-hook env, each
+`.env` emission in `bootstrapEnv` (`internal/cli/run.go`), the
+per-iteration env, trace-ID injection, the security-hook env, each
 production runtime's `EnvExports()` and launch-command exports, the
 `fullsend agent new` Vertex scaffold, and the effective reserved-key set
 after the init-time merges. Commands are replayed in a scratch workspace
