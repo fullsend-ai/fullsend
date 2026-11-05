@@ -325,6 +325,9 @@ func TestLoadRunnerSecrets_RefusedNames(t *testing.T) {
 		"PATH",
 		"HOME",
 		"TRACEPARENT",
+		// google-github-actions/auth exports these with a project id.
+		"GCLOUD_PROJECT",
+		"GCP_PROJECT",
 	}
 	for _, name := range refused {
 		t.Run(name, func(t *testing.T) {
@@ -345,6 +348,79 @@ func TestLoadRunnerSecrets_InvalidName(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `"1BAD": not a valid environment variable name`)
 	assert.Contains(t, err.Error(), `"has-dash": not a valid environment variable name`)
+}
+
+// clearRunnerSecretsCIMarkers unsets every CI marker for the test, so the
+// result does not depend on where the test runs.
+func clearRunnerSecretsCIMarkers(t *testing.T) {
+	t.Helper()
+	for _, name := range runnerSecretsCIMarkers {
+		t.Setenv(name, "")
+		require.NoError(t, os.Unsetenv(name))
+	}
+}
+
+func TestInlineRunnerSecretsCIMarker(t *testing.T) {
+	const bundle = `{"X":"x-secret-value-1"}`
+	tests := []struct {
+		name       string
+		inline     string
+		markers    map[string]string
+		wantMarker string
+	}{
+		{name: "local run", inline: bundle},
+		{name: "GitHub Actions", inline: bundle, markers: map[string]string{"GITHUB_ACTIONS": "true"}, wantMarker: "GITHUB_ACTIONS"},
+		{name: "GitLab CI", inline: bundle, markers: map[string]string{"GITLAB_CI": "true"}, wantMarker: "GITLAB_CI"},
+		{name: "generic CI", inline: bundle, markers: map[string]string{"CI": "1"}, wantMarker: "CI"},
+		{name: "CI first", inline: bundle, markers: map[string]string{"CI": "true", "GITLAB_CI": "true"}, wantMarker: "CI"},
+		{name: "marker set to false", inline: bundle, markers: map[string]string{"CI": "False"}},
+		{name: "blank bundle in CI", inline: "  ", markers: map[string]string{"CI": "true"}},
+		{name: "no bundle in CI", markers: map[string]string{"CI": "true"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			clearRunnerSecretsCIMarkers(t)
+			t.Setenv(runnerSecretsEnv, tc.inline)
+			for k, v := range tc.markers {
+				t.Setenv(k, v)
+			}
+
+			marker, ok := inlineRunnerSecretsCIMarker()
+			assert.Equal(t, tc.wantMarker != "", ok)
+			assert.Equal(t, tc.wantMarker, marker)
+		})
+	}
+}
+
+// The inline bundle in CI draws a warning that names the variables and no
+// value, and is still read.
+func TestRunAgent_InlineRunnerSecretsInCIWarns(t *testing.T) {
+	usePreScriptStub(t)
+	clearRunnerSecretsCIMarkers(t)
+	t.Setenv("CI", "true")
+	t.Setenv(runnerSecretsEnv, `{"X":"x-secret-value-ci"}`)
+	marker := filepath.Join(t.TempDir(), "ran")
+	dir := newRunnerSecretHarnessDir(t,
+		"env:\n  runner:\n    X: \"${X}\"\n",
+		`[ "${X:-}" = "x-secret-value-ci" ] || exit 11`+"\n"+"touch "+marker+"\n")
+
+	var out strings.Builder
+	require.NoError(t, runRunnerSecretAgentTo(t, dir, &out))
+	assert.FileExists(t, marker)
+	assert.Contains(t, out.String(), runnerSecretsEnv+" is set inline while CI is set")
+	assert.Contains(t, out.String(), runnerSecretsFileEnv)
+	assert.NotContains(t, out.String(), "x-secret-value-ci")
+}
+
+func TestRunAgent_InlineRunnerSecretsLocallyDoesNotWarn(t *testing.T) {
+	usePreScriptStub(t)
+	clearRunnerSecretsCIMarkers(t)
+	t.Setenv(runnerSecretsEnv, `{"X":"x-secret-value-local"}`)
+	dir := newRunnerSecretHarnessDir(t, "env:\n  runner:\n    X: \"${X}\"\n", "")
+
+	var out strings.Builder
+	require.NoError(t, runRunnerSecretAgentTo(t, dir, &out))
+	assert.NotContains(t, out.String(), "is set inline while")
 }
 
 // Every name the reusable workflows and the composite action set on a

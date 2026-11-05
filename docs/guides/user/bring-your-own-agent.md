@@ -1075,15 +1075,18 @@ use the composite action and pass
 `with: runner_secrets: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}`; the
 action stages the file for you. The `FULLSEND_GITHUB_RUNNER_SECRETS`
 environment variable also works, but only for local runs: in CI the value would
-stay readable in `/proc/<pid>/environ` for the whole run. See
-[`fullsend run` § Runner secrets](../../cli/run.md#runner-secrets).
+stay readable in `/proc/<pid>/environ` for the whole run. This is not
+enforced: in CI, `fullsend run` prints a warning but still reads the variable.
+See [`fullsend run` § Runner secrets](../../cli/run.md#runner-secrets).
 
 On GitLab, skip the object. Add each secret as its own masked CI/CD variable
 (for example `JIRA_API_TOKEN`) and reference it from `env.runner` the same way.
 The rules above (refused names, host side only, overlays) apply to names in the
 GitHub object only; GitLab behaves as before, and every CI/CD variable in the
 job except `JIRA_TOKEN`, `JIRA_USER_EMAIL` and the OTLP headers still reaches
-host-side scripts.
+host-side scripts. Do not add a CI/CD variable named
+`FULLSEND_GITHUB_RUNNER_SECRETS`: `fullsend run` still reads it as an inline
+object, with a warning, and applies the rules above to its names.
 
 ### Harness composition with `base`
 

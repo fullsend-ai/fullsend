@@ -482,9 +482,9 @@ function in `internal/cli/run.go` is the canonical implementation.
    `_SECRET`, `_PASSWORD`, `_KEY`, `_CREDENTIALS`) with
    `[REDACTED:<key>]`. Skip values shorter than
    `minRedactableSecretLen` (currently 8) — short values like `"main"`
-   or `"true"` cause false-positive mangling. `replaceEnvSecrets` is that
-   pass: it takes longer values first, so a value that contains another
-   is replaced whole.
+   or `"true"` cause false-positive mangling. `envLiterals` lists these
+   values, longer values first, and `redactSecretLiterals` is the
+   canonical literal pass that replaces them (invariant 3).
 
 2. **Scan `providerOnlyKeys` from the process environment
    (`os.Getenv`) for credential literal values.** Provider-only
@@ -493,9 +493,10 @@ function in `internal/cli/run.go` is the canonical implementation.
    can't reach them, which means the `RunnerEnv` scan in invariant 1
    never sees them. Iterate `providerOnlyKeys`, read each value with
    `os.Getenv`, and replace it the same way (skipping values shorter
-   than `minRedactableSecretLen`). `replaceEnvSecrets` does this in the
-   same longest-first pass as invariant 1. A future credential class kept
-   out of `RunnerEnv` for the same reason needs the same treatment here.
+   than `minRedactableSecretLen`). `envLiterals` lists these values with
+   those of invariant 1, so they go in the same pass. A future credential
+   class kept out of `RunnerEnv` for the same reason needs the same
+   treatment here.
 
 3. **Replace registered runtime secrets (`security.RuntimeSecrets()`).**
    Values registered with `security.RegisterRuntimeSecret` have no
@@ -504,9 +505,19 @@ function in `internal/cli/run.go` is the canonical implementation.
    register through `registerRunnerSecretValue`, which adds the trimmed
    value, each line with and without padding, and the JSON-escaped form
    of each, because script output is often trimmed or quoted before it
-   is redacted. Exact literals from invariants 1 to 3 are replaced in one
-   pass, longest first, so a value inside a longer one never leaves part
-   of the longer one visible.
+   is redacted. `redactSecretLiterals` replaces the exact literals from
+   invariants 1 to 3 (`envLiterals` plus `security.RuntimeSecrets()`) in
+   one pass, longest first, so a value inside a longer one never leaves
+   part of the longer one visible. New features should call
+   `redactSecretLiterals` (or `redactFeedback`, which runs it before
+   invariant 4) rather than build their own literal pass. Not every
+   existing caller has one pass yet: the telemetry content collector
+   (`redactText` in `internal/cli/content_collector.go`) still replaces
+   env literals with `replaceEnvSecrets` and runtime secrets in a
+   separate pass inside `security.SecretRedactor`, so a runtime secret
+   and an env literal that overlap can leave part of one visible there.
+   Overlapping values are tracked in
+   [#8165](https://github.com/fullsend-ai/fullsend/issues/8165).
 
 4. **Apply `security.SecretRedactor` as a fallback pass.**
    The `RunnerEnv` and `providerOnlyKeys` scans only catch credentials
@@ -531,7 +542,7 @@ function in `internal/cli/run.go` is the canonical implementation.
    permissions limit exposure if the artifact is downloaded to a
    shared filesystem.
 
-### Why all three passes are needed
+### Why all four passes are needed
 
 No single pass is sufficient. Opaque tokens declared in `RunnerEnv`
 (e.g., a GitHub installation token with no recognizable prefix) have no
@@ -541,10 +552,15 @@ scan catches those. Provider-only credentials such as
 neither the `RunnerEnv` scan nor an unrelated `SecretRedactor` pattern
 match is guaranteed to catch them — only the `providerOnlyKeys` scan of
 the process environment does, though `SecretRedactor` may also match
-this token's shape as a fallback. Conversely, credentials that never
-entered either the runner environment or `providerOnlyKeys` (a PEM key
-printed by a repo hook, a fixture secret) are invisible to both env
-scans — only the pattern-based `SecretRedactor` catches those.
+this token's shape as a fallback. Registered runtime secrets — an
+access token the runner exchanged during the run, or a runner secret
+referenced from `env.runner` under a key such as `JIRA_EMAIL` that
+`sensitiveEnvKey` does not match — sit under no sensitive key and, being
+opaque, match no pattern, so only the runtime-secrets pass catches them.
+Conversely, credentials that never entered the runner environment,
+`providerOnlyKeys` or the runtime-secret registry (a PEM key printed by
+a repo hook, a fixture secret) are invisible to the literal passes —
+only the pattern-based `SecretRedactor` catches those.
 
 ### When this applies
 

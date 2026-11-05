@@ -69,7 +69,9 @@ var workflowSetEnvNames = []string{
 
 // runnerSecretRefusedNames are minted role tokens and other runner-owned
 // names outside the refused families: GH_TOKEN, every role token in
-// roleTokenVars, GITLAB_TOKEN, PATH and workflowSetEnvNames. oidcDenyKeys,
+// roleTokenVars, GITLAB_TOKEN, PATH, the project variables
+// google-github-actions/auth exports outside its GOOGLE_ and CLOUDSDK_
+// families, and workflowSetEnvNames. oidcDenyKeys,
 // providerOnlyKeys and reservedSandboxKeys are refused as well
 // (runnerSecretNameRefused), which keeps GH_WORKFLOW_TOKEN (ADR 0114)
 // unforgeable.
@@ -78,6 +80,10 @@ var runnerSecretRefusedNames = func() map[string]bool {
 		"GH_TOKEN":     true,
 		"GITLAB_TOKEN": true,
 		"PATH":         true,
+		// google-github-actions/auth exports these for the job when given
+		// a project id.
+		"GCLOUD_PROJECT": true,
+		"GCP_PROJECT":    true,
 	}
 	for _, n := range workflowSetEnvNames {
 		names[n] = true
@@ -89,6 +95,30 @@ var runnerSecretRefusedNames = func() map[string]bool {
 	}
 	return names
 }()
+
+// runnerSecretsCIMarkers are variables a CI platform sets in every job.
+// One of them set alongside the inline runnerSecretsEnv means the inline
+// variable is being used outside a local run.
+var runnerSecretsCIMarkers = []string{"CI", "GITLAB_CI", "GITHUB_ACTIONS"}
+
+// inlineRunnerSecretsCIMarker reports the first CI marker that is set when
+// the inline runnerSecretsEnv holds a bundle, so the caller can warn that
+// the inline variable is meant for local runs only. It is a warning, not
+// a refusal: loadRunnerSecrets still reads the variable. A marker set to
+// "false" counts as unset. Call it before loadRunnerSecrets, which removes
+// the variable from the environment. It returns a marker name, never a
+// value, so the warning cannot quote the bundle.
+func inlineRunnerSecretsCIMarker() (string, bool) {
+	if strings.TrimSpace(os.Getenv(runnerSecretsEnv)) == "" {
+		return "", false
+	}
+	for _, name := range runnerSecretsCIMarkers {
+		if v := os.Getenv(name); v != "" && !strings.EqualFold(v, "false") {
+			return name, true
+		}
+	}
+	return "", false
+}
 
 // runnerSecretDisplayName quotes a bundle key for an error message unless
 // it is a valid variable name, so a key holding a newline or a workflow
