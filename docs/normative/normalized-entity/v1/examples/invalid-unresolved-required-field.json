@@ -58,6 +58,9 @@
       "harness": "review",
       "human_min_role": "triage",
       "origin": "discovery",
+      "basis": "scope_complete",
+      "outcome": true,
+      "acquisition_plan": "plan-review-1",
       "resolved_at": "2026-10-14T06:00:05.000000000Z",
       "removed_elements": 0
     }

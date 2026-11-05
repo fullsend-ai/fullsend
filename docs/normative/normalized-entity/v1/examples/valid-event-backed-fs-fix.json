@@ -100,6 +100,9 @@
       "harness": "fix",
       "human_min_role": "write",
       "origin": "event",
+      "basis": "scope_complete",
+      "outcome": true,
+      "acquisition_plan": "plan-fix-1",
       "resolved_at": "2026-10-02T08:30:04.000000000Z",
       "removed_elements": 1
     }

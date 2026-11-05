@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://fullsend.ai/normative/normalized-entity/v1/normalized-entity.schema.json",
   "title": "NormalizedEntityDocument",
-  "description": "Logical normalized-entity v1 document (ADR 0098). The `entity` member is the value bound to the harness CEL variable `entity`; `coverage` and `evaluation` are host-only and never CEL-visible. A `candidate` document may be partial; an `evaluable` document is the per-harness form admitted to CEL and requires complete coverage of every applicable facet. Facet fields are present if and only if their facet coverage is `complete`, so unresolved data is never encoded as absent or empty. This schema describes logical content and conformance fixtures; it does not prescribe an in-memory representation.",
+  "description": "Logical normalized-entity v1 document (ADR 0098). The `entity` member is the value bound to the harness CEL variable `entity`; `coverage` and `evaluation` are host-only and never CEL-visible. A `candidate` document may be partial; an `evaluable` document is the per-harness form that carries a conclusive predicate result over selectively acquired data (ADR 0147). Every facet of an evaluable document is either `complete` or outside the acquisition plan (`not_loaded`), unless a retained witness settles a true outcome. Facet fields are present if and only if their facet coverage is `complete`, so unresolved data is never encoded as absent or empty. This schema describes logical content and conformance fixtures; it does not prescribe an in-memory representation.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "phase", "entity", "coverage"],
@@ -12,7 +12,7 @@
     },
     "phase": {
       "enum": ["candidate", "evaluable"],
-      "description": "`candidate`: discovered or partially resolved identity, not admissible to CEL. `evaluable`: complete per-harness form after action-indicating enumeration and current-permission filtering."
+      "description": "`candidate`: discovered or partially resolved identity, not admissible to CEL. `evaluable`: per-harness form with a conclusive result over the acquired, current-permission-filtered data."
     },
     "entity": {
       "$ref": "#/$defs/entity"
@@ -177,7 +177,45 @@
       }
     },
     {
-      "$comment": "Evaluable documents require complete coverage of every applicable facet and an evaluation block; candidates have no evaluation block.",
+      "$comment": "A candidate that carries the actions list carries the complete enumerated superset: every applicable category is complete.",
+      "if": {
+        "properties": {
+          "phase": { "const": "candidate" },
+          "coverage": {
+            "properties": {
+              "actions": {
+                "properties": { "status": { "const": "complete" } },
+                "required": ["status"]
+              }
+            },
+            "required": ["actions"]
+          }
+        },
+        "required": ["phase", "coverage"]
+      },
+      "then": {
+        "properties": {
+          "coverage": {
+            "properties": {
+              "actions": {
+                "properties": {
+                  "categories": {
+                    "properties": {
+                      "body": { "properties": { "status": { "const": "complete" } } },
+                      "comment": { "properties": { "status": { "const": "complete" } } },
+                      "review": { "properties": { "status": { "const": "complete" } } },
+                      "label_application": { "properties": { "status": { "const": "complete" } } }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "Evaluable documents carry an evaluation block and filter every retained or witness actor at the platform triage floor; candidates have no evaluation block.",
       "if": {
         "properties": { "phase": { "const": "evaluable" } },
         "required": ["phase"]
@@ -185,18 +223,20 @@
       "then": {
         "required": ["evaluation"],
         "properties": {
-          "coverage": {
-            "properties": {
-              "state": { "properties": { "status": { "const": "complete" } } },
-              "change_proposal": {
-                "properties": { "status": { "const": "complete" } }
-              },
-              "actions": { "properties": { "status": { "const": "complete" } } }
-            }
-          },
           "entity": {
             "properties": {
               "actions": {
+                "items": {
+                  "properties": {
+                    "actor": { "$ref": "#/$defs/retained_actor_triage" }
+                  }
+                }
+              }
+            }
+          },
+          "evaluation": {
+            "properties": {
+              "witnesses": {
                 "items": {
                   "properties": {
                     "actor": { "$ref": "#/$defs/retained_actor_triage" }
@@ -212,7 +252,73 @@
       }
     },
     {
-      "$comment": "Mutation harnesses (human_min_role write) retain only human elements whose current role is write or above.",
+      "$comment": "Complete-scope decisions (basis scope_complete): each facet and category is either complete (acquired in full) or not_loaded (outside the acquisition plan). A planned read that is incomplete, unknown, failed, or unsupported leaves a decision dependency unresolved, so no evaluable document exists. A complete actions facet then needs at least one complete category (enforced in actions_coverage).",
+      "if": {
+        "properties": {
+          "phase": { "const": "evaluable" },
+          "evaluation": {
+            "properties": { "basis": { "const": "scope_complete" } },
+            "required": ["basis"]
+          }
+        },
+        "required": ["phase", "evaluation"]
+      },
+      "then": {
+        "properties": {
+          "coverage": {
+            "properties": {
+              "state": { "properties": { "status": { "enum": ["complete", "not_loaded"] } } },
+              "change_proposal": {
+                "properties": { "status": { "enum": ["complete", "not_loaded"] } }
+              },
+              "actions": {
+                "properties": {
+                  "status": { "enum": ["complete", "not_loaded"] },
+                  "categories": {
+                    "properties": {
+                      "body": { "properties": { "status": { "enum": ["complete", "not_loaded"] } } },
+                      "comment": { "properties": { "status": { "enum": ["complete", "not_loaded"] } } },
+                      "review": { "properties": { "status": { "enum": ["complete", "not_loaded"] } } },
+                      "label_application": { "properties": { "status": { "enum": ["complete", "not_loaded"] } } }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "Witness decisions (basis witness) are conclusive true results settled by retained witness elements; they list the witnesses and never settle false. Other bases carry no witness list.",
+      "if": {
+        "properties": {
+          "phase": { "const": "evaluable" },
+          "evaluation": {
+            "properties": { "basis": { "const": "witness" } },
+            "required": ["basis"]
+          }
+        },
+        "required": ["phase", "evaluation"]
+      },
+      "then": {
+        "properties": {
+          "evaluation": {
+            "required": ["witnesses"],
+            "properties": { "outcome": { "const": true } }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "evaluation": {
+            "properties": { "witnesses": false }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "Harness minimum write: retain only human elements whose current role is write or above (ADR 0151).",
       "if": {
         "properties": {
           "phase": { "const": "evaluable" },
@@ -231,6 +337,95 @@
                 "items": {
                   "properties": {
                     "actor": { "$ref": "#/$defs/retained_actor_write" }
+                  }
+                }
+              }
+            }
+          },
+          "evaluation": {
+            "properties": {
+              "witnesses": {
+                "items": {
+                  "properties": {
+                    "actor": { "$ref": "#/$defs/retained_actor_write" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "Harness minimum maintain: retain only human elements whose current role is maintain or admin (ADR 0151).",
+      "if": {
+        "properties": {
+          "phase": { "const": "evaluable" },
+          "evaluation": {
+            "properties": { "human_min_role": { "const": "maintain" } },
+            "required": ["human_min_role"]
+          }
+        },
+        "required": ["phase", "evaluation"]
+      },
+      "then": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "actions": {
+                "items": {
+                  "properties": {
+                    "actor": { "$ref": "#/$defs/retained_actor_maintain" }
+                  }
+                }
+              }
+            }
+          },
+          "evaluation": {
+            "properties": {
+              "witnesses": {
+                "items": {
+                  "properties": {
+                    "actor": { "$ref": "#/$defs/retained_actor_maintain" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "Harness minimum admin: retain only human elements whose current role is admin (ADR 0151).",
+      "if": {
+        "properties": {
+          "phase": { "const": "evaluable" },
+          "evaluation": {
+            "properties": { "human_min_role": { "const": "admin" } },
+            "required": ["human_min_role"]
+          }
+        },
+        "required": ["phase", "evaluation"]
+      },
+      "then": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "actions": {
+                "items": {
+                  "properties": {
+                    "actor": { "$ref": "#/$defs/retained_actor_admin" }
+                  }
+                }
+              }
+            }
+          },
+          "evaluation": {
+            "properties": {
+              "witnesses": {
+                "items": {
+                  "properties": {
+                    "actor": { "$ref": "#/$defs/retained_actor_admin" }
                   }
                 }
               }
@@ -319,7 +514,7 @@
         "actions": {
           "type": "array",
           "items": { "$ref": "#/$defs/action" },
-          "description": "Action-indicating elements (actions facet). Candidate: the complete enumerated superset. Evaluable: the subset retained for this harness after current-permission filtering. Sorted by created_at, then id."
+          "description": "Action-indicating elements (actions facet). Candidate: the complete enumerated superset. Evaluable: the elements of the acquired (complete) categories retained for this harness after current-permission filtering. Categories outside the acquisition plan contribute nothing, and the plan covers every category the predicate depends on. Sorted by created_at, then id."
         }
       }
     },
@@ -432,13 +627,37 @@
       ]
     },
     "retained_actor_write": {
-      "$comment": "Mutation threshold: verified humans at write or above, or recognized bots.",
+      "$comment": "Harness minimum write: verified humans at write or above, or recognized bots.",
       "allOf": [
         { "$ref": "#/$defs/retained_actor_triage" },
         {
           "if": { "properties": { "kind": { "const": "human" } }, "required": ["kind"] },
           "then": {
             "properties": { "role": { "enum": ["admin", "maintain", "write"] } }
+          }
+        }
+      ]
+    },
+    "retained_actor_maintain": {
+      "$comment": "Harness minimum maintain: verified humans at maintain or admin, or recognized bots.",
+      "allOf": [
+        { "$ref": "#/$defs/retained_actor_write" },
+        {
+          "if": { "properties": { "kind": { "const": "human" } }, "required": ["kind"] },
+          "then": {
+            "properties": { "role": { "enum": ["admin", "maintain"] } }
+          }
+        }
+      ]
+    },
+    "retained_actor_admin": {
+      "$comment": "Harness minimum admin: verified humans at admin, or recognized bots.",
+      "allOf": [
+        { "$ref": "#/$defs/retained_actor_maintain" },
+        {
+          "if": { "properties": { "kind": { "const": "human" } }, "required": ["kind"] },
+          "then": {
+            "properties": { "role": { "const": "admin" } }
           }
         }
       ]
@@ -472,8 +691,11 @@
           "minLength": 2,
           "maxLength": 64,
           "pattern": "^/",
-          "not": { "type": "string", "pattern": "\\s" },
-          "description": "First whitespace-delimited token of the first line of the current revision when it is a command token (begins with '/', 2 to 64 characters, no whitespace), otherwise null. A bare '/' or a slash-prefixed token over 64 characters is not a command token and yields null. Required for body, comment, and review."
+          "not": {
+            "type": "string",
+            "pattern": "[\\u0009-\\u000d\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]"
+          },
+          "description": "First whitespace-delimited token of the first line of the current revision when it is a command token (begins with '/', 2 to 64 characters, no whitespace), otherwise null. Whitespace is the explicit code-point set in the README (Unicode White_Space plus U+FEFF), encoded as an explicit character class so every regular-expression dialect agrees. A bare '/' or a slash-prefixed token over 64 characters is not a command token and yields null. Required for body, comment, and review."
         },
         "label": {
           "type": "string",
@@ -596,32 +818,51 @@
           "$ref": "#/$defs/facet_coverage_pairing"
         },
         {
-          "$comment": "Enumeration is complete iff every applicable category is complete.",
+          "$comment": "The actions facet is complete iff every acquired category is complete: each category is complete or not_loaded (outside the acquisition plan), and at least one is complete. Any other mix is not complete. A candidate that carries the list additionally needs every applicable category complete (top-level rule).",
           "if": { "properties": { "status": { "const": "complete" } }, "required": ["status"] },
           "then": {
             "properties": {
               "categories": {
                 "properties": {
-                  "body": { "properties": { "status": { "const": "complete" } } },
-                  "comment": { "properties": { "status": { "const": "complete" } } },
-                  "review": { "properties": { "status": { "const": "complete" } } },
-                  "label_application": { "properties": { "status": { "const": "complete" } } }
+                  "body": { "properties": { "status": { "enum": ["complete", "not_loaded"] } } },
+                  "comment": { "properties": { "status": { "enum": ["complete", "not_loaded"] } } },
+                  "review": { "properties": { "status": { "enum": ["complete", "not_loaded"] } } },
+                  "label_application": { "properties": { "status": { "enum": ["complete", "not_loaded"] } } }
                 }
               }
-            }
+            },
+            "$comment": "At least one category is complete.",
+            "anyOf": [
+              { "properties": { "categories": { "properties": { "body": { "properties": { "status": { "const": "complete" } }, "required": ["status"] } }, "required": ["body"] } } },
+              { "properties": { "categories": { "properties": { "comment": { "properties": { "status": { "const": "complete" } }, "required": ["status"] } }, "required": ["comment"] } } },
+              { "properties": { "categories": { "properties": { "review": { "properties": { "status": { "const": "complete" } }, "required": ["status"] } }, "required": ["review"] } } },
+              { "properties": { "categories": { "properties": { "label_application": { "properties": { "status": { "const": "complete" } }, "required": ["status"] } }, "required": ["label_application"] } } }
+            ]
           },
           "else": {
             "not": {
-              "properties": {
-                "categories": {
+              "allOf": [
+                {
                   "properties": {
-                    "body": { "properties": { "status": { "const": "complete" } } },
-                    "comment": { "properties": { "status": { "const": "complete" } } },
-                    "review": { "properties": { "status": { "const": "complete" } } },
-                    "label_application": { "properties": { "status": { "const": "complete" } } }
+                    "categories": {
+                      "properties": {
+                        "body": { "properties": { "status": { "enum": ["complete", "not_loaded"] } } },
+                        "comment": { "properties": { "status": { "enum": ["complete", "not_loaded"] } } },
+                        "review": { "properties": { "status": { "enum": ["complete", "not_loaded"] } } },
+                        "label_application": { "properties": { "status": { "enum": ["complete", "not_loaded"] } } }
+                      }
+                    }
                   }
+                },
+                {
+                  "anyOf": [
+                    { "properties": { "categories": { "properties": { "body": { "properties": { "status": { "const": "complete" } }, "required": ["status"] } }, "required": ["body"] } } },
+                    { "properties": { "categories": { "properties": { "comment": { "properties": { "status": { "const": "complete" } }, "required": ["status"] } }, "required": ["comment"] } } },
+                    { "properties": { "categories": { "properties": { "review": { "properties": { "status": { "const": "complete" } }, "required": ["status"] } }, "required": ["review"] } } },
+                    { "properties": { "categories": { "properties": { "label_application": { "properties": { "status": { "const": "complete" } }, "required": ["status"] } }, "required": ["label_application"] } } }
+                  ]
                 }
-              }
+              ]
             }
           }
         }
@@ -685,18 +926,39 @@
     "evaluation": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["harness", "human_min_role", "origin", "resolved_at", "removed_elements"],
+      "required": ["harness", "human_min_role", "origin", "basis", "outcome", "acquisition_plan", "resolved_at", "removed_elements"],
       "properties": {
         "harness": {
           "type": "string",
           "minLength": 1,
           "maxLength": 255,
           "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
-          "description": "Candidate harness whose threshold produced this evaluable form."
+          "description": "Candidate harness whose minimum produced this evaluable form."
         },
         "human_min_role": {
-          "enum": ["triage", "write"],
-          "description": "Effective human threshold: triage for observation, write for mutation (Authorization Contract v1)."
+          "enum": ["triage", "write", "maintain", "admin"],
+          "description": "The harness's effective human_min_role (ADR 0151, Authorization Contract v2): triage, write, maintain, or admin. It gates every retained human element."
+        },
+        "basis": {
+          "enum": ["scope_complete", "witness"],
+          "description": "Why the outcome is conclusive (ADR 0147). scope_complete: every planned facet and category is complete and everything else is not_loaded, so the outcome holds for every complete entity consistent with that evidence. witness: a true outcome settled by the listed retained witness elements, with other reads possibly incomplete."
+        },
+        "outcome": {
+          "type": "boolean",
+          "description": "The conclusive predicate result. An UNKNOWN result never forms an evaluable document. false requires basis scope_complete."
+        },
+        "acquisition_plan": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:=-]*$",
+          "description": "Opaque identity of the conservative acquisition plan derived from the harness predicate. Every not_loaded facet or category is outside the plan's dependencies. Audit only."
+        },
+        "witnesses": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/action" },
+          "description": "Retained elements that settle a true outcome when basis is witness. Each passes the harness minimum. Present only for basis witness. Audit only."
         },
         "origin": {
           "enum": ["event", "discovery"],
