@@ -171,7 +171,7 @@ func newPollCmd() *cobra.Command {
 	for _, name := range []string{"jira-url", "jira-project", "jql"} {
 		_ = cmd.Flags().MarkHidden(name)
 	}
-	cmd.Flags().StringVar(&targetRepo, "target-repo", "", "GitHub repo slug where agents run (default: $GITHUB_REPOSITORY; jira-poll with --target-forge github only)")
+	cmd.Flags().StringVar(&targetRepo, "target-repo", "", "GitHub owner/repo slug where agents run, without '..' (default: $GITHUB_REPOSITORY; jira-poll with --target-forge github only)")
 	cmd.Flags().StringVar(&targetForge, "target-forge", jirapoll.TargetForgeGitHub, "Forge the jira-poll driver dispatches agents to: 'github' (write --output for reusable-dispatch.yml) or 'gitlab' (start the project's protected agent pipelines; uses --project and --gitlab-url)")
 	cmd.Flags().StringVar(&modeFlag, "mode", "", "Poll mode: 'slash' (slash commands only) or 'events' (labels, merges, non-slash notes)")
 	cmd.MarkFlagsOneRequired("forge", "input-driver")
@@ -429,6 +429,11 @@ func validateJiraPollArgs(settings jiraPollSettings, targetRepo, outputPath, ful
 	}
 	if !validTargetRepo.MatchString(targetRepo) {
 		return jiraPollArgs{}, fmt.Errorf("--target-repo %q must be an owner/repo slug", targetRepo)
+	}
+	// The repo becomes every event's normalized repo, which may not contain
+	// "..": the poller would skip every event and advance every checkpoint.
+	if strings.Contains(targetRepo, "..") {
+		return jiraPollArgs{}, fmt.Errorf("--target-repo %q must not contain '..'", targetRepo)
 	}
 
 	if outputPath == "" {

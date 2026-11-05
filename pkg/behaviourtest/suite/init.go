@@ -194,6 +194,9 @@ func resetScenarioWorld(w *world.World) {
 	w.JiraMockServer = nil
 	w.JiraMockState = nil
 	w.JiraConfigDir = ""
+	w.JiraPollCLIOutput = ""
+	w.JiraPollCLIExitCode = 0
+	w.JiraPollCLIOutputPath = ""
 	w.PlaybackEntries = nil
 	w.PlaybackCommitted = false
 	w.ConsumedHarnessRunIDs = nil

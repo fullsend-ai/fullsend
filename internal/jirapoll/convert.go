@@ -1,7 +1,6 @@
 package jirapoll
 
 import (
-	"log"
 	"regexp"
 	"strconv"
 	"strings"
@@ -93,13 +92,13 @@ func mapRawAction(event JiraEvent) string {
 }
 
 // parseIssueID converts a Jira issue ID string to int. Jira always returns
-// numeric ID strings for issues; a parse failure would mean entity.id is
-// silently written as 0 (schema-invalid), so it's logged rather than
-// swallowed even though it isn't expected to happen in practice.
+// numeric ID strings for issues. Any parse error yields 0, including a
+// numeric id out of int range (for which strconv.Atoi returns the max int),
+// and 0 fails validation, so the poller skips the event with a warning.
 func parseIssueID(id string) int {
 	n, err := strconv.Atoi(id)
 	if err != nil {
-		log.Printf("WARNING: unparseable Jira issue id %q, using 0: %v", id, err)
+		return 0
 	}
 	return n
 }

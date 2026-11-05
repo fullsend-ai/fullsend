@@ -33,3 +33,19 @@ Feature: Jira poll dispatch
     And the Jira poller runs
     Then the dispatch output contains a "triage" stage for issue "PROJ-303"
     And the dispatch output attributes issue "PROJ-303" to actor "admin-001" with role "admin"
+
+  Scenario: Jira event that fails normalized-event validation is skipped
+    Given a Jira issue "PROJ-505" with labels "bug"
+    And Jira issue "PROJ-505" has id "not-a-number"
+    And a Jira issue "PROJ-506" with labels "bug"
+    When a comment "/fs-triage check" is added to Jira issue "PROJ-505"
+    And a comment "/fs-triage check" is added to Jira issue "PROJ-506"
+    And the Jira poller runs
+    Then the dispatch output does not contain a stage for issue "PROJ-505"
+    And the dispatch output contains a "triage" stage for issue "PROJ-506"
+
+  Scenario: fullsend poll refuses a target repo whose path contains ..
+    Given a Jira issue "PROJ-606" with labels "bug"
+    When a comment "/fs-triage check" is added to Jira issue "PROJ-606"
+    And fullsend poll runs the Jira poller with target repo "test-org/.."
+    Then fullsend poll fails with "must not contain '..'" and writes no dispatch output

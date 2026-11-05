@@ -67,6 +67,8 @@ type Poller struct {
 	userGroups          map[string][]jira.UserGroupInfo      // accountID → GetUserGroups result, cached per cycle
 	statusCategoryCache map[string]string                    // status name → statusCategory key, reset each cycle
 	selfAccountID       string                               // authenticated Jira account from GetMyself; used to classify self-authored events as bot
+	eventsSeen          int                                  // events converted this cycle
+	eventsInvalid       int                                  // events skipped this cycle because they failed validation
 }
 
 // ctxSleep sleeps for d or until ctx is cancelled, whichever comes first,
@@ -106,6 +108,7 @@ func New(client JiraClient, matcher EventMatcher, opts Options) *Poller {
 func (p *Poller) Run(ctx context.Context) error {
 	cycleID := uuid.New().String()
 	p.dispatches = nil
+	p.eventsSeen, p.eventsInvalid = 0, 0
 	p.statusCategoryCache = make(map[string]string)
 	p.roleMembership = make(map[string]string)
 	p.roleGroups = make(map[string][]string)
@@ -245,6 +248,11 @@ func (p *Poller) Run(ctx context.Context) error {
 
 	log.Printf("poll complete: %d candidates, %d unlocked, %d selected, %d dispatches",
 		len(candidates), len(unlocked), len(selected), len(p.dispatches))
+	// One bad issue skips one event; a setting that breaks every event
+	// skips them all, which this line shows.
+	if p.eventsInvalid > 0 {
+		log.Printf("WARNING: skipped %d of %d events this cycle because they failed normalized-event validation", p.eventsInvalid, p.eventsSeen)
+	}
 	if dispatchErrors > 0 {
 		return fmt.Errorf("failed to dispatch records for %d issue(s); their lastCheck was not advanced, so they are retried next cycle: %w", dispatchErrors, firstDispatchErr)
 	}
@@ -517,8 +525,25 @@ func (p *Poller) processIssue(ctx context.Context, issue jira.Issue, cycleID str
 	// event is skipped rather than retried: the checkpoint advances past
 	// all inspected entries regardless, which prevents the poller from
 	// stalling when a routing error persists across cycles.
+	labelsWarned := false
 	for _, event := range events {
 		ne := p.toNormalizedEvent(event)
+		p.eventsSeen++
+		// fullsend run cannot use an invalid embedded event, so an event that
+		// fails validation is skipped here rather than dispatched. Jira was
+		// observed serving an issue without labels with an empty list (checked
+		// 2026-11-01), so an issue served without a labels array gets its own
+		// warning, once: one odd issue must not stop the others, but the
+		// operator should be able to tell it from an ordinary invalid event.
+		if err := ne.Validate(); err != nil {
+			if ne.State.Labels == nil && !labelsWarned {
+				log.Printf("WARNING: jira served issue %s without a labels array (null or missing); its events are skipped. The Jira response shape may have changed", issue.Key)
+				labelsWarned = true
+			}
+			log.Printf("WARNING: skipping event %s for issue %s: %v (jira issue id %q)", event.Key(), event.IssueKey, err, event.IssueID)
+			p.eventsInvalid++
+			continue
+		}
 
 		if p.matcher != nil {
 			records, matchErr := p.matcher.Match(ctx, &ne)

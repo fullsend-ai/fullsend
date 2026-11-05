@@ -188,12 +188,18 @@ func TestResetScenarioWorld_ClearsSharedState(t *testing.T) {
 		PlaybackEntries:            []runtime.PlaybackEntry{{Result: "triage/bug"}},
 		PlaybackCommitted:          true,
 		ConsumedHarnessRunIDs:      map[string]map[int]bool{"review": {10: true}},
+		JiraPollCLIOutput:          "{\n  \"dispatches\": []\n}\n",
+		JiraPollCLIExitCode:        1,
+		JiraPollCLIOutputPath:      "/tmp/jira-poll-output.json",
 		MintProbe:                  &world.MintProbe{Forge: "github"},
 		BotRoleProbe:               &world.BotRoleProbe{Forge: "github"},
 	}
 	resetScenarioWorld(w)
 	assert.Nil(t, w.MintProbe)
 	assert.Nil(t, w.BotRoleProbe)
+	assert.Equal(t, "", w.JiraPollCLIOutput)
+	assert.Equal(t, 0, w.JiraPollCLIExitCode)
+	assert.Equal(t, "", w.JiraPollCLIOutputPath)
 	assert.Equal(t, 0, w.PRNumber)
 	assert.Equal(t, "", w.DispatchAgent)
 	assert.Equal(t, 0, w.IssueNumber)
