@@ -1005,33 +1005,78 @@ func TestPinAgentURL_NilForgeClient(t *testing.T) {
 	assert.Contains(t, err.Error(), "forge client for branch resolution")
 }
 
-func TestPinAgentURL_RefFallbackToDefaultBranch(t *testing.T) {
-	resolvedSHA := "e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6"
-	harnessContent := []byte("role: coder\n")
-
-	_, policy := newAgentTestServer(t, map[string][]byte{
-		"/" + resolvedSHA + "/harness/triage.yaml": harnessContent,
-	})
-
-	origPolicy := fetch.DefaultPolicy
-	fetch.DefaultPolicy = policy
-	defer func() { fetch.DefaultPolicy = origPolicy }()
-
+func TestPinAgentURL_UnresolvableRefErrors(t *testing.T) {
+	// A ref that exists as neither a branch nor a tag must fail rather
+	// than silently pinning the default branch.
 	client := forge.NewFakeClient()
 	client.Repos = []forge.Repository{{
 		FullName:      "org/repo",
 		DefaultBranch: "main",
 	}}
-	client.BranchRefs["org/repo/main"] = resolvedSHA
+	client.BranchRefs["org/repo/main"] = "e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6"
 
 	source := "https://raw.githubusercontent.com/org/repo/some-tag/harness/triage.yaml"
 
 	var buf strings.Builder
 	printer := ui.New(&buf)
-	_, _, err := pinAgentURL(context.Background(), source, client, printer)
-	// Fetch fails (raw.githubusercontent.com != test server) but resolution path was exercised
+	pinned, ref, err := pinAgentURL(context.Background(), source, client, printer)
 	require.Error(t, err)
-	assert.Contains(t, buf.String(), "falling back to default branch")
+	assert.True(t, forge.IsNotFound(err), "expected not-found error, got %v", err)
+	assert.Contains(t, err.Error(), `ref "some-tag" not found as a branch or tag in org/repo`)
+	assert.NotContains(t, err.Error(), "fetching", "must not fetch content for an unresolved ref")
+	assert.Empty(t, pinned)
+	assert.Empty(t, ref)
+	assert.NotContains(t, buf.String(), "falling back to default branch")
+	assert.NotContains(t, buf.String(), "Resolved to")
+}
+
+func TestPinAgentURL_ResolvesTag(t *testing.T) {
+	// A blob URL naming a tag pins the tag's commit, not the default branch.
+	tagSHA := "87a43fcb849546b267a619434ca19dedde8df476"
+
+	origPolicy := fetch.DefaultPolicy
+	fetch.DefaultPolicy = fetch.FetchPolicy{Offline: true}
+	defer func() { fetch.DefaultPolicy = origPolicy }()
+
+	client := forge.NewFakeClient()
+	client.Repos = []forge.Repository{{FullName: "org/repo", DefaultBranch: "main"}}
+	client.BranchRefs["org/repo/main"] = "416a47dd08e9416a47dd08e9416a47dd08e9416a"
+	client.Refs["org/repo/tags/v0.54.0"] = tagSHA
+
+	var buf strings.Builder
+	printer := ui.New(&buf)
+	_, _, err := pinAgentURL(context.Background(),
+		"https://github.com/org/repo/blob/v0.54.0/harness/fix.yaml",
+		client, printer)
+	// Fetch fails (offline policy) but the pinned URL is in the error.
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "https://raw.githubusercontent.com/org/repo/"+tagSHA+"/harness/fix.yaml")
+
+	output := buf.String()
+	assert.Contains(t, output, "org/repo@v0.54.0")
+	assert.Contains(t, output, "Resolved to "+tagSHA[:12])
+	assert.NotContains(t, output, "Using ref")
+	assert.NotContains(t, output, "falling back to default branch")
+}
+
+func TestPinAgentURL_TagWithSlash(t *testing.T) {
+	tagSHA := "f1f2f3f4f5f6f7f8f9f0e1e2e3e4e5e6e7e8e9e0"
+
+	origPolicy := fetch.DefaultPolicy
+	fetch.DefaultPolicy = fetch.FetchPolicy{Offline: true}
+	defer func() { fetch.DefaultPolicy = origPolicy }()
+
+	client := forge.NewFakeClient()
+	client.Refs["org/repo/tags/release/v1"] = tagSHA
+
+	var buf strings.Builder
+	printer := ui.New(&buf)
+	_, _, err := pinAgentURL(context.Background(),
+		"https://github.com/org/repo/blob/release/v1/dir/agent.yaml",
+		client, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "https://raw.githubusercontent.com/org/repo/"+tagSHA+"/dir/agent.yaml")
+	assert.Contains(t, buf.String(), `Using ref "release/v1"`)
 }
 
 func TestPinAgentURL_TransientErrorDoesNotFallback(t *testing.T) {
@@ -1111,21 +1156,15 @@ func TestPinAgentURL_BranchWithSlash(t *testing.T) {
 	assert.Contains(t, err.Error(), "https://raw.githubusercontent.com/org/repo/"+resolvedSHA+"/dir/agent.yaml")
 
 	output := buf.String()
-	assert.Contains(t, output, `Using branch "user/feature"`)
+	assert.Contains(t, output, `Using ref "user/feature"`)
 	assert.Contains(t, output, "Resolved to "+resolvedSHA[:12])
 	assert.NotContains(t, output, "falling back to default branch")
 }
 
-func TestPinAgentURL_UnresolvedRefFetchErrorExplainsFallback(t *testing.T) {
-	mainSHA := "b9b8b7b6b5b4b3b2b1b0a9a8a7a6a5a4a3a2a1a0"
-
-	origPolicy := fetch.DefaultPolicy
-	fetch.DefaultPolicy = fetch.FetchPolicy{Offline: true}
-	defer func() { fetch.DefaultPolicy = origPolicy }()
-
+func TestPinAgentURL_UnresolvedSlashRefErrors(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.Repos = []forge.Repository{{FullName: "org/repo", DefaultBranch: "main"}}
-	client.BranchRefs["org/repo/main"] = mainSHA
+	client.BranchRefs["org/repo/main"] = "b9b8b7b6b5b4b3b2b1b0a9a8a7a6a5a4a3a2a1a0"
 
 	var buf strings.Builder
 	printer := ui.New(&buf)
@@ -1133,10 +1172,10 @@ func TestPinAgentURL_UnresolvedRefFetchErrorExplainsFallback(t *testing.T) {
 		"https://github.com/org/repo/blob/user/typo/dir/agent.yaml",
 		client, printer)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), `no branch matching "user" was found in org/repo`)
-	assert.Contains(t, err.Error(), `default branch "main" was used`)
+	assert.Contains(t, err.Error(), `ref "user" not found as a branch or tag in org/repo`)
 	assert.Contains(t, err.Error(), "pin it to a commit SHA")
-	assert.Contains(t, buf.String(), "falling back to default branch")
+	assert.NotContains(t, err.Error(), "default branch")
+	assert.NotContains(t, buf.String(), "falling back to default branch")
 }
 
 func TestResolveBranchAndPath(t *testing.T) {
@@ -1145,6 +1184,7 @@ func TestResolveBranchAndPath(t *testing.T) {
 	tests := []struct {
 		name       string
 		branches   []string
+		tags       []string
 		ref        string
 		path       string
 		wantBranch string
@@ -1185,6 +1225,41 @@ func TestResolveBranchAndPath(t *testing.T) {
 			wantErr:    true,
 		},
 		{
+			name:       "tag",
+			tags:       []string{"v1.0.0"},
+			ref:        "v1.0.0",
+			path:       "harness/agent.yaml",
+			wantBranch: "v1.0.0",
+			wantPath:   "harness/agent.yaml",
+		},
+		{
+			name:       "tag with slash",
+			tags:       []string{"release/v1"},
+			ref:        "release",
+			path:       "v1/agent.yaml",
+			wantBranch: "release/v1",
+			wantPath:   "agent.yaml",
+		},
+		{
+			name:       "branch preferred over tag of the same name",
+			branches:   []string{"v1"},
+			tags:       []string{"v1"},
+			ref:        "v1",
+			path:       "agent.yaml",
+			wantBranch: "v1",
+			wantPath:   "agent.yaml",
+		},
+		{
+			name: "slash branch preferred over shorter tag prefix",
+			// Branch URLs must resolve as they did before tag support.
+			branches:   []string{"user/feature"},
+			tags:       []string{"user"},
+			ref:        "user",
+			path:       "feature/dir/agent.yaml",
+			wantBranch: "user/feature",
+			wantPath:   "dir/agent.yaml",
+		},
+		{
 			name:       "no candidate resolves",
 			ref:        "missing",
 			path:       "agent.yaml",
@@ -1204,6 +1279,9 @@ func TestResolveBranchAndPath(t *testing.T) {
 			client := forge.NewFakeClient()
 			for _, b := range tt.branches {
 				client.BranchRefs["org/repo/"+b] = sha
+			}
+			for _, tag := range tt.tags {
+				client.Refs["org/repo/tags/"+tag] = sha
 			}
 
 			branch, path, gotSHA, err := resolveBranchAndPath(context.Background(), client, "org", "repo", tt.ref, tt.path)
@@ -1228,6 +1306,44 @@ func TestResolveBranchAndPath_TransientErrorStopsProbing(t *testing.T) {
 	require.Error(t, err)
 	assert.False(t, forge.IsNotFound(err))
 	assert.Equal(t, "user", branch, "should stop at the first candidate on a non-not-found error")
+}
+
+func TestResolveBranchAndPath_TransientTagErrorStopsProbing(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.Errors["GetRef"] = fmt.Errorf("HTTP 500: internal server error")
+
+	ref, _, _, err := resolveBranchAndPath(context.Background(), client, "org", "repo", "v1", "agent.yaml")
+	require.Error(t, err)
+	assert.False(t, forge.IsNotFound(err))
+	assert.Contains(t, err.Error(), "internal server error")
+	assert.Equal(t, "v1", ref)
+}
+
+func TestResolveNamedRef(t *testing.T) {
+	branchSHA := "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+	tagSHA := "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+
+	client := forge.NewFakeClient()
+	client.BranchRefs["org/repo/main"] = branchSHA
+	client.Refs["org/repo/tags/main"] = tagSHA
+	client.Refs["org/repo/tags/v1.0.0"] = tagSHA
+
+	got, err := resolveNamedRef(context.Background(), client, "org", "repo", "main")
+	require.NoError(t, err)
+	assert.Equal(t, branchSHA, got, "branch takes precedence over a tag of the same name")
+
+	got, err = resolveNamedRef(context.Background(), client, "org", "repo", "v1.0.0")
+	require.NoError(t, err)
+	assert.Equal(t, tagSHA, got)
+
+	_, err = resolveNamedRef(context.Background(), client, "org", "repo", "missing")
+	require.Error(t, err)
+	assert.True(t, forge.IsNotFound(err))
+
+	client.Errors["GetBranchRef"] = fmt.Errorf("rate limited")
+	_, err = resolveNamedRef(context.Background(), client, "org", "repo", "v1.0.0")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "rate limited", "non-not-found errors must not fall through to the tag lookup")
 }
 
 func TestRunAgentUpdate_GitHubURLUsesRawURL(t *testing.T) {
@@ -1312,6 +1428,55 @@ allowed_remote_resources:
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "fetching content")
 	assert.Contains(t, buf.String(), "org/repo@release-1.0", "should resolve against stored ref")
+}
+
+func TestRunAgentUpdate_UsesStoredTagRef(t *testing.T) {
+	tagSHA := "d9d8d7d6d5d4d3d2d1d0c9c8c7c6c5c4c3c2c1c0"
+
+	dir := t.TempDir()
+	oldHash := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	writePerRepoConfig(t, dir, `agents:
+  - source: "https://raw.githubusercontent.com/org/repo/`+testCommitSHA+`/harness/triage.yaml#sha256=`+oldHash+`"
+    ref: v1.0.0
+allowed_remote_resources:
+  - "https://raw.githubusercontent.com/org/repo/"
+`)
+
+	client := forge.NewFakeClient()
+	// No default branch configured: if the stored tag were ignored or
+	// treated as a missing branch, resolution would fail.
+	client.Refs["org/repo/tags/v1.0.0"] = tagSHA
+
+	var buf strings.Builder
+	printer := ui.New(&buf)
+	err := runAgentUpdate(context.Background(), "triage", "", dir, client, printer)
+	// Fetch fails (raw.githubusercontent.com != test server) but the tag
+	// was resolved to its commit.
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "fetching content")
+	assert.Contains(t, buf.String(), "org/repo@v1.0.0")
+	assert.Contains(t, buf.String(), "Resolved to "+tagSHA[:12])
+}
+
+func TestRunAgentUpdate_StoredRefNotFound(t *testing.T) {
+	dir := t.TempDir()
+	oldHash := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	writePerRepoConfig(t, dir, `agents:
+  - source: "https://raw.githubusercontent.com/org/repo/`+testCommitSHA+`/harness/triage.yaml#sha256=`+oldHash+`"
+    ref: gone
+allowed_remote_resources:
+  - "https://raw.githubusercontent.com/org/repo/"
+`)
+
+	client := forge.NewFakeClient()
+	client.Repos = []forge.Repository{{FullName: "org/repo", DefaultBranch: "main"}}
+	client.BranchRefs["org/repo/main"] = "e1e2e3e4e5e6e7e8e9e0f1f2f3f4f5f6f7f8f9f0"
+
+	printer := ui.New(os.Stdout)
+	err := runAgentUpdate(context.Background(), "triage", "", dir, client, printer)
+	require.Error(t, err)
+	assert.True(t, forge.IsNotFound(err), "expected not-found error, got %v", err)
+	assert.Contains(t, err.Error(), "tags/gone")
 }
 
 func TestRunAgentUpdate_FallsBackToDefaultBranchWhenNoRef(t *testing.T) {
@@ -1687,16 +1852,17 @@ func TestRunAgentUpdate_LoadError(t *testing.T) {
 	assert.Contains(t, err.Error(), "reading config")
 }
 
-func TestPinAgentURL_GetRepoErrorWrapsRepoErr(t *testing.T) {
+func TestPinAgentURL_UnresolvedRefDoesNotLookUpRepo(t *testing.T) {
 	client := forge.NewFakeClient()
-	// Don't set BranchRefs["org/repo/feature"] so GetBranchRef returns ErrNotFound
+	// No refs for "feature" and GetRepo would fail: an unresolved ref must
+	// error out without consulting the repo's default branch.
 	client.Errors["GetRepo"] = fmt.Errorf("auth failure")
 
 	printer := ui.New(os.Stdout)
 	_, _, err := pinAgentURL(context.Background(), "https://raw.githubusercontent.com/org/repo/feature/harness/triage.yaml", client, printer)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "auth failure")
-	assert.Contains(t, err.Error(), "looking up repo")
+	assert.Contains(t, err.Error(), `ref "feature" not found`)
+	assert.NotContains(t, err.Error(), "auth failure")
 }
 
 func TestNewAgentListCmd_Execute(t *testing.T) {
@@ -2251,18 +2417,6 @@ func TestRewriteHarnessBaseURL_InvalidYAMLAfterReplace(t *testing.T) {
 	err := rewriteHarnessBaseURL(path, oldURL, "https://example.com/new.yaml\n{")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "verifying rewritten harness file")
-}
-
-func TestPinAgentURL_DefaultBranchResolveError(t *testing.T) {
-	client := forge.NewFakeClient()
-	client.Repos = []forge.Repository{{
-		FullName:      "org/repo",
-		DefaultBranch: "main",
-	}}
-	printer := ui.New(os.Stdout)
-	_, _, err := pinAgentURL(context.Background(), "https://raw.githubusercontent.com/org/repo/missing-tag/harness/triage.yaml", client, printer)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "resolving default branch")
 }
 
 func TestAllowlistPrefixForURL_OwnerRepoNotInPath(t *testing.T) {
