@@ -249,19 +249,6 @@ func ValidatePipelineVarOverrideRole(role string) error {
 // ErrNotFound indicates a requested resource was not found on the forge.
 var ErrNotFound = errors.New("not found")
 
-// ErrJobsListingNotFoundFirstPage reports that a workflow run's jobs
-// listing returned not found on its first page. Forges have been observed
-// to do this for runs that have not started; the cause is unverified (see
-// https://github.com/fullsend-ai/fullsend/issues/9124). The sentinel
-// describes the response shape only and does not establish that the
-// listing — or the run — is absent: callers may treat it as absence only
-// when the run status independently shows the run has not started.
-//
-// Adapters attach it only to first-page not-founds. A not-found on a later
-// page means the listing was already partially readable and may hold a
-// completed job, so it never carries this sentinel.
-var ErrJobsListingNotFoundFirstPage = errors.New("workflow run jobs listing not found on first page")
-
 // IsNotFound reports whether err indicates a resource was not found.
 func IsNotFound(err error) bool {
 	return errors.Is(err, ErrNotFound)
@@ -546,7 +533,6 @@ type PullRequestInfo struct {
 // WorkflowRun represents a CI/CD workflow execution.
 type WorkflowRun struct {
 	ID         int
-	RunAttempt int // Attempt number for a rerunnable execution; zero when unavailable.
 	Name       string
 	Event      string // GitHub trigger event, e.g. "issues", "issue_comment"
 	Status     string // "queued", "in_progress", "completed"
@@ -558,7 +544,6 @@ type WorkflowRun struct {
 // WorkflowJob represents a job within a workflow run.
 type WorkflowJob struct {
 	ID         int
-	RunAttempt int // Execution attempt containing this job; zero when unavailable.
 	Name       string
 	Status     string // "queued", "in_progress", "completed"
 	Conclusion string // "success", "failure", "cancelled", etc.

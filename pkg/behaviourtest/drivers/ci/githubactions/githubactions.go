@@ -1582,9 +1582,8 @@ func (d *Driver) failedHarnessPollOnce(ctx context.Context, remaining time.Durat
 // cancellation is still in progress.
 func (d *Driver) CountHarnessDispatches(ctx context.Context, owner, repo, agent string, after time.Time) (int, error) {
 	deadline := d.now().Add(dispatchWait)
-	completedJobs := make(map[forge.WorkflowRun][]forge.WorkflowJob)
 	for {
-		count, pending, err := d.settleHarnessDispatchCount(ctx, owner, repo, agent, after, completedJobs)
+		count, pending, err := d.settleHarnessDispatchCount(ctx, owner, repo, agent, after)
 		if err != nil {
 			return 0, err
 		}
@@ -1607,60 +1606,6 @@ func (d *Driver) CountHarnessDispatches(ctx context.Context, owner, repo, agent 
 	}
 }
 
-// runUnstarted reports whether a workflow run is queued before any job
-// can run. Its jobs listing cannot classify a dispatch and can still 404
-// while the run sits in the queue.
-func runUnstarted(status string) bool {
-	switch status {
-	case "queued", "requested", "pending":
-		return true
-	}
-	return false
-}
-
-// jobsReadOutcome classifies a workflow run whose jobs listing could not
-// be read.
-type jobsReadOutcome int
-
-const (
-	// jobsSkipRun: the run cannot hold agent work yet, so the caller
-	// ignores it — no dispatch, no violation.
-	jobsSkipRun jobsReadOutcome = iota
-	// jobsRetryLater: the run may hold agent work but its listing is not
-	// readable yet. A settling caller keeps the run pending; a one-shot
-	// caller fails closed, because an unreadable listing is not evidence
-	// that no agent job ran.
-	jobsRetryLater
-	// jobsFatal: the listing error is unexpected and must fail the caller.
-	jobsFatal
-)
-
-// classifyJobsError is the only place that maps a run's status and a
-// jobs-listing error to a tolerance rule. The dispatch-count and
-// negative-assertion paths both route their listing errors through it
-// and must not grow status predicates of their own.
-//
-// A run that has not started cannot hold agent work, and its listing has
-// been observed to 404 on the first page before the run starts, so that
-// shape skips the run. A waiting run — one held on an environment
-// approval — can already hold a completed agent job, so its unreadable
-// listing is retry material, never evidence of absence. Any other error
-// is fatal; in particular a later-page 404 means page 1 was already
-// readable and may hold a completed agent job, so it is never tolerated.
-func classifyJobsError(status string, err error) jobsReadOutcome {
-	if !errors.Is(err, forge.ErrJobsListingNotFoundFirstPage) {
-		return jobsFatal
-	}
-	switch {
-	case runUnstarted(status):
-		return jobsSkipRun
-	case status == "waiting":
-		return jobsRetryLater
-	default:
-		return jobsFatal
-	}
-}
-
 // settleHarnessDispatchCount classifies harness runs created after the
 // trigger time into counted dispatches and pending runs. A run is pending
 // when its agent job exists but has not completed, or when the run itself
@@ -1678,51 +1623,21 @@ func classifyJobsError(status string, err error) jobsReadOutcome {
 // computing the matrix (#7957 review, third pass — mirrors
 // harnessRoundPollOnce's guard; cancelled static jobs added #7996 review;
 // success/failure built-in matches added #7996 review, second pass).
-func (d *Driver) settleHarnessDispatchCount(ctx context.Context, owner, repo, agent string, after time.Time, completedJobs map[forge.WorkflowRun][]forge.WorkflowJob) (count, pending int, err error) {
-	allRuns, err := d.listHarnessRunsAfterPaginated(ctx, owner, repo, after)
+func (d *Driver) settleHarnessDispatchCount(ctx context.Context, owner, repo, agent string, after time.Time) (count, pending int, err error) {
+	allRuns, err := d.Client.ListWorkflowRuns(ctx, owner, repo, harnessWorkflowFile)
 	if err != nil {
 		return 0, 0, err
 	}
 	for _, r := range allRuns {
-		if r.Status == "completed" && r.Conclusion == "skipped" {
+		runTime, parseErr := time.Parse(time.RFC3339, r.CreatedAt)
+		if parseErr != nil || runTime.Before(after) {
 			continue
 		}
-		if runUnstarted(r.Status) {
-			// classifyJobsError would skip these runs anyway; skipping
-			// before the read also avoids a listing call that 404s while
-			// the run sits in the queue.
-			pending++
-			continue
-		}
-		jobs, cached := completedJobs[r]
-		if !cached {
-			jobs, err = d.Client.ListWorkflowRunJobs(ctx, owner, repo, r.ID)
-			if err != nil {
-				// Settling, so both skippable and retryable runs stay
-				// pending rather than fail the count.
-				if outcome := classifyJobsError(r.Status, err); outcome == jobsSkipRun || outcome == jobsRetryLater {
-					pending++
-					continue
-				}
-				return 0, 0, err
-			}
+		jobs, err := d.Client.ListWorkflowRunJobs(ctx, owner, repo, r.ID)
+		if err != nil {
+			return 0, 0, err
 		}
 		hasJob, job := matchAgentJob(jobs, agent)
-		if !cached {
-			// Only a counted terminal match is decisive; missing jobs can still become visible.
-			cacheable := r.Status == "completed" && r.RunAttempt > 0 && hasJob &&
-				job.Conclusion != "" && !isConcurrencySuperseded(job.Conclusion)
-			// Reruns reuse IDs; only reuse completed jobs from the same known attempt.
-			for _, job := range jobs {
-				if job.Status != "completed" || job.RunAttempt != r.RunAttempt {
-					cacheable = false
-					break
-				}
-			}
-			if cacheable && completedJobs != nil {
-				completedJobs[r] = jobs
-			}
-		}
 		switch {
 		case hasJob && job.Status != "completed":
 			pending++
@@ -1884,23 +1799,18 @@ func isConcurrencySuperseded(conclusion string) bool {
 // than artifacts so that sibling runs for other agents are not mistaken
 // for evidence.
 func (d *Driver) AssertNoHarnessAgentArtifact(ctx context.Context, owner, repo, agent string, after time.Time) error {
-	allRuns, err := d.listHarnessRunsAfterPaginated(ctx, owner, repo, after)
+	allRuns, err := d.Client.ListWorkflowRuns(ctx, owner, repo, harnessWorkflowFile)
 	if err != nil {
 		return err
 	}
 	for _, r := range allRuns {
-		if r.Status == "completed" && r.Conclusion == "skipped" {
+		runTime, parseErr := time.Parse(time.RFC3339, r.CreatedAt)
+		if parseErr != nil || runTime.Before(after) {
 			continue
 		}
 		jobs, err := d.Client.ListWorkflowRunJobs(ctx, owner, repo, r.ID)
 		if err != nil {
-			// One-shot, so only a run that cannot hold agent work yet is
-			// skipped: an unreadable listing is not evidence that no
-			// agent job ran, so retryable and fatal both fail closed.
-			if classifyJobsError(r.Status, err) != jobsSkipRun {
-				return err
-			}
-			continue
+			return err
 		}
 		// Every matching job is inspected independently here, rather than
 		// through matchAgentJob's single "best" match: a job list can
