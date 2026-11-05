@@ -9,7 +9,8 @@
 # validateDeclaredMintURL. The FULLSEND_MINT_URL fallback also allows loopback
 # HTTP (localhost / 127.0.0.1), matching mintclient.MintToken.
 #
-# Requires: yq, GITHUB_OUTPUT, FALLBACK_MINT_URL (may be empty).
+# Requires: GITHUB_OUTPUT, FALLBACK_MINT_URL (may be empty). yq is required
+# only when .fullsend/config.yaml or config.base.yaml is present.
 
 set -euo pipefail
 
@@ -18,13 +19,17 @@ if [[ -z "${GITHUB_OUTPUT:-}" ]]; then
   exit 1
 fi
 
-if ! command -v yq >/dev/null 2>&1; then
-  echo "::error::yq is required to resolve mint_url from config" >&2
-  exit 1
-fi
-
 _effective="${FALLBACK_MINT_URL:-}"
 _from_file=false
+_overlay=".fullsend/config.yaml"
+_base=".fullsend/config.base.yaml"
+
+if [[ -f "${_overlay}" || -f "${_base}" ]]; then
+  if ! command -v yq >/dev/null 2>&1; then
+    echo "::error::yq is required to resolve mint_url from config" >&2
+    exit 1
+  fi
+fi
 
 # Aligns with validateDeclaredMintURL for file-sourced values. Never echoes
 # the URL: rejected values may contain userinfo.
@@ -81,20 +86,20 @@ _read_mint_url() {
   fi
 }
 
-if [[ -f .fullsend/config.yaml ]]; then
-  overlay=$(_read_mint_url .fullsend/config.yaml)
+if [[ -f "${_overlay}" ]]; then
+  overlay=$(_read_mint_url "${_overlay}")
   if [[ -n "${overlay}" ]]; then
     _effective="${overlay}"
     _from_file=true
-  elif [[ -f .fullsend/config.base.yaml ]]; then
-    base=$(_read_mint_url .fullsend/config.base.yaml)
+  elif [[ -f "${_base}" ]]; then
+    base=$(_read_mint_url "${_base}")
     if [[ -n "${base}" ]]; then
       _effective="${base}"
       _from_file=true
     fi
   fi
-elif [[ -f .fullsend/config.base.yaml ]]; then
-  base=$(_read_mint_url .fullsend/config.base.yaml)
+elif [[ -f "${_base}" ]]; then
+  base=$(_read_mint_url "${_base}")
   if [[ -n "${base}" ]]; then
     _effective="${base}"
     _from_file=true

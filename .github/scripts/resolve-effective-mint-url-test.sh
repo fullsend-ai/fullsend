@@ -111,6 +111,40 @@ setup_repo
 printf 'version: "1"\nmint_url: http://localhost:8080\n' >.fullsend/config.yaml
 run_resolve_expect_fail "" "reject localhost http from config file"
 
+noyq_path=""
+IFS=':' read -ra _path_parts <<<"${PATH}"
+for _dir in "${_path_parts[@]}"; do
+  if [[ -n "${_dir}" && -x "${_dir}/yq" ]]; then
+    continue
+  fi
+  if [[ -z "${noyq_path}" ]]; then
+    noyq_path="${_dir}"
+  else
+    noyq_path="${noyq_path}:${_dir}"
+  fi
+done
+if [[ -z "${noyq_path}" ]]; then
+  noyq_path="/usr/bin:/bin"
+fi
+
+run_resolve_without_yq() {
+  local fallback="${1:-}"
+  local output_file="${TMPDIR}/github-output.txt"
+  local oldpwd="${PWD}"
+  : >"${output_file}"
+  cd "${TMPDIR}/repo"
+  PATH="${noyq_path}" GITHUB_OUTPUT="${output_file}" FALLBACK_MINT_URL="${fallback}" bash "${SCRIPT}"
+  cd "${oldpwd}"
+  grep '^mint_url=' "${output_file}" | cut -d= -f2-
+}
+
+setup_repo
+assert_eq "no yq without config files" "https://fallback.example" "$(run_resolve_without_yq "https://fallback.example")"
+
+setup_repo
+printf 'version: "1"\nmint_url: https://overlay.example\n' >.fullsend/config.yaml
+PATH="${noyq_path}" run_resolve_expect_fail "https://fallback.example" "yq required when config files exist"
+
 if [[ "${FAILURES}" -eq 0 ]]; then
   echo "All tests passed."
 else
