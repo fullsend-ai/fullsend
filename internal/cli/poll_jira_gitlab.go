@@ -108,6 +108,9 @@ func normalizeJiraGitLabURL(raw string) (string, error) {
 // authenticated with the Poller role credential, and an issue's Jira
 // checkpoint advances only when all of its pipelines were created.
 func runJiraPollGitLab(cmd *cobra.Command, f jiraPollGitLabFlags) error {
+	if err := applyJiraTrackerConfig(f.fullsendDir, &f.jiraURL, &f.jiraProject, &f.jqlOverride); err != nil {
+		return err
+	}
 	args, gitlabURL, err := validateJiraGitLabPollArgs(f, os.Getenv)
 	if err != nil {
 		return err
@@ -164,16 +167,10 @@ func runJiraPollGitLab(cmd *cobra.Command, f jiraPollGitLabFlags) error {
 		ChildDispatchJobToken: childJobToken,
 	})
 
-	opts := jirapoll.Options{
-		TargetRepo:  args.targetRepo,
-		TargetForge: jirapoll.TargetForgeGitLab,
-		GitLabURL:   gitlabURL,
-		JiraBaseURL: args.jiraURL,
-		JiraProject: args.jiraProject,
-		JQL:         args.jqlOverride,
-		OutputPath:  args.outputPath,
-		Dispatcher:  gitlabJiraDispatcher{poller: glPoller},
-	}
+	opts := jiraPollOptions(args, matcher)
+	opts.TargetForge = jirapoll.TargetForgeGitLab
+	opts.GitLabURL = gitlabURL
+	opts.Dispatcher = gitlabJiraDispatcher{poller: glPoller}
 	poller := jirapoll.New(jiraClient, matcher, opts)
 	return wrapGitLabAuthFailure(sel, poller.Run(cmd.Context()))
 }

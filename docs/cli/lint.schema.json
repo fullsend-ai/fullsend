@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fullsend.ai/cli/lint.schema.json",
+  "title": "fullsend lint JSON report",
+  "description": "Stdout document written by `fullsend lint --format json`. schema_version 1 is the shape added in https://github.com/fullsend-ai/fullsend/pull/8995.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "success", "summary", "diagnostics"],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Document version. 1 is the current schema."
+    },
+    "success": {
+      "type": "boolean",
+      "description": "true when the process would exit 0."
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["errors", "warnings"],
+      "properties": {
+        "errors": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Count of error-severity items in diagnostics."
+        },
+        "warnings": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Count of warning-severity items in diagnostics."
+        }
+      }
+    },
+    "diagnostics": {
+      "type": "array",
+      "description": "One object per finding. Never null; no findings is [].",
+      "items": {
+        "$ref": "#/$defs/diagnostic"
+      }
+    }
+  },
+  "$defs": {
+    "diagnostic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agent", "severity", "field", "message"],
+      "properties": {
+        "agent": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Agent name, or \"config\" for config-level findings."
+        },
+        "severity": {
+          "type": "string",
+          "enum": ["error", "warning"]
+        },
+        "field": {
+          "type": "string",
+          "description": "Harness field path. Empty when a harness fails to resolve, load, or validate."
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

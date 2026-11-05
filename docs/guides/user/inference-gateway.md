@@ -33,6 +33,15 @@ listed in [`fullsend github setup`](../../cli/github.md) and the
 
 The examples use `example-org/example-repo` and `https://gateway.example.com`.
 
+> **See it in practice.** The fullsend-ai organization enrols its own repositories in a gateway
+> it runs. The *Enroll a repository* section of the
+> [fullsend-ai/org inference gateway README](https://github.com/fullsend-ai/org/blob/main/inference-gateway/README.md)
+> walks through one enrolment end to end: the allowlist entry the operator applies, the
+> `inference.gateway` block (or the `fullsend github setup` flags), and the log line that shows
+> the repository's calls arriving.
+> Its steps for that organization's own repositories, such as its manifest sync, apply only
+> there; take the values for your repository from your gateway operator.
+
 ## Prerequisites
 
 For the repo admin:
@@ -168,10 +177,10 @@ request with the change. The pull request's `config.yaml` diff, on a repository 
 with `--runtime pi`:
 
 ```diff
-@@ -20,3 +20,12 @@ create_issues:
-         repos:
-             - example-org/example-repo
-             - fullsend-ai/fullsend
+@@ -21,3 +21,12 @@ tracker:
+             repos:
+                 - example-org/example-repo
+                 - fullsend-ai/fullsend
 +inference:
 +    gateway:
 +        url: https://gateway.example.com
@@ -197,10 +206,10 @@ fullsend github setup example-org/example-repo \
 The output is the same as above. The pull request's diff:
 
 ```diff
-@@ -20,3 +20,12 @@ create_issues:
-         repos:
-             - example-org/example-repo
-             - fullsend-ai/fullsend
+@@ -21,3 +21,12 @@ tracker:
+             repos:
+                 - example-org/example-repo
+                 - fullsend-ai/fullsend
 +inference:
 +    gateway:
 +        url: https://gateway.example.com
@@ -314,6 +323,6 @@ For pi, the harness-plugin path for local runs is in
 | `inference.gateway is partial: missing audience (the oidc mode needs url and audience)`, or from `status`: `inference.gateway is partially configured: missing audience` | The block, after its layers merge, lacks `url`, or lacks `audience` in the `oidc` mode. | Set the missing field with `fullsend github setup --inference-gateway-url` or `--inference-gateway-audience`, or remove the block. |
 | `pi gateway/ models need a model list: set inference.gateway.models or inference.gateway.models_file (pi runs offline and cannot discover gateway models)` | An agent uses a `gateway/` model, and the block has no model list. | List the models with `--inference-gateway-model id=api` or `--inference-gateway-models-file`. |
 | `inference.gateway.auth is "api-key" but FULLSEND_INFERENCE_GATEWAY_API_KEY is not set; set it as a forge secret (or in the local environment)` | The block is in the `api-key` mode and the run has no key. | Set the repository secret as shown in [Choosing `auth`](#choosing-auth), or export the variable for a local run. |
-| From `status`: `Gateway refused the assertion (HTTP 401)` or `(HTTP 403)`; in a run, the model call fails with the gateway's `401` or `403` | The gateway did not accept the credential: a different audience, a repository not on its allowed list, or a revoked key. | Check the audience and allowed repositories with the operator. The gateway's exact error text and its fixes are in the operator guide's [troubleshooting table](../infrastructure/inference-gateway-operator.md#troubleshooting). |
+| From `status`: `Gateway refused the assertion (HTTP 401)` or `(HTTP 403)`; in a run, the model call fails with the gateway's `401` or `403` | The gateway did not accept the credential: a different audience, a repository not on its allowed list, or a revoked key. | Check the audience and allowed repositories with the operator. A `401` body only says `authentication failed`; the operator finds the reason in the gateway's access log, as the operator guide's [troubleshooting](../infrastructure/inference-gateway-operator.md#troubleshooting) shows. |
 | Model calls fail just after the host running the run wakes from sleep (a laptop or a suspended VM), in the `oidc` mode: the gateway's `401` on Claude Code, or an OpenShell `500` on pi and codex | The gateway token expired while the host slept. The refresher checks the wall clock every 30 seconds and refreshes on the first check after wake if the token is due or already expired; requests sent before that check can still fail. Only Claude Code's placeholder carries a run deadline past the token's expiry, so a stale token reaches the gateway and gets its `401`; on pi and codex the placeholder expires with the token and OpenShell answers `500`. | None if the run log then shows `Inference gateway token refreshed for … (next expiry` or `Inference gateway token handed off for …`. If it shows the refresh gave up or stopped, re-run. |
-| Any other gateway error, such as `authentication failure: ...` or `model_authorization_denied` | The gateway refused the request for its own reasons. | See the operator guide's [troubleshooting table](../infrastructure/inference-gateway-operator.md#troubleshooting). |
+| Any other gateway error, such as `401 authentication failed` or `model_authorization_denied` | The gateway refused the request for its own reasons. | See the operator guide's [troubleshooting table](../infrastructure/inference-gateway-operator.md#troubleshooting). |

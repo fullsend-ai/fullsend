@@ -479,6 +479,12 @@ type MintProbeResult struct {
 	RepositorySelection string            `json:"repository_selection,omitempty"`
 	GrantedRepos        []string          `json:"granted_repos,omitempty"`
 	GrantedPermissions  map[string]string `json:"granted_permissions,omitempty"`
+
+	// TokenHSTS and HealthHSTS are the Strict-Transport-Security values
+	// of the mint's /v1/token and /health responses, empty when the
+	// header or the response is missing.
+	TokenHSTS  string `json:"hsts_token,omitempty"`
+	HealthHSTS string `json:"hsts_health,omitempty"`
 }
 
 // Clone creates a shallow copy of w. Drivers and shared state (SCM,

@@ -56,10 +56,17 @@ func TestEvaluateOverlay_EventField(t *testing.T) {
 
 func TestEvaluateOverlay_ConfigVariable(t *testing.T) {
 	event := map[string]any{}
-	config := map[string]any{"tracker": "jira"}
-	ok, err := EvaluateOverlay(`config.tracker == "jira"`, event, "", config)
+	const expr = `has(config.tracker) && has(config.tracker.jira)`
+	config := map[string]any{"tracker": map[string]any{"jira": map[string]any{}}}
+	ok, err := EvaluateOverlay(expr, event, "", config)
 	require.NoError(t, err)
 	assert.True(t, ok)
+
+	// A tracker mapping that selects another provider does not match.
+	config = map[string]any{"tracker": map[string]any{"github": map[string]any{}}}
+	ok, err = EvaluateOverlay(expr, event, "", config)
+	require.NoError(t, err)
+	assert.False(t, ok)
 }
 
 func TestEvaluateOverlay_EmptyExpression(t *testing.T) {

@@ -29,6 +29,10 @@ providers:                           # Network access via provider profiles
 # ── Skills & plugins ──────────────────────────────────────────
 skills:
   - skills/my-skill                  # Local path or URL with #sha256=...
+  - skills/pr-review:                # Map form: per-file overrides (staged per run)
+      sub-agents/security.md: overrides/security.md   # Replace (or add) from a local file
+      sub-agents/extra.md: https://example.com/extra.md#sha256=abc...  # Or a pinned URL
+      sub-agents/user-experience.md: null             # Remove from this run's copy
 plugins:                             # Directories a runtime loads (ADR 0094)
   - plugins/gopls-lsp                # Claude plugin (plugin.json); Claude Code loads it
   - extensions/go-diagnostics        # pi extension (index.* or package.json entry point)
@@ -134,12 +138,14 @@ security:
 > collisions when multiple agents share a sandbox or env file.
 >
 > A setting meant to apply the same way across every agent (like
-> `roles` or `create_issues.allow_targets`) belongs in `config.yaml`
+> `roles` or `tracker.<provider>.allowed_targets`) belongs in `config.yaml`
 > instead, not as an env var.
 
 ## Field details
 
 Most fields are self-explanatory from the inline comments above. This section expands on fields where additional context helps.
+
+**`image`** — The sandbox container image. On GitHub Actions a private `ghcr.io` package works on code and fix harnesses, whose shipped workflows grant `packages: read`; see [GitHub Packages credentials](../cli/run.md#github-packages-credentials).
 
 **`role`** — The agent's identity within fullsend. Dispatch uses the role to match config-registered agents to built-in defaults (same-name config agents take precedence). The role also determines which GitHub App credentials **and permissions** the mint service issues. It must be a role the mint serves: on the hosted mint that is the fixed built-in set (`triage`, `coder`, `review`, `retro`, `prioritize`, `fullsend`); custom roles require your own mint. An unserved role returns `403`. See [Custom Agent Identity](../guides/user/custom-agent-identity.md).
 
@@ -213,9 +219,10 @@ interpreter, loader and shell-behavior names such as `HTTPS_PROXY`,
 `SSL_CERT_FILE`, `GIT_SSH_COMMAND`, `NODE_OPTIONS` and `IFS`). `fullsend run`
 warns once when the harness loads, naming every dropped key, and once per key on
 stderr as it writes the sandbox environment; `fullsend lock` prints the
-load-time warning when it composes a harness. The full list is in [Reserved
-`env.sandbox` names](#reserved-envsandbox-names), where blocked proxy and
-certificate settings go instead is in [Migrating proxy and certificate
+load-time warning when it composes a harness, and `fullsend lint` reports it
+without changing config, forge state or `lock.yaml`. The full list is in
+[Reserved `env.sandbox` names](#reserved-envsandbox-names), where blocked proxy
+and certificate settings go instead is in [Migrating proxy and certificate
 settings](#migrating-proxy-and-certificate-settings), and the warnings are
 described in [`fullsend run` § Reserved `env.sandbox`
 keys](../cli/run.md#reserved-envsandbox-keys).
@@ -261,6 +268,34 @@ runtimes.
 
 **`allow_runtime_fetch`** — When `true`, the agent can fetch remote resources (skills, plugins, profiles) at runtime rather than only at harness resolution time. Fetched URLs must still be covered by `allowed_remote_resources`.
 
+**`skills`** — Skill directories to upload. Each entry is a source string (a
+local path or a forge tree URL pinned with `#sha256=`), or a single-key map
+of that source to per-file overrides. An override key is a file path
+relative to the skill root in clean form: no leading `/`, no `..` or `.`
+segment, no `//` or trailing `/`, no null bytes, and never a directory. Its value is `null` (remove the file), a local path
+resolved from the `.fullsend` directory, or an `https://` URL with
+`#sha256=` covered by `allowed_remote_resources`; a string replaces the file
+when it exists and adds it otherwise. For each entry with overrides, the
+runner copies the resolved skill to
+`<output-dir>/<sandbox-name>/skills/<index>/<skill-name>` right after
+harness resolution, then applies the overrides to the copy; the source is
+never written. A symlink inside an overridden skill, or on the path to an
+override file, fails the run. Every run, with or without overrides, writes a
+persona manifest of the personas found in the staged skills (by the rules the
+`pi` and `codex` runtimes use to discover them) to `<output-dir>/<sandbox-name>/personas.json` and
+`/sandbox/workspace/.fullsend/personas.json`, and exports its path as
+`FULLSEND_PERSONAS_FILE` to the pre-script, post-script, validation script
+and sandbox. Under `base:` composition, a map-form entry whose name matches a
+base skill but whose path has no `SKILL.md` in the `.fullsend` directory
+keeps the base skill's source and applies only its overrides, so a child can
+override files in an inherited skill without copying it. When you list a
+skill directly and another skill also pulls it in through its
+`dependencies:`, only one copy is staged, and the direct entry's overrides
+apply to that copy whatever the list order. Two entries for the same skill
+may set the same file to the same value; setting it to different values is
+an error. See
+[Configuring with Skills § Overriding single files in a skill](../guides/user/customizing-with-skills.md#overriding-single-files-in-a-skill).
+
 **`plugins`** — Directories a runtime loads. Which runtime loads an entry follows from the directory, not from the key: a directory with `plugin.json` at its root or `.claude-plugin/plugin.json` is a Claude plugin and Claude Code loads it; anything else must be a directory pi's `-e` loader resolves an entry point in, and pi loads it as an extension ([ADR 0094](../ADRs/0094-pi-extensions-are-harness-resources.md)). Each runtime names and skips the entries in the other format, so one list works whichever runtime the org configures.
 
 Sourcing is the `skills:` rule: a path in the harness repository, or a forge tree URL pinned with `#sha256=`. `npm:`/`git:`/`ssh:` sources are rejected — pi would fetch them from the network at startup, which the sandbox cannot do.
@@ -302,7 +337,8 @@ sandbox environment, case-insensitively:
   `SHELL`, `BASH_ENV`, `ENV`, `LD_PRELOAD`, `LD_LIBRARY_PATH`, `TRACEPARENT`,
   and every `FULLSEND_*` variable the runner itself exports into the sandbox
   (its output and fetch plumbing, the repository path, role and slug, the
-  iteration budget and deadline, and its own `PATH` entry). The set grows
+  iteration budget and deadline, the persona manifest path
+  `FULLSEND_PERSONAS_FILE`, and its own `PATH` entry). The set grows
   with the runner; the warnings described below name any such key a harness
   sets.
 - **Credentials it mints or receives:** `FULLSEND_GCP_OIDC_AUTH_FILE`,
@@ -346,12 +382,18 @@ name is not necessarily safe.
 drop, and warns again on stderr for each key as it writes the sandbox
 environment. To check the harness without starting an agent:
 
-1. Run `fullsend lock <agent-name>`. It reports the same lint warning when it
+1. Run `fullsend lint`. It reports the same warning, and
+   `fullsend lint --strict` exits non-zero on it. Lint leaves config, forge
+   state and `lock.yaml` unchanged, but it may fetch dependencies and update
+   `.fullsend-cache` and its audit log; pass `--offline` to restrict it to
+   cached remote resources. Lint checks the declared YAML, so a key added by
+   an overlay guarded on `event` is reported only by `fullsend run`.
+2. Run `fullsend lock <agent-name>`. It reports the same lint warning when it
    loads and composes the harness. Locking may fetch dependencies and write the
    lock file. If the entry is already current, it skips composition and does
    not check the keys. `lock` composes without event context, so a key added
    by an overlay guarded on `event` is reported only by `fullsend run`.
-2. Run `fullsend lock <agent-name> --update` (or
+3. Run `fullsend lock <agent-name> --update` (or
    `fullsend lock --all --update`) to check the composed harness when the entry
    is current. This forces dependency re-resolution and may change the lock
    file; it is not a diagnostics-only operation.
@@ -456,7 +498,7 @@ More-specific entries go last so they override broader defaults.
 | Field type | Behavior |
 |-----------|----------|
 | Scalars (`model`, `pre_script`, `policy`, `image`, etc.) | Child wins if non-empty |
-| `skills` | Merged with deduplication by skill identity (declared `SKILL.md` name when on disk, otherwise basename). Child overrides a matching base entry; sibling nested dirs that share a leaf name are kept; two entries with one identity in a single list are both kept and fail at bootstrap |
+| `skills` | Merged with deduplication by skill identity (declared `SKILL.md` name when on disk, otherwise basename). Child overrides a matching base entry; sibling nested dirs that share a leaf name are kept; two entries with one identity in a single list are both kept and fail at bootstrap; when a child entry replaces a base entry, their per-file override maps merge (child keys win); a map-form child entry whose path has no `SKILL.md` keeps the base entry's source (and, with no other match, the one pinned-URL base entry of its name; two or more such entries are an error that asks for the full base URL as the map key) |
 | `providers`, `openshell.profiles` | Concatenated (base + child); also applies per matched overlay |
 | `plugins`, `api_servers` | Concatenated (base + child); each entry keeps its own `env`/`pi` |
 | `host_files` | Concatenated; child overrides by `dest` |

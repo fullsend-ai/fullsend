@@ -1045,7 +1045,7 @@ func TestBuildWebhookEvents_DispatchHandoff(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	we := got[0]
-	if err := p.dispatch(context.Background(), p.owner, p.repo, we.Stages[0], we.Event); err != nil {
+	if err := p.dispatch(context.Background(), p.owner, p.repo, we.Stages[0], we.Event, &we.Normalized); err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
 	if len(mc.pipelineCalls) != 1 {

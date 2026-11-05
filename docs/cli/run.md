@@ -111,6 +111,12 @@ cases fail earlier:
 See
 [pi § Per-persona model configuration](../runtimes/pi.md#per-persona-model-configuration).
 
+## Live progress
+
+Progress display depends on the selected runtime. See
+[Claude Workflow progress](../runtimes/claude.md#live-claude-workflow-progress)
+for Claude background tasks, agent lifecycle metadata and display limits.
+
 ## Output artifacts
 
 Each run produces artifacts in the output directory. Relative `--output-dir`
@@ -122,6 +128,8 @@ depend on the process cwd.
 |------|-------------|
 | `metrics.json` | Behavioral metrics: tokens, cost, model, runtime, iterations |
 | `transcripts/` | Agent conversation transcripts |
+| `personas.json` | Persona manifest of the personas found in the staged skills (by the rules the `pi` and `codex` runtimes use to discover them), written every run; its path is exported as `FULLSEND_PERSONAS_FILE` to the pre-script, post-script and validation script (see [Configuring with Skills § The persona list file](../guides/user/customizing-with-skills.md#the-persona-list-file)) |
+| `skills/<index>/<name>/` | Per-run copies of skills that have per-file overrides, with the overrides applied (see [Overriding single files in a skill](../guides/user/customizing-with-skills.md#overriding-single-files-in-a-skill)) |
 | `claude-debug.log`, `pi-debug.log` or `codex-debug.log` | Debug log (when `--debug` is set) |
 
 ### metrics.json fields
@@ -201,7 +209,7 @@ on every runtime (claude, pi, codex, opencode):
 |---|---|
 | `FULLSEND_TIMEOUT_MINUTES` | The budget: the harness's `timeout_minutes`, or `30` when it sets none |
 | `FULLSEND_ITERATION_DEADLINE` | Unix time (seconds) at which the running iteration is killed |
-| `TRACEPARENT` | W3C trace context of this iteration's **agent** span (not the run-root span that pre/post scripts receive). Runtimes use it to join Fullsend traces. An inbound unsampled parent (`-00`) is preserved so runtime export stays suppressed. Empty when telemetry produced no valid span context. Reserved: an `env.sandbox` entry with this name is dropped. |
+| `TRACEPARENT` | W3C trace context of this iteration's **agent** span (not the run-root span that pre/post scripts receive). Runtimes use it to join fullsend traces. An inbound unsampled parent (`-00`) is preserved so runtime export stays suppressed. Empty when telemetry produced no valid span context. Reserved: an `env.sandbox` entry with this name is dropped. |
 
 **Example.** A probe that shows both, and what a kill looks like. The agent prints the variables
 with its own clock, then sleeps past the budget:
@@ -456,6 +464,17 @@ pre/post/validation child environments never receive it. Outside Actions the var
 derived from a local PAT — a caller may set it explicitly. `GH_TOKEN`, `GITHUB_TOKEN` and
 `PUSH_TOKEN` still receive the minted App identity.
 
+The runner itself also reads `GH_WORKFLOW_TOKEN` for one purpose besides provider credential
+expansion: before it creates the sandbox, on GitHub Actions, when the harness `image:` is on
+`ghcr.io`, it pulls the image with the token through Podman (a run-scoped auth file in a private
+temporary directory, removed after the pull), so the image can be a private package. Only the
+shipped code and fix workflows grant `packages: read`, so a private image works on code and fix
+harnesses; on other agents a private image is denied and sandbox creation fails. The package must also
+allow Actions access from the repository. If the pull fails, the runner logs a warning and the
+OpenShell gateway attempts its own unauthenticated pull, so public images keep working. For images
+on other registries the runner adds no credentials. See
+[Extending the sandbox image](../guides/user/customizing-agents.md#extending-the-sandbox-image).
+
 Every mint sets both `GH_TOKEN` and `GITHUB_TOKEN` to the minted token, even when the caller
 workflow did not export `GITHUB_TOKEN`. When the mint is cleaned up, each one goes back to the value
 it held before that mint, or is unset if it was unset. A caller workflow that exports
@@ -481,9 +500,11 @@ them into the sandbox. Matching is case-insensitive. It warns twice:
 - As it writes the sandbox environment, one stderr line per key:
   `WARNING: env.sandbox key "NAME" is reserved (runner infrastructure or security deny-list); skipping`
 
-`fullsend lock` prints the load-time warning when it composes a harness. A
-current lock entry is not composed; run `fullsend lock --update` to check its
-keys. `lock` composes without event context, so a key added by an overlay
+`fullsend lint` also reports the load-time warning, and
+`fullsend lint --strict` exits non-zero on it. `fullsend lock` prints the
+load-time warning when it composes a harness. A current lock entry is not
+composed; run `fullsend lock --update` to check its keys. `lock` composes
+without event context, so a key added by an overlay
 guarded on `event` is reported only by `fullsend run`. The reserved names are
 listed in [Harness Field Reference § Reserved `env.sandbox`
 names](../reference/harness-reference.md#reserved-envsandbox-names); where

@@ -44,7 +44,8 @@ var jiraRawTypePattern = regexp.MustCompile(`^[a-z][a-z_]*$`)
 // jiraCommentLimits are the successive rune limits DispatchJiraEvent tries
 // for the comment body and instruction until the payload fits the
 // event_payload_chunk_NN budget (see maxEventPayloadChunks). The first
-// matches buildEventPayload's note_body bound for GitLab events.
+// matches noteBodyTransportLimit, buildEventPayload's bound for
+// non-command GitLab note bodies.
 var jiraCommentLimits = []int{800, 400, 200, 100, 0}
 
 // DispatchJiraEvent starts the protected agent pipeline for stage with a

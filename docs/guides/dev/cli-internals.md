@@ -63,6 +63,8 @@ fullsend
 │   │   ├── --vertex-project <id>            #   GCP project ID for Vertex inference (else declared inference.project; never in repos.yaml)
 │   │   ├── --vertex-wif-provider <path>     #   Full WIF provider resource name (else declared inference.wif_provider; skips per-repo derivation)
 │   │   ├── --openai-api-key <key>           #   FULLSEND_OPENAI_API_KEY for openai-api-key repos (CLI-only; never in repos.yaml)
+│   │   ├── --jira-token <token>             #   FULLSEND_JIRA_TOKEN for repos whose tracker.jira.poll.enabled is true (CLI-only; never in repos.yaml)
+│   │   ├── --jira-email <email>             #   FULLSEND_JIRA_EMAIL for repos whose tracker.jira.poll.enabled is true (optional; CLI-only)
 │   │   ├── --fullsend-binary <path>         #   Pre-built binary to vendor (requires a selected repo with vendor: true)
 │   │   ├── --fullsend-source <path>         #   Source checkout to vendor from (requires a selected repo with vendor: true)
 │   │   ├── --gitlab-role-registry <path>    #   Administrator GitLab role registry JSON
@@ -107,11 +109,12 @@ fullsend
 │   │   └── --effort <level>                 #   Effort level for this agent
 │   ├── update       <name> [sha]             # Re-pin URL agent or local harness base
 │   └── remove       <name>                   # Unregister agent from config
-├── lint                                      # Lint config.yaml and harness definitions
+├── lint             [agent-name]              # Lint config.yaml and harness definitions
 │   ├── --fullsend-dir <path>                #   .fullsend configuration directory (default: .fullsend)
 │   ├── --forge <platform>                   #   Forge platform (github, gitlab); auto-detected from CI env
 │   ├── --strict                             #   Exit non-zero on warning-level diagnostics
-│   └── --offline                            #   Reject network fetches
+│   ├── --offline                            #   Reject network fetches
+│   └── --format <text|json>                 #   Output format (default: text)
 ├── lock             [agent-name]              # Pin remote deps to lock.yaml
 │   ├── --all                                #   Lock all harnesses in the harness directory
 │   ├── --fullsend-dir <path>                #   .fullsend configuration directory (default: .fullsend)

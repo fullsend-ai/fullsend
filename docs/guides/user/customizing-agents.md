@@ -122,6 +122,9 @@ Any harness field can be overridden. See the [field merge rules](../../reference
 
 - **Change model, timeout, image, scripts** — scalars replace the base value.
 - **Add skills** — your entries are merged with the base's by skill identity (declared `SKILL.md` name when on disk, otherwise directory basename); a matching child skill overrides the base entry. Nested forge skills that share a leaf directory name are kept alongside each other. **Add plugins or host_files** — your entries are concatenated with the base's, base first.
+- **Override files inside a skill** — repeat the skill's entry in map form
+  with [per-file overrides](customizing-with-skills.md#overriding-single-files-in-a-skill);
+  the child's override keys merge with any the base declares, child keys win.
 - **Add or override env vars** — maps are merged; your keys win on collision.
 - **Override validation_loop fields** — child non-zero values win; omitted fields inherit from the base (for example, set only `schema` to swap the schema without copying `script`). **Replace security config** — child replaces the entire block.
 
@@ -173,11 +176,14 @@ fix workflows grant `packages: read`. Nothing in this section ships by
 default.
 
 **What fullsend provides.** On GitHub Actions the runner keeps the job's own
-workflow token as `GH_WORKFLOW_TOKEN`, a *provider-only* credential:
+workflow token as `GH_WORKFLOW_TOKEN`, a credential harness `${}` sites
+refuse:
 
-- Only provider credential expansion can read it. `${GH_WORKFLOW_TOKEN}` is
-  refused in `runner_env`, `env.runner`, `env.sandbox`, `host_files` and
-  `validation_loop.schema`, and pre/post/validation scripts never see it.
+- `${GH_WORKFLOW_TOKEN}` is refused in `runner_env`, `env.runner`,
+  `env.sandbox`, `host_files` and `validation_loop.schema`, and
+  pre/post/validation scripts never see it. Provider credential expansion
+  reads it, and so does the runner's own `ghcr.io` image pull (see
+  [Extending the sandbox image](#extending-the-sandbox-image)).
 - `gh` and the post-script keep using the minted token (`GH_TOKEN`,
   `GITHUB_TOKEN`, `PUSH_TOKEN`).
 - Outside GitHub Actions the variable is left alone; a local PAT is never
@@ -332,15 +338,18 @@ are actually changing:
    orchestrator uses a fixed roster). Do not invent a parallel
    `*/SKILL.md` that embeds the same content.
 5. **Prefer the lightest shipping path** the current docs support —
-   upstream contribution, file-level skill override when available, or
-   whole-skill fork only when that is still required.
+   upstream contribution, file-level skill override, or whole-skill fork
+   only when that is still required.
 
-> **Planned:** File-level overrides inside a pinned skill directory (add or
-> replace a single `sub-agents/<name>.md` without vendoring the whole tree)
-> are tracked in [#6158](https://github.com/fullsend-ai/fullsend/issues/6158)
-> / [#6157](https://github.com/fullsend-ai/fullsend/issues/6157). Until that
-> lands, fixed-roster sub-agent changes usually need an upstream PR or a
-> whole-skill pin.
+To add, replace or remove a single `sub-agents/<name>.md` without vendoring
+the whole skill, list
+[per-file overrides](customizing-with-skills.md#overriding-single-files-in-a-skill)
+on the skill's `skills:` entry. Each run also writes a persona manifest that
+pre-scripts, post-scripts and skills read through `FULLSEND_PERSONAS_FILE`,
+so a roster change made by an override is visible to them
+([#6158](https://github.com/fullsend-ai/fullsend/issues/6158)). An
+orchestrator whose dispatch list is hard-coded still needs a parent-skill
+change to call an added persona.
 
 **Authoring help:** the contributor skill
 [`author-fullsend-augmentations`](../../../skills/author-fullsend-augmentations/SKILL.md)
@@ -364,6 +373,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends rustc \
 
 Use `ghcr.io/fullsend-ai/fullsend-code:latest` as the parent instead when you
 also need the Go toolchain. Pin the parent tag to a digest before CI use.
+
+The image can be a **private** package on `ghcr.io` for the code and fix
+agents, whose shipped workflows grant `packages: read`. On GitHub Actions,
+`fullsend run` pulls the image with the job's workflow token
+(`GH_WORKFLOW_TOKEN`) before it creates the sandbox. Prerequisites and
+failure behaviour: [GitHub Packages credentials](../../cli/run.md#github-packages-credentials).
 
 ### Adding executables
 
@@ -461,8 +476,9 @@ sandbox. Matching is case-insensitive, and `fullsend run` warns about every
 key it drops. The gate covers `env.sandbox` only; it is not a reason to move
 those settings into `.env.d` files.
 
-For the full list, how to check a harness with `fullsend lock`, and where
-proxy and certificate settings go instead, see [Reserved `env.sandbox`
+For the full list, how to check a harness with `fullsend lint` or
+`fullsend lock`, and where proxy and certificate settings go instead, see
+[Reserved `env.sandbox`
 names](../../reference/harness-reference.md#reserved-envsandbox-names) and
 [Migrating proxy and certificate
 settings](../../reference/harness-reference.md#migrating-proxy-and-certificate-settings)
@@ -639,6 +655,28 @@ threshold follows the harness `role:`:
   including OWNERS reviewers on GitHub when
   [OWNERS authorization](owners-file-authorization.md) is enabled.
 - Any other `role:` — the actor needs `write`.
+
+These thresholds apply to human actors. On GitHub, `fullsend dispatch` does
+not read a permission level for a bot. For a non-label event, it asks the mint
+for the fullsend role registered for the bot, using the mint URL (a layered
+`mint_url` in `config.yaml` or `config.base.yaml`, else the
+`FULLSEND_MINT_URL` variable) and the job's Actions OIDC token, and exposes it
+to triggers as `event.actor.bot_role`. A bot that is not registered with a
+fullsend role, or whose lookup fails, gets `actor.role: "none"` and is denied.
+Label-added events skip the lookup.
+
+This is a breaking change for bots that are not registered with the mint:
+third-party bots such as Dependabot or Renovate no longer reach harness
+dispatch or CEL-routed stages on non-label events. The denial applies where
+`fullsend dispatch` runs: harness dispatch, and `--route` for an agent whose
+`config.yaml` entry sets `agents[].trigger`. In a repository with no
+`agents[].trigger`, the dispatch workflow does not run `--route`, so its
+bash-routed stages still admit a bot's events as before. To keep a bot's
+events, register the bot with the mint.
+Callers that run `fullsend dispatch` outside the shipped dispatch workflow,
+or an older shim, must provide a mint URL and grant the job `id-token: write`;
+without them the lookup fails and every bot actor is denied. See
+[ADR 0107](../../ADRs/0107-bot-identity-resolution-for-dispatch-authorization.md).
 
 GitLab uses its own stage router, which applies the same triage and write
 split to slash commands. The GitLab agent job also requires the event actor

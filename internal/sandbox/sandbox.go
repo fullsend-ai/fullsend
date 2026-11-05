@@ -1185,14 +1185,18 @@ func effectiveReadyTimeout(override time.Duration) time.Duration {
 // It retries up to DefaultMaxCreateAttempts times with exponential backoff,
 // deleting the failed sandbox between attempts.
 func Create(name string, providers []string, image, policy string) error {
-	return CreateWithRetry(name, providers, image, policy, DefaultMaxCreateAttempts, 0)
+	return CreateWithRetry(name, providers, image, policy, DefaultMaxCreateAttempts, 0, false)
 }
 
 // CreateWithRetry creates a sandbox, retrying up to maxAttempts times with
 // exponential backoff on failure. Between attempts the failed sandbox is
 // deleted to avoid name conflicts. If readyTimeoutOverride is positive, it
 // overrides the default ready timeout.
-func CreateWithRetry(name string, providers []string, image, policy string, maxAttempts int, readyTimeoutOverride time.Duration) error {
+//
+// If keep is true (--keep-sandbox), a failed attempt is neither deleted nor
+// retried: retrying would require deleting the sandbox under the same name,
+// which destroys the state the caller asked to keep for inspection.
+func CreateWithRetry(name string, providers []string, image, policy string, maxAttempts int, readyTimeoutOverride time.Duration, keep bool) error {
 	if maxAttempts < 1 {
 		return fmt.Errorf("maxAttempts must be >= 1, got %d", maxAttempts)
 	}
@@ -1204,6 +1208,11 @@ func CreateWithRetry(name string, providers []string, image, policy string, maxA
 		lastErr = createOnce(name, providers, image, policy, timeout)
 		if lastErr == nil {
 			return nil
+		}
+
+		// Keep the failed sandbox in place for inspection and stop.
+		if keep {
+			return fmt.Errorf("sandbox creation failed (sandbox kept, not retried): %w", lastErr)
 		}
 
 		// A global policy source is a stable mismatch — retrying with a
@@ -1386,18 +1395,18 @@ func createOnce(name string, providers []string, image, policy string, timeout t
 			// Detect terminal phases and fail immediately instead of
 			// polling through the full timeout.
 			if phase := terminalSandboxPhase(lastOutput); phase != "" {
-				return fmt.Errorf("sandbox %q entered terminal phase %q (will not become Ready)\ncreate output: %s\nstdout: %s\nstderr: %s",
-					name, phase, createOutput, lastOutput, lastStderr)
+				// The sandbox still exists here, so its logs are still
+				// available; collect them before CreateWithRetry deletes it.
+				supervisorLogs, gatewayLogs, containerLogs := collectCreateFailureLogs(name)
+				return fmt.Errorf("sandbox %q entered terminal phase %q (will not become Ready)\ncreate output: %s\nstdout: %s\nstderr: %s\nsupervisor logs: %s\ngateway logs: %s\ncontainer logs: %s",
+					name, phase, createOutput, lastOutput, lastStderr, supervisorLogs, gatewayLogs, containerLogs)
 			}
 		}
 		time.Sleep(readyPoll)
 	}
 
 	// Collect sandbox logs to help diagnose the failure.
-	supervisorLogs, _ := CollectLogs(name, "supervisor")
-	gatewayLogs, _ := CollectLogs(name, "gateway")
-
-	containerLogs := collectPodmanLogs(name)
+	supervisorLogs, gatewayLogs, containerLogs := collectCreateFailureLogs(name)
 
 	if lastPolicyErr != nil {
 		return fmt.Errorf("sandbox %q policy verification failed after %s: %w\ncreate output: %s\nstdout: %s\nstderr: %s\nsupervisor logs: %s\ngateway logs: %s\ncontainer logs: %s",
@@ -1406,6 +1415,17 @@ func createOnce(name string, providers []string, image, policy string, timeout t
 
 	return fmt.Errorf("sandbox %q not ready after %s\ncreate output: %s\nstdout: %s\nstderr: %s\nsupervisor logs: %s\ngateway logs: %s\ncontainer logs: %s",
 		name, timeout, createOutput, lastOutput, lastStderr, supervisorLogs, gatewayLogs, containerLogs)
+}
+
+// collectCreateFailureLogs gathers the supervisor, gateway and container logs
+// of a sandbox whose creation failed, for inclusion in the creation error.
+// Collection errors are ignored: a log source with nothing to report must not
+// mask the creation failure itself.
+func collectCreateFailureLogs(name string) (supervisorLogs, gatewayLogs, containerLogs string) {
+	supervisorLogs, _ = CollectLogs(name, "supervisor")
+	gatewayLogs, _ = CollectLogs(name, "gateway")
+	containerLogs = collectPodmanLogs(name)
+	return supervisorLogs, gatewayLogs, containerLogs
 }
 
 // errPolicyGlobal is returned by verifyPolicy when the sandbox's policy

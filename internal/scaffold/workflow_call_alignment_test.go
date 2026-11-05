@@ -1135,9 +1135,8 @@ func TestShimScaffoldBranchFilter(t *testing.T) {
 }
 
 // TestShimPerRepoSlashCommandFilter validates that the per-repo shim template
-// filters issue_comment events with both a /fs- prefix check and a bot-type
-// guard, preserving defense-in-depth while short-circuiting non-slash-command
-// comments at the workflow level (#6738).
+// forwards /fs- issue comments regardless of actor type while keeping
+// /fs-fix-stop human-only (#8894).
 func TestShimPerRepoSlashCommandFilter(t *testing.T) {
 	content := loadScaffoldFile("templates/shim-per-repo.yaml")(t)
 
@@ -1149,8 +1148,15 @@ func TestShimPerRepoSlashCommandFilter(t *testing.T) {
 	assert.Contains(t, job.If, "startsWith(github.event.comment.body, '/fs-')",
 		"per-repo shim dispatch job must filter issue_comment events to /fs-* slash commands")
 
-	assert.Contains(t, job.If, "github.event.comment.user.type != 'Bot'",
-		"per-repo shim must retain bot-type filter for defense-in-depth alongside /fs- prefix check")
+	assert.NotContains(t, job.If, "github.event.comment.user.type",
+		"per-repo shim dispatch job must forward /fs-* comments regardless of actor type")
+
+	stopFix, ok := wf.Jobs["stop-fix"]
+	require.True(t, ok, "per-repo shim must have a stop-fix job")
+	assert.Contains(t, stopFix.If, "github.event.comment.user.type != 'Bot'",
+		"/fs-fix-stop must remain human-only")
+	assert.Contains(t, stopFix.If, "github.event.comment.body == '/fs-fix-stop'",
+		"stop-fix must remain limited to the /fs-fix-stop command")
 }
 
 // TestShimPerRepoNoFullsendAlias validates that the per-repo dispatch
@@ -1175,7 +1181,8 @@ func TestShimPerRepoNoFullsendAlias(t *testing.T) {
 }
 
 // TestLiveShimSlashCommandFilter validates that the live fullsend.yaml workflow
-// uses both a /fs- prefix filter and bot-type guard for defense-in-depth (#6738).
+// forwards /fs- issue comments regardless of actor type and keeps /fs-fix-stop
+// human-only (#8894).
 func TestLiveShimSlashCommandFilter(t *testing.T) {
 	content := loadRepoFile(".github/workflows/fullsend.yaml")(t)
 
@@ -1187,8 +1194,28 @@ func TestLiveShimSlashCommandFilter(t *testing.T) {
 	assert.Contains(t, job.If, "startsWith(github.event.comment.body, '/fs-')",
 		"fullsend.yaml dispatch job must filter issue_comment events to /fs-* slash commands")
 
-	assert.Contains(t, job.If, "github.event.comment.user.type != 'Bot'",
-		"fullsend.yaml must retain bot-type filter for defense-in-depth alongside /fs- prefix check")
+	assert.NotContains(t, job.If, "github.event.comment.user.type",
+		"fullsend.yaml dispatch job must forward /fs-* comments regardless of actor type")
+
+	stopFix, ok := wf.Jobs["stop-fix"]
+	require.True(t, ok, "fullsend.yaml must have a stop-fix job")
+	assert.Contains(t, stopFix.If, "github.event.comment.user.type != 'Bot'",
+		"/fs-fix-stop must remain human-only")
+	assert.Contains(t, stopFix.If, "github.event.comment.body == '/fs-fix-stop'",
+		"stop-fix must remain limited to the /fs-fix-stop command")
+}
+
+func TestShimDispatchConditionCopiesMatch(t *testing.T) {
+	var template, live callerWorkflow
+	require.NoError(t, yaml.Unmarshal(loadScaffoldFile("templates/shim-per-repo.yaml")(t), &template))
+	require.NoError(t, yaml.Unmarshal(loadRepoFile(".github/workflows/fullsend.yaml")(t), &live))
+
+	templateDispatch, ok := template.Jobs["dispatch"]
+	require.True(t, ok, "per-repo shim template must have a dispatch job")
+	liveDispatch, ok := live.Jobs["dispatch"]
+	require.True(t, ok, "live fullsend.yaml must have a dispatch job")
+	assert.Equal(t, templateDispatch.If, liveDispatch.If,
+		"live and scaffold dispatch conditions must stay aligned")
 }
 
 func TestPerRepoShimAdmitsEmptyBodyReviewEvents(t *testing.T) {

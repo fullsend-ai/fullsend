@@ -47,10 +47,10 @@ fullsend --version
 ## Install OpenShell
 
 [OpenShell](https://github.com/NVIDIA/OpenShell) provides the sandbox runtime. There are multiple ways
-to install it, here we use one similar to how we download it on Fullsend. Use the version
+to install it, here we use one similar to how we download it on fullsend. Use the version
 fullsend is pinned to — the source of truth is
 [`.github/scripts/openshell-version.sh`](https://github.com/fullsend-ai/fullsend/blob/main/.github/scripts/openshell-version.sh)
-in the fullsend repo at your release tag (also printed on Fullsend workflow runs).
+in the fullsend repo at your release tag (also printed on fullsend workflow runs).
 
 ```bash
 export OPENSHELL_VERSION=0.1.4  # check the pin file for the current version
@@ -389,12 +389,27 @@ fullsend if the version is newer. A missing lock file is not an error.
 
 When `--forge` is specified, only that platform variant is locked. When omitted,
 all forge variants defined in the harness are resolved and the union of their
-dependencies is locked.
+dependencies is locked. If your agent's forge-specific files come only from a
+`base:` harness (your harness has no `forge:` block), pass `--forge <platform>`,
+for example `--forge github`, so `fullsend lock` pins them. Without it, the run
+warns that the lock entry does not pin them.
 
 When the lock entry is current (harness SHA256 matches), dependencies are
 resolved from the local cache without network access. If the harness has changed
 or a cached artifact is missing, `fullsend run` falls back to normal network
 resolution and prints a warning suggesting you re-run `fullsend lock`.
+
+A current lock entry also pins the files a URL `base:` (or an agent fetched from
+a URL) names by relative path: agent, policy, skills, skill file overrides,
+scripts, plugins and the rest. They resolve to the locked content even when the
+cache has since fetched newer content for the same URL. `fullsend run` prints
+`Pinning N dependencies from lock file` when it applies these pins. If locked
+content is missing from the cache, an `--offline` run fails and asks you to run
+`fullsend lock --update`, and an online run re-fetches it and fails if it no
+longer matches the lock (`fullsend lock --update` re-pins it). A lock entry for
+an agent fetched from a URL that was written before fullsend recorded these
+files does not pin them; run `fullsend lock --update` to add them. `fullsend run`
+warns when a current lock entry leaves any of these files unpinned.
 
 Use `--update` to force re-resolution even if the lock entry appears current.
 A current entry is also not composed, so `fullsend lock` does not check it for

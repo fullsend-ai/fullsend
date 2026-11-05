@@ -12,10 +12,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// wideningInstallPreset supplies a cross-repo create_issues target the code
+// wideningInstallPreset supplies a cross-repo tracking target the code
 // defaults do not allow, so declaring it for an installed repository without
 // a base file widens the effective configuration.
-const wideningInstallPreset = "version: \"1\"\ncreate_issues:\n  allow_targets:\n    repos:\n      - acme/other\n"
+const wideningInstallPreset = "version: \"1\"\ntracker:\n  github:\n    allowed_targets:\n      repos:\n        - acme/other\n"
 
 // assertNoInstallWrites fails when the fake client recorded any forge write.
 func assertNoInstallWrites(t *testing.T, fc *forge.FakeClient) {
@@ -96,7 +96,7 @@ func TestRunReposInstall_SafetyRejectionLeavesManifestByteIdentical(t *testing.T
 			name:         "preset relaxation",
 			defaults:     "defaults:\n  config_base:\n    source: preset.yaml\n",
 			targetConfig: managedConfigMarker + "{}\n",
-			want:         "create_issues.allow_targets",
+			want:         "tracker.github.allowed_targets",
 		},
 	}
 
@@ -138,7 +138,7 @@ func TestRunReposInstall_SafetyRejectionLeavesManifestByteIdentical(t *testing.T
 // Effective-infrastructure conflicts (a mint URL that the repos.yaml
 // mint_url and the declared configuration disagree on, or a Vertex flag
 // that contradicts the declared value) are rejected before the planned
-// create_issues writeback is persisted, so repos.yaml stays byte-identical
+// tracking writeback is persisted, so repos.yaml stays byte-identical
 // — including for a pristine glob-covered repository.
 func TestRunReposInstall_InfrastructureConflictLeavesManifestByteIdentical(t *testing.T) {
 	const manifestHeader = `version: 1

@@ -53,14 +53,17 @@ func (d *perRepoDefaults) AgentEntries() []AgentEntry { return nil }
 // AllowedResources returns the default allowed remote resource prefixes.
 func (d *perRepoDefaults) AllowedResources() []string { return DefaultAllowedRemoteResources() }
 
-// IssueCreationConfig returns nil — no issue creation config by default.
-func (d *perRepoDefaults) IssueCreationConfig() *CreateIssuesConfig { return nil }
+// IssueTracking returns nil — no issue-tracking config by default.
+func (d *perRepoDefaults) IssueTracking() *TrackingConfig { return nil }
 
 // StatusNotifications returns nil — no status notifications by default.
 func (d *perRepoDefaults) StatusNotifications() *StatusNotificationConfig { return nil }
 
 // IsOwnersFileAuthEnabled returns false — OWNERS auth is off by default.
 func (d *perRepoDefaults) IsOwnersFileAuthEnabled() bool { return false }
+
+// JiraAuthorization returns nil — no jira authorization provider by default.
+func (d *perRepoDefaults) JiraAuthorization() *AuthorizationProvider { return nil }
 
 // ConfigMintURL returns the default mint URL (hosted public mint).
 func (d *perRepoDefaults) ConfigMintURL() string { return DefaultPerRepoMintURL }

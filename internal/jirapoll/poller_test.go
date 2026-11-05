@@ -61,6 +61,9 @@ type mockClient struct {
 	userGroupsErr  error                           // global error
 	userGroupsErrs map[string]error                // per-actor error (overrides global)
 
+	roleActorsCalls int            // GetProjectRoleActors call count
+	userGroupsCalls map[string]int // accountID -> GetUserGroups call count
+
 	// getPropertyHook, if set, runs after each GetEntityProperty call
 	// captures its return value, and before that value is returned. Used
 	// to simulate a concurrent writer changing the stored property
@@ -191,6 +194,7 @@ func (m *mockClient) GetStatus(_ context.Context, idOrName string) (*jira.Status
 }
 
 func (m *mockClient) GetProjectRoleActors(_ context.Context, _ string) (map[string]jira.ProjectRoleActors, error) {
+	m.roleActorsCalls++
 	if m.roleActorsErr != nil {
 		return nil, m.roleActorsErr
 	}
@@ -216,6 +220,10 @@ func (m *mockClient) GetProjectRoleActors(_ context.Context, _ string) (map[stri
 }
 
 func (m *mockClient) GetUserGroups(_ context.Context, accountID string) ([]jira.UserGroupInfo, error) {
+	if m.userGroupsCalls == nil {
+		m.userGroupsCalls = make(map[string]int)
+	}
+	m.userGroupsCalls[accountID]++
 	if err, ok := m.userGroupsErrs[accountID]; ok {
 		return nil, err
 	}

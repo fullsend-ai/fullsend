@@ -290,7 +290,7 @@ What a local pi run needs, beyond the guide:
   pinned exactly and the stream-parser fixtures are tied to the pinned version.
 - **Malformed `edit` calls are repaired.** Some models send the `edit` tool's `edits` as a JSON
   string holding raw newlines, or as an array of JSON strings; the pinned pi rejects both with
-  `edits.0: must be object` and the model has to redo the call
+  `edits.0: expected object, got string` and the model has to redo the call
   ([earendil-works/pi#8521](https://github.com/earendil-works/pi/issues/8521),
   [#8962](https://github.com/earendil-works/pi/issues/8962)). When the agent has `edit`, the runner
   loads `fullsend-edit-repair.js`, which parses the argument before pi validates it and logs each

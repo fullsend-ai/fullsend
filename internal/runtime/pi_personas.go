@@ -24,6 +24,11 @@ type piPersona struct {
 	Description string
 	Body        string
 	Frontmatter []byte
+	// skillDir, path and data locate the file discovery read, for the
+	// runner's persona manifest (#6158).
+	skillDir string
+	path     string
+	data     []byte
 }
 
 // piPersonaManifestEntry is one entry in the manifest's personas table,
@@ -162,6 +167,9 @@ func discoverPersonas(skillDirs []string, agentName string) ([]piPersona, []piSk
 					Description:   def.Description,
 					Body:          def.Body,
 					Frontmatter:   def.Frontmatter,
+					skillDir:      skillDir,
+					path:          path,
+					data:          data,
 				})
 			}
 		}

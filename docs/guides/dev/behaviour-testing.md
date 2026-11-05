@@ -57,7 +57,7 @@ Given a dummy agent that would:
 | Column | Meaning |
 |--------|---------|
 | `description` | Human label matched by assertion steps |
-| `op` | `read_file`, `url_get`, `write_fixture`, `assert_env`, `assert_not_jwt`, `assert_file`, `assert_json`, `checkout_branch`, `http_probe`, `wait` |
+| `op` | `read_file`, `url_get`, `write_fixture`, `assert_env`, `assert_not_jwt`, `assert_file`, `assert_json`, `assert_jq`, `checkout_branch`, `http_probe`, `wait` |
 | `args` | Op-specific; see below |
 | `expect` | Optional. `fail` marks a step the scenario expects to fail, such as a fetch the sandbox blocks. The failure is still recorded for `the agent will fail to ...`, but it does not make the agent exit non-zero, so the run still succeeds. |
 
@@ -66,6 +66,8 @@ Given a dummy agent that would:
 **`wait`:** `SECONDS` — sleeps for a whole number of seconds (1 to 1200) between the ops before and after it, for example to outlast a credential's lifetime before probing again.
 
 **`http_probe`:** `METHOD URL HEADER_ENV [BODY]` — `GET` or `POST` (body only with `POST`), sent through `node` from inside the sandbox with `Authorization: Bearer $HEADER_ENV`. `HEADER_ENV` must be `INFERENCE_GATEWAY_API_KEY` or `OPENAI_API_KEY`, the variables that hold OpenShell credential placeholders, so a scenario cannot send any other sandbox variable to a host of its choosing. `<gateway>` expands to `E2E_INFERENCE_GATEWAY_URL`. The HTTP status and the first 4 KiB of the response body are recorded in `behaviour-results.json` (the body is read only up to that limit); JWT-shaped substrings in the body are replaced by `<redacted-jwt>` and `body_had_jwt` records that one was there. The op succeeds only on a 2xx. Assert with `the agent's probe "<description>" returned HTTP <code>` and `... response contains|does not contain "<text>"`; a needle starting with `eyJ` also matches a redacted JWT. `features/runtime/inference-gateway-api-key.feature` runs the gateway's `api-key` mode (ADR 0138): `the test inference gateway is configured for the repository with an API key` commits `url` and `auth: api-key`, and the probe asserts that the echo upstream reports `STUB_KEY`, the gateway's own credential: a positive check, since the runner redacts the test key from the recorded results. It is gated on `inference-gateway-api-key` and skips when `E2E_INFERENCE_GATEWAY_TEST_KEY` is unset. The key must be authorised for the `echo` model only. The step sets it as the leased repository's `FULLSEND_INFERENCE_GATEWAY_API_KEY` secret, which the reusable workflow passes to the runner, and scenario cleanup deletes it, so the pool holds no standing key. Each gateway scenario starts with `the test inference gateway is available` (or `... available with an API key`), which skips before a repository is leased when the settings are unset, so runs without them spend no API calls on the gateway scenarios.
+
+**`assert_jq`:** `path, jq_filter` — runs `jq -e` with the filter (everything after the first comma) on the JSON file at `path`, relative to the sandbox workspace, and succeeds when the last output is neither `false` nor `null`. Use it where `assert_json`'s dotted field path is not enough, such as `any(.personas[]; .path == "sub-agents/security.md")` against `.fullsend/personas.json`. Filters that read the environment, other inputs or modules are refused. Write a `|` inside a table cell as `\|`.
 
 **`write_fixture`:** `dest_path, fixtures/...` — content lives in `e2e/behaviour/fixtures/`, embedded in the committed scenario script at `.fullsend/behaviour/current-scenario.yaml`.
 
@@ -87,6 +89,8 @@ And the agent will output issues.out with:
   expected content
   """
 ```
+
+`Then the harness "<agent>" workflow logs contain "<text>"` (or `... do not contain "<text>"`) searches the harness workflow's job logs. A `do not contain` check fails when the log snapshot is incomplete, rather than passing on missing data. `Then the harness "<agent>" workflow logs register persona "<name>" and not "<other>"` reads only the block of `subagents: <name> → <model>` lines pi prints when it registers personas: the block must be found with an ordinary log line on both sides, must list `<name>` and must not list `<other>`, so a job log truncated elsewhere does not fail it. `Given the repository allows remote resources from "<prefix>"` adds a prefix to the leased repository's `.fullsend/config.yaml` `allowed_remote_resources` for the scenario, so a custom harness can fetch URL skills; see `features/runtime/skill-overrides.feature`.
 
 ### Runtime steps
 
@@ -331,7 +335,15 @@ In CI, the test runner mints cross-org `e2e` installation tokens via OIDC for Gi
 
 The `dev` preview mints are deployed with `--public` (`PER_REPO_WIF_REPOS=*`), which broadens *caller* eligibility, not anonymous access. OIDC verification, the workflow-host allowlist (an explicit `--workflow-host-repos`, kept separate from callers per [ADR 0082](../../ADRs/0082-workflow-host-allow-list.md)), role permissions, and requested-repo and FOREIGN scope checks all still apply, and the status endpoint's GitHub-team authorization is independent of this mode. The accepted trade-off: the `fullsend-test-*` Apps are installed on every repo in the pool orgs, so an unrelated repo there that uses an approved workflow host could mint a token for *itself* through a live preview URL. The previews are temporary and the identities test-only. The [GitHub mint scope scenarios](#github-mint-scope-scenarios) keep the denials for another repository or org without the required FOREIGN grant and for unapproved workflow hosts. Grouped orgs share a preview hostname and its 60 requests/minute/IP native rate limiter, so validate 429s with live traffic rather than assuming the per-org traffic pattern still holds.
 
-Godog concurrency stays independent of slot capacity. The default is the slots per org (12), and `GODOG_CONCURRENCY` overrides it. Capacity is every slot of the pool (144 on `dev`), and a concurrency above capacity only makes workers wait. The allocator logs each claim and release with its org/repo and that org's quota (`[slots] claimed halfsend-03/test-repo-05 (quota …)`). An exhausted pass logs the per-org breakdown: occupied, rate-limited until, denied, failed, e2e-lock excluded, and GC results. `Finalize` logs every org's last observed rate limit.
+Godog concurrency stays independent of slot capacity. The default is the
+slots per org (12), and `GODOG_CONCURRENCY` overrides it. Capacity is every
+slot of the pool (144 on `dev`), and a concurrency above capacity only makes
+workers wait. The allocator logs each claim and release with its org/repo and
+that org's quota
+(`[slots] claimed halfsend-03/test-repo-05 (quota …)`). An exhausted pass logs
+the per-org breakdown: occupied, rate-limited until, denied, failed, e2e-lock
+excluded, and GC results. `Finalize` logs every org's last observed rate limit
+(see [Rate-limit observability](#rate-limit-observability)).
 
 The After hook runs `CleanupScenario` (issues, PRs, ephemeral forks, hosting
 repos) and then `LeaseDriver.DeallocateLease(org, repo)`. Cleanup changes the
@@ -407,7 +419,9 @@ When `BEHAVIOUR_CONFIG_PRESET` is set to a local path or HTTPS URL, install driv
 
 When `ENVIRONMENT=stage`, the suite selects the `RepoPoolCFMintStage` driver which deploys a durable CF Worker mint at `stage-mint.fullsend.sh` and uses the `halfsend` org with a non-vendored per-repo install (referencing main HEAD via `--fullsend-ref=main`). The `halfsend` org uses the same repo pool pattern as the DEV pool orgs.
 
-Triage scenarios apply the `ready-for-triage` label (not `/fs-triage` comments) because the per-repo shim ignores `issue_comment` events from bot users and CI uses minted e2e installation tokens.
+Triage scenarios apply the `ready-for-triage` label (not `/fs-triage` comments)
+because reusable dispatch filters bot-authored `/fs-triage` comments before
+starting the triage stage, and CI uses minted e2e installation tokens.
 
 ### Shared org lock bridge (temporary)
 
@@ -522,7 +536,7 @@ delete a repository recreated after a successor reclaimed the slot.
 
 ### Job-scoped trace collection
 
-The tested Fullsend workflows run on separate GitHub-hosted runners, so the suite gives them a single place to send traces. When the trace collector is enabled, the CF mint install drivers (`NewRepoPoolCFMintPreviews`, `NewRepoPoolCFMintStage`) set it up during suite setup. No workflow changes are needed:
+The tested fullsend workflows run on separate GitHub-hosted runners, so the suite gives them a single place to send traces. When the trace collector is enabled, the CF mint install drivers (`NewRepoPoolCFMintPreviews`, `NewRepoPoolCFMintStage`) set it up during suite setup. No workflow changes are needed:
 
 1. Generate a random bearer token for the job. The token is registered with the process secret redactor. It is never placed on a command line, in a file or on stdout. In particular it is not announced with `::add-mask::`: the step log is tee'd into the artifact directory, and a suite killed by the timeout never runs the scrub, so that line would leave the raw token in the uploaded log.
 2. Start the OpenTelemetry Collector (`otelcol-contrib`) with Podman. Its OTLP/HTTP receiver is published on `127.0.0.1` of the CI worker and requires the token through the `bearertokenauth` extension. The file exporter writes received traces as OTLP/JSON lines, one file per trace ID (`/traces/trace-<trace ID>.jsonl`). The file exporter can only route by a resource attribute, so the traces pipeline first copies each span's trace ID into a temporary `bt.trace_id` span attribute (`transform` processor) and promotes it to a resource attribute (`groupbyattrs` processor). Spans of one trace that arrive in different OTLP requests are appended to the same file, and different trace IDs never share a file.
@@ -537,6 +551,115 @@ The tested Fullsend workflows run on separate GitHub-hosted runners, so the suit
 `BEHAVIOUR_TRACE_COLLECTOR` controls the collector. When unset, it runs only in GitHub Actions and only when `BEHAVIOUR_ARTIFACT_DIR` is set. Set it to `true` to run the collector locally (requires Podman and `BEHAVIOUR_ARTIFACT_DIR`), or `false` to turn it off. Trace collection is diagnostic: if the collector cannot start (no Podman, image pull or tunnel failure), the suite logs a warning and runs without it. If a repository cannot be configured, the suite logs that and continues. A suite killed by the `go test` timeout skips `t.Cleanup`, so no trace files are saved for that run.
 
 To check the per-trace routing against the pinned Collector image, run `BT_OTELCOL_INTEGRATION=1 go test ./pkg/behaviourtest/drivers/install -run PerTraceFilesWithRealCollector` (requires Podman). The test sends interleaved spans of two trace IDs across several export requests and verifies that every span is preserved and each trace ID has its own file. The test is skipped otherwise.
+
+### Rate-limit observability
+
+When a pool org's installation token exhausts its GitHub API budget
+mid-suite, harness waits fail blind: polls return 403s that surface only as
+`no recent workflow runs found after trigger time` timeouts
+([#6702](https://github.com/fullsend-ai/fullsend/issues/6702)). The suite
+instruments every point where that exhaustion manifests, so a run's logs
+and timeout errors always show the budget the suite observed.
+
+**Lease boundaries and teardown.** The slot allocator logs the org's
+last-observed quota with every claim and release
+([`slotpool.go`](../../../pkg/behaviourtest/drivers/install/slotpool.go),
+[#8578](https://github.com/fullsend-ai/fullsend/issues/8578)) —
+`[slots] claimed halfsend-03/test-repo-05 (quota remaining=1234/5000
+reset=2026-10-25T18:00:00Z resource=core)`, or `quota unknown` before the
+org's client has seen rate-limit headers — and the composed driver repeats
+the summary on its `[driver] allocated` and `[driver] deallocated` lines
+([`composed.go`](../../../pkg/behaviourtest/drivers/install/composed.go)).
+At teardown, `Finalize` logs the last observation of every org the suite
+used ([#8622](https://github.com/fullsend-ai/fullsend/issues/8622)):
+
+```
+[driver] per-org rate limits at finalize:
+halfsend-01: remaining=4987/5000 reset=2026-10-25T18:00:00Z resource=core
+halfsend-03: remaining=12/5000 reset=2026-10-25T19:00:00Z resource=core
+```
+
+**Harness-wait timeout errors.** Every harness-wait timeout error the
+GitHub Actions CI driver reports ends with the polling client's last-seen
+rate-limit state (`describeRateLimitState` in
+[`githubactions.go`](../../../pkg/behaviourtest/drivers/ci/githubactions/githubactions.go)):
+
+```
+github rate limit: remaining=1234/5000 reset=2026-10-25T18:00:00Z resource=core, observed 34s ago
+```
+
+The line is appended even when no poll during the wait failed. The GitHub
+client implements `forge.RateLimitReporter` (`internal/forge/forge.go`;
+`RateLimit` carries the `Observed` timestamp the age is computed from), so
+a client that tracks rate limits but has not observed the headers yet
+renders `github rate limit: unknown (no observation yet)` — the same
+explicit-unknown convention as the boundary summaries — while a client
+that does not implement the reporter (the GitLab driver) adds no line and
+its timeout errors are unchanged. The read is in-memory client state, made
+outside the timeout-diagnostics lookup budget, so it costs no API call.
+Timeout errors also report the API failures recorded during the wait
+([#6697](https://github.com/fullsend-ai/fullsend/issues/6697),
+[#6698](https://github.com/fullsend-ai/fullsend/issues/6698)): a failed
+run listing is named as `run listing failed: …`, poll failures that repeat
+one identical error render `(same error on N of M polls during the wait)`,
+and the per-run lookups made while building the diagnostics render
+`(failed on N of M lookups during the wait; last: …)` — the lookup tail
+counts failed lookups and names the last one, because the diagnostics pass
+no current lookup error to compare against. Those strings land in the
+behaviour job's step log and in the failure summaries the After hook
+writes under `BEHAVIOUR_ARTIFACT_DIR`.
+
+#### The marker strings are the scanner's contract
+
+The rate-limit evidence scanner greps the behaviour job's logs for exactly
+those rendered strings: `run listing failed:`, `(same error on N of M
+polls during the wait)`, and `(failed on N of M lookups during the wait;
+last: …)`. The poll near-miss `(failed on N of M polls during the wait;
+last: …)` that non-identical poll failures render instead is deliberately
+not a marker — #6702's criterion targets the blind-wait signature of
+identical repetition, not individual poll failures — while the lookup
+counted-failures shape is a marker, because the lookup tail has no
+current-error comparison and always renders that shape. Because the
+scanner matches the rendered text, any wording change in
+`harnessTimeoutDiagnostics` or `pollErrors.describe` must keep the marker
+strings in sync. The paired hermetic test
+`skills/e2e-health/scripts/scan-ratelimit-evidence_test.sh` (also run by
+`make script-test`) pins the patterns against fixture logs, including the
+near-misses that must not match — run it whenever either side changes.
+
+#### Running the evidence check
+
+The evidence check is `skills/e2e-health/scripts/scan-ratelimit-evidence.sh`.
+It is read-only (`gh` GETs, on your own token rather than the installation
+token it measures) and runs from any checkout with ordinary `gh` auth:
+
+```bash
+bash skills/e2e-health/scripts/scan-ratelimit-evidence.sh          # default: 20 runs
+bash skills/e2e-health/scripts/scan-ratelimit-evidence.sh --runs 2 # window size, 1-100
+```
+
+Pass `--repo OWNER/NAME` to scan an explicit repository; the default is
+the one `gh` resolves from the checkout. The scan enumerates completed
+`e2e.yml` runs on `main`, keeps the most recent ones whose `behaviour` job
+actually ran, and walks every attempt of each kept run —
+infrastructure-classified failures retry once, so a passing later attempt
+can mask a rate-limited first one. Run conclusions come from run and
+attempt metadata, never from log parsing. stdout carries only the JSON
+report (`script > report.json` captures it); stderr carries progress and
+the summary table (`2> summary.txt`). Exit 0 means the scan completed;
+exit 1 means it failed or the report is incomplete — a behaviour-job log
+could not be fetched, the affected attempts carry `log_error` entries, and
+the verdict may undercount.
+
+The verdict reports both signal levels from one scan. **Strict**
+(`runs_with_markers`) counts any marker occurrence; **lenient**
+(`runs_with_markers_that_passed`) counts marker-bearing runs that
+ultimately passed — the retry-masked occurrences. Which level counts as a
+violation is the closure-rule decision recorded alongside the report, not
+a scanner behavior. The skill-facing procedure — when to run the scan and
+how to read a saved report — is documented in the
+[`e2e-health` skill](../../../skills/e2e-health/SKILL.md#rate-limit-evidence-scan);
+this section is its contributor-facing counterpart.
 
 ### Test actor account permission scope
 
@@ -633,18 +756,23 @@ The `fork-dispatch.feature` file defines the canonical fork-PR behaviour contrac
 | Disabled harness (`enabled: false`) on fork event | Empty matrix, exit 0 | Disabled harness in positive scenario; assert agent did not run |
 | Fork PR `synchronize` + label dispatches harness | Harness dispatched exactly 1 time; workflow completes | Separate scenario with sync commit + label |
 | CEL `is_fork` exclusion (`!event.state.change_proposal.is_fork`) | Empty matrix, exit 0 | Harness with `is_fork` guard in positive scenario; assert agent did not run |
-| Fork PR matches CEL `trigger` on `pull_request_target`; unauthorized actor ([ADR 0054](../../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)) | Empty matrix, exit 0 — no agent run | `platform/trigger-auth.feature`. The outsider opens a PR from its own fork; assert the harness dispatch completed with an empty matrix, the agent did not run, and it was dispatched exactly 0 times, then a label as the positive control |
+| Fork PR matches CEL `trigger` on `pull_request_target`; unauthorized actor ([ADR 0054](../../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)) | Empty matrix, exit 0 — no agent run | `platform/actor-authorization.feature`. The outsider opens a PR from its own fork; assert the harness dispatch completed with an empty matrix, the agent did not run, and it was dispatched exactly 0 times, then a label as the positive control |
+| Human actors at each permission level comment `/fs-do` and add a label | Each harness is dispatched or not by the actor's role: the write actor starts the triage-level and write-level harnesses, the triage actor only the triage-level one, the outsider none; the label harness runs for both labelers | `platform/actor-authorization.feature`, the `<actor> comments "/fs-do" and labels the issue` outline |
+| Bot actors (review, coder and triage role bots, the e2e bot) and the write actor as a control comment `/fs-do` and add a label | One harness per bot role triggers on `/fs-do` with `event.actor.bot_role == "<role>"`; one harness triggers on the label. The shim forwards `/fs-` comments from bots, so a comment reaches the bot-role lookup. Each registered role bot dispatches only the harness of its own role. The write actor (a human, so no bot role) and the unregistered e2e bot (denied by the lookup before CEL) dispatch no role harness. Every actor's label dispatches the label harness, because label-added events skip the lookup. The matrix counts the dispatches of each harness per actor | `platform/bot-actor-authorization.feature`, the `registered <actor> posts "/fs-do" and labels the issue "do-it"` outline and the `<actor> posts "/fs-do" and labels the issue "do-it" without a bot role` outline. See [Bot actor steps](#bot-actor-steps) |
+| The three role bots and the e2e bot submit a review comment on a pull request, with the write actor's review as a control | A pull request review is a bot transition the shim forwards, so it reaches the dispatch-time bot-role lookup. Each registered role bot dispatches the harness of its own role (`event.actor.bot_role`) and the unrestricted `on-review` harness. The unregistered e2e bot dispatches nothing, not even `on-review`, until the write actor's review dispatches it. A failed lookup cannot be induced against the deployed mint; the unit tests of the gate cover it | `platform/bot-actor-authorization.feature`, the `registered <actor> submits a review comment on a pull request` outline and the `unregistered e2e bot submits a review comment on a pull request` scenario |
 
 **Kill switch vs disabled harness:** These are distinct mechanisms. The **kill switch** (`kill_switch: true`, settable in either `config.yaml` or `config.base.yaml`) is a global emergency stop that blocks *all* harness dispatch for the repo — tested in its own scenario because no positive harness can run alongside it. A **disabled harness** (`enabled: false` per agent entry) only prevents that single agent from running — tested as a piggyback negative assertion in the positive-path scenario.
 
 **Consolidation pattern:** To conserve parallel execution slots, add negative-path harnesses (disabled agent, CEL exclusion) alongside the positive-path harness in a single scenario rather than creating separate scenarios. The positive harness wait acts as the settle window for negative assertions (piggyback pattern — see `negativeSettleDuration` in `dispatch.go`). The kill switch scenario cannot be consolidated because it blocks all harnesses.
 
-**Unauthorized-actor denial:** The row lives in `e2e/behaviour/features/platform/trigger-auth.feature`, the home for platform trigger authorization scenarios, rather than in `fork-dispatch.feature`. The dispatch gate (`harnessdispatch.IsEventAuthorized`, then the per-harness `role:` threshold from `IsHarnessAuthorized`) authorizes label-added events without any role. So the denial can only be exercised through a transition that needs one — for the `fork-auth-probe` harness (`role: triage`), the `triage` threshold: the PR `opened` event, sent by the outsider when it opens the PR from its own fork. The harness trigger matches both `opened` and a label, and the scenario orders its steps as follows:
+**Unauthorized-actor denial:** The row lives in `e2e/behaviour/features/platform/actor-authorization.feature`, the canonical default platform actor authorization matrix, rather than in `fork-dispatch.feature`. The dispatch gate (`harnessdispatch.IsEventAuthorized`, then the per-harness `role:` threshold from `IsHarnessAuthorized`) authorizes label-added events without any role. So the denial can only be exercised through a transition that needs one — for the `fork-auth-probe` harness (`role: triage`), the `triage` threshold: the PR `opened` event, sent by the outsider when it opens the PR from its own fork. The harness trigger matches both `opened` and a label, and the scenario orders its steps as follows:
 
 1. The denial assertions (`the harness dispatch completes with an empty matrix`, then `agent did not run`, then `dispatched exactly 0 times`) run before the label is added. The first is the one that checks the required outcome: the other two also pass when the dispatch job errored or when no run was created, because neither counts a run without an agent job. `harness-run` uses a `cancel-in-progress` concurrency group per agent and PR, and the dispatch count excludes cancelled jobs. A leaked `opened` dispatch that the label run cancelled would therefore not be counted.
 2. The label, added afterwards by the e2e identity, must dispatch. This positive control shows that the harness is registered and its trigger matches the PR, so the denial cannot pass just because the harness never loaded.
 
 ### Dispatch step reference
+
+**`a fullsend file "<path>" with:`** — Commits the doc string to `.fullsend/<path>` in the test repository, for a file a harness names by a path relative to the fullsend directory, such as a skill override source. The path must stay inside `.fullsend`.
 
 **`a disabled custom harness "<name>" with:`** — Registers the harness YAML under `.fullsend/harness/<name>.yaml` and adds an agent entry with `enabled: false` to the repo's `config.yaml`. Use this step for negative dispatch assertions where a single agent should be excluded while other agents in the same scenario continue to run. This is *not* the kill switch; for the global emergency stop that blocks all harnesses, use `the kill switch is active`.
 
@@ -777,11 +905,21 @@ The install driver's internal ensurer always re-vendors the CLI binary (`github 
 | `target repo` | `shim repo` or `none` |
 | `selection` | The token's `repository_selection` (`selected`), or `none` |
 
-Every role mints at both levels for its own repository. Wildcard and other-repository scopes are denied (`scope-denied`), and an unapproved workflow host is denied (`host-denied`). Out of scope: the deprecated per-org installation mode, the infrastructure-only `e2e` role, cross-organization minting, and GitLab or Forgejo minting.
+Every role mints at both levels for its own repository. Wildcard and other-repository scopes are denied (`scope-denied`), and an unapproved workflow host is denied (`host-denied`).
+
+Every row also checks the mint's `Strict-Transport-Security` header
+against the value in the step (`max-age=31536000`, see
+[HTTP Strict Transport Security](../infrastructure/mint-administration.md#http-strict-transport-security)).
+Each probe job records the header of its `/v1/token` response and of a
+`GET /health` it makes first. The step requires the exact value from both
+jobs. The control's 200 covers a success response, and the subject's 401
+or 403 in denial rows covers error responses.
+
+Out of scope: the deprecated per-org installation mode, the infrastructure-only `e2e` role, cross-organization minting, and GitLab or Forgejo minting.
 
 ### Probe topology
 
-The probe adds and changes no committed Fullsend workflow, and runs no harness or dummy runtime. For each row the steps:
+The probe adds and changes no committed fullsend workflow, and runs no harness or dummy runtime. For each row the steps:
 
 1. Create a temporary, public host repository in the pool org and commit the reusable probe workflow (`pkg/behaviourtest/steps/mint_probe_workflow.yml`) to it. The approved host is `test-repo-NN-mint-host`. Both CF mint drivers list that name in the mint's `WORKFLOW_HOST_REPOS`, next to the pool repos (see [Install driver (unified)](behaviour-drivers.md#install-driver-unified)). Unapproved-host rows also create `test-repo-NN-mint-unapproved`, which no list names.
 2. Push a shim workflow to a temporary branch (`behaviour/mint-probe-<nonce>`) of the leased repository. On that push, the shim calls the probe workflow twice in one run and passes the repository's `FULLSEND_MINT_URL` variable to both jobs.
@@ -791,7 +929,7 @@ The leased repository is the OIDC `repository` claim (the shim) and the host rep
 
 ### Telling denials from failures
 
-Each probe job requests one token with the job's OIDC token, then masks and revokes any token it gets. It uploads a compact JSON result: the outcome (`minted`, `denied` or `error`), the mint's HTTP status and error message, the two claims, and a minted token's `repository_selection`, granted repositories and granted permissions. No token is kept. The job exits 0 whatever the mint answers, and the upload requires the result file, so a missing result fails the run.
+Each probe job requests one token with the job's OIDC token, then masks and revokes any token it gets. It uploads a compact JSON result: the outcome (`minted`, `denied` or `error`), the mint's HTTP status and error message, the two claims, a minted token's `repository_selection`, granted repositories and granted permissions, and the `Strict-Transport-Security` values of the `/v1/token` and `/health` responses (`hsts_token`, `hsts_health`). No token is kept. The job exits 0 whatever the mint answers, and the upload requires the result file, so a missing result fails the run.
 
 The steps report a policy denial separately from an infrastructure failure. These are infrastructure failures, and none can satisfy an expected denial:
 
@@ -853,7 +991,46 @@ The steps register the credential with the secret redactor. They store only reda
 
 The same run makes a **control** lookup of the registered review bot, which must answer 200 `recognized` with role `review`, from a token the probe verified, with the leased repository as the OIDC `repository` claim. Otherwise the row fails as an infrastructure failure. As in the mint probe, each job verifies its own OIDC token first (`oidc_verified`). Probe-side configuration, OIDC and transport failures are always infrastructure failures, and so is a lookup-mode answer that `botidentity.ParseMintBotRoleResponse` rejects. A forced failure counts as `lookup-failed` only for a verified token answered 401 `authentication failed`. Any other status is an infrastructure failure, and a 200 fails the row because the mint accepted an invalid credential. No infrastructure failure can satisfy an expected outcome.
 
-The probe uploads only the request fields, `oidc_verified`, the two OIDC claims, the HTTP status, the `outcome`, `role` and `error` strings of the mint's body (each at most 300 characters), and a probe-side error class. It never writes a token. The remaining steps project the subject's outcome onto a normalized actor with `botidentity.ApplyBotRoleResult`, and check the event-level pre-CEL gate (`harnessdispatch.IsEventAuthorized`) for a non-label `review_submitted` event. A `no-match` and a `lookup-failed` are both denied before CEL, and `role_verified` (`true` and `false`) keeps them apart. `TestBotRoleLookupFeature_RowsMatchSteps` checks every Examples row against the step patterns and classification. Each of the 4 rows leases a pool repository.
+The probe uploads only the request fields, `oidc_verified`, the two OIDC claims, the HTTP status, the `outcome`, `role` and `error` strings of the mint's body (each at most 300 characters), and a probe-side error class. It never writes a token. The remaining steps project the subject's outcome onto a normalized actor with `botidentity.ApplyBotRoleResult`, and check the event-level pre-CEL gate (`harnessdispatch.IsEventAuthorized`) for a non-label `review_submitted` event. A `no-match` and a `lookup-failed` are both denied before CEL, and `role_verified` (`true` and `false`) keeps them apart. `fullsend dispatch` runs the same lookup for bot actors of `gha-event` input, before CEL routing and harness dispatch; its Go path is covered by `internal/cli/dispatch_botrole_test.go`. `TestBotRoleLookupFeature_RowsMatchSteps` checks every Examples row against the step patterns and classification. Each of the 4 rows leases a pool repository.
+
+### Bot actor steps
+
+`the <bot> posts "<text>" on the issue` and `the <bot> labels the issue
+"<label>"` make a bot act on the scenario's issue, the way `the <actor> posts
+...` does for the human test actors. `the <bot> submits a review comment on the
+pull request` submits a COMMENT review on the scenario's pull request (open it
+first with `a pull request is opened`). The shim forwards both a bot's `/fs-`
+comment and a bot's review to dispatch. The bots are `review bot`, `coder bot`, `triage bot`
+and `e2e bot`. The triage bot's token has no `pull_requests` permission, so it
+cannot submit a review and has no row in the review scenario.
+
+- The `e2e bot` is the suite's own installation identity behind `World.SCM`. No
+  role of the app set uses it, so the mint has no registered role for it.
+- A role bot acts through the GitHub App of its role. The step pushes a
+  workflow (`bot-actor-<nonce>`, triggered by a push to the temporary branch
+  `behaviour/bot-actor-<nonce>`) to the leased repository and waits for its run
+  to succeed. The job exchanges its Actions OIDC token at the mint
+  (`POST /v1/token`, the role at the `write` level, the leased repository
+  only), masks the minted token, calls the GitHub API with it and revokes it.
+  The job checks the OIDC token and the minted token against a character
+  allowlist before it masks them. The leased repository is on the mint's
+  workflow-host list and the suite's mints accept any workflow basename, so no
+  host repository is needed. The branch is removed with the scenario's other
+  branches.
+
+Two more steps cover the unregistered e2e bot's loss of the bot-review
+exception. `the label "<label>" exists` makes the e2e identity create the label
+with a throwaway issue (closed again), because the triage actor cannot create
+labels; run it before `an issue`, so the throwaway issue's workflow runs predate
+`ScenarioStart`. `the <actor> submits a review comment on the pull request`
+submits a COMMENT review as a human test actor, where `a review comment is
+submitted on the pull request` makes the e2e bot do so, and the bot-role lookup
+now denies that bot's review before CEL.
+
+`ScenarioStart` is set before a comment, and before a label when no comment set
+it, so the dispatch counts cover both events.
+`TestBotActorAuthorizationFeature_RowsMatchSteps` checks every Examples row
+against the registered step patterns.
 
 ## Version pinning for `fullsend-ai/agents`
 

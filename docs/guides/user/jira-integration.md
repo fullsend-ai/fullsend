@@ -6,21 +6,57 @@ Connect fullsend to a Jira project so that Jira issue activity — comments, lab
 
 ## Setup overview
 
-1. **Create a Jira service account** and an API token. Store the credentials as GitHub Actions secrets. See [Credential setup](#credential-setup).
-2. **Grant it two project roles** in the target Jira project:
-   - **Developers** — so the poller can operate on issues and write the entity properties it uses for lock and checkpoint coordination.
-   - **Administrators** — so the poller can inspect other users' project-role membership when authorizing slash commands.
+1. **Create a dedicated Jira account** for fullsend and an API token. Store the credentials as GitHub Actions secrets. See [Credential setup](#credential-setup) and [Use a dedicated account for the poller](#use-a-dedicated-account-for-the-poller).
+2. **Grant it the minimum Jira permissions** in the target project, usually
+   through the **Developers** project role. The poller needs Browse
+   Projects, Edit Issues, Add Comments, and Edit Own Comments to operate on
+   issues and write the entity properties it uses for lock and checkpoint
+   coordination. Then choose how Jira users are authorized:
+   - **Recommended:** list who may trigger agents under a `jira` provider in
+     `.fullsend/config.yaml`. The poller account then also needs the
+     Browse users and groups global permission, but only if the lists name
+     groups.
+   - **Project roles:** with no `jira` entry, every Jira event is authorized by
+     the actor's Jira project role; with an entry that sets no lists, slash
+     commands are. Reading project roles needs the **Administrators** project
+     role (Administer Projects). With `labels: project_roles`, label-added
+     events are too, and with no lists every event is. See
+     [Keeping project roles](#keeping-project-roles-as-today).
 
-   Giving one account both sets of access is more power than we want long-term and needs a follow-up design. See [Actor role resolution](#actor-role-resolution).
+   With no `jira` entry, label-added events also go through project roles, so
+   the poller needs Administer Projects. A `jira` entry (default
+   `labels: jira_editors`) authorizes them by Edit Issues instead. See
+   [Actor role resolution](#actor-role-resolution).
 3. **Install fullsend** in the GitHub repository that will run the agents (`fullsend github setup`). See [Configuring GitHub](../getting-started/configuring-github.md) and [Prerequisites](#prerequisites).
 4. **Copy the Jira poller workflow** into `.github/workflows/fullsend-poll-jira.yml`. See [Scheduled workflow](#scheduled-workflow).
 
    For a GitLab project, steps 3 and 4 differ: install fullsend in the project with `fullsend repos install` and run the poller from a scheduled GitLab CI job with `--target-forge gitlab`. See [GitLab runtime](#gitlab-runtime).
 5. **Set the Jira project key** (replace `PROJ`) and, if you want a narrower candidate set, a custom `--jql` expression in that workflow. See [Custom JQL](#custom-jql).
-6. **Add a `trigger` expression** on each agent that should handle Jira events:
-   add `trigger:` to a harness YAML file registered via `config.yaml`'s
-   `agents[].source` (see [Configuring agent
-   behavior](customizing-agents.md#configuration-with-base-composition)). The
+6. **Check which agents handle Jira events.** The poller dispatches an agent
+   only when its harness `trigger:` CEL expression matches the Jira event, and
+   produces zero dispatches for a harness with no trigger, its own or
+   inherited. The built-in triage and code harnesses ship triggers that match
+   Jira events, so they need no extra configuration:
+
+   | Built-in agent | Jira events its trigger matches | From |
+   |---|---|---|
+   | triage | A `/fs-triage` comment from a human, the `ready-for-triage` label being added, or a human opening or editing an issue | The agents release that follows v0.49.0 |
+   | code | A `/fs-code` comment from a human, or the `ready-to-code` label being added | The agents release that follows v0.52.0 ([agents#1842](https://github.com/fullsend-ai/agents/pull/1842)) |
+
+   The actor still needs the role the agent requires. See
+   [Actor role resolution](#actor-role-resolution). The default prioritize
+   trigger also matches a `/fs-prioritize` comment on a Jira issue, but
+   prioritize has no Jira support yet
+   ([#2266](https://github.com/fullsend-ai/fullsend/issues/2266)). Review,
+   fix and retro do not run from Jira events: see [How it works](#how-it-works).
+
+   If your built-in agents are pinned to an earlier agents release, or for a
+   custom agent, add a `trigger:` to a harness YAML file registered via
+   `config.yaml`'s `agents[].source` (see [Configuring agent
+   behavior](customizing-agents.md#configuration-with-base-composition)). To
+   use the built-in triggers instead, move to the release listed above. Re-pin
+   a harness registered with `source:` or composed with `base:` with
+   `fullsend agent update <name>`. The
    poller reads only the harness `trigger:`. A `trigger` on an `agents:` entry
    in `config.yaml` does not affect it: that field decides routing for the
    built-in review, retro, triage and prioritize agents on GitHub only
@@ -28,24 +64,25 @@ Connect fullsend to a Jira project so that Jira issue activity — comments, lab
    [Choosing when retro runs](customizing-agents.md#choosing-when-retro-runs),
    [Choosing when triage and prioritize
    run](customizing-agents.md#choosing-when-triage-and-prioritize-run)).
-   The poller produces zero dispatches for a harness with no trigger, its
-   own or inherited. See [CEL Triggers Reference](cel-triggers-reference.md).
-   Native Jira triggers for the default agent suite are tracked in
-   [#6672](https://github.com/fullsend-ai/fullsend/issues/6672).
+   See [CEL Triggers Reference](cel-triggers-reference.md).
 
    > [!WARNING]
-   > After the agents release that follows v0.49.0, the default triage and
-   > prioritize harnesses ship triggers that also match Jira issues; the
-   > review trigger needs a pull request and the retro trigger is limited to
-   > GitHub and GitLab, so neither matches a Jira issue.
-   > A harness you registered with `source:` that points at the default
-   > triage harness, or composes it with `base:`, and sets no trigger of its
-   > own inherits that trigger when you re-pin its ref. From then on every
-   > Jira issue that a person with triage access or above opens or edits
-   > dispatches triage, not only
+   > A harness you registered with `source:` that points at a default
+   > harness, or composes it with `base:`, and sets no trigger of its own
+   > inherits the default trigger when you re-pin its ref to a release that
+   > ships one. For code (from the agents release that follows v0.52.0), a
+   > `/fs-code` comment or an added `ready-to-code` label on a Jira issue then
+   > dispatches it. For triage (from the agents release that follows
+   > v0.49.0), every Jira issue that a person with triage access or above
+   > opens or edits dispatches triage, not only
    > `/fs-triage`, and on GitHub an entry registered under another name, such
    > as `my-triage`, is dispatched on every issue a person opens or edits.
    > Set your own trigger to keep a narrower one.
+   > On Jira, an issue opener or editor gets triage access or above from the
+   > project roles when there is no `jira` entry (or `labels: project_roles`
+   > with no lists), or from the `jira` authorization lists when there is
+   > one. Any other `jira` entry that sets no `write` or `triage` list leaves
+   > opened and edited events unresolved, so they do not dispatch. See [Actor role resolution](#actor-role-resolution).
 
 ## How it works
 
@@ -67,9 +104,81 @@ The same conventions work across forges:
 | Comment starting with `/fs-code` | code |
 | Label `ready-to-code` added | code |
 
-A slash command is only recognized as the **first token of the comment's first line**; the rest of that line becomes the instruction passed to the agent. A command buried mid-sentence ("please /fs-triage this") or on a later line does not trigger. Slash commands follow the `/fs-{agent}` pattern for stages that can legitimately run against a bare Jira issue. `review`, `fix`, and `retro` are **not** among them: per the [jira-poll adapter spec](../../normative/normalized-event/v1/jira-poll-adapter.md#state), those stages are change-proposal-scoped (they act on an existing PR) and harness CEL triggers for them MUST require `entity.kind == 'change_proposal'` — which a Jira issue comment alone never has. A `/fs-review` comment on a Jira issue is not expected to dispatch anything.
+A slash command is only recognized as the **first token of the comment's first
+line**. The rest of that line is recorded in the normalized event as
+`transition.comment.instruction`. Later lines are not part of it. No built-in
+agent that runs from Jira reads that field: only the fix agent receives an
+instruction today, parsed from the `/fs-fix` comment on the pull or merge
+request, and fix does not run from Jira events. The built-in triage and code
+agents instead read the Jira issue and its comments through the read-only Jira
+provider (`jira-ro`). So the whole comment, including any lines after the
+command, reaches them as part of the issue context, together with every other
+comment on the issue. A custom agent's `trigger` can test
+`event.transition.comment.instruction`.
+A command buried mid-sentence ("please /fs-triage this") or on a later line does not trigger. Slash commands follow the `/fs-{agent}` pattern for stages that can legitimately run against a bare Jira issue. `review`, `fix`, and `retro` are **not** among them: per the [jira-poll adapter spec](../../normative/normalized-event/v1/jira-poll-adapter.md#state), those stages are change-proposal-scoped (they act on an existing PR) and harness CEL triggers for them MUST require `entity.kind == 'change_proposal'` — which a Jira issue comment alone never has. A `/fs-review` comment on a Jira issue is not expected to dispatch anything.
 
-Comments and changelog entries from the **authenticated poller account** are classified as `actor.kind: bot` and do not dispatch agents. The poller learns that identity from Jira's `/myself` endpoint during the auth preflight, so a regular Atlassian service account (plain display name, `accountType: atlassian`) is recognized without renaming it or adding display-name heuristics. This is the invariant that a mutation performed by fullsend — applying `needs-info`, posting a triage comment, writing a run-status update — cannot trigger the same agent again. Human comments, including `/fs-triage`, still dispatch. Filtered self-authored events still advance the per-issue checkpoint, so they are not reconsidered on the next poll.
+Comments and changelog entries from the **authenticated poller account** are classified as `actor.kind: bot` and do not dispatch agents. The poller learns that identity from Jira's `/myself` endpoint during the auth preflight, so a dedicated regular Atlassian account (plain display name, `accountType: atlassian`) is recognized without renaming it or adding display-name heuristics. This is the invariant that a mutation performed by fullsend — applying `needs-info`, posting a triage comment, writing a run-status update — cannot trigger the same agent again. Human comments, including `/fs-triage`, still dispatch. Filtered self-authored events still advance the per-issue checkpoint, so they are not reconsidered on the next poll.
+
+The poller also classifies an actor as a bot, and drops its events, when
+either of these holds:
+
+- The actor's Jira account type is `app`.
+- The actor's display name, compared case-insensitively, ends in `bot` or
+  `automation` as a separate word, or starts with `Automation for `. A
+  separate word follows a space, hyphen, underscore or `[`, and may be
+  followed by a closing `]`. `Release Bot`, `ci-bot`, `[automation]` and
+  Atlassian's `Automation for Jira` match. `Dependabot` and `Marbot` do not.
+  A person whose display name matches is treated as a bot too, so their
+  comments and label changes do not dispatch.
+
+### Use a dedicated account for the poller
+
+Give the poller a Jira account of its own, rather than a person's API token.
+Today that means a dedicated non-human account: a regular Atlassian user
+account (often called a bot account) created for fullsend, with its own email
+and API token. It is not an Atlassian-managed service account. Those
+authenticate through `api.atlassian.com` with scoped API tokens. Fullsend's
+shared Jira client supports scoped tokens through the API gateway. It uses
+`FULLSEND_JIRA_TOKEN`, plus `FULLSEND_JIRA_EMAIL` for a bot user, or no email
+for a service account (see the
+[Config Reference](../../reference/config-reference.md#trackerjira-connection-and-polling-settings)).
+The poller and agents do not use that client yet; see
+[#9077](https://github.com/fullsend-ai/fullsend/issues/9077),
+[#9078](https://github.com/fullsend-ai/fullsend/issues/9078), and
+[#9079](https://github.com/fullsend-ai/fullsend/issues/9079). OAuth 2.0
+client credentials are not supported.
+
+The poller and the built-in agents' Jira writes both authenticate as
+`JIRA_USER_EMAIL` / `JIRA_TOKEN`, and the poller treats that account as a
+bot. If the token belongs to a person:
+
+- That person's own comments and label changes never dispatch agents,
+  including their `/fs-triage` and `/fs-code` commands.
+- Jira history and comments cannot tell what the person did from what
+  fullsend did, because both appear under the person's name.
+- The poller runs with every Jira permission the person holds, not only the
+  ones it needs, and stops working if the person leaves or loses access.
+
+### Labels present when an issue is created
+
+A label-added trigger, such as the code agent's `ready-to-code`, does not fire
+for an issue that was created with the label already applied. The poller
+builds `label_changed` events from the issue's changelog, and Jira records no
+changelog entry for labels set at creation. On an issue's first poll, the
+poller instead emits a single `opened` event with the reporter as the actor
+and the issue's current labels in `state.labels`. It does this only when the
+issue was created within the 24-hour backfill window (see
+[Poll coordination](#poll-coordination)). The default triage trigger matches
+that `opened` event. The default code trigger does not.
+
+To start the code agent on such an issue, do one of the following:
+
+1. Comment `/fs-code` on the issue.
+2. Remove the `ready-to-code` label, then add it again.
+
+The person who comments or re-adds the label needs the role the code agent
+requires, as for any other trigger. See
+[Actor role resolution](#actor-role-resolution).
 
 ## Event semantics — input only
 
@@ -77,17 +186,76 @@ The `event_type` field in dispatch records (e.g. `"comment_added"`, `"label_chan
 
 For a Jira-sourced run, `fullsend run` exports the tracker-independent `FULLSEND_WORK_ITEM_SOURCE` (`jira`), `FULLSEND_WORK_ITEM_KEY` (for example `PROJ-123`), and `FULLSEND_WORK_ITEM_URL` variables from the normalized event, replacing any inherited values, and clears `ISSUE_NUMBER` because a Jira key has no GitHub or GitLab issue number. The run fails closed, rather than guessing an identity, when the dispatch payload declares Jira but its key or URL is missing or malformed. Harness scripts that handle Jira work items should read the `FULLSEND_WORK_ITEM_*` variables instead of `ISSUE_NUMBER`.
 
-Built-in agent pipelines have not been adapted to this yet, so substantive results — comments, labels, pull requests, and so on — still go to **GitHub** unless a custom harness routes them elsewhere. Run-status notifications (start, completion, and orphan reconciliation) are routed through `tracker.Client` to the tracker that originated the event, so Jira-triggered runs update the Jira issue as well. The Jira issue does not receive the agent's substantive output automatically.
+### Where built-in agent results appear
 
-The CLI primitive for posting comments to Jira exists — `fullsend issues post-comment --tracker jira` — along with the underlying `tracker.Client` Jira implementation ([#5989](https://github.com/fullsend-ai/fullsend/issues/5989)). However, the built-in agent pipeline does not use it yet: agent pre/post scripts still expect a GitHub issue number, not a Jira key ([#2264](https://github.com/fullsend-ai/fullsend/issues/2264)).
+Starting with the agents release that follows v0.52.0
+([agents#1843](https://github.com/fullsend-ai/agents/pull/1843)), the built-in
+triage and code agents write their results to the Jira issue that started the
+run. This works for both GitHub and GitLab code-host targets. Run-status
+notifications (start, completion, and orphan reconciliation) are routed through
+`tracker.Client` to the originating tracker, so the Jira issue also receives
+run-status updates.
 
-This means the person who commented `/fs-triage` on a Jira issue will see the run-status updates in Jira, but with the built-in agents may need to check the linked GitHub repo for the triage result. Until agent-pipeline integration lands ([#2264](https://github.com/fullsend-ai/fullsend/issues/2264)), treat Jira as a **trigger source for substantive built-in-agent output**: it can start agent work, while that output appears in GitHub. Custom agents can use `fullsend issues post-comment --tracker jira` directly to post results back to Jira, and `fullsend issues create --tracker jira` to create Jira issues and sub-tasks. See [Issue commands](issues-commands.md) for usage.
+| Stage | Written to the Jira issue | Stays on the code host |
+|---|---|---|
+| triage | The triage comment, label and component updates, and close actions as Jira transitions | No code artifacts |
+| code | A short code-stage update with the URL of the created or updated PR (GitHub target) or MR (GitLab target) | Branch, commits, PR or MR, review, and merge |
+
+Review, fix, and retro act on pull or merge request events on the code host and
+do not write to Jira.
+
+The post-scripts write to the issue at `FULLSEND_WORK_ITEM_URL`. Triage stops
+before any write if `FULLSEND_WORK_ITEM_KEY` does not match that URL, or if an
+explicit `FULLSEND_TRACKER` or `ISSUE_URL` points somewhere else. Code stops if
+`FULLSEND_TRACKER` and `FULLSEND_WORK_ITEM_SOURCE` are both set and disagree.
+
+- **Transitions:** triage closes issues with the Jira transition names set by
+  `JIRA_DUPLICATE_TRANSITION`, `JIRA_NOT_PLANNED_TRANSITION`, and
+  `JIRA_SPLIT_TRANSITION` in the triage harness's Jira overlay (by default
+  `Duplicate`, `Won't Do`, and `Obsolete`). Override them in a harness if your
+  Jira workflow uses different names. Tracker-neutral transition discovery is
+  tracked in [#6704](https://github.com/fullsend-ai/fullsend/issues/6704).
+- **Updates Jira cannot apply:** triage lists them under **Not applied in
+  Jira** in its comment instead of dropping them. This covers a label add for
+  a label not used anywhere on the Jira site (triage does not create new
+  labels), and component changes skipped because the issue's current
+  components could not be read.
+- **Retries:** comments are not duplicated. The code-stage update and the
+  sticky triage comments use fixed markers. Other triage comments use a marker
+  scoped to the CI run (`GITHUB_RUN_ID` or `CI_PIPELINE_ID`). A re-run of the
+  same workflow or pipeline edits its earlier comment, while a new triage run
+  posts a new one.
+- **Write failures:** a failed Jira write fails the step, so it is never
+  reported as a success. For triage this covers label adds and removals,
+  component updates, comments, and transitions. For code the step fails even
+  though the PR or MR already exists.
+- **Bot loops:** the writes authenticate as `JIRA_USER_EMAIL` / `JIRA_TOKEN`,
+  the same account the poller classifies as `actor.kind: bot`, so they do not
+  dispatch agents again. See [How it works](#how-it-works).
+- **Credentials:** the triage and code harnesses pass `JIRA_USER_EMAIL` and
+  `JIRA_TOKEN` to the runner-side post-scripts only. The sandbox gets the
+  `jira-ro` provider's placeholder, not the real token.
+
+When the code agent makes no PR or MR, or the run fails, nothing beyond the
+run-status update is written to Jira.
+
+Custom agents can use `fullsend issues post-comment --tracker jira` to post
+results back to Jira, and `fullsend issues create --tracker jira` to create
+Jira issues and sub-tasks. These commands use the `tracker.Client` Jira
+implementation
+([#5989](https://github.com/fullsend-ai/fullsend/issues/5989)). See
+[Issue commands](issues-commands.md) for usage.
 
 ## Prerequisites
 
 - A GitHub repo with fullsend installed (`fullsend github setup` completed).
 - A Jira Cloud instance. **Jira Data Center is not currently supported** — the client is hard-wired to Cloud-only APIs (REST v3, cursor-based search pagination, `groupId`-based group lookup), so requests against a Data Center instance will fail. Tracked as future work.
-- A Jira API token ([Create API token](https://id.atlassian.com/manage-profile/security/api-tokens)) for a dedicated service account in the **Developers** and **Administrators** project roles. See [Setup overview](#setup-overview) for why both roles are required today.
+- A Jira API token ([Create API token](https://id.atlassian.com/manage-profile/security/api-tokens))
+  for a [dedicated non-human account](#use-a-dedicated-account-for-the-poller)
+  with the [minimum Jira permissions](#minimum-jira-permissions). That is
+  usually the **Developers** project role. The **Administrators** role is
+  needed only when project roles are used: with no `jira` entry, for slash
+  commands when the `jira` entry sets no lists, or for `labels: project_roles`.
 
 ## Credential setup
 
@@ -100,7 +268,13 @@ This means the person who commented `/fs-triage` on a Jira issue will see the ru
 | `JIRA_USER_EMAIL` | Email associated with the token |
 | `JIRA_BASE_URL` | Jira instance URL, e.g. `https://myteam.atlassian.net` |
 
-`fullsend run` reads `JIRA_TOKEN` and `JIRA_USER_EMAIL` for its own Jira calls but does not pass them on to host-side pre/post/validation scripts by default. A harness whose scripts call Jira must declare them under `env.runner` (for example `JIRA_TOKEN: "${JIRA_TOKEN}"`). See [Harness reference § `env.runner`](../../reference/harness-reference.md#field-details).
+`fullsend run` reads `JIRA_TOKEN` and `JIRA_USER_EMAIL` for its own Jira calls
+but does not pass them on to host-side pre/post/validation scripts by default. A
+harness whose scripts call Jira must declare them under `env.runner` (for
+example `JIRA_TOKEN: "${JIRA_TOKEN}"`). The built-in triage and code harnesses
+already do this in their Jira overlays, so their post-scripts can write results
+to the Jira issue. See
+[Harness reference § `env.runner`](../../reference/harness-reference.md#field-details).
 
 ### Sandbox credentials and network access
 
@@ -113,9 +287,28 @@ The wildcard host (`*.atlassian.net`) permits egress to any Atlassian Cloud tena
 
 ## Repo configuration
 
-The Jira poller produces the same [NormalizedEvents](../../normative/normalized-event/v1/) that GitHub and GitLab do, so routing works the same way. Until built-in harnesses ship native Jira `trigger` expressions ([#6672](https://github.com/fullsend-ai/fullsend/issues/6672)), each agent that should handle Jira events still needs a matching `trigger` — see [Setup overview](#setup-overview) step 6. Built-in agent output is currently written to GitHub by default, while run-status notifications route to Jira for Jira-triggered runs. For Jira-triggered runs, `fullsend run` exports `FULLSEND_WORK_ITEM_SOURCE`, `FULLSEND_WORK_ITEM_KEY`, and `FULLSEND_WORK_ITEM_URL`, clears `ISSUE_NUMBER`, and fails closed on a malformed Jira identity. See [Event semantics — input only](#event-semantics--input-only) for details. Additionally, the built-in agents' pre/post scripts do not yet understand Jira work-item payloads (they expect a GitHub issue number, not a Jira key — [#2264](https://github.com/fullsend-ai/fullsend/issues/2264)), so dispatched agent runs will not complete successfully until that follow-up lands. See the Troubleshooting section below.
+The Jira poller produces the same
+[NormalizedEvents](../../normative/normalized-event/v1/) that GitHub and GitLab
+do, so routing works the same way. From the agents release that follows
+v0.52.0, the built-in triage and code harnesses ship `trigger` expressions
+that match Jira events. A custom agent, or a built-in agent pinned to an
+earlier release, needs its own matching `trigger`. See
+[Setup overview](#setup-overview) step 6 for which events each built-in
+trigger matches. For Jira-triggered runs,
+`fullsend run` exports `FULLSEND_WORK_ITEM_SOURCE`, `FULLSEND_WORK_ITEM_KEY`,
+and `FULLSEND_WORK_ITEM_URL`, clears `ISSUE_NUMBER`, and fails closed on a
+malformed Jira identity. The built-in triage and code agents write their results
+to the Jira issue, while branches, commits, PRs or MRs, review, and merge stay
+on the code host. See
+[Where built-in agent results appear](#where-built-in-agent-results-appear) for
+details.
 
-If your repo already has a `.fullsend/config.yaml` from `fullsend github setup`, add a harness override with the Jira `trigger` expressions from step 6 (see [Configuring agent behavior](customizing-agents.md#configuration-with-base-composition)) and you are ready to receive dispatches.
+If your repo already has a `.fullsend/config.yaml` from `fullsend github setup`
+and uses the built-in triage and code agents from the agents release that
+follows v0.52.0 or later, you need no harness changes to receive dispatches.
+Otherwise, add a harness override with a Jira `trigger` expression for each
+agent that should handle Jira events (see step 6 and
+[Configuring agent behavior](customizing-agents.md#configuration-with-base-composition)).
 
 ## Scheduled workflow
 
@@ -223,7 +416,20 @@ pattern.
 
 ### Custom JQL
 
-By default the poller searches for all non-done issues in the project, ordered by most recently updated. To narrow the scope, use `--jql`:
+By default the poller searches for all non-done issues in the project, ordered by most recently updated.
+
+You can set the Jira site, project, and query in config instead of on the
+command line. Use
+[`tracker.jira`](../../reference/config-reference.md#trackerjira-connection-and-polling-settings)
+in `.fullsend/config.yaml` or in the repository's `config:` block in
+`repos.yaml`. When the config sets them, the poller reads `base_url`,
+`project`, and `poll.query` from it. It always scopes the query as
+`project = "<project>" AND (<query>)`, keeping a trailing `ORDER BY` at the
+end. The parentheses in `poll.query` must be balanced. `--jira-url`,
+`--jira-project`, and `--jql` are then rejected, and `JIRA_BASE_URL` is
+ignored.
+
+Without that config, use `--jql` to narrow the scope:
 
 ```bash
 fullsend poll \
@@ -236,9 +442,9 @@ fullsend poll \
   --fullsend-dir .fullsend
 ```
 
-**`--jira-project` is required for any project using slash commands.** Without it the poller cannot resolve Jira project roles, so all actors default to the `external` role and every `/fs-*` command silently fails the role gate. Always provide `--jira-project` alongside `--jql` unless you are certain your routing rules do not depend on actor roles.
+**`--jira-project` is required for any project using slash commands whose roles come from Jira project roles.** Without it the poller cannot resolve Jira project roles, so all actors default to the `external` role and every `/fs-*` command silently fails the role gate. When the `jira` authorization entry sets `write` or `triage` lists and does not use `labels: project_roles`, roles come from those lists instead and `--jira-project` is not needed for role resolution. Otherwise, provide `--jira-project` alongside `--jql` unless you are certain your routing rules do not depend on actor roles.
 
-Technically `--jql` can be used without `--jira-project`, but the only scenario where that is safe is a read-only polling setup with no slash-command-based dispatch.
+Technically `--jql` can be used without `--jira-project`. That is safe in a read-only polling setup with no slash-command-based dispatch, or when the `jira` authorization entry sets `write` or `triage` lists without `labels: project_roles`, so that actor roles come from the lists and the project roles are never read (with `labels: project_roles`, label-added events still read them).
 
 Custom JQL must be a **bounded query**: Jira's enhanced search endpoint rejects queries without a search restriction (e.g. a bare `ORDER BY updated DESC`) with a 400 on every cycle. Always include at least a `project = ...` or similar restriction, as the examples above do.
 
@@ -266,9 +472,12 @@ for issues and merge requests.
   dispatches.
 - `JIRA_TOKEN`, `JIRA_USER_EMAIL`, and `JIRA_BASE_URL` are set as protected,
   masked CI/CD variables. The agent jobs need them as well, to post run status
-  to the Jira issue.
+  and the triage and code results to the Jira issue.
 
-`fullsend` does not yet create the schedule or the Jira variables for you.
+`repos install` converges the `FULLSEND_JIRA_TOKEN` and `FULLSEND_JIRA_EMAIL`
+variables from `--jira-token` and `--jira-email` for projects whose effective
+`tracker.jira.poll.enabled` is `true`. `fullsend` does not yet create the
+schedule or the `JIRA_*` variables above for you.
 That setup is tracked in
 [#8906](https://github.com/fullsend-ai/fullsend/issues/8906).
 
@@ -386,7 +595,7 @@ go run ./cmd/fullsend poll \
 
 Replace `PROJ` with your Jira project key and `owner/repo` with the GitHub repository slug where agent workflows run.
 
-> **Note:** `--jira-project` is effectively required when your project uses slash commands (`/fs-triage`, `/fs-code`, etc.). Without it, the poller cannot resolve Jira project roles and all actors default to `external`, which silently fails the role gate for write-gated commands. See [#6089](https://github.com/fullsend-ai/fullsend/issues/6089) for details.
+> **Note:** `--jira-project` is effectively required when your project uses slash commands (`/fs-triage`, `/fs-code`, etc.) and roles come from Jira project roles. Without it, the poller cannot resolve Jira project roles and all actors default to `external`, which silently fails the role gate for write-gated commands. It is not needed for role resolution when the `jira` authorization entry sets `write` or `triage` lists, because the lists decide the role. See [#6089](https://github.com/fullsend-ai/fullsend/issues/6089) for details.
 
 ### Inspecting output
 
@@ -479,9 +688,91 @@ The `entity.key` field is required when `source.system` is `"jira"` — it carri
 
 ## Actor role resolution
 
+The `jira` provider under `authorization:` in `.fullsend/config.yaml` is
+opt-in
+([ADR 0153](../../ADRs/0153-authorize-jira-poll-actors-without-project-administration.md)).
+With no `jira` entry, the poller resolves every event, label-added events
+included, through the Jira project roles (see
+[Project role mapping](#project-role-mapping)), which needs Administer
+Projects. To authorize actors without that permission, add a `jira` entry:
+
+```yaml
+authorization:
+  - provider: jira
+    write:            # Fullsend role write
+      groups: [example-team-developers]
+      accounts: ["5f7c012e0b2a4c001f3d9876"]   # Jira account IDs
+    triage:           # Fullsend role triage
+      groups: [example-team]
+      accounts: []
+    labels: jira_editors  # jira_editors (default) | allowlist | project_roles
+```
+
+- **Label added.** When a `jira` entry exists, by default
+  (`labels: jira_editors`), any human who adds a label can trigger the agents
+  whose trigger matches it. With no `jira` entry, a label-added event takes
+  the project-role rule described below instead. Jira only lets users with the Edit Issues
+  permission change labels, so this works like GitHub, where applying a
+  label needs triage access. Edit Issues is often granted more widely than
+  the Developers role. Set `labels: allowlist` to check label authors
+  against the lists below, or `labels: project_roles` to keep the
+  project-role rule described below.
+- **Slash commands and other activity, with lists.** When the `jira` entry
+  sets a `write` or `triage` list, the lists decide, and Jira project roles
+  are not read. A list left empty (for example after removing its last
+  entry) still counts as set, so everyone is denied; remove the `write` and
+  `triage` keys entirely to stop using the lists (see the next bullet for
+  what then decides). An actor listed under `write` (by account ID,
+  or through a listed group) can run every agent. An actor listed only under
+  `triage` can run `/fs-triage` and custom agents whose harness
+  sets `role: triage` or `role: review`. Everyone else is denied. This also
+  applies to issues being opened or edited.
+- **Slash commands without lists.** Slash commands are authorized by the
+  actor's Jira project role, as in the table below. When a `jira` entry exists
+  but sets no lists and does not set `labels: project_roles`, issues being
+  opened, edited, closed, or reopened, plain comments, and label removals are
+  not authorized for any agent. With no `jira` entry, or with
+  `labels: project_roles` and no lists, every event takes the project-role
+  rule.
+
+### Keeping project roles as today
+
+To keep authorizing every Jira event through project roles, as with no
+`jira` entry, write the two-line entry:
+
+```yaml
+authorization:
+  - provider: jira
+    labels: project_roles
+```
+
+It needs no lists. If you add a `write` or `triage` list to it, the lists
+decide every event except label-added ones.
+
+Group entries match a Jira group's name or group ID and are checked with
+Jira's user-groups API, once per actor per poll cycle. Account entries are
+compared with the actor's account ID directly. To find an account ID, open
+the user's Jira profile: the ID is the last part of its URL.
+
+### Minimum Jira permissions
+
+| Permission | When the poller account needs it |
+|---|---|
+| Browse Projects, Edit Issues, Add Comments, Edit Own Comments | Always |
+| Browse users and groups (global permission) | When the `jira` lists name groups, or when project-role resolution finds a project role granted to a group (the poller then calls `GET /user/groups` for the actor) |
+| Administer Projects (the **Administrators** project role) | Only when project roles are used: no `jira` entry, `labels: project_roles`, or slash commands when the `jira` entry sets no lists |
+
+The poller reads the project role list only in a cycle that has an event
+needing it. A setup whose `jira` entry uses the lists without
+`labels: project_roles`, or only label triggers under `jira_editors`, never
+needs Administer Projects. With no `jira` entry,
+or with `labels: project_roles` and no lists, every event needs the role list.
+
+### Project role mapping
+
 > **Known limitation.** Roles are resolved by Jira project **role name**, not by actual granted permissions. This is intentional for the MVP — see below.
 
-The poller maps each event actor to a dispatch authorization role (`read`, `write`, `admin`) by looking up their Jira project role membership and matching on the role's **name**:
+When project roles are used, the poller maps each event actor to a dispatch authorization role (`read`, `write`, `admin`) by looking up their Jira project role membership and matching on the role's **name**:
 
 | Jira project role name (case-insensitive) | Dispatch role |
 |---|---|
@@ -505,6 +796,11 @@ The role resolved above feeds directly into the dispatch authorization gate (see
 The same holds for a [GitLab target](#gitlab-runtime): the agent job skips its GitLab Developer-access check for Jira dispatches, so project membership in GitLab is not checked either.
 
 If your Jira project's membership is broader than your GitHub repo's collaborator list — which is common, since the two are usually administered separately — treat that gap as real: anyone in that gap can use their Jira membership alone to induce agent-proposed changes to your repository. Before enabling this driver, check who holds `write`-mapped roles in the target Jira project and make sure you're comfortable with each of them being able to do that.
+
+The same applies to the `jira` lists and to label triggers. Under a `jira`
+entry's default `labels: jira_editors`, anyone with Edit Issues on the project can
+add a label such as `ready-to-code` and dispatch the agent whose trigger
+matches it. Use `labels: allowlist` if that group is broader than you want.
 
 ## Poll coordination
 
@@ -542,7 +838,7 @@ Three edge cases of checkpoint tracking are worth knowing:
   independently of GitHub Actions avoids the auto-disable risk.
 - **Comment edits count as new activity, and are attributed to the editor.** The poller filters comments on the later of their created and updated timestamps, so editing a comment (for example, adding a slash command to an old comment) is detected on the next cycle. Jira bumps a comment's updated timestamp on modifications other than body edits too (such as visibility changes), and any such bump counts as activity. The flip side: modifying a comment whose slash command was already dispatched makes it look new again and can re-dispatch it. An edit-detected comment is attributed to the account that last modified it (Jira's `updateAuthor`), not the original author — so a user who edits someone else's comment to inject a command is authorized on *their own* role, not the original author's.
 
-Because each cron run is a fresh process, per-cycle Jira API cost is worth sizing for: every cycle that selects at least one issue makes one call to load the project's role structure (a role-list call plus one detail call per role), then one additional call for each distinct actor below the highest role priority the first time they're seen that cycle, to check their group memberships (cached per actor for the rest of the cycle, but not across cron runs). Cost scales with the number of distinct commenting actors per cycle rather than the size of the groups backing a role.
+Because each cron run is a fresh process, per-cycle Jira API cost is worth sizing for: a cycle loads the project's role structure (a role-list call plus one detail call per role) only when some selected issue has an event that needs project-role resolution (no `jira` entry, `labels: project_roles`, or a slash command when the `jira` entry sets no lists), then, in such a cycle, makes one additional call for each distinct actor below the highest role priority the first time they're seen that cycle, to check their group memberships (cached per actor for the rest of the cycle, but not across cron runs). Cost scales with the number of distinct commenting actors per cycle rather than the size of the groups backing a role.
 
 Two more scaling limits:
 
@@ -597,13 +893,20 @@ However, more pollers against the same Jira project means more API calls per cyc
 | 200 on `/myself` but 403 on issue search | Org restricts personal API tokens for project data | Ask your Atlassian org admin to allow API token access for project data |
 | No dispatches produced | No changes since last poll | Check the `lastCheck` entity property on the issue — the poller only dispatches for changes newer than this timestamp |
 | Agent comments or label changes re-dispatch in a loop | A different Jira account posted the agent output than the one the poller authenticates as | The poller classifies its own `/myself` account as `actor.kind: bot` and filters those events. Confirm `JIRA_USER_EMAIL` / `JIRA_TOKEN` are the same account that posts comments and labels. Human follow-up, including `/fs-triage`, still dispatches |
-| Slash command ignored | Actor lacks `write` role in Jira project | The actor must be a member of a Jira project role named exactly "Developers" or "Administrators" — see [Actor role resolution](#actor-role-resolution) if you use custom role names |
-| Slash commands silently ignored when using `--jql` | `--jira-project` not provided — all actors resolve to `external` and fail the role gate | Add `--jira-project PROJ` alongside `--jql` in your workflow file |
+| Your own comments or label changes never dispatch | `JIRA_USER_EMAIL` / `JIRA_TOKEN` belong to your own Jira account | The poller classifies its own `/myself` account as `actor.kind: bot`, so that account's comments (including `/fs-triage`) and label changes are filtered with no error. Give the poller a dedicated account; see [Use a dedicated account for the poller](#use-a-dedicated-account-for-the-poller) |
+| `load project roles for PROJ: ... 401 You cannot edit the configuration of this project` | The poller read Jira project roles without Administer Projects. That happens with no `jira` entry in `.fullsend/config.yaml`, with `labels: project_roles`, or on a slash command when the entry sets no lists | Add a `jira` entry with `write`/`triage` lists so project roles are not read, or grant the poller account the **Administrators** project role. See [Minimum Jira permissions](#minimum-jira-permissions) |
+| `resolve jira list groups: ... get user groups` errors | The `jira` lists name groups, or project-role resolution found a role granted to a group, but the poller account lacks the Browse users and groups global permission | Grant Browse users and groups, or list account IDs instead of groups |
+| Slash command ignored (with `jira` lists) | Actor is not in the `write` list (or the `triage` list for triage-level agents) | Add the actor's account ID or one of their groups to the right list — see [Actor role resolution](#actor-role-resolution) |
+| Slash command ignored (without `jira` lists) | Actor lacks `write` role in Jira project | The actor must be a member of a Jira project role named exactly "Developers" or "Administrators" — see [Project role mapping](#project-role-mapping) if you use custom role names |
+| Issue opened or edited on Jira never dispatches triage | A `jira` entry is present but sets no `write` or `triage` list and not `labels: project_roles`, so opened and edited events are unresolved (with no `jira` entry, or with `labels: project_roles` and no lists, they resolve through project roles) | Add `write`/`triage` lists to the entry, or set `labels: project_roles`. See [Actor role resolution](#actor-role-resolution) |
+| Label added but nothing dispatched | There is no `jira` entry, or it sets `labels: allowlist` or `labels: project_roles`, and the label author is not authorized by it | Add the author to the lists, or add a `jira` entry with the default `labels: jira_editors` |
+| Slash commands silently ignored when using `--jql` | `--jira-project` not provided and no `jira` lists — all actors resolve to `external` and fail the role gate | Add `--jira-project PROJ` alongside `--jql` in your workflow file, or configure the `jira` lists |
 | Duplicate dispatches | `lastCheck` was cleared or missing | The poller treats a missing `lastCheck` as "never polled" and processes all recent changes. This is self-correcting — the next cycle advances `lastCheck` past the duplicates |
 | Old comment or label change on a newly polled issue never dispatches | Activity predates the first-poll backfill window | On an issue's first poll, activity older than the 24-hour backfill window is permanently skipped (the checkpoint advances past it). To pick up older activity, scope the initial `--jql` to recently updated issues and widen it gradually, or have someone re-trigger by commenting again |
 | Activity during a long outage or disabled workflow is missing after resume | Poller gap exceeded the 24-hour backfill window | The same 24-hour window that bounds a first poll also bounds resumption — any `lastCheck` older than 24 hours is clamped forward. Check the run log for `predates the backfill window` — if present, events in the gap are permanently lost. Have affected users re-trigger by commenting again. See [Poll coordination](#poll-coordination) |
 | GitLab Jira dispatch fails with `does not accept Jira work items` | The project's scaffold predates Jira dispatch | Rerun `fullsend repos install` for the project and merge the scaffold update. See [GitLab runtime](#gitlab-runtime) |
-| Dispatched agent workflow fails immediately | Agent pre/post scripts don't understand Jira-keyed payloads yet | Known limitation, tracked in [#2264](https://github.com/fullsend-ai/fullsend/issues/2264). The dispatch step above still runs the workflow and produces a `NormalizedEvent`, but built-in agent scripts expect a GitHub issue number, not a Jira key |
+| Triage or code results do not appear on the Jira issue | The built-in agents are pinned to a release that predates Jira result writes | Use built-in agents from the agents release that follows v0.52.0, or later. Re-pin a harness registered with `source:` or composed with `base:` with `fullsend agent update <name>`. See [Where built-in agent results appear](#where-built-in-agent-results-appear) |
+| Code step fails after the PR or MR was created | The Jira write of the code-stage update failed | Check the step log for the Jira error, and confirm `JIRA_USER_EMAIL`, `JIRA_TOKEN`, and `JIRA_BASE_URL` reach the agent job and the account can comment on the issue. A re-run edits the existing update rather than posting a second one |
 
 ## See also
 

@@ -364,6 +364,13 @@ type reposInstallConfig struct {
 	// never persisted to the manifest and never logged.
 	openAIAPIKey string
 
+	// jiraToken and jiraEmail are written as FULLSEND_JIRA_TOKEN and
+	// FULLSEND_JIRA_EMAIL to selected repos whose effective
+	// tracker.jira.poll.enabled is true (#9076). Command-line only: never
+	// persisted to the manifest and never logged.
+	jiraToken string
+	jiraEmail string
+
 	// GitLab-specific
 	gitlabRoleRegistry string
 	gitlabRoleTokens   []string
@@ -473,6 +480,14 @@ is supplied) for Vertex sub-agents; FULLSEND_OPENAI_API_KEY is removed only
 once the identifiers are live on the default branch. openai-wif on a GitLab
 repo is rejected before any write.
 
+Jira polling follows each repo's effective tracker.jira.poll.enabled; the
+Jira site, project and query come only from the effective configuration.
+When it is true, --jira-token and the optional --jira-email are written as
+FULLSEND_JIRA_TOKEN and FULLSEND_JIRA_EMAIL; --jira-token is required when
+the repo has no FULLSEND_JIRA_TOKEN yet, and an omitted flag keeps the
+existing secret. When it is false or omitted, Fullsend-owned poll resources
+are removed and the Jira secrets are left in place.
+
 The persistent-setting flags --roles, --fullsend-ref, --mint-url, --app-set,
 --inference-auth, --vendor, --signoff, --gitlab-url, --vertex-region and
 --forge were removed; using one fails with the repos.yaml key to set instead.
@@ -506,6 +521,8 @@ GCP infrastructure (WIF, mint) must be provisioned separately via
 	cmd.Flags().StringVar(&opts.inferenceProject, "vertex-project", "", "GCP project ID written as FULLSEND_GCP_PROJECT_ID for Vertex AI inference; must match config.inference.project when repos.yaml or the preset declares one; never written to repos.yaml")
 	cmd.Flags().StringVar(&opts.inferenceWIFProvider, "vertex-wif-provider", "", "full WIF provider resource name (projects/{number}/locations/global/workloadIdentityPools/{pool}/providers/{id}) written as FULLSEND_GCP_WIF_PROVIDER instead of deriving per-repo providers; must match config.inference.wif_provider when declared; never written to repos.yaml")
 	cmd.Flags().StringVar(&opts.openAIAPIKey, "openai-api-key", "", "OpenAI API key written as FULLSEND_OPENAI_API_KEY to selected repos whose inference.auth is openai-api-key; command-line only, never written to repos.yaml and never logged")
+	cmd.Flags().StringVar(&opts.jiraToken, "jira-token", "", "Jira API token written as FULLSEND_JIRA_TOKEN to selected repos whose tracker.jira.poll.enabled is true; required on the first Jira-enabled install, an omitted value keeps the existing secret; command-line only, never written to repos.yaml and never logged")
+	cmd.Flags().StringVar(&opts.jiraEmail, "jira-email", "", "Jira account email written as FULLSEND_JIRA_EMAIL to selected repos whose tracker.jira.poll.enabled is true (optional); an omitted value keeps the existing secret; command-line only, never written to repos.yaml")
 	cmd.Flags().StringVar(&opts.gitlabRoleRegistry, "gitlab-role-registry", "", "path to administrator GitLab role registry JSON (custom roles; never secret values)")
 	cmd.Flags().StringArrayVar(&opts.gitlabRoleTokens, "gitlab-role-token", nil, "administrator-provided GitLab role PAT (repeatable, role=token); values are never logged")
 	cmd.Flags().BoolVar(&opts.rotateGitLabRoles, "rotate-gitlab-roles", false, "force-rotate GitLab role credentials even if they are not near expiry")
@@ -722,7 +739,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	}
 
 	// The only manifest edit install still plans is the initial
-	// create_issues writeback below. It is planned in memory (DryRun) with
+	// tracking writeback below. It is planned in memory (DryRun) with
 	// its progress output held in deferredOutput; the layered safety
 	// comparison then runs against the proposed manifest and presets, and
 	// only then is the manifest persisted, so a safety rejection leaves
@@ -732,7 +749,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	manifestChanged := false
 
 	// Persist the install-time choice the generated managed overlay must
-	// reproduce (the upstream create_issues default for a no-preset first
+	// reproduce (the upstream tracking default for a no-preset first
 	// install) in each repo's manifest entry before the overlay is rendered
 	// (#8218). A manifest that cannot be written fails here, before any
 	// forge write, with the exact edit.
@@ -751,6 +768,19 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	}
 	if len(writtenBack) > 0 {
 		manifestChanged = true
+	}
+
+	// The manifest loader converted any legacy tracker/create_issues config
+	// to the tracker mapping in memory (#9075), so the rendered managed
+	// overlays use the new shape. Persist the converted manifest with the
+	// other planned edits, or name the edits for a manifest that cannot be
+	// written.
+	if migrations := manifest.LegacyTrackingMigrations(); len(migrations) > 0 {
+		writable := opts.manifest != "" && !repos.ManifestReadOnly(manifest, opts.manifest)
+		if writable {
+			manifestChanged = true
+		}
+		deferOutput(func() { reportLegacyTrackingMigrations(printer, opts.manifest, migrations, writable, opts.dryRun) })
 	}
 
 	// Compare the proposed layered configuration (manifest edits and declared
@@ -883,6 +913,8 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		WIFProvider:             opts.inferenceWIFProvider,
 		ResolveProjectNumber:    resolveProjectNumber,
 		OpenAIAPIKey:            opts.openAIAPIKey,
+		JiraToken:               opts.jiraToken,
+		JiraEmail:               opts.jiraEmail,
 		ReviewAppClientID:       reviewAppClientID,
 		ReviewAppClientIDAppSet: reviewAppSet,
 		ReadVendoredWorkflow:    readVendoredWorkflow,
@@ -1325,6 +1357,26 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		return fmt.Errorf("%d repos failed", failedCount)
 	}
 	return nil
+}
+
+// reportLegacyTrackingMigrations reports the manifest config layers whose
+// legacy tracker/create_issues keys were converted to the tracker mapping
+// (#9075). writable reports whether install persists the converted manifest;
+// otherwise the operator is asked to apply the same edits to its source.
+func reportLegacyTrackingMigrations(printer *ui.Printer, manifestPath string, migrations []repos.LegacyTrackingMigration, writable, dryRun bool) {
+	var b strings.Builder
+	for _, mig := range migrations {
+		fmt.Fprintf(&b, "\n  %s: %s", mig.Path, mig.Result)
+	}
+	switch {
+	case !writable:
+		printer.StepWarn(fmt.Sprintf("Manifest %s uses the legacy tracker/create_issues configuration and cannot be written; "+
+			"this run uses the converted values. Replace them in the manifest source with:%s", manifestPath, b.String()))
+	case dryRun:
+		printer.StepInfo("Would convert the legacy tracker/create_issues configuration in " + manifestPath + " to the tracker mapping:" + b.String())
+	default:
+		printer.StepInfo("Converted the legacy tracker/create_issues configuration in " + manifestPath + " to the tracker mapping:" + b.String())
+	}
 }
 
 // reconcileFailedGitLabWebhookSafety runs the revocation-only webhook safety

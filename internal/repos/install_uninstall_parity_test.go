@@ -61,6 +61,19 @@ func parityInstallConfig(forgeName, auth string) InstallConfig {
 	}
 }
 
+// installSideSecretExtras names repository secrets install provisions outside
+// installSecretsForForge, which the secret parity check cannot discover on its
+// own. convergeJiraPoll writes the Jira polling credentials (jiraSecretValues)
+// for repos whose effective tracker.jira.poll.enabled is true on both forges.
+// Hand-maintained, like installSideExtras: add any further out-of-band secret.
+var installSideSecretExtras = func() map[string][]string {
+	var names []string
+	for name := range jiraSecretValues(ConvergeConfig{JiraToken: "token", JiraEmail: "email"}) {
+		names = append(names, name)
+	}
+	return map[string][]string{ForgeGitHub: names, ForgeGitLab: names}
+}()
+
 func TestInstallUninstallVariableParity(t *testing.T) {
 	const mintURL = "https://mint.example.com"
 
@@ -105,6 +118,12 @@ func TestInstallUninstallSecretParity(t *testing.T) {
 						"install writes secret %q on %s but uninstall does not delete it; "+
 							"add it to inferenceSecretsForAuth, which is what "+
 							"managedInferenceSecrets and both uninstall lists are built from",
+						name, forgeName)
+				}
+				for _, name := range installSideSecretExtras[forgeName] {
+					assert.Contains(t, cleanup, name,
+						"install provisions secret %q on %s outside installSecretsForForge but "+
+							"uninstall does not delete it; add it to the uninstall list for that forge",
 						name, forgeName)
 				}
 			})

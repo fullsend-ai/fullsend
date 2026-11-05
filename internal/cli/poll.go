@@ -161,9 +161,9 @@ func newPollCmd() *cobra.Command {
 	cmd.Flags().StringVar(&outputPath, "output", "", "Path to write dispatches JSON (jira-poll only; required for --target-forge github, optional for --target-forge gitlab; ignored by --forge gitlab)")
 	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "path to the .fullsend configuration directory")
 	_ = cmd.MarkFlagRequired("fullsend-dir")
-	cmd.Flags().StringVar(&jiraURL, "jira-url", "", "Jira instance base URL (default: $JIRA_BASE_URL)")
-	cmd.Flags().StringVar(&jiraProject, "jira-project", "", "Jira project key for JQL scoping")
-	cmd.Flags().StringVar(&jqlOverride, "jql", "", "Custom JQL override")
+	cmd.Flags().StringVar(&jiraURL, "jira-url", "", "Jira instance base URL (default: $JIRA_BASE_URL; not allowed when config.yaml sets tracker.jira)")
+	cmd.Flags().StringVar(&jiraProject, "jira-project", "", "Jira project key for JQL scoping (not allowed when config.yaml sets tracker.jira)")
+	cmd.Flags().StringVar(&jqlOverride, "jql", "", "Custom JQL override (not allowed when config.yaml sets tracker.jira; use tracker.jira.poll.query)")
 	cmd.Flags().StringVar(&targetRepo, "target-repo", "", "GitHub repo slug where agents run (default: $GITHUB_REPOSITORY; jira-poll with --target-forge github only)")
 	cmd.Flags().StringVar(&targetForge, "target-forge", jirapoll.TargetForgeGitHub, "Forge the jira-poll driver dispatches agents to: 'github' (write --output for reusable-dispatch.yml) or 'gitlab' (start the project's protected agent pipelines; uses --project and --gitlab-url)")
 	cmd.Flags().StringVar(&modeFlag, "mode", "", "Poll mode: 'slash' (slash commands only) or 'events' (labels, merges, non-slash notes)")
@@ -174,6 +174,9 @@ func newPollCmd() *cobra.Command {
 }
 
 func runJiraPoll(cmd *cobra.Command, jiraURL, jiraProject, jqlOverride, targetRepo, outputPath, fullsendDir string) error {
+	if err := applyJiraTrackerConfig(fullsendDir, &jiraURL, &jiraProject, &jqlOverride); err != nil {
+		return err
+	}
 	args, err := validateJiraPollArgs(jiraURL, jiraProject, jqlOverride, targetRepo, outputPath, fullsendDir)
 	if err != nil {
 		return err
@@ -189,15 +192,7 @@ func runJiraPoll(cmd *cobra.Command, jiraURL, jiraProject, jqlOverride, targetRe
 		return fmt.Errorf("build CEL matcher: %w", err)
 	}
 
-	opts := jirapoll.Options{
-		TargetRepo:  args.targetRepo,
-		JiraBaseURL: args.jiraURL,
-		JiraProject: args.jiraProject,
-		JQL:         args.jqlOverride,
-		OutputPath:  args.outputPath,
-	}
-
-	poller := jirapoll.New(jiraClient, matcher, opts)
+	poller := jirapoll.New(jiraClient, matcher, jiraPollOptions(args, matcher))
 	return poller.Run(cmd.Context())
 }
 
@@ -329,6 +324,45 @@ func gitlabChildDispatchJobToken(getenv func(string) string) (string, error) {
 	}
 }
 
+// applyJiraTrackerConfig reads the Jira site, project, and poll query from
+// tracker.jira in the effective config.yaml (#9035). When the config sets
+// any tracker.jira connection or poll setting, the config is the only
+// source of these settings:
+// --jira-url, --jira-project, and --jql are rejected instead of acting as
+// overrides, JIRA_BASE_URL is ignored, and the JQL is the configured (or
+// default) query scoped to the configured project. When the config does
+// not set them, the flags and JIRA_BASE_URL are used as before.
+func applyJiraTrackerConfig(fullsendDir string, jiraURL, jiraProject, jql *string) error {
+	cfg, err := config.LoadConfig(fullsendDir, config.LoadOpts{MissingOK: true})
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	tracking := cfg.IssueTracking()
+	if tracking.Provider() != config.TrackingProviderJira || !tracking.Jira.HasConnectionSettings() {
+		return nil
+	}
+	jiraCfg := tracking.Jira
+	if err := jiraCfg.ValidateConnection(); err != nil {
+		return err
+	}
+	var conflicts []string
+	for _, f := range []struct{ flag, value string }{
+		{"--jira-url", *jiraURL}, {"--jira-project", *jiraProject}, {"--jql", *jql},
+	} {
+		if f.value != "" {
+			conflicts = append(conflicts, f.flag)
+		}
+	}
+	if len(conflicts) > 0 {
+		return fmt.Errorf("%s cannot be used when tracker.jira is configured in config.yaml: "+
+			"set tracker.jira.base_url, tracker.jira.project, and tracker.jira.poll.query there instead", strings.Join(conflicts, ", "))
+	}
+	*jiraURL = jiraCfg.BaseURL
+	*jiraProject = jiraCfg.Project
+	*jql = jiraCfg.PollJQL()
+	return nil
+}
+
 // jiraPollArgs holds resolved arguments for runJiraPoll after env-var fallbacks.
 type jiraPollArgs struct {
 	jiraURL     string
@@ -441,6 +475,10 @@ func buildRouter(fullsendDir string) (*dispatch.HarnessRouter, error) {
 // loaded once at construction and reused for every event in the cycle.
 type celMatcher struct {
 	candidates []harnessdispatch.TriggeredHarness
+	// jiraAuth is the jira authorization provider from config.yaml, or
+	// nil when none is listed. It configures the poller's actor role
+	// resolution and the gate's Jira label rule.
+	jiraAuth *config.AuthorizationProvider
 }
 
 // newCELMatcher loads harness files with CEL triggers from the config
@@ -450,25 +488,84 @@ func newCELMatcher(ctx context.Context, fullsendDir string) (*celMatcher, error)
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
 	}
+	if err := config.ValidateRuntimeAuthorization(cfg); err != nil {
+		return nil, fmt.Errorf("invalid authorization config: %w", err)
+	}
+	var jiraAuth *config.AuthorizationProvider
+	if pr, ok := cfg.(config.PerRepoConfigReader); ok {
+		jiraAuth = pr.JiraAuthorization()
+	}
 	if cfg.IsKillSwitchActive() {
 		// Kill switch active: return a matcher with no candidates so all
 		// events are silently dropped (no dispatches).
-		return &celMatcher{}, nil
+		return &celMatcher{jiraAuth: jiraAuth}, nil
 	}
 	candidates, err := harnessdispatch.ListTriggeredHarnesses(ctx, fullsendDir, cfg, nil)
 	if err != nil {
 		return nil, fmt.Errorf("list triggered harnesses: %w", err)
 	}
-	return &celMatcher{candidates: candidates}, nil
+	return &celMatcher{candidates: candidates, jiraAuth: jiraAuth}, nil
+}
+
+// authOptions returns the dispatch gate policy for the configured jira
+// provider: with no jira entry, Jira label-added events take the
+// per-harness role threshold as before; with an entry, they are authorized
+// by Jira's Edit Issues permission under labels: jira_editors (the default)
+// and take the role threshold under allowlist or project_roles, where the
+// poller resolves the label author's role from that source.
+func (m *celMatcher) authOptions() harnessdispatch.AuthOptions {
+	return harnessdispatch.AuthOptions{
+		JiraLabelsByEditPermission: m.jiraAuth != nil &&
+			m.jiraAuth.EffectiveJiraLabels() == config.JiraLabelsEditors,
+	}
+}
+
+// jiraPollOptions builds the poller options every jira-poll target forge
+// shares: the Jira connection, the query, the output path and the jira
+// authorization provider the matcher loaded. Forge-specific callers set
+// their own TargetForge, GitLabURL and Dispatcher on the result, so the
+// authorization lists reach the poller on every target.
+func jiraPollOptions(args jiraPollArgs, matcher *celMatcher) jirapoll.Options {
+	return jirapoll.Options{
+		TargetRepo:  args.targetRepo,
+		JiraBaseURL: args.jiraURL,
+		JiraProject: args.jiraProject,
+		JQL:         args.jqlOverride,
+		OutputPath:  args.outputPath,
+
+		Authorization: jiraPollAuthorization(matcher.jiraAuth),
+	}
+}
+
+// jiraPollAuthorization converts the jira authorization provider to the
+// poller's option type. A nil provider is the zero value.
+func jiraPollAuthorization(p *config.AuthorizationProvider) jirapoll.Authorization {
+	if p == nil {
+		return jirapoll.Authorization{}
+	}
+	list := func(l *config.JiraActorList) jirapoll.ActorList {
+		if l == nil {
+			return jirapoll.ActorList{}
+		}
+		return jirapoll.ActorList{Groups: l.Groups, Accounts: l.Accounts}
+	}
+	return jirapoll.Authorization{
+		Configured:      true,
+		Write:           list(p.Write),
+		Triage:          list(p.Triage),
+		ListsConfigured: p.Write != nil || p.Triage != nil,
+		Labels:          p.EffectiveJiraLabels(),
+	}
 }
 
 // Match evaluates the event against all CEL trigger candidates and returns
 // dispatch records for each matching harness.
 func (m *celMatcher) Match(_ context.Context, event *normevent.Event) ([]jirapoll.DispatchRecord, error) {
-	if !harnessdispatch.IsEventAuthorized(event) {
+	opts := m.authOptions()
+	if !harnessdispatch.IsEventAuthorizedWith(event, opts) {
 		return nil, nil
 	}
-	candidates := harnessdispatch.FilterAuthorizedHarnesses(m.candidates, event)
+	candidates := harnessdispatch.FilterAuthorizedHarnessesWith(m.candidates, event, opts)
 	matched, err := harnessdispatch.MatchHarnesses(candidates, event)
 	if err != nil {
 		return nil, err
