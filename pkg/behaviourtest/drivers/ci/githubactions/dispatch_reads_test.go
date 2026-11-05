@@ -131,8 +131,14 @@ func TestHarnessDispatchAssertions_NotStartedRunJobs(t *testing.T) {
 			assert.Equal(t, 1, pending)
 
 			// The negative assertion reads the listing and tolerates the
-			// first-page 404 only when the run has not started.
-			require.NoError(t, d.AssertNoHarnessAgentArtifact(context.Background(), "org", "repo", "fix", after))
+			// first-page 404 only for a run that has not started. A waiting
+			// run can already hold a completed agent job, so an unreadable
+			// listing must fail the assertion rather than skip the run.
+			if status == "waiting" {
+				require.ErrorIs(t, d.AssertNoHarnessAgentArtifact(context.Background(), "org", "repo", "fix", after), forge.ErrJobsListingNotFoundFirstPage)
+			} else {
+				require.NoError(t, d.AssertNoHarnessAgentArtifact(context.Background(), "org", "repo", "fix", after))
+			}
 
 			// A 404 on a later page means the listing was partially read —
 			// page 1 may hold a completed agent job — so it is never

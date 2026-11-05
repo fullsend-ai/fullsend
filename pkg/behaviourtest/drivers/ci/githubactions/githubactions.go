@@ -1618,16 +1618,6 @@ func runUnstarted(status string) bool {
 	return false
 }
 
-// runNotStarted reports whether a workflow run has not begun executing,
-// including a run waiting on an environment approval whose earlier jobs
-// may already have run. The negative assertion tolerates a first-page
-// absent jobs listing for these runs; the count path additionally reads
-// waiting runs, because a completed agent job in a waiting run is
-// conclusive dispatch evidence.
-func runNotStarted(status string) bool {
-	return runUnstarted(status) || status == "waiting"
-}
-
 // settleHarnessDispatchCount classifies harness runs created after the
 // trigger time into counted dispatches and pending runs. A run is pending
 // when its agent job exists but has not completed, or when the run itself
@@ -1865,12 +1855,12 @@ func (d *Driver) AssertNoHarnessAgentArtifact(ctx context.Context, owner, repo, 
 			// A run that has not started cannot hold agent work, and its
 			// jobs listing has been observed to 404 on the first page
 			// before the run starts — only that shape is tolerated, and
-			// only when the status independently says not started. A
-			// waiting run can follow jobs that already ran (environment
-			// approval), so its listing is checked like any other run's. A
-			// later-page 404 means the listing was partially read and may
-			// hold a completed agent job, so it is never tolerated.
-			if !(runNotStarted(r.Status) && errors.Is(err, forge.ErrJobsListingNotFoundFirstPage)) {
+			// only for those statuses. A waiting run can follow jobs that
+			// already ran (environment approval), so an unreadable listing
+			// fails the assertion rather than skipping the run. A later-page
+			// 404 means the listing was partially read and may hold a
+			// completed agent job, so it is never tolerated.
+			if !(runUnstarted(r.Status) && errors.Is(err, forge.ErrJobsListingNotFoundFirstPage)) {
 				return err
 			}
 			continue
