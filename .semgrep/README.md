@@ -17,10 +17,17 @@ pinned source or locked Semgrep environment cannot be prepared. Other contexts,
 including agent pre-commit gates, warn and skip when `uv` is missing or the
 source, cache, or environment dependency cannot be prepared. A completed scan
 still fails on findings.
-The pre-commit hook is verbose, so its warning is visible when a scan is skipped
-even though the hook passes. Local runs reuse a verified cache keyed by the
-SHA-256. Use `SKIP=semgrep` with pre-commit or `make test` to skip the hook
-explicitly while offline.
+The pre-commit hook is verbose. If a local prerequisite is unavailable, it
+prints `SKIPPED` and says that no files were analyzed, even though the hook
+passes. Local runs reuse a verified cache keyed by the SHA-256. Use
+`SKIP=semgrep` with pre-commit or `make test` to skip the hook explicitly while
+offline.
+
+The production `math/rand` uses flagged by the security scan were replaced
+with shared crypto-backed helpers, including non-security jitter and shuffle
+call sites. This keeps production randomness consistent and avoids suppressing
+the same rule at those call sites; deterministic test-only randomness remains
+outside the scan.
 
 The scheduled `Semgrep Ruleset Drift` workflow compares allowlisted rule-file
 contents at the pinned commit and upstream `develop`. It reports only when

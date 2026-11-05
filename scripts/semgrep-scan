@@ -50,7 +50,7 @@ scan_prerequisite_failure() {
 		echo "semgrep-scan: $1; failing the required scan" >&2
 		exit 1
 	fi
-	echo "semgrep-scan: warning: $1; skipping this scan" >&2
+	echo "semgrep-scan: SKIPPED — $1; no files were analyzed. Set SEMGREP_REQUIRED=1 to fail closed." >&2
 	exit 0
 }
 

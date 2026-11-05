@@ -24,7 +24,7 @@ help:
 	@echo "  go-vet               - Run go vet"
 	@echo "  go-tidy              - Run go mod tidy"
 	@echo "  lint-md-links        - Check markdown files for broken in-repo links and anchors"
-	@echo "  script-test          - Run shell script tests (topissues, analyze-transcript, user-forum-whats-new, gitlint-rules, gateway doc configs, artifact redaction, kill_stray_processes, ci-local)"
+	@echo "  script-test          - Run shell and Python script tests (including Semgrep ruleset drift)"
 	@echo "  test                 - Run all checks: lint-all, go-test, script-test"
 	@echo "  ci-local             - Run CI checks in a container matching the ubuntu-24.04 runner (T=\"targets\"; see hack/ci-local)"
 	@echo "  behaviour-test       - Run Gherkin behaviour tests (installs fullsend per-repo; CI: OIDC mint)"
@@ -219,6 +219,7 @@ script-test:
 	$(call run-timed,python3 skills/adr-corner/scripts/adr_corner_test.py)
 	$(call run-timed,python3 skills/analyze-transcript/analyze_transcript_test.py)
 	$(call run-timed,python3 skills/user-forum-whats-new/scripts/gather_test.py)
+	$(call run-timed,python3 -m pytest .github/scripts/semgrep_ruleset_drift_test.py -q)
 	$(call run-timed,python3 -m pytest gitlint_rules_test.py -v)
 	$(call run-timed,python3 -m pytest hack/check_gateway_doc_configs_test.py -q)
 	$(call run-timed,python3 -m pytest internal/security/hooks/ -q)

@@ -194,7 +194,8 @@ LOCAL_OFFLINE_CACHE="${TEST_ROOT}/cache-local-offline"
 LOCAL_OFFLINE_CALLS="${TEST_ROOT}/local-offline-curl-calls"
 if output="$(run_scan "$LOCAL_OFFLINE_CACHE" fail "${TEST_ROOT}/valid-rules.tar.gz" \
 	"$LOCAL_OFFLINE_CALLS" 0 "${TEST_ROOT}/local-offline-uv" 2>&1)"; then
-	[[ "$output" == *"warning:"* && "$output" == *"skipping this scan"* ]] || \
+	[[ "$output" == *"SKIPPED"* && "$output" == *"no files were analyzed"* && \
+		"$output" == *"SEMGREP_REQUIRED=1"* ]] || \
 		fail "local network failure did not warn and skip"
 else
 	fail "local network failure returned nonzero"
