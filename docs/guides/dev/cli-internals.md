@@ -63,6 +63,8 @@ fullsend
 │   │   ├── --vertex-project <id>            #   GCP project ID for Vertex inference (else declared inference.project; never in repos.yaml)
 │   │   ├── --vertex-wif-provider <path>     #   Full WIF provider resource name (else declared inference.wif_provider; skips per-repo derivation)
 │   │   ├── --openai-api-key <key>           #   FULLSEND_OPENAI_API_KEY for openai-api-key repos (CLI-only; never in repos.yaml)
+│   │   ├── --jira-token <token>             #   FULLSEND_JIRA_TOKEN for repos whose tracker.jira.poll.enabled is true (CLI-only; never in repos.yaml)
+│   │   ├── --jira-email <email>             #   FULLSEND_JIRA_EMAIL for repos whose tracker.jira.poll.enabled is true (optional; CLI-only)
 │   │   ├── --fullsend-binary <path>         #   Pre-built binary to vendor (requires a selected repo with vendor: true)
 │   │   ├── --fullsend-source <path>         #   Source checkout to vendor from (requires a selected repo with vendor: true)
 │   │   ├── --gitlab-role-registry <path>    #   Administrator GitLab role registry JSON

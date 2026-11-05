@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"regexp"
 	"slices"
 	"strings"
@@ -90,9 +91,200 @@ type GitLabAllowedTargets struct {
 	Repos  []string `yaml:"repos,omitempty"`
 }
 
-// JiraTrackingConfig holds Jira issue-tracking settings.
+// DefaultJiraAPIURL is the Jira API gateway URL used when
+// tracker.jira.api_url is unset.
+const DefaultJiraAPIURL = "https://api.atlassian.com"
+
+// DefaultJiraPollQuery is the JQL predicate the Jira poller uses when
+// tracker.jira.poll.query is unset. It is always scoped to the configured
+// project (see JiraTrackingConfig.PollJQL).
+const DefaultJiraPollQuery = "statusCategory != Done ORDER BY updated DESC"
+
+// JiraTrackingConfig holds Jira issue-tracking settings: the Jira site and
+// project this repository is connected to, the cross-project issue
+// destinations, and the poller settings. Credentials (the Jira token and
+// account email) are never part of this mapping; they are supplied as
+// repository secrets.
 type JiraTrackingConfig struct {
+	// BaseURL is the Jira site URL (for example
+	// https://example.atlassian.net). Required when any connection or
+	// poll setting is present.
+	BaseURL string `yaml:"base_url,omitempty"`
+	// APIURL is the Jira API gateway URL; empty means DefaultJiraAPIURL.
+	APIURL string `yaml:"api_url,omitempty"`
+	// Project is the key of the single Jira project configured for this
+	// repository. Required when any connection or poll setting is present.
+	Project        string             `yaml:"project,omitempty"`
 	AllowedTargets JiraAllowedTargets `yaml:"allowed_targets"`
+	Poll           *JiraPollConfig    `yaml:"poll,omitempty"`
+}
+
+// JiraPollConfig holds the Jira poller settings.
+type JiraPollConfig struct {
+	// Enabled installs (true) or removes (false) the managed poll
+	// workflow. Nil means the workflow is not installed.
+	Enabled *bool `yaml:"enabled,omitempty"`
+	// Query is the JQL the poller runs, before project scoping; empty
+	// means DefaultJiraPollQuery.
+	Query string `yaml:"query,omitempty"`
+}
+
+// jiraTrackingKeys, jiraPollKeys, and jiraAllowedTargetsKeys are the keys
+// accepted in tracker.jira, tracker.jira.poll, and
+// tracker.jira.allowed_targets.
+var (
+	jiraTrackingKeys       = map[string]bool{"base_url": true, "api_url": true, "project": true, "allowed_targets": true, "poll": true}
+	jiraPollKeys           = map[string]bool{"enabled": true, "query": true}
+	jiraAllowedTargetsKeys = map[string]bool{"projects": true}
+)
+
+// jiraCredentialKeys are keys rejected in tracker.jira with a pointer to
+// the repository secrets: credentials never belong in config files.
+var jiraCredentialKeys = map[string]bool{
+	"token": true, "api_token": true, "jira_token": true, "email": true, "user_email": true,
+	"jira_email": true, "password": true, "secret": true, "credentials": true, "username": true,
+}
+
+// jiraTrackingPlain has JiraTrackingConfig's fields but not its
+// UnmarshalYAML, so it can be decoded without recursion.
+type jiraTrackingPlain JiraTrackingConfig
+
+// UnmarshalYAML implements yaml.Unmarshaler. A custom unmarshaler drops
+// yaml.v3's strict-field option for everything below it, so the keys of
+// tracker.jira (and of its poll and allowed_targets mappings) are checked
+// here. Credential-like keys get a message pointing at the repository
+// secrets instead of the generic unknown-field error.
+func (j *JiraTrackingConfig) UnmarshalYAML(n *yaml.Node) error {
+	if r := resolveAlias(n); r.Kind == yaml.MappingNode {
+		for i := 0; i+1 < len(r.Content); i += 2 {
+			key := r.Content[i].Value
+			if jiraCredentialKeys[strings.ToLower(key)] {
+				return managedFieldError(r.Content[i], fmt.Sprintf("tracker.jira: %q must not be set in config: "+
+					"supply the Jira token and account email as the FULLSEND_JIRA_TOKEN and FULLSEND_JIRA_EMAIL repository secrets", key))
+			}
+		}
+		if err := checkMappingKeys(r, jiraTrackingKeys, "tracker.jira"); err != nil {
+			return err
+		}
+		for _, sub := range []struct {
+			key     string
+			allowed map[string]bool
+		}{{"poll", jiraPollKeys}, {"allowed_targets", jiraAllowedTargetsKeys}} {
+			if v := mappingNode(r, sub.key); v != nil && v.Kind == yaml.MappingNode {
+				if err := checkMappingKeys(v, sub.allowed, "tracker.jira."+sub.key); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return n.Decode((*jiraTrackingPlain)(j))
+}
+
+// EffectiveAPIURL returns api_url, or DefaultJiraAPIURL when it is unset.
+func (j *JiraTrackingConfig) EffectiveAPIURL() string {
+	if j == nil || j.APIURL == "" {
+		return DefaultJiraAPIURL
+	}
+	return j.APIURL
+}
+
+// PollEnabled reports whether poll.enabled is explicitly true. An omitted
+// poll mapping or poll.enabled means the poll workflow is not installed.
+func (j *JiraTrackingConfig) PollEnabled() bool {
+	return j != nil && j.Poll != nil && j.Poll.Enabled != nil && *j.Poll.Enabled
+}
+
+// PollQuery returns poll.query, or DefaultJiraPollQuery when it is unset.
+func (j *JiraTrackingConfig) PollQuery() string {
+	if j == nil || j.Poll == nil || strings.TrimSpace(j.Poll.Query) == "" {
+		return DefaultJiraPollQuery
+	}
+	return j.Poll.Query
+}
+
+// PollJQL returns the poller's JQL: the configured (or default) query
+// scoped to the repository's project (see ScopeJQLToProject).
+func (j *JiraTrackingConfig) PollJQL() string {
+	return ScopeJQLToProject(j.Project, j.PollQuery())
+}
+
+// HasConnectionSettings reports whether the mapping sets any setting
+// beyond allowed_targets (base_url, api_url, project, or poll).
+func (j *JiraTrackingConfig) HasConnectionSettings() bool {
+	return j != nil && (j.BaseURL != "" || j.APIURL != "" || j.Project != "" || j.Poll != nil)
+}
+
+// jqlOrderByRe finds a trailing ORDER BY clause, case-insensitively.
+var jqlOrderByRe = regexp.MustCompile(`(?i)\border\s+by\b`)
+
+// ScopeJQLToProject scopes query to project as
+// `project = "<project>" AND (<predicate>)`, keeping a trailing ORDER BY
+// clause after the closing parenthesis. The ORDER BY is located outside
+// quoted strings, so a predicate that mentions "order by" inside a quoted
+// value is not split. An empty predicate (a query that is only an
+// ORDER BY clause) yields `project = "<project>"` plus the ORDER BY.
+func ScopeJQLToProject(project, query string) string {
+	predicate, orderBy := splitJQLOrderBy(query)
+	predicate = strings.TrimSpace(predicate)
+	// Quote the key so a reserved-word key (AND, OR, IN) stays a value.
+	scoped := fmt.Sprintf("project = %q", project)
+	if predicate != "" {
+		scoped += " AND (" + predicate + ")"
+	}
+	if orderBy != "" {
+		scoped += " " + orderBy
+	}
+	return scoped
+}
+
+// splitJQLOrderBy splits query at its last ORDER BY that is outside a
+// quoted string, returning the predicate and the ORDER BY clause.
+func splitJQLOrderBy(query string) (string, string) {
+	query = strings.TrimSpace(query)
+	quoted := quotedRanges(query)
+	matches := jqlOrderByRe.FindAllStringIndex(query, -1)
+	for i := len(matches) - 1; i >= 0; i-- {
+		start := matches[i][0]
+		if inRanges(start, quoted) {
+			continue
+		}
+		return query[:start], strings.TrimSpace(query[start:])
+	}
+	return query, ""
+}
+
+// quotedRanges returns the [start, end) byte ranges of single- or
+// double-quoted strings in s, honoring backslash escapes.
+func quotedRanges(s string) [][2]int {
+	var out [][2]int
+	var quote byte
+	start := 0
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case quote != 0 && c == '\\':
+			i++
+		case quote != 0 && c == quote:
+			out = append(out, [2]int{start, i + 1})
+			quote = 0
+		case quote == 0 && (c == '"' || c == '\''):
+			quote = c
+			start = i
+		}
+	}
+	if quote != 0 {
+		out = append(out, [2]int{start, len(s)})
+	}
+	return out
+}
+
+func inRanges(pos int, ranges [][2]int) bool {
+	for _, r := range ranges {
+		if pos >= r[0] && pos < r[1] {
+			return true
+		}
+	}
+	return false
 }
 
 // JiraAllowedTargets lists the Jira projects (by key) agents may create
@@ -241,9 +433,22 @@ func cloneTracking(src *TrackingConfig) *TrackingConfig {
 		}}
 	}
 	if src.Jira != nil {
-		out.Jira = &JiraTrackingConfig{AllowedTargets: JiraAllowedTargets{
-			Projects: cloneStringSlice(src.Jira.AllowedTargets.Projects),
-		}}
+		out.Jira = &JiraTrackingConfig{
+			BaseURL: src.Jira.BaseURL,
+			APIURL:  src.Jira.APIURL,
+			Project: src.Jira.Project,
+			AllowedTargets: JiraAllowedTargets{
+				Projects: cloneStringSlice(src.Jira.AllowedTargets.Projects),
+			},
+		}
+		if p := src.Jira.Poll; p != nil {
+			poll := &JiraPollConfig{Query: p.Query}
+			if p.Enabled != nil {
+				enabled := *p.Enabled
+				poll.Enabled = &enabled
+			}
+			out.Jira.Poll = poll
+		}
 	}
 	return out
 }
@@ -299,11 +504,80 @@ func validateTracking(cfg *TrackingConfig) error {
 		}
 	}
 	if jira := cfg.Jira; jira != nil {
+		if err := jira.ValidateConnection(); err != nil {
+			return err
+		}
 		for _, project := range jira.AllowedTargets.Projects {
 			if !jiraProjectKeyRe.MatchString(project) {
 				return fmt.Errorf("tracker.jira: project %q in allowed_targets.projects must be a Jira project key (for example PROJ)", project)
 			}
 		}
+	}
+	return nil
+}
+
+// ValidateConnection checks the Jira site, API gateway, project, and poll
+// settings. base_url and project have no defaults, so both are required
+// once any of these settings is present; a mapping that only selects Jira
+// (jira: {}), such as one migrated from the legacy scalar tracker form,
+// stays valid. Runtime loading does not run Validate, so commands that
+// consume these settings call it directly.
+func (j *JiraTrackingConfig) ValidateConnection() error {
+	if !j.HasConnectionSettings() {
+		return nil
+	}
+	if j.BaseURL == "" {
+		return fmt.Errorf("tracker.jira: base_url is required (the Jira site URL, for example https://example.atlassian.net)")
+	}
+	if err := validateJiraURL("base_url", j.BaseURL); err != nil {
+		return err
+	}
+	if j.APIURL != "" {
+		if err := validateJiraURL("api_url", j.APIURL); err != nil {
+			return err
+		}
+	}
+	if j.Project == "" {
+		return fmt.Errorf("tracker.jira: project is required (the Jira project key for this repository, for example PROJ)")
+	}
+	if !jiraProjectKeyRe.MatchString(j.Project) {
+		return fmt.Errorf("tracker.jira: project %q must be a Jira project key (for example PROJ)", j.Project)
+	}
+	if j.Poll != nil && !jqlParensBalanced(j.Poll.Query) {
+		return fmt.Errorf("tracker.jira: poll.query has unbalanced parentheses: the query is wrapped in parentheses to scope it to the project")
+	}
+	return nil
+}
+
+// jqlParensBalanced reports whether the parentheses of query, ignoring
+// those inside quoted strings, are balanced and never close before they
+// open.
+func jqlParensBalanced(query string) bool {
+	quoted := quotedRanges(query)
+	depth := 0
+	for i := 0; i < len(query); i++ {
+		if inRanges(i, quoted) {
+			continue
+		}
+		switch query[i] {
+		case '(':
+			depth++
+		case ')':
+			if depth--; depth < 0 {
+				return false
+			}
+		}
+	}
+	return depth == 0
+}
+
+// validateJiraURL requires an https URL with a host and no credentials,
+// query, or fragment.
+func validateJiraURL(field, raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Opaque != "" {
+		// The raw value is left out of the error: it may embed credentials.
+		return fmt.Errorf("tracker.jira: %s must be an https URL without credentials, query, or fragment", field)
 	}
 	return nil
 }

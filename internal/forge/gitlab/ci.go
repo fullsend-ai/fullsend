@@ -177,7 +177,8 @@ func (c *LiveClient) updateRepoSecret(ctx context.Context, owner, repo, name, va
 func maskingRequired(name string) bool {
 	switch name {
 	case forge.SecretOpenAIAPIKey, forge.SecretTriggerToken, forge.SecretWebhookSecret, forge.SecretGitLabTriggerAccountToken,
-		forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken:
+		forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken,
+		forge.SecretJiraToken:
 		return true
 	}
 	// Custom role credentials (gitlabroles.CustomSecretName).
