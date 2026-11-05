@@ -88,6 +88,8 @@ jobs:
       FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
       OTEL_EXPORTER_OTLP_TRACES_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_TRACES_HEADERS }}
       OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}
+      FULLSEND_JIRA_TOKEN: ${{ secrets.FULLSEND_JIRA_TOKEN }}
+      FULLSEND_JIRA_EMAIL: ${{ secrets.FULLSEND_JIRA_EMAIL }}
       JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
       JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
 ```
@@ -141,9 +143,10 @@ Your external repository needs these variables and secrets configured:
 - `FULLSEND_GCP_WIF_PROVIDER` - GCP Workload Identity Federation (WIF) provider
 - `FULLSEND_GCP_PROJECT_ID` - GCP project ID
 - `OTEL_EXPORTER_OTLP_TRACES_HEADERS` - [OTEL](../../glossary.md#otel-primary-facts) auth headers (optional)
-- `FULLSEND_JIRA_TOKEN` - Scoped Jira API token for the Jira poller
-- `FULLSEND_JIRA_EMAIL` - Bot user email for the Jira poller (omit for a
-  service-account token)
+- `FULLSEND_JIRA_TOKEN` - Scoped Jira API token for the Jira poller and
+  Jira-originated agent status updates
+- `FULLSEND_JIRA_EMAIL` - Bot user email for the poller and agent status calls
+  (omit for a service-account token)
 - `JIRA_TOKEN` - Jira API token (if using Jira agents)
 - `JIRA_USER_EMAIL` - Jira user email (if using Jira agents)
 

@@ -625,6 +625,75 @@ func TestOTELHeadersSecretThreading(t *testing.T) {
 	})
 }
 
+// TestJiraCredentialSecretThreading validates that the scoped Jira credentials
+// reach every fullsend run that may post status to a Jira-originated work item.
+// Both secrets are optional because service-account tokens omit the email.
+func TestJiraCredentialSecretThreading(t *testing.T) {
+	const token = "FULLSEND_JIRA_TOKEN"
+	const email = "FULLSEND_JIRA_EMAIL"
+	forward := func(name string) string {
+		return name + ": ${{ secrets." + name + " }}"
+	}
+
+	for _, tc := range []struct {
+		name    string
+		content func(t *testing.T) []byte
+	}{
+		{"scaffold/templates/shim-per-repo.yaml", loadScaffoldFile("templates/shim-per-repo.yaml")},
+		{"scaffold/prioritize.yml", loadScaffoldFile(".github/workflows/prioritize.yml")},
+		{"fullsend.yaml", loadRepoFile(".github/workflows/fullsend.yaml")},
+		{"prioritize.yml", loadRepoFile(".github/workflows/prioritize.yml")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := string(tc.content(t))
+			assert.Contains(t, body, forward(token), "%s must forward %s", tc.name, token)
+			assert.Contains(t, body, forward(email), "%s must forward %s", tc.name, email)
+		})
+	}
+
+	for _, wf := range []string{".github/workflows/reusable-dispatch.yml", ".github/workflows/reusable-prioritize.yml"} {
+		t.Run(wf, func(t *testing.T) {
+			body := string(loadRepoFile(wf)(t))
+			var parsed reusableWorkflow
+			require.NoError(t, yaml.Unmarshal([]byte(body), &parsed), "%s must be valid YAML", wf)
+			for _, name := range []string{token, email} {
+				secret, ok := parsed.On.WorkflowCall.Secrets[name]
+				require.True(t, ok, "%s must declare %s as a workflow_call secret", wf, name)
+				assert.False(t, secret.Required, "%s must keep %s optional", wf, name)
+			}
+			markers := []string{"Run prioritize agent"}
+			if wf == ".github/workflows/reusable-dispatch.yml" {
+				markers = []string{
+					"Run triage agent", "Run code agent", "Run review agent",
+					"Run fix agent", "Run retro agent", "Run prioritize agent",
+					"Run harness agent",
+				}
+			}
+			for _, marker := range markers {
+				t.Run(marker, func(t *testing.T) {
+					section := extractStepSection(t, body, marker)
+					payload := "needs.route.outputs.event_payload"
+					if marker == "Run harness agent" {
+						payload = "matrix.event_payload"
+					} else if wf == ".github/workflows/reusable-prioritize.yml" {
+						payload = "inputs.event_payload"
+					}
+					assert.Contains(t, section, "jira-token: ${{ fromJSON("+payload+")._normalized_event.source.system == 'jira' && secrets."+token+" || '' }}", "%s must pass the Jira token only for Jira-originated runs", marker)
+					assert.Contains(t, section, "jira-email: ${{ fromJSON("+payload+")._normalized_event.source.system == 'jira' && secrets."+email+" || '' }}", "%s must pass the optional Jira email only for Jira-originated runs", marker)
+				})
+			}
+		})
+	}
+
+	action := string(loadRepoFile("action.yml")(t))
+	assert.Contains(t, action, "  jira-token:\n", "action.yml must declare jira-token")
+	assert.Contains(t, action, "  jira-email:\n", "action.yml must declare jira-email")
+	assert.Contains(t, action, "FULLSEND_JIRA_TOKEN: ${{ inputs.jira-token }}")
+	assert.Contains(t, action, "FULLSEND_JIRA_EMAIL_INPUT: ${{ inputs.jira-email }}")
+	assert.Contains(t, action, "unset FULLSEND_JIRA_EMAIL\n", "an omitted email must select service-account Bearer auth")
+	assert.Contains(t, action, "unset FULLSEND_JIRA_EMAIL_INPUT\n", "the temporary email input must not reach child processes")
+}
+
 // TestRunnerSecretsThreading validates the in-repo half of the
 // FULLSEND_GITHUB_RUNNER_SECRETS channel (ADR 0136): the scaffold shim forwards
 // the secret with its one fixed line, the composite action reads its

@@ -1082,7 +1082,8 @@ On GitLab, skip the object. Add each secret as its own masked CI/CD variable
 (for example `JIRA_API_TOKEN`) and reference it from `env.runner` the same way.
 The rules above (refused names, host side only, overlays) apply to names in the
 GitHub object only; GitLab behaves as before, and every CI/CD variable in the
-job except `JIRA_TOKEN`, `JIRA_USER_EMAIL` and the OTLP headers still reaches
+job except `JIRA_TOKEN`, `JIRA_USER_EMAIL`, `FULLSEND_JIRA_TOKEN`,
+`FULLSEND_JIRA_EMAIL` and the OTLP headers still reaches
 host-side scripts.
 
 ### Harness composition with `base`

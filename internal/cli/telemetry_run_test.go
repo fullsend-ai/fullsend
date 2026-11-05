@@ -570,6 +570,8 @@ func TestIsInheritedScriptDenyKey(t *testing.T) {
 	for key, want := range map[string]bool{
 		"JIRA_TOKEN":                        true,
 		"JIRA_USER_EMAIL":                   true,
+		"FULLSEND_JIRA_TOKEN":               true,
+		"FULLSEND_JIRA_EMAIL":               true,
 		"OTEL_EXPORTER_OTLP_HEADERS":        true,
 		"OTEL_EXPORTER_OTLP_TRACES_HEADERS": true,
 		"OTEL_EXPORTER_OTLP_LOGS_HEADERS":   true,

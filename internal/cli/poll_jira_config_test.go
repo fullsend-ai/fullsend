@@ -133,10 +133,10 @@ func TestLoadJiraPollSettings_MalformedConfig(t *testing.T) {
 	assert.Contains(t, err.Error(), "load config")
 }
 
-// jiraGatewayServer serves the Jira site's tenant_info and the API
+// jiraPollGatewayServer serves the Jira site's tenant_info and the API
 // gateway's /myself, recording the Authorization header /myself received and
 // whether tenant_info was called.
-func jiraGatewayServer(t *testing.T, gotAuth *string, tenantCalled *bool) *httptest.Server {
+func jiraPollGatewayServer(t *testing.T, gotAuth *string, tenantCalled *bool) *httptest.Server {
 	t.Helper()
 	const cloudID = "11111111-2222-3333-4444-555555555555"
 	mux := http.NewServeMux()
@@ -181,7 +181,7 @@ func TestBuildJiraClient_ScopedAuth(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			var gotAuth string
 			var tenantCalled bool
-			srv := jiraGatewayServer(t, &gotAuth, &tenantCalled)
+			srv := jiraPollGatewayServer(t, &gotAuth, &tenantCalled)
 			c, err := buildJiraClient(jiraPollSettings{baseURL: srv.URL + "/site", apiURL: srv.URL + "/gw"}, env(tc.vars))
 			require.NoError(t, err)
 			me, err := c.GetMyself(context.Background())
@@ -243,64 +243,4 @@ func TestSkipDisabledJiraPoll_WriteError(t *testing.T) {
 	err := skipDisabledJiraPoll(cmd, filepath.Join(t.TempDir(), "missing", "dispatches.json"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "write dispatches")
-}
-
-func TestResolveConfiguredJiraURL(t *testing.T) {
-	configured := "tracker:\n  jira:\n    base_url: https://example.atlassian.net\n    project: PROJ\n"
-
-	t.Run("config base_url", func(t *testing.T) {
-		got, err := resolveConfiguredJiraURL("", writeJiraPollConfig(t, configured), nil)
-		require.NoError(t, err)
-		assert.Equal(t, "https://example.atlassian.net", got)
-	})
-	t.Run("test config reader", func(t *testing.T) {
-		reader, err := config.ParsePerRepoConfig([]byte(configured))
-		require.NoError(t, err)
-		got, err := resolveConfiguredJiraURL("", "", reader)
-		require.NoError(t, err)
-		assert.Equal(t, "https://example.atlassian.net", got)
-	})
-	t.Run("flag rejected with config", func(t *testing.T) {
-		_, err := resolveConfiguredJiraURL("https://other.atlassian.net", writeJiraPollConfig(t, configured), nil)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "--jira-url cannot be used")
-	})
-	t.Run("invalid config", func(t *testing.T) {
-		_, err := resolveConfiguredJiraURL("", writeJiraPollConfig(t, "tracker:\n  jira:\n    project: PROJ\n"), nil)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "base_url is required")
-	})
-	t.Run("malformed config", func(t *testing.T) {
-		_, err := resolveConfiguredJiraURL("", writeJiraPollConfig(t, "tracker:\n  jira:\n    email: a@example.com\n"), nil)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "loading config for tracker.jira")
-	})
-	t.Run("selection only keeps flag", func(t *testing.T) {
-		got, err := resolveConfiguredJiraURL("https://flag.atlassian.net", writeJiraPollConfig(t, "tracker:\n  jira: {}\n"), nil)
-		require.NoError(t, err)
-		assert.Equal(t, "https://flag.atlassian.net", got)
-	})
-	t.Run("no fullsend dir keeps flag", func(t *testing.T) {
-		got, err := resolveConfiguredJiraURL("https://flag.atlassian.net", "", nil)
-		require.NoError(t, err)
-		assert.Equal(t, "https://flag.atlassian.net", got)
-	})
-}
-
-func TestNewConfiguredTrackerClient(t *testing.T) {
-	dir := writeJiraPollConfig(t, "tracker:\n  jira:\n    base_url: https://example.atlassian.net\n    project: PROJ\n")
-	t.Setenv("JIRA_BASE_URL", "")
-
-	tc, err := newConfiguredTrackerClient(trackerJira, "token123", "", "user@example.com", dir, nil)
-	require.NoError(t, err, "base_url from config replaces --jira-url and JIRA_BASE_URL")
-	assert.NotNil(t, tc)
-
-	_, err = newConfiguredTrackerClient(trackerJira, "token123", "https://other.atlassian.net", "user@example.com", dir, nil)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--jira-url cannot be used")
-
-	// Non-Jira trackers do not read tracker.jira.
-	tc, err = newConfiguredTrackerClient(trackerGitLab, "glpat-test123", "", "", dir, nil)
-	require.NoError(t, err)
-	assert.NotNil(t, tc)
 }
