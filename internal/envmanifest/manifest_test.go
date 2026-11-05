@@ -15,6 +15,8 @@ func sampleManifest() Manifest {
 		AddAlways("PATH", "FULLSEND_ROLE", "FULLSEND_OUTPUT_DIR").
 		AddConditional("FULLSEND_SLUG", "harness sets a slug").
 		AddConditional("TRACEPARENT", "writeIterationEnv succeeds").
+		AddConditional("TIRITH_REQUIRED", "Tirith scanning is required; only the claude and pi bootstraps append hook env").
+		RestrictConditional("TIRITH_REQUIRED", "pi", "claude").
 		AddRuntimeSpecific("claude", "CLAUDE_CONFIG_DIR").
 		AddRuntimeSpecific("opencode").
 		AddRuntimeSpecific("pi", "PI_TELEMETRY", "JITI_FS_CACHE").
@@ -50,6 +52,7 @@ var namesOnlyFieldTypes = map[string]string{
 	"Exports.Always":              "[]string",
 	"Exports.Conditional":         "map[string]string",
 	"Exports.RuntimeSpecific":     "map[string][]string",
+	"Exports.ConditionalRuntimes": "map[string][]string",
 	"HarnessDelivered.Provenance": "string",
 }
 

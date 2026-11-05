@@ -45,6 +45,8 @@ func TestRenderSchemas_Deterministic(t *testing.T) {
 		AddDeprecated("FULLSEND_ROLE").
 		AddConditional("TRACEPARENT", "writeIterationEnv succeeds").
 		AddConditional("FULLSEND_SLUG", "harness sets a slug").
+		RestrictConditional("TIRITH_REQUIRED", "claude", "pi", "claude").
+		AddConditional("TIRITH_REQUIRED", "Tirith scanning is required; only the claude and pi bootstraps append hook env").
 		AddAlways("FULLSEND_OUTPUT_DIR", "PATH", "FULLSEND_ROLE").
 		Build()
 	reordered, err := shuffled.RenderSchemas()
@@ -170,12 +172,24 @@ func TestHarnessEnvSchema_Validates(t *testing.T) {
 		// env.runner is the runner's own environment: reserved names are
 		// not the sandbox contract's concern there.
 		`{"env":{"runner":{"TRACEPARENT":"x"}},"schema_version":1}`,
+		// The runner upper-cases keys before the reserved lookup, so
+		// lowercase and mixed-case spellings are reserved too.
+		`{"env":{"sandbox":{"traceparent":"x"}}}`,
+		`{"forge":{"github":{"env":{"sandbox":{"OpenAI_API_Key":"x"}}}}}`,
+		// Overlays supply env.sandbox like forge entries do.
+		`{"overlays":[{"when":"true","env":{"sandbox":{"TRACEPARENT":"x"}}}]}`,
+		`{"overlays":[{"when":"true","env":{"sandbox":{"gh_workflow_token":"x"}}}]}`,
+		`{"overlays":[{"when":"true","env":{"sandbox":{"BAD-NAME":"x"}}}]}`,
+		// A non-reserved overlay key, and a name that merely contains a
+		// reserved one, stay valid.
+		`{"overlays":[{"when":"true","env":{"sandbox":{"GOOGLE_CLOUD_PROJECT":"p","TRACEPARENT_COPY":"x"}}}]}`,
 	)
 	assert.Equal(t, "ok", verdicts[0])
-	assert.Contains(t, verdicts[1], "invalid")
-	assert.Contains(t, verdicts[2], "invalid")
-	assert.Contains(t, verdicts[3], "invalid")
+	for _, i := range []int{1, 2, 3, 5, 6, 7, 8, 9} {
+		assert.Contains(t, verdicts[i], "invalid", "instance %d", i)
+	}
 	assert.Equal(t, "ok", verdicts[4])
+	assert.Equal(t, "ok", verdicts[10])
 }
 
 func TestEnvReferencesSchema_Validates(t *testing.T) {
@@ -188,6 +202,13 @@ func TestEnvReferencesSchema_Validates(t *testing.T) {
 		`{"runtime":"portable","variables":["FULLSEND_OUTPUT_DIR","FULLSEND_SLUG","GOOGLE_APPLICATION_CREDENTIALS"]}`,
 		// A runtime-specific name under its own runtime.
 		`{"runtime":"claude","variables":["CLAUDE_CONFIG_DIR"]}`,
+		// A runtime-restricted conditional name under a runtime that
+		// emits it.
+		`{"runtime":"pi","variables":["TIRITH_REQUIRED"]}`,
+		// ...but not under a runtime whose bootstrap never emits it,
+		`{"runtime":"opencode","variables":["TIRITH_REQUIRED"]}`,
+		// nor under portable.
+		`{"runtime":"portable","variables":["TIRITH_REQUIRED"]}`,
 		// The fullsend-ai/agents#1672 failure: a skill reading
 		// CLAUDE_CONFIG_DIR while running under pi.
 		`{"runtime":"pi","variables":["CLAUDE_CONFIG_DIR"]}`,
@@ -201,8 +222,8 @@ func TestEnvReferencesSchema_Validates(t *testing.T) {
 		`{"runtime":"claude"}`,
 		`{"runtime":"claude","variables":["PATH"],"extra":true}`,
 	)
-	assert.Equal(t, []string{"ok", "ok"}, verdicts[:2])
-	for i, v := range verdicts[2:] {
-		assert.Contains(t, v, "invalid", "instance %d", i+2)
+	assert.Equal(t, []string{"ok", "ok", "ok"}, verdicts[:3])
+	for i, v := range verdicts[3:] {
+		assert.Contains(t, v, "invalid", "instance %d", i+3)
 	}
 }

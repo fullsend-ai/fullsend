@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"slices"
+	"strings"
+	"unicode"
 )
 
 // SchemaBaseURI is the $id prefix of the published sandbox env schemas,
@@ -68,13 +71,20 @@ func (m Manifest) harnessEnvSchema() object {
 		{"$schema", "https://json-schema.org/draft/2020-12/schema"},
 		{"$id", SchemaBaseURI + HarnessEnvSchemaFile},
 		{"title", "Harness sandbox env contract"},
-		{"description", "Validates the env blocks of a fullsend harness YAML (top-level env and forge.<name>.env) against the sandbox environment-variable contract: an env.sandbox key must be a shell variable name and must not be a name the runner reserves, because the runner drops reserved keys instead of exporting them. Other harness fields are not constrained here. Generated from the runner's code (ADR 0146); see README.md."},
+		{"description", "Validates the env blocks of a fullsend harness YAML (top-level env, forge.<name>.env, and overlays[].env) against the sandbox environment-variable contract: an env.sandbox key must be a shell variable name and must not be a name the runner reserves, in any letter case, because the runner matches reserved keys case-insensitively and drops them instead of exporting them. Other harness fields are not constrained here. Generated from the runner's code (ADR 0146); see README.md."},
 		{"type", "object"},
 		{"properties", object{
 			{"env", ref("#/$defs/env_block")},
 			{"forge", object{
 				{"type", "object"},
 				{"additionalProperties", object{
+					{"type", "object"},
+					{"properties", object{{"env", ref("#/$defs/env_block")}}},
+				}},
+			}},
+			{"overlays", object{
+				{"type", "array"},
+				{"items", object{
 					{"type", "object"},
 					{"properties", object{{"env", ref("#/$defs/env_block")}}},
 				}},
@@ -86,15 +96,16 @@ func (m Manifest) harnessEnvSchema() object {
 				{"properties", object{{"sandbox", ref("#/$defs/sandbox_env")}}},
 			}},
 			{"sandbox_env", object{
-				{"description", "Variables a harness delivers into the sandbox. The runner owns the reserved names and refuses them here."},
+				{"description", "Variables a harness delivers into the sandbox. The runner owns the reserved names and refuses them here in any letter case."},
 				{"type", "object"},
 				{"propertyNames", object{{"allOf", []any{
 					ref("#/$defs/env_name"),
-					object{{"not", ref("#/$defs/reserved")}},
+					object{{"not", ref("#/$defs/reserved_any_case")}},
 				}}}},
 			}},
 			{"env_name", envNameSchema()},
 			{"reserved", m.reservedSchema()},
+			{"reserved_any_case", m.reservedAnyCaseSchema()},
 		}},
 	}
 }
@@ -102,12 +113,10 @@ func (m Manifest) harnessEnvSchema() object {
 func (m Manifest) envReferencesSchema() object {
 	runtimes := m.Runtimes()
 	runtimeEnum := append([]string{PortableRuntime}, runtimes...)
-	shared := []any{ref("#/$defs/always"), ref("#/$defs/conditional"), ref("#/$defs/harness_delivered")}
-
 	var perRuntime []any
-	perRuntime = append(perRuntime, reachableWhen(PortableRuntime, shared))
+	perRuntime = append(perRuntime, reachableWhen(PortableRuntime, []any{ref("#/$defs/always"), m.conditionalReachableUnder(PortableRuntime), ref("#/$defs/harness_delivered")}))
 	for _, rt := range runtimes {
-		perRuntime = append(perRuntime, reachableWhen(rt, append(slices.Clone(shared), ref("#/$defs/runtime_"+rt))))
+		perRuntime = append(perRuntime, reachableWhen(rt, []any{ref("#/$defs/always"), m.conditionalReachableUnder(rt), ref("#/$defs/harness_delivered"), ref("#/$defs/runtime_" + rt)}))
 	}
 
 	defs := object{
@@ -121,7 +130,7 @@ func (m Manifest) envReferencesSchema() object {
 			{"enum", m.Exports.Always},
 		}},
 		{"conditional", object{
-			{"description", "Exported by the runner only when the gate in each entry's description holds."},
+			{"description", "Exported by the runner only when the gate in each entry's description holds. Some entries are emitted only by certain runtimes' bootstraps; the per-runtime reachability rules exclude them elsewhere and under portable."},
 			{"oneOf", m.conditionalItems()},
 		}},
 	}
@@ -176,6 +185,64 @@ func reachableWhen(rt string, reachable []any) object {
 
 func (m Manifest) reservedSchema() object {
 	return nameSet("Reserved by the runner: a harness cannot set these through env.sandbox.", m.Reserved)
+}
+
+// conditionalReachableUnder returns the conditional category as reachable
+// under rt: the whole category, minus names restricted to other runtimes.
+// Under portable every restricted name is excluded, since portable code
+// must work under every runtime.
+func (m Manifest) conditionalReachableUnder(rt string) any {
+	var excluded []string
+	for name, runtimes := range m.Exports.ConditionalRuntimes {
+		if _, ok := m.Exports.Conditional[name]; !ok {
+			continue
+		}
+		if rt == PortableRuntime || !slices.Contains(runtimes, rt) {
+			excluded = append(excluded, name)
+		}
+	}
+	if len(excluded) == 0 {
+		return ref("#/$defs/conditional")
+	}
+	slices.Sort(excluded)
+	return object{{"allOf", []any{
+		ref("#/$defs/conditional"),
+		object{{"not", object{{"enum", excluded}}}},
+	}}}
+}
+
+// reservedAnyCaseSchema matches the reserved names in any letter case, as
+// the runner's isReservedSandboxKey does: it upper-cases a key before the
+// lookup. JSON Schema patterns have no case-insensitive flag, so each
+// letter becomes a two-case character class.
+func (m Manifest) reservedAnyCaseSchema() object {
+	if len(m.Reserved) == 0 {
+		return object{{"description", reservedAnyCaseDescription}, {"not", object{}}}
+	}
+	alts := make([]string, 0, len(m.Reserved))
+	for _, name := range m.Reserved {
+		alts = append(alts, anyCasePattern(name))
+	}
+	return object{
+		{"description", reservedAnyCaseDescription},
+		{"pattern", "^(?:" + strings.Join(alts, "|") + ")$"},
+	}
+}
+
+const reservedAnyCaseDescription = "The reserved names in any letter case: the runner upper-cases an env.sandbox key before checking it against the reserved set."
+
+// anyCasePattern renders name as a pattern matching it in any letter case.
+func anyCasePattern(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		switch {
+		case unicode.IsLetter(r):
+			b.WriteString("[" + string(unicode.ToUpper(r)) + string(unicode.ToLower(r)) + "]")
+		default:
+			b.WriteString(regexp.QuoteMeta(string(r)))
+		}
+	}
+	return b.String()
 }
 
 func (m Manifest) conditionalItems() []any {

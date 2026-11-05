@@ -18,7 +18,7 @@ not describe it.
 
 | File | Validates | Use it to |
 |------|-----------|-----------|
-| [`harness-env.schema.json`](harness-env.schema.json) | A harness YAML (converted to JSON) | Reject `env.sandbox` keys the runner reserves — at the top level and under `forge.<name>.env` |
+| [`harness-env.schema.json`](harness-env.schema.json) | A harness YAML (converted to JSON) | Reject `env.sandbox` keys the runner reserves, in any letter case — at the top level, under `forge.<name>.env`, and under `overlays[].env` |
 | [`env-references.schema.json`](env-references.schema.json) | `{"runtime": ..., "variables": [...]}` | Check that code running under a runtime reads only variables reachable there; its `$defs` are the full inventory |
 
 Each schema is self-contained: every definition it uses is in its own
@@ -34,11 +34,14 @@ check-jsonschema --schemafile "$BASE/harness-env.schema.json" harness/*.yaml
 A reserved key fails with the offending path:
 
 ```text
-$.env.sandbox: 'TRACEPARENT' should not be valid under {'$ref': '#/$defs/reserved'}
+$.env.sandbox: 'TRACEPARENT' should not be valid under {'$ref': '#/$defs/reserved_any_case'}
 ```
 
-The schema constrains only the env blocks; other harness fields pass
-through. `fullsend lint` performs the same reserved-key check in-process
+The runner upper-cases a key before checking it, so `traceparent` and
+`Https_Proxy` are refused too; `#/$defs/reserved_any_case` matches the
+reserved names in any letter case, while `#/$defs/reserved` keeps the
+canonical uppercase inventory. The schema constrains only the env blocks;
+other harness fields pass through. `fullsend lint` performs the same reserved-key check in-process
 for repos that run the fullsend binary.
 
 ### Validating env references
@@ -79,7 +82,9 @@ their gates these are reachable under any runtime, which is why
 `portable` admits them. The security-hook variables are the exception:
 only the claude, codex, and pi bootstraps append hook env, so
 `TIRITH_FAIL_ON`, `TIRITH_REQUIRED`, and `FULLSEND_EGRESS_ALLOWLIST` never
-reach an opencode sandbox; their gate descriptions say so.
+reach an opencode sandbox. Their gate descriptions say so, and the
+per-runtime rules enforce it: those names validate under claude, codex,
+and pi, but not under opencode or `portable`.
 
 **`runtime_<name>` — guaranteed only when that runtime runs.** Across
 runtimes they are a portability gap: nothing promises `CLAUDE_CONFIG_DIR`

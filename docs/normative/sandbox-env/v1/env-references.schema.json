@@ -42,7 +42,20 @@
                   "$ref": "#/$defs/always"
                 },
                 {
-                  "$ref": "#/$defs/conditional"
+                  "allOf": [
+                    {
+                      "$ref": "#/$defs/conditional"
+                    },
+                    {
+                      "not": {
+                        "enum": [
+                          "FULLSEND_EGRESS_ALLOWLIST",
+                          "TIRITH_FAIL_ON",
+                          "TIRITH_REQUIRED"
+                        ]
+                      }
+                    }
+                  ]
                 },
                 {
                   "$ref": "#/$defs/harness_delivered"
@@ -141,7 +154,20 @@
                   "$ref": "#/$defs/always"
                 },
                 {
-                  "$ref": "#/$defs/conditional"
+                  "allOf": [
+                    {
+                      "$ref": "#/$defs/conditional"
+                    },
+                    {
+                      "not": {
+                        "enum": [
+                          "FULLSEND_EGRESS_ALLOWLIST",
+                          "TIRITH_FAIL_ON",
+                          "TIRITH_REQUIRED"
+                        ]
+                      }
+                    }
+                  ]
                 },
                 {
                   "$ref": "#/$defs/harness_delivered"
@@ -216,7 +242,7 @@
       ]
     },
     "conditional": {
-      "description": "Exported by the runner only when the gate in each entry's description holds.",
+      "description": "Exported by the runner only when the gate in each entry's description holds. Some entries are emitted only by certain runtimes' bootstraps; the per-runtime reachability rules exclude them elsewhere and under portable.",
       "oneOf": [
         {
           "const": "FULLSEND_EGRESS_ALLOWLIST",

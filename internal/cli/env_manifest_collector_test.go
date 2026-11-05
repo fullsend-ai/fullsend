@@ -1,10 +1,14 @@
 package cli
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -405,15 +409,34 @@ func collectSandboxEnvManifest(t *testing.T) *envmanifest.Manifest {
 			conditional[key] = true
 		}
 	}
+	// Hook env is appended by the runtime bootstrap, not by bootstrapEnv,
+	// so only the runtimes whose Bootstrap reaches appendHookEnv emit it.
+	// A hook key no shared emitter also produces is restricted to those
+	// runtimes.
+	sharedConditional := maps.Clone(conditional)
+	var hookOnly []string
 	for _, key := range hookEnvExportKeys(t) {
 		if !alwaysKeys[key] {
 			conditional[key] = true
+			if !sharedConditional[key] {
+				hookOnly = append(hookOnly, key)
+			}
 		}
 	}
+	hookRuntimes := hookEnvRuntimes(t)
 	for key := range conditional {
 		gate, ok := sandboxEnvGates[key]
 		require.True(t, ok, "sandbox env var %q is emitted under a gate the collector does not describe; add it to sandboxEnvGates", key)
 		b.AddConditional(key, gate)
+	}
+	for _, key := range hookOnly {
+		b.RestrictConditional(key, hookRuntimes...)
+		for _, rt := range productionSandboxRuntimes {
+			if !slices.Contains(hookRuntimes, rt) {
+				assert.Contains(t, sandboxEnvGates[key], "unreachable under "+rt,
+					"%s is hook env that %s's Bootstrap never appends; its gate description must say so", key, rt)
+			}
+		}
 	}
 	for key := range sandboxEnvGates {
 		require.True(t, conditional[key], "sandboxEnvGates describes %q, which no emitter emits under a gate anymore", key)
@@ -510,6 +533,103 @@ func hookEnvExportKeys(t *testing.T) []string {
 	}
 	require.NoError(t, agentruntime.ClaudeRuntime{}.Bootstrap(in))
 	return sandboxEnvFileKeys(t, envManifestEnvWrites(t, execLog)...)
+}
+
+// hookEnvRuntimes returns the production runtimes whose Bootstrap reaches
+// appendHookEnv, sorted. appendHookEnv is package-private to
+// internal/runtime and some runtimes' bootstraps need a live sandbox to
+// drive, so the set comes from the package's static call graph: every
+// function and method body in internal/runtime, walked from
+// <RuntimeType>.Bootstrap through plain calls and calls on the receiver.
+func hookEnvRuntimes(t *testing.T) []string {
+	t.Helper()
+	dir := filepath.Join("..", "runtime")
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	fset := token.NewFileSet()
+	calls := map[string][]string{}
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, filepath.Join(dir, name), nil, 0)
+		require.NoError(t, err, "parsing internal/runtime/%s", name)
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			key, recvName, recvType := fn.Name.Name, "", ""
+			if fn.Recv != nil && len(fn.Recv.List) == 1 {
+				typ := fn.Recv.List[0].Type
+				if star, ok := typ.(*ast.StarExpr); ok {
+					typ = star.X
+				}
+				if ident, ok := typ.(*ast.Ident); ok {
+					recvType = ident.Name
+					key = recvType + "." + fn.Name.Name
+				}
+				if len(fn.Recv.List[0].Names) == 1 {
+					recvName = fn.Recv.List[0].Names[0].Name
+				}
+			}
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				switch f := call.Fun.(type) {
+				case *ast.Ident:
+					calls[key] = append(calls[key], f.Name)
+				case *ast.SelectorExpr:
+					if x, ok := f.X.(*ast.Ident); ok && recvName != "" && x.Name == recvName {
+						calls[key] = append(calls[key], recvType+"."+f.Sel.Name)
+					}
+				}
+				return true
+			})
+		}
+	}
+	require.Contains(t, calls, "appendHookEnv", "appendHookEnv not found in internal/runtime")
+
+	reaches := func(start string) bool {
+		seen := map[string]bool{}
+		stack := []string{start}
+		for len(stack) > 0 {
+			fn := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			if fn == "appendHookEnv" {
+				return true
+			}
+			if seen[fn] {
+				continue
+			}
+			seen[fn] = true
+			stack = append(stack, calls[fn]...)
+		}
+		return false
+	}
+
+	var runtimes []string
+	for _, name := range productionSandboxRuntimes {
+		backend, err := agentruntime.Resolve(name)
+		require.NoError(t, err, "resolving runtime %q", name)
+		typ := reflect.TypeOf(backend.Runtime)
+		if typ.Kind() == reflect.Pointer {
+			typ = typ.Elem()
+		}
+		bootstrap := typ.Name() + ".Bootstrap"
+		require.Contains(t, calls, bootstrap, "runtime %q: %s not found in internal/runtime", name, bootstrap)
+		if reaches(bootstrap) {
+			runtimes = append(runtimes, name)
+		}
+	}
+	// ClaudeRuntime.Bootstrap is the path hookEnvExportKeys drives, so the
+	// static walk must find it; otherwise the walk has stopped seeing calls.
+	require.Contains(t, runtimes, "claude", "the call-graph walk no longer finds ClaudeRuntime.Bootstrap reaching appendHookEnv")
+	slices.Sort(runtimes)
+	return runtimes
 }
 
 // envManifestScaffoldOptions builds a valid agent-new Options whose

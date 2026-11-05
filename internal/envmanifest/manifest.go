@@ -30,6 +30,11 @@ type Exports struct {
 	Always          []string
 	Conditional     map[string]string
 	RuntimeSpecific map[string][]string
+	// ConditionalRuntimes restricts a Conditional variable to the runtimes
+	// whose bootstrap can emit it. A Conditional variable with no entry
+	// here is reachable under every runtime; one with an entry is
+	// reachable only under the listed runtimes and never under portable.
+	ConditionalRuntimes map[string][]string
 }
 
 // HarnessDelivered describes a variable delivered by stock harness
@@ -47,6 +52,10 @@ func (m Manifest) normalized() Manifest {
 	for k, v := range m.Exports.Conditional {
 		conditional[k] = v
 	}
+	conditionalRuntimes := make(map[string][]string, len(m.Exports.ConditionalRuntimes))
+	for name, runtimes := range m.Exports.ConditionalRuntimes {
+		conditionalRuntimes[name] = sortedUnique(runtimes)
+	}
 	runtimeSpecific := make(map[string][]string, len(m.Exports.RuntimeSpecific))
 	for runtime, names := range m.Exports.RuntimeSpecific {
 		runtimeSpecific[runtime] = sortedUnique(names)
@@ -57,9 +66,10 @@ func (m Manifest) normalized() Manifest {
 	}
 	return Manifest{
 		Exports: Exports{
-			Always:          sortedUnique(m.Exports.Always),
-			Conditional:     conditional,
-			RuntimeSpecific: runtimeSpecific,
+			Always:              sortedUnique(m.Exports.Always),
+			Conditional:         conditional,
+			RuntimeSpecific:     runtimeSpecific,
+			ConditionalRuntimes: conditionalRuntimes,
 		},
 		HarnessDelivered: harnessDelivered,
 		Reserved:         sortedUnique(m.Reserved),

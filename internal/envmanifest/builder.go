@@ -3,12 +3,13 @@ package envmanifest
 // Builder assembles a Manifest from derived emitter output. The zero value
 // is usable, but NewBuilder is the documented entry point.
 type Builder struct {
-	always           []string
-	conditional      map[string]string
-	runtimeSpecific  map[string][]string
-	harnessDelivered map[string]HarnessDelivered
-	reserved         []string
-	deprecated       []string
+	always              []string
+	conditional         map[string]string
+	conditionalRuntimes map[string][]string
+	runtimeSpecific     map[string][]string
+	harnessDelivered    map[string]HarnessDelivered
+	reserved            []string
+	deprecated          []string
 }
 
 // NewBuilder returns an empty manifest builder.
@@ -33,6 +34,17 @@ func (b *Builder) AddConditional(name, gate string) *Builder {
 		b.conditional = map[string]string{}
 	}
 	b.conditional[name] = gate
+	return b
+}
+
+// RestrictConditional records that the conditional variable name can reach
+// only the listed runtimes, because only their bootstraps emit it. An
+// unrestricted conditional variable is reachable under every runtime.
+func (b *Builder) RestrictConditional(name string, runtimes ...string) *Builder {
+	if b.conditionalRuntimes == nil {
+		b.conditionalRuntimes = map[string][]string{}
+	}
+	b.conditionalRuntimes[name] = append(b.conditionalRuntimes[name], runtimes...)
 	return b
 }
 
@@ -75,9 +87,10 @@ func (b *Builder) AddDeprecated(names ...string) *Builder {
 func (b *Builder) Build() Manifest {
 	return Manifest{
 		Exports: Exports{
-			Always:          b.always,
-			Conditional:     b.conditional,
-			RuntimeSpecific: b.runtimeSpecific,
+			Always:              b.always,
+			Conditional:         b.conditional,
+			RuntimeSpecific:     b.runtimeSpecific,
+			ConditionalRuntimes: b.conditionalRuntimes,
 		},
 		HarnessDelivered: b.harnessDelivered,
 		Reserved:         b.reserved,
