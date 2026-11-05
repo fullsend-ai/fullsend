@@ -123,7 +123,8 @@ example above.
 - **Bash allowlists are enforced.** `Bash(gh,jq)` permits only those program names in each
   simple command. Native patterns deny other commands where compatible with the trusted policy;
   the plugin independently enforces the allowlist and rejects ambiguous shell syntax, environment
-  assignments, command substitutions and shell wrappers. Trusted pattern maps remain a ceiling.
+  assignments, command substitutions, shell wrappers, `&&` chains, redirections, and backgrounding.
+  Trusted pattern maps remain a ceiling.
   This restricts executable names, not every capability of an allowed program.
   Unlike pi's advisory default, OpenCode enforces the declared list without an
   opt-in switch. Agent instructions must use the commands they declare; see
@@ -136,7 +137,8 @@ example above.
   from writable config locations, re-uploads the agent definition, and checks that OpenCode loads it.
   Adapter/script digests are checked before agent verification and before and after `.env` is sourced.
   Each iteration also requires the loaded plugin to return a runner-held activation challenge; a
-  missing signal fails the run rather than accepting an unhooked result. Each intercepted tool call
+  missing signal detects an unhooked iteration after it exits; it does not prevent that iteration's
+  side effects. Preflight activation prevention remains follow-up hardening alongside #9022. Each intercepted tool call
   rechecks the script directory. Native write/edit/patch tools cannot
   write outside the workspace or into `.env`, `.security` or `runner-state`, including via symlinks.
 - **Hook configuration is not a same-user secret boundary.** The activation challenge and hook
