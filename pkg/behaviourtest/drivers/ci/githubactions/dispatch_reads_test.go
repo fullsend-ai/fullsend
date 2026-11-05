@@ -1,0 +1,359 @@
+package githubactions
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// dispatchReadsClient measures requests while two runs settle over six polls.
+type dispatchReadsClient struct {
+	*forge.FakeClient
+	polls    int
+	jobReads map[int]int
+}
+
+func (c *dispatchReadsClient) ListWorkflowRunsSince(ctx context.Context, owner, repo, workflow string, after time.Time) ([]forge.WorkflowRun, error) {
+	c.polls++
+	runs, err := c.FakeClient.ListWorkflowRunsSince(ctx, owner, repo, workflow, after)
+	for i := range runs {
+		if runs[i].ID > 30 && c.polls >= 6 {
+			runs[i].Status = "completed"
+		}
+	}
+	return runs, err
+}
+
+func (c *dispatchReadsClient) ListWorkflowRuns(ctx context.Context, owner, repo, workflow string) ([]forge.WorkflowRun, error) {
+	runs, err := c.ListWorkflowRunsSince(ctx, owner, repo, workflow, time.Time{})
+	if len(runs) > 10 {
+		runs = runs[:10]
+	}
+	return runs, err
+}
+
+func (c *dispatchReadsClient) ListWorkflowRunJobs(ctx context.Context, owner, repo string, runID int) ([]forge.WorkflowJob, error) {
+	c.jobReads[runID]++
+	return c.FakeClient.ListWorkflowRunJobs(ctx, owner, repo, runID)
+}
+
+func newDispatchReadsClient(after time.Time) *dispatchReadsClient {
+	fake := forge.NewFakeClient()
+	var runs []forge.WorkflowRun
+	jobs := make(map[int][]forge.WorkflowJob)
+	for id := 32; id > 0; id-- {
+		run := forge.WorkflowRun{ID: id, RunAttempt: 1, Status: "completed", Conclusion: "success", CreatedAt: after.Add(time.Duration(id) * time.Second).Format(time.RFC3339)}
+		switch {
+		case id > 30:
+			run.Status = "in_progress"
+		case id > 10:
+			run.Conclusion = "skipped"
+		}
+		runs = append(runs, run)
+		jobs[id] = []forge.WorkflowJob{{ID: id, RunAttempt: 1, Name: "dispatch / Route", Status: "completed", Conclusion: "success"}}
+	}
+	// The target dispatch is older than the ten newest runs.
+	jobs[1] = []forge.WorkflowJob{{ID: 1, RunAttempt: 1, Name: "dispatch / Harness run (fix)", Status: "completed", Conclusion: "success"}}
+	fake.WorkflowRunsList = map[string][]forge.WorkflowRun{"org/repo/fullsend.yaml": runs}
+	fake.WorkflowRunJobs = jobs
+	return &dispatchReadsClient{FakeClient: fake, jobReads: make(map[int]int)}
+}
+
+func TestHarnessDispatchAssertions_RequestCounts(t *testing.T) {
+	t.Parallel()
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	t.Run("count across six polls", func(t *testing.T) {
+		client := newDispatchReadsClient(after)
+		d := &Driver{Client: client, afterFunc: instantAfter}
+		count, err := d.CountHarnessDispatches(context.Background(), "org", "repo", "fix", after)
+		require.NoError(t, err)
+		var total int
+		for _, calls := range client.jobReads {
+			total += calls
+		}
+		t.Logf("list calls=%d jobs calls=%d unique jobs URLs=%d count=%d", client.polls, total, len(client.jobReads), count)
+		assert.Equal(t, 1, count, "the older dispatch must still be counted")
+		assert.Equal(t, 6, client.polls)
+		assert.Equal(t, 67, total, "one decisive match once, nine inconclusive and two active runs on six polls")
+		assert.Equal(t, 12, len(client.jobReads), "skipped workflows need no jobs lookup")
+	})
+	t.Run("negative assertion", func(t *testing.T) {
+		client := newDispatchReadsClient(after)
+		d := &Driver{Client: client}
+		require.NoError(t, d.AssertNoHarnessAgentArtifact(context.Background(), "org", "repo", "absent", after))
+		t.Logf("list calls=%d jobs calls=%d", client.polls, len(client.jobReads))
+		assert.Len(t, client.jobReads, 12)
+		for _, calls := range client.jobReads {
+			assert.Equal(t, 1, calls)
+		}
+	})
+}
+
+func TestHarnessDispatchAssertions_SkippedRunNeedsNoJobs(t *testing.T) {
+	t.Parallel()
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	fake := forge.NewFakeClient()
+	fake.WorkflowRunsList = map[string][]forge.WorkflowRun{"org/repo/fullsend.yaml": {
+		{ID: 1, Status: "completed", Conclusion: "skipped", CreatedAt: after.Format(time.RFC3339)},
+	}}
+	fake.Errors["ListWorkflowRunJobs"] = errors.New("jobs must not be requested for a skipped workflow")
+	d := &Driver{Client: fake}
+	count, err := d.CountHarnessDispatches(context.Background(), "org", "repo", "fix", after)
+	require.NoError(t, err)
+	assert.Zero(t, count)
+	require.NoError(t, d.AssertNoHarnessAgentArtifact(context.Background(), "org", "repo", "fix", after))
+}
+
+func TestHarnessDispatchAssertions_NotStartedRunJobs(t *testing.T) {
+	t.Parallel()
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for _, status := range []string{"queued", "waiting", "requested", "pending"} {
+		t.Run(status, func(t *testing.T) {
+			t.Parallel()
+			fake := forge.NewFakeClient()
+			fake.WorkflowRunsList = map[string][]forge.WorkflowRun{"org/repo/fullsend.yaml": {
+				{ID: 1, Status: status, CreatedAt: after.Format(time.RFC3339)},
+			}}
+			// A queued run is pending without a jobs read; a waiting run
+			// reads the listing and stays pending when it 404s on page 1.
+			fake.Errors["ListWorkflowRunJobs"] = forge.ErrJobsListingNotFoundFirstPage
+			d := &Driver{Client: fake}
+
+			count, pending, err := d.settleHarnessDispatchCount(context.Background(), "org", "repo", "fix", after, nil)
+			require.NoError(t, err)
+			assert.Zero(t, count)
+			assert.Equal(t, 1, pending)
+
+			// The negative assertion reads the listing and tolerates the
+			// first-page 404 only for a run that has not started. A waiting
+			// run can already hold a completed agent job, so an unreadable
+			// listing must fail the assertion rather than skip the run.
+			if status == "waiting" {
+				require.ErrorIs(t, d.AssertNoHarnessAgentArtifact(context.Background(), "org", "repo", "fix", after), forge.ErrJobsListingNotFoundFirstPage)
+			} else {
+				require.NoError(t, d.AssertNoHarnessAgentArtifact(context.Background(), "org", "repo", "fix", after))
+			}
+
+			// A 404 on a later page means the listing was partially read —
+			// page 1 may hold a completed agent job — so it is never
+			// absence, even for a not-started run.
+			fake.Errors["ListWorkflowRunJobs"] = fmt.Errorf("list workflow run jobs page 2: %w", forge.ErrNotFound)
+			require.ErrorIs(t, d.AssertNoHarnessAgentArtifact(context.Background(), "org", "repo", "fix", after), forge.ErrNotFound,
+				"a partially readable listing must fail the assertion")
+
+			// A waiting run can follow jobs that already ran (environment
+			// approval), so returned jobs are checked, never skipped.
+			delete(fake.Errors, "ListWorkflowRunJobs")
+			fake.WorkflowRunJobs = map[int][]forge.WorkflowJob{1: {
+				{ID: 1, RunAttempt: 1, Name: "dispatch / Harness run (fix)", Status: "completed", Conclusion: "success"},
+			}}
+			require.Error(t, d.AssertNoHarnessAgentArtifact(context.Background(), "org", "repo", "fix", after),
+				"a run awaiting approval can already hold a completed agent job")
+
+			// Any other listing error stays fatal on the negative path.
+			lookupErr := errors.New("jobs lookup failed")
+			fake.Errors["ListWorkflowRunJobs"] = lookupErr
+			require.ErrorIs(t, d.AssertNoHarnessAgentArtifact(context.Background(), "org", "repo", "fix", after), lookupErr)
+		})
+	}
+}
+
+// TestCountHarnessDispatches_WaitingRunHoldsCompletedAgentJob pins the
+// count-side rule: a workflow waiting on an environment approval can
+// already hold a completed agent job, which is conclusive dispatch
+// evidence — the count must not wait out the whole run.
+// TestClassifyJobsError pins the full status × listing-error table that
+// both dispatch paths route through. Changing an entry here is a
+// semantic decision about run statuses, not a mechanical drift fix.
+func TestClassifyJobsError(t *testing.T) {
+	t.Parallel()
+	firstPage404 := fmt.Errorf("list workflow run jobs page 1: %w: %w", forge.ErrJobsListingNotFoundFirstPage, forge.ErrNotFound)
+	laterPage404 := fmt.Errorf("list workflow run jobs page 2: %w", forge.ErrNotFound)
+	otherErr := errors.New("jobs lookup failed")
+	for _, tc := range []struct {
+		name   string
+		status string
+		err    error
+		want   jobsReadOutcome
+	}{
+		{"queued first-page 404 skips", "queued", firstPage404, jobsSkipRun},
+		{"requested first-page 404 skips", "requested", firstPage404, jobsSkipRun},
+		{"pending first-page 404 skips", "pending", firstPage404, jobsSkipRun},
+		{"waiting first-page 404 retries later", "waiting", firstPage404, jobsRetryLater},
+		{"in_progress first-page 404 is fatal", "in_progress", firstPage404, jobsFatal},
+		{"completed first-page 404 is fatal", "completed", firstPage404, jobsFatal},
+		{"queued later-page 404 is fatal", "queued", laterPage404, jobsFatal},
+		{"waiting later-page 404 is fatal", "waiting", laterPage404, jobsFatal},
+		{"completed later-page 404 is fatal", "completed", laterPage404, jobsFatal},
+		{"queued other error is fatal", "queued", otherErr, jobsFatal},
+		{"waiting other error is fatal", "waiting", otherErr, jobsFatal},
+		{"completed other error is fatal", "completed", otherErr, jobsFatal},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, classifyJobsError(tc.status, tc.err))
+		})
+	}
+}
+
+func TestCountHarnessDispatches_WaitingRunHoldsCompletedAgentJob(t *testing.T) {
+	t.Parallel()
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name  string
+		job   forge.WorkflowJob
+		count int
+		pend  int
+	}{
+		{
+			name:  "completed agent job counts",
+			job:   forge.WorkflowJob{ID: 1, RunAttempt: 1, Name: "dispatch / Harness run (fix)", Status: "completed", Conclusion: "success"},
+			count: 1,
+		},
+		{
+			name: "running agent job stays pending",
+			job:  forge.WorkflowJob{ID: 1, RunAttempt: 1, Name: "dispatch / Harness run (fix)", Status: "in_progress"},
+			pend: 1,
+		},
+		{
+			name: "no agent job yet stays pending",
+			job:  forge.WorkflowJob{ID: 1, RunAttempt: 1, Name: "dispatch / Route", Status: "completed", Conclusion: "success"},
+			pend: 1,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			fake := forge.NewFakeClient()
+			fake.WorkflowRunsList = map[string][]forge.WorkflowRun{"org/repo/fullsend.yaml": {
+				{ID: 1, RunAttempt: 1, Status: "waiting", CreatedAt: after.Format(time.RFC3339)},
+			}}
+			fake.WorkflowRunJobs = map[int][]forge.WorkflowJob{1: {tc.job}}
+			d := &Driver{Client: fake}
+			count, pending, err := d.settleHarnessDispatchCount(context.Background(), "org", "repo", "fix", after, nil)
+			require.NoError(t, err)
+			assert.Equal(t, tc.count, count)
+			assert.Equal(t, tc.pend, pending)
+		})
+	}
+	t.Run("absent jobs listing stays pending", func(t *testing.T) {
+		t.Parallel()
+		fake := forge.NewFakeClient()
+		fake.WorkflowRunsList = map[string][]forge.WorkflowRun{"org/repo/fullsend.yaml": {
+			{ID: 1, RunAttempt: 1, Status: "waiting", CreatedAt: after.Format(time.RFC3339)},
+		}}
+		fake.Errors["ListWorkflowRunJobs"] = forge.ErrJobsListingNotFoundFirstPage
+		d := &Driver{Client: fake}
+		count, pending, err := d.settleHarnessDispatchCount(context.Background(), "org", "repo", "fix", after, nil)
+		require.NoError(t, err)
+		assert.Zero(t, count)
+		assert.Equal(t, 1, pending)
+	})
+}
+
+func TestCountHarnessDispatches_CompletedRunJobsBecomeVisible(t *testing.T) {
+	t.Parallel()
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for _, firstJob := range []string{"dispatch / Route", "dispatch / Harness run (${{ matrix.agent }})", "dispatch / Fix", "dispatch / Harness run (fix)"} {
+		t.Run(firstJob, func(t *testing.T) {
+			client := newDispatchReadsClient(after)
+			run := client.WorkflowRunsList["org/repo/fullsend.yaml"][31]
+			client.WorkflowRunJobs[1] = []forge.WorkflowJob{{ID: 1, RunAttempt: 1, Name: firstJob, Status: "completed", Conclusion: "skipped"}}
+			if firstJob == "dispatch / Route" {
+				client.WorkflowRunJobs[1][0].Conclusion = "success"
+			}
+			d := &Driver{Client: client, afterFunc: func(time.Duration) <-chan time.Time {
+				if client.polls == 1 {
+					client.WorkflowRunJobs[1] = append(client.WorkflowRunJobs[1], forge.WorkflowJob{
+						ID: 100, RunAttempt: 1, Name: "dispatch / Harness run (fix)", Status: "completed", Conclusion: "success",
+					})
+				}
+				return instantAfter(0)
+			}}
+			count, err := d.CountHarnessDispatches(context.Background(), "org", "repo", "fix", after)
+			require.NoError(t, err)
+			assert.Equal(t, 1, count, "a lagging listing must not permanently hide the completed agent job")
+			assert.Equal(t, 2, client.jobReads[1], "reread the inconclusive listing, then cache the decisive match")
+			assert.Equal(t, 6, client.polls, "a pending sibling keeps the assertion polling")
+			assert.Equal(t, run, client.WorkflowRunsList["org/repo/fullsend.yaml"][31], "completed run metadata stays unchanged")
+		})
+	}
+}
+
+func TestHarnessDispatchAssertions_RelevantJobsErrorsRemainFatal(t *testing.T) {
+	t.Parallel()
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for _, run := range []forge.WorkflowRun{
+		{Status: "completed", Conclusion: "success"},
+		{Status: "completed", Conclusion: "failure"},
+		{Status: "completed", Conclusion: "cancelled"},
+		{Status: "in_progress", Conclusion: "skipped"},
+		{},
+	} {
+		t.Run(run.Status+"/"+run.Conclusion, func(t *testing.T) {
+			fake := forge.NewFakeClient()
+			run.ID, run.CreatedAt = 1, after.Format(time.RFC3339)
+			fake.WorkflowRunsList = map[string][]forge.WorkflowRun{"org/repo/fullsend.yaml": {run}}
+			lookupErr := errors.New("jobs lookup failed")
+			fake.Errors["ListWorkflowRunJobs"] = lookupErr
+			d := &Driver{Client: fake}
+			_, err := d.CountHarnessDispatches(context.Background(), "org", "repo", "fix", after)
+			require.ErrorIs(t, err, lookupErr)
+			require.ErrorIs(t, d.AssertNoHarnessAgentArtifact(context.Background(), "org", "repo", "fix", after), lookupErr)
+		})
+	}
+}
+
+func TestCountHarnessDispatches_CompletedJobCache(t *testing.T) {
+	t.Parallel()
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for _, name := range []string{"rerun", "unknown run attempt", "unknown job attempt", "mismatched job attempt", "unfinished job", "unfinished conclusion", "empty jobs", "assertion local", "changed conclusion"} {
+		t.Run(name, func(t *testing.T) {
+			client := newDispatchReadsClient(after)
+			run := &client.WorkflowRunsList["org/repo/fullsend.yaml"][31]
+			job := &client.WorkflowRunJobs[1][0]
+			switch name {
+			case "unknown run attempt":
+				run.RunAttempt = 0
+			case "unknown job attempt":
+				job.RunAttempt = 0
+			case "mismatched job attempt":
+				job.RunAttempt = 2
+			case "unfinished job":
+				job.Status = "queued"
+			case "unfinished conclusion":
+				job.Conclusion = ""
+			case "empty jobs":
+				client.WorkflowRunJobs[1] = nil
+			}
+			d := &Driver{Client: client, afterFunc: func(time.Duration) <-chan time.Time {
+				if client.polls == 1 {
+					switch name {
+					case "rerun":
+						run.RunAttempt = 2
+						job.RunAttempt = 2
+					case "changed conclusion":
+						run.Conclusion = "cancelled"
+					}
+					client.WorkflowRunJobs[1] = []forge.WorkflowJob{{ID: 100, RunAttempt: run.RunAttempt, Name: "dispatch / Harness run (fix)", Status: "completed", Conclusion: "cancelled"}}
+				}
+				return instantAfter(0)
+			}}
+			count, err := d.CountHarnessDispatches(context.Background(), "org", "repo", "fix", after)
+			require.NoError(t, err)
+			if name == "assertion local" {
+				assert.Equal(t, 1, count, "the completed attempt is reused within the first assertion")
+				assert.Equal(t, 1, client.jobReads[1])
+				count, err = d.CountHarnessDispatches(context.Background(), "org", "repo", "fix", after)
+				require.NoError(t, err)
+			}
+			assert.Zero(t, count, "a changed or uncertified job listing must be fetched again")
+			assert.GreaterOrEqual(t, client.jobReads[1], 2)
+		})
+	}
+}

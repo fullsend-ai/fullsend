@@ -568,6 +568,36 @@ func (c *truncatingListWorkflowRunsClient) ListWorkflowRuns(_ context.Context, _
 	return append([]forge.WorkflowRun(nil), c.truncated...), nil
 }
 
+func TestHarnessDispatchAssertions_IncludeRunsBeyondFirstPage(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	fake := forge.NewFakeClient()
+	var runs []forge.WorkflowRun
+	for id := range 11 {
+		runs = append(runs, forge.WorkflowRun{
+			ID: id + 1, Status: "completed", Conclusion: "success",
+			CreatedAt: after.Add(time.Duration(id+1) * time.Minute).Format(time.RFC3339),
+		})
+	}
+	fake.WorkflowRunsList = map[string][]forge.WorkflowRun{"org/repo/fullsend.yaml": runs}
+	fake.WorkflowRunJobs = map[int][]forge.WorkflowJob{
+		1: {{ID: 1, Name: "dispatch / Harness run (fix)", Status: "completed", Conclusion: "success"}},
+	}
+	d := newTestDriver(&truncatingListWorkflowRunsClient{FakeClient: fake, truncated: runs[1:]})
+
+	t.Run("exact count", func(t *testing.T) {
+		count, err := d.CountHarnessDispatches(context.Background(), "org", "repo", "fix", after)
+		require.NoError(t, err)
+		assert.Equal(t, 1, count, "newer unrelated runs must not hide a dispatch")
+	})
+	t.Run("negative assertion", func(t *testing.T) {
+		err := d.AssertNoHarnessAgentArtifact(context.Background(), "org", "repo", "fix", after)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "workflow run 1")
+	})
+}
+
 // TestWaitForHarnessAgentRound_SelectsEarliestEligibleRunBeyondTruncatedPage
 // is a regression test (#7996 review): listHarnessRunsAfter's shared
 // listing (used by WaitForHarnessAgent's latest-eligible-run selection)
@@ -2890,7 +2920,7 @@ func TestSettleHarnessDispatchCount_SuccessfulBuiltinMatrixUnresolvedPending(t *
 	}
 
 	d := &Driver{Client: fake}
-	count, pending, err := d.settleHarnessDispatchCount(context.Background(), "org", "repo", "triage", after)
+	count, pending, err := d.settleHarnessDispatchCount(context.Background(), "org", "repo", "triage", after, nil)
 	require.NoError(t, err)
 	assert.Equal(t, 0, count, "a successful built-in match must not be counted while the custom matrix remains unresolved")
 	assert.Equal(t, 1, pending, "the run must be classified as pending until the real matrix job appears")
