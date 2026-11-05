@@ -877,9 +877,19 @@ func TestReusableDispatchJobsReceiveMintOIDC(t *testing.T) {
 	for _, tc := range []struct {
 		jobName  string
 		stepName string
+		mintURL  string
 	}{
-		{jobName: "route", stepName: "Evaluate CEL route"},
-		{jobName: "harness-dispatch", stepName: "Run fullsend dispatch"},
+		{
+			jobName:  "route",
+			stepName: "Evaluate CEL route",
+			// CLI resolveMintURL layers config files over FULLSEND_MINT_URL.
+			mintURL: "${{ inputs.mint_url }}",
+		},
+		{
+			jobName:  "harness-dispatch",
+			stepName: "Run fullsend dispatch",
+			mintURL:  "${{ steps.resolve-mint.outputs.mint_url }}",
+		},
 	} {
 		t.Run(tc.jobName, func(t *testing.T) {
 			job, ok := workflow.Jobs[tc.jobName]
@@ -897,8 +907,8 @@ func TestReusableDispatchJobsReceiveMintOIDC(t *testing.T) {
 			require.NotEmpty(t, dispatch.Name, "job %q must include step %q", tc.jobName, tc.stepName)
 			assert.Contains(t, dispatch.Run, "--input-driver gha-event",
 				"step %q must use the GitHub event driver", tc.stepName)
-			assert.Equal(t, "${{ steps.resolve-mint.outputs.mint_url }}", dispatch.Env["FULLSEND_MINT_URL"],
-				"step %q must receive the resolved mint URL", tc.stepName)
+			assert.Equal(t, tc.mintURL, dispatch.Env["FULLSEND_MINT_URL"],
+				"step %q must receive the expected mint URL", tc.stepName)
 			for name, value := range job.Outputs {
 				assert.NotContains(t, name, "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
 					"job %q output names must not expose the OIDC request token", tc.jobName)
@@ -930,6 +940,17 @@ func TestReusableDispatchMintResolverFetchesFromWorkflow(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, yaml.Unmarshal(content, &workflow))
 
+	stepIndex := func(names []string, name string) int {
+		t.Helper()
+		for i, n := range names {
+			if n == name {
+				return i
+			}
+		}
+		t.Fatalf("missing step %q", name)
+		return -1
+	}
+
 	for _, jobName := range []string{"route", "harness-dispatch", "harness-run"} {
 		t.Run(jobName, func(t *testing.T) {
 			job, ok := workflow.Jobs[jobName]
@@ -945,14 +966,32 @@ func TestReusableDispatchMintResolverFetchesFromWorkflow(t *testing.T) {
 			assert.Contains(t, names, "Prepare mint URL resolver script")
 			assert.Contains(t, names, "Checkout workflow mint URL resolver")
 			assert.Contains(t, checkoutStep.If, "mint-resolver-script.outputs.fetched")
+			switch jobName {
+			case "route":
+				assert.Less(t, stepIndex(names, "Check kill switch"),
+					stepIndex(names, "Prepare mint URL resolver script"),
+					"route must resolve mint URL after the kill switch")
+				assert.Contains(t, checkoutStep.If, "steps.route.outputs.stage")
+			case "harness-dispatch":
+				assert.Less(t, stepIndex(names, "Detect registered harness triggers"),
+					stepIndex(names, "Prepare mint URL resolver script"),
+					"harness-dispatch must resolve mint URL after trigger detection")
+				assert.Contains(t, checkoutStep.If, "has_triggers")
+			}
 		})
 	}
-	assert.Contains(t, string(content), "workflow-mint-resolver",
-		"upstream resolver checkout must use a dedicated path under RUNNER_TEMP")
+	assert.Contains(t, string(content), "path: .workflow-mint-resolver",
+		"upstream resolver checkout must use a workspace-relative path")
+	assert.NotContains(t, string(content), "runner.temp }}/workflow-mint-resolver",
+		"actions/checkout path must stay under GITHUB_WORKSPACE")
+	assert.NotContains(t, string(content), "RUNNER_TEMP}/workflow-mint-resolver",
+		"resolver script path must stay under GITHUB_WORKSPACE")
 
 	prioritize := string(loadRepoFile(".github/workflows/reusable-prioritize.yml")(t))
 	assert.Contains(t, prioritize, "Checkout workflow mint URL resolver")
 	assert.Contains(t, prioritize, "Prepare mint URL resolver script")
+	assert.Contains(t, prioritize, "path: .workflow-mint-resolver")
+	assert.NotContains(t, prioritize, "runner.temp }}/workflow-mint-resolver")
 }
 
 // TestCustomAppSetReviewBotWiring ensures every GitHub review/fix dispatch

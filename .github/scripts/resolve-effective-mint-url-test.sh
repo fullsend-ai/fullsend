@@ -26,17 +26,25 @@ run_resolve() {
 
 run_resolve_expect_fail() {
   local fallback="${1:-}"
+  local name="${2}"
+  local leak="${3:-}"
   local output_file="${TMPDIR}/github-output.txt"
+  local stderr_file="${TMPDIR}/stderr.txt"
   local oldpwd="${PWD}"
   : >"${output_file}"
+  : >"${stderr_file}"
   cd "${TMPDIR}/repo"
-  if GITHUB_OUTPUT="${output_file}" FALLBACK_MINT_URL="${fallback}" bash "${SCRIPT}"; then
+  if GITHUB_OUTPUT="${output_file}" FALLBACK_MINT_URL="${fallback}" bash "${SCRIPT}" 2>"${stderr_file}"; then
     cd "${oldpwd}"
-    echo "FAIL: ${2}: expected non-zero exit"
+    echo "FAIL: ${name}: expected non-zero exit"
     FAILURES=$((FAILURES + 1))
     return 0
   fi
   cd "${oldpwd}"
+  if [[ -n "${leak}" ]] && grep -F -- "${leak}" "${stderr_file}" >/dev/null; then
+    echo "FAIL: ${name}: stderr leaked ${leak@Q}"
+    FAILURES=$((FAILURES + 1))
+  fi
 }
 
 setup_repo() {
@@ -83,7 +91,25 @@ run_resolve_expect_fail "https://fallback.example" "reject http mint_url"
 
 setup_repo
 printf 'version: "1"\nmint_url: https://user:pass@mint.example\n' >.fullsend/config.yaml
-run_resolve_expect_fail "https://fallback.example" "reject userinfo mint_url"
+run_resolve_expect_fail "https://fallback.example" "reject userinfo mint_url" "user:pass"
+
+setup_repo
+printf 'version: "1"\nmint_url: https://mint.example/a@b\n' >.fullsend/config.yaml
+assert_eq "at-sign in path is not userinfo" "https://mint.example/a@b" "$(run_resolve "")"
+
+setup_repo
+printf 'version: "1"\nmint_url: HTTPS://mint.example\n' >.fullsend/config.yaml
+assert_eq "uppercase scheme" "HTTPS://mint.example" "$(run_resolve "")"
+
+setup_repo
+assert_eq "localhost http fallback" "http://localhost:8080" "$(run_resolve "http://localhost:8080")"
+
+setup_repo
+assert_eq "loopback http fallback" "http://127.0.0.1:8080" "$(run_resolve "http://127.0.0.1:8080")"
+
+setup_repo
+printf 'version: "1"\nmint_url: http://localhost:8080\n' >.fullsend/config.yaml
+run_resolve_expect_fail "" "reject localhost http from config file"
 
 if [[ "${FAILURES}" -eq 0 ]]; then
   echo "All tests passed."

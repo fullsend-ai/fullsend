@@ -152,7 +152,7 @@ jobs:
         with:
           repository: ${{ job.workflow_repository }}
           ref: ${{ job.workflow_sha }}
-          path: ${{ runner.temp }}/workflow-mint-resolver
+          path: .workflow-mint-resolver
           fetch-depth: 1
           persist-credentials: false
           sparse-checkout: |
@@ -167,7 +167,7 @@ jobs:
           set -euo pipefail
           RESOLVER="${{ steps.mint-resolver-script.outputs.path }}"
           if [[ -z "${RESOLVER}" ]]; then
-            RESOLVER="${RUNNER_TEMP}/workflow-mint-resolver/.github/scripts/resolve-effective-mint-url.sh"
+            RESOLVER=".workflow-mint-resolver/.github/scripts/resolve-effective-mint-url.sh"
           fi
           if [[ ! -f "${RESOLVER}" ]]; then
             echo "::error::resolve-effective-mint-url.sh is missing from caller and workflow repository"
