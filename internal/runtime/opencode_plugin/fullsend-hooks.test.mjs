@@ -39,7 +39,7 @@ test("Bash restrictions reject composed/hidden commands and environment override
   for (const command of ["gh", "gh issue list", "gh issue list | jq '.[]'"]) {
     await h.before("bash", { command });
   }
-  for (const command of ["", "rm file", "gh issue list; rm file", "gh && rm file", "gh | sh", "gh & rm file", "gh > output", "gh 2> output", "gh < input", "$(rm file)", "gh `rm file`", "GH_PAGER=sh gh", "env gh", "command gh", "/usr/bin/gh", "g\\h", "gh <<EOF\nrm file\nEOF", "gh $(rm file)", "gh # '\nrm file\n# '", "gh # \"; rm file #\""]) {
+  for (const command of ["", "rm file", "gh issue list; rm file", "gh && rm file", "gh && jq", "gh | sh", "gh & rm file", "gh > output", "gh 2> output", "gh < input", "$(rm file)", "gh `rm file`", "GH_PAGER=sh gh", "env gh", "command gh", "/usr/bin/gh", "g\\h", "gh <<EOF\nrm file\nEOF", "gh $(rm file)", "gh # '\nrm file\n# '", "gh # \"; rm file #\""]) {
     await assert.rejects(h.before("bash", { command }), /fullsend-hooks/);
   }
 });
