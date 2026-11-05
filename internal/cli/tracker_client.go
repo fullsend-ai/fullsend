@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge/jira"
 	"github.com/fullsend-ai/fullsend/internal/tracker"
 )
@@ -85,6 +86,52 @@ func newTrackerClient(trackerName, token, jiraBaseURL, jiraEmail string) (tracke
 	default:
 		return nil, fmt.Errorf("unsupported tracker %q: use %q, %q, or %q", trackerName, trackerGitHub, trackerGitLab, trackerJira)
 	}
+}
+
+// newConfiguredTrackerClient is newTrackerClient for the fullsend issues
+// commands: for Jira it first resolves the instance URL from
+// tracker.jira.base_url in the config.yaml under fullsendDir (see
+// resolveConfiguredJiraURL).
+func newConfiguredTrackerClient(trackerName, token, jiraURLFlag, jiraEmail, fullsendDir string, testConfigReader config.PerRepoConfigReader) (tracker.Client, error) {
+	jiraURL := jiraURLFlag
+	if trackerName == trackerJira {
+		var err error
+		jiraURL, err = resolveConfiguredJiraURL(jiraURLFlag, fullsendDir, testConfigReader)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return newTrackerClient(trackerName, token, jiraURL, jiraEmail)
+}
+
+// resolveConfiguredJiraURL returns the Jira instance URL for the issues
+// commands (#9035). When the effective config sets the tracker.jira
+// connection settings, base_url is the only source: --jira-url is
+// rejected instead of acting as an override, and JIRA_BASE_URL is not
+// consulted. Otherwise the flag is returned unchanged, and
+// newTrackerClient falls back to JIRA_BASE_URL as before.
+func resolveConfiguredJiraURL(jiraURLFlag, fullsendDir string, testConfigReader config.PerRepoConfigReader) (string, error) {
+	var tracking *config.TrackingConfig
+	switch {
+	case testConfigReader != nil:
+		tracking = testConfigReader.IssueTracking()
+	case fullsendDir != "":
+		reader, err := config.LoadConfig(fullsendDir, config.LoadOpts{MissingOK: true})
+		if err != nil {
+			return "", fmt.Errorf("loading config for tracker.jira: %w", err)
+		}
+		tracking = reader.IssueTracking()
+	}
+	if tracking.Provider() != config.TrackingProviderJira || !tracking.Jira.HasConnectionSettings() {
+		return jiraURLFlag, nil
+	}
+	if err := tracking.Jira.ValidateConnection(); err != nil {
+		return "", err
+	}
+	if jiraURLFlag != "" {
+		return "", fmt.Errorf("--jira-url cannot be used when tracker.jira is configured in config.yaml: set tracker.jira.base_url there instead")
+	}
+	return tracking.Jira.BaseURL, nil
 }
 
 // resolveGitLabTrackerToken returns a GitLab token from the explicit

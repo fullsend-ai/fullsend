@@ -129,6 +129,16 @@ const (
 	// Setup does not write it; the repository admin sets it.
 	SecretInferenceGatewayAPIKey = "FULLSEND_INFERENCE_GATEWAY_API_KEY"
 
+	// Jira credentials (#9076). `fullsend repos install` writes them on
+	// GitHub and GitLab from --jira-token and --jira-email for
+	// repositories whose effective tracker.jira.poll.enabled is true. An
+	// omitted flag preserves the existing secret. Disabling polling does
+	// not delete them, since other Jira consumers may still need them.
+	// The token is a bearer credential and is never stored unmasked; the
+	// account email is optional.
+	SecretJiraToken = "FULLSEND_JIRA_TOKEN"
+	SecretJiraEmail = "FULLSEND_JIRA_EMAIL"
+
 	// Legacy uninstall-only variables — GitLab.
 	VarLegacyBotTokenSecret = "FULLSEND_BOT_TOKEN_SECRET"
 	VarLegacySA             = "FULLSEND_SA"

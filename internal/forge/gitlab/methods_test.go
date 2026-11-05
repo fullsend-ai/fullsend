@@ -5188,6 +5188,11 @@ func TestCreateRepoSecret_MaskingRequiredGenericValueInvalid(t *testing.T) {
 	assert.Equal(t, 1, callCount, "must not retry with masked:false")
 }
 
+func TestMaskingRequired_JiraSecrets(t *testing.T) {
+	assert.True(t, maskingRequired(forge.SecretJiraToken), "the Jira token is a bearer credential")
+	assert.False(t, maskingRequired(forge.SecretJiraEmail), "the Jira account email is not a bearer credential")
+}
+
 func TestIsMaskingError(t *testing.T) {
 	tests := []struct {
 		name   string

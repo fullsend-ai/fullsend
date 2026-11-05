@@ -161,9 +161,9 @@ func newPollCmd() *cobra.Command {
 	cmd.Flags().StringVar(&outputPath, "output", "", "Path to write dispatches JSON (jira-poll only; required for --target-forge github, optional for --target-forge gitlab; ignored by --forge gitlab)")
 	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "path to the .fullsend configuration directory")
 	_ = cmd.MarkFlagRequired("fullsend-dir")
-	cmd.Flags().StringVar(&jiraURL, "jira-url", "", "Jira instance base URL (default: $JIRA_BASE_URL)")
-	cmd.Flags().StringVar(&jiraProject, "jira-project", "", "Jira project key for JQL scoping")
-	cmd.Flags().StringVar(&jqlOverride, "jql", "", "Custom JQL override")
+	cmd.Flags().StringVar(&jiraURL, "jira-url", "", "Jira instance base URL (default: $JIRA_BASE_URL; not allowed when config.yaml sets tracker.jira)")
+	cmd.Flags().StringVar(&jiraProject, "jira-project", "", "Jira project key for JQL scoping (not allowed when config.yaml sets tracker.jira)")
+	cmd.Flags().StringVar(&jqlOverride, "jql", "", "Custom JQL override (not allowed when config.yaml sets tracker.jira; use tracker.jira.poll.query)")
 	cmd.Flags().StringVar(&targetRepo, "target-repo", "", "GitHub repo slug where agents run (default: $GITHUB_REPOSITORY; jira-poll with --target-forge github only)")
 	cmd.Flags().StringVar(&targetForge, "target-forge", jirapoll.TargetForgeGitHub, "Forge the jira-poll driver dispatches agents to: 'github' (write --output for reusable-dispatch.yml) or 'gitlab' (start the project's protected agent pipelines; uses --project and --gitlab-url)")
 	cmd.Flags().StringVar(&modeFlag, "mode", "", "Poll mode: 'slash' (slash commands only) or 'events' (labels, merges, non-slash notes)")
@@ -174,6 +174,9 @@ func newPollCmd() *cobra.Command {
 }
 
 func runJiraPoll(cmd *cobra.Command, jiraURL, jiraProject, jqlOverride, targetRepo, outputPath, fullsendDir string) error {
+	if err := applyJiraTrackerConfig(fullsendDir, &jiraURL, &jiraProject, &jqlOverride); err != nil {
+		return err
+	}
 	args, err := validateJiraPollArgs(jiraURL, jiraProject, jqlOverride, targetRepo, outputPath, fullsendDir)
 	if err != nil {
 		return err
@@ -319,6 +322,45 @@ func gitlabChildDispatchJobToken(getenv func(string) string) (string, error) {
 	default:
 		return "", fmt.Errorf("%s=%q is not a recognized dispatch route (expected unset, %q, or %q)", forge.VarGitLabDispatchRoute, route, forge.GitLabDispatchRouteAPI, forge.GitLabDispatchRouteChildPipeline)
 	}
+}
+
+// applyJiraTrackerConfig reads the Jira site, project, and poll query from
+// tracker.jira in the effective config.yaml (#9035). When the config sets
+// any tracker.jira connection or poll setting, the config is the only
+// source of these settings:
+// --jira-url, --jira-project, and --jql are rejected instead of acting as
+// overrides, JIRA_BASE_URL is ignored, and the JQL is the configured (or
+// default) query scoped to the configured project. When the config does
+// not set them, the flags and JIRA_BASE_URL are used as before.
+func applyJiraTrackerConfig(fullsendDir string, jiraURL, jiraProject, jql *string) error {
+	cfg, err := config.LoadConfig(fullsendDir, config.LoadOpts{MissingOK: true})
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	tracking := cfg.IssueTracking()
+	if tracking.Provider() != config.TrackingProviderJira || !tracking.Jira.HasConnectionSettings() {
+		return nil
+	}
+	jiraCfg := tracking.Jira
+	if err := jiraCfg.ValidateConnection(); err != nil {
+		return err
+	}
+	var conflicts []string
+	for _, f := range []struct{ flag, value string }{
+		{"--jira-url", *jiraURL}, {"--jira-project", *jiraProject}, {"--jql", *jql},
+	} {
+		if f.value != "" {
+			conflicts = append(conflicts, f.flag)
+		}
+	}
+	if len(conflicts) > 0 {
+		return fmt.Errorf("%s cannot be used when tracker.jira is configured in config.yaml: "+
+			"set tracker.jira.base_url, tracker.jira.project, and tracker.jira.poll.query there instead", strings.Join(conflicts, ", "))
+	}
+	*jiraURL = jiraCfg.BaseURL
+	*jiraProject = jiraCfg.Project
+	*jql = jiraCfg.PollJQL()
+	return nil
 }
 
 // jiraPollArgs holds resolved arguments for runJiraPoll after env-var fallbacks.
