@@ -184,10 +184,13 @@ administrative tasks as needed.
 - GitHub `admin` access on the fullsend-ai repositories
 - All capabilities from previous roles
 
-**Criteria and process:** If you are not already a member of the core
-team and you need administrator access, reach out to one or more
-members of the core team and explain why you need it. The core team
-considers such requests on a case-by-case basis.
+**Criteria and process:** This role has no formal request process
+yet. The project does not anticipate needing to add core team members
+anytime soon. If and when someone needs this role, the core team will
+define the request process, the track record expected, and the
+approval threshold, and document them here. Until then, if you believe
+you need administrator access, reach out to one or more members of the
+core team and explain why.
 
 **How to check:** Your GitHub username is listed in the `core` team in
 [peribolos.yaml](https://github.com/fullsend-ai/org/blob/main/peribolos.yaml)
@@ -293,7 +296,7 @@ Role changes use the following request mechanisms:
 | Triage | [Triage Request](https://github.com/fullsend-ai/org/issues/new?template=triage-request.yml) issue in [fullsend-ai/org](https://github.com/fullsend-ai/org) | 1 Maintainer |
 | Write | [Write Request](https://github.com/fullsend-ai/org/issues/new?template=write-request.yml) issue in [fullsend-ai/org](https://github.com/fullsend-ai/org) | 2 Maintainers |
 | Maintainer | [Maintainer Nomination](https://github.com/fullsend-ai/org/issues/new?template=maintainer-request.yml) issue in [fullsend-ai/org](https://github.com/fullsend-ai/org) (see [MAINTAINERS.md](MAINTAINERS.md)) | Maintainer consensus |
-| Core | Ask one or more members of the [@fullsend-ai/core](https://github.com/orgs/fullsend-ai/teams/core) team | Core team, case by case |
+| Core | None yet; ask a member of the [@fullsend-ai/core](https://github.com/orgs/fullsend-ai/teams/core) team (see [Core](#core)) | Core team; formal process to be defined when needed |
 
 ## Revoking access
 
