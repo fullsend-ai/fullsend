@@ -147,6 +147,46 @@ func TestRunAgentUpdate_PreservesConfigLayout(t *testing.T) {
 	assert.Equal(t, strings.Replace(orig, `"`+oldSource+`"`, `"`+entry.Source+`"`, 1), readFile(t, path))
 }
 
+func TestRunAgentUpdate_AfterURLAddPreservesConfigLayout(t *testing.T) {
+	newSHA := "b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3"
+	newContent := []byte("role: triage\nupdated: true\n")
+	srv, policy := newAgentTestServer(t, map[string][]byte{
+		"/my-org/my-agents/" + testCommitSHA + "/harness/triage.yaml": []byte("role: triage\n"),
+		"/my-org/my-agents/" + newSHA + "/harness/triage.yaml":        newContent,
+	})
+	origPolicy := fetch.DefaultPolicy
+	fetch.DefaultPolicy = policy
+	defer func() { fetch.DefaultPolicy = origPolicy }()
+
+	dir := t.TempDir()
+	path := writeAgentConfigFixture(t, dir, commentedAgentConfig)
+	printer := ui.New(&bytes.Buffer{})
+
+	// add writes the unnamed entry as "- source: <url>".
+	source := srv.URL + "/my-org/my-agents/" + testCommitSHA + "/harness/triage.yaml"
+	require.NoError(t, runAgentAdd(context.Background(), source, "", dir, forge.NewFakeClient(), printer))
+	added := readFile(t, path)
+	require.Contains(t, added, "    - source: ")
+
+	// update changes that first pair; the dash, comments and every other
+	// line must survive rather than falling back to a full rewrite.
+	require.NoError(t, runAgentUpdate(context.Background(), "triage", newSHA, dir, nil, printer))
+	cfg, err := loadAgentConfig(path)
+	require.NoError(t, err)
+	entry, ok := config.AgentSettingsFor(cfg.AgentEntries(), "triage")
+	require.True(t, ok)
+	assert.Contains(t, entry.Source, newSHA)
+
+	var oldLine string
+	for _, l := range strings.Split(added, "\n") {
+		if strings.HasPrefix(l, "    - source: ") {
+			oldLine = l
+		}
+	}
+	require.NotEmpty(t, oldLine)
+	assert.Equal(t, strings.Replace(added, oldLine, "    - source: "+entry.Source, 1), readFile(t, path))
+}
+
 func TestRunAgentRemove_DropsEntryCommentAndPrefix(t *testing.T) {
 	hash := strings.Repeat("4", 64)
 	source := "https://raw.githubusercontent.com/org/repo/" + testCommitSHA + "/harness/triage.yaml#sha256=" + hash

@@ -216,6 +216,46 @@ func TestMarshalPreservingLayout_UpdateScalarSourceKeepsForm(t *testing.T) {
 	assert.Equal(t, want, got)
 }
 
+// firstPairFixture holds mapping entries whose first pair shares its line
+// with the sequence dash.
+const firstPairFixture = `# keep me
+version: "1"
+agents:
+    # triage pinned to the v1 harness.
+    - source: ` + triageSource + `   # old pin
+      model: haiku
+    - name: triage2
+      source: https://raw.githubusercontent.com/org/agents/0123456789abcdef0123456789abcdef01234567/harness/triage2.yaml
+      model: opus
+# trailing comment
+`
+
+func TestMarshalPreservingLayout_ReplaceFirstPairKeepsDash(t *testing.T) {
+	w := parseLayoutFixture(t, firstPairFixture)
+	agents := w.LocalAgentEntries()
+	newSource := strings.Replace(triageSource, "0123456789abcdef0123456789abcdef01234567", "fedcba9876543210fedcba9876543210fedcba98", 1)
+	agents[0].Source = newSource
+	w.SetAgents(agents)
+
+	got := marshalLayout(t, firstPairFixture, w)
+
+	want := replaceOnce(t, firstPairFixture, `    - source: `+triageSource+`   # old pin`,
+		`    - source: `+newSource+` # old pin`)
+	assert.Equal(t, want, got)
+}
+
+func TestMarshalPreservingLayout_RemoveFirstPairKeepsDash(t *testing.T) {
+	w := parseLayoutFixture(t, firstPairFixture)
+	agents := w.LocalAgentEntries()
+	agents[1].Name = "" // still derives triage2 from its source
+	w.SetAgents(agents)
+
+	got := marshalLayout(t, firstPairFixture, w)
+
+	want := replaceOnce(t, firstPairFixture, "    - name: triage2\n      source:", "    - source:")
+	assert.Equal(t, want, got)
+}
+
 func TestMarshalPreservingLayout_ScalarEntryGainingSettings(t *testing.T) {
 	w := parseLayoutFixture(t, layoutFixture)
 	w.SetAgents(UpsertAgentSettings(w.LocalAgentEntries(), "triage", "", "haiku", "", nil))

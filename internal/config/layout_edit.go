@@ -377,8 +377,37 @@ func (e *layoutEditor) replacePair(m *yaml.Node, idx, mEnd int, v *yaml.Node) er
 	if err != nil {
 		return err
 	}
+	// The first pair of a sequence item shares its line with the dash:
+	// keep that prefix instead of padding over it.
+	prefix, err := e.dashPrefix(m.Content[idx])
+	if err != nil {
+		return err
+	}
+	if prefix != "" {
+		lines[0] = prefix + lines[0][len(prefix):]
+	}
 	e.replace(start, end, lines)
 	return nil
+}
+
+// dashPrefix returns the text before key on its line when that is a
+// sequence dash (the first pair of a sequence item), else "".
+func (e *layoutEditor) dashPrefix(key *yaml.Node) (string, error) {
+	if key.Line < 1 || key.Line > len(e.lines) || key.Column < 1 {
+		return "", errNoSplice
+	}
+	line := e.lines[key.Line-1]
+	if key.Column-1 > len(line) {
+		return "", errNoSplice
+	}
+	p := line[:key.Column-1]
+	if strings.TrimSpace(p) == "" {
+		return "", nil
+	}
+	if strings.Trim(p, " -") != "" {
+		return "", errNoSplice
+	}
+	return p, nil
 }
 
 // remove deletes child idx of container c together with the comment
@@ -393,8 +422,32 @@ func (e *layoutEditor) remove(c *yaml.Node, idx, cEnd int) error {
 		if col, _, err = e.itemColumns(c, idx); err != nil {
 			return err
 		}
+	} else if prefix, err := e.dashPrefix(c.Content[idx]); err != nil {
+		return err
+	} else if prefix != "" {
+		return e.removeFirstPair(c, idx, start, end, prefix)
 	}
 	e.replace(e.headStart(start, col), end, nil)
+	return nil
+}
+
+// removeFirstPair deletes the first pair of a mapping that is a sequence
+// item. Its line holds the item's dash, so the next pair is moved up
+// onto that dash instead.
+func (e *layoutEditor) removeFirstPair(m *yaml.Node, idx, start, end int, prefix string) error {
+	if idx+2 >= len(m.Content) {
+		return errNoSplice // the item would be left empty
+	}
+	next := m.Content[idx+2]
+	if next.Line <= end || next.Line > len(e.lines) || next.Column-1 != len(prefix) {
+		return errNoSplice
+	}
+	line := strings.TrimSuffix(e.lines[next.Line-1], "\r")
+	if next.Column-1 > len(line) {
+		return errNoSplice
+	}
+	e.replace(start, end, nil)
+	e.replace(next.Line, next.Line, []string{prefix + line[len(prefix):]})
 	return nil
 }
 
