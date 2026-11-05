@@ -4,9 +4,10 @@ Maintainers have merge and approval rights on this repository. They are
 members of the [@fullsend-ai/maintainers](https://github.com/orgs/fullsend-ai/teams/maintainers)
 team referenced in [CODEOWNERS](CODEOWNERS).
 
-Maintainer is the final role on the [contributor ladder](LADDER.md).
-See that document for the full path from first-time contributor to
-Maintainer, including the intermediate roles (Vouched, Triage, Write).
+Maintainer is a role on the [contributor ladder](LADDER.md), above
+Write and below Core. See that document for the full path from
+first-time contributor to core team member, including the other roles
+(Vouched, Triage, Write, and Core).
 
 ## What maintainers do that contributors do not
 

@@ -300,8 +300,8 @@ Role changes use the following request mechanisms:
 
 ## Revoking access
 
-Any maintainer may revoke a collaborator's access at any role level. Common
-reasons include:
+Any core team member may revoke a collaborator's access at any role
+level. Common reasons include:
 
 - Extended inactivity (no contributions or reviews for 6+ months)
 - Misuse of granted permissions
