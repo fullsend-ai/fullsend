@@ -417,10 +417,11 @@ fi
 # Runs here (not in dispatch) because the Members API requires the
 # bot PAT (from FULLSEND_JOB_TOKEN, selected by role).
 # Fail-closed: API failure → access_level 0 → reject.
-# ACTOR_ID is the generic actor identity, populated from NoteAuthorID for
-# MR events and issue/note events. Older dispatch pipelines may omit it, so
-# keep the MR_AUTHOR_ID fallback except for a closed MR: closed retro must
-# identify the actual closer and cannot use the MR author's membership.
+# ACTOR_ID is the generic actor identity, populated from the event actor
+# for MR events and issue/note events. Older dispatch pipelines may omit it;
+# MR_AUTHOR_ID is a safe fallback only for opened/synchronized events, where
+# the MR author is the actor. Close/merge events must identify the closer or
+# merger, and an absent or unreadable action cannot authorize the MR author.
 #
 # Jira work-item dispatches (EVENT_TYPE jira_*, #8919) carry no ACTOR_ID:
 # a Jira actor has no GitLab user ID. The Jira poller already authorized
@@ -436,12 +437,18 @@ if [ "${JIRA_DISPATCH}" = "true" ]; then
   echo "Jira work-item dispatch — actor authorized by the Jira poller's project-role check"
 elif [ "${STAGE}" != "prioritize" ]; then
   AUTH_ACTOR_ID="${ACTOR_ID:-}"
-  _FULLSEND_MR_ACTION=""
-  if [ "${EVENT_TYPE:-}" = "mr_event" ] && [ -n "${EVENT_PAYLOAD_B64:-}" ]; then
-    _FULLSEND_MR_ACTION=$(printf '%s' "${EVENT_PAYLOAD_B64}" | base64 -d 2>/dev/null | jq -r '.action // ""' 2>/dev/null || true)
-  fi
-  if [ -z "${AUTH_ACTOR_ID}" ] && [ "${_FULLSEND_MR_ACTION}" != "closed" ]; then
-    AUTH_ACTOR_ID="${MR_AUTHOR_ID:-}"
+  if [ "${EVENT_TYPE:-}" = "mr_event" ]; then
+    _FULLSEND_MR_ACTION=""
+    if [ -n "${EVENT_PAYLOAD_B64:-}" ]; then
+      _FULLSEND_MR_ACTION=$(printf '%s' "${EVENT_PAYLOAD_B64}" | base64 -d 2>/dev/null | jq -r '.action // empty' 2>/dev/null) || _FULLSEND_MR_ACTION=""
+    fi
+    case "${_FULLSEND_MR_ACTION}" in
+      opened|synchronized)
+        if [ -z "${AUTH_ACTOR_ID}" ]; then
+          AUTH_ACTOR_ID="${MR_AUTHOR_ID:-}"
+        fi
+        ;;
+    esac
   fi
   if [ -z "${AUTH_ACTOR_ID}" ]; then
     echo "WARNING: No actor identity available — skipping stage (fail-closed)"

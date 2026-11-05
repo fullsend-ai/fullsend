@@ -64,7 +64,11 @@ Feature: Retro routing by a config trigger
       model: opus
       image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
       policy: policies/base.yaml
-      trigger: |
+      """
+    And the repository agents are configured with:
+      """
+      retro:
+        trigger: >
           event.transition.kind == "comment_added"
           && has(event.transition.comment.command)
           && event.transition.comment.command == "/fs-retro"

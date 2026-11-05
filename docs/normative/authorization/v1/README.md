@@ -355,7 +355,8 @@ GitLab merged and closed merge requests use the same write threshold. The
 poller resolves the actor's project role before routing, and the agent job
 checks Developer membership before running retro. A role or membership lookup
 failure denies dispatch. If GitLab does not provide the closer identity, the
-poller fails closed and never substitutes the merge request author.
+poller observes the event without dispatch or a poll failure, and never
+substitutes the merge request author.
 
 The GitHub `/fs-retro` command also requires the fixed write threshold,
 regardless of a lower role declared by the retro harness. CEL cannot promote

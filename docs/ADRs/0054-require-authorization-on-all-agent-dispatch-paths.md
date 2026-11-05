@@ -254,6 +254,8 @@ permission list, not by bypassing the check.
 > skips retro instead of falling back to the Bash route. GitLab merged and
 > closed merge requests use the same write-equivalent threshold: the actor
 > must have Developer access, checked in routing and again in the agent job.
+> If GitLab omits the closer identity, polling skips retro without using the
+> merge request author as a substitute.
 
 ## Consequences
 

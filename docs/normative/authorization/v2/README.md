@@ -538,8 +538,8 @@ permission are denied; a write-authorized user can run `/fs-retro` afterward.
 GitLab merged and closed merge requests use the same write threshold: polling
 resolves the actor's project role, and the agent job independently checks
 Developer membership before running retro. If GitLab does not provide the
-closer identity, polling fails closed instead of using the merge request
-author.
+closer identity, polling observes the event without dispatch or a poll failure
+instead of using the merge request author.
 If CEL opt-in, configuration, or route evaluation fails for a close event, the
 workflow skips retro rather than falling back to the Bash stage. Retro's
 repository token can write issues and pull requests, so this dispatch is not

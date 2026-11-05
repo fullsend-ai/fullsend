@@ -1062,17 +1062,58 @@ func TestRunAgentJobScript_MapsOnlyPrefixedOpenAIKey(t *testing.T) {
 	}
 }
 
-func TestRunAgentJobScript_ClosedMRWithoutCloserDoesNotUseMRAuthor(t *testing.T) {
-	payload := base64.StdEncoding.EncodeToString([]byte(`{"type":"mr_event","action":"closed"}`))
-	got, _ := runAgentJobScriptForFullsendRun(t, []string{
-		"STAGE=retro",
-		"EVENT_TYPE=mr_event",
-		"EVENT_PAYLOAD_B64=" + payload,
-		"ACTOR_ID=",
-		"MR_AUTHOR_ID=42",
-	})
-	assert.Contains(t, got, "No actor identity available — skipping stage")
-	assert.NotContains(t, got, "FULLSEND_GITLAB_URL:", "closed-MR authorization must not run as the MR author")
+func TestRunAgentJobScript_MRLifecycleWithoutActorDoesNotUseMRAuthor(t *testing.T) {
+	tests := []struct {
+		name        string
+		eventType   string
+		payload     string
+		payloadB64  string
+		omitPayload bool
+	}{
+		{
+			name:      "closed MR without closed_by",
+			eventType: "mr_event",
+			payload:   `{"type":"mr_event","action":"closed"}`,
+		},
+		{
+			// Poll-discovered merge payloads carry mr_author_id but no action.
+			name:      "merged MR without merger identity",
+			eventType: "mr_event",
+			payload:   `{"type":"mr_event","iid":11,"mr_author_id":42}`,
+		},
+		{
+			name:       "unreadable payload",
+			eventType:  "mr_event",
+			payloadB64: "%%%",
+		},
+		{
+			name:        "missing payload",
+			eventType:   "mr_event",
+			omitPayload: true,
+		},
+		{
+			name:        "MR note without commenter identity",
+			eventType:   "mr_note",
+			omitPayload: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			payload := tt.payloadB64
+			if payload == "" && !tt.omitPayload {
+				payload = base64.StdEncoding.EncodeToString([]byte(tt.payload))
+			}
+			got, _ := runAgentJobScriptForFullsendRun(t, []string{
+				"STAGE=retro",
+				"EVENT_TYPE=" + tt.eventType,
+				"EVENT_PAYLOAD_B64=" + payload,
+				"ACTOR_ID=",
+				"MR_AUTHOR_ID=42",
+			})
+			assert.Contains(t, got, "No actor identity available — skipping stage")
+			assert.NotContains(t, got, "FULLSEND_GITLAB_URL:", "MR lifecycle authorization must not run as the MR author")
+		})
+	}
 }
 
 // runAgentJobScriptForFullsendRun runs run-agent-job.sh against a fake

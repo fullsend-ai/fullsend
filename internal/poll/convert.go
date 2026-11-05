@@ -13,6 +13,8 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/normevent"
 )
 
+var errMissingMRCloserIdentity = errors.New("closed merge request has no closer identity")
+
 // toNormalizedEvent converts a RoutableEvent into a dispatch.NormalizedEvent
 // suitable for stage matching and dispatch. The returned int is the resolved
 // numeric actor ID (e.g. from the label-events API for issue_label events).
@@ -107,7 +109,7 @@ func (p *Poller) toNormalizedEvent(ctx context.Context, event RoutableEvent) (di
 		case "closed":
 			actorLogin = event.NoteAuthorLogin
 			if authorID == 0 || actorLogin == "" {
-				return dispatch.NormalizedEvent{}, 0, fmt.Errorf("closed merge request has no closer identity")
+				return dispatch.NormalizedEvent{}, 0, errMissingMRCloserIdentity
 			}
 			isBot = event.IsBot || (p.botUserID != 0 && authorID == p.botUserID) || isProjectAccessTokenBot(actorLogin)
 		default:

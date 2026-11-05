@@ -2,6 +2,7 @@ package poll
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -481,7 +482,7 @@ func TestToNormalizedEvent_MREventClosedWithoutCloserFailsClosed(t *testing.T) {
 		TargetBranch:  "main",
 	}
 
-	if _, _, err := p.toNormalizedEvent(context.Background(), event); err == nil || !strings.Contains(err.Error(), "closed merge request has no closer identity") {
+	if _, _, err := p.toNormalizedEvent(context.Background(), event); !errors.Is(err, errMissingMRCloserIdentity) {
 		t.Fatalf("toNormalizedEvent error = %v, want missing closer identity", err)
 	}
 }
