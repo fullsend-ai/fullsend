@@ -177,6 +177,146 @@
       }
     },
     {
+      "$comment": "Retained actions belong only to acquired, complete categories: a body action requires body coverage complete.",
+      "if": {
+        "not": {
+          "properties": {
+            "coverage": {
+              "properties": {
+                "actions": {
+                  "properties": {
+                    "categories": {
+                      "properties": {
+                        "body": { "properties": { "status": { "const": "complete" } }, "required": ["status"] }
+                      },
+                      "required": ["body"]
+                    }
+                  },
+                  "required": ["categories"]
+                }
+              },
+              "required": ["actions"]
+            }
+          },
+          "required": ["coverage"]
+        }
+      },
+      "then": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "actions": { "items": { "properties": { "category": { "not": { "const": "body" } } } } }
+            }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "Retained actions belong only to acquired, complete categories: a comment action requires comment coverage complete.",
+      "if": {
+        "not": {
+          "properties": {
+            "coverage": {
+              "properties": {
+                "actions": {
+                  "properties": {
+                    "categories": {
+                      "properties": {
+                        "comment": { "properties": { "status": { "const": "complete" } }, "required": ["status"] }
+                      },
+                      "required": ["comment"]
+                    }
+                  },
+                  "required": ["categories"]
+                }
+              },
+              "required": ["actions"]
+            }
+          },
+          "required": ["coverage"]
+        }
+      },
+      "then": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "actions": { "items": { "properties": { "category": { "not": { "const": "comment" } } } } }
+            }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "Retained actions belong only to acquired, complete categories: a review action requires review coverage complete.",
+      "if": {
+        "not": {
+          "properties": {
+            "coverage": {
+              "properties": {
+                "actions": {
+                  "properties": {
+                    "categories": {
+                      "properties": {
+                        "review": { "properties": { "status": { "const": "complete" } }, "required": ["status"] }
+                      },
+                      "required": ["review"]
+                    }
+                  },
+                  "required": ["categories"]
+                }
+              },
+              "required": ["actions"]
+            }
+          },
+          "required": ["coverage"]
+        }
+      },
+      "then": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "actions": { "items": { "properties": { "category": { "not": { "const": "review" } } } } }
+            }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "Retained actions belong only to acquired, complete categories: a label_application action requires label_application coverage complete.",
+      "if": {
+        "not": {
+          "properties": {
+            "coverage": {
+              "properties": {
+                "actions": {
+                  "properties": {
+                    "categories": {
+                      "properties": {
+                        "label_application": { "properties": { "status": { "const": "complete" } }, "required": ["status"] }
+                      },
+                      "required": ["label_application"]
+                    }
+                  },
+                  "required": ["categories"]
+                }
+              },
+              "required": ["actions"]
+            }
+          },
+          "required": ["coverage"]
+        }
+      },
+      "then": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "actions": { "items": { "properties": { "category": { "not": { "const": "label_application" } } } } }
+            }
+          }
+        }
+      }
+    },
+    {
       "$comment": "A candidate that carries the actions list carries the complete enumerated superset: every applicable category is complete.",
       "if": {
         "properties": {

@@ -279,7 +279,9 @@ These values are kept distinct as follows:
   acquisition plan), and at least one is `complete`. A candidate that carries
   `entity.actions` carries the full enumerated superset, so every applicable
   category is `complete`. An evaluable document may leave categories outside
-  its acquisition plan `not_loaded`.
+  its acquisition plan `not_loaded`. Categories outside the plan contribute no
+  elements: `entity.actions` MUST NOT contain an element of a category whose
+  coverage is not `complete`. The schema enforces this.
 
 **Decision evidence boundary.** CEL observes no coverage state. Coverage is
 host-only, and no CEL expression can distinguish "not loaded" from "absent",
@@ -722,11 +724,13 @@ Files prefixed `valid-` validate against their schema, and files prefixed
 | [`valid-scheduled-empty-history.json`](examples/valid-scheduled-empty-history.json) | Genuinely empty retained history. Complete enumeration whose one element was removed below the harness minimum. |
 | [`valid-manual-event.json`](examples/valid-manual-event.json) | Event-backed evaluation for a `manual` event. `event.source.system` is `manual` while `entity.source.system` is the hosting forge `github`. |
 | [`valid-command-token-bounds.json`](examples/valid-command-token-bounds.json) | Command-token boundaries. A bare `/` and an over-64-character slash-prefixed token yield `command: null`. Tokens of exactly 2 and 64 characters are retained. |
+| [`valid-command-token-uppercase-e.json`](examples/valid-command-token-uppercase-e.json) | A command token (`/EDIT`) containing an uppercase E. Only the explicit whitespace code points are rejected. |
 | [`valid-state-only-decision.json`](examples/valid-state-only-decision.json) | A `scope_complete` result from a state-only predicate. The state facet is `complete`, and the whole actions facet and its categories are `not_loaded` because they are outside the acquisition plan. No history is fetched. |
 | [`valid-witness-true.json`](examples/valid-witness-true.json) | A `witness` result. A retained `/fs-triage` comment settles an existence test as `true` while the comment category is still `incomplete` and `entity.actions` is omitted. |
 | [`valid-maintain-minimum.json`](examples/valid-maintain-minimum.json) | A `maintain` harness minimum. Maintain and admin humans and a recognized bot are retained, and a lower-role element was removed. |
 | [`valid-admin-minimum.json`](examples/valid-admin-minimum.json) | An `admin` harness minimum. Only an admin human is retained. |
 | [`invalid-witness-false-outcome.json`](examples/invalid-witness-false-outcome.json) | A `witness` result with outcome `false`. A witness settles existence only. |
+| [`invalid-action-from-not-loaded-category.json`](examples/invalid-action-from-not-loaded-category.json) | Comment actions retained while the comment category is `not_loaded`. Categories outside the acquisition plan contribute no elements. |
 | [`invalid-maintain-minimum-write-actor.json`](examples/invalid-maintain-minimum-write-actor.json) | A `write` human retained under a `maintain` minimum |
 | [`invalid-admin-minimum-maintain-actor.json`](examples/invalid-admin-minimum-maintain-actor.json) | A `maintain` human retained under an `admin` minimum |
 | [`invalid-command-bare-slash.json`](examples/invalid-command-bare-slash.json) | A bare `/` encoded as `command` instead of `null` |
