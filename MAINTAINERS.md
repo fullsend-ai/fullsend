@@ -5,9 +5,9 @@ members of the [@fullsend-ai/maintainers](https://github.com/orgs/fullsend-ai/te
 team referenced in [CODEOWNERS](CODEOWNERS).
 
 Maintainer is a role on the [contributor ladder](LADDER.md), above
-Write and below Core. See that document for the full path from
-first-time contributor to core team member, including the other roles
-(Vouched, Triage, Write, and Core).
+Write and below Admin. See that document for the full path from
+first-time contributor to admin, including the other roles (Vouched,
+Triage, Write, and Admin).
 
 ## What maintainers do that contributors do not
 

@@ -1,9 +1,9 @@
 # Contributor Ladder
 
-This document defines the path from first-time contributor to core
-team member. Each role grants additional capabilities and carries
-additional expectations. Advancement is not automatic — it requires a
-request, a track record, and maintainer approval.
+This document defines the path from first-time contributor to admin.
+Each role grants additional capabilities and carries additional
+expectations. Advancement is not automatic — it requires a request, a
+track record, and maintainer approval.
 
 The ladder is organization-wide. Merged PRs and substantive reviews in
 any public repository under the
@@ -169,15 +169,15 @@ issue in [fullsend-ai/org](https://github.com/fullsend-ai/org). Existing
 maintainers discuss and reach consensus; if approved, your username is
 added to the `maintainers` team in `peribolos.yaml`.
 
-### Core
+### Admin
 
 **What it means:** You have repository administration rights and are a
 member of the
-[@fullsend-ai/core](https://github.com/orgs/fullsend-ai/teams/core)
-team. Core team members are typically also owners of the fullsend-ai
-GitHub organization. You are expected to perform all of the activities
-of the Maintainer role and also to perform repository-level
-administrative tasks as needed.
+[@fullsend-ai/admins](https://github.com/orgs/fullsend-ai/teams/admins)
+team. Admins are typically also owners of the fullsend-ai GitHub
+organization. You are expected to perform all of the activities of the
+Maintainer role and also to perform repository-level administrative
+tasks as needed.
 
 **What it unlocks:**
 
@@ -185,14 +185,14 @@ administrative tasks as needed.
 - All capabilities from previous roles
 
 **Criteria and process:** This role has no formal request process
-yet. The project does not anticipate needing to add core team members
-anytime soon. If and when someone needs this role, the core team will
-define the request process, the track record expected, and the
-approval threshold, and document them here. Until then, if you believe
-you need administrator access, reach out to one or more members of the
-core team and explain why.
+yet. The project does not anticipate needing to add admins anytime
+soon. If and when someone needs this role, the admins will define the
+request process, the track record expected, and the approval
+threshold, and document them here. Until then, if you believe you need
+administrator access, reach out to one or more admins and explain why.
 
-**How to check:** Your GitHub username is listed in the `core` team in
+**How to check:** Your GitHub username is listed in the `admins` team
+in
 [peribolos.yaml](https://github.com/fullsend-ai/org/blob/main/peribolos.yaml)
 in the [fullsend-ai/org](https://github.com/fullsend-ai/org) repository.
 
@@ -296,12 +296,12 @@ Role changes use the following request mechanisms:
 | Triage | [Triage Request](https://github.com/fullsend-ai/org/issues/new?template=triage-request.yml) issue in [fullsend-ai/org](https://github.com/fullsend-ai/org) | 1 Maintainer |
 | Write | [Write Request](https://github.com/fullsend-ai/org/issues/new?template=write-request.yml) issue in [fullsend-ai/org](https://github.com/fullsend-ai/org) | 2 Maintainers |
 | Maintainer | [Maintainer Nomination](https://github.com/fullsend-ai/org/issues/new?template=maintainer-request.yml) issue in [fullsend-ai/org](https://github.com/fullsend-ai/org) (see [MAINTAINERS.md](MAINTAINERS.md)) | Maintainer consensus |
-| Core | None yet; ask a member of the [@fullsend-ai/core](https://github.com/orgs/fullsend-ai/teams/core) team (see [Core](#core)) | Core team; formal process to be defined when needed |
+| Admin | None yet; ask a member of the [@fullsend-ai/admins](https://github.com/orgs/fullsend-ai/teams/admins) team (see [Admin](#admin)) | Admins; formal process to be defined when needed |
 
 ## Revoking access
 
-Any core team member may revoke a collaborator's access at any role
-level. Common reasons include:
+Any admin may revoke a collaborator's access at any role level. Common
+reasons include:
 
 - Extended inactivity (no contributions or reviews for 6+ months)
 - Misuse of granted permissions

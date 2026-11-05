@@ -190,7 +190,7 @@ The [`filing-issues`](skills/filing-issues/SKILL.md) skill encodes this split fo
 ## Contributor ladder
 
 This project defines five contributor roles — Vouched, Triage, Write,
-Maintainer, and Core — each granting additional capabilities. See
+Maintainer, and Admin — each granting additional capabilities. See
 [LADDER.md](LADDER.md) for the full ladder and how to request each role.
 
 For the Maintainer role specifically, see
