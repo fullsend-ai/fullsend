@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -27,6 +28,15 @@ type LiveClient struct {
 	baseURL    string
 	email      string // for Basic auth (Cloud)
 	token      string
+
+	// gatewayURL, when set, routes REST requests through the Atlassian
+	// API gateway (see WithAPIGateway) instead of the site URL.
+	gatewayURL string
+	// cloudSem serializes cloud ID discovery; cloudID caches the result.
+	// Only a successful discovery is cached, so a failed one is retried
+	// on the next request.
+	cloudSem chan struct{}
+	cloudID  string
 }
 
 // Option configures the Jira client.
@@ -47,6 +57,21 @@ func WithBaseURL(rawURL string) Option {
 func WithEmail(email string) Option {
 	return func(c *LiveClient) {
 		c.email = email
+	}
+}
+
+// WithAPIGateway routes REST requests through the Atlassian API gateway
+// at apiURL (for example https://api.atlassian.com) instead of the site
+// URL: requests go to {apiURL}/ex/jira/{cloudId}/rest/api/3/... Scoped
+// API tokens, including service-account tokens, are only accepted
+// through the gateway. The cloud ID is discovered from the site URL set
+// by WithBaseURL (GET {baseURL}/_edge/tenant_info) on the first request
+// and cached for the client's lifetime. The site URL stays the source of
+// issue browse links. An apiURL override must serve the same
+// /ex/jira/{cloudId}/rest/api/3 path layout.
+func WithAPIGateway(apiURL string) Option {
+	return func(c *LiveClient) {
+		c.gatewayURL = strings.TrimRight(apiURL, "/")
 	}
 }
 
@@ -118,7 +143,8 @@ func New(token string, opts ...Option) (*LiveClient, error) {
 			Timeout:       30 * time.Second,
 			CheckRedirect: checkRedirect,
 		},
-		token: token,
+		token:    token,
+		cloudSem: make(chan struct{}, 1),
 	}
 	for _, o := range opts {
 		o(c)
@@ -128,6 +154,11 @@ func New(token string, opts ...Option) (*LiveClient, error) {
 	}
 	if err := ValidateBaseURL(c.baseURL); err != nil {
 		return nil, err
+	}
+	if c.gatewayURL != "" {
+		if err := ValidateBaseURL(c.gatewayURL); err != nil {
+			return nil, fmt.Errorf("jira: API gateway URL: %w", err)
+		}
 	}
 	return c, nil
 }
@@ -163,13 +194,86 @@ func (e *APIError) Unwrap() error {
 
 const maxRetries = 5
 
-// apiURL builds a Jira Cloud REST API v3 URL. This client targets Cloud
-// only: v3/ADF and the cursor-based search/group endpoints below don't
-// exist on Data Center (which speaks /rest/api/2 with startAt/total
-// pagination and takes a groupname, not a groupId). Data Center support
-// is tracked as future work, not implemented here.
-func (c *LiveClient) apiURL(path string) string {
-	return c.baseURL + "/rest/api/3" + path
+// apiURL builds a Jira Cloud REST API v3 URL: under the site URL by
+// default, or under the API gateway and the site's cloud ID when
+// WithAPIGateway is set. This client targets Cloud only: v3/ADF and the
+// cursor-based search/group endpoints below don't exist on Data Center
+// (which speaks /rest/api/2 with startAt/total pagination and takes a
+// groupname, not a groupId). Data Center support is tracked as future
+// work, not implemented here.
+func (c *LiveClient) apiURL(ctx context.Context, path string) (string, error) {
+	if c.gatewayURL == "" {
+		return c.baseURL + "/rest/api/3" + path, nil
+	}
+	cloudID, err := c.resolveCloudID(ctx)
+	if err != nil {
+		return "", err
+	}
+	return c.gatewayURL + "/ex/jira/" + cloudID + "/rest/api/3" + path, nil
+}
+
+// maxTenantInfoBytes bounds the tenant_info response body.
+const maxTenantInfoBytes = 64 << 10
+
+// cloudIDRe matches a Jira Cloud ID (a UUID). Anything else is rejected so
+// a malformed tenant_info response cannot inject path segments into the
+// gateway URL.
+var cloudIDRe = regexp.MustCompile(`^[A-Za-z0-9-]{1,64}$`)
+
+// resolveCloudID returns the site's cloud ID, discovering it on first use.
+// Concurrent callers wait for a single discovery; waiting honours ctx.
+func (c *LiveClient) resolveCloudID(ctx context.Context) (string, error) {
+	select {
+	case c.cloudSem <- struct{}{}:
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+	defer func() { <-c.cloudSem }()
+	if c.cloudID != "" {
+		return c.cloudID, nil
+	}
+	cloudID, err := c.fetchCloudID(ctx)
+	if err != nil {
+		return "", err
+	}
+	c.cloudID = cloudID
+	return cloudID, nil
+}
+
+// fetchCloudID reads the cloud ID from GET {baseURL}/_edge/tenant_info.
+// The endpoint is public, so no credentials are sent to it.
+func (c *LiveClient) fetchCloudID(ctx context.Context) (string, error) {
+	tenantURL := c.baseURL + "/_edge/tenant_info"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, tenantURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("jira: discover cloud ID: create request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("jira: discover cloud ID: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("jira: discover cloud ID from %q: unexpected status %d", tenantURL, resp.StatusCode)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxTenantInfoBytes+1))
+	if err != nil {
+		return "", fmt.Errorf("jira: discover cloud ID from %q: read response: %w", tenantURL, err)
+	}
+	if len(data) > maxTenantInfoBytes {
+		return "", fmt.Errorf("jira: discover cloud ID from %q: response exceeds %d bytes", tenantURL, maxTenantInfoBytes)
+	}
+	var info struct {
+		CloudID string `json:"cloudId"`
+	}
+	if err := json.Unmarshal(data, &info); err != nil {
+		return "", fmt.Errorf("jira: discover cloud ID from %q: malformed response: %w", tenantURL, err)
+	}
+	if !cloudIDRe.MatchString(info.CloudID) {
+		return "", fmt.Errorf("jira: discover cloud ID from %q: response has no valid cloudId", tenantURL)
+	}
+	return info.CloudID, nil
 }
 
 func (c *LiveClient) setAuth(req *http.Request) {
@@ -183,7 +287,10 @@ func (c *LiveClient) setAuth(req *http.Request) {
 
 // do executes an HTTP request with auth, error handling, and retry with backoff.
 func (c *LiveClient) do(ctx context.Context, method, path string, body io.Reader, result any) error {
-	reqURL := c.apiURL(path)
+	reqURL, err := c.apiURL(ctx, path)
+	if err != nil {
+		return err
+	}
 
 	var bodyBytes []byte
 	if body != nil {

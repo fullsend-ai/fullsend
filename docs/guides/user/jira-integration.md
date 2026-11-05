@@ -137,9 +137,16 @@ Give the poller a Jira account of its own, rather than a person's API token.
 Today that means a dedicated non-human account: a regular Atlassian user
 account (often called a bot account) created for fullsend, with its own email
 and API token. It is not an Atlassian-managed service account. Those
-authenticate through `api.atlassian.com` with scoped API tokens or OAuth 2.0,
-which fullsend does not support yet; see
-[#9007](https://github.com/fullsend-ai/fullsend/issues/9007).
+authenticate through `api.atlassian.com` with scoped API tokens. Fullsend's
+shared Jira client supports scoped tokens through the API gateway. It uses
+`FULLSEND_JIRA_TOKEN`, plus `FULLSEND_JIRA_EMAIL` for a bot user, or no email
+for a service account (see the
+[Config Reference](../../reference/config-reference.md#trackerjira-connection-and-polling-settings)).
+The poller and agents do not use that client yet; see
+[#9077](https://github.com/fullsend-ai/fullsend/issues/9077),
+[#9078](https://github.com/fullsend-ai/fullsend/issues/9078), and
+[#9079](https://github.com/fullsend-ai/fullsend/issues/9079). OAuth 2.0
+client credentials are not supported.
 
 The poller and the built-in agents' Jira writes both authenticate as
 `JIRA_USER_EMAIL` / `JIRA_TOKEN`, and the poller treats that account as a
