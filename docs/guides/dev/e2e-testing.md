@@ -140,28 +140,24 @@ The CI service account needs inference-provision IAM on `E2E_GCP_PROJECT_ID`:
 | `roles/iam.workloadIdentityPoolAdmin` | Create/update repo-scoped inference WIF providers |
 | `roles/resourcemanager.projectIamAdmin` | Grant `roles/aiplatform.user` to repo WIF principals |
 
-One-time enrollment for all pool orgs (idempotent). Enroll the singular `test-repo` (used by the driver today) and the behaviour pool `test-repo-01` … `test-repo-12` (pre-provisioned for planned parallelization):
+One-time enrollment for all pool orgs (idempotent). Enroll the singular
+`test-repo` (used by the driver today) and the behaviour pool
+`test-repo-01` … `test-repo-12`, so parallel slot claims never wait on
+mint enrollment. Use the enrollment script, which runs the same
+`mint enroll` calls per org. Set `REGION` to override the mint region
+(default `us-central1`):
 
 ```bash
-export GCP_PROJECT=it-gcp-konflux-dev-fullsend
+export GCP_PROJECT=<mint-project>
 for i in $(seq -w 1 12); do
-  go run ./cmd/fullsend mint enroll "halfsend-${i}/test-repo" \
-    --project="$GCP_PROJECT" --region=us-central1
-  for j in $(seq -w 1 12); do
-    go run ./cmd/fullsend mint enroll "halfsend-${i}/test-repo-${j}" \
-      --project="$GCP_PROJECT" --region=us-central1
-  done
+  e2e/org-pool/enroll.sh "${i}"
 done
 ```
 
 One-time enrollment for the STAGE org (`halfsend`). The STAGE driver uses the same repo pool pattern (`test-repo-01` … `test-repo-12`) within the `halfsend` org:
 
 ```bash
-export GCP_PROJECT=it-gcp-konflux-dev-fullsend
-for j in $(seq -w 1 12); do
-  go run ./cmd/fullsend mint enroll "halfsend/test-repo-${j}" \
-    --project="$GCP_PROJECT" --region=us-central1
-done
+GCP_PROJECT=<mint-project> e2e/org-pool/enroll.sh halfsend
 ```
 
 Re-run enrollment when adding a new pool org or after mint infrastructure changes that drop `PER_REPO_WIF_REPOS` entries. See [mint-administration.md](../infrastructure/mint-administration.md) for required operator IAM.
@@ -178,12 +174,40 @@ Each pool org must be provisioned before e2e can use it:
 6. `FULLSEND_FOREIGN_E2E_REPOS` includes `fullsend-ai/fullsend` with org-wide visibility (`visibility: all`)
 7. Mint enrolled: requesting repository `fullsend-ai/fullsend` in `PER_REPO_WIF_REPOS` (or public mode), `e2e` in `ROLE_APP_IDS`, e2e app PEM enrolled. The pool org is a foreign target, so its access is governed by the `FULLSEND_FOREIGN_E2E_REPOS` grant and App installation above rather than by requesting-repository enrollment
 
-Use the idempotent setup script. Numeric arguments become `halfsend-NN`; a full org name (for example `halfsend` for STAGE) is used as-is:
+Use the idempotent setup scripts in `e2e/org-pool/`. These steps are
+operator work — org creation and app installs need an org-admin `gh`
+session, and enrollment needs a GCP admin. Developers running behaviour
+tests locally can assume the pool orgs are already provisioned.
 
-```bash
-hack/setup-new-e2e-org.sh 07
-hack/setup-new-e2e-org.sh halfsend
-```
+1. Run the interactive script once per org to complete the manual steps
+   (org creation, `botsend` ownership, test actor invitations, GitHub App
+   installs). It requires `ORG_CONTACT_EMAIL`, the contact email for the
+   org:
+
+   ```bash
+   ORG_CONTACT_EMAIL=<contact-email> e2e/org-pool/setup-manual.sh 07
+   ```
+
+2. Run the non-interactive script, which is safe to run in CI. Numeric
+   arguments become `halfsend-NN`; a full org name (for example `halfsend`
+   for STAGE) is used as-is:
+
+   ```bash
+   e2e/org-pool/setup-org.sh 07
+   e2e/org-pool/setup-org.sh halfsend
+   ```
+
+   If an actor invitation is still pending, the script accepts it when the
+   actor PATs are exported:
+
+   ```bash
+   TEST_ACTOR_WRITE_PAT=<pat> TEST_ACTOR_TRIAGE_PAT=<pat> \
+     e2e/org-pool/setup-org.sh 07
+   ```
+
+The behaviour job in `.github/workflows/e2e.yml` does not run this script;
+CI runs it are planned as a follow-up once the scripts land on `main`
+(#8886). Until then, an org owner runs it per org to correct drift.
 
 Verify foreign authorization:
 
@@ -232,23 +256,21 @@ It does **not** call `AddCollaborator`, and it does not re-verify the
 all-repository role itself at runtime — that would require the e2e App
 installation on every pool org to hold the `organization_custom_roles`
 permission solely to call the organization-roles API. The all-repository
-role is verified once, at setup time, by `hack/setup-new-e2e-org.sh`
+role is verified once, at setup time, by `e2e/org-pool/setup-org.sh`
 (which runs with an org-admin `gh` session, not the e2e App). Missing
-membership fails with a message to run `hack/setup-new-e2e-org.sh`. The
+membership fails with a message to run `e2e/org-pool/setup-manual.sh` to
+grant organization membership, then `e2e/org-pool/setup-org.sh` to assign
+the all-repository role. The
 outsider must remain outside the organization and must not receive an
 all-repository role.
 
-The setup script (`hack/setup-new-e2e-org.sh`) creates or verifies this
-model idempotently on `halfsend-NN` and on the STAGE org `halfsend`. To
-auto-accept org membership invitations, pass the actor PATs as
-environment variables:
-
-```bash
-TEST_ACTOR_WRITE_PAT=ghp_... TEST_ACTOR_TRIAGE_PAT=ghp_... \
-  hack/setup-new-e2e-org.sh 07
-```
-
-Without the PAT variables, the script pauses for manual acceptance.
+The setup scripts in `e2e/org-pool/` create or verify this
+model idempotently on `halfsend-NN` and on the STAGE org `halfsend`.
+`setup-manual.sh` invites the actors. `setup-org.sh` accepts pending
+invitations with the actor PATs, which CI provides from the repository
+secrets `TEST_ACTOR_WRITE_PAT` and `TEST_ACTOR_TRIAGE_PAT`; run locally,
+export the PATs as shown above. It fails when an actor has no membership
+at all.
 
 Accounts and PATs are managed under
 [#6024](https://github.com/fullsend-ai/fullsend/issues/6024). PATs are
@@ -292,8 +314,9 @@ the team. The
 run `fullsend mint status --mint-url` with the writer PAT against that
 mint.
 
-The setup script (`hack/setup-new-e2e-org.sh`) creates or verifies the
-team after it confirms test actor org membership:
+The setup script (`e2e/org-pool/setup-org.sh`) creates or verifies the
+team after it confirms test actor org membership. It never pauses, so it
+runs in CI:
 
 - When the team is missing, the script creates it.
 - On every run, the script removes the operator whose `gh` session it
@@ -317,7 +340,7 @@ the team out to existing orgs, an org owner runs the script once per org:
 
 ```bash
 for org in halfsend $(seq -w 1 12); do
-  hack/setup-new-e2e-org.sh "${org}"
+  e2e/org-pool/setup-org.sh "${org}"
 done
 ```
 
