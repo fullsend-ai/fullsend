@@ -27,9 +27,11 @@ an agent to repeat or summarize protected material.
 [ADR 0021](../ADRs/0021-jsonl-reasoning-trace-exposure.md) chooses access control
 for full-fidelity transcripts rather than relying on heuristic sanitization.
 It also specifies opt-in suppression of the JSONL transcript artifact,
-declared in agent configuration for protected external sources. That decision
-does not cover console output, reviews, traces or other forge writes, and does
-not establish that every execution path implements the suppression mechanism.
+declared in agent configuration for protected external sources. This control
+is not implemented: there is no configuration field or transcript extraction
+path that implements the opt-in suppression. Operators cannot currently rely
+on this decision to suppress transcripts. The decision does not cover console
+output, reviews, traces or other forge writes.
 
 The existing [private-repositories guide](../guides/infrastructure/private-repositories.md)
 provides operator guidance: `AGENTS.md` disclosure rules, per-agent risk
