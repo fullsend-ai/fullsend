@@ -12,6 +12,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
@@ -127,13 +128,14 @@ func nonzeroFallback(fb Fallback) Fallback {
 // NormalizeInstance canonicalizes a forge web base URL to the D01 instance
 // form: lowercase scheme://host with an escaped, case-sensitive deployment
 // prefix and no trailing slashes, query, fragment, or user info. Only http
-// and https are accepted, empty/default ports are removed, other ports
-// lose leading zeros and must fit 16 bits, a single DNS root dot is
-// stripped from the host, and hosts must be ASCII (punycode for IDNs)
-// without an IPv6 zone identifier. Path segments and escape spelling are
-// preserved so distinct deployments cannot alias. All identity and
-// envelope construction must use the normalized form so independent
-// launches converge.
+// and https are accepted. Ports lose leading zeros (an all-zero port stays
+// :0) and must fit 16 bits; empty and default ports are then removed.
+// Trailing DNS root dots are stripped, hosts must be ASCII (punycode for
+// IDNs), and IPv6 hosts take their RFC 5952 form without a zone
+// identifier. Path segments and escape spelling are preserved so distinct
+// deployments cannot alias; a path mixing percent-escapes with characters
+// that still need escaping rejects. All identity and envelope construction
+// must use the normalized form so independent launches converge.
 func NormalizeInstance(raw string) (string, error) {
 	if !utf8.ValidString(raw) {
 		return "", errors.New("tracecontext: instance must be valid UTF-8")
@@ -150,6 +152,12 @@ func NormalizeInstance(raw string) (string, error) {
 	}
 	if !utf8.ValidString(u.Path) || strings.ContainsRune(u.Path, '\x00') {
 		return "", errors.New("tracecontext: instance path must be valid UTF-8 without NUL")
+	}
+	// net/url keeps the original escapes only when the whole path is validly
+	// escaped; otherwise EscapedPath re-escapes the decoded path and %2F
+	// becomes a separator, aliasing two deployments.
+	if strings.Contains(u.RawPath, "%") && u.EscapedPath() != u.RawPath {
+		return "", errors.New("tracecontext: instance path mixes percent-escapes with unescaped characters; use the fully escaped prefix")
 	}
 	scheme := strings.ToLower(u.Scheme)
 	if scheme != "http" && scheme != "https" {
@@ -173,6 +181,10 @@ func NormalizeInstance(raw string) (string, error) {
 	host = strings.TrimRight(host, ".")
 	if host == "" {
 		return "", errors.New("tracecontext: instance URL needs a host")
+	}
+	// One IPv6 address has one spelling: use its RFC 5952 form.
+	if addr, err := netip.ParseAddr(u.Hostname()); err == nil && addr.Is6() {
+		host = "[" + addr.String() + "]"
 	}
 	port := strings.TrimLeft(rawPort, "0")
 	if port == "" && rawPort != "" {

@@ -38,23 +38,27 @@ URL-escaped deployment path prefix, with trailing slashes removed. For
 example, `https://GitLab.example.com/gitlab/` becomes
 `https://gitlab.example.com/gitlab`; it is distinct from both the root
 installation and `/GitLab`. Path segments and existing escape spelling are
-preserved, never cleaned or decoded into separators. Use the same configured
-deployment URL on every launch, rather than an entity or API URL.
+preserved, never cleaned or decoded into separators. A path that mixes
+percent-escapes with characters that still need escaping, such as
+`/a%2Fb/c d`, rejects; write the fully escaped prefix (`/a%2Fb/c%20d`). Use
+the same configured deployment URL on every launch, rather than an entity or
+API URL.
 
-Remove an empty port and the scheme's default port (`443` for HTTPS, `80` for
-HTTP). Strip leading zeros from other ports, preserving an explicit zero as
-`:0` rather than treating it as the default, and reject ports above `65535`.
-For example, `https://host:` becomes `https://host`, and
-`https://host:08443` becomes `https://host:8443`. Hosts must be ASCII: use
-the punycode form for internationalized domain names, and reject Unicode
-host spellings instead of converting them. For example,
-`https://GitHub.com:443/` becomes `https://github.com`, and
+Strip leading zeros from the port, keeping an all-zero port as `:0` rather
+than treating it as the default, and reject ports above `65535`. Then remove
+an empty port and the scheme's default port (`443` for HTTPS, `80` for
+HTTP). For example, `https://host:` and `https://host:0443` become
+`https://host`, and `https://host:08443` becomes `https://host:8443`.
+Hosts must be ASCII: use the punycode form for internationalized domain
+names, and reject Unicode host spellings instead of converting them. For
+example, `https://GitHub.com:443/` becomes `https://github.com`, and
 `https://XN--BCHER-KVA.example` becomes `https://xn--bcher-kva.example`.
-Bracketed IPv6 hosts follow the same case and port rules, without zone
-identifiers: `https://[FE80::1%25EN0]` rejects — use a routable address —
-so a normalized instance always re-normalizes to itself. Trailing DNS root
-dots are stripped: `https://github.com.` and `https://github.com` are one
-deployment with one fallback identity, never two.
+Bracketed IPv6 hosts follow the same port rules and take their RFC 5952
+form: `https://[2001:DB8:0:0:0:0:0:1]` becomes `https://[2001:db8::1]`.
+Zone identifiers reject (`https://[FE80::1%25EN0]`; use a routable
+address), so a normalized instance always re-normalizes to itself.
+Trailing DNS root dots are stripped: `https://github.com.` and
+`https://github.com` are one deployment with one fallback identity.
 
 `NormalizeInstance` rejects queries, fragments, user info, missing hosts,
 invalid UTF-8 or NUL in the decoded path, and normalized URLs over 253 bytes

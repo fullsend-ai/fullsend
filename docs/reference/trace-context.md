@@ -66,7 +66,8 @@ database ID; its result alone cannot resolve trace identity.
 
 - [`identity_test.go`](https://github.com/fullsend-ai/fullsend/blob/main/internal/telemetry/tracecontext/identity_test.go)
   contains independent fallback vectors, deployment-prefix separation checks,
-  cross-process convergence, root-dot/port/IPv6-zone canonicalization, a
+  cross-process convergence, root-dot, port, and IPv6 spelling and zone
+  canonicalization, mixed-escape path rejection, a
   normalization fuzz target asserting the canonical form re-normalizes to
   itself, and SDK exporter lifecycle assertions.
 - [`envelope_test.go`](https://github.com/fullsend-ai/fullsend/blob/main/internal/telemetry/tracecontext/envelope_test.go)

@@ -253,12 +253,18 @@ func TestNormalizeInstance(t *testing.T) {
 		{"ipv6 empty port", "https://[::1]:/gitlab", "https://[::1]/gitlab"},
 		{"ipv6 nondefault port", "https://[2001:DB8::1]:8443", "https://[2001:db8::1]:8443"},
 		{"ipv6 padded nondefault port", "https://[2001:DB8::1]:08443", "https://[2001:db8::1]:8443"},
+		{"ipv6 expanded spelling", "https://[2001:DB8:0:0:0:0:0:1]", "https://[2001:db8::1]"},
+		{"ipv6 padded group", "https://[2001:db8::0001]:443", "https://[2001:db8::1]"},
+		{"ipv4-mapped ipv6 hex spelling", "https://[::ffff:c000:201]", "https://[::ffff:192.0.2.1]"},
+		{"multiple root dots", "https://GitHub.com..", "https://github.com"},
 		{"IDN punycode", "https://XN--BCHER-KVA.example", "https://xn--bcher-kva.example"},
 		{"trailing slash", "https://github.com/", "https://github.com"},
 		{"gitlab prefix", "https://GitLab.example.com/gitlab/", "https://gitlab.example.com/gitlab"},
 		{"nested case-sensitive prefix", "https://gitlab.example.com/Services/GitLab///", "https://gitlab.example.com/Services/GitLab"},
 		{"escaped prefix", "https://gitlab.example.com/a%2Fb/", "https://gitlab.example.com/a%2Fb"},
 		{"unicode prefix", "https://gitlab.example.com/café/", "https://gitlab.example.com/caf%C3%A9"},
+		{"fully escaped prefix with separator escape", "https://gitlab.example.com/a%2Fb/c%20d", "https://gitlab.example.com/a%2Fb/c%20d"},
+		{"fully escaped unicode prefix with separator escape", "https://gitlab.example.com/caf%C3%A9%2Fx", "https://gitlab.example.com/caf%C3%A9%2Fx"},
 		{"maximum prefix", "https://example.com/" + strings.Repeat("a", 233), "https://example.com/" + strings.Repeat("a", 233)},
 	}
 	for _, tc := range cases {
@@ -321,6 +327,8 @@ func FuzzNormalizeInstance(f *testing.F) {
 	f.Add("https://[2001:DB8::1]:443/")
 	f.Add("https://example.com.")
 	f.Add("https://example.com:65536")
+	f.Add("https://[2001:DB8:0:0:0:0:0:1]:08443")
+	f.Add("https://gitlab.example.com/a%2Fb/c d")
 	f.Fuzz(func(t *testing.T, raw string) {
 		normalized, err := NormalizeInstance(raw)
 		if err != nil {
@@ -354,6 +362,10 @@ func TestNormalizeInstance_Rejects(t *testing.T) {
 		"https://\xff.example",
 		"https://bücher.example",
 		"https://b%C3%BCcher.example",
+		// Mixed escapes would decode %2F into a separator and alias
+		// /a/b/c%20d or /caf%C3%A9/x.
+		"https://gitlab.example.com/a%2Fb/c d",
+		"https://gitlab.example.com/café%2Fx",
 	} {
 		_, err := NormalizeInstance(raw)
 		assert.Error(t, err, "input %q must be rejected", raw)
