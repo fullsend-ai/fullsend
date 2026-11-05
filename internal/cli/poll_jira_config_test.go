@@ -134,12 +134,14 @@ func TestLoadJiraPollSettings_MalformedConfig(t *testing.T) {
 }
 
 // jiraGatewayServer serves the Jira site's tenant_info and the API
-// gateway's /myself, recording the Authorization header /myself received.
-func jiraGatewayServer(t *testing.T, gotAuth *string) *httptest.Server {
+// gateway's /myself, recording the Authorization header /myself received and
+// whether tenant_info was called.
+func jiraGatewayServer(t *testing.T, gotAuth *string, tenantCalled *bool) *httptest.Server {
 	t.Helper()
 	const cloudID = "11111111-2222-3333-4444-555555555555"
 	mux := http.NewServeMux()
 	mux.HandleFunc("/site/_edge/tenant_info", func(w http.ResponseWriter, _ *http.Request) {
+		*tenantCalled = true
 		_, _ = w.Write([]byte(`{"cloudId":"` + cloudID + `"}`))
 	})
 	mux.HandleFunc("/gw/ex/jira/"+cloudID+"/rest/api/3/myself", func(w http.ResponseWriter, r *http.Request) {
@@ -178,13 +180,15 @@ func TestBuildJiraClient_ScopedAuth(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			var gotAuth string
-			srv := jiraGatewayServer(t, &gotAuth)
+			var tenantCalled bool
+			srv := jiraGatewayServer(t, &gotAuth, &tenantCalled)
 			c, err := buildJiraClient(jiraPollSettings{baseURL: srv.URL + "/site", apiURL: srv.URL + "/gw"}, env(tc.vars))
 			require.NoError(t, err)
 			me, err := c.GetMyself(context.Background())
 			require.NoError(t, err, "requests go through the configured API gateway")
 			assert.Equal(t, "acct-1", me.AccountID)
 			assert.Equal(t, tc.wantAuth, gotAuth)
+			assert.True(t, tenantCalled, "tenant_info must be called")
 		})
 	}
 }
