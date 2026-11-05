@@ -53,7 +53,7 @@ repos:
         entry: ./scripts/semgrep-scan
         language: system
         verbose: true
-        exclude: '(^|/)([^/]*_test\.[^/]+|test_[^/]+\.py|tests?(/|$))|^\.semgrep/|^e2e/behaviour/(fixtures|results)/'
+        exclude: '(^|/)([^/]*_test\.[^/]+|[^/]*\.(test|spec)\.[^/]+|test_[^/]+\.py|tests?(/|$))|^\.semgrep/|^e2e/behaviour/(fixtures|results)/'
 
   - repo: https://github.com/zricethezav/gitleaks
     rev: v8.30.0

@@ -16,14 +16,18 @@ jobs:
       drift: ${{ steps.compare.outputs.drift }}
       expected: ${{ steps.compare.outputs.expected }}
       actual: ${{ steps.compare.outputs.actual }}
+      changed_files: ${{ steps.compare.outputs.changed_files }}
+      missing_from_pinned: ${{ steps.compare.outputs.missing_from_pinned }}
+      missing_from_upstream: ${{ steps.compare.outputs.missing_from_upstream }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Check for a newer upstream rules commit
+      - name: Compare allowlisted rule contents with upstream
         id: compare
         env:
           GH_TOKEN: ${{ github.token }}
           RULESET_COMMIT_FILE: scripts/semgrep-ruleset-commit
+          RULESET_FILES_FILE: scripts/semgrep-ruleset-files.txt
         run: |
           set -euo pipefail
           expected="$(tr -d '[:space:]' < "$RULESET_COMMIT_FILE")"
@@ -32,13 +36,40 @@ jobs:
             echo "Expected and upstream commits must be full lowercase Git SHAs" >&2
             exit 1
           fi
-          echo "expected=$expected" >> "$GITHUB_OUTPUT"
-          echo "actual=$actual" >> "$GITHUB_OUTPUT"
+          archive_dir="$(mktemp -d)"
+          trap 'rm -rf "$archive_dir"' EXIT
+          pinned_archive="$archive_dir/pinned.tar.gz"
+          upstream_archive="$archive_dir/upstream.tar.gz"
+          curl --connect-timeout 10 --max-time 60 \
+            --fail --location --silent --show-error \
+            "https://codeload.github.com/semgrep/semgrep-rules/tar.gz/$expected" \
+            --output "$pinned_archive"
           if [[ "$actual" == "$expected" ]]; then
-            echo "drift=false" >> "$GITHUB_OUTPUT"
+            upstream_archive="$pinned_archive"
           else
-            echo "drift=true" >> "$GITHUB_OUTPUT"
+            curl --connect-timeout 10 --max-time 60 \
+              --fail --location --silent --show-error \
+              "https://codeload.github.com/semgrep/semgrep-rules/tar.gz/$actual" \
+              --output "$upstream_archive"
           fi
+          comparison="$(python3 .github/scripts/semgrep_ruleset_drift.py \
+            "$pinned_archive" "$upstream_archive" "$RULESET_FILES_FILE")"
+          changed_files="$(jq -c '.changed_files' <<< "$comparison")"
+          missing_from_pinned="$(jq -c '.missing_from_pinned' <<< "$comparison")"
+          missing_from_upstream="$(jq -c '.missing_from_upstream' <<< "$comparison")"
+          changed_count="$(jq '(.changed_files | length) + (.missing_from_pinned | length) + (.missing_from_upstream | length)' <<< "$comparison")"
+          drift=false
+          if ((changed_count > 0)); then
+            drift=true
+          fi
+          {
+            echo "drift=$drift"
+            echo "expected=$expected"
+            echo "actual=$actual"
+            echo "changed_files=$changed_files"
+            echo "missing_from_pinned=$missing_from_pinned"
+            echo "missing_from_upstream=$missing_from_upstream"
+          } >> "$GITHUB_OUTPUT"
 
   report:
     needs: compare
@@ -55,6 +86,9 @@ jobs:
           RULESET_DRIFT: ${{ needs.compare.outputs.drift }}
           RULESET_EXPECTED: ${{ needs.compare.outputs.expected }}
           RULESET_ACTUAL: ${{ needs.compare.outputs.actual }}
+          RULESET_CHANGED_FILES: ${{ needs.compare.outputs.changed_files }}
+          RULESET_MISSING_FROM_PINNED: ${{ needs.compare.outputs.missing_from_pinned }}
+          RULESET_MISSING_FROM_UPSTREAM: ${{ needs.compare.outputs.missing_from_upstream }}
         run: |
           set -euo pipefail
           title="Semgrep ruleset drift"
@@ -66,12 +100,15 @@ jobs:
             cat > "$body_file" <<EOF
           <!-- fullsend-semgrep-ruleset-drift -->
 
-          The upstream semgrep/semgrep-rules develop branch has advanced past
-          the rules commit used by Fullsend. Scans remain pinned until this
-          update is reviewed and merged.
+          The allowlisted Semgrep rule contents differ between the pinned
+          semgrep/semgrep-rules commit and upstream develop. Scans remain pinned
+          until the rule changes are reviewed and merged.
 
           - Pinned commit: $RULESET_EXPECTED
           - Current upstream commit: $RULESET_ACTUAL
+          - Changed allowlisted files: $RULESET_CHANGED_FILES
+          - Missing from pinned archive: $RULESET_MISSING_FROM_PINNED
+          - Missing from upstream archive: $RULESET_MISSING_FROM_UPSTREAM
           - Pin file: scripts/semgrep-ruleset-commit
           - Source: https://github.com/semgrep/semgrep-rules
 

@@ -2,6 +2,8 @@
 # .pre-commit-config.yaml; explicit hook targets bypass this file.
 # Keep tests and Semgrep setup notes out of the repository-wide source scan.
 *_test.*
+*.test.*
+*.spec.*
 test_*.py
 **/test/
 **/tests/

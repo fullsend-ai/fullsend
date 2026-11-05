@@ -282,17 +282,20 @@ Semgrep environment cannot be prepared.
 Other contexts, including agent pre-commit gates, warn and skip if `uv` is
 missing or the source, cache, or environment dependency cannot be prepared. A
 completed scan still fails on findings. The scheduled `Semgrep Ruleset Drift`
-workflow reports when upstream `develop` advances past the pinned commit;
-upstream changes do not alter scans until the pin is updated. Renovate PEP 621
+workflow compares allowlisted rule-file contents at the pinned commit and
+upstream `develop`. It reports only when those selected rules differ; unrelated
+upstream commits do not create drift. Upstream changes do not alter scans until
+the pin is updated. Renovate PEP 621
 updates keep the Semgrep version and `uv.lock` together; weekly lock
 maintenance refreshes transitive dependencies, and Semgrep updates stay out of
 automerge.
 
 The pre-commit hook scans changed files of all types, except paths matched by
 its `exclude:` expression in `.pre-commit-config.yaml`. Semgrep's full-directory
-scan in CI honors `.semgrepignore`, which excludes language test files and
-synthetic fixtures; explicit file arguments bypass it, so keep the hook
-expression aligned with that file. CI scans in a separate job, leaving
+scan in CI honors `.semgrepignore`, which excludes Go, Python, JavaScript, and
+TypeScript test and spec files plus synthetic fixtures. Explicit file arguments
+bypass it, so keep the hook expression aligned with that file. CI scans in a
+separate job, leaving
 lint and test results visible if Semgrep fails, and retains a SARIF artifact
 for 30 days. Both scans use `--strict` so parse errors and rule timeouts fail
 the scan instead of passing with partial analysis. The job reports failures

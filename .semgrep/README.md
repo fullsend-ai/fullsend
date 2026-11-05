@@ -22,11 +22,13 @@ even though the hook passes. Local runs reuse a verified cache keyed by the
 SHA-256. Use `SKIP=semgrep` with pre-commit or `make test` to skip the hook
 explicitly while offline.
 
-The scheduled `Semgrep Ruleset Drift` workflow reports when the upstream
-`develop` branch has advanced beyond the pinned commit. That notification does
-not change the rules used by scans. To update them, review the upstream changes
-under `security/`, update the commit and archive hash, and review the resulting
-findings. Add `nosemgrep: <rule-id>` comments only with a rationale.
+The scheduled `Semgrep Ruleset Drift` workflow compares allowlisted rule-file
+contents at the pinned commit and upstream `develop`. It reports only when
+those selected rules differ; unrelated commits do not create drift. The
+notification does not change the rules used by scans. To update them, review
+the upstream changes under `security/`, update the commit and archive hash, and
+review the resulting findings. Add `nosemgrep: <rule-id>` comments only with a
+rationale.
 There is no separate baseline file. The rules are fetched at runtime and are
 not stored in this repository.
 
