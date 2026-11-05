@@ -1452,6 +1452,8 @@ When multiple repos are targeted (via globs or explicit bulk lists), the command
 
 Uninstall removes every fullsend-managed inference credential, whatever the repo's `inference.auth` is (or whether it is set or valid at all): `FULLSEND_GCP_PROJECT_ID`, `FULLSEND_GCP_WIF_PROVIDER`, and `FULLSEND_OPENAI_API_KEY`, plus the `FULLSEND_GCP_REGION` variable (and, on GitLab, `FULLSEND_GCP_SERVICE_ACCOUNT`). Leftovers from an earlier method and partially installed repos are cleaned up the same way. A credential that is already absent is skipped, so re-running uninstall is safe. Uninstall never deletes an unprefixed `OPENAI_API_KEY` secret or CI/CD variable, or any other credential fullsend does not manage. It also leaves the user-managed `FULLSEND_OPENAI_AUDIENCE`, `FULLSEND_OPENAI_IDENTITY_PROVIDER_ID` and `FULLSEND_OPENAI_SERVICE_ACCOUNT_ID` identifier variables in place. Remove `OPENAI_API_KEY` yourself if nothing else uses it.
 
+**Upgrade behavior change.** Uninstall also deletes `FULLSEND_JIRA_TOKEN` and `FULLSEND_JIRA_EMAIL` on both forges, mirroring [Jira polling](#jira-polling) install. Earlier releases never touched these credentials, so a repo that provisioned them by hand for another Jira consumer loses them when you uninstall with this release. Back them up or re-provision them afterward if something else depends on them.
+
 ```bash
 fullsend repos uninstall acme/old-api
 fullsend repos uninstall "acme/*" --yes
