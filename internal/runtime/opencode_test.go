@@ -556,6 +556,7 @@ func TestOpenCodeTrustedEnvRestore(t *testing.T) {
 			// Loader/linker injection vectors (CWE-426). Verify restore clears them.
 			`export LD_PRELOAD=/tmp/evil.so`+"\n"+
 			`export OPENCODE_TEST_HOME=/tmp/fake-home`+"\n"+
+			`export SHELL=/tmp/agent-shell`+"\n"+
 			// HOME and PATH hijack attempt — restore must re-pin them.
 			`export HOME=/tmp/agent-home`+"\n"+
 			`export PATH=/tmp/agent-bin:/usr/bin:/bin`+"\n",
@@ -571,7 +572,7 @@ func TestOpenCodeTrustedEnvRestore(t *testing.T) {
 	command := "HOME=" + shellQuote(origHome) + " PATH=" + shellQuote(origPath) +
 		" sh -c " + shellQuote(
 		openCodeTrustedEnvPin(trustedEnv)+" && "+envDataTrustedPin()+" && "+envDataLoad(envFile, openCodeEnvDataDrop...)+" && "+openCodeTrustedEnvRestore()+
-			` && printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' "$OPENCODE_CONFIG_CONTENT" "$GOOGLE_APPLICATION_CREDENTIALS" "$HOME" "$PATH" "$OPENCODE_PERMISSION" "$OPENCODE_CONFIG" "$LD_PRELOAD" "${OPENCODE_PURE-unset}"`,
+			` && printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' "$OPENCODE_CONFIG_CONTENT" "$GOOGLE_APPLICATION_CREDENTIALS" "$HOME" "$PATH" "$OPENCODE_PERMISSION" "$OPENCODE_CONFIG" "$LD_PRELOAD" "${OPENCODE_PURE-unset}" "${SHELL-unset}"`,
 	)
 	cmd := exec.Command("sh", "-c", command)
 	cmd.Env = []string{"PATH=/usr/bin:/bin", "OPENCODE_PURE=true"}
@@ -580,12 +581,12 @@ func TestOpenCodeTrustedEnvRestore(t *testing.T) {
 	out, err := cmd.Output()
 	require.NoError(t, err, "%s%s", out, stderr.String())
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	require.Len(t, lines, 8)
+	require.Len(t, lines, 9)
 	assert.Equal(t, `{"permission":{"*":"deny"}}`, lines[0], "OPENCODE_CONFIG_CONTENT must be restored from pin")
 	assert.Equal(t, "/runner/adc.json", lines[1], "GOOGLE_APPLICATION_CREDENTIALS must be restored from pin")
 	assert.Equal(t, origHome, lines[2], "HOME must be restored from before .env")
 	assert.Equal(t, origPath, lines[3], "PATH must be restored from before .env")
-	assert.Equal(t, []string{"", "", "", "unset"}, lines[4:], "dangerous values must be cleared; OPENCODE_PURE must be unset")
+	assert.Equal(t, []string{"", "", "", "unset", "unset"}, lines[4:], "dangerous values must be cleared; OPENCODE_PURE and SHELL must be unset")
 }
 
 func TestOpenCodeReadTrustedEnvErrors(t *testing.T) {
