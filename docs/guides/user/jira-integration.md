@@ -137,9 +137,16 @@ Give the poller a Jira account of its own, rather than a person's API token.
 Today that means a dedicated non-human account: a regular Atlassian user
 account (often called a bot account) created for fullsend, with its own email
 and API token. It is not an Atlassian-managed service account. Those
-authenticate through `api.atlassian.com` with scoped API tokens or OAuth 2.0,
-which fullsend does not support yet; see
-[#9007](https://github.com/fullsend-ai/fullsend/issues/9007).
+authenticate through `api.atlassian.com` with scoped API tokens. Fullsend's
+shared Jira client supports scoped tokens through the API gateway. It uses
+`FULLSEND_JIRA_TOKEN`, plus `FULLSEND_JIRA_EMAIL` for a bot user, or no email
+for a service account (see the
+[Config Reference](../../reference/config-reference.md#trackerjira-connection-and-polling-settings)).
+The poller and agents do not use that client yet; see
+[#9077](https://github.com/fullsend-ai/fullsend/issues/9077),
+[#9078](https://github.com/fullsend-ai/fullsend/issues/9078), and
+[#9079](https://github.com/fullsend-ai/fullsend/issues/9079). OAuth 2.0
+client credentials are not supported.
 
 The poller and the built-in agents' Jira writes both authenticate as
 `JIRA_USER_EMAIL` / `JIRA_TOKEN`, and the poller treats that account as a
@@ -409,7 +416,20 @@ pattern.
 
 ### Custom JQL
 
-By default the poller searches for all non-done issues in the project, ordered by most recently updated. To narrow the scope, use `--jql`:
+By default the poller searches for all non-done issues in the project, ordered by most recently updated.
+
+You can set the Jira site, project, and query in config instead of on the
+command line. Use
+[`tracker.jira`](../../reference/config-reference.md#trackerjira-connection-and-polling-settings)
+in `.fullsend/config.yaml` or in the repository's `config:` block in
+`repos.yaml`. When the config sets them, the poller reads `base_url`,
+`project`, and `poll.query` from it. It always scopes the query as
+`project = "<project>" AND (<query>)`, keeping a trailing `ORDER BY` at the
+end. The parentheses in `poll.query` must be balanced. `--jira-url`,
+`--jira-project`, and `--jql` are then rejected, and `JIRA_BASE_URL` is
+ignored.
+
+Without that config, use `--jql` to narrow the scope:
 
 ```bash
 fullsend poll \
@@ -454,7 +474,10 @@ for issues and merge requests.
   masked CI/CD variables. The agent jobs need them as well, to post run status
   and the triage and code results to the Jira issue.
 
-`fullsend` does not yet create the schedule or the Jira variables for you.
+`repos install` converges the `FULLSEND_JIRA_TOKEN` and `FULLSEND_JIRA_EMAIL`
+variables from `--jira-token` and `--jira-email` for projects whose effective
+`tracker.jira.poll.enabled` is `true`. `fullsend` does not yet create the
+schedule or the `JIRA_*` variables above for you.
 That setup is tracked in
 [#8906](https://github.com/fullsend-ai/fullsend/issues/8906).
 

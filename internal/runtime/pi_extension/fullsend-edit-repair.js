@@ -7,7 +7,7 @@
 // — or as an array whose items are JSON strings. pi's own preparation
 // repairs a well-formed stringified array and a bare edit object (a
 // JSON.parse with an empty catch), so both shapes fail validation with
-// `edits.0: must be object`
+// `edits.0: expected object, got string`
 // and the model has to redo the call: 46 times in one fullsend code-agent run
 // (fullsend#7231). Both shapes are reported upstream — earendil-works/pi#8521
 // and #8962 — and closed as not planned; the fix offered for the first,

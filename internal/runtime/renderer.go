@@ -12,11 +12,19 @@ import (
 // It tracks block state (text/thinking) so transitions between event
 // types produce clean output boundaries.
 type EventRenderer struct {
+	// RedactProgress removes caller-owned credential literals from progress
+	// metadata before and after normalization, before truncation. The callback
+	// must match original and NormalizeProgressText-normalized literals and
+	// use display-safe replacement markers. Pattern and registered
+	// runtime-secret redaction apply even when this callback is nil.
+	RedactProgress func(string) string
+
 	printer    *ui.Printer
 	isCI       bool
 	inText     bool
 	inThinking bool
 	seenInit   bool
+	progress   progressReconciler
 }
 
 // NewEventRenderer creates a renderer that writes to the given printer.
@@ -34,6 +42,14 @@ var (
 // Handle dispatches a single AgentEvent to the appropriate rendering method.
 func (r *EventRenderer) Handle(evt AgentEvent) {
 	switch e := evt.(type) {
+	case StatusProgressEvent:
+		if msg, show := r.progress.status(e, r.RedactProgress); show {
+			r.printProgress(msg)
+		}
+	case TaskProgressEvent:
+		if msg, show := r.progress.task(e, r.RedactProgress); show {
+			r.printProgress(msg)
+		}
 	case InitEvent:
 		if r.seenInit {
 			return
@@ -164,4 +180,12 @@ func (r *EventRenderer) endBlock() {
 		r.inText = false
 		r.inThinking = false
 	}
+}
+
+func (r *EventRenderer) printProgress(msg string) {
+	r.endBlock()
+	if r.isCI {
+		fmt.Fprintf(os.Stderr, "::notice::%s\n", msg)
+	}
+	r.printer.ToolProgress(msg)
 }
