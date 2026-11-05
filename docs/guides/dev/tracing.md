@@ -168,31 +168,34 @@ unchanged.
 
 ### usage spans
 
-Mixed-model Pi iterations only. `emitPerModelUsageSpans()` (`internal/cli/usage_spans.go`)
-runs from `finalizeAgentSpan` after unanswered tool spans close and before
-the agent span ends, so the children land in the file sink on a cancelled
-iteration. One Internal child per `PerModelUsage` entry, named `usage <model>`,
-keyed by model spec (parent included). Each child carries that spec's
-serving-endpoint provider, effective model, token fields, request count, and
-cost, marked `fullsend.usage.component`. Specs emit in sorted order so the
-trace is deterministic across retries. An `unknown` spec (a child record with
-no model) is still a component; it is not translated through `translatePiModel`.
-Each `PerModelUsage` key is a sandbox-writable value (`foldPiSubagentUsage`
-keys entries by a child record's model field, and `scanOutputFiles` skips the
-telemetry JSONL on the invariant that stream-derived span strings are
-scanned before assembly), so `sanitizeModelSpec` runs it through
-`security.OutputPipeline()` before any part of it reaches a span name or
-attribute — the same treatment `toolSpanTracker.safeName` gives the
-structurally identical execute_tool case; a spec that sanitizes to nothing
-is dropped into the `unknown` bucket rather than shown unredacted. The
-model portion of the span name is bounded to `maxUsageSpanNameBytes` (128)
-bytes. `emitPerModelUsageSpans` records at most `maxUsageSpansPerIteration`
-(1,024) children per iteration and reports the overflow as
-`fullsend.usage.dropped` on the agent span, mirroring
-`fullsend.tool_spans.dropped`'s protection against an agent-controlled
-burst filling the OTLP batch queue.
-This is usage attribution, not the recursive sub-agent span expansion ADR 0050
-deferred — see the [query contract](../infrastructure/distributed-tracing.md#per-model-usage-components).
+Mixed-model iterations only. `emitPerModelUsageSpans()`
+(`internal/cli/usage_spans.go`) runs from `finalizeAgentSpan` after unanswered
+tool spans close and before the agent span ends, so the children land in the
+file sink on a cancelled iteration. One Internal child per `PerModelUsage`
+entry, named `usage <model>`, keyed by model spec (parent included). Each child
+carries that spec's serving-endpoint provider, effective model, token fields,
+request count, and cost, marked `fullsend.usage.component`. Specs emit in sorted
+order so the trace is deterministic across retries. An `unknown` spec (a child
+record with no model) is still a component; it is not translated through
+`translatePiModel`. Pi keys carry a `provider/id` prefix; Claude and Codex
+report model ids that inherit the iteration's serving endpoint (including
+gateway routes). Each `PerModelUsage` key is a sandbox-writable value
+(`foldPiSubagentUsage` keys entries by a child record's model field, and
+`scanOutputFiles` skips the telemetry JSONL on the invariant that stream-derived
+span strings are scanned before assembly), so `sanitizeModelSpec` runs it
+through `redactText` (the output pipeline plus the runner env literal pass,
+whole-string masking, and URL userinfo/query/fragment masking) before any part
+of it reaches a span name or attribute — the same treatment
+`toolSpanTracker.safeName` gives the structurally identical execute_tool case;
+a spec that sanitizes to nothing is dropped into
+the `unknown` bucket rather than shown unredacted. The model portion of the span
+name is bounded to `maxUsageSpanNameBytes` (128) bytes. `emitPerModelUsageSpans`
+records at most `maxUsageSpansPerIteration` (1,024) children per iteration and
+reports the overflow as `fullsend.usage.dropped` on the agent span, mirroring
+`fullsend.tool_spans.dropped`'s protection against an agent-controlled burst
+filling the OTLP batch queue. This is usage attribution, not the recursive
+sub-agent span expansion ADR 0050 deferred — see the [query
+contract](../infrastructure/distributed-tracing.md#per-model-usage-components).
 
 ### execute_tool spans
 
