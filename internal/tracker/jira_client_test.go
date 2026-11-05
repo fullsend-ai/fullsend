@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/forge/jira"
 )
@@ -20,6 +23,43 @@ func newTestJiraClient(t *testing.T, jc jiraClient, baseURL string) *JiraClient 
 		t.Fatalf("NewJiraClient(%q) returned error: %v", baseURL, err)
 	}
 	return c
+}
+
+// TestJiraClient_ScopedClientBrowseLinksUseSiteURL checks that a client
+// built with jira.NewScoped sends REST calls through the API gateway while
+// issue browse links stay on the site URL.
+func TestJiraClient_ScopedClientBrowseLinksUseSiteURL(t *testing.T) {
+	const cloudID = "11111111-2222-3333-4444-555555555555"
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	site := srv.URL + "/site"
+	mux.HandleFunc("/site/_edge/tenant_info", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"cloudId":"` + cloudID + `"}`))
+	})
+	mux.HandleFunc("/gw/ex/jira/"+cloudID+"/rest/api/3/issue/PROJ-7", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"key":"PROJ-7","fields":{"summary":"title"}}`))
+	})
+
+	jc, err := jira.NewScoped(jira.ScopedConfig{BaseURL: site, APIURL: srv.URL + "/gw"}, jira.Credentials{Token: "tok"})
+	if err != nil {
+		t.Fatalf("NewScoped: %v", err)
+	}
+	issue, err := newTestJiraClient(t, jc, site).GetIssue(context.Background(), "PROJ", 7)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if want := site + "/browse/PROJ-7"; issue.URL != want {
+		t.Errorf("issue.URL = %q, want %q", issue.URL, want)
+	}
+}
+
+// TestJiraDefaultAPIURLMatchesConfig keeps the client default gateway in
+// step with the tracker.jira.api_url default.
+func TestJiraDefaultAPIURLMatchesConfig(t *testing.T) {
+	if jira.DefaultAPIURL != config.DefaultJiraAPIURL {
+		t.Errorf("jira.DefaultAPIURL = %q, config.DefaultJiraAPIURL = %q", jira.DefaultAPIURL, config.DefaultJiraAPIURL)
+	}
 }
 
 func TestNewJiraClient_RejectsCredentialBaseURL(t *testing.T) {

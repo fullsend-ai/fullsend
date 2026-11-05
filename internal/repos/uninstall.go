@@ -22,7 +22,17 @@ var uninstallVariables = slices.Concat([]string{forge.PerRepoGuardVar}, required
 // block cleanup. Deleting an absent secret is a no-op, so repeating
 // uninstall is safe. It must not become requiredSecrets — probe/converge
 // require only the selected method's secrets.
-var uninstallSecrets = managedInferenceSecrets()
+//
+// It also deletes the Jira polling credentials (FULLSEND_JIRA_TOKEN and
+// FULLSEND_JIRA_EMAIL) that `repos install` provisions for repositories
+// whose effective tracker.jira.poll.enabled is true. Install deliberately
+// keeps them while polling is disabled, but teardown must not leave a
+// long-lived Jira credential behind.
+var uninstallSecrets = append(managedInferenceSecrets(), jiraManagedSecrets...)
+
+// jiraManagedSecrets are the Jira polling credentials written by install
+// (convergeJiraPoll) outside installSecretsForForge.
+var jiraManagedSecrets = []string{forge.SecretJiraToken, forge.SecretJiraEmail}
 
 // gitlabUninstallVars intentionally does NOT include the legacy
 // FULLSEND_FORGE_TOKEN shared secret. Uninstall no longer retires it
@@ -66,7 +76,10 @@ var gitlabUninstallVars = []string{
 // It also includes the webhook fast-path credentials (FULLSEND_TRIGGER_TOKEN
 // and FULLSEND_WEBHOOK_SECRET). Secret deletion addresses only the
 // wildcard-scoped variable, which is the one Fullsend creates.
-var gitlabUninstallSecrets = append(managedInferenceSecrets(), forge.SecretTriggerToken, forge.SecretWebhookSecret)
+//
+// It also includes the Jira polling credentials, which GitLab injects into
+// every protected-branch job while they exist.
+var gitlabUninstallSecrets = slices.Concat(managedInferenceSecrets(), []string{forge.SecretTriggerToken, forge.SecretWebhookSecret}, jiraManagedSecrets)
 
 // gitlabScaffoldPaths is the full set of files uninstall removes. It is
 // a superset of the current install set: fullsend-dispatch.yml is no

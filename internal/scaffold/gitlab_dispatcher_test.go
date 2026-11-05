@@ -366,6 +366,8 @@ echo "ANALYST_USER_ID=${FULLSEND_GITLAB_ANALYST_USER_ID:-<unset>}"
 echo "FORGE=${FULLSEND_FORGE_TOKEN:-<unset>}"
 echo "TRIGGER=${FULLSEND_TRIGGER_TOKEN:-<unset>}"
 echo "WEBHOOK_SECRET=${FULLSEND_WEBHOOK_SECRET:-<unset>}"
+echo "JIRA_TOKEN=${FULLSEND_JIRA_TOKEN:-<unset>}"
+echo "JIRA_EMAIL=${FULLSEND_JIRA_EMAIL:-<unset>}"
 `), 0o755))
 
 	cmd := exec.Command("bash", "-c", "set -euo pipefail; . \"$SCRIPT\"")
@@ -384,6 +386,8 @@ echo "WEBHOOK_SECRET=${FULLSEND_WEBHOOK_SECRET:-<unset>}"
 		"FULLSEND_FORGE_TOKEN=shared-pat",
 		"FULLSEND_TRIGGER_TOKEN=trigger-bearer",
 		"FULLSEND_WEBHOOK_SECRET=webhook-secret",
+		"FULLSEND_JIRA_TOKEN=jira-api-token",
+		"FULLSEND_JIRA_EMAIL=jira@example.com",
 		// Deliberately distinct from the pinned identity so passing
 		// assertions prove the driver gets the pinned values.
 		"CI_PROJECT_ID=1",
@@ -397,6 +401,9 @@ echo "WEBHOOK_SECRET=${FULLSEND_WEBHOOK_SECRET:-<unset>}"
 	require.NoError(t, err, "stdout/stderr: %s", out)
 	got := string(out)
 
+	assert.Contains(t, got, "JIRA_TOKEN=<unset>", "the Jira token must not reach the dispatcher driver")
+	assert.Contains(t, got, "JIRA_EMAIL=<unset>", "the Jira email must not reach the dispatcher driver")
+	assert.NotContains(t, got, "jira-api-token")
 	assert.Contains(t, got, "FULLSEND_ARGS: poll --input-driver gitlab-webhook --project pinned/project --gitlab-url "+srv.URL+" --fullsend-dir .fullsend")
 	assert.Contains(t, got, "TRIGGER_PAYLOAD="+payload, "native TRIGGER_PAYLOAD path must be handed over unchanged")
 	assert.Contains(t, got, "CI_COMMIT_REF_NAME=main")

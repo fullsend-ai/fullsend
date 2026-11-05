@@ -108,6 +108,9 @@ func normalizeJiraGitLabURL(raw string) (string, error) {
 // authenticated with the Poller role credential, and an issue's Jira
 // checkpoint advances only when all of its pipelines were created.
 func runJiraPollGitLab(cmd *cobra.Command, f jiraPollGitLabFlags) error {
+	if err := applyJiraTrackerConfig(f.fullsendDir, &f.jiraURL, &f.jiraProject, &f.jqlOverride); err != nil {
+		return err
+	}
 	args, gitlabURL, err := validateJiraGitLabPollArgs(f, os.Getenv)
 	if err != nil {
 		return err
