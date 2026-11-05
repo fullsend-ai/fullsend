@@ -81,7 +81,7 @@ This matters for fullsend because review agents and code agents process forge co
 
 The same disclosure boundary arises when an authorized agent reads a private
 tracker while working on a public repository, even without adversarial input.
-See [Private context in public agent workflows](private-context-public-workflows.md)
+See [Private Context in Public Agent Workflows](private-context-public-workflows.md)
 for the log, artifact and publication paths that must preserve that boundary.
 
 ### Disproportionate response via social pressure

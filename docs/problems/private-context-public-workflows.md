@@ -1,4 +1,4 @@
-# Private context in public agent workflows
+# Private Context in Public Agent Workflows
 
 How can an agent use private planning or issue-tracking context while working
 on a public repository without publishing information beyond its authorized
@@ -84,7 +84,7 @@ Publish only approved material to the public project.
 This narrows exposure and can retain useful private evidence. It requires
 cross-repository authorization, dispatch, artifact retrieval and status
 correlation. It is a deployment pattern to evaluate, not an assertion that
-Fullsend already provides a drop-in installation for it.
+fullsend already provides a drop-in installation for it.
 
 ### Restrict the public job's inputs to approved public material
 

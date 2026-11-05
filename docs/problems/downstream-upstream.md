@@ -123,7 +123,7 @@ The intent system's `proposed/` to `approved/` workflow assumes someone is filte
 
 When agents are given private downstream planning context, access to that
 context does not itself authorize public disclosure or a veto over upstream
-changes. [Private context in public agent workflows](private-context-public-workflows.md)
+changes. [Private Context in Public Agent Workflows](private-context-public-workflows.md)
 examines that confidentiality boundary separately from priority reconciliation.
 
 ### Fork economics under cheap code

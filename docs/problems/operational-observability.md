@@ -207,8 +207,8 @@ This works for early experimentation when the volume is low and the operators ar
   0021](../ADRs/0021-jsonl-reasoning-trace-exposure.md): owner-scoped storage
   with credential scanning as defense-in-depth. Broader question of balancing
   security and transparency for non-JSONL observability data remains open.) See
-  [Private context in public agent
-  workflows](private-context-public-workflows.md) for runs whose input audience
+  [Private Context in Public Agent
+  Workflows](private-context-public-workflows.md) for runs whose input audience
   is narrower than the target repository and whose console, artifacts and public
   output need separate controls.
 - What retention policy applies to traces? Indefinite retention supports audit requirements but increases storage cost and data sensitivity exposure. Time-bounded retention (e.g., 90 days) limits exposure but may lose traces needed for incident investigation.
