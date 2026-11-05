@@ -585,8 +585,8 @@ read are separate counters. The reasoning rule depends on the runtime:
 - **Claude:** Reasoning is a breakdown of output. Do not add it again.
   An interrupted iteration may lack the final reasoning count even when
   streamed output counts were captured.
-- **pi:** The pinned pi `1.3.0`
-  [usage schema](https://github.com/earendil-works/pi/blob/v1.3.0/packages/ai/src/types.ts#L451-L463)
+- **pi:** The pinned pi `1.5.0`
+  [usage schema](https://github.com/earendil-works/pi/blob/v1.5.0/packages/ai/src/types.ts#L459-L471)
   defines reasoning as a subset of output. Fullsend passes those fields
   through, so do not add reasoning again. Recheck the schema when pricing
   artifacts from a different pi version; sibling JSON fields and synthetic

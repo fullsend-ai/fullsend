@@ -27,6 +27,12 @@ esac
 # before any later code can read them.
 unset FULLSEND_TRIGGER_TOKEN FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN FULLSEND_WEBHOOK_SECRET
 
+# Clear the Jira credentials. `repos install` writes FULLSEND_JIRA_TOKEN and
+# FULLSEND_JIRA_EMAIL as project-wide variables, so GitLab injects them into
+# every protected-branch job. Only the Jira poller and the agent jobs consume
+# them; this slash/events poller needs neither value.
+unset FULLSEND_JIRA_TOKEN FULLSEND_JIRA_EMAIL
+
 # Pin job/pipeline/project identity to the CI_JOB_TOKEN job record
 # and admit only source=schedule. Disjoint from the agent (api) and
 # the dispatcher (trigger, #7771). Runs before any PAT-bearing call
