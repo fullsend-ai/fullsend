@@ -71,7 +71,7 @@ function checkBash(command, allowlist) {
   }
   if (quote !== null) deny("Bash allowlist rejects unterminated quotes");
   if (/[`$(){}\\<>]|&/.test(syntax)) deny("Bash allowlist rejects substitutions, groups, redirections, backgrounding and escapes");
-  for (const segment of syntax.split(/\r?\n|&&|\|\||;|\|&|\||(?<![<>|])&(?!>)/)) {
+  for (const segment of syntax.split(/\r?\n|\|\||;|\|/)) {
     if (!segment.trim()) continue;
     const first = segment.trim().split(/\s+/)[0];
     if (!allowlist.includes(first) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(first) ||
