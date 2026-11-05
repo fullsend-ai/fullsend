@@ -4925,7 +4925,11 @@ func finalizeAgentSpan(span trace.Span, runErr error, iteration, exitCode int, s
 	recordToolSpanOverflow(span, toolSpans.Finish())
 	// Usage children end before the agent span so they reach the file
 	// sink on a cancelled iteration, the same way unanswered tool spans do.
-	emitPerModelUsageSpans(span, system, runtimeName, m)
+	var runnerEnv map[string]string
+	if toolSpans != nil {
+		runnerEnv = toolSpans.runnerEnv
+	}
+	emitPerModelUsageSpans(span, system, runtimeName, m, runnerEnv)
 	span.SetAttributes(agentSpanEndAttrs(iteration, exitCode, system, runtimeName, m)...)
 	switch {
 	case runErr != nil:

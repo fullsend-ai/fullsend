@@ -480,11 +480,37 @@ breakdown in `metrics.json` (`per_model_usage`). The trace now exports the same
 components so model/provider dashboards do not attribute every child to the
 parent.
 
-**When they appear.** One Internal child of that iteration's `agent` span per `per_model_usage` entry, named `usage <model>`, only when the iteration has **more than one** spec. A single-model run (including an Agent-enabled iteration that dispatched nothing) and any runtime that leaves `per_model_usage` unset keep today's `agent` span and emit no children. Historical traces are not rewritten; `metrics.json` is unchanged. At most 1,024 children are emitted per iteration; a breakdown with more distinct specs than that reports the overflow as `fullsend.usage.dropped` on the `agent` span instead of emitting further children.
+**When they appear.** One Internal child of that iteration's `agent` span per
+`per_model_usage` entry, named `usage <model>`, only when the iteration has
+**more than one** spec. A single-model run (including an Agent-enabled
+iteration that dispatched nothing) and any runtime that leaves
+`per_model_usage` unset keep today's `agent` span and emit no children.
+Historical traces are not rewritten; `metrics.json` is unchanged. At most 1,024
+children are emitted per iteration; a breakdown with more distinct specs than
+that reports the overflow as `fullsend.usage.dropped` on the `agent` span
+instead of emitting further children.
 
-**What each child carries.** The serving-endpoint provider (`gen_ai.system` / `gen_ai.provider.name`), the effective model id (`gen_ai.request.model`), input/output/cache-creation/cache-read tokens (`gen_ai.usage.*`), `fullsend.usage.requests`, `fullsend.usage.model_spec`, `fullsend.cost_usd` (that component, rounded to cents), and `fullsend.runtime`. Status is Ok: the span reports consumed usage, not the agent's outcome. There is no prompt/output content, no credentials, and no `mlflow.*` attributes. A record with no model spec is keyed `unknown` (provider and model `unknown`) rather than dropped. Pi keys carry their serving endpoint as a `provider/id` prefix. Claude and Codex keys are model ids and inherit the iteration's serving endpoint, including `gateway` when that route is selected. Claude reports no per-model request count (`fullsend.usage.requests` is `0`); Codex reports no dollar cost (`fullsend.cost_usd` is `0`).
+**What each child carries.** The serving-endpoint provider (`gen_ai.system` /
+`gen_ai.provider.name`), the effective model id (`gen_ai.request.model`),
+input/output/cache-creation/cache-read tokens (`gen_ai.usage.*`),
+`fullsend.usage.requests`, `fullsend.usage.model_spec`, `fullsend.cost_usd`
+(that component, rounded to cents), and `fullsend.runtime`. Status is Ok: the
+span reports consumed usage, not the agent's outcome. There is no prompt/output
+content, no credentials, and no `mlflow.*` attributes. A record with no model
+spec is keyed `unknown` (provider and model `unknown`) rather than dropped. Pi
+keys carry their serving endpoint as a `provider/id` prefix. Claude and Codex
+keys are model ids and inherit the iteration's serving endpoint, including
+`gateway` when that route is selected. Claude reports no per-model request
+count (`fullsend.usage.requests` is `0`); Codex reports no dollar cost
+(`fullsend.cost_usd` is `0`).
 
-**How to query without double-counting.** The parent `agent` span is a rollup: it keeps the parent identity and the iteration's `fullsend.cost_usd`, and is marked `fullsend.usage.rollup=true`. It does **not** carry `gen_ai.usage.input_tokens` / `output_tokens` / `cache_*_input_tokens` on mixed-model iterations, because backends that auto-sum those keys (MLflow; ADR 0050, 2026-08-18) would otherwise add the rollup to the components. `reasoning_tokens` has no per-model counterpart and stays on the `agent` span.
+**How to query without double-counting.** The parent `agent` span is a rollup:
+it keeps the parent identity and the iteration's `fullsend.cost_usd`, and is
+marked `fullsend.usage.rollup=true`. It does **not** carry
+`gen_ai.usage.input_tokens` / `output_tokens` / `cache_*_input_tokens` on
+mixed-model iterations, because backends that auto-sum those keys (MLflow; ADR
+0050, 2026-08-18) would otherwise add the rollup to the components.
+`reasoning_tokens` has no per-model counterpart and stays on the `agent` span.
 
 Billable tokens and cost live on the children (`fullsend.usage.component=true`).
 Filter on that flag — not on span name — when summing. Do not add the `agent`

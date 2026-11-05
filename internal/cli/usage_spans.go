@@ -123,9 +123,10 @@ func usageSpanName(model string) string {
 // PerModelUsage entry when the iteration is mixed-model. Children are
 // started and ended here, before the agent span ends, so they land in the
 // file sink on a cancelled iteration the same way unanswered tool spans
-// do. A nil parent, a non-recording parent, or a non-mixed breakdown is
-// a no-op.
-func emitPerModelUsageSpans(parent trace.Span, system, runtimeName string, m *agentruntime.RunMetrics) {
+// do. runnerEnv feeds the literal pass that sanitizes each spec (see
+// sanitizeModelSpec). A nil parent, a non-recording parent, or a non-mixed
+// breakdown is a no-op.
+func emitPerModelUsageSpans(parent trace.Span, system, runtimeName string, m *agentruntime.RunMetrics, runnerEnv map[string]string) {
 	if parent == nil || !parent.IsRecording() || !isMixedModelUsage(m) {
 		return
 	}
@@ -151,7 +152,7 @@ func emitPerModelUsageSpans(parent trace.Span, system, runtimeName string, m *ag
 	pipeline := security.OutputPipeline()
 	for _, spec := range specs {
 		u := m.PerModelUsage[spec]
-		safeSpec := sanitizeModelSpec(pipeline, spec)
+		safeSpec := sanitizeModelSpec(pipeline, runnerEnv, spec)
 		provider, model := splitModelSpec(safeSpec)
 		if runtimeName != "pi" && strings.TrimSpace(safeSpec) != "" && strings.TrimSpace(safeSpec) != unknownModelSpec {
 			// Claude and Codex report model ids, not Pi provider/id specs.
@@ -168,28 +169,25 @@ func emitPerModelUsageSpans(parent trace.Span, system, runtimeName string, m *ag
 	}
 }
 
-// sanitizeModelSpec runs a PerModelUsage key through the output security
-// pipeline before any part of it reaches a span name or attribute. The key
-// is not trusted input: foldPiSubagentUsage (internal/runtime/
-// pi_subagents.go) keys entries by a child record's "model" field, read
-// back from a file the sandbox can write, and its own comments acknowledge
-// a malformed line may be agent-authored. scanOutputFiles (run.go) skips
-// the telemetry JSONL outright on the invariant that every stream-derived
-// string landing on a span was already scanned at assembly — the same
-// treatment toolSpanTracker.safeName gives execute_tool's stream-derived
-// name. Mirroring that: a scan that only redacts part of the spec keeps the
-// redacted text, and a spec that carries findings but sanitizes to nothing
-// is dropped (splitModelSpec("") maps it to the unknown bucket) rather than
-// shown.
-func sanitizeModelSpec(pipeline *security.Pipeline, spec string) string {
-	scanned := pipeline.Scan(spec)
-	if scanned.Sanitized != "" {
-		return scanned.Sanitized
-	}
-	if len(scanned.Findings) > 0 {
-		return ""
-	}
-	return spec
+// sanitizeModelSpec runs a PerModelUsage key through redactText, the
+// shared redaction helper toolSpanTracker.safeName uses, before any part of
+// it reaches a span name or attribute. The key is not trusted input:
+// foldPiSubagentUsage (internal/runtime/pi_subagents.go) keys entries by a
+// child record's "model" field, read back from a file the sandbox can
+// write, and its own comments acknowledge a malformed line may be
+// agent-authored. scanOutputFiles (run.go) skips the telemetry JSONL
+// outright on the invariant that every stream-derived string landing on a
+// span was already scanned at assembly. redactText supplies the pieces that
+// invariant relies on: the runner env literal pass, whole-string masking
+// when the normalizer stripped something or the text is not valid UTF-8,
+// and maskURLs for URL userinfo, query and fragment. A spec that carries
+// findings but sanitizes to nothing is dropped (splitModelSpec("") maps it
+// to the unknown bucket) rather than shown. It runs on the whole spec,
+// before splitting or truncating, so a cut can never split a credential
+// past recognition.
+func sanitizeModelSpec(pipeline *security.Pipeline, runnerEnv map[string]string, spec string) string {
+	var findings []security.Finding
+	return redactText(pipeline, runnerEnv, spec, &findings)
 }
 
 // recordUsageSpanOverflow marks the parent agent span when its iteration's

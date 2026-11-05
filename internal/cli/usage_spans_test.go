@@ -140,7 +140,7 @@ func TestEmitPerModelUsageSpans_MixedVertexXAIGoogle(t *testing.T) {
 	_, parent := tp.Tracer("test").Start(context.Background(), "agent")
 
 	m := mixedVertexXAIGoogleMetrics()
-	emitPerModelUsageSpans(parent, "anthropic-vertex", "pi", m)
+	emitPerModelUsageSpans(parent, "anthropic-vertex", "pi", m, nil)
 	parent.End()
 
 	ended := rec.Ended()
@@ -254,7 +254,7 @@ func TestEmitPerModelUsageSpans_UnknownSpec(t *testing.T) {
 			"unknown":                          {Requests: 1, InputTokens: 5, OutputTokens: 1, CostUSD: 0.01},
 		},
 	}
-	emitPerModelUsageSpans(parent, "anthropic-vertex", "pi", m)
+	emitPerModelUsageSpans(parent, "anthropic-vertex", "pi", m, nil)
 	parent.End()
 
 	var unknownAttrs map[attribute.Key]attribute.Value
@@ -282,9 +282,9 @@ func TestEmitPerModelUsageSpans_SkippedWhenNotMixed(t *testing.T) {
 		PerModelUsage: map[string]agentruntime.ModelUsage{
 			"anthropic-vertex/claude-sonnet-5": {Requests: 1, InputTokens: 10},
 		},
-	})
-	emitPerModelUsageSpans(parent, "anthropic", "claude", &agentruntime.RunMetrics{})
-	emitPerModelUsageSpans(parent, "anthropic", "claude", nil)
+	}, nil)
+	emitPerModelUsageSpans(parent, "anthropic", "claude", &agentruntime.RunMetrics{}, nil)
+	emitPerModelUsageSpans(parent, "anthropic", "claude", nil, nil)
 	parent.End()
 
 	require.Len(t, rec.Ended(), 1, "single-model and nil breakdowns emit no usage children")
@@ -373,7 +373,7 @@ func TestUsageComponentSpanAttrs_RepairsInvalidUTF8(t *testing.T) {
 }
 
 func TestEmitPerModelUsageSpans_NilParentIsNoop(t *testing.T) {
-	emitPerModelUsageSpans(nil, "anthropic-vertex", "pi", mixedVertexXAIGoogleMetrics())
+	emitPerModelUsageSpans(nil, "anthropic-vertex", "pi", mixedVertexXAIGoogleMetrics(), nil)
 }
 
 func TestEmitPerModelUsageSpans_NonRecordingParentIsNoop(t *testing.T) {
@@ -384,7 +384,7 @@ func TestEmitPerModelUsageSpans_NonRecordingParentIsNoop(t *testing.T) {
 	_, parent := tp.Tracer("test").Start(context.Background(), "agent")
 	parent.End()
 
-	emitPerModelUsageSpans(parent, "anthropic-vertex", "pi", mixedVertexXAIGoogleMetrics())
+	emitPerModelUsageSpans(parent, "anthropic-vertex", "pi", mixedVertexXAIGoogleMetrics(), nil)
 	require.Len(t, rec.Ended(), 1, "an already-ended parent must not grow extra usage children")
 }
 
@@ -404,7 +404,7 @@ func TestEmitPerModelUsageSpans_EmptySpecKey(t *testing.T) {
 			"":                                 {Requests: 1, InputTokens: 5, OutputTokens: 1},
 		},
 	}
-	emitPerModelUsageSpans(parent, "anthropic-vertex", "pi", m)
+	emitPerModelUsageSpans(parent, "anthropic-vertex", "pi", m, nil)
 	parent.End()
 
 	var found bool
@@ -461,7 +461,7 @@ func TestEmitPerModelUsageSpans_SanitizesSecretInSpec(t *testing.T) {
 			"xai-vertex/xai/grok-4.6-mini-fast": {Requests: 1, InputTokens: 5, OutputTokens: 1},
 		},
 	}
-	emitPerModelUsageSpans(parent, "anthropic-vertex", "pi", m)
+	emitPerModelUsageSpans(parent, "anthropic-vertex", "pi", m, nil)
 	parent.End()
 
 	for _, sp := range rec.Ended() {
@@ -484,6 +484,57 @@ func TestEmitPerModelUsageSpans_SanitizesSecretInSpec(t *testing.T) {
 	assert.True(t, found, "the anthropic-vertex component must still be exported, redacted rather than dropped")
 }
 
+// TestEmitPerModelUsageSpans_RedactsURLsAndRunnerEnv covers the protections
+// toolSpanTracker.safeName gets from redactText and a bare pipeline scan
+// lacks: URL userinfo, query and fragment masking, and the runner env
+// literal pass for a value no pattern recognizes. Neither may reach a usage
+// span name or any string attribute.
+func TestEmitPerModelUsageSpans_RedactsURLsAndRunnerEnv(t *testing.T) {
+	pinSpanLimitEnv(t)
+	const (
+		userinfo = "opaqueuser:opaquepass"
+		query    = "sig=opaque-query-value"
+		fragment = "opaque-fragment-value"
+		envValue = "plainliteral-runner-value-1234"
+	)
+	runnerEnv := map[string]string{"DEPLOY_PASSWORD": envValue}
+	specs := map[string]string{
+		"userinfo": "openai/https://" + userinfo + "@example.invalid/path",
+		"query":    "openai/https://example.invalid/?" + query,
+		"fragment": "openai/https://example.invalid/path#" + fragment,
+		"env":      "openai/model-" + envValue,
+	}
+	secrets := []string{userinfo, "opaquepass", query, fragment, envValue}
+
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	_, parent := tp.Tracer("test").Start(context.Background(), "agent")
+
+	usage := map[string]agentruntime.ModelUsage{}
+	for _, spec := range specs {
+		usage[spec] = agentruntime.ModelUsage{Requests: 1, InputTokens: 1}
+	}
+	m := &agentruntime.RunMetrics{Model: "claude-sonnet-5", PerModelUsage: usage}
+	emitPerModelUsageSpans(parent, "anthropic-vertex", "pi", m, runnerEnv)
+	parent.End()
+
+	var components int
+	for _, sp := range rec.Ended() {
+		if sp.Name() != "agent" {
+			components++
+		}
+		for _, secret := range secrets {
+			assert.NotContains(t, sp.Name(), secret, "span name must never carry %q", secret)
+			for k, v := range spanAttrMap(sp) {
+				assert.NotContains(t, v.Emit(), secret,
+					"attribute %s on span %q must never carry %q", k, sp.Name(), secret)
+			}
+		}
+	}
+	assert.Equal(t, len(specs), components, "every spec is still exported, redacted rather than dropped")
+}
+
 // TestEmitPerModelUsageSpans_CapsCardinality covers the data-exposure
 // finding that PerModelUsage keys come from a sandbox-writable file with no
 // cap of its own: an adversarial burst of distinct model keys must not emit
@@ -503,7 +554,7 @@ func TestEmitPerModelUsageSpans_CapsCardinality(t *testing.T) {
 	}
 	m := &agentruntime.RunMetrics{Model: "claude-sonnet-5", PerModelUsage: usage}
 
-	emitPerModelUsageSpans(parent, "anthropic-vertex", "pi", m)
+	emitPerModelUsageSpans(parent, "anthropic-vertex", "pi", m, nil)
 	parent.End()
 
 	ended := rec.Ended()
@@ -531,7 +582,7 @@ func TestEmitPerModelUsageSpans_NoOverflowUnderCap(t *testing.T) {
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 	_, parent := tp.Tracer("test").Start(context.Background(), "agent")
 
-	emitPerModelUsageSpans(parent, "anthropic-vertex", "pi", mixedVertexXAIGoogleMetrics())
+	emitPerModelUsageSpans(parent, "anthropic-vertex", "pi", mixedVertexXAIGoogleMetrics(), nil)
 	parent.End()
 
 	agent := agent0(rec.Ended())

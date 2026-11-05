@@ -181,9 +181,11 @@ gateway routes). Each `PerModelUsage` key is a sandbox-writable value
 (`foldPiSubagentUsage` keys entries by a child record's model field, and
 `scanOutputFiles` skips the telemetry JSONL on the invariant that stream-derived
 span strings are scanned before assembly), so `sanitizeModelSpec` runs it
-through `security.OutputPipeline()` before any part of it reaches a span name or
-attribute — the same treatment `toolSpanTracker.safeName` gives the structurally
-identical execute_tool case; a spec that sanitizes to nothing is dropped into
+through `redactText` (the output pipeline plus the runner env literal pass,
+whole-string masking, and URL userinfo/query/fragment masking) before any part
+of it reaches a span name or attribute — the same treatment
+`toolSpanTracker.safeName` gives the structurally identical execute_tool case;
+a spec that sanitizes to nothing is dropped into
 the `unknown` bucket rather than shown unredacted. The model portion of the span
 name is bounded to `maxUsageSpanNameBytes` (128) bytes. `emitPerModelUsageSpans`
 records at most `maxUsageSpansPerIteration` (1,024) children per iteration and
