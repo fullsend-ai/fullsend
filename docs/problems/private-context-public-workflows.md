@@ -26,7 +26,13 @@ an agent to repeat or summarize protected material.
 
 [ADR 0021](../ADRs/0021-jsonl-reasoning-trace-exposure.md) chooses access control
 for full-fidelity transcripts rather than relying on heuristic sanitization.
-It also specifies opt-in suppression of the JSONL transcript artifact,
+The owner-scoped storage boundary is also missing for public repositories.
+GitHub runs currently upload transcripts and other run output as forge-native
+artifacts. Anyone with read access to a public repository can download them.
+[#6734](https://github.com/fullsend-ai/fullsend/issues/6734) tracks alternative
+artifact storage, including disabling forge-native uploads.
+
+ADR 0021 also specifies opt-in suppression of the JSONL transcript artifact,
 declared in agent configuration for protected external sources. This control
 is not implemented: there is no configuration field or transcript extraction
 path that implements the opt-in suppression. Operators cannot currently rely
@@ -42,8 +48,6 @@ establish safety when a public repository's agents consume private sources.
 
 Live runtime-event rendering shipped through
 [PR #3186](https://github.com/fullsend-ai/fullsend/pull/3186).
-[#6734](https://github.com/fullsend-ai/fullsend/issues/6734) tracks configurable
-artifact storage, including disabling forge-native uploads.
 [ADR 0050](../ADRs/0050-distributed-tracing-instrumentation.md) addresses
 telemetry separately: private remote export does not change the audience of
 local files, console output or public reviews.
