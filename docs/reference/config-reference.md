@@ -308,6 +308,14 @@ tracker:
   with no credentials, query, or fragment. It has no default.
 - **`tracker.jira.api_url`** — The Jira API gateway URL. It is optional and
   defaults to `https://api.atlassian.com`. It is validated like `base_url`.
+  Fullsend's shared Jira client sends REST requests to
+  `{api_url}/ex/jira/{cloudId}/rest/api/3/...`. It discovers the cloud ID
+  from `{base_url}/_edge/tenant_info` and keeps `base_url` for issue browse
+  links. An override must serve the same gateway path layout. The poller,
+  `fullsend issues`, run-status updates, and reconciliation do not use this
+  setting yet. They switch to the shared client in
+  [#9077](https://github.com/fullsend-ai/fullsend/issues/9077) and
+  [#9078](https://github.com/fullsend-ai/fullsend/issues/9078).
 - **`tracker.jira.project`** — The key of the single Jira project for this
   repository. It is not a fallback project, and it has no default.
 - **`tracker.jira.poll.enabled`** — Controls the managed poll workflow. `true`
@@ -331,7 +339,12 @@ legacy scalar `tracker: jira`.
 Credentials are never part of this mapping. Keys such as `token`,
 `api_token`, `email`, or `password` are rejected. Supply the Jira token and
 the optional account email as the `FULLSEND_JIRA_TOKEN` and
-`FULLSEND_JIRA_EMAIL` repository secrets. Other unknown keys under
+`FULLSEND_JIRA_EMAIL` repository secrets. The shared Jira client treats the
+token as a scoped API token. When `FULLSEND_JIRA_EMAIL` is set, the client
+uses Basic auth with that email and a scoped user token (a bot user). When it
+is absent, the client sends the token as a Bearer token from a scoped
+service account. The token string does not show its type, so the email alone
+selects the mode. Other unknown keys under
 `tracker.jira`, `tracker.jira.poll`, and `tracker.jira.allowed_targets` are
 rejected too.
 
