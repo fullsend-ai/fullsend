@@ -1,7 +1,7 @@
 # Contributor Ladder
 
-This document defines the path from first-time contributor to
-maintainer. Each role grants additional capabilities and carries
+This document defines the path from first-time contributor to core
+team member. Each role grants additional capabilities and carries
 additional expectations. Advancement is not automatic — it requires a
 request, a track record, and maintainer approval.
 
@@ -169,6 +169,30 @@ issue in [fullsend-ai/org](https://github.com/fullsend-ai/org). Existing
 maintainers discuss and reach consensus; if approved, your username is
 added to the `maintainers` team in `peribolos.yaml`.
 
+### Core
+
+**What it means:** You have repository administration rights and are a
+member of the
+[@fullsend-ai/core](https://github.com/orgs/fullsend-ai/teams/core)
+team. Core team members are typically also owners of the fullsend-ai
+GitHub organization. You are expected to perform all of the activities
+of the Maintainer role and also to perform repository-level
+administrative tasks as needed.
+
+**What it unlocks:**
+
+- GitHub `admin` access on the fullsend-ai repositories
+- All capabilities from previous roles
+
+**Criteria and process:** If you are not already a member of the core
+team and you need administrator access, reach out to one or more
+members of the core team and explain why you need it. The core team
+considers such requests on a case-by-case basis.
+
+**How to check:** Your GitHub username is listed in the `core` team in
+[peribolos.yaml](https://github.com/fullsend-ai/org/blob/main/peribolos.yaml)
+in the [fullsend-ai/org](https://github.com/fullsend-ai/org) repository.
+
 ## Demonstrating readiness
 
 Advancement is a human assessment of demonstrated trust and readiness.
@@ -269,6 +293,7 @@ Role changes use the following request mechanisms:
 | Triage | [Triage Request](https://github.com/fullsend-ai/org/issues/new?template=triage-request.yml) issue in [fullsend-ai/org](https://github.com/fullsend-ai/org) | 1 Maintainer |
 | Write | [Write Request](https://github.com/fullsend-ai/org/issues/new?template=write-request.yml) issue in [fullsend-ai/org](https://github.com/fullsend-ai/org) | 2 Maintainers |
 | Maintainer | [Maintainer Nomination](https://github.com/fullsend-ai/org/issues/new?template=maintainer-request.yml) issue in [fullsend-ai/org](https://github.com/fullsend-ai/org) (see [MAINTAINERS.md](MAINTAINERS.md)) | Maintainer consensus |
+| Core | Ask one or more members of the [@fullsend-ai/core](https://github.com/orgs/fullsend-ai/teams/core) team | Core team, case by case |
 
 ## Revoking access
 
