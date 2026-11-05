@@ -189,7 +189,7 @@ RUN curl -fsSL --retry 3 --retry-delay 5 \
 # would re-walk earlier extensions on every rebuild), so the last install also
 # locks the parent directory itself, non-recursively -- its mode is then
 # explicit rather than inherited from the build umask.
-ARG PI_XAI_VERTEX_VERSION=0.3.0
+ARG PI_XAI_VERTEX_VERSION=0.3.1
 ARG PI_XAI_VERTEX_SHA256=e9e4e008690fc1b4ac4928e39080afb4e6c1fb5abeea9b16ddc52a7c9d03be23
 RUN curl -fsSL --retry 3 --retry-delay 5 \
       "https://github.com/fullsend-ai/pi-xai-vertex/archive/refs/tags/v${PI_XAI_VERTEX_VERSION}.tar.gz" \
