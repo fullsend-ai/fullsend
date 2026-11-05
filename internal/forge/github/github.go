@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"math"
 	"math/rand/v2"
 	"net/http"
@@ -56,6 +57,10 @@ type LiveClient struct {
 	rateMu   sync.Mutex
 	rate     forge.RateLimit
 	rateSeen bool
+
+	// calls counts responses by forge.APICaller label; see APICalls.
+	callsMu sync.Mutex
+	calls   map[string]int64
 
 	// etagCache holds the last ETag and raw JSON body seen for GET URLs
 	// that opt into conditional requests via getCachedJSON (#6702). A 304
@@ -116,6 +121,7 @@ const (
 var _ forge.Client = (*LiveClient)(nil)
 var _ forge.GitHubExtensions = (*LiveClient)(nil)
 var _ forge.RateLimitReporter = (*LiveClient)(nil)
+var _ forge.APICallReporter = (*LiveClient)(nil)
 
 // RateLimit returns the most recent rate-limit state observed on a
 // response from this client, and whether one has been observed yet.
@@ -123,6 +129,29 @@ func (c *LiveClient) RateLimit() (forge.RateLimit, bool) {
 	c.rateMu.Lock()
 	defer c.rateMu.Unlock()
 	return c.rate, c.rateSeen
+}
+
+// APICalls returns how many responses this client has received, by
+// forge.APICaller label. Every attempt of a retried request counts. A 304
+// does not, because it costs no primary quota, and neither does a request
+// that got no response.
+func (c *LiveClient) APICalls() map[string]int64 {
+	c.callsMu.Lock()
+	defer c.callsMu.Unlock()
+	return maps.Clone(c.calls)
+}
+
+// countAPICall records one response for APICalls.
+func (c *LiveClient) countAPICall(ctx context.Context, status int) {
+	if status == http.StatusNotModified {
+		return
+	}
+	c.callsMu.Lock()
+	defer c.callsMu.Unlock()
+	if c.calls == nil {
+		c.calls = map[string]int64{}
+	}
+	c.calls[forge.APICaller(ctx)]++
 }
 
 // parseRateLimit reads the X-RateLimit-* headers of one response. ok is
@@ -422,6 +451,7 @@ func (c *LiveClient) doRequest(ctx context.Context, method, path string, content
 		resp, err := c.http.Do(req)
 		if err == nil {
 			c.observeRateLimit(resp.Header)
+			c.countAPICall(ctx, resp.StatusCode)
 		}
 		if err != nil {
 			if closer, ok := reqBody.(io.Closer); ok {

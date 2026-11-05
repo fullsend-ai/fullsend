@@ -579,6 +579,34 @@ halfsend-01: remaining=4987/5000 reset=2026-10-25T18:00:00Z resource=core
 halfsend-03: remaining=12/5000 reset=2026-10-25T19:00:00Z resource=core
 ```
 
+**API calls by caller.** The composed driver also logs how many GitHub API
+calls each org's client made, by caller
+([#9140](https://github.com/fullsend-ai/fullsend/issues/9140)). It logs them
+every 5 minutes and at teardown, so a job that times out before `Finalize`
+still leaves counts. The counts are running totals from suite start:
+
+```
+[driver] per-org API calls so far:
+halfsend-01: total=2150 claim=310 gc=24 lock=486 other=1190 provision=120 release=20
+halfsend-03: total=96 claim=40 lock=56
+all orgs: total=2246 claim=350 gc=24 lock=542 other=1190 provision=120 release=20
+```
+
+| Caller | Calls |
+|---|---|
+| `claim` | Slot claim passes: org listings, creates, and ownership lookups |
+| `lock` | Joining and leaving the shared `e2e-lock` |
+| `gc` | Slot GC |
+| `provision` | Preparing a leased slot, from this process |
+| `release` | Deleting a leased slot and its leftover state |
+| `other` | Everything else, mainly scenario steps, harness polling, and scenario cleanup |
+
+Every attempt of a retried request counts. A `304` does not, because it
+costs no primary quota. The counts cover one suite process and one client
+per org, so they leave out other suites sharing the pool and the `fullsend`
+CLI subprocess that installs into a slot. To estimate that unattributed
+traffic, compare the totals with the drop in the org's remaining quota.
+
 **Harness-wait timeout errors.** Every harness-wait timeout error the
 GitHub Actions CI driver reports ends with the polling client's last-seen
 rate-limit state (`describeRateLimitState` in
