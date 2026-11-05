@@ -40,8 +40,8 @@ const (
 	poolOrgPrefix = StageOrg
 
 	// DevPoolOrgCount is the number of numbered DEV pool orgs
-	// (halfsend-01 … halfsend-12).
-	DevPoolOrgCount = 12
+	// (halfsend-01 … halfsend-22).
+	DevPoolOrgCount = 22
 
 	// SlotRepoDescription is the description prefix every claimed slot
 	// repo is created with. It is the test-ownership marker: only repos
@@ -104,7 +104,7 @@ type PoolLayout struct {
 	SlotsPerOrg int
 }
 
-// DevPoolLayout is the DEV pool: halfsend-01 … halfsend-12, each with
+// DevPoolLayout is the DEV pool: halfsend-01 … halfsend-22, each with
 // test-repo-01 … test-repo-<slotsPerOrg> (DefaultPoolSize by default).
 func DevPoolLayout(slotsPerOrg int) PoolLayout {
 	return PoolLayout{FirstOrgIndex: 1, OrgCount: DevPoolOrgCount, SlotsPerOrg: slotsPerOrg}
