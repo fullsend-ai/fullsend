@@ -15,15 +15,17 @@ Feature: An overlay that references a runner secret reads only runtime.forge and
     Given the enrolled test repository
     And the repository has the runner secret "BEHAVIOUR_RUNNER_SECRET"
 
+  # The refused scenario has not passed a live run yet, so it is gated
+  # on the runner-secret-overlay-guard capability; the Makefile's
+  # BEHAVIOUR_CAPABILITIES comment says when to declare it, and
+  # Jira AISDLC-654 tracks that step.
+  @requires:capability:runner-secret-overlay-guard
   Scenario: An overlay that reads a shadowed .event is refused
     # Harness dispatch loads the harness without the runner secret names
     # (only the run job reads FULLSEND_GITHUB_RUNNER_SECRETS), so the
     # runner-secret check does not run there and the harness is
     # dispatched; the run job refuses it, and the error below reaches the
-    # run's logs. The refusal comes from the run job's fullsend binary,
-    # which a STAGE install takes from main (repopool_cfmint_stage.go),
-    # so a red run there means main predates the guard fix, not that the
-    # guard regressed.
+    # run's logs.
     Given a custom harness "secret-guard-refused" with:
       """
       agent: agents/triage.md
@@ -74,4 +76,5 @@ Feature: An overlay that references a runner secret reads only runtime.forge and
     And an issue
     When the issue is labeled "ready-for-secret-guard-allowed"
     Then the harness "secret-guard-allowed" workflow completes successfully
+    And the harness "secret-guard-allowed" workflow logs contain "Runner secrets"
     And the agent will succeed to Prove execution
