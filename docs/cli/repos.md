@@ -477,10 +477,23 @@ flag or environment variable supplies them.
   repo missing it fails before anything is written. If you omit a flag on a
   later install, the existing secret is kept. If you supply it, the secret is
   replaced.
+- **Upgrade behavior change (breaking).** Earlier releases ignored
+  `tracker.jira.poll.enabled` at install time. A repo whose effective
+  configuration (including one inherited from a `config_base` preset) already
+  has `poll.enabled: true` now makes `repos install` fail for that repo, before
+  any write, until `--jira-token` is supplied or `FULLSEND_JIRA_TOKEN` already
+  exists. Re-runs, CI jobs, and scripted installs that previously succeeded
+  need the flag added, for example
+  `fullsend repos install --jira-token "$JIRA_TOKEN"`. Setting
+  `poll.enabled: false` also avoids the requirement.
 - **Disabled (`poll.enabled: false`, or `poll`/`poll.enabled` omitted).**
   Install removes the Fullsend-owned Jira poll resources. `FULLSEND_JIRA_TOKEN`
   and `FULLSEND_JIRA_EMAIL` are left in place because other Jira consumers may
-  still need them.
+  still need them. `repos uninstall` deletes both.
+- **GitLab job exposure.** GitLab injects project-wide CI/CD variables into
+  every protected-branch job. The scaffolded poll and webhook dispatcher jobs
+  clear both Jira variables before running other code. Only the Jira poller
+  and agent jobs keep them.
 - **Forge resources.** The managed resources are the GitHub scheduled poll
   workflow and the GitLab poll job and pipeline schedule. They are delivered
   by forge-specific follow-up work
