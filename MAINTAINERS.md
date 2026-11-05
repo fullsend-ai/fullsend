@@ -59,6 +59,83 @@ are expected to remain active — reviewing PRs, responding to issues, and
 staying current with project direction. If you are unable to participate
 for an extended period, let the team know so coverage can be adjusted.
 
+## Inactivity and removal
+
+Maintainer permissions are elevated access. Permissions held by people
+who no longer take part in the project add security risk and leave the
+list of code owners out of date. This section describes how inactive
+maintainers are removed. Removal for inactivity is not punitive.
+
+### Inactivity threshold
+
+A maintainer is considered inactive after **6 months** with no
+maintainer activity in any public repository of the
+[fullsend-ai](https://github.com/fullsend-ai) organization. Maintainer
+activity includes:
+
+- Reviewing pull requests
+- Authoring or driving merged changes
+- Triaging issues (labeling, commenting, closing duplicates)
+- Taking part in issue, pull request, or discussion threads about
+  project direction
+
+This matches the inactivity reason for revoking access in the
+[contributor ladder](LADDER.md#revoking-access).
+
+A planned leave announced to the team in advance does not count toward
+the threshold. Tell the team when the leave starts and roughly when you
+expect to return.
+
+### Prior notification
+
+A maintainer is never removed for inactivity without notice first. Any
+maintainer who notices that another maintainer has passed the threshold
+may start the process:
+
+1. **Open a notification issue** in
+   [fullsend-ai/org](https://github.com/fullsend-ai/org). Mention the
+   inactive maintainer by GitHub username, state the date of their last
+   maintainer activity, and link to this section.
+2. **Contact the maintainer directly** as well, through any channel the
+   team normally uses to reach them, and note in the issue that you did.
+
+### Grace period
+
+The maintainer has **30 days** from the date of the notification issue
+to respond on it. During the grace period, the maintainer can:
+
+- Confirm that they intend to stay active. The issue is closed and no
+  change is made.
+- Declare a planned leave, with an expected return date. The issue is
+  closed and no change is made.
+- Step down voluntarily, as described in [Stepping down](#stepping-down).
+
+If the maintainer does not respond within the grace period, the
+removal goes ahead.
+
+### Removal
+
+Removal uses the same GitHub team structure as onboarding:
+
+1. A maintainer opens a pull request against
+   [peribolos.yaml](https://github.com/fullsend-ai/org/blob/main/peribolos.yaml)
+   in [fullsend-ai/org](https://github.com/fullsend-ai/org) that removes
+   the username from the maintainer team. The pull request links the
+   notification issue.
+2. A different maintainer approves and merges it. The notification
+   issue is then closed.
+
+Code ownership follows team membership. [CODEOWNERS](CODEOWNERS) names
+the maintainer team, not individual users, so removing someone from the
+team also removes their code owner approval. No per-user CODEOWNERS
+edit is needed. If CODEOWNERS ever lists individual maintainers, the
+removal pull request must also remove the username there.
+
+### Returning
+
+A former maintainer removed for inactivity is welcome to return. File a
+new nomination through the normal [Process](#process).
+
 ## Team meetings and communication
 
 Becoming a maintainer does not automatically include an invitation to
