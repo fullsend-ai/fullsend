@@ -396,7 +396,7 @@ var openCodeDangerousEnvVars = []string{
 	"BUN_OPTIONS",
 	"BUN_RUNTIME_TRANSPILER_CACHE_PATH", "BUN_INSTALL_CACHE_DIR",
 	"PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONUSERBASE",
-	"BASH_ENV", "ENV", "CDPATH", "PS4",
+	"BASH_ENV", "ENV", "SHELL", "CDPATH", "PS4",
 }
 
 func openCodeTrustedEnvRestore() string {

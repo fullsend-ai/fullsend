@@ -181,7 +181,8 @@ export default async ({ directory, worktree }) => {
   const cwd = directory ?? process.cwd();
   const permissionRoot = resolved(worktree ?? cwd);
   // Never inherit loader, Python, pager, provider or agent-modified variables.
-  const env = { PATH: "/usr/local/bin:/usr/bin:/bin", ...cfg?.env };
+  // OpenShell's marker is a trusted sandbox capability signal used by SSRF hooks.
+  const env = { PATH: "/usr/local/bin:/usr/bin:/bin", OPENSHELL_SANDBOX: process.env.OPENSHELL_SANDBOX ?? "", ...cfg?.env };
   const blockReason = (script, reason) => {
     const fallback = `blocked by ${script}`;
     if (typeof reason !== "string" || !reason.trim() || reason.length > 4096 ||

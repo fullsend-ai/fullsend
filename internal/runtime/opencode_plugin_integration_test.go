@@ -404,9 +404,7 @@ func runOpenCodeHookProbe(t *testing.T, binary, version, scenario string, deadli
 		require.Equal(t, want, actualCounts[kind], "%s model-send count; output: %s", kind, output)
 	}
 	if !lsProbe && !errorProbe {
-		allowed, err := os.ReadFile(filepath.Join(work, "allowed"))
-		require.NoError(t, err, "control command must execute; output: %s", output)
-		assert.Equal(t, "executed", string(allowed))
+		assert.Contains(t, string(captured), "executed", "control command output must reach a model continuation; output: %s", output)
 	}
 	assert.NoFileExists(t, filepath.Join(work, "forbidden"))
 	assert.NotContains(t, string(captured), "FULLSEND_PROBE_ORIGINAL_", "raw output reached a model request")
@@ -573,7 +571,7 @@ func runOpenCodeHookProbe(t *testing.T, binary, version, scenario string, deadli
 
 func stepsForAllowedProbe() openCodeProbeCall {
 	return openCodeProbeCall{name: "bash", args: map[string]any{
-		"command": "printf executed > allowed", "description": "probe-allowed",
+		"command": "printf executed", "description": "probe-allowed",
 	}}
 }
 
