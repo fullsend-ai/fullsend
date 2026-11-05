@@ -307,6 +307,143 @@ func TestLoad_FileNotFound(t *testing.T) {
 	assert.Contains(t, err.Error(), "reading harness file")
 }
 
+func TestLoad_SchemaVersionAccepted(t *testing.T) {
+	// ADR 0127 Decision 1: absent, null, and explicit 1 all mean version 1
+	// and must load through both parse-level entry points.
+	tests := []struct {
+		name    string
+		version string // YAML lines appended to the harness body
+		want    *schemaVersionValue
+	}{
+		{name: "absent", version: "", want: nil},
+		{name: "null", version: "schema_version: null\n", want: nil},
+		{name: "explicit one", version: "schema_version: 1\n", want: schemaVersionPtr(1)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			content := "agent: agents/test.md\nrole: test\n" + tt.version
+			dir := t.TempDir()
+			path := filepath.Join(dir, "ok.yaml")
+			require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+			h, err := LoadRaw(path)
+			require.NoError(t, err)
+			if tt.want == nil {
+				assert.Nil(t, h.SchemaVersion)
+			} else {
+				require.NotNil(t, h.SchemaVersion)
+				assert.Equal(t, *tt.want, *h.SchemaVersion)
+			}
+
+			// Load runs the same parse funnel plus Validate.
+			_, err = Load(path)
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestLoad_SchemaVersionMalformed(t *testing.T) {
+	// Non-integer values fail inside yaml.v3 during unmarshaling with the
+	// offending line identified (ADR 0127 Decision 1: reject malformed
+	// versions during parsing). Long float literals are truncated in the
+	// type error exactly as yaml.v3 truncates its own long values.
+	tests := []struct {
+		name      string
+		version   string // YAML lines appended to the harness body
+		wantLine  string
+		wantValue string // truncated float literal the type error names; empty skips the assertion
+	}{
+		{name: "string", version: "schema_version: one\n", wantLine: "line 2:"},
+		{name: "float", version: "schema_version: 1.5\n", wantLine: "line 2:"},
+		// The truncated spelling (first seven characters plus an ellipsis,
+		// backtick-quoted) cannot occur inside the untruncated literal, so
+		// its presence proves the truncation branch ran.
+		{name: "long float", version: "schema_version: 1.23456789012345\n", wantLine: "line 2:", wantValue: "`1.23456...`"},
+		{name: "mapping", version: "schema_version:\n  one: two\n", wantLine: "line 3:"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			content := "agent: agents/test.md\n" + tt.version
+			dir := t.TempDir()
+			path := filepath.Join(dir, "bad.yaml")
+			require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+			_, err := LoadRaw(path)
+			require.Error(t, err)
+			assert.ErrorContains(t, err, "parsing harness YAML:")
+			assert.ErrorContains(t, err, "cannot unmarshal")
+			assert.ErrorContains(t, err, tt.wantLine)
+			if tt.wantValue != "" {
+				assert.ErrorContains(t, err, tt.wantValue)
+			}
+
+			// Load funnels through parseRaw, so it fails identically.
+			_, err = Load(path)
+			require.Error(t, err)
+			assert.ErrorContains(t, err, "parsing harness YAML:")
+			assert.ErrorContains(t, err, "cannot unmarshal")
+		})
+	}
+}
+
+func TestLoad_SchemaVersionOutOfRange(t *testing.T) {
+	// Zero, negative, and unsupported versions are rejected by the
+	// parse-level check with field-named messages (ADR 0127 Decision 1).
+	tests := []struct {
+		name    string
+		version string
+		wantErr string
+	}{
+		{name: "zero", version: "schema_version: 0\n", wantErr: "schema_version must be a positive integer, got 0"},
+		{name: "negative", version: "schema_version: -1\n", wantErr: "schema_version must be a positive integer, got -1"},
+		{
+			name:    "unsupported",
+			version: "schema_version: 2\n",
+			wantErr: "schema_version 2 is not supported by this version of fullsend (maximum supported schema_version: 1)",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			content := "agent: agents/test.md\n" + tt.version
+			dir := t.TempDir()
+			path := filepath.Join(dir, "bad.yaml")
+			require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+			_, err := LoadRaw(path)
+			require.Error(t, err)
+			assert.ErrorContains(t, err, "parsing harness YAML:")
+			assert.ErrorContains(t, err, tt.wantErr)
+
+			_, err = Load(path)
+			require.Error(t, err)
+			assert.ErrorContains(t, err, "parsing harness YAML:")
+			assert.ErrorContains(t, err, tt.wantErr)
+		})
+	}
+}
+
+func TestLoadWithOpts_SchemaVersionRejectedBeforeResolution(t *testing.T) {
+	// The version check runs inside parseRaw, before validateForge,
+	// forge/overlay resolution, and Validate. Stack failures for the later
+	// stages on the same harness — an unrecognized forge key and a missing
+	// agent — so if any of them ran first, its error would surface instead
+	// of the version rejection.
+	content := `schema_version: 2
+forge:
+  bogus: {}
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bad.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	_, err := LoadWithOpts(path, LoadOpts{ForgePlatform: "github"})
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "parsing harness YAML:")
+	assert.ErrorContains(t, err, "schema_version 2 is not supported by this version of fullsend")
+	assert.NotContains(t, err.Error(), "unrecognized key")        // validateForge did not run
+	assert.NotContains(t, err.Error(), "agent field is required") // Validate did not run
+}
+
 func TestValidateRunnerEnv_UnsetVar(t *testing.T) {
 	h := &Harness{
 		Agent:     "test.md",
