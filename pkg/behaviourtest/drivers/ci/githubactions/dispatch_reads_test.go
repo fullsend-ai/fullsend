@@ -164,10 +164,6 @@ func TestHarnessDispatchAssertions_NotStartedRunJobs(t *testing.T) {
 	}
 }
 
-// TestCountHarnessDispatches_WaitingRunHoldsCompletedAgentJob pins the
-// count-side rule: a workflow waiting on an environment approval can
-// already hold a completed agent job, which is conclusive dispatch
-// evidence — the count must not wait out the whole run.
 // TestClassifyJobsError pins the full status × listing-error table that
 // both dispatch paths route through. Changing an entry here is a
 // semantic decision about run statuses, not a mechanical drift fix.
@@ -202,6 +198,10 @@ func TestClassifyJobsError(t *testing.T) {
 	}
 }
 
+// TestCountHarnessDispatches_WaitingRunHoldsCompletedAgentJob pins the
+// count-side rule: a workflow waiting on an environment approval can
+// already hold a completed agent job, which is conclusive dispatch
+// evidence — the count must not wait out the whole run.
 func TestCountHarnessDispatches_WaitingRunHoldsCompletedAgentJob(t *testing.T) {
 	t.Parallel()
 	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)

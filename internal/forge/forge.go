@@ -259,6 +259,11 @@ func ValidatePipelineVarOverrideRole(role string) error {
 // ErrNotFound indicates a requested resource was not found on the forge.
 var ErrNotFound = errors.New("not found")
 
+// IsNotFound reports whether err indicates a resource was not found.
+func IsNotFound(err error) bool {
+	return errors.Is(err, ErrNotFound)
+}
+
 // ErrJobsListingNotFoundFirstPage reports that a workflow run's jobs
 // listing returned not found on its first page. Forges have been observed
 // to do this for runs that have not started; the cause is unverified (see
@@ -271,11 +276,6 @@ var ErrNotFound = errors.New("not found")
 // page means the listing was already partially readable and may hold a
 // completed job, so it never carries this sentinel.
 var ErrJobsListingNotFoundFirstPage = errors.New("workflow run jobs listing not found on first page")
-
-// IsNotFound reports whether err indicates a resource was not found.
-func IsNotFound(err error) bool {
-	return errors.Is(err, ErrNotFound)
-}
 
 // ErrAlreadyExists indicates that the resource already exists.
 var ErrAlreadyExists = errors.New("already exists")
