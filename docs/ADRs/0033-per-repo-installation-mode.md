@@ -368,6 +368,9 @@ Ordered by the project's threat priority (external injection > insider > drift >
 
 ## References
 
+- [ADR 0037: Kubernetes repository security boundaries](0037-kubernetes-repository-security-boundaries.md)
+  — extends repository-scoped execution to Kubernetes namespaces and workload
+  identity for mint authentication.
 - [ADR 0007: Per-role GitHub Apps](0007-per-role-github-apps.md) — authentication model replicated in per-repo
 - [ADR 0008: workflow_dispatch for cross-repo dispatch](0008-workflow-dispatch-for-cross-repo-dispatch.md) — superseded by `workflow_call` (ADR 0034 centralizes routing)
 - [ADR 0026: Stage-based dispatch](0026-stage-based-dispatch-for-agent-workflow-decoupling.md) — stage model preserved in reusable workflows
