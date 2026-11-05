@@ -37,12 +37,12 @@ Leverage infrastructure the organization already runs — e.g. CI runners, inter
 
 **Pros:** No new vendor, data stays internal, consistent with existing operational and security practices, possible reuse of identity and secrets management.
 
+**Cons:** Internal platforms may not be designed for long-running or bursty agent workloads; we may need to add isolation, scaling, and tooling; ownership and SLOs may be unclear.
+
 Private execution infrastructure does not itself restrict the audience of
 console logs, artifacts or forge writes. See
 [Private Context in Public Agent Workflows](private-context-public-workflows.md)
 for the separate output boundary when an agent uses protected external data.
-
-**Cons:** Internal platforms may not be designed for long-running or bursty agent workloads; we may need to add isolation, scaling, and tooling; ownership and SLOs may be unclear.
 
 **Open questions:**
 

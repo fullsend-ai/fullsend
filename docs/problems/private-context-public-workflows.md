@@ -46,8 +46,12 @@ depend on agents following the instructions and on patterns the scanner can
 recognize. The guide's lower-risk recommendations for repo-local output do not
 establish safety when a public repository's agents consume private sources.
 
-Live runtime-event rendering shipped through
-[PR #3186](https://github.com/fullsend-ai/fullsend/pull/3186).
+Live runtime-event rendering
+([PR #3186](https://github.com/fullsend-ai/fullsend/pull/3186)) streams model
+thinking and assistant text to the job console. On a public repository,
+protected input quoted in that output reaches public job logs even if artifact
+uploads are suppressed.
+
 [ADR 0050](../ADRs/0050-distributed-tracing-instrumentation.md) addresses
 telemetry separately: private remote export does not change the audience of
 local files, console output or public reviews.
