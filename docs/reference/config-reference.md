@@ -313,9 +313,12 @@ tracker:
 - **`tracker.jira.poll.enabled`** — Controls the managed poll workflow. `true`
   installs or enables it, `false` removes or disables it. When `poll` or
   `poll.enabled` is omitted, the workflow is not installed. This setting does
-  not affect `fullsend poll` or `fullsend issues`. Installing and removing
-  the managed workflow is not implemented yet. For now the value is
-  validated and stored only.
+  not affect `fullsend poll` or `fullsend issues`. `fullsend repos install`
+  converges it. When it is `true`, install writes the Jira credentials from
+  `--jira-token` and `--jira-email` and ensures the managed poll resources.
+  When it is `false` or omitted, install removes those resources and keeps
+  the credentials. The forge-specific poll resources are not managed yet
+  (see [Jira polling](../cli/repos.md#jira-polling)).
 - **`tracker.jira.poll.query`** — The JQL the poller runs. It defaults to
   `statusCategory != Done ORDER BY updated DESC`. The query is always scoped
   to `project`: the poller runs `project = "<project>" AND (<query>)` and

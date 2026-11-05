@@ -460,6 +460,48 @@ The Vertex AI credential inputs of `repos install` now carry a `vertex-` prefix.
 
 The validation, WIF provider derivation, and the `FULLSEND_GCP_*` secret and variable names are unchanged. `--openai-api-key` keeps its name; `--inference-auth` was removed in favor of the `inference.auth` manifest key. Other command groups (`github setup`, `admin install`, `inference`) keep their `--inference-*` flags.
 
+### Jira polling
+
+`repos install` converges Jira polling from each repo's effective
+`tracker.jira.poll.enabled`: the managed config from `repos.yaml` layered over
+its `config_base` preset (see
+[Config Reference](../reference/config-reference.md#trackerjira-connection-and-polling-settings)).
+The Jira site, project, and query are read only from that configuration. No
+flag or environment variable supplies them.
+
+- **Enabled (`poll.enabled: true`).** Install writes `--jira-token` as
+  `FULLSEND_JIRA_TOKEN` and, when supplied, `--jira-email` as
+  `FULLSEND_JIRA_EMAIL` (GitHub secrets or GitLab CI/CD variables). After that
+  it ensures the Fullsend-owned Jira poll resources for the repo's forge.
+  `--jira-token` is required when the repo has no `FULLSEND_JIRA_TOKEN` yet. A
+  repo missing it fails before anything is written. If you omit a flag on a
+  later install, the existing secret is kept. If you supply it, the secret is
+  replaced.
+- **Disabled (`poll.enabled: false`, or `poll`/`poll.enabled` omitted).**
+  Install removes the Fullsend-owned Jira poll resources. `FULLSEND_JIRA_TOKEN`
+  and `FULLSEND_JIRA_EMAIL` are left in place because other Jira consumers may
+  still need them.
+- **Forge resources.** The managed resources are the GitHub scheduled poll
+  workflow and the GitLab poll job and pipeline schedule. They are delivered
+  by forge-specific follow-up work
+  ([#9109](https://github.com/fullsend-ai/fullsend/issues/9109),
+  [#9108](https://github.com/fullsend-ai/fullsend/issues/9108)). Until a
+  forge's resources are managed, install still converges the credentials and
+  reports that this release does not manage the poll resources on that forge.
+- **Validation.** When polling is enabled, `tracker.jira.base_url` and
+  `tracker.jira.project` must be set, or the repo fails before any write.
+  Surrounding whitespace is trimmed from both flags. On GitLab the token must
+  be storable as a masked CI/CD variable (at least 8 characters from
+  `A-Z a-z 0-9 _ + = / @ : . ~ -`, no whitespace). An existing GitLab
+  `FULLSEND_JIRA_TOKEN` is reused only when it is a masked, protected
+  environment variable available to all environments. Supplying
+  `--jira-token` or `--jira-email` when no selected repo enables polling fails
+  the run.
+- **Dry run.** `--dry-run` lists the Jira secrets that would be written, by
+  name only.
+- **Command-line only.** `--jira-token` and `--jira-email` are never written
+  to `repos.yaml` and never logged.
+
 ### Flags
 
 Install flags supply only secrets and sensitive provisioning inputs, local vendoring artifacts, and controls for one run. None of their values is written to `repos.yaml`. Persistent settings live in the manifest; the flags that used to set them were removed (see [Removed configuration flags](#removed-configuration-flags-breaking)).
@@ -475,6 +517,8 @@ Install flags supply only secrets and sensitive provisioning inputs, local vendo
 | `--vertex-project` | | GCP project ID for Vertex inference, written as the `FULLSEND_GCP_PROJECT_ID` secret. Optional when the effective configuration declares `inference.project`; a different value from the declared one fails that repo. See [Effective infrastructure values](#effective-infrastructure-values) |
 | `--vertex-wif-provider` | | Full WIF provider resource name (`projects/{number}/locations/global/workloadIdentityPools/{pool}/providers/{id}`), written as the `FULLSEND_GCP_WIF_PROVIDER` secret instead of deriving per-repo providers. The project number is embedded in the path, so no lookup is needed. Optional when the effective configuration declares `inference.wif_provider`; a different value from the declared one fails that repo. Requires a project |
 | `--openai-api-key` | | OpenAI API key written as `FULLSEND_OPENAI_API_KEY` to selected repos whose `inference.auth` is `openai-api-key` (GitHub and GitLab). Command-line only: never written to `repos.yaml` and never logged. See [Inference credentials](#inference-credentials). |
+| `--jira-token` | | Jira API token written as `FULLSEND_JIRA_TOKEN` to selected repos whose effective `tracker.jira.poll.enabled` is `true`. Required when such a repo has no `FULLSEND_JIRA_TOKEN` yet; if omitted, the existing secret is kept. Command-line only: never written to `repos.yaml` and never logged. See [Jira polling](#jira-polling). |
+| `--jira-email` | | Optional Jira account email written as `FULLSEND_JIRA_EMAIL` to selected repos whose effective `tracker.jira.poll.enabled` is `true`. If omitted, the existing secret is kept. Command-line only. See [Jira polling](#jira-polling). |
 | `--fullsend-binary` | | Path to a pre-built Linux fullsend binary to upload when vendoring instead of auto-resolving it from the resolved `fullsend_ref`. Valid only when at least one selected repo resolves `vendor: true`; otherwise install fails and points at `fullsend repos set defaults.vendor true` |
 | `--fullsend-source` | | Path to a fullsend source checkout for vendored content and cross-compilation instead of auto-detecting or fetching from GitHub. Same `vendor: true` requirement as `--fullsend-binary` |
 | `--gitlab-role-registry` | | Path to administrator GitLab role registry JSON (custom roles: credential references and policy, never secret values). Written as the protected unmasked `FULLSEND_GITLAB_ROLE_REGISTRY` variable. |
