@@ -32,7 +32,7 @@ The fullsend team operates a public hosted community mint service. Install the s
 https://mint.fullsend.sh
 ```
 
-The CLI defaults to this URL. You can also set the `FULLSEND_MINT_URL` repository/org variable in GitHub explicitly. If you are using the hosted community mint, the rest of this guide (deploying, enrolling, troubleshooting) is for platform operators managing self-hosted mints — you do not need to manage mint infrastructure yourself.
+The CLI defaults to this URL. You can also set the `FULLSEND_MINT_URL` repository/org variable in GitHub explicitly. When `mint_url` is declared in `.fullsend/config.yaml` or `config.base.yaml`, dispatch resolves that layered value before the variable (see [Layered configuration reference](layered-config-reference.md)); the variable remains the fallback when both files are silent on `mint_url`. If you are using the hosted community mint, the rest of this guide (deploying, enrolling, troubleshooting) is for platform operators managing self-hosted mints — you do not need to manage mint infrastructure yourself.
 
 ## Prerequisites
 

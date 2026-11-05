@@ -911,6 +911,50 @@ func TestReusableDispatchJobsReceiveMintOIDC(t *testing.T) {
 		"the workflow must not copy the OIDC request token into logs or matrix data")
 }
 
+// TestReusableDispatchMintResolverFetchesFromWorkflow ensures upstream-mode
+// callers without a vendored resolver can sparse-checkout the script from
+// job.workflow_repository (#9104).
+func TestReusableDispatchMintResolverFetchesFromWorkflow(t *testing.T) {
+	type workflowStep struct {
+		Name string `yaml:"name"`
+		If   string `yaml:"if"`
+	}
+	type workflowJob struct {
+		Steps []workflowStep `yaml:"steps"`
+	}
+	var workflow struct {
+		Jobs map[string]workflowJob `yaml:"jobs"`
+	}
+
+	content, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "reusable-dispatch.yml"))
+	require.NoError(t, err)
+	require.NoError(t, yaml.Unmarshal(content, &workflow))
+
+	for _, jobName := range []string{"route", "harness-dispatch", "harness-run"} {
+		t.Run(jobName, func(t *testing.T) {
+			job, ok := workflow.Jobs[jobName]
+			require.True(t, ok, "job %q must exist", jobName)
+			names := make([]string, 0, len(job.Steps))
+			var checkoutStep workflowStep
+			for _, step := range job.Steps {
+				names = append(names, step.Name)
+				if step.Name == "Checkout workflow mint URL resolver" {
+					checkoutStep = step
+				}
+			}
+			assert.Contains(t, names, "Prepare mint URL resolver script")
+			assert.Contains(t, names, "Checkout workflow mint URL resolver")
+			assert.Contains(t, checkoutStep.If, "mint-resolver-script.outputs.fetched")
+		})
+	}
+	assert.Contains(t, string(content), "workflow-mint-resolver",
+		"upstream resolver checkout must use a dedicated path under RUNNER_TEMP")
+
+	prioritize := string(loadRepoFile(".github/workflows/reusable-prioritize.yml")(t))
+	assert.Contains(t, prioritize, "Checkout workflow mint URL resolver")
+	assert.Contains(t, prioritize, "Prepare mint URL resolver script")
+}
+
 // TestCustomAppSetReviewBotWiring ensures every GitHub review/fix dispatch
 // path receives the configured app-set prefix and recognizes its exact review
 // bot identity.

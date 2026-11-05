@@ -128,20 +128,52 @@ jobs:
           mkdir -p .github/scripts
           cp "${SRC}/.github/scripts/setup-agent-env.sh" .github/scripts/setup-agent-env.sh
 
+      - name: Prepare mint URL resolver script
+        id: mint-resolver-script
+        run: |
+          set -euo pipefail
+          RESOLVER=""
+          for candidate in .github/scripts/resolve-effective-mint-url.sh .defaults/.github/scripts/resolve-effective-mint-url.sh; do
+            if [[ -f "${candidate}" ]]; then
+              RESOLVER="${candidate}"
+              break
+            fi
+          done
+          if [[ -n "${RESOLVER}" ]]; then
+            echo "path=${RESOLVER}" >> "${GITHUB_OUTPUT}"
+            echo "fetched=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "fetched=true" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Checkout workflow mint URL resolver
+        if: steps.mint-resolver-script.outputs.fetched == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: ${{ runner.temp }}/workflow-mint-resolver
+          fetch-depth: 1
+          persist-credentials: false
+          sparse-checkout: |
+            .github/scripts/resolve-effective-mint-url.sh
+          sparse-checkout-cone-mode: false
+
       - name: Resolve effective mint URL
         id: resolve-mint
         env:
           FALLBACK_MINT_URL: ${{ inputs.mint_url }}
         run: |
           set -euo pipefail
-          for candidate in .github/scripts/resolve-effective-mint-url.sh .defaults/.github/scripts/resolve-effective-mint-url.sh; do
-            if [[ -f "${candidate}" ]]; then
-              bash "${candidate}"
-              exit 0
-            fi
-          done
-          echo "::error::resolve-effective-mint-url.sh is missing; re-run fullsend github converge"
-          exit 1
+          RESOLVER="${{ steps.mint-resolver-script.outputs.path }}"
+          if [[ -z "${RESOLVER}" ]]; then
+            RESOLVER="${RUNNER_TEMP}/workflow-mint-resolver/.github/scripts/resolve-effective-mint-url.sh"
+          fi
+          if [[ ! -f "${RESOLVER}" ]]; then
+            echo "::error::resolve-effective-mint-url.sh is missing from caller and workflow repository"
+            exit 1
+          fi
+          bash "${RESOLVER}"
 
       - name: Validate enrollment and extract repository metadata
         id: repo-parts

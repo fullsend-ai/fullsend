@@ -16,14 +16,27 @@ trap 'rm -rf "${TMPDIR}"' EXIT
 run_resolve() {
   local fallback="${1:-}"
   local output_file="${TMPDIR}/github-output.txt"
+  local oldpwd="${PWD}"
   : >"${output_file}"
-  (
-    cd "${TMPDIR}/repo"
-    export GITHUB_OUTPUT="${output_file}"
-    export FALLBACK_MINT_URL="${fallback}"
-    bash "${SCRIPT}"
-  )
+  cd "${TMPDIR}/repo"
+  GITHUB_OUTPUT="${output_file}" FALLBACK_MINT_URL="${fallback}" bash "${SCRIPT}"
+  cd "${oldpwd}"
   grep '^mint_url=' "${output_file}" | cut -d= -f2-
+}
+
+run_resolve_expect_fail() {
+  local fallback="${1:-}"
+  local output_file="${TMPDIR}/github-output.txt"
+  local oldpwd="${PWD}"
+  : >"${output_file}"
+  cd "${TMPDIR}/repo"
+  if GITHUB_OUTPUT="${output_file}" FALLBACK_MINT_URL="${fallback}" bash "${SCRIPT}"; then
+    cd "${oldpwd}"
+    echo "FAIL: ${2}: expected non-zero exit"
+    FAILURES=$((FAILURES + 1))
+    return 0
+  fi
+  cd "${oldpwd}"
 }
 
 setup_repo() {
@@ -63,6 +76,14 @@ assert_eq "overlay beats base" "https://overlay.example" "$(run_resolve "https:/
 
 setup_repo
 assert_eq "empty fallback" "" "$(run_resolve "")"
+
+setup_repo
+printf 'version: "1"\nmint_url: http://evil.example\n' >.fullsend/config.yaml
+run_resolve_expect_fail "https://fallback.example" "reject http mint_url"
+
+setup_repo
+printf 'version: "1"\nmint_url: https://user:pass@mint.example\n' >.fullsend/config.yaml
+run_resolve_expect_fail "https://fallback.example" "reject userinfo mint_url"
 
 if [[ "${FAILURES}" -eq 0 ]]; then
   echo "All tests passed."
