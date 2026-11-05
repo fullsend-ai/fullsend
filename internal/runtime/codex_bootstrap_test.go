@@ -1206,9 +1206,15 @@ func TestCodexSubagentNote_CarriesTheDispatchContract(t *testing.T) {
 	assert.Contains(t, got, "This agent runs on the codex runtime (FULLSEND_RUNTIME=codex).")
 	// The roster sentence, in roster order (codexRoles sorts).
 	assert.Contains(t, got, "Registered sub-agent roles: challenger, correctness, default, explore, security.")
-	// The denied-spawn sentence, verbatim.
-	assert.Contains(t, got, "A denied spawn is final for that role: do not retry it, execute that sub-agent "+
+	// The denied-spawn sentences, verbatim: an unregistered name is retried
+	// under the registered one (#9073), any other deny is final, and a
+	// selected sub-agent that never ran is reported as a failure.
+	assert.Contains(t, got, "A spawn denied because its `agent_type` is not a registered role denied no role: retry "+
+		"it once with the registered role the denial names (the persona's full name, not a short form).")
+	assert.Contains(t, got, "Any other denied spawn is final for that role: do not retry it, execute that sub-agent "+
 		"definition yourself with the same context package, and treat the output as that sub-agent's result.")
+	assert.Contains(t, got, "A selected sub-agent that ran neither as a child nor in your own context must appear "+
+		"in your result as a failure, never as coverage.")
 	assert.NotContains(t, got, "No fullsend sub-agent roster")
 
 	for _, want := range []string{
@@ -1242,7 +1248,7 @@ func TestCodexDeveloperInstructions_DelegatingAgentGetsTheDispatchNote(t *testin
 	assert.Contains(t, got, "Review a pull request.")
 	assert.Contains(t, got, "You are the review agent.")
 	assert.Contains(t, got, "Registered sub-agent roles: correctness, default, explore.")
-	assert.Contains(t, got, "A denied spawn is final for that role")
+	assert.Contains(t, got, "Any other denied spawn is final for that role")
 	assert.Contains(t, got, "at most 200 lines")
 	assert.NotContains(t, got, "No fullsend sub-agent roster")
 
@@ -1273,7 +1279,7 @@ func TestCodexRuntimeBootstrap_DelegatingAgentRunsNativeChildren(t *testing.T) {
 	assert.NotContains(t, cfg, "[agents]\nenabled = false")
 	assert.Contains(t, cfg, "trust_level = \"untrusted\"", "the project pin stays")
 	assert.Contains(t, cfg, "Registered sub-agent roles: correctness, default, explore.")
-	assert.Contains(t, cfg, "A denied spawn is final for that role")
+	assert.Contains(t, cfg, "Any other denied spawn is final for that role")
 	assert.Contains(t, cfg, "at most 200 lines", "the chunked-read rule stays (#7832)")
 	assert.NotContains(t, cfg, "No fullsend sub-agent roster")
 

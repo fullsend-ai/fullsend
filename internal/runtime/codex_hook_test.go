@@ -1259,6 +1259,8 @@ func TestCodexAdapterSpawnGuardConstantsMatchGo(t *testing.T) {
 		"the guard's own deadline is derived from the adapter's handler budget, so it stays below codex's timeout")
 	assert.Contains(t, src, `SPAWN_ADMIT_FINDING = "`+codexSpawnAdmitFinding+`"`,
 		"the findings-log line an admitted spawn writes; the runner's cross-check reads it back by this name")
+	assert.Contains(t, src, `SPAWN_DENY_FINDING = "`+codexSpawnDenyFinding+`"`,
+		"the findings-log line a denied call writes; the runner prints it back by this name")
 	assert.Contains(t, src, `FINDINGS_PATH = "`+codexFindingsLogPath+`"`, "the runner reads the file the adapter writes")
 	pattern := regexp.MustCompile(codexSpawnGuardMatcher)
 	for _, name := range []string{"spawn_agent", "multi_agent_v1wait_agent", "multi_agent_v1close_agent", "multi_agent_v1send_input"} {
@@ -1650,7 +1652,8 @@ func TestCodexAdapter_SpawnGuardDenies(t *testing.T) {
 			start := time.Now()
 			got := h.spawnGuard(codexSpawnInput("planted"), "correctness")
 			assert.Less(t, time.Since(start), 5*time.Second, "a FIFO is refused, not written")
-			assert.Equal(t, "fullsend: spawn_agent role 'planted' is not one the runner registered", got.stderr,
+			assert.Equal(t, "fullsend: spawn_agent role 'planted' is not one the runner registered; "+
+				"registered roles: correctness. No registered role was denied: retry once with the registered role name", got.stderr,
 				"the policy reason is the whole of stderr")
 			return got
 		}, "is not one the runner registered"},
@@ -1665,4 +1668,65 @@ func TestCodexAdapter_SpawnGuardDenies(t *testing.T) {
 			assert.Empty(t, got.stdout, "a deny writes nothing on stdout")
 		})
 	}
+}
+
+// TestCodexAdapter_SpawnGuardNamesTheRegisteredRole covers the deny for an
+// agent_type that names no registered role (#9073): the reason lists the
+// roster and the closest role, so the parent can retry under the registered
+// name, and the same reason is the findings-log detail the runner prints.
+// A registered role is still admitted.
+func TestCodexAdapter_SpawnGuardNamesTheRegisteredRole(t *testing.T) {
+	roster := []string{"default", "docs", "explore", "intent-coherence", "style"}
+	const listed = "; registered roles: default, docs, explore, intent-coherence, style. " +
+		"No registered role was denied: retry once with the registered role name"
+	cases := []struct {
+		name  string
+		role  any
+		roles []string
+		want  string
+	}{
+		{"short name of a persona", "intent", roster,
+			"fullsend: spawn_agent role 'intent' is not one the runner registered; did you mean 'intent-coherence'?" + listed},
+		{"misspelt persona", "intnet-coherence", roster,
+			"fullsend: spawn_agent role 'intnet-coherence' is not one the runner registered; did you mean 'intent-coherence'?" + listed},
+		{"built-in explorer", "explorer", roster,
+			"fullsend: spawn_agent role 'explorer' is not one the runner registered; did you mean 'explore'?" + listed},
+		{"nothing close", "worker", roster,
+			"fullsend: spawn_agent role 'worker' is not one the runner registered" + listed},
+		{"a short name more than one role contains, nothing close", "e", roster,
+			"fullsend: spawn_agent role 'e' is not one the runner registered" + listed},
+		{"agent_type not a string", nil, roster,
+			"fullsend: spawn_agent role None is not one the runner registered" + listed},
+		{"no role registered", "intent", nil,
+			"fullsend: spawn_agent role 'intent' is not one the runner registered; no role is registered"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newCodexAdapterHarness(t)
+			findings := h.findingsLog()
+			in := codexSpawnInput("")
+			codexSpawnArgs(in)["agent_type"] = tc.role
+			got := h.spawnGuard(in, tc.roles...)
+			assert.Equal(t, 2, got.exitCode, got.stderr)
+			assert.Equal(t, tc.want, got.stderr, "the reason is the whole of stderr")
+			assert.Empty(t, got.stdout)
+
+			data, err := os.ReadFile(findings)
+			require.NoError(t, err, "a denied spawn is recorded in the findings log")
+			var finding struct {
+				Name, Detail, Action string
+			}
+			require.NoError(t, json.Unmarshal([]byte(strings.TrimSpace(string(data))), &finding), "one JSON line")
+			assert.Equal(t, codexSpawnDenyFinding, finding.Name)
+			assert.Equal(t, tc.want, finding.Detail, "the runner prints this detail in the run's output")
+			assert.Equal(t, "block", finding.Action)
+		})
+	}
+
+	t.Run("the registered name is admitted", func(t *testing.T) {
+		h := newCodexAdapterHarness(t)
+		got := h.spawnGuard(codexSpawnInput("intent-coherence"), roster...)
+		assert.Equal(t, 0, got.exitCode, got.stderr)
+		assert.Empty(t, got.stderr)
+	})
 }

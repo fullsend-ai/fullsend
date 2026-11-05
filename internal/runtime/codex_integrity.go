@@ -77,6 +77,10 @@ type codexRunnerHeldDigestSet struct {
 	// The findings log the admission cross-check compares it with persists
 	// across them too.
 	CompletedSpawns int
+
+	// ReportedDenials is how many of the findings log's spawn-guard denials
+	// the run has printed, so each iteration prints only its own.
+	ReportedDenials int
 }
 
 // delegating reports whether Bootstrap registered native sub-agent roles for
