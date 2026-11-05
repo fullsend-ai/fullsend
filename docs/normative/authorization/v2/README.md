@@ -133,7 +133,7 @@ every event when no `jira` entry exists (or when an entry sets
 `labels: project_roles` and no list) and for slash commands when any other
 entry sets no list.
 The roster is the project's role membership for the
-configured `--jira-project`, resolved once per poll cycle for event-backed
+configured `tracker.jira.project`, resolved once per poll cycle for event-backed
 dispatch. Entity-source CEL may reuse a completed
 provider-verified actor verdict across poll cycles and bound `run` checks only
 under the bounded cache rules below; event admission does not use that cache.

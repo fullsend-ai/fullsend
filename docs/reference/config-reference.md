@@ -311,17 +311,20 @@ tracker:
   Fullsend's shared Jira client sends REST requests to
   `{api_url}/ex/jira/{cloudId}/rest/api/3/...`. It discovers the cloud ID
   from `{base_url}/_edge/tenant_info` and keeps `base_url` for issue browse
-  links. An override must serve the same gateway path layout. The poller,
+  links. An override must serve the same gateway path layout. The Jira
+  poller (`fullsend poll --input-driver jira-poll`) uses this client.
   `fullsend issues`, run-status updates, and reconciliation do not use this
   setting yet. They switch to the shared client in
-  [#9077](https://github.com/fullsend-ai/fullsend/issues/9077) and
   [#9078](https://github.com/fullsend-ai/fullsend/issues/9078).
 - **`tracker.jira.project`** — The key of the single Jira project for this
   repository. It is not a fallback project, and it has no default.
 - **`tracker.jira.poll.enabled`** — Controls the managed poll workflow. `true`
   installs or enables it, `false` removes or disables it. When `poll` or
-  `poll.enabled` is omitted, the workflow is not installed. This setting does
-  not affect `fullsend poll` or `fullsend issues`. `fullsend repos install`
+  `poll.enabled` is omitted, the workflow is not installed. `fullsend poll
+  --input-driver jira-poll` also reads it: unless it is `true`, the poller
+  skips the cycle without contacting Jira, and writes an empty dispatch
+  list to `--output` when that flag is set. It does not affect
+  `fullsend issues`. `fullsend repos install`
   converges it. When it is `true`, install writes the Jira credentials from
   `--jira-token` and `--jira-email` and ensures the managed poll resources.
   When it is `false` or omitted, install removes those resources and keeps
@@ -351,11 +354,14 @@ selects the mode. Other unknown keys under
 `tracker.jira`, `tracker.jira.poll`, and `tracker.jira.allowed_targets` are
 rejected too.
 
-When the effective config sets these settings, `fullsend poll --input-driver
-jira-poll` reads the Jira site, project, and query only from the config.
-`--jira-url`, `--jira-project`, and `--jql` are rejected, and
-`JIRA_BASE_URL` is ignored. When the config does not set them, the poller
-still uses those flags and `JIRA_BASE_URL`.
+`fullsend poll --input-driver jira-poll` reads the Jira site, API gateway,
+project, and query only from the effective `tracker.jira` config, so it
+requires `base_url` and `project`. The removed `--jira-url`,
+`--jira-project`, and `--jql` flags are rejected, and environment variables
+such as `JIRA_BASE_URL` are not read. The poller authenticates with the
+shared Jira client: `FULLSEND_JIRA_TOKEN` is required and
+`FULLSEND_JIRA_EMAIL` is optional, as described above. The legacy
+`JIRA_TOKEN` and `JIRA_USER_EMAIL` variables are not used by the poller.
 
 For GitHub and GitLab the scopes are additive: a destination is allowed if it
 matches a configured org or group, or a configured repo. Malformed entries

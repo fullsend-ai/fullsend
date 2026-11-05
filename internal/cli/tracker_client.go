@@ -66,11 +66,10 @@ func newTrackerClient(trackerName, token, jiraBaseURL, jiraEmail string) (tracke
 			email = os.Getenv("JIRA_USER_EMAIL")
 		}
 		if email == "" {
-			// Mirrors buildJiraClient's rationale in poll.go: this Jira
-			// client targets Cloud only, Cloud rejects a bare Bearer
-			// token, and omitting the email would silently send a
-			// scheme Cloud rejects, surfacing as a generic 401 rather
-			// than a clear configuration error.
+			// This Jira client targets the Cloud site URL only, which
+			// rejects a bare Bearer token, and omitting the email would
+			// silently send a scheme Cloud rejects, surfacing as a
+			// generic 401 rather than a clear configuration error.
 			return nil, fmt.Errorf("--jira-email or JIRA_USER_EMAIL required for Jira tracker (Jira Cloud auth is email+token, not a bare token)")
 		}
 		jc, err := jira.New(jiraToken, jira.WithBaseURL(baseURL), jira.WithEmail(email))

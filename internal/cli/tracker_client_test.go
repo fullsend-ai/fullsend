@@ -61,8 +61,7 @@ func TestNewTrackerClient_Jira_NoBaseURL(t *testing.T) {
 
 func TestNewTrackerClient_Jira_NoEmail(t *testing.T) {
 	// Jira Cloud rejects a bare Bearer token; omitting the email must
-	// fail loudly here rather than surfacing as a generic 401 later,
-	// mirroring buildJiraClient's rationale in poll.go.
+	// fail loudly here rather than surfacing as a generic 401 later.
 	t.Setenv("JIRA_USER_EMAIL", "")
 	_, err := newTrackerClient(trackerJira, "token123", "https://test.atlassian.net", "")
 	assert.Error(t, err)
