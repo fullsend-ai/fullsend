@@ -149,8 +149,8 @@ ENV PI_CODING_AGENT_DIR="/sandbox/pi-config" \
 # PI_VERSION bump move that matrix to the new pin first. Compat flags
 # reach Vertex only through the extension's VERTEX_COMPAT_KEYS allowlist.
 #   sha256sum <(curl -fsSL https://github.com/fullsend-ai/pi-anthropic-vertex/archive/refs/tags/v<ver>.tar.gz)
-ARG PI_ANTHROPIC_VERTEX_VERSION=0.2.0
-ARG PI_ANTHROPIC_VERTEX_SHA256=37929edb120f4eb9030fe168230dd1d2c7bae6a029d086bd1fc186039984a32d
+ARG PI_ANTHROPIC_VERTEX_VERSION=0.2.1
+ARG PI_ANTHROPIC_VERTEX_SHA256=3463c8c655001dfc89fdce649a461dbc55463f970b35b923d28a35eed712f5ef
 ARG PI_EXTENSIONS_DIR=/usr/local/share/pi-extensions
 RUN curl -fsSL --retry 3 --retry-delay 5 \
       "https://github.com/fullsend-ai/pi-anthropic-vertex/archive/refs/tags/v${PI_ANTHROPIC_VERTEX_VERSION}.tar.gz" \
@@ -189,8 +189,8 @@ RUN curl -fsSL --retry 3 --retry-delay 5 \
 # would re-walk earlier extensions on every rebuild), so the last install also
 # locks the parent directory itself, non-recursively -- its mode is then
 # explicit rather than inherited from the build umask.
-ARG PI_XAI_VERTEX_VERSION=0.3.0
-ARG PI_XAI_VERTEX_SHA256=e9e4e008690fc1b4ac4928e39080afb4e6c1fb5abeea9b16ddc52a7c9d03be23
+ARG PI_XAI_VERTEX_VERSION=0.3.1
+ARG PI_XAI_VERTEX_SHA256=325de8a6b123f205b45de446f628878f3e9ecc1bd69034dd7a5abf4948b6b7ac
 RUN curl -fsSL --retry 3 --retry-delay 5 \
       "https://github.com/fullsend-ai/pi-xai-vertex/archive/refs/tags/v${PI_XAI_VERTEX_VERSION}.tar.gz" \
       -o /tmp/pi-xai-vertex.tar.gz \
