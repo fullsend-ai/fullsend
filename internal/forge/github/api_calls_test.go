@@ -28,6 +28,12 @@ func TestLiveClient_APICalls(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 		case "/missing":
 			w.WriteHeader(http.StatusNotFound)
+		case "/graphql":
+			w.Header().Set("X-RateLimit-Resource", "graphql")
+			w.WriteHeader(http.StatusOK)
+		case "/core":
+			w.Header().Set("X-RateLimit-Resource", "core")
+			w.WriteHeader(http.StatusOK)
 		default:
 			w.WriteHeader(http.StatusOK)
 		}
@@ -56,6 +62,8 @@ func TestLiveClient_APICalls(t *testing.T) {
 	_, err := c.get(claim, "/missing")
 	require.True(t, forge.IsNotFound(err), "unexpected error: %v", err)
 	get(forge.WithAPICaller(ctx, "lock"), "/flaky")
+	get(claim, "/core")
+	get(claim, "/graphql")
 	resp, notModified, err := c.getConditional(claim, "/not-modified", `"etag"`)
 	require.NoError(t, err)
 	assert.Nil(t, resp)
@@ -64,12 +72,13 @@ func TestLiveClient_APICalls(t *testing.T) {
 	calls := c.APICalls()
 	assert.Equal(t, map[string]int64{
 		forge.APICallerOther: 1,
-		"claim":              2, // the 304 costs no quota, so it is not counted
+		"claim":              3, // the 304 costs no quota, so it is not counted
+		"claim/graphql":      1, // charged to another quota
 		"lock":               2, // both attempts of the retried request
 	}, calls)
 
 	calls["claim"] = 100
-	assert.Equal(t, int64(2), c.APICalls()["claim"], "APICalls returns a copy")
+	assert.Equal(t, int64(3), c.APICalls()["claim"], "APICalls returns a copy")
 }
 
 func TestLiveClient_APICallsIgnoresRequestsWithoutAResponse(t *testing.T) {

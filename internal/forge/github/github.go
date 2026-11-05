@@ -134,7 +134,8 @@ func (c *LiveClient) RateLimit() (forge.RateLimit, bool) {
 // APICalls returns how many responses this client has received, by
 // forge.APICaller label. Every attempt of a retried request counts. A 304
 // does not, because it costs no primary quota, and neither does a request
-// that got no response.
+// that got no response. A response charged to a quota other than core, such
+// as graphql, counts under "caller/resource".
 func (c *LiveClient) APICalls() map[string]int64 {
 	c.callsMu.Lock()
 	defer c.callsMu.Unlock()
@@ -142,16 +143,20 @@ func (c *LiveClient) APICalls() map[string]int64 {
 }
 
 // countAPICall records one response for APICalls.
-func (c *LiveClient) countAPICall(ctx context.Context, status int) {
-	if status == http.StatusNotModified {
+func (c *LiveClient) countAPICall(ctx context.Context, resp *http.Response) {
+	if resp.StatusCode == http.StatusNotModified {
 		return
+	}
+	key := forge.APICaller(ctx)
+	if resource := resp.Header.Get("X-RateLimit-Resource"); resource != "" && resource != "core" {
+		key += "/" + resource
 	}
 	c.callsMu.Lock()
 	defer c.callsMu.Unlock()
 	if c.calls == nil {
 		c.calls = map[string]int64{}
 	}
-	c.calls[forge.APICaller(ctx)]++
+	c.calls[key]++
 }
 
 // parseRateLimit reads the X-RateLimit-* headers of one response. ok is
@@ -451,7 +456,7 @@ func (c *LiveClient) doRequest(ctx context.Context, method, path string, content
 		resp, err := c.http.Do(req)
 		if err == nil {
 			c.observeRateLimit(resp.Header)
-			c.countAPICall(ctx, resp.StatusCode)
+			c.countAPICall(ctx, resp)
 		}
 		if err != nil {
 			if closer, ok := reqBody.(io.Closer); ok {

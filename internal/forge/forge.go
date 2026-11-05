@@ -783,7 +783,9 @@ func APICaller(ctx context.Context) string {
 }
 
 // APICallReporter is implemented by clients that count their API calls by
-// caller (see WithAPICaller). APICalls returns a copy of the counts.
+// caller (see WithAPICaller). APICalls returns a copy of the counts. A key
+// of the form "caller/resource" holds calls charged to a quota other than
+// the client's main one.
 type APICallReporter interface {
 	APICalls() map[string]int64
 }

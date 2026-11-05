@@ -124,11 +124,15 @@ func (c *orgCredentials) apiCallDiagnostics() string {
 }
 
 // formatAPICalls renders calls as "total=N caller=N ...", callers sorted.
+// total covers the core quota only, so it compares with the org's remaining
+// quota; "caller/resource" entries are charged to another quota.
 func formatAPICalls(calls map[string]int64) string {
 	var total int64
 	parts := make([]string, 0, len(calls)+1)
 	for _, caller := range sortedKeys(calls) {
-		total += calls[caller]
+		if !strings.Contains(caller, "/") {
+			total += calls[caller]
+		}
 		parts = append(parts, fmt.Sprintf("%s=%d", caller, calls[caller]))
 	}
 	return strings.Join(append([]string{fmt.Sprintf("total=%d", total)}, parts...), " ")
@@ -213,6 +217,13 @@ type composedDriver struct {
 	// the first admission, under envMu.
 	acquireCtx    context.Context
 	cancelAcquire context.CancelFunc
+
+	// stopAPICallLog ends the periodic API call log, which starts on the
+	// first admission and runs until Finalize has finished its cleanup,
+	// and apiCallLogDone closes once it has ended. Both are guarded by
+	// envMu.
+	stopAPICallLog context.CancelFunc
+	apiCallLogDone chan struct{}
 
 	mu          sync.Mutex
 	outstanding map[Slot]*orgEnv // slots currently leased
@@ -350,10 +361,10 @@ func poolLogf(pool PoolConfig) func(string, ...any) {
 }
 
 // errLeaseRequired is returned by the name-only Driver methods.
+var errLeaseRequired = errors.New("the shared pool driver leases slots across orgs; use AllocateLease and DeallocateLease (install.LeaseDriver)")
+
 // apiCallLogInterval is how often a running suite logs its API call counts.
 var apiCallLogInterval = 5 * time.Minute
-
-var errLeaseRequired = errors.New("the shared pool driver leases slots across orgs; use AllocateLease and DeallocateLease (install.LeaseDriver)")
 
 // AllocateRepo fails: a repo name alone does not identify a slot across
 // orgs. Use AllocateLease.
@@ -379,7 +390,7 @@ func (d *composedDriver) AllocateLease(ctx context.Context) (RepoLease, error) {
 	d.allocs.Add(1)
 	if d.acquireCtx == nil {
 		d.acquireCtx, d.cancelAcquire = context.WithCancel(context.Background())
-		go d.logAPICallsEvery(d.acquireCtx, apiCallLogInterval)
+		d.startAPICallLog(apiCallLogInterval)
 	}
 	acquireStop := d.acquireCtx
 	d.envMu.Unlock()
@@ -456,7 +467,8 @@ func (d *composedDriver) provision(ctx context.Context, slot Slot) (_ RepoLease,
 		if err == nil {
 			return
 		}
-		if relErr := env.ensurer.ReleaseRepo(context.WithoutCancel(ctx), slot.Org, slot.Repo, stillOwns); relErr != nil {
+		relCtx := forge.WithAPICaller(context.WithoutCancel(ctx), apiCallerRelease)
+		if relErr := env.ensurer.ReleaseRepo(relCtx, slot.Org, slot.Repo, stillOwns); relErr != nil {
 			d.logf("[driver] releasing leftover state of %s after failed provisioning: %v", slot, relErr)
 		}
 	}()
@@ -597,6 +609,30 @@ func (d *composedDriver) release(ctx context.Context, slot Slot, env *orgEnv) {
 	}
 }
 
+// startAPICallLog starts the periodic API call log. The caller holds envMu.
+func (d *composedDriver) startAPICallLog(interval time.Duration) {
+	ctx, stop := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	d.stopAPICallLog, d.apiCallLogDone = stop, done
+	go func() {
+		defer close(done)
+		d.logAPICallsEvery(ctx, interval)
+	}()
+}
+
+// endAPICallLog stops the periodic API call log and waits for it, so no
+// periodic line follows the final one.
+func (d *composedDriver) endAPICallLog() {
+	d.envMu.Lock()
+	stop, done := d.stopAPICallLog, d.apiCallLogDone
+	d.envMu.Unlock()
+	if stop == nil {
+		return
+	}
+	stop()
+	<-done
+}
+
 // logAPICallsEvery logs the API call counts every interval until ctx ends.
 // Finalize logs them too, but a job that times out never reaches it, and
 // those are the jobs whose quota use matters most.
@@ -712,7 +748,13 @@ func (d *composedDriver) Finalize(ctx context.Context) error {
 	if diag := d.alloc.QuotaDiagnostics(); diag != "" {
 		d.logf("[driver] per-org rate limits at finalize:\n%s", diag)
 	}
-	d.logAPICalls("at finalize")
+	d.endAPICallLog()
+	when := "at finalize"
+	if allocWaitErr != nil || waitErr != nil {
+		// Work Finalize stopped waiting for can still make calls.
+		when = "at finalize (incomplete: work still in flight)"
+	}
+	d.logAPICalls(when)
 
 	// Stop the trace collector last, after the repos (and their
 	// workflows) are gone, so it flushes everything it received.

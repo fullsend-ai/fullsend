@@ -153,7 +153,7 @@ func credentialsFor(clients map[string]forge.Client) *orgCredentials {
 
 func TestOrgCredentials_APICallDiagnostics(t *testing.T) {
 	creds := credentialsFor(map[string]forge.Client{
-		"halfsend-02":    countingClient{calls: map[string]int64{"lock": 5, "claim": 2}},
+		"halfsend-02":    countingClient{calls: map[string]int64{"lock": 5, "claim": 2, "provision/graphql": 4}},
 		"halfsend-01":    countingClient{calls: map[string]int64{"claim": 1, forge.APICallerOther: 10}},
 		"no-calls-yet":   countingClient{},
 		"does-not-count": forge.NewFakeClient(),
@@ -161,8 +161,8 @@ func TestOrgCredentials_APICallDiagnostics(t *testing.T) {
 
 	assert.Equal(t, strings.Join([]string{
 		"halfsend-01: total=11 claim=1 other=10",
-		"halfsend-02: total=7 claim=2 lock=5",
-		"all orgs: total=18 claim=3 lock=5 other=10",
+		"halfsend-02: total=7 claim=2 lock=5 provision/graphql=4",
+		"all orgs: total=18 claim=3 lock=5 other=10 provision/graphql=4",
 	}, "\n"), creds.apiCallDiagnostics())
 }
 
@@ -237,19 +237,26 @@ func (e *callerEnsurer) ReleaseRepo(ctx context.Context, org, repo string, still
 	return e.slotEnsurer.ReleaseRepo(ctx, org, repo, stillOwns)
 }
 
-func TestComposedDriver_LabelsProvisionAndReleaseCalls(t *testing.T) {
-	td := newTestPoolDriver(t, StagePoolLayout(1))
+// withCallerEnsurer makes td's org setup wrap each ensurer in a
+// callerEnsurer, returned through the pointer it yields.
+func withCallerEnsurer(td *testPoolDriver) **callerEnsurer {
 	inner := td.setup
-	var ens *callerEnsurer
+	ens := new(*callerEnsurer)
 	td.setup = func(ctx context.Context, org string, cred orgCredential) (*orgEnv, error) {
 		env, err := inner(ctx, org, cred)
 		if err != nil {
 			return nil, err
 		}
-		ens = &callerEnsurer{slotEnsurer: env.ensurer.(*slotEnsurer)}
-		env.ensurer = ens
+		*ens = &callerEnsurer{slotEnsurer: env.ensurer.(*slotEnsurer)}
+		env.ensurer = *ens
 		return env, nil
 	}
+	return ens
+}
+
+func TestComposedDriver_LabelsProvisionAndReleaseCalls(t *testing.T) {
+	td := newTestPoolDriver(t, StagePoolLayout(1))
+	ens := withCallerEnsurer(td)
 	ctx := context.Background()
 
 	lease, err := td.AllocateLease(ctx)
@@ -257,7 +264,147 @@ func TestComposedDriver_LabelsProvisionAndReleaseCalls(t *testing.T) {
 	require.NoError(t, td.DeallocateLease(ctx, lease.Org, lease.Repo))
 	require.NoError(t, td.Finalize(ctx))
 
-	require.NotNil(t, ens)
-	assert.Equal(t, apiCallerProvision, ens.ensure)
-	assert.Equal(t, apiCallerRelease, ens.release)
+	require.NotNil(t, *ens)
+	assert.Equal(t, apiCallerProvision, (*ens).ensure)
+	assert.Equal(t, apiCallerRelease, (*ens).release)
+}
+
+func TestComposedDriver_LabelsProvisioningRollbackAsRelease(t *testing.T) {
+	td := newTestPoolDriver(t, StagePoolLayout(1))
+	ens := withCallerEnsurer(td)
+	ctx := context.Background()
+
+	first, err := td.AllocateLease(ctx)
+	require.NoError(t, err)
+	require.NoError(t, td.DeallocateLease(ctx, first.Org, first.Repo))
+	(*ens).release = ""
+
+	sink := &recordingTraceSink{}
+	sink.beforeWrite = func(ctx context.Context) error {
+		require.NoError(t, td.pool.fc.DeleteRepo(ctx, first.Org, first.Repo))
+		_, err := td.pool.fc.CreateRepo(ctx, first.Org, first.Repo, "another holder", false)
+		require.NoError(t, err)
+		return forge.RetryGuard(ctx)(ctx)
+	}
+	td.traces = sink
+
+	_, err = td.AllocateLease(ctx)
+	require.ErrorIs(t, err, errLeaseLost)
+	assert.Equal(t, apiCallerProvision, (*ens).ensure)
+	assert.Equal(t, apiCallerRelease, (*ens).release, "the rollback after EnsureRepo is release traffic")
+}
+
+// apiCallLines collects the driver's API call log lines.
+type apiCallLines struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (l *apiCallLines) logf(format string, args ...any) {
+	line := fmt.Sprintf(format, args...)
+	if !strings.Contains(line, "per-org API calls") {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.lines = append(l.lines, line)
+}
+
+func (l *apiCallLines) count() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.lines)
+}
+
+func (l *apiCallLines) last() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.lines) == 0 {
+		return ""
+	}
+	return l.lines[len(l.lines)-1]
+}
+
+// countCalls makes td report API calls for org, and sends its API call log
+// lines to the returned collector.
+func countCalls(td *testPoolDriver, org string) *apiCallLines {
+	lines := &apiCallLines{}
+	td.logf = lines.logf
+	td.creds.byOrg[org] = orgCredential{
+		token:  "tok-" + org,
+		client: countingClient{Client: td.pool.clients[org], calls: map[string]int64{"claim": 3}},
+	}
+	return lines
+}
+
+func TestComposedDriver_LogsAPICallsUntilFinalizeEnds(t *testing.T) {
+	td := newTestPoolDriver(t, StagePoolLayout(2))
+	lines := countCalls(td, StageOrg)
+	ctx := context.Background()
+	first, err := td.AllocateLease(ctx)
+	require.NoError(t, err)
+	require.NoError(t, td.DeallocateLease(ctx, first.Org, first.Repo))
+
+	// Swap the 5-minute log for a fast one.
+	td.endAPICallLog()
+	td.envMu.Lock()
+	td.startAPICallLog(time.Millisecond)
+	td.envMu.Unlock()
+
+	td.ensurer(first.Org).gate = make(chan struct{})
+	td.ensurer(first.Org).started = make(chan struct{}, 1)
+	gate := td.ensurer(first.Org).gate
+	allocDone := make(chan error, 1)
+	go func() {
+		_, allocErr := td.AllocateLease(ctx)
+		allocDone <- allocErr
+	}()
+	<-td.ensurer(first.Org).started
+
+	finalizeDone := make(chan error, 1)
+	go func() { finalizeDone <- td.Finalize(ctx) }()
+	require.Eventually(t, func() bool {
+		td.envMu.Lock()
+		defer td.envMu.Unlock()
+		return td.closed
+	}, 5*time.Second, time.Millisecond, "Finalize began")
+
+	before := lines.count()
+	logged := assert.Eventually(t, func() bool { return lines.count() > before },
+		5*time.Second, time.Millisecond, "the log keeps running while Finalize is blocked")
+	close(gate)
+	require.True(t, logged)
+	require.NoError(t, <-allocDone)
+	require.ErrorContains(t, <-finalizeDone, "1 outstanding lease(s)")
+
+	final := lines.count()
+	assert.Contains(t, lines.last(), "per-org API calls at finalize:")
+	time.Sleep(20 * time.Millisecond)
+	assert.Equal(t, final, lines.count(), "nothing logs after the final line")
+}
+
+func TestComposedDriver_FinalizeMarksIncompleteAPICalls(t *testing.T) {
+	td := newTestPoolDriver(t, StagePoolLayout(2))
+	lines := countCalls(td, StageOrg)
+	td.setupGate = make(chan struct{})
+	td.setupStarted = make(chan struct{}, 1)
+
+	leaseCtx, cancelLease := context.WithCancel(context.Background())
+	leaseDone := make(chan error, 1)
+	go func() {
+		_, err := td.AllocateLease(leaseCtx)
+		leaseDone <- err
+	}()
+	<-td.setupStarted
+	cancelLease()
+	require.ErrorIs(t, <-leaseDone, context.Canceled)
+
+	finalizeCtx, cancelFinalize := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancelFinalize()
+	err := td.Finalize(finalizeCtx)
+	close(td.setupGate)
+	td.composedDriver.setups.Wait()
+
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.Contains(t, lines.last(), "at finalize (incomplete: work still in flight):")
 }
