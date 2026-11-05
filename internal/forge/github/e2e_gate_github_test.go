@@ -50,6 +50,7 @@ func TestGetCollaboratorPermission_HTTP404(t *testing.T) {
 
 	_, err := newTestClient(t, srv).GetCollaboratorPermission(context.Background(), "o", "r", "alice")
 	require.Error(t, err)
+	assert.Contains(t, err.Error(), "get collaborator permission for alice")
 	var apiErr *APIError
 	require.ErrorAs(t, err, &apiErr)
 	assert.Equal(t, http.StatusNotFound, apiErr.StatusCode)

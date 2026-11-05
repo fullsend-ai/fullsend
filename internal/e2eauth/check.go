@@ -115,12 +115,8 @@ func Check(ctx context.Context, gh GitHubGate, in Input) Result {
 		return res
 	}
 
-	res.Authorized = true
-	res.Reason = "ok_to_test"
-
 	labelerLogin := strings.TrimSpace(in.LabelActorLogin)
 	if labelerLogin == "" {
-		res.Authorized = false
 		res.Reason = "untrusted_labeler"
 		return res
 	}
@@ -131,24 +127,23 @@ func Check(ctx context.Context, gh GitHubGate, in Input) Result {
 	}
 
 	if !isWriteRole(labelerRole) {
-		res.Authorized = false
 		res.Reason = "untrusted_labeler"
-		frozen := strings.TrimSpace(in.LabelActorLogin)
-		if frozen != "" {
-			events, err := gh.ListIssueLabelEvents(ctx, owner, repo, prNumber)
+		events, err := gh.ListIssueLabelEvents(ctx, owner, repo, prNumber)
+		if err != nil {
+			return errorResult(err)
+		}
+		if latestOkToTestLabeler(events) == labelerLogin {
+			removed, err := tryRemoveOkToTestLabel(ctx, gh, in, owner, repo, prNumber)
 			if err != nil {
 				return errorResult(err)
 			}
-			if latestOkToTestLabeler(events) == frozen {
-				removed, err := tryRemoveOkToTestLabel(ctx, gh, in, owner, repo, prNumber)
-				if err != nil {
-					return errorResult(err)
-				}
-				res.LabelRemoved = removed
-			}
+			res.LabelRemoved = removed
 		}
+		return res
 	}
 
+	res.Authorized = true
+	res.Reason = "ok_to_test"
 	return res
 }
 
@@ -193,16 +188,27 @@ func latestOkToTestLabelTime(events []forge.IssueLabelEvent) string {
 }
 
 func latestOkToTestLabeler(events []forge.IssueLabelEvent) string {
-	var bestTime string
+	maxTime := latestOkToTestLabelTime(events)
+	if maxTime == "" {
+		return ""
+	}
 	var login string
+	ambiguous := false
 	for _, ev := range events {
-		if ev.LabelName != OkToTestLabel {
+		if ev.LabelName != OkToTestLabel || ev.CreatedAt != maxTime {
 			continue
 		}
-		if ev.CreatedAt >= bestTime {
-			bestTime = ev.CreatedAt
-			login = ev.ActorLogin
+		actor := strings.TrimSpace(ev.ActorLogin)
+		if login == "" {
+			login = actor
+			continue
 		}
+		if actor != login {
+			ambiguous = true
+		}
+	}
+	if ambiguous {
+		return ""
 	}
 	return login
 }

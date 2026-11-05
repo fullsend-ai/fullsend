@@ -1248,8 +1248,8 @@ type Client interface {
 	// pull request. Returns forge.ErrNotSupported if the forge has no
 	// equivalent concept.
 	ListIssueReactions(ctx context.Context, owner, repo string, number int) ([]Reaction, error)
-	// ListIssueLabelEvents returns labeled events on an issue or pull request,
-	// oldest first within each page and pages in API order.
+	// ListIssueLabelEvents returns labeled events on an issue or pull request.
+	// GitHub does not document event ordering; callers must not rely on slice order.
 	ListIssueLabelEvents(ctx context.Context, owner, repo string, number int) ([]IssueLabelEvent, error)
 	// RemoveIssueLabel removes a single label from an issue or pull request.
 	// Returns forge.ErrNotFound when the label is already absent.

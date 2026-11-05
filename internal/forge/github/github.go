@@ -4776,7 +4776,7 @@ func (c *LiveClient) GetAppClientID(ctx context.Context, slug string) (string, e
 func (c *LiveClient) GetCollaboratorPermission(ctx context.Context, owner, repo, username string) (string, error) {
 	perm, err := c.fetchCollaboratorPermission(ctx, owner, repo, username)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("get collaborator permission for %s: %w", username, err)
 	}
 	if perm.RoleName == "" {
 		return "", fmt.Errorf("%w: no permission for %s", forge.ErrNotFound, username)
