@@ -467,7 +467,10 @@ for issues and merge requests.
   masked CI/CD variables. The agent jobs need them as well, to post run status
   and the triage and code results to the Jira issue.
 
-`fullsend` does not yet create the schedule or the Jira variables for you.
+`repos install` converges the `FULLSEND_JIRA_TOKEN` and `FULLSEND_JIRA_EMAIL`
+variables from `--jira-token` and `--jira-email` for projects whose effective
+`tracker.jira.poll.enabled` is `true`. `fullsend` does not yet create the
+schedule or the `JIRA_*` variables above for you.
 That setup is tracked in
 [#8906](https://github.com/fullsend-ai/fullsend/issues/8906).
 

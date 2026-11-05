@@ -792,6 +792,7 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 			return nil, err
 		}
 	}
+	store := newPresetCache()
 	excludedUsesOpenAI, excludedUsesVertex, excludedUsesJira := false, false, false
 	if len(cfg.ExcludeRepos) > 0 {
 		excluded := make(map[string]bool, len(cfg.ExcludeRepos))
@@ -814,9 +815,19 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 			case InferenceAuthVertexWIF, InferenceAuthOpenAIWIF:
 				excludedUsesVertex = true
 			}
-			// The preset is not loaded for an excluded repo, so only its
-			// repos.yaml configuration is consulted here.
-			if jira, jiraErr := effectiveJiraTracking(excludedResolved, nil); jiraErr != nil || jira.PollEnabled() {
+			// Polling can be enabled by the declared preset alone, so the
+			// preset is read (never written) to see the same effective
+			// configuration a selected repo would. A preset that cannot be
+			// loaded, or a configuration that does not resolve, counts the
+			// repo as a consumer: the run is not failed on its account.
+			var excludedPreset []byte
+			var presetErr error
+			if excludedResolved.Config != "" {
+				excludedPreset, presetErr = store.Load(ctx, excludedResolved.Config, excludedResolved.ConfigHash)
+			}
+			if presetErr != nil {
+				excludedUsesJira = true
+			} else if jira, jiraErr := effectiveJiraTracking(excludedResolved, excludedPreset); jiraErr != nil || jira.PollEnabled() {
 				excludedUsesJira = true
 			}
 		}
@@ -907,7 +918,6 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 	discoveries := make([]convergeDiscovery, len(repos))
 	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
-	store := newPresetCache()
 
 	for i, r := range repos {
 		wg.Add(1)

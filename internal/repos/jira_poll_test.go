@@ -336,6 +336,26 @@ func TestConverge_JiraPoll_ExcludedRepoCountsAsConsumer(t *testing.T) {
 	assert.Empty(t, fc.CreatedSecrets)
 }
 
+// An excluded repo whose polling is enabled only by its declared preset still
+// counts as a Jira consumer, so a supplied --jira-token is not rejected as
+// unconsumed when the remaining selected repo does not enable polling.
+func TestConverge_JiraPoll_ExcludedPresetEnabledRepoCountsAsConsumer(t *testing.T) {
+	fc := newFakeClientForBatch("acme/api", "acme/web")
+	markFullyInstalled(fc, "acme", "api")
+	markFullyInstalled(fc, "acme", "web")
+	m := newConvergeManifest("acme/api", "acme/web")
+	m.GitHub.Repos[0].ConfigBase.Source = writePresetFile(t, jiraPollEnabledConfig)
+	cfg := withoutInferenceInputs(convergeCfgWithDefaults(m))
+	cfg.ExcludeRepos = []string{"acme/api"}
+	cfg.JiraToken = testJiraToken
+
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), (&fakeScaffoldCommit{}).fn(), noopProgress)
+	require.NoError(t, err)
+	require.Len(t, result.Results, 1)
+	assert.Equal(t, "web", result.Results[0].Repo)
+	assert.Empty(t, jiraSecretWrites(fc), "neither the excluded repo nor the non-Jira repo receives the credentials")
+}
+
 func TestConverge_JiraPoll_PresetWithIncompleteConnectionFailsBeforeWrites(t *testing.T) {
 	rec := &fakeJiraPollReconciler{}
 	withJiraPollReconciler(t, ForgeGitHub, rec)

@@ -40,6 +40,8 @@ fullsend github set "$OWNER/$REPO" FULLSEND_GCP_REGION global
 | `FULLSEND_GCP_WIF_PROVIDER` | Repo secret | Full WIF provider resource name for OIDC authentication | `projects/123456789/locations/global/...` |
 | `FULLSEND_OPENAI_API_KEY` | Repo secret | OpenAI API key for repos whose `inference.auth` is `openai-api-key`, written by `repos install --openai-api-key` (exported as `OPENAI_API_KEY`; unused when the WIF trio is set) | `sk-...` |
 | `FULLSEND_INFERENCE_GATEWAY_API_KEY` | Repo secret | Inference gateway API key for repos whose `inference.gateway.auth` is `api-key`; set by the repository admin (`fullsend github set`), not by setup. A long-lived secret: prefer `auth: oidc` | — |
+| `FULLSEND_JIRA_TOKEN` | Repo secret | Jira API token for repos whose effective `tracker.jira.poll.enabled` is `true`, written by `repos install --jira-token` (required on the first Jira-enabled install; an omitted flag keeps the existing secret) | (Jira API token) |
+| `FULLSEND_JIRA_EMAIL` | Repo secret | Optional Jira account email for the same repos, written by `repos install --jira-email`; an omitted flag keeps the existing secret | `poller@example.com` |
 | `FULLSEND_GITHUB_RUNNER_SECRETS` | Repo or org secret (optional) | JSON object of name → value for host-side scripts, read through each harness's `env.runner`. Set with `gh secret set`, not `fullsend github set`; see [Pass secrets to host-side scripts](../user/bring-your-own-agent.md#pass-secrets-to-host-side-scripts-github) | `{"JIRA_API_TOKEN":"..."}` |
 
 Repositories selecting `inference.auth: openai-wif` need no inference secrets unless
@@ -89,6 +91,8 @@ being written. See
 | `FULLSEND_GITLAB_POLLER_TOKEN` / `FULLSEND_GITLAB_ANALYST_TOKEN` / `FULLSEND_GITLAB_CODER_TOKEN` | CI/CD secret | Built-in role PATs provisioned by `repos install`; the selected role secret is required for every runtime job | (masked) |
 | `FULLSEND_OPENAI_API_KEY` | CI/CD variable (masked) | OpenAI API key for projects whose `inference.auth` is `openai-api-key`, written by `repos install --openai-api-key`. The job maps it to `OPENAI_API_KEY`; an unprefixed `OPENAI_API_KEY` CI/CD variable is no longer used (see [upgrade steps](../../cli/repos.md#gitlab-fullsend_openai_api_key-replaces-openai_api_key-breaking)) | `sk-...` |
 | `FULLSEND_INFERENCE_GATEWAY_API_KEY` | CI/CD variable (masked) | Inference gateway API key for projects whose `inference.gateway.auth` is `api-key`; the job passes it to the runner under its own name. Set by the project admin, not by setup | — |
+| `FULLSEND_JIRA_TOKEN` | CI/CD secret (protected, masked) | Jira API token for projects whose effective `tracker.jira.poll.enabled` is `true`, written by `repos install --jira-token` (required on the first Jira-enabled install; an omitted flag keeps the existing variable). The dispatcher job clears it | (masked) |
+| `FULLSEND_JIRA_EMAIL` | CI/CD secret (protected, masked) | Optional Jira account email for the same projects, written by `repos install --jira-email`; an omitted flag keeps the existing variable. The dispatcher job clears it | (masked) |
 
 `repos install` provisions and rotates the registered role credentials directly. There is no migration gate and no shared-token runtime path. Neither install nor uninstall removes a leftover `FULLSEND_FORGE_TOKEN` from a repository installed before the role-only rollout — clean that up manually.
 
