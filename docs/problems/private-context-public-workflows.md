@@ -56,8 +56,13 @@ uploads are suppressed.
 telemetry separately: private remote export does not change the audience of
 local files, console output or public reviews.
 
-[#2513](https://github.com/fullsend-ai/fullsend/issues/2513) tracks warnings
-about private Jira data in public-repository artifacts.
+[#2513](https://github.com/fullsend-ai/fullsend/issues/2513) records the
+direction to use private GitHub repositories as the standard for private Jira
+refinement. It chooses documentation warnings as the immediate step and a
+harness-level runtime check that warns or blocks Jira integration in a public
+repository as the follow-up. This records the intended guard, rather than
+establishing that runtime enforcement is available.
+
 [#1189](https://github.com/fullsend-ai/fullsend/issues/1189) identifies private
 content in public retro issues. These establish parts of the problem; neither
 a documentation warning nor a destination allow-list proves that derived
@@ -86,6 +91,22 @@ content; suppressing output does not reduce what the agent can read.
 
 ## Options and trade-offs
 
+### Refuse or warn on protected sources for public-repository installs
+
+Check the repository's visibility and configured sources before allowing an
+agent to read protected context. Refuse that combination or warn the operator,
+starting with the runtime validation planned in #2513 for Jira integrations.
+Apply the check during setup and before execution so later configuration or
+visibility changes also receive validation.
+
+Refusal can prevent known unsafe configurations without having to sanitize
+all downstream output. It can also exclude useful workflows that separate
+private processing from approved public output. A warning preserves operator
+choice but does not prevent disclosure if the operator proceeds. Both choices
+need trusted source classification, coverage of custom integrations and a
+policy for unknown sensitivity. Repository visibility alone does not identify
+all private inputs or public destinations.
+
 ### Keep protected processing in a private execution environment
 
 Run the confidential stage in an access-controlled worker or control repository.
@@ -93,8 +114,8 @@ Publish only approved material to the public project.
 
 This narrows exposure and can retain useful private evidence. It requires
 cross-repository authorization, dispatch, artifact retrieval and status
-correlation. It is a deployment pattern to evaluate, not an assertion that
-fullsend already provides a drop-in installation for it.
+correlation. The private-repository direction above does not establish that
+fullsend provides this cross-repository publishing arrangement.
 
 ### Restrict the public job's inputs to approved public material
 
