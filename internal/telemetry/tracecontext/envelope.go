@@ -69,8 +69,8 @@ type Provenance struct {
 // unauthenticated: Parse checks structure only, so TraceID, ParentSpanID,
 // and Provenance must not be consumed unless Admit returns
 // OutcomeAdmitted. The wire layout, exact sizes, and strict limits are
-// frozen in docs/normative/trace-context/v1/README.md; Marshal is its only
-// legal encoder.
+// specified in docs/normative/trace-context/v1/README.md, provisional until
+// the first carrier-publishing PR merges; Marshal is its only legal encoder.
 type Envelope struct {
 	Domain       Domain
 	KeyID        [8]byte
@@ -97,7 +97,7 @@ const MaxEnvelopeLen = 439
 // base64.StdEncoding of MaxEnvelopeLen bytes without line breaks.
 const MaxCarrierLen = 588
 
-// Wire constants of the frozen v1 format.
+// Wire constants of the v1 format.
 var magic = [4]byte{'F', 'S', 'T', 'C'}
 
 const versionV1 = 0x01
