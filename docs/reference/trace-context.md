@@ -50,7 +50,7 @@ database ID; its result alone cannot resolve trace identity.
 | Symbol | Purpose |
 |--------|---------|
 | `Identity` | The immutable binding tuple |
-| `Identity.Resolved` | Whether forge-side identity components are present |
+| `Identity.Resolved` | Whether the forge-side components are present and valid: a canonical instance, IDs ≥ 1, and a defined kind |
 | `DeriveFallback` | The v1 deterministic fallback context |
 | `NormalizeInstance` | Canonical deployment base URL, including its path prefix |
 | `Envelope` | A decoded, unverified v1 envelope or pending marker; fields are safe only after `Admit` admits |

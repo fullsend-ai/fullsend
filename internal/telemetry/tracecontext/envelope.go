@@ -402,14 +402,17 @@ type Outcome int
 
 const (
 	// OutcomeFallback means no carrier was admissible; the caller uses
-	// the deterministic entity-derived fallback. It is the zero value.
+	// the deterministic entity-derived fallback, except for
+	// ReasonUnresolved, where it must postpone dispatch. It is the zero
+	// value.
 	OutcomeFallback Outcome = iota
 	// OutcomeAdmitted means a verified bound envelope matched the
 	// expected binding; the admitted IDs are available.
 	OutcomeAdmitted
 	// OutcomePending means a verified pending marker matched the expected
-	// scope. It grants neither context nor links; bounded rereads are
-	// caller policy.
+	// scope. It grants neither context nor links; callers bound the reread
+	// by a window from the entity's trusted creation metadata, then fall
+	// back.
 	OutcomePending
 )
 
@@ -461,12 +464,13 @@ func reasonForParse(err error) string {
 	}
 }
 
-// Admit parses, verifies, and binds candidate carrier wire bytes against
-// the expected identity and the configured eligible verification keys
-// (active plus retained). Identical duplicate candidates are acceptable;
-// any differing candidates reject. Keys are resolved only from the
-// supplied trusted set. Admission is independent of dispatch
-// authorization: this function never returns permission.
+// Admit parses, verifies, and binds candidate envelope wire bytes, each
+// decoded from its carrier with DecodeCarrier, against the expected
+// identity and the configured eligible verification keys (active plus
+// retained). Identical duplicate candidates are acceptable; any differing
+// candidates reject. Keys are resolved only from the supplied trusted set.
+// Admission is independent of dispatch authorization: this function never
+// returns permission.
 //
 // An unresolved expected identity reports ReasonUnresolved before any
 // carrier is inspected: the caller must postpone dispatch (FR-002) and

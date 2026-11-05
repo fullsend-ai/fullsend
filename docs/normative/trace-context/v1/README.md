@@ -10,8 +10,8 @@ provisioning, and runtime integration are outside this contract.
 ## Identity
 
 Every forge entity is addressed by an immutable five-part tuple. Display
-names, URLs, GitHub numbers, GitLab IIDs, and Jira keys are not identity
-components.
+names, entity URLs, GitHub numbers, GitLab IIDs, and Jira keys are not
+identity components.
 
 | Component | GitHub | GitLab | Jira |
 |-----------|--------|--------|------|
@@ -64,9 +64,9 @@ Trailing DNS root dots are stripped: `https://github.com.` and
 invalid UTF-8 or NUL in the decoded path, and normalized URLs over 253 bytes
 (including the escaped prefix). Identity resolution, signing, and parsing
 require the already canonical value; they never silently rewrite an
-authenticated field. Root-instance vectors, wire layout, and size limits
-are unchanged; prefixed deployments use the same v1 length-delimited field
-and fallback derivation with the full normalized instance bytes.
+authenticated field. Prefixed deployments use the same v1 length-delimited
+instance field and fallback derivation with the full normalized instance
+bytes.
 
 The installation ID is generated during key provisioning and identifies
 one install's key set. It is authenticated inside every envelope and must
@@ -77,7 +77,7 @@ traces regardless of key state.
 ### Rename and move rules
 
 - Renames (issue titles, repository names, Jira project keys) never
-  change identity: every component is a database ID.
+  change identity: the container and entity components are database IDs.
 - Repository transfers on GitHub and GitLab preserve the database ID, so
   identity survives a transfer.
 - An entity moved between containers (a GitHub issue transfer, a Jira
@@ -85,6 +85,9 @@ traces regardless of key state.
   ID — and therefore a new identity. A previously published envelope
   fails the binding check and the moved entity falls back. A move is
   never treated as a rename.
+- Changing the configured deployment URL (a Jira site rename, a GHES
+  hostname change, a GitLab `external_url` change) is also a new binding:
+  published envelopes fail the binding check and entities fall back.
 
 ### Fallback derivation (v1)
 
@@ -146,7 +149,7 @@ the magic through the nonce — there are no unsigned fields.
 | · | 8 | Parent/anchor Span ID | nonzero |
 | · | 1 | Provenance kind | `0x00` none, `0x01` source link, `0x02` scenario |
 | · | 0/24/32 | Provenance fields | none; source link = 16B source TraceID + 8B source SpanID; scenario = 16B scenario TraceID + 16B invocation ID |
-| · | 16 | Nonce | `crypto/rand`, nonzero, unique per creation intent |
+| · | 16 | Nonce | nonzero (checked); signers draw it from `crypto/rand`, unique per creation intent (not checked at admission) |
 | end−64 | 64 | Ed25519 signature | over bytes `[0, end−64)` |
 
 The maximum legal size is 439 bytes (bound envelope, scenario provenance,
@@ -196,8 +199,8 @@ without context or provenance; they never reach Ed25519 verification.
 
 `Admit(expected Identity, keys, candidates...)` is the pure decision
 operation. It takes the trusted expected binding, the configured eligible
-verification keys, and bounded candidate carrier bytes, and returns
-exactly one outcome:
+verification keys, and bounded candidate envelope bytes, each decoded from
+its carrier with `DecodeCarrier`, and returns exactly one outcome:
 
 - **Admitted**: a verified bound envelope matched every binding
   component. The result carries the admitted TraceID, parent SpanID, and
@@ -211,7 +214,8 @@ exactly one outcome:
   `created_at`) before rereading and falling back, per
   [ADR 0154](../../../ADRs/0154-correlate-work-item-and-behaviour-scenario-traces.md).
 - **Fallback**: nothing was admissible. The caller uses the
-  entity-derived fallback.
+  entity-derived fallback, except for reason `unresolved`, where it
+  postpones dispatch (see below).
 
 The zero-value result selects fallback and grants no context or provenance.
 
@@ -221,12 +225,15 @@ Fallback reason codes are redacted diagnostics — `absent`, `malformed`,
 never key material or raw bytes. A plain W3C `traceparent` is never an
 envelope.
 
-Any extra or differing candidate deliberately forces fallback, even when
-one candidate alone would admit. An actor who can edit the body can deny
-continuity by appending junk or deleting the carrier, but can never choose,
-alter, or inject the admitted context; rejection is deliberately fail-closed
-so a forged carrier is reported rather than silently ignored. Publishing a
-bound envelope must remove the pending marker it replaces;
+Any differing extra candidate, whether junk or a second envelope,
+deliberately forces fallback even when one candidate alone would admit;
+identical duplicates do not. An actor who can edit the body can deny
+continuity by appending junk or deleting the carrier, but can never alter
+or inject a context: only an envelope the installation signed for this
+entity admits. Admission has no freshness check, so an older valid
+envelope for the same entity still admits. Rejection is deliberately
+fail-closed so a forged carrier is reported rather than silently ignored.
+Publishing a bound envelope must remove the pending marker it replaces;
 leaving both present produces conflicting carriers and fallback, never a
 pick between them.
 
@@ -236,10 +243,11 @@ authorization are independent decisions; a denied actor never dispatches
 regardless of admission, and an admitted envelope never authorizes
 anything.
 
-An unresolved identity (missing instance, container, kind, or entity) is
-explicit: admission returns fallback with reason `unresolved` before
-inspecting any candidate, and callers must postpone dispatch with
-diagnostics rather than derive a fallback or guess.
+An unresolved identity (a missing or invalid instance, container, kind, or
+entity, including a non-canonical instance) is explicit: admission returns
+fallback with reason `unresolved` before inspecting any candidate, and
+callers must postpone dispatch with diagnostics rather than derive a
+fallback or guess.
 
 ## Compatibility
 

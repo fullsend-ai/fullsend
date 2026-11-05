@@ -66,7 +66,9 @@ type Issue struct {
 	// GitLab's database issue id (not the IID), or Jira's numeric issue
 	// id string parsed to an integer. It is 0 when the backend did not
 	// report one; trace admission treats that as unresolved identity
-	// rather than guessing.
+	// rather than guessing. For a GitHub PR number, a forge-backed GetIssue
+	// returns the issue-space id; never use it as KindChangeProposal
+	// identity (see forge.Issue.ID).
 	ID int64
 	// ContainerID is the immutable Jira project ID supplied by GetIssue.
 	// Zero means unresolved: create responses and forge-backed reads need
