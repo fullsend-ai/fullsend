@@ -1,5 +1,5 @@
-# Source-file membership from the p/security-audit config snapshot with SHA-256
-# 83d7cde9157b3c79cc5cfaea26e7bd2ba9c740f2ba07635ad475b2585556c32d.
+# Source-file membership from the p/security-audit config snapshot pinned in
+# scripts/semgrep-security-audit.sha256.
 # Includes all 225 Community Edition rules from the pinned upstream commit in 216 files.
 c/lang/security/double-free.yaml
 c/lang/security/insecure-use-gets-fn.yaml

@@ -84,19 +84,23 @@ run_scan() {
 	local curl_calls="$4"
 	local required_value="$5"
 	local uv_prefix="$6"
+	local -a env_args=(
+		CI=true
+		GITHUB_ACTIONS=true
+		XDG_CACHE_HOME="$cache_dir"
+		CURL_MODE="$curl_mode"
+		CURL_PAYLOAD="$curl_payload"
+		CURL_CALLS="$curl_calls"
+		CURL_ARGS_FILE="${uv_prefix}.curl-args"
+		UV_CWD_FILE="${uv_prefix}.cwd"
+		UV_ARGS_FILE="${uv_prefix}.args"
+		PATH="${STUB_BIN}:${PATH}"
+	)
+	if [[ "$required_value" != "__unset__" ]]; then
+		env_args+=("SEMGREP_REQUIRED=$required_value")
+	fi
 
-	env \
-		CI=true \
-		GITHUB_ACTIONS=true \
-		SEMGREP_REQUIRED="$required_value" \
-		XDG_CACHE_HOME="$cache_dir" \
-		CURL_MODE="$curl_mode" \
-		CURL_PAYLOAD="$curl_payload" \
-		CURL_CALLS="$curl_calls" \
-		CURL_ARGS_FILE="${uv_prefix}.curl-args" \
-		UV_CWD_FILE="${uv_prefix}.cwd" \
-		UV_ARGS_FILE="${uv_prefix}.args" \
-		PATH="${STUB_BIN}:${PATH}" \
+	env "${env_args[@]}" \
 		"${FIXTURE_ROOT}/scripts/semgrep-scan" \
 		--sarif-output report.sarif src/main.go
 }
@@ -195,13 +199,23 @@ LOCAL_OFFLINE_CALLS="${TEST_ROOT}/local-offline-curl-calls"
 if output="$(run_scan "$LOCAL_OFFLINE_CACHE" fail "${TEST_ROOT}/valid-rules.tar.gz" \
 	"$LOCAL_OFFLINE_CALLS" 0 "${TEST_ROOT}/local-offline-uv" 2>&1)"; then
 	[[ "$output" == *"SKIPPED"* && "$output" == *"no files were analyzed"* && \
-		"$output" == *"SEMGREP_REQUIRED=1"* ]] || \
+		"$output" == *"SEMGREP_REQUIRED=0"* ]] || \
 		fail "local network failure did not warn and skip"
 else
 	fail "local network failure returned nonzero"
 fi
 [[ ! -e "${TEST_ROOT}/local-offline-uv.cwd" ]] || fail "local offline scan invoked Semgrep"
 pass "local network failure warns and skips"
+
+DEFAULT_REQUIRED_CACHE="${TEST_ROOT}/cache-default-required"
+if output="$(run_scan "$DEFAULT_REQUIRED_CACHE" fail "${TEST_ROOT}/valid-rules.tar.gz" \
+	"${TEST_ROOT}/default-required-curl-calls" __unset__ \
+	"${TEST_ROOT}/default-required-uv" 2>&1)"; then
+	fail "unset SEMGREP_REQUIRED returned success"
+fi
+[[ "$output" == *"failing the required scan"* ]] || \
+	fail "unset SEMGREP_REQUIRED did not fail closed"
+pass "unset SEMGREP_REQUIRED fails closed"
 
 CI_OFFLINE_CACHE="${TEST_ROOT}/cache-ci-offline"
 if output="$(run_scan "$CI_OFFLINE_CACHE" fail "${TEST_ROOT}/valid-rules.tar.gz" \

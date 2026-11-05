@@ -12,6 +12,7 @@ on:
       - "scripts/semgrep-ruleset-commit"
       - "scripts/semgrep-ruleset-files.txt"
       - "scripts/semgrep-ruleset.sha256"
+      - "scripts/semgrep-security-audit.sha256"
   merge_group:
 
 permissions:
@@ -28,6 +29,9 @@ jobs:
       changed_files: ${{ steps.compare.outputs.changed_files }}
       missing_from_pinned: ${{ steps.compare.outputs.missing_from_pinned }}
       missing_from_upstream: ${{ steps.compare.outputs.missing_from_upstream }}
+      config_drift: ${{ steps.compare.outputs.config_drift }}
+      config_sha256_pinned: ${{ steps.compare.outputs.config_sha256_pinned }}
+      config_sha256_upstream: ${{ steps.compare.outputs.config_sha256_upstream }}
     steps:
       - name: Check for relevant merge queue changes
         id: changes
@@ -49,7 +53,7 @@ jobs:
             echo "::warning::Compare API returned ${file_count} files; running the comparison"
             echo "relevant=true" >> "$GITHUB_OUTPUT"
           # SYNC-WITH: pull_request.paths above
-          elif printf '%s\n' "$files" | grep -qE '^((\.github/workflows/semgrep-ruleset-drift\.yml)|(\.github/scripts/semgrep_ruleset_drift(_test)?\.py)|(scripts/semgrep-ruleset-(commit|files\.txt|sha256)))$'; then
+          elif printf '%s\n' "$files" | grep -qE '^((\.github/workflows/semgrep-ruleset-drift\.yml)|(\.github/scripts/semgrep_ruleset_drift(_test)?\.py)|(scripts/semgrep-ruleset-(commit|files\.txt|sha256))|(scripts/semgrep-security-audit\.sha256))$'; then
             echo "relevant=true" >> "$GITHUB_OUTPUT"
           else
             echo "::notice::No Semgrep ruleset files changed; skipping"
@@ -66,6 +70,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RULESET_COMMIT_FILE: scripts/semgrep-ruleset-commit
           RULESET_FILES_FILE: scripts/semgrep-ruleset-files.txt
+          RULESET_CONFIG_SHA256_FILE: scripts/semgrep-security-audit.sha256
         run: |
           set -euo pipefail
           expected="$(tr -d '[:space:]' < "$RULESET_COMMIT_FILE")"
@@ -90,14 +95,24 @@ jobs:
               "https://codeload.github.com/semgrep/semgrep-rules/tar.gz/$actual" \
               --output "$upstream_archive"
           fi
+          upstream_config="$archive_dir/p-security-audit.yml"
+          curl --connect-timeout 10 --max-time 60 \
+            --fail --location --silent --show-error \
+            https://semgrep.dev/c/p/security-audit \
+            --output "$upstream_config"
           comparison="$(python3 .github/scripts/semgrep_ruleset_drift.py \
-            "$pinned_archive" "$upstream_archive" "$RULESET_FILES_FILE")"
+            "$pinned_archive" "$upstream_archive" "$RULESET_FILES_FILE" \
+            --config-sha256-pin "$RULESET_CONFIG_SHA256_FILE" \
+            --upstream-config "$upstream_config")"
           changed_files="$(jq -c '.changed_files' <<< "$comparison")"
           missing_from_pinned="$(jq -c '.missing_from_pinned' <<< "$comparison")"
           missing_from_upstream="$(jq -c '.missing_from_upstream' <<< "$comparison")"
+          config_drift="$(jq -r '.config_drift' <<< "$comparison")"
+          config_sha256_pinned="$(jq -r '.config_sha256_pinned' <<< "$comparison")"
+          config_sha256_upstream="$(jq -r '.config_sha256_upstream' <<< "$comparison")"
           changed_count="$(jq '(.changed_files | length) + (.missing_from_pinned | length) + (.missing_from_upstream | length)' <<< "$comparison")"
           drift=false
-          if ((changed_count > 0)); then
+          if ((changed_count > 0)) || [[ "$config_drift" == "true" ]]; then
             drift=true
           fi
           {
@@ -107,6 +122,9 @@ jobs:
             echo "changed_files=$changed_files"
             echo "missing_from_pinned=$missing_from_pinned"
             echo "missing_from_upstream=$missing_from_upstream"
+            echo "config_drift=$config_drift"
+            echo "config_sha256_pinned=$config_sha256_pinned"
+            echo "config_sha256_upstream=$config_sha256_upstream"
           } >> "$GITHUB_OUTPUT"
 
   report:
@@ -127,6 +145,9 @@ jobs:
           RULESET_CHANGED_FILES: ${{ needs.compare.outputs.changed_files }}
           RULESET_MISSING_FROM_PINNED: ${{ needs.compare.outputs.missing_from_pinned }}
           RULESET_MISSING_FROM_UPSTREAM: ${{ needs.compare.outputs.missing_from_upstream }}
+          RULESET_CONFIG_DRIFT: ${{ needs.compare.outputs.config_drift }}
+          RULESET_CONFIG_SHA256_PINNED: ${{ needs.compare.outputs.config_sha256_pinned }}
+          RULESET_CONFIG_SHA256_UPSTREAM: ${{ needs.compare.outputs.config_sha256_upstream }}
         run: |
           set -euo pipefail
           title="Semgrep ruleset drift"
@@ -138,15 +159,18 @@ jobs:
             cat > "$body_file" <<EOF
           <!-- fullsend-semgrep-ruleset-drift -->
 
-          The allowlisted Semgrep rule contents differ between the pinned
-          semgrep/semgrep-rules commit and upstream develop. Scans remain pinned
-          until the rule changes are reviewed and merged.
+          The pinned p/security-audit config snapshot or allowlisted rule
+          contents differ from upstream. Scans remain pinned until the changes
+          are reviewed and merged.
 
           - Pinned commit: $RULESET_EXPECTED
           - Current upstream commit: $RULESET_ACTUAL
           - Changed allowlisted files: $RULESET_CHANGED_FILES
           - Missing from pinned archive: $RULESET_MISSING_FROM_PINNED
           - Missing from upstream archive: $RULESET_MISSING_FROM_UPSTREAM
+          - Config snapshot drift: $RULESET_CONFIG_DRIFT
+          - Pinned config SHA-256: $RULESET_CONFIG_SHA256_PINNED
+          - Current config SHA-256: $RULESET_CONFIG_SHA256_UPSTREAM
           - Pin file: scripts/semgrep-ruleset-commit
           - Source: https://github.com/semgrep/semgrep-rules
 

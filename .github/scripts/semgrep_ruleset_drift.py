@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import re
 import tarfile
 from pathlib import Path, PurePosixPath
 
@@ -49,7 +51,7 @@ def read_selected_files(archive_path: Path, allowlist: set[str]) -> dict[str, by
 
 def compare_archives(
     pinned_archive: Path, upstream_archive: Path, allowlist: list[str]
-) -> dict[str, list[str]]:
+) -> dict[str, object]:
     paths = set(allowlist)
     pinned = read_selected_files(pinned_archive, paths)
     upstream = read_selected_files(upstream_archive, paths)
@@ -64,18 +66,37 @@ def compare_archives(
     }
 
 
+def compare_config_snapshot(pin_path: Path, upstream_config: Path) -> dict[str, str | bool]:
+    expected = pin_path.read_text(encoding="utf-8").strip()
+    if not re.fullmatch(r"[0-9a-f]{64}", expected):
+        raise ValueError("p/security-audit config pin must be a full lowercase SHA-256")
+    actual = hashlib.sha256(upstream_config.read_bytes()).hexdigest()
+    return {
+        "config_drift": expected != actual,
+        "config_sha256_pinned": expected,
+        "config_sha256_upstream": actual,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("pinned_archive", type=Path)
     parser.add_argument("upstream_archive", type=Path)
     parser.add_argument("allowlist", type=Path)
+    parser.add_argument("--config-sha256-pin", type=Path)
+    parser.add_argument("--upstream-config", type=Path)
     args = parser.parse_args()
 
-    result = compare_archives(
+    if (args.config_sha256_pin is None) != (args.upstream_config is None):
+        parser.error("--config-sha256-pin and --upstream-config must be provided together")
+
+    result: dict[str, object] = compare_archives(
         args.pinned_archive,
         args.upstream_archive,
         read_allowlist(args.allowlist),
     )
+    if args.config_sha256_pin is not None and args.upstream_config is not None:
+        result.update(compare_config_snapshot(args.config_sha256_pin, args.upstream_config))
     print(json.dumps(result, separators=(",", ":")))
 
 

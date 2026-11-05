@@ -6,20 +6,18 @@ commit is in `scripts/semgrep-ruleset-commit`; the downloaded archive is
 verified against `scripts/semgrep-ruleset.sha256` before it is extracted. The
 source-file allowlist in `scripts/semgrep-ruleset-files.txt` selects the
 Community Edition rules represented in the curated `p/security-audit` config
-snapshot whose SHA-256 is recorded in that file. The manifest contains 216
-files with all 225 rules from the snapshot. Rule contents come from the
-commit-pinned upstream archive; the config snapshot defines pack membership.
+snapshot whose SHA-256 is recorded in
+`scripts/semgrep-security-audit.sha256`. The manifest contains 216 files with
+all 225 rules from the snapshot. Rule contents come from the commit-pinned
+upstream archive; the config snapshot defines pack membership.
 The scanner verifies that every allowlisted file exists under a `security/`
 directory and rejects upstream test fixtures.
 
-The dedicated Semgrep job sets `SEMGREP_REQUIRED=1`, so it fails closed if the
-pinned source or locked Semgrep environment cannot be prepared. Other contexts,
-including agent pre-commit gates, warn and skip when `uv` is missing or the
-source, cache, or environment dependency cannot be prepared. A completed scan
-still fails on findings.
-The pre-commit hook is verbose. If a local prerequisite is unavailable, it
-prints `SKIPPED` and says that no files were analyzed, even though the hook
-passes. Local runs reuse a verified cache keyed by the SHA-256. Use
+The dedicated Semgrep job sets `SEMGREP_REQUIRED=1`, and scans fail closed by
+default if the pinned source or locked Semgrep environment cannot be prepared.
+The pre-commit hook explicitly sets `SEMGREP_REQUIRED=0` to allow a local skip
+when prerequisites are unavailable. It prints `SKIPPED` and says that no files
+were analyzed. Local runs reuse a verified cache keyed by the SHA-256. Use
 `SKIP=semgrep` with pre-commit or `make test` to skip the hook explicitly while
 offline.
 
@@ -30,12 +28,14 @@ the same rule at those call sites; deterministic test-only randomness remains
 outside the scan.
 
 The scheduled `Semgrep Ruleset Drift` workflow compares allowlisted rule-file
-contents at the pinned commit and upstream `develop`. It reports only when
-those selected rules differ; unrelated commits do not create drift. The
-notification does not change the rules used by scans. To update them, review
-the upstream changes under `security/`, update the commit and archive hash, and
-review the resulting findings. Add `nosemgrep: <rule-id>` comments only with a
-rationale.
+contents at the pinned commit and upstream `develop`. It also compares the
+upstream `p/security-audit` config SHA-256 with
+`scripts/semgrep-security-audit.sha256`, so pack membership changes trigger
+review. Unrelated upstream commits do not create drift. The notification does
+not change the rules used by scans. To update them, review the upstream config
+and rule changes under `security/`, update the commit, archive hash, config
+hash, and allowlist, then review the resulting findings. Add
+`nosemgrep: <rule-id>` comments only with a rationale.
 There is no separate baseline file. The rules are fetched at runtime and are
 not stored in this repository.
 

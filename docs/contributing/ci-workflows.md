@@ -271,21 +271,24 @@ This recursion is by design but interacts with the convergence non-idempotence t
 and commit-pinned Community Edition rules from `semgrep/semgrep-rules`. The
 source-file allowlist in `scripts/semgrep-ruleset-files.txt` limits the scan to
 files represented in the curated `p/security-audit` config snapshot whose
-SHA-256 is recorded in that file. It includes all 225 Community Edition rules
-from the snapshot in 216 source files available in the pinned public rules
-repository.
+SHA-256 is recorded in `scripts/semgrep-security-audit.sha256`. It includes all
+225 Community Edition rules from the snapshot in 216 source files available in
+the pinned public rules repository.
 The source commit is recorded in `scripts/semgrep-ruleset-commit`; the downloaded
 archive is checked against the SHA-256 in `scripts/semgrep-ruleset.sha256` before
-extraction. Upstream rule test fixtures are excluded. The dedicated Semgrep job
+extraction. The p/security-audit config snapshot hash is recorded in
+`scripts/semgrep-security-audit.sha256`; the drift workflow checks it so changes
+to pack membership are reported alongside changes to selected rule files.
+Upstream rule test fixtures are excluded. The dedicated Semgrep job
 sets `SEMGREP_REQUIRED=1`, so it fails closed if the pinned source or locked
 Semgrep environment cannot be prepared.
-Other contexts, including agent pre-commit gates, warn and skip if `uv` is
-missing or the source, cache, or environment dependency cannot be prepared. A
+Scans fail closed by default; the local pre-commit hook explicitly sets
+`SEMGREP_REQUIRED=0` to allow a skip when prerequisites are unavailable. A
 completed scan still fails on findings. The scheduled `Semgrep Ruleset Drift`
 workflow compares allowlisted rule-file contents at the pinned commit and
-upstream `develop`. It reports only when those selected rules differ; unrelated
-upstream commits do not create drift. Upstream changes do not alter scans until
-the pin is updated. Renovate PEP 621
+upstream `develop`, and checks the config hash so pack membership changes are
+reported too. Unrelated upstream commits do not create drift. Upstream changes
+do not alter scans until the pins are updated. Renovate PEP 621
 updates keep the Semgrep version and `uv.lock` together; weekly lock
 maintenance refreshes transitive dependencies, and Semgrep updates stay out of
 automerge.

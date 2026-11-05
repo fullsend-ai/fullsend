@@ -32,12 +32,13 @@ sha256_file() {
 	fi
 }
 
-semgrep_required=false
-case "${SEMGREP_REQUIRED:-}" in
+semgrep_required=true
+case "${SEMGREP_REQUIRED:-1}" in
 1)
-	semgrep_required=true
 	;;
-"" | 0)
+
+0)
+	semgrep_required=false
 	;;
 *)
 	echo "semgrep-scan: SEMGREP_REQUIRED must be 1, 0, or unset" >&2
@@ -50,7 +51,7 @@ scan_prerequisite_failure() {
 		echo "semgrep-scan: $1; failing the required scan" >&2
 		exit 1
 	fi
-	echo "semgrep-scan: SKIPPED — $1; no files were analyzed. Set SEMGREP_REQUIRED=1 to fail closed." >&2
+	echo "semgrep-scan: SKIPPED — $1; no files were analyzed because SEMGREP_REQUIRED=0." >&2
 	exit 0
 }
 
