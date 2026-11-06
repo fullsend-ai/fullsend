@@ -441,9 +441,25 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        if [[ -n "${OPENSHELL_GATEWAY_ENDPOINT:-}" ]]; then
-          echo "OPENSHELL_GATEWAY_ENDPOINT is set: using the existing OpenShell gateway, skipping local Podman and gateway setup"
+        # The workflow layer (reusable-dispatch.yml) passes the gateway
+        # endpoint from repository variables as
+        # FULLSEND_OPENSHELL_GATEWAY_ENDPOINT. That channel wins when it is
+        # non-empty. An unset repository variable renders as an empty string
+        # and must not shadow a value configured in the runner's own process
+        # environment, so the fallback reads OPENSHELL_GATEWAY_ENDPOINT only
+        # when the workflow channel is empty (#9044).
+        endpoint="${FULLSEND_OPENSHELL_GATEWAY_ENDPOINT:-}"
+        if [[ -z "$endpoint" ]]; then
+          endpoint="${OPENSHELL_GATEWAY_ENDPOINT:-}"
+        fi
+        if [[ -n "$endpoint" ]]; then
+          echo "Using the OpenShell gateway at ${endpoint}; skipping local Podman and gateway setup"
           echo "local=false" >> "${GITHUB_OUTPUT}"
+          # The sandbox setup reads OPENSHELL_GATEWAY_ENDPOINT from the
+          # environment; publish the resolved value for the later steps.
+          if [[ -n "${GITHUB_ENV:-}" ]]; then
+            echo "OPENSHELL_GATEWAY_ENDPOINT=${endpoint}" >> "${GITHUB_ENV}"
+          fi
           if command -v openshell >/dev/null 2>&1; then
             echo "Using the preinstalled OpenShell CLI"
             echo "install-openshell=false" >> "${GITHUB_OUTPUT}"
