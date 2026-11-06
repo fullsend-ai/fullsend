@@ -4026,6 +4026,47 @@ func TestListWorkflowRunJobs_Error(t *testing.T) {
 	})
 	_, err := client.ListWorkflowRunJobs(context.Background(), "o", "r", 10)
 	require.Error(t, err)
+	assert.NotErrorIs(t, err, forge.ErrJobsListingNotFoundFirstPage)
+}
+
+// TestListWorkflowRunJobs_FirstPageNotFoundCarriesSentinel covers the
+// not-found classification adapters attach to a first-page 404, and the
+// later-page 404 that must not carry it: page 1 was already readable and
+// may hold a completed job.
+func TestListWorkflowRunJobs_FirstPageNotFoundCarriesSentinel(t *testing.T) {
+	t.Run("first page 404 carries the sentinel", func(t *testing.T) {
+		client, mux := setupTest(t)
+		mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines/10/jobs", func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+		})
+		_, err := client.ListWorkflowRunJobs(context.Background(), "o", "r", 10)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, forge.ErrNotFound)
+		assert.ErrorIs(t, err, forge.ErrJobsListingNotFoundFirstPage)
+	})
+	t.Run("later page 404 does not carry it", func(t *testing.T) {
+		client, mux := setupTest(t)
+		mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines/10/jobs", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch r.URL.Query().Get("page") {
+			case "1":
+				jobs := make([]string, 100)
+				for i := range jobs {
+					jobs[i] = fmt.Sprintf(`{"id":%d,"name":"job-%d","status":"success"}`, i+1, i+1)
+				}
+				w.Header().Set("X-Next-Page", "2")
+				fmt.Fprint(w, "["+strings.Join(jobs, ",")+"]")
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		})
+		jobs, err := client.ListWorkflowRunJobs(context.Background(), "o", "r", 10)
+		require.Error(t, err)
+		assert.Nil(t, jobs)
+		assert.ErrorIs(t, err, forge.ErrNotFound, "the 404 stays classified as not found")
+		assert.NotErrorIs(t, err, forge.ErrJobsListingNotFoundFirstPage, "a partially readable listing never carries the sentinel")
+		assert.Contains(t, err.Error(), "page 2")
+	})
 }
 
 func TestListWorkflowRunArtifacts_Error(t *testing.T) {
