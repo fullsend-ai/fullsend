@@ -204,7 +204,7 @@ and `validation_loop.script`), layered over the `fullsend run`
 process environment. (`validation_loop.preflight_check` also reads `env.runner`
 declarations, but atop its own allowlisted environment — see above, not the
 process environment.) A few named workflow secrets are **not** inherited from that environment:
-`JIRA_TOKEN`, `JIRA_USER_EMAIL`, and the OTLP collector headers `OTEL_EXPORTER_OTLP_HEADERS` /
+`JIRA_TOKEN`, `JIRA_USER_EMAIL`, `FULLSEND_JIRA_TOKEN`, `FULLSEND_JIRA_EMAIL`, and the OTLP collector headers `OTEL_EXPORTER_OTLP_HEADERS` /
 `OTEL_EXPORTER_OTLP_*_HEADERS` (for example `OTEL_EXPORTER_OTLP_TRACES_HEADERS`). A script
 receives one only when the harness declares it, e.g. `JIRA_TOKEN: "${JIRA_TOKEN}"` under
 `env.runner`. `fullsend run` itself still reads them for its own Jira client and trace export.

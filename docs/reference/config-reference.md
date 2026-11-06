@@ -363,6 +363,15 @@ shared Jira client: `FULLSEND_JIRA_TOKEN` is required and
 `FULLSEND_JIRA_EMAIL` is optional, as described above. The legacy
 `JIRA_TOKEN` and `JIRA_USER_EMAIL` variables are not used by the poller.
 
+The `fullsend issues` commands (`get`, `create`, `post-comment`, `link`),
+`fullsend run` Jira status updates, and `fullsend reconcile-status` read the
+Jira connection only from these settings, with no flag or environment
+fallback: `base_url` and `project` must be set, and Jira API calls fail
+without them. `project` is the default `--project` of the issues commands.
+`fullsend issues create` refuses any other Jira project unless it is listed
+in `allowed_targets.projects`. See
+[Issue commands](../guides/user/issues-commands.md#jira-connection-settings).
+
 For GitHub and GitLab the scopes are additive: a destination is allowed if it
 matches a configured org or group, or a configured repo. Malformed entries
 are rejected: an empty org or group, an org containing `/`, a GitHub repo not
