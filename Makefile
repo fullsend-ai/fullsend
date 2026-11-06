@@ -259,6 +259,15 @@ ci-local:
 # runtime-opencode (features/runtime/opencode.feature) is not declared until
 # fullsend-sandbox:latest ships OpenCode, i.e. after the image change is
 # published from main; then add it here (one small haiku run on Vertex).
+# runner-secret-overlay-guard
+# (features/dispatch/runner-secret-overlay-guard.feature) is not declared
+# until its refused scenario has passed one live run. A dev run (an
+# authorized PR or the merge queue) installs the PR head's fullsend
+# binary; a stage run (push to main) takes main's. Run make behaviour-test
+# on demand with runner-secret-overlay-guard added to
+# BEHAVIOUR_CAPABILITIES, on dev against the fix or on stage once it is on
+# main; when that passes, declare it here. Jira AISDLC-654 tracks that
+# step and the harnessLogPollWindow confirmation.
 BEHAVIOUR_CAPABILITIES ?= runtime-pi,inference-gateway,inference-gateway-api-key
 
 behaviour-test:

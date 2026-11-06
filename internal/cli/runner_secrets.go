@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/security"
 )
@@ -26,7 +27,7 @@ const runnerSecretsFileEnv = "FULLSEND_GITHUB_RUNNER_SECRETS_FILE"
 // local runs only: in CI the value would stay readable in
 // /proc/<pid>/environ even after fullsend run unsets it. fullsend run
 // removes it from its environment before any child process starts.
-const runnerSecretsEnv = "FULLSEND_GITHUB_RUNNER_SECRETS"
+const runnerSecretsEnv = forge.SecretGitHubRunnerSecrets
 
 // runnerSecretRefusedPrefixes are variable families owned by the runner
 // or the CI platform. A runner secret may not shadow any of them.

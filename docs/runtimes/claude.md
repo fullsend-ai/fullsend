@@ -281,6 +281,13 @@ pinned. On gateway runs the cleared variables are also pinned in the inline `--s
 non-gateway runs that block is read by Claude Code itself, after launch. On every route, the egress profile and the endpoint-bound placeholder are what keep the
 credential on its host.
 
+What the runner itself injects into the sandbox — for claude,
+`CLAUDE_CONFIG_DIR` and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` on every
+run, plus `ANTHROPIC_BASE_URL` and a gateway credential variable when an
+inference gateway applies — and the keys it reserves from `env.sandbox` are
+published as generated, machine-checkable schemas: the
+[sandbox environment contract](../normative/sandbox-env/v1/README.md).
+
 **Sandbox hook settings come from the harness, not `.env`.** With sandbox
 hooks on, `TIRITH_FAIL_ON`, `TIRITH_REQUIRED`, `FULLSEND_EGRESS_ALLOWLIST`,
 `FULLSEND_CANARY_TOKEN` and `FULLSEND_TOOL_ALLOWLIST` are taken from the harness

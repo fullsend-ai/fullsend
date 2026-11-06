@@ -1208,10 +1208,29 @@ func agentDestName(agentName, agentPath string) string {
 	return filepath.Base(agentPath)
 }
 
+// LaunchEnvExports implements LaunchEnvExporter: the environment names
+// buildRunCommand sets beyond EnvExports. Nonessential traffic is always
+// disabled; the rest are set only when an inference gateway is registered
+// for the run (claudeGatewayPostEnv), with the credential variable chosen
+// by the block's auth mode, and are recorded flat anyway: runtime_specific
+// asks whether the runtime can set the name, not whether every
+// configuration does. TestLaunchEnvExportsMatchLaunchCommands pins this
+// list to the launch commands.
+func (ClaudeRuntime) LaunchEnvExports() []string {
+	return []string{
+		claudeNonessentialTrafficEnv,
+		claudeGatewayBaseURLEnv,
+		"ANTHROPIC_API_KEY",
+		"ANTHROPIC_AUTH_TOKEN",
+		"CLAUDE_CODE_API_KEY_HELPER_TTL_MS",
+	}
+}
+
 // Ensure ClaudeRuntime implements Runtime and TranscriptHandler.
 var (
 	_ Runtime           = ClaudeRuntime{}
 	_ TranscriptHandler = ClaudeRuntime{}
 	_ DebugLogNamer     = ClaudeRuntime{}
 	_ ContextBridger    = ClaudeRuntime{}
+	_ LaunchEnvExporter = ClaudeRuntime{}
 )

@@ -19,7 +19,11 @@ Date: 2026-10-22
 
 Accepted
 
-This records the chosen topology; implementation is pending.
+This records the chosen topology. The identity, fallback, envelope, and
+admission foundation is implemented; the
+[trace-context v1 specification](../normative/trace-context/v1/README.md)
+defines its contract. Carrier publication, key provisioning, and runtime
+integration are pending.
 
 ## Context
 

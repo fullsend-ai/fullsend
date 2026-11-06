@@ -90,7 +90,7 @@ And the agent will output issues.out with:
   """
 ```
 
-`Then the harness "<agent>" workflow logs contain "<text>"` (or `... do not contain "<text>"`) searches the harness workflow's job logs. A `do not contain` check fails when the log snapshot is incomplete, rather than passing on missing data. `Then the harness "<agent>" workflow logs register persona "<name>" and not "<other>"` reads only the block of `subagents: <name> → <model>` lines pi prints when it registers personas: the block must be found with an ordinary log line on both sides, must list `<name>` and must not list `<other>`, so a job log truncated elsewhere does not fail it. `Given the repository allows remote resources from "<prefix>"` adds a prefix to the leased repository's `.fullsend/config.yaml` `allowed_remote_resources` for the scenario, so a custom harness can fetch URL skills; see `features/runtime/skill-overrides.feature`.
+`Then the harness "<agent>" workflow logs contain "<text>"` (or `... do not contain "<text>"`) searches the harness workflow's job logs. A `do not contain` check fails when the log snapshot is incomplete or the poll window ended with no log output, rather than passing on missing data. `Then the harness "<agent>" workflow logs register persona "<name>" and not "<other>"` reads only the block of `subagents: <name> → <model>` lines pi prints when it registers personas: the block must be found with an ordinary log line on both sides, must list `<name>` and must not list `<other>`, so a job log truncated elsewhere does not fail it. `Given the repository allows remote resources from "<prefix>"` adds a prefix to the leased repository's `.fullsend/config.yaml` `allowed_remote_resources` for the scenario, so a custom harness can fetch URL skills; see `features/runtime/skill-overrides.feature`.
 
 ### Runtime steps
 
@@ -140,6 +140,47 @@ Then the harness "fix" workflow fails reporting "Refusing to push"
 Pick a stable fragment of the failure-comment contract (the category
 label headline or a fixed detail phrase). No shipped scenario uses this
 step yet; it is unit-tested.
+
+### Runner secret steps
+
+`pkg/behaviourtest/steps/runner_secrets.go` covers runner secrets
+([ADR 0136](../../ADRs/0136-runner-secrets-through-one-stored-secret.md)).
+
+`the repository has the runner secret "<NAME>"` sets the leased
+repository's `FULLSEND_GITHUB_RUNNER_SECRETS` secret. The secret holds one
+object with `<NAME>` and a random value. The step registers the value for
+redaction, and scenario cleanup deletes the secret. Call the step once per
+scenario: a second call is an error. Runner secrets reach a run through this
+one secret, which exists on GitHub only, so tag these scenarios
+`@skip:gitlab`.
+
+`the harness "<agent>" workflow fails with "<text>" in its logs` waits for
+the agent's harness run to fail. It then looks for the text in the run's
+workflow logs. Use it when a run fails before a post-script can comment,
+for example when `fullsend run` refuses the harness at load.
+
+Logs fetched right after a run completes can come back unusable. The cause
+is unknown. The step fetches again when a fetch fails, the logs are empty
+or they hold a fetch-failure note. It waits 5 seconds after each fetch and
+keeps trying for up to a minute. The last fetch can start up to 5 seconds
+after that minute and take up to 30 seconds. When the text is missing, the error
+names the cause: the logs could not be fetched, were empty or were
+incomplete. A log-fetch problem then reads as a fetch problem, not as a
+wrong result.
+
+`the harness "<agent>" workflow logs contain "<text>"` checks the logs of a
+run that succeeds. It fetches unusable logs again in the same way.
+
+`features/dispatch/runner-secret-overlay-guard.feature` uses these steps.
+Its refused scenario gives an overlay that references the runner secret
+and reads a shadowed `.event`, and expects the run to fail with the guard
+error. Its allowed scenario guards the same overlay on `runtime.forge`. It
+expects the run to complete and its logs to contain "Runner secrets", which
+shows the secret reached the run.
+
+The `@requires:capability:runner-secret-overlay-guard` tag gates the refused
+scenario. `make behaviour-test` skips it until that capability is declared.
+The Makefile's `BEHAVIOUR_CAPABILITIES` comment says why and when.
 
 ### Forge-state assertion steps
 
@@ -324,10 +365,10 @@ In CI, the test runner mints cross-org `e2e` installation tokens via OIDC for Gi
 
 ### Repo allocation via the shared slot driver
 
-`RunSuite` and `RunPlaybackSuite` build one shared install driver (`install.Factory` over an `install.PoolConfig`) for the environment's pool. On `dev` the pool is the derived orgs `halfsend-01` … `halfsend-12`, and on `stage` it is the single unsuffixed `halfsend` org, each with `test-repo-01` … `test-repo-NN` slots (`install.PoolLayoutForEnvironment`; `BEHAVIOUR_POOL_SIZE` sets the slots per org). The driver resolves one installation token per org (`e2etest.TokenForOrg`, minted once per org and kept for the run, since a token outlives the 45-minute job). It builds one forge client per org from that token. The `Given the enrolled test repository` step calls `install.LeaseDriver.AllocateLease(ctx)`, which:
+`RunSuite` and `RunPlaybackSuite` build one shared install driver (`install.Factory` over an `install.PoolConfig`) for the environment's pool. On `dev` the pool is the derived orgs `halfsend-01` … `halfsend-22`, and on `stage` it is the single unsuffixed `halfsend` org, each with `test-repo-01` … `test-repo-NN` slots (`install.PoolLayoutForEnvironment`; `BEHAVIOUR_POOL_SIZE` sets the slots per org). The driver resolves one installation token per org (`e2etest.TokenForOrg`, minted once per org and kept for the run, since a token outlives the 45-minute job). It builds one forge client per org from that token. The `Given the enrolled test repository` step calls `install.LeaseDriver.AllocateLease(ctx)`, which:
 
 1. Claims a free slot through the cross-org allocator (`slotpool.go`), blocking until one is free or ctx is cancelled. The claim *creates* the slot repo (the forge's `auto_init` provides the initial commit). A slot whose repo already exists belongs to another holder, possibly another suite. It is skipped for the whole of provisioning and is never reset or deleted. Orgs whose installation's rate-limit headers show the quota nearly spent are skipped until their reset, so leases move to orgs with quota left.
-2. On the first lease in any org of a mint group, deploys the group's mint: a public preview mint on `dev` and the durable STAGE mint on `stage`. The driver packs the pool orgs into the fewest groups whose `WORKFLOW_HOST_REPOS` fits in 5,000 bytes, recomputed from the layout on every run (two groups for the 12 DEV orgs at 12 slots each, one for STAGE). Every mint's `--status-github-group` is the `mint-status` team of one pool org, picked at random once per job. Concurrent first leases in a group share one deploy. A failed deploy is torn down and retried by the group's next lease, and `Finalize` tears each deployed mint down once.
+2. On the first lease in any org of a mint group, deploys the group's mint: a public preview mint on `dev` and the durable STAGE mint on `stage`. The driver packs the pool orgs into the fewest groups whose `WORKFLOW_HOST_REPOS` fits in 5,000 bytes, recomputed from the layout on every run (four groups for the 22 DEV orgs at 12 slots each, one for STAGE). Every mint's `--status-github-group` is the `mint-status` team of one pool org, picked at random once per job. Concurrent first leases in a group share one deploy. A failed deploy is torn down and retried by the group's next lease, and `Finalize` tears each deployed mint down once.
 3. Installs fullsend into the claimed repo with the org's credential and mint URL. It deletes a leftover `{name}-fork` from an earlier holder of the slot, then runs `fullsend github setup` (after resolving the inference WIF provider when configured) and the post-install checks. If the install fails, the slot is released, deleting only this lease's own repo.
 4. Returns an `install.RepoLease` with the org, repo, the org's token and client, and its group's mint URL, status group and workflow hosts. The step rebinds the scenario `World` to that org: `Org`, `RepoOwner`, `Token`, `MintURL`, `MintStatusGroup`, `MintWorkflowHostRepos`, and SCM/CI drivers rebuilt through `World.OrgDrivers` from the lease's client. Every step and the scenario's cleanup then act in the leased org with its credentials.
 
@@ -337,7 +378,7 @@ The `dev` preview mints are deployed with `--public` (`PER_REPO_WIF_REPOS=*`), w
 
 Godog concurrency stays independent of slot capacity. The default is the
 slots per org (12), and `GODOG_CONCURRENCY` overrides it. Capacity is every
-slot of the pool (144 on `dev`), and a concurrency above capacity only makes
+slot of the pool (264 on `dev`), and a concurrency above capacity only makes
 workers wait. The allocator logs each claim and release with its org/repo and
 that org's quota
 (`[slots] claimed halfsend-03/test-repo-05 (quota …)`). An exhausted pass logs
@@ -570,6 +611,13 @@ reset=2026-10-25T18:00:00Z resource=core)`, or `quota unknown` before the
 org's client has seen rate-limit headers — and the composed driver repeats
 the summary on its `[driver] allocated` and `[driver] deallocated` lines
 ([`composed.go`](../../../pkg/behaviourtest/drivers/install/composed.go)).
+While claims wait for capacity, the allocator logs every org's latest quota
+on one line, at most once per claim poll
+([#9154](https://github.com/fullsend-ai/fullsend/issues/9154)):
+`[slots] quota during slot wait: halfsend-03: remaining=1234/5000
+reset=2026-10-25T18:00:00Z resource=core; halfsend-04: …`. Each entry comes
+from the org's latest response, so compare entries with the same `resource`
+and `reset`.
 At teardown, `Finalize` logs the last observation of every org the suite
 used ([#8622](https://github.com/fullsend-ai/fullsend/issues/8622)):
 
@@ -578,6 +626,46 @@ used ([#8622](https://github.com/fullsend-ai/fullsend/issues/8622)):
 halfsend-01: remaining=4987/5000 reset=2026-10-25T18:00:00Z resource=core
 halfsend-03: remaining=12/5000 reset=2026-10-25T19:00:00Z resource=core
 ```
+
+**API calls by caller.** The composed driver also logs how many GitHub API
+calls each org's client made, by caller
+([#9140](https://github.com/fullsend-ai/fullsend/issues/9140)). It logs them
+every 5 minutes, including during teardown, and once more when `Finalize`
+ends. A job that times out still leaves the counts from its last 5-minute
+log, and a job stopped within its first 5 minutes leaves none. The counts
+are running totals from suite start:
+
+```
+[driver] per-org API calls so far:
+halfsend-01: total=2150 claim=310 gc=24 lock=486 other=1190 provision=120 release=20
+halfsend-03: total=96 claim=40 lock=56
+all orgs: total=2246 claim=350 gc=24 lock=542 other=1190 provision=120 release=20
+```
+
+| Caller | Calls |
+|---|---|
+| `claim` | Slot claim passes: org listings, creates, and ownership lookups |
+| `lock` | Joining and leaving the shared `e2e-lock` |
+| `gc` | Slot GC |
+| `provision` | Preparing a leased slot, from this process |
+| `release` | Deleting a leased slot and its leftover state |
+| `other` | Everything else, mainly scenario steps, harness polling, and scenario cleanup |
+
+Every attempt of a retried request counts. A `304` costs no primary quota,
+so it is left out. Calls charged to another GitHub quota appear as
+`caller/resource`, such as `provision/graphql=4`, and `total` covers the core
+quota only. A final line marked `incomplete` means `Finalize` stopped waiting
+for work that can still make calls.
+
+The counts cover one suite process and one client per org, so they leave out
+other suites sharing the pool and the `fullsend` CLI subprocess that installs
+into a slot.
+
+The counts show how many requests each caller made, which can differ from the
+quota those requests cost. On the stage pool, `total` has run about 50% above
+the drop in remaining quota, and the difference lines up with `claim` and
+`lock` ([#9154](https://github.com/fullsend-ai/fullsend/issues/9154)). To
+measure quota use, read the `quota remaining` values in the log.
 
 **Harness-wait timeout errors.** Every harness-wait timeout error the
 GitHub Actions CI driver reports ends with the polling client's last-seen
@@ -779,8 +867,9 @@ The `fork-dispatch.feature` file defines the canonical fork-PR behaviour contrac
 **`the harness dispatch completes with an empty matrix`** — Waits for the harness workflow run(s) created since the last trigger step, then requires every run that was not cancelled or skipped (a skipped run, such as the shim run for a bot comment, ran no job) to have completed with its `Harness dispatch` job succeeded and no `Harness run (<agent>)` job scheduled. It fails if the dispatch job failed or an agent was scheduled, and keeps waiting while no run exists yet or a run is still in progress, so a denial is never inferred from a missing or failed run. Pair it with `agent did not run` and `dispatched exactly 0 times` for denial scenarios. It needs a CI driver that implements the optional `ci.EmptyMatrixWaiter`; the GitHub Actions driver does.
 
 **`the harness "<agent>" run was skipped by its pre-script`** — Downloads
-the `fullsend-<agent>` artifact of the workflow run the scenario is tracking
-and requires two things. First, the host-written `run-telemetry.jsonl` must
+the artifacts for `<agent>` from the workflow run the scenario is tracking
+and requires every matching artifact to satisfy two things. First, its
+host-written `run-telemetry.jsonl` must
 record `fullsend.prescript.skipped=true` on its root `run` span. Second, no
 agent output (`agent-result.json`, or the dummy runtime's
 `behaviour-results.json`) may be present. A skipped run still uploads its

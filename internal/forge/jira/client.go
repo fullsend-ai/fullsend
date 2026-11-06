@@ -458,7 +458,7 @@ type searchRequest struct {
 // plausibly exceed the client's 10MB decode cap — and since a failed
 // search aborts the whole cycle with the same data returning every time,
 // that failure mode would wedge the poller for the entire project.
-var searchFields = []string{"summary", "status", "labels", "reporter", "created", "updated"}
+var searchFields = []string{"summary", "status", "labels", "reporter", "created", "updated", "project"}
 
 // maxSearchPages limits pagination to prevent unbounded memory growth
 // from overly broad JQL queries.

@@ -25,6 +25,7 @@ func Register(sc *godog.ScenarioContext) {
 	registerOwnersSteps(sc)
 	registerPlaybackSteps(sc)
 	registerGatewaySteps(sc)
+	registerRunnerSecretSteps(sc)
 	registerMintProbeSteps(sc)
 	registerMintStatusSteps(sc)
 	registerBotRoleProbeSteps(sc)

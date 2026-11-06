@@ -717,6 +717,10 @@ GitHub webhooks do not support custom trace headers.
 Within a single work item, `fullsend.work_item_id` on the root `run` span
 is the correlation key for filtering related traces in a backend.
 
+For durable work-item continuity, see
+[ADR 0154](../../ADRs/0154-correlate-work-item-and-behaviour-scenario-traces.md)
+and the [Trace Context Reference](../../reference/trace-context.md).
+
 ## Operational behavior
 
 - **Export timing:** spans are exported live via the batch processor. On

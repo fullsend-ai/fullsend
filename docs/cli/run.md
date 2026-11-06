@@ -211,6 +211,11 @@ on every runtime (claude, pi, codex, opencode):
 | `FULLSEND_ITERATION_DEADLINE` | Unix time (seconds) at which the running iteration is killed |
 | `TRACEPARENT` | W3C trace context of this iteration's **agent** span (not the run-root span that pre/post scripts receive). Runtimes use it to join fullsend traces. An inbound unsampled parent (`-00`) is preserved so runtime export stays suppressed. Empty when telemetry produced no valid span context. Reserved: an `env.sandbox` entry with this name is dropped. |
 
+The full inventory of what the runner injects into the sandbox — these names
+included — and of the keys it reserves from `env.sandbox` override is
+published as the generated [sandbox environment
+contract](../normative/sandbox-env/v1/README.md).
+
 **Example.** A probe that shows both, and what a kill looks like. The agent prints the variables
 with its own clock, then sleeps past the budget:
 
@@ -482,10 +487,14 @@ it held before that mint, or is unset if it was unset. A caller workflow that ex
 variable, not the job token.
 
 Host-side scripts (pre/post and validation) also no longer inherit `JIRA_TOKEN`,
-`JIRA_USER_EMAIL`, or the OTLP collector headers (`OTEL_EXPORTER_OTLP_HEADERS` and
+`JIRA_USER_EMAIL`, `FULLSEND_JIRA_TOKEN`, `FULLSEND_JIRA_EMAIL`, or the OTLP
+collector headers (`OTEL_EXPORTER_OTLP_HEADERS` and
 `OTEL_EXPORTER_OTLP_*_HEADERS`) from the `fullsend run` process environment. A script
 receives one only when the harness declares it under `env.runner`; see
 [`env.runner`](../reference/harness-reference.md#field-details) in the harness reference.
+`FULLSEND_JIRA_EMAIL` is optional: an `env.runner` reference to it does not fail when it is
+unset, and the entry is omitted rather than passed empty. See
+[Jira repository secrets in agent runs](../guides/user/jira-integration.md#jira-repository-secrets-in-agent-runs).
 
 Repo-level setup (provider, profile, `~/.npmrc`, code/fix overlays):
 [Private registries and GitHub Packages](../guides/user/customizing-agents.md#private-registries-and-github-packages).

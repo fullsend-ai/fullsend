@@ -93,7 +93,7 @@ set -euo pipefail
 # Keep in sync with orgPool in internal/e2etest/testutil.go (plus the STAGE
 # org halfsend) and DefaultPoolSize in pkg/behaviourtest/drivers/install/
 # driver.go. A pool change is an edit here plus a re-run.
-POOL_ORGS=(halfsend-01 halfsend-02 halfsend-03 halfsend-04 halfsend-05 halfsend-06 halfsend-07 halfsend-08 halfsend-09 halfsend-10 halfsend-11 halfsend-12 halfsend)
+POOL_ORGS=(halfsend-01 halfsend-02 halfsend-03 halfsend-04 halfsend-05 halfsend-06 halfsend-07 halfsend-08 halfsend-09 halfsend-10 halfsend-11 halfsend-12 halfsend-13 halfsend-14 halfsend-15 halfsend-16 halfsend-17 halfsend-18 halfsend-19 halfsend-20 halfsend-21 halfsend-22 halfsend)
 POOL_REPOS=(test-repo-01 test-repo-02 test-repo-03 test-repo-04 test-repo-05 test-repo-06 test-repo-07 test-repo-08 test-repo-09 test-repo-10 test-repo-11 test-repo-12)
 
 # A repository outside the pool. Only it may use the echo-denied model, so a

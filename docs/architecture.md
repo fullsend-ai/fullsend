@@ -88,7 +88,13 @@ each target repository's **`.fullsend/`** directory
 
 - What is the right isolation level — process, container, microVM, or separate cluster? (See [agent-infrastructure.md](problems/agent-infrastructure.md) and [security-threat-model.md](problems/security-threat-model.md).)
 - ~~How granular is network regulation? Allowlist of endpoints, or coarser controls?~~ Decided in [ADR 0065](ADRs/0065-provider-backed-policy-composition.md): network access is granted through provider profiles with per-endpoint allowlists.
-- Does the sandbox provide a pre-built environment (tools, language runtimes, repo clones), or does the agent set up its own workspace within the sandbox?
+- Does the sandbox provide a pre-built environment (tools, language
+  runtimes, repo clones), or does the agent set up its own workspace
+  within the sandbox? (The environment-variable dimension is now a
+  published, generated contract —
+  [ADR 0146](ADRs/0146-sandbox-environment-contract-manifest.md),
+  [contract](normative/sandbox-env/v1/README.md); tools, runtimes,
+  and workspace setup remain open.)
 - ~~Is the sandbox the same for all agent roles, or does each role get a differently-scoped sandbox?~~ Decided in [ADR 0020](ADRs/0020-composable-single-responsibility-agents-with-individual-sandboxes.md): each agent gets its own sandbox with policies designed for its responsibility.
 
 **Decided:**
@@ -133,7 +139,12 @@ repo baseline and overrides)
   sub-maps replaces `runner_env` and manual `.env` files. The runner generates
   the sandbox `.env` file from `env.sandbox` at bootstrap. `runner_env` is
   deprecated ([ADR 0055](ADRs/0055-unified-env-var-delivery.md), amending
-  [ADR 0024](ADRs/0024-harness-definitions.md)).
+  [ADR 0024](ADRs/0024-harness-definitions.md)). What the runner itself
+  injects — which env vars every sandbox receives, which arrive per runtime
+  via `EnvExports()`, and which keys are reserved from harness override — is
+  published as generated, tag-pinned JSON Schemas enforced by an always-on
+  golden test ([ADR 0146](ADRs/0146-sandbox-environment-contract-manifest.md);
+  [contract](normative/sandbox-env/v1/README.md)).
 - Runner secrets on GitHub (interim until external secret manager support
   or #6359 settles the long-term route, then kept as the fallback for
   workflows without GitHub OIDC or WIF; integrations fullsend owns keep their
@@ -218,16 +229,19 @@ repo baseline and overrides)
   platform. `forge:` is deprecated but remains functional
   ([ADR 0088](ADRs/0088-cel-guarded-overlays.md)).
 - Harness schema versioning and field types: a `schema_version` field (absent
-  = version `1`) is planned to make the harness a versioned contract, and every
-  field is classified by semantic type — inline command (`sh -c`), local file
-  path, resource reference, scalar value, or structural container — published in the
-  [Harness Field Reference](contributing/harness-fields.md). The field and its
-  type-flagging in `Harness.Lint()` are planned, not yet implemented (Lint
-  diagnostics non-fatal, with fail-fast as a tracked follow-up). Incompatible
-  field-type changes require a version bump; compatible additions do not
-  require one. Version-aware loaders reject unsupported versions before
-  composition; older pinned consumers must be upgraded before receiving
-  newer-version harnesses ([ADR 0127](ADRs/0127-harness-schema-versioning-and-field-types.md)).
+  = version `1`) makes the harness a versioned contract, and every field is
+  classified by semantic type — inline command (`sh -c`), local file path,
+  resource reference, scalar value, or structural container — published in the
+  [Harness Field Reference](contributing/harness-fields.md). Type-flagging in
+  `Harness.Lint()` remains planned
+  ([#8723](https://github.com/fullsend-ai/fullsend/issues/8723)), not yet
+  implemented (Lint diagnostics non-fatal, with fail-fast as a tracked
+  follow-up). Incompatible field-type changes require a version bump;
+  compatible additions do not require one. Version-aware loaders reject
+  malformed, zero, negative, and unsupported versions at parse time as load
+  failures, and mixed-version `base:` layers are rejected before any merge
+  runs; older pinned consumers must be upgraded before receiving newer-version
+  harnesses ([ADR 0127](ADRs/0127-harness-schema-versioning-and-field-types.md)).
 - `preflight_check` is a literal host command, not a script resource: it runs
   via `sh -c` without setting a working directory and is not resource-resolved;
   `Harness.Lint()` flags path-like values at error severity, so `fullsend
@@ -321,7 +335,11 @@ flowchart TB
   routing is overlays setting `model` and `effort`; when a routed model is not
   served, the runner retries once with the model and effort it would use
   without overlays, and `FULLSEND_FALLBACK_MODELS` applies as each runtime
-  allows. Decided, not yet implemented.
+  allows. A matching overlay will also be able to grant runtime fetch, with
+  every prefix it adds, and the whole merged list once it sets
+  `allow_runtime_fetch`, inside the config-level allowlist
+  ([ADR 0158](ADRs/0158-overlays-may-grant-runtime-fetch-within-the-config-allowlist.md)).
+  Decided, not yet implemented.
 - Plugins are runtime-scoped harness resources: a harness declares `plugins:` as one list of directories in its own repository (same trust and fetch path as skills), and each entry's format decides which runtime loads it — a `plugin.json` bundle is Claude Code's, a directory pi's `-e` loader resolves is uploaded and loaded after a tree-hash preflight computed from the host copy. Each runtime names and skips the entries in the other format, so the list survives a runtime switch. Because `--no-extensions` plus explicit `-e` closes the set of code that can register tools, no per-tool declaration is needed ([ADR 0094](ADRs/0094-pi-extensions-are-harness-resources.md)).
 - Decided, not yet implemented: extend the runner-owned native Codex child
   policy to V2 alongside the 0.166.0 bump. Bootstrap requires the `Agent` tool,
@@ -427,9 +445,14 @@ The existing design principle is that [the repo is the coordinator](problems/age
   during reconciliation remains a separate decision
   ([ADR 0106](ADRs/0106-serialize-agent-runs-and-coalesce-subsequent-events.md),
   partially superseded by [ADR 0144](ADRs/0144-reuse-poll-and-entity-bound-run-processes.md)).
-- Dispatch runs no follow-up stage after an agent. Every run publishes the
-  `fullsend-<agent>` artifact, and users who want to act on a result chain
-  their own workflow on the shim's `workflow_run` event
+- Dispatch runs no follow-up stage after an agent. Every unique agent job
+  publishes the `fullsend-<agent>` artifact. When a dispatch matrix repeats an
+  agent, its first job keeps that name and later jobs use
+  `fullsend-<agent>.matrix-<job-index>`; other agents keep their usual names.
+  The composite action also accepts an optional `artifact-name` input for
+  caller-defined names. Users who want to act on a result chain their own
+  workflow on the shim's
+  `workflow_run` event
   ([guide](guides/user/chaining-follow-up-workflows.md),
   [ADR 0124](ADRs/0124-criteria-for-adding-a-built-in-agent-role.md)).
 - Per-repo **polling** complements webhook dispatch: `fullsend poll` uses poll
