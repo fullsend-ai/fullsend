@@ -15,8 +15,9 @@ redirect it: the scripts live in `hooks/` next to this file, and
 CodexRuntime.Run checks this file's SHA-256 against the copy embedded in the
 fullsend binary before every iteration.
 
-Wire translation (codex `rust-v0.152.1`, verified against
-codex-rs/hooks/src/{schema.rs,engine/output_parser.rs,events/*.rs}):
+Wire translation (codex `rust-v0.166.0`, verified against
+codex-rs/hooks/src/{schema.rs,engine/output_parser.rs,events/*.rs} and
+codex-rs/core/src/tools/registry.rs function_hook_tool_name):
 
 * Inbound, `tool_name` → the Claude vocabulary the scripts expect
   (`apply_patch` → `Edit`, `spawn_agent` → `Agent`, `Bash` unchanged, MCP
@@ -132,8 +133,8 @@ MODE_SPAWN_GUARD = "SpawnGuard"
 # The only multi-agent tool the guard admits.
 SPAWN_TOOL_V1 = "spawn_agent"
 # Passed through from the root thread: each acts on an admitted child and
-# none can start or reopen one. Denied from a child. Every other
-# multi-agent tool is denied by name.
+# none can start or reopen one. Denied from a child, whose payload carries
+# agent_id or agent_type. Every other multi-agent tool is denied by name.
 SPAWN_GUARD_PASS = frozenset(
     {
         "multi_agent_v1wait_agent",
@@ -171,6 +172,13 @@ CLAUDE_TOOL_FOR_CODEX = {
     "multi_agent_v1wait_agent": "Agent",
     "multi_agent_v1close_agent": "Agent",
     "multi_agent_v1send_input": "Agent",
+    # The V2 spawn and the control calls ADR 0159 decision 3 maps the same
+    # way are Agent too; the guard still denies them by name. send_message
+    # and followup_task stay unmapped like the resume.
+    "collaborationspawn_agent": "Agent",
+    "collaborationwait_agent": "Agent",
+    "collaborationlist_agents": "Agent",
+    "collaborationinterrupt_agent": "Agent",
 }
 
 
@@ -779,7 +787,7 @@ def run_spawn_guard(hook_input: dict[str, Any]) -> None:
     call. Every path but the admit path ends in block()."""
     tool = hook_input.get("tool_name")
     if tool in SPAWN_GUARD_PASS:
-        if "agent_id" in hook_input:
+        if "agent_id" in hook_input or "agent_type" in hook_input:
             denied = f"fullsend: {tool!r} is not allowed from a child (fail closed)"
             log_finding("codex_spawn_guard_block", "critical", denied, "block")
             block(denied)

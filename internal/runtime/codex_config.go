@@ -383,11 +383,17 @@ type codexHookEntry struct {
 	Timeout int    `json:"timeout,omitempty"`
 }
 
+// codexAgentMatcher is the exact alternation (no regex characters, see
+// codexMatcherFor) that selects every call the adapter reports as Agent.
+var codexAgentMatcher = strings.Join(codexAgentToolNames, "|")
+
 // codexToolMatcher maps a Claude Code tool name from security.HookGroup.Tools
 // onto the matcher token codex selects handlers with. codex's canonical hook
 // tool names are `Bash`, `apply_patch` and `spawn_agent`
-// (codex-rs/core/src/tools/hook_names.rs); an empty string means codex has no
-// such tool.
+// (codex-rs/core/src/tools/hook_names.rs) plus the namespaced multi-agent
+// calls in codexAgentToolNames (codex-rs/core/src/tools/registry.rs
+// function_hook_tool_name, codex-rs/core/src/tools/mod.rs flat_tool_name);
+// an empty string means codex has no such tool.
 //
 // `Write` and `Edit` would in fact also select apply_patch, which carries them
 // as matcher aliases, but the file says what it means and the payload's
@@ -400,8 +406,8 @@ var codexToolMatcher = map[string]string{
 	"Write":     "apply_patch",
 	"Edit":      "apply_patch",
 	"MultiEdit": "apply_patch",
-	"Agent":     "spawn_agent",
-	"Task":      "spawn_agent",
+	"Agent":     codexAgentMatcher,
+	"Task":      codexAgentMatcher,
 	"Read":      "",
 	"Glob":      "",
 	"Grep":      "",
