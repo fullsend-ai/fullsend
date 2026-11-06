@@ -238,6 +238,7 @@ permission list, not by bypassing the check.
 > v1 limitation: only repo-root flat `approvers`/`reviewers` lists are
 > read. Prow `filters:` blocks and nested per-directory OWNERS files
 > are not supported.
+
 > **Note (2026-09-27, ADR 0107):** Non-label bot authorization is being
 > migrated from `[bot]` naming and transition-specific exceptions to
 > provider-backed exact bot-role resolution. The existing GitHub label-added
