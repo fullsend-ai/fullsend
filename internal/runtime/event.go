@@ -1,5 +1,7 @@
 package runtime
 
+import "time"
+
 // streamBufSize is the bufio.Reader buffer size used by every NDJSON stream
 // parser (Claude, pi, codex, OpenCode). Lines exceeding this size are
 // skipped; the Claude parser still reports an oversized tool_result line's
@@ -39,15 +41,18 @@ func (TextEvent) agentEvent() {}
 
 // ToolUseEvent reports a tool call. The Claude Code parser emits it when
 // it reads the line carrying the call's complete arguments (written ahead
-// of the call's result; the tool may already be running by then); the pi,
-// codex and OpenCode parsers emit it when the call has finished — codex
+// of the call's result; the tool may already be running by then); the pi
+// parser holds it until tool_execution_end, because a failed call's summary
+// needs the result, and the codex and OpenCode parsers emit it when the call
+// has finished — codex
 // once per changed path of a file_change item, so one apply_patch can
 // yield several. Not every call yields one: a Claude Code server_tool_use
 // block on an assistant line (the path production takes) and a tool_use
 // line beyond streamBufSize emit nothing.
 // ID is the tool call identifier from the runtime stream; it is empty
-// when the parser passes none through — pi and codex (#7414), OpenCode,
-// and a Claude Code server-side tool reported from stream_event blocks,
+// when the parser passes none through — codex (#7414), OpenCode,
+// a pi call whose tool_execution_start was not seen, and a Claude Code
+// server-side tool reported from stream_event blocks,
 // whose result never arrives as a tool_result.
 // Name is the raw tool name from the runtime stream.
 // Summary is a one-line context string from extractSafeContext; it is
@@ -56,13 +61,18 @@ func (TextEvent) agentEvent() {}
 // unredacted, for the Level 3 content collector only — the renderer does
 // not print it. It is not checked here: input assembled from stream_event
 // deltas stops growing at maxToolInputSize and can be incomplete JSON.
-// Empty when the wire carried no input, and from the pi and codex
-// parsers (#7414) and the OpenCode parser.
+// Empty when the wire carried no input, and from the codex parser (#7414)
+// and the OpenCode parser.
+// StartedAt is when the parser read the call's start, for a parser that
+// holds this event until the call ends (pi). It is zero when no start was
+// seen and from the other parsers: the event's receipt is then the nearest
+// thing to a start.
 type ToolUseEvent struct {
 	ID        string
 	Name      string
 	Summary   string
 	Arguments string
+	StartedAt time.Time
 }
 
 func (ToolUseEvent) agentEvent() {}
@@ -75,8 +85,8 @@ func (ToolUseEvent) agentEvent() {}
 // Result is a fragment of what the wire carried; Oversized reports that
 // the result's stream line exceeded streamBufSize and was skipped, so
 // only ID is known — Result is empty and IsError is unknown, not false.
-// Only the Claude runtime emits it today — see the runtime support
-// matrix in docs/runtimes.md.
+// The Claude and pi runtimes emit it; only Claude reports Oversized — see
+// the runtime support matrix in docs/runtimes.md.
 type ToolResultEvent struct {
 	ID        string
 	Result    string
