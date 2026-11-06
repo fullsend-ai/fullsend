@@ -12,11 +12,11 @@ For implementation details, see the
 |-------|-----------------|----------------------|
 | 1 | `run-telemetry.jsonl` file in the run output directory | None |
 | 2 | OTLP/HTTP export to a remote backend (metadata only) | `OTEL_EXPORTER_OTLP_*ENDPOINT` |
-| 3 | Conversation content (assistant text, reasoning, tool calls and — on Claude runs — their arguments and results; on a retry that carries validation feedback, the prompt the runner composed) on `agent` spans | `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true` |
+| 3 | Conversation content (assistant text, reasoning, tool calls and — on Claude and pi runs — their arguments and results; on a retry that carries validation feedback, the prompt the runner composed) on `agent` spans | `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true` |
 
 All levels produce metadata (timing, token counts, tool names, errors),
 including up to one `execute_tool` span per id-bearing tool call under each
-`agent` span (Claude Code today; pi and codex emit no call ids, [#7414](https://github.com/fullsend-ai/fullsend/issues/7414)),
+`agent` span (Claude Code and pi; codex emits no call ids, [#7414](https://github.com/fullsend-ai/fullsend/issues/7414)),
 capped at 1,024 per iteration.
 Level 3 adds the agent's conversation content to spans — enabled by one
 environment variable, exactly like Level 2's endpoint.
@@ -122,8 +122,8 @@ unattributed — as the `gen_ai.output.messages` span attribute: a JSON
 string following the
 [GenAI output-messages schema](https://github.com/open-telemetry/semantic-conventions/blob/v1.37.0/docs/gen-ai/gen-ai-output-messages.json)
 with a `finish_reason` of `stop` or `error`. Tool arguments, tool results, and the `id` that correlates a result with its call, are captured
-only when the runtime's stream provides them: Claude runs do; the pi and
-codex parsers emit none of the three yet
+only when the runtime's stream provides them: Claude and pi runs do; the
+codex parser emits none of the three yet
 ([#7414](https://github.com/fullsend-ai/fullsend/issues/7414)).
 `arguments` holds the members of the call's input that name what was
 called, listed by tool, each redacted as text: `Bash` — `command`,
@@ -133,8 +133,12 @@ called, listed by tool, each redacted as text: `Bash` — `command`,
 `Grep` — `pattern`, `path`, `glob`, `type`, `output_mode`, `context`,
 `head_limit`, `multiline`, `-A`, `-B`, `-C`, `-i`, `-n`; `Glob` —
 `pattern`, `path`; `WebFetch` — `url`; `Agent` — `description`, `model`,
-`subagent_type`; `Skill` — `skill`. Nothing else of the input is
-recorded: a file body, an edit, a prompt, a notebook source, a todo list,
+`subagent_type`; `Skill` — `skill`. pi's tools have their own names:
+`bash` — `command`, `timeout`; `read` — `path`, `offset`, `limit`; `write`
+and `edit` — `path`; `grep` — `pattern`, `path`, `glob`, `ignoreCase`,
+`literal`, `context`, `limit`; `find` — `pattern`, `path`, `limit`; `ls` —
+`path`, `limit`; its `Agent` and `Task` — as `Agent` above. Nothing else of
+the input is recorded: a file body, an edit, a prompt, a notebook source, a todo list,
 any member whose value is an object or an array, and the whole input of
 a tool not listed here (every `mcp__` tool among them) are dropped —
 scanned first, so a secret in them still counts, but neither charged nor
@@ -299,7 +303,7 @@ receipt, marked `fullsend.tool.result_oversized` with no status and no
 `error.type` — the tool answered, and whether it failed was never decoded; a
 result whose call was never reported (its stream line was skipped) is a
 near-zero-duration span marked `fullsend.tool.unmatched`. Runtimes whose parsers
-emit no call ids (pi, codex) produce no `execute_tool` spans, and neither
+emit no call ids (codex) produce no `execute_tool` spans, and neither
 do server-side tools, whose result never arrives as a `tool_result`. Tool
 names and call ids get the redaction span content gets (runner environment
 and provider-only values, Unicode normalization, secret redaction, then

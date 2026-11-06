@@ -611,3 +611,26 @@ func TestToolSpanTracker_RawIDKeysCorrelationEvenWhenMasksCollide(t *testing.T) 
 	}
 	assert.Empty(t, tr.open)
 }
+
+func TestToolSpanTracker_StartedAtSetsSpanStart(t *testing.T) {
+	tr, rec, _ := toolSpanFixture(t)
+	started := time.Now().Add(-time.Minute)
+	tr.Handle(agentruntime.ToolUseEvent{ID: "c1", Name: "bash", StartedAt: started})
+	tr.Handle(agentruntime.ToolResultEvent{ID: "c1"})
+
+	spans := endedToolSpans(rec)
+	require.Len(t, spans, 1)
+	assert.True(t, spans[0].StartTime.Equal(started), "the span covers the call, not the moment it was reported")
+	assert.GreaterOrEqual(t, spans[0].EndTime.Sub(spans[0].StartTime), time.Minute)
+}
+
+func TestToolSpanTracker_ZeroStartedAtUsesReceipt(t *testing.T) {
+	tr, rec, _ := toolSpanFixture(t)
+	before := time.Now()
+	tr.Handle(agentruntime.ToolUseEvent{ID: "c1", Name: "Bash"})
+	tr.Handle(agentruntime.ToolResultEvent{ID: "c1"})
+
+	spans := endedToolSpans(rec)
+	require.Len(t, spans, 1)
+	assert.False(t, spans[0].StartTime.Before(before))
+}

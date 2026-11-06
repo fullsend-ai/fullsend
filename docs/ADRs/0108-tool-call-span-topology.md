@@ -124,6 +124,13 @@ convention bump.
 
 ## Annotations
 
+**2026-11-05 — pi ([#7414](https://github.com/fullsend-ai/fullsend/issues/7414)):**
+the pi parser now passes call ids, arguments and results through, so pi runs
+get `execute_tool` spans. pi reports a call once it has finished, so its span
+starts when `tool_execution_start` was read, not at the use event. Calls inside
+pi sub-agents stay out of these spans: they are separate pi processes, never on
+the parent's stream. codex stays as the Consequences describe.
+
 **2026-09-18 — Tool arguments on the message record:** the Decision's "full
 arguments next" is in place for the members that name what was called:
 `tool_call` parts on the `agent` span's `gen_ai.output.messages` record
