@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -136,6 +137,17 @@ func runPreflightCheck(ctx context.Context, printer *ui.Printer, source, rawCmd 
 	if err != nil {
 		printer.StepFail("Preflight dependency check failed")
 		return fmt.Errorf("%s %w", source, err)
+	}
+	// Lint() checks the declared value, where a ${VAR} reference never
+	// matches the path-shape heuristic, so check the expanded command too
+	// (#8747). Only a value containing "${" is expanded, so this cannot
+	// repeat the declared-value diagnostic. Redact before printing: the
+	// expansion splices env.runner values into the message.
+	if strings.Contains(rawCmd, "${") {
+		if d := harness.PreflightCheckDiagnostic(source, expanded); d != nil {
+			d.Message = redactFeedback(d.Message, runnerEnv)
+			emitDiagnostic(printer, *d)
+		}
 	}
 	preflightCtx, preflightCancel := context.WithTimeout(ctx, preflightCheckTimeout)
 	defer preflightCancel()

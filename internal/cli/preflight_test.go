@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"os"
@@ -318,4 +319,59 @@ func TestRunPreflightCheck_TimeoutBoundedWithNonExecChild(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "preflight_check timed out")
 	assert.Less(t, elapsed, 10*time.Second, "teardown must be bounded by timeout + WaitDelay, not by the grandchild's lifetime")
+}
+
+// writePreflightScript writes an executable script that exits 0 and returns
+// its path.
+func writePreflightScript(t *testing.T, dir string) string {
+	t.Helper()
+	path := filepath.Join(dir, "validate.sh")
+	require.NoError(t, os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755))
+	return path
+}
+
+const preflightPathShapeMarker = "looks like a script path"
+
+// TestRunPreflightCheck_FlagsExpandedScriptPath covers #8747: Lint() sees
+// only the declared ${VAR} reference, so the path-shape diagnostic must be
+// emitted for the expanded command, exactly once.
+func TestRunPreflightCheck_FlagsExpandedScriptPath(t *testing.T) {
+	script := writePreflightScript(t, t.TempDir())
+	var buf bytes.Buffer
+	err := runPreflightCheck(context.Background(), ui.New(&buf), "validation_loop.preflight_check", "${PREFLIGHT_CMD}", map[string]string{"PREFLIGHT_CMD": script}, "/fs/dir")
+	require.NoError(t, err)
+	out := buf.String()
+	assert.Equal(t, 1, strings.Count(out, preflightPathShapeMarker), out)
+	assert.Contains(t, out, "validation_loop.preflight_check")
+	assert.Contains(t, out, script)
+}
+
+func TestRunPreflightCheck_ExpandedInterpreterFormNotFlagged(t *testing.T) {
+	script := writePreflightScript(t, t.TempDir())
+	var buf bytes.Buffer
+	err := runPreflightCheck(context.Background(), ui.New(&buf), "validation_loop.preflight_check", "${PREFLIGHT_CMD}", map[string]string{"PREFLIGHT_CMD": "sh " + script}, "/fs/dir")
+	require.NoError(t, err)
+	assert.NotContains(t, buf.String(), preflightPathShapeMarker)
+}
+
+// A literal path is flagged by Lint() on the declared value; run must not
+// repeat it.
+func TestRunPreflightCheck_LiteralScriptPathNotReflagged(t *testing.T) {
+	script := writePreflightScript(t, t.TempDir())
+	var buf bytes.Buffer
+	err := runPreflightCheck(context.Background(), ui.New(&buf), "validation_loop.preflight_check", script, nil, "/fs/dir")
+	require.NoError(t, err)
+	assert.NotContains(t, buf.String(), preflightPathShapeMarker)
+}
+
+func TestRunPreflightCheck_ExpandedScriptPathDiagnosticRedacted(t *testing.T) {
+	dir := t.TempDir()
+	writePreflightScript(t, dir)
+	var buf bytes.Buffer
+	err := runPreflightCheck(context.Background(), ui.New(&buf), "validation_loop.preflight_check", "${SENTINEL_SECRET}/validate.sh", map[string]string{"SENTINEL_SECRET": dir}, "/fs/dir")
+	require.NoError(t, err)
+	out := buf.String()
+	assert.Equal(t, 1, strings.Count(out, preflightPathShapeMarker), out)
+	assert.NotContains(t, out, dir, "env.runner values spliced by expansion must be redacted")
+	assert.Contains(t, out, "[REDACTED:SENTINEL_SECRET]")
 }
