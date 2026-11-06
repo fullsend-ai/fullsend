@@ -607,6 +607,14 @@ The existing design principle is that [the repo is the coordinator](problems/age
   Implementation and the normative query protocol are tracked in
   [#8418](https://github.com/fullsend-ai/fullsend/issues/8418) and
   [#8421](https://github.com/fullsend-ai/fullsend/issues/8421).
+- Steering (target state): a notification during a cycle's sandbox may steer
+  it with freshly admitted, filtered records, and with a moved change-proposal
+  head as Git objects the host fetches and installs, as an optional fast path.
+  A steer never consumes the pending follow-up and admits at the same
+  threshold as the cycle's snapshot. A review of a steered head cannot
+  approve it, and the next cycle stays the backstop
+  ([ADR 0117](ADRs/0117-steer-a-running-cycle-with-admitted-entity-updates.md),
+  [steer envelope v1](normative/steer-envelope/v1/README.md)).
 
 **Open questions:**
 
