@@ -369,9 +369,15 @@ this repository's workflow runs for the
 [busy check](#change-control)). Run it again after any of these
 changes:
 
-- **Pool change:** a new pool org, or a different `DefaultPoolSize`
-  (`pkg/behaviourtest/drivers/install/driver.go`). Edit `POOL_ORGS` or
-  `POOL_REPOS` at the top of the script.
+- **Pool change:** a new pool org (`DevPoolOrgCount` in
+  `pkg/behaviourtest/drivers/install/slotpool.go`), or a different
+  `DefaultPoolSize` (`pkg/behaviourtest/drivers/install/driver.go`). Edit
+  `POOL_ORG_COUNT` or `POOL_REPO_COUNT` at the top of the script to match;
+  `hack/setup-e2e-inference-gateway_test.sh` fails while they differ. The
+  change alters the pool regex, a frozen part of the config, so run the
+  script with `--dry-run` first: it shows the diff and exits 4. Then run it
+  with `--allow-frozen-change`, outside a release window and with the
+  maintainers told first.
 - **agentgateway bump:** change `AGW_VERSION`, and `AGW_DIGEST` to the
   release's multi-arch index digest. The version in the config header is
   masked, so a bump passes the frozen-path diff and needs no
@@ -525,14 +531,18 @@ changes nothing skips them and is still a no-op.
    about it, but it is not the baseline. If the traffic is split across
    revisions, the script stops before it changes anything. The comparison
    masks only the changes that are allowed:
-   - extra allowlist repositories after the pool list, such as temporary
-     repositories added to the live config by hand;
+   - an exact-name list of extra repositories right after the pool regex,
+     such as temporary repositories added to the live config by hand:
+     `jwt.repository.matches("<regex>") || jwt.repository in ["owner/name"]`
+     in an allow rule, and the same list as
+     `default(jwt.repository, "") in ["owner/name"]` in a rate-limit key.
+     A changed regex or pool count stays visible;
    - the time-boxed `REAL_KEY_HASH` entry, when it may call exactly one
      real model, and its allow rule on that model;
    - the tokens-per-minute cap, only with `--allow-tpm-change`.
 
    Any other difference refuses the deploy with exit 4 and prints the masked
-   diff. That covers the `echo` and `echo-denied` models, the pool list, the
+   diff. That covers the `echo` and `echo-denied` models, the pool regex, the
    `jwtAuth` and `apiKey` modes, the echo key hash, the requests-per-minute
    cap, the Vertex models, and the real key's rule on `echo` or
    `echo-denied`. To make such a change, pass
@@ -631,9 +641,20 @@ The generated config (print it with `--print-config`):
   `oidc` and `api-key` auth modes. Do not copy it to production. A
   production OIDC gateway should keep the strict `jwtAuth` recommended by
   [ADR 0137](../../ADRs/0137-inference-gateway-credential-route.md).
-- authorises each model with an exact-match list of `jwt.repository` values.
-  The list covers `test-repo-01` to `test-repo-12` in `halfsend-01` to
-  `halfsend-22` and in the STAGE org `halfsend`: 276 repositories. It
+- authorises each model with one anchored regular expression on
+  `jwt.repository`, `jwt.repository.matches("<regex>")`, and uses the same
+  regex for the pool's rate-limit bucket. The script builds it from
+  `POOL_ORG_COUNT` and `POOL_REPO_COUNT`; for the current pool it is
+  `^halfsend(-(01|02|...|22))?/test-repo-(01|02|...|12)$`, which covers
+  `test-repo-01` to `test-repo-12` in `halfsend-01` to `halfsend-22` and in
+  the STAGE org `halfsend`: 276 repositories. Each number is written as an
+  explicit alternative, never as `[0-9]{2}` or a digit range, so the regex
+  admits exactly the pool: `halfsend-00`, `halfsend-23` and
+  `halfsend-01/test-repo-13` are refused, and whoever owns a pool-shaped org
+  name outside the pool gets no access. One regex also keeps the config far
+  below Secret Manager's 65,536-byte limit for a secret version, which a
+  list of every repository approached as the pool grew; the script refuses
+  a rendered config over that limit before it changes anything. It
   matches names, so keep the pool orgs registered: whoever owns a pool org
   name can call the gateway. A model that a configured key may call also
   admits that key's `apiKey.purpose`.
