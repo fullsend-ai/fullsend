@@ -141,16 +141,17 @@ func TestDo_PrimaryRateLimitWithoutResetKeepsBackoff(t *testing.T) {
 
 	orig := secondaryRateLimitBackoff
 	defer func() { secondaryRateLimitBackoff = orig }()
-	secondaryRateLimitBackoff = 10 * time.Millisecond
+	// The recorded delay is never slept. 10s keeps the jittered range clear of
+	// a 1s or 2s primary reset wait.
+	secondaryRateLimitBackoff = 10 * time.Second
 
 	after, delays := recordingAfter()
 	client := New("test-token").WithBaseURL(srv.URL).WithAfterFunc(after)
 	require.NoError(t, client.DeleteRepo(context.Background(), "org", "repo"))
 	got := delays()
 	require.Len(t, got, 1)
-	// retryDelay jitters a first-attempt 403 within
-	// [base/2, base] where base = secondaryRateLimitBackoff + 1s, so bound by
-	// base rather than a fixed 1s that the jitter can exceed.
-	assert.LessOrEqual(t, got[0], secondaryRateLimitBackoff+time.Second,
-		"a secondary limit keeps the configured backoff")
+	// retryDelay jitters a first-attempt 403 within [base/2, base], inclusive.
+	base := secondaryRateLimitBackoff + time.Second
+	assert.GreaterOrEqual(t, got[0], base/2, "a secondary limit keeps the configured backoff")
+	assert.LessOrEqual(t, got[0], base, "a secondary limit keeps the configured backoff")
 }
