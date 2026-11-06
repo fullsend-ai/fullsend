@@ -17,7 +17,7 @@ identity components.
 |-----------|--------|--------|------|
 | Installation | 128-bit ID provisioned with the signing key pair | same | same |
 | Forge instance | web base URL (`https://github.com`, or a GHES host) | web base URL (`https://gitlab.com`, or a self-hosted host) | site base URL |
-| Container | repository `id` | project `id` | project `id` |
+| Container | repository `id`; for a PR, the base repository, never the fork | project `id`; for an MR, the target project, never the fork | project `id` |
 | Entity kind | `work_item` (issue), `change_proposal` (PR) | `work_item` (issue), `change_proposal` (MR) | `work_item` (issue; Jira has no change proposal) |
 | Entity | `work_item`: issue REST `id`; `change_proposal`: pull-request REST `id` = GraphQL `fullDatabaseId` (`BigInt`), never the issue-space ID | issue or MR database `id` (not the IID) | issue `id` |
 
@@ -44,6 +44,10 @@ percent-escapes with characters that still need escaping, such as
 the same configured deployment URL on every launch, rather than an entity or
 API URL.
 
+Normalization fixes spelling only; it never resolves one name to another. An
+IP literal and its hostname, two DNS aliases of one host, and
+`https://[::ffff:192.0.2.1]` and `https://192.0.2.1` are different instances.
+
 Strip leading zeros from the port, keeping an all-zero port as `:0` rather
 than treating it as the default, and reject ports above `65535`. Then remove
 an empty port and the scheme's default port (`443` for HTTPS, `80` for
@@ -54,7 +58,8 @@ names, and reject Unicode host spellings instead of converting them. For
 example, `https://GitHub.com:443/` becomes `https://github.com`, and
 `https://XN--BCHER-KVA.example` becomes `https://xn--bcher-kva.example`.
 Bracketed IPv6 hosts follow the same port rules and take their RFC 5952
-form: `https://[2001:DB8:0:0:0:0:0:1]` becomes `https://[2001:db8::1]`.
+section 4 form, with IPv4-mapped addresses in mixed notation:
+`https://[2001:DB8:0:0:0:0:0:1]` becomes `https://[2001:db8::1]`.
 Zone identifiers reject (`https://[FE80::1%25EN0]`; use a routable
 address), so a normalized instance always re-normalizes to itself.
 Trailing DNS root dots are stripped: `https://github.com.` and
@@ -78,8 +83,8 @@ traces regardless of key state.
 
 - Renames (issue titles, repository names, Jira project keys) never
   change identity: the container and entity components are database IDs.
-- Repository transfers on GitHub and GitLab preserve the database ID, so
-  identity survives a transfer.
+- A container transfer that keeps the container's database ID keeps
+  identity; one that changes the database ID is a new binding.
 - An entity moved between containers (a GitHub issue transfer, a Jira
   project move) has a **new binding** — a different container or entity
   ID — and therefore a new identity. A previously published envelope
@@ -91,8 +96,10 @@ traces regardless of key state.
 
 ### Fallback derivation (v1)
 
-When no admissible stored context exists, the entity's context is derived
-deterministically:
+When the identity is resolved and no admissible stored context exists, the
+entity's context is derived deterministically. An unresolved identity gets no
+derived context; dispatch is postponed instead (see [Admission](#admission)).
+The derivation is:
 
 - Input: the forge instance, container, kind, and entity — never the
   installation.
@@ -148,7 +155,7 @@ the magic through the nonce — there are no unsigned fields.
 | · | 16 | Trace ID | nonzero |
 | · | 8 | Parent/anchor Span ID | nonzero |
 | · | 1 | Provenance kind | `0x00` none, `0x01` source link, `0x02` scenario |
-| · | 0/24/32 | Provenance fields | none; source link = 16B source TraceID + 8B source SpanID; scenario = 16B scenario TraceID + 16B invocation ID |
+| · | 0/24/32 | Provenance fields | none; source link = 16B source TraceID + 8B source SpanID; scenario = 16B scenario TraceID + 16B invocation ID; every ID nonzero |
 | · | 16 | Nonce | nonzero (checked); signers draw it from `crypto/rand`, unique per creation intent (not checked at admission) |
 | end−64 | 64 | Ed25519 signature | over bytes `[0, end−64)` |
 
@@ -228,7 +235,7 @@ envelope.
 Any differing extra candidate, whether junk or a second envelope,
 deliberately forces fallback even when one candidate alone would admit;
 identical duplicates do not. An actor who can edit the body can deny
-continuity by appending junk or deleting the carrier, but can never alter
+continuity by appending junk or deleting the carrier, but can never forge
 or inject a context: only an envelope the installation signed for this
 entity admits. Admission has no freshness check, so an older valid
 envelope for the same entity still admits. Rejection is deliberately

@@ -451,8 +451,12 @@ type searchRequest struct {
 	NextPageToken string   `json:"nextPageToken,omitempty"`
 }
 
-// searchFields lists the issue fields the poller actually consumes.
-// Requesting them explicitly (rather than "*all") bounds search payloads:
+// searchFields lists the issue fields search requests. All but "project"
+// are fields the poller consumes. "project" carries the immutable project
+// database ID, the Jira container identity for trace binding (ADR 0154),
+// so search results hold the same identity as issue reads; the poller does
+// not read it today, and GetIssue fetches it through its own request.
+// Requesting fields explicitly (rather than "*all") bounds search payloads:
 // with "*all", 50 issues per page each carrying full ADF descriptions,
 // embedded first comment pages, attachments, and every custom field can
 // plausibly exceed the client's 10MB decode cap — and since a failed
