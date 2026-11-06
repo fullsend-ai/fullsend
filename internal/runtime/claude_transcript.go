@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -153,9 +154,17 @@ type claudeTranscriptRecord struct {
 	} `json:"message"`
 }
 
-// stoppedBackgroundSubagents returns the names of the transcripts in
-// transcriptDir whose last user or assistant record is Claude Code's
-// interrupt marker, recorded at or after since. A record without a
+// subagentTranscriptRe matches a sub-agent transcript's local name:
+// ExtractTranscripts saves Claude Code's agent-<id>.jsonl as
+// <agent>-agent-<id>.jsonl. The main session's <agent>-<uuid>.jsonl has
+// hyphens in its id, so it does not match.
+var subagentTranscriptRe = regexp.MustCompile(`-agent-[0-9A-Za-z]+\.jsonl$`)
+
+// stoppedBackgroundSubagents returns the names of the sub-agent transcripts
+// in transcriptDir (subagentTranscriptRe) whose last user or assistant
+// record is Claude Code's interrupt marker, recorded at or after since. The
+// names come from inside the sandbox and are returned sanitized
+// (sanitizeOutput), for display. A record without a
 // parseable timestamp is not excluded by since. Records of other types
 // (Claude Code writes bookkeeping records such as last-prompt at exit) do
 // not count as the last record. Unreadable files are skipped: detection is
@@ -167,11 +176,11 @@ func stoppedBackgroundSubagents(transcriptDir string, since time.Time) []string 
 	}
 	var stopped []string
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
+		if entry.IsDir() || !subagentTranscriptRe.MatchString(entry.Name()) {
 			continue
 		}
 		if endsWithInterrupt(filepath.Join(transcriptDir, entry.Name()), since) {
-			stopped = append(stopped, entry.Name())
+			stopped = append(stopped, sanitizeOutput(entry.Name()))
 		}
 	}
 	return stopped

@@ -250,6 +250,7 @@ func TestClaudeRunnerSettings(t *testing.T) {
 			env[key] = ""
 		}
 		env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
+		env["CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS"] = "0"
 		return env
 	}
 
@@ -269,10 +270,19 @@ func TestClaudeRunnerSettings(t *testing.T) {
 		}
 	})
 
+	t.Run("background-wait ceiling is lifted on every route", func(t *testing.T) {
+		gateway := map[string]any{"env": map[string]any{"ANTHROPIC_BASE_URL": "https://gw.example.com"}}
+		for name, extra := range map[string]map[string]any{"vertex": nil, "gateway": gateway} {
+			env, ok := claudeRunnerSettings(recorded, extra)["env"].(map[string]any)
+			require.True(t, ok, name)
+			assert.Equal(t, "0", env[claudeBgWaitCeilingEnv], name)
+		}
+	})
+
 	t.Run("nothing recorded pins every name empty", func(t *testing.T) {
 		env, ok := claudeRunnerSettings(nil, nil)["env"].(map[string]any)
 		require.True(t, ok)
-		require.Len(t, env, len(hookEnvManagedKeys)+len(pinned)+1)
+		require.Len(t, env, len(hookEnvManagedKeys)+len(pinned)+2)
 		for _, key := range append(append([]string{}, hookEnvManagedKeys...), pinned...) {
 			assert.Equal(t, "", env[key], key)
 		}
@@ -323,6 +333,7 @@ func TestInstallClaudeHooks_PinsRunnerSettings(t *testing.T) {
 		wantHookEnv[key] = ""
 	}
 	wantHookEnv["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
+	wantHookEnv["CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS"] = "0"
 
 	install := func(t *testing.T, sb string, extra map[string]any) (map[string]any, []byte) {
 		t.Helper()

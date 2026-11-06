@@ -3068,7 +3068,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 		lastIterBgStopped = backgroundStopCause(tx, lastExitCode, lastIterTimedOut, iterTranscriptDir, agentStart)
 		if len(lastIterBgStopped) > 0 {
-			printer.StepWarn("The agent CLI stopped a pending background sub-agent when it exited, before the agent wrote its result: " + strings.Join(lastIterBgStopped, ", "))
+			printer.StepWarn("The agent CLI exited 0 and the iteration failed validation; interrupted background sub-agent transcripts found, so a pending sub-agent may have been stopped at CLI exit: " + strings.Join(lastIterBgStopped, ", "))
 		}
 
 		// A killed iteration is not retried: the next one would replay the
@@ -3896,7 +3896,7 @@ func runTerminalError(hasLoop, validationPassed, timedOut bool, exitCode int, ex
 	case hasLoop && !validationPassed && timedOut:
 		return timeoutErr
 	case hasLoop && !validationPassed && len(bgStopped) > 0:
-		return fmt.Errorf("validation failed after %d iteration(s): pending background sub-agent stopped at CLI teardown (%s)", runCount, strings.Join(bgStopped, ", "))
+		return fmt.Errorf("validation failed after %d iteration(s): interrupted background sub-agent transcripts found, possibly stopped at CLI teardown (%s)", runCount, strings.Join(bgStopped, ", "))
 	case hasLoop && !validationPassed:
 		return fmt.Errorf("validation failed after %d iteration(s)", runCount)
 	case !hasLoop && timedOut:
