@@ -78,6 +78,9 @@ type piAgentManifest struct {
 	// extensions present in the image, then the hook adapter when security
 	// is enabled. Never this extension itself.
 	Extensions []string `json:"extensions"`
+	// DeclaredExtensions are the vetted harness plugins inherited by children.
+	// The dispatcher rechecks their tree hashes before every child launch.
+	DeclaredExtensions []piManifestExtension `json:"declaredExtensions,omitempty"`
 	// ExtensionDigests is the sha256 (hex) of each Extensions entry that
 	// Bootstrap itself wrote under the runner-owned config dir. The
 	// extension re-hashes them before every dispatch; see
@@ -352,6 +355,7 @@ func (r PiRuntime) Bootstrap(input BootstrapInput) error {
 		if err != nil {
 			return err
 		}
+		block.DeclaredExtensions = extensions
 		manifest.Agent = block
 	}
 

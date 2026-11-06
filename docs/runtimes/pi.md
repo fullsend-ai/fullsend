@@ -388,6 +388,13 @@ under it — that is what a declared `tools:` means. An agent whose `tools:` map
 provides gets `--no-builtin-tools`, and its extensions still load: `-e` is independent of `--tools`.
 An agent without `tools:` gets pi's default set plus whatever its extensions register.
 
+MCP tool names such as `mcp__docs__search` and patterns such as
+`mcp__docs__*` pass through the pi tool mapping. Sub-agents load the same
+declared extensions, with their directory hashes checked before each launch.
+A persona's tools are intersected with the parent's permissions using the
+registered tool names. An empty child allowlist hides both built-in and
+extension tools.
+
 The hook adapter treats an extension tool like any other — every PreToolUse and PostToolUse hook
 runs on it, with no bypass. If your org enables the optional `tool_allowlist_pretool.py` hook, list
 the extension's tool names in `FULLSEND_TOOL_ALLOWLIST` the same way `mcp__*` names are listed.
