@@ -455,6 +455,12 @@ The existing design principle is that [the repo is the coordinator](problems/age
   `workflow_run` event
   ([guide](guides/user/chaining-follow-up-workflows.md),
   [ADR 0124](ADRs/0124-criteria-for-adding-a-built-in-agent-role.md)).
+- Steering default (target state): steering is on for every eligible harness
+  once its dependencies are in place. `steer: {enabled: false}` in a harness or
+  in the repository's `.fullsend/config.yaml` turns it off, and any `false`
+  wins over every other layer. `steer: {max_steers: N}` caps steers per cycle
+  (default 3, at most 9999)
+  ([ADR 0121](ADRs/0121-steering-on-by-default.md)).
 - Per-repo **polling** complements webhook dispatch: `fullsend poll` uses poll
   input drivers to discover work from remote systems (Jira first), coordinates
   via source-native write-then-verify locks, and feeds the same dispatch pipeline
