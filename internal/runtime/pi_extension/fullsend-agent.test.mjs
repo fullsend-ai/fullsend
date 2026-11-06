@@ -1348,7 +1348,7 @@ test("MCP child dispatch intersects concrete tools and rechecks declared extensi
   mkdirSync(ext);
   writeFileSync(join(ext, "index.js"), "// docs fixture\n");
   mkdirSync(join(ext, "data"));
-  const entry = { name: "docs", path: ext, sha256: extensionTreeHash(ext), args: ["--docs-mode", "offline"] };
+  const entry = { name: "docs", path: ext, sha256: await extensionTreeHash(ext), args: ["--docs-mode", "offline"] };
   manifest.agent.declaredExtensions = [entry];
   manifest.agent.tools = ["mcp__docs__*", "Agent"];
   manifest.agent.personas = { docs: { tools: ["mcp__docs__search"], prompt: "Search docs" } };
@@ -1366,7 +1366,7 @@ test("MCP child dispatch intersects concrete tools and rechecks declared extensi
   const { spawn, children } = fakeSpawn();
   const tool = createAgentTool(manifest, { ...quiet, spawn, registeredTools: () => registry });
   const pending = tool.run({ prompt: "search" });
-  await new Promise((r) => setImmediate(r));
+  for (let i = 0; i < 200 && children.length === 0; i++) await new Promise((r) => setTimeout(r, 5));
   assert.equal(children.length, 1);
   assert.equal(children[0].args[children[0].args.indexOf("--tools") + 1], "mcp__docs__search");
   children[0].child.finish(okStream("done"));
@@ -1386,6 +1386,31 @@ test("MCP child dispatch intersects concrete tools and rechecks declared extensi
   assert.match((await tool.run({ prompt: "search" })).error, /cannot verify extension/);
   assert.equal(children.length, 1);
   await tool.shutdown();
+});
+
+test("child permissions preserve default, extension-only and explicit parent modes", () => {
+  const registry = ["read", "bash", "powershell", "mcp__docs__search", "mcp__docs__write", "Agent", "Task"];
+  const agent = { tools: ["read", "bash"], personas: { docs: { tools: ["mcp__docs__search"] } } };
+  for (const toolMode of ["default", "extensions-only"]) {
+    agent.toolMode = toolMode;
+    assert.deepEqual(childTools(agent, "docs", registry), ["mcp__docs__search"]);
+    assert.deepEqual(childTools(agent, "Explore", registry), toolMode === "default" ? ["read"] : []);
+    assert.deepEqual(childTools(agent, undefined, registry), toolMode === "default"
+      ? ["read", "bash", "mcp__docs__search", "mcp__docs__write"] : ["mcp__docs__search", "mcp__docs__write"]);
+  }
+  agent.toolMode = "explicit";
+  assert.deepEqual(childTools(agent, "docs", registry), []);
+  agent.toolMode = undefined; // Older manifests stay restrictive.
+  assert.deepEqual(childTools(agent, "docs", registry), []);
+});
+
+test("extension tree verification yields to the event loop", async () => {
+  const { dir } = fixture();
+  writeFileSync(join(dir, "index.js"), "// docs\n");
+  let yielded = false;
+  setImmediate(() => { yielded = true; });
+  await extensionTreeHash(dir);
+  assert.equal(yielded, true);
 });
 
 function registerWith(manifestPath, env = {}) {

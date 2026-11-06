@@ -120,6 +120,7 @@ type piAgentManifest struct {
 	Thinking       string              `json:"thinking"`
 	// Tools is the built-in set a child gets (the parent's, minus
 	// Agent/Task); ExploreTools the read-only set for subagent_type Explore.
+	ToolMode       string   `json:"toolMode,omitempty"` // default, extensions-only, or explicit (empty for older manifests)
 	Tools          []string `json:"tools"`
 	ExploreTools   []string `json:"exploreTools"`
 	MaxConcurrent  int      `json:"maxConcurrent"`
@@ -526,7 +527,9 @@ func (r PiRuntime) piAgentManifestFor(sandboxName string, def *piAgentDef, tools
 		return nil, err
 	}
 	childTools := []string{}
+	toolMode := "explicit"
 	if tools == nil {
+		toolMode = "default"
 		childTools = append(childTools, piDefaultTools...)
 	} else {
 		for _, t := range tools {
@@ -534,6 +537,9 @@ func (r PiRuntime) piAgentManifestFor(sandboxName string, def *piAgentDef, tools
 				childTools = append(childTools, t)
 			}
 		}
+	}
+	if tools != nil && len(tools) == 0 {
+		toolMode = "extensions-only"
 	}
 	gw := piGatewayRunFor(sandboxName)
 	var gatewayIDs []string
@@ -558,6 +564,7 @@ func (r PiRuntime) piAgentManifestFor(sandboxName string, def *piAgentDef, tools
 		ProviderModels:   piAgentProviderModels(gatewayIDs),
 		Thinking:         piAgentThinking(),
 		Tools:            childTools,
+		ToolMode:         toolMode,
 		ExploreTools:     append([]string{}, piExploreTools...),
 		MaxConcurrent:    piAgentMaxConcurrent,
 		TimeoutSeconds:   piAgentTimeoutSeconds,

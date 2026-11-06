@@ -300,7 +300,7 @@ func TestPiExtensionTreeHash_MatchesChildDispatcher(t *testing.T) {
 	require.NoError(t, os.Mkdir(filepath.Join(ext, "empty"), 0o755))
 	want, err := piExtensionTreeHash(ext)
 	require.NoError(t, err)
-	cmd := exec.Command(node, "--input-type=module", "-e", `import {extensionTreeHash} from './pi_extension/fullsend-agent.js'; console.log(extensionTreeHash(process.argv[1]));`, ext)
+	cmd := exec.Command(node, "--input-type=module", "-e", `import {extensionTreeHash} from './pi_extension/fullsend-agent.js'; console.log(await extensionTreeHash(process.argv[1]));`, ext)
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, "%s", out)
 	assert.Equal(t, want, strings.TrimSpace(string(out)))

@@ -34,10 +34,13 @@ export default function(pi) {
 }
 `);
   const agent = { sessionsDir: home, extensions: [provider], declaredExtensions: [{path: docs}], tools: ["mcp__docs__*"], personas: {docs: {tools: ["mcp__docs__search"]}} };
-  for (const empty of [false, true]) {
-    if (empty) agent.personas.docs.tools = [];
+  for (const [index, mode] of ["explicit", "default", "extensions-only", "empty"].entries()) {
+    const empty = mode === "empty";
+    agent.toolMode = empty ? "explicit" : mode;
+    agent.tools = mode === "default" ? ["read", "bash"] : mode === "extensions-only" ? [] : ["mcp__docs__*"];
+    agent.personas.docs.tools = empty ? [] : ["mcp__docs__search"];
     const tools = childTools(agent, "docs", ["mcp__docs__search", "mcp__docs__write"]);
-    const args = childArgs(agent, {seq: empty ? 2 : 1, modelSpec: "faux/faux-1", tools});
+    const args = childArgs(agent, {seq: index + 1, modelSpec: "faux/faux-1", tools});
     const result = spawnSync(process.env.FULLSEND_TEST_PI_BIN, args, {
       cwd: home, input: "search docs", encoding: "utf8", timeout: 45_000,
       env: {PATH: process.env.PATH, HOME: home, PI_CODING_AGENT_DIR: home},
