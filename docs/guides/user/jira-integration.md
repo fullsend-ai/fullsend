@@ -418,7 +418,9 @@ trigger: >
 ```
 
 Register it with `name: code` and `source: harness/code.yaml` under `agents:`
-in `.fullsend/config.yaml`. A child `trigger` replaces the base trigger, so
+in `.fullsend/config.yaml`. The override changes Jira runs only: on GitHub, a
+harness `trigger` on the built-in `code` agent does not change how GitHub
+starts it. A child `trigger` replaces the base trigger, so
 the expression above copies the default code trigger and adds the
 author-or-assignee clause to its `/fs-code` arm. The `ready-to-code` label arm
 is unchanged, because triage applies that label when it promotes an issue.
@@ -432,6 +434,11 @@ The actor still needs the role that
 permission to assign issues can assign themselves. The poller reads the
 assignee when it polls, so a reassignment between the poll and the run does
 not change a run that was already dispatched.
+
+To check it works, post `/fs-code` on an issue assigned to someone else, as a
+user who is neither its reporter nor its assignee: after the next poll, no
+Code run starts. Then post `/fs-code` as the assignee: the next poll starts a
+Code run.
 
 ## Scheduled workflow
 

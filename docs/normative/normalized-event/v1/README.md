@@ -79,8 +79,8 @@ Breaking changes require `docs/normative/normalized-event/v2/`.
 
 The new optional actor fields are additive, but consumers that vendor this
 schema with `additionalProperties: false` must refresh their copy before an
-adapter emits `bot_role`, `role_verified` or `is_entity_assignee`; otherwise their local validator
-may reject an otherwise valid v1 event. Fullsend controls the supported
+adapter emits `bot_role`, `role_verified` or `is_entity_assignee`; otherwise
+their local validator may reject an otherwise valid v1 event. Fullsend controls the supported
 NormalizedEvent producers and consumers, so the bundled validator and other
 supported consumers MUST be updated to this v1 schema before any adapter emits
 the new fields. Older strict schema copies are not a supported
@@ -270,7 +270,7 @@ before the run starts.
 |--------|---------------------------|------------|
 | GitHub (`gha-event`) | `issue.assignees[].login` or `pull_request.assignees[].login` in the webhook payload (the legacy single `assignee` only when the payload has no `assignees` array); no extra API call | Case-insensitive against the actor login (the reviewer for `pull_request_review`) |
 | GitLab (`gitlab-poll`, `gitlab-webhook`) | Issues: `assignees[].id` from the same issue fetch the author check uses. Merge requests: `assignees[].id` from the MR object that supplies the MR author | Numeric user ID against the resolved actor ID |
-| Jira (`jira-poll`) | `fields.assignee`, requested alongside `reporter` in the search fields | The same identifier as `actor.id`: `accountId`, or `name` when accountId is unavailable (Data Center/Server), matching the `is_entity_author` fallback |
+| Jira (`jira-poll`) | `fields.assignee`, requested alongside `reporter` in the search fields | The same identifier as `actor.id`: `accountId`, or `name` when `accountId` is unavailable (Data Center/Server), matching the `is_entity_author` fallback |
 
 Both fields are best-effort **routing** facts, not authorization. They can
 only narrow which actor a trigger accepts; the platform role gate

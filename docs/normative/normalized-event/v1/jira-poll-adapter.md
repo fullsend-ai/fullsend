@@ -75,7 +75,7 @@ the first line after the command (same rules as
 | `actor.bot_role` | Provider lookup of the verified bot identity; the canonical fullsend role when recognized, otherwise `null` |
 | `actor.role_verified` | `true` when bot-role or Jira project-role lookup completed, including a no-match result; `false` when resolution failed |
 | `actor.is_entity_author` | `true` when actor is the issue reporter |
-| `actor.is_entity_assignee` | `true` when actor is the issue's current assignee (`fields.assignee`, requested in the search fields), compared on the same identifier as `actor.id`: `accountId`, or `name` when accountId is unavailable; `false` when the issue is unassigned |
+| `actor.is_entity_assignee` | `true` when actor is the issue's current assignee (`fields.assignee`, requested in the search fields), compared on the same identifier as `actor.id`: `accountId`, or `name` when `accountId` is unavailable; otherwise `false`, including when the issue is unassigned |
 
 Authorization is enforced by `fullsend dispatch` per
 [ADR 0054](../../../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)
