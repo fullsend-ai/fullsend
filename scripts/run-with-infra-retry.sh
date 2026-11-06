@@ -73,16 +73,26 @@ output_matches_fatal_pattern() {
 # fatal pattern arrives on stderr, the lower-volume stream a verbose run's
 # stdout would overwrite. The foreground pipeline is also the barrier: bash
 # waits for both the command and the tee before the pattern grep runs. `2>&1`
-# merges stderr into the captured stream. `|| status=$?` keeps set -e from
-# aborting the script on the command's failure while still capturing its exit
-# status (pipefail, already set above, makes the pipeline's status the
-# command's rather than the tee's; an `if` guard would reset $? to the
-# if-statement's own status).
-status=0
-"$@" 2>&1 | tee "${OUTPUT_FILE}" || status=$?
+# merges stderr into the captured stream. PIPESTATUS keeps the command's exit
+# status and tee's apart: under pipefail a failing tee would replace the
+# command's status in the pipeline's. errexit is off for the pipeline so the
+# command's failure reaches the checks below.
+set +e
+"$@" 2>&1 | tee "${OUTPUT_FILE}"
+pipe_status=("${PIPESTATUS[@]}")
+set -e
+status="${pipe_status[0]}"
+tee_status="${pipe_status[1]}"
 
 if [[ "${status}" -eq 0 ]]; then
   exit 0
+fi
+
+# A failed capture can't show that the output is free of fatal patterns, so
+# it fails closed like a missing report.
+if [[ "${tee_status}" -ne 0 ]]; then
+  echo "[infra-retry] capturing attempt 1 output failed (tee status ${tee_status}); not retrying" >&2
+  exit "${status}"
 fi
 
 # A fatal pattern in attempt 1's output forbids the retry outright, before
@@ -111,6 +121,15 @@ if [[ "${class}" != "infrastructure" ]]; then
 fi
 
 echo "[infra-retry] attempt 1 classified as infrastructure (report: ${marker}); retrying once" >&2
+
+# Attempt 1's report moves aside so the active report only ever describes the
+# final attempt: a retry that dies before writing its own leaves an empty
+# report, which reads as unclassified. Truncating rather than deleting keeps
+# the mktemp'd local marker's mode 600.
+if ! cp -p -- "${marker}" "${marker}.attempt-1"; then
+  echo "[infra-retry] could not keep attempt 1's report at ${marker}.attempt-1" >&2
+fi
+: >"${marker}"
 
 # Attempt 2 — the only retry. The final exit status is attempt 2's. The
 # mktemp'd local marker is deliberately left in place after exit: the suite's
