@@ -5060,8 +5060,8 @@ func TestIterationTimedOutUnlessBehavioral(t *testing.T) {
 	// With the behavioral exit not counted as a timeout, the run ends
 	// without a terminal error, so the post-script (guarded on runErr) runs.
 	timedOut := iterationTimedOutUnlessBehavioral(2, late, timeout, "error_max_turns")
-	assert.NoError(t, runTerminalError(false, false, timedOut, 2, "error_max_turns", 1, late, timeout))
-	assert.NoError(t, runTerminalError(true, true, timedOut, 2, "error_max_turns", 1, late, timeout))
+	assert.NoError(t, runTerminalError(false, false, timedOut, 2, "error_max_turns", 1, late, timeout, nil))
+	assert.NoError(t, runTerminalError(true, true, timedOut, 2, "error_max_turns", 1, late, timeout, nil))
 }
 
 // TestIterationEnvSourceLine pins the last line of .env: sourcing an absent
@@ -5196,12 +5196,17 @@ func TestRunTerminalError(t *testing.T) {
 		exitReason      string
 		runCount        int
 		elapsed         time.Duration
+		bgStopped       []string
 		wantErrMsg      string // empty = no error
 	}{
 		{name: "loop, killed at budget, nothing valid", hasLoop: true, timedOut: true, exitCode: -1, runCount: 1, elapsed: timeout, wantErrMsg: "agent timed out after 20m0s without completing (timeout: 20m0s)"},
 		{name: "loop, killed at budget, output validated", hasLoop: true, passed: true, timedOut: true, exitCode: -1, runCount: 1, elapsed: timeout},
 		{name: "loop, early exit with invalid output", hasLoop: true, exitCode: 1, runCount: 2, elapsed: 3 * time.Minute, wantErrMsg: "validation failed after 2 iteration(s)"},
 		{name: "loop, validation passed", hasLoop: true, passed: true, runCount: 1, elapsed: 3 * time.Minute},
+		{name: "loop, background sub-agent stopped at CLI exit", hasLoop: true, runCount: 1, elapsed: 34 * time.Minute, bgStopped: []string{"review-agent-a1.jsonl", "review-agent-b2.jsonl"}, wantErrMsg: "validation failed after 1 iteration(s): pending background sub-agent stopped at CLI teardown (review-agent-a1.jsonl, review-agent-b2.jsonl)"},
+		{name: "loop, background stop but output validated", hasLoop: true, passed: true, runCount: 1, elapsed: 3 * time.Minute, bgStopped: []string{"review-agent-a1.jsonl"}},
+		{name: "loop, killed at budget wins over background stop", hasLoop: true, timedOut: true, exitCode: -1, runCount: 1, elapsed: timeout, bgStopped: []string{"review-agent-a1.jsonl"}, wantErrMsg: "agent timed out after 20m0s without completing (timeout: 20m0s)"},
+		{name: "no loop, background stop is not an error", runCount: 1, elapsed: 3 * time.Minute, bgStopped: []string{"review-agent-a1.jsonl"}},
 		{name: "loop, validation passed after non-zero exit", hasLoop: true, passed: true, exitCode: 1, runCount: 1, elapsed: 3 * time.Minute},
 		{name: "no loop, killed at budget", timedOut: true, exitCode: 1, runCount: 1, elapsed: 19 * time.Minute, wantErrMsg: "agent timed out after 19m0s without completing (timeout: 20m0s)"},
 		{name: "no loop, exited in time", runCount: 1, elapsed: 3 * time.Minute},
@@ -5216,7 +5221,7 @@ func TestRunTerminalError(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			err := runTerminalError(tc.hasLoop, tc.passed, tc.timedOut, tc.exitCode, tc.exitReason, tc.runCount, tc.elapsed, timeout)
+			err := runTerminalError(tc.hasLoop, tc.passed, tc.timedOut, tc.exitCode, tc.exitReason, tc.runCount, tc.elapsed, timeout, tc.bgStopped)
 			if tc.wantErrMsg == "" {
 				assert.NoError(t, err)
 				return
@@ -5224,6 +5229,24 @@ func TestRunTerminalError(t *testing.T) {
 			require.EqualError(t, err, tc.wantErrMsg)
 		})
 	}
+}
+
+// TestBackgroundStopCause pins #9149: on a clean exit the claude runtime's
+// interrupted sub-agent transcripts are named; a runner kill, a non-zero
+// exit, or a runtime without the detector names none.
+func TestBackgroundStopCause(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	interrupt := `{"type":"user","timestamp":"2026-11-05T13:11:16.698Z","message":{"content":[{"type":"text","text":"[Request interrupted by user]"}]}}`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "review-agent-a62f.jsonl"), []byte(interrupt+"\n"), 0o644))
+	since := time.Date(2026, 11, 5, 12, 37, 41, 0, time.UTC)
+
+	claude := agentruntime.ClaudeRuntime{}
+	assert.Equal(t, []string{"review-agent-a62f.jsonl"}, backgroundStopCause(claude, 0, false, dir, since))
+	assert.Nil(t, backgroundStopCause(claude, 0, true, dir, since), "a runner kill is reported as a timeout")
+	assert.Nil(t, backgroundStopCause(claude, 1, false, dir, since), "only a clean exit is checked")
+	assert.Empty(t, backgroundStopCause(claude, 0, false, dir, since.Add(24*time.Hour)), "an earlier iteration's stop is not this one's")
+	assert.Nil(t, backgroundStopCause(agentruntime.DummyRuntime{}, 0, false, dir, since), "runtimes without the detector are unchanged")
 }
 
 // TestPostScriptGate pins #8305: without a loop a failed agent still gets its
@@ -5239,7 +5262,7 @@ func TestPostScriptGate(t *testing.T) {
 	}
 	noLoop := &harness.Harness{}
 	withLoop := &harness.Harness{ValidationLoop: &harness.ValidationLoop{Script: "validate.sh"}}
-	agentFailed := runTerminalError(false, false, false, 1, "", 1, time.Minute, time.Hour)
+	agentFailed := runTerminalError(false, false, false, 1, "", 1, time.Minute, time.Hour, nil)
 
 	t.Run("no loop, failed agent, valid result", func(t *testing.T) {
 		t.Parallel()
@@ -5292,7 +5315,7 @@ func TestPostScriptGate(t *testing.T) {
 	})
 	t.Run("no loop, other run error", func(t *testing.T) {
 		t.Parallel()
-		timedOut := runTerminalError(false, false, true, -1, "", 1, time.Hour, time.Hour)
+		timedOut := runTerminalError(false, false, true, -1, "", 1, time.Hour, time.Hour, nil)
 		got := postScriptGate(noLoop, false, false, timedOut, writeResult(t, "agent-result.json", `{}`))
 		assert.False(t, got.run)
 	})
@@ -5302,7 +5325,7 @@ func TestPostScriptGate(t *testing.T) {
 	})
 	t.Run("loop, validation failed with a result present", func(t *testing.T) {
 		t.Parallel()
-		runErr := runTerminalError(true, false, false, 1, "", 2, time.Minute, time.Hour)
+		runErr := runTerminalError(true, false, false, 1, "", 2, time.Minute, time.Hour, nil)
 		got := postScriptGate(withLoop, false, false, runErr, writeResult(t, "agent-result.json", `{}`))
 		assert.False(t, got.run)
 		assert.Equal(t, "Skipping post-script: validation did not pass", got.message)

@@ -507,6 +507,7 @@ export CLAUDE_CODE_USE_VERTEX=1
 export CLAUDE_CODE_USE_BEDROCK=1
 export CLAUDE_CODE_API_KEY_HELPER_TTL_MS=99999999
 export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=0
+export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=1000
 export INFERENCE_GATEWAY_API_KEY=planted-after-the-seed
 export ANTHROPIC_DEFAULT_HAIKU_MODEL=kept
 `
@@ -520,6 +521,7 @@ func TestBuildRunCommand_GatewayEnvOwnership_OIDC(t *testing.T) {
 	assert.Contains(t, out, "ANTHROPIC_BASE_URL=https://gw.example.com\n")
 	assert.Contains(t, out, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1\n")
 	assert.Contains(t, out, "CLAUDE_CODE_API_KEY_HELPER_TTL_MS=10000\n")
+	assert.Contains(t, out, "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0\n", ".env cannot shorten the background-wait ceiling")
 	assert.Contains(t, out, "ANTHROPIC_DEFAULT_HAIKU_MODEL=kept", "model choice is not the route's")
 	for _, planted := range []string{"evil.example.com", "sk-planted", "ANTHROPIC_AUTH_TOKEN=", "ANTHROPIC_CUSTOM_HEADERS=", "CLAUDE_CODE_USE_VERTEX=", "CLAUDE_CODE_USE_BEDROCK=", "ANTHROPIC_API_KEY="} {
 		assert.NotContains(t, out, planted, "%s reached claude", planted)
