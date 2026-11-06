@@ -344,6 +344,17 @@ The procedures in this guide need the following before the first step:
 make behaviour-test
 ```
 
+### Unit tests behind the build tag
+
+`make behaviour-test-unit` runs the `behaviour`-tagged unit tests in
+`pkg/behaviourtest` and `internal/forge`, such as the report and template
+tests. It needs no credentials or pool orgs, and `make go-test` skips these
+tests. Run it after changing them; `lint.yml` runs the same target in CI.
+
+```bash
+make behaviour-test-unit
+```
+
 ### Parallel execution
 
 The suite runs scenarios in parallel by default. The default concurrency
@@ -422,11 +433,16 @@ everything else stays `scenario` — never retried, never masked.
 | Infrastructure mode | Recognized by |
 |---------------------|---------------|
 | GitHub API rate limit: 429 or secondary-rate-limit 403 | `gh.IsRateLimitError` on the forge client's `APIError` |
-| Pool capacity exhausted — every org rate-limited, denied or failed | `install.CapacityError` (all causes) |
+| Pool capacity exhausted — every org rate-limited, denied or failed | `install.CapacityError` (all causes), when it reaches the classifier on its own |
 | Collaborator invitation pending (access requested, not yet granted) | the `gh.ErrInvitationPending` sentinel |
 | Terminal setup-poll exhaustion — repo never visible after creation, or dispatch workflow never settles | `behaviourfail.Mark` in the install ensure path |
 | GCP WIF quota or rate limit during inference provisioning (provision and status wait) | `behaviourfail.Mark` on matched CLI stderr signatures |
 | e2e auth-token mint or download failure at bootstrap | `behaviourfail.Mark` at the e2etest token source |
+
+`Acquire` keeps waiting while the pool is full, so a slot wait normally ends
+with a slot or at the `go test` timeout. A wait ended by cancellation joins the
+context error to the `CapacityError`, and that join stays `scenario`, so a
+full pool earns no retry on this path.
 
 Everything else classifies as `scenario`: assertion failures (expected
 state not observed), unrecognized API errors (a 500 is a product or forge

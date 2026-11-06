@@ -36,7 +36,9 @@ import (
 //     says "rate limit" (secondary limit), per gh.IsRateLimitError.
 //   - an install.CapacityError: the slot pool could not provide
 //     capacity — every cause (rate-limited, denied, or failed orgs)
-//     is an environment condition, not a product assertion.
+//     is an environment condition, not a product assertion. A slot
+//     wait ended by cancellation joins the context error to it, and
+//     that join stays scenario under the rule below.
 //   - the gh.ErrInvitationPending sentinel: collaborator access
 //     awaits an accepted invitation.
 //
