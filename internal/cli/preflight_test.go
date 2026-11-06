@@ -395,10 +395,11 @@ func TestRunPreflightCheck_TopLevelNonPlainBraceFormNotValidated(t *testing.T) {
 // runner-forced FULLSEND_DIR and PYTHONDONTWRITEBYTECODE, and non-credential
 // variables declared via env.runner (or the deprecated runner_env — both
 // channels reach this call site as the same post-ADR-0055 merged runner
-// env). Credential names — forge, mint, and provider tokens, runner
-// secrets, and OIDC/trigger names — never reach the child even when
-// declared, and nothing else from the host process is inherited: the child
-// environment never starts from os.Environ (#8721).
+// env). The fixed credential names — forge, mint, and provider tokens, the
+// runner-secret bundle env names, and OIDC/trigger names — never reach the
+// child even when declared. A secret aliased under another env.runner name
+// is not covered here (#8860). Nothing else from the host process is
+// inherited: the child environment never starts from os.Environ (#8721).
 func TestRunPreflightCheck_TopLevelChildEnvExclusion(t *testing.T) {
 	// The distinctive host TMPDIR value must be a real directory: every
 	// t.TempDir call (this one and the subtests' below) creates its
