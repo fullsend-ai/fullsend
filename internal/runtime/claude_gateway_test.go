@@ -136,6 +136,27 @@ func TestClaudeGatewaySettings(t *testing.T) {
 	assert.Equal(t, "", keyEnv["CLAUDE_CODE_API_KEY_HELPER_TTL_MS"])
 }
 
+// TestClaudeGatewaySettingsArg_NoHooksPinsBgWaitCeiling: a gateway run without
+// installed hooks falls back to the gateway settings alone, which must still
+// pin the background-wait ceiling against a repository settings env block
+// (#9149), for both auth modes, without altering the stored registration's
+// settings.
+func TestClaudeGatewaySettingsArg_NoHooksPinsBgWaitCeiling(t *testing.T) {
+	for _, apiKey := range []bool{false, true} {
+		sb := "fs-claude-gw-nohooks-oidc"
+		if apiKey {
+			sb = "fs-claude-gw-nohooks-key"
+		}
+		registerClaudeGateway(t, sb, apiKey)
+		var got map[string]any
+		require.NoError(t, json.Unmarshal([]byte(ClaudeRuntime{}.claudeGatewaySettingsArg(sb)), &got), sb)
+		env, ok := got["env"].(map[string]any)
+		require.True(t, ok, sb)
+		assert.Equal(t, "0", env[claudeBgWaitCeilingEnv], sb)
+		assert.Equal(t, "https://gw.example.com", env["ANTHROPIC_BASE_URL"], sb)
+	}
+}
+
 // inlineGatewaySettings returns the inline --settings document of a launch
 // command.
 func inlineGatewaySettings(t *testing.T, cmd string) map[string]any {
