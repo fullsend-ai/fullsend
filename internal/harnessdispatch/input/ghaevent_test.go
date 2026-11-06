@@ -674,6 +674,32 @@ func TestLoadGHAEvent_IssuesLegacySingleAssignee(t *testing.T) {
 	assert.False(t, ev.Actor.IsEntityAuthor)
 }
 
+// TestLoadGHAEvent_EmptyAssigneesIgnoresLegacyField checks that an explicit
+// empty assignees array wins over a stale legacy assignee field.
+func TestLoadGHAEvent_EmptyAssigneesIgnoresLegacyField(t *testing.T) {
+	raw := map[string]any{
+		"action": "labeled",
+		"issue": map[string]any{
+			"number":    float64(42),
+			"html_url":  "https://github.com/o/r/issues/42",
+			"user":      map[string]any{"login": "pm"},
+			"labels":    []any{map[string]any{"name": "ready-to-code"}},
+			"assignees": []any{},
+			"assignee":  map[string]any{"login": "dev"},
+		},
+		"label":  map[string]any{"name": "ready-to-code"},
+		"sender": map[string]any{"login": "dev", "type": "User"},
+	}
+	ev, err := input.LoadGHAEvent(context.Background(), input.GHAEventOptions{
+		EventPath:  writeEventFile(t, raw),
+		EventName:  "issues",
+		Repository: "o/r",
+		Forge:      forge.NewFakeClient(),
+	})
+	require.NoError(t, err)
+	assert.False(t, ev.Actor.IsEntityAssignee)
+}
+
 // TestLoadGHAEvent_PRAssignee covers pull request events: an assignee who
 // acts on the PR yields true, while a requested reviewer who submits a
 // review yields false because reviewers are not assignees.

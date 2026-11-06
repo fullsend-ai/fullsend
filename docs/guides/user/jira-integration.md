@@ -423,9 +423,15 @@ the expression above copies the default code trigger and adds the
 author-or-assignee clause to its `/fs-code` arm. The `ready-to-code` label arm
 is unchanged, because triage applies that label when it promotes an issue.
 
-The clause only narrows who can start Code. The actor still needs the role
-that [Actor role resolution](#actor-role-resolution) assigns, and anyone with
-permission to assign issues can assign themselves.
+The clause only narrows who can start Code with `/fs-code`. Anyone the label
+rules allow can still start Code by adding `ready-to-code`. To limit that path
+too, add the same author-or-assignee clause to the label arm.
+
+The actor still needs the role that
+[Actor role resolution](#actor-role-resolution) assigns, and anyone with
+permission to assign issues can assign themselves. The poller reads the
+assignee when it polls, so a reassignment between the poll and the run does
+not change a run that was already dispatched.
 
 ## Scheduled workflow
 

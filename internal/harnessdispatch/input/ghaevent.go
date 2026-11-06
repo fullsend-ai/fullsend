@@ -465,8 +465,10 @@ func labelNames(obj map[string]any) []string {
 // isAssignee reports whether actorID is one of the current assignees of an
 // issue or pull request webhook object, compared case-insensitively like the
 // author check. It reads the assignees array the payload already carries
-// (no API call) and falls back to the legacy single assignee field.
-// Requested reviewers are not assignees. An empty actorID never matches.
+// (no API call). Only when the payload has no assignees array does it fall
+// back to the legacy single assignee field, so a stale assignee cannot
+// match an empty array. Requested reviewers are not assignees. An empty
+// actorID never matches.
 func isAssignee(obj map[string]any, actorID string) bool {
 	if actorID == "" {
 		return false
@@ -477,6 +479,7 @@ func isAssignee(obj map[string]any, actorID string) bool {
 				return true
 			}
 		}
+		return false
 	}
 	return strings.EqualFold(stringField(obj, "assignee", "login"), actorID)
 }

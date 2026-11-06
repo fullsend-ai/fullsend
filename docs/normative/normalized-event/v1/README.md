@@ -79,7 +79,7 @@ Breaking changes require `docs/normative/normalized-event/v2/`.
 
 The new optional actor fields are additive, but consumers that vendor this
 schema with `additionalProperties: false` must refresh their copy before an
-adapter emits `bot_role` or `role_verified`; otherwise their local validator
+adapter emits `bot_role`, `role_verified` or `is_entity_assignee`; otherwise their local validator
 may reject an otherwise valid v1 event. Fullsend controls the supported
 NormalizedEvent producers and consumers, so the bundled validator and other
 supported consumers MUST be updated to this v1 schema before any adapter emits
@@ -262,11 +262,13 @@ the entity has no assignee, the actor is not one, or the assignees cannot be
 determined. Reviewers and requested reviewers are not assignees. An event
 without the field means `false`; the Go `normevent.Actor` type always emits
 it, so a trigger that reads it on an event built by a current adapter needs
-no `has()` guard.
+no `has()` guard. The value is a snapshot taken when the event is built. For
+a poll source such as Jira, that is poll time, and the assignee can change
+before the run starts.
 
 | Source | Where assignees come from | Comparison |
 |--------|---------------------------|------------|
-| GitHub (`gha-event`) | `issue.assignees[].login` or `pull_request.assignees[].login` in the webhook payload (legacy single `assignee` as fallback); no extra API call | Case-insensitive against the actor login (the reviewer for `pull_request_review`) |
+| GitHub (`gha-event`) | `issue.assignees[].login` or `pull_request.assignees[].login` in the webhook payload (the legacy single `assignee` only when the payload has no `assignees` array); no extra API call | Case-insensitive against the actor login (the reviewer for `pull_request_review`) |
 | GitLab (`gitlab-poll`, `gitlab-webhook`) | Issues: `assignees[].id` from the same issue fetch the author check uses. Merge requests: `assignees[].id` from the MR object that supplies the MR author | Numeric user ID against the resolved actor ID |
 | Jira (`jira-poll`) | `fields.assignee`, requested alongside `reporter` in the search fields | The same identifier as `actor.id`: `accountId`, or `name` when accountId is unavailable (Data Center/Server), matching the `is_entity_author` fallback |
 

@@ -725,6 +725,71 @@ func TestDetectChanges_EditedCommentAttributedToEditor(t *testing.T) {
 	}
 }
 
+// TestEditedComment_IsEntityAssigneeFollowsEditor checks that an edited
+// comment is judged by its editor: the assignee editing someone else's
+// comment yields true, and another user editing the assignee's comment
+// yields false.
+func TestEditedComment_IsEntityAssigneeFollowsEditor(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	lastCheck := now.Add(-1 * time.Hour)
+	created := now.Add(-48 * time.Hour).Format("2006-01-02T15:04:05.000-0700")
+	updated := now.Add(-10 * time.Minute).Format("2006-01-02T15:04:05.000-0700")
+
+	tests := []struct {
+		name         string
+		author       string
+		editor       string
+		wantAssignee bool
+	}{
+		{"assignee edits another user's comment", "other-b", "assignee-a", true},
+		{"another user edits the assignee's comment", "assignee-a", "other-b", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mc := newMockClient()
+			mc.comments["PROJ-123"] = []jira.Comment{{
+				ID:           "1",
+				Body:         "/fs-code",
+				Created:      created,
+				Updated:      updated,
+				Author:       jira.User{AccountID: tc.author, AccountType: "atlassian"},
+				UpdateAuthor: jira.User{AccountID: tc.editor, AccountType: "atlassian"},
+			}}
+			p := New(mc, nil, Options{TargetRepo: "acme/platform", JiraBaseURL: "https://acme.atlassian.net", JiraProject: "PROJ"})
+			issue := jira.Issue{
+				ID:  "10042",
+				Key: "PROJ-123",
+				Fields: jira.IssueFields{
+					Reporter: jira.User{AccountID: "reporter-r"},
+					Assignee: jira.User{AccountID: "assignee-a"},
+					Created:  created,
+				},
+			}
+			result, err := p.detectChanges(context.Background(), issue, lastCheck)
+			if err != nil {
+				t.Fatalf("detectChanges() error: %v", err)
+			}
+			var found bool
+			for _, e := range result.events {
+				if e.Type != "comment_added" || e.CommentID != "1" {
+					continue
+				}
+				found = true
+				ne := p.toNormalizedEvent(e)
+				if ne.Actor.ID != tc.editor {
+					t.Errorf("actor.id = %q, want the editor %q", ne.Actor.ID, tc.editor)
+				}
+				if ne.Actor.IsEntityAssignee != tc.wantAssignee {
+					t.Errorf("actor.is_entity_assignee = %v, want %v", ne.Actor.IsEntityAssignee, tc.wantAssignee)
+				}
+			}
+			if !found {
+				t.Fatal("expected the edited comment to surface")
+			}
+		})
+	}
+}
+
 // TestDetectChanges_CarriesAssignee checks that opened, comment and
 // changelog events carry the issue's assignee for the
 // actor.is_entity_assignee check.
