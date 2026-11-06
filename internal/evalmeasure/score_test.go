@@ -283,3 +283,138 @@ func TestScoreFitness_ProviderNameAccepted(t *testing.T) {
 	r := ScoreFitness(tr)
 	assert.Equal(t, LabelPass, r.Label)
 }
+
+// Mixed-model Pi traces put gen_ai.usage.* on usage-component children,
+// not on the agent span, so MLflow cannot double-count. EM-001 must still
+// pass: the usage check follows those children (#7550).
+func TestScoreFitness_MixedModelUsageComponentsPass(t *testing.T) {
+	t.Parallel()
+	tr := Trace{
+		TraceID: "cccccccccccccccccccccccccccccccc",
+		Spans: []Span{
+			{
+				Name: "run",
+				Attrs: map[string]any{
+					"fullsend.agent":        "review",
+					"gen_ai.agent.name":     "review",
+					"gen_ai.operation.name": "invoke_agent",
+					"fullsend.work_item_id": "acme/demo#1",
+					"exit_code":             int64(0),
+					"fullsend.cost_usd":     1.23,
+					"fullsend.tool_calls":   int64(4),
+					"fullsend.iterations":   int64(1),
+					"fullsend.num_turns":    int64(3),
+				},
+			},
+			{Name: "sandbox_create"},
+			{
+				Name: "agent",
+				Attrs: map[string]any{
+					"gen_ai.system":         "anthropic-vertex",
+					"gen_ai.provider.name":  "anthropic-vertex",
+					"gen_ai.request.model":  "claude-sonnet-5",
+					"gen_ai.agent.name":     "review",
+					"fullsend.cost_usd":     1.23,
+					"fullsend.usage.rollup": true,
+				},
+			},
+			{
+				Name: "usage claude-sonnet-5",
+				Attrs: map[string]any{
+					"fullsend.usage.component":   true,
+					"gen_ai.system":              "anthropic-vertex",
+					"gen_ai.provider.name":       "anthropic-vertex",
+					"gen_ai.request.model":       "claude-sonnet-5",
+					"gen_ai.usage.input_tokens":  int64(400),
+					"gen_ai.usage.output_tokens": int64(80),
+				},
+			},
+			{
+				Name: "usage xai/grok-4.6",
+				Attrs: map[string]any{
+					"fullsend.usage.component":   true,
+					"gen_ai.system":              "xai-vertex",
+					"gen_ai.provider.name":       "xai-vertex",
+					"gen_ai.request.model":       "xai/grok-4.6",
+					"gen_ai.usage.input_tokens":  int64(350),
+					"gen_ai.usage.output_tokens": int64(70),
+				},
+			},
+		},
+	}
+	r := ScoreFitness(tr)
+	assert.Equal(t, LabelPass, r.Label, r.Explanation)
+	assert.NotContains(t, r.Explanation, "usage=fail")
+}
+
+func TestScoreFitness_UsageMissingWithoutComponentsFails(t *testing.T) {
+	t.Parallel()
+	tr := Trace{
+		TraceID: "ffffffffffffffffffffffffffffffff",
+		Spans: []Span{
+			{
+				Name: "run",
+				Attrs: map[string]any{
+					"fullsend.agent":        "review",
+					"gen_ai.agent.name":     "review",
+					"gen_ai.operation.name": "invoke_agent",
+					"fullsend.work_item_id": "acme/demo#1",
+					"exit_code":             int64(0),
+					"fullsend.cost_usd":     0.1,
+					"fullsend.tool_calls":   int64(1),
+					"fullsend.iterations":   int64(0),
+				},
+			},
+			{Name: "sandbox_create"},
+			{
+				Name: "agent",
+				Attrs: map[string]any{
+					"gen_ai.system":        "anthropic-vertex",
+					"gen_ai.request.model": "claude-sonnet-5",
+					"gen_ai.agent.name":    "review",
+				},
+			},
+		},
+	}
+	r := ScoreFitness(tr)
+	assert.Equal(t, LabelFail, r.Label)
+	assert.Contains(t, r.Explanation, "usage=fail")
+}
+
+func TestScoreFitness_UsageComponentWithoutTokensFails(t *testing.T) {
+	t.Parallel()
+	tr := Trace{
+		TraceID: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		Spans: []Span{
+			{
+				Name: "run",
+				Attrs: map[string]any{
+					"fullsend.agent":        "review",
+					"gen_ai.agent.name":     "review",
+					"gen_ai.operation.name": "invoke_agent",
+					"fullsend.work_item_id": "acme/demo#1",
+					"exit_code":             int64(0),
+					"fullsend.cost_usd":     0.1,
+					"fullsend.tool_calls":   int64(1),
+					"fullsend.iterations":   int64(0),
+				},
+			},
+			{Name: "sandbox_create"},
+			{
+				Name: "agent",
+				Attrs: map[string]any{
+					"gen_ai.system":        "anthropic-vertex",
+					"gen_ai.request.model": "claude-sonnet-5",
+					"gen_ai.agent.name":    "review",
+				},
+			},
+			{
+				Name:  "usage claude-sonnet-5",
+				Attrs: map[string]any{"fullsend.usage.component": true},
+			},
+		},
+	}
+	r := ScoreFitness(tr)
+	assert.Equal(t, LabelFail, r.Label)
+	assert.Contains(t, r.Explanation, "usage=fail")
+}

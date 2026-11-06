@@ -83,6 +83,14 @@ is zero, or when you need a list-price figure rather than the
 runtime's reported estimate, compute it from the persisted token fields
 — see [Computing dollar cost from token telemetry](../infrastructure/distributed-tracing.md#computing-dollar-cost-from-token-telemetry).
 
+On mixed-model traces, MLflow's native estimate should follow the `usage
+<model>` children (`fullsend.usage.component`): those carry `gen_ai.usage.*` and
+the per-provider identity. The parent `agent` span is a rollup
+(`fullsend.usage.rollup`) and omits `gen_ai.usage.*` so it is not added to the
+components; do not sum its `fullsend.cost_usd` with the children's. See
+[Per-model usage
+components](../infrastructure/distributed-tracing.md#per-model-usage-components).
+
 ## Level 3 content
 
 With content capture enabled (see

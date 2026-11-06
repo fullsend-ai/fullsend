@@ -196,6 +196,13 @@ differences in the last bullet.
   failed or interrupted turn, a cancel or a timeout, still counts what its children had recorded
   when the runner read them: codex writes a child's usage as each response completes. After a
   cancel or a timeout the run warns that usage recorded after the read is not counted.
+- **Traces.** When an iteration has more than one spec, the same breakdown is exported as
+  `usage <model>` children of that iteration's `agent` span, one per entry, so mixed-vendor
+  spend is not attributed to the parent in OTLP backends. Filter `fullsend.usage.component`
+  to sum billable tokens and cost; the parent `agent` span is the rollup
+  (`fullsend.usage.rollup`) and must not be added to the children. Single-model iterations and
+  runtimes without `per_model_usage` keep the previous `agent` span. See
+  [Per-model usage components](../guides/infrastructure/distributed-tracing.md#per-model-usage-components).
 
 ## Budget and deadline
 

@@ -162,6 +162,11 @@ hold content, see
 [Content capture (Level 3)](../infrastructure/distributed-tracing.md#content-capture-level-3)
 in the Tracing Reference.
 
+Mixed-model runs additionally emit one `usage <model>` child per
+`per_model_usage` entry so child-provider tokens and cost are not attributed to
+the parent; see [Per-model usage
+components](../infrastructure/distributed-tracing.md#per-model-usage-components).
+
 ## Disable trace export
 
 Remove the endpoint variable and header secret from the repository or
