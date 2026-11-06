@@ -309,7 +309,8 @@ func ParsePiStream(r io.Reader, onEvent func(AgentEvent)) (sessionID string, err
 //     tool_execution_end {toolCallId, toolName, result, isError}; per pi
 //     1.5.0's agent-loop.ts, not yet a live run with a rewriting hook, pi
 //     emits the end after its afterToolCall hooks, so result is what a
-//     tool_result hook left. Both events below fire at the end:
+//     tool_result hook left. This parser holds both events below until the
+//     end, because a failed call's summary needs the result:
 //     a ToolUseEvent, carrying the call's id and arguments and when its
 //     start was read, then a ToolResultEvent with the result text. The
 //     ToolUseEvent summary is the argument context captured at start
@@ -592,13 +593,19 @@ func parsePiStream(r io.Reader, onEvent func(AgentEvent)) (sessionID string, err
 					}
 				}
 			}
-			onEvent(ToolUseEvent{
-				ID:        evt.ToolCallID,
+			use := ToolUseEvent{
 				Name:      evt.ToolName,
 				Summary:   summary,
 				Arguments: call.arguments,
 				StartedAt: call.startedAt,
-			})
+			}
+			// With no start seen (its line was over streamBufSize) there is no
+			// call to match: the id stays off, so the result reads as unmatched,
+			// as on Claude, and the call still counts.
+			if sawStart {
+				use.ID = evt.ToolCallID
+			}
+			onEvent(use)
 			if evt.ToolCallID != "" {
 				text, partial := piResultText(evt.Result)
 				onEvent(ToolResultEvent{ID: evt.ToolCallID, Result: text, IsError: evt.IsError, Partial: partial})

@@ -1298,10 +1298,12 @@ func TestParsePiStream_ToolResultEdgeCases(t *testing.T) {
 
 	t.Run("no start seen", func(t *testing.T) {
 		use, results := parse(t, `{"type":"tool_execution_end","toolCallId":"c1","toolName":"bash","result":"out","isError":false}`+"\n")
-		assert.Equal(t, "c1", use.ID)
+		assert.Equal(t, "bash", use.Name, "the call still counts")
+		assert.Empty(t, use.ID, "no start to match, so the result reads as unmatched")
 		assert.Empty(t, use.Arguments)
 		assert.True(t, use.StartedAt.IsZero(), "the tracker falls back to its own receipt")
 		require.Len(t, results, 1)
+		assert.Equal(t, "c1", results[0].ID)
 		assert.Equal(t, "out", results[0].Result)
 	})
 

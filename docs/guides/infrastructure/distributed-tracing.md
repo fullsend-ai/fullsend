@@ -288,8 +288,9 @@ run (root; Consumer when dispatched with TRACEPARENT, else Internal)
 ```
 
 `execute_tool` spans are named `execute_tool <tool name>`. One starts when
-the runtime reports a tool call (its arguments complete) and ends when it
-reports the result — both are runner-side receipt times, which trail the
+the runtime reports a tool call (on Claude Code, when its arguments are
+complete; on pi, when `tool_execution_start` was read) and ends when it
+reports the result — both are runner-side times, which trail the
 sandbox by the pipe latency and the parser's decode of the line, stamped after the
 console renderer's output for the call (it prints nothing for a result) and
 before that event's Level 3 content processing. Events are handled one at a
@@ -300,8 +301,9 @@ the start trails by more than the end (an earlier event was still being
 processed when the call arrived) the span is shorter than the execution it
 covers. A call with no result
 by the end of the iteration is closed with `error.type=unanswered`, except
-on pi, which reports a call only when it ends, so a call interrupted before
-then has no span; a
+on pi: the parser holds a call's event until `tool_execution_end`, because a
+failed call's summary needs the result, so a call cut off by a kill or timeout
+has no span; a
 result whose stream line exceeded the parser's 1 MiB bound ends its span on
 receipt, marked `fullsend.tool.result_oversized` with no status and no
 `error.type` — the tool answered, and whether it failed was never decoded; a
@@ -444,7 +446,7 @@ Inputs, in order of precedence:
 |-----------|------------|-------------|
 | `exit_code` | `run`, `agent` | Process exit code |
 | `iteration` | `agent` | 1-based iteration index |
-| `error.type` | `execute_tool` | `tool_error` when the runtime flagged the result `is_error`; `unanswered` when the call had no result by the end of the iteration (the runtime was stopped, or an over-long result line showed no call id within its first 1 MiB; a pi call interrupted before it ends has no span at all) or the runtime reported the same call id again (the earlier open call is superseded); absent on success |
+| `error.type` | `execute_tool` | `tool_error` when the runtime flagged the result `is_error`; `unanswered` when the call had no result by the end of the iteration (the runtime was stopped, or an over-long result line showed no call id within its first 1 MiB; a pi call cut off by a kill or timeout has no span at all) or the runtime reported the same call id again (the earlier open call is superseded); absent on success |
 
 ### Resource attributes
 

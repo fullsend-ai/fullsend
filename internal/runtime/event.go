@@ -41,15 +41,18 @@ func (TextEvent) agentEvent() {}
 
 // ToolUseEvent reports a tool call. The Claude Code parser emits it when
 // it reads the line carrying the call's complete arguments (written ahead
-// of the call's result; the tool may already be running by then); the pi,
-// codex and OpenCode parsers emit it when the call has finished — codex
+// of the call's result; the tool may already be running by then); the pi
+// parser holds it until tool_execution_end, because a failed call's summary
+// needs the result, and the codex and OpenCode parsers emit it when the call
+// has finished — codex
 // once per changed path of a file_change item, so one apply_patch can
 // yield several. Not every call yields one: a Claude Code server_tool_use
 // block on an assistant line (the path production takes) and a tool_use
 // line beyond streamBufSize emit nothing.
 // ID is the tool call identifier from the runtime stream; it is empty
 // when the parser passes none through — codex (#7414), OpenCode,
-// and a Claude Code server-side tool reported from stream_event blocks,
+// a pi call whose tool_execution_start was not seen, and a Claude Code
+// server-side tool reported from stream_event blocks,
 // whose result never arrives as a tool_result.
 // Name is the raw tool name from the runtime stream.
 // Summary is a one-line context string from extractSafeContext; it is
@@ -61,9 +64,9 @@ func (TextEvent) agentEvent() {}
 // Empty when the wire carried no input, and from the codex parser (#7414)
 // and the OpenCode parser.
 // StartedAt is when the parser read the call's start, for a parser that
-// emits this event after the call finished (pi). It is zero when no start
-// was seen and from the other parsers: the event's receipt is then the
-// nearest thing to a start.
+// holds this event until the call ends (pi). It is zero when no start was
+// seen and from the other parsers: the event's receipt is then the nearest
+// thing to a start.
 type ToolUseEvent struct {
 	ID        string
 	Name      string

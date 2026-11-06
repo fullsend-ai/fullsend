@@ -126,8 +126,10 @@ convention bump.
 
 **2026-11-05 — pi ([#7414](https://github.com/fullsend-ai/fullsend/issues/7414)):**
 the pi parser now passes call ids, arguments and results through, so pi runs
-get `execute_tool` spans. pi reports a call once it has finished, so its span
-starts when `tool_execution_start` was read, not at the use event. Calls inside
+get `execute_tool` spans. The fullsend pi parser emits a call's `ToolUseEvent`
+at `tool_execution_end`, because it needs the result to build a failed call's
+summary, so a span starts when `tool_execution_start` was read, not at the use
+event, and a call cut off by a kill or timeout has no span. Calls inside
 pi sub-agents stay out of these spans: they are separate pi processes, never on
 the parent's stream. codex stays as the Consequences describe.
 

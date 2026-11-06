@@ -43,21 +43,22 @@ const maxToolSpanNameBytes = 128
 // gate is on.
 //
 // A span starts when the tracker handles the ToolUseEvent, or at the event's
-// StartedAt when it has one (pi reports a call once it has finished, and
-// stamps when it read the start), and ends when it handles the matching
-// ToolResultEvent. iterationEventHandler runs the
+// StartedAt when it has one (the pi parser holds the event until the call
+// ends, and stamps when it read tool_execution_start), and ends when it handles
+// the matching ToolResultEvent. iterationEventHandler runs the
 // console renderer first (it prints for a call, nothing for a result), then
 // this tracker, then the Level 3 collector, so the collector's redaction pass
 // over an event never delays that event's own stamp. Events are handled one
 // at a time: with several calls open, a stamp can still trail the collector's
 // pass over an event queued ahead of it. Both timestamps are runner-side
-// receipt instants
+// instants: receipt of the events, or for pi's start the parser's read of
+// tool_execution_start,
 // on the parent agent span's clock — no cross-host skew, and the one source
 // every runtime provides (Claude Code's tool_use and tool_result lines carry
 // sandbox-clock timestamps the parser does not decode; pi's tool-execution
 // lines and codex's items carry none). The cost is loose timing in both
-// directions: tool_use arrival is arguments-complete rather than execution
-// start (early), but its stamp also trails the pipe, the parser's decode, the
+// directions: a start stamped at tool_use arrival is arguments-complete rather
+// than execution start (early; pi's start line precedes execution), but its stamp also trails the pipe, the parser's decode, the
 // renderer's print and any event queued ahead of it (late), and tool_result
 // arrival trails execution end by the pipe latency and the parser's decode of
 // the line — so a span can be shorter than the execution it covers as well as
@@ -65,8 +66,9 @@ const maxToolSpanNameBytes = 128
 // because the stream interleaves several open calls (parallel sub-agent
 // dispatch); a call that never gets a result — the runtime was stopped, or its
 // over-long result line showed no id in the prefix the parser keeps — is ended
-// by Finish as error.type=unanswered (pi reports a call only when it ends, so
-// an interrupted pi call never opens a span); a result whose line exceeded the parser's
+// by Finish as error.type=unanswered (the pi parser holds a call's event until
+// tool_execution_end, so a pi call cut off by a kill or timeout never opens a
+// span); a result whose line exceeded the parser's
 // 1 MiB bound (ToolResultEvent.Oversized) ends its span at receipt, marked
 // fullsend.tool.result_oversized and left without a status, since the tool
 // answered and its is_error was never decoded; and a result whose call was
