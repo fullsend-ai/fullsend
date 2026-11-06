@@ -1238,7 +1238,7 @@ func agentDestName(agentName, agentPath string) string {
 
 // LaunchEnvExports implements LaunchEnvExporter: the environment names
 // buildRunCommand sets beyond EnvExports. Nonessential traffic is always
-// disabled; the rest are set only when an inference gateway is registered
+// disabled and the background-wait ceiling is always lifted; the rest are set only when an inference gateway is registered
 // for the run (claudeGatewayPostEnv), with the credential variable chosen
 // by the block's auth mode, and are recorded flat anyway: runtime_specific
 // asks whether the runtime can set the name, not whether every
@@ -1247,6 +1247,7 @@ func agentDestName(agentName, agentPath string) string {
 func (ClaudeRuntime) LaunchEnvExports() []string {
 	return []string{
 		claudeNonessentialTrafficEnv,
+		claudeBgWaitCeilingEnv,
 		claudeGatewayBaseURLEnv,
 		"ANTHROPIC_API_KEY",
 		"ANTHROPIC_AUTH_TOKEN",
