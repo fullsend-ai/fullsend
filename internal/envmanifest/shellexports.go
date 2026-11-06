@@ -125,8 +125,9 @@ func collectFromCommand(words []shellWord, seen, exported map[string]bool, depth
 		}
 		// Launching a process hands it the shell's current export
 		// attributes, so a later "export -n" cannot retract them. "export"
-		// and "command" run inside the shell (command may run a builtin).
-		if cmd != "export" && cmd != "command" {
+		// and "command" run inside the shell (command may run a builtin),
+		// and "exec" with no command launches nothing.
+		if cmd != "export" && cmd != "command" && (cmd != "exec" || len(args) > 0) {
 			for name := range exported {
 				seen[name] = true
 			}
@@ -135,12 +136,13 @@ func collectFromCommand(words []shellWord, seen, exported map[string]bool, depth
 	switch cmd {
 	case "export":
 		// Options precede the operands and end at "--" or the first
-		// operand; -n (alone or combined, as in -pn) switches the command
-		// to removing the export attribute. -f selects the function
-		// namespace, so a function-mode "-n" leaves variables exported.
+		// operand (a lone "-" is an operand); -n (alone or combined, as in
+		// -pn) switches the command to removing the export attribute. -f
+		// selects the function namespace, so function-mode operands never
+		// change a variable's export attribute.
 		unexport, funcMode, optsDone := false, false, false
 		for _, a := range args {
-			if !optsDone && strings.HasPrefix(a.text, "-") {
+			if !optsDone && a.text != "-" && strings.HasPrefix(a.text, "-") {
 				if a.text == "--" {
 					optsDone = true
 				} else {
@@ -165,7 +167,7 @@ func collectFromCommand(words []shellWord, seen, exported map[string]bool, depth
 			}
 			switch {
 			case name == "":
-			case unexport && funcMode:
+			case funcMode:
 			case unexport:
 				delete(exported, name)
 			default:
