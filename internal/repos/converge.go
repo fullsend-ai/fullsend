@@ -1487,6 +1487,10 @@ func convergeRepo(ctx context.Context,
 			return cr
 		}
 	}
+	if err := checkGitHubJiraPollWorkflow(ctx, d, cfg, refResolver); err != nil {
+		cr.Error = err
+		return cr
+	}
 
 	auth := resolved.InferenceAuth
 	// A pinned scaffold that predates the OpenAI credential mapping cannot
@@ -1639,6 +1643,7 @@ func convergeRepo(ctx context.Context,
 		// on preview fidelity).
 		rref := resolveTargetRef(ctx, resolved.FullsendRef, cfg.UpstreamRef, cfg.UpstreamTag, refResolver)
 		ref, tag, manifestRef := rref.ref, rref.tag, rref.manifestRef
+		jiraRender := scaffold.RenderOptions{UpstreamRef: ref, UpstreamTag: tag}
 
 		vendor := resolved.Vendor
 		if vendor && resolved.Forge == ForgeGitLab {
@@ -1775,7 +1780,7 @@ func convergeRepo(ctx context.Context,
 					dryCleanupErrors = append(dryCleanupErrors, a.Detail)
 				}
 			}
-			dryJira := convergeJiraPoll(ctx, d, cfg, progress)
+			dryJira := convergeJiraPoll(ctx, d, cfg, jiraPollDelivery{render: jiraRender}, progress)
 			cr.Actions = append(cr.Actions, dryJira...)
 			for _, a := range dryJira {
 				if a.Action == "error" {
@@ -1811,9 +1816,23 @@ func convergeRepo(ctx context.Context,
 			}
 		}
 
+		// Jira polling converges when the install commits its scaffold:
+		// its credentials are written after Install has written its own,
+		// and a file-based poll resource joins the same scaffold commit.
+		var jiraActions []ComponentAction
+		scaffoldCommit := installCommit
+		installCommit = func(ctx context.Context, owner, repo string, files []forge.TreeFile, direct bool, installed bool) error {
+			jiraActions = convergeJiraPoll(ctx, d, cfg, jiraPollDelivery{
+				render: jiraRender,
+				stage:  func(f forge.TreeFile) { files = append(files, f) },
+			}, progress)
+			return scaffoldCommit(ctx, owner, repo, files, direct, installed)
+		}
+
 		installResult, installErr := Install(ctx, installCfg, resolved.ForgeConfig.Client, installCommit, progress)
 		if installErr != nil {
 			cr.Error = installErr
+			cr.Actions = append(cr.Actions, jiraActions...)
 			if installResult != nil {
 				cr.WIFProvider = installResult.WIFProvider
 			}
@@ -1834,8 +1853,7 @@ func convergeRepo(ctx context.Context,
 		// earlier run wrote the credentials but failed to complete setup or
 		// to delete the obsolete secrets.
 		cleanup := removeObsoleteInferenceSecrets(ctx, resolved, false, false, installResult.ScaffoldFiles, progress)
-		// Jira polling converges once the installation exists.
-		cleanup = append(cleanup, convergeJiraPoll(ctx, d, cfg, progress)...)
+		cleanup = append(cleanup, jiraActions...)
 		cr.Actions = append(cr.Actions, cleanup...)
 		var cleanupErrors []string
 		for _, a := range cleanup {
@@ -1859,8 +1877,16 @@ func convergeRepo(ctx context.Context,
 	}
 
 	// 2d': Converge Jira polling: credential secrets and the forge's poll
-	// resources, or their removal when polling is disabled (#9076).
-	cr.Actions = append(cr.Actions, convergeJiraPoll(ctx, d, cfg, progress)...)
+	// resources, or their removal when polling is disabled (#9076). A
+	// file-based poll resource joins the scaffold commit below (#9109).
+	jiraDelivery := jiraPollDelivery{
+		stage: func(f forge.TreeFile) { allScaffoldFiles = append(allScaffoldFiles, f) },
+	}
+	if d.jira.enabled {
+		rref := resolveTargetRef(ctx, resolved.FullsendRef, cfg.UpstreamRef, cfg.UpstreamTag, refResolver)
+		jiraDelivery.render = scaffold.RenderOptions{UpstreamRef: rref.ref, UpstreamTag: rref.tag}
+	}
+	cr.Actions = append(cr.Actions, convergeJiraPoll(ctx, d, cfg, jiraDelivery, progress)...)
 
 	// 2e: Commit all scaffold file changes in one atomic commit.
 	// Variable/secret writes above are not rolled back on commit failure;
