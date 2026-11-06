@@ -29,7 +29,9 @@ var envNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // name exported when a process launches stays in that process's
 // environment, so a later "export -n" does not retract either. "export
 // -f" works on functions, so "export -fn NAME" leaves variable NAME
-// exported. Parentheses are only separators, so an "export -n" inside a
+// exported. An "export" with an option other than -f, -n or -p
+// changes nothing, and "command -v" only looks a command up, so it
+// launches nothing. Parentheses are only separators, so an "export -n" inside a
 // ( ... ) subshell is treated as if it ran in the parent shell.
 // Assignment-shaped text
 // inside a quoted value is data, not a binding, and a command
@@ -142,6 +144,11 @@ func collectFromCommand(words []shellWord, seen, exported map[string]bool, depth
 				if a.text == "--" {
 					optsDone = true
 				} else {
+					// An option the builtin rejects makes the whole
+					// command a no-op, so no export state changes.
+					if strings.Trim(a.text[1:], "fnp") != "" {
+						return
+					}
 					if strings.Contains(a.text[1:], "n") {
 						unexport = true
 					}
@@ -182,7 +189,22 @@ func collectFromCommand(words []shellWord, seen, exported map[string]bool, depth
 	case "exec", "nohup":
 		collectFromCommand(args, seen, map[string]bool{}, depth)
 	case "command":
-		collectFromCommand(args, seen, exported, depth)
+		// Options end at "--" or the first non-option word. -v and -V
+		// only look the command up, and an option the builtin rejects
+		// runs nothing, so neither launches a process.
+		for j, a := range args {
+			if a.text == "--" {
+				collectFromCommand(args[j+1:], seen, exported, depth)
+				return
+			}
+			if !strings.HasPrefix(a.text, "-") || a.text == "-" {
+				collectFromCommand(args[j:], seen, exported, depth)
+				return
+			}
+			if strings.Trim(a.text[1:], "pvV") != "" || strings.ContainsAny(a.text[1:], "vV") {
+				return
+			}
+		}
 	case "sh", "bash", "/bin/sh", "/bin/bash":
 		for j, a := range args {
 			if strings.HasPrefix(a.text, "-") && strings.Contains(a.text, "c") && j+1 < len(args) {
