@@ -29,6 +29,24 @@ func ciDriverWithAction(action string) *mockCIDriver {
 	}
 }
 
+func ciDriverWithActions(actions ...string) *mockCIDriver {
+	return &mockCIDriver{
+		downloadNamedArtifactFn: func(_ context.Context, _, _ string, _ int, _, destDir string) error {
+			for i, action := range actions {
+				artifactDir := filepath.Join(destDir, fmt.Sprintf("fullsend-review.matrix-%d", i))
+				if err := os.MkdirAll(artifactDir, 0o755); err != nil {
+					return err
+				}
+				data := []byte(fmt.Sprintf(`{"action":%q}`, action))
+				if err := os.WriteFile(filepath.Join(artifactDir, "agent-result.json"), data, 0o644); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}
+}
+
 // fakePlaybackSCM implements scm.Driver for playback step tests. Embedding
 // the nil interface (like mockCIDriver in dispatch_count_test.go) means
 // only the methods playback.go actually calls need stubs; anything else
@@ -611,6 +629,96 @@ func TestThenAgentSubmittedReview_SelectsReviewForCurrentRound(t *testing.T) {
 		}},
 	}
 	require.NoError(t, thenAgentSubmittedReview(w, "review", "changes_requested"))
+}
+
+func TestThenAgentSubmittedReview_AggregatesRepeatedAgentArtifacts(t *testing.T) {
+	w := &world.World{
+		PRNumber:    2,
+		WorkflowRun: &forge.WorkflowRun{ID: 55, CreatedAt: "2026-01-01T00:00:00Z"},
+		CI:          ciDriverWithActions("approve", "approve"),
+		SCM: &fakePlaybackSCM{listReviewsFn: func(context.Context, string, string, int) ([]forge.PullRequestReview, error) {
+			return []forge.PullRequestReview{{State: "APPROVED", SubmittedAt: "2026-01-01T00:05:00Z"}}, nil
+		}},
+	}
+	require.NoError(t, thenAgentSubmittedReview(w, "review", "approved"))
+}
+
+func TestThenAgentSubmittedReview_UsesNewestValidIterationPerArtifact(t *testing.T) {
+	write := func(destDir, rel, content string) error {
+		path := filepath.Join(destDir, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(path, []byte(content), 0o644)
+	}
+	ci := &mockCIDriver{downloadNamedArtifactFn: func(_ context.Context, _, _ string, _ int, _, destDir string) error {
+		// First artifact: the newest iteration is malformed and an older
+		// one is superseded with a different action; the valid newest is
+		// iteration-2.
+		for rel, content := range map[string]string{
+			"fullsend-review/run/iteration-1/output/agent-result.json":          `{"action":"request-changes"}`,
+			"fullsend-review/run/iteration-2/output/agent-result.json":          `{"action":"approve"}`,
+			"fullsend-review/run/iteration-3/output/agent-result.json":          `{`,
+			"fullsend-review.matrix-1/run/iteration-1/output/agent-result.json": `{"action":"approve"}`,
+		} {
+			if err := write(destDir, rel, content); err != nil {
+				return err
+			}
+		}
+		return nil
+	}}
+	w := &world.World{
+		PRNumber:    2,
+		WorkflowRun: &forge.WorkflowRun{ID: 55, CreatedAt: "2026-01-01T00:00:00Z"},
+		CI:          ci,
+		SCM: &fakePlaybackSCM{listReviewsFn: func(context.Context, string, string, int) ([]forge.PullRequestReview, error) {
+			return []forge.PullRequestReview{{State: "APPROVED", SubmittedAt: "2026-01-01T00:05:00Z"}}, nil
+		}},
+	}
+	require.NoError(t, thenAgentSubmittedReview(w, "review", "approved"))
+}
+
+func TestThenAgentSubmittedReview_RejectsConflictingRepeatedAgentArtifacts(t *testing.T) {
+	w := &world.World{
+		PRNumber:    2,
+		WorkflowRun: &forge.WorkflowRun{ID: 55, CreatedAt: "2026-01-01T00:00:00Z"},
+		CI:          ciDriverWithActions("approve", "request-changes"),
+	}
+	err := thenAgentSubmittedReview(w, "review", "approved")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "conflicting review states")
+}
+
+func TestThenAgentSubmittedReview_RejectsInvalidArtifactResults(t *testing.T) {
+	tests := []struct {
+		name string
+		ci   *mockCIDriver
+		want string
+	}{
+		{
+			name: "unknown action",
+			ci:   ciDriverWithAction("other"),
+			want: "unrecognized action",
+		},
+		{
+			name: "malformed result",
+			ci: &mockCIDriver{downloadNamedArtifactFn: func(_ context.Context, _, _ string, _ int, _, destDir string) error {
+				return os.WriteFile(filepath.Join(destDir, "agent-result.json"), []byte("{"), 0o644)
+			}},
+			want: "parsing agent-result.json",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := &world.World{
+				PRNumber:    2,
+				WorkflowRun: &forge.WorkflowRun{ID: 55, CreatedAt: "2026-01-01T00:00:00Z"},
+				CI:          tt.ci,
+			}
+			err := thenAgentSubmittedReview(w, "review", "approved")
+			require.ErrorContains(t, err, tt.want)
+		})
+	}
 }
 
 func TestThenAgentSubmittedReview_SelectsLaterRoundWhenRunAdvanced(t *testing.T) {

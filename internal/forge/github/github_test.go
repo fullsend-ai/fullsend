@@ -5150,6 +5150,33 @@ func TestListWorkflowRunArtifacts(t *testing.T) {
 	assert.Equal(t, 5, arts[0].ID)
 }
 
+func TestListWorkflowRunArtifactsPaginates(t *testing.T) {
+	var pages []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/repos/org/repo/actions/runs/42/artifacts", r.URL.Path)
+		assert.Equal(t, "100", r.URL.Query().Get("per_page"))
+		page := r.URL.Query().Get("page")
+		pages = append(pages, page)
+		n := 100
+		if page == "2" {
+			n = 3
+		}
+		arts := make([]map[string]any, n)
+		for i := range arts {
+			arts[i] = map[string]any{"id": len(pages)*1000 + i, "name": fmt.Sprintf("fullsend-p%s-%d", page, i)}
+		}
+		json.NewEncoder(w).Encode(map[string]any{"artifacts": arts})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	arts, err := client.ListWorkflowRunArtifacts(context.Background(), "org", "repo", 42)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"1", "2"}, pages)
+	require.Len(t, arts, 103)
+	assert.Equal(t, "fullsend-p2-2", arts[102].Name)
+}
+
 func TestListRepositoryArtifacts(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/repos/org/repo/actions/artifacts", r.URL.Path)

@@ -339,21 +339,41 @@ func (d *Driver) ListRecentRuns(ctx context.Context, owner, repo string, limit i
 }
 
 func (d *Driver) DownloadNamedArtifactFromRun(ctx context.Context, owner, repo string, runID int, artifactName string, destDir string) error {
+	return d.downloadArtifactsFromRun(ctx, owner, repo, runID, artifactName, destDir, func(actual string) bool {
+		return actual == artifactName
+	})
+}
+
+func (d *Driver) DownloadAgentArtifactsFromRun(ctx context.Context, owner, repo string, runID int, agent string, destDir string) error {
+	artifactName := "fullsend-" + agent
+	return d.downloadArtifactsFromRun(ctx, owner, repo, runID, artifactName, destDir, func(actual string) bool {
+		return agentArtifactNameMatches(actual, artifactName)
+	})
+}
+
+func (d *Driver) downloadArtifactsFromRun(ctx context.Context, owner, repo string, runID int, requestedName, destDir string, matches func(string) bool) error {
 	artifacts, err := d.Client.ListWorkflowRunArtifacts(ctx, owner, repo, runID)
 	if err != nil {
 		return err
 	}
+	var found bool
 	for _, art := range artifacts {
-		if art.Name != artifactName {
+		if !matches(art.Name) {
 			continue
 		}
+		found = true
 		zipData, err := d.Client.DownloadWorkflowRunArtifact(ctx, owner, repo, art.ID)
 		if err != nil {
 			return err
 		}
-		return extractArtifactZip(art.Name, zipData, destDir)
+		if err := extractArtifactZip(art.Name, zipData, destDir); err != nil {
+			return err
+		}
 	}
-	return fmt.Errorf("artifact %q not found on workflow run %d", artifactName, runID)
+	if found {
+		return nil
+	}
+	return fmt.Errorf("artifact %q not found on workflow run %d", requestedName, runID)
 }
 
 func (d *Driver) DownloadArtifacts(ctx context.Context, owner, repo string, runID int, destDir string) error {
@@ -374,6 +394,19 @@ func (d *Driver) DownloadArtifacts(ctx context.Context, owner, repo string, runI
 }
 
 func (d *Driver) DownloadNamedArtifactAfter(ctx context.Context, owner, repo, artifactName string, after time.Time, destDir string) error {
+	return d.downloadArtifactAfter(ctx, owner, repo, artifactName, after, destDir, false, func(actual string) bool {
+		return actual == artifactName
+	})
+}
+
+func (d *Driver) DownloadAgentArtifactsAfter(ctx context.Context, owner, repo, agent string, after time.Time, destDir string) error {
+	artifactName := "fullsend-" + agent
+	return d.downloadArtifactAfter(ctx, owner, repo, artifactName, after, destDir, true, func(actual string) bool {
+		return agentArtifactNameMatches(actual, artifactName)
+	})
+}
+
+func (d *Driver) downloadArtifactAfter(ctx context.Context, owner, repo, artifactName string, after time.Time, destDir string, waitForRun bool, matches func(string) bool) error {
 	deadline := time.Now().Add(artifactRunWait)
 	var lastNewestCreatedAt string
 	for time.Now().Before(deadline) {
@@ -392,12 +425,29 @@ func (d *Driver) DownloadNamedArtifactAfter(ctx context.Context, owner, repo, ar
 		}
 		lastNewestCreatedAt = newestCreatedAt
 
-		if art := selectRepositoryArtifactAfter(arts, artifactName, after); art != nil {
-			zipData, err := d.Client.DownloadWorkflowRunArtifact(ctx, owner, repo, art.ID)
-			if err != nil {
-				return err
+		matching := repositoryArtifactsAfter(arts, after, matches)
+		if len(matching) > 0 {
+			// A repository can have several workflow runs after the same
+			// scenario start, and each run can publish the same matrix names.
+			// Use the repository listing (a single bounded page) only to pick
+			// the newest run. Then enumerate that run's artifacts through the
+			// paginated run listing, so a run with many artifacts is
+			// downloaded in full and older output cannot overwrite it.
+			runID := matching[0].WorkflowRunID
+			for _, art := range matching[1:] {
+				if art.WorkflowRunID > runID {
+					runID = art.WorkflowRunID
+				}
 			}
-			return extractArtifactZip(art.Name, zipData, destDir)
+			if waitForRun {
+				// Repeated-agent matrix jobs upload separate artifacts as
+				// they finish, so wait for the run to reach a terminal
+				// status before listing it, or a partial set is downloaded.
+				if err := d.waitForRunCompleted(ctx, owner, repo, runID, deadline); err != nil {
+					return err
+				}
+			}
+			return d.downloadArtifactsFromRun(ctx, owner, repo, runID, artifactName, destDir, matches)
 		}
 		select {
 		case <-ctx.Done():
@@ -406,6 +456,36 @@ func (d *Driver) DownloadNamedArtifactAfter(ctx context.Context, owner, repo, ar
 		}
 	}
 	return fmt.Errorf("artifact %q not found after %s", artifactName, after.Format(time.RFC3339))
+}
+
+// waitForRunCompleted polls the run until it is completed, the context ends,
+// or the deadline passes. If completion is not confirmed by the deadline it
+// returns a timeout error (wrapping the last run lookup error, if any), so the
+// caller never reports a possibly partial artifact set as complete.
+func (d *Driver) waitForRunCompleted(ctx context.Context, owner, repo string, runID int, deadline time.Time) error {
+	var lastErr error
+	lastStatus := ""
+	for time.Now().Before(deadline) {
+		run, err := d.Client.GetWorkflowRun(ctx, owner, repo, runID)
+		if err == nil {
+			if run.Status == "completed" {
+				return nil
+			}
+			lastErr = nil
+			lastStatus = run.Status
+		} else {
+			lastErr = err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-d.timerAfter(artifactRunPoll):
+		}
+	}
+	if lastErr != nil {
+		return fmt.Errorf("workflow run %d did not complete before the artifact wait deadline: %w", runID, lastErr)
+	}
+	return fmt.Errorf("workflow run %d did not complete before the artifact wait deadline (last status %q)", runID, lastStatus)
 }
 
 func newestRepositoryArtifactCreatedAt(arts []forge.RepositoryArtifact) string {
@@ -421,7 +501,7 @@ func newestRepositoryArtifactCreatedAt(arts []forge.RepositoryArtifact) string {
 func selectRepositoryArtifactAfter(arts []forge.RepositoryArtifact, name string, after time.Time) *forge.RepositoryArtifact {
 	var best *forge.RepositoryArtifact
 	for _, art := range arts {
-		if art.Name != name {
+		if !agentArtifactNameMatches(art.Name, name) {
 			continue
 		}
 		artTime, parseErr := time.Parse(time.RFC3339, art.CreatedAt)
@@ -435,6 +515,49 @@ func selectRepositoryArtifactAfter(arts []forge.RepositoryArtifact, name string,
 	}
 	return best
 }
+
+func repositoryArtifactsAfter(arts []forge.RepositoryArtifact, after time.Time, matches func(string) bool) []forge.RepositoryArtifact {
+	var matching []forge.RepositoryArtifact
+	for _, art := range arts {
+		if !matches(art.Name) {
+			continue
+		}
+		artTime, parseErr := time.Parse(time.RFC3339, art.CreatedAt)
+		if parseErr != nil || artTime.Before(after) {
+			continue
+		}
+		matching = append(matching, art)
+	}
+	return matching
+}
+
+// agentArtifactNameMatches accepts the stable exact name and the readable
+// matrix suffix for the same logical agent. Agent names are restricted to
+// alphanumerics, underscores, and hyphens, so the dot before "matrix" cannot
+// be part of another agent's legacy name.
+func agentArtifactNameMatches(actual, requested string) bool {
+	const logicalPrefix = "fullsend-"
+	if !strings.HasPrefix(requested, logicalPrefix) {
+		return false
+	}
+	agent := strings.TrimPrefix(requested, logicalPrefix)
+	if !artifactAgentNamePattern.MatchString(agent) {
+		return false
+	}
+	if actual == requested {
+		return true
+	}
+	suffixPrefix := requested + ".matrix-"
+	if !strings.HasPrefix(actual, suffixPrefix) {
+		return false
+	}
+	return artifactMatrixIndexPattern.MatchString(strings.TrimPrefix(actual, suffixPrefix))
+}
+
+var (
+	artifactAgentNamePattern   = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+	artifactMatrixIndexPattern = regexp.MustCompile(`^[0-9]+$`)
+)
 
 func extractArtifactZip(name string, zipData []byte, destDir string) error {
 	tmp, err := os.CreateTemp("", "behaviour-artifact-*.zip")
@@ -601,7 +724,7 @@ func formatArtifactDiagnostics(arts []forge.RepositoryArtifact, targetName strin
 	var matched int
 	var b strings.Builder
 	for _, art := range arts {
-		if art.Name != targetName {
+		if !agentArtifactNameMatches(art.Name, targetName) {
 			continue
 		}
 		matched++
@@ -1133,8 +1256,8 @@ func (d *Driver) harnessPollOnce(ctx context.Context, remaining time.Duration, o
 	defer cancel()
 	artifactName := "fullsend-" + agent
 
-	// Quick-success: check for the agent's artifact (a completed
-	// harness job uploads fullsend-{agent}).
+	// Quick-success: check for the agent's artifact (a completed harness
+	// job uploads the legacy exact name or its readable matrix suffix).
 	arts, err := d.Client.ListRepositoryArtifacts(ctx, owner, repo, 100)
 	artifactErrs.record(ctx, err)
 	if err == nil {
@@ -1145,7 +1268,7 @@ func (d *Driver) harnessPollOnce(ctx context.Context, remaining time.Duration, o
 				if candidate.Conclusion == "success" {
 					return candidate, true, nil
 				}
-				// The harness workflow uploads fullsend-{agent} with
+				// The harness workflow uploads the agent artifact with
 				// if: always(), so a dual-dispatch sibling — cancelled,
 				// skipped, or a genuine failure — can produce this
 				// artifact while a later run for the same agent is
@@ -1369,8 +1492,8 @@ func (d *Driver) harnessRoundPollOnce(ctx context.Context, remaining time.Durati
 // skipID, the one already selected as the highest-ID match — that was
 // created at or after after and belongs to a completed, successful
 // workflow run. selectRepositoryArtifactAfter only ever returns the single
-// highest-ID artifact for a given name, but the harness workflow uploads
-// fullsend-{agent} with if: always(), so a dual-dispatch sibling that
+// highest-ID artifact for a logical agent, but the harness workflow uploads
+// its artifact with if: always(), so a dual-dispatch sibling that
 // concludes failure, cancelled, or skipped can win that selection over an
 // already-succeeded run's own artifact whenever the non-success run
 // finishes uploading later (#7574). This scan finds that hidden success
@@ -1380,7 +1503,7 @@ func (d *Driver) harnessRoundPollOnce(ctx context.Context, remaining time.Durati
 // the max-ID selection on every poll and hide the success forever.
 func (d *Driver) harnessArtifactRunSuccess(ctx context.Context, owner, repo string, arts []forge.RepositoryArtifact, name string, after time.Time, skipID int, lookupErrs *pollErrors) *forge.WorkflowRun {
 	for _, art := range arts {
-		if art.Name != name || art.ID == skipID {
+		if !agentArtifactNameMatches(art.Name, name) || art.ID == skipID {
 			continue
 		}
 		artTime, parseErr := time.Parse(time.RFC3339, art.CreatedAt)
@@ -1470,8 +1593,8 @@ func (d *Driver) hasSupersedingAgentRun(ctx context.Context, owner, repo, agent 
 // the run completes successfully instead — callers use this to assert a
 // refuse-to-push (or similar fail-closed) path.
 //
-// Detection is artifact-first: the fullsend action uploads the
-// fullsend-<agent> artifact with `if: always()`, so it exists for failed
+// Detection is artifact-first: the fullsend action uploads the agent's
+// artifact with `if: always()`, so it exists for failed
 // runs too, and it is the only signal that works for both standard stage
 // jobs (named e.g. "Code"/"Fix") and custom-harness matrix jobs (named
 // "Harness run (<agent>)"). The job-name scan is a fallback for
