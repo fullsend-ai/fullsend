@@ -90,7 +90,7 @@ And the agent will output issues.out with:
   """
 ```
 
-`Then the harness "<agent>" workflow logs contain "<text>"` (or `... do not contain "<text>"`) searches the harness workflow's job logs. A `do not contain` check fails when the log snapshot is incomplete, rather than passing on missing data. `Then the harness "<agent>" workflow logs register persona "<name>" and not "<other>"` reads only the block of `subagents: <name> → <model>` lines pi prints when it registers personas: the block must be found with an ordinary log line on both sides, must list `<name>` and must not list `<other>`, so a job log truncated elsewhere does not fail it. `Given the repository allows remote resources from "<prefix>"` adds a prefix to the leased repository's `.fullsend/config.yaml` `allowed_remote_resources` for the scenario, so a custom harness can fetch URL skills; see `features/runtime/skill-overrides.feature`.
+`Then the harness "<agent>" workflow logs contain "<text>"` (or `... do not contain "<text>"`) searches the harness workflow's job logs. A `do not contain` check fails when the log snapshot is incomplete or the poll window ended with no log output, rather than passing on missing data. `Then the harness "<agent>" workflow logs register persona "<name>" and not "<other>"` reads only the block of `subagents: <name> → <model>` lines pi prints when it registers personas: the block must be found with an ordinary log line on both sides, must list `<name>` and must not list `<other>`, so a job log truncated elsewhere does not fail it. `Given the repository allows remote resources from "<prefix>"` adds a prefix to the leased repository's `.fullsend/config.yaml` `allowed_remote_resources` for the scenario, so a custom harness can fetch URL skills; see `features/runtime/skill-overrides.feature`.
 
 ### Runtime steps
 
@@ -140,6 +140,47 @@ Then the harness "fix" workflow fails reporting "Refusing to push"
 Pick a stable fragment of the failure-comment contract (the category
 label headline or a fixed detail phrase). No shipped scenario uses this
 step yet; it is unit-tested.
+
+### Runner secret steps
+
+`pkg/behaviourtest/steps/runner_secrets.go` covers runner secrets
+([ADR 0136](../../ADRs/0136-runner-secrets-through-one-stored-secret.md)).
+
+`the repository has the runner secret "<NAME>"` sets the leased
+repository's `FULLSEND_GITHUB_RUNNER_SECRETS` secret. The secret holds one
+object with `<NAME>` and a random value. The step registers the value for
+redaction, and scenario cleanup deletes the secret. Call the step once per
+scenario: a second call is an error. Runner secrets reach a run through this
+one secret, which exists on GitHub only, so tag these scenarios
+`@skip:gitlab`.
+
+`the harness "<agent>" workflow fails with "<text>" in its logs` waits for
+the agent's harness run to fail. It then looks for the text in the run's
+workflow logs. Use it when a run fails before a post-script can comment,
+for example when `fullsend run` refuses the harness at load.
+
+Logs fetched right after a run completes can come back unusable. The cause
+is unknown. The step fetches again when a fetch fails, the logs are empty
+or they hold a fetch-failure note. It waits 5 seconds after each fetch and
+keeps trying for up to a minute. The last fetch can start up to 5 seconds
+after that minute and take up to 30 seconds. When the text is missing, the error
+names the cause: the logs could not be fetched, were empty or were
+incomplete. A log-fetch problem then reads as a fetch problem, not as a
+wrong result.
+
+`the harness "<agent>" workflow logs contain "<text>"` checks the logs of a
+run that succeeds. It fetches unusable logs again in the same way.
+
+`features/dispatch/runner-secret-overlay-guard.feature` uses these steps.
+Its refused scenario gives an overlay that references the runner secret
+and reads a shadowed `.event`, and expects the run to fail with the guard
+error. Its allowed scenario guards the same overlay on `runtime.forge`. It
+expects the run to complete and its logs to contain "Runner secrets", which
+shows the secret reached the run.
+
+The `@requires:capability:runner-secret-overlay-guard` tag gates the refused
+scenario. `make behaviour-test` skips it until that capability is declared.
+The Makefile's `BEHAVIOUR_CAPABILITIES` comment says why and when.
 
 ### Forge-state assertion steps
 

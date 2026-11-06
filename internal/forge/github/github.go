@@ -4690,7 +4690,8 @@ func (c *LiveClient) ListRepositoryArtifacts(ctx context.Context, owner, repo st
 const maxJobLogBytes = 1 << 20 // 1 MiB per job
 
 // GetWorkflowRunLogs downloads the logs for a workflow run.
-// It fetches the job list for the run and concatenates each job's log output.
+// It fetches the job list for the run and concatenates each job's log output;
+// a skipped job is listed with no log.
 // When the output is not complete — more jobs than the single page of up to
 // 100 fetched, or a job log over maxJobLogBytes — a "[job list truncated:" or
 // "[log truncated:" note is embedded in the returned text.
@@ -4735,6 +4736,12 @@ func (c *LiveClient) GetWorkflowRunLogs(ctx context.Context, owner, repo string,
 			fmt.Fprintf(&buf, "  %s Step %d: %s [%s/%s]\n", marker, step.Number, step.Name, step.Status, step.Conclusion)
 		}
 		fmt.Fprintln(&buf)
+		// A skipped job never ran, so it has no log to fetch: in the runs
+		// observed, its log request answered 404 (not a documented API
+		// guarantee), which would read as a fetch that failed.
+		if job.Conclusion == "skipped" {
+			continue
+		}
 
 		// Download logs for each job (returns plain text, 302 redirect to download URL).
 		jobResp, err := c.do(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/%s/actions/jobs/%d/logs", owner, repo, job.ID), nil)
