@@ -347,7 +347,7 @@ stale provider profiles, schema validation, triggers that never fire), see
 
 ## `agent add`
 
-Register an agent in config by URL or local path. URL sources are automatically pinned to a specific commit SHA and annotated with a `#sha256=...` integrity hash. When a URL references a branch or tag (rather than a commit SHA), the original ref is stored in the config entry's `ref` field so that subsequent `agent update` calls re-resolve against the same branch. The URL prefix is added to `allowed_remote_resources` if not already present.
+Register an agent in config by URL or local path. URL sources are automatically pinned to a specific commit SHA and annotated with a `#sha256=...` integrity hash. When a URL references a branch or tag (rather than a commit SHA), the original ref is stored in the config entry's `ref` field so that subsequent `agent update` calls re-resolve against the same branch or tag. The URL prefix is added to `allowed_remote_resources` if not already present.
 
 ```bash
 fullsend agent add https://github.com/my-org/agents/blob/main/harness/lint.yaml
@@ -361,7 +361,7 @@ fullsend agent add harness/custom-review.yaml --name my-review
 | `--fullsend-dir` | `.fullsend` | Path to the `.fullsend` configuration directory |
 | `--name` | derived from filename | Explicit agent name |
 
-GitHub blob URLs are resolved to pinned `raw.githubusercontent.com` URLs. Branch names containing `/` (for example `.../blob/user/feature/harness/lint.yaml`) are resolved by probing successively longer branch candidates. If no candidate matches, the default branch is used. Non-GitHub URLs must already contain a commit SHA in the path. Local paths must be relative, must not contain path traversal (`..`), and the file must exist. If an agent with the same name already exists, the command fails.
+GitHub blob URLs are resolved to pinned `raw.githubusercontent.com` URLs. The ref in the URL is resolved as a branch first, then as a tag; an annotated tag is pinned to the commit it points at. Ref names containing `/` (for example `.../blob/user/feature/harness/lint.yaml`) are resolved by probing successively longer candidates, trying every branch candidate before any tag candidate. If the ref matches neither a branch nor a tag, the command fails and names the ref; it never substitutes the default branch. Non-GitHub URLs must already contain a commit SHA in the path. Local paths must be relative, must not contain path traversal (`..`), and the file must exist. If an agent with the same name already exists, the command fails.
 
 ## `agent list`
 
@@ -393,7 +393,7 @@ my-lint  harness/my-lint.yaml
 
 ## `agent update`
 
-Update a URL-based agent, or a local-path agent's `base:` URL, to a new commit SHA and recompute the `#sha256=...` integrity hash. If no SHA is provided, the branch ref stored at adoption time is re-resolved; if no ref was stored, the default branch HEAD is used. `agent add` never stores a ref for local-path sources, so an `agent update` on a local-path agent's `base:` URL without an explicit SHA always resolves the base repo's default branch — pass an explicit SHA if the `base:` URL was originally pinned to a different branch.
+Update a URL-based agent, or a local-path agent's `base:` URL, to a new commit SHA and recompute the `#sha256=...` integrity hash. If no SHA is provided, the branch or tag ref stored at adoption time is re-resolved (branch first, then tag); if no ref was stored, the default branch HEAD is used. `agent add` never stores a ref for local-path sources, so an `agent update` on a local-path agent's `base:` URL without an explicit SHA always resolves the base repo's default branch — pass an explicit SHA if the `base:` URL was originally pinned to a different branch.
 
 ```bash
 fullsend agent update triage
