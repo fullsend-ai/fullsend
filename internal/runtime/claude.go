@@ -793,9 +793,11 @@ func claudeModelID(name string, aliases map[string]string) string {
 
 // claudeNonessentialTrafficEnv turns off Claude Code's nonessential traffic
 // to Anthropic; every run sets it (claudeRunnerSettings, buildRunCommand).
+// claudeNonessentialSettings is the no-hooks --settings document; it also pins
+// claudeBgWaitCeilingEnv to "0" so that path matches claudeRunnerSettings.
 const (
 	claudeNonessentialTrafficEnv = "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"
-	claudeNonessentialSettings   = `{"env":{"` + claudeNonessentialTrafficEnv + `":"1"}}`
+	claudeNonessentialSettings   = `{"env":{"` + claudeNonessentialTrafficEnv + `":"1","` + claudeBgWaitCeilingEnv + `":"0"}}`
 )
 
 // claudeBgWaitCeilingExport lifts the cap Claude Code puts on how long a
@@ -809,8 +811,9 @@ const (
 const claudeBgWaitCeilingExport = "export " + claudeBgWaitCeilingEnv + "=0"
 
 // claudeBgWaitCeilingEnv names the variable claudeBgWaitCeilingExport sets.
-// claudeRunnerSettings pins it to "0" in the settings document as well, so a
-// repository settings file's env block cannot restore the default ceiling.
+// claudeRunnerSettings and claudeNonessentialSettings pin it to "0" in the
+// settings document as well, so a repository settings file's env block cannot
+// restore the default ceiling.
 const claudeBgWaitCeilingEnv = "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS"
 
 // buildRunCommand renders the in-sandbox command line. When sandbox hooks are
@@ -880,9 +883,9 @@ func buildRunCommandWithDigests(params RunParams, hookDigests claudeHookDigests)
 	} else if params.HooksSettingsPath != "" {
 		parts = append(parts, fmt.Sprintf("--settings '%s'", strings.ReplaceAll(params.HooksSettingsPath, "'", "'\\''")))
 	} else {
-		// No hooks document: --settings still pins the variable above the
+		// No hooks document: --settings still pins the variables above the
 		// repository's settings files, which would otherwise win over the
-		// exported value.
+		// exported values.
 		parts = append(parts, "--settings "+shellQuote(claudeNonessentialSettings))
 	}
 
