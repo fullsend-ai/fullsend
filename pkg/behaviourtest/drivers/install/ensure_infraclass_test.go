@@ -107,7 +107,7 @@ func IsForkReplacedForTest(err error) bool { return errors.Is(err, errForkReplac
 // AwaitWorkflowGetErrorForTest runs the real awaitWorkflowReady poll
 // against a client whose GetWorkflow fails with err instead of the
 // expected not-found lag, and returns the error the ensurer surfaces
-// for that unexpected GetWorkflow failure.
+// once the poll exhausts on that GetWorkflow failure.
 func AwaitWorkflowGetErrorForTest(t *testing.T, err error) error {
 	t.Helper()
 	speedUpSettlePoll(t)

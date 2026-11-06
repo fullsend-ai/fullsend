@@ -867,20 +867,6 @@ func awaitWorkflowReady(ctx context.Context, client forge.Client, org, repo, wor
 			lastErr = err
 		}
 
-		// Only the expected not-found lag is a poll-through condition;
-		// gh.APIError maps a 404 to forge.ErrNotFound, so both the
-		// sentinel and a real 404 response are covered. Any other
-		// GetWorkflow failure — a 500, a permission 403, a malformed
-		// response — is a forge or product defect, not settle lag:
-		// return it unmarked, preserving the cause, so it classifies
-		// as a scenario failure instead of spinning the poll and being
-		// infra-marked at exhaustion. A rate-limit error also returns
-		// here unmarked and still classifies as infrastructure through
-		// failclass's structural rule.
-		if err != nil && !forge.IsNotFound(err) {
-			return fmt.Errorf("getting workflow %s on %s: %w", workflowFile, target, err)
-		}
-
 		if attempt < settleMaxAttempts {
 			if ctx.Err() != nil {
 				return fmt.Errorf("context cancelled while waiting for %s on %s: %w", workflowFile, target, ctx.Err())
