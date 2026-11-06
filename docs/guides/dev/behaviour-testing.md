@@ -661,24 +661,36 @@ The counts cover one suite process and one client per org, so they leave out
 other suites sharing the pool and the `fullsend` CLI subprocess that installs
 into a slot.
 
-**Quota counters.** GitHub can report two core quota counters for one org at
-the same time, each with its own reset time and limit
-([#9154](https://github.com/fullsend-ai/fullsend/issues/9154)). A `quota
-remaining` value describes only the counter that answered last, so readings
-from different counters can appear to rise and fall. After each API call log,
-the driver logs what each counter did:
+**Quota readings by reset time.** GitHub can report more than one core quota
+reading for an org at the same time, each with its own reset time
+([#9154](https://github.com/fullsend-ai/fullsend/issues/9154)). GitHub
+processes requests in multiple regions, and
+[its rate limit docs](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api)
+say values can vary from one response to the next, so these may be regional
+views of one allowance. A `quota remaining` value describes only the response
+that answered last, so values can appear to rise and fall. After each API call
+log, the driver logs the readings it saw, grouped by reset time:
 
 ```
 [driver] per-org quota counters at finalize:
-halfsend-01: reset=2026-10-25T18:00:00Z drop=1800 remaining=3200/5000 calls=1500 claim/GET=300 other/POST=1200
-halfsend-01: reset=2026-10-25T18:00:09Z drop=900 remaining=4100/5000 calls=750 lock/GET=250 other/GET=500
+halfsend-01: reset=2026-10-25T18:00:00Z spread=1800 remaining=3200/5000 calls=1500 claim/GET=300 other/POST=1200
+halfsend-01: reset=2026-10-25T18:00:09Z spread=900 remaining=4100/5000 calls=750 lock/GET=250 other/GET=500
 ```
 
-`drop` is how far the counter fell while this client watched it, whoever spent
-it, and `remaining` is its lowest reading. `calls` counts this client's core
-calls that the counter answered, by caller and HTTP method. A `drop` above
-`calls` shows traffic from outside this client. To estimate an org's total quota
-use, add the `drop` of every counter in the same hour.
+`spread` is the gap between the highest and lowest `remaining` values in the
+group, and `remaining` is the lowest. `calls` counts this client's core calls
+answered in the group, by caller and HTTP method.
+
+`spread` is a range of readings rather than measured quota spend, so treat a
+comparison with `calls` as a clue:
+
+- `spread` above `calls` can mean traffic from outside this client, or readings
+  that vary between regions.
+- `calls` above `spread` can mean some counted calls were charged elsewhere, or
+  did not lower the readings in this group.
+
+The log covers only the groups this client saw, so it cannot give an org's
+total quota use.
 
 **Harness-wait timeout errors.** Every harness-wait timeout error the
 GitHub Actions CI driver reports ends with the polling client's last-seen

@@ -188,9 +188,9 @@ func TestOrgCredentials_APIQuotaDiagnostics(t *testing.T) {
 		"not-a-reporter": countingClient{},
 	})
 	assert.Equal(t, strings.Join([]string{
-		"halfsend-01: reset=2026-10-25T18:00:00Z drop=0 remaining=10/5000 calls=1 lock/GET=1",
-		"halfsend-01: reset=2026-10-25T18:00:09Z drop=5 remaining=15/5000 calls=1 lock/POST=1",
-		"halfsend-02: reset=2026-10-25T18:00:00Z drop=1000 remaining=3000/5000 calls=7 claim/GET=5 other/POST=2",
+		"halfsend-01: reset=2026-10-25T18:00:00Z spread=0 remaining=10/5000 calls=1 lock/GET=1",
+		"halfsend-01: reset=2026-10-25T18:00:09Z spread=5 remaining=15/5000 calls=1 lock/POST=1",
+		"halfsend-02: reset=2026-10-25T18:00:00Z spread=1000 remaining=3000/5000 calls=7 claim/GET=5 other/POST=2",
 	}, "\n"), creds.apiQuotaDiagnostics())
 }
 

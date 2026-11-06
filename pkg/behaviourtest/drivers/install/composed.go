@@ -123,9 +123,8 @@ func (c *orgCredentials) apiCallDiagnostics() string {
 	return strings.Join(append(lines, "all orgs: "+formatAPICalls(all)), "\n")
 }
 
-// apiQuotaDiagnostics renders one line per org and core quota counter, so
-// each counter's calls can be compared with how far it fell. Clients that do
-// not report counters are left out.
+// apiQuotaDiagnostics renders one line per org and group of core rate-limit
+// readings. Clients that do not report them are left out.
 func (c *orgCredentials) apiQuotaDiagnostics() string {
 	c.mu.Lock()
 	orgs := sortedKeys(c.byOrg)
@@ -148,9 +147,9 @@ func (c *orgCredentials) apiQuotaDiagnostics() string {
 	return strings.Join(lines, "\n")
 }
 
-// formatAPIQuotaCounter renders a counter as "reset=T drop=N remaining=N/N
-// calls=N caller/METHOD=N ...", with callers sorted. drop covers everyone
-// spending the counter, and calls covers this client only.
+// formatAPIQuotaCounter renders a group as "reset=T spread=N remaining=N/N
+// calls=N caller/METHOD=N ...", with callers sorted. spread is the gap between
+// the highest and lowest readings, and remaining is the lowest.
 func formatAPIQuotaCounter(c forge.APIQuotaCounter) string {
 	var calls int64
 	parts := make([]string, 0, len(c.Calls))
@@ -158,7 +157,7 @@ func formatAPIQuotaCounter(c forge.APIQuotaCounter) string {
 		calls += c.Calls[key]
 		parts = append(parts, fmt.Sprintf("%s=%d", key, c.Calls[key]))
 	}
-	head := fmt.Sprintf("reset=%s drop=%d remaining=%d/%d calls=%d",
+	head := fmt.Sprintf("reset=%s spread=%d remaining=%d/%d calls=%d",
 		c.Reset.UTC().Format(time.RFC3339), c.Highest-c.Lowest, c.Lowest, c.Limit, calls)
 	return strings.Join(append([]string{head}, parts...), " ")
 }
