@@ -85,6 +85,15 @@ type ConvergeConfig struct {
 	// manifest and never logged or reported.
 	OpenAIAPIKey string
 
+	// JiraToken and JiraEmail are written as FULLSEND_JIRA_TOKEN and
+	// FULLSEND_JIRA_EMAIL to repositories whose effective
+	// tracker.jira.poll.enabled is true (#9076). The token is required
+	// when the repository has no FULLSEND_JIRA_TOKEN yet; an omitted value
+	// preserves the existing secret. Command-line input only: never
+	// persisted to the manifest and never logged or reported.
+	JiraToken string
+	JiraEmail string
+
 	// ReviewAppClientID is the OAuth client ID of the review agent's
 	// GitHub App, pre-resolved by the caller for ReviewAppClientIDAppSet.
 	// It seeds the per-repo resolution cache so repos on that app set
@@ -288,6 +297,11 @@ type convergeDiscovery struct {
 	// region the probe does not report the variable, so discovery
 	// records its presence separately.
 	gcpRegionExists bool
+
+	// jira is the repository's Jira polling state: the effective
+	// tracker.jira mapping, whether polling is enabled, and whether the
+	// Jira credential secrets exist (#9076).
+	jira jiraPollState
 }
 
 // withVertexInputs returns cfg with this repository's effective Vertex
@@ -757,6 +771,8 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 	// (e.g. a trailing newline from a pipe) would otherwise defeat GitLab
 	// masking and be trimmed only at runtime.
 	cfg.OpenAIAPIKey = strings.TrimSpace(cfg.OpenAIAPIKey)
+	cfg.JiraToken = strings.TrimSpace(cfg.JiraToken)
+	cfg.JiraEmail = strings.TrimSpace(cfg.JiraEmail)
 
 	manifest := cfg.Manifest
 	if err := manifest.Validate(); err != nil {
@@ -776,7 +792,8 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 			return nil, err
 		}
 	}
-	excludedUsesOpenAI, excludedUsesVertex := false, false
+	store := newPresetCache()
+	excludedUsesOpenAI, excludedUsesVertex, excludedUsesJira := false, false, false
 	if len(cfg.ExcludeRepos) > 0 {
 		excluded := make(map[string]bool, len(cfg.ExcludeRepos))
 		for _, name := range cfg.ExcludeRepos {
@@ -791,11 +808,27 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 			// An excluded repo takes no write, but it is still part of the
 			// selection the credential inputs are validated against, so a
 			// skipped consumer does not fail the run for the others.
-			switch manifest.ResolveConfigForEntry(rr.Owner, rr.Repo, rr.Forge, rr.Entry).InferenceAuth {
+			excludedResolved := manifest.ResolveConfigForEntry(rr.Owner, rr.Repo, rr.Forge, rr.Entry)
+			switch excludedResolved.InferenceAuth {
 			case InferenceAuthOpenAIAPIKey:
 				excludedUsesOpenAI = true
 			case InferenceAuthVertexWIF, InferenceAuthOpenAIWIF:
 				excludedUsesVertex = true
+			}
+			// Polling can be enabled by the declared preset alone, so the
+			// preset is read (never written) to see the same effective
+			// configuration a selected repo would. A preset that cannot be
+			// loaded, or a configuration that does not resolve, counts the
+			// repo as a consumer: the run is not failed on its account.
+			var excludedPreset []byte
+			var presetErr error
+			if excludedResolved.Config != "" {
+				excludedPreset, presetErr = store.Load(ctx, excludedResolved.Config, excludedResolved.ConfigHash)
+			}
+			if presetErr != nil {
+				excludedUsesJira = true
+			} else if jira, jiraErr := effectiveJiraTracking(excludedResolved, excludedPreset); jiraErr != nil || jira.PollEnabled() {
+				excludedUsesJira = true
 			}
 		}
 		repos = kept
@@ -885,7 +918,6 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 	discoveries := make([]convergeDiscovery, len(repos))
 	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
-	store := newPresetCache()
 
 	for i, r := range repos {
 		wg.Add(1)
@@ -932,6 +964,12 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 				discoveries[idx] = convergeDiscovery{repo: rr, resolved: resolved, configErr: inputErr}
 				return
 			}
+			jiraTracking, jiraErr := effectiveJiraTracking(resolved, presetData)
+			if jiraErr != nil {
+				discoveries[idx] = convergeDiscovery{repo: rr, resolved: resolved, configErr: jiraErr}
+				return
+			}
+			jiraState := jiraPollState{jira: jiraTracking, enabled: jiraTracking.PollEnabled()}
 			repoFullName := rr.Owner + "/" + rr.Repo
 			progress(repoFullName, "discover", "Checking installation status")
 
@@ -1023,7 +1061,14 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 				}
 			}
 
+			jiraState, jiraErr = probeJiraPollSecrets(ctx, fc.Client, rr.Owner, rr.Repo, resolved.Forge, jiraState)
+			if jiraErr != nil {
+				discoveries[idx] = convergeDiscovery{repo: rr, resolved: resolved, err: jiraErr}
+				return
+			}
+
 			discoveries[idx] = convergeDiscovery{
+				jira:              jiraState,
 				repo:              rr,
 				resolved:          resolved,
 				components:        probed,
@@ -1063,6 +1108,22 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 	}
 	if cfg.WIFProvider != "" && !usesVertex {
 		return nil, fmt.Errorf("--vertex-wif-provider was supplied but no selected repository uses inference.auth %s or %s", InferenceAuthVertexWIF, InferenceAuthOpenAIWIF)
+	}
+	// A repository whose discovery failed may still enable Jira polling;
+	// it is reported on its own rather than failing the whole run.
+	usesJira := excludedUsesJira
+	for _, d := range discoveries {
+		if d.jira.enabled || d.configErr != nil || d.err != nil {
+			usesJira = true
+		}
+	}
+	if !usesJira {
+		if cfg.JiraToken != "" {
+			return nil, fmt.Errorf("--jira-token was supplied but no selected repository sets tracker.jira.poll.enabled: true")
+		}
+		if cfg.JiraEmail != "" {
+			return nil, fmt.Errorf("--jira-email was supplied but no selected repository sets tracker.jira.poll.enabled: true")
+		}
 	}
 
 	// Phase 2: parallel convergence — apply needed actions.
@@ -1248,6 +1309,17 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 				Repo:  d.repo.Repo,
 				Error: fmt.Errorf("%s/%s: the OpenAI API key cannot be stored as a masked GitLab CI/CD variable (at least 8 characters from A-Z a-z 0-9 _ + = / @ : . ~ -, no whitespace); check the --openai-api-key value",
 					d.repo.Owner, d.repo.Repo),
+			}
+			continue
+		}
+
+		// A repository with Jira polling enabled needs a usable Jira token
+		// (existing or supplied) before any write.
+		if jiraErr := validateJiraPollInputs(d, cfg); jiraErr != nil {
+			result.Results[i] = ConvergeResult{
+				Owner: d.repo.Owner,
+				Repo:  d.repo.Repo,
+				Error: jiraErr,
 			}
 			continue
 		}
@@ -1526,7 +1598,7 @@ func convergeRepo(ctx context.Context,
 			// established-path gate, status and preflight do: the safety
 			// comparison does not check decoded values such as runtime.
 			if found {
-				if valErr := validateExistingOverlay(existing); valErr != nil {
+				if valErr := validateExistingOverlay(existing, resolved.Forge); valErr != nil {
 					cr.Error = fmt.Errorf("convergence errors: %w", valErr)
 					return cr
 				}
@@ -1703,6 +1775,13 @@ func convergeRepo(ctx context.Context,
 					dryCleanupErrors = append(dryCleanupErrors, a.Detail)
 				}
 			}
+			dryJira := convergeJiraPoll(ctx, d, cfg, progress)
+			cr.Actions = append(cr.Actions, dryJira...)
+			for _, a := range dryJira {
+				if a.Action == "error" {
+					dryCleanupErrors = append(dryCleanupErrors, a.Detail)
+				}
+			}
 			if len(dryCleanupErrors) > 0 {
 				cr.Error = fmt.Errorf("convergence errors: %s", strings.Join(dryCleanupErrors, "; "))
 			}
@@ -1755,6 +1834,8 @@ func convergeRepo(ctx context.Context,
 		// earlier run wrote the credentials but failed to complete setup or
 		// to delete the obsolete secrets.
 		cleanup := removeObsoleteInferenceSecrets(ctx, resolved, false, false, installResult.ScaffoldFiles, progress)
+		// Jira polling converges once the installation exists.
+		cleanup = append(cleanup, convergeJiraPoll(ctx, d, cfg, progress)...)
 		cr.Actions = append(cr.Actions, cleanup...)
 		var cleanupErrors []string
 		for _, a := range cleanup {
@@ -1776,6 +1857,10 @@ func convergeRepo(ctx context.Context,
 	if cr.Error != nil {
 		return cr
 	}
+
+	// 2d': Converge Jira polling: credential secrets and the forge's poll
+	// resources, or their removal when polling is disabled (#9076).
+	cr.Actions = append(cr.Actions, convergeJiraPoll(ctx, d, cfg, progress)...)
 
 	// 2e: Commit all scaffold file changes in one atomic commit.
 	// Variable/secret writes above are not rolled back on commit failure;

@@ -445,7 +445,7 @@ Your only output is the JSON result file.
 The agent's environment also carries its budget: `FULLSEND_TIMEOUT_MINUTES` (the harness's
 `timeout_minutes`) and `FULLSEND_ITERATION_DEADLINE` (Unix seconds at which the iteration is killed),
 and `TRACEPARENT` (this iteration's agent-span W3C trace context, so runtime telemetry joins the
-Fullsend trace; empty when telemetry produced no valid span context). Write the result before the
+fullsend trace; empty when telemetry produced no valid span context). Write the result before the
 deadline — see [`fullsend run` § Budget and deadline](../../cli/run.md#budget-and-deadline).
 
 Network access (which APIs the agent can reach) is controlled by provider profiles or inline `network_policies`. The eight builtin provider names (`vertex-ai`, `github`, `github-ro`, `github-artifacts`, `gitleaks`, `package-registries`, `atlassian-cloud`, `openai`) resolve against the definition and profile built into the `fullsend` binary with no `openshell.profiles` entry at all. A fully custom provider type is different: it needs a provider definition (local or remote) together with a matching `openshell.profiles` entry (or one inherited via `base:` composition) to be imported — see [Remote providers and profiles](customizing-agents.md#remote-providers-and-profiles). For endpoints not covered by providers, inline `network_policies` in the policy YAML also work. Providers are the pattern used by fullsend's built-in agents, but custom agents can use whichever approach fits.
@@ -515,7 +515,7 @@ Key patterns to note:
 - **`host_files`** copy credentials from the trusted runner into the sandbox. `expand: true` resolves `${VAR}` references before copying.
 - **`validation_loop.schema`** references the JSON schema file directly — the validation script checks agent output against it.
 - **`overlays`** uses CEL `when` expressions to conditionally apply scripts, skills, providers, openshell, host_files, and env vars. Resolution merges all matching entries in order: every entry whose `when` evaluates to true is applied, with later matches taking precedence over earlier ones. The CEL environment exposes `event` (the triggering event), `runtime.forge` (the effective forge platform), and `config` (per-repo config from config.yaml). When running without an event context (e.g., `fullsend run` or `fullsend lock`), `event` is an empty map — use `has(event.source)` to guard event field access: `has(event.source) && event.source.system == "jira"` instead of just `event.source.system == "jira"` to avoid "no such key" errors.
-- **`common/env/gcp-vertex.env`** is referenced by relative path because both files live in the same repo. If your agent lives in a different repo, reference it by URL (see [Harness Field Reference — Referencing resources](../../reference/harness-reference.md#referencing-resources-local-vs-remote)) or copy it locally.
+- **`common/env/gcp-vertex.env`** is referenced by relative path because both files live in the same repo. If your agent lives in a different repo, reference it by URL (see [Harness Field Reference — Referencing resources](../../reference/harness-reference.md#referencing-resources-local-vs-remote)) or copy it locally. The variables it delivers reach the sandbox through harness configuration rather than runner guarantee — they are catalogued as `harness_delivered` in the [sandbox environment contract](../../normative/sandbox-env/v1/README.md).
 
 For the complete list of harness fields, see the [Harness Field Reference](../../reference/harness-reference.md).
 
@@ -1081,9 +1081,16 @@ stay readable in `/proc/<pid>/environ` for the whole run. See
 On GitLab, skip the object. Add each secret as its own masked CI/CD variable
 (for example `JIRA_API_TOKEN`) and reference it from `env.runner` the same way.
 The rules above (refused names, host side only, overlays) apply to names in the
-GitHub object only; GitLab behaves as before, and every CI/CD variable in the
-job except `JIRA_TOKEN`, `JIRA_USER_EMAIL` and the OTLP headers still reaches
-host-side scripts.
+GitHub object only. `FULLSEND_JIRA_TOKEN` and `FULLSEND_JIRA_EMAIL` are not
+inherited by host-side scripts; declare either value in `env.runner` when a
+trusted script needs it. This is the same host-script rule on GitHub and
+GitLab. On every forge, references to these values in `env.sandbox`, expanded
+`host_files`, `FULLSEND_OUTPUT_FILE`, and provider config or credential values
+resolve empty. See
+[Jira integration](jira-integration.md#jira-repository-secrets-in-agent-runs)
+for details. Other CI/CD variables still reach host-side scripts except
+`JIRA_TOKEN`, `JIRA_USER_EMAIL`, `FULLSEND_JIRA_TOKEN`,
+`FULLSEND_JIRA_EMAIL` and the OTLP headers.
 
 ### Harness composition with `base`
 

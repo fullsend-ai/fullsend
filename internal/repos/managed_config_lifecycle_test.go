@@ -1195,30 +1195,30 @@ func TestConvergeManagedConfigFiles_SafetyGateAllowsExplicitAgentEnable(t *testi
 	assert.Equal(t, desired, files[0].Content)
 }
 
-func TestConvergeManagedConfigFiles_SafetyGateRejectsImplicitCreateIssuesWiden(t *testing.T) {
+func TestConvergeManagedConfigFiles_SafetyGateRejectsImplicitTrackingWiden(t *testing.T) {
 	m := newConvergeManifest("acme/api")
 	m.Defaults.Config = mustManagedConfig(t, "{}")
 	desired := mustDesiredManaged(t, m, "acme", "api")
 
 	fc := forge.NewFakeClient()
-	fc.FileContents["acme/api/"+preset.BasePath] = []byte("create_issues:\n  allow_targets:\n    orgs:\n      - acme\n      - other\n")
-	fc.FileContents["acme/api/"+preset.OverlayPath] = []byte(managedConfigMarker + "create_issues:\n  allow_targets:\n    orgs:\n      - acme\n")
+	fc.FileContents["acme/api/"+preset.BasePath] = []byte("tracker:\n  github:\n    allowed_targets:\n      orgs:\n        - acme\n        - other\n")
+	fc.FileContents["acme/api/"+preset.OverlayPath] = []byte(managedConfigMarker + "tracker:\n  github:\n    allowed_targets:\n      orgs:\n        - acme\n")
 	resolved := managedResolved(t, fc, m, "acme", "api")
 
 	files, actions := convergeManagedConfigFiles(context.Background(), resolved, desired, false, noopProgress)
 	assert.Empty(t, files)
 	require.Len(t, actions, 1)
 	assert.Equal(t, ActionSafetyRejected, actions[0].Action)
-	assert.Contains(t, actions[0].Detail, "create_issues.allow_targets")
+	assert.Contains(t, actions[0].Detail, "tracker.github.allowed_targets")
 }
 
-func TestConvergeManagedConfigFiles_SafetyGateAllowsExplicitCreateIssuesWiden(t *testing.T) {
+func TestConvergeManagedConfigFiles_SafetyGateAllowsExplicitTrackingWiden(t *testing.T) {
 	m := newConvergeManifest("acme/api")
-	m.Defaults.Config = mustManagedConfig(t, "create_issues:\n  allow_targets:\n    orgs:\n      - acme\n      - other\n")
+	m.Defaults.Config = mustManagedConfig(t, "tracker:\n  github:\n    allowed_targets:\n      orgs:\n        - acme\n        - other\n")
 	desired := mustDesiredManaged(t, m, "acme", "api")
 
 	fc := forge.NewFakeClient()
-	fc.FileContents["acme/api/"+preset.OverlayPath] = []byte(managedConfigMarker + "create_issues:\n  allow_targets:\n    orgs:\n      - acme\n")
+	fc.FileContents["acme/api/"+preset.OverlayPath] = []byte(managedConfigMarker + "tracker:\n  github:\n    allowed_targets:\n      orgs:\n        - acme\n")
 	resolved := managedResolved(t, fc, m, "acme", "api")
 
 	files, actions := convergeManagedConfigFiles(context.Background(), resolved, desired, false, noopProgress)
@@ -1309,7 +1309,7 @@ func TestExistingOverlayInvalidValues(t *testing.T) {
 			err = checkEstablishedOverlayGate(context.Background(), cfg, desired)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "invalid runtime")
-			assert.Error(t, validateExistingOverlay([]byte(body)))
+			assert.Error(t, validateExistingOverlay([]byte(body), ForgeGitHub))
 		})
 	}
 }

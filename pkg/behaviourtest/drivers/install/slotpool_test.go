@@ -205,6 +205,7 @@ func TestPoolNames(t *testing.T) {
 	assert.Equal(t, StageOrg, PoolOrgName(0))
 	assert.Equal(t, "halfsend-01", PoolOrgName(1))
 	assert.Equal(t, "halfsend-12", PoolOrgName(12))
+	assert.Equal(t, "halfsend-22", PoolOrgName(22))
 	assert.Equal(t, "test-repo-01", PoolSlotName(1))
 	assert.Equal(t, "test-repo-12", PoolSlotName(12))
 	assert.Equal(t, "halfsend-01/test-repo-03", Slot{Org: "halfsend-01", Repo: "test-repo-03"}.String())
@@ -215,13 +216,13 @@ func TestDevPoolLayout(t *testing.T) {
 	l := PoolLayoutForEnvironment("dev", t.Logf)
 	assert.Equal(t, DevPoolLayout(DefaultPoolSize), l)
 	orgs := l.Orgs()
-	require.Len(t, orgs, 12)
+	require.Len(t, orgs, 22)
 	assert.Equal(t, "halfsend-01", orgs[0])
-	assert.Equal(t, "halfsend-12", orgs[11])
+	assert.Equal(t, "halfsend-22", orgs[21])
 	slots := l.Slots()
-	require.Len(t, slots, 144)
+	require.Len(t, slots, 264)
 	assert.Equal(t, Slot{Org: "halfsend-01", Repo: "test-repo-01"}, slots[0])
-	assert.Equal(t, Slot{Org: "halfsend-12", Repo: "test-repo-12"}, slots[143])
+	assert.Equal(t, Slot{Org: "halfsend-22", Repo: "test-repo-12"}, slots[263])
 }
 
 func TestStagePoolLayout_OnlyUnsuffixedOrg(t *testing.T) {
@@ -253,7 +254,7 @@ func TestNewSlotAllocator_Validation(t *testing.T) {
 
 	a, err := newSlotAllocator(DevPoolLayout(DefaultPoolSize), cf, nil)
 	require.NoError(t, err)
-	assert.Equal(t, 144, a.Capacity())
+	assert.Equal(t, 264, a.Capacity())
 }
 
 func TestSlotAllocator_ConcurrentClaimsAreDistinct(t *testing.T) {
@@ -623,6 +624,75 @@ func TestSlotAllocator_AcquireCancelAndHardError(t *testing.T) {
 	_, _, err = a.Acquire(cctx)
 	require.ErrorIs(t, err, context.Canceled)
 	assert.False(t, errors.Is(err, ErrPoolCapacityExhausted))
+}
+
+// quotaReportingClient is a fake client with a fixed rate-limit observation.
+type quotaReportingClient struct {
+	*forge.FakeClient
+	rate forge.RateLimit
+}
+
+func (c *quotaReportingClient) RateLimit() (forge.RateLimit, bool) { return c.rate, true }
+
+func TestSlotAllocator_AcquireLogsQuotaWhileWaiting(t *testing.T) {
+	old := slotClaimPoll
+	slotClaimPoll = 5 * time.Millisecond
+	t.Cleanup(func() { slotClaimPoll = old })
+
+	layout := PoolLayout{FirstOrgIndex: 0, OrgCount: 1, SlotsPerOrg: 1}
+	fc := forge.NewFakeClient()
+	fc.Repos = append(fc.Repos, forge.Repository{Name: "test-repo-01", FullName: "halfsend/test-repo-01"})
+	client := &quotaReportingClient{FakeClient: fc, rate: forge.RateLimit{
+		Remaining: 1234,
+		Limit:     5000,
+		Reset:     time.Now().Add(time.Hour),
+		Resource:  "core",
+	}}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var lines []string
+	a, err := newSlotAllocator(layout, func(context.Context, string) (forge.Client, error) { return client, nil },
+		func(format string, args ...any) {
+			line := fmt.Sprintf(format, args...)
+			if strings.HasPrefix(line, "[slots] quota during slot wait: ") {
+				lines = append(lines, line)
+				cancel()
+			}
+		})
+	require.NoError(t, err)
+
+	_, _, err = a.Acquire(ctx)
+	require.ErrorIs(t, err, context.Canceled)
+	require.Len(t, lines, 1)
+	assert.Contains(t, lines[0], "halfsend: remaining=1234/5000")
+	assert.Contains(t, lines[0], "resource=core")
+}
+
+func TestSlotAllocator_LogWaitQuotaSharesOneLinePerPoll(t *testing.T) {
+	layout := PoolLayout{FirstOrgIndex: 0, OrgCount: 2, SlotsPerOrg: 1}
+	var lines []string
+	a := newTestAllocator(t, layout, newFakePool(layout))
+	a.logf = func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
+	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
+	a.now = func() time.Time { return now }
+
+	// Nothing observed yet: no line to write.
+	a.logWaitQuota()
+	assert.Empty(t, lines)
+
+	a.quota["halfsend-01"] = forge.RateLimit{Remaining: 10, Limit: 50}
+	a.quota["halfsend-02"] = forge.RateLimit{Remaining: 20, Limit: 50}
+	now = now.Add(slotClaimPoll)
+	a.logWaitQuota()
+	a.logWaitQuota()
+	require.Len(t, lines, 1, "a second waiter in the same poll adds no line")
+	assert.Contains(t, lines[0], "halfsend-01: remaining=10/50")
+	assert.Contains(t, lines[0], "; halfsend-02: remaining=20/50")
+	assert.NotContains(t, lines[0], "\n")
+
+	now = now.Add(slotClaimPoll)
+	a.logWaitQuota()
+	assert.Len(t, lines, 2)
 }
 
 func TestSlotAllocator_QuotaIgnoresNonReporters(t *testing.T) {

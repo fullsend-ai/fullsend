@@ -20,7 +20,6 @@ version: "1"                         # Schema version (required)
 
 # ── Platform ─────────────────────────────────────────────────
 forge: github                        # Hosting platform: github, gitlab (auto-detected if omitted)
-tracker: jira                        # Default issue tracker for `fullsend issues` commands: github, gitlab, jira
 
 # ── Operations ───────────────────────────────────────────────
 kill_switch: false                   # Emergency stop — disables all agent dispatch when true
@@ -57,14 +56,28 @@ allowed_remote_resources:            # URL prefixes allowed for remote resources
   - https://raw.githubusercontent.com/fullsend-ai/fullsend/
   - https://raw.githubusercontent.com/fullsend-ai/agents/
 
-# ── Cross-repo issue creation ────────────────────────────────
-create_issues:
-  allow_targets:
-    orgs:                            # GitHub orgs agents may create issues in
-      - my-org
-    repos:                           # Specific repos (owner/name) agents may create issues in
-      - fullsend-ai/fullsend
-      - fullsend-ai/agents
+# ── Issue tracker ────────────────────────────────────────────
+tracker:                             # Issue tracker. At most one provider block: github, gitlab, or jira
+  github:
+    allowed_targets:
+      orgs:                          # GitHub orgs agents may create issues in
+        - my-org
+      repos:                         # Specific repos (owner/name) agents may create issues in
+        - fullsend-ai/fullsend
+        - fullsend-ai/agents
+  # gitlab:
+  #   allowed_targets:
+  #     groups: [my-group]           # GitLab groups (projects in the group and its subgroups)
+  #     repos: [my-group/sub/project] # Full project paths
+  # jira:
+  #   base_url: https://example.atlassian.net # Jira site URL (required with any Jira setting below)
+  #   api_url: https://api.atlassian.com      # Jira API gateway URL (optional; this is the default)
+  #   project: PROJ                  # This repository's Jira project key (required with base_url)
+  #   allowed_targets:
+  #     projects: [OTHER]            # Jira project keys for cross-project issue creation or moves
+  #   poll:
+  #     enabled: true                # Managed poll workflow switch (see the tracker.jira section)
+  #     query: 'labels = "fullsend" ORDER BY updated DESC' # JQL; always scoped to project
 
 # ── Authorization ────────────────────────────────────────────
 authorization:                       # Extra sources of permission for triggering agents
@@ -133,15 +146,6 @@ Schema version string. Must be `"1"`. Present in every config file.
 Hosting platform for the repository (`github` or `gitlab`). When omitted,
 fullsend auto-detects the forge from CI environment variables. Most
 installations do not need to set this explicitly.
-
-### `tracker`
-
-Default issue tracker for `fullsend issues` commands' `--tracker` flag
-(`github`, `gitlab`, or `jira`). Distinct from `forge` — a repository hosted
-on GitHub may track issues in Jira. When omitted, `--tracker` is required on
-every `fullsend issues` invocation. See
-[Jira Integration](../guides/user/jira-integration.md) for cross-platform
-setup.
 
 ### `kill_switch`
 
@@ -255,29 +259,141 @@ omitted inherits from parent; explicit empty (`[]`) denies all remote
 resources; a non-empty list is unioned with the parent's list. See
 [Layered Config Reference](../guides/infrastructure/layered-config-reference.md).
 
-### `create_issues`
+### `tracker`
 
-Controls cross-repo issue creation by agents. The `allow_targets` field
-restricts which orgs and repos agents may create issues in.
+The issue tracker, as a single provider-discriminated mapping. `tracker` holds
+at most one provider block — `github`, `gitlab`, or `jira` — and the block that
+is present selects the provider. It is the default backend for the `--tracker`
+flag of `fullsend issues` commands (distinct from `forge`: a repository hosted
+on GitHub may track issues in Jira), and its `allowed_targets` restrict where
+agents may create issues. Declare a provider with no extra targets as an empty
+block (for example `tracker: {jira: {}}`). When omitted, no provider is
+selected, `--tracker` is required on every `fullsend issues` invocation, and
+agents cannot create issues outside the repository they run in. Validation
+rejects a `tracker` mapping with more than one provider block. See
+[Jira Integration](../guides/user/jira-integration.md) for cross-platform
+setup.
 
-- **`allow_targets.orgs`** — GitHub organizations. All repos in these orgs are
-  allowed.
-- **`allow_targets.repos`** — Specific repos in `owner/name` format.
+- **`tracker.github.allowed_targets.orgs`** — GitHub organizations. All repos
+  in these orgs are allowed.
+- **`tracker.github.allowed_targets.repos`** — Specific repos in exactly
+  `owner/name` format.
+- **`tracker.gitlab.allowed_targets.groups`** — GitLab groups (full group
+  path). Projects in the group and its subgroups are allowed.
+- **`tracker.gitlab.allowed_targets.repos`** — Specific projects by full
+  project path (for example `group/subgroup/project`).
+- **`tracker.jira.allowed_targets.projects`** — Jira project keys (an
+  uppercase letter followed by uppercase letters, digits, or underscores).
 
-When omitted, agents cannot create issues outside the repository they are
-running in. That repository is always allowed, so it does not need an
+#### `tracker.jira` connection and polling settings
+
+`tracker.jira` also holds the Jira site, project, and poller settings. The
+mapping can be set in `.fullsend/config.yaml` or in a repository's managed
+`config:` block in `repos.yaml`:
+
+```yaml
+tracker:
+  jira:
+    base_url: https://example.atlassian.net
+    api_url: https://api.atlassian.com
+    project: PROJ
+    allowed_targets:
+      projects: [OTHER]
+    poll:
+      enabled: true
+      query: 'labels = "fullsend" AND statusCategory != Done ORDER BY updated DESC'
+```
+
+- **`tracker.jira.base_url`** — The Jira site URL. It must be an `https` URL
+  with no credentials, query, or fragment. It has no default.
+- **`tracker.jira.api_url`** — The Jira API gateway URL. It is optional and
+  defaults to `https://api.atlassian.com`. It is validated like `base_url`.
+  Fullsend's shared Jira client sends REST requests to
+  `{api_url}/ex/jira/{cloudId}/rest/api/3/...`. It discovers the cloud ID
+  from `{base_url}/_edge/tenant_info` and keeps `base_url` for issue browse
+  links. An override must serve the same gateway path layout. The Jira
+  poller (`fullsend poll --input-driver jira-poll`) uses this client.
+  `fullsend issues`, run-status updates, and reconciliation do not use this
+  setting yet. They switch to the shared client in
+  [#9078](https://github.com/fullsend-ai/fullsend/issues/9078).
+- **`tracker.jira.project`** — The key of the single Jira project for this
+  repository. It is not a fallback project, and it has no default.
+- **`tracker.jira.poll.enabled`** — Controls the managed poll workflow. `true`
+  installs or enables it, `false` removes or disables it. When `poll` or
+  `poll.enabled` is omitted, the workflow is not installed. `fullsend poll
+  --input-driver jira-poll` also reads it: unless it is `true`, the poller
+  skips the cycle without contacting Jira, and writes an empty dispatch
+  list to `--output` when that flag is set. It does not affect
+  `fullsend issues`. `fullsend repos install`
+  converges it. When it is `true`, install writes the Jira credentials from
+  `--jira-token` and `--jira-email` and ensures the managed poll resources.
+  When it is `false` or omitted, install removes those resources and keeps
+  the credentials. The forge-specific poll resources are not managed yet
+  (see [Jira polling](../cli/repos.md#jira-polling)).
+- **`tracker.jira.poll.query`** — The JQL the poller runs. It defaults to
+  `statusCategory != Done ORDER BY updated DESC`. The query is always scoped
+  to `project`: the poller runs `project = "<project>" AND (<query>)` and
+  keeps a trailing `ORDER BY` after the closing parenthesis. The parentheses
+  in the query must be balanced. For example, the query above runs as
+  `project = "PROJ" AND (labels = "fullsend" AND statusCategory != Done) ORDER BY updated DESC`.
+
+`base_url` and `project` are required once `base_url`, `api_url`, `project`,
+or `poll` is set. A mapping that only selects Jira (`jira: {}`) or only sets
+`allowed_targets` stays valid. This includes a mapping migrated from the
+legacy scalar `tracker: jira`.
+
+Credentials are never part of this mapping. Keys such as `token`,
+`api_token`, `email`, or `password` are rejected. Supply the Jira token and
+the optional account email as the `FULLSEND_JIRA_TOKEN` and
+`FULLSEND_JIRA_EMAIL` repository secrets. The shared Jira client treats the
+token as a scoped API token. When `FULLSEND_JIRA_EMAIL` is set, the client
+uses Basic auth with that email and a scoped user token (a bot user). When it
+is absent, the client sends the token as a Bearer token from a scoped
+service account. The token string does not show its type, so the email alone
+selects the mode. Other unknown keys under
+`tracker.jira`, `tracker.jira.poll`, and `tracker.jira.allowed_targets` are
+rejected too.
+
+`fullsend poll --input-driver jira-poll` reads the Jira site, API gateway,
+project, and query only from the effective `tracker.jira` config, so it
+requires `base_url` and `project`. The removed `--jira-url`,
+`--jira-project`, and `--jql` flags are rejected, and environment variables
+such as `JIRA_BASE_URL` are not read. The poller authenticates with the
+shared Jira client: `FULLSEND_JIRA_TOKEN` is required and
+`FULLSEND_JIRA_EMAIL` is optional, as described above. The legacy
+`JIRA_TOKEN` and `JIRA_USER_EMAIL` variables are not used by the poller.
+
+The `fullsend issues` commands (`get`, `create`, `post-comment`, `link`),
+`fullsend run` Jira status updates, and `fullsend reconcile-status` read the
+Jira connection only from these settings, with no flag or environment
+fallback: `base_url` and `project` must be set, and Jira API calls fail
+without them. `project` is the default `--project` of the issues commands.
+`fullsend issues create` refuses any other Jira project unless it is listed
+in `allowed_targets.projects`. See
+[Issue commands](../guides/user/issues-commands.md#jira-connection-settings).
+
+For GitHub and GitLab the scopes are additive: a destination is allowed if it
+matches a configured org or group, or a configured repo. Malformed entries
+are rejected: an empty org or group, an org containing `/`, a GitHub repo not
+in `owner/name` form, a GitLab path with empty segments or a repo without a
+namespace, or an invalid Jira project key.
+
+The repository agents run in is always allowed, so it does not need an
 entry. The default GitHub per-repo configuration generated without a preset lists
-both `fullsend-ai/fullsend` and `fullsend-ai/agents` in `allow_targets.repos`,
+both `fullsend-ai/fullsend` and `fullsend-ai/agents` in
+`tracker.github.allowed_targets.repos`,
 so retro proposals and triage prerequisites can reach the platform or agent
 repository that owns the change. These are installation defaults, not an
 automatic grant for every repository in `allowed_remote_resources`.
-Fresh GitLab installations instead record an explicit empty `allow_targets`
-policy: cross-project targets must be configured for the GitLab host.
+Fresh GitLab installations instead record an explicit empty
+`tracker.gitlab.allowed_targets` policy: cross-project targets must be
+configured for the GitLab host.
 Explicit settings are preserved. Retro and triage post-scripts currently read
 only the overlay (`.fullsend/config.yaml`), not the preset
 (`.fullsend/config.base.yaml`). Until
 [agents#1728](https://github.com/fullsend-ai/agents/issues/1728) is fixed,
-preset users must declare the required `config.create_issues.allow_targets` in the
+preset users must declare the required
+`config.tracker.<provider>.allowed_targets` in the
 managed repository’s `repos.yaml` entry and rerun `fullsend repos install`,
 or edit `.fullsend/config.yaml` for an unmanaged installation. Updating only
 the preset does not enable these cross-repository operations. Include all
@@ -286,6 +402,67 @@ Existing installations retain their permissions on upgrade; on GitHub, to opt in
 `fullsend-ai/agents` to the existing target list in the managed repository’s
 `repos.yaml` configuration, or in `.fullsend/config.yaml` for an installation
 not managed through `fullsend repos`. Preserve any other targets you need.
+
+In the layered config system, `tracker` replaces the parent's whole object
+when set, so layers never combine two providers. See
+[Layered Config Reference](../guides/infrastructure/layered-config-reference.md).
+
+**Breaking change — migration from the scalar `tracker`:** `tracker` used to be
+a scalar (`tracker: jira`). A scalar value is no longer accepted: validation
+(`fullsend lint` and CLI config writes) and config loading reject it with a
+migration message. A `repos.yaml` managed `config:` block containing it is
+converted by `fullsend repos install` (see below). Replace it with the provider
+block:
+
+```yaml
+# before
+tracker: jira
+# after
+tracker:
+  jira: {}
+```
+
+**Migration from `create_issues`:** the top-level `create_issues` key is
+removed. Runtime config loading fails with a migration error when either
+`.fullsend/config.yaml` or `.fullsend/config.base.yaml` still contains
+`create_issues`; the key is never silently ignored. Validation also rejects it.
+Move `create_issues.allow_targets.orgs` and `repos`
+to `tracker.github.allowed_targets.orgs` and `repos` on GitHub, to
+`tracker.gitlab.allowed_targets.groups` and `repos` on GitLab, or to
+`tracker.jira.allowed_targets.projects` on Jira, and keep only one provider
+block.
+
+**Automatic migration of managed configuration:** `fullsend repos install`
+converts the legacy scalar `tracker` and `create_issues` keys in `repos.yaml`
+managed `config:` blocks (`defaults.config`, the forge section's `config`, and
+each repository entry's `config`) before the manifest is decoded, writes the
+converted manifest, and re-renders each fullsend-managed `.fullsend/config.yaml`
+from it. Each layer that set a legacy key gets the full `tracker` mapping that
+was in effect there, because the legacy keys were inherited separately while a
+`tracker` mapping replaces the parent's. The effective provider and targets of
+every repository stay the same:
+
+- A layer with no provider uses the repository's forge (`github` or `gitlab`).
+  A `create_issues` block in `defaults.config` with no provider is moved to each
+  forge section's `config`, because `defaults.config` applies to both forges.
+- GitHub `orgs` and `repos` stay organization and repository grants under
+  `tracker.github.allowed_targets`. GitLab `repos` move to
+  `tracker.gitlab.allowed_targets.repos`.
+- Install stops before any write, naming the manifest path and the edit to
+  make, when a target has no unambiguous equivalent. That covers repository or
+  organization targets under a Jira provider (Jira targets are project keys
+  under `tracker.jira.allowed_targets.projects` and are never derived from
+  repository paths), organization targets on GitLab (list the groups under
+  `tracker.gitlab.allowed_targets.groups`), and a layer that combines a
+  `tracker` mapping with `create_issues`.
+- A scalar `tracker` with no `create_issues` in the manifest becomes a provider
+  block with no `allowed_targets`. As a `tracker` mapping it replaces any
+  `tracker` mapping in the preset (`.fullsend/config.base.yaml`).
+
+Running install again changes nothing. A read-only or HTTPS manifest is
+converted in memory for that run and install prints the edits to apply to its
+source. `--dry-run` reports the conversion without writing. Markerless
+`.fullsend/config.yaml` files and presets are not converted; edit them by hand.
 
 ### `authorization`
 
@@ -320,8 +497,8 @@ GitLab authorization
 
 | Key | Meaning |
 |---|---|
-| `write.groups`, `write.accounts` | Jira groups (by name or group ID) and Jira account IDs granted the Fullsend `write` role |
-| `triage.groups`, `triage.accounts` | Jira groups and account IDs granted the Fullsend `triage` role |
+| `write.groups`, `write.accounts` | Jira groups (by name or group ID) and Jira account IDs granted the fullsend `write` role |
+| `triage.groups`, `triage.accounts` | Jira groups and account IDs granted the fullsend `triage` role |
 | `labels` | How a label-added event is authorized: `jira_editors` (default once the entry is present), `allowlist`, or `project_roles` |
 
 - **Slash commands and other non-label events:** when the entry sets a

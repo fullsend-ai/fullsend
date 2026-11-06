@@ -118,6 +118,7 @@ prefix per level (`base.env.runner`, `base.overlays[<n>].…`).
 |-------|----------|---------|
 | `runner_env` | warning | `runner_env` is deprecated; use `env.runner` instead ([ADR 0055](../ADRs/0055-unified-env-var-delivery.md)) |
 | `env.sandbox` | warning | `env.sandbox` coexists with a `host_files` entry delivering `.env.d/` files; `env.sandbox` values take precedence on key collision |
+| `env.sandbox` | warning | One or more `env.sandbox` keys are reserved (runner infrastructure names or the sandbox credential deny-list, matched case-insensitively) and will be dropped instead of exported into the sandbox; the message names every dropped key. `fullsend run` and `fullsend lock` report the same warning. Because it is a warning, `--strict` fails on it |
 | `allowed_remote_resources` | warning | `allowed_remote_resources` is declared without `allow_runtime_fetch: true`; the implicit runtime fetch service start is deprecated — add `allow_runtime_fetch: true` to silence it |
 | `forge` | warning | `forge` is deprecated; use overlays with CEL `when` expressions instead ([ADR 0088](../ADRs/0088-cel-guarded-overlays.md)) |
 | `validation_loop.preflight_check` | error | The value looks like a bare script path (for example `scripts/common-preflight.sh`) rather than a self-contained command; `preflight_check` runs verbatim as a `sh -c` command on the host and is never fetched or resolved like `pre_script`/`post_script` — if a fetched harness script was intended, use `pre_script`; otherwise inline the command (for example `python3 -c 'import jsonschema'`) |
@@ -159,6 +160,13 @@ single document. Exit codes and what is linted are unchanged.
 | `summary.warnings` | Count of warning-severity items in `diagnostics` |
 | `diagnostics` | One object per finding. Harness lint diagnostics include `field`. Config-level diagnostics use `agent` `"config"`. A harness that fails to resolve, load, or validate is an error-severity item with an empty `field` |
 
+The document matches [`lint.schema.json`](lint.schema.json). Consumers can
+validate stdout against that file. The schema sets `additionalProperties`
+to `false`, so unknown fields are errors. Adding, removing, or renaming a
+field, or changing a type or enum, is an incompatible change: bump
+`schema_version` and update the schema in the same change. Do not add
+fields under version `1`.
+
 A missing `config.yaml`, an unreadable config file, or an invalid
 `--format` value still fails before a document is written.
 
@@ -183,3 +191,4 @@ together at the end.
 - [Checking a trigger before you merge](../guides/user/cel-triggers-reference.md#checking-a-trigger-before-you-merge) for passing and failing `trigger` examples and a CI job
 - [Bring Your Own Agent](../guides/user/bring-your-own-agent.md) for harness and `config.yaml` layout
 - [CLI internals](../guides/dev/cli-internals.md) for the full command tree
+- [lint JSON schema](lint.schema.json) for `--format json`

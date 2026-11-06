@@ -210,8 +210,9 @@ func extractCommand(body string) (command, instruction string) {
 // authorizes by Jira's Edit Issues permission), or the Jira project role.
 //
 // roleMembership is loaded once per cycle for a single p.opts.JiraProject.
-// A --jql spanning multiple projects can still surface issues outside that
-// project, so an actor's project role is only honored for issues in the
+// The poller query is scoped to that project, but as defensive validation
+// (for example a misconfigured poll.query, or an issue moved between
+// projects) an actor's project role is only honored for issues in the
 // configured project; anything else fails closed to "external" rather than
 // leaking a role granted in one project onto an issue in another (see PR
 // #5778 review).

@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/forge/jira"
 )
@@ -20,6 +23,43 @@ func newTestJiraClient(t *testing.T, jc jiraClient, baseURL string) *JiraClient 
 		t.Fatalf("NewJiraClient(%q) returned error: %v", baseURL, err)
 	}
 	return c
+}
+
+// TestJiraClient_ScopedClientBrowseLinksUseSiteURL checks that a client
+// built with jira.NewScoped sends REST calls through the API gateway while
+// issue browse links stay on the site URL.
+func TestJiraClient_ScopedClientBrowseLinksUseSiteURL(t *testing.T) {
+	const cloudID = "11111111-2222-3333-4444-555555555555"
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	site := srv.URL + "/site"
+	mux.HandleFunc("/site/_edge/tenant_info", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"cloudId":"` + cloudID + `"}`))
+	})
+	mux.HandleFunc("/gw/ex/jira/"+cloudID+"/rest/api/3/issue/PROJ-7", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"key":"PROJ-7","fields":{"summary":"title"}}`))
+	})
+
+	jc, err := jira.NewScoped(jira.ScopedConfig{BaseURL: site, APIURL: srv.URL + "/gw"}, jira.Credentials{Token: "tok"})
+	if err != nil {
+		t.Fatalf("NewScoped: %v", err)
+	}
+	issue, err := newTestJiraClient(t, jc, site).GetIssue(context.Background(), "PROJ", 7)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if want := site + "/browse/PROJ-7"; issue.URL != want {
+		t.Errorf("issue.URL = %q, want %q", issue.URL, want)
+	}
+}
+
+// TestJiraDefaultAPIURLMatchesConfig keeps the client default gateway in
+// step with the tracker.jira.api_url default.
+func TestJiraDefaultAPIURLMatchesConfig(t *testing.T) {
+	if jira.DefaultAPIURL != config.DefaultJiraAPIURL {
+		t.Errorf("jira.DefaultAPIURL = %q, config.DefaultJiraAPIURL = %q", jira.DefaultAPIURL, config.DefaultJiraAPIURL)
+	}
 }
 
 func TestNewJiraClient_RejectsCredentialBaseURL(t *testing.T) {
@@ -681,6 +721,23 @@ func TestJiraClient_FindStatusComment_IgnoresQuotedMarker(t *testing.T) {
 	}
 }
 
+// listedComment returns the comment with id as ListJiraComments reports
+// it, properties included, failing the test if it is absent.
+func listedComment(t *testing.T, c *JiraClient, id string) jira.Comment {
+	t.Helper()
+	comments, err := c.ListJiraComments(context.Background(), "PROJ", 42)
+	if err != nil {
+		t.Fatalf("ListJiraComments: %v", err)
+	}
+	for _, jc := range comments {
+		if jc.ID == id {
+			return jc
+		}
+	}
+	t.Fatalf("comment %s not found", id)
+	return jira.Comment{}
+}
+
 func TestJiraClient_MigrateAndUpdateComment(t *testing.T) {
 	fc := &FakeJiraClient{}
 	c := newTestJiraClient(t, fc, "https://acme.atlassian.net")
@@ -695,7 +752,7 @@ func TestJiraClient_MigrateAndUpdateComment(t *testing.T) {
 	}
 
 	// Migrate: update body and set property.
-	err = c.MigrateAndUpdateComment(ctx, "PROJ", 42, "1", "migrated content", marker)
+	err = c.MigrateAndUpdateComment(ctx, "PROJ", 42, listedComment(t, c, "1"), "migrated content", marker)
 	if err != nil {
 		t.Fatalf("MigrateAndUpdateComment: %v", err)
 	}
@@ -703,6 +760,9 @@ func TestJiraClient_MigrateAndUpdateComment(t *testing.T) {
 	// Verify body was updated.
 	if fc.UpdatedBody != "migrated content" {
 		t.Errorf("UpdatedBody = %q, want %q", fc.UpdatedBody, "migrated content")
+	}
+	if fc.PropertyWrites != 1 {
+		t.Errorf("PropertyWrites = %d, want 1 for a legacy migration", fc.PropertyWrites)
 	}
 
 	// Verify property was set.
@@ -720,14 +780,82 @@ func TestJiraClient_MigrateAndUpdateComment(t *testing.T) {
 	}
 }
 
+// A comment already carrying an exactly matching marker property is
+// updated without any property write, so a Jira rejection of property
+// writes cannot block the body update.
+func TestJiraClient_MigrateAndUpdateComment_ExactPropertySkipsPropertyWrite(t *testing.T) {
+	fc := &FakeJiraClient{}
+	c := newTestJiraClient(t, fc, "https://acme.atlassian.net")
+	ctx := context.Background()
+	marker := "<!-- fullsend:triage-agent -->"
+
+	created, err := c.CreateCommentWithMarker(ctx, "PROJ", 42, "first run", marker)
+	if err != nil {
+		t.Fatalf("CreateCommentWithMarker: %v", err)
+	}
+	fc.PropertyError = errors.New("403 forbidden")
+
+	if err := c.MigrateAndUpdateComment(ctx, "PROJ", 42, listedComment(t, c, created.ID), "second run", marker); err != nil {
+		t.Fatalf("MigrateAndUpdateComment: %v", err)
+	}
+	if fc.PropertyWrites != 0 {
+		t.Errorf("PropertyWrites = %d, want 0 for an exact property match", fc.PropertyWrites)
+	}
+	if fc.UpdatedCommentID != created.ID || fc.UpdatedBody != "second run" {
+		t.Errorf("UpdateComment(%q, %q), want (%q, %q)", fc.UpdatedCommentID, fc.UpdatedBody, created.ID, "second run")
+	}
+}
+
+// Only a decodable property whose marker equals the requested marker
+// counts as an exact match; anything else is (re)written before the body.
+func TestJiraClient_MigrateAndUpdateComment_InexactPropertyIsWritten(t *testing.T) {
+	marker := "<!-- fullsend:triage-agent -->"
+	for _, tc := range []struct {
+		name  string
+		value string
+	}{
+		{"malformed value", `not json`},
+		{"different marker", `{"marker":"<!-- fullsend:review-agent -->"}`},
+		{"key without marker", `{}`},
+		{"wrong value shape", `"` + marker + `"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fc := &FakeJiraClient{
+				CommentProperties: map[string]map[string]json.RawMessage{
+					"PROJ-42/1": {stickyPropertyKey: json.RawMessage(tc.value)},
+				},
+			}
+			c := newTestJiraClient(t, fc, "https://acme.atlassian.net")
+			ctx := context.Background()
+			if _, err := fc.CreateComment(ctx, "PROJ-42", "content"); err != nil {
+				t.Fatalf("CreateComment: %v", err)
+			}
+			comment := listedComment(t, c, "1")
+			if hasStickyMarkerProperty(comment, marker) {
+				t.Fatalf("hasStickyMarkerProperty(%s) = true, want false", tc.value)
+			}
+
+			if err := c.MigrateAndUpdateComment(ctx, "PROJ", 42, comment, "updated", marker); err != nil {
+				t.Fatalf("MigrateAndUpdateComment: %v", err)
+			}
+			if fc.PropertyWrites != 1 {
+				t.Errorf("PropertyWrites = %d, want 1", fc.PropertyWrites)
+			}
+			if !hasStickyMarkerProperty(listedComment(t, c, "1"), marker) {
+				t.Error("property should hold the requested marker after the update")
+			}
+		})
+	}
+}
+
 func TestJiraClient_MigrateAndUpdateComment_SetPropertyError(t *testing.T) {
 	fc := &FakeJiraClient{}
 	c := newTestJiraClient(t, fc, "https://acme.atlassian.net")
 	ctx := context.Background()
 	marker := "<!-- fullsend:triage-agent -->"
 
-	// Create a comment to update.
-	_, err := fc.CreateComment(ctx, "PROJ-42", "content")
+	// Create a legacy comment to migrate.
+	_, err := fc.CreateComment(ctx, "PROJ-42", marker+"\nlegacy content")
 	if err != nil {
 		t.Fatalf("CreateComment: %v", err)
 	}
@@ -735,12 +863,25 @@ func TestJiraClient_MigrateAndUpdateComment_SetPropertyError(t *testing.T) {
 	// Simulate a property write failure.
 	fc.PropertyError = errors.New("403 forbidden")
 
-	err = c.MigrateAndUpdateComment(ctx, "PROJ", 42, "1", "updated", marker)
+	err = c.MigrateAndUpdateComment(ctx, "PROJ", 42, listedComment(t, c, "1"), "updated", marker)
 	if err == nil {
 		t.Fatal("expected error from MigrateAndUpdateComment when SetCommentProperty fails")
 	}
 	if !errors.Is(err, fc.PropertyError) {
 		t.Errorf("error should wrap PropertyError, got: %v", err)
+	}
+
+	// The body must be untouched, so the legacy marker still identifies
+	// the comment on the next run.
+	if fc.UpdatedCommentID != "" {
+		t.Errorf("UpdateComment called for comment %q after the property write failed", fc.UpdatedCommentID)
+	}
+	comments, err := c.ListJiraComments(ctx, "PROJ", 42)
+	if err != nil {
+		t.Fatalf("ListJiraComments: %v", err)
+	}
+	if found := c.FindCommentByMarkerProperty(comments, marker); found == nil || found.ID != "1" {
+		t.Errorf("FindCommentByMarkerProperty = %+v, want legacy comment 1", found)
 	}
 }
 
@@ -750,8 +891,8 @@ func TestJiraClient_MigrateAndUpdateComment_UpdateCommentError(t *testing.T) {
 	ctx := context.Background()
 	marker := "<!-- fullsend:triage-agent -->"
 
-	// Create a comment to update.
-	_, err := fc.CreateComment(ctx, "PROJ-42", "content")
+	// Create a legacy comment to migrate.
+	_, err := fc.CreateComment(ctx, "PROJ-42", marker+"\nlegacy content")
 	if err != nil {
 		t.Fatalf("CreateComment: %v", err)
 	}
@@ -759,12 +900,25 @@ func TestJiraClient_MigrateAndUpdateComment_UpdateCommentError(t *testing.T) {
 	// Simulate an update failure (property write succeeds, body update fails).
 	fc.UpdateError = forge.ErrNotFound
 
-	err = c.MigrateAndUpdateComment(ctx, "PROJ", 42, "1", "updated", marker)
+	err = c.MigrateAndUpdateComment(ctx, "PROJ", 42, listedComment(t, c, "1"), "updated", marker)
 	if err == nil {
 		t.Fatal("expected error from MigrateAndUpdateComment when UpdateComment fails")
 	}
 	if !errors.Is(err, forge.ErrNotFound) {
 		t.Errorf("error should wrap forge.ErrNotFound, got: %v", err)
+	}
+
+	// The migrated property keeps the comment discoverable for a retry.
+	comments, err := c.ListJiraComments(ctx, "PROJ", 42)
+	if err != nil {
+		t.Fatalf("ListJiraComments: %v", err)
+	}
+	found := c.FindCommentByMarkerProperty(comments, marker)
+	if found == nil || found.ID != "1" {
+		t.Fatalf("FindCommentByMarkerProperty = %+v, want comment 1", found)
+	}
+	if !hasStickyMarkerProperty(*found, marker) {
+		t.Error("comment should be found via its migrated property")
 	}
 }
 

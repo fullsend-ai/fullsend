@@ -73,6 +73,22 @@ const (
 // Errors are logged but not returned — log collection is best-effort
 // and must not fail the scenario.
 func saveWorkflowRunLogs(ctx context.Context, w *world.World, label string, run *forge.WorkflowRun) {
+	saveRunLogs(w, label, run, func() (string, error) {
+		return writeWorkflowRunLogs(ctx, w, label, run)
+	})
+}
+
+// saveFetchedWorkflowRunLogs is saveWorkflowRunLogs for logs, or a fetch
+// error, that the caller already got from GetRunLogs, so a step that also
+// reads the logs fetches them once.
+func saveFetchedWorkflowRunLogs(w *world.World, label string, run *forge.WorkflowRun, logs string, fetchErr error) {
+	saveRunLogs(w, label, run, func() (string, error) {
+		return writeFetchedWorkflowRunLogs(w, label, run, logs, fetchErr)
+	})
+}
+
+// saveRunLogs runs write for the two save functions above and logs the outcome.
+func saveRunLogs(w *world.World, label string, run *forge.WorkflowRun, write func() (string, error)) {
 	if run == nil {
 		return
 	}
@@ -83,7 +99,7 @@ func saveWorkflowRunLogs(ctx context.Context, w *world.World, label string, run 
 		return
 	}
 
-	logPath, err := writeWorkflowRunLogs(ctx, w, label, run)
+	logPath, err := write()
 	if err != nil {
 		logRedacted(w, "save workflow run logs: %v", err)
 		return
@@ -103,7 +119,12 @@ func writeWorkflowRunLogs(ctx context.Context, w *world.World, label string, run
 	defer cancel()
 
 	logs, fetchErr := w.CI.GetRunLogs(fetchCtx, w.Org, w.RepoName, run.ID)
+	return writeFetchedWorkflowRunLogs(w, label, run, logs, fetchErr)
+}
 
+// writeFetchedWorkflowRunLogs is writeWorkflowRunLogs for the result of a
+// GetRunLogs call the caller already made.
+func writeFetchedWorkflowRunLogs(w *world.World, label string, run *forge.WorkflowRun, logs string, fetchErr error) (string, error) {
 	// Both forge clients return an empty string and no error when the run
 	// has no jobs to read (for example a run that has not started any job).
 	// Empty output is not a log snapshot: report it as unavailable, with an
@@ -160,36 +181,55 @@ func writeWorkflowRunLogs(ctx context.Context, w *world.World, label string, run
 	return logPath, nil
 }
 
-// partialLogMarkers are the in-band notes the forge clients embed in the
-// text returned by GetRunLogs, without returning an error, when a single
-// job's log (or the whole aggregate) could not be fetched in full.
-var partialLogMarkers = []string{
-	"[failed to fetch logs:",
-	"[logs unavailable:",
-	"[failed to read logs:",
-	"error fetching trace:",
-	"error reading trace:",
-	"aggregate trace limit",
-	// Truncation notes: the GitHub client reads one page of jobs and 1 MiB
-	// of each job's log, the GitLab client 10 MiB of each trace.
-	"[job list truncated:",
-	"[log truncated:",
-	"trace truncated at",
+// partialLogNote is one in-band note the forge clients embed in the text
+// returned by GetRunLogs, without returning an error, when a single job's
+// log (or the whole aggregate) could not be fetched in full.
+type partialLogNote struct {
+	marker string
+	// truncation marks a size or page cap, which a later fetch of the same
+	// run returns again; any other note records a fetch that failed and may
+	// succeed later.
+	truncation bool
+}
+
+// partialLogMarkers are the notes partialLogMarker looks for. The GitHub
+// client reads one page of jobs and 1 MiB of each job's log, the GitLab
+// client 10 MiB of each trace and 100 MiB in all.
+var partialLogMarkers = []partialLogNote{
+	{marker: "[failed to fetch logs:"},
+	{marker: "[logs unavailable:"},
+	{marker: "[failed to read logs:"},
+	{marker: "error fetching trace:"},
+	{marker: "error reading trace:"},
+	{marker: "aggregate trace limit", truncation: true},
+	{marker: "[job list truncated:", truncation: true},
+	{marker: "[log truncated:", truncation: true},
+	{marker: "trace truncated at", truncation: true},
 }
 
 // runLogsComplete reports whether logs, fetched for run, are a complete
 // snapshot: the run has reached a terminal status and no job's log was
-// replaced by a fetch-failure note.
+// replaced by a fetch-failure note or cut at a cap.
 func runLogsComplete(run forge.WorkflowRun, logs string) bool {
-	if run.Status != "completed" {
-		return false
-	}
-	for _, marker := range partialLogMarkers {
-		if strings.Contains(logs, marker) {
-			return false
+	return run.Status == "completed" && partialLogMarker(logs).marker == ""
+}
+
+// partialLogMarker returns the note logs holds, a fetch-failure note before
+// a truncation note, or the zero note when the text carries none.
+func partialLogMarker(logs string) partialLogNote {
+	var found partialLogNote
+	for _, note := range partialLogMarkers {
+		if !strings.Contains(logs, note.marker) {
+			continue
+		}
+		if !note.truncation {
+			return note
+		}
+		if found.marker == "" {
+			found = note
 		}
 	}
-	return true
+	return found
 }
 
 // sensitiveEnvSuffixes mark runner environment variables whose values are

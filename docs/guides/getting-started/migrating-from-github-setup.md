@@ -19,7 +19,7 @@ The procedure is the same in both cases: declare the values in `repos.yaml`,
 supply credentials when you run install, preview, install, and verify.
 
 **Target audience:** org maintainers and platform administrators who install
-Fullsend with `repos install`. For manifest structure and day-2 operations,
+fullsend with `repos install`. For manifest structure and day-2 operations,
 see [Repo Management](repo-management.md).
 
 ## Prerequisites
@@ -89,7 +89,7 @@ see [Repo Management](repo-management.md).
   `vendor`, install removes the stale binary, the vendor manifest, the
   `.defaults/` content, and the local reusable workflows. Fullsend's own
   callers are rewritten in the same scaffold commit. Install deletes only
-  files Fullsend is known to have shipped; a file you created, even one
+  files fullsend is known to have shipped; a file you created, even one
   the vendor manifest lists, is kept. If a workflow would still call a local reusable
   workflow, install keeps everything and reports the pending work. See
   [Turning vendoring off](../../cli/repos.md#turning-vendoring-off).
@@ -126,7 +126,7 @@ These inputs are never written to `repos.yaml`:
 
 | Purpose | Flags |
 |---|---|
-| Secrets and sensitive provisioning | `--openai-api-key`, `--vertex-project`, `--vertex-wif-provider`, `--gitlab-role-token role=token` (repeatable), `--gitlab-role-registry`, `--gitlab-token` (or `GITLAB_TOKEN`) |
+| Secrets and sensitive provisioning | `--openai-api-key`, `--jira-token`, `--jira-email`, `--vertex-project`, `--vertex-wif-provider`, `--gitlab-role-token role=token` (repeatable), `--gitlab-role-registry`, `--gitlab-token` (or `GITLAB_TOKEN`) |
 | Local vendoring artifacts | `--fullsend-binary`, `--fullsend-source`. Valid only when a selected repository resolves `vendor: true`; otherwise install fails and points at `fullsend repos set defaults.vendor true` |
 | One-run controls | `-f` / `--manifest`, `--dry-run`, `--direct`, `--concurrency`, `--force`, `--reactivate-schedules`, `--rotate-gitlab-roles`, `--rotate-gitlab-role`, `--rotate-gitlab-trigger-token`, `--rotate-gitlab-trigger-account` |
 
@@ -243,7 +243,7 @@ file needs action, install stops before any manifest or forge write.
 
 ### Fresh repository
 
-The repository has no Fullsend files.
+The repository has no fullsend files.
 
 1. Declare the repository and its settings:
 
@@ -285,7 +285,7 @@ The repository has no Fullsend files.
    ```
 
    A first install without a preset records
-   `config.create_issues.allow_targets.repos: [fullsend-ai/fullsend, fullsend-ai/agents]` on
+   `config.tracker.github.allowed_targets.repos: [fullsend-ai/fullsend, fullsend-ai/agents]` on
    the entry, and writes `github.fullsend_ref` when it is unset. Commit
    both.
 
@@ -403,7 +403,7 @@ Install rejects a rewrite that makes the effective configuration less
 restrictive than the current one unless `repos.yaml` declares that
 relaxation. The compared keys are `kill_switch`, `roles`,
 `allowed_remote_resources`, agent `enabled: false` suppressions,
-`create_issues.allow_targets`, `inference.gateway.url`, and
+`tracker.<provider>.allowed_targets`, `inference.gateway.url`, and
 `inference.gateway.audience`. The output names the affected keys.
 
 After the repository is in `repos.yaml`, stop running `github setup` on it.
@@ -463,17 +463,38 @@ reused.
 Install writes to `repos.yaml` itself only in two cases, both of which
 predate this change:
 
-- On a first install with no preset and no `create_issues` declaration, it
-  records `config.create_issues.allow_targets.repos: [fullsend-ai/fullsend, fullsend-ai/agents]`
+- On a first install with no preset and no `tracker` declaration, it
+  records `config.tracker.github.allowed_targets.repos: [fullsend-ai/fullsend, fullsend-ai/agents]`
   on a GitHub repository's entry. For GitLab it records the explicit empty
-  policy `config.create_issues.allow_targets: {}`. For a repository covered only by a glob, this
+  policy `config.tracker.gitlab.allowed_targets: {}`. For a repository covered only by a glob, this
   adds an explicit entry.
 - After a first install, it writes the CLI's release to
   `github.fullsend_ref` or `gitlab.fullsend_ref` when that key is unset.
 
 ### Permit agent improvement proposals on existing installations
 
-Fresh GitHub no-preset installations without an explicit `create_issues` setting
+The top-level `create_issues` key has been replaced by
+`tracker.<provider>.allowed_targets`, and a leftover `create_issues` is
+rejected by validation. Move `create_issues.allow_targets.orgs` and `repos` to
+`tracker.github.allowed_targets.orgs` and `repos` on GitHub, to
+`tracker.gitlab.allowed_targets.groups` and `repos` on GitLab, or to
+`tracker.jira.allowed_targets.projects` on Jira; see the
+[Config Reference](../../reference/config-reference.md#tracker).
+
+**Breaking change:** `tracker` is now this same provider-discriminated mapping,
+so the old scalar form (`tracker: jira`) is rejected. Replace it with
+`tracker: {jira: {}}` (or `github` / `gitlab`), merged into any
+`allowed_targets` you set for the same provider; only one provider block is
+allowed. `fullsend repos install` converts legacy scalar `tracker` values and
+`create_issues` targets in managed `repos.yaml` `config:` blocks, writes the
+converted manifest, and re-renders the managed `.fullsend/config.yaml` files,
+keeping each repository's effective provider and targets. It stops with the
+exact edit to make when a target has no unambiguous equivalent, such as
+repositories under a Jira provider or organizations on GitLab; see
+[Automatic migration of managed configuration](../../reference/config-reference.md#tracker).
+Edit unmanaged `.fullsend/config.yaml` files and presets by hand.
+
+Fresh GitHub no-preset installations without an explicit `tracker` setting
 include both `fullsend-ai/fullsend` and `fullsend-ai/agents` as cross-repository
 issue targets. Upgrading the CLI or rerunning install does not widen an
 established installation’s permissions or override a declared preset.
@@ -481,28 +502,28 @@ established installation’s permissions or override a declared preset.
 Fresh GitLab installations default to an explicit empty cross-project
 allowlist. Existing GitLab installations may still contain the old
 `fullsend-ai/fullsend` default. Remove that entry from
-`config.create_issues.allow_targets.repos` in the repository’s `repos.yaml`
+`config.tracker.gitlab.allowed_targets.repos` in the repository’s `repos.yaml`
 configuration, then rerun `fullsend repos install` for that repository.
-Declare `config.create_issues.allow_targets: {}` to allow no cross-project
+Declare `config.tracker.gitlab.allowed_targets: {}` to allow no cross-project
 targets, or list the real project paths you intend to authorize on your
 GitLab host. Preserve other intended targets. For an unmanaged installation,
-make the equivalent change under `create_issues` in `.fullsend/config.yaml`.
+make the equivalent change under `tracker` in `.fullsend/config.yaml`.
 A GitHub repository name is interpreted as a path on the GitLab host; it
 does not route proposals to GitHub. Upgrading alone does not remove the old
 entry.
 
 To let retro file agent-layer proposals from an existing managed GitHub installation,
 add `fullsend-ai/agents` to the existing
-`config.create_issues.allow_targets.repos` list in the repository’s `repos.yaml`
+`config.tracker.github.allowed_targets.repos` list in the repository’s `repos.yaml`
 entry (or the manifest layer that owns that policy), then run `fullsend repos
 install` for that repository. Keep any existing targets; this is an explicit
 permission change. For an installation still using `github setup`, edit its
 `.fullsend/config.yaml` instead.
 
 For preset-backed installations, declare the required
-`config.create_issues.allow_targets` in the repository’s `repos.yaml` entry
+`config.tracker.<provider>.allowed_targets` in the repository’s `repos.yaml` entry
 and rerun `fullsend repos install`; for an unmanaged installation, declare
-`create_issues.allow_targets` directly in `.fullsend/config.yaml`. Retro and
+`tracker.<provider>.allowed_targets` directly in `.fullsend/config.yaml`. Retro and
 triage currently read only that overlay, not `.fullsend/config.base.yaml`,
 so changing the preset alone has no effect on their allowlist. Include all
 intended targets in the overlay policy. This workaround applies to both

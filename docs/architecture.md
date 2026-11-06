@@ -88,7 +88,13 @@ each target repository's **`.fullsend/`** directory
 
 - What is the right isolation level — process, container, microVM, or separate cluster? (See [agent-infrastructure.md](problems/agent-infrastructure.md) and [security-threat-model.md](problems/security-threat-model.md).)
 - ~~How granular is network regulation? Allowlist of endpoints, or coarser controls?~~ Decided in [ADR 0065](ADRs/0065-provider-backed-policy-composition.md): network access is granted through provider profiles with per-endpoint allowlists.
-- Does the sandbox provide a pre-built environment (tools, language runtimes, repo clones), or does the agent set up its own workspace within the sandbox?
+- Does the sandbox provide a pre-built environment (tools, language
+  runtimes, repo clones), or does the agent set up its own workspace
+  within the sandbox? (The environment-variable dimension is now a
+  published, generated contract —
+  [ADR 0146](ADRs/0146-sandbox-environment-contract-manifest.md),
+  [contract](normative/sandbox-env/v1/README.md); tools, runtimes,
+  and workspace setup remain open.)
 - ~~Is the sandbox the same for all agent roles, or does each role get a differently-scoped sandbox?~~ Decided in [ADR 0020](ADRs/0020-composable-single-responsibility-agents-with-individual-sandboxes.md): each agent gets its own sandbox with policies designed for its responsibility.
 
 **Decided:**
@@ -133,7 +139,12 @@ repo baseline and overrides)
   sub-maps replaces `runner_env` and manual `.env` files. The runner generates
   the sandbox `.env` file from `env.sandbox` at bootstrap. `runner_env` is
   deprecated ([ADR 0055](ADRs/0055-unified-env-var-delivery.md), amending
-  [ADR 0024](ADRs/0024-harness-definitions.md)).
+  [ADR 0024](ADRs/0024-harness-definitions.md)). What the runner itself
+  injects — which env vars every sandbox receives, which arrive per runtime
+  via `EnvExports()`, and which keys are reserved from harness override — is
+  published as generated, tag-pinned JSON Schemas enforced by an always-on
+  golden test ([ADR 0146](ADRs/0146-sandbox-environment-contract-manifest.md);
+  [contract](normative/sandbox-env/v1/README.md)).
 - Runner secrets on GitHub (interim until external secret manager support
   or #6359 settles the long-term route, then kept as the fallback for
   workflows without GitHub OIDC or WIF; integrations fullsend owns keep their
@@ -218,16 +229,19 @@ repo baseline and overrides)
   platform. `forge:` is deprecated but remains functional
   ([ADR 0088](ADRs/0088-cel-guarded-overlays.md)).
 - Harness schema versioning and field types: a `schema_version` field (absent
-  = version `1`) is planned to make the harness a versioned contract, and every
-  field is classified by semantic type — inline command (`sh -c`), local file
-  path, resource reference, scalar value, or structural container — published in the
-  [Harness Field Reference](contributing/harness-fields.md). The field and its
-  type-flagging in `Harness.Lint()` are planned, not yet implemented (Lint
-  diagnostics non-fatal, with fail-fast as a tracked follow-up). Incompatible
-  field-type changes require a version bump; compatible additions do not
-  require one. Version-aware loaders reject unsupported versions before
-  composition; older pinned consumers must be upgraded before receiving
-  newer-version harnesses ([ADR 0127](ADRs/0127-harness-schema-versioning-and-field-types.md)).
+  = version `1`) makes the harness a versioned contract, and every field is
+  classified by semantic type — inline command (`sh -c`), local file path,
+  resource reference, scalar value, or structural container — published in the
+  [Harness Field Reference](contributing/harness-fields.md). Type-flagging in
+  `Harness.Lint()` remains planned
+  ([#8723](https://github.com/fullsend-ai/fullsend/issues/8723)), not yet
+  implemented (Lint diagnostics non-fatal, with fail-fast as a tracked
+  follow-up). Incompatible field-type changes require a version bump;
+  compatible additions do not require one. Version-aware loaders reject
+  malformed, zero, negative, and unsupported versions at parse time as load
+  failures, and mixed-version `base:` layers are rejected before any merge
+  runs; older pinned consumers must be upgraded before receiving newer-version
+  harnesses ([ADR 0127](ADRs/0127-harness-schema-versioning-and-field-types.md)).
 - `preflight_check` is a literal host command, not a script resource: it runs
   via `sh -c` without setting a working directory and is not resource-resolved;
   `Harness.Lint()` flags path-like values at error severity, so `fullsend
@@ -321,9 +335,29 @@ flowchart TB
   routing is overlays setting `model` and `effort`; when a routed model is not
   served, the runner retries once with the model and effort it would use
   without overlays, and `FULLSEND_FALLBACK_MODELS` applies as each runtime
-  allows. Decided, not yet implemented.
+  allows. A matching overlay will also be able to grant runtime fetch, with
+  every prefix it adds, and the whole merged list once it sets
+  `allow_runtime_fetch`, inside the config-level allowlist
+  ([ADR 0158](ADRs/0158-overlays-may-grant-runtime-fetch-within-the-config-allowlist.md)).
+  Decided, not yet implemented.
 - Plugins are runtime-scoped harness resources: a harness declares `plugins:` as one list of directories in its own repository (same trust and fetch path as skills), and each entry's format decides which runtime loads it — a `plugin.json` bundle is Claude Code's, a directory pi's `-e` loader resolves is uploaded and loaded after a tree-hash preflight computed from the host copy. Each runtime names and skips the entries in the other format, so the list survives a runtime switch. Because `--no-extensions` plus explicit `-e` closes the set of code that can register tools, no per-tool declaration is needed ([ADR 0094](ADRs/0094-pi-extensions-are-harness-resources.md)).
-- Native Codex children run under a runner-owned policy: Bootstrap registers roles for an agent with the `Agent` tool, under harness security, whose parent model Codex resolves to collaboration V1 on the direct route (a V2, unlisted or `gateway/` parent keeps the multi-agent tools off), and binds each child's model (a persona's own entry in its role file, the run-level default otherwise) and the run's effort, and a mandatory dispatch hook admits only fresh-context V1 spawns of registered roles after checking `hooks.json` and the role files against runner-held digests; after each iteration the runner checks the spawns seen in the stream or in the children's rollouts on disk, each child once, against the hook's admissions ([ADR 0126](ADRs/0126-fullsend-owned-codex-subagents.md), [#6970](https://github.com/fullsend-ai/fullsend/issues/6970)).
+- Decided, not yet implemented: extend the runner-owned native Codex child
+  policy to V2 alongside the 0.166.0 bump. Bootstrap requires the `Agent` tool,
+  harness security and a direct-route parent selecting V1 or V2 in the bundled
+  model catalog (absent means V1); other parents keep delegation off. The
+  runner binds child models and effort, registers roles and admits only
+  fresh-context spawns after checking runner-held digests. V2 configuration
+  removes direct messaging and model overrides, with hook denial as a
+  backstop; spawn and permitted control calls map to `Agent`. Every child of
+  a V2 parent inherits V2 tools, so depth one relies on hook enforcement and
+  its documented fail-open limits. V2 child results must pass the ADR 0100
+  PostToolUse chain before entering the parent's context; V2 delegation stays
+  experimental until this path is implemented and verified live. Aggregate
+  spawn/admission reconciliation remains after-the-fact detection: unused
+  admissions or missing/altered child session logs can hide unauthorized spawns
+  ([ADR 0126](ADRs/0126-fullsend-owned-codex-subagents.md),
+  [ADR 0159](ADRs/0159-codex-subagents-on-collaboration-v2.md),
+  [#6970](https://github.com/fullsend-ai/fullsend/issues/6970)).
 
 ### Behaviour testing
 
@@ -358,7 +392,7 @@ Identity is not the same as trust. An agent's identity lets it authenticate to e
 
 - Credential delivery model: four tiers — (1) prefetch + post-process for agents with enumerable inputs (zero credential access), (2) OpenShell providers + L7 egress policies for static token auth (credentials never enter sandbox), (3) host-side REST server for operations providers cannot handle — long-running operations, sandbox capability gaps, credentials in request bodies, response transformation, and multi-step atomic operations (see [ADR 0046](ADRs/0046-host-side-api-server-design.md)), (4) host files + L7 policies for complex auth requiring in-sandbox credential files. L7 policies enforce both method + path and binary-level restrictions. Providers are preferred over REST servers when viable ([ADR 0017](ADRs/0017-credential-isolation-for-sandboxed-agents.md), extended by [ADR 0025](ADRs/0025-provider-credential-delivery-for-sandboxed-agents.md)). OpenAI inference on the pi runtime is the first tier-2 use: the runner exchanges the job's GitHub OIDC token for a short-lived OpenAI access token and hands it to a run-scoped OpenShell provider, so no OpenAI credential enters the sandbox ([ADR 0092](ADRs/0092-openai-wif-credential-delivery.md)); the codex runtime reuses that provider and follows its refreshes by re-reading a runner-seeded token file through codex's `auth.command`, since its process environment cannot carry a placeholder that survives a refresh ([ADR 0099](ADRs/0099-codex-agent-runtime.md)).
 - Inference gateway route: a committed `inference.gateway` block in `.fullsend/config.yaml` names an LLM gateway (`url` and `audience`) that trusts the forge's OIDC issuer directly. The route is runtime-neutral: the credential is re-seeded through a route-aware seeder (the OpenAI seeder generalised, with independent handoffs when a run uses both routes), and each runtime keeps the gateway URL runner-owned. pi, codex and Claude Code use it, and on each the `gateway/` model prefix opts a model in: pi through the pi-inference-gateway extension, codex through a runner-owned `fullsend-gateway` provider in its digest-guarded `config.toml`, on the Responses API only, and Claude Code through a runner-owned `ANTHROPIC_BASE_URL`, cleared and re-exported after `.env`, with its credential from an `apiKeyHelper` that re-reads the re-seeded token file. The runner seeds the job's OIDC token, fetched with the gateway's audience, into a run-scoped OpenShell provider as an endpoint-bound placeholder and re-seeds it before `exp`, scheduled from each token's own `exp` and `iat`. The gateway holds the upstream provider key, so the forge stores no reusable provider key. The route is selected per model by provider prefix, with no precedence order against WIF or the static key: `openai/` and other providers keep their routes, one run can mix them, and a gateway that fails never falls back. The runner owns the route only when a complete block applies; without one, the plugin-carried setup for local runs is unchanged. On pi the route is a separate `gateway` provider served by pi-inference-gateway, with a runner-rendered, digest-guarded model list taken from inline `models` or a validated `models_file` ([ADR 0137](ADRs/0137-inference-gateway-credential-route.md)). The block's `auth` field selects the credential: `oidc` (the default, as above) or `api-key`, a supported mode for gateways that cannot trust forge OIDC. In `api-key` mode the runner reads a gateway key from `FULLSEND_INFERENCE_GATEWAY_API_KEY` and puts it behind the same placeholder, egress profile and guards, with no re-seed loop. The block then applies on local runs too. There is no fallback between modes, and because the mode relies on a long-lived secret, setup and status warn about it ([ADR 0138](ADRs/0138-inference-gateway-api-key-credential-mode.md)). An opt-in setting on the block, `messages_auth_header: x-api-key`, sends the gateway credential as `x-api-key` instead of `Authorization: Bearer` for Messages-dialect models (pi `anthropic-messages` models and Claude Code), for gateways that read the key where Anthropic documents it for that API. It is valid only with `auth: api-key`; an `oidc` block that sets it is a config error. The default stays `authorization`, the other dialects and codex keep Bearer, and an `x-api-key` gateway must replace the caller's key with its own on the upstream hop ([ADR 0142](ADRs/0142-inference-gateway-x-api-key-header-for-messages-models.md); implementation in [#8370](https://github.com/fullsend-ai/fullsend/issues/8370)).
-- GitHub Packages for sandboxed installs: the job's Actions workflow token is preserved as `GH_WORKFLOW_TOKEN`, readable only by provider credential expansion, and a repo-level provider binds it to `npm.pkg.github.com` (read-only, enforced) and the tarball CDN (which serves pre-signed URLs); forge identity stays the minted App token, which cannot read public packages owned by another org ([ADR 0114](ADRs/0114-github-packages-via-host-bound-workflow-token-provider.md)).
+- GitHub Packages for sandboxed installs: the job's Actions workflow token is preserved as `GH_WORKFLOW_TOKEN`, refused at every harness `${}` site and in child environments and read by provider credential expansion, and a repo-level provider binds it to `npm.pkg.github.com` (read-only, enforced) and the tarball CDN (which serves pre-signed URLs); forge identity stays the minted App token, which cannot read public packages owned by another org ([ADR 0114](ADRs/0114-github-packages-via-host-bound-workflow-token-provider.md)). On GitHub Actions the runner also reads the token itself to pull a private `ghcr.io` sandbox image before sandbox creation ([#9019](https://github.com/fullsend-ai/fullsend/issues/9019)).
 - Host-side API server design: Credential delivery tier 3 servers follow a uniform process contract (`--port`, `--token`, `--bind-address`, `/healthz`, `/tools.json`, `SIGTERM`). Network access is controlled via composable provider profiles — atomic capability profiles composed per-harness. Per-run UUID bearer tokens are delivered through OpenShell provider placeholders. File transfer uses `openshell sandbox upload/download` ([ADR 0046](ADRs/0046-host-side-api-server-design.md)).
 - Per-role GitHub Apps with manifest-based creation. Each agent role gets its own app with scoped permissions. PEMs stored in Secret Manager as `fullsend-{role}-app-pem` — one secret per role, shared across orgs on a mint. `ROLE_APP_IDS` uses the same shared-per-role model (`coder` → app ID). Caller authorization is per-repo enrollment (`PER_REPO_WIF_REPOS`); org isolation is enforced via WIF conditions and installation verification ([ADR 0007](ADRs/0007-per-role-github-apps.md), [ADR 0033](ADRs/0033-per-repo-installation-mode.md)). Public multi-tenant mint (`PER_REPO_WIF_REPOS=*`) with workflow provenance limited to the shared host allowlist (upstream plus `WORKFLOW_HOST_REPOS`) is defined in [ADR 0059](ADRs/0059-public-mint-mode-with-wildcard-allowlists.md); upstream-only provenance limits which workflows can call the mint, complementing [ADR 0029](ADRs/0029-central-token-mint-secretless-fullsend.md) multi-tenant blast-radius concerns.
 - Cross-org mint authorization: workflows may request tokens for a different org via optional `target_org` when the target org installs the role App and sets `FULLSEND_FOREIGN_<role>_REPOS` ([ADR 0060](ADRs/0060-cross-org-mint-authorization-via-org-variables.md)). Repo-level `FULLSEND_FOREIGN_<role>_REPOS` variables enable per-repo foreign grants (scoped to the specific target repo) and intra-org cross-repo access for per-repo callers, with disjoint authorization boundaries from org-level grants — repo-level for repo-scoped requests, org-level for installation-wide requests ([ADR 0083](ADRs/0083-repo-level-foreign-allow-list.md)).
@@ -377,7 +411,7 @@ Identity is not the same as trust. An agent's identity lets it authenticate to e
   specific to one agent goes to a custom role on its author's standalone mint
   ([ADR 0124](ADRs/0124-criteria-for-adding-a-built-in-agent-role.md)).
 
-One concrete implementation option is [`oidcx`](https://github.com/oxidecomputer/oidcx): a service that accepts OIDC identity tokens and exchanges them for short-lived access tokens. It can mint tokens scoped to selected GitHub repositories and permissions, or to selected Oxide silos and permissions, and it also ships with a GitHub Action wrapper. In a Fullsend deployment, this can be used by the sandbox entrypoint to narrow a broad GitHub App identity down to only the specific permissions an agent needs for the current run.
+One concrete implementation option is [`oidcx`](https://github.com/oxidecomputer/oidcx): a service that accepts OIDC identity tokens and exchanges them for short-lived access tokens. It can mint tokens scoped to selected GitHub repositories and permissions, or to selected Oxide silos and permissions, and it also ships with a GitHub Action wrapper. In a fullsend deployment, this can be used by the sandbox entrypoint to narrow a broad GitHub App identity down to only the specific permissions an agent needs for the current run.
 
 **Open questions:**
 
@@ -411,9 +445,14 @@ The existing design principle is that [the repo is the coordinator](problems/age
   during reconciliation remains a separate decision
   ([ADR 0106](ADRs/0106-serialize-agent-runs-and-coalesce-subsequent-events.md),
   partially superseded by [ADR 0144](ADRs/0144-reuse-poll-and-entity-bound-run-processes.md)).
-- Dispatch runs no follow-up stage after an agent. Every run publishes the
-  `fullsend-<agent>` artifact, and users who want to act on a result chain
-  their own workflow on the shim's `workflow_run` event
+- Dispatch runs no follow-up stage after an agent. Every unique agent job
+  publishes the `fullsend-<agent>` artifact. When a dispatch matrix repeats an
+  agent, its first job keeps that name and later jobs use
+  `fullsend-<agent>.matrix-<job-index>`; other agents keep their usual names.
+  The composite action also accepts an optional `artifact-name` input for
+  caller-defined names. Users who want to act on a result chain their own
+  workflow on the shim's
+  `workflow_run` event
   ([guide](guides/user/chaining-follow-up-workflows.md),
   [ADR 0124](ADRs/0124-criteria-for-adding-a-built-in-agent-role.md)).
 - Per-repo **polling** complements webhook dispatch: `fullsend poll` uses poll
@@ -437,7 +476,7 @@ The existing design principle is that [the repo is the coordinator](problems/age
   `fullsend poll` and non-CI bound runs default to once; a CI bound run with
   entity sources, eventless eligibility, a usable job deadline, and recurring
   repository-scoped poll coverage defaults to timed. Its internal timer checks
-  only its bound entity, independently of optional private Fullsend-to-Fullsend
+  only its bound entity, independently of optional private fullsend-to-fullsend
   wake delivery; the broad `fullsend poll` scan normally runs less often. Bound
   `run` exits after an idle period in either resident lifecycle, while a
   repository-wide `fullsend poll` may stay resident until stopped. Eventless
@@ -507,7 +546,7 @@ The existing design principle is that [the repo is the coordinator](problems/age
   [ADR 0054](ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md);
   [ADR 0151](ADRs/0151-harness-human-role-minimums.md)).
 - Data security boundary (target state): each source-system record that
-  Fullsend controls is admitted to model input only after its exact current
+  fullsend controls is admitted to model input only after its exact current
   revision's actor and current authorization are verified. An ordinary human
   actor must meet the platform `triage` floor and the selected harness's
   effective `human_min_role`; registered bots use a separate provider-backed
@@ -525,7 +564,7 @@ The existing design principle is that [the repo is the coordinator](problems/age
 - Fullsend-originated entity evaluation (target state): `fullsend poll`
   enumerates candidates, while a bound `fullsend run` may recheck only its
   canonical entity with `event == null`. Both require verified,
-  non-user-assertable Fullsend invocation provenance and effective platform
+  non-user-assertable fullsend invocation provenance and effective platform
   eligibility; the actor of an earlier event does not authorize an eventless
   cycle. The platform classifies action-indicating categories, but acquires
   only entity data that can affect each harness's CEL predicate. The target
@@ -642,7 +681,7 @@ Observability is a cross-cutting concern that touches every other component. Eac
 
 - JSONL reasoning trace exposure: raw JSONL conversation transcripts are extracted from sandboxes and stored with owner-scoped access. Credential scanning acts as an invariant check on [ADR 0017](ADRs/0017-credential-isolation-for-sandboxed-agents.md)'s isolation model. Agents handling data from protected sources beyond the target repo can opt in to JSONL suppression via configuration ([ADR 0021](ADRs/0021-jsonl-reasoning-trace-exposure.md)).
 - Event-driven stage dispatch remains traceable end-to-end in the GitHub Actions UI by using synchronous `workflow_call` dispatch (see [ADR 0041](ADRs/0041-synchronous-workflow-call-event-dispatch.md)).
-- Scheduled entity-discovery runs are attributable to the verified Fullsend
+- Scheduled entity-discovery runs are attributable to the verified fullsend
   invocation identity, target repository, effective policy, harness revision,
   and resolved entity. Their CEL checks record decision and coverage evidence;
   identifiable positive witnesses retain actor provenance, while collection
@@ -654,6 +693,19 @@ Observability is a cross-cutting concern that touches every other component. Eac
   [ADR 0147](ADRs/0147-evaluate-entity-cel-over-selectively-acquired-data.md),
   [ADR 0148](ADRs/0148-reuse-verified-actor-roles-for-entity-cel.md)).
 - Distributed tracing: framework-native OpenTelemetry instrumentation with zero-configuration baseline. Every run produces `run-telemetry.jsonl` locally; optional live OTLP export to any compatible backend. W3C trace context propagation links multi-agent pipelines into unified traces. OTEL GenAI semantic conventions enable LLM-aware backends ([ADR 0050](ADRs/0050-distributed-tracing-instrumentation.md)).
+- Work-item trace continuity: the chosen topology gives each issue or change
+  proposal a stable context to parent fullsend launches, with explicit span
+  links for fullsend-created child entities. Behaviour-test scenarios will
+  parent their own operations and created entities in one TraceID
+  ([ADR 0154](ADRs/0154-correlate-work-item-and-behaviour-scenario-traces.md);
+  implementation pending). Fullsend accepts stored context only when its
+  signature verifies with the configured public key and its installation,
+  repository, and destination entity match. Missing or invalid context uses
+  the stable entity-derived context. Standard installs generate a signing key
+  stored in repository secrets; BT supplies a protected signing-key source and
+  verification key through install flags. GitHub, GitLab, and Forgejo use
+  hidden entity-body metadata; Jira uses issue properties for fullsend- or
+  BT-created issues and comment properties for issues created elsewhere.
 - Eval measurements: the concept of scoring traces ([fail-open](glossary.md#fail-open)). [OTEL primary facts](glossary.md#otel-primary-facts) stay on the run trace (`run-telemetry.jsonl`); [OTEL derived products](glossary.md#otel-derived-products) are the scores (`eval-measurements.jsonl`) ([ADR 0087](ADRs/0087-eval-measurements-online-trace-scoring.md)). See [Eval Measurements](guides/infrastructure/eval-measurements.md). When `OTEL_EXPORTER_OTLP_*` is set, scores also export as `gen_ai.evaluation.result` span events on the same TraceID (same OTLP path as agent traces; fail-open).
 
 - Tool-call span topology: every id-bearing tool call the runtime reports — Claude Code today; pi and codex emit no call ids — becomes an `execute_tool` child span of its iteration's `agent` span, up to 1,024 per iteration. The spans carry semantic-convention metadata only, timed at runner receipt; tool content stays on the `agent` span's message record ([ADR 0108](ADRs/0108-tool-call-span-topology.md)).
@@ -721,7 +773,7 @@ ADR 0002: [Building block 3](ADRs/0002-initial-fullsend-design.md#3-label-state-
 
 ### 4. triage agent runtime
 
-Runs triage from issue `title`/`body` + GitHub-native attachments only; each run starts with **`duplicate`** and other reset labels cleared; duplicate detection, prerequisite detection (cross-repo), readiness, reproducibility, test handoff; can close as duplicate again if still a match, label **`blocked`** when progress depends on another open issue or PR, or create upstream prerequisite issues when no tracking issue exists (controlled by `create_issues.allow_targets` config).
+Runs triage from issue `title`/`body` + GitHub-native attachments only; each run starts with **`duplicate`** and other reset labels cleared; duplicate detection, prerequisite detection (cross-repo), readiness, reproducibility, test handoff; can close as duplicate again if still a match, label **`blocked`** when progress depends on another open issue or PR, or create upstream prerequisite issues when no tracking issue exists (controlled by the `tracker.<provider>.allowed_targets` config).
 ADR 0002: [Building block 4](ADRs/0002-initial-fullsend-design.md#4-triage-agent-runtime).
 
 ### 5. Duplicate / similarity search
@@ -865,7 +917,7 @@ See [ADR 0003](ADRs/0003-org-config-repo-convention.md) for the historical org c
 
 In the self-managed per-repository deployment model, each installation
 operates independently, with no shared control plane between installations.
-If Fullsend offers a centrally managed service, each tenant's repository
+If fullsend offers a centrally managed service, each tenant's repository
 configuration will use the existing `repos.yaml` v1 manifest. The source of
 truth and how service components consume it, along with the service's runtime
 and deployment model, remain open ([ADR 0123](ADRs/0123-tenant-configuration-from-repos-yaml.md)).

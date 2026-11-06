@@ -272,7 +272,7 @@ bare — and `metrics.json` records the same (`runtime`, `runtime_source`, `requ
 ...
 runtime: selected "codex" from --runtime flag
 ...
-→ Agent: gpt-5.6-luna (v0.159.3)
+→ Agent: gpt-5.6-luna (v0.166.0)
   ✓ Agent exited with code 0
 ```
 
@@ -288,7 +288,7 @@ What a local codex run needs, beyond the guide:
 - **fullsend from the release that carries `CODEX_VERSION`** — the first one cut after the codex
   runtime lands. The release download and the container image both work as-is.
 - **A sandbox image that includes codex** — `ghcr.io/fullsend-ai/fullsend-sandbox` built with
-  `CODEX_VERSION` (0.159.3 today). A stale image fails Bootstrap's preflight before the agent
+  `CODEX_VERSION` (0.166.0 today). A stale image fails Bootstrap's preflight before the agent
   starts, with ``codex preflight: `codex --version` exited 127``; `podman pull
   ghcr.io/fullsend-ai/fullsend-sandbox:latest` fixes it.
 - **A harness that declares the provider and a policy** — `providers: [openai]` and
@@ -380,7 +380,7 @@ What a local codex run needs, beyond the guide:
   scrubbed before they are written.
 - **Skills** work as they do on Claude Code: the harness's skills, plus your repository's own
   `.agents/skills` (codex's documented location for repository skills), both scanned for injected
-  content before the agent sees them. Codex 0.159.3 also picks up `.codex/skills` even though the
+  content before the agent sees them. Codex 0.166.0 also picks up `.codex/skills` even though the
   project is untrusted; that is not documented upstream and may change, so keep repository skills
   in `.agents/skills`. Codex's bundled skills (`skill-installer`, `imagegen` and friends) are
   switched off, so an agent sees only yours.
@@ -509,7 +509,7 @@ bytes`.
 ```
 codex_spawn_without_admission: a spawn was not sent by the primary thread
 ```
-A spawn item without a sender, or sent by a thread other than the run's own. Codex 0.159.3 emits
+A spawn item without a sender, or sent by a thread other than the run's own. Codex 0.166.0 emits
 neither; look for a malformed or planted stream line.
 ```
 codex_spawn_without_admission: a spawn_agent item longer than 1048576 bytes could not be read
@@ -580,3 +580,4 @@ ran and why.
 - [OpenAI Workload Identity](../guides/infrastructure/openai-workload-identity.md) — the CI credential path
 - [codex runtime internals](../contributing/runtime-implementation.md#codex-runtime-internals-6920) — config layers, the hook adapter contract, and what to re-check on a `CODEX_VERSION` bump
 - [ADR 0099](../ADRs/0099-codex-agent-runtime.md) — why codex uses a custom model provider, a runner-seeded token file and a translating hook adapter
+- [Sandbox environment contract](../normative/sandbox-env/v1/README.md) — the generated list of what the runner exports into a codex sandbox (`runtime_codex`) and the keys it reserves

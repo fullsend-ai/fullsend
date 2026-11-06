@@ -15,10 +15,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// wideningPreset supplies a cross-repo create_issues target that the code
+// wideningPreset supplies a cross-repo tracking target that the code
 // defaults do not allow, so a repository that only gains this preset
 // widens its effective configuration through overlay fallthrough.
-const wideningPreset = "version: \"1\"\ncreate_issues:\n  allow_targets:\n    repos:\n      - acme/other\n"
+const wideningPreset = "version: \"1\"\ntracker:\n  github:\n    allowed_targets:\n      repos:\n        - acme/other\n"
 
 // assertNoForgeWrites fails when the fake client recorded any file,
 // branch, PR/MR, variable or secret write.
@@ -85,7 +85,7 @@ func TestConverge_InstalledRepoGainingPresetWithoutBaseIsSafetyChecked(t *testin
 				require.NoError(t, err)
 				failures := result.Failed()
 				require.Len(t, failures, 1)
-				assert.Contains(t, failures[0].Error.Error(), "create_issues.allow_targets")
+				assert.Contains(t, failures[0].Error.Error(), "tracker.github.allowed_targets")
 				assert.Contains(t, failures[0].Error.Error(), "adding "+preset.BasePath)
 				assert.False(t, committed, "no commit or PR/MR is attempted")
 				assertNoForgeWrites(t, fc)
@@ -98,7 +98,7 @@ func TestConverge_InstalledRepoGainingPresetWithoutBaseIsSafetyChecked(t *testin
 	t.Run("an explicit declaration is not an implicit relaxation", func(t *testing.T) {
 		fc, cfg := blockedInstallFixture(t, ForgeGitHub, true, presetPath)
 		cfg.DryRun = true
-		cfg.Manifest.Defaults.Config = mustManagedConfig(t, "create_issues:\n  allow_targets:\n    repos: [acme/other]\n")
+		cfg.Manifest.Defaults.Config = mustManagedConfig(t, "tracker:\n  github:\n    allowed_targets:\n      repos: [acme/other]\n")
 		fc.FileContents["acme/api/"+preset.OverlayPath] = mustDesiredManaged(t, cfg.Manifest, "acme", "api")
 		result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), noopCommit, noopProgress)
 		require.NoError(t, err)
@@ -166,7 +166,7 @@ func TestConverge_BlockedFreshInstallMakesNoWrites(t *testing.T) {
 }
 
 // A pristine first install (no installation, no overlay, no base) inherits
-// create_issues targets from its declared preset: there is no existing
+// tracking targets from its declared preset: there is no existing
 // effective configuration to relax, so the layered gate must not reject it.
 func TestConverge_PristineFirstInstallInheritsPresetPermissions(t *testing.T) {
 	presetPath := writePresetFile(t, wideningPreset)
@@ -280,7 +280,7 @@ func TestConverge_PendingInitializationRetryKeepsPresetPermissions(t *testing.T)
 		result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), noopCommit, noopProgress)
 		require.NoError(t, err)
 		require.Len(t, result.Failed(), 1)
-		assert.Contains(t, result.Failed()[0].Error.Error(), "create_issues.allow_targets")
+		assert.Contains(t, result.Failed()[0].Error.Error(), "tracker.github.allowed_targets")
 	})
 
 	t.Run("a stale initialization branch does not exempt a live shim workflow", func(t *testing.T) {
@@ -291,7 +291,7 @@ func TestConverge_PendingInitializationRetryKeepsPresetPermissions(t *testing.T)
 		result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), noopCommit, noopProgress)
 		require.NoError(t, err)
 		require.Len(t, result.Failed(), 1)
-		assert.Contains(t, result.Failed()[0].Error.Error(), "create_issues.allow_targets")
+		assert.Contains(t, result.Failed()[0].Error.Error(), "tracker.github.allowed_targets")
 	})
 
 	t.Run("an established installation keeps the gate", func(t *testing.T) {
@@ -331,7 +331,7 @@ func TestStatus_PresetGainWithoutBase(t *testing.T) {
 		require.Empty(t, r.Error)
 		require.Len(t, r.Drifts, 1)
 		assert.Equal(t, preset.BasePath, r.Drifts[0].Field)
-		assert.Contains(t, r.Drifts[0].Actual, "create_issues.allow_targets")
+		assert.Contains(t, r.Drifts[0].Actual, "tracker.github.allowed_targets")
 		assert.Contains(t, r.Drifts[0].Actual, "adding it")
 	})
 
@@ -353,7 +353,7 @@ func TestStatus_PresetGainWithoutBase(t *testing.T) {
 			}
 		}
 		require.NotNil(t, base, "drifts: %+v", r.Drifts)
-		assert.Contains(t, base.Actual, "missing; adding it would make the effective configuration less restrictive without an explicit manifest declaration (ADR-0122): create_issues.allow_targets")
+		assert.Contains(t, base.Actual, "missing; adding it would make the effective configuration less restrictive without an explicit manifest declaration (ADR-0122): tracker.github.allowed_targets")
 		assert.Contains(t, base.Actual, "acme/other")
 	})
 }
@@ -523,7 +523,7 @@ func TestConverge_PartialInstallWithoutConfigLayersIsNotPristine(t *testing.T) {
 	require.NoError(t, err)
 	failures := result.Failed()
 	require.Len(t, failures, 1)
-	assert.Contains(t, failures[0].Error.Error(), "create_issues.allow_targets")
+	assert.Contains(t, failures[0].Error.Error(), "tracker.github.allowed_targets")
 	assertNoForgeWrites(t, fc)
 }
 
@@ -601,7 +601,7 @@ func TestPreflightProposedManagedSafety(t *testing.T) {
 			fc.FileContents["acme/api/"+preset.OverlayPath] = mustDesiredManaged(t, cfg.Manifest, "acme", "api")
 			err := PreflightProposedManagedSafety(context.Background(), cfg.Manifest, newTestClientFactory(fc), nil, nil)
 			require.Error(t, err)
-			assert.Contains(t, err.Error(), "create_issues.allow_targets")
+			assert.Contains(t, err.Error(), "tracker.github.allowed_targets")
 		})
 		t.Run(forgeName+"/pristine first install passes", func(t *testing.T) {
 			fc, cfg := blockedInstallFixture(t, forgeName, false, presetPath)

@@ -177,7 +177,8 @@ func (c *LiveClient) updateRepoSecret(ctx context.Context, owner, repo, name, va
 func maskingRequired(name string) bool {
 	switch name {
 	case forge.SecretOpenAIAPIKey, forge.SecretTriggerToken, forge.SecretWebhookSecret, forge.SecretGitLabTriggerAccountToken,
-		forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken:
+		forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken,
+		forge.SecretJiraToken:
 		return true
 	}
 	// Custom role credentials (gitlabroles.CustomSecretName).
@@ -923,6 +924,14 @@ func (c *LiveClient) ListWorkflowRunJobs(ctx context.Context, owner, repo string
 			proj, runID, perPage, page)
 		resp, err := c.get(ctx, path)
 		if err != nil {
+			if page == 1 && forge.IsNotFound(err) {
+				// GitLab has been observed to 404 the first page for
+				// pipelines that have not started; the cause is unverified
+				// (#9124). Report the shape only — absence still depends on
+				// the run status. A later-page 404 is a partially readable
+				// listing and never carries the sentinel.
+				return nil, fmt.Errorf("list pipeline jobs page %d: %w: %w", page, forge.ErrJobsListingNotFoundFirstPage, err)
+			}
 			return nil, fmt.Errorf("list pipeline jobs page %d: %w", page, err)
 		}
 		var jobs []glJob
