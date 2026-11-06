@@ -161,7 +161,7 @@ effective model via `runtime.GenAISystemFor`; `System()` is only the fallback.
 
 ### execute_tool spans
 
-One per id-bearing tool call the runtime reports (Claude Code today), up to
+One per id-bearing tool call the runtime reports (Claude Code and pi), up to
 1,024 per iteration, a child of that iteration's agent span, named
 `execute_tool <tool name>`. `toolSpanTracker`
 (`internal/cli/tool_spans.go`) starts the span when it handles the
@@ -185,7 +185,8 @@ and no `error.type`, since `is_error` was never decoded. A call still open
 when the stream ends — the runtime was stopped, or an over-long result
 line showed no id in that prefix — is closed as `error.type=unanswered` by
 `Finish()`, which `runAgent` calls once `rt.Run` returns, before content
-assembly; a
+assembly (the pi parser emits a call's `ToolUseEvent` only at
+`tool_execution_end`, so an interrupted pi call never opens a span); a
 call superseded by a second `tool_use` with the same id is ended the same
 way at the reuse; a result with no matching call (its `tool_use` line was skipped) becomes a
 near-zero-duration span marked `fullsend.tool.unmatched=true`. Events without

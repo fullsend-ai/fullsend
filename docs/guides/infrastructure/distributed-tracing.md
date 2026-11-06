@@ -100,10 +100,11 @@ members included, masked a URL's userinfo, query or fragment in them,
 stripped an escape sequence or tag characters from them, or could not
 judge them at all (invalid UTF-8 or the replacement character): the parser cut the summary out of them before anything scanned it,
 so the secret could be there as a beginning. Where a runtime reports a summary and no
-arguments (pi, codex, OpenCode), its parser has already run the patterns
-over the summary and, for pi and codex, cut it: a value that straddles a
+arguments (codex, OpenCode), its parser has already run the patterns
+over the summary and, for codex, cut it: a value that straddles a
 cut stays in part, and one a pattern recognised stays as that pattern's
-mask. The agent runtime's own
+mask. The same holds for the result text the pi parser appends to a failed
+call's summary. The agent runtime's own
 content-logging variables (`OTEL_LOG_USER_PROMPTS`,
 `OTEL_LOG_ASSISTANT_RESPONSES`, etc.) are never set.
 
@@ -298,7 +299,9 @@ execution rather than measuring it: both times trail the sandbox, and when
 the start trails by more than the end (an earlier event was still being
 processed when the call arrived) the span is shorter than the execution it
 covers. A call with no result
-by the end of the iteration is closed with `error.type=unanswered`; a
+by the end of the iteration is closed with `error.type=unanswered`, except
+on pi, which reports a call only when it ends, so a call interrupted before
+then has no span; a
 result whose stream line exceeded the parser's 1 MiB bound ends its span on
 receipt, marked `fullsend.tool.result_oversized` with no status and no
 `error.type` — the tool answered, and whether it failed was never decoded; a
@@ -441,7 +444,7 @@ Inputs, in order of precedence:
 |-----------|------------|-------------|
 | `exit_code` | `run`, `agent` | Process exit code |
 | `iteration` | `agent` | 1-based iteration index |
-| `error.type` | `execute_tool` | `tool_error` when the runtime flagged the result `is_error`; `unanswered` when the call had no result by the end of the iteration (the runtime was stopped, or an over-long result line showed no call id within its first 1 MiB) or the runtime reported the same call id again (the earlier open call is superseded); absent on success |
+| `error.type` | `execute_tool` | `tool_error` when the runtime flagged the result `is_error`; `unanswered` when the call had no result by the end of the iteration (the runtime was stopped, or an over-long result line showed no call id within its first 1 MiB; a pi call interrupted before it ends has no span at all) or the runtime reported the same call id again (the earlier open call is superseded); absent on success |
 
 ### Resource attributes
 
@@ -689,7 +692,7 @@ Non-finite float values (NaN, Infinity) are encoded as proto3 JSON strings
 The file is written synchronously per span. Spans are flushed to disk as
 they complete; the file is the forensic record for crashed runs. Every
 `execute_tool` span is one such line, so a tool-heavy iteration (a hundred
-or more id-bearing calls — Claude Code today) adds up to that many, capped
+or more id-bearing calls — Claude Code and pi) adds up to that many, capped
 at 1,024.
 
 ## Cross-run trace correlation

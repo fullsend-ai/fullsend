@@ -65,7 +65,8 @@ const maxToolSpanNameBytes = 128
 // because the stream interleaves several open calls (parallel sub-agent
 // dispatch); a call that never gets a result — the runtime was stopped, or its
 // over-long result line showed no id in the prefix the parser keeps — is ended
-// by Finish as error.type=unanswered; a result whose line exceeded the parser's
+// by Finish as error.type=unanswered (pi reports a call only when it ends, so
+// an interrupted pi call never opens a span); a result whose line exceeded the parser's
 // 1 MiB bound (ToolResultEvent.Oversized) ends its span at receipt, marked
 // fullsend.tool.result_oversized and left without a status, since the tool
 // answered and its is_error was never decoded; and a result whose call was

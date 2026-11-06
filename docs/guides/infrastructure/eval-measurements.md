@@ -115,8 +115,9 @@ tool-call defect detection over the always-on `execute_tool` spans. It fails
 a run only
 on an unambiguous integrity break (a tool result with no matching call) and
 reports tool errors and unanswered calls as signals; runs whose runtime emits
-no `execute_tool` spans (pi, codex) and runs that made no tool calls are
-skipped.
+no `execute_tool` spans (codex) and runs that made no tool calls are
+skipped. A pi call interrupted before it ends has no span, so it does not
+count as unanswered.
 
 Manifest shape (first ship — enablement only):
 
