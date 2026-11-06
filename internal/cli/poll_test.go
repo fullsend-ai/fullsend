@@ -38,6 +38,7 @@ func clearPollEnv(t *testing.T) {
 		forge.SecretGitLabCoderToken,
 		"JIRA_BASE_URL", "GITHUB_REPOSITORY",
 		"JIRA_TOKEN", "JIRA_USER_EMAIL",
+		"FULLSEND_JIRA_TOKEN", "FULLSEND_JIRA_EMAIL",
 		"TRIGGER_PAYLOAD", "FULLSEND_DISPATCH_SECRET",
 	} {
 		t.Setenv(v, "")
@@ -153,82 +154,49 @@ trigger: |
 func TestValidateJiraPollArgs(t *testing.T) {
 	fullsendDir := t.TempDir()
 
+	settings := jiraPollSettings{baseURL: "https://acme.atlassian.net", project: "PROJ", jql: `project = "PROJ"`, enabled: true}
+
 	tests := []struct {
 		name           string
 		envVars        map[string]string
-		jiraURL        string
-		jiraProject    string
-		jqlOverride    string
 		targetRepo     string
 		outputPath     string
 		wantErrContain string
+		wantRepo       string
 		wantOK         bool
 	}{
 		{
-			name:           "missing jira-url and JIRA_BASE_URL",
-			envVars:        map[string]string{},
-			jiraURL:        "",
-			targetRepo:     "acme/platform",
-			jiraProject:    "PROJ",
-			wantErrContain: "jira-url",
-		},
-		{
 			name:           "missing target-repo and GITHUB_REPOSITORY",
 			envVars:        map[string]string{},
-			jiraURL:        "https://acme.atlassian.net",
 			targetRepo:     "",
-			jiraProject:    "PROJ",
 			wantErrContain: "target-repo",
-		},
-		{
-			name:           "missing both jira-project and jql",
-			envVars:        map[string]string{},
-			jiraURL:        "https://acme.atlassian.net",
-			targetRepo:     "acme/platform",
-			jiraProject:    "",
-			jqlOverride:    "",
-			wantErrContain: "jira-project",
 		},
 		{
 			name:           "target-repo without a slash is rejected",
 			envVars:        map[string]string{},
-			jiraURL:        "https://acme.atlassian.net",
 			targetRepo:     "platform",
-			jiraProject:    "PROJ",
 			wantErrContain: "owner/repo",
 		},
 		{
-			name:        "valid minimal config",
-			envVars:     map[string]string{},
-			jiraURL:     "https://acme.atlassian.net",
-			targetRepo:  "acme/platform",
-			jiraProject: "PROJ",
-			wantOK:      true,
+			name:       "valid minimal config",
+			envVars:    map[string]string{},
+			targetRepo: "acme/platform",
+			wantRepo:   "acme/platform",
+			wantOK:     true,
 		},
 		{
-			name:        "subgroup target-repo is valid",
-			envVars:     map[string]string{},
-			jiraURL:     "https://acme.atlassian.net",
-			targetRepo:  "org/sub/project",
-			jiraProject: "PROJ",
-			wantOK:      true,
+			name:       "subgroup target-repo is valid",
+			envVars:    map[string]string{},
+			targetRepo: "org/sub/project",
+			wantRepo:   "org/sub/project",
+			wantOK:     true,
 		},
 		{
-			name:        "env var fallback for jira-url",
-			envVars:     map[string]string{"JIRA_BASE_URL": "https://acme.atlassian.net"},
-			jiraURL:     "",
-			targetRepo:  "acme/platform",
-			jiraProject: "PROJ",
-			wantOK:      true,
-		},
-		{
-			name:        "jql without jira-project is valid",
-			envVars:     map[string]string{},
-			jiraURL:     "https://acme.atlassian.net",
-			targetRepo:  "acme/platform",
-			jiraProject: "",
-			jqlOverride: "project = PROJ ORDER BY updated DESC",
-			wantOK:      true,
+			name:       "env var fallback for target-repo",
+			envVars:    map[string]string{"GITHUB_REPOSITORY": "acme/from-env"},
+			targetRepo: "",
+			wantRepo:   "acme/from-env",
+			wantOK:     true,
 		},
 		{
 			// Without --output, a full poll cycle runs and checkpoints
@@ -236,9 +204,7 @@ func TestValidateJiraPollArgs(t *testing.T) {
 			// (Run only writes when OutputPath is non-empty).
 			name:           "missing --output",
 			envVars:        map[string]string{},
-			jiraURL:        "https://acme.atlassian.net",
 			targetRepo:     "acme/platform",
-			jiraProject:    "PROJ",
 			outputPath:     "",
 			wantErrContain: "--output is required",
 		},
@@ -247,7 +213,6 @@ func TestValidateJiraPollArgs(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			// Clear env vars that the function checks as fallbacks.
-			t.Setenv("JIRA_BASE_URL", "")
 			t.Setenv("GITHUB_REPOSITORY", "")
 
 			for k, v := range tc.envVars {
@@ -258,19 +223,11 @@ func TestValidateJiraPollArgs(t *testing.T) {
 			if outputPath == "" && tc.wantOK {
 				outputPath = "dispatches.json"
 			}
-			args, err := validateJiraPollArgs(tc.jiraURL, tc.jiraProject, tc.jqlOverride, tc.targetRepo, outputPath, fullsendDir)
+			args, err := validateJiraPollArgs(settings, tc.targetRepo, outputPath, fullsendDir)
 
 			if tc.wantOK {
-				if err != nil {
-					t.Fatalf("expected no error, got: %v", err)
-				}
-				// Verify resolved values are populated.
-				if args.jiraURL == "" {
-					t.Error("expected jiraURL to be resolved")
-				}
-				if args.targetRepo == "" {
-					t.Error("expected targetRepo to be resolved")
-				}
+				require.NoError(t, err)
+				assert.Equal(t, jiraPollArgs{jira: settings, targetRepo: tc.wantRepo, outputPath: outputPath, fullsendDir: fullsendDir}, args)
 				return
 			}
 
@@ -371,26 +328,40 @@ func TestPollCmd_JiraPollInvalidArgs(t *testing.T) {
 	cmd := newPollCmd()
 	cmd.SetArgs([]string{"--input-driver", "jira-poll", "--fullsend-dir", t.TempDir()})
 	err := cmd.Execute()
-	if err == nil || !strings.Contains(err.Error(), "jira-url") {
-		t.Fatalf("expected jira-url validation error, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "requires tracker.jira") {
+		t.Fatalf("expected tracker.jira config error, got: %v", err)
 	}
 }
 
-func TestPollCmd_JiraPollMissingToken(t *testing.T) {
+func TestPollCmd_JiraPollRemovedFlag(t *testing.T) {
 	clearPollEnv(t)
 	cmd := newPollCmd()
 	cmd.SetArgs([]string{
 		"--input-driver", "jira-poll",
 		"--jira-url", "https://acme.atlassian.net",
-		"--jira-project", "PROJ",
-		"--target-repo", "acme/widget",
-		"--output", filepath.Join(t.TempDir(), "dispatches.json"),
-		"--fullsend-dir", t.TempDir(),
+		"--fullsend-dir", writeJiraPollConfig(t, enabledJiraPollConfig),
 	})
 	err := cmd.Execute()
-	if err == nil || !strings.Contains(err.Error(), "create Jira client") {
-		t.Fatalf("expected 'create Jira client' error, got: %v", err)
-	}
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--jira-url no longer supported")
+}
+
+func TestPollCmd_JiraPollMissingToken(t *testing.T) {
+	clearPollEnv(t)
+	// Legacy credential variables are not a fallback.
+	t.Setenv("JIRA_TOKEN", "legacy-token")
+	t.Setenv("JIRA_USER_EMAIL", "bot@example.com")
+	cmd := newPollCmd()
+	cmd.SetArgs([]string{
+		"--input-driver", "jira-poll",
+		"--target-repo", "acme/widget",
+		"--output", filepath.Join(t.TempDir(), "dispatches.json"),
+		"--fullsend-dir", writeJiraPollConfig(t, enabledJiraPollConfig),
+	})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "create Jira client")
+	assert.Contains(t, err.Error(), "FULLSEND_JIRA_TOKEN is required")
 }
 
 // --- gitlab-webhook input driver ---
@@ -546,38 +517,6 @@ func TestPollCmd_GitLabWebhookAuthFailure(t *testing.T) {
 	}
 	if handlerCalls == 0 {
 		t.Error("mock GitLab handler was never invoked; the 401 path was not exercised")
-	}
-}
-
-// --- buildJiraClient ---
-
-func TestBuildJiraClient_MissingToken(t *testing.T) {
-	clearPollEnv(t)
-	_, err := buildJiraClient("https://acme.atlassian.net")
-	if err == nil || !strings.Contains(err.Error(), "JIRA_TOKEN") {
-		t.Fatalf("expected JIRA_TOKEN error, got: %v", err)
-	}
-}
-
-func TestBuildJiraClient_MissingEmail(t *testing.T) {
-	clearPollEnv(t)
-	t.Setenv("JIRA_TOKEN", "tok")
-	_, err := buildJiraClient("https://acme.atlassian.net")
-	if err == nil || !strings.Contains(err.Error(), "JIRA_USER_EMAIL") {
-		t.Fatalf("expected JIRA_USER_EMAIL error, got: %v", err)
-	}
-}
-
-func TestBuildJiraClient_WithTokenAndEmail(t *testing.T) {
-	clearPollEnv(t)
-	t.Setenv("JIRA_TOKEN", "tok")
-	t.Setenv("JIRA_USER_EMAIL", "bot@acme.com")
-	c, err := buildJiraClient("https://acme.atlassian.net")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if c == nil {
-		t.Fatal("expected non-nil client")
 	}
 }
 
@@ -829,7 +768,10 @@ authorization:
 	m, err := newCELMatcher(context.Background(), dir)
 	require.NoError(t, err)
 
-	args := jiraPollArgs{jiraURL: "https://jira.example.com", jiraProject: "PROJ", jqlOverride: "project = PROJ", targetRepo: "group/sub/repo", outputPath: "out.json", fullsendDir: dir}
+	args := jiraPollArgs{
+		jira:       jiraPollSettings{baseURL: "https://jira.example.com", apiURL: config.DefaultJiraAPIURL, project: "PROJ", jql: "project = PROJ", enabled: true},
+		targetRepo: "group/sub/repo", outputPath: "out.json", fullsendDir: dir,
+	}
 	opts := jiraPollOptions(args, m)
 	assert.Equal(t, jirapoll.Options{
 		TargetRepo:  "group/sub/repo",

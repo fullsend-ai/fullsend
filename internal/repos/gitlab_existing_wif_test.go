@@ -170,7 +170,7 @@ func TestConverge_GitLabExistingWIFOptionsInertForOpenAI(t *testing.T) {
 	m := gitlabExistingWIFManifest(t, "inference:\n  wif_audience: custom-audience\n  service_account: "+testServiceAccount+"\n")
 	m.Defaults.Inference.Auth = InferenceAuthOpenAIAPIKey
 	spy := &spyScaffoldCommit{}
-	result, err := Converge(context.Background(), ConvergeConfig{Manifest: m, MaxConcurrency: 4, Direct: true, OpenAIAPIKey: "sk-test-key-0123456789"},
+	result, err := Converge(context.Background(), ConvergeConfig{Manifest: m, MaxConcurrency: 4, Direct: true, OpenAIAPIKey: testOpenAIAPIKey},
 		newTestClientFactory(fc), spy.fn(), noopProgress)
 	require.NoError(t, err)
 	require.Empty(t, result.Failed(), "results: %+v", result.Results)

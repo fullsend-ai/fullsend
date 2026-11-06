@@ -160,7 +160,9 @@ with the credential kept out of the sandbox by an OpenShell provider. In CI the 
 identity ([OpenAI Workload Identity](../infrastructure/openai-workload-identity.md)); on your
 machine there is no such identity, so use an API key from the same OpenAI project. Put it in an
 environment file, like the GCP settings above — never in the harness YAML and never under
-`env.sandbox` (the runner refuses to export it into the sandbox):
+`env.sandbox` (the runner refuses to export it into the sandbox; `OPENAI_API_KEY` is in the
+reserved set published by the [sandbox environment
+contract](../../normative/sandbox-env/v1/README.md)):
 
 ```bash
 # fullsend-openai.env

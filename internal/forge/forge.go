@@ -128,6 +128,12 @@ const (
 	// masked CI/CD variable (GitLab) the runner reads under this name.
 	// Setup does not write it; the repository admin sets it.
 	SecretInferenceGatewayAPIKey = "FULLSEND_INFERENCE_GATEWAY_API_KEY"
+	// SecretGitHubRunnerSecrets carries runner secrets to host-side scripts on
+	// GitHub (ADR 0136): a JSON object of name → value that the shim forwards
+	// and the composite action stages for the run step. It is optional; setup
+	// does not write it, and an admin sets it as a repository or organization
+	// secret.
+	SecretGitHubRunnerSecrets = "FULLSEND_GITHUB_RUNNER_SECRETS"
 
 	// Jira credentials (#9076). `fullsend repos install` writes them on
 	// GitHub and GitLab from --jira-token and --jira-email for
@@ -263,6 +269,19 @@ var ErrNotFound = errors.New("not found")
 func IsNotFound(err error) bool {
 	return errors.Is(err, ErrNotFound)
 }
+
+// ErrJobsListingNotFoundFirstPage reports that a workflow run's jobs
+// listing returned not found on its first page. Forges have been observed
+// to do this for runs that have not started; the cause is unverified (see
+// https://github.com/fullsend-ai/fullsend/issues/9124). The sentinel
+// describes the response shape only and does not establish that the
+// listing — or the run — is absent: callers may treat it as absence only
+// when the run status independently shows the run has not started.
+//
+// Adapters attach it only to first-page not-founds. A not-found on a later
+// page means the listing was already partially readable and may hold a
+// completed job, so it never carries this sentinel.
+var ErrJobsListingNotFoundFirstPage = errors.New("workflow run jobs listing not found on first page")
 
 // ErrAlreadyExists indicates that the resource already exists.
 var ErrAlreadyExists = errors.New("already exists")
@@ -505,10 +524,17 @@ type Repository struct {
 
 // ChangeProposal represents a pull request or merge request.
 type ChangeProposal struct {
-	URL    string
-	Title  string
+	URL   string
+	Title string
+	// Number is the display number: GitHub's per-repo PR number or
+	// GitLab's per-project MR IID. It is not a stable identity.
 	Number int
-	Head   string
+	// ID is the immutable forge database ID of the change proposal:
+	// GitHub's REST pull-request id or GitLab's database merge-request
+	// id (not the IID). It is 0 when the adapter did not capture one.
+	// A GitHub PR's issue-space id is not its change-proposal identity.
+	ID   int64
+	Head string
 	// HeadRepo identifies the repository the head branch lives in, as
 	// "owner/repo" on both GitHub and GitLab (GitLab resolves a fork's
 	// numeric source project ID to its path_with_namespace). Empty when
@@ -536,6 +562,7 @@ type PullRequestInfo struct {
 // WorkflowRun represents a CI/CD workflow execution.
 type WorkflowRun struct {
 	ID         int
+	RunAttempt int // Attempt number for a rerunnable execution; zero when unavailable.
 	Name       string
 	Event      string // GitHub trigger event, e.g. "issues", "issue_comment"
 	Status     string // "queued", "in_progress", "completed"
@@ -547,6 +574,7 @@ type WorkflowRun struct {
 // WorkflowJob represents a job within a workflow run.
 type WorkflowJob struct {
 	ID         int
+	RunAttempt int // Execution attempt containing this job; zero when unavailable.
 	Name       string
 	Status     string // "queued", "in_progress", "completed"
 	Conclusion string // "success", "failure", "cancelled", etc.
@@ -583,7 +611,17 @@ type Annotation struct {
 
 // Issue represents a forge issue.
 type Issue struct {
+	// Number is the display number: GitHub's per-repo issue number or
+	// GitLab's per-project IID. It is not a stable identity.
 	Number int
+	// ID is the immutable forge database ID of the issue: GitHub's REST
+	// id or GitLab's database id (not the IID). It is 0 when the adapter
+	// did not capture one; trace admission treats that as unresolved
+	// identity rather than guessing.
+	// For a GitHub PR number, GetIssue returns the issue-space id, not the
+	// pull-request id. Never use it as KindChangeProposal identity; resolve
+	// the pull-request id through a trusted pull-request read instead.
+	ID     int64
 	Title  string
 	Body   string
 	URL    string
@@ -595,6 +633,28 @@ type Issue struct {
 	// or "duplicate" for a closed issue, "reopened" or empty otherwise.
 	// GitLab does not report one. Only populated by GetIssue.
 	StateReason string
+}
+
+// PullRequestAuthorizationContext carries PR fields used by the e2e CI
+// authorization gate (author identity, label set, frozen updated_at).
+type PullRequestAuthorizationContext struct {
+	AuthorLogin string
+	UpdatedAt   string
+	Labels      []string
+}
+
+// IssueLabelEvent is a labeled timeline event on an issue or pull request.
+type IssueLabelEvent struct {
+	LabelName  string
+	ActorLogin string
+	CreatedAt  string
+}
+
+// GitHubCollaboratorPermissionDetail is the raw collaborator permission API
+// subset used by the e2e gate's strict role_name/permission cross-check.
+type GitHubCollaboratorPermissionDetail struct {
+	RoleName   string
+	Permission string
 }
 
 // IssueComment represents a comment on an issue.
@@ -758,6 +818,36 @@ func (r RateLimit) String() string {
 // ok is false until the client has seen a response carrying the headers.
 type RateLimitReporter interface {
 	RateLimit() (state RateLimit, ok bool)
+}
+
+// APICallerOther is the caller name of API calls made with a context that
+// carries no WithAPICaller label.
+const APICallerOther = "other"
+
+type apiCallerKey struct{}
+
+// WithAPICaller returns a context whose forge API calls are counted under
+// caller by clients that implement APICallReporter. An inner label replaces
+// an outer one, so a shared client can tell apart the parts of a program
+// that spend its quota.
+func WithAPICaller(ctx context.Context, caller string) context.Context {
+	return context.WithValue(ctx, apiCallerKey{}, caller)
+}
+
+// APICaller returns ctx's WithAPICaller label, or APICallerOther.
+func APICaller(ctx context.Context) string {
+	if caller, ok := ctx.Value(apiCallerKey{}).(string); ok {
+		return caller
+	}
+	return APICallerOther
+}
+
+// APICallReporter is implemented by clients that count their API calls by
+// caller (see WithAPICaller). APICalls returns a copy of the counts. A key
+// of the form "caller/resource" holds calls charged to a quota other than
+// the client's main one.
+type APICallReporter interface {
+	APICalls() map[string]int64
 }
 
 // Installation represents an app installation on an org.
@@ -1226,9 +1316,18 @@ type Client interface {
 	// pull request. Returns forge.ErrNotSupported if the forge has no
 	// equivalent concept.
 	ListIssueReactions(ctx context.Context, owner, repo string, number int) ([]Reaction, error)
+	// ListIssueLabelEvents returns labeled events on an issue or pull request.
+	// GitHub does not document event ordering; callers must not rely on slice order.
+	ListIssueLabelEvents(ctx context.Context, owner, repo string, number int) ([]IssueLabelEvent, error)
+	// RemoveIssueLabel removes a single label from an issue or pull request.
+	// Returns forge.ErrNotFound when the label is already absent.
+	RemoveIssueLabel(ctx context.Context, owner, repo string, number int, label string) error
 
 	// Pull request operations
 	GetPullRequestInfo(ctx context.Context, owner, repo string, number int) (*PullRequestInfo, error)
+	// GetPullRequestAuthorizationContext returns author login, updated_at, and
+	// label names for a pull request. Used by the e2e CI authorization gate.
+	GetPullRequestAuthorizationContext(ctx context.Context, owner, repo string, number int) (*PullRequestAuthorizationContext, error)
 	GetPullRequestHeadSHA(ctx context.Context, owner, repo string, number int) (string, error)
 	// ListPullRequestFiles returns the relative file paths changed by a pull
 	// request. On GitHub, the API caps results at 3000 files total.
@@ -1290,7 +1389,8 @@ type Client interface {
 	ListRepositoryArtifacts(ctx context.Context, owner, repo string, perPage int) ([]RepositoryArtifact, error)
 
 	// GetWorkflowRunLogs downloads the logs for a workflow run as plain text.
-	// On GitHub, this fetches job logs for each job in the run.
+	// On GitHub, this fetches the log of each job in the run that was not
+	// skipped.
 	GetWorkflowRunLogs(ctx context.Context, owner, repo string, runID int) (string, error)
 
 	// GetWorkflowRunAnnotations returns annotations (::notice::, ::warning::,
@@ -1665,6 +1765,12 @@ type GitHubExtensions interface {
 	// owner/repo, resolving custom role names from effective permissions.
 	// Returns forge.ErrNotFound when the user has no explicit permission.
 	GetCollaboratorPermission(ctx context.Context, owner, repo, username string) (role string, err error)
+
+	// GetCollaboratorPermissionDetail returns role_name and permission from
+	// the GitHub collaborator permission API without resolving custom roles.
+	// Used by the e2e CI gate, which applies a stricter built-in cross-check
+	// than GetCollaboratorPermission. Returns forge.ErrNotFound for HTTP 404.
+	GetCollaboratorPermissionDetail(ctx context.Context, owner, repo, username string) (GitHubCollaboratorPermissionDetail, error)
 
 	// AddCollaborator grants username a direct collaborator permission
 	// (pull, triage, push, maintain, admin) on owner/repo. It returns an

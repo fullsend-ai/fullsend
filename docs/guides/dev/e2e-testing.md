@@ -15,7 +15,7 @@ Playwright or stored sessions.
 
 Before running e2e locally or in CI:
 
-1. **Pool orgs** (`halfsend-01` … `halfsend-12`) provisioned per [Pool org provisioning](#pool-org-provisioning) below
+1. **Pool orgs** (`halfsend-01` … `halfsend-22`) provisioned per [Pool org provisioning](#pool-org-provisioning) below
 2. **Mint** deployed with `e2e` role enrolled and the requesting repository `fullsend-ai/fullsend` enrolled in `PER_REPO_WIF_REPOS` (or the mint explicitly in public mode, `PER_REPO_WIF_REPOS=*`)
 3. **CI only:** pool orgs with `FULLSEND_FOREIGN_E2E_REPOS` authorizing `fullsend-ai/fullsend`
 4. **Local only:** `gh auth login` (or `GH_TOKEN` / `GITHUB_TOKEN`) with admin access on pool orgs
@@ -76,7 +76,7 @@ Optional environment variables:
 Behaviour tests use the pool orgs (for `ENVIRONMENT=dev`) and install fullsend per-repo via `fullsend github setup`. When `ENVIRONMENT=stage`, the suite uses the `halfsend` org with a durable CF Worker mint instead of a pool org. See [behaviour-testing.md](behaviour-testing.md) and [behaviour-drivers.md](behaviour-drivers.md).
 
 The behaviour and playback suites lease `(org, test-repo-NN)` slots across the
-pool orgs (`halfsend-01` … `halfsend-12` for DEV, or `halfsend` for STAGE)
+pool orgs (`halfsend-01` … `halfsend-22` for DEV, or `halfsend` for STAGE)
 instead of locking a whole org; see
 [behaviour-testing.md](behaviour-testing.md#repo-allocation-via-the-shared-slot-driver).
 Other e2e tests still acquire an exclusive lock on one pool org — see
@@ -144,7 +144,7 @@ One-time enrollment for all pool orgs (idempotent). Enroll the singular `test-re
 
 ```bash
 export GCP_PROJECT=it-gcp-konflux-dev-fullsend
-for i in $(seq -w 1 12); do
+for i in $(seq -w 1 22); do
   go run ./cmd/fullsend mint enroll "halfsend-${i}/test-repo" \
     --project="$GCP_PROJECT" --region=us-central1
   for j in $(seq -w 1 12); do
@@ -192,7 +192,7 @@ go run ./cmd/fullsend admin foreign list --org halfsend-01
 # expect e2e → fullsend-ai/fullsend
 ```
 
-Existing pool orgs (`halfsend-01` … `halfsend-12`) need a one-time operator pass: install the e2e app (if missing) and run:
+Existing pool orgs (`halfsend-01` … `halfsend-22`) need a one-time operator pass: install the e2e app (if missing) and run:
 
 ```bash
 go run ./cmd/fullsend admin foreign allow --org halfsend-NN --role e2e --caller fullsend-ai/fullsend
@@ -281,6 +281,16 @@ a closed team.
 | `halfsend-10` | `halfsend-10/mint-status` |
 | `halfsend-11` | `halfsend-11/mint-status` |
 | `halfsend-12` | `halfsend-12/mint-status` |
+| `halfsend-13` | `halfsend-13/mint-status` |
+| `halfsend-14` | `halfsend-14/mint-status` |
+| `halfsend-15` | `halfsend-15/mint-status` |
+| `halfsend-16` | `halfsend-16/mint-status` |
+| `halfsend-17` | `halfsend-17/mint-status` |
+| `halfsend-18` | `halfsend-18/mint-status` |
+| `halfsend-19` | `halfsend-19/mint-status` |
+| `halfsend-20` | `halfsend-20/mint-status` |
+| `halfsend-21` | `halfsend-21/mint-status` |
+| `halfsend-22` | `halfsend-22/mint-status` |
 
 The STAGE and numbered test mints take these values as
 `--status-github-group=ORG/mint-status`. The behaviour suite's CF mint
@@ -623,7 +633,7 @@ The generated config (print it with `--print-config`):
   [ADR 0137](../../ADRs/0137-inference-gateway-credential-route.md).
 - authorises each model with an exact-match list of `jwt.repository` values.
   The list covers `test-repo-01` to `test-repo-12` in `halfsend-01` to
-  `halfsend-12` and in the STAGE org `halfsend`: 156 repositories. It
+  `halfsend-22` and in the STAGE org `halfsend`: 276 repositories. It
   matches names, so keep the pool orgs registered: whoever owns a pool org
   name can call the gateway. A model that a configured key may call also
   admits that key's `apiKey.purpose`.
@@ -873,7 +883,7 @@ The `fix` role reuses the coder app (`fullsend-test-coder`) and
 ### Installation targets
 
 All six test apps are installed with access to **all repositories** on
-`halfsend-01` through `halfsend-12` and on `halfsend` (used by the STAGE driver).
+`halfsend-01` through `halfsend-22` and on `halfsend` (used by the STAGE driver).
 The production `fullsend-ai-e2e` app is installed on the same organizations for
 cross-org suite control and minting. The other production agent apps are not
 required for the normal behaviour or playback suites and are intentionally not
@@ -911,7 +921,7 @@ App registration in that setup. Per-repo setup may still request the literal
 **Permission rollout for the coder App:** When adding a permission such as
 `packages:read`, update the `fullsend-test-coder` App registration first. Then
 have the installation owner for each existing pool org (`halfsend-01` through
-`halfsend-12`) Accept the pending permission update. New pool-org installs
+`halfsend-22`) Accept the pending permission update. New pool-org installs
 receive the permission during installation; existing installs may otherwise
 continue using the mint's rollout warning path.
 

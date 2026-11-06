@@ -387,9 +387,9 @@ expect_out "prints the x-api-key probe" "x-api-key only: GET /v1/models -> HTTP 
 CFG="${STATE}/secrets/${CFG_SECRET}.v1"
 if [[ "$(cat "${STATE}/secrets/${KEY_SECRET}.v1")" == "e2e-stub-upstream-key" ]]; then
   pass "stub key holds the fixed value"; else fail "stub key value"; fi
-if [[ "$(grep -o '"halfsend[-0-9]*/test-repo-[0-9][0-9]"' "${CFG}" | sort -u | wc -l | tr -d ' ')" == "156" ]] \
+if [[ "$(grep -o '"halfsend[-0-9]*/test-repo-[0-9][0-9]"' "${CFG}" | sort -u | wc -l | tr -d ' ')" == "276" ]] \
     && grep -q '"halfsend/test-repo-12"' "${CFG}"; then
-  pass "config allows the 13 x 12 pool repositories"; else fail "pool allowlist"; fi
+  pass "config allows the 23 x 12 pool repositories"; else fail "pool allowlist"; fi
 if grep -q 'mode: strict' "${CFG}" && grep -q 'audiences: \[fullsend-e2e-gateway\]' "${CFG}" \
     && ! grep -q 'preserveToken: true' "${CFG}"; then
   pass "config validates GitHub OIDC strictly with the fixed audience"; else fail "jwtAuth"; fi

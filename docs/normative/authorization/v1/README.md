@@ -142,7 +142,7 @@ source for each event is chosen by the provider:
   `GET /rest/api/3/user/groups` and is read once per actor per poll cycle.
 - **Without lists**, and every event when no `jira` entry exists, the role
   comes from the project's role roster, resolved once per poll cycle for the
-  configured `--jira-project` and only when such an event is present. An
+  configured `tracker.jira.project` and only when such an event is present. An
   actor is matched by Jira account ID. Role names are matched
   case-insensitively against the names above, and unrecognized role names
   fall through to `read`. Actors with no membership in the configured

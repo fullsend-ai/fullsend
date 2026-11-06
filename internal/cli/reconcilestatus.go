@@ -29,9 +29,10 @@ var reconcileNewTrackerClient = func(fc forge.Client) tracker.Client {
 	return tracker.NewForgeClient(fc)
 }
 
-// reconcileNewJiraTrackerClient creates a tracker.Client backed by Jira.
-// Extracted as a package-level var so tests can replace it.
-var reconcileNewJiraTrackerClient = newJiraTrackerClientFromEnv
+// reconcileNewJiraTrackerClient creates a tracker.Client backed by Jira
+// from the effective tracker config. Extracted as a package-level var so
+// tests can replace it.
+var reconcileNewJiraTrackerClient = newJiraTrackerClientFromConfig
 
 func newReconcileStatusCmd() *cobra.Command {
 	var (
@@ -124,8 +125,12 @@ finalized, this is a no-op.`,
 			}
 
 			if trackerSource == "jira" {
+				var tracking *config.TrackingConfig
+				if orgCfg != nil {
+					tracking = orgCfg.IssueTracking()
+				}
 				var jErr error
-				tc, jErr = reconcileNewJiraTrackerClient()
+				tc, jErr = reconcileNewJiraTrackerClient(tracking)
 				if jErr != nil {
 					return fmt.Errorf("creating Jira tracker client: %w", jErr)
 				}
