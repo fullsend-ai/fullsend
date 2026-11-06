@@ -157,6 +157,10 @@ func TestPiToolsFor(t *testing.T) {
 	tools, unsupported = piToolsFor([]string{"Skill"})
 	assert.Equal(t, []string{}, tools, "restriction with no pi tools stays non-nil")
 	assert.Nil(t, unsupported)
+
+	tools, unsupported = piToolsFor([]string{"Bash", "mcp__docs__search", "mcp__docs__*"})
+	assert.Equal(t, []string{"bash", "mcp__docs__search", "mcp__docs__*"}, tools, "MCP tool names pass through verbatim")
+	assert.Nil(t, unsupported)
 }
 
 func TestPiAgentToolEnabled(t *testing.T) {
