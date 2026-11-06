@@ -625,6 +625,90 @@ func TestOTELHeadersSecretThreading(t *testing.T) {
 	})
 }
 
+// TestJiraCredentialSecretThreading validates that the scoped Jira credentials
+// reach every fullsend run that may post status to a Jira-originated work item.
+// Both secrets are optional because service-account tokens omit the email.
+func TestJiraCredentialSecretThreading(t *testing.T) {
+	const token = "FULLSEND_JIRA_TOKEN"
+	const email = "FULLSEND_JIRA_EMAIL"
+	forward := func(name string) string {
+		return name + ": ${{ secrets." + name + " }}"
+	}
+
+	for _, tc := range []struct {
+		name    string
+		content func(t *testing.T) []byte
+	}{
+		{"scaffold/templates/shim-per-repo.yaml", loadScaffoldFile("templates/shim-per-repo.yaml")},
+		{"scaffold/prioritize.yml", loadScaffoldFile(".github/workflows/prioritize.yml")},
+		{"fullsend.yaml", loadRepoFile(".github/workflows/fullsend.yaml")},
+		{"prioritize.yml", loadRepoFile(".github/workflows/prioritize.yml")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := string(tc.content(t))
+			assert.Contains(t, body, forward(token), "%s must forward %s", tc.name, token)
+			assert.Contains(t, body, forward(email), "%s must forward %s", tc.name, email)
+		})
+	}
+
+	for _, wf := range []string{".github/workflows/reusable-dispatch.yml", ".github/workflows/reusable-prioritize.yml"} {
+		t.Run(wf, func(t *testing.T) {
+			body := string(loadRepoFile(wf)(t))
+			var parsed reusableWorkflow
+			require.NoError(t, yaml.Unmarshal([]byte(body), &parsed), "%s must be valid YAML", wf)
+			for _, name := range []string{token, email} {
+				secret, ok := parsed.On.WorkflowCall.Secrets[name]
+				require.True(t, ok, "%s must declare %s as a workflow_call secret", wf, name)
+				assert.False(t, secret.Required, "%s must keep %s optional", wf, name)
+			}
+			markers := []string{"Run prioritize agent"}
+			if wf == ".github/workflows/reusable-dispatch.yml" {
+				markers = []string{
+					"Run triage agent", "Run code agent", "Run review agent",
+					"Run fix agent", "Run retro agent", "Run prioritize agent",
+					"Run harness agent",
+				}
+			}
+			for _, marker := range markers {
+				t.Run(marker, func(t *testing.T) {
+					section := extractStepSection(t, body, marker)
+					payload := "needs.route.outputs.event_payload"
+					if marker == "Run harness agent" {
+						payload = "matrix.event_payload"
+					} else if wf == ".github/workflows/reusable-prioritize.yml" {
+						payload = "inputs.event_payload"
+					}
+					assert.Contains(t, section, "jira-token: ${{ fromJSON("+payload+")._normalized_event.source.system == 'jira' && secrets."+token+" || '' }}", "%s must pass the Jira token only for Jira-originated runs", marker)
+					assert.Contains(t, section, "jira-email: ${{ fromJSON("+payload+")._normalized_event.source.system == 'jira' && secrets."+email+" || '' }}", "%s must pass the optional Jira email only for Jira-originated runs", marker)
+				})
+			}
+		})
+	}
+
+	action := string(loadRepoFile("action.yml")(t))
+	assert.Contains(t, action, "  jira-token:\n", "action.yml must declare jira-token")
+	assert.Contains(t, action, "  jira-email:\n", "action.yml must declare jira-email")
+	assert.Contains(t, action, "FULLSEND_JIRA_TOKEN: ${{ inputs.jira-token }}")
+	assert.Contains(t, action, "FULLSEND_JIRA_EMAIL_INPUT: ${{ inputs.jira-email }}")
+	assert.Contains(t, action, "unset FULLSEND_JIRA_EMAIL\n", "an omitted email must select service-account Bearer auth")
+	assert.Contains(t, action, "unset FULLSEND_JIRA_EMAIL_INPUT\n", "the temporary email input must not reach child processes")
+
+	// Both the run step and the orphaned-status finalizer call Jira-backed
+	// code paths, so each must receive and normalize the credentials.
+	for _, name := range []string{"Run fullsend", "Finalize orphaned status comment"} {
+		start := strings.Index(action, "\n    - name: "+name+"\n")
+		require.GreaterOrEqual(t, start, 0, "action.yml must have a %s step", name)
+		step := action[start+1:]
+		if next := strings.Index(step[1:], "\n    - name: "); next >= 0 {
+			step = step[:next+1]
+		}
+		assert.Contains(t, step, "FULLSEND_JIRA_TOKEN: ${{ inputs.jira-token }}", "%s must receive the Jira token", name)
+		assert.Contains(t, step, "FULLSEND_JIRA_EMAIL_INPUT: ${{ inputs.jira-email }}", "%s must receive the optional Jira email", name)
+		assert.Contains(t, step, "unset FULLSEND_JIRA_EMAIL\n", "%s: an omitted email must select service-account Bearer auth", name)
+		assert.Contains(t, step, "unset FULLSEND_JIRA_EMAIL_INPUT\n", "%s: the temporary email input must not reach child processes", name)
+	}
+}
+
 // TestRunnerSecretsThreading validates the in-repo half of the
 // FULLSEND_GITHUB_RUNNER_SECRETS channel (ADR 0136): the scaffold shim forwards
 // the secret with its one fixed line, the composite action reads its
@@ -1303,6 +1387,150 @@ func TestActionPRHeadSHAInput(t *testing.T) {
 		"reconcile step must pass PR_HEAD_SHA_INPUT env from input")
 }
 
+// TestActionArtifactNameInput validates that action.yml accepts an exact
+// artifact name for collision-proof matrix uploads while retaining the
+// legacy default for standalone callers (#8961).
+func TestActionArtifactNameInput(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join("..", "..", "action.yml"))
+	require.NoError(t, err)
+	var action struct {
+		Inputs map[string]struct {
+			Default *string `yaml:"default"`
+		} `yaml:"inputs"`
+		Runs struct {
+			Steps []struct {
+				Name string            `yaml:"name"`
+				With map[string]string `yaml:"with"`
+			} `yaml:"steps"`
+		} `yaml:"runs"`
+	}
+	require.NoError(t, yaml.Unmarshal(content, &action))
+
+	nameInput, ok := action.Inputs["artifact-name"]
+	require.True(t, ok, "action.yml must declare the artifact-name input")
+	require.NotNil(t, nameInput.Default, "artifact-name must declare a default")
+	assert.Empty(t, *nameInput.Default, "artifact-name must default to empty for existing callers")
+
+	var name string
+	found := false
+	for _, step := range action.Runs.Steps {
+		if step.Name == "Upload fullsend artifacts" {
+			name = step.With["name"]
+			found = true
+			break
+		}
+	}
+	require.True(t, found, "action.yml must have an Upload fullsend artifacts step")
+	assert.Equal(t,
+		"${{ inputs.artifact-name || format('fullsend-{0}', inputs.agent) }}",
+		name, "upload must prefer the exact artifact-name and keep the legacy fallback")
+}
+
+func TestReusableDispatchArtifactNamesUseCompactAgentList(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "reusable-dispatch.yml"))
+	require.NoError(t, err)
+	workflow := string(content)
+	stepStart := strings.Index(workflow, "      - name: Export dispatch context env\n")
+	require.NotEqual(t, -1, stepStart, "harness-run must compute its artifact name")
+	stepEnd := strings.Index(workflow[stepStart:], "\n      - name: Run harness agent")
+	require.NotEqual(t, -1, stepEnd, "artifact naming step must precede the agent action")
+	step := workflow[stepStart : stepStart+stepEnd]
+	assert.Contains(t, step, "MATRIX_AGENT_NAMES: ${{ toJSON(fromJSON(inputs.matrix != '' && inputs.matrix || needs.harness-dispatch.outputs.matrix).include.*.agent) }}")
+	assert.NotContains(t, step, "MATRIX_JSON:", "the step must not receive event payloads for every matrix row")
+	assert.Contains(t, workflow, "artifact-name: ${{ steps.dispatch-env.outputs.artifact_name }}",
+		"the computed per-row name must be passed to the composite action")
+
+	script := extractReusableDispatchStepScript(t, "harness-run", "Export dispatch context env")
+	nameStart := strings.Index(script, `if [[ ! "${MATRIX_AGENT}" =~ ^[a-zA-Z0-9_-]+$`)
+	require.NotEqual(t, -1, nameStart, "the step must validate the matrix agent and job index")
+	nameEnd := strings.Index(script[nameStart:], "\nURL=$(printf")
+	require.NotEqual(t, -1, nameEnd, "artifact naming must finish before event payload parsing")
+	script = "set -euo pipefail\n" + script[nameStart:nameStart+nameEnd] + "\nprintf '%s\\n' \"$ARTIFACT_NAME\"\n"
+
+	repeated := `["code","code","code-0"]`
+	unique := `["ci-retry","ci-retry-1"]`
+	rows := []struct {
+		agent  string
+		index  string
+		names  string
+		wanted string
+	}{
+		{agent: "code", index: "0", names: repeated, wanted: "fullsend-code"},
+		{agent: "code", index: "1", names: repeated, wanted: "fullsend-code.matrix-1"},
+		{agent: "code-0", index: "2", names: repeated, wanted: "fullsend-code-0"},
+		{agent: "ci-retry", index: "0", names: unique, wanted: "fullsend-ci-retry"},
+		{agent: "ci-retry-1", index: "1", names: unique, wanted: "fullsend-ci-retry-1"},
+	}
+	seen := make(map[string]bool)
+	for _, row := range rows {
+		cmd := exec.Command("bash", "-c", script)
+		cmd.Env = append(os.Environ(), "MATRIX_AGENT="+row.agent, "MATRIX_JOB_INDEX="+row.index,
+			"MATRIX_AGENT_NAMES="+row.names)
+		output, err := cmd.CombinedOutput()
+		require.NoError(t, err, "%s", output)
+		name := strings.TrimSpace(string(output))
+		assert.Equal(t, row.wanted, name)
+		assert.False(t, seen[name], "matrix artifact name %q collided", name)
+		seen[name] = true
+	}
+
+	cmd := exec.Command("bash", "-c", script)
+	cmd.Env = append(os.Environ(), "MATRIX_AGENT=ci.retry", "MATRIX_JOB_INDEX=0", `MATRIX_AGENT_NAMES=["ci.retry"]`)
+	output, err := cmd.CombinedOutput()
+	require.Error(t, err, "agent names containing the reserved dot separator must be rejected")
+	assert.Contains(t, string(output), "matrix agent and job index must be valid")
+}
+
+func TestChainingGuideFindsArtifactOnLaterAPIPages(t *testing.T) {
+	doc, err := os.ReadFile(filepath.Join("..", "..", "docs", "guides", "user", "chaining-follow-up-workflows.md"))
+	require.NoError(t, err)
+	const stepName = "Check this run is a ${{ env.AGENT }} run"
+	marker := "      - name: " + stepName
+	stepStart := strings.Index(string(doc), marker)
+	require.NotEqual(t, -1, stepStart, "guide must include the documented artifact lookup step")
+	runMarker := "        run: |\n"
+	runStart := strings.Index(string(doc)[stepStart:], runMarker)
+	require.NotEqual(t, -1, runStart, "artifact lookup step must include a shell script")
+	runStart += stepStart + len(runMarker)
+	var script strings.Builder
+	for _, line := range strings.Split(string(doc)[runStart:], "\n") {
+		if strings.TrimSpace(line) == "" {
+			script.WriteByte('\n')
+			continue
+		}
+		indent := len(line) - len(strings.TrimLeft(line, " "))
+		if indent < 10 {
+			break
+		}
+		script.WriteString(line[10:])
+		script.WriteByte('\n')
+	}
+	require.Contains(t, script.String(), "gh api --paginate", "the artifact lookup must request every API page")
+
+	binDir := t.TempDir()
+	ghStub := `#!/usr/bin/env bash
+set -euo pipefail
+if [[ " $* " == *" --paginate "* ]]; then
+  for i in {1..30}; do printf 'fullsend-unrelated-%s\n' "$i"; done
+  printf 'fullsend-ci-retry.matrix-31\n'
+else
+  for i in {1..30}; do printf 'fullsend-unrelated-%s\n' "$i"; done
+fi
+`
+	ghPath := filepath.Join(binDir, "gh")
+	require.NoError(t, os.WriteFile(ghPath, []byte(ghStub), 0o755))
+	outputPath := filepath.Join(t.TempDir(), "github-output")
+	cmd := exec.Command("bash", "-c", script.String())
+	cmd.Env = append(os.Environ(), "PATH="+binDir+":"+os.Getenv("PATH"), "GITHUB_REPOSITORY=org/repo",
+		"RUN_ID=123", "AGENT=ci-retry", "GITHUB_OUTPUT="+outputPath)
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err, "%s", output)
+	result, err := os.ReadFile(outputPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(result), "fullsend-ci-retry.matrix-31",
+		"the workflow must match an artifact returned only by a later API page")
+}
+
 func TestActionReconcileStatusUsesSuppliedRoleFallback(t *testing.T) {
 	content, err := os.ReadFile(filepath.Join("..", "..", "action.yml"))
 	require.NoError(t, err)
@@ -1376,6 +1604,8 @@ func TestActionReconcileStatusSupportsOlderCLIs(t *testing.T) {
 			"WAS_SKIPPED=false",
 			"PR_HEAD_SHA_INPUT="+prHeadInput,
 			"FULLSEND_DIR="+dir,
+			"FULLSEND_JIRA_TOKEN=",
+			"FULLSEND_JIRA_EMAIL_INPUT=",
 			"GITHUB_WORKSPACE="+dir,
 			"GITHUB_SHA=merge-or-base",
 			"GITHUB_EVENT_NAME="+eventName,

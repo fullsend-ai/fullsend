@@ -87,6 +87,16 @@ var orgPool = []string{
 	"halfsend-10",
 	"halfsend-11",
 	"halfsend-12",
+	"halfsend-13",
+	"halfsend-14",
+	"halfsend-15",
+	"halfsend-16",
+	"halfsend-17",
+	"halfsend-18",
+	"halfsend-19",
+	"halfsend-20",
+	"halfsend-21",
+	"halfsend-22",
 }
 
 var (

@@ -782,6 +782,36 @@ type RateLimitReporter interface {
 	RateLimit() (state RateLimit, ok bool)
 }
 
+// APICallerOther is the caller name of API calls made with a context that
+// carries no WithAPICaller label.
+const APICallerOther = "other"
+
+type apiCallerKey struct{}
+
+// WithAPICaller returns a context whose forge API calls are counted under
+// caller by clients that implement APICallReporter. An inner label replaces
+// an outer one, so a shared client can tell apart the parts of a program
+// that spend its quota.
+func WithAPICaller(ctx context.Context, caller string) context.Context {
+	return context.WithValue(ctx, apiCallerKey{}, caller)
+}
+
+// APICaller returns ctx's WithAPICaller label, or APICallerOther.
+func APICaller(ctx context.Context) string {
+	if caller, ok := ctx.Value(apiCallerKey{}).(string); ok {
+		return caller
+	}
+	return APICallerOther
+}
+
+// APICallReporter is implemented by clients that count their API calls by
+// caller (see WithAPICaller). APICalls returns a copy of the counts. A key
+// of the form "caller/resource" holds calls charged to a quota other than
+// the client's main one.
+type APICallReporter interface {
+	APICalls() map[string]int64
+}
+
 // Installation represents an app installation on an org.
 type Installation struct {
 	ID            int

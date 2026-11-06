@@ -5858,9 +5858,9 @@ func TestSetupStatusNotifier_Jira(t *testing.T) {
 		trackerProject: "PROJ",
 	}
 
-	t.Setenv("JIRA_BASE_URL", "https://acme.atlassian.net")
-	t.Setenv("JIRA_TOKEN", "jira-test-token")
-	t.Setenv("JIRA_USER_EMAIL", "bot@example.com")
+	writeJiraTrackerConfigFile(t, tmpDir)
+	t.Setenv("FULLSEND_JIRA_TOKEN", "jira-test-token")
+	t.Setenv("FULLSEND_JIRA_EMAIL", "")
 
 	n, err := setupStatusNotifier(tmpDir, "code", "", sOpts, printer)
 	require.NoError(t, err)
@@ -5869,7 +5869,7 @@ func TestSetupStatusNotifier_Jira(t *testing.T) {
 	assert.False(t, n.HasClientFactory(), "Jira should use a static client, not a factory")
 }
 
-func TestSetupStatusNotifier_Jira_NoBaseURL(t *testing.T) {
+func TestSetupStatusNotifier_Jira_NoJiraConfig(t *testing.T) {
 	tmpDir := t.TempDir()
 	printer := ui.New(io.Discard)
 
@@ -5880,12 +5880,14 @@ func TestSetupStatusNotifier_Jira_NoBaseURL(t *testing.T) {
 		trackerProject: "PROJ",
 	}
 
-	t.Setenv("JIRA_BASE_URL", "")
-	t.Setenv("JIRA_TOKEN", "jira-test-token")
+	// A config.yaml without tracker.jira connection settings; no
+	// environment fallback supplies them.
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "config.yaml"), []byte("version: \"1\"\n"), 0o600))
+	t.Setenv("FULLSEND_JIRA_TOKEN", "jira-test-token")
 
 	_, err := setupStatusNotifier(tmpDir, "code", "", sOpts, printer)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "JIRA_BASE_URL required")
+	assert.Contains(t, err.Error(), "tracker.jira.base_url")
 }
 
 func TestSetupStatusNotifier_Jira_NoToken(t *testing.T) {
@@ -5899,15 +5901,15 @@ func TestSetupStatusNotifier_Jira_NoToken(t *testing.T) {
 		trackerProject: "PROJ",
 	}
 
-	t.Setenv("JIRA_BASE_URL", "https://acme.atlassian.net")
-	t.Setenv("JIRA_TOKEN", "")
+	writeJiraTrackerConfigFile(t, tmpDir)
+	t.Setenv("FULLSEND_JIRA_TOKEN", "")
 
 	_, err := setupStatusNotifier(tmpDir, "code", "", sOpts, printer)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "JIRA_TOKEN required")
+	assert.Contains(t, err.Error(), "FULLSEND_JIRA_TOKEN is required")
 }
 
-func TestSetupStatusNotifier_Jira_NoEmail(t *testing.T) {
+func TestSetupStatusNotifier_Jira_NoEmailUsesServiceAccount(t *testing.T) {
 	tmpDir := t.TempDir()
 	printer := ui.New(io.Discard)
 
@@ -5918,13 +5920,15 @@ func TestSetupStatusNotifier_Jira_NoEmail(t *testing.T) {
 		trackerProject: "PROJ",
 	}
 
-	t.Setenv("JIRA_BASE_URL", "https://acme.atlassian.net")
-	t.Setenv("JIRA_TOKEN", "jira-test-token")
-	t.Setenv("JIRA_USER_EMAIL", "")
+	// FULLSEND_JIRA_EMAIL is optional: without it the token is a
+	// service-account token sent as a Bearer token.
+	writeJiraTrackerConfigFile(t, tmpDir)
+	t.Setenv("FULLSEND_JIRA_TOKEN", "jira-test-token")
+	t.Setenv("FULLSEND_JIRA_EMAIL", "")
 
-	_, err := setupStatusNotifier(tmpDir, "code", "", sOpts, printer)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "JIRA_USER_EMAIL required")
+	n, err := setupStatusNotifier(tmpDir, "code", "", sOpts, printer)
+	require.NoError(t, err)
+	assert.NotNil(t, n)
 }
 
 func TestParseJiraKey(t *testing.T) {
@@ -5967,9 +5971,9 @@ func TestSetupStatusNotifier_Jira_UsesGitHubRunID(t *testing.T) {
 		trackerProject: "PROJ",
 	}
 
-	t.Setenv("JIRA_BASE_URL", "https://acme.atlassian.net")
-	t.Setenv("JIRA_TOKEN", "test-token")
-	t.Setenv("JIRA_USER_EMAIL", "bot@example.com")
+	writeJiraTrackerConfigFile(t, tmpDir)
+	t.Setenv("FULLSEND_JIRA_TOKEN", "test-token")
+	t.Setenv("FULLSEND_JIRA_EMAIL", "bot@example.com")
 	t.Setenv("GITHUB_RUN_ID", "98765")
 
 	n, err := setupStatusNotifier(tmpDir, "code", "", sOpts, printer)
@@ -5988,9 +5992,9 @@ func TestSetupStatusNotifier_Jira_FallsBackToSyntheticRunID(t *testing.T) {
 		trackerProject: "PROJ",
 	}
 
-	t.Setenv("JIRA_BASE_URL", "https://acme.atlassian.net")
-	t.Setenv("JIRA_TOKEN", "jira-test-token")
-	t.Setenv("JIRA_USER_EMAIL", "bot@example.com")
+	writeJiraTrackerConfigFile(t, tmpDir)
+	t.Setenv("FULLSEND_JIRA_TOKEN", "jira-test-token")
+	t.Setenv("FULLSEND_JIRA_EMAIL", "bot@example.com")
 	t.Setenv("GITHUB_RUN_ID", "") // unset
 
 	n, err := setupStatusNotifier(tmpDir, "code", "", sOpts, printer)

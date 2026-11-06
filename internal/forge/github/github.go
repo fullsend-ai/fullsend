@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"math"
 	"math/rand/v2"
 	"net/http"
@@ -56,6 +57,10 @@ type LiveClient struct {
 	rateMu   sync.Mutex
 	rate     forge.RateLimit
 	rateSeen bool
+
+	// calls counts responses by forge.APICaller label; see APICalls.
+	callsMu sync.Mutex
+	calls   map[string]int64
 
 	// etagCache holds the last ETag and raw JSON body seen for GET URLs
 	// that opt into conditional requests via getCachedJSON (#6702). A 304
@@ -116,6 +121,7 @@ const (
 var _ forge.Client = (*LiveClient)(nil)
 var _ forge.GitHubExtensions = (*LiveClient)(nil)
 var _ forge.RateLimitReporter = (*LiveClient)(nil)
+var _ forge.APICallReporter = (*LiveClient)(nil)
 
 // RateLimit returns the most recent rate-limit state observed on a
 // response from this client, and whether one has been observed yet.
@@ -123,6 +129,34 @@ func (c *LiveClient) RateLimit() (forge.RateLimit, bool) {
 	c.rateMu.Lock()
 	defer c.rateMu.Unlock()
 	return c.rate, c.rateSeen
+}
+
+// APICalls returns how many responses this client has received, by
+// forge.APICaller label. Every attempt of a retried request counts. A 304
+// does not, because it costs no primary quota, and neither does a request
+// that got no response. A response charged to a quota other than core, such
+// as graphql, counts under "caller/resource".
+func (c *LiveClient) APICalls() map[string]int64 {
+	c.callsMu.Lock()
+	defer c.callsMu.Unlock()
+	return maps.Clone(c.calls)
+}
+
+// countAPICall records one response for APICalls.
+func (c *LiveClient) countAPICall(ctx context.Context, resp *http.Response) {
+	if resp.StatusCode == http.StatusNotModified {
+		return
+	}
+	key := forge.APICaller(ctx)
+	if resource := resp.Header.Get("X-RateLimit-Resource"); resource != "" && resource != "core" {
+		key += "/" + resource
+	}
+	c.callsMu.Lock()
+	defer c.callsMu.Unlock()
+	if c.calls == nil {
+		c.calls = map[string]int64{}
+	}
+	c.calls[key]++
 }
 
 // parseRateLimit reads the X-RateLimit-* headers of one response. ok is
@@ -422,6 +456,7 @@ func (c *LiveClient) doRequest(ctx context.Context, method, path string, content
 		resp, err := c.http.Do(req)
 		if err == nil {
 			c.observeRateLimit(resp.Header)
+			c.countAPICall(ctx, resp)
 		}
 		if err != nil {
 			if closer, ok := reqBody.(io.Closer); ok {
@@ -4515,21 +4550,31 @@ func (c *LiveClient) ListWorkflowRunJobs(ctx context.Context, owner, repo string
 }
 
 // ListWorkflowRunArtifacts returns artifacts uploaded by a workflow run.
+// It paginates like ListWorkflowRunJobs so runs with more than one page of
+// artifacts (e.g. large dispatch matrices) are returned in full.
 func (c *LiveClient) ListWorkflowRunArtifacts(ctx context.Context, owner, repo string, runID int) ([]forge.WorkflowArtifact, error) {
-	var result struct {
-		Artifacts []struct {
-			ID   int    `json:"id"`
-			Name string `json:"name"`
-		} `json:"artifacts"`
+	const maxPages = 100
+	const perPage = 100
+	var artifacts []forge.WorkflowArtifact
+	for page := 1; page <= maxPages; page++ {
+		var result struct {
+			Artifacts []struct {
+				ID   int    `json:"id"`
+				Name string `json:"name"`
+			} `json:"artifacts"`
+		}
+		path := fmt.Sprintf("/repos/%s/%s/actions/runs/%d/artifacts?per_page=%d&page=%d", url.PathEscape(owner), url.PathEscape(repo), runID, perPage, page)
+		if err := c.getCachedJSON(ctx, path, &result); err != nil {
+			return nil, fmt.Errorf("list workflow run artifacts page %d: %w", page, err)
+		}
+		for _, art := range result.Artifacts {
+			artifacts = append(artifacts, forge.WorkflowArtifact{ID: art.ID, Name: art.Name})
+		}
+		if len(result.Artifacts) < perPage {
+			return artifacts, nil
+		}
 	}
-	if err := c.getCachedJSON(ctx, fmt.Sprintf("/repos/%s/%s/actions/runs/%d/artifacts", owner, repo, runID), &result); err != nil {
-		return nil, fmt.Errorf("list workflow run artifacts: %w", err)
-	}
-	artifacts := make([]forge.WorkflowArtifact, len(result.Artifacts))
-	for i, art := range result.Artifacts {
-		artifacts[i] = forge.WorkflowArtifact{ID: art.ID, Name: art.Name}
-	}
-	return artifacts, nil
+	return nil, fmt.Errorf("list workflow run artifacts: pagination exceeded %d pages", maxPages)
 }
 
 // DownloadWorkflowRunArtifact returns the zip archive for a workflow artifact.

@@ -22,11 +22,14 @@ import (
 
 // fakeSkipArtifactCI answers DownloadNamedArtifactFromRun by writing files
 // (relative path → content) into dest/<artifact name>/, where the real CI
-// drivers extract a named artifact, or returning err.
+// drivers extract an agent's artifacts, or returning err.
 type fakeSkipArtifactCI struct {
 	ci.Driver
 	files map[string]string
-	err   error
+	// artifacts maps extracted artifact names to their file contents, used to
+	// model repeated matrix rows for the same logical agent.
+	artifacts map[string]map[string]string
+	err       error
 
 	gotRunID int
 	gotName  string
@@ -38,13 +41,19 @@ func (f *fakeSkipArtifactCI) DownloadNamedArtifactFromRun(_ context.Context, _, 
 	if f.err != nil {
 		return f.err
 	}
-	for rel, content := range f.files {
-		p := filepath.Join(dest, name, rel)
-		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-			return err
-		}
-		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
-			return err
+	artifacts := f.artifacts
+	if len(artifacts) == 0 {
+		artifacts = map[string]map[string]string{name: f.files}
+	}
+	for artifactName, files := range artifacts {
+		for rel, content := range files {
+			p := filepath.Join(dest, artifactName, rel)
+			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+				return err
+			}
+			if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -85,6 +94,29 @@ func TestThenHarnessRunSkippedByPreScript(t *testing.T) {
 			fake: &fakeSkipArtifactCI{files: map[string]string{
 				telemetry: runTelemetry("run", skippedAttrTrue),
 			}},
+		},
+		{
+			name: "all repeated matrix artifacts were skipped",
+			fake: &fakeSkipArtifactCI{artifacts: map[string]map[string]string{
+				"fullsend-pre": {
+					telemetry: runTelemetry("run", skippedAttrTrue),
+				},
+				"fullsend-pre.matrix-1": {
+					telemetry: runTelemetry("run", skippedAttrTrue),
+				},
+			}},
+		},
+		{
+			name: "mixed repeated matrix artifacts do not count as skipped",
+			fake: &fakeSkipArtifactCI{artifacts: map[string]map[string]string{
+				"fullsend-pre": {
+					telemetry:   runTelemetry("run", skippedAttrFalse),
+					agentResult: `{}`,
+				},
+				"fullsend-pre.matrix-1": {
+					telemetry: runTelemetry("run", skippedAttrTrue),
+				},
+			}}, wantErr: []string{"skipped=false", "agent-result.json present"},
 		},
 		{
 			name: "agent ran",

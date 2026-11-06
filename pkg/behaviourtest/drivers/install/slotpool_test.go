@@ -205,6 +205,7 @@ func TestPoolNames(t *testing.T) {
 	assert.Equal(t, StageOrg, PoolOrgName(0))
 	assert.Equal(t, "halfsend-01", PoolOrgName(1))
 	assert.Equal(t, "halfsend-12", PoolOrgName(12))
+	assert.Equal(t, "halfsend-22", PoolOrgName(22))
 	assert.Equal(t, "test-repo-01", PoolSlotName(1))
 	assert.Equal(t, "test-repo-12", PoolSlotName(12))
 	assert.Equal(t, "halfsend-01/test-repo-03", Slot{Org: "halfsend-01", Repo: "test-repo-03"}.String())
@@ -215,13 +216,13 @@ func TestDevPoolLayout(t *testing.T) {
 	l := PoolLayoutForEnvironment("dev", t.Logf)
 	assert.Equal(t, DevPoolLayout(DefaultPoolSize), l)
 	orgs := l.Orgs()
-	require.Len(t, orgs, 12)
+	require.Len(t, orgs, 22)
 	assert.Equal(t, "halfsend-01", orgs[0])
-	assert.Equal(t, "halfsend-12", orgs[11])
+	assert.Equal(t, "halfsend-22", orgs[21])
 	slots := l.Slots()
-	require.Len(t, slots, 144)
+	require.Len(t, slots, 264)
 	assert.Equal(t, Slot{Org: "halfsend-01", Repo: "test-repo-01"}, slots[0])
-	assert.Equal(t, Slot{Org: "halfsend-12", Repo: "test-repo-12"}, slots[143])
+	assert.Equal(t, Slot{Org: "halfsend-22", Repo: "test-repo-12"}, slots[263])
 }
 
 func TestStagePoolLayout_OnlyUnsuffixedOrg(t *testing.T) {
@@ -253,7 +254,7 @@ func TestNewSlotAllocator_Validation(t *testing.T) {
 
 	a, err := newSlotAllocator(DevPoolLayout(DefaultPoolSize), cf, nil)
 	require.NoError(t, err)
-	assert.Equal(t, 144, a.Capacity())
+	assert.Equal(t, 264, a.Capacity())
 }
 
 func TestSlotAllocator_ConcurrentClaimsAreDistinct(t *testing.T) {
