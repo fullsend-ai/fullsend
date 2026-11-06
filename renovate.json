@@ -4,11 +4,23 @@
   "automergeType": "pr",
   "platformAutomerge": true,
   "prHourlyLimit": 1,
+  "pep621": {
+    "lockFileMaintenance": {
+      "enabled": true,
+      "schedule": ["before 4am on monday"]
+    },
+    "automerge": false
+  },
   "packageRules": [
     {
       "description": "Automerge low-risk updates (patch bumps and pin updates)",
       "matchUpdateTypes": ["patch", "pin"],
       "automerge": true
+    },
+    {
+      "description": "Keep Semgrep dependency updates human-reviewed.",
+      "matchPackageNames": ["semgrep"],
+      "automerge": false
     },
     {
       "description": "Automerge minor GitHub Actions updates (SHA-pinned, low-risk)",
