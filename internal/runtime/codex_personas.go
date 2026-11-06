@@ -168,7 +168,7 @@ func resolveCodexChildModels(roles []codexRole, skipped map[string]string, subag
 
 	// The child effort. Codex resets a child to the run-level child model's
 	// catalog default unless agents.default_subagent_reasoning_effort is set
-	// (child_config.rs, rust-v0.159.3), so the run's effort is written there
+	// (child_config.rs, rust-v0.166.0), so the run's effort is written there
 	// when the run has one. Either way codex checks the effort against the
 	// run-level child model and against a persona's own model at spawn and
 	// refuses the spawn when the model lacks it: each is checked here.

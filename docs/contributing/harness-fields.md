@@ -11,11 +11,13 @@
 > overlays). Those ADRs are point-in-time records; this document reflects the
 > current state.
 >
-> **Decided, not yet implemented (2026-10-01):**
+> **Decided, not yet implemented (2026-10-01; ADR 0158 2026-10-27):**
 > [ADR 0112](../ADRs/0112-overlays-may-set-any-harness-field.md) will let
 > overlays set any field except `base`, `trigger`, `overlays`, `slug`, `role`
-> and `forge`, with guarded fields limited to trusted inputs. The tables below
-> change when it is implemented.
+> and `forge`, with guarded fields limited to trusted inputs, and
+> [ADR 0158](../ADRs/0158-overlays-may-grant-runtime-fetch-within-the-config-allowlist.md)
+> will let a matching overlay grant runtime fetch within the config-level
+> allowlist. The tables below change when they are implemented.
 > [ADR 0151](../ADRs/0151-harness-human-role-minimums.md) adds the target
 > `human_min_role` field at the top level and in guarded overlays, with its
 > overlay selected before actor admission and pinned through the run. Legacy

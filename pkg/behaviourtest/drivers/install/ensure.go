@@ -20,9 +20,6 @@ const (
 	// GetWorkflow before giving up.
 	settleMaxAttempts = 30
 
-	// settlePoll is the delay between GetWorkflow polls.
-	settlePoll = 5 * time.Second
-
 	// resetMaxAttempts bounds the read-after-write retries around a
 	// freshly claimed slot repo: GetRepo polls confirming its creation
 	// (or a leftover fork's deletion), and github setup re-runs after
@@ -36,6 +33,10 @@ const (
 // polling GetRepo after delete or create. Doubled on each retry.
 // Overridden in tests to avoid slow retry loops.
 var resetRetryDelay = time.Second
+
+// settlePoll is the delay between GetWorkflow polls.
+// Overridden in tests to avoid slow retry loops.
+var settlePoll = 5 * time.Second
 
 // provisionGate serialises "inference provision" across every ensurer in
 // the process. A cold pool (or one whose providers were removed) would
@@ -830,11 +831,17 @@ func awaitWorkflowReady(ctx context.Context, client forge.Client, org, repo, wor
 	target := org + "/" + repo
 	logf("[ensure] waiting for Actions to recognise %s on %s", workflowFile, target)
 
+	// lastErr keeps the most recent poll failure so a persistent 403 or
+	// 5xx is reported as itself, not as a plain indexing timeout.
+	var lastErr error
 	for attempt := 1; attempt <= settleMaxAttempts; attempt++ {
 		wf, err := client.GetWorkflow(ctx, org, repo, workflowFile)
 		if err == nil && wf != nil {
 			logf("[ensure] %s visible on %s after %d attempt(s) (state=%s)", workflowFile, target, attempt, wf.State)
 			return nil
+		}
+		if err != nil {
+			lastErr = err
 		}
 
 		if attempt < settleMaxAttempts {
@@ -849,5 +856,8 @@ func awaitWorkflowReady(ctx context.Context, client forge.Client, org, repo, wor
 		}
 	}
 
+	if lastErr != nil {
+		return fmt.Errorf("workflow %s not visible on %s after %d attempts: %w", workflowFile, target, settleMaxAttempts, lastErr)
+	}
 	return fmt.Errorf("workflow %s not visible on %s after %d attempts", workflowFile, target, settleMaxAttempts)
 }

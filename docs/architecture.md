@@ -335,7 +335,11 @@ flowchart TB
   routing is overlays setting `model` and `effort`; when a routed model is not
   served, the runner retries once with the model and effort it would use
   without overlays, and `FULLSEND_FALLBACK_MODELS` applies as each runtime
-  allows. Decided, not yet implemented.
+  allows. A matching overlay will also be able to grant runtime fetch, with
+  every prefix it adds, and the whole merged list once it sets
+  `allow_runtime_fetch`, inside the config-level allowlist
+  ([ADR 0158](ADRs/0158-overlays-may-grant-runtime-fetch-within-the-config-allowlist.md)).
+  Decided, not yet implemented.
 - Plugins are runtime-scoped harness resources: a harness declares `plugins:` as one list of directories in its own repository (same trust and fetch path as skills), and each entry's format decides which runtime loads it — a `plugin.json` bundle is Claude Code's, a directory pi's `-e` loader resolves is uploaded and loaded after a tree-hash preflight computed from the host copy. Each runtime names and skips the entries in the other format, so the list survives a runtime switch. Because `--no-extensions` plus explicit `-e` closes the set of code that can register tools, no per-tool declaration is needed ([ADR 0094](ADRs/0094-pi-extensions-are-harness-resources.md)).
 - Decided, not yet implemented: extend the runner-owned native Codex child
   policy to V2 alongside the 0.166.0 bump. Bootstrap requires the `Agent` tool,
