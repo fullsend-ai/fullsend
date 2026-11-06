@@ -106,10 +106,15 @@ configuration, and installs the OpenShell CLI. That suits GitHub-hosted
 runners, which start empty.
 
 A self-hosted runner can instead use an OpenShell gateway that runs
-elsewhere. Set `OPENSHELL_GATEWAY_ENDPOINT` in the runner's environment to
-that gateway's `https://` endpoint. When it is set, the action skips the
-Podman installation, the rootless Podman configuration, and the local gateway
-configuration, and sandboxes are created on the remote gateway. If the
+elsewhere. Set the `OPENSHELL_GATEWAY_ENDPOINT` repository variable to that
+gateway's `https://` endpoint; the dispatch workflow passes it to the agent
+action. When it is set, the action skips the Podman installation, the
+rootless Podman configuration, and the local gateway configuration, and
+sandboxes are created on the remote gateway. A non-empty repository variable
+takes precedence over a value configured in the runner's own process
+environment, which remains supported as a fallback for fleet-managed runner
+images: set `OPENSHELL_GATEWAY_ENDPOINT` in the runner's environment and it
+applies whenever the repository variable is unset. If the
 `openshell` CLI is already on the runner's `PATH`, the action also skips the
 OpenShell CLI installer, which needs `sudo` and starts a local gateway
 service. Install the CLI version pinned in
