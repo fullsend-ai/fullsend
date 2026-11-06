@@ -2114,6 +2114,308 @@ func TestRunAgentSet_InvalidSubagentModelRejected(t *testing.T) {
 	assert.Contains(t, err.Error(), "config validation failed")
 }
 
+// --- runAgentSet Vertex/OpenAI harness-move tests (#7984) ---
+
+const vertexShapedHarnessYAML = `agent: agents/lint-docs.md
+role: coder
+providers:
+  - providers/vertex-ai.yaml
+  - providers/github-ro.yaml
+host_files:
+  - src: ${GOOGLE_APPLICATION_CREDENTIALS}
+    dest: /tmp/.gcp-credentials.json
+    optional: true
+model: opus
+env:
+  sandbox:
+    CLAUDE_CODE_USE_VERTEX: "1"
+    ANTHROPIC_VERTEX_PROJECT_ID: ${ANTHROPIC_VERTEX_PROJECT_ID}
+`
+
+const openAIShapedHarnessYAML = `agent: agents/codex-agent.md
+role: coder
+providers:
+  - providers/openai.yaml
+model: openai/gpt-5.6-luna
+`
+
+// vertexBaseHarnessYAML is a base: layer carrying Vertex signals; paired
+// with childInheritsVertexHarnessYAML, which declares none of its own.
+const vertexBaseHarnessYAML = `agent: agents/base.md
+role: coder
+providers:
+  - providers/vertex-ai.yaml
+host_files:
+  - src: ${GOOGLE_APPLICATION_CREDENTIALS}
+    dest: /tmp/.gcp-credentials.json
+    optional: true
+env:
+  sandbox:
+    CLAUDE_CODE_USE_VERTEX: "1"
+`
+
+const childInheritsVertexHarnessYAML = `base: common.yaml
+agent: agents/child.md
+role: coder
+model: opus
+`
+
+func TestEffectiveRuntimeName(t *testing.T) {
+	cases := []struct {
+		entryRuntime, repoRuntime string
+		want                      string
+	}{
+		{"", "", "claude"},
+		{"", "codex", "codex"},
+		{"claude", "codex", "claude"},
+		{"pi", "", "pi"},
+	}
+	for _, c := range cases {
+		assert.Equal(t, c.want, effectiveRuntimeName(c.entryRuntime, c.repoRuntime), "entryRuntime=%q repoRuntime=%q", c.entryRuntime, c.repoRuntime)
+	}
+}
+
+func TestRunAgentSet_RefusesVertexToOpenAIMove(t *testing.T) {
+	dir := t.TempDir()
+	writePerRepoConfig(t, dir, `agents:
+  - source: harness/lint-docs.yaml
+`)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "lint-docs.yaml"), []byte(vertexShapedHarnessYAML), 0o644))
+
+	err := runAgentSet(dir, "lint-docs", agentSetFlags{runtime: "codex", runtimeSet: true}, ui.New(os.Stdout))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "does not use Vertex")
+	assert.Contains(t, err.Error(), "providers: providers/vertex-ai.yaml")
+	assert.Contains(t, err.Error(), "env.sandbox: CLAUDE_CODE_USE_VERTEX")
+	assert.Contains(t, err.Error(), "host_files: /tmp/.gcp-credentials.json")
+
+	// Refused before anything was written: the agent still has no runtime
+	// override in config.yaml.
+	cfg, err := loadAgentConfig(filepath.Join(dir, "config.yaml"))
+	require.NoError(t, err)
+	lint, found := config.AgentSettingsFor(cfg.AgentEntries(), "lint-docs")
+	require.True(t, found)
+	assert.Empty(t, lint.Runtime)
+}
+
+func TestRunAgentSet_RefusesOpenAIToVertexMove(t *testing.T) {
+	dir := t.TempDir()
+	writePerRepoConfig(t, dir, `agents:
+  - source: harness/codex-agent.yaml
+    runtime: codex
+    model: openai/gpt-5.6-luna
+`)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "codex-agent.yaml"), []byte(openAIShapedHarnessYAML), 0o644))
+
+	// Moving back to the default (claude/Vertex) runtime without reshaping
+	// the harness is the inverse move and must be caught the same way.
+	err := runAgentSet(dir, "codex-agent", agentSetFlags{runtime: "", runtimeSet: true}, ui.New(os.Stdout))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "needs Vertex")
+
+	cfg, err := loadAgentConfig(filepath.Join(dir, "config.yaml"))
+	require.NoError(t, err)
+	agent, found := config.AgentSettingsFor(cfg.AgentEntries(), "codex-agent")
+	require.True(t, found)
+	assert.Equal(t, "codex", agent.Runtime, "refused: the old runtime is untouched")
+}
+
+// TestRunAgentSet_RefusesMoveAccountingForInheritedRepoRuntime covers the
+// logic-error finding on #7987: an agent with no per-agent runtime override
+// inherits the repo-wide `runtime:` key, not "claude". Comparing the
+// agents: entry's literal (empty) Runtime field would misclassify the old
+// state as claude/Vertex and miss that --runtime claude is itself the
+// boundary-crossing move.
+func TestRunAgentSet_RefusesMoveAccountingForInheritedRepoRuntime(t *testing.T) {
+	dir := t.TempDir()
+	writePerRepoConfig(t, dir, `runtime: codex
+agents:
+  - source: harness/codex-agent.yaml
+    model: openai/gpt-5.6-luna
+`)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "codex-agent.yaml"), []byte(openAIShapedHarnessYAML), 0o644))
+
+	// No per-agent runtime override is set: the agent runs under the
+	// repo-wide codex default today. Explicitly setting --runtime claude
+	// crosses the boundary even though the agents: entry's own Runtime
+	// field is empty before and after.
+	err := runAgentSet(dir, "codex-agent", agentSetFlags{runtime: "claude", runtimeSet: true}, ui.New(os.Stdout))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "needs Vertex")
+}
+
+// TestRunAgentSet_ClearingOverrideBackToSameRepoRuntimeSucceeds covers the
+// inverse of the inherited-runtime finding: clearing a per-agent override
+// that happens to match the repo-wide default does not cross the boundary
+// and must not be refused.
+func TestRunAgentSet_ClearingOverrideBackToSameRepoRuntimeSucceeds(t *testing.T) {
+	dir := t.TempDir()
+	writePerRepoConfig(t, dir, `runtime: codex
+agents:
+  - source: harness/codex-agent.yaml
+    runtime: codex
+    model: openai/gpt-5.6-luna
+`)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "codex-agent.yaml"), []byte(openAIShapedHarnessYAML), 0o644))
+
+	// Clearing the per-agent override falls back to the repo-wide codex
+	// default — the effective runtime does not change, so this must
+	// succeed even though the agents: entry's literal Runtime field goes
+	// from "codex" to "".
+	require.NoError(t, runAgentSet(dir, "codex-agent", agentSetFlags{runtime: "", runtimeSet: true}, ui.New(os.Stdout)))
+}
+
+// TestRunAgentSet_RefusesMoveWhenAliasResolvesToOpenAI covers the
+// logic-error finding on #7987: classifying a model by its literal prefix
+// disagrees with pi's actual resolution, which consults models.aliases.
+// "sonnet" carries no "openai/" prefix, but an alias remaps it to an OpenAI
+// id here — the same alias table pi's own launch path consults.
+func TestRunAgentSet_RefusesMoveWhenAliasResolvesToOpenAI(t *testing.T) {
+	t.Setenv("FULLSEND_PI_PROVIDER", "")
+	dir := t.TempDir()
+	writePerRepoConfig(t, dir, `agents:
+  - source: harness/pi-agent.yaml
+    runtime: pi
+    model: opus
+models:
+  aliases:
+    sonnet: openai/gpt-5.6-luna
+`)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "pi-agent.yaml"), []byte(vertexShapedHarnessYAML), 0o644))
+
+	err := runAgentSet(dir, "pi-agent", agentSetFlags{model: "sonnet", modelSet: true}, ui.New(os.Stdout))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "does not use Vertex")
+}
+
+// TestRunAgentSet_AllowsClearingOpenAIOverrideWhenHarnessModelIsStillOpenAI
+// covers the finding's "conversely" case: clearing an OpenAI override must
+// not be refused when the harness's own `model:` still resolves to OpenAI
+// and the provider does not actually change.
+func TestRunAgentSet_AllowsClearingOpenAIOverrideWhenHarnessModelIsStillOpenAI(t *testing.T) {
+	t.Setenv("FULLSEND_PI_PROVIDER", "")
+	dir := t.TempDir()
+	writePerRepoConfig(t, dir, `agents:
+  - source: harness/pi-agent.yaml
+    runtime: pi
+    model: openai/gpt-5.6-luna
+`)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	// The harness's own model: is an OpenAI id, so clearing the agents:
+	// entry override still resolves to OpenAI through the harness fallback.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "pi-agent.yaml"), []byte(openAIShapedHarnessYAML), 0o644))
+
+	require.NoError(t, runAgentSet(dir, "pi-agent", agentSetFlags{model: "", modelSet: true}, ui.New(os.Stdout)))
+}
+
+// TestRunAgentSet_RefusesMoveWhenHarnessInheritsVertexFromBase covers the
+// logic-error finding on #7987: a raw (non-composed) read of a child
+// harness can miss Vertex fields it inherits from a base: layer. The child
+// here declares no Vertex signals of its own — only its base does.
+func TestRunAgentSet_RefusesMoveWhenHarnessInheritsVertexFromBase(t *testing.T) {
+	dir := t.TempDir()
+	writePerRepoConfig(t, dir, `agents:
+  - source: harness/custom.yaml
+`)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "common.yaml"), []byte(vertexBaseHarnessYAML), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "custom.yaml"), []byte(childInheritsVertexHarnessYAML), 0o644))
+
+	err := runAgentSet(dir, "custom", agentSetFlags{runtime: "codex", runtimeSet: true}, ui.New(os.Stdout))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "does not use Vertex")
+	assert.Contains(t, err.Error(), "providers: providers/vertex-ai.yaml")
+}
+
+// TestRunAgentSet_AllowsMoveWhenBaseHarnessAlreadyMatches is the positive
+// counterpart: the base layer is already OpenAI-shaped, so composing it in
+// must not manufacture a refusal.
+func TestRunAgentSet_AllowsMoveWhenBaseHarnessAlreadyMatches(t *testing.T) {
+	dir := t.TempDir()
+	writePerRepoConfig(t, dir, `agents:
+  - source: harness/custom.yaml
+`)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "openai-base.yaml"), []byte(openAIShapedHarnessYAML), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "custom.yaml"), []byte(`base: openai-base.yaml
+agent: agents/child.md
+role: coder
+`), 0o644))
+
+	require.NoError(t, runAgentSet(dir, "custom", agentSetFlags{
+		runtime: "codex", runtimeSet: true, model: "openai/gpt-5.6-luna", modelSet: true,
+	}, ui.New(os.Stdout)))
+}
+
+func TestRunAgentSet_NoOpVertexMoveSucceeds(t *testing.T) {
+	dir := t.TempDir()
+	writePerRepoConfig(t, dir, `agents:
+  - source: harness/lint-docs.yaml
+`)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "lint-docs.yaml"), []byte(vertexShapedHarnessYAML), 0o644))
+
+	// No --runtime flag, and the new model is still a Vertex (non-"openai/")
+	// one: this never crosses the Vertex/OpenAI boundary, so the harness is
+	// not even consulted.
+	require.NoError(t, runAgentSet(dir, "lint-docs", agentSetFlags{model: "sonnet", modelSet: true}, ui.New(os.Stdout)))
+
+	cfg, err := loadAgentConfig(filepath.Join(dir, "config.yaml"))
+	require.NoError(t, err)
+	lint, found := config.AgentSettingsFor(cfg.AgentEntries(), "lint-docs")
+	require.True(t, found)
+	assert.Equal(t, "sonnet", lint.Model)
+}
+
+func TestRunAgentSet_AllowsMoveWhenHarnessAlreadyMatches(t *testing.T) {
+	dir := t.TempDir()
+	writePerRepoConfig(t, dir, `agents:
+  - source: harness/custom.yaml
+`)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "custom.yaml"), []byte(openAIShapedHarnessYAML), 0o644))
+
+	// The harness was already hand-shaped for OpenAI, so moving config.yaml
+	// to codex finds nothing stale.
+	require.NoError(t, runAgentSet(dir, "custom", agentSetFlags{
+		runtime: "codex", runtimeSet: true, model: "openai/gpt-5.6-luna", modelSet: true,
+	}, ui.New(os.Stdout)))
+}
+
+func TestRunAgentSet_SkipsVertexCheckForBuiltinWithNoHarness(t *testing.T) {
+	dir := t.TempDir()
+	writePerRepoConfig(t, dir, "")
+
+	// "code" is a built-in with no local harness file to inspect — the
+	// fleet resolves its harness over the network at run time — so the move
+	// check must not block it.
+	require.NoError(t, runAgentSet(dir, "code", agentSetFlags{
+		runtime: "codex", runtimeSet: true, model: "openai/gpt-5.6-luna", modelSet: true,
+	}, ui.New(os.Stdout)))
+}
+
+func TestRunAgentSet_SkipsVertexCheckForURLSource(t *testing.T) {
+	dir := t.TempDir()
+	hash := fetch.ComputeSHA256([]byte(vertexShapedHarnessYAML))
+	writePerRepoConfig(t, dir, `agents:
+  - name: lint
+    source: "https://raw.githubusercontent.com/org/agents/`+testCommitSHA+`/harness/lint.yaml#sha256=`+hash+`"
+allowed_remote_resources:
+  - "https://raw.githubusercontent.com/org/agents/"
+`)
+
+	// A URL-sourced agent's harness would need a network fetch to inspect;
+	// the move check must skip it rather than refuse blindly.
+	require.NoError(t, runAgentSet(dir, "lint", agentSetFlags{
+		runtime: "codex", runtimeSet: true, model: "openai/gpt-5.6-luna", modelSet: true,
+	}, ui.New(os.Stdout)))
+}
+
 func TestRunAgentSetCmd_SubagentFlags(t *testing.T) {
 	dir := t.TempDir()
 	writePerRepoConfig(t, dir, "")
