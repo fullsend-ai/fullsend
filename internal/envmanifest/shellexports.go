@@ -197,10 +197,13 @@ func collectFromCommand(words []shellWord, seen, exported map[string]bool, depth
 		if len(args) > 0 && args[0].text == "--" {
 			args = args[1:]
 		}
+		// The dispatched command keeps this command's prefix assignments,
+		// so "Y=1 builtin exec prog" still hands Y to prog.
 		if len(args) > 0 {
 			switch args[0].text {
 			case "export", "command", "exec", "builtin":
-				collectFromCommand(args, seen, exported, depth)
+				target := append(slices.Clone(words[:i]), args...)
+				collectFromCommand(target, seen, exported, depth)
 			}
 		}
 	case "exec", "nohup":
