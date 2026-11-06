@@ -234,9 +234,11 @@ The bash dispatch implementation uses a parameterized
 > `has_repo_permission`.
 > On GitHub, the bash route and `fullsend dispatch --route retro` both require
 > write access from the actor who closed or merged the pull request. The same
-> rule applies to merge-queue events: a bot or app sender without verified
-> write access is denied. The retro role's ordinary threshold is write; a
-> failed permission lookup denies dispatch. If CEL
+> rule applies to merge-queue events. GitHub App and bot senders have `role:
+> none`, so their close or merge events, including bot automerges through a
+> merge queue, do not start retro. A write-authorized user can run `/fs-retro`
+> afterward. The retro role's ordinary threshold is write; a failed permission
+> lookup denies dispatch. If CEL
 > routing fails for a close event, the workflow skips retro rather than
 > falling back to the bash stage.
 

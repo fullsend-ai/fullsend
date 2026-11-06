@@ -351,7 +351,11 @@ the review entry is disabled.
 | `cel=skip reason=bot-role lookup failed` | The bot-role lookup could not complete, so the bot is denied | Check the route step's warning for the lookup error |
 | `cel=skip reason=harness unavailable; actor below write` | The review harness could not be fetched or loaded, so only write access passes | Check the route step's warning for the harness error |
 | `cel=skip reason=trigger evaluation failed: …` | The trigger compiles but failed on this event, for example it reads a field the event lacks without `has()`; this counts as no match | Guard optional fields with `has()` |
-| `CEL route failed; keeping the bash stage` | A CEL route step failed or the configuration is invalid; closed-PR retro is skipped instead of falling back to Bash | Open the failed "… CEL route" step for the error, for example an invalid `trigger` or another invalid `agents:` entry |
+| `CEL route failed; keeping the bash stage` | A CEL route step failed or the configuration is invalid; for events other than a closed pull request, the Bash stage remains selected | Open the failed "… CEL route" step for the error, for example an invalid `trigger` or another invalid `agents:` entry |
+| `CEL routing failed for a closed pull request; skipping retro` | CEL routing failed for a closed pull request, so retro is skipped instead of falling back to Bash | Open the failed "… CEL route" step for the error |
+| `CEL retro run denied because the Bash route did not authorize retro` | CEL selected retro, but the Bash route did not authorize retro for this event | Check the event actor's write access and use `/fs-retro` if an authorized manual run is needed |
+| `cel=skip reason=closed pull request retro requires write` | The actor closing or merging the pull request lacked write access | Have a write-authorized user close or merge the pull request, or run `/fs-retro` |
+| `cel=skip reason=retro command requires write` | The actor invoking `/fs-retro` lacked write access | Have a write-authorized user invoke `/fs-retro` |
 | `invalid agent config: agents[N] (review): invalid trigger` in any agent job | The `trigger` in `config.yaml` does not compile; every agent run validates the whole `agents:` list, so all agents fail, not only review | Fix the expression in `.fullsend/config.yaml`; see [Checking a trigger before you merge](#checking-a-trigger-before-you-merge) |
 
 ### Choosing when retro runs

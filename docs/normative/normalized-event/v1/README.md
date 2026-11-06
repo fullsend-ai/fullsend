@@ -260,7 +260,9 @@ dispatch-level authorization per ADR 0054. Triage and review are observation
 agents. Retro can create issues and comments, so its dispatch authorization
 must be considered separately; GitHub PR-close retro requires the closing or
 merging actor to have write access, including for a completed merge-queue
-merge. A queue bot or app without verified write access is denied.
+merge. GitHub App and bot senders have `role: none`, so their close or merge
+events, including bot automerges through a merge queue, do not start retro. A
+write-authorized user can run `/fs-retro` afterward.
 
 ### Change facts (`state.change_proposal.diff`, `state.change_proposal.linked_work_items`)
 
