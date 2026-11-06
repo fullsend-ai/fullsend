@@ -13,7 +13,7 @@ What happens when agents get stuck in loops, oscillate between competing approac
 
 Agents can get stuck in loops where they repeatedly attempt and fail the same task, or oscillate between competing approaches without settling on a solution. This "flapping" wastes LLM spend, blocks real work, and can pollute PR histories with dozens of failed attempts.
 
-Flapping is distinct from normal retry behavior. A single retry after a transient failure is healthy. Flapping is when the system does not converge: each attempt either reproduces the same failure or introduces a new one that reverses the previous fix.
+Flapping is distinct from normal retry behavior. A single retry after a transient failure is healthy. Flapping is when the system does not converge: each attempt either reproduces the same failure or introduces a new one that reverses the previous fix. The accumulated attempt commits also pollute PR histories with dozens of failed attempts — see [commit-hygiene.md](commit-hygiene.md) for the history-noise side of this.
 
 ### Types of flapping
 

@@ -1211,6 +1211,16 @@ flowchart TB
 
 See [runtimes.md](runtimes.md) for the control-by-control security matrix, the config-key mapping and how to select a runtime per repo.
 
+## Release process
+
+A tag push triggers a release. GoReleaser builds, signs, and publishes the
+artifacts. **Decided:** Release notes come from `release-note` blocks in
+merged PR bodies. Write the block for users. Write `NONE` when the change has
+no effect users can see. Start the block with `action required` when the
+change breaks something. The Kubernetes `release-notes` tool gathers the
+blocks. Commit subjects no longer feed the release notes
+([ADR 0160](ADRs/0160-gather-release-notes-from-pr-bodies.md)).
+
 ## Repository layout (design workspace vs. web delivery)
 
 The repository combines design documents, Go CLI code, and a small **public web** surface. **Decided:** Browser-oriented static source lives under **`web/`** (the landing page is `web/public/index.html` at `/` and the custom 404 page is `web/public/404.html`). The user-facing documentation site is built from **`docs/`** by VitePress (`npm run docs:build`) and served under `/docs/`. Cloudflare Wrangler configuration and deploy-time static assets live under **`cloudflare_site/`** (single `wrangler.toml` with `not_found_handling = "404-page"`; CI stages **`_bundle/`** on the deploy runner and copies only **`public/`** and **`worker/`** from the artifact into that tree so **`wrangler.toml` is never taken from the PR-built zip**). See [ADR 0019](ADRs/0019-web-source-and-cloudflare-site-layout.md).
