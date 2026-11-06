@@ -850,6 +850,29 @@ type APICallReporter interface {
 	APICalls() map[string]int64
 }
 
+// APIQuotaCounter is one core quota counter as a client saw it. GitHub can
+// report more than one core counter for a token at the same time, each with
+// its own reset time, so a single remaining value describes only the counter
+// that answered last.
+type APIQuotaCounter struct {
+	// Reset identifies the counter within a client.
+	Reset time.Time
+	Limit int
+	// Highest and Lowest bound the remaining values seen, so their
+	// difference is how far the counter fell, whoever spent it.
+	Highest int
+	Lowest  int
+	// Calls counts this client's responses from the counter by
+	// "caller/METHOD".
+	Calls map[string]int64
+}
+
+// APIQuotaReporter is implemented by clients that attribute their core API
+// calls to quota counters. APIQuotaCounters returns a copy, ordered by Reset.
+type APIQuotaReporter interface {
+	APIQuotaCounters() []APIQuotaCounter
+}
+
 // Installation represents an app installation on an org.
 type Installation struct {
 	ID            int

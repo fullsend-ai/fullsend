@@ -123,9 +123,49 @@ func (c *orgCredentials) apiCallDiagnostics() string {
 	return strings.Join(append(lines, "all orgs: "+formatAPICalls(all)), "\n")
 }
 
+// apiQuotaDiagnostics renders one line per org and core quota counter, so
+// each counter's calls can be compared with how far it fell. Clients that do
+// not report counters are left out.
+func (c *orgCredentials) apiQuotaDiagnostics() string {
+	c.mu.Lock()
+	orgs := sortedKeys(c.byOrg)
+	clients := make([]forge.Client, 0, len(orgs))
+	for _, org := range orgs {
+		clients = append(clients, c.byOrg[org].client)
+	}
+	c.mu.Unlock()
+
+	var lines []string
+	for i, org := range orgs {
+		r, ok := clients[i].(forge.APIQuotaReporter)
+		if !ok {
+			continue
+		}
+		for _, counter := range r.APIQuotaCounters() {
+			lines = append(lines, org+": "+formatAPIQuotaCounter(counter))
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// formatAPIQuotaCounter renders a counter as "reset=T drop=N remaining=N/N
+// calls=N caller/METHOD=N ...", with callers sorted. drop covers everyone
+// spending the counter, and calls covers this client only.
+func formatAPIQuotaCounter(c forge.APIQuotaCounter) string {
+	var calls int64
+	parts := make([]string, 0, len(c.Calls))
+	for _, key := range sortedKeys(c.Calls) {
+		calls += c.Calls[key]
+		parts = append(parts, fmt.Sprintf("%s=%d", key, c.Calls[key]))
+	}
+	head := fmt.Sprintf("reset=%s drop=%d remaining=%d/%d calls=%d",
+		c.Reset.UTC().Format(time.RFC3339), c.Highest-c.Lowest, c.Lowest, c.Limit, calls)
+	return strings.Join(append([]string{head}, parts...), " ")
+}
+
 // formatAPICalls renders calls as "total=N caller=N ...", callers sorted.
-// total covers the core quota only, so it compares with the org's remaining
-// quota; "caller/resource" entries are charged to another quota.
+// total covers the core quota only; "caller/resource" entries are charged to
+// another quota.
 func formatAPICalls(calls map[string]int64) string {
 	var total int64
 	parts := make([]string, 0, len(calls)+1)
@@ -653,6 +693,9 @@ func (d *composedDriver) logAPICallsEvery(ctx context.Context, interval time.Dur
 func (d *composedDriver) logAPICalls(when string) {
 	if diag := d.creds.apiCallDiagnostics(); diag != "" {
 		d.logf("[driver] per-org API calls %s:\n%s", when, diag)
+	}
+	if diag := d.creds.apiQuotaDiagnostics(); diag != "" {
+		d.logf("[driver] per-org quota counters %s:\n%s", when, diag)
 	}
 }
 

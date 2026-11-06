@@ -661,11 +661,24 @@ The counts cover one suite process and one client per org, so they leave out
 other suites sharing the pool and the `fullsend` CLI subprocess that installs
 into a slot.
 
-The counts show how many requests each caller made, which can differ from the
-quota those requests cost. On the stage pool, `total` has run about 50% above
-the drop in remaining quota, and the difference lines up with `claim` and
-`lock` ([#9154](https://github.com/fullsend-ai/fullsend/issues/9154)). To
-measure quota use, read the `quota remaining` values in the log.
+**Quota counters.** GitHub can report two core quota counters for one org at
+the same time, each with its own reset time and limit
+([#9154](https://github.com/fullsend-ai/fullsend/issues/9154)). A `quota
+remaining` value describes only the counter that answered last, so readings
+from different counters can appear to rise and fall. After each API call log,
+the driver logs what each counter did:
+
+```
+[driver] per-org quota counters at finalize:
+halfsend-01: reset=2026-10-25T18:00:00Z drop=1800 remaining=3200/5000 calls=1500 claim/GET=300 other/POST=1200
+halfsend-01: reset=2026-10-25T18:00:09Z drop=900 remaining=4100/5000 calls=750 lock/GET=250 other/GET=500
+```
+
+`drop` is how far the counter fell while this client watched it, whoever spent
+it, and `remaining` is its lowest reading. `calls` counts this client's core
+calls that the counter answered, by caller and HTTP method. A `drop` above
+`calls` shows traffic from outside this client. To estimate an org's total quota
+use, add the `drop` of every counter in the same hour.
 
 **Harness-wait timeout errors.** Every harness-wait timeout error the
 GitHub Actions CI driver reports ends with the polling client's last-seen
