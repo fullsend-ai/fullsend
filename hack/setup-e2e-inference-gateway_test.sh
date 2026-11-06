@@ -17,7 +17,10 @@
 # model included), a busy gateway exits 6 before any change (a pending
 # rollout and --delete included), a failed post-deploy check exits 5 with the
 # served version's restore command, a disabled served version stops the run,
-# and a no-change run is a no-op.
+# and a no-change run is a no-op. Pool: POOL_ORG_COUNT and POOL_REPO_COUNT
+# equal DevPoolOrgCount and DefaultPoolSize, the one pool regex admits every
+# pool repository and refuses near misses, a pool change is a frozen change,
+# and an oversized config or an expandable "$" stops the run before any change.
 #
 # Run from the repo root:
 #   bash hack/setup-e2e-inference-gateway_test.sh
@@ -25,6 +28,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SETUP="${SCRIPT_DIR}/setup-e2e-inference-gateway.sh"
+INSTALL_DIR="${SCRIPT_DIR}/../pkg/behaviourtest/drivers/install"
 FAILURES=0
 PROJECT="test-project-123"
 
@@ -302,6 +306,16 @@ cat > "${SHIM_DIR}/gh" <<'EOF'
 S="${STUB_STATE}"
 echo "gh $*" >> "${S}/gh.log"
 [[ -f "${S}/gh_down" ]] && { echo "HTTP 401: Bad credentials" >&2; exit 1; }
+# gh_runs_down fails only the run lookups, so the busy check is reached.
+[[ -f "${S}/gh_runs_down" && "$1 $2" == "run list" ]] && { echo "HTTP 502: Bad Gateway" >&2; exit 1; }
+# gh api orgs/<org> --jq .id: the pinned id, or org_id_<org> when a test sets it.
+if [[ "$1" == api && "$2" == orgs/* ]]; then
+  org="${2#orgs/}"
+  if [[ -f "${S}/org_id_${org}" ]]; then cat "${S}/org_id_${org}"; exit 0; fi
+  id=$(sed -n "s/^${org}=//p" "${STUB_ORG_IDS}")
+  [[ -n "${id}" ]] || { echo "HTTP 404: Not Found (orgs/${org})" >&2; exit 1; }
+  echo "${id}"; exit 0
+fi
 wf="" event="" status="" limit=20
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -319,6 +333,9 @@ jq -e 'type == "array"' <<<"${runs}" >/dev/null || { echo "${runs}"; exit 0; }
 jq -c --arg s "${status}" --argjson n "${limit}" 'map(select($s == "" or .status == $s)) | .[:$n]' <<<"${runs}"
 EOF
 chmod +x "${SHIM_DIR}"/*
+# The stub gh answers each pool org with the id the script pins.
+export STUB_ORG_IDS="${SHIM_DIR}/org_ids"
+sed -nE 's/^  (halfsend(-[0-9]{2})?=[0-9]+)$/\1/p' "${SETUP}" > "${STUB_ORG_IDS}"
 
 stub_sha256() { if command -v sha256sum >/dev/null; then sha256sum | cut -d' ' -f1; else shasum -a 256 | cut -d' ' -f1; fi; }
 UPSTREAM_DIGEST="sha256:$(stub_sha256 < "${SHIM_DIR}/upstream.json")"
@@ -387,9 +404,61 @@ expect_out "prints the x-api-key probe" "x-api-key only: GET /v1/models -> HTTP 
 CFG="${STATE}/secrets/${CFG_SECRET}.v1"
 if [[ "$(cat "${STATE}/secrets/${KEY_SECRET}.v1")" == "e2e-stub-upstream-key" ]]; then
   pass "stub key holds the fixed value"; else fail "stub key value"; fi
-if [[ "$(grep -o '"halfsend[-0-9]*/test-repo-[0-9][0-9]"' "${CFG}" | sort -u | wc -l | tr -d ' ')" == "276" ]] \
-    && grep -q '"halfsend/test-repo-12"' "${CFG}"; then
-  pass "config allows the 23 x 12 pool repositories"; else fail "pool allowlist"; fi
+expect_out "prints the config size" "OK: rendered config is [0-9]+ bytes \\(limit 65536\\)"
+
+# --- pool: counts in sync with the behaviour pool, one anchored regex ---------
+# go_const FILE NAME prints the integer value of a Go constant "NAME = <n>".
+go_const() { sed -nE "s/^[[:space:]]*$2[[:space:]]*=[[:space:]]*([0-9]+)[[:space:]]*(\/\/.*)?$/\1/p" "$1"; }
+# sh_count NAME prints the integer value of "NAME=<n>" in the setup script.
+sh_count() { sed -nE "s/^$1=([0-9]+)$/\1/p" "${SCRIPT_DIR}/setup-e2e-inference-gateway.sh"; }
+DEV_ORGS=$(go_const "${INSTALL_DIR}/slotpool.go" DevPoolOrgCount)
+POOL_SIZE=$(go_const "${INSTALL_DIR}/driver.go" DefaultPoolSize)
+if [[ -n "${DEV_ORGS}" && "$(sh_count POOL_ORG_COUNT)" == "${DEV_ORGS}" ]]; then
+  pass "POOL_ORG_COUNT equals DevPoolOrgCount (${DEV_ORGS})"; else
+  fail "POOL_ORG_COUNT '$(sh_count POOL_ORG_COUNT)' differs from DevPoolOrgCount '${DEV_ORGS}' in slotpool.go"; fi
+if [[ -n "${POOL_SIZE}" && "$(sh_count POOL_REPO_COUNT)" == "${POOL_SIZE}" ]]; then
+  pass "POOL_REPO_COUNT equals DefaultPoolSize (${POOL_SIZE})"; else
+  fail "POOL_REPO_COUNT '$(sh_count POOL_REPO_COUNT)' differs from DefaultPoolSize '${POOL_SIZE}' in driver.go"; fi
+
+PATH="${SHIM_DIR}:${PATH}" bash "${SETUP}" --project "${PROJECT}" --with-vertex --print-config > "${STATE}/pool.yaml"
+# Every repository rule uses the same regex on "<owner id>/<owner>/<repo>":
+# 2 rate-limit keys, 3 real models, echo.
+POOL_RE=$(grep -o '\.matches("[^"]*")' "${STATE}/pool.yaml" | sort -u | sed -E 's/^\.matches\("(.*)"\)$/\1/')
+if [[ "$(grep -o '\.matches("[^"]*")' "${STATE}/pool.yaml" | wc -l | tr -d ' ')" == "6" ]] \
+    && [[ "$(wc -l <<<"${POOL_RE}" | tr -d ' ')" == "1" ]] \
+    && [[ "$(grep -c '(default(jwt.repository_owner_id, "") + "/" + default(jwt.repository, "")).matches("' "${STATE}/pool.yaml")" == "2" ]] \
+    && [[ "$(grep -c "^      - allow: '(jwt.repository_owner_id + \"/\" + jwt.repository).matches(\"[^\"]*\")'$" "${STATE}/pool.yaml")" == "4" ]] \
+    && ! grep -q 'jwt.repository in \[' "${STATE}/pool.yaml"; then
+  pass "every repository rule matches the one pool regex on owner id and name"; else fail "pool regex rules"; fi
+if [[ "${POOL_RE}" == ^*\$ ]] && ! grep -qE '\[|\{' <<<"${POOL_RE}"; then
+  pass "the pool regex is anchored and lists each number explicitly"; else fail "pool regex shape: ${POOL_RE}"; fi
+if [[ "$(wc -l < "${STUB_ORG_IDS}" | tr -d ' ')" == "$((DEV_ORGS + 1))" ]]; then
+  pass "POOL_ORG_IDS pins one id per pool org ($((DEV_ORGS + 1)))"; else fail "POOL_ORG_IDS has $(wc -l < "${STUB_ORG_IDS}" | tr -d ' ') entries"; fi
+org_id() { sed -n "s/^$1=//p" "${STUB_ORG_IDS}"; }
+for (( o = 0; o <= DEV_ORGS; o++ )); do
+  org=halfsend
+  if (( o > 0 )); then org=$(printf 'halfsend-%02d' "${o}"); fi
+  id=$(org_id "${org}")
+  for (( r = 1; r <= POOL_SIZE; r++ )); do printf '%s/%s/test-repo-%02d\n' "${id}" "${org}" "${r}"; done
+done > "${STATE}/pool-names"
+want=$(( (DEV_ORGS + 1) * POOL_SIZE ))
+if [[ "$(wc -l < "${STATE}/pool-names" | tr -d ' ')" == "${want}" ]] \
+    && [[ "$(grep -cE -- "${POOL_RE}" "${STATE}/pool-names")" == "${want}" ]]; then
+  pass "the pool regex matches all ${want} pool repositories with their org ids"; else
+  fail "pool regex misses: $(grep -vE -- "${POOL_RE}" "${STATE}/pool-names" | head -n 5 | tr '\n' ' ')"; fi
+if grep -qx "# ${want} allowed repositories ($((DEV_ORGS + 1)) orgs x ${POOL_SIZE} repos)" "${STATE}/pool.yaml"; then
+  pass "the config header counts the ${DEV_ORGS} + 1 orgs x ${POOL_SIZE} pool repositories"; else fail "pool header"; fi
+id01=$(org_id halfsend-01)
+id14=$(org_id halfsend-14)
+for subject in "${id01}/halfsend-00/test-repo-01" "${id01}/halfsend-$(printf '%02d' $((DEV_ORGS + 1)))/test-repo-01" \
+    "${id01}/halfsend-1/test-repo-01" "${id01}/halfsend-01/test-repo-$(printf '%02d' $((POOL_SIZE + 1)))" \
+    "${id01}/halfsend-01/test-repo-00" "${id01}/halfsend-01/test-repo-1" "${id01}/xhalfsend-01/test-repo-01" \
+    "${id01}/halfsend-01/test-repo-01x" "${id01}/halfsend-01/test-repo-01/x" "${id01}/Halfsend-01/test-repo-01" \
+    "${id01}/halfsend-01-x/test-repo-01" "999999999/halfsend-14/test-repo-05" "${id01}/halfsend-14/test-repo-05" \
+    "/halfsend-14/test-repo-05" "x${id14}/halfsend-14/test-repo-05" "${id14}0/halfsend-14/test-repo-05"; do
+  if ! grep -qE -- "${POOL_RE}" <<<"${subject}"; then pass "the pool regex refuses ${subject}"; else
+    fail "the pool regex admits ${subject}"; fi
+done
 if grep -q 'mode: strict' "${CFG}" && grep -q 'audiences: \[fullsend-e2e-gateway\]' "${CFG}" \
     && ! grep -q 'preserveToken: true' "${CFG}"; then
   pass "config validates GitHub OIDC strictly with the fixed audience"; else fail "jwtAuth"; fi
@@ -429,7 +498,10 @@ if [[ "${rc}" == "4" ]]; then pass "--dry-run refuses a frozen change (new model
 run_setup --project "${PROJECT}" --with-vertex --dry-run --allow-frozen-change && rc=0 || rc=$?
 if [[ "${rc}" == "3" ]]; then pass "--dry-run with pending changes exits 3"; else fail "--dry-run exit ${rc}"; fi
 expect_out "--dry-run lists the config change" "WOULD: added a new version of secret ${CFG_SECRET}"
-if [[ ! -e "${STATE}/gh.log" ]]; then pass "--dry-run never runs the busy check"; else fail "--dry-run queried runs"; fi
+if ! grep -q '^gh run list' "${STATE}/gh.log" 2>/dev/null; then pass "--dry-run never runs the busy check"; else fail "--dry-run queried runs"; fi
+# Two dry runs above, each looking up all 23 pool orgs.
+if [[ "$(grep -c '^gh api orgs/' "${STATE}/gh.log" 2>/dev/null)" == "46" ]]; then
+  pass "--dry-run checks every pool org id"; else fail "--dry-run org id lookups"; fi
 expect_no_mutations "--dry-run mutates nothing" "${before}"
 
 run_setup --project "${PROJECT}" --with-vertex --allow-frozen-change || fail "--with-vertex run failed"
@@ -700,6 +772,52 @@ if [[ "${rc}" == "3" ]]; then pass "--dry-run on an empty project exits 3"; else
 expect_out "--dry-run on an empty project plans the service" "WOULD: created Cloud Run service"
 expect_no_mutations "--dry-run on an empty project mutates nothing" 0
 
+# A pool org whose GitHub id differs from the pinned one stops the run.
+fresh_state
+echo 999999999 > "${STATE}/org_id_halfsend-14"
+run_setup --project "${PROJECT}" --without-vertex && rc=0 || rc=$?
+if [[ "${rc}" == "1" ]]; then pass "a changed pool org id exits 1"; else fail "a changed pool org id: exit ${rc}"; fi
+expect_out "a changed pool org id names the org" "org halfsend-14 has id '999999999' on GitHub, but POOL_ORG_IDS pins 353052683"
+expect_no_mutations "a changed pool org id makes no gcloud write" 0
+# A failed lookup fails closed.
+fresh_state
+touch "${STATE}/gh_down"
+run_setup --project "${PROJECT}" --without-vertex && rc=0 || rc=$?
+if [[ "${rc}" == "1" ]]; then pass "a failed org id lookup exits 1"; else fail "a failed org id lookup: exit ${rc}"; fi
+expect_out "a failed org id lookup says so" "could not look up org halfsend on GitHub"
+expect_no_mutations "a failed org id lookup makes no gcloud write" 0
+# POOL_ORG_IDS must list every pool org in order, even for --print-config.
+sed 's/^POOL_ORG_COUNT=.*/POOL_ORG_COUNT=23/' "${SETUP}" > "${SHIM_DIR}/pinned/setup-ids.sh"
+if E2E_GCP_PROJECT_ID="${PROJECT}" bash "${SHIM_DIR}/pinned/setup-ids.sh" --print-config > /dev/null 2> "${STATE}/ids.err"; then
+  fail "a missing POOL_ORG_IDS entry was accepted"; elif grep -q 'POOL_ORG_IDS has 23 entries; POOL_ORG_COUNT=23 needs 24' "${STATE}/ids.err"; then
+  pass "a missing POOL_ORG_IDS entry stops the run"; else fail "missing POOL_ORG_IDS entry: $(cat "${STATE}/ids.err")"; fi
+sed 's/^  halfsend-05=/  halfsend-5=/' "${SETUP}" > "${SHIM_DIR}/pinned/setup-ids.sh"
+if E2E_GCP_PROJECT_ID="${PROJECT}" bash "${SHIM_DIR}/pinned/setup-ids.sh" --print-config > /dev/null 2> "${STATE}/ids.err"; then
+  fail "a misnamed POOL_ORG_IDS entry was accepted"; elif grep -q "entry 6 is 'halfsend-5=286139354', expected halfsend-05=<id>" "${STATE}/ids.err"; then
+  pass "a misnamed POOL_ORG_IDS entry stops the run"; else fail "misnamed POOL_ORG_IDS entry: $(cat "${STATE}/ids.err")"; fi
+
+# An oversized config stops the run before any gcloud write. The stub config
+# cannot reach 65,536 bytes, so a copy of the script has a lower limit.
+sed 's/^CONFIG_MAX_BYTES=.*/CONFIG_MAX_BYTES=1000/' "${SETUP}" > "${SHIM_DIR}/pinned/setup-small.sh"
+PINNED_SETUP="${SETUP}"
+SETUP="${SHIM_DIR}/pinned/setup-small.sh"
+fresh_state
+run_setup --project "${PROJECT}" --without-vertex && rc=0 || rc=$?
+if [[ "${rc}" != "0" ]]; then pass "an oversized config exits non-zero"; else fail "an oversized config was accepted"; fi
+expect_out "an oversized config names its byte count" "rendered config is [0-9]+ bytes, over Secret Manager's limit of 1000 bytes"
+expect_no_mutations "an oversized config makes no gcloud write" 0
+SETUP="${PINNED_SETUP}"
+
+# A "$" that agentgateway would expand stops the run before any change.
+sed "s|^DENIED_REPO=.*|DENIED_REPO='outside/\$HOME'|" "${SETUP}" > "${SHIM_DIR}/pinned/setup-dollar.sh"
+PINNED_SETUP="${SETUP}"
+SETUP="${SHIM_DIR}/pinned/setup-dollar.sh"
+fresh_state
+if run_setup --project "${PROJECT}" --without-vertex; then fail "a config with \$HOME accepted"; else
+  expect_out "a '\$' before a variable name fails" "contains a '\\$' that is not followed by"; fi
+expect_no_mutations "a '\$' before a variable name changes nothing" 0
+SETUP="${PINNED_SETUP}"
+
 fresh_state
 printf '{"manifests":[]}' > "${STATE}/upstream_moved"
 if run_setup --project "${PROJECT}" --without-vertex; then fail "a moved upstream tag accepted"; else
@@ -823,6 +941,10 @@ live_edit() {
   sed -e "$1" "${f}" > "${f}.tmp" && mv "${f}.tmp" "${f}"
 }
 cfg_version() { cat "${STATE}/secrets/${CFG_SECRET}.latest"; }
+# EXTRA_REPO is a sed expression that adds a temporary repository, as an
+# exact-name list after the pool regex, to both rate-limit keys and every
+# model allow rule.
+EXTRA_REPO='s#\(default(jwt\.repository, ""))\.matches("[^"]*")\)#\1 || default(jwt.repository, "") in ["tier-b-org/tier-b-repo"]#g; s#\( + jwt\.repository)\.matches("[^"]*")\)#\1 || jwt.repository in ["tier-b-org/tier-b-repo"]#g'
 # live_append PATTERN LINE... adds LINEs after every line of the live config
 # version that matches the extended regex PATTERN.
 live_append() {
@@ -856,12 +978,14 @@ cc_reset
 cc_run || fail "no-change run failed"
 expect_out "a no-change run reports no changes" "No changes: everything was already in place"
 expect_no_mutations "a no-change run mutates nothing" 0
-if [[ ! -e "${STATE}/gh.log" ]] && ! grep -q -- '-X POST' "${STATE}/curl.log"; then
+if ! grep -q '^gh run list' "${STATE}/gh.log" 2>/dev/null && ! grep -q -- '-X POST' "${STATE}/curl.log"; then
   pass "a no-change run skips the busy and post-deploy checks"; else fail "no-change run ran change control"; fi
 
-# Allowed: extra allowlist repositories after the pool list.
+# Allowed: an exact-name list of extra repositories after the pool regex.
 cc_reset
-live_edit 's|"halfsend/test-repo-12"\]|"halfsend/test-repo-12", "tier-b-org/tier-b-repo"]|g'
+live_edit "${EXTRA_REPO}"
+if [[ "$(grep -c 'in \["tier-b-org/tier-b-repo"\]' "${STATE}/secrets/${CFG_SECRET}.v$(cfg_version)")" == "6" ]]; then
+  pass "the extra repo is in every repository rule of the live config"; else fail "EXTRA_REPO edit"; fi
 cc_run || fail "extra allowlist repo run failed"
 expect_out "an extra allowlist repo passes the diff" "only where a change is allowed"
 if [[ "$(cfg_version)" == "$((seed_version + 1))" ]]; then pass "an extra allowlist repo change rolls out"; else fail "extra repo version"; fi
@@ -882,15 +1006,42 @@ live_edit 's|agentgateway v1.7.0, llm mode|agentgateway v1.6.0, llm mode|'
 cc_run || fail "agentgateway bump run failed"
 expect_out "an agentgateway bump passes the diff" "only where a change is allowed"
 
-# Frozen: the echo key hash, the pool list, the auth mode and the RPM cap.
+# Frozen: the echo key hash, the pool regex, the auth mode and the RPM cap.
 cc_reset
 ECHO_KEY_HASH="${OTHER_ECHO_HASH}" run_setup --project "${PROJECT}" --with-vertex && rc=0 || rc=$?
 expect_refused "an echo key hash change" 4
 expect_out "a frozen change prints the diff" "\\| \\+.*keyHash: \"${OTHER_ECHO_HASH}\""
 cc_reset
-live_edit 's|"halfsend-05/test-repo-03"|"halfsend-05/test-repo-99"|g'
+live_edit 's#353053001/halfsend-22#353053002/halfsend-22#g'
 cc_run && rc=0 || rc=$?
-expect_refused "a pool list change" 4
+expect_refused "a pool regex change" 4
+# A changed regex stays visible even with an extra repository after it.
+cc_reset
+live_edit 's#353053001/halfsend-22#353053002/halfsend-22#g'
+live_edit "${EXTRA_REPO}"
+cc_run && rc=0 || rc=$?
+expect_refused "a pool regex change with an extra repo" 4
+# The exact-name list is masked only in its own form: a bare jwt.repository
+# list in a rate-limit key stays visible.
+cc_reset
+live_edit 's#\(default(jwt\.repository, ""))\.matches("[^"]*")\)#\1 || jwt.repository in ["tier-b-org/tier-b-repo"]#g'
+cc_run && rc=0 || rc=$?
+expect_refused "an extra repo list in the wrong form" 4
+# A pool change (here POOL_ORG_COUNT) is a frozen change: --dry-run shows the
+# diff and exits 4, and only --allow-frozen-change deploys it.
+sed -e 's/^POOL_ORG_COUNT=.*/POOL_ORG_COUNT=23/' -e 's/^  halfsend-22=353053001$/&\
+  halfsend-23=353099999/' "${SETUP}" > "${SHIM_DIR}/pinned/setup-pool.sh"
+PINNED_SETUP="${SETUP}"
+SETUP="${SHIM_DIR}/pinned/setup-pool.sh"
+cc_reset
+echo 353099999 > "${STATE}/org_id_halfsend-23"
+cc_run --dry-run && rc=0 || rc=$?
+expect_refused "a pool change with --dry-run" 4
+expect_out "a pool change prints the new regex" "\\| \\+.*\\|353099999/halfsend-23\\)/test-repo-"
+expect_out "a pool change prints the new count" "\\| \\+# 288 allowed repositories \\(24 orgs x 12 repos\\)"
+cc_run --allow-frozen-change || fail "pool change with --allow-frozen-change failed"
+if [[ "$(cfg_version)" == "$((seed_version + 1))" ]]; then pass "a pool change deploys with --allow-frozen-change"; else fail "pool change version"; fi
+SETUP="${PINNED_SETUP}"
 cc_reset
 run_setup --project "${PROJECT}" --with-vertex && rc=0 || rc=$?
 expect_refused "an auth mode change (permissive to strict)" 4
@@ -914,7 +1065,7 @@ if [[ "$(cfg_version)" == "$((seed_version + 1))" ]]; then pass "a TPM change pa
 # Busy: a running merge_group run or an unfinished release refuses (exit 6).
 for busy in "e2e.yml in_progress" "e2e.yml queued" "release.yml waiting"; do
   cc_reset
-  live_edit 's|"halfsend/test-repo-12"\]|"halfsend/test-repo-12", "tier-b-org/tier-b-repo"]|g'
+  live_edit "${EXTRA_REPO}"
   wf="${busy% *}" status="${busy#* }"
   printf '[{"databaseId":7,"status":"completed","url":"https://runs/6"},{"databaseId":8,"status":"%s","url":"https://runs/8"}]' \
     "${status}" > "${STATE}/runs_${wf}"
@@ -925,20 +1076,21 @@ done
 cc_run --force-busy || fail "--force-busy run failed"
 expect_out "--force-busy proceeds" "WARNING: busy check skipped \\(--force-busy\\)"
 cc_reset
-live_edit 's|"halfsend/test-repo-12"\]|"halfsend/test-repo-12", "tier-b-org/tier-b-repo"]|g'
+live_edit "${EXTRA_REPO}"
 echo '[{"databaseId":7,"status":"completed","url":"https://runs/7"}]' > "${STATE}/runs_release.yml"
 cc_run || fail "completed runs blocked the deploy"
 expect_out "completed runs do not block" "no merge_group e2e run or release run is using the gateway"
 cc_reset
-live_edit 's|"halfsend/test-repo-12"\]|"halfsend/test-repo-12", "tier-b-org/tier-b-repo"]|g'
-touch "${STATE}/gh_down"
+live_edit "${EXTRA_REPO}"
+touch "${STATE}/gh_runs_down"
 cc_run && rc=0 || rc=$?
 if [[ "${rc}" != "0" ]]; then pass "a failed run lookup fails closed"; else fail "a failed run lookup passed"; fi
+expect_out "a failed run lookup stops at the busy check" "could not list [a-z_]+ e2e.yml runs"
 expect_no_mutations "a failed run lookup changes nothing" 0
 
 # Post-deploy: a call that is not refused exits 5 with the restore command.
 cc_reset
-live_edit 's|"halfsend/test-repo-12"\]|"halfsend/test-repo-12", "tier-b-org/tier-b-repo"]|g'
+live_edit "${EXTRA_REPO}"
 echo "gemini-3.8-flash /v1/responses" > "${STATE}/anon_open"
 cc_run && rc=0 || rc=$?
 if [[ "${rc}" == "5" ]]; then pass "an anonymous call that is not refused exits 5"; else fail "anonymous leak exit ${rc}"; fi
@@ -952,7 +1104,7 @@ if [[ -n "${restore}" ]] && (cd "${STATE}" && PATH="${SHIM_DIR}:${PATH}" STUB_ST
 if grep -q -- "run services update fullsend-e2e-gateway .*--update-secrets=" "${STATE}/gcloud.log"; then
   pass "the restore command rolls a revision"; else fail "restore command rolls no revision"; fi
 cc_reset
-live_edit 's|"halfsend/test-repo-12"\]|"halfsend/test-repo-12", "tier-b-org/tier-b-repo"]|g'
+live_edit "${EXTRA_REPO}"
 echo 403 > "${STATE}/wrong_key_status"
 cc_run && rc=0 || rc=$?
 if [[ "${rc}" == "5" ]]; then pass "a wrong key that does not get 401 exits 5"; else fail "wrong key exit ${rc}"; fi
@@ -992,7 +1144,7 @@ expect_out "the post-deploy check runs after a rollout without a config change" 
 # The restore target is the version the serving revision loaded, not the
 # newest secret version.
 cc_reset
-add_pending_version 's|"halfsend/test-repo-12"\]|"halfsend/test-repo-12", "tier-b-org/tier-b-repo"]|g'
+add_pending_version "${EXTRA_REPO}"
 echo "gemini-3.8-flash /v1/responses" > "${STATE}/anon_open"
 REAL_KEY_HASH="${REAL_HASH}" cc_run && rc=0 || rc=$?
 if [[ "${rc}" == "5" ]]; then pass "a failed check after a pending rollout exits 5"; else fail "pending rollout post-check exit ${rc}"; fi
@@ -1010,7 +1162,7 @@ expect_no_mutations "a disabled served version changes nothing" 0
 # The baseline is the revision that gets the traffic, not the latest ready one:
 # after a rollback to an older revision, that revision's start version counts.
 cc_reset
-add_pending_version 's|"halfsend/test-repo-12"\]|"halfsend/test-repo-12", "tier-b-org/tier-b-repo"]|g'
+add_pending_version "${EXTRA_REPO}"
 echo 2099-01-01T00:00:01Z > "${STATE}/revision_time"  # "rev" started on the newer version
 cp "${STATE}/secrets/${CFG_SECRET}.v${seed_version}.time" "${STATE}/revision_time_rev-old"
 echo '[{"revisionName": "rev-old", "percent": 100}]' > "${STATE}/status_traffic"
@@ -1023,7 +1175,7 @@ expect_out "a version newer than the serving revision is a warned pending rollou
 # A revision pinned to a version number serves that version, even when a later
 # version also predates the revision.
 cc_reset
-add_pending_version 's|"halfsend/test-repo-12"\]|"halfsend/test-repo-12", "tier-b-org/tier-b-repo"]|g'
+add_pending_version "${EXTRA_REPO}"
 cp "${STATE}/revision_time" "${STATE}/secrets/${CFG_SECRET}.v$(cfg_version).time"  # predates the revision too
 echo "${seed_version}" > "${STATE}/revision_pin"
 echo "gemini-3.8-flash /v1/responses" > "${STATE}/anon_open"
@@ -1032,7 +1184,7 @@ expect_out "a pinned revision's version is the baseline" \
   "previous config is version ${seed_version} of secret ${CFG_SECRET}"
 # A run that removed the Vertex grant restores it with the config.
 cc_reset
-live_edit 's|"halfsend/test-repo-12"\]|"halfsend/test-repo-12", "tier-b-org/tier-b-repo"]|g'
+live_edit "${EXTRA_REPO}"
 echo "echo /v1/responses" > "${STATE}/anon_open"
 ECHO_KEY_HASH="${ECHO_HASH}" run_setup --project "${PROJECT}" --without-vertex --allow-frozen-change && rc=0 || rc=$?
 if [[ "${rc}" == "5" ]]; then pass "a failed check after removing Vertex exits 5"; else fail "removed-Vertex post-check exit ${rc}"; fi
@@ -1041,7 +1193,7 @@ expect_out "the restore command grants Vertex again" \
 
 # Traffic split across revisions is ambiguous: stop before any change.
 cc_reset
-live_edit 's|"halfsend/test-repo-12"\]|"halfsend/test-repo-12", "tier-b-org/tier-b-repo"]|g'
+live_edit "${EXTRA_REPO}"
 echo '[{"revisionName": "rev", "percent": 90}, {"revisionName": "rev-old", "percent": 10}]' > "${STATE}/status_traffic"
 cc_run && rc=0 || rc=$?
 if [[ "${rc}" == "1" ]]; then pass "split traffic stops the run"; else fail "split traffic: exit ${rc}"; fi
@@ -1050,7 +1202,7 @@ expect_no_mutations "split traffic changes nothing" 0
 
 # A config mount the script cannot read stops the run.
 cc_reset
-live_edit 's|"halfsend/test-repo-12"\]|"halfsend/test-repo-12", "tier-b-org/tier-b-repo"]|g'
+live_edit "${EXTRA_REPO}"
 echo "" > "${STATE}/revision_pin"
 cc_run && rc=0 || rc=$?
 if [[ "${rc}" == "1" ]]; then pass "an unreadable config mount stops the run"; else fail "unreadable config mount: exit ${rc}"; fi
@@ -1059,7 +1211,7 @@ expect_no_mutations "an unreadable config mount changes nothing" 0
 
 # A gh answer that is not a run list fails closed.
 cc_reset
-live_edit 's|"halfsend/test-repo-12"\]|"halfsend/test-repo-12", "tier-b-org/tier-b-repo"]|g'
+live_edit "${EXTRA_REPO}"
 echo '{}' > "${STATE}/runs_release.yml"
 cc_run && rc=0 || rc=$?
 if [[ "${rc}" == "1" ]]; then pass "a run list that is not an array fails closed"; else fail "non-array run list: exit ${rc}"; fi
@@ -1076,7 +1228,7 @@ if [[ ! -f "${STATE}/svc.json" ]]; then pass "--delete --force-busy proceeds"; e
 
 # An unfinished run behind a page of completed ones is still found.
 cc_reset
-live_edit 's|"halfsend/test-repo-12"\]|"halfsend/test-repo-12", "tier-b-org/tier-b-repo"]|g'
+live_edit "${EXTRA_REPO}"
 jq -nc '[range(0; 150) | {databaseId: ., status: "completed", url: "https://runs/\(.)"}]
   + [{databaseId: 999, status: "waiting", url: "https://runs/999"}]' > "${STATE}/runs_release.yml"
 cc_run && rc=0 || rc=$?
