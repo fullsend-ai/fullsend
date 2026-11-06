@@ -334,6 +334,26 @@ func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, direct bool
 		files = append(files, forge.TreeFile{Path: p, Delete: true})
 	}
 
+	// The managed Jira poll caller (#9109) is removed with the rest of the
+	// scaffold, since uninstall also deletes the Jira credentials it uses.
+	// A user-owned workflow at the same path is left alone.
+	if cfg.Forge == ForgeGitHub || cfg.Forge == "" {
+		actions, err := githubJiraPollReconciler{}.Remove(ctx, jiraPollRequest{
+			Client:    client,
+			Owner:     owner,
+			Repo:      repo,
+			StageFile: func(f forge.TreeFile) { files = append(files, f) },
+		})
+		if err != nil {
+			result.Error = fmt.Errorf("checking managed Jira poll workflow before uninstall: %w", err)
+			progress(fullName, "workflow", fmt.Sprintf("Failed: %v", result.Error))
+			return result
+		}
+		for _, a := range actions {
+			progress(fullName, "workflow", a.Detail)
+		}
+	}
+
 	// For GitLab, clean fullsend entries from the root .gitlab-ci.yml
 	// in the same commit as the scaffold deletes. The root file is
 	// user-owned: we remove only fullsend's include directive and

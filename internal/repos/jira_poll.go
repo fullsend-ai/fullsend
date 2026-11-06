@@ -6,6 +6,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
 
 // jiraPollComponent is the ComponentAction component reported for the
@@ -28,6 +29,23 @@ type jiraPollRequest struct {
 	// DryRun asks the reconciler to report the actions it would take
 	// without any forge write.
 	DryRun bool
+	// Render pins the reusable workflows of a file-based poll resource
+	// (the GitHub caller) to the ref the run's scaffold uses. Only
+	// meaningful for Ensure.
+	Render scaffold.RenderOptions
+	// StageFile queues a repository file write or deletion for the run's
+	// scaffold commit, so a file-based poll resource is delivered the same
+	// way as the rest of the scaffold (direct push or pull request). It is
+	// nil on a dry run.
+	StageFile func(forge.TreeFile)
+}
+
+// jiraPollDelivery is how a run delivers file-based poll resources: the
+// render options of its scaffold, and the function that queues a file for
+// its scaffold commit (nil on a dry run).
+type jiraPollDelivery struct {
+	render scaffold.RenderOptions
+	stage  func(forge.TreeFile)
 }
 
 // jiraPollReconciler manages the Fullsend-owned Jira poll resources of one
@@ -49,6 +67,7 @@ type jiraPollReconciler interface {
 // install still converges the credentials and reports that the resources
 // are not managed.
 var jiraPollReconcilers = map[string]jiraPollReconciler{
+	ForgeGitHub: githubJiraPollReconciler{},
 	ForgeGitLab: gitlabJiraPollReconciler{},
 }
 
@@ -162,8 +181,9 @@ func jiraSecretValues(cfg ConvergeConfig) map[string]string {
 // written (an omitted flag keeps the existing secret), then the forge's
 // poll resources are ensured. Disabled or omitted: the forge's poll
 // resources are removed, and the credentials are left untouched because
-// other Jira consumers may still need them. A dry run writes nothing.
-func convergeJiraPoll(ctx context.Context, d convergeDiscovery, cfg ConvergeConfig, progress ProgressFunc) []ComponentAction {
+// other Jira consumers may still need them. File-based poll resources are
+// delivered through delivery. A dry run writes nothing.
+func convergeJiraPoll(ctx context.Context, d convergeDiscovery, cfg ConvergeConfig, delivery jiraPollDelivery, progress ProgressFunc) []ComponentAction {
 	resolved := d.resolved
 	repoFullName := resolved.Owner + "/" + resolved.Repo
 	client := resolved.ForgeConfig.Client
@@ -174,6 +194,10 @@ func convergeJiraPoll(ctx context.Context, d convergeDiscovery, cfg ConvergeConf
 		Repo:   resolved.Repo,
 		Jira:   d.jira.jira,
 		DryRun: cfg.DryRun,
+		Render: delivery.render,
+	}
+	if !cfg.DryRun {
+		req.StageFile = delivery.stage
 	}
 
 	if !d.jira.enabled {

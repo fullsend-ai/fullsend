@@ -456,7 +456,7 @@ func TestConvergeJiraPoll_GitLab(t *testing.T) {
 	enabled := d
 	enabled.jira = jiraPollState{enabled: true}
 
-	actions := convergeJiraPoll(context.Background(), enabled, ConvergeConfig{JiraToken: testJiraToken}, noopProgress)
+	actions := convergeJiraPoll(context.Background(), enabled, ConvergeConfig{JiraToken: testJiraToken}, jiraPollDelivery{}, noopProgress)
 	a, ok := findAction(actions, jiraPollComponent)
 	require.True(t, ok, "actions: %+v", actions)
 	assert.Equal(t, "add", a.Action)
@@ -465,13 +465,13 @@ func TestConvergeJiraPoll_GitLab(t *testing.T) {
 
 	rerun := enabled
 	rerun.jira.tokenExists = true
-	actions = convergeJiraPoll(context.Background(), rerun, ConvergeConfig{}, noopProgress)
+	actions = convergeJiraPoll(context.Background(), rerun, ConvergeConfig{}, jiraPollDelivery{}, noopProgress)
 	for _, a := range actions {
 		assert.Equal(t, "none", a.Action, "an unchanged re-run is idempotent: %+v", a)
 	}
 	assert.Len(t, fc.CreatedSchedules, 1)
 
-	actions = convergeJiraPoll(context.Background(), d, ConvergeConfig{}, noopProgress)
+	actions = convergeJiraPoll(context.Background(), d, ConvergeConfig{}, jiraPollDelivery{}, noopProgress)
 	a, ok = findAction(actions, jiraPollComponent)
 	require.True(t, ok)
 	assert.Equal(t, "delete", a.Action)
