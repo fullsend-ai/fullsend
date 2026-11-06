@@ -27,10 +27,12 @@ run_resolve() {
 run_resolve_expect_fail() {
   local fallback="${1:-}"
   local name="${2}"
-  local leak="${3:-}"
+  local expected="${3}"
+  local leak="${4:-}"
   local output_file="${TMPDIR}/github-output.txt"
   local stderr_file="${TMPDIR}/stderr.txt"
   local oldpwd="${PWD}"
+  local got
   : >"${output_file}"
   : >"${stderr_file}"
   cd "${TMPDIR}/repo"
@@ -41,6 +43,11 @@ run_resolve_expect_fail() {
     return 0
   fi
   cd "${oldpwd}"
+  got="$(cat "${stderr_file}")"
+  if ! grep -F -- "${expected}" "${stderr_file}" >/dev/null; then
+    echo "FAIL: ${name}: expected ${expected@Q} in stderr, got ${got@Q}"
+    FAILURES=$((FAILURES + 1))
+  fi
   if [[ -n "${leak}" ]] && grep -F -- "${leak}" "${stderr_file}" >/dev/null; then
     echo "FAIL: ${name}: stderr leaked ${leak@Q}"
     FAILURES=$((FAILURES + 1))
@@ -87,11 +94,11 @@ assert_eq "empty fallback" "" "$(run_resolve "")"
 
 setup_repo
 printf 'version: "1"\nmint_url: http://evil.example\n' >.fullsend/config.yaml
-run_resolve_expect_fail "https://fallback.example" "reject http mint_url"
+run_resolve_expect_fail "https://fallback.example" "reject http mint_url" "::error::mint_url must be a valid HTTPS URL"
 
 setup_repo
 printf 'version: "1"\nmint_url: https://user:pass@mint.example\n' >.fullsend/config.yaml
-run_resolve_expect_fail "https://fallback.example" "reject userinfo mint_url" "user:pass"
+run_resolve_expect_fail "https://fallback.example" "reject userinfo mint_url" "::error::mint_url must not contain userinfo" "user:pass"
 
 setup_repo
 printf 'version: "1"\nmint_url: https://mint.example/a@b\n' >.fullsend/config.yaml
@@ -109,7 +116,25 @@ assert_eq "loopback http fallback" "http://127.0.0.1:8080" "$(run_resolve "http:
 
 setup_repo
 printf 'version: "1"\nmint_url: http://localhost:8080\n' >.fullsend/config.yaml
-run_resolve_expect_fail "" "reject localhost http from config file"
+run_resolve_expect_fail "" "reject localhost http from config file" "::error::mint_url must be a valid HTTPS URL"
+
+setup_repo
+run_resolve_expect_fail "http://evil.example" "reject non-loopback http fallback" "::error::mint_url must be a valid HTTPS URL"
+
+setup_repo
+run_resolve_expect_fail "https://u:p@host" "reject userinfo fallback" "::error::mint_url must not contain userinfo" "u:p"
+
+setup_repo
+run_resolve_expect_fail $'https://mint.example\nsmuggled' "reject LF in fallback" "::error::mint_url must not contain CR or LF"
+
+setup_repo
+printf 'mint_url: [unclosed\n' >.fullsend/config.yaml
+run_resolve_expect_fail "https://fallback.example" "reject unparsable overlay" "::error::failed to read mint_url from .fullsend/config.yaml"
+
+setup_repo
+printf 'version: "1"\n' >.fullsend/config.yaml
+printf 'mint_url: [unclosed\n' >.fullsend/config.base.yaml
+run_resolve_expect_fail "https://fallback.example" "reject unparsable base under silent overlay" "::error::failed to read mint_url from .fullsend/config.base.yaml"
 
 noyq_path=""
 IFS=':' read -ra _path_parts <<<"${PATH}"
@@ -143,7 +168,7 @@ assert_eq "no yq without config files" "https://fallback.example" "$(run_resolve
 
 setup_repo
 printf 'version: "1"\nmint_url: https://overlay.example\n' >.fullsend/config.yaml
-PATH="${noyq_path}" run_resolve_expect_fail "https://fallback.example" "yq required when config files exist"
+PATH="${noyq_path}" run_resolve_expect_fail "https://fallback.example" "yq required when config files exist" "::error::yq is required to resolve mint_url from config"
 
 if [[ "${FAILURES}" -eq 0 ]]; then
   echo "All tests passed."
