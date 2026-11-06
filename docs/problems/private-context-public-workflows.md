@@ -132,15 +132,26 @@ publication policy. It is not equivalent to approving a limited projection.
 
 ### Mediate access to protected context
 
-Have trusted pipeline code select the context before execution, or expose a
-restricted retrieval interface whose source permissions and network controls
-prevent broader access. Neither approach requires giving the agent unrestricted
-access to an entire tracker or document store.
+[ADR 0141](../ADRs/0141-deterministic-filtered-entity-context-staging.md)
+already chooses deterministic, filtered staging of forge entity content for
+issue and change-proposal runs. It applies
+[ADR 0133](../ADRs/0133-actor-attributed-data-security-boundary.md), which
+separates actor authorization, data admission and platform authority. Direct
+model-initiated source-system calls remain outside ADR 0133's guarantee.
+Neither decision authorizes publication of admitted private content; this
+option builds on that admission boundary rather than replacing it.
+
+For other protected sources, have trusted pipeline code select the context
+before execution, or expose a restricted retrieval interface whose source
+permissions and network controls prevent broader access. Neither approach
+requires giving the agent unrestricted access to an entire tracker or
+document store.
 
 Context needs vary by task. A change may need one work item's approved fields,
 while duplicate detection or retrospective analysis may need a broader corpus.
-Compare a bounded prefetch with scoped retrieval for both task effectiveness
-and disclosure risk rather than assuming either is sufficient for every agent.
+For sources outside the decided staging scope, compare bounded prefetch with
+scoped retrieval for task effectiveness and disclosure risk. The choice depends
+on the task and disclosure policy.
 
 Source-specific controls may operate at issue, comment or field granularity.
 Their visibility settings must be interpreted explicitly: a source's
