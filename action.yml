@@ -611,8 +611,16 @@ runs:
         WAS_SKIPPED: ${{ steps.run.outputs.skipped }}
         PR_HEAD_SHA_INPUT: ${{ inputs.pr-head-sha }}
         FULLSEND_DIR: ${{ inputs.fullsend-dir }}
+        FULLSEND_JIRA_TOKEN: ${{ inputs.jira-token }}
+        FULLSEND_JIRA_EMAIL_INPUT: ${{ inputs.jira-email }}
       run: |
         set -euo pipefail
+        if [[ -n "${FULLSEND_JIRA_EMAIL_INPUT}" ]]; then
+          export FULLSEND_JIRA_EMAIL="${FULLSEND_JIRA_EMAIL_INPUT}"
+        else
+          unset FULLSEND_JIRA_EMAIL
+        fi
+        unset FULLSEND_JIRA_EMAIL_INPUT
         # When the fullsend process is hard-killed (SIGKILL, OOM, segfault),
         # the deferred PostCompletion call never runs and the status comment
         # remains in "Started" state. This step runs unconditionally (if:

@@ -692,6 +692,21 @@ func TestJiraCredentialSecretThreading(t *testing.T) {
 	assert.Contains(t, action, "FULLSEND_JIRA_EMAIL_INPUT: ${{ inputs.jira-email }}")
 	assert.Contains(t, action, "unset FULLSEND_JIRA_EMAIL\n", "an omitted email must select service-account Bearer auth")
 	assert.Contains(t, action, "unset FULLSEND_JIRA_EMAIL_INPUT\n", "the temporary email input must not reach child processes")
+
+	// Both the run step and the orphaned-status finalizer call Jira-backed
+	// code paths, so each must receive and normalize the credentials.
+	for _, name := range []string{"Run fullsend", "Finalize orphaned status comment"} {
+		start := strings.Index(action, "\n    - name: "+name+"\n")
+		require.GreaterOrEqual(t, start, 0, "action.yml must have a %s step", name)
+		step := action[start+1:]
+		if next := strings.Index(step[1:], "\n    - name: "); next >= 0 {
+			step = step[:next+1]
+		}
+		assert.Contains(t, step, "FULLSEND_JIRA_TOKEN: ${{ inputs.jira-token }}", "%s must receive the Jira token", name)
+		assert.Contains(t, step, "FULLSEND_JIRA_EMAIL_INPUT: ${{ inputs.jira-email }}", "%s must receive the optional Jira email", name)
+		assert.Contains(t, step, "unset FULLSEND_JIRA_EMAIL\n", "%s: an omitted email must select service-account Bearer auth", name)
+		assert.Contains(t, step, "unset FULLSEND_JIRA_EMAIL_INPUT\n", "%s: the temporary email input must not reach child processes", name)
+	}
 }
 
 // TestRunnerSecretsThreading validates the in-repo half of the
@@ -1445,6 +1460,8 @@ func TestActionReconcileStatusSupportsOlderCLIs(t *testing.T) {
 			"WAS_SKIPPED=false",
 			"PR_HEAD_SHA_INPUT="+prHeadInput,
 			"FULLSEND_DIR="+dir,
+			"FULLSEND_JIRA_TOKEN=",
+			"FULLSEND_JIRA_EMAIL_INPUT=",
 			"GITHUB_WORKSPACE="+dir,
 			"GITHUB_SHA=merge-or-base",
 			"GITHUB_EVENT_NAME="+eventName,
