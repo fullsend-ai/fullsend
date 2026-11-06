@@ -148,5 +148,9 @@ func TestDo_PrimaryRateLimitWithoutResetKeepsBackoff(t *testing.T) {
 	require.NoError(t, client.DeleteRepo(context.Background(), "org", "repo"))
 	got := delays()
 	require.Len(t, got, 1)
-	assert.Less(t, got[0], time.Second, "a secondary limit keeps the configured backoff")
+	// retryDelay jitters a first-attempt 403 within
+	// [base/2, base] where base = secondaryRateLimitBackoff + 1s, so bound by
+	// base rather than a fixed 1s that the jitter can exceed.
+	assert.LessOrEqual(t, got[0], secondaryRateLimitBackoff+time.Second,
+		"a secondary limit keeps the configured backoff")
 }
