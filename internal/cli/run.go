@@ -1215,7 +1215,16 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepFail("Runner secret validation failed")
 		return err
 	}
-	if err := h.ValidateRunnerEnvWith(withRunnerSecretLookup(runnerSecrets, lookup)); err != nil {
+	// Sandbox-bound sites expand sandboxDeniedKeys empty instead of failing,
+	// so validation must resolve them there whether or not the host variable
+	// is set (the action unsets FULLSEND_JIRA_TOKEN on non-Jira runs).
+	sandboxLookup := func(key string) (string, bool) {
+		if sandboxDeniedKeys[key] {
+			return "", true
+		}
+		return lookup(key)
+	}
+	if err := h.ValidateRunnerEnvSites(withRunnerSecretLookup(runnerSecrets, lookup), sandboxLookup); err != nil {
 		printer.StepFail("Environment validation failed")
 		return fmt.Errorf("validating env: %w", err)
 	}
@@ -1246,7 +1255,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// Expand ${VAR} references in validation_loop.schema so the path
 	// resolves before ValidateFilesExist stat-checks it.
 	if h.ValidationLoop != nil && strings.Contains(h.ValidationLoop.Schema, "${") {
-		h.ValidationLoop.Schema = os.Expand(h.ValidationLoop.Schema, expander)
+		h.ValidationLoop.Schema = expandSandboxEnvValue(h.ValidationLoop.Schema, expander)
 	}
 
 	if err := h.ValidateFilesExist(); err != nil {

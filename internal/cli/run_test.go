@@ -2470,6 +2470,105 @@ func TestSafeExpandEnv_RefusesOIDCVars(t *testing.T) {
 	assert.Equal(t, "/prefix//suffix", safeExpandEnv("/prefix/${FULLSEND_GCP_OIDC_AUTH_FILE}/suffix"))
 }
 
+// TestSandboxDeniedKeys_JiraSecrets verifies that the Jira repository secrets
+// stay declarable in env.runner but expand empty at sandbox-bound sites:
+// env.sandbox values and expanded host_files content (#9079).
+func TestSandboxDeniedKeys_JiraSecrets(t *testing.T) {
+	t.Setenv("FULLSEND_JIRA_TOKEN", "process-scoped-jira-token")
+	t.Setenv("FULLSEND_JIRA_EMAIL", "scoped-bot@example.com")
+
+	for _, key := range []string{"FULLSEND_JIRA_TOKEN", "FULLSEND_JIRA_EMAIL"} {
+		value := os.Getenv(key)
+		assert.True(t, sandboxDeniedKeys[key], key)
+
+		// env.runner may still declare it.
+		assert.Equal(t, value, harnessEnvExpand(key), "env.runner must still resolve %s", key)
+		got, ok := harnessEnvLookup(key)
+		assert.True(t, ok)
+		assert.Equal(t, value, got)
+
+		// Sandbox-bound sites refuse it.
+		assert.Equal(t, "x--y", expandSandboxEnvValue("x-${"+key+"}-y", harnessEnvExpand))
+		assert.NotContains(t, shellSafeExpandEnv("export V=\"${"+key+"}\""), value)
+	}
+
+	t.Setenv("OTHER_VAR", "kept")
+	assert.Equal(t, "kept", expandSandboxEnvValue("${OTHER_VAR}", harnessEnvExpand))
+}
+
+// TestExpandRunnerEntry_OutputFileRefusesJiraSecrets verifies that
+// FULLSEND_OUTPUT_FILE, the runner entry exported verbatim into the sandbox,
+// cannot carry the Jira repository secrets from runner_env or env.runner,
+// while other runner entries still resolve them (#9079).
+func TestExpandRunnerEntry_OutputFileRefusesJiraSecrets(t *testing.T) {
+	t.Setenv("FULLSEND_JIRA_TOKEN", "process-scoped-jira-token")
+	t.Setenv("FULLSEND_JIRA_EMAIL", "scoped-bot@example.com")
+
+	for _, key := range []string{"FULLSEND_JIRA_TOKEN", "FULLSEND_JIRA_EMAIL"} {
+		value := os.Getenv(key)
+		got := expandRunnerEntry("FULLSEND_OUTPUT_FILE", "x-${"+key+"}-y", harnessEnvExpand)
+		assert.Equal(t, "x--y", got)
+		assert.NotContains(t, got, value)
+		assert.Equal(t, value, expandRunnerEntry("SOME_SCRIPT_VAR", "${"+key+"}", harnessEnvExpand),
+			"other runner entries must still resolve %s", key)
+	}
+}
+
+// TestValidateThenExpand_SandboxJiraRefsWithTokenUnset runs validation
+// followed by expansion with the Jira secrets unset (the action unsets
+// FULLSEND_JIRA_TOKEN on non-Jira runs). Sandbox-bound references must
+// resolve empty without a validation error, while an env.runner reference
+// to the unset token still fails (#9079).
+func TestValidateThenExpand_SandboxJiraRefsWithTokenUnset(t *testing.T) {
+	// t.Setenv registers the restore of the original values; unset after it.
+	for _, key := range []string{"FULLSEND_JIRA_TOKEN", "FULLSEND_JIRA_EMAIL"} {
+		t.Setenv(key, "")
+		require.NoError(t, os.Unsetenv(key))
+	}
+
+	sandboxLookup := func(key string) (string, bool) {
+		if sandboxDeniedKeys[key] {
+			return "", true
+		}
+		return harnessEnvLookup(key)
+	}
+	newHarness := func() *harness.Harness {
+		return &harness.Harness{
+			RunnerEnv:      map[string]string{"FULLSEND_OUTPUT_FILE": "out-${FULLSEND_JIRA_TOKEN}.json"},
+			Env:            &harness.EnvConfig{Sandbox: map[string]string{"FOO": "${FULLSEND_JIRA_TOKEN}", "BAR": "${FULLSEND_JIRA_EMAIL}"}},
+			ValidationLoop: &harness.ValidationLoop{Schema: "/schemas/${FULLSEND_JIRA_TOKEN}.json"},
+		}
+	}
+
+	h := newHarness()
+	require.NoError(t, h.ValidateRunnerEnvSites(harnessEnvLookup, sandboxLookup))
+	h.RunnerEnv["FULLSEND_OUTPUT_FILE"] = expandRunnerEntry("FULLSEND_OUTPUT_FILE", h.RunnerEnv["FULLSEND_OUTPUT_FILE"], harnessEnvExpand)
+	for k, v := range h.Env.Sandbox {
+		h.Env.Sandbox[k] = expandSandboxEnvValue(v, harnessEnvExpand)
+	}
+	h.ValidationLoop.Schema = expandSandboxEnvValue(h.ValidationLoop.Schema, harnessEnvExpand)
+	assert.Equal(t, "out-.json", h.RunnerEnv["FULLSEND_OUTPUT_FILE"])
+	assert.Equal(t, map[string]string{"FOO": "", "BAR": ""}, h.Env.Sandbox)
+	assert.Equal(t, "/schemas/.json", h.ValidationLoop.Schema)
+
+	// An ordinary env.runner reference keeps the missing-token error.
+	runnerH := &harness.Harness{Env: &harness.EnvConfig{Runner: map[string]string{"FULLSEND_JIRA_TOKEN": "${FULLSEND_JIRA_TOKEN}"}}}
+	err := runnerH.ValidateRunnerEnvSites(harnessEnvLookup, sandboxLookup)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "FULLSEND_JIRA_TOKEN is not set")
+}
+
+// TestValidationLoopSchemaRefusesJiraSecrets verifies that a schema path
+// cannot carry the Jira repository secrets into a file-validation error.
+func TestValidationLoopSchemaRefusesJiraSecrets(t *testing.T) {
+	const token = "process-scoped-jira-token"
+	t.Setenv("FULLSEND_JIRA_TOKEN", token)
+
+	schema := expandSandboxEnvValue("/missing/${FULLSEND_JIRA_TOKEN}.json", harnessEnvExpand)
+	assert.Equal(t, "/missing/.json", schema)
+	assert.NotContains(t, schema, token)
+}
+
 // TestReservedSandboxKeys_IncludesOIDCVars verifies that OIDC credential vars
 // are in reservedSandboxKeys so env.sandbox cannot inject them (#5832).
 func TestReservedSandboxKeys_IncludesOIDCVars(t *testing.T) {
