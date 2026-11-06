@@ -338,6 +338,8 @@ func TestFakeClient_CreateCrossRepoChangeProposal(t *testing.T) {
 	assert.Equal(t, "head-owner/head-repo", cp.HeadRepo)
 	assert.Equal(t, "main", cp.Base)
 	assert.Contains(t, cp.URL, "base-owner/base-repo/pull/1")
+	assert.Positive(t, cp.ID)
+	assert.NotEqual(t, int64(cp.Number), cp.ID)
 
 	// Second proposal gets incremented number.
 	cp2, err := fc.CreateCrossRepoChangeProposal(ctx,
@@ -347,6 +349,8 @@ func TestFakeClient_CreateCrossRepoChangeProposal(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 2, cp2.Number)
 	assert.Len(t, fc.CreatedProposals, 2)
+	assert.NotEqual(t, cp.ID, cp2.ID)
+	assert.Equal(t, []ChangeProposal{*cp, *cp2}, fc.CreatedProposals)
 }
 
 func TestFakeClient_CreateChangeProposal(t *testing.T) {

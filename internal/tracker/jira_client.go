@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 	"time"
@@ -120,11 +121,17 @@ func (c *JiraClient) GetIssue(ctx context.Context, project string, number int) (
 	if issue.Fields.IssueType != nil {
 		issueType = issue.Fields.IssueType.Name
 	}
+	var containerID int64
+	if issue.Fields.Project != nil {
+		containerID = parseJiraID(issue.Fields.Project.ID)
+	}
 	canonicalKey := issue.Key
 	if canonicalKey == "" {
 		canonicalKey = key
 	}
 	return &Issue{
+		ID:           parseJiraID(issue.ID),
+		ContainerID:  containerID,
 		Number:       number,
 		Title:        issue.Fields.Summary,
 		Body:         Body(jira.ADFToMarkdown(issue.Fields.Description)),
@@ -161,12 +168,26 @@ func (c *JiraClient) CreateIssue(ctx context.Context, project, title string, bod
 		return nil, err
 	}
 	return &Issue{
+		ID:     parseJiraID(created.ID),
 		Number: number,
 		Title:  title,
 		Body:   body,
 		URL:    c.baseURL + "/browse/" + created.Key,
 		Key:    created.Key,
 	}, nil
+}
+
+// parseJiraID converts a Jira issue or project ID string to the immutable
+// int64 identity. Jira returns positive numeric ID strings; an invalid value
+// yields 0, which callers must treat as an unresolved identity rather than
+// guessing (FR-002), matching jirapoll's parseIssueID behavior.
+func parseJiraID(id string) int64 {
+	n, err := strconv.ParseInt(id, 10, 64)
+	if err != nil || n < 1 {
+		log.Printf("WARNING: invalid Jira id %q, using 0", id)
+		return 0
+	}
+	return n
 }
 
 // issueNumberFromKey returns the numeric part of a Jira issue key, e.g.

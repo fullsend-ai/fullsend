@@ -29,6 +29,7 @@ func (c *LiveClient) CreateIssue(ctx context.Context, owner, repo, title, body s
 	}
 
 	var result struct {
+		ID     int64        `json:"id"`
 		IID    int          `json:"iid"`
 		Title  string       `json:"title"`
 		Desc   string       `json:"description"`
@@ -40,6 +41,7 @@ func (c *LiveClient) CreateIssue(ctx context.Context, owner, repo, title, body s
 	}
 
 	return &forge.Issue{
+		ID:     result.ID,
 		Number: result.IID,
 		Title:  result.Title,
 		Body:   result.Desc,
@@ -58,6 +60,7 @@ func (c *LiveClient) GetIssue(ctx context.Context, owner, repo string, number in
 	}
 
 	var result struct {
+		ID     int64        `json:"id"`
 		IID    int          `json:"iid"`
 		Title  string       `json:"title"`
 		Desc   string       `json:"description"`
@@ -76,6 +79,7 @@ func (c *LiveClient) GetIssue(ctx context.Context, owner, repo string, number in
 		state = "open"
 	}
 	return &forge.Issue{
+		ID:     result.ID,
 		Number: result.IID,
 		Title:  result.Title,
 		Body:   result.Desc,
@@ -107,6 +111,7 @@ func (c *LiveClient) ListOpenIssues(ctx context.Context, owner, repo string, lab
 		}
 
 		var raw []struct {
+			ID     int64        `json:"id"`
 			IID    int          `json:"iid"`
 			Title  string       `json:"title"`
 			Desc   string       `json:"description"`
@@ -119,6 +124,7 @@ func (c *LiveClient) ListOpenIssues(ctx context.Context, owner, repo string, lab
 
 		for _, item := range raw {
 			result = append(result, forge.Issue{
+				ID:     item.ID,
 				Number: item.IID,
 				Title:  item.Title,
 				Body:   item.Desc,
