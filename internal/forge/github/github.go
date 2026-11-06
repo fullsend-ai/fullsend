@@ -145,9 +145,11 @@ func (c *LiveClient) APICalls() map[string]int64 {
 	return maps.Clone(c.calls)
 }
 
-// APIQuotaCounters returns the core quota counters this client has seen and
-// its calls to each. It counts the same responses as APICalls, leaving out
-// those without rate-limit headers or charged to another quota.
+// APIQuotaCounters returns the groups of core rate-limit readings this client
+// has seen and its calls in each. It counts the core responses APICalls counts,
+// except those without a usable X-RateLimit-Remaining or X-RateLimit-Reset,
+// which belong to no group. As in APICalls, a response with no
+// X-RateLimit-Resource counts as core.
 func (c *LiveClient) APIQuotaCounters() []forge.APIQuotaCounter {
 	c.callsMu.Lock()
 	defer c.callsMu.Unlock()
@@ -165,7 +167,7 @@ func (c *LiveClient) APIQuotaCounters() []forge.APIQuotaCounter {
 // callsMu must be held.
 func (c *LiveClient) countQuotaCall(caller, method string, h http.Header) {
 	rl, ok := parseRateLimit(h)
-	if !ok || rl.Reset.IsZero() || rl.Resource != "core" {
+	if !ok || rl.Reset.IsZero() || (rl.Resource != "" && rl.Resource != "core") {
 		return
 	}
 	if c.quotaCounters == nil {

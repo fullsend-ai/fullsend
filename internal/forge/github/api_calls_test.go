@@ -154,3 +154,35 @@ func TestLiveClient_APIQuotaCounters(t *testing.T) {
 	counters[0].Calls["claim/GET"] = 100
 	assert.Equal(t, int64(2), c.APIQuotaCounters()[0].Calls["claim/GET"], "callers get a copy")
 }
+
+func TestLiveClient_APIQuotaCountersWithMissingHeaders(t *testing.T) {
+	const reset = 1800000000
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-RateLimit-Limit", "5000")
+		w.Header().Set("X-RateLimit-Remaining", "100")
+		switch r.URL.Path {
+		case "/no-resource":
+			w.Header().Set("X-RateLimit-Reset", strconv.Itoa(reset))
+		case "/no-reset":
+			w.Header().Set("X-RateLimit-Resource", "core")
+		case "/bad-reset":
+			w.Header().Set("X-RateLimit-Resource", "core")
+			w.Header().Set("X-RateLimit-Reset", "soon")
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c := New("token").WithBaseURL(srv.URL)
+	for _, path := range []string{"/no-resource", "/no-reset", "/bad-reset"} {
+		resp, err := c.do(context.Background(), http.MethodGet, path, nil)
+		require.NoError(t, err)
+		require.NoError(t, resp.Body.Close())
+	}
+
+	assert.Equal(t, map[string]int64{forge.APICallerOther: 3}, c.APICalls())
+	counters := c.APIQuotaCounters()
+	require.Len(t, counters, 1, "a response with no usable reset belongs to no group")
+	assert.Equal(t, int64(reset), counters[0].Reset.Unix())
+	assert.Equal(t, map[string]int64{"other/GET": 1}, counters[0].Calls, "no resource header counts as core")
+}
