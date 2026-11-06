@@ -2,6 +2,7 @@ package poll
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -940,36 +941,122 @@ func TestBuildChangeProposalState_ZeroProjectIDs(t *testing.T) {
 	}
 }
 
-func TestIsEntityAuthor_IssueNote(t *testing.T) {
+func TestEntityRelation_IssueNoteAuthor(t *testing.T) {
 	mc := newMockClient()
 	mc.issue[1] = &Issue{IID: 1, Author: UserRef{ID: 42}}
 	p := newEventsPoller(mc)
 
 	event := RoutableEvent{Type: "issue_note", IID: 1}
 
-	if !p.isEntityAuthor(context.Background(), event, 42) {
-		t.Error("expected isEntityAuthor to return true when actor is issue author")
+	if isAuthor, _ := p.entityRelation(context.Background(), event, 42); !isAuthor {
+		t.Error("expected entityRelation to report author when actor is issue author")
 	}
-	if p.isEntityAuthor(context.Background(), event, 99) {
-		t.Error("expected isEntityAuthor to return false when actor is not issue author")
+	if isAuthor, _ := p.entityRelation(context.Background(), event, 99); isAuthor {
+		t.Error("expected entityRelation not to report author when actor is not issue author")
 	}
 }
 
-func TestIsEntityAuthor_MREvent(t *testing.T) {
+func TestEntityRelation_MREventAuthor(t *testing.T) {
 	mc := newMockClient()
 	p := newEventsPoller(mc)
 
 	event := RoutableEvent{Type: "mr_event", IID: 5, MRAuthorID: 42}
-	if !p.isEntityAuthor(context.Background(), event, 42) {
-		t.Error("expected isEntityAuthor to return true when actor is MR author")
+	if isAuthor, _ := p.entityRelation(context.Background(), event, 42); !isAuthor {
+		t.Error("expected entityRelation to report author when actor is MR author")
 	}
-	if p.isEntityAuthor(context.Background(), event, 99) {
-		t.Error("expected isEntityAuthor to return false when actor is not MR author")
+	if isAuthor, _ := p.entityRelation(context.Background(), event, 99); isAuthor {
+		t.Error("expected entityRelation not to report author when actor is not MR author")
 	}
 
 	noAuthor := RoutableEvent{Type: "mr_event", IID: 5, MRAuthorID: 0}
-	if p.isEntityAuthor(context.Background(), noAuthor, 42) {
-		t.Error("expected isEntityAuthor to return false when MRAuthorID is 0")
+	if isAuthor, _ := p.entityRelation(context.Background(), noAuthor, 42); isAuthor {
+		t.Error("expected entityRelation not to report author when MRAuthorID is 0")
+	}
+}
+
+// TestEntityRelation_Assignee covers actor.is_entity_assignee on GitLab:
+// an assignee yields true, another user yields false, an unassigned entity
+// yields false, and a failed issue lookup yields false.
+func TestEntityRelation_Assignee(t *testing.T) {
+	mc := newMockClient()
+	mc.issue[1] = &Issue{IID: 1, Author: UserRef{ID: 10}, Assignees: []UserRef{{ID: 7}, {ID: 42}}}
+	mc.issue[2] = &Issue{IID: 2, Author: UserRef{ID: 10}}
+	mc.issueErr[3] = errors.New("boom")
+	p := newEventsPoller(mc)
+	ctx := context.Background()
+
+	tests := []struct {
+		name  string
+		event RoutableEvent
+		actor int
+		want  bool
+	}{
+		{"issue assignee", RoutableEvent{Type: "issue_note", IID: 1}, 42, true},
+		{"issue other user", RoutableEvent{Type: "issue_note", IID: 1}, 99, false},
+		{"issue author is not assignee", RoutableEvent{Type: "issue_note", IID: 1}, 10, false},
+		{"issue unassigned", RoutableEvent{Type: "issue_note", IID: 2}, 42, false},
+		{"issue lookup fails", RoutableEvent{Type: "issue_note", IID: 3}, 42, false},
+		{"issue label by assignee", RoutableEvent{Type: "issue_label", IID: 1}, 7, true},
+		{"mr assignee", RoutableEvent{Type: "mr_note", IID: 5, MRAuthorID: 10, MRAssigneeIDs: []int{42}}, 42, true},
+		{"mr other user", RoutableEvent{Type: "mr_note", IID: 5, MRAuthorID: 10, MRAssigneeIDs: []int{42}}, 99, false},
+		{"mr unassigned", RoutableEvent{Type: "mr_event", IID: 5, MRAuthorID: 10}, 42, false},
+		{"zero actor", RoutableEvent{Type: "mr_note", IID: 5, MRAssigneeIDs: []int{42}}, 0, false},
+		{"unknown type", RoutableEvent{Type: "other", IID: 1}, 42, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, got := p.entityRelation(ctx, tc.event, tc.actor); got != tc.want {
+				t.Errorf("isAssignee = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestToNormalizedEvent_IssueNoteAssignee(t *testing.T) {
+	mc := newMockClient()
+	mc.memberLevel[42] = 30 // Developer -> "write"
+	mc.memberLevel[43] = 30
+	mc.issue[1] = &Issue{IID: 1, Author: UserRef{ID: 10}, Assignees: []UserRef{{ID: 42, Username: "dev"}}}
+	p := newEventsPoller(mc)
+
+	for _, tc := range []struct {
+		id    int
+		login string
+		want  bool
+	}{
+		{42, "dev", true},
+		{43, "carol", false},
+	} {
+		ne, _, err := p.toNormalizedEvent(context.Background(), RoutableEvent{
+			Type:            "issue_note",
+			IID:             1,
+			NoteBody:        "/fs-code",
+			NoteID:          10 + tc.id,
+			NoteAuthorID:    tc.id,
+			NoteAuthorLogin: tc.login,
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if ne.Actor.Role != "write" {
+			t.Errorf("%s: Actor.Role = %q, want write", tc.login, ne.Actor.Role)
+		}
+		if ne.Actor.IsEntityAuthor {
+			t.Errorf("%s: expected Actor.IsEntityAuthor to be false", tc.login)
+		}
+		if ne.Actor.IsEntityAssignee != tc.want {
+			t.Errorf("%s: Actor.IsEntityAssignee = %v, want %v", tc.login, ne.Actor.IsEntityAssignee, tc.want)
+		}
+	}
+}
+
+func TestUserIDs(t *testing.T) {
+	if got := userIDs(nil); got != nil {
+		t.Errorf("userIDs(nil) = %v, want nil", got)
+	}
+	got := userIDs([]UserRef{{ID: 3}, {ID: 0}, {ID: 5}})
+	if len(got) != 2 || got[0] != 3 || got[1] != 5 {
+		t.Errorf("userIDs = %v, want [3 5]", got)
 	}
 }
 

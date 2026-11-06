@@ -112,6 +112,7 @@ type Issue struct {
 	State     string    `json:"state"`
 	Labels    []string  `json:"labels"`
 	Author    UserRef   `json:"author"`
+	Assignees []UserRef `json:"assignees"`
 	ClosedBy  UserRef   `json:"closed_by"`
 	ClosedAt  time.Time `json:"closed_at"`
 	CreatedAt time.Time `json:"created_at"`
@@ -131,6 +132,7 @@ type MergeRequest struct {
 	SourceBranch    string    `json:"source_branch"`
 	TargetBranch    string    `json:"target_branch"`
 	Author          UserRef   `json:"author"`
+	Assignees       []UserRef `json:"assignees"`
 	MergeUser       UserRef   `json:"merge_user"`
 	MergedBy        UserRef   `json:"merged_by"`
 	ClosedBy        UserRef   `json:"closed_by"`
