@@ -371,13 +371,18 @@ changes:
 
 - **Pool change:** a new pool org (`DevPoolOrgCount` in
   `pkg/behaviourtest/drivers/install/slotpool.go`), or a different
-  `DefaultPoolSize` (`pkg/behaviourtest/drivers/install/driver.go`). Edit
-  `POOL_ORG_COUNT` or `POOL_REPO_COUNT` at the top of the script to match;
-  `hack/setup-e2e-inference-gateway_test.sh` fails while they differ. The
-  change alters the pool regex, a frozen part of the config, so run the
-  script with `--dry-run` first: it shows the diff and exits 4. Then run it
-  with `--allow-frozen-change`, outside a release window and with the
-  maintainers told first.
+  `DefaultPoolSize` (`pkg/behaviourtest/drivers/install/driver.go`).
+  1. Edit `POOL_ORG_COUNT` or `POOL_REPO_COUNT` at the top of the script to
+     match; `hack/setup-e2e-inference-gateway_test.sh` fails while they
+     differ.
+  2. For a new org, add its line to `POOL_ORG_IDS`, with the id from
+     `gh api orgs/<org> --jq .id`. Only the highest-numbered org can be
+     removed: lower the count, drop its line, and deploy before the org is
+     deleted or renamed. Otherwise every run stops at the org id check.
+  3. Run the script with `--dry-run`: the pool regex is a frozen part of the
+     config, so it shows the diff and exits 4.
+  4. Run it with `--allow-frozen-change`, outside a release window and with
+     the maintainers told first.
 - **agentgateway bump:** change `AGW_VERSION`, and `AGW_DIGEST` to the
   release's multi-arch index digest. The version in the config header is
   masked, so a bump passes the frozen-path diff and needs no
@@ -520,6 +525,11 @@ script also waits for release runs, so nothing changes while a release is
 cut. So a run that changes the gateway goes through three checks. A run that
 changes nothing skips them and is still a no-op.
 
+Every setup run, a no-op or `--dry-run` included, checks that each org in
+`POOL_ORG_IDS` still has its pinned id on GitHub before it renders the
+config. A different id or a failed lookup stops the run before any change.
+`--print-config` and `--delete` skip the check.
+
 1. **Frozen-path diff.** Before it changes anything, the script renders the
    new config and compares it with the live config: the config secret
    version that the revision getting the traffic started with. A revision
@@ -531,12 +541,12 @@ changes nothing skips them and is still a no-op.
    about it, but it is not the baseline. If the traffic is split across
    revisions, the script stops before it changes anything. The comparison
    masks only the changes that are allowed:
-   - an exact-name list of extra repositories right after the pool regex,
+   - an exact-name list of extra repositories right after the pool rule,
      such as temporary repositories added to the live config by hand:
-     `jwt.repository.matches("<regex>") || jwt.repository in ["owner/name"]`
-     in an allow rule, and the same list as
+     `<pool rule> || jwt.repository in ["owner/name"]` in an allow rule, and
      `default(jwt.repository, "") in ["owner/name"]` in a rate-limit key.
-     A changed regex or pool count stays visible;
+     These match by name only, without the org id pin, so remove them when
+     the run is done. A changed regex, org id or pool count stays visible;
    - the time-boxed `REAL_KEY_HASH` entry, when it may call exactly one
      real model, and its allow rule on that model;
    - the tokens-per-minute cap, only with `--allow-tpm-change`.
@@ -641,23 +651,25 @@ The generated config (print it with `--print-config`):
   `oidc` and `api-key` auth modes. Do not copy it to production. A
   production OIDC gateway should keep the strict `jwtAuth` recommended by
   [ADR 0137](../../ADRs/0137-inference-gateway-credential-route.md).
-- authorises each model with one anchored regular expression on
-  `jwt.repository`, `jwt.repository.matches("<regex>")`, and uses the same
-  regex for the pool's rate-limit bucket. The script builds it from
-  `POOL_ORG_COUNT` and `POOL_REPO_COUNT`; for the current pool it is
-  `^halfsend(-(01|02|...|22))?/test-repo-(01|02|...|12)$`, which covers
-  `test-repo-01` to `test-repo-12` in `halfsend-01` to `halfsend-22` and in
-  the STAGE org `halfsend`: 276 repositories. Each number is written as an
-  explicit alternative, never as `[0-9]{2}` or a digit range, so the regex
-  admits exactly the pool: `halfsend-00`, `halfsend-23` and
-  `halfsend-01/test-repo-13` are refused, and whoever owns a pool-shaped org
-  name outside the pool gets no access. One regex also keeps the config far
-  below Secret Manager's 65,536-byte limit for a secret version, which a
-  list of every repository approached as the pool grew; the script refuses
-  a rendered config over that limit before it changes anything. It
-  matches names, so keep the pool orgs registered: whoever owns a pool org
-  name can call the gateway. A model that a configured key may call also
-  admits that key's `apiKey.purpose`.
+- authorises each model with one anchored regular expression on the
+  calling repository's owner id and name,
+  `(jwt.repository_owner_id + "/" + jwt.repository).matches("<regex>")`, and
+  uses the same rule for the pool's rate-limit bucket. The script builds the
+  regex from `POOL_ORG_IDS` and `POOL_REPO_COUNT`:
+  `^(273231846/halfsend|286139071/halfsend-01|...|353053001/halfsend-22)/test-repo-(01|02|...|12)$`.
+  That covers `test-repo-01` to `test-repo-12` in `halfsend-01` to
+  `halfsend-22` and the STAGE org `halfsend`: 276 repositories.
+  - Each org name is paired with its GitHub id. Ids are never reused, so an
+    org re-created under a pool name, after a delete or a rename, is
+    refused.
+  - Each number is an explicit alternative, never `[0-9]{2}` or a range, so
+    `halfsend-23` or `test-repo-13` is refused.
+  - Each rule is about 600 bytes and grows by about 20 bytes per org; the
+    whole config is about 8 KB. The script refuses a rendered config over
+    Secret Manager's 65,536-byte limit for a secret version before it
+    changes anything.
+- admits a configured key's `apiKey.purpose` on each model that key may
+  call.
 - strips `x-api-key` from every request it sends upstream.
 - caps each real model at 60 requests and 200,000 tokens per minute for
   each kind of caller: the pool shares one budget per model, each configured

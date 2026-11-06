@@ -30,8 +30,10 @@
 #   - busy check: before the first change of any kind (--delete too),
 #     refuses (exit 6) while a merge_group run of e2e.yml or a release.yml
 #     run is not completed
+#   - pool org ids: refuses (exit 1) unless every pool org still has its
+#     pinned id (POOL_ORG_IDS) on GitHub
 #   - frozen-path diff: refuses (exit 4) any config difference except an
-#     exact-name list of extra repositories after the pool regex, the
+#     exact-name list of extra repositories after the pool rule, the
 #     REAL_KEY_HASH entry and its allow rule on a real model, and (with
 #     --allow-tpm-change) the tokens-per-minute cap. The base is the config
 #     version that the revision getting the traffic started with.
@@ -104,6 +106,40 @@ set -euo pipefail
 # change is a frozen change: see "Idempotent" above.
 POOL_ORG_COUNT=22
 POOL_REPO_COUNT=12
+
+# POOL_ORG_IDS pins each pool org's GitHub id; the rules match it as
+# jwt.repository_owner_id. Org ids are never reused, so an org re-created
+# under a pool name (after a delete or rename) is refused. Add an org's id
+# from `gh api orgs/<org> --jq .id`, never from a lookup at deploy time,
+# which would pin whoever holds the name that day. Each run checks the table
+# against GitHub before it changes anything. Only the highest-numbered org
+# can be dropped: lower POOL_ORG_COUNT, remove its line and deploy before the
+# org is deleted or renamed, or every run stops at that check.
+POOL_ORG_IDS=(
+  halfsend=273231846
+  halfsend-01=286139071
+  halfsend-02=286136132
+  halfsend-03=286139209
+  halfsend-04=286139284
+  halfsend-05=286139354
+  halfsend-06=286139421
+  halfsend-07=298026865
+  halfsend-08=298029010
+  halfsend-09=298029468
+  halfsend-10=298030162
+  halfsend-11=298030745
+  halfsend-12=298031207
+  halfsend-13=351883647
+  halfsend-14=353052683
+  halfsend-15=353052733
+  halfsend-16=353052777
+  halfsend-17=353052812
+  halfsend-18=353052850
+  halfsend-19=353052883
+  halfsend-20=353052926
+  halfsend-21=353052961
+  halfsend-22=353053001
+)
 
 # A repository outside the pool. Only it may use the echo-denied model, so a
 # behaviour test can assert the 403 for a pool repository.
@@ -250,9 +286,7 @@ DEST_IMAGE="${REGISTRY_HOST}/${PROJECT}/${NAME}/agentgateway:${AGW_VERSION}"
 
 # --- Gateway config -----------------------------------------------------------
 # pool_numbers N prints 01|02|...|N. Each number is an explicit alternative,
-# never [0-9]{2} or a digit range, so the regex admits exactly the pool and
-# not a pool-shaped name outside it such as halfsend-00 or halfsend-23: whoever
-# owns such an org must not get access.
+# never [0-9]{2} or a digit range, so the regex admits exactly the pool.
 pool_numbers() {
   local i sep=""
   for (( i = 1; i <= $1; i++ )); do
@@ -261,18 +295,56 @@ pool_numbers() {
   done
 }
 
-# pool_regex prints the anchored regular expression that matches exactly the
-# pool repositories. An anchored alternation behaves the same in RE2 (CEL's
-# matches) and in ERE (grep -E in the tests). Its closing "$" is always
-# followed by a quote, which agentgateway's variable expansion leaves alone.
+# pool_org_name I prints the name of pool org I: halfsend for 0, else halfsend-II.
+pool_org_name() {
+  if (( $1 == 0 )); then printf 'halfsend'; else printf 'halfsend-%02d' "$1"; fi
+}
+
+# check_pool_org_ids exits unless POOL_ORG_IDS lists every pool org once, in
+# order, each with a numeric id.
+check_pool_org_ids() {
+  local i want=$(( POOL_ORG_COUNT + 1 ))
+  if (( ${#POOL_ORG_IDS[@]} != want )); then
+    echo "Error: POOL_ORG_IDS has ${#POOL_ORG_IDS[@]} entries; POOL_ORG_COUNT=${POOL_ORG_COUNT} needs ${want}." >&2
+    exit 1
+  fi
+  for (( i = 0; i < want; i++ )); do
+    if [[ ! "${POOL_ORG_IDS[i]}" =~ ^$(pool_org_name "${i}")=[0-9]+$ ]]; then
+      echo "Error: POOL_ORG_IDS entry $(( i + 1 )) is '${POOL_ORG_IDS[i]}', expected $(pool_org_name "${i}")=<id>." >&2
+      exit 1
+    fi
+  done
+}
+
+# pool_regex prints the anchored regular expression that matches exactly
+# "<repository_owner_id>/<owner>/<repo>" for every pool repository. Each org
+# appears only with its pinned id, so neither a re-created org under a pool
+# name nor a pool name with another org's id matches. An anchored alternation
+# behaves the same in RE2 (CEL's matches) and in ERE (grep -E in the tests).
+# Its closing "$" is always followed by a quote, which agentgateway's variable
+# expansion leaves alone.
 pool_regex() {
-  printf '^halfsend(-(%s))?/test-repo-(%s)$' \
-    "$(pool_numbers "${POOL_ORG_COUNT}")" "$(pool_numbers "${POOL_REPO_COUNT}")"
+  local e orgs="" sep=""
+  for e in "${POOL_ORG_IDS[@]}"; do
+    orgs+="${sep}${e#*=}/${e%%=*}"
+    sep="|"
+  done
+  printf '^(%s)/test-repo-(%s)$' "${orgs}" "$(pool_numbers "${POOL_REPO_COUNT}")"
+}
+
+# pool_subject prints the CEL string that pool_regex matches. With "default"
+# as $1 a missing claim reads as "", for the rate-limit keys.
+pool_subject() {
+  if [[ "${1:-}" == "default" ]]; then
+    printf '(default(jwt.repository_owner_id, "") + "/" + default(jwt.repository, ""))'
+  else
+    printf '(jwt.repository_owner_id + "/" + jwt.repository)'
+  fi
 }
 
 # pool_cel prints the authorization rule that admits every pool repository.
 pool_cel() {
-  printf 'jwt.repository.matches("%s")' "$(pool_regex)"
+  printf '%s.matches("%s")' "$(pool_subject)" "$(pool_regex)"
 }
 
 # Cost cap: per real model, RATE_RPM requests and RATE_TPM tokens per minute.
@@ -307,8 +379,8 @@ real_list() {
 
 # rate_key prints the bucket key for a CEL expression that yields the model.
 rate_key() {
-  printf '(default(jwt.repository, "").matches("%s") ? "pool" : (default(apiKey.purpose, "") != "" ? "key/" + string(apiKey.purpose) : "other")).with(c, c == "other" ? "other" : (%s in %s ? "echo/" + c + "/" + string(request.startTime).substring(0, 19) : (%s in %s ? string(%s) + "/" + c : "unknown/" + c)))' \
-    "$(pool_regex)" "$1" "${ECHO_MODELS}" "$1" "$(real_list)" "$1"
+  printf '(%s.matches("%s") ? "pool" : (default(apiKey.purpose, "") != "" ? "key/" + string(apiKey.purpose) : "other")).with(c, c == "other" ? "other" : (%s in %s ? "echo/" + c + "/" + string(request.startTime).substring(0, 19) : (%s in %s ? string(%s) + "/" + c : "unknown/" + c)))' \
+    "$(pool_subject default)" "$(pool_regex)" "$1" "${ECHO_MODELS}" "$1" "$(real_list)" "$1"
 }
 
 # rate_limit_policy prints the llm localRateLimit policy.
@@ -469,6 +541,7 @@ EOF
   model echo-denied "${echo_provider}" "${echo_params}" "jwt.repository == \"${DENIED_REPO}\""
 }
 
+check_pool_org_ids
 if [[ "${PRINT_CONFIG}" == "true" ]]; then
   render_config
   exit 0
@@ -484,6 +557,22 @@ ok() { say "OK: $*"; }
 die() {
   echo "    ERROR: $*" >&2
   exit 1
+}
+
+# verify_pool_org_ids exits unless every pool org still has its pinned id on
+# GitHub. A mismatch means the name now belongs to another org; a failed
+# lookup stops the run, since an unknown owner is not a verified one.
+verify_pool_org_ids() {
+  local e org want got
+  command -v gh &>/dev/null || die "gh is required to check the pool org ids."
+  for e in "${POOL_ORG_IDS[@]}"; do
+    org="${e%%=*}" want="${e#*=}"
+    got=$(gh api "orgs/${org}" --jq .id 2>"${TMP}/gh-org.err") \
+      || die "could not look up org ${org} on GitHub: $(cat "${TMP}/gh-org.err"); nothing changed."
+    [[ "${got}" == "${want}" ]] \
+      || die "org ${org} has id '${got}' on GitHub, but POOL_ORG_IDS pins ${want}: the name may belong to another org now; nothing changed."
+  done
+  ok "all ${#POOL_ORG_IDS[@]} pool orgs have their pinned ids on GitHub"
 }
 
 # check_busy exits 6 while a merge_group run of the e2e workflows or a release
@@ -781,23 +870,21 @@ fi
 # using the gateway.
 
 # mask_config prints a config with the allowed changes masked out: an
-# exact-name list of extra repositories right after the pool regex (temporary
-# repositories added to the live config, as
-# jwt.repository.matches("<regex>") || jwt.repository in ["owner/name"] in an
-# allow rule and default(jwt.repository, "").matches("<regex>") ||
-# default(jwt.repository, "") in ["owner/name"] in a rate-limit key), the
+# exact-name list of extra repositories right after the pool rule (temporary
+# repositories added to the live config, as `<pool rule> || jwt.repository in
+# ["owner/name"]`, with default(jwt.repository, "") in a rate-limit key), the
 # time-boxed real key's entry when it may call exactly one real model, its
 # allow rule inside a real model's block, and, with --allow-tpm-change, the
-# tokens-per-minute cap. Only that trailing list is masked: the regex is
-# matched as rendered from this script's counts, so a changed regex or count
+# tokens-per-minute cap. Only that trailing list is masked: the pool rule is
+# matched as this script renders it, so a changed regex, org id or count
 # stays visible, as does the header line that counts the pool. The real key's
 # rule on echo or echo-denied, or a real key that may call another model,
 # stays visible too.
 mask_config() {
   local re
   re=$(pool_regex)
-  jq -Rrs --arg key "default(jwt.repository, \"\").matches(\"${re}\")" \
-    --arg rule "jwt.repository.matches(\"${re}\")" --argjson tpm "${ALLOW_TPM_CHANGE}" \
+  jq -Rrs --arg key "$(pool_subject default).matches(\"${re}\")" \
+    --arg rule "$(pool_subject).matches(\"${re}\")" --argjson tpm "${ALLOW_TPM_CHANGE}" \
     --argjson real "$(printf '%s\n' "${VERTEX_MODELS[@]}" | jq -R . | jq -sc .)" \
     --arg allow "      - allow: '${REAL_KEY_CEL}'" '
     def drop_extra($call; $extra):
@@ -826,6 +913,7 @@ mask_config() {
 }
 
 echo "==> Change control..."
+verify_pool_org_ids
 render_config > "${TMP}/config.yaml"
 if grep -qE '\$([^"]|$)' "${TMP}/config.yaml"; then
   die "rendered config contains a '\$' that is not followed by '\"', which agentgateway may expand."
