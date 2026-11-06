@@ -61,6 +61,8 @@ type LiveClient struct {
 	// calls counts responses by forge.APICaller label; see APICalls.
 	callsMu sync.Mutex
 	calls   map[string]int64
+	// quotaCounters holds core counters by reset time; see APIQuotaCounters.
+	quotaCounters map[int64]*forge.APIQuotaCounter
 
 	// etagCache holds the last ETag and raw JSON body seen for GET URLs
 	// that opt into conditional requests via getCachedJSON (#6702). A 304
@@ -122,6 +124,7 @@ var _ forge.Client = (*LiveClient)(nil)
 var _ forge.GitHubExtensions = (*LiveClient)(nil)
 var _ forge.RateLimitReporter = (*LiveClient)(nil)
 var _ forge.APICallReporter = (*LiveClient)(nil)
+var _ forge.APIQuotaReporter = (*LiveClient)(nil)
 
 // RateLimit returns the most recent rate-limit state observed on a
 // response from this client, and whether one has been observed yet.
@@ -142,12 +145,57 @@ func (c *LiveClient) APICalls() map[string]int64 {
 	return maps.Clone(c.calls)
 }
 
-// countAPICall records one response for APICalls.
-func (c *LiveClient) countAPICall(ctx context.Context, resp *http.Response) {
+// APIQuotaCounters returns the groups of core rate-limit readings this client
+// has seen and its calls in each. It counts the core responses APICalls counts,
+// except those without a usable X-RateLimit-Remaining or X-RateLimit-Reset,
+// which belong to no group. As in APICalls, a response with no
+// X-RateLimit-Resource counts as core.
+func (c *LiveClient) APIQuotaCounters() []forge.APIQuotaCounter {
+	c.callsMu.Lock()
+	defer c.callsMu.Unlock()
+	counters := make([]forge.APIQuotaCounter, 0, len(c.quotaCounters))
+	for _, counter := range c.quotaCounters {
+		cp := *counter
+		cp.Calls = maps.Clone(counter.Calls)
+		counters = append(counters, cp)
+	}
+	slices.SortFunc(counters, func(a, b forge.APIQuotaCounter) int { return a.Reset.Compare(b.Reset) })
+	return counters
+}
+
+// countQuotaCall records one core response against its quota counter.
+// callsMu must be held.
+func (c *LiveClient) countQuotaCall(caller, method string, h http.Header) {
+	rl, ok := parseRateLimit(h)
+	if !ok || rl.Reset.IsZero() || (rl.Resource != "" && rl.Resource != "core") {
+		return
+	}
+	if c.quotaCounters == nil {
+		c.quotaCounters = map[int64]*forge.APIQuotaCounter{}
+	}
+	counter := c.quotaCounters[rl.Reset.Unix()]
+	if counter == nil {
+		counter = &forge.APIQuotaCounter{
+			Reset:   rl.Reset,
+			Limit:   rl.Limit,
+			Highest: rl.Remaining,
+			Lowest:  rl.Remaining,
+			Calls:   map[string]int64{},
+		}
+		c.quotaCounters[rl.Reset.Unix()] = counter
+	}
+	counter.Highest = max(counter.Highest, rl.Remaining)
+	counter.Lowest = min(counter.Lowest, rl.Remaining)
+	counter.Calls[caller+"/"+method]++
+}
+
+// countAPICall records one response for APICalls and APIQuotaCounters.
+func (c *LiveClient) countAPICall(ctx context.Context, method string, resp *http.Response) {
 	if resp.StatusCode == http.StatusNotModified {
 		return
 	}
-	key := forge.APICaller(ctx)
+	caller := forge.APICaller(ctx)
+	key := caller
 	if resource := resp.Header.Get("X-RateLimit-Resource"); resource != "" && resource != "core" {
 		key += "/" + resource
 	}
@@ -157,6 +205,7 @@ func (c *LiveClient) countAPICall(ctx context.Context, resp *http.Response) {
 		c.calls = map[string]int64{}
 	}
 	c.calls[key]++
+	c.countQuotaCall(caller, method, resp.Header)
 }
 
 // parseRateLimit reads the X-RateLimit-* headers of one response. ok is
@@ -456,7 +505,7 @@ func (c *LiveClient) doRequest(ctx context.Context, method, path string, content
 		resp, err := c.http.Do(req)
 		if err == nil {
 			c.observeRateLimit(resp.Header)
-			c.countAPICall(ctx, resp)
+			c.countAPICall(ctx, method, resp)
 		}
 		if err != nil {
 			if closer, ok := reqBody.(io.Closer); ok {
