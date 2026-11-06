@@ -494,7 +494,11 @@ func (c *LiveClient) CreateBranch(ctx context.Context, owner, repo, branchName s
 
 // CreateBranchFromSHA creates a new branch pointing at the given commit SHA.
 // GitLab's branch creation API accepts a commit SHA as the ref parameter.
-// Returns forge.ErrAlreadyExists if the branch already exists.
+// Returns forge.ErrAlreadyExists if the branch already exists, and
+// forge.ErrNotFound if the SHA is not present in owner/repo. Unlike GitHub,
+// a GitLab fork that has not been synced does not contain upstream commits
+// made after the fork, so GitLab rejects such a SHA with a 400 "invalid
+// reference name".
 func (c *LiveClient) CreateBranchFromSHA(ctx context.Context, owner, repo, branchName, sha string) error {
 	proj := projectPath(owner, repo)
 	payload := map[string]string{
@@ -504,9 +508,15 @@ func (c *LiveClient) CreateBranchFromSHA(ctx context.Context, owner, repo, branc
 	resp, err := c.post(ctx, fmt.Sprintf("/projects/%s/repository/branches", proj), payload)
 	if err != nil {
 		var apiErr *APIError
-		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusBadRequest &&
-			strings.Contains(strings.ToLower(apiErr.Message), "already exists") {
-			return fmt.Errorf("create branch %s from SHA: %w: %w", branchName, forge.ErrAlreadyExists, err)
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusBadRequest {
+			msg := strings.ToLower(apiErr.Message)
+			if strings.Contains(msg, "already exists") {
+				return fmt.Errorf("create branch %s from SHA: %w: %w", branchName, forge.ErrAlreadyExists, err)
+			}
+			if strings.Contains(msg, "invalid reference name") {
+				return fmt.Errorf("create branch %s from SHA %s: commit %w in %s/%s: %w",
+					branchName, sha, forge.ErrNotFound, owner, repo, err)
+			}
 		}
 		return fmt.Errorf("create branch %s from SHA: %w", branchName, err)
 	}

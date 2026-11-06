@@ -948,6 +948,43 @@ func TestCreateBranchFromSHA_GenericError(t *testing.T) {
 	assert.False(t, forge.IsAlreadyExists(err), "non-400 error should not be ErrAlreadyExists")
 }
 
+func TestCreateBranchFromSHA_SHANotInRepo(t *testing.T) {
+	client, mux := setupTest(t)
+
+	// Response GitLab returns when the SHA is an upstream commit that an
+	// unsynced fork does not contain (#8841).
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/branches", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{
+			"message": "Failed to create branch 'feature-branch': invalid reference name 'abc123sha'",
+		})
+	})
+
+	err := client.CreateBranchFromSHA(context.Background(), "owner", "repo", "feature-branch", "abc123sha")
+	require.Error(t, err)
+	assert.True(t, forge.IsNotFound(err), "expected ErrNotFound, got: %v", err)
+	assert.False(t, forge.IsAlreadyExists(err))
+	assert.Contains(t, err.Error(), "invalid reference name")
+}
+
+func TestCreateBranchFromSHA_OtherBadRequest(t *testing.T) {
+	client, mux := setupTest(t)
+
+	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/branches", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{
+			"message": "Branch name is invalid",
+		})
+	})
+
+	err := client.CreateBranchFromSHA(context.Background(), "owner", "repo", "feature-branch", "abc123sha")
+	require.Error(t, err)
+	assert.False(t, forge.IsNotFound(err), "unrelated 400 should not be ErrNotFound")
+	assert.False(t, forge.IsAlreadyExists(err), "unrelated 400 should not be ErrAlreadyExists")
+}
+
 func TestGetRef(t *testing.T) {
 	t.Run("heads prefix", func(t *testing.T) {
 		client, mux := setupTest(t)
