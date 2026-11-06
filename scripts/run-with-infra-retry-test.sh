@@ -23,6 +23,9 @@ export COUNT_FILE MODES_FILE
 # marker the way the real suite's report writer does, and exits with a
 # configured status. Environment inputs:
 #   STUB_MODE         write | malformed | missing — marker behavior on failure
+#   STUB_MODE_2       marker behavior on later invocations (defaults to
+#                     STUB_MODE; "missing" emulates a retry that dies before
+#                     its report write)
 #   STUB_CLASS        .class value written in write mode
 #   STUB_FAIL_STATUS  exit status on the first failing invocation (default 1)
 #   STUB_FAIL_STATUS_2 exit status on later failing invocations (defaults to
@@ -59,7 +62,12 @@ if [[ -n "${STUB_PASS_ON:-}" && "${n}" -ge "${STUB_PASS_ON}" ]]; then
   exit 0
 fi
 
-case "${STUB_MODE:-missing}" in
+stub_mode="${STUB_MODE:-missing}"
+if [[ "${n}" -gt 1 && -n "${STUB_MODE_2:-}" ]]; then
+  stub_mode="${STUB_MODE_2}"
+fi
+
+case "${stub_mode}" in
   write)
     jq -n --arg class "${STUB_CLASS:?}" \
       '{class: $class, infrastructure_failures: 1, scenario_failures: 0, failures: []}' \
@@ -74,7 +82,7 @@ case "${STUB_MODE:-missing}" in
     # wrapper; on the mktemp path the fresh empty marker stays empty.
     ;;
   *)
-    echo "unexpected STUB_MODE: ${STUB_MODE}" >&2
+    echo "unexpected stub mode: ${stub_mode}" >&2
     exit 99
     ;;
 esac
@@ -277,6 +285,41 @@ export STUB_MODE=write STUB_CLASS=infrastructure STUB_PASS_ON=2
 run_wrapper
 check "infrastructure failure via artifact dir retries once" 0 2 "yes"
 unset STUB_PASS_ON
+
+# A retry that dies before writing its report leaves the active report empty
+# rather than still describing attempt 1, and attempt 1's report stays
+# readable beside it.
+export STUB_MODE=write STUB_CLASS=infrastructure STUB_MODE_2=missing
+run_wrapper
+check "retry without a report leaves no stale classification" 8 2 "yes"
+if [[ -s "${ART_DIR}/failure-class.json" ]]; then
+  echo "FAIL: attempt 1's classification survived as the final report"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: the active report no longer describes attempt 1"
+fi
+if [[ "$(jq -r .class "${ART_DIR}/failure-class.json.attempt-1")" == "infrastructure" ]]; then
+  echo "PASS: attempt 1's report is kept beside the active report"
+else
+  echo "FAIL: attempt 1's report was not kept"
+  FAILURES=$((FAILURES + 1))
+fi
+unset STUB_MODE_2
+
+# A failed output capture can't rule out fatal patterns, so it refuses the
+# retry and the command's own status is reported, not tee's.
+mkdir -p "${TMPDIR}/failing-tee"
+cat >"${TMPDIR}/failing-tee/tee" <<'EOF'
+#!/usr/bin/env bash
+cat >/dev/null
+exit 3
+EOF
+chmod +x "${TMPDIR}/failing-tee/tee"
+saved_path="${PATH}"
+PATH="${TMPDIR}/failing-tee:${PATH}"
+run_wrapper
+PATH="${saved_path}"
+check "failed output capture refuses the retry" 7 1 "no"
 
 # --- Marker permission contract ---
 
