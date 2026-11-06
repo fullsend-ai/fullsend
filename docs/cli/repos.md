@@ -491,16 +491,32 @@ flag or environment variable supplies them.
   and `FULLSEND_JIRA_EMAIL` are left in place because other Jira consumers may
   still need them. `repos uninstall` deletes both.
 - **GitLab job exposure.** GitLab injects project-wide CI/CD variables into
-  every protected-branch job. The scaffolded poll and webhook dispatcher jobs
-  clear both Jira variables before running other code. Only the Jira poller
-  and agent jobs keep them.
-- **Forge resources.** The managed resources are the GitHub scheduled poll
-  workflow and the GitLab poll job and pipeline schedule. They are delivered
-  by forge-specific follow-up work
-  ([#9109](https://github.com/fullsend-ai/fullsend/issues/9109),
-  [#9108](https://github.com/fullsend-ai/fullsend/issues/9108)). Until a
-  forge's resources are managed, install still converges the credentials and
-  reports that this release does not manage the poll resources on that forge.
+  every protected-branch job. The scaffolded webhook dispatcher job, and the
+  poll job in slash and event mode, clear both Jira variables before running
+  other code. Only the Jira poll job and agent jobs keep them. Neither
+  variable is added to the runner-secret bundle.
+- **GitLab resources.** The poll job in the managed
+  `.gitlab/ci/fullsend-poll.yml` runs the Jira poller
+  (`fullsend poll --input-driver jira-poll --target-forge gitlab`) only in a
+  pipeline started by the Fullsend-owned `fullsend jira poll` pipeline
+  schedule. Install creates that schedule on the default branch when polling
+  is enabled, runs it every five minutes (offset by one minute from the slash
+  poll), and gives it no pipeline variables. A schedule with the wrong ref,
+  cron, or timezone, or with pipeline variables, is replaced. Duplicates are
+  deleted. A schedule you disabled stays disabled. Disabling or omitting
+  polling deletes the schedule. Install never touches the slash and event
+  poll schedules, other schedules, or your CI configuration for Jira polling.
+  `repos uninstall` deletes the schedule with the other `fullsend` schedules.
+- **GitLab schedule timing.** Install creates the schedule only after the
+  default branch has a poll template and job script that run the Jira poller,
+  and after `ci_pipeline_variables_minimum_override_role` is
+  `no_one_allowed`. Until both hold, it reports that the schedule is
+  deferred. On a first install or upgrade, merge the scaffold MR, then run
+  `repos install` again to create the schedule.
+- **GitHub resources.** The GitHub scheduled poll workflow is delivered by
+  follow-up work ([#9109](https://github.com/fullsend-ai/fullsend/issues/9109)).
+  Until then, install still converges the credentials on GitHub and reports
+  that this release does not manage the poll resources there.
 - **Validation.** When polling is enabled, `tracker.jira.base_url` and
   `tracker.jira.project` must be set, or the repo fails before any write.
   Surrounding whitespace is trimmed from both flags. On GitLab the token must

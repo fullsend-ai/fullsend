@@ -48,7 +48,9 @@ type jiraPollReconciler interface {
 // reconciler. A forge without an entry has no managed poll resources yet:
 // install still converges the credentials and reports that the resources
 // are not managed.
-var jiraPollReconcilers = map[string]jiraPollReconciler{}
+var jiraPollReconcilers = map[string]jiraPollReconciler{
+	ForgeGitLab: gitlabJiraPollReconciler{},
+}
 
 // jiraPollState is a repository's Jira polling state, read during
 // discovery before any write.

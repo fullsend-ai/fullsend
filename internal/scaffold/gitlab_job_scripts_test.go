@@ -83,7 +83,7 @@ func TestRunPollJobScript_RejectsInvalidPollMode(t *testing.T) {
 	}, pinTLSEnv(t, srv)...)
 	out, err := cmd.CombinedOutput()
 	require.Error(t, err, "stdout/stderr: %s", out)
-	assert.Contains(t, string(out), "FULLSEND_POLL_MODE must be 'slash' or 'events'")
+	assert.Contains(t, string(out), "FULLSEND_POLL_MODE must be 'slash', 'events' or 'jira'")
 }
 
 func TestRunPollJobScript_DebugTraceAborts(t *testing.T) {
@@ -223,6 +223,68 @@ func TestRunPollJobScript_BlanksSiblingSecretsBeforePoll(t *testing.T) {
 	assert.Contains(t, got, "JIRA_TOKEN=unset", "the Jira token must not reach the slash/events poller")
 	assert.Contains(t, got, "JIRA_EMAIL=unset", "the Jira email must not reach the slash/events poller")
 	assert.NotContains(t, got, "jira-api-token")
+}
+
+// TestRunPollJobScript_JiraModeRunsJiraPoller covers the Jira poll mode the
+// job rules select for the "fullsend jira poll" schedule (#9108): the Jira
+// credentials reach `fullsend poll --input-driver jira-poll` alone, with no
+// Jira site, project or query argument, while every other credential is
+// still blanked.
+func TestRunPollJobScript_JiraModeRunsJiraPoller(t *testing.T) {
+	root := t.TempDir()
+	writeGitLabScript(t, root, ".gitlab/ci/scripts/trust-ci-server-ca.sh")
+	writeGitLabScript(t, root, gitlabPinCIJobIdentityScriptPath)
+	writeGitLabScript(t, root, ".gitlab/ci/scripts/select-gitlab-role-token.sh")
+	script := writeGitLabScript(t, root, gitlabRunPollJobScriptPath)
+
+	st := &pinAPIState{
+		jobJSON:      pinJobJSON("42", "100", "main"),
+		projectJSON:  `{"id":42,"default_branch":"main","path_with_namespace":"group/project"}`,
+		branchJSON:   `{"name":"main","protected":true}`,
+		pipelineJSON: `{"id":100,"source":"schedule"}`,
+		userIDByPAT:  map[string]int{"poll-pat": 10, "analyst-pat": 55},
+	}
+	srv := startPinAPI(t, st)
+	t.Cleanup(srv.Close)
+
+	bin := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "fullsend"), []byte("#!/bin/sh\n"+
+		"echo POLL_ARGS=\"$*\"\n"+
+		"echo POLL_JIRA_TOKEN=\"${FULLSEND_JIRA_TOKEN-unset}\"\n"+
+		"echo POLL_JIRA_EMAIL=\"${FULLSEND_JIRA_EMAIL-unset}\"\n"+
+		"echo POLL_REF=\"${CI_COMMIT_REF_NAME-unset}\"\n"+
+		"exit 0\n"), 0o755))
+
+	cmd := exec.Command("bash", "-c", `set -euo pipefail; . "$SCRIPT"; echo ANALYST="${FULLSEND_GITLAB_ANALYST_TOKEN-unset}"; echo TRIGGER="${FULLSEND_TRIGGER_TOKEN-unset}"; echo WEBHOOK_SECRET="${FULLSEND_WEBHOOK_SECRET-unset}"`)
+	cmd.Env = append([]string{
+		"SCRIPT=" + script,
+		"PATH=" + bin + ":" + os.Getenv("PATH"),
+		"HOME=" + t.TempDir(),
+		"CI_PROJECT_DIR=" + root,
+		"RUNNER_TEMP=" + t.TempDir(),
+		"CI_JOB_TOKEN=job-token",
+		"FULLSEND_GITLAB_POLLER_TOKEN=poll-pat",
+		"FULLSEND_GITLAB_ANALYST_TOKEN=analyst-pat",
+		"FULLSEND_TRIGGER_TOKEN=trigger-bearer",
+		"FULLSEND_WEBHOOK_SECRET=webhook-secret",
+		"FULLSEND_JIRA_TOKEN=jira-api-token",
+		"FULLSEND_JIRA_EMAIL=jira@example.com",
+		"FULLSEND_POLL_MODE=jira",
+		"CI_PROJECT_ID=1",
+		"CI_PROJECT_PATH=group/project",
+		"CI_SERVER_URL=https://gitlab.example",
+	}, pinTLSEnv(t, srv)...)
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "stdout/stderr: %s", out)
+	got := string(out)
+	assert.Contains(t, got, "POLL_ARGS=poll --input-driver jira-poll --target-forge gitlab --project group/project --gitlab-url "+srv.URL+" --fullsend-dir .fullsend\n")
+	assert.NotContains(t, got, "--mode", "the slash/events poller does not run in Jira mode")
+	assert.Contains(t, got, "POLL_JIRA_TOKEN=jira-api-token", "the Jira poller receives the Jira token")
+	assert.Contains(t, got, "POLL_JIRA_EMAIL=jira@example.com", "the Jira poller receives the optional Jira email")
+	assert.Contains(t, got, "POLL_REF=main", "the Jira poller dispatches to the pinned ref")
+	assert.Contains(t, got, "ANALYST=unset")
+	assert.Contains(t, got, "TRIGGER=unset")
+	assert.Contains(t, got, "WEBHOOK_SECRET=unset")
 }
 
 // TestRunPollJobScript_AnalystUserIDLookupFailureIsNonFatal covers the
