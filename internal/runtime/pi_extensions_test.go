@@ -291,6 +291,40 @@ func TestPiExtensionsGuard(t *testing.T) {
 	assert.Equal(t, "", piExtensionsGuard(nil), "no extensions, no guard")
 }
 
+func TestPiExtensionTreeHash_MatchesChildDispatcher(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not installed")
+	}
+	ext := writeExtensionFixture(t, "docs")
+	require.NoError(t, os.Mkdir(filepath.Join(ext, "empty"), 0o755))
+	want, err := piExtensionTreeHash(ext)
+	require.NoError(t, err)
+	cmd := exec.Command(node, "--input-type=module", "-e", `import {extensionTreeHash} from './pi_extension/fullsend-agent.js'; console.log(extensionTreeHash(process.argv[1]));`, ext)
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "%s", out)
+	assert.Equal(t, want, strings.TrimSpace(string(out)))
+}
+
+func TestPiBootstrap_ChildDeclaredExtensions(t *testing.T) {
+	work := t.TempDir()
+	store := filepath.Join(work, "store")
+	fakeOpenshellPi(t, filepath.Join(work, "openshell.log"), store, "/dev/null")
+	ext := writeExtensionFixture(t, "docs")
+	err := (PiRuntime{}).Bootstrap(bootstrapInput{
+		sandboxName: "sb",
+		agentPath:   writeAgentFile(t, "---\nname: code\ntools: [Agent, 'mcp__docs__*']\n---\nBody"),
+		agentName:   "code",
+		plugins:     []PluginInput{{Path: ext, Kind: pluginformat.KindPi, PiArgs: []string{"--strict"}, Env: map[string]string{"DOCS_MODE": "offline"}}},
+	})
+	require.NoError(t, err)
+	var m piManifest
+	require.NoError(t, json.Unmarshal(storedUpload(t, store, PiRuntime{}.ConfigDir()+"/fullsend-manifest.json"), &m))
+	require.NotNil(t, m.Agent)
+	require.Len(t, m.Agent.DeclaredExtensions, 1)
+	assert.Equal(t, m.Extensions, m.Agent.DeclaredExtensions)
+}
+
 func TestPiResolveRunPlugins(t *testing.T) {
 	t.Parallel()
 	dir := writeExtensionFixture(t, "go-diagnostics")
