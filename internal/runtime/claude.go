@@ -806,7 +806,12 @@ const (
 // stays the only clock on sub-agents, as on codex. The launch exports it
 // after .env on every route, so neither .env nor env.sandbox (written into
 // .env) can shorten it.
-const claudeBgWaitCeilingExport = "export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0"
+const claudeBgWaitCeilingExport = "export " + claudeBgWaitCeilingEnv + "=0"
+
+// claudeBgWaitCeilingEnv names the variable claudeBgWaitCeilingExport sets.
+// claudeRunnerSettings pins it to "0" in the settings document as well, so a
+// repository settings file's env block cannot restore the default ceiling.
+const claudeBgWaitCeilingEnv = "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS"
 
 // buildRunCommand renders the in-sandbox command line. When sandbox hooks are
 // enabled (params.HooksSettingsPath set), the launch refuses to start claude
@@ -1054,6 +1059,9 @@ func installClaudeHooks(sandboxName string, hooks security.SandboxHookConfig, ex
 //   - env sets claudeNonessentialTrafficEnv to "1": Claude Code treats a
 //     harness's own ANTHROPIC_BASE_URL as the Claude API, where metrics,
 //     /feedback and surveys default on.
+//   - env sets claudeBgWaitCeilingEnv to "0": the launch exports it, and a
+//     settings file's env block would otherwise restore the default ceiling
+//     inside Claude Code (#9149).
 //   - disableAllHooks is false, so no other file can switch off the hooks
 //     this document wires.
 //
@@ -1083,6 +1091,7 @@ func claudeRunnerSettings(securityEnv []hookEnvPair, extra map[string]any) map[s
 		env[key] = ""
 	}
 	env[claudeNonessentialTrafficEnv] = "1"
+	env[claudeBgWaitCeilingEnv] = "0"
 	out["env"] = env
 	out["disableAllHooks"] = false
 	return out

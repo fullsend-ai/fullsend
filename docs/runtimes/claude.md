@@ -329,7 +329,8 @@ These are the places Claude Code differs from pi — useful when comparing a run
   agent's last turn until its background sub-agents finish. By default Claude Code stops them
   after 10 minutes of idle waiting, drops the partial result and exits 0. The launch exports
   `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0` (no cap) after `.env`, so a value from `.env` or
-  `env.sandbox` cannot shorten it, and the iteration's `timeout_minutes` is the only clock on
+  `env.sandbox` cannot shorten it, and the runner's `--settings` document pins it to `0` too, so a
+  repository `.claude/settings.json` env block cannot restore the cap. The iteration's `timeout_minutes` is the only clock on
   sub-agents, as on codex. If a sub-agent is still stopped at exit and validation fails, the run
   names the cause (see [How a run ends](../cli/run.md#how-a-run-ends)).
 - **A `CLAUDE.md` bridge is injected** when the repo has `AGENTS.md` but no `CLAUDE.md`, because

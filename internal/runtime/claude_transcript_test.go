@@ -426,6 +426,26 @@ func TestStoppedBackgroundSubagents(t *testing.T) {
 	var _ BackgroundStopDetector = ClaudeRuntime{}
 }
 
+// TestStoppedBackgroundSubagents_SubagentTranscriptsOnly: only sub-agent
+// transcripts (<agent>-agent-<id>.jsonl) are candidates. The main session's
+// <agent>-<uuid>.jsonl is not, even when it ends with the interrupt marker, and
+// a name from inside the sandbox is reported sanitized.
+func TestStoppedBackgroundSubagents_SubagentTranscriptsOnly(t *testing.T) {
+	t.Parallel()
+	interrupt := `{"type":"user","message":{"content":[{"type":"text","text":"[Request interrupted by user]"}]}}`
+	dir := t.TempDir()
+	for _, name := range []string{
+		"review-2e52f3a1-1b2c-4d5e-8f90-a1b2c3d4e5f6.jsonl",
+		"review-agent-2e52f3a1-1b2c-4d5e-8f90-a1b2c3d4e5f6.jsonl",
+		"review-agent-a62f.jsonl",
+		"re\x1b[31mv::iew-agent-b7.jsonl",
+	} {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(interrupt+"\n"), 0o644))
+	}
+	assert.ElementsMatch(t, []string{"review-agent-a62f.jsonl", "rev: :iew-agent-b7.jsonl"}, stoppedBackgroundSubagents(dir, time.Time{}),
+		"the main session is not a candidate; escape sequences and workflow-command markers are stripped from names")
+}
+
 // TestStoppedBackgroundSubagents_OversizedLine checks that a line beyond
 // maxTranscriptLineSize is skipped without stopping the scan, and counts as a
 // record that is not the marker.
@@ -434,7 +454,7 @@ func TestStoppedBackgroundSubagents_OversizedLine(t *testing.T) {
 	big := `{"type":"user","message":{"content":"` + strings.Repeat("x", maxTranscriptLineSize+10) + `"}}`
 	interrupt := `{"type":"user","message":{"content":[{"type":"text","text":"[Request interrupted by user]"}]}}`
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "a-agent-big-last.jsonl"), []byte(interrupt+"\n"+big+"\n"), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "a-agent-big-first.jsonl"), []byte(big+"\n"+interrupt+"\n"), 0o644))
-	assert.Equal(t, []string{"a-agent-big-first.jsonl"}, stoppedBackgroundSubagents(dir, time.Time{}))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a-agent-biglast.jsonl"), []byte(interrupt+"\n"+big+"\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a-agent-bigfirst.jsonl"), []byte(big+"\n"+interrupt+"\n"), 0o644))
+	assert.Equal(t, []string{"a-agent-bigfirst.jsonl"}, stoppedBackgroundSubagents(dir, time.Time{}))
 }

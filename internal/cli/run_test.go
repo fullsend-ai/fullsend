@@ -5251,7 +5251,7 @@ func TestRunTerminalError(t *testing.T) {
 		{name: "loop, killed at budget, output validated", hasLoop: true, passed: true, timedOut: true, exitCode: -1, runCount: 1, elapsed: timeout},
 		{name: "loop, early exit with invalid output", hasLoop: true, exitCode: 1, runCount: 2, elapsed: 3 * time.Minute, wantErrMsg: "validation failed after 2 iteration(s)"},
 		{name: "loop, validation passed", hasLoop: true, passed: true, runCount: 1, elapsed: 3 * time.Minute},
-		{name: "loop, background sub-agent stopped at CLI exit", hasLoop: true, runCount: 1, elapsed: 34 * time.Minute, bgStopped: []string{"review-agent-a1.jsonl", "review-agent-b2.jsonl"}, wantErrMsg: "validation failed after 1 iteration(s): pending background sub-agent stopped at CLI teardown (review-agent-a1.jsonl, review-agent-b2.jsonl)"},
+		{name: "loop, background sub-agent stopped at CLI exit", hasLoop: true, runCount: 1, elapsed: 34 * time.Minute, bgStopped: []string{"review-agent-a1.jsonl", "review-agent-b2.jsonl"}, wantErrMsg: "validation failed after 1 iteration(s): interrupted background sub-agent transcripts found, possibly stopped at CLI teardown (review-agent-a1.jsonl, review-agent-b2.jsonl)"},
 		{name: "loop, background stop but output validated", hasLoop: true, passed: true, runCount: 1, elapsed: 3 * time.Minute, bgStopped: []string{"review-agent-a1.jsonl"}},
 		{name: "loop, killed at budget wins over background stop", hasLoop: true, timedOut: true, exitCode: -1, runCount: 1, elapsed: timeout, bgStopped: []string{"review-agent-a1.jsonl"}, wantErrMsg: "agent timed out after 20m0s without completing (timeout: 20m0s)"},
 		{name: "no loop, background stop is not an error", runCount: 1, elapsed: 3 * time.Minute, bgStopped: []string{"review-agent-a1.jsonl"}},
@@ -5295,6 +5295,16 @@ func TestBackgroundStopCause(t *testing.T) {
 	assert.Nil(t, backgroundStopCause(claude, 1, false, dir, since), "only a clean exit is checked")
 	assert.Empty(t, backgroundStopCause(claude, 0, false, dir, since.Add(24*time.Hour)), "an earlier iteration's stop is not this one's")
 	assert.Nil(t, backgroundStopCause(agentruntime.DummyRuntime{}, 0, false, dir, since), "runtimes without the detector are unchanged")
+
+	// A name from inside the sandbox reaches the warning and the terminal
+	// error without control characters.
+	hostile := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(hostile, "re\x1b[31mview-agent-a1.jsonl"), []byte(interrupt+"\n"), 0o644))
+	named := backgroundStopCause(claude, 0, false, hostile, since)
+	assert.Equal(t, []string{"review-agent-a1.jsonl"}, named)
+	err := runTerminalError(true, false, false, 0, "", 1, time.Minute, time.Hour, named)
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "\x1b")
 }
 
 // TestPostScriptGate pins #8305: without a loop a failed agent still gets its
