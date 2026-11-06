@@ -33,6 +33,7 @@ import defaultExport, {
   childModelNotServed,
   childSessionDir,
   childTools,
+  extensionTreeHash,
   consumeLine,
   createAgentTool,
   isAgentEndPrefix,
@@ -396,8 +397,8 @@ test("childArgs mirrors the runner's pi command line, extensions in manifest ord
   assert.match(CHILD_SYSTEM_NOTE, /sub-agent/);
 
   const empty = childArgs(manifest.agent, { seq: 4, modelSpec: "anthropic-vertex/claude-opus-4-6", tools: [] });
-  assert.ok(empty.includes("--no-builtin-tools"), "an empty child tool list means no built-ins, like the runner does for the parent");
-  assert.ok(!empty.includes("--tools"));
+  assert.equal(empty[empty.indexOf("--tools") + 1], "", "empty filters built-in and extension tools");
+  assert.ok(!empty.includes("--no-builtin-tools"));
 });
 
 test("childArgs loads the edit repair only for a child whose tools name edit", () => {
@@ -1341,6 +1342,77 @@ test("shutdown stops in-flight children, fails their calls and settles the queue
   assert.match(res.error, /shut down|killed/);
 });
 
+test("MCP child dispatch intersects concrete tools and rechecks declared extension trees", async () => {
+  const { dir, manifest } = fixture();
+  const ext = join(dir, "docs");
+  mkdirSync(ext);
+  writeFileSync(join(ext, "index.js"), "// docs fixture\n");
+  mkdirSync(join(ext, "data"));
+  const entry = { name: "docs", path: ext, sha256: await extensionTreeHash(ext), args: ["--docs-mode", "offline"] };
+  manifest.agent.declaredExtensions = [entry];
+  manifest.agent.tools = ["mcp__docs__*", "Agent"];
+  manifest.agent.personas = { docs: { tools: ["mcp__docs__search"], prompt: "Search docs" } };
+  const registry = ["mcp__docs__search", "mcp__docs__write", "mcp__other__search", "bash", "Agent"];
+  assert.deepEqual(childTools(manifest.agent, "docs", registry), ["mcp__docs__search"]);
+  manifest.agent.tools = ["mcp__docs__search"];
+  manifest.agent.personas.docs.tools = ["mcp__docs__*"];
+  assert.deepEqual(childTools(manifest.agent, "docs", registry), ["mcp__docs__search"]);
+  manifest.agent.personas.docs.tools = ["bash"];
+  assert.deepEqual(childTools(manifest.agent, "docs", registry), []);
+  const args = childArgs(manifest.agent, { seq: 1, modelSpec: "m", tools: [] });
+  assert.deepEqual(args.slice(args.indexOf(ext) - 1, args.indexOf(ext) + 3), ["-e", ext, "--docs-mode", "offline"]);
+  assert.equal(args[args.indexOf("--tools") + 1], "");
+
+  const { spawn, children } = fakeSpawn();
+  const tool = createAgentTool(manifest, { ...quiet, spawn, registeredTools: () => registry });
+  const pending = tool.run({ prompt: "search" });
+  for (let i = 0; i < 200 && children.length === 0; i++) await new Promise((r) => setTimeout(r, 5));
+  assert.equal(children.length, 1);
+  assert.equal(children[0].args[children[0].args.indexOf("--tools") + 1], "mcp__docs__search");
+  children[0].child.finish(okStream("done"));
+  await pending;
+  writeFileSync(join(ext, "index.js"), "// modified\n");
+  const rejected = await tool.run({ prompt: "search" });
+  assert.equal(rejected.isError, true);
+  assert.match(rejected.error, /changed since load/);
+  assert.equal(children.length, 1, "no child runs modified extension code");
+  writeFileSync(join(ext, "index.js"), "// docs fixture\n");
+  mkdirSync(join(ext, "skills"));
+  assert.match((await tool.run({ prompt: "search" })).error, /changed since load/);
+  rmSync(join(ext, "skills"), { recursive: true });
+  symlinkSync(join(ext, "index.js"), join(ext, "link.js"));
+  assert.match((await tool.run({ prompt: "search" })).error, /non-regular entry/);
+  rmSync(ext, { recursive: true });
+  assert.match((await tool.run({ prompt: "search" })).error, /cannot verify extension/);
+  assert.equal(children.length, 1);
+  await tool.shutdown();
+});
+
+test("child permissions preserve default, extension-only and explicit parent modes", () => {
+  const registry = ["read", "bash", "powershell", "mcp__docs__search", "mcp__docs__write", "Agent", "Task"];
+  const agent = { tools: ["read", "bash"], personas: { docs: { tools: ["mcp__docs__search"] } } };
+  for (const toolMode of ["default", "extensions-only"]) {
+    agent.toolMode = toolMode;
+    assert.deepEqual(childTools(agent, "docs", registry), ["mcp__docs__search"]);
+    assert.deepEqual(childTools(agent, "Explore", registry), toolMode === "default" ? ["read"] : []);
+    assert.deepEqual(childTools(agent, undefined, registry), toolMode === "default"
+      ? ["read", "bash", "mcp__docs__search", "mcp__docs__write"] : ["mcp__docs__search", "mcp__docs__write"]);
+  }
+  agent.toolMode = "explicit";
+  assert.deepEqual(childTools(agent, "docs", registry), []);
+  agent.toolMode = undefined; // Older manifests stay restrictive.
+  assert.deepEqual(childTools(agent, "docs", registry), []);
+});
+
+test("extension tree verification yields to the event loop", async () => {
+  const { dir } = fixture();
+  writeFileSync(join(dir, "index.js"), "// docs\n");
+  let yielded = false;
+  setImmediate(() => { yielded = true; });
+  await extensionTreeHash(dir);
+  assert.equal(yielded, true);
+});
+
 function registerWith(manifestPath, env = {}) {
   const tools = [];
   const events = {};
@@ -1352,7 +1424,7 @@ function registerWith(manifestPath, env = {}) {
   delete process.env.FULLSEND_SUBAGENT_DEPTH;
   Object.assign(process.env, env);
   try {
-    defaultExport({ registerTool: (d) => tools.push(d), on: (ev, fn) => { events[ev] = fn; } });
+    defaultExport({ getAllTools: () => JSON.parse(readFileSync(manifestPath)).agent.tools.map((name) => ({ name })), registerTool: (d) => tools.push(d), on: (ev, fn) => { events[ev] = fn; } });
   } finally {
     console.error = origError;
     for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];

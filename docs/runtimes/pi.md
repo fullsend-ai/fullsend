@@ -388,6 +388,13 @@ under it — that is what a declared `tools:` means. An agent whose `tools:` map
 provides gets `--no-builtin-tools`, and its extensions still load: `-e` is independent of `--tools`.
 An agent without `tools:` gets pi's default set plus whatever its extensions register.
 
+MCP tool names such as `mcp__docs__search` and patterns such as
+`mcp__docs__*` pass through the pi tool mapping. Sub-agents load the same
+declared extensions, with their directory hashes checked before each launch.
+A persona's tools are intersected with the parent's permissions using the
+registered tool names. An empty child allowlist hides both built-in and
+extension tools.
+
 The hook adapter treats an extension tool like any other — every PreToolUse and PostToolUse hook
 runs on it, with no bypass. If your org enables the optional `tool_allowlist_pretool.py` hook, list
 the extension's tool names in `FULLSEND_TOOL_ALLOWLIST` the same way `mcp__*` names are listed.
@@ -758,17 +765,22 @@ agent's system prompt says so, so a skill that asks for "dispatch these in paral
 
 A child starts with the parent's posture — `--no-approve`, `--no-extensions` with an explicit `-e`
 list, no prompt templates or themes, its own session dir, and a `--tools` allowlist
-(`--no-builtin-tools` when that allowlist is empty). It inherits:
+(`--tools ''` when that allowlist is empty, disabling extension tools too). It inherits:
 
 - **The sandbox hooks.** Its `-e` list carries the vendored provider extensions and the hook adapter,
   so PreToolUse/PostToolUse hooks and the Bash allowlist apply inside sub-agents too — as they do on
   Claude Code, where the same hooks run on `Agent` calls.
 - **The parent's tool set**, minus `Agent`/`Task`: a child cannot dispatch children of its own.
+  Omitted parent `tools:` and extension-only parent launches retain registered extension tools;
+  explicit parent lists restrict them. Persona patterns are intersected against concrete registered
+  names; Explore remains limited to read-only built-ins.
+- **Harness pi plugins.** Children load the same host-vetted declared extensions and arguments.
+  Before each launch (including retries), the dispatcher asynchronously re-hashes their trees and
+  refuses changed or unverifiable content. This detects drift, not concurrent tampering: a same-user
+  writer can still change a path between verification and the child's load.
 
 It does not inherit:
 
-- **Harness pi plugins.** A child's `-e` list is fixed at bootstrap, so a tool one of your
-  declared pi extensions (the pi-format `plugins:` entries) registers is not available inside a sub-agent.
 - **The parent's system prompt.** Children get a short sub-agent role note instead of the
   orchestrator persona, whose "make several `Agent` calls in one message" advice a child cannot act
   on.

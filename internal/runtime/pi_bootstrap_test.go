@@ -795,6 +795,15 @@ func TestPiAgentTool_ManifestBlock(t *testing.T) {
 		return &m, store, string(storedUpload(t, store, cfg+"/APPEND_SYSTEM.md"))
 	}
 
+	t.Run("extension-only launch mode", func(t *testing.T) {
+		work := t.TempDir()
+		fakeOpenshellPi(t, filepath.Join(work, "openshell.log"), filepath.Join(work, "store"), "/dev/null")
+		m, err := (PiRuntime{}).piAgentManifestFor("sb", &piAgentDef{Model: "opus"}, []string{}, false, nil, nil, nil, nil, "", false)
+		require.NoError(t, err)
+		assert.Equal(t, "extensions-only", m.ToolMode)
+		assert.Empty(t, m.Tools)
+	})
+
 	t.Run("enabled without tools frontmatter, hooks on", func(t *testing.T) {
 		m, store, appendSystem := bootstrap(t, "---\nname: review\nmodel: opus\n---\nReview the PR.", true)
 		require.NotNil(t, m.Agent)
@@ -835,6 +844,7 @@ func TestPiAgentTool_ManifestBlock(t *testing.T) {
 			"the vendored provider extension is root-owned and read-only in the image; nothing to re-check")
 		assert.Equal(t, "medium", m.Agent.Thinking, "children default to medium: the roster overran the review budget at high")
 		assert.Equal(t, piDefaultTools, m.Agent.Tools, "no tools: frontmatter → the default built-in set")
+		assert.Equal(t, "default", m.Agent.ToolMode)
 		assert.Equal(t, piExploreTools, m.Agent.ExploreTools)
 		assert.Equal(t, piAgentMaxConcurrent, m.Agent.MaxConcurrent)
 		assert.Equal(t, piAgentTimeoutSeconds, m.Agent.TimeoutSeconds)
@@ -857,6 +867,7 @@ func TestPiAgentTool_ManifestBlock(t *testing.T) {
 		require.NotNil(t, m.Agent)
 		assert.Equal(t, []string{"read", "grep", "Agent", "Task"}, m.Tools, "--tools carries both tool names")
 		assert.Equal(t, []string{"read", "grep"}, m.Agent.Tools, "children get the built-ins only")
+		assert.Equal(t, "explicit", m.Agent.ToolMode)
 		assert.Equal(t, []string{piVertexExtensionPath}, m.Agent.Extensions, "no hook adapter without security")
 		assert.Empty(t, m.Agent.ExtensionDigests, "no hook adapter and no edit repair (no edit tool), hence no digests")
 		assert.Empty(t, m.Agent.EditRepairExtension, "the tools: list names no edit")

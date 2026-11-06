@@ -39,6 +39,7 @@
 import { spawn as nodeSpawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { appendFileSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { lstat, readdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
@@ -442,20 +443,57 @@ function servableSpecs(agent, parentSpec) {
 // otherwise get it back by dispatching an Explore child. It is a no-op for
 // an agent that declared no tools:, whose set is pi's defaults and already
 // a superset of the read-only tools.
-export function childTools(agent, subagentType) {
+// Resolve patterns against the parent's registered tool names, then intersect
+// concrete names. Never pass a union of wildcard expressions to the child.
+function toolMatches(pattern, name) {
+  const escaped = pattern.split("*").map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  return new RegExp(`^${escaped.join(".*")}$`, "u").test(name);
+}
+
+export function childTools(agent, subagentType, registeredTools) {
   const parent = (agent?.tools ?? []).filter((t) => t !== TOOL_NAME && t !== TOOL_ALIAS);
   const explore = typeof subagentType === "string" && subagentType.trim().toLowerCase() === "explore";
-  if (explore) return (agent?.exploreTools ?? DEFAULT_EXPLORE_TOOLS).filter((t) => parent.includes(t));
+  const candidates = registeredTools ?? parent.filter((t) => !t.includes("*"));
+  // Omitted --tools and --no-builtin-tools both leave extension tools enabled.
+  // These are pi's built-ins, including the optional powershell tool.
+  const builtins = new Set(["read", "bash", "edit", "write", "grep", "find", "ls", "powershell"]);
+  const allowed = candidates.filter((t) => {
+    if (t === TOOL_NAME || t === TOOL_ALIAS) return false;
+    if (agent?.toolMode === "extensions-only") return !builtins.has(t);
+    if (agent?.toolMode === "default") return !builtins.has(t) || parent.includes(t);
+    return parent.some((p) => toolMatches(p, t));
+  });
+  if (explore) return allowed.filter((t) => (agent?.exploreTools ?? DEFAULT_EXPLORE_TOOLS).includes(t));
   // Persona dispatch intersects with the parent, as Explore does. A
   // present-but-empty array means "no tools" and must stay empty --
-  // childArgs turns it into --no-builtin-tools; widening to the parent
+  // childArgs turns it into --tools ''; widening to the parent
   // here would hand a restricted persona bash, write and edit.
   const persona = lookupPersona(agent, subagentType);
   if (persona && Array.isArray(persona.tools)) {
-    const parentSet = new Set(parent);
-    return persona.tools.filter((t) => parentSet.has(t));
+    return allowed.filter((t) => persona.tools.some((p) => toolMatches(p, t)));
   }
-  return parent;
+  return allowed;
+}
+
+// Same tree digest as piExtensionTreeHash in pi_extensions.go: sorted GNU
+// sha256sum-style file lines followed by the digest of the directory listing.
+export async function extensionTreeHash(root) {
+  const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
+  const files = [], dirs = [];
+  const walk = async (rel) => {
+    const path = join(root, rel);
+    const st = await lstat(path);
+    if (/[\n\r\\]/u.test(rel)) throw new Error("invalid extension path");
+    if (st.isDirectory()) {
+      dirs.push(rel);
+      for (const entry of await readdir(path)) await walk(rel === "." ? `./${entry}` : `${rel}/${entry}`);
+    } else if (st.isFile()) {
+      files.push(`${hash(await readFile(path))}  ${rel}`);
+    } else throw new Error("extension contains a non-regular entry");
+  };
+  await walk(".");
+  const lines = (xs) => xs.sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b))).map((x) => x + "\n").join("");
+  return hash(lines(files) + `${hash(lines(dirs))}  -\n`);
 }
 
 // childArgs renders the child's argv (without the binary): the parent's
@@ -471,21 +509,16 @@ export function childArgs(agent, { seq, modelSpec, tools, personaName }) {
     "--session-dir", childSessionDir(agent, seq, personaName),
   ];
   for (const ext of agent.extensions ?? []) args.push("-e", ext);
+  for (const ext of agent.declaredExtensions ?? []) args.push("-e", ext.path, ...(ext.args ?? []));
   // The edit-repair extension registers the edit tool, and pi does not
   // filter extension tools under --no-builtin-tools, so it loads only for a
   // child whose allowlist already names edit (see fullsend-edit-repair.js).
   if (typeof agent.editRepairExtension === "string" && agent.editRepairExtension !== "" && tools.includes("edit")) {
     args.push("-e", agent.editRepairExtension);
   }
-  if (tools.length === 0) {
-    // Mirror the runner: an empty allowlist means "no built-in tools", not
-    // "the default set". `--tools ''` and `--no-tools` drop extension tools
-    // too; --no-builtin-tools keeps them, which is the behaviour the
-    // edit-repair gate above compensates for (all three measured on 0.85.0).
-    args.push("--no-builtin-tools");
-  } else {
-    args.push("--tools", tools.join(","));
-  }
+  // --no-builtin-tools leaves extension tools active. An explicit empty
+  // --tools value filters those too, so a disjoint intersection fails closed.
+  args.push("--tools", tools.join(","));
   args.push("--model", modelSpec);
   args.push("--thinking", agent.thinking || DEFAULT_THINKING);
   // Replaces the discovered APPEND_SYSTEM.md, which is the parent's
@@ -736,7 +769,7 @@ export function sanitizeLogLine(text) {
 // sanitizeLogLine first. run() never throws for a failed child —
 // it returns { isError, error } — so the registered execute() decides how
 // to surface it (pi marks a result isError only when execute throws).
-export function createAgentTool(manifest, { spawn = nodeSpawn, log: rawLog = (m) => console.error(m), now = () => Date.now(), env = process.env, stat = statSync, killGraceMs = DEFAULT_KILL_GRACE_MS, manifestPath = "", manifestSum = "", configDir = manifestPath ? dirname(manifestPath) : "" } = {}) {
+export function createAgentTool(manifest, { spawn = nodeSpawn, log: rawLog = (m) => console.error(m), now = () => Date.now(), env = process.env, stat = statSync, killGraceMs = DEFAULT_KILL_GRACE_MS, manifestPath = "", manifestSum = "", registeredTools = () => undefined, configDir = manifestPath ? dirname(manifestPath) : "" } = {}) {
   const log = (m) => rawLog(sanitizeLogLine(m));
   const agent = manifest?.agent ?? {};
   const maxConcurrent = Math.max(1, Number(agent.maxConcurrent) || DEFAULT_MAX_CONCURRENT);
@@ -908,7 +941,7 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log: rawLog = (m)
   // re-checked immediately before every dispatch, inside the slot this
   // dispatch holds. The manifest half is skipped when the caller supplied
   // no digest — the unit tests build a tool from an object, not a file.
-  const manifestDrift = () => {
+  const manifestDrift = async () => {
     if (manifestPath && manifestSum) {
       let sum;
       try {
@@ -926,6 +959,13 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log: rawLog = (m)
         return `cannot re-read ${file} before dispatching: ${err.message}`;
       }
       if (sum !== want) return `${basename(file)} changed since load; refusing to dispatch`;
+    }
+    for (const ext of agent.declaredExtensions ?? []) {
+      try {
+        if (await extensionTreeHash(ext.path) !== ext.sha256) return `${ext.name} changed since load; refusing to dispatch`;
+      } catch (err) {
+        return `cannot verify extension ${ext.name}: ${err.message}`;
+      }
     }
     return gatewayConfigDrift();
   };
@@ -1140,7 +1180,7 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log: rawLog = (m)
     };
     let early = cancelled();
     if (early) return early;
-    const tools = childTools(agent, params?.subagent_type);
+    const tools = childTools(agent, params?.subagent_type, registeredTools());
     // The ticket carries the queue entry (before a slot is free) and then
     // the running child, so an abort reaches whichever stage the dispatch
     // is in. The listener is removed on every exit path.
@@ -1164,7 +1204,9 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log: rawLog = (m)
         return early;
       }
       try {
-        const drift = manifestDrift();
+        const drift = await manifestDrift();
+        early = cancelled();
+        if (early) return early;
         if (drift) {
           return { seq: id, isError: true, error: drift, text: "", stopReason: "rejected", model: modelSpec };
         }
@@ -1185,7 +1227,9 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log: rawLog = (m)
           if (!childModelNotServed(outcome) || cancelled()) break;
           const remainingMs = deadline - now();
           if (remainingMs < MIN_FALLBACK_MS) break;
-          const nextDrift = manifestDrift();
+          const nextDrift = await manifestDrift();
+          early = cancelled();
+          if (early) return early;
           if (nextDrift) {
             return { seq: id, isError: true, error: nextDrift, text: "", stopReason: "rejected", model: modelSpec };
           }
@@ -1290,7 +1334,7 @@ export default function (pi) {
     console.error(`${LOG_PREFIX} the Agent tool is not enabled for this agent; nothing registered`);
     return;
   }
-  const tool = createAgentTool(manifest, { manifestPath, manifestSum });
+  const tool = createAgentTool(manifest, { manifestPath, manifestSum, registeredTools: () => pi.getAllTools().map((t) => t.name) });
 
   const execute = async (_toolCallId, params, signal, _onUpdate, ctx) => {
     const m = ctx?.model;
