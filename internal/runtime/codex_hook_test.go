@@ -250,12 +250,18 @@ func TestCodexAdapter_TranslatesToolNames(t *testing.T) {
 	h.script("record.py", `open(`+pyStr(seen)+`, "w").write(json.dumps(payload))
 sys.exit(0)`)
 
-	for codexName, claudeName := range map[string]string{
+	cases := map[string]string{
 		"apply_patch":              "Edit",
-		"spawn_agent":              "Agent",
 		"Bash":                     "Bash",
 		"mcp__github__list_issues": "mcp__github__list_issues",
-	} {
+		// Unmapped, so an allowlist without its name blocks it.
+		"collaborationsend_message": "collaborationsend_message",
+	}
+	// Every multi-agent call the adapter reports as Agent, the V1 spawn included.
+	for _, name := range codexAgentToolNames {
+		cases[name] = "Agent"
+	}
+	for codexName, claudeName := range cases {
 		input := codexBashInput("touch x")
 		input["tool_name"] = codexName
 		got := h.run("PreToolUse", input, "record.py")
@@ -1261,16 +1267,15 @@ func TestCodexAdapterSpawnGuardConstantsMatchGo(t *testing.T) {
 		"the findings-log line an admitted spawn writes; the runner's cross-check reads it back by this name")
 	assert.Contains(t, src, `FINDINGS_PATH = "`+codexFindingsLogPath+`"`, "the runner reads the file the adapter writes")
 	pattern := regexp.MustCompile(codexSpawnGuardMatcher)
-	for _, name := range []string{"spawn_agent", "multi_agent_v1wait_agent", "multi_agent_v1close_agent", "multi_agent_v1send_input"} {
-		assert.True(t, pattern.MatchString(name), "%s is admitted or passed through by the handler, so the matcher must reach it", name)
-		assert.Contains(t, src, `"`+name+`"`, "the adapter must name %s", name)
-	}
-	for _, name := range []string{"multi_agent_v1wait_agent", "multi_agent_v1close_agent", "multi_agent_v1send_input"} {
+	for _, name := range codexAgentToolNames {
+		assert.True(t, pattern.MatchString(name), "%s is reported as Agent, so the guard's matcher must reach it", name)
 		assert.Contains(t, src, `"`+name+`": "Agent",`,
-			"the sandbox hooks (the tool allowlist first) see %s as Agent, the name the spawn already has (ADR 0126)", name)
+			"the sandbox hooks (the tool allowlist first) see %s as Agent (ADR 0126, ADR 0159 decision 3)", name)
 	}
-	assert.NotContains(t, src, `"multi_agent_v1resume_agent": "Agent"`,
-		"resume stays unmapped so the tool allowlist still blocks it when the dispatch hook cannot run (ADR 0126)")
+	assert.Equal(t, len(codexAgentToolNames), strings.Count(src, `": "Agent",`), "every Agent mapping in the adapter is one the Go table names")
+	for _, name := range []string{"multi_agent_v1resume_agent", "collaborationsend_message", "collaborationfollowup_task"} {
+		assert.NotContains(t, src, `"`+name+`": "Agent"`, "%s stays unmapped so an allowlist without its name blocks it when the dispatch hook cannot run", name)
+	}
 }
 
 // codexSpawnInput is the PreToolUse payload codex sends for a V1 spawn of
@@ -1640,6 +1645,13 @@ func TestCodexAdapter_SpawnGuardDenies(t *testing.T) {
 			in["tool_name"] = "multi_agent_v1wait_agent"
 			in["tool_input"] = map[string]any{"target": "01a0ee84-2a04-7d03-b84f-ad297f46b50e"}
 			in["agent_id"] = "01a0ee89-1b2e-7c60-8812-87a59542808f"
+			in["agent_type"] = "probe"
+			return h.spawnGuard(in, "correctness")
+		}, "is not allowed from a child"},
+		{"pass-through name from a child (agent_type only)", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			in := codexSpawnInput("correctness")
+			in["tool_name"] = "multi_agent_v1wait_agent"
+			in["tool_input"] = map[string]any{"target": "01a0ee84-2a04-7d03-b84f-ad297f46b50e"}
 			in["agent_type"] = "probe"
 			return h.spawnGuard(in, "correctness")
 		}, "is not allowed from a child"},

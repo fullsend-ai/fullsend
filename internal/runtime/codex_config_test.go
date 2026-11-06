@@ -237,7 +237,8 @@ func TestCodexMatcherFor(t *testing.T) {
 		{"write and edit collapse to apply_patch", []string{"Write", "Edit"}, "apply_patch", nil, true},
 		{"ssrf group drops WebFetch", []string{"Bash", "WebFetch"}, "Bash", []string{"WebFetch"}, true},
 		{"read-only group is not wired", []string{"Read", "Grep"}, "", []string{"Read", "Grep"}, false},
-		{"agent maps to spawn_agent", []string{"Agent"}, "spawn_agent", nil, true},
+		{"agent maps to every admitted multi-agent call", []string{"Agent"}, codexAgentMatcher, nil, true},
+		{"task maps to every admitted multi-agent call", []string{"Task"}, codexAgentMatcher, nil, true},
 		{"mcp names pass through", []string{"mcp__github__list_issues"}, "mcp__github__list_issues", nil, true},
 		{"duplicates collapse", []string{"Write", "MultiEdit", "Edit"}, "apply_patch", nil, true},
 	}
@@ -257,15 +258,25 @@ func TestCodexMatcherFor(t *testing.T) {
 // through to the regex path would match on substrings, so a group meant for
 // `Bash` would also select a tool merely containing it.
 func TestCodexMatcherFor_ExactAlternationForm(t *testing.T) {
+	exact := func(matcher string, tools any) {
+		for _, r := range matcher {
+			isExact := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+				(r >= '0' && r <= '9') || r == '_' || r == '|'
+			assert.True(t, isExact, "matcher %q for %v leaves the exact-alternation set at %q", matcher, tools, r)
+		}
+	}
 	for _, g := range security.HookPlan(security.SandboxHookConfigFromHarness(&harness.Harness{})) {
 		matcher, _, ok := codexMatcherFor(g.Tools)
 		if !ok || matcher == "" {
 			continue
 		}
-		for _, r := range matcher {
-			isExact := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
-				(r >= '0' && r <= '9') || r == '_' || r == '|'
-			assert.True(t, isExact, "matcher %q for %v leaves the exact-alternation set at %q", matcher, g.Tools, r)
+		exact(matcher, g.Tools)
+	}
+	// The default plan's groups are Bash and *, so the table's own tokens (the
+	// Agent alternation among them) are checked directly.
+	for tool, matcher := range codexToolMatcher {
+		if matcher != "" {
+			exact(matcher, tool)
 		}
 	}
 }
@@ -470,7 +481,8 @@ func TestCodexHooksJSON_SpawnGuardIsFirst(t *testing.T) {
 	for _, name := range []string{
 		"spawn_agent", "multi_agent_v1resume_agent", "collaborationspawn_agent", // codex's spawn and resume tools
 		"multi_agent_v1wait_agent", "multi_agent_v1close_agent", "multi_agent_v1send_input", // passed through by the handler
-		"collaborationwait_agent", "multi_agent_v1fork_agent", "resume_agent", // unknown names: denied by the handler
+		"collaborationwait_agent", "collaborationlist_agents", "collaborationinterrupt_agent", // V2 control calls: denied by the handler
+		"multi_agent_v1fork_agent", "resume_agent", // unknown names: denied by the handler
 	} {
 		assert.True(t, pattern.MatchString(name), "the guard must run for %s", name)
 	}

@@ -58,15 +58,30 @@ type codexHookGroup struct {
 	Wired   bool   `json:"wired"`
 }
 
+// codexAgentToolNames are the codex multi-agent calls the adapter reports as
+// Agent: the V1 spawn and the control calls the spawn guard passes through
+// from the root (ADR 0126), and the V2 spawn and control calls ADR 0159
+// decision 3 maps the same way. send_message, followup_task and resume stay
+// unmapped, so an allowlist without their names blocks them even when the
+// guard cannot run. codex joins namespace and name with no separator
+// (codex-rs/core/src/tools/registry.rs function_hook_tool_name); only the
+// default and multi_agent_v1 namespaces keep the bare spawn_agent.
+var codexAgentToolNames = []string{
+	"spawn_agent",
+	"multi_agent_v1wait_agent", "multi_agent_v1close_agent", "multi_agent_v1send_input",
+	"collaborationspawn_agent", "collaborationwait_agent", "collaborationlist_agents", "collaborationinterrupt_agent",
+}
+
 // claudeToolForCodex is the adapter's translation table, mirrored into the
 // manifest for operators reading it. codex's shell tool is already called
-// `Bash`; `apply_patch` covers Claude's Write and Edit, and the canonical
-// name it reports is what the scripts see translated
-// (codex-rs/core/src/tools/hook_names.rs).
-var claudeToolForCodex = map[string]string{
-	"apply_patch": "Edit",
-	"spawn_agent": "Agent",
-}
+// `Bash`; `apply_patch` covers Claude's Write and Edit.
+var claudeToolForCodex = func() map[string]string {
+	m := map[string]string{"apply_patch": "Edit"}
+	for _, name := range codexAgentToolNames {
+		m[name] = "Agent"
+	}
+	return m
+}()
 
 func (r CodexRuntime) codexHooksDir() string { return r.ConfigDir() + "/hooks" }
 
