@@ -630,6 +630,11 @@ func (ClaudeRuntime) EmitTranscriptErrors(w io.Writer, summaries []TranscriptErr
 	emitTranscriptErrors(w, summaries)
 }
 
+// StoppedBackgroundSubagents implements BackgroundStopDetector.
+func (ClaudeRuntime) StoppedBackgroundSubagents(transcriptDir string, since time.Time) []string {
+	return stoppedBackgroundSubagents(transcriptDir, since)
+}
+
 // reservedPluginDestNames are basenames bootstrapPlugins and
 // buildPluginConfigs create directly under configDir/plugins/ — two
 // marketplace-scaffolding directories plus the two shared registration
@@ -793,6 +798,16 @@ const (
 	claudeNonessentialSettings   = `{"env":{"` + claudeNonessentialTrafficEnv + `":"1"}}`
 )
 
+// claudeBgWaitCeilingExport lifts the cap Claude Code puts on how long a
+// --print run waits, after the main agent's last turn, for background
+// sub-agents still running (600s by default). At the cap Claude Code stops
+// them, drops the partial result and exits 0, a clock the runner does not
+// own (#9149). 0 waits without a cap, so the iteration's timeout_minutes
+// stays the only clock on sub-agents, as on codex. The launch exports it
+// after .env on every route, so neither .env nor env.sandbox (written into
+// .env) can shorten it.
+const claudeBgWaitCeilingExport = "export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0"
+
 // buildRunCommand renders the in-sandbox command line. When sandbox hooks are
 // enabled (params.HooksSettingsPath set), the launch refuses to start claude
 // unless hooks.json and the hook scripts still match the runner-held digests
@@ -828,6 +843,7 @@ func buildRunCommandWithDigests(params RunParams, hookDigests claudeHookDigests)
 		// The gateway route already exports it in claudeGatewayPostEnv.
 		postEnv += " && export " + claudeNonessentialTrafficEnv + "=1"
 	}
+	postEnv += " && " + claudeBgWaitCeilingExport
 	if params.HooksSettingsPath != "" {
 		// The hook settings, re-asserted after the agent-writable .env from
 		// what Bootstrap recorded; a name the runner has no value for is

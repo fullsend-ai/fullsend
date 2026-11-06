@@ -6,6 +6,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestParseTranscriptFile_ErrorResult(t *testing.T) {
@@ -370,4 +374,67 @@ func TestIsResultLine(t *testing.T) {
 			t.Errorf("isResultLine(%q) = %v, want %v", tt.line, got, tt.want)
 		}
 	}
+}
+
+// TestStoppedBackgroundSubagents pins the #9149 signature: a sub-agent
+// transcript whose last user or assistant record is Claude Code's interrupt
+// marker, recorded during this iteration, is reported; bookkeeping records
+// after it do not hide it.
+func TestStoppedBackgroundSubagents(t *testing.T) {
+	t.Parallel()
+	since := time.Date(2026, 11, 5, 12, 37, 41, 0, time.UTC)
+	const (
+		toolUse   = `{"type":"assistant","timestamp":"2026-11-05T13:09:07.325Z","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{}}]}}`
+		toolRes   = `{"type":"user","timestamp":"2026-11-05T13:09:07.547Z","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}`
+		attach    = `{"type":"attachment","timestamp":"2026-11-05T13:09:07.555Z"}`
+		apiReq    = `{"type":"api-request","timestamp":"2026-11-05T13:09:07.575Z"}`
+		interrupt = `{"type":"user","timestamp":"2026-11-05T13:11:16.698Z","message":{"content":[{"type":"text","text":"[Request interrupted by user]"}]}}`
+		finalText = `{"type":"assistant","timestamp":"2026-11-05T13:01:16.553Z","message":{"content":[{"type":"text","text":"Challenger dispatched."}]}}`
+	)
+	files := map[string]string{
+		// The challenger from the incident: interrupted mid-request.
+		"review-agent-a62f.jsonl": strings.Join([]string{toolUse, toolRes, attach, apiReq, interrupt}, "\n") + "\n",
+		// The main session: ends its turn, then bookkeeping at exit.
+		"review-2e52.jsonl": strings.Join([]string{finalText, `{"type":"last-prompt"}`, `{"type":"cost-state"}`}, "\n") + "\n",
+		// A sub-agent that finished normally.
+		"review-agent-done.jsonl": strings.Join([]string{toolUse, toolRes, finalText}, "\n"),
+		// An interrupt marker as a plain string, then bookkeeping.
+		"review-agent-str.jsonl": `{"type":"user","timestamp":"2026-11-05T13:11:16.698Z","message":{"content":"[Request interrupted by user for tool use]"}}` + "\n" + `{"type":"cost-state"}` + "\n",
+		// An interrupt the agent recovered from: an assistant turn follows.
+		"review-agent-resumed.jsonl": strings.Join([]string{interrupt, toolUse}, "\n"),
+		// A previous iteration's stop, before since.
+		"review-agent-old.jsonl": `{"type":"user","timestamp":"2026-11-05T11:00:00Z","message":{"content":[{"type":"text","text":"[Request interrupted by user]"}]}}`,
+		// No timestamp: since cannot exclude it.
+		"review-agent-nots.jsonl": `{"type":"user","message":{"content":[{"type":"text","text":"[Request interrupted by user]"}]}}`,
+		// Not a transcript.
+		"notes.txt": interrupt,
+		// Garbage lines are skipped.
+		"review-agent-garbage.jsonl": "not json\n\n",
+	}
+	dir := t.TempDir()
+	for name, content := range files {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644))
+	}
+	require.NoError(t, os.Mkdir(filepath.Join(dir, "sub.jsonl"), 0o755))
+
+	got := ClaudeRuntime{}.StoppedBackgroundSubagents(dir, since)
+	assert.ElementsMatch(t, []string{"review-agent-a62f.jsonl", "review-agent-str.jsonl", "review-agent-nots.jsonl"}, got)
+
+	assert.Contains(t, stoppedBackgroundSubagents(dir, time.Time{}), "review-agent-old.jsonl", "a zero since excludes nothing")
+	assert.Empty(t, stoppedBackgroundSubagents(filepath.Join(dir, "missing"), since))
+
+	var _ BackgroundStopDetector = ClaudeRuntime{}
+}
+
+// TestStoppedBackgroundSubagents_OversizedLine checks that a line beyond
+// maxTranscriptLineSize is skipped without stopping the scan, and counts as a
+// record that is not the marker.
+func TestStoppedBackgroundSubagents_OversizedLine(t *testing.T) {
+	t.Parallel()
+	big := `{"type":"user","message":{"content":"` + strings.Repeat("x", maxTranscriptLineSize+10) + `"}}`
+	interrupt := `{"type":"user","message":{"content":[{"type":"text","text":"[Request interrupted by user]"}]}}`
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a-agent-big-last.jsonl"), []byte(interrupt+"\n"+big+"\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a-agent-big-first.jsonl"), []byte(big+"\n"+interrupt+"\n"), 0o644))
+	assert.Equal(t, []string{"a-agent-big-first.jsonl"}, stoppedBackgroundSubagents(dir, time.Time{}))
 }

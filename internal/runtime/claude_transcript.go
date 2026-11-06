@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -134,4 +135,123 @@ func emitTranscriptErrors(w io.Writer, summaries []TranscriptError) {
 		// DisplayMessage sanitizes to prevent GHA command injection.
 		fmt.Fprintf(w, "::error title=Agent Error (%s)::%s\n", sanitizeOutput(s.Source), s.DisplayMessage())
 	}
+}
+
+// claudeInterruptMarker opens the text Claude Code records as a user turn
+// when it aborts a request in flight. A --print run has no user, so in a
+// sub-agent transcript it marks a stop by Claude Code itself — such as the
+// stop of background sub-agents still running when it exits (#9149).
+const claudeInterruptMarker = "[Request interrupted by user"
+
+// claudeTranscriptRecord is the part of a Claude Code session transcript
+// record stoppedBackgroundSubagents reads.
+type claudeTranscriptRecord struct {
+	Type      string `json:"type"`
+	Timestamp string `json:"timestamp"`
+	Message   struct {
+		Content json.RawMessage `json:"content"`
+	} `json:"message"`
+}
+
+// stoppedBackgroundSubagents returns the names of the transcripts in
+// transcriptDir whose last user or assistant record is Claude Code's
+// interrupt marker, recorded at or after since. A record without a
+// parseable timestamp is not excluded by since. Records of other types
+// (Claude Code writes bookkeeping records such as last-prompt at exit) do
+// not count as the last record. Unreadable files are skipped: detection is
+// best-effort, like parseTranscriptErrors.
+func stoppedBackgroundSubagents(transcriptDir string, since time.Time) []string {
+	entries, err := os.ReadDir(transcriptDir)
+	if err != nil {
+		return nil
+	}
+	var stopped []string
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
+			continue
+		}
+		if endsWithInterrupt(filepath.Join(transcriptDir, entry.Name()), since) {
+			stopped = append(stopped, entry.Name())
+		}
+	}
+	return stopped
+}
+
+// endsWithInterrupt reports whether the transcript at path ends, among its
+// user and assistant records, with the interrupt marker recorded at or after
+// since. A line longer than maxTranscriptLineSize is not decoded and counts
+// as a record that is not the marker.
+func endsWithInterrupt(path string, since time.Time) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+
+	br := bufio.NewReaderSize(f, 64*1024)
+	interrupted := false
+	var line []byte
+	for {
+		chunk, isPrefix, readErr := br.ReadLine()
+		if readErr != nil {
+			break
+		}
+		line = append(line, chunk...)
+		if isPrefix {
+			if len(line) > maxTranscriptLineSize {
+				interrupted = false
+				for isPrefix && readErr == nil {
+					_, isPrefix, readErr = br.ReadLine()
+				}
+				line = line[:0]
+			}
+			continue
+		}
+		var rec claudeTranscriptRecord
+		if len(line) > 0 && json.Unmarshal(line, &rec) == nil {
+			switch rec.Type {
+			case "assistant":
+				interrupted = false
+			case "user":
+				interrupted = isInterruptContent(rec.Message.Content) && !recordedBefore(rec.Timestamp, since)
+			}
+		}
+		line = line[:0]
+	}
+	return interrupted
+}
+
+// isInterruptContent reports whether a user message's content is the
+// interrupt marker, as a plain string or as a text block.
+func isInterruptContent(content json.RawMessage) bool {
+	var text string
+	if json.Unmarshal(content, &text) == nil {
+		return strings.HasPrefix(strings.TrimSpace(text), claudeInterruptMarker)
+	}
+	var items []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(content, &items) != nil {
+		return false
+	}
+	for _, item := range items {
+		if item.Type == "text" && strings.HasPrefix(strings.TrimSpace(item.Text), claudeInterruptMarker) {
+			return true
+		}
+	}
+	return false
+}
+
+// recordedBefore reports whether the RFC 3339 timestamp ts is before since.
+// An empty or unparseable timestamp, or a zero since, is never before.
+func recordedBefore(ts string, since time.Time) bool {
+	if since.IsZero() {
+		return false
+	}
+	t, err := time.Parse(time.RFC3339Nano, ts)
+	if err != nil {
+		return false
+	}
+	return t.Before(since)
 }
