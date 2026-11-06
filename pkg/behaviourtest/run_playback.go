@@ -4,6 +4,7 @@ package behaviourtest
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"testing"
 
@@ -14,6 +15,11 @@ import (
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/suite"
 )
+
+// playbackSuiteName labels this runner in bootstrap failure messages,
+// the completion report, and the CI step summary; it matches the godog
+// TestSuite name below.
+const playbackSuiteName = "playback"
 
 // RunPlaybackSuite bootstraps and executes the dummy-playback behaviour
 // suite. It mirrors RunSuite (cross-org slot leasing through the shared
@@ -29,6 +35,13 @@ import (
 // Only @playback-tagged scenarios are run — the tag filter is fixed
 // rather than read from GODOG_TAGS, since this suite has a single
 // purpose and does not need caller-supplied tag expressions.
+//
+// The run reports its outcome with a failure-class completion report:
+// bootstrap failures and the suite status are classified as
+// infrastructure or scenario failures, the final failure message names
+// the class and per-class counts, and failure-class.json is written
+// under BEHAVIOUR_ARTIFACT_DIR (or BEHAVIOUR_FAILURE_CLASS_FILE) when
+// either is set — on success as well as failure.
 //
 // The test file that calls RunPlaybackSuite must be built with
 // `-tags playback`. This lives in a separate build-tagged file (rather
@@ -51,7 +64,7 @@ func RunPlaybackSuite(t *testing.T, opts SuiteOptions) {
 
 	cfg := env.LoadRunnerConfig()
 	if err := cfg.Validate(); err != nil {
-		t.Fatalf("invalid behaviour runner config: %v", err)
+		failRun(t, nil, playbackSuiteName, fmt.Errorf("invalid behaviour runner config: %w", err))
 	}
 
 	e2eCfg := e2etest.LoadEnvConfig(t)
@@ -67,7 +80,7 @@ func RunPlaybackSuite(t *testing.T, opts SuiteOptions) {
 	pool := poolConfigFor(cfg.Environment, e2eCfg, binary, t.Logf)
 	baseDriver, err := installFactoryFor(cfg.Environment)(pool)
 	if err != nil {
-		t.Fatalf("creating install driver (env=%s): %v", cfg.Environment, err)
+		failRun(t, nil, playbackSuiteName, fmt.Errorf("creating install driver (env=%s): %w", cfg.Environment, err))
 	}
 	driver := install.NewPlaybackDriver(baseDriver)
 
@@ -89,10 +102,10 @@ func RunPlaybackSuite(t *testing.T, opts SuiteOptions) {
 	}
 	t.Logf("leasing repo slots across %d org(s) %v (%d slot(s)), godog concurrency %d", pool.Layout.OrgCount, pool.Layout.Orgs(), driver.Capacity(), concurrency)
 
-	template := newTemplateWorld(t, ctx, cfg, pool, driver, opts)
+	template := newTemplateWorld(t, playbackSuiteName, ctx, cfg, pool, driver, opts)
 
 	suiteRunner := godog.TestSuite{
-		Name:                "playback",
+		Name:                playbackSuiteName,
 		ScenarioInitializer: func(sc *godog.ScenarioContext) { suite.InitScenario(sc, template) },
 		Options: &godog.Options{
 			Format:      "pretty",
@@ -102,7 +115,21 @@ func RunPlaybackSuite(t *testing.T, opts SuiteOptions) {
 			Concurrency: concurrency,
 		},
 	}
-	if st := suiteRunner.Run(); st != 0 {
-		t.Fatalf("playback suite failed with status %d", st)
+	st := suiteRunner.Run()
+	// The completion report is written for every outcome (design D4): a
+	// successful run writes a fresh success marker so a stale marker from
+	// an earlier attempt is detectable. godog reports failure through the
+	// status, not an error, so runErr is nil and status carries st.
+	report, reportPath := writeCompletionReport(template, playbackSuiteName, nil, st)
+	if st != 0 {
+		// Design D5: the final failure message names the run class and
+		// per-class counts; the report path is appended only when a
+		// destination was configured, matching failRun's message.
+		failMsg := fmt.Sprintf("%s suite failed with status %d: %s failure (%d infrastructure, %d scenario)",
+			playbackSuiteName, st, report.Class, report.InfrastructureFailures, report.ScenarioFailures)
+		if reportPath != "" {
+			failMsg += "; report: " + reportPath
+		}
+		t.Fatalf("%s", failMsg)
 	}
 }

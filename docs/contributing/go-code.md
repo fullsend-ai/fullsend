@@ -64,7 +64,8 @@ When making changes to Go code under `cmd/`, `internal/`, or `pkg/`:
 1. **Unit tests:** Run `make go-test` (or `go test ./...`) and fix any failures before committing. On macOS or a Linux distribution other than Ubuntu, `make ci-local T=go-test` runs the same tests in a container that matches the CI runner (see [`hack/ci-local`](../../hack/ci-local/README.md)).
 2. **Coverage:** CI enforces thresholds via [Codecov](https://about.codecov.io/) (see [`.codecov.yml`](../../.codecov.yml)). **Patch coverage** on changed lines has an **80% target** and a **75% enforced floor** (5% threshold). Codecov PR comments mark ✗ below 80% even when the `codecov/patch` status check is green. **Project coverage** must not drop more than **1%** below the base branch. `make go-test` alone does **not** enforce these thresholds — you must verify coverage locally before committing. See [Verifying patch coverage locally](#verifying-patch-coverage-locally) below for the exact commands.
 3. **Vet:** Run `make go-vet` to catch common issues.
-4. **Behaviour tests:** Run `make behaviour-test` (and `make playback-test` for multi-agent pipeline changes) if your changes affect the end-to-end behaviour covered by the Gherkin suites. These tests install fullsend per-repo on live GitHub pool repositories using mint/OIDC authentication. See [Behaviour testing](../guides/dev/behaviour-testing.md).
+4. **Behaviour-tagged unit tests:** Run `make behaviour-test-unit` when you change tests behind the `behaviour` build tag, such as the report and template tests in `pkg/behaviourtest/`. `make go-test` skips them.
+5. **Behaviour tests:** Run `make behaviour-test` (and `make playback-test` for multi-agent pipeline changes) if your changes affect the end-to-end behaviour covered by the Gherkin suites. These tests install fullsend per-repo on live GitHub pool repositories using mint/OIDC authentication. See [Behaviour testing](../guides/dev/behaviour-testing.md).
 
 ## Verifying patch coverage locally
 
@@ -590,7 +591,21 @@ The e2e tests mint short-lived GitHub App installation tokens via the central to
 - **CI (mint):** Uses the hosted public mint (same default as `fullsend github setup --mint-url`) with the workflow's OIDC identity. The e2e workflow exchanges the OIDC JWT for an `e2e`-role installation token on the pool org. Override with `FULLSEND_MINT_URL` if needed.
 - **Local:** Run `gh auth login` (or set `GH_TOKEN` / `GITHUB_TOKEN` with pool-org admin access). Mint uses `FULLSEND_MINT_URL` or the hosted default.
 
-**Do not** increase e2e or behaviour **suite** timeouts without **explicit human authorization** in the current session (or an issue/PR comment that clearly authorizes that bump). Suite ceilings are job `timeout-minutes` in `.github/workflows/e2e.yml` for the `behaviour` / `playback` jobs, the matching `go test -timeout` values in the `behaviour-test` / `playback-test` Make targets (and the `timeout-minutes` of any job that runs `playback-test`), and the default `E2E_LOCK_TIMEOUT`. Scenario-level wait or assertion windows (for example dispatch detection) are out of scope when an issue asks for them — those are not suite ceilings. On timeout failures, diagnose and fix the root cause (slow scenarios, unnecessary waits, lock contention); do not open a PR whose primary change is raising the suite timeout.
+**Do not** increase e2e or behaviour **suite** timeouts without **explicit human
+authorization** in the current session (or an issue/PR comment that clearly
+authorizes that bump). Suite ceilings are job `timeout-minutes` in
+`.github/workflows/e2e.yml` for the `behaviour` / `playback` jobs (90 minutes,
+sized so one infrastructure-classified retry of a 45-minute attempt fits; the
+same applies to the `timeout-minutes` of any job that runs `playback-test`), the
+per-attempt `go test -timeout` values in the `behaviour-test` / `playback-test`
+Make targets (45 minutes each — the job ceiling deliberately covers two
+attempts, not one; see the retry budgeting discussion in
+`docs/guides/dev/behaviour-testing.md`), and the default `E2E_LOCK_TIMEOUT`.
+Scenario-level wait or assertion windows (for example dispatch detection) are
+out of scope when an issue asks for them — those are not suite ceilings. On
+timeout failures, diagnose and fix the root cause (slow scenarios, unnecessary
+waits, lock contention); do not open a PR whose primary change is raising the
+suite timeout.
 
 **When reviewing PRs:** Flag unauthorized suite-timeout increases as an **important-severity** finding (policy violation). Explicit human authorization in the linked issue or a PR comment is the only exception.
 

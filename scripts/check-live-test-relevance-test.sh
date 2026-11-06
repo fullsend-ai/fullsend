@@ -33,6 +33,7 @@ for filter in "${filters[@]}"; do
     .github/workflows/e2e-ok-to-test.yml \
     .github/actions/check-e2e-authorization/action.yml \
     scripts/check-e2e-authorization.sh \
+    scripts/run-with-infra-retry.sh \
     Makefile; do
     if ! printf '%s\n' "$path" | grep -qE "$filter"; then
       printf 'Expected live-test relevance for %s\n' "$path" >&2
