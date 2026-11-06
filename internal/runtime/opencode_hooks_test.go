@@ -80,7 +80,7 @@ func TestOpenCodeBootstrapHookPlan(t *testing.T) {
 	require.NoError(t, OpenCodeRuntime{}.Bootstrap(in))
 	env, ok := lookupOpenCodeTrustedEnv("sb")
 	require.True(t, ok)
-	require.True(t, openCodeHasHookPlan(env.Hooks))
+	require.True(t, openCodeHookInterpreterConfigured(env.Hooks))
 	assert.Equal(t, security.HookPlan(in.hooks), env.Hooks.Groups)
 	assert.Equal(t, OpenCodeRuntime{}.ConfigDir()+"/hooks", env.Hooks.Dir)
 	assert.Equal(t, "/sandbox", env.Hooks.ShellHome)
@@ -142,7 +142,9 @@ func TestOpenCodeSDKCacheRestore(t *testing.T) {
 	sdk := filepath.Join(t.TempDir(), "sdk files")
 	require.NoError(t, os.MkdirAll(filepath.Join(sdk, "node_modules"), 0o700))
 	for _, name := range []string{"package.json", "package-lock.json"} {
-		require.NoError(t, os.WriteFile(filepath.Join(sdk, name), []byte(`{"test":"metadata"}`), 0o600))
+		// Match the image-owned SDK, whose files are read-only even though the
+		// sandbox user can replace its own copied bookkeeping files.
+		require.NoError(t, os.WriteFile(filepath.Join(sdk, name), []byte(`{"test":"metadata"}`), 0o444))
 	}
 	home := t.TempDir()
 	configDir := filepath.Join(t.TempDir(), "opencode config")
@@ -164,11 +166,27 @@ func TestOpenCodeSDKCacheRestore(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, filepath.Join(sdk, "node_modules"), target)
 	}
+	// Bootstrap and every Run restore this cache. Only the global directory is
+	// cleared by the override reset; the custom config manifests remain.
+	require.NoError(t, os.RemoveAll(filepath.Join(home, ".config", "opencode")))
+	out, err = run()
+	require.NoError(t, err, "restoring read-only bookkeeping twice: %s", out)
+	// Replacing a manifest must unlink, not follow, an agent-planted symlink.
+	outside := filepath.Join(home, "untouched")
+	require.NoError(t, os.WriteFile(outside, []byte("keep"), 0o600))
+	require.NoError(t, os.Remove(filepath.Join(configDir, "package.json")))
+	require.NoError(t, os.Symlink(outside, filepath.Join(configDir, "package.json")))
+	out, err = run()
+	require.NoError(t, err, "%s", out)
+	data, err := os.ReadFile(outside)
+	require.NoError(t, err)
+	assert.Equal(t, "keep", string(data))
 	require.NoError(t, os.Remove(filepath.Join(sdk, "package.json")))
 	out, err = run()
 	var exit *exec.ExitError
 	require.ErrorAs(t, err, &exit, "%s", out)
 	assert.Equal(t, 127, exit.ExitCode())
+	assert.Contains(t, string(out), "OpenCode plugin SDK missing")
 }
 
 func TestOpenCodeSDKCacheRestore_UsesImageOwnedSDK(t *testing.T) {
