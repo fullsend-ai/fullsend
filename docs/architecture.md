@@ -456,6 +456,12 @@ The existing design principle is that [the repo is the coordinator](problems/age
   `labels: project_roles` (which, with no lists, resolves every event through
   the roster, as with no entry)
   ([ADR 0153](ADRs/0153-authorize-jira-poll-actors-without-project-administration.md)).
+- The Jira site URL is kept for links and cloud-ID discovery, and API calls
+  go to a separate API URL that defaults to the Atlassian API gateway for
+  the site and can be overridden; the same email-plus-token credential
+  works for a bot account or an Atlassian-managed service account, and
+  Fullsend does not ask which it holds
+  ([ADR 0156](ADRs/0156-separate-jira-api-url-from-site-url.md)).
 - Process lifecycle (target state): bound `fullsend run` and `fullsend poll`
   support once, resident polling, and deadline-bounded polling. Bare
   `fullsend poll` and non-CI bound runs default to once; a CI bound run with
