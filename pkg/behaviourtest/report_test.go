@@ -425,3 +425,16 @@ func TestReportRecordBootstrapFailure_RedactsWorldTokenWithoutPriorRegistration(
 		"the opaque token must be masked by registration, not by pattern luck")
 	assert.Contains(t, snapshot[0].Message, "bootstrap failed with token")
 }
+
+// TestBootstrapFailureMessageNeutralizesWorkflowCommands pins that a
+// multi-line error cannot put a workflow command at the start of a job log
+// line.
+func TestBootstrapFailureMessageNeutralizesWorkflowCommands(t *testing.T) {
+	err := errors.New("mint refused\n::error::injected")
+
+	msg := bootstrapFailureMessage("behaviour", behaviourfail.Infrastructure, err, "")
+
+	assert.NotContains(t, msg, "\n")
+	assert.NotContains(t, msg, "::error::")
+	assert.Contains(t, msg, "mint refused")
+}

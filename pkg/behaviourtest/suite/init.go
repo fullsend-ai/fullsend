@@ -164,9 +164,10 @@ func afterScenario(ctx context.Context, driver install.Driver, scenarioErr error
 func recordScenarioFailure(w *world.World, err error) {
 	steps.RegisterRedactionLiterals(w)
 	class := failclass.Classify(err)
-	w.Failures.RecordFailure("scenario", w.ScenarioName, class, steps.RedactText(err.Error()))
+	scenario := steps.RedactText(w.ScenarioName)
+	w.Failures.RecordFailure("scenario", scenario, class, steps.RedactText(err.Error()))
 	if w.Logf != nil {
-		w.Logf("[failure-class] scenario %q: %s", steps.RedactText(w.ScenarioName), class)
+		w.Logf("[failure-class] scenario %q: %s", scenario, class)
 	}
 }
 
