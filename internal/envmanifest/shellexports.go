@@ -21,7 +21,12 @@ var envNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 //
 // A plain assignment with no command ("NAME=value" alone, or "readonly
 // NAME=value") is shell-local and is not reported, nor is a prefix
-// assignment on a shell builtin ("IFS= read"). Assignment-shaped text
+// assignment on a shell builtin ("IFS= read"). "export -n NAME" removes
+// the export attribute, so a name the scripts un-export after exporting
+// it is not reported; scripts are read in order as one shell, and an
+// "sh -c" script is its own shell whose un-exports do not reach its
+// parent. Prefix assignments affect only their command's process, so a
+// later "export -n" does not retract them. Assignment-shaped text
 // inside a quoted value is data, not a binding, and a command
 // substitution's exports stay in its subshell. The parser is a tokenizer,
 // not a shell: it handles single and double quotes, backslash escapes,
@@ -29,8 +34,12 @@ var envNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // separators, which is the subset the runner's emitters generate.
 func ExportedNames(scripts ...string) []string {
 	seen := map[string]bool{}
+	exported := map[string]bool{}
 	for _, script := range scripts {
-		collectExportedNames(script, seen, 0)
+		collectExportedNames(script, seen, exported, 0)
+	}
+	for name := range exported {
+		seen[name] = true
 	}
 	names := make([]string, 0, len(seen))
 	for name := range seen {
@@ -74,17 +83,21 @@ func (w shellWord) assignmentName() string {
 	return name
 }
 
-func collectExportedNames(script string, seen map[string]bool, depth int) {
+// collectExportedNames records the names script exports. seen collects
+// names that reach a child process for certain (prefix and env
+// assignments, and a finished child shell's exports); exported holds the
+// current shell's export attributes, which a later "export -n" can clear.
+func collectExportedNames(script string, seen, exported map[string]bool, depth int) {
 	if depth > maxShellDepth {
 		return
 	}
 	for _, words := range shellCommands(script) {
-		collectFromCommand(words, seen, depth)
+		collectFromCommand(words, seen, exported, depth)
 	}
 }
 
 // collectFromCommand records the names one simple command exports.
-func collectFromCommand(words []shellWord, seen map[string]bool, depth int) {
+func collectFromCommand(words []shellWord, seen, exported map[string]bool, depth int) {
 	// Leading NAME=value words are prefix assignments when a command
 	// follows them, and shell-local assignments when nothing does.
 	i := 0
@@ -102,14 +115,30 @@ func collectFromCommand(words []shellWord, seen map[string]bool, depth int) {
 	}
 	switch cmd {
 	case "export":
+		// Options precede the operands and end at "--" or the first
+		// operand; -n (alone or combined, as in -pn) switches the command
+		// to removing the export attribute.
+		unexport, optsDone := false, false
 		for _, a := range args {
-			if strings.HasPrefix(a.text, "-") {
+			if !optsDone && strings.HasPrefix(a.text, "-") {
+				if a.text == "--" {
+					optsDone = true
+				} else if strings.Contains(a.text[1:], "n") {
+					unexport = true
+				}
 				continue
 			}
-			if name := a.assignmentName(); name != "" {
-				seen[name] = true
-			} else if envNameRe.MatchString(a.text) {
-				seen[a.text] = true
+			optsDone = true
+			name := a.assignmentName()
+			if name == "" && envNameRe.MatchString(a.text) {
+				name = a.text
+			}
+			switch {
+			case name == "":
+			case unexport:
+				delete(exported, name)
+			default:
+				exported[name] = true
 			}
 		}
 	case "env":
@@ -119,17 +148,23 @@ func collectFromCommand(words []shellWord, seen map[string]bool, depth int) {
 			}
 			name := a.assignmentName()
 			if name == "" {
-				collectFromCommand(args[j:], seen, depth)
+				collectFromCommand(args[j:], seen, exported, depth)
 				return
 			}
 			seen[name] = true
 		}
 	case "exec", "command", "nohup":
-		collectFromCommand(args, seen, depth)
+		collectFromCommand(args, seen, exported, depth)
 	case "sh", "bash", "/bin/sh", "/bin/bash":
 		for j, a := range args {
 			if strings.HasPrefix(a.text, "-") && strings.Contains(a.text, "c") && j+1 < len(args) {
-				collectExportedNames(args[j+1].text, seen, depth+1)
+				// The child shell has its own export attributes: its
+				// "export -n" cannot un-export a name in this shell.
+				child := map[string]bool{}
+				collectExportedNames(args[j+1].text, seen, child, depth+1)
+				for name := range child {
+					seen[name] = true
+				}
 				return
 			}
 		}
