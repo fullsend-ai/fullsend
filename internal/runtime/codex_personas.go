@@ -26,8 +26,9 @@ func codexDelegates(def *piAgentDef, securityEnabled bool) bool {
 
 // codexRole is one native Codex sub-agent role, written to
 // $CODEX_HOME/agents/<Name>.toml. Instructions is the child's
-// developer_instructions: codexChildNote, then the persona body; nothing of
-// the dropped frontmatter (#6970).
+// developer_instructions: the collaboration version's child note
+// (codexChildNote, codexChildNoteV2), then the persona body; nothing of the
+// dropped frontmatter (#6970).
 type codexRole struct {
 	Name, Description, Instructions string
 	// Model is the child's model, set only for a skill persona with its own
@@ -224,14 +225,28 @@ func (role codexRole) toml() []byte {
 		"developer_instructions = " + codexTOMLString(role.Instructions) + "\n")
 }
 
-// codexChildNote opens every role's developer_instructions. A native child
-// runs with its role's developer_instructions in place of the parent's, so
-// nothing of codexNoSubagentNote reaches it: the note carries the child
-// contract (pi's CHILD_SYSTEM_NOTE, word for word) and the chunked-read rule.
+// codexChildNote opens every V1 role's developer_instructions. A native
+// child runs with its role's developer_instructions in place of the
+// parent's, so nothing of codexNoSubagentNote reaches it: the note carries
+// the child contract (pi's CHILD_SYSTEM_NOTE, word for word) and the
+// chunked-read rule.
 const codexChildNote = "## Runtime note\n\n" +
 	"You are a sub-agent dispatched by another agent. Carry out the single task in the message you " +
 	"were given and then stop. You have no sub-agent tool of your own and cannot dispatch further " +
 	"work. Your final assistant message is the entire result handed back to the agent that " +
+	"dispatched you, so make it self-contained.\n\n" +
+	codexChunkedReadNote + "\n"
+
+// codexChildNoteV2 is codexChildNote for a V2 child. The child inherits the
+// feature table (ADR 0159 decision 1), and codex gives it the multi-agent
+// tools only when its own model selects V2 in the catalog
+// (collab_tools_enabled, codex-rs/core/src/tools/spec_plan.rs). Either way
+// the hook denies every such call from a child (ADR 0159 decision 3), and
+// the note says so where V1's says the child has no tool.
+const codexChildNoteV2 = "## Runtime note\n\n" +
+	"You are a sub-agent dispatched by another agent. Carry out the single task in the message you " +
+	"were given and then stop. Do not spawn, wait on, list, message or interrupt agents; any such call " +
+	"is denied. Your final assistant message is the entire result handed back to the agent that " +
 	"dispatched you, so make it self-contained.\n\n" +
 	codexChunkedReadNote + "\n"
 
@@ -256,8 +271,9 @@ const (
 // fails Bootstrap: a stray sub-agents/*.md must not stop a run that never
 // dispatches it, the rule discoverPersonas already applies. The second
 // value maps each skipped name to its reason, so a subagents key naming one
-// fails with that reason, as on pi (resolveCodexChildModels).
-func codexRoles(skillDirs []string, agentName string) ([]codexRole, map[string]string) {
+// fails with that reason, as on pi (resolveCodexChildModels). version is
+// the collaboration version the gate admitted, which picks the child note.
+func codexRoles(skillDirs []string, agentName, version string) ([]codexRole, map[string]string) {
 	// discoverPersonas never returns a non-nil error; the value exists for
 	// the pi call site's shape.
 	personas, skipped, _ := discoverPersonas(skillDirs, agentName)
@@ -266,9 +282,13 @@ func codexRoles(skillDirs []string, agentName string) ([]codexRole, map[string]s
 		fmt.Fprintf(os.Stderr, "Warning: persona %q skipped: %s\n", sk.Path, sk.Reason)
 		reasons[sk.Name] = sk.Path + ": " + sk.Reason
 	}
+	note := codexChildNote
+	if version == "v2" {
+		note = codexChildNoteV2
+	}
 	roles := []codexRole{
-		{Name: "default", Description: codexDefaultRoleDescription, Instructions: codexChildNote + codexDefaultRoleInstructions},
-		{Name: "explore", Description: codexExploreRoleDescription, Instructions: codexChildNote + codexExploreRoleInstructions},
+		{Name: "default", Description: codexDefaultRoleDescription, Instructions: note + codexDefaultRoleInstructions},
+		{Name: "explore", Description: codexExploreRoleDescription, Instructions: note + codexExploreRoleInstructions},
 	}
 	for _, p := range personas {
 		var reason string
@@ -290,7 +310,7 @@ func codexRoles(skillDirs []string, agentName string) ([]codexRole, map[string]s
 				"(the role's model is its subagents entry, else the run-level child model) and the parent's tools apply\n",
 				p.Name, strings.Join(keys, ", "))
 		}
-		roles = append(roles, codexRole{Name: p.Name, Description: p.Description, Instructions: codexChildNote + p.Body + "\n"})
+		roles = append(roles, codexRole{Name: p.Name, Description: p.Description, Instructions: note + p.Body + "\n"})
 	}
 	slices.SortFunc(roles, func(a, b codexRole) int { return strings.Compare(a.Name, b.Name) })
 	return roles, reasons

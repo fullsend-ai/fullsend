@@ -133,7 +133,7 @@ func TestCodexRoles_BuiltinsAlwaysPresent(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			roles, _ := codexRoles(dirs, "retro")
+			roles, _ := codexRoles(dirs, "retro", "v1")
 			assert.Equal(t, []string{"default", "explore"}, codexRoleNames(roles))
 			for _, r := range roles {
 				assert.NotEmpty(t, r.Description, "%s: the parent sees the description in the spawn tool's role list", r.Name)
@@ -150,7 +150,7 @@ func TestCodexRoles_SkillPersonasSorted(t *testing.T) {
 	writePersonaFile(t, skill, "style", "---\nname: style\ndescription: Style review.\n---\nReview for style.\n")
 	writePersonaFile(t, skill, "correctness", codexTestPersona)
 
-	roles, _ := codexRoles([]string{skill}, "review")
+	roles, _ := codexRoles([]string{skill}, "review", "v1")
 	assert.Equal(t, []string{"correctness", "default", "explore", "style"}, codexRoleNames(roles),
 		"ascending by name, built-ins included; the spawn digest env lists roles in this order")
 	assert.Equal(t, codexRole{
@@ -170,7 +170,7 @@ func TestCodexRoles_DiscoverySkipIsAWarning(t *testing.T) {
 
 	var roles []codexRole
 	var skipped map[string]string
-	out := captureStderr(t, func() { roles, skipped = codexRoles([]string{skill}, "review") })
+	out := captureStderr(t, func() { roles, skipped = codexRoles([]string{skill}, "review", "v1") })
 
 	assert.Equal(t, []string{"default", "explore"}, codexRoleNames(roles))
 	assert.Equal(t, filepath.Join(skill, "sub-agents", "default.md")+": name is reserved", skipped["default"],
@@ -212,7 +212,7 @@ func TestCodexRoles_SkipsInvalidPersonas(t *testing.T) {
 
 			var roles []codexRole
 			var skipped map[string]string
-			out := captureStderr(t, func() { roles, skipped = codexRoles([]string{skill}, "review") })
+			out := captureStderr(t, func() { roles, skipped = codexRoles([]string{skill}, "review", "v1") })
 
 			assert.Equal(t, []string{"default", "explore"}, codexRoleNames(roles))
 			assert.Contains(t, out, tt.wantWarn)
@@ -231,7 +231,7 @@ func TestCodexRoles_DuplicateAcrossSkillsKeepsTheFirst(t *testing.T) {
 	writePersonaFile(t, second, "correctness", "---\nname: correctness\ndescription: Other.\n---\nOther body.\n")
 
 	var roles []codexRole
-	out := captureStderr(t, func() { roles, _ = codexRoles([]string{first, second}, "review") })
+	out := captureStderr(t, func() { roles, _ = codexRoles([]string{first, second}, "review", "v1") })
 
 	assert.Equal(t, []string{"correctness", "default", "explore"}, codexRoleNames(roles))
 	assert.Equal(t, codexChildNote+"# Correctness\n\nYou are a senior software engineer reviewing for correctness.\n", roles[0].Instructions)
@@ -249,7 +249,7 @@ func TestCodexRoles_ReportsDroppedFrontmatter(t *testing.T) {
 	writePersonaFile(t, skill, "clean", "---\nname: clean\ndescription: d\n---\nbody\n")
 
 	var roles []codexRole
-	out := captureStderr(t, func() { roles, _ = codexRoles([]string{skill}, "review") })
+	out := captureStderr(t, func() { roles, _ = codexRoles([]string{skill}, "review", "v1") })
 
 	assert.Contains(t, out, `Codex persona "all-five": frontmatter model, tools, permissionMode, background, maxTurns dropped`)
 	assert.Contains(t, out, `Codex persona "two": frontmatter model, maxTurns dropped`, "fixed order, not file order")
@@ -276,7 +276,7 @@ func TestCodexRoles_DroppedFrontmatterIsTheRegisteredFile(t *testing.T) {
 			registered := t.TempDir()
 			writePersonaFile(t, registered, "correctness", tc.registered)
 
-			out := captureStderr(t, func() { codexRoles([]string{skipped, registered}, "review") })
+			out := captureStderr(t, func() { codexRoles([]string{skipped, registered}, "review", "v1") })
 
 			assert.Contains(t, out, "skipped: frontmatter name")
 			if tc.want == "" {
@@ -324,11 +324,36 @@ func codexDecodeTOML(t *testing.T, data []byte) map[string]any {
 	return doc
 }
 
+// TestCodexRoles_V2ChildNote: on V2 every role opens with codexChildNoteV2,
+// the V1 note with its no-tool sentence replaced by the denial of every
+// multi-agent call (ADR 0159 decision 3), and differs from its V1 role in
+// nothing else.
+func TestCodexRoles_V2ChildNote(t *testing.T) {
+	t.Parallel()
+	skill := t.TempDir()
+	writePersonaFile(t, skill, "correctness", codexTestPersona)
+
+	v1, _ := codexRoles([]string{skill}, "review", "v1")
+	v2, _ := codexRoles([]string{skill}, "review", "v2")
+	require.Len(t, v2, len(v1))
+	for i := range v1 {
+		assert.True(t, strings.HasPrefix(v1[i].Instructions, codexChildNote), v1[i].Name)
+		assert.True(t, strings.HasPrefix(v2[i].Instructions, codexChildNoteV2), v2[i].Name)
+		assert.Equal(t, v1[i], codexRole{Name: v2[i].Name, Description: v2[i].Description,
+			Instructions: codexChildNote + strings.TrimPrefix(v2[i].Instructions, codexChildNoteV2), Model: v2[i].Model},
+			"%s: the note is the only difference", v2[i].Name)
+	}
+	assert.Equal(t, strings.Replace(codexChildNote,
+		"You have no sub-agent tool of your own and cannot dispatch further work.",
+		"Do not spawn, wait on, list, message or interrupt agents; any such call is denied.", 1), codexChildNoteV2)
+	assert.NotEqual(t, codexChildNote, codexChildNoteV2)
+}
+
 func TestCodexRole_TOMLParsesWithTheThreeKeys(t *testing.T) {
 	skill := t.TempDir()
 	writePersonaFile(t, skill, "correctness", codexTestPersona)
 
-	roles, _ := codexRoles([]string{skill}, "review")
+	roles, _ := codexRoles([]string{skill}, "review", "v1")
 	for _, role := range roles {
 		doc := codexDecodeTOML(t, role.toml())
 		assert.Len(t, doc, 3, "%s: name, description, developer_instructions and nothing else", role.Name)
