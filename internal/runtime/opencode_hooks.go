@@ -197,8 +197,11 @@ func openCodeHookEnvExport(cfg *openCodeHookConfig) string {
 	return "export " + openCodeHookConfigEnv + "=" + shellQuote(openCodeHookConfigJSON(cfg))
 }
 
-func openCodeHasHookPlan(cfg *openCodeHookConfig) bool {
-	return cfg != nil && strings.HasPrefix(cfg.Python, "/")
+// openCodeHookInterpreterConfigured reports whether Bootstrap recorded an
+// absolute interpreter path. It does not validate the plan; an empty plan is
+// valid when the harness disables every shared hook stage.
+func openCodeHookInterpreterConfigured(cfg *openCodeHookConfig) bool {
+	return cfg != nil && filepath.IsAbs(cfg.Python)
 }
 
 // OpenCode initializes SDK bookkeeping in its global config as well as the
@@ -214,5 +217,5 @@ func openCodeSDKCacheRestoreFrom(prefix string, configDirs ...string) string {
 		dirs = append(dirs, shellQuote(dir))
 	}
 	return `{ { test -f ` + shellQuote(prefix+"/package.json") + ` && test -f ` + shellQuote(prefix+"/package-lock.json") + ` && test -d ` + shellQuote(prefix+"/node_modules") + `; } || { echo 'fullsend: OpenCode plugin SDK missing; rebuild the sandbox image' >&2; exit 127; }; ` +
-		`for dir in ` + strings.Join(dirs, " ") + `; do command -p rm -rf "$dir/node_modules" && command -p mkdir -p "$dir" && command -p cp ` + shellQuote(prefix+"/package.json") + ` ` + shellQuote(prefix+"/package-lock.json") + ` "$dir/" && command -p ln -s ` + shellQuote(prefix+"/node_modules") + ` "$dir/node_modules" || exit $?; done; }`
+		`for dir in ` + strings.Join(dirs, " ") + `; do command -p rm -rf "$dir/node_modules" && command -p mkdir -p "$dir" && command -p rm -f -- "$dir/package.json" "$dir/package-lock.json" && command -p cp ` + shellQuote(prefix+"/package.json") + ` ` + shellQuote(prefix+"/package-lock.json") + ` "$dir/" && command -p ln -s ` + shellQuote(prefix+"/node_modules") + ` "$dir/node_modules" || exit $?; done; }`
 }

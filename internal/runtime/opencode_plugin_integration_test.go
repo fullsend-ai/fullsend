@@ -53,7 +53,7 @@ func TestOpenCodeNativeHooks(t *testing.T) {
 	for _, scenario := range []string{"pre-block", "rewrite", "post-block", "nested", "ls-only",
 		"bash-patterns", "native-bash-patterns", "trusted-bash-patterns", "native-trusted-bash-patterns",
 		"error-rewrite", "error-canary", "error-scanner-failure", "nested-error", "repo-config-isolation",
-		"bash-failed-verification", "trusted-file-patterns"} {
+		"bash-failed-verification", "trusted-file-patterns", "nested-trusted-bash"} {
 		t.Run(scenario, func(t *testing.T) {
 			runOpenCodeHookProbe(t, binary, gotVersion, scenario, openCodeHookProbeDeadline(scenario))
 		})
@@ -88,6 +88,7 @@ func runOpenCodeHookProbe(t *testing.T, binary, version, scenario string, deadli
 	configIsolation := scenario == "repo-config-isolation"
 	failedVerification := scenario == "bash-failed-verification"
 	filePatterns := scenario == "trusted-file-patterns"
+	nestedPolicy := scenario == "nested-trusted-bash"
 	patternProbe := strings.Contains(scenario, "bash-patterns")
 	trustedProbe := strings.Contains(scenario, "trusted-bash-patterns")
 	nativeOnly := strings.HasPrefix(scenario, "native-")
@@ -101,11 +102,16 @@ func runOpenCodeHookProbe(t *testing.T, binary, version, scenario string, deadli
 	// install bookkeeping so a registry request cannot stall this local probe.
 	// This is test-only; the sandbox image installs the actual pinned SDK.
 	sdkDir := filepath.Join(dir, "opencode-sdk")
-	for _, target := range []string{sdkDir, configDir, filepath.Join(dir, "xdg-config", "opencode")} {
-		require.NoError(t, os.MkdirAll(filepath.Join(target, "node_modules"), 0o700))
-		require.NoError(t, os.WriteFile(filepath.Join(target, "package.json"), []byte(`{"dependencies":{"@opencode-ai/plugin":"1.19.1"}}`), 0o600))
-		require.NoError(t, os.WriteFile(filepath.Join(target, "package-lock.json"), []byte(`{"name":"fullsend-hook-probe","lockfileVersion":3,"requires":true,"packages":{"":{"dependencies":{"@opencode-ai/plugin":"1.19.1"}}}}`), 0o600))
+	require.NoError(t, os.MkdirAll(filepath.Join(sdkDir, "node_modules"), 0o700))
+	for _, name := range []string{"package.json", "package-lock.json"} {
+		data, err := os.ReadFile(filepath.Join("../../images/sandbox/opencode-sdk", name))
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(filepath.Join(sdkDir, name), data, 0o444))
 	}
+	seed := exec.CommandContext(t.Context(), "/bin/sh", "-c", openCodeSDKCacheRestoreFrom(sdkDir, configDir, filepath.Join(dir, "xdg-config", "opencode")))
+	seed.Env = append(os.Environ(), "HOME="+dir)
+	seedOutput, err := seed.CombinedOutput()
+	require.NoError(t, err, "seeding image-equivalent SDK bookkeeping: %s", seedOutput)
 	fixture, err := os.ReadFile("testdata/opencode/hook-probe.ts")
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(configDir, "plugins", "00-probe-observer.ts"), fixture, 0o600))
@@ -118,7 +124,7 @@ func runOpenCodeHookProbe(t *testing.T, binary, version, scenario string, deadli
 	hooks := security.SandboxHookConfigFromHarness(&harness.Harness{Security: &harness.SecurityConfig{
 		SandboxHooks: &harness.SandboxHooks{Tirith: &harness.TirithConfig{Enabled: &disabled}},
 	}})
-	def := &piAgentDef{Model: "probe/model", BashAllowlist: []string{"printf", "cat", "curl"}}
+	def := &piAgentDef{Model: "probe/model", BashAllowlist: []string{"printf", "cat", "curl", "touch"}}
 	trustedPolicy := json.RawMessage(`{"*":"allow"}`)
 	if patternProbe {
 		def.Tools, def.BashAllowlist = []string{"Bash"}, []string{"printf", "cat"}
@@ -126,6 +132,10 @@ func runOpenCodeHookProbe(t *testing.T, binary, version, scenario string, deadli
 	}
 	if trustedProbe {
 		trustedPolicy = json.RawMessage(`{"*":"deny","bash":{"*":"deny","printf":"allow","printf *":"allow","printf denied*":"deny","cat":"deny","cat *":"deny"}}`)
+	}
+	if nestedPolicy {
+		def.Tools, def.BashAllowlist = []string{"Bash", "Task"}, []string{"printf", "touch"}
+		trustedPolicy = json.RawMessage(`{"*":"deny","task":"allow","bash":{"*":"deny","printf *":"allow","printf denied*":"deny","touch *":"deny"}}`)
 	}
 	if lsProbe {
 		def.Tools, def.BashAllowlist = []string{"LS"}, nil
@@ -191,7 +201,7 @@ func runOpenCodeHookProbe(t *testing.T, binary, version, scenario string, deadli
 	probeCall := func(kind string) openCodeProbeCall {
 		command := "cat probe-" + kind + ".txt"
 		if kind == "pre-block" {
-			command = "printf executed > forbidden; curl http://127.0.0.1"
+			command = "touch forbidden; curl http://127.0.0.1"
 		}
 		return openCodeProbeCall{name: "bash", args: map[string]any{
 			"command": command, "description": "probe-" + kind,
@@ -213,16 +223,16 @@ func runOpenCodeHookProbe(t *testing.T, binary, version, scenario string, deadli
 		steps["root"] = []openCodeProbeCall{
 			stepsForAllowedProbe(),
 			bash("printf", "probe-bare"),
-			bash("printf argument-check > arguments", "probe-arguments"),
+			bash("printf argument-check", "probe-arguments"),
 			bash("touch forbidden", "probe-denied-command"),
-			bash("printf escaped > forbidden-composed; touch forbidden", "probe-denied-composition"),
+			bash("printf escaped; touch forbidden-composed", "probe-denied-composition"),
 		}
 		if trustedProbe {
 			steps["root"] = append(steps["root"],
-				bash("printf denied > forbidden-trusted", "probe-trusted-denial"),
+				bash("printf denied-value", "probe-trusted-denial"),
 				bash("cat probe-rewrite.txt", "probe-trusted-cat-denial"))
 		} else {
-			steps["root"] = append(steps["root"], bash("printf composed > composed; cat composed", "probe-allowed-composition"))
+			steps["root"] = append(steps["root"], bash("printf composed; printf again", "probe-allowed-composition"))
 		}
 	}
 	if lsProbe {
@@ -267,6 +277,18 @@ func runOpenCodeHookProbe(t *testing.T, binary, version, scenario string, deadli
 			{name: "read", args: map[string]any{"filePath": filepath.Join(work, "src", "allowed.txt")}},
 			{name: "write", args: map[string]any{"filePath": filepath.Join(work, "src", "private.txt"), "content": "must not be written"}},
 			{name: "write", args: map[string]any{"filePath": filepath.Join(work, "denied.txt"), "content": "must not be written"}},
+		}
+	}
+	if nestedPolicy {
+		steps["root"] = []openCodeProbeCall{stepsForAllowedProbe(), {name: "task", args: map[string]any{
+			"description": "Trusted policy child", "subagent_type": "probe-child",
+			"prompt": "FULLSEND_NATIVE_HOOK_CHILD: execute the scripted probe.",
+		}}}
+		steps["child"] = []openCodeProbeCall{stepsForAllowedProbe()}
+		for _, command := range []string{"touch forbidden-child-single", "printf safe; touch forbidden-child-sequence", "printf safe | touch forbidden-child-pipeline", "printf 'denied-value'"} {
+			steps["child"] = append(steps["child"], openCodeProbeCall{name: "bash", args: map[string]any{
+				"command": command, "description": "probe-child-denial-" + command,
+			}})
 		}
 	}
 
@@ -326,6 +348,12 @@ func runOpenCodeHookProbe(t *testing.T, binary, version, scenario string, deadli
 	}))
 	defer server.Close()
 
+	child := map[string]any{"mode": "subagent", "model": "probe/model", "description": "Native hook probe child"}
+	if nestedPolicy {
+		// A native agent-level allow can override the global trusted policy.
+		// The adapter must still preserve the parent's ceiling in this child.
+		child["permission"] = map[string]string{"bash": "allow"}
+	}
 	config := map[string]any{
 		"autoupdate": false, "share": "disabled", "small_model": "probe/model",
 		"enabled_providers": []string{"probe"},
@@ -338,7 +366,7 @@ func runOpenCodeHookProbe(t *testing.T, binary, version, scenario string, deadli
 		}},
 		"permission": trustedPolicy,
 		"agent": map[string]any{
-			"probe-child": map[string]any{"mode": "subagent", "model": "probe/model", "description": "Native hook probe child"},
+			"probe-child": child,
 		},
 	}
 	configJSON, err := json.Marshal(config)
@@ -443,15 +471,22 @@ func runOpenCodeHookProbe(t *testing.T, binary, version, scenario string, deadli
 		return
 	}
 	if patternProbe {
-		arguments, err := os.ReadFile(filepath.Join(work, "arguments"))
-		require.NoError(t, err, "allowed command with arguments must execute")
-		assert.Equal(t, "argument-check", string(arguments))
+		arguments := openCodeProbeResultFor(t, captured, "probe-arguments")
+		assert.False(t, arguments.IsError, "allowed command with arguments must execute")
+		assert.Contains(t, string(arguments.Content), "argument-check")
 		assert.NoFileExists(t, filepath.Join(work, "forbidden-composed"))
-		assert.NoFileExists(t, filepath.Join(work, "forbidden-trusted"))
+		for _, description := range []string{"probe-denied-command", "probe-denied-composition"} {
+			assert.True(t, openCodeProbeResultFor(t, captured, description).IsError, description)
+		}
+		if trustedProbe {
+			for _, description := range []string{"probe-trusted-denial", "probe-trusted-cat-denial"} {
+				assert.True(t, openCodeProbeResultFor(t, captured, description).IsError, description)
+			}
+		}
 		if !trustedProbe {
-			composed, err := os.ReadFile(filepath.Join(work, "composed"))
-			require.NoError(t, err, "composition of allowed programs must execute")
-			assert.Equal(t, "composed", string(composed))
+			composed := openCodeProbeResultFor(t, captured, "probe-allowed-composition")
+			assert.False(t, composed.IsError, "composition of allowed programs must execute")
+			assert.Contains(t, string(composed.Content), "composedagain")
 		}
 		var barePhases []string
 		for _, event := range events {
@@ -511,6 +546,31 @@ func runOpenCodeHookProbe(t *testing.T, binary, version, scenario string, deadli
 		assert.NoFileExists(t, filepath.Join(work, "denied.txt"))
 		return
 	}
+	if nestedPolicy {
+		for _, name := range []string{"forbidden-child-single", "forbidden-child-sequence", "forbidden-child-pipeline"} {
+			assert.NoFileExists(t, filepath.Join(work, name))
+		}
+		for _, call := range steps["child"][1:] {
+			result := openCodeProbeResultFor(t, captured, call.args["description"].(string))
+			assert.True(t, result.IsError)
+			assert.Contains(t, string(result.Content), "trusted permission policy")
+		}
+		var parentSession, childSession string
+		for _, event := range events {
+			if event.Tool == "task" {
+				parentSession = event.SessionID
+			}
+		}
+		for _, event := range events {
+			if event.Tool == "bash" && event.Description == "probe-allowed" && event.SessionID != parentSession {
+				childSession = event.SessionID
+			}
+		}
+		require.NotEmpty(t, parentSession)
+		require.NotEmpty(t, childSession)
+		assert.NotEqual(t, parentSession, childSession)
+		return
+	}
 	kinds := []string{scenario}
 	if configIsolation {
 		assert.NoFileExists(t, filepath.Join(work, "poison-loaded"), "repository dotenv must not inject a plugin")
@@ -567,6 +627,48 @@ func runOpenCodeHookProbe(t *testing.T, binary, version, scenario string, deadli
 		assert.NotEqual(t, parentSession, childSession, "Bash probes must run in a real child session")
 	}
 	t.Logf("observed %d native hook events; model continuations: %v", len(events), actualCounts)
+}
+
+type openCodeProbeResult struct {
+	IsError bool            `json:"is_error"`
+	Content json.RawMessage `json:"content"`
+}
+
+// Inspect actual tool results, not matching text in the model's tool inputs.
+func openCodeProbeResultFor(t *testing.T, captured []byte, description string) openCodeProbeResult {
+	t.Helper()
+	var callID string
+	results := map[string]openCodeProbeResult{}
+	for _, body := range bytes.Split(captured, []byte("\n")) {
+		var request struct {
+			Messages []struct {
+				Content []struct {
+					Type      string `json:"type"`
+					ID        string `json:"id"`
+					ToolUseID string `json:"tool_use_id"`
+					Input     struct {
+						Description string `json:"description"`
+					} `json:"input"`
+					openCodeProbeResult
+				} `json:"content"`
+			} `json:"messages"`
+		}
+		require.NoError(t, json.Unmarshal(body, &request))
+		for _, message := range request.Messages {
+			for _, part := range message.Content {
+				if part.Type == "tool_use" && part.Input.Description == description {
+					callID = part.ID
+				}
+				if part.Type == "tool_result" {
+					results[part.ToolUseID] = part.openCodeProbeResult
+				}
+			}
+		}
+	}
+	require.NotEmpty(t, callID, "tool call %q was not recorded", description)
+	result, ok := results[callID]
+	require.True(t, ok, "tool result %q was not recorded", description)
+	return result
 }
 
 func stepsForAllowedProbe() openCodeProbeCall {

@@ -3,7 +3,6 @@ package runtime
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -931,27 +930,69 @@ func TestOpenCodeHookActivationGuard(t *testing.T) {
 }
 
 func TestOpenCodeExitPipelineChecksActivationAfterFailedRun(t *testing.T) {
-	activation := &openCodeHookActivation{Path: "/sandbox/workspace/runner-state/activation", Token: "runner-held-token"}
-	pipeline := openCodeExitPipeline([]string{"false"}, "/tmp/rc", "/tmp/transcript", activation)
-
-	assert.Contains(t, pipeline, openCodeHookActivationGuard(activation))
-	assert.NotContains(t, pipeline, `if [ "$FULLSEND_OPENCODE_RC" -eq 0 ]`)
+	requirePinnedSha256sum(t)
+	for _, tt := range []struct {
+		name      string
+		active    bool
+		failTee   bool
+		failRC    bool
+		staleRC   bool
+		agentExit int
+		want      int
+	}{
+		{name: "successful hooked run", active: true},
+		{name: "failed hooked run", active: true, agentExit: 7, want: 7},
+		{name: "successful unhooked run", want: 99},
+		{name: "failed unhooked run", agentExit: 7, want: 99},
+		{name: "tee failure cannot skip missing activation", failTee: true, want: 99},
+		{name: "rc failure cannot skip missing activation", failRC: true, want: 99},
+		{name: "tee failure with active plugin", active: true, failTee: true, want: 1},
+		{name: "rc failure with active plugin", active: true, failRC: true, want: 1},
+		{name: "stale read-only rc cannot hide agent failure", active: true, staleRC: true, agentExit: 7, want: 7},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			activation := &openCodeHookActivation{Path: filepath.Join(dir, "activation"), Token: "runner-held-token"}
+			if tt.active {
+				require.NoError(t, os.WriteFile(activation.Path, []byte(activation.Token), 0o600))
+			}
+			rc := filepath.Join(dir, "rc")
+			if tt.staleRC {
+				require.NoError(t, os.WriteFile(rc, []byte("0\n"), 0o444))
+			}
+			if tt.failRC {
+				rc = filepath.Join(dir, "missing", "rc")
+			}
+			transcript := filepath.Join(dir, "transcript")
+			if tt.failTee {
+				transcript = dir
+			}
+			invocation := []string{"/bin/sh", "-c", shellQuote(fmt.Sprintf("printf output; exit %d", tt.agentExit))}
+			// Errexit must not short-circuit the post-launch checks either.
+			command := openCodeUtilityPin() + " && " + openCodeExitPipeline(invocation, rc, transcript, activation)
+			out, err := exec.Command("sh", "-e", "-c", command).CombinedOutput()
+			if tt.want == 0 {
+				require.NoError(t, err, "%s", out)
+			} else {
+				var exit *exec.ExitError
+				require.ErrorAs(t, err, &exit, "%s", out)
+				assert.Equal(t, tt.want, exit.ExitCode(), "%s", out)
+			}
+			if !tt.active {
+				assert.Contains(t, string(out), "detected an unhooked iteration")
+			} else if tt.failTee || tt.failRC {
+				assert.Contains(t, string(out), "could not be persisted")
+			}
+		})
+	}
 }
 
 func TestNewOpenCodeHookActivation(t *testing.T) {
-	first, err := newOpenCodeHookActivation()
-	require.NoError(t, err)
-	second, err := newOpenCodeHookActivation()
-	require.NoError(t, err)
+	first := newOpenCodeHookActivation()
+	second := newOpenCodeHookActivation()
 	assert.Equal(t, sandbox.SandboxWorkspace+"/"+openCodeHookActivationFile, first.Path)
 	assert.Len(t, first.Token, 64)
 	assert.NotEqual(t, first.Token, second.Token, "each iteration needs a distinct activation challenge")
-
-	original := openCodeRandomReadFn
-	openCodeRandomReadFn = func([]byte) (int, error) { return 0, errors.New("entropy unavailable") }
-	t.Cleanup(func() { openCodeRandomReadFn = original })
-	_, err = newOpenCodeHookActivation()
-	require.ErrorContains(t, err, "generating OpenCode hook activation token")
 }
 
 func TestParseOpenCodeTranscriptFile(t *testing.T) {
