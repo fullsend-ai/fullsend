@@ -131,10 +131,11 @@ func nonzeroFallback(fb Fallback) Fallback {
 // and https are accepted. Ports lose leading zeros (an all-zero port stays
 // :0) and must fit 16 bits; empty and default ports are then removed.
 // Trailing DNS root dots are stripped, hosts must be ASCII (punycode for
-// IDNs), and IPv6 hosts take their RFC 5952 form without a zone
-// identifier. Path segments and escape spelling are preserved so distinct
-// deployments cannot alias; a path mixing percent-escapes with characters
-// that still need escaping rejects. All identity and envelope construction
+// IDNs), and IPv6 hosts take their RFC 5952 section 4 form, with
+// IPv4-mapped addresses in mixed notation, and no zone identifier. Path
+// segments and escape spelling are preserved so distinct deployments
+// cannot alias; a path mixing percent-escapes with characters that still
+// need escaping rejects. All identity and envelope construction
 // must use the normalized form so independent launches converge.
 func NormalizeInstance(raw string) (string, error) {
 	if !utf8.ValidString(raw) {
@@ -182,7 +183,8 @@ func NormalizeInstance(raw string) (string, error) {
 	if host == "" {
 		return "", errors.New("tracecontext: instance URL needs a host")
 	}
-	// One IPv6 address has one spelling: use its RFC 5952 form.
+	// One IPv6 address has one spelling: use its RFC 5952 section 4 form,
+	// with IPv4-mapped addresses in mixed notation.
 	if addr, err := netip.ParseAddr(u.Hostname()); err == nil && addr.Is6() {
 		host = "[" + addr.String() + "]"
 	}
