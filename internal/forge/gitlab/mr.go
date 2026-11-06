@@ -243,6 +243,11 @@ func (c *LiveClient) GetPullRequestInfo(ctx context.Context, owner, repo string,
 	}, nil
 }
 
+// GetPullRequestAuthorizationContext is not supported on GitLab (e2e gate is GitHub-only).
+func (c *LiveClient) GetPullRequestAuthorizationContext(_ context.Context, _, _ string, _ int) (*forge.PullRequestAuthorizationContext, error) {
+	return nil, forge.ErrNotSupported
+}
+
 // GetPullRequestHeadSHA returns the current HEAD commit SHA of a merge request.
 func (c *LiveClient) GetPullRequestHeadSHA(ctx context.Context, owner, repo string, number int) (string, error) {
 	path := fmt.Sprintf("/projects/%s/merge_requests/%d", projectPath(owner, repo), number)
