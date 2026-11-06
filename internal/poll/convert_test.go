@@ -2,6 +2,7 @@ package poll
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -458,15 +459,10 @@ func TestToNormalizedEvent_MREventClosed(t *testing.T) {
 	}
 }
 
-func TestToNormalizedEvent_MREventClosedActorFallback(t *testing.T) {
-	// A human closes a bot-authored MR and GitLab omits closed_by: the
-	// closed event carries empty NoteAuthor* (see discoverAllEvents), so
-	// toNormalizedEvent falls back to the MR author to resolve the actor.
-	// The MR author is the bot, so Actor.Kind is "bot", but routeMerge has
-	// no actor-kind gate — retro (read-only) still runs. This pins the
-	// closed-specific fallback so a future refactor splitting the shared
-	// "opened"/"closed" branch cannot silently regress #7322's
-	// human-rejects-the-agent's-work path.
+func TestToNormalizedEvent_MREventClosedWithoutCloserFailsClosed(t *testing.T) {
+	// A human closes an MR but GitLab omits closed_by. The MR author must
+	// not be substituted for the closer, or their Developer membership
+	// could authorize a retro they did not trigger.
 	mc := newMockClient()
 	mc.memberLevel[100] = 40 // Maintainer -> "maintain"
 	mc.projectPaths[1] = "group/project"
@@ -486,21 +482,33 @@ func TestToNormalizedEvent_MREventClosedActorFallback(t *testing.T) {
 		TargetBranch:  "main",
 	}
 
-	ne, authorID, err := p.toNormalizedEvent(context.Background(), event)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if _, _, err := p.toNormalizedEvent(context.Background(), event); !errors.Is(err, errMissingMRCloserIdentity) {
+		t.Fatalf("toNormalizedEvent error = %v, want missing closer identity", err)
 	}
-	if authorID != 100 {
-		t.Errorf("authorID = %d, want 100 (MR author fallback)", authorID)
+}
+
+func TestToNormalizedEvent_MREventMergedWithoutMergerFailsClosed(t *testing.T) {
+	tests := []struct {
+		name          string
+		noteAuthorID  int
+		mergedByLogin string
+	}{
+		{name: "missing merger ID", mergedByLogin: "merger-user"},
+		{name: "missing merger login", noteAuthorID: 42},
 	}
-	if ne.Actor.ID != "fullsend-bot" {
-		t.Errorf("Actor.ID = %q, want %q (MR author fallback)", ne.Actor.ID, "fullsend-bot")
-	}
-	if ne.Actor.Kind != "bot" {
-		t.Errorf("Actor.Kind = %q, want %q (MR author is the bot)", ne.Actor.Kind, "bot")
-	}
-	if ne.Transition.Kind != "closed" {
-		t.Errorf("Transition.Kind = %q, want %q", ne.Transition.Kind, "closed")
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			p := newEventsPoller(newMockClient())
+			event := RoutableEvent{
+				Type:          "mr_event",
+				NoteAuthorID:  tc.noteAuthorID,
+				MergedByLogin: tc.mergedByLogin,
+			}
+
+			if _, _, err := p.toNormalizedEvent(context.Background(), event); !errors.Is(err, errMissingMRMergerIdentity) {
+				t.Fatalf("toNormalizedEvent error = %v, want missing merger identity", err)
+			}
+		})
 	}
 }
 

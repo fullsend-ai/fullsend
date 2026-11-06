@@ -45,6 +45,9 @@ func registerActorSteps(sc *godog.ScenarioContext) {
 	sc.Step(actorOpensPullRequestPattern, func(ctx context.Context, actor, linked string) (context.Context, error) {
 		return ctx, whenActorOpensPullRequest(world.FromContext(ctx), actor, linked != "")
 	})
+	sc.Step(`^the write actor closes the pull request$`, func(ctx context.Context) (context.Context, error) {
+		return ctx, whenActorClosesPullRequest(world.FromContext(ctx), actorWrite)
+	})
 	sc.Step(`^the (`+actorAlternation+`) posts "([^"]+)" on the pull request$`, func(ctx context.Context, actor, body string) (context.Context, error) {
 		return ctx, whenActorPostsPRComment(world.FromContext(ctx), actor, body)
 	})
@@ -183,6 +186,19 @@ func whenActorSubmitsReviewComment(w *world.World, actor string) error {
 	w.ScenarioStart = time.Now().Truncate(time.Second)
 	return actorSCM.SubmitPullRequestReview(context.Background(),
 		w.RepoOwner, w.RepoName, w.PRNumber, "COMMENT")
+}
+
+// whenActorClosesPullRequest closes the scenario PR using the named actor's PAT.
+func whenActorClosesPullRequest(w *world.World, actor string) error {
+	actorSCM, _, err := actorIdentity(w, actor)
+	if err != nil {
+		return err
+	}
+	if w.PRNumber == 0 {
+		return fmt.Errorf("no pull request opened")
+	}
+	w.ScenarioStart = time.Now().Truncate(time.Second)
+	return actorSCM.CloseIssue(context.Background(), w.RepoOwner, w.RepoName, w.PRNumber)
 }
 
 // whenActorOpensPullRequest opens a pull request as the named test actor,

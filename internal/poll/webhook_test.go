@@ -514,6 +514,7 @@ func TestBuildWebhookEvents_MergeRequest(t *testing.T) {
 		mr.ClosedAt = recent
 		mr.MergeUser = bob
 		mc.mr[3] = mr
+		mc.memberLevel[bob.ID] = 30
 		p := newWebhookPoller(mc)
 		got, err := p.BuildWebhookEvents(context.Background(), mrPayload(t, "merge", bob.ID, 3, nil))
 		if err != nil {
@@ -533,6 +534,7 @@ func TestBuildWebhookEvents_MergeRequest(t *testing.T) {
 		mr.ClosedAt = recent
 		mr.ClosedBy = bob
 		mc.mr[3] = mr
+		mc.memberLevel[bob.ID] = 30
 		p := newWebhookPoller(mc)
 		got, err := p.BuildWebhookEvents(context.Background(), mrPayload(t, "close", bob.ID, 3, nil))
 		if err != nil {

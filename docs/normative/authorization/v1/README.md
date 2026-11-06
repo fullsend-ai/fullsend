@@ -223,17 +223,24 @@ The bash dispatch implementation uses a parameterized
 > webhook routing do not use `harnessdispatch`: `dispatch.HarnessRouter`
 > gates slash commands per stage (triage and review at `triage`, other stages
 > at `write`) and label routes at `write`, and the agent job then requires
-> Developer access for every stage except retro and prioritize. The one
-> exception to that agent-job check is Jira work items dispatched to GitLab
-> (`jira_*` events): the Jira poller authorizes the actor by Jira project role
+> Developer access for every stage except prioritize. GitLab merge and close
+> routes also require the normalized actor role to meet `write`; the job's
+> live Developer-access check independently enforces the same threshold. The
+> one exception to that agent-job check is Jira work items dispatched to
+> GitLab (`jira_*` events): the Jira poller authorizes the actor by Jira project role
 > during polling, and the agent job skips the Developer-access check for these
 > signed events. The bash path (GitHub webhook
 > dispatch) applies the same thresholds per stage through
 > `has_repo_permission`.
-> Among the Go paths, only `fullsend dispatch --route retro` applies the
-> lifecycle-close exception; the bash path applies it for every closer and
-> CEL harness dispatch does not (see
-> [Lifecycle close](#lifecycle-close-pull_request_targetclosed)).
+> On GitHub, the bash route and `fullsend dispatch --route retro` both require
+> write access from the actor who closed or merged the pull request. The same
+> rule applies to merge-queue events. GitHub App and bot senders have `role:
+> none`, so their close or merge events, including bot automerges through a
+> merge queue, do not start retro. A write-authorized user can run `/fs-retro`
+> afterward. The retro role's ordinary threshold is write; a failed permission
+> lookup denies dispatch. If CEL
+> routing fails for a close event, the workflow skips retro rather than
+> falling back to the bash stage.
 
 ## Fail-closed behavior
 
@@ -330,22 +337,36 @@ bot and resolves its exact registered `actor.bot_role`; `actor.role` remains
 `none`. The downstream harness CEL trigger may further constrain which bot
 role and review state are accepted.
 
-### Lifecycle close (pull\_request\_target.closed)
+### Closed pull request retro (pull\_request\_target.closed)
 
-The `pull_request_target.closed` event that triggers the retro stage is
-intentionally ungated: any closer may trigger read-only lifecycle
-accounting. The retro agent performs only observation work and does not
-mutate repository state. This exception is implemented in the bash
-dispatch path and, on GitHub, by `fullsend dispatch --route retro`
-(`IsLifecycleCloseAuthorized()` in `harnessdispatch`), which admits a
-`pull_request_target` close, merged or not, whoever closed it, for the
-retro role only. Any pull request author can close their own pull request,
-so no other harness role gets the exception. The route applies it only when
-routing retro, keyed on the resolved harness `role: retro`; when the harness
-cannot be loaded, it is keyed on the routed agent's own role (the Retro job
-mints the retro role either way). CEL harness dispatch has no
-special handling for closed transitions: the retro harness role resolves to
-the `write` threshold there.
+A closed pull request may trigger retro only when the closing actor meets the
+standard write-level permission threshold. The bash dispatch path checks the
+event sender's repository permission; the GitHub CEL route applies a fixed
+write floor before the ordinary event and harness authorization gates. A
+custom retro harness role cannot lower this floor. Merge-queue merges follow
+the same rule: the event sender must have write-level repository permission.
+Other automated merge or close senders without write-level repository
+permission are denied, and a write-authorized user can start retro afterward
+with `/fs-retro`.
+Permission lookup failures deny dispatch. If CEL opt-in, configuration, or
+route evaluation fails for a close event, the workflow clears the Bash stage
+and skips retro. With no CEL route candidate, the authorized Bash route runs
+as usual.
+
+GitLab merged and closed merge requests use the same write threshold. The
+poller resolves the actor's project role before routing, and the agent job
+checks Developer membership before running retro. A role or membership lookup
+failure denies dispatch. If GitLab does not provide the closer identity, the
+poller observes the event without dispatch or a poll failure, and never
+substitutes the merge request author.
+
+The GitHub `/fs-retro` command also requires the fixed write threshold,
+regardless of a lower role declared by the retro harness. CEL cannot promote
+the command to a retro run when the Bash route denied the actor.
+
+Retro can post comments, create issues, and apply labels through its
+repository token, so closing a pull request is treated as a mutation-capable
+dispatch rather than read-only lifecycle accounting.
 
 ### Schedule and manual dispatch
 

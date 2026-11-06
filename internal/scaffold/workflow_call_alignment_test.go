@@ -1229,8 +1229,8 @@ func TestDispatchPerStageAuthorization(t *testing.T) {
 			assert.NotRegexp(t, `(?s)ready-to-code".*is_event_actor_authorized "\$\{EVENT_SENDER_LOGIN\}" triage`, s,
 				"ready-to-code must not accept triage min on the mutation path")
 
-			// Retro on PR close remains intentionally ungated (documented)
-			assert.Regexp(t, `(?s)closed\)\s*\n\s+# Intentional ungated:.*\n\s+STAGE="retro"`, s)
+			// Retro on PR close uses the standard write gate on the closing actor.
+			assert.Regexp(t, `(?s)closed\)\s*\n\s+# Retro can write.*\n\s+if is_event_actor_authorized "\$\{EVENT_SENDER_LOGIN\}"; then\s*\n\s+STAGE="retro"`, s)
 
 			// OWNERS role→permission mapping: approvers in write|triage arm,
 			// reviewers in triage-only arm, connected by ;;&  (pattern-retest).
