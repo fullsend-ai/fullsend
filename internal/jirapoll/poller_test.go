@@ -725,6 +725,53 @@ func TestDetectChanges_EditedCommentAttributedToEditor(t *testing.T) {
 	}
 }
 
+// TestDetectChanges_CarriesAssignee checks that opened, comment and
+// changelog events carry the issue's assignee for the
+// actor.is_entity_assignee check.
+func TestDetectChanges_CarriesAssignee(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	ts := now.Add(-time.Minute).Format("2006-01-02T15:04:05.000-0700")
+	mc := newMockClient()
+	mc.comments["PROJ-123"] = []jira.Comment{
+		{ID: "1", Body: "/fs-code", Created: ts, Author: jira.User{AccountID: "assignee-a"}},
+	}
+	mc.changelog["PROJ-123"] = []jira.ChangelogEntry{
+		{
+			ID:      "100",
+			Created: ts,
+			Author:  jira.User{AccountID: "assignee-a"},
+			Items:   []jira.ChangeItem{{Field: "labels", ToString: "ready-to-code"}},
+		},
+	}
+
+	p := New(mc, nil, Options{TargetRepo: "acme/platform", JiraBaseURL: "https://acme.atlassian.net", JiraProject: "PROJ"})
+	issue := jira.Issue{
+		ID:  "10042",
+		Key: "PROJ-123",
+		Fields: jira.IssueFields{
+			Reporter: jira.User{AccountID: "reporter-r"},
+			Assignee: jira.User{AccountID: "assignee-a"},
+			Created:  ts,
+		},
+	}
+	result, err := p.detectChanges(context.Background(), issue, time.Time{})
+	if err != nil {
+		t.Fatalf("detectChanges() error: %v", err)
+	}
+	types := map[string]bool{}
+	for _, e := range result.events {
+		types[e.Type] = true
+		if e.Assignee.AccountID != "assignee-a" {
+			t.Errorf("%s event Assignee = %q, want assignee-a", e.Type, e.Assignee.AccountID)
+		}
+	}
+	for _, want := range []string{"opened", "comment_added", "label_changed"} {
+		if !types[want] {
+			t.Errorf("expected a %s event, got %v", want, types)
+		}
+	}
+}
+
 // TestReadLastCheck_ClampsUntrustedValues: lastCheck is attacker-writable,
 // so a future value is treated as unset (bounded first-poll path) and a
 // value older than the backfill window is floored.

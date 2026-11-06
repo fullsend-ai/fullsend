@@ -389,6 +389,44 @@ Otherwise, add a harness override with a Jira `trigger` expression for each
 agent that should handle Jira events (see step 6 and
 [Configuring agent behavior](customizing-agents.md#configuration-with-base-composition)).
 
+### Letting the assignee start Code
+
+The developer who works a Jira issue is usually its **assignee**, while a
+product manager, QE engineer or partner is often the **reporter**. By default
+any human with the required role can start Code with `/fs-code`. To accept
+`/fs-code` only from the reporter or the assignee, override the code
+harness's `trigger` and test `event.actor.is_entity_author` (the reporter)
+and `event.actor.is_entity_assignee` (the current assignee).
+
+**`harness/code.yaml`:**
+
+```yaml
+base: https://raw.githubusercontent.com/fullsend-ai/agents/<sha>/harness/code.yaml#sha256=abc...
+
+trigger: >
+  event.entity.kind == "work_item"
+    && !has(event.entity.linked_change_proposal)
+    && event.source.system in ["github", "gitlab", "jira"]
+    && ((event.transition.kind == "comment_added"
+        && has(event.transition.comment.command)
+        && event.transition.comment.command == "/fs-code"
+        && event.actor.kind == "human"
+        && (event.actor.is_entity_author || event.actor.is_entity_assignee))
+      || (event.transition.kind == "label_changed"
+        && event.transition.label.name == "ready-to-code"
+        && event.transition.label.action == "added"))
+```
+
+Register it with `name: code` and `source: harness/code.yaml` under `agents:`
+in `.fullsend/config.yaml`. A child `trigger` replaces the base trigger, so
+the expression above copies the default code trigger and adds the
+author-or-assignee clause to its `/fs-code` arm. The `ready-to-code` label arm
+is unchanged, because triage applies that label when it promotes an issue.
+
+The clause only narrows who can start Code. The actor still needs the role
+that [Actor role resolution](#actor-role-resolution) assigns, and anyone with
+permission to assign issues can assign themselves.
+
 ## Scheduled workflow
 
 1. Create `.github/workflows/fullsend-poll-jira.yml` with the following content:
@@ -761,7 +799,8 @@ The `event_payload` field is a JSON-encoded [NormalizedEvent](../../normative/no
     "id": "5f7c012e0b2a4c001f3d9876",
     "kind": "human",
     "role": "write",
-    "is_entity_author": false
+    "is_entity_author": false,
+    "is_entity_assignee": false
   },
   "state": {
     "labels": ["bug", "fullsend"]

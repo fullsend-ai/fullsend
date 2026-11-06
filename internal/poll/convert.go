@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -134,8 +135,9 @@ func (p *Poller) toNormalizedEvent(ctx context.Context, event RoutableEvent) (di
 		Role: role,
 	}
 
-	// Best-effort: determine if the actor authored the entity.
-	ne.Actor.IsEntityAuthor = p.isEntityAuthor(ctx, event, authorID)
+	// Best-effort: determine if the actor authored, or is assigned to, the
+	// entity.
+	ne.Actor.IsEntityAuthor, ne.Actor.IsEntityAssignee = p.entityRelation(ctx, event, authorID)
 
 	// For MR events, populate ChangeProposalState.
 	if event.Type == "mr_note" || event.Type == "mr_event" {
@@ -333,22 +335,40 @@ func entityURL(gitlabURL, projectPath, eventType string, iid int) string {
 	}
 }
 
-// isEntityAuthor determines whether the actor is the author of the entity.
-// It uses a best-effort approach, returning false if the author cannot be
+// entityRelation determines whether the actor is the author of the entity
+// and whether the actor is one of its current assignees. Issues share one
+// GetIssue call; MRs read the author and assignees carried on the event from
+// the MR object. It is best-effort: either result is false when it cannot be
 // determined.
-func (p *Poller) isEntityAuthor(ctx context.Context, event RoutableEvent, actorID int) bool {
+func (p *Poller) entityRelation(ctx context.Context, event RoutableEvent, actorID int) (isAuthor, isAssignee bool) {
 	switch event.Type {
 	case "issue_label", "issue_note", "issue_event":
 		issue, err := p.client.GetIssue(ctx, p.owner, p.repo, event.IID)
 		if err != nil {
-			return false
+			return false, false
 		}
-		return issue.Author.ID == actorID
+		return issue.Author.ID == actorID, containsID(userIDs(issue.Assignees), actorID)
 	case "mr_note", "mr_event":
-		return event.MRAuthorID != 0 && event.MRAuthorID == actorID
+		return event.MRAuthorID != 0 && event.MRAuthorID == actorID, containsID(event.MRAssigneeIDs, actorID)
 	default:
-		return false
+		return false, false
 	}
+}
+
+// userIDs returns the non-zero IDs of refs, or nil when there are none.
+func userIDs(refs []UserRef) []int {
+	var ids []int
+	for _, r := range refs {
+		if r.ID != 0 {
+			ids = append(ids, r.ID)
+		}
+	}
+	return ids
+}
+
+// containsID reports whether id is a non-zero member of ids.
+func containsID(ids []int, id int) bool {
+	return id != 0 && slices.Contains(ids, id)
 }
 
 // buildChangeProposalState populates the ChangeProposalState for MR events

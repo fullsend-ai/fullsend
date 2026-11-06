@@ -1,10 +1,14 @@
 package harness
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/fullsend-ai/fullsend/internal/normevent"
 )
 
 func TestValidateTriggerExpression(t *testing.T) {
@@ -34,6 +38,69 @@ func TestEvaluateTrigger(t *testing.T) {
 	ok, err = EvaluateTrigger(expr, event)
 	require.NoError(t, err)
 	assert.False(t, ok)
+}
+
+// TestEvaluateTrigger_AuthorOrAssignee checks the documented opt-in trigger
+// that lets the author or the assignee start Code: it matches the author and
+// the assignee and rejects a third write-role user. Events are built through
+// normevent.Event.ToMap, the path dispatch uses, so a fixture that predates
+// is_entity_assignee still evaluates (to false) instead of failing on a
+// missing key.
+func TestEvaluateTrigger_AuthorOrAssignee(t *testing.T) {
+	const expr = `event.entity.kind == "work_item"
+		&& event.transition.kind == "comment_added"
+		&& has(event.transition.comment.command)
+		&& event.transition.comment.command == "/fs-code"
+		&& event.actor.kind == "human"
+		&& (event.actor.is_entity_author || event.actor.is_entity_assignee)`
+	require.NoError(t, ValidateTriggerExpression(expr))
+
+	commentBy := func(id string, author, assignee bool) map[string]any {
+		ev := normevent.Event{
+			Repo:       "o/r",
+			Entity:     normevent.Entity{Kind: normevent.EntityWorkItem, ID: 1, URL: "https://github.com/o/r/issues/1"},
+			Transition: normevent.Transition{Kind: normevent.TransitionCommentAdded, Comment: &normevent.Comment{Command: "/fs-code", Body: "/fs-code"}},
+			Actor:      normevent.Actor{ID: id, Kind: normevent.ActorHuman, Role: normevent.RoleWrite, IsEntityAuthor: author, IsEntityAssignee: assignee},
+			State:      normevent.State{Labels: []string{}},
+			Source:     normevent.Source{System: normevent.SystemGitHub, RawType: "issue_comment"},
+		}
+		require.NoError(t, ev.Validate())
+		m, err := ev.ToMap()
+		require.NoError(t, err)
+		return m
+	}
+
+	for _, tc := range []struct {
+		name  string
+		event map[string]any
+		want  bool
+	}{
+		{"author", commentBy("pm", true, false), true},
+		{"assignee", commentBy("dev", false, true), true},
+		{"third write-role user", commentBy("carol", false, false), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ok, err := EvaluateTrigger(expr, tc.event)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, ok)
+		})
+	}
+
+	t.Run("legacy fixture without the field", func(t *testing.T) {
+		data, err := os.ReadFile(filepath.Join("..", "..", "docs", "normative", "normalized-event", "v1", "examples", "fs-fix-comment.json"))
+		require.NoError(t, err)
+		require.NotContains(t, string(data), "is_entity_assignee")
+		ev, err := normevent.ParseJSON(data)
+		require.NoError(t, err)
+		ev.Entity.LinkedChangeProposal = nil
+		ev.State.ChangeProposal = nil
+		ev.Transition.Comment.Command = "/fs-code"
+		m, err := ev.ToMap()
+		require.NoError(t, err)
+		ok, err := EvaluateTrigger(expr, m)
+		require.NoError(t, err)
+		assert.False(t, ok)
+	})
 }
 
 func TestEvaluateOverlay_RuntimeForge(t *testing.T) {

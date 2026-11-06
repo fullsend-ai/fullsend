@@ -296,6 +296,7 @@ func (p *Poller) discoverAllEvents(ctx context.Context, owner, repo string, sinc
 				TargetBranch:    mr.TargetBranch,
 				MRAuthorID:      mr.Author.ID,
 				MRAuthorLogin:   mr.Author.Username,
+				MRAssigneeIDs:   userIDs(mr.Assignees),
 			})
 		}
 
@@ -315,6 +316,7 @@ func (p *Poller) discoverAllEvents(ctx context.Context, owner, repo string, sinc
 				TargetBranch:    mr.TargetBranch,
 				MRAuthorID:      mr.Author.ID,
 				MRAuthorLogin:   mr.Author.Username,
+				MRAssigneeIDs:   userIDs(mr.Assignees),
 				MergedByLogin:   mergedBy.Username,
 			})
 		}
@@ -358,6 +360,7 @@ func (p *Poller) discoverAllEvents(ctx context.Context, owner, repo string, sinc
 				TargetBranch:    mr.TargetBranch,
 				MRAuthorID:      mr.Author.ID,
 				MRAuthorLogin:   mr.Author.Username,
+				MRAssigneeIDs:   userIDs(mr.Assignees),
 			})
 		}
 
@@ -397,6 +400,7 @@ func (p *Poller) discoverAllEvents(ctx context.Context, owner, repo string, sinc
 					TargetBranch:    mr.TargetBranch,
 					MRAuthorID:      mr.Author.ID,
 					MRAuthorLogin:   mr.Author.Username,
+					MRAssigneeIDs:   userIDs(mr.Assignees),
 				})
 			}
 		}
@@ -434,6 +438,7 @@ func (p *Poller) discoverAllEvents(ctx context.Context, owner, repo string, sinc
 				TargetBranch:    mr.TargetBranch,
 				MRAuthorID:      mr.Author.ID,
 				MRAuthorLogin:   mr.Author.Username,
+				MRAssigneeIDs:   userIDs(mr.Assignees),
 			})
 		}
 	}
@@ -496,6 +501,7 @@ func (p *Poller) discoverSlashCommands(ctx context.Context, owner, repo string, 
 			re.TargetBranch = mr.TargetBranch
 			re.MRAuthorID = mr.Author.ID
 			re.MRAuthorLogin = mr.Author.Username
+			re.MRAssigneeIDs = userIDs(mr.Assignees)
 			re.Labels = mr.Labels
 		}
 

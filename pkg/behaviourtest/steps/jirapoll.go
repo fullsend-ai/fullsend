@@ -48,10 +48,11 @@ func (m *routerMatcher) Match(_ context.Context, event *normevent.Event) ([]jira
 			Kind: string(event.Transition.Kind),
 		},
 		Actor: dispatch.Actor{
-			ID:             event.Actor.ID,
-			Kind:           string(event.Actor.Kind),
-			Role:           string(event.Actor.Role),
-			IsEntityAuthor: event.Actor.IsEntityAuthor,
+			ID:               event.Actor.ID,
+			Kind:             string(event.Actor.Kind),
+			Role:             string(event.Actor.Role),
+			IsEntityAuthor:   event.Actor.IsEntityAuthor,
+			IsEntityAssignee: event.Actor.IsEntityAssignee,
 		},
 		State: dispatch.State{
 			Labels: event.State.Labels,
