@@ -570,6 +570,13 @@ reset=2026-10-25T18:00:00Z resource=core)`, or `quota unknown` before the
 org's client has seen rate-limit headers — and the composed driver repeats
 the summary on its `[driver] allocated` and `[driver] deallocated` lines
 ([`composed.go`](../../../pkg/behaviourtest/drivers/install/composed.go)).
+While claims wait for capacity, the allocator logs every org's latest quota
+on one line, at most once per claim poll
+([#9154](https://github.com/fullsend-ai/fullsend/issues/9154)):
+`[slots] quota during slot wait: halfsend-03: remaining=1234/5000
+reset=2026-10-25T18:00:00Z resource=core; halfsend-04: …`. Each entry comes
+from the org's latest response, so compare entries with the same `resource`
+and `reset`.
 At teardown, `Finalize` logs the last observation of every org the suite
 used ([#8622](https://github.com/fullsend-ai/fullsend/issues/8622)):
 
@@ -611,8 +618,13 @@ for work that can still make calls.
 
 The counts cover one suite process and one client per org, so they leave out
 other suites sharing the pool and the `fullsend` CLI subprocess that installs
-into a slot. To estimate that unattributed traffic, compare `total` with the
-drop in the org's remaining quota.
+into a slot.
+
+The counts show how many requests each caller made, which can differ from the
+quota those requests cost. On the stage pool, `total` has run about 50% above
+the drop in remaining quota, and the difference lines up with `claim` and
+`lock` ([#9154](https://github.com/fullsend-ai/fullsend/issues/9154)). To
+measure quota use, read the `quota remaining` values in the log.
 
 **Harness-wait timeout errors.** Every harness-wait timeout error the
 GitHub Actions CI driver reports ends with the polling client's last-seen
