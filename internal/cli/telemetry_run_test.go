@@ -28,6 +28,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
+	"github.com/fullsend-ai/fullsend/internal/sandbox"
 	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/telemetry"
 	"github.com/fullsend-ai/fullsend/internal/ui"
@@ -425,6 +426,8 @@ func setInheritedScriptSecrets(t *testing.T) {
 	t.Setenv("JIRA_TOKEN", "process-jira-token")
 	t.Setenv("JIRA_USER_EMAIL", "bot@example.com")
 	t.Setenv("JIRA_BASE_URL", "https://acme.atlassian.net")
+	t.Setenv("FULLSEND_JIRA_TOKEN", "process-scoped-jira-token")
+	t.Setenv("FULLSEND_JIRA_EMAIL", "scoped-bot@example.com")
 }
 
 func envHasKey(env []string, key string) bool {
@@ -451,6 +454,8 @@ func TestChildScriptEnv_StripsInheritedNamedSecrets(t *testing.T) {
 		"OTEL_EXPORTER_OTLP_METRICS_HEADERS",
 		"JIRA_TOKEN",
 		"JIRA_USER_EMAIL",
+		"FULLSEND_JIRA_TOKEN",
+		"FULLSEND_JIRA_EMAIL",
 	} {
 		assert.False(t, envHasKey(env, key), "%s must not be inherited by child scripts", key)
 	}
@@ -461,6 +466,7 @@ func TestChildScriptEnv_StripsInheritedNamedSecrets(t *testing.T) {
 
 	// The parent process keeps them for its own Jira client and exporter.
 	assert.Equal(t, "process-jira-token", os.Getenv("JIRA_TOKEN"))
+	assert.Equal(t, "process-scoped-jira-token", os.Getenv("FULLSEND_JIRA_TOKEN"))
 	assert.Equal(t, "Authorization=Bearer%20traces", os.Getenv("OTEL_EXPORTER_OTLP_TRACES_HEADERS"))
 }
 
@@ -470,12 +476,16 @@ func TestChildScriptEnv_KeepsDeclaredNamedSecrets(t *testing.T) {
 	setInheritedScriptSecrets(t)
 
 	env := childScriptEnv(map[string]string{
-		"JIRA_TOKEN":      "process-jira-token",
-		"JIRA_USER_EMAIL": "bot@example.com",
+		"JIRA_TOKEN":          "process-jira-token",
+		"JIRA_USER_EMAIL":     "bot@example.com",
+		"FULLSEND_JIRA_TOKEN": "process-scoped-jira-token",
+		"FULLSEND_JIRA_EMAIL": "scoped-bot@example.com",
 	}, "")
 
 	assert.Equal(t, "process-jira-token", envLast(env, "JIRA_TOKEN"), "declared JIRA_TOKEN must reach the script")
 	assert.Equal(t, "bot@example.com", envLast(env, "JIRA_USER_EMAIL"), "declared JIRA_USER_EMAIL must reach the script")
+	assert.Equal(t, "process-scoped-jira-token", envLast(env, "FULLSEND_JIRA_TOKEN"), "declared FULLSEND_JIRA_TOKEN must reach the script")
+	assert.Equal(t, "scoped-bot@example.com", envLast(env, "FULLSEND_JIRA_EMAIL"), "declared FULLSEND_JIRA_EMAIL must reach the script")
 	assert.False(t, envHasKey(env, "OTEL_EXPORTER_OTLP_HEADERS"), "undeclared OTLP headers must still be stripped")
 }
 
@@ -583,6 +593,93 @@ func TestIsInheritedScriptDenyKey(t *testing.T) {
 	} {
 		assert.Equal(t, want, isInheritedScriptDenyKey(key), key)
 	}
+}
+
+// TestProviderDefinitionsCannotExpandJiraSecrets verifies that provider
+// definitions may not expand the Jira repository secrets in config values
+// (argv) or credential values (child environment): they are host-script-only
+// (#9079), so the openshell child sees neither the arguments nor the
+// credential variables carrying them.
+func TestProviderDefinitionsCannotExpandJiraSecrets(t *testing.T) {
+	const token, email = "jira-secret-token-9f8e7d", "jira-bot-secret@example.com"
+	t.Setenv("FULLSEND_JIRA_TOKEN", token)
+	t.Setenv("FULLSEND_JIRA_EMAIL", email)
+	t.Setenv("HARMLESS_PROVIDER_VALUE", "harmless-ok")
+
+	binDir := t.TempDir()
+	capture := filepath.Join(binDir, "capture.log")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + shellQuoteForTest(capture) + "\nprintf '%s|%s|%s\\n' \"${JIRA_CRED-<unset>}\" \"${JIRA_CRED2-<unset>}\" \"${OTHER-<unset>}\" >> " + shellQuoteForTest(capture) + "\nexit 0\n"
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	err := sandbox.EnsureProvider(context.Background(), "jira-probe", "custom",
+		map[string]string{
+			"JIRA_CRED":  "${FULLSEND_JIRA_TOKEN}",
+			"JIRA_CRED2": "${FULLSEND_JIRA_EMAIL}",
+			"OTHER":      "${HARMLESS_PROVIDER_VALUE}",
+		},
+		map[string]string{
+			"TOKEN_URL": "https://x/${FULLSEND_JIRA_TOKEN}",
+			"EMAIL_URL": "https://x/${FULLSEND_JIRA_EMAIL}",
+		}, false)
+	require.NoError(t, err)
+
+	out, err := os.ReadFile(capture)
+	require.NoError(t, err)
+	assert.NotContains(t, string(out), token, "provider expansion must refuse FULLSEND_JIRA_TOKEN")
+	assert.NotContains(t, string(out), email, "provider expansion must refuse FULLSEND_JIRA_EMAIL")
+	assert.Contains(t, string(out), "harmless-ok", "an unrelated key still expands")
+}
+
+// TestHarnessEnvLookup_OptionalJiraEmail verifies that a harness may declare
+// FULLSEND_JIRA_EMAIL in env.runner on a run without that secret: the
+// service-account mode has no email, and the reference must not fail
+// validation (#9079). The token stays required.
+func TestHarnessEnvLookup_OptionalJiraEmail(t *testing.T) {
+	h := &harness.Harness{Env: &harness.EnvConfig{Runner: map[string]string{
+		"FULLSEND_JIRA_TOKEN": "${FULLSEND_JIRA_TOKEN}",
+		"FULLSEND_JIRA_EMAIL": "${FULLSEND_JIRA_EMAIL}",
+	}}}
+
+	t.Setenv("FULLSEND_JIRA_TOKEN", "scoped-token")
+	t.Setenv("FULLSEND_JIRA_EMAIL", "bot@example.com")
+	v, ok := harnessEnvLookup("FULLSEND_JIRA_EMAIL")
+	assert.True(t, ok)
+	assert.Equal(t, "bot@example.com", v)
+
+	require.NoError(t, os.Unsetenv("FULLSEND_JIRA_EMAIL"))
+	v, ok = harnessEnvLookup("FULLSEND_JIRA_EMAIL")
+	assert.True(t, ok, "an unset FULLSEND_JIRA_EMAIL must still resolve")
+	assert.Empty(t, v)
+	require.NoError(t, h.ValidateRunnerEnvWith(harnessEnvLookup))
+
+	require.NoError(t, os.Unsetenv("FULLSEND_JIRA_TOKEN"))
+	_, ok = harnessEnvLookup("FULLSEND_JIRA_TOKEN")
+	assert.False(t, ok, "FULLSEND_JIRA_TOKEN is not optional")
+	err := h.ValidateRunnerEnvWith(harnessEnvLookup)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "FULLSEND_JIRA_TOKEN is not set")
+	assert.NotContains(t, err.Error(), "FULLSEND_JIRA_EMAIL")
+}
+
+// TestDropEmptyOptionalRunnerEnv verifies that an empty FULLSEND_JIRA_EMAIL
+// is omitted from the effective runner env, so scripts see it absent rather
+// than empty, while a set email and other empty keys are kept (#9079).
+func TestDropEmptyOptionalRunnerEnv(t *testing.T) {
+	for _, empty := range []string{"", "  \n"} {
+		env := map[string]string{"FULLSEND_JIRA_EMAIL": empty, "FULLSEND_JIRA_TOKEN": "tok", "OTHER": ""}
+		dropEmptyOptionalRunnerEnv(env)
+		assert.NotContains(t, env, "FULLSEND_JIRA_EMAIL")
+		assert.Equal(t, map[string]string{"FULLSEND_JIRA_TOKEN": "tok", "OTHER": ""}, env)
+	}
+
+	env := map[string]string{"FULLSEND_JIRA_EMAIL": "bot@example.com"}
+	dropEmptyOptionalRunnerEnv(env)
+	assert.Equal(t, "bot@example.com", env["FULLSEND_JIRA_EMAIL"])
+
+	env = map[string]string{}
+	dropEmptyOptionalRunnerEnv(env)
+	assert.Empty(t, env)
 }
 
 func TestAgentSpanStartAttrs(t *testing.T) {
@@ -1847,4 +1944,48 @@ func TestHarnessIdentityAttrs_OmitsSHAWhenUnreadable(t *testing.T) {
 
 func TestHarnessIdentityAttrs_Empty(t *testing.T) {
 	assert.Empty(t, harnessIdentityAttrs("", ""))
+}
+
+// TestSandboxDeniedKeys_JiraSecrets verifies that the Jira repository secrets
+// stay declarable in env.runner but expand empty at sandbox-bound sites:
+// env.sandbox values and expanded host_files content (#9079).
+func TestSandboxDeniedKeys_JiraSecrets(t *testing.T) {
+	t.Setenv("FULLSEND_JIRA_TOKEN", "process-scoped-jira-token")
+	t.Setenv("FULLSEND_JIRA_EMAIL", "scoped-bot@example.com")
+
+	for _, key := range []string{"FULLSEND_JIRA_TOKEN", "FULLSEND_JIRA_EMAIL"} {
+		value := os.Getenv(key)
+		assert.True(t, sandboxDeniedKeys[key], key)
+
+		// env.runner may still declare it.
+		assert.Equal(t, value, harnessEnvExpand(key), "env.runner must still resolve %s", key)
+		got, ok := harnessEnvLookup(key)
+		assert.True(t, ok)
+		assert.Equal(t, value, got)
+
+		// Sandbox-bound sites refuse it.
+		assert.Equal(t, "x--y", expandSandboxEnvValue("x-${"+key+"}-y", harnessEnvExpand))
+		assert.NotContains(t, shellSafeExpandEnv("export V=\"${"+key+"}\""), value)
+	}
+
+	t.Setenv("OTHER_VAR", "kept")
+	assert.Equal(t, "kept", expandSandboxEnvValue("${OTHER_VAR}", harnessEnvExpand))
+}
+
+// TestExpandRunnerEntry_OutputFileRefusesJiraSecrets verifies that
+// FULLSEND_OUTPUT_FILE, the runner entry exported verbatim into the sandbox,
+// cannot carry the Jira repository secrets from runner_env or env.runner,
+// while other runner entries still resolve them (#9079).
+func TestExpandRunnerEntry_OutputFileRefusesJiraSecrets(t *testing.T) {
+	t.Setenv("FULLSEND_JIRA_TOKEN", "process-scoped-jira-token")
+	t.Setenv("FULLSEND_JIRA_EMAIL", "scoped-bot@example.com")
+
+	for _, key := range []string{"FULLSEND_JIRA_TOKEN", "FULLSEND_JIRA_EMAIL"} {
+		value := os.Getenv(key)
+		got := expandRunnerEntry("FULLSEND_OUTPUT_FILE", "x-${"+key+"}-y", harnessEnvExpand)
+		assert.Equal(t, "x--y", got)
+		assert.NotContains(t, got, value)
+		assert.Equal(t, value, expandRunnerEntry("SOME_SCRIPT_VAR", "${"+key+"}", harnessEnvExpand),
+			"other runner entries must still resolve %s", key)
+	}
 }

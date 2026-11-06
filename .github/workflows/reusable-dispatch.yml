@@ -105,10 +105,14 @@ on:
         description: "Jira account email for Basic auth"
         required: false
       FULLSEND_JIRA_TOKEN:
-        description: Scoped Jira API token for status notifications.
+        description: >-
+          Scoped Jira API token for status notifications and Jira-consuming
+          agent runs.
         required: false
       FULLSEND_JIRA_EMAIL:
-        description: Optional Jira account email for a scoped user token.
+        description: >-
+          Optional Jira account email for status notifications and bot-user
+          Basic auth.
         required: false
       FULLSEND_GITHUB_RUNNER_SECRETS:
         description: >-

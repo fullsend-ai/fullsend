@@ -209,7 +209,12 @@ process environment.) A few named workflow secrets are **not** inherited from th
 receives one only when the harness declares it, e.g. `JIRA_TOKEN: "${JIRA_TOKEN}"` under
 `env.runner`. `fullsend run` itself still reads them for its own Jira client and trace export.
 Earlier releases passed them to every script unconditionally; a harness whose scripts read
-`JIRA_TOKEN` or `JIRA_USER_EMAIL` without declaring them must add them to `env.runner`. Scripts
+`JIRA_TOKEN` or `JIRA_USER_EMAIL` without declaring them must add them to `env.runner`. The
+Jira repository secrets `FULLSEND_JIRA_TOKEN` and `FULLSEND_JIRA_EMAIL` follow the same rule (see
+[Jira integration § Jira repository secrets in agent runs](../guides/user/jira-integration.md#jira-repository-secrets-in-agent-runs)).
+`FULLSEND_JIRA_EMAIL` is optional: a `${FULLSEND_JIRA_EMAIL}` reference does not fail validation
+when the variable is unset, and an `env.runner` entry for it that resolves empty is omitted, so
+the script sees no variable rather than an empty one. Scripts
 always run with `PYTHONDONTWRITEBYTECODE=1`, overriding any `env.runner` value, so bytecode never
 breaks the hash-verified fetch cache.
 

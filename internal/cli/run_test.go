@@ -3398,6 +3398,31 @@ func TestRedactFeedback_RedactsWorkflowTokenFromProcessEnv(t *testing.T) {
 	assert.Contains(t, out, " here")
 }
 
+func TestRedactFeedback_RedactsJiraSecretsAliasedToNonSensitiveRunnerKeys(t *testing.T) {
+	const token = "jira-token-opaque-redaction-test"
+	const email = "jira-email-redaction-test@example.invalid"
+	t.Setenv("FULLSEND_JIRA_TOKEN", token)
+	t.Setenv("FULLSEND_JIRA_EMAIL", email)
+
+	runnerEnv := map[string]string{
+		"ACCOUNT_ALIAS": email,
+		"BUILD_LABEL":   token,
+	}
+	assert.False(t, sensitiveEnvKey("ACCOUNT_ALIAS"))
+	assert.False(t, sensitiveEnvKey("BUILD_LABEL"))
+
+	literalOut := redactSecretLiterals("token="+token+" email="+email, runnerEnv)
+	assert.Equal(t, "token=[REDACTED:FULLSEND_JIRA_TOKEN] email=[REDACTED:FULLSEND_JIRA_EMAIL]", literalOut)
+	assert.Contains(t, security.RuntimeSecrets(), token)
+	assert.Contains(t, security.RuntimeSecrets(), email)
+
+	out := redactFeedback("token="+token+" email="+email, runnerEnv)
+	assert.NotContains(t, out, token)
+	assert.NotContains(t, out, email)
+	assert.Contains(t, out, "token=")
+	assert.Contains(t, out, " email=")
+}
+
 func TestSensitiveEnvKey(t *testing.T) {
 	for _, k := range []string{"PUSH_TOKEN", "GH_TOKEN", "GITLAB_TOKEN", "MY_SECRET", "DB_PASSWORD", "SIGNING_KEY", "GCP_CREDENTIALS", "GH_WORKFLOW_TOKEN", "JIRA_USER_EMAIL", "OTEL_EXPORTER_OTLP_HEADERS", "OTEL_EXPORTER_OTLP_TRACES_HEADERS"} {
 		assert.True(t, sensitiveEnvKey(k), "%s should be treated as sensitive", k)

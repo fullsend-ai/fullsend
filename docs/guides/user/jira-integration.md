@@ -150,7 +150,12 @@ The poller, `fullsend issues` commands, run-status notifications, and
 `fullsend reconcile-status` use that shared client. Their credentials are
 `FULLSEND_JIRA_TOKEN` and optional `FULLSEND_JIRA_EMAIL`. The built-in triage
 and code post-scripts still use `JIRA_TOKEN` and `JIRA_USER_EMAIL` to write
-agent results. OAuth 2.0 client credentials are not supported.
+agent results. For how the repository secrets reach Jira-consuming agent runs,
+see [Jira repository secrets in agent
+runs](#jira-repository-secrets-in-agent-runs).
+The Jira-aware harness integration is tracked in
+[agents#1900](https://github.com/fullsend-ai/agents/issues/1900). OAuth 2.0
+client credentials are not supported.
 
 Use the same Jira account for the poller, status notifications, and agent
 result writes. The poller treats only its own account as a bot, so writes from
@@ -287,6 +292,68 @@ harness whose scripts call Jira must declare their credentials under
 and code harnesses do this in their Jira overlays, so their post-scripts can
 write results to the Jira issue. See
 [Harness reference § `env.runner`](../../reference/harness-reference.md#field-details).
+
+### Jira repository secrets in agent runs
+
+`fullsend repos install` writes the Jira credentials as the
+`FULLSEND_JIRA_TOKEN` and optional `FULLSEND_JIRA_EMAIL` repository secrets
+(see [Jira polling](../../cli/repos.md#jira-polling)). They reach agent runs
+through their own path, not through `FULLSEND_GITHUB_RUNNER_SECRETS`, because
+that bundle refuses every `FULLSEND_*` name. The runtime mapping is:
+
+| Hop | Token | Email |
+|---|---|---|
+| Fullsend composite action input | `jira-token` | `jira-email` |
+| `fullsend run` process environment | `FULLSEND_JIRA_TOKEN` | `FULLSEND_JIRA_EMAIL`, only when the secret is set |
+| Host-side scripts (pre, post, validation) | `FULLSEND_JIRA_TOKEN`, only when the harness declares it in `env.runner` | `FULLSEND_JIRA_EMAIL`, only when the harness declares it in `env.runner` and the secret is set |
+| Sandbox-bound sites | Not inherited; references resolve empty (see breaking change below). | Not inherited; references resolve empty (see breaking change below). |
+
+- **Absent secrets are absent, not empty.** The action's Run fullsend step
+  unsets an input that arrives empty, so a repository without
+  `FULLSEND_JIRA_EMAIL` runs `fullsend run` with no `FULLSEND_JIRA_EMAIL`
+  variable. A token with no email selects service-account Bearer auth, and a
+  token with an email selects bot-user Basic auth.
+- **Declaring them in a harness.** Host-side scripts do not inherit either
+  variable from the `fullsend run` environment. A harness whose scripts call
+  Jira declares both:
+
+  ```yaml
+  env:
+    runner:
+      FULLSEND_JIRA_TOKEN: "${FULLSEND_JIRA_TOKEN}"
+      FULLSEND_JIRA_EMAIL: "${FULLSEND_JIRA_EMAIL}"
+  ```
+
+  The email reference does not fail validation when the secret is absent.
+  The entry is dropped instead, so the script sees no `FULLSEND_JIRA_EMAIL`.
+  A missing `FULLSEND_JIRA_TOKEN` still fails the run when the harness
+  references it.
+- **Breaking change: sandbox-bound expansion.** On every forge,
+  `${FULLSEND_JIRA_TOKEN}` and `${FULLSEND_JIRA_EMAIL}` references in
+  `env.sandbox`, expanded `host_files` content, `FULLSEND_OUTPUT_FILE`, and
+  provider config or credential values now resolve empty without a validation
+  error. These sites previously expanded the values from the `fullsend run`
+  process environment. Remove those references; where a trusted host-side
+  script needs Jira access, declare the credential under `env.runner` as
+  described above. Host-side scripts already require an explicit `env.runner`
+  mapping on both GitHub and GitLab, so this change does not introduce a
+  GitLab-specific host-script migration.
+- **Residual exposure in the `fullsend run` process.** The action sets both
+  values in the initial environment of the process that runs `fullsend run`,
+  because the Jira client reads them from the process environment. Other
+  same-user processes on the runner can read them from
+  `/proc/<pid>/environ` for the whole run, even when no harness declares them.
+  Unlike [runner secrets](../../cli/run.md#runner-secrets), they are not staged
+  through a file. Deploy these secrets only on runners you trust.
+- **No Jira settings as workflow inputs.** The site URL, API gateway URL,
+  project, and query stay in the effective
+  [`tracker.jira` config](../../reference/config-reference.md#trackerjira-connection-and-polling-settings).
+
+> **Planned:** The Jira-aware agents tracked in
+> [agents#1900](https://github.com/fullsend-ai/agents/issues/1900) will consume
+> these credentials through host-side mappings. No current agents-side harness
+> declares `FULLSEND_JIRA_*`; the planned harnesses must declare each value
+> they use under `env.runner`.
 
 ### Sandbox credentials and network access
 

@@ -768,6 +768,99 @@ func TestRunnerSecretsThreading(t *testing.T) {
 	}
 }
 
+// TestJiraSecretsActionWiring validates the Jira repository-secret channel
+// (#9079) from the scaffold shim through reusable-dispatch.yml to the composite
+// action. The secrets stay separate from runner_secrets and are forwarded only
+// for Jira-originated runs.
+func TestJiraSecretsActionWiring(t *testing.T) {
+	action := string(loadRepoFile("action.yml")(t))
+	var doc struct {
+		Inputs map[string]struct {
+			Required bool   `yaml:"required"`
+			Default  string `yaml:"default"`
+		} `yaml:"inputs"`
+		Runs struct {
+			Steps []struct {
+				Name string            `yaml:"name"`
+				Env  map[string]string `yaml:"env"`
+				Run  string            `yaml:"run"`
+			} `yaml:"steps"`
+		} `yaml:"runs"`
+	}
+	require.NoError(t, yaml.Unmarshal([]byte(action), &doc))
+
+	wantEnv := map[string]string{
+		"jira-token": "FULLSEND_JIRA_TOKEN",
+		"jira-email": "FULLSEND_JIRA_EMAIL",
+	}
+	for input, envName := range wantEnv {
+		in, ok := doc.Inputs[input]
+		require.True(t, ok, "action.yml must declare the %s input", input)
+		assert.False(t, in.Required, "%s must be optional: non-Jira runs have no Jira secrets", input)
+		assert.Empty(t, in.Default, "%s must default to empty", input)
+
+		ref := "${{ inputs." + input + " }}"
+		stepEnvName := envName
+		if input == "jira-email" {
+			stepEnvName = "FULLSEND_JIRA_EMAIL_INPUT"
+		}
+		var readers []string
+		for _, st := range doc.Runs.Steps {
+			for k, v := range st.Env {
+				if strings.Contains(v, "inputs."+input) {
+					readers = append(readers, st.Name)
+					assert.Equal(t, stepEnvName, k, "%s must reach %s as %s", input, st.Name, stepEnvName)
+					assert.Equal(t, ref, v)
+				}
+			}
+			assert.NotContains(t, st.Run, "inputs."+input, "%s must be consumed through env:, never interpolated into run:", input)
+		}
+		assert.Equal(t, []string{"Run fullsend", "Finalize orphaned status comment"}, readers,
+			"%s must reach both Jira-consuming action steps", input)
+	}
+
+	for _, st := range doc.Runs.Steps {
+		if st.Name != "Run fullsend" && st.Name != "Finalize orphaned status comment" {
+			continue
+		}
+		emailNormalize := "if [[ -n \"${FULLSEND_JIRA_EMAIL_INPUT}\" ]]; then\n  export FULLSEND_JIRA_EMAIL=\"${FULLSEND_JIRA_EMAIL_INPUT}\"\nelse\n  unset FULLSEND_JIRA_EMAIL\nfi\nunset FULLSEND_JIRA_EMAIL_INPUT"
+		assert.Contains(t, st.Run, emailNormalize, "%s must omit an empty email and remove its temporary input", st.Name)
+		if st.Name == "Run fullsend" {
+			tokenUnset := "if [[ -z \"${FULLSEND_JIRA_TOKEN}\" ]]; then\n  unset FULLSEND_JIRA_TOKEN\nfi"
+			assert.Contains(t, st.Run, tokenUnset, "Run fullsend must unset an empty Jira token")
+		}
+	}
+
+	dispatchContent := loadRepoFile(".github/workflows/reusable-dispatch.yml")(t)
+	var dispatch reusableWorkflow
+	require.NoError(t, yaml.Unmarshal(dispatchContent, &dispatch))
+	for _, secretName := range []string{"FULLSEND_JIRA_TOKEN", "FULLSEND_JIRA_EMAIL"} {
+		secret, ok := dispatch.On.WorkflowCall.Secrets[secretName]
+		require.True(t, ok, "reusable-dispatch.yml must declare %s", secretName)
+		assert.False(t, secret.Required, "%s must be optional for non-Jira runs", secretName)
+	}
+
+	harnessRun := extractStepSection(t, string(dispatchContent), "Run harness agent")
+	withIndex := strings.Index(harnessRun, "\n        with:\n")
+	require.NotEqual(t, -1, withIndex, "Run harness agent must have a with: block")
+	assert.NotContains(t, harnessRun[:withIndex], "FULLSEND_JIRA_",
+		"Jira secrets must not be passed through env:")
+	with := harnessRun[withIndex:]
+	for input, secretName := range map[string]string{
+		"jira-token": "FULLSEND_JIRA_TOKEN",
+		"jira-email": "FULLSEND_JIRA_EMAIL",
+	} {
+		assert.Contains(t, with, fmt.Sprintf("          %s: ${{ fromJSON(matrix.event_payload)._normalized_event.source.system == 'jira' && secrets.%s || '' }}", input, secretName),
+			"Run harness agent must pass %s as the %s action input only for Jira events", secretName, input)
+	}
+
+	shim := string(loadScaffoldFile("templates/shim-per-repo.yaml")(t))
+	for _, secretName := range []string{"FULLSEND_JIRA_TOKEN", "FULLSEND_JIRA_EMAIL"} {
+		assert.Contains(t, shim, fmt.Sprintf("      %s: ${{ secrets.%s }}", secretName, secretName),
+			"per-repo shim must forward %s to reusable-dispatch.yml", secretName)
+	}
+}
+
 // TestOTELVariableForwarding validates that OTEL variables (#5886) are
 // injected into the env: block of every agent run step. Variables are
 // auto-visible via vars. context so they don't need secrets: threading,
