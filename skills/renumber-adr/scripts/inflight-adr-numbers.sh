@@ -6,7 +6,8 @@
 #   exclude-pr   PR number to exclude (typically the current PR)
 #
 # Prints one four-digit ADR number per line, sorted and deduplicated.
-# Exit code is always 0 (no output means no in-flight ADR numbers found).
+# Exit code is always 0. No output means either no in-flight ADR numbers were
+# found or `gh` could not list open PRs (failures are not reported).
 #
 # Note: reports ADR numbers from all changed files (added, modified, deleted),
 # not just additions. This is intentionally conservative — the caller already
@@ -19,7 +20,11 @@ set -euo pipefail
 base="${1:-main}"
 exclude="${2:-}"
 
-gh pr list --base "$base" --state open --json number --jq '.[].number' \
+# Brace-group the list call so `|| true` cannot bind tighter than the pipe
+# (`cmd || true | while` would skip the loop when `gh pr list` succeeds).
+# -L 999 overrides gh's default 30-result cap. Failures (auth, network,
+# rate limit) produce empty output rather than a non-zero exit.
+{ gh pr list -L 999 --base "$base" --state open --json number --jq '.[].number' 2>/dev/null || true; } \
   | while read -r pr; do
       [ "$pr" = "$exclude" ] && continue
       gh pr diff "$pr" --name-only 2>/dev/null || true
