@@ -241,6 +241,12 @@ What a local pi run needs, beyond the guide:
   It also needs `readlink` there as a regular file, not a symlink; without one the launch also
   prints `no readlink that is a regular file in a PATH directory the agent cannot write`. The
   fullsend sandbox image ships both.
+- **`tirith` in the sandbox image** — with sandbox hooks on and Tirith enabled (the default, which
+  sets `TIRITH_REQUIRED=1`), the image also needs `tirith` in a `PATH` directory the sandbox user
+  neither owns nor can write. The hooks run under `FULLSEND_PI_HOOK_PATH`, which leaves out the
+  agent-writable directories, so a `tirith` installed only in one of them is not found and every
+  Bash call blocks with `tirith binary not found but TIRITH_REQUIRED=1 (expected in sandbox image)`.
+  The fullsend sandbox image installs it in `/usr/local/bin`.
 - **`pi` and `node` in directories the agent cannot write** — the launch pins
   the first `pi` in a `PATH` directory the sandbox user neither owns nor can
   write, judged by the file it resolves to and every directory above that
