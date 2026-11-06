@@ -397,11 +397,14 @@ func TestRedaction_NoSecretSurvivesAnyWrapping(t *testing.T) {
 		{"pi result as a plain string", viaPi(func(text string) string {
 			return piWire("bash", `{"command":"ls"}`, jsonStr(text), false)
 		})},
-		{"pi result of an undocumented shape", viaPi(func(text string) string {
+		{"pi result with no content list", viaPi(func(text string) string {
 			return piWire("bash", `{"command":"ls"}`, `{"output":`+jsonStr(text)+`}`, false)
 		})},
-		{"pi failed call with a result of an undocumented shape", viaPi(func(text string) string {
+		{"pi failed call with no content list", viaPi(func(text string) string {
 			return piWire("bash", `{"command":"ls"}`, `{"output":`+jsonStr(text)+`}`, true)
+		})},
+		{"pi failed call with a result that is not an object", viaPi(func(text string) string {
+			return piWire("bash", `{"command":"ls"}`, `[`+jsonStr(text)+`]`, true)
 		})},
 		{"pi result with no start", viaPi(func(text string) string {
 			return `{"type":"tool_execution_end","toolCallId":"toolu_01","toolName":"bash","result":` + piResult(text) + `,"isError":false}` + "\n"

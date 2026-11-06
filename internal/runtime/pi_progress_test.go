@@ -1351,7 +1351,12 @@ func TestPiResultText(t *testing.T) {
 		{"only an image: no base64 in the text", `{"content":[{"type":"image","data":"AAAA"}]}`, "", true},
 		{"empty content has nothing to skip", `{"content":[],"details":{"seq":1}}`, "", false},
 		{"details never reach the text", `{"content":[{"type":"text","text":"a"}],"details":{"k":"hidden"}}`, "a", false},
-		{"an undocumented shape is dropped and marked", `{"output":"x"}`, "", true},
+		{"no content list is empty, not cut", `{"details":{"k":"hidden"}}`, "", false},
+		{"null content is empty, not cut", `{"content":null}`, "", false},
+		{"an unknown member never reaches the text", `{"output":"x"}`, "", false},
+		{"an array is dropped and marked", `["x"]`, "", true},
+		{"a number is dropped and marked", `1`, "", true},
+		{"a content member of the wrong type is dropped and marked", `{"content":"x"}`, "", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

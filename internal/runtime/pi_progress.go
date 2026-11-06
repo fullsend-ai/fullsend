@@ -248,11 +248,13 @@ func piContentText(blocks []piContentBlock) (text string, partial bool) {
 
 // piResultText returns a tool_execution_end result as ToolResultEvent carries
 // it: the raw text, unredacted and uncut, for the Level 3 content collector
-// only. partial reports a skipped non-text block, as for Claude. A result
-// with no content list is not a shape pi documents: its text is dropped and
-// partial set, also as for Claude, since the redactor is written for plain
-// text and JSON escapes can hide a secret from it. With no text left, the
-// collector keeps a part only for a failed call (see contentBytes).
+// only. partial reports a skipped non-text block, as for Claude. An object
+// with no content list is an empty result, as pi 1.5.0 treats it (content ??
+// []; an untyped extension tool can return one). Anything else is dropped and
+// partial set, also as for Claude, rather than kept as JSON, since the
+// redactor is written for plain text and JSON escapes can hide a secret from
+// it. With no text left, the collector keeps a part only for a failed call
+// (see contentBytes).
 func piResultText(raw json.RawMessage) (text string, partial bool) {
 	if len(raw) == 0 {
 		return "", false
@@ -262,10 +264,10 @@ func piResultText(raw json.RawMessage) (text string, partial bool) {
 		return s, false
 	}
 	var res piToolResult
-	if err := json.Unmarshal(raw, &res); err == nil && res.Content != nil {
-		return piContentText(res.Content)
+	if err := json.Unmarshal(raw, &res); err != nil {
+		return "", true
 	}
-	return "", true
+	return piContentText(res.Content)
 }
 
 // piIsErrorStop reports whether a StopReason means the run failed. Pi's union
