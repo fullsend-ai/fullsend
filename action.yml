@@ -85,11 +85,21 @@ inputs:
     required: false
     default: ""
   jira-token:
-    description: Scoped Jira API token used by Jira status notifications.
+    description: >-
+      Scoped Jira API token for status notifications and Jira-consuming agent
+      runs. The Run fullsend and orphaned-status finalizer steps receive it as
+      FULLSEND_JIRA_TOKEN. Host-side scripts receive it only when a harness
+      declares it in env.runner; sandbox and provider expansion sites deny it.
+      It is separate from runner_secrets and remains in the fullsend run
+      process environment.
     required: false
     default: ""
   jira-email:
-    description: Optional Jira account email for a scoped user token. Leave empty for a service-account token.
+    description: >-
+      Optional Jira account email. When set, it selects bot-user Basic auth;
+      when absent, the token uses service-account Bearer auth. The Run fullsend
+      and orphaned-status finalizer steps receive it only when set. Host-side
+      scripts receive it only when the harness declares it in env.runner.
     required: false
     default: ""
 
@@ -495,6 +505,9 @@ runs:
         FULLSEND_JIRA_EMAIL_INPUT: ${{ inputs.jira-email }}
       run: |
         set -euo pipefail
+        if [[ -z "${FULLSEND_JIRA_TOKEN}" ]]; then
+          unset FULLSEND_JIRA_TOKEN
+        fi
         if [[ -n "${FULLSEND_JIRA_EMAIL_INPUT}" ]]; then
           export FULLSEND_JIRA_EMAIL="${FULLSEND_JIRA_EMAIL_INPUT}"
         else

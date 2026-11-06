@@ -487,10 +487,14 @@ it held before that mint, or is unset if it was unset. A caller workflow that ex
 variable, not the job token.
 
 Host-side scripts (pre/post and validation) also no longer inherit `JIRA_TOKEN`,
-`JIRA_USER_EMAIL`, `FULLSEND_JIRA_TOKEN`, `FULLSEND_JIRA_EMAIL`, or the OTLP collector headers (`OTEL_EXPORTER_OTLP_HEADERS` and
+`JIRA_USER_EMAIL`, `FULLSEND_JIRA_TOKEN`, `FULLSEND_JIRA_EMAIL`, or the OTLP
+collector headers (`OTEL_EXPORTER_OTLP_HEADERS` and
 `OTEL_EXPORTER_OTLP_*_HEADERS`) from the `fullsend run` process environment. A script
 receives one only when the harness declares it under `env.runner`; see
 [`env.runner`](../reference/harness-reference.md#field-details) in the harness reference.
+`FULLSEND_JIRA_EMAIL` is optional: an `env.runner` reference to it does not fail when it is
+unset, and the entry is omitted rather than passed empty. See
+[Jira repository secrets in agent runs](../guides/user/jira-integration.md#jira-repository-secrets-in-agent-runs).
 
 Repo-level setup (provider, profile, `~/.npmrc`, code/fix overlays):
 [Private registries and GitHub Packages](../guides/user/customizing-agents.md#private-registries-and-github-packages).
