@@ -900,6 +900,12 @@ func RecordManagedGitLabLegacyToken(ctx context.Context, client forge.Client, ow
 		}
 		rs := state.Roles[string(rec.Name)]
 		rs.CreatedTokenIDs = uniqueInts(append(rs.CreatedTokenIDs, token.ID))
+		// The bot user GitLab created for this token is the role's legacy
+		// actor identity. It is taken only from the creation response; a
+		// response without one records nothing, so the bot stays unresolved.
+		if token.UserID > 0 {
+			rs.LegacyBotUserIDs = uniqueInts(append(rs.LegacyBotUserIDs, token.UserID))
+		}
 		state.Roles[string(rec.Name)] = rs
 		return writeRotationState(ctx, client, owner, repo, state)
 	}
