@@ -343,7 +343,7 @@ flowchart TB
   Decided, not yet implemented.
 - Plugins are runtime-scoped harness resources: a harness declares `plugins:` as one list of directories in its own repository (same trust and fetch path as skills), and each entry's format decides which runtime loads it — a `plugin.json` bundle is Claude Code's, a directory pi's `-e` loader resolves is uploaded and loaded after a tree-hash preflight computed from the host copy. Each runtime names and skips the entries in the other format, so the list survives a runtime switch. Because `--no-extensions` plus explicit `-e` closes the set of code that can register tools, no per-tool declaration is needed ([ADR 0094](ADRs/0094-pi-extensions-are-harness-resources.md)).
 - Decided, not yet implemented: extend the runner-owned native Codex child
-  policy to V2 alongside the 0.166.0 bump. Bootstrap requires the `Agent` tool,
+  policy to V2. Bootstrap requires the `Agent` tool,
   harness security and a direct-route parent selecting V1 or V2 in the bundled
   model catalog (absent means V1); other parents keep delegation off. The
   runner binds child models and effort, registers roles and admits only
