@@ -360,11 +360,11 @@ func RedactText(s string) string {
 	return s
 }
 
-// sanitizeConsole neutralizes text that GitHub Actions would interpret when
+// SanitizeConsole neutralizes text that GitHub Actions would interpret when
 // printed to the console: line breaks and other control characters are
 // replaced with spaces so interpolated text cannot start a new line, and the
 // "::" workflow-command delimiter is broken up.
-func sanitizeConsole(s string) string {
+func SanitizeConsole(s string) string {
 	s = strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) {
 			return ' '
@@ -382,7 +382,7 @@ func logRedacted(w *world.World, format string, args ...any) {
 	if w.Logf == nil {
 		return
 	}
-	w.Logf("%s", sanitizeConsole(RedactText(fmt.Sprintf(format, args...))))
+	w.Logf("%s", SanitizeConsole(RedactText(fmt.Sprintf(format, args...))))
 }
 
 // CollectFailureLogs is called by the suite's After hook for a failed

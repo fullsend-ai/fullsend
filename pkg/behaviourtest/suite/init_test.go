@@ -992,3 +992,23 @@ func TestRecordScenarioFailure_RedactsWorldTokenWithoutPriorRegistration(t *test
 		"the opaque token must be masked by registration, not by pattern luck")
 	assert.Contains(t, record.Message, "step failed with token")
 }
+
+// TestRecordScenarioFailure_RedactsScenarioName pins that the report's
+// scenario field gets the same redaction as its message: the report writer
+// serializes both as recorded.
+func TestRecordScenarioFailure_RedactsScenarioName(t *testing.T) {
+	token := "opaquescenarioname7b2e9a1c"
+	rec := &behaviourfail.Recorder{}
+	w := &world.World{
+		Token:        token,
+		ScenarioName: "scenario using " + token,
+		Failures:     rec,
+	}
+
+	recordScenarioFailure(w, errors.New("step failed"))
+
+	snapshot := rec.Snapshot()
+	require.Len(t, snapshot, 1)
+	assert.NotContains(t, snapshot[0].Scenario, token)
+	assert.Contains(t, snapshot[0].Scenario, "scenario using")
+}

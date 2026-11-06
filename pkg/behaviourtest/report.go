@@ -108,9 +108,11 @@ func recordBootstrapFailure(w *world.World, err error) *world.World {
 // was written. The class must appear in the final test output (design
 // D5) so a red check names the failure mode. Redaction is idempotent, so
 // re-running the source error through RedactText here (it was already
-// redacted at record time) cannot double-mask.
+// redacted at record time) cannot double-mask. The error text can carry
+// remote CLI or mint output and reaches the job log through t.Fatalf, so
+// it is sanitized against Actions workflow commands too.
 func bootstrapFailureMessage(suite string, class behaviourfail.Class, err error, reportPath string) string {
-	msg := fmt.Sprintf("%s suite failed during bootstrap: %s failure: %s", suite, class, steps.RedactText(err.Error()))
+	msg := fmt.Sprintf("%s suite failed during bootstrap: %s failure: %s", suite, class, steps.SanitizeConsole(steps.RedactText(err.Error())))
 	if reportPath != "" {
 		msg += "; report: " + reportPath
 	}
