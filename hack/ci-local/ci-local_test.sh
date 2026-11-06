@@ -207,13 +207,15 @@ BUILD=$(last_build_args)
 arg() { grep -A1 -x -- '--build-arg' <<< "${BUILD}" | sed -n "s/^$1=//p"; }
 want_go=$(awk '$1 == "go" {print $2; exit}' "${REPO}/go.mod")
 missing=""
-for v in GO_VERSION PYTHON_VERSION NODE_VERSION PIP_PACKAGES LYCHEE_VERSION LYCHEE_SHA256_AMD64 PINACT_VERSION PINACT_SHA256_AMD64; do
+for v in GO_VERSION PYTHON_VERSION NODE_VERSION PIP_PACKAGES LYCHEE_VERSION LYCHEE_SHA256_AMD64 PINACT_VERSION PINACT_SHA256_AMD64 YQ_VERSION YQ_SHA256_AMD64 YQ_SHA256_ARM64; do
   [ -n "$(arg "$v")" ] || missing="${missing} $v"
 done
 if [ -z "${missing}" ] && [ "$(arg GO_VERSION)" = "${want_go}" ] &&
   grep -q "python-version: \"$(arg PYTHON_VERSION)\"" "${REPO}/.github/workflows/lint.yml" &&
   grep -q "$(arg LYCHEE_SHA256_AMD64)  /tmp/lychee.tar.gz" "${REPO}/.github/workflows/lint.yml" &&
-  [[ "$(arg PINACT_SHA256_AMD64)" =~ ^[0-9a-f]{64}$ ]]; then
+  [[ "$(arg PINACT_SHA256_AMD64)" =~ ^[0-9a-f]{64}$ ]] &&
+  grep -q "$(arg YQ_SHA256_AMD64)  /tmp/yq.tar.gz" "${REPO}/.github/workflows/lint.yml" &&
+  grep -q "yq_linux_arm64.tar.gz sha256sum $(arg YQ_SHA256_ARM64)" "${REPO}/.github/workflows/lint.yml"; then
   pass "all build args are read from the real go.mod and lint.yml"
 else
   fail "build args from CI config: missing=[${missing}] args=$(tr '\n' ' ' <<< "${BUILD}")"
