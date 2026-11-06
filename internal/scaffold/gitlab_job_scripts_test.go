@@ -230,6 +230,7 @@ func TestRunPollJobScript_BlanksSiblingSecretsBeforePoll(t *testing.T) {
 // an inherited FULLSEND_GITLAB_ANALYST_USER_ID is never passed through, and
 // the poll still runs so unrelated events keep dispatching.
 func TestRunPollJobScript_AnalystUserIDLookupFailureIsNonFatal(t *testing.T) {
+	const inheritedAnalystID = "inherited-analyst-id-sentinel"
 	for _, tc := range []struct {
 		name       string
 		analystPAT string
@@ -273,7 +274,9 @@ func TestRunPollJobScript_AnalystUserIDLookupFailureIsNonFatal(t *testing.T) {
 				"CI_PROJECT_ID=1",
 				"CI_PROJECT_PATH=group/project",
 				// Inherited from the job environment; must not reach the CLI.
-				"FULLSEND_GITLAB_ANALYST_USER_ID=999",
+				// A non-numeric sentinel cannot collide with the random
+				// numeric suffix of t.TempDir() paths echoed in the output.
+				"FULLSEND_GITLAB_ANALYST_USER_ID=" + inheritedAnalystID,
 			}
 			if tc.analystPAT != "" {
 				env = append(env, "FULLSEND_GITLAB_ANALYST_TOKEN="+tc.analystPAT)
@@ -284,7 +287,7 @@ func TestRunPollJobScript_AnalystUserIDLookupFailureIsNonFatal(t *testing.T) {
 			require.NoError(t, err, "stdout/stderr: %s", out)
 			got := string(out)
 			assert.Contains(t, got, "POLL_ANALYST_USER_ID=unset")
-			assert.NotContains(t, got, "999")
+			assert.NotContains(t, got, inheritedAnalystID)
 			assert.Contains(t, got, tc.wantWarn)
 		})
 	}
