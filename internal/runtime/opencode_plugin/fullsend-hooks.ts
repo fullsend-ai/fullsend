@@ -35,50 +35,107 @@ else:
 json.dump({"reason": text}, sys.stdout)
 `;
 
-// Enforce Bash(...) program names; pi makes this advisory by default.
-// Refuse syntax that can hide executable commands rather than
-// treating a prefix match ("gh *") as validation of an entire shell program.
-function checkBash(command, allowlist) {
-  if (!allowlist?.length) return;
+// Parse only the shell grammar we can check completely. Keep command boundaries
+// and remove argument quotes so neither a prefix nor quoting can hide a denied
+// command from a trusted pattern map. This is deliberately not a general shell
+// parser: unsupported syntax is refused before execution.
+function bashCommands(command, allowParameterExpansion = false) {
   if (typeof command !== "string" || !command.trim()) deny("empty Bash command");
-  // Quoted arguments are data, except expansion syntax that remains active in
-  // double quotes. Keep quote markers so quoted/concatenated program names fail.
-  let syntax = "";
+  const commands = [];
+  let words = [];
+  let word = "";
+  let started = false;
+  let quotedProgram = false;
   let quote = null;
+  const finishWord = () => {
+    if (!started) return;
+    if (!words.length && quotedProgram) deny("Bash policy rejects quoted program names");
+    words.push(word);
+    word = "";
+    started = false;
+    quotedProgram = false;
+  };
+  const finishCommand = () => {
+    finishWord();
+    if (words.length) {
+      const first = words[0];
+      if (!/^[A-Za-z0-9_./-]+$/.test(first) ||
+          ["eval", "exec", "sh", "bash", "source", ".", "command", "builtin", "env", "nohup", "nice", "timeout", "xargs", "time",
+            "if", "then", "else", "elif", "fi", "for", "while", "until", "do", "done", "case", "esac", "in", "function", "select", "coproc",
+            "export", "unset", "readonly", "set", "trap", "alias", "unalias", "declare", "typeset", "local", "let", "enable", "hash"].includes(first)) {
+        deny("Bash policy rejects environment assignments and shell wrappers");
+      }
+      commands.push(words.join(" "));
+      words = [];
+    }
+  };
   for (let index = 0; index < command.length; index++) {
     const char = command[index];
     if (quote === "'") {
-      if (char === "'") { quote = null; syntax += char; }
+      if (char === "'") quote = null;
+      else word += char;
       continue;
     }
     if (quote === '"') {
-      if (char === '"') { quote = null; syntax += char; }
+      if (char === '"') quote = null;
       else if (char === "$") {
-        // Parameter expansion is needed for runner-provided output paths.
-        // Keep every other dollar form in syntax so the deny rule rejects it.
         const expansion = command.slice(index).match(/^\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})/);
-        if (expansion) index += expansion[0].length - 1;
-        else syntax += char;
-      } else if (char === "`" || char === "\\") syntax += char;
+        // Program-name allowlists do not inspect arguments. Trusted argument
+        // patterns cannot safely authorize an expansion's unknown value.
+        if (!allowParameterExpansion || !expansion) deny("Bash policy rejects parameter expansion with trusted patterns or unsupported substitutions");
+        word += expansion[0];
+        index += expansion[0].length - 1;
+      } else if (char === "`" || char === "\\") deny("Bash policy rejects substitutions and escapes");
+      else word += char;
       continue;
     }
-    // This restricted grammar does not support shell comments. Treating their
-    // contents as syntax would let comment quotes hide later commands.
-    if (char === "#") deny("Bash allowlist rejects comments");
-    if (char === "'" && quote !== '"') { quote = "'"; syntax += char; continue; }
-    syntax += char;
-    if (char === '"') quote = '"';
-  }
-  if (quote !== null) deny("Bash allowlist rejects unterminated quotes");
-  if (/[`$(){}\\<>]|&/.test(syntax)) deny("Bash allowlist rejects substitutions, groups, redirections, backgrounding and escapes");
-  for (const segment of syntax.split(/\r?\n|\|\||;|\|/)) {
-    if (!segment.trim()) continue;
-    const first = segment.trim().split(/\s+/)[0];
-    if (!allowlist.includes(first) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(first) ||
-        ["eval", "exec", "sh", "bash", "source", ".", "command", "builtin", "env", "nohup", "nice", "timeout", "xargs", "time"].includes(first)) {
-      deny("command is outside the Bash allowlist");
+    if (char === "#") deny("Bash policy rejects comments");
+    if (char === "'" || char === '"') {
+      quote = char;
+      started = true;
+      if (!words.length) quotedProgram = true;
+    } else if (/[`$(){}\\<>&\r]/.test(char)) {
+      deny("Bash policy rejects substitutions, groups, redirections, backgrounding and escapes");
+    } else if (char === " " || char === "\t") finishWord();
+    else if (char === "\n" || char === ";" || char === "|") {
+      finishCommand();
+      if (char === "|" && command[index + 1] === "|") index++;
+    } else {
+      word += char;
+      started = true;
     }
   }
+  if (quote !== null) deny("Bash policy rejects unterminated quotes");
+  finishCommand();
+  return commands;
+}
+
+// Enforce Bash(...) program names; pi makes this advisory by default.
+function checkBash(command, allowlist) {
+  if (!allowlist?.length) return;
+  for (const segment of bashCommands(command, true)) {
+    if (!allowlist.includes(segment.split(" ")[0])) deny("command is outside the Bash allowlist");
+  }
+}
+
+function parseHookReply(stdout, phase) {
+  if (!stdout.trim()) return null;
+  const object = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+  let reply;
+  try { reply = JSON.parse(stdout); } catch { deny("malformed hook reply (fail closed)"); }
+  if (!object(reply) || Object.keys(reply).some((key) => !["decision", "reason", "continue", "metadata", "hookSpecificOutput", "tool_result"].includes(key)) ||
+      ("decision" in reply && !["allow", "block"].includes(reply.decision)) ||
+      ("reason" in reply && typeof reply.reason !== "string") ||
+      ("continue" in reply && typeof reply.continue !== "boolean") ||
+      ("metadata" in reply && !object(reply.metadata))) deny("malformed hook reply (fail closed)");
+  if ("hookSpecificOutput" in reply) {
+    const output = reply.hookSpecificOutput;
+    if (!object(output) || Object.keys(output).some((key) => !["hookEventName", "updatedToolOutput", "additionalContext"].includes(key)) ||
+        ("hookEventName" in output && output.hookEventName !== phase) ||
+        ("additionalContext" in output && typeof output.additionalContext !== "string") ||
+        ("updatedToolOutput" in output && phase !== "PostToolUse")) deny("malformed hook reply (fail closed)");
+  }
+  return reply;
 }
 
 function checkFiles(cfg) {
@@ -132,7 +189,8 @@ function checkPermission(cfg, tool, args, cwd, worktree, targets) {
       skill: args.name,
     }[tool] ?? "*";
     let values = [value];
-    if (["read", "write", "edit", "multiedit", "apply_patch"].includes(tool)) {
+    if (tool === "bash") values = bashCommands(args.command);
+    else if (["read", "write", "edit", "multiedit", "apply_patch"].includes(tool)) {
       const paths = tool === "read" ? [args.filePath ?? args.file_path] : targets;
       values = paths.map((target) => {
         if (typeof target !== "string" || !target) deny("missing permission path");
@@ -205,6 +263,13 @@ export default async ({ directory, worktree }) => {
     try {
       checkFiles(cfg);
       let canonical = names[input.tool] ?? input.tool;
+      // OpenCode replaces write/edit with apply_patch for GPT-family models,
+      // and its edit tool implements the legacy MultiEdit capability too.
+      if (input.tool === "apply_patch") {
+        canonical = ["Edit", "MultiEdit", "Write"].find((name) => cfg.tools?.includes(name)) ?? canonical;
+      } else if (input.tool === "edit" && !cfg.tools?.includes("Edit") && cfg.tools?.includes("MultiEdit")) {
+        canonical = "MultiEdit";
+      }
       // OpenCode combines file reads and directory listings in `read`.
       // An LS-only parent may list directories, but must not gain file reads.
       if (input.tool === "read" && cfg.tools?.includes("LS") && !cfg.tools.includes("Read")) {
@@ -249,8 +314,7 @@ export default async ({ directory, worktree }) => {
           timeout: 30_000, maxBuffer: 16 * 1024 * 1024,
         });
         if (result.error || result.signal || result.status === null) deny("hook failed to execute (fail closed)");
-        let reply;
-        try { reply = result.stdout.trim() ? JSON.parse(result.stdout) : null; } catch { deny("malformed hook reply (fail closed)"); }
+        const reply = parseHookReply(result.stdout, phase);
         if (result.status !== 0 || reply?.decision === "block" || reply?.continue === false) {
           deny(blockReason(script, reply?.reason));
         }

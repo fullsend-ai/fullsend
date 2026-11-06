@@ -396,6 +396,20 @@ and a trusted pattern map whose later deny must win. Each Bash policy runs with 
 adapter and with only the observation plugin, so native permission evaluation is verified
 independently of hook enforcement.
 
+The nested trusted-Bash scenario gives the child broader native permissions than
+the parent. Single commands, sequences, pipelines and quoted arguments must still
+obey the parent's trusted patterns. The adapter parses its restricted shell
+grammar, matches each command's unquoted words, and rejects parameter expansion
+when trusted argument patterns are active. Program-name-only allowlists still
+accept simple quoted parameter expansion.
+
+Allowed-command assertions inspect successful tool-result content rather than
+matching text in the model's tool inputs. The SSRF probe uses an otherwise
+allowed `touch` followed by a blocked URL, so absence of the file proves the
+pre-tool chain ran before either command. SDK fixtures use the committed
+manifests with the image's read-only permissions and the production cache-restore
+command, including a repeated restore in the config-isolation scenario.
+
 Four failure scenarios use a test-only tool that genuinely throws without firing the after hook.
 They verify credential redaction, canary withholding, fail-closed scanner-error metadata, and
 nested Task errors at the model boundary. The repo-config isolation scenario verifies that a

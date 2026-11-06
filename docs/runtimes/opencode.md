@@ -123,13 +123,24 @@ example above.
 - **Bash allowlists are enforced.** `Bash(gh,jq)` permits only those program names in each
   simple command. Native patterns deny other commands where compatible with the trusted policy;
   the plugin independently enforces the allowlist and rejects ambiguous shell syntax, environment
-  assignments, command substitutions, shell wrappers, `&&` chains, redirections, and backgrounding.
-  Trusted pattern maps remain a ceiling.
-  This restricts executable names, not every capability of an allowed program.
+  assignments, command substitutions, shell wrappers and control flow, `&&`
+  chains, redirections, and backgrounding.
+  Trusted Bash pattern maps use the same restricted shell grammar, even without
+  a program-name allowlist. The adapter checks each command separately and
+  removes argument quotes before matching, including inside Task children with
+  broader native permissions. Parameter expansion in arguments is allowed with
+  a program-name allowlist and flat trusted permission, but rejected with trusted
+  argument patterns because its value is not known during matching.
+  Program-name allowlists restrict executable names, not every capability of an
+  allowed program.
   Unlike pi's advisory default, OpenCode enforces the declared list without an
   opt-in switch. Agent instructions must use the commands they declare; see
   [agents#1821](https://github.com/fullsend-ai/agents/issues/1821) for the scribe
   compatibility follow-up.
+- **Native editing tools share capabilities.** GPT-family models use
+  `apply_patch` in place of native write/edit tools. Agents declaring `Write`,
+  `Edit`, or `MultiEdit` can use it, subject to the trusted edit policy and write
+  path checks. A `MultiEdit` declaration also permits the native `edit` tool.
 - **Directory listing stays distinct from file reading.** OpenCode uses `read` for both.
   An agent declaring only `LS` can list directories, including directory symlinks, but cannot
   read regular files or file symlinks through that tool.
@@ -138,9 +149,12 @@ example above.
   Adapter/script digests are checked before agent verification and before and after `.env` is sourced.
   Each iteration also requires the loaded plugin to return a runner-held activation challenge; a
   missing signal detects an unhooked iteration after it exits; it does not prevent that iteration's
-  side effects. Preflight activation prevention remains follow-up hardening alongside #9022. Each intercepted tool call
-  rechecks the script directory. Native write/edit/patch tools cannot
-  write outside the workspace or into `.env`, `.security` or `runner-state`, including via symlinks.
+  side effects. Verification still runs when transcript or exit-status
+  persistence fails; missing activation takes precedence as exit 99.
+  Preflight activation prevention remains follow-up hardening alongside #9022.
+  Each intercepted tool call rechecks the script directory. Native
+  write/edit/patch tools cannot write outside the workspace or into `.env`,
+  `.security` or `runner-state`, including via symlinks.
 - **Hook configuration is not a same-user secret boundary.** The activation challenge and hook
   settings are cleared from ordinary tool-process environments, but same-UID processes can inspect
   the OpenCode process through `/proc`. This residual is documented with the adapter's writable
@@ -189,14 +203,19 @@ checks cover its plugin and selected hook scripts, not skill contents.
 
 Native exceptions skip the after hook, so `experimental.chat.messages.transform` scans failed-tool
 history before model requests, including Task sessions. Credentials are redacted; canary hits,
-scanner failures or invalid replies stop the next request. Raw session/transcript storage is
-not covered by this model-boundary check (see #7320). Denials identify the blocking
-script and include a bounded, credential-redacted reason when the verified shared sanitizer is
-available. Reasons containing the canary, missing sanitizer files, and sanitization failures
-produce only the script name; raw hook stderr is never reflected.
+scanner failures or invalid replies stop the next request. Nonempty replies must
+be JSON objects with recognized fields and correctly typed decisions, metadata,
+and rewrite fields; empty stdout means unchanged output. Raw session/transcript
+storage is not covered by this model-boundary check (see #7320). Denials identify
+the blocking script and include a bounded, credential-redacted reason when the
+verified shared sanitizer is available. Reasons containing the canary, missing
+sanitizer files, and sanitization failures produce only the script name; raw hook
+stderr is never reflected.
 The image keeps the pinned plugin SDK under the root-owned, sandbox-user-unwritable
-`/usr/local/share/opencode-sdk`. Bootstrap restores global SDK bookkeeping from that
-installation after clearing user config, so startup needs no registry download.
+`/usr/local/share/opencode-sdk`. Bootstrap and each iteration restore global and
+custom-config SDK bookkeeping from that installation. Restoration replaces the
+copied read-only manifests before copying, so retries work without making the
+image-owned SDK writable or downloading it again.
 
 ## Troubleshooting
 

@@ -99,13 +99,9 @@ func openCodeBareModelID(spec string) string {
 // piHooksMissingExit).
 const openCodeHooksMissingExit = 97
 
-// openCodeHookActivationMissingExit is returned when the hash-checked adapter
-// was not actually loaded by the OpenCode process for this iteration.
+// openCodeHookActivationMissingExit is returned when the iteration has no
+// valid activation signal from the hash-checked adapter.
 const openCodeHookActivationMissingExit = 99
-
-// openCodeRandomReadFn calls crypto/rand.Read. Override in tests to exercise
-// activation-token generation failures.
-var openCodeRandomReadFn = rand.Read
 
 const (
 	openCodeBinaryVar             = "FULLSEND_OPENCODE_BIN"
@@ -309,13 +305,18 @@ func openCodeExitPipeline(invocation []string, rcFile, transcript string, activa
 		` | "$` + openCodeTeeVar + `" ` + shellQuote(transcript)
 	activationGuard := ""
 	if activation != nil {
-		activationGuard = " && " + openCodeHookActivationGuard(activation)
+		activationGuard = openCodeHookActivationGuard(activation) + "; "
 	}
-	return pipeline +
-		` && FULLSEND_OPENCODE_RC="$("$` + openCodeCatVar + `" ` + shellQuote(rcFile) + ` 2>/dev/null)"` +
-		` && case "$FULLSEND_OPENCODE_RC" in ''|*[!0-9]*) FULLSEND_OPENCODE_RC=1;; esac` +
+	// Keep this group on the prelude's && chain, but never put activation
+	// verification behind the pipeline or persistence status. The if statements
+	// also preserve this ordering when the caller enables shell errexit.
+	// Remove any old rc first so a failed write cannot reuse a stale success.
+	return `{ "$` + openCodeRmVar + `" -f -- ` + shellQuote(rcFile) + ` || { "$` + openCodePrintfVar + `" '%s\n' 'fullsend: OpenCode exit status could not be reset' >&2; exit 1; }; if ` + pipeline + `; then FULLSEND_OPENCODE_PIPE_RC=0; else FULLSEND_OPENCODE_PIPE_RC=$?; fi; ` +
+		`if FULLSEND_OPENCODE_RC="$("$` + openCodeCatVar + `" ` + shellQuote(rcFile) + ` 2>/dev/null)"; then FULLSEND_OPENCODE_RC_READ=0; else FULLSEND_OPENCODE_RC_READ=$?; fi; ` +
 		activationGuard +
-		` && exit "$FULLSEND_OPENCODE_RC"`
+		`if "$` + openCodeTestVar + `" "$FULLSEND_OPENCODE_PIPE_RC" -ne 0 || "$` + openCodeTestVar + `" "$FULLSEND_OPENCODE_RC_READ" -ne 0; then "$` + openCodePrintfVar + `" '%s\n' 'fullsend: OpenCode transcript or exit status could not be persisted' >&2; exit 1; fi; ` +
+		`case "$FULLSEND_OPENCODE_RC" in ''|*[!0-9]*) FULLSEND_OPENCODE_RC=1;; esac; ` +
+		`exit "$FULLSEND_OPENCODE_RC"; }`
 }
 
 // openCodeBinaryPin is the POSIX sh fragment that records where opencode is,
@@ -471,18 +472,12 @@ func (r OpenCodeRuntime) Run(ctx context.Context, params RunParams, printer *ui.
 	if !ok {
 		return -1, fmt.Errorf("opencode run: trusted environment was not recorded during bootstrap")
 	}
-	if trustedEnv.Hooks == nil || (params.HooksSettingsPath != "" && !openCodeHasHookPlan(trustedEnv.Hooks)) {
+	if trustedEnv.Hooks == nil || (params.HooksSettingsPath != "" && !openCodeHookInterpreterConfigured(trustedEnv.Hooks)) {
 		return -1, fmt.Errorf("opencode run: hook policy was not installed during bootstrap")
 	}
-	if trustedEnv.Hooks != nil {
-		activation, err := newOpenCodeHookActivation()
-		if err != nil {
-			return -1, err
-		}
-		hooks := *trustedEnv.Hooks
-		hooks.Activation = activation
-		trustedEnv.Hooks = &hooks
-	}
+	hooks := *trustedEnv.Hooks
+	hooks.Activation = newOpenCodeHookActivation()
+	trustedEnv.Hooks = &hooks
 	if trustedEnv.AgentDefinition != "" {
 		if err := r.restoreOpenCodeAgent(params.SandboxName, agentName, trustedEnv); err != nil {
 			return -1, fmt.Errorf("opencode run: %w", err)
@@ -598,18 +593,18 @@ func (r OpenCodeRuntime) Run(ctx context.Context, params RunParams, printer *ui.
 	return exitCode, nil
 }
 
-func newOpenCodeHookActivation() (*openCodeHookActivation, error) {
+func newOpenCodeHookActivation() *openCodeHookActivation {
 	token := make([]byte, 32)
-	if _, err := openCodeRandomReadFn(token); err != nil {
-		return nil, fmt.Errorf("generating OpenCode hook activation token: %w", err)
-	}
+	// crypto/rand.Read fills the entire buffer and never returns an error.
+	rand.Read(token)
 	return &openCodeHookActivation{
 		Path:  sandbox.SandboxWorkspace + "/" + openCodeHookActivationFile,
 		Token: hex.EncodeToString(token),
-	}, nil
+	}
 }
 
-// Clear mutable overrides without removing the vetted adapter or harness skills.
+// openCodeOverridePaths lists shell-quoted mutable override paths for callers
+// to remove. It excludes the vetted adapter and harness skills.
 func (r OpenCodeRuntime) openCodeOverridePaths(withAgentDir bool) string {
 	dirs := []string{"agents", "mode", "modes", "tool", "tools", "command", "commands", "plugin", "skill", "opencode.json", "opencode.jsonc"}
 	if withAgentDir {
