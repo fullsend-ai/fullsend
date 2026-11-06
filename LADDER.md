@@ -182,6 +182,10 @@ tasks as needed.
 **What it unlocks:**
 
 - GitHub `admin` access on the fullsend-ai repositories
+- Approving and merging the `peribolos.yaml` pull requests in
+  [fullsend-ai/org](https://github.com/fullsend-ai/org) that grant or
+  revoke roles (see [Requesting a role](#requesting-a-role) and
+  [Revoking access](#revoking-access))
 - All capabilities from previous roles
 
 **Criteria and process:** This role has no formal request process
@@ -297,6 +301,14 @@ Role changes use the following request mechanisms:
 | Write | [Write Request](https://github.com/fullsend-ai/org/issues/new?template=write-request.yml) issue in [fullsend-ai/org](https://github.com/fullsend-ai/org) | 2 Maintainers |
 | Maintainer | [Maintainer Nomination](https://github.com/fullsend-ai/org/issues/new?template=maintainer-request.yml) issue in [fullsend-ai/org](https://github.com/fullsend-ai/org) (see [MAINTAINERS.md](MAINTAINERS.md)) | Maintainer consensus |
 | Admin | None yet; ask a member of the [@fullsend-ai/admins](https://github.com/orgs/fullsend-ai/teams/admins) team (see [Admin](#admin)) | Admins; formal process to be defined when needed |
+
+Approving a request and merging it are separate steps. Maintainers
+approve Triage, Write, and Maintainer requests as the table shows, but
+each of those roles is granted by a pull request against
+[peribolos.yaml](https://github.com/fullsend-ai/org/blob/main/peribolos.yaml)
+in [fullsend-ai/org](https://github.com/fullsend-ai/org), and merging
+there needs an admin's review. A maintainer can open that pull request
+once the request is approved; an admin then approves and merges it.
 
 ## Revoking access
 
