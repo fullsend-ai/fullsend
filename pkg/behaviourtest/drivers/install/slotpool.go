@@ -61,6 +61,15 @@ const (
 	// move the exhaustion into the scenario.
 	rateLimitReserve = 100
 
+	// The forge.WithAPICaller labels of the suite's own API calls, so a
+	// job's log can show what spends each org's quota. Scenario steps,
+	// harness polling and scenario cleanup stay forge.APICallerOther.
+	apiCallerClaim     = "claim"
+	apiCallerGC        = "gc"
+	apiCallerLock      = "lock"
+	apiCallerProvision = "provision"
+	apiCallerRelease   = "release"
+
 	// defaultRateLimitWindow is how long an org is avoided after a
 	// rate-limit error when no reset time is known. GitHub documents
 	// waiting at least one minute before retrying a secondary limit that
@@ -394,6 +403,7 @@ func (a *slotAllocator) Capacity() int {
 // it returns a *CapacityError (errors.Is ErrPoolCapacityExhausted);
 // context cancellation is returned as the context error.
 func (a *slotAllocator) Claim(ctx context.Context) (Slot, forge.Client, error) {
+	ctx = forge.WithAPICaller(ctx, apiCallerClaim)
 	slots := a.layout.Slots()
 	a.shuffle(slots)
 
@@ -707,7 +717,7 @@ func (a *slotAllocator) joinOrgLock(ctx context.Context, slot Slot, client forge
 	if a.orgLock == nil {
 		return nil, true
 	}
-	m, reason, err := a.orgLock.join(ctx, client, slot.Org)
+	m, reason, err := a.orgLock.join(forge.WithAPICaller(ctx, apiCallerLock), client, slot.Org)
 	a.observeQuota(slot.Org, client)
 	switch {
 	case err != nil:
@@ -741,6 +751,7 @@ func (a *slotAllocator) leaveOrgLock(ctx context.Context, client forge.Client, m
 	}
 	leaveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), claimCreateTimeout)
 	defer cancel()
+	leaveCtx = forge.WithAPICaller(leaveCtx, apiCallerLock)
 	if err := a.orgLock.leave(leaveCtx, client, m); err != nil {
 		a.logf("[slots] warning: leaving shared e2e-lock on %s failed: %v", m.org, err)
 	}
@@ -926,6 +937,7 @@ func (a *slotAllocator) Acquire(ctx context.Context) (Slot, forge.Client, error)
 // is an error and deletes nothing. After the repository step, whatever
 // its outcome, the lease's holder leaves the org's shared e2e-lock.
 func (a *slotAllocator) Release(ctx context.Context, slot Slot) error {
+	ctx = forge.WithAPICaller(ctx, apiCallerRelease)
 	a.mu.Lock()
 	l, ok := a.held[slot]
 	if ok {
@@ -940,7 +952,7 @@ func (a *slotAllocator) Release(ctx context.Context, slot Slot) error {
 
 	err := a.deleteLeasedRepo(ctx, client, slot, l)
 	if a.orgLock != nil && l.orgLock != nil {
-		if leaveErr := a.orgLock.leave(ctx, client, l.orgLock); leaveErr != nil {
+		if leaveErr := a.orgLock.leave(forge.WithAPICaller(ctx, apiCallerLock), client, l.orgLock); leaveErr != nil {
 			err = errors.Join(err, fmt.Errorf("releasing pool slot %s: leaving shared e2e-lock: %w", slot, leaveErr))
 		}
 	}
