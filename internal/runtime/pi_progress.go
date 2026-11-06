@@ -249,9 +249,10 @@ func piContentText(blocks []piContentBlock) (text string, partial bool) {
 // piResultText returns a tool_execution_end result as ToolResultEvent carries
 // it: the raw text, unredacted and uncut, for the Level 3 content collector
 // only. partial reports a skipped non-text block, as for Claude. A result
-// with no content list is not a shape pi documents: it is dropped and marked,
-// also as for Claude, since the redactor is written for plain text and JSON
-// escapes can hide a secret from it.
+// with no content list is not a shape pi documents: its text is dropped and
+// partial set, also as for Claude, since the redactor is written for plain
+// text and JSON escapes can hide a secret from it. With no text left, the
+// collector keeps a part only for a failed call (see contentBytes).
 func piResultText(raw json.RawMessage) (text string, partial bool) {
 	if len(raw) == 0 {
 		return "", false
@@ -305,9 +306,10 @@ func ParsePiStream(r io.Reader, onEvent func(AgentEvent)) (sessionID string, err
 //   - Streaming deltas arrive as message_update.assistantMessageEvent
 //     (text_delta / thinking_delta). message_end.message is authoritative.
 //   - Tool calls are tool_execution_start {toolCallId, toolName, args} and
-//     tool_execution_end {toolCallId, toolName, result, isError}; pi emits
-//     the end after its afterToolCall hooks (agent-loop.ts), so result is
-//     what a tool_result hook left. Both events below fire at the end:
+//     tool_execution_end {toolCallId, toolName, result, isError}; per pi
+//     1.5.0's agent-loop.ts, not yet a live run with a rewriting hook, pi
+//     emits the end after its afterToolCall hooks, so result is what a
+//     tool_result hook left. Both events below fire at the end:
 //     a ToolUseEvent, carrying the call's id and arguments and when its
 //     start was read, then a ToolResultEvent with the result text. The
 //     ToolUseEvent summary is the argument context captured at start

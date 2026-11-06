@@ -238,7 +238,8 @@ first 1 MiB, where Claude Code normally writes it (ahead of the content; an
 id serialized after the content is not recovered, and that call closes
 `unanswered`). Two cases are absent rather than truncated: any other stream
 line beyond 1 MiB is skipped whole by the parser, and results whose content is entirely non-text (for example
-images) produce no part. A result that mixed text with non-text blocks keeps
+images), or a pi result in a shape pi does not document, produce no part
+unless the call failed. A result that mixed text with non-text blocks keeps
 its text and is marked `fullsend.truncated`; a failed call with empty
 output survives as a `tool_call_response` part carrying `is_error`. The SDK's span attribute length cap is
 lifted while capture is on; an explicit
