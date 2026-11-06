@@ -461,7 +461,7 @@ The existing design principle is that [the repo is the coordinator](problems/age
   as webhooks ([ADR 0063](ADRs/0063-polling-based-work-discovery.md)). Initial
   scope is per-repo mode only.
 - Jira poll actor authorization does not require the poller to administer the
-  Jira project once a repository opts in with a `jira` provider under
+  Jira project once a repository adds a `jira` provider under
   `authorization:`. With no `jira` entry, every Jira event resolves through the
   admin-only project role roster. The entry lists Jira groups and account IDs
   for the `write` and `triage` roles, which are authoritative for slash
@@ -471,6 +471,12 @@ The existing design principle is that [the repo is the coordinator](problems/age
   `labels: project_roles` (which, with no lists, resolves every event through
   the roster, as with no entry)
   ([ADR 0153](ADRs/0153-authorize-jira-poll-actors-without-project-administration.md)).
+  Running the `jira-poll` driver with no `jira` entry is deprecated: the
+  poller warns at start, and a later release requires the entry, with the
+  two-line `labels: project_roles` entry as the migration
+  ([ADR 0157](ADRs/0157-require-jira-authorization-entry-for-jira-poll.md),
+  rollout in [#9005](https://github.com/fullsend-ai/fullsend/issues/9005)
+  and [#9006](https://github.com/fullsend-ai/fullsend/issues/9006)).
 - Process lifecycle (target state): bound `fullsend run` and `fullsend poll`
   support once, resident polling, and deadline-bounded polling. Bare
   `fullsend poll` and non-CI bound runs default to once; a CI bound run with
