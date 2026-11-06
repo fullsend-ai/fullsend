@@ -216,6 +216,13 @@ included — and of the keys it reserves from `env.sandbox` override is
 published as the generated [sandbox environment
 contract](../normative/sandbox-env/v1/README.md).
 
+The budget is the only clock on sub-agents too. On the claude runtime the launch exports
+`CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0` after `.env`, so a value from `.env` or `env.sandbox`
+cannot override it. Without it, Claude Code stops background sub-agents still running 10 minutes
+after the main agent's last turn and exits 0 without a result
+([claude runtime](../runtimes/claude.md#behaviour-differences-worth-knowing)). The pi, codex and
+opencode launches are unchanged.
+
 **Example.** A probe that shows both, and what a kill looks like. The agent prints the variables
 with its own clock, then sleeps past the budget:
 
@@ -351,6 +358,7 @@ variables is deployed.
 | You see | Meaning | Do |
 |---|---|---|
 | `agent timed out after 20m0s without completing (timeout: 20m0s)` | The agent was killed at the budget and no iteration produced a valid result. | Raise `timeout_minutes`, or make the agent write its result before `FULLSEND_ITERATION_DEADLINE`. |
+| `validation failed after 1 iteration(s): interrupted background sub-agent transcripts found, possibly stopped at CLI teardown (<transcripts>)` | Claude runtime: the agent CLI exited 0 and validation failed, and the iteration's sub-agent transcripts include some that end with `[Request interrupted by user]`. A background sub-agent may have been still running, and stopped, when the CLI exited before the agent wrote its result; the runner does not tie the interrupt to the exit, so another cause is possible. The runner exports `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0`, so the CLI does not stop sub-agents on its own idle-wait cap. | Read the named transcripts. If the CLI build ignores the variable, have the agent run the sub-agent in the foreground (`run_in_background: false`) or wait for its result before ending its turn. |
 | `validation failed after 2 iteration(s)` with `Agent exited with code 0` above it | The agent finished in time; its output failed validation on every iteration. | Read the `Validation failed:` lines and fix the output, not the budget. |
 | `Could not export the iteration deadline: exit 1: ...` | The runner could not write the variables into the sandbox. The iteration runs without them; the runner still kills it at the budget. | Usually a non-writable sandbox workspace; a sandbox that died mid-run looks the same. Check the sandbox logs and the image. |
 | `clearing stale iteration deadline (iteration N): ...` | The write failed and the previous iteration's file could not be removed either. The run stops rather than let the agent read a stale deadline. | Same as above. |
@@ -363,6 +371,7 @@ After the last iteration, `fullsend run` returns an error, and so exits non-zero
 | Harness | Run fails when | Error |
 |---|---|---|
 | With `validation_loop` | No iteration validated and the last one was killed at the budget | `agent timed out after <elapsed> without completing (timeout: <budget>)` |
+| With `validation_loop` | No iteration validated, and the last one exited 0 with an interrupted background sub-agent transcript present (claude runtime) | `validation failed after N iteration(s): interrupted background sub-agent transcripts found, possibly stopped at CLI teardown (<transcripts>)` |
 | With `validation_loop` | No iteration validated | `validation failed after N iteration(s)` |
 | Without `validation_loop` | The iteration was killed at the budget | `agent timed out after <elapsed> without completing (timeout: <budget>)` |
 | Without `validation_loop` | The agent exited non-zero, or exited 0 with an error reported in its transcript | `agent failed with exit code <code>` |

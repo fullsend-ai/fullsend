@@ -322,6 +322,14 @@ func TestBuildRunCommand_WithoutHooksSettings(t *testing.T) {
 	assert.Contains(t, cmd, "--settings "+shellQuote(claudeNonessentialSettings),
 		"without the hooks document, --settings still pins nonessential traffic off")
 	assert.Contains(t, cmd, "export "+claudeNonessentialTrafficEnv+"=1")
+
+	var doc struct {
+		Env map[string]string `json:"env"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(claudeNonessentialSettings), &doc))
+	assert.Equal(t, "0", doc.Env[claudeBgWaitCeilingEnv],
+		"without the hooks document, --settings still pins the background-wait ceiling off")
+	assert.Equal(t, "1", doc.Env[claudeNonessentialTrafficEnv])
 }
 
 func TestBuildRunCommand_HooksSettingsEscapesQuotes(t *testing.T) {

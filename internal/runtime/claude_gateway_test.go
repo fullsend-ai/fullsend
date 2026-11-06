@@ -136,6 +136,27 @@ func TestClaudeGatewaySettings(t *testing.T) {
 	assert.Equal(t, "", keyEnv["CLAUDE_CODE_API_KEY_HELPER_TTL_MS"])
 }
 
+// TestClaudeGatewaySettingsArg_NoHooksPinsBgWaitCeiling: a gateway run without
+// installed hooks falls back to the gateway settings alone, which must still
+// pin the background-wait ceiling against a repository settings env block
+// (#9149), for both auth modes, without altering the stored registration's
+// settings.
+func TestClaudeGatewaySettingsArg_NoHooksPinsBgWaitCeiling(t *testing.T) {
+	for _, apiKey := range []bool{false, true} {
+		sb := "fs-claude-gw-nohooks-oidc"
+		if apiKey {
+			sb = "fs-claude-gw-nohooks-key"
+		}
+		registerClaudeGateway(t, sb, apiKey)
+		var got map[string]any
+		require.NoError(t, json.Unmarshal([]byte(ClaudeRuntime{}.claudeGatewaySettingsArg(sb)), &got), sb)
+		env, ok := got["env"].(map[string]any)
+		require.True(t, ok, sb)
+		assert.Equal(t, "0", env[claudeBgWaitCeilingEnv], sb)
+		assert.Equal(t, "https://gw.example.com", env["ANTHROPIC_BASE_URL"], sb)
+	}
+}
+
 // inlineGatewaySettings returns the inline --settings document of a launch
 // command.
 func inlineGatewaySettings(t *testing.T, cmd string) map[string]any {
@@ -250,6 +271,7 @@ func TestClaudeRunnerSettings(t *testing.T) {
 			env[key] = ""
 		}
 		env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
+		env["CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS"] = "0"
 		return env
 	}
 
@@ -269,10 +291,19 @@ func TestClaudeRunnerSettings(t *testing.T) {
 		}
 	})
 
+	t.Run("background-wait ceiling is lifted on every route", func(t *testing.T) {
+		gateway := map[string]any{"env": map[string]any{"ANTHROPIC_BASE_URL": "https://gw.example.com"}}
+		for name, extra := range map[string]map[string]any{"vertex": nil, "gateway": gateway} {
+			env, ok := claudeRunnerSettings(recorded, extra)["env"].(map[string]any)
+			require.True(t, ok, name)
+			assert.Equal(t, "0", env[claudeBgWaitCeilingEnv], name)
+		}
+	})
+
 	t.Run("nothing recorded pins every name empty", func(t *testing.T) {
 		env, ok := claudeRunnerSettings(nil, nil)["env"].(map[string]any)
 		require.True(t, ok)
-		require.Len(t, env, len(hookEnvManagedKeys)+len(pinned)+1)
+		require.Len(t, env, len(hookEnvManagedKeys)+len(pinned)+2)
 		for _, key := range append(append([]string{}, hookEnvManagedKeys...), pinned...) {
 			assert.Equal(t, "", env[key], key)
 		}
@@ -323,6 +354,7 @@ func TestInstallClaudeHooks_PinsRunnerSettings(t *testing.T) {
 		wantHookEnv[key] = ""
 	}
 	wantHookEnv["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
+	wantHookEnv["CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS"] = "0"
 
 	install := func(t *testing.T, sb string, extra map[string]any) (map[string]any, []byte) {
 		t.Helper()
@@ -507,6 +539,7 @@ export CLAUDE_CODE_USE_VERTEX=1
 export CLAUDE_CODE_USE_BEDROCK=1
 export CLAUDE_CODE_API_KEY_HELPER_TTL_MS=99999999
 export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=0
+export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=1000
 export INFERENCE_GATEWAY_API_KEY=planted-after-the-seed
 export ANTHROPIC_DEFAULT_HAIKU_MODEL=kept
 `
@@ -520,6 +553,7 @@ func TestBuildRunCommand_GatewayEnvOwnership_OIDC(t *testing.T) {
 	assert.Contains(t, out, "ANTHROPIC_BASE_URL=https://gw.example.com\n")
 	assert.Contains(t, out, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1\n")
 	assert.Contains(t, out, "CLAUDE_CODE_API_KEY_HELPER_TTL_MS=10000\n")
+	assert.Contains(t, out, "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0\n", ".env cannot shorten the background-wait ceiling")
 	assert.Contains(t, out, "ANTHROPIC_DEFAULT_HAIKU_MODEL=kept", "model choice is not the route's")
 	for _, planted := range []string{"evil.example.com", "sk-planted", "ANTHROPIC_AUTH_TOKEN=", "ANTHROPIC_CUSTOM_HEADERS=", "CLAUDE_CODE_USE_VERTEX=", "CLAUDE_CODE_USE_BEDROCK=", "ANTHROPIC_API_KEY="} {
 		assert.NotContains(t, out, planted, "%s reached claude", planted)
