@@ -72,7 +72,8 @@ jobs:
           relevant=true
           if [ "$EVENT" = merge_group ]; then
             # SYNC-WITH: push.paths / pull_request.paths filters above
-            if git diff --quiet "$BASE_SHA" "$HEAD_SHA" -- images/sandbox images/code internal/runtime internal/security .github/workflows/sandbox-images.yml go.mod go.sum; then
+            # Inspect repository bytes, never an ambient diff helper's verdict.
+            if git diff --no-ext-diff --no-textconv --quiet "$BASE_SHA" "$HEAD_SHA" -- images/sandbox images/code internal/runtime internal/security .github/workflows/sandbox-images.yml go.mod go.sum; then
               relevant=false
             else
               status=$?

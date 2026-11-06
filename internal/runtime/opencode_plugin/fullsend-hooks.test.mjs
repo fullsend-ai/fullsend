@@ -75,9 +75,41 @@ test("trusted permission patterns use tool-specific values when optional fields 
   await assert.rejects(h.before("task", { command: "explore", subagent_type: "general" }), /trusted permission/);
 });
 
-test("Edit-only parents can use apply_patch", async (t) => {
-  const h = await setup(t, { tools: ["Edit"], permission: { "*": "allow", edit: "allow" } });
-  await h.before("apply_patch", { patchText: "*** Update File: file.txt\n@@\n-old\n+new" });
+test("native patch and edit tools preserve translated parent capabilities", async (t) => {
+  for (const capability of ["Write", "Edit", "MultiEdit"]) {
+    const h = await setup(t, { tools: [capability], permission: { edit: "allow" } });
+    for (const patchText of ["*** Add File: file.txt\n+new", "*** Update File: file.txt\n@@\n-old\n+new"]) {
+      await h.before("apply_patch", { patchText });
+    }
+    if (capability !== "Write") await h.before("edit", { filePath: "file.txt", oldString: "old", newString: "new" });
+  }
+  const readOnly = await setup(t, { tools: ["Read"], permission: { edit: "allow" } });
+  await assert.rejects(readOnly.before("apply_patch", { patchText: "*** Add File: file.txt\n+new" }), /parent allowlist/);
+  const denied = await setup(t, { tools: ["Write"], permission: { edit: "deny" } });
+  await assert.rejects(denied.before("apply_patch", { patchText: "*** Add File: file.txt\n+new" }), /trusted permission/);
+});
+
+test("trusted Bash patterns check every command and unquoted argument value", async (t) => {
+  for (const bashAllowlist of [null, ["printf", "touch"]]) {
+    const h = await setup(t, { bashAllowlist, permission: { bash: {
+      "*": "deny", "printf *": "allow", "printf denied*": "deny", "touch *": "deny",
+    } } });
+    for (const command of ["printf safe; printf again", "printf safe | printf again", "printf 'literal; touch data'", "printf \"literal | touch data\""]) {
+      await h.before("bash", { command });
+    }
+    for (const command of [
+      "touch forbidden", "printf safe; touch forbidden", "printf safe | touch forbidden",
+      "printf safe || touch forbidden", "printf safe\ntouch forbidden", "printf 'denied value'",
+      "printf de'nied'", "printf\tdenied", 'printf "$VALUE"', 'printf "${VALUE}"',
+      "printf safe # '\ntouch forbidden\n# '", "printf safe > forbidden", "printf safe && touch forbidden",
+    ]) {
+      await assert.rejects(h.before("bash", { command }), /fullsend-hooks/, command);
+    }
+  }
+  const permissive = await setup(t, { permission: { bash: { "*": "allow", "touch *": "deny" } } });
+  for (const command of ["! touch forbidden", "if printf safe; then touch forbidden; fi", "while printf safe; do touch forbidden; done", "touc? forbidden", "hash -p /tmp/evil touch; touch forbidden", "export VALUE=evil; printf safe"]) {
+    await assert.rejects(permissive.before("bash", { command }), /Bash policy/, command);
+  }
 });
 
 test("Bash accepts single-quoted GraphQL literals without hiding executable syntax", async (t) => {
@@ -283,6 +315,31 @@ test("script failure, malformed replies and tampering all fail closed", async (t
   await assert.rejects(other.before("read", {}), /directory changed/);
   const missing = await setup(t, { python: "/does-not-exist", groups: [{ Phase: "PreToolUse", Tools: ["*"], Scripts: ["hook.py"] }] }, { "hook.py": "pass" });
   await assert.rejects(missing.before("read", {}), /failed to execute/);
+});
+
+test("nonempty hook replies must satisfy the wire contract on every scan path", async (t) => {
+  for (const reply of [
+    "null", "[]", "true", '"not a hook reply"', '{"decision":"blok"}', '{"continue":"false"}',
+    '{"reason":42}', '{"metadata":[]}', '{"hookSpecificOutput":null}',
+    '{"hookSpecificOutput":{"hookEventName":"wrong"}}', '{"hookSpecificOutput":{"additionalContext":false}}',
+    '{"unexpected":"field"}',
+  ]) {
+    const script = `print(${JSON.stringify(reply)})\n`;
+    const h = await setup(t, { groups: [
+      { Phase: "PreToolUse", Tools: ["*"], Scripts: ["hook.py"] },
+      { Phase: "PostToolUse", Tools: ["*"], Scripts: ["hook.py"] },
+    ] }, { "hook.py": script });
+    await assert.rejects(h.before("read", {}), /malformed hook reply/, reply);
+    await assert.rejects(h.after("read", {}, "private"), /malformed hook reply/, reply);
+    const failed = { type: "tool", tool: "read", state: { status: "error", input: {}, error: "private" } };
+    await assert.rejects(h.messages([failed]), /malformed hook reply/, reply);
+    assert.equal(failed.state.error, "Tool error withheld by Fullsend");
+  }
+  for (const reply of ["", "{}", '{"decision":"allow"}', '{"continue":true}']) {
+    const h = await setup(t, { groups: [{ Phase: "PreToolUse", Tools: ["*"], Scripts: ["hook.py"] }] },
+      { "hook.py": `print(${JSON.stringify(reply)})\n` });
+    await h.before("read", {});
+  }
 });
 
 test("denial diagnostics retain useful details without secrets or canaries", async (t) => {
