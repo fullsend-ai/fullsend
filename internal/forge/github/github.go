@@ -3226,6 +3226,7 @@ func (c *LiveClient) GetLatestWorkflowRun(ctx context.Context, owner, repo, work
 	var result struct {
 		WorkflowRuns []struct {
 			ID         int    `json:"id"`
+			RunAttempt int    `json:"run_attempt"`
 			Name       string `json:"name"`
 			Event      string `json:"event"`
 			Status     string `json:"status"`
@@ -3245,6 +3246,7 @@ func (c *LiveClient) GetLatestWorkflowRun(ctx context.Context, owner, repo, work
 	run := result.WorkflowRuns[0]
 	return &forge.WorkflowRun{
 		ID:         run.ID,
+		RunAttempt: run.RunAttempt,
 		Name:       run.Name,
 		Event:      run.Event,
 		Status:     run.Status,
@@ -3263,6 +3265,7 @@ func (c *LiveClient) GetWorkflowRun(ctx context.Context, owner, repo string, run
 
 	var run struct {
 		ID         int    `json:"id"`
+		RunAttempt int    `json:"run_attempt"`
 		Name       string `json:"name"`
 		Event      string `json:"event"`
 		Status     string `json:"status"`
@@ -3276,6 +3279,7 @@ func (c *LiveClient) GetWorkflowRun(ctx context.Context, owner, repo string, run
 
 	return &forge.WorkflowRun{
 		ID:         run.ID,
+		RunAttempt: run.RunAttempt,
 		Name:       run.Name,
 		Event:      run.Event,
 		Status:     run.Status,
@@ -4298,6 +4302,7 @@ func (c *LiveClient) ListWorkflowRuns(ctx context.Context, owner, repo, workflow
 	var result struct {
 		WorkflowRuns []struct {
 			ID         int    `json:"id"`
+			RunAttempt int    `json:"run_attempt"`
 			Name       string `json:"name"`
 			Event      string `json:"event"`
 			Status     string `json:"status"`
@@ -4313,6 +4318,7 @@ func (c *LiveClient) ListWorkflowRuns(ctx context.Context, owner, repo, workflow
 	for i, r := range result.WorkflowRuns {
 		runs[i] = forge.WorkflowRun{
 			ID:         r.ID,
+			RunAttempt: r.RunAttempt,
 			Name:       r.Name,
 			Event:      r.Event,
 			Status:     r.Status,
@@ -4341,6 +4347,7 @@ func (c *LiveClient) ListWorkflowRunsSince(ctx context.Context, owner, repo, wor
 		var result struct {
 			WorkflowRuns []struct {
 				ID         int    `json:"id"`
+				RunAttempt int    `json:"run_attempt"`
 				Name       string `json:"name"`
 				Event      string `json:"event"`
 				Status     string `json:"status"`
@@ -4365,6 +4372,7 @@ func (c *LiveClient) ListWorkflowRunsSince(ctx context.Context, owner, repo, wor
 			}
 			all = append(all, forge.WorkflowRun{
 				ID:         r.ID,
+				RunAttempt: r.RunAttempt,
 				Name:       r.Name,
 				Event:      r.Event,
 				Status:     r.Status,
@@ -4391,6 +4399,7 @@ func (c *LiveClient) ListRecentWorkflowRuns(ctx context.Context, owner, repo str
 	var result struct {
 		WorkflowRuns []struct {
 			ID         int    `json:"id"`
+			RunAttempt int    `json:"run_attempt"`
 			Name       string `json:"name"`
 			Event      string `json:"event"`
 			Status     string `json:"status"`
@@ -4406,6 +4415,7 @@ func (c *LiveClient) ListRecentWorkflowRuns(ctx context.Context, owner, repo str
 	for i, r := range result.WorkflowRuns {
 		runs[i] = forge.WorkflowRun{
 			ID:         r.ID,
+			RunAttempt: r.RunAttempt,
 			Name:       r.Name,
 			Event:      r.Event,
 			Status:     r.Status,
@@ -4439,6 +4449,7 @@ func (c *LiveClient) ListWorkflowRunJobs(ctx context.Context, owner, repo string
 		var result struct {
 			Jobs []struct {
 				ID         int    `json:"id"`
+				RunAttempt int    `json:"run_attempt"`
 				Name       string `json:"name"`
 				Status     string `json:"status"`
 				Conclusion string `json:"conclusion"`
@@ -4446,8 +4457,17 @@ func (c *LiveClient) ListWorkflowRunJobs(ctx context.Context, owner, repo string
 		}
 		path := fmt.Sprintf("/repos/%s/%s/actions/runs/%d/jobs?per_page=%d&page=%d",
 			url.PathEscape(owner), url.PathEscape(repo), runID, perPage, page)
+		label := fmt.Sprintf("list workflow run jobs for %s/%s run %d page %d", owner, repo, runID, page)
 		if err := c.getCachedJSON(ctx, path, &result); err != nil {
-			return nil, fmt.Errorf("list workflow run jobs page %d: %w", page, err)
+			if page == 1 && forge.IsNotFound(err) {
+				// GitHub has been observed to 404 the first page for runs
+				// that have not started; the cause is unverified (#9124).
+				// Report the shape only — absence still depends on the run
+				// status. A later-page 404 is a partially readable listing
+				// and never carries the sentinel.
+				return nil, fmt.Errorf("%s: %w: %w", label, forge.ErrJobsListingNotFoundFirstPage, err)
+			}
+			return nil, fmt.Errorf("%s: %w", label, err)
 		}
 		if len(result.Jobs) == 0 {
 			return jobs, nil
@@ -4455,6 +4475,7 @@ func (c *LiveClient) ListWorkflowRunJobs(ctx context.Context, owner, repo string
 		for _, j := range result.Jobs {
 			jobs = append(jobs, forge.WorkflowJob{
 				ID:         j.ID,
+				RunAttempt: j.RunAttempt,
 				Name:       j.Name,
 				Status:     j.Status,
 				Conclusion: j.Conclusion,
