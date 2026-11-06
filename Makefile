@@ -29,7 +29,7 @@ help:
 	@echo "  ci-local             - Run CI checks in a container matching the ubuntu-24.04 runner (T=\"targets\"; see hack/ci-local)"
 	@echo "  behaviour-test       - Run Gherkin behaviour tests (installs fullsend per-repo; CI: OIDC mint)"
 	@echo "  playback-test        - Run @playback behaviour scenarios on the dummy-playback runtime (CI: OIDC mint)"
-	@echo "  behaviour-test-unit  - Run behaviour-tagged pkg/behaviourtest unit tests (mirrors lint.yml)"
+	@echo "  behaviour-test-unit  - Run behaviour-tagged pkg/behaviourtest and internal/forge unit tests (mirrors lint.yml)"
 	@echo "  wasm-build           - Build mintcore WASM binary and report gzip size vs Workers limits"
 	@echo "  wasm-stage           - Build and stage WASM + wasm_exec.js into CF Worker source tree"
 	@echo "  mint-cf-worker-test  - Build WASM, install deps, and run CF Worker bridge smoke tests"
@@ -305,4 +305,6 @@ playback-test:
 # template) that the untagged go-test target skips, plus internal/forge
 # in the same invocation.
 behaviour-test-unit:
+	GH_TOKEN= GITHUB_TOKEN= \
+	GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=commit.gpgsign GIT_CONFIG_VALUE_0=false \
 	go test -race -tags behaviour ./pkg/behaviourtest/... ./internal/forge/...
