@@ -8,6 +8,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT="${SCRIPT_DIR}/resolve-effective-mint-url.sh"
+BASH_ABS="$(command -v bash)"
 FAILURES=0
 
 TMPDIR="$(mktemp -d)"
@@ -19,7 +20,7 @@ run_resolve() {
   local oldpwd="${PWD}"
   : >"${output_file}"
   cd "${TMPDIR}/repo"
-  GITHUB_OUTPUT="${output_file}" FALLBACK_MINT_URL="${fallback}" bash "${SCRIPT}"
+  GITHUB_OUTPUT="${output_file}" FALLBACK_MINT_URL="${fallback}" "${BASH_ABS}" "${SCRIPT}"
   cd "${oldpwd}"
   grep '^mint_url=' "${output_file}" | cut -d= -f2-
 }
@@ -33,10 +34,11 @@ run_resolve_expect_fail() {
   local stderr_file="${TMPDIR}/stderr.txt"
   local oldpwd="${PWD}"
   local got
+  local script_path="${RESOLVE_PATH:-${PATH}}"
   : >"${output_file}"
   : >"${stderr_file}"
   cd "${TMPDIR}/repo"
-  if GITHUB_OUTPUT="${output_file}" FALLBACK_MINT_URL="${fallback}" bash "${SCRIPT}" 2>"${stderr_file}"; then
+  if PATH="${script_path}" GITHUB_OUTPUT="${output_file}" FALLBACK_MINT_URL="${fallback}" "${BASH_ABS}" "${SCRIPT}" 2>"${stderr_file}"; then
     cd "${oldpwd}"
     echo "FAIL: ${name}: expected non-zero exit"
     FAILURES=$((FAILURES + 1))
@@ -136,20 +138,21 @@ printf 'version: "1"\n' >.fullsend/config.yaml
 printf 'mint_url: [unclosed\n' >.fullsend/config.base.yaml
 run_resolve_expect_fail "https://fallback.example" "reject unparsable base under silent overlay" "::error::failed to read mint_url from .fullsend/config.base.yaml"
 
-noyq_path=""
-IFS=':' read -ra _path_parts <<<"${PATH}"
-for _dir in "${_path_parts[@]}"; do
-  if [[ -n "${_dir}" && -x "${_dir}/yq" ]]; then
-    continue
+# Isolate PATH so yq is missing without dropping bash/tr from system
+# directories that also contain yq (for example /usr/bin on merged-/usr).
+noyq_bin="${TMPDIR}/noyq-bin"
+mkdir -p "${noyq_bin}"
+for _cmd in bash tr grep cut cat; do
+  _src="$(command -v "${_cmd}")"
+  if [[ -z "${_src}" || ! -x "${_src}" ]]; then
+    echo "FAIL: required tool ${_cmd} not found on PATH"
+    exit 1
   fi
-  if [[ -z "${noyq_path}" ]]; then
-    noyq_path="${_dir}"
-  else
-    noyq_path="${noyq_path}:${_dir}"
-  fi
+  ln -s "${_src}" "${noyq_bin}/${_cmd}"
 done
-if [[ -z "${noyq_path}" ]]; then
-  noyq_path="/usr/bin:/bin"
+if PATH="${noyq_bin}" command -v yq >/dev/null 2>&1; then
+  echo "FAIL: isolated PATH still finds yq"
+  exit 1
 fi
 
 run_resolve_without_yq() {
@@ -158,7 +161,7 @@ run_resolve_without_yq() {
   local oldpwd="${PWD}"
   : >"${output_file}"
   cd "${TMPDIR}/repo"
-  PATH="${noyq_path}" GITHUB_OUTPUT="${output_file}" FALLBACK_MINT_URL="${fallback}" bash "${SCRIPT}"
+  PATH="${noyq_bin}" GITHUB_OUTPUT="${output_file}" FALLBACK_MINT_URL="${fallback}" "${BASH_ABS}" "${SCRIPT}"
   cd "${oldpwd}"
   grep '^mint_url=' "${output_file}" | cut -d= -f2-
 }
@@ -168,7 +171,7 @@ assert_eq "no yq without config files" "https://fallback.example" "$(run_resolve
 
 setup_repo
 printf 'version: "1"\nmint_url: https://overlay.example\n' >.fullsend/config.yaml
-PATH="${noyq_path}" run_resolve_expect_fail "https://fallback.example" "yq required when config files exist" "::error::yq is required to resolve mint_url from config"
+RESOLVE_PATH="${noyq_bin}" run_resolve_expect_fail "https://fallback.example" "yq required when config files exist" "::error::yq is required to resolve mint_url from config"
 
 if [[ "${FAILURES}" -eq 0 ]]; then
   echo "All tests passed."
