@@ -3397,10 +3397,14 @@ var providerOnlyKeys = map[string]bool{
 // `JIRA_TOKEN: "${JIRA_TOKEN}"`) still passes it to its scripts; one that
 // does not declare it no longer receives it. The parent process keeps them
 // for its own Jira client and trace exporter. The OTLP *_HEADERS variants
-// are matched by isInheritedScriptDenyKey.
+// are matched by isInheritedScriptDenyKey. FULLSEND_JIRA_TOKEN and
+// FULLSEND_JIRA_EMAIL are the credentials the parent's Jira status client
+// reads (jira.CredentialsFromEnv).
 var inheritedScriptDenyKeys = map[string]bool{
-	"JIRA_TOKEN":      true,
-	"JIRA_USER_EMAIL": true,
+	"JIRA_TOKEN":          true,
+	"JIRA_USER_EMAIL":     true,
+	"FULLSEND_JIRA_TOKEN": true,
+	"FULLSEND_JIRA_EMAIL": true,
 }
 
 // isInheritedScriptDenyKey reports whether key must be dropped from the
@@ -6550,7 +6554,11 @@ func setupStatusNotifier(fullsendDir string, role string, forgePlatform string, 
 	// instead of the code-hosting forge. This check comes before the
 	// owner/repo parsing because Jira uses project-key addressing.
 	if sOpts.trackerSource == "jira" {
-		return setupStatusNotifierJira(notifyCfg, sOpts, printer)
+		var tracking *config.TrackingConfig
+		if fsCfg != nil {
+			tracking = fsCfg.IssueTracking()
+		}
+		return setupStatusNotifierJira(notifyCfg, tracking, sOpts, printer)
 	}
 
 	parts := strings.SplitN(sOpts.statusRepo, "/", 2)
@@ -6720,9 +6728,10 @@ func setupStatusNotifierGitLab(notifyCfg config.StatusNotificationConfig, owner,
 // setupStatusNotifierJira creates a status notifier for Jira. Unlike the
 // GitHub/GitLab paths, Jira has no commit SHA or CI run ID equivalents, so a
 // synthetic run ID is generated from the current time when no CI run ID is
-// available.
-func setupStatusNotifierJira(notifyCfg config.StatusNotificationConfig, sOpts statusOpts, printer *ui.Printer) (*statuscomment.Notifier, error) {
-	tc, err := newJiraTrackerClientFromEnv()
+// available. The Jira client is built from the effective tracker.jira
+// config (tracking) and the FULLSEND_JIRA_* credentials.
+func setupStatusNotifierJira(notifyCfg config.StatusNotificationConfig, tracking *config.TrackingConfig, sOpts statusOpts, printer *ui.Printer) (*statuscomment.Notifier, error) {
+	tc, err := newJiraTrackerClientFromConfig(tracking)
 	if err != nil {
 		return nil, err
 	}

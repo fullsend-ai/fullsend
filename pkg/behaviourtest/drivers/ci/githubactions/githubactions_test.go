@@ -21,6 +21,8 @@ import (
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
 )
 
+var _ ci.AgentArtifactDownloader = (*Driver)(nil)
+
 // instantAfter returns a timer function that fires immediately, allowing
 // poll-loop tests to run without real wall-clock sleeps.
 func instantAfter(_ time.Duration) <-chan time.Time {
@@ -276,6 +278,31 @@ func TestNewestRepositoryArtifactCreatedAt(t *testing.T) {
 		{CreatedAt: "2026-01-02T00:00:00Z"},
 	}
 	assert.Equal(t, "2026-01-02T00:00:00Z", newestRepositoryArtifactCreatedAt(arts))
+}
+
+func TestAgentArtifactNameMatchesLogicalAgent(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		actual    string
+		requested string
+		want      bool
+	}{
+		{name: "legacy exact name", actual: "fullsend-ci-retry", requested: "fullsend-ci-retry", want: true},
+		{name: "readable matrix name", actual: "fullsend-ci-retry.matrix-12", requested: "fullsend-ci-retry", want: true},
+		{name: "numeric sibling is not a suffix", actual: "fullsend-ci-retry-1", requested: "fullsend-ci-retry", want: false},
+		{name: "prefix lookalike", actual: "fullsend-ci-retry-helper", requested: "fullsend-ci-retry", want: false},
+		{name: "different agent matrix name", actual: "fullsend-ci-retry-1.matrix-0", requested: "fullsend-ci-retry", want: false},
+		{name: "malformed matrix index", actual: "fullsend-ci-retry.matrix-x", requested: "fullsend-ci-retry", want: false},
+		{name: "invalid agent cannot alias a matrix name", actual: "fullsend-ci-retry.matrix-0", requested: "fullsend-ci-retry.matrix-0", want: false},
+		{name: "invalid requested agent does not match matrix suffix", actual: "fullsend-ci-retry.matrix-0.matrix-1", requested: "fullsend-ci-retry.matrix-0", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, agentArtifactNameMatches(tt.actual, tt.requested))
+		})
+	}
 }
 
 func TestCountHarnessDispatches_NoRuns(t *testing.T) {
@@ -1107,6 +1134,15 @@ func TestWaitForHarnessAgent_FromRepositoryArtifact(t *testing.T) {
 				CreatedAt:     "2026-01-02T00:00:00Z",
 				WorkflowRunID: 99,
 			},
+			{
+				ID:            11,
+				Name:          "fullsend-issue-ping.matrix-1",
+				CreatedAt:     "2026-01-02T00:00:00Z",
+				WorkflowRunID: 99,
+			},
+			// This used to look like a numeric suffix for issue-ping, but
+			// it is the exact legacy name of a different agent.
+			{ID: 12, Name: "fullsend-issue-ping-1", CreatedAt: "2026-01-02T00:00:00Z", WorkflowRunID: 88},
 		},
 	}
 	client.WorkflowRuns = map[string]*forge.WorkflowRun{
@@ -1120,6 +1156,370 @@ func TestWaitForHarnessAgent_FromRepositoryArtifact(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, run)
 	assert.Equal(t, 99, run.ID)
+}
+
+func TestDownloadAgentArtifactsFromRunDownloadsEveryMatchingMatrixArtifact(t *testing.T) {
+	t.Parallel()
+
+	zipData := func(t *testing.T, content string) []byte {
+		t.Helper()
+		var buf bytes.Buffer
+		zw := zip.NewWriter(&buf)
+		w, err := zw.Create("result.txt")
+		require.NoError(t, err)
+		_, err = w.Write([]byte(content))
+		require.NoError(t, err)
+		require.NoError(t, zw.Close())
+		return buf.Bytes()
+	}
+	first := "fullsend-ci-retry"
+	second := "fullsend-ci-retry.matrix-1"
+	other := "fullsend-ci-retry-1"
+	client := forge.NewFakeClient()
+	client.WorkflowRunArtifacts = map[int][]forge.WorkflowArtifact{
+		42: {
+			{ID: 1, Name: first},
+			{ID: 2, Name: second},
+			{ID: 3, Name: other},
+		},
+	}
+	client.WorkflowArtifactContents = map[int][]byte{
+		1: zipData(t, "first"),
+		2: zipData(t, "second"),
+		3: zipData(t, "numeric sibling"),
+	}
+
+	dest := t.TempDir()
+	err := ci.DownloadAgentArtifactsFromRun(context.Background(), New(client, ""), "org", "repo", 42, "ci-retry", dest)
+	require.NoError(t, err)
+	for name, want := range map[string]string{first: "first", second: "second"} {
+		got, err := os.ReadFile(filepath.Join(dest, name, "result.txt"))
+		require.NoError(t, err)
+		assert.Equal(t, want, string(got))
+	}
+	_, err = os.Stat(filepath.Join(dest, other))
+	assert.True(t, os.IsNotExist(err), "numeric sibling artifact must not be downloaded")
+}
+
+func TestDownloadNamedArtifactFromRunMatchesExactName(t *testing.T) {
+	t.Parallel()
+
+	zipData := func(t *testing.T, content string) []byte {
+		t.Helper()
+		var buf bytes.Buffer
+		zw := zip.NewWriter(&buf)
+		w, err := zw.Create("result.txt")
+		require.NoError(t, err)
+		_, err = w.Write([]byte(content))
+		require.NoError(t, err)
+		require.NoError(t, zw.Close())
+		return buf.Bytes()
+	}
+	client := forge.NewFakeClient()
+	client.WorkflowRunArtifacts = map[int][]forge.WorkflowArtifact{
+		42: {
+			{ID: 1, Name: "fullsend-review"},
+			{ID: 2, Name: "fullsend-review.matrix-1"},
+		},
+	}
+	client.WorkflowArtifactContents = map[int][]byte{
+		1: zipData(t, "base"),
+		2: zipData(t, "matrix sibling"),
+	}
+	dest := t.TempDir()
+	err := New(client, "").DownloadNamedArtifactFromRun(context.Background(), "org", "repo", 42, "fullsend-review", dest)
+	require.NoError(t, err)
+	got, err := os.ReadFile(filepath.Join(dest, "fullsend-review", "result.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "base", string(got))
+	assert.NoFileExists(t, filepath.Join(dest, "fullsend-review.matrix-1"))
+}
+
+func TestDownloadNamedArtifactFromRunErrorsWhenNotFound(t *testing.T) {
+	t.Parallel()
+
+	client := forge.NewFakeClient()
+	client.WorkflowRunArtifacts = map[int][]forge.WorkflowArtifact{
+		42: {{ID: 1, Name: "fullsend-ci-retry-1"}},
+	}
+	err := New(client, "").DownloadNamedArtifactFromRun(context.Background(), "org", "repo", 42, "fullsend-ci-retry", t.TempDir())
+	require.ErrorContains(t, err, `artifact "fullsend-ci-retry" not found on workflow run 42`)
+}
+
+func TestDownloadAgentArtifactsAfterDownloadsEveryMatchingMatrixArtifact(t *testing.T) {
+	t.Parallel()
+
+	zipData := func(t *testing.T, content string) []byte {
+		t.Helper()
+		var buf bytes.Buffer
+		zw := zip.NewWriter(&buf)
+		w, err := zw.Create("result.txt")
+		require.NoError(t, err)
+		_, err = w.Write([]byte(content))
+		require.NoError(t, err)
+		require.NoError(t, zw.Close())
+		return buf.Bytes()
+	}
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	first := "fullsend-ci-retry"
+	second := "fullsend-ci-retry.matrix-1"
+	client := forge.NewFakeClient()
+	client.WorkflowRuns = map[string]*forge.WorkflowRun{
+		"run-42": {ID: 42, Status: "completed", Conclusion: "success"},
+	}
+	client.RepositoryArtifacts = map[string][]forge.RepositoryArtifact{
+		"org/repo": {
+			{ID: 1, Name: first, CreatedAt: "2026-01-02T00:00:00Z", WorkflowRunID: 42},
+			{ID: 2, Name: second, CreatedAt: "2026-01-02T00:00:00Z", WorkflowRunID: 42},
+			{ID: 3, Name: "fullsend-ci-retry-1", CreatedAt: "2026-01-02T00:00:00Z", WorkflowRunID: 42},
+		},
+	}
+	client.WorkflowRunArtifacts = map[int][]forge.WorkflowArtifact{
+		42: {
+			{ID: 1, Name: first},
+			{ID: 2, Name: second},
+			{ID: 3, Name: "fullsend-ci-retry-1"},
+		},
+	}
+	client.WorkflowArtifactContents = map[int][]byte{
+		1: zipData(t, "first"),
+		2: zipData(t, "second"),
+		3: zipData(t, "numeric sibling"),
+	}
+	dest := t.TempDir()
+	err := newTestDriver(client).DownloadAgentArtifactsAfter(context.Background(), "org", "repo", "ci-retry", after, dest)
+	require.NoError(t, err)
+	for name, want := range map[string]string{first: "first", second: "second"} {
+		got, err := os.ReadFile(filepath.Join(dest, name, "result.txt"))
+		require.NoError(t, err)
+		assert.Equal(t, want, string(got))
+	}
+	assert.NoFileExists(t, filepath.Join(dest, "fullsend-ci-retry-1"))
+}
+
+func TestDownloadAgentArtifactsAfterUsesOnlyNewestWorkflowRun(t *testing.T) {
+	t.Parallel()
+
+	zipData := func(t *testing.T, content string) []byte {
+		t.Helper()
+		var buf bytes.Buffer
+		zw := zip.NewWriter(&buf)
+		w, err := zw.Create("result.txt")
+		require.NoError(t, err)
+		_, err = w.Write([]byte(content))
+		require.NoError(t, err)
+		require.NoError(t, zw.Close())
+		return buf.Bytes()
+	}
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	client := forge.NewFakeClient()
+	client.WorkflowRuns = map[string]*forge.WorkflowRun{
+		"run-101": {ID: 101, Status: "completed", Conclusion: "success"},
+		"run-102": {ID: 102, Status: "completed", Conclusion: "success"},
+	}
+	client.RepositoryArtifacts = map[string][]forge.RepositoryArtifact{
+		"org/repo": {
+			// The latest run appears first, as it does in the repository
+			// artifact listing. Older artifacts use the same names and have
+			// no downloadable contents; the driver must never fetch them.
+			{ID: 3, Name: "fullsend-ci-retry", CreatedAt: "2026-01-03T00:00:00Z", WorkflowRunID: 102},
+			{ID: 4, Name: "fullsend-ci-retry.matrix-1", CreatedAt: "2026-01-03T00:00:00Z", WorkflowRunID: 102},
+			{ID: 1, Name: "fullsend-ci-retry", CreatedAt: "2026-01-02T00:00:00Z", WorkflowRunID: 101},
+			{ID: 2, Name: "fullsend-ci-retry.matrix-1", CreatedAt: "2026-01-02T00:00:00Z", WorkflowRunID: 101},
+		},
+	}
+	client.WorkflowRunArtifacts = map[int][]forge.WorkflowArtifact{
+		102: {
+			{ID: 3, Name: "fullsend-ci-retry"},
+			{ID: 4, Name: "fullsend-ci-retry.matrix-1"},
+		},
+		101: {
+			{ID: 1, Name: "fullsend-ci-retry"},
+			{ID: 2, Name: "fullsend-ci-retry.matrix-1"},
+		},
+	}
+	client.WorkflowArtifactContents = map[int][]byte{
+		3: zipData(t, "newest first job"),
+		4: zipData(t, "newest second job"),
+	}
+	dest := t.TempDir()
+	err := newTestDriver(client).DownloadAgentArtifactsAfter(context.Background(), "org", "repo", "ci-retry", after, dest)
+	require.NoError(t, err)
+	for name, want := range map[string]string{
+		"fullsend-ci-retry":          "newest first job",
+		"fullsend-ci-retry.matrix-1": "newest second job",
+	} {
+		got, err := os.ReadFile(filepath.Join(dest, name, "result.txt"))
+		require.NoError(t, err)
+		assert.Equal(t, want, string(got))
+	}
+}
+
+func TestDownloadAgentArtifactsAfterDownloadsRunArtifactsBeyondRepositoryListing(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, err := zw.Create("result.txt")
+	require.NoError(t, err)
+	_, err = w.Write([]byte("result"))
+	require.NoError(t, err)
+	require.NoError(t, zw.Close())
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	client := forge.NewFakeClient()
+	client.WorkflowRuns = map[string]*forge.WorkflowRun{
+		"run-42": {ID: 42, Status: "completed", Conclusion: "success"},
+	}
+	// The repository listing only surfaces one artifact of the run; the
+	// run's own (paginated) listing holds more than one page of them.
+	client.RepositoryArtifacts = map[string][]forge.RepositoryArtifact{
+		"org/repo": {
+			{ID: 1, Name: "fullsend-ci-retry", CreatedAt: "2026-01-02T00:00:00Z", WorkflowRunID: 42},
+		},
+	}
+	const total = 120
+	runArtifacts := []forge.WorkflowArtifact{{ID: 1, Name: "fullsend-ci-retry"}}
+	client.WorkflowArtifactContents = map[int][]byte{1: buf.Bytes()}
+	for i := 1; i < total; i++ {
+		runArtifacts = append(runArtifacts, forge.WorkflowArtifact{ID: i + 1, Name: fmt.Sprintf("fullsend-ci-retry.matrix-%d", i)})
+		client.WorkflowArtifactContents[i+1] = buf.Bytes()
+	}
+	client.WorkflowRunArtifacts = map[int][]forge.WorkflowArtifact{42: runArtifacts}
+
+	dest := t.TempDir()
+	require.NoError(t, newTestDriver(client).DownloadAgentArtifactsAfter(context.Background(), "org", "repo", "ci-retry", after, dest))
+	entries, err := os.ReadDir(dest)
+	require.NoError(t, err)
+	assert.Len(t, entries, total)
+}
+
+func TestDownloadAgentArtifactsAfterWaitsForRunToComplete(t *testing.T) {
+	t.Parallel()
+
+	zipData := func(t *testing.T, content string) []byte {
+		t.Helper()
+		var buf bytes.Buffer
+		zw := zip.NewWriter(&buf)
+		w, err := zw.Create("result.txt")
+		require.NoError(t, err)
+		_, err = w.Write([]byte(content))
+		require.NoError(t, err)
+		require.NoError(t, zw.Close())
+		return buf.Bytes()
+	}
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	first := "fullsend-ci-retry"
+	second := "fullsend-ci-retry.matrix-1"
+	client := forge.NewFakeClient()
+	run := &forge.WorkflowRun{ID: 42, Status: "in_progress"}
+	client.WorkflowRuns = map[string]*forge.WorkflowRun{"run-42": run}
+	// Only the fastest matrix job has uploaded while the run is in progress.
+	client.RepositoryArtifacts = map[string][]forge.RepositoryArtifact{
+		"org/repo": {{ID: 1, Name: first, CreatedAt: "2026-01-02T00:00:00Z", WorkflowRunID: 42}},
+	}
+	client.WorkflowRunArtifacts = map[int][]forge.WorkflowArtifact{42: {{ID: 1, Name: first}}}
+	client.WorkflowArtifactContents = map[int][]byte{
+		1: zipData(t, "first"),
+		2: zipData(t, "second"),
+	}
+	polls := 0
+	d := &Driver{
+		Client: client,
+		afterFunc: func(_ time.Duration) <-chan time.Time {
+			polls++
+			if polls == 2 {
+				// The sibling uploads and the run finishes between polls.
+				client.WorkflowRunArtifacts[42] = append(client.WorkflowRunArtifacts[42], forge.WorkflowArtifact{ID: 2, Name: second})
+				run.Status = "completed"
+				run.Conclusion = "success"
+			}
+			return instantAfter(0)
+		},
+	}
+
+	dest := t.TempDir()
+	require.NoError(t, d.DownloadAgentArtifactsAfter(context.Background(), "org", "repo", "ci-retry", after, dest))
+	assert.GreaterOrEqual(t, polls, 2, "driver should poll until the run completes")
+	for name, want := range map[string]string{first: "first", second: "second"} {
+		got, err := os.ReadFile(filepath.Join(dest, name, "result.txt"))
+		require.NoError(t, err)
+		assert.Equal(t, want, string(got))
+	}
+}
+
+// sleepyAfter returns a timer function that sleeps briefly in real time, so a
+// short wall-clock deadline expires after a handful of polls.
+func sleepyAfter(_ time.Duration) <-chan time.Time {
+	time.Sleep(2 * time.Millisecond)
+	return instantAfter(0)
+}
+
+func TestWaitForRunCompletedTimesOutWhileRunInProgress(t *testing.T) {
+	t.Parallel()
+
+	client := forge.NewFakeClient()
+	client.WorkflowRuns = map[string]*forge.WorkflowRun{"run-42": {ID: 42, Status: "in_progress"}}
+	d := &Driver{Client: client, afterFunc: sleepyAfter}
+
+	err := d.waitForRunCompleted(context.Background(), "org", "repo", 42, time.Now().Add(20*time.Millisecond))
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "workflow run 42 did not complete")
+	assert.ErrorContains(t, err, "in_progress")
+}
+
+func TestWaitForRunCompletedReturnsLastLookupError(t *testing.T) {
+	t.Parallel()
+
+	client := forge.NewFakeClient()
+	client.Errors = map[string]error{"GetWorkflowRun": errRateLimited}
+	d := &Driver{Client: client, afterFunc: sleepyAfter}
+
+	err := d.waitForRunCompleted(context.Background(), "org", "repo", 42, time.Now().Add(20*time.Millisecond))
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errRateLimited)
+}
+
+func TestDownloadAgentArtifactsAfterFailsWhenRunNeverCompletes(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	client := forge.NewFakeClient()
+	client.WorkflowRuns = map[string]*forge.WorkflowRun{"run-42": {ID: 42, Status: "in_progress"}}
+	client.RepositoryArtifacts = map[string][]forge.RepositoryArtifact{
+		"org/repo": {{ID: 1, Name: "fullsend-ci-retry", CreatedAt: "2026-01-02T00:00:00Z", WorkflowRunID: 42}},
+	}
+	client.WorkflowRunArtifacts = map[int][]forge.WorkflowArtifact{42: {{ID: 1, Name: "fullsend-ci-retry"}}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	polls := 0
+	d := &Driver{
+		Client: client,
+		afterFunc: func(_ time.Duration) <-chan time.Time {
+			polls++
+			if polls >= 3 {
+				cancel()                    // stands in for the wait deadline; the run never completes
+				return make(chan time.Time) // block so ctx.Done() wins
+			}
+			return instantAfter(0)
+		},
+	}
+
+	dest := t.TempDir()
+	err := d.DownloadAgentArtifactsAfter(ctx, "org", "repo", "ci-retry", after, dest)
+	require.Error(t, err)
+	entries, readErr := os.ReadDir(dest)
+	require.NoError(t, readErr)
+	assert.Empty(t, entries, "no partial artifact set should be downloaded")
+}
+
+func TestDownloadNamedArtifactAfterReturnsListingError(t *testing.T) {
+	t.Parallel()
+
+	client := forge.NewFakeClient()
+	client.Errors = map[string]error{"ListRepositoryArtifacts": errors.New("list failed")}
+	err := newTestDriver(client).DownloadNamedArtifactAfter(context.Background(), "org", "repo", "fullsend-ci-retry", time.Now(), t.TempDir())
+	require.ErrorContains(t, err, "list failed")
 }
 
 func TestWaitForHarnessAgent_FailFastOnFailure(t *testing.T) {
@@ -3885,12 +4285,16 @@ func TestFormatArtifactDiagnostics(t *testing.T) {
 		{ID: 11, Name: "fullsend-agent", CreatedAt: "not-a-time", WorkflowRunID: 100},
 		{ID: 12, Name: "fullsend-agent", CreatedAt: "2026-01-01T12:00:30Z", WorkflowRunID: 101},
 		{ID: 13, Name: "fullsend-other", CreatedAt: "2026-01-01T12:00:30Z", WorkflowRunID: 101},
+		{ID: 14, Name: "fullsend-agent.matrix-0", CreatedAt: "2026-01-01T12:00:30Z", WorkflowRunID: 102},
+		{ID: 15, Name: "fullsend-agent-1", CreatedAt: "2026-01-01T12:00:30Z", WorkflowRunID: 103},
 	}, "fullsend-agent", after)
-	assert.Contains(t, classified, `artifact "fullsend-agent" listed 3 time(s):`)
+	assert.Contains(t, classified, `artifact "fullsend-agent" listed 4 time(s):`)
 	assert.Contains(t, classified, "artifact 10: run=99 created_at=2026-01-01T11:59:59Z (rejected: created before trigger time 2026-01-01T12:00:00Z)")
 	assert.Contains(t, classified, "artifact 11: run=100 created_at=not-a-time (rejected: unparseable created_at)")
 	assert.Contains(t, classified, "artifact 12: run=101 created_at=2026-01-01T12:00:30Z (eligible by trigger time; not explained by the listing")
 	assert.NotContains(t, classified, "artifact 13")
+	assert.Contains(t, classified, "artifact 14: run=102")
+	assert.NotContains(t, classified, "artifact 15")
 }
 
 // TestWaitForHarnessAgent_SkipsPollBelowMinimumBudget drives the clock so

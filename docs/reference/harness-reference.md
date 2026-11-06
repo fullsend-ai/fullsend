@@ -9,6 +9,7 @@ role: triage                        # A role the mint serves (built-in on the ho
 policy: policies/base.yaml          # Sandbox policy; required
 
 # ── Identity & metadata ──────────────────────────────────────
+schema_version: 1                   # Schema contract version (ADR 0127); defaults to `1`
 slug: my-org-my-role                # Install-time App discovery (convention: <org>-<role>); not read by the mint
 description: One-line summary       # Human-readable description
 doc: docs/agents/my-agent.md        # Source-repo-only; not resolved at runtime
@@ -155,6 +156,43 @@ Most fields are self-explanatory from the inline comments above. This section ex
 
 **`doc`** — Path to a human-readable document describing the agent's purpose and design. Resolved in the source repo only; the runtime ignores it. Useful for documentation indexes and discoverability.
 
+**`schema_version`** — Declares the schema contract version of the harness
+document. A scalar integer; the maximum supported version is currently `1`,
+and an absent field means version `1` — the implicit contract of every
+harness written before the field existed — so existing harnesses remain
+valid. `schema_version: null` and `schema_version: ~` count as absent too.
+An invalid `schema_version` value fails at parse time as a load failure —
+not a `Harness.Lint()` finding — in every raw composition layer, before
+layers merge and before forge/overlay resolution. The error shapes:
+
+- **Malformed** — a non-integer value (a string, any float — including
+  `1.0` and `1.5` — or a mapping) fails with the YAML type error naming the
+  offending line (`line N: cannot unmarshal ...`), wrapped under the
+  loader's `parsing harness YAML:` prefix.
+- **Zero or negative** — fails with
+  `schema_version must be a positive integer, got N`.
+- **Unsupported** — a version above the maximum supported fails naming the
+  declared version, the maximum, and the remedy: upgrade fullsend to a
+  release that supports it, or pin harness content declaring a supported
+  version.
+
+Compatibility also runs backward by construction: a build loads any declared
+`schema_version` from `1` through its maximum supported version, and that
+maximum only grows across releases, so newer binaries read older files.
+Whether a future schema version may stop interpreting older-version field
+semantics — and whether a deprecation floor can ever retire an older declared
+version — is deliberately left to the cross-version policy that ADR 0127
+does not set.
+
+**Top level only** — it is not a `ForgeConfig` field, so a `schema_version`
+key placed under `overlays:`/`forge:` is silently ignored; only `base:`
+composition carries it. A `base:` layer whose effective version differs
+from the harness composing it is rejected at load time with an error naming
+both versions and the layer, so mixed-version layers never merge. The merged
+harness keeps the child's own declaration — an absent child stays absent
+(version `1`).
+See [ADR 0127](../ADRs/0127-harness-schema-versioning-and-field-types.md).
+
 **`validation_loop.feedback_mode`** — Controls how validation script output reaches the agent for its next iteration. `none` (default): no feedback; `append`: the previous iteration's validation failure is appended to the agent prompt on retry. See [Configuring agent behavior](../guides/user/customizing-agents.md) for examples.
 
 **`validation_loop.max_iterations`** — The maximum number of agent runs in one invocation (default 1). A second run happens only when the agent finished and its output failed validation; an iteration the runner killed at `timeout_minutes` is not retried. See [`fullsend run` § Budget and deadline](../cli/run.md#budget-and-deadline) and [ADR 0105](../ADRs/0105-timed-out-iteration-ends-the-run.md).
@@ -166,7 +204,7 @@ and `validation_loop.script`), layered over the `fullsend run`
 process environment. (`validation_loop.preflight_check` also reads `env.runner`
 declarations, but atop its own allowlisted environment — see above, not the
 process environment.) A few named workflow secrets are **not** inherited from that environment:
-`JIRA_TOKEN`, `JIRA_USER_EMAIL`, and the OTLP collector headers `OTEL_EXPORTER_OTLP_HEADERS` /
+`JIRA_TOKEN`, `JIRA_USER_EMAIL`, `FULLSEND_JIRA_TOKEN`, `FULLSEND_JIRA_EMAIL`, and the OTLP collector headers `OTEL_EXPORTER_OTLP_HEADERS` /
 `OTEL_EXPORTER_OTLP_*_HEADERS` (for example `OTEL_EXPORTER_OTLP_TRACES_HEADERS`). A script
 receives one only when the harness declares it, e.g. `JIRA_TOKEN: "${JIRA_TOKEN}"` under
 `env.runner`. `fullsend run` itself still reads them for its own Jira client and trace export.
@@ -498,6 +536,7 @@ More-specific entries go last so they override broader defaults.
 | Field type | Behavior |
 |-----------|----------|
 | Scalars (`model`, `pre_script`, `policy`, `image`, etc.) | Child wins if non-empty |
+| `schema_version` | NOT inherited — the merged harness keeps the child's own declaration (absent stays absent, version `1`). Every composed `base:` layer must share one effective version, or the load fails naming both versions and the layer. Top-level only — a `schema_version` key under `overlays:`/`forge:` is silently ignored |
 | `skills` | Merged with deduplication by skill identity (declared `SKILL.md` name when on disk, otherwise basename). Child overrides a matching base entry; sibling nested dirs that share a leaf name are kept; two entries with one identity in a single list are both kept and fail at bootstrap; when a child entry replaces a base entry, their per-file override maps merge (child keys win); a map-form child entry whose path has no `SKILL.md` keeps the base entry's source (and, with no other match, the one pinned-URL base entry of its name; two or more such entries are an error that asks for the full base URL as the map key) |
 | `providers`, `openshell.profiles` | Concatenated (base + child); also applies per matched overlay |
 | `plugins`, `api_servers` | Concatenated (base + child); each entry keeps its own `env`/`pi` |

@@ -20,7 +20,7 @@ import (
 func TestNewIssuesCreateCmd_Flags(t *testing.T) {
 	cmd := newIssuesCreateCmd()
 
-	for _, name := range []string{"tracker", "project", "type", "parent", "title", "body", "token", "jira-url", "jira-email", "fullsend-dir"} {
+	for _, name := range []string{"tracker", "project", "type", "parent", "title", "body", "token", "fullsend-dir"} {
 		require.NotNil(t, cmd.Flags().Lookup(name), "flag %q should exist", name)
 	}
 }
@@ -30,8 +30,10 @@ func TestIssuesCreateCmd_RequiredFlags(t *testing.T) {
 	cmd.SetArgs([]string{"--tracker", "github"})
 	err := cmd.Execute()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "project")
 	assert.Contains(t, err.Error(), "title")
+	// --project is not a required flag (Jira defaults it to
+	// tracker.jira.project); GitHub and GitLab still require it at run time.
+	assert.NotContains(t, err.Error(), "project")
 }
 
 func TestIssuesCreateCmd_TrackerNotRequired(t *testing.T) {
@@ -112,6 +114,8 @@ func TestRunIssuesCreate_JiraSubTask(t *testing.T) {
 		testStdin:   strings.NewReader("## Plan\n\n- step one\n"),
 		testClient:  tc,
 		testWriter:  &buf,
+
+		testConfigReader: jiraCreateConfig(t, "TC"),
 	}
 	require.NoError(t, runIssuesCreate(context.Background(), cfg))
 
@@ -145,6 +149,8 @@ func TestRunIssuesCreate_JiraWhitespaceOnlyStdinBody(t *testing.T) {
 		testStdin:   strings.NewReader("  \n\t\n  "),
 		testClient:  tc,
 		testWriter:  &buf,
+
+		testConfigReader: jiraCreateConfig(t, "PROJ"),
 	}
 	require.NoError(t, runIssuesCreate(context.Background(), cfg))
 
@@ -182,6 +188,8 @@ func TestRunIssuesCreate_JiraKeyFromTracker(t *testing.T) {
 		title:       "t",
 		testClient:  canonicalKeyClient{},
 		testWriter:  &buf,
+
+		testConfigReader: jiraCreateConfig(t, "PROJ"),
 	}
 	require.NoError(t, runIssuesCreate(context.Background(), cfg))
 
@@ -190,24 +198,88 @@ func TestRunIssuesCreate_JiraKeyFromTracker(t *testing.T) {
 	assert.Equal(t, "https://acme.atlassian.net/browse/PROJ-43", result.URL)
 }
 
-func TestRunIssuesCreate_TrackerFromConfig(t *testing.T) {
-	reader, err := config.ParsePerRepoConfig([]byte("tracker:\n  jira: {}\n"))
+// jiraCreateConfig returns a config reader whose tracker.jira mapping
+// sets project as the primary project and allowed as the cross-project
+// allowed_targets.projects.
+func jiraCreateConfig(t *testing.T, project string, allowed ...string) config.PerRepoConfigReader {
+	t.Helper()
+	body := "tracker:\n  jira:\n    base_url: https://acme.atlassian.net\n    project: " + project + "\n"
+	if len(allowed) > 0 {
+		body += "    allowed_targets:\n      projects: [" + strings.Join(allowed, ", ") + "]\n"
+	}
+	reader, err := config.ParsePerRepoConfig([]byte(body))
 	require.NoError(t, err)
+	return reader
+}
+
+func TestRunIssuesCreate_TrackerAndProjectFromConfig(t *testing.T) {
 	tc, fake, err := tracker.NewFakeJiraClientWithFake("https://acme.atlassian.net")
 	require.NoError(t, err)
 	var buf bytes.Buffer
 
 	cfg := &issuesCreateConfig{
-		project:          "PROJ",
 		issueType:        "Task",
 		title:            "From config",
 		testClient:       tc,
 		testWriter:       &buf,
-		testConfigReader: reader,
+		testConfigReader: jiraCreateConfig(t, "PROJ"),
 	}
 	require.NoError(t, runIssuesCreate(context.Background(), cfg))
 	require.Len(t, fake.CreatedIssues, 1)
+	assert.Equal(t, "PROJ", fake.CreatedIssues[0].ProjectKey, "--project defaults to tracker.jira.project")
 	assert.Equal(t, "PROJ-1", decodeCreateResult(t, &buf).Key)
+}
+
+func TestRunIssuesCreate_JiraCrossProjectTargets(t *testing.T) {
+	t.Run("allowed target", func(t *testing.T) {
+		tc, fake, err := tracker.NewFakeJiraClientWithFake("https://acme.atlassian.net")
+		require.NoError(t, err)
+		cfg := &issuesCreateConfig{
+			trackerName:      trackerJira,
+			project:          "OPS",
+			issueType:        "Task",
+			title:            "t",
+			testClient:       tc,
+			testWriter:       &bytes.Buffer{},
+			testConfigReader: jiraCreateConfig(t, "PROJ", "OPS"),
+		}
+		require.NoError(t, runIssuesCreate(context.Background(), cfg))
+		require.Len(t, fake.CreatedIssues, 1)
+		assert.Equal(t, "OPS", fake.CreatedIssues[0].ProjectKey)
+	})
+	t.Run("project outside allowed targets", func(t *testing.T) {
+		tc, fake, err := tracker.NewFakeJiraClientWithFake("https://acme.atlassian.net")
+		require.NoError(t, err)
+		cfg := &issuesCreateConfig{
+			trackerName:      trackerJira,
+			project:          "SEC",
+			issueType:        "Task",
+			title:            "t",
+			testClient:       tc,
+			testWriter:       &bytes.Buffer{},
+			testConfigReader: jiraCreateConfig(t, "PROJ", "OPS"),
+		}
+		err = runIssuesCreate(context.Background(), cfg)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `Jira project "SEC" is not allowed`)
+		assert.Empty(t, fake.CreatedIssues, "nothing is created in a disallowed project")
+	})
+	t.Run("no jira config", func(t *testing.T) {
+		tc, fake, err := tracker.NewFakeJiraClientWithFake("https://acme.atlassian.net")
+		require.NoError(t, err)
+		cfg := &issuesCreateConfig{
+			trackerName: trackerJira,
+			project:     "PROJ",
+			issueType:   "Task",
+			title:       "t",
+			testClient:  tc,
+			testWriter:  &bytes.Buffer{},
+		}
+		err = runIssuesCreate(context.Background(), cfg)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "tracker.jira.base_url")
+		assert.Empty(t, fake.CreatedIssues)
+	})
 }
 
 func TestRunIssuesCreate_ValidationErrors(t *testing.T) {
@@ -219,7 +291,7 @@ func TestRunIssuesCreate_ValidationErrors(t *testing.T) {
 		{
 			name:    "empty project",
 			cfg:     issuesCreateConfig{trackerName: trackerGitHub, project: " ", title: "t"},
-			wantErr: "--project must not be empty",
+			wantErr: "--project must not be empty for --tracker github",
 		},
 		{
 			name:    "empty title",
@@ -320,14 +392,16 @@ func TestRunIssuesCreate_TrackerError(t *testing.T) {
 }
 
 func TestRunIssuesCreate_JiraMissingCredentials(t *testing.T) {
-	t.Setenv("JIRA_TOKEN", "")
-	t.Setenv("JIRA_BASE_URL", "")
+	t.Setenv("FULLSEND_JIRA_TOKEN", "")
 	cfg := &issuesCreateConfig{
-		trackerName: trackerJira,
-		project:     "PROJ",
-		issueType:   "10003",
-		title:       "t",
-		testWriter:  &bytes.Buffer{},
+		trackerName:      trackerJira,
+		project:          "PROJ",
+		issueType:        "10003",
+		title:            "t",
+		testWriter:       &bytes.Buffer{},
+		testConfigReader: jiraCreateConfig(t, "PROJ"),
 	}
-	require.Error(t, runIssuesCreate(context.Background(), cfg))
+	err := runIssuesCreate(context.Background(), cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "FULLSEND_JIRA_TOKEN is required")
 }

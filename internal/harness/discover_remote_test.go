@@ -108,6 +108,29 @@ func TestDiscoverRemoteAgents(t *testing.T) {
 		assert.Equal(t, "triage", agents[0].Role)
 	})
 
+	t.Run("unsupported schema_version returns multi-error with valid files", func(t *testing.T) {
+		// Remote counterpart of the local discovery contract: a version
+		// this build does not interpret fails that file's parse, so the
+		// valid file's identity is returned alongside the multi-error
+		// naming the bad file.
+		fc := forge.NewFakeClient()
+		fc.DirContents[fmt.Sprintf("%s/%s/harness@%s", owner, repo, ref)] = []forge.DirectoryEntry{
+			{Path: "good.yaml", Type: "file"},
+			{Path: "future.yaml", Type: "file"},
+		}
+		fc.FileContentsRef[fmt.Sprintf("%s/%s/harness/good.yaml@%s", owner, repo, ref)] = []byte("agent: agents/good.md\nrole: triage\nslug: fs-triage\n")
+		fc.FileContentsRef[fmt.Sprintf("%s/%s/harness/future.yaml@%s", owner, repo, ref)] = []byte("schema_version: 2\nagent: agents/future.md\nrole: coder\nslug: fs-coder\n")
+
+		agents, err := DiscoverRemoteAgents(ctx, fc, owner, repo, ref)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "future.yaml")
+		assert.Contains(t, err.Error(), "schema_version 2 is not supported by this version of fullsend")
+		require.Len(t, agents, 1)
+		assert.Equal(t, "triage", agents[0].Role)
+		assert.Equal(t, "fs-triage", agents[0].Slug)
+		assert.Equal(t, "good.yaml", agents[0].Filename)
+	})
+
 	t.Run("GetFileContentAtRef failure for one file returns multi-error", func(t *testing.T) {
 		fc := forge.NewFakeClient()
 		fc.DirContents[fmt.Sprintf("%s/%s/harness@%s", owner, repo, ref)] = []forge.DirectoryEntry{

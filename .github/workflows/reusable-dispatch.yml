@@ -104,6 +104,12 @@ on:
       JIRA_USER_EMAIL:
         description: "Jira account email for Basic auth"
         required: false
+      FULLSEND_JIRA_TOKEN:
+        description: Scoped Jira API token for status notifications.
+        required: false
+      FULLSEND_JIRA_EMAIL:
+        description: Optional Jira account email for a scoped user token.
+        required: false
       FULLSEND_GITHUB_RUNNER_SECRETS:
         description: >-
           JSON object of name to value for host-side scripts (pre_script,
@@ -1159,6 +1165,8 @@ jobs:
           agent: triage
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
           gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+          jira-token: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_TOKEN || '' }}
+          jira-email: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_EMAIL || '' }}
           runner_secrets: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}
           fullsend-dir: .fullsend
           version: ${{ inputs.fullsend_version || job.workflow_sha }}
@@ -1291,6 +1299,8 @@ jobs:
           agent: code
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
           gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+          jira-token: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_TOKEN || '' }}
+          jira-email: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_EMAIL || '' }}
           runner_secrets: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}
           fullsend-dir: .fullsend
           version: ${{ inputs.fullsend_version || job.workflow_sha }}
@@ -1421,6 +1431,8 @@ jobs:
           agent: review
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
           gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+          jira-token: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_TOKEN || '' }}
+          jira-email: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_EMAIL || '' }}
           runner_secrets: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}
           fullsend-dir: .fullsend
           version: ${{ inputs.fullsend_version || job.workflow_sha }}
@@ -1685,6 +1697,8 @@ jobs:
           agent: fix
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
           gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+          jira-token: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_TOKEN || '' }}
+          jira-email: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_EMAIL || '' }}
           runner_secrets: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}
           fullsend-dir: .fullsend
           version: ${{ inputs.fullsend_version || job.workflow_sha }}
@@ -1795,6 +1809,8 @@ jobs:
           agent: retro
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
           gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+          jira-token: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_TOKEN || '' }}
+          jira-email: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_EMAIL || '' }}
           runner_secrets: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}
           fullsend-dir: .fullsend
           version: ${{ inputs.fullsend_version || job.workflow_sha }}
@@ -1891,6 +1907,8 @@ jobs:
           agent: prioritize
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
           gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+          jira-token: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_TOKEN || '' }}
+          jira-email: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_EMAIL || '' }}
           runner_secrets: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}
           fullsend-dir: .fullsend
           version: ${{ inputs.fullsend_version || job.workflow_sha }}
@@ -2291,8 +2309,27 @@ jobs:
         shell: bash
         env:
           EVENT_PAYLOAD: ${{ matrix.event_payload }}
+          # Pass only agent names, not the event payloads in the full matrix.
+          # The matrix can exceed a process environment entry's size limit.
+          MATRIX_AGENT_NAMES: ${{ toJSON(fromJSON(inputs.matrix != '' && inputs.matrix || needs.harness-dispatch.outputs.matrix).include.*.agent) }}
+          MATRIX_AGENT: ${{ matrix.agent }}
+          MATRIX_JOB_INDEX: ${{ strategy.job-index }}
         run: |
           set -euo pipefail
+          if [[ ! "${MATRIX_AGENT}" =~ ^[a-zA-Z0-9_-]+$ || ! "${MATRIX_JOB_INDEX}" =~ ^[0-9]+$ ]]; then
+            echo "::error::matrix agent and job index must be valid"
+            exit 1
+          fi
+          AGENT_OCCURRENCES=$(printf '%s' "${MATRIX_AGENT_NAMES}" | jq --arg agent "${MATRIX_AGENT}" '[.[] | select(. == $agent)] | length')
+          ARTIFACT_NAME="fullsend-${MATRIX_AGENT}"
+          if (( AGENT_OCCURRENCES > 1 )); then
+            FIRST_AGENT_INDEX=$(printf '%s' "${MATRIX_AGENT_NAMES}" | jq --arg agent "${MATRIX_AGENT}" 'index($agent)')
+            if [[ "${FIRST_AGENT_INDEX}" != "${MATRIX_JOB_INDEX}" ]]; then
+              # Dots are excluded from valid agent names, so this readable
+              # suffix cannot overlap another agent's legacy artifact name.
+              ARTIFACT_NAME="fullsend-${MATRIX_AGENT}.matrix-${MATRIX_JOB_INDEX}"
+            fi
+          fi
           URL=$(printf '%s' "${EVENT_PAYLOAD}" | jq -r '.issue.html_url // .pull_request.html_url // empty')
           if [[ -z "${URL}" ]]; then
             echo "::error::event_payload missing issue or pull_request html_url"
@@ -2315,6 +2352,7 @@ jobs:
             echo
             echo "${DELIM}"
             echo "issue_number=${ISSUE_NUMBER}"
+            echo "artifact_name=${ARTIFACT_NAME}"
           } >> "${GITHUB_OUTPUT}"
 
       - name: Run harness agent
@@ -2352,6 +2390,8 @@ jobs:
           agent: ${{ matrix.agent }}
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
           gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+          jira-token: ${{ fromJSON(matrix.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_TOKEN || '' }}
+          jira-email: ${{ fromJSON(matrix.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_EMAIL || '' }}
           role: ${{ matrix.role }}
           runner_secrets: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}
           version: ${{ inputs.fullsend_version || job.workflow_sha }}
@@ -2362,3 +2402,4 @@ jobs:
           status-comment-id: ${{ fromJSON(matrix.event_payload).comment.id }}
           mint-url: ${{ steps.resolve-mint.outputs.mint_url }}
           pr-head-sha: ${{ fromJSON(matrix.event_payload).pull_request.head.sha || '' }}
+          artifact-name: ${{ steps.dispatch-env.outputs.artifact_name }}
