@@ -24,6 +24,24 @@ func TestLatestOkToTestLabeler(t *testing.T) {
 		assert.Empty(t, latestOkToTestLabeler(events))
 	})
 
+	t.Run("same timestamp empty actor before real labeler is ambiguous", func(t *testing.T) {
+		ts := "2026-06-01T11:00:00Z"
+		events := []forge.IssueLabelEvent{
+			{LabelName: OkToTestLabel, CreatedAt: ts, ActorLogin: ""},
+			{LabelName: OkToTestLabel, CreatedAt: ts, ActorLogin: "triager"},
+		}
+		assert.Empty(t, latestOkToTestLabeler(events))
+	})
+
+	t.Run("same timestamp real labeler before empty actor is ambiguous", func(t *testing.T) {
+		ts := "2026-06-01T11:00:00Z"
+		events := []forge.IssueLabelEvent{
+			{LabelName: OkToTestLabel, CreatedAt: ts, ActorLogin: "triager"},
+			{LabelName: OkToTestLabel, CreatedAt: ts, ActorLogin: ""},
+		}
+		assert.Empty(t, latestOkToTestLabeler(events))
+	})
+
 	t.Run("ignores other labels", func(t *testing.T) {
 		events := []forge.IssueLabelEvent{
 			{LabelName: "bug", CreatedAt: "2026-06-01T12:00:00Z", ActorLogin: "other"},

@@ -193,17 +193,19 @@ func latestOkToTestLabeler(events []forge.IssueLabelEvent) string {
 		return ""
 	}
 	var login string
-	ambiguous := false
+	seen, ambiguous := false, false
 	for _, ev := range events {
 		if ev.LabelName != OkToTestLabel || ev.CreatedAt != maxTime {
 			continue
 		}
 		actor := strings.TrimSpace(ev.ActorLogin)
-		if login == "" {
-			login = actor
+		if actor == "" {
+			ambiguous = true // unknown actor at the latest time: keep the label
 			continue
 		}
-		if actor != login {
+		if !seen {
+			login, seen = actor, true
+		} else if actor != login {
 			ambiguous = true
 		}
 	}
