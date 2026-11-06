@@ -212,7 +212,7 @@ func (r CodexRuntime) Bootstrap(input BootstrapInput) error {
 	// inference.gateway block for this sandbox (PrepareGatewayRun).
 	gatewayBaseURL := codexGatewayRunFor(sandboxName)
 	configTOML, err := renderCodexConfig(cfg, repoInput.RepoDir(),
-		codexDeveloperInstructions(agentName, def, roles), gatewayBaseURL, roles, defaultSubagentModel, childEffort)
+		codexDeveloperInstructions(agentName, def, roles), gatewayBaseURL, roles, defaultSubagentModel, childEffort, false)
 	if err != nil {
 		return err
 	}

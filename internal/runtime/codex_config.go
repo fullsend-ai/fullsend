@@ -121,10 +121,23 @@ const codexAuthTimeoutMS = 5000
 // it (verified on 0.157.0, 0.158.0 and 0.159.3; the resolution order is
 // unchanged at 0.166.0).
 //
-// `[features] multi_agent_v2 = false` states codex's default so that the
-// `[agents]` table decides: codex checks this feature first, and when it is
-// on the V2 collaboration tools come back for every model (verified on
-// 0.159.3, unchanged at 0.166.0). On its own the key removes nothing.
+// The `[features.multi_agent_v2]` table decides the collaboration protocol
+// of the run and of every child, whatever its model: codex checks this
+// feature before `[agents] enabled`. When it is on, the root gets the V2
+// tools whatever its model (verified on 0.159.3, unchanged at 0.166.0) and
+// a child gets them only when its own model selects V2 in the catalog
+// (collab_tools_enabled, 0.166.0). `enabled = false` is codex's default,
+// the same as the scalar `[features] multi_agent_v2 = false`, stated so
+// that the `[agents]` table decides. `enabled = true`, for an admitted V2
+// parent with a roster (ADR 0159 decision 1), brings
+// `disable_direct_message = true` (no send_message or followup_task) and
+// `expose_spawn_agent_model_overrides = false` (no model or
+// reasoning_effort in the spawn schema) with it, and only then: the table
+// is `deny_unknown_fields` (MultiAgentV2ConfigToml), so a bump that drops
+// either key would otherwise refuse every run's config, V1 and
+// single-context ones included. `max_concurrent_threads_per_session` is
+// never rendered here: codex derives the V2 cap from the `[agents]` key
+// plus one for the root, so `[agents]` at 4 already yields four children.
 //
 // `[model_providers.fullsend-gateway]` is rendered only when an
 // inference.gateway block applies (codex_gateway.go): a second runner-owned
@@ -161,7 +174,11 @@ enabled = false
 
 [features]
 plugins = false
-multi_agent_v2 = false
+
+[features.multi_agent_v2]
+enabled = {{ .MultiAgentV2 }}{{ if .MultiAgentV2 }}
+disable_direct_message = true
+expose_spawn_agent_model_overrides = false{{ end }}
 
 {{ .AgentsBlock }}
 
@@ -204,7 +221,10 @@ type codexConfigData struct {
 	AuthCommand           string
 	ProjectKey            string
 	// AgentsBlock arrives rendered by codexAgentsBlock, its strings quoted.
-	AgentsBlock       string
+	AgentsBlock string
+	// MultiAgentV2 turns the collaboration V2 table on, with its two
+	// restriction keys; false renders the table at codex's default.
+	MultiAgentV2      bool
 	RefreshIntervalMS int
 	TimeoutMS         int
 	// GatewayProviderID, GatewayBaseURL and GatewayAuthCommand render the
@@ -222,10 +242,16 @@ type codexConfigData struct {
 // fullsend-gateway provider's base_url (codexGatewayBaseURL), or "" when no
 // inference.gateway block applies. roles is the roster Bootstrap registers
 // for a delegating agent (empty otherwise) and defaultSubagentModel the
-// run-level child model it resolved with them.
-func renderCodexConfig(configDir, repoDir, developerInstructions, gatewayBaseURL string, roles []codexRole, defaultSubagentModel, childEffort string) ([]byte, error) {
+// run-level child model it resolved with them. multiAgentV2 is true for a
+// parent admitted on collaboration V2, which needs the roster: the table
+// overrides `[agents] enabled = false`, so V2 without a roster would give
+// the multi-agent tools to an agent that runs in one context.
+func renderCodexConfig(configDir, repoDir, developerInstructions, gatewayBaseURL string, roles []codexRole, defaultSubagentModel, childEffort string, multiAgentV2 bool) ([]byte, error) {
 	if repoDir == "" {
 		return nil, fmt.Errorf("rendering codex %s: the target repository path is required", codexConfigFile)
+	}
+	if multiAgentV2 && len(roles) == 0 {
+		return nil, fmt.Errorf("rendering codex %s: collaboration V2 needs a registered roster", codexConfigFile)
 	}
 	data := codexConfigData{
 		DefaultProviderID:     codexProviderID,
@@ -235,6 +261,7 @@ func renderCodexConfig(configDir, repoDir, developerInstructions, gatewayBaseURL
 		AuthCommand:           codexTOMLString(configDir + "/" + codexAuthScriptFile),
 		ProjectKey:            codexTOMLKey(repoDir),
 		AgentsBlock:           codexAgentsBlock(configDir, roles, defaultSubagentModel, childEffort),
+		MultiAgentV2:          multiAgentV2,
 		RefreshIntervalMS:     codexAuthRefreshIntervalMS,
 		TimeoutMS:             codexAuthTimeoutMS,
 	}
