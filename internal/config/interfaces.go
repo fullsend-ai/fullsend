@@ -258,6 +258,11 @@ func (c *perRepoConfig) AgentEntries() []AgentEntry {
 // Marshal writes), as opposed to the merged set from AgentEntries.
 func (c *perRepoConfig) LocalAgentEntries() []AgentEntry { return c.Agents }
 
+// LocalAllowedResources returns only this layer's own
+// allowed_remote_resources: entries (what Marshal writes), as opposed to
+// the merged set from AllowedResources. nil means the key is unset.
+func (c *perRepoConfig) LocalAllowedResources() []string { return c.AllowedRemoteResources }
+
 // IsKillSwitchActive reports whether the kill switch is engaged.
 // KillSwitch is a *bool: nil falls through to parent, non-nil
 // (including explicit false) is the local decision.

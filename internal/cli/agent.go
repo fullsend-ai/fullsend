@@ -27,6 +27,24 @@ func loadAgentConfig(configPath string) (config.ConfigWriter, error) {
 	return config.LoadConfigWriter(filepath.Dir(configPath), config.LoadOpts{MissingOK: false})
 }
 
+// writeAgentConfig writes cfg to configPath as a minimal edit of the
+// existing file, so comments, key order, indentation and quoting outside
+// the changed agents: and allowed_remote_resources: entries survive.
+func writeAgentConfig(configPath string, cfg config.ConfigWriter) error {
+	orig, err := os.ReadFile(configPath)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("reading config: %w", err)
+	}
+	data, err := config.MarshalPreservingLayout(orig, cfg)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(configPath, data, 0o644); err != nil {
+		return fmt.Errorf("writing config: %w", err)
+	}
+	return nil
+}
+
 func newAgentCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "agent",
@@ -287,12 +305,8 @@ func runAgentSet(fullsendDir, agentName string, f agentSetFlags, printer *ui.Pri
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("config validation failed: %w", err)
 	}
-	data, err := cfg.Marshal()
-	if err != nil {
+	if err := writeAgentConfig(configPath, cfg); err != nil {
 		return err
-	}
-	if err := os.WriteFile(configPath, data, 0o644); err != nil {
-		return fmt.Errorf("writing config: %w", err)
 	}
 	msg := fmt.Sprintf("Set agent %q: runtime=%q model=%q effort=%q (empty = inherit)", agentName, runtimeName, model, effort)
 	if s := formatSubagents(subagents); s != "" {
@@ -337,6 +351,15 @@ func localAgentEntries(cfg config.ConfigReader) []config.AgentEntry {
 	return cfg.AgentEntries()
 }
 
+// localAllowedResources returns the allowed_remote_resources entries the
+// overlay itself declares (nil when it does not set the key).
+func localAllowedResources(cfg config.ConfigReader) []string {
+	if local, ok := cfg.(interface{ LocalAllowedResources() []string }); ok {
+		return local.LocalAllowedResources()
+	}
+	return cfg.AllowedResources()
+}
+
 // upsertAgentSource sets Source for name on a layer's local agent list:
 // on the entry with that name when present, else as a new override-only
 // entry. Mirrors config.UpsertAgentSettings, but for the update path's
@@ -375,12 +398,13 @@ func runAgentAdd(ctx context.Context, source, name, fullsendDir string, forgeCli
 		entry.Ref = originalRef
 
 		prefix := allowlistPrefixForURL(pinnedSource)
-		if prefix != "" {
-			resources := cfg.AllowedResources()
-			if !hasAllowlistPrefix(resources, prefix) {
-				printer.StepInfo("Adding " + prefix + " to allowed_remote_resources")
-				cfg.SetAllowedRemoteResources(append(resources, prefix))
-			}
+		if prefix != "" && !hasAllowlistPrefix(cfg.AllowedResources(), prefix) {
+			printer.StepInfo("Adding " + prefix + " to allowed_remote_resources")
+			// Append to this layer's own list: a non-empty list is
+			// unioned with the parent's, so copying the merged list
+			// would only write inherited defaults into config.yaml.
+			local := localAllowedResources(cfg)
+			cfg.SetAllowedRemoteResources(append(append([]string(nil), local...), prefix))
 		}
 	} else {
 		if err := validateLocalPath(absDir, source); err != nil {
@@ -394,23 +418,20 @@ func runAgentAdd(ctx context.Context, source, name, fullsendDir string, forgeCli
 	}
 
 	derivedName := entry.DerivedName()
-	agents := cfg.AgentEntries()
-	if _, found := findAgentByName(agents, derivedName); found {
+	if _, found := findAgentByName(cfg.AgentEntries(), derivedName); found {
 		return fmt.Errorf("agent %q already exists in config", derivedName)
 	}
 
-	cfg.SetAgents(append(agents, entry))
+	// Only this layer's own entries are written, instead of freezing the
+	// parent layer's entries into config.yaml (mirrors runAgentSet).
+	cfg.SetAgents(append(append([]config.AgentEntry(nil), localAgentEntries(cfg)...), entry))
 
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("config validation failed: %w", err)
 	}
 
-	data, err := cfg.Marshal()
-	if err != nil {
+	if err := writeAgentConfig(configPath, cfg); err != nil {
 		return err
-	}
-	if err := os.WriteFile(configPath, data, 0o644); err != nil {
-		return fmt.Errorf("writing config: %w", err)
 	}
 
 	printer.StepDone(fmt.Sprintf("Added agent %q", derivedName))
@@ -518,12 +539,8 @@ func runAgentUpdate(ctx context.Context, agentName, explicitSHA, fullsendDir str
 			return fmt.Errorf("config validation failed: %w", err)
 		}
 
-		data, err := cfg.Marshal()
-		if err != nil {
+		if err := writeAgentConfig(configPath, cfg); err != nil {
 			return err
-		}
-		if err := os.WriteFile(configPath, data, 0o644); err != nil {
-			return fmt.Errorf("writing config: %w", err)
 		}
 
 		printer.StepDone(fmt.Sprintf("Updated agent %q to %s", agentName, newSHA[:12]))
@@ -711,7 +728,9 @@ func runAgentRemove(fullsendDir, agentName string, printer *ui.Printer) error {
 	if urlutil.IsURL(removedEntry.Source) {
 		prefix := allowlistPrefixForURL(removedEntry.Source)
 		if prefix != "" && !anyAgentUsesPrefix(agents, prefix) {
-			resources := cfg.AllowedResources()
+			// Edit this layer's own list (see runAgentAdd); a prefix that
+			// only the parent lists is unioned back in regardless.
+			resources := localAllowedResources(cfg)
 			cleaned := make([]string, 0, len(resources))
 			for _, r := range resources {
 				if r != prefix {
@@ -720,6 +739,11 @@ func runAgentRemove(fullsendDir, agentName string, printer *ui.Printer) error {
 			}
 			if len(cleaned) < len(resources) {
 				printer.StepInfo("Removed unused prefix from allowed_remote_resources: " + prefix)
+				if len(cleaned) == 0 {
+					// An empty list opts out of the parent's prefixes;
+					// unset the key to keep inheriting them instead.
+					cleaned = nil
+				}
 				cfg.SetAllowedRemoteResources(cleaned)
 			}
 		}
@@ -729,12 +753,8 @@ func runAgentRemove(fullsendDir, agentName string, printer *ui.Printer) error {
 		return fmt.Errorf("config validation failed: %w", err)
 	}
 
-	data, err := cfg.Marshal()
-	if err != nil {
+	if err := writeAgentConfig(configPath, cfg); err != nil {
 		return err
-	}
-	if err := os.WriteFile(configPath, data, 0o644); err != nil {
-		return fmt.Errorf("writing config: %w", err)
 	}
 
 	printer.StepDone(fmt.Sprintf("Removed agent %q", agentName))

@@ -14,6 +14,15 @@ When `--fullsend-dir` is omitted and `.fullsend` does not exist, the command
 stops with `no .fullsend directory in the current directory; run from the
 repository root or pass --fullsend-dir <path>`.
 
+`agent add`, `agent set`, `agent update` and `agent remove` edit
+`config.yaml` in place. Only the `agents:` entries and
+`allowed_remote_resources:` prefixes they change are written; comments, key
+order, indentation and quoting everywhere else are left as they are, and new
+entries follow the indentation of the existing list. If the file cannot be
+edited in place with the same result (for example, it holds more than one
+YAML document), the command rewrites the whole file instead, which drops its
+comments.
+
 ## Commands
 
 | Command | Description |
