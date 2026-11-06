@@ -131,16 +131,25 @@ PHASE_POST = "PostToolUse"
 
 # argv[1] of the spawn guard handler, which takes no script.
 MODE_SPAWN_GUARD = "SpawnGuard"
-# The only multi-agent tool the guard admits.
+# The spawns the guard admits under policy: the V1 spawn, which codex
+# reports under its bare name, and the V2 spawn, reported as its
+# `collaboration` namespace joined with the name (ADR 0126, ADR 0159).
 SPAWN_TOOL_V1 = "spawn_agent"
+SPAWN_TOOL_V2 = "collaborationspawn_agent"
+SPAWN_TOOLS = frozenset({SPAWN_TOOL_V1, SPAWN_TOOL_V2})
 # Passed through from the root thread: each acts on an admitted child and
 # none can start or reopen one. Denied from a child, whose payload carries
-# agent_id or agent_type. Every other multi-agent tool is denied by name.
+# agent_id or agent_type. Every other multi-agent tool is denied by name:
+# the V1 resume, and the V2 send_message and followup_task, which reach a
+# child again.
 SPAWN_GUARD_PASS = frozenset(
     {
         "multi_agent_v1wait_agent",
         "multi_agent_v1close_agent",
         "multi_agent_v1send_input",
+        "collaborationwait_agent",
+        "collaborationlist_agents",
+        "collaborationinterrupt_agent",
     }
 )
 # A spawn without agent_type asks codex for its `default` role.
@@ -175,13 +184,13 @@ CLAUDE_TOOL_FOR_CODEX = {
     "multi_agent_v1close_agent": "Agent",
     "multi_agent_v1send_input": "Agent",
     # The V2 spawn and the control calls ADR 0159 decision 3 maps the same
-    # way are Agent too; the guard still denies them by name. No mapped call
-    # has the allowlist as a backstop: an allowlist that permits Agent passes
-    # them all and the spawn guard is their only name-level check. The V1
-    # spawn still sits under codex's agents.max_depth; the V2 spawn does not
-    # (#9085), so V2 admission needs a backstop of its own before
-    # CodexRuntime.Bootstrap accepts a V2 parent. send_message and
-    # followup_task stay unmapped like the resume.
+    # way are Agent too, admitted and passed through under the same policy.
+    # No mapped call has the allowlist as a backstop: an allowlist that
+    # permits Agent passes them all and the spawn guard is their only
+    # name-level check. The V1 spawn still sits under codex's
+    # agents.max_depth; the V2 spawn does not (#9085), so V2 admission needs
+    # a backstop of its own before CodexRuntime.Bootstrap accepts a V2
+    # parent. send_message and followup_task stay unmapped like the resume.
     "collaborationspawn_agent": "Agent",
     "collaborationwait_agent": "Agent",
     "collaborationlist_agents": "Agent",
@@ -756,15 +765,24 @@ def verify_spawn_files(digests: dict[str, str]) -> str | None:
     return None
 
 
+def _is_none_fork(value: Any) -> bool:
+    """True for the fork_turns codex reads as no fork: a string that is "none"
+    once trimmed, compared case-insensitively. Python's strip() trims a
+    superset of Rust's trim() (U+001C to U+001F); a value the hook admits on
+    that difference is still rejected by codex, never forked."""
+    return isinstance(value, str) and value.strip().casefold() == "none"
+
+
 def spawn_policy(hook_input: dict[str, Any], registered: dict[str, str]) -> str | None:
-    """The reason a multi-agent call is outside policy, or None for a V1 spawn
-    from the root thread of a registered role with fork_context false and no
-    model or effort argument. Reads no file: agent_type is never a path."""
+    """The reason a multi-agent call is outside policy, or None for a spawn
+    from the root thread of a registered role that starts a fresh context
+    (V1: fork_context false; V2: fork_turns "none") with no model or effort
+    argument. Reads no file: agent_type is never a path."""
     tool = hook_input.get("tool_name")
-    if tool != SPAWN_TOOL_V1:
+    if tool not in SPAWN_TOOLS:
         return (
-            f"fullsend: {tool!r} is not the V1 spawn tool; resuming a child, V2 "
-            "tools and unknown multi-agent tools are not allowed"
+            f"fullsend: {tool!r} is not a spawn tool the runner admits; resuming "
+            "or messaging a child and unknown multi-agent tools are not allowed"
         )
     # Only a child's payload carries agent_id or agent_type.
     if "agent_id" in hook_input or "agent_type" in hook_input:
@@ -772,10 +790,20 @@ def spawn_policy(hook_input: dict[str, Any], registered: dict[str, str]) -> str 
     args = hook_input.get("tool_input")
     if not isinstance(args, dict):
         return "fullsend: spawn_agent arguments are not an object (fail closed)"
-    if args.get("fork_context") is not False:
+    if tool == SPAWN_TOOL_V1 and args.get("fork_context") is not False:
         return (
             "fullsend: spawn_agent must pass fork_context: false; a child starts "
             "without the parent's context"
+        )
+    # Under V2 an absent fork_turns forks the parent's whole history and "0"
+    # is invalid, so only "none" as codex reads it is a fresh context;
+    # fork_context is V1's key.
+    if tool == SPAWN_TOOL_V2 and (
+        "fork_context" in args or not _is_none_fork(args.get("fork_turns"))
+    ):
+        return (
+            'fullsend: spawn_agent must pass fork_turns: "none" and no fork_context; '
+            "a child starts without the parent's context"
         )
     for key in ("model", "reasoning_effort"):
         if key in args:

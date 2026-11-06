@@ -481,7 +481,7 @@ func TestCodexHooksJSON_SpawnGuardIsFirst(t *testing.T) {
 	for _, name := range []string{
 		"spawn_agent", "multi_agent_v1resume_agent", "collaborationspawn_agent", // codex's spawn and resume tools
 		"multi_agent_v1wait_agent", "multi_agent_v1close_agent", "multi_agent_v1send_input", // passed through by the handler
-		"collaborationwait_agent", "collaborationlist_agents", "collaborationinterrupt_agent", // V2 control calls: denied by the handler
+		"collaborationwait_agent", "collaborationlist_agents", "collaborationinterrupt_agent", // V2 control calls: passed through by the handler
 		"multi_agent_v1fork_agent", "resume_agent", // unknown names: denied by the handler
 	} {
 		assert.True(t, pattern.MatchString(name), "the guard must run for %s", name)

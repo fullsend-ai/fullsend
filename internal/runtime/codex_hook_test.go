@@ -1260,7 +1260,10 @@ func TestCodexAdapterSpawnGuardConstantsMatchGo(t *testing.T) {
 	assert.Contains(t, src, `MODE_SPAWN_GUARD = "`+codexSpawnGuardMode+`"`)
 	assert.Contains(t, src, `SPAWN_DIGESTS_ENV = "`+codexSpawnDigestsEnv+`"`)
 	assert.Contains(t, src, `SPAWN_TOOL_V1 = "spawn_agent"`,
-		"the guard admits the V1 spawn under policy; every other matched name is passed through or denied by the handler")
+		"the guard admits the V1 spawn under policy")
+	assert.Contains(t, src, `SPAWN_TOOL_V2 = "collaborationspawn_agent"`,
+		"the guard admits the V2 spawn under policy, reached as its namespace joined with its name (ADR 0159); "+
+			"every other matched name is passed through or denied by the handler")
 	assert.Contains(t, src, `SPAWN_GUARD_DEADLINE_S = HANDLER_TIMEOUT_S - BUDGET_MARGIN_S`,
 		"the guard's own deadline is derived from the adapter's handler budget, so it stays below codex's timeout")
 	assert.Contains(t, src, `SPAWN_ADMIT_FINDING = "`+codexSpawnAdmitFinding+`"`,
@@ -1305,6 +1308,26 @@ func codexChildSpawnInput() map[string]any {
 	in["agent_id"] = "01a0ee89-1b2e-7c60-8812-87a59542808f"
 	in["agent_type"] = "correctness"
 	in["model"] = "gpt-5.6-terra"
+	return in
+}
+
+// codexSpawnInputV2 is the PreToolUse payload codex sends for a V2 spawn of
+// role from the root thread: the `collaboration` namespace joined with the
+// tool name, and task_name and fork_turns in place of fork_context. An empty
+// role omits agent_type, which asks codex for the default role.
+func codexSpawnInputV2(role string) map[string]any {
+	in := codexSpawnInput("")
+	in["model"] = "gpt-5.6-sol"
+	in["tool_name"] = "collaborationspawn_agent"
+	args := map[string]any{
+		"fork_turns": "none",
+		"message":    "Review the diff for correctness.",
+		"task_name":  "correctness",
+	}
+	if role != "" {
+		args["agent_type"] = role
+	}
+	in["tool_input"] = args
 	return in
 }
 
@@ -1400,9 +1423,10 @@ func (h *codexAdapterHarness) findingsLog() string {
 }
 
 // TestCodexAdapter_SpawnGuardAdmits covers what the guard lets through: a
-// root-thread V1 spawn of a registered role, and the V1 tools that act on a
-// child already admitted. An allow writes nothing, since stdout codex cannot
-// parse fails the hook; an admitted spawn is recorded in the findings log.
+// root-thread spawn of a registered role, V1 or V2, and the tools of either
+// version that act on a child already admitted. An allow writes nothing,
+// since stdout codex cannot parse fails the hook; an admitted spawn is
+// recorded in the findings log.
 func TestCodexAdapter_SpawnGuardAdmits(t *testing.T) {
 	unnamed := codexSpawnInput("")
 	delete(codexSpawnArgs(unnamed), "agent_type")
@@ -1410,6 +1434,17 @@ func TestCodexAdapter_SpawnGuardAdmits(t *testing.T) {
 		in := codexSpawnInput("correctness")
 		in["tool_name"] = tool
 		in["tool_input"] = map[string]any{"target": "01a0ee84-2a04-7d03-b84f-ad297f46b50e"}
+		return in
+	}
+	spacedNone := codexSpawnInputV2("correctness")
+	codexSpawnArgs(spacedNone)["fork_turns"] = " None "
+	upperNone := codexSpawnInputV2("correctness")
+	codexSpawnArgs(upperNone)["fork_turns"] = "NONE"
+	// The guard reads nothing of a pass-through's arguments.
+	passThroughV2 := func(tool string, input map[string]any) map[string]any {
+		in := codexSpawnInputV2("correctness")
+		in["tool_name"] = tool
+		in["tool_input"] = input
 		return in
 	}
 
@@ -1424,6 +1459,13 @@ func TestCodexAdapter_SpawnGuardAdmits(t *testing.T) {
 		{"V1 wait_agent passes through, no role registered", passThrough("multi_agent_v1wait_agent"), nil, ""},
 		{"V1 close_agent passes through", passThrough("multi_agent_v1close_agent"), []string{"correctness"}, ""},
 		{"V1 send_input passes through", passThrough("multi_agent_v1send_input"), []string{"correctness"}, ""},
+		{"V2 spawn of a registered role, fork_turns none, no override", codexSpawnInputV2("correctness"), []string{"correctness", "default"}, "admitted spawn tool_use_id=call_1_0 agent_type=correctness"},
+		{"V2 agent_type absent maps to default", codexSpawnInputV2(""), []string{"default"}, "admitted spawn tool_use_id=call_1_0 agent_type=default"},
+		{"V2 fork_turns trimmed as codex trims it", spacedNone, []string{"correctness"}, "admitted spawn tool_use_id=call_1_0 agent_type=correctness"},
+		{"V2 fork_turns compared case-insensitively", upperNone, []string{"correctness"}, "admitted spawn tool_use_id=call_1_0 agent_type=correctness"},
+		{"V2 wait_agent passes through, no role registered", passThroughV2("collaborationwait_agent", map[string]any{"timeout_ms": 60000}), nil, ""},
+		{"V2 list_agents passes through", passThroughV2("collaborationlist_agents", map[string]any{}), []string{"correctness"}, ""},
+		{"V2 interrupt_agent passes through", passThroughV2("collaborationinterrupt_agent", map[string]any{}), []string{"correctness"}, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1462,6 +1504,17 @@ func TestCodexAdapter_SpawnGuardDenies(t *testing.T) {
 		edit(codexSpawnArgs(in))
 		return in
 	}
+	withArgsV2 := func(edit func(args map[string]any)) map[string]any {
+		in := codexSpawnInputV2("correctness")
+		edit(codexSpawnArgs(in))
+		return in
+	}
+	namedV2 := func(tool string, input map[string]any) map[string]any {
+		in := codexSpawnInputV2("correctness")
+		in["tool_name"] = tool
+		in["tool_input"] = input
+		return in
+	}
 	rules := []struct {
 		name string
 		run  func(t *testing.T, h *codexAdapterHarness) codexAdapterResult
@@ -1486,13 +1539,54 @@ func TestCodexAdapter_SpawnGuardDenies(t *testing.T) {
 			in["tool_name"] = "multi_agent_v1resume_agent"
 			in["tool_input"] = map[string]any{"target": "01a0ee84-2a04-7d03-b84f-ad297f46b50e"}
 			return h.spawnGuard(in, "correctness")
-		}, "is not the V1 spawn tool"},
-		{"tool collaborationspawn_agent", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
-			in := codexSpawnInput("correctness")
-			in["tool_name"] = "collaborationspawn_agent"
-			in["model"] = "gpt-5.6-sol"
+		}, "is not a spawn tool the runner admits"},
+		{"V2 send_message reaches a child again", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			return h.spawnGuard(namedV2("collaborationsend_message", map[string]any{"target": "correctness", "message": "more"}), "correctness")
+		}, "is not a spawn tool the runner admits"},
+		{"V2 followup_task is the V2 resume", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			return h.spawnGuard(namedV2("collaborationfollowup_task", map[string]any{"target": "correctness", "message": "again"}), "correctness")
+		}, "is not a spawn tool the runner admits"},
+		{"V2 fork_turns absent forks the parent's whole history", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			return h.spawnGuard(withArgsV2(func(a map[string]any) { delete(a, "fork_turns") }), "correctness")
+		}, `fork_turns: "none"`},
+		{"V2 fork_turns 0 is not none", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			return h.spawnGuard(withArgsV2(func(a map[string]any) { a["fork_turns"] = "0" }), "correctness")
+		}, `fork_turns: "none"`},
+		{"V2 fork_turns all", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			return h.spawnGuard(withArgsV2(func(a map[string]any) { a["fork_turns"] = "all" }), "correctness")
+		}, `fork_turns: "none"`},
+		{"V2 fork_turns a number", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			return h.spawnGuard(withArgsV2(func(a map[string]any) { a["fork_turns"] = 3 }), "correctness")
+		}, `fork_turns: "none"`},
+		{"V2 fork_turns null", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			return h.spawnGuard(withArgsV2(func(a map[string]any) { a["fork_turns"] = nil }), "correctness")
+		}, `fork_turns: "none"`},
+		{"V2 fork_turns whitespace only (codex maps it to all)", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			return h.spawnGuard(withArgsV2(func(a map[string]any) { a["fork_turns"] = "   " }), "correctness")
+		}, `fork_turns: "none"`},
+		{"V2 fork_context present", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			return h.spawnGuard(withArgsV2(func(a map[string]any) { a["fork_context"] = false }), "correctness")
+		}, "no fork_context"},
+		{"V2 model argument present", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			return h.spawnGuard(withArgsV2(func(a map[string]any) { a["model"] = "gpt-5.6-sol" }), "correctness")
+		}, "must not pass model"},
+		{"V2 reasoning_effort argument null", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			return h.spawnGuard(withArgsV2(func(a map[string]any) { a["reasoning_effort"] = nil }), "correctness")
+		}, "must not pass reasoning_effort"},
+		{"V2 built-in explorer", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			return h.spawnGuard(codexSpawnInputV2("explorer"), "correctness", "default")
+		}, "'explorer' is not one the runner registered"},
+		{"V2 spawn from a child", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			in := codexSpawnInputV2("correctness")
+			in["agent_id"] = "01a0ee89-1b2e-7c60-8812-87a59542808f"
+			in["agent_type"] = "correctness"
 			return h.spawnGuard(in, "correctness")
-		}, "is not the V1 spawn tool"},
+		}, "a child may not spawn"},
+		{"V2 pass-through name from a child, agent_type only", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			in := namedV2("collaborationwait_agent", map[string]any{"timeout_ms": 60000})
+			in["agent_type"] = "correctness"
+			return h.spawnGuard(in, "correctness")
+		}, "is not allowed from a child"},
 		{"spawn from a child (agent_id and agent_type present)", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
 			return h.spawnGuard(codexChildSpawnInput(), "correctness")
 		}, "a child may not spawn"},
@@ -1599,16 +1693,13 @@ func TestCodexAdapter_SpawnGuardDenies(t *testing.T) {
 			return h.spawnGuardRaw("   ", h.spawnEnv(h.spawnDigests("correctness")))
 		}, "cannot be scanned"},
 		{"unknown tool in the V2 namespace (deny-by-default)", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
-			in := codexSpawnInput("correctness")
-			in["tool_name"] = "collaborationwait_agent"
-			in["tool_input"] = map[string]any{"target": "01a0ee84-2a04-7d03-b84f-ad297f46b50e"}
-			return h.spawnGuard(in, "correctness")
-		}, "is not the V1 spawn tool"},
+			return h.spawnGuard(namedV2("collaborationresume_agent", map[string]any{"target": "correctness"}), "correctness")
+		}, "is not a spawn tool the runner admits"},
 		{"unknown tool in the V1 namespace (deny-by-default)", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
 			in := codexSpawnInput("correctness")
 			in["tool_name"] = "multi_agent_v1fork_agent"
 			return h.spawnGuard(in, "correctness")
-		}, "is not the V1 spawn tool"},
+		}, "is not a spawn tool the runner admits"},
 		{"role file swapped for a FIFO", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
 			// A plain open() of a FIFO would block until codex's timeout, which
 			// does not block the spawn; the guard must refuse it at once.
