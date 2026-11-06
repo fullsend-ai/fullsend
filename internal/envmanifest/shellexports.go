@@ -30,8 +30,9 @@ var envNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // environment, so a later "export -n" does not retract either. "export
 // -f" works on functions, so "export -fn NAME" leaves variable NAME
 // exported. An "export" with an option other than -f, -n or -p
-// changes nothing, and "command -v" only looks a command up, so it
-// launches nothing. Parentheses are only separators, so an "export -n" inside a
+// changes nothing, and "command -v" only looks a command up and
+// "builtin" runs only a shell builtin, so neither launches a process.
+// Parentheses are only separators, so an "export -n" inside a
 // ( ... ) subshell is treated as if it ran in the parent shell.
 // Assignment-shaped text
 // inside a quoted value is data, not a binding, and a command
@@ -67,7 +68,7 @@ var shellBuiltins = map[string]bool{
 	"readonly": true, "local": true, "declare": true, "typeset": true,
 	"let": true, "pwd": true, "wait": true, "trap": true, "umask": true,
 	"getopts": true, "source": true, ".": true, "alias": true,
-	"hash": true, "type": true, "ulimit": true,
+	"hash": true, "type": true, "ulimit": true, "builtin": true,
 }
 
 // maxShellDepth bounds sh -c recursion so a malformed input cannot loop.
@@ -187,6 +188,20 @@ func collectFromCommand(words []shellWord, seen, exported map[string]bool, depth
 				return
 			}
 			seen[name] = true
+		}
+	case "builtin":
+		// builtin runs only a shell builtin, never an external program, so
+		// it launches no process itself. A target outside the shell's
+		// own export/command/exec/builtin dispatchers has no effect on
+		// export attributes, and a non-builtin target is an error.
+		if len(args) > 0 && args[0].text == "--" {
+			args = args[1:]
+		}
+		if len(args) > 0 {
+			switch args[0].text {
+			case "export", "command", "exec", "builtin":
+				collectFromCommand(args, seen, exported, depth)
+			}
 		}
 	case "exec", "nohup":
 		collectFromCommand(args, seen, map[string]bool{}, depth)
