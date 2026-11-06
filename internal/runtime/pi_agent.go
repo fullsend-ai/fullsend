@@ -268,6 +268,17 @@ func piToolsFor(claudeTools []string) (tools, unsupported []string) {
 			}
 			continue
 		}
+		if strings.HasPrefix(ct, "mcp__") {
+			// MCP tool names are canonical: hooks and the allowlist match
+			// them verbatim, and pi's --tools accepts them as patterns. A
+			// declared MCP tool must be named here or pi never declares it
+			// to the model (--tools is a strict selection).
+			if !seen[ct] {
+				seen[ct] = true
+				tools = append(tools, ct)
+			}
+			continue
+		}
 		pt, ok := piToolForClaude[ct]
 		if !ok {
 			unsupported = append(unsupported, ct)
