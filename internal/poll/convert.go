@@ -14,6 +14,7 @@ import (
 )
 
 var errMissingMRCloserIdentity = errors.New("closed merge request has no closer identity")
+var errMissingMRMergerIdentity = errors.New("merged merge request has no merger identity")
 
 // toNormalizedEvent converts a RoutableEvent into a dispatch.NormalizedEvent
 // suitable for stage matching and dispatch. The returned int is the resolved
@@ -114,6 +115,9 @@ func (p *Poller) toNormalizedEvent(ctx context.Context, event RoutableEvent) (di
 			isBot = event.IsBot || (p.botUserID != 0 && authorID == p.botUserID) || isProjectAccessTokenBot(actorLogin)
 		default:
 			actorLogin = event.MergedByLogin
+			if authorID == 0 || actorLogin == "" {
+				return dispatch.NormalizedEvent{}, 0, errMissingMRMergerIdentity
+			}
 			isBot = event.IsBot || (p.botUserID != 0 && event.NoteAuthorID == p.botUserID) || isProjectAccessTokenBot(event.MergedByLogin)
 		}
 	}

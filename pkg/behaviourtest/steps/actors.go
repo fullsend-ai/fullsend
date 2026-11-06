@@ -46,7 +46,7 @@ func registerActorSteps(sc *godog.ScenarioContext) {
 		return ctx, whenActorOpensPullRequest(world.FromContext(ctx), actor, linked != "")
 	})
 	sc.Step(`^the write actor closes the pull request$`, func(ctx context.Context) (context.Context, error) {
-		return ctx, whenWriteActorClosesPullRequest(world.FromContext(ctx))
+		return ctx, whenActorClosesPullRequest(world.FromContext(ctx), actorWrite)
 	})
 	sc.Step(`^the (`+actorAlternation+`) posts "([^"]+)" on the pull request$`, func(ctx context.Context, actor, body string) (context.Context, error) {
 		return ctx, whenActorPostsPRComment(world.FromContext(ctx), actor, body)
@@ -188,17 +188,17 @@ func whenActorSubmitsReviewComment(w *world.World, actor string) error {
 		w.RepoOwner, w.RepoName, w.PRNumber, "COMMENT")
 }
 
-// whenWriteActorClosesPullRequest closes the scenario PR using the write actor's
-// PAT, so the resulting webhook carries a collaborator with write access.
-func whenWriteActorClosesPullRequest(w *world.World) error {
-	if err := requireWriteActor(w); err != nil {
+// whenActorClosesPullRequest closes the scenario PR using the named actor's PAT.
+func whenActorClosesPullRequest(w *world.World, actor string) error {
+	actorSCM, _, err := actorIdentity(w, actor)
+	if err != nil {
 		return err
 	}
 	if w.PRNumber == 0 {
 		return fmt.Errorf("no pull request opened")
 	}
 	w.ScenarioStart = time.Now().Truncate(time.Second)
-	return w.WriteSCM.CloseIssue(context.Background(), w.RepoOwner, w.RepoName, w.PRNumber)
+	return actorSCM.CloseIssue(context.Background(), w.RepoOwner, w.RepoName, w.PRNumber)
 }
 
 // whenActorOpensPullRequest opens a pull request as the named test actor,

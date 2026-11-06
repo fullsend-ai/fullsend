@@ -67,6 +67,8 @@ Feature: Retro routing by a config trigger
       """
     And the repository agents are configured with:
       """
+      review:
+        trigger: "false"
       retro:
         trigger: >
           event.transition.kind == "comment_added"

@@ -546,6 +546,43 @@ func TestRunMissingMRCloserIsObservedWithoutFailure(t *testing.T) {
 	}
 }
 
+func TestRunMissingMRMergerIsObservedWithoutFailure(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	since := now.Add(-20 * time.Minute)
+	mc := newMockClient()
+	mc.setPollState(persistedPollState{LastPollAtFull: since.Format(time.RFC3339)})
+	mc.mrs = []MergeRequest{{
+		IID:             11,
+		State:           "merged",
+		MergedAt:        now,
+		UpdatedAt:       now,
+		Author:          UserRef{ID: 42, Username: "alice"},
+		SourceProjectID: 1,
+		TargetProjectID: 1,
+	}}
+	mc.mrNotes[11] = []Note{}
+
+	router := &stubRouter{stages: []string{"retro"}}
+	p := New(mc, router, "group/project", withTestSecret(Options{Mode: "events"}))
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error: %v, want missing-merger event to be observed without failure", err)
+	}
+	if mc.pipelineCounter != 0 {
+		t.Fatalf("pipeline count = %d, want 0", mc.pipelineCounter)
+	}
+	got, ok := mc.getPollState()
+	if !ok {
+		t.Fatal("poll state was not persisted")
+	}
+	eventKey := (RoutableEvent{Type: "mr_event", IID: 11, UpdatedAt: now}).Key()
+	if got.FailedKeysFull[eventKey] != 0 {
+		t.Errorf("failed-key count for %s = %d, want 0", eventKey, got.FailedKeysFull[eventKey])
+	}
+	if got.LastPollAtFull == since.Format(time.RFC3339) {
+		t.Errorf("watermark remained at %s; unrouteable merge should be observed", got.LastPollAtFull)
+	}
+}
+
 func TestRunAllEventsFailWatermarkNotAdvanced(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	since := now.Add(-20 * time.Minute)

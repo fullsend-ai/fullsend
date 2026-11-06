@@ -42,16 +42,13 @@ type routableAgent struct {
 	// accepts reports whether the event is one this agent's CEL route
 	// covers. Other events keep bash routing (routeBash).
 	accepts func(*normevent.Event) bool
-	// role is the role the agent's reusable-dispatch.yml job mints its
-	// token for, used by the authorization gate.
-	role string
 }
 
 var routableAgents = map[string]routableAgent{
-	"prioritize": {accepts: prioritizeRouteAccepts, role: "prioritize"},
-	"retro":      {accepts: retroRouteAccepts, role: "retro"},
-	"review":     {accepts: reviewRouteAccepts, role: "review"},
-	"triage":     {accepts: triageRouteAccepts, role: "triage"},
+	"prioritize": {accepts: prioritizeRouteAccepts},
+	"retro":      {accepts: retroRouteAccepts},
+	"review":     {accepts: reviewRouteAccepts},
+	"triage":     {accepts: triageRouteAccepts},
 }
 
 // retroRouteAccepts covers the events bash routes to retro: a pull request

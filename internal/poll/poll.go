@@ -323,8 +323,8 @@ func (p *Poller) Run(ctx context.Context) error {
 
 		normalizedEvent, actorID, err := p.toNormalizedEvent(ctx, event)
 		if err != nil {
-			if errors.Is(err, errMissingMRCloserIdentity) {
-				log.Printf("WARNING: observing %s event on IID %d without dispatch: closer identity is unavailable", event.Type, event.IID)
+			if errors.Is(err, errMissingMRCloserIdentity) || errors.Is(err, errMissingMRMergerIdentity) {
+				log.Printf("WARNING: observing %s event on IID %d without dispatch: close/merge actor identity is unavailable", event.Type, event.IID)
 				observe(event)
 				continue
 			}

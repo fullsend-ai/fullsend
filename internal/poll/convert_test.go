@@ -487,6 +487,31 @@ func TestToNormalizedEvent_MREventClosedWithoutCloserFailsClosed(t *testing.T) {
 	}
 }
 
+func TestToNormalizedEvent_MREventMergedWithoutMergerFailsClosed(t *testing.T) {
+	tests := []struct {
+		name          string
+		noteAuthorID  int
+		mergedByLogin string
+	}{
+		{name: "missing merger ID", mergedByLogin: "merger-user"},
+		{name: "missing merger login", noteAuthorID: 42},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			p := newEventsPoller(newMockClient())
+			event := RoutableEvent{
+				Type:          "mr_event",
+				NoteAuthorID:  tc.noteAuthorID,
+				MergedByLogin: tc.mergedByLogin,
+			}
+
+			if _, _, err := p.toNormalizedEvent(context.Background(), event); !errors.Is(err, errMissingMRMergerIdentity) {
+				t.Fatalf("toNormalizedEvent error = %v, want missing merger identity", err)
+			}
+		})
+	}
+}
+
 func TestToNormalizedEvent_UnresolvableActorError(t *testing.T) {
 	mc := newMockClient()
 	p := newEventsPoller(mc)
