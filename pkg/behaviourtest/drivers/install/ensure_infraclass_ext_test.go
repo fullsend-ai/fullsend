@@ -87,10 +87,10 @@ func TestInfraClassForkReplacedStaysScenario(t *testing.T) {
 }
 
 // TestInfraClassWorkflowGetErrorSurfaced pins awaitWorkflowReady's
-// poll-through boundary (PR #8801 review): only the expected not-found
-// lag is polled through to the infra-marked exhaustion; every other
-// GetWorkflow failure is returned unmarked, preserving the cause, so
-// the classifier decides from the real error.
+// classification at exhaustion (PR #8801 review): a poll that ends on the
+// expected not-found lag is infra-marked, and any other last error is
+// returned unmarked with its cause, so the classifier decides from the
+// real error.
 func TestInfraClassWorkflowGetErrorSurfaced(t *testing.T) {
 	tests := map[string]struct {
 		err        error
@@ -104,23 +104,23 @@ func TestInfraClassWorkflowGetErrorSurfaced(t *testing.T) {
 			wantMarked: true,
 			wantMsg:    "not visible on",
 		},
-		"rate limit 429 surfaces unmarked and classifies infra": {
+		"rate limit 429 stays unmarked and classifies infra": {
 			err:        &gh.APIError{StatusCode: http.StatusTooManyRequests, Message: "too many requests"},
 			wantClass:  behaviourfail.Infrastructure,
 			wantMarked: false,
-			wantMsg:    "getting workflow fullsend.yaml on org/repo",
+			wantMsg:    "not visible on",
 		},
-		"permission 403 surfaces unmarked and classifies scenario": {
+		"permission 403 stays unmarked and classifies scenario": {
 			err:        &gh.APIError{StatusCode: http.StatusForbidden, Message: "resource not accessible by integration"},
 			wantClass:  behaviourfail.Scenario,
 			wantMarked: false,
-			wantMsg:    "getting workflow fullsend.yaml on org/repo",
+			wantMsg:    "not visible on",
 		},
-		"server 500 surfaces unmarked and classifies scenario": {
+		"server 500 stays unmarked and classifies scenario": {
 			err:        &gh.APIError{StatusCode: http.StatusInternalServerError, Message: "boom"},
 			wantClass:  behaviourfail.Scenario,
 			wantMarked: false,
-			wantMsg:    "getting workflow fullsend.yaml on org/repo",
+			wantMsg:    "not visible on",
 		},
 	}
 	for name, tc := range tests {
