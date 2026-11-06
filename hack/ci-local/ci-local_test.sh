@@ -107,6 +107,13 @@ exec %q "$@"
 chmod +x "${WORK}/bin-uname/uname"
 export PATH="${WORK}/bin-uname:${PATH}"
 
+# Stub getenforce: prints Permissive, so the checkout mount never gets :z
+# from the host's SELinux mode. The enforcing case overrides it in ${SHIMS}.
+mkdir -p "${WORK}/bin-getenforce"
+printf '#!/bin/sh\necho Permissive\n' > "${WORK}/bin-getenforce/getenforce"
+chmod +x "${WORK}/bin-getenforce/getenforce"
+export PATH="${WORK}/bin-getenforce:${PATH}"
+
 # Args of the last `run` call that is not Docker's root volume chmod.
 last_run_args() {
   awk '/^CALL$/{n++} {a[n]=a[n] $0 "\n"} END{for(i=n;i>0;i--) if (a[i] ~ /\nARG run\n/ && a[i] !~ /ARG --user\nARG 0\n/) {printf "%s", a[i]; exit}}' "${ENGINE_LOG}" |
@@ -542,7 +549,7 @@ if [ "${RC_SUB}" -eq 0 ] && grep -qx "${COV}:/src" <<< "${ARGS_SUB}" &&
   [ "${RC_C}" -eq 0 ] && grep -qx "${COV}:/src" <<< "${ARGS_C}"; then
   pass "the checkout containing the current directory, or -C's directory, is tested (or the directory itself)"
 else
-  fail "default checkout: sub rc=${RC_SUB} [$(grep ':/src$' <<< "${ARGS_SUB}")] plain rc=${RC_PLAIN} [$(grep ':/src$' <<< "${ARGS_PLAIN}")] -C rc=${RC_C} [$(grep ':/src$' <<< "${ARGS_C}")]"
+  fail "default checkout: sub rc=${RC_SUB} [$(grep -E ':/src(:z)?$' <<< "${ARGS_SUB}")] plain rc=${RC_PLAIN} [$(grep -E ':/src(:z)?$' <<< "${ARGS_PLAIN}")] -C rc=${RC_C} [$(grep -E ':/src(:z)?$' <<< "${ARGS_C}")]"
 fi
 
 # With CDPATH set, cd prints the directory it found there; -C must not capture
@@ -554,7 +561,7 @@ ln -sfn "${SCRIPT_DIR}" "${WORK}/ci-local-dir"
 if [ "${RC}" -eq 0 ] && grep -qx "${COV}:/src" <<< "$(last_run_args)"; then
   pass "-C with a relative directory found through CDPATH"
 else
-  fail "-C through CDPATH: rc=${RC} [$(last_run_args | grep ':/src$')]"
+  fail "-C through CDPATH: rc=${RC} [$(last_run_args | grep -E ':/src(:z)?$')]"
 fi
 
 # lint and lint-all install node_modules only when staged docs/.vitepress files need
