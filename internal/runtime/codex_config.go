@@ -118,12 +118,13 @@ const codexAuthTimeoutMS = 5000
 // agent (ADR 0126) `enabled = true` with the roster, depth one, four open
 // children and the run-level child model. `[features] multi_agent = false`
 // is not enough to turn the tools off: the model's catalog entry overrides
-// it (verified on 0.157.0, 0.158.0 and 0.159.3).
+// it (verified on 0.157.0, 0.158.0 and 0.159.3; the resolution order is
+// unchanged at 0.166.0).
 //
 // `[features] multi_agent_v2 = false` states codex's default so that the
 // `[agents]` table decides: codex checks this feature first, and when it is
 // on the V2 collaboration tools come back for every model (verified on
-// 0.159.3). On its own the key removes nothing.
+// 0.159.3, unchanged at 0.166.0). On its own the key removes nothing.
 //
 // `[model_providers.fullsend-gateway]` is rendered only when an
 // inference.gateway block applies (codex_gateway.go): a second runner-owned
