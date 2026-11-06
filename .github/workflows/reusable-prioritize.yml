@@ -173,6 +173,11 @@ jobs:
       - name: Run prioritize agent
         uses: ./.defaults/
         env:
+          # Remote OpenShell gateway endpoint from repository variables
+          # (#9044): passed via a dedicated channel so an unset variable
+          # (rendered as an empty string) does not shadow a value configured
+          # in the runner's own process environment.
+          FULLSEND_OPENSHELL_GATEWAY_ENDPOINT: ${{ vars.OPENSHELL_GATEWAY_ENDPOINT }}
           GITHUB_ISSUE_URL: ${{ fromJSON(inputs.event_payload).issue.html_url }}
           REPO_FULL_NAME: ${{ inputs.source_repo }}
           OTEL_EXPORTER_OTLP_ENDPOINT: ${{ vars.OTEL_EXPORTER_OTLP_ENDPOINT }}
