@@ -62,6 +62,14 @@ Some type/scope pairs are **enforced as errors** by gitlint (rule `UC1`). These 
 | `fix(e2e)` | E2E test changes are not user-visible bug fixes | `ci(e2e)` |
 | `feat(e2e)` | E2E test changes are not user-visible features | `ci(e2e)` |
 
+## Release notes
+
+Today, commit prefixes feed the auto-generated release notes. **Decided in
+[ADR 0160](docs/ADRs/0160-gather-release-notes-from-pr-bodies.md):** release
+notes move to a `release-note` block in the PR body. The Kubernetes
+`release-notes` tool gathers the blocks. Until that work lands, keep treating
+commit subjects as the source for release notes.
+
 ## Breaking changes
 
 Breaking changes **must** be marked in both commit messages and PR titles.
