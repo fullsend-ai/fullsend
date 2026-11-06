@@ -334,17 +334,15 @@ on:
     - cron: "*/5 * * * *"  # every 5 minutes
   workflow_dispatch: {}     # allow manual runs
 
-permissions:
-  actions: write
-  contents: write
-  id-token: write
-  issues: write
-  packages: read
-  pull-requests: write
+permissions: {}
 
 jobs:
   poll:
     runs-on: ubuntu-24.04
+    # Just checks out the repo and runs the fullsend binary -- no write
+    # access needed.
+    permissions:
+      contents: read
     concurrency:
       group: fullsend-jira-poll
       cancel-in-progress: false
@@ -393,6 +391,15 @@ jobs:
   harness:
     name: Harness
     needs: poll
+    # GitHub requires granting every permission reusable-dispatch.yml's jobs
+    # need, even ones that end up skipped this run.
+    permissions:
+      actions: write
+      contents: write
+      id-token: write
+      issues: write
+      packages: read
+      pull-requests: write
     uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@main
     with:
       matrix: ${{ needs.poll.outputs.matrix }}
