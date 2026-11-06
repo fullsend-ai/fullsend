@@ -258,6 +258,23 @@ jobs:
             -f sha="${AGENTS_SHA}"
           echo "Created tag ${TAG} on fullsend-ai/agents at ${AGENTS_SHA}"
 
+  notify-scaffold-sync:
+    # Fan the release out to the fullsend-ai fleet: the called workflow
+    # dispatches `fullsend-updated` to fullsend-ai/.fullsend, whose
+    # sync-scaffold opens one pull request per drifted repository. Called
+    # from here because GoReleaser publishes with GITHUB_TOKEN, and events
+    # created with that token start no workflow runs, so a `release:`
+    # trigger on the called workflow would never fire. Finals only: the
+    # fleet pins final tags, and a release candidate must not open pull
+    # requests across every installed repository.
+    needs: [release]
+    if: "!contains(github.ref_name, '-')"
+    permissions: {}
+    uses: ./.github/workflows/notify-scaffold-sync.yml
+    secrets:
+      SYNC_PRIVATE_KEY: ${{ secrets.SYNC_PRIVATE_KEY }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
   notify-release-blocked:
     # Pre-publication failure: nothing shipped. Before the gate moved ahead
     # of GoReleaser this path did not exist — a validation failure still
