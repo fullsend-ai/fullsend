@@ -580,3 +580,4 @@ ran and why.
 - [OpenAI Workload Identity](../guides/infrastructure/openai-workload-identity.md) — the CI credential path
 - [codex runtime internals](../contributing/runtime-implementation.md#codex-runtime-internals-6920) — config layers, the hook adapter contract, and what to re-check on a `CODEX_VERSION` bump
 - [ADR 0099](../ADRs/0099-codex-agent-runtime.md) — why codex uses a custom model provider, a runner-seeded token file and a translating hook adapter
+- [Sandbox environment contract](../normative/sandbox-env/v1/README.md) — the generated list of what the runner exports into a codex sandbox (`runtime_codex`) and the keys it reserves
