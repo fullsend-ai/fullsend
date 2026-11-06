@@ -431,11 +431,13 @@ runs:
       shell: bash
       run: fullsend --version
 
-    # A runner that sets OPENSHELL_GATEWAY_ENDPOINT uses an OpenShell gateway
-    # that runs elsewhere. Sandboxes are created on that gateway, so the
-    # runner needs no Podman and no local gateway (#9044). This step reads the
-    # runner process environment: the `env` context in an `if:` holds only
-    # workflow, job and step variables, not the runner's own environment.
+    # A remote OpenShell gateway runs elsewhere; sandboxes are created on
+    # it, so the runner needs no Podman and no local gateway (#9044). The
+    # endpoint comes from the repository variable the dispatch workflow
+    # passes as FULLSEND_OPENSHELL_GATEWAY_ENDPOINT, or, when that is unset,
+    # from the runner's own process environment: the `env` context in an
+    # `if:` holds only workflow, job and step variables, not the runner's
+    # own environment.
     - name: Detect sandbox host
       id: sandbox-host
       shell: bash
@@ -449,11 +451,22 @@ runs:
         # environment, so the fallback reads OPENSHELL_GATEWAY_ENDPOINT only
         # when the workflow channel is empty (#9044).
         endpoint="${FULLSEND_OPENSHELL_GATEWAY_ENDPOINT:-}"
+        endpoint_source="repository variable"
         if [[ -z "$endpoint" ]]; then
           endpoint="${OPENSHELL_GATEWAY_ENDPOINT:-}"
+          endpoint_source="runner environment"
         fi
         if [[ -n "$endpoint" ]]; then
-          echo "Using the OpenShell gateway at ${endpoint}; skipping local Podman and gateway setup"
+          # The value is written to GITHUB_ENV below, where a newline would
+          # become a separate assignment for later steps, so it must be a
+          # single https:// URL with no whitespace. This also rejects
+          # whitespace-only configuration, which would otherwise suppress
+          # the fallback and select an unusable remote mode.
+          if [[ ! "$endpoint" =~ ^https://[^[:space:]]+$ ]]; then
+            echo "::error::OPENSHELL_GATEWAY_ENDPOINT must be a single https:// URL with no whitespace (got ${#endpoint} characters from ${endpoint_source})"
+            exit 1
+          fi
+          echo "Using the OpenShell gateway (from ${endpoint_source}); skipping local Podman and gateway setup"
           echo "local=false" >> "${GITHUB_OUTPUT}"
           # The sandbox setup reads OPENSHELL_GATEWAY_ENDPOINT from the
           # environment; publish the resolved value for the later steps.
