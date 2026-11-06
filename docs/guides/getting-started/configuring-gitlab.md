@@ -223,7 +223,10 @@ Install then converges the project:
   leftover shared token from a repository installed before the role-only
   rollout — that requires manual cleanup.
 * Creates two pipeline schedules: `fullsend slash poll` (every 5 minutes)
-  and `fullsend event poll` (at minutes 2, 17, 32, 47). Re-running install
+  and `fullsend event poll` (at minutes 2, 17, 32, 47). When
+  `tracker.jira.poll.enabled` is true it also manages a third schedule,
+  `fullsend jira poll` (cron `1-59/5 * * * *`), created only when Jira polling
+  is enabled. Re-running install
   reports either schedule as drift if it exists but has been disabled,
   without changing it; pass `--reactivate-schedules` to have install
   re-enable it. Leave that flag unset on repos using [Off-system
