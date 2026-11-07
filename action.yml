@@ -412,11 +412,37 @@ runs:
       shell: bash
       run: fullsend --version
 
+    # A runner that sets OPENSHELL_GATEWAY_ENDPOINT uses an OpenShell gateway
+    # that runs elsewhere. Sandboxes are created on that gateway, so the
+    # runner needs no Podman and no local gateway (#9044). This step reads the
+    # runner process environment: the `env` context in an `if:` holds only
+    # workflow, job and step variables, not the runner's own environment.
+    - name: Detect sandbox host
+      id: sandbox-host
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [[ -n "${OPENSHELL_GATEWAY_ENDPOINT:-}" ]]; then
+          echo "OPENSHELL_GATEWAY_ENDPOINT is set: using the existing OpenShell gateway, skipping local Podman and gateway setup"
+          echo "local=false" >> "${GITHUB_OUTPUT}"
+          if command -v openshell >/dev/null 2>&1; then
+            echo "Using the preinstalled OpenShell CLI"
+            echo "install-openshell=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "install-openshell=true" >> "${GITHUB_OUTPUT}"
+          fi
+        else
+          echo "local=true" >> "${GITHUB_OUTPUT}"
+          echo "install-openshell=true" >> "${GITHUB_OUTPUT}"
+        fi
+
     - name: Install Podman
+      if: steps.sandbox-host.outputs.local == 'true'
       shell: bash
       run: "$GITHUB_ACTION_PATH/.github/scripts/install-podman.sh"
 
     - name: Configure rootless Podman
+      if: steps.sandbox-host.outputs.local == 'true'
       shell: bash
       run: |
         test -f /sys/fs/cgroup/cgroup.controllers || { echo "::error::cgroups v2 required"; exit 1; }
@@ -427,6 +453,7 @@ runs:
         systemctl --user start podman.socket
 
     - name: Configure OpenShell gateway
+      if: steps.sandbox-host.outputs.local == 'true'
       shell: bash
       run: |
         source "$GITHUB_ACTION_PATH/.github/scripts/openshell-version.sh"
@@ -446,13 +473,32 @@ runs:
         health_check_interval_secs = 10
         EOF
 
+    # The upstream installer needs sudo and starts a local gateway service, so
+    # a remote-gateway runner that already has the CLI skips it.
     - name: Install OpenShell CLI
+      if: steps.sandbox-host.outputs.install-openshell == 'true'
       shell: bash
       run: "$GITHUB_ACTION_PATH/.github/scripts/install-openshell.sh"
 
+    # A container runner image can ship jsonschema already, or ship a Python
+    # that pip refuses to modify (an externally managed environment, PEP 668).
+    # Skip the install when the package already imports and its installed
+    # version meets the 4.18.0 floor (Draft 2020-12 support); otherwise fall
+    # back to --break-system-packages when the plain install is refused. The
+    # consumers (fullsend-check-output) call the system python3, so the package
+    # must land in its site-packages rather than in a venv.
     - name: Install validation dependencies
       shell: bash
-      run: pip install --quiet "jsonschema>=4.18.0"
+      run: |
+        set -euo pipefail
+        if python3 -c 'import importlib.metadata as m, re, sys, jsonschema; v = re.match(r"(\d+)\.(\d+)", m.version("jsonschema")); sys.exit(0 if v and (int(v[1]), int(v[2])) >= (4, 18) else 1)' >/dev/null 2>&1; then
+          echo "jsonschema >=4.18.0 is already installed, skipping install"
+          exit 0
+        fi
+        if ! python3 -m pip install --quiet "jsonschema>=4.18.0"; then
+          echo "pip install was refused, retrying with --break-system-packages (externally managed Python)"
+          python3 -m pip install --quiet --break-system-packages "jsonschema>=4.18.0"
+        fi
 
     - name: Set up Go for target repo pre-commit hooks
       if: hashFiles(format('{0}/go.mod', inputs.target-repo)) != ''
