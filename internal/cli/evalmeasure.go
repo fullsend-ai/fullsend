@@ -13,7 +13,6 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/evalmeasure"
 	"github.com/fullsend-ai/fullsend/internal/fetch"
 	"github.com/fullsend-ai/fullsend/internal/forge"
-	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
@@ -254,7 +253,7 @@ func evalMeasureFetchContext(fullsendDir string, offline bool, printer *ui.Print
 		AuditLogPath:  filepath.Join(abs, ".fullsend-cache", "fetch-audit.jsonl"),
 		OrgAllowlist:  orgAllowlist,
 		GitToken:      token,
-	}, gh.New(token)
+	}, newGitHubLiveClient(token, "")
 }
 
 func printMeasurementResults(printer *ui.Printer, results []evalmeasure.EvaluationResult, wroteOK bool) {
