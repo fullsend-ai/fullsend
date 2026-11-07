@@ -671,9 +671,11 @@ into a slot.
 **Quota counters by reset time.** GitHub usually reports two core quota
 counters for an org at the same time, even for a single token
 ([#9154](https://github.com/fullsend-ai/fullsend/issues/9154)). Their reset
-times are usually under a minute apart, and each has its own `remaining` value. Almost
-all writes land on one counter, and reads split across both. The cause is
-unknown. GitHub processes requests in multiple regions, and
+times are usually under a minute apart, and each has its own `remaining` value.
+In 39 behaviour jobs from November 2026, almost all writes landed on one
+counter, and reads split across both
+([evidence](https://github.com/fullsend-ai/fullsend/issues/9154#issuecomment-6710943328)).
+The cause is unknown. GitHub processes requests in multiple regions, and
 [its rate limit docs](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api)
 say values can vary from one response to the next, so these may be regional
 counters. It is also unknown whether requests fail when one counter runs out or
@@ -696,13 +698,18 @@ answered in the group, by caller and HTTP method.
 
 To estimate quota use, compare each group's `calls` with its own `spread`. Do
 not compare `total` with one group's drop, because `total` covers both counters.
-On the stage org, where one suite runs at a time, each group's `spread` rose
-with its own `calls`, and `claim` and `lock` calls cost about 1 quota each.
+In the 7 stage org runs in that evidence, where one suite runs at a time, each
+group's `spread` rose with its own `calls`, and a regression put `claim` and
+`lock` at about 0.98 quota per call. These are observations from a short sample,
+not a documented GitHub rule.
 
-- `spread` above `calls` points to traffic this client did not count, possibly
+- `spread` above `calls` can mean traffic this client did not count, possibly
   from other suites or the `fullsend` CLI subprocess.
 - `spread` one below `calls` is normal, because the first reading already
   includes the first call.
+- `calls` more than one above `spread` is rare, at 2 of 1,792 groups in those
+  jobs, and its cause is unknown. It can mean some calls were charged elsewhere
+  or did not lower the readings in this group.
 
 The log covers only the groups this client saw, so it cannot give an org's
 total quota use.
