@@ -1509,6 +1509,10 @@ func convergeRepo(ctx context.Context,
 		cr.Error = err
 		return cr
 	}
+	if err := checkGitLabJiraOAuthSupport(ctx, d, cfg, refResolver); err != nil {
+		cr.Error = err
+		return cr
+	}
 
 	auth := resolved.InferenceAuth
 	// A pinned scaffold that predates the OpenAI credential mapping cannot

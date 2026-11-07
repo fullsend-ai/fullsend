@@ -9,6 +9,50 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
+// checkGitLabJiraOAuthSupport verifies that an explicit fullsend_ref pin
+// ships GitLab job scripts that understand the Jira OAuth client
+// credentials. An OAuth install writes FULLSEND_JIRA_CLIENT_ID and
+// FULLSEND_JIRA_CLIENT_SECRET and removes the token variables, so a pin
+// whose poll script predates them could no longer authenticate. It runs
+// before any credential write. An unpinned manifest renders the running
+// binary's embedded scaffold, which always supports OAuth. The fetch is
+// read-only and fails closed.
+func checkGitLabJiraOAuthSupport(ctx context.Context, d convergeDiscovery, cfg ConvergeConfig, refResolver *RefResolver) error {
+	if !d.jira.enabled || d.resolved.Forge != ForgeGitLab || !jiraUsesOAuth(d.jira, cfg) {
+		return nil
+	}
+	resolved := d.resolved
+	target := resolveTargetRef(ctx, resolved.FullsendRef, cfg.UpstreamRef, cfg.UpstreamTag, refResolver)
+	if target.manifestRef == "" || refResolver == nil {
+		return nil
+	}
+	scripts := []struct {
+		repoPath, outPath string
+		optional          bool
+	}{
+		{"internal/scaffold/fullsend-repo-gitlab/" + gitlabPollJobScriptPath, gitlabPollJobScriptPath, false},
+		// Refs that predate the webhook dispatcher have no such script.
+		{"internal/scaffold/fullsend-repo-gitlab/" + gitlabDispatcherJobScriptPath, gitlabDispatcherJobScriptPath, true},
+	}
+	for _, sc := range scripts {
+		content, err := refResolver.client.GetFileContentAtRef(ctx, shimOwner, shimRepo, sc.repoPath, target.manifestRef)
+		if err != nil {
+			if sc.optional && forge.IsNotFound(err) {
+				continue
+			}
+			return fmt.Errorf("%s/%s: fetching pinned GitLab %s at fullsend_ref %q to verify Jira OAuth support (existing Jira credentials were left unchanged): %w",
+				resolved.Owner, resolved.Repo, sc.outPath, target.manifestRef, err)
+		}
+		for _, name := range jiraOAuthSecrets {
+			if !bytes.Contains(content, []byte(name)) {
+				return fmt.Errorf("%s/%s: pinned fullsend_ref %q: GitLab %s does not reference %s required for Jira OAuth credentials; upgrade fullsend_ref to a ref that supports them (existing Jira credentials were left unchanged)",
+					resolved.Owner, resolved.Repo, target.manifestRef, sc.outPath, name)
+			}
+		}
+	}
+	return nil
+}
+
 // gitlabJiraPollReconciler manages the Fullsend-owned GitLab Jira poll
 // resources (#9108).
 //
