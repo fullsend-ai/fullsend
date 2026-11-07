@@ -392,7 +392,9 @@ MCP tool names such as `mcp__docs__search` and patterns such as
 `mcp__docs__*` pass through the pi tool mapping. Sub-agents load the same
 declared extensions, with their directory hashes checked before each launch.
 A persona's tools are intersected with the parent's permissions using the
-registered tool names. An empty child allowlist hides both built-in and
+active tool names, queried with `pi.getActiveTools()` before each child launch.
+Registered but inactive tools, including `defaultActive: false` tools, stay unavailable.
+An empty child allowlist hides both built-in and
 extension tools.
 
 The hook adapter treats an extension tool like any other — every PreToolUse and PostToolUse hook
@@ -771,9 +773,10 @@ list, no prompt templates or themes, its own session dir, and a `--tools` allowl
   so PreToolUse/PostToolUse hooks and the Bash allowlist apply inside sub-agents too — as they do on
   Claude Code, where the same hooks run on `Agent` calls.
 - **The parent's tool set**, minus `Agent`/`Task`: a child cannot dispatch children of its own.
-  Omitted parent `tools:` and extension-only parent launches retain registered extension tools;
-  explicit parent lists restrict them. Persona patterns are intersected against concrete registered
-  names; Explore remains limited to read-only built-ins.
+  Each launch starts from the parent's current active tools, not every registered tool.
+  Omitted parent `tools:` and extension-only launches retain active extension tools;
+  explicit parent lists restrict them further. Persona patterns are intersected against
+  concrete active names; Explore remains limited to read-only built-ins.
 - **Harness pi plugins.** Children load the same host-vetted declared extensions and arguments.
   Before each launch (including retries), the dispatcher asynchronously re-hashes their trees and
   refuses changed or unverifiable content. This detects drift, not concurrent tampering: a same-user

@@ -1364,7 +1364,7 @@ test("MCP child dispatch intersects concrete tools and rechecks declared extensi
   assert.equal(args[args.indexOf("--tools") + 1], "");
 
   const { spawn, children } = fakeSpawn();
-  const tool = createAgentTool(manifest, { ...quiet, spawn, registeredTools: () => registry });
+  const tool = createAgentTool(manifest, { ...quiet, spawn, activeTools: () => registry });
   const pending = tool.run({ prompt: "search" });
   for (let i = 0; i < 200 && children.length === 0; i++) await new Promise((r) => setTimeout(r, 5));
   assert.equal(children.length, 1);
@@ -1393,15 +1393,39 @@ test("child permissions preserve default, extension-only and explicit parent mod
   const agent = { tools: ["read", "bash"], personas: { docs: { tools: ["mcp__docs__search"] } } };
   for (const toolMode of ["default", "extensions-only"]) {
     agent.toolMode = toolMode;
-    assert.deepEqual(childTools(agent, "docs", registry), ["mcp__docs__search"]);
-    assert.deepEqual(childTools(agent, "Explore", registry), toolMode === "default" ? ["read"] : []);
-    assert.deepEqual(childTools(agent, undefined, registry), toolMode === "default"
+    const active = toolMode === "default" ? registry.filter((t) => t !== "powershell") : registry.filter((t) => !["read", "bash", "powershell"].includes(t));
+    assert.deepEqual(childTools(agent, "docs", active), ["mcp__docs__search"]);
+    assert.deepEqual(childTools(agent, "Explore", active), toolMode === "default" ? ["read"] : []);
+    assert.deepEqual(childTools(agent, undefined, active), toolMode === "default"
       ? ["read", "bash", "mcp__docs__search", "mcp__docs__write"] : ["mcp__docs__search", "mcp__docs__write"]);
   }
   agent.toolMode = "explicit";
   assert.deepEqual(childTools(agent, "docs", registry), []);
   agent.toolMode = undefined; // Older manifests stay restrictive.
   assert.deepEqual(childTools(agent, "docs", registry), []);
+});
+
+test("queued dispatch resamples active tools after obtaining a slot", async () => {
+  const { manifest } = fixture();
+  manifest.agent.toolMode = "default";
+  manifest.agent.maxConcurrent = 1;
+  const { spawn, children } = fakeSpawn();
+  let active = ["mcp__docs__search"];
+  const tool = createAgentTool(manifest, { ...quiet, spawn, activeTools: () => active });
+  const first = tool.run({ prompt: "first" });
+  const second = tool.run({ prompt: "queued" });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(children.length, 1);
+  assert.equal(children[0].args[children[0].args.indexOf("--tools") + 1], "mcp__docs__search");
+  active = [];
+  children[0].child.finish(okStream("done"));
+  await first;
+  await new Promise((r) => setImmediate(r));
+  assert.equal(children.length, 2);
+  assert.equal(children[1].args[children[1].args.indexOf("--tools") + 1], "");
+  children[1].child.finish(okStream("done"));
+  await second;
+  await tool.shutdown();
 });
 
 test("extension tree verification yields to the event loop", async () => {
@@ -1413,7 +1437,7 @@ test("extension tree verification yields to the event loop", async () => {
   assert.equal(yielded, true);
 });
 
-function registerWith(manifestPath, env = {}) {
+function registerWith(manifestPath, env = {}, activeTools) {
   const tools = [];
   const events = {};
   const lines = [];
@@ -1424,7 +1448,7 @@ function registerWith(manifestPath, env = {}) {
   delete process.env.FULLSEND_SUBAGENT_DEPTH;
   Object.assign(process.env, env);
   try {
-    defaultExport({ getAllTools: () => JSON.parse(readFileSync(manifestPath)).agent.tools.map((name) => ({ name })), registerTool: (d) => tools.push(d), on: (ev, fn) => { events[ev] = fn; } });
+    defaultExport({ getAllTools: () => { throw new Error("dispatch must not use the full registry"); }, getActiveTools: activeTools ?? (() => JSON.parse(readFileSync(manifestPath)).agent.tools), registerTool: (d) => tools.push(d), on: (ev, fn) => { events[ev] = fn; } });
   } finally {
     console.error = origError;
     for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
@@ -1443,6 +1467,33 @@ test("default export registers Agent and Task with one handler and a shutdown ho
   assert.deepEqual(tools[0].parameters, AGENT_TOOL_PARAMETERS);
   assert.ok(typeof events.session_shutdown === "function");
   assert.deepEqual(lines, []);
+});
+
+test("production dispatch uses live active tools, never inactive registry entries", async () => {
+  for (const toolMode of ["default", "extensions-only", "explicit"]) {
+    const { dir, manifest } = fixture();
+    const path = join(dir, "manifest.json");
+    manifest.agent.toolMode = toolMode;
+    manifest.agent.tools = ["read", "mcp__docs__*", "future_builtin"];
+    manifest.agent.personas = { hidden: { tools: ["mcp__docs__hidden", "future_builtin"] } };
+    writeFileSync(path, JSON.stringify(manifest));
+    // hidden represents a defaultActive:false extension; future_builtin is
+    // registered but inactive. Neither may be activated by a child's --tools.
+    let active = ["mcp__docs__search", "Agent", "Task"];
+    const { tools, events } = registerWith(path, {}, () => active);
+    const ctx = { model: { provider: "anthropic-vertex", id: "claude-opus-4-6" } };
+    const selection = async (subagent_type) => {
+      const result = await tools[0].execute("call", { prompt: "ok", subagent_type }, undefined, undefined, ctx);
+      const { argv } = JSON.parse(result.content[0].text);
+      return argv[argv.indexOf("--tools") + 1];
+    };
+    assert.equal(await selection(), "mcp__docs__search");
+    assert.equal(await selection("hidden"), "");
+    // Query the API again for each dispatch, not just when the extension loads.
+    active = [];
+    assert.equal(await selection(), "");
+    await events.session_shutdown();
+  }
 });
 
 test("default export: missing manifest, disabled block, or a set depth registers nothing and logs once", () => {

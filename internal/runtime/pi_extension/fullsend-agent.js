@@ -440,27 +440,25 @@ function servableSpecs(agent, parentSpec) {
 //
 // The intersection matters because a sub-agent must never be able to reach
 // past its parent: an agent whose tools: frontmatter withheld `grep` would
-// otherwise get it back by dispatching an Explore child. It is a no-op for
-// an agent that declared no tools:, whose set is pi's defaults and already
-// a superset of the read-only tools.
-// Resolve patterns against the parent's registered tool names, then intersect
+// otherwise get it back by dispatching an Explore child. Even default-mode
+// children stay within the parent's live active set.
+// Resolve patterns against the parent's active tool names, then intersect
 // concrete names. Never pass a union of wildcard expressions to the child.
 function toolMatches(pattern, name) {
   const escaped = pattern.split("*").map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
   return new RegExp(`^${escaped.join(".*")}$`, "u").test(name);
 }
 
-export function childTools(agent, subagentType, registeredTools) {
+export function childTools(agent, subagentType, activeTools) {
   const parent = (agent?.tools ?? []).filter((t) => t !== TOOL_NAME && t !== TOOL_ALIAS);
   const explore = typeof subagentType === "string" && subagentType.trim().toLowerCase() === "explore";
-  const candidates = registeredTools ?? parent.filter((t) => !t.includes("*"));
-  // Omitted --tools and --no-builtin-tools both leave extension tools enabled.
-  // These are pi's built-ins, including the optional powershell tool.
-  const builtins = new Set(["read", "bash", "edit", "write", "grep", "find", "ls", "powershell"]);
+  const candidates = activeTools ?? parent.filter((t) => !t.includes("*"));
+  // The live active set is the ceiling, not the registry of all available tools.
+  // pi already applies default/extension-only selection and defaultActive there;
+  // classifying built-ins ourselves would drift when pi adds a new one.
   const allowed = candidates.filter((t) => {
     if (t === TOOL_NAME || t === TOOL_ALIAS) return false;
-    if (agent?.toolMode === "extensions-only") return !builtins.has(t);
-    if (agent?.toolMode === "default") return !builtins.has(t) || parent.includes(t);
+    if (agent?.toolMode === "extensions-only" || agent?.toolMode === "default") return true;
     return parent.some((p) => toolMatches(p, t));
   });
   if (explore) return allowed.filter((t) => (agent?.exploreTools ?? DEFAULT_EXPLORE_TOOLS).includes(t));
@@ -769,7 +767,7 @@ export function sanitizeLogLine(text) {
 // sanitizeLogLine first. run() never throws for a failed child —
 // it returns { isError, error } — so the registered execute() decides how
 // to surface it (pi marks a result isError only when execute throws).
-export function createAgentTool(manifest, { spawn = nodeSpawn, log: rawLog = (m) => console.error(m), now = () => Date.now(), env = process.env, stat = statSync, killGraceMs = DEFAULT_KILL_GRACE_MS, manifestPath = "", manifestSum = "", registeredTools = () => undefined, configDir = manifestPath ? dirname(manifestPath) : "" } = {}) {
+export function createAgentTool(manifest, { spawn = nodeSpawn, log: rawLog = (m) => console.error(m), now = () => Date.now(), env = process.env, stat = statSync, killGraceMs = DEFAULT_KILL_GRACE_MS, manifestPath = "", manifestSum = "", activeTools = () => undefined, configDir = manifestPath ? dirname(manifestPath) : "" } = {}) {
   const log = (m) => rawLog(sanitizeLogLine(m));
   const agent = manifest?.agent ?? {};
   const maxConcurrent = Math.max(1, Number(agent.maxConcurrent) || DEFAULT_MAX_CONCURRENT);
@@ -1180,7 +1178,6 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log: rawLog = (m)
     };
     let early = cancelled();
     if (early) return early;
-    const tools = childTools(agent, params?.subagent_type, registeredTools());
     // The ticket carries the queue entry (before a slot is free) and then
     // the running child, so an abort reaches whichever stage the dispatch
     // is in. The listener is removed on every exit path.
@@ -1216,7 +1213,7 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log: rawLog = (m)
         // every attempt of the fallback chain shares it, so a chain never
         // runs longer than a single child could.
         const deadline = now() + timeoutMs;
-        outcome = await runChild(id, params, modelSpec, tools, ticket, personaName, timeoutMs);
+        outcome = await runChild(id, params, modelSpec, childTools(agent, params?.subagent_type, activeTools()), ticket, personaName, timeoutMs);
         // Walk the alias's fallback chain while the project does not serve
         // the model (#8426). The abandoned attempt's session is removed so
         // it is not extracted as an error on a dispatch that succeeded. A
@@ -1240,7 +1237,7 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log: rawLog = (m)
             log(`${LOG_PREFIX} #${id} cannot remove the abandoned attempt's session: ${err.message}`);
           }
           modelSpec = next;
-          outcome = await runChild(id, params, modelSpec, tools, ticket, personaName, remainingMs);
+          outcome = await runChild(id, params, modelSpec, childTools(agent, params?.subagent_type, activeTools()), ticket, personaName, remainingMs);
         }
       } finally {
         release();
@@ -1334,7 +1331,7 @@ export default function (pi) {
     console.error(`${LOG_PREFIX} the Agent tool is not enabled for this agent; nothing registered`);
     return;
   }
-  const tool = createAgentTool(manifest, { manifestPath, manifestSum, registeredTools: () => pi.getAllTools().map((t) => t.name) });
+  const tool = createAgentTool(manifest, { manifestPath, manifestSum, activeTools: () => pi.getActiveTools() });
 
   const execute = async (_toolCallId, params, signal, _onUpdate, ctx) => {
     const m = ctx?.model;
