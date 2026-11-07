@@ -237,8 +237,8 @@ func TestCodexMatcherFor(t *testing.T) {
 		{"write and edit collapse to apply_patch", []string{"Write", "Edit"}, "apply_patch", nil, true},
 		{"ssrf group drops WebFetch", []string{"Bash", "WebFetch"}, "Bash", []string{"WebFetch"}, true},
 		{"read-only group is not wired", []string{"Read", "Grep"}, "", []string{"Read", "Grep"}, false},
-		{"agent maps to every admitted multi-agent call", []string{"Agent"}, codexAgentMatcher, nil, true},
-		{"task maps to every admitted multi-agent call", []string{"Task"}, codexAgentMatcher, nil, true},
+		{"agent maps to every call reported as Agent", []string{"Agent"}, codexAgentMatcher, nil, true},
+		{"task maps to every call reported as Agent", []string{"Task"}, codexAgentMatcher, nil, true},
 		{"mcp names pass through", []string{"mcp__github__list_issues"}, "mcp__github__list_issues", nil, true},
 		{"duplicates collapse", []string{"Write", "MultiEdit", "Edit"}, "apply_patch", nil, true},
 	}

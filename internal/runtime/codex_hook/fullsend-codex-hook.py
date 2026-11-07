@@ -20,10 +20,11 @@ codex-rs/hooks/src/{schema.rs,engine/output_parser.rs,events/*.rs} and
 codex-rs/core/src/tools/registry.rs function_hook_tool_name):
 
 * Inbound, `tool_name` → the Claude vocabulary the scripts expect
-  (`apply_patch` → `Edit`, `spawn_agent` → `Agent`, `Bash` unchanged, MCP
-  names verbatim). `tool_input` passes through — for `Bash` and
-  `apply_patch` it is `{"command": "<string>"}`, which is what
-  `tirith_check.py` and `ssrf_pretool.py` read.
+  (`apply_patch` → `Edit`, `spawn_agent` and the other multi-agent calls in
+  `CLAUDE_TOOL_FOR_CODEX` → `Agent`, `Bash` unchanged, MCP names verbatim).
+  `tool_input` passes through — for `Bash` and `apply_patch` it is
+  `{"command": "<string>"}`, which is what `tirith_check.py` and
+  `ssrf_pretool.py` read.
 * Outbound, only two shapes are ever emitted:
     - **block** → exit **2** with the reason on stderr and nothing on stdout.
       The scripts' own convention (exit 1 + `{"decision":"block"}`) must not
@@ -160,9 +161,10 @@ SPAWN_GUARD_DEADLINE_REASON = (
 # codex tool name -> the Claude Code name security.HookGroup.Tools,
 # FULLSEND_TOOL_ALLOWLIST and the scripts are written in (#608).
 # codex-rs/core/src/tools/hook_names.rs: the shell tool is already `Bash`;
-# `apply_patch` covers Claude's Write and Edit; `spawn_agent` is Claude's
-# Agent. Names outside the map (MCP tools) keep their codex name so `*`
-# groups still see them, exactly as the pi adapter does.
+# `apply_patch` covers Claude's Write and Edit; `spawn_agent` and the other
+# multi-agent calls below are Claude's Agent. Names outside the map (MCP
+# tools) keep their codex name so `*` groups still see them, exactly as the
+# pi adapter does.
 CLAUDE_TOOL_FOR_CODEX = {
     "apply_patch": "Edit",
     "spawn_agent": "Agent",

@@ -1212,9 +1212,12 @@ flowchart TB
 - **No `CLAUDE.md` pointer.** `CodexRuntime` does not implement `ContextBridger`; it gets the repo's
   `AGENTS.md` through `$CODEX_HOME/AGENTS.md` instead (see **AGENTS.md** below).
 - **Tool names**: the shell tool is already `Bash`; `apply_patch` covers Claude's `Write` and `Edit`
-  and carries them as matcher aliases; `spawn_agent` carries `Agent`. `Read`, `Glob`, `Grep`,
-  `WebFetch` and `WebSearch` have no codex tool — codex does that work through the shell, so the
-  `Bash` groups already cover it.
+  and carries them as matcher aliases; `spawn_agent` carries `Agent` the same way. The adapter
+  reports `spawn_agent`, the V1 control calls the spawn guard passes through and the V2
+  `collaboration*` spawn and control calls to the scripts as `Agent`; codex aliases none of the
+  other seven, so the `Agent`/`Task` matcher lists all eight (the matcher translation table below).
+  `Read`, `Glob`, `Grep`, `WebFetch` and `WebSearch` have no codex tool — codex does that work
+  through the shell, so the `Bash` groups already cover it.
 - **Skills** come from `$CODEX_HOME/skills`, which `Bootstrap` populates. Codex also discovers a
   repo's `.agents/skills`, and (verified live at 0.157.0; discovery source unchanged through
   0.166.0) its `.codex/skills` even with the project untrusted; both are covered by the host-side
@@ -1325,7 +1328,7 @@ Matcher translation, per group:
 | `Read`, `Glob`, `Grep`, `LS`, `WebFetch`, `WebSearch` | *dropped, with a note* | no codex tool; the `Bash` groups cover this work |
 | `*` (`security.AllTools`) | *matcher key omitted* | an absent matcher matches every tool |
 | `PostToolUseFailure` (any tools) | *not wired* | codex has no such event and does not need one — see below |
-| *(the spawn guard, not a plan group)* | `^(multi_agent_v1\|collaboration)\|(spawn\|resume)_agent$` — a regex (a character outside `[A-Za-z0-9_\|]` makes it one) that reaches both multi-agent namespaces plus the bare V1 `spawn_agent` | `PreToolUse` element 0; admits a V1 `spawn_agent` from the root thread of a registered role, with `fork_context: false` and no `model` or `reasoning_effort`, after re-checking the files in `FULLSEND_CODEX_SPAWN_DIGESTS`; passes the parent's wait, close and send-input calls through and denies them from a child (a payload carrying `agent_id` or `agent_type`); the V2 `wait_agent`, `list_agents` and `interrupt_agent` stay denied by name, and today Bootstrap declines a V2 parent, so no `collaboration*` call reaches the hook; everything else, its own errors included, exits 2 with a reason. Every admit and deny is logged to `security/findings.jsonl` |
+| *(the spawn guard, not a plan group)* | `^(multi_agent_v1\|collaboration)\|(spawn\|resume)_agent$` — a regex (a character outside `[A-Za-z0-9_\|]` makes it one) that reaches both multi-agent namespaces plus the bare V1 `spawn_agent` | `PreToolUse` element 0; admits a V1 `spawn_agent` from the root thread of a registered role, with `fork_context: false` and no `model` or `reasoning_effort`, after re-checking the files in `FULLSEND_CODEX_SPAWN_DIGESTS`; passes the parent's wait, close and send-input calls through and denies them from a child (a payload carrying `agent_id` or `agent_type`); the V2 spawn, `wait_agent`, `list_agents` and `interrupt_agent` stay denied by name, and today Bootstrap declines a V2 parent, so no `collaboration*` call reaches the hook; everything else, its own errors included, exits 2 with a reason. Every admit and deny is logged to `security/findings.jsonl` |
 
 Tokens are joined with `|` and stay within `[A-Za-z0-9_|]`, which is the character set codex treats
 as an **exact alternation** rather than a regex, so there is no anchoring question and no substring
