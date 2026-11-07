@@ -8,6 +8,30 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
 
+// jiraOAuthWorkflowFixture stands in for a reusable workflow that declares
+// the Jira OAuth client credential secrets. jiraPreOAuthWorkflowFixture is
+// a pre-OAuth workflow that exists but lacks those declarations.
+const (
+	jiraOAuthWorkflowFixture = `name: Jira poll
+on:
+  workflow_call:
+    secrets:
+      FULLSEND_JIRA_TOKEN:
+        required: false
+      FULLSEND_JIRA_CLIENT_ID:
+        required: false
+      FULLSEND_JIRA_CLIENT_SECRET:
+        required: false
+`
+	jiraPreOAuthWorkflowFixture = `name: Jira poll
+on:
+  workflow_call:
+    secrets:
+      FULLSEND_JIRA_TOKEN:
+        required: false
+`
+)
+
 func makeWorkflow(ref string) []byte {
 	return []byte(fmt.Sprintf(`name: fullsend
 on:
@@ -44,7 +68,7 @@ func newFakeClientForBatch(repos ...string) *forge.FakeClient {
 	}
 	// v1.0.0 is the current-release fixture for tests that enable GitHub
 	// Jira polling. Older pins intentionally lack this file in the fixture.
-	fc.FileContentsRef[shimOwner+"/"+shimRepo+"/"+reusableJiraPollWorkflowPath+"@v1.0.0"] = []byte("name: Jira poll\non:\n  workflow_call: {}\n")
+	fc.FileContentsRef[shimOwner+"/"+shimRepo+"/"+reusableJiraPollWorkflowPath+"@v1.0.0"] = []byte(jiraOAuthWorkflowFixture)
 	// A GitHub OpenAI install that cannot fetch its explicit pin's scaffold
 	// fails closed, so the default test pin serves the embedded per-repo
 	// shim and thin callers, which forward the key and match what the
@@ -86,6 +110,10 @@ func reusableWorkflowFixture(forward, gcpRequired bool) []byte {
 	fmt.Fprintf(&b, "name: reusable\non:\n  workflow_call:\n    secrets:\n")
 	for _, name := range openAIWIFGCPSecrets {
 		fmt.Fprintf(&b, "      %s:\n        required: %t\n", name, gcpRequired)
+	}
+	// Current releases also declare the optional Jira OAuth credentials.
+	for _, name := range jiraOAuthSecrets {
+		fmt.Fprintf(&b, "      %s:\n        required: false\n", name)
 	}
 	b.WriteString("jobs:\n  agent:\n    runs-on: ubuntu-latest\n    permissions:\n      id-token: write\n    steps:\n      - name: Run agent\n        uses: ./.defaults/\n        env:\n          REPO_FULL_NAME: ${{ github.repository }}\n")
 	if forward {

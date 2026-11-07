@@ -287,6 +287,39 @@ func TestConverge_GitHubJiraPoll_RejectsOldPinnedRefBeforeWrites(t *testing.T) {
 	assert.False(t, staged, "install must fail before delivering caller files")
 }
 
+func TestConverge_GitHubJiraPoll_RejectsPreOAuthWorkflowsBeforeWrites(t *testing.T) {
+	tests := []struct {
+		name     string
+		poll     string
+		dispatch string
+		wantErr  string
+	}{
+		{name: "poll workflow lacks OAuth secrets", poll: jiraPreOAuthWorkflowFixture, dispatch: jiraOAuthWorkflowFixture, wantErr: reusableJiraPollWorkflowPath},
+		{name: "dispatch workflow lacks OAuth secrets", poll: jiraOAuthWorkflowFixture, dispatch: jiraPreOAuthWorkflowFixture, wantErr: reusableDispatchWorkflowPath},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fc := installedJiraRepo(forge.SecretJiraToken)
+			fc.FileContentsRef[shimOwner+"/"+shimRepo+"/"+reusableJiraPollWorkflowPath+"@v1.0.0"] = []byte(tt.poll)
+			fc.FileContentsRef[shimOwner+"/"+shimRepo+"/"+reusableDispatchWorkflowPath+"@v1.0.0"] = []byte(tt.dispatch)
+			cfg := convergeCfgWithDefaults(jiraManifest(t, jiraPollEnabledConfig))
+			cfg.JiraClientID = testJiraClientID
+			cfg.JiraClientSecret = testJiraClientSecret
+			spy := &spyScaffoldCommit{}
+
+			result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), spy.fn(), noopProgress)
+			require.NoError(t, err)
+			require.Len(t, result.Failed(), 1)
+			assert.ErrorContains(t, result.Results[0].Error, tt.wantErr)
+			assert.ErrorContains(t, result.Results[0].Error, "existing Jira credentials were left unchanged")
+			assert.Empty(t, jiraSecretWrites(fc), "an incompatible ref must not receive OAuth credentials")
+			assert.Empty(t, fc.DeletedSecrets, "existing credentials must stay in place")
+			_, staged := stagedJiraCaller(t, spy)
+			assert.False(t, staged, "install must fail before delivering caller files")
+		})
+	}
+}
+
 func TestCheckGitHubJiraPollWorkflowRefResolution(t *testing.T) {
 	newDiscovery := func(client *forge.FakeClient, forgeName, fullsendRef string, enabled bool) convergeDiscovery {
 		return convergeDiscovery{
