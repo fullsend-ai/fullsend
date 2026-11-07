@@ -678,3 +678,18 @@ func TestToolSpanTracker_PiCutOffCallIsUnanswered(t *testing.T) {
 	assert.Contains(t, spans[0].Attributes, attribute.String("error.type", "unanswered"))
 	assert.False(t, spans[0].StartTime.Before(before))
 }
+
+func TestToolSpanTracker_PiOversizedEndIsAnsweredNotUnanswered(t *testing.T) {
+	tr, rec, _ := toolSpanFixture(t)
+	big := strings.Repeat("x", 1024*1024+10)
+	wire := `{"type":"tool_execution_start","toolCallId":"c1","toolName":"read","args":{"path":"/big"}}` + "\n" +
+		`{"type":"tool_execution_end","toolCallId":"c1","toolName":"read","result":{"content":[{"type":"text","text":"` + big + `"}]},"isError":false}` + "\n"
+	_, err := agentruntime.ParsePiStream(strings.NewReader(wire), tr.Handle)
+	require.NoError(t, err)
+	tr.Finish()
+
+	spans := endedToolSpans(rec)
+	require.Len(t, spans, 1)
+	assert.Contains(t, spans[0].Attributes, attribute.Bool("fullsend.tool.result_oversized", true))
+	assert.NotContains(t, spans[0].Attributes, attribute.String("error.type", "unanswered"))
+}

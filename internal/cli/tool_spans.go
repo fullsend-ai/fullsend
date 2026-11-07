@@ -68,12 +68,11 @@ const maxToolSpanNameBytes = 128
 // over-long result line showed no id in the prefix the parser keeps — is ended
 // by Finish as error.type=unanswered (the pi parser reports a call cut off by a
 // kill or timeout when its stream stops); a result whose line exceeded the
-// parser's
-// 1 MiB bound (ToolResultEvent.Oversized) ends its span at receipt, marked
-// fullsend.tool.result_oversized and left without a status, since the tool
-// answered and its is_error was never decoded; and a result whose call was
-// never seen (its tool_use line was skipped) becomes a marked span of
-// near-zero duration. Events
+// parser's 1 MiB bound (ToolResultEvent.Oversized) ends its span at
+// receipt, marked fullsend.tool.result_oversized and left without a status,
+// since the tool answered and its is_error was never decoded; and a result
+// whose call was never seen (its tool_use line was skipped) becomes a
+// marked span of near-zero duration. Events
 // without an id — codex emits none — produce no span, and neither does
 // a server-side tool: its result never arrives as a tool_result, so the parser
 // reports it without an id (stream_event lines) or not at all (assistant

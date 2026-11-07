@@ -235,7 +235,7 @@ counts toward the 255,000 bytes. A tool result whose stream line
 exceeds the parser's 1 MiB bound is kept as an empty, marked
 `tool_call_response` part — the call was answered, its content is lost and
 its `is_error` unknown — provided the line shows the call id within its
-first 1 MiB, where Claude Code normally writes it (ahead of the content; an
+first 1 MiB, where Claude Code and pi normally write it (ahead of the content; an
 id serialized after the content is not recovered, and that call closes
 `unanswered`). Two cases are absent rather than truncated: any other stream
 line beyond 1 MiB is skipped whole by the parser, and results whose content is entirely non-text (for example

@@ -1416,3 +1416,42 @@ func TestParsePiStream_CutOffCallsReportedWhenStreamStops(t *testing.T) {
 		check(t, collect(t, io.MultiReader(strings.NewReader(stream), iotest.ErrReader(errors.New("boom")))))
 	})
 }
+
+func TestParsePiStream_OversizedEndLineAnswersTheCall(t *testing.T) {
+	big := strings.Repeat("x", streamBufSize+10)
+	start := `{"type":"tool_execution_start","toolCallId":"c1","toolName":"read","args":{"path":"/big"}}` + "\n"
+	end := `{"type":"tool_execution_end","toolCallId":"c1","toolName":"read","result":{"content":[{"type":"text","text":"` + big + `"}]},"isError":false}` + "\n"
+	parse := func(t *testing.T, stream string) ([]ToolUseEvent, []ToolResultEvent) {
+		t.Helper()
+		var uses []ToolUseEvent
+		var results []ToolResultEvent
+		_, err := parsePiStream(strings.NewReader(stream), func(evt AgentEvent) {
+			switch e := evt.(type) {
+			case ToolUseEvent:
+				uses = append(uses, e)
+			case ToolResultEvent:
+				results = append(results, e)
+			}
+		})
+		require.NoError(t, err)
+		return uses, results
+	}
+
+	t.Run("id in the prefix", func(t *testing.T) {
+		uses, results := parse(t, start+end)
+		require.Len(t, uses, 1, "answered once, not again as unanswered when the stream stops")
+		assert.Equal(t, "c1", uses[0].ID)
+		assert.Equal(t, "read", uses[0].Name)
+		assert.Equal(t, "/big", uses[0].Summary)
+		require.Len(t, results, 1)
+		assert.Equal(t, ToolResultEvent{ID: "c1", Oversized: true}, results[0])
+	})
+
+	t.Run("id not where pi writes it", func(t *testing.T) {
+		moved := `{"type":"tool_execution_end","result":{"content":[{"type":"text","text":"` + big + `"}]},"toolCallId":"c1","toolName":"read","isError":false}` + "\n"
+		uses, results := parse(t, start+moved)
+		require.Len(t, uses, 1)
+		assert.Equal(t, "c1", uses[0].ID, "still open, so reported when the stream stops")
+		assert.Empty(t, results, "with no result it closes as unanswered")
+	})
+}
