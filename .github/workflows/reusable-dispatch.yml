@@ -136,6 +136,7 @@ jobs:
       stage: ${{ steps.agent-check.outputs.skipped != 'true' && steps.route.outputs.stage || '' }}
       trigger_source: ${{ steps.route.outputs.trigger_source }}
       event_payload: ${{ steps.payload.outputs.event_payload }}
+      mint_url: ${{ steps.resolve-mint.outputs.mint_url }}
     steps:
       - name: Validate event_action
         if: ${{ inputs.event_action == '' }}
@@ -157,6 +158,8 @@ jobs:
           sparse-checkout: |
             .fullsend/config.yaml
             .fullsend/config.base.yaml
+            .github/scripts/resolve-effective-mint-url.sh
+            .defaults/.github/scripts/resolve-effective-mint-url.sh
             /OWNERS
             /OWNERS_ALIASES
           sparse-checkout-cone-mode: false
@@ -875,6 +878,55 @@ jobs:
             exit 1
           fi
 
+      - name: Prepare mint URL resolver script
+        if: steps.route.outputs.stage != ''
+        id: mint-resolver-script
+        run: |
+          set -euo pipefail
+          RESOLVER=""
+          for candidate in .github/scripts/resolve-effective-mint-url.sh .defaults/.github/scripts/resolve-effective-mint-url.sh; do
+            if [[ -f "${candidate}" ]]; then
+              RESOLVER="${candidate}"
+              break
+            fi
+          done
+          if [[ -n "${RESOLVER}" ]]; then
+            echo "path=${RESOLVER}" >> "${GITHUB_OUTPUT}"
+            echo "fetched=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "fetched=true" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Checkout workflow mint URL resolver
+        if: steps.route.outputs.stage != '' && steps.mint-resolver-script.outputs.fetched == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .workflow-mint-resolver
+          fetch-depth: 1
+          persist-credentials: false
+          sparse-checkout: |
+            .github/scripts/resolve-effective-mint-url.sh
+          sparse-checkout-cone-mode: false
+
+      - name: Resolve effective mint URL
+        if: steps.route.outputs.stage != ''
+        id: resolve-mint
+        env:
+          FALLBACK_MINT_URL: ${{ inputs.mint_url }}
+        run: |
+          set -euo pipefail
+          RESOLVER="${{ steps.mint-resolver-script.outputs.path }}"
+          if [[ -z "${RESOLVER}" ]]; then
+            RESOLVER=".workflow-mint-resolver/.github/scripts/resolve-effective-mint-url.sh"
+          fi
+          if [[ ! -f "${RESOLVER}" ]]; then
+            echo "::error::resolve-effective-mint-url.sh is missing from caller and workflow repository"
+            exit 1
+          fi
+          bash "${RESOLVER}"
+
       - name: Validate agents config
         if: steps.route.outputs.stage != ''
         run: |
@@ -1066,7 +1118,7 @@ jobs:
         with:
           role: triage
           repos: ${{ steps.workspace.outputs.repo_name }}
-          mint_url: ${{ inputs.mint_url }}
+          mint_url: ${{ needs.route.outputs.mint_url }}
 
       - name: Checkout target repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1126,7 +1178,7 @@ jobs:
           status-repo: ${{ github.repository }}
           status-number: ${{ fromJSON(needs.route.outputs.event_payload).issue.number }}
           status-comment-id: ${{ fromJSON(needs.route.outputs.event_payload).comment.id }}
-          mint-url: ${{ inputs.mint_url }}
+          mint-url: ${{ needs.route.outputs.mint_url }}
           pr-head-sha: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.head.sha || '' }}
 
   code:
@@ -1179,7 +1231,7 @@ jobs:
         with:
           role: coder
           repos: ${{ steps.workspace.outputs.repo_name }}
-          mint_url: ${{ inputs.mint_url }}
+          mint_url: ${{ needs.route.outputs.mint_url }}
 
       - name: Checkout target repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1260,7 +1312,7 @@ jobs:
           status-repo: ${{ github.repository }}
           status-number: ${{ fromJSON(needs.route.outputs.event_payload).issue.number }}
           status-comment-id: ${{ fromJSON(needs.route.outputs.event_payload).comment.id }}
-          mint-url: ${{ inputs.mint_url }}
+          mint-url: ${{ needs.route.outputs.mint_url }}
           pr-head-sha: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.head.sha || '' }}
 
   review:
@@ -1312,7 +1364,7 @@ jobs:
         with:
           role: review
           repos: ${{ steps.workspace.outputs.repo_name }}
-          mint_url: ${{ inputs.mint_url }}
+          mint_url: ${{ needs.route.outputs.mint_url }}
 
       - name: Checkout target repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1392,7 +1444,7 @@ jobs:
           status-repo: ${{ github.repository }}
           status-number: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.number || fromJSON(needs.route.outputs.event_payload).issue.number }}
           status-comment-id: ${{ fromJSON(needs.route.outputs.event_payload).comment.id }}
-          mint-url: ${{ inputs.mint_url }}
+          mint-url: ${{ needs.route.outputs.mint_url }}
           pr-head-sha: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.head.sha || '' }}
 
   fix:
@@ -1445,7 +1497,7 @@ jobs:
         with:
           role: coder
           repos: ${{ steps.workspace.outputs.repo_name }}
-          mint_url: ${{ inputs.mint_url }}
+          mint_url: ${{ needs.route.outputs.mint_url }}
 
       - name: Resolve bot identity
         env:
@@ -1658,7 +1710,7 @@ jobs:
           status-repo: ${{ github.repository }}
           status-number: ${{ steps.context.outputs.pr_number }}
           status-comment-id: ${{ fromJSON(needs.route.outputs.event_payload).comment.id }}
-          mint-url: ${{ inputs.mint_url }}
+          mint-url: ${{ needs.route.outputs.mint_url }}
           pr-head-sha: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.head.sha || '' }}
 
   retro:
@@ -1709,7 +1761,7 @@ jobs:
         with:
           role: retro
           repos: ${{ steps.workspace.outputs.repo_name }}
-          mint_url: ${{ inputs.mint_url }}
+          mint_url: ${{ needs.route.outputs.mint_url }}
 
       - name: Checkout target repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1770,7 +1822,7 @@ jobs:
           status-repo: ${{ github.repository }}
           status-number: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.number || fromJSON(needs.route.outputs.event_payload).issue.number }}
           status-comment-id: ${{ fromJSON(needs.route.outputs.event_payload).comment.id }}
-          mint-url: ${{ inputs.mint_url }}
+          mint-url: ${{ needs.route.outputs.mint_url }}
           pr-head-sha: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.head.sha || '' }}
 
   prioritize:
@@ -1867,7 +1919,7 @@ jobs:
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           status-repo: ${{ github.repository }}
           status-number: ${{ fromJSON(needs.route.outputs.event_payload).issue.number }}
-          mint-url: ${{ inputs.mint_url }}
+          mint-url: ${{ needs.route.outputs.mint_url }}
 
   harness-dispatch:
     name: Harness dispatch
@@ -1900,6 +1952,8 @@ jobs:
             .defaults/action.yml
             .defaults/.github/actions/install-fullsend-cli/
             .fullsend/.defaults/action.yml
+            .github/scripts/resolve-effective-mint-url.sh
+            .defaults/.github/scripts/resolve-effective-mint-url.sh
           sparse-checkout-cone-mode: false
 
       - name: Detect registered harness triggers
@@ -1920,6 +1974,55 @@ jobs:
             fi
           fi
           echo "has_triggers=${has_triggers}" >> "${GITHUB_OUTPUT}"
+
+      - name: Prepare mint URL resolver script
+        if: steps.triggers.outputs.has_triggers == 'true'
+        id: mint-resolver-script
+        run: |
+          set -euo pipefail
+          RESOLVER=""
+          for candidate in .github/scripts/resolve-effective-mint-url.sh .defaults/.github/scripts/resolve-effective-mint-url.sh; do
+            if [[ -f "${candidate}" ]]; then
+              RESOLVER="${candidate}"
+              break
+            fi
+          done
+          if [[ -n "${RESOLVER}" ]]; then
+            echo "path=${RESOLVER}" >> "${GITHUB_OUTPUT}"
+            echo "fetched=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "fetched=true" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Checkout workflow mint URL resolver
+        if: steps.triggers.outputs.has_triggers == 'true' && steps.mint-resolver-script.outputs.fetched == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .workflow-mint-resolver
+          fetch-depth: 1
+          persist-credentials: false
+          sparse-checkout: |
+            .github/scripts/resolve-effective-mint-url.sh
+          sparse-checkout-cone-mode: false
+
+      - name: Resolve effective mint URL
+        if: steps.triggers.outputs.has_triggers == 'true'
+        id: resolve-mint
+        env:
+          FALLBACK_MINT_URL: ${{ inputs.mint_url }}
+        run: |
+          set -euo pipefail
+          RESOLVER="${{ steps.mint-resolver-script.outputs.path }}"
+          if [[ -z "${RESOLVER}" ]]; then
+            RESOLVER=".workflow-mint-resolver/.github/scripts/resolve-effective-mint-url.sh"
+          fi
+          if [[ ! -f "${RESOLVER}" ]]; then
+            echo "::error::resolve-effective-mint-url.sh is missing from caller and workflow repository"
+            exit 1
+          fi
+          bash "${RESOLVER}"
 
       - name: Detect dispatch CLI install mode
         id: mode
@@ -2012,7 +2115,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GITHUB_EVENT_NAME: ${{ github.event_name }}
           EVENT_ACTION: ${{ inputs.event_action }}
-          FULLSEND_MINT_URL: ${{ inputs.mint_url }}
+          FULLSEND_MINT_URL: ${{ steps.resolve-mint.outputs.mint_url }}
         run: |
           set -euo pipefail
           if [[ "${{ steps.triggers.outputs.has_triggers }}" != "true" ]]; then
@@ -2086,6 +2189,53 @@ jobs:
           mkdir -p .github/scripts
           cp "${SRC}/.github/scripts/setup-agent-env.sh" .github/scripts/setup-agent-env.sh
 
+      - name: Prepare mint URL resolver script
+        id: mint-resolver-script
+        run: |
+          set -euo pipefail
+          RESOLVER=""
+          for candidate in .github/scripts/resolve-effective-mint-url.sh .defaults/.github/scripts/resolve-effective-mint-url.sh; do
+            if [[ -f "${candidate}" ]]; then
+              RESOLVER="${candidate}"
+              break
+            fi
+          done
+          if [[ -n "${RESOLVER}" ]]; then
+            echo "path=${RESOLVER}" >> "${GITHUB_OUTPUT}"
+            echo "fetched=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "fetched=true" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Checkout workflow mint URL resolver
+        if: steps.mint-resolver-script.outputs.fetched == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .workflow-mint-resolver
+          fetch-depth: 1
+          persist-credentials: false
+          sparse-checkout: |
+            .github/scripts/resolve-effective-mint-url.sh
+          sparse-checkout-cone-mode: false
+
+      - name: Resolve effective mint URL
+        id: resolve-mint
+        env:
+          FALLBACK_MINT_URL: ${{ inputs.mint_url }}
+        run: |
+          set -euo pipefail
+          RESOLVER="${{ steps.mint-resolver-script.outputs.path }}"
+          if [[ -z "${RESOLVER}" ]]; then
+            RESOLVER=".workflow-mint-resolver/.github/scripts/resolve-effective-mint-url.sh"
+          fi
+          if [[ ! -f "${RESOLVER}" ]]; then
+            echo "::error::resolve-effective-mint-url.sh is missing from caller and workflow repository"
+            exit 1
+          fi
+          bash "${RESOLVER}"
+
       - name: Extract repo metadata
         id: repo-parts
         shell: bash
@@ -2111,7 +2261,7 @@ jobs:
         with:
           role: ${{ matrix.role }}
           repos: ${{ steps.repo-parts.outputs.name }}
-          mint_url: ${{ inputs.mint_url }}
+          mint_url: ${{ steps.resolve-mint.outputs.mint_url }}
 
       - name: Checkout target repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -2254,6 +2404,6 @@ jobs:
           status-repo: ${{ matrix.status_repo }}
           status-number: ${{ matrix.status_number }}
           status-comment-id: ${{ fromJSON(matrix.event_payload).comment.id }}
-          mint-url: ${{ inputs.mint_url }}
+          mint-url: ${{ steps.resolve-mint.outputs.mint_url }}
           pr-head-sha: ${{ fromJSON(matrix.event_payload).pull_request.head.sha || '' }}
           artifact-name: ${{ steps.dispatch-env.outputs.artifact_name }}

@@ -82,6 +82,8 @@ func TestIsVendoredDefaultsInfra(t *testing.T) {
 	assert.True(t, isVendoredDefaultsInfra(".github/scripts/count-fix-commits.jq"))
 	assert.True(t, isVendoredDefaultsInfra(".github/scripts/install-podman.sh"))
 	assert.True(t, isVendoredDefaultsInfra(".github/scripts/pre-fetch-review-body.sh"))
+	assert.True(t, isVendoredDefaultsInfra(".github/scripts/resolve-effective-mint-url.sh"))
+	assert.False(t, isVendoredDefaultsInfra(".github/scripts/resolve-effective-mint-url-test.sh"))
 	assert.False(t, isVendoredDefaultsInfra(".github/scripts/run.sh"))
 	assert.False(t, isVendoredDefaultsInfra(".github/scripts/check-fix-eligibility-test.sh"))
 	assert.False(t, isVendoredDefaultsInfra(".github/scripts/count-fix-commits-test.sh"))
