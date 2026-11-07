@@ -1583,6 +1583,9 @@ github:
               enabled: true
 `)
 	fc := newInstallFakeClient("acme/api")
+	// repos install verifies that the upstream ref it resolves (main here)
+	// contains the reusable Jira poll workflow before writing credentials.
+	fc.FileContentsRef["fullsend-ai/fullsend/.github/workflows/reusable-poll-jira.yml@main"] = []byte("name: Poll Jira\n")
 
 	err := runReposInstall(context.Background(), &reposInstallConfig{
 		manifest:     manifestPath,
