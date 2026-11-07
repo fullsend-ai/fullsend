@@ -68,6 +68,7 @@ type RoutableEvent struct {
 	TargetBranch    string
 	MRAuthorID      int
 	MRAuthorLogin   string
+	MRAssigneeIDs   []int // from the same MR object as MRAuthorID (MR events only)
 	MergedByLogin   string
 	// HeadSHA is the MR head commit the event is about. For a
 	// synchronized event (Type=="mr_event" with Action=="synchronized")

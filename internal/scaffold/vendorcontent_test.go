@@ -63,6 +63,7 @@ func TestVendoredInfraFileMode(t *testing.T) {
 
 func TestIsVendoredReusableWorkflow(t *testing.T) {
 	assert.True(t, isVendoredReusableWorkflow(".github/workflows/reusable-prioritize.yml"))
+	assert.True(t, isVendoredReusableWorkflow(".github/workflows/reusable-poll-jira.yml"))
 	assert.False(t, isVendoredReusableWorkflow(".github/workflows/triage.yml"))
 	assert.False(t, isVendoredReusableWorkflow("action.yml"))
 }

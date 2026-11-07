@@ -1,0 +1,68 @@
+---
+# fullsend-component: jira-poll
+# fullsend Jira poll caller (per-repo installation mode)
+# `fullsend repos install` writes this workflow while the repository's
+# effective tracker.jira.poll.enabled is true, and removes it otherwise. The
+# Jira site, project and query come from .fullsend/config.yaml, never from
+# this workflow.
+#
+# This caller owns only the schedule. reusable-poll-jira.yml runs the poll and
+# returns the dispatch matrix, which the dispatch job hands to
+# reusable-dispatch.yml. Both are pinned to the same ref, so the poll and the
+# agents it dispatches always run one Fullsend version (ADR 62).
+#
+# Security: FULLSEND_JIRA_TOKEN and FULLSEND_JIRA_EMAIL reach only the poll
+# job. They are not forwarded to the agents or the runner-secret bundle.
+#
+# Concurrency: overlapping poll cycles queue rather than cancel each other.
+name: fullsend Jira poll
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
+
+permissions: {}
+
+jobs:
+  poll:
+    concurrency:
+      group: ${{ github.workflow }}-poll
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    uses: __REUSABLE_WORKFLOW__
+    with:
+      runner_image: __GH_RUNNER__
+      timeout_minutes: 15
+    secrets:
+      FULLSEND_JIRA_TOKEN: ${{ secrets.FULLSEND_JIRA_TOKEN }}
+      FULLSEND_JIRA_EMAIL: ${{ secrets.FULLSEND_JIRA_EMAIL }}
+
+  dispatch:
+    needs: poll
+    if: ${{ needs.poll.outputs.matrix != '' && fromJSON(needs.poll.outputs.matrix).include[0] != null }}
+    permissions:
+      actions: write
+      id-token: write
+      contents: write
+      issues: write
+      packages: read
+      pull-requests: write
+    uses: __REUSABLE_DISPATCH__
+    with:
+      matrix: ${{ needs.poll.outputs.matrix }}
+      mint_url: ${{ vars.FULLSEND_MINT_URL }}
+      gcp_region: ${{ vars.FULLSEND_GCP_REGION }}
+      project_number: ${{ vars.FULLSEND_PROJECT_NUMBER }}
+      runner_image: __GH_RUNNER__
+    secrets:
+      FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
+      FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+      FULLSEND_OPENAI_API_KEY: ${{ secrets.FULLSEND_OPENAI_API_KEY }}
+      FULLSEND_INFERENCE_GATEWAY_API_KEY: ${{ secrets.FULLSEND_INFERENCE_GATEWAY_API_KEY }}
+      OTEL_EXPORTER_OTLP_TRACES_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_TRACES_HEADERS }}
+      OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}
+      FULLSEND_GITHUB_RUNNER_SECRETS: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}
+      JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
+      JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}

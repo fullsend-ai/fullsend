@@ -491,16 +491,45 @@ flag or environment variable supplies them.
   and `FULLSEND_JIRA_EMAIL` are left in place because other Jira consumers may
   still need them. `repos uninstall` deletes both.
 - **GitLab job exposure.** GitLab injects project-wide CI/CD variables into
-  every protected-branch job. The scaffolded poll and webhook dispatcher jobs
-  clear both Jira variables before running other code. Only the Jira poller
-  and agent jobs keep them.
-- **Forge resources.** The managed resources are the GitHub scheduled poll
-  workflow and the GitLab poll job and pipeline schedule. They are delivered
-  by forge-specific follow-up work
-  ([#9109](https://github.com/fullsend-ai/fullsend/issues/9109),
-  [#9108](https://github.com/fullsend-ai/fullsend/issues/9108)). Until a
-  forge's resources are managed, install still converges the credentials and
-  reports that this release does not manage the poll resources on that forge.
+  every protected-branch job. The scaffolded webhook dispatcher job, and the
+  poll job in slash and event mode, clear both Jira variables before running
+  other code. Only the Jira poll job and agent jobs keep them. Neither
+  variable is added to the runner-secret bundle.
+- **GitLab resources.** The poll job in the managed
+  `.gitlab/ci/fullsend-poll.yml` runs the Jira poller
+  (`fullsend poll --input-driver jira-poll --target-forge gitlab`) only in a
+  pipeline started by the Fullsend-owned `fullsend jira poll` pipeline
+  schedule. Install creates that schedule on the default branch when polling
+  is enabled, runs it every five minutes (offset by one minute from the slash
+  poll), and gives it no pipeline variables. A schedule with the wrong ref,
+  cron, or timezone, or with pipeline variables, is replaced. Duplicates are
+  deleted. A schedule you disabled stays disabled. Disabling or omitting
+  polling deletes the schedule. Install never touches the slash and event
+  poll schedules, other schedules, or your CI configuration for Jira polling.
+  `repos uninstall` deletes the schedule with the other `fullsend` schedules.
+- **GitLab schedule timing.** Install creates the schedule only after the
+  default branch has a poll template and job script that run the Jira poller,
+  and after `ci_pipeline_variables_minimum_override_role` is
+  `no_one_allowed`. Until both hold, it reports that the schedule is
+  deferred. On a first install or upgrade, merge the scaffold MR, then run
+  `repos install` again to create the schedule.
+- **GitHub poll workflow.** On GitHub the managed resource is the scheduled
+  caller `.github/workflows/fullsend-poll-jira.yml`. It runs every five
+  minutes and on manual dispatch. It calls Fullsend's `reusable-poll-jira.yml`
+  and hands the resulting dispatch matrix to `reusable-dispatch.yml`, both
+  pinned to the same ref as the rest of the scaffold. The poll job receives
+  `FULLSEND_JIRA_TOKEN`, and `FULLSEND_JIRA_EMAIL` only when that secret
+  exists. Install adds, updates, or removes the caller in the scaffold commit,
+  so `--direct` and pull-request delivery apply to it as they do to the shim.
+  When install manages the caller, it checks that its upstream ref contains
+  `reusable-poll-jira.yml`. An older pin fails with no credential or workflow
+  changes; upgrade the pin to a ref that includes the workflow.
+  Install changes the file only when it carries the
+  `# fullsend-component: jira-poll` marker line. A workflow at that path
+  without the marker, such as one copied from the Jira guide, is reported and
+  left untouched, and so are other workflow files. `repos uninstall` removes
+  the managed caller. See
+  [Scheduled workflow](../guides/user/jira-integration.md#scheduled-workflow).
 - **Validation.** When polling is enabled, `tracker.jira.base_url` and
   `tracker.jira.project` must be set, or the repo fails before any write.
   Surrounding whitespace is trimmed from both flags. On GitLab the token must
@@ -510,8 +539,8 @@ flag or environment variable supplies them.
   environment variable available to all environments. Supplying
   `--jira-token` or `--jira-email` when no selected repo enables polling fails
   the run.
-- **Dry run.** `--dry-run` lists the Jira secrets that would be written, by
-  name only.
+- **Dry run.** `--dry-run` lists Jira secrets by name only and reports the
+  poll-resource changes it would make.
 - **Command-line only.** `--jira-token` and `--jira-email` are never written
   to `repos.yaml` and never logged.
 

@@ -404,7 +404,7 @@ func TestConvergeJiraPoll_ReconcilerErrors(t *testing.T) {
 		withJiraPollReconciler(t, ForgeGitHub, rec)
 		enabled := d
 		enabled.jira = jiraPollState{enabled: true, tokenExists: true}
-		actions := convergeJiraPoll(context.Background(), enabled, ConvergeConfig{JiraToken: testJiraToken}, noopProgress)
+		actions := convergeJiraPoll(context.Background(), enabled, ConvergeConfig{JiraToken: testJiraToken}, jiraPollDelivery{}, noopProgress)
 		a, ok := findAction(actions[len(actions)-1:], jiraPollComponent)
 		require.True(t, ok)
 		assert.Equal(t, "error", a.Action)
@@ -414,7 +414,7 @@ func TestConvergeJiraPoll_ReconcilerErrors(t *testing.T) {
 	t.Run("remove", func(t *testing.T) {
 		rec := &fakeJiraPollReconciler{removeErr: errors.New("boom")}
 		withJiraPollReconciler(t, ForgeGitHub, rec)
-		actions := convergeJiraPoll(context.Background(), d, ConvergeConfig{}, noopProgress)
+		actions := convergeJiraPoll(context.Background(), d, ConvergeConfig{}, jiraPollDelivery{}, noopProgress)
 		require.Len(t, actions, 1)
 		assert.Equal(t, "error", actions[0].Action)
 		assert.Contains(t, actions[0].Detail, "failed to remove Jira poll resources")
@@ -423,7 +423,7 @@ func TestConvergeJiraPoll_ReconcilerErrors(t *testing.T) {
 	t.Run("disabled without reconciler", func(t *testing.T) {
 		withJiraPollReconciler(t, ForgeGitHub, nil)
 		delete(jiraPollReconcilers, ForgeGitHub)
-		assert.Empty(t, convergeJiraPoll(context.Background(), d, ConvergeConfig{}, noopProgress))
+		assert.Empty(t, convergeJiraPoll(context.Background(), d, ConvergeConfig{}, jiraPollDelivery{}, noopProgress))
 	})
 }
 

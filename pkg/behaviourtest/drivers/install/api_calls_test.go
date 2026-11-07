@@ -166,6 +166,47 @@ func TestOrgCredentials_APICallDiagnostics(t *testing.T) {
 	}, "\n"), creds.apiCallDiagnostics())
 }
 
+// quotaCountingClient is a forge.Client that reports fixed quota counters.
+type quotaCountingClient struct {
+	forge.Client
+	counters []forge.APIQuotaCounter
+}
+
+func (c quotaCountingClient) APIQuotaCounters() []forge.APIQuotaCounter { return c.counters }
+
+func TestOrgCredentials_APIQuotaDiagnostics(t *testing.T) {
+	reset := time.Date(2026, 10, 25, 18, 0, 0, 0, time.UTC)
+	creds := credentialsFor(map[string]forge.Client{
+		"halfsend-02": quotaCountingClient{counters: []forge.APIQuotaCounter{{
+			Reset: reset, Limit: 5000, Highest: 4000, Lowest: 3000,
+			Calls: map[string]int64{"other/POST": 2, "claim/GET": 5},
+		}}},
+		"halfsend-01": quotaCountingClient{counters: []forge.APIQuotaCounter{
+			{Reset: reset, Limit: 5000, Highest: 10, Lowest: 10, Calls: map[string]int64{"lock/GET": 1}},
+			{Reset: reset.Add(9 * time.Second), Limit: 5000, Highest: 20, Lowest: 15, Calls: map[string]int64{"lock/POST": 1}},
+		}},
+		"not-a-reporter": countingClient{},
+	})
+	assert.Equal(t, strings.Join([]string{
+		"halfsend-01: reset=2026-10-25T18:00:00Z spread=0 remaining=10/5000 calls=1 lock/GET=1",
+		"halfsend-01: reset=2026-10-25T18:00:09Z spread=5 remaining=15/5000 calls=1 lock/POST=1",
+		"halfsend-02: reset=2026-10-25T18:00:00Z spread=1000 remaining=3000/5000 calls=7 claim/GET=5 other/POST=2",
+	}, "\n"), creds.apiQuotaDiagnostics())
+}
+
+func TestComposedDriver_LogsQuotaCounters(t *testing.T) {
+	var lines []string
+	d := &composedDriver{
+		creds: credentialsFor(map[string]forge.Client{"org": quotaCountingClient{counters: []forge.APIQuotaCounter{{
+			Reset: time.Date(2026, 10, 25, 18, 0, 0, 0, time.UTC), Limit: 5000, Calls: map[string]int64{"claim/GET": 1},
+		}}}}),
+		logf: func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) },
+	}
+	d.logAPICalls("so far")
+	require.Len(t, lines, 1)
+	assert.Contains(t, lines[0], "[driver] per-org quota counters so far:\norg: reset=")
+}
+
 func TestOrgCredentials_APICallDiagnosticsEmpty(t *testing.T) {
 	assert.Empty(t, credentialsFor(nil).apiCallDiagnostics())
 	assert.Empty(t, credentialsFor(map[string]forge.Client{"org": forge.NewFakeClient()}).apiCallDiagnostics())

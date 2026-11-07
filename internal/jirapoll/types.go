@@ -150,6 +150,10 @@ type JiraEvent struct {
 
 	// Issue reporter (for is_entity_author check)
 	Reporter jira.User
+
+	// Issue assignee (for is_entity_assignee check); zero value when
+	// the issue is unassigned.
+	Assignee jira.User
 }
 
 // Key returns a deduplication key for the event.

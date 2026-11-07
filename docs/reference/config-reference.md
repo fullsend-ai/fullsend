@@ -328,8 +328,10 @@ tracker:
   converges it. When it is `true`, install writes the Jira credentials from
   `--jira-token` and `--jira-email` and ensures the managed poll resources.
   When it is `false` or omitted, install removes those resources and keeps
-  the credentials. The forge-specific poll resources are not managed yet
-  (see [Jira polling](../cli/repos.md#jira-polling)).
+  the credentials. On GitHub, install manages
+  `.github/workflows/fullsend-poll-jira.yml`. On GitLab, it manages the
+  `fullsend jira poll` pipeline schedule. See
+  [Jira polling](../cli/repos.md#jira-polling).
 - **`tracker.jira.poll.query`** — The JQL the poller runs. It defaults to
   `statusCategory != Done ORDER BY updated DESC`. The query is always scoped
   to `project`: the poller runs `project = "<project>" AND (<query>)` and

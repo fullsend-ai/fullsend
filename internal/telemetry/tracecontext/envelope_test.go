@@ -469,7 +469,8 @@ func TestAdmit_DuplicateCarriers(t *testing.T) {
 
 // TestAdmit_AppendedJunkForcesFallback documents the accepted
 // denial-of-continuity trade-off: an editor can suppress continuity by
-// appending an unauthenticated carrier, but cannot inject or select one.
+// appending an unauthenticated carrier, but can never forge or inject a
+// context.
 func TestAdmit_AppendedJunkForcesFallback(t *testing.T) {
 	t.Parallel()
 	raw, keys := signedGolden(t, DomainBound, ProvenanceNone)

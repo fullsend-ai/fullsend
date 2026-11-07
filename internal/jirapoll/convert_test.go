@@ -510,6 +510,81 @@ func TestToNormalizedEvent_IsEntityAuthor(t *testing.T) {
 	}
 }
 
+// TestToNormalizedEvent_IsEntityAssignee covers actor.is_entity_assignee on
+// Jira: given reporter R and assignee A, a /fs-code comment by A yields true,
+// a comment by another write-role user B yields false, and a comment on an
+// unassigned issue yields false.
+func TestToNormalizedEvent_IsEntityAssignee(t *testing.T) {
+	p := &Poller{
+		opts: Options{
+			TargetRepo:  "acme/platform",
+			JiraBaseURL: "https://acme.atlassian.net",
+		},
+		roleMembership: map[string]string{
+			"reporter-r": "Developers",
+			"assignee-a": "Developers",
+			"other-b":    "Developers",
+		},
+	}
+	comment := func(author string, assignee jira.User) JiraEvent {
+		return JiraEvent{
+			Type:          "comment_added",
+			IssueID:       "10042",
+			IssueKey:      "PROJ-123",
+			IssueURL:      "https://acme.atlassian.net/browse/PROJ-123",
+			CommentBody:   "/fs-code",
+			CommentAuthor: jira.User{AccountID: author, AccountType: "atlassian"},
+			Reporter:      jira.User{AccountID: "reporter-r"},
+			Assignee:      assignee,
+		}
+	}
+	assigneeA := jira.User{AccountID: "assignee-a"}
+
+	tests := []struct {
+		name         string
+		event        JiraEvent
+		wantAuthor   bool
+		wantAssignee bool
+	}{
+		{"assignee comments", comment("assignee-a", assigneeA), false, true},
+		{"other write user comments", comment("other-b", assigneeA), false, false},
+		{"reporter comments", comment("reporter-r", assigneeA), true, false},
+		{"unassigned issue", comment("assignee-a", jira.User{}), false, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ne := p.toNormalizedEvent(tc.event)
+			if ne.Actor.Role != normevent.RoleWrite {
+				t.Errorf("actor.role = %q, want write", ne.Actor.Role)
+			}
+			if ne.Actor.IsEntityAuthor != tc.wantAuthor {
+				t.Errorf("actor.is_entity_author = %v, want %v", ne.Actor.IsEntityAuthor, tc.wantAuthor)
+			}
+			if ne.Actor.IsEntityAssignee != tc.wantAssignee {
+				t.Errorf("actor.is_entity_assignee = %v, want %v", ne.Actor.IsEntityAssignee, tc.wantAssignee)
+			}
+		})
+	}
+}
+
+func TestIsEntityAssignee_DataCenterNameFallback(t *testing.T) {
+	event := JiraEvent{
+		Type:          "label_changed",
+		ChangeAuthor:  jira.User{Name: "jdoe"},
+		Assignee:      jira.User{Name: "jdoe"},
+		ChangedLabel:  "ready-to-code",
+		LabelAction:   "added",
+		CommentAuthor: jira.User{Name: "someone-else"},
+	}
+	if !isEntityAssignee(event) {
+		t.Error("isEntityAssignee() = false, want true when accountId is unavailable but names match")
+	}
+	event.ChangeAuthor = jira.User{}
+	if isEntityAssignee(event) {
+		t.Error("isEntityAssignee() = true, want false when the actor has no identifier")
+	}
+}
+
 func TestExtractPlainText_ADF(t *testing.T) {
 	adf := map[string]any{
 		"type":    "doc",

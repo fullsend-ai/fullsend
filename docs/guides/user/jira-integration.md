@@ -30,7 +30,7 @@ Connect fullsend to a Jira project so that Jira issue activity — comments, lab
 3. **Install fullsend** in the GitHub repository that will run the agents (`fullsend github setup`). See [Configuring GitHub](../getting-started/configuring-github.md) and [Prerequisites](#prerequisites).
 4. **Copy the Jira poller workflow** into `.github/workflows/fullsend-poll-jira.yml`. See [Scheduled workflow](#scheduled-workflow).
 
-   For a GitLab project, steps 3 and 4 differ: install fullsend in the project with `fullsend repos install` and run the poller from a scheduled GitLab CI job with `--target-forge gitlab`. See [GitLab runtime](#gitlab-runtime).
+   For a GitLab project, steps 3 and 4 differ: install fullsend in the project with `fullsend repos install`. When `tracker.jira.poll.enabled` is true, `repos install` provisions the `fullsend jira poll` schedule, and the managed poll job runs the poller with `--target-forge gitlab`. See [GitLab runtime](#gitlab-runtime).
 5. **Configure the Jira site and project** under `tracker.jira` in
    `.fullsend/config.yaml`: set `base_url`, `project`, and
    `poll.enabled: true`, plus `poll.query` if you want a narrower candidate
@@ -389,118 +389,110 @@ Otherwise, add a harness override with a Jira `trigger` expression for each
 agent that should handle Jira events (see step 6 and
 [Configuring agent behavior](customizing-agents.md#configuration-with-base-composition)).
 
-## Scheduled workflow
+### Letting the assignee start Code
 
-1. Create `.github/workflows/fullsend-poll-jira.yml` with the following content:
+The developer who works a Jira issue is usually its **assignee**, while a
+product manager, QE engineer or partner is often the **reporter**. By default
+any human with the required role can start Code with `/fs-code`. To accept
+`/fs-code` only from the reporter or the assignee, override the code
+harness's `trigger` and test `event.actor.is_entity_author` (the reporter)
+and `event.actor.is_entity_assignee` (the current assignee).
+
+**`harness/code.yaml`:**
 
 ```yaml
-name: fullsend Jira poll
+base: https://raw.githubusercontent.com/fullsend-ai/agents/<sha>/harness/code.yaml#sha256=abc...
 
-on:
-  schedule:
-    - cron: "*/5 * * * *"  # every 5 minutes
-  workflow_dispatch: {}     # allow manual runs
-
-permissions: {}
-
-jobs:
-  poll:
-    runs-on: ubuntu-24.04
-    # Just checks out the repo and runs the fullsend binary -- no write
-    # access needed.
-    permissions:
-      contents: read
-    concurrency:
-      group: fullsend-jira-poll
-      cancel-in-progress: false
-    outputs:
-      matrix: ${{ steps.build-matrix.outputs.matrix }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install fullsend
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release download --repo fullsend-ai/fullsend -p 'fullsend_*_linux_amd64.tar.gz' -O - | tar xz
-          sudo mv fullsend /usr/local/bin/
-
-      - name: Poll Jira
-        env:
-          FULLSEND_JIRA_TOKEN: ${{ secrets.FULLSEND_JIRA_TOKEN }}
-          FULLSEND_JIRA_EMAIL: ${{ secrets.FULLSEND_JIRA_EMAIL }}
-          TARGET_REPO: ${{ github.repository }}
-        run: |
-          fullsend poll \
-            --input-driver jira-poll \
-            --target-repo "${TARGET_REPO}" \
-            --output dispatches.json \
-            --fullsend-dir .fullsend
-
-      - name: Build dispatch matrix
-        id: build-matrix
-        run: |
-          set -euo pipefail
-          if ! jq -e 'length > 0' dispatches.json > /dev/null 2>&1; then
-            echo "No dispatches."
-            echo 'matrix={"include":[]}' >> "${GITHUB_OUTPUT}"
-            exit 0
-          fi
-          MATRIX=$(jq -c '{include: .}' dispatches.json)
-          DELIM="MATRIX_$(openssl rand -hex 8)"
-          {
-            echo "matrix<<${DELIM}"
-            printf '%s' "${MATRIX}"
-            echo
-            echo "${DELIM}"
-          } >> "${GITHUB_OUTPUT}"
-
-  harness:
-    name: Harness
-    needs: poll
-    # GitHub requires granting every permission reusable-dispatch.yml's jobs
-    # need, even ones that end up skipped this run.
-    permissions:
-      actions: write
-      contents: write
-      id-token: write
-      issues: write
-      packages: read
-      pull-requests: write
-    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@main
-    with:
-      matrix: ${{ needs.poll.outputs.matrix }}
-      mint_url: ${{ vars.FULLSEND_MINT_URL }}
-      gcp_region: ${{ vars.FULLSEND_GCP_REGION }}
-      jira_base_url: ${{ vars.JIRA_BASE_URL }}
-    secrets:
-      FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
-      FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
-      OTEL_EXPORTER_OTLP_TRACES_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_TRACES_HEADERS }}
-      OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}
-      FULLSEND_JIRA_TOKEN: ${{ secrets.FULLSEND_JIRA_TOKEN }}
-      FULLSEND_JIRA_EMAIL: ${{ secrets.FULLSEND_JIRA_EMAIL }}
-      JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
-      JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
+trigger: >
+  event.entity.kind == "work_item"
+    && !has(event.entity.linked_change_proposal)
+    && event.source.system in ["github", "gitlab", "jira"]
+    && ((event.transition.kind == "comment_added"
+        && has(event.transition.comment.command)
+        && event.transition.comment.command == "/fs-code"
+        && event.actor.kind == "human"
+        && (event.actor.is_entity_author || event.actor.is_entity_assignee))
+      || (event.transition.kind == "label_changed"
+        && event.transition.label.name == "ready-to-code"
+        && event.transition.label.action == "added"))
 ```
 
-2. Set `tracker.jira.base_url`, `tracker.jira.project`, and
-   `tracker.jira.poll.enabled: true` in `.fullsend/config.yaml` (see
-   [Custom JQL](#custom-jql)). Unless `poll.enabled` is `true`, the poll step
-   skips the cycle and writes an empty `dispatches.json`.
-3. Commit and push the workflow file.
+Register it with `name: code` and `source: harness/code.yaml` under `agents:`
+in `.fullsend/config.yaml`. The override changes Jira runs only: on GitHub, a
+harness `trigger` on the built-in `code` agent does not change how GitHub
+starts it. A child `trigger` replaces the base trigger, so
+the expression above copies the default code trigger and adds the
+author-or-assignee clause to its `/fs-code` arm. The `ready-to-code` label arm
+is unchanged, because triage applies that label when it promotes an issue.
 
-**How this works:** The `poll` job queries Jira and builds a dispatch matrix in
+The clause only narrows who can start Code with `/fs-code`. Anyone the label
+rules allow can still start Code by adding `ready-to-code`. To limit that path
+too, add the same author-or-assignee clause to the label arm.
+
+The actor still needs the role that
+[Actor role resolution](#actor-role-resolution) assigns, and anyone with
+permission to assign issues can assign themselves. The poller reads the
+assignee when it polls, so a reassignment between the poll and the run does
+not change a run that was already dispatched.
+
+To check it works, post `/fs-code` on an issue assigned to someone else, as a
+user who is neither its reporter nor its assignee: after the next poll, no
+Code run starts. Then post `/fs-code` as the assignee: the next poll starts a
+Code run.
+
+## Scheduled workflow
+
+`fullsend repos install` manages the scheduled Jira poll workflow for you.
+
+1. Set `tracker.jira.base_url`, `tracker.jira.project`, and
+   `tracker.jira.poll.enabled: true` in the repository's configuration (its
+   `config:` block in `repos.yaml`, or a `config_base` preset; see
+   [Custom JQL](#custom-jql)).
+2. Run `fullsend repos install --jira-token "$FULLSEND_JIRA_TOKEN"`, adding
+   `--jira-email` for a bot user's token. The token is required only on the
+   first Jira-enabled install. Later installs keep the existing secrets unless
+   you supply new values. See
+   [Jira polling](../../cli/repos.md#jira-polling).
+
+Install writes `.github/workflows/fullsend-poll-jira.yml` in the same scaffold
+commit or pull request as the rest of the installation. The workflow:
+
+- runs every five minutes and on manual dispatch (`workflow_dispatch`);
+- calls Fullsend's shared `reusable-poll-jira.yml`, which runs
+  `fullsend poll --input-driver jira-poll` against the repository's
+  `.fullsend/config.yaml` and returns the dispatch matrix;
+- hands that matrix to `reusable-dispatch.yml`, which runs the agents;
+- passes `FULLSEND_JIRA_TOKEN` to the poll job, and `FULLSEND_JIRA_EMAIL` only
+  when that secret exists. The agent jobs never receive either secret. They
+  get `JIRA_TOKEN` and `JIRA_USER_EMAIL` for their own Jira writes.
+
+The workflow has no Jira URL, project, or query inputs. The poller reads them
+from the configuration. Both reusable workflows are pinned to the scaffold's
+`fullsend_ref`, so that ref must be a Fullsend release that ships
+`reusable-poll-jira.yml`. When install manages the caller, it checks that the
+selected ref includes the reusable workflow before writing credentials or
+workflow files. If the ref is too old, install fails for that repo; upgrade
+`fullsend_ref` and run install again.
+
+Install keeps the workflow current. When `poll.enabled` is `false` or
+omitted, it removes the workflow. `repos uninstall` removes it too. Install
+changes the file only when it carries the `# fullsend-component: jira-poll`
+marker line that Fullsend writes. If you copied the poll workflow from an
+earlier version of this guide, it has no marker: install reports it and
+leaves it untouched. Delete that file and re-run `repos install` to switch to
+the managed workflow.
+
+**How this works:** The poll job queries Jira and builds a dispatch matrix in
 the format expected by `reusable-dispatch.yml`. When the `matrix` input is
 provided, `reusable-dispatch.yml` skips its routing and dispatch steps and
 goes directly to running harness agents with the pre-computed matrix. Because
-the agent stages still run inside `reusable-dispatch.yml`, dispatch and the
-agents always come from the same fullsend version, and custom pollers can
-reuse fullsend's harness infrastructure. See
+both reusable workflows are pinned to the same ref, the poller, dispatch, and
+the agents always come from the same fullsend version. Custom pollers can
+reuse fullsend's harness infrastructure the same way. See
 [Custom Poller Example](custom-poller-example.md) for more details on this
 pattern.
 
-**`concurrency.cancel-in-progress: false`** ensures overlapping poll cycles queue rather than cancel each other, which is the primary defense against concurrent runs — the GitHub Actions concurrency group means only one poll cycle for this workflow ever runs at a time in the common case. The poller's own Jira entity-property locking is a secondary guard for cases outside that group (e.g. a manually triggered run overlapping a scheduled one): it re-checks for a live lock immediately before writing, narrowing the race to the jitter window between that check and the write, but Jira entity properties have no compare-and-swap, so a lock created in that narrow window can still be clobbered by a genuinely concurrent poller. Treat the GHA concurrency group as the real safety mechanism, not the lock.
+**The poll job's concurrency group (`cancel-in-progress: false`)** makes overlapping poll cycles queue rather than cancel each other. It is the primary defense against concurrent runs: only one poll cycle for this workflow runs at a time in the common case, including manually triggered runs. The poller's own Jira entity-property locking is a secondary guard for cases outside that group: it re-checks for a live lock immediately before writing, narrowing the race to the jitter window between that check and the write, but Jira entity properties have no compare-and-swap, so a lock created in that narrow window can still be clobbered by a genuinely concurrent poller. Treat the GHA concurrency group as the real safety mechanism, not the lock.
 
 ### Custom JQL
 
@@ -537,8 +529,10 @@ slash commands and label events.
 
 ## GitLab runtime
 
-Jira work items can also dispatch agents in a GitLab project. Run the poller
-with `--target-forge gitlab` from a CI job in that project. The poller does
+Jira work items can also dispatch agents in a GitLab project. When
+`tracker.jira.poll.enabled` is true, `repos install` provisions the
+`fullsend jira poll` schedule, and the managed poll job runs the poller with
+`--target-forge gitlab`. The poller does
 not write a matrix for a downstream step. It starts each matched agent
 directly, through the same protected pipeline route the GitLab poller uses
 for issues and merge requests.
@@ -566,11 +560,19 @@ for issues and merge requests.
 - `JIRA_TOKEN`, `JIRA_USER_EMAIL`, and `JIRA_BASE_URL` are set as protected,
   masked CI/CD variables for the triage and code result-write scripts.
 
-`repos install` converges the `FULLSEND_JIRA_TOKEN` and `FULLSEND_JIRA_EMAIL`
-variables from `--jira-token` and `--jira-email` for projects whose effective
-`tracker.jira.poll.enabled` is `true`. `fullsend` does not yet create the
-schedule or the `JIRA_*` variables above for you.
-That setup is tracked in
+For projects whose effective `tracker.jira.poll.enabled` is `true`,
+`repos install` writes the `FULLSEND_JIRA_TOKEN` and `FULLSEND_JIRA_EMAIL`
+variables from `--jira-token` and `--jira-email`. It also creates the
+`fullsend jira poll` pipeline schedule. The scaffolded poll job runs the
+command below for that schedule, so you do not need to write your own job. The
+schedule is created only after the scaffold that contains the Jira poll job is
+on the default branch, so after a first install or upgrade, merge the
+scaffold MR and run `repos install` again. Setting `poll.enabled: false`, or
+omitting it, removes the schedule. See
+[Jira polling](../../cli/repos.md#jira-polling).
+
+`fullsend` does not yet create the `JIRA_*` variables above for you. That
+setup is tracked in
 [#8906](https://github.com/fullsend-ai/fullsend/issues/8906).
 
 ### Running the poller
@@ -761,7 +763,8 @@ The `event_payload` field is a JSON-encoded [NormalizedEvent](../../normative/no
     "id": "5f7c012e0b2a4c001f3d9876",
     "kind": "human",
     "role": "write",
-    "is_entity_author": false
+    "is_entity_author": false,
+    "is_entity_assignee": false
   },
   "state": {
     "labels": ["bug", "fullsend"]

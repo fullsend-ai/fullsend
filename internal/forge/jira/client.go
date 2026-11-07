@@ -10,7 +10,6 @@ import (
 	"io"
 	"log"
 	"math"
-	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/url"
@@ -20,6 +19,7 @@ import (
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/randutil"
 )
 
 // LiveClient is an HTTP client for the Jira Cloud REST API v3.
@@ -436,7 +436,7 @@ func retryDelay(resp *http.Response, attempt int) time.Duration {
 	}
 	base := time.Duration(math.Pow(2, float64(attempt))) * time.Second
 	half := base / 2
-	return half + time.Duration(rand.Int64N(int64(half)+1))
+	return half + time.Duration(randutil.Int64N(int64(half)+1))
 }
 
 // ---------------------------------------------------------------------------
@@ -451,14 +451,18 @@ type searchRequest struct {
 	NextPageToken string   `json:"nextPageToken,omitempty"`
 }
 
-// searchFields lists the issue fields the poller actually consumes.
-// Requesting them explicitly (rather than "*all") bounds search payloads:
+// searchFields lists the issue fields SearchIssues requests. Of these,
+// the poller reads only "created", "labels", and "reporter". "project"
+// carries the immutable project database ID, the Jira container identity
+// for trace binding (ADR 0154), so search results hold the same identity
+// as issue reads; GetIssue fetches it through its own request.
+// Requesting fields explicitly (rather than "*all") bounds search payloads:
 // with "*all", 50 issues per page each carrying full ADF descriptions,
 // embedded first comment pages, attachments, and every custom field can
 // plausibly exceed the client's 10MB decode cap — and since a failed
 // search aborts the whole cycle with the same data returning every time,
 // that failure mode would wedge the poller for the entire project.
-var searchFields = []string{"summary", "status", "labels", "reporter", "created", "updated", "project"}
+var searchFields = []string{"summary", "status", "labels", "reporter", "assignee", "created", "updated", "project"}
 
 // maxSearchPages limits pagination to prevent unbounded memory growth
 // from overly broad JQL queries.

@@ -661,11 +661,36 @@ The counts cover one suite process and one client per org, so they leave out
 other suites sharing the pool and the `fullsend` CLI subprocess that installs
 into a slot.
 
-The counts show how many requests each caller made, which can differ from the
-quota those requests cost. On the stage pool, `total` has run about 50% above
-the drop in remaining quota, and the difference lines up with `claim` and
-`lock` ([#9154](https://github.com/fullsend-ai/fullsend/issues/9154)). To
-measure quota use, read the `quota remaining` values in the log.
+**Quota readings by reset time.** GitHub can report more than one core quota
+reading for an org at the same time, each with its own reset time
+([#9154](https://github.com/fullsend-ai/fullsend/issues/9154)). GitHub
+processes requests in multiple regions, and
+[its rate limit docs](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api)
+say values can vary from one response to the next, so these may be regional
+views of one allowance. A `quota remaining` value describes only the response
+that answered last, so values can appear to rise and fall. After each API call
+log, the driver logs the readings it saw, grouped by reset time:
+
+```
+[driver] per-org quota counters at finalize:
+halfsend-01: reset=2026-10-25T18:00:00Z spread=1800 remaining=3200/5000 calls=1500 claim/GET=300 other/POST=1200
+halfsend-01: reset=2026-10-25T18:00:09Z spread=900 remaining=4100/5000 calls=750 lock/GET=250 other/GET=500
+```
+
+`spread` is the gap between the highest and lowest `remaining` values in the
+group, and `remaining` is the lowest. `calls` counts this client's core calls
+answered in the group, by caller and HTTP method.
+
+`spread` is a range of readings rather than measured quota spend, so treat a
+comparison with `calls` as a clue:
+
+- `spread` above `calls` can mean traffic from outside this client, or readings
+  that vary between regions.
+- `calls` above `spread` can mean some counted calls were charged elsewhere, or
+  did not lower the readings in this group.
+
+The log covers only the groups this client saw, so it cannot give an org's
+total quota use.
 
 **Harness-wait timeout errors.** Every harness-wait timeout error the
 GitHub Actions CI driver reports ends with the polling client's last-seen
@@ -1038,7 +1063,7 @@ A minted token's granted permissions are compared with the role's canonical set 
 
 ### Budget
 
-Each row is a scenario that leases a pool repository, so the 18 rows add 18 leases (about 3–5 minutes of provisioning each) to the [CI timeout budget](#ci-timeout-budgeting-for-lazy-provisioning). Each probe run is short: two parallel jobs that each make one HTTP request. If the suite outgrows the budget, grow the pool through `DefaultPoolSize` (`pkg/behaviourtest/drivers/install/driver.go`). Update the pool-sized infrastructure in the same change, for example `POOL_REPOS` in the inference gateway setup script (see [e2e-testing.md](e2e-testing.md#who-runs-it-and-when)). Then rerun that infrastructure before the larger pool is used.
+Each row is a scenario that leases a pool repository, so the 18 rows add 18 leases (about 3–5 minutes of provisioning each) to the [CI timeout budget](#ci-timeout-budgeting-for-lazy-provisioning). Each probe run is short: two parallel jobs that each make one HTTP request. If the suite outgrows the budget, grow the pool through `DefaultPoolSize` (`pkg/behaviourtest/drivers/install/driver.go`). Update the pool-sized infrastructure in the same change, for example `POOL_REPO_COUNT` in the inference gateway setup script, and deploy it before the larger pool is used (see the "Pool change" step in [e2e-testing.md](e2e-testing.md#who-runs-it-and-when)).
 
 ## CLI mint status scenarios
 

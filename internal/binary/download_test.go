@@ -75,6 +75,53 @@ func TestExtractFullsendFromTarGz_PathTraversal(t *testing.T) {
 	assert.Contains(t, err.Error(), "not found in archive")
 }
 
+func TestExtractFullsendFromTarGz_InvalidGzip(t *testing.T) {
+	err := ExtractFullsendFromTarGz(bytes.NewReader([]byte("not gzip")), filepath.Join(t.TempDir(), "fullsend"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "gzip reader")
+}
+
+func TestExtractFullsendFromTarGz_CreatingDestinationFails(t *testing.T) {
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gw)
+	content := []byte("valid binary content")
+	require.NoError(t, tw.WriteHeader(&tar.Header{
+		Name:     "fullsend",
+		Size:     int64(len(content)),
+		Mode:     0o755,
+		Typeflag: tar.TypeReg,
+	}))
+	_, err := tw.Write(content)
+	require.NoError(t, err)
+	require.NoError(t, tw.Close())
+	require.NoError(t, gw.Close())
+
+	err = ExtractFullsendFromTarGz(&buf, t.TempDir())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "creating")
+}
+
+func TestExtractFullsendFromTarGz_TruncatedBinary(t *testing.T) {
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gw)
+	require.NoError(t, tw.WriteHeader(&tar.Header{
+		Name:     "fullsend",
+		Size:     100,
+		Mode:     0o755,
+		Typeflag: tar.TypeReg,
+	}))
+	_, err := tw.Write([]byte("short"))
+	require.NoError(t, err)
+	_ = tw.Close() // The deliberately incomplete entry makes this return an error.
+	require.NoError(t, gw.Close())
+
+	err = ExtractFullsendFromTarGz(&buf, filepath.Join(t.TempDir(), "fullsend"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "extracting fullsend")
+}
+
 func TestExtractFullsendFromTarGz_ValidEntry(t *testing.T) {
 	var buf bytes.Buffer
 	gw := gzip.NewWriter(&buf)
@@ -615,7 +662,17 @@ func TestExtractSourceTreeExtractsSmallFile(t *testing.T) {
 
 	content := []byte("hello")
 	require.NoError(t, tw.WriteHeader(&tar.Header{
-		Name:     "fullsend-repo/README.md",
+		Name:     "fullsend-repo/nested/",
+		Typeflag: tar.TypeDir,
+		Mode:     0o755,
+	}))
+	require.NoError(t, tw.WriteHeader(&tar.Header{
+		Name:     "fullsend-repo/..unsafe",
+		Typeflag: tar.TypeReg,
+		Mode:     0o644,
+	}))
+	require.NoError(t, tw.WriteHeader(&tar.Header{
+		Name:     "fullsend-repo/nested/README.md",
 		Typeflag: tar.TypeReg,
 		Size:     int64(len(content)),
 		Mode:     0o644,
@@ -628,9 +685,39 @@ func TestExtractSourceTreeExtractsSmallFile(t *testing.T) {
 	dest := t.TempDir()
 	require.NoError(t, extractSourceTree(bytes.NewReader(buf.Bytes()), dest))
 
-	data, err := os.ReadFile(filepath.Join(dest, "README.md"))
+	data, err := os.ReadFile(filepath.Join(dest, "nested", "README.md"))
 	require.NoError(t, err)
 	assert.Equal(t, content, data)
+}
+
+func TestExtractSourceTree_InvalidGzip(t *testing.T) {
+	err := extractSourceTree(bytes.NewReader([]byte("not gzip")), filepath.Join(t.TempDir(), "source"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "gzip reader")
+}
+
+func TestExtractSourceTreeRejectsTruncatedEntry(t *testing.T) {
+	origMax := maxDownloadSize
+	maxDownloadSize = 64
+	t.Cleanup(func() { maxDownloadSize = origMax })
+
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	require.NoError(t, tw.WriteHeader(&tar.Header{
+		Name:     "fullsend-repo/truncated.bin",
+		Size:     100,
+		Mode:     0o644,
+		Typeflag: tar.TypeReg,
+	}))
+	_, err := tw.Write([]byte("short"))
+	require.NoError(t, err)
+	_ = tw.Close() // The deliberately incomplete entry makes this return an error.
+	require.NoError(t, gz.Close())
+
+	err = extractSourceTree(bytes.NewReader(buf.Bytes()), filepath.Join(t.TempDir(), "source"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "extracting truncated.bin")
 }
 
 func TestCopyDirContentsPreservesMode(t *testing.T) {

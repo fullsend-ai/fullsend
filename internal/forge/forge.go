@@ -303,6 +303,8 @@ func IsConflict(err error) bool {
 // GitBlobSHA returns the Git blob object ID (SHA-1) of content: the
 // expectedSHA UpdateFileIfMatch compares against the stored file.
 func GitBlobSHA(content []byte) string {
+	// Git blob IDs use SHA-1 for compatibility with forge APIs.
+	// nosemgrep: go.lang.security.audit.crypto.use-of-sha1
 	h := sha1.New() //nolint:gosec // Git's blob hash algorithm, not used for security
 	fmt.Fprintf(h, "blob %d\x00", len(content))
 	h.Write(content)
@@ -848,6 +850,29 @@ func APICaller(ctx context.Context) string {
 // the client's main one.
 type APICallReporter interface {
 	APICalls() map[string]int64
+}
+
+// APIQuotaCounter is one group of core rate-limit readings a client saw,
+// identified by reset time. GitHub processes requests in multiple regions and
+// its rate-limit values can vary between responses, so a token can show more
+// than one reset time at once, and one remaining value describes only the
+// response that answered last.
+type APIQuotaCounter struct {
+	// Reset identifies the group within a client.
+	Reset time.Time
+	Limit int
+	// Highest and Lowest bound the remaining values seen. Their difference
+	// is a spread of readings, not a measure of quota spent.
+	Highest int
+	Lowest  int
+	// Calls counts this client's responses in the group by "caller/METHOD".
+	Calls map[string]int64
+}
+
+// APIQuotaReporter is implemented by clients that attribute their core API
+// calls to quota counters. APIQuotaCounters returns a copy, ordered by Reset.
+type APIQuotaReporter interface {
+	APIQuotaCounters() []APIQuotaCounter
 }
 
 // Installation represents an app installation on an org.
