@@ -581,6 +581,7 @@ func TestValidateJiraPollInputs_OAuth(t *testing.T) {
 		{name: "file-type client ID rejected", d: gitlab(jiraPollState{clientIDExists: true, clientSecretExists: true, clientIDDefect: "file-type variable"}), cfg: ConvergeConfig{JiraClientSecret: testJiraClientSecret}, wantErr: forge.SecretJiraClientID + " CI/CD variable cannot be reused (file-type variable)"},
 		{name: "file-type client ID replaced", d: gitlab(jiraPollState{clientIDExists: true, clientSecretExists: true, clientIDDefect: "file-type variable"}), cfg: both},
 		{name: "unmaskable secret", d: gitlab(jiraPollState{}), cfg: ConvergeConfig{JiraClientID: testJiraClientID, JiraClientSecret: "short"}, wantErr: "cannot be stored as a masked GitLab CI/CD variable"},
+		{name: "short secret accepted on GitHub", d: github(jiraPollState{}), cfg: ConvergeConfig{JiraClientID: testJiraClientID, JiraClientSecret: "short"}},
 		{name: "token selected over existing client credentials", d: gitlab(jiraPollState{clientIDExists: true, clientSecretExists: true}), cfg: ConvergeConfig{JiraToken: testJiraToken}},
 		{name: "missing token mentions client credentials", d: gitlab(jiraPollState{}), wantErr: "--jira-client-id and --jira-client-secret"},
 	}

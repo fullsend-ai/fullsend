@@ -253,7 +253,7 @@ func validateJiraOAuthInputs(d convergeDiscovery, cfg ConvergeConfig) error {
 		}
 		return nil
 	}
-	if !gitlabMaskableRe.MatchString(cfg.JiraClientSecret) {
+	if d.resolved.Forge == ForgeGitLab && !gitlabMaskableRe.MatchString(cfg.JiraClientSecret) {
 		return fmt.Errorf("%s: the Jira OAuth client secret cannot be stored as a masked GitLab CI/CD variable (at least 8 characters from A-Z a-z 0-9 _ + = / @ : . ~ -, no whitespace); check the --jira-client-secret value",
 			repo)
 	}
