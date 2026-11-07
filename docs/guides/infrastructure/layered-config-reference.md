@@ -556,7 +556,7 @@ compiled-in defaults apply:
 | `keep_history` | `true` (history appended) |
 | `roles` | `["triage", "coder", "review", "fix", "retro", "prioritize"]` |
 | `agents` | `nil` (none configured) |
-| `allowed_remote_resources` | `["https://raw.githubusercontent.com/fullsend-ai/fullsend/", "https://raw.githubusercontent.com/fullsend-ai/agents/"]` |
+| `allowed_remote_resources` | `["https://raw.githubusercontent.com/fullsend-ai/fullsend/", "https://raw.githubusercontent.com/fullsend-ai/agents/"]`, plus `https://<host>/fullsend-ai/fullsend/raw/` and `https://<host>/fullsend-ai/agents/raw/` when `GITHUB_SERVER_URL` names a host other than `github.com` |
 | `forge` | `""` (GitHub) |
 | `mint_url` | `"https://mint.fullsend.sh"` (hosted public mint) |
 | `inference.provider` | `"vertex"` |

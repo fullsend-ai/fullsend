@@ -254,6 +254,13 @@ and `base:` composition. The config-level list acts as a fallback for all URL
 resolution: a URL is accepted if it matches either the harness-level or the
 config-level list. Default prefixes cover the fullsend and agents repositories.
 
+When the `GITHUB_SERVER_URL` environment variable names a GitHub host other
+than `github.com` (for example a GitHub Enterprise Server), the defaults also
+include the raw-content prefixes for the same two repositories on that host:
+`https://<host>/fullsend-ai/fullsend/raw/` and
+`https://<host>/fullsend-ai/agents/raw/`. GitHub Actions sets this variable on
+every runner. No other path on that host is added.
+
 In the layered config system, this field uses union-with-deny-all semantics:
 omitted inherits from parent; explicit empty (`[]`) denies all remote
 resources; a non-empty list is unioned with the parent's list. See
