@@ -371,6 +371,40 @@ func TestCheckGitHubJiraPollWorkflowRefResolution(t *testing.T) {
 	})
 }
 
+func TestCheckGitHubJiraPollWorkflowUserOwnedCallerOAuth(t *testing.T) {
+	oauth := ConvergeConfig{JiraClientID: testJiraClientID, JiraClientSecret: testJiraClientSecret}
+	forwarding := userJiraCaller + "jobs:\n  poll:\n    secrets:\n      FULLSEND_JIRA_CLIENT_ID: ${{ secrets.FULLSEND_JIRA_CLIENT_ID }}\n      FULLSEND_JIRA_CLIENT_SECRET: ${{ secrets.FULLSEND_JIRA_CLIENT_SECRET }}\n"
+	tests := []struct {
+		name    string
+		caller  string
+		cfg     ConvergeConfig
+		wantErr string
+	}{
+		{name: "token-only caller rejected for OAuth", caller: userJiraCaller + "jobs:\n  poll:\n    secrets:\n      FULLSEND_JIRA_TOKEN: ${{ secrets.FULLSEND_JIRA_TOKEN }}\n", cfg: oauth, wantErr: "does not forward"},
+		{name: "only one OAuth secret rejected", caller: userJiraCaller + "      FULLSEND_JIRA_CLIENT_ID: x\n", cfg: oauth, wantErr: "does not forward"},
+		{name: "forwarding caller accepted", caller: forwarding, cfg: oauth},
+		{name: "inherit accepted", caller: userJiraCaller + "jobs:\n  poll:\n    secrets: inherit\n", cfg: oauth},
+		{name: "token install ignores caller", caller: userJiraCaller, cfg: ConvergeConfig{JiraToken: testJiraToken}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fc := forge.NewFakeClient()
+			fc.FileContents[jiraCallerKey] = []byte(tt.caller)
+			d := convergeDiscovery{
+				resolved: ResolvedConfig{Owner: "acme", Repo: "api", Forge: ForgeGitHub, ForgeConfig: ForgeConfig{Client: fc}},
+				jira:     jiraPollState{enabled: true},
+			}
+			err := checkGitHubJiraPollWorkflow(context.Background(), d, tt.cfg, NewRefResolver(fc))
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, tt.wantErr)
+			assert.Contains(t, err.Error(), "left unchanged")
+		})
+	}
+}
+
 func TestGitHubJiraPollReconciler_RequiresScaffoldCommit(t *testing.T) {
 	fc := forge.NewFakeClient()
 	managed, err := scaffold.RenderJiraPollCaller(scaffold.RenderOptions{}, false, false)

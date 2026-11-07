@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
+	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -15,6 +17,9 @@ const (
 	reusableJiraPollWorkflowPath = ".github/workflows/reusable-poll-jira.yml"
 	reusableDispatchWorkflowPath = ".github/workflows/reusable-dispatch.yml"
 )
+
+// jiraCallerInheritsSecretsRe matches a `secrets: inherit` line.
+var jiraCallerInheritsSecretsRe = regexp.MustCompile(`(?m)^\s*secrets:\s*inherit\s*(#.*)?$`)
 
 // githubJiraPollReconciler manages the GitHub Jira poll resource (#9109):
 // the scheduled caller workflow at scaffold.JiraPollCallerPath, which calls
@@ -45,6 +50,12 @@ func checkGitHubJiraPollWorkflow(ctx context.Context, d convergeDiscovery, cfg C
 			resolved.Owner, resolved.Repo, err)
 	}
 	if exists && !scaffold.IsManagedJiraPollCaller(caller) {
+		// The user-owned caller is never rewritten, so an OAuth install
+		// would strand it on the token credentials it is about to remove.
+		if jiraUsesOAuth(d.jira, cfg) && !userJiraCallerForwardsOAuth(caller) {
+			return fmt.Errorf("%s/%s: %s is not managed by fullsend and does not forward the %s secrets required for Jira OAuth credentials; migrate it to pass them (or remove it to let repos install manage it) before switching to OAuth (existing Jira credentials were left unchanged)",
+				resolved.Owner, resolved.Repo, scaffold.JiraPollCallerPath, strings.Join(jiraOAuthSecrets, "/"))
+		}
 		return nil
 	}
 
@@ -93,6 +104,21 @@ func checkGitHubJiraPollWorkflow(ctx context.Context, d convergeDiscovery, cfg C
 			resolved.Owner, resolved.Repo, reusableDispatchWorkflowPath, source, ref, err)
 	}
 	return requireJiraOAuthSecrets(resolved, source, ref, reusableDispatchWorkflowPath, dispatchWorkflow)
+}
+
+// userJiraCallerForwardsOAuth reports whether a user-owned Jira poll caller
+// hands the OAuth client credentials to the reusable workflow: it names both
+// secrets or inherits all of them.
+func userJiraCallerForwardsOAuth(caller []byte) bool {
+	if jiraCallerInheritsSecretsRe.Match(caller) {
+		return true
+	}
+	for _, name := range jiraOAuthSecrets {
+		if !bytes.Contains(caller, []byte(name)) {
+			return false
+		}
+	}
+	return true
 }
 
 // requireJiraOAuthSecrets rejects a reusable workflow that does not declare
