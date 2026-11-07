@@ -50,6 +50,13 @@ type ComposeOpts struct {
 	// TraceID is a correlation ID for audit log entries.
 	TraceID string
 
+	// GitHubURL is the URL of the GitHub instance the run is configured for
+	// (e.g. "https://ghe.example.com" on GitHub Enterprise Server). Raw-content
+	// URLs served by that host are accepted for directory fetches in addition
+	// to raw.githubusercontent.com URLs (see forge.ParseRawContentURLOnHost).
+	// Empty or github.com means only raw.githubusercontent.com is accepted.
+	GitHubURL string
+
 	// AuditLogPath is the path to the fetch audit log (JSONL).
 	// If empty, audit logging is skipped.
 	AuditLogPath string
@@ -1882,7 +1889,7 @@ func fetchBaseFileFromPinnedTree(ctx context.Context, field, baseURLDir, relPath
 		if opts.FetchPolicy.Offline {
 			return Dependency{}, "", lockedNotCachedError(field, fileURL, treeHash)
 		}
-		_, parseErr := forge.ParseRawContentURL(baseURLDir + dir)
+		_, parseErr := forge.ParseRawContentURLOnHost(baseURLDir+dir, opts.GitHubURL)
 		if dir == "." || parseErr != nil {
 			return Dependency{}, "", fmt.Errorf("base %s: URL %s is pinned in the lock file to directory sha256=%s, which cannot be fetched from this URL (run 'fullsend lock --update' to re-pin)", field, fileURL, treeHash)
 		}
@@ -2005,7 +2012,7 @@ func fetchBaseScriptOrDir(ctx context.Context, field, baseURLDir, relPath string
 
 		if !opts.FetchPolicy.Offline && !pinnedFileCached {
 			// Probe whether the URL is parseable for directory-level fetching.
-			if _, parseErr := forge.ParseRawContentURL(scriptDirURL); parseErr == nil {
+			if _, parseErr := forge.ParseRawContentURLOnHost(scriptDirURL, opts.GitHubURL); parseErr == nil {
 				allowedBy := matchingAllowedPrefix(fileURL, allowlist)
 				if allowedBy == "" {
 					return Dependency{}, "", fmt.Errorf("base %s: URL %q is not in allowed_remote_resources", field, fileURL)
@@ -2051,7 +2058,7 @@ func fetchBaseScriptDirTree(ctx context.Context, field, scriptDirURL, scriptFile
 		return Dependency{}, "", fmt.Errorf("base %s: script directory URL %q is not in allowed_remote_resources", field, dirPrefix)
 	}
 
-	forgeInfo, err := forge.ParseRawContentURL(scriptDirURL)
+	forgeInfo, err := forge.ParseRawContentURLOnHost(scriptDirURL, opts.GitHubURL)
 	if err != nil {
 		return Dependency{}, "", fmt.Errorf("base %s: parsing raw URL for script directory fetch: %w", field, err)
 	}
@@ -2229,7 +2236,7 @@ func fetchBaseSkillDir(ctx context.Context, field, skillDirURL, skillFileURL, sk
 		return Dependency{}, "", fmt.Errorf("base %s: skill directory URL %q is not in allowed_remote_resources", field, dirPrefix)
 	}
 
-	forgeInfo, err := forge.ParseRawContentURL(skillDirURL)
+	forgeInfo, err := forge.ParseRawContentURLOnHost(skillDirURL, opts.GitHubURL)
 	if err != nil {
 		return Dependency{}, "", fmt.Errorf("base %s: parsing raw URL for skill directory fetch: %w", field, err)
 	}
@@ -2438,7 +2445,7 @@ func fetchBaseDirTree(ctx context.Context, kind baseDirKind, field, dirURL, keyU
 		return Dependency{}, "", fmt.Errorf("base %s: %s directory URL %q is not in allowed_remote_resources", field, kind.label, dirPrefix)
 	}
 
-	forgeInfo, err := forge.ParseRawContentURL(dirURL)
+	forgeInfo, err := forge.ParseRawContentURLOnHost(dirURL, opts.GitHubURL)
 	if err != nil {
 		return Dependency{}, "", fmt.Errorf("base %s: parsing raw URL for %s directory fetch: %w", field, kind.label, err)
 	}
