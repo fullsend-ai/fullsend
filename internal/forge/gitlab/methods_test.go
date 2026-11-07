@@ -5232,6 +5232,8 @@ func TestCreateRepoSecret_MaskingRequiredGenericValueInvalid(t *testing.T) {
 func TestMaskingRequired_JiraSecrets(t *testing.T) {
 	assert.True(t, maskingRequired(forge.SecretJiraToken), "the Jira token is a bearer credential")
 	assert.False(t, maskingRequired(forge.SecretJiraEmail), "the Jira account email is not a bearer credential")
+	assert.True(t, maskingRequired(forge.SecretJiraClientSecret), "the Jira OAuth client secret mints bearer credentials")
+	assert.False(t, maskingRequired(forge.SecretJiraClientID), "the Jira OAuth client ID is not a bearer credential")
 }
 
 func TestIsMaskingError(t *testing.T) {

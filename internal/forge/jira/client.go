@@ -29,6 +29,12 @@ type LiveClient struct {
 	email      string // for Basic auth (Cloud)
 	token      string
 
+	// oauth, when set, supplies Bearer access tokens from a service
+	// account's OAuth 2.0 client credentials instead of token (see
+	// NewScoped). oauthTokenURL overrides its token endpoint.
+	oauth         *oauthTokenSource
+	oauthTokenURL string
+
 	// gatewayURL, when set, routes REST requests through the Atlassian
 	// API gateway (see WithAPIGateway) instead of the site URL.
 	gatewayURL string
@@ -133,11 +139,10 @@ func checkRedirect(req *http.Request, via []*http.Request) error {
 	return nil
 }
 
-// New creates a new Jira client with the given API token.
+// New creates a new Jira client with the given API token. NewScoped also
+// uses it for OAuth 2.0 client credentials, which take the place of the
+// token.
 func New(token string, opts ...Option) (*LiveClient, error) {
-	if token == "" {
-		return nil, fmt.Errorf("jira: token must not be empty")
-	}
 	c := &LiveClient{
 		httpClient: &http.Client{
 			Timeout:       30 * time.Second,
@@ -148,6 +153,18 @@ func New(token string, opts ...Option) (*LiveClient, error) {
 	}
 	for _, o := range opts {
 		o(c)
+	}
+	if c.oauth == nil && token == "" {
+		return nil, fmt.Errorf("jira: token must not be empty")
+	}
+	if c.oauth != nil {
+		c.oauth.tokenURL = DefaultOAuthTokenURL
+		if c.oauthTokenURL != "" {
+			c.oauth.tokenURL = c.oauthTokenURL
+		}
+		if err := ValidateBaseURL(c.oauth.tokenURL); err != nil {
+			return nil, fmt.Errorf("jira: OAuth token URL: %w", err)
+		}
 	}
 	if c.baseURL == "" {
 		return nil, fmt.Errorf("jira: base URL must be set via WithBaseURL")
@@ -276,6 +293,22 @@ func (c *LiveClient) fetchCloudID(ctx context.Context) (string, error) {
 	return info.CloudID, nil
 }
 
+// authorize sets the request's Authorization header and returns the OAuth
+// access token it used ("" with a token). stale is an access token the API
+// just rejected: it is replaced rather than reused.
+func (c *LiveClient) authorize(ctx context.Context, req *http.Request, stale string) (string, error) {
+	if c.oauth == nil {
+		c.setAuth(req)
+		return "", nil
+	}
+	tok, err := c.oauth.token(ctx, c.httpClient, stale)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
+	return tok, nil
+}
+
 func (c *LiveClient) setAuth(req *http.Request) {
 	if c.email != "" {
 		cred := base64.StdEncoding.EncodeToString([]byte(c.email + ":" + c.token))
@@ -301,6 +334,11 @@ func (c *LiveClient) do(ctx context.Context, method, path string, body io.Reader
 		}
 	}
 
+	// stale is an OAuth access token the API rejected with 401 on this
+	// call. The request is retried once with a freshly requested token:
+	// a 401 means the request was not processed, so the retry is safe
+	// for any method.
+	var stale string
 	for attempt := range maxRetries {
 		var reqBody io.Reader
 		if bodyBytes != nil {
@@ -312,7 +350,10 @@ func (c *LiveClient) do(ctx context.Context, method, path string, body io.Reader
 			return fmt.Errorf("create request: %w", err)
 		}
 
-		c.setAuth(req)
+		usedToken, err := c.authorize(ctx, req, stale)
+		if err != nil {
+			return err
+		}
 		req.Header.Set("Accept", "application/json")
 		if bodyBytes != nil {
 			req.Header.Set("Content-Type", "application/json")
@@ -330,6 +371,12 @@ func (c *LiveClient) do(ctx context.Context, method, path string, body io.Reader
 				continue
 			}
 			return fmt.Errorf("http %s %s: %w", method, path, err)
+		}
+
+		if resp.StatusCode == http.StatusUnauthorized && usedToken != "" && stale == "" && attempt < maxRetries-1 {
+			_ = resp.Body.Close()
+			stale = usedToken
+			continue
 		}
 
 		if isRetryable(resp, method, path) {

@@ -1608,7 +1608,7 @@ github:
 
 func TestReposInstallCmd_JiraFlags(t *testing.T) {
 	cmd := newReposInstallCmd()
-	for _, name := range []string{"jira-token", "jira-email"} {
+	for _, name := range []string{"jira-token", "jira-email", "jira-client-id", "jira-client-secret"} {
 		f := cmd.Flags().Lookup(name)
 		require.NotNil(t, f, name)
 		assert.Empty(t, f.DefValue, "%s has no default", name)

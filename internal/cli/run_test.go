@@ -2476,8 +2476,10 @@ func TestSafeExpandEnv_RefusesOIDCVars(t *testing.T) {
 func TestSandboxDeniedKeys_JiraSecrets(t *testing.T) {
 	t.Setenv("FULLSEND_JIRA_TOKEN", "process-scoped-jira-token")
 	t.Setenv("FULLSEND_JIRA_EMAIL", "scoped-bot@example.com")
+	t.Setenv("FULLSEND_JIRA_CLIENT_ID", "process-jira-client-id")
+	t.Setenv("FULLSEND_JIRA_CLIENT_SECRET", "process-jira-client-secret")
 
-	for _, key := range []string{"FULLSEND_JIRA_TOKEN", "FULLSEND_JIRA_EMAIL"} {
+	for _, key := range []string{"FULLSEND_JIRA_TOKEN", "FULLSEND_JIRA_EMAIL", "FULLSEND_JIRA_CLIENT_ID", "FULLSEND_JIRA_CLIENT_SECRET"} {
 		value := os.Getenv(key)
 		assert.True(t, sandboxDeniedKeys[key], key)
 
@@ -3514,6 +3516,12 @@ func TestRedactFeedback_RedactsJiraSecretsAliasedToNonSensitiveRunnerKeys(t *tes
 	assert.Equal(t, "token=[REDACTED:FULLSEND_JIRA_TOKEN] email=[REDACTED:FULLSEND_JIRA_EMAIL]", literalOut)
 	assert.Contains(t, security.RuntimeSecrets(), token)
 	assert.Contains(t, security.RuntimeSecrets(), email)
+
+	const clientSecret = "jira-client-secret-redaction-test"
+	t.Setenv("FULLSEND_JIRA_CLIENT_SECRET", clientSecret)
+	assert.Equal(t, "secret=[REDACTED:FULLSEND_JIRA_CLIENT_SECRET]",
+		redactSecretLiterals("secret="+clientSecret, map[string]string{"BUILD_LABEL": clientSecret}))
+	assert.Contains(t, security.RuntimeSecrets(), clientSecret)
 
 	out := redactFeedback("token="+token+" email="+email, runnerEnv)
 	assert.NotContains(t, out, token)

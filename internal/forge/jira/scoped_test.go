@@ -140,7 +140,8 @@ func TestNewScoped_RejectsEmptyToken(t *testing.T) {
 	t.Parallel()
 	_, err := NewScoped(ScopedConfig{BaseURL: "https://example.atlassian.net"}, Credentials{})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "token must not be empty")
+	assert.Contains(t, err.Error(), TokenEnvVar+" is required")
+	assert.Contains(t, err.Error(), ClientIDEnvVar, "the error names both credential options")
 }
 
 func TestCloudID_CachedPerClient(t *testing.T) {

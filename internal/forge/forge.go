@@ -144,6 +144,12 @@ const (
 	// account email is optional.
 	SecretJiraToken = "FULLSEND_JIRA_TOKEN"
 	SecretJiraEmail = "FULLSEND_JIRA_EMAIL"
+	// Jira OAuth 2.0 client credentials of an Atlassian service account
+	// (#9176), written by `fullsend repos install` from --jira-client-id
+	// and --jira-client-secret instead of the token. The client secret is
+	// never stored unmasked.
+	SecretJiraClientID     = "FULLSEND_JIRA_CLIENT_ID"
+	SecretJiraClientSecret = "FULLSEND_JIRA_CLIENT_SECRET"
 
 	// Legacy uninstall-only variables — GitLab.
 	VarLegacyBotTokenSecret = "FULLSEND_BOT_TOKEN_SECRET"
