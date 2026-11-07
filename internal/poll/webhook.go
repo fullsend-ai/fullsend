@@ -644,4 +644,8 @@ func applyMRFields(ev *RoutableEvent, mr *MergeRequest) {
 	ev.MRAuthorLogin = mr.Author.Username
 	ev.MRAssigneeIDs = userIDs(mr.Assignees)
 	ev.Labels = mr.Labels
+	// A synchronized event keys on its diff-version head; never replace it.
+	if ev.HeadSHA == "" {
+		ev.HeadSHA = mr.SHA
+	}
 }

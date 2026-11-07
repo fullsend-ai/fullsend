@@ -390,12 +390,29 @@ func (p *Poller) buildChangeProposalState(ctx context.Context, event RoutableEve
 		BaseRepo: baseRepo,
 		HeadRef:  event.SourceBranch,
 		BaseRef:  event.TargetBranch,
-		// Set only where discovery read it (a synchronized event's diff
-		// version); empty otherwise and omitted from the event.
-		HeadSHA:  event.HeadSHA,
+		HeadSHA:  p.changeProposalHeadSHA(ctx, event),
 		AuthorID: event.MRAuthorLogin,
 		IsFork:   event.MRSource == 0 || event.MRTarget == 0 || event.MRSource != event.MRTarget,
 	}, nil
+}
+
+// changeProposalHeadSHA returns the head commit for an MR event's
+// change_proposal state. Discovery normally sets it: a synchronized event
+// from its diff version, every other MR event from the MR's sha. When an
+// event reaches here without one, the MR is read once more for its sha.
+// A synchronized event is never filled this way: its head keys the event
+// and must stay the diff-version head. A failed lookup is logged and leaves
+// the SHA empty (omitted from the event) rather than failing the event.
+func (p *Poller) changeProposalHeadSHA(ctx context.Context, event RoutableEvent) string {
+	if event.HeadSHA != "" || event.Action == "synchronized" {
+		return event.HeadSHA
+	}
+	mr, err := p.client.GetMergeRequest(ctx, p.owner, p.repo, event.IID)
+	if err != nil {
+		log.Printf("WARNING: get MR !%d for head SHA of %s: %v (head_sha left empty)", event.IID, event.Type, err)
+		return ""
+	}
+	return mr.SHA
 }
 
 func truncate(s string, maxLen int) string {
