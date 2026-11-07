@@ -5,8 +5,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"regexp"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -17,9 +18,6 @@ const (
 	reusableJiraPollWorkflowPath = ".github/workflows/reusable-poll-jira.yml"
 	reusableDispatchWorkflowPath = ".github/workflows/reusable-dispatch.yml"
 )
-
-// jiraCallerInheritsSecretsRe matches a `secrets: inherit` line.
-var jiraCallerInheritsSecretsRe = regexp.MustCompile(`(?m)^\s*secrets:\s*inherit\s*(#.*)?$`)
 
 // githubJiraPollReconciler manages the GitHub Jira poll resource (#9109):
 // the scheduled caller workflow at scaffold.JiraPollCallerPath, which calls
@@ -106,19 +104,53 @@ func checkGitHubJiraPollWorkflow(ctx context.Context, d convergeDiscovery, cfg C
 	return requireJiraOAuthSecrets(resolved, source, ref, reusableDispatchWorkflowPath, dispatchWorkflow)
 }
 
-// userJiraCallerForwardsOAuth reports whether a user-owned Jira poll caller
-// hands the OAuth client credentials to the reusable workflow: it names both
-// secrets or inherits all of them.
+// userJiraCallerForwardsOAuth reports whether every job of a user-owned Jira
+// poll caller that calls Fullsend's reusable poll or dispatch workflow hands
+// the OAuth client credentials to it: the job inherits all secrets or names
+// both. A caller that does not parse, or has no such job, cannot be verified
+// and reports false.
 func userJiraCallerForwardsOAuth(caller []byte) bool {
-	if jiraCallerInheritsSecretsRe.Match(caller) {
-		return true
+	var wf struct {
+		Jobs map[string]struct {
+			Uses    string    `yaml:"uses"`
+			Secrets yaml.Node `yaml:"secrets"`
+		} `yaml:"jobs"`
 	}
-	for _, name := range jiraOAuthSecrets {
-		if !bytes.Contains(caller, []byte(name)) {
+	if err := yaml.Unmarshal(caller, &wf); err != nil {
+		return false
+	}
+	checked := 0
+	for _, job := range wf.Jobs {
+		if !strings.Contains(job.Uses, "reusable-poll-jira.yml") && !strings.Contains(job.Uses, "reusable-dispatch.yml") {
+			continue
+		}
+		checked++
+		if !jiraJobForwardsOAuth(job.Secrets) {
 			return false
 		}
 	}
-	return true
+	return checked > 0
+}
+
+// jiraJobForwardsOAuth reports whether a job's secrets node is `inherit` or a
+// mapping that names every Jira OAuth client secret.
+func jiraJobForwardsOAuth(secrets yaml.Node) bool {
+	switch secrets.Kind {
+	case yaml.ScalarNode:
+		return secrets.Value == "inherit"
+	case yaml.MappingNode:
+		named := map[string]bool{}
+		for i := 0; i+1 < len(secrets.Content); i += 2 {
+			named[secrets.Content[i].Value] = true
+		}
+		for _, name := range jiraOAuthSecrets {
+			if !named[name] {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }
 
 // requireJiraOAuthSecrets rejects a reusable workflow that does not declare

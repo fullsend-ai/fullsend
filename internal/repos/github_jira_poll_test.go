@@ -373,17 +373,26 @@ func TestCheckGitHubJiraPollWorkflowRefResolution(t *testing.T) {
 
 func TestCheckGitHubJiraPollWorkflowUserOwnedCallerOAuth(t *testing.T) {
 	oauth := ConvergeConfig{JiraClientID: testJiraClientID, JiraClientSecret: testJiraClientSecret}
-	forwarding := userJiraCaller + "jobs:\n  poll:\n    secrets:\n      FULLSEND_JIRA_CLIENT_ID: ${{ secrets.FULLSEND_JIRA_CLIENT_ID }}\n      FULLSEND_JIRA_CLIENT_SECRET: ${{ secrets.FULLSEND_JIRA_CLIENT_SECRET }}\n"
+	const pollUses = "    uses: fullsend-ai/fullsend/.github/workflows/reusable-poll-jira.yml@main\n"
+	const dispatchUses = "    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@main\n"
+	const oauthSecrets = "    secrets:\n      FULLSEND_JIRA_CLIENT_ID: ${{ secrets.FULLSEND_JIRA_CLIENT_ID }}\n      FULLSEND_JIRA_CLIENT_SECRET: ${{ secrets.FULLSEND_JIRA_CLIENT_SECRET }}\n"
+	forwarding := userJiraCaller + "jobs:\n  poll:\n" + pollUses + oauthSecrets
 	tests := []struct {
 		name    string
 		caller  string
 		cfg     ConvergeConfig
 		wantErr string
 	}{
-		{name: "token-only caller rejected for OAuth", caller: userJiraCaller + "jobs:\n  poll:\n    secrets:\n      FULLSEND_JIRA_TOKEN: ${{ secrets.FULLSEND_JIRA_TOKEN }}\n", cfg: oauth, wantErr: "does not forward"},
-		{name: "only one OAuth secret rejected", caller: userJiraCaller + "      FULLSEND_JIRA_CLIENT_ID: x\n", cfg: oauth, wantErr: "does not forward"},
+		{name: "token-only caller rejected for OAuth", caller: userJiraCaller + "jobs:\n  poll:\n" + pollUses + "    secrets:\n      FULLSEND_JIRA_TOKEN: ${{ secrets.FULLSEND_JIRA_TOKEN }}\n", cfg: oauth, wantErr: "does not forward"},
+		{name: "only one OAuth secret rejected", caller: userJiraCaller + "jobs:\n  poll:\n" + pollUses + "    secrets:\n      FULLSEND_JIRA_CLIENT_ID: x\n", cfg: oauth, wantErr: "does not forward"},
 		{name: "forwarding caller accepted", caller: forwarding, cfg: oauth},
-		{name: "inherit accepted", caller: userJiraCaller + "jobs:\n  poll:\n    secrets: inherit\n", cfg: oauth},
+		{name: "inherit accepted", caller: userJiraCaller + "jobs:\n  poll:\n" + pollUses + "    secrets: inherit\n", cfg: oauth},
+		{name: "forwarding in both poll and dispatch accepted", caller: userJiraCaller + "jobs:\n  poll:\n" + pollUses + oauthSecrets + "  dispatch:\n" + dispatchUses + oauthSecrets, cfg: oauth},
+		{name: "forwarding in only the poll job rejected", caller: userJiraCaller + "jobs:\n  poll:\n" + pollUses + oauthSecrets + "  dispatch:\n" + dispatchUses + "    secrets:\n      FULLSEND_JIRA_TOKEN: x\n", cfg: oauth, wantErr: "does not forward"},
+		{name: "names only in comments rejected", caller: userJiraCaller + "# FULLSEND_JIRA_CLIENT_ID FULLSEND_JIRA_CLIENT_SECRET\njobs:\n  poll:\n" + pollUses + "    secrets:\n      FULLSEND_JIRA_TOKEN: x\n", cfg: oauth, wantErr: "does not forward"},
+		{name: "inherit on an unrelated job rejected", caller: userJiraCaller + "jobs:\n  other:\n    uses: ./.github/workflows/other.yml\n    secrets: inherit\n  poll:\n" + pollUses + "    secrets:\n      FULLSEND_JIRA_TOKEN: x\n", cfg: oauth, wantErr: "does not forward"},
+		{name: "caller without a Fullsend job rejected", caller: userJiraCaller, cfg: oauth, wantErr: "does not forward"},
+		{name: "unparseable caller rejected", caller: "jobs: [\n", cfg: oauth, wantErr: "does not forward"},
 		{name: "token install ignores caller", caller: userJiraCaller, cfg: ConvergeConfig{JiraToken: testJiraToken}},
 	}
 	for _, tt := range tests {
