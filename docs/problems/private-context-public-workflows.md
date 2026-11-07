@@ -26,9 +26,11 @@ an agent to repeat or summarize protected material.
 
 [ADR 0021](../ADRs/0021-jsonl-reasoning-trace-exposure.md) chooses access control
 for full-fidelity transcripts rather than relying on heuristic sanitization.
-The owner-scoped storage boundary is also missing for public repositories.
-GitHub runs currently upload transcripts and other run output as forge-native
-artifacts. Anyone with read access to a public repository can download them.
+ADR 0021's owner-scoped storage has not been implemented for any repository.
+GitHub runs upload transcripts and other run output as forge-native artifacts,
+readable by anyone with repository read access. For a public repository, that
+means any signed-in GitHub user. Private-repository artifacts are available to
+repository readers, not just owners.
 [#6734](https://github.com/fullsend-ai/fullsend/issues/6734) tracks alternative
 artifact storage, including disabling forge-native uploads.
 
@@ -45,6 +47,18 @@ recommendations, output checks and the harness `SecretRedactor`. Those controls
 depend on agents following the instructions and on patterns the scanner can
 recognize. The guide's lower-risk recommendations for repo-local output do not
 establish safety when a public repository's agents consume private sources.
+
+The [scribe agent](https://github.com/fullsend-ai/agents/blob/5b3049ba969789e0aa82e7a412f7280ce2607215/agents/scribe.md#L67-L88)
+already requires a `public_safe` classification for each topic and new issue,
+with a single-word `public_safe_category` for rejected content. Its
+[post-script](https://github.com/fullsend-ai/agents/blob/5b3049ba969789e0aa82e7a412f7280ce2607215/scripts/post-scribe.src.sh#L290-L305)
+checks that flag before repository writes. For items marked unsafe, it skips
+the write and logs the category instead of the title or body. This constrains
+scribe's forge writes and rejection-log text, but trusts the model's own
+classification. It does not independently validate the publication safety of
+derived content marked safe, or protect artifacts, transcripts or the live
+console thinking stream. It is an existing release gate with limited coverage,
+not a general confidentiality guarantee.
 
 Live runtime-event rendering
 ([PR #3186](https://github.com/fullsend-ai/fullsend/pull/3186)) streams model
