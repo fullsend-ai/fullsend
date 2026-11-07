@@ -43,7 +43,7 @@ func (TextEvent) agentEvent() {}
 // it reads the line carrying the call's complete arguments (written ahead
 // of the call's result; the tool may already be running by then); the pi
 // parser holds it until tool_execution_end, because a failed call's summary
-// needs the result, and the codex and OpenCode parsers emit it when the call
+// needs the result, or until the stream stops if no end came, and the codex and OpenCode parsers emit it when the call
 // has finished — codex
 // once per changed path of a file_change item, so one apply_patch can
 // yield several. Not every call yields one: a Claude Code server_tool_use

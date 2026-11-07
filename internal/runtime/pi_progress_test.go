@@ -1366,3 +1366,53 @@ func TestPiResultText(t *testing.T) {
 		})
 	}
 }
+
+func TestParsePiStream_CutOffCallsReportedWhenStreamStops(t *testing.T) {
+	stream := `{"type":"tool_execution_start","toolCallId":"a","toolName":"bash","args":{"command":"sleep 999"}}` + "\n" +
+		`{"type":"tool_execution_start","toolCallId":"b","toolName":"read","args":{"path":"/done"}}` + "\n" +
+		`{"type":"tool_execution_start","toolCallId":"c","toolName":"read","args":{"path":"/also-cut"}}` + "\n" +
+		`{"type":"tool_execution_end","toolCallId":"b","toolName":"read","result":"ok","isError":false}` + "\n"
+
+	collect := func(t *testing.T, r io.Reader) []AgentEvent {
+		t.Helper()
+		var events []AgentEvent
+		_, _ = parsePiStream(r, func(evt AgentEvent) { events = append(events, evt) })
+		return events
+	}
+	check := func(t *testing.T, events []AgentEvent) {
+		t.Helper()
+		var uses []ToolUseEvent
+		var results []ToolResultEvent
+		resultAt, lastUse := -1, -1
+		for i, evt := range events {
+			switch e := evt.(type) {
+			case ToolUseEvent:
+				uses = append(uses, e)
+				lastUse = i
+			case ToolResultEvent:
+				results = append(results, e)
+			case ResultEvent:
+				resultAt = i
+			}
+		}
+		require.Len(t, uses, 3)
+		assert.Equal(t, "b", uses[0].ID, "the finished call is reported when it ends")
+		assert.Equal(t, "a", uses[1].ID, "cut-off calls follow in start order")
+		assert.Equal(t, "c", uses[2].ID)
+		assert.Equal(t, "bash", uses[1].Name)
+		assert.Equal(t, "$ sleep 999", uses[1].Summary)
+		assert.JSONEq(t, `{"command":"sleep 999"}`, uses[1].Arguments)
+		assert.False(t, uses[1].StartedAt.IsZero())
+		require.Len(t, results, 1, "a cut-off call has no result, so the tracker closes it as unanswered")
+		assert.Equal(t, "b", results[0].ID)
+		require.GreaterOrEqual(t, resultAt, 0)
+		assert.Greater(t, resultAt, lastUse, "the run's result stays last")
+	}
+
+	t.Run("EOF", func(t *testing.T) {
+		check(t, collect(t, strings.NewReader(stream)))
+	})
+	t.Run("read error", func(t *testing.T) {
+		check(t, collect(t, io.MultiReader(strings.NewReader(stream), iotest.ErrReader(errors.New("boom")))))
+	})
+}

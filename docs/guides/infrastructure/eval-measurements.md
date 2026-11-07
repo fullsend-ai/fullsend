@@ -116,8 +116,7 @@ a run only
 on an unambiguous integrity break (a tool result with no matching call) and
 reports tool errors and unanswered calls as signals; runs whose runtime emits
 no `execute_tool` spans (codex) and runs that made no tool calls are
-skipped. A pi call cut off by a kill or timeout has no span, so it does not
-count as unanswered.
+skipped.
 
 Manifest shape (first ship — enablement only):
 
