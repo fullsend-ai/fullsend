@@ -87,6 +87,47 @@ func TestGeneratedHarnessLoads(t *testing.T) {
 	}
 }
 
+// TestGeneratedHarnessLoadsWithValidationLoop extends TestGeneratedHarnessLoads
+// to the --validation-loop scaffold: the generated tree must load through the
+// same loader dispatch uses. During the migration window the scaffold emits
+// both the top-level preflight_check and the deprecated nested
+// validation_loop.preflight_check, so lint must report exactly one
+// diagnostic: the nested-field deprecation warning.
+func TestGeneratedHarnessLoadsWithValidationLoop(t *testing.T) {
+	dir := t.TempDir()
+	opts := testOptions("lint-docs", "triage")
+	opts.ValidationLoop = true
+	if err := opts.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	files, err := Render(opts)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	writeTree(t, dir, files)
+
+	h, err := harness.Load(filepath.Join(dir, "harness", "lint-docs.yaml"))
+	if err != nil {
+		t.Fatalf("generated harness does not load: %v", err)
+	}
+	if err := h.ResolveRelativeTo(dir); err != nil {
+		t.Fatalf("ResolveRelativeTo: %v", err)
+	}
+	if err := h.ValidateFilesExist(); err != nil {
+		t.Fatalf("ValidateFilesExist: %v", err)
+	}
+	diags := h.Lint()
+	if len(diags) != 1 || diags[0].Severity != harness.SeverityWarning || diags[0].Field != "validation_loop.preflight_check" {
+		t.Errorf("generated harness must produce exactly the nested-field deprecation warning, got: %v", diags)
+	}
+	if h.PreflightCheck == "" {
+		t.Error("generated harness must set the top-level preflight_check")
+	}
+	if h.ValidationLoop == nil || h.ValidationLoop.PreflightCheck == "" {
+		t.Error("generated harness must keep the nested validation_loop.preflight_check during the migration window")
+	}
+}
+
 func TestGeneratedHarnessMakesGCPCredentialMountOptional(t *testing.T) {
 	files, err := Render(testOptions("lint-docs", "triage"))
 	if err != nil {

@@ -4,6 +4,11 @@
 # sandbox creation: a skipped run sees no error, while a proceeding run
 # fails here.
 #
+# When FULLSEND_TEST_SANDBOX_SENTINEL names a file, a refused create first
+# appends a "sandbox-create" marker line to it (once — CreateWithRetry
+# re-invokes this stub) so ordering tests can prove which stages ran
+# before sandbox creation was attempted.
+#
 # `sandbox get` must fail too — createOnce falls back to it to decide
 # whether a failed create nonetheless left a sandbox behind, and a passing
 # `get` would send it into the ready-poll loop instead of returning.
@@ -25,6 +30,9 @@ case "$1" in
   sandbox)
     case "$2" in
       create)
+        if [ -n "${FULLSEND_TEST_SANDBOX_SENTINEL:-}" ] && ! grep -q '^sandbox-create' "${FULLSEND_TEST_SANDBOX_SENTINEL}" 2>/dev/null; then
+          echo "sandbox-create" >> "${FULLSEND_TEST_SANDBOX_SENTINEL}"
+        fi
         echo "prescript-stub: sandbox creation refused" >&2
         exit 1
         ;;
