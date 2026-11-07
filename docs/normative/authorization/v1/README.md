@@ -375,7 +375,10 @@ it is not yet implemented by `fullsend dispatch`, `fullsend poll`, or eventless
 bound `fullsend run`. Entity-first execution MUST NOT be enabled until the
 versioned normalized-entity contract defines CEL-eligible and prompt-eligible
 fields. That contract is a platform allowlist; a harness may request fewer
-fields but cannot expand it.
+fields but cannot expand it. It is specified by
+[Normalized entity v1](../../normalized-entity/v1/README.md), which also
+defines how action-indicating elements, their current actor permissions, and
+incomplete enumeration are represented.
 
 `fullsend poll` may enumerate candidates without synthesizing a
 `NormalizedEvent` or event actor. A bound `fullsend run` may instead recheck

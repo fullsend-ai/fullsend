@@ -1,0 +1,1119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fullsend.ai/normative/normalized-entity/v1/normalized-entity.schema.json",
+  "title": "NormalizedEntityDocument",
+  "description": "Logical normalized-entity v1 document (ADR 0098). The `entity` member is the value bound to the harness CEL variable `entity`; `coverage` and `evaluation` are host-only and never CEL-visible. A `candidate` document may be partial; an `evaluable` document is the per-harness form that carries a conclusive predicate result over selectively acquired data (ADR 0147). Every facet of an evaluable document is either `complete` or outside the acquisition plan (`not_loaded`), unless a retained witness settles a true outcome. Facet fields are present if and only if their facet coverage is `complete`, so unresolved data is never encoded as absent or empty. This schema describes logical content and conformance fixtures; it does not prescribe an in-memory representation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "phase", "entity", "coverage"],
+  "properties": {
+    "schema_version": {
+      "const": "normalized-entity/v1"
+    },
+    "phase": {
+      "enum": ["candidate", "evaluable"],
+      "description": "`candidate`: discovered or partially resolved identity, not admissible to CEL. `evaluable`: per-harness form with a conclusive result over the acquired, current-permission-filtered data."
+    },
+    "entity": {
+      "$ref": "#/$defs/entity"
+    },
+    "coverage": {
+      "$ref": "#/$defs/coverage"
+    },
+    "evaluation": {
+      "$ref": "#/$defs/evaluation"
+    }
+  },
+  "allOf": [
+    {
+      "$comment": "State facet fields are present iff the state facet is complete.",
+      "if": {
+        "properties": {
+          "coverage": {
+            "properties": {
+              "state": {
+                "properties": { "status": { "const": "complete" } },
+                "required": ["status"]
+              }
+            },
+            "required": ["state"]
+          }
+        },
+        "required": ["coverage"]
+      },
+      "then": {
+        "properties": {
+          "entity": {
+            "required": ["state", "author", "created_at", "updated_at", "labels"]
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "state": false,
+              "author": false,
+              "created_at": false,
+              "updated_at": false,
+              "labels": false
+            }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "Change-proposal facet fields are present iff that facet is complete.",
+      "if": {
+        "properties": {
+          "coverage": {
+            "properties": {
+              "change_proposal": {
+                "properties": { "status": { "const": "complete" } },
+                "required": ["status"]
+              }
+            },
+            "required": ["change_proposal"]
+          }
+        },
+        "required": ["coverage"]
+      },
+      "then": {
+        "properties": { "entity": { "required": ["change_proposal"] } }
+      },
+      "else": {
+        "properties": {
+          "entity": { "properties": { "change_proposal": false } }
+        }
+      }
+    },
+    {
+      "$comment": "The actions list is present iff action-indicating enumeration is complete. An incomplete, failed, unknown, unsupported, or unloaded enumeration is never encoded as an empty list.",
+      "if": {
+        "properties": {
+          "coverage": {
+            "properties": {
+              "actions": {
+                "properties": { "status": { "const": "complete" } },
+                "required": ["status"]
+              }
+            },
+            "required": ["actions"]
+          }
+        },
+        "required": ["coverage"]
+      },
+      "then": {
+        "properties": { "entity": { "required": ["actions"] } }
+      },
+      "else": {
+        "properties": {
+          "entity": { "properties": { "actions": false } }
+        }
+      }
+    },
+    {
+      "$comment": "change_proposal entities carry the change-proposal facet and the review category.",
+      "if": {
+        "properties": {
+          "entity": {
+            "properties": { "kind": { "const": "change_proposal" } },
+            "required": ["kind"]
+          }
+        },
+        "required": ["entity"]
+      },
+      "then": {
+        "properties": {
+          "coverage": {
+            "required": ["change_proposal"],
+            "properties": {
+              "actions": {
+                "properties": {
+                  "categories": { "required": ["review"] }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "work_item entities have no change-proposal facet, no merged state, and no review category.",
+      "if": {
+        "properties": {
+          "entity": {
+            "properties": { "kind": { "const": "work_item" } },
+            "required": ["kind"]
+          }
+        },
+        "required": ["entity"]
+      },
+      "then": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "state": { "enum": ["open", "closed"] },
+              "actions": {
+                "items": {
+                  "properties": {
+                    "category": { "not": { "const": "review" } }
+                  }
+                }
+              }
+            }
+          },
+          "coverage": {
+            "properties": {
+              "change_proposal": false,
+              "actions": {
+                "properties": {
+                  "categories": { "properties": { "review": false } }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "Retained actions belong only to acquired, complete categories: a body action requires body coverage complete.",
+      "if": {
+        "not": {
+          "properties": {
+            "coverage": {
+              "properties": {
+                "actions": {
+                  "properties": {
+                    "categories": {
+                      "properties": {
+                        "body": { "properties": { "status": { "const": "complete" } }, "required": ["status"] }
+                      },
+                      "required": ["body"]
+                    }
+                  },
+                  "required": ["categories"]
+                }
+              },
+              "required": ["actions"]
+            }
+          },
+          "required": ["coverage"]
+        }
+      },
+      "then": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "actions": { "items": { "properties": { "category": { "not": { "const": "body" } } } } }
+            }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "Retained actions belong only to acquired, complete categories: a comment action requires comment coverage complete.",
+      "if": {
+        "not": {
+          "properties": {
+            "coverage": {
+              "properties": {
+                "actions": {
+                  "properties": {
+                    "categories": {
+                      "properties": {
+                        "comment": { "properties": { "status": { "const": "complete" } }, "required": ["status"] }
+                      },
+                      "required": ["comment"]
+                    }
+                  },
+                  "required": ["categories"]
+                }
+              },
+              "required": ["actions"]
+            }
+          },
+          "required": ["coverage"]
+        }
+      },
+      "then": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "actions": { "items": { "properties": { "category": { "not": { "const": "comment" } } } } }
+            }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "Retained actions belong only to acquired, complete categories: a review action requires review coverage complete.",
+      "if": {
+        "not": {
+          "properties": {
+            "coverage": {
+              "properties": {
+                "actions": {
+                  "properties": {
+                    "categories": {
+                      "properties": {
+                        "review": { "properties": { "status": { "const": "complete" } }, "required": ["status"] }
+                      },
+                      "required": ["review"]
+                    }
+                  },
+                  "required": ["categories"]
+                }
+              },
+              "required": ["actions"]
+            }
+          },
+          "required": ["coverage"]
+        }
+      },
+      "then": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "actions": { "items": { "properties": { "category": { "not": { "const": "review" } } } } }
+            }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "Retained actions belong only to acquired, complete categories: a label_application action requires label_application coverage complete.",
+      "if": {
+        "not": {
+          "properties": {
+            "coverage": {
+              "properties": {
+                "actions": {
+                  "properties": {
+                    "categories": {
+                      "properties": {
+                        "label_application": { "properties": { "status": { "const": "complete" } }, "required": ["status"] }
+                      },
+                      "required": ["label_application"]
+                    }
+                  },
+                  "required": ["categories"]
+                }
+              },
+              "required": ["actions"]
+            }
+          },
+          "required": ["coverage"]
+        }
+      },
+      "then": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "actions": { "items": { "properties": { "category": { "not": { "const": "label_application" } } } } }
+            }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "A candidate that carries the actions list carries the complete enumerated superset: every applicable category is complete.",
+      "if": {
+        "properties": {
+          "phase": { "const": "candidate" },
+          "coverage": {
+            "properties": {
+              "actions": {
+                "properties": { "status": { "const": "complete" } },
+                "required": ["status"]
+              }
+            },
+            "required": ["actions"]
+          }
+        },
+        "required": ["phase", "coverage"]
+      },
+      "then": {
+        "properties": {
+          "coverage": {
+            "properties": {
+              "actions": {
+                "properties": {
+                  "categories": {
+                    "properties": {
+                      "body": { "properties": { "status": { "const": "complete" } } },
+                      "comment": { "properties": { "status": { "const": "complete" } } },
+                      "review": { "properties": { "status": { "const": "complete" } } },
+                      "label_application": { "properties": { "status": { "const": "complete" } } }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "Evaluable documents carry an evaluation block and filter every retained or witness actor at the platform triage floor; candidates have no evaluation block.",
+      "if": {
+        "properties": { "phase": { "const": "evaluable" } },
+        "required": ["phase"]
+      },
+      "then": {
+        "required": ["evaluation"],
+        "properties": {
+          "entity": {
+            "properties": {
+              "actions": {
+                "items": {
+                  "properties": {
+                    "actor": { "$ref": "#/$defs/retained_actor_triage" }
+                  }
+                }
+              }
+            }
+          },
+          "evaluation": {
+            "properties": {
+              "witnesses": {
+                "items": {
+                  "properties": {
+                    "actor": { "$ref": "#/$defs/retained_actor_triage" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": { "evaluation": false }
+      }
+    },
+    {
+      "$comment": "Complete-scope decisions (basis scope_complete): each facet and category is either complete (acquired in full) or not_loaded (outside the acquisition plan). A planned read that is incomplete, unknown, failed, or unsupported leaves a decision dependency unresolved, so no evaluable document exists. A complete actions facet then needs at least one complete category (enforced in actions_coverage).",
+      "if": {
+        "properties": {
+          "phase": { "const": "evaluable" },
+          "evaluation": {
+            "properties": { "basis": { "const": "scope_complete" } },
+            "required": ["basis"]
+          }
+        },
+        "required": ["phase", "evaluation"]
+      },
+      "then": {
+        "properties": {
+          "coverage": {
+            "properties": {
+              "state": { "properties": { "status": { "enum": ["complete", "not_loaded"] } } },
+              "change_proposal": {
+                "properties": { "status": { "enum": ["complete", "not_loaded"] } }
+              },
+              "actions": {
+                "properties": {
+                  "status": { "enum": ["complete", "not_loaded"] },
+                  "categories": {
+                    "properties": {
+                      "body": { "properties": { "status": { "enum": ["complete", "not_loaded"] } } },
+                      "comment": { "properties": { "status": { "enum": ["complete", "not_loaded"] } } },
+                      "review": { "properties": { "status": { "enum": ["complete", "not_loaded"] } } },
+                      "label_application": { "properties": { "status": { "enum": ["complete", "not_loaded"] } } }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "Witness decisions (basis witness) are conclusive true results settled by retained witness elements; they list the witnesses and never settle false. Other bases carry no witness list.",
+      "if": {
+        "properties": {
+          "phase": { "const": "evaluable" },
+          "evaluation": {
+            "properties": { "basis": { "const": "witness" } },
+            "required": ["basis"]
+          }
+        },
+        "required": ["phase", "evaluation"]
+      },
+      "then": {
+        "properties": {
+          "evaluation": {
+            "required": ["witnesses"],
+            "properties": { "outcome": { "const": true } }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "evaluation": {
+            "properties": { "witnesses": false }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "Harness minimum write: retain only human elements whose current role is write or above (ADR 0151).",
+      "if": {
+        "properties": {
+          "phase": { "const": "evaluable" },
+          "evaluation": {
+            "properties": { "human_min_role": { "const": "write" } },
+            "required": ["human_min_role"]
+          }
+        },
+        "required": ["phase", "evaluation"]
+      },
+      "then": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "actions": {
+                "items": {
+                  "properties": {
+                    "actor": { "$ref": "#/$defs/retained_actor_write" }
+                  }
+                }
+              }
+            }
+          },
+          "evaluation": {
+            "properties": {
+              "witnesses": {
+                "items": {
+                  "properties": {
+                    "actor": { "$ref": "#/$defs/retained_actor_write" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "Harness minimum maintain: retain only human elements whose current role is maintain or admin (ADR 0151).",
+      "if": {
+        "properties": {
+          "phase": { "const": "evaluable" },
+          "evaluation": {
+            "properties": { "human_min_role": { "const": "maintain" } },
+            "required": ["human_min_role"]
+          }
+        },
+        "required": ["phase", "evaluation"]
+      },
+      "then": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "actions": {
+                "items": {
+                  "properties": {
+                    "actor": { "$ref": "#/$defs/retained_actor_maintain" }
+                  }
+                }
+              }
+            }
+          },
+          "evaluation": {
+            "properties": {
+              "witnesses": {
+                "items": {
+                  "properties": {
+                    "actor": { "$ref": "#/$defs/retained_actor_maintain" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "Harness minimum admin: retain only human elements whose current role is admin (ADR 0151).",
+      "if": {
+        "properties": {
+          "phase": { "const": "evaluable" },
+          "evaluation": {
+            "properties": { "human_min_role": { "const": "admin" } },
+            "required": ["human_min_role"]
+          }
+        },
+        "required": ["phase", "evaluation"]
+      },
+      "then": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "actions": {
+                "items": {
+                  "properties": {
+                    "actor": { "$ref": "#/$defs/retained_actor_admin" }
+                  }
+                }
+              }
+            }
+          },
+          "evaluation": {
+            "properties": {
+              "witnesses": {
+                "items": {
+                  "properties": {
+                    "actor": { "$ref": "#/$defs/retained_actor_admin" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{9}Z$",
+      "description": "UTC with exactly nine fractional-second digits, so lexical string comparison equals chronological comparison in CEL."
+    },
+    "structural_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:=-]*$",
+      "description": "Immutable opaque source-system identifier. GitHub uses the GraphQL node_id."
+    },
+    "repository": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 512,
+      "pattern": "^[a-z0-9._-]+(/[a-z0-9._-]+)+$",
+      "description": "Lowercase navigation path of a repository (GitHub owner/repository). Not an identity input."
+    },
+    "role": {
+      "enum": ["admin", "maintain", "write", "triage", "read", "none", "external"],
+      "description": "Authorization Contract v1 role vocabulary (independent copy)."
+    },
+    "entity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "source", "id", "number", "url"],
+      "properties": {
+        "kind": {
+          "enum": ["work_item", "change_proposal"],
+          "description": "Forge-neutral entity kind. v1 supports GitHub issues (work_item) and pull requests (change_proposal)."
+        },
+        "source": {
+          "$ref": "#/$defs/source"
+        },
+        "id": {
+          "$ref": "#/$defs/structural_id",
+          "description": "Immutable opaque entity ID; equals entity-context-snapshot v1 entity id. Distinct from NormalizedEvent v1 entity.id, which carries the display number."
+        },
+        "number": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Positive display number; equals NormalizedEvent v1 entity.id (or entity.linked_change_proposal.id) for the same entity."
+        },
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "state": {
+          "enum": ["open", "closed", "merged"],
+          "description": "Current lifecycle state (state facet)."
+        },
+        "author": {
+          "$ref": "#/$defs/actor_ref",
+          "description": "Source-authenticated creator of the entity (state facet). Routing data only; not authorization evidence."
+        },
+        "created_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "updated_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "labels": {
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 100,
+          "items": { "type": "string", "minLength": 1, "maxLength": 255 },
+          "description": "Current label names sorted by UTF-8 byte order (state facet). State, not a request: a label used as a request to run is tested through a retained label_application action."
+        },
+        "change_proposal": {
+          "$ref": "#/$defs/change_proposal"
+        },
+        "actions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/action" },
+          "description": "Action-indicating elements (actions facet). Candidate: the complete enumerated superset. Evaluable: the elements of the acquired (complete) categories retained for this harness after current-permission filtering. Categories outside the acquisition plan contribute nothing, and the plan covers every category the predicate depends on. Sorted by created_at, then id."
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["system", "host", "repository", "repository_id"],
+      "properties": {
+        "system": {
+          "enum": ["github"],
+          "description": "Source system of the entity (ADR 0098 entity.source.system). Overlays used for entity discovery select on this field."
+        },
+        "host": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255,
+          "pattern": "^[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:[1-9][0-9]{0,4})?$",
+          "description": "Lowercase DNS name, with :port only when the HTTPS port is not 443."
+        },
+        "repository": {
+          "$ref": "#/$defs/repository"
+        },
+        "repository_id": {
+          "$ref": "#/$defs/structural_id"
+        }
+      }
+    },
+    "actor_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "login", "kind"],
+      "properties": {
+        "id": { "$ref": "#/$defs/structural_id" },
+        "login": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "maxLength": 255,
+          "description": "Current display login; untrusted and mutable."
+        },
+        "kind": { "enum": ["human", "bot"] }
+      }
+    },
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "login", "kind", "role", "bot_role", "role_verified", "is_entity_author"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/structural_id",
+          "description": "Immutable ID of the source-authenticated actor of the element's current revision. Required and non-null: an element without established actor provenance cannot be represented."
+        },
+        "login": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "kind": { "enum": ["human", "bot"] },
+        "role": {
+          "$ref": "#/$defs/role",
+          "description": "Current forge permission resolved for this evaluation. Bots use none (ADR 0107)."
+        },
+        "bot_role": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "maxLength": 255,
+          "description": "Provider-resolved Fullsend bot role; null for humans and unrecognized bots."
+        },
+        "role_verified": {
+          "type": "boolean",
+          "description": "Humans: role is a verified current permission. Bots: bot-role lookup completed, including a successful no-match."
+        },
+        "is_entity_author": {
+          "type": "boolean",
+          "description": "Routing aid; never authorization evidence."
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "human" } }, "required": ["kind"] },
+          "then": { "properties": { "bot_role": { "const": null } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "bot" } }, "required": ["kind"] },
+          "then": { "properties": { "role": { "const": "none" } } }
+        },
+        {
+          "if": {
+            "properties": { "role_verified": { "const": false } },
+            "required": ["role_verified"]
+          },
+          "then": { "properties": { "bot_role": { "const": null } } }
+        }
+      ]
+    },
+    "retained_actor_triage": {
+      "$comment": "Observation threshold: verified humans at triage or above, or recognized bots.",
+      "required": ["role_verified"],
+      "properties": { "role_verified": { "const": true } },
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "human" } }, "required": ["kind"] },
+          "then": {
+            "properties": { "role": { "enum": ["admin", "maintain", "write", "triage"] } }
+          }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "bot" } }, "required": ["kind"] },
+          "then": { "properties": { "bot_role": { "type": "string" } } }
+        }
+      ]
+    },
+    "retained_actor_write": {
+      "$comment": "Harness minimum write: verified humans at write or above, or recognized bots.",
+      "allOf": [
+        { "$ref": "#/$defs/retained_actor_triage" },
+        {
+          "if": { "properties": { "kind": { "const": "human" } }, "required": ["kind"] },
+          "then": {
+            "properties": { "role": { "enum": ["admin", "maintain", "write"] } }
+          }
+        }
+      ]
+    },
+    "retained_actor_maintain": {
+      "$comment": "Harness minimum maintain: verified humans at maintain or admin, or recognized bots.",
+      "allOf": [
+        { "$ref": "#/$defs/retained_actor_write" },
+        {
+          "if": { "properties": { "kind": { "const": "human" } }, "required": ["kind"] },
+          "then": {
+            "properties": { "role": { "enum": ["admin", "maintain"] } }
+          }
+        }
+      ]
+    },
+    "retained_actor_admin": {
+      "$comment": "Harness minimum admin: verified humans at admin, or recognized bots.",
+      "allOf": [
+        { "$ref": "#/$defs/retained_actor_maintain" },
+        {
+          "if": { "properties": { "kind": { "const": "human" } }, "required": ["kind"] },
+          "then": {
+            "properties": { "role": { "const": "admin" } }
+          }
+        }
+      ]
+    },
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "category", "created_at", "revised_at", "actor"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/structural_id",
+          "description": "Immutable source record ID. The body element uses the entity id."
+        },
+        "category": {
+          "enum": ["body", "comment", "review", "label_application"],
+          "description": "Platform-defined action-indicating category. review applies only to change_proposal."
+        },
+        "created_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "Immutable source time: creation for body and comment, submission for review, application for label_application."
+        },
+        "revised_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "Time of the current revision: the latest authenticated edit when the source records one, otherwise equal to created_at. Never earlier than created_at. Always equal to created_at for label_application."
+        },
+        "actor": {
+          "$ref": "#/$defs/actor"
+        },
+        "command": {
+          "type": ["string", "null"],
+          "minLength": 2,
+          "maxLength": 64,
+          "pattern": "^/",
+          "not": {
+            "type": "string",
+            "pattern": "[\\u0009-\\u000d\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]"
+          },
+          "description": "First whitespace-delimited token of the first line of the current revision when it is a command token (begins with '/', 2 to 64 characters, no whitespace), otherwise null. Whitespace is the explicit code-point set in the README (Unicode White_Space plus U+FEFF), encoded as an explicit character class so every regular-expression dialect agrees. A bare '/' or a slash-prefixed token over 64 characters is not a command token and yields null. Required for body, comment, and review."
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255,
+          "description": "Applied label name. Required for label_application."
+        },
+        "review_state": {
+          "enum": ["approved", "changes_requested", "commented", "dismissed"],
+          "description": "Current review state. Required for review."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "category": { "enum": ["body", "comment"] } },
+            "required": ["category"]
+          },
+          "then": {
+            "required": ["command"],
+            "properties": { "label": false, "review_state": false }
+          }
+        },
+        {
+          "if": {
+            "properties": { "category": { "const": "review" } },
+            "required": ["category"]
+          },
+          "then": {
+            "required": ["command", "review_state"],
+            "properties": { "label": false }
+          }
+        },
+        {
+          "if": {
+            "properties": { "category": { "const": "label_application" } },
+            "required": ["category"]
+          },
+          "then": {
+            "required": ["label"],
+            "properties": { "command": false, "review_state": false }
+          }
+        }
+      ]
+    },
+    "change_proposal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["base_repository", "head_repository", "base_ref", "head_ref", "head_sha", "is_fork", "draft"],
+      "properties": {
+        "base_repository": { "$ref": "#/$defs/repository" },
+        "head_repository": {
+          "oneOf": [{ "$ref": "#/$defs/repository" }, { "type": "null" }],
+          "description": "null only when the source reports that the head repository no longer exists."
+        },
+        "base_ref": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "head_ref": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "head_sha": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"
+        },
+        "is_fork": {
+          "type": "boolean",
+          "description": "Source-reported cross-repository flag; independent of head_repository availability."
+        },
+        "draft": { "type": "boolean" }
+      }
+    },
+    "coverage_status": {
+      "enum": ["complete", "not_loaded", "unsupported", "incomplete", "unknown", "failed"]
+    },
+    "facet_coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": {
+        "status": { "$ref": "#/$defs/coverage_status" },
+        "reason": {
+          "enum": [
+            "not_requested",
+            "provider_unsupported",
+            "kind_unsupported",
+            "truncated",
+            "pagination_incomplete",
+            "consistency_unknown",
+            "fetch_failed",
+            "timeout",
+            "rate_limited",
+            "source_too_large",
+            "invalid_metadata",
+            "actor_unattributed",
+            "permission_unverifiable"
+          ]
+        }
+      },
+      "allOf": [{ "$ref": "#/$defs/facet_coverage_pairing" }]
+    },
+    "actions_coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "categories"],
+      "properties": {
+        "status": { "$ref": "#/$defs/coverage_status" },
+        "reason": { "$ref": "#/$defs/facet_coverage/properties/reason" },
+        "categories": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["body", "comment", "label_application"],
+          "properties": {
+            "body": { "$ref": "#/$defs/facet_coverage" },
+            "comment": { "$ref": "#/$defs/facet_coverage" },
+            "review": { "$ref": "#/$defs/facet_coverage" },
+            "label_application": { "$ref": "#/$defs/facet_coverage" }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "$comment": "Status and reason pairing follows facet_coverage.",
+          "$ref": "#/$defs/facet_coverage_pairing"
+        },
+        {
+          "$comment": "The actions facet is complete iff every acquired category is complete: each category is complete or not_loaded (outside the acquisition plan), and at least one is complete. Any other mix is not complete. A candidate that carries the list additionally needs every applicable category complete (top-level rule).",
+          "if": { "properties": { "status": { "const": "complete" } }, "required": ["status"] },
+          "then": {
+            "properties": {
+              "categories": {
+                "properties": {
+                  "body": { "properties": { "status": { "enum": ["complete", "not_loaded"] } } },
+                  "comment": { "properties": { "status": { "enum": ["complete", "not_loaded"] } } },
+                  "review": { "properties": { "status": { "enum": ["complete", "not_loaded"] } } },
+                  "label_application": { "properties": { "status": { "enum": ["complete", "not_loaded"] } } }
+                }
+              }
+            },
+            "$comment": "At least one category is complete.",
+            "anyOf": [
+              { "properties": { "categories": { "properties": { "body": { "properties": { "status": { "const": "complete" } }, "required": ["status"] } }, "required": ["body"] } } },
+              { "properties": { "categories": { "properties": { "comment": { "properties": { "status": { "const": "complete" } }, "required": ["status"] } }, "required": ["comment"] } } },
+              { "properties": { "categories": { "properties": { "review": { "properties": { "status": { "const": "complete" } }, "required": ["status"] } }, "required": ["review"] } } },
+              { "properties": { "categories": { "properties": { "label_application": { "properties": { "status": { "const": "complete" } }, "required": ["status"] } }, "required": ["label_application"] } } }
+            ]
+          },
+          "else": {
+            "not": {
+              "allOf": [
+                {
+                  "properties": {
+                    "categories": {
+                      "properties": {
+                        "body": { "properties": { "status": { "enum": ["complete", "not_loaded"] } } },
+                        "comment": { "properties": { "status": { "enum": ["complete", "not_loaded"] } } },
+                        "review": { "properties": { "status": { "enum": ["complete", "not_loaded"] } } },
+                        "label_application": { "properties": { "status": { "enum": ["complete", "not_loaded"] } } }
+                      }
+                    }
+                  }
+                },
+                {
+                  "anyOf": [
+                    { "properties": { "categories": { "properties": { "body": { "properties": { "status": { "const": "complete" } }, "required": ["status"] } }, "required": ["body"] } } },
+                    { "properties": { "categories": { "properties": { "comment": { "properties": { "status": { "const": "complete" } }, "required": ["status"] } }, "required": ["comment"] } } },
+                    { "properties": { "categories": { "properties": { "review": { "properties": { "status": { "const": "complete" } }, "required": ["status"] } }, "required": ["review"] } } },
+                    { "properties": { "categories": { "properties": { "label_application": { "properties": { "status": { "const": "complete" } }, "required": ["status"] } }, "required": ["label_application"] } } }
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "facet_coverage_pairing": {
+      "$comment": "Reusable status/reason pairing for objects that also carry other members.",
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "complete" } }, "required": ["status"] },
+          "then": { "properties": { "reason": false } },
+          "else": { "required": ["reason"] }
+        },
+        {
+          "if": { "properties": { "status": { "const": "not_loaded" } }, "required": ["status"] },
+          "then": { "properties": { "reason": { "enum": ["not_requested"] } } }
+        },
+        {
+          "if": { "properties": { "status": { "const": "unsupported" } }, "required": ["status"] },
+          "then": { "properties": { "reason": { "enum": ["provider_unsupported", "kind_unsupported"] } } }
+        },
+        {
+          "if": { "properties": { "status": { "const": "incomplete" } }, "required": ["status"] },
+          "then": { "properties": { "reason": { "enum": ["truncated", "pagination_incomplete"] } } }
+        },
+        {
+          "if": { "properties": { "status": { "const": "unknown" } }, "required": ["status"] },
+          "then": { "properties": { "reason": { "enum": ["consistency_unknown"] } } }
+        },
+        {
+          "if": { "properties": { "status": { "const": "failed" } }, "required": ["status"] },
+          "then": {
+            "properties": {
+              "reason": {
+                "enum": [
+                  "fetch_failed",
+                  "timeout",
+                  "rate_limited",
+                  "source_too_large",
+                  "invalid_metadata",
+                  "actor_unattributed",
+                  "permission_unverifiable"
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "actions"],
+      "properties": {
+        "state": { "$ref": "#/$defs/facet_coverage" },
+        "change_proposal": { "$ref": "#/$defs/facet_coverage" },
+        "actions": { "$ref": "#/$defs/actions_coverage" }
+      },
+      "description": "Host-only coverage of each facet. Identity (kind, source, id, number, url) is required in every phase and has no coverage entry."
+    },
+    "evaluation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["harness", "human_min_role", "origin", "basis", "outcome", "acquisition_plan", "resolved_at", "removed_elements"],
+      "properties": {
+        "harness": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+          "description": "Candidate harness whose minimum produced this evaluable form."
+        },
+        "human_min_role": {
+          "enum": ["triage", "write", "maintain", "admin"],
+          "description": "The harness's effective human_min_role (ADR 0151, Authorization Contract v2): triage, write, maintain, or admin. It gates every retained human element."
+        },
+        "basis": {
+          "enum": ["scope_complete", "witness"],
+          "description": "Why the outcome is conclusive (ADR 0147). scope_complete: every planned facet and category is complete and everything else is not_loaded, so the outcome holds for every complete entity consistent with that evidence. witness: a true outcome settled by the listed retained witness elements, with other reads possibly incomplete."
+        },
+        "outcome": {
+          "type": "boolean",
+          "description": "The conclusive predicate result. An UNKNOWN result never forms an evaluable document. false requires basis scope_complete."
+        },
+        "acquisition_plan": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:=-]*$",
+          "description": "Opaque identity of the conservative acquisition plan derived from the harness predicate. Every not_loaded facet or category is outside the plan's dependencies. Audit only."
+        },
+        "witnesses": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/action" },
+          "description": "Retained elements that settle a true outcome when basis is witness. Each passes the harness minimum. Present only for basis witness. Audit only."
+        },
+        "origin": {
+          "enum": ["event", "discovery"],
+          "description": "event: event-driven dispatch (CEL event is non-null). discovery: scheduled entity discovery (CEL event is null)."
+        },
+        "resolved_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "Time at which entity state and actor permissions were resolved for this evaluation. Audit only; not CEL-visible."
+        },
+        "removed_elements": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of enumerated elements removed because the actor's verified current permission did not meet the threshold. Audit only; not CEL-visible."
+        }
+      }
+    }
+  }
+}

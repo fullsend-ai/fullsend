@@ -581,7 +581,8 @@ prompt-eligible fields and their coverage states. That contract is a platform
 allowlist; a harness may request fewer fields but cannot expand it.
 
 > **Planned:** Entity-source CEL is not implemented and remains disabled until
-> the [normalized-entity contract tracked by issue #8420](https://github.com/fullsend-ai/fullsend/issues/8420)
+> the [normalized-entity contract tracked by issue #8420](https://github.com/fullsend-ai/fullsend/issues/8420),
+> specified by [Normalized entity v1](../../normalized-entity/v1/README.md),
 > and the run-time authorization and launch checks described here are
 > implemented. Legacy non-CEL, non-entity workflows remain on Authorization
 > v1.

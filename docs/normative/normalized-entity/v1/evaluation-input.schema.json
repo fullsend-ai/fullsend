@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fullsend.ai/normative/normalized-entity/v1/evaluation-input.schema.json",
+  "title": "EntityFirstEvaluationInput",
+  "description": "Conformance shape of one entity-first harness predicate evaluation (ADR 0098). CEL binds `entity` to entity_document.entity and `event` to the event member, which is null for scheduled discovery. Only evaluable documents may form an evaluation input. Cross-field identity rules between the event and the entity are specified in the README and enforced by producers.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["entity_document", "event"],
+  "properties": {
+    "entity_document": {
+      "allOf": [
+        { "$ref": "normalized-entity.schema.json" },
+        {
+          "properties": { "phase": { "const": "evaluable" } },
+          "required": ["phase"]
+        }
+      ]
+    },
+    "event": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "../../normalized-event/v1/normalized-event.schema.json" }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "event": { "type": "null" } },
+        "required": ["event"]
+      },
+      "then": {
+        "properties": {
+          "entity_document": {
+            "properties": {
+              "evaluation": {
+                "properties": { "origin": { "const": "discovery" } }
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "entity_document": {
+            "properties": {
+              "evaluation": {
+                "properties": { "origin": { "const": "event" } }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}
