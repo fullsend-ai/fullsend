@@ -382,6 +382,10 @@ func TestCheckGitHubJiraPollWorkflowUserOwnedCallerOAuth(t *testing.T) {
 		caller  string
 		cfg     ConvergeConfig
 		wantErr string
+		// upstream overrides the content served for both Fullsend reusable
+		// workflows at @main; local is served from the caller's own repo.
+		upstream string
+		local    string
 	}{
 		{name: "token-only caller rejected for OAuth", caller: userJiraCaller + "jobs:\n  poll:\n" + pollUses + "    secrets:\n      FULLSEND_JIRA_TOKEN: ${{ secrets.FULLSEND_JIRA_TOKEN }}\n", cfg: oauth, wantErr: "does not forward"},
 		{name: "only one OAuth secret rejected", caller: userJiraCaller + "jobs:\n  poll:\n" + pollUses + "    secrets:\n      FULLSEND_JIRA_CLIENT_ID: x\n", cfg: oauth, wantErr: "does not forward"},
@@ -394,11 +398,26 @@ func TestCheckGitHubJiraPollWorkflowUserOwnedCallerOAuth(t *testing.T) {
 		{name: "caller without a Fullsend job rejected", caller: userJiraCaller, cfg: oauth, wantErr: "does not forward"},
 		{name: "unparseable caller rejected", caller: "jobs: [\n", cfg: oauth, wantErr: "does not forward"},
 		{name: "token install ignores caller", caller: userJiraCaller, cfg: ConvergeConfig{JiraToken: testJiraToken}},
+		{name: "inheriting caller pinned to pre-OAuth poll workflow rejected", caller: userJiraCaller + "jobs:\n  poll:\n" + pollUses + "    secrets: inherit\n", cfg: oauth, upstream: jiraPreOAuthWorkflowFixture, wantErr: "does not declare"},
+		{name: "forwarding caller pinned to pre-OAuth dispatch workflow rejected", caller: userJiraCaller + "jobs:\n  poll:\n" + pollUses + oauthSecrets + "  dispatch:\n" + dispatchUses + oauthSecrets, cfg: oauth, upstream: jiraPreOAuthWorkflowFixture, wantErr: "does not declare"},
+		{name: "reference without a pinned ref rejected", caller: userJiraCaller + "jobs:\n  poll:\n    uses: fullsend-ai/fullsend/.github/workflows/reusable-poll-jira.yml\n    secrets: inherit\n", cfg: oauth, wantErr: "cannot be verified"},
+		{name: "upstream workflow missing at pinned ref rejected", caller: userJiraCaller + "jobs:\n  poll:\n    uses: fullsend-ai/fullsend/.github/workflows/reusable-poll-jira.yml@v0.0.1\n    secrets: inherit\n", cfg: oauth, wantErr: "could not be verified"},
+		{name: "local workflow declaring OAuth secrets accepted", caller: userJiraCaller + "jobs:\n  poll:\n    uses: ./.github/workflows/reusable-poll-jira.yml\n    secrets: inherit\n", cfg: oauth, local: jiraOAuthWorkflowFixture},
+		{name: "local pre-OAuth workflow rejected", caller: userJiraCaller + "jobs:\n  poll:\n    uses: ./.github/workflows/reusable-poll-jira.yml\n    secrets: inherit\n", cfg: oauth, local: jiraPreOAuthWorkflowFixture, wantErr: "does not declare"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fc := forge.NewFakeClient()
 			fc.FileContents[jiraCallerKey] = []byte(tt.caller)
+			upstream := jiraOAuthWorkflowFixture
+			if tt.upstream != "" {
+				upstream = tt.upstream
+			}
+			fc.FileContentsRef[shimOwner+"/"+shimRepo+"/"+reusableJiraPollWorkflowPath+"@main"] = []byte(upstream)
+			fc.FileContentsRef[shimOwner+"/"+shimRepo+"/"+reusableDispatchWorkflowPath+"@main"] = []byte(upstream)
+			if tt.local != "" {
+				fc.FileContents["acme/api/.github/workflows/reusable-poll-jira.yml"] = []byte(tt.local)
+			}
 			d := convergeDiscovery{
 				resolved: ResolvedConfig{Owner: "acme", Repo: "api", Forge: ForgeGitHub, ForgeConfig: ForgeConfig{Client: fc}},
 				jira:     jiraPollState{enabled: true},
