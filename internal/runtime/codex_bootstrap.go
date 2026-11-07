@@ -409,10 +409,10 @@ const codexChunkedReadNote = "When reading a SKILL.md or other instruction file,
 // tools and states the policy the spawn guard enforces, so the parent passes
 // the arguments the guard admits and handles a denial without retrying. The
 // first two sentences and the denied-spawn sentence are what the agents
-// repository's pr-review skill will key on once its codex wording lands;
-// change them only together with that skill. roles is the registered
-// roster, sorted by name (codexRoles). The child contract is in every role
-// file (codexChildNote), not here.
+// repository's pr-review skill and retro agent key on
+// (fullsend-ai/agents#1849); change them only together with those. roles is
+// the registered roster, sorted by name (codexRoles). The child contract is in
+// every role file (codexChildNote), not here.
 func codexSubagentNote(roles []codexRole) string {
 	names := make([]string, len(roles))
 	for i, role := range roles {

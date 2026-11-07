@@ -1597,8 +1597,9 @@ Two artefacts of the run are worth knowing about:
   and local smoke runs.
 - The rollout session files are archived as transcripts but not error-classified: only the tee'd
   `exec --json` capture yields a verdict, which is what the runner's exit-code override reads.
-- Native sub-agents (ADR 0126) have not completed a fleet-shaped run; `review`/`retro` stay on
-  Claude Code in the docs until one does.
+- Native sub-agents (ADR 0126) have completed fleet-shaped runs only locally, on macOS and on
+  Fedora ([#6970](https://github.com/fullsend-ai/fullsend/issues/6970)), not through the fleet
+  workflows.
 
 ### Re-check on a `CODEX_VERSION` bump
 
