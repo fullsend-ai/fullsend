@@ -75,7 +75,7 @@ func checkGitHubJiraPollWorkflow(ctx context.Context, d convergeDiscovery, cfg C
 
 // Ensure makes the managed caller present and current.
 func (githubJiraPollReconciler) Ensure(ctx context.Context, req jiraPollRequest) ([]ComponentAction, error) {
-	want, err := scaffold.RenderJiraPollCaller(req.Render, req.EmailConfigured)
+	want, err := scaffold.RenderJiraPollCaller(req.Render, req.EmailConfigured, req.OAuthConfigured)
 	if err != nil {
 		return nil, err
 	}

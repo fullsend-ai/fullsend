@@ -652,6 +652,7 @@ func TestConvergeJiraPoll_OAuthReplacesToken(t *testing.T) {
 	}
 	require.Len(t, rec.ensures, 1)
 	assert.False(t, rec.ensures[0].EmailConfigured, "the email is removed with OAuth client credentials")
+	assert.True(t, rec.ensures[0].OAuthConfigured, "the caller forwards the OAuth client credentials")
 	for _, a := range actions {
 		assert.NotContains(t, a.Detail, testJiraClientSecret)
 	}
@@ -672,6 +673,7 @@ func TestConvergeJiraPoll_TokenReplacesOAuth(t *testing.T) {
 	assert.ElementsMatch(t, []string{forge.SecretJiraClientID, forge.SecretJiraClientSecret}, deleted)
 	require.Len(t, rec.ensures, 1)
 	assert.True(t, rec.ensures[0].EmailConfigured)
+	assert.False(t, rec.ensures[0].OAuthConfigured, "a token install must not forward OAuth client credentials")
 }
 
 func TestConvergeJiraPoll_OAuthRepeatInstallPreservesSecrets(t *testing.T) {

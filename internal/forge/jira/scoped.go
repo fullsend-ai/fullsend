@@ -126,6 +126,9 @@ type ScopedConfig struct {
 // expires or when the gateway rejects it. opts are applied after the
 // connection settings, for example WithHTTPClient.
 func NewScoped(cfg ScopedConfig, creds Credentials, opts ...Option) (*LiveClient, error) {
+	if err := creds.validate(); err != nil {
+		return nil, err
+	}
 	apiURL := cfg.APIURL
 	if apiURL == "" {
 		apiURL = DefaultAPIURL
@@ -135,9 +138,6 @@ func NewScoped(cfg ScopedConfig, creds Credentials, opts ...Option) (*LiveClient
 		WithAPIGateway(apiURL),
 	}
 	if creds.OAuth() {
-		if err := creds.validate(); err != nil {
-			return nil, err
-		}
 		all = append(all, withOAuthClientCredentials(creds.ClientID, creds.ClientSecret))
 		return New("", append(all, opts...)...)
 	}

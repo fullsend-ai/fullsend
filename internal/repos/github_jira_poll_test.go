@@ -152,7 +152,7 @@ func TestConverge_GitHubJiraPoll_EstablishedInstallAddsThenIsIdempotent(t *testi
 
 func TestConverge_GitHubJiraPoll_StaleManagedCallerUpdated(t *testing.T) {
 	fc := installedJiraRepo(forge.SecretJiraToken)
-	stale, err := scaffold.RenderJiraPollCaller(scaffold.RenderOptions{UpstreamRef: "v0.9.0"}, true)
+	stale, err := scaffold.RenderJiraPollCaller(scaffold.RenderOptions{UpstreamRef: "v0.9.0"}, true, false)
 	require.NoError(t, err)
 	fc.FileContents[jiraCallerKey] = stale
 
@@ -179,7 +179,7 @@ func TestConverge_GitHubJiraPoll_DisabledRemovesManagedCaller(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			fc := installedJiraRepo(forge.SecretJiraToken, forge.SecretJiraEmail)
-			managed, err := scaffold.RenderJiraPollCaller(scaffold.RenderOptions{}, false)
+			managed, err := scaffold.RenderJiraPollCaller(scaffold.RenderOptions{}, false, false)
 			require.NoError(t, err)
 			fc.FileContents[jiraCallerKey] = managed
 			fc.FileContents[unrelatedKey] = []byte(unrelatedFlow)
@@ -246,7 +246,7 @@ func TestConverge_GitHubJiraPoll_DryRunStagesNothing(t *testing.T) {
 
 	t.Run("remove", func(t *testing.T) {
 		fc := installedJiraRepo()
-		managed, err := scaffold.RenderJiraPollCaller(scaffold.RenderOptions{}, false)
+		managed, err := scaffold.RenderJiraPollCaller(scaffold.RenderOptions{}, false, false)
 		require.NoError(t, err)
 		fc.FileContents[jiraCallerKey] = managed
 		cr, spy := runJiraConverge(t, fc, "", func(c *ConvergeConfig) { c.DryRun = true })
@@ -340,7 +340,7 @@ func TestCheckGitHubJiraPollWorkflowRefResolution(t *testing.T) {
 
 func TestGitHubJiraPollReconciler_RequiresScaffoldCommit(t *testing.T) {
 	fc := forge.NewFakeClient()
-	managed, err := scaffold.RenderJiraPollCaller(scaffold.RenderOptions{}, false)
+	managed, err := scaffold.RenderJiraPollCaller(scaffold.RenderOptions{}, false, false)
 	require.NoError(t, err)
 	req := jiraPollRequest{Client: fc, Owner: "acme", Repo: "api"}
 
@@ -355,7 +355,7 @@ func TestGitHubJiraPollReconciler_RequiresScaffoldCommit(t *testing.T) {
 }
 
 func TestUninstall_RemovesManagedJiraPollCaller(t *testing.T) {
-	managed, err := scaffold.RenderJiraPollCaller(scaffold.RenderOptions{}, true)
+	managed, err := scaffold.RenderJiraPollCaller(scaffold.RenderOptions{}, true, false)
 	require.NoError(t, err)
 
 	tests := []struct {

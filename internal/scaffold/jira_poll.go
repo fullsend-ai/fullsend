@@ -27,13 +27,26 @@ const JiraPollCallerMarker = "# fullsend-component: jira-poll"
 // writes; only the poll-job copy is omitted when there is no email.
 const jiraPollEmailSecretLine = "      FULLSEND_JIRA_EMAIL: ${{ secrets.FULLSEND_JIRA_EMAIL }}\n"
 
+// jiraPollOAuthSecretLines forward the Jira OAuth 2.0 client credentials to
+// the poll and dispatch jobs. A reusable workflow pinned to a ref from before
+// OAuth support does not declare these secrets, and GitHub rejects a caller
+// that passes an undeclared secret, so they are rendered only when the
+// repository uses OAuth.
+var jiraPollOAuthSecretLines = []string{
+	"      FULLSEND_JIRA_CLIENT_ID: ${{ secrets.FULLSEND_JIRA_CLIENT_ID }}\n",
+	"      FULLSEND_JIRA_CLIENT_SECRET: ${{ secrets.FULLSEND_JIRA_CLIENT_SECRET }}\n",
+}
+
 // RenderJiraPollCaller renders the managed GitHub Jira poll caller. Its
 // reusable workflows are pinned to the upstream ref in opts; the caller
 // always references the upstream repository, so it does not depend on a
 // vendored copy of reusable-poll-jira.yml. emailConfigured controls whether
 // FULLSEND_JIRA_EMAIL reaches the poll job. The dispatch job forwards Jira
-// credentials to Jira-originated Fullsend status updates only.
-func RenderJiraPollCaller(opts RenderOptions, emailConfigured bool) ([]byte, error) {
+// credentials to Jira-originated Fullsend status updates only. oauthConfigured
+// controls whether the OAuth client credentials are forwarded; a token-only
+// caller omits them so it stays valid against reusable workflows pinned to a
+// ref that predates OAuth support.
+func RenderJiraPollCaller(opts RenderOptions, emailConfigured, oauthConfigured bool) ([]byte, error) {
 	raw, err := FullsendRepoFile(jiraPollCallerTemplate)
 	if err != nil {
 		return nil, fmt.Errorf("loading Jira poll caller template: %w", err)
@@ -44,6 +57,14 @@ func RenderJiraPollCaller(opts RenderOptions, emailConfigured bool) ([]byte, err
 	}
 	if !emailConfigured {
 		out = strings.Replace(out, jiraPollEmailSecretLine, "", 1)
+	}
+	for _, line := range jiraPollOAuthSecretLines {
+		if strings.Count(out, line) != 2 {
+			return nil, fmt.Errorf("the Jira poll caller template must forward the Jira OAuth client credentials to the poll and dispatch jobs")
+		}
+		if !oauthConfigured {
+			out = strings.ReplaceAll(out, line, "")
+		}
 	}
 	upstream := opts
 	upstream.Vendored = false

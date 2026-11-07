@@ -27,6 +27,12 @@ type jiraPollRequest struct {
 	// It is false when the repository uses OAuth 2.0 client credentials,
 	// since the email is then removed. Only meaningful for Ensure.
 	EmailConfigured bool
+	// OAuthConfigured reports that the repository uses OAuth 2.0 client
+	// credentials after this run, so the GitHub caller forwards them. A
+	// token-only caller omits them, which keeps it valid against reusable
+	// workflows pinned to a ref that predates OAuth support. Only
+	// meaningful for Ensure.
+	OAuthConfigured bool
 	// DryRun asks the reconciler to report the actions it would take
 	// without any forge write.
 	DryRun bool
@@ -417,6 +423,7 @@ func convergeJiraPoll(ctx context.Context, d convergeDiscovery, cfg ConvergeConf
 	}
 	_, emailSupplied := values[forge.SecretJiraEmail]
 	req.EmailConfigured = !useOAuth && (d.jira.emailExists || emailSupplied)
+	req.OAuthConfigured = useOAuth
 	ensured, err := reconciler.Ensure(ctx, req)
 	actions = append(actions, ensured...)
 	if err != nil {
