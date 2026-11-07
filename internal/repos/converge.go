@@ -93,6 +93,15 @@ type ConvergeConfig struct {
 	// persisted to the manifest and never logged or reported.
 	JiraToken string
 	JiraEmail string
+	// JiraClientID and JiraClientSecret are written as
+	// FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET instead of
+	// the token, for an Atlassian service account's OAuth 2.0 credential
+	// (#9176). Supplying them removes an existing token and email, and
+	// supplying a token removes existing client credentials. Command-line
+	// input only: never persisted to the manifest
+	// and never logged or reported.
+	JiraClientID     string
+	JiraClientSecret string
 
 	// ReviewAppClientID is the OAuth client ID of the review agent's
 	// GitHub App, pre-resolved by the caller for ReviewAppClientIDAppSet.
@@ -773,6 +782,8 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 	cfg.OpenAIAPIKey = strings.TrimSpace(cfg.OpenAIAPIKey)
 	cfg.JiraToken = strings.TrimSpace(cfg.JiraToken)
 	cfg.JiraEmail = strings.TrimSpace(cfg.JiraEmail)
+	cfg.JiraClientID = strings.TrimSpace(cfg.JiraClientID)
+	cfg.JiraClientSecret = strings.TrimSpace(cfg.JiraClientSecret)
 
 	manifest := cfg.Manifest
 	if err := manifest.Validate(); err != nil {
@@ -1124,6 +1135,12 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 		if cfg.JiraEmail != "" {
 			return nil, fmt.Errorf("--jira-email was supplied but no selected repository sets tracker.jira.poll.enabled: true")
 		}
+		if cfg.JiraClientID != "" {
+			return nil, fmt.Errorf("--jira-client-id was supplied but no selected repository sets tracker.jira.poll.enabled: true")
+		}
+		if cfg.JiraClientSecret != "" {
+			return nil, fmt.Errorf("--jira-client-secret was supplied but no selected repository sets tracker.jira.poll.enabled: true")
+		}
 	}
 
 	// Phase 2: parallel convergence — apply needed actions.
@@ -1314,7 +1331,8 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 		}
 
 		// A repository with Jira polling enabled needs a usable Jira token
-		// (existing or supplied) before any write.
+		// or OAuth 2.0 client credentials (existing or supplied) before
+		// any write.
 		if jiraErr := validateJiraPollInputs(d, cfg); jiraErr != nil {
 			result.Results[i] = ConvergeResult{
 				Owner: d.repo.Owner,

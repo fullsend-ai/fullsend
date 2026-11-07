@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
+	"github.com/fullsend-ai/fullsend/internal/forge/jira"
 )
 
 func writeJiraPollConfig(t *testing.T, body string) string {
@@ -191,6 +192,33 @@ func TestBuildJiraClient_ScopedAuth(t *testing.T) {
 			assert.True(t, tenantCalled, "tenant_info must be called")
 		})
 	}
+}
+
+func TestBuildJiraClient_OAuthClientCredentials(t *testing.T) {
+	env := func(vars map[string]string) func(string) string {
+		return func(k string) string { return vars[k] }
+	}
+	var gotAuth string
+	var tenantCalled bool
+	srv := jiraPollGatewayServer(t, &gotAuth, &tenantCalled)
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"access_token":"oauth-access","token_type":"Bearer","expires_in":3600}`))
+	}))
+	t.Cleanup(tokenSrv.Close)
+
+	c, err := buildJiraClient(jiraPollSettings{baseURL: srv.URL + "/site", apiURL: srv.URL + "/gw"},
+		env(map[string]string{"FULLSEND_JIRA_CLIENT_ID": "client-id", "FULLSEND_JIRA_CLIENT_SECRET": "client-secret"}),
+		jira.WithOAuthTokenURL(tokenSrv.URL))
+	require.NoError(t, err)
+	_, err = c.GetMyself(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "Bearer oauth-access", gotAuth)
+
+	_, err = buildJiraClient(jiraPollSettings{baseURL: srv.URL + "/site"},
+		env(map[string]string{"FULLSEND_JIRA_TOKEN": "scoped-token", "FULLSEND_JIRA_CLIENT_ID": "client-id", "FULLSEND_JIRA_CLIENT_SECRET": "client-secret"}))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not both")
+	assert.NotContains(t, err.Error(), "client-secret")
 }
 
 func TestRunJiraPoll_RejectsRemovedFlags(t *testing.T) {

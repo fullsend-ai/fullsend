@@ -178,7 +178,7 @@ func maskingRequired(name string) bool {
 	switch name {
 	case forge.SecretOpenAIAPIKey, forge.SecretTriggerToken, forge.SecretWebhookSecret, forge.SecretGitLabTriggerAccountToken,
 		forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken,
-		forge.SecretJiraToken:
+		forge.SecretJiraToken, forge.SecretJiraClientSecret:
 		return true
 	}
 	// Custom role credentials (gitlabroles.CustomSecretName).

@@ -39,13 +39,16 @@ func TestRenderJiraPollCaller(t *testing.T) {
 		require.Contains(t, wf.Jobs, "poll")
 		require.Contains(t, wf.Jobs, "dispatch")
 		assert.Equal(t, map[string]string{
-			"FULLSEND_JIRA_TOKEN": "${{ secrets.FULLSEND_JIRA_TOKEN }}",
-			"FULLSEND_JIRA_EMAIL": "${{ secrets.FULLSEND_JIRA_EMAIL }}",
-		}, wf.Jobs["poll"].Secrets, "the poll job receives only the Jira poll credentials")
+			"FULLSEND_JIRA_TOKEN":         "${{ secrets.FULLSEND_JIRA_TOKEN }}",
+			"FULLSEND_JIRA_EMAIL":         "${{ secrets.FULLSEND_JIRA_EMAIL }}",
+			"FULLSEND_JIRA_CLIENT_ID":     "${{ secrets.FULLSEND_JIRA_CLIENT_ID }}",
+			"FULLSEND_JIRA_CLIENT_SECRET": "${{ secrets.FULLSEND_JIRA_CLIENT_SECRET }}",
+		}, wf.Jobs["poll"].Secrets, "the poll job receives the Jira credential choices")
 		assert.Equal(t, "15", wf.Jobs["poll"].With["timeout_minutes"], "the caller sets the reusable poll timeout")
 		assert.Equal(t, "${{ needs.poll.outputs.matrix }}", wf.Jobs["dispatch"].With["matrix"])
-		for name := range wf.Jobs["dispatch"].Secrets {
-			assert.NotContains(t, name, "FULLSEND_JIRA", "the agents never receive the poll credentials")
+		for _, name := range []string{"FULLSEND_JIRA_TOKEN", "FULLSEND_JIRA_EMAIL", "FULLSEND_JIRA_CLIENT_ID", "FULLSEND_JIRA_CLIENT_SECRET"} {
+			assert.Equal(t, "${{ secrets."+name+" }}", wf.Jobs["dispatch"].Secrets[name],
+				"dispatch forwards %s so the Jira status writer can use it")
 		}
 	})
 
@@ -53,10 +56,15 @@ func TestRenderJiraPollCaller(t *testing.T) {
 		out, err := RenderJiraPollCaller(pinned, false)
 		require.NoError(t, err)
 		assert.Contains(t, string(out), "FULLSEND_JIRA_TOKEN: ${{ secrets.FULLSEND_JIRA_TOKEN }}")
-		assert.NotContains(t, string(out), "secrets.FULLSEND_JIRA_EMAIL")
 		var wf callerWorkflow
 		require.NoError(t, yaml.Unmarshal(out, &wf))
-		assert.Equal(t, map[string]string{"FULLSEND_JIRA_TOKEN": "${{ secrets.FULLSEND_JIRA_TOKEN }}"}, wf.Jobs["poll"].Secrets)
+		assert.Equal(t, map[string]string{
+			"FULLSEND_JIRA_TOKEN":         "${{ secrets.FULLSEND_JIRA_TOKEN }}",
+			"FULLSEND_JIRA_CLIENT_ID":     "${{ secrets.FULLSEND_JIRA_CLIENT_ID }}",
+			"FULLSEND_JIRA_CLIENT_SECRET": "${{ secrets.FULLSEND_JIRA_CLIENT_SECRET }}",
+		}, wf.Jobs["poll"].Secrets)
+		assert.Equal(t, "${{ secrets.FULLSEND_JIRA_EMAIL }}", wf.Jobs["dispatch"].Secrets["FULLSEND_JIRA_EMAIL"],
+			"an absent poller email is still an optional status credential")
 	})
 
 	t.Run("default ref and vendored install", func(t *testing.T) {

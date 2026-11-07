@@ -3,8 +3,9 @@
 # `fullsend repos install` writes while tracker.jira.poll.enabled is true.
 #
 # workflow_call contract:
-# - Required secret: FULLSEND_JIRA_TOKEN (Jira API token, used only by the poll step).
-# - Optional secret: FULLSEND_JIRA_EMAIL (account email, used only by the poll step).
+# - Optional secrets: FULLSEND_JIRA_TOKEN / FULLSEND_JIRA_EMAIL for API-token
+#   authentication, or FULLSEND_JIRA_CLIENT_ID / FULLSEND_JIRA_CLIENT_SECRET
+#   for OAuth 2.0 client credentials. The Jira client validates the pair.
 # - Optional inputs: runner_image (runner for the poll job) and timeout_minutes
 #   (job timeout; defaults to 15 minutes and can be raised by the caller).
 # - Output: matrix is the JSON include matrix for reusable-dispatch.yml; an
@@ -34,8 +35,12 @@ on:
         default: 15
     secrets:
       FULLSEND_JIRA_TOKEN:
-        required: true
+        required: false
       FULLSEND_JIRA_EMAIL:
+        required: false
+      FULLSEND_JIRA_CLIENT_ID:
+        required: false
+      FULLSEND_JIRA_CLIENT_SECRET:
         required: false
     outputs:
       matrix:
@@ -97,6 +102,8 @@ jobs:
         env:
           FULLSEND_JIRA_TOKEN: ${{ secrets.FULLSEND_JIRA_TOKEN }}
           FULLSEND_JIRA_EMAIL: ${{ secrets.FULLSEND_JIRA_EMAIL }}
+          FULLSEND_JIRA_CLIENT_ID: ${{ secrets.FULLSEND_JIRA_CLIENT_ID }}
+          FULLSEND_JIRA_CLIENT_SECRET: ${{ secrets.FULLSEND_JIRA_CLIENT_SECRET }}
           TARGET_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail

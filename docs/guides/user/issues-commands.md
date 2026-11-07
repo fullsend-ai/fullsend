@@ -50,10 +50,15 @@ tracker:
 
 Credentials come only from the environment:
 
-- `FULLSEND_JIRA_TOKEN` (required) is a scoped Jira API token.
+- `FULLSEND_JIRA_TOKEN` (required unless client credentials are set) is a
+  scoped Jira API token.
 - `FULLSEND_JIRA_EMAIL` (optional) is the bot user's account email. When it
   is set, the token is sent with Basic auth. When it is unset, the token is a
   service-account token sent as a Bearer token.
+- `FULLSEND_JIRA_CLIENT_ID` and `FULLSEND_JIRA_CLIENT_SECRET` are a service
+  account's OAuth 2.0 credential, used instead of the token and email. The
+  client exchanges them for a short-lived Bearer access token. Setting them
+  together with `FULLSEND_JIRA_TOKEN`, or only one of them, is an error.
 
 `--token` is rejected with `--tracker jira`, so the token never appears on
 the command line.
@@ -139,7 +144,8 @@ API token. For GitHub or GitLab, pass the project as `owner/repo` and supply
 the token with `--token` or the relevant
 [environment variable](#environment-variables). For Jira, configure the
 [Jira connection settings](#jira-connection-settings), set
-`FULLSEND_JIRA_TOKEN`, and pass `--fullsend-dir`. `--project` defaults to
+`FULLSEND_JIRA_TOKEN` (or the OAuth client credentials), and pass
+`--fullsend-dir`. `--project` defaults to
 `tracker.jira.project`. Another project must be listed in
 `tracker.jira.allowed_targets.projects`. Jira also requires an issue type;
 use the issue type's name or ID with `--type`.
@@ -282,7 +288,7 @@ created in the type's outward direction: the example above records that
 | `--from` | Yes | Source issue key (e.g. `PROJ-123`) |
 | `--to` | Yes | Target issue key (e.g. `PROJ-456`) |
 | `--type` | Yes | Link type name (e.g. `Blocks`), passed through verbatim |
-| `--token` | No | Rejected for Jira, which reads `FULLSEND_JIRA_TOKEN` |
+| `--token` | No | Rejected for Jira, which reads `FULLSEND_JIRA_TOKEN` or the OAuth client credentials |
 | `--fullsend-dir` | Jira | Path to `.fullsend` config directory. Supplies the default `--tracker` and the [Jira connection settings](#jira-connection-settings) |
 
 ## Config-based default tracker
@@ -337,8 +343,9 @@ earlier one behind with content no later run updates. To recover:
 |----------|---------|-------------|
 | `GH_TOKEN` or `GITHUB_TOKEN` | GitHub | GitHub API token |
 | `GITLAB_TOKEN` | GitLab | GitLab API token |
-| `FULLSEND_JIRA_TOKEN` | Jira | Scoped Jira API token (required) |
+| `FULLSEND_JIRA_TOKEN` | Jira | Scoped Jira API token (required unless the OAuth client credentials are set) |
 | `FULLSEND_JIRA_EMAIL` | Jira | Bot user account email. When it is set, the token is sent with Basic auth. When it is unset, the token is a service-account token sent as a Bearer token |
+| `FULLSEND_JIRA_CLIENT_ID`, `FULLSEND_JIRA_CLIENT_SECRET` | Jira | A service account's OAuth 2.0 client credentials, used instead of `FULLSEND_JIRA_TOKEN` |
 
 Jira site and project settings are never read from the environment; see
 [Jira connection settings](#jira-connection-settings).

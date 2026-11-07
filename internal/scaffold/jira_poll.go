@@ -22,24 +22,25 @@ const jiraPollCallerTemplate = "templates/jira-poll-per-repo.yaml"
 // `repos install` never rewrites or deletes it.
 const JiraPollCallerMarker = "# fullsend-component: jira-poll"
 
-// jiraPollEmailSecretLine forwards FULLSEND_JIRA_EMAIL to the poll job. It
-// is rendered only when the repository has that secret.
+// jiraPollEmailSecretLine forwards FULLSEND_JIRA_EMAIL to the poll job. The
+// same secret is forwarded separately to reusable-dispatch for Jira status
+// writes; only the poll-job copy is omitted when there is no email.
 const jiraPollEmailSecretLine = "      FULLSEND_JIRA_EMAIL: ${{ secrets.FULLSEND_JIRA_EMAIL }}\n"
 
 // RenderJiraPollCaller renders the managed GitHub Jira poll caller. Its
 // reusable workflows are pinned to the upstream ref in opts; the caller
 // always references the upstream repository, so it does not depend on a
-// vendored copy of reusable-poll-jira.yml. emailConfigured forwards
-// FULLSEND_JIRA_EMAIL to the poll job; without it only FULLSEND_JIRA_TOKEN is
-// passed.
+// vendored copy of reusable-poll-jira.yml. emailConfigured controls whether
+// FULLSEND_JIRA_EMAIL reaches the poll job. The dispatch job forwards Jira
+// credentials to Jira-originated Fullsend status updates only.
 func RenderJiraPollCaller(opts RenderOptions, emailConfigured bool) ([]byte, error) {
 	raw, err := FullsendRepoFile(jiraPollCallerTemplate)
 	if err != nil {
 		return nil, fmt.Errorf("loading Jira poll caller template: %w", err)
 	}
 	out := string(raw)
-	if strings.Count(out, jiraPollEmailSecretLine) != 1 {
-		return nil, fmt.Errorf("the Jira poll caller template must forward FULLSEND_JIRA_EMAIL exactly once")
+	if strings.Count(out, jiraPollEmailSecretLine) != 2 {
+		return nil, fmt.Errorf("the Jira poll caller template must forward FULLSEND_JIRA_EMAIL to the poll and dispatch jobs")
 	}
 	if !emailConfigured {
 		out = strings.Replace(out, jiraPollEmailSecretLine, "", 1)

@@ -182,7 +182,7 @@ func TestRunPollJobScript_BlanksSiblingSecretsBeforePoll(t *testing.T) {
 	}
 	writeStub("fullsend", "echo POLL_RAN\necho POLL_ANALYST_USER_ID=\"${FULLSEND_GITLAB_ANALYST_USER_ID-unset}\"\nexit 0\n")
 
-	cmd := exec.Command("bash", "-c", `set -euo pipefail; . "$SCRIPT"; echo ANALYST="${FULLSEND_GITLAB_ANALYST_TOKEN-unset}"; echo CODER="${FULLSEND_GITLAB_CODER_TOKEN-unset}"; echo SHARED="${FULLSEND_FORGE_TOKEN-unset}"; echo JOB="${FULLSEND_JOB_TOKEN-unset}"; echo TRIGGER="${FULLSEND_TRIGGER_TOKEN-unset}"; echo ACCOUNT_TRIGGER="${FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN-unset}"; echo WEBHOOK_SECRET="${FULLSEND_WEBHOOK_SECRET-unset}"; echo JIRA_TOKEN="${FULLSEND_JIRA_TOKEN-unset}"; echo JIRA_EMAIL="${FULLSEND_JIRA_EMAIL-unset}"`)
+	cmd := exec.Command("bash", "-c", `set -euo pipefail; . "$SCRIPT"; echo ANALYST="${FULLSEND_GITLAB_ANALYST_TOKEN-unset}"; echo CODER="${FULLSEND_GITLAB_CODER_TOKEN-unset}"; echo SHARED="${FULLSEND_FORGE_TOKEN-unset}"; echo JOB="${FULLSEND_JOB_TOKEN-unset}"; echo TRIGGER="${FULLSEND_TRIGGER_TOKEN-unset}"; echo ACCOUNT_TRIGGER="${FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN-unset}"; echo WEBHOOK_SECRET="${FULLSEND_WEBHOOK_SECRET-unset}"; echo JIRA_TOKEN="${FULLSEND_JIRA_TOKEN-unset}"; echo JIRA_EMAIL="${FULLSEND_JIRA_EMAIL-unset}"; echo JIRA_CLIENT_ID="${FULLSEND_JIRA_CLIENT_ID-unset}"; echo JIRA_CLIENT_SECRET="${FULLSEND_JIRA_CLIENT_SECRET-unset}"`)
 	cmd.Env = append([]string{
 		"SCRIPT=" + script,
 		"PATH=" + bin + ":" + os.Getenv("PATH"),
@@ -199,6 +199,8 @@ func TestRunPollJobScript_BlanksSiblingSecretsBeforePoll(t *testing.T) {
 		"FULLSEND_WEBHOOK_SECRET=webhook-secret",
 		"FULLSEND_JIRA_TOKEN=jira-api-token",
 		"FULLSEND_JIRA_EMAIL=jira@example.com",
+		"FULLSEND_JIRA_CLIENT_ID=jira-client-id",
+		"FULLSEND_JIRA_CLIENT_SECRET=jira-client-secret",
 		"FULLSEND_POLL_MODE=events",
 		"CI_PROJECT_ID=1",
 		"CI_PROJECT_PATH=group/project",
@@ -222,7 +224,10 @@ func TestRunPollJobScript_BlanksSiblingSecretsBeforePoll(t *testing.T) {
 	assert.Contains(t, got, "WEBHOOK_SECRET=unset", "the webhook secret must not outlive the job preamble")
 	assert.Contains(t, got, "JIRA_TOKEN=unset", "the Jira token must not reach the slash/events poller")
 	assert.Contains(t, got, "JIRA_EMAIL=unset", "the Jira email must not reach the slash/events poller")
+	assert.Contains(t, got, "JIRA_CLIENT_ID=unset", "the Jira OAuth client ID must not reach the slash/events poller")
+	assert.Contains(t, got, "JIRA_CLIENT_SECRET=unset", "the Jira OAuth client secret must not reach the slash/events poller")
 	assert.NotContains(t, got, "jira-api-token")
+	assert.NotContains(t, got, "jira-client-secret")
 }
 
 // TestRunPollJobScript_JiraModeRunsJiraPoller covers the Jira poll mode the
@@ -252,6 +257,8 @@ func TestRunPollJobScript_JiraModeRunsJiraPoller(t *testing.T) {
 		"echo POLL_ARGS=\"$*\"\n"+
 		"echo POLL_JIRA_TOKEN=\"${FULLSEND_JIRA_TOKEN-unset}\"\n"+
 		"echo POLL_JIRA_EMAIL=\"${FULLSEND_JIRA_EMAIL-unset}\"\n"+
+		"echo POLL_JIRA_CLIENT_ID=\"${FULLSEND_JIRA_CLIENT_ID-unset}\"\n"+
+		"echo POLL_JIRA_CLIENT_SECRET=\"${FULLSEND_JIRA_CLIENT_SECRET-unset}\"\n"+
 		"echo POLL_REF=\"${CI_COMMIT_REF_NAME-unset}\"\n"+
 		"exit 0\n"), 0o755))
 
@@ -269,6 +276,8 @@ func TestRunPollJobScript_JiraModeRunsJiraPoller(t *testing.T) {
 		"FULLSEND_WEBHOOK_SECRET=webhook-secret",
 		"FULLSEND_JIRA_TOKEN=jira-api-token",
 		"FULLSEND_JIRA_EMAIL=jira@example.com",
+		"FULLSEND_JIRA_CLIENT_ID=jira-client-id",
+		"FULLSEND_JIRA_CLIENT_SECRET=jira-client-secret",
 		"FULLSEND_POLL_MODE=jira",
 		"CI_PROJECT_ID=1",
 		"CI_PROJECT_PATH=group/project",
@@ -281,6 +290,8 @@ func TestRunPollJobScript_JiraModeRunsJiraPoller(t *testing.T) {
 	assert.NotContains(t, got, "--mode", "the slash/events poller does not run in Jira mode")
 	assert.Contains(t, got, "POLL_JIRA_TOKEN=jira-api-token", "the Jira poller receives the Jira token")
 	assert.Contains(t, got, "POLL_JIRA_EMAIL=jira@example.com", "the Jira poller receives the optional Jira email")
+	assert.Contains(t, got, "POLL_JIRA_CLIENT_ID=jira-client-id", "the Jira poller receives the OAuth client ID")
+	assert.Contains(t, got, "POLL_JIRA_CLIENT_SECRET=jira-client-secret", "the Jira poller receives the OAuth client secret")
 	assert.Contains(t, got, "POLL_REF=main", "the Jira poller dispatches to the pinned ref")
 	assert.Contains(t, got, "ANALYST=unset")
 	assert.Contains(t, got, "TRIGGER=unset")

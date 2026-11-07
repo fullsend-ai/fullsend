@@ -23,8 +23,9 @@ var uninstallVariables = slices.Concat([]string{forge.PerRepoGuardVar}, required
 // uninstall is safe. It must not become requiredSecrets — probe/converge
 // require only the selected method's secrets.
 //
-// It also deletes the Jira polling credentials (FULLSEND_JIRA_TOKEN and
-// FULLSEND_JIRA_EMAIL) that `repos install` provisions for repositories
+// It also deletes the Jira polling credentials (FULLSEND_JIRA_TOKEN,
+// FULLSEND_JIRA_EMAIL, FULLSEND_JIRA_CLIENT_ID and
+// FULLSEND_JIRA_CLIENT_SECRET) that `repos install` provisions for repositories
 // whose effective tracker.jira.poll.enabled is true. Install deliberately
 // keeps them while polling is disabled, but teardown must not leave a
 // long-lived Jira credential behind.
@@ -32,7 +33,7 @@ var uninstallSecrets = append(managedInferenceSecrets(), jiraManagedSecrets...)
 
 // jiraManagedSecrets are the Jira polling credentials written by install
 // (convergeJiraPoll) outside installSecretsForForge.
-var jiraManagedSecrets = []string{forge.SecretJiraToken, forge.SecretJiraEmail}
+var jiraManagedSecrets = []string{forge.SecretJiraToken, forge.SecretJiraEmail, forge.SecretJiraClientID, forge.SecretJiraClientSecret}
 
 // gitlabUninstallVars intentionally does NOT include the legacy
 // FULLSEND_FORGE_TOKEN shared secret. Uninstall no longer retires it

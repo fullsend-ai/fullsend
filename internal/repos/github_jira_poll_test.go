@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
@@ -20,6 +21,12 @@ const (
 	unrelatedKey   = "acme/api/.github/workflows/ci.yml"
 	unrelatedFlow  = "name: ci\non: push\n"
 )
+
+type renderedJiraPollCaller struct {
+	Jobs map[string]struct {
+		Secrets map[string]string `yaml:"secrets"`
+	} `yaml:"jobs"`
+}
 
 // stagedJiraCaller returns the Jira poll caller entry the spy received, if
 // any.
@@ -83,7 +90,11 @@ func TestConverge_GitHubJiraPoll_FreshInstallCommitsCaller(t *testing.T) {
 	assert.True(t, scaffold.IsManagedJiraPollCaller(f.Content))
 	assert.Contains(t, string(f.Content), "reusable-poll-jira.yml@v1.0.0")
 	assert.Contains(t, string(f.Content), "reusable-dispatch.yml@v1.0.0")
-	assert.NotContains(t, string(f.Content), "secrets.FULLSEND_JIRA_EMAIL", "the email is passed only when it exists")
+	var caller renderedJiraPollCaller
+	require.NoError(t, yaml.Unmarshal(f.Content, &caller))
+	assert.NotContains(t, caller.Jobs["poll"].Secrets, "FULLSEND_JIRA_EMAIL", "the poll job omits an absent email")
+	assert.Contains(t, caller.Jobs["dispatch"].Secrets, "FULLSEND_JIRA_EMAIL",
+		"the dispatch job forwards the optional email so Jira status writes can authenticate")
 	assert.Equal(t, map[string]string{forge.SecretJiraToken: testJiraToken}, jiraSecretWrites(fc))
 	assertNoUnrelatedFiles(t, spy)
 
@@ -117,8 +128,12 @@ func TestConverge_GitHubJiraPoll_EstablishedInstallAddsThenIsIdempotent(t *testi
 	require.NoError(t, cr.Error)
 	f, ok := stagedJiraCaller(t, spy)
 	require.True(t, ok)
-	assert.Contains(t, string(f.Content), "FULLSEND_JIRA_EMAIL: ${{ secrets.FULLSEND_JIRA_EMAIL }}",
+	var caller renderedJiraPollCaller
+	require.NoError(t, yaml.Unmarshal(f.Content, &caller))
+	assert.Contains(t, caller.Jobs["poll"].Secrets, "FULLSEND_JIRA_EMAIL",
 		"an existing email secret is passed to the poll workflow")
+	assert.Contains(t, caller.Jobs["dispatch"].Secrets, "FULLSEND_JIRA_EMAIL",
+		"the status writer also receives the optional email")
 	a, _ := findAction(cr.Actions, jiraPollComponent)
 	assert.Equal(t, "add", a.Action)
 	assertNoUnrelatedFiles(t, spy)
@@ -146,7 +161,12 @@ func TestConverge_GitHubJiraPoll_StaleManagedCallerUpdated(t *testing.T) {
 	f, ok := stagedJiraCaller(t, spy)
 	require.True(t, ok)
 	assert.Contains(t, string(f.Content), "@v1.0.0")
-	assert.NotContains(t, string(f.Content), "secrets.FULLSEND_JIRA_EMAIL", "a removed email secret is no longer passed")
+	var caller renderedJiraPollCaller
+	require.NoError(t, yaml.Unmarshal(f.Content, &caller))
+	assert.NotContains(t, caller.Jobs["poll"].Secrets, "FULLSEND_JIRA_EMAIL",
+		"the poll job omits a removed email secret")
+	assert.Contains(t, caller.Jobs["dispatch"].Secrets, "FULLSEND_JIRA_EMAIL",
+		"the dispatch caller can pass the optional email when it exists")
 	a, _ := findAction(cr.Actions, jiraPollComponent)
 	assert.Equal(t, "update", a.Action)
 }
