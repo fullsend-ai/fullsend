@@ -326,7 +326,8 @@ tracker:
   list to `--output` when that flag is set. It does not affect
   `fullsend issues`. `fullsend repos install`
   converges it. When it is `true`, install writes the Jira credentials from
-  `--jira-token` and `--jira-email` and ensures the managed poll resources.
+  `--jira-token` and `--jira-email`, or the OAuth client ID and secret, and
+  ensures the managed poll resources.
   When it is `false` or omitted, install removes those resources and keeps
   the credentials. On GitHub, install manages
   `.github/workflows/fullsend-poll-jira.yml`. On GitLab, it manages the
@@ -345,14 +346,25 @@ or `poll` is set. A mapping that only selects Jira (`jira: {}`) or only sets
 legacy scalar `tracker: jira`.
 
 Credentials are never part of this mapping. Keys such as `token`,
-`api_token`, `email`, or `password` are rejected. Supply the Jira token and
-the optional account email as the `FULLSEND_JIRA_TOKEN` and
-`FULLSEND_JIRA_EMAIL` repository secrets. The shared Jira client treats the
-token as a scoped API token. When `FULLSEND_JIRA_EMAIL` is set, the client
-uses Basic auth with that email and a scoped user token (a bot user). When it
-is absent, the client sends the token as a Bearer token from a scoped
+`api_token`, `email`, `password`, `client_id`, or `client_secret` are
+rejected. Supply either a Jira token and optional account email as the
+`FULLSEND_JIRA_TOKEN` and `FULLSEND_JIRA_EMAIL` repository secrets, or an
+Atlassian service account's OAuth 2.0 client ID and secret as
+`FULLSEND_JIRA_CLIENT_ID` and `FULLSEND_JIRA_CLIENT_SECRET`. These credential
+sets are mutually exclusive. The shared Jira client treats the token as a
+scoped API token. When `FULLSEND_JIRA_EMAIL` is set, the client uses Basic auth
+with that email and a scoped user token (a bot user). When it is absent, the
+client sends the token as a Bearer token from a scoped
 service account. The token string does not show its type, so the email alone
-selects the mode. Other unknown keys under
+selects the mode. An Atlassian service account can use an OAuth 2.0
+credential instead of a token. Supply it as the `FULLSEND_JIRA_CLIENT_ID`
+and `FULLSEND_JIRA_CLIENT_SECRET` repository secrets, and leave
+`FULLSEND_JIRA_TOKEN` and `FULLSEND_JIRA_EMAIL` unset. Setting both
+credential types, or only one of the client ID and secret, is an error. The
+client exchanges the credential with the `client_credentials` grant at
+`https://auth.atlassian.com/oauth/token`. It sends the resulting Bearer
+access token to the same `api_url` gateway and refreshes it before it
+expires. Other unknown keys under
 `tracker.jira`, `tracker.jira.poll`, and `tracker.jira.allowed_targets` are
 rejected too.
 
@@ -362,7 +374,8 @@ requires `base_url` and `project`. The removed `--jira-url`,
 `--jira-project`, and `--jql` flags are rejected, and environment variables
 such as `JIRA_BASE_URL` are not read. The poller authenticates with the
 shared Jira client: `FULLSEND_JIRA_TOKEN` is required and
-`FULLSEND_JIRA_EMAIL` is optional, as described above. The legacy
+`FULLSEND_JIRA_EMAIL` is optional, or `FULLSEND_JIRA_CLIENT_ID` and
+`FULLSEND_JIRA_CLIENT_SECRET` replace both, as described above. The legacy
 `JIRA_TOKEN` and `JIRA_USER_EMAIL` variables are not used by the poller.
 
 The `fullsend issues` commands (`get`, `create`, `post-comment`, `link`),

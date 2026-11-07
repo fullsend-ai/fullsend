@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
@@ -20,6 +21,12 @@ const (
 	unrelatedKey   = "acme/api/.github/workflows/ci.yml"
 	unrelatedFlow  = "name: ci\non: push\n"
 )
+
+type renderedJiraPollCaller struct {
+	Jobs map[string]struct {
+		Secrets map[string]string `yaml:"secrets"`
+	} `yaml:"jobs"`
+}
 
 // stagedJiraCaller returns the Jira poll caller entry the spy received, if
 // any.
@@ -83,7 +90,11 @@ func TestConverge_GitHubJiraPoll_FreshInstallCommitsCaller(t *testing.T) {
 	assert.True(t, scaffold.IsManagedJiraPollCaller(f.Content))
 	assert.Contains(t, string(f.Content), "reusable-poll-jira.yml@v1.0.0")
 	assert.Contains(t, string(f.Content), "reusable-dispatch.yml@v1.0.0")
-	assert.NotContains(t, string(f.Content), "secrets.FULLSEND_JIRA_EMAIL", "the email is passed only when it exists")
+	var caller renderedJiraPollCaller
+	require.NoError(t, yaml.Unmarshal(f.Content, &caller))
+	assert.NotContains(t, caller.Jobs["poll"].Secrets, "FULLSEND_JIRA_EMAIL", "the poll job omits an absent email")
+	assert.Contains(t, caller.Jobs["dispatch"].Secrets, "FULLSEND_JIRA_EMAIL",
+		"the dispatch job forwards the optional email so Jira status writes can authenticate")
 	assert.Equal(t, map[string]string{forge.SecretJiraToken: testJiraToken}, jiraSecretWrites(fc))
 	assertNoUnrelatedFiles(t, spy)
 
@@ -117,8 +128,12 @@ func TestConverge_GitHubJiraPoll_EstablishedInstallAddsThenIsIdempotent(t *testi
 	require.NoError(t, cr.Error)
 	f, ok := stagedJiraCaller(t, spy)
 	require.True(t, ok)
-	assert.Contains(t, string(f.Content), "FULLSEND_JIRA_EMAIL: ${{ secrets.FULLSEND_JIRA_EMAIL }}",
+	var caller renderedJiraPollCaller
+	require.NoError(t, yaml.Unmarshal(f.Content, &caller))
+	assert.Contains(t, caller.Jobs["poll"].Secrets, "FULLSEND_JIRA_EMAIL",
 		"an existing email secret is passed to the poll workflow")
+	assert.Contains(t, caller.Jobs["dispatch"].Secrets, "FULLSEND_JIRA_EMAIL",
+		"the status writer also receives the optional email")
 	a, _ := findAction(cr.Actions, jiraPollComponent)
 	assert.Equal(t, "add", a.Action)
 	assertNoUnrelatedFiles(t, spy)
@@ -137,7 +152,7 @@ func TestConverge_GitHubJiraPoll_EstablishedInstallAddsThenIsIdempotent(t *testi
 
 func TestConverge_GitHubJiraPoll_StaleManagedCallerUpdated(t *testing.T) {
 	fc := installedJiraRepo(forge.SecretJiraToken)
-	stale, err := scaffold.RenderJiraPollCaller(scaffold.RenderOptions{UpstreamRef: "v0.9.0"}, true)
+	stale, err := scaffold.RenderJiraPollCaller(scaffold.RenderOptions{UpstreamRef: "v0.9.0"}, true, false)
 	require.NoError(t, err)
 	fc.FileContents[jiraCallerKey] = stale
 
@@ -146,7 +161,12 @@ func TestConverge_GitHubJiraPoll_StaleManagedCallerUpdated(t *testing.T) {
 	f, ok := stagedJiraCaller(t, spy)
 	require.True(t, ok)
 	assert.Contains(t, string(f.Content), "@v1.0.0")
-	assert.NotContains(t, string(f.Content), "secrets.FULLSEND_JIRA_EMAIL", "a removed email secret is no longer passed")
+	var caller renderedJiraPollCaller
+	require.NoError(t, yaml.Unmarshal(f.Content, &caller))
+	assert.NotContains(t, caller.Jobs["poll"].Secrets, "FULLSEND_JIRA_EMAIL",
+		"the poll job omits a removed email secret")
+	assert.Contains(t, caller.Jobs["dispatch"].Secrets, "FULLSEND_JIRA_EMAIL",
+		"the dispatch caller can pass the optional email when it exists")
 	a, _ := findAction(cr.Actions, jiraPollComponent)
 	assert.Equal(t, "update", a.Action)
 }
@@ -159,7 +179,7 @@ func TestConverge_GitHubJiraPoll_DisabledRemovesManagedCaller(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			fc := installedJiraRepo(forge.SecretJiraToken, forge.SecretJiraEmail)
-			managed, err := scaffold.RenderJiraPollCaller(scaffold.RenderOptions{}, false)
+			managed, err := scaffold.RenderJiraPollCaller(scaffold.RenderOptions{}, false, false)
 			require.NoError(t, err)
 			fc.FileContents[jiraCallerKey] = managed
 			fc.FileContents[unrelatedKey] = []byte(unrelatedFlow)
@@ -226,7 +246,7 @@ func TestConverge_GitHubJiraPoll_DryRunStagesNothing(t *testing.T) {
 
 	t.Run("remove", func(t *testing.T) {
 		fc := installedJiraRepo()
-		managed, err := scaffold.RenderJiraPollCaller(scaffold.RenderOptions{}, false)
+		managed, err := scaffold.RenderJiraPollCaller(scaffold.RenderOptions{}, false, false)
 		require.NoError(t, err)
 		fc.FileContents[jiraCallerKey] = managed
 		cr, spy := runJiraConverge(t, fc, "", func(c *ConvergeConfig) { c.DryRun = true })
@@ -265,6 +285,39 @@ func TestConverge_GitHubJiraPoll_RejectsOldPinnedRefBeforeWrites(t *testing.T) {
 	assert.Empty(t, fc.CreatedSecrets)
 	_, staged := stagedJiraCaller(t, spy)
 	assert.False(t, staged, "install must fail before delivering caller files")
+}
+
+func TestConverge_GitHubJiraPoll_RejectsPreOAuthWorkflowsBeforeWrites(t *testing.T) {
+	tests := []struct {
+		name     string
+		poll     string
+		dispatch string
+		wantErr  string
+	}{
+		{name: "poll workflow lacks OAuth secrets", poll: jiraPreOAuthWorkflowFixture, dispatch: jiraOAuthWorkflowFixture, wantErr: reusableJiraPollWorkflowPath},
+		{name: "dispatch workflow lacks OAuth secrets", poll: jiraOAuthWorkflowFixture, dispatch: jiraPreOAuthWorkflowFixture, wantErr: reusableDispatchWorkflowPath},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fc := installedJiraRepo(forge.SecretJiraToken)
+			fc.FileContentsRef[shimOwner+"/"+shimRepo+"/"+reusableJiraPollWorkflowPath+"@v1.0.0"] = []byte(tt.poll)
+			fc.FileContentsRef[shimOwner+"/"+shimRepo+"/"+reusableDispatchWorkflowPath+"@v1.0.0"] = []byte(tt.dispatch)
+			cfg := convergeCfgWithDefaults(jiraManifest(t, jiraPollEnabledConfig))
+			cfg.JiraClientID = testJiraClientID
+			cfg.JiraClientSecret = testJiraClientSecret
+			spy := &spyScaffoldCommit{}
+
+			result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), spy.fn(), noopProgress)
+			require.NoError(t, err)
+			require.Len(t, result.Failed(), 1)
+			assert.ErrorContains(t, result.Results[0].Error, tt.wantErr)
+			assert.ErrorContains(t, result.Results[0].Error, "existing Jira credentials were left unchanged")
+			assert.Empty(t, jiraSecretWrites(fc), "an incompatible ref must not receive OAuth credentials")
+			assert.Empty(t, fc.DeletedSecrets, "existing credentials must stay in place")
+			_, staged := stagedJiraCaller(t, spy)
+			assert.False(t, staged, "install must fail before delivering caller files")
+		})
+	}
 }
 
 func TestCheckGitHubJiraPollWorkflowRefResolution(t *testing.T) {
@@ -320,7 +373,7 @@ func TestCheckGitHubJiraPollWorkflowRefResolution(t *testing.T) {
 
 func TestGitHubJiraPollReconciler_RequiresScaffoldCommit(t *testing.T) {
 	fc := forge.NewFakeClient()
-	managed, err := scaffold.RenderJiraPollCaller(scaffold.RenderOptions{}, false)
+	managed, err := scaffold.RenderJiraPollCaller(scaffold.RenderOptions{}, false, false)
 	require.NoError(t, err)
 	req := jiraPollRequest{Client: fc, Owner: "acme", Repo: "api"}
 
@@ -335,7 +388,7 @@ func TestGitHubJiraPollReconciler_RequiresScaffoldCommit(t *testing.T) {
 }
 
 func TestUninstall_RemovesManagedJiraPollCaller(t *testing.T) {
-	managed, err := scaffold.RenderJiraPollCaller(scaffold.RenderOptions{}, true)
+	managed, err := scaffold.RenderJiraPollCaller(scaffold.RenderOptions{}, true, false)
 	require.NoError(t, err)
 
 	tests := []struct {

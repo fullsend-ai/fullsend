@@ -29,7 +29,7 @@ var knownTrackers = []string{trackerGitHub, trackerGitLab, trackerJira}
 // Usage strings shared by the issues subcommands.
 const (
 	projectFlagUsage     = "project identifier: owner/repo (GitHub/GitLab, required) or project key (Jira, default: tracker.jira.project)"
-	tokenFlagUsage       = "API token for GitHub/GitLab (default: env var per tracker; not accepted for Jira, which reads $FULLSEND_JIRA_TOKEN)"
+	tokenFlagUsage       = "API token for GitHub/GitLab (default: env var per tracker; not accepted for Jira, which reads $FULLSEND_JIRA_TOKEN or $FULLSEND_JIRA_CLIENT_ID/$FULLSEND_JIRA_CLIENT_SECRET)"
 	fullsendDirFlagUsage = "path to .fullsend config directory (sources a default --tracker and, for Jira, the tracker.jira connection settings from its config.yaml)"
 )
 
@@ -51,7 +51,9 @@ pointing at the directory containing it.
 Jira connection settings come only from tracker.jira in that config.yaml
 (base_url, optional api_url, and project, which is the default
 --project). Credentials come from the FULLSEND_JIRA_TOKEN environment
-variable and, for a bot user, FULLSEND_JIRA_EMAIL.`,
+variable and, for a bot user, FULLSEND_JIRA_EMAIL, or from a service
+account's OAuth 2.0 client credentials in FULLSEND_JIRA_CLIENT_ID and
+FULLSEND_JIRA_CLIENT_SECRET.`,
 	}
 	cmd.AddCommand(newIssuesGetCmd())
 	cmd.AddCommand(newIssuesCreateCmd())

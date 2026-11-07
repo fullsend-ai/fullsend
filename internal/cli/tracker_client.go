@@ -57,8 +57,9 @@ func newForgeTrackerClient(trackerName, token string) (tracker.Client, error) {
 // issues commands. GitHub and GitLab clients come from
 // newForgeTrackerClient. A Jira client is built only from the effective
 // tracker.jira config under fullsendDir (or testConfigReader) and the
-// FULLSEND_JIRA_TOKEN / FULLSEND_JIRA_EMAIL environment variables; --token
-// is rejected for Jira so the token never travels on the command line.
+// FULLSEND_JIRA_TOKEN / FULLSEND_JIRA_EMAIL or FULLSEND_JIRA_CLIENT_ID /
+// FULLSEND_JIRA_CLIENT_SECRET environment variables; --token is rejected
+// for Jira so the credential never travels on the command line.
 func newConfiguredTrackerClient(trackerName, token, fullsendDir string, testConfigReader config.PerRepoConfigReader) (tracker.Client, error) {
 	if trackerName != trackerJira {
 		return newForgeTrackerClient(trackerName, token)
@@ -86,21 +87,25 @@ func newJiraTrackerClientFromConfig(tracking *config.TrackingConfig) (tracker.Cl
 
 // newJiraTrackerClient is the single constructor for Jira tracker clients
 // outside the poller. Connection settings come from the validated
-// tracker.jira settings; the token and optional account email come from
-// FULLSEND_JIRA_TOKEN and FULLSEND_JIRA_EMAIL via jira.CredentialsFromEnv.
-// The client is built with jira.NewScoped, so requests go through the
-// configured API gateway with Basic auth when an email is set and Bearer
-// auth otherwise.
+// tracker.jira settings; the credentials come from FULLSEND_JIRA_TOKEN and
+// the optional FULLSEND_JIRA_EMAIL, or from FULLSEND_JIRA_CLIENT_ID and
+// FULLSEND_JIRA_CLIENT_SECRET, via jira.CredentialsFromEnv. The client is
+// built with jira.NewScoped, so requests go through the configured API
+// gateway with Basic auth when an email is set, and Bearer auth with the
+// token or an OAuth 2.0 access token otherwise.
 func newJiraTrackerClient(settings *config.JiraTrackingConfig) (*tracker.JiraClient, error) {
 	creds, err := jira.CredentialsFromEnv(nil)
 	if err != nil {
-		if os.Getenv("JIRA_TOKEN") != "" && os.Getenv(jira.TokenEnvVar) == "" {
-			return nil, fmt.Errorf("%w (legacy JIRA_TOKEN is no longer read here; set %s and %s instead, and set the Jira site URL in tracker.jira.base_url instead of JIRA_BASE_URL)",
-				err, jira.TokenEnvVar, jira.EmailEnvVar)
+		if os.Getenv("JIRA_TOKEN") != "" && os.Getenv(jira.TokenEnvVar) == "" &&
+			os.Getenv(jira.ClientIDEnvVar) == "" && os.Getenv(jira.ClientSecretEnvVar) == "" {
+			return nil, fmt.Errorf("%w (legacy JIRA_TOKEN is no longer read here; set %s and %s, or %s and %s, instead, and set the Jira site URL in tracker.jira.base_url instead of JIRA_BASE_URL)",
+				err, jira.TokenEnvVar, jira.EmailEnvVar, jira.ClientIDEnvVar, jira.ClientSecretEnvVar)
 		}
 		return nil, err
 	}
 	maskActionsValue(creds.Token)
+	maskActionsValue(creds.ClientID)
+	maskActionsValue(creds.ClientSecret)
 	jc, err := jira.NewScoped(jira.ScopedConfig{
 		BaseURL: settings.BaseURL,
 		APIURL:  settings.EffectiveAPIURL(),

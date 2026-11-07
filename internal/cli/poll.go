@@ -444,16 +444,18 @@ func validateJiraPollArgs(settings jiraPollSettings, targetRepo, outputPath, ful
 }
 
 // buildJiraClient creates the poller's Jira client with the shared scoped
-// token constructor (jira.NewScoped): requests go through the configured
-// API gateway, FULLSEND_JIRA_TOKEN is required, and FULLSEND_JIRA_EMAIL
-// selects bot-user Basic auth when set and service-account Bearer auth
-// when absent.
-func buildJiraClient(settings jiraPollSettings, getenv func(string) string) (*jira.LiveClient, error) {
+// constructor (jira.NewScoped): requests go through the configured API
+// gateway. Either FULLSEND_JIRA_TOKEN is required, with FULLSEND_JIRA_EMAIL
+// selecting bot-user Basic auth when set and service-account Bearer auth
+// when absent, or FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET
+// supply a service account's OAuth 2.0 client credentials. opts are passed
+// to jira.NewScoped; production callers pass none.
+func buildJiraClient(settings jiraPollSettings, getenv func(string) string, opts ...jira.Option) (*jira.LiveClient, error) {
 	creds, err := jira.CredentialsFromEnv(getenv)
 	if err != nil {
 		return nil, err
 	}
-	return jira.NewScoped(jira.ScopedConfig{BaseURL: settings.baseURL, APIURL: settings.apiURL}, creds)
+	return jira.NewScoped(jira.ScopedConfig{BaseURL: settings.baseURL, APIURL: settings.apiURL}, creds, opts...)
 }
 
 // buildRouter constructs a HarnessRouter from config-registered agents
