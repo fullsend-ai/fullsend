@@ -235,7 +235,7 @@ counts toward the 255,000 bytes. A tool result whose stream line
 exceeds the parser's 1 MiB bound is kept as an empty, marked
 `tool_call_response` part — the call was answered, its content is lost and
 its `is_error` unknown — provided the line shows the call id within its
-first 1 MiB, where Claude Code normally writes it (ahead of the content; an
+first 1 MiB, where Claude Code and pi normally write it (ahead of the content; an
 id serialized after the content is not recovered, and that call closes
 `unanswered`). Two cases are absent rather than truncated: any other stream
 line beyond 1 MiB is skipped whole by the parser, and results whose content is entirely non-text (for example
@@ -300,10 +300,7 @@ execution rather than measuring it: both times trail the sandbox, and when
 the start trails by more than the end (an earlier event was still being
 processed when the call arrived) the span is shorter than the execution it
 covers. A call with no result
-by the end of the iteration is closed with `error.type=unanswered`, except
-on pi: the parser holds a call's event until `tool_execution_end`, because a
-failed call's summary needs the result, so a call cut off by a kill or timeout
-has no span; a
+by the end of the iteration is closed with `error.type=unanswered`; a
 result whose stream line exceeded the parser's 1 MiB bound ends its span on
 receipt, marked `fullsend.tool.result_oversized` with no status and no
 `error.type` — the tool answered, and whether it failed was never decoded; a
@@ -446,7 +443,7 @@ Inputs, in order of precedence:
 |-----------|------------|-------------|
 | `exit_code` | `run`, `agent` | Process exit code |
 | `iteration` | `agent` | 1-based iteration index |
-| `error.type` | `execute_tool` | `tool_error` when the runtime flagged the result `is_error`; `unanswered` when the call had no result by the end of the iteration (the runtime was stopped, or an over-long result line showed no call id within its first 1 MiB; a pi call cut off by a kill or timeout has no span at all) or the runtime reported the same call id again (the earlier open call is superseded); absent on success |
+| `error.type` | `execute_tool` | `tool_error` when the runtime flagged the result `is_error`; `unanswered` when the call had no result by the end of the iteration (the runtime was stopped, or an over-long result line showed no call id within its first 1 MiB) or the runtime reported the same call id again (the earlier open call is superseded); absent on success |
 
 ### Resource attributes
 

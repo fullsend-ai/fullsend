@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"encoding/json"
 	"io"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -86,9 +88,17 @@ type piToolExecutionStartEvent struct {
 	Args       json.RawMessage `json:"args"`
 }
 
+// piOversizedEndRe matches the start of a tool_execution_end line as pi writes
+// it (agent-loop.ts emitToolExecutionEnd: type, toolCallId and toolName come
+// before result), so the call's id survives in the prefix the parser keeps
+// when the whole line exceeds streamBufSize.
+var piOversizedEndRe = regexp.MustCompile(`^\{"type":"tool_execution_end","toolCallId":"([^"\\]{1,256})","toolName":"([^"\\]{1,256})"`)
+
 // piToolCall is what tool_execution_start leaves for the matching
 // tool_execution_end.
 type piToolCall struct {
+	seq       int
+	name      string
 	context   string
 	arguments string
 	startedAt time.Time
@@ -308,11 +318,13 @@ func ParsePiStream(r io.Reader, onEvent func(AgentEvent)) (sessionID string, err
 //   - Streaming deltas arrive as message_update.assistantMessageEvent
 //     (text_delta / thinking_delta). message_end.message is authoritative.
 //   - Tool calls are tool_execution_start {toolCallId, toolName, args} and
-//     tool_execution_end {toolCallId, toolName, result, isError}; per pi
-//     1.5.0's agent-loop.ts, not yet a live run with a rewriting hook, pi
-//     emits the end after its afterToolCall hooks, so result is what a
-//     tool_result hook left. This parser holds both events below until the
-//     end, because a failed call's summary needs the result:
+//     tool_execution_end {toolCallId, toolName, result, isError}; pi emits
+//     the end after its afterToolCall hooks (agent-loop.ts, confirmed on a
+//     live pi 1.5.0 run), so result is what a tool_result hook left. This
+//     parser holds both events below until the end, because a failed call's
+//     summary needs the result. A call with no end when the stream stops (a
+//     kill or timeout) gets its ToolUseEvent then, ahead of the ResultEvent,
+//     with no ToolResultEvent, so the tracker closes it as unanswered:
 //     a ToolUseEvent, carrying the call's id and arguments and when its
 //     start was read, then a ToolResultEvent with the result text. The
 //     ToolUseEvent summary is the argument context captured at start
@@ -380,7 +392,8 @@ func parsePiStream(r io.Reader, onEvent func(AgentEvent)) (sessionID string, err
 		emittedInit   bool
 		// In-flight tool calls, keyed by toolCallId; an entry exists for
 		// every start seen, even when the context is "".
-		toolCalls = map[string]piToolCall{}
+		toolCalls   = map[string]piToolCall{}
+		toolCallSeq int
 	)
 
 	emitInit := func(model string) {
@@ -464,10 +477,73 @@ func parsePiStream(r io.Reader, onEvent func(AgentEvent)) (sessionID string, err
 		checkpoint(nil)
 	}
 
+	// endCall reports a finished call: its ToolUseEvent, then its
+	// ToolResultEvent. oversized means the end line exceeded streamBufSize, so
+	// only the id and name were recovered: the result is reported lost and
+	// isError unknown, and the summary is the start's context alone.
+	endCall := func(id, name string, result json.RawMessage, isError, oversized bool) {
+		call, sawStart := toolCalls[id]
+		delete(toolCalls, id)
+		summary := call.context
+		if !oversized && (isError || !sawStart) {
+			if text := piResultSummary(result); text != "" {
+				if summary != "" {
+					summary = piTruncate(summary+": "+text, piSummaryMax)
+				} else {
+					summary = text
+				}
+			}
+		}
+		use := ToolUseEvent{
+			Name:      name,
+			Summary:   summary,
+			Arguments: call.arguments,
+			StartedAt: call.startedAt,
+		}
+		// With no start seen (its line was over streamBufSize) there is no
+		// call to match: the id stays off, so the result reads as unmatched,
+		// as on Claude, and the call still counts.
+		if sawStart {
+			use.ID = id
+		}
+		onEvent(use)
+		if id == "" {
+			return
+		}
+		if oversized {
+			onEvent(ToolResultEvent{ID: id, Oversized: true})
+			return
+		}
+		text, partial := piResultText(result)
+		onEvent(ToolResultEvent{ID: id, Result: text, IsError: isError, Partial: partial})
+	}
+
+	// reportUnfinishedCalls emits a ToolUseEvent, in start order, for each call
+	// whose tool_execution_end never came. No ToolResultEvent follows.
+	reportUnfinishedCalls := func() {
+		ids := make([]string, 0, len(toolCalls))
+		for id := range toolCalls {
+			ids = append(ids, id)
+		}
+		sort.Slice(ids, func(i, j int) bool { return toolCalls[ids[i]].seq < toolCalls[ids[j]].seq })
+		for _, id := range ids {
+			call := toolCalls[id]
+			onEvent(ToolUseEvent{
+				ID:        id,
+				Name:      call.name,
+				Summary:   call.context,
+				Arguments: call.arguments,
+				StartedAt: call.startedAt,
+			})
+			delete(toolCalls, id)
+		}
+	}
+
 	// finish emits the stream's single ResultEvent. lost is true when the
 	// stream ended with a read error rather than EOF: the process may still
 	// have been running, so an unsettled result is not evidence of completion.
 	finish := func(lost bool) {
+		reportUnfinishedCalls()
 		if compacting || (lost && pendingResult != nil) {
 			// Died mid-compaction (pi may have been about to retry) or the
 			// stream was lost before agent_settled.
@@ -513,10 +589,22 @@ func parsePiStream(r io.Reader, onEvent func(AgentEvent)) (sessionID string, err
 			finish(true)
 			return sessionID, err
 		}
-		// Skip lines exceeding the buffer (same pattern as other parsers).
+		// Skip lines exceeding the buffer (same pattern as other parsers). A
+		// tool_execution_end line is not skipped silently: its retained prefix
+		// carries the call id, so the call is reported as answered with its
+		// result lost (ToolResultEvent.Oversized), as on Claude, rather than
+		// left open and reported as unanswered when the stream stops.
 		if isPrefix {
+			// Copied out now: the next ReadLine reuses the buffer line points into.
+			var lostID, lostName string
+			if m := piOversizedEndRe.FindSubmatch(line); m != nil {
+				lostID, lostName = string(m[1]), string(m[2])
+			}
 			for isPrefix && err == nil {
 				_, isPrefix, err = br.ReadLine()
+			}
+			if lostID != "" {
+				endCall(lostID, lostName, nil, false, true)
 			}
 			continue
 		}
@@ -572,7 +660,10 @@ func parsePiStream(r io.Reader, onEvent func(AgentEvent)) (sessionID string, err
 			if err := json.Unmarshal(line, &evt); err != nil {
 				continue
 			}
+			toolCallSeq++
 			toolCalls[evt.ToolCallID] = piToolCall{
+				seq:       toolCallSeq,
+				name:      evt.ToolName,
 				context:   piToolContext(evt.ToolName, evt.Args),
 				arguments: string(evt.Args),
 				startedAt: time.Now(),
@@ -583,35 +674,7 @@ func parsePiStream(r io.Reader, onEvent func(AgentEvent)) (sessionID string, err
 			if err := json.Unmarshal(line, &evt); err != nil {
 				continue
 			}
-			call, sawStart := toolCalls[evt.ToolCallID]
-			delete(toolCalls, evt.ToolCallID)
-			summary := call.context
-			if evt.IsError || !sawStart {
-				if result := piResultSummary(evt.Result); result != "" {
-					if summary != "" {
-						summary = piTruncate(summary+": "+result, piSummaryMax)
-					} else {
-						summary = result
-					}
-				}
-			}
-			use := ToolUseEvent{
-				Name:      evt.ToolName,
-				Summary:   summary,
-				Arguments: call.arguments,
-				StartedAt: call.startedAt,
-			}
-			// With no start seen (its line was over streamBufSize) there is no
-			// call to match: the id stays off, so the result reads as unmatched,
-			// as on Claude, and the call still counts.
-			if sawStart {
-				use.ID = evt.ToolCallID
-			}
-			onEvent(use)
-			if evt.ToolCallID != "" {
-				text, partial := piResultText(evt.Result)
-				onEvent(ToolResultEvent{ID: evt.ToolCallID, Result: text, IsError: evt.IsError, Partial: partial})
-			}
+			endCall(evt.ToolCallID, evt.ToolName, evt.Result, evt.IsError, false)
 
 		case "auto_retry_start":
 			var evt piAutoRetryStartEvent
