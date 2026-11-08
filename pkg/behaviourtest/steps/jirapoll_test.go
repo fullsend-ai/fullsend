@@ -98,16 +98,6 @@ func TestJiraPoll_IssueIDUnknownIssue(t *testing.T) {
 	assert.Error(t, givenJiraIssueID(&world.World{Logf: t.Logf}, "PROJ-1", "1"))
 }
 
-// stubCLI writes a shell script that prints out and exits with code, and
-// returns its path, standing in for the suite's fullsend binary.
-func stubCLI(t *testing.T, out string, code int) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "fullsend")
-	script := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' %q\nexit %d\n", out, code)
-	require.NoError(t, os.WriteFile(path, []byte(script), 0o755))
-	return path
-}
-
 func TestJiraPollCLI_RefusalRecordedAndChecked(t *testing.T) {
 	t.Parallel()
 	w := &world.World{Logf: t.Logf}
@@ -116,14 +106,14 @@ func TestJiraPollCLI_RefusalRecordedAndChecked(t *testing.T) {
 
 	assert.ErrorContains(t, thenJiraPollCLIFails(w, "x"), "has not run")
 
-	w.CLIBinary = stubCLI(t, "Error: --target-repo \"test-org/..\" must not contain '..'", 1)
+	w.CLIBinary = writeFakeCLI(t, t.TempDir(), fmt.Sprintf("printf '%%s\\n' %q\nexit %d", "Error: --target-repo \"test-org/..\" must not contain '..'", 1))
 	require.NoError(t, whenJiraPollCLIRuns(context.Background(), w, "test-org/.."))
 	assert.Equal(t, 1, w.JiraPollCLIExitCode)
 	require.NoError(t, thenJiraPollCLIFails(w, "must not contain '..'"))
 	assert.ErrorContains(t, thenJiraPollCLIFails(w, "something else"), "without \"something else\"")
 
 	// A run that succeeds fails the step, and so does one that wrote output.
-	w.CLIBinary = stubCLI(t, "poll complete", 0)
+	w.CLIBinary = writeFakeCLI(t, t.TempDir(), fmt.Sprintf("printf '%%s\\n' %q\nexit %d", "poll complete", 0))
 	require.NoError(t, whenJiraPollCLIRuns(context.Background(), w, "test-org/.."))
 	assert.ErrorContains(t, thenJiraPollCLIFails(w, "must not contain"), "succeeded")
 	w.JiraPollCLIExitCode = 1
@@ -176,17 +166,20 @@ func TestJiraPollCLIEnv(t *testing.T) {
 	}
 }
 
-// TestJiraPollCLI_WritesTrackerConfig: the step points tracker.jira in the
-// scenario config at the mock Jira server (#9077 moved the Jira site,
-// project, and poll settings from --jira-url/--jira-project into config.yaml),
-// so a `fullsend poll` run against the mock reads its Jira settings from the
-// config and cannot pass the removed flags.
+// TestJiraPollCLI_WritesTrackerConfig: the step writes tracker.jira into the
+// scenario config (#9077 moved the Jira site, project, and poll settings from
+// --jira-url/--jira-project into config.yaml), so a `fullsend poll` run reads
+// its Jira settings from the config and cannot pass the removed flags. The
+// base_url is a syntactically valid HTTPS URL rather than the mock's plain
+// HTTP one: the CLI validates the connection (https required) before the
+// argument checks, and the scenarios using this step refuse during argument
+// validation, before any Jira contact.
 func TestJiraPollCLI_WritesTrackerConfig(t *testing.T) {
 	t.Parallel()
 	w := &world.World{Logf: t.Logf}
 	require.NoError(t, givenMockJiraServer(w))
 	t.Cleanup(func() { CleanupScenario(w) })
-	w.CLIBinary = stubCLI(t, "refused", 1)
+	w.CLIBinary = writeFakeCLI(t, t.TempDir(), fmt.Sprintf("printf '%%s\\n' %q\nexit %d", "refused", 1))
 
 	require.NoError(t, whenJiraPollCLIRuns(context.Background(), w, "test-org/.."))
 
@@ -195,7 +188,7 @@ func TestJiraPollCLI_WritesTrackerConfig(t *testing.T) {
 	want := "version: \"1\"\n" +
 		"tracker:\n" +
 		"  jira:\n" +
-		"    base_url: " + w.JiraMockServer.URL + "\n" +
+		"    base_url: https://jira.invalid\n" +
 		"    project: PROJ\n" +
 		"    poll:\n" +
 		"      enabled: true\n"

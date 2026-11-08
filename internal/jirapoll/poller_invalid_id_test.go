@@ -26,7 +26,7 @@ func TestRun_InvalidEventSkippedWithoutRoster(t *testing.T) {
 		wantLog string
 	}{
 		{"non-numeric id", "not-a-number", []string{}, "WARNING: skipping event comment-1 for issue PROJ-123"},
-		{"negative id", "-1", []string{}, `WARNING: skipping event comment-1 for issue PROJ-123: normalized event: entity.id must be >= 1 (jira issue id "-1")`},
+		{"negative id", "-1", []string{}, `WARNING: skipping event comment-1 for issue PROJ-123: normalized event: entity.id must be >= 1 (Jira issue id "-1")`},
 		{"nil labels", "10042", nil, "WARNING: skipping event comment-1 for issue PROJ-123: normalized event: state.labels is required"},
 	}
 	for _, tc := range cases {
@@ -143,11 +143,11 @@ func TestRun_NilLabelsSkippedWithDistinctWarning(t *testing.T) {
 	if err := p.Run(context.Background()); err != nil {
 		t.Fatalf("Run() error: %v", err)
 	}
-	const distinct = "WARNING: jira served issue PROJ-123 without a labels array (null or missing); its events are skipped"
+	const distinct = "WARNING: Jira served issue PROJ-123 without a labels array (null or missing); its events are skipped"
 	if n := strings.Count(logBuf.String(), distinct); n != 1 {
 		t.Errorf("distinct labels warning logged %d times, want once:\n%s", n, logBuf.String())
 	}
-	if strings.Contains(logBuf.String(), "jira served issue PROJ-122 without a labels array") {
+	if strings.Contains(logBuf.String(), "Jira served issue PROJ-122 without a labels array") {
 		t.Errorf("an issue served with an empty labels list must not get the labels warning:\n%s", logBuf.String())
 	}
 	valid := 0
