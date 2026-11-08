@@ -668,15 +668,23 @@ The counts cover one suite process and one client per org, so they leave out
 other suites sharing the pool and the `fullsend` CLI subprocess that installs
 into a slot.
 
-**Quota readings by reset time.** GitHub can report more than one core quota
-reading for an org at the same time, each with its own reset time
-([#9154](https://github.com/fullsend-ai/fullsend/issues/9154)). GitHub
-processes requests in multiple regions, and
+**Quota counters by reset time.** GitHub usually reports two core quota
+counters for an org at the same time, even for a single token
+([#9154](https://github.com/fullsend-ai/fullsend/issues/9154)). Their reset
+times are usually under a minute apart, and each has its own `remaining` value.
+In stage and pool runs from November 2026, almost all writes landed on one
+counter, and reads split across both
+([evidence](https://github.com/fullsend-ai/fullsend/issues/9154#issuecomment-6710943328)).
+The cause is unknown. GitHub processes requests in multiple regions, and
 [its rate limit docs](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api)
 say values can vary from one response to the next, so these may be regional
-views of one allowance. A `quota remaining` value describes only the response
-that answered last, so values can appear to rise and fall. After each API call
-log, the driver logs the readings it saw, grouped by reset time:
+counters. It is also unknown whether requests fail when one counter runs out or
+only when both do.
+
+A `quota remaining` value describes only the counter that answered last, so
+values can appear to rise and fall. Compare readings only when they have the
+same `reset`. After each API call log, the driver logs the readings it saw,
+grouped by reset time:
 
 ```
 [driver] per-org quota counters at finalize:
@@ -688,13 +696,19 @@ halfsend-01: reset=2026-10-25T18:00:09Z spread=900 remaining=4100/5000 calls=750
 group, and `remaining` is the lowest. `calls` counts this client's core calls
 answered in the group, by caller and HTTP method.
 
-`spread` is a range of readings rather than measured quota spend, so treat a
-comparison with `calls` as a clue:
+To estimate quota use, compare each group's `calls` with its own `spread`. Do
+not compare `total` with one group's drop, because `total` covers both counters.
+In the 7 stage org runs in that evidence, where one suite runs at a time, each
+group's `spread` rose with its own `calls`, and a regression put `claim` and
+`lock` at about 0.98 quota per call. These are observations from a short sample,
+not a documented GitHub rule.
 
-- `spread` above `calls` can mean traffic from outside this client, or readings
-  that vary between regions.
-- `calls` above `spread` can mean some counted calls were charged elsewhere, or
-  did not lower the readings in this group.
+- `spread` above `calls` can mean traffic this client did not count, possibly
+  from other suites or the `fullsend` CLI subprocess.
+- `spread` one below `calls` is normal, because the first reading already
+  includes the first call.
+- `calls` more than one above `spread` has no known cause. It can mean some
+  calls were charged elsewhere or did not lower the readings in this group.
 
 The log covers only the groups this client saw, so it cannot give an org's
 total quota use.
