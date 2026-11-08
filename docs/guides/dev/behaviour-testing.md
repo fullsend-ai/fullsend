@@ -1319,13 +1319,16 @@ addition.
 **Jira poll CLI steps and `world.World.JiraPollCLI*` additions:** `fullsend
 poll runs the Jira poller with target repo "<repo>"` runs the suite's
 `fullsend` binary (`world.World.CLIBinary`) as `fullsend poll --input-driver
-jira-poll` against the mock Jira server — writing `tracker.jira` (the mock's
-URL as `base_url`, project `PROJ`, polling enabled) into the scenario's
+jira-poll` — writing `tracker.jira` (a syntactically valid HTTPS `base_url`,
+`https://jira.invalid`, project `PROJ`, polling enabled) into the scenario's
 `config.yaml`, since the jira-poll driver reads its Jira settings from the
 config rather than CLI flags — with placeholder scoped Jira credentials, and
 records the run in the new `JiraPollCLIOutput`, `JiraPollCLIExitCode` and
 `JiraPollCLIOutputPath` fields; `fullsend poll fails with "<text>" and writes
-no dispatch output` checks it. A non-breaking addition.
+no dispatch output` checks it. The `base_url` does not point at the mock Jira
+server: the CLI validates the connection (https required) before the argument
+checks, and the scenarios using this step refuse during argument validation,
+before any Jira contact. A non-breaking addition.
 
 **`jiramock` labels change:** an issue added with `AddIssue(key, nil)` is now
 served with `"labels": []`, as Jira Cloud was observed serving an issue without
