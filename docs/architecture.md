@@ -496,6 +496,39 @@ The existing design principle is that [the repo is the coordinator](problems/age
   or explicit receipts to decide whether work has already been handled
   ([ADR 0098](ADRs/0098-entity-first-harness-evaluation.md), partially
   superseding [ADR 0063](ADRs/0063-polling-based-work-discovery.md)).
+- Entity binding and CI integration (target state): harness `entity_kinds` maps
+  named slots to kinds, with source defaulting to work item and target to the
+  source kind. Repository `agents[].entities` maps those slots to lists of
+  scopes. Source defaults to `[native]`; omitted target copies the effective
+  source list, while additional slots require explicit bindings.
+  The configuration clone selects the native provider independently of the
+  runtime or CI platform. Its host and repository path supply defaults;
+  provider-default connections (`github`, `gitlab`, `forgejo`) can override the
+  instance, including GitHub.com to GitHub Enterprise. Reserved source names
+  default to those connections and can override queries and repository scopes.
+  The matching provider source and `native` resolve identically. Other provider names
+  require explicit external connections and scopes when bound. A source named
+  `native` is forbidden. Only source schedules work.
+  Harness `entity_filters` narrows each slot's source queries
+  by provider; primary selections combine for discovery and are checked before
+  full CEL admission. Other slot filters apply to explicit searches only.
+  GitHub source queries and harness filters share a bounded subset of native
+  UI metadata filters and Boolean combinations; unsupported syntax is rejected.
+  GitHub prefers GraphQL discovery with selective projections derived from
+  compiled CEL dependencies, progressively acquiring further decision and actor
+  evidence under ADR 0147.
+  The same resolved plan drives event
+  dispatch, broad polling, and bound-run checks, with CI providing trusted
+  invocation and execution rather than separate agent-routing decisions.
+  Installation verifies recurring discovery coverage for the effective plan
+  before resident eventless cycles can run. Target and additional slots make
+  typed scopes available to the run without implicit joins or broadcast writes.
+  Creation policy stays on connections independently of discovery; standalone
+  commands without context require explicit scope selection. Deprecated
+  `tracker` mappings translate in memory with warnings and preserved legacy
+  command defaults
+  ([ADR 0079](ADRs/0079-bind-entity-execution-through-named-sources.md),
+  [configuration contract](normative/entity-source-configuration/v1/)).
 - GitLab dispatch uses a native webhook fast-path for low-latency candidates and the cron-poller as the authoritative reconciliation backstop ([ADR 0125](ADRs/0125-gitlab-hybrid-webhook-poller-dispatch.md)). Native `merge_request_event` dispatch stays removed ([#7322](https://github.com/fullsend-ai/fullsend/issues/7322)). No external webhook bridge (see [ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md) for the poller, credentials, and in-job gate).
 - Conversation participation: GitHub Discussions (and future chat systems) enter
   dispatch as resolved entities with `entity.kind: conversation`; when a
@@ -599,11 +632,17 @@ The existing design principle is that [the repo is the coordinator](problems/age
   [ADR 0151](ADRs/0151-harness-human-role-minimums.md),
   [Authorization Contract v2](normative/authorization/v2/)).
 
-- Entity-source discovery (target state): `fullsend poll` combines admissible
-  harness queries into one logical candidate search per source scope and routes
-  possible matches locally. A bound `run` rechecks source-query membership
-  before event-backed or eventless sandbox cycles
-  ([ADR 0149](ADRs/0149-coalesce-entity-source-discovery-queries.md)).
+- Entity-source discovery (target state): `fullsend poll` combines source
+  queries into one logical candidate search per source scope. Source membership
+  follows native provider semantics, with exact checks over already-fetched
+  data or batched provider checks; Jira accepts native JQL, GitHub accepts a
+  bounded subset of UI metadata filters and Boolean combinations, and GitLab
+  starts with open/closed/all state selections. A bound `run` rechecks current
+  membership before event-backed or eventless sandbox cycles. Provider-native
+  selection can reflect changes excluded from the actor-filtered CEL view; it
+  grants no authority and does not admit content to the model
+  ([ADR 0149](ADRs/0149-coalesce-entity-source-discovery-queries.md), partially
+  superseded by [ADR 0079](ADRs/0079-bind-entity-execution-through-named-sources.md)).
   Implementation and the normative query protocol are tracked in
   [#8418](https://github.com/fullsend-ai/fullsend/issues/8418) and
   [#8421](https://github.com/fullsend-ai/fullsend/issues/8421).
@@ -616,10 +655,12 @@ The existing design principle is that [the repo is the coordinator](problems/age
   [ADR 0147](ADRs/0147-evaluate-entity-cel-over-selectively-acquired-data.md)
   for selective acquisition and its authorization rules, and
   [ADR 0149](ADRs/0149-coalesce-entity-source-discovery-queries.md)
-  for query combination and local routing. The normative discovery protocol,
-  including query syntax, adapter mappings, and discovery coverage evidence,
-  remains open, as do the normalized entity-history and handled-state
-  contracts.
+  for query combination and coverage. Configuration, provider-specific query
+  selection, native membership, and CI binding are decided in
+  [ADR 0079](ADRs/0079-bind-entity-execution-through-named-sources.md).
+  Detailed provider query/consistency mappings and coverage evidence remain in
+  the pending discovery protocol, alongside the normalized entity-history,
+  handled-state, authorization, and model-context contracts needed for activation.
 - Is GitHub's event system sufficient for forge-native duplicate protection, or
   do we need additional coordination beyond label/state conventions and agent
   idempotency? (Jira polling per ADR 0063 uses entity-property locks and runner

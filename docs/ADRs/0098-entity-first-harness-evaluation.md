@@ -62,6 +62,11 @@ one combined logical search per source scope and local per-harness routing.
 For source-backed harnesses, even an event-supplied candidate must pass a
 current local source-query membership check before sandbox admission.
 
+[ADR 0079](0079-bind-entity-execution-through-named-sources.md) refines source
+declarations into named, typed harness slots and repository-owned binding lists.
+It also permits native provider membership checks as a separate selection gate;
+actor-filtered CEL and model-context admission remain required.
+
 ## Context
 
 [ADR 0061](0061-harness-cel-dispatch.md) made a `NormalizedEvent` the sole CEL
