@@ -143,16 +143,16 @@ adapter's supported kinds and the query's selection are checked against each
 consuming harness slot's kind. The same source may serve differently typed slots.
 The planner enumerates only the kinds needed by active primary-source bindings.
 An active forge source's `repositories` list scopes it to explicit canonical
-repository paths. Omission is permitted only for the reserved source whose
-provider matches the configuration origin. In that case it means the clone's
-repository path on the same-named provider-default connection, including when
+repository paths. If omitted, the scope defaults to the clone's repository path
+when the source resolves to the configuration origin provider's provider-default
+connection. This applies to reserved and ordinary source names, including when
 that connection uses an explicit `base_url` for another instance. All other
-active forge sources, including reserved names for non-origin providers, MUST
-specify `repositories`. An unbound reserved entry for another provider is an
-inert preset and may omit its connection and repository scope until it is bound.
-An explicit list selects those paths; it does not claim they are the same
-canonical repository as the clone. A Jira source MUST specify a nonempty
-`projects` list.
+active forge sources, including those using another provider-default or named
+connection, MUST specify `repositories`. An unbound reserved entry for another
+provider is an inert preset and may omit its connection and repository scope
+until it is bound. An explicit list selects those paths; it does not claim they
+are the same canonical repository as the clone. A Jira source MUST specify a
+nonempty `projects` list.
 Source scopes MUST resolve to canonical provider identities before use.
 Configuration authorizes a source scope, not an arbitrary target code
 repository.
@@ -241,9 +241,10 @@ connection with an all-state query and `discovery: true`: an empty query for
 GitHub, or `all` for GitLab. If present, its `query` and optional `discovery`
 override those defaults under ordinary whole-entry layering. Its repository
 scope defaults to the clone's path on the same-named connection, including when
-that connection's endpoint is overridden; an explicit `repositories` list
-selects another path. Other named sources can select additional instances or
-scopes.
+that connection's endpoint is overridden. The same repository-path default
+applies to any active forge source that resolves to this connection; an explicit
+`repositories` list selects another path. Other named sources can select
+additional instances or scopes.
 
 Provider names MAY also appear explicitly in `agents[].entities` lists and in
 standalone source selection. For the origin's provider, `[github]` (for example)
@@ -353,8 +354,10 @@ entity_filters:
 ```
 
 The effective query requires both expressions inside the configured repository
-and work-item guard. A review harness could instead use a change-proposal
-source with `is:open draft:false base:main -label:blocked`.
+and work-item guard. `actionable_work` omits `repositories` because it resolves
+to the origin's provider-default `github` connection, so its scope is the
+configuration repository. A review harness could instead use a
+change-proposal source with `is:open draft:false base:main -label:blocked`.
 
 Parse and validate this subset before provider submission; do not pass unknown
 syntax through as free text. Reject bare text, `in:`, general `NOT`, relative
@@ -760,10 +763,12 @@ Implementations MUST cover at least these observable cases:
   only their same-named provider connection. For a GitHub-origin clone,
   `entity_sources.github` may omit both `connection` and `repositories`; it uses
   `connections.github` and the clone path even when that connection points to
-  GitHub Enterprise. `entity_sources.github.connection: enterprise` fails
-  validation. A reserved source for another provider must specify its repository
-  scope. Untrusted layers cannot change endpoints, and a new endpoint requires a
-  separately provisioned credential binding.
+  GitHub Enterprise. Any other active forge source resolving to
+  `connections.github`, such as `actionable_work`, may also omit `repositories`.
+  A source using an external or separately named connection must specify its
+  repository scope. `entity_sources.github.connection: enterprise` fails
+  validation. Untrusted layers cannot change endpoints, and a new endpoint
+  requires a separately provisioned credential binding.
 - Native resolution uses the clone's provider independently of Kubernetes,
   GitHub Actions, or GitLab CI execution. Its provider-default connection can
   override the instance. Explicit matching-provider aliases deduplicate with
