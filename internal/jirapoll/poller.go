@@ -537,10 +537,10 @@ func (p *Poller) processIssue(ctx context.Context, issue jira.Issue, cycleID str
 		// operator should be able to tell it from an ordinary invalid event.
 		if err := ne.Validate(); err != nil {
 			if ne.State.Labels == nil && !labelsWarned {
-				log.Printf("WARNING: jira served issue %s without a labels array (null or missing); its events are skipped. The Jira response shape may have changed", issue.Key)
+				log.Printf("WARNING: Jira served issue %s without a labels array (null or missing); its events are skipped. The Jira response shape may have changed", issue.Key)
 				labelsWarned = true
 			}
-			log.Printf("WARNING: skipping event %s for issue %s: %v (jira issue id %q)", event.Key(), event.IssueKey, err, event.IssueID)
+			log.Printf("WARNING: skipping event %s for issue %s: %v (Jira issue id %q)", event.Key(), event.IssueKey, err, event.IssueID)
 			p.eventsInvalid++
 			continue
 		}

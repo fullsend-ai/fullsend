@@ -9,6 +9,9 @@ Feature: Jira poll dispatch
   dispatch or artifact collection — it validates the poll-to-dispatch-
   record path in isolation.
 
+  The last scenario exercises the real CLI's argument validation only,
+  with a placeholder https base_url, and never contacts Jira or the mock.
+
   Background:
     Given a mock Jira server
 
@@ -45,7 +48,5 @@ Feature: Jira poll dispatch
     And the dispatch output contains a "triage" stage for issue "PROJ-506"
 
   Scenario: fullsend poll refuses a target repo whose path contains ..
-    Given a Jira issue "PROJ-606" with labels "bug"
-    When a comment "/fs-triage check" is added to Jira issue "PROJ-606"
-    And fullsend poll runs the Jira poller with target repo "test-org/.."
+    When fullsend poll runs the Jira poller with target repo "test-org/.."
     Then fullsend poll fails with "must not contain '..'" and writes no dispatch output

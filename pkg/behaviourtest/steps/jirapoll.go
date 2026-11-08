@@ -240,17 +240,21 @@ func whenJiraPollerRuns(ctx context.Context, w *world.World) error {
 	return nil
 }
 
-// jiraPollCLITimeout bounds one `fullsend poll` run against the mock.
+// jiraPollCLITimeout bounds one `fullsend poll` run launched by the CLI step.
 const jiraPollCLITimeout = 2 * time.Minute
 
 // whenJiraPollCLIRuns runs the suite's fullsend CLI as
-// `fullsend poll --input-driver jira-poll` against the mock Jira server with
-// the given target repo. The Jira site, project, and poll settings come from
-// tracker.jira in the scenario's config.yaml (#9077 removed --jira-url and
-// --jira-project), so the step writes that mapping — pointing at the mock,
-// polling enabled — and passes placeholder scoped credentials: a run that got
-// past the argument checks would fail on Jira contact, not on missing
-// configuration. A run that exits non-zero is recorded, not returned.
+// `fullsend poll --input-driver jira-poll` with the given target repo. The
+// Jira site, project, and poll settings come from tracker.jira in the
+// scenario's config.yaml (#9077 removed --jira-url and --jira-project), so
+// the step writes that mapping with a syntactically valid HTTPS base_url
+// (https://jira.invalid) and placeholder scoped credentials: the CLI
+// validates the connection — which requires an https URL — before the
+// argument checks, and the scenarios using this step refuse during argument
+// validation, before any Jira contact, so they must not fail on the URL
+// instead of the argument under test. The mock Jira server is still
+// required: it provisions the config dir the run and the scenario's earlier
+// steps use. A run that exits non-zero is recorded, not returned.
 func whenJiraPollCLIRuns(ctx context.Context, w *world.World, repo string) error {
 	if w.JiraMockServer == nil {
 		return fmt.Errorf("mock Jira server not initialized")
@@ -283,17 +287,22 @@ func whenJiraPollCLIRuns(ctx context.Context, w *world.World, repo string) error
 	return nil
 }
 
-// writeJiraPollTrackerConfig points the scenario config's tracker.jira at the
-// mock Jira server. The jira-poll driver reads the Jira site, project, and
-// poll settings from tracker.jira in config.yaml (#9077), so a CLI run
-// against the mock needs that mapping in place of the removed
-// --jira-url/--jira-project flags; the suite's config starts as a bare
-// `version: 1`, which this replaces for the run.
+// writeJiraPollTrackerConfig writes the scenario config's tracker.jira with
+// the settings the jira-poll driver reads from config.yaml (#9077) in place
+// of the removed --jira-url/--jira-project flags: project PROJ, polling
+// enabled, and a syntactically valid HTTPS base_url (https://jira.invalid).
+// The base_url deliberately does not point at the mock Jira server: the mock
+// serves plain HTTP, the CLI's connection validation requires https and runs
+// before the argument checks, and the scenarios using this step refuse
+// during argument validation — before any Jira contact — so an HTTP URL
+// would fail the run on the URL instead of the argument under test. The
+// suite's config starts as a bare `version: 1`, which this replaces for the
+// run.
 func writeJiraPollTrackerConfig(w *world.World) error {
 	cfg := "version: \"1\"\n" +
 		"tracker:\n" +
 		"  jira:\n" +
-		"    base_url: " + w.JiraMockServer.URL + "\n" +
+		"    base_url: https://jira.invalid\n" +
 		"    project: PROJ\n" +
 		"    poll:\n" +
 		"      enabled: true\n"
