@@ -1,0 +1,213 @@
+{
+  "schema_version": "normalized-entity/v1",
+  "entity": {
+    "kind": "change_proposal",
+    "source": {
+      "system": "gitlab",
+      "host": "gitlab.example.com",
+      "repository": "Group/Subgroup/Demo",
+      "repository_id": "101"
+    },
+    "id": "fullsend:entity:v1:gitlab:gitlab.example.com:change_proposal:987",
+    "source_id": "987",
+    "key": "#17",
+    "number": 17,
+    "url": "https://gitlab.example.com/Group/Subgroup/Demo/-/merge_requests/17",
+    "state": "open",
+    "title": {
+      "$unknown": "not_loaded"
+    },
+    "author": {
+      "id": "26",
+      "login": "alice",
+      "kind": "human",
+      "role": "write",
+      "role_verified": true
+    },
+    "created_at": "2026-10-12T09:00:00.000000000Z",
+    "updated_at": "2026-10-13T11:20:00.000000000Z",
+    "body": null,
+    "comments": [
+      {
+        "id": "301",
+        "created_at": "2026-10-13T10:05:00.000000000Z",
+        "revised_at": "2026-10-13T10:05:00.000000000Z",
+        "actor": {
+          "id": "26",
+          "login": "alice",
+          "kind": "human",
+          "role": "write",
+          "role_verified": true
+        },
+        "text": "Please check this line.",
+        "command": null,
+        "thread_id": "9fdc9a3b1e78d42f8c6a0b5e3d19a47f6c2e80ab",
+        "is_entity_author": true
+      }
+    ],
+    "label_applications": [],
+    "reviews": [],
+    "threads": [
+      {
+        "id": "9fdc9a3b1e78d42f8c6a0b5e3d19a47f6c2e80ab",
+        "created_at": "2026-10-13T10:05:00.000000000Z",
+        "comment_ids": [
+          "301"
+        ],
+        "resolved": true,
+        "outdated": null,
+        "review_id": null,
+        "location": {
+          "path": "README.md",
+          "line": 12,
+          "side": "right"
+        }
+      }
+    ],
+    "labels": [],
+    "change_proposal": {
+      "base_repository": "Group/Subgroup/Demo",
+      "head_repository": "Fork/Demo",
+      "base_ref": "main",
+      "head_ref": {
+        "$unknown": "not_loaded"
+      },
+      "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "is_fork": {
+        "$unknown": "not_loaded"
+      },
+      "draft": false,
+      "approval": {
+        "gate": {
+          "$unknown": "not_loaded"
+        }
+      },
+      "changed_files": [],
+      "commits": []
+    },
+    "checks": [
+      {
+        "id": "401",
+        "name": "lint",
+        "status": "queued",
+        "conclusion": null,
+        "created_at": "2026-10-13T11:00:00.000000000Z",
+        "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "started_at": null,
+        "completed_at": null,
+        "never_started": null,
+        "log": {
+          "ascending": [],
+          "descending": []
+        },
+        "report": {
+          "title": {
+            "$unknown": "unsupported"
+          },
+          "summary": {
+            "$unknown": "unsupported"
+          },
+          "details": {
+            "$unknown": "unsupported"
+          },
+          "annotations": []
+        }
+      }
+    ],
+    "reviewers": [],
+    "current_approvals": [],
+    "assignees": [],
+    "reactions": [],
+    "lifecycle": {
+      "closed_at": {
+        "$unknown": "not_loaded"
+      },
+      "closed_by": {
+        "$unknown": "not_loaded"
+      },
+      "merged_at": {
+        "$unknown": "not_loaded"
+      },
+      "merged_by": {
+        "$unknown": "not_loaded"
+      }
+    }
+  },
+  "coverage": {
+    "labels": {
+      "status": "complete"
+    },
+    "comments": {
+      "status": "complete"
+    },
+    "label_applications": {
+      "status": "complete"
+    },
+    "reviews": {
+      "status": "unsupported",
+      "reason": "immutable_review_history_unavailable"
+    },
+    "threads": {
+      "status": "complete"
+    },
+    "thread_comments": [
+      {
+        "thread_id": "9fdc9a3b1e78d42f8c6a0b5e3d19a47f6c2e80ab",
+        "status": "complete"
+      }
+    ],
+    "checks": {
+      "status": "partial",
+      "reason": "other_jobs_not_requested",
+      "source_revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "check_logs": [
+      {
+        "check_id": "401",
+        "ascending": {
+          "status": "not_loaded",
+          "reason": "not_requested"
+        },
+        "descending": {
+          "status": "not_loaded",
+          "reason": "not_requested"
+        }
+      }
+    ],
+    "check_annotations": [
+      {
+        "check_id": "401",
+        "coverage": {
+          "status": "unsupported",
+          "reason": "no_job_bound_annotations"
+        }
+      }
+    ],
+    "reviewers": {
+      "status": "not_loaded",
+      "reason": "not_requested"
+    },
+    "current_approvals": {
+      "status": "not_loaded",
+      "reason": "not_requested"
+    },
+    "changed_files": {
+      "status": "not_loaded"
+    },
+    "commits": {
+      "status": "not_loaded"
+    },
+    "assignees": {
+      "status": "not_loaded"
+    },
+    "reactions": {
+      "status": "not_loaded"
+    },
+    "extension_lists": []
+  },
+  "view": {
+    "human_min_role": "triage",
+    "resolved_at": "2026-10-14T06:00:02.000000000Z",
+    "filter_version": "example-filter-v1"
+  }
+}
