@@ -672,7 +672,7 @@ into a slot.
 counters for an org at the same time, even for a single token
 ([#9154](https://github.com/fullsend-ai/fullsend/issues/9154)). Their reset
 times are usually under a minute apart, and each has its own `remaining` value.
-In 39 behaviour jobs from November 2026, almost all writes landed on one
+In stage and pool runs from November 2026, almost all writes landed on one
 counter, and reads split across both
 ([evidence](https://github.com/fullsend-ai/fullsend/issues/9154#issuecomment-6710943328)).
 The cause is unknown. GitHub processes requests in multiple regions, and
@@ -707,9 +707,8 @@ not a documented GitHub rule.
   from other suites or the `fullsend` CLI subprocess.
 - `spread` one below `calls` is normal, because the first reading already
   includes the first call.
-- `calls` more than one above `spread` is rare, at 2 of 1,792 groups in those
-  jobs, and its cause is unknown. It can mean some calls were charged elsewhere
-  or did not lower the readings in this group.
+- `calls` more than one above `spread` has no known cause. It can mean some
+  calls were charged elsewhere or did not lower the readings in this group.
 
 The log covers only the groups this client saw, so it cannot give an org's
 total quota use.
