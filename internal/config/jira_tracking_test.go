@@ -122,6 +122,8 @@ func TestJiraTracking_RejectsCredentialAndUnknownKeys(t *testing.T) {
 		{name: "token", jira: "token: abc", wantErr: "FULLSEND_JIRA_TOKEN"},
 		{name: "email", jira: "email: a@example.com", wantErr: "\"email\" must not be set in config"},
 		{name: "api_token uppercase", jira: "API_TOKEN: abc", wantErr: "must not be set in config"},
+		{name: "client_secret", jira: "client_secret: abc", wantErr: "FULLSEND_JIRA_CLIENT_SECRET"},
+		{name: "client_id", jira: "client_id: abc", wantErr: "\"client_id\" must not be set in config"},
 		{name: "unknown key", jira: "base_uri: https://example.atlassian.net", wantErr: "tracker.jira: unknown field \"base_uri\""},
 		{name: "unknown poll key", jira: "poll:\n      interval: 5m", wantErr: "tracker.jira.poll: unknown field \"interval\""},
 		{name: "unknown allowed_targets key", jira: "allowed_targets:\n      repos: [a/b]", wantErr: "tracker.jira.allowed_targets: unknown field \"repos\""},

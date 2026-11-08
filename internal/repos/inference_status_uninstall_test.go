@@ -261,7 +261,7 @@ func TestStatus_ObsoleteSecretLookupErrorReportsStatusError(t *testing.T) {
 func TestManagedInferenceSecrets_SharedByUninstallAndOrphanDetection(t *testing.T) {
 	want := []string{forge.SecretGCPProjectID, forge.SecretGCPWIFProvider, forge.SecretOpenAIAPIKey}
 	assert.Equal(t, want, managedInferenceSecrets())
-	jira := []string{forge.SecretJiraToken, forge.SecretJiraEmail}
+	jira := []string{forge.SecretJiraToken, forge.SecretJiraEmail, forge.SecretJiraClientID, forge.SecretJiraClientSecret}
 	// Uninstall also removes the Jira polling credentials install provisions.
 	assert.Equal(t, append(append([]string{}, want...), jira...), UninstallSecretsForForge(ForgeGitHub))
 	// GitLab uninstall also removes the webhook fast-path credentials.

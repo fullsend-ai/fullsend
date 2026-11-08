@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -993,6 +994,7 @@ allowed_remote_resources:
 		require.Len(t, report.Diagnostics, 1)
 		assert.Equal(t, "my-agent", report.Diagnostics[0].Agent)
 		assert.Equal(t, "warning", report.Diagnostics[0].Severity)
+		assert.Equal(t, harness.CodeAllowedRemoteImplicitFetch, report.Diagnostics[0].Code)
 		assert.Equal(t, "allowed_remote_resources", report.Diagnostics[0].Field)
 		assert.Contains(t, report.Diagnostics[0].Message, "deprecated")
 	})
@@ -1029,6 +1031,7 @@ func TestLintCommand_JSONFormat_Error(t *testing.T) {
 	require.Len(t, report.Diagnostics, 1)
 	assert.Equal(t, "config", report.Diagnostics[0].Agent)
 	assert.Equal(t, "error", report.Diagnostics[0].Severity)
+	assert.Equal(t, lintCodeConfigInvalid, report.Diagnostics[0].Code)
 	assert.Equal(t, "config.yaml", report.Diagnostics[0].Field)
 	assert.Contains(t, report.Diagnostics[0].Message, `unsupported version "999"`)
 }
@@ -1053,6 +1056,7 @@ agents:
 	require.Len(t, report.Diagnostics, 1)
 	assert.Equal(t, "my-agent", report.Diagnostics[0].Agent)
 	assert.Equal(t, "error", report.Diagnostics[0].Severity)
+	assert.Equal(t, lintCodeHarnessFailed, report.Diagnostics[0].Code)
 	assert.Empty(t, report.Diagnostics[0].Field)
 	assert.Contains(t, report.Diagnostics[0].Message, `resolving harness for agent "my-agent"`)
 }
@@ -1078,6 +1082,7 @@ func TestLintCommand_JSONFormat_DefaultRemainsText(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, out, "config: error: config.yaml")
 	assert.NotContains(t, out, `"schema_version"`)
+	assert.NotContains(t, out, lintCodeConfigInvalid)
 }
 
 func TestLintJSONReport_EmptyDiagnosticsMarshalsAsArray(t *testing.T) {
@@ -1092,6 +1097,76 @@ func TestLintJSONReport_EmptyDiagnosticsMarshalsAsArray(t *testing.T) {
 	require.NoError(t, e.writeJSON(&buf, true))
 	assert.Contains(t, buf.String(), `"diagnostics": []`)
 	assert.NotContains(t, buf.String(), `"diagnostics": null`)
+}
+
+func TestLintJSONReport_MissingCodeFailsWrite(t *testing.T) {
+	e := &lintEmitter{
+		jsonMode: true,
+		report: lintJSONReport{
+			SchemaVersion: lintJSONSchemaVersion,
+			Diagnostics: []lintJSONDiagnostic{{
+				Agent:    "my-agent",
+				Severity: "warning",
+				Field:    "forge",
+				Message:  "forge is deprecated",
+			}},
+		},
+	}
+	var buf bytes.Buffer
+	err := e.writeJSON(&buf, true)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "missing code")
+	assert.Empty(t, buf.String())
+}
+
+func TestLintCommand_JSONFormat_TextOmitsCode(t *testing.T) {
+	dir := t.TempDir()
+	cfg := `version: "1"
+agents:
+  - name: my-agent
+    source: harness/my-agent.yaml
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(cfg), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	writeLintAgentFixture(t, dir, "my-agent")
+	harnessYAML := `role: triage
+agent: agents/my-agent.md
+policy: policies/base.yaml
+allowed_remote_resources:
+  - "https://raw.githubusercontent.com/fullsend-ai/agents/"
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "my-agent.yaml"), []byte(harnessYAML), 0o644))
+
+	out, err := executeCmd(newLintCmd(), []string{"--fullsend-dir", dir})
+	require.NoError(t, err)
+	assert.Contains(t, out, "my-agent: warning: allowed_remote_resources:")
+	assert.NotContains(t, out, harness.CodeAllowedRemoteImplicitFetch)
+	assert.NotContains(t, out, `"code"`)
+}
+
+func TestLintDiagnosticCodesMatchPattern(t *testing.T) {
+	re := regexp.MustCompile(`^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$`)
+	codes := []string{
+		lintCodeConfigInvalid,
+		lintCodeAgentsSiblingsInvalid,
+		lintCodeAgentUnavailable,
+		lintCodeHarnessFailed,
+		lintCodeReservedSandboxEnv,
+		harness.CodeRunnerEnvDeprecated,
+		harness.CodeSandboxHostFilesCollision,
+		harness.CodeAllowedRemoteImplicitFetch,
+		harness.CodeForgeDeprecated,
+		harness.CodeTriggerInvalid,
+		harness.CodePreflightCheckPath,
+		harness.CodeGithubIssueURLDeprecated,
+	}
+	seen := map[string]struct{}{}
+	for _, c := range codes {
+		assert.True(t, re.MatchString(c), c)
+		_, dup := seen[c]
+		assert.False(t, dup, "duplicate code %q", c)
+		seen[c] = struct{}{}
+	}
 }
 
 // writeScopedLintFixture writes a config registering the given agents[]
@@ -1200,6 +1275,22 @@ func TestLintCommand_ScopedReportsInvalidSiblingEntriesAsWarning(t *testing.T) {
 			assert.Contains(t, out, tc.want)
 			assert.Contains(t, out, "my-agent: warning:", "the selected agent is still linted")
 
+			stdout, _, jsonErr := executeLintStreams(newLintCmd(), []string{
+				"--fullsend-dir", dir, "my-agent", "--format", "json",
+			})
+			require.NoError(t, jsonErr)
+			report := parseLintJSON(t, stdout)
+			var foundSibling bool
+			for _, d := range report.Diagnostics {
+				if d.Code == lintCodeAgentsSiblingsInvalid {
+					foundSibling = true
+					assert.Equal(t, "config", d.Agent)
+					assert.Equal(t, "agents", d.Field)
+					assert.Equal(t, "warning", d.Severity)
+				}
+			}
+			assert.True(t, foundSibling, "expected agents-siblings-invalid in JSON")
+
 			_, err = executeCmd(newLintCmd(), []string{"--fullsend-dir", dir, "my-agent", "--strict"})
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "(--strict)")
@@ -1230,6 +1321,15 @@ func TestLintCommand_ScopedUnknownAgentFails(t *testing.T) {
 		assert.Contains(t, err.Error(), `agent "revieww" is not registered in config.yaml; registered agents that can be linted: alpha, review`)
 		assert.NotContains(t, err.Error(), "off")
 		assert.NotContains(t, out, "warning:", "no agent is linted")
+
+		stdout, _, jsonErr := executeLintStreams(newLintCmd(), []string{
+			"--fullsend-dir", dir, "revieww", "--format", "json",
+		})
+		require.Error(t, jsonErr)
+		report := parseLintJSON(t, stdout)
+		require.Len(t, report.Diagnostics, 1)
+		assert.Equal(t, lintCodeAgentUnavailable, report.Diagnostics[0].Code)
+		assert.Equal(t, "config", report.Diagnostics[0].Agent)
 	})
 
 	t.Run("no enabled agents", func(t *testing.T) {
@@ -1351,4 +1451,5 @@ func TestLintCommand_ScopedJSONLintsOnlySelectedAgent(t *testing.T) {
 	require.Len(t, report.Diagnostics, 1)
 	assert.Equal(t, "beta", report.Diagnostics[0].Agent)
 	assert.Equal(t, "warning", report.Diagnostics[0].Severity)
+	assert.Equal(t, harness.CodeGithubIssueURLDeprecated, report.Diagnostics[0].Code)
 }

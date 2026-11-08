@@ -177,6 +177,31 @@ func TestNewJiraTrackerClient_MasksTokenInGitHubActions(t *testing.T) {
 	assert.Contains(t, string(out), "::add-mask::jira-token")
 }
 
+func TestNewJiraTrackerClient_MasksOAuthClientCredentials(t *testing.T) {
+	t.Setenv(jira.TokenEnvVar, "")
+	t.Setenv(jira.EmailEnvVar, "")
+	t.Setenv(jira.ClientIDEnvVar, "oauth-client-id")
+	t.Setenv(jira.ClientSecretEnvVar, "oauth-client-secret")
+	t.Setenv("GITHUB_ACTIONS", "true")
+
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	origStderr := os.Stderr
+	os.Stderr = w
+	t.Cleanup(func() { os.Stderr = origStderr })
+
+	tc, err := newJiraTrackerClientFromConfig(parseTestConfig(t, testJiraConfig).IssueTracking())
+	os.Stderr = origStderr
+	require.NoError(t, w.Close())
+	require.NoError(t, err)
+	assert.NotNil(t, tc)
+
+	out, err := io.ReadAll(r)
+	require.NoError(t, err)
+	assert.Contains(t, string(out), "::add-mask::oauth-client-id\n")
+	assert.Contains(t, string(out), "::add-mask::oauth-client-secret\n")
+}
+
 func TestNewJiraTrackerClient_EscapesMaskedToken(t *testing.T) {
 	t.Setenv(jira.TokenEnvVar, "jira\n::error::x%token")
 	t.Setenv("GITHUB_ACTIONS", "true")
@@ -222,10 +247,13 @@ func newJiraGatewayServer(t *testing.T) *jiraGatewayServer {
 		g.mu.Unlock()
 		_, _ = w.Write([]byte(`{"key":"PROJ-7","fields":{"summary":"title"}}`))
 	})
+	mux.HandleFunc("/oauth/token", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"access_token":"oauth-access","token_type":"Bearer","expires_in":3600}`))
+	})
 	g.srv = httptest.NewTLSServer(mux)
 	t.Cleanup(g.srv.Close)
 	orig := jiraScopedTestOptions
-	jiraScopedTestOptions = []jira.Option{jira.WithHTTPClient(g.srv.Client())}
+	jiraScopedTestOptions = []jira.Option{jira.WithHTTPClient(g.srv.Client()), jira.WithOAuthTokenURL(g.srv.URL + "/oauth/token")}
 	t.Cleanup(func() { jiraScopedTestOptions = orig })
 	return g
 }
@@ -291,4 +319,20 @@ func TestCheckJiraTargetProject(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `Jira project "SEC" is not allowed`)
 	assert.Contains(t, err.Error(), "tracker.jira.allowed_targets.projects")
+}
+
+func TestNewConfiguredTrackerClient_JiraOAuthClientCredentials(t *testing.T) {
+	g := newJiraGatewayServer(t)
+	t.Setenv(jira.TokenEnvVar, "")
+	t.Setenv(jira.EmailEnvVar, "")
+	t.Setenv(jira.ClientIDEnvVar, "oauth-client-id")
+	t.Setenv(jira.ClientSecretEnvVar, "oauth-client-secret")
+	t.Setenv("GITHUB_ACTIONS", "")
+
+	tc, err := newConfiguredTrackerClient(trackerJira, "", "", parseTestConfig(t, g.config()))
+	require.NoError(t, err)
+	_, err = tc.GetIssue(context.Background(), "PROJ", 7)
+	require.NoError(t, err)
+	require.Len(t, g.auth, 1)
+	assert.Equal(t, "Bearer oauth-access", g.auth[0])
 }

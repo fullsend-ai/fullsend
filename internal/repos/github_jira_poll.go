@@ -5,13 +5,20 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
 
-const reusableJiraPollWorkflowPath = ".github/workflows/reusable-poll-jira.yml"
+const (
+	reusableJiraPollWorkflowPath = ".github/workflows/reusable-poll-jira.yml"
+	reusableDispatchWorkflowPath = ".github/workflows/reusable-dispatch.yml"
+)
 
 // githubJiraPollReconciler manages the GitHub Jira poll resource (#9109):
 // the scheduled caller workflow at scaffold.JiraPollCallerPath, which calls
@@ -42,7 +49,20 @@ func checkGitHubJiraPollWorkflow(ctx context.Context, d convergeDiscovery, cfg C
 			resolved.Owner, resolved.Repo, err)
 	}
 	if exists && !scaffold.IsManagedJiraPollCaller(caller) {
-		return nil
+		// The user-owned caller is never rewritten, so an OAuth install
+		// would strand it on the token credentials it is about to remove.
+		if !jiraUsesOAuth(d.jira, cfg) {
+			return nil
+		}
+		uses, forwards := userJiraCallerOAuthUses(caller)
+		if !forwards {
+			return fmt.Errorf("%s/%s: %s is not managed by fullsend and does not forward the %s secrets required for Jira OAuth credentials; migrate it to pass them (or remove it to let repos install manage it) before switching to OAuth (existing Jira credentials were left unchanged)",
+				resolved.Owner, resolved.Repo, scaffold.JiraPollCallerPath, strings.Join(jiraOAuthSecrets, "/"))
+		}
+		// Forwarding the secrets does not prove the reusable workflows the
+		// caller actually pins declare them; check each before credentials
+		// are replaced.
+		return requireUserJiraCallerWorkflowsOAuth(ctx, resolved, refResolver, uses)
 	}
 
 	target := resolveTargetRef(ctx, resolved.FullsendRef, cfg.UpstreamRef, cfg.UpstreamTag, refResolver)
@@ -61,21 +81,147 @@ func checkGitHubJiraPollWorkflow(ctx context.Context, d convergeDiscovery, cfg C
 		return nil
 	}
 
-	_, err = refResolver.client.GetFileContentAtRef(ctx, shimOwner, shimRepo, reusableJiraPollWorkflowPath, ref)
-	if err == nil {
+	pollWorkflow, err := refResolver.client.GetFileContentAtRef(ctx, shimOwner, shimRepo, reusableJiraPollWorkflowPath, ref)
+	if err != nil {
+		if forge.IsNotFound(err) {
+			return fmt.Errorf("%s/%s: %s %s does not include %s required by Jira polling; upgrade fullsend_ref to a ref that includes it (existing Jira credentials were left unchanged)",
+				resolved.Owner, resolved.Repo, source, ref, reusableJiraPollWorkflowPath)
+		}
+		return fmt.Errorf("%s/%s: checking %s at %s %s before install: %w",
+			resolved.Owner, resolved.Repo, reusableJiraPollWorkflowPath, source, ref, err)
+	}
+	if !jiraUsesOAuth(d.jira, cfg) {
 		return nil
 	}
-	if forge.IsNotFound(err) {
-		return fmt.Errorf("%s/%s: %s %s does not include %s required by Jira polling; upgrade fullsend_ref to a ref that includes it (existing Jira credentials were left unchanged)",
-			resolved.Owner, resolved.Repo, source, ref, reusableJiraPollWorkflowPath)
+
+	// OAuth installs write the client credentials and the managed caller
+	// forwards them by name. A workflow that does not declare them rejects
+	// the caller, so verify both reusable workflows before any write.
+	if err := requireJiraOAuthSecrets(resolved, source, ref, reusableJiraPollWorkflowPath, pollWorkflow); err != nil {
+		return err
 	}
-	return fmt.Errorf("%s/%s: checking %s at %s %s before install: %w",
-		resolved.Owner, resolved.Repo, reusableJiraPollWorkflowPath, source, ref, err)
+	dispatchWorkflow, err := refResolver.client.GetFileContentAtRef(ctx, shimOwner, shimRepo, reusableDispatchWorkflowPath, ref)
+	if err != nil {
+		if forge.IsNotFound(err) {
+			return fmt.Errorf("%s/%s: %s %s does not include %s; upgrade fullsend_ref to a ref that supports Jira OAuth credentials (existing Jira credentials were left unchanged)",
+				resolved.Owner, resolved.Repo, source, ref, reusableDispatchWorkflowPath)
+		}
+		return fmt.Errorf("%s/%s: checking %s at %s %s before install: %w",
+			resolved.Owner, resolved.Repo, reusableDispatchWorkflowPath, source, ref, err)
+	}
+	return requireJiraOAuthSecrets(resolved, source, ref, reusableDispatchWorkflowPath, dispatchWorkflow)
+}
+
+// userJiraCallerOAuthUses returns the sorted, de-duplicated `uses` references
+// of a user-owned Jira poll caller's jobs that call Fullsend's reusable poll or
+// dispatch workflow, and reports whether every such job hands the OAuth client
+// credentials to it: the job inherits all secrets or names both. A caller that
+// does not parse, or has no such job, cannot be verified and reports false.
+func userJiraCallerOAuthUses(caller []byte) ([]string, bool) {
+	var wf struct {
+		Jobs map[string]struct {
+			Uses    string    `yaml:"uses"`
+			Secrets yaml.Node `yaml:"secrets"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(caller, &wf); err != nil {
+		return nil, false
+	}
+	seen := map[string]bool{}
+	var uses []string
+	for _, job := range wf.Jobs {
+		if !strings.Contains(job.Uses, "reusable-poll-jira.yml") && !strings.Contains(job.Uses, "reusable-dispatch.yml") {
+			continue
+		}
+		if !jiraJobForwardsOAuth(job.Secrets) {
+			return nil, false
+		}
+		if !seen[job.Uses] {
+			seen[job.Uses] = true
+			uses = append(uses, job.Uses)
+		}
+	}
+	sort.Strings(uses)
+	return uses, len(uses) > 0
+}
+
+// requireUserJiraCallerWorkflowsOAuth verifies that each reusable workflow a
+// user-owned caller invokes declares the Jira OAuth client secrets, reading it
+// at the ref the caller pins (or from the caller's own repository for a local
+// `./` reference). A reference whose workflow cannot be read or located is
+// rejected, since its OAuth support cannot be established.
+func requireUserJiraCallerWorkflowsOAuth(ctx context.Context, resolved ResolvedConfig, refResolver *RefResolver, uses []string) error {
+	for _, u := range uses {
+		var content []byte
+		var err error
+		if localPath, local := strings.CutPrefix(u, "./"); local {
+			content, err = resolved.ForgeConfig.Client.GetFileContent(ctx, resolved.Owner, resolved.Repo, localPath)
+		} else {
+			target, ref, hasRef := strings.Cut(u, "@")
+			parts := strings.SplitN(target, "/", 3)
+			if !hasRef || len(parts) != 3 || refResolver == nil {
+				return fmt.Errorf("%s/%s: %s calls %q, whose Jira OAuth support cannot be verified; pin it to owner/repo/path@ref of a Fullsend version that supports OAuth credentials (existing Jira credentials were left unchanged)",
+					resolved.Owner, resolved.Repo, scaffold.JiraPollCallerPath, u)
+			}
+			content, err = refResolver.client.GetFileContentAtRef(ctx, parts[0], parts[1], parts[2], ref)
+		}
+		if err != nil {
+			return fmt.Errorf("%s/%s: %s calls %q, whose Jira OAuth support could not be verified: %w (existing Jira credentials were left unchanged)",
+				resolved.Owner, resolved.Repo, scaffold.JiraPollCallerPath, u, err)
+		}
+		if name := missingJiraOAuthSecret(content); name != "" {
+			return fmt.Errorf("%s/%s: %s calls %q, which does not declare the %s secret required for Jira OAuth credentials; update the reference to a Fullsend version that supports them (existing Jira credentials were left unchanged)",
+				resolved.Owner, resolved.Repo, scaffold.JiraPollCallerPath, u, name)
+		}
+	}
+	return nil
+}
+
+// missingJiraOAuthSecret returns the first Jira OAuth client secret a workflow
+// does not declare, or "" when it declares them all.
+func missingJiraOAuthSecret(content []byte) string {
+	for _, name := range jiraOAuthSecrets {
+		if !bytes.Contains(content, []byte(name)) {
+			return name
+		}
+	}
+	return ""
+}
+
+// jiraJobForwardsOAuth reports whether a job's secrets node is `inherit` or a
+// mapping that names every Jira OAuth client secret.
+func jiraJobForwardsOAuth(secrets yaml.Node) bool {
+	switch secrets.Kind {
+	case yaml.ScalarNode:
+		return secrets.Value == "inherit"
+	case yaml.MappingNode:
+		named := map[string]bool{}
+		for i := 0; i+1 < len(secrets.Content); i += 2 {
+			named[secrets.Content[i].Value] = true
+		}
+		for _, name := range jiraOAuthSecrets {
+			if !named[name] {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+// requireJiraOAuthSecrets rejects a reusable workflow that does not declare
+// the Jira OAuth client credential secrets.
+func requireJiraOAuthSecrets(resolved ResolvedConfig, source, ref, workflowPath string, content []byte) error {
+	if name := missingJiraOAuthSecret(content); name != "" {
+		return fmt.Errorf("%s/%s: %s %s: %s does not declare the %s secret required for Jira OAuth credentials; upgrade fullsend_ref to a ref that supports them (existing Jira credentials were left unchanged)",
+			resolved.Owner, resolved.Repo, source, ref, workflowPath, name)
+	}
+	return nil
 }
 
 // Ensure makes the managed caller present and current.
 func (githubJiraPollReconciler) Ensure(ctx context.Context, req jiraPollRequest) ([]ComponentAction, error) {
-	want, err := scaffold.RenderJiraPollCaller(req.Render, req.EmailConfigured)
+	want, err := scaffold.RenderJiraPollCaller(req.Render, req.EmailConfigured, req.OAuthConfigured)
 	if err != nil {
 		return nil, err
 	}

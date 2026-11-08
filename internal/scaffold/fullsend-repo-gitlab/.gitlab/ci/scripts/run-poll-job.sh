@@ -28,12 +28,13 @@ esac
 unset FULLSEND_TRIGGER_TOKEN FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN FULLSEND_WEBHOOK_SECRET
 
 # Clear the Jira credentials. `repos install` writes FULLSEND_JIRA_TOKEN and
-# FULLSEND_JIRA_EMAIL as project-wide variables, so GitLab injects them into
-# every protected-branch job. Only the Jira poller and the agent jobs consume
+# FULLSEND_JIRA_EMAIL, or FULLSEND_JIRA_CLIENT_ID and
+# FULLSEND_JIRA_CLIENT_SECRET, as project-wide variables, so GitLab injects
+# them into every protected-branch job. Only the Jira poller and the agent jobs consume
 # them; the slash/events poller needs neither value. The Jira poll mode is
 # selected by the job rules from the "fullsend jira poll" schedule identity.
 if [ "${FULLSEND_POLL_MODE:-events}" != "jira" ]; then
-  unset FULLSEND_JIRA_TOKEN FULLSEND_JIRA_EMAIL
+  unset FULLSEND_JIRA_TOKEN FULLSEND_JIRA_EMAIL FULLSEND_JIRA_CLIENT_ID FULLSEND_JIRA_CLIENT_SECRET
 fi
 
 # Pin job/pipeline/project identity to the CI_JOB_TOKEN job record
@@ -149,7 +150,8 @@ export CI_COMMIT_REF_NAME="${FULLSEND_PINNED_REF}"
 if [ "${FULLSEND_POLL_MODE:-events}" = "jira" ]; then
   # Jira poll (#9108): the Jira site, project and query come only from
   # tracker.jira in .fullsend/config.yaml; the credentials from
-  # FULLSEND_JIRA_TOKEN and the optional FULLSEND_JIRA_EMAIL.
+  # FULLSEND_JIRA_TOKEN and the optional FULLSEND_JIRA_EMAIL, or from a
+  # service account's FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET.
   fullsend poll \
     --input-driver jira-poll \
     --target-forge gitlab \

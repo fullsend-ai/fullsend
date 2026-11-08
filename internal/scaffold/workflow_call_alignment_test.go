@@ -640,14 +640,16 @@ func TestJiraCredentialSecretThreading(t *testing.T) {
 		content func(t *testing.T) []byte
 	}{
 		{"scaffold/templates/shim-per-repo.yaml", loadScaffoldFile("templates/shim-per-repo.yaml")},
+		{"scaffold/templates/jira-poll-per-repo.yaml", loadScaffoldFile("templates/jira-poll-per-repo.yaml")},
 		{"scaffold/prioritize.yml", loadScaffoldFile(".github/workflows/prioritize.yml")},
 		{"fullsend.yaml", loadRepoFile(".github/workflows/fullsend.yaml")},
 		{"prioritize.yml", loadRepoFile(".github/workflows/prioritize.yml")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := string(tc.content(t))
-			assert.Contains(t, body, forward(token), "%s must forward %s", tc.name, token)
-			assert.Contains(t, body, forward(email), "%s must forward %s", tc.name, email)
+			for _, name := range []string{token, email, "FULLSEND_JIRA_CLIENT_ID", "FULLSEND_JIRA_CLIENT_SECRET"} {
+				assert.Contains(t, body, forward(name), "%s must forward %s", tc.name, name)
+			}
 		})
 	}
 
@@ -656,7 +658,7 @@ func TestJiraCredentialSecretThreading(t *testing.T) {
 			body := string(loadRepoFile(wf)(t))
 			var parsed reusableWorkflow
 			require.NoError(t, yaml.Unmarshal([]byte(body), &parsed), "%s must be valid YAML", wf)
-			for _, name := range []string{token, email} {
+			for _, name := range []string{token, email, "FULLSEND_JIRA_CLIENT_ID", "FULLSEND_JIRA_CLIENT_SECRET"} {
 				secret, ok := parsed.On.WorkflowCall.Secrets[name]
 				require.True(t, ok, "%s must declare %s as a workflow_call secret", wf, name)
 				assert.False(t, secret.Required, "%s must keep %s optional", wf, name)
@@ -680,6 +682,8 @@ func TestJiraCredentialSecretThreading(t *testing.T) {
 					}
 					assert.Contains(t, section, "jira-token: ${{ fromJSON("+payload+")._normalized_event.source.system == 'jira' && secrets."+token+" || '' }}", "%s must pass the Jira token only for Jira-originated runs", marker)
 					assert.Contains(t, section, "jira-email: ${{ fromJSON("+payload+")._normalized_event.source.system == 'jira' && secrets."+email+" || '' }}", "%s must pass the optional Jira email only for Jira-originated runs", marker)
+					assert.Contains(t, section, "jira-client-id: ${{ fromJSON("+payload+")._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_ID || '' }}", "%s must pass the OAuth client ID only for Jira-originated runs", marker)
+					assert.Contains(t, section, "jira-client-secret: ${{ fromJSON("+payload+")._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_SECRET || '' }}", "%s must pass the OAuth client secret only for Jira-originated runs", marker)
 				})
 			}
 		})
@@ -706,7 +710,13 @@ func TestJiraCredentialSecretThreading(t *testing.T) {
 		assert.Contains(t, step, "FULLSEND_JIRA_EMAIL_INPUT: ${{ inputs.jira-email }}", "%s must receive the optional Jira email", name)
 		assert.Contains(t, step, "unset FULLSEND_JIRA_EMAIL\n", "%s: an omitted email must select service-account Bearer auth", name)
 		assert.Contains(t, step, "unset FULLSEND_JIRA_EMAIL_INPUT\n", "%s: the temporary email input must not reach child processes", name)
+		assert.Contains(t, step, "FULLSEND_JIRA_CLIENT_ID: ${{ inputs.jira-client-id }}", "%s must receive the optional Jira OAuth client ID", name)
+		assert.Contains(t, step, "FULLSEND_JIRA_CLIENT_SECRET: ${{ inputs.jira-client-secret }}", "%s must receive the optional Jira OAuth client secret", name)
+		assert.Contains(t, step, "unset FULLSEND_JIRA_CLIENT_ID\n", "%s: an omitted client ID must be absent, not empty", name)
+		assert.Contains(t, step, "unset FULLSEND_JIRA_CLIENT_SECRET\n", "%s: an omitted client secret must be absent, not empty", name)
 	}
+	assert.Contains(t, action, "  jira-client-id:\n", "action.yml must declare jira-client-id")
+	assert.Contains(t, action, "  jira-client-secret:\n", "action.yml must declare jira-client-secret")
 }
 
 // TestRunnerSecretsThreading validates the in-repo half of the
@@ -790,8 +800,10 @@ func TestJiraSecretsActionWiring(t *testing.T) {
 	require.NoError(t, yaml.Unmarshal([]byte(action), &doc))
 
 	wantEnv := map[string]string{
-		"jira-token": "FULLSEND_JIRA_TOKEN",
-		"jira-email": "FULLSEND_JIRA_EMAIL",
+		"jira-token":         "FULLSEND_JIRA_TOKEN",
+		"jira-email":         "FULLSEND_JIRA_EMAIL",
+		"jira-client-id":     "FULLSEND_JIRA_CLIENT_ID",
+		"jira-client-secret": "FULLSEND_JIRA_CLIENT_SECRET",
 	}
 	for input, envName := range wantEnv {
 		in, ok := doc.Inputs[input]
@@ -829,12 +841,16 @@ func TestJiraSecretsActionWiring(t *testing.T) {
 			tokenUnset := "if [[ -z \"${FULLSEND_JIRA_TOKEN}\" ]]; then\n  unset FULLSEND_JIRA_TOKEN\nfi"
 			assert.Contains(t, st.Run, tokenUnset, "Run fullsend must unset an empty Jira token")
 		}
+		for _, name := range []string{"FULLSEND_JIRA_CLIENT_ID", "FULLSEND_JIRA_CLIENT_SECRET"} {
+			unset := "if [[ -z \"${" + name + ":-}\" ]]; then\n  unset " + name + "\nfi"
+			assert.Contains(t, st.Run, unset, "%s must unset an empty %s", st.Name, name)
+		}
 	}
 
 	dispatchContent := loadRepoFile(".github/workflows/reusable-dispatch.yml")(t)
 	var dispatch reusableWorkflow
 	require.NoError(t, yaml.Unmarshal(dispatchContent, &dispatch))
-	for _, secretName := range []string{"FULLSEND_JIRA_TOKEN", "FULLSEND_JIRA_EMAIL"} {
+	for _, secretName := range []string{"FULLSEND_JIRA_TOKEN", "FULLSEND_JIRA_EMAIL", "FULLSEND_JIRA_CLIENT_ID", "FULLSEND_JIRA_CLIENT_SECRET"} {
 		secret, ok := dispatch.On.WorkflowCall.Secrets[secretName]
 		require.True(t, ok, "reusable-dispatch.yml must declare %s", secretName)
 		assert.False(t, secret.Required, "%s must be optional for non-Jira runs", secretName)
@@ -847,17 +863,40 @@ func TestJiraSecretsActionWiring(t *testing.T) {
 		"Jira secrets must not be passed through env:")
 	with := harnessRun[withIndex:]
 	for input, secretName := range map[string]string{
-		"jira-token": "FULLSEND_JIRA_TOKEN",
-		"jira-email": "FULLSEND_JIRA_EMAIL",
+		"jira-token":         "FULLSEND_JIRA_TOKEN",
+		"jira-email":         "FULLSEND_JIRA_EMAIL",
+		"jira-client-id":     "FULLSEND_JIRA_CLIENT_ID",
+		"jira-client-secret": "FULLSEND_JIRA_CLIENT_SECRET",
 	} {
 		assert.Contains(t, with, fmt.Sprintf("          %s: ${{ fromJSON(matrix.event_payload)._normalized_event.source.system == 'jira' && secrets.%s || '' }}", input, secretName),
 			"Run harness agent must pass %s as the %s action input only for Jira events", secretName, input)
 	}
 
 	shim := string(loadScaffoldFile("templates/shim-per-repo.yaml")(t))
-	for _, secretName := range []string{"FULLSEND_JIRA_TOKEN", "FULLSEND_JIRA_EMAIL"} {
+	for _, secretName := range []string{"FULLSEND_JIRA_TOKEN", "FULLSEND_JIRA_EMAIL", "FULLSEND_JIRA_CLIENT_ID", "FULLSEND_JIRA_CLIENT_SECRET"} {
 		assert.Contains(t, shim, fmt.Sprintf("      %s: ${{ secrets.%s }}", secretName, secretName),
 			"per-repo shim must forward %s to reusable-dispatch.yml", secretName)
+	}
+}
+
+// TestJiraPollWorkflowSecretThreading validates the GitHub poller workflow
+// contract and its scaffold caller. OAuth credentials must reach the poll
+// step, while the caller also forwards them to reusable-dispatch for Jira
+// run-status updates.
+func TestJiraPollWorkflowSecretThreading(t *testing.T) {
+	content := string(loadRepoFile(".github/workflows/reusable-poll-jira.yml")(t))
+	var parsed reusableWorkflow
+	require.NoError(t, yaml.Unmarshal([]byte(content), &parsed))
+	for _, name := range []string{"FULLSEND_JIRA_TOKEN", "FULLSEND_JIRA_EMAIL", "FULLSEND_JIRA_CLIENT_ID", "FULLSEND_JIRA_CLIENT_SECRET"} {
+		secret, ok := parsed.On.WorkflowCall.Secrets[name]
+		require.True(t, ok, "reusable-poll-jira.yml must declare %s", name)
+		assert.False(t, secret.Required, "%s must be optional so either credential type can be used", name)
+		assert.Contains(t, content, name+": ${{ secrets."+name+" }}", "poll step must receive %s", name)
+	}
+
+	caller := string(loadScaffoldFile("templates/jira-poll-per-repo.yaml")(t))
+	for _, name := range []string{"FULLSEND_JIRA_TOKEN", "FULLSEND_JIRA_EMAIL", "FULLSEND_JIRA_CLIENT_ID", "FULLSEND_JIRA_CLIENT_SECRET"} {
+		assert.Contains(t, caller, name+": ${{ secrets."+name+" }}", "managed poll caller must forward %s", name)
 	}
 }
 

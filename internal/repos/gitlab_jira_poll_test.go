@@ -479,3 +479,67 @@ func TestConvergeJiraPoll_GitLab(t *testing.T) {
 	assertUnrelatedSchedulesKept(t, fc)
 	assert.Empty(t, fc.DeletedSecrets)
 }
+
+func TestCheckGitLabJiraOAuthSupport(t *testing.T) {
+	const (
+		pin        = "v0.9.0"
+		pollPath   = "internal/scaffold/fullsend-repo-gitlab/" + gitlabPollJobScriptPath
+		dispatPath = "internal/scaffold/fullsend-repo-gitlab/" + gitlabDispatcherJobScriptPath
+	)
+	oauthScript := []byte("unset FULLSEND_JIRA_CLIENT_ID FULLSEND_JIRA_CLIENT_SECRET\n")
+	preOAuthScript := []byte("unset FULLSEND_JIRA_TOKEN FULLSEND_JIRA_EMAIL\n")
+	oauthCfg := ConvergeConfig{JiraClientID: testJiraClientID, JiraClientSecret: testJiraClientSecret}
+	serve := func(fc *forge.FakeClient, path string, content []byte) {
+		fc.FileContentsRef[shimOwner+"/"+shimRepo+"/"+path+"@"+pin] = content
+	}
+	discovery := func(fc *forge.FakeClient, fullsendRef string, enabled bool) convergeDiscovery {
+		d := gitlabJiraDiscovery(fc, jiraPollState{})
+		d.jira.enabled = enabled
+		d.resolved.FullsendRef = fullsendRef
+		return d
+	}
+
+	tests := []struct {
+		name    string
+		setup   func(fc *forge.FakeClient)
+		cfg     ConvergeConfig
+		ref     string
+		enabled bool
+		wantErr string
+	}{
+		{name: "pre-OAuth poll script", setup: func(fc *forge.FakeClient) { serve(fc, pollPath, preOAuthScript) }, cfg: oauthCfg, ref: pin, enabled: true, wantErr: gitlabPollJobScriptPath},
+		{name: "pre-OAuth dispatcher script", setup: func(fc *forge.FakeClient) {
+			serve(fc, pollPath, oauthScript)
+			serve(fc, dispatPath, preOAuthScript)
+		}, cfg: oauthCfg, ref: pin, enabled: true, wantErr: gitlabDispatcherJobScriptPath},
+		{name: "scripts fetch fails closed", setup: func(fc *forge.FakeClient) { fc.Errors["GetFileContentAtRef"] = errors.New("upstream unavailable") }, cfg: oauthCfg, ref: pin, enabled: true, wantErr: "upstream unavailable"},
+		{name: "OAuth-capable pin", setup: func(fc *forge.FakeClient) {
+			serve(fc, pollPath, oauthScript)
+			serve(fc, dispatPath, oauthScript)
+		}, cfg: oauthCfg, ref: pin, enabled: true},
+		{name: "pin predating the dispatcher", setup: func(fc *forge.FakeClient) { serve(fc, pollPath, oauthScript) }, cfg: oauthCfg, ref: pin, enabled: true},
+		{name: "token install needs no OAuth support", setup: func(fc *forge.FakeClient) { serve(fc, pollPath, preOAuthScript) }, cfg: ConvergeConfig{JiraToken: testJiraToken}, ref: pin, enabled: true},
+		{name: "unpinned manifest uses embedded scaffold", setup: func(fc *forge.FakeClient) {}, cfg: oauthCfg, enabled: true},
+		{name: "Jira polling disabled", setup: func(fc *forge.FakeClient) {}, cfg: oauthCfg, ref: pin},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fc := jiraReadyGitLabProject(t)
+			tt.setup(fc)
+			err := checkGitLabJiraOAuthSupport(context.Background(), discovery(fc, tt.ref, tt.enabled), tt.cfg, NewRefResolver(fc))
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, tt.wantErr)
+			assert.ErrorContains(t, err, "existing Jira credentials were left unchanged")
+		})
+	}
+
+	t.Run("GitHub projects are skipped", func(t *testing.T) {
+		fc := jiraReadyGitLabProject(t)
+		d := discovery(fc, pin, true)
+		d.resolved.Forge = ForgeGitHub
+		require.NoError(t, checkGitLabJiraOAuthSupport(context.Background(), d, oauthCfg, NewRefResolver(fc)))
+	})
+}
