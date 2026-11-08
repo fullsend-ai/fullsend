@@ -4437,3 +4437,135 @@ func TestListRecentRuns_ImplementsRunLister(t *testing.T) {
 	_, err = lister.ListRecentRuns(context.Background(), "org", "repo", 2)
 	require.ErrorContains(t, err, "boom")
 }
+
+// replacingClient lists runs[0] (in progress) on the first
+// ListWorkflowRuns call and every run after it; GetWorkflowRun serves
+// each run in its final state.
+type replacingClient struct {
+	*forge.FakeClient
+	mu    sync.Mutex
+	calls int
+	final []forge.WorkflowRun
+}
+
+func (c *replacingClient) ListWorkflowRuns(context.Context, string, string, string) ([]forge.WorkflowRun, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls++
+	if c.calls == 1 {
+		first := c.final[0]
+		first.Status, first.Conclusion = "in_progress", ""
+		return []forge.WorkflowRun{first}, nil
+	}
+	return append([]forge.WorkflowRun(nil), c.final...), nil
+}
+
+func (c *replacingClient) GetWorkflowRun(_ context.Context, _, _ string, runID int) (*forge.WorkflowRun, error) {
+	for _, r := range c.final {
+		if r.ID == runID {
+			return &r, nil
+		}
+	}
+	return nil, fmt.Errorf("run %d not found", runID)
+}
+
+// chainClient models a chain of failing runs, each replaced by a newer
+// one: ListWorkflowRuns first lists run first in progress, then lists the
+// newest run so far as a success; GetWorkflowRun serves every run as a
+// failure and makes the next run visible, until last.
+type chainClient struct {
+	*forge.FakeClient
+	mu                   sync.Mutex
+	listed               bool
+	first, last, visible int
+}
+
+func (c *chainClient) chainRun(id int, status, conclusion string) forge.WorkflowRun {
+	return forge.WorkflowRun{ID: id, Status: status, Conclusion: conclusion, Event: "issues", CreatedAt: "2026-01-02T00:00:00Z"}
+}
+
+func (c *chainClient) ListWorkflowRuns(context.Context, string, string, string) ([]forge.WorkflowRun, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.listed {
+		c.listed, c.visible = true, c.first
+		return []forge.WorkflowRun{c.chainRun(c.first, "in_progress", "")}, nil
+	}
+	return []forge.WorkflowRun{c.chainRun(c.visible, "completed", "success")}, nil
+}
+
+func (c *chainClient) GetWorkflowRun(_ context.Context, _, _ string, runID int) (*forge.WorkflowRun, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if runID == c.visible && c.visible < c.last {
+		c.visible++
+	}
+	r := c.chainRun(runID, "completed", "failure")
+	return &r, nil
+}
+
+func TestWaitForWorkflow_FailedRuns(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	run := func(id int, conclusion string) forge.WorkflowRun {
+		return forge.WorkflowRun{ID: id, Status: "completed", Conclusion: conclusion, Event: "issues", CreatedAt: "2026-01-02T00:00:00Z"}
+	}
+
+	t.Run("a run already failed at detection is an error", func(t *testing.T) {
+		t.Parallel()
+		client := forge.NewFakeClient()
+		failed := run(10, "failure")
+		client.WorkflowRuns = map[string]*forge.WorkflowRun{"org/repo/test.yaml": &failed}
+		_, err := newTestDriver(client).WaitForWorkflow(context.Background(), "org", "repo", "test.yaml", after, "issues")
+		require.ErrorContains(t, err, `run 10 concluded with "failure" during dispatch`)
+	})
+
+	t.Run("a failed run is replaced by a later successful one", func(t *testing.T) {
+		t.Parallel()
+		client := &replacingClient{FakeClient: forge.NewFakeClient(), final: []forge.WorkflowRun{run(10, "failure"), run(11, "success")}}
+		got, err := newTestDriver(client).WaitForWorkflow(context.Background(), "org", "repo", "test.yaml", after, "issues")
+		require.NoError(t, err)
+		assert.Equal(t, 11, got.ID)
+	})
+
+	t.Run("a failed run with no replacement returns the run and an error", func(t *testing.T) {
+		t.Parallel()
+		client := &replacingClient{FakeClient: forge.NewFakeClient(), final: []forge.WorkflowRun{run(10, "failure")}}
+		got, err := newTestDriver(client).WaitForWorkflow(context.Background(), "org", "repo", "test.yaml", after, "issues")
+		require.ErrorContains(t, err, `run 10 concluded with "failure"`)
+		require.NotNil(t, got)
+		assert.Equal(t, 10, got.ID)
+	})
+
+	// The run and its replacements share one dispatchWait deadline: a
+	// chain of failing replacements ends in a timeout before the chain
+	// runs out, rather than each replacement getting a fresh deadline.
+	// The clock starts at after, months before the wall clock, so a
+	// deadline read from time.Now instead of d.now is not reached before
+	// the chain runs out either. Each poll makes the next run visible, so
+	// visible past first shows the wait polled before it timed out: a loop
+	// that reads time.Now, or times out at once, never polls.
+	t.Run("replacement runs share one deadline", func(t *testing.T) {
+		t.Parallel()
+		client := &chainClient{FakeClient: forge.NewFakeClient(), first: 10, last: 1000}
+		d := newTestDriver(client)
+		d.nowFunc = steppingClock(after, time.Minute)
+		_, err := d.WaitForWorkflow(context.Background(), "org", "repo", "test.yaml", after, "issues")
+		require.ErrorContains(t, err, "did not complete within deadline")
+		client.mu.Lock()
+		defer client.mu.Unlock()
+		assert.Greater(t, client.visible, client.first, "the wait must poll before the deadline passes")
+		assert.Less(t, client.visible, client.last, "the deadline must pass before the chain runs out")
+	})
+
+	t.Run("a cancelled context stops the wait", func(t *testing.T) {
+		t.Parallel()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		d := newTestDriver(forge.NewFakeClient())
+		d.afterFunc = func(time.Duration) <-chan time.Time { return make(chan time.Time) }
+		_, err := d.WaitForWorkflow(ctx, "org", "repo", "test.yaml", after, "issues")
+		require.ErrorIs(t, err, context.Canceled)
+	})
+}
