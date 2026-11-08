@@ -51,6 +51,11 @@ jobs:
           fi
           echo "current=${TAG} previous=${PREV:-<goreleaser default>}"
 
+      # GoReleaser signs the release here. Installed CLIs only accept a
+      # signature made by this workflow file, for the tag, on a
+      # GitHub-hosted runner (internal/selfupdate/verify.go). Renaming this
+      # file or moving this step to another workflow breaks
+      # `fullsend self-update`.
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
