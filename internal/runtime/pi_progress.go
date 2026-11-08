@@ -321,18 +321,18 @@ func ParsePiStream(r io.Reader, onEvent func(AgentEvent)) (sessionID string, err
 //     tool_execution_end {toolCallId, toolName, result, isError}; pi emits
 //     the end after its afterToolCall hooks (agent-loop.ts, confirmed on a
 //     live pi 1.5.0 run), so result is what a tool_result hook left. This
-//     parser holds both events below until the end, because a failed call's
-//     summary needs the result. A call with no end when the stream stops (a
-//     kill or timeout) gets its ToolUseEvent then, ahead of the ResultEvent,
-//     with no ToolResultEvent, so the tracker closes it as unanswered:
-//     a ToolUseEvent, carrying the call's id and arguments and when its
-//     start was read, then a ToolResultEvent with the result text. The
-//     ToolUseEvent summary is the argument context captured at start
-//     (command/path/pattern, as for Claude and OpenCode); on isError the
-//     result text is appended so failures are diagnosable. A successful
-//     call never surfaces its output: tools with no known context (extension
-//     tools) get an empty summary. Result text stands alone only when no
-//     start was seen for the call.
+//     parser holds both events until the end, because a failed call's
+//     summary needs the result, and then emits a ToolUseEvent, carrying the
+//     call's id and arguments and when its start was read, then a
+//     ToolResultEvent with the result text. A call with no end when the
+//     stream stops (a kill or timeout) gets its ToolUseEvent then, ahead of
+//     the ResultEvent, with no ToolResultEvent, so the tracker closes it as
+//     unanswered. The ToolUseEvent summary is the argument context captured
+//     at start (command/path/pattern, as for Claude and OpenCode); on
+//     isError the result text is appended so failures are diagnosable. A
+//     successful call never surfaces its output: tools with no known
+//     context (extension tools) get an empty summary. Result text stands
+//     alone only when no start was seen for the call.
 //   - Usage/cost on AssistantMessage are camelCase; cost is a nested object.
 //   - agent_end is {messages, willRetry} — stopReason lives on the assistant
 //     message, not on the agent_end envelope. willRetry=true is a retry
