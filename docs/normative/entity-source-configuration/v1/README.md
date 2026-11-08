@@ -12,6 +12,12 @@ normalized-entity specification, or authorization contract. Those contracts,
 provider conformance, and context support are prerequisites for entity-driven
 execution, as required by ADR 0079.
 
+The `v1` label versions this contract; it does not add a version field to
+`config.yaml`. Configuration readers remain strict and older binaries may reject
+the new fields. Deploy updated readers and managed-config consumers before
+writing entity-source fields; mixed-version readers are not supported during
+that cutover, and diagnostics MUST identify the unsupported configuration key.
+
 ## Configuration shape
 
 Repository configuration binds named harness slots to entity-source scopes:
@@ -74,7 +80,7 @@ enable an unsupported adapter. Non-entity connection kinds,
 such as Vault under [PR #9097](https://github.com/fullsend-ai/fullsend/pull/9097),
 share the registry but MUST NOT be accepted by an entity source.
 
-Record the repository from which this invocation's Fullsend configuration was
+Record the repository from which this invocation's fullsend configuration was
 cloned as trusted origin metadata: provider, host, and canonical repository
 identity/path. This selects the native provider and supplies connection defaults;
 it does not lock native entities to the clone host. For the origin's provider,
@@ -82,28 +88,43 @@ synthesize its named connection when absent, using the origin host. A declared
 connection of that name replaces the default and MAY set a different `base_url`.
 If it omits `base_url`, use the origin host; never fill it from the CI platform.
 Other provider-default connections require an explicit endpoint when used.
+Connection kinds and endpoints determine where credentials are sent. Only
+configuration layers designated trusted by the repository's configuration
+policy may set or change them; event data, harnesses, and untrusted overlays
+MUST NOT. At minimum, trusted layers include managed `repos.yaml` values and
+`.fullsend/` configuration read from the protected default branch under
+[ADR 0033](../../../ADRs/0033-per-repo-installation-mode.md). PR-head config,
+harness content, and event data cannot designate themselves as trusted endpoint
+overrides. Credential bindings MUST be provisioned for the canonical provider
+endpoint and tenant, and the resolver MUST refuse to send a credential to any
+other endpoint even when the connection name and kind match. Changing an
+endpoint requires a separately provisioned credential binding for that host;
+the old host's credential, grants, and cached evidence do not transfer.
 
 For example, a GitHub.com clone selects the `github` provider. Setting
 `connections.github.base_url` to a GitHub Enterprise URL makes that instance
 the default GitHub connection used by native entities. The same rule applies to
 GitLab and Forgejo. The execution platform and imported layer/harness origins do
-not change the selected provider, but trusted layered connection settings can
-change its instance. Missing origin prevents native-provider inference; it MUST
-NOT be guessed from the runner or current Git remote. There is no separate fixed
-`repository` connection. Entity `native` is distinct from the Vault proposal's
-`native` secret-source selector.
+not change the selected provider, but trusted configuration layers can change the
+provider-default connection's instance. Missing origin prevents native-provider
+inference; it MUST NOT be guessed from the runner or current Git remote. There
+is no separate fixed `repository` connection. Entity `native` is distinct from
+the Vault proposal's `native` secret-source selector.
 
 Forge connections identify their provider instance through `base_url`;
 Jira uses `base_url` for the site and optional `api_url` for its API
 gateway, preserving the current Jira gateway default. Provider validation MUST
-reject endpoints containing embedded credentials. Changing an alias's endpoint
-does not transfer grants or cached evidence from the previous instance. An
-inherited issue-creation policy MUST NOT authorize a different instance unless
-trusted configuration explicitly rebinds that policy to the new instance.
+reject endpoints containing embedded credentials. An inherited issue-creation
+policy MUST NOT authorize a different instance unless trusted configuration
+explicitly rebinds that policy to the new instance.
 
 Connections identify where to connect, not an authorization principal. Host
 credential resolution MUST bind each connection to a provisioned credential
-scope and keep discovery credentials separate from harness run identities.
+scope for the exact canonical endpoint and tenant, and keep discovery
+credentials separate from harness run identities. A connection name or kind
+alone MUST NOT select or reuse a credential for another host. Changing an
+endpoint invalidates the old binding until a credential for the new host is
+separately provisioned.
 Legacy translated connections retain existing credential lookup. Credentials
 MUST NOT be written into this configuration or sent in dispatch descriptors.
 Additional connections require independently provisioned host bindings; they
@@ -112,36 +133,50 @@ credential-reference formats remain part of the provider credential contracts.
 
 ### Sources and queries
 
-`entity_sources` is a map of named entries. Each ordinary source MUST have a
-`connection` and a provider-valid `query`; it MUST NOT declare a `kind`. Reserved
-provider entries can omit the connection as specified below. The
+`entity_sources` is a map of named entries. Each source MUST resolve a
+connection and provider-valid `query`; it MUST NOT declare a `kind`. If a source
+omits `connection`, use the connection with the same name as the source and
+require that connection to exist when the source is active. An unbound reserved
+preset may omit its connection as described below. Reserved provider entries
+follow the stricter same-name rule below. The
 adapter's supported kinds and the query's selection are checked against each
 consuming harness slot's kind. The same source may serve differently typed slots.
 The planner enumerates only the kinds needed by active primary-source bindings.
-A forge source's
-`repositories` list scopes it to explicit canonical repository paths; omission
-is permitted for the origin provider's default connection and means the clone's
-repository path on that effective connection, which may be on a different host.
-An explicit list selects other paths; an override does not claim they are the
-same canonical repository as the clone. A Jira source MUST specify a nonempty
-`projects` list. Source
-scopes MUST resolve to canonical provider identities before use. Configuration
-authorizes a source scope, not an arbitrary target code repository.
+An active forge source's `repositories` list scopes it to explicit canonical
+repository paths. Omission is permitted only for the reserved source whose
+provider matches the configuration origin. In that case it means the clone's
+repository path on the same-named provider-default connection, including when
+that connection uses an explicit `base_url` for another instance. All other
+active forge sources, including reserved names for non-origin providers, MUST
+specify `repositories`. An unbound reserved entry for another provider is an
+inert preset and may omit its connection and repository scope until it is bound.
+An explicit list selects those paths; it does not claim they are the same
+canonical repository as the clone. A Jira source MUST specify a nonempty
+`projects` list.
+Source scopes MUST resolve to canonical provider identities before use.
+Configuration authorizes a source scope, not an arbitrary target code
+repository.
 
 GitHub accepts the bounded UI filter subset defined below; an explicitly empty
 query adds no filter beyond the scope and kind guards. GitLab initially accepts
-`open`, `closed`, and `all` presets for `work_item` and `change_proposal`. For change proposals,
-`closed` includes both merged and closed-unmerged entities; CEL can distinguish
-them. Jira work-item sources accept native JQL; an explicitly empty string
+`open`, `closed`, and `all` presets for `work_item` and `change_proposal`. These
+are fullsend lifecycle predicates translated into native API filters. For change
+proposals, `closed` means not open and expands to the union of native
+`state=closed` and `state=merged` results; these are separate GitLab API states.
+CEL can distinguish merged from closed-unmerged entities. Jira work-item sources
+accept native JQL; an explicitly empty string
 adds no filter beyond the project guard. Their project guard is independent of
 the query:
 `OR` terms MUST NOT widen it. When scopes overlap, adapters plan per canonical
 provider/tenant/project-or-repository/kind/credential scope, so each scope has
 one combined logical enumeration under ADR 0149, not one search per alias.
 
-GitLab's presets are an initial Fullsend subset, not a claim that the provider
+GitLab's presets are an initial fullsend subset, not a claim that the provider
 supports only lifecycle filters. Its [REST issue filters](https://docs.gitlab.com/api/issues/#list-all-project-issues)
-also include labels, assignees, and dates. Its
+also include labels, assignees, and dates. The
+[merge request API](https://docs.gitlab.com/api/merge_requests/#list-project-merge-requests)
+exposes `closed` and `merged` as separate `state` values; the fullsend `closed`
+preset therefore combines both native queries. The
 [GLQL operators](https://docs.gitlab.com/user/glql/#operators) support conjunction
 and some same-field alternatives through `in`, but not arbitrary disjunctions
 of whole queries. GitHub supports
@@ -193,29 +228,31 @@ path are defaults, not immutable native destinations. Execution platform never
 selects the provider or overrides these configured values.
 
 The reserved provider names customize native selection. A declared reserved
-entry MUST contain a provider-valid `query`. Its connection defaults to the
-same-named provider-default connection; an explicit connection must have the
-same provider kind. If the origin's matching source entry is absent,
-synthesize it on that provider-default connection with an
-all-state query and `discovery: true`: an empty query for GitHub, or `all` for
-GitLab. If present, its `query` and optional
-`discovery` override those defaults under ordinary whole-entry layering. Its
-repository scope defaults to the clone's path on the selected instance; an
-explicit `repositories` list overrides that path. Source connection overrides
-and provider-default connection overrides therefore both affect native
-resolution. Other named sources can select additional instances or scopes.
+entry MUST contain a provider-valid `query`. The reserved source name is also
+its connection name: `entity_sources.github` uses `connections.github`,
+`entity_sources.gitlab` uses `connections.gitlab`, and `entity_sources.forgejo`
+uses `connections.forgejo`. The source may omit `connection`, which defaults to
+that same name; if specified, `connection` MUST equal the reserved source name.
+A reserved source MUST NOT use a differently named connection, even when its
+kind matches. To select a different instance for the native provider, configure
+the same-named provider-default connection's `base_url`. If the origin's
+matching source entry is absent, synthesize it on that provider-default
+connection with an all-state query and `discovery: true`: an empty query for
+GitHub, or `all` for GitLab. If present, its `query` and optional `discovery`
+override those defaults under ordinary whole-entry layering. Its repository
+scope defaults to the clone's path on the same-named connection, including when
+that connection's endpoint is overridden; an explicit `repositories` list
+selects another path. Other named sources can select additional instances or
+scopes.
 
 Provider names MAY also appear explicitly in `agents[].entities` lists and in
 standalone source selection. For the origin's provider, `[github]` (for example)
 and `[native]` resolve to the same customized source even if its definition was
 omitted. For a different provider, such as `[gitlab]` with a GitHub origin, an
-explicit binding is allowed when that entry resolves a configured external
-connection and an explicit repository scope. Its connection can be omitted when
-the same-named provider-default connection is configured. Any connection
-referenced by a reserved provider source
-MUST have a kind matching that source name. Do not infer that external connection
-from the execution platform. Such a source
-does not change native resolution or acquire credentials or creation grants.
+explicit binding is allowed when the same-named provider-default connection and
+an explicit repository scope are configured. Do not infer that external
+connection from the execution platform. Such a source does not change native
+resolution or acquire credentials or creation grants.
 
 An unbound reserved entry for another provider may contain just its query and
 discovery settings so a preset can customize several native providers. It does
@@ -239,7 +276,6 @@ connections:
     base_url: https://gitlab.example.com
 entity_sources:
   github:
-    repositories: [example/project]
     query: 'is:open -label:blocked'
   gitlab:
     repositories: [example/related-work]
@@ -252,9 +288,10 @@ agents:
 ```
 
 Here `native` and `github` select `example/project` on `github.example.com`,
-even though the configuration was cloned from GitHub.com. `gitlab` selects the
-configured external scope. Omitting `repositories` from the `github` source
-would reuse the clone's owner/repository path on the enterprise instance.
+even though the configuration was cloned from GitHub.com. The `github` source
+omits both `connection` and `repositories`: the same-named connection is used,
+and the clone's owner/repository path carries over to that connection's
+enterprise endpoint. `gitlab` selects the configured external scope.
 Binding both `native` and `github`
 does not duplicate discovery or executions. Native customization applies to all
 uses of that native source, including omitted source bindings and targets that
@@ -608,11 +645,15 @@ A new explicit slot binding replaces that translated slot's entire list. This
 allows mixed-layer migration without changing legacy-only behavior or retaining
 write grants from a replaced tracker provider.
 
-The translator uses `legacy_tracker` for its connection and lookup scope when
-connection/polling settings exist. Explicit entries with that name replace the
-corresponding generated entries and undergo ordinary validation; independent
-new names coexist. Effective-config inspection MUST distinguish translated
-entries, explicit replacements, and compatibility-only command defaults.
+For every present provider block, the translator creates the compatibility
+connection `legacy_tracker` using the legacy endpoint and credential-resolution
+rules. It attaches that block's `allowed_targets` to this connection, including
+for GitHub and GitLab blocks that contain only creation policy; they MUST NOT be
+copied to another provider-default connection. A provider-only block still does
+not create a discovery scope. Explicit entries with the name `legacy_tracker`
+replace the corresponding generated entries and undergo ordinary validation;
+independent new names coexist. Effective-config inspection MUST distinguish translated entries, explicit
+replacements, and compatibility-only command defaults.
 
 Translate existing tracker configuration without guessing missing values:
 
@@ -643,6 +684,13 @@ to effective configuration or a host-generated compatibility projection before
 new-only configuration is enabled; the projection is never a second authority
 merged back into configuration.
 
+No release or removal date is set for `tracker` support. Keep the
+compatibility translator until every supported reader, command, poller,
+installer, and raw-YAML consumer has migrated and no supported execution
+path depends on the legacy form. Removing it requires a later ADR and a
+published major-release migration window. Until then, deprecation
+warnings do not disable the old configuration.
+
 ## Execution readiness and cutover
 
 The resolved execution plan records the agent/harness revision, trusted target
@@ -660,7 +708,7 @@ bindings; target and auxiliary lists do not add scheduled work. For GitHub Actio
 execution this is a managed workflow; for GitLab CI execution it is a managed
 pipeline schedule/job. These are execution adapters, not native-provider
 selection rules. A standalone scheduler uses the same readiness and coverage
-contract. Each invokes the shared Fullsend discovery path,
+contract. Each invokes the shared fullsend discovery path,
 with the proper trusted credential scope, rather than reproducing agent routing
 in workflow expressions. Event-driven GitHub Actions execution retains synchronous
 dispatch correlation; GitLab CI uses its protected-default-branch delivery model.
@@ -689,25 +737,39 @@ and harness support are deployed. For that binding, only one of legacy event
 reconstruction and entity-driven admission may own dispatch at a time. Keep
 legacy paths for unmigrated agents. Generic execution jobs or existing stage
 wrappers may deliver admitted work, but all migrated bindings use the same
-Fullsend admission logic. Job deadlines and lifecycle choices use ADR 0144;
+fullsend admission logic. Job deadlines and lifecycle choices use ADR 0144;
 source queries do not select lifecycle or define an agent sequence.
 
 ## Conformance requirements
 
 Implementations MUST cover at least these observable cases:
 
+- The v1 contract has no in-band configuration version field. Old strict readers
+  reject entity-source keys with an actionable key-specific error; managed
+  rollout does not write those keys until every supported reader is upgraded.
+- Connection endpoints can be changed only by trusted layers. Discovery
+  credentials are bound to the canonical endpoint and tenant; changing the host
+  requires a separately provisioned binding and never sends the previous host's
+  credential to the new endpoint.
 - Kind defaults and per-slot inheritance resolve correctly; all binding values
   are lists, source defaults to `[native]`, and an omitted target copies the
   final source list. Explicit targets win, copied names must support the target
   kind, and additional named slots require explicit compatible nonempty bindings.
+- A source that omits `connection` uses the connection with the same name;
+  validation fails when that connection is absent. Reserved source names may use
+  only their same-named provider connection. For a GitHub-origin clone,
+  `entity_sources.github` may omit both `connection` and `repositories`; it uses
+  `connections.github` and the clone path even when that connection points to
+  GitHub Enterprise. `entity_sources.github.connection: enterprise` fails
+  validation. A reserved source for another provider must specify its repository
+  scope. Untrusted layers cannot change endpoints, and a new endpoint requires a
+  separately provisioned credential binding.
 - Native resolution uses the clone's provider independently of Kubernetes,
-  GitHub Actions, or GitLab CI execution. Matching provider-default connections
-  can override the instance, including GitHub.com to GitHub Enterprise, and
-  source scopes can override the cloned path. Explicit matching-provider aliases
-  deduplicate with `native`; other provider names can bind external sources.
-  Missing external scope, mismatched provider kinds, and `entity_sources.native`
-  fail validation. Unbound cross-provider preset overrides start no discovery;
-  endpoint changes neither reuse old-host credentials/evidence nor transfer grants.
+  GitHub Actions, or GitLab CI execution. Its provider-default connection can
+  override the instance. Explicit matching-provider aliases deduplicate with
+  `native`; external names do not change native resolution. Unbound
+  cross-provider preset overrides start no discovery, and endpoint changes do
+  not transfer grants or evidence.
 - Only the primary source list schedules work; target/auxiliary lists create
   neither implicit joins nor broadcast writes, and ambiguous destinations need
   explicit selection. Empty source/target lists suppress their defaults.
@@ -731,13 +793,18 @@ Implementations MUST cover at least these observable cases:
   execution per agent and target repository, without mixing credential scopes.
 - Jira query combination preserves scoped membership; the local fast path
   agrees with native evaluation, and unresolved checks batch without per-agent
-  searches or changing the effective Jira principal.
+  searches or changing the effective Jira principal. GitLab `closed` for a merge
+  request combines native `state=closed` and `state=merged` results, while a work
+  item uses `state=closed`; neither preset mistakes merged for open.
 - A source match alone cannot authorize a sandbox or admit content; uncertain
   membership, actor authority, or coverage cannot masquerade as a non-match.
 - Legacy translation preserves command defaults, polling enablement, credential
-  resolution, and creation permissions, including whole-block tracker replacement,
-  provider-only Jira entries, and shadowing. Standalone invocations without
-  legacy defaults or agent/entity context require explicit scope selection.
+  resolution, and creation permissions, including whole-block tracker replacement
+  and shadowing. For provider-only GitHub and GitLab blocks, `allowed_targets`
+  attaches to the generated `legacy_tracker` connection; it is not lost or
+  copied to a provider-default connection. Provider-only Jira entries follow the
+  same rule. Standalone invocations without legacy defaults or agent/entity
+  context require explicit scope selection.
 - Standalone `--entity-source` selects one work-item scope independently of
   agent bindings. Unique projects are inferred; ambiguous projects require
   selection. Explicit identity operations can access entities outside a source's

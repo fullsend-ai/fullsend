@@ -32,15 +32,19 @@ remain unchanged.
 ## Context
 
 The current `tracker` mapping selects one issue backend and its issue-creation
-policy. [PR #9091](https://github.com/fullsend-ai/fullsend/pull/9091) added the
+policy, as specified in [issue #9074](https://github.com/fullsend-ai/fullsend/issues/9074).
+[PR #9091](https://github.com/fullsend-ai/fullsend/pull/9091) added the
 Jira connection and polling configuration contract. The
 [review proposal](https://github.com/fullsend-ai/fullsend/pull/9091#discussion_r4465261777)
 separates reusable connections, named entity sources, and agent bindings: one
 connection can supply several entity kinds, and one agent can process equivalent
 work from several systems.
 
-ADRs 0098, 0144, and 0149 define entity evaluation, reusable run processes, and
-combined discovery, but leave the configuration and CI integration incomplete.
+[ADR 0098](0098-entity-first-harness-evaluation.md),
+[ADR 0144](0144-reuse-poll-and-entity-bound-run-processes.md), and
+[ADR 0149](0149-coalesce-entity-source-discovery-queries.md) define entity
+evaluation, reusable run processes, and combined discovery, but leave the
+configuration and CI integration incomplete.
 This ADR aims to connect those decisions through one repository-owned binding
 model, while keeping agent coordination in entity state and predicates.
 
@@ -243,14 +247,17 @@ examples illustrate roles; they do not define a fixed inventory.
 
 `native` is an entity-source selector. Resolve it in three steps:
 
-1. The repository from which Fullsend configuration was cloned selects the
-   provider: GitHub, GitLab, or Forgejo. The platform running Fullsend does not
+1. The repository from which fullsend configuration was cloned selects the
+   provider: GitHub, GitLab, or Forgejo. The platform running fullsend does not
    select it.
 2. The corresponding reserved source name (`github`, `gitlab`, or `forgejo`)
-   selects a connection. It defaults to the connection with the same name.
-3. That connection selects the instance. The source selects repository paths
-   on that instance. The clone host and path provide defaults; explicit
-   connection and source settings override them after layering.
+   uses the provider-default connection with the same name. It cannot use a
+   differently named connection.
+3. That connection selects the instance. A trusted override of its `base_url`
+   can select another instance. For the origin provider, the reserved source's
+   repository path defaults to the clone path on that instance; its explicit
+   scope can select another path. Sources for other providers need explicit
+   repository scopes.
 
 Reserved connection names imply their provider kind; an explicit `kind` must
 agree. For example, a GitHub.com configuration clone can use a GitHub Enterprise
@@ -272,7 +279,7 @@ agents:
 ```
 
 Here `[native]` and `[github]` both select `example/project` on
-`github.example.com`, including when Fullsend runs on standalone Kubernetes or
+`github.example.com`, including when fullsend runs on standalone Kubernetes or
 in GitLab CI. Set `entity_sources.github.repositories` if the repository path
 differs. The override selects an instance; access still requires credentials and
 permissions for that instance.
@@ -298,8 +305,10 @@ provider:
   draft/branch fields, with Boolean combinations and exclusions. Full-text and
   history/review search filters are outside the initial subset. Lifecycle
   filters use `is:open` or `is:closed`; an empty query adds no restriction.
-- GitLab initially uses `open`, `closed`, and `all` presets. Adapter support may
-  expand without requiring the same query language on every provider.
+- GitLab initially uses `open`, `closed`, and `all` presets. For change
+  proposals, `closed` expands to the union of native `state=closed` and
+  `state=merged` results; work items use native `state=closed`. Adapter support
+  may expand without requiring the same query language on every provider.
 
 For each source binding, require both the repository's source query and the
 harness filter, within the configured repository or project scope. Combine
@@ -327,7 +336,7 @@ these partial-data checks. Selecting fewer fields does not remove search caps
 or pagination requirements.
 
 An entity matching a provider query is only a candidate. Before execution,
-Fullsend must establish authorized invocation, a current source match, and a
+fullsend must establish authorized invocation, a current source match, and a
 true harness predicate over actor-filtered data. It must also prepare filtered
 model context under [ADR 0141](0141-deterministic-filtered-entity-context-staging.md).
 Provider-native fields may include changes that CEL is not allowed to use, so
@@ -336,7 +345,7 @@ authority. This is the explicit change to ADR 0149's source-membership rule.
 
 ### CI coordination and run modes
 
-Webhooks and polling supply candidates to the same Fullsend selection and
+Webhooks and polling supply candidates to the same fullsend selection and
 authorization path. Each dispatch identifies the agent, target repository,
 canonical source entity, and resolved configuration revision. A resolved plan
 contains the connections, source queries, slot bindings, and harness requirements
@@ -345,7 +354,7 @@ for that revision. Source aliases are not entity identities.
 Fullsend decides whether an agent should act. CI provides trusted invocation,
 capacity, job deadlines, execution serialization, and result publication.
 Existing jobs may remain as execution wrappers during migration; migrated jobs
-use Fullsend's decisions rather than separate stage-routing conditions.
+use fullsend's decisions rather than separate stage-routing conditions.
 
 Agents coordinate by changing entity state and recording completed work, which
 other agents' predicates can observe. For example, triage can make a work item
@@ -370,7 +379,7 @@ choice of `timed` also requires a usable deadline, sufficient initial-cycle
 budget, permission for eventless checks, and working recurring discovery.
 
 Installation sets up recurring discovery for enabled source bindings. Before a
-run can repeat checks without events, Fullsend must verify that discovery is
+run can repeat checks without events, fullsend must verify that discovery is
 operational for its current plan and can recover work after the run exits. An
 installed workflow file alone is insufficient. Missing or stale discovery
 evidence keeps the automatic `once` fallback or rejects an explicit request to
@@ -452,8 +461,13 @@ remain available.
 
 ## Consequences
 
-- Agents can process equivalent entities from several systems without knowing deployment-specific connection names.
-- Explicit connections, sources, and bindings add configuration concepts that the single-tracker model did not require.
-- Provider queries remain expressive, and shared discovery and selective reads can reduce API work, subject to exact membership and coverage checks.
-- Existing tracker configurations continue working, but raw-YAML consumers and CI require a coordinated migration.
-- Coverage readiness and adapter conformance become explicit activation requirements for resident runs.
+- Agents can process equivalent entities from several systems without knowing
+  deployment-specific connection names.
+- Explicit connections, sources, and bindings add configuration concepts that
+  the single-tracker model did not require.
+- Provider queries remain expressive, and shared discovery and selective reads
+  can reduce API work, subject to exact membership and coverage checks.
+- Existing tracker configurations continue working, but raw-YAML consumers and
+  CI require a coordinated migration.
+- Coverage readiness and adapter conformance become explicit activation
+  requirements for resident runs.
