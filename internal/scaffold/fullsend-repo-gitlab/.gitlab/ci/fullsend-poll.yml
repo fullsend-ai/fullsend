@@ -29,6 +29,12 @@ spec:
     - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true" && $CI_DEBUG_TRACE !~ /^(1|t|true)$/i && $CI_PIPELINE_SCHEDULE_DESCRIPTION == "fullsend event poll"
       variables:
         FULLSEND_POLL_MODE: "events"
+    # Jira poll (#9108): `repos install` creates this schedule only for a
+    # repository whose effective tracker.jira.poll.enabled is true, and
+    # removes it otherwise. The Jira settings come from .fullsend/config.yaml.
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true" && $CI_DEBUG_TRACE !~ /^(1|t|true)$/i && $CI_PIPELINE_SCHEDULE_DESCRIPTION == "fullsend jira poll"
+      variables:
+        FULLSEND_POLL_MODE: "jira"
   variables:
     FULLSEND_FORGE: "gitlab"
     FULLSEND_POLL_MODE: "events"

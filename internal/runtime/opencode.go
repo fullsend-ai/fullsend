@@ -61,9 +61,28 @@ func (r OpenCodeRuntime) EnvExports() []string {
 	}
 }
 
+// LaunchEnvExports implements LaunchEnvExporter: the environment names
+// buildOpenCodeRunCommand sets beyond EnvExports. The Vertex project
+// mapping is always exported, and the opencode process is started with its
+// own HOME and trusted PATH as prefix assignments; the location is exported
+// only when the composed value is non-empty and is recorded flat anyway:
+// runtime_specific asks whether the runtime can set the name, not whether
+// every configuration does. TestLaunchEnvExportsMatchLaunchCommands pins
+// this list to the launch commands.
+func (OpenCodeRuntime) LaunchEnvExports() []string {
+	return []string{
+		openCodeRuntimeEnv,
+		"GOOGLE_CLOUD_PROJECT",
+		"GOOGLE_CLOUD_LOCATION",
+		"HOME",
+		"PATH",
+	}
+}
+
 // Compile-time interface assertions.
 var (
 	_ Runtime           = OpenCodeRuntime{}
 	_ TranscriptHandler = OpenCodeRuntime{}
 	_ DebugLogNamer     = OpenCodeRuntime{}
+	_ LaunchEnvExporter = OpenCodeRuntime{}
 )

@@ -179,6 +179,11 @@ codex emit no call ids — becomes an `execute_tool` child of its iteration's
 on the `agent` span stays the content carrier. Sub-agent nesting (deferred item 1 above)
 remains deferred.
 
+**2026-11-05 — pi tool I/O ([#7414](https://github.com/fullsend-ai/fullsend/issues/7414)):**
+`tool_call` parts on pi runs now carry ids and arguments, with `tool_call_response`
+parts beside them, and pi's tools have their own entries in the recorded-arguments
+list. The Claude-only wording in the annotations below still holds for codex.
+
 **2026-09-18 — Level 3 input message and tool arguments ([ADR 0108](0108-tool-call-span-topology.md)):**
 under the content gate, a retry iteration that carries validation feedback
 records the prompt the runner composed as `gen_ai.input.messages`, and

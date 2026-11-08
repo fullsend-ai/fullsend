@@ -192,9 +192,10 @@ func codexReadBounded(path string) ([]byte, error) {
 
 // codexRolloutEnvelopes are the top-level `type` values a codex rollout line
 // carries: every variant of RolloutItemWire in
-// codex-rs/history/src/rollout_payload.rs, 0.152.1 through 0.159.3 (the
-// variant set is unchanged since 0.157.0). Update it on a CODEX_VERSION
-// bump, since one unknown line discards the whole file. They are
+// codex-rs/history/src/rollout_payload.rs, 0.152.1 through 0.166.0
+// (dynamic_tools_updated arrived in 0.166.0; the set was unchanged from
+// 0.157.0 to 0.159.3). Update it on a CODEX_VERSION bump, since one unknown
+// line discards the whole file. They are
 // underscored, where the tee'd `exec --json` stream uses dotted names, so
 // the two never collide.
 var codexRolloutEnvelopes = map[string]bool{
@@ -204,6 +205,9 @@ var codexRolloutEnvelopes = map[string]bool{
 	"security_risk_score": true, "realtime_item": true,
 	// Added in 0.157.0; token_usage_record is on every response.
 	"token_usage_record": true, "retained_context": true,
+	// Added in 0.166.0: written when a thread's dynamic tools change
+	// (codex-rs/core/src/session/thread_settings.rs).
+	"dynamic_tools_updated": true,
 }
 
 // codexMaxArtifactBytes bounds what the artifact filters will read. A codex

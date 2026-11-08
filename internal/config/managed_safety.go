@@ -206,14 +206,14 @@ func CheckManagedSafetyGate(current PerRepoConfigReader, candidate PerRepoConfig
 		})
 	}
 
-	currentCI := current.IssueCreationConfig()
-	candidateCI := candidate.IssueCreationConfig()
-	if allowTargetsWidened(currentCI, candidateCI) {
-		if local == nil || local.CreateIssues == nil {
+	currentTracking := current.IssueTracking()
+	candidateTracking := candidate.IssueTracking()
+	if trackingWidened(currentTracking, candidateTracking) {
+		if local == nil || local.Tracker == nil {
 			out = append(out, SafetyRelaxation{
-				Key:       "create_issues.allow_targets",
-				Current:   formatAllowTargets(currentCI),
-				Candidate: formatAllowTargets(candidateCI),
+				Key:       trackingSafetyKey(currentTracking, candidateTracking),
+				Current:   formatTrackingTargets(currentTracking),
+				Candidate: formatTrackingTargets(candidateTracking),
 			})
 		}
 	}
@@ -339,36 +339,6 @@ func localAgentExplicitlyEnabled(local []AgentEntry, name string) bool {
 	return false
 }
 
-// allowTargetsWidened reports whether candidate grants issue-creation access
-// current does not. Orgs and repos are compared by what they grant, not
-// list by list: a candidate repository whose owner is already covered by a
-// current org entry admits nothing new, so replacing an org with one of its
-// repositories is a narrowing.
-func allowTargetsWidened(current, candidate *CreateIssuesConfig) bool {
-	var currentOrgs, currentRepos, candidateOrgs, candidateRepos []string
-	if current != nil {
-		currentOrgs = current.AllowTargets.Orgs
-		currentRepos = current.AllowTargets.Repos
-	}
-	if candidate != nil {
-		candidateOrgs = candidate.AllowTargets.Orgs
-		candidateRepos = candidate.AllowTargets.Repos
-	}
-	if setWidened(currentOrgs, candidateOrgs) {
-		return true
-	}
-	for _, repo := range candidateRepos {
-		if slices.Contains(currentRepos, repo) {
-			continue
-		}
-		if owner, _, ok := strings.Cut(repo, "/"); ok && slices.Contains(currentOrgs, owner) {
-			continue
-		}
-		return true
-	}
-	return false
-}
-
 func formatStringList(values []string) string {
 	if values == nil {
 		return "unset"
@@ -384,11 +354,4 @@ func formatAllowlist(values []string) string {
 		return "deny-all"
 	}
 	return formatStringList(values)
-}
-
-func formatAllowTargets(ci *CreateIssuesConfig) string {
-	if ci == nil {
-		return "unset"
-	}
-	return "orgs=" + formatStringList(ci.AllowTargets.Orgs) + " repos=" + formatStringList(ci.AllowTargets.Repos)
 }

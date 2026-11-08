@@ -88,7 +88,7 @@ On GitHub the mapping source is the collaborator permission API
 returns the user's **effective** role including inherited org grants
 regardless of membership visibility. A built-in `role_name` is used as is.
 Custom repository roles are an organization-level GitHub Enterprise Cloud
-feature, so most repositories only ever return built-in names; Fullsend
+feature, so most repositories only ever return built-in names; fullsend
 does not interpret a custom role's name or its fine-grained permissions.
 A custom repository role resolves to the strongest base role set to `true`
 in `user.permissions` (`admin`, `maintain`, `push` → `write`, `triage`,
@@ -142,7 +142,7 @@ source for each event is chosen by the provider:
   `GET /rest/api/3/user/groups` and is read once per actor per poll cycle.
 - **Without lists**, and every event when no `jira` entry exists, the role
   comes from the project's role roster, resolved once per poll cycle for the
-  configured `--jira-project` and only when such an event is present. An
+  configured `tracker.jira.project` and only when such an event is present. An
   actor is matched by Jira account ID. Role names are matched
   case-insensitively against the names above, and unrecognized role names
   fall through to `read`. Actors with no membership in the configured
@@ -283,7 +283,7 @@ rationale.
 **Current compatibility behavior:** GitHub authorizes an added-label event
 without applying the ordinary `actor.role` threshold. This existing behavior
 preserves bot-to-bot handoffs such as adding `ready-to-code` after triage
-completes, including handoffs from provider bots that are not Fullsend-
+completes, including handoffs from provider bots that are not fullsend-
 registered.
 
 **ADR 0107 target behavior:** When
@@ -382,7 +382,7 @@ fields but cannot expand it.
 only its canonical entity with `event == null`, including after consuming an
 initial event. Both paths require eligible entity sources and effective
 platform policy permitting eventless evaluation. They are authorized only when
-the caller has trusted Fullsend-controlled invocation provenance: a verified,
+the caller has trusted fullsend-controlled invocation provenance: a verified,
 non-user-assertable platform execution identity bound to the invocation and its
 target, such as an attested workflow/job identity or installation credential.
 Neither the actor of an earlier event nor an authenticated wake peer supplies
@@ -392,16 +392,16 @@ Wildcard eligibility (`*` or `all`) requires the same explicit platform-level
 justification as any other wildcard allowlist in this contract.
 
 Each eventless entity evaluation's audit record MUST identify the verified
-Fullsend invocation identity, target repository, effective policy, harness
+fullsend invocation identity, target repository, effective policy, harness
 revision, canonical entity, and every retained action-indicating element and
 its actor. Those element actors describe evaluated entity history, not the
 evaluation's initiator. An event-bearing child cycle identifies its verified
 event actor; the actor of an earlier event is not attributed as the initiator
 of a later eventless cycle in the same containing run.
 
-Authorization of the Fullsend invocation origin does not authorize entity
+Authorization of the fullsend invocation origin does not authorize entity
 content. For each evaluated harness, before evaluating its CEL predicate,
-Fullsend MUST enumerate a platform-defined closed superset of
+fullsend MUST enumerate a platform-defined closed superset of
 action-indicating elements for the entity kind. These are actor-originated
 entity-history elements whose content or state could be treated as a request
 for a stage to run; the superset includes issue or change-proposal bodies,
@@ -431,10 +431,10 @@ harness's configured identity and permissions.
 
 ## Model-bound actor-attributed data admission
 
-The model-bound gate applies to every source-system record that Fullsend may
+The model-bound gate applies to every source-system record that fullsend may
 expose to a model, regardless of whether the record arrived in an event, was
 found by polling or snapshotting, or was read through a proactive or
-Fullsend-controlled API. Fullsend MUST establish the record's current actor
+fullsend-controlled API. Fullsend MUST establish the record's current actor
 attribution through the source system and resolve that actor's current
 authorization against the applicable observation or mutation threshold. If
 attribution or authorization cannot be established, or the actor does not meet
@@ -456,7 +456,7 @@ again immediately before sandbox initialization, and again immediately before
 first model exposure. If sandbox initialization and first exposure are
 contiguous, one fresh check MAY serve both. Non-event retrieval paths MUST
 perform the equivalent checks after retrieval admission. A
-Fullsend-controlled capability invoked after sandbox initialization MUST
+fullsend-controlled capability invoked after sandbox initialization MUST
 resolve authorization immediately before releasing each result to the model.
 That release check is the mid-run equivalent of the sandbox checkpoints.
 
@@ -478,12 +478,13 @@ used for dispatch gating:
 | `author_association` | Does not reflect private org membership; an org admin with private membership gets `CONTRIBUTOR` instead of `MEMBER` ([github/gh-aw-mcpg#2862](https://github.com/github/gh-aw-mcpg/issues/2862)). Also reflects contribution history, not current authority. |
 | Contribution history | Past contributions do not confer current repository permissions. A former maintainer whose access was revoked should not pass authorization. |
 | `actor.is_entity_author` | Being the author of an issue or PR does not grant repository permissions. This field supports routing decisions in CEL triggers, not authorization. |
+| `actor.is_entity_assignee` | Being assigned to an issue or PR does not grant repository permissions, and anyone who can assign issues can assign themselves. Like `is_entity_author`, this field only narrows which actor a CEL trigger accepts after the role gate has run; it never admits an actor the gate denies. |
 
 **Principle:** relationship and contribution-history fields are not
 evidence of current authority. Event-backed authorization must be derived from
 the forge's permission model at event time, not from cached or inferred
 relationships. Fullsend-originated eventless evaluation must instead be
-authorized from trusted Fullsend-controlled invocation provenance for poll
+authorized from trusted fullsend-controlled invocation provenance for poll
 enumeration or bound rechecks. Action-indicating elements are separately gated
 by current actor permission; historical actors and relationship fields must not
 serve as authorization evidence.
@@ -492,7 +493,7 @@ serve as authorization evidence.
 
 Authorization is enforced as a **platform-level gate** before CEL trigger
 evaluation. Event-backed dispatch uses the normalized event actor;
-Fullsend-originated eventless evaluation uses trusted invocation provenance to
+fullsend-originated eventless evaluation uses trusted invocation provenance to
 authorize evaluation, then independently filters action-indicating elements by
 current actor permission before CEL.
 
@@ -527,7 +528,7 @@ This separation is enforced architecturally: on the event-backed path,
 `IsEventAuthorized()` runs before harness enumeration in the dispatch core, and
 `FilterAuthorizedHarnesses()` removes each harness whose role threshold the
 actor does not meet before `MatchHarnesses()` evaluates CEL. On the
-Fullsend-originated eventless path, the trusted-origin gate runs before poll
+fullsend-originated eventless path, the trusted-origin gate runs before poll
 enumeration or bound-entity resolution and CEL evaluation. For each eligible
 harness, the platform removes unauthorized action-indicating elements using
 that harness's stage threshold before its CEL predicate runs, and `event`

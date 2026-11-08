@@ -1,0 +1,451 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fullsend.ai/normative/sandbox-env/v1/env-references.schema.json",
+  "title": "Sandbox env references",
+  "description": "Validates that code running in a fullsend sandbox — a skill script, an agent prompt's tool calls, a sandbox hook — reads only environment variables the contract makes reachable under its runtime. List the variables the code reads, minus those the harness's own env.sandbox declares. The $defs are the full contract inventory. Generated from the runner's code (ADR 0146); see README.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "runtime",
+    "variables"
+  ],
+  "properties": {
+    "runtime": {
+      "$ref": "#/$defs/runtime"
+    },
+    "variables": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/env_name"
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "runtime": {
+            "const": "portable"
+          }
+        },
+        "required": [
+          "runtime"
+        ]
+      },
+      "then": {
+        "properties": {
+          "variables": {
+            "items": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/always"
+                },
+                {
+                  "allOf": [
+                    {
+                      "$ref": "#/$defs/conditional"
+                    },
+                    {
+                      "not": {
+                        "enum": [
+                          "FULLSEND_EGRESS_ALLOWLIST",
+                          "TIRITH_FAIL_ON",
+                          "TIRITH_REQUIRED"
+                        ]
+                      }
+                    }
+                  ]
+                },
+                {
+                  "$ref": "#/$defs/harness_delivered"
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "runtime": {
+            "const": "claude"
+          }
+        },
+        "required": [
+          "runtime"
+        ]
+      },
+      "then": {
+        "properties": {
+          "variables": {
+            "items": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/always"
+                },
+                {
+                  "$ref": "#/$defs/conditional"
+                },
+                {
+                  "$ref": "#/$defs/harness_delivered"
+                },
+                {
+                  "$ref": "#/$defs/runtime_claude"
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "runtime": {
+            "const": "codex"
+          }
+        },
+        "required": [
+          "runtime"
+        ]
+      },
+      "then": {
+        "properties": {
+          "variables": {
+            "items": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/always"
+                },
+                {
+                  "$ref": "#/$defs/conditional"
+                },
+                {
+                  "$ref": "#/$defs/harness_delivered"
+                },
+                {
+                  "$ref": "#/$defs/runtime_codex"
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "runtime": {
+            "const": "opencode"
+          }
+        },
+        "required": [
+          "runtime"
+        ]
+      },
+      "then": {
+        "properties": {
+          "variables": {
+            "items": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/always"
+                },
+                {
+                  "allOf": [
+                    {
+                      "$ref": "#/$defs/conditional"
+                    },
+                    {
+                      "not": {
+                        "enum": [
+                          "FULLSEND_EGRESS_ALLOWLIST",
+                          "TIRITH_FAIL_ON",
+                          "TIRITH_REQUIRED"
+                        ]
+                      }
+                    }
+                  ]
+                },
+                {
+                  "$ref": "#/$defs/harness_delivered"
+                },
+                {
+                  "$ref": "#/$defs/runtime_opencode"
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "runtime": {
+            "const": "pi"
+          }
+        },
+        "required": [
+          "runtime"
+        ]
+      },
+      "then": {
+        "properties": {
+          "variables": {
+            "items": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/always"
+                },
+                {
+                  "$ref": "#/$defs/conditional"
+                },
+                {
+                  "$ref": "#/$defs/harness_delivered"
+                },
+                {
+                  "$ref": "#/$defs/runtime_pi"
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "env_name": {
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+    },
+    "runtime": {
+      "description": "The runtime the referencing code runs under, or \"portable\" for code that must work under every runtime.",
+      "enum": [
+        "portable",
+        "claude",
+        "codex",
+        "opencode",
+        "pi"
+      ]
+    },
+    "always": {
+      "description": "Exported by the runner into every sandbox it builds.",
+      "enum": [
+        "FULLSEND_OUTPUT_DIR",
+        "FULLSEND_PERSONAS_FILE",
+        "FULLSEND_ROLE",
+        "FULLSEND_TARGET_REPO_DIR",
+        "PATH"
+      ]
+    },
+    "conditional": {
+      "description": "Exported by the runner only when the gate in each entry's description holds. Some entries are emitted only by certain runtimes' bootstraps; the per-runtime reachability rules exclude them elsewhere and under portable.",
+      "oneOf": [
+        {
+          "const": "FULLSEND_EGRESS_ALLOWLIST",
+          "description": "an SSRF egress allowlist is configured, including the auto-merged forge egress entry; only the claude, codex, and pi bootstraps append hook env, so it is unreachable under opencode"
+        },
+        {
+          "const": "FULLSEND_FETCH_TOKEN",
+          "description": "the runtime fetch service is enabled (ADR 0038)"
+        },
+        {
+          "const": "FULLSEND_FETCH_URL",
+          "description": "the runtime fetch service is enabled (ADR 0038)"
+        },
+        {
+          "const": "FULLSEND_ITERATION_DEADLINE",
+          "description": "writeIterationEnv succeeds; the run warns and continues when it fails"
+        },
+        {
+          "const": "FULLSEND_OUTPUT_FILE",
+          "description": "the legacy runner_env FULLSEND_OUTPUT_FILE is set"
+        },
+        {
+          "const": "FULLSEND_OUTPUT_SCHEMA",
+          "description": "an output schema is configured (validation_loop.schema, or the legacy FULLSEND_OUTPUT_SCHEMA runner env) and its file uploads into the sandbox"
+        },
+        {
+          "const": "FULLSEND_SLUG",
+          "description": "the harness sets a slug"
+        },
+        {
+          "const": "FULLSEND_TIMEOUT_MINUTES",
+          "description": "writeIterationEnv succeeds; the run warns and continues when it fails"
+        },
+        {
+          "const": "FULLSEND_TRACE_ID",
+          "description": "trace-ID injection succeeds; the run warns and continues when it fails"
+        },
+        {
+          "const": "TIRITH_FAIL_ON",
+          "description": "security.sandbox_hooks.tirith.fail_on is set; only the claude, codex, and pi bootstraps append hook env, so it is unreachable under opencode"
+        },
+        {
+          "const": "TIRITH_REQUIRED",
+          "description": "Tirith scanning is required (security.sandbox_hooks.tirith.enabled, default true); only the claude, codex, and pi bootstraps append hook env, so it is unreachable under opencode"
+        },
+        {
+          "const": "TRACEPARENT",
+          "description": "writeIterationEnv succeeds; the run warns and continues when it fails"
+        }
+      ]
+    },
+    "runtime_claude": {
+      "description": "Exported only when dispatch runs under claude: its EnvExports plus the environment its launch command sets. Not reachable under other runtimes.",
+      "enum": [
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_BASE_URL",
+        "CLAUDE_CODE_API_KEY_HELPER_TTL_MS",
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+        "CLAUDE_CONFIG_DIR"
+      ]
+    },
+    "runtime_codex": {
+      "description": "Exported only when dispatch runs under codex: its EnvExports plus the environment its launch command sets. Not reachable under other runtimes.",
+      "enum": [
+        "CODEX_HOME",
+        "FULLSEND_CODEX_HOOK_DIGESTS",
+        "FULLSEND_CODEX_SPAWN_DIGESTS",
+        "FULLSEND_RUNTIME",
+        "FULLSEND_TRUSTED_PATH",
+        "RUST_LOG"
+      ]
+    },
+    "runtime_opencode": {
+      "description": "Exported only when dispatch runs under opencode: its EnvExports plus the environment its launch command sets. Not reachable under other runtimes.",
+      "enum": [
+        "FULLSEND_RUNTIME",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "GOOGLE_CLOUD_LOCATION",
+        "GOOGLE_CLOUD_PROJECT",
+        "HOME",
+        "OPENCODE_CONFIG_CONTENT",
+        "OPENCODE_CONFIG_DIR",
+        "OPENCODE_DISABLE_EXTERNAL_SKILLS",
+        "OPENCODE_DISABLE_PROJECT_CONFIG"
+      ]
+    },
+    "runtime_pi": {
+      "description": "Exported only when dispatch runs under pi: its EnvExports plus the environment its launch command sets. Not reachable under other runtimes.",
+      "enum": [
+        "FULLSEND_PI_CHILD_BIN",
+        "FULLSEND_PI_CHILD_NODE",
+        "FULLSEND_PI_HOOK_PATH",
+        "FULLSEND_PI_HOOK_PYTHON",
+        "FULLSEND_PI_MANIFEST",
+        "FULLSEND_PI_MANIFEST_SHA256",
+        "FULLSEND_RUNTIME",
+        "GOOGLE_CLOUD_LOCATION",
+        "GOOGLE_CLOUD_PROJECT",
+        "INFERENCE_GATEWAY_BASE_URL",
+        "INFERENCE_GATEWAY_CONFIG_FILE",
+        "INFERENCE_GATEWAY_TOKEN_FILE",
+        "JITI_FS_CACHE",
+        "PI_CODING_AGENT_DIR",
+        "PI_CODING_AGENT_SESSION_DIR",
+        "PI_OFFLINE",
+        "PI_SKIP_VERSION_CHECK",
+        "PI_TELEMETRY",
+        "XAI_VERTEX_PROJECT_ID"
+      ]
+    },
+    "harness_delivered": {
+      "description": "Delivered by stock harness configuration, not by the runner: reachable only when the harness delivers it.",
+      "oneOf": [
+        {
+          "const": "ANTHROPIC_VERTEX_PROJECT_ID",
+          "description": "fullsend agent new Vertex scaffold (internal/agentnew); the fleet delivers these plus GOOGLE_CLOUD_PROJECT and ANTHROPIC_DEFAULT_SONNET_MODEL through env/gcp-vertex.env in fullsend-ai/agents"
+        },
+        {
+          "const": "CLAUDE_CODE_USE_VERTEX",
+          "description": "fullsend agent new Vertex scaffold (internal/agentnew); the fleet delivers these plus GOOGLE_CLOUD_PROJECT and ANTHROPIC_DEFAULT_SONNET_MODEL through env/gcp-vertex.env in fullsend-ai/agents"
+        },
+        {
+          "const": "CLOUD_ML_REGION",
+          "description": "fullsend agent new Vertex scaffold (internal/agentnew); the fleet delivers these plus GOOGLE_CLOUD_PROJECT and ANTHROPIC_DEFAULT_SONNET_MODEL through env/gcp-vertex.env in fullsend-ai/agents"
+        },
+        {
+          "const": "GOOGLE_APPLICATION_CREDENTIALS",
+          "description": "fullsend agent new Vertex scaffold (internal/agentnew); the fleet delivers these plus GOOGLE_CLOUD_PROJECT and ANTHROPIC_DEFAULT_SONNET_MODEL through env/gcp-vertex.env in fullsend-ai/agents"
+        }
+      ]
+    },
+    "reserved": {
+      "description": "Reserved by the runner: a harness cannot set these through env.sandbox.",
+      "enum": [
+        "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+        "ACTIONS_ID_TOKEN_REQUEST_URL",
+        "ALL_PROXY",
+        "BASH_ENV",
+        "CDPATH",
+        "CURL_CA_BUNDLE",
+        "DYLD_INSERT_LIBRARIES",
+        "ENV",
+        "FULLSEND_FETCH_TOKEN",
+        "FULLSEND_FETCH_URL",
+        "FULLSEND_GCP_OIDC_AUTH_FILE",
+        "FULLSEND_GCP_OIDC_URL",
+        "FULLSEND_GCP_PROJECT_ID",
+        "FULLSEND_GCP_WIF_PROVIDER",
+        "FULLSEND_GITHUB_RUNNER_SECRETS",
+        "FULLSEND_GITHUB_RUNNER_SECRETS_FILE",
+        "FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN",
+        "FULLSEND_INFERENCE_GATEWAY_API_KEY",
+        "FULLSEND_ITERATION_DEADLINE",
+        "FULLSEND_OPENAI_API_KEY",
+        "FULLSEND_OPENAI_AUDIENCE",
+        "FULLSEND_OPENAI_IDENTITY_PROVIDER_ID",
+        "FULLSEND_OPENAI_SERVICE_ACCOUNT_ID",
+        "FULLSEND_OUTPUT_DIR",
+        "FULLSEND_OUTPUT_FILE",
+        "FULLSEND_OUTPUT_SCHEMA",
+        "FULLSEND_PERSONAS_FILE",
+        "FULLSEND_ROLE",
+        "FULLSEND_RUNNER_PATH",
+        "FULLSEND_SLUG",
+        "FULLSEND_TARGET_REPO_DIR",
+        "FULLSEND_TIMEOUT_MINUTES",
+        "FULLSEND_TRIGGER_TOKEN",
+        "FULLSEND_WEBHOOK_SECRET",
+        "GH_WORKFLOW_TOKEN",
+        "GIT_ASKPASS",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_EXEC_PATH",
+        "GIT_SSH_COMMAND",
+        "GIT_TEMPLATE_DIR",
+        "HOME",
+        "HOSTALIASES",
+        "HTTPS_PROXY",
+        "HTTP_PROXY",
+        "IFS",
+        "JAVA_TOOL_OPTIONS",
+        "LD_AUDIT",
+        "LD_LIBRARY_PATH",
+        "LD_PRELOAD",
+        "NODE_EXTRA_CA_CERTS",
+        "NODE_OPTIONS",
+        "NO_PROXY",
+        "OPENAI_API_KEY",
+        "PATH",
+        "PERL5OPT",
+        "PROMPT_COMMAND",
+        "PYTHONPATH",
+        "PYTHONSTARTUP",
+        "RUBYOPT",
+        "SHELL",
+        "SSL_CERT_DIR",
+        "SSL_CERT_FILE",
+        "TRACEPARENT"
+      ]
+    },
+    "deprecated": {
+      "description": "Deprecated and scheduled for removal in a future contract version; still reachable through its export category until then. Consumers should warn on a match and migrate.",
+      "not": {}
+    }
+  }
+}

@@ -77,6 +77,7 @@ func (c *LiveClient) createMergeRequest(ctx context.Context, projPath string, pa
 	}
 
 	var mr struct {
+		ID           int64  `json:"id"`
 		IID          int    `json:"iid"`
 		Title        string `json:"title"`
 		WebURL       string `json:"web_url"`
@@ -88,6 +89,7 @@ func (c *LiveClient) createMergeRequest(ctx context.Context, projPath string, pa
 	}
 
 	return &forge.ChangeProposal{
+		ID:     mr.ID,
 		Number: mr.IID,
 		URL:    mr.WebURL,
 		Title:  mr.Title,
@@ -112,6 +114,7 @@ func (c *LiveClient) ListRepoPullRequests(ctx context.Context, owner, repo strin
 		}
 
 		var mrs []struct {
+			ID              int64  `json:"id"`
 			IID             int    `json:"iid"`
 			Title           string `json:"title"`
 			WebURL          string `json:"web_url"`
@@ -151,6 +154,7 @@ func (c *LiveClient) ListRepoPullRequests(ctx context.Context, owner, repo strin
 				headRepo = resolved
 			}
 			result = append(result, forge.ChangeProposal{
+				ID:       mr.ID,
 				Number:   mr.IID,
 				URL:      mr.WebURL,
 				Title:    mr.Title,
@@ -241,6 +245,11 @@ func (c *LiveClient) GetPullRequestInfo(ctx context.Context, owner, repo string,
 		AuthorID: mr.Author.Username,
 		IsFork:   isFork,
 	}, nil
+}
+
+// GetPullRequestAuthorizationContext is not supported on GitLab (e2e gate is GitHub-only).
+func (c *LiveClient) GetPullRequestAuthorizationContext(_ context.Context, _, _ string, _ int) (*forge.PullRequestAuthorizationContext, error) {
+	return nil, forge.ErrNotSupported
 }
 
 // GetPullRequestHeadSHA returns the current HEAD commit SHA of a merge request.

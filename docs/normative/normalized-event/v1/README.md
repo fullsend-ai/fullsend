@@ -38,7 +38,7 @@ v1 adapters and examples target **GitHub** webhooks, **GitLab** cron-poll
 and native-webhook input, and **Jira poll** input:
 
 - `source.system` is `github`, `gitlab`, `jira`, `manual`, or `schedule`.
-- `repo` is the target Fullsend repository (`owner/repo` for GitHub,
+- `repo` is the target fullsend repository (`owner/repo` for GitHub,
   `group/subgroup/project` for GitLab) for all systems — including Jira poll
   events (see [jira-poll-adapter.md](jira-poll-adapter.md)).
 - The `gha-event` input driver is the production GitHub adapter; `gitlab-poll`
@@ -79,8 +79,8 @@ Breaking changes require `docs/normative/normalized-event/v2/`.
 
 The new optional actor fields are additive, but consumers that vendor this
 schema with `additionalProperties: false` must refresh their copy before an
-adapter emits `bot_role` or `role_verified`; otherwise their local validator
-may reject an otherwise valid v1 event. Fullsend controls the supported
+adapter emits `bot_role`, `role_verified` or `is_entity_assignee`; otherwise
+their local validator may reject an otherwise valid v1 event. Fullsend controls the supported
 NormalizedEvent producers and consumers, so the bundled validator and other
 supported consumers MUST be updated to this v1 schema before any adapter emits
 the new fields. Older strict schema copies are not a supported
@@ -251,6 +251,34 @@ non-label paths. Only the GitHub `gha-event` path of `fullsend dispatch`
 sets the fields today, and only for bot actors on non-label events, so
 triggers that read them must guard with `has()`.
 
+### Entity author and assignee (`actor.is_entity_author`, `actor.is_entity_assignee`)
+
+`actor.is_entity_author` is `true` when the actor authored the work item,
+change proposal or conversation. `actor.is_entity_assignee` is an optional
+additive field with the same semantics on every source system: `true` when
+the actor is one of the entity's current assignees at the time the adapter
+builds the event (with several assignees, any match counts), and `false` when
+the entity has no assignee, the actor is not one, or the assignees cannot be
+determined. Reviewers and requested reviewers are not assignees. An event
+without the field means `false`; the Go `normevent.Actor` type always emits
+it, so a trigger that reads it on an event built by a current adapter needs
+no `has()` guard. The value is a snapshot taken when the event is built. For
+a poll source such as Jira, that is poll time, and the assignee can change
+before the run starts.
+
+| Source | Where assignees come from | Comparison |
+|--------|---------------------------|------------|
+| GitHub (`gha-event`) | `issue.assignees[].login` or `pull_request.assignees[].login` in the webhook payload (the legacy single `assignee` only when the payload has no `assignees` array); no extra API call | Case-insensitive against the actor login (the reviewer for `pull_request_review`) |
+| GitLab (`gitlab-poll`, `gitlab-webhook`) | Issues: `assignees[].id` from the same issue fetch the author check uses. Merge requests: `assignees[].id` from the MR object that supplies the MR author | Numeric user ID against the resolved actor ID |
+| Jira (`jira-poll`) | `fields.assignee`, requested alongside `reporter` in the search fields | The same identifier as `actor.id`: `accountId`, or `name` when `accountId` is unavailable (Data Center/Server), matching the `is_entity_author` fallback |
+
+Both fields are best-effort **routing** facts, not authorization. They can
+only narrow which actor a trigger accepts; the platform role gate
+([Authorization Contract v1](../../authorization/v1/README.md#excluded-fields))
+still runs first and is unchanged. Anyone who can assign issues can assign
+themselves, so a trigger must never treat `is_entity_assignee` as a reason to
+admit an actor the role gate would deny.
+
 ### Fork security (`state.change_proposal.is_fork`)
 
 `is_fork` is `true` when `head_repo` differs from `base_repo` (fork-based
@@ -295,7 +323,9 @@ until it is listed here. For example `transition.comment` (its `body`,
 `command` and `instruction` all come from the comment text), the action fields
 (`transition.kind`, `source.raw_type`, `source.raw_action`, `entity.kind`),
 `actor.kind` (some adapters infer it from a display name),
-`actor.is_entity_author` (the author makes it true by acting), `state.labels`,
+`actor.is_entity_author` (the author makes it true by acting),
+`actor.is_entity_assignee` (anyone who can assign issues can make it true),
+`state.labels`,
 `base_ref` (the author picks the target branch), `head_*` and the change facts
 are untrusted. A guarded overlay may test `has()` only on objects the schema
 always requires, such as `source`; reading `is_fork` when there is no change
@@ -332,6 +362,14 @@ event.transition.kind == "comment_added"
   && event.transition.comment.command == "/fs-fix"
   && !event.state.change_proposal.is_fork
 
+// Code on /fs-code only from the issue's author or an assignee
+// (narrows the role gate; does not replace it)
+event.entity.kind == "work_item"
+  && event.transition.kind == "comment_added"
+  && has(event.transition.comment.command)
+  && event.transition.comment.command == "/fs-code"
+  && (event.actor.is_entity_author || event.actor.is_entity_assignee)
+
 // Conversation-native agent on Discussion slash command (ADR 0086)
 event.entity.kind == "conversation"
   && event.transition.kind == "comment_added"
@@ -342,6 +380,9 @@ event.entity.kind == "conversation"
 ```
 
 See [`examples/`](examples/) for matching `NormalizedEvent` fixtures. The
+`fs-code-assignee-comment.json`, `gitlab-fs-code-assignee-note.json` and
+`jira-fs-code-assignee-comment.json` fixtures show `actor.is_entity_assignee`
+for each source system; fixtures without the field remain valid. The
 existing top-level fixtures retain the legacy v1 representation; target
 fixtures for ADR 0107 are under
 [`examples/adr-0107/`](examples/adr-0107/).
@@ -680,7 +721,7 @@ triage agent that succeeded, and replay found no further dispatches. Trigger
 account rotation moved both active schedules to the replacement account
 without a second install, and a post-rotation issue reached a successful
 triage agent through the webhook. `repos status` reported no drift, and the
-trigger deploy key was the only protected-branch push grant Fullsend added,
+trigger deploy key was the only protected-branch push grant fullsend added,
 separate from the Poller identity. Uninstall left no managed hooks,
 schedules, variables, trigger tokens, or deploy keys. Some webhook pipelines
 triggered by agent-generated issue updates were rejected because the payload
@@ -732,7 +773,7 @@ that covered only the first.
 2. A paused old-Poller PAT self-rotation returned a new PAT, but that PAT
    belonged to the old Developer user and could not create a trigger.
 3. When a test proxy dropped the successful response to a bootstrap
-   trigger create, Fullsend quarantined that generation, and the next
+   trigger create, fullsend quarantined that generation, and the next
    `repos install` did not repeat the create. A request paused *after*
    GitLab's final trigger-creation authorization check still completed
    after the bootstrap PAT was revoked and the account demoted. The trigger
@@ -747,7 +788,7 @@ so the CE triage runs used an isolated agents patch (`371fdf36cef0`, never
 pushed). The gap is tracked in
 [fullsend-ai/agents#1732](https://github.com/fullsend-ai/agents/issues/1732).
 The patch accepts an optional HTTPS port and sends API calls
-to `CI_SERVER_URL`. The CE runs therefore verify the Fullsend install,
+to `CI_SERVER_URL`. The CE runs therefore verify the fullsend install,
 webhook, polling, rotation, and cleanup paths on CE with that patch. They do
 not verify stock agents on a custom-port CE instance. The port fix merged in
 [fullsend-ai/agents#1733](https://github.com/fullsend-ai/agents/pull/1733)
@@ -798,8 +839,8 @@ gate is tracked in [#8835](https://github.com/fullsend-ai/fullsend/issues/8835).
 |------|--------|----------------------------|
 | Trigger-variable control (Owner-role PAT or `no_one_allowed`) | Closed: superseded | [ADR 0131](../../../ADRs/0131-gitlab-dispatch-pipeline-inputs-no-owner-role.md) adopted typed pipeline inputs with `no_one_allowed` and a Developer-role Poller. No Owner-role credential is used. ADR 0125's Caveats finding that `no_one_allowed` is unusable applied only to variable-based dispatch. |
 | Native `TRIGGER_PAYLOAD` under the required restriction | Closed | GitLab supplies `TRIGGER_PAYLOAD` as a file-type variable, and `no_one_allowed` does not strip it. In the [2026-10-20 run](https://github.com/fullsend-ai/fullsend/issues/8245#issuecomment-6301468961) on GitLab.com Free and self-managed EE (`a87815b6c`), and in the CE runs, webhook dispatcher pipelines read the payload and dispatched agents. At those commits, install provisions the trigger and webhook only after it reads back `no_one_allowed` ([`gitlabTriggerSafetyCheck`](https://github.com/fullsend-ai/fullsend/blob/a7f851df9848eab7f76c0b4aadc9043ddcd6241d/internal/repos/gitlab_webhook.go#L747)). The dispatcher fails closed when `TRIGGER_PAYLOAD` is unset or unreadable ([`run-dispatcher-job.sh`](https://github.com/fullsend-ai/fullsend/blob/a7f851df9848eab7f76c0b4aadc9043ddcd6241d/internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/scripts/run-dispatcher-job.sh#L66-L80)). |
-| `CI_JOB_TOKEN` running-job identity pin | Open: gated on the restriction | All three job scripts source [`pin-ci-job-identity.sh`](https://github.com/fullsend-ai/fullsend/blob/a7f851df9848eab7f76c0b4aadc9043ddcd6241d/internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/scripts/pin-ci-job-identity.sh). Under `no_one_allowed`, GitLab rejects caller-supplied pipeline variables: the [#7769](https://github.com/fullsend-ai/fullsend/issues/7769) spike on self-managed EE 19.2.7 recorded HTTP 400 for a `CI_JOB_TOKEN` override on `POST /pipeline` and for a variable on a trigger-token `POST /trigger/pipeline`. The pin's own behavior for an invalid override (expected to fail closed) and for a valid foreign job token (would mis-resolve) has not been tested on a target GitLab version. The [maintainer decision on #8871](https://github.com/fullsend-ai/fullsend/issues/8871#issuecomment-6453959180) retains the `no_one_allowed` restriction as the gate and makes those invalid and valid-foreign override tests non-blocking. The "sole project-identity source" claim therefore holds only while the restriction is verified before runnable jobs and the webhook are delivered, and the pin is defense in depth: the helper does not independently bind a supplied token to the running job. The restriction does not cover project, group, or instance CI/CD settings variables. The decision accepts that project Maintainers, group Owners, and GitLab instance administrators do not add or change a `CI_JOB_TOKEN` settings-variable override in scopes Fullsend cannot read or that change later. If those roles are adversaries, the acceptance does not apply, and the installer must fail closed on unreadable scopes or a separate identity-binding control is needed. |
-| API base-URL trust | Closed: risk accepted | The identity pin bootstraps `GET /api/v4/job` from `CI_API_V4_URL`, rejects any value that is not an https API root or that contains globbing or userinfo characters, and passes that root on as `FULLSEND_PINNED_GITLAB_URL`. `CI_API_V4_URL` is in the overridable class. Its trust rests on `no_one_allowed`, which install verifies before it provisions the webhook, and on the [inherited CI/CD variable trust](../../../guides/getting-started/configuring-gitlab.md#inherited-cicd-variable-trust) assumption. The current deployment meets that restriction-based model. It does not provide the restriction-independent pin that ADR 0125 required before shipping. The [maintainer decision on #8871](https://github.com/fullsend-ai/fullsend/issues/8871#issuecomment-6453141351) accepts the restriction-based model with no independent host pin. Within the accepted trust boundary, project Maintainers, group Owners, and GitLab instance administrators are trusted to control project, group, and instance CI/CD variables, including inherited scopes Fullsend cannot read. If those roles must be treated as adversaries, the acceptance does not apply, and an independent API-host pin or fail-closed verification of unreadable scopes is required. |
+| `CI_JOB_TOKEN` running-job identity pin | Open: gated on the restriction | All three job scripts source [`pin-ci-job-identity.sh`](https://github.com/fullsend-ai/fullsend/blob/a7f851df9848eab7f76c0b4aadc9043ddcd6241d/internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/scripts/pin-ci-job-identity.sh). Under `no_one_allowed`, GitLab rejects caller-supplied pipeline variables: the [#7769](https://github.com/fullsend-ai/fullsend/issues/7769) spike on self-managed EE 19.2.7 recorded HTTP 400 for a `CI_JOB_TOKEN` override on `POST /pipeline` and for a variable on a trigger-token `POST /trigger/pipeline`. The pin's own behavior for an invalid override (expected to fail closed) and for a valid foreign job token (would mis-resolve) has not been tested on a target GitLab version. The [maintainer decision on #8871](https://github.com/fullsend-ai/fullsend/issues/8871#issuecomment-6453959180) retains the `no_one_allowed` restriction as the gate and makes those invalid and valid-foreign override tests non-blocking. The "sole project-identity source" claim therefore holds only while the restriction is verified before runnable jobs and the webhook are delivered, and the pin is defense in depth: the helper does not independently bind a supplied token to the running job. The restriction does not cover project, group, or instance CI/CD settings variables. The decision accepts that project Maintainers, group Owners, and GitLab instance administrators do not add or change a `CI_JOB_TOKEN` settings-variable override in scopes fullsend cannot read or that change later. If those roles are adversaries, the acceptance does not apply, and the installer must fail closed on unreadable scopes or a separate identity-binding control is needed. |
+| API base-URL trust | Closed: risk accepted | The identity pin bootstraps `GET /api/v4/job` from `CI_API_V4_URL`, rejects any value that is not an https API root or that contains globbing or userinfo characters, and passes that root on as `FULLSEND_PINNED_GITLAB_URL`. `CI_API_V4_URL` is in the overridable class. Its trust rests on `no_one_allowed`, which install verifies before it provisions the webhook, and on the [inherited CI/CD variable trust](../../../guides/getting-started/configuring-gitlab.md#inherited-cicd-variable-trust) assumption. The current deployment meets that restriction-based model. It does not provide the restriction-independent pin that ADR 0125 required before shipping. The [maintainer decision on #8871](https://github.com/fullsend-ai/fullsend/issues/8871#issuecomment-6453141351) accepts the restriction-based model with no independent host pin. Within the accepted trust boundary, project Maintainers, group Owners, and GitLab instance administrators are trusted to control project, group, and instance CI/CD variables, including inherited scopes fullsend cannot read. If those roles must be treated as adversaries, the acceptance does not apply, and an independent API-host pin or fail-closed verification of unreadable scopes is required. |
 | Snapshot-consistent replay | Closed: risk accepted | The builder rejects re-fetched event-time evidence older than 30 minutes ([`webhookMaxEventAge`](https://github.com/fullsend-ai/fullsend/blob/a7f851df9848eab7f76c0b4aadc9043ddcd6241d/internal/poll/webhook.go#L56)) and shares occurrence-aware dispatch keys with the poller ([ADR 0132](../../../ADRs/0132-occurrence-aware-shared-poller-state.md)). The [residual replay risk](#gitlab-webhook-transition-provenance-gitlab-webhook) above remains. Delivery is also at-least-once: a webhook and a poll cycle that both read state before either persists can each dispatch the same event ([`webhook_dispatch.go`](https://github.com/fullsend-ai/fullsend/blob/a7f851df9848eab7f76c0b4aadc9043ddcd6241d/internal/poll/webhook_dispatch.go#L74-L84)). The [maintainer decision on #8835](https://github.com/fullsend-ai/fullsend/issues/8835#issuecomment-6452638835) accepts bounded at-least-once replay, not exactly-once dispatch. The accepted residuals are a duplicate dispatch when concurrent webhook and poller runs both read state before either saves, a retry after pipeline creation succeeds but state persistence fails, and a partial stage fan-out that redispatches a stage that succeeded when another stage failed. A replayed event must still pass re-fetch, freshness, actor binding, and authorization, and replay is skipped once its dispatch key is saved. |
 | Actor-to-transition attribution | Closed for the rows the builder accepts | [`bindActor`](https://github.com/fullsend-ai/fullsend/blob/a7f851df9848eab7f76c0b4aadc9043ddcd6241d/internal/poll/webhook.go#L607) requires the payload-named actor to equal the actor the re-fetch records for the transition: the note author; the MR author, merger, or closer; the issue author or closer; or the user on the latest matching resource label event. Both `reopen` rows have no event-time actor evidence and are rejected. MR label changes and other MR updates are rejected as well. Note edits and bare issue updates are ignored without dispatch. Any row added later MUST bind its actor the same way or fail closed. |
 | Live validation ([#8245](https://github.com/fullsend-ai/fullsend/issues/8245)) | Closed for GitLab.com Free and self-managed EE | See [Validation status](#gitlab-webhook-validation-status). Self-managed CE is non-gating, and stock agents on custom-port CE remain unverified. |

@@ -18,6 +18,12 @@ func TestOverlayGuardReadsOnlyForgeOrConfig(t *testing.T) {
 		`runtime.forge == "github"`,
 		`runtime.forge in ["github", "gitlab"]`,
 		`true`,
+		// The global runtime.forge, spelled with a leading dot under a
+		// shadowing comprehension variable.
+		`[0].exists(runtime, .runtime.forge == "github")`,
+		// A dotless runtime comprehension variable used only as .forge is
+		// read as the global runtime.forge.
+		`[{"forge": "github"}].exists(runtime, runtime.forge == "github")`,
 	}
 	for _, when := range allowed {
 		assert.True(t, overlayGuardReadsOnlyForgeOrConfig(when), when)
@@ -29,6 +35,16 @@ func TestOverlayGuardReadsOnlyForgeOrConfig(t *testing.T) {
 		`has(runtime.forge)`,
 		`runtime.forge == "github" || runtime == {}`,
 		`not valid cel ((`,
+		// A shadowing comprehension variable makes the checker keep the
+		// global reference as ".event" / ".runtime".
+		`[0].exists(event, .event.kind == "x")`,
+		`[0].exists(runtime, .runtime.other == "x")`,
+		// A dotless event is refused even when it is the comprehension
+		// variable rather than the global (fails closed).
+		`[0].exists(event, event == 0)`,
+		// The dotless runtime variable is used only as .forge, but the range
+		// it iterates reads event.kind, so the expression is still refused.
+		`[{"forge": event.kind}].exists(runtime, runtime.forge == "github")`,
 	}
 	for _, when := range refused {
 		assert.False(t, overlayGuardReadsOnlyForgeOrConfig(when), when)
@@ -51,6 +67,22 @@ func TestValidateOverlayRunnerSecretRefs(t *testing.T) {
 		err := ValidateOverlayRunnerSecretRefs([]OverlayEntry{
 			withRunnerRef(`runtime.forge == "github"`),
 			withRunnerRef(`has(event.kind)`),
+		}, names)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "overlays[1] references runner secret(s) X")
+	})
+	t.Run("shadowed event guard refused", func(t *testing.T) {
+		err := ValidateOverlayRunnerSecretRefs([]OverlayEntry{
+			withRunnerRef(`runtime.forge == "github"`),
+			withRunnerRef(`[0].exists(event, .event.kind == "x")`),
+		}, names)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "overlays[1] references runner secret(s) X")
+	})
+	t.Run("shadowed runtime guard refused", func(t *testing.T) {
+		err := ValidateOverlayRunnerSecretRefs([]OverlayEntry{
+			withRunnerRef(`runtime.forge == "github"`),
+			withRunnerRef(`[0].exists(runtime, .runtime.other == "x")`),
 		}, names)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "overlays[1] references runner secret(s) X")

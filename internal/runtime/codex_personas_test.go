@@ -341,8 +341,11 @@ func TestCodexRole_TOMLParsesWithTheThreeKeys(t *testing.T) {
 // TestCodexCatalog reads the fixture reduced from the pinned CLI's dump and
 // pins the questions Bootstrap asks it: is a model listed, does codex
 // resolve it to collaboration V1, and which efforts a child on it may run
-// at. On a CODEX_VERSION bump regenerate it, never edit it (the file name
-// carries the pin):
+// at. The reduction keeps only the four fields Bootstrap reads, so a bump
+// that changes other catalog fields (0.166.0 rewrote model_messages for
+// every entry) leaves the fixture untouched; 0.166.0's only visible change
+// is the added gpt-6.1-terra entry. On a CODEX_VERSION bump regenerate it,
+// never edit it (the file name carries the pin):
 //
 //	codex debug models --bundled | python3 -c 'import json,sys; d=json.load(sys.stdin); json.dump({"models":[{"slug":m["slug"],"multi_agent_version":m.get("multi_agent_version"),"default_reasoning_level":m.get("default_reasoning_level"),"supported_reasoning_levels":[{"effort":l["effort"]} for l in m.get("supported_reasoning_levels") or []]} for m in d["models"]]}, sys.stdout, indent=2); print()' > testdata/codex/models-bundled-<pin>.json
 func TestCodexCatalog(t *testing.T) {
@@ -357,7 +360,7 @@ func TestCodexCatalog(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.True(t, catalog.has(codexDefaultSubagentModel), "the floor must be listed; a child takes its parent's collaboration version, so the floor's own does not matter")
-	assert.True(t, catalog.resolvesV1("gpt-5.6-luna"), "a luna parent delegates on 0.159.3")
+	assert.True(t, catalog.resolvesV1("gpt-5.6-luna"), "a luna parent delegates on 0.166.0")
 	assert.Equal(t, "medium", catalog["gpt-5.6-luna"].DefaultEffort, "children on the floor run at medium when the run sets no effort")
 	assert.Equal(t, []string{"low", "medium", "high", "xhigh", "max"}, catalog["gpt-5.6-luna"].Efforts)
 	assert.Equal(t, "low", catalog["gpt-5.6-sol"].DefaultEffort)
@@ -636,7 +639,7 @@ func TestResolveCodexChildModels_NonOpenAIValueNamesTheKey(t *testing.T) {
 
 // codexTestCatalog lists every model the tables above use, with the versions,
 // default efforts and supported efforts of
-// testdata/codex/models-bundled-0.159.3.json; add any id a new row introduces.
+// testdata/codex/models-bundled-0.166.0.json; add any id a new row introduces.
 func codexTestCatalog() codexCatalog {
 	upToMax := []string{"low", "medium", "high", "xhigh", "max"}
 	upToUltra := []string{"low", "medium", "high", "xhigh", "max", "ultra"}

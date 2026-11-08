@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/mintclient"
@@ -835,7 +836,11 @@ func TestNewReconcileStatusCmd_Jira(t *testing.T) {
 		gotNumber = number
 		return nil
 	}
-	reconcileNewJiraTrackerClient = func() (tracker.Client, error) {
+	var gotBaseURL string
+	reconcileNewJiraTrackerClient = func(tracking *config.TrackingConfig) (tracker.Client, error) {
+		if tracking != nil && tracking.Jira != nil {
+			gotBaseURL = tracking.Jira.BaseURL
+		}
 		return tracker.NewForgeClient(gh.New("fake")), nil // stub; type doesn't matter for this test
 	}
 	t.Cleanup(func() {
@@ -845,10 +850,7 @@ func TestNewReconcileStatusCmd_Jira(t *testing.T) {
 
 	dir := t.TempDir()
 	writeJiraDispatchEvent(t, dir, "PROJ-123")
-
-	t.Setenv("JIRA_BASE_URL", "https://acme.atlassian.net")
-	t.Setenv("JIRA_TOKEN", "jira-test-token")
-	t.Setenv("JIRA_USER_EMAIL", "bot@example.com")
+	writeJiraTrackerConfigFile(t, dir)
 
 	cmd := newReconcileStatusCmd()
 	cmd.SetArgs([]string{
@@ -860,14 +862,22 @@ func TestNewReconcileStatusCmd_Jira(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "PROJ", gotProject)
 	assert.Equal(t, 123, gotNumber)
+	assert.Equal(t, "https://acme.atlassian.net", gotBaseURL, "the Jira client is built from tracker.jira in --fullsend-dir")
 }
 
-func TestNewReconcileStatusCmd_Jira_NoBaseURL(t *testing.T) {
+// writeJiraTrackerConfigFile writes a config.yaml with tracker.jira
+// connection settings under dir.
+func writeJiraTrackerConfigFile(t *testing.T, dir string) {
+	t.Helper()
+	cfg := "version: \"1\"\ntracker:\n  jira:\n    base_url: https://acme.atlassian.net\n    project: PROJ\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(cfg), 0o600))
+}
+
+func TestNewReconcileStatusCmd_Jira_NoJiraConfig(t *testing.T) {
 	dir := t.TempDir()
 	writeJiraDispatchEvent(t, dir, "PROJ-123")
 
-	t.Setenv("JIRA_BASE_URL", "")
-	t.Setenv("JIRA_TOKEN", "test-token")
+	t.Setenv("FULLSEND_JIRA_TOKEN", "test-token")
 
 	cmd := newReconcileStatusCmd()
 	cmd.SetArgs([]string{
@@ -877,15 +887,15 @@ func TestNewReconcileStatusCmd_Jira_NoBaseURL(t *testing.T) {
 
 	err := cmd.Execute()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "JIRA_BASE_URL required")
+	assert.Contains(t, err.Error(), "tracker.jira.base_url")
 }
 
 func TestNewReconcileStatusCmd_Jira_NoToken(t *testing.T) {
 	dir := t.TempDir()
 	writeJiraDispatchEvent(t, dir, "PROJ-123")
+	writeJiraTrackerConfigFile(t, dir)
 
-	t.Setenv("JIRA_BASE_URL", "https://acme.atlassian.net")
-	t.Setenv("JIRA_TOKEN", "")
+	t.Setenv("FULLSEND_JIRA_TOKEN", "")
 
 	cmd := newReconcileStatusCmd()
 	cmd.SetArgs([]string{
@@ -896,7 +906,7 @@ func TestNewReconcileStatusCmd_Jira_NoToken(t *testing.T) {
 
 	err := cmd.Execute()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "JIRA_TOKEN required")
+	assert.Contains(t, err.Error(), "FULLSEND_JIRA_TOKEN is required")
 }
 
 func TestNewReconcileStatusCmd_NoTrackerFlags(t *testing.T) {
@@ -922,7 +932,7 @@ func TestNewReconcileStatusCmd_Jira_ViaGitHubEventPath(t *testing.T) {
 		gotNumber = number
 		return nil
 	}
-	reconcileNewJiraTrackerClient = func() (tracker.Client, error) {
+	reconcileNewJiraTrackerClient = func(*config.TrackingConfig) (tracker.Client, error) {
 		return tracker.NewForgeClient(gh.New("fake")), nil
 	}
 	t.Cleanup(func() {
@@ -938,8 +948,6 @@ func TestNewReconcileStatusCmd_Jira_ViaGitHubEventPath(t *testing.T) {
 	require.NoError(t, os.WriteFile(eventFile, []byte(eventContent), 0o644))
 
 	t.Setenv("GITHUB_EVENT_PATH", eventFile)
-	t.Setenv("JIRA_BASE_URL", "https://acme.atlassian.net")
-	t.Setenv("JIRA_TOKEN", "jira-test-token")
 
 	cmd := newReconcileStatusCmd()
 	cmd.SetArgs([]string{

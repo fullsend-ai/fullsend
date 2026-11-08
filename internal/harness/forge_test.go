@@ -1276,7 +1276,7 @@ func TestValidateOverlays_ConfigVariableAccepted(t *testing.T) {
 		Agent: "agents/test.md",
 		Role:  "fix",
 		Overlays: []OverlayEntry{
-			{When: `config.tracker == "jira" && runtime.forge == "github"`, ForgeConfig: ForgeConfig{PreScript: "scripts/pre.sh"}},
+			{When: `has(config.tracker) && has(config.tracker.jira) && runtime.forge == "github"`, ForgeConfig: ForgeConfig{PreScript: "scripts/pre.sh"}},
 		},
 	}
 	err := h.validateOverlays()
@@ -1415,13 +1415,13 @@ func TestResolveOverlays_MergeAllMatching_MixedConditions(t *testing.T) {
 				PreScript: "scripts/gh.sh",
 				RunnerEnv: map[string]string{"GH_TOKEN": "tok"},
 			}},
-			{When: `config.tracker == "jira"`, ForgeConfig: ForgeConfig{
+			{When: `has(config.tracker) && has(config.tracker.jira)`, ForgeConfig: ForgeConfig{
 				RunnerEnv: map[string]string{"JIRA_TOKEN": "jira-tok"},
 			}},
 		},
 	}
 	event := map[string]any{"source": map[string]any{"system": "jira"}}
-	config := map[string]any{"tracker": "jira"}
+	config := map[string]any{"tracker": map[string]any{"jira": map[string]any{}}}
 	err := h.ResolveOverlays(event, "github", config)
 	require.NoError(t, err)
 	// Both overlays match: first sets PreScript and GH_TOKEN, second adds JIRA_TOKEN
@@ -1561,12 +1561,12 @@ func TestResolveOverlays_ConfigVariable(t *testing.T) {
 		Agent: "agents/test.md",
 		Role:  "fix",
 		Overlays: []OverlayEntry{
-			{When: `config.tracker == "jira"`, ForgeConfig: ForgeConfig{PreScript: "scripts/jira.sh"}},
-			{When: `config.tracker == "github"`, ForgeConfig: ForgeConfig{PreScript: "scripts/gh.sh"}},
+			{When: `has(config.tracker) && has(config.tracker.jira)`, ForgeConfig: ForgeConfig{PreScript: "scripts/jira.sh"}},
+			{When: `has(config.tracker) && has(config.tracker.github)`, ForgeConfig: ForgeConfig{PreScript: "scripts/gh.sh"}},
 		},
 	}
 	event := map[string]any{"source": map[string]any{"system": "jira"}}
-	config := map[string]any{"tracker": "jira"}
+	config := map[string]any{"tracker": map[string]any{"jira": map[string]any{}}}
 	err := h.ResolveOverlays(event, "github", config)
 	require.NoError(t, err)
 	assert.Equal(t, "scripts/jira.sh", h.PreScript)
@@ -1715,15 +1715,79 @@ func TestBuildConfigMap_AllFields(t *testing.T) {
 	require.True(t, ok)
 	assert.Contains(t, arr, "https://example.com/*")
 
-	// Issue creation config (set by NewPerRepoConfig): the default
+	// Tracker config (set by NewPerRepoConfig): the default
 	// allowlist includes both upstreams; the target repo is always implicitly
 	// allowed and needs no entry.
-	ci, ok := m["create_issues"].(map[string]any)
+	tracker, ok := m["tracker"].(map[string]any)
 	require.True(t, ok)
-	repos, ok := ci["allow_repos"].([]any)
+	github, ok := tracker["github"].(map[string]any)
+	require.True(t, ok)
+	targets, ok := github["allowed_targets"].(map[string]any)
+	require.True(t, ok)
+	repos, ok := targets["repos"].([]any)
 	require.True(t, ok)
 	assert.Equal(t, []any{"fullsend-ai/fullsend", "fullsend-ai/agents"}, repos)
 	assert.NotContains(t, repos, "org/repo")
+	assert.NotContains(t, m, "create_issues")
+}
+
+func TestBuildConfigMap_TrackerProviders(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		yaml string
+		want map[string]any
+	}{
+		{
+			name: "github",
+			yaml: "tracker:\n  github:\n    allowed_targets:\n      orgs: [acme]\n      repos: [other/repo]\n",
+			want: map[string]any{"github": map[string]any{"allowed_targets": map[string]any{
+				"orgs": []any{"acme"}, "repos": []any{"other/repo"},
+			}}},
+		},
+		{
+			name: "gitlab",
+			yaml: "tracker:\n  gitlab:\n    allowed_targets:\n      groups: [grp]\n      repos: [grp/sub/proj]\n",
+			want: map[string]any{"gitlab": map[string]any{"allowed_targets": map[string]any{
+				"groups": []any{"grp"}, "repos": []any{"grp/sub/proj"},
+			}}},
+		},
+		{
+			name: "jira",
+			yaml: "tracker:\n  jira:\n    allowed_targets:\n      projects: [PROJ]\n",
+			want: map[string]any{"jira": map[string]any{"allowed_targets": map[string]any{
+				"projects": []any{"PROJ"},
+			}}},
+		},
+		{
+			name: "empty allowed_targets keeps the provider key",
+			yaml: "tracker:\n  gitlab:\n    allowed_targets: {}\n",
+			want: map[string]any{"gitlab": map[string]any{}},
+		},
+		{
+			name: "empty provider block selects the provider",
+			yaml: "tracker:\n  jira: {}\n",
+			want: map[string]any{"jira": map[string]any{}},
+		},
+		{
+			name: "unset",
+			yaml: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg, err := config.ParsePerRepoConfig([]byte("version: \"1\"\n" + tc.yaml))
+			require.NoError(t, err)
+			m := BuildConfigMap(cfg)
+			if tc.want == nil {
+				assert.NotContains(t, m, "tracker")
+				assert.NotContains(t, m, "tracking")
+				return
+			}
+			assert.Equal(t, tc.want, m["tracker"])
+		})
+	}
 }
 
 func TestBuildConfigMap_ForgeAndTracker(t *testing.T) {
@@ -1731,7 +1795,8 @@ func TestBuildConfigMap_ForgeAndTracker(t *testing.T) {
 	yamlData := []byte(`
 version: "1"
 forge: github
-tracker: jira
+tracker:
+  jira: {}
 roles:
   - triage
 `)
@@ -1741,7 +1806,7 @@ roles:
 	m := BuildConfigMap(cfg)
 	require.NotNil(t, m)
 	assert.Equal(t, "github", m["forge"])
-	assert.Equal(t, "jira", m["tracker"])
+	assert.Equal(t, map[string]any{"jira": map[string]any{}}, m["tracker"])
 }
 
 func TestBuildConfigMap_EmptyFieldsOmitted(t *testing.T) {

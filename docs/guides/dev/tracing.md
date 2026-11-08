@@ -128,7 +128,10 @@ is present, the W3C propagator extracts a remote span context and the root
 span is `SpanKindConsumer`. Otherwise it is `SpanKindInternal`.
 
 Start attributes include: `fullsend.agent`, `fullsend.work_item_id`,
-`gen_ai.operation.name`, `gen_ai.agent.name`.
+`gen_ai.operation.name`, `gen_ai.agent.name`. The harness identity
+(`fullsend.harness.*`, `harnessIdentityAttrs()`) and the forge and CI pointers
+(`vcs.*`, `cicd.*`, `forgePointerAttrs()`) are set right after the root span
+starts.
 
 End attributes (set in a deferred cleanup): `exit_code`,
 `fullsend.cost_usd`, `fullsend.num_turns`, `fullsend.tool_calls`,
@@ -158,20 +161,23 @@ effective model via `runtime.GenAISystemFor`; `System()` is only the fallback.
 
 ### execute_tool spans
 
-One per id-bearing tool call the runtime reports (Claude Code today), up to
+One per id-bearing tool call the runtime reports (Claude Code and pi), up to
 1,024 per iteration, a child of that iteration's agent span, named
 `execute_tool <tool name>`. `toolSpanTracker`
 (`internal/cli/tool_spans.go`) starts the span when it handles the
-`ToolUseEvent` and ends it when it handles the matching `ToolResultEvent`.
+`ToolUseEvent`, or at the event's `StartedAt` on pi (when the parser read
+`tool_execution_start`), and ends it when it handles the matching
+`ToolResultEvent`.
 `iterationEventHandler` runs the console renderer first, then the tracker,
-then the Level 3 collector, so both timestamps are runner-side receipt
+then the Level 3 collector, so both timestamps are runner-side
 instants on one clock, each trailing the sandbox by the pipe latency and the
 parser's decode of the line: the start also trails receipt by the renderer's output for
 the call (the renderer prints nothing for a result), and neither waits on
 the collector's redaction pass over its own event (events are handled one
 at a time, so with several calls open an instant can still trail the
 collector's pass over an earlier event, such as another call's large
-result) — the start is arguments-complete, not execution start. Attributes:
+result) — on Claude Code the start is arguments-complete, not execution
+start. Attributes:
 `gen_ai.operation.name=execute_tool`, `gen_ai.tool.name`,
 `gen_ai.tool.call.id`; a result flagged `is_error` sets
 `error.type=tool_error` and status Error. A result whose stream line
@@ -182,11 +188,14 @@ and no `error.type`, since `is_error` was never decoded. A call still open
 when the stream ends — the runtime was stopped, or an over-long result
 line showed no id in that prefix — is closed as `error.type=unanswered` by
 `Finish()`, which `runAgent` calls once `rt.Run` returns, before content
-assembly; a
+assembly (the pi parser holds a call's `ToolUseEvent` until
+`tool_execution_end`, because a failed call's summary needs the result, so a
+call cut off by a kill or timeout never opens a span); a
 call superseded by a second `tool_use` with the same id is ended the same
-way at the reuse; a result with no matching call (its `tool_use` line was skipped) becomes a
+way at the reuse; a result with no matching call (its `tool_use` or, on pi,
+`tool_execution_start` line was skipped) becomes a
 near-zero-duration span marked `fullsend.tool.unmatched=true`. Events without
-an id — pi and codex emit none — produce no span, so the child count can be
+an id — codex emits none — produce no span, so the child count can be
 below `fullsend.tool_calls`, which counts every reported call, id or not; a
 `server_tool_use` block on an `assistant` line produces no event at all (its
 result never arrives as a `tool_result`), so it appears in neither count. The name passes through `redactText`
@@ -224,9 +233,9 @@ renderer path.
 
 The collector (`internal/cli/content_collector.go`) coalesces contiguous
 text/reasoning deltas, maps tool use to `tool_call` parts and tool
-results to `tool_call_response` parts (only the Claude parser emits
-`ToolResultEvent`, call ids and `ToolUseEvent.Arguments` today — pi and
-codex emit none of them,
+results to `tool_call_response` parts (only the Claude and pi parsers emit
+`ToolResultEvent`, call ids and `ToolUseEvent.Arguments` today — codex
+emits none of them,
 [#7414](https://github.com/fullsend-ai/fullsend/issues/7414); the schema's
 required result field is `response`), redacts every
 part — `security.OutputPipeline()`, with `replaceEnvSecrets` for the values

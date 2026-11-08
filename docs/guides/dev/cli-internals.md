@@ -63,6 +63,10 @@ fullsend
 │   │   ├── --vertex-project <id>            #   GCP project ID for Vertex inference (else declared inference.project; never in repos.yaml)
 │   │   ├── --vertex-wif-provider <path>     #   Full WIF provider resource name (else declared inference.wif_provider; skips per-repo derivation)
 │   │   ├── --openai-api-key <key>           #   FULLSEND_OPENAI_API_KEY for openai-api-key repos (CLI-only; never in repos.yaml)
+│   │   ├── --jira-token <token>             #   FULLSEND_JIRA_TOKEN when no OAuth client credentials are configured (CLI-only; never in repos.yaml)
+│   │   ├── --jira-email <email>             #   FULLSEND_JIRA_EMAIL for repos whose tracker.jira.poll.enabled is true (optional; CLI-only)
+│   │   ├── --jira-client-id <id>            #   FULLSEND_JIRA_CLIENT_ID instead of --jira-token (CLI-only)
+│   │   ├── --jira-client-secret <secret>    #   FULLSEND_JIRA_CLIENT_SECRET instead of --jira-token (CLI-only; never logged)
 │   │   ├── --fullsend-binary <path>         #   Pre-built binary to vendor (requires a selected repo with vendor: true)
 │   │   ├── --fullsend-source <path>         #   Source checkout to vendor from (requires a selected repo with vendor: true)
 │   │   ├── --gitlab-role-registry <path>    #   Administrator GitLab role registry JSON
@@ -660,6 +664,12 @@ Vendoring commit messages use title + body (upload and stale delete). `admin ins
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+The `bootstrapEnv()` writes and the `iteration.env` names in this diagram are
+the runner's exports. The full, machine-checkable inventory — what every
+sandbox receives, per gate and per runtime, and what arrives only through
+harness configuration — is the generated [sandbox environment
+contract](../../normative/sandbox-env/v1/README.md).
 
 ### Sandbox Constants
 

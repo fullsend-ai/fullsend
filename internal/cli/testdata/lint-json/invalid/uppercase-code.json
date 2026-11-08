@@ -1,0 +1,17 @@
+{
+  "schema_version": 2,
+  "success": true,
+  "summary": {
+    "errors": 0,
+    "warnings": 1
+  },
+  "diagnostics": [
+    {
+      "code": "Runner-env-deprecated",
+      "agent": "my-agent",
+      "severity": "warning",
+      "field": "runner_env",
+      "message": "uppercase codes are rejected"
+    }
+  ]
+}

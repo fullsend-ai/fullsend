@@ -47,10 +47,10 @@ fullsend --version
 ## Install OpenShell
 
 [OpenShell](https://github.com/NVIDIA/OpenShell) provides the sandbox runtime. There are multiple ways
-to install it, here we use one similar to how we download it on Fullsend. Use the version
+to install it, here we use one similar to how we download it on fullsend. Use the version
 fullsend is pinned to — the source of truth is
 [`.github/scripts/openshell-version.sh`](https://github.com/fullsend-ai/fullsend/blob/main/.github/scripts/openshell-version.sh)
-in the fullsend repo at your release tag (also printed on Fullsend workflow runs).
+in the fullsend repo at your release tag (also printed on fullsend workflow runs).
 
 ```bash
 export OPENSHELL_VERSION=0.1.4  # check the pin file for the current version
@@ -160,7 +160,9 @@ with the credential kept out of the sandbox by an OpenShell provider. In CI the 
 identity ([OpenAI Workload Identity](../infrastructure/openai-workload-identity.md)); on your
 machine there is no such identity, so use an API key from the same OpenAI project. Put it in an
 environment file, like the GCP settings above — never in the harness YAML and never under
-`env.sandbox` (the runner refuses to export it into the sandbox):
+`env.sandbox` (the runner refuses to export it into the sandbox; `OPENAI_API_KEY` is in the
+reserved set published by the [sandbox environment
+contract](../../normative/sandbox-env/v1/README.md)):
 
 ```bash
 # fullsend-openai.env
