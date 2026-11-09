@@ -138,13 +138,13 @@ Rejected.
 
 **D. A rotation or cursor across cycles to reach issues beyond M.** Needs
 state that survives process restarts. A resident poller
-([ADR 0144](0144-reuse-poll-and-entity-bound-run-processes.md)) could hold a cursor in memory
-between cycles, but loses it on every restart, and the managed GitHub
-workflow runs one cycle per job. The Jira-side stores are issue
-properties (editor-writable and per issue) and project properties (which
-need Administer Projects, the permission ADR 0153 removed); the search API's
-page tokens are opaque and short-lived; the target repository is not a
-store the poller writes. B does not shrink the window: the filter runs on
+([ADR 0144](0144-reuse-poll-and-entity-bound-run-processes.md)) could hold
+a cursor in memory between cycles, but loses it on every restart, and the
+managed GitHub workflow runs one cycle per job. The Jira-side stores are
+issue properties (editor-writable and per issue) and project properties
+(which need Administer Projects, the permission ADR 0153 removed); the
+search API's page tokens are opaque and short-lived; the target repository
+is not a store the poller writes. B does not shrink the window: the filter runs on
 the rows the search returned, and idle issues still occupy those rows, so
 with the default most-recent-first order a pending issue drops out of
 reach once M other matching issues have changed after it, over however
