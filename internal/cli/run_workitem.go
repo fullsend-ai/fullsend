@@ -105,38 +105,32 @@ func discoverJiraGatewayURL(ctx context.Context, cfg jira.ScopedConfig) (string,
 // variable or dispatch input), so config is the only source. JIRA_API_URL is
 // the gateway base {api_url}/ex/jira/{cloudId} the shared client uses.
 //
-// Both values are always exported for a Jira-sourced run, so an inherited
-// value never survives:
-//   - tracker.jira.base_url missing or invalid (not https, embedded
-//     credentials): both are cleared and warn is called.
-//   - offline: JIRA_API_URL is cleared without a network call.
-//   - cloud-ID discovery fails: JIRA_API_URL is cleared, so agents fall back
-//     to JIRA_BASE_URL, and warn names the site host only.
+// It fails closed (ADR 0156): a Jira-sourced run stops, rather than falling
+// back to the site URL, when the Jira connection settings are missing or
+// invalid, when the run is offline, or when cloud-ID discovery fails. A
+// fallback would turn a service-account rejection into an unexplained
+// failure inside the agent. Errors never include the raw URL, which may
+// embed credentials; discovery errors name the site host only.
 //
 // Both values are URLs, never credentials.
-func resolveJiraRunEnv(ctx context.Context, trackerSource string, tracking *config.TrackingConfig, offline bool, discover jiraGatewayDiscoverer, warn func(string)) map[string]string {
+func resolveJiraRunEnv(ctx context.Context, trackerSource string, tracking *config.TrackingConfig, offline bool, discover jiraGatewayDiscoverer) (map[string]string, error) {
 	if trackerSource != string(normevent.SystemJira) {
-		return nil
+		return nil, nil
 	}
-	cleared := map[string]string{envJiraBaseURL: "", envJiraAPIURL: ""}
 	if tracking == nil || tracking.Jira == nil || tracking.Jira.BaseURL == "" {
-		warn(fmt.Sprintf("tracker.jira.base_url is not configured; %s and %s are cleared for this Jira-sourced run", envJiraBaseURL, envJiraAPIURL))
-		return cleared
+		return nil, fmt.Errorf("jira-sourced run: tracker.jira.base_url is not configured, so %s and %s cannot be set", envJiraBaseURL, envJiraAPIURL)
 	}
 	baseURL := strings.TrimRight(tracking.Jira.BaseURL, "/")
 	conn := *tracking.Jira
 	conn.BaseURL = baseURL
 	// The config-layer rule (https only, no credentials, query, or
-	// fragment); its errors never include the raw URL, which may embed
-	// credentials. Runtime loading does not run it, so check here.
+	// fragment); its errors never include the raw URL. Runtime loading does
+	// not run it, so check here.
 	if err := conn.ValidateConnection(); err != nil {
-		warn(fmt.Sprintf("Jira connection settings are invalid (%v); %s and %s are cleared for this Jira-sourced run", err, envJiraBaseURL, envJiraAPIURL))
-		return cleared
+		return nil, fmt.Errorf("jira-sourced run: invalid Jira connection settings: %w", err)
 	}
-	env := map[string]string{envJiraBaseURL: baseURL, envJiraAPIURL: ""}
 	if offline {
-		warn(fmt.Sprintf("Offline: the Jira API gateway URL is not resolved; %s is cleared", envJiraAPIURL))
-		return env
+		return nil, fmt.Errorf("jira-sourced run: %s needs a cloud-ID lookup, which --offline does not allow", envJiraAPIURL)
 	}
 	host := baseURL
 	if u, err := url.Parse(baseURL); err == nil {
@@ -145,15 +139,13 @@ func resolveJiraRunEnv(ctx context.Context, trackerSource string, tracking *conf
 	dctx, cancel := context.WithTimeout(ctx, jiraGatewayDiscoveryTimeout)
 	defer cancel()
 	apiURL, err := discover(dctx, jira.ScopedConfig{BaseURL: baseURL, APIURL: tracking.Jira.EffectiveAPIURL()})
-	if err != nil || apiURL == "" {
-		if err == nil {
-			err = fmt.Errorf("empty gateway URL")
-		}
-		warn(fmt.Sprintf("Could not resolve the Jira API gateway URL for %s; %s is cleared, so agents use the site URL and service-account credentials will fail: %v", host, envJiraAPIURL, err))
-		return env
+	if err == nil && apiURL == "" {
+		err = fmt.Errorf("empty gateway URL")
 	}
-	env[envJiraAPIURL] = apiURL
-	return env
+	if err != nil {
+		return nil, fmt.Errorf("jira-sourced run: could not resolve the Jira API gateway URL for %s: %w", host, err)
+	}
+	return map[string]string{envJiraBaseURL: baseURL, envJiraAPIURL: apiURL}, nil
 }
 
 // jiraGatewayDiscoveryTimeout bounds the cloud-ID lookup a Jira-sourced run

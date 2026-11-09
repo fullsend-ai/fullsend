@@ -238,18 +238,18 @@ For a Jira-sourced run, `fullsend run` also sets two Jira URLs before harness en
 | `JIRA_BASE_URL` | `tracker.jira.base_url`. It replaces any inherited value, such as the `JIRA_BASE_URL` repository variable or the `jira_base_url` dispatch input, so config is the only source. |
 | `JIRA_API_URL` | The per-site API gateway base `{api_url}/ex/jira/{cloudId}`, with no trailing slash, where `api_url` is `tracker.jira.api_url` (default `https://api.atlassian.com`). It is the same base fullsend's own Jira client uses, and the cloud ID is discovered the same way, from `{base_url}/_edge/tenant_info`. |
 
-The built-in agents send Jira REST calls to `${JIRA_API_URL:-${JIRA_BASE_URL}}/rest/api/3/...`. A service account's scoped API token or OAuth 2.0 access token works only through the gateway, so these runs need `JIRA_API_URL`. Bot-user Basic auth also works against the site URL.
+The built-in agents send Jira REST calls to `${JIRA_API_URL:-${JIRA_BASE_URL}}/rest/api/3/...`. Because `fullsend run` always sets `JIRA_API_URL` for a Jira-sourced run that starts, those calls go through the gateway, which accepts a bot user's token, a service account's scoped token, and an OAuth 2.0 access token.
 
-Both variables are always set for a Jira-sourced run, so an inherited value never takes effect:
+A Jira-sourced run fails closed. It stops before the sandbox starts, rather than letting agents fall back to the site URL, where a service account's credential is rejected:
 
-| Case | `JIRA_BASE_URL` | `JIRA_API_URL` | Warning |
-|---|---|---|---|
-| Discovery succeeds | site URL | gateway base | none |
-| Discovery fails (10-second limit) | site URL | empty, so agents fall back to the site URL, where only bot-user Basic auth works | names the site host |
-| `fullsend run --offline` | site URL | empty, with no network call | yes |
-| `tracker.jira` connection settings missing or invalid (for example `base_url` or `api_url` not `https`, or with credentials, a query, or a fragment) | empty | empty | yes; the URL is never printed |
+| Case | Result |
+|---|---|
+| Discovery succeeds | Both variables are set; the run continues |
+| Discovery fails or times out (10-second limit) | The run stops; the error names the site host |
+| `fullsend run --offline` | The run stops: the gateway address needs a network lookup |
+| `tracker.jira` connection settings missing or invalid (for example `base_url` or `api_url` not `https`, or with credentials, a query, or a fragment) | The run stops; the URL is never printed |
 
-Empty, not unset, is deliberate: it clears any inherited value, and an unset `${JIRA_API_URL}` would fail harness env validation. For the same reason, reference these variables only in a harness overlay that applies to Jira runs (`when: 'has(event.source) && event.source.system == "jira"'`). On a GitHub- or GitLab-sourced run, fullsend leaves them as they are, and an unset reference fails the run. Both values are URLs, not credentials, and a runner secret cannot override `JIRA_API_URL` or `JIRA_BASE_URL`.
+Reference these variables only in a harness overlay that applies to Jira runs (`when: 'has(event.source) && event.source.system == "jira"'`). On a GitHub- or GitLab-sourced run, fullsend leaves them as they are, and an unset reference fails the run. Both values are URLs, not credentials, and a runner secret cannot override `JIRA_API_URL` or `JIRA_BASE_URL`.
 
 For sandboxed use, the network profile must allow the gateway host. The built-in agents' `jira-ro` provider profile allows `api.atlassian.com`. The legacy `atlassian-cloud` profile below allows only `*.atlassian.net`, so it serves bot-user calls to the site URL only.
 

@@ -47,16 +47,14 @@ func TestResolveJiraRunEnv_Jira(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var gotCfg jira.ScopedConfig
-			var warnings []string
-			env := resolveJiraRunEnv(context.Background(), "jira", jiraTracking(testJiraSite, tt.apiURL), false,
-				stubJiraGateway(&gotCfg), func(s string) { warnings = append(warnings, s) })
-
+			env, err := resolveJiraRunEnv(context.Background(), "jira", jiraTracking(testJiraSite, tt.apiURL), false,
+				stubJiraGateway(&gotCfg))
+			require.NoError(t, err)
 			assert.Equal(t, map[string]string{
 				envJiraBaseURL: testJiraSite,
 				envJiraAPIURL:  tt.wantAPIURL,
 			}, env)
 			assert.Equal(t, testJiraSite, gotCfg.BaseURL)
-			assert.Empty(t, warnings)
 		})
 	}
 }
@@ -69,45 +67,39 @@ func TestResolveJiraRunEnv_NonJiraSource(t *testing.T) {
 				called = true
 				return jira.DefaultAPIURL + "/ex/jira/x", nil
 			}
-			env := resolveJiraRunEnv(context.Background(), source, jiraTracking(testJiraSite, ""), false,
-				discover, func(s string) { t.Errorf("unexpected warning: %s", s) })
+			// Even with no usable Jira config, non-Jira runs never fail here.
+			env, err := resolveJiraRunEnv(context.Background(), source, nil, true, discover)
+			require.NoError(t, err)
 			assert.Nil(t, env)
 			assert.False(t, called, "no discovery for non-Jira runs")
 		})
 	}
 }
 
-func TestResolveJiraRunEnv_DiscoveryFails(t *testing.T) {
-	discover := func(context.Context, jira.ScopedConfig) (string, error) {
-		return "", errors.New("jira: discover cloud ID: unexpected status 404")
+// TestResolveJiraRunEnv_DiscoveryFailsClosed checks that a failed or empty
+// cloud-ID lookup stops the run instead of letting agents fall back to the
+// site URL (ADR 0156), and that the error names the site host.
+func TestResolveJiraRunEnv_DiscoveryFailsClosed(t *testing.T) {
+	for name, discover := range map[string]jiraGatewayDiscoverer{
+		"lookup error": func(context.Context, jira.ScopedConfig) (string, error) {
+			return "", errors.New("jira: discover cloud ID: unexpected status 404")
+		},
+		"empty result": func(context.Context, jira.ScopedConfig) (string, error) { return "", nil },
+	} {
+		t.Run(name, func(t *testing.T) {
+			env, err := resolveJiraRunEnv(context.Background(), "jira", jiraTracking(testJiraSite, ""), false, discover)
+			require.Error(t, err)
+			assert.Nil(t, env)
+			assert.Contains(t, err.Error(), "example.atlassian.net")
+			assert.Contains(t, err.Error(), "gateway URL")
+		})
 	}
-	var warnings []string
-	env := resolveJiraRunEnv(context.Background(), "jira", jiraTracking(testJiraSite, ""), false,
-		discover, func(s string) { warnings = append(warnings, s) })
-
-	assert.Equal(t, map[string]string{
-		envJiraBaseURL: testJiraSite,
-		envJiraAPIURL:  "",
-	}, env, "JIRA_API_URL is cleared so agents fall back to JIRA_BASE_URL")
-	require.Len(t, warnings, 1)
-	assert.Contains(t, warnings[0], "example.atlassian.net")
-	assert.Contains(t, warnings[0], envJiraAPIURL)
 }
 
-func TestResolveJiraRunEnv_EmptyDiscoveryResult(t *testing.T) {
-	discover := func(context.Context, jira.ScopedConfig) (string, error) { return "", nil }
-	var warnings []string
-	env := resolveJiraRunEnv(context.Background(), "jira", jiraTracking(testJiraSite, ""), false,
-		discover, func(s string) { warnings = append(warnings, s) })
-	assert.Equal(t, map[string]string{envJiraBaseURL: testJiraSite, envJiraAPIURL: ""}, env)
-	require.Len(t, warnings, 1)
-}
-
-// TestResolveJiraRunEnv_ClearsWithoutUsableBaseURL checks that a Jira run
-// without a usable tracker.jira.base_url clears both variables, so an
-// inherited repository variable or workflow value never takes effect
-// (#8906), and that the warning never echoes embedded credentials.
-func TestResolveJiraRunEnv_ClearsWithoutUsableBaseURL(t *testing.T) {
+// TestResolveJiraRunEnv_InvalidConfigFailsClosed checks that a Jira run
+// without usable tracker.jira connection settings stops, and that the error
+// never echoes embedded credentials.
+func TestResolveJiraRunEnv_InvalidConfigFailsClosed(t *testing.T) {
 	for name, tracking := range map[string]*config.TrackingConfig{
 		"nil tracking":                 nil,
 		"no jira block":                {},
@@ -122,35 +114,34 @@ func TestResolveJiraRunEnv_ClearsWithoutUsableBaseURL(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			discover := func(context.Context, jira.ScopedConfig) (string, error) {
-				t.Error("discovery must not run without a usable base URL")
+				t.Error("discovery must not run without usable connection settings")
 				return "", nil
 			}
-			var warnings []string
-			env := resolveJiraRunEnv(context.Background(), "jira", tracking, false, discover, func(s string) { warnings = append(warnings, s) })
-			assert.Equal(t, map[string]string{envJiraBaseURL: "", envJiraAPIURL: ""}, env)
-			require.Len(t, warnings, 1)
-			assert.Contains(t, warnings[0], "tracker.jira")
-			assert.NotContains(t, warnings[0], "s3cret")
+			env, err := resolveJiraRunEnv(context.Background(), "jira", tracking, false, discover)
+			require.Error(t, err)
+			assert.Nil(t, env)
+			assert.Contains(t, err.Error(), "tracker.jira")
+			assert.NotContains(t, err.Error(), "s3cret")
 		})
 	}
 }
 
-func TestResolveJiraRunEnv_Offline(t *testing.T) {
+func TestResolveJiraRunEnv_OfflineFailsClosed(t *testing.T) {
 	discover := func(context.Context, jira.ScopedConfig) (string, error) {
 		t.Error("discovery must not run offline")
 		return "", nil
 	}
-	var warnings []string
-	env := resolveJiraRunEnv(context.Background(), "jira", jiraTracking(testJiraSite, ""), true,
-		discover, func(s string) { warnings = append(warnings, s) })
-	assert.Equal(t, map[string]string{envJiraBaseURL: testJiraSite, envJiraAPIURL: ""}, env)
-	require.Len(t, warnings, 1)
+	env, err := resolveJiraRunEnv(context.Background(), "jira", jiraTracking(testJiraSite, ""), true, discover)
+	require.Error(t, err)
+	assert.Nil(t, env)
+	assert.Contains(t, err.Error(), "--offline")
 }
 
 func TestResolveJiraRunEnv_TrimsTrailingSlash(t *testing.T) {
 	var gotCfg jira.ScopedConfig
-	env := resolveJiraRunEnv(context.Background(), "jira", jiraTracking(testJiraSite+"/", ""), false,
-		stubJiraGateway(&gotCfg), func(s string) { t.Errorf("unexpected warning: %s", s) })
+	env, err := resolveJiraRunEnv(context.Background(), "jira", jiraTracking(testJiraSite+"/", ""), false,
+		stubJiraGateway(&gotCfg))
+	require.NoError(t, err)
 	assert.Equal(t, testJiraSite, env[envJiraBaseURL])
 	assert.Equal(t, testJiraSite, gotCfg.BaseURL)
 }
@@ -175,8 +166,9 @@ func TestDiscoverJiraGatewayURL(t *testing.T) {
 // what a host_files expand:true template resolves ${JIRA_API_URL} to.
 func TestJiraRunEnv_HostFileExpansion(t *testing.T) {
 	var gotCfg jira.ScopedConfig
-	env := resolveJiraRunEnv(context.Background(), "jira", jiraTracking(testJiraSite, ""), false,
-		stubJiraGateway(&gotCfg), func(string) {})
+	env, err := resolveJiraRunEnv(context.Background(), "jira", jiraTracking(testJiraSite, ""), false,
+		stubJiraGateway(&gotCfg))
+	require.NoError(t, err)
 	for k, v := range env {
 		t.Setenv(k, v)
 	}
@@ -222,9 +214,16 @@ func writeJiraEnvHarnessFixture(t *testing.T, baseURL string) string {
 		[]byte("agent: agents/code.md\nrole: coder\npolicy: policies/base.yaml\nrunner_env:\n  MY_API: ${JIRA_API_URL}\n  MY_BASE: ${JIRA_BASE_URL}\n"),
 		0o644,
 	))
+	writeJiraTrackerConfig(t, dir, baseURL)
+	return dir
+}
+
+// writeJiraTrackerConfig writes a config.yaml that registers the code
+// harness and sets tracker.jira.base_url to baseURL.
+func writeJiraTrackerConfig(t *testing.T, dir, baseURL string) {
+	t.Helper()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"),
 		[]byte("agents:\n  - harness/code.yaml\ntracker:\n  jira:\n    base_url: "+baseURL+"\n    project: PROJ\n"), 0o644))
-	return dir
 }
 
 const jiraCodeDispatchPayload = `{"_normalized_event":{"repo":"org/repo","entity":{"kind":"work_item","id":10042,"key":"PROJ-1","url":"https://example.atlassian.net/browse/PROJ-1"},"transition":{"kind":"comment_added","comment":{"body":"/fs-code","command":"/fs-code"}},"actor":{"id":"u1","kind":"human","role":"write","is_entity_author":false},"state":{"labels":[]},"source":{"system":"jira","raw_type":"comment"}}}`
@@ -235,11 +234,14 @@ const jiraCodeDispatchPayload = `{"_normalized_event":{"repo":"org/repo","entity
 // inherited values afterwards.
 func TestRunAgent_JiraRunEnvExported(t *testing.T) {
 	for _, tt := range []struct {
-		name   string
-		status int
+		name    string
+		status  int
+		wantErr string
 	}{
-		{name: "discovery succeeds", status: http.StatusOK},
-		{name: "discovery fails", status: http.StatusNotFound},
+		// The fake openshell fails after env validation passed.
+		{name: "discovery succeeds", status: http.StatusOK, wantErr: "openshell"},
+		// Fail closed before the sandbox (ADR 0156).
+		{name: "discovery fails", status: http.StatusNotFound, wantErr: "could not resolve the Jira API gateway URL"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			useFakeOpenshell(t)
@@ -257,7 +259,7 @@ func TestRunAgent_JiraRunEnvExported(t *testing.T) {
 
 			err := runCodeAgentForWorkItemTest(t, dir)
 			require.Error(t, err)
-			assert.Contains(t, err.Error(), "openshell")
+			assert.Contains(t, err.Error(), tt.wantErr)
 			assert.NotContains(t, err.Error(), "validating env")
 			assert.Equal(t, int32(1), hits.Load(), "cloud ID is discovered once from tracker.jira.base_url")
 

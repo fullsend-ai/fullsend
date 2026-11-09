@@ -225,9 +225,9 @@ For a Jira-sourced run, `fullsend run` sets `JIRA_BASE_URL` to `tracker.jira.bas
 `JIRA_API_URL` to the API gateway base `{tracker.jira.api_url}/ex/jira/{cloudId}` before env
 expansion, replacing any inherited `JIRA_BASE_URL`. A `${JIRA_BASE_URL}` or `${JIRA_API_URL}`
 reference in `env.runner`, `env.sandbox`, or a `host_files` entry with `expand: true` resolves to
-these values. When cloud-ID discovery fails, `JIRA_API_URL` is empty and the run continues with a
-warning; when `tracker.jira.base_url` is missing or invalid, both are empty. A runner secret cannot
-override either name. Runs from other sources do not get these variables from `fullsend run`, so
+these values. A Jira-sourced run stops before the sandbox starts when cloud-ID discovery fails,
+when the run is `--offline`, or when the `tracker.jira` connection settings are missing or invalid,
+instead of letting agents fall back to the site URL. A runner secret cannot override either name. Runs from other sources do not get these variables from `fullsend run`, so
 reference them only in an overlay guarded on `event.source.system == "jira"`: an unset reference
 fails env validation on a GitHub or GitLab run. See
 [Jira integration § Jira connection variables in agent runs](../guides/user/jira-integration.md#jira-connection-variables-in-agent-runs).
