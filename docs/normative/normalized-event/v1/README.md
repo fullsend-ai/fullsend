@@ -454,7 +454,7 @@ contract):
 | `project_number` | Not in `NormalizedEvent`; prioritize agent reads `PRIORITIZE_PROJECT_NUMBER` from workflow env |
 | `run-url` | Runtime-only; set by the dispatch workflow, not projected from `NormalizedEvent` |
 
-**`event_type` / `pull_request_target`:** v1 preserves the GitHub Actions event
+**`event_type` / `pull_request` and `pull_request_target`:** v1 preserves the GitHub Actions event
 name in `source.raw_type`, never normalized. When the workflow runs on
 `pull_request_target`, adapters emit `raw_type: "pull_request_target"`; when it
 runs on `pull_request`, they emit `raw_type: "pull_request"`. Both map to the

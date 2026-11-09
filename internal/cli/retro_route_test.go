@@ -155,22 +155,22 @@ func TestRouteBuiltinAgent_Retro(t *testing.T) {
 			wantDecision: routeRun,
 		},
 		{
-			name:         "pull_request: PR closed by its read-only author starts a retro (lifecycle-close exception)",
+			name:         "pull_request: PR closed by its read-only author is denied",
 			agents:       []config.AgentEntry{{Name: "retro", Trigger: routeTrigger(t, "retro")}},
 			event:        routeRetroEvent(routeRetroPR, routeRetroClosed, routeRetroReadAuthor, "pull_request", "closed"),
-			wantDecision: routeRun,
+			wantDecision: routeSkip, wantReason: "closed pull request retro requires write",
 		},
 		{
-			name:         "pull_request: PR closed by an app bot without a role starts a retro (lifecycle-close exception)",
+			name:         "pull_request: PR closed by an app bot without write is denied",
 			agents:       []config.AgentEntry{{Name: "retro", Trigger: routeTrigger(t, "retro")}},
 			event:        routeRetroEvent(routeRetroPR, routeRetroClosed, routeRetroAppBot, "pull_request", "closed"),
-			wantDecision: routeRun,
+			wantDecision: routeSkip, wantReason: "closed pull request retro requires write",
 		},
 		{
-			name:         "pull_request: PR closed by a triage user starts a retro (lifecycle-close exception)",
+			name:         "pull_request: PR closed by a triage user is denied",
 			agents:       []config.AgentEntry{{Name: "retro", Trigger: routeTrigger(t, "retro")}},
 			event:        routeRetroEvent(routeRetroPR, routeRetroClosed, routeRetroTriager, "pull_request", "closed"),
-			wantDecision: routeRun,
+			wantDecision: routeSkip, wantReason: "closed pull request retro requires write",
 		},
 		{
 			name:         "/fs-retro from a triage user is not authorized",

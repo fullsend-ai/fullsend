@@ -67,7 +67,7 @@ thresholds, dispatch-path differences), see
 OWNERS can only **raise** a user's effective role, never lower it. Users not
 found in OWNERS fall through to the forge's permission API. The OWNERS file
 is read from a trusted ref so that PR authors cannot add themselves:
-`pull_request_target` and `pull_request_review` events use the PR's
+`pull_request`, `pull_request_target` and `pull_request_review` events use the PR's
 **base-branch SHA**; all other events — including slash commands posted on a
 PR (`issue_comment`) — use the **default branch**.
 

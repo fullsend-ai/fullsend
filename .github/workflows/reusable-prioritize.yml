@@ -107,7 +107,7 @@ jobs:
           # checkout@v7 blocks fork PR checkouts on pull_request_target by default.
           # Safe here: only .fullsend/ config is read, no fork code is executed,
           # and credentials are not persisted.
-          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.sha }}
+          ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request') && github.event.pull_request.base.sha || github.sha }}
           persist-credentials: false
           allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
 
@@ -116,7 +116,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
-          ref: ${{ job.workflow_sha }}
+          ref: ${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
           path: .defaults
           fetch-depth: 1
           sparse-checkout: |
@@ -201,7 +201,7 @@ jobs:
           jira-client-id: ${{ fromJSON(inputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_ID || '' }}
           jira-client-secret: ${{ fromJSON(inputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_SECRET || '' }}
           runner_secrets: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}
-          version: ${{ inputs.fullsend_version || job.workflow_sha }}
+          version: ${{ inputs.fullsend_version || (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
           fullsend-dir: .fullsend
           mint-url: ${{ inputs.mint_url }}
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
