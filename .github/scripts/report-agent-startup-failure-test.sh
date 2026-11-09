@@ -33,9 +33,12 @@ MOCKEOF
 chmod +x "${MOCK_BIN}/gh"
 
 run_case() {
-  local name="$1" viewer="$2" comment_login="$3" trusted_bots="${4:-}"
+  local name="$1" viewer="$2" comment_login="$3" trusted_bots="${4:-}" body_prefix="${5:-marker}" expected="${6:-patch}"
   local marker='<!-- fullsend:agent-startup-failure:review:123 -->'
   local body="${marker}\n\nold comment"
+  if [[ "${body_prefix}" == "embedded" ]]; then
+    body="old comment\n\n${marker}"
+  fi
   export MOCK_VIEWER_LOGIN="${viewer}"
   export MOCK_COMMENTS_JSON="[[{\"id\":42,\"user\":{\"type\":\"Bot\",\"login\":\"${comment_login}\"},\"body\":\"${body}\"}]]"
   : > "${TMPDIR}/calls"
@@ -51,10 +54,12 @@ run_case() {
     FULLSEND_FAILURE_CATEGORY="workflow setup" \
     bash "${SCRIPT}" >/dev/null
 
-  if [[ "$(cat "${TMPDIR}/calls")" == "patch" ]]; then
+  local actual
+  actual="$(cat "${TMPDIR}/calls")"
+  if [[ "${actual}" == "${expected}" ]]; then
     printf 'PASS: %s\n' "${name}"
   else
-    printf 'FAIL: %s — expected PATCH\n' "${name}" >&2
+    printf 'FAIL: %s — expected %s, got %s\n' "${name}" "${expected:-no call}" "${actual:-no call}" >&2
     return 1
   fi
 }
@@ -63,3 +68,5 @@ run_case "job token finds app-bot comment" "github-actions" "fullsend-ai-review[
 run_case "app token finds job-bot comment" "fullsend-ai-review" "github-actions[bot]"
 run_case "custom app set finds job-bot comment" "acme-review" "github-actions[bot]" "acme"
 run_case "job token finds custom app-set comment" "github-actions" "acme-review[bot]" "acme"
+run_case "lookalike app is not trusted" "github-actions" "acme-reviewer[bot]" "acme" "marker" "post"
+run_case "marker must start the comment" "github-actions" "fullsend-ai-review[bot]" "" "embedded" "post"

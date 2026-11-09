@@ -50,7 +50,7 @@ BODY_FILE="${RUNNER_TEMP:-/tmp}/fullsend-agent-startup-failure.md"
 BOT_LOGIN="$(gh api graphql -f query='{ viewer { login } }' --jq '.data.viewer.login')"
 COMMENTS_JSON="$(gh api --paginate --slurp \
   "repos/${FULLSEND_FAILURE_REPOSITORY}/issues/${FULLSEND_FAILURE_NUMBER}/comments")"
-TRUSTED_BOT_LOGINS="github-actions${FULLSEND_FAILURE_TRUSTED_BOTS:+,${FULLSEND_FAILURE_TRUSTED_BOTS}}"
+TRUSTED_BOT_LOGINS="github-actions"
 case "${FULLSEND_FAILURE_AGENT}" in
   code|fix) TRUSTED_BOT_LOGINS+=",fullsend-ai-coder" ;;
   review) TRUSTED_BOT_LOGINS+=",fullsend-ai-review" ;;
@@ -58,17 +58,27 @@ case "${FULLSEND_FAILURE_AGENT}" in
   retro) TRUSTED_BOT_LOGINS+=",fullsend-ai-retro" ;;
   prioritize) TRUSTED_BOT_LOGINS+=",fullsend-ai-prioritize" ;;
 esac
-TRUSTED_BOTS_JSON="$(jq -Rn --arg current "${BOT_LOGIN}" --arg logins "${TRUSTED_BOT_LOGINS}" \
-  '[ $current ] + ($logins | split(",") | map(select(length > 0)))
+# FULLSEND_FAILURE_TRUSTED_BOTS contains app-set prefixes (for example,
+# "fullsend-ai" or "acme"), not arbitrary login prefixes. Expand each set to
+# the known agent identities so a lookalike app cannot update this comment.
+TRUSTED_BOTS_JSON="$(jq -Rn \
+  --arg current "${BOT_LOGIN}" \
+  --arg logins "${TRUSTED_BOT_LOGINS}" \
+  --arg app_sets "${FULLSEND_FAILURE_TRUSTED_BOTS:-}" \
+  '[ $current ]
+   + ($logins | split(",") | map(select(length > 0)))
+   + ($app_sets | split(",") | map(select(length > 0)
+      | . as $set
+      | ["coder", "review", "triage", "retro", "prioritize"]
+      | map($set + "-" + .)) | add)
    | map(sub("\\[bot\\]$"; ""))
    | unique')"
 COMMENT_ID="$(printf '%s' "${COMMENTS_JSON}" | jq -r \
   --arg marker "${MARKER}" --argjson trusted "${TRUSTED_BOTS_JSON}" \
   'add | map(select((.user.type == "Bot")
-    and (((.user.login | sub("\\[bot\\]$"; "")) as $login
-      | any($trusted[]; . as $prefix
-        | ($login == $prefix or ($login | startswith($prefix + "-"))))))
-    and (.body | contains($marker)))) | last | .id // empty')"
+    and ((.user.login | sub("\\[bot\\]$"; "")) as $login
+      | (($trusted | index($login)) != null))
+    and (.body | startswith($marker)))) | last | .id // empty')"
 
 if [[ -n "${COMMENT_ID}" ]]; then
   gh api --method PATCH "repos/${FULLSEND_FAILURE_REPOSITORY}/issues/comments/${COMMENT_ID}" \
