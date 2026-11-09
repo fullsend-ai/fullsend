@@ -1,0 +1,408 @@
+<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"
+	xmlns:content="http://purl.org/rss/1.0/modules/content/"
+	xmlns:wfw="http://wellformedweb.org/CommentAPI/"
+	xmlns:dc="http://purl.org/dc/elements/1.1/"
+	xmlns:atom="http://www.w3.org/2005/Atom"
+	xmlns:sy="http://purl.org/rss/1.0/modules/syndication/"
+	xmlns:slash="http://purl.org/rss/1.0/modules/slash/"
+	>
+
+<channel>
+	<title>Use Case: actions - GitHub Changelog</title>
+	<atom:link href="https://github.blog/changelog/label/actions/feed/" rel="self" type="application/rss+xml" />
+	<link>https://github.blog/changelog/label/actions/</link>
+	<description>Updates, ideas, and inspiration from GitHub to help developers build and design software.</description>
+	<lastBuildDate>Tue, 03 Nov 2026 00:46:35 +0000</lastBuildDate>
+	<language>en-US</language>
+	<sy:updatePeriod>
+	hourly	</sy:updatePeriod>
+	<sy:updateFrequency>
+	1	</sy:updateFrequency>
+	<generator>https://wordpress.org/?v=7.1.4</generator>
+
+<image>
+	<url>https://github.blog/wp-content/uploads/2019/01/cropped-github-favicon-512.png?fit=32%2C32</url>
+	<title>Use Case: actions - GitHub Changelog</title>
+	<link>https://github.blog/changelog/label/actions/</link>
+	<width>32</width>
+	<height>32</height>
+</image>
+<site xmlns="com-wordpress:feed-additions:1">153214340</site>	<item>
+		<title>pull_request_target blocked by default December 2</title>
+		<link>https://github.blog/changelog/2026-11-02-pull_request_target-blocked-by-default-december-2</link>
+
+		<dc:creator><![CDATA[Allison]]></dc:creator>
+		<pubDate>Mon, 02 Nov 2026 15:14:46 +0000</pubDate>
+				<guid isPermaLink="false">https://github.blog/changelog/2026-11-02-pull_request_target-blocked-by-default-december-2</guid>
+
+					<description><![CDATA[<p>Starting December 2, 2026, GitHub Actions will block pull_request_target events by default in all public repositories, unless an applicable Actions event policy explicitly allows them. Enforcement was previously scheduled for&#8230;</p>
+<p>The post <a href="https://github.blog/changelog/2026-11-02-pull_request_target-blocked-by-default-december-2">pull_request_target blocked by default December 2</a> appeared first on <a href="https://github.blog">The GitHub Blog</a>.</p>
+]]></description>
+										<content:encoded><![CDATA[<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN" "http://www.w3.org/TR/REC-html40/loose.dtd">
+<html><body><p>Starting December 2, 2026, GitHub Actions will block <code>pull_request_target</code> events by default in all public repositories, unless an applicable Actions event policy explicitly allows them. Enforcement was previously scheduled for November 2, 2026.</p>
+<p>GitHub introduced this default rule through workflow execution protections. The rule initially runs in evaluate mode, so you can see which workflow runs it would block before enforcement begins.</p>
+<p>Private and internal repositories aren&rsquo;t affected.</p>
+<h2 id="why-were-making-this-change" id="why-were-making-this-change" ><a class="heading-link" href="#why-were-making-this-change">Why we&rsquo;re making this change<span class="heading-hash pl-2 text-italic text-bold" aria-hidden="true"></span></a></h2>
+<p><code>pull_request_target</code> runs in the context of the base repository and can access its secrets. If a workflow executes untrusted code from a fork, that code could compromise your pipeline or steal secrets. The default rule helps reduce this risk while letting you explicitly allow workflows that depend on the trigger.</p>
+<h2 id="brownout-schedule" id="brownout-schedule" ><a class="heading-link" href="#brownout-schedule">Brownout schedule<span class="heading-hash pl-2 text-italic text-bold" aria-hidden="true"></span></a></h2>
+<p>Before permanent enforcement begins on December 2, 2026, we&rsquo;ll temporarily enforce the default protection during two scheduled brownouts. These windows will help you identify affected workflows and update your policies before enforcement becomes permanent.</p>
+<div data-target="content-table-wrap.container" class="content-table-wrap"><content-table-wrap><table>
+<thead>
+<tr>
+<th>Date</th>
+<th>Time (UTC)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>November 9, 2026</td>
+<td>16:00&ndash;18:00</td>
+</tr>
+<tr>
+<td>November 16, 2026</td>
+<td>16:00&ndash;18:00</td>
+</tr>
+</tbody>
+</table></content-table-wrap></div>
+<p>During each window, <code>pull_request_target</code> workflow attempts blocked by the default rule in affected public repositories will create failed runs with an error annotation; the workflows won&rsquo;t execute. After each window, the default rule will return to evaluate mode, allowing workflows to run with warnings. Private and internal repositories aren&rsquo;t affected.</p>
+<h2 id="prepare-your-workflows" id="prepare-your-workflows" ><a class="heading-link" href="#prepare-your-workflows">Prepare your workflows<span class="heading-hash pl-2 text-italic text-bold" aria-hidden="true"></span></a></h2>
+<p>Before the first brownout on November 9, use Insights to see which workflow runs the rule would block. From there, you have two options:</p>
+<ul>
+<li>Keep the default rule in place to block <code>pull_request_target</code>.</li>
+<li>Explicitly allow <code>pull_request_target</code> in an applicable Actions event policy if your workflows depend on it. Use workflow file targeting to allow specific workflows.</li>
+</ul>
+<p>See <a href="https://docs.github.com/actions/how-tos/administer/control-workflow-execution">how to control workflow execution</a> to configure your policies.</p>
+<p>This change applies to public repositories on GitHub Free, GitHub Team, and GitHub Enterprise Cloud, not GitHub Enterprise Server.</p>
+</body></html>
+<p>The post <a href="https://github.blog/changelog/2026-11-02-pull_request_target-blocked-by-default-december-2">pull_request_target blocked by default December 2</a> appeared first on <a href="https://github.blog">The GitHub Blog</a>.</p>
+]]></content:encoded>
+
+
+
+		<category domain="changelog-type"><![CDATA[Retired]]></category>
+<category domain="changelog-label"><![CDATA[actions]]></category>
+<category domain="changelog-label"><![CDATA[application security]]></category>
+<post-id xmlns="com-wordpress:feed-additions:1">99939</post-id>	</item>
+		<item>
+		<title>GitHub Agentic Workflows generally available</title>
+		<link>https://github.blog/changelog/2026-10-28-github-agentic-workflows-generally-available</link>
+
+		<dc:creator><![CDATA[Allison]]></dc:creator>
+		<pubDate>Wed, 28 Oct 2026 15:30:15 +0000</pubDate>
+				<guid isPermaLink="false">https://github.blog/changelog/2026-10-27-github-agentic-workflows-generally-available</guid>
+
+					<description><![CDATA[<p>GitHub Agentic Workflows, an open source project from GitHub Next, is now generally available. With agentic workflows, you can automate reasoning-based tasks like issue triage, CI failure analysis, documentation updates,&#8230;</p>
+<p>The post <a href="https://github.blog/changelog/2026-10-28-github-agentic-workflows-generally-available">GitHub Agentic Workflows generally available</a> appeared first on <a href="https://github.blog">The GitHub Blog</a>.</p>
+]]></description>
+										<content:encoded><![CDATA[<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN" "http://www.w3.org/TR/REC-html40/loose.dtd">
+<html><body><p><a href="https://github.github.com/gh-aw/?utm_source=agentic-workflows-changelog-aw-website&amp;utm_medium=changelog&amp;utm_campaign=universe-2026">GitHub Agentic Workflows</a>, an open source project from GitHub Next, is now generally available. With agentic workflows, you can automate reasoning-based tasks like issue triage, CI failure analysis, documentation updates, and test writing by using coding agents inside GitHub Actions.</p>
+<p>Define your automation in natural language Markdown files, and GitHub Agentic Workflows compiles them into standard Actions YAML. Because these are GitHub Actions, they reuse your existing runner groups and policy constraints. You can use GitHub Copilot or bring your own coding agent to power each workflow.</p>
+<blockquote class="gh-changelog-quote"><p>We&rsquo;ve been rolling out our agentic developer workflows, and the results are measurable. One of our leads saved an estimated 29 hours a week on his development work alone. Across his team, measured velocity has more than doubled on average, and AI now authors 91% of the team&rsquo;s commits. With these workflows, the team cut production errors from about 11,000 a day to under 1,000 and drove a technology migration end to end.</p>
+<p>One workflow takes a feature from requirements to implementation with validation evidence. Others keep our frameworks current and steadily raise code quality and test coverage. Because AI drives the process to completion, our engineers can run four or five efforts in parallel and stay focused on the bigger goals.<br>
+    <cite>Ben Alton &ndash; Senior manager, Strategy, Architecture &amp; Innovation team at Accenture</cite></p></blockquote>
+<h3 id="built-in-safeguards" id="built-in-safeguards" ><a class="heading-link" href="#built-in-safeguards">Built-in safeguards<span class="heading-hash pl-2 text-italic text-bold" aria-hidden="true"></span></a></h3>
+<p>GitHub Agentic Workflows incorporates layered safeguards for your automation. Agents access GitHub content respecting the <a href="https://github.github.io/gh-aw/reference/integrity/">integrity filter</a> rules, run with read-only permissions by default, and execute inside a sandboxed container behind the <a href="https://github.github.com/gh-aw/introduction/architecture/?utm_source=agentic-workflows-changelog-firewall&amp;utm_medium=changelog&amp;utm_campaign=universe-2026#agent-workflow-firewall-awf">Agent Workflow Firewall</a>. The outputs are validated through the <a href="https://github.github.com/gh-aw/reference/safe-outputs/?utm_source=agentic-workflows-changelog-safe-outputs&amp;utm_medium=changelog&amp;utm_campaign=universe-2026">safe outputs</a> process, and a dedicated <a href="https://github.github.com/gh-aw/reference/threat-detection/?utm_source=agentic-workflows-changelog-threat-detection&amp;utm_medium=changelog&amp;utm_campaign=universe-2026">threat detection</a> job scans all proposed changes before they are applied.</p>
+<h3 id="additional-capabilities-for-general-availability" id="additional-capabilities-for-general-availability" ><a class="heading-link" href="#additional-capabilities-for-general-availability">Additional capabilities for general availability<span class="heading-hash pl-2 text-italic text-bold" aria-hidden="true"></span></a></h3>
+<p>Highlights since the public preview include:</p>
+<ul>
+<li><strong>Actions Runner Controller (ARC) and Docker-in-Docker support:</strong> Run agentic workflows on self-hosted ARC runners with Docker-in-Docker.</li>
+<li><strong>Improved budget forecasting:</strong> <code>gh aw forecast</code> is no longer experimental. It now includes both threat detection credits and monthly ranges for a fuller picture of your AI credit spend.</li>
+<li><strong>New models, engine choices, and workflows:</strong> The model inventory has been refreshed, model providers can be picked per workflow, and there are new workflow templates that can be added with <code>gh aw add-wizard</code>.</li>
+<li><strong>Model routing:</strong> Workflows can use a model router that optimizes for task type and difficulty.</li>
+<li><strong>Improved agent isolation:</strong> Agents can run in a Cloud Hypervisor or NVX micro-VM and prevent data leaks in cross-repository workflows with enclaves.</li>
+</ul>
+<p>See the <a href="https://github.com/github/gh-aw/releases">GitHub Agentic Workflows release notes</a> for the full list of changes.</p>
+<h3 id="get-started" id="get-started" ><a class="heading-link" href="#get-started">Get started<span class="heading-hash pl-2 text-italic text-bold" aria-hidden="true"></span></a></h3>
+<p>Follow the <a href="https://github.github.com/gh-aw/setup/quick-start/?utm_source=agentic-workflows-changelog-quickstart&amp;utm_medium=changelog&amp;utm_campaign=universe-2026/">quickstart guide</a> to install the CLI extension and trigger your first workflow in minutes. Explore prebuilt workflows in GitHub Next&rsquo;s <a href="https://github.com/githubnext/agentics?utm_source=agentic-workflows-changelog-agentics&amp;utm_medium=changelog&amp;utm_campaign=universe-2026">agentics repository</a> for ready-to-use examples covering triage, dependency management, code review, and reporting.</p>
+<p>GitHub Agentic Workflows is now generally available on github.com for GitHub Free, Team, and Enterprise. Using the default GitHub Copilot CLI engine to power a workflow requires a Copilot license.</p>
+<p>Learn more in the <a href="https://github.github.com/gh-aw/?utm_source=agentic-workflows-changelog-docs&amp;utm_medium=changelog&amp;utm_campaign=universe-2026">GitHub Agentic Workflows documentation</a>, and join the conversation in the <a href="https://github.com/orgs/community/discussions/211013?utm_source=agentic-workflows-changelog-community-discussion&amp;utm_medium=changelog&amp;utm_campaign=universe-2026">community discussion</a>.</p>
+</body></html>
+<p>The post <a href="https://github.blog/changelog/2026-10-28-github-agentic-workflows-generally-available">GitHub Agentic Workflows generally available</a> appeared first on <a href="https://github.blog">The GitHub Blog</a>.</p>
+]]></content:encoded>
+
+
+
+		<category domain="changelog-type"><![CDATA[Release]]></category>
+<category domain="changelog-label"><![CDATA[actions]]></category>
+<category domain="changelog-label"><![CDATA[copilot]]></category>
+<category domain="changelog-label"><![CDATA[universe26]]></category>
+<post-id xmlns="com-wordpress:feed-additions:1">99751</post-id>	</item>
+		<item>
+		<title>GitHub Actions adds multi-cloud compute to improve reliability</title>
+		<link>https://github.blog/changelog/2026-10-28-github-actions-adds-multi-cloud-compute-to-improve-reliability</link>
+
+		<dc:creator><![CDATA[Allison]]></dc:creator>
+		<pubDate>Wed, 28 Oct 2026 15:30:00 +0000</pubDate>
+				<guid isPermaLink="false">https://github.blog/changelog/2026-11-26-github-actions-adds-multi-cloud-compute-to-improve-reliability</guid>
+
+					<description><![CDATA[<p>We&#8217;re expanding the infrastructure behind GitHub-hosted runners so your workflows start faster and run more reliably, even during periods of peak demand. GitHub Actions now schedules eligible jobs across a&#8230;</p>
+<p>The post <a href="https://github.blog/changelog/2026-10-28-github-actions-adds-multi-cloud-compute-to-improve-reliability">GitHub Actions adds multi-cloud compute to improve reliability</a> appeared first on <a href="https://github.blog">The GitHub Blog</a>.</p>
+]]></description>
+										<content:encoded><![CDATA[<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN" "http://www.w3.org/TR/REC-html40/loose.dtd">
+<html><body><p>We&rsquo;re expanding the infrastructure behind GitHub-hosted runners so your workflows start faster and run more reliably, even during periods of peak demand. GitHub Actions now schedules eligible jobs across a broader, multi-cloud compute pool. This adds capacity, reduces capacity-related queue times, and improves service resilience. As part of this, eligible Linux jobs may run on Amazon Web Services (AWS) in addition to Microsoft Azure.</p>
+<p>Multi-cloud compute will be used for standard 2-core and 4-core Linux runners and compatible 2-core and 4-core larger runners without specialized configurations. This change does not apply to Windows runners or runners with private networking or other specialized configurations.</p>
+<p>For customers on GitHub Free, GitHub Pro, and GitHub Team, eligible runners will automatically use multi-cloud compute. Customers on GitHub Enterprise Cloud can opt in by going to <strong>Enterprise Settings &gt; Policies &gt; Actions &gt; General &gt; Hosted compute cloud providers</strong> and enabling AWS compute.</p>
+<p><em>Editor&rsquo;s note (November 2, 2026): Corrected the path for opting in.</em></p>
+<p>GitHub Actions automatically schedules eligible jobs across available cloud providers. Your existing runner labels and workflow syntax remain unchanged.</p>
+<h2 id="recommended-action-keep-your-network-allowlists-up-to-date" id="recommended-action-keep-your-network-allowlists-up-to-date" ><a class="heading-link" href="#recommended-action-keep-your-network-allowlists-up-to-date">Recommended action: Keep your network allowlists up to date<span class="heading-hash pl-2 text-italic text-bold" aria-hidden="true"></span></a></h2>
+<p>To get the full benefit of expanded capacity, make sure any IP allowlists or network-based access policies your workflows rely on include all published GitHub Actions IP ranges. Runners in the expanded compute pool use additional outbound IP addresses, so policies that allow only Azure or Microsoft-owned ranges, including Microsoft Entra Conditional Access policies, can block connections or authentication from these runners.</p>
+<p>This is a rolling change, so we recommend updating your allowlists now, before your workflows begin running in the expanded compute pool.</p>
+<p>All GitHub Actions runner IP ranges, including the new ones, are published in the <code>actions</code> array returned by <code>GET https://api.github.com/meta</code>. We recommend keeping your allowlists in sync with this endpoint rather than relying on cloud-provider-specific ranges. See <a href="https://docs.github.com/actions/reference/runners/github-hosted-runners#ip-addresses">GitHub-hosted runner IP addresses</a> for details.</p>
+</body></html>
+<p>The post <a href="https://github.blog/changelog/2026-10-28-github-actions-adds-multi-cloud-compute-to-improve-reliability">GitHub Actions adds multi-cloud compute to improve reliability</a> appeared first on <a href="https://github.blog">The GitHub Blog</a>.</p>
+]]></content:encoded>
+
+
+
+		<category domain="changelog-type"><![CDATA[Improvement]]></category>
+<category domain="changelog-label"><![CDATA[actions]]></category>
+<category domain="changelog-label"><![CDATA[universe26]]></category>
+<post-id xmlns="com-wordpress:feed-additions:1">99823</post-id>	</item>
+		<item>
+		<title>GitHub Actions workflow lockfiles are generally available</title>
+		<link>https://github.blog/changelog/2026-10-28-github-actions-workflow-lockfiles-are-generally-available</link>
+
+		<dc:creator><![CDATA[Allison]]></dc:creator>
+		<pubDate>Wed, 28 Oct 2026 15:30:00 +0000</pubDate>
+				<guid isPermaLink="false">https://github.blog/changelog/2026-11-26-github-actions-workflow-lockfiles-are-generally-available</guid>
+
+					<description><![CDATA[<p>You can now use GitHub Actions workflow dependency lockfiles in general availability on GitHub Enterprise Cloud, GitHub Enterprise Cloud with data residency, Team, and Free plans. Lockfiles let you keep&#8230;</p>
+<p>The post <a href="https://github.blog/changelog/2026-10-28-github-actions-workflow-lockfiles-are-generally-available">GitHub Actions workflow lockfiles are generally available</a> appeared first on <a href="https://github.blog">The GitHub Blog</a>.</p>
+]]></description>
+										<content:encoded><![CDATA[<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN" "http://www.w3.org/TR/REC-html40/loose.dtd">
+<html><body><p>You can now use GitHub Actions workflow dependency lockfiles in general availability on GitHub Enterprise Cloud, GitHub Enterprise Cloud with data residency, Team, and Free plans. Lockfiles let you keep readable tag and branch references in your workflows while running the exact commits you locked, even if those references move.</p>
+<p>This release brings the capabilities introduced in the public preview to general availability:</p>
+<ul>
+<li><strong>Lock your dependencies:</strong> Use the <code>gh actions-lock</code> extension for the GitHub CLI to generate <code>.github/workflows/actions.lock</code> for actions and their transitive dependencies.</li>
+<li><strong>Adopt locking gradually:</strong> Onboard workflows individually. GitHub Actions requires each dependency of an onboarded workflow to be in the lockfile and runs its recorded commit.</li>
+<li><strong>Keep updates in sync:</strong> When Dependabot opens a version update for an action in an onboarded workflow, it also regenerates the matching lockfile entry in the same pull request, without additional configuration.</li>
+<li><strong>Require lockfile:</strong> Enterprise, organization, and repository administrators can use the <strong>Require lockfile</strong> policy to enforce adoption.</li>
+<li><strong>Check for stale lockfiles:</strong> Verify that your lockfile is up to date without modifying files, including in a CI check.</li>
+</ul>
+<p>Lockfiles help protect against unexpected dependency changes, but they don&rsquo;t determine whether a dependency is safe. Review dependencies before locking them.</p>
+<h2 id="get-started" id="get-started" ><a class="heading-link" href="#get-started">Get started<span class="heading-hash pl-2 text-italic text-bold" aria-hidden="true"></span></a></h2>
+<p>Install the extension from the <a href="https://github.com/github/gh-actions-lock">gh-actions-lock repository</a>, then review and commit the generated lockfile and workflow changes. See <a href="https://docs.github.com/actions/concepts/security/workflow-dependency-lockfiles">workflow dependency lockfiles</a> in GitHub Docs for details and setup instructions.</p>
+<p>Share feedback in the <a href="https://github.com/orgs/community/discussions/194494">community discussion</a> or <a href="https://github.com/github/gh-actions-lock/issues">report an issue with the extension</a>.</p>
+</body></html>
+<p>The post <a href="https://github.blog/changelog/2026-10-28-github-actions-workflow-lockfiles-are-generally-available">GitHub Actions workflow lockfiles are generally available</a> appeared first on <a href="https://github.blog">The GitHub Blog</a>.</p>
+]]></content:encoded>
+
+
+
+		<category domain="changelog-type"><![CDATA[Release]]></category>
+<category domain="changelog-label"><![CDATA[actions]]></category>
+<category domain="changelog-label"><![CDATA[universe26]]></category>
+<post-id xmlns="com-wordpress:feed-additions:1">99870</post-id>	</item>
+		<item>
+		<title>Meta API endpoints updated for Actions blob storage</title>
+		<link>https://github.blog/changelog/2026-10-22-meta-api-endpoints-updated-for-actions-blob-storage</link>
+
+		<dc:creator><![CDATA[Allison]]></dc:creator>
+		<pubDate>Thu, 22 Oct 2026 18:14:16 +0000</pubDate>
+				<guid isPermaLink="false">https://github.blog/changelog/2026-10-22-meta-api-endpoints-updated-for-actions-blob-storage</guid>
+
+					<description><![CDATA[<p>We&#8217;re adding blob storage endpoints for GitHub Actions on github.com as part of our ongoing work to improve capacity and reliability. The meta API now includes these new endpoints. If&#8230;</p>
+<p>The post <a href="https://github.blog/changelog/2026-10-22-meta-api-endpoints-updated-for-actions-blob-storage">Meta API endpoints updated for Actions blob storage</a> appeared first on <a href="https://github.blog">The GitHub Blog</a>.</p>
+]]></description>
+										<content:encoded><![CDATA[<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN" "http://www.w3.org/TR/REC-html40/loose.dtd">
+<html><body><p>We&rsquo;re adding blob storage endpoints for GitHub Actions on github.com as part of our ongoing work to improve capacity and reliability. The <a href="https://api.github.com/meta">meta API</a> now includes these new endpoints.</p>
+<p>If your organization uses a network allowlist to access GitHub Actions blob storage, review your network access settings and ensure you allow the following new hosts (both ranges are inclusive):</p>
+<ul>
+<li><code>productionresultssa30.blob.core.windows.net</code> through <code>productionresultssa49.blob.core.windows.net</code></li>
+<li><code>productionresultssa100.blob.core.windows.net</code> through <code>productionresultssa199.blob.core.windows.net</code></li>
+</ul>
+<p>If you already allow <code>productionresultssa*.blob.core.windows.net</code>, no changes are needed for these additions. If you allow individual hosts, add the new hosts to avoid interruptions to job summaries and logs.</p>
+<p>For guidance on allowlisting GitHub traffic, see <a href="https://docs.github.com/authentication/keeping-your-account-and-data-secure/about-githubs-ip-addresses">GitHub&rsquo;s IP addresses</a>. You can retrieve the current endpoint list using the <a href="https://docs.github.com/rest/meta/meta">REST API endpoints for meta data</a>.</p>
+</body></html>
+<p>The post <a href="https://github.blog/changelog/2026-10-22-meta-api-endpoints-updated-for-actions-blob-storage">Meta API endpoints updated for Actions blob storage</a> appeared first on <a href="https://github.blog">The GitHub Blog</a>.</p>
+]]></content:encoded>
+
+
+
+		<category domain="changelog-type"><![CDATA[Improvement]]></category>
+<category domain="changelog-label"><![CDATA[actions]]></category>
+<post-id xmlns="com-wordpress:feed-additions:1">99664</post-id>	</item>
+		<item>
+		<title>Xcode 27 runner image generally available</title>
+		<link>https://github.blog/changelog/2026-10-15-xcode-27-runner-image-generally-available</link>
+
+		<dc:creator><![CDATA[Allison]]></dc:creator>
+		<pubDate>Fri, 16 Oct 2026 04:36:30 +0000</pubDate>
+				<guid isPermaLink="false">https://github.blog/changelog/2026-10-15-xcode-27-runner-image-generally-available</guid>
+
+					<description><![CDATA[<p>You can now use the generally available Xcode 27 runner image to build and test your Apple applications in GitHub Actions. Previously in public preview, this GitHub-hosted image runs on&#8230;</p>
+<p>The post <a href="https://github.blog/changelog/2026-10-15-xcode-27-runner-image-generally-available">Xcode 27 runner image generally available</a> appeared first on <a href="https://github.blog">The GitHub Blog</a>.</p>
+]]></description>
+										<content:encoded><![CDATA[<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN" "http://www.w3.org/TR/REC-html40/loose.dtd">
+<html><body><p>You can now use the generally available Xcode 27 runner image to build and test your Apple applications in GitHub Actions. Previously in public preview, this GitHub-hosted image runs on macOS 27 and includes the Xcode 27 toolchain and Apple SDKs.</p>
+<h2 id="xcode-based-images" id="xcode-based-images" ><a class="heading-link" href="#xcode-based-images">Xcode-based images<span class="heading-hash pl-2 text-italic text-bold" aria-hidden="true"></span></a></h2>
+<p>Each image supports one major Xcode version rather than targeting a specific operating system version. This makes it easier to select the toolchain your project needs and know what each runner provides.</p>
+<h2 id="get-started" id="get-started" ><a class="heading-link" href="#get-started">Get started<span class="heading-hash pl-2 text-italic text-bold" aria-hidden="true"></span></a></h2>
+<p>To use the image, set your workflow&rsquo;s <code>runs-on:</code> value to one of these labels:</p>
+<ul>
+<li><code>xcode-27</code></li>
+<li><code>xcode-27-xlarge</code></li>
+</ul>
+<p>If you already use these labels, you don&rsquo;t need to change your workflows. The image is available on Apple Silicon (arm64) runners only, not Intel runners.</p>
+<p>To view the installed software or report an issue, visit the <a href="https://github.com/actions/runner-images">runner-images repository</a>.</p>
+</body></html>
+<p>The post <a href="https://github.blog/changelog/2026-10-15-xcode-27-runner-image-generally-available">Xcode 27 runner image generally available</a> appeared first on <a href="https://github.blog">The GitHub Blog</a>.</p>
+]]></content:encoded>
+
+
+
+		<category domain="changelog-type"><![CDATA[Release]]></category>
+<category domain="changelog-label"><![CDATA[actions]]></category>
+<post-id xmlns="com-wordpress:feed-additions:1">99569</post-id>	</item>
+		<item>
+		<title>GitHub Actions workflow lockfiles in public preview</title>
+		<link>https://github.blog/changelog/2026-10-14-github-actions-workflow-lockfiles-in-public-preview</link>
+
+		<dc:creator><![CDATA[Allison]]></dc:creator>
+		<pubDate>Wed, 14 Oct 2026 13:49:15 +0000</pubDate>
+				<guid isPermaLink="false">https://github.blog/changelog/2026-10-12-github-actions-workflow-lockfiles-in-public-preview</guid>
+
+					<description><![CDATA[<p>GitHub Actions workflow dependency lockfiles are now in public preview for GitHub Enterprise Cloud, GitHub Enterprise Cloud with data residency, Team, and Free plans. Tags and branches can move after&#8230;</p>
+<p>The post <a href="https://github.blog/changelog/2026-10-14-github-actions-workflow-lockfiles-in-public-preview">GitHub Actions workflow lockfiles in public preview</a> appeared first on <a href="https://github.blog">The GitHub Blog</a>.</p>
+]]></description>
+										<content:encoded><![CDATA[<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN" "http://www.w3.org/TR/REC-html40/loose.dtd">
+<html><body><p>GitHub Actions workflow dependency lockfiles are now in public preview for GitHub Enterprise Cloud, GitHub Enterprise Cloud with data residency, Team, and Free plans. Tags and branches can move after you review a workflow, so a later run might execute different code. Lockfiles let you keep those references in your workflow while running the exact commits you locked.</p>
+<p><em>Editor&rsquo;s note (October 14th, 2026): Updated which plans have access to this public preview.</em></p>
+<p>If an action is compromised, a moved tag or branch can introduce malicious code into your workflow without a change to your repository. Lockfiles help protect against unexpected dependency changes by keeping workflow runs tied to the commits you locked. Locking does not determine whether the dependency itself is safe, so review dependencies before locking them.</p>
+<p>Install the <code>gh actions-lock</code> extension for the GitHub CLI to create and maintain your workflow lockfile. With the extension, you can:</p>
+<ul>
+<li><strong>Pin your dependencies:</strong> Generate <code>.github/workflows/actions.lock</code> with reviewable commits for actions and their transitive dependencies.</li>
+<li><strong>Adopt locking gradually:</strong> Onboard workflows individually. Once onboarded, a workflow must have lockfile entries for its dependencies, and GitHub Actions runs the recorded commits.</li>
+<li><strong>Keep workflow runs consistent:</strong> GitHub Actions requires each dependency of an onboarded workflow to be in the lockfile and uses its recorded commit, even if a tag or branch moves.</li>
+<li><strong>Check for stale lockfiles:</strong> Verify that the lockfile is up to date without modifying files, including in a CI check.</li>
+</ul>
+<p>The <strong>Require lockfile</strong> policy is also available in public preview. Enterprise, organization, and repository administrators can require workflows to use lockfiles across their enterprise, organization, or repository.</p>
+<h2 id="keep-locked-dependencies-up-to-date-with-dependabot" id="keep-locked-dependencies-up-to-date-with-dependabot" ><a class="heading-link" href="#keep-locked-dependencies-up-to-date-with-dependabot">Keep locked dependencies up to date with Dependabot<span class="heading-hash pl-2 text-italic text-bold" aria-hidden="true"></span></a></h2>
+<p>Dependabot helps you keep your GitHub Actions dependencies up to date. When it opens a version update for an action in a workflow that is already onboarded, it also regenerates the matching lockfile entry in the same pull request, keeping the updated workflow reference and its locked commit in sync without additional configuration. Read more about <a href="https://docs.github.com/code-security/concepts/supply-chain-security/dependabot-version-updates#updates-for-actions">Dependabot updates for actions</a>.</p>
+<h2 id="get-started" id="get-started" ><a class="heading-link" href="#get-started">Get started<span class="heading-hash pl-2 text-italic text-bold" aria-hidden="true"></span></a></h2>
+<p>To get started, install the extension from the <a href="https://github.com/github/gh-actions-lock">public gh-actions-lock repository</a>, then review and commit the generated lockfile and workflow changes.</p>
+<p>For more details and links to setup instructions, see <a href="https://docs.github.com/actions/concepts/security/workflow-dependency-lockfiles">workflow dependency lockfiles</a> in GitHub Docs.</p>
+<p>Share feedback in the <a href="https://github.com/orgs/community/discussions/194494">existing community discussion</a> or <a href="https://github.com/github/gh-actions-lock/issues">open an issue in the gh-actions-lock repository</a>.</p>
+<p>Thank you to the community members who helped shape this preview through testing and feedback, with special thanks to Andrew Nesbitt, Fran&ccedil;ois Proulx, Jesse Houwing, and William Woodruff for their close collaboration and iteration on this solution over the past year.</p>
+</body></html>
+<p>The post <a href="https://github.blog/changelog/2026-10-14-github-actions-workflow-lockfiles-in-public-preview">GitHub Actions workflow lockfiles in public preview</a> appeared first on <a href="https://github.blog">The GitHub Blog</a>.</p>
+]]></content:encoded>
+
+
+
+		<category domain="changelog-type"><![CDATA[Release]]></category>
+<category domain="changelog-label"><![CDATA[actions]]></category>
+<post-id xmlns="com-wordpress:feed-additions:1">99443</post-id>	</item>
+		<item>
+		<title>Stateless GitHub App installation tokens rolled out</title>
+		<link>https://github.blog/changelog/2026-10-02-stateless-github-app-installation-tokens-rolled-out</link>
+
+		<dc:creator><![CDATA[Allison]]></dc:creator>
+		<pubDate>Fri, 02 Oct 2026 22:18:23 +0000</pubDate>
+				<guid isPermaLink="false">https://github.blog/changelog/2026-10-02-stateless-github-app-installation-tokens-rolled-out</guid>
+
+					<description><![CDATA[<p>The staged rollout of the stateless GitHub App installation token format, which began on April 27, 2026, is complete. By default, all newly minted GitHub App installation tokens will be&#8230;</p>
+<p>The post <a href="https://github.blog/changelog/2026-10-02-stateless-github-app-installation-tokens-rolled-out">Stateless GitHub App installation tokens rolled out</a> appeared first on <a href="https://github.blog">The GitHub Blog</a>.</p>
+]]></description>
+										<content:encoded><![CDATA[<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN" "http://www.w3.org/TR/REC-html40/loose.dtd">
+<html><body><p>The staged rollout of the stateless GitHub App installation token format, which began on April 27, 2026, is complete. By default, all newly minted GitHub App installation tokens will be in the stateless <code>ghs_APPID_JWT</code> format, which makes token issuance and validation faster and improves the reliability of the GitHub API.</p>
+<h2 id="whats-changed" id="whats-changed" ><a class="heading-link" href="#whats-changed">What&rsquo;s changed<span class="heading-hash pl-2 text-italic text-bold" aria-hidden="true"></span></a></h2>
+<p>Installation tokens still start with the <code>ghs_</code> prefix, but they&rsquo;re now about 520 characters long instead of 40.</p>
+<p>Token permissions, repository scoping, the one-hour expiration, and the installation access token REST API endpoint are unchanged. Tokens minted before the change continue to work until they expire.</p>
+<h2 id="what-to-expect-going-forward" id="what-to-expect-going-forward" ><a class="heading-link" href="#what-to-expect-going-forward">What to expect going forward<span class="heading-hash pl-2 text-italic text-bold" aria-hidden="true"></span></a></h2>
+<p>The temporary <code>X-GitHub-Stateless-S2S-Token</code> request header, which we introduced so you could validate the new format on demand, will be deprecated on November 30, 2026. After that date, GitHub will no longer respect the header, and all eligible apps will always receive stateless tokens. To learn more about the temporary header, see <a href="https://github.blog/changelog/2026-05-15-github-app-installation-tokens-per-request-override-header/">our original changelog for its release</a>.</p>
+<p>Once you&rsquo;ve validated your apps and workflows with both token formats, remove the header from your production code before November 30, 2026.</p>
+<h2 id="check-your-integrations" id="check-your-integrations" ><a class="heading-link" href="#check-your-integrations">Check your integrations<span class="heading-hash pl-2 text-italic text-bold" aria-hidden="true"></span></a></h2>
+<p>If you haven&rsquo;t already, confirm that every system that handles installation tokens treats them as opaque strings. Look for:</p>
+<ul>
+<li>Validation that requires tokens to be exactly 40 characters or patterns written for the legacy format.</li>
+<li>Database columns, secret stores, or environment variables with a fixed or small maximum length.</li>
+<li>Proxies, gateways, or middleware that truncate or reject long <code>Authorization</code> headers.</li>
+<li>Logging and secret redaction rules that only match the legacy token pattern.</li>
+</ul>
+<p>To learn more, see <a href="https://docs.github.com/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app">Generating an installation access token for a GitHub App</a>.</p>
+</body></html>
+<p>The post <a href="https://github.blog/changelog/2026-10-02-stateless-github-app-installation-tokens-rolled-out">Stateless GitHub App installation tokens rolled out</a> appeared first on <a href="https://github.blog">The GitHub Blog</a>.</p>
+]]></content:encoded>
+
+
+
+		<category domain="changelog-type"><![CDATA[Improvement]]></category>
+<category domain="changelog-label"><![CDATA[actions]]></category>
+<category domain="changelog-label"><![CDATA[ecosystem &amp; accessibility]]></category>
+<post-id xmlns="com-wordpress:feed-additions:1">99283</post-id>	</item>
+		<item>
+		<title>GitHub Actions: macOS 14 runner image retirement</title>
+		<link>https://github.blog/changelog/2026-10-01-github-actions-macos-14-runner-image-retirement</link>
+
+		<dc:creator><![CDATA[Allison]]></dc:creator>
+		<pubDate>Thu, 01 Oct 2026 19:11:23 +0000</pubDate>
+				<guid isPermaLink="false">https://github.blog/changelog/2026-10-01-github-actions-macos-14-runner-image-retirement</guid>
+
+					<description><![CDATA[<p>The macOS 14 runner image will be retired on November 2, 2026. To raise awareness of the upcoming removal, jobs using macOS 14 will temporarily fail during the following scheduled&#8230;</p>
+<p>The post <a href="https://github.blog/changelog/2026-10-01-github-actions-macos-14-runner-image-retirement">GitHub Actions: macOS 14 runner image retirement</a> appeared first on <a href="https://github.blog">The GitHub Blog</a>.</p>
+]]></description>
+										<content:encoded><![CDATA[<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN" "http://www.w3.org/TR/REC-html40/loose.dtd">
+<html><body><p>The macOS 14 runner image will be retired on November 2, 2026. To raise awareness of the upcoming removal, jobs using macOS 14 will temporarily fail during the following scheduled brownout periods:</p>
+<ul>
+<li>October 5, 14:00 UTC to October 6, 00:00 UTC</li>
+<li>October 12, 14:00 UTC to October 13, 00:00 UTC</li>
+<li>October 16, 14:00 UTC to October 17, 00:00 UTC</li>
+<li>October 19, 14:00 UTC to October 20, 00:00 UTC</li>
+<li>October 23, 14:00 UTC to October 24, 00:00 UTC</li>
+<li>October 26, 14:00 UTC to October 27, 00:00 UTC</li>
+<li>October 29, 14:00 UTC to October 30, 00:00 UTC</li>
+<li>October 30, 14:00 UTC to October 31, 00:00 UTC</li>
+</ul>
+<p>This deprecation includes the following labels:</p>
+<ul>
+<li><code>macos-14</code></li>
+<li><code>macos-14-large</code></li>
+<li><code>macos-14-xlarge</code></li>
+</ul>
+<p>During the lead-up to retirement, GitHub may reduce macOS 14 runner capacity, which could result in longer queue times for jobs that continue to use these labels.</p>
+<h3 id="what-you-need-to-do" id="what-you-need-to-do" ><a class="heading-link" href="#what-you-need-to-do">What you need to do<span class="heading-hash pl-2 text-italic text-bold" aria-hidden="true"></span></a></h3>
+<p>Update your workflow files to use one of the following macOS arm64 labels:</p>
+<ul>
+<li><code>macos-latest</code> (<code>macos-26</code>)</li>
+<li><code>macos-15</code></li>
+<li><code>macos-latest-xlarge</code> (<code>macos-26-xlarge</code>)</li>
+<li><code>macos-15-xlarge</code></li>
+</ul>
+<p>For up-to-date information about available tools and software, see the <a href="https://github.com/actions/runner-images">runner images repository</a>. If you run into problems or need help, contact <a href="https://support.github.com/contact?form%5Bsubject%5D=Re%3A+GitHub+Actions&amp;tags=dotcom-contact-params">GitHub Support</a>.</p>
+</body></html>
+<p>The post <a href="https://github.blog/changelog/2026-10-01-github-actions-macos-14-runner-image-retirement">GitHub Actions: macOS 14 runner image retirement</a> appeared first on <a href="https://github.blog">The GitHub Blog</a>.</p>
+]]></content:encoded>
+
+
+
+		<category domain="changelog-type"><![CDATA[Retired]]></category>
+<category domain="changelog-label"><![CDATA[actions]]></category>
+<post-id xmlns="com-wordpress:feed-additions:1">99219</post-id>	</item>
+		<item>
+		<title>Actions retention now covers checks, runs, and statuses</title>
+		<link>https://github.blog/changelog/2026-10-01-actions-retention-now-covers-checks-runs-and-statuses</link>
+
+		<dc:creator><![CDATA[Allison]]></dc:creator>
+		<pubDate>Thu, 01 Oct 2026 17:59:54 +0000</pubDate>
+				<guid isPermaLink="false">https://github.blog/changelog/2026-10-01-actions-retention-now-covers-checks-runs-and-statuses</guid>
+
+					<description><![CDATA[<p>As previously announced, checks, workflow runs, and statuses are now governed by the same GitHub Actions retention setting that controls how long artifacts and logs are kept. These records are&#8230;</p>
+<p>The post <a href="https://github.blog/changelog/2026-10-01-actions-retention-now-covers-checks-runs-and-statuses">Actions retention now covers checks, runs, and statuses</a> appeared first on <a href="https://github.blog">The GitHub Blog</a>.</p>
+]]></description>
+										<content:encoded><![CDATA[<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN" "http://www.w3.org/TR/REC-html40/loose.dtd">
+<html><body><p>As <a href="https://github.blog/changelog/2026-08-27-actions-retention-will-cover-checks-workflow-runs-and-statuses/">previously announced</a>, checks, workflow runs, and statuses are now governed by the same GitHub Actions retention setting that controls how long artifacts and logs are kept.</p>
+<p>These records are automatically cleaned up when they exceed the retention period configured for your enterprise, organization, or repository. This applies to checks and statuses created by GitHub Actions and third-party applications.</p>
+<p>The setting is labeled &ldquo;Check, workflow run, status, artifact and log retention&rdquo; in the UI. Repository retention remains subject to organization and enterprise caps, and the maximum retention for public repositories is 90 days. Changing the setting won&rsquo;t restore data that was previously removed.</p>
+<p>Review or update the <a href="https://docs.github.com/repositories/managing-your-repositorys-settings-and-features/enabling-features-for-your-repository/managing-github-actions-settings-for-a-repository#setting-the-artifact-and-log-retention-period-for-a-repository">artifact and log retention period for your repository</a>. The expanded retention policy applies to GitHub Actions on github.com.</p>
+</body></html>
+<p>The post <a href="https://github.blog/changelog/2026-10-01-actions-retention-now-covers-checks-runs-and-statuses">Actions retention now covers checks, runs, and statuses</a> appeared first on <a href="https://github.blog">The GitHub Blog</a>.</p>
+]]></content:encoded>
+
+
+
+		<category domain="changelog-type"><![CDATA[Retired]]></category>
+<category domain="changelog-label"><![CDATA[actions]]></category>
+<post-id xmlns="com-wordpress:feed-additions:1">99215</post-id>	</item>
+	</channel>
+</rss>

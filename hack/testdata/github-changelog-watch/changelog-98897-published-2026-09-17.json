@@ -1,0 +1,23 @@
+[
+ {
+  "id": 98897,
+  "date": "2026-09-17T08:45:26",
+  "modified": "2026-09-17T08:45:26",
+  "type": [
+   3521
+  ],
+  "link": "https://github.blog/changelog/2026-09-17-workflow-execution-protections-in-github-actions-generally-available",
+  "title": {
+   "rendered": "Workflow execution protections in GitHub Actions generally available"
+  },
+  "content": {
+   "rendered": "<!DOCTYPE html PUBLIC \"-//W3C//DTD HTML 4.0 Transitional//EN\" \"http://www.w3.org/TR/REC-html40/loose.dtd\">\n<html><body><p>Workflow execution protections for GitHub Actions, previously in public preview, are now generally available for GitHub Enterprise, organizations, and repositories.</p>\n<p>Execution protections let you define an allowlist that controls who can trigger an Actions workflow and what events can start it. Actor rules cover the who, event rules cover the what, and actions evaluate both before a run.</p>\n<h2 id=\"whats-new\" id=\"whats-new\" ><a class=\"heading-link\" href=\"#whats-new\">What&rsquo;s new<span class=\"heading-hash pl-2 text-italic text-bold\" aria-hidden=\"true\"></span></a></h2>\n<p>Alongside the actor and event rules you&rsquo;ve used in public preview, general availability adds:</p>\n<ul>\n<li><strong>Workflow file targeting:</strong> Scope execution protection rules to specific workflow files rather than an entire repository, so a single repository can apply different policies to different workflows. For example, restrict <code>deploy.yml</code> to a designated team while leaving CI workflows open to all contributors.</li>\n<li><strong>Insights:</strong> See how actions evaluate and enforce your rules across your enterprise, organization, and repositories. This enables you to audit policy impact and tune rules both before and after you enforce them.</li>\n<li><strong>REST API:</strong> Manage execution protections programmatically at the enterprise, organization, and repository level. Create, read, update, and delete rules &mdash; including workflow path conditions &mdash; so you can manage Actions policy as code, keep rules consistent across hundreds of repositories, and wire enforcement into your existing governance tooling instead of clicking through settings.</li>\n</ul>\n<p>Evaluate mode also carries over from the preview, so you can run rules in shadow mode and see which workflow runs would be blocked before you enforce them.</p>\n<h2 id=\"new-secure-defaults\" id=\"new-secure-defaults\" ><a class=\"heading-link\" href=\"#new-secure-defaults\">New secure defaults<span class=\"heading-hash pl-2 text-italic text-bold\" aria-hidden=\"true\"></span></a></h2>\n<p>Vulnerabilities in <code>pull_request_target</code> workflows, such as <a href=\"https://securitylab.github.com/resources/github-actions-preventing-pwn-requests/\">Pwn Requests</a>, are one of the most commonly exploited vulnerabilities in action workflows. <code>pull_request_target</code> runs with access to your secrets in the context of the base repository, so if code is executed from a fork, that untrusted code could poison your pipeline and exfiltrate secrets. We&rsquo;re rolling out a default protection rule to limit the execution of <code>pull_request_target</code> events.</p>\n<p>For public repositories that do not already have an applicable event policy, GitHub is introducing a default rule that disables <code>pull_request_target</code>. This default does not apply to private or internal repositories. It initially runs in evaluate mode, so you can see which workflow runs would be affected before enforcement begins.</p>\n<p>On November 2, 2026, we&rsquo;ll automatically enforce the default rule for affected repositories that were using the default <code>pull_request_target</code> policy before general availability.</p>\n<p>To prepare for the roll out of this rule, you can view the results of the evaluate rule using Insights and see which workflow runs will fail once enforcement begins.</p>\n<p>From there you have two options: leave the rule in place to block <code>pull_request_target</code>, or explicitly allow <code>pull_request_target</code> in an applicable Actions event policy if your workflows still depend on the trigger. Specific workflows can be allow-listed using the new workflow file targeting.</p>\n<p>To get started, see <a href=\"https://docs.github.com/actions/concepts/about-actions-policies\">About Actions policies</a>, <a href=\"https://docs.github.com/actions/how-tos/administer/control-workflow-execution\">Control workflow execution</a>, and the <a href=\"https://docs.github.com/rest/actions/policies\">Actions policies REST API reference</a>.</p>\n</body></html>\n",
+   "protected": false
+  },
+  "label": [
+   1836,
+   3630
+  ],
+  "modified_gmt": "2026-09-17T08:45:26"
+ }
+]
