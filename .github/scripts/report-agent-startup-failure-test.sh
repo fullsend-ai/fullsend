@@ -33,7 +33,7 @@ MOCKEOF
 chmod +x "${MOCK_BIN}/gh"
 
 run_case() {
-  local name="$1" viewer="$2" comment_login="$3"
+  local name="$1" viewer="$2" comment_login="$3" trusted_bots="${4:-}"
   local marker='<!-- fullsend:agent-startup-failure:review:123 -->'
   local body="${marker}\n\nold comment"
   export MOCK_VIEWER_LOGIN="${viewer}"
@@ -46,6 +46,7 @@ run_case() {
     FULLSEND_FAILURE_REPOSITORY=org/repo \
     FULLSEND_FAILURE_NUMBER=123 \
     FULLSEND_FAILURE_AGENT=review \
+    FULLSEND_FAILURE_TRUSTED_BOTS="${trusted_bots}" \
     FULLSEND_FAILURE_RUN_URL=https://github.com/org/repo/actions/runs/123 \
     FULLSEND_FAILURE_CATEGORY="workflow setup" \
     bash "${SCRIPT}" >/dev/null
@@ -60,3 +61,5 @@ run_case() {
 
 run_case "job token finds app-bot comment" "github-actions" "fullsend-ai-review[bot]"
 run_case "app token finds job-bot comment" "fullsend-ai-review" "github-actions[bot]"
+run_case "custom app set finds job-bot comment" "acme-review" "github-actions[bot]" "acme"
+run_case "job token finds custom app-set comment" "github-actions" "acme-review[bot]" "acme"
