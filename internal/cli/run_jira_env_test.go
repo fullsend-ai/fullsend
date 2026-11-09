@@ -109,12 +109,16 @@ func TestResolveJiraRunEnv_EmptyDiscoveryResult(t *testing.T) {
 // (#8906), and that the warning never echoes embedded credentials.
 func TestResolveJiraRunEnv_ClearsWithoutUsableBaseURL(t *testing.T) {
 	for name, tracking := range map[string]*config.TrackingConfig{
-		"nil tracking":         nil,
-		"no jira block":        {},
-		"empty base_url":       jiraTracking("", ""),
-		"http base_url":        jiraTracking("http://example.atlassian.net", ""),
-		"credentials in base":  jiraTracking("https://user:s3cret@example.atlassian.net", ""),
-		"unparseable base_url": jiraTracking("https://exa mple.atlassian.net", ""),
+		"nil tracking":                 nil,
+		"no jira block":                {},
+		"empty base_url":               jiraTracking("", ""),
+		"http base_url":                jiraTracking("http://example.atlassian.net", ""),
+		"credentials in base":          jiraTracking("https://user:s3cret@example.atlassian.net", ""),
+		"unparseable base_url":         jiraTracking("https://exa mple.atlassian.net", ""),
+		"unparseable with credentials": jiraTracking("https://user:s3cret@exa mple.atlassian.net", ""),
+		"loopback http base_url":       jiraTracking("http://localhost:2990", ""),
+		"query in base_url":            jiraTracking("https://example.atlassian.net?x=1", ""),
+		"http api_url":                 jiraTracking(testJiraSite, "http://gateway.example.com"),
 	} {
 		t.Run(name, func(t *testing.T) {
 			discover := func(context.Context, jira.ScopedConfig) (string, error) {
@@ -125,7 +129,7 @@ func TestResolveJiraRunEnv_ClearsWithoutUsableBaseURL(t *testing.T) {
 			env := resolveJiraRunEnv(context.Background(), "jira", tracking, false, discover, func(s string) { warnings = append(warnings, s) })
 			assert.Equal(t, map[string]string{envJiraBaseURL: "", envJiraAPIURL: ""}, env)
 			require.Len(t, warnings, 1)
-			assert.Contains(t, warnings[0], "tracker.jira.base_url")
+			assert.Contains(t, warnings[0], "tracker.jira")
 			assert.NotContains(t, warnings[0], "s3cret")
 		})
 	}

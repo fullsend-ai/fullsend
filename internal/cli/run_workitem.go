@@ -124,9 +124,13 @@ func resolveJiraRunEnv(ctx context.Context, trackerSource string, tracking *conf
 		return cleared
 	}
 	baseURL := strings.TrimRight(tracking.Jira.BaseURL, "/")
-	if err := jira.ValidateBaseURL(baseURL); err != nil {
-		// ValidateBaseURL redacts any credentials in its error text.
-		warn(fmt.Sprintf("tracker.jira.base_url is invalid (%v); %s and %s are cleared for this Jira-sourced run", err, envJiraBaseURL, envJiraAPIURL))
+	conn := *tracking.Jira
+	conn.BaseURL = baseURL
+	// The config-layer rule (https only, no credentials, query, or
+	// fragment); its errors never include the raw URL, which may embed
+	// credentials. Runtime loading does not run it, so check here.
+	if err := conn.ValidateConnection(); err != nil {
+		warn(fmt.Sprintf("Jira connection settings are invalid (%v); %s and %s are cleared for this Jira-sourced run", err, envJiraBaseURL, envJiraAPIURL))
 		return cleared
 	}
 	env := map[string]string{envJiraBaseURL: baseURL, envJiraAPIURL: ""}

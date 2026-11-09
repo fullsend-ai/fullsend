@@ -247,7 +247,7 @@ Both variables are always set for a Jira-sourced run, so an inherited value neve
 | Discovery succeeds | site URL | gateway base | none |
 | Discovery fails (10-second limit) | site URL | empty, so agents fall back to the site URL, where only bot-user Basic auth works | names the site host |
 | `fullsend run --offline` | site URL | empty, with no network call | yes |
-| `tracker.jira.base_url` missing, not `https`, or with embedded credentials | empty | empty | yes; credentials are never printed |
+| `tracker.jira` connection settings missing or invalid (for example `base_url` or `api_url` not `https`, or with credentials, a query, or a fragment) | empty | empty | yes; the URL is never printed |
 
 Empty, not unset, is deliberate: it clears any inherited value, and an unset `${JIRA_API_URL}` would fail harness env validation. For the same reason, reference these variables only in a harness overlay that applies to Jira runs (`when: 'has(event.source) && event.source.system == "jira"'`). On a GitHub- or GitLab-sourced run, fullsend leaves them as they are, and an unset reference fails the run. Both values are URLs, not credentials, and a runner secret cannot override `JIRA_API_URL` or `JIRA_BASE_URL`.
 
