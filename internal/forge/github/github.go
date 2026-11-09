@@ -14,7 +14,6 @@ import (
 	"log"
 	"maps"
 	"math"
-	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"os"
@@ -27,6 +26,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
+	"github.com/fullsend-ai/fullsend/internal/randutil"
 	"golang.org/x/crypto/nacl/box"
 	"golang.org/x/sync/singleflight"
 )
@@ -61,6 +61,8 @@ type LiveClient struct {
 	// calls counts responses by forge.APICaller label; see APICalls.
 	callsMu sync.Mutex
 	calls   map[string]int64
+	// quotaCounters holds core counters by reset time; see APIQuotaCounters.
+	quotaCounters map[int64]*forge.APIQuotaCounter
 
 	// etagCache holds the last ETag and raw JSON body seen for GET URLs
 	// that opt into conditional requests via getCachedJSON (#6702). A 304
@@ -122,6 +124,7 @@ var _ forge.Client = (*LiveClient)(nil)
 var _ forge.GitHubExtensions = (*LiveClient)(nil)
 var _ forge.RateLimitReporter = (*LiveClient)(nil)
 var _ forge.APICallReporter = (*LiveClient)(nil)
+var _ forge.APIQuotaReporter = (*LiveClient)(nil)
 
 // RateLimit returns the most recent rate-limit state observed on a
 // response from this client, and whether one has been observed yet.
@@ -142,12 +145,57 @@ func (c *LiveClient) APICalls() map[string]int64 {
 	return maps.Clone(c.calls)
 }
 
-// countAPICall records one response for APICalls.
-func (c *LiveClient) countAPICall(ctx context.Context, resp *http.Response) {
+// APIQuotaCounters returns the groups of core rate-limit readings this client
+// has seen and its calls in each. It counts the core responses APICalls counts,
+// except those without a usable X-RateLimit-Remaining or X-RateLimit-Reset,
+// which belong to no group. As in APICalls, a response with no
+// X-RateLimit-Resource counts as core.
+func (c *LiveClient) APIQuotaCounters() []forge.APIQuotaCounter {
+	c.callsMu.Lock()
+	defer c.callsMu.Unlock()
+	counters := make([]forge.APIQuotaCounter, 0, len(c.quotaCounters))
+	for _, counter := range c.quotaCounters {
+		cp := *counter
+		cp.Calls = maps.Clone(counter.Calls)
+		counters = append(counters, cp)
+	}
+	slices.SortFunc(counters, func(a, b forge.APIQuotaCounter) int { return a.Reset.Compare(b.Reset) })
+	return counters
+}
+
+// countQuotaCall records one core response against its quota counter.
+// callsMu must be held.
+func (c *LiveClient) countQuotaCall(caller, method string, h http.Header) {
+	rl, ok := parseRateLimit(h)
+	if !ok || rl.Reset.IsZero() || (rl.Resource != "" && rl.Resource != "core") {
+		return
+	}
+	if c.quotaCounters == nil {
+		c.quotaCounters = map[int64]*forge.APIQuotaCounter{}
+	}
+	counter := c.quotaCounters[rl.Reset.Unix()]
+	if counter == nil {
+		counter = &forge.APIQuotaCounter{
+			Reset:   rl.Reset,
+			Limit:   rl.Limit,
+			Highest: rl.Remaining,
+			Lowest:  rl.Remaining,
+			Calls:   map[string]int64{},
+		}
+		c.quotaCounters[rl.Reset.Unix()] = counter
+	}
+	counter.Highest = max(counter.Highest, rl.Remaining)
+	counter.Lowest = min(counter.Lowest, rl.Remaining)
+	counter.Calls[caller+"/"+method]++
+}
+
+// countAPICall records one response for APICalls and APIQuotaCounters.
+func (c *LiveClient) countAPICall(ctx context.Context, method string, resp *http.Response) {
 	if resp.StatusCode == http.StatusNotModified {
 		return
 	}
-	key := forge.APICaller(ctx)
+	caller := forge.APICaller(ctx)
+	key := caller
 	if resource := resp.Header.Get("X-RateLimit-Resource"); resource != "" && resource != "core" {
 		key += "/" + resource
 	}
@@ -157,6 +205,7 @@ func (c *LiveClient) countAPICall(ctx context.Context, resp *http.Response) {
 		c.calls = map[string]int64{}
 	}
 	c.calls[key]++
+	c.countQuotaCall(caller, method, resp.Header)
 }
 
 // parseRateLimit reads the X-RateLimit-* headers of one response. ok is
@@ -456,7 +505,7 @@ func (c *LiveClient) doRequest(ctx context.Context, method, path string, content
 		resp, err := c.http.Do(req)
 		if err == nil {
 			c.observeRateLimit(resp.Header)
-			c.countAPICall(ctx, resp)
+			c.countAPICall(ctx, method, resp)
 		}
 		if err != nil {
 			if closer, ok := reqBody.(io.Closer); ok {
@@ -478,7 +527,7 @@ func (c *LiveClient) doRequest(ctx context.Context, method, path string, content
 				}
 				base := time.Duration(math.Pow(2, float64(attempt))) * time.Second
 				half := base / 2
-				delay := half + time.Duration(rand.Int64N(int64(half)+1))
+				delay := half + time.Duration(randutil.Int64N(int64(half)+1))
 				select {
 				case <-c.afterFunc(delay):
 				case <-ctx.Done():
@@ -716,7 +765,7 @@ func retryDelay(resp *http.Response, attempt int) time.Duration {
 	// Add jitter: randomize between 50-100% of base to desynchronize
 	// concurrent callers (e.g. parallel e2e test runners).
 	half := base / 2
-	return half + time.Duration(rand.Int64N(int64(half)+1))
+	return half + time.Duration(randutil.Int64N(int64(half)+1))
 }
 
 // checkStatus verifies the response has an acceptable status code and returns
@@ -1564,7 +1613,7 @@ func retryCommitOp[T any](ctx context.Context, c *LiveClient, label string, op f
 	var err error
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		if attempt > 0 {
-			jitter := time.Duration(100+rand.IntN(400)) * time.Millisecond
+			jitter := time.Duration(100+randutil.IntN(400)) * time.Millisecond
 			select {
 			case <-ctx.Done():
 				var zero T
@@ -1976,16 +2025,16 @@ func isNoChangesError(apiErr *APIError) bool {
 	return strings.Contains(lowerAPIErrorText(apiErr), "no commits between")
 }
 
-// blobSHA computes the Git blob object SHA-1 for the given content.
+// blobSHA computes the Git blob object SHA-1 required by the forge Git API.
 func blobSHA(content []byte) string {
-	h := sha1.New()
+	h := sha1.New() // nosemgrep: go.lang.security.audit.crypto.use-of-sha1
 	fmt.Fprintf(h, "blob %d\x00", len(content))
 	h.Write(content)
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
 func blobSHAReader(r io.Reader, size int64) (string, error) {
-	h := sha1.New()
+	h := sha1.New() // nosemgrep: go.lang.security.audit.crypto.use-of-sha1
 	fmt.Fprintf(h, "blob %d\x00", size)
 	if _, err := io.Copy(h, r); err != nil {
 		return "", err
@@ -2518,6 +2567,7 @@ func (c *LiveClient) CreateChangeProposal(ctx context.Context, owner, repo, titl
 	}
 
 	var pr struct {
+		ID      int64  `json:"id"`
 		HTMLURL string `json:"html_url"`
 		Title   string `json:"title"`
 		Number  int    `json:"number"`
@@ -2527,6 +2577,7 @@ func (c *LiveClient) CreateChangeProposal(ctx context.Context, owner, repo, titl
 	}
 
 	return &forge.ChangeProposal{
+		ID:     pr.ID,
 		URL:    pr.HTMLURL,
 		Title:  pr.Title,
 		Number: pr.Number,
@@ -2570,6 +2621,7 @@ func (c *LiveClient) CreateCrossRepoChangeProposal(ctx context.Context, baseOwne
 	query := `mutation($input: CreatePullRequestInput!) {
 		createPullRequest(input: $input) {
 			pullRequest {
+				fullDatabaseId
 				number
 				title
 				url
@@ -2600,9 +2652,10 @@ func (c *LiveClient) CreateCrossRepoChangeProposal(ctx context.Context, baseOwne
 		Data struct {
 			CreatePullRequest struct {
 				PullRequest struct {
-					Number int    `json:"number"`
-					Title  string `json:"title"`
-					URL    string `json:"url"`
+					FullDatabaseID json.RawMessage `json:"fullDatabaseId"`
+					Number         int             `json:"number"`
+					Title          string          `json:"title"`
+					URL            string          `json:"url"`
 				} `json:"pullRequest"`
 			} `json:"createPullRequest"`
 		} `json:"data"`
@@ -2629,7 +2682,18 @@ func (c *LiveClient) CreateCrossRepoChangeProposal(ctx context.Context, baseOwne
 	}
 
 	pr := gqlResult.Data.CreatePullRequest.PullRequest
+	var id int64
+	var number json.Number
+	// An unusable optional ID must not discard an already-created PR.
+	if json.Unmarshal(pr.FullDatabaseID, &number) == nil {
+		id, err = number.Int64()
+		if err != nil || id < 1 {
+			id = 0
+		}
+	}
 	return &forge.ChangeProposal{
+		// BigInt may be a JSON number or string; never round through float64.
+		ID:     id,
 		URL:    pr.URL,
 		Title:  pr.Title,
 		Number: pr.Number,
@@ -2647,6 +2711,7 @@ func (c *LiveClient) ListRepoPullRequests(ctx context.Context, owner, repo strin
 		}
 
 		var prs []struct {
+			ID      int64  `json:"id"`
 			HTMLURL string `json:"html_url"`
 			Title   string `json:"title"`
 			Number  int    `json:"number"`
@@ -2669,6 +2734,7 @@ func (c *LiveClient) ListRepoPullRequests(ctx context.Context, owner, repo strin
 
 		for _, pr := range prs {
 			result = append(result, forge.ChangeProposal{
+				ID:       pr.ID,
 				URL:      pr.HTMLURL,
 				Title:    pr.Title,
 				Number:   pr.Number,
@@ -3338,6 +3404,7 @@ func (c *LiveClient) CreateIssue(ctx context.Context, owner, repo, title, body s
 		}
 	}
 	var result struct {
+		ID      int64  `json:"id"`
 		Number  int    `json:"number"`
 		Title   string `json:"title"`
 		Body    string `json:"body"`
@@ -3350,6 +3417,7 @@ func (c *LiveClient) CreateIssue(ctx context.Context, owner, repo, title, body s
 		return nil, fmt.Errorf("decode issue: %w", err)
 	}
 	return &forge.Issue{
+		ID:     result.ID,
 		Number: result.Number,
 		Title:  result.Title,
 		Body:   result.Body,
@@ -3392,6 +3460,7 @@ func (c *LiveClient) GetIssue(ctx context.Context, owner, repo string, number in
 		return nil, fmt.Errorf("get issue #%d: %w", number, err)
 	}
 	var result struct {
+		ID      int64  `json:"id"`
 		Number  int    `json:"number"`
 		Title   string `json:"title"`
 		Body    string `json:"body"`
@@ -3406,6 +3475,7 @@ func (c *LiveClient) GetIssue(ctx context.Context, owner, repo string, number in
 		return nil, fmt.Errorf("decode issue #%d: %w", number, err)
 	}
 	return &forge.Issue{
+		ID:          result.ID,
 		Number:      result.Number,
 		Title:       result.Title,
 		Body:        result.Body,
@@ -3456,6 +3526,7 @@ func (c *LiveClient) ListOpenIssues(ctx context.Context, owner, repo string, lab
 			return nil, fmt.Errorf("list open issues page %d: %w", page, err)
 		}
 		var raw []struct {
+			ID          int64  `json:"id"`
 			Number      int    `json:"number"`
 			Title       string `json:"title"`
 			Body        string `json:"body"`
@@ -3475,6 +3546,7 @@ func (c *LiveClient) ListOpenIssues(ctx context.Context, owner, repo string, lab
 				continue
 			}
 			result = append(result, forge.Issue{
+				ID:     item.ID,
 				Number: item.Number,
 				Title:  item.Title,
 				Body:   item.Body,
@@ -3487,6 +3559,62 @@ func (c *LiveClient) ListOpenIssues(ctx context.Context, owner, repo string, lab
 		}
 	}
 	return result, nil
+}
+
+// ListIssueLabelEvents returns labeled events on an issue or pull request.
+func (c *LiveClient) ListIssueLabelEvents(ctx context.Context, owner, repo string, number int) ([]forge.IssueLabelEvent, error) {
+	var result []forge.IssueLabelEvent
+
+	for page := 1; ; page++ {
+		resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/issues/%d/events?per_page=100&page=%d", owner, repo, number, page))
+		if err != nil {
+			return nil, fmt.Errorf("list issue label events page %d: %w", page, err)
+		}
+		var raw []struct {
+			Event     string `json:"event"`
+			CreatedAt string `json:"created_at"`
+			Label     struct {
+				Name string `json:"name"`
+			} `json:"label"`
+			Actor struct {
+				Login string `json:"login"`
+			} `json:"actor"`
+		}
+		if err := decodeJSON(resp, &raw); err != nil {
+			return nil, fmt.Errorf("decode issue label events page %d: %w", page, err)
+		}
+
+		for _, r := range raw {
+			if r.Event != "labeled" {
+				continue
+			}
+			result = append(result, forge.IssueLabelEvent{
+				LabelName:  r.Label.Name,
+				ActorLogin: r.Actor.Login,
+				CreatedAt:  r.CreatedAt,
+			})
+		}
+
+		if len(raw) < 100 {
+			break
+		}
+	}
+	return result, nil
+}
+
+// RemoveIssueLabel removes a label from an issue or pull request.
+func (c *LiveClient) RemoveIssueLabel(ctx context.Context, owner, repo string, number int, label string) error {
+	path := fmt.Sprintf("/repos/%s/%s/issues/%d/labels/%s",
+		url.PathEscape(owner), url.PathEscape(repo), number, url.PathEscape(label))
+	resp, err := c.do(ctx, http.MethodDelete, path, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return forge.ErrNotFound
+	}
+	return checkStatus(resp, http.StatusNoContent, http.StatusOK)
 }
 
 // ListIssueComments returns all comments on an issue, paginating automatically.
@@ -3783,6 +3911,32 @@ func (c *LiveClient) GetPullRequestInfo(ctx context.Context, owner, repo string,
 		HeadSHA:  pr.Head.SHA,
 		AuthorID: pr.User.Login,
 		IsFork:   isFork,
+	}, nil
+}
+
+// GetPullRequestAuthorizationContext returns fields used by the e2e CI gate.
+func (c *LiveClient) GetPullRequestAuthorizationContext(ctx context.Context, owner, repo string, number int) (*forge.PullRequestAuthorizationContext, error) {
+	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/pulls/%d", owner, repo, number))
+	if err != nil {
+		return nil, fmt.Errorf("get pull request #%d for authorization: %w", number, err)
+	}
+
+	var pr struct {
+		UpdatedAt string `json:"updated_at"`
+		User      struct {
+			Login string `json:"login"`
+		} `json:"user"`
+		Labels []struct {
+			Name string `json:"name"`
+		} `json:"labels"`
+	}
+	if err := decodeJSON(resp, &pr); err != nil {
+		return nil, fmt.Errorf("decode pull request #%d for authorization: %w", number, err)
+	}
+	return &forge.PullRequestAuthorizationContext{
+		AuthorLogin: pr.User.Login,
+		UpdatedAt:   pr.UpdatedAt,
+		Labels:      labelNames(pr.Labels),
 	}, nil
 }
 
@@ -4585,7 +4739,8 @@ func (c *LiveClient) ListRepositoryArtifacts(ctx context.Context, owner, repo st
 const maxJobLogBytes = 1 << 20 // 1 MiB per job
 
 // GetWorkflowRunLogs downloads the logs for a workflow run.
-// It fetches the job list for the run and concatenates each job's log output.
+// It fetches the job list for the run and concatenates each job's log output;
+// a skipped job is listed with no log.
 // When the output is not complete — more jobs than the single page of up to
 // 100 fetched, or a job log over maxJobLogBytes — a "[job list truncated:" or
 // "[log truncated:" note is embedded in the returned text.
@@ -4630,6 +4785,12 @@ func (c *LiveClient) GetWorkflowRunLogs(ctx context.Context, owner, repo string,
 			fmt.Fprintf(&buf, "  %s Step %d: %s [%s/%s]\n", marker, step.Number, step.Name, step.Status, step.Conclusion)
 		}
 		fmt.Fprintln(&buf)
+		// A skipped job never ran, so it has no log to fetch: in the runs
+		// observed, its log request answered 404 (not a documented API
+		// guarantee), which would read as a fetch that failed.
+		if job.Conclusion == "skipped" {
+			continue
+		}
 
 		// Download logs for each job (returns plain text, 302 redirect to download URL).
 		jobResp, err := c.do(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/%s/actions/jobs/%d/logs", owner, repo, job.ID), nil)
@@ -4760,12 +4921,30 @@ func (c *LiveClient) GetAppClientID(ctx context.Context, slug string) (string, e
 func (c *LiveClient) GetCollaboratorPermission(ctx context.Context, owner, repo, username string) (string, error) {
 	perm, err := c.fetchCollaboratorPermission(ctx, owner, repo, username)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("get collaborator permission for %s: %w", username, err)
 	}
 	if perm.RoleName == "" {
 		return "", fmt.Errorf("%w: no permission for %s", forge.ErrNotFound, username)
 	}
 	return perm.baseRole(), nil
+}
+
+func (c *LiveClient) GetCollaboratorPermissionDetail(ctx context.Context, owner, repo, username string) (forge.GitHubCollaboratorPermissionDetail, error) {
+	perm, err := c.fetchCollaboratorPermission(ctx, owner, repo, username)
+	if err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+			return forge.GitHubCollaboratorPermissionDetail{}, fmt.Errorf("%w: collaborator %s", forge.ErrNotFound, username)
+		}
+		return forge.GitHubCollaboratorPermissionDetail{}, fmt.Errorf("get collaborator permission for %s: %w", username, err)
+	}
+	if perm.Permission == "" {
+		return forge.GitHubCollaboratorPermissionDetail{}, fmt.Errorf("decode collaborator permission for %s: missing permission field", username)
+	}
+	return forge.GitHubCollaboratorPermissionDetail{
+		RoleName:   perm.RoleName,
+		Permission: perm.Permission,
+	}, nil
 }
 
 // fetchCollaboratorPermission returns the decoded collaborator permission
@@ -4775,7 +4954,7 @@ func (c *LiveClient) fetchCollaboratorPermission(ctx context.Context, owner, rep
 		url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(username))
 	resp, err := c.get(ctx, path)
 	if err != nil {
-		return collaboratorPermission{}, fmt.Errorf("get collaborator permission for %s: %w", username, err)
+		return collaboratorPermission{}, err
 	}
 	var perm collaboratorPermission
 	if err := decodeJSON(resp, &perm); err != nil {

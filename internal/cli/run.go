@@ -37,6 +37,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	gl "github.com/fullsend-ai/fullsend/internal/forge/gitlab"
+	"github.com/fullsend-ai/fullsend/internal/forge/jira"
 	"github.com/fullsend-ai/fullsend/internal/gitfetch"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	vertexinference "github.com/fullsend-ai/fullsend/internal/inference/vertex"
@@ -541,6 +542,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	orgCfg, err := loadLockConfig(orgConfigPath)
 	if err != nil {
 		printer.StepFail("Failed to load fullsend config")
+		reportConfigLoadFailure(ctx, agentName, absFullsendDir, forgeFlag, eventFile, sOpts, runnerSecrets, err, printer)
 		return err
 	}
 
@@ -1214,7 +1216,16 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepFail("Runner secret validation failed")
 		return err
 	}
-	if err := h.ValidateRunnerEnvWith(withRunnerSecretLookup(runnerSecrets, lookup)); err != nil {
+	// Sandbox-bound sites expand sandboxDeniedKeys empty instead of failing,
+	// so validation must resolve them there whether or not the host variable
+	// is set (the action unsets FULLSEND_JIRA_TOKEN on non-Jira runs).
+	sandboxLookup := func(key string) (string, bool) {
+		if sandboxDeniedKeys[key] {
+			return "", true
+		}
+		return lookup(key)
+	}
+	if err := h.ValidateRunnerEnvSites(withRunnerSecretLookup(runnerSecrets, lookup), sandboxLookup); err != nil {
 		printer.StepFail("Environment validation failed")
 		return fmt.Errorf("validating env: %w", err)
 	}
@@ -1224,7 +1235,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// seen. Emission happens after ValidateFilesExist, further below.
 	lintDiags := h.Lint()
 	for k, v := range h.RunnerEnv {
-		h.RunnerEnv[k] = os.Expand(v, expander)
+		h.RunnerEnv[k] = expandRunnerEntry(k, v, expander)
 	}
 	// Collect the referenced bundle names before expansion replaces them.
 	usedRunnerSecrets := referencedRunnerSecretNames(h, runnerSecrets)
@@ -1235,17 +1246,17 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if h.Env != nil {
 		runnerExpander := withRunnerSecretExpander(runnerSecrets, expander)
 		for k, v := range h.Env.Runner {
-			h.Env.Runner[k] = os.Expand(v, runnerExpander)
+			h.Env.Runner[k] = expandRunnerEntry(k, v, runnerExpander)
 		}
 		for k, v := range h.Env.Sandbox {
-			h.Env.Sandbox[k] = os.Expand(v, expander)
+			h.Env.Sandbox[k] = expandSandboxEnvValue(v, expander)
 		}
 	}
 
 	// Expand ${VAR} references in validation_loop.schema so the path
 	// resolves before ValidateFilesExist stat-checks it.
 	if h.ValidationLoop != nil && strings.Contains(h.ValidationLoop.Schema, "${") {
-		h.ValidationLoop.Schema = os.Expand(h.ValidationLoop.Schema, expander)
+		h.ValidationLoop.Schema = expandSandboxEnvValue(h.ValidationLoop.Schema, expander)
 	}
 
 	if err := h.ValidateFilesExist(); err != nil {
@@ -1289,6 +1300,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			effectiveRunnerEnv[k] = v
 		}
 	}
+	// An optional key such as FULLSEND_JIRA_EMAIL that resolved empty is
+	// omitted, so scripts see it absent rather than empty (#9079).
+	dropEmptyOptionalRunnerEnv(effectiveRunnerEnv)
 	// NOTE: after this point h.RunnerEnv contains the merged effective set
 	// (runner_env + env.runner), not just the declared runner_env entries.
 	h.RunnerEnv = effectiveRunnerEnv
@@ -3397,14 +3411,61 @@ var providerOnlyKeys = map[string]bool{
 // `JIRA_TOKEN: "${JIRA_TOKEN}"`) still passes it to its scripts; one that
 // does not declare it no longer receives it. The parent process keeps them
 // for its own Jira client and trace exporter. The OTLP *_HEADERS variants
-// are matched by isInheritedScriptDenyKey. FULLSEND_JIRA_TOKEN and
-// FULLSEND_JIRA_EMAIL are the credentials the parent's Jira status client
-// reads (jira.CredentialsFromEnv).
+// are matched by isInheritedScriptDenyKey.
+//
+// FULLSEND_JIRA_TOKEN, FULLSEND_JIRA_EMAIL, FULLSEND_JIRA_CLIENT_ID and
+// FULLSEND_JIRA_CLIENT_SECRET are the Jira repository secrets the composite
+// action passes to the fullsend run step from its jira-token, jira-email,
+// jira-client-id and jira-client-secret inputs (#9079, #9176). The parent
+// uses them for Jira status notifications; host-side scripts receive them
+// only when a harness declares them in env.runner.
 var inheritedScriptDenyKeys = map[string]bool{
-	"JIRA_TOKEN":          true,
-	"JIRA_USER_EMAIL":     true,
-	"FULLSEND_JIRA_TOKEN": true,
-	"FULLSEND_JIRA_EMAIL": true,
+	"JIRA_TOKEN":            true,
+	"JIRA_USER_EMAIL":       true,
+	jira.TokenEnvVar:        true,
+	jira.EmailEnvVar:        true,
+	jira.ClientIDEnvVar:     true,
+	jira.ClientSecretEnvVar: true,
+}
+
+// optionalHarnessEnvKeys are host variables a harness ${VAR} reference may
+// name even when they are unset. The action passes FULLSEND_JIRA_EMAIL only
+// when that repository secret exists: an absent email selects
+// service-account Bearer auth, so a harness that declares it in env.runner
+// must not fail validation on a run without it (#9079). The OAuth 2.0
+// client credentials are likewise present only on deployments that use
+// them instead of a token (#9176). An unset key expands empty, and
+// dropEmptyOptionalRunnerEnv then removes the entry so scripts see the
+// variable absent rather than empty.
+var optionalHarnessEnvKeys = map[string]bool{
+	jira.EmailEnvVar:        true,
+	jira.ClientIDEnvVar:     true,
+	jira.ClientSecretEnvVar: true,
+}
+
+// isOptionalHarnessEnvKey reports whether a harness ${VAR} reference to key
+// resolves even when key is unset: an optionalHarnessEnvKeys entry, or
+// FULLSEND_JIRA_TOKEN on a deployment that authenticates with OAuth 2.0
+// client credentials instead, so one harness can declare both credential
+// types (#9176).
+func isOptionalHarnessEnvKey(key string) bool {
+	if optionalHarnessEnvKeys[key] {
+		return true
+	}
+	return key == jira.TokenEnvVar &&
+		(strings.TrimSpace(os.Getenv(jira.ClientIDEnvVar)) != "" || strings.TrimSpace(os.Getenv(jira.ClientSecretEnvVar)) != "")
+}
+
+// dropEmptyOptionalRunnerEnv removes isOptionalHarnessEnvKey entries whose
+// value is empty or whitespace from runnerEnv, so a host-side script gets
+// no variable rather than an empty one. The shared Jira client trims the
+// credentials the same way before choosing the auth mode.
+func dropEmptyOptionalRunnerEnv(runnerEnv map[string]string) {
+	for k, v := range runnerEnv {
+		if isOptionalHarnessEnvKey(k) && strings.TrimSpace(v) == "" {
+			delete(runnerEnv, k)
+		}
+	}
 }
 
 // isInheritedScriptDenyKey reports whether key must be dropped from the
@@ -3450,12 +3511,51 @@ func harnessEnvExpand(key string) string {
 	return os.Getenv(key)
 }
 
+// sandboxDeniedKeys are host-only credentials that env.runner may declare
+// but no sandbox-bound site (env.sandbox values, expanded host_files content)
+// may expand: the Jira repository secrets the
+// composite action passes to the fullsend run step (#9079). They stay out of
+// harnessExpansionDenied because that map also gates env.runner, where a
+// harness declares them on purpose.
+var sandboxDeniedKeys = map[string]bool{
+	jira.TokenEnvVar:        true,
+	jira.EmailEnvVar:        true,
+	jira.ClientIDEnvVar:     true,
+	jira.ClientSecretEnvVar: true,
+}
+
+// expandSandboxEnvValue expands ${VAR} references in an env.sandbox value
+// with expander, refusing sandboxDeniedKeys (they expand empty).
+func expandSandboxEnvValue(v string, expander func(string) string) string {
+	return os.Expand(v, func(key string) string {
+		if sandboxDeniedKeys[key] {
+			return ""
+		}
+		return expander(key)
+	})
+}
+
+// expandRunnerEntry expands ${VAR} references in a runner_env or env.runner
+// value with expander. FULLSEND_OUTPUT_FILE is the one runner entry that
+// bootstrapEnv exports verbatim into the sandbox, so it is expanded like an
+// env.sandbox value and refuses sandboxDeniedKeys.
+func expandRunnerEntry(key, v string, expander func(string) string) string {
+	if key == "FULLSEND_OUTPUT_FILE" {
+		return expandSandboxEnvValue(v, expander)
+	}
+	return os.Expand(v, expander)
+}
+
 // harnessEnvLookup is the lookup used by ValidateRunnerEnvWith. Denied keys
 // return false so a harness that references them fails validation rather
-// than expanding empty.
+// than expanding empty. Keys isOptionalHarnessEnvKey matches always
+// resolve, to their value or empty.
 func harnessEnvLookup(key string) (string, bool) {
 	if harnessExpansionDenied(key) {
 		return "", false
+	}
+	if isOptionalHarnessEnvKey(key) {
+		return os.Getenv(key), true
 	}
 	return os.LookupEnv(key)
 }
@@ -3508,6 +3608,12 @@ func init() {
 	sandbox.DenyExpansionKeys(denied...)
 	for k := range oidcDenyKeys {
 		reservedSandboxKeys[k] = true
+	}
+	// The Jira repository secrets are host-script-only (#9079): provider
+	// definitions may not expand them in config values (argv) or credential
+	// values, the same as the sandbox-bound harness sites above.
+	for k := range sandboxDeniedKeys {
+		sandbox.DenyExpansionKeys(k)
 	}
 	// Provider-only keys are reserved in the sandbox (env.sandbox cannot
 	// inject them) but must remain expandable in provider credential values,
@@ -4053,7 +4159,7 @@ func safeExpandEnv(s string) string {
 // Fixes #408, #615.
 func shellSafeExpandEnv(text string) string {
 	return os.Expand(text, func(key string) string {
-		if harnessExpansionDenied(key) {
+		if harnessExpansionDenied(key) || sandboxDeniedKeys[key] {
 			return ""
 		}
 		return escapeForDoubleQuotes(os.Getenv(key))
@@ -4332,9 +4438,9 @@ func redactSecretLiteralsWithNormalizer(feedback string, runnerEnv map[string]st
 	// All exact literals are replaced in one pass, longest first, so a
 	// value that is a substring of another never leaves part of the longer
 	// one visible, whichever source each came from. envLiterals covers
-	// RunnerEnv and the provider-only keys kept out of it (#6649);
-	// registered runtime secrets, such as runner secrets referenced under a
-	// key sensitiveEnvKey does not match, join the same pass.
+	// RunnerEnv, provider-only keys kept out of it (#6649), and Jira
+	// repository secrets; registered runtime secrets, such as runner secrets
+	// referenced under a key sensitiveEnvKey does not match, join the same pass.
 	type literal struct{ value, mask string }
 	var literals []literal
 	seen := map[string]bool{}
@@ -4368,12 +4474,12 @@ func redactSecretLiteralsWithNormalizer(feedback string, runnerEnv map[string]st
 }
 
 // replaceEnvSecrets is the literal pass: the value of each sensitive runner
-// env key, and of each providerOnlyKeys entry in the process environment
-// (kept out of RunnerEnv, #6649), when it holds minRedactableSecretLen bytes
-// or more and occurs in text, becomes [REDACTED:<key>]. It returns the keys
-// it replaced. Both sources go in one pass, longer values first, then key
-// order: a value that contains another is replaced whole, whichever source
-// holds it, and the text is the same on every run.
+// env key, and of each provider-only or Jira repository secret in the process
+// environment, when it holds minRedactableSecretLen bytes or more and occurs
+// in text, becomes [REDACTED:<key>]. It returns the keys it replaced. All
+// sources go in one pass, longer values first, then key order: a value that
+// contains another is replaced whole, whichever source holds it, and the text
+// is the same on every run.
 func replaceEnvSecrets(text string, runnerEnv map[string]string) (string, []string) {
 	var replaced []string
 	for _, l := range envLiterals(runnerEnv) {
@@ -4391,8 +4497,11 @@ func replaceEnvSecrets(text string, runnerEnv map[string]string) (string, []stri
 type envLiteral struct{ key, value string }
 
 // envLiterals lists the values replaceEnvSecrets replaces — longer values
-// first, then key order, so a value that contains another is replaced
-// whole whichever source holds it.
+// first, then key order, so a value that contains another is replaced whole
+// whichever source holds it. Jira repository credentials are included from
+// the process environment even when a harness aliases them under a key that
+// is not classified as sensitive; they are also registered with the shared
+// runtime redactor.
 func envLiterals(runnerEnv map[string]string) []envLiteral {
 	var literals []envLiteral
 	for key, value := range runnerEnv {
@@ -4402,6 +4511,12 @@ func envLiterals(runnerEnv map[string]string) []envLiteral {
 	}
 	for key := range providerOnlyKeys {
 		if value := os.Getenv(key); len(value) >= minRedactableSecretLen {
+			literals = append(literals, envLiteral{key, value})
+		}
+	}
+	for _, key := range []string{jira.TokenEnvVar, jira.EmailEnvVar, jira.ClientIDEnvVar, jira.ClientSecretEnvVar} {
+		if value := os.Getenv(key); len(value) >= minRedactableSecretLen {
+			security.RegisterRuntimeSecret(value)
 			literals = append(literals, envLiteral{key, value})
 		}
 	}
@@ -5549,7 +5664,9 @@ func stripControlChars(s string) string {
 // See #5832, #6649.
 //
 // Named workflow secrets (inheritedScriptDenyKeys: JIRA_TOKEN,
-// JIRA_USER_EMAIL, OTEL_EXPORTER_OTLP_*HEADERS) are dropped from the
+// JIRA_USER_EMAIL, FULLSEND_JIRA_TOKEN, FULLSEND_JIRA_EMAIL,
+// FULLSEND_JIRA_CLIENT_ID, FULLSEND_JIRA_CLIENT_SECRET,
+// OTEL_EXPORTER_OTLP_*HEADERS) are dropped from the
 // inherited process environment only; a runnerEnv entry for one of them is
 // kept, so a harness that declares it in env.runner still gets it (#8154).
 //

@@ -1081,10 +1081,18 @@ stay readable in `/proc/<pid>/environ` for the whole run. See
 On GitLab, skip the object. Add each secret as its own masked CI/CD variable
 (for example `JIRA_API_TOKEN`) and reference it from `env.runner` the same way.
 The rules above (refused names, host side only, overlays) apply to names in the
-GitHub object only; GitLab behaves as before, and every CI/CD variable in the
-job except `JIRA_TOKEN`, `JIRA_USER_EMAIL`, `FULLSEND_JIRA_TOKEN`,
-`FULLSEND_JIRA_EMAIL` and the OTLP headers still reaches
-host-side scripts.
+GitHub object only. `FULLSEND_JIRA_TOKEN`, `FULLSEND_JIRA_EMAIL`,
+`FULLSEND_JIRA_CLIENT_ID`, and `FULLSEND_JIRA_CLIENT_SECRET` are not
+inherited by host-side scripts; declare either value in `env.runner` when a
+trusted script needs it. This is the same host-script rule on GitHub and
+GitLab. On every forge, references to these values in `env.sandbox`, expanded
+`host_files`, `FULLSEND_OUTPUT_FILE`, and provider config or credential values
+resolve empty. See
+[Jira integration](jira-integration.md#jira-repository-secrets-in-agent-runs)
+for details. Other CI/CD variables still reach host-side scripts except
+`JIRA_TOKEN`, `JIRA_USER_EMAIL`, `FULLSEND_JIRA_TOKEN`,
+`FULLSEND_JIRA_EMAIL`, `FULLSEND_JIRA_CLIENT_ID`,
+`FULLSEND_JIRA_CLIENT_SECRET` and the OTLP headers.
 
 ### Harness composition with `base`
 

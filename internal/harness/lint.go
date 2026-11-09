@@ -52,8 +52,23 @@ var issueURLRef = regexp.MustCompile(`\$\{GITHUB_ISSUE_URL\}|\$GITHUB_ISSUE_URL(
 const DeprecatedIssueURLWarning = "GITHUB_ISSUE_URL is deprecated; use FULLSEND_WORK_ITEM_URL instead (see #6610); " +
 	"keep GITHUB_ISSUE_URL for harnesses run by the reusable prioritize workflow, which does not export FULLSEND_WORK_ITEM_URL yet"
 
+// Stable diagnostic codes for JSON lint output. They identify the rule,
+// not the current message wording. Keep them lowercase kebab-case.
+const (
+	CodeRunnerEnvDeprecated        = "runner-env-deprecated"
+	CodeSandboxHostFilesCollision  = "sandbox-host-files-collision"
+	CodeAllowedRemoteImplicitFetch = "allowed-remote-implicit-fetch"
+	CodeForgeDeprecated            = "forge-deprecated"
+	CodeTriggerInvalid             = "trigger-invalid"
+	CodePreflightCheckPath         = "preflight-check-path"
+	CodeGithubIssueURLDeprecated   = "github-issue-url-deprecated"
+)
+
 // Diagnostic represents a non-fatal issue found by Lint.
 type Diagnostic struct {
+	// Code identifies the lint rule independently of Message. Empty on
+	// diagnostics constructed only for text-format unit tests.
+	Code     string
 	Severity DiagnosticSeverity
 	Field    string
 	Message  string
@@ -76,6 +91,7 @@ func (h *Harness) Lint() []Diagnostic {
 			msg = "runner_env is deprecated and env.runner takes precedence; migrate to env.runner (see ADR 0055)"
 		}
 		diags = append(diags, Diagnostic{
+			Code:     CodeRunnerEnvDeprecated,
 			Severity: SeverityWarning,
 			Field:    "runner_env",
 			Message:  msg,
@@ -89,6 +105,7 @@ func (h *Harness) Lint() []Diagnostic {
 		for _, hf := range h.HostFiles {
 			if hf.Expand && strings.Contains(hf.Dest, ".env.d/") {
 				diags = append(diags, Diagnostic{
+					Code:     CodeSandboxHostFilesCollision,
 					Severity: SeverityWarning,
 					Field:    "env.sandbox",
 					Message:  fmt.Sprintf("env.sandbox coexists with host_files entry %s (dest: %s); env.sandbox values take precedence on key collision", hf.Src, hf.Dest),
@@ -105,6 +122,7 @@ func (h *Harness) Lint() []Diagnostic {
 	// reasons, so only a bare declaration warns.
 	if len(h.AllowedRemoteResources) > 0 && !h.AllowRuntimeFetch && !h.HasURLDirResources() {
 		diags = append(diags, Diagnostic{
+			Code:     CodeAllowedRemoteImplicitFetch,
 			Severity: SeverityWarning,
 			Field:    "allowed_remote_resources",
 			Message:  "allowed_remote_resources is declared without allow_runtime_fetch: true; the runtime fetch service will start for backward compatibility, but this behavior is deprecated — add allow_runtime_fetch: true to the harness to silence this warning",
@@ -113,6 +131,7 @@ func (h *Harness) Lint() []Diagnostic {
 
 	if h.hadForgeBeforeResolve {
 		diags = append(diags, Diagnostic{
+			Code:     CodeForgeDeprecated,
 			Severity: SeverityWarning,
 			Field:    "forge",
 			Message:  "forge is deprecated; use overlays with CEL when expressions instead (see ADR 0088)",
@@ -122,6 +141,7 @@ func (h *Harness) Lint() []Diagnostic {
 	if strings.TrimSpace(h.Trigger) != "" {
 		if err := ValidateTriggerExpression(h.Trigger); err != nil {
 			diags = append(diags, Diagnostic{
+				Code:     CodeTriggerInvalid,
 				Severity: SeverityError,
 				Field:    "trigger",
 				Message:  err.Error(),
@@ -156,6 +176,7 @@ func lintPreflightCheckCommand(field, value string) *Diagnostic {
 		return nil
 	}
 	return &Diagnostic{
+		Code:     CodePreflightCheckPath,
 		Severity: SeverityError,
 		Field:    field,
 		Message:  fmt.Sprintf("value %q looks like a script path; %s runs verbatim as `sh -c` on the host and is never fetched or resolved like pre_script/post_script — if a fetched harness script was intended, use pre_script; otherwise inline the command (e.g. python3 -c 'import jsonschema')", pc, field),
@@ -204,6 +225,7 @@ func (h *Harness) scanDeprecatedIssueURL() []Diagnostic {
 	checkEnv := func(m map[string]string, field string) {
 		for _, k := range deprecatedIssueURLKeys(m) {
 			diags = append(diags, Diagnostic{
+				Code:     CodeGithubIssueURLDeprecated,
 				Severity: SeverityWarning,
 				Field:    field,
 				Message:  fmt.Sprintf("%s (entry %q)", DeprecatedIssueURLWarning, k),
@@ -220,6 +242,7 @@ func (h *Harness) scanDeprecatedIssueURL() []Diagnostic {
 				field = fmt.Sprintf("%s.host_files[%d].src", prefix, i)
 			}
 			diags = append(diags, Diagnostic{
+				Code:     CodeGithubIssueURLDeprecated,
 				Severity: SeverityWarning,
 				Field:    field,
 				Message:  DeprecatedIssueURLWarning,

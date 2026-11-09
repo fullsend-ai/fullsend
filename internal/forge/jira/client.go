@@ -10,7 +10,6 @@ import (
 	"io"
 	"log"
 	"math"
-	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/url"
@@ -20,6 +19,7 @@ import (
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/randutil"
 )
 
 // LiveClient is an HTTP client for the Jira Cloud REST API v3.
@@ -28,6 +28,12 @@ type LiveClient struct {
 	baseURL    string
 	email      string // for Basic auth (Cloud)
 	token      string
+
+	// oauth, when set, supplies Bearer access tokens from a service
+	// account's OAuth 2.0 client credentials instead of token (see
+	// NewScoped). oauthTokenURL overrides its token endpoint.
+	oauth         *oauthTokenSource
+	oauthTokenURL string
 
 	// gatewayURL, when set, routes REST requests through the Atlassian
 	// API gateway (see WithAPIGateway) instead of the site URL.
@@ -133,11 +139,10 @@ func checkRedirect(req *http.Request, via []*http.Request) error {
 	return nil
 }
 
-// New creates a new Jira client with the given API token.
+// New creates a new Jira client with the given API token. NewScoped also
+// uses it for OAuth 2.0 client credentials, which take the place of the
+// token.
 func New(token string, opts ...Option) (*LiveClient, error) {
-	if token == "" {
-		return nil, fmt.Errorf("jira: token must not be empty")
-	}
 	c := &LiveClient{
 		httpClient: &http.Client{
 			Timeout:       30 * time.Second,
@@ -148,6 +153,18 @@ func New(token string, opts ...Option) (*LiveClient, error) {
 	}
 	for _, o := range opts {
 		o(c)
+	}
+	if c.oauth == nil && token == "" {
+		return nil, fmt.Errorf("jira: token must not be empty")
+	}
+	if c.oauth != nil {
+		c.oauth.tokenURL = DefaultOAuthTokenURL
+		if c.oauthTokenURL != "" {
+			c.oauth.tokenURL = c.oauthTokenURL
+		}
+		if err := ValidateBaseURL(c.oauth.tokenURL); err != nil {
+			return nil, fmt.Errorf("jira: OAuth token URL: %w", err)
+		}
 	}
 	if c.baseURL == "" {
 		return nil, fmt.Errorf("jira: base URL must be set via WithBaseURL")
@@ -276,6 +293,22 @@ func (c *LiveClient) fetchCloudID(ctx context.Context) (string, error) {
 	return info.CloudID, nil
 }
 
+// authorize sets the request's Authorization header and returns the OAuth
+// access token it used ("" with a token). stale is an access token the API
+// just rejected: it is replaced rather than reused.
+func (c *LiveClient) authorize(ctx context.Context, req *http.Request, stale string) (string, error) {
+	if c.oauth == nil {
+		c.setAuth(req)
+		return "", nil
+	}
+	tok, err := c.oauth.token(ctx, c.httpClient, stale)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
+	return tok, nil
+}
+
 func (c *LiveClient) setAuth(req *http.Request) {
 	if c.email != "" {
 		cred := base64.StdEncoding.EncodeToString([]byte(c.email + ":" + c.token))
@@ -301,6 +334,11 @@ func (c *LiveClient) do(ctx context.Context, method, path string, body io.Reader
 		}
 	}
 
+	// stale is an OAuth access token the API rejected with 401 on this
+	// call. The request is retried once with a freshly requested token:
+	// a 401 means the request was not processed, so the retry is safe
+	// for any method.
+	var stale string
 	for attempt := range maxRetries {
 		var reqBody io.Reader
 		if bodyBytes != nil {
@@ -312,7 +350,10 @@ func (c *LiveClient) do(ctx context.Context, method, path string, body io.Reader
 			return fmt.Errorf("create request: %w", err)
 		}
 
-		c.setAuth(req)
+		usedToken, err := c.authorize(ctx, req, stale)
+		if err != nil {
+			return err
+		}
 		req.Header.Set("Accept", "application/json")
 		if bodyBytes != nil {
 			req.Header.Set("Content-Type", "application/json")
@@ -330,6 +371,12 @@ func (c *LiveClient) do(ctx context.Context, method, path string, body io.Reader
 				continue
 			}
 			return fmt.Errorf("http %s %s: %w", method, path, err)
+		}
+
+		if resp.StatusCode == http.StatusUnauthorized && usedToken != "" && stale == "" && attempt < maxRetries-1 {
+			_ = resp.Body.Close()
+			stale = usedToken
+			continue
 		}
 
 		if isRetryable(resp, method, path) {
@@ -436,7 +483,7 @@ func retryDelay(resp *http.Response, attempt int) time.Duration {
 	}
 	base := time.Duration(math.Pow(2, float64(attempt))) * time.Second
 	half := base / 2
-	return half + time.Duration(rand.Int64N(int64(half)+1))
+	return half + time.Duration(randutil.Int64N(int64(half)+1))
 }
 
 // ---------------------------------------------------------------------------
@@ -451,14 +498,18 @@ type searchRequest struct {
 	NextPageToken string   `json:"nextPageToken,omitempty"`
 }
 
-// searchFields lists the issue fields the poller actually consumes.
-// Requesting them explicitly (rather than "*all") bounds search payloads:
+// searchFields lists the issue fields SearchIssues requests. Of these,
+// the poller reads only "created", "labels", and "reporter". "project"
+// carries the immutable project database ID, the Jira container identity
+// for trace binding (ADR 0154), so search results hold the same identity
+// as issue reads; GetIssue fetches it through its own request.
+// Requesting fields explicitly (rather than "*all") bounds search payloads:
 // with "*all", 50 issues per page each carrying full ADF descriptions,
 // embedded first comment pages, attachments, and every custom field can
 // plausibly exceed the client's 10MB decode cap — and since a failed
 // search aborts the whole cycle with the same data returning every time,
 // that failure mode would wedge the poller for the entire project.
-var searchFields = []string{"summary", "status", "labels", "reporter", "created", "updated"}
+var searchFields = []string{"summary", "status", "labels", "reporter", "assignee", "created", "updated", "project"}
 
 // maxSearchPages limits pagination to prevent unbounded memory growth
 // from overly broad JQL queries.

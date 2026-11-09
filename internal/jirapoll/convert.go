@@ -30,10 +30,11 @@ func (p *Poller) toNormalizedEvent(event JiraEvent) normevent.Event {
 			Kind: normevent.TransitionKind(event.Type),
 		},
 		Actor: normevent.Actor{
-			ID:             actorID(event),
-			Kind:           normevent.ActorKind(p.actorKind(event)),
-			Role:           normevent.ActorRole(p.resolveRole(event)),
-			IsEntityAuthor: isEntityAuthor(event),
+			ID:               actorID(event),
+			Kind:             normevent.ActorKind(p.actorKind(event)),
+			Role:             normevent.ActorRole(p.resolveRole(event)),
+			IsEntityAuthor:   isEntityAuthor(event),
+			IsEntityAssignee: isEntityAssignee(event),
 		},
 		State: normevent.State{
 			Labels: event.Labels,
@@ -173,6 +174,18 @@ func isEntityAuthor(event JiraEvent) bool {
 		return false
 	}
 	return aid == userID(event.Reporter)
+}
+
+// isEntityAssignee checks if the actor is the issue's current assignee. It
+// compares the same identifier as actor.id and isEntityAuthor: accountId,
+// or name where accountId is unavailable (Data Center/Server). An
+// unassigned issue (zero-value Assignee) never matches.
+func isEntityAssignee(event JiraEvent) bool {
+	aid := actorID(event)
+	if aid == "" {
+		return false
+	}
+	return aid == userID(event.Assignee)
 }
 
 // extractCommand parses a comment body for a /fs- slash command. It returns

@@ -61,6 +61,13 @@ Given a dummy agent that would:
 | `args` | Op-specific; see below |
 | `expect` | Optional. `fail` marks a step the scenario expects to fail, such as a fetch the sandbox blocks. The failure is still recorded for `the agent will fail to ...`, but it does not make the agent exit non-zero, so the run still succeeds. |
 
+Every op that runs a command in the sandbox (all of the above except
+`write_fixture` and `wait`) first reads the harness environment from the
+sandbox `.env`, the same way an agent launch reads it. The command therefore
+sees the `env.sandbox` values, the `.env.d` files from `host_files` and the
+runner's `PATH`. If `.env` or a file it names cannot be read, the op fails with
+`loading the harness environment failed` and the loader's error.
+
 **`assert_not_jwt`:** `VAR` — succeeds when the sandbox variable `VAR` is set and does not hold a JWT (three base64url segments, the first starting `eyJ`). When its value is an absolute path to a readable file, as `INFERENCE_GATEWAY_TOKEN_FILE` is, the file must not hold one either. Use it to check that a credential reached the sandbox only as a placeholder.
 
 **`wait`:** `SECONDS` — sleeps for a whole number of seconds (1 to 1200) between the ops before and after it, for example to outlast a credential's lifetime before probing again.
@@ -90,7 +97,7 @@ And the agent will output issues.out with:
   """
 ```
 
-`Then the harness "<agent>" workflow logs contain "<text>"` (or `... do not contain "<text>"`) searches the harness workflow's job logs. A `do not contain` check fails when the log snapshot is incomplete, rather than passing on missing data. `Then the harness "<agent>" workflow logs register persona "<name>" and not "<other>"` reads only the block of `subagents: <name> → <model>` lines pi prints when it registers personas: the block must be found with an ordinary log line on both sides, must list `<name>` and must not list `<other>`, so a job log truncated elsewhere does not fail it. `Given the repository allows remote resources from "<prefix>"` adds a prefix to the leased repository's `.fullsend/config.yaml` `allowed_remote_resources` for the scenario, so a custom harness can fetch URL skills; see `features/runtime/skill-overrides.feature`.
+`Then the harness "<agent>" workflow logs contain "<text>"` (or `... do not contain "<text>"`) searches the harness workflow's job logs. A `do not contain` check fails when the log snapshot is incomplete or the poll window ended with no log output, rather than passing on missing data. `Then the harness "<agent>" workflow logs register persona "<name>" and not "<other>"` reads only the block of `subagents: <name> → <model>` lines pi prints when it registers personas: the block must be found with an ordinary log line on both sides, must list `<name>` and must not list `<other>`, so a job log truncated elsewhere does not fail it. `Given the repository allows remote resources from "<prefix>"` adds a prefix to the leased repository's `.fullsend/config.yaml` `allowed_remote_resources` for the scenario, so a custom harness can fetch URL skills; see `features/runtime/skill-overrides.feature`.
 
 ### Runtime steps
 
@@ -140,6 +147,47 @@ Then the harness "fix" workflow fails reporting "Refusing to push"
 Pick a stable fragment of the failure-comment contract (the category
 label headline or a fixed detail phrase). No shipped scenario uses this
 step yet; it is unit-tested.
+
+### Runner secret steps
+
+`pkg/behaviourtest/steps/runner_secrets.go` covers runner secrets
+([ADR 0136](../../ADRs/0136-runner-secrets-through-one-stored-secret.md)).
+
+`the repository has the runner secret "<NAME>"` sets the leased
+repository's `FULLSEND_GITHUB_RUNNER_SECRETS` secret. The secret holds one
+object with `<NAME>` and a random value. The step registers the value for
+redaction, and scenario cleanup deletes the secret. Call the step once per
+scenario: a second call is an error. Runner secrets reach a run through this
+one secret, which exists on GitHub only, so tag these scenarios
+`@skip:gitlab`.
+
+`the harness "<agent>" workflow fails with "<text>" in its logs` waits for
+the agent's harness run to fail. It then looks for the text in the run's
+workflow logs. Use it when a run fails before a post-script can comment,
+for example when `fullsend run` refuses the harness at load.
+
+Logs fetched right after a run completes can come back unusable. The cause
+is unknown. The step fetches again when a fetch fails, the logs are empty
+or they hold a fetch-failure note. It waits 5 seconds after each fetch and
+keeps trying for up to a minute. The last fetch can start up to 5 seconds
+after that minute and take up to 30 seconds. When the text is missing, the error
+names the cause: the logs could not be fetched, were empty or were
+incomplete. A log-fetch problem then reads as a fetch problem, not as a
+wrong result.
+
+`the harness "<agent>" workflow logs contain "<text>"` checks the logs of a
+run that succeeds. It fetches unusable logs again in the same way.
+
+`features/dispatch/runner-secret-overlay-guard.feature` uses these steps.
+Its refused scenario gives an overlay that references the runner secret
+and reads a shadowed `.event`, and expects the run to fail with the guard
+error. Its allowed scenario guards the same overlay on `runtime.forge`. It
+expects the run to complete and its logs to contain "Runner secrets", which
+shows the secret reached the run.
+
+The `@requires:capability:runner-secret-overlay-guard` tag gates the refused
+scenario. `make behaviour-test` skips it until that capability is declared.
+The Makefile's `BEHAVIOUR_CAPABILITIES` comment says why and when.
 
 ### Forge-state assertion steps
 
@@ -570,6 +618,13 @@ reset=2026-10-25T18:00:00Z resource=core)`, or `quota unknown` before the
 org's client has seen rate-limit headers — and the composed driver repeats
 the summary on its `[driver] allocated` and `[driver] deallocated` lines
 ([`composed.go`](../../../pkg/behaviourtest/drivers/install/composed.go)).
+While claims wait for capacity, the allocator logs every org's latest quota
+on one line, at most once per claim poll
+([#9154](https://github.com/fullsend-ai/fullsend/issues/9154)):
+`[slots] quota during slot wait: halfsend-03: remaining=1234/5000
+reset=2026-10-25T18:00:00Z resource=core; halfsend-04: …`. Each entry comes
+from the org's latest response, so compare entries with the same `resource`
+and `reset`.
 At teardown, `Finalize` logs the last observation of every org the suite
 used ([#8622](https://github.com/fullsend-ai/fullsend/issues/8622)):
 
@@ -611,8 +666,52 @@ for work that can still make calls.
 
 The counts cover one suite process and one client per org, so they leave out
 other suites sharing the pool and the `fullsend` CLI subprocess that installs
-into a slot. To estimate that unattributed traffic, compare `total` with the
-drop in the org's remaining quota.
+into a slot.
+
+**Quota counters by reset time.** GitHub usually reports two core quota
+counters for an org at the same time, even for a single token
+([#9154](https://github.com/fullsend-ai/fullsend/issues/9154)). Their reset
+times are usually under a minute apart, and each has its own `remaining` value.
+In stage and pool runs from November 2026, almost all writes landed on one
+counter, and reads split across both
+([evidence](https://github.com/fullsend-ai/fullsend/issues/9154#issuecomment-6710943328)).
+The cause is unknown. GitHub processes requests in multiple regions, and
+[its rate limit docs](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api)
+say values can vary from one response to the next, so these may be regional
+counters. It is also unknown whether requests fail when one counter runs out or
+only when both do.
+
+A `quota remaining` value describes only the counter that answered last, so
+values can appear to rise and fall. Compare readings only when they have the
+same `reset`. After each API call log, the driver logs the readings it saw,
+grouped by reset time:
+
+```
+[driver] per-org quota counters at finalize:
+halfsend-01: reset=2026-10-25T18:00:00Z spread=1800 remaining=3200/5000 calls=1500 claim/GET=300 other/POST=1200
+halfsend-01: reset=2026-10-25T18:00:09Z spread=900 remaining=4100/5000 calls=750 lock/GET=250 other/GET=500
+```
+
+`spread` is the gap between the highest and lowest `remaining` values in the
+group, and `remaining` is the lowest. `calls` counts this client's core calls
+answered in the group, by caller and HTTP method.
+
+To estimate quota use, compare each group's `calls` with its own `spread`. Do
+not compare `total` with one group's drop, because `total` covers both counters.
+In the 7 stage org runs in that evidence, where one suite runs at a time, each
+group's `spread` rose with its own `calls`, and a regression put `claim` and
+`lock` at about 0.98 quota per call. These are observations from a short sample,
+not a documented GitHub rule.
+
+- `spread` above `calls` can mean traffic this client did not count, possibly
+  from other suites or the `fullsend` CLI subprocess.
+- `spread` one below `calls` is normal, because the first reading already
+  includes the first call.
+- `calls` more than one above `spread` has no known cause. It can mean some
+  calls were charged elsewhere or did not lower the readings in this group.
+
+The log covers only the groups this client saw, so it cannot give an org's
+total quota use.
 
 **Harness-wait timeout errors.** Every harness-wait timeout error the
 GitHub Actions CI driver reports ends with the polling client's last-seen
@@ -985,7 +1084,7 @@ A minted token's granted permissions are compared with the role's canonical set 
 
 ### Budget
 
-Each row is a scenario that leases a pool repository, so the 18 rows add 18 leases (about 3–5 minutes of provisioning each) to the [CI timeout budget](#ci-timeout-budgeting-for-lazy-provisioning). Each probe run is short: two parallel jobs that each make one HTTP request. If the suite outgrows the budget, grow the pool through `DefaultPoolSize` (`pkg/behaviourtest/drivers/install/driver.go`). Update the pool-sized infrastructure in the same change, for example `POOL_REPOS` in the inference gateway setup script (see [e2e-testing.md](e2e-testing.md#who-runs-it-and-when)). Then rerun that infrastructure before the larger pool is used.
+Each row is a scenario that leases a pool repository, so the 18 rows add 18 leases (about 3–5 minutes of provisioning each) to the [CI timeout budget](#ci-timeout-budgeting-for-lazy-provisioning). Each probe run is short: two parallel jobs that each make one HTTP request. If the suite outgrows the budget, grow the pool through `DefaultPoolSize` (`pkg/behaviourtest/drivers/install/driver.go`). Update the pool-sized infrastructure in the same change, for example `POOL_REPO_COUNT` in the inference gateway setup script, and deploy it before the larger pool is used (see the "Pool change" step in [e2e-testing.md](e2e-testing.md#who-runs-it-and-when)).
 
 ## CLI mint status scenarios
 

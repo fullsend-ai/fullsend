@@ -204,12 +204,20 @@ and `validation_loop.script`), layered over the `fullsend run`
 process environment. (`validation_loop.preflight_check` also reads `env.runner`
 declarations, but atop its own allowlisted environment — see above, not the
 process environment.) A few named workflow secrets are **not** inherited from that environment:
-`JIRA_TOKEN`, `JIRA_USER_EMAIL`, `FULLSEND_JIRA_TOKEN`, `FULLSEND_JIRA_EMAIL`, and the OTLP collector headers `OTEL_EXPORTER_OTLP_HEADERS` /
+`JIRA_TOKEN`, `JIRA_USER_EMAIL`, `FULLSEND_JIRA_TOKEN`, `FULLSEND_JIRA_EMAIL`, `FULLSEND_JIRA_CLIENT_ID`, `FULLSEND_JIRA_CLIENT_SECRET`, and the OTLP collector headers `OTEL_EXPORTER_OTLP_HEADERS` /
 `OTEL_EXPORTER_OTLP_*_HEADERS` (for example `OTEL_EXPORTER_OTLP_TRACES_HEADERS`). A script
 receives one only when the harness declares it, e.g. `JIRA_TOKEN: "${JIRA_TOKEN}"` under
 `env.runner`. `fullsend run` itself still reads them for its own Jira client and trace export.
 Earlier releases passed them to every script unconditionally; a harness whose scripts read
-`JIRA_TOKEN` or `JIRA_USER_EMAIL` without declaring them must add them to `env.runner`. Scripts
+`JIRA_TOKEN` or `JIRA_USER_EMAIL` without declaring them must add them to `env.runner`. The
+Jira repository secrets `FULLSEND_JIRA_TOKEN`, `FULLSEND_JIRA_EMAIL`, `FULLSEND_JIRA_CLIENT_ID`, and `FULLSEND_JIRA_CLIENT_SECRET` follow the same rule (see
+[Jira integration § Jira repository secrets in agent runs](../guides/user/jira-integration.md#jira-repository-secrets-in-agent-runs)).
+`FULLSEND_JIRA_EMAIL` is optional: a `${FULLSEND_JIRA_EMAIL}` reference does not fail validation
+when the variable is unset, and an `env.runner` entry for it that resolves empty is omitted, so
+the script sees no variable rather than an empty one. `FULLSEND_JIRA_CLIENT_ID` and
+`FULLSEND_JIRA_CLIENT_SECRET` (a service account's OAuth 2.0 credential) are optional the same
+way, and `FULLSEND_JIRA_TOKEN` is optional too while the client credentials are set. A harness can
+therefore declare both credential types. Scripts
 always run with `PYTHONDONTWRITEBYTECODE=1`, overriding any `env.runner` value, so bytecode never
 breaks the hash-verified fetch cache.
 

@@ -105,10 +105,20 @@ on:
         description: "Jira account email for Basic auth"
         required: false
       FULLSEND_JIRA_TOKEN:
-        description: Scoped Jira API token for status notifications.
+        description: >-
+          Scoped Jira API token for status notifications and Jira-consuming
+          agent runs.
         required: false
       FULLSEND_JIRA_EMAIL:
-        description: Optional Jira account email for a scoped user token.
+        description: >-
+          Optional Jira account email for status notifications and bot-user
+          Basic auth.
+        required: false
+      FULLSEND_JIRA_CLIENT_ID:
+        description: Atlassian service account OAuth 2.0 client ID.
+        required: false
+      FULLSEND_JIRA_CLIENT_SECRET:
+        description: Atlassian service account OAuth 2.0 client secret.
         required: false
       FULLSEND_GITHUB_RUNNER_SECRETS:
         description: >-
@@ -1167,6 +1177,8 @@ jobs:
           gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           jira-token: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_TOKEN || '' }}
           jira-email: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_EMAIL || '' }}
+          jira-client-id: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_ID || '' }}
+          jira-client-secret: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_SECRET || '' }}
           runner_secrets: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}
           fullsend-dir: .fullsend
           version: ${{ inputs.fullsend_version || job.workflow_sha }}
@@ -1301,6 +1313,8 @@ jobs:
           gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           jira-token: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_TOKEN || '' }}
           jira-email: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_EMAIL || '' }}
+          jira-client-id: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_ID || '' }}
+          jira-client-secret: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_SECRET || '' }}
           runner_secrets: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}
           fullsend-dir: .fullsend
           version: ${{ inputs.fullsend_version || job.workflow_sha }}
@@ -1433,6 +1447,8 @@ jobs:
           gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           jira-token: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_TOKEN || '' }}
           jira-email: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_EMAIL || '' }}
+          jira-client-id: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_ID || '' }}
+          jira-client-secret: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_SECRET || '' }}
           runner_secrets: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}
           fullsend-dir: .fullsend
           version: ${{ inputs.fullsend_version || job.workflow_sha }}
@@ -1699,6 +1715,8 @@ jobs:
           gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           jira-token: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_TOKEN || '' }}
           jira-email: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_EMAIL || '' }}
+          jira-client-id: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_ID || '' }}
+          jira-client-secret: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_SECRET || '' }}
           runner_secrets: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}
           fullsend-dir: .fullsend
           version: ${{ inputs.fullsend_version || job.workflow_sha }}
@@ -1811,6 +1829,8 @@ jobs:
           gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           jira-token: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_TOKEN || '' }}
           jira-email: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_EMAIL || '' }}
+          jira-client-id: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_ID || '' }}
+          jira-client-secret: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_SECRET || '' }}
           runner_secrets: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}
           fullsend-dir: .fullsend
           version: ${{ inputs.fullsend_version || job.workflow_sha }}
@@ -1909,6 +1929,8 @@ jobs:
           gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           jira-token: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_TOKEN || '' }}
           jira-email: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_EMAIL || '' }}
+          jira-client-id: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_ID || '' }}
+          jira-client-secret: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_SECRET || '' }}
           runner_secrets: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}
           fullsend-dir: .fullsend
           version: ${{ inputs.fullsend_version || job.workflow_sha }}
@@ -2392,6 +2414,8 @@ jobs:
           gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           jira-token: ${{ fromJSON(matrix.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_TOKEN || '' }}
           jira-email: ${{ fromJSON(matrix.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_EMAIL || '' }}
+          jira-client-id: ${{ fromJSON(matrix.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_ID || '' }}
+          jira-client-secret: ${{ fromJSON(matrix.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_SECRET || '' }}
           role: ${{ matrix.role }}
           runner_secrets: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}
           version: ${{ inputs.fullsend_version || job.workflow_sha }}

@@ -82,6 +82,7 @@ The `event` variable has the following top-level fields:
 | `event.actor.bot_role` | string or null | Optional provider-resolved canonical bot role such as `review`; absent/null for humans and unrecognized bots |
 | `event.actor.role_verified` | boolean | Optional lookup status. For humans, true means `actor.role` is a trusted forge permission; for bots, true means bot-role lookup completed, including a successful no-match result |
 | `event.actor.is_entity_author` | boolean | True when the actor is the author of the work item, change proposal, or conversation |
+| `event.actor.is_entity_assignee` | boolean | True when the actor is one of the entity's current assignees on GitHub, GitLab or Jira; false when it is unassigned, the actor is not an assignee, or the assignees are unknown. Reviewers are not assignees |
 | `event.state.labels` | list | Label names on the entity at event time |
 | `event.state.change_proposal` | object | Present when a change proposal is involved (includes `is_fork`, `head_ref`, `base_ref`) |
 | `event.state.conversation` | object | Required when `entity.kind == "conversation"` (includes `category.name`; optional `category.id` / `slug` / `format`) |
@@ -188,6 +189,33 @@ trigger: >
     && event.transition.kind == "opened"
     && event.actor.role in ["admin", "maintain", "write"]
 ```
+
+**Run only for the issue's author or an assignee:**
+```yaml
+trigger: >
+  event.entity.kind == "work_item"
+    && event.transition.kind == "comment_added"
+    && has(event.transition.comment.command)
+    && event.transition.comment.command == "/my-command"
+    && (event.actor.is_entity_author || event.actor.is_entity_assignee)
+```
+
+The developer working an issue is usually its assignee, while someone else
+often filed it. This clause lets either of them start the agent and turns
+away other users, even ones with write access. It only narrows who the
+trigger accepts: the authorization gate still runs first, and anyone who can
+assign issues can assign themselves, so the actor still needs the role the
+agent requires.
+
+Where the field takes effect depends on the forge. On GitHub,
+`fullsend dispatch` evaluates it for custom agents; a harness `trigger:` on a
+built-in agent such as `code` does not change GitHub stage routing (see
+[Coexistence with built-in agents](#coexistence-with-built-in-agents)). GitLab
+sets the field on its events, but its built-in router does not evaluate
+`trigger` expressions. The Jira poller evaluates harness triggers for
+built-in agents too, so a `code.yaml` override there can restrict `/fs-code`
+to the author or the assignee; see
+[Jira integration](jira-integration.md#letting-the-assignee-start-code).
 
 ### Guarding optional fields with `has()`
 

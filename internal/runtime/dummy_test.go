@@ -717,6 +717,7 @@ func TestExecuteBehaviourOp_CheckoutBranchMissingRemoteCommand(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, git.calls, 1)
 	assert.Equal(t, []string{"ls-remote", "--exit-code", "--heads", "origin", "refs/heads/agent/42-fix-widget"}, git.calls[0])
+	gotCmd = stripHarnessEnv(t, gotCmd)
 	assert.Contains(t, gotCmd, "cd '"+repoDir+"'")
 	assert.Contains(t, gotCmd, "git checkout -B 'agent/42-fix-widget' &&")
 	assert.NotContains(t, gotCmd, "ls-remote", "the sandbox must not contact the remote")
@@ -756,6 +757,7 @@ func TestExecuteBehaviourOp_CheckoutBranchExistingRemoteCommand(t *testing.T) {
 	assert.Equal(t, "refs/fullsend-behaviour/heads/agent/42-fix-widget", git.calls[2][len(git.calls[2])-1])
 	assert.Equal(t, []string{"update-ref", "-d", "refs/fullsend-behaviour/heads/agent/42-fix-widget"}, git.calls[3])
 	assert.Equal(t, checkoutBranchBundlePath, uploadedTo)
+	gotCmd = stripHarnessEnv(t, gotCmd)
 	assert.Contains(t, gotCmd, "git -c gc.auto=0 -c maintenance.auto=false fetch --no-tags '"+checkoutBranchBundlePath+"' 'refs/fullsend-behaviour/heads/agent/42-fix-widget'")
 	assert.Contains(t, gotCmd, "git -c gc.auto=0 -c maintenance.auto=false -c user.name=")
 	assert.Contains(t, gotCmd, "git checkout -B 'agent/42-fix-widget' FETCH_HEAD")
@@ -944,6 +946,7 @@ func runCheckoutBranchForReal(t *testing.T, hostRepo, sandboxRepo, branch string
 			return os.WriteFile(bundlePath, data, 0o644)
 		},
 		hostRepoDir: hostRepo,
+		envLoad:     emptyHarnessEnvLoad(t),
 	}
 	err = executeBehaviourOp(rt, "sandbox", sandboxRepo, BehaviourOperation{
 		Op:   "checkout_branch",
@@ -1528,7 +1531,7 @@ func TestExecuteHTTPProbe_RealNode(t *testing.T) {
 			code, err = exitErr.ExitCode(), nil
 		}
 		return stdout.String(), stderr.String(), code, err
-	}}
+	}, envLoad: emptyHarnessEnvLoad(t)}
 
 	status, body, hadJWT, err := executeHTTPProbe(rt, "sb", BehaviourOperation{Op: "http_probe", Args: "POST " + srv.URL + `/ok INFERENCE_GATEWAY_API_KEY {"model": "echo"}`})
 	require.NoError(t, err)

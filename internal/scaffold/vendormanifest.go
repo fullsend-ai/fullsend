@@ -136,6 +136,7 @@ func (m *VendorManifest) CleanupPaths(workflowPrefix string) []string {
 
 var vendoredReusableWorkflows = []string{
 	"reusable-dispatch.yml",
+	"reusable-poll-jira.yml",
 	"reusable-prioritize.yml",
 }
 
@@ -162,6 +163,7 @@ var vendoredDefaultsInfraPaths = []string{
 	".github/scripts/install-podman.sh",
 	".github/scripts/openshell-version.sh",
 	".github/scripts/pre-fetch-review-body.sh",
+  ".github/scripts/retry-with-backoff.sh",
 	".github/scripts/resolve-effective-mint-url.sh",
 }
 

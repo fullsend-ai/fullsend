@@ -29,6 +29,7 @@ func TestReservedSandboxEnvDiagnostics_ReportsDroppedKeys(t *testing.T) {
 	diags := reservedSandboxEnvDiagnostics(h)
 	require.Len(t, diags, 1, "the reserved keys collapse into one warning")
 	assert.Equal(t, harness.SeverityWarning, diags[0].Severity)
+	assert.Equal(t, lintCodeReservedSandboxEnv, diags[0].Code)
 	assert.Equal(t, "env.sandbox", diags[0].Field)
 
 	// Every key the gate will drop is named, and only those keys.

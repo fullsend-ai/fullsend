@@ -42,20 +42,23 @@ const maxToolSpanNameBytes = 128
 // spans are Level 1 metadata and are emitted whether or not the content
 // gate is on.
 //
-// A span starts when the tracker handles the ToolUseEvent and ends when it
-// handles the matching ToolResultEvent. iterationEventHandler runs the
+// A span starts when the tracker handles the ToolUseEvent, or at the event's
+// StartedAt when it has one (the pi parser holds the event until the call
+// ends, and stamps when it read tool_execution_start), and ends when it handles
+// the matching ToolResultEvent. iterationEventHandler runs the
 // console renderer first (it prints for a call, nothing for a result), then
 // this tracker, then the Level 3 collector, so the collector's redaction pass
 // over an event never delays that event's own stamp. Events are handled one
 // at a time: with several calls open, a stamp can still trail the collector's
 // pass over an event queued ahead of it. Both timestamps are runner-side
-// receipt instants
+// instants: receipt of the events, or for pi's start the parser's read of
+// tool_execution_start,
 // on the parent agent span's clock — no cross-host skew, and the one source
 // every runtime provides (Claude Code's tool_use and tool_result lines carry
 // sandbox-clock timestamps the parser does not decode; pi's tool-execution
 // lines and codex's items carry none). The cost is loose timing in both
-// directions: tool_use arrival is arguments-complete rather than execution
-// start (early), but its stamp also trails the pipe, the parser's decode, the
+// directions: a start stamped at tool_use arrival is arguments-complete rather
+// than execution start (early; pi's start line precedes execution), but its stamp also trails the pipe, the parser's decode, the
 // renderer's print and any event queued ahead of it (late), and tool_result
 // arrival trails execution end by the pipe latency and the parser's decode of
 // the line — so a span can be shorter than the execution it covers as well as
@@ -63,13 +66,15 @@ const maxToolSpanNameBytes = 128
 // because the stream interleaves several open calls (parallel sub-agent
 // dispatch); a call that never gets a result — the runtime was stopped, or its
 // over-long result line showed no id in the prefix the parser keeps — is ended
-// by Finish as error.type=unanswered; a result whose line exceeded the parser's
+// by Finish as error.type=unanswered (the pi parser holds a call's event until
+// tool_execution_end, so a pi call cut off by a kill or timeout never opens a
+// span); a result whose line exceeded the parser's
 // 1 MiB bound (ToolResultEvent.Oversized) ends its span at receipt, marked
 // fullsend.tool.result_oversized and left without a status, since the tool
 // answered and its is_error was never decoded; and a result whose call was
 // never seen (its tool_use line was skipped) becomes a marked span of
 // near-zero duration. Events
-// without an id — pi and codex emit none — produce no span, and neither does
+// without an id — codex emits none — produce no span, and neither does
 // a server-side tool: its result never arrives as a tool_result, so the parser
 // reports it without an id (stream_event lines) or not at all (assistant
 // lines, the live path). The
@@ -114,7 +119,7 @@ func (t *toolSpanTracker) Handle(evt agentruntime.AgentEvent) {
 		if prev, ok := t.open[id]; ok {
 			endUnanswered(prev)
 		}
-		t.open[id] = t.start(id, e.Name)
+		t.open[id] = t.start(id, e.Name, e.StartedAt)
 	case agentruntime.ToolResultEvent:
 		id := boundedID(e.ID)
 		if id == "" {
@@ -132,7 +137,7 @@ func (t *toolSpanTracker) Handle(evt agentruntime.AgentEvent) {
 				return
 			}
 			t.created++
-			span = t.start(id, "")
+			span = t.start(id, "", time.Time{})
 			span.SetAttributes(attribute.Bool("fullsend.tool.unmatched", true))
 		}
 		if e.Oversized {
@@ -194,10 +199,13 @@ func (t *toolSpanTracker) safeID(id string) string {
 	return id
 }
 
-func (t *toolSpanTracker) start(id, name string) trace.Span {
+func (t *toolSpanTracker) start(id, name string, startedAt time.Time) trace.Span {
 	// Stamped before the scans below: the name is sanitized at full length
 	// and bounded only afterwards, so their cost is the stream's to set.
-	now := time.Now()
+	now := startedAt
+	if now.IsZero() {
+		now = time.Now()
+	}
 	attrs := []attribute.KeyValue{attribute.String("gen_ai.operation.name", "execute_tool")}
 	if safe := t.safeID(id); safe != "" {
 		attrs = append(attrs, stringAttr("gen_ai.tool.call.id", safe))

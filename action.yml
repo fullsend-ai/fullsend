@@ -85,11 +85,40 @@ inputs:
     required: false
     default: ""
   jira-token:
-    description: Scoped Jira API token used by Jira status notifications.
+    description: >-
+      Scoped Jira API token for status notifications and Jira-consuming agent
+      runs. The Run fullsend and orphaned-status finalizer steps receive it as
+      FULLSEND_JIRA_TOKEN. Host-side scripts receive it only when a harness
+      declares it in env.runner; sandbox and provider expansion sites deny it.
+      It is separate from runner_secrets and remains in the fullsend run
+      process environment.
     required: false
     default: ""
   jira-email:
-    description: Optional Jira account email for a scoped user token. Leave empty for a service-account token.
+    description: >-
+      Optional Jira account email. When set, it selects bot-user Basic auth;
+      when absent, the token uses service-account Bearer auth. The Run fullsend
+      and orphaned-status finalizer steps receive it only when set. Host-side
+      scripts receive it only when the harness declares it in env.runner.
+    required: false
+    default: ""
+  jira-client-id:
+    description: >-
+      Optional OAuth 2.0 client ID of an Atlassian service account, used with
+      jira-client-secret instead of jira-token. The Run fullsend and
+      orphaned-status finalizer steps receive it as FULLSEND_JIRA_CLIENT_ID only
+      when set. Host-side scripts receive it only when a harness declares it in
+      env.runner; sandbox and provider expansion sites deny it.
+    required: false
+    default: ""
+  jira-client-secret:
+    description: >-
+      Optional OAuth 2.0 client secret of an Atlassian service account, used
+      with jira-client-id instead of jira-token. fullsend exchanges the client
+      credentials for short-lived access tokens. The Run fullsend and
+      orphaned-status finalizer steps receive it as FULLSEND_JIRA_CLIENT_SECRET
+      only when set. Host-side scripts receive it only when a harness declares
+      it in env.runner; sandbox and provider expansion sites deny it.
     required: false
     default: ""
 
@@ -493,14 +522,27 @@ runs:
         FULLSEND_GITHUB_RUNNER_SECRETS_FILE: ${{ steps.runner-secrets.outputs.path }}
         FULLSEND_JIRA_TOKEN: ${{ inputs.jira-token }}
         FULLSEND_JIRA_EMAIL_INPUT: ${{ inputs.jira-email }}
+        FULLSEND_JIRA_CLIENT_ID: ${{ inputs.jira-client-id }}
+        FULLSEND_JIRA_CLIENT_SECRET: ${{ inputs.jira-client-secret }}
       run: |
         set -euo pipefail
+        if [[ -z "${FULLSEND_JIRA_TOKEN}" ]]; then
+          unset FULLSEND_JIRA_TOKEN
+        fi
         if [[ -n "${FULLSEND_JIRA_EMAIL_INPUT}" ]]; then
           export FULLSEND_JIRA_EMAIL="${FULLSEND_JIRA_EMAIL_INPUT}"
         else
           unset FULLSEND_JIRA_EMAIL
         fi
         unset FULLSEND_JIRA_EMAIL_INPUT
+        # OAuth 2.0 client credentials replace the token; an unset pair
+        # leaves token auth (or no Jira credential) in effect.
+        if [[ -z "${FULLSEND_JIRA_CLIENT_ID:-}" ]]; then
+          unset FULLSEND_JIRA_CLIENT_ID
+        fi
+        if [[ -z "${FULLSEND_JIRA_CLIENT_SECRET:-}" ]]; then
+          unset FULLSEND_JIRA_CLIENT_SECRET
+        fi
         FULLSEND_DIR="${FULLSEND_DIR:-${GITHUB_WORKSPACE}}"
         TARGET_REPO="${TARGET_REPO:-${GITHUB_WORKSPACE}/target-repo}"
         mkdir -p "${GITHUB_WORKSPACE}/output"
@@ -620,6 +662,8 @@ runs:
         FULLSEND_DIR: ${{ inputs.fullsend-dir }}
         FULLSEND_JIRA_TOKEN: ${{ inputs.jira-token }}
         FULLSEND_JIRA_EMAIL_INPUT: ${{ inputs.jira-email }}
+        FULLSEND_JIRA_CLIENT_ID: ${{ inputs.jira-client-id }}
+        FULLSEND_JIRA_CLIENT_SECRET: ${{ inputs.jira-client-secret }}
       run: |
         set -euo pipefail
         if [[ -n "${FULLSEND_JIRA_EMAIL_INPUT}" ]]; then
@@ -628,6 +672,14 @@ runs:
           unset FULLSEND_JIRA_EMAIL
         fi
         unset FULLSEND_JIRA_EMAIL_INPUT
+        # OAuth 2.0 client credentials replace the token; an unset pair
+        # leaves token auth (or no Jira credential) in effect.
+        if [[ -z "${FULLSEND_JIRA_CLIENT_ID:-}" ]]; then
+          unset FULLSEND_JIRA_CLIENT_ID
+        fi
+        if [[ -z "${FULLSEND_JIRA_CLIENT_SECRET:-}" ]]; then
+          unset FULLSEND_JIRA_CLIENT_SECRET
+        fi
         # When the fullsend process is hard-killed (SIGKILL, OOM, segfault),
         # the deferred PostCompletion call never runs and the status comment
         # remains in "Started" state. This step runs unconditionally (if:

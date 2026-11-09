@@ -22,7 +22,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math/rand/v2"
 	"net/http"
 	"slices"
 	"sort"
@@ -32,6 +31,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
+	"github.com/fullsend-ai/fullsend/internal/randutil"
 )
 
 const (
@@ -296,6 +296,9 @@ type slotAllocator struct {
 	held         map[Slot]lease
 	blockedUntil map[string]time.Time
 	quota        map[string]forge.RateLimit
+	// waitQuotaLogged is when logWaitQuota last logged, so concurrent
+	// waiters share one line per slotClaimPoll.
+	waitQuotaLogged time.Time
 	// pending maps each slot to the lease descriptions of creates whose
 	// outcome is unknown: the create failed ambiguously and the ownership
 	// lookup could not show the repo was ours or someone else's. Later
@@ -355,7 +358,7 @@ func (l lease) owns(repo *forge.Repository) bool {
 
 // newLeaseDescription returns SlotRepoDescription with a unique nonce.
 func newLeaseDescription() string {
-	return fmt.Sprintf("%s%s%016x%016x", SlotRepoDescription, leaseDescriptionSep, rand.Uint64(), rand.Uint64())
+	return fmt.Sprintf("%s%s%016x%016x", SlotRepoDescription, leaseDescriptionSep, randutil.Uint64(), randutil.Uint64())
 }
 
 // newSlotAllocator returns an allocator over layout that resolves
@@ -376,7 +379,7 @@ func newSlotAllocator(layout PoolLayout, clientFor OrgClientFunc, logf func(stri
 		logf:      logf,
 		now:       time.Now,
 		shuffle: func(s []Slot) {
-			rand.Shuffle(len(s), func(i, j int) { s[i], s[j] = s[j], s[i] })
+			randutil.Shuffle(len(s), func(i, j int) { s[i], s[j] = s[j], s[i] })
 		},
 		held:         make(map[Slot]lease),
 		blockedUntil: make(map[string]time.Time),
@@ -910,6 +913,7 @@ func (a *slotAllocator) Acquire(ctx context.Context) (Slot, forge.Client, error)
 			continue
 		}
 		a.logf("[slots] no capacity, retrying in %v: %v", slotClaimPoll, err)
+		a.logWaitQuota()
 		select {
 		case <-ctx.Done():
 			return Slot{}, nil, fmt.Errorf("claiming pool slot: %w", errors.Join(ctx.Err(), err))
@@ -1079,6 +1083,25 @@ func (a *slotAllocator) QuotaDiagnostics() string {
 		lines = append(lines, fmt.Sprintf("%s: %s", org, a.quota[org]))
 	}
 	return strings.Join(lines, "\n")
+}
+
+// logWaitQuota logs every org's last observed quota while claims wait for
+// capacity, at most once per slotClaimPoll across all waiters. Claims and
+// releases are the only other quota log lines, and a wait has neither.
+func (a *slotAllocator) logWaitQuota() {
+	a.mu.Lock()
+	now := a.now()
+	due := now.Sub(a.waitQuotaLogged) >= slotClaimPoll
+	if due {
+		a.waitQuotaLogged = now
+	}
+	a.mu.Unlock()
+	if !due {
+		return
+	}
+	if diag := a.QuotaDiagnostics(); diag != "" {
+		a.logf("[slots] quota during slot wait: %s", strings.ReplaceAll(diag, "\n", "; "))
+	}
 }
 
 func (a *slotAllocator) isHeld(slot Slot) bool {
