@@ -299,10 +299,11 @@ the runner writes or puts on `PATH` ahead of the image are refused when the
 harness loads: `/sandbox/workspace/.env`, the runner and runtime binaries in
 `/sandbox/workspace/bin` (`claude`, `codex`, `pi`, `opencode`, `fullsend`,
 `fullsend-check-output`), and anything under `/sandbox/claude-config`,
-`/sandbox/codex-config`, `/sandbox/pi-config`,
+`/sandbox/codex-config`, `/sandbox/pi-config`, `/sandbox/opencode-config`,
 `/sandbox/workspace/.fullsend`, `/sandbox/workspace/.security`,
 `/sandbox/.venv` or `/sandbox/go/bin`. A `dest` containing a `..` path
-component is refused as well. The same rule applies to `host_files` under
+component is refused as well. These reservations apply regardless of the selected
+runtime. The same rule applies to `host_files` under
 `overlays:`, `forge:` and inherited from `base:`. On Claude and pi runs
 `/sandbox/workspace/bin` is last on the agent's `PATH`, so a file there adds a
 command but does not replace one the image provides. Codex restores the `PATH`
