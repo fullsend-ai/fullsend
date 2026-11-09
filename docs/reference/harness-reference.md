@@ -22,7 +22,7 @@ base: harness/common-base.yaml      # Inherit from another harness (local or URL
 image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
 model: opus                         # LLM model override
 effort: high                        # Reasoning effort (low, medium, high, xhigh, max); claude runtime only
-readonly_repo: false                # Mount repo as read-only in sandbox
+readonly_repo: false                # Strip write bits from the repo tree (chmod-only, .git stays writable); advisory where the agent owns the tree (#7927)
 providers:                           # Network access via provider profiles
   - vertex-ai                       # Bare builtin name: resolves to fullsend's embedded definition
   - github                          # Same; or a providers/<name>.yaml path for a local/custom definition

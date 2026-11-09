@@ -17,7 +17,8 @@ func TestReadonlyRepoCommand_Structure(t *testing.T) {
 	cmd := readonlyRepoCommand("/sandbox/workspace/repo")
 
 	assert.Contains(t, cmd, "find /sandbox/workspace/repo -path '*/.git' -prune -o -not -type l -exec chmod a-w {} +")
-	assert.Contains(t, cmd, `if [ "$(id -u)" = 0 ]; then chown -R sandbox:sandbox /sandbox/workspace/repo/.git; fi`)
+	assert.Contains(t, cmd, `{ u=$(id -u) && [ -n "$u" ] || { echo "readonly_repo: cannot determine the exec uid" >&2; exit 1; }; } &&`)
+	assert.Contains(t, cmd, `if [ "$u" = 0 ]; then chown -R sandbox:sandbox /sandbox/workspace/repo/.git; fi`)
 	assert.True(t, strings.HasSuffix(cmd, "chmod -R u+w /sandbox/workspace/repo/.git"), "command must end by restoring .git write permission: %s", cmd)
 	assert.NotContains(t, cmd, "&& chown", "chown must not run unconditionally")
 }
@@ -34,13 +35,16 @@ func TestReadonlyRepoCommand_ExecIdentity(t *testing.T) {
 	tests := []struct {
 		name        string
 		uid         string
+		idExit      int
 		chownExit   int
 		wantChown   bool
 		wantSuccess bool
 	}{
-		{name: "non-root skips chown", uid: "10001", chownExit: 1, wantChown: false, wantSuccess: true},
-		{name: "root runs chown", uid: "0", chownExit: 0, wantChown: true, wantSuccess: true},
-		{name: "root chown failure fails enforcement", uid: "0", chownExit: 1, wantChown: true, wantSuccess: false},
+		{name: "non-root skips chown", uid: "10001", idExit: 0, chownExit: 1, wantChown: false, wantSuccess: true},
+		{name: "root runs chown", uid: "0", idExit: 0, chownExit: 0, wantChown: true, wantSuccess: true},
+		{name: "root chown failure fails enforcement", uid: "0", idExit: 0, chownExit: 1, wantChown: true, wantSuccess: false},
+		{name: "a failing id fails enforcement", uid: "", idExit: 1, chownExit: 0, wantChown: false, wantSuccess: false},
+		{name: "an empty id output fails enforcement", uid: "", idExit: 0, chownExit: 0, wantChown: false, wantSuccess: false},
 	}
 
 	for _, tt := range tests {
@@ -56,7 +60,7 @@ func TestReadonlyRepoCommand_ExecIdentity(t *testing.T) {
 			binDir := filepath.Join(tmp, "bin")
 			require.NoError(t, os.MkdirAll(binDir, 0o755))
 			chownLog := filepath.Join(tmp, "chown.log")
-			writeScript(t, filepath.Join(binDir, "id"), "#!/bin/sh\necho "+tt.uid+"\n")
+			writeScript(t, filepath.Join(binDir, "id"), "#!/bin/sh\n[ "+strconv.Itoa(tt.idExit)+" -eq 0 ] || exit 1\necho "+tt.uid+"\n")
 			writeScript(t, filepath.Join(binDir, "chown"),
 				"#!/bin/sh\necho \"$@\" >> '"+chownLog+"'\nexit "+strconv.Itoa(tt.chownExit)+"\n")
 

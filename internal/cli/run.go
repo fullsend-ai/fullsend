@@ -2540,7 +2540,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			printer.StepFail("Could not make repo read-only (exit " + fmt.Sprintf("%d", exitCode) + "): " + stderr)
 			return fmt.Errorf("read-only repo enforcement failed: exit code %d", exitCode)
 		}
-		printer.StepDone("Target repo set to read-only")
+		printer.StepDone("Target repo tree set read-only (file modes; .git writable)")
 	}
 
 	// 8d. Host-side scan (Path A): scan the target repo's context files
@@ -8168,10 +8168,15 @@ func sandboxProviderNames(harnessProviders []string, resolved []resolve.Resolved
 // sandbox user (OpenShell's Kubernetes driver) run without CAP_CHOWN, so the
 // chown would fail with EPERM; there the exec user already owns the tree it
 // uploaded and the trailing chmod is enough to keep .git/ writable (#9211).
+// The exec uid is read up front and the command fails closed when it cannot
+// be determined, so a missing or failing id does not silently skip the chown
+// for a root exec user.
 func readonlyRepoCommand(repoDir string) string {
 	return fmt.Sprintf(
 		"find %s -path '*/.git' -prune -o -not -type l -exec chmod a-w {} + && "+
-			"if [ \"$(id -u)\" = 0 ]; then chown -R sandbox:sandbox %s/.git; fi && "+
+			"{ u=$(id -u) && [ -n \"$u\" ] || "+
+			"{ echo \"readonly_repo: cannot determine the exec uid\" >&2; exit 1; }; } && "+
+			"if [ \"$u\" = 0 ]; then chown -R sandbox:sandbox %s/.git; fi && "+
 			"chmod -R u+w %s/.git",
 		repoDir, repoDir, repoDir,
 	)
