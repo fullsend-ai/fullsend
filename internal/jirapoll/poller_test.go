@@ -96,7 +96,9 @@ func (m *mockClient) SearchIssues(_ context.Context, jql string, limit int) ([]j
 	if m.searchErr != nil {
 		return nil, m.searchErr
 	}
-	// Jira serves an issue without labels with "labels": [], never null.
+	// The default mock serves an issue without labels with "labels": []
+	// (one shape Jira serves); rawSearchClient serves the raw nil shape
+	// instead, so tests pin both.
 	for i := range m.searchResult {
 		if m.searchResult[i].Fields.Labels == nil {
 			m.searchResult[i].Fields.Labels = []string{}
@@ -497,7 +499,10 @@ func captureLog(t *testing.T) *bytes.Buffer {
 // does not parse as an int, which becomes entity.id 0) is skipped instead of
 // dispatched: fullsend run would stop on it. strconv.Atoi returns the max int
 // with ErrRange for an out-of-range numeric id, so that row pins that
-// parseIssueID returns 0 on every parse error.
+// parseIssueID returns 0 on every parse error. A cycle in which every event
+// failed validation fails and holds the checkpoint (criterion 1 as amended
+// on PR #9191's review): the events are retried next cycle instead of being
+// dropped for good behind a green run.
 func TestRun_InvalidEventNotDispatched(t *testing.T) {
 	for _, id := range []string{"not-a-number", "99999999999999999999"} {
 		t.Run(id, func(t *testing.T) {
@@ -532,8 +537,13 @@ func TestRun_InvalidEventNotDispatched(t *testing.T) {
 				OutputPath:  outputPath,
 			})
 			logBuf := captureLog(t)
-			if err := p.Run(context.Background()); err != nil {
-				t.Fatalf("Run() error: %v", err)
+			err := p.Run(context.Background())
+			if err == nil {
+				t.Fatalf("Run() = nil error, want the all-invalid cycle to fail")
+			}
+			const wantErr = "failed normalized-event validation"
+			if !strings.Contains(err.Error(), wantErr) {
+				t.Errorf("Run() error = %q, want it to name %q", err.Error(), wantErr)
 			}
 			// A comment event's key is comment-<id>, so the warning also
 			// names the issue the operator has to comment on again.
@@ -556,8 +566,8 @@ func TestRun_InvalidEventNotDispatched(t *testing.T) {
 			if len(dispatches) != 0 {
 				t.Errorf("expected no dispatches for an invalid event, got %+v", dispatches)
 			}
-			if got, err := p.readLastCheck(context.Background(), "PROJ-123"); err != nil || got.IsZero() {
-				t.Errorf("PROJ-123 lastCheck = %v (err %v), want advanced past the skipped event", got, err)
+			if got, err := p.readLastCheck(context.Background(), "PROJ-123"); err != nil || !got.IsZero() {
+				t.Errorf("PROJ-123 lastCheck = %v (err %v), want held at zero so the cycle retries the events", got, err)
 			}
 		})
 	}
@@ -724,6 +734,8 @@ func TestProcessIssue_CheckpointNeverRegresses(t *testing.T) {
 // TestRun_NoActorEventSkippedWithoutRoster: an event with no actor fails
 // validation and is skipped, so it must not load the project-role roster;
 // a roster failure would otherwise fail the cycle and hold the checkpoint.
+// With every event of the cycle invalid, Run fails and holds the checkpoint
+// (criterion 1 as amended on PR #9191's review).
 func TestRun_NoActorEventSkippedWithoutRoster(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	mc := newMockClient()
@@ -753,8 +765,8 @@ func TestRun_NoActorEventSkippedWithoutRoster(t *testing.T) {
 		JiraProject: "PROJ",
 	})
 	logBuf := captureLog(t)
-	if err := p.Run(context.Background()); err != nil {
-		t.Fatalf("Run() error: %v", err)
+	if err := p.Run(context.Background()); err == nil || !strings.Contains(err.Error(), "failed normalized-event validation") {
+		t.Fatalf("Run() error = %v, want the all-invalid cycle to fail", err)
 	}
 	if mc.roleActorsCalls != 0 {
 		t.Errorf("GetProjectRoleActors called %d times, want 0", mc.roleActorsCalls)
@@ -762,8 +774,8 @@ func TestRun_NoActorEventSkippedWithoutRoster(t *testing.T) {
 	if !strings.Contains(logBuf.String(), "WARNING: skipping event comment-1 for issue PROJ-123") {
 		t.Errorf("poll log lacks the skip warning:\n%s", logBuf.String())
 	}
-	if got, err := p.readLastCheck(context.Background(), "PROJ-123"); err != nil || got.IsZero() {
-		t.Errorf("PROJ-123 lastCheck = %v (err %v), want advanced past the skipped event", got, err)
+	if got, err := p.readLastCheck(context.Background(), "PROJ-123"); err != nil || !got.IsZero() {
+		t.Errorf("PROJ-123 lastCheck = %v (err %v), want held at zero so the cycle retries the events", got, err)
 	}
 }
 
