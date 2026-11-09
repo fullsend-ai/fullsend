@@ -202,7 +202,14 @@ Prefer short-lived narrowly-scoped credentials whenever possible. When long-live
 
 ### Gate job mitigation
 
-The `check-e2e-authorization` gate job (`gate` in `e2e.yml`) mitigates the risk by requiring authorization before the behaviour and playback jobs check out PR-head code:
+The `check-e2e-authorization` gate job (`gate` in `e2e.yml`) mitigates
+the risk by requiring authorization before the behaviour and playback
+jobs check out PR-head code. The policy lives in Go
+(`internal/e2eauth`, exposed as
+[`fullsend ci check-e2e-authorization`](../cli/ci.md)). Production
+workflows still run `scripts/check-e2e-authorization.sh` until the
+composite action is wired to that command
+([#8371](https://github.com/fullsend-ai/fullsend/issues/8371)).
 
 - **Trusted authors** — org members and repo collaborators are auto-authorized.
 - **External contributors** — require a user with write access (Write role or above) to apply the `ok-to-test` label after reviewing the PR diff; the gate checks the labeler's permission. The gate removes stale labels when new commits land.
@@ -218,8 +225,9 @@ The `check-e2e-authorization` gate job (`gate` in `e2e.yml`) mitigates the risk 
 workflows execute the gate from the base branch (`main`), PR runs on a
 gate-modifying PR still execute `main`'s gate. PRs modifying
 `pull_request_target` gates must validate logic via unit tests pre-merge (e.g.,
-`scripts/check-e2e-authorization-test.sh`) and include a post-merge validation
-checklist in the PR description.
+`scripts/check-e2e-authorization-test.sh` and
+`go test ./internal/e2eauth/ ./internal/cli/ -run CheckE2E`) and include
+a post-merge validation checklist in the PR description.
 
 ### Review checklist for secrets in behaviour/playback jobs
 

@@ -79,6 +79,7 @@ func TestCheck_PolicyTable(t *testing.T) {
 				in := baseInput()
 				in.PRAuthorLogin = "contributor"
 				in.EventAction = "labeled"
+				in.EventLabel = OkToTestLabel
 				in.LabelActorLogin = "labeler"
 				return in
 			},
@@ -177,10 +178,28 @@ func TestCheck_PolicyTable(t *testing.T) {
 				in := baseInput()
 				in.PRAuthorLogin = "contributor"
 				in.EventAction = "labeled"
+				in.EventLabel = OkToTestLabel
 				in.LabelActorLogin = "labeler"
 				return in
 			},
 			wantAuth: true, wantReason: "ok_to_test", wantLabelRemoved: false,
+		},
+		{
+			name: "labeled other label does not authorize while ok-to-test is present",
+			setup: func(h *harness) {
+				h.setRole("contributor", "none")
+				h.setRole("labeler", "write")
+				h.writePR("contributor", []string{OkToTestLabel}, "")
+			},
+			in: func() Input {
+				in := baseInput()
+				in.PRAuthorLogin = "contributor"
+				in.EventAction = "labeled"
+				in.EventLabel = "component/cli"
+				in.LabelActorLogin = "labeler"
+				return in
+			},
+			wantAuth: false, wantReason: "unauthorized", wantLabelRemoved: false,
 		},
 		{
 			name: "PR context fetch failure",
@@ -213,6 +232,7 @@ func TestCheck_PolicyTable(t *testing.T) {
 				in.DryRun = false
 				in.PRAuthorLogin = "contributor"
 				in.EventAction = "labeled"
+				in.EventLabel = OkToTestLabel
 				in.LabelActorLogin = "triager"
 				return in
 			},
@@ -231,6 +251,7 @@ func TestCheck_PolicyTable(t *testing.T) {
 				in := baseInput()
 				in.PRAuthorLogin = "contributor"
 				in.EventAction = "labeled"
+				in.EventLabel = OkToTestLabel
 				in.LabelActorLogin = "labeler"
 				return in
 			},
@@ -251,6 +272,7 @@ func TestCheck_PolicyTable(t *testing.T) {
 				in := baseInput()
 				in.PRAuthorLogin = "contributor"
 				in.EventAction = "labeled"
+				in.EventLabel = OkToTestLabel
 				in.LabelActorLogin = "triager"
 				return in
 			},

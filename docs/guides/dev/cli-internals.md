@@ -206,6 +206,17 @@ fullsend
 │   ├── --mr-iid <int>                       #   Merge request IID (required)
 │   ├── --gitlab-url <url>                   #   GitLab instance URL (default: https://gitlab.com)
 │   └── --token <string>                     #   GitLab token (default: $GITLAB_TOKEN)
+├── ci                                       # CI helper commands
+│   └── check-e2e-authorization [PR] [OWNER/REPO]
+│       ├── --pr <int>                       #   Pull request number (default: positional or PR_NUMBER)
+│       ├── --repo <owner/repo>              #   Repository (default: positional or GITHUB_REPOSITORY)
+│       ├── --event-action <action>          #   GitHub event action (default: EVENT_ACTION)
+│       ├── --pr-updated-at <time>           #   Frozen pull_request.updated_at (default: PR_UPDATED_AT)
+│       ├── --pr-author-login <login>        #   PR author login (default: PR_AUTHOR_LOGIN)
+│       ├── --label-actor-login <login>      #   Who applied the label (default: LABEL_ACTOR_LOGIN)
+│       ├── --event-label <name>             #   github.event.label.name (default: EVENT_LABEL)
+│       ├── --dry-run                        #   Report label removal without calling the API
+│       └── --forge-token <token>            #   GitHub token (default: GH_TOKEN / GITHUB_TOKEN / gh auth token)
 ├── check-protected-branch                   # Fail closed unless a GitLab branch is confirmed not protected
 │   ├── --project <path>                     #   GitLab project path to check (required)
 │   ├── --branch <string>                    #   Branch name to check (required)

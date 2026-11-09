@@ -27,7 +27,10 @@ type Input struct {
 	PRUpdatedAt     string
 	PRAuthorLogin   string
 	LabelActorLogin string
-	DryRun          bool
+	// EventLabel is github.event.label.name on labeled events. A labeled
+	// event authorizes only when this equals OkToTestLabel.
+	EventLabel string
+	DryRun     bool
 }
 
 // Result is the authorization outcome written to GITHUB_OUTPUT by the gate.
@@ -115,6 +118,10 @@ func Check(ctx context.Context, gh GitHubGate, in Input) Result {
 		return res
 	}
 
+	if strings.TrimSpace(in.EventLabel) != OkToTestLabel {
+		return res
+	}
+
 	labelerLogin := strings.TrimSpace(in.LabelActorLogin)
 	if labelerLogin == "" {
 		res.Reason = "untrusted_labeler"
@@ -187,6 +194,11 @@ func latestOkToTestLabelTime(events []forge.IssueLabelEvent) string {
 	return max
 }
 
+// latestOkToTestLabeler returns the actor who most recently applied
+// ok-to-test. Distinct actors that share the latest timestamp, or any
+// latest-timestamp event with an empty actor, are ambiguous and return
+// "". That is stricter than the bash script's jq max_by, which picks
+// one event on ties; Go keeps the label instead of removing it.
 func latestOkToTestLabeler(events []forge.IssueLabelEvent) string {
 	maxTime := latestOkToTestLabelTime(events)
 	if maxTime == "" {

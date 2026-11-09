@@ -102,6 +102,7 @@ func TestCheck_LabeledOkToTest(t *testing.T) {
 	h := newHarness()
 	in := baseInput()
 	in.EventAction = "labeled"
+	in.EventLabel = OkToTestLabel
 	in.LabelActorLogin = "labeler"
 	h.setRole("labeler", "write")
 	h.writePR("contributor", []string{OkToTestLabel}, "")
@@ -138,6 +139,7 @@ func TestCheck_RemoveLabel404(t *testing.T) {
 	in.DryRun = false
 	in.PRAuthorLogin = "contributor"
 	in.EventAction = "labeled"
+	in.EventLabel = OkToTestLabel
 	in.LabelActorLogin = "triager"
 	h.setRole("contributor", "none")
 	h.setRole("triager", "triage")
@@ -153,6 +155,7 @@ func TestCheck_BotAuthorOkToTest(t *testing.T) {
 	h := newHarness()
 	in := baseInput()
 	in.EventAction = "labeled"
+	in.EventLabel = OkToTestLabel
 	in.LabelActorLogin = "labeler"
 	in.PRAuthorLogin = "app-bot"
 	h.fc.CollaboratorPermissionDetails[collabKey("app-bot")] = forge.GitHubCollaboratorPermissionDetail{
@@ -168,6 +171,7 @@ func TestCheck_FrozenUntrustedKeepsNewerLabel(t *testing.T) {
 	in := baseInput()
 	in.DryRun = true
 	in.EventAction = "labeled"
+	in.EventLabel = OkToTestLabel
 	in.LabelActorLogin = "triager"
 	in.PRAuthorLogin = "contributor"
 	h.setRole("contributor", "none")
@@ -188,4 +192,23 @@ func TestCheck_TrustedAuthorIgnoresEventsFailure(t *testing.T) {
 	h.writePR("author", nil, "")
 	h.fc.Errors = map[string]error{"ListIssueLabelEvents": fmt.Errorf("events down")}
 	h.runCase(t, "write author", in, true, "trusted_author", false)
+}
+
+func TestCheck_LabeledRequiresOkToTestEventLabel(t *testing.T) {
+	h := newHarness()
+	in := baseInput()
+	in.EventAction = "labeled"
+	in.LabelActorLogin = "labeler"
+	in.PRAuthorLogin = "contributor"
+	h.setRole("contributor", "none")
+	h.setRole("labeler", "write")
+	h.writePR("contributor", []string{OkToTestLabel}, "")
+
+	h.runCase(t, "missing event label", in, false, "unauthorized", false)
+
+	in.EventLabel = "component/cli"
+	h.runCase(t, "other label", in, false, "unauthorized", false)
+
+	in.EventLabel = OkToTestLabel
+	h.runCase(t, "ok-to-test label", in, true, "ok_to_test", false)
 }
