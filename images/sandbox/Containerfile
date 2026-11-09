@@ -429,6 +429,8 @@ RUN case "$TARGETARCH" in \
 # To update: bump the versions and refresh the SHA256s from
 #   https://github.com/BurntSushi/ripgrep/releases/download/<ver>/ripgrep-<ver>-<arch>-unknown-linux-musl.tar.gz.sha256
 #   sha256sum <(curl -fsSL https://github.com/sharkdp/fd/releases/download/v<ver>/fd-v<ver>-<arch>-unknown-linux-musl.tar.gz)
+# Renovate bumps FD_VERSION; postUpgradeTasks runs
+# scripts/renovate/update-fd-checksums.sh to refresh the FD_SHA256 ARGs.
 ARG RIPGREP_VERSION=15.2.0
 ARG RIPGREP_SHA256_AMD64=33e15bcf1624b25cdd2a55813a47a2f95dbe126268203e76aa6a585d1e7b149c
 ARG RIPGREP_SHA256_ARM64=800b1e7206afe799dfb5a6901f23147cfaabe0e52210538100f61e86e1740915

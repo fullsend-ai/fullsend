@@ -99,6 +99,15 @@
       }
     },
     {
+      "description": "After an fd version bump in the sandbox image, download the linux-musl release tarballs and update FD_SHA256_{AMD64,ARM64} in the Containerfile (fd publishes no checksum assets, so the value is sha256sum of each tarball)",
+      "matchPackageNames": ["sharkdp/fd"],
+      "postUpgradeTasks": {
+        "commands": ["bash scripts/renovate/update-fd-checksums.sh"],
+        "fileFilters": ["images/sandbox/Containerfile"],
+        "executionMode": "branch"
+      }
+    },
+    {
       "description": "pi releases ~weekly minors and has changed its --mode json wire shape within a minor before (0.84.0); require manual review so the stream parser fixtures (#6464) are re-verified before a pin bump lands, even for patch/pin updates",
       "matchPackageNames": ["@earendil-works/pi-coding-agent"],
       "automerge": false
@@ -252,7 +261,7 @@
     },
     {
       "customType": "regex",
-      "description": "Track the fd pin in the sandbox image (pi's find backend). Not automerged: FD_SHA256_{AMD64,ARM64} must be refreshed by hand (fd publishes no checksum assets, so the value is sha256sum of the release tarball); the image build fails on a mismatch until they are.",
+      "description": "Track the fd pin in the sandbox image (pi's find backend). FD_SHA256_{AMD64,ARM64} are updated automatically by postUpgradeTasks (scripts/renovate/update-fd-checksums.sh; fd publishes no checksum assets, so the value is sha256sum of each release tarball).",
       "managerFilePatterns": ["/^images/sandbox/Containerfile$/"],
       "matchStrings": [
         "ARG FD_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)"

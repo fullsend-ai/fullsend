@@ -195,6 +195,12 @@ The Go toolchain is automated the same way: Renovate bumps `GO_VERSION` in
 refreshes `GO_SHA256_{AMD64,ARM64}` in both files from
 <https://go.dev/dl/?mode=json&include=all>.
 
+The fd pin in `images/sandbox/Containerfile` is automated too: Renovate bumps
+`FD_VERSION`, and `scripts/renovate/update-fd-checksums.sh` (run via
+`postUpgradeTasks`) downloads both linux-musl release tarballs and refreshes
+`FD_SHA256_{AMD64,ARM64}` with their `sha256sum` (fd publishes no checksum
+files).
+
 ## Local builds
 
 Build for your native architecture:
