@@ -36,6 +36,10 @@ def renovate_patterns() -> list[re.Pattern[str]]:
         "npx @scope/tool run",
         "uvx ty@latest check",
         "npx lint-staged@^16",
+        "npx lint-staged@16",
+        "npx lint-staged@16.x",
+        "uvx ty@0.0.*",
+        "uvx ty@0.0.99.x",
         "uvx --from gitlint-core gitlint",
         "npx -y lint-staged",
         "uvx ty==0.0.99 check",
@@ -53,6 +57,8 @@ def test_flags_unpinned_fetch(line: str) -> None:
         "\tuvx ruff@0.15.7 format .",
         "npx lint-staged@16.4.0 --allow-empty",
         "npx @scope/tool@1.2.3 run",
+        "uvx  ty@0.0.99 check",
+        "uvx \t ty@0.0.99",
     ],
 )
 def test_passes_pinned_fetch(line: str) -> None:
