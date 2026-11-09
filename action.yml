@@ -40,6 +40,12 @@ inputs:
   status-number:
     description: Issue/PR number for status comments (optional).
     default: ""
+  failure-repo:
+    description: Repository (owner/repo) for startup-failure comments (optional).
+    default: ""
+  failure-number:
+    description: Issue/PR number for startup-failure comments (optional).
+    default: ""
   source-system:
     description: >-
       Originating tracker for the event (github, gitlab, or jira). GitHub
@@ -701,15 +707,18 @@ runs:
         path: ${{ github.workspace }}/output
 
     - name: Report pre-agent startup failure
-      if: always() && inputs.agent != '__install_only__' && inputs.source-system == 'github' && inputs.status-repo != '' && inputs.status-number != ''
+      if: >-
+        failure() && !cancelled() && steps.run.outcome == 'skipped' &&
+        inputs.agent != '__install_only__' && inputs.source-system == 'github' &&
+        ((inputs.failure-repo != '' && inputs.failure-number != '') ||
+        (inputs.status-repo != '' && inputs.status-number != ''))
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github_token }}
         AGENT: ${{ inputs.agent }}
-        STATUS_REPO: ${{ inputs.status-repo }}
-        STATUS_NUMBER: ${{ inputs.status-number }}
+        FAILURE_REPO: ${{ inputs.failure-repo || inputs.status-repo }}
+        FAILURE_NUMBER: ${{ inputs.failure-number || inputs.status-number }}
         RUN_URL: ${{ inputs.run-url }}
-        JOB_STATUS: ${{ job.status }}
         INSTALL_CLI_OUTCOME: ${{ steps.detect.outcome }}
         VENDORED_OUTCOME: ${{ steps.install-vendored.outcome }}
         DOWNLOAD_RELEASE_OUTCOME: ${{ steps.download-release.outcome }}
@@ -719,37 +728,34 @@ runs:
         PODMAN_OUTCOME: ${{ steps.install-podman.outcome }}
         CONFIGURE_PODMAN_OUTCOME: ${{ steps.configure-podman.outcome }}
         OPENSHELL_OUTCOME: ${{ steps.install-openshell.outcome }}
-        RUN_OUTCOME: ${{ steps.run.outcome }}
       run: |
         set -euo pipefail
-        if [[ "${JOB_STATUS}" == "failure" && "${RUN_OUTCOME}" == "skipped" ]]; then
-          FAILURE_CATEGORY="workflow setup"
-          if [[ "${PODMAN_OUTCOME}" == "failure" \
+        FAILURE_CATEGORY="workflow setup"
+        if [[ "${PODMAN_OUTCOME}" == "failure" \
             || "${CONFIGURE_PODMAN_OUTCOME}" == "failure" \
             || "${OPENSHELL_OUTCOME}" == "failure" ]]; then
-            FAILURE_CATEGORY="runtime setup"
-          elif [[ "${INSTALL_CLI_OUTCOME}" == "failure" \
+          FAILURE_CATEGORY="runtime setup"
+        elif [[ "${INSTALL_CLI_OUTCOME}" == "failure" \
             || "${VENDORED_OUTCOME}" == "failure" \
-            || "${DOWNLOAD_RELEASE_OUTCOME}" == "failure" \
+            || ("${DOWNLOAD_RELEASE_OUTCOME}" == "failure" && "${BUILD_SOURCE_OUTCOME}" != "success") \
             || "${CLONE_SOURCE_OUTCOME}" == "failure" \
             || "${BUILD_SOURCE_OUTCOME}" == "failure" \
             || "${PRINT_VERSION_OUTCOME}" == "failure" ]]; then
-            FAILURE_CATEGORY="CLI setup"
-          fi
+          FAILURE_CATEGORY="CLI setup"
+        fi
 
-          FULLSEND_FAILURE_REPOSITORY="${STATUS_REPO}"
-          FULLSEND_FAILURE_NUMBER="${STATUS_NUMBER}"
-          FULLSEND_FAILURE_AGENT="${AGENT}"
-          FULLSEND_FAILURE_RUN_URL="${RUN_URL:-${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}}"
-          FULLSEND_FAILURE_CATEGORY="${FAILURE_CATEGORY}"
-          export FULLSEND_FAILURE_REPOSITORY FULLSEND_FAILURE_NUMBER \
-            FULLSEND_FAILURE_AGENT FULLSEND_FAILURE_RUN_URL \
-            FULLSEND_FAILURE_CATEGORY
-          if "$GITHUB_ACTION_PATH/.github/scripts/report-agent-startup-failure.sh"; then
-            echo "FULLSEND_STARTUP_FAILURE_REPORTED=true" >> "${GITHUB_ENV}"
-          else
-            echo "::warning::Could not post pre-agent failure comment"
-          fi
+        FULLSEND_FAILURE_REPOSITORY="${FAILURE_REPO}"
+        FULLSEND_FAILURE_NUMBER="${FAILURE_NUMBER}"
+        FULLSEND_FAILURE_AGENT="${AGENT}"
+        FULLSEND_FAILURE_RUN_URL="${RUN_URL:-${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}}"
+        FULLSEND_FAILURE_CATEGORY="${FAILURE_CATEGORY}"
+        export FULLSEND_FAILURE_REPOSITORY FULLSEND_FAILURE_NUMBER \
+          FULLSEND_FAILURE_AGENT FULLSEND_FAILURE_RUN_URL \
+          FULLSEND_FAILURE_CATEGORY
+        if "$GITHUB_ACTION_PATH/.github/scripts/report-agent-startup-failure.sh"; then
+          echo "FULLSEND_STARTUP_FAILURE_REPORTED=true" >> "${GITHUB_ENV}"
+        else
+          echo "::warning::Could not post pre-agent failure comment"
         fi
 
     - name: Finalize orphaned status comment

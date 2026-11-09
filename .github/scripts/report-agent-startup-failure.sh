@@ -4,7 +4,10 @@
 # because the fullsend CLI may be the dependency that failed to install.
 set -euo pipefail
 
-: "${GH_TOKEN:?GH_TOKEN is required}"
+if [[ -z "${GH_TOKEN:-}" ]]; then
+  echo "::warning::Skipping startup failure comment: GH_TOKEN is required" >&2
+  exit 1
+fi
 FULLSEND_FAILURE_REPOSITORY="${FULLSEND_FAILURE_REPOSITORY:-}"
 FULLSEND_FAILURE_NUMBER="${FULLSEND_FAILURE_NUMBER:-}"
 FULLSEND_FAILURE_AGENT="${FULLSEND_FAILURE_AGENT:-}"
@@ -56,10 +59,15 @@ case "${FULLSEND_FAILURE_AGENT}" in
   prioritize) TRUSTED_BOT_LOGINS+=",fullsend-ai-prioritize" ;;
 esac
 TRUSTED_BOTS_JSON="$(jq -Rn --arg current "${BOT_LOGIN}" --arg logins "${TRUSTED_BOT_LOGINS}" \
-  '[ $current ] + ($logins | split(",") | map(select(length > 0))) | unique')"
+  '[ $current ] + ($logins | split(",") | map(select(length > 0)))
+   | map(sub("\\[bot\\]$"; ""))
+   | unique')"
 COMMENT_ID="$(printf '%s' "${COMMENTS_JSON}" | jq -r \
   --arg marker "${MARKER}" --argjson trusted "${TRUSTED_BOTS_JSON}" \
-  'add | map(select((.user.type == "Bot") and ((.user.login) as $login | ($trusted | index($login)) != null) and (.body | contains($marker)))) | last | .id // empty')"
+  'add | map(select((.user.type == "Bot")
+    and (((.user.login | sub("\\[bot\\]$"; "")) as $login
+      | ($trusted | index($login)) != null))
+    and (.body | contains($marker)))) | last | .id // empty')"
 
 if [[ -n "${COMMENT_ID}" ]]; then
   gh api --method PATCH "repos/${FULLSEND_FAILURE_REPOSITORY}/issues/comments/${COMMENT_ID}" \
