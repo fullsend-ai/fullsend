@@ -503,6 +503,18 @@ The existing design principle is that [the repo is the coordinator](problems/age
   or explicit receipts to decide whether work has already been handled
   ([ADR 0098](ADRs/0098-entity-first-harness-evaluation.md), partially
   superseding [ADR 0063](ADRs/0063-polling-based-work-discovery.md)).
+- Absorbed-steer receipts (target state): a run that absorbed steers records
+  each absorbed record's key and delivered digest in its host-written final
+  run metadata. Before the next cycle's pre-script runs, the host reads the
+  receipt from the latest run of the same harness's own workflow and job for
+  that entity, never from comment text, keeps only records whose current
+  digest still matches, and stages it through entity-context-snapshot v2 for
+  the pre-script; harness CEL does not see it. These are ADR 0098 explicit
+  per-harness receipts that only the pre-script reads, not CEL-visible ones.
+  Heads are never listed as absorbed, so a pushed head always gets a
+  follow-up cycle. Missing or mismatched metadata means the cycle runs.
+  Fullsend adds no runner skip
+  ([ADR 0120](ADRs/0120-record-absorbed-steers-as-agent-run-receipts.md)).
 - GitLab dispatch uses a native webhook fast-path for low-latency candidates and the cron-poller as the authoritative reconciliation backstop ([ADR 0125](ADRs/0125-gitlab-hybrid-webhook-poller-dispatch.md)). Native `merge_request_event` dispatch stays removed ([#7322](https://github.com/fullsend-ai/fullsend/issues/7322)). No external webhook bridge (see [ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md) for the poller, credentials, and in-job gate).
 - Conversation participation: GitHub Discussions (and future chat systems) enter
   dispatch as resolved entities with `entity.kind: conversation`; when a
@@ -617,6 +629,8 @@ The existing design principle is that [the repo is the coordinator](problems/age
 
 **Open questions:**
 
+- Which shipped harnesses should read ADR 0120 absorbed-steer receipts first,
+  and does a shared helper belong in fullsend-ai/agents?
 - What field-level normalized-entity contract and provider query plans can
   support entity-first evaluation, prove partial-history coverage, and
   represent handled state? See
