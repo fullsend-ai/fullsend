@@ -23,7 +23,9 @@ Fullsend's Jira integration (the `jira-poll` input driver of
 [ADR 0063](0063-polling-based-work-discovery.md), status notifications, and
 `fullsend issues`) authenticates as a single non-human Jira identity.
 Atlassian Cloud offers two kinds of identity for that purpose, and Atlassian
-accepts their credentials at different hosts.
+accepts their credentials at different hosts. The
+[Jira integration guide](../guides/user/jira-integration.md) covers setting
+up either kind.
 
 A **bot account** is an ordinary Atlassian user account that a team creates
 for automation. It has an email address, can log in like a person, holds
@@ -63,15 +65,15 @@ and a classic bot token has been observed to work there as well, though
 Atlassian's documentation does not promise it. The site URL accepts only the
 bot token.
 
-Today (verified at `6f45fa15b`) Fullsend has one URL setting, the site URL,
-and uses it for three jobs: every API call, the links to issues that it
-writes for humans, and the sandbox egress rule for Jira. It therefore
-supports only bot accounts
-([#9007](https://github.com/fullsend-ai/fullsend/issues/9007) records the
+Before this decision (verified at `6f45fa15b`), Fullsend had one URL
+setting, the site URL, and used it for three jobs: every API call, the links
+to issues that it writes for humans, and the sandbox egress rule for Jira.
+It therefore supported only bot accounts
+([#9007](https://github.com/fullsend-ai/fullsend/issues/9007) recorded the
 gap, with the file-level evidence in this ADR's pull request). A team that
-has a service account can use it today only by pointing the site URL setting
-at the gateway, which works for API calls but produces wrong links and
-leaves the sandbox without Jira access.
+had a service account could use it only by pointing the site URL setting at
+the gateway, which worked for API calls but produced wrong links and left
+the sandbox without Jira access.
 
 Fullsend supports Jira Cloud only; Jira Data Center is tracked as future
 work. Atlassian also operates cloud variants with their own hosts (a
@@ -107,22 +109,28 @@ behaviour for bot tokens, and a discovery call at startup.
 
 We separate the two URLs. The site URL stays the one required setting and
 keeps its human-facing jobs: links to issues and discovery of the site's
-cloud ID. API calls go to a separate API URL that defaults to the Atlassian
-gateway address for that site and can be overridden. The credential is the
-account email and an API token in both cases; Fullsend does not need to
-know, and does not ask, which kind of account it holds.
+cloud ID. API calls go through the Atlassian API gateway. A separate API URL
+setting names the gateway host; it defaults to `https://api.atlassian.com`
+and can be overridden. Fullsend always calls
+`{API URL}/ex/jira/{cloudId}/...`, so an override must serve the same path
+layout. Fullsend does not ask which kind of account it holds: a token with
+the account's email is sent with Basic auth, as a bot account's is, and a
+token without an email is sent as a Bearer token, as a service account's is.
 
-When the API URL is not set and cloud-ID discovery fails, Fullsend reports
-the failure and tells the operator to set the API URL explicitly, rather
-than falling back to the site URL, because a silent fallback would turn a
-service-account rejection into an unexplained failure. Fullsend resolves the
-API URL once and hands the resolved value to scripts it runs on behalf of
-agents, so that nothing downstream repeats the discovery.
+Fullsend always discovers the cloud ID from the site URL. If discovery
+fails, the run stops and reports the failure rather than falling back to the
+site URL, because a silent fallback would turn a service-account rejection
+into an unexplained failure. Fullsend resolves the gateway address once and
+hands only the resolved `{API URL}/ex/jira/{cloudId}` to scripts it runs on
+behalf of agents, so that nothing downstream repeats the discovery.
 
-This changes the host that existing bot-account deployments talk to. It
-lands unless a maintainer objects on the ADR's pull request; the escape
-hatch is to set the API URL to the site URL, which restores today's
-behaviour exactly.
+Every deployment, bot accounts included, talks to the gateway, and there is
+no setting that sends API calls to the site URL: one would keep unscoped
+classic tokens on the site host. Upgrading therefore requires a credential
+that works through the gateway. A deployment pinned to an earlier Fullsend
+version keeps its current behaviour until it switches. A classic bot token
+working through the gateway rests on observed behaviour that Atlassian does
+not promise, and we accept that risk.
 
 OAuth 2.0 client credentials for service accounts are a different way of
 authenticating, not a different host, and are out of scope. How a
@@ -145,18 +153,18 @@ nothing changes there.
 
 - Teams can adopt Fullsend with whichever Jira identity their organization
   provisions, bot account or service account, with the same settings.
-- Existing deployments switch to the gateway host on upgrade; bot tokens
-  there rest on observed behaviour, and the API URL override is the
-  documented way back to the site URL if that ever changes.
+- Existing deployments switch to the gateway host on upgrade and need a
+  credential that works there. A bot token there rests on observed
+  behaviour, and there is no supported way back to the site URL if that
+  ever changes.
 - The sandbox egress profile for Jira must admit the gateway host as well as
   the site, within the credential-isolation rules of
   [ADR 0017](0017-credential-isolation-for-sandboxed-agents.md).
-- Every Fullsend component that calls Jira, including built-in agents'
-  post-scripts in `fullsend-ai/agents`, must call the resolved API URL
-  rather than the site URL before service accounts work end to end.
-- Atlassian's government and isolated cloud variants are reachable through
-  the override but remain untested and unsupported until someone can try
-  them.
-- Implementation is tracked in
-  [#9007](https://github.com/fullsend-ai/fullsend/issues/9007), not in this
-  ADR.
+- Fullsend passes the resolved gateway address to agent runs
+  ([#9218](https://github.com/fullsend-ai/fullsend/issues/9218)). Every
+  component that calls Jira, including built-in agents' scripts in
+  `fullsend-ai/agents`, must call it rather than the site URL before service
+  accounts work end to end.
+- Atlassian's government and isolated cloud variants may be reachable
+  through the API URL override, if their gateways serve the same path
+  layout, but remain untested and unsupported until someone can try them.
