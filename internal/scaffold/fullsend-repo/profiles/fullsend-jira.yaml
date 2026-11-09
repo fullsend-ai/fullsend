@@ -1,0 +1,32 @@
+---
+# Reserved for the copy built into fullsend (fullsend#9220): `fullsend run`
+# mints a token for this profile when the runner has only OAuth 2.0 client
+# credentials, so a repository or URL-resolved profile with this id is
+# refused rather than allowed to govern that token.
+id: fullsend-jira
+display_name: Fullsend Jira (read-only)
+description: Read-only Jira Cloud API access for fullsend agents
+category: data
+credentials:
+  - name: api_token
+    description: Jira API token or runner-minted OAuth 2.0 access token
+    env_vars: [JIRA_TOKEN]
+    required: true
+endpoints:
+  # Jira Cloud site URLs. They accept a bot account's classic token only.
+  - host: "*.atlassian.net"
+    port: 443
+    protocol: rest
+    access: read-only
+    enforcement: enforce
+  # Atlassian Platform API Gateway (api.atlassian.com/ex/jira/<cloudId>/...),
+  # where JIRA_API_URL points by default. It accepts a bot account's classic
+  # token, a service account's scoped token, and a minted OAuth 2.0 access
+  # token; the site URL accepts only the first.
+  - host: "api.atlassian.com"
+    port: 443
+    protocol: rest
+    access: read-only
+    enforcement: enforce
+binaries:
+  - "**/curl"

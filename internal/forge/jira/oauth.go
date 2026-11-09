@@ -159,3 +159,43 @@ func (s *oauthTokenSource) fetch(ctx context.Context, hc *http.Client) (string, 
 	}
 	return tr.AccessToken, lifetime, nil
 }
+
+// AccessToken is an OAuth 2.0 access token and the instant it expires.
+type AccessToken struct {
+	Value     string
+	ExpiresAt time.Time
+}
+
+// MintAccessToken performs one client_credentials grant with creds, which
+// must be OAuth 2.0 client credentials, and returns the access token with
+// its expiry. It is for a caller that hands the token on instead of calling
+// Jira itself: fullsend run gives it to the sandbox's Jira provider and
+// mints a new one before it expires (fullsend#9220). The client secret
+// never leaves this call. tokenURL empty means DefaultOAuthTokenURL; hc nil
+// means a client with the same timeout and redirect policy as New. Errors
+// name the credential variables and the token endpoint but never the
+// client ID, client secret or response body.
+func MintAccessToken(ctx context.Context, hc *http.Client, tokenURL string, creds Credentials) (AccessToken, error) {
+	if !creds.OAuth() {
+		return AccessToken{}, fmt.Errorf("jira: minting an access token needs %s and %s", ClientIDEnvVar, ClientSecretEnvVar)
+	}
+	if err := creds.validate(); err != nil {
+		return AccessToken{}, err
+	}
+	if tokenURL = strings.TrimSpace(tokenURL); tokenURL == "" {
+		tokenURL = DefaultOAuthTokenURL
+	}
+	if err := ValidateBaseURL(tokenURL); err != nil {
+		return AccessToken{}, fmt.Errorf("jira: OAuth token URL: %w", err)
+	}
+	if hc == nil {
+		hc = &http.Client{Timeout: 30 * time.Second, CheckRedirect: checkRedirect}
+	}
+	src := &oauthTokenSource{tokenURL: tokenURL, clientID: creds.ClientID, clientSecret: creds.ClientSecret}
+	issued := time.Now()
+	tok, lifetime, err := src.fetch(ctx, hc)
+	if err != nil {
+		return AccessToken{}, err
+	}
+	return AccessToken{Value: tok, ExpiresAt: issued.Add(lifetime)}, nil
+}

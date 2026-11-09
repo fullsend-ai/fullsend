@@ -410,7 +410,7 @@ timeout_minutes: 15
 **`vertex-ai` above is a bare provider name**, not a path. Every provider
 name fullsend ships —
 `vertex-ai`, `github`, `github-ro`, `github-artifacts`, `gitleaks`,
-`package-registries`, `atlassian-cloud`, `openai` — resolves to the
+`package-registries`, `atlassian-cloud`, `openai`, `jira` — resolves to the
 definition and profile built into the `fullsend` binary: no `providers/`
 file, no `profiles/` file, and no `openshell.profiles` entry to add, so
 nothing to keep in sync. These names are reserved for the built-in copies.
@@ -448,7 +448,7 @@ and `TRACEPARENT` (this iteration's agent-span W3C trace context, so runtime tel
 fullsend trace; empty when telemetry produced no valid span context). Write the result before the
 deadline — see [`fullsend run` § Budget and deadline](../../cli/run.md#budget-and-deadline).
 
-Network access (which APIs the agent can reach) is controlled by provider profiles or inline `network_policies`. The eight builtin provider names (`vertex-ai`, `github`, `github-ro`, `github-artifacts`, `gitleaks`, `package-registries`, `atlassian-cloud`, `openai`) resolve against the definition and profile built into the `fullsend` binary with no `openshell.profiles` entry at all. A fully custom provider type is different: it needs a provider definition (local or remote) together with a matching `openshell.profiles` entry (or one inherited via `base:` composition) to be imported — see [Remote providers and profiles](customizing-agents.md#remote-providers-and-profiles). For endpoints not covered by providers, inline `network_policies` in the policy YAML also work. Providers are the pattern used by fullsend's built-in agents, but custom agents can use whichever approach fits.
+Network access (which APIs the agent can reach) is controlled by provider profiles or inline `network_policies`. The nine builtin provider names (`vertex-ai`, `github`, `github-ro`, `github-artifacts`, `gitleaks`, `package-registries`, `atlassian-cloud`, `openai`, `jira`) resolve against the definition and profile built into the `fullsend` binary with no `openshell.profiles` entry at all. A fully custom provider type is different: it needs a provider definition (local or remote) together with a matching `openshell.profiles` entry (or one inherited via `base:` composition) to be imported — see [Remote providers and profiles](customizing-agents.md#remote-providers-and-profiles). For endpoints not covered by providers, inline `network_policies` in the policy YAML also work. Providers are the pattern used by fullsend's built-in agents, but custom agents can use whichever approach fits.
 
 **Next steps:** [Register your agent](#registering-your-agent) so dispatch discovers it, then [write a CEL trigger](cel-triggers-reference.md#writing-cel-triggers) to control when it runs. To iterate on your agent locally before registering, see [Testing locally](#testing-locally).
 

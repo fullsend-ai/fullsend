@@ -726,6 +726,52 @@ The fullsend binary also ships a legacy OpenShell credential provider (`atlassia
 
 The wildcard host (`*.atlassian.net`) permits egress to any Atlassian Cloud tenant. Per-tenant scoping is not yet supported by OpenShell; this is an accepted risk for now.
 
+### Read-only Jira access from the sandbox (`jira` provider)
+
+The fullsend binary also ships a read-only Jira provider, `jira`, with the
+profile `fullsend-jira`. The profile allows read-only HTTPS to
+`*.atlassian.net` and the Atlassian API gateway (`api.atlassian.com`), from
+`curl` only. List the bare name `jira` under a harness's `providers:`. The
+sandbox sees `JIRA_TOKEN` as a placeholder, never the real value, and the
+proxy swaps the real value in for either Basic (`--user email:token`) or
+Bearer (`--oauth2-bearer token`) auth.
+
+Where the value comes from depends on the deployment's credential:
+
+- **Token or bot user.** The provider expands `JIRA_TOKEN` from the
+  `fullsend run` environment, like any provider. Nothing else changes.
+- **OAuth 2.0 client credentials only.** When `JIRA_TOKEN` is unset or empty
+  and `FULLSEND_JIRA_CLIENT_ID` and `FULLSEND_JIRA_CLIENT_SECRET` are both
+  set, `fullsend run` mints the access token itself and gives it to a
+  provider instance created for this run only, with the token's expiry. It
+  mints a new token about five minutes before each one expires. The client
+  secret never reaches a provider value, the sandbox, or a log, and every
+  minted token is redacted from output and masked in GitHub Actions logs.
+  Setting only one of the two client variables fails the run. The minted
+  token works only through the Atlassian API gateway, so sandboxed tools
+  must call `JIRA_API_URL`, not the site URL.
+
+A running process keeps the placeholder it started with, and OpenShell keeps
+resolving that one to the token it was issued for, which expires after 60
+minutes. So in the OAuth 2.0 mode `fullsend run` also keeps the current
+placeholder in `/sandbox/fullsend-jira/token`, rewriting it after every
+refresh. Tools in the sandbox should read the token from that file on every
+call and fall back to `$JIRA_TOKEN` when the file is absent:
+
+```sh
+JIRA_TOKEN=$(cat /sandbox/fullsend-jira/token 2>/dev/null || printf %s "$JIRA_TOKEN")
+```
+
+The file holds only the placeholder. If minting fails, `fullsend run` keeps
+retrying: Jira access from the sandbox stops when the token the agent holds
+expires and resumes once a retry succeeds. If a new token is minted but the
+sandbox never picks it up, the refresh stops for the rest of the run, and
+access ends when the held token expires.
+
+A harness cannot supply its own `fullsend-jira` profile: `fullsend run`
+refuses a profile with that id, so only the copy built into the binary
+governs a token it mints.
+
 ## Repo configuration
 
 The Jira poller produces the same

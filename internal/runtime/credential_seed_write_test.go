@@ -69,6 +69,12 @@ func orderedSeedCases() []orderedSeedCase {
 				return strings.ReplaceAll(ClaudeRuntime{}.GatewayCredentialSeed().Seed, sandbox.SandboxClaudeConfig, dir)
 			},
 		},
+		{
+			name: "jira token",
+			env:  jiraTokenPlaceholderEnv,
+			file: "token",
+			seed: func(dir string) string { return jiraTokenSeedFragment(dir, dir+"/token") },
+		},
 	}
 }
 

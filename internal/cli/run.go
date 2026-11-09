@@ -1699,6 +1699,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// goroutine-safe against a still-running refresher's os.Getenv calls.
 	// Both stopRefresh and refreshWg.Wait are safe to call more than once.
 	var stopOpenAIRefreshers []func()
+	// jiraHandles are the run-scoped jira providers whose token the runner
+	// mints (fullsend#9220). Their refreshers read no environment, so they
+	// need no pause around the token remints; the sandbox cleanup defer
+	// stops them before the sandbox they re-seed is deleted.
+	var jiraHandles []jiraProviderHandle
+	var stopJiraRefreshers []func()
 	allProviderNames := append([]string{}, h.Providers...)
 	if len(h.Providers) > 0 || len(result.Providers) > 0 || len(result.Profiles) > 0 {
 		// Enable provider-backed policy composition on the gateway.
@@ -1773,6 +1779,43 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		sharedDefs := allDefs[:0:0]
 		handledEmbeddedProfiles := make(map[string]struct{}, len(allDefs))
 		for _, pd := range allDefs {
+			if strings.EqualFold(pd.Type, jiraProviderType) {
+				pd.Type = jiraProviderType
+				// As for fullsend-openai below: the profile may govern a
+				// token the runner mints, so only the embedded copy is
+				// trusted, whichever mode this run takes.
+				if err := rejectReservedProfileID(jiraProviderType, result.Profiles); err != nil {
+					return err
+				}
+				jiraCreds, mint, err := jiraMintCredentials(pd, os.Getenv)
+				if err != nil {
+					printer.StepFail("Jira credentials incomplete for provider " + pd.Name)
+					return err
+				}
+				if mint {
+					if err := ensureEmbeddedProfile(ctx, pd.Type, printer); err != nil {
+						return err
+					}
+					handledEmbeddedProfiles[pd.Type] = struct{}{}
+					handle, err := ensureJiraProvider(ctx, pd, sandboxName, jiraCreds, printer)
+					if err != nil {
+						return err
+					}
+					created[pd.Name] = struct{}{}
+					runScopedProviders[pd.Name] = handle.name
+					jiraHandles = append(jiraHandles, handle)
+					// LIFO: the refresher stops before the provider is deleted.
+					defer cleanupRunScopedProvider(handle.name, []string{jiraCredentialKey}, keepSandbox, printer)
+					stops := startJiraRefreshers([]jiraProviderHandle{handle}, printer)
+					stopJiraRefreshers = append(stopJiraRefreshers, stops...)
+					for _, stop := range stops {
+						defer stop()
+					}
+					continue
+				}
+				// A static token, or no Jira credential at all: the
+				// provider is shared and expanded like any other below.
+			}
 			if !strings.EqualFold(pd.Type, openAIProviderType) {
 				if _, done := handledEmbeddedProfiles[pd.Type]; !done && isReservedProfileID(pd.Type) {
 					handledEmbeddedProfiles[pd.Type] = struct{}{}
@@ -2141,7 +2184,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 	finalizeSandboxSpan(sandboxSpan, nil)
 
-	if len(runScopedProviders) > 0 {
+	if len(openAIHandles) > 0 {
 		// The OpenAI credential only reaches api.openai.com through an
 		// inspected route; fail here, with the rule named, rather than
 		// after the agent has retried its first request.
@@ -2168,6 +2211,25 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 	for _, gh := range gatewayHandles {
 		gh.sandboxUp.Store(true)
+	}
+	// A minted Jira token only reaches the Atlassian gateway through an
+	// inspected route, and the running agent only follows a refresh
+	// through the token file, so check the route and seed the file before
+	// the agent starts.
+	if len(jiraHandles) > 0 {
+		if err := checkJiraEgressInspected(ctx, sandboxName); err != nil {
+			printer.StepFail("Sandbox policy cannot deliver the Jira access token")
+			discardSandbox(sandboxName, runDir, keepSandbox, printer)
+			return err
+		}
+	}
+	for _, jh := range jiraHandles {
+		if err := seedJiraTokenFileFn(ctx, jh, printer); err != nil {
+			printer.StepFail("Failed to seed the sandbox's Jira token file")
+			discardSandbox(sandboxName, runDir, keepSandbox, printer)
+			return err
+		}
+		jh.sandboxUp.Store(true)
 	}
 
 	// repoExtractedOK tracks whether hostRepositoryDownloadDir is safe
@@ -2338,8 +2400,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 	defer func() {
 		// The gateway refreshers re-seed this sandbox; stop them before it
-		// goes, and before the post-script and its remint run.
+		// goes, and before the post-script and its remint run. The Jira
+		// refreshers re-seed it too.
 		for _, stop := range stopGatewayRefreshers {
+			stop()
+		}
+		for _, stop := range stopJiraRefreshers {
 			stop()
 		}
 		// Collect OpenShell logs before sandbox deletion for post-mortem debugging.
@@ -8174,7 +8240,7 @@ func quotePathForLog(path string) string {
 // warnReservedProviderNameOverrides, ensureEmbeddedProfile).
 var builtinProviderNames = []string{
 	"vertex-ai", "github", "github-ro", "github-artifacts",
-	"gitleaks", "package-registries", "atlassian-cloud", "openai",
+	"gitleaks", "package-registries", "atlassian-cloud", "openai", "jira",
 }
 
 // isBuiltinProviderName reports whether name is one fullsend ships an
@@ -8258,11 +8324,11 @@ func rejectReservedProfileID(id string, resolved []resolve.ResolvedProfile) erro
 // or not a provider in this run uses it. Resolved profiles must already be
 // deduplicated by the caller using dedupResolvedProfiles. For one release the
 // listed copy stays live: the caller does not import the embedded profile over
-// it. fullsend-openai is skipped here because it is already an error
-// (rejectReservedProfileID) (#7268).
+// it. fullsend-openai and fullsend-jira are skipped here because they are
+// already an error (rejectReservedProfileID) (#7268, #9220).
 func warnReservedProfileCopies(resolved []resolve.ResolvedProfile, printer *ui.Printer) {
 	for _, rp := range resolved {
-		if rp.ID == openAIProviderType || !isReservedProfileID(rp.ID) {
+		if rp.ID == openAIProviderType || rp.ID == jiraProviderType || !isReservedProfileID(rp.ID) {
 			continue
 		}
 		printer.StepWarn(fmt.Sprintf("provider profile %q will be rejected in a future release: the id is reserved for the copy built into fullsend. Your copy is still used for now. Remove it from openshell.profiles and declare the bare provider name %q instead", rp.ID, strings.TrimPrefix(rp.ID, "fullsend-")))
@@ -8276,7 +8342,7 @@ func warnReservedProfileCopies(resolved []resolve.ResolvedProfile, printer *ui.P
 func profileOverridePaths(resolved []resolve.ResolvedProfile) map[string]string {
 	overrides := make(map[string]string)
 	for _, rp := range resolved {
-		if rp.ID == openAIProviderType || !isReservedProfileID(rp.ID) {
+		if rp.ID == openAIProviderType || rp.ID == jiraProviderType || !isReservedProfileID(rp.ID) {
 			continue
 		}
 		localPath := ""

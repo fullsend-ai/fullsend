@@ -407,10 +407,21 @@ in [`agent new`](agent.md#what-gets-written)) resolves to the
 definition and profile built into fullsend, locally and in CI, with nothing on disk. These names
 and their `fullsend-<name>` profile ids are reserved: a harness that still uses its own copy under
 one gets a warning and keeps the copy for now, and a later release rejects it (`fullsend-openai`
-is already rejected). Give repository-specific providers and profiles their own names.
+and `fullsend-jira` are already rejected). Give repository-specific providers and profiles their own names.
 
 Both paths create a provider named after the run and remove it when the run ends. Setup and
 troubleshooting: [OpenAI Workload Identity](../guides/infrastructure/openai-workload-identity.md).
+
+## Jira access token in the sandbox
+
+The builtin `jira` provider (`providers: [jira]`, profile `fullsend-jira`) gives the sandbox
+read-only Jira access as `JIRA_TOKEN`. With a static `JIRA_TOKEN` in the runner environment it is
+created like any provider. When `JIRA_TOKEN` is unset or empty and `FULLSEND_JIRA_CLIENT_ID` and
+`FULLSEND_JIRA_CLIENT_SECRET` are both set, the run mints a service account's OAuth 2.0 access
+token itself, gives it to a provider named after the run, refreshes it before it expires, keeps the
+current placeholder in `/sandbox/fullsend-jira/token`, and deletes the provider when the run ends.
+The client secret stays in the `fullsend run` process. See
+[Read-only Jira access from the sandbox](../guides/user/jira-integration.md#read-only-jira-access-from-the-sandbox-jira-provider).
 
 <a id="inference-gateway-credentials-on-pi"></a>
 <a id="inference-gateway-credentials-on-pi-and-codex"></a>

@@ -440,3 +440,56 @@ func TestCredentialsFromEnv_OAuth(t *testing.T) {
 		})
 	}
 }
+
+func TestMintAccessToken_ReturnsTokenAndExpiry(t *testing.T) {
+	t.Parallel()
+	f := newOAuthFixture(t)
+	f.expiresIn.Store(3600)
+	before := time.Now()
+	tok, err := MintAccessToken(context.Background(), nil, f.tokenURL(),
+		Credentials{ClientID: testClientID, ClientSecret: testClientSecret})
+	require.NoError(t, err)
+	assert.Equal(t, "access-token-1", tok.Value)
+	assert.WithinDuration(t, before.Add(time.Hour), tok.ExpiresAt, 5*time.Second)
+	assert.False(t, tok.ExpiresAt.After(time.Now().Add(time.Hour)), "the expiry counts from before the request, never later")
+	grant, _ := f.lastGrant.Load().(map[string]string)
+	assert.Equal(t, "client_credentials", grant["grant_type"])
+	assert.Equal(t, testClientID, grant["client_id"])
+	assert.Equal(t, testClientSecret, grant["client_secret"])
+
+	// No caching: each call is a fresh grant.
+	tok2, err := MintAccessToken(context.Background(), nil, f.tokenURL(),
+		Credentials{ClientID: testClientID, ClientSecret: testClientSecret})
+	require.NoError(t, err)
+	assert.Equal(t, "access-token-2", tok2.Value)
+}
+
+func TestMintAccessToken_Validation(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	_, err := MintAccessToken(ctx, nil, "", Credentials{Token: "static"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), ClientIDEnvVar)
+
+	_, err = MintAccessToken(ctx, nil, "", Credentials{ClientID: testClientID})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), ClientSecretEnvVar)
+
+	_, err = MintAccessToken(ctx, nil, "http://auth.example.com/oauth/token",
+		Credentials{ClientID: testClientID, ClientSecret: testClientSecret})
+	require.Error(t, err, "a non-loopback http token URL is refused")
+	assert.NotContains(t, err.Error(), testClientSecret)
+}
+
+func TestMintAccessToken_ErrorsNeverCarryTheSecret(t *testing.T) {
+	t.Parallel()
+	f := newOAuthFixture(t)
+	f.status.Store(http.StatusUnauthorized)
+	f.body.Store(`{"error":"invalid_client","error_description":"` + testClientSecret + `"}`)
+	_, err := MintAccessToken(context.Background(), nil, f.tokenURL(),
+		Credentials{ClientID: testClientID, ClientSecret: testClientSecret})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid_client")
+	assert.NotContains(t, err.Error(), testClientSecret)
+	assert.NotContains(t, err.Error(), testClientID)
+}
