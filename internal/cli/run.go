@@ -8141,7 +8141,7 @@ func agentsRepoHostTreeFetcher(forgeClient forge.Client, hostPrefix string, poli
 			return nil, err
 		}
 		if len(entries) > gitfetch.MaxFiles {
-			return nil, fmt.Errorf("directory %s exceeds the %d-file limit", dirPath, gitfetch.MaxFiles)
+			return nil, fmt.Errorf("directory %q exceeds the %d-file limit", dirPath, gitfetch.MaxFiles)
 		}
 		files := make(map[string][]byte, len(entries))
 		total := 0
@@ -8151,16 +8151,16 @@ func agentsRepoHostTreeFetcher(forgeClient forge.Client, hostPrefix string, poli
 			}
 			for _, seg := range strings.Split(e.Path, "/") {
 				if seg == ".." || seg == "." || seg == "" {
-					return nil, fmt.Errorf("unsupported path %q in agents repo directory %s", e.Path, dirPath)
+					return nil, fmt.Errorf("unsupported path %q in agents repo directory %q", e.Path, dirPath)
 				}
 			}
 			content, err := readAgentsRepoFileAtRef(ctx, forgeClient, dirPath+"/"+e.Path, ref, policy)
 			if err != nil {
-				return nil, fmt.Errorf("reading %s/%s: %w", dirPath, e.Path, err)
+				return nil, fmt.Errorf("reading %q/%q: %w", dirPath, e.Path, err)
 			}
 			total += len(content)
 			if total > maxAgentsRepoHostTreeBytes {
-				return nil, fmt.Errorf("directory %s exceeds the %d MiB total size limit", dirPath, maxAgentsRepoHostTreeBytes>>20)
+				return nil, fmt.Errorf("directory %q exceeds the %d MiB total size limit", dirPath, maxAgentsRepoHostTreeBytes>>20)
 			}
 			files[e.Path] = content
 		}

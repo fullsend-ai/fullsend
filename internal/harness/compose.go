@@ -134,9 +134,9 @@ var defaultTreeFetchFn gitfetch.TreeFetchFunc = gitfetch.FetchTree
 
 // parseRawURL describes a directory resource URL, through opts.ParseRawURL
 // when set, else forge.ParseRawContentURL.
-func (o ComposeOpts) parseRawURL(rawURL string) (*forge.ForgeURLInfo, error) {
-	if o.ParseRawURL != nil {
-		return o.ParseRawURL(rawURL)
+func (opts ComposeOpts) parseRawURL(rawURL string) (*forge.ForgeURLInfo, error) {
+	if opts.ParseRawURL != nil {
+		return opts.ParseRawURL(rawURL)
 	}
 	return forge.ParseRawContentURL(rawURL)
 }
