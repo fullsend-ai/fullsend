@@ -63,9 +63,13 @@ type codexHookGroup struct {
 // from the root (ADR 0126), and the V2 spawn and control calls ADR 0159
 // decision 3 maps the same way. send_message, followup_task and resume stay
 // unmapped, so an allowlist without their names blocks them even when the
-// guard cannot run. codex joins namespace and name with no separator
-// (codex-rs/core/src/tools/registry.rs function_hook_tool_name); only the
-// default and multi_agent_v1 namespaces keep the bare spawn_agent.
+// guard cannot run. No mapped call has that backstop: an allowlist that
+// permits Agent passes them all and the spawn guard is their only name-level
+// check. The V1 spawn still sits under codex's agents.max_depth; the V2 spawn
+// does not (#9085), so V2 admission needs a backstop of its own before
+// Bootstrap accepts a V2 parent. codex joins namespace and name with no
+// separator (codex-rs/core/src/tools/registry.rs function_hook_tool_name);
+// only the default and multi_agent_v1 namespaces keep the bare spawn_agent.
 var codexAgentToolNames = []string{
 	"spawn_agent",
 	"multi_agent_v1wait_agent", "multi_agent_v1close_agent", "multi_agent_v1send_input",

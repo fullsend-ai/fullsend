@@ -175,8 +175,13 @@ CLAUDE_TOOL_FOR_CODEX = {
     "multi_agent_v1close_agent": "Agent",
     "multi_agent_v1send_input": "Agent",
     # The V2 spawn and the control calls ADR 0159 decision 3 maps the same
-    # way are Agent too; the guard still denies them by name. send_message
-    # and followup_task stay unmapped like the resume.
+    # way are Agent too; the guard still denies them by name. No mapped call
+    # has the allowlist as a backstop: an allowlist that permits Agent passes
+    # them all and the spawn guard is their only name-level check. The V1
+    # spawn still sits under codex's agents.max_depth; the V2 spawn does not
+    # (#9085), so V2 admission needs a backstop of its own before
+    # CodexRuntime.Bootstrap accepts a V2 parent. send_message and
+    # followup_task stay unmapped like the resume.
     "collaborationspawn_agent": "Agent",
     "collaborationwait_agent": "Agent",
     "collaborationlist_agents": "Agent",
