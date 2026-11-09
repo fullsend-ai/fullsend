@@ -394,8 +394,10 @@ declared extensions, with their directory hashes checked before each launch.
 A persona's tools are intersected with the parent's permissions using the
 active tool names, queried with `pi.getActiveTools()` before each child launch.
 Registered but inactive tools, including `defaultActive: false` tools, stay unavailable.
-An empty child allowlist hides both built-in and
-extension tools.
+An empty child allowlist hides both built-in and extension tools. A nonempty
+child selection with no `mcp__` names also gets `--exclude-tools 'mcp__*'`.
+Pi otherwise retains MCP registrations for such lists, which can leave tools
+callable through codemode or deferred exposure even when inactive.
 
 The hook adapter treats an extension tool like any other — every PreToolUse and PostToolUse hook
 runs on it, with no bypass. If your org enables the optional `tool_allowlist_pretool.py` hook, list

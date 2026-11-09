@@ -517,6 +517,12 @@ export function childArgs(agent, { seq, modelSpec, tools, personaName }) {
   // --no-builtin-tools leaves extension tools active. An explicit empty
   // --tools value filters those too, so a disjoint intersection fails closed.
   args.push("--tools", tools.join(","));
+  // pi 1.5.0 keeps MCP registrations when a nonempty --tools list has no
+  // mcp__ entry. They remain callable through codemode/deferred exposure,
+  // even if inactive. Deny them explicitly, without a collidable sentinel.
+  if (tools.length > 0 && !tools.some((t) => t.startsWith("mcp__"))) {
+    args.push("--exclude-tools", "mcp__*");
+  }
   args.push("--model", modelSpec);
   args.push("--thinking", agent.thinking || DEFAULT_THINKING);
   // Replaces the discovered APPEND_SYSTEM.md, which is the parent's

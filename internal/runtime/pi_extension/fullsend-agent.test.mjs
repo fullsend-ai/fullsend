@@ -383,6 +383,7 @@ test("childArgs mirrors the runner's pi command line, extensions in manifest ord
     "-e", "/usr/local/share/pi-extensions/xai-vertex",
     "-e", "/sandbox/pi-config/fullsend-hooks.js",
     "--tools", "read,grep",
+    "--exclude-tools", "mcp__*",
     "--model", "anthropic-vertex/claude-sonnet-4-6",
     "--thinking", "medium",
     "--append-system-prompt", CHILD_SYSTEM_NOTE,
@@ -399,6 +400,17 @@ test("childArgs mirrors the runner's pi command line, extensions in manifest ord
   const empty = childArgs(manifest.agent, { seq: 4, modelSpec: "anthropic-vertex/claude-opus-4-6", tools: [] });
   assert.equal(empty[empty.indexOf("--tools") + 1], "", "empty filters built-in and extension tools");
   assert.ok(!empty.includes("--no-builtin-tools"));
+});
+
+test("childArgs denies MCP registrations for non-MCP selections only", () => {
+  const { manifest } = fixture();
+  for (const tools of [["codemode"], ["read"], [], ["codemode", "mcp__docs__search"]]) {
+    const args = childArgs(manifest.agent, {seq: 1, modelSpec: "m", tools});
+    const deny = args.indexOf("--exclude-tools");
+    assert.equal(deny >= 0, tools.length > 0 && !tools.some((t) => t.startsWith("mcp__")));
+    if (deny >= 0) assert.equal(args[deny + 1], "mcp__*");
+    assert.equal(args[args.indexOf("--tools") + 1], tools.join(","));
+  }
 });
 
 test("childArgs loads the edit repair only for a child whose tools name edit", () => {

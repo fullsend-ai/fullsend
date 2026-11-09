@@ -6,6 +6,61 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { childArgs, childTools } from "./fullsend-agent.js";
 
+// Exercise the same nested execution API used by codemode, with both MCP
+// exposures that stay callable even when inactive. The unguarded control
+// proves this fixture reaches the pi 1.5.0 registration loophole.
+test("real pi: non-MCP persona cannot call inherited MCP through codemode", { skip: !process.env.FULLSEND_TEST_PI_BIN, timeout: 120_000 }, () => {
+  const home = mkdtempSync(join(tmpdir(), "fullsend-mcp-deny-"));
+  const extension = join(home, "fixture.js");
+  writeFileSync(extension, `
+import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
+export default function(pi) {
+  const faux = fauxProvider({provider: "faux", models: [{id: "faux-1"}]});
+  faux.setResponses([
+    fauxAssistantMessage([fauxToolCall("codemode", {})], {stopReason: "toolUse"}),
+    fauxAssistantMessage("done"),
+  ]);
+  pi.registerProvider(faux.provider);
+  for (const exposure of ["codemode", "deferred"]) {
+    const name = "mcp__docs__" + exposure;
+    pi.registerTool({name, label: name, description: name, exposure, defaultActive: false,
+      parameters: {type: "object", properties: {}},
+      async execute() { console.error("EXECUTED:" + name); return {content: [{type: "text", text: "docs"}]}; }
+    });
+  }
+  pi.registerTool({name: "codemode", label: "codemode", description: "nested execution probe",
+    parameters: {type: "object", properties: {}},
+    async execute(id, params, signal, update, ctx) {
+      console.error("PROBED:codemode");
+      for (const exposure of ["codemode", "deferred"]) {
+        try { await ctx.executeTool("mcp__docs__" + exposure, {}); } catch {}
+      }
+      return {content: [{type: "text", text: "done"}]};
+    }
+  });
+}
+`);
+  const agent = {sessionsDir: home, declaredExtensions: [{path: extension}], toolMode: "explicit",
+    tools: ["codemode", "mcp__docs__search"], personas: {docs: {tools: ["codemode"]}}};
+  const tools = childTools(agent, "docs", ["codemode", "mcp__docs__search"]);
+  assert.deepEqual(tools, ["codemode"]);
+  for (const guarded of [false, true]) {
+    const args = childArgs(agent, {seq: guarded ? 2 : 1, modelSpec: "faux/faux-1", tools});
+    // Control recreates the pre-fix argv, proving the nested tools execute.
+    if (!guarded) args.splice(args.indexOf("--exclude-tools"), 2);
+    const result = spawnSync(process.env.FULLSEND_TEST_PI_BIN, args, {
+      cwd: home, input: "probe nested tools", encoding: "utf8", timeout: 45_000,
+      env: {PATH: process.env.PATH, HOME: home, PI_CODING_AGENT_DIR: home},
+    });
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stderr, /PROBED:codemode/);
+    for (const exposure of ["codemode", "deferred"]) {
+      assert.equal(result.stderr.includes("EXECUTED:mcp__docs__" + exposure), !guarded, result.stderr);
+    }
+  }
+});
+
 // Offline real-pi regression: a scripted provider asks for both the allowed
 // and forbidden tool. No network, credentials, or organization-specific data.
 test("real pi: MCP persona executes only the concrete intersection", { skip: !process.env.FULLSEND_TEST_PI_BIN, timeout: 120_000 }, () => {
