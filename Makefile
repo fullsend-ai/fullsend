@@ -192,6 +192,7 @@ script-test:
 	$(call run-timed,bash .github/scripts/check-fix-eligibility-test.sh)
 	$(call run-timed,bash .github/scripts/count-fix-commits-test.sh)
 	$(call run-timed,bash .github/scripts/pre-fetch-review-body-test.sh)
+	$(call run-timed,bash .github/scripts/report-agent-startup-failure-test.sh)
 	$(call run-timed,bash .github/scripts/retry-with-backoff-test.sh)
 	$(call run-timed,bash scripts/check-agents-gate-pin-test.sh)
 	$(call run-timed,bash scripts/semgrep-scan-test.sh)

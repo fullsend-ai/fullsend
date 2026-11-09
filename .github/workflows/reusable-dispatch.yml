@@ -1136,6 +1136,7 @@ jobs:
           status-number: ${{ fromJSON(needs.route.outputs.event_payload).issue.number }}
           source-system: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system || 'github' }}
           status-comment-id: ${{ fromJSON(needs.route.outputs.event_payload).comment.id }}
+          failure-trusted-bots: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
           mint-url: ${{ inputs.mint_url }}
           pr-head-sha: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.head.sha || '' }}
 
@@ -1144,6 +1145,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           MINT_OUTCOME: ${{ steps.app-token.outcome }}
+          FULLSEND_FAILURE_TRUSTED_BOTS: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
           REPOSITORY: ${{ github.repository }}
           NUMBER: ${{ fromJSON(needs.route.outputs.event_payload).issue.number }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -1304,6 +1306,7 @@ jobs:
           status-number: ${{ fromJSON(needs.route.outputs.event_payload).issue.number }}
           source-system: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system || 'github' }}
           status-comment-id: ${{ fromJSON(needs.route.outputs.event_payload).comment.id }}
+          failure-trusted-bots: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
           mint-url: ${{ inputs.mint_url }}
           pr-head-sha: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.head.sha || '' }}
 
@@ -1312,6 +1315,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           MINT_OUTCOME: ${{ steps.app-token.outcome }}
+          FULLSEND_FAILURE_TRUSTED_BOTS: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
           REPOSITORY: ${{ github.repository }}
           NUMBER: ${{ fromJSON(needs.route.outputs.event_payload).issue.number }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -1470,6 +1474,7 @@ jobs:
           status-number: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.number || fromJSON(needs.route.outputs.event_payload).issue.number }}
           source-system: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system || 'github' }}
           status-comment-id: ${{ fromJSON(needs.route.outputs.event_payload).comment.id }}
+          failure-trusted-bots: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
           mint-url: ${{ inputs.mint_url }}
           pr-head-sha: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.head.sha || '' }}
 
@@ -1478,6 +1483,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           MINT_OUTCOME: ${{ steps.app-token.outcome }}
+          FULLSEND_FAILURE_TRUSTED_BOTS: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
           REPOSITORY: ${{ github.repository }}
           NUMBER: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.number || fromJSON(needs.route.outputs.event_payload).issue.number }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -1772,14 +1778,16 @@ jobs:
           status-number: ${{ steps.context.outputs.pr_number }}
           source-system: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system || 'github' }}
           status-comment-id: ${{ fromJSON(needs.route.outputs.event_payload).comment.id }}
+          failure-trusted-bots: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
           mint-url: ${{ inputs.mint_url }}
           pr-head-sha: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.head.sha || '' }}
 
       - name: Report fix launch failure
-        if: ${{ failure() && !cancelled() && steps.run-agent.outcome == 'skipped' && steps.fork_guard.outcome != 'failure' && steps.eligibility.outcome != 'failure' && (fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system || 'github') == 'github' }}
+        if: ${{ failure() && !cancelled() && steps.run-agent.outcome == 'skipped' && steps.fork_guard.outcome != 'failure' && steps.eligibility.outcome != 'failure' && steps.review-body.outcome != 'failure' && (fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system || 'github') == 'github' }}
         env:
           GH_TOKEN: ${{ github.token }}
           MINT_OUTCOME: ${{ steps.app-token.outcome }}
+          FULLSEND_FAILURE_TRUSTED_BOTS: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
           REPOSITORY: ${{ github.repository }}
           NUMBER: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.number || fromJSON(needs.route.outputs.event_payload).issue.number }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -1918,6 +1926,7 @@ jobs:
           status-number: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.number || fromJSON(needs.route.outputs.event_payload).issue.number }}
           source-system: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system || 'github' }}
           status-comment-id: ${{ fromJSON(needs.route.outputs.event_payload).comment.id }}
+          failure-trusted-bots: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
           mint-url: ${{ inputs.mint_url }}
           pr-head-sha: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.head.sha || '' }}
 
@@ -1926,6 +1935,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           MINT_OUTCOME: ${{ steps.app-token.outcome }}
+          FULLSEND_FAILURE_TRUSTED_BOTS: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
           REPOSITORY: ${{ github.repository }}
           NUMBER: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.number || fromJSON(needs.route.outputs.event_payload).issue.number }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -2049,12 +2059,14 @@ jobs:
           status-repo: ${{ github.repository }}
           status-number: ${{ fromJSON(needs.route.outputs.event_payload).issue.number }}
           source-system: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system || 'github' }}
+          failure-trusted-bots: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
           mint-url: ${{ inputs.mint_url }}
 
       - name: Report prioritize launch failure
         if: ${{ failure() && !cancelled() && steps.run-agent.outcome == 'skipped' && (fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system || 'github') == 'github' }}
         env:
           GH_TOKEN: ${{ github.token }}
+          FULLSEND_FAILURE_TRUSTED_BOTS: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
           REPOSITORY: ${{ github.repository }}
           NUMBER: ${{ fromJSON(needs.route.outputs.event_payload).issue.number || fromJSON(needs.route.outputs.event_payload).pull_request.number }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -2474,6 +2486,7 @@ jobs:
           status-number: ${{ matrix.status_number }}
           source-system: ${{ fromJSON(matrix.event_payload)._normalized_event.source.system || 'github' }}
           status-comment-id: ${{ fromJSON(matrix.event_payload).comment.id }}
+          failure-trusted-bots: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
           mint-url: ${{ inputs.mint_url }}
           pr-head-sha: ${{ fromJSON(matrix.event_payload).pull_request.head.sha || '' }}
           artifact-name: ${{ steps.dispatch-env.outputs.artifact_name }}
@@ -2482,6 +2495,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
           MINT_OUTCOME: ${{ steps.app-token.outcome }}
+          FULLSEND_FAILURE_TRUSTED_BOTS: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
           REPOSITORY: ${{ matrix.status_repo }}
           NUMBER: ${{ matrix.status_number }}
           AGENT: ${{ matrix.agent }}

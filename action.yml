@@ -46,6 +46,9 @@ inputs:
   failure-number:
     description: Issue/PR number for startup-failure comments (optional).
     default: ""
+  failure-trusted-bots:
+    description: Comma-separated custom bot login prefixes trusted for startup-failure comments (optional).
+    default: ""
   source-system:
     description: >-
       Originating tracker for the event (github, gitlab, or jira). GitHub
@@ -718,6 +721,7 @@ runs:
         AGENT: ${{ inputs.agent }}
         FAILURE_REPO: ${{ inputs.failure-repo || inputs.status-repo }}
         FAILURE_NUMBER: ${{ inputs.failure-number || inputs.status-number }}
+        FULLSEND_FAILURE_TRUSTED_BOTS: ${{ inputs.failure-trusted-bots }}
         RUN_URL: ${{ inputs.run-url }}
         INSTALL_CLI_OUTCOME: ${{ steps.detect.outcome }}
         VENDORED_OUTCOME: ${{ steps.install-vendored.outcome }}
