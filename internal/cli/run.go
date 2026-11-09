@@ -2532,12 +2532,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// Runs after all repo-directory writes (8a, 8a-2) are complete.
 	// Excludes .git/ so git operations (index.lock, etc.) still work.
 	if h.ReadonlyRepo {
-		// -prune skips .git traversal entirely; -not -type l prevents symlink traversal.
-		// chown ensures the sandbox user (run_as_user) owns .git/ after root-owned extraction.
-		chmodCmd := fmt.Sprintf(
-			"find %s -path '*/.git' -prune -o -not -type l -exec chmod a-w {} + && chown -R sandbox:sandbox %s/.git && chmod -R u+w %s/.git",
-			remoteRepositoryDir, remoteRepositoryDir, remoteRepositoryDir,
-		)
+		chmodCmd := readonlyRepoCommand(remoteRepositoryDir)
 		if _, stderr, exitCode, err := sandbox.Exec(sandboxName, chmodCmd, 30*time.Second); err != nil {
 			printer.StepFail("Could not make repo read-only: " + err.Error())
 			return fmt.Errorf("Read-only repo enforcement failed: %w", err)
@@ -8160,6 +8155,26 @@ func sandboxProviderNames(harnessProviders []string, resolved []resolve.Resolved
 		}
 	}
 	return names
+}
+
+// readonlyRepoCommand returns the in-sandbox shell command that enforces
+// readonly_repo on repoDir: it strips write permission from the working tree
+// (excluding .git/) and leaves .git/ writable for the exec user.
+//
+// -prune skips .git traversal entirely; -not -type l prevents symlink
+// traversal. The chown hands .git/ to the image's sandbox user after a
+// root-owned extraction, so it runs only when the exec user is root. Drivers
+// whose exec identity is a numeric workload uid unrelated to the image's
+// sandbox user (OpenShell's Kubernetes driver) run without CAP_CHOWN, so the
+// chown would fail with EPERM; there the exec user already owns the tree it
+// uploaded and the trailing chmod is enough to keep .git/ writable (#9211).
+func readonlyRepoCommand(repoDir string) string {
+	return fmt.Sprintf(
+		"find %s -path '*/.git' -prune -o -not -type l -exec chmod a-w {} + && "+
+			"if [ \"$(id -u)\" = 0 ]; then chown -R sandbox:sandbox %s/.git; fi && "+
+			"chmod -R u+w %s/.git",
+		repoDir, repoDir, repoDir,
+	)
 }
 
 // forceRemoveAll restores owner-write permission on all directories under
