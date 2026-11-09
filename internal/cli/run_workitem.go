@@ -110,7 +110,7 @@ func discoverJiraGatewayURL(ctx context.Context, cfg jira.ScopedConfig) (string,
 // invalid, when the run is offline, or when cloud-ID discovery fails. A
 // fallback would turn a service-account rejection into an unexplained
 // failure inside the agent. Errors never include the raw URL, which may
-// embed credentials; discovery errors name the site host only.
+// embed credentials; discovery errors name only the validated site URL.
 //
 // Both values are URLs, never credentials.
 func resolveJiraRunEnv(ctx context.Context, trackerSource string, tracking *config.TrackingConfig, offline bool, discover jiraGatewayDiscoverer) (map[string]string, error) {
