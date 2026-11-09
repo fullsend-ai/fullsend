@@ -21,6 +21,10 @@ consumed by this contract. Bot identity and role resolution are specified by
 > Human labelers must meet that minimum; bot label grants remain separate.
 > Existing event-backed dispatch continues to use v1 until migrated; the v1
 > requirements below remain the record of this version's contract.
+> The fixed write floor for closed-PR retro removes v1's lifecycle-close
+> exception. A custom retro harness role cannot lower it. This security-driven
+> tightening is also recorded in [Authorization Contract v2](../v2/README.md)
+> and follows [ADR 0054](../../../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md).
 
 > **ADR 0107 target contract — partially implemented:** The bot identity
 > fields, resolver outcomes, and bot-specific fail-closed rows below describe

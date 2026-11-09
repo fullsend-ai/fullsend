@@ -1067,13 +1067,17 @@ func TestRunAgentJobScript_MapsOnlyPrefixedOpenAIKey(t *testing.T) {
 	}
 }
 
-func TestRunAgentJobScript_MRLifecycleWithoutActorDoesNotUseMRAuthor(t *testing.T) {
+func TestRunAgentJobScript_MRLifecycleActorAuthorization(t *testing.T) {
 	tests := []struct {
 		name        string
 		eventType   string
 		payload     string
 		payloadB64  string
 		omitPayload bool
+		stage       string
+		actorID     string
+		mrAuthorID  string
+		wantRun     bool
 	}{
 		{
 			name:      "closed MR without closed_by",
@@ -1101,6 +1105,22 @@ func TestRunAgentJobScript_MRLifecycleWithoutActorDoesNotUseMRAuthor(t *testing.
 			eventType:   "mr_note",
 			omitPayload: true,
 		},
+		{
+			name:       "opened MR uses Developer author fallback for review",
+			eventType:  "mr_event",
+			payload:    `{"type":"mr_event","action":"opened"}`,
+			stage:      "review",
+			mrAuthorID: "5",
+			wantRun:    true,
+		},
+		{
+			name:      "Developer can start retro for a closed MR",
+			eventType: "mr_event",
+			payload:   `{"type":"mr_event","action":"closed"}`,
+			stage:     "retro",
+			actorID:   "5",
+			wantRun:   true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1108,15 +1128,28 @@ func TestRunAgentJobScript_MRLifecycleWithoutActorDoesNotUseMRAuthor(t *testing.
 			if payload == "" && !tt.omitPayload {
 				payload = base64.StdEncoding.EncodeToString([]byte(tt.payload))
 			}
-			got, _ := runAgentJobScriptForFullsendRun(t, []string{
-				"STAGE=retro",
+			stage := tt.stage
+			if stage == "" {
+				stage = "retro"
+			}
+			mrAuthorID := tt.mrAuthorID
+			if mrAuthorID == "" {
+				mrAuthorID = "42"
+			}
+			got, srvURL := runAgentJobScriptForFullsendRun(t, []string{
+				"STAGE=" + stage,
 				"EVENT_TYPE=" + tt.eventType,
 				"EVENT_PAYLOAD_B64=" + payload,
-				"ACTOR_ID=",
-				"MR_AUTHOR_ID=42",
+				"ACTOR_ID=" + tt.actorID,
+				"MR_AUTHOR_ID=" + mrAuthorID,
 			})
-			assert.Contains(t, got, "No actor identity available — skipping stage")
-			assert.NotContains(t, got, "FULLSEND_GITLAB_URL:", "MR lifecycle authorization must not run as the MR author")
+			if tt.wantRun {
+				assert.Contains(t, got, "FULLSEND_GITLAB_URL: "+srvURL)
+				assert.NotContains(t, got, "No actor identity available — skipping stage")
+			} else {
+				assert.Contains(t, got, "No actor identity available — skipping stage")
+				assert.NotContains(t, got, "FULLSEND_GITLAB_URL:", "MR lifecycle authorization must not run as the MR author")
+			}
 		})
 	}
 }
