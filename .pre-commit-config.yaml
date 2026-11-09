@@ -34,7 +34,7 @@ repos:
     hooks:
       - id: ty
         name: ty check
-        entry: uvx ty check --ignore import-not-found --ignore unresolved-attribute
+        entry: uvx ty@0.0.99 check --ignore import-not-found --ignore unresolved-attribute
         language: system
         types: [python]
 
@@ -200,7 +200,15 @@ repos:
 
       - id: lint-staged
         name: lint-staged (web)
-        entry: npx lint-staged --allow-empty
+        entry: npx lint-staged@16.4.0 --allow-empty
         language: system
         files: ^docs/\.vitepress/
         pass_filenames: false
+
+      # Renovate only bumps tool fetches (uvx/npx) that carry @<version>; flag
+      # unpinned ones so a new release cannot break lint-all unreviewed (#9226).
+      - id: check-tool-fetch-pins
+        name: check version pins on uvx/npx
+        entry: '\b(uvx|npx)\s+(@[\w.-]+/)?\w[\w.-]*(\s|$)'
+        language: pygrep
+        files: ^(\.pre-commit-config\.yaml|Makefile)$
