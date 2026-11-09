@@ -18,6 +18,19 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
+// piMCPResourceTools mirrors MCP_RESOURCE_TOOLS in pi's core/mcp-servers.js.
+var piMCPResourceTools = []string{"list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"}
+
+// piMCPResourcePattern accepts resource names and scoped resource patterns,
+// not broad wildcards that could accidentally select unrelated tools.
+func piMCPResourcePattern(pattern string) bool {
+	if !strings.HasPrefix(pattern, "list_mcp_") && !strings.HasPrefix(pattern, "read_mcp_") {
+		return false
+	}
+	matcher := regexp.MustCompile("^" + strings.ReplaceAll(regexp.QuoteMeta(pattern), "\\*", ".*") + "$")
+	return slices.ContainsFunc(piMCPResourceTools, matcher.MatchString)
+}
+
 // piMCPExclusions closes pi 1.5.0's implicit MCP retention for explicit
 // non-MCP selections. Keep in sync with childArgs and the pinned-pi tests.
 func piMCPExclusions(tools []string) string {
@@ -25,7 +38,7 @@ func piMCPExclusions(tools []string) string {
 		return ""
 	}
 	excluded := []string{"mcp__*"}
-	for _, name := range []string{"list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"} {
+	for _, name := range piMCPResourceTools {
 		selected := slices.ContainsFunc(tools, func(pattern string) bool {
 			matcher := regexp.MustCompile("^" + strings.ReplaceAll(regexp.QuoteMeta(pattern), "\\*", ".*") + "$")
 			return matcher.MatchString(name)

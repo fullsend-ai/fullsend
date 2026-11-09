@@ -163,6 +163,12 @@ func TestPiToolsFor(t *testing.T) {
 	assert.Nil(t, unsupported)
 }
 
+func TestPiMCPResourceTools(t *testing.T) {
+	tools, unsupported := piToolsFor([]string{"read_mcp_resource", "list_mcp_resources", "list_mcp_resource_templates", "list_mcp_*", "read_mcp_*", "read_mcp_resource", "*", "list_mcp_unknown"})
+	assert.Equal(t, []string{"read_mcp_resource", "list_mcp_resources", "list_mcp_resource_templates", "list_mcp_*", "read_mcp_*"}, tools)
+	assert.Equal(t, []string{"*", "list_mcp_unknown"}, unsupported)
+}
+
 func TestPiAgentToolEnabled(t *testing.T) {
 	t.Parallel()
 	assert.True(t, piAgentToolEnabled(&piAgentDef{}), "no tools: frontmatter means the default set, which includes the Agent tool")

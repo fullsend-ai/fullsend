@@ -389,11 +389,18 @@ provides gets `--no-builtin-tools`, and its extensions still load: `-e` is indep
 An agent without `tools:` gets pi's default set plus whatever its extensions register.
 
 MCP tool names such as `mcp__docs__search` and patterns such as
-`mcp__docs__*` pass through the pi tool mapping. Sub-agents load the same
+`mcp__docs__*` pass through the pi tool mapping, as do MCP resource names
+(`list_mcp_resources`, `list_mcp_resource_templates`, `read_mcp_resource`)
+and scoped patterns such as `list_mcp_*` or `read_mcp_*` in parent and
+persona tool lists. Sub-agents load the same
 declared extensions, with their directory hashes checked before each launch.
 A persona's tools are intersected with the parent's permissions using the
-active tool names, queried with `pi.getActiveTools()` before each child launch.
-Registered but inactive tools, including `defaultActive: false` tools, stay unavailable.
+parent's callable permissions before each child launch: active names from
+`pi.getActiveTools()`, plus registered tools whose `pi.getAllTools()` exposure
+is `codemode` or `deferred`. Pi permits nested calls to those tools even when
+inactive. Inactive direct tools (including `defaultActive: false` direct tools)
+and other inactive registrations are not added. Explicit parent selections
+and persona patterns still restrict this union; registration alone is not a grant.
 An empty child allowlist hides both built-in and extension tools. Explicit
 nonempty parent and child selections without `mcp__` entries also get
 `--exclude-tools`: `mcp__*` plus each unselected MCP resource tool
@@ -780,10 +787,12 @@ list, no prompt templates or themes, its own session dir, and a `--tools` allowl
   so PreToolUse/PostToolUse hooks and the Bash allowlist apply inside sub-agents too — as they do on
   Claude Code, where the same hooks run on `Agent` calls.
 - **The parent's tool set**, minus `Agent`/`Task`: a child cannot dispatch children of its own.
-  Each launch starts from the parent's current active tools, not every registered tool.
-  Omitted parent `tools:` and extension-only launches retain active extension tools;
-  explicit parent lists restrict them further. Persona patterns are intersected against
-  concrete active names; Explore remains limited to read-only built-ins.
+  Each launch starts from the parent's active tools plus registered tools with
+  `codemode`/`deferred` exposure, which pi permits in nested calls even when
+  inactive. Other inactive registrations stay unavailable. Omitted parent
+  `tools:` and extension-only launches retain these callable permissions;
+  explicit parent lists restrict them further. Persona patterns intersect
+  concrete names; Explore remains limited to read-only built-ins.
 - **Harness pi plugins.** Children load the same host-vetted declared extensions and arguments.
   Before each launch (including retries), the dispatcher asynchronously re-hashes their trees and
   refuses changed or unverifiable content. This detects drift, not concurrent tampering: a same-user

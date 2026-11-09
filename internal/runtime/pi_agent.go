@@ -268,7 +268,7 @@ func piToolsFor(claudeTools []string) (tools, unsupported []string) {
 			}
 			continue
 		}
-		if strings.HasPrefix(ct, "mcp__") {
+		if strings.HasPrefix(ct, "mcp__") || piMCPResourcePattern(ct) {
 			// MCP tool names are canonical: hooks and the allowlist match
 			// them verbatim, and pi's --tools accepts them as patterns. A
 			// declared MCP tool must be named here or pi never declares it

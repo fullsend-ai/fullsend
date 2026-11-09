@@ -449,13 +449,15 @@ function toolMatches(pattern, name) {
   return new RegExp(`^${escaped.join(".*")}$`, "u").test(name);
 }
 
-export function childTools(agent, subagentType, activeTools) {
+export function childTools(agent, subagentType, activeTools, registeredTools = []) {
   const parent = (agent?.tools ?? []).filter((t) => t !== TOOL_NAME && t !== TOOL_ALIAS);
   const explore = typeof subagentType === "string" && subagentType.trim().toLowerCase() === "explore";
-  const candidates = activeTools ?? parent.filter((t) => !t.includes("*"));
-  // The live active set is the ceiling, not the registry of all available tools.
-  // pi already applies default/extension-only selection and defaultActive there;
-  // classifying built-ins ourselves would drift when pi adds a new one.
+  // pi permits nested calls to registered codemode/deferred tools even when
+  // inactive. Inactive direct/model-only/hidden registrations are not grants.
+  const candidates = [...new Set([
+    ...(activeTools ?? parent.filter((t) => !t.includes("*"))),
+    ...registeredTools.filter((t) => t.exposure === "codemode" || t.exposure === "deferred").map((t) => t.name),
+  ])];
   const allowed = candidates.filter((t) => {
     if (t === TOOL_NAME || t === TOOL_ALIAS) return false;
     if (agent?.toolMode === "extensions-only" || agent?.toolMode === "default") return true;
@@ -775,7 +777,7 @@ export function sanitizeLogLine(text) {
 // sanitizeLogLine first. run() never throws for a failed child —
 // it returns { isError, error } — so the registered execute() decides how
 // to surface it (pi marks a result isError only when execute throws).
-export function createAgentTool(manifest, { spawn = nodeSpawn, log: rawLog = (m) => console.error(m), now = () => Date.now(), env = process.env, stat = statSync, killGraceMs = DEFAULT_KILL_GRACE_MS, manifestPath = "", manifestSum = "", activeTools = () => undefined, configDir = manifestPath ? dirname(manifestPath) : "" } = {}) {
+export function createAgentTool(manifest, { spawn = nodeSpawn, log: rawLog = (m) => console.error(m), now = () => Date.now(), env = process.env, stat = statSync, killGraceMs = DEFAULT_KILL_GRACE_MS, manifestPath = "", manifestSum = "", activeTools = () => undefined, registeredTools = () => [], configDir = manifestPath ? dirname(manifestPath) : "" } = {}) {
   const log = (m) => rawLog(sanitizeLogLine(m));
   const agent = manifest?.agent ?? {};
   const maxConcurrent = Math.max(1, Number(agent.maxConcurrent) || DEFAULT_MAX_CONCURRENT);
@@ -1221,7 +1223,7 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log: rawLog = (m)
         // every attempt of the fallback chain shares it, so a chain never
         // runs longer than a single child could.
         const deadline = now() + timeoutMs;
-        outcome = await runChild(id, params, modelSpec, childTools(agent, params?.subagent_type, activeTools()), ticket, personaName, timeoutMs);
+        outcome = await runChild(id, params, modelSpec, childTools(agent, params?.subagent_type, activeTools(), registeredTools()), ticket, personaName, timeoutMs);
         // Walk the alias's fallback chain while the project does not serve
         // the model (#8426). The abandoned attempt's session is removed so
         // it is not extracted as an error on a dispatch that succeeded. A
@@ -1245,7 +1247,7 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log: rawLog = (m)
             log(`${LOG_PREFIX} #${id} cannot remove the abandoned attempt's session: ${err.message}`);
           }
           modelSpec = next;
-          outcome = await runChild(id, params, modelSpec, childTools(agent, params?.subagent_type, activeTools()), ticket, personaName, remainingMs);
+          outcome = await runChild(id, params, modelSpec, childTools(agent, params?.subagent_type, activeTools(), registeredTools()), ticket, personaName, remainingMs);
         }
       } finally {
         release();
@@ -1339,7 +1341,7 @@ export default function (pi) {
     console.error(`${LOG_PREFIX} the Agent tool is not enabled for this agent; nothing registered`);
     return;
   }
-  const tool = createAgentTool(manifest, { manifestPath, manifestSum, activeTools: () => pi.getActiveTools() });
+  const tool = createAgentTool(manifest, { manifestPath, manifestSum, activeTools: () => pi.getActiveTools(), registeredTools: () => pi.getAllTools() });
 
   const execute = async (_toolCallId, params, signal, _onUpdate, ctx) => {
     const m = ctx?.model;

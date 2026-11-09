@@ -1460,7 +1460,7 @@ test("extension tree verification yields to the event loop", async () => {
   assert.equal(yielded, true);
 });
 
-function registerWith(manifestPath, env = {}, activeTools) {
+function registerWith(manifestPath, env = {}, activeTools, registeredTools = () => []) {
   const tools = [];
   const events = {};
   const lines = [];
@@ -1471,7 +1471,7 @@ function registerWith(manifestPath, env = {}, activeTools) {
   delete process.env.FULLSEND_SUBAGENT_DEPTH;
   Object.assign(process.env, env);
   try {
-    defaultExport({ getAllTools: () => { throw new Error("dispatch must not use the full registry"); }, getActiveTools: activeTools ?? (() => JSON.parse(readFileSync(manifestPath)).agent.tools), registerTool: (d) => tools.push(d), on: (ev, fn) => { events[ev] = fn; } });
+    defaultExport({ getAllTools: registeredTools, getActiveTools: activeTools ?? (() => JSON.parse(readFileSync(manifestPath)).agent.tools), registerTool: (d) => tools.push(d), on: (ev, fn) => { events[ev] = fn; } });
   } finally {
     console.error = origError;
     for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
@@ -1503,7 +1503,8 @@ test("production dispatch uses live active tools, never inactive registry entrie
     // hidden represents a defaultActive:false extension; future_builtin is
     // registered but inactive. Neither may be activated by a child's --tools.
     let active = ["mcp__docs__search", "Agent", "Task"];
-    const { tools, events } = registerWith(path, {}, () => active);
+    let registry = [];
+    const { tools, events } = registerWith(path, {}, () => active, () => registry);
     const ctx = { model: { provider: "anthropic-vertex", id: "claude-opus-4-6" } };
     const selection = async (subagent_type) => {
       const result = await tools[0].execute("call", { prompt: "ok", subagent_type }, undefined, undefined, ctx);
@@ -1514,6 +1515,11 @@ test("production dispatch uses live active tools, never inactive registry entrie
     assert.equal(await selection("hidden"), "");
     // Query the API again for each dispatch, not just when the extension loads.
     active = [];
+    assert.equal(await selection(), "");
+    registry = [{name: "mcp__docs__search", exposure: "codemode"}, {name: "mcp__docs__hidden", exposure: "direct"}];
+    assert.equal(await selection(), "mcp__docs__search");
+    assert.equal(await selection("hidden"), "");
+    registry = [];
     assert.equal(await selection(), "");
     await events.session_shutdown();
   }
@@ -2198,4 +2204,25 @@ test("run: no fallback starts with less than the minimum attempt time left", asy
   for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
   assert.equal(children.length, 1);
   rmSync(dir, { recursive: true, force: true });
+});
+
+test("callable exposure union retains nested tools but never inactive direct tools", () => {
+  const registry = [
+    {name: "mcp__docs__search", exposure: "codemode"},
+    {name: "list_mcp_resources", exposure: "deferred"},
+    {name: "mcp__docs__hidden", exposure: "direct"},
+    {name: "secret", exposure: "hidden"},
+  ];
+  const agent = {tools: [], personas: {docs: {tools: ["mcp__docs__search", "mcp__docs__hidden"]}}};
+  for (const toolMode of ["default", "extensions-only"]) {
+    agent.toolMode = toolMode;
+    assert.deepEqual(childTools(agent, undefined, ["codemode"], registry),
+      ["codemode", "mcp__docs__search", "list_mcp_resources"]);
+    assert.deepEqual(childTools(agent, "docs", ["codemode"], registry), ["mcp__docs__search"]);
+    assert.deepEqual(childTools(agent, "Explore", ["codemode"], registry), []);
+  }
+  agent.toolMode = "explicit";
+  agent.tools = ["list_mcp_*"];
+  assert.deepEqual(childTools(agent, undefined, ["codemode"], registry), ["list_mcp_resources"]);
+  assert.deepEqual(childTools(agent, "docs", ["codemode"], registry), []);
 });
