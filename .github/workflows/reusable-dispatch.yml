@@ -1336,6 +1336,7 @@ jobs:
           export FULLSEND_FAILURE_REPOSITORY="${REPOSITORY}"
           export FULLSEND_FAILURE_NUMBER="${NUMBER}"
           export FULLSEND_FAILURE_AGENT="code"
+          export FULLSEND_FAILURE_ROLE="coder"
           export FULLSEND_FAILURE_RUN_URL="${RUN_URL}"
           FULLSEND_FAILURE_CATEGORY="$([[ "${MINT_OUTCOME}" == "failure" ]] && echo 'token mint' || echo 'workflow setup')"
           export FULLSEND_FAILURE_CATEGORY
@@ -1808,6 +1809,7 @@ jobs:
           export FULLSEND_FAILURE_REPOSITORY="${REPOSITORY}"
           export FULLSEND_FAILURE_NUMBER="${NUMBER}"
           export FULLSEND_FAILURE_AGENT="fix"
+          export FULLSEND_FAILURE_ROLE="coder"
           export FULLSEND_FAILURE_RUN_URL="${RUN_URL}"
           FULLSEND_FAILURE_CATEGORY="$([[ "${MINT_OUTCOME}" == "failure" ]] && echo 'token mint' || echo 'workflow setup')"
           export FULLSEND_FAILURE_CATEGORY

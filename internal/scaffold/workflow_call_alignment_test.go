@@ -64,6 +64,8 @@ func TestStartupFailureReportingGuards(t *testing.T) {
 	assert.Contains(t, dispatchText, "id: eligibility")
 	assert.Contains(t, dispatchText, "steps.fork_guard.outcome != 'failure'")
 	assert.Contains(t, dispatchText, "steps.eligibility.outcome != 'failure'")
+	assert.GreaterOrEqual(t, strings.Count(dispatchText, `export FULLSEND_FAILURE_ROLE="coder"`), 2,
+		"code and fix reporters must use the shared coder bot role")
 
 	prioritize, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "reusable-prioritize.yml"))
 	require.NoError(t, err)
@@ -1699,6 +1701,8 @@ func TestActionReconcileStatusUsesSuppliedRoleFallback(t *testing.T) {
 		"action.yml must declare the optional role supplied by matrix dispatch")
 	assert.Contains(t, s, "SUPPLIED_ROLE: ${{ inputs.role }}",
 		"reconcile step must receive the supplied role")
+	assert.Contains(t, s, "ROLE: ${{ inputs.role || inputs.agent }}",
+		"startup failure reporter must receive a role even when the run step is skipped")
 	assert.Contains(t, s, "RESOLVED_ROLE=\"${HARNESS_ROLE:-${SUPPLIED_ROLE:-${AGENT}}}\"",
 		"reconciliation must use the supplied role when an early failure prevents the harness from reporting one")
 }
