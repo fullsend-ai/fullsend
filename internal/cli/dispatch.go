@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/fullsend-ai/fullsend/internal/fetch"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/harnessdispatch"
 	"github.com/fullsend-ai/fullsend/internal/harnessdispatch/input"
@@ -75,6 +76,22 @@ type dispatchOpts struct {
 	route string
 }
 
+// newDispatchFetchPolicy returns the fetch policy `fullsend dispatch`
+// uses when it resolves and loads harnesses, for both the dispatch matrix
+// and --route. It is the default policy extended to admit the configured
+// GitHub host, derived from the base URL of the same fallback client
+// fullsend run uses (GITHUB_API_URL and the manifest are honoured; the
+// token is optional, as fullsend-ai/agents is public and the client here
+// only names the host). On github.com the default policy is returned
+// unchanged.
+func newDispatchFetchPolicy(forgeToken string) fetch.FetchPolicy {
+	token, err := resolveGitHubToken(forgeToken)
+	if err != nil {
+		token = ""
+	}
+	return withAgentsRepoHostAllowed(fetch.DefaultPolicy, newGitHubLiveClient(token, ""))
+}
+
 func runDispatch(ctx context.Context, opts dispatchOpts) error {
 	route := strings.ToLower(strings.TrimSpace(opts.route))
 	if _, ok := routableAgents[route]; opts.route != "" && !ok {
@@ -96,6 +113,15 @@ func runDispatch(ctx context.Context, opts dispatchOpts) error {
 	if c, err := newAuthenticatedGitHubClient(opts.forgeToken, ""); err == nil {
 		client = c
 	}
+
+	// The harnesses dispatch enumerates and routes load can pin base:
+	// chains and companion files to the configured GitHub host — the same
+	// host fullsend run's agents-repo fallback resolves through
+	// newGitHubLiveClient. The default fetch policy names only github.com
+	// hosts, so it is extended from the fallback client's base URL exactly
+	// as runAgent does; without that, loading such a harness fails with
+	// "domain not in allowlist" before any agent job is reached.
+	dispatchFetchPolicy := newDispatchFetchPolicy(opts.forgeToken)
 
 	var event *normevent.Event
 	var err error
@@ -130,6 +156,7 @@ func runDispatch(ctx context.Context, opts dispatchOpts) error {
 			configDir:   opts.configDir,
 			event:       event,
 			forgeClient: client,
+			fetchPolicy: &dispatchFetchPolicy,
 			printer:     printer,
 		})
 		if err != nil {
@@ -144,8 +171,9 @@ func runDispatch(ctx context.Context, opts dispatchOpts) error {
 	}
 
 	refs, err := harnessdispatch.Dispatch(ctx, harnessdispatch.Options{
-		ConfigDir: opts.configDir,
-		Event:     event,
+		ConfigDir:   opts.configDir,
+		Event:       event,
+		FetchPolicy: &dispatchFetchPolicy,
 	})
 	if err != nil {
 		return err

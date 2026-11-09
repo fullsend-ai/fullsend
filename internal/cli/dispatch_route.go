@@ -12,7 +12,6 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/fetch"
 	"github.com/fullsend-ai/fullsend/internal/forge"
-	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/harnessdispatch"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
@@ -247,7 +246,11 @@ func routeBuiltinAgent(ctx context.Context, o routeOpts) (routeDecision, error) 
 	}
 	forgeClient := o.forgeClient
 	if forgeClient == nil {
-		forgeClient = gh.New("")
+		// Unauthenticated, as the agents repository is public, but on the
+		// configured host: a bare gh.New addresses api.github.com by name, so
+		// on any other forge the fallback lookup fails and the route's
+		// authorization threshold silently fails closed to write.
+		forgeClient = newGitHubLiveClient("", "")
 	}
 	printer := o.printer
 	if printer == nil {
