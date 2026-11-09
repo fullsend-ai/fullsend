@@ -96,6 +96,8 @@ function bashCommands(command, allowParameterExpansion = false) {
       if (!words.length) quotedProgram = true;
     } else if (/[`$(){}\\<>&\r]/.test(char)) {
       deny("Bash policy rejects substitutions, groups, redirections, backgrounding and escapes");
+    } else if (!allowParameterExpansion && ["*", "?", "["].includes(char)) {
+      deny("Bash policy rejects pathname expansion with trusted patterns");
     } else if (char === " " || char === "\t") finishWord();
     else if (char === "\n" || char === ";" || char === "|") {
       finishCommand();

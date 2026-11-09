@@ -130,7 +130,9 @@ example above.
   removes argument quotes before matching, including inside Task children with
   broader native permissions. Parameter expansion in arguments is allowed with
   a program-name allowlist and flat trusted permission, but rejected with trusted
-  argument patterns because its value is not known during matching.
+  argument patterns because its value is not known during matching. Trusted
+  argument patterns also reject unquoted pathname expansion (`*`, `?`, and
+  `[...]`) for the same reason. Quote these characters to pass them literally.
   Program-name allowlists restrict executable names, not every capability of an
   allowed program.
   Unlike pi's advisory default, OpenCode enforces the declared list without an
