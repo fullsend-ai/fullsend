@@ -45,6 +45,33 @@ func TestReviewWorkflowKeepsThreadFetchAgentOwned(t *testing.T) {
 	assert.NotContains(t, section, "HUMAN_RESOLVED_FETCH_SCRIPT:")
 }
 
+// TestStartupFailureReportingGuards verifies the workflow conditions that keep
+// policy skips and cancellations from being reported as setup failures.
+func TestStartupFailureReportingGuards(t *testing.T) {
+	dispatch, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "reusable-dispatch.yml"))
+	require.NoError(t, err)
+	dispatchText := string(dispatch)
+
+	for _, agent := range []string{"triage", "code", "review", "fix", "retro", "prioritize", "harness"} {
+		assert.Contains(t, dispatchText, "Report "+agent+" launch failure")
+	}
+	for _, line := range strings.Split(dispatchText, "\n") {
+		if strings.Contains(line, "if: ${{ failure()") && strings.Contains(line, "steps.run-agent.outcome") {
+			assert.Contains(t, line, "!cancelled()", "startup failure reporters must not run after cancellation")
+		}
+	}
+	assert.Contains(t, dispatchText, "id: fork_guard")
+	assert.Contains(t, dispatchText, "id: eligibility")
+	assert.Contains(t, dispatchText, "steps.fork_guard.outcome != 'failure'")
+	assert.Contains(t, dispatchText, "steps.eligibility.outcome != 'failure'")
+
+	prioritize, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "reusable-prioritize.yml"))
+	require.NoError(t, err)
+	prioritizeText := string(prioritize)
+	assert.Contains(t, prioritizeText, "failure-repo: ${{ inputs.source_repo }}")
+	assert.NotContains(t, prioritizeText, "status-repo: ${{ inputs.source_repo }}")
+}
+
 type workflowInput struct {
 	Required bool   `yaml:"required"`
 	Type     string `yaml:"type"`
