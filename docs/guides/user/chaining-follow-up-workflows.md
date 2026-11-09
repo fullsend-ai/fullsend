@@ -333,10 +333,11 @@ What each guard does:
 - **The API lookup** confirms each id is a failed job in this repository, in
   the workflow named by `CI_WORKFLOW`, with a name listed in `CI_JOBS`.
 - **`HEAD_SHA`** comes from the event, not the agent. A job on any other
-  commit is skipped. For pull request events (`pull_request_target`) the shim
-  run's `head_sha` is the pull request head, the same SHA a `pull_request` CI
-  job reports; the job's own `GITHUB_SHA` (the base branch) is a different
-  value. For comment and issue events it is the default branch, so the
+  commit is skipped. For pull request events (`pull_request`, or
+  `pull_request_target` from a shim that has not been upgraded) the shim run's
+  `head_sha` is the pull request head, the same SHA a `pull_request` CI job
+  reports; the job's own `GITHUB_SHA` (the merge commit on `pull_request`, the
+  default branch on `pull_request_target`) is a different value. For comment and issue events it is the default branch, so the
   follow-up skips those runs rather than guessing. The agent can only choose
   among failed, allowlisted jobs on the commit it ran on.
 - **`run_attempt`** bounds repeats without any bookkeeping of your own.

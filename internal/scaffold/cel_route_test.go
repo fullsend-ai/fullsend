@@ -93,6 +93,15 @@ var (
 		"EVENT_NAME": "pull_request_target", "EVENT_ACTION": "closed",
 		"PR_USER_LOGIN": "someone",
 	}
+	celRouteSameRepoClosed = map[string]string{
+		"EVENT_NAME": "pull_request", "EVENT_ACTION": "closed",
+		"PR_USER_LOGIN": "someone", "PR_HEAD_REPO": "acme/widgets", "PR_BASE_REPO": "acme/widgets",
+	}
+	celRouteSameRepoLabel = map[string]string{
+		"EVENT_NAME": "pull_request", "EVENT_ACTION": "labeled",
+		"TRIGGERING_LABEL": "ready-for-review", "PR_USER_LOGIN": "someone",
+		"PR_HEAD_REPO": "acme/widgets", "PR_BASE_REPO": "acme/widgets",
+	}
 	celRoutePRComment = map[string]string{
 		"EVENT_NAME": "issue_comment", "EVENT_ACTION": "created",
 		"COMMENT_BODY": "looks good", "ISSUE_IS_PR": "true",
@@ -149,13 +158,15 @@ func TestRouteJob_NoReviewEntryIsByteIdentical(t *testing.T) {
 			"  - name: prioritize\n    model: sonnet\n",
 	}
 	for name, event := range map[string]map[string]string{
-		"review label":      celRouteReviewLabel,
-		"other label":       celRouteOtherLabel,
-		"closed":            celRouteClosed,
-		"PR comment":        celRoutePRComment,
-		"issue comment":     celRouteIssueComment,
-		"triage label":      celRouteTriageLabel,
-		"other issue label": celRouteIssueOtherLabel,
+		"review label":        celRouteReviewLabel,
+		"other label":         celRouteOtherLabel,
+		"closed":              celRouteClosed,
+		"pull_request closed": celRouteSameRepoClosed,
+		"pull_request label":  celRouteSameRepoLabel,
+		"PR comment":          celRoutePRComment,
+		"issue comment":       celRouteIssueComment,
+		"triage label":        celRouteTriageLabel,
+		"other issue label":   celRouteIssueOtherLabel,
 	} {
 		for cfgName, cfg := range configs {
 			t.Run(name+"/"+cfgName, func(t *testing.T) {
@@ -253,6 +264,14 @@ func TestCELRouteOptIn_EventGate(t *testing.T) {
 		{"review stage on an issue comment does not fit", "issue_comment", "false", "review", "created", "/fs-review", ""},
 		{"retro stage on an open PR event does not fit", "pull_request_target", "false", "retro", "opened", "", ""},
 		{"review stage on a closed PR does not fit", "pull_request_target", "false", "review", "closed", "", ""},
+		// pull_request (the shim trigger since #9221) selects like pull_request_target.
+		{"pull_request event with no bash stage", "pull_request", "false", "", "opened", "", "review"},
+		{"pull_request event routed to review", "pull_request", "false", "review", "synchronize", "", "review"},
+		{"pull_request event routed to another stage", "pull_request", "false", "fix", "opened", "", ""},
+		{"pull_request closed routed to retro", "pull_request", "false", "retro", "closed", "", "retro"},
+		{"pull_request closed with no bash stage", "pull_request", "false", "", "closed", "", "retro"},
+		{"retro stage on an open pull_request does not fit", "pull_request", "false", "retro", "opened", "", ""},
+		{"review stage on a closed pull_request does not fit", "pull_request", "false", "review", "closed", "", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -477,7 +496,8 @@ func TestCELRouteStepsGatedAndIsolated(t *testing.T) {
 		assert.True(t, step.ContinueOnError, "step %q must continue on error", step.Name)
 		switch step.ID {
 		case "cel-opt-in":
-			assert.Equal(t, "${{ github.event_name == 'pull_request_target' || github.event_name == 'issue_comment' || github.event_name == 'issues' }}", step.If)
+			assert.Equal(t, "${{ github.event_name == 'pull_request_target' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name == github.event.pull_request.base.repo.full_name && github.actor != 'dependabot[bot]')) || github.event_name == 'issue_comment' || github.event_name == 'issues' }}", step.If,
+				"CEL routing covers same-repo pull_request events and never a fork or Dependabot PR on pull_request (#9221)")
 		case "cel-config":
 			assert.Equal(t, "steps.cel-opt-in.outputs.opt_in == 'true'", step.If)
 		default:

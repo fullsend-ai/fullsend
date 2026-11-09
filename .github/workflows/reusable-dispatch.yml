@@ -157,7 +157,7 @@ jobs:
           # is executed, and credentials are not persisted. Pin to base branch
           # SHA for PR-scoped events so kill-switch / role gating always reads
           # trusted config — PR authors cannot self-authorize.
-          ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
+          ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
           persist-credentials: false
           allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
           sparse-checkout: |
@@ -187,6 +187,7 @@ jobs:
           PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           PR_BASE_REPO: ${{ github.event.pull_request.base.repo.full_name }}
           PR_USER_LOGIN: ${{ github.event.pull_request.user.login }}
+          EVENT_ACTOR: ${{ github.actor }}
           ORG_NAME: ${{ github.repository_owner }}
           FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
           GH_TOKEN: ${{ github.token }}
@@ -392,7 +393,35 @@ jobs:
               fi
               ;;
 
-            pull_request_target)
+            pull_request_target|pull_request)
+              # pull_request is the shim trigger from #9221 on (GitHub blocks
+              # pull_request_target by default in public repos from
+              # 2026-12-02). pull_request_target stays routed the same way so
+              # shims that have not upgraded keep working until they do.
+              if [[ "${EVENT_NAME}" == "pull_request_target" ]]; then
+                echo "::warning::This repository's fullsend shim still triggers on pull_request_target, which GitHub blocks by default in public repositories from 2026-12-02. Re-run 'fullsend repos install' to move the shim to pull_request."
+              fi
+              # The shim skips fork PRs on pull_request with a same-repo guard,
+              # but a pull_request run uses the PR's own copy of the shim, so a
+              # fork can drop that guard. Upstream installs call this file from
+              # fullsend, which a fork cannot edit, so this re-check holds there
+              # (vendored installs run their own copy, and depend on GitHub not
+              # sending secrets to fork PR runs). A fork PR is never routed on
+              # pull_request; a maintainer comments /fs-review instead. Missing
+              # repo names also skip.
+              if [[ "${EVENT_NAME}" == "pull_request" ]] && [[ -z "${PR_HEAD_REPO:-}" || "${PR_HEAD_REPO:-}" != "${PR_BASE_REPO:-}" ]]; then
+                echo "::notice::Fork pull request on pull_request: not routed. A maintainer can comment /fs-review to review it."
+                echo "stage=" >> "${GITHUB_OUTPUT}"
+                exit 0
+              fi
+              # GitHub gives pull_request runs triggered by Dependabot only
+              # Dependabot secrets, so an agent run would fail. Skip it; a
+              # maintainer's /fs-review runs with the repository's secrets.
+              if [[ "${EVENT_NAME}" == "pull_request" && "${EVENT_ACTOR:-}" == "dependabot[bot]" ]]; then
+                echo "::notice::Dependabot pull request on pull_request: not routed. A maintainer can comment /fs-review to review it."
+                echo "stage=" >> "${GITHUB_OUTPUT}"
+                exit 0
+              fi
               case "${EVENT_ACTION}" in
                 opened|synchronize|ready_for_review)
                   if [[ "${PR_USER_LOGIN}" =~ \[bot\]$ ]] || is_event_actor_authorized "${PR_USER_LOGIN}" triage; then
@@ -465,7 +494,9 @@ jobs:
       # bash stage through unchanged.
       - name: Detect CEL route opt-in
         id: cel-opt-in
-        if: ${{ github.event_name == 'pull_request_target' || github.event_name == 'issue_comment' || github.event_name == 'issues' }}
+        # A fork or Dependabot PR on pull_request is never routed (see
+        # "Determine stage"), by CEL either: a maintainer comments /fs-review.
+        if: ${{ github.event_name == 'pull_request_target' || (github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name == github.event.pull_request.base.repo.full_name && github.actor != 'dependabot[bot]')) || github.event_name == 'issue_comment' || github.event_name == 'issues' }}
         continue-on-error: true
         shell: bash
         env:
@@ -496,14 +527,18 @@ jobs:
             # Same parsing as "Determine stage".
             COMMAND="$(printf '%s\n' "${COMMENT_BODY}" | head -1 | tr -d '\r' | awk '{print $1}' | sed 's/[.,;:!?]*$//')"
           fi
+          IS_PR_EVENT=false
+          if [[ "${EVENT_NAME}" == "pull_request_target" || "${EVENT_NAME}" == "pull_request" ]]; then
+            IS_PR_EVENT=true
+          fi
           PR_CLOSED=false
-          if [[ "${EVENT_NAME}" == "pull_request_target" && "${EVENT_ACTION:-}" == "closed" ]]; then
+          if [[ "${IS_PR_EVENT}" == "true" && "${EVENT_ACTION:-}" == "closed" ]]; then
             PR_CLOSED=true
           fi
           fits=""
           # review: pull request events other than closed, and comments on a
           # pull request.
-          if [[ ( "${EVENT_NAME}" == "pull_request_target" && "${PR_CLOSED}" == "false" ) || ( "${EVENT_NAME}" == "issue_comment" && "${ISSUE_IS_PR}" == "true" ) ]]; then
+          if [[ ( "${IS_PR_EVENT}" == "true" && "${PR_CLOSED}" == "false" ) || ( "${EVENT_NAME}" == "issue_comment" && "${ISSUE_IS_PR}" == "true" ) ]]; then
             fits+=" review"
           fi
           # retro: a closed pull request, and comments on an issue or a pull
@@ -541,7 +576,7 @@ jobs:
             agent="triage"
           elif [[ "${PR_CLOSED}" == "true" ]]; then
             agent="retro"
-          elif [[ "${EVENT_NAME}" == "pull_request_target" ]]; then
+          elif [[ "${IS_PR_EVENT}" == "true" ]]; then
             agent="review"
           fi
 
@@ -604,7 +639,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Same trusted ref as the checkout above: the base branch for PR events.
-          ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
+          ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
           path: cel-route
           persist-credentials: false
           allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
@@ -637,7 +672,7 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/fullsend-cache
-          key: fullsend-cli-${{ steps.cel-cli-mode.outputs.mode }}-${{ job.workflow_sha }}
+          key: fullsend-cli-${{ steps.cel-cli-mode.outputs.mode }}-${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
 
       # Vendored installs copy the committed binary directly, so the step does
       # not depend on where the vendored defaults (.defaults/ or
@@ -663,7 +698,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
-          ref: ${{ job.workflow_sha }}
+          ref: ${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
           path: .workflow-actions
           fetch-depth: 1
           sparse-checkout: |
@@ -681,7 +716,7 @@ jobs:
         with:
           mode: upstream
           workflow_repository: ${{ job.workflow_repository }}
-          workflow_sha: ${{ job.workflow_sha }}
+          workflow_sha: ${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
           github_token: ${{ github.token }}
 
       - name: Expose cached fullsend CLI for CEL route
@@ -711,7 +746,7 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/fullsend-cache
-          key: fullsend-cli-${{ steps.cel-cli-mode.outputs.mode }}-${{ job.workflow_sha }}
+          key: fullsend-cli-${{ steps.cel-cli-mode.outputs.mode }}-${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
 
       - name: Evaluate CEL route
         id: cel-route
@@ -1042,7 +1077,7 @@ jobs:
       - name: Checkout caller repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
+          ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
           persist-credentials: false
           allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
 
@@ -1051,7 +1086,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
-          ref: ${{ job.workflow_sha }}
+          ref: ${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
           path: .defaults
           fetch-depth: 1
           sparse-checkout: |
@@ -1082,6 +1117,10 @@ jobs:
           path: target-repo
           fetch-depth: 1
           persist-credentials: false
+          # With no ref, checkout uses github.ref: the default branch on
+          # pull_request_target, the PR merge commit on pull_request. Keep the
+          # default branch on pull_request (#9221).
+          ref: ${{ github.event_name == 'pull_request' && format('refs/heads/{0}', github.event.repository.default_branch) || '' }}
 
       - name: Setup agent environment
         env:
@@ -1129,7 +1168,7 @@ jobs:
           jira-client-secret: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_SECRET || '' }}
           runner_secrets: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}
           fullsend-dir: .fullsend
-          version: ${{ inputs.fullsend_version || job.workflow_sha }}
+          version: ${{ inputs.fullsend_version || (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           status-repo: ${{ github.repository }}
           status-number: ${{ fromJSON(needs.route.outputs.event_payload).issue.number }}
@@ -1157,7 +1196,7 @@ jobs:
       - name: Checkout caller repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
+          ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
           persist-credentials: false
           allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
 
@@ -1166,7 +1205,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
-          ref: ${{ job.workflow_sha }}
+          ref: ${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
           path: .defaults
           fetch-depth: 1
           sparse-checkout: |
@@ -1197,6 +1236,10 @@ jobs:
           path: target-repo
           fetch-depth: 0
           persist-credentials: false
+          # With no ref, checkout uses github.ref: the default branch on
+          # pull_request_target, the PR merge commit on pull_request. Keep the
+          # default branch on pull_request (#9221).
+          ref: ${{ github.event_name == 'pull_request' && format('refs/heads/{0}', github.event.repository.default_branch) || '' }}
 
       - name: Resolve bot identity
         env:
@@ -1265,7 +1308,7 @@ jobs:
           jira-client-secret: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_SECRET || '' }}
           runner_secrets: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}
           fullsend-dir: .fullsend
-          version: ${{ inputs.fullsend_version || job.workflow_sha }}
+          version: ${{ inputs.fullsend_version || (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           status-repo: ${{ github.repository }}
           status-number: ${{ fromJSON(needs.route.outputs.event_payload).issue.number }}
@@ -1292,7 +1335,7 @@ jobs:
       - name: Checkout caller repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
+          ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
           persist-credentials: false
           allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
 
@@ -1301,7 +1344,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
-          ref: ${{ job.workflow_sha }}
+          ref: ${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
           path: .defaults
           fetch-depth: 1
           sparse-checkout: |
@@ -1332,6 +1375,10 @@ jobs:
           path: target-repo
           fetch-depth: 1
           persist-credentials: false
+          # With no ref, checkout uses github.ref: the default branch on
+          # pull_request_target, the PR merge commit on pull_request. Keep the
+          # default branch on pull_request (#9221).
+          ref: ${{ github.event_name == 'pull_request' && format('refs/heads/{0}', github.event.repository.default_branch) || '' }}
 
       - name: Pre-fetch prior review context
         id: prior-review
@@ -1399,7 +1446,7 @@ jobs:
           jira-client-secret: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_SECRET || '' }}
           runner_secrets: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}
           fullsend-dir: .fullsend
-          version: ${{ inputs.fullsend_version || job.workflow_sha }}
+          version: ${{ inputs.fullsend_version || (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           status-repo: ${{ github.repository }}
           status-number: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.number || fromJSON(needs.route.outputs.event_payload).issue.number }}
@@ -1427,7 +1474,7 @@ jobs:
       - name: Checkout caller repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
+          ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
           persist-credentials: false
           allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
 
@@ -1436,7 +1483,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
-          ref: ${{ job.workflow_sha }}
+          ref: ${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
           path: .defaults
           fetch-depth: 1
           sparse-checkout: |
@@ -1667,7 +1714,7 @@ jobs:
           jira-client-secret: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_SECRET || '' }}
           runner_secrets: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}
           fullsend-dir: .fullsend
-          version: ${{ inputs.fullsend_version || job.workflow_sha }}
+          version: ${{ inputs.fullsend_version || (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           status-repo: ${{ github.repository }}
           status-number: ${{ steps.context.outputs.pr_number }}
@@ -1693,7 +1740,7 @@ jobs:
       - name: Checkout caller repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
+          ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
           persist-credentials: false
           allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
 
@@ -1702,7 +1749,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
-          ref: ${{ job.workflow_sha }}
+          ref: ${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
           path: .defaults
           fetch-depth: 1
           sparse-checkout: |
@@ -1733,6 +1780,10 @@ jobs:
           path: target-repo
           fetch-depth: 1
           persist-credentials: false
+          # With no ref, checkout uses github.ref: the default branch on
+          # pull_request_target, the PR merge commit on pull_request. Keep the
+          # default branch on pull_request (#9221).
+          ref: ${{ github.event_name == 'pull_request' && format('refs/heads/{0}', github.event.repository.default_branch) || '' }}
 
       - name: Setup agent environment
         env:
@@ -1781,7 +1832,7 @@ jobs:
           jira-client-secret: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_SECRET || '' }}
           runner_secrets: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}
           fullsend-dir: .fullsend
-          version: ${{ inputs.fullsend_version || job.workflow_sha }}
+          version: ${{ inputs.fullsend_version || (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           status-repo: ${{ github.repository }}
           status-number: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.number || fromJSON(needs.route.outputs.event_payload).issue.number }}
@@ -1807,7 +1858,7 @@ jobs:
       - name: Checkout caller repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
+          ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
           persist-credentials: false
           allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
 
@@ -1816,7 +1867,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
-          ref: ${{ job.workflow_sha }}
+          ref: ${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
           path: .defaults
           fetch-depth: 1
           sparse-checkout: |
@@ -1881,7 +1932,7 @@ jobs:
           jira-client-secret: ${{ fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_SECRET || '' }}
           runner_secrets: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}
           fullsend-dir: .fullsend
-          version: ${{ inputs.fullsend_version || job.workflow_sha }}
+          version: ${{ inputs.fullsend_version || (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           status-repo: ${{ github.repository }}
           status-number: ${{ fromJSON(needs.route.outputs.event_payload).issue.number }}
@@ -1889,7 +1940,9 @@ jobs:
 
   harness-dispatch:
     name: Harness dispatch
-    if: ${{ inputs.matrix == '' }}
+    # A fork or Dependabot PR on pull_request never dispatches (see
+    # "Determine stage" in the route job, #9221).
+    if: ${{ inputs.matrix == '' && (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.event.pull_request.base.repo.full_name && github.actor != 'dependabot[bot]')) }}
     runs-on: ${{ inputs.runner_image }}
     permissions:
       actions: write
@@ -1908,7 +1961,7 @@ jobs:
       - name: Checkout caller repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
+          ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
           persist-credentials: false
           allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
           sparse-checkout: |
@@ -1967,7 +2020,7 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/fullsend-cache
-          key: fullsend-cli-${{ steps.mode.outputs.mode }}-${{ job.workflow_sha }}
+          key: fullsend-cli-${{ steps.mode.outputs.mode }}-${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
 
       - name: Install fullsend CLI (vendored defaults)
         if: steps.triggers.outputs.has_triggers == 'true' && steps.mode.outputs.mode == 'vendored' && steps.cli-cache.outputs.cache-hit != 'true'
@@ -1982,7 +2035,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
-          ref: ${{ job.workflow_sha }}
+          ref: ${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
           path: .workflow-actions
           fetch-depth: 1
           sparse-checkout: |
@@ -1995,7 +2048,7 @@ jobs:
         with:
           mode: upstream
           workflow_repository: ${{ job.workflow_repository }}
-          workflow_sha: ${{ job.workflow_sha }}
+          workflow_sha: ${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
           github_token: ${{ github.token }}
 
       - name: Expose cached fullsend CLI
@@ -2022,7 +2075,7 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/fullsend-cache
-          key: fullsend-cli-${{ steps.mode.outputs.mode }}-${{ job.workflow_sha }}
+          key: fullsend-cli-${{ steps.mode.outputs.mode }}-${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
 
       - name: Run fullsend dispatch
         id: dispatch
@@ -2053,7 +2106,9 @@ jobs:
   harness-run:
     name: Harness run (${{ matrix.agent }})
     needs: [harness-dispatch]
-    if: ${{ !cancelled() && ((inputs.matrix != '' && fromJSON(inputs.matrix).include[0] != null) || (needs.harness-dispatch.outputs.matrix != '' && fromJSON(needs.harness-dispatch.outputs.matrix).include[0] != null)) }}
+    # A fork or Dependabot PR on pull_request never dispatches (see
+    # "Determine stage" in the route job, #9221).
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.event.pull_request.base.repo.full_name && github.actor != 'dependabot[bot]')) && ((inputs.matrix != '' && fromJSON(inputs.matrix).include[0] != null) || (needs.harness-dispatch.outputs.matrix != '' && fromJSON(needs.harness-dispatch.outputs.matrix).include[0] != null)) }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(inputs.matrix != '' && inputs.matrix || (needs.harness-dispatch.outputs.matrix != '' && needs.harness-dispatch.outputs.matrix || '{"include":[]}')) }}
@@ -2071,7 +2126,7 @@ jobs:
       - name: Checkout caller repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
+          ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
           persist-credentials: false
           allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
 
@@ -2080,7 +2135,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
-          ref: ${{ job.workflow_sha }}
+          ref: ${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
           path: .defaults
           fetch-depth: 1
           sparse-checkout: |
@@ -2139,6 +2194,10 @@ jobs:
           path: target-repo
           fetch-depth: 1
           persist-credentials: false
+          # With no ref, checkout uses github.ref: the default branch on
+          # pull_request_target, the PR merge commit on pull_request. Keep the
+          # default branch on pull_request (#9221).
+          ref: ${{ github.event_name == 'pull_request' && matrix.source_repo == github.repository && format('refs/heads/{0}', github.event.repository.default_branch) || '' }}
 
       - name: Resolve bot identity
         env:
@@ -2268,7 +2327,7 @@ jobs:
           jira-client-secret: ${{ fromJSON(matrix.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_SECRET || '' }}
           role: ${{ matrix.role }}
           runner_secrets: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}
-          version: ${{ inputs.fullsend_version || job.workflow_sha }}
+          version: ${{ inputs.fullsend_version || (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
           fullsend-dir: .fullsend
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           status-repo: ${{ matrix.status_repo }}

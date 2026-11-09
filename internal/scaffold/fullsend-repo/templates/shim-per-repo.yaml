@@ -3,10 +3,16 @@
 # Routes events to agent workflows via reusable-dispatch.yml.
 # All agent execution happens in this repository's context.
 #
-# Security: pull_request_target runs the BASE branch version of this workflow,
-# preventing PRs from modifying it to exfiltrate credentials.
-# This shim never checks out PR code, so it is not vulnerable to "pwn request"
-# attacks.
+# Security: pull request events use pull_request, not pull_request_target
+# (GitHub blocks pull_request_target by default in public repositories from
+# 2026-12-02; ADR 0164). On pull_request this workflow runs from the PR's own
+# copy and forwards the repository secrets, so the dispatch job runs only for
+# same-repo PRs, whose authors already have write access. Fork PRs are skipped
+# here and again in reusable-dispatch.yml (a fork cannot edit the upstream
+# copy; a vendored copy runs from the PR); a maintainer comments /fs-review
+# to review one. Keep "send secrets to workflows from fork pull requests"
+# off in private repositories.
+# reusable-dispatch.yml checks out the base side for pull request events.
 #
 # Routing: this shim forwards the raw event context to reusable-dispatch.yml,
 # which determines the stage and runs the agent inline (ADR 62).
@@ -21,7 +27,7 @@ on:
     types: [opened, edited, labeled]
   issue_comment:
     types: [created]
-  pull_request_target:
+  pull_request:
     types: [opened, synchronize, ready_for_review, closed, labeled, unlabeled]
   pull_request_review:
     types: [submitted]
@@ -31,8 +37,10 @@ permissions: {}
 jobs:
   dispatch:
     if: >-
-      (github.event_name != 'pull_request_target' && github.event_name != 'pull_request_review'
+      (github.event_name != 'pull_request' && github.event_name != 'pull_request_review'
        || github.event.pull_request.head.ref != 'fullsend/scaffold-install')
+      && (github.event_name != 'pull_request'
+       || github.event.pull_request.head.repo.id == github.repository_id)
       && (github.event_name != 'issue_comment'
        || startsWith(github.event.comment.body, '/fs-'))
     permissions:

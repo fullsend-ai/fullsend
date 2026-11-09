@@ -48,6 +48,9 @@ func registerActorSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the (`+actorAlternation+`) posts "([^"]+)" on the pull request$`, func(ctx context.Context, actor, body string) (context.Context, error) {
 		return ctx, whenActorPostsPRComment(world.FromContext(ctx), actor, body)
 	})
+	sc.Step(`^the (`+actorAlternation+`) posts "([^"]+)" on the fork pull request$`, func(ctx context.Context, actor, body string) (context.Context, error) {
+		return ctx, whenActorPostsForkPRComment(world.FromContext(ctx), actor, body)
+	})
 	sc.Step(`^the comment "([^"]+)" on the issue is authored by the (`+actorAlternation+`)$`, func(ctx context.Context, body, actor string) (context.Context, error) {
 		return ctx, thenIssueCommentAuthoredBy(world.FromContext(ctx), body, actor)
 	})
@@ -230,6 +233,25 @@ func whenActorPostsPRComment(w *world.World, actor, body string) error {
 	w.ScenarioStart = time.Now().Truncate(time.Second)
 	_, err = actorSCM.AddComment(context.Background(),
 		w.RepoOwner, w.RepoName, w.PRNumber, body)
+	return err
+}
+
+// whenActorPostsForkPRComment posts body on the scenario's fork pull request
+// as the named test actor. Fork pull request events no longer dispatch on
+// pull_request (#9221); a maintainer's slash command on the pull request is
+// the way to run an agent on one.
+func whenActorPostsForkPRComment(w *world.World, actor, body string) error {
+	actorSCM, _, err := actorIdentity(w, actor)
+	if err != nil {
+		return err
+	}
+	if w.ForkPRNumber == 0 {
+		return fmt.Errorf("no fork pull request opened")
+	}
+	// Run created_at has second precision (#7957).
+	w.ScenarioStart = time.Now().Truncate(time.Second)
+	_, err = actorSCM.AddComment(context.Background(),
+		w.RepoOwner, w.RepoName, w.ForkPRNumber, body)
 	return err
 }
 

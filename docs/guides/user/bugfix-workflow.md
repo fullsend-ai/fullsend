@@ -138,11 +138,11 @@ The code agent:
 3. **Tests iteratively.** Runs the test suite, incorporates triage-provided tests if present, writes new tests if needed. Iterates until tests pass.
 4. **Opens a PR.** Links the issue, describes the changes.
 5. **Handles CI failures.** Fetches failing check logs, fixes issues, pushes again. Repeats until all required checks pass (up to a fixed retry cap).
-6. **Hands off to review.** The PR creation or push triggers review dispatch automatically via `pull_request_target`.
+6. **Hands off to review.** The PR creation or push triggers review dispatch automatically via `pull_request`.
 
 ### Stage 3: Review
 
-**Triggered by:** `pull_request_target` events (PR opened, push to PR branch, or marked ready for review), `/fs-review` on a PR comment, or applying `ready-for-review` to a PR (per-repo installs enforce PR context for the latter two).
+**Triggered by:** `pull_request` events on same-repo PRs (PR opened, push to PR branch, or marked ready for review), `/fs-review` on a PR comment, or applying `ready-for-review` to a PR (per-repo installs enforce PR context for the latter two). PRs from forks are not reviewed automatically: a maintainer comments `/fs-review` to start a review.
 
 The review swarm:
 
@@ -177,7 +177,7 @@ The **retro agent** ([#131](https://github.com/fullsend-ai/fullsend/issues/131))
 
 ### Stopping automation
 
-- Remove the triggering label (`ready-to-code`) to prevent the next stage from starting. Note: review is triggered automatically by PR events (`pull_request_target`), so closing the PR is the way to stop review dispatch.
+- Remove the triggering label (`ready-to-code`) to prevent the next stage from starting. Note: review is triggered automatically by PR events (`pull_request`), so closing the PR is the way to stop review dispatch.
 - Close the issue. Agents don't act on closed issues (except `/fs-triage` which explicitly reopens).
 
 ### Restarting a stage
