@@ -955,6 +955,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	for k, v := range workItemEnv {
 		setFlagEnv(k, v)
 	}
+	var issueTracking *config.TrackingConfig
+	if orgCfg != nil {
+		issueTracking = orgCfg.IssueTracking()
+	}
+	for k, v := range resolveJiraRunEnv(ctx, sOpts.trackerSource, issueTracking, discoverJiraGatewayURL, printer.StepWarn) {
+		setFlagEnv(k, v)
+	}
 
 	// Mint the runtime-stage token before env expansion so provider
 	// credentials and host_files with expand:true capture the sandbox

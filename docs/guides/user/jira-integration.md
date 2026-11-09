@@ -229,6 +229,19 @@ The `event_type` field in dispatch records (e.g. `"comment_added"`, `"label_chan
 
 For a Jira-sourced run, `fullsend run` exports the tracker-independent `FULLSEND_WORK_ITEM_SOURCE` (`jira`), `FULLSEND_WORK_ITEM_KEY` (for example `PROJ-123`), and `FULLSEND_WORK_ITEM_URL` variables from the normalized event, replacing any inherited values, and clears `ISSUE_NUMBER` because a Jira key has no GitHub or GitLab issue number. The run fails closed, rather than guessing an identity, when the dispatch payload declares Jira but its key or URL is missing or malformed. Harness scripts that handle Jira work items should read the `FULLSEND_WORK_ITEM_*` variables instead of `ISSUE_NUMBER`.
 
+### Jira connection variables in agent runs
+
+For a Jira-sourced run, `fullsend run` also sets two Jira URLs before harness env expansion, so `${JIRA_BASE_URL}` and `${JIRA_API_URL}` in `env.runner`, `env.sandbox`, and `host_files` entries with `expand: true` resolve to them:
+
+| Variable | Value |
+|---|---|
+| `JIRA_BASE_URL` | `tracker.jira.base_url`. It replaces any inherited value, such as the `JIRA_BASE_URL` repository variable or the `jira_base_url` dispatch input, so config is the only source. |
+| `JIRA_API_URL` | The per-site API gateway base `{api_url}/ex/jira/{cloudId}`, with no trailing slash, where `api_url` is `tracker.jira.api_url` (default `https://api.atlassian.com`). It is the same base fullsend's own Jira client uses, and the cloud ID is discovered the same way, from `{base_url}/_edge/tenant_info`. |
+
+The built-in agents send Jira REST calls to `${JIRA_API_URL:-${JIRA_BASE_URL}}/rest/api/3/...`. A service account's scoped API token or OAuth 2.0 access token works only through the gateway, so these runs need `JIRA_API_URL`. Bot-user Basic auth also works against the site URL.
+
+If cloud-ID discovery fails, the run continues: `fullsend run` prints a warning that names the base URL and leaves `JIRA_API_URL` empty, so agents fall back to `JIRA_BASE_URL`. If `tracker.jira.base_url` is not configured, `fullsend run` warns and sets neither variable. Runs from GitHub or GitLab are unchanged. Both values are URLs, not credentials.
+
 ### Where built-in agent results appear
 
 Starting with the agents release that follows v0.52.0
@@ -312,7 +325,7 @@ implementation
 | `FULLSEND_JIRA_CLIENT_ID`, `FULLSEND_JIRA_CLIENT_SECRET` | Alternative to `FULLSEND_JIRA_TOKEN`: a service account's OAuth 2.0 credential (see [Use OAuth 2.0 client credentials](#use-oauth-20-client-credentials-for-a-service-account)) |
 | `JIRA_TOKEN` | Jira API token for built-in triage and code result writes |
 | `JIRA_USER_EMAIL` | Email associated with the token used for built-in agent result writes |
-| `JIRA_BASE_URL` | Jira site URL used by built-in agent result-write scripts |
+| `JIRA_BASE_URL` | Jira site URL used by built-in agent result-write scripts. For Jira-sourced runs, `fullsend run` replaces it with `tracker.jira.base_url` and also sets `JIRA_API_URL` (see [Jira connection variables in agent runs](#jira-connection-variables-in-agent-runs)) |
 
 The poller and Jira-originated agent workflows use either the token and
 optional email or the OAuth client ID and secret. They take the Jira site and
@@ -420,7 +433,9 @@ earlier release, needs its own matching `trigger`. See
 trigger matches. For Jira-triggered runs,
 `fullsend run` exports `FULLSEND_WORK_ITEM_SOURCE`, `FULLSEND_WORK_ITEM_KEY`,
 and `FULLSEND_WORK_ITEM_URL`, clears `ISSUE_NUMBER`, and fails closed on a
-malformed Jira identity. The built-in triage and code agents write their results
+malformed Jira identity. It also sets `JIRA_BASE_URL` and `JIRA_API_URL` from
+`tracker.jira` (see
+[Jira connection variables in agent runs](#jira-connection-variables-in-agent-runs)). The built-in triage and code agents write their results
 to the Jira issue, while branches, commits, PRs or MRs, review, and merge stay
 on the code host. See
 [Where built-in agent results appear](#where-built-in-agent-results-appear) for

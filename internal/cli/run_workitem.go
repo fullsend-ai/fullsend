@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -8,6 +9,8 @@ import (
 	"regexp"
 	"strconv"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
+	"github.com/fullsend-ai/fullsend/internal/forge/jira"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
 	"github.com/fullsend-ai/fullsend/internal/urlutil"
 )
@@ -68,6 +71,58 @@ func resolveWorkItemIdentity(eventMap map[string]any, trackerSource, forgePlatfo
 		return nil, nil
 	}
 	return map[string]string{envWorkItemSource: source}, nil
+}
+
+// Jira connection variables run exports for Jira-sourced runs, so harness
+// scripts and host_files expansions reach the same Jira site and API
+// gateway as fullsend's own client. Agents send REST calls to
+// ${JIRA_API_URL:-${JIRA_BASE_URL}}/rest/api/3/...
+const (
+	envJiraAPIURL  = "JIRA_API_URL"
+	envJiraBaseURL = "JIRA_BASE_URL"
+)
+
+// jiraGatewayDiscoverer resolves the per-site API gateway base URL
+// {api_url}/ex/jira/{cloudId}. Production code uses discoverJiraGatewayURL;
+// tests inject a stub.
+type jiraGatewayDiscoverer func(ctx context.Context, cfg jira.ScopedConfig) (string, error)
+
+// discoverJiraGatewayURL resolves the gateway base with the shared Jira
+// client's cloud-ID discovery.
+func discoverJiraGatewayURL(ctx context.Context, cfg jira.ScopedConfig) (string, error) {
+	return jira.GatewayBaseURL(ctx, cfg, jiraScopedTestOptions...)
+}
+
+// resolveJiraRunEnv returns the JIRA_BASE_URL and JIRA_API_URL values run
+// exports before harness env expansion. It returns nil for runs that are
+// not Jira-sourced, so GitHub and GitLab runs are unchanged.
+//
+// For a Jira-sourced run, JIRA_BASE_URL is tracker.jira.base_url and
+// replaces any inherited value (such as a repository variable or dispatch
+// input), so config is the only source. JIRA_API_URL is the gateway base
+// {api_url}/ex/jira/{cloudId} the shared client uses. When cloud-ID
+// discovery fails, JIRA_API_URL is cleared (agents then fall back to
+// JIRA_BASE_URL) and warn is called with a message naming the base URL. When
+// tracker.jira.base_url is not configured, nothing is exported and warn is
+// called. Both values are URLs, never credentials.
+func resolveJiraRunEnv(ctx context.Context, trackerSource string, tracking *config.TrackingConfig, discover jiraGatewayDiscoverer, warn func(string)) map[string]string {
+	if trackerSource != string(normevent.SystemJira) {
+		return nil
+	}
+	if tracking == nil || tracking.Jira == nil || tracking.Jira.BaseURL == "" {
+		warn(fmt.Sprintf("tracker.jira.base_url is not configured; %s and %s are not set for this Jira-sourced run", envJiraBaseURL, envJiraAPIURL))
+		return nil
+	}
+	baseURL := tracking.Jira.BaseURL
+	env := map[string]string{envJiraBaseURL: baseURL}
+	apiURL, err := discover(ctx, jira.ScopedConfig{BaseURL: baseURL, APIURL: tracking.Jira.EffectiveAPIURL()})
+	if err != nil {
+		warn(fmt.Sprintf("Could not resolve the Jira API gateway URL for %s; %s is not set: %v", baseURL, envJiraAPIURL, err))
+		env[envJiraAPIURL] = ""
+		return env
+	}
+	env[envJiraAPIURL] = apiURL
+	return env
 }
 
 // issueNumberFlagEnv returns the ISSUE_NUMBER value run exports and whether
