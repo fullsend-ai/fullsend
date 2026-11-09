@@ -11,6 +11,11 @@ and resolved at runtime via config entries or agents-repo fallback.
 Custom agents can be registered via the `agents:` field in the repository-local
 `.fullsend/config.yaml` (see [Architecture](../architecture.md#agent-registry) for details on the registration model).
 
+The table below documents primary agents shipped by fullsend. The full,
+current agent inventory is defined and discovered dynamically from the
+[`fullsend-ai/agents`](https://github.com/fullsend-ai/agents) repository at
+runtime (under `harness/*.yaml`).
+
 | Agent | Summary |
 |-------|---------|
 | [Triage](triage.md) | Inspects new issues and produces structured triage decisions |
