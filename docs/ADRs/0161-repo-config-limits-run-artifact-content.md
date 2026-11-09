@@ -122,7 +122,8 @@ artifacts:
   owner controls still works under every level, as in ADR 0050.
 
 The rest of ADR 0021 stands: full transcripts by default, and credential
-scanning as an invariant check. Artifact retention is out of scope.
+scanning as an invariant check. Per-agent levels and artifact retention are
+out of scope.
 
 ## Forge scope
 
