@@ -406,6 +406,9 @@ func TestRedaction_NoSecretSurvivesAnyWrapping(t *testing.T) {
 		{"pi failed call with a result that is not an object", viaPi(func(text string) string {
 			return piWire("bash", `{"command":"ls"}`, `[`+jsonStr(text)+`]`, true)
 		})},
+		{"pi call cut off before it ends", viaPi(func(text string) string {
+			return `{"type":"tool_execution_start","toolCallId":"toolu_01","toolName":"bash","args":{"command":` + jsonStr(text) + `}}` + "\n"
+		})},
 		{"pi result with no start", viaPi(func(text string) string {
 			return `{"type":"tool_execution_end","toolCallId":"toolu_01","toolName":"bash","result":` + piResult(text) + `,"isError":false}` + "\n"
 		})},
