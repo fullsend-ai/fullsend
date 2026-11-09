@@ -205,10 +205,12 @@ repos:
         files: ^docs/\.vitepress/
         pass_filenames: false
 
-      # Renovate only bumps tool fetches (uvx/npx) that carry @<version>; flag
-      # unpinned ones so a new release cannot break lint-all unreviewed (#9226).
+      # Renovate bumps `uvx`/`npx` fetches only in the <pkg>@<version> form;
+      # flag every other form (no version, @latest, flags first, ==) so a new
+      # release cannot reach lint-all unreviewed (#9226). Tested by
+      # hack/tool_fetch_pins_test.py.
       - id: check-tool-fetch-pins
-        name: check version pins on uvx/npx
-        entry: '\b(uvx|npx)\s+(@[\w.-]+/)?\w[\w.-]*(\s|$)'
+        name: check tool fetch version pins (uvx/npx)
+        entry: '\b(uvx|npx)\s+(?!(@[\w.-]+/)?[\w.-]+@\d)'
         language: pygrep
         files: ^(\.pre-commit-config\.yaml|Makefile)$

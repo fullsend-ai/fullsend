@@ -125,9 +125,20 @@
       "automerge": false
     },
     {
-      "description": "Move the lint-staged range in package.json and the npx pin in the lint-staged pre-commit hook in the same PR (#9226).",
+      "description": "Keep the npx lint-staged pin in .pre-commit-config.yaml equal to the package-lock.json version, so one PR moves both (#9226). npx uses the local install only on an exact version match.",
       "matchPackageNames": ["lint-staged"],
       "groupName": "lint-staged"
+    },
+    {
+      "description": "Keep the ruff-pre-commit rev and the Makefile uvx ruff pin on one version in one PR (#9226).",
+      "matchPackageNames": ["ruff", "astral-sh/ruff-pre-commit"],
+      "groupName": "ruff",
+      "automerge": false
+    },
+    {
+      "description": "Pre-commit hooks are linters and scanners: a patch release can add or rename checks, and the code runs on contributor machines. Review hook rev bumps by hand (#9226).",
+      "matchManagers": ["pre-commit"],
+      "automerge": false
     }
   ],
   "postUpdateOptions": ["gomodTidy"],
@@ -324,7 +335,8 @@
       "matchStrings": [
         "\\buvx\\s+(?<depName>[A-Za-z0-9][A-Za-z0-9._-]*)@(?<currentValue>[^\\s'\"]+)"
       ],
-      "datasourceTemplate": "pypi"
+      "datasourceTemplate": "pypi",
+      "versioningTemplate": "pep440"
     },
     {
       "customType": "regex",
@@ -333,7 +345,8 @@
       "matchStrings": [
         "\\bnpx\\s+(?<depName>(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*)@(?<currentValue>[^\\s'\"]+)"
       ],
-      "datasourceTemplate": "npm"
+      "datasourceTemplate": "npm",
+      "versioningTemplate": "npm"
     }
   ]
 }
