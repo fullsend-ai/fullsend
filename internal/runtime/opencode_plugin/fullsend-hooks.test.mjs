@@ -215,6 +215,57 @@ test("native write paths resolve symlinks and protect runner state", async (t) =
   await assert.rejects(h.before("apply_patch", { patchText: "unrecognized" }), /unrecognized/);
 });
 
+test("symlink targets resolve parent traversal before checking protected writes", async (t) => {
+  const h = await setup(t);
+  mkdirSync(path.join(h.workspace, "src"));
+  mkdirSync(path.join(h.workspace, ".fullsend"));
+  symlinkSync(path.join(h.workspace, ".fullsend"), path.join(h.workspace, "src/bridge"));
+  symlinkSync("bridge/../.env", path.join(h.workspace, "src/alias"));
+  symlinkSync(h.workspace + "/src/bridge/../.env", path.join(h.workspace, "src/absolute-alias"));
+  symlinkSync("bridge/../.env.d/new.env", path.join(h.workspace, "src/new-alias"));
+  for (const existing of [false, true]) {
+    if (existing) {
+      writeFileSync(path.join(h.workspace, ".env"), "protected fixture");
+      assert.equal(readFileSync(path.join(h.workspace, "src/alias"), "utf8"), "protected fixture");
+    }
+    for (const filePath of ["src/alias", "src/absolute-alias", "src/bridge/../.env", path.join(h.workspace, "src/alias"), "src/new-alias"]) {
+      for (const tool of ["write", "edit", "multiedit"]) {
+        await assert.rejects(h.before(tool, { filePath }), /write path/, `${tool}: ${filePath}`);
+      }
+      for (const header of ["Add File", "Update File", "Delete File", "Move to"]) {
+        await assert.rejects(h.before("apply_patch", { patchText: `*** Add File: safe.txt\n+safe\n*** ${header}: ${filePath}` }), /write path/);
+      }
+    }
+  }
+  symlinkSync("loop", path.join(h.workspace, "loop"));
+  await assert.rejects(h.before("write", { filePath: "loop" }), /symlink loop/);
+});
+
+test("trusted file policies follow symlinks before parent traversal", async (t) => {
+  const scoped = { "*": "deny", "src/*": "allow" };
+  const h = await setup(t, { permission: { "*": "deny", read: scoped, edit: scoped } });
+  mkdirSync(path.join(h.workspace, "src"));
+  mkdirSync(path.join(h.workspace, "private/sub"), { recursive: true });
+  symlinkSync("../private/sub", path.join(h.workspace, "src/bridge"));
+  symlinkSync("bridge/../file.txt", path.join(h.workspace, "src/alias"));
+  symlinkSync("bridge/../../src/new.txt", path.join(h.workspace, "src/safe-alias"));
+  const nested = await plugin({ directory: path.join(h.workspace, "src"), worktree: h.workspace });
+  for (const existing of [false, true]) {
+    if (existing) writeFileSync(path.join(h.workspace, "private/file.txt"), "outside trusted subtree");
+    for (const tool of ["read", "write", "edit", "multiedit"]) {
+      for (const filePath of ["src/alias", "src/bridge/../file.txt"]) {
+        await assert.rejects(h.before(tool, { filePath }), /trusted permission/, `${tool}: ${filePath}`);
+      }
+      await assert.rejects(nested["tool.execute.before"]({ tool }, { args: { filePath: "alias" } }), /trusted permission/);
+      await h.before(tool, { filePath: "src/safe-alias" });
+    }
+    for (const header of ["Add File", "Update File", "Delete File", "Move to"]) {
+      await assert.rejects(h.before("apply_patch", { patchText: `*** Add File: src/ok.txt\n+ok\n*** ${header}: src/alias` }), /trusted permission/);
+    }
+    await h.before("apply_patch", { patchText: "*** Add File: src/safe-alias\n+safe" });
+  }
+});
+
 test("patch targets use native header recognition and trimming", async (t) => {
   const h = await setup(t);
   for (const spacing of ["", " ", "\t"]) {
