@@ -1,0 +1,30 @@
+{
+  "repo": "fullsend-ai/demo",
+  "entity": {
+    "kind": "work_item",
+    "id": 120,
+    "url": "https://github.com/fullsend-ai/demo/issues/120"
+  },
+  "transition": {
+    "kind": "comment_added",
+    "comment": {
+      "command": "/fs-code",
+      "body": "/fs-code"
+    }
+  },
+  "actor": {
+    "id": "dev-assignee",
+    "kind": "human",
+    "role": "write",
+    "is_entity_author": false,
+    "is_entity_assignee": true
+  },
+  "state": {
+    "labels": ["ready-to-code"]
+  },
+  "source": {
+    "system": "github",
+    "raw_type": "issue_comment",
+    "raw_action": "created"
+  }
+}

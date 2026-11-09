@@ -176,11 +176,14 @@ fix workflows grant `packages: read`. Nothing in this section ships by
 default.
 
 **What fullsend provides.** On GitHub Actions the runner keeps the job's own
-workflow token as `GH_WORKFLOW_TOKEN`, a *provider-only* credential:
+workflow token as `GH_WORKFLOW_TOKEN`, a credential harness `${}` sites
+refuse:
 
-- Only provider credential expansion can read it. `${GH_WORKFLOW_TOKEN}` is
-  refused in `runner_env`, `env.runner`, `env.sandbox`, `host_files` and
-  `validation_loop.schema`, and pre/post/validation scripts never see it.
+- `${GH_WORKFLOW_TOKEN}` is refused in `runner_env`, `env.runner`,
+  `env.sandbox`, `host_files` and `validation_loop.schema`, and
+  pre/post/validation scripts never see it. Provider credential expansion
+  reads it, and so does the runner's own `ghcr.io` image pull (see
+  [Extending the sandbox image](#extending-the-sandbox-image)).
 - `gh` and the post-script keep using the minted token (`GH_TOKEN`,
   `GITHUB_TOKEN`, `PUSH_TOKEN`).
 - Outside GitHub Actions the variable is left alone; a local PAT is never
@@ -371,6 +374,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends rustc \
 Use `ghcr.io/fullsend-ai/fullsend-code:latest` as the parent instead when you
 also need the Go toolchain. Pin the parent tag to a digest before CI use.
 
+The image can be a **private** package on `ghcr.io` for the code and fix
+agents, whose shipped workflows grant `packages: read`. On GitHub Actions,
+`fullsend run` pulls the image with the job's workflow token
+(`GH_WORKFLOW_TOKEN`) before it creates the sandbox. Prerequisites and
+failure behaviour: [GitHub Packages credentials](../../cli/run.md#github-packages-credentials).
+
 ### Adding executables
 
 On Claude and pi runs the sandbox already has `/sandbox/workspace/bin` on its
@@ -465,10 +474,13 @@ shell-behavior variables like `HTTPS_PROXY`, `SSL_CERT_FILE`,
 `GIT_SSH_COMMAND` and `NODE_OPTIONS`, instead of exporting them into the
 sandbox. Matching is case-insensitive, and `fullsend run` warns about every
 key it drops. The gate covers `env.sandbox` only; it is not a reason to move
-those settings into `.env.d` files.
+those settings into `.env.d` files. The full reserved set is published in the
+generated [sandbox environment
+contract](../../normative/sandbox-env/v1/README.md).
 
-For the full list, how to check a harness with `fullsend lock`, and where
-proxy and certificate settings go instead, see [Reserved `env.sandbox`
+For the full list, how to check a harness with `fullsend lint` or
+`fullsend lock`, and where proxy and certificate settings go instead, see
+[Reserved `env.sandbox`
 names](../../reference/harness-reference.md#reserved-envsandbox-names) and
 [Migrating proxy and certificate
 settings](../../reference/harness-reference.md#migrating-proxy-and-certificate-settings)
@@ -648,11 +660,11 @@ threshold follows the harness `role:`:
 
 These thresholds apply to human actors. On GitHub, `fullsend dispatch` does
 not read a permission level for a bot. For a non-label event, it asks the mint
-for the Fullsend role registered for the bot, using the mint URL (a layered
+for the fullsend role registered for the bot, using the mint URL (a layered
 `mint_url` in `config.yaml` or `config.base.yaml`, else the
 `FULLSEND_MINT_URL` variable) and the job's Actions OIDC token, and exposes it
 to triggers as `event.actor.bot_role`. A bot that is not registered with a
-Fullsend role, or whose lookup fails, gets `actor.role: "none"` and is denied.
+fullsend role, or whose lookup fails, gets `actor.role: "none"` and is denied.
 Label-added events skip the lookup.
 
 This is a breaking change for bots that are not registered with the mint:

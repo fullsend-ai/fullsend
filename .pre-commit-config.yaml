@@ -34,7 +34,7 @@ repos:
     hooks:
       - id: ty
         name: ty check
-        entry: uvx ty check --ignore unresolved-import --ignore unresolved-attribute
+        entry: uvx ty check --ignore import-not-found --ignore unresolved-attribute
         language: system
         types: [python]
 
@@ -44,6 +44,16 @@ repos:
       - id: bandit
         args: ["-r", "hack/", "--skip", "B101,B404,B603"]
         pass_filenames: false
+
+  - repo: local
+    hooks:
+      # Explicit filenames bypass .semgrepignore; keep this exclude aligned with it.
+      - id: semgrep
+        name: semgrep security audit (pinned p/security-audit rules)
+        entry: env SEMGREP_REQUIRED=0 ./scripts/semgrep-scan
+        language: system
+        verbose: true
+        exclude: '(^|/)([^/]*_test\.[^/]+|[^/]*\.(test|spec)\.[^/]+|test_[^/]+\.py|tests?(/|$))|^\.semgrep/|^e2e/behaviour/(fixtures|results)/'
 
   - repo: https://github.com/zricethezav/gitleaks
     rev: v8.30.0

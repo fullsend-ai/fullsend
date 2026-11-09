@@ -92,7 +92,7 @@ If you have no OpenAI platform access at all, see
 
 The inference gateway does not do WIF. A gateway credential mode based on
 token exchange, for gateways that trust only their own identity provider, is
-not available: Fullsend cannot exchange the forge OIDC token for a gateway
+not available: fullsend cannot exchange the forge OIDC token for a gateway
 credential through a WIF or STS service. Today the gateway either validates
 the forge OIDC token directly (`auth: oidc`) or takes a static key
 (`auth: api-key`).

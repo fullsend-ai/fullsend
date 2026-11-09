@@ -9,13 +9,13 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"math/rand/v2"
 	"os"
 	"regexp"
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge/jira"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
+	"github.com/fullsend-ai/fullsend/internal/randutil"
 
 	"github.com/google/uuid"
 )
@@ -405,7 +405,7 @@ func selectRandom(items []jira.Issue, n int) []jira.Issue {
 	if len(items) <= n {
 		return items
 	}
-	rand.Shuffle(len(items), func(i, j int) {
+	randutil.Shuffle(len(items), func(i, j int) {
 		items[i], items[j] = items[j], items[i]
 	})
 	return items[:n]

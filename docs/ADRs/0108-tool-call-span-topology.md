@@ -124,6 +124,21 @@ convention bump.
 
 ## Annotations
 
+**2026-11-07 — Cut-off pi calls ([#7414](https://github.com/fullsend-ai/fullsend/issues/7414)):**
+the pi parser now emits a call with no `tool_execution_end` when its stream
+stops, so a call cut off by a kill or timeout closes as
+`error.type=unanswered` and counts in `fullsend.tool_calls`, as on Claude
+Code. The 2026-11-05 note that such a call has no span no longer holds.
+
+**2026-11-05 — pi ([#7414](https://github.com/fullsend-ai/fullsend/issues/7414)):**
+the pi parser now passes call ids, arguments and results through, so pi runs
+get `execute_tool` spans. The fullsend pi parser emits a call's `ToolUseEvent`
+at `tool_execution_end`, because it needs the result to build a failed call's
+summary, so a span starts when `tool_execution_start` was read, not at the use
+event, and a call cut off by a kill or timeout has no span. Calls inside
+pi sub-agents stay out of these spans: they are separate pi processes, never on
+the parent's stream. codex stays as the Consequences describe.
+
 **2026-09-18 — Tool arguments on the message record:** the Decision's "full
 arguments next" is in place for the members that name what was called:
 `tool_call` parts on the `agent` span's `gen_ai.output.messages` record

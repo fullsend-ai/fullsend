@@ -15,7 +15,7 @@ Playwright or stored sessions.
 
 Before running e2e locally or in CI:
 
-1. **Pool orgs** (`halfsend-01` … `halfsend-12`) provisioned per [Pool org provisioning](#pool-org-provisioning) below
+1. **Pool orgs** (`halfsend-01` … `halfsend-22`) provisioned per [Pool org provisioning](#pool-org-provisioning) below
 2. **Mint** deployed with `e2e` role enrolled and the requesting repository `fullsend-ai/fullsend` enrolled in `PER_REPO_WIF_REPOS` (or the mint explicitly in public mode, `PER_REPO_WIF_REPOS=*`)
 3. **CI only:** pool orgs with `FULLSEND_FOREIGN_E2E_REPOS` authorizing `fullsend-ai/fullsend`
 4. **Local only:** `gh auth login` (or `GH_TOKEN` / `GITHUB_TOKEN`) with admin access on pool orgs
@@ -76,7 +76,7 @@ Optional environment variables:
 Behaviour tests use the pool orgs (for `ENVIRONMENT=dev`) and install fullsend per-repo via `fullsend github setup`. When `ENVIRONMENT=stage`, the suite uses the `halfsend` org with a durable CF Worker mint instead of a pool org. See [behaviour-testing.md](behaviour-testing.md) and [behaviour-drivers.md](behaviour-drivers.md).
 
 The behaviour and playback suites lease `(org, test-repo-NN)` slots across the
-pool orgs (`halfsend-01` … `halfsend-12` for DEV, or `halfsend` for STAGE)
+pool orgs (`halfsend-01` … `halfsend-22` for DEV, or `halfsend` for STAGE)
 instead of locking a whole org; see
 [behaviour-testing.md](behaviour-testing.md#repo-allocation-via-the-shared-slot-driver).
 Other e2e tests still acquire an exclusive lock on one pool org — see
@@ -144,7 +144,7 @@ One-time enrollment for all pool orgs (idempotent). Enroll the singular `test-re
 
 ```bash
 export GCP_PROJECT=it-gcp-konflux-dev-fullsend
-for i in $(seq -w 1 12); do
+for i in $(seq -w 1 22); do
   go run ./cmd/fullsend mint enroll "halfsend-${i}/test-repo" \
     --project="$GCP_PROJECT" --region=us-central1
   for j in $(seq -w 1 12); do
@@ -192,7 +192,7 @@ go run ./cmd/fullsend admin foreign list --org halfsend-01
 # expect e2e → fullsend-ai/fullsend
 ```
 
-Existing pool orgs (`halfsend-01` … `halfsend-12`) need a one-time operator pass: install the e2e app (if missing) and run:
+Existing pool orgs (`halfsend-01` … `halfsend-22`) need a one-time operator pass: install the e2e app (if missing) and run:
 
 ```bash
 go run ./cmd/fullsend admin foreign allow --org halfsend-NN --role e2e --caller fullsend-ai/fullsend
@@ -281,6 +281,16 @@ a closed team.
 | `halfsend-10` | `halfsend-10/mint-status` |
 | `halfsend-11` | `halfsend-11/mint-status` |
 | `halfsend-12` | `halfsend-12/mint-status` |
+| `halfsend-13` | `halfsend-13/mint-status` |
+| `halfsend-14` | `halfsend-14/mint-status` |
+| `halfsend-15` | `halfsend-15/mint-status` |
+| `halfsend-16` | `halfsend-16/mint-status` |
+| `halfsend-17` | `halfsend-17/mint-status` |
+| `halfsend-18` | `halfsend-18/mint-status` |
+| `halfsend-19` | `halfsend-19/mint-status` |
+| `halfsend-20` | `halfsend-20/mint-status` |
+| `halfsend-21` | `halfsend-21/mint-status` |
+| `halfsend-22` | `halfsend-22/mint-status` |
 
 The STAGE and numbered test mints take these values as
 `--status-github-group=ORG/mint-status`. The behaviour suite's CF mint
@@ -359,9 +369,20 @@ this repository's workflow runs for the
 [busy check](#change-control)). Run it again after any of these
 changes:
 
-- **Pool change:** a new pool org, or a different `DefaultPoolSize`
-  (`pkg/behaviourtest/drivers/install/driver.go`). Edit `POOL_ORGS` or
-  `POOL_REPOS` at the top of the script.
+- **Pool change:** a new pool org (`DevPoolOrgCount` in
+  `pkg/behaviourtest/drivers/install/slotpool.go`), or a different
+  `DefaultPoolSize` (`pkg/behaviourtest/drivers/install/driver.go`).
+  1. Edit `POOL_ORG_COUNT` or `POOL_REPO_COUNT` at the top of the script to
+     match; `hack/setup-e2e-inference-gateway_test.sh` fails while they
+     differ.
+  2. For a new org, add its line to `POOL_ORG_IDS`, with the id from
+     `gh api orgs/<org> --jq .id`. Only the highest-numbered org can be
+     removed: lower the count, drop its line, and deploy before the org is
+     deleted or renamed. Otherwise every run stops at the org id check.
+  3. Run the script with `--dry-run`: the pool regex is a frozen part of the
+     config, so it shows the diff and exits 4.
+  4. Run it with `--allow-frozen-change`, outside a release window and with
+     the maintainers told first.
 - **agentgateway bump:** change `AGW_VERSION`, and `AGW_DIGEST` to the
   release's multi-arch index digest. The version in the config header is
   masked, so a bump passes the frozen-path diff and needs no
@@ -504,6 +525,11 @@ script also waits for release runs, so nothing changes while a release is
 cut. So a run that changes the gateway goes through three checks. A run that
 changes nothing skips them and is still a no-op.
 
+Every setup run, a no-op or `--dry-run` included, checks that each org in
+`POOL_ORG_IDS` still has its pinned id on GitHub before it renders the
+config. A different id or a failed lookup stops the run before any change.
+`--print-config` and `--delete` skip the check.
+
 1. **Frozen-path diff.** Before it changes anything, the script renders the
    new config and compares it with the live config: the config secret
    version that the revision getting the traffic started with. A revision
@@ -515,14 +541,18 @@ changes nothing skips them and is still a no-op.
    about it, but it is not the baseline. If the traffic is split across
    revisions, the script stops before it changes anything. The comparison
    masks only the changes that are allowed:
-   - extra allowlist repositories after the pool list, such as temporary
-     repositories added to the live config by hand;
+   - an exact-name list of extra repositories right after the pool rule,
+     such as temporary repositories added to the live config by hand:
+     `<pool rule> || jwt.repository in ["owner/name"]` in an allow rule, and
+     `default(jwt.repository, "") in ["owner/name"]` in a rate-limit key.
+     These match by name only, without the org id pin, so remove them when
+     the run is done. A changed regex, org id or pool count stays visible;
    - the time-boxed `REAL_KEY_HASH` entry, when it may call exactly one
      real model, and its allow rule on that model;
    - the tokens-per-minute cap, only with `--allow-tpm-change`.
 
    Any other difference refuses the deploy with exit 4 and prints the masked
-   diff. That covers the `echo` and `echo-denied` models, the pool list, the
+   diff. That covers the `echo` and `echo-denied` models, the pool regex, the
    `jwtAuth` and `apiKey` modes, the echo key hash, the requests-per-minute
    cap, the Vertex models, and the real key's rule on `echo` or
    `echo-denied`. To make such a change, pass
@@ -621,12 +651,25 @@ The generated config (print it with `--print-config`):
   `oidc` and `api-key` auth modes. Do not copy it to production. A
   production OIDC gateway should keep the strict `jwtAuth` recommended by
   [ADR 0137](../../ADRs/0137-inference-gateway-credential-route.md).
-- authorises each model with an exact-match list of `jwt.repository` values.
-  The list covers `test-repo-01` to `test-repo-12` in `halfsend-01` to
-  `halfsend-12` and in the STAGE org `halfsend`: 156 repositories. It
-  matches names, so keep the pool orgs registered: whoever owns a pool org
-  name can call the gateway. A model that a configured key may call also
-  admits that key's `apiKey.purpose`.
+- authorises each model with one anchored regular expression on the
+  calling repository's owner id and name,
+  `(jwt.repository_owner_id + "/" + jwt.repository).matches("<regex>")`, and
+  uses the same rule for the pool's rate-limit bucket. The script builds the
+  regex from `POOL_ORG_IDS` and `POOL_REPO_COUNT`:
+  `^(273231846/halfsend|286139071/halfsend-01|...|353053001/halfsend-22)/test-repo-(01|02|...|12)$`.
+  That covers `test-repo-01` to `test-repo-12` in `halfsend-01` to
+  `halfsend-22` and the STAGE org `halfsend`: 276 repositories.
+  - Each org name is paired with its GitHub id. Ids are never reused, so an
+    org re-created under a pool name, after a delete or a rename, is
+    refused.
+  - Each number is an explicit alternative, never `[0-9]{2}` or a range, so
+    `halfsend-23` or `test-repo-13` is refused.
+  - Each rule is about 600 bytes and grows by about 20 bytes per org; the
+    whole config is about 8 KB. The script refuses a rendered config over
+    Secret Manager's 65,536-byte limit for a secret version before it
+    changes anything.
+- admits a configured key's `apiKey.purpose` on each model that key may
+  call.
 - strips `x-api-key` from every request it sends upstream.
 - caps each real model at 60 requests and 200,000 tokens per minute for
   each kind of caller: the pool shares one budget per model, each configured
@@ -873,7 +916,7 @@ The `fix` role reuses the coder app (`fullsend-test-coder`) and
 ### Installation targets
 
 All six test apps are installed with access to **all repositories** on
-`halfsend-01` through `halfsend-12` and on `halfsend` (used by the STAGE driver).
+`halfsend-01` through `halfsend-22` and on `halfsend` (used by the STAGE driver).
 The production `fullsend-ai-e2e` app is installed on the same organizations for
 cross-org suite control and minting. The other production agent apps are not
 required for the normal behaviour or playback suites and are intentionally not
@@ -911,7 +954,7 @@ App registration in that setup. Per-repo setup may still request the literal
 **Permission rollout for the coder App:** When adding a permission such as
 `packages:read`, update the `fullsend-test-coder` App registration first. Then
 have the installation owner for each existing pool org (`halfsend-01` through
-`halfsend-12`) Accept the pending permission update. New pool-org installs
+`halfsend-22`) Accept the pending permission update. New pool-org installs
 receive the permission during installation; existing installs may otherwise
 continue using the mint's rollout warning path.
 

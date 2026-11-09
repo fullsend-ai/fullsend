@@ -238,6 +238,7 @@ func (a *slotAllocator) collectAfterPass(ctx context.Context, clients map[string
 // collectDueOrg runs collectOrg for an org dueForGC returned and clears its
 // running mark.
 func (a *slotAllocator) collectDueOrg(ctx context.Context, client forge.Client, org string) (int, string) {
+	ctx = forge.WithAPICaller(ctx, apiCallerGC)
 	defer func() {
 		a.mu.Lock()
 		delete(a.gcRunning, org)

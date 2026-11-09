@@ -45,7 +45,7 @@ The suite uses a single unified `install.Driver` constructed via `install.Factor
 
 | Environment | Factory | Mint | Org | Install mode |
 |-------------|---------|------|-----|-------------|
-| `dev` (default) | `NewRepoPoolCFMintPreviews` | One public CF Worker preview per mint group leased in the run (two at 12 slots per org) | Pool orgs `halfsend-01` … `halfsend-12` | Vendored binary |
+| `dev` (default) | `NewRepoPoolCFMintPreviews` | One public CF Worker preview per mint group leased in the run (four at 12 slots per org) | Pool orgs `halfsend-01` … `halfsend-22` | Vendored binary |
 | `stage` | `NewRepoPoolCFMintStage` | Durable CF Worker at `stage-mint.fullsend.sh` | `halfsend` (single unsuffixed org) | Non-vendored, `--fullsend-ref=main` |
 
 Each factory returns the same shared slot driver (`composed.go`), which owns the full lifecycle:
@@ -59,7 +59,7 @@ The Factory takes an `install.PoolConfig`: the pool layout, a per-org token sour
 
 Pool orgs must already have the six `fullsend-test-*` role apps and the production `fullsend-ai-e2e` app installed, plus per-repo mint enrollment for each numbered repo (one-time GCP admin step on the hosted mint project). The driver does not run `fullsend admin install` or `fullsend mint enroll`. See [e2e-testing.md](e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
 
-The two CF mint drivers compute mint groups from the pool layout on every run (`planMintGroups` in `mint_groups.go`); there is no hardcoded org-to-mint list. A group's `--workflow-host-repos` lists its orgs' pool repos plus each slot's mint-probe host `<org>/test-repo-NN-mint-host` (`install.MintProbeHostRepoSuffix`). The driver packs orgs in order into the fewest groups whose actual serialized list stays within 5,000 bytes, a margin under Cloudflare's 5 KB per-variable limit. At 12 slots per org a list for six orgs is 4,319 bytes and for seven is 5,039 bytes, so the 12 DEV orgs use two mints. A changed slot or org count regroups automatically. If one org's list alone exceeds the limit, the factory fails and names the org (one org's slots are not split across mints). The [GitHub mint scope scenarios](behaviour-testing.md#github-mint-scope-scenarios) create and delete the probe hosts per scenario. Because the lists are deploy flags, a change takes effect on the next suite run's mint deploy, with no GCP enrollment step.
+The two CF mint drivers compute mint groups from the pool layout on every run (`planMintGroups` in `mint_groups.go`); there is no hardcoded org-to-mint list. A group's `--workflow-host-repos` lists its orgs' pool repos plus each slot's mint-probe host `<org>/test-repo-NN-mint-host` (`install.MintProbeHostRepoSuffix`). The driver packs orgs in order into the fewest groups whose actual serialized list stays within 5,000 bytes, a margin under Cloudflare's 5 KB per-variable limit. At 12 slots per org a list for six orgs is 4,319 bytes and for seven is 5,039 bytes, so the 22 DEV orgs use four mints. A changed slot or org count regroups automatically. If one org's list alone exceeds the limit, the factory fails and names the org (one org's slots are not split across mints). The [GitHub mint scope scenarios](behaviour-testing.md#github-mint-scope-scenarios) create and delete the probe hosts per scenario. Because the lists are deploy flags, a change takes effect on the next suite run's mint deploy, with no GCP enrollment step.
 
 RepoPoolCFMintPreviews deploys its previews with `--public` (`PER_REPO_WIF_REPOS=*`) instead of `--per-repo-wif-repos`, so no caller list has to fit in a Worker variable or be kept enrolled. RepoPoolCFMintStage keeps `--per-repo-wif-repos` for its durable mint. See [Public preview mints](behaviour-testing.md#public-preview-mints) for the accepted trade-off.
 
@@ -86,8 +86,9 @@ Use `forge.Client` for operations it already exposes; add REST helpers inside th
 1. Implement `ci.Driver` — `WaitForWorkflow`, `FindCompletedWorkflowRun`, `AssertNoWorkflow`, `GetRunLogs`, `DownloadArtifacts`, `DownloadNamedArtifactFromRun`, `DownloadNamedArtifactAfter`, `WaitForHarnessAgent`, `WaitForHarnessAgentRound`, `WaitForFailedHarnessAgent`, `AssertNoHarnessAgentArtifact`, `CountHarnessDispatches`.
 2. Also implement the optional `ci.RunLister` interface (`ListRecentRuns`). A failed scenario's After hook uses it to save the logs of runs that no step resolved before the leased repository is deleted. Without it, only the run a step resolved has its logs collected.
 3. Also implement the optional `ci.EmptyMatrixWaiter` interface (`WaitForHarnessEmptyMatrix`). The `the harness dispatch completes with an empty matrix` step needs it to assert that a harness run succeeded without dispatching any agent.
-4. Map forge `WorkflowRun` types to portable polling logic; reuse patterns from the GitHub Actions driver in `pkg/behaviourtest/drivers/ci/githubactions/`.
-5. Register in `behaviourtest.RunSuite` for the matching `BEHAVIOUR_CI` value.
+4. Also implement the optional `ci.AgentArtifactDownloader` interface (`DownloadAgentArtifactsFromRun`, `DownloadAgentArtifactsAfter`). It selects artifacts by logical agent and downloads every artifact a repeated agent uploads (for example one per matrix entry). Without it, steps fall back to `DownloadNamedArtifactFromRun` and `DownloadNamedArtifactAfter` with the exact name `fullsend-<agent>`, so a repeated agent's additional artifacts are not collected.
+5. Map forge `WorkflowRun` types to portable polling logic; reuse patterns from the GitHub Actions driver in `pkg/behaviourtest/drivers/ci/githubactions/`.
+6. Register in `behaviourtest.RunSuite` for the matching `BEHAVIOUR_CI` value.
 
 ## Adding an install driver
 
