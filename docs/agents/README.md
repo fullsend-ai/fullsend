@@ -19,6 +19,7 @@ Custom agents can be registered via the `agents:` field in the repository-local
 | [Review](review.md) | Reviews pull requests for correctness, security, and intent alignment |
 | [Fix](fix.md) | Addresses review feedback on open PRs |
 | [Retro](retro.md) | Analyzes completed workflows and proposes system improvements |
+| [Scribe](scribe.md) | Maps discussion topics from meeting notes to existing issues or new issue proposals |
 
 ## Configuration
 
