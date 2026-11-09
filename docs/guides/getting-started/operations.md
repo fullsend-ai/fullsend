@@ -313,7 +313,7 @@ review reconciliation:
 | `status-number` | Issue or PR number for status comments |
 | `failure-repo` | Repository (`owner/repo`) for startup-failure comments; falls back to `status-repo` when unset |
 | `failure-number` | Issue or PR number for startup-failure comments; falls back to `status-number` when unset |
-| `failure-trusted-bots` | Comma-separated custom bot login prefixes trusted for startup-failure comment deduplication (optional) |
+| `failure-trusted-bots` | Comma-separated GitHub App set names (as in `FULLSEND_APP_SET`); each is expanded to the `<set>-<role>` bot identity for startup-failure comment deduplication (optional) |
 | `failure-token` | Optional token used only for startup-failure reporting; the normal `github_token` remains the workflow token |
 | `source-system` | Originating tracker (`github`, `gitlab`, or `jira`); startup-failure comments are GitHub-only (default: `github`) |
 | `status-comment-id` | ID of the comment that triggered a slash-command run; when set, reactions target that comment instead of the issue/PR |

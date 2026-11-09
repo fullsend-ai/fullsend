@@ -70,5 +70,6 @@ run_case "app token finds job-bot comment" "fullsend-ai-review" "github-actions[
 run_case "custom app set finds job-bot comment" "acme-review" "github-actions[bot]" "acme"
 run_case "job token finds custom app-set comment" "github-actions" "acme-review[bot]" "acme"
 run_case "non-listed role is trusted" "github-actions" "acme-scribe[bot]" "acme" "scribe"
+run_case "custom app-set whitespace is trimmed" "github-actions" "acme-scribe[bot]" " acme " "scribe"
 run_case "lookalike app is not trusted" "github-actions" "acme-reviewer[bot]" "acme" "review" "marker" "post"
 run_case "marker must start the comment" "github-actions" "fullsend-ai-review[bot]" "" "review" "embedded" "post"

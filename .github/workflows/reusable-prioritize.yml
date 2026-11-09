@@ -251,7 +251,11 @@ jobs:
           export FULLSEND_FAILURE_NUMBER="${NUMBER}"
           export FULLSEND_FAILURE_AGENT="prioritize"
           export FULLSEND_FAILURE_RUN_URL="${RUN_URL}"
-          FULLSEND_FAILURE_CATEGORY="$([[ "${MINT_OUTCOME}" == "failure" ]] && echo 'token mint' || echo 'workflow setup')"
+          if [[ "${MINT_OUTCOME}" == "failure" && "${REPOSITORY}" != "${GITHUB_REPOSITORY}" ]]; then
+            FULLSEND_FAILURE_CATEGORY="token mint"
+          else
+            FULLSEND_FAILURE_CATEGORY="workflow setup"
+          fi
           export FULLSEND_FAILURE_CATEGORY
           bash "${script}"
 

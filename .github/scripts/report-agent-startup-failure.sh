@@ -66,7 +66,7 @@ TRUSTED_BOTS_JSON="$(jq -Rn \
   --arg role "${FULLSEND_FAILURE_ROLE}" \
   '[ $current ]
    + ($logins | split(",") | map(select(length > 0)))
-   + ($app_sets | split(",") | map(select(length > 0)
+   + ($app_sets | split(",") | map(gsub("^\\s+|\\s+$"; "") | select(length > 0)
       | . as $set
       | [$set + "-" + $role]) | add)
    | map(sub("\\[bot\\]$"; ""))
