@@ -52,6 +52,27 @@ test("parent tool and trusted policy ceilings apply to every session", async (t)
   await assert.rejects(h.before("write", { filePath: "file" }), /parent allowlist/);
 });
 
+test("trusted Bash patterns reject unquoted argument globs", async (t) => {
+  const commands = ["gh secre? list", "gh s[e]cret list", "gh s*t list"];
+  for (const bashAllowlist of [null, ["gh"]]) {
+    const h = await setup(t, { bashAllowlist, permission: { bash: {
+      "*": "deny", "gh *": "allow", "gh secret*": "deny",
+    } } });
+    writeFileSync(path.join(h.workspace, "secret"), "");
+    await assert.rejects(h.before("bash", { command: "gh secret list" }), /trusted permission/);
+    for (const command of commands) {
+      await assert.rejects(h.before("bash", { command }), /pathname expansion/, command);
+    }
+    for (const argument of ["secre?", "s[e]cret", "s*t"]) {
+      for (const quote of ["'", '"']) {
+        await h.before("bash", { command: `gh ${quote}${argument}${quote} list` });
+      }
+    }
+  }
+  const programOnly = await setup(t, { bashAllowlist: ["gh"], permission: { bash: "allow" } });
+  for (const command of commands) await programOnly.before("bash", { command });
+});
+
 test("trusted permission patterns use native values and trailing wildcard semantics", async (t) => {
   const patterns = { "*": "deny", "safe *": "allow" };
   const h = await setup(t, { permission: { bash: { "*": "deny", "printf *": "allow" }, skill: patterns, glob: patterns, grep: patterns, websearch: patterns } });
