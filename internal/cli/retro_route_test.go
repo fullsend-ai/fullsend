@@ -76,13 +76,15 @@ func TestRetroRouteAccepts(t *testing.T) {
 		event string
 		want  bool
 	}{
-		"PR closed":          {routeRetroEvent(routeRetroPR, routeRetroClosed, routeRetroWriter, "pull_request_target", "closed"), true},
-		"PR merged":          {routeRetroEvent(routeRetroPR, routeRetroMerged, routeRetroWriter, "pull_request_target", "closed"), true},
-		"/fs-retro on a PR":  {routeRetroEvent(routeRetroPR, routeRetroCommand, routeRetroWriter, "issue_comment", "created"), true},
-		"/fs-retro on issue": {routeRetroEvent(routeRetroIssue, routeRetroCommand, routeRetroWriter, "issue_comment", "created"), true},
-		"/fs-review on a PR": {routeRetroEvent(routeRetroPR, routeRetroOtherCommand, routeRetroWriter, "issue_comment", "created"), false},
-		"issue closed":       {routeRetroEvent(routeRetroIssue, routeRetroClosed, routeRetroWriter, "issues", "closed"), false},
-		"PR opened":          {routePROpened, false},
+		"PR closed":                {routeRetroEvent(routeRetroPR, routeRetroClosed, routeRetroWriter, "pull_request_target", "closed"), true},
+		"PR merged":                {routeRetroEvent(routeRetroPR, routeRetroMerged, routeRetroWriter, "pull_request_target", "closed"), true},
+		"PR closed (pull_request)": {routeRetroEvent(routeRetroPR, routeRetroClosed, routeRetroWriter, "pull_request", "closed"), true},
+		"PR merged (pull_request)": {routeRetroEvent(routeRetroPR, routeRetroMerged, routeRetroWriter, "pull_request", "closed"), true},
+		"/fs-retro on a PR":        {routeRetroEvent(routeRetroPR, routeRetroCommand, routeRetroWriter, "issue_comment", "created"), true},
+		"/fs-retro on issue":       {routeRetroEvent(routeRetroIssue, routeRetroCommand, routeRetroWriter, "issue_comment", "created"), true},
+		"/fs-review on a PR":       {routeRetroEvent(routeRetroPR, routeRetroOtherCommand, routeRetroWriter, "issue_comment", "created"), false},
+		"issue closed":             {routeRetroEvent(routeRetroIssue, routeRetroClosed, routeRetroWriter, "issues", "closed"), false},
+		"PR opened":                {routePROpened, false},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -145,6 +147,30 @@ func TestRouteBuiltinAgent_Retro(t *testing.T) {
 			agents:       []config.AgentEntry{{Name: "retro", Trigger: routeTrigger(t, "retro")}},
 			event:        routeRetroEvent(routeRetroPR, routeRetroClosed, routeRetroTriager, "pull_request_target", "closed"),
 			wantDecision: routeSkip, wantReason: "closed pull request retro requires write",
+		},
+		{
+			name:         "pull_request: PR merged by a write user starts a retro",
+			agents:       []config.AgentEntry{{Name: "retro", Trigger: routeTrigger(t, "retro")}},
+			event:        routeRetroEvent(routeRetroPR, routeRetroMerged, routeRetroWriter, "pull_request", "closed"),
+			wantDecision: routeRun,
+		},
+		{
+			name:         "pull_request: PR closed by its read-only author starts a retro (lifecycle-close exception)",
+			agents:       []config.AgentEntry{{Name: "retro", Trigger: routeTrigger(t, "retro")}},
+			event:        routeRetroEvent(routeRetroPR, routeRetroClosed, routeRetroReadAuthor, "pull_request", "closed"),
+			wantDecision: routeRun,
+		},
+		{
+			name:         "pull_request: PR closed by an app bot without a role starts a retro (lifecycle-close exception)",
+			agents:       []config.AgentEntry{{Name: "retro", Trigger: routeTrigger(t, "retro")}},
+			event:        routeRetroEvent(routeRetroPR, routeRetroClosed, routeRetroAppBot, "pull_request", "closed"),
+			wantDecision: routeRun,
+		},
+		{
+			name:         "pull_request: PR closed by a triage user starts a retro (lifecycle-close exception)",
+			agents:       []config.AgentEntry{{Name: "retro", Trigger: routeTrigger(t, "retro")}},
+			event:        routeRetroEvent(routeRetroPR, routeRetroClosed, routeRetroTriager, "pull_request", "closed"),
+			wantDecision: routeRun,
 		},
 		{
 			name:         "/fs-retro from a triage user is not authorized",
@@ -412,6 +438,20 @@ func TestRetroRouteParity(t *testing.T) {
 			payload: commentPayload(true, "writer", "User", "/fs-review"),
 			bash:    false, cel: false,
 		},
+	}
+
+	// Per-repo shims on the pull_request trigger send pull_request; older
+	// shims keep sending pull_request_target. Retro routes and authorizes
+	// both alike, so every pull_request_target row is mirrored as a
+	// pull_request row with the same expectations.
+	for _, tc := range cases {
+		if tc.eventName != "pull_request_target" {
+			continue
+		}
+		mirrored := tc
+		mirrored.name = tc.name + " (pull_request)"
+		mirrored.eventName = "pull_request"
+		cases = append(cases, mirrored)
 	}
 
 	for _, tc := range cases {
