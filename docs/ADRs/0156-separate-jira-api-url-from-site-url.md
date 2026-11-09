@@ -50,7 +50,7 @@ alone.
 A **service account** is an Atlassian-managed identity created by an
 organization administrator (Atlassian Administration > Directory > Service
 accounts). It has no password login. Its credential is a scoped API token
-(or OAuth 2.0 client credentials, which this ADR does not cover), and
+(or OAuth 2.0 client credentials), and
 Atlassian accepts it only through its API gateway
 (`https://api.atlassian.com/ex/jira/<cloudId>/...`), never at the site URL.
 Its strengths are that it is designed for integrations: no human login to
@@ -132,13 +132,18 @@ version keeps its current behaviour until it switches. A classic bot token
 working through the gateway rests on observed behaviour that Atlassian does
 not promise, and we accept that risk.
 
-OAuth 2.0 client credentials for service accounts are a different way of
-authenticating, not a different host, and are out of scope. How a
+A service account can also authenticate with OAuth 2.0 client credentials
+instead of a token. Fullsend exchanges them at Atlassian's token endpoint for
+a short-lived Bearer access token, refreshes it before it expires, and sends
+it to the same API URL. This is another way of authenticating, not another
+host, so it needs no further URL or account-kind setting. A deployment
+supplies either a token or client credentials, never both
+([#9176](https://github.com/fullsend-ai/fullsend/issues/9176)). How a
 deployment obtains and rotates the credential, including the longer-term
 goal of short-lived credentials minted centrally
 ([#2269](https://github.com/fullsend-ai/fullsend/issues/2269),
-[#4885](https://github.com/fullsend-ai/fullsend/issues/4885)), is also a
-separate question.
+[#4885](https://github.com/fullsend-ai/fullsend/issues/4885)), is a separate
+question.
 
 ## Forge scope
 
