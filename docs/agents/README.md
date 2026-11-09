@@ -11,10 +11,10 @@ and resolved at runtime via config entries or agents-repo fallback.
 Custom agents can be registered via the `agents:` field in the repository-local
 `.fullsend/config.yaml` (see [Architecture](../architecture.md#agent-registry) for details on the registration model).
 
-The table below documents primary agents shipped by fullsend. The full,
-current agent inventory is defined and discovered dynamically from the
-[`fullsend-ai/agents`](https://github.com/fullsend-ai/agents) repository at
-runtime (under `harness/*.yaml`).
+Built-in agents resolve automatically through repository configuration or the
+[`fullsend-ai/agents`](https://github.com/fullsend-ai/agents) repository
+fallback. Additional agents, such as Scribe, are opt-in and must be added
+explicitly with `fullsend agent add`.
 
 | Agent | Summary |
 |-------|---------|
@@ -24,7 +24,7 @@ runtime (under `harness/*.yaml`).
 | [Review](review.md) | Reviews pull requests for correctness, security, and intent alignment |
 | [Fix](fix.md) | Addresses review feedback on open PRs |
 | [Retro](retro.md) | Analyzes completed workflows and proposes system improvements |
-| [Scribe](scribe.md) | Maps discussion topics from meeting notes to existing issues or new issue proposals |
+| [Scribe](scribe.md) (opt-in) | Maps discussion topics from meeting notes to existing issues or new issue proposals |
 
 ## Configuration
 

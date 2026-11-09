@@ -84,8 +84,10 @@ architecture:
      rejects any entry marked `public_safe: false`.
    - Enforces sensitive-content and suspicious-Unicode gates on all titles,
      bodies, summaries, and labels.
-   - Enforces dry-run safety: defaults to preview mode (`SCRIBE_DRY_RUN: true`);
-     live writes require `SCRIBE_DRY_RUN` to be set to `false`.
+   - Enforces dry-run safety: `SCRIBE_DRY_RUN` must be set explicitly;
+     `false` enables live writes, while any other value previews actions in
+     logs without making mutations (the reference dogfood workflow in
+     `fullsend-ai/.fullsend` defaults to previewing by passing `true`).
    - Applies mode filtering (`all`, `comments_only`, `new_issues_only`).
    - Writes approved comments and issues using forge API calls (`gh` on
      GitHub, `curl` on GitLab) or Jira Cloud issue creation (`fullsend issues
@@ -104,17 +106,18 @@ architecture:
 - **Host-side PII scrubbing**: Bracketed attendee names and speaker
   attributions are scrubbed on the host before notes enter the sandbox;
   raw transcripts are excluded entirely.
-- **Sandbox network isolation**: Sandbox outbound network policy permits
-  Vertex AI only; curl, forge APIs, and Drive APIs are blocked to prevent
+- **Sandbox network isolation**: Sandbox outbound network policy permits only
+  the configured inference providers (Vertex AI and OpenAI in the shipped
+  harness); curl, forge APIs, and Drive APIs are blocked to reduce the risk of
   token or credential exfiltration.
 - **Credential isolation and host-side tokens**: Forge tokens (`GH_TOKEN`,
-  `GITLAB_TOKEN`) and Jira API tokens remain host-side and are never
-  injected into the sandbox container. The GCP service account key
+  `GITLAB_TOKEN`) and Jira API tokens remain host-side and are never injected
+  into the sandbox container. The GCP service account key
   (`GOOGLE_APPLICATION_CREDENTIALS`) is mounted into the sandbox at
-  `/tmp/.gcp-credentials.json` for Vertex AI inference, so it can also access
+  `/tmp/.gcp-credentials.json` for Vertex AI inference, so it could also access
   Drive if granted; use a dedicated service account with minimal scope
-  (invited calendar events only) and restrict sandbox egress to Vertex AI so
-  the key cannot be exfiltrated.
+  (invited calendar events only) and restrict sandbox egress to the required
+  inference providers to minimize exfiltration risk.
 - **Host-side validation gates**: Output schema checks, confidence
   thresholds, sensitive content pattern matching, and public-safety
   verification run host-side before any mutations occur.
@@ -137,6 +140,22 @@ architecture:
 
 The scribe agent does not accept slash commands. It runs on a schedule or
 via manual workflow dispatch.
+
+### Prerequisites and workflow setup
+
+Scribe is an opt-in agent and mint-only dogfood role; fullsend does not ship a
+pre-configured scribe workflow under `.github/workflows/` or within
+`internal/scaffold`, and `scribe` is **not** a valid role under the `roles:`
+field in `config.yaml` (see
+[Config Reference](../reference/config-reference.md#roles)).
+
+To run scribe:
+1. If using the fullsend token mint service, register the dogfood role:
+   `fullsend mint add-role scribe`.
+2. Register the agent harness with `fullsend agent add` (shown below).
+3. Supply your own scheduled or dispatch workflow on your CI runner. For an
+   example implementation, see the [reference scribe workflow in `fullsend-ai/.fullsend`](https://github.com/fullsend-ai/.fullsend/blob/main/.github/workflows/scribe.yml)
+   or the workflow step guide in [agents `docs/scribe.md`](https://github.com/fullsend-ai/agents/blob/main/docs/scribe.md).
 
 ## Control labels
 
@@ -182,25 +201,33 @@ service account to unrelated Shared Drives.
 
 Per [ADR 0049](../ADRs/0049-agent-configuration-env-var-convention.md), scribe
 configuration uses the `SCRIBE_` prefix. In the reference GitHub Actions
-workflow, `SCRIBE_SEARCH_QUERY` is mapped from the repository variable
+workflow in [`fullsend-ai/.fullsend`](https://github.com/fullsend-ai/.fullsend/blob/main/.github/workflows/scribe.yml),
+`SCRIBE_SEARCH_QUERY` is mapped from the repository variable
 `vars.SCRIBE_GDRIVE_SEARCH_QUERY`, and `SCRIBE_NAME_FILTER` is mapped from
-`vars.SCRIBE_GDRIVE_NAME_FILTER`:
+`vars.SCRIBE_GDRIVE_NAME_FILTER`.
+
+Because `harness/scribe.yaml` references these environment variables in
+`env.runner` and `env.sandbox`, every variable listed below must exist in the
+runner environment (even if set to an empty string `""`); `fullsend run`
+validates harness variable references and fails with `<VAR> is not set` if any
+referenced variable is omitted. Documented defaults apply when the variable is
+empty or set to its default value.
 
 | Name | Required | Default | Description |
 |------|----------|---------|-------------|
 | `SCRIBE_REPO` | Yes | `-` | Target repository (`owner/name` on GitHub, `group/project` on GitLab) |
 | `SCRIBE_SEARCH_QUERY` | Yes | `-` | Google Drive search query for meeting note document names (mapped from `vars.SCRIBE_GDRIVE_SEARCH_QUERY`) |
 | `SCRIBE_NAME_FILTER` | No | `none` | Optional document title substring or regex filter (mapped from `vars.SCRIBE_GDRIVE_NAME_FILTER`) |
-| `SCRIBE_LOOKBACK_HOURS` | No | `3` | Search lookback window in hours |
-| `SCRIBE_DRY_RUN` | No | `true` | `true` to preview actions in logs; `false` for live writes |
-| `SCRIBE_MIN_CONFIDENCE` | No | `0.6` | Minimum confidence threshold for posting topics |
-| `SCRIBE_MODE` | No | `all` | Operating mode: `all`, `comments_only`, or `new_issues_only` |
+| `SCRIBE_LOOKBACK_HOURS` | No | `3` | Search lookback window in hours (applied when empty) |
+| `SCRIBE_DRY_RUN` | Yes | `-` | `false` enables live writes; any other value previews actions in logs (post-script exits if unset) |
+| `SCRIBE_MIN_CONFIDENCE` | No | `0.6` | Minimum confidence threshold for posting topics (applied when empty) |
+| `SCRIBE_MODE` | No | `all` | Operating mode: `all`, `comments_only`, or `new_issues_only` (applied when empty) |
 | `FULLSEND_FORGE` | Yes | `-` | Forge type: `github` or `gitlab` |
 | `GH_TOKEN` | Yes (GitHub) | `-` | GitHub token with issue read/write permissions |
-| `CONTENTS_TOKEN` | No (GitHub) | `GH_TOKEN` | Optional token for repository content reads; falls back to `GH_TOKEN` |
+| `CONTENTS_TOKEN` | No (GitHub) | `GH_TOKEN` | Optional token for repository content reads; falls back to `GH_TOKEN` when empty |
 | `GITLAB_TOKEN` | Yes (GitLab) | `-` | GitLab access token with API read/write permissions |
 | `GOOGLE_APPLICATION_CREDENTIALS` | Yes | `-` | Path to GCP service account key for Drive reads and Vertex AI |
-| `SCRIBE_DRIVE_CREDENTIALS` | No | `GOOGLE_APPLICATION_CREDENTIALS` | Path to an alternate Drive-scoped service account key |
+| `SCRIBE_DRIVE_CREDENTIALS` | No | `GOOGLE_APPLICATION_CREDENTIALS` | Path to an alternate Drive-scoped service account key; falls back to `GOOGLE_APPLICATION_CREDENTIALS` when empty |
 | `SCRIBE_SLACK_WEBHOOK_URL` | No | `none` | Optional Slack incoming webhook URL for run notifications |
 
 ### Operating modes
@@ -216,7 +243,7 @@ workflow, `SCRIBE_SEARCH_QUERY` is mapped from the repository variable
 Scribe can create new issues in Jira Cloud instead of the forge's native issue
 tracker. The forge (`FULLSEND_FORGE`) provides repository context (open PRs and
 documentation index), while the Jira Cloud project provides the open backlog
-and recently resolved issues for matching and receives new issues.
+and recently resolved issues for matching, and receives new issues.
 
 Configure Jira connection settings under `tracker.jira` in
 `.fullsend/config.yaml`:
@@ -229,11 +256,12 @@ tracker:
     # api_url: https://api.atlassian.com  # optional API gateway URL
 ```
 
-Issue creation delegates to `fullsend issues create --tracker jira`, which
-reads connection settings from `tracker.jira` and requires credentials in
-`FULLSEND_JIRA_*` environment variables. External harness scripts in
-`fullsend-ai/agents` query the Jira backlog using legacy `JIRA_*` variables
-until those scripts are updated to translate or read `FULLSEND_JIRA_*`.
+Issue creation delegates to `fullsend issues create --tracker jira`. The
+external harness scripts in `fullsend-ai/agents` query the Jira backlog using
+`JIRA_BASE_URL` and `JIRA_TOKEN` (with optional `JIRA_USER_EMAIL`), and
+automatically pass these to `fullsend issues create` as `FULLSEND_JIRA_TOKEN`
+and `FULLSEND_JIRA_EMAIL`. (Note that OAuth credentials are not supported by the
+scribe harness scripts; token authentication via `JIRA_TOKEN` is required).
 
 Set `FULLSEND_TRACKER=jira` and configure Jira variables in runner environment
 variables. Extend the harness with `base:` composition in
@@ -246,13 +274,9 @@ env:
     FULLSEND_TRACKER: jira
     SCRIBE_JIRA_PROJECT: PROJ
     SCRIBE_JIRA_ISSUE_TYPE: Task
-    FULLSEND_JIRA_TOKEN: ${FULLSEND_JIRA_TOKEN}
-    FULLSEND_JIRA_EMAIL: ${FULLSEND_JIRA_EMAIL}
-    # Legacy variables read only by external harness scripts:
     JIRA_BASE_URL: ${JIRA_BASE_URL}
     JIRA_TOKEN: ${JIRA_TOKEN}
     JIRA_USER_EMAIL: ${JIRA_USER_EMAIL}
-    FULLSEND_DIR: ${FULLSEND_DIR}
 ```
 
 If `scribe` was previously registered from a remote URL, remove it first from
@@ -269,17 +293,12 @@ fullsend agent add scribe.yaml --name scribe
 |------|----------|---------|-------------|
 | `FULLSEND_TRACKER` | Yes (Jira) | `FULLSEND_FORGE` | Must be set to `jira` |
 | `SCRIBE_JIRA_PROJECT` | Yes (Jira) | `-` | Jira project key for backlog reads and issue creation (matches `tracker.jira.project`) |
-| `SCRIBE_JIRA_ISSUE_TYPE` | No | `Task` | Jira issue type for created issues |
+| `SCRIBE_JIRA_ISSUE_TYPE` | No | `Task` | Jira issue type for created issues (applied when empty) |
 | `SCRIBE_JIRA_LABELS` | No | `meeting-notes` | Comma-separated allowlist of labels scribe may apply to Jira issues |
-| `FULLSEND_JIRA_TOKEN` | Yes (Jira) | `-` | Scoped Jira API token for `fullsend issues create --tracker jira` (required unless OAuth credentials are set) |
-| `FULLSEND_JIRA_EMAIL` | No | `none` | Email address for bot user Basic auth with `FULLSEND_JIRA_TOKEN`. Omit for service account Bearer auth |
-| `FULLSEND_JIRA_CLIENT_ID` | No | `none` | OAuth 2.0 client ID for service account authentication (used with `FULLSEND_JIRA_CLIENT_SECRET`) |
-| `FULLSEND_JIRA_CLIENT_SECRET` | No | `none` | OAuth 2.0 client secret for service account authentication (used with `FULLSEND_JIRA_CLIENT_ID`) |
-| `FULLSEND_DIR` | No | `.fullsend` | Path to `.fullsend` directory containing `config.yaml` with `tracker.jira` settings |
-| `JIRA_BASE_URL` | Yes (Jira) | `-` | Jira Cloud instance URL (`https://<site>.atlassian.net`), read only by external harness scripts |
-| `JIRA_API_URL` | No | `JIRA_BASE_URL` | Target REST API gateway URL, read only by external harness scripts |
-| `JIRA_TOKEN` | Yes (Jira) | `-` | Jira API token, read only by external harness scripts |
-| `JIRA_USER_EMAIL` | No | `none` | Email address for bot user Basic auth, read only by external harness scripts |
+| `JIRA_BASE_URL` | Yes (Jira) | `-` | Jira Cloud instance URL (`https://<site>.atlassian.net`) |
+| `JIRA_API_URL` | No | `JIRA_BASE_URL` | Target REST API gateway URL, read by external harness scripts |
+| `JIRA_TOKEN` | Yes (Jira) | `-` | Jira API token (passed to CLI as `FULLSEND_JIRA_TOKEN`) |
+| `JIRA_USER_EMAIL` | No | `none` | Email address for Basic auth; omit for service account Bearer auth (passed to CLI as `FULLSEND_JIRA_EMAIL`) |
 
 In Jira mode:
 - Only new issues are created. Comments on existing Jira issues are not
@@ -291,14 +310,12 @@ In Jira mode:
 - Issue creation delegates to `fullsend issues create --tracker jira`, which
   converts Markdown to Atlassian Document Format (ADF) and invokes Jira REST
   APIs. The CLI reads connection settings from `tracker.jira` in
-  `.fullsend/config.yaml` and credentials from `FULLSEND_JIRA_*`
-  (`FULLSEND_JIRA_TOKEN` plus optional `FULLSEND_JIRA_EMAIL`, or
-  `FULLSEND_JIRA_CLIENT_ID` and `FULLSEND_JIRA_CLIENT_SECRET`). Legacy
-  `JIRA_TOKEN` and `JIRA_BASE_URL` are rejected by the CLI and are read only
-  by external harness scripts for backlog querying if those scripts do not
-  translate credentials.
+  `.fullsend/config.yaml`, and the harness scripts translate `JIRA_TOKEN` and
+  `JIRA_USER_EMAIL` into the `FULLSEND_JIRA_*` variables expected by the CLI.
 - Labels are validated against an allowlist (`SCRIBE_JIRA_LABELS`) and applied
   host-side.
+- For complete Jira configuration details and harness examples, see [Jira setup
+  in `fullsend-ai/agents` `docs/scribe.md`](https://github.com/fullsend-ai/agents/blob/main/docs/scribe.md).
 
 ### GitLab host validation
 
