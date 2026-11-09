@@ -146,13 +146,13 @@ labels) to issues it creates for categorization and filtering.
 
 ## Configuration and extension
 
-Register the scribe agent in your repository's `.fullsend` directory:
+From the repository root, register the scribe agent (which writes to
+`.fullsend/config.yaml` using the default `--fullsend-dir .fullsend`):
 
 ```bash
 fullsend agent add \
   https://github.com/fullsend-ai/agents/blob/main/harness/scribe.yaml \
-  --name scribe \
-  --fullsend-dir .
+  --name scribe
 ```
 
 ### Dedicated GCP service account setup
@@ -218,6 +218,23 @@ tracker. The forge (`FULLSEND_FORGE`) provides repository context (open PRs and
 documentation index), while the Jira Cloud project provides the open backlog
 and recently resolved issues for matching and receives new issues.
 
+Configure Jira connection settings under `tracker.jira` in
+`.fullsend/config.yaml`:
+
+```yaml
+tracker:
+  jira:
+    base_url: https://myteam.atlassian.net
+    project: PROJ
+    # api_url: https://api.atlassian.com  # optional API gateway URL
+```
+
+Issue creation delegates to `fullsend issues create --tracker jira`, which
+reads connection settings from `tracker.jira` and requires credentials in
+`FULLSEND_JIRA_*` environment variables. External harness scripts in
+`fullsend-ai/agents` query the Jira backlog using legacy `JIRA_*` variables
+until those scripts are updated to translate or read `FULLSEND_JIRA_*`.
+
 Set `FULLSEND_TRACKER=jira` and configure Jira variables in runner environment
 variables. Extend the harness with `base:` composition in
 `.fullsend/scribe.yaml`:
@@ -229,32 +246,40 @@ env:
     FULLSEND_TRACKER: jira
     SCRIBE_JIRA_PROJECT: PROJ
     SCRIBE_JIRA_ISSUE_TYPE: Task
+    FULLSEND_JIRA_TOKEN: ${FULLSEND_JIRA_TOKEN}
+    FULLSEND_JIRA_EMAIL: ${FULLSEND_JIRA_EMAIL}
+    # Legacy variables read only by external harness scripts:
     JIRA_BASE_URL: ${JIRA_BASE_URL}
     JIRA_TOKEN: ${JIRA_TOKEN}
     JIRA_USER_EMAIL: ${JIRA_USER_EMAIL}
     FULLSEND_DIR: ${FULLSEND_DIR}
 ```
 
-If `scribe` was previously registered from a remote URL, remove it first before
-registering the local harness override, as `fullsend agent add` refuses
-duplicate agent names:
+If `scribe` was previously registered from a remote URL, remove it first from
+the repository root before registering the local harness override, as `fullsend
+agent add` refuses duplicate agent names. Register the local file relative to
+`--fullsend-dir` (default: `.fullsend`):
 
 ```bash
-fullsend agent remove scribe --fullsend-dir .
-fullsend agent add .fullsend/scribe.yaml --name scribe --fullsend-dir .
+fullsend agent remove scribe
+fullsend agent add scribe.yaml --name scribe
 ```
 
 | Name | Required | Default | Description |
 |------|----------|---------|-------------|
 | `FULLSEND_TRACKER` | Yes (Jira) | `FULLSEND_FORGE` | Must be set to `jira` |
-| `SCRIBE_JIRA_PROJECT` | Yes (Jira) | `-` | Jira project key for backlog reads and issue creation |
+| `SCRIBE_JIRA_PROJECT` | Yes (Jira) | `-` | Jira project key for backlog reads and issue creation (matches `tracker.jira.project`) |
 | `SCRIBE_JIRA_ISSUE_TYPE` | No | `Task` | Jira issue type for created issues |
 | `SCRIBE_JIRA_LABELS` | No | `meeting-notes` | Comma-separated allowlist of labels scribe may apply to Jira issues |
-| `JIRA_BASE_URL` | Yes (Jira) | `-` | Jira Cloud instance URL (`https://<site>.atlassian.net`) |
-| `JIRA_API_URL` | No | `JIRA_BASE_URL` | Target REST API gateway URL |
-| `JIRA_TOKEN` | Yes (Jira) | `-` | Jira API token |
-| `JIRA_USER_EMAIL` | No | `none` | Email address for bot user Basic auth. Omit for service account Bearer auth |
-| `FULLSEND_DIR` | Yes (Jira) | `-` | Path to `.fullsend` directory containing `config.yaml` with `tracker.jira` settings |
+| `FULLSEND_JIRA_TOKEN` | Yes (Jira) | `-` | Scoped Jira API token for `fullsend issues create --tracker jira` (required unless OAuth credentials are set) |
+| `FULLSEND_JIRA_EMAIL` | No | `none` | Email address for bot user Basic auth with `FULLSEND_JIRA_TOKEN`. Omit for service account Bearer auth |
+| `FULLSEND_JIRA_CLIENT_ID` | No | `none` | OAuth 2.0 client ID for service account authentication (used with `FULLSEND_JIRA_CLIENT_SECRET`) |
+| `FULLSEND_JIRA_CLIENT_SECRET` | No | `none` | OAuth 2.0 client secret for service account authentication (used with `FULLSEND_JIRA_CLIENT_ID`) |
+| `FULLSEND_DIR` | No | `.fullsend` | Path to `.fullsend` directory containing `config.yaml` with `tracker.jira` settings |
+| `JIRA_BASE_URL` | Yes (Jira) | `-` | Jira Cloud instance URL (`https://<site>.atlassian.net`), read only by external harness scripts |
+| `JIRA_API_URL` | No | `JIRA_BASE_URL` | Target REST API gateway URL, read only by external harness scripts |
+| `JIRA_TOKEN` | Yes (Jira) | `-` | Jira API token, read only by external harness scripts |
+| `JIRA_USER_EMAIL` | No | `none` | Email address for bot user Basic auth, read only by external harness scripts |
 
 In Jira mode:
 - Only new issues are created. Comments on existing Jira issues are not
@@ -265,7 +290,13 @@ In Jira mode:
   completed work.
 - Issue creation delegates to `fullsend issues create --tracker jira`, which
   converts Markdown to Atlassian Document Format (ADF) and invokes Jira REST
-  APIs.
+  APIs. The CLI reads connection settings from `tracker.jira` in
+  `.fullsend/config.yaml` and credentials from `FULLSEND_JIRA_*`
+  (`FULLSEND_JIRA_TOKEN` plus optional `FULLSEND_JIRA_EMAIL`, or
+  `FULLSEND_JIRA_CLIENT_ID` and `FULLSEND_JIRA_CLIENT_SECRET`). Legacy
+  `JIRA_TOKEN` and `JIRA_BASE_URL` are rejected by the CLI and are read only
+  by external harness scripts for backlog querying if those scripts do not
+  translate credentials.
 - Labels are validated against an allowlist (`SCRIBE_JIRA_LABELS`) and applied
   host-side.
 
